@@ -4,6 +4,12 @@
 
 ![主界面 (深色)](screenshots/main_dark.png)
 
+## 设备实拍
+
+| SAN-90 | SAN-90 + WebSA 实拍 |
+|---|---|
+| ![SAN-90](screenshots/harogic_san-90.jpg) | ![WebSA 实拍](screenshots/harogic_san-90_websa.jpg) |
+
 ## 特性
 
 - **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 查看冻结，4 条迹线，前端平滑

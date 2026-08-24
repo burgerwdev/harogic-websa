@@ -4,6 +4,12 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 ![Main UI (dark)](screenshots/main_dark.png)
 
+## Hardware
+
+| SAN-90 | SAN-90 + WebSA |
+|---|---|
+| ![san90](screenshots/harogic_san-90.jpg) | ![websa](screenshots/harogic_san-90_websa.jpg) |
+
 ## Features
 
 - **Spectrum display** — Clear Write / Max Hold / Min Hold / Average / View, 4 traces, frontend smoothing
