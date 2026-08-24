@@ -100,3 +100,9 @@ harogic-websa/
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
 - 截图使用真实 SAN-90 + TinySA 扫频源拍摄
 
+
+---
+
+## 作者
+
+[好奇牛马 (B站)](https://space.bilibili.com/28447213)

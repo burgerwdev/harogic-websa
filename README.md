@@ -100,3 +100,9 @@ harogic-websa/
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Screenshots captured with a real SAN-90 + TinySA sweep source
 
+
+---
+
+## Author
+
+[好奇牛马 (Bilibili)](https://space.bilibili.com/28447213)
