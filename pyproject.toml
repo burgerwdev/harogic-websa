@@ -1,0 +1,21 @@
+[project]
+name = "harogic-websa-sa"
+version = "1.0.0"
+description = "Harogic SAN series (45/60/90) Web Spectrum Analyzer (backend)"
+requires-python = ">=3.10"
+dependencies = ["aiohttp>=3.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = ["BLE001", "S110", "S112", "C408", "UP031", "SIM102", "SIM105", "E501", "E702"]
+select = ["E", "F", "W", "UP", "B", "SIM", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harogic SAN-90 Web Spectrum Analyzer</title>
+</head>
+<body>
+<div class="analyzer-card">
+  <div class="info-bar">
+    <div class="info-left">
+      <div class="info-item"><span class="info-label" data-i18n="ref_level">Ref Level:</span><span class="info-value" id="info-ref">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="scale">Scale:</span><span class="info-value" id="info-scale">10 dB/div</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="rbw">RBW:</span><span class="info-value" id="info-rbw">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="vbw">VBW:</span><span class="info-value" id="info-vbw">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="pts">Pts:</span><span class="info-value" id="info-pts">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="swt">SWT:</span><span class="info-value" id="info-swt">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="gnss">GNSS:</span><span class="info-value" id="info-gnss">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="clock_ref">Clock Ref:</span>
+        <select id="select-refclk" data-action="set-refclock">
+          <option value="internal" data-i18n="int">Int</option><option value="external" data-i18n="ext">Ext</option>
+          <option value="external_forced" data-i18n="ext_force">ExtForce</option>
+        </select>
+        <button class="btn" id="btn-refclk-out" data-action="toggle-refclkout" data-i18n="output" data-i18n-attr="title" title="Reference clock output on/off">Output</button>
+      </div>
+    </div>
+    <div class="info-right">
+      <span id="connDot" class="dot off"></span>
+      <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect">Connect SAN-90</button>
+    </div>
+  </div>
+
+  <div class="screen-container">
+    <div class="spectrum-area">
+      <canvas id="spectrum" width="860" height="480"></canvas>
+      <table class="marker-table" id="marker-table">
+        <thead><tr>
+          <th style="width:9%;" data-i18n="mk_marker">Marker</th><th style="width:14%;" data-i18n="mk_mode">Mode</th>
+          <th style="width:37%;" data-i18n="mk_freq">Frequency / ΔFreq</th><th style="width:25%;" data-i18n="mk_amp">Amplitude / ΔPower</th><th style="width:15%;" data-i18n="mk_ref">Reference</th>
+        </tr></thead>
+        <tbody id="marker-tbody"></tbody>
+      </table>
+      <table class="marker-table" id="peak-table" style="display:none;">
+        <tbody id="peak-tbody"></tbody>
+      </table>
+      <table class="harmonic-table" id="harmonic-table" style="display:none;">
+        <tbody id="harmonic-tbody"></tbody>
+      </table>
+      <table class="harmonic-table" id="pnm-table" style="display:none;">
+        <tbody id="pnm-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="control-panel">
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="frequency">Frequency</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any">
+            <div class="unit-btn-group" id="unit-center-group"></div>
+            <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="span">Span</label><input type="number" id="input-span" value="100" step="any">
+            <div class="unit-btn-group" id="unit-span-group"></div>
+            <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="start">Start</label><input type="number" id="input-start" value="950" step="any">
+            <div class="unit-btn-group" id="unit-start-group"></div></div>
+          <div class="param-row"><label data-i18n="stop">Stop</label><input type="number" id="input-stop" value="1050" step="any">
+            <div class="unit-btn-group" id="unit-stop-group"></div>
+            <button class="btn" data-action="apply-start-stop" data-i18n="set">Set</button></div>
+          <div class="param-row"><button class="btn" style="width:100%;" data-action="full-span" data-i18n="full_span">Full Span (100kHz - 9GHz)</button></div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="level">Level</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body meas-allowed">
+          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" step="1"><button class="btn" data-action="set-ref-level" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="scale_short">Scale</label>
+            <div class="unit-btn-group" id="unit-scale-group">
+              <button class="unit-btn" data-scale="1">1</button>
+              <button class="unit-btn" data-scale="2">2</button>
+              <button class="unit-btn" data-scale="5">5</button>
+              <button class="unit-btn active" data-scale="10">10</button>
+              <button class="unit-btn" data-scale="20">20</button>
+            </div><span class="cur-val" data-i18n="db_div">dB/div</span></div>
+          <div class="param-row"><label data-i18n="offset">Offset</label>
+            <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
+            <span class="cur-val" data-i18n="db">dB</span></div>
+          <div class="param-row"><label data-i18n="atten">Atten</label>
+            <select id="select-atten" data-action="set-amp" data-i18n="tip_atten" data-i18n-attr="title" title="Manual attenuation (Auto=-1). Manual sets Ref Level = Atten - 10 dBm">
+              <option value="-1" data-i18n="auto">Auto</option>
+              <option value="0">0 dB</option><option value="10">10 dB</option>
+              <option value="20">20 dB</option><option value="30">30 dB</option>
+            </select><span class="cur-val" id="cur-atten">-</span></div>
+          <div class="param-row"><label data-i18n="preamp">PreAmp</label>
+            <select id="select-preamp" data-action="set-amp">
+              <option value="0" data-i18n="auto">Auto</option><option value="1" data-i18n="off">Off</option>
+            </select><span class="cur-val" id="cur-preamp">-</span></div>
+          <div class="param-row"><label data-i18n="if_gain">IF Gain</label>
+            <select id="select-ifgain" data-action="set-amp">
+              <option value="0">0</option><option value="1">1</option>
+              <option value="2" selected>2</option><option value="3">3</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="gain_strategy">Gain St</label>
+            <select id="select-gainstrategy" data-action="set-amp">
+              <option value="0" data-i18n="low_noise">Low Noise</option><option value="1" data-i18n="high_linearity">High Linearity</option>
+            </select></div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="trace">Trace</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="trace">Trace</label>
+            <button class="trace-btn T1 active" data-trace-tab="0">T1</button>
+            <button class="trace-btn T2" data-trace-tab="1">T2</button>
+            <button class="trace-btn T3" data-trace-tab="2">T3</button>
+            <button class="trace-btn T4" data-trace-tab="3">T4</button>
+          </div>
+          <div class="param-row"><label data-i18n="mode">Mode</label>
+            <select id="select-trace-mode" data-action="set-trace-mode">
+              <option value="CLEAR_WRITE" data-i18n="clear_write">Clear Write</option><option value="MAX_HOLD" data-i18n="max_hold">Max Hold</option>
+              <option value="MIN_HOLD" data-i18n="min_hold">Min Hold</option><option value="AVERAGE" data-i18n="average">Average</option>
+              <option value="VIEW" data-i18n="view">View (Freeze)</option><option value="OFF" data-i18n="off">Off</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="smooth">Smooth</label>
+            <select id="select-smooth" data-action="set-smooth">
+              <option value="1" data-i18n="off_short">Off</option><option value="3">3 pts</option>
+              <option value="5">5 pts</option><option value="9">9 pts</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="cal_wnd">Cal Wnd</label>
+            <select id="select-refwin" data-action="set-norm-refwin" data-i18n="tip_refwin" data-i18n-attr="title" title="Normalize reference smoothing window">
+              <option value="0" data-i18n="auto_rbw">Auto (RBW)</option><option value="3">3 pts</option>
+              <option value="5">5 pts</option><option value="7">7 pts</option><option value="9">9 pts</option>
+            </select></div>
+          <div class="btn-group" style="margin-top:4px;">
+            <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-attr="title" title="Through cal: store current trace as reference and enable normalize">Normalize</button>
+            <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
+            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button></div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="marker">Marker</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body marker-ops">
+          <div class="param-row"><label data-i18n="active">Active</label>
+            <button class="mkr-btn M1 active" data-marker-select="1">M1</button>
+            <button class="mkr-btn M2" data-marker-select="2">M2</button>
+            <button class="mkr-btn M3" data-marker-select="3">M3</button>
+            <button class="mkr-btn M4" data-marker-select="4">M4</button></div>
+          <div class="param-row"><label data-i18n="peak">Peak</label>
+            <button class="btn" data-action="mkr-peak" data-i18n="peak">Peak</button>
+            <button class="btn" data-action="mkr-peak-left">◀</button>
+            <button class="btn" data-action="mkr-peak-right">▶</button></div>
+          <div class="param-row"><label data-i18n="valley">Valley</label>
+            <button class="btn" data-action="mkr-valley" data-i18n="valley">Valley</button>
+            <button class="btn" data-action="mkr-valley-left">◀</button>
+            <button class="btn" data-action="mkr-valley-right">▶</button></div>
+          <div class="param-row"><label data-i18n="center_btn">Center</label>
+            <button class="btn" data-action="mkr-center" data-i18n="mkr_center">Mkr→Center</button></div>
+          <div class="param-row"><label data-i18n="pk_list">Pk List</label>
+            <input type="number" id="input-peakthr" value="-80" step="1" min="-150" max="0" data-i18n="tip_peakthr" data-i18n-attr="title"
+                   title="Peak threshold (dBm); Auto = global peak - 50dB, manual edit keeps your value"><span class="cur-val">dBm</span>
+            <button class="btn" id="btn-peakthr-auto" data-action="peakthr-auto" data-i18n="pk_auto" title="Re-enable auto threshold (peak-50dB)">Auto</button>
+            <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off">Off</button></div>
+          <div class="param-row"><label data-i18n="count">Count</label>
+            <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
+                   title="Number of peaks to display (1~20, single row)"><span class="cur-val">pts</span></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="meas-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="measurement">Measurement</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="measure">Measure</label>
+            <button class="btn" id="btn-meas-onoff" data-action="meas-toggle" data-i18n="off">Off</button>
+            <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude">Amplitude</button>
+            <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic">Harmonic</button>
+            <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise">PhaseNoise</button></div>
+          <div id="meas-amp" class="meas-tab">
+            <div class="param-row"><label data-i18n="n_db">n dB</label>
+              <input type="text" id="input-ampdbs" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
+                     title="Comma-separated thresholds below peak (1~60 dB)">
+              <button class="btn" id="btn-amp-meas" data-action="meas-amp" data-i18n="meas">Meas</button>
+              <button class="btn" id="btn-amp-clear" data-action="clear-amp" data-i18n="clear">Clear</button></div>
+          </div>
+          <div id="meas-harm" class="meas-tab" style="display:none;">
+            <div class="param-row"><label data-i18n="fund">Fund</label>
+              <input type="number" id="input-harm-f0" value="1000" step="any" data-i18n="tip_harm_f0" data-i18n-attr="title"
+                     title="Fundamental frequency (MHz). Span auto-selected from it, override below">
+              <span class="cur-val">MHz</span>
+              <button class="btn" id="btn-harm-set" data-action="meas-harm" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="span_short">Span</label>
+              <select id="select-harm-span" data-i18n="tip_harm_span" data-i18n-attr="title" title="Narrow sweep span around each harmonic (auto-set by fundamental, 1Hz~100MHz)">
+                <option value="100000000">100MHz</option>
+                <option value="10000000">10MHz</option>
+                <option value="1000000">1MHz</option>
+                <option value="100000">100kHz</option>
+                <option value="1000">1kHz</option>
+                <option value="1">1Hz</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="orders">Orders</label>
+              <input type="number" id="input-harm-count" value="5" min="1" max="10" step="1" data-i18n="tip_harm_orders" data-i18n-attr="title"
+                     title="Harmonic orders 1~10"></div>
+          </div>
+          <div id="meas-pnm" class="meas-tab" style="display:none;">
+            <div class="param-row"><label data-i18n="carrier">Carrier</label>
+              <input type="number" id="input-pnm" value="1000" step="any" data-i18n="tip_pnm_carrier" data-i18n-attr="title"
+                     title="Carrier frequency">
+              <div class="unit-btn-group" id="unit-pnm-group"></div>
+              <button class="btn" id="btn-pnm-set" data-action="meas-pnm" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="range">Range</label>
+              <span class="cur-val">100Hz - 10MHz (5 dec)</span></div>
+            <div class="param-row"><label data-i18n="threshold">Threshold</label>
+              <input type="number" id="input-pnm-thr" value="-50" step="1" placeholder="dBm" data-i18n="tip_pnm_thr" data-i18n-attr="title"
+                     title="Carrier detect threshold (dBm), official default -50">
+              <button class="btn" id="btn-pnm-thr" data-action="meas-pnm" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="avg">Avg</label>
+              <input type="number" id="input-pnm-avg" value="4" min="1" max="1000" step="1" data-i18n="tip_pnm_avg" data-i18n-attr="title"
+                     title="Trace average count (1~1000)">
+              <button class="btn" id="btn-pnm-avg" data-action="meas-pnm" data-i18n="apply">Apply</button></div>
+            <div class="param-row"><label data-i18n="smooth_short">Smooth</label>
+              <select id="select-pnm-smooth" data-i18n="tip_pnm_smooth" data-i18n-attr="title" title="Trace smoothing (frontend, like official software)">
+                <option value="1" data-i18n="on">On</option><option value="0" data-i18n="off">Off</option>
+              </select>
+              <input type="number" id="input-pnm-win" value="1" min="0" max="10" step="0.5" data-i18n="tip_pnm_win" data-i18n-attr="title"
+                     title="Smooth window (% of trace length, 0~10)">
+              <span class="cur-val">%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="bw">BW</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body meas-allowed">
+          <div class="param-row"><label data-i18n="rbw">RBW</label><input type="number" id="input-rbw" value="300" step="any">
+            <div class="unit-btn-group" id="unit-rbw-group"></div></div>
+          <div class="param-row"><label></label>
+            <select id="select-rbw-mode" data-action="apply-rbw">
+              <option value="manual" data-i18n="manual">Manual</option><option value="auto" data-i18n="auto_span2000">Auto (Span/2000)</option>
+            </select><button class="btn" data-action="apply-rbw" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="window">Window</label>
+            <select id="select-window" data-action="set-window" title="FFT window: FlatTop/B-Nuttall/LowSideLobe/Rectangle/Kaiser">
+              <option value="0">FlatTop</option>
+              <option value="1" selected>Blackman-Nuttall</option>
+              <option value="2">LowSideLobe</option>
+              <option value="3">Rectangle</option>
+              <option value="4">Kaiser</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="vbw">VBW</label><input type="number" id="input-vbw" value="100" step="any">
+            <div class="unit-btn-group" id="unit-vbw-group"></div></div>
+          <div class="param-row"><label></label>
+            <select id="select-vbw-mode" data-action="apply-vbw">
+              <option value="bypass" data-i18n="bypass_10x">Bypass (10×RBW)</option><option value="equal" data-i18n="eq_rbw">= RBW</option>
+              <option value="tenth" data-i18n="tenth_rbw">= 0.1×RBW</option><option value="manual" data-i18n="manual">Manual</option>
+            </select><button class="btn" data-action="apply-vbw" data-i18n="set">Set</button></div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="sweep">Sweep</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000"><button class="btn" data-action="apply-points" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="spur">Spur</label>
+            <select id="select-spur" data-action="set-spur">
+              <option value="bypass" selected data-i18n="bypass">Bypass</option><option value="standard" data-i18n="standard">Standard</option><option value="enhanced" data-i18n="enhanced">Enhanced</option>
+            </select>
+            <label style="min-width:auto;" data-i18n="gapfill">GapFill</label><button class="btn active" id="btn-gapfill" data-action="toggle-gapfill" data-i18n="on">On</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="dev-bar" id="dev-bar">
+    <div class="info-item"><span class="info-label">SAN-90</span><span class="info-value" id="dev-model">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="uid">UID:</span><span class="info-value" id="dev-uid">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="hw">HW:</span><span class="info-value" id="dev-hw">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="mfw">MFW:</span><span class="info-value" id="dev-mfw">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="ffw">FFW:</span><span class="info-value" id="dev-ffw">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="bus">BUS:</span><span class="info-value" id="dev-bus">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="api">API:</span><span class="info-value" id="dev-api">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="warn">Warn:</span><span class="info-value" id="dev-warn">-</span></div>
+    <div class="info-right">
+      <button class="btn" id="btn-preset" data-action="preset" data-i18n="preset" title="Restore default settings">Preset</button>
+      <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
+      <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
+      <span class="info-label">2026 © HAROGIC WebSA</span>
+      <span class="version-tag" title="前端版本">v1.0.0 by BiliBili: <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+    </div>
+  </div>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
