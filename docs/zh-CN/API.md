@@ -34,7 +34,7 @@ curl http://localhost:8080/api/state
   "actual": { "center": 1000000000, "span": 600000000, "points": 985, "rbw": 100000, "vbw": 1000000 },
   "amp": { "atten": -1, "preamp": 0, "ifgain": 2, "gain_strategy": 0, "atten_actual": 30, "preamp_actual": 1, "ifgain_actual": 2 },
   "ref_clock": "internal", "has_docxo": false, "refclk_ppm": 0.0, "calibrating": false,
-  "refclk_out": false, "last_cal_freq": 0.0, "gnss": { "lock": false, "sats": 0 },
+  "refclk_out": false, "last_cal_freq": 0.0, "gnss": { "lock": false, "sats": 0, "docxo": 0, "docxo_mode": -1, "antenna": -1, "latitude": 0.0, "longitude": 0.0, "altitude": 0, "time": "0000-00-00 00:00:00" },
   "last_error": ""
 }
 ```
@@ -60,7 +60,7 @@ curl http://localhost:8080/api/state
 | `has_docxo` | bool | 是否支持 DOCXO |
 | `refclk_ppm` / `calibrating` / `last_cal_freq` | - | GNSS 校准状态 |
 | `refclk_out` | bool | 参考时钟输出使能 |
-| `gnss` | obj | GNSS 锁定状态（lock/sats）|
+| `gnss` | obj | GNSS 状态：`lock`(0/1) `sats`(卫星数) `docxo`(0/1) `docxo_mode`(0=驯服,1=跟踪) `antenna`(0=外部,1=内部) `latitude`/`longitude`(度) `altitude`(米) `time`(UTC, 无效为 "0000-00-00 00:00:00")|
 | `last_error` | str | 最近错误信息 |
 
 ### `POST /api/config`
@@ -134,7 +134,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 
 | `cmd` | 触发 | 说明 |
 |---|---|---|
-| `STATUS` | 连接时 / 命令后 / 周期 | 完整状态（字段见 §1）|
+| `STATUS` | 连接时 / 命令后 / **周期(每 1s)** | 完整状态（字段见 §1）；周期推送使 GNSS/时间/锁定等状态自动刷新, 无需刷新页面 |
 | `HARM` | 谐波测量中 | 谐波结果：`{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | 相噪测量中 | 相噪结果：`{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
 | `ERROR` | 设备错误 | `{cmd:'ERROR', msg}` |

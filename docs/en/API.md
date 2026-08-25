@@ -34,7 +34,7 @@ Example response:
   "actual": { "center": 1000000000, "span": 600000000, "points": 985, "rbw": 100000, "vbw": 1000000 },
   "amp": { "atten": -1, "preamp": 0, "ifgain": 2, "gain_strategy": 0, "atten_actual": 30, "preamp_actual": 1, "ifgain_actual": 2 },
   "ref_clock": "internal", "has_docxo": false, "refclk_ppm": 0.0, "calibrating": false,
-  "refclk_out": false, "last_cal_freq": 0.0, "gnss": { "lock": false, "sats": 0 },
+  "refclk_out": false, "last_cal_freq": 0.0, "gnss": { "lock": false, "sats": 0, "docxo": 0, "docxo_mode": -1, "antenna": -1, "latitude": 0.0, "longitude": 0.0, "altitude": 0, "time": "0000-00-00 00:00:00" },
   "last_error": ""
 }
 ```
@@ -60,7 +60,7 @@ Field reference:
 | `has_docxo` | bool | DOCXO supported |
 | `refclk_ppm` / `calibrating` / `last_cal_freq` | - | GNSS calibration state |
 | `refclk_out` | bool | reference clock output enable |
-| `gnss` | obj | GNSS lock state (lock/sats) |
+| `gnss` | obj | GNSS state: `lock`(0/1) `sats` `docxo`(0/1) `docxo_mode`(0=disciplined,1=hold) `antenna`(0=external,1=internal) `latitude`/`longitude`(deg) `altitude`(m) `time`(UTC, "0000-00-00 00:00:00" when invalid) |
 | `last_error` | str | recent error message |
 
 ### `POST /api/config`
@@ -134,7 +134,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 
 | `cmd` | Trigger | Description |
 |---|---|---|
-| `STATUS` | on connect / after commands / periodic | full status (fields in §1) |
+| `STATUS` | on connect / after commands / **periodic (every 1 s)** | full status (fields in §1); periodic push keeps GNSS/time/lock states fresh without page refresh |
 | `HARM` | during harmonic measurement | result: `{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | during phase noise | result: `{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
 | `ERROR` | device error | `{cmd:'ERROR', msg}` |

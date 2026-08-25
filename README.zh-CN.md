@@ -1,5 +1,7 @@
 # Harogic SAN 系列频谱仪 Web 上位机 (SAN-45 / SAN-60 / SAN-90)
 
+**English: [README.md](README.md)**
+
 基于 **Harogic SAN 系列频谱仪**（SAN-45 / SAN-60 / SAN-90，海得逻捷）官方 SDK（`htra_api.py` + `libhtraapi.so`，USB 连接）的浏览器 Web 上位机。
 
 ![主界面 (深色)](screenshots/main_dark.png)
@@ -14,11 +16,13 @@
 
 - **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 查看冻结，4 条迹线，前端平滑
 - **控制面板** — 中心/扫宽、RBW/VBW/点数、FFT 窗口（FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser，与官方一致）、衰减/前置放大/中频增益、参考时钟（内部/外部/外部强制 + 输出）
-- **Marker 与 DSP 引擎**
+- **Marker 与 DSP 引擎** — 4 个游标 + **全部开启/关闭**(自动分布到各峰值)、寻峰寻谷遍历
+
   - Savitzky-Golay 平滑（2 阶 + 梯度自适应）
   - 三级寻峰引擎：局部极值 → Escursion 双侧 ≥6dB → 抛物线亚频点拟合
   - 谷凹陷合并（25bin，与 Valley 定位一致）、频率方向遍历
   - Raw Anchor（未平滑时取原始迹线真实极值）
+- **GNSS 详情浮层** — 点击指示器查看完整信息(锁定/卫星/天线/经纬度/UTC 时间); 状态每秒自动刷新
 - **测量模式** — 幅度（n-dB 带宽）、谐波（H1~H5 服务器自动调谐）、相噪（6 档频偏 100Hz~10MHz）
 - **归一化** — 直通校准、自适应吸收、显示层变换
 

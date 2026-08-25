@@ -1,5 +1,7 @@
 # Harogic SAN Series Web Spectrum Analyzer (SAN-45 / SAN-60 / SAN-90)
 
+**中文文档: [README.zh-CN.md](README.zh-CN.md)**
+
 A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), built on the official SDK (`htra_api.py` + `libhtraapi.so`, USB connection).
 
 ![Main UI (dark)](screenshots/main_dark.png)
@@ -14,11 +16,13 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 - **Spectrum display** — Clear Write / Max Hold / Min Hold / Average / View, 4 traces, frontend smoothing
 - **Control panel** — center/span, RBW/VBW/points, FFT windows (FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser, matching official), attenuation / preamp / IF gain, reference clock (Int / Ext / ExtForce + output)
-- **Marker & DSP engine**
+- **Marker & DSP engine** — 4 markers with **All On/Off** (auto-distribute to peaks), peak/valley navigation
+
   - Savitzky-Golay smoothing (2nd order + gradient-adaptive)
   - 3-stage peak engine: local extrema → excursion (≥6 dB both sides) → parabolic sub-bin fit
   - Valley merging (25-bin per depression, consistent with Valley positioning), frequency-direction traversal
   - Raw Anchor (real extremum in raw trace when unsmoothed)
+- **GNSS detail popover** — click the indicator for full info (lock/sats/antenna/position/UTC time); states auto-refresh every 1 s
 - **Measurements** — amplitude (n-dB bandwidth), harmonic (H1–H5 server-side auto-tune), phase noise (6 offsets 100 Hz–10 MHz)
 - **Normalization** — through-cal, adaptive absorption, display-layer transform
 

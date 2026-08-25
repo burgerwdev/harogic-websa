@@ -47,3 +47,12 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 - **Valley**: locates global minimum of display data + parabolic sub-bin
 - **smooth data source**: when enabled, fully based on smoothed curve (position/amplitude smoothed, matches display); when disabled, raw + Raw Anchor
 - **Pk threshold**: auto = global peak −50 dB when unset; user edit locks (activeElement guard + oninput); Auto restores; no update when all markers off
+
+## Display-Layer Design
+- **ref level is display-only**: the device already returns port-referenced power (atten-compensated), so the
+  frontend treats ref level purely as the Y-axis top (displayRef); it is never sent to the device —
+  this avoids the device's ref-atten coupling (manual atten forces ref=atten-10) and Auto-atten
+  re-configuration stalls on broadband sources
+- **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
+  keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
+- **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

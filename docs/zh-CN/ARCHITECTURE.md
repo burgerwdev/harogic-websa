@@ -50,3 +50,10 @@ SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_HARM/SET_PNM
 - **smooth 数据源**: 开启时完全用平滑曲线(位置/幅度均平滑, 与显示一致); 关闭用原始+Raw Anchor
 - **Pk 阈值**: 未设置自动=峰值-50dB; 用户编辑锁定(activeElement 不覆盖 + oninput 实时锁定);
   Auto 恢复; marker 全关闭不更新
+
+## 显示层设计
+- **ref level 为纯显示参数**: 设备返回的功率已含衰减补偿(端口参考), 前端将 ref level 仅作为 Y 轴顶值(displayRef),
+  绝不下发设备 — 避免设备 ref-atten 耦合(手动衰减强制 ref=atten-10)与宽带源下 Auto 衰减重配卡顿
+- **周期 STATUS 推送(1s)**: publisher 每秒推送全量 STATUS(与 GNSS 轮询对齐),
+  使 GNSS 锁定/时间、refclk_out、校准状态自动刷新, 无需刷新页面
+- **GNSS 详情浮层**: 点击 GNSS 指示器查看完整信息(锁定/卫星/天线/经纬度/海拔/UTC 时间)
