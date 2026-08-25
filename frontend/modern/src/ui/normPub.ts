@@ -1,4 +1,4 @@
-// 归一化公共导出(避免 controls 循环依赖)
+// Normalization public exports (avoids circular dependency with controls)
 import * as S from '../core/store';
 import { smoothRefWindow, normRefWindow } from '../dsp/normalize';
 
@@ -12,6 +12,13 @@ export function buildReferenceTablePub(powers: Float32Array): Float32Array {
   const thresh = noiseFloor + 20;
   const isSrc = new Uint8Array(n);
   for (let i = 0; i < n; i++) if (powers[i] > thresh) isSrc[i] = 1;
+  let srcCount = 0;
+  for (let i = 0; i < n; i++) srcCount += isSrc[i];
+  // No sources (noise source): reference = smoothed noise floor
+  if (srcCount / n < 0.05) {
+    const win = Math.max(3, Math.min(9, normRefWindow()));
+    return smoothRefWindow(powers, win);
+  }
   const ref = new Float32Array(n);
   const K = 8;
   for (let i = 0; i < n; i++) {

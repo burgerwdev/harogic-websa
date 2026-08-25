@@ -1,4 +1,4 @@
-// WS 发送(独立模块, 避免循环依赖)
+// WS send (separate module to avoid circular dependency)
 let ws: WebSocket | null = null;
 export function setWS(w: WebSocket | null) { ws = w; }
 export function send(obj: object) {

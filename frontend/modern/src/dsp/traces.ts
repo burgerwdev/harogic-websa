@@ -1,8 +1,8 @@
-// 迹线处理: 重采样/gapFill/杂散抑制/状态机
+// Trace processing: resampling/gapFill/spur suppression/state machine
 import * as S from '../core/store';
 import { updateNormalizeStatusUI } from './normalize';
 
-// 保峰重采样
+// Peak-preserving resampling
 export function resampleTrace(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
   const out = new Float32Array(newLen);
   const oldLen = src.length;

@@ -1,4 +1,4 @@
-// 主题系统: dark/light, CSS 变量 + canvas 颜色读取
+// Theme system: dark/light, CSS variables + canvas color reading
 export type Theme = 'dark' | 'light';
 
 let current: Theme = 'dark';
@@ -22,13 +22,13 @@ export function onThemeChange(fn: (th: Theme) => void) {
   listeners.add(fn);
 }
 
-// 读取 CSS 变量(供 canvas 使用; 每次渲染前调用, 主题切换后自动取新值)
+// Read a CSS variable (for canvas use; called before each render so the new value is picked up after a theme switch)
 export function cssVar(name: string, fallback = ''): string {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
 }
 
-// canvas 颜色集合(按主题从 CSS 变量解析)
+// Canvas color set (resolved from CSS variables by theme)
 export function canvasColors() {
   return {
     bg: cssVar('--sa-bg', '#000'),
@@ -59,7 +59,7 @@ export function canvasColors() {
     ref: cssVar('--sa-ref', '#00ff00'),
     norm: cssVar('--sa-norm', '#ffd75e'),
     warning: cssVar('--sa-warning', '#ff4d4d'),
-    // 标签/衬底(light 模式自动切换为浅底深字, 不影响信息读取)
+// Label/backplate (in light mode switches to a light background with dark text, without affecting readability)
     labelBg: cssVar('--sa-label-bg', 'rgba(0,0,0,0.7)'),
     labelBorder: cssVar('--sa-label-border', '#00aa66'),
     osdStroke: cssVar('--sa-osd-stroke', 'rgba(0,0,0,0.9)'),
@@ -69,7 +69,7 @@ export function canvasColors() {
 
 export type CanvasColors = ReturnType<typeof canvasColors>;
 
-// 主题初始化(默认 dark, 与 legacy 一致)
+// Theme initialization (default dark, consistent with legacy)
 export function initTheme(saved?: Theme | null) {
   const th = saved || 'dark';
   setTheme(th);

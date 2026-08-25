@@ -1,4 +1,4 @@
-// Pk List: 峰值检测/阈值/表格/图上标记
+// Pk list: peak detection/threshold/table/on-canvas marks
 import * as S from '../core/store';
 import { getX, getY } from './spectrum';
 import { fmtF } from '../core/fmt';

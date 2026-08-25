@@ -1,10 +1,10 @@
-// WebSocket 协议层 + STATUS 处理
+// WebSocket protocol layer + STATUS handling
 import * as S from './store';
 import { formatBWHz, formatFreqHz, fmtAxis } from './fmt';
 import { toUnit } from './units';
 import { t } from './i18n';
 import { updateInfoBar } from '../render/infobar';
-import { syncRefClkOut } from '../ui/controls';
+import { syncRefClkOut, fillGnssDetail } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { setWS } from './wsSend';
 import { retrackMarkers } from './markerCommon';
@@ -23,7 +23,7 @@ export function send(obj: object) {
 
 export function connectWS() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  setWS(ws);   // 关键: 所有命令(send)经 wsSend 统一出口, 必须初始化
+  setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { send({ cmd: 'STATUS' }); };
   ws.onclose = () => {
@@ -84,10 +84,10 @@ export function updateStatus(s: any) {
     S.setLastMeasKey(measKey);
     invalidateAllTraces();
   }
-  if (S.displayUnit !== 'dB') S.setDisplayRef(S.refLevel);
+  if (S.displayUnit !== 'dB' && !S.refUserSet) S.setDisplayRef(S.refLevel);
 
   updateFreqUIInputs();
-  setInput('input-ref', S.displayUnit === 'dB' ? '0' : S.refLevel.toFixed(0));
+  setInput('input-ref', S.displayUnit === 'dB' ? '0' : S.displayRef.toFixed(0));
   setInput('input-points', String(S.currentPoints));
   setSelect('select-rbw-mode', S.rbwMode);
   setSelect('select-vbw-mode', S.vbwMode);
@@ -107,11 +107,15 @@ export function updateStatus(s: any) {
     set('dev-api', 'v' + dd.api_ver);
     set('dev-warn', dd.warnings);
   }
+  S.setLastGnss(s.gnss);
   const g = document.getElementById('info-gnss');
   if (g) {
-    if (s.gnss && s.gnss.sats > 0) { g.textContent = 'Locked ' + s.gnss.sats + 's'; g.style.color = 'var(--dot-on)'; }
-    else if (s.gnss && s.gnss.lock) { g.textContent = 'Locked'; g.style.color = 'var(--dot-on)'; }
-    else { g.textContent = 'NoLock'; g.style.color = 'var(--dot-off)'; }
+    // The top bar shows only the locked state (details such as satellite count live in the detail popover)
+    if (s.gnss && s.gnss.lock) { g.textContent = t('status_locked'); g.style.color = 'var(--dot-on)'; }
+    else { g.textContent = t('status_nolock'); g.style.color = 'var(--dot-off)'; }
+    // Update the detail popover synchronously (if open)
+    const pop = document.getElementById('gnss-popover');
+    if (pop && pop.style.display !== 'none') fillGnssDetail();
   }
   const rc = document.getElementById('select-refclk') as HTMLSelectElement;
   syncRefClkOut(s);
@@ -158,7 +162,7 @@ function setSelect(id: string, v: string) {
   if (el && document.activeElement !== el) el.value = v;
 }
 
-// 频率输入框同步
+// Sync frequency input fields
 export function updateFreqUIInputs() {
   setInput('input-center', toUnit(S.centerHz, 'center').toFixed(4));
   setInput('input-span', toUnit(S.spanHz, 'span').toFixed(4));
@@ -168,7 +172,7 @@ export function updateFreqUIInputs() {
   setInput('input-vbw', toUnit(S.currentVBW, 'vbw').toFixed(2));
 }
 
-// i18n 同步: 连接按钮/状态文字
+// i18n sync: connect button/status text
 export function syncConnectBtn() {
   const bc = document.getElementById('btn-connect');
   if (bc) bc.textContent = S.deviceConnected ? t('status_connected') : t('connect');

@@ -1,7 +1,7 @@
-// 平滑: S-G 2 阶 + 梯度自适应 / 窗口平滑
+// Smoothing: 2nd-order SG + gradient-adaptive / window smoothing
 import * as S from '../core/store';
 
-// P2: Savitzky-Golay 2 阶平滑(保峰值/保边沿)
+// P2: Savitzky-Golay 2nd-order smoothing (preserve peaks/edges)
 export function sgSmooth(src: Float32Array, w: number, adaptive: boolean): Float32Array {
   if (w <= 1) return src.slice();
   const out = new Float32Array(src.length);

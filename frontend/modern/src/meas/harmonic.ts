@@ -1,4 +1,4 @@
-// 谐波测量(服务器自动调谐 H1~H5) + 表格
+// Harmonic measurement (server auto-tunes H1~H5) + table
 import * as S from '../core/store';
 import { formatFreqHz } from '../core/fmt';
 import { renderAll } from '../render/spectrum';
@@ -117,7 +117,7 @@ export function updateHarmonicTable() {
   if (!tb || !tb2) return;
   const h = S.harm;
   if (!h || !h.list.length) {
-    // 测量模式已开启但无结果: 显示 measuring 状态(而非隐藏)
+    // Measurement mode is on but no result yet: show the measuring state (rather than hiding)
     if (S.measOn && S.viewMode === 'harm') {
       tb.style.display = '';
       tb2.innerHTML = '<tr><td class="harm-cell">measuring...</td></tr>';

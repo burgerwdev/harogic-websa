@@ -1,4 +1,4 @@
-// 迹线 UI 操作: tab 切换 / 模式设置
+// Trace UI ops: tab switching / mode setting
 import * as S from '../core/store';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';

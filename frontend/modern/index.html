@@ -14,8 +14,24 @@
       <div class="info-item"><span class="info-label" data-i18n="rbw">RBW:</span><span class="info-value" id="info-rbw">-</span></div><span class="separator">|</span>
       <div class="info-item"><span class="info-label" data-i18n="vbw">VBW:</span><span class="info-value" id="info-vbw">-</span></div><span class="separator">|</span>
       <div class="info-item"><span class="info-label" data-i18n="pts">Pts:</span><span class="info-value" id="info-pts">-</span></div><span class="separator">|</span>
-      <div class="info-item"><span class="info-label" data-i18n="swt">SWT:</span><span class="info-value" id="info-swt">-</span></div><span class="separator">|</span>
-      <div class="info-item"><span class="info-label" data-i18n="gnss">GNSS:</span><span class="info-value" id="info-gnss">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="gnss">GNSS:</span><span class="info-value gnss-indicator" id="info-gnss" data-action="gnss-detail" data-i18n-attr="title" title="GNSS detail">-</span>
+        <div class="gnss-popover" id="gnss-popover" style="display:none;">
+          <div class="gnss-popover-head"><span data-i18n="gnss_detail">GNSS Detail</span>
+            <button class="btn" data-action="gnss-close" data-i18n="gnss_close">Close</button></div>
+          <div class="gnss-popover-body">
+            <div class="param-row"><label data-i18n="gnss_lock">Lock</label><span class="info-value" id="gnss-d-lock">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_sats">Satellites</label><span class="info-value" id="gnss-d-sats">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_docxo">DOCXO</label><span class="info-value" id="gnss-d-docxo">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_docxo_mode">DOCXO Mode</label><span class="info-value" id="gnss-d-docxo_mode">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_antenna">Antenna</label><span class="info-value" id="gnss-d-antenna">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_latitude">Latitude</label><span class="info-value" id="gnss-d-latitude">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_longitude">Longitude</label><span class="info-value" id="gnss-d-longitude">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_altitude">Altitude</label><span class="info-value" id="gnss-d-altitude">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_utc_time">GNSS UTC Time</label><span class="info-value" id="gnss-d-utc">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_local_time">System Local Time</label><span class="info-value" id="gnss-d-local">-</span></div>
+          </div>
+        </div></div><span class="separator">|</span><div class="info-item"><span class="info-label" data-i18n="swt">SWT:</span><span class="info-value" id="info-swt">-</span></div><span class="separator">|</span>
+      
       <div class="info-item"><span class="info-label" data-i18n="clock_ref">Clock Ref:</span>
         <select id="select-refclk" data-action="set-refclock">
           <option value="internal" data-i18n="int">Int</option><option value="external" data-i18n="ext">Ext</option>
@@ -162,7 +178,9 @@
             <button class="mkr-btn M1 active" data-marker-select="1">M1</button>
             <button class="mkr-btn M2" data-marker-select="2">M2</button>
             <button class="mkr-btn M3" data-marker-select="3">M3</button>
-            <button class="mkr-btn M4" data-marker-select="4">M4</button></div>
+            <button class="mkr-btn M4" data-marker-select="4">M4</button>
+            <span class="mkr-gap"></span>
+            <button class="btn mkr-all-btn" id="btn-markers-all" data-action="markers-all" data-i18n="all_off">All Off</button></div>
           <div class="param-row"><label data-i18n="peak">Peak</label>
             <button class="btn" data-action="mkr-peak" data-i18n="peak">Peak</button>
             <button class="btn" data-action="mkr-peak-left">◀</button>
@@ -311,7 +329,7 @@
       <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
       <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" title="前端版本">v1.0.0 by BiliBili: <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" title="前端版本">v1.0.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

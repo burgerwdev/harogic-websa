@@ -1,4 +1,4 @@
-// Marker 表格(固定布局)
+// Marker table (fixed layout)
 import * as S from '../core/store';
 import { formatFreqHz } from '../core/fmt';
 import { markerFreqHz } from '../core/markerCommon';

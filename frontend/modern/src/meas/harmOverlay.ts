@@ -1,4 +1,4 @@
-// 谐波标注线(真实频谱上) renderHarmOverlay
+// Harmonic annotation lines (on the real spectrum) — renderHarmOverlay
 import * as S from '../core/store';
 import { getX } from '../render/spectrum';
 import { plotRect } from '../render/plot';

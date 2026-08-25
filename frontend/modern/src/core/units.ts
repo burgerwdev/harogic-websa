@@ -1,4 +1,4 @@
-// 单位组工具 (原 buildUnitGroups/setUnit/parseFreqUnit/toUnit)
+// Unit helpers (from buildUnitGroups/setUnit/parseFreqUnit/toUnit)
 import { units } from './store';
 
 export function buildUnitGroups() {

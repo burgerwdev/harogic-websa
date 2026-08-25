@@ -1,4 +1,4 @@
-// 全局状态 (原 app.js 全局变量集中管理)
+// Global state (centralized management of the original app.js globals)
 export interface TraceState {
   id: number;
   mode: string;
@@ -24,13 +24,13 @@ export interface MarkerState {
 
 export interface ExtremaItem { i: number; v: number; sv?: number; f: number; a: number; }
 
-// 画布
+// Canvas
 export const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
 export const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
 export const W = canvas.width, H = canvas.height;
 export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
 
-// 频率/幅度状态
+// Frequency/amplitude state
 export const FREQ_MIN = 100e3, FREQ_MAX = 9e9;
 export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
 export function setCenterHz(v: number) { centerHz = v; }
@@ -59,6 +59,9 @@ export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 export let displayRef = 0.0;
 export function setDisplayRef(v: number) { displayRef = v; }
+// Today's display scale was manually set by the user (ref level = pure display param) → STATUS writes no longer override it
+export let refUserSet = false;
+export function setRefUserSet(v: boolean) { refUserSet = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 
@@ -69,7 +72,7 @@ export function setFreqVersion(v: number) { freqVersion = v; }
 
 export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz', rbw: 'kHz', vbw: 'kHz', pnm: 'MHz' };
 
-// 迹线
+// Traces
 export let activeTraceIdx = 0;
 export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
 export const TRACE_COLORS = ['#00FF00', '#FFFF00', '#00FFFF', '#FF00FF'];
@@ -80,7 +83,7 @@ export const traces: TraceState[] = [
   { id: 4, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
 ];
 
-// Marker
+// Markers
 export let activeMkrId = 1;
 export function setActiveMkrId(v: number) { activeMkrId = v; }
 export const MARKER_COLORS = ['#FF4444', '#FFD700', '#1E90FF', '#FFFFFF'];
@@ -91,7 +94,7 @@ export const markers: MarkerState[] = [
   { id: 4, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
 ];
 
-// 测量状态
+// Measurement state
 export interface M3dBResult { peak: number; thresh: number; thr: number; pi: number; li: number; ri: number; lf: number; rf: number; lv: number; rv: number; bw: number; peakF: number; }
 export let m3dB: M3dBResult | null = null;
 export function setM3dB(v: M3dBResult | null) { m3dB = v; }
@@ -120,13 +123,13 @@ export function setAmpRes(v: any) { ampRes = v; }
 export let lastHarmList: any = null;
 export function setLastHarmList(v: any) { lastHarmList = v; }
 
-// 平滑/寻峰
+// Smoothing / peak finding
 export let smoothBins = 1;
 export function setSmoothBins(v: number) { smoothBins = v; }
 export let valleySeqPos = 0;
 export function setValleySeqPos(v: number) { valleySeqPos = v; }
 
-// 峰值表
+// Peak list
 export let peakListOn = false;
 export function setPeakListOn(v: boolean) { peakListOn = v; }
 export let peakMarks: any[] | null = null;
@@ -137,10 +140,13 @@ export let normRefWinUser = 0;
 export function setNormRefWinUser(v: number) { normRefWinUser = v; }
 export let defaultMkrDone = false;
 export function setDefaultMkrDone(v: boolean) { defaultMkrDone = v; }
+// Latest GNSS status (for the detail popover)
+export let lastGnss: any = null;
+export function setLastGnss(v: any) { lastGnss = v; }
 export let dragging = false;
 export function setDragging(v: boolean) { dragging = v; }
 
-// 常量
+// Constants
 export const NORM_POS_CAP = 0.0;
 export const ABSORB_THRESH = 0.3;
 export const NORM_REF_RBW_FACTOR = 60;

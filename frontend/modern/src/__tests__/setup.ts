@@ -1,5 +1,5 @@
-// vitest setup: mock canvas/DOM, 供 store 模块(顶层访问 spectrum canvas)加载
-// 测试不涉及真实渲染, 只测纯逻辑(平滑/寻峰/重采样/归一化)
+// vitest setup: mock canvas/DOM so the store module (which accesses the spectrum canvas at the top level) can load
+// The tests do not do real rendering, only pure logic (smoothing/peak-finding/resampling/normalization)
 const fakeCtx = new Proxy({}, {
   get: () => () => {},
   set: () => true,
@@ -12,12 +12,12 @@ const fakeCanvas = {
   getBoundingClientRect: () => ({ left: 0, top: 0, width: 860, height: 480 }),
 } as unknown as HTMLCanvasElement;
 
-// 保留原 getElementById, 仅对 spectrum 返回 fake canvas
+// Keep the original getElementById, only return the fake canvas for 'spectrum'
 const origGetElementById = document.getElementById.bind(document);
 document.getElementById = ((id: string) =>
   id === 'spectrum' ? fakeCanvas : origGetElementById(id)) as typeof document.getElementById;
 
-// performance.now 兜底(某些环境缺失)
+// performance.now fallback (missing in some environments)
 if (!globalThis.performance) {
   (globalThis as any).performance = { now: () => 0 };
 }

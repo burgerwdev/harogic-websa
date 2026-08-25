@@ -1,21 +1,26 @@
 /* ============ 自托管字体: 全平台/浏览器一致 ============
-   Noto Sans CJK SC (思源黑体) GB2312 常用子集 + 拉丁 + UI 符号, woff2
+   LXGW WenKai (霞鹜文楷) GB2312 常用子集 + 拉丁 + UI 符号, woff2
    中英文统一使用该字体, 各平台渲染完全一致 */
 @font-face {
-  font-family: 'WebSA Sans';
-  src: url('/static/modern/dist/fonts/WebSASCJK-Regular.woff2') format('woff2');
+  font-family: 'LXGW WenKai';
+  src: url('/static/modern/dist/fonts/LXGWWenKai-Regular.woff2') format('woff2');
   font-weight: 400; font-style: normal; font-display: swap;
 }
 @font-face {
-  font-family: 'WebSA Sans';
-  src: url('/static/modern/dist/fonts/WebSASCJK-Bold.woff2') format('woff2');
+  font-family: 'LXGW WenKai';
+  src: url('/static/modern/dist/fonts/LXGWWenKai-Medium.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'LXGW WenKai';
+  src: url('/static/modern/dist/fonts/LXGWWenKai-Medium.woff2') format('woff2');
   font-weight: 700; font-style: normal; font-display: swap;
 }
 /* ============ 全局强制字体: 自托管优先, 未打包字符 fallback 系统 ============ */
 *, *::before, *::after {
-  font-family: 'WebSA Sans', 'Noto Sans CJK SC', 'Noto Sans CJK', 'Source Han Sans SC',
-               'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Zen Hei',
-               sans-serif !important;
+  font-family: 'LXGW WenKai', '霞鹜文楷', 'Noto Sans CJK SC', 'Noto Sans CJK',
+               'Source Han Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+               'WenQuanYi Zen Hei', sans-serif !important;
 }
 select option { font-size: 11px; }
 input, select, button, textarea { font-size: 11px; }
@@ -172,6 +177,36 @@ body {
 #meas-panel button:disabled { opacity: 0.35; cursor: not-allowed; }
 .info-value { color: var(--text); font-weight: bold; font-variant-numeric: tabular-nums; }
 .separator { color: var(--separator); }
+/* SWT 固定宽度 + 右对齐: 数值位数变化不引起布局重排闪动,
+   value 右边缘到右侧 | 的距离 = label 左边缘到左侧 | 的距离(与其他项一致) */
+#info-swt { display: inline-block; min-width: 62px; text-align: right; }
+/* 顶部/底部栏控件: 背景与栏 div 一致(panel-2, 类似 Output 按钮 off 风格, 非纯黑) */
+.info-bar select, .info-bar .btn:not(.active),
+.dev-bar .btn, .dev-bar #btn-preset, .dev-bar .version-tag-link {
+  background-color: var(--panel-2);
+}
+.info-bar select:hover, .info-bar .btn:not(.active):hover,
+.dev-bar .btn:hover, .dev-bar #btn-preset:hover, .dev-bar .version-tag-link:hover {
+  background-color: var(--btn-hover);
+}
+/* GNSS 指示器 + 详情浮层 */
+.gnss-indicator { cursor: pointer; }
+.gnss-indicator:hover { text-decoration: underline; }
+.gnss-popover {
+  position: absolute; z-index: 100; top: 26px; left: 0;
+  background: var(--panel-2); border: 1px solid var(--card-border);
+  border-radius: 3px; padding: 8px 10px; min-width: 210px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.gnss-popover-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding-bottom: 6px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--inner-border);
+  color: var(--label); font-size: 12px; font-weight: bold;
+}
+.gnss-popover .param-row { display: grid; grid-template-columns: 116px 1fr; }   /* 固定列宽, 值列严格对齐 */
+.gnss-popover .param-row label { min-width: 0; }
+.info-item { position: relative; }
 .screen-container {
   display: flex; flex-direction: row; gap: 12px; align-items: stretch; flex-wrap: wrap;
   height: calc(100vh - 96px); min-height: 420px; overflow: hidden;
@@ -229,6 +264,8 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .marker-ops .param-row .btn[data-action="mkr-valley-left"],
 .marker-ops .param-row .btn[data-action="mkr-valley-right"] { width: 34px; min-width: 34px; padding: 4px 0; }
 .marker-ops .param-row label { min-width: 48px; }
+.mkr-gap { width: 34px; flex-shrink: 0; }   /* 间隔一个按钮宽度 */
+.mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
 .param-row label { color: var(--label); font-size: 11px; min-width: 58px; }
 input[type=text] { background: var(--input-bg); color: var(--text); border: 1px solid var(--input-border); padding: 2px 4px; width: 68px; font-family: monospace; font-size: 11px; }

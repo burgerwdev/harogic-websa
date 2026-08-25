@@ -1,4 +1,4 @@
-// 画布叠加: 各次谐波垂直线 + 菱形 + 标签 renderHarmonics
+// Canvas overlay: vertical lines + diamonds + labels for each harmonic — renderHarmonics
 import * as S from '../core/store';
 import { getX, getY } from '../render/spectrum';
 import { plotRect } from '../render/plot';

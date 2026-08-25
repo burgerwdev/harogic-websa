@@ -1,4 +1,4 @@
-// 相噪(PNM) 测量: 渲染/表格/结果处理
+// Phase noise (PNM) measurement: render/table/result handling
 import * as S from '../core/store';
 import { fmtHzUnit, formatFreqHz, fmtPnmFreq } from '../core/fmt';
 import { renderAll } from '../render/spectrum';
@@ -6,11 +6,12 @@ import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measure';
 import { canvasColors } from '../core/theme';
 
-// 首次完整采集后不再显示 measuring overlay(后端 progress 每轮循环, 测量持续刷新)
+// Stop showing the measuring overlay after the first complete acquisition
+// (the backend recycles progress every loop while the measurement keeps refreshing)
 let pnmFirstDone = false;
 
 export function measPnmApply() {
-  pnmFirstDone = false;   // 重新测量: 重新显示 loading
+  pnmFirstDone = false;   // Re-measure: re-show the loading overlay
   if (!S.measOn || S.measTabSel !== 'pnm') return;
   const center = parsePnmFreq() || 1e9;
   const thr = parseFloat((document.getElementById('input-pnm-thr') as HTMLInputElement).value);
@@ -32,22 +33,24 @@ function parsePnmFreq(): number {
   return u === 'GHz' ? v * 1e9 : u === 'MHz' ? v * 1e6 : u === 'kHz' ? v * 1e3 : v;
 }
 
-// 相噪图"完整"判据:
-//  1. x 轴 label 齐全(offset 覆盖 100Hz~10MHz)
-//  2. 曲线数据有效点占比 ≥90% (设备增量累积, 未更新段 pn=0 → 无效)
+// Phase-noise plot "readiness" criteria:
+//  1. x-axis labels complete (offset covers 100Hz~10MHz)
+//  2. ≥90% of curve data points are valid (device accumulates incrementally; bins not yet updated have pn=0 → invalid)
 function pnmReady(d: any): boolean {
   if (!d || !d.offset || d.offset.length < 2 || !d.pn || d.pn.length < 2) return false;
   const offs = d.offset;
   if (!(offs[0] <= 100.5 && offs[offs.length - 1] >= 9.5e6)) return false;
   const pn = d.pn;
-  // 图"真正画完" = 无无效点(-500 未更新段); 对应后端一轮增量采集完成(done)
+  // The plot is "truly drawn" = when there are no invalid points (-500 for not-yet-updated bins);
+  // this marks a complete backend incremental acquisition pass (done)
   for (const v of pn) if (!isFinite(v) || v <= -250) return false;
   return true;
 }
 
 export function onPnmResult(d: any) {
   S.setPnmData(d);
-  // 以 x 轴 label 齐全(offset 覆盖全范围)为准 dismiss —— 图真正画完才消失
+  // Dismiss based on complete x-axis labels (offset covers the full range) —
+  // the loading overlay disappears only once the plot is truly finished
   if (d.done || pnmReady(d)) {
     pnmFirstDone = true;
   }
@@ -107,7 +110,7 @@ export function renderPnm() {
   const col = canvasColors();
   ctx2.clearRect(0, 0, c.width, c.height);
   const d = S.pnmData;
-  // 测量中(无数据): 明确的 loading 提示 + 进度条, 避免用户误以为卡死
+  // Measuring (no data): explicit loading hint + progress bar so the user doesn't think it hung
   if (!d || !d.offset || d.offset.length < 2) {
     drawLoading(c, ctx2, col, d && d.progress != null ? Math.min(100, d.progress) : 0);
     return;
@@ -165,7 +168,7 @@ export function renderPnm() {
   let pen = false;
   for (let i = 0; i < d.offset.length; i++) {
     const v = pnDisp[i];
-    if (!isFinite(v) || v >= 0) { pen = false; continue; }   // 无效点(未更新=0)不连线
+    if (!isFinite(v) || v >= 0) { pen = false; continue; }   // invalid points (not updated = 0) are not connected
     const x = X(d.offset[i]), y = Y(v);
     if (!pen) { ctx2.moveTo(x, y); pen = true; } else ctx2.lineTo(x, y);
   }
@@ -179,13 +182,14 @@ export function renderPnm() {
     ctx2.fill();
   }
 
-  // 仅首次采集未完成时叠加 measuring 提示(此后 progress 循环不再打扰)
+  // Overlay the measuring hint only while the initial acquisition is incomplete
+  // (after that the progress loop no longer interferes)
   if (!pnmFirstDone && d.progress != null && d.progress < 100) {
     drawProgressOverlay(c, ctx2, col, Math.min(100, d.progress));
   }
 }
 
-// 曲线绘制完成但仍在增量采集中: 半透明覆盖 + 中央进度提示
+// Curve drawn but still in incremental acquisition: semi-transparent overlay + centered progress hint
 function drawProgressOverlay(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: any, progress: number) {
   ctx2.save();
   ctx2.fillStyle = 'rgba(0, 0, 0, 0.45)';
@@ -229,17 +233,17 @@ export function updatePnmTable() {
   tb2.innerHTML = html;
 }
 
-// 中央 loading 提示 + 进度条
+// Centered loading hint + progress bar
 function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: any, progress: number) {
   ctx2.fillStyle = col.bg;
   ctx2.fillRect(0, 0, c.width, c.height);
   const cx = c.width / 2, cy = c.height / 2;
-  // 标题
+  // Title
   ctx2.fillStyle = col.text;
   ctx2.font = 'bold 16px monospace';
   ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
   ctx2.fillText(progress >= 100 ? 'PHASE NOISE  (updating...)' : 'PHASE NOISE  (measuring... ' + progress + '%)', cx, cy - 24);
-  // 进度条
+  // Progress bar
   const bw = 280, bh = 8, bx = cx - bw / 2, by = cy + 12;
   ctx2.fillStyle = col.grid;
   ctx2.fillRect(bx, by, bw, bh);
@@ -248,7 +252,7 @@ function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: 
   ctx2.strokeStyle = col.grid;
   ctx2.lineWidth = 1;
   ctx2.strokeRect(bx, by, bw, bh);
-  // 提示
+  // Hint
   ctx2.fillStyle = col.axis;
   ctx2.font = '12px monospace';
   ctx2.fillText('please wait...', cx, by + 26);

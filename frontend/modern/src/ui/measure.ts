@@ -1,4 +1,4 @@
-// 测量模式状态机: 开关/tab/视图切换
+// Measurement mode state machine: on/off, tab, view switching
 import * as S from '../core/store';
 import { renderAll } from '../render/spectrum';
 import { send } from '../core/wsSend';
@@ -31,7 +31,7 @@ export function setMeasButtons(en: boolean) {
     const b = document.getElementById(id) as HTMLButtonElement;
     if (b) b.disabled = !en;
   });
-  // modern 按钮 id 可能不同, 兼容 data-action 方式
+  // modern buttons may have different ids; also support the data-action approach
   const acts = ['meas-amp', 'clear-amp', 'meas-harm', 'meas-pnm'];
   acts.forEach(a => {
     const el = document.querySelector(`[data-action="${a}"]`) as HTMLButtonElement;

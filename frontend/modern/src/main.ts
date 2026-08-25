@@ -1,4 +1,4 @@
-// 入口: 初始化所有模块
+// Entry point: initialize all modules
 import './style.css';
 import * as S from './core/store';
 import { buildUnitGroups } from './core/units';
@@ -12,7 +12,7 @@ import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
 function init() {
-  // 主题/语言(从 localStorage 恢复)
+  // Theme/language (restored from localStorage)
   const savedTheme = localStorage.getItem('web-sa-theme');
   initTheme(savedTheme === 'light' ? 'light' : 'dark');
   const savedLang = localStorage.getItem('web-sa-lang');
@@ -25,7 +25,7 @@ function init() {
   bindActions();
   bindCanvas();
 
-  // 主题/语言切换按钮(dev-bar, preset 旁, 无 label)
+  // Theme/language toggle buttons (dev-bar, next to preset, no label)
   const btnTheme = document.getElementById('btn-theme');
   if (btnTheme) {
     btnTheme.textContent = S_getTheme() === 'dark' ? 'Light' : 'Dark';
@@ -52,7 +52,7 @@ function init() {
   }
   onThemeChange(() => { renderAll(); });
 
-  // WS + 周期渲染(测量视图)
+  // WS + periodic render (measurement view)
   connectWS();
   setInterval(() => { if (S.viewMode === 'pnm' || S.viewMode === 'harm') renderAll(); }, 200);
 }

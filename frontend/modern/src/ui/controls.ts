@@ -1,4 +1,4 @@
-// 控制命令 + data-action 绑定 + 面板折叠 + marker 操作 + canvas 交互
+// Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 import { updateFreqUIInputs } from '../core/ws';
@@ -20,7 +20,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 
-// ── 频率联动 ──
+// ── Frequency linking ──
 export function fitSpan(center: number, span: number): number {
   const maxSpan = 2 * Math.min(center - S.FREQ_MIN, S.FREQ_MAX - center);
   return Math.max(1000, Math.min(span, maxSpan));
@@ -70,15 +70,14 @@ export function applyFullSpan() { send({ cmd: 'SET_FREQ', center: 4.50005e9, spa
 export function setRefLevel() {
   const el = document.getElementById('input-ref') as HTMLInputElement;
   const v = parseFloat(el.value);
-  if (S.displayUnit === 'dB') {
-    S.setDisplayRef(v);
-    updateInfoBar();
-    renderAll();
-    return;
-  }
-  S.setRefLevel(v);
+  if (!isFinite(v)) return;
+  // ref level = pure display scale (device-reported power already includes atten compensation):
+  // only update the display reference + redraw, do not send to the device → no device reconfig
+  // (auto atten stays stable, no stutter), and it is unaffected by the device firmware's
+  // ref-atten coupling; the atten feature (SET_AMP) remains fully independent
   S.setDisplayRef(v);
-  send({ cmd: 'SET_REF', ref: v });
+  S.setRefUserSet(true);
+  updateInfoBar();
   renderAll();
 }
 export function setScale(v: number) {
@@ -151,7 +150,7 @@ export function toggleGapFill() {
 }
 export function connectDevice() { send({ cmd: 'CONNECT' }); }
 
-// ── Marker 操作 ──
+// ── Marker operations ──
 export function activeMarkerPeak() {
   const p = getDisplayPowers(); if (!p) return;
   let bi = 0, bv = -Infinity;
@@ -217,7 +216,31 @@ function autoTrackMarker(m: S.MarkerState) {
   }
 }
 
-// 预设
+// Turn all markers on/off at once (toggle)
+export function updateMarkersAllBtn() {
+  const allOn = S.markers.every(m => m.enabled && m.mode !== 'OFF');
+  const el = document.getElementById('btn-markers-all');
+  if (el) {
+    el.textContent = allOn ? t('all_on') : t('all_off');
+    el.classList.toggle('active', allOn);
+  }
+}
+export function toggleMarkersAll() {
+  const allOn = S.markers.every(m => m.enabled && m.mode !== 'OFF');
+  if (allOn) {
+    S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; });
+  } else {
+    // All on: track one peak at a time — M1 takes the strongest peak, later markers skip
+    // occupied positions and take the next strongest
+    // (consistent with the autoTrackMarker logic in selectMarker)
+    S.markers.forEach(m => { m.enabled = true; if (m.mode === 'OFF') m.mode = 'NORMAL'; });
+    S.markers.forEach(m => autoTrackMarker(m));
+  }
+  updateMarkersAllBtn();
+  renderAll();
+}
+
+// Preset
 export function presetAll() {
   exitMeasModePub();
   S.setMeasOn(false);
@@ -240,7 +263,38 @@ export function presetAll() {
   updateInfoBar(); applyMeasUI(); renderAll();
 }
 
-// 语言切换时同步所有 toggle 按钮文本
+// Current frontend time (shown when not locked)
+function fmtNow(): string {
+  const d = new Date();
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' +
+    p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+}
+
+// GNSS detail popover: fill + show/close
+export function fillGnssDetail() {
+  const g = S.lastGnss || {};
+  const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('gnss-d-lock', g.lock ? t('status_locked') : t('status_nolock'));
+  set('gnss-d-sats', g.sats != null ? String(g.sats) : '-');
+  set('gnss-d-docxo', g.docxo ? t('on') : t('off'));
+  set('gnss-d-docxo_mode', g.docxo_mode === 0 ? t('gnss_docxo_lock') : (g.docxo_mode === 1 ? t('gnss_docxo_hold') : '-'));
+  set('gnss-d-antenna', g.antenna === 0 ? t('gnss_ext_ant') : (g.antenna === 1 ? t('gnss_int_ant') : '-'));
+  set('gnss-d-latitude', g.latitude != null && Math.abs(g.latitude) > 0.0001 ? g.latitude.toFixed(6) + '°' : '-');
+  set('gnss-d-longitude', g.longitude != null && Math.abs(g.longitude) > 0.0001 ? g.longitude.toFixed(6) + '°' : '-');
+  set('gnss-d-altitude', g.altitude != null ? String(g.altitude) + ' m' : '-');
+  // Time: GNSS UTC (shown only when locked and valid) + system local time (always shown)
+  set('gnss-d-utc', (g.lock && g.time && !g.time.includes('0000')) ? g.time : '-');
+  set('gnss-d-local', fmtNow());
+  const pop = document.getElementById('gnss-popover');
+  if (pop) pop.style.display = '';
+}
+export function closeGnssDetail() {
+  const pop = document.getElementById('gnss-popover');
+  if (pop) pop.style.display = 'none';
+}
+
+// Sync all toggle button texts when the language changes
 export function syncToggleTexts() {
   const pl = document.getElementById('btn-peaklist');
   if (pl) pl.textContent = S.peakListOn ? t('on') : t('off');
@@ -253,9 +307,10 @@ export function syncToggleTexts() {
     const on = rc.classList.contains('on');
     rc.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
   }
+  updateMarkersAllBtn();
 }
 
-// ── 面板折叠 ──
+// ── Panel collapse ──
 export function toggleGroup(el: HTMLElement) {
   const g = el.closest('.control-group');
   if (g) {
@@ -279,7 +334,7 @@ export function syncToggleIcons() {
   });
 }
 
-// ── data-action 绑定 ──
+// ── data-action binding ──
 export function bindActions() {
   const act: Record<string, (el: HTMLElement) => void> = {
     'apply-center-span': () => applyCenterSpan(),
@@ -324,6 +379,9 @@ export function bindActions() {
     'meas-harm': () => measHarmApply(),
     'meas-pnm': () => measPnmApply(),
     'connect': () => connectDevice(),
+    'gnss-detail': () => fillGnssDetail(),
+    'gnss-close': () => closeGnssDetail(),
+    'markers-all': () => toggleMarkersAll(),
     'preset': () => presetAll(),
     'toggle-gapfill': () => toggleGapFill(),
     'toggle-group': (el) => toggleGroup(el),
@@ -339,7 +397,7 @@ export function bindActions() {
       el.addEventListener('click', () => handler(el as HTMLElement));
     }
   });
-  // 特殊绑定: trace tab / meas tab / marker select / scale / peakthr 输入
+  // Special bindings: trace tab / meas tab / marker select / scale / peakthr input
   document.querySelectorAll('[data-trace-tab]').forEach(el => {
     el.addEventListener('click', () => switchTraceTab(parseInt((el as HTMLElement).dataset.traceTab || '0')));
   });
@@ -367,7 +425,7 @@ export function bindActions() {
   if (hf) hf.addEventListener('input', () => autoHarmSpan());
 }
 
-// canvas 点击/拖动
+// Canvas click/drag
 export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;

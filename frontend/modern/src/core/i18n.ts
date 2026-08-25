@@ -1,4 +1,4 @@
-// i18n 中英字典 —— 覆盖全部 UI 文本
+// i18n en/zh dictionary — covers all UI text
 export type Lang = 'en' | 'zh';
 
 const dict = {
@@ -20,6 +20,7 @@ const dict = {
     'marker': 'Marker', 'active': 'Active', 'peak': 'Peak', 'valley': 'Valley',
     'center_btn': 'Center', 'mkr_center': 'Mkr→Center', 'pk_list': 'Pk List',
     'pk_auto': 'Auto', 'pk_off': 'Off', 'count': 'Count',
+    'all_on': 'All On', 'all_off': 'All Off',
     'measurement': 'Measurement', 'measure': 'Measure', 'amplitude': 'Amplitude',
     'harmonic': 'Harmonic', 'phase_noise': 'PhaseNoise', 'n_db': 'N dB',
     'fund': 'Fund', 'orders': 'Orders', 'span_short': 'Span', 'carrier': 'Carrier',
@@ -34,17 +35,25 @@ const dict = {
     'api': 'API:', 'warn': 'Warn:', 'preset': 'Preset',
     'theme': 'Theme:', 'dark': 'Dark', 'light': 'Light', 'lang': 'Lang:',
     'status_connected': 'Connected', 'status_disconnected': 'Disconnected',
+    'status_locked': 'Locked', 'status_nolock': 'NoLock',
+    'gnss_detail': 'GNSS Detail', 'gnss_lock': 'Lock', 'gnss_sats': 'Satellites',
+    'gnss_docxo': 'DOCXO', 'gnss_time': 'Time', 'gnss_close': 'Close',
+    'gnss_latitude': 'Latitude', 'gnss_longitude': 'Longitude', 'gnss_altitude': 'Altitude',
+    'gnss_antenna': 'Antenna', 'gnss_docxo_mode': 'DOCXO Mode',
+    'gnss_ext_ant': 'External', 'gnss_int_ant': 'Internal',
+    'gnss_utc_time': 'GNSS UTC Time', 'gnss_local_time': 'System Time',
+    'gnss_docxo_lock': 'Disciplined', 'gnss_docxo_hold': 'Hold',
     'ref_clock_out': 'Reference clock output on/off',
-    // OSD / 状态
+    // OSD / Status
     'osd_ref': 'Ref', 'osd_scale': 'dB/div', 'osd_rbw': 'RBW', 'osd_vbw': 'VBW',
     'osd_sweep': 'Sweep', 'osd_pts': 'Pts',
-    // Marker 表头
+    // Marker table header
     'mk_marker': 'Marker', 'mk_mode': 'Mode', 'mk_freq': 'Frequency / ΔFreq',
     'mk_amp': 'Amplitude / ΔPower', 'mk_ref': 'Reference',
-    // 测量叠加
+    // Measurement overlay
     'm3db_bw': '3dB BW', 'm3db_center': 'Center', 'm3db_q': 'Q',
     'harm_table_title': 'Harmonics', 'pnm_title': 'Phase Noise',
-    // 提示
+    // Tooltips
     'tip_connect': 'Connect to device', 'tip_norm': 'Store current trace as reference and enable normalize',
     'tip_atten': 'Manual attenuation (Auto=-1)', 'tip_peakthr': 'Peak threshold (dBm); Auto = global peak - 50dB, manual edit keeps your value',
     'tip_peakcnt': 'Number of peaks to display (1~20, single row)',
@@ -77,6 +86,7 @@ const dict = {
     'marker': '游标', 'active': '活动', 'peak': '峰值', 'valley': '谷值',
     'center_btn': '居中', 'mkr_center': '游标→中心', 'pk_list': '峰值列表',
     'pk_auto': '自动', 'pk_off': '关', 'count': '数量',
+    'all_on': '全部开启', 'all_off': '全部关闭',
     'measurement': '测量', 'measure': '测量', 'amplitude': '幅度',
     'harmonic': '谐波', 'phase_noise': '相位噪声', 'n_db': 'N dB',
     'fund': '基频', 'orders': '谐波次数', 'span_short': '扫宽', 'carrier': '载波',
@@ -91,6 +101,14 @@ const dict = {
     'api': 'API:', 'warn': '告警:', 'preset': '预设',
     'theme': '主题:', 'dark': '深色', 'light': '浅色', 'lang': '语言:',
     'status_connected': '已连接', 'status_disconnected': '未连接',
+    'status_locked': '已锁定', 'status_nolock': '未锁定',
+    'gnss_detail': 'GNSS 详情', 'gnss_lock': '锁定', 'gnss_sats': '卫星数',
+    'gnss_docxo': 'DOCXO', 'gnss_time': '时间', 'gnss_close': '关闭',
+    'gnss_latitude': '纬度', 'gnss_longitude': '经度', 'gnss_altitude': '海拔',
+    'gnss_antenna': '天线', 'gnss_docxo_mode': 'DOCXO 模式',
+    'gnss_ext_ant': '外部', 'gnss_int_ant': '内部',
+    'gnss_utc_time': 'GNSS UTC 时间', 'gnss_local_time': '系统时间',
+    'gnss_docxo_lock': '驯服', 'gnss_docxo_hold': '跟踪',
     'ref_clock_out': '参考时钟输出开/关',
     'osd_ref': '参考', 'osd_scale': 'dB/格', 'osd_rbw': 'RBW', 'osd_vbw': 'VBW',
     'osd_sweep': '扫描', 'osd_pts': '点数',
@@ -140,7 +158,7 @@ export function onLangChange(fn: (l: Lang) => void) {
   listeners.add(fn);
 }
 
-// 渲染所有 data-i18n 节点 (文本或 placeholder/title)
+// Render all data-i18n nodes (text or placeholder/title)
 export function applyI18n(root: HTMLElement | Document = document) {
   root.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => {
     const k = el.dataset.i18n!;

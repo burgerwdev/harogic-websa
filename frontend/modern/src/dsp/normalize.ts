@@ -1,4 +1,4 @@
-// 归一化: 参考构建/直通校准/显示层变换
+// Normalization: reference build / direct-pass calibration / display-layer transform
 import * as S from '../core/store';
 import { resetTraceAccum } from './traces';
 import { updateInfoBar } from '../render/infobar';
@@ -34,12 +34,21 @@ function classifySource(powers: Float32Array) {
   const thresh = noiseFloor + 20;
   const isSrc = new Uint8Array(n);
   for (let i = 0; i < n; i++) if (powers[i] > thresh) isSrc[i] = 1;
-  return { isSrc, noiseFloor, thresh };
+  let srcCount = 0;
+  for (let i = 0; i < n; i++) srcCount += isSrc[i];
+  return { isSrc, noiseFloor, thresh, srcRatio: n ? srcCount / n : 0 };
 }
 
 function buildReferenceTable(powers: Float32Array): Float32Array {
   const n = powers.length;
-  const { isSrc } = classifySource(powers);
+  const { isSrc, srcRatio } = classifySource(powers);
+  // No source points (noise source/weak signal): reference = smoothed noise floor (local mean),
+  // not a single-frame raw snapshot — otherwise the normalized difference jumps with
+  // per-frame noise and the baseline fails to converge at 0
+  if (srcRatio < 0.05) {
+    const win = Math.max(3, Math.min(9, normRefWindow()));
+    return smoothRefWindow(powers, win);
+  }
   const ref = new Float32Array(n);
   const K = 8;
   for (let i = 0; i < n; i++) {

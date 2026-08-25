@@ -1,4 +1,4 @@
-// 格式化工具 (原 app.js 工具函数)
+// Formatting utilities (from the original app.js helpers)
 export function formatFreqHz(hz: number): string {
   if (!isFinite(hz)) return '-';
   const a = Math.abs(hz);

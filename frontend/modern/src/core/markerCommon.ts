@@ -1,4 +1,4 @@
-// Marker 公共: 索引/频率/重定位 (与 render 解耦, 避免循环依赖)
+// Marker common: index/frequency/relocation (decoupled from render to avoid circular deps)
 import * as S from './store';
 
 export function markerFreqHz(idx: number): number {
@@ -6,7 +6,7 @@ export function markerFreqHz(idx: number): number {
   return S.centerHz;
 }
 
-// 频率轴更新后,把各启用 marker 按其记录的频率值映射到新轴上的最近点
+// After the frequency axis updates, map each enabled marker to the nearest point of the new axis by its recorded frequency
 export function retrackMarkers() {
   if (!S.freqArray) return;
   S.markers.forEach(m => {

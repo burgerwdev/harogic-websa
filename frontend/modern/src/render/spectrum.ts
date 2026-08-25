@@ -1,4 +1,4 @@
-// 频谱渲染主模块: 网格/迹线/marker/OSD/3dB/峰标记
+// Spectrum rendering main module: grid/traces/markers/OSD/3dB/peak marks
 import * as S from '../core/store';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';
@@ -15,7 +15,7 @@ import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 
-// 从 store 取可变引用(模块内部使用快照, 渲染时重新读取)
+// Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
   return {
     centerHz: S.centerHz, spanHz: S.spanHz, dbPerDiv: S.dbPerDiv, displayRef: S.displayRef,
@@ -120,7 +120,7 @@ export function renderTraceLine(t: S.TraceState) {
   ctx.restore();
 }
 
-// -3dB 测量叠加
+// -3dB measurement overlay
 function render3dB(powers: Float32Array) {
   const m3 = cur().m3dB;
   if (!m3 || !S.freqArray) return;

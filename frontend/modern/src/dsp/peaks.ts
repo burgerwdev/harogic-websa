@@ -1,9 +1,9 @@
-// DSP 寻峰寻谷引擎: 三级寻峰 + 谷凹陷合并 + 频率方向遍历
+// DSP peak/valley engine: three-stage peak finding + valley-dip merging + frequency-direction traversal
 import * as S from '../core/store';
 import type { ExtremaItem } from '../core/store';
 import { smoothForDisplay } from './smooth';
 
-// P1: 抛物线亚频点拟合
+// P1: Parabola sub-bin fit
 export function parabolaFit(p: ArrayLike<number>, k: number): { dk: number; y: number } {
   const y0 = p[k - 1], y1 = p[k], y2 = p[k + 1];
   if (!isFinite(y0) || !isFinite(y1) || !isFinite(y2)) return { dk: 0, y: y1 };
@@ -14,7 +14,7 @@ export function parabolaFit(p: ArrayLike<number>, k: number): { dk: number; y: n
   return { dk, y };
 }
 
-// P3: Excursion —— 双侧追溯 ≥dL dB
+// P3: Excursion — retrace both sides by ≥dL dB
 export function hasExcursion(p: ArrayLike<number>, k: number, dL: number, isPeak: boolean): boolean {
   const v = p[k];
   let l = false, r = false;

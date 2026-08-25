@@ -1,4 +1,4 @@
-// 画布布局
+// Canvas layout
 import { W, H, MARGIN } from '../core/store';
 export { W, H, MARGIN };
 export function plotRect() {

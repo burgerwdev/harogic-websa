@@ -1,4 +1,4 @@
-// 幅度测量: 多阈值 n-dB 自动定位
+// Amplitude measurement: multi-threshold n-dB auto-location
 import * as S from '../core/store';
 import { getX, getY, renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
