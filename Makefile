@@ -1,23 +1,23 @@
-# 统一入口
+# Unified entry
 .PHONY: run stop clean build test all
 
-run:      ## 启动服务 (WEB_SA_UI=modern 切新前端)
+run:      ## Start service
 	./run.sh
 
-stop:     ## 停止服务
+stop:     ## Stop service
 	./stop.sh
 
-clean:    ## 清理缓存/日志/构建产物
+clean:    ## Clean caches/logs/artifacts
 	./clean.sh
 
-build:    ## 前端构建
+build:    ## Frontend build
 	./build.sh
 
-test:     ## 测试 (后端 pytest + 前端 vitest)
+test:     ## Test (backend pytest + frontend vitest)
 	./test.sh
 
-all:      ## 构建 + 测试 + 启动
+all:      ## Build + test + run
 	./build.sh && ./test.sh && ./run.sh
 
-help:     ## 显示帮助
+help:     ## Show help
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | awk 'BEGIN {FS = ":.*## "}; {printf "  %-8s %s\n", $$1, $$2}'

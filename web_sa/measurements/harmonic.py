@@ -1,7 +1,8 @@
 """
-measurements/harmonic.py —— 谐波测量会话 (官方风格: 全频段真实频谱 + 逐谐波自动调谐)
+measurements/harmonic.py -- harmonic measurement session (official style: full-band real
+spectrum + per-harmonic auto-tuning)
 
-来源: web_sa/server.py (v0.11.1) harm_step/pub_harmonic 迁移。
+Source: migrated from harm_step/pub_harmonic of web_sa/server.py (v0.11.1).
 """
 from __future__ import annotations
 
@@ -19,13 +20,13 @@ class HarmonicSession(MeasurementSession):
         self.f0 = 1e9
         self.count = 5
         self.span = 10e6
-        self._seq = None          # 当前逐谐波序列
+        self._seq = None          # current per-harmonic sequence
         self._seq_n = 1
         self._base = None
-        self._scan_phase = True   # 全频段扫描(推真实频谱帧) / 逐谐波测峰
+        self._scan_phase = True   # full-band scan (push real spectrum frames) / per-harmonic peak measure
         self._scan_cnt = 0
 
-    # ---- 参数 (SET_HARM 入口) ----
+    # ---- Parameters (SET_HARM entry point) ----
     def set_params(self, f0=None, count=None, span=None):
         if f0 is not None:
             self.f0 = float(max(self.dev.state.caps.freq_min_hz,
@@ -34,9 +35,9 @@ class HarmonicSession(MeasurementSession):
             self.count = int(max(1, min(10, count)))
         if span is not None:
             self.span = float(max(1.0, min(100e6, span)))
-        self._seq = None          # 参数变更重启序列
+        self._seq = None          # parameter change restarts the sequence
 
-    # ---- 全频段扫描 (推真实频谱帧) ----
+    # ---- Full-band scan (pushes real spectrum frames) ----
     def _scan_step(self):
         s = self.dev.state
         hi = min(s.caps.freq_max_hz, self.f0 * (self.count + 1))
@@ -59,7 +60,7 @@ class HarmonicSession(MeasurementSession):
             self._scan_phase = False
         return frames, []
 
-    # ---- 逐谐波精确测量 ----
+    # ---- Per-harmonic precise measurement ----
     def _measure_step(self):
         if self._seq is None:
             self._seq, self._seq_n, self._base = [], 1, None
@@ -69,14 +70,14 @@ class HarmonicSession(MeasurementSession):
             res = list(self._seq)
             self.dev.state.harm_results = res
             self._seq = None
-            self._scan_phase = True   # 回全频段刷新
+            self._scan_phase = True   # back to full-band refresh
             return [], [{'cmd': 'HARM', 'list': res, 'f0': self.f0}]
         s = self.dev.state
         center = max(s.caps.freq_min_hz, min(f, s.caps.freq_max_hz))
         s.center_hz, s.span_hz = center, min(self.span, fit_span(center, self.span, s.caps))
         self.dev.configure_swp()
         r = None
-        for _try in range(6):       # 配置后立即扫频可能失败, 重试
+        for _try in range(6):       # sweeping right after configure may fail; retry
             r = self.dev.fetch_sweep()
             if r is not None:
                 break

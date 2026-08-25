@@ -1,10 +1,12 @@
 """
 hardware/sdk_bindings.py
 
-ctypes 绑定层 —— 整个项目中唯一直接触碰 libhtraapi (dll) 的模块。
-业务层只通过本模块暴露的 API/结构体工作；mock 或硬件替换只需重写本模块。
+ctypes binding layer -- the only module in the whole project that directly touches
+libhtraapi (dll). The business layer works only through the APIs/structs exposed by
+this module; mocking or replacing the hardware only requires rewriting this module.
 
-来源: web_sa/server.py (v0.11.1) 迁移, 含手动声明的 PNM 结构(官方 Python 包装未导出)。
+Source: migrated from web_sa/server.py (v0.11.1), incl. manually declared PNM structs
+(not exported by the official Python wrapper).
 """
 from __future__ import annotations
 
@@ -28,13 +30,15 @@ from ctypes import (
 )
 
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))  # ../.. = Python_Examples (htra_api.py)
-import htra_api  # 官方 Python 包装 (../htra_api.py)
+import htra_api  # official Python wrapper (../htra_api.py)
 
 dll = htra_api.dll
 
 # ---------------------------------------------------------------------------
-# PNM 相噪结构 (htra_api.py 未导出, 手动声明 —— 与 /opt/htraapi/inc/htra_api_pnm.h 对齐)
-# 踩坑记录: 字段遗漏会导致 DLL 越界写 → 内存损坏/GC 崩溃
+# PNM phase-noise structs (not exported by htra_api.py; manually declared -- aligned
+# with /opt/htraapi/inc/htra_api_pnm.h)
+# Pitfall notes: a missing field would cause the DLL to write out of bounds -> memory
+# corruption / GC crashes
 # ---------------------------------------------------------------------------
 class PNM_Profile_TypeDef(Structure):
     _fields_ = [
@@ -53,7 +57,7 @@ class PNM_MeasInfo_TypeDef(Structure):
 
 
 class PNM_AuxInfo_TypeDef(Structure):
-    """MeasAuxInfo 的 PNM 用副本 —— 含 RFState(uint16), 不可省略。"""
+    """PNM-specific copy of MeasAuxInfo - includes RFState (uint16), must not be omitted."""
     _fields_ = [
         ('MaxIndex', c_uint32), ('MaxPower_dBm', c_float), ('Temperature', c_int16),
         ('RFState', c_uint16),
@@ -65,8 +69,9 @@ class PNM_AuxInfo_TypeDef(Structure):
 
 
 class Full_MeasAuxInfo(Structure):
-    """完整 MeasAuxInfo: 前 11 字段与 htra_api.py 官方包装一致(DLL 兼容),
-    追加 .h 尾部字段(IFAGCGain/RefClkFreqOffset/nsSinceEpoch), ppm 由此读取。"""
+    """Full MeasAuxInfo: the first 11 fields match the official wrapper in htra_api.py
+    (DLL compatible); appends the .h trailing fields (IFAGCGain/RefClkFreqOffset/
+    nsSinceEpoch), from which ppm is read."""
     _fields_ = [
         ('MaxIndex', c_uint32), ('MaxPower_dBm', c_float), ('Temperature', c_int16),
         ('RFState', c_uint16), ('BBState', c_uint16), ('GainPattern', c_uint16),
@@ -78,7 +83,7 @@ class Full_MeasAuxInfo(Structure):
 
 
 def _bind_pnm() -> bool:
-    """绑定 PNM 函数; 库不支持时返回 False。"""
+    """Bind the PNM functions; return False if the library does not support them."""
     try:
         dll.PNM_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(PNM_Profile_TypeDef)]
         dll.PNM_ProfileDeInit.restype = c_int
@@ -98,24 +103,25 @@ def _bind_pnm() -> bool:
         return False
 
 
-# 关键: DSP_InterceptSpectrum 官方包装缺少 argtypes, 必须手动补
+# Important: the official wrapper for DSP_InterceptSpectrum is missing argtypes, must add them manually
 dll.DSP_InterceptSpectrum.argtypes = [
     c_double, c_double, POINTER(c_double), POINTER(c_float), c_uint32,
     POINTER(c_double), POINTER(c_float), POINTER(c_uint32)]
 dll.DSP_InterceptSpectrum.restype = None
 
-# SWP_GetFullSweep 的 MeasAuxInfo 用完整结构(覆盖 htra_api 的 argtypes)
+# SWP_GetFullSweep's MeasAuxInfo uses the full structure (overrides htra_api's argtypes)
 dll.SWP_GetFullSweep.argtypes = [POINTER(c_void_p), POINTER(c_double),
                                  POINTER(c_float), POINTER(Full_MeasAuxInfo)]
 
-# 参考时钟校准(htra_api.py 未导出; 注意 argtypes 必须完整, 否则指针截断崩溃)
+# Reference clock calibration (not exported by htra_api.py; note that argtypes must be
+# complete, otherwise the pointer truncates and crashes)
 dll.Device_CalibrateRefClock.argtypes = [
     POINTER(c_void_p), c_int, c_double, c_uint64, c_uint8, POINTER(c_double)]
 dll.Device_CalibrateRefClock.restype = c_int
 
 PNM_SUPPORTED = _bind_pnm()
 
-# 便捷别名 (业务层使用)
+# Convenient aliases (used by the business layer)
 SWP_Profile_TypeDef = htra_api.SWP_Profile_TypeDef
 SWP_TraceInfo_TypeDef = htra_api.SWP_TraceInfo_TypeDef
 SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef

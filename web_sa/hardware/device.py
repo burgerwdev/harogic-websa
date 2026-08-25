@@ -1,9 +1,10 @@
 """
-hardware/device.py —— 设备抽象 (SAN 全系列)
+hardware/device.py -- device abstraction (full SAN series)
 
-来源: web_sa/server.py (v0.11.1) HarogicDevice 迁移; 行为保持, 结构重构。
-- 业务层唯一设备入口: open/configure/fetch/query
-- 所有 SDK 调用经 hardware/sdk_bindings 串行执行 (事件循环内)
+Source: HarogicDevice migrated from web_sa/server.py (v0.11.1); behavior kept,
+structure refactored.
+- The only device entry point for the business layer: open/configure/fetch/query
+- All SDK calls are executed serially via hardware/sdk_bindings (inside the event loop)
 """
 from __future__ import annotations
 
@@ -14,9 +15,9 @@ import numpy as np
 from ..config import DeviceCapabilities
 from . import sdk_bindings as sb
 
-# 硬件枚举便捷别名
+# Convenient aliases for hardware enums
 SWP = sb
-T = sb  # 类型别名
+T = sb  # type aliases
 
 
 class DeviceError(RuntimeError):
@@ -25,12 +26,12 @@ class DeviceError(RuntimeError):
 
 @dataclass
 class DeviceState:
-    """设备只读状态 (序列化到 WS STATUS)。"""
+    """Device read-only state (serialized to WS STATUS)."""
     connected: bool = False
     label: str = ''
     detail: str = ''
     device_detail: dict = field(default_factory=dict)
-    caps: DeviceCapabilities = None          # 型号能力
+    caps: DeviceCapabilities = None          # model capabilities
     center_hz: float = 1e9
     span_hz: float = 100e6
     ref_level: float = 0.0
@@ -60,36 +61,36 @@ class DeviceState:
     refclk_ppm: float = 0.0
     calibrating: bool = False
     last_cal_freq: float = 0.0
-    refclk_out: bool = False   # 参考时钟输出使能
-    # 测量结果
+    refclk_out: bool = False   # reference clock output enable
+    # Measurement results
     harm_results: list = field(default_factory=list)
     pnm_last: dict | None = None
 
 
 class HarogicDevice:
-    """设备封装: 生命周期 + 扫频 + 查询 + 测量会话宿主。"""
+    """Device wrapper: lifecycle + sweep + query + measurement session host."""
 
     def __init__(self):
         self.dev = sb.c_void_p()
         self.dsp = sb.c_void_p()
         self.state = DeviceState()
         self.session = None
-        # 扫频缓冲区(尺寸变化时重建,避免每帧分配) —— 参考原实现
+        # Sweep buffers (rebuilt when the size changes to avoid per-frame allocation) -- per the original implementation
         self._freq_buf = None
         self._spec_buf = None
         self._ifreq_buf = None
         self._ispec_buf = None
         self._cnt = sb.c_uint32(0)
-        self._meas_aux = sb.Full_MeasAuxInfo()   # 完整结构(含 RefClkFreqOffset ppm)
+        self._meas_aux = sb.Full_MeasAuxInfo()   # full structure (includes RefClkFreqOffset ppm)
         self._trace_points = 0
         self._user_start = 0.0
         self._user_stop = 0.0
-        self.preset_defaults = None   # 启动时读取的 SWP 默认配置缓存
-        self.last_freq = None      # 最近扫频频率轴(新 WS 客户端连接时下发)
+        self.preset_defaults = None   # cached SWP default config read at startup
+        self.last_freq = None      # most recent frequency axis (pushed to new WS clients on connect)
         self.last_freq_ver = 0
         self._sweep_ema = None
 
-    # ---------------- 生命周期 ----------------
+    # ---------------- Lifecycle ----------------
     def open(self) -> tuple[bool, str]:
         bp = sb.BootProfile_TypeDef()
         bi = sb.BootInfo_TypeDef()
@@ -113,9 +114,10 @@ class HarogicDevice:
         self.state.connected = True
         self.configure_swp()
         self._detect_docxo()
-        self.load_preset_defaults()   # 读取设备默认配置供 preset 使用
-        # DOCXO 探测用临时配置会改变设备实际参数(如 TracePoints),
-        # 必须重新下发标准配置并刷新缓冲,否则 GetFullSweep 越界写
+        self.load_preset_defaults()   # read the device default config for the preset
+        # The temporary config used for DOCXO detection changes the device's actual
+        # parameters (e.g. TracePoints), so the standard config must be re-issued and
+        # the buffers refreshed, otherwise GetFullSweep writes out of bounds
         self.configure_swp()
         return True, 'ok'
 
@@ -126,10 +128,10 @@ class HarogicDevice:
             pass
         self.state.connected = False
 
-    # ---------------- 配置 (参考原 web_sa/server.py 实现) ----------------
+    # ---------------- Configuration (ported from web_sa/server.py) ----------------
     def load_preset_defaults(self) -> None:
-        """启动时读取一次 SWP_ProfileDeInit 设备默认配置并缓存(不写死, 支持不同 SAN 型号)。
-        preset 调用时用缓存值恢复。"""
+        """Read once at startup the SWP_ProfileDeInit device default config and cache it
+        (not hard-coded; supports different SAN models). Restore from the cache on preset."""
         try:
             p = sb.SWP_Profile_TypeDef()
             sb.dll.SWP_ProfileDeInit(sb.pointer(self.dev), sb.pointer(p))
@@ -143,7 +145,7 @@ class HarogicDevice:
             self.preset_defaults = None
 
     def apply_preset(self) -> dict:
-        """应用缓存的设备默认配置, 返回默认值(供 STATUS/前端)。"""
+        """Apply the cached device defaults and return them (for STATUS/frontend)."""
         d = self.preset_defaults
         if not d:
             self.load_preset_defaults()
@@ -197,8 +199,10 @@ class HarogicDevice:
                   'premium': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal_Premium,
                   'external_forced': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External_Forced}
         p.ReferenceClockSource = rc_map.get(s.ref_clock, T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
-        # 外部参考频率: 用户外部信号源 10MHz(官方 SCIPI 示例 ROSC:EXT:FREQ 10MHz)
-        # 注意: SystemClockSource 切外部是危险配置(厂商指导下使用), 不设置, 避免设备挂死
+        # External reference frequency: the user's external 10MHz signal source
+        # (official SCPI example ROSC:EXT:FREQ 10MHz)
+        # Note: switching SystemClockSource to external is dangerous (only under vendor
+        # guidance); left unset to avoid hanging the device
         p.ExternalSystemClockFrequency = 10e6
         p.EnableReferenceClockOut = 1 if s.refclk_out else 0
         p.SweepTimeMode = T.SweepTimeMode_TypeDef.SWTMode_minSWT
@@ -227,6 +231,8 @@ class HarogicDevice:
                                  points=ti.FullsweepTracePoints, est_min=ti.EstimateMinSweepTime,
                                  refclk=pout.ReferenceClockFrequency,
                                  refclk_src=int(pout.ReferenceClockSource.value))
+        # fill sweep_ms with the device-estimated sweep time (carried in the frame header -> SWT display on the frontend)
+        self.state.sweep_ms = float(getattr(ti, 'EstimateMinSweepTime', 0.0) or 0.0)
         self._trace_points = int(ti.FullsweepTracePoints)
         self._user_start = float(pout.StartFreq_Hz)
         self._user_stop = float(pout.StopFreq_Hz)
@@ -236,7 +242,7 @@ class HarogicDevice:
         return True, 'ok'
 
     def _read_amp_atten(self) -> None:
-        """回读实际衰减/前置状态 (参考原实现 Device_GetAmpAttenState)。"""
+        """Read back the actual attenuation/preamplifier state (per Device_GetAmpAttenState from the original implementation)."""
         try:
             amp = sb.PreamplifierState_TypeDef()
             att = sb.c_int(0)
@@ -248,9 +254,9 @@ class HarogicDevice:
         except Exception:
             pass
 
-    # ---------------- 扫频 ----------------
+    # ---------------- Sweep ----------------
     def fetch_sweep(self):
-        """返回 (freq_np_float64, power_np_float32) 或 None。事件循环内串行调用。"""
+        """Return (freq_np_float64, power_np_float32) or None. Called serially inside the event loop."""
         n = getattr(self, '_trace_points', 0)
         if n <= 0 or not self.state.connected:
             return None
@@ -274,20 +280,35 @@ class HarogicDevice:
                 return None
             f = np.frombuffer(self._ifreq_buf, dtype=np.float64, count=c).copy()
             p = np.frombuffer(self._ispec_buf, dtype=np.float32, count=c).copy()
+            # Unfilled bins in the device's invalid zone (outside the actual swept range)
+            # return exact 0.0 (shown as a false vertical 0dBm line at the upper edge of
+            # the full span) -> set to NaN, to be filled in by the frontend gapFill
+            # (a real signal can never be exactly 0.0, so this is safe)
+            p[p == 0.0] = np.nan
             mask = f >= 0.0
             if not mask.all():
                 f = f[mask]; p = p[mask]
             if len(f) < 2:
                 return None
-            # 返回设备原生迹线(与 v0.5.3 一致):
-            # 后端不重采样, 由前端 resampleTrace 处理点数变化;
-            # 后端 np.interp 升采样会把窄信号拉成三角波
+            # Return the device-native trace (consistent with v0.5.3):
+            # the backend does not resample; the frontend resampleTrace handles point counts;
+            # backend np.interp upsampling would pull narrow signals into triangle waves
             return f, p
         except Exception as e:
             self.state.last_error = 'sweep: %r' % e
             return None
 
-    # ---------------- 查询 ----------------
+    def measure_sweep(self, dt):
+        """Update the measured sweep time EMA (interval between two fetches -> sweep_ms)."""
+        if dt <= 0:
+            return
+        if self._sweep_ema is None:
+            self._sweep_ema = dt
+        else:
+            self._sweep_ema = 0.8 * self._sweep_ema + 0.2 * dt
+        self.state.sweep_ms = round(self._sweep_ema * 1000.0, 1)
+
+    # ---------------- Queries ----------------
     def _detect_docxo(self) -> None:
         try:
             prof = T.SWP_Profile_TypeDef()
@@ -305,8 +326,10 @@ class HarogicDevice:
             self.state.has_docxo = False
 
     def calibrate_ref_clock(self, trigger_count: int = 30) -> tuple[bool, float]:
-        """GNSS 1PPS 校准内部参考时钟(阻塞, 调用方需后台线程 + 超时保护).
-        GNSS 1PPS 不可用(无天线/未锁定)时 DLL 可能挂起等待, 需外部超时."""
+        """Calibrate the internal reference clock with GNSS 1PPS (blocks; the caller
+        needs a background thread + timeout protection). If GNSS 1PPS is unavailable
+        (no antenna / not locked) the DLL may hang while waiting, so an external timeout
+        is required."""
         self.state.calibrating = True
         try:
             out = sb.c_double(0.0)
@@ -326,16 +349,37 @@ class HarogicDevice:
         try:
             g = T.GNSSInfo_TypeDef()
             sb.dll.Device_GetGNSSInfo(sb.pointer(self.dev), sb.pointer(g))
-            return dict(lock=int(g.GNSS_LockState), sats=int(g.SatsNum),
-                        docxo=int(g.DOCXO_LockState), time='')
+            # fill in all the SDK GNSS fields: lat/lon/altitude/date-time/antenna/DOCXO work mode
+            try:
+                docxo_mode = int(g.DOCXO_WorkMode.value)
+            except Exception:
+                docxo_mode = -1
+            try:
+                antenna = int(g.GNSSAntennaState.value)
+            except Exception:
+                antenna = -1
+            return dict(
+                lock=int(g.GNSS_LockState), sats=int(g.SatsNum),
+                docxo=int(g.DOCXO_LockState), docxo_mode=docxo_mode,
+                antenna=antenna,
+                latitude=float(getattr(g, 'latitude', 0.0)),
+                longitude=float(getattr(g, 'longitude', 0.0)),
+                altitude=int(getattr(g, 'altitude', 0)),
+                year=int(getattr(g, 'Year', 0)), month=int(getattr(g, 'month', 0)),
+                day=int(getattr(g, 'day', 0)), hour=int(getattr(g, 'hour', 0)),
+                minute=int(getattr(g, 'minute', 0)), second=int(getattr(g, 'second', 0)),
+                time='%04d-%02d-%02d %02d:%02d:%02d' % (
+                    getattr(g, 'Year', 0), getattr(g, 'month', 0), getattr(g, 'day', 0),
+                    getattr(g, 'hour', 0), getattr(g, 'minute', 0), getattr(g, 'second', 0)),
+            )
         except Exception:
             return {}
 
-    # ---------------- 会话宿主 ----------------
+    # ---------------- Session host ----------------
     def set_session(self, session) -> None:
         self.session = session
         self.state.mode = session.name if session else 'std'
 
     def step(self):
-        """publisher 单步: 转发给当前会话。"""
+        """publisher single step: forward to the current session."""
         return self.session.step() if self.session else None

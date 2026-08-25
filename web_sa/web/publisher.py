@@ -1,7 +1,8 @@
 """
-web/publisher.py —— 数据推送调度
+web/publisher.py -- data push scheduler
 
-来源: web_sa/server.py (v0.11.1) publisher 迁移; 会话对象化后只做调度。
+Source: migrated from the publisher of web_sa/server.py (v0.11.1); after session
+objectification it only does scheduling.
 """
 from __future__ import annotations
 
@@ -9,17 +10,27 @@ import asyncio
 import json
 import time
 
-from ..config import PUBLISH_MIN_INTERVAL
+from ..config import PUBLISH_MIN_INTERVAL, GNSS_POLL_INTERVAL
+
+STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL   # periodic STATUS push interval (aligned with GNSS polling ~2s)
 
 
 async def publisher(app, dev):
     last_freq_ver = -1
+    last_status_push = 0.0
     while True:
         t0 = time.monotonic()
         if app['ws']:
+            # Push STATUS periodically (aligned with the GNSS polling rhythm):
+            # keeps device states like GNSS lock / reference clock output / calibration
+            # status automatically refreshed, so the frontend page need not be reloaded
+            if time.monotonic() - last_status_push >= STATUS_PUSH_INTERVAL:
+                last_status_push = time.monotonic()
+                from .http_api import build_status
+                await _send_json(app, build_status(dev))
             try:
                 frames, msgs = dev.step()
-                # FREQ 帧按版本变化发送
+                # send FREQ frames only when the version changes
                 if dev.state.mode == 'std':
                     for fr in frames:
                         magic = fr[:4]
@@ -37,6 +48,12 @@ async def publisher(app, dev):
             except Exception:
                 pass
         dt = time.monotonic() - t0
+        # measured sweep time EMA (frame interval -> SWT display)
+        if app['ws']:
+            try:
+                dev.measure_sweep(dt)
+            except Exception:
+                pass
         if dt < PUBLISH_MIN_INTERVAL:
             await asyncio.sleep(PUBLISH_MIN_INTERVAL - dt)
         else:

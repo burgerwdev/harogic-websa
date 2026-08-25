@@ -1,8 +1,9 @@
 """
-measurements/framer.py —— WS 二进制帧编解码 (协议版本化占位)
+measurements/framer.py -- WS binary frame encode/decode (protocol versioning placeholder)
 
-来源: web_sa/server.py (v0.11.1) send_frame 迁移。
-关键: POWR 强制 float32, FREQ 保持 float64 (np.interp 会把 float32 变 float64, 否则前端解析错位)。
+Source: migrated from send_frame of web_sa/server.py (v0.11.1).
+Key point: POWR is forced to float32, FREQ stays float64 (np.interp would turn
+float32 into float64, otherwise the frontend parse would misalign).
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import numpy as np
 
 MAGIC_FREQ = b'FREQ'
 MAGIC_POWR = b'POWR'
-HEADER = struct.Struct('<IIf')     # version, points, sweep_ms (共 12 字节, 前缀 4 字节 magic)
+HEADER = struct.Struct('<IIf')     # version, points, sweep_ms (12 bytes total, 4-byte magic prefix)
 
 
 def _frame(magic: bytes, version: int, points: int, sweep_ms: float, data, dtype) -> bytes:

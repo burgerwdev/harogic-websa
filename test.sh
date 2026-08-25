@@ -1,15 +1,15 @@
 #!/bin/bash
-# 测试: 后端 pytest + 前端 vitest(如已装依赖)
+# Test: backend pytest + frontend vitest (if deps installed)
 set -e
 cd "$(dirname "$0")"
-echo "==== 后端测试 (pytest) ===="
+echo "==== Backend tests (pytest) ===="
 python3 -m pytest tests/ -v 2>&1 | tail -15
 
 echo
-echo "==== 前端测试 (vitest) ===="
+echo "==== Frontend tests (vitest) ===="
 if [ -d frontend/modern/node_modules ]; then
   (cd frontend/modern && npx vitest run 2>&1 | tail -12)
 else
-  echo "前端依赖未安装, 跳过 (cd frontend/modern && npm install 后重跑)"
+  echo "Frontend deps not installed, skipped (cd frontend/modern && npm install then rerun)"
 fi
-echo "OK: 测试完成"
+echo "OK: tests complete"

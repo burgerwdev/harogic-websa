@@ -1,5 +1,5 @@
 """
-web/http_api.py —— REST 路由 + STATUS 序列化
+web/http_api.py -- REST routes + STATUS serialization
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def build_status(dev) -> dict:
 
 
 def make_routes(app, dev, static_dir):
-    """直接在 app.router 注册路由。"""
+    """Register routes directly on app.router."""
 
     async def state(request):
         return web.json_response(build_status(dev))
@@ -51,14 +51,14 @@ def make_routes(app, dev, static_dir):
         _dispatch(dev, data.get('cmd'), data)
         return web.json_response(build_status(dev))
 
-    # 前端: modern (TS 重构, i18n+主题)
+    # Frontend: modern (TS rewrite, i18n + theming)
     async def index(request):
         return web.FileResponse(os.path.join(static_dir, 'modern', 'dist', 'index.html'))
 
     app.router.add_get('/api/state', state)
     app.router.add_post('/api/config', config)
     app.router.add_get('/', index)
-    # modern 前端资源: /static/modern/dist/...
+    # modern frontend assets: /static/modern/dist/...
     async def modern_static(request):
         name = request.match_info['file'].split('?')[0]
         safe = os.path.normpath(name)

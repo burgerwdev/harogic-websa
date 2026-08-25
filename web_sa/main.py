@@ -1,7 +1,8 @@
 """
-main.py —— 应用入口 (web_sa_new)
+main.py -- application entry point (web_sa_new)
 
-单进程 aiohttp + 串行 SDK 调用; SIGINT/SIGTERM → os._exit(0) (lib 析构崩溃规避)。
+Single-process aiohttp + serial SDK calls; SIGINT/SIGTERM -> os._exit(0)
+(to avoid crashes during library destruction).
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ def main() -> None:
     print('Device open:', err if not ok else dev.state.label)
 
     def sig(sig_, frame_):
-        os._exit(0)   # 不要在信号处理器里调 Device_Close (可能卡 USB)
+        os._exit(0)   # do not call Device_Close inside the signal handler (may hang on USB)
 
     signal.signal(signal.SIGINT, sig)
     signal.signal(signal.SIGTERM, sig)

@@ -1,4 +1,4 @@
-"""logging_setup.py —— 结构化日志(占位, P2 完善轮转)。"""
+"""logging_setup.py -- structured logging (placeholder, rotation to be completed in P2)."""
 import logging
 import sys
 

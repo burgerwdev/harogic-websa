@@ -1,8 +1,9 @@
 """
-measurements/base.py —— 测量会话基类 + 标准扫频会话
+measurements/base.py -- measurement session base class + standard sweep session
 
-会话对象化: std/harmonic/pnm 统一接口 start/step/stop + enter/exit 配置快照。
-来源: web_sa/server.py (v0.11.1) 的 set_mode/_snap_std/_restore_std 迁移。
+Session objectification: std/harmonic/pnm share a uniform start/step/stop interface
+plus enter/exit configuration snapshots.
+Source: migrated from set_mode/_snap_std/_restore_std of web_sa/server.py (v0.11.1).
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ConfigSnapshot:
-    """进入测量会话前的设备配置快照 (退出时恢复)。"""
+    """Snapshot of the device config taken before entering a measurement session (restored on exit)."""
     center: float
     span: float
     points: int
@@ -29,7 +30,7 @@ class ConfigSnapshot:
 
 
 class MeasurementSession:
-    """测量会话基类。name ∈ {std, harmonic, pnm}。"""
+    """Measurement session base class. name is one of {std, harmonic, pnm}."""
 
     name = 'std'
 
@@ -38,7 +39,7 @@ class MeasurementSession:
         self.snapshot: ConfigSnapshot | None = None
 
     def enter(self) -> None:
-        """进入会话: 快照标准配置。"""
+        """Enter the session: snapshot the standard config."""
         s = self.dev.state
         self.snapshot = ConfigSnapshot(
             center=s.center_hz, span=s.span_hz, points=s.points_req,
@@ -47,7 +48,7 @@ class MeasurementSession:
             gain_strategy=s.gain_strategy, window=s.window, spur=s.spur_mode)
 
     def exit(self) -> None:
-        """退出会话: 恢复快照并重配设备。"""
+        """Exit the session: restore the snapshot and reconfigure the device."""
         snap = self.snapshot
         if snap is None:
             return
@@ -64,12 +65,12 @@ class MeasurementSession:
         self.dev.configure_swp()
 
     def step(self):
-        """单步执行 (publisher 调用), 返回 (frames, json_msgs)。"""
+        """Run a single step (called by the publisher), returns (frames, json_msgs)."""
         return [], []
 
 
 class StdSession(MeasurementSession):
-    """标准扫频会话: 连续 fetch_sweep 推 FREQ/POWR 帧。"""
+    """Standard sweep session: continuously push FREQ/POWR frames via fetch_sweep."""
 
     name = 'std'
 
@@ -80,7 +81,7 @@ class StdSession(MeasurementSession):
         f, p = r
         frames = []
         fv = self.dev.state.freq_version
-        self.dev.last_freq = f          # 供新客户端连接时下发
+        self.dev.last_freq = f          # for pushing to new clients on connect
         self.dev.last_freq_ver = fv
         from .framer import encode_freq, encode_powr
         frames.append(encode_freq(fv, f, self.dev.state.sweep_ms))

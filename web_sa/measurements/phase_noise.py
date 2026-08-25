@@ -1,8 +1,9 @@
 """
-measurements/phase_noise.py —— 相噪(PNM)测量会话
+measurements/phase_noise.py -- phase-noise (PNM) measurement session
 
-来源: web_sa/server.py (v0.11.1) _pnm_start/pnm_step 迁移。
-特性: 每次 Get 实时推送部分结果; 参数变更(dirty)在当前周期完成后重配。
+Source: migrated from _pnm_start/pnm_step of web_sa/server.py (v0.11.1).
+Features: each Get pushes partial results in real time; parameter changes (dirty) are
+reconfigured after the current cycle completes.
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ class PhaseNoiseSession(MeasurementSession):
             self.start_offset = float(max(1.0, min(9e6, start)))
         if stop is not None:
             self.stop_offset = float(max(10.0, min(1e7, stop)))
-        self.dirty = True          # 当前周期完成后重配 (不打断)
+        self.dirty = True          # reconfigure after the current cycle completes (do not interrupt)
 
     def enter(self):
         super().enter()
