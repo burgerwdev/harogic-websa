@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / 前端
+node_modules/
+frontend/modern/dist/
+frontend/modern/public/fonts/WebSASCJK-*.woff2
+npm-debug.log*
+
+# 日志/运行时
+*.log
+*.pid
+server.pid
+
+# 测试/缓存
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 专有二进制(需用户自备)
+libhtraapi.so
+libhtraapi.dll
+libhtraapi.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
