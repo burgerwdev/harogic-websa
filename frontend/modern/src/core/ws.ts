@@ -6,6 +6,7 @@ import { t } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import { syncRefClkOut, fillGnssDetail } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
+import { pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
@@ -16,6 +17,8 @@ import { updateNormalizeStatusUI } from '../dsp/normalize';
 
 let ws: WebSocket;
 let lastRender = 0;
+let firstConnect = true;
+let rtaAvgN = 0;
 
 export function send(obj: object) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -25,7 +28,21 @@ export function connectWS() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { send({ cmd: 'STATUS' }); };
+  ws.onopen = () => {
+    send({ cmd: 'STATUS' });
+    // First load: force the backend back to standard sweep. A leftover RTA session
+    // keeps pushing RTAF frames (no SWP data) while the UI defaults to std ->
+    // blank spectrum until RTA is toggled twice.
+    if (firstConnect) {
+      firstConnect = false;
+      // First load: restore saved mode (default std). A leftover RTA session on the
+      // backend would otherwise push RTAF frames with no SWP data -> blank spectrum.
+      const saved = localStorage.getItem('web-sa-mode');
+      const wantRta = saved === 'rta';
+      send({ cmd: 'SET_MODE', mode: wantRta ? 'rta' : 'std' });
+      if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
+    }
+  };
   ws.onclose = () => {
     S.setDeviceConnected(false);
     updateInfoBar();
@@ -47,6 +64,97 @@ export function connectWS() {
     const sweepMsHdr = view.getFloat32(12, true);
     if (sweepMsHdr > 0 && sweepMsHdr !== S.sweepMs) { S.setSweepMs(sweepMsHdr); updateInfoBar(); }
     if (points < 2) return;
+    if (magic === 'RTAF') {
+      // RTA 帧: magic(4) + hdr(ver u32, pts u32, wfLen u16, maxD u16, startHz f8 = 20B) → 24B 头(8 对齐)
+      // 数据: freq(f8×pts) + spec(f4×pts) + wfRow(u2×wfLen) + stopHz(f8)
+      const hdr = new DataView(event.data, 4, 20);
+      const ver = hdr.getUint32(0, true);
+      const pts = hdr.getUint32(4, true);
+      const wfLen = hdr.getUint16(8, true);
+      const maxDensity = hdr.getUint16(10, true);
+      const startHz = hdr.getFloat64(12, true);
+      let off = 24;
+      const freq = new Float64Array(event.data, off, pts); off += pts * 8;
+      const spec = new Float32Array(event.data, off, pts); off += pts * 4;
+      const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
+      const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
+      (window as any).__rta = S.rtaData;
+      // RTA mode has no FREQ frames; sync the frequency axis so markers map correctly
+      S.setFreqArray(freq);
+      // 2D probability density (freq x amplitude bins): points along the signal trace
+      // accumulate and fade - official-style density dots, not full columns.
+      const dB_PER_BIN = 100 / S.RTA_AMP_BINS;
+      const refTop = S.displayRef;
+      const len2 = spec.length * S.RTA_AMP_BINS;
+      const srt = Array.from(spec).sort((a, b) => a - b);
+      const floorN = srt[Math.floor(spec.length * 0.3)];
+      const sigThr = floorN + 15;   // only clear signals leave density dots
+      if (!S.rtaDensity2d || S.rtaDensity2d.length !== len2) {
+        const nd = new Float32Array(len2);
+        for (let i = 0; i < spec.length; i++) {
+          if (spec[i] <= sigThr) continue;   // only real signals leave density dots
+          const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
+          nd[i * S.RTA_AMP_BINS + b] = 1;
+        }
+        S.setRtaDensity2d(nd);
+      } else {
+        const nd = S.rtaDensity2d;
+        for (let i = 0; i < spec.length; i++) {
+          for (let b = 0; b < S.RTA_AMP_BINS; b++) {
+            const v = nd[i * S.RTA_AMP_BINS + b] * 0.97;
+            nd[i * S.RTA_AMP_BINS + b] = v > 0.05 ? v : 0;
+          }
+          if (spec[i] <= sigThr) continue;
+          // Fill the signal peak ±1 amplitude bin so the retained shape matches the
+          // signal's vertical extent (not just a single-dB point).
+          const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
+          const o = i * S.RTA_AMP_BINS;
+          const bump = (bin: number, v: number) => {
+            if (bin < 0 || bin >= S.RTA_AMP_BINS) return;
+            const k = o + bin;
+            nd[k] += v;
+            if (nd[k] > 40) nd[k] = 40;
+          };
+          bump(b, 3);
+          bump(b - 1, 1.5);
+          bump(b + 1, 1.5);
+        }
+      }
+      // Per-trace accumulation (multi-trace like the official SW): each enabled trace
+      // accumulates its own RTA display according to its mode.
+      S.traces.forEach((tr, ti) => {
+        if (tr.mode === 'OFF') return;
+        const d = S.rtaDisplays[ti];
+        if (!d || d.length !== spec.length) { S.rtaDisplays[ti] = new Float32Array(spec); return; }
+        if (tr.mode === 'MAX_HOLD') {
+          for (let i = 0; i < spec.length; i++) if (spec[i] > d[i]) d[i] = spec[i];
+        } else if (tr.mode === 'MIN_HOLD') {
+          for (let i = 0; i < spec.length; i++) if (spec[i] < d[i]) d[i] = spec[i];
+        } else if (tr.mode === 'AVERAGE') {
+          if (!S.rtaAvgN[ti]) { S.rtaAvgN[ti] = 1; d.set(spec); }
+          else { S.rtaAvgN[ti]++; const a = 1 / S.rtaAvgN[ti];
+            for (let i = 0; i < spec.length; i++) d[i] += (spec[i] - d[i]) * a; }
+        } else if (tr.mode === 'VIEW') {
+          // freeze
+        } else {
+          d.set(spec);   // CLEAR_WRITE
+        }
+      });
+      if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
+        // bitmap rows are often all-zero; derive waterfall row from the live trace
+        pushSwpRow(spec, wfRow.length, maxDensity);
+      }
+      const el = document.getElementById('info-pts');
+      if (el) el.innerText = String(pts);
+      // RTA data arrived -> redraw at ~60fps (16ms throttle)
+      const now = performance.now();
+      if (now - lastRender >= 16) {
+        lastRender = now;
+        renderAll();
+      }
+      return;
+    }
     if (magic === 'FREQ') {
       S.setFreqArray(new Float64Array(event.data, 16, points));
       S.setFreqVersion(version);

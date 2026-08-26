@@ -6,6 +6,7 @@ export function buildUnitGroups() {
     center: ['Hz', 'kHz', 'MHz', 'GHz'], span: ['Hz', 'kHz', 'MHz', 'GHz'],
     start: ['Hz', 'kHz', 'MHz', 'GHz'], stop: ['Hz', 'kHz', 'MHz', 'GHz'],
     rbw: ['Hz', 'kHz', 'MHz'], vbw: ['Hz', 'kHz', 'MHz'], pnm: ['Hz', 'kHz', 'MHz', 'GHz'],
+    rta_center: ['MHz', 'GHz'],
   };
   for (const [f, opts] of Object.entries(defs)) {
     const grp = document.getElementById(`unit-${f}-group`);

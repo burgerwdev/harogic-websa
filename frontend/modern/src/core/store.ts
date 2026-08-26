@@ -2,6 +2,7 @@
 export interface TraceState {
   id: number;
   mode: string;
+  prevMode?: string;   // mode before Freeze (View) toggle, to restore on unfreeze
   raw: Float32Array | null;
   powers: Float32Array | null;
   avgSum: Float32Array | null;
@@ -70,7 +71,7 @@ export function setFreqArray(v: Float64Array | null) { freqArray = v; }
 export let freqVersion = -1;
 export function setFreqVersion(v: number) { freqVersion = v; }
 
-export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz', rbw: 'kHz', vbw: 'kHz', pnm: 'MHz' };
+export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz', rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz' };
 
 // Traces
 export let activeTraceIdx = 0;
@@ -141,6 +142,28 @@ export function setNormRefWinUser(v: number) { normRefWinUser = v; }
 export let defaultMkrDone = false;
 export function setDefaultMkrDone(v: boolean) { defaultMkrDone = v; }
 // Latest GNSS status (for the detail popover)
+// RTA 实时频谱 + 瀑布
+export let rtaData: any = null;
+export function setRtaData(v: any) { rtaData = v; }
+export let rtaDisplays: (Float32Array | null)[] = [null, null, null, null];   // per-trace RTA accumulation
+export let rtaAvgN: number[] = [0, 0, 0, 0];
+export function setRtaDisplays(v: (Float32Array | null)[]) { rtaDisplays = v; }
+export const RTA_AMP_BINS = 50;                            // amplitude bins for the 2D density
+export let rtaDensity2d: Float32Array | null = null;   // freq x amp probability density (signal trace path)
+export function setRtaDensity2d(v: Float32Array | null) { rtaDensity2d = v; }
+export const waterfallRows: Uint16Array[] = [];
+export function pushWaterfallRow(row: Uint16Array) {
+  waterfallRows.push(row);
+  if (waterfallRows.length > 512) waterfallRows.shift();
+}
+export function resetWaterfall() { waterfallRows.length = 0; }
+export let waterfallOn = false;
+export function setWaterfallOn(v: boolean) { waterfallOn = v; }
+export let wfPaused = false;
+export function setWfPaused(v: boolean) { wfPaused = v; }
+export let rtaMode = false;
+export function setRtaMode(v: boolean) { rtaMode = v; }
+
 export let lastGnss: any = null;
 export function setLastGnss(v: any) { lastGnss = v; }
 export let dragging = false;

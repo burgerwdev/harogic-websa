@@ -35,6 +35,7 @@ export function getTraceDisplay(t: S.TraceState): Float32Array | null {
 }
 
 export function getDisplayPowers(): Float32Array | null {
+  if (S.rtaMode) return (S.rtaDisplays[S.activeTraceIdx] || (S.rtaData && S.rtaData.spec)) as Float32Array;
   const t = S.traces[S.activeTraceIdx];
   if (t.powers) return getTraceDisplay(t);
   const any = S.traces.find(x => x.powers);

@@ -9,7 +9,7 @@ import { markerFreqHz } from '../core/markerCommon';
 import { parseFreqUnit, toUnit } from '../core/units';
 import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, setTraceMode } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace } from './traceOps';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
@@ -216,6 +216,99 @@ function autoTrackMarker(m: S.MarkerState) {
   }
 }
 
+// Graph mode: RTA toggle (SWP is the default; click RTA to enter/exit)
+export function setGraphMode(mode: string) {
+  const isRta = mode === 'rta';
+  S.setRtaMode(isRta);
+  if (isRta && S.measOn) {
+    exitMeasModePub();
+    S.setMeasOn(false);
+    const b = document.getElementById('btn-meas-onoff');
+    if (b) b.textContent = t('off');
+    setMeasButtons(false);
+  }
+  if (isRta) {
+    S.setViewMode('rta');
+    S.resetWaterfall();
+    send({ cmd: 'SET_MODE', mode: 'rta' });
+  } else {
+    if (S.viewMode === 'rta') send({ cmd: 'SET_MODE', mode: 'std' });
+    S.setViewMode('std');
+  }
+  const bRta = document.getElementById('btn-mode-rta');
+  if (bRta) bRta.classList.toggle('active', isRta);
+  localStorage.setItem('web-sa-mode', isRta ? 'rta' : 'std');
+  // RTA mode: default sweep speed = minSWTx4
+  if (isRta) {
+    const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement;
+    if (sm && sm.value !== '2') { sm.value = '2'; syncSweepInput(); send({ cmd: 'SET_SWEEP', mode: 2 }); }
+  }
+  // RTA mode: disable the Measurement panel + non-applicable trace/BW controls
+  document.body.classList.toggle('rta-mode', isRta);
+  const rtaDisable = [
+    'select-smooth', 'select-refwin', 'btn-normalize', 'btn-rbw-set',
+    'select-rbw-mode', 'select-vbw-mode', 'select-window',
+  ];
+  rtaDisable.forEach((id) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    if (el) el.disabled = isRta;
+  });
+  const resetBtn = document.querySelector('[data-action="reset-norm"]') as HTMLButtonElement | null;
+  if (resetBtn) resetBtn.disabled = isRta;   // clear stays enabled in RTA
+  // 频率控制区切换: RTA 专用设置 / SWP 常规设置
+  const rtaF = document.getElementById('rta-freq-settings');
+  const swpF = document.getElementById('swp-freq-settings');
+  if (rtaF) rtaF.style.display = isRta ? '' : 'none';
+  if (swpF) swpF.style.display = isRta ? 'none' : '';
+  renderAll();
+}
+export function applyRta() {
+  const c = parseFloat((document.getElementById('input-rta-center') as HTMLInputElement).value || '1000');
+  const u = S.units.rta_center || 'MHz';
+  const center = isFinite(c) ? (u === 'GHz' ? c * 1e9 : u === 'kHz' ? c * 1e3 : c * 1e6) : 1e9;
+  send({ cmd: 'SET_RTA', center });
+}
+export function toggleWaterfall() {
+  S.setWaterfallOn(!S.waterfallOn);
+  if (S.waterfallOn) S.resetWaterfall();
+  const wf = document.getElementById('waterfall');
+  if (wf) wf.style.display = S.waterfallOn ? '' : 'none';
+  const mt = document.getElementById('marker-table');
+  if (mt) mt.style.display = S.waterfallOn ? 'none' : '';
+  const btn = document.getElementById('btn-waterfall');
+  if (btn) btn.classList.toggle('active', S.waterfallOn);   // text stays "Waterfall", active = on
+  renderAll();
+}
+export function toggleWfPause() {
+  S.setWfPaused(!S.wfPaused);
+  const b = document.getElementById('btn-wf-pause');
+  if (b) b.classList.toggle('active', S.wfPaused);
+}
+export function resetWf() {
+  S.resetWaterfall();
+  renderAll();
+}
+export function setSweepSpeed() {
+  const sel = document.getElementById('select-sweep-mode') as HTMLSelectElement;
+  const tin = document.getElementById('input-sweep-time') as HTMLInputElement;
+  const mode = parseInt(sel?.value || '0');
+  const time = parseFloat(tin?.value || '0');
+  const m: any = { cmd: 'SET_SWEEP', mode };
+  if (mode === 6 || mode === 7 || mode === 8) m.time = isFinite(time) ? time : 0;
+  send(m);
+}
+// 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
+export function syncSweepInput() {
+  const sel = document.getElementById('select-sweep-mode') as HTMLSelectElement;
+  const tin = document.getElementById('input-sweep-time') as HTMLInputElement;
+  const btn = document.querySelector('button[data-action="set-sweep"]') as HTMLElement;
+  if (!sel) return;
+  const mode = parseInt(sel.value || '0');
+  const need = mode >= 6;   // minSWTxN(6)/Manual(7)/minSMPxN(8) need an input value
+  if (tin) { tin.style.display = need ? '' : 'none'; tin.placeholder = mode === 7 ? t('swt_sec') : t('swt_xn'); }
+  if (btn) btn.style.display = need ? '' : 'none';
+}
+
 // Turn all markers on/off at once (toggle)
 export function updateMarkersAllBtn() {
   const allOn = S.markers.every(m => m.enabled && m.mode !== 'OFF');
@@ -308,6 +401,8 @@ export function syncToggleTexts() {
     rc.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
   }
   updateMarkersAllBtn();
+  const wb = document.getElementById('btn-waterfall');
+  if (wb) wb.classList.toggle('active', S.waterfallOn);
 }
 
 // ── Panel collapse ──
@@ -361,9 +456,13 @@ export function bindActions() {
       }
       renderAll();
     },
+    'toggle-freeze': () => toggleFreeze(),
     'normalize': () => normalizeActiveTrace(),
     'reset-norm': () => resetActiveTraceNormalize(),
-    'clear-trace': () => resetTraceAccum(S.traces[S.activeTraceIdx]),
+    'clear-trace': () => {
+      if (S.rtaMode) { clearRtaTrace(); }
+      else resetTraceAccum(S.traces[S.activeTraceIdx]);
+    },
     'mkr-peak': () => activeMarkerPeak(),
     'mkr-peak-left': () => activeMarkerNextPeakLeft(),
     'mkr-peak-right': () => activeMarkerNextPeakRight(),
@@ -382,6 +481,11 @@ export function bindActions() {
     'gnss-detail': () => fillGnssDetail(),
     'gnss-close': () => closeGnssDetail(),
     'markers-all': () => toggleMarkersAll(),
+    'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },
+    'toggle-rta': () => setGraphMode(S.rtaMode ? 'swp' : 'rta'),
+    'apply-rta': () => applyRta(),
+    'wf-pause': () => toggleWfPause(),
+    'wf-reset': () => resetWf(),
     'preset': () => presetAll(),
     'toggle-gapfill': () => toggleGapFill(),
     'toggle-group': (el) => toggleGroup(el),
@@ -404,12 +508,17 @@ export function bindActions() {
   document.querySelectorAll('[data-meas-tab]').forEach(el => {
     el.addEventListener('click', () => measTab((el as HTMLElement).dataset.measTab || 'amp'));
   });
+
+  const wfBtn = document.getElementById('btn-waterfall');
+  if (wfBtn) wfBtn.addEventListener('click', () => toggleWaterfall());
   document.querySelectorAll('[data-marker-select]').forEach(el => {
     el.addEventListener('click', () => selectMarker(parseInt((el as HTMLElement).dataset.markerSelect || '1')));
   });
   document.querySelectorAll('[data-scale]').forEach(el => {
     el.addEventListener('click', () => setScale(parseFloat((el as HTMLElement).dataset.scale || '10')));
   });
+  const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement;
+  if (sm) { sm.addEventListener('change', () => syncSweepInput()); syncSweepInput(); }
   const pt = document.getElementById('input-peakthr') as HTMLInputElement;
   if (pt) {
     pt.addEventListener('input', () => peakThrManual());

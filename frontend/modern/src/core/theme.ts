@@ -64,6 +64,7 @@ export function canvasColors() {
     labelBorder: cssVar('--sa-label-border', '#00aa66'),
     osdStroke: cssVar('--sa-osd-stroke', 'rgba(0,0,0,0.9)'),
     osdFill: cssVar('--sa-osd-fill', '#00ff00'),
+    rta: cssVar('--sa-rta', '#00ff88'),
   };
 }
 

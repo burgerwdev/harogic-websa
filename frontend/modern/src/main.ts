@@ -25,6 +25,19 @@ function init() {
   bindActions();
   bindCanvas();
 
+  // Restore saved mode (non-first load keeps RTA; first load defaults to std)
+  const savedMode = localStorage.getItem('web-sa-mode');
+  if (savedMode === 'rta') {
+    S.setViewMode('rta');
+    S.setRtaMode(true);
+    const bRta = document.getElementById('btn-mode-rta');
+    if (bRta) bRta.classList.add('active');
+    const rtaF = document.getElementById('rta-freq-settings');
+    const swpF = document.getElementById('swp-freq-settings');
+    if (rtaF) rtaF.style.display = '';
+    if (swpF) swpF.style.display = 'none';
+  }
+
   // Theme/language toggle buttons (dev-bar, next to preset, no label)
   const btnTheme = document.getElementById('btn-theme');
   if (btnTheme) {

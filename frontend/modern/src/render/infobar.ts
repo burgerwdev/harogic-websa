@@ -11,7 +11,13 @@ function setSwt() {
   const now = performance.now();
   if (now - lastSwtAt < SWT_THROTTLE_MS) return;   // skip entirely within the throttle window (regardless of whether the value changed)
   lastSwtAt = now;
-  const v = S.sweepMs > 0 ? S.sweepMs.toFixed(1) + ' ms' : '-';
+  // RTA mode: show current RTA bandwidth (start~stop) instead of sweep time
+  let v: string;
+  if (S.rtaMode && S.rtaData && S.rtaData.stopHz) {
+    v = formatBWHz(S.rtaData.stopHz - S.rtaData.startHz);
+  } else {
+    v = S.sweepMs > 0 ? S.sweepMs.toFixed(1) + ' ms' : '-';
+  }
   if (v === lastSwtStr) return;                     // also skip if the value didn't change (avoid pointless writes)
   lastSwtStr = v;
   const el = document.getElementById('info-swt');
@@ -20,6 +26,9 @@ function setSwt() {
 
 export function updateInfoBar() {
   const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  // RTA mode: the SWT field shows the RTA analysis bandwidth -> label becomes "BW:"
+  const swtLabel = document.querySelector('[data-i18n="swt"]');
+  if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
   // ref display = display reference (displayRef) — ref level is a pure frontend display parameter
   set('info-ref', S.displayUnit === 'dB' ? S.displayRef.toFixed(1) + ' dB' : S.displayRef.toFixed(1) + ' dBm');
   set('info-scale', S.dbPerDiv + ' dB/div');

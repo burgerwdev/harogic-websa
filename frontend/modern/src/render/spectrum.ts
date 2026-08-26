@@ -14,6 +14,7 @@ import { renderHarmOverlay } from '../meas/harmOverlay';
 import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
+import { renderWaterfall, pushSwpRow } from './waterfall';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -36,6 +37,30 @@ export function getY(val: number): number {
 export function getX(idx: number, points: number): number {
   const p = plotRect();
   return p.x + (idx / (points - 1)) * p.w;
+}
+
+// Shared bottom frequency row (used by both SWP grid and RTA view)
+function drawFreqRow(lo: number, hi: number, col: any, p: any) {
+  ctx.font = '11px monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  let fx = p.x;
+  const fy = p.y + p.h + 8;
+  const cHz = (lo + hi) / 2;
+  const segs: [string, string][] = [
+    ['Start ', formatFreqHz(lo)],
+    ['Stop ', formatFreqHz(hi)],
+    ['Center ', formatFreqHz(cHz)],
+    ['Span ', formatFreqHz(hi - lo)],
+  ];
+  for (const [l, v] of segs) {
+    ctx.fillStyle = col.axis;
+    ctx.fillText(l, fx, fy);
+    fx += ctx.measureText(l).width;
+    ctx.fillStyle = col.text;
+    ctx.fillText(v, fx, fy);
+    fx += ctx.measureText(v).width + 16;
+  }
 }
 
 export function renderGrid() {
@@ -64,28 +89,9 @@ export function renderGrid() {
     ctx.fillText(v.toFixed(0), labelX, y);
   }
 
-  ctx.font = '11px monospace';
-  ctx.textBaseline = 'top';
-  let fx = p.x;
-  const fy = p.y + p.h + 8;
   let loHz = c.centerHz - c.spanHz / 2, hiHz = c.centerHz + c.spanHz / 2;
   if (S.freqArray && S.freqArray.length > 1) { loHz = S.freqArray[0]; hiHz = S.freqArray[S.freqArray.length - 1]; }
-  const cHz = (loHz + hiHz) / 2;
-  const segs: [string, string][] = [
-    ['Start ', formatFreqHz(loHz)],
-    ['Stop ', formatFreqHz(hiHz)],
-    ['Center ', formatFreqHz(cHz)],
-    ['Span ', formatFreqHz(hiHz - loHz)],
-  ];
-  for (const [l, v] of segs) {
-    ctx.textAlign = 'left';
-    ctx.fillStyle = col.axis;
-    ctx.fillText(l, fx, fy);
-    fx += ctx.measureText(l).width;
-    ctx.fillStyle = col.text;
-    ctx.fillText(v, fx, fy);
-    fx += ctx.measureText(v).width + 16;
-  }
+  drawFreqRow(loHz, hiHz, col, p);
 
   if (c.displayUnit === 'dB') {
     ctx.strokeStyle = col.axis;
@@ -292,6 +298,31 @@ function renderOSD(powers: Float32Array) {
 
 export function renderAll() {
   const c = cur();
+  // Waterfall container replaces the table slot in ALL modes (incl. RTA)
+  const wfc = document.getElementById('waterfall-container');
+  if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
+  if (c.viewMode === 'rta') {
+    renderRta();
+    renderWaterfallIfOn();
+    const rp = getDisplayPowers();
+    if (S.waterfallOn) {
+      ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+    } else if (S.peakListOn) {
+      const mt2 = document.getElementById('marker-table');
+      if (mt2) mt2.style.display = 'none';
+      if (rp) { updatePeakTable(rp); renderPeakMarks(rp); }
+    } else {
+      const mt2 = document.getElementById('marker-table');
+      if (mt2) mt2.style.display = '';
+      const pt = document.getElementById('peak-table');
+      if (pt) pt.style.display = 'none';   // pk list off -> no leftover peak table
+      updateMarkerTable(rp);
+    }
+    return;
+  }
   if (c.viewMode === 'pnm') { renderPnm(); updatePnmTable(); return; }
   if (c.viewMode === 'harm') {
     renderGrid();
@@ -313,7 +344,13 @@ export function renderAll() {
     if (c.viewMode === 'harm') renderHarmonics(powers);
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
   }
-  if (powers) {
+  if (S.waterfallOn) {
+    ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+  } else {
+    if (powers) {
     autoPeakThr(powers);
     if (peakListOn() && c.viewMode === 'std') {
       const mt = document.getElementById('marker-table');
@@ -327,6 +364,162 @@ export function renderAll() {
       if (pt) pt.style.display = 'none';
       updateMarkerTable(powers);
     }
-    if (c.viewMode === 'harm') updateHarmonicTable();
+      if (c.viewMode === 'harm') updateHarmonicTable();
+    }
   }
+  renderWaterfallIfOn();
+}
+
+
+// ---- RTA 实时频谱渲染 ----
+function renderRta() {
+  const col = canvasColors();
+  ctx.clearRect(0, 0, W, H);
+  const p = plotRect();
+  // 背景 + 网格
+  ctx.fillStyle = col.bg;
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  ctx.strokeStyle = col.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < S.totalDivs; i++) {
+    const x = p.x + i * p.w / S.totalDivs;
+    ctx.moveTo(x, p.y); ctx.lineTo(x, p.y + p.h);
+    const y = p.y + i * p.h / S.totalDivs;
+    ctx.moveTo(p.x, y); ctx.lineTo(p.x + p.w, y);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = col.axis;
+  ctx.strokeRect(p.x, p.y, p.w, p.h);
+  // Y 轴标签
+  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  const labelX = p.x + p.w + 42;
+  for (let i = 0; i <= S.totalDivs; i++) {
+    const y = p.y + i * p.h / S.totalDivs;
+    const v = cur().displayRef - i * cur().dbPerDiv;
+    ctx.fillText(v.toFixed(0), labelX, y);
+  }
+  // Corner label "RTA" (kept; FFT size removed)
+  ctx.fillStyle = col.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('RTA', p.x + 4, p.y + 4);
+  const d = S.rtaData;
+  if (!d || !d.freq || d.freq.length < 2) return;
+  const n = d.freq.length;
+  const lo = d.startHz, hi = d.stopHz;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+  // 2D probability density: 1px dots along the signal trace path. Drawn with
+  // fillRect (source-over) so the grid drawn earlier stays visible.
+  if (S.rtaDensity2d && S.rtaDensity2d.length >= n * S.RTA_AMP_BINS) {
+    const lut = densityLutForRta();
+    const dB_PER_BIN = 100 / S.RTA_AMP_BINS;
+    const colW = p.w / n;
+    const yTops: number[] = [];
+    for (let b = 0; b < S.RTA_AMP_BINS; b++) {
+      yTops.push(getY(cur().displayRef - b * dB_PER_BIN));
+    }
+    for (let i = 0; i < n; i++) {
+      const x0 = Math.floor(p.x + i * colW);
+      for (let b = 0; b < S.RTA_AMP_BINS; b++) {
+        const dens = S.rtaDensity2d[i * S.RTA_AMP_BINS + b];
+        if (dens < 0.01) continue;   // keep even very sparse low-power traces (fill signal bottom)
+        const lvl = Math.max(90, Math.min(255, Math.round(Math.min(1, dens / 8) * 255)));
+        const c = lut[lvl];
+        const yC = Math.round((yTops[b] + (yTops[b + 1] || (p.y + p.h))) / 2);
+        if (yC < p.y || yC >= p.y + p.h) continue;
+        ctx.fillStyle = 'rgb(' + (c & 0xff) + ',' + ((c >> 8) & 0xff) + ',' + ((c >> 16) & 0xff) + ')';
+        ctx.fillRect(x0, yC, 1, 1);   // single-pixel dot
+      }
+    }
+  } else {
+    ctx.fillStyle = col.bg;
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+  }
+  // Fluorescent traces with glow (previous style; density dots provide the lingering trail)
+  S.traces.forEach((tr, ti) => {
+    if (tr.mode === 'OFF') return;
+    const disp = S.rtaDisplays[ti];
+    if (!disp || disp.length < 2) return;
+    const dn = Math.min(n, disp.length);   // guard against point-count mismatch
+    const tcol = canvasColors().traces[ti] || col.rta;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+    // glow
+    ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
+    ctx.beginPath();
+    for (let i = 0; i < dn; i++) {
+      const x = p.x + (d.freq[i] - lo) / (hi - lo) * p.w;
+      const y = getY(disp[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // main line
+    ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = tcol;
+    ctx.beginPath();
+    for (let i = 0; i < dn; i++) {
+      const x = p.x + (d.freq[i] - lo) / (hi - lo) * p.w;
+      const y = getY(disp[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  });
+  // 频率轴
+  ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
+  // Bottom frequency row (same as SWP grid)
+  drawFreqRow(lo, hi, col, p);
+  // Markers on the active RTA trace (length-guarded)
+  const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;
+  renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);
+  renderOSD(actDisp.length >= 2 ? actDisp : d.spec);
+}
+
+// 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
+let lastSwpWfAt = 0;
+function renderWaterfallIfOn() {
+  if (!S.waterfallOn) return;
+  const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
+  if (!wf) return;
+  // Canvas width = spectrum plot area width (CSS px), fixed (buttons don't squeeze it)
+  const spec = document.getElementById('spectrum') as HTMLCanvasElement;
+  const sRect = spec.getBoundingClientRect();
+  const scale = sRect.width / S.W;
+  const pr = plotRect();
+  const w = Math.max(60, Math.round(pr.w * scale));
+  const h = Math.max(40, 135 - 2);
+  if (wf.width !== w || wf.height !== h) { wf.width = w; wf.height = h; }
+  // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
+  if (!S.rtaMode) {
+    const powers = getDisplayPowers();
+    if (powers && !S.wfPaused) {
+      const now = performance.now();
+      if (now - lastSwpWfAt > 100) {
+        lastSwpWfAt = now;
+        pushSwpRow(powers, wf.width, 20);
+      }
+    }
+  }
+  renderWaterfall(wf, S.rtaMode && S.rtaData ? S.rtaData.maxDensity : 20);
+}
+
+
+// RTA density heat LUT (theme-aware, deep-blue -> cyan -> yellow -> red)
+function densityLutForRta(): Uint32Array {
+  const th = document.documentElement.dataset.theme;
+  const stops = th === 'light'
+    ? [[255, 255, 255], [200, 225, 255], [120, 170, 255], [60, 110, 220], [40, 130, 150], [180, 140, 0], [220, 70, 0]]
+    : [[0, 0, 0], [0, 0, 60], [0, 40, 140], [0, 110, 170], [0, 170, 190], [60, 220, 80], [255, 200, 0], [255, 80, 0]];
+  const lut = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255 * (stops.length - 1);
+    const j = Math.min(stops.length - 2, Math.floor(x));
+    const t = x - j;
+    const a = stops[j], b = stops[j + 1];
+    const r = Math.round(a[0] + (b[0] - a[0]) * t);
+    const g = Math.round(a[1] + (b[1] - a[1]) * t);
+    const bl = Math.round(a[2] + (b[2] - a[2]) * t);
+    lut[i] = (255 << 24) | (bl << 16) | (g << 8) | r;
+  }
+  return lut;
 }

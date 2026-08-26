@@ -49,6 +49,13 @@
   <div class="screen-container">
     <div class="spectrum-area">
       <canvas id="spectrum" width="860" height="480"></canvas>
+      <div id="waterfall-container" class="waterfall-container" style="display:none;">
+        <canvas id="waterfall" width="800" height="135"></canvas>
+        <div id="wf-controls" class="wf-controls">
+          <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" title="Pause/Resume waterfall">⏸</button>
+          <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" title="Restart waterfall from scratch">↻</button>
+        </div>
+      </div>
       <table class="marker-table" id="marker-table">
         <thead><tr>
           <th style="width:9%;" data-i18n="mk_marker">Marker</th><th style="width:14%;" data-i18n="mk_mode">Mode</th>
@@ -68,6 +75,19 @@
     </div>
 
     <div class="control-panel">
+      <div class="control-group" id="graph-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="graph">Graph</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="mode">Mode</label>
+            <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall">Waterfall</button>
+            <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta">RTA</button>
+          </div>
+        </div>
+      </div>
       <div class="control-group">
         <div class="group-head">
           <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
@@ -75,6 +95,12 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
+          <div id="rta-freq-settings" style="display:none;">
+            <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-rta-center" value="1000" step="any">
+              <div class="unit-btn-group" id="unit-rta_center-group"></div>
+              <button class="btn" data-action="apply-rta" data-i18n="set">Set</button></div>
+          </div>
+          <div id="swp-freq-settings">
           <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any">
             <div class="unit-btn-group" id="unit-center-group"></div>
             <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
@@ -87,6 +113,7 @@
             <div class="unit-btn-group" id="unit-stop-group"></div>
             <button class="btn" data-action="apply-start-stop" data-i18n="set">Set</button></div>
           <div class="param-row"><button class="btn" style="width:100%;" data-action="full-span" data-i18n="full_span">Full Span (100kHz - 9GHz)</button></div>
+          </div>
         </div>
       </div>
 
@@ -131,25 +158,26 @@
         </div>
       </div>
 
-      <div class="control-group">
+      <div class="control-group" id="trace-panel">
         <div class="group-head">
           <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="trace">Trace</span>
           <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="trace">Trace</label>
+          <div class="param-row trace-keep"><label data-i18n="trace">Trace</label>
             <button class="trace-btn T1 active" data-trace-tab="0">T1</button>
             <button class="trace-btn T2" data-trace-tab="1">T2</button>
             <button class="trace-btn T3" data-trace-tab="2">T3</button>
             <button class="trace-btn T4" data-trace-tab="3">T4</button>
           </div>
-          <div class="param-row"><label data-i18n="mode">Mode</label>
+          <div class="param-row trace-keep"><label data-i18n="mode">Mode</label>
             <select id="select-trace-mode" data-action="set-trace-mode">
               <option value="CLEAR_WRITE" data-i18n="clear_write">Clear Write</option><option value="MAX_HOLD" data-i18n="max_hold">Max Hold</option>
               <option value="MIN_HOLD" data-i18n="min_hold">Min Hold</option><option value="AVERAGE" data-i18n="average">Average</option>
-              <option value="VIEW" data-i18n="view">View (Freeze)</option><option value="OFF" data-i18n="off">Off</option>
-            </select></div>
+              <option value="OFF" data-i18n="off">Off</option>
+            </select>
+            <button class="btn" id="btn-view-freeze" data-action="toggle-freeze" data-i18n="freeze">Freeze</button></div>
           <div class="param-row"><label data-i18n="smooth">Smooth</label>
             <select id="select-smooth" data-action="set-smooth">
               <option value="1" data-i18n="off_short">Off</option><option value="3">3 pts</option>
@@ -267,7 +295,7 @@
         </div>
       </div>
 
-      <div class="control-group">
+      <div class="control-group" id="bw-panel">
         <div class="group-head">
           <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="bw">BW</span>
@@ -298,7 +326,7 @@
         </div>
       </div>
 
-      <div class="control-group">
+      <div class="control-group" id="sweep-panel">
         <div class="group-head">
           <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="sweep">Sweep</span>
@@ -306,6 +334,18 @@
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000"><button class="btn" data-action="apply-points" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="speed">Speed</label>
+            <select id="select-sweep-mode" data-action="set-sweep">
+              <option value="0" data-i18n="swt_min">minSWT</option>
+              <option value="1">minSWTx2</option><option value="2">minSWTx4</option><option value="3">minSWTx10</option>
+              <option value="4">minSWTx20</option><option value="5">minSWTx50</option>
+              <option value="6">minSWTxN</option>
+              <option value="7" data-i18n="manual">Manual</option>
+              <option value="8">minSMPxN</option>
+            </select>
+            <input type="number" id="input-sweep-time" value="0" step="any" style="display:none;"
+                   title="×N: multiplier / Manual: seconds">
+            <button class="btn" data-action="set-sweep" data-i18n="set" style="display:none;">Set</button></div>
           <div class="param-row"><label data-i18n="spur">Spur</label>
             <select id="select-spur" data-action="set-spur">
               <option value="bypass" selected data-i18n="bypass">Bypass</option><option value="standard" data-i18n="standard">Standard</option><option value="enhanced" data-i18n="enhanced">Enhanced</option>
@@ -329,7 +369,7 @@
       <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
       <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" title="前端版本">v1.0.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" title="前端版本">v1.0.2 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

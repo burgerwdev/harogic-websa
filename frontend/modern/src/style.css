@@ -74,6 +74,7 @@ input, select, button, textarea { font-size: 11px; }
   --sa-ref: #00ff00;
   --sa-norm: #ffd75e;
   --sa-warning: #ff4d4d;
+  --sa-rta: #00ff88;
   --sa-label-bg: rgba(0, 0, 0, 0.7);
   --sa-label-border: #00aa66;
   --sa-osd-stroke: rgba(0, 0, 0, 0.9);
@@ -137,6 +138,7 @@ input, select, button, textarea { font-size: 11px; }
   --sa-ref: #0d7a2e;
   --sa-norm: #9a6a00;
   --sa-warning: #c00000;
+  --sa-rta: #0d7a2e;
   --sa-label-bg: rgba(255, 255, 255, 0.88);
   --sa-label-border: #b0c4b0;
   --sa-osd-stroke: rgba(255, 255, 255, 0.9);
@@ -174,7 +176,9 @@ body {
 #btn-refclk-out.on { background: var(--btn-active); color: var(--text); border-color: var(--text); }
 #btn-refclk-out:not(.on) { background: var(--panel-2); color: var(--label); border-color: var(--card-border); }
 .cur-val { color: var(--label); font-size: 11px; }
-#meas-panel button:disabled { opacity: 0.35; cursor: not-allowed; }
+button:disabled, select:disabled { opacity: 0.35; cursor: not-allowed; }
+/* select 禁用时仍显示为禁用态(非透明消失) */
+select:disabled { color: var(--label); }
 .info-value { color: var(--text); font-weight: bold; font-variant-numeric: tabular-nums; }
 .separator { color: var(--separator); }
 /* SWT 固定宽度 + 右对齐: 数值位数变化不引起布局重排闪动,
@@ -215,11 +219,19 @@ body {
 canvas {
   background-color: var(--sa-bg); border: 1px solid var(--card-border); display: block; cursor: crosshair;
   width: 100%; height: auto; flex: 0 1 auto; min-height: 0;
+  box-sizing: border-box;   /* width includes the 1px border -> aligns with the 100% marker table below */
 }
 .tab-btn { background: var(--panel-2); color: var(--label); border: 1px solid var(--card-border); padding: 2px 6px;
   font: 11px monospace; cursor: pointer; }
 .tab-btn.active { background: var(--btn-active); color: var(--text); border-color: var(--text); }
 body.meas-mode .control-group:not(#meas-panel) .group-body:not(.meas-allowed) { pointer-events: none; opacity: 0.45; }
+/* RTA mode: panels with SWP-only controls grey out (same style as meas-mode) */
+body.rta-mode #meas-panel .group-body,
+body.rta-mode #bw-panel .group-body,
+body.rta-mode #sweep-panel .group-body { pointer-events: none; opacity: 0.45; }
+body.rta-mode #meas-panel .btn { opacity: 0.4; }
+/* Trace panel: only smooth/cal-wnd/normalize rows are RTA-inapplicable */
+body.rta-mode #trace-panel .param-row:not(.trace-keep) { pointer-events: none; opacity: 0.45; }
 body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .harmonic-table { width: 100%; border-collapse: collapse; margin-top: 4px; font: 11px monospace; }
 .harmonic-table td { border: 1px solid var(--inner-border); padding: 3px 8px; text-align: center; color: var(--table-cell); background: var(--panel-2); }
@@ -232,6 +244,24 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .pk-id { color: var(--label); font-weight: bold; }
 .pk-a { color: var(--table-cell-dim); }
 .marker-table { flex-shrink: 0; }
+/* 瀑布图: 绝对定位覆盖 marker 表区域(关闭时隐藏) */
+.waterfall-container {
+  position: relative; flex-shrink: 0; height: 135px;
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--card-border); background: var(--sa-bg);
+}
+/* Canvas: fixed width = spectrum plot area (left 10px, width set by JS);
+   buttons sit absolutely at the right, never squeezing the canvas */
+.waterfall-container canvas {
+  position: absolute; left: 10px; top: 0; height: calc(100% - 2px);
+  width: auto;   /* override global `canvas { width:100% }`; width set by JS */
+  border: none; display: block;
+}
+.wf-controls {
+  position: absolute; right: 4px; top: 3px; width: 26px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.wf-btn { min-width: 0; width: 100%; padding: 0; text-align: center; font-size: 9px; line-height: 1.4; box-sizing: border-box; }
 .control-panel {
   display: flex; flex-direction: column; gap: 8px; width: 360px; flex-shrink: 0;
   height: 100%; overflow-y: auto; padding-right: 2px;
