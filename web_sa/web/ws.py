@@ -96,6 +96,10 @@ def _dispatch(dev, cmd, data) -> bool:
         # (ref independent)
         dev.configure_swp()
         return True
+    # In RTA mode, SWP-only params (RBW/VBW/window/points/amp) are not applicable;
+    # applying them reconfigures the device behind the RTA session -> spectrum freezes.
+    if dev.state.mode == 'rta' and cmd in ('SET_RBW', 'SET_VBW', 'SET_WINDOW', 'SET_POINTS', 'SET_AMP', 'SET_SPUR'):
+        return False
     if cmd == 'SET_RBW':
         if 'mode' in data:
             s.rbw_mode = data['mode'] if data['mode'] in ('manual', 'auto') else s.rbw_mode
@@ -108,6 +112,20 @@ def _dispatch(dev, cmd, data) -> bool:
             s.vbw_mode = data['mode']
         if 'vbw' in data:
             s.vbw_hz = float(data['vbw'])
+        dev.configure_swp()
+        return True
+    if cmd == 'SET_SWEEP':
+        # RTA mode: sweep speed goes to the RTA session (RTA_Profile.SweepTimeMode)
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            sess.set_sweep(mode=int(data.get('mode', 0)), time=float(data.get('time', 0) or 0))
+            return True
+        if 'mode' in data:
+            m = int(data['mode'])
+            if 0 <= m <= 8:
+                s.sweep_time_mode = m
+        if 'time' in data:
+            s.sweep_time = max(0.0, min(1e6, float(data['time'])))
         dev.configure_swp()
         return True
     if cmd == 'SET_POINTS':
@@ -149,8 +167,13 @@ def _dispatch(dev, cmd, data) -> bool:
     if cmd == 'SET_MODE':
         from ..measurements import make_session
         name = data.get('mode', 'std')
-        if name in ('std', 'harmonic', 'pnm'):
+        if name in ('std', 'harmonic', 'pnm', 'rta'):
             dev.set_session(make_session(dev, name))
+            return True
+    if cmd == 'SET_RTA':
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            sess.set_params(center=data.get('center'), span=data.get('span'))
             return True
     if cmd == 'SET_HARM':
         sess = dev.session

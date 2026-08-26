@@ -55,6 +55,8 @@ class DeviceState:
     actual: dict = field(default_factory=dict)
     gnss: dict = field(default_factory=dict)
     sweep_ms: float = 0.0
+    sweep_time_mode: int = 0     # SweepTimeMode_TypeDef: 0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN
+    sweep_time: float = 0.0      # Manual=绝对秒; xN=倍率; 其他模式忽略
     freq_version: int = 0
     config_version: int = 0
     last_error: str = ''
@@ -205,7 +207,8 @@ class HarogicDevice:
         # guidance); left unset to avoid hanging the device
         p.ExternalSystemClockFrequency = 10e6
         p.EnableReferenceClockOut = 1 if s.refclk_out else 0
-        p.SweepTimeMode = T.SweepTimeMode_TypeDef.SWTMode_minSWT
+        p.SweepTimeMode = T.SweepTimeMode_TypeDef(s.sweep_time_mode)
+        p.SweepTime = float(s.sweep_time)   # Manual 时绝对秒; xN 时倍率; 其他模式忽略
         p.TracePoints = int(max(51, min(4000, s.points_req)))
         p.TracePointsStrategy = T.TracePointsStrategy_TypeDef.SweepSpeedPreferred
         p.TraceAlign = T.TraceAlign_TypeDef.AlignToStart

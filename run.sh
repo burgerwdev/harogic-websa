@@ -10,8 +10,12 @@ if [ ! -f frontend/modern/dist/index.html ]; then
   exit 1
 fi
 
-pkill -9 -f "python3 -m web_sa.main" 2>/dev/null || true
-sleep 2
+# Already running? stop gracefully first (device handle released cleanly)
+if pgrep -f "python3 -m web_sa.main" > /dev/null 2>&1; then
+  echo "Service already running - stopping first..."
+  ./stop.sh
+  sleep 2
+fi
 setsid nohup python3 -m web_sa.main > /tmp/san90-web.log 2>&1 < /dev/null &
 for i in $(seq 1 25); do
   sleep 1

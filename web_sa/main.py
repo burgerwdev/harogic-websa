@@ -66,7 +66,10 @@ def main() -> None:
     print('Device open:', err if not ok else dev.state.label)
 
     def sig(sig_, frame_):
-        os._exit(0)   # do not call Device_Close inside the signal handler (may hang on USB)
+        # Fast exit. Device handle is released by the OS; official SDK docs require
+        # open/close once per session - the process exits so the handle is freed on
+        # process teardown (verified: manual Ctrl+C then restart works).
+        os._exit(0)
 
     signal.signal(signal.SIGINT, sig)
     signal.signal(signal.SIGTERM, sig)

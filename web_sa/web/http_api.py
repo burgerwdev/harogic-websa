@@ -18,6 +18,7 @@ def build_status(dev) -> dict:
         'center': s.center_hz, 'span': s.span_hz, 'ref': s.ref_level,
         'rbw_mode': s.rbw_mode, 'rbw': s.rbw_hz, 'vbw_mode': s.vbw_mode, 'vbw': s.vbw_hz,
         'points': s.points_req, 'window': s.window, 'spur': s.spur_mode,
+        'sweep_time_mode': s.sweep_time_mode, 'sweep_time': s.sweep_time,
         'mode': s.mode, 'pnm_supported': s.pnm_supported,
         'caps': dict(model=s.caps.model if s.caps else 0, name=s.caps.name if s.caps else '',
                      fmin=s.caps.freq_min_hz if s.caps else 0,

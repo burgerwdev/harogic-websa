@@ -29,7 +29,12 @@ async def publisher(app, dev):
                 from .http_api import build_status
                 await _send_json(app, build_status(dev))
             try:
-                frames, msgs = dev.step()
+                # RTA Get transfers ~2MB/frame; run on a worker thread (libhtraapi
+                # RTA calls behave differently on the asyncio thread -> crash)
+                if dev.state.mode == 'rta':
+                    frames, msgs = await asyncio.to_thread(dev.step)
+                else:
+                    frames, msgs = dev.step()
                 # send FREQ frames only when the version changes
                 if dev.state.mode == 'std':
                     for fr in frames:
