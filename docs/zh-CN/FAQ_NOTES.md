@@ -28,3 +28,7 @@
 - 中频增益 1/4 档部分频点 ~1dB 幅度差异
 - 杂散抑制算法仅 SWP 模式有效
 - SAN 系列: SAN-45 9kHz-4.5GHz / SAN-60 9kHz-6GHz / SAN-90 9kHz-9GHz, 功能相同指标不同
+- RTA 模式: 实时频谱走官方取包路径; SDK 仍可能段错误(libhtraapi 固有) — 崩溃后设备句柄残留,
+  下次 open 可能挂起; 等几秒或重插 USB 设备(必要时重启系统)
+- 必须从项目目录启动: `python3 -m web_sa.main` 的模块解析用 *cwd*(`web_sa` 包从 cwd 找,
+  不是脚本位置) — 从错误目录启动会加载旧版 `web_sa`(无 RTA); 始终用 `./run.sh`(先 cd 到项目根)

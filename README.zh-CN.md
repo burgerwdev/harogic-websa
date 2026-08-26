@@ -22,6 +22,7 @@
   - 三级寻峰引擎：局部极值 → Escursion 双侧 ≥6dB → 抛物线亚频点拟合
   - 谷凹陷合并（25bin，与 Valley 定位一致）、频率方向遍历
   - Raw Anchor（未平滑时取原始迹线真实极值）
+- **实时频谱 (RTA)** — FPGA 引擎、多迹线(各 tab 独立模式)、概率密度背景(渐隐痕迹)、瀑布图
 - **GNSS 详情浮层** — 点击指示器查看完整信息(锁定/卫星/天线/经纬度/UTC 时间); 状态每秒自动刷新
 - **测量模式** — 幅度（n-dB 带宽）、谐波（H1~H5 服务器自动调谐）、相噪（6 档频偏 100Hz~10MHz）
 - **归一化** — 直通校准、自适应吸收、显示层变换
@@ -37,6 +38,8 @@
 | ![寻峰](screenshots/marker_peaks.png) | ![谐波](screenshots/measure_harmonic.png) | ![相噪](screenshots/measure_phasenoise.png) |
 | 寻谷 (DUT 扫频, MAX_HOLD + smooth=5) | 幅度测量 (N dB) | — |
 | ![寻谷](screenshots/marker_valley.png) | ![幅度](screenshots/measure_amplitude.png) | |
+| 瀑布 + RTA 实时频谱 |
+| ![RTA瀑布](screenshots/waterfall_rta.png) |
 
 ## 快速开始
 

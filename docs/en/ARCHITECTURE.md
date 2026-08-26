@@ -33,6 +33,32 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 CONNECT/STATUS/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_POINTS/SET_SPUR/SET_WINDOW/
 SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_HARM/SET_PNM
 
+## RTA Real-Time Spectrum (SWP/RTA modes)
+- **Session** (`web_sa/measurements/rta.py`, `RtaSession`): built on the official SDK path
+  `RTA_Configuration` → `BusTriggerStart` → `GetRealTimeSpectrum`; official packet-drain loop
+  (after trigger, `Get` repeatedly for `PacketCount` packets), switching latency ~1.5 s, `acq=0.005`
+  (~150 fps device capability)
+- **Push rate**: backend step waits only `acq+0.002` (~7 ms) → ~130 fps; frontend redraw throttle
+  16 ms → ~60 fps display (SWP mode keeps 33 ms)
+- **RTAF frame** (`framer/`): magic `RTAF` + `freq` (f8) + `spec` (f4) + `wfRow` (u2) + `stopHz`;
+  each dtype is `tobytes`-packed separately (a single `np.concatenate` would upcast to f8 and corrupt
+  the frontend parse); wfRow comes before density byte for 2-byte alignment; first frame drops the
+  19-frame mirror image
+- **Multi-trace (T1-T4)**: per-trace accumulators (`rtaDisplays[4]`) with their own modes, rendered
+  overlaid (own color + glow); **Freeze/View** is a standalone toggle button next to the trace-mode
+  dropdown (VIEW = freeze accumulation; unfreeze restores the previous mode); Clear resets the active trace
+- **Probability-density background**: 2D accumulator `rtaDensity2d` (freq × 50 amp bins), 1 px dots
+  drawn along the trace path with `fillRect` (source-over, grid stays visible); signal gating
+  (noise floor +15 dB), peak ±1 bin (center +3 / flanks +1.5); decay ×0.97, new point +3,
+  density display threshold 0.01 (keeps the low-power signal bottom visible), min brightness 90,
+  full brightness at dens/8; offscreen persistence was rolled back → fluorescent glow trace + density dots
+- **Waterfall**: SWP mode throttles POWR rows to 10 rows/s; RTA pushes `wfRow` from the backend;
+  the container replaces the marker-table slot (same 135 px height → spectrum canvas does not jump);
+  top-down growth (newest at top); RTA waterfall uses the spec row (bitmap rows are all-zero/unreliable)
+- **Known quirk**: `renderRta` wraps density+traces in an outer `save/clip(plotRect)` that must be
+  `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
+  away and disappears after switching to RTA (fixed)
+
 ## Frontend DSP Engine (marker peak/valley)
 Implemented after modern analyzer architecture (Keysight/R&S style), all in the TS frontend:
 - **S-G smoothing** `sgSmooth(src,w,adaptive)`: 2nd-order Savitzky-Golay + gradient-adaptive

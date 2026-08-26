@@ -28,3 +28,9 @@
 - IF gain 1/4 steps: ~1 dB amplitude difference at some frequencies
 - Spur rejection algorithm is only effective in SWP mode
 - SAN series: SAN-45 9kHz-4.5GHz / SAN-60 9kHz-6GHz / SAN-90 9kHz-9GHz, same functions, different specs
+- RTA mode: real-time spectrum runs through the official packet-drain path; the SDK can still
+  segfault (inherent to libhtraapi) — after a crash the device handle lingers and the next open may
+  hang; wait a few seconds or replug the USB device (restart the system if needed)
+- Start from the project directory: `python3 -m web_sa.main` resolves modules via the *cwd*
+  (`web_sa` package is picked from cwd, not the script location) — starting from a wrong directory
+  loads an older `web_sa` tree (no RTA); always use `./run.sh` (it cd's to the project root first)

@@ -33,6 +33,28 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 CONNECT/STATUS/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_POINTS/SET_SPUR/SET_WINDOW/
 SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_HARM/SET_PNM
 
+## RTA 实时频谱 (SWP/RTA 模式)
+- **会话** (`web_sa/measurements/rta.py`, `RtaSession`): 基于官方 SDK 路径
+  `RTA_Configuration` → `BusTriggerStart` → `GetRealTimeSpectrum`; 官方取包模式
+  (trigger 后按 `PacketCount` 循环 `Get`), 切换延迟 ~1.5 s, `acq=0.005` (~150 fps 设备能力)
+- **推送速率**: 后端 step 仅等待 `acq+0.002`(~7 ms) → ~130 fps; 前端渲染节流 16 ms → ~60 fps 显示
+  (SWP 模式保持 33 ms)
+- **RTAF 帧** (`framer/`): magic `RTAF` + `freq`(f8) + `spec`(f4) + `wfRow`(u2) + `stopHz`;
+  各 dtype 分别 `tobytes` 打包(单次 `np.concatenate` 会提升为 f8 破坏前端解析); wfRow 在 density
+  字节前(2 字节对齐); 丢弃首帧的 19 帧镜像
+- **多迹线 (T1-T4)**: 各迹线独立累积(`rtaDisplays[4]`)并按各自 mode 叠加显示(各自颜色 + 辉光);
+  **Freeze/View** 为 trace mode 下拉右侧的独立 toggle 按钮(VIEW = 冻结累积; 解冻恢复之前的模式);
+  Clear 清空当前迹线
+- **概率密度背景**: 2D 累积 `rtaDensity2d`(freq × 50 幅度 bin), 沿迹线路径画 1px 点
+  (`fillRect` source-over, 网格保持可见); 信号门控(噪底 +15 dB), 峰 ±1 bin(中心 +3 / 两侧 +1.5);
+  衰减 ×0.97, 新点 +3, 密度显示阈值 0.01(保留信号低功率底部, 避免空档), 最低亮度 90,
+  dens/8 满亮; 离屏余辉已回退 → 荧光辉光迹线 + 密度点尾迹
+- **瀑布**: SWP 模式 POWR 行节流 10 行/s; RTA 由后端推 `wfRow`; 容器替换 marker 表槽位
+  (同高 135px → 频谱画布不跳动); top-down 增长(最新在顶部); RTA 瀑布用 spec 行
+  (bitmap 行全 0 不可靠)
+- **已知坑**: `renderRta` 用外层 `save/clip(plotRect)` 包裹密度+迹线, 画底部频率行前必须
+  `restore` —— 否则绘图区外的频率行被 clip 裁掉, 切到 RTA 后消失(已修复)
+
 ## 前端 DSP 引擎 (marker 寻峰寻谷)
 按现代频谱仪架构(Keysight/R&S 思路)实现, 全部在前端 app.js:
 - **S-G 平滑** `sgSmooth(src,w,adaptive)`: 2 阶 Savitzky-Golay + 梯度自适应

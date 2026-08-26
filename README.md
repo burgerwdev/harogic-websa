@@ -22,6 +22,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
   - 3-stage peak engine: local extrema → excursion (≥6 dB both sides) → parabolic sub-bin fit
   - Valley merging (25-bin per depression, consistent with Valley positioning), frequency-direction traversal
   - Raw Anchor (real extremum in raw trace when unsmoothed)
+- **Real-time spectrum (RTA)** — FPGA engine, multi-trace (per-tab modes), probability-density background with fading traces, waterfall
 - **GNSS detail popover** — click the indicator for full info (lock/sats/antenna/position/UTC time); states auto-refresh every 1 s
 - **Measurements** — amplitude (n-dB bandwidth), harmonic (H1–H5 server-side auto-tune), phase noise (6 offsets 100 Hz–10 MHz)
 - **Normalization** — through-cal, adaptive absorption, display-layer transform
@@ -37,6 +38,8 @@ A browser-based control and measurement application for **Harogic SAN series spe
 | ![peaks](screenshots/marker_peaks.png) | ![harm](screenshots/measure_harmonic.png) | ![pnm](screenshots/measure_phasenoise.png) |
 | Valley detection (DUT sweep, MAX_HOLD + smooth=5) | Amplitude measurement (N dB) | — |
 | ![valley](screenshots/marker_valley.png) | ![amp](screenshots/measure_amplitude.png) | |
+| Waterfall + RTA real-time spectrum |
+| ![rta-wf](screenshots/waterfall_rta.png) |
 
 ## Quick Start
 
