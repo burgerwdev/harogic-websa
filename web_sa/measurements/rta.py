@@ -271,8 +271,6 @@ class RtaSession(MeasurementSession):
         with self._lock:
             self._dbg_n += 1
             log_this = (self._dbg_n % 100 == 1)
-            if log_this:
-                _dbg('STEP #%d trigger ...' % self._dbg_n)
             try:
                 st = T.dll.RTA_BusTriggerStart(T.pointer(dev.dev))
             except Exception as e:
@@ -282,47 +280,23 @@ class RtaSession(MeasurementSession):
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
                 return [], []
-            # Official pattern: after one BusTriggerStart, Get repeatedly for PacketCount
-            # packets until the full acquisition is drained (single Get + throttle caused
-            # device-state conflicts -> GPF in libhtraapi).
-            # Wait for the acquisition window (TriggerAcqTime) to fill before Get;
-            # Getting too early returns stale/cached data -> effective ~2 fps.
-            acq = float(getattr(info, 'PacketAcqTime', 0.05) or 0.05)
-            time.sleep(min(0.5, acq + 0.002))   # minimal wait; higher push rate (~130fps)
-            st = -1
-            nok = 0
-            t0 = time.monotonic()
-            ngets = 1
+            # Continuous mode (official pattern): Get blocks until the acq window is
+            # filled (~6ms), so no pre-sleep is needed. We do NOT BusTriggerStop each
+            # round -- that call takes ~100ms (device waits for the acquisition to fully
+            # wind down) and is THE fps bottleneck; the next BusTriggerStart simply
+            # restarts the acquisition. Stopping happens only on reconfigure
+            # (_configure_locked) so the device is idle before RTA_Configuration.
             try:
-                for _ in range(ngets):
-                    if log_this:
-                        _dbg('STEP #%d Get ...' % self._dbg_n)
-                    s = T.dll.RTA_GetRealTimeSpectrum(
-                        dev.dev, self._trace, self._bitmap,
-                        T.pointer(self._plot), T.pointer(self._trigger),
-                        C.cast(C.byref(self._aux), T.POINTER(T.MeasAuxInfo_TypeDef)))
-                    if log_this:
-                        _dbg('STEP #%d Get ret=%s' % (self._dbg_n, s))
-                    if s != 0:
-                        break
-                    st = s
-                    nok += 1
+                s = T.dll.RTA_GetRealTimeSpectrum(
+                    dev.dev, self._trace, self._bitmap,
+                    T.pointer(self._plot), T.pointer(self._trigger),
+                    C.cast(C.byref(self._aux), T.POINTER(T.MeasAuxInfo_TypeDef)))
             except Exception as e:
                 _dbg('STEP #%d Get EXC %r' % (self._dbg_n, e))
                 return [], []
-            dt = (time.monotonic() - t0) * 1000.0
-            # End this acquisition so the device is idle: next trigger restarts it, and a
-            # concurrent reconfigure never meets a streaming device.
             if log_this:
-                _dbg('STEP #%d Stop ...' % self._dbg_n)
-            try:
-                T.dll.RTA_BusTriggerStop(T.pointer(dev.dev))
-            except Exception as e:
-                if log_this:
-                    _dbg('STEP #%d Stop EXC %r' % (self._dbg_n, e))
-            if log_this:
-                _dbg('STEP #%d Stop done' % self._dbg_n)
-            if st != 0:
+                _dbg('STEP #%d Get ret=%s' % (self._dbg_n, s))
+            if s != 0:
                 return [], []
         pass
         n = int(info.PacketValidPoints)

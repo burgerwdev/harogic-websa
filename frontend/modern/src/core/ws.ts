@@ -19,6 +19,7 @@ let ws: WebSocket;
 let lastRender = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
+let lastDensRef = 0, lastDensRange = 0;
 let firstConnect = true;
 let rtaAvgN = 0;
 
@@ -103,41 +104,61 @@ export function connectWS() {
       S.setFreqArray(freq);
       // 2D probability density (freq x amplitude bins): points along the signal trace
       // accumulate and fade - official-style density dots, not full columns.
-      const dB_PER_BIN = 100 / S.RTA_AMP_BINS;
+      // The bin grid is anchored to the CURRENT display window (refTop..refTop-range):
+      // if the user changes ref level or scale (dbPerDiv) the grid moves with the trace,
+      // so density and trace never drift apart. A window change rebuilds the grid.
+      const dispRange = S.totalDivs * S.dbPerDiv;
+      const dB_PER_BIN = dispRange / S.RTA_AMP_BINS;
       const refTop = S.displayRef;
+      if (lastDensRef !== refTop || lastDensRange !== dispRange) {
+        if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+        lastDensRef = refTop; lastDensRange = dispRange;
+      }
       const len2 = spec.length * S.RTA_AMP_BINS;
       const srt = Array.from(spec).sort((a, b) => a - b);
       const floorN = srt[Math.floor(spec.length * 0.3)];
-      const sigThr = floorN + 15;   // only clear signals leave density dots
+      // Amplitude-graded weight: how far a point sits above the noise floor decides how
+      // strongly it accumulates. Weak signals (>3 dB) still leave a light density cloud
+      // so the density map covers the whole trace; the floor ripple itself stays out.
+      const accW = (relDb: number): number => {
+        if (relDb < 3) return 0;
+        if (relDb >= 25) return 1;
+        return 0.25 + 0.75 * ((relDb - 3) / 22);
+      };
+      const pushDensity = (nd: Float32Array, i: number, relDb: number, w: number) => {
+        const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
+        const o = i * S.RTA_AMP_BINS;
+        const bump = (bin: number, v: number) => {
+          if (bin < 0 || bin >= S.RTA_AMP_BINS) return;
+          const k = o + bin;
+          nd[k] += v;
+          if (nd[k] > 40) nd[k] = 40;
+        };
+        const c = 3.5 * w;            // peak bin weight scales with signal strength
+        bump(b, c);
+        bump(b - 1, 2 * w);
+        bump(b + 1, 2 * w);
+        bump(b - 2, 1 * w);
+        bump(b + 2, 1 * w);
+      };
       if (!S.rtaDensity2d || S.rtaDensity2d.length !== len2) {
         const nd = new Float32Array(len2);
         for (let i = 0; i < spec.length; i++) {
-          if (spec[i] <= sigThr) continue;   // only real signals leave density dots
-          const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
-          nd[i * S.RTA_AMP_BINS + b] = 1;
+          const w = accW(spec[i] - floorN);
+          if (w <= 0) continue;
+          pushDensity(nd, i, spec[i] - floorN, w);
         }
         S.setRtaDensity2d(nd);
       } else {
         const nd = S.rtaDensity2d;
         for (let i = 0; i < spec.length; i++) {
           for (let b = 0; b < S.RTA_AMP_BINS; b++) {
-            const v = nd[i * S.RTA_AMP_BINS + b] * 0.97;
+            const v = nd[i * S.RTA_AMP_BINS + b] * S.rtaFade;
             nd[i * S.RTA_AMP_BINS + b] = v > 0.05 ? v : 0;
           }
-          if (spec[i] <= sigThr) continue;
-          // Fill the signal peak ±1 amplitude bin so the retained shape matches the
-          // signal's vertical extent (not just a single-dB point).
-          const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
-          const o = i * S.RTA_AMP_BINS;
-          const bump = (bin: number, v: number) => {
-            if (bin < 0 || bin >= S.RTA_AMP_BINS) return;
-            const k = o + bin;
-            nd[k] += v;
-            if (nd[k] > 40) nd[k] = 40;
-          };
-          bump(b, 3);
-          bump(b - 1, 1.5);
-          bump(b + 1, 1.5);
+          const w = accW(spec[i] - floorN);
+          if (w <= 0) continue;
+          pushDensity(nd, i, spec[i] - floorN, w);
         }
       }
       // Per-trace accumulation (multi-trace like the official SW): each enabled trace

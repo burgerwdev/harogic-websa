@@ -242,6 +242,7 @@ export function setGraphMode(mode: string) {
   localStorage.setItem('web-sa-mode', isRta ? 'rta' : 'std');
   // RTA mode: re-enter with the LAST session's settings if any (memorized), else defaults.
   if (isRta) {
+    restoreRtaDensityCfg();   // persistence/grain are global prefs (not per-session)
     restoreRtaSettings();
   }
   // RTA mode: disable the Measurement panel + non-applicable trace/BW controls
@@ -277,6 +278,14 @@ function clearRtaAccum() {
   for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
   for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
   S.resetWaterfall();
+}
+
+// Density persistence/grain restored on page load + RTA entry (independent memory keys)
+export function restoreRtaDensityCfg() {
+  const f = localStorage.getItem('rta-fade');
+  if (f) { const s = document.getElementById('select-rta-fade') as HTMLSelectElement | null; if (s) s.value = f; S.setRtaFade(parseFloat(f)); }
+  const bn = localStorage.getItem('rta-bins');
+  if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; S.setRtaAmpBins(parseInt(bn) || 128); }
 }
 
 export function rememberRtaSettings() {
@@ -329,6 +338,15 @@ function restoreRtaSettings() {
     send(m2);
     send({ cmd: 'SET_SWEEP', mode: parseInt(sm.value) || 2 });
   }
+}
+
+// Density grain: changing bins invalidates the current density array (ws.ts rebuilds it
+// automatically on the next frame because the length no longer matches).
+export function setRtaBins(bins: number) {
+  S.setRtaAmpBins(bins);
+  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+  try { localStorage.setItem('rta-bins', String(bins)); } catch { /* ignore */ }
+  renderAll();
 }
 
 // Step the RTA span one notch (delta: +1 narrower ▼, -1 wider ▲) or jump to full.
@@ -591,6 +609,8 @@ export function bindActions() {
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
+    'set-rta-fade': (el) => { S.setRtaFade(parseFloat((el as HTMLSelectElement).value) || 0.98); try { localStorage.setItem('rta-fade', (el as HTMLSelectElement).value); } catch {} },
+    'set-rta-bins': (el) => { setRtaBins(parseInt((el as HTMLSelectElement).value) || 128); },
     'wf-pause': () => toggleWfPause(),
     'wf-reset': () => resetWf(),
     'preset': () => presetAll(),

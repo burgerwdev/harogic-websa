@@ -150,7 +150,11 @@ export function setRtaData(v: any) { rtaData = v; }
 export let rtaDisplays: (Float32Array | null)[] = [null, null, null, null];   // per-trace RTA accumulation
 export let rtaAvgN: number[] = [0, 0, 0, 0];
 export function setRtaDisplays(v: (Float32Array | null)[]) { rtaDisplays = v; }
-export const RTA_AMP_BINS = 50;                            // amplitude bins for the 2D density
+// Density persistence params (UI-configurable in RTA mode)
+export let RTA_AMP_BINS = 128;                            // amplitude bins (~0.78 dB/bin at 100 dB)
+export let rtaFade = 0.98;                                // per-frame density decay (slower = longer persistence)
+export function setRtaAmpBins(v: number) { RTA_AMP_BINS = v; }
+export function setRtaFade(v: number) { rtaFade = v; }
 export let rtaDensity2d: Float32Array | null = null;   // freq x amp probability density (signal trace path)
 export function setRtaDensity2d(v: Float32Array | null) { rtaDensity2d = v; }
 export const waterfallRows: Uint16Array[] = [];

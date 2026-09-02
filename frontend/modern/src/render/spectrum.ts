@@ -409,29 +409,12 @@ function renderRta() {
   const lo = d.startHz, hi = d.stopHz;
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-  // 2D probability density: 1px dots along the signal trace path. Drawn with
-  // fillRect (source-over) so the grid drawn earlier stays visible.
+  // 2D probability density rendered as an offscreen layer (freq x amplitude matrix ->
+  // ImageData with gamma-adjusted color), then drawImage-scaled onto the plot so the
+  // hot region is continuous and smooth instead of sparse 1px dots. Row 0 = top of the
+  // density matrix = displayRef (highest power), matching the plot Y direction.
   if (S.rtaDensity2d && S.rtaDensity2d.length >= n * S.RTA_AMP_BINS) {
-    const lut = densityLutForRta();
-    const dB_PER_BIN = 100 / S.RTA_AMP_BINS;
-    const colW = p.w / n;
-    const yTops: number[] = [];
-    for (let b = 0; b < S.RTA_AMP_BINS; b++) {
-      yTops.push(getY(cur().displayRef - b * dB_PER_BIN));
-    }
-    for (let i = 0; i < n; i++) {
-      const x0 = Math.floor(p.x + i * colW);
-      for (let b = 0; b < S.RTA_AMP_BINS; b++) {
-        const dens = S.rtaDensity2d[i * S.RTA_AMP_BINS + b];
-        if (dens < 0.01) continue;   // keep even very sparse low-power traces (fill signal bottom)
-        const lvl = Math.max(90, Math.min(255, Math.round(Math.min(1, dens / 8) * 255)));
-        const c = lut[lvl];
-        const yC = Math.round((yTops[b] + (yTops[b + 1] || (p.y + p.h))) / 2);
-        if (yC < p.y || yC >= p.y + p.h) continue;
-        ctx.fillStyle = 'rgb(' + (c & 0xff) + ',' + ((c >> 8) & 0xff) + ',' + ((c >> 16) & 0xff) + ')';
-        ctx.fillRect(x0, yC, 1, 1);   // single-pixel dot
-      }
-    }
+    drawRtaDensityLayer(n, p);
   } else {
     ctx.fillStyle = col.bg;
     ctx.fillRect(p.x, p.y, p.w, p.h);
@@ -513,12 +496,48 @@ function renderWaterfallIfOn() {
 }
 
 
+let rtaDensLayer: HTMLCanvasElement | null = null;
+let rtaDensCtx: CanvasRenderingContext2D | null = null;
+let lastDensRebuild = 0;
+// Build the density layer (throttled; cheap drawImage reuse between rebuilds)
+function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number; h: number }) {
+  if (!rtaDensLayer) { rtaDensLayer = document.createElement('canvas'); rtaDensCtx = rtaDensLayer.getContext('2d'); }
+  const rows = S.RTA_AMP_BINS;
+  const now = performance.now();
+  if (rtaDensLayer.width !== cols || rtaDensLayer.height !== rows) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
+  const lc = rtaDensCtx!;
+  const dens = S.rtaDensity2d!;
+  if (now - lastDensRebuild > 30) {   // ~33fps density refresh is plenty (fade is slow)
+    lastDensRebuild = now;
+    const lut = densityLutForRta();
+    const img = lc.createImageData(cols, rows);
+    const px = img.data;
+    const MAXD = 40;   // density that saturates (matches the ws.ts +3/decay accumulation)
+    for (let i = 0; i < cols; i++) {
+      const base = i * rows;
+      for (let b = 0; b < rows; b++) {
+        const v = dens[base + b];
+        const o = (i + b * cols) * 4;
+        if (v <= 0.02) { px[o + 3] = 0; continue; }
+        // gamma ~0.45: weak skirt/noise-floor hits stay clearly visible, dense saturate
+        const g = Math.min(1, Math.pow(Math.min(1, v / MAXD), 0.45));
+        const c = lut[Math.round(g * 255)];
+        px[o] = c & 0xff; px[o + 1] = (c >> 8) & 0xff; px[o + 2] = (c >> 16) & 0xff;
+        px[o + 3] = Math.min(255, 110 + Math.round(g * 145));
+      }
+    }
+    lc.putImageData(img, 0, 0);
+  }
+  // smooth-bilinear scale onto the plot area (row 0 = top = displayRef)
+  ctx.drawImage(rtaDensLayer, p.x, p.y, p.w, p.h);
+}
+
 // RTA density heat LUT (theme-aware, deep-blue -> cyan -> yellow -> red)
 function densityLutForRta(): Uint32Array {
   const th = document.documentElement.dataset.theme;
   const stops = th === 'light'
     ? [[255, 255, 255], [200, 225, 255], [120, 170, 255], [60, 110, 220], [40, 130, 150], [180, 140, 0], [220, 70, 0]]
-    : [[0, 0, 0], [0, 0, 60], [0, 40, 140], [0, 110, 170], [0, 170, 190], [60, 220, 80], [255, 200, 0], [255, 80, 0]];
+    : [[0, 8, 90], [0, 24, 150], [0, 70, 190], [0, 130, 200], [30, 200, 200], [90, 230, 90], [255, 220, 40], [255, 110, 20]];
   const lut = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
     const x = i / 255 * (stops.length - 1);

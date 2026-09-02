@@ -117,6 +117,20 @@
               <button class="btn" id="btn-rta-span-down" data-action="rta-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
               <button class="btn" id="btn-rta-span-full" data-action="rta-span-full" data-i18n="span_full_short" data-i18n-title="span_full">Full</button>
               <button class="btn" id="btn-rta-span-up" data-action="rta-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
+            <div class="param-row"><label data-i18n="persist">Persist</label>
+              <select id="select-rta-fade" data-action="set-rta-fade" title="Persistence (density fade)">
+                <option value="0.95">Fast</option>
+                <option value="0.975" selected>Medium</option>
+                <option value="0.99">Slow</option>
+                <option value="0.995">Very Slow</option>
+              </select>
+              <label style="min-width:auto;" data-i18n="grain">Grain</label>
+              <select id="select-rta-bins" data-action="set-rta-bins">
+                <option value="64">64</option>
+                <option value="96">96</option>
+                <option value="128" selected>128</option>
+                <option value="192">192</option>
+              </select></div>
           </div>
           <div id="swp-freq-settings">
           <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any">
@@ -387,7 +401,7 @@
       <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
       <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" title="前端版本">v1.0.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" title="前端版本">v1.0.4 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
