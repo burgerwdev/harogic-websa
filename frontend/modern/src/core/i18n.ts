@@ -15,6 +15,9 @@ const dict = {
     'gain_strategy': 'Gain St', 'low_noise': 'Low Noise', 'high_linearity': 'High Linearity',
     'trace': 'Trace', 'mode': 'Mode', 'clear_write': 'Clear Write', 'max_hold': 'Max Hold',
     'min_hold': 'Min Hold', 'average': 'Average', 'view': 'View (Freeze)', 'freeze': 'Freeze',
+    'glyph_down': '▼', 'glyph_up': '▲',
+    'span_down': 'Narrower span', 'span_up': 'Wider span',
+    'span_full': 'Full bandwidth (50.8 MHz)', 'span_full_short': 'Full',
     'smooth': 'Smooth', 'off_short': 'Off', 'cal_wnd': 'Cal Wnd', 'auto_rbw': 'Auto (RBW)',
     'normalize': 'Normalize', 'reset_norm': 'Reset Norm', 'clear': 'Clear',
     'marker': 'Marker', 'active': 'Active', 'peak': 'Peak', 'valley': 'Valley',
@@ -84,6 +87,9 @@ const dict = {
     'gain_strategy': '增益策略', 'low_noise': '低噪声', 'high_linearity': '高线性',
     'trace': '迹线', 'mode': '模式', 'clear_write': '清除写入', 'max_hold': '最大保持',
     'min_hold': '最小保持', 'average': '平均', 'view': '查看(冻结)', 'freeze': '冻结',
+    'glyph_down': '▼', 'glyph_up': '▲',
+    'span_down': '收窄带宽', 'span_up': '加宽带宽',
+    'span_full': '全带宽 (50.8 MHz)', 'span_full_short': '全带宽',
     'smooth': '平滑', 'off_short': '关', 'cal_wnd': '校准窗口', 'auto_rbw': '自动(RBW)',
     'normalize': '归一化', 'reset_norm': '重置归一化', 'clear': '清除',
     'marker': '游标', 'active': '活动', 'peak': '峰值', 'valley': '谷值',
@@ -169,7 +175,12 @@ export function applyI18n(root: HTMLElement | Document = document) {
   root.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => {
     const k = el.dataset.i18n!;
     if (el.dataset.i18nAttr === 'placeholder') el.setAttribute('placeholder', t(k));
-    else if (el.dataset.i18nAttr === 'title') el.title = t(k);
-    else el.textContent = t(k);
+    else {
+      // Tooltip: data-i18n-title overrides the label key; data-i18n-attr="title" marks
+      // title-only elements (glyph buttons keep their symbol as text).
+      if (el.dataset.i18nTitle) el.title = t(el.dataset.i18nTitle);
+      else if (el.dataset.i18nAttr === 'title') el.title = t(k);
+      if (el.dataset.i18nAttr !== 'title') el.textContent = t(k);
+    }
   });
 }

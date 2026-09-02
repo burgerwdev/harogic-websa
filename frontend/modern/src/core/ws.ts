@@ -6,7 +6,7 @@ import { t } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import { syncRefClkOut, fillGnssDetail } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
-import { pushSwpRow } from '../render/waterfall';
+import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
@@ -17,6 +17,8 @@ import { updateNormalizeStatusUI } from '../dsp/normalize';
 
 let ws: WebSocket;
 let lastRender = 0;
+let lastRtaInfoAt = 0;
+let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let firstConnect = true;
 let rtaAvgN = 0;
 
@@ -78,8 +80,25 @@ export function connectWS() {
       const spec = new Float32Array(event.data, off, pts); off += pts * 4;
       const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
       const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      // The RTA frequency window (center/span) changed -> every accumulation (probability
+      // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
+      // must be reset, otherwise stale dots/traces linger at wrong frequencies.
+      if (lastRtaStartHz === 0 || Math.abs(startHz - lastRtaStartHz) > 0.5 || Math.abs(stopHz - lastRtaStopHz) > 0.5) {
+        if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+        for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
+        for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
+        S.resetWaterfall();
+      }
+      lastRtaStartHz = startHz;
+      lastRtaStopHz = stopHz;
       S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
       (window as any).__rta = S.rtaData;
+      // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
+      const _nowU = performance.now();
+      if (_nowU - lastRtaInfoAt > 400) {
+        lastRtaInfoAt = _nowU;
+        updateInfoBar();
+      }
       // RTA mode has no FREQ frames; sync the frequency axis so markers map correctly
       S.setFreqArray(freq);
       // 2D probability density (freq x amplitude bins): points along the signal trace
@@ -143,7 +162,7 @@ export function connectWS() {
       });
       if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
         // bitmap rows are often all-zero; derive waterfall row from the live trace
-        pushSwpRow(spec, wfRow.length, maxDensity);
+        pushRtaRow(spec, wfRow.length, 100);   // fixed density scale; device MaxDensityValue collapses to 1 at high decimate
       }
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(pts);
@@ -175,6 +194,8 @@ export function connectWS() {
 }
 
 export function updateStatus(s: any) {
+  // RTA keeps its own center (req.rta_center); SWP center comes from actual/req.center
+  if (s.req && s.req.rta_center > 0) S.setRtaCenterHz(s.req.rta_center);
   S.setCenterHz(s.actual.center > 0 ? s.actual.center : s.req.center);
   S.setSpanHz(s.actual.span > 0 ? s.actual.span : s.req.span);
   S.setRefLevel(s.actual.ref > 0 ? s.actual.ref : s.req.ref);
@@ -278,6 +299,12 @@ export function updateFreqUIInputs() {
   setInput('input-stop', toUnit(S.centerHz + S.spanHz / 2, 'stop').toFixed(4));
   setInput('input-rbw', toUnit(S.currentRBW, 'rbw').toFixed(2));
   setInput('input-vbw', toUnit(S.currentVBW, 'vbw').toFixed(2));
+  // RTA center is independent (req.rta_center); follows preset/reset in RTA mode
+  if (S.rtaMode) {
+    const u = S.units.rta_center || 'MHz';
+    const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
+    setInput('input-rta-center', (S.rtaCenterHz / scale).toFixed(4));
+  }
 }
 
 // i18n sync: connect button/status text

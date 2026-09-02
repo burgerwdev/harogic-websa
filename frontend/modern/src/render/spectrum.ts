@@ -486,9 +486,18 @@ function renderWaterfallIfOn() {
   const sRect = spec.getBoundingClientRect();
   const scale = sRect.width / S.W;
   const pr = plotRect();
-  const w = Math.max(60, Math.round(pr.w * scale));
+  const wCss = pr.w * scale;                       // plot width in CSS px
+  const leftCss = pr.x * scale;                    // plot left edge in CSS px
+  const w = Math.max(60, Math.round(wCss));
   const h = Math.max(40, 135 - 2);
   if (wf.width !== w || wf.height !== h) { wf.width = w; wf.height = h; }
+  // Pin the CSS box to the plot area: left AND right edge align with the spectrum X
+  // axis (canvas is CSS-scaled, so the internal margins render at *scale on screen;
+  // explicit width prevents the default canvas sizing from drifting)
+  const ls = leftCss.toFixed(3) + 'px';
+  if (wf.style.left !== ls) wf.style.left = ls;
+  const ws = wCss.toFixed(3) + 'px';
+  if (wf.style.width !== ws) wf.style.width = ws;
   // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
   if (!S.rtaMode) {
     const powers = getDisplayPowers();
@@ -500,7 +509,7 @@ function renderWaterfallIfOn() {
       }
     }
   }
-  renderWaterfall(wf, S.rtaMode && S.rtaData ? S.rtaData.maxDensity : 20);
+  renderWaterfall(wf, S.rtaMode ? 100 : 20);
 }
 
 

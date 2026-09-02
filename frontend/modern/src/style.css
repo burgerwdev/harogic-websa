@@ -225,10 +225,10 @@ canvas {
   font: 11px monospace; cursor: pointer; }
 .tab-btn.active { background: var(--btn-active); color: var(--text); border-color: var(--text); }
 body.meas-mode .control-group:not(#meas-panel) .group-body:not(.meas-allowed) { pointer-events: none; opacity: 0.45; }
-/* RTA mode: panels with SWP-only controls grey out (same style as meas-mode) */
-body.rta-mode #meas-panel .group-body,
-body.rta-mode #bw-panel .group-body,
-body.rta-mode #sweep-panel .group-body { pointer-events: none; opacity: 0.45; }
+/* RTA mode: only the Measurement panel greys out entirely. BW/Sweep panels stay
+   usable (RBW auto/manual + sweep speed apply to the RTA session); their SWP-only
+   controls (Points/VBW/Window) are disabled individually via JS (rtaDisable). */
+body.rta-mode #meas-panel .group-body { pointer-events: none; opacity: 0.45; }
 body.rta-mode #meas-panel .btn { opacity: 0.4; }
 /* Trace panel: only smooth/cal-wnd/normalize rows are RTA-inapplicable */
 body.rta-mode #trace-panel .param-row:not(.trace-keep) { pointer-events: none; opacity: 0.45; }
@@ -298,6 +298,26 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
 .param-row label { color: var(--label); font-size: 11px; min-width: 58px; }
+/* RTA frequency controls (Center + Span rows): the frequency input and the span
+   dropdown share the same width/height so the two rows grid-align. Buttons keep their
+   natural widths (only the ▼/▲ glyph buttons are equalized); everything shares the
+   row height for a clean baseline. */
+#rta-freq-settings .param-row { flex-wrap: nowrap; align-items: center; }
+#rta-freq-settings .param-row label { min-width: 52px; }
+/* main control column: input == select */
+#rta-freq-settings input[type="number"],
+#rta-freq-settings select { width: 108px; height: 22px; box-sizing: border-box; }
+#rta-freq-settings .btn {
+  height: 22px; font-size: 11px; box-sizing: border-box; line-height: 1;
+  padding: 0 8px; display: inline-flex; align-items: center; justify-content: center;
+}
+#rta-freq-settings .unit-btn-group { gap: 2px; }
+#rta-freq-settings .unit-btn-group .btn,
+#rta-freq-settings .unit-btn-group .unit-btn { height: 22px; padding: 0 6px; }
+/* ▼/▲ step buttons: narrow and equal; Full/Set keep natural text width */
+#rta-freq-settings .btn[data-action="rta-span-down"],
+#rta-freq-settings .btn[data-action="rta-span-up"] { width: 24px; padding: 0; font-size: 10px; }
+#rta-freq-settings .btn[data-action="rta-span-full"] { padding: 0 10px; }
 input[type=text] { background: var(--input-bg); color: var(--text); border: 1px solid var(--input-border); padding: 2px 4px; width: 68px; font-family: monospace; font-size: 11px; }
 input[type=text]:focus { outline: none; border-color: var(--text); }
 input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }

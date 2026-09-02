@@ -37,7 +37,7 @@ def make_ws_handler(app, dev):
                     from .http_api import build_status
                     await ws.send_str(json.dumps(build_status(dev)))
                     continue
-                changed = _dispatch(dev, cmd, data)
+                changed = await _dispatch(dev, cmd, data)
                 if changed:
                     from .http_api import build_status
                     await ws.send_str(json.dumps(build_status(dev)))
@@ -48,16 +48,40 @@ def make_ws_handler(app, dev):
     return handler
 
 
-def _dispatch(dev, cmd, data) -> bool:
-    """Command dispatch -- returns whether the config changed (a STATUS push is needed)."""
+import asyncio as _asyncio
+
+
+async def _dispatch(dev, cmd, data) -> bool:
+    """Command dispatch -- returns whether the config changed (a STATUS push is needed).
+
+    Slow/possibly-hanging device reconfigurations (RTA session: mode enter, center/span/
+    sweep/RBW) run on a worker thread with a timeout so the asyncio loop (publisher,
+    STATUS pushes, other clients) never blocks on a DLL call that the device firmware
+    answers slowly. The device watchdog recovers the hardware; the next reconfigure
+    succeeds on its own.
+    """
     s = dev.state
+    async def _hw_call(fn, *a, timeout=12.0, **kw):
+        await _asyncio.wait_for(_asyncio.to_thread(fn, *a, **kw), timeout=timeout)
+
     if cmd == 'SET_PRESET':
-        dev.apply_preset()
+        # Preset covers BOTH modes without switching the current one:
+        # 1) SWP parameters <- device defaults (preset_state, no reconfigure)
+        # 2) RTA parameters  <- RTA defaults (RtaSession.reset_defaults)
+        # Only the ACTIVE mode is reconfigured/put into effect now; the other mode's
+        # defaults apply automatically the next time it is entered.
+        dev.preset_state()
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            # RTA active: reset + reconfigure on a worker thread (device reconfigure on
+            # the asyncio thread stalls the publisher/data flow)
+            await _hw_call(sess.reset_defaults)
+            return True
+        await _hw_call(dev.configure_swp)   # SWP active: apply SWP defaults now
         return True
     if cmd == 'CAL_REFCLK':
         # Run GNSS 1PPS calibration on a background thread, pausing the publisher during
         # it; set the state synchronously for frontend feedback
-        import asyncio
         async def _cal():
             cnt = int(data.get('count', 10))
             try:
@@ -96,11 +120,20 @@ def _dispatch(dev, cmd, data) -> bool:
         # (ref independent)
         dev.configure_swp()
         return True
-    # In RTA mode, SWP-only params (RBW/VBW/window/points/amp) are not applicable;
+    # In RTA mode, SWP-only params (VBW/window/points/amp/spur) are not applicable;
     # applying them reconfigures the device behind the RTA session -> spectrum freezes.
-    if dev.state.mode == 'rta' and cmd in ('SET_RBW', 'SET_VBW', 'SET_WINDOW', 'SET_POINTS', 'SET_AMP', 'SET_SPUR'):
+    # SET_RBW/SET_VBW are NOT intercepted: RTA supports both via the session
+    # (set_rbw/set_vbw below, independent from SWP and restored on exit).
+    if dev.state.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_AMP', 'SET_SPUR'):
         return False
     if cmd == 'SET_RBW':
+        print('DBG SET_RBW mode=%s state.mode=%s sess=%s' % (
+            data.get('mode'), dev.state.mode, dev.session.name if dev.session else None), flush=True)
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            await _hw_call(sess.set_rbw,
+                           mode=data.get('mode', 'auto'), rbw=data.get('rbw', 0))
+            return True
         if 'mode' in data:
             s.rbw_mode = data['mode'] if data['mode'] in ('manual', 'auto') else s.rbw_mode
         if 'rbw' in data:
@@ -108,7 +141,12 @@ def _dispatch(dev, cmd, data) -> bool:
         dev.configure_swp()
         return True
     if cmd == 'SET_VBW':
-        if 'mode' in data and data['mode'] in ('manual', 'equal', 'tenth', 'bypass'):
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            await _hw_call(sess.set_vbw,
+                           mode=data.get('mode', 'equal'), vbw=data.get('vbw', 0))
+            return True
+        if 'mode' in data and data['mode'] in ('manual', 'equal', 'tenth', 'bypass', 'onethousandth'):
             s.vbw_mode = data['mode']
         if 'vbw' in data:
             s.vbw_hz = float(data['vbw'])
@@ -118,7 +156,8 @@ def _dispatch(dev, cmd, data) -> bool:
         # RTA mode: sweep speed goes to the RTA session (RTA_Profile.SweepTimeMode)
         sess = dev.session
         if sess is not None and sess.name == 'rta':
-            sess.set_sweep(mode=int(data.get('mode', 0)), time=float(data.get('time', 0) or 0))
+            await _hw_call(sess.set_sweep,
+                           mode=int(data.get('mode', 0)), time=float(data.get('time', 0) or 0))
             return True
         if 'mode' in data:
             m = int(data['mode'])
@@ -168,12 +207,18 @@ def _dispatch(dev, cmd, data) -> bool:
         from ..measurements import make_session
         name = data.get('mode', 'std')
         if name in ('std', 'harmonic', 'pnm', 'rta'):
-            dev.set_session(make_session(dev, name))
+            def _sw():
+                old_sess = dev.session
+                if old_sess is not None and old_sess.name == 'rta':
+                    old_sess._ready = False   # stop the RTA worker loop first (best-effort)
+                dev.set_session(make_session(dev, name))
+            await _hw_call(_sw)
             return True
     if cmd == 'SET_RTA':
         sess = dev.session
         if sess is not None and sess.name == 'rta':
-            sess.set_params(center=data.get('center'), span=data.get('span'))
+            await _hw_call(sess.set_params,
+                           center=data.get('center'), span=data.get('span'))
             return True
     if cmd == 'SET_HARM':
         sess = dev.session

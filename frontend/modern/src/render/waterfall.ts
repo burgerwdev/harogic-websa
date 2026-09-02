@@ -84,6 +84,29 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   ctx.putImageData(img, 0, 0);
 }
 
+// RTA 模式: 从实时 spec 生成瀑布行, 按帧噪底动态映射 —— 底噪稳定显示为暗蓝(可见),
+// 信号随强度渐变为红。避免固定 -110~-30 映射在窄 span(dec 大, RBW 窄 -> 噪底更低)时
+// 把底噪压成全黑、只剩信号满红的两个极端。
+export function pushRtaRow(spec: Float32Array, w: number, maxDensity: number) {
+  const sorted = Array.from(spec).filter(isFinite).sort((a, b) => a - b);
+  if (sorted.length < 4) return;
+  const floor = sorted[Math.floor(sorted.length * 0.3)];
+  const peak = sorted[Math.floor(sorted.length * 0.98)];
+  const dyn = Math.max(15, peak - floor);
+  const row = new Uint16Array(w);
+  for (let i = 0; i < w; i++) {
+    const j0 = Math.floor(i * spec.length / w);
+    const j1 = Math.min(spec.length - 1, Math.ceil((i + 1) * spec.length / w));
+    let m = -300;
+    for (let j = j0; j < j1; j++) if (isFinite(spec[j]) && spec[j] > m) m = spec[j];
+    // noise floor lands ~26% of the LUT (clearly visible blue), a full dyn rise saturates red
+    const frac = (m - floor) / dyn;
+    const lvl = Math.max(0, Math.min(maxDensity, Math.round((0.26 + frac * 0.74) * maxDensity)));
+    row[i] = lvl;
+  }
+  S.pushWaterfallRow(row);
+}
+
 // SWP 模式: 从迹线生成瀑布行(保峰降采样)并累积(节流调用方控制)
 export function pushSwpRow(powers: Float32Array, w: number, maxDensity: number) {
   const row = new Uint16Array(w);

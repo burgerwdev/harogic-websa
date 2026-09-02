@@ -52,16 +52,21 @@ class PhaseNoiseSession(MeasurementSession):
         self._configure()
 
     def exit(self):
-        try:
-            if self._ready:
-                sb.dll.PNM_StopMeasure(sb.pointer(self.dev.dev))
-        except Exception:
-            pass
+        with self.dev._hw:
+            try:
+                if self._ready:
+                    sb.dll.PNM_StopMeasure(sb.pointer(self.dev.dev))
+            except Exception:
+                pass
         self._ready = False
         self._started = False
         super().exit()
 
     def _configure(self):
+        with self.dev._hw:
+            self._configure_locked()
+
+    def _configure_locked(self):
         d = self.dev.dev
         prof = sb.PNM_Profile_TypeDef()
         sb.dll.PNM_ProfileDeInit(sb.pointer(d), sb.pointer(prof))
@@ -90,45 +95,46 @@ class PhaseNoiseSession(MeasurementSession):
     def step(self):
         if not self._ready or self._info is None:
             return [], []
-        if not self._started and self.dirty:
-            try:
-                self._configure()
-            except Exception:
-                self.dirty = False
-        d = self.dev.dev
-        info = self._info
-        if not self._started:
-            st = sb.dll.PNM_StartMeasure(sb.pointer(d))
-            if st != 0:
+        with self.dev._hw:
+            if not self._started and self.dirty:
+                try:
+                    self._configure()
+                except Exception:
+                    self.dirty = False
+            d = self.dev.dev
+            info = self._info
+            if not self._started:
+                st = sb.dll.PNM_StartMeasure(sb.pointer(d))
+                if st != 0:
+                    return [], []
+                self._started = True
+                self._i = 0
+                self._stall = 0
+            n = max(int(info.TracePoints), 1)
+            upd = (sb.c_uint32 * max(int(info.Segments), 1))()
+            aux = sb.PNM_AuxInfo_TypeDef()
+            st = sb.dll.PNM_GetPartialUpdatedFullTrace(
+                sb.pointer(d), sb.pointer(self._cf), sb.pointer(self._cp),
+                self._freq, self._pn, upd, sb.pointer(aux), sb.pointer(self._rf))
+            if st == 0:
+                self._i += 1
+                self._stall = 0
+            else:
+                self._stall += 1
+                if self._stall > info.PartialUpdateCounts + 8:
+                    self._started = False
+                    return [], []
                 return [], []
-            self._started = True
-            self._i = 0
-            self._stall = 0
-        n = max(int(info.TracePoints), 1)
-        upd = (sb.c_uint32 * max(int(info.Segments), 1))()
-        aux = sb.PNM_AuxInfo_TypeDef()
-        st = sb.dll.PNM_GetPartialUpdatedFullTrace(
-            sb.pointer(d), sb.pointer(self._cf), sb.pointer(self._cp),
-            self._freq, self._pn, upd, sb.pointer(aux), sb.pointer(self._rf))
-        if st == 0:
-            self._i += 1
-            self._stall = 0
-        else:
-            self._stall += 1
-            if self._stall > info.PartialUpdateCounts + 8:
+            res = dict(carrier_freq=float(self._cf.value),
+                       carrier_power=float(self._cp.value),
+                       offset=list(self._freq[:n]), pn=list(self._pn[:n]),
+                       ref=float(self._rf.value), traceavg=float(self.traceavg))
+            if self._i >= info.PartialUpdateCounts:
                 self._started = False
-                return [], []
-            return [], []
-        res = dict(carrier_freq=float(self._cf.value),
-                   carrier_power=float(self._cp.value),
-                   offset=list(self._freq[:n]), pn=list(self._pn[:n]),
-                   ref=float(self._rf.value), traceavg=float(self.traceavg))
-        if self._i >= info.PartialUpdateCounts:
-            self._started = False
-            self.dirty = False
-            res['done'] = True
-            self.dev.state.pnm_last = res
+                self.dirty = False
+                res['done'] = True
+                self.dev.state.pnm_last = res
+                return [], [{'cmd': 'PNM', **res}]
+            res['done'] = False
+            res['progress'] = round(self._i / max(info.PartialUpdateCounts, 1) * 100)
             return [], [{'cmd': 'PNM', **res}]
-        res['done'] = False
-        res['progress'] = round(self._i / max(info.PartialUpdateCounts, 1) * 100)
-        return [], [{'cmd': 'PNM', **res}]

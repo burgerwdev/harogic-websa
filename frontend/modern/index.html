@@ -99,6 +99,24 @@
             <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-rta-center" value="1000" step="any">
               <div class="unit-btn-group" id="unit-rta_center-group"></div>
               <button class="btn" data-action="apply-rta" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="span">Span</label>
+              <select id="select-rta-span" data-action="apply-rta">
+                <option value="50781250" selected>50.8 MHz</option>
+                <option value="25390625">25.4 MHz</option>
+                <option value="12695312">12.7 MHz</option>
+                <option value="6347656">6.35 MHz</option>
+                <option value="3173828">3.17 MHz</option>
+                <option value="1586914">1.59 MHz</option>
+                <option value="793457">794 kHz</option>
+                <option value="396729">397 kHz</option>
+                <option value="198364">198 kHz</option>
+                <option value="99182">99.2 kHz</option>
+                <option value="49591">49.6 kHz</option>
+                <option value="24796">24.8 kHz</option>
+              </select>
+              <button class="btn" id="btn-rta-span-down" data-action="rta-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
+              <button class="btn" id="btn-rta-span-full" data-action="rta-span-full" data-i18n="span_full_short" data-i18n-title="span_full">Full</button>
+              <button class="btn" id="btn-rta-span-up" data-action="rta-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
           </div>
           <div id="swp-freq-settings">
           <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any">
@@ -322,7 +340,7 @@
             <select id="select-vbw-mode" data-action="apply-vbw">
               <option value="bypass" data-i18n="bypass_10x">Bypass (10×RBW)</option><option value="equal" data-i18n="eq_rbw">= RBW</option>
               <option value="tenth" data-i18n="tenth_rbw">= 0.1×RBW</option><option value="manual" data-i18n="manual">Manual</option>
-            </select><button class="btn" data-action="apply-vbw" data-i18n="set">Set</button></div>
+            </select><button class="btn" id="btn-vbw-set" data-action="apply-vbw" data-i18n="set">Set</button></div>
         </div>
       </div>
 
@@ -333,7 +351,7 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000"><button class="btn" data-action="apply-points" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000"><button class="btn" id="btn-points" data-action="apply-points" data-i18n="set">Set</button></div>
           <div class="param-row"><label data-i18n="speed">Speed</label>
             <select id="select-sweep-mode" data-action="set-sweep">
               <option value="0" data-i18n="swt_min">minSWT</option>
@@ -369,7 +387,7 @@
       <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
       <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" title="前端版本">v1.0.2 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" title="前端版本">v1.0.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

@@ -41,11 +41,15 @@ export function switchTraceTab(idx: number) {
 }
 
 export function clearRtaTrace() {
+  // Clear the active trace + the probability-density background so the spectrum restarts
+  // fresh from the live signal. The waterfall has its own Clear (wf-reset) and is left
+  // untouched here.
   const idx = S.activeTraceIdx;
   const arr = S.rtaDisplays.slice();
   arr[idx] = null;
   S.rtaAvgN[idx] = 0;
   S.setRtaDisplays(arr);
+  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
   renderAll();
 }
 

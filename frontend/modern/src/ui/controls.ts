@@ -97,6 +97,7 @@ export function applyRBW() {
   S.setRbwMode(rbwMode);
   const m: any = { cmd: 'SET_RBW', mode: rbwMode };
   if (rbwMode === 'manual') m.rbw = parseFreqUnit('rbw');
+  if (S.rtaMode) { clearRtaAccum(); rememberRtaSettings(); }
   send(m);
 }
 export function applyVBW() {
@@ -105,6 +106,7 @@ export function applyVBW() {
   S.setVbwMode(vbwMode);
   const m: any = { cmd: 'SET_VBW', mode: vbwMode };
   if (vbwMode === 'manual') m.vbw = parseFreqUnit('vbw');
+  if (S.rtaMode) { clearRtaAccum(); rememberRtaSettings(); }
   send(m);
 }
 export function applyPoints() {
@@ -238,17 +240,20 @@ export function setGraphMode(mode: string) {
   const bRta = document.getElementById('btn-mode-rta');
   if (bRta) bRta.classList.toggle('active', isRta);
   localStorage.setItem('web-sa-mode', isRta ? 'rta' : 'std');
-  // RTA mode: default sweep speed = minSWTx4
+  // RTA mode: re-enter with the LAST session's settings if any (memorized), else defaults.
   if (isRta) {
-    const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement;
-    if (sm && sm.value !== '2') { sm.value = '2'; syncSweepInput(); send({ cmd: 'SET_SWEEP', mode: 2 }); }
+    restoreRtaSettings();
   }
   // RTA mode: disable the Measurement panel + non-applicable trace/BW controls
   document.body.classList.toggle('rta-mode', isRta);
   const rtaDisable = [
-    'select-smooth', 'select-refwin', 'btn-normalize', 'btn-rbw-set',
-    'select-rbw-mode', 'select-vbw-mode', 'select-window',
+    'select-smooth', 'select-refwin', 'btn-normalize',
+    'select-window',
+    'input-points', 'btn-points',
   ];
+  // In RTA these STAY enabled (all independent per-session): RBW (select-rbw-mode/
+  // btn-rbw-set/input-rbw -> set_rbw), VBW (select-vbw-mode/input-vbw/btn-vbw-set ->
+  // set_vbw), sweep Speed (select-sweep-mode). Only FFT-window + Points are SWP-only.
   rtaDisable.forEach((id) => {
     const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
     if (el) el.disabled = isRta;
@@ -262,11 +267,96 @@ export function setGraphMode(mode: string) {
   if (swpF) swpF.style.display = isRta ? 'none' : '';
   renderAll();
 }
+// --- RTA settings memory: re-entering RTA restores the previous session's config ---
+const RTA_MEM = 'web-sa-rta';
+
+function clearRtaAccum() {
+  // A reconfiguration (span/rbw/sweep) invalidates every accumulation on the old
+  // frequency axis / resolution: probability density, per-trace displays, waterfall.
+  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+  for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
+  for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
+  S.resetWaterfall();
+}
+
+export function rememberRtaSettings() {
+  const spanSel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+  const rbwSel = document.getElementById('select-rbw-mode') as HTMLSelectElement | null;
+  const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement | null;
+  const cc = document.getElementById('input-rta-center') as HTMLInputElement | null;
+  const vbwSel = document.getElementById('select-vbw-mode') as HTMLSelectElement | null;
+  const mem = {
+    span: spanSel ? spanSel.value : '50781250',
+    rbwMode: rbwSel ? rbwSel.value : 'auto',
+    vbwMode: vbwSel ? vbwSel.value : 'equal',
+    sweepMode: sm ? sm.value : '2',
+    center: cc ? cc.value : '1000',
+  };
+  try { localStorage.setItem(RTA_MEM, JSON.stringify(mem)); } catch { /* ignore */ }
+}
+
+function restoreRtaSettings() {
+  let mem: any = null;
+  try { mem = JSON.parse(localStorage.getItem(RTA_MEM) || 'null'); } catch { /* ignore */ }
+  const spanSel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+  const rbwSel = document.getElementById('select-rbw-mode') as HTMLSelectElement | null;
+  const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement;
+  const cc = document.getElementById('input-rta-center') as HTMLInputElement | null;
+  const unit = S.units.rta_center || 'MHz';
+  if (mem && spanSel && rbwSel && sm && cc) {
+    spanSel.value = String(mem.span || '50781250');
+    rbwSel.value = String(mem.rbwMode || 'auto');
+    sm.value = String(mem.sweepMode || '2');
+    cc.value = String(mem.center || '1000');
+    syncSweepInput();
+    const c = parseFloat(cc.value) || 1000;
+    const center = unit === 'GHz' ? c * 1e9 : unit === 'kHz' ? c * 1e3 : c * 1e6;
+    send({ cmd: 'SET_RTA', center, span: parseFloat(spanSel.value) || 50781250 });
+    if (rbwSel.value === 'manual') {
+      const iv = document.getElementById('input-rbw') as HTMLInputElement | null;
+      send({ cmd: 'SET_RBW', mode: 'manual', rbw: parseFreqUnit('rbw') });
+    } else {
+      send({ cmd: 'SET_RBW', mode: 'auto' });
+    }
+    const vbwSel2 = document.getElementById('select-vbw-mode') as HTMLSelectElement | null;
+    const vbwMode = String(mem.vbwMode || 'equal');
+    if (vbwSel2) vbwSel2.value = vbwMode;
+    const m2: any = { cmd: 'SET_VBW', mode: vbwMode };
+    if (vbwMode === 'manual') {
+      const iv = document.getElementById('input-vbw') as HTMLInputElement | null;
+      m2.vbw = iv ? (parseFloat(iv.value) || 100) : 100;
+    }
+    send(m2);
+    send({ cmd: 'SET_SWEEP', mode: parseInt(sm.value) || 2 });
+  }
+}
+
+// Step the RTA span one notch (delta: +1 narrower ▼, -1 wider ▲) or jump to full.
+export function rtaSpanStep(delta: number) {
+  const sel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+  if (!sel) return;
+  const idx = Array.from(sel.options).findIndex(o => o.value === sel.value);
+  const ni = Math.max(0, Math.min(sel.options.length - 1, idx + delta));
+  if (ni === idx || ni < 0) return;
+  sel.value = sel.options[ni].value;
+  applyRta();
+}
+export function rtaSpanFull() {
+  const sel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+  if (!sel || sel.options.length === 0) return;
+  sel.value = sel.options[0].value;   // options are sorted largest first (50.8M)
+  applyRta();
+}
+
 export function applyRta() {
   const c = parseFloat((document.getElementById('input-rta-center') as HTMLInputElement).value || '1000');
   const u = S.units.rta_center || 'MHz';
   const center = isFinite(c) ? (u === 'GHz' ? c * 1e9 : u === 'kHz' ? c * 1e3 : c * 1e6) : 1e9;
-  send({ cmd: 'SET_RTA', center });
+  const spanEl = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+  const span = spanEl ? (parseFloat(spanEl.value) || 50781250) : 50781250;
+  clearRtaAccum();
+  rememberRtaSettings();
+  send({ cmd: 'SET_RTA', center, span });
 }
 export function toggleWaterfall() {
   S.setWaterfallOn(!S.waterfallOn);
@@ -352,6 +442,20 @@ export function presetAll() {
   if (pl) pl.textContent = t('off');
   S.setActiveMkrId(1);
   S.setDefaultMkrDone(true);
+  // Preset also resets the RTA session (backend reset_defaults) and clears the RTA
+  // memory + UI so re-entering RTA starts from factory defaults.
+  try { localStorage.removeItem(RTA_MEM); } catch { /* ignore */ }
+  if (S.rtaMode) {
+    const spanSel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+    if (spanSel) spanSel.value = '50781250';
+    const rbwSel = document.getElementById('select-rbw-mode') as HTMLSelectElement | null;
+    if (rbwSel) rbwSel.value = 'auto';
+    const vbwSel = document.getElementById('select-vbw-mode') as HTMLSelectElement | null;
+    if (vbwSel) vbwSel.value = 'equal';
+    const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement;
+    if (sm) { sm.value = '2'; syncSweepInput(); }
+    clearRtaAccum();
+  }
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); renderAll();
 }
@@ -484,6 +588,9 @@ export function bindActions() {
     'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },
     'toggle-rta': () => setGraphMode(S.rtaMode ? 'swp' : 'rta'),
     'apply-rta': () => applyRta(),
+    'rta-span-down': () => rtaSpanStep(1),
+    'rta-span-up': () => rtaSpanStep(-1),
+    'rta-span-full': () => rtaSpanFull(),
     'wf-pause': () => toggleWfPause(),
     'wf-reset': () => resetWf(),
     'preset': () => presetAll(),

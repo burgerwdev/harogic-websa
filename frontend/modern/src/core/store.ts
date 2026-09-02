@@ -34,6 +34,8 @@ export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
 // Frequency/amplitude state
 export const FREQ_MIN = 100e3, FREQ_MAX = 9e9;
 export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
+export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
+export function setRtaCenterHz(v: number) { rtaCenterHz = v; }
 export function setCenterHz(v: number) { centerHz = v; }
 export function setSpanHz(v: number) { spanHz = v; }
 export function setRefLevel(v: number) { refLevel = v; }

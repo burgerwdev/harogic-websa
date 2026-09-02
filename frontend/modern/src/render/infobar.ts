@@ -32,7 +32,14 @@ export function updateInfoBar() {
   // ref display = display reference (displayRef) — ref level is a pure frontend display parameter
   set('info-ref', S.displayUnit === 'dB' ? S.displayRef.toFixed(1) + ' dB' : S.displayRef.toFixed(1) + ' dBm');
   set('info-scale', S.dbPerDiv + ' dB/div');
-  set('info-rbw', formatBWHz(S.currentRBW) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
+  if (S.rtaMode && S.rtaData && S.rtaData.stopHz) {
+    // RTA: RBW follows span (span/2000, official auto semantics); manual shows the requested value
+    const span = S.rtaData.stopHz - S.rtaData.startHz;
+    const rbw = S.rbwMode === 'manual' ? S.currentRBW : span / 2000;
+    set('info-rbw', formatBWHz(rbw) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
+  } else {
+    set('info-rbw', formatBWHz(S.currentRBW) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
+  }
   set('info-vbw', S.vbwMode === 'bypass' ? 'Bypass' : formatBWHz(S.currentVBW));
   setSwt();
   const dot = document.getElementById('connDot');
