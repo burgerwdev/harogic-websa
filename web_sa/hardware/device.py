@@ -8,11 +8,22 @@ structure refactored.
 """
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..config import DeviceCapabilities
+from ..config import (
+    DEFAULT_RTA_CENTER_HZ,
+    DEFAULT_RTA_RBW_MODE,
+    DEFAULT_RTA_REF_DBM,
+    DEFAULT_RTA_SPAN_HZ,
+    DEFAULT_RTA_SWEEP_MODE,
+    DEFAULT_RTA_VBW_MODE,
+    DeviceCapabilities,
+    fit_center_span,
+)
 from . import sdk_bindings as sb
 
 # Convenient aliases for hardware enums
@@ -34,8 +45,19 @@ class DeviceState:
     caps: DeviceCapabilities = None          # model capabilities
     center_hz: float = 1e9          # SWP-mode center
     span_hz: float = 100e6
-    rta_center_hz: float = 1e9     # RTA-mode center (independent from SWP center)
+    rta_center_hz: float = DEFAULT_RTA_CENTER_HZ
+    rta_span_hz: float = DEFAULT_RTA_SPAN_HZ
+    rta_ref_level: float = DEFAULT_RTA_REF_DBM
+    rta_ref_mode: str = 'manual'
+    rta_rbw_mode: str = DEFAULT_RTA_RBW_MODE
+    rta_rbw_hz: float = 0.0
+    rta_vbw_mode: str = DEFAULT_RTA_VBW_MODE
+    rta_vbw_hz: float = 0.0
+    rta_sweep_time_mode: int = DEFAULT_RTA_SWEEP_MODE
+    rta_sweep_time: float = 0.0
+    rta_actual: dict = field(default_factory=dict)
     ref_level: float = 0.0
+    ref_mode: str = 'manual'
     rbw_mode: str = 'manual'
     rbw_hz: float = 100e3
     vbw_mode: str = 'manual'
@@ -99,6 +121,17 @@ class HarogicDevice:
         self.last_freq = None      # most recent frequency axis (pushed to new WS clients on connect)
         self.last_freq_ver = 0
         self._sweep_ema = None
+        self._auto_ref = {
+            'std': {
+                'candidate': None, 'candidate_since': 0.0,
+                'last_change': 0.0, 'last_peak': None,
+            },
+            'rta': {
+                'candidate': None, 'candidate_since': 0.0,
+                'last_change': 0.0, 'last_peak': None,
+            },
+        }
+        self._pending_auto_ref: tuple[str, float] | None = None
 
     # ---------------- Lifecycle ----------------
     def open(self) -> tuple[bool, str]:
@@ -161,14 +194,43 @@ class HarogicDevice:
             try:
                 p = sb.SWP_Profile_TypeDef()
                 sb.dll.SWP_ProfileDeInit(sb.pointer(self.dev), sb.pointer(p))
+                rbw_mode = 'auto' if int(getattr(p.RBWMode, 'value', p.RBWMode)) else 'manual'
+                vbw_modes = {
+                    0: 'manual', 1: 'equal', 2: 'tenth',
+                    3: 'onethousandth', 4: 'bypass',
+                }
+                spur_modes = {0: 'bypass', 1: 'standard', 2: 'enhanced'}
                 self.preset_defaults = dict(
                     center=float(p.CenterFreq_Hz), span=float(p.Span_Hz),
                     ref=float(p.RefLevel_dBm), rbw=float(p.RBW_Hz),
-                    points=int(p.TracePoints), atten=int(p.Atten),
+                    vbw=float(p.VBW_Hz), points=int(p.TracePoints), atten=int(p.Atten),
                     window=int(p.Window.value if hasattr(p.Window, 'value') else p.Window),
-                    rbw_mode='auto' if int(getattr(p.RBWMode, 'value', p.RBWMode)) else 'manual')
+                    rbw_mode=rbw_mode,
+                    vbw_mode=vbw_modes.get(int(getattr(p.VBWMode, 'value', p.VBWMode)), 'bypass'),
+                    spur=spur_modes.get(int(getattr(p.SpurRejection, 'value', p.SpurRejection)), 'bypass'),
+                    preamp=int(getattr(p.Preamplifier, 'value', p.Preamplifier)),
+                    ifgain=int(p.IFGainGrade),
+                    gain_strategy=int(getattr(p.GainStrategy, 'value', p.GainStrategy)),
+                    sweep_time_mode=int(getattr(p.SweepTimeMode, 'value', p.SweepTimeMode)),
+                    sweep_time=float(p.SweepTime),
+                )
             except Exception:
                 self.preset_defaults = None
+
+    def reset_rta_state(self) -> None:
+        s = self.state
+        s.rta_center_hz = DEFAULT_RTA_CENTER_HZ
+        s.rta_span_hz = DEFAULT_RTA_SPAN_HZ
+        s.rta_ref_level = DEFAULT_RTA_REF_DBM
+        s.rta_ref_mode = 'manual'
+        s.rta_rbw_mode = DEFAULT_RTA_RBW_MODE
+        s.rta_rbw_hz = 0.0
+        s.rta_vbw_mode = DEFAULT_RTA_VBW_MODE
+        s.rta_vbw_hz = 0.0
+        s.rta_sweep_time_mode = DEFAULT_RTA_SWEEP_MODE
+        s.rta_sweep_time = 0.0
+        s.rta_actual = {}
+        self.reset_auto_reference('rta')
 
     def preset_state(self) -> dict:
         """Write the cached device defaults into dev.state (SWP parameters) WITHOUT
@@ -182,13 +244,24 @@ class HarogicDevice:
             if not d:
                 return {}
             s = self.state
-            s.center_hz, s.span_hz = d['center'], d['span']
+            s.center_hz, s.span_hz = fit_center_span(
+                d['center'], d['span'], s.caps)
             s.ref_level = d['ref']
+            s.ref_mode = 'manual'
             s.rbw_hz = d['rbw']
+            s.vbw_hz = d['vbw']
             s.points_req = d['points']
             s.atten = d['atten']
             s.window = d['window']
             s.rbw_mode = d['rbw_mode']
+            s.vbw_mode = d['vbw_mode']
+            s.spur_mode = d['spur']
+            s.preamplifier = d['preamp']
+            s.ifgain = d['ifgain']
+            s.gain_strategy = d['gain_strategy']
+            s.sweep_time_mode = d['sweep_time_mode']
+            s.sweep_time = d['sweep_time']
+            self.reset_auto_reference('std')
             return d
 
     def apply_preset(self) -> dict:
@@ -330,6 +403,9 @@ class HarogicDevice:
                     f = f[mask]; p = p[mask]
                 if len(f) < 2:
                     return None
+                finite = p[np.isfinite(p)]
+                if finite.size:
+                    self.observe_reference_peak(self.state.mode, float(np.max(finite)))
                 # Return the device-native trace (consistent with v0.5.3):
                 # the backend does not resample; the frontend resampleTrace handles point counts;
                 # backend np.interp upsampling would pull narrow signals into triangle waves
@@ -420,6 +496,72 @@ class HarogicDevice:
                 )
             except Exception:
                 return {}
+
+    def observe_reference_peak(self, mode: str, peak_dbm: float) -> None:
+        """Queue a stable, hysteretic automatic reference-level adjustment."""
+        with self._hw:
+            self._observe_reference_peak_locked(mode, peak_dbm)
+
+    def _observe_reference_peak_locked(self, mode: str, peak_dbm: float) -> None:
+        if mode not in ('std', 'rta') or not math.isfinite(peak_dbm):
+            return
+        state = self.state
+        ref_mode = state.rta_ref_mode if mode == 'rta' else state.ref_mode
+        if ref_mode != 'auto' or state.atten != -1:
+            return
+        tracker = self._auto_ref[mode]
+        tracker['last_peak'] = peak_dbm
+        current = state.rta_ref_level if mode == 'rta' else state.ref_level
+        target = max(-50.0, min(30.0, math.ceil((peak_dbm + 5.0) / 5.0) * 5.0))
+        if abs(target - current) < 5.0:
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            return
+
+        now = time.monotonic()
+        if tracker['candidate'] != target:
+            tracker['candidate'] = target
+            tracker['candidate_since'] = now
+        # Raise the reference immediately for overload safety. Lowering waits for a
+        # time-stable peak so RTA settle/empty frames cannot collapse Ref to -50 dBm.
+        stable_for = 0.15 if target > current else 1.5
+        if (
+            now - tracker['candidate_since'] >= stable_for
+            and now - tracker['last_change'] >= 1.0
+        ):
+            self._pending_auto_ref = (mode, target)
+            tracker['last_change'] = now
+
+    def reset_auto_reference(self, mode: str) -> None:
+        with self._hw:
+            tracker = self._auto_ref[mode]
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
+                self._pending_auto_ref = None
+
+    def apply_pending_auto_reference(self) -> bool:
+        """Apply one queued auto-reference update in the active acquisition worker."""
+        with self._hw:
+            pending = self._pending_auto_ref
+            if pending is None or pending[0] != self.state.mode:
+                return False
+            self._pending_auto_ref = None
+            mode, target = pending
+            tracker = self._auto_ref[mode]
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            if mode == 'rta' and self.session is not None and self.session.name == 'rta':
+                self.state.rta_ref_level = target
+                self.session._configure()
+            elif mode == 'std':
+                self.state.ref_level = target
+                ok, _ = self.configure_swp()
+                if not ok:
+                    return False
+            else:
+                return False
+            return True
 
     # ---------------- Session host ----------------
     def set_session(self, session) -> None:

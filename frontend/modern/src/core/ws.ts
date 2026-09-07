@@ -4,7 +4,13 @@ import { formatBWHz, formatFreqHz, fmtAxis } from './fmt';
 import { toUnit } from './units';
 import { t } from './i18n';
 import { updateInfoBar } from '../render/infobar';
-import { syncRefClkOut, fillGnssDetail } from '../ui/controls';
+import {
+  syncRefClkOut,
+  fillGnssDetail,
+  syncGraphModeStatus,
+  releaseGraphModePending,
+  syncFrequencyEditorStatus,
+} from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
@@ -69,6 +75,7 @@ export function connectWS() {
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
     S.setDeviceConnected(false);
+    releaseGraphModePending();
     updateInfoBar();
     setWS(null);
     ws = null;
@@ -81,7 +88,10 @@ export function connectWS() {
         if (msg.cmd === 'STATUS') updateStatus(msg);
         else if (msg.cmd === 'HARM') onHarmResult(msg.list);
         else if (msg.cmd === 'PNM') onPnmResult(msg);
-        else if (msg.cmd === 'ERROR') alert('Device: ' + msg.msg);
+        else if (msg.cmd === 'ERROR') {
+          releaseGraphModePending();
+          alert('Device: ' + msg.msg);
+        }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
       }
@@ -254,35 +264,64 @@ export function connectWS() {
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
   if (s.caps) S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
-  // RTA keeps its own center (req.rta_center); SWP center comes from actual/req.center
-  if (s.req && s.req.rta_center > 0) S.setRtaCenterHz(s.req.rta_center);
-  S.setCenterHz(s.actual.center > 0 ? s.actual.center : s.req.center);
-  S.setSpanHz(s.actual.span > 0 ? s.actual.span : s.req.span);
-  S.setRefLevel(s.actual.ref > 0 ? s.actual.ref : s.req.ref);
-  S.setCurrentRBW(s.actual.rbw > 0 ? s.actual.rbw : s.req.rbw);
-  S.setCurrentVBW(s.actual.vbw > 0 ? s.actual.vbw : s.req.vbw);
-  S.setRbwMode(s.req.rbw_mode);
-  S.setVbwMode(s.req.vbw_mode);
-  S.setCurrentPoints(s.req.points || s.actual.points);
-  S.setCurrentSpur(s.req.spur);
+  // STATUS top-level fields are the effective values for the active hardware mode.
+  const isRtaStatus = s.mode === 'rta';
+  if (s.req.rta?.center > 0) S.setRtaCenterHz(Number(s.req.rta.center));
+  S.setCenterHz(Number(s.center));
+  S.setSpanHz(Number(s.span));
+  S.setRefLevel(Number(s.ref));
+  S.setRefMode(s.ref_mode === 'auto' ? 'auto' : 'manual');
+  S.setConfigVersion(Number(s.config_version) || 0);
+  S.setCurrentRBW(Number(s.rbw));
+  S.setCurrentVBW(Number(s.vbw));
+  S.setRbwMode(s.rbw_mode);
+  S.setVbwMode(s.vbw_mode);
+  S.setCurrentPoints(Number(s.points) || Number(s.req.swp?.points) || 1001);
+  S.setCurrentSpur(s.req.swp?.spur || s.spur || 'bypass');
   S.setSweepMs(s.sweep_ms || 0);
   S.setDeviceConnected(!!s.connected);
+  syncGraphModeStatus(s.mode);
+  syncFrequencyEditorStatus(s.response_to, S.configVersion);
 
   const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
   if (measKey !== S.lastMeasKey) {
     S.setLastMeasKey(measKey);
     invalidateAllTraces();
   }
-  if (S.displayUnit !== 'dB' && !S.refUserSet) S.setDisplayRef(S.refLevel);
+  if (S.displayUnit !== 'dB') S.setDisplayRef(S.refLevel);
 
-  updateFreqUIInputs();
-  setInput('input-ref', S.displayUnit === 'dB' ? '0' : S.displayRef.toFixed(0));
+  const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
+  updateFreqUIInputs(frequencyCommitted);
+  setInput('input-ref', S.displayUnit === 'dB' ? '0' : S.refLevel.toFixed(0));
+  const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
+  const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
+  const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
+  if (refInput) refInput.disabled = S.refMode === 'auto';
+  if (refSet) refSet.disabled = S.refMode === 'auto';
+  if (refAuto) {
+    refAuto.classList.toggle('active', S.refMode === 'auto');
+    refAuto.title = s.auto_ref_suspended ? 'Auto Ref requires Atten Auto' : '';
+  }
   setInput('input-points', String(S.currentPoints));
   setSelect('select-rbw-mode', S.rbwMode);
   setSelect('select-vbw-mode', S.vbwMode);
   setSelect('select-spur', S.currentSpur);
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
   if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
+  const sweepSelect = document.getElementById('select-sweep-mode') as HTMLSelectElement | null;
+  if (sweepSelect && document.activeElement !== sweepSelect) {
+    sweepSelect.value = String(s.sweep_time_mode ?? 0);
+  }
+  if (isRtaStatus) {
+    const spanSelect = document.getElementById('select-rta-span') as HTMLSelectElement | null;
+    if (spanSelect && document.activeElement !== spanSelect) {
+      const options = [...spanSelect.options];
+      const nearest = options.reduce((best, option) =>
+        Math.abs(Number(option.value) - S.spanHz) < Math.abs(Number(best.value) - S.spanHz)
+          ? option : best, options[0]);
+      if (nearest) spanSelect.value = nearest.value;
+    }
+  }
 
   const dd = s.device_detail;
   if (dd) {
@@ -342,9 +381,9 @@ export function updateStatus(s: any) {
   updateInfoBar();
 }
 
-function setInput(id: string, v: string) {
+function setInput(id: string, v: string, force = false) {
   const el = document.getElementById(id) as HTMLInputElement;
-  if (el && document.activeElement !== el) el.value = v;
+  if (el && (force || document.activeElement !== el)) el.value = v;
 }
 function setSelect(id: string, v: string) {
   const el = document.getElementById(id) as HTMLSelectElement;
@@ -352,18 +391,21 @@ function setSelect(id: string, v: string) {
 }
 
 // Sync frequency input fields
-export function updateFreqUIInputs() {
-  setInput('input-center', toUnit(S.centerHz, 'center').toFixed(4));
-  setInput('input-span', toUnit(S.spanHz, 'span').toFixed(4));
-  setInput('input-start', toUnit(S.centerHz - S.spanHz / 2, 'start').toFixed(4));
-  setInput('input-stop', toUnit(S.centerHz + S.spanHz / 2, 'stop').toFixed(4));
+export function updateFreqUIInputs(force = false) {
+  const swpEditor = document.getElementById('swp-freq-settings');
+  if (swpEditor?.dataset.dirty !== '1') {
+    setInput('input-center', toUnit(S.centerHz, 'center').toFixed(4), force);
+    setInput('input-span', toUnit(S.spanHz, 'span').toFixed(4), force);
+    setInput('input-start', toUnit(S.centerHz - S.spanHz / 2, 'start').toFixed(4), force);
+    setInput('input-stop', toUnit(S.centerHz + S.spanHz / 2, 'stop').toFixed(4), force);
+  }
   setInput('input-rbw', toUnit(S.currentRBW, 'rbw').toFixed(2));
   setInput('input-vbw', toUnit(S.currentVBW, 'vbw').toFixed(2));
-  // RTA center is independent (req.rta_center); follows preset/reset in RTA mode
-  if (S.rtaMode) {
+  const rtaEditor = document.getElementById('rta-freq-settings');
+  if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
     const u = S.units.rta_center || 'MHz';
     const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
-    setInput('input-rta-center', (S.rtaCenterHz / scale).toFixed(4));
+    setInput('input-rta-center', (S.rtaCenterHz / scale).toFixed(4), force);
   }
 }
 

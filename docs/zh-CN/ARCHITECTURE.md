@@ -25,6 +25,8 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 5. **客户端背压**: 每个 WS 独立发送任务；FREQ/JSON 保留，POWR/RTAF 采用 latest-wins
 6. **安全默认**: loopback 监听；远程模式要求 token；静态资源限制在构建目录内
 7. **故障恢复**: SDK 调用离开 asyncio 主线程；native 崩溃/致命超时由 supervisor 重启 worker
+8. **模式私有状态**: SWP/RTA 分别保存 Center/Span/Ref/RBW/VBW/Sweep 和 actual；
+   模式切换只发送一次 SET_MODE，完整流转见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)
 
 ## 帧协议
 | 类型 | 头 | 数据 |

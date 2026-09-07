@@ -47,16 +47,21 @@ curl http://localhost:8080/api/state
 |---|---|---|
 | `connected` | bool | 设备是否已连接 |
 | `device` / `device_detail` | str / obj | 设备名与详细信息（uid/model/hw/mfw/ffw/bus/api/warnings）|
-| `center` / `span` / `ref` | number | 中心频率 / 扫宽 / 参考电平（Hz、dBm）|
-| `rbw_mode` / `rbw` | str / number | RBW 模式（manual/auto）、分辨率带宽 |
-| `vbw_mode` / `vbw` | str / number | VBW 模式（bypass/equal/tenth/manual）、视频带宽 |
+| `center` / `span` / `ref` | number | 当前模式的设备有效中心频率 / 扫宽 / 参考电平 |
+| `ref_mode` | str | 当前模式参考电平模式（manual/auto）|
+| `rbw_mode` / `rbw` | str / number | 当前模式 RBW 模式及 SDK 实际值 |
+| `vbw_mode` / `vbw` | str / number | 当前模式 VBW 模式及 SDK 实际值 |
 | `points` | int | 请求点数（前端重采样目标）|
 | `window` | int | FFT 窗：0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
-| `mode` | str | 当前测量模式（std/harmonic/pnm）|
+| `mode` | str | 当前测量模式（std/harmonic/pnm/rta）|
 | `caps` | obj | 型号能力（model/name/fmin/fmax）|
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
-| `req` / `actual` | obj | 请求值 / 设备实际值（点数/RBW 等设备原生值与请求可能不同）|
+| `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta` 分别保存两模式配置 |
+| `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
+| `config_version` | int | 每次成功硬件重配置递增 |
+| `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |
+| `auto_ref` | obj | Auto Ref 最近峰值、候选值和 pending 目标 |
 | `amp` | obj | 增益链配置：atten/preamp/ifgain/gain_strategy + 实际值 atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | 参考时钟源：internal/external/premium/external_forced |
 | `has_docxo` | bool | 是否支持 DOCXO |
@@ -64,6 +69,9 @@ curl http://localhost:8080/api/state
 | `refclk_out` | bool | 参考时钟输出使能 |
 | `gnss` | obj | GNSS 状态：`lock`(0/1) `sats`(卫星数) `docxo`(0/1) `docxo_mode`(0=驯服,1=跟踪) `antenna`(0=外部,1=内部) `latitude`/`longitude`(度) `altitude`(米) `time`(UTC, 无效为 "0000-00-00 00:00:00")|
 | `last_error` | str | 最近错误信息 |
+
+完整参数所有权、默认值和模式转换流程见
+[`MODE_STATE_FLOW.md`](MODE_STATE_FLOW.md)。
 
 ### `POST /api/config`
 
@@ -105,21 +113,23 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `CONNECT` | - | 连接设备（如未连接）|
 | `SET_PRESET` | - | 恢复设备默认配置（Preset）|
 | `CAL_REFCLK` | `count?` | GNSS 1PPS 参考时钟校准（后台线程，期间校准状态 `calibrating=true`）|
-| `SET_FREQ` | `center`, `span` | 设置中心频率/扫宽（span 自动收缩到设备范围）|
-| `SET_REF` | `ref` | 设置参考电平（dBm）|
+| `SET_FREQ` | `center`,`span` 或 `start`,`stop` | 原子设置 SWP 频率窗口；禁止混合两种赋值 |
+| `SET_REF` | `mode`（manual/auto）, `ref?` | 当前模式参考电平；manual 必须提供 ref |
 | `SET_RBW` | `mode?`（manual/auto）, `rbw?` | 设置分辨率带宽 |
 | `SET_VBW` | `mode?`（manual/equal/tenth/bypass）, `vbw?` | 设置视频带宽 |
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |
 | `SET_SPUR` | `mode`（bypass/standard/enhanced）| 杂散抑制模式 |
 | `SET_WINDOW` | `window`（0~4）| FFT 窗口 |
 | `SET_AMP` | `atten`（-1~33）, `preamp`（0/1）, `ifgain`（0~3）, `gain_strategy`（0/1）| 增益链配置 |
-| `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 参考时钟源 |
-| `SET_REFCKOUT` | `on`（bool）| 参考时钟输出使能 |
-| `SET_MODE` | `mode`（std/harmonic/pnm）| 切换测量模式（会话）|
+| `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 参考时钟源；RTA 中重配 RTA Profile |
+| `SET_REFCKOUT` | `on`（bool）| 参考时钟输出；RTA 中重配 RTA Profile |
+| `SET_MODE` | `mode`（std/harmonic/pnm/rta）| 切换测量模式（会话）|
+| `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
 
-> 配置类命令（SET_*）执行后服务端自动回发最新 STATUS。
+> 配置类命令（SET_*）执行后服务端自动回发最新 STATUS，并携带
+> `response_to=<命令名>`；周期 STATUS 不携带该字段。
 
 > 配置命令会进行有限数值、范围、枚举、设备连接和能力校验。非法命令返回 HTTP 400
 > `{"error":"..."}`；WS 返回 `{"cmd":"ERROR","msg":"..."}`。

@@ -44,11 +44,15 @@ def test_device_caps_derivation():
 
 def test_fit_span():
     c = config.DeviceCapabilities.from_model(67)
-    # span 收缩到设备范围内(保持 center)
-    s = config.fit_span(1e9, 20e9, c)
-    assert s <= 2 * min(1e9 - c.freq_min_hz, c.freq_max_hz - 1e9)
-    # 最小 span 下限
+    center, span = config.fit_center_span(1e9, 20e9, c)
+    assert center == (c.freq_min_hz + c.freq_max_hz) / 2
+    assert span == c.freq_max_hz - c.freq_min_hz
+    assert config.fit_span(1e9, 20e9, c) == 2 * (1e9 - c.freq_min_hz)
     assert config.fit_span(1e9, 10, c) >= 100.0
+
+    center, span = config.fit_start_stop(950e6, 1050e6, c)
+    assert center == 1e9
+    assert span == 100e6
 
 
 def test_remote_listener_requires_authentication():

@@ -18,6 +18,12 @@ DEFAULT_POINTS = 1000
 DEFAULT_REF_DBM = 0.0
 DEFAULT_RBW_HZ = 100e3
 DEFAULT_VBW_HZ = 100e3
+DEFAULT_RTA_CENTER_HZ = 1e9
+DEFAULT_RTA_SPAN_HZ = 50.78125e6
+DEFAULT_RTA_REF_DBM = 0.0
+DEFAULT_RTA_RBW_MODE = 'auto'
+DEFAULT_RTA_VBW_MODE = 'equal'
+DEFAULT_RTA_SWEEP_MODE = 2
 PUBLISH_MIN_INTERVAL = 0.004   # ~250 fps max
 GNSS_POLL_INTERVAL = 1.0   # GNSS polling + periodic STATUS push interval (1s)
 
@@ -101,7 +107,37 @@ class AppConfig:
         return {x.strip().rstrip('/') for x in self.allowed_origins.split(',') if x.strip()}
 
 
+def fit_center_span(
+    center: float, span: float, cap: DeviceCapabilities, minimum_span: float = 100.0
+) -> tuple[float, float]:
+    """Clamp center/span while preserving a symmetric span inside device limits."""
+    full_span = cap.freq_max_hz - cap.freq_min_hz
+    fitted_span = max(minimum_span, min(float(span), full_span))
+    half_span = fitted_span / 2
+    fitted_center = max(
+        cap.freq_min_hz + half_span,
+        min(cap.freq_max_hz - half_span, float(center)),
+    )
+    return fitted_center, fitted_span
+
+
+def fit_start_stop(
+    start: float, stop: float, cap: DeviceCapabilities, minimum_span: float = 100.0
+) -> tuple[float, float]:
+    """Clamp start/stop and return their canonical center/span representation."""
+    fitted_start = max(cap.freq_min_hz, min(cap.freq_max_hz, float(start)))
+    fitted_stop = max(cap.freq_min_hz, min(cap.freq_max_hz, float(stop)))
+    if fitted_stop <= fitted_start:
+        fitted_stop = min(cap.freq_max_hz, fitted_start + minimum_span)
+        if fitted_stop <= fitted_start:
+            fitted_start = max(cap.freq_min_hz, fitted_stop - minimum_span)
+    return (fitted_start + fitted_stop) / 2, fitted_stop - fitted_start
+
+
 def fit_span(center: float, span: float, cap: DeviceCapabilities) -> float:
-    """Shrink span while keeping center (consistent with the frontend fitSpan)."""
-    return max(100.0, min(float(span),
-                          2 * min(center - cap.freq_min_hz, cap.freq_max_hz - center)))
+    """Shrink span around a fixed center (legacy helper used by measurements)."""
+    symmetric_limit = 2 * min(
+        float(center) - cap.freq_min_hz,
+        cap.freq_max_hz - float(center),
+    )
+    return max(100.0, min(float(span), symmetric_limit))

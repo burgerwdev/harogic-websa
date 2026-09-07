@@ -49,9 +49,11 @@ class ClientStream:
         if self.closed:
             return
         text = json.dumps(obj, allow_nan=False, separators=(',', ':'))
-        if obj.get('cmd') == 'STATUS':
+        if obj.get('cmd') == 'STATUS' and not obj.get('response_to'):
             self._control = deque(
-                item for item in self._control if '"cmd":"STATUS"' not in item)
+                item for item in self._control
+                if '"cmd":"STATUS"' not in item or '"response_to":' in item
+            )
         if len(self._control) >= self.CONTROL_LIMIT:
             self._control.popleft()
             self.dropped_control += 1

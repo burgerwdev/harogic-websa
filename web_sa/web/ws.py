@@ -87,12 +87,27 @@ def _validate_command(dev, cmd, data):
     elif cmd == 'SET_FREQ':
         if caps is None:
             raise CommandError('device capabilities are unavailable')
-        _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-        _number(data, 'span', minimum=100.0, maximum=2 * caps.freq_max_hz)
-        if 'center' not in data and 'span' not in data:
-            raise CommandError('SET_FREQ requires center or span')
+        has_center_span = 'center' in data or 'span' in data
+        has_start_stop = 'start' in data or 'stop' in data
+        if has_center_span and has_start_stop:
+            raise CommandError('use center/span or start/stop, not both')
+        if has_start_stop:
+            _number(data, 'start', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz,
+                    required=True)
+            _number(data, 'stop', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz,
+                    required=True)
+            if data['stop'] - data['start'] < 100.0:
+                raise CommandError('stop - start must be >= 100 Hz')
+        elif has_center_span:
+            _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
+            _number(data, 'span', minimum=100.0,
+                    maximum=caps.freq_max_hz - caps.freq_min_hz)
+        else:
+            raise CommandError('SET_FREQ requires center/span or start/stop')
     elif cmd == 'SET_REF':
-        _number(data, 'ref', minimum=-50.0, maximum=30.0, required=True)
+        mode = _choice(data, 'mode', ('manual', 'auto')) or 'manual'
+        if mode == 'manual':
+            _number(data, 'ref', minimum=-50.0, maximum=30.0, required=True)
     elif cmd == 'SET_RBW':
         mode = _choice(data, 'mode', ('manual', 'auto')) or 'auto'
         if mode == 'manual':
@@ -103,7 +118,12 @@ def _validate_command(dev, cmd, data):
             _number(data, 'vbw', minimum=10.0, maximum=10e6, required=True)
     elif cmd == 'SET_SWEEP':
         mode = _integer(data, 'mode', minimum=0, maximum=8)
-        mode = dev.state.sweep_time_mode if mode is None else mode
+        current_mode = (
+            dev.state.rta_sweep_time_mode
+            if dev.state.mode == 'rta'
+            else dev.state.sweep_time_mode
+        )
+        mode = current_mode if mode is None else mode
         if mode == 7:
             _number(data, 'time', minimum=0.001, maximum=60.0, required=True)
         elif mode in (6, 8):
@@ -184,12 +204,13 @@ def make_ws_handler(app, dev):
                         async with app[COMMAND_LOCK]:
                             channel.publish_json(build_status(dev))
                         continue
+                    from .http_api import build_status
                     async with app[COMMAND_LOCK]:
                         changed = await _dispatch(dev, cmd, data)
-                    if changed:
-                        from .http_api import build_status
-                        async with app[COMMAND_LOCK]:
-                            channel.publish_json(build_status(dev))
+                        status = build_status(dev) if changed else None
+                    if status is not None:
+                        status['response_to'] = cmd
+                        channel.publish_json(status)
                 except CommandError as exc:
                     channel.publish_json({'cmd': 'ERROR', 'msg': str(exc)})
                 except Exception:
@@ -228,6 +249,13 @@ async def _dispatch(dev, cmd, data) -> bool:
         if result and result[0] is False:
             raise CommandError(result[1])
 
+    async def _configure_active():
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            await _hw_call(sess.reconfigure)
+        else:
+            await _configure_swp()
+
     if cmd == 'SET_PRESET':
         # Preset covers BOTH modes without switching the current one:
         # 1) SWP parameters <- device defaults (preset_state, no reconfigure)
@@ -235,8 +263,11 @@ async def _dispatch(dev, cmd, data) -> bool:
         # Only the ACTIVE mode is reconfigured/put into effect now; the other mode's
         # defaults apply automatically the next time it is entered.
         dev.preset_state()
+        dev.reset_rta_state()
         sess = dev.session
         if sess is not None and sess.name == 'rta':
+            # Preset supersedes the SWP restore point captured when RTA was entered.
+            sess.snapshot_current()
             # RTA active: reset + reconfigure on a worker thread (device reconfigure on
             # the asyncio thread stalls the publisher/data flow)
             await _hw_call(sess.reset_defaults)
@@ -283,24 +314,34 @@ async def _dispatch(dev, cmd, data) -> bool:
             raise CommandError(err)
         return True
     if cmd == 'SET_FREQ':
-        if 'center' in data:
-            s.center_hz = data['center']
-        if 'span' in data:
-            from ..config import fit_span
-            s.span_hz = fit_span(s.center_hz, data['span'], s.caps)
+        from ..config import fit_center_span, fit_start_stop
+
+        if 'start' in data:
+            s.center_hz, s.span_hz = fit_start_stop(
+                data['start'], data['stop'], s.caps)
+        else:
+            center = data.get('center', s.center_hz)
+            span = data.get('span', s.span_hz)
+            s.center_hz, s.span_hz = fit_center_span(center, span, s.caps)
         await _configure_swp()
         return True
     if cmd == 'SET_REF':
-        s.ref_level = data['ref']
-        # Ref level remains a hardware setting for API clients; the current frontend
-        # treats its reference-level control as display-only.
-        await _configure_swp()
+        mode = data.get('mode', 'manual')
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            await _hw_call(sess.set_reference, mode=mode, ref=data.get('ref'))
+            return True
+        s.ref_mode = mode
+        dev.reset_auto_reference('std')
+        if mode == 'manual':
+            s.ref_level = data['ref']
+            await _configure_swp()
         return True
-    # In RTA mode, SWP-only params (VBW/window/points/amp/spur) are not applicable;
-    # applying them reconfigures the device behind the RTA session -> spectrum freezes.
+    # In RTA mode, SWP-only params (window/points/spur) are not applicable.
+    # Shared RF/front-end settings are re-applied through the active RTA profile.
     # SET_RBW/SET_VBW are NOT intercepted: RTA supports both via the session
     # (set_rbw/set_vbw below, independent from SWP and restored on exit).
-    if dev.state.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_AMP', 'SET_SPUR'):
+    if dev.state.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_SPUR'):
         return False
     if cmd == 'SET_RBW':
         sess = dev.session
@@ -328,8 +369,11 @@ async def _dispatch(dev, cmd, data) -> bool:
         # RTA mode: sweep speed goes to the RTA session (RTA_Profile.SweepTimeMode)
         sess = dev.session
         if sess is not None and sess.name == 'rta':
-            await _hw_call(sess.set_sweep,
-                           mode=int(data.get('mode', 0)), time=float(data.get('time', 0) or 0))
+            await _hw_call(
+                sess.set_sweep,
+                mode=int(data.get('mode', s.rta_sweep_time_mode)),
+                time=float(data.get('time', s.rta_sweep_time) or 0),
+            )
             return True
         if 'mode' in data:
             m = int(data['mode'])
@@ -360,15 +404,15 @@ async def _dispatch(dev, cmd, data) -> bool:
             s.ifgain = int(max(0, min(3, int(data['ifgain']))))
         if 'gain_strategy' in data:
             s.gain_strategy = 1 if data['gain_strategy'] else 0
-        await _configure_swp()
+        await _configure_active()
         return True
     if cmd == 'SET_REFCK':
         s.ref_clock = data['mode']
-        await _configure_swp()
+        await _configure_active()
         return True
     if cmd == 'SET_REFCKOUT':
         s.refclk_out = data['on']
-        await _configure_swp()
+        await _configure_active()
         return True
     if cmd == 'SET_MODE':
         from ..measurements import make_session
@@ -383,10 +427,11 @@ async def _dispatch(dev, cmd, data) -> bool:
             return True
     if cmd == 'SET_RTA':
         sess = dev.session
-        if sess is not None and sess.name == 'rta':
-            await _hw_call(sess.set_params,
-                           center=data.get('center'), span=data.get('span'))
-            return True
+        if sess is None or sess.name != 'rta':
+            raise CommandError('SET_RTA requires RTA mode')
+        await _hw_call(
+            sess.set_params, center=data.get('center'), span=data.get('span'))
+        return True
     if cmd == 'SET_HARM':
         sess = dev.session
         if sess is not None and sess.name == 'harmonic':

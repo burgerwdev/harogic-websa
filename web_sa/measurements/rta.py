@@ -30,7 +30,8 @@ class RtaSession(MeasurementSession):
 
     name = 'rta'
 
-    DISPLAY_POINTS = 1001      # trace downsample target (matches SWP display)
+    FULL_SPAN_HZ = 50.78125e6
+    DISPLAY_POINTS = 1001
     WATERFALL_WIDTH = 860      # waterfall row width after downsample
 
     def __init__(self, dev):
@@ -41,15 +42,8 @@ class RtaSession(MeasurementSession):
         # thread-safe; concurrent calls caused GPF/segfaults during RTA span switches.
         self._lock = dev._hw
         self._ready = False
-        self._decimate = 1         # analysis bandwidth = 50.78M / decimate (1 = full, device Nyquist)
-        self._rbw_mode = 'auto'    # RBW follows span (span/2000, official semantics); manual sends RBW_Hz
-        self._rbw_hz = 0.0
-        # VBW (video bandwidth) is independent per-session (device applies it exactly:
-        # manual VBW_Hz passes through, equal/tenpercent/... follow RBW).
-        self._vbw_mode = 'equal'   # device default maps to VBW_EqualToRBW
-        self._vbw_hz = 0.0
-        self._sweep_mode = 2       # default minSWTx4 (RTA sweep speed)
-        self._sweep_time = 0.0
+        ratio = max(1.0, self.FULL_SPAN_HZ / dev.state.rta_span_hz)
+        self._decimate = 2 ** max(0, int(round(np.log2(ratio))))
         self._trace = None
         self._bitmap = None
         self._plot = None
@@ -73,7 +67,8 @@ class RtaSession(MeasurementSession):
         dev = self.dev
         s = dev.state
         _dbg('CONF enter ready=%s dec=%s rbw=%s sweep=%s center=%.3e' % (
-            self._ready, self._decimate, self._rbw_mode, self._sweep_mode, s.rta_center_hz))
+            self._ready, self._decimate, s.rta_rbw_mode,
+            s.rta_sweep_time_mode, s.rta_center_hz))
         # Drop stale buffers first: a mid-stream reconfigure while old trace/bitmap
         # buffers are still referenced by an in-flight Get would let the DLL write into
         # freed/reallocated memory -> GPF. Fresh config = fresh buffers.
@@ -93,11 +88,33 @@ class RtaSession(MeasurementSession):
         T.dll.RTA_ProfileDeInit(T.pointer(dev.dev), T.pointer(prof))
         _dbg('CONF RTA_ProfileDeInit done')
         prof.CenterFreq_Hz = s.rta_center_hz
-        prof.RefLevel_dBm = s.ref_level
+        prof.RefLevel_dBm = s.rta_ref_level
         prof.DecimateFactor = self._decimate
-        if self._rbw_mode == 'manual' and self._rbw_hz > 0:
+        prof.Atten = int(s.atten)
+        prof.Preamplifier = (
+            T.PreamplifierState_TypeDef.AutoOn
+            if s.preamplifier == 0
+            else T.PreamplifierState_TypeDef.ForcedOff
+        )
+        prof.IFGainGrade = int(s.ifgain)
+        prof.GainStrategy = (
+            T.GainStrategy_TypeDef.LowNoisePreferred
+            if s.gain_strategy == 0
+            else T.GainStrategy_TypeDef.HighLinearityPreferred
+        )
+        ref_clock_map = {
+            'internal': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
+            'external': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External,
+            'premium': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal_Premium,
+            'external_forced': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External_Forced,
+        }
+        prof.ReferenceClockSource = ref_clock_map.get(
+            s.ref_clock, T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
+        prof.ExternalSystemClockFrequency = 10e6
+        prof.EnableReferenceClockOut = 1 if s.refclk_out else 0
+        if s.rta_rbw_mode == 'manual' and s.rta_rbw_hz > 0:
             prof.RBWMode = T.RBWMode_TypeDef.RBW_Manual
-            prof.RBW_Hz = self._rbw_hz
+            prof.RBW_Hz = s.rta_rbw_hz
         else:
             prof.RBWMode = T.RBWMode_TypeDef.RBW_Auto   # RBW follows span (span/2000)
         _vbw_map = {'manual': T.VBWMode_TypeDef.VBW_Manual,
@@ -105,50 +122,38 @@ class RtaSession(MeasurementSession):
                     'tenth': T.VBWMode_TypeDef.VBW_TenPercentRBW,
                     'onethousandth': T.VBWMode_TypeDef.VBW_OnePercentRBW,
                     'bypass': T.VBWMode_TypeDef.VBW_TenTimesRBW}
-        prof.VBWMode = _vbw_map.get(self._vbw_mode, T.VBWMode_TypeDef.VBW_EqualToRBW)
-        if self._vbw_mode == 'manual' and self._vbw_hz > 0:
-            prof.VBW_Hz = self._vbw_hz
+        prof.VBWMode = _vbw_map.get(s.rta_vbw_mode, T.VBWMode_TypeDef.VBW_EqualToRBW)
+        if s.rta_vbw_mode == 'manual' and s.rta_vbw_hz > 0:
+            prof.VBW_Hz = s.rta_vbw_hz
         prof.TriggerSource = T.RTA_TriggerSource_TypeDef.Bus
         prof.TriggerMode = T.TriggerMode_TypeDef.FixedPoints
         prof.TriggerAcqTime = 0.005   # short acq -> PacketCount=1, ~150fps (probe-verified)
-        prof.SweepTimeMode = T.SweepTimeMode_TypeDef(self._sweep_mode)
-        prof.SweepTime = float(self._sweep_time)
+        prof.SweepTimeMode = T.SweepTimeMode_TypeDef(s.rta_sweep_time_mode)
+        prof.SweepTime = float(s.rta_sweep_time)
         _dbg('CONF calling RTA_Configuration dec=%s ...' % self._decimate)
         st = T.dll.RTA_Configuration(T.pointer(dev.dev), T.pointer(prof), T.pointer(out), T.pointer(info))
         _dbg('CONF RTA_Configuration ret=%s' % st)
         if st != 0:
             dev.state.last_error = 'RTA_Configuration status=%d' % st
             raise RuntimeError(dev.state.last_error)
-        # Mirror effective values into dev.state (STATUS / frontend read actual.*):
-        # - rbw_mode + actual RBW/VBW selected by the device (manual RBW IS honored: the
-        #   device picks the nearest 2^n FFT size; show the applied value, not raw input)
-        # - center/span/start/stop so the frequency input + readouts follow the RTA LO
-        #   (the SWP "actual" cache would otherwise win and jump the input back)
-        dev.state.rbw_mode = self._rbw_mode
-        try:
-            dev.state.actual['center'] = float(s.rta_center_hz)
-            dev.state.actual['start'] = float(info.StartFrequency_Hz)
-            dev.state.actual['stop'] = float(info.StopFrequency_Hz)
-            dev.state.actual['span'] = float(info.StopFrequency_Hz - info.StartFrequency_Hz)
-        except Exception:
-            pass
-        try:
-            actual_rbw = float(out.RBW_Hz)
-            if actual_rbw > 0:
-                dev.state.rbw_hz = actual_rbw
-                try:
-                    dev.state.actual['rbw'] = actual_rbw
-                except Exception:
-                    pass
-            actual_vbw = float(out.VBW_Hz)
-            if actual_vbw > 0:
-                dev.state.vbw_hz = actual_vbw
-                try:
-                    dev.state.actual['vbw'] = actual_vbw
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        s.rta_span_hz = float(info.StopFrequency_Hz - info.StartFrequency_Hz)
+        s.rta_actual = {
+            'center': float(s.rta_center_hz),
+            'span': s.rta_span_hz,
+            'start': float(info.StartFrequency_Hz),
+            'stop': float(info.StopFrequency_Hz),
+            'ref': float(out.RefLevel_dBm),
+            'rbw': float(out.RBW_Hz),
+            'vbw': float(out.VBW_Hz),
+            'points': int(info.FrameWidth),
+            'refclk': float(out.ReferenceClockFrequency),
+            'refclk_src': int(out.ReferenceClockSource.value),
+            'refclk_out': bool(out.EnableReferenceClockOut),
+            'atten': int(out.Atten),
+            'preamp': int(out.Preamplifier.value),
+            'ifgain': int(out.IFGainGrade),
+        }
+        dev._read_amp_atten()
         self._info = info
         # Get writes SpectrumStream of PacketValidPoints bytes into the buffer; allocate
         # over both reported sizes + margin so a DLL write can never run past the end
@@ -175,7 +180,9 @@ class RtaSession(MeasurementSession):
         # deterministic GPF on the 2nd fetch. Must use the full-size struct.
         self._aux = _sb.Full_MeasAuxInfo()
         self._ready = True
+        dev.state.config_version += 1
         dev.state.freq_version += 1
+        dev.state.last_error = ''
         self._last_wf_time = 0.0
         self._last_get = 0.0
         # Short settle after configuration (Configuration returned synchronously; the
@@ -186,66 +193,56 @@ class RtaSession(MeasurementSession):
         self._dbg_n = 0
 
     def set_params(self, center=None, span=None):
-        """Update RTA center and/or analysis span (bandwidth = 50.78M / 2^n) then reconfigure."""
+        """Update the mode-private RTA frequency window and configure exactly once."""
         import math
+
         s = self.dev.state
-        changed = False
-        if center is not None:
-            s.rta_center_hz = float(center)
-            changed = True
-        if span is not None and float(span) > 0:
-            # map requested span (Hz) to the nearest 2^n decimate step of the full 50.78125M
-            ratio = max(1.0, 50.78125e6 / float(span))
-            dec = 2 ** max(0, int(round(math.log2(ratio))))
-            if dec != self._decimate:
-                self._decimate = dec
-                changed = True
-        if changed:
-            self._configure()
+        if span is not None:
+            ratio = max(1.0, self.FULL_SPAN_HZ / float(span))
+            self._decimate = min(65536, 2 ** max(0, int(round(math.log2(ratio)))))
+            s.rta_span_hz = self.FULL_SPAN_HZ / self._decimate
+        requested_center = s.rta_center_hz if center is None else float(center)
+        half_span = s.rta_span_hz / 2
+        s.rta_center_hz = max(
+            s.caps.freq_min_hz + half_span,
+            min(s.caps.freq_max_hz - half_span, requested_center),
+        )
+        self._configure()
 
     def set_sweep(self, mode=0, time=0.0):
-        """Update RTA sweep speed (SweepTimeMode) and reconfigure."""
-        self._sweep_mode = max(0, min(8, int(mode)))
-        self._sweep_time = float(time)
+        s = self.dev.state
+        s.rta_sweep_time_mode = max(0, min(8, int(mode)))
+        s.rta_sweep_time = float(time)
         self._configure()
 
     def reset_defaults(self):
-        """Preset: return the RTA session to its own defaults (center 1 GHz per
-        RTA_ProfileDeInit, dec=1 full span, RBW auto, VBW equal, sweep minSWTx4) and
-        reconfigure. Never touches the SWP parameters (preset_state handles those)."""
+        """Restore documented RTA defaults without changing SWP settings."""
         self._decimate = 1
-        self._rbw_mode = 'auto'
-        self._rbw_hz = 0.0
-        self._sweep_mode = 2
-        self._sweep_time = 0.0
-        self._vbw_mode = 'equal'
-        self._vbw_hz = 0.0
-        self.dev.state.rta_center_hz = 1e9
+        self.dev.reset_rta_state()
         self._configure()
 
     def set_vbw(self, mode='equal', vbw=0.0):
-        """VBW for the RTA session (manual VBW_Hz passes through exactly; equal/
-        tenth/onethousandth/bypass follow RBW). Independent from SWP (restored on exit)."""
-        if mode not in ('manual', 'equal', 'tenth', 'onethousandth', 'bypass'):
-            mode = 'equal'
-        self._vbw_mode = mode
-        self._vbw_hz = float(vbw) if float(vbw) > 0 else 0.0
-        self.dev.state.vbw_mode = mode
-        if mode == 'manual':
-            self.dev.state.vbw_hz = self._vbw_hz
+        s = self.dev.state
+        s.rta_vbw_mode = mode
+        s.rta_vbw_hz = float(vbw) if mode == 'manual' else 0.0
         self._configure()
 
     def set_rbw(self, mode='auto', rbw=0.0):
-        """RBW auto (follows span as span/2000) or manual RBW_Hz; reconfigure under lock.
-        Mirror into dev.state so the periodic STATUS push shows the RTA-selected RBW mode
-        (otherwise the frontend reverts to the SWP value on every STATUS push)."""
-        self._rbw_mode = 'manual' if mode == 'manual' else 'auto'
-        self._rbw_hz = float(rbw) if float(rbw) > 0 else 0.0
-        _dbg('set_rbw called mode=%s rbw=%s (session=%s)' % (self._rbw_mode, self._rbw_hz, self.dev.session.name if self.dev.session else None))
-        self.dev.state.rbw_mode = self._rbw_mode
-        if self._rbw_mode == 'manual':
-            self.dev.state.rbw_hz = self._rbw_hz
+        s = self.dev.state
+        s.rta_rbw_mode = 'manual' if mode == 'manual' else 'auto'
+        s.rta_rbw_hz = float(rbw) if s.rta_rbw_mode == 'manual' else 0.0
         self._configure()
+
+    def reconfigure(self):
+        self._configure()
+
+    def set_reference(self, mode='manual', ref=None):
+        s = self.dev.state
+        s.rta_ref_mode = mode
+        self.dev.reset_auto_reference('rta')
+        if mode == 'manual':
+            s.rta_ref_level = float(ref)
+            self._configure()
 
     def exit(self):
         """Exit RTA after stopping acquisition, then restore the SWP snapshot."""
@@ -331,6 +328,9 @@ class RtaSession(MeasurementSession):
         index = np.linspace(0, width - 1, self.DISPLAY_POINTS).astype(np.int64)
         display_spectrum = spectrum[index].astype(np.float32)
         display_freq = freq[index]
+        finite = spectrum[np.isfinite(spectrum)]
+        if finite.size:
+            dev.observe_reference_peak('rta', float(np.max(finite)))
         if width != self.WATERFALL_WIDTH:
             row = row[np.linspace(0, width - 1, self.WATERFALL_WIDTH).astype(np.int64)]
         frame = _encode_rta(

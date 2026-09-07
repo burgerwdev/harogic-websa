@@ -70,9 +70,9 @@ export function measTab(t: string) {
   applyMeasNow();
 }
 
-export function exitMeasMode() {
+export function exitMeasMode(updateBackend = true) {
   if (S.viewMode === 'pnm' || S.viewMode === 'harm') {
-    send({ cmd: 'SET_MODE', mode: 'std' });
+    if (updateBackend) send({ cmd: 'SET_MODE', mode: 'std' });
     if (S.stdSnap) {
       S.traces.forEach((t, i) => { if (S.stdSnap!.traces[i]) t.mode = S.stdSnap!.traces[i].mode; });
       S.markers.forEach((mk, i) => { if (S.stdSnap!.markers[i]) Object.assign(mk, S.stdSnap!.markers[i]); });

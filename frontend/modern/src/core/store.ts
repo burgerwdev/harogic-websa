@@ -40,6 +40,10 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
   }
 }
 export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
+export let refMode: 'manual' | 'auto' = 'manual';
+export function setRefMode(v: 'manual' | 'auto') { refMode = v; }
+export let configVersion = 0;
+export function setConfigVersion(v: number) { configVersion = v; }
 export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
 export function setRtaCenterHz(v: number) { rtaCenterHz = v; }
 export function setCenterHz(v: number) { centerHz = v; }
@@ -68,9 +72,6 @@ export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 export let displayRef = 0.0;
 export function setDisplayRef(v: number) { displayRef = v; }
-// Today's display scale was manually set by the user (ref level = pure display param) → STATUS writes no longer override it
-export let refUserSet = false;
-export function setRefUserSet(v: boolean) { refUserSet = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 

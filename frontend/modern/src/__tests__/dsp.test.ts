@@ -5,6 +5,8 @@ import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { buildReferenceTablePub } from '../ui/normPub';
 import { percentileApprox } from '../dsp/stats';
+import { normalizeCenterSpan, normalizeStartStop } from '../core/frequency';
+import { convertUnitValue } from '../core/units';
 import * as S from '../core/store';
 import { synthCW, synthBandpass, synthTwoPeaks } from './synth';
 
@@ -116,6 +118,31 @@ describe('resampleTrace 保峰重采样', () => {
     src[50] = -90;
     const out = resampleTrace(src, 50, false);
     expect(Math.min(...out)).toBeLessThan(-80);
+  });
+});
+
+describe('频率字段联动', () => {
+  it('center/span 在设备边界内生成一致的 start/stop', () => {
+    const window = normalizeCenterSpan(1e9, 100e6, 9e3, 9e9)!;
+    expect(window.start).toBe(950e6);
+    expect(window.stop).toBe(1050e6);
+  });
+
+  it('全扫宽会移动 center 并保持完整范围', () => {
+    const window = normalizeCenterSpan(1e9, 20e9, 9e3, 9e9)!;
+    expect(window.start).toBe(9e3);
+    expect(window.stop).toBe(9e9);
+  });
+
+  it('start/stop 作为一组生成 center/span', () => {
+    const window = normalizeStartStop(950e6, 1050e6, 9e3, 9e9)!;
+    expect(window.center).toBe(1e9);
+    expect(window.span).toBe(100e6);
+  });
+
+  it('单位切换保持物理频率不变', () => {
+    expect(convertUnitValue(1000, 'MHz', 'GHz')).toBe(1);
+    expect(convertUnitValue(1, 'GHz', 'kHz')).toBe(1e6);
   });
 });
 

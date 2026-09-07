@@ -81,6 +81,21 @@ async def test_status_messages_are_coalesced():
 
 
 @pytest.mark.asyncio
+async def test_command_status_is_not_coalesced_by_periodic_status():
+    ws = FakeWebSocket()
+    stream = ClientStream(ws)
+    stream.publish_json({'cmd': 'STATUS', 'response_to': 'SET_FREQ', 'version': 2})
+    stream.publish_json({'cmd': 'STATUS', 'version': 2})
+    stream.start()
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(ws.text) == 2
+    assert json.loads(ws.text[0])['response_to'] == 'SET_FREQ'
+    await stream.close()
+
+
+@pytest.mark.asyncio
 async def test_stalled_client_is_closed(monkeypatch):
     monkeypatch.setattr(client_stream_module, 'SEND_TIMEOUT', 0.01)
     ws = FakeWebSocket()

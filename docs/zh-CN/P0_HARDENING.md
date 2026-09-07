@@ -22,6 +22,11 @@
 - 前端支持 `wss`、令牌、退避重连、坏帧长度保护和坏 JSON 保护。
 - RTA 重计算限制约 33 Hz，噪底/峰值分位数改为 O(n) 直方图估计。
 - 前端频率范围由设备 STATUS 能力驱动，不再固定 SAN-90 范围。
+- SWP/RTA 分别保存 Center/Span/Ref/RBW/VBW/Sweep/actual，模式切换不再互相覆盖。
+- SWP Center/Span 与 Start/Stop 原子提交；单位切换不配置硬件，dirty 编辑不被周期 STATUS 覆盖。
+- RTA 切换只发送一次 SET_MODE，不再由 localStorage 连发 RTA/RBW/VBW/Sweep 重配置。
+- Reference Level Manual 实际下发硬件；Auto 采用峰值余量、时间稳定和迟滞控制。
+- RTA 中切换 Ref Clock/Clock Output/共享增益时重配 RTA Profile，不再错误调用 SWP 配置。
 - supervisor 在 worker 原生崩溃或硬件超时后退避重启；配置错误不循环重启。
 - NumPy/pyserial 依赖、DSP_Close、跨架构 SDK 路径和滚动日志已补齐。
 
@@ -61,7 +66,7 @@ python3 -m ruff check web_sa tests tools
 cd frontend/modern && npm audit
 ```
 
-当前基线：后端 35 项、前端 15 项，Ruff 0，npm audit 0。
+当前基线：后端 49 项、前端 19 项，Ruff 0，npm audit 0。
 
 ## 硬件冒烟测试
 

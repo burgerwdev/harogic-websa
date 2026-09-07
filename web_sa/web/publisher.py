@@ -12,7 +12,6 @@ from .app_keys import COMMAND_LOCK, WS_CLIENTS
 log = logging.getLogger(__name__)
 STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL
 ERROR_LOG_INTERVAL = 5.0
-CLIENT_SEND_TIMEOUT = 5.0
 
 
 def _acquisition_timeout(dev) -> float:
@@ -21,6 +20,12 @@ def _acquisition_timeout(dev) -> float:
     estimated = float(dev.state.actual.get('est_min', 0.0) or 0.0)
     configured = dev.state.sweep_time if dev.state.sweep_time_mode == 7 else 0.0
     return max(10.0, min(180.0, max(estimated, configured) * 1.5 + 5.0))
+
+
+def _acquisition_step(dev):
+    if dev.apply_pending_auto_reference():
+        return [], []
+    return dev.step()
 
 
 async def publisher(app, dev):
@@ -49,7 +54,9 @@ async def publisher(app, dev):
                 async with app[COMMAND_LOCK]:
                     try:
                         result = await asyncio.wait_for(
-                            asyncio.to_thread(dev.step), timeout=_acquisition_timeout(dev))
+                            asyncio.to_thread(_acquisition_step, dev),
+                            timeout=_acquisition_timeout(dev),
+                        )
                     except asyncio.TimeoutError:
                         log.critical('Acquisition timed out; terminating worker for recovery')
                         os._exit(70)

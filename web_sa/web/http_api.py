@@ -58,23 +58,83 @@ def security_middleware(cfg):
 
 def build_status(dev) -> dict:
     s = dev.state
+    swp_req = {
+        'center': s.center_hz,
+        'span': s.span_hz,
+        'points': s.points_req,
+        'rbw_mode': s.rbw_mode,
+        'rbw': s.rbw_hz,
+        'vbw_mode': s.vbw_mode,
+        'vbw': s.vbw_hz,
+        'ref_mode': s.ref_mode,
+        'ref': s.ref_level,
+        'sweep_time_mode': s.sweep_time_mode,
+        'sweep_time': s.sweep_time,
+        'spur': s.spur_mode,
+        'window': s.window,
+    }
+    rta_req = {
+        'center': s.rta_center_hz,
+        'span': s.rta_span_hz,
+        'points': 1001,
+        'rbw_mode': s.rta_rbw_mode,
+        'rbw': s.rta_rbw_hz,
+        'vbw_mode': s.rta_vbw_mode,
+        'vbw': s.rta_vbw_hz,
+        'ref_mode': s.rta_ref_mode,
+        'ref': s.rta_ref_level,
+        'sweep_time_mode': s.rta_sweep_time_mode,
+        'sweep_time': s.rta_sweep_time,
+    }
+    is_rta = s.mode == 'rta'
+    active_req = rta_req if is_rta else swp_req
+    active_actual = s.rta_actual if is_rta else s.actual
+    auto_trackers = getattr(dev, '_auto_ref', {})
+    auto_tracker = auto_trackers.get(
+        'rta' if is_rta else 'std',
+        {'last_peak': None, 'candidate': None},
+    )
+    pending_auto_ref = getattr(dev, '_pending_auto_ref', None)
+
+    def effective(name):
+        value = active_actual.get(name)
+        return active_req.get(name) if value is None else value
+
+    request = dict(active_req)
+    request['rta_center'] = s.rta_center_hz  # protocol compatibility
+    request['swp'] = swp_req
+    request['rta'] = rta_req
     return _json_safe({
         'cmd': 'STATUS', 'connected': s.connected, 'device': s.label,
         'device_detail': s.device_detail,
-        'center': s.center_hz, 'span': s.span_hz, 'ref': s.ref_level,
-        'rbw_mode': s.rbw_mode, 'rbw': s.rbw_hz, 'vbw_mode': s.vbw_mode, 'vbw': s.vbw_hz,
-        'points': s.points_req, 'window': s.window, 'spur': s.spur_mode,
-        'sweep_time_mode': s.sweep_time_mode, 'sweep_time': s.sweep_time,
+        'center': effective('center'), 'span': effective('span'),
+        'ref_mode': active_req['ref_mode'], 'ref': effective('ref'),
+        'rbw_mode': active_req['rbw_mode'], 'rbw': effective('rbw'),
+        'vbw_mode': active_req['vbw_mode'], 'vbw': effective('vbw'),
+        'points': effective('points'), 'window': s.window, 'spur': s.spur_mode,
+        'sweep_time_mode': active_req['sweep_time_mode'],
+        'sweep_time': active_req['sweep_time'],
         'mode': s.mode, 'pnm_supported': s.pnm_supported,
+        'config_version': s.config_version,
         'caps': dict(model=s.caps.model if s.caps else 0, name=s.caps.name if s.caps else '',
                      fmin=s.caps.freq_min_hz if s.caps else 0,
                      fmax=s.caps.freq_max_hz if s.caps else 0),
         'preset_defaults': dev.preset_defaults,
-        'req': dict(center=s.center_hz, span=s.span_hz, points=s.points_req,
-                    rbw_mode=s.rbw_mode, rbw=s.rbw_hz, vbw_mode=s.vbw_mode, vbw=s.vbw_hz,
-                    ref=s.ref_level, spur=s.spur_mode,
-                    rta_center=s.rta_center_hz),
-        'actual': s.actual,
+        'rta_defaults': {
+            'center': 1e9, 'span': 50.78125e6, 'ref': 0.0, 'ref_mode': 'manual',
+            'rbw_mode': 'auto', 'rbw': 0.0, 'vbw_mode': 'equal', 'vbw': 0.0,
+            'sweep_time_mode': 2, 'sweep_time': 0.0,
+        },
+        'req': request,
+        'actual': active_actual,
+        'swp_actual': s.actual,
+        'rta_actual': s.rta_actual,
+        'auto_ref_suspended': active_req['ref_mode'] == 'auto' and s.atten != -1,
+        'auto_ref': {
+            'last_peak': auto_tracker['last_peak'],
+            'candidate': auto_tracker['candidate'],
+            'pending': pending_auto_ref[1] if pending_auto_ref else None,
+        },
         'amp': dict(atten=s.atten, preamp=s.preamplifier, ifgain=s.ifgain,
                     gain_strategy=s.gain_strategy, atten_actual=s.amp_atten,
                     preamp_actual=s.preamplifier_actual, ifgain_actual=s.ifgain),
@@ -107,13 +167,14 @@ def make_routes(app, dev, static_dir):
         try:
             async with app[COMMAND_LOCK]:
                 changed = await _dispatch(dev, data.get('cmd'), data)
+                status = build_status(dev)
         except CommandError as exc:
             return web.json_response({'error': str(exc)}, status=400)
         except Exception as exc:
             request.app[LOGGER].exception('HTTP command failed')
             return web.json_response({'error': str(exc)}, status=503)
-        status = build_status(dev)
         status['changed'] = changed
+        status['response_to'] = data.get('cmd')
         return web.json_response(status)
 
     static_root = Path(static_dir, 'modern', 'dist').resolve()
