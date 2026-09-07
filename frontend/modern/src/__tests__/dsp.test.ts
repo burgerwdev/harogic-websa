@@ -4,6 +4,7 @@ import { sgSmooth, smoothForDisplay } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { buildReferenceTablePub } from '../ui/normPub';
+import { percentileApprox } from '../dsp/stats';
 import * as S from '../core/store';
 import { synthCW, synthBandpass, synthTwoPeaks } from './synth';
 
@@ -115,6 +116,15 @@ describe('resampleTrace 保峰重采样', () => {
     src[50] = -90;
     const out = resampleTrace(src, 50, false);
     expect(Math.min(...out)).toBeLessThan(-80);
+  });
+});
+
+describe('实时分位数统计', () => {
+  it('无需排序即可近似噪底和峰值分位数', () => {
+    const src = new Float32Array(1000).fill(-90);
+    for (let i = 980; i < 1000; i++) src[i] = -20;
+    expect(percentileApprox(src, 0.3)).toBeCloseTo(-90, 0);
+    expect(percentileApprox(src, 0.98)).toBeCloseTo(-20, 0);
   });
 });
 

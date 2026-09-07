@@ -45,7 +45,7 @@
 
 ### 前置条件
 
-- Python ≥ 3.10（aiohttp）
+- Python ≥ 3.10（aiohttp、NumPy；硬件冒烟工具可选 pyserial）
 - Node.js ≥ 18（仅重建前端时需要）
 - Harogic SAN 系列频谱仪 + 官方 SDK：
   - `htra_api.py` — 已包含在仓库根目录（官方 Python 包装，HAROGIC 版权）
@@ -64,7 +64,16 @@ cd frontend/modern && npm install && npm run build   # 前端构建(dist 已含)
 ./run.sh
 ```
 
-浏览器打开 http://localhost:8080
+浏览器打开 http://127.0.0.1:8080
+
+默认仅监听本机。远程访问必须设置令牌：
+
+```bash
+WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
+```
+
+然后访问 `http://设备地址:8080/?token=同一令牌`。详细加固和硬件测试说明见
+[`docs/zh-CN/P0_HARDENING.md`](docs/zh-CN/P0_HARDENING.md)。
 
 ### 3. 测试
 
@@ -76,7 +85,7 @@ cd frontend/modern && npm install && npm run build   # 前端构建(dist 已含)
 
 ```
 harogic-websa/
-├─ web_sa/               后端 (aiohttp 单进程, 设备调用串行)
+├─ web_sa/               后端 (supervisor + aiohttp worker, 设备调用串行)
 │  ├─ hardware/          sdk_bindings.py(唯一 dll 接触点) / device.py
 │  ├─ measurements/      Std/Harmonic/PhaseNoise 会话 + framer(帧协议)
 │  └─ web/               ws.py / http_api.py / publisher.py
@@ -95,7 +104,7 @@ harogic-websa/
 
 | 脚本 | 说明 |
 |---|---|
-| `./run.sh` | 启动服务（单次启动，不重试）|
+| `./run.sh` | 启动 supervisor + WebSA worker；SDK 崩溃/致命超时自动退避重启 |
 | `./stop.sh` | 停止服务 |
 | `./clean.sh` | 清理缓存/日志/构建产物 |
 | `./test.sh` | 后端 pytest + 前端 vitest |
@@ -103,8 +112,8 @@ harogic-websa/
 
 ## 测试
 
-- **后端（14 项）**：帧协议编解码 + float32 类型守卫、配置常量与 SAN 型号能力推导、`DeviceState` 序列化与 `build_status` 载荷、HTTP API 端点（`/api/state`、`/api/config`，aiohttp TestClient + stub 设备）——**无需硬件**
-- **前端（13 项）**：DSP 引擎合成迹线测试——S-G 平滑（保峰/保边沿）、抛物线亚频点拟合、Escursion 过滤、寻峰寻谷与 25bin 凹陷合并、保峰重采样、归一化参考构建——**无需硬件**
+- **后端（35 项）**：帧协议、配置/安全默认、命令校验、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
+- **前端（15 项）**：DSP 引擎合成迹线、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
 
 ## 开源说明
 

@@ -32,7 +32,13 @@ export const W = canvas.width, H = canvas.height;
 export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
 
 // Frequency/amplitude state
-export const FREQ_MIN = 100e3, FREQ_MAX = 9e9;
+export let FREQ_MIN = 9e3, FREQ_MAX = 9e9;
+export function setFrequencyLimits(minimum: number, maximum: number) {
+  if (isFinite(minimum) && isFinite(maximum) && minimum > 0 && maximum > minimum) {
+    FREQ_MIN = minimum;
+    FREQ_MAX = maximum;
+  }
+}
 export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
 export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
 export function setRtaCenterHz(v: number) { rtaCenterHz = v; }

@@ -11,24 +11,18 @@ waterfall without huge per-frame payloads.
 """
 from __future__ import annotations
 
-import os
-import threading
+import logging
 import time
 
 import numpy as np
 
-# Crash-localization debug log (independent file so it survives service-log rotation/rm)
-_RTA_DBG = os.environ.get('RTA_DBG', '') or '/tmp/rta_dbg.log'
-_dbgf = open(_RTA_DBG, 'a', buffering=1)
+from .base import MeasurementSession
+
+log = logging.getLogger(__name__)
 
 
 def _dbg(msg: str) -> None:
-    try:
-        _dbgf.write('[%s] %s\n' % (time.strftime('%H:%M:%S.%f')[:-3], msg))
-    except Exception:
-        pass
-
-from .base import MeasurementSession
+    log.debug('RTA %s', msg)
 
 
 class RtaSession(MeasurementSession):
@@ -74,6 +68,7 @@ class RtaSession(MeasurementSession):
 
     def _configure_locked(self):
         import htra_api as T
+
         from ..hardware import sdk_bindings as _sb
         dev = self.dev
         s = dev.state
@@ -123,7 +118,7 @@ class RtaSession(MeasurementSession):
         _dbg('CONF RTA_Configuration ret=%s' % st)
         if st != 0:
             dev.state.last_error = 'RTA_Configuration status=%d' % st
-            return
+            raise RuntimeError(dev.state.last_error)
         # Mirror effective values into dev.state (STATUS / frontend read actual.*):
         # - rbw_mode + actual RBW/VBW selected by the device (manual RBW IS honored: the
         #   device picks the nearest 2^n FFT size; show the applied value, not raw input)
@@ -160,8 +155,17 @@ class RtaSession(MeasurementSession):
         # (out-of-bounds write = segfault). PacketValidPoints can exceed PacketSamplePoints
         # depending on decimate/frame layout.
         n = int(max(int(info.PacketValidPoints), int(info.PacketSamplePoints))) + 4096
+        bitmap_points = int(info.FrameHeight) * int(info.FrameWidth)
+        max_buffer_points = 16_000_000
+        if (
+            n <= 4096
+            or n > max_buffer_points
+            or bitmap_points <= 0
+            or bitmap_points > max_buffer_points
+        ):
+            raise RuntimeError('invalid RTA buffer dimensions')
         self._trace = (T.c_uint8 * n)()
-        self._bitmap = (T.c_uint16 * (int(info.FrameHeight) * int(info.FrameWidth) + 65536))()
+        self._bitmap = (T.c_uint16 * (bitmap_points + 65536))()
         self._plot = T.RTA_PlotInfo_TypeDef()
         self._trigger = T.RTA_TriggerInfo_TypeDef()
         # CRITICAL: MeasAuxInfo_TypeDef in the official htra_api.py wrapper is 48 bytes but
@@ -171,6 +175,7 @@ class RtaSession(MeasurementSession):
         # deterministic GPF on the 2nd fetch. Must use the full-size struct.
         self._aux = _sb.Full_MeasAuxInfo()
         self._ready = True
+        dev.state.freq_version += 1
         self._last_wf_time = 0.0
         self._last_get = 0.0
         # Short settle after configuration (Configuration returned synchronously; the
@@ -243,10 +248,15 @@ class RtaSession(MeasurementSession):
         self._configure()
 
     def exit(self):
-        """Exit RTA: drop acquisition, restore standard config (base handles snapshot)."""
-        # Note: RTA_ProfileDeInit here occasionally segfaults libhtraapi; skipping it and
-        # letting configure_swp (SWP re-entry) reset the device is more reliable.
-        self._ready = False
+        """Exit RTA after stopping acquisition, then restore the SWP snapshot."""
+        import htra_api as T
+
+        with self._lock:
+            self._ready = False
+            try:
+                T.dll.RTA_BusTriggerStop(T.pointer(self.dev.dev))
+            except Exception:
+                log.exception('RTA trigger stop failed during session exit')
         super().exit()
 
     # Get 节流: 避免 publisher 高频(4ms)调用导致 DLL 不稳定/段错误
@@ -262,64 +272,70 @@ class RtaSession(MeasurementSession):
         if now - self._last_get < self.GET_MIN_INTERVAL:
             return [], []
         import ctypes as C
+
         import htra_api as T
+
         dev = self.dev
-        info = self._info
         self._last_get = now
-        # Whole trigger+Get sequence under the lock so a concurrent reconfigure
-        # (span/center/sweep) can never interleave with the DLL calls.
+        # Snapshot frame dimensions and copy the DLL-owned buffers while holding the
+        # same lock as reconfiguration. Lock-free work below only touches local arrays.
         with self._lock:
+            if not self._ready or self._info is None:
+                return [], []
+            info = self._info
             self._dbg_n += 1
-            log_this = (self._dbg_n % 100 == 1)
+            log_this = self._dbg_n % 100 == 1
             try:
                 st = T.dll.RTA_BusTriggerStart(T.pointer(dev.dev))
-            except Exception as e:
-                _dbg('STEP #%d trigger EXC %r' % (self._dbg_n, e))
+            except Exception as exc:
+                _dbg('STEP #%d trigger EXC %r' % (self._dbg_n, exc))
                 return [], []
             if log_this:
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
                 return [], []
-            # Continuous mode (official pattern): Get blocks until the acq window is
-            # filled (~6ms), so no pre-sleep is needed. We do NOT BusTriggerStop each
-            # round -- that call takes ~100ms (device waits for the acquisition to fully
-            # wind down) and is THE fps bottleneck; the next BusTriggerStart simply
-            # restarts the acquisition. Stopping happens only on reconfigure
-            # (_configure_locked) so the device is idle before RTA_Configuration.
             try:
-                s = T.dll.RTA_GetRealTimeSpectrum(
+                status = T.dll.RTA_GetRealTimeSpectrum(
                     dev.dev, self._trace, self._bitmap,
                     T.pointer(self._plot), T.pointer(self._trigger),
                     C.cast(C.byref(self._aux), T.POINTER(T.MeasAuxInfo_TypeDef)))
-            except Exception as e:
-                _dbg('STEP #%d Get EXC %r' % (self._dbg_n, e))
+            except Exception as exc:
+                _dbg('STEP #%d Get EXC %r' % (self._dbg_n, exc))
                 return [], []
             if log_this:
-                _dbg('STEP #%d Get ret=%s' % (self._dbg_n, s))
-            if s != 0:
+                _dbg('STEP #%d Get ret=%s' % (self._dbg_n, status))
+            if status != 0:
                 return [], []
-        pass
-        n = int(info.PacketValidPoints)
-        W = int(info.FrameWidth)
-        # The device trace is FrameWidth × PacketFrame spectrum frames concatenated
-        # in time; taking all of it would show repeated mirror images of each signal.
-        # Use the FIRST frame as the current spectrum.
-        s_full = np.frombuffer(self._trace, dtype=np.uint8, count=n).astype(np.float32) * self._plot.ScaleTodBm + self._plot.OffsetTodBm
-        s = s_full[:W]
-        f = info.StartFrequency_Hz + np.arange(W) * (info.StopFrequency_Hz - info.StartFrequency_Hz) / W
-        idx = np.linspace(0, W - 1, self.DISPLAY_POINTS).astype(np.int64)
-        s_d = s[idx].astype(np.float32)
-        f_d = f[idx]
-        # latest waterfall row: last row of bitmap, downsample width
-        W, H = int(info.FrameWidth), int(info.FrameHeight)
-        bm = np.frombuffer(self._bitmap, dtype=np.uint16, count=W * H).reshape(H, W)
-        row = bm[-1].astype(np.uint16)   # latest time slice (bottom row)
-        if W != self.WATERFALL_WIDTH:
-            row = row[np.linspace(0, W - 1, self.WATERFALL_WIDTH).astype(np.int64)]
-        maxd = int(info.MaxDensityValue)
-        fv = dev.state.freq_version
-        frame = _encode_rta(fv, f_d, s_d, row, maxd,
-                            info.StartFrequency_Hz, info.StopFrequency_Hz)
+
+            valid_points = int(info.PacketValidPoints)
+            width, height = int(info.FrameWidth), int(info.FrameHeight)
+            if width < 2 or height < 1 or valid_points < width:
+                raise RuntimeError('invalid RTA frame dimensions')
+            trace = np.frombuffer(
+                self._trace, dtype=np.uint8, count=valid_points).copy()
+            row = np.frombuffer(
+                self._bitmap, dtype=np.uint16, count=width * height
+            ).reshape(height, width)[-1].copy()
+            scale = float(self._plot.ScaleTodBm)
+            offset = float(self._plot.OffsetTodBm)
+            start_hz = float(info.StartFrequency_Hz)
+            stop_hz = float(info.StopFrequency_Hz)
+            max_density = int(info.MaxDensityValue)
+            freq_version = dev.state.freq_version
+
+        # The stream contains PacketFrame spectra. The current implementation uses the
+        # first spectrum; hardware-density semantics remain a separate validation item.
+        spectrum = trace.astype(np.float32) * scale + offset
+        spectrum = spectrum[:width]
+        freq = start_hz + np.arange(width) * (stop_hz - start_hz) / width
+        index = np.linspace(0, width - 1, self.DISPLAY_POINTS).astype(np.int64)
+        display_spectrum = spectrum[index].astype(np.float32)
+        display_freq = freq[index]
+        if width != self.WATERFALL_WIDTH:
+            row = row[np.linspace(0, width - 1, self.WATERFALL_WIDTH).astype(np.int64)]
+        frame = _encode_rta(
+            freq_version, display_freq, display_spectrum, row, max_density,
+            start_hz, stop_hz)
         return [frame], []
 
 
@@ -328,7 +344,9 @@ def _encode_rta(version, freq_hz, spec_dbm, wf_row, max_density, start_hz, stop_
     + wfRow(u2×wfLen) + stopHz(f8)."""
     import struct
     pts = len(spec_dbm)
-    hdr = b'RTAF' + struct.pack('<IIHHd', version, pts, len(wf_row), max_density, float(start_hz))
+    max_density = max(0, min(65535, int(max_density)))
+    hdr = b'RTAF' + struct.pack(
+        '<IIHHd', version, pts, len(wf_row), max_density, float(start_hz))
     payload = (freq_hz.astype(np.float64).tobytes() +
                spec_dbm.astype(np.float32).tobytes() +
                wf_row.astype(np.uint16).tobytes())

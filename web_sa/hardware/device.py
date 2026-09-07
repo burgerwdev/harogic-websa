@@ -111,7 +111,11 @@ class HarogicDevice:
             if st != 0 and st != -49:
                 self.state.last_error = 'Device_Open status=%d' % st
                 return False, self.state.last_error
-            sb.dll.DSP_Open(sb.pointer(self.dsp))
+            dsp_status = sb.dll.DSP_Open(sb.pointer(self.dsp))
+            if dsp_status != 0:
+                sb.dll.Device_Close(sb.pointer(self.dev))
+                self.state.last_error = f'DSP_Open status={dsp_status}'
+                return False, self.state.last_error
             self.state.pnm_supported = sb.PNM_SUPPORTED
             di = bi.DeviceInfo
             self.state.label = 'UID:%012X Model:%d HW:%d MFW:%d FFW:%d' % (
@@ -123,6 +127,7 @@ class HarogicDevice:
                 bus_speed=bi.BusSpeed, bus_ver=bi.BusVersion,
                 api_ver=bi.APIVersion, warnings=bi.Warnings, errors=bi.Errors)
             self.state.connected = True
+            self.state.last_error = ''
             self.configure_swp()
             self._detect_docxo()
             self.load_preset_defaults()   # read the device default config for the preset
@@ -135,9 +140,17 @@ class HarogicDevice:
     def close(self) -> None:
         with self._hw:
             try:
-                sb.dll.Device_Close(sb.pointer(self.dev))
+                if self.dsp.value:
+                    sb.dll.DSP_Close(sb.pointer(self.dsp))
             except Exception:
                 pass
+            try:
+                if self.dev.value:
+                    sb.dll.Device_Close(sb.pointer(self.dev))
+            except Exception:
+                pass
+            self.dsp = sb.c_void_p()
+            self.dev = sb.c_void_p()
             self.state.connected = False
 
     # ---------------- Configuration (ported from web_sa/server.py) ----------------
@@ -262,6 +275,7 @@ class HarogicDevice:
             self._user_stop = float(pout.StopFreq_Hz)
             self.state.config_version += 1
             self.state.freq_version += 1
+            self.state.last_error = ''
             self._read_amp_atten()
             return True, 'ok'
 
@@ -377,7 +391,10 @@ class HarogicDevice:
         with self._hw:
             try:
                 g = T.GNSSInfo_TypeDef()
-                sb.dll.Device_GetGNSSInfo(sb.pointer(self.dev), sb.pointer(g))
+                st = sb.dll.Device_GetGNSSInfo(sb.pointer(self.dev), sb.pointer(g))
+                if st != 0:
+                    self.state.last_error = f'Device_GetGNSSInfo status={st}'
+                    return {}
                 # fill in all the SDK GNSS fields: lat/lon/altitude/date-time/antenna/DOCXO work mode
                 try:
                     docxo_mode = int(g.DOCXO_WorkMode.value)

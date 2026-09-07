@@ -36,10 +36,7 @@ for w in ('Regular', 'Medium'):
 PY
 fi
 
-# npm deps + build
-if [ ! -d node_modules ]; then
-  echo "Installing npm dependencies..."
-  npm install
-fi
+# npm deps + build (always reconcile node_modules with package-lock.json)
+npm install --prefer-offline --no-audit
 npm run build
 echo "OK: frontend build complete -> frontend/modern/dist"

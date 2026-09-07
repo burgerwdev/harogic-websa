@@ -2,8 +2,10 @@
 
 后端（`web_sa/`）对外接口：**HTTP REST** + **WebSocket**（JSON 命令/状态 + 二进制迹线帧）。
 
-- 服务地址：`http://localhost:8080`（`/ws` 为 WebSocket）
+- 服务地址：`http://127.0.0.1:8080`（`/ws` 为 WebSocket）
 - 前端：modern UI（`/`），静态资源 `/static/modern/dist/{file}`
+- 默认仅监听 loopback；远程监听需设置 `WEBSA_TOKEN`，REST 使用 Bearer token，
+  浏览器/WS 可使用 `?token=...`。WebSocket 仅允许同源或 `WEBSA_ALLOWED_ORIGINS` 白名单。
 
 ---
 
@@ -119,6 +121,12 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 
 > 配置类命令（SET_*）执行后服务端自动回发最新 STATUS。
 
+> 配置命令会进行有限数值、范围、枚举、设备连接和能力校验。非法命令返回 HTTP 400
+> `{"error":"..."}`；WS 返回 `{"cmd":"ERROR","msg":"..."}`。
+>
+> 周期 STATUS 的 `stream` 字段包含 `clients`、`dropped_frames`、`dropped_control`，
+> 用于观察慢客户端触发的 latest-wins 丢帧。
+
 **命令示例：**
 
 ```js
@@ -216,7 +224,7 @@ async def main():
                     head = struct.unpack('<4sIIf', msg.data[:16])
                     magic, ver, pts, sweep_ms = head[0], head[1], head[2], head[3]
                     if magic == b'FREQ':
-                        freq = struct.unpack_from('<%df' % pts, msg.data, 16)
+                        freq = struct.unpack_from('<%dd' % pts, msg.data, 16)
                     elif magic == b'POWR':
                         # float32 功率
                         import array

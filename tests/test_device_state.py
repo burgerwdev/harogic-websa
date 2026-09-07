@@ -1,8 +1,10 @@
 """DeviceState 序列化 + build_status(WS STATUS 载荷) 单测(无设备, stub)"""
-import os, sys
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from web_sa.hardware.device import DeviceState
 from web_sa.config import DeviceCapabilities
+from web_sa.hardware.device import DeviceState
 from web_sa.web.http_api import build_status
 
 
@@ -50,10 +52,14 @@ def test_build_status_defaults():
 
 
 def test_device_state_serializable():
-    """状态字段全部可 JSON 序列化(无 NaN/对象)"""
+    """状态字段全部可 JSON 序列化，SDK 非有限浮点值清洗为 null。"""
     import json
-    s = make_state(gnss={'lock': True, 'sats': 8},
-                   actual={'center': 1e9}, harm_results=[{'n': 1, 'amp': -20.5}])
-    json.dumps(build_status(StubDevice(s)))
+    s = make_state(gnss={'lock': True, 'sats': 8, 'latitude': float('nan')},
+                   actual={'center': 1e9, 'rbw': float('inf')},
+                   harm_results=[{'n': 1, 'amp': -20.5}])
+    status = build_status(StubDevice(s))
+    json.dumps(status, allow_nan=False)
+    assert status['gnss']['latitude'] is None
+    assert status['actual']['rbw'] is None
     assert s.gnss['sats'] == 8
     assert s.harm_results[0]['amp'] == -20.5

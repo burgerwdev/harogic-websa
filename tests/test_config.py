@@ -1,6 +1,10 @@
 """config 配置常量与映射单测(无设备依赖)"""
-import os, sys
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
+
 from web_sa import config
 
 
@@ -45,3 +49,10 @@ def test_fit_span():
     assert s <= 2 * min(1e9 - c.freq_min_hz, c.freq_max_hz - 1e9)
     # 最小 span 下限
     assert config.fit_span(1e9, 10, c) >= 100.0
+
+
+def test_remote_listener_requires_authentication():
+    with pytest.raises(ValueError, match='WEBSA_TOKEN'):
+        config.AppConfig(host='0.0.0.0').validate()
+    config.AppConfig(host='0.0.0.0', auth_token='secret').validate()
+    config.AppConfig(host='127.0.0.1').validate()

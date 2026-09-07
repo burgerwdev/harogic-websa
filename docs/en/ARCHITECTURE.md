@@ -3,9 +3,9 @@
 ## Overview
 ```
 Browser (frontend/modern: TS + Vite)
-   │  WS binary frames (FREQ/POWR) + WS JSON (STATUS/commands/HARM/PNM)
+   │  bounded latest-wins binary frames + WS JSON
    ▼
-web_sa/ (Python package, single-process aiohttp, serialized device calls)
+Supervisor → web_sa worker (aiohttp + serialized SDK access; restart on native crash/timeout)
    │
    ▼
 htra_api.py → libhtraapi.so → USB → SAN series analyzer
@@ -22,6 +22,9 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 2. **Model capability derivation**: DeviceCapabilities (SAN-45/60/90 frequency ranges), no hardcoding
 3. **Frontend peak-preserving resampling**: backend sends device-native traces; frontend `resampleTrace` handles points (peak-preserving, no interpolation artifacts)
 4. **Frame protocol**: 16-byte header (magic+ver+points+sweep_ms) + data; POWR forced to float32
+5. **Client backpressure**: one sender per WS; retain FREQ/JSON and use latest-wins for POWR/RTAF
+6. **Secure default**: loopback listener, token required remotely, static files confined to the build root
+7. **Failure recovery**: SDK calls leave the asyncio thread; supervisor restarts after native crash/fatal timeout
 
 ## Frame Protocol
 | Type | Header | Data |

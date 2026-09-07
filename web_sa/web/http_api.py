@@ -3,16 +3,62 @@ web/http_api.py -- REST routes + STATUS serialization
 """
 from __future__ import annotations
 
+import asyncio
+import hmac
+import logging
+import math
 import os
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from .ws import _dispatch
+from .app_keys import COMMAND_LOCK, LOGGER
+from .ws import CommandError, _dispatch
+
+
+def _json_safe(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def security_middleware(cfg):
+    """Protect hardware-control endpoints and reject cross-origin WebSockets."""
+    @web.middleware
+    async def middleware(request, handler):
+        if request.path.startswith('/api/') or request.path == '/ws':
+            if cfg.auth_token:
+                auth = request.headers.get('Authorization', '')
+                supplied = auth[7:] if auth.startswith('Bearer ') else request.query.get('token', '')
+                if not hmac.compare_digest(supplied, cfg.auth_token):
+                    raise web.HTTPUnauthorized(text='authentication required')
+
+        if request.path in ('/ws', '/api/config'):
+            origin = request.headers.get('Origin')
+            if origin:
+                parsed = urlsplit(origin)
+                normalized = f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
+                same_host = parsed.scheme in ('http', 'https') and parsed.netloc == request.host
+                if not same_host and normalized not in cfg.origin_allowlist:
+                    raise web.HTTPForbidden(text='request origin not allowed')
+
+        response = await handler(request)
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        response.headers['X-Frame-Options'] = 'DENY'
+        return response
+
+    return middleware
 
 
 def build_status(dev) -> dict:
     s = dev.state
-    return {
+    return _json_safe({
         'cmd': 'STATUS', 'connected': s.connected, 'device': s.label,
         'device_detail': s.device_detail,
         'center': s.center_hz, 'span': s.span_hz, 'ref': s.ref_level,
@@ -36,35 +82,59 @@ def build_status(dev) -> dict:
         'refclk_ppm': s.refclk_ppm, 'calibrating': s.calibrating, 'refclk_out': s.refclk_out,
         'last_cal_freq': s.last_cal_freq,
         'gnss': s.gnss, 'last_error': s.last_error,
-    }
+    })
 
 
 def make_routes(app, dev, static_dir):
     """Register routes directly on app.router."""
+    if COMMAND_LOCK not in app:
+        app[COMMAND_LOCK] = asyncio.Lock()
+    if LOGGER not in app:
+        app[LOGGER] = logging.getLogger(__name__)
 
     async def state(request):
-        return web.json_response(build_status(dev))
+        async with app[COMMAND_LOCK]:
+            status = build_status(dev)
+        return web.json_response(status)
 
     async def config(request):
         try:
             data = await request.json()
         except Exception:
             return web.json_response({'error': 'bad json'}, status=400)
-        await _dispatch(dev, data.get('cmd'), data)
-        return web.json_response(build_status(dev))
+        if not isinstance(data, dict):
+            return web.json_response({'error': 'JSON body must be an object'}, status=400)
+        try:
+            async with app[COMMAND_LOCK]:
+                changed = await _dispatch(dev, data.get('cmd'), data)
+        except CommandError as exc:
+            return web.json_response({'error': str(exc)}, status=400)
+        except Exception as exc:
+            request.app[LOGGER].exception('HTTP command failed')
+            return web.json_response({'error': str(exc)}, status=503)
+        status = build_status(dev)
+        status['changed'] = changed
+        return web.json_response(status)
 
-    # Frontend: modern (TS rewrite, i18n + theming)
+    static_root = Path(static_dir, 'modern', 'dist').resolve()
+
     async def index(request):
-        return web.FileResponse(os.path.join(static_dir, 'modern', 'dist', 'index.html'))
+        index_file = static_root / 'index.html'
+        if not index_file.is_file():
+            raise web.HTTPServiceUnavailable(text='frontend is not built')
+        return web.FileResponse(index_file)
 
     app.router.add_get('/api/state', state)
     app.router.add_post('/api/config', config)
     app.router.add_get('/', index)
-    # modern frontend assets: /static/modern/dist/...
     async def modern_static(request):
-        name = request.match_info['file'].split('?')[0]
-        safe = os.path.normpath(name)
-        if safe.startswith('..'):
-            return web.Response(status=403)
-        return web.FileResponse(os.path.join(static_dir, 'modern', 'dist', safe))
+        try:
+            target = (static_root / request.match_info['file']).resolve()
+            if os.path.commonpath((str(static_root), str(target))) != str(static_root):
+                raise web.HTTPForbidden(text='invalid static path')
+        except (OSError, ValueError) as exc:
+            raise web.HTTPForbidden(text='invalid static path') from exc
+        if not target.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(target)
     app.router.add_get('/static/modern/dist/{file:.*}', modern_static)

@@ -1,6 +1,6 @@
 # Known Limitations & Notes
 
-1. **Occasional libhtraapi segfault**: fast reconfiguration / extreme configs may crash; restart the service to recover, the device may need replug
+1. **Occasional libhtraapi segfault/block**: the supervisor restarts the worker after a native crash or call timeout; a fully wedged device may still require replugging. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
 2. **SAStudio4 exclusivity**: device is single-handle; Device_Open returns -1 while the official software is running
 3. **External reference locking**: requires ExternalSystemClockFrequency=10 MHz correctly set with external signal present;
    Ext mode falls back to internal on unlock (normal device behavior); use ExtForce to force

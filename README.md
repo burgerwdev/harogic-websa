@@ -45,7 +45,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 ### Prerequisites
 
-- Python ≥ 3.10 (aiohttp)
+- Python ≥ 3.10 (aiohttp, NumPy; pyserial is optional for hardware smoke tests)
 - Node.js ≥ 18 (only needed to rebuild the frontend)
 - Harogic SAN series analyzer + official SDK:
   - `htra_api.py` — included in the repo root (official Python wrapper, HAROGIC copyright)
@@ -64,7 +64,16 @@ cd frontend/modern && npm install && npm run build   # frontend build (dist incl
 ./run.sh
 ```
 
-Open http://localhost:8080
+Open http://127.0.0.1:8080
+
+The service listens on loopback by default. Remote control requires a token:
+
+```bash
+WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
+```
+
+Then open `http://device-address:8080/?token=the-same-token`. See
+[`docs/zh-CN/P0_HARDENING.md`](docs/zh-CN/P0_HARDENING.md) for hardening and hardware-test details.
 
 ### 3. Test
 
@@ -76,7 +85,7 @@ Open http://localhost:8080
 
 ```
 harogic-websa/
-├─ web_sa/               backend (aiohttp, single process, serialized device calls)
+├─ web_sa/               backend (supervisor + aiohttp worker, serialized device calls)
 │  ├─ hardware/          sdk_bindings.py (only DLL contact point) / device.py
 │  ├─ measurements/      Std/Harmonic/PhaseNoise sessions + framer (frame protocol)
 │  └─ web/               ws.py / http_api.py / publisher.py
@@ -95,7 +104,7 @@ harogic-websa/
 
 | Script | Description |
 |---|---|
-| `./run.sh` | Start service (single-shot, no retry loop) |
+| `./run.sh` | Start supervisor + WebSA worker; restart after native SDK crash/fatal timeout |
 | `./stop.sh` | Stop service |
 | `./clean.sh` | Clean caches / logs / build artifacts |
 | `./test.sh` | Backend pytest + frontend vitest |
@@ -103,8 +112,8 @@ harogic-websa/
 
 ## Tests
 
-- **Backend (14)**: frame protocol encode/decode + float32 dtype guard, config constants & SAN model capability derivation, `DeviceState` serialization & `build_status` payload, HTTP API endpoints (`/api/state`, `/api/config`) via aiohttp TestClient with a stubbed device — **no hardware required**
-- **Frontend (13)**: DSP engine with synthetic traces — S-G smoothing (peak/edge preservation), parabola sub-bin fit, excursion filter, peak/valley detection & 25-bin depression merging, peak-preserving resample, normalization reference building — **no hardware required**
+- **Backend (35)**: protocol, configuration/security defaults, command validation, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
+- **Frontend (15)**: synthetic-trace DSP, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
 
 ## Open-Source Notes
 

@@ -57,15 +57,21 @@ export function applyCenterSpan() {
   send({ cmd: 'SET_FREQ', center: S.centerHz, span: S.spanHz });
 }
 export function applyStartStop() {
-  let start = Math.max(100000, parseFreqUnit('start'));
-  let stop = parseFreqUnit('stop');
+  let start = Math.max(S.FREQ_MIN, parseFreqUnit('start'));
+  let stop = Math.min(S.FREQ_MAX, parseFreqUnit('stop'));
   if (stop <= start) stop = start + 1000;
   S.setCenterHz((start + stop) / 2);
   S.setSpanHz(fitSpan(S.centerHz, stop - start));
   updateFreqUIInputs();
   send({ cmd: 'SET_FREQ', center: S.centerHz, span: S.spanHz });
 }
-export function applyFullSpan() { send({ cmd: 'SET_FREQ', center: 4.50005e9, span: 8.9999e9 }); }
+export function applyFullSpan() {
+  send({
+    cmd: 'SET_FREQ',
+    center: (S.FREQ_MIN + S.FREQ_MAX) / 2,
+    span: S.FREQ_MAX - S.FREQ_MIN,
+  });
+}
 
 export function setRefLevel() {
   const el = document.getElementById('input-ref') as HTMLInputElement;
@@ -177,9 +183,15 @@ export function activeMarkerNextValleyRight() { nextExtreme('right', false); }
 export function markerToCenter() {
   const m = S.markers.find(x => x.id === S.activeMkrId);
   if (!m || !m.enabled) return;
-  S.setCenterHz(markerFreqHz(m.idx));
-  updateFreqUIInputs();
-  send({ cmd: 'SET_FREQ', center: S.centerHz, span: S.spanHz });
+  const center = markerFreqHz(m.idx);
+  if (S.rtaMode) {
+    S.setRtaCenterHz(center);
+    send({ cmd: 'SET_RTA', center });
+  } else {
+    S.setCenterHz(center);
+    updateFreqUIInputs();
+    send({ cmd: 'SET_FREQ', center: S.centerHz, span: S.spanHz });
+  }
 }
 export function selectMarker(id: number) {
   S.setActiveMkrId(id);
@@ -402,7 +414,10 @@ export function setSweepSpeed() {
   const mode = parseInt(sel?.value || '0');
   const time = parseFloat(tin?.value || '0');
   const m: any = { cmd: 'SET_SWEEP', mode };
-  if (mode === 6 || mode === 7 || mode === 8) m.time = isFinite(time) ? time : 0;
+  if (mode === 6 || mode === 7 || mode === 8) {
+    const minimum = mode === 7 ? 0.001 : 1;
+    m.time = Math.max(minimum, isFinite(time) ? time : minimum);
+  }
   send(m);
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏

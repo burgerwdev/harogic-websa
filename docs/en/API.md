@@ -2,8 +2,11 @@
 
 Backend (`web_sa/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames).
 
-- Service: `http://localhost:8080` (WebSocket at `/ws`)
+- Service: `http://127.0.0.1:8080` (WebSocket at `/ws`)
 - Frontend: modern UI at `/`, static assets `/static/modern/dist/{file}`
+- Loopback is the secure default. Remote listeners require `WEBSA_TOKEN`; REST accepts a
+  Bearer token and browser/WS clients accept `?token=...`. WebSockets require same-origin
+  access or an origin listed in `WEBSA_ALLOWED_ORIGINS`.
 
 ---
 
@@ -216,7 +219,7 @@ async def main():
                     head = struct.unpack('<4sIIf', msg.data[:16])
                     magic, ver, pts, sweep_ms = head[0], head[1], head[2], head[3]
                     if magic == b'FREQ':
-                        freq = struct.unpack_from('<%df' % pts, msg.data, 16)
+                        freq = struct.unpack_from('<%dd' % pts, msg.data, 16)
                     elif magic == b'POWR':
                         import array
                         pwr = array.array('f')

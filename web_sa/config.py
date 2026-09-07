@@ -7,6 +7,7 @@ capabilities (product manual V1.3)
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 
@@ -64,11 +65,15 @@ class DeviceCapabilities:
 @dataclass
 class AppConfig:
     """Application configuration: overridable via environment variables."""
-    host: str = os.getenv('WEBSA_HOST', '0.0.0.0')
+    host: str = os.getenv('WEBSA_HOST', '127.0.0.1')
     port: int = int(os.getenv('WEBSA_PORT', '8080'))
     log_level: str = os.getenv('WEBSA_LOG', 'INFO')
     log_file: str = os.getenv('WEBSA_LOGFILE', '')
     static_dir: str = os.getenv('WEBSA_STATIC', '')
+    auth_token: str = os.getenv('WEBSA_TOKEN', '')
+    allowed_origins: str = os.getenv('WEBSA_ALLOWED_ORIGINS', '')
+    allow_unauthenticated_remote: bool = os.getenv(
+        'WEBSA_ALLOW_UNAUTHENTICATED_REMOTE', '').lower() in ('1', 'true', 'yes')
     # Measurement defaults
     harm_f0: float = 1e9
     harm_count: int = 5
@@ -79,6 +84,21 @@ class AppConfig:
     pnm_start: float = 100.0
     pnm_stop: float = 10e6
     pnm_traceavg: int = 4
+
+    def validate(self) -> None:
+        """Reject accidentally exposing hardware control without authentication."""
+        try:
+            is_loopback = ipaddress.ip_address(self.host).is_loopback
+        except ValueError:
+            is_loopback = self.host.lower() == 'localhost'
+        if not is_loopback and not self.auth_token and not self.allow_unauthenticated_remote:
+            raise ValueError(
+                'Remote WEBSA_HOST requires WEBSA_TOKEN; set '
+                'WEBSA_ALLOW_UNAUTHENTICATED_REMOTE=1 only on a trusted network')
+
+    @property
+    def origin_allowlist(self) -> set[str]:
+        return {x.strip().rstrip('/') for x in self.allowed_origins.split(',') if x.strip()}
 
 
 def fit_span(center: float, span: float, cap: DeviceCapabilities) -> float:

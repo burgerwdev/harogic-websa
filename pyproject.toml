@@ -1,12 +1,13 @@
 [project]
 name = "harogic-websa-sa"
-version = "1.0.4"
+version = "1.1.0"
 description = "Harogic SAN series (45/60/90) Web Spectrum Analyzer (backend)"
 requires-python = ">=3.10"
-dependencies = ["aiohttp>=3.9"]
+dependencies = ["aiohttp>=3.9", "numpy>=1.24"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff"]
+hardware = ["pyserial>=3.5"]
 
 [tool.ruff]
 line-length = 100

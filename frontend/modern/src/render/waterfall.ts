@@ -1,6 +1,7 @@
 // 瀑布图渲染: ImageData 逐像素密度着色 + 滚动历史
 import * as S from '../core/store';
 import { canvasColors, getTheme } from '../core/theme';
+import { percentileApprox } from '../dsp/stats';
 
 // 密度 → 颜色 LUT(256 级), 按主题区分: dark=荧光系(深底亮色), light=深色系(浅底高对比)
 let lutCache: { theme: string; lut: Uint32Array } | null = null;
@@ -88,10 +89,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
 // 信号随强度渐变为红。避免固定 -110~-30 映射在窄 span(dec 大, RBW 窄 -> 噪底更低)时
 // 把底噪压成全黑、只剩信号满红的两个极端。
 export function pushRtaRow(spec: Float32Array, w: number, maxDensity: number) {
-  const sorted = Array.from(spec).filter(isFinite).sort((a, b) => a - b);
-  if (sorted.length < 4) return;
-  const floor = sorted[Math.floor(sorted.length * 0.3)];
-  const peak = sorted[Math.floor(sorted.length * 0.98)];
+  const floor = percentileApprox(spec, 0.3);
+  const peak = percentileApprox(spec, 0.98);
   const dyn = Math.max(15, peak - floor);
   const row = new Uint16Array(w);
   for (let i = 0; i < w; i++) {

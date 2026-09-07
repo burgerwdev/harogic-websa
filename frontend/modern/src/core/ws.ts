@@ -14,8 +14,12 @@ import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
+import { percentileApprox } from '../dsp/stats';
 
-let ws: WebSocket;
+let ws: WebSocket | null = null;
+let reconnectTimer: number | null = null;
+let reconnectDelay = 1000;
+let lastRtaProcess = 0;
 let lastRender = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
@@ -27,11 +31,27 @@ export function send(obj: object) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+function scheduleReconnect() {
+  if (reconnectTimer !== null) return;
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    connectWS();
+  }, reconnectDelay);
+  reconnectDelay = Math.min(10000, reconnectDelay * 2);
+}
+
 export function connectWS() {
-  ws = new WebSocket(`ws://${location.host}/ws`);
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const queryToken = new URLSearchParams(location.search).get('token');
+  if (queryToken) sessionStorage.setItem('web-sa-token', queryToken);
+  const token = sessionStorage.getItem('web-sa-token');
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  ws = new WebSocket(`${protocol}//${location.host}/ws${query}`);
   setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
+    reconnectDelay = 1000;
     send({ cmd: 'STATUS' });
     // First load: force the backend back to standard sweep. A leftover RTA session
     // keeps pushing RTAF frames (no SWP data) while the UI defaults to std ->
@@ -46,28 +66,42 @@ export function connectWS() {
       if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
     }
   };
+  ws.onerror = () => ws?.close();
   ws.onclose = () => {
     S.setDeviceConnected(false);
     updateInfoBar();
-    setTimeout(connectWS, 2000);
+    setWS(null);
+    ws = null;
+    scheduleReconnect();
   };
   ws.onmessage = (event: MessageEvent) => {
     if (typeof event.data === 'string') {
-      const msg = JSON.parse(event.data as string);
-      if (msg.cmd === 'STATUS') updateStatus(msg);
-      else if (msg.cmd === 'HARM') onHarmResult(msg.list);
-      else if (msg.cmd === 'PNM') onPnmResult(msg);
-      else if (msg.cmd === 'ERROR') alert('Device: ' + msg.msg);
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.cmd === 'STATUS') updateStatus(msg);
+        else if (msg.cmd === 'HARM') onHarmResult(msg.list);
+        else if (msg.cmd === 'PNM') onPnmResult(msg);
+        else if (msg.cmd === 'ERROR') alert('Device: ' + msg.msg);
+      } catch (error) {
+        console.error('Invalid WebSocket JSON message', error);
+      }
       return;
     }
+    if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
     const view = new DataView(event.data, 0, 16);
     const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
     const version = view.getUint32(4, true);
     const points = view.getUint32(8, true);
     const sweepMsHdr = view.getFloat32(12, true);
-    if (sweepMsHdr > 0 && sweepMsHdr !== S.sweepMs) { S.setSweepMs(sweepMsHdr); updateInfoBar(); }
+    if (magic !== 'RTAF' && sweepMsHdr > 0 && sweepMsHdr !== S.sweepMs) {
+      S.setSweepMs(sweepMsHdr);
+      updateInfoBar();
+    }
     if (points < 2) return;
     if (magic === 'RTAF') {
+      const processAt = performance.now();
+      if (processAt - lastRtaProcess < 30) return;
+      lastRtaProcess = processAt;
       // RTA 帧: magic(4) + hdr(ver u32, pts u32, wfLen u16, maxD u16, startHz f8 = 20B) → 24B 头(8 对齐)
       // 数据: freq(f8×pts) + spec(f4×pts) + wfRow(u2×wfLen) + stopHz(f8)
       const hdr = new DataView(event.data, 4, 20);
@@ -76,6 +110,8 @@ export function connectWS() {
       const wfLen = hdr.getUint16(8, true);
       const maxDensity = hdr.getUint16(10, true);
       const startHz = hdr.getFloat64(12, true);
+      const expectedBytes = 24 + pts * 8 + pts * 4 + wfLen * 2 + 8;
+      if (pts < 2 || wfLen < 1 || event.data.byteLength !== expectedBytes) return;
       let off = 24;
       const freq = new Float64Array(event.data, off, pts); off += pts * 8;
       const spec = new Float32Array(event.data, off, pts); off += pts * 4;
@@ -115,8 +151,7 @@ export function connectWS() {
         lastDensRef = refTop; lastDensRange = dispRange;
       }
       const len2 = spec.length * S.RTA_AMP_BINS;
-      const srt = Array.from(spec).sort((a, b) => a - b);
-      const floorN = srt[Math.floor(spec.length * 0.3)];
+      const floorN = percentileApprox(spec, 0.3);
       // Amplitude-graded weight: how far a point sits above the noise floor decides how
       // strongly it accumulates. Weak signals (>3 dB) still leave a light density cloud
       // so the density map covers the whole trace; the floor ripple itself stays out.
@@ -196,12 +231,14 @@ export function connectWS() {
       return;
     }
     if (magic === 'FREQ') {
+      if (event.data.byteLength !== 16 + points * 8) return;
       S.setFreqArray(new Float64Array(event.data, 16, points));
       S.setFreqVersion(version);
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(points);
       retrackMarkers();
     } else if (magic === 'POWR') {
+      if (event.data.byteLength !== 16 + points * 4) return;
       if (version !== S.freqVersion) return;
       const raw = new Float32Array(event.data, 16, points);
       processTraces(raw);
@@ -215,6 +252,8 @@ export function connectWS() {
 }
 
 export function updateStatus(s: any) {
+  if (!s || !s.req || !s.actual) return;
+  if (s.caps) S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
   // RTA keeps its own center (req.rta_center); SWP center comes from actual/req.center
   if (s.req && s.req.rta_center > 0) S.setRtaCenterHz(s.req.rta_center);
   S.setCenterHz(s.actual.center > 0 ? s.actual.center : s.req.center);

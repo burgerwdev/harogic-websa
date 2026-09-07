@@ -1,15 +1,22 @@
 #!/bin/bash
-# Test: backend pytest + frontend vitest (if deps installed)
-set -e
+# Test backend, static checks, and frontend. Any failed stage fails the script.
+set -euo pipefail
 cd "$(dirname "$0")"
+
 echo "==== Backend tests (pytest) ===="
-python3 -m pytest tests/ -v 2>&1 | tail -15
+python3 -m pytest tests/ -q
+
+echo
+echo "==== Python static checks (ruff) ===="
+python3 -m ruff check web_sa tests tools
 
 echo
 echo "==== Frontend tests (vitest) ===="
 if [ -d frontend/modern/node_modules ]; then
-  (cd frontend/modern && npx vitest run 2>&1 | tail -12)
+  (cd frontend/modern && npm test -- --reporter=dot)
 else
-  echo "Frontend deps not installed, skipped (cd frontend/modern && npm install then rerun)"
+  echo "Frontend deps not installed, run ./build.sh first"
+  exit 1
 fi
+
 echo "OK: tests complete"

@@ -1,81 +1,95 @@
-"""
-web/publisher.py -- data push scheduler
-
-Source: migrated from the publisher of web_sa/server.py (v0.11.1); after session
-objectification it only does scheduling.
-"""
+"""Data acquisition and non-blocking fan-out scheduler."""
 from __future__ import annotations
 
 import asyncio
-import json
+import logging
+import os
 import time
 
-from ..config import PUBLISH_MIN_INTERVAL, GNSS_POLL_INTERVAL
+from ..config import GNSS_POLL_INTERVAL, PUBLISH_MIN_INTERVAL
+from .app_keys import COMMAND_LOCK, WS_CLIENTS
 
-STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL   # periodic STATUS push interval (aligned with GNSS polling ~2s)
+log = logging.getLogger(__name__)
+STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL
+ERROR_LOG_INTERVAL = 5.0
+CLIENT_SEND_TIMEOUT = 5.0
+
+
+def _acquisition_timeout(dev) -> float:
+    if dev.state.mode == 'rta':
+        return 5.0
+    estimated = float(dev.state.actual.get('est_min', 0.0) or 0.0)
+    configured = dev.state.sweep_time if dev.state.sweep_time_mode == 7 else 0.0
+    return max(10.0, min(180.0, max(estimated, configured) * 1.5 + 5.0))
 
 
 async def publisher(app, dev):
     last_freq_ver = -1
     last_status_push = 0.0
+    last_error_log = 0.0
     while True:
         t0 = time.monotonic()
-        if app['ws']:
-            # Push STATUS periodically (aligned with the GNSS polling rhythm):
-            # keeps device states like GNSS lock / reference clock output / calibration
-            # status automatically refreshed, so the frontend page need not be reloaded
-            if time.monotonic() - last_status_push >= STATUS_PUSH_INTERVAL:
-                last_status_push = time.monotonic()
+        clients = app[WS_CLIENTS]
+        if clients:
+            if t0 - last_status_push >= STATUS_PUSH_INTERVAL:
+                last_status_push = t0
                 from .http_api import build_status
-                await _send_json(app, build_status(dev))
+                async with app[COMMAND_LOCK]:
+                    status = build_status(dev)
+                status['stream'] = {
+                    'clients': len(clients),
+                    'dropped_frames': sum(client.dropped_frames for client in clients),
+                    'dropped_control': sum(client.dropped_control for client in clients),
+                }
+                _send_json(app, status)
             try:
-                # RTA Get transfers ~2MB/frame; run on a worker thread (libhtraapi
-                # RTA calls behave differently on the asyncio thread -> crash)
-                if dev.state.mode == 'rta':
-                    frames, msgs = await asyncio.to_thread(dev.step)
-                else:
-                    frames, msgs = dev.step()
-                # send FREQ frames only when the version changes
+                # All SDK access runs outside the event loop and shares command_lock with
+                # configuration/GNSS operations. This prevents old-data fetches from
+                # interleaving with a state mutation and keeps HTTP/WS responsive.
+                async with app[COMMAND_LOCK]:
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(dev.step), timeout=_acquisition_timeout(dev))
+                    except asyncio.TimeoutError:
+                        log.critical('Acquisition timed out; terminating worker for recovery')
+                        os._exit(70)
+                frames, msgs = result if result is not None else ([], [])
                 if dev.state.mode == 'std':
-                    for fr in frames:
-                        magic = fr[:4]
-                        ver = int.from_bytes(fr[4:8], "little")
+                    for frame in frames:
+                        magic = frame[:4]
+                        version = int.from_bytes(frame[4:8], 'little')
                         if magic == b'FREQ':
-                            if ver == last_freq_ver:
+                            if version == last_freq_ver:
                                 continue
-                            last_freq_ver = ver
-                        await _send_bytes(app, fr)
+                            last_freq_ver = version
+                        _send_bytes(app, frame)
                 else:
-                    for fr in frames:
-                        await _send_bytes(app, fr)
-                for m in msgs:
-                    await _send_json(app, m)
-            except Exception:
-                pass
+                    for frame in frames:
+                        _send_bytes(app, frame)
+                for message in msgs:
+                    _send_json(app, message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                dev.state.last_error = f'publisher: {exc!r}'
+                if t0 - last_error_log >= ERROR_LOG_INTERVAL:
+                    last_error_log = t0
+                    log.exception('Acquisition step failed')
+
         dt = time.monotonic() - t0
-        # measured sweep time EMA (frame interval -> SWT display)
-        if app['ws']:
-            try:
-                dev.measure_sweep(dt)
-            except Exception:
-                pass
-        if dt < PUBLISH_MIN_INTERVAL:
-            await asyncio.sleep(PUBLISH_MIN_INTERVAL - dt)
-        else:
-            await asyncio.sleep(0.002)
+        if clients:
+            dev.measure_sweep(dt)
+        await asyncio.sleep(max(0.002, PUBLISH_MIN_INTERVAL - dt))
 
 
-async def _send_bytes(app, frame):
-    for ws in list(app['ws']):
+def _send_bytes(app, frame):
+    for client in tuple(app[WS_CLIENTS]):
+        client.publish_bytes(frame)
+
+
+def _send_json(app, obj):
+    for client in tuple(app[WS_CLIENTS]):
         try:
-            await ws.send_bytes(frame)
-        except Exception:
-            pass
-
-
-async def _send_json(app, obj):
-    for ws in list(app['ws']):
-        try:
-            await ws.send_str(json.dumps(obj))
-        except Exception:
-            pass
+            client.publish_json(obj)
+        except (TypeError, ValueError):
+            log.exception('Invalid JSON payload dropped')

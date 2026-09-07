@@ -6,22 +6,168 @@ refactored into a command table.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import math
+import os
 
 from aiohttp import WSMsgType, web
+
+from .app_keys import COMMAND_LOCK, WS_CLIENTS
+from .client_stream import ClientStream
+
+log = logging.getLogger(__name__)
+
+
+class CommandError(ValueError):
+    """A client command is malformed or cannot be applied in the current state."""
+
+
+_COMMANDS = {
+    'STATUS', 'CONNECT', 'SET_PRESET', 'CAL_REFCLK', 'SET_FREQ', 'SET_REF',
+    'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR', 'SET_WINDOW',
+    'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT', 'SET_MODE', 'SET_RTA', 'SET_HARM',
+    'SET_PNM',
+}
+
+
+def _number(data, key, *, minimum=None, maximum=None, required=False):
+    if key not in data:
+        if required:
+            raise CommandError(f'missing {key}')
+        return None
+    value = data[key]
+    if isinstance(value, bool):
+        raise CommandError(f'{key} must be a number')
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise CommandError(f'{key} must be a number') from None
+    if not math.isfinite(value):
+        raise CommandError(f'{key} must be finite')
+    if minimum is not None and value < minimum:
+        raise CommandError(f'{key} must be >= {minimum}')
+    if maximum is not None and value > maximum:
+        raise CommandError(f'{key} must be <= {maximum}')
+    data[key] = value
+    return value
+
+
+def _integer(data, key, *, minimum=None, maximum=None, required=False):
+    value = _number(data, key, minimum=minimum, maximum=maximum, required=required)
+    if value is None:
+        return None
+    if not value.is_integer():
+        raise CommandError(f'{key} must be an integer')
+    data[key] = int(value)
+    return data[key]
+
+
+def _choice(data, key, choices, *, required=False):
+    if key not in data:
+        if required:
+            raise CommandError(f'missing {key}')
+        return None
+    value = data[key]
+    if value not in choices:
+        raise CommandError(f'{key} must be one of {", ".join(map(str, choices))}')
+    return value
+
+
+def _validate_command(dev, cmd, data):
+    if not isinstance(data, dict) or not isinstance(cmd, str) or cmd not in _COMMANDS:
+        raise CommandError('unknown or missing command')
+    if cmd not in ('STATUS', 'CONNECT') and not dev.state.connected:
+        raise CommandError('device is not connected')
+
+    caps = dev.state.caps
+    if cmd == 'CAL_REFCLK':
+        _integer(data, 'count', minimum=3, maximum=120)
+    elif cmd == 'SET_FREQ':
+        if caps is None:
+            raise CommandError('device capabilities are unavailable')
+        _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
+        _number(data, 'span', minimum=100.0, maximum=2 * caps.freq_max_hz)
+        if 'center' not in data and 'span' not in data:
+            raise CommandError('SET_FREQ requires center or span')
+    elif cmd == 'SET_REF':
+        _number(data, 'ref', minimum=-50.0, maximum=30.0, required=True)
+    elif cmd == 'SET_RBW':
+        mode = _choice(data, 'mode', ('manual', 'auto')) or 'auto'
+        if mode == 'manual':
+            _number(data, 'rbw', minimum=100.0, maximum=10e6, required=True)
+    elif cmd == 'SET_VBW':
+        mode = _choice(data, 'mode', ('manual', 'equal', 'tenth', 'bypass', 'onethousandth')) or 'bypass'
+        if mode == 'manual':
+            _number(data, 'vbw', minimum=10.0, maximum=10e6, required=True)
+    elif cmd == 'SET_SWEEP':
+        mode = _integer(data, 'mode', minimum=0, maximum=8)
+        mode = dev.state.sweep_time_mode if mode is None else mode
+        if mode == 7:
+            _number(data, 'time', minimum=0.001, maximum=60.0, required=True)
+        elif mode in (6, 8):
+            _number(data, 'time', minimum=1.0, maximum=1000.0, required=True)
+        else:
+            _number(data, 'time', minimum=0.0, maximum=60.0)
+    elif cmd == 'SET_POINTS':
+        _integer(data, 'points', minimum=51, maximum=4000, required=True)
+    elif cmd == 'SET_SPUR':
+        _choice(data, 'mode', ('bypass', 'standard', 'enhanced'), required=True)
+    elif cmd == 'SET_WINDOW':
+        _integer(data, 'window', minimum=0, maximum=4, required=True)
+    elif cmd == 'SET_AMP':
+        _integer(data, 'atten', minimum=-1, maximum=33)
+        _integer(data, 'preamp', minimum=0, maximum=1)
+        _integer(data, 'ifgain', minimum=0, maximum=3)
+        _integer(data, 'gain_strategy', minimum=0, maximum=1)
+    elif cmd == 'SET_REFCK':
+        _choice(data, 'mode', ('internal', 'external', 'premium', 'external_forced'), required=True)
+    elif cmd == 'SET_REFCKOUT':
+        if not isinstance(data.get('on'), bool):
+            raise CommandError('on must be a boolean')
+    elif cmd == 'SET_MODE':
+        mode = _choice(data, 'mode', ('std', 'harmonic', 'pnm', 'rta'), required=True)
+        if mode == 'pnm' and not dev.state.pnm_supported:
+            raise CommandError('phase-noise measurement is not supported')
+    elif cmd == 'SET_RTA':
+        if caps is None:
+            raise CommandError('device capabilities are unavailable')
+        _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
+        _number(data, 'span', minimum=1000.0, maximum=50.78125e6)
+        if 'center' not in data and 'span' not in data:
+            raise CommandError('SET_RTA requires center or span')
+    elif cmd == 'SET_HARM':
+        if caps is None:
+            raise CommandError('device capabilities are unavailable')
+        _number(data, 'f0', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
+        _integer(data, 'count', minimum=1, maximum=10)
+        _number(data, 'span', minimum=1.0, maximum=100e6)
+    elif cmd == 'SET_PNM':
+        if caps is None:
+            raise CommandError('device capabilities are unavailable')
+        _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
+        _number(data, 'threshold', minimum=-150.0, maximum=30.0)
+        _integer(data, 'traceavg', minimum=1, maximum=1000)
+        start = _number(data, 'start', minimum=1.0, maximum=9e6)
+        stop = _number(data, 'stop', minimum=10.0, maximum=10e6)
+        if start is not None and stop is not None and start >= stop:
+            raise CommandError('start must be lower than stop')
 
 
 def make_ws_handler(app, dev):
     async def handler(request):
         ws = web.WebSocketResponse(max_msg_size=32 * 1024 * 1024)
         await ws.prepare(request)
-        app['ws'].add(ws)
+        channel = ClientStream(ws)
+        channel.start()
+        app[WS_CLIENTS].add(channel)
         # New client connects: push the most recent frequency axis (FREQ frames are only
         # sent when the version changes, otherwise a new client would have no freq)
         if dev.last_freq is not None:
             try:
                 from ..measurements.framer import encode_freq
-                await ws.send_bytes(encode_freq(dev.last_freq_ver, dev.last_freq, 0.0))
+                channel.publish_bytes(encode_freq(dev.last_freq_ver, dev.last_freq, 0.0))
             except Exception:
                 pass
         try:
@@ -30,25 +176,31 @@ def make_ws_handler(app, dev):
                     continue
                 try:
                     data = json.loads(msg.data)
+                    if not isinstance(data, dict):
+                        raise CommandError('JSON message must be an object')
+                    cmd = data.get('cmd')
+                    if cmd == 'STATUS':
+                        from .http_api import build_status
+                        async with app[COMMAND_LOCK]:
+                            channel.publish_json(build_status(dev))
+                        continue
+                    async with app[COMMAND_LOCK]:
+                        changed = await _dispatch(dev, cmd, data)
+                    if changed:
+                        from .http_api import build_status
+                        async with app[COMMAND_LOCK]:
+                            channel.publish_json(build_status(dev))
+                except CommandError as exc:
+                    channel.publish_json({'cmd': 'ERROR', 'msg': str(exc)})
                 except Exception:
-                    continue
-                cmd = data.get('cmd')
-                if cmd == 'STATUS':
-                    from .http_api import build_status
-                    await ws.send_str(json.dumps(build_status(dev)))
-                    continue
-                changed = await _dispatch(dev, cmd, data)
-                if changed:
-                    from .http_api import build_status
-                    await ws.send_str(json.dumps(build_status(dev)))
+                    log.exception('WebSocket command failed')
+                    channel.publish_json({'cmd': 'ERROR', 'msg': 'command failed'})
         finally:
-            app['ws'].discard(ws)
+            app[WS_CLIENTS].discard(channel)
+            await channel.close()
         return ws
 
     return handler
-
-
-import asyncio as _asyncio
 
 
 async def _dispatch(dev, cmd, data) -> bool:
@@ -60,9 +212,21 @@ async def _dispatch(dev, cmd, data) -> bool:
     answers slowly. The device watchdog recovers the hardware; the next reconfigure
     succeeds on its own.
     """
+    _validate_command(dev, cmd, data)
     s = dev.state
-    async def _hw_call(fn, *a, timeout=12.0, **kw):
-        await _asyncio.wait_for(_asyncio.to_thread(fn, *a, **kw), timeout=timeout)
+
+    async def _hw_call(fn, *a, timeout=20.0, **kw):
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fn, *a, **kw), timeout=timeout)
+        except asyncio.TimeoutError:
+            s.last_error = f'{getattr(fn, "__name__", "hardware call")} timed out'
+            log.critical('%s; terminating worker for supervisor recovery', s.last_error)
+            os._exit(70)
+
+    async def _configure_swp():
+        result = await _hw_call(dev.configure_swp)
+        if result and result[0] is False:
+            raise CommandError(result[1])
 
     if cmd == 'SET_PRESET':
         # Preset covers BOTH modes without switching the current one:
@@ -77,7 +241,7 @@ async def _dispatch(dev, cmd, data) -> bool:
             # the asyncio thread stalls the publisher/data flow)
             await _hw_call(sess.reset_defaults)
             return True
-        await _hw_call(dev.configure_swp)   # SWP active: apply SWP defaults now
+        await _configure_swp()   # SWP active: apply SWP defaults now
         return True
     if cmd == 'CAL_REFCLK':
         # Run GNSS 1PPS calibration on a background thread, pausing the publisher during
@@ -85,40 +249,52 @@ async def _dispatch(dev, cmd, data) -> bool:
         async def _cal():
             cnt = int(data.get('count', 10))
             try:
-                ok, freq = await asyncio.wait_for(
-                    asyncio.to_thread(dev.calibrate_ref_clock, cnt),
-                    timeout=cnt * 1.2 + 10)   # DLL may hang if GNSS 1PPS is unavailable; timeout protection
+                command_lock = getattr(dev, 'command_lock', None)
+                if command_lock is None:
+                    task = asyncio.to_thread(dev.calibrate_ref_clock, cnt)
+                    ok, freq = await asyncio.wait_for(task, timeout=cnt * 1.2 + 10)
+                else:
+                    async with command_lock:
+                        task = asyncio.to_thread(dev.calibrate_ref_clock, cnt)
+                        ok, freq = await asyncio.wait_for(task, timeout=cnt * 1.2 + 10)
                 if ok:
                     dev.state.last_cal_freq = freq
                     dev.state.refclk_ppm = (freq / 100e6 - 1.0) * 1e6
-            except Exception:
-                pass
+            except asyncio.TimeoutError:
+                s.last_error = 'reference calibration timed out'
+                log.critical('%s; terminating worker for supervisor recovery', s.last_error)
+                os._exit(70)
+            except Exception as exc:
+                s.last_error = f'reference calibration failed: {exc}'
+                log.exception('Reference-clock calibration failed')
             finally:
-                dev.state.calibrating = False   # reset on timeout/failure (frontend button recovers)
+                dev.state.calibrating = False
         if not dev.state.calibrating:
             dev.state.calibrating = True
-            asyncio.ensure_future(_cal())
+            asyncio.create_task(_cal())
         return True
     if cmd == 'STATUS':
         return False
     if cmd == 'CONNECT':
-        return False
+        if s.connected:
+            return False
+        ok, err = await _hw_call(dev.open)
+        if not ok:
+            raise CommandError(err)
+        return True
     if cmd == 'SET_FREQ':
         if 'center' in data:
-            s.center_hz = float(data['center'])
+            s.center_hz = data['center']
         if 'span' in data:
             from ..config import fit_span
-            s.span_hz = fit_span(s.center_hz, float(data['span']), s.caps)
-        dev.configure_swp()
+            s.span_hz = fit_span(s.center_hz, data['span'], s.caps)
+        await _configure_swp()
         return True
     if cmd == 'SET_REF':
-        s.ref_level = float(data.get('ref', s.ref_level))
-        # Note: previously tried "reading back the actual attenuation and locking it to a
-        # fixed value" to mitigate auto attenuation oscillation under a noise source, but
-        # in manual attenuation mode ref and atten are deeply coupled (ref=atten-10), so
-        # users could not set ref level independently -> rolled back, keeping auto atten
-        # (ref independent)
-        dev.configure_swp()
+        s.ref_level = data['ref']
+        # Ref level remains a hardware setting for API clients; the current frontend
+        # treats its reference-level control as display-only.
+        await _configure_swp()
         return True
     # In RTA mode, SWP-only params (VBW/window/points/amp/spur) are not applicable;
     # applying them reconfigures the device behind the RTA session -> spectrum freezes.
@@ -127,30 +303,26 @@ async def _dispatch(dev, cmd, data) -> bool:
     if dev.state.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_AMP', 'SET_SPUR'):
         return False
     if cmd == 'SET_RBW':
-        print('DBG SET_RBW mode=%s state.mode=%s sess=%s' % (
-            data.get('mode'), dev.state.mode, dev.session.name if dev.session else None), flush=True)
         sess = dev.session
         if sess is not None and sess.name == 'rta':
-            await _hw_call(sess.set_rbw,
-                           mode=data.get('mode', 'auto'), rbw=data.get('rbw', 0))
+            await _hw_call(sess.set_rbw, mode=data.get('mode', 'auto'), rbw=data.get('rbw', 0))
             return True
         if 'mode' in data:
-            s.rbw_mode = data['mode'] if data['mode'] in ('manual', 'auto') else s.rbw_mode
+            s.rbw_mode = data['mode']
         if 'rbw' in data:
-            s.rbw_hz = float(data['rbw'])
-        dev.configure_swp()
+            s.rbw_hz = data['rbw']
+        await _configure_swp()
         return True
     if cmd == 'SET_VBW':
         sess = dev.session
         if sess is not None and sess.name == 'rta':
-            await _hw_call(sess.set_vbw,
-                           mode=data.get('mode', 'equal'), vbw=data.get('vbw', 0))
+            await _hw_call(sess.set_vbw, mode=data.get('mode', 'equal'), vbw=data.get('vbw', 0))
             return True
-        if 'mode' in data and data['mode'] in ('manual', 'equal', 'tenth', 'bypass', 'onethousandth'):
+        if 'mode' in data:
             s.vbw_mode = data['mode']
         if 'vbw' in data:
-            s.vbw_hz = float(data['vbw'])
-        dev.configure_swp()
+            s.vbw_hz = data['vbw']
+        await _configure_swp()
         return True
     if cmd == 'SET_SWEEP':
         # RTA mode: sweep speed goes to the RTA session (RTA_Profile.SweepTimeMode)
@@ -165,22 +337,20 @@ async def _dispatch(dev, cmd, data) -> bool:
                 s.sweep_time_mode = m
         if 'time' in data:
             s.sweep_time = max(0.0, min(1e6, float(data['time'])))
-        dev.configure_swp()
+        await _configure_swp()
         return True
     if cmd == 'SET_POINTS':
-        s.points_req = int(max(51, min(4000, int(data.get('points', 1000)))))
-        dev.configure_swp()
+        s.points_req = data['points']
+        await _configure_swp()
         return True
     if cmd == 'SET_SPUR':
-        if data.get('mode') in ('bypass', 'standard', 'enhanced'):
-            s.spur_mode = data['mode']
-            dev.configure_swp()
-            return True
+        s.spur_mode = data['mode']
+        await _configure_swp()
+        return True
     if cmd == 'SET_WINDOW':
-        if 0 <= int(data.get('window', 1)) <= 4:
-            s.window = int(data['window'])
-            dev.configure_swp()
-            return True
+        s.window = data['window']
+        await _configure_swp()
+        return True
     if cmd == 'SET_AMP':
         if 'atten' in data:
             s.atten = int(max(-1, min(33, int(data['atten']))))
@@ -190,19 +360,16 @@ async def _dispatch(dev, cmd, data) -> bool:
             s.ifgain = int(max(0, min(3, int(data['ifgain']))))
         if 'gain_strategy' in data:
             s.gain_strategy = 1 if data['gain_strategy'] else 0
-        dev.configure_swp()
+        await _configure_swp()
         return True
     if cmd == 'SET_REFCK':
-        mode = data.get('mode', 'internal')
-        if mode in ('internal', 'external', 'premium', 'external_forced'):
-            s.ref_clock = mode
-            dev.configure_swp()   # push the reference clock source to the device
-            return True
+        s.ref_clock = data['mode']
+        await _configure_swp()
+        return True
     if cmd == 'SET_REFCKOUT':
-        if 'on' in data:
-            s.refclk_out = bool(data['on'])
-            dev.configure_swp()   # push the reference clock output enable
-            return True
+        s.refclk_out = data['on']
+        await _configure_swp()
+        return True
     if cmd == 'SET_MODE':
         from ..measurements import make_session
         name = data.get('mode', 'std')

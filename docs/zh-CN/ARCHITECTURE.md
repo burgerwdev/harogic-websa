@@ -2,10 +2,10 @@
 
 ## 总览
 ```
-浏览器 (frontend/legacy: index.html + app.js + style.css)
-   │  WS 二进制帧(FREQ/POWR) + WS JSON(STATUS/命令/HARM/PNM)
+浏览器 (frontend/modern: TypeScript + Canvas)
+   │  WS 有界 latest-wins 二进制帧 + WS JSON
    ▼
-web_sa/ (Python 包, 单进程 aiohttp, 设备调用串行)
+Supervisor → web_sa worker (aiohttp + 串行 SDK 调用；native 崩溃/超时退避重启)
    │
    ▼
 htra_api.py → libhtraapi.so → USB → SAN 系列设备
@@ -22,6 +22,9 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 2. **型号能力推导**: DeviceCapabilities(SAN-45/60/90 频率范围), 不硬编码
 3. **前端保峰重采样**: 后端返回设备原生迹线, 前端 resampleTrace 处理点数(保峰, 无插值三角)
 4. **帧协议**: 16 字节头(magic+ver+points+sweep_ms) + 数据; POWR 强制 float32
+5. **客户端背压**: 每个 WS 独立发送任务；FREQ/JSON 保留，POWR/RTAF 采用 latest-wins
+6. **安全默认**: loopback 监听；远程模式要求 token；静态资源限制在构建目录内
+7. **故障恢复**: SDK 调用离开 asyncio 主线程；native 崩溃/致命超时由 supervisor 重启 worker
 
 ## 帧协议
 | 类型 | 头 | 数据 |

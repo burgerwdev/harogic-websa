@@ -7,6 +7,7 @@ Single-process aiohttp + serial SDK calls; SIGINT/SIGTERM -> os._exit(0)
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 
@@ -18,26 +19,35 @@ from .logging_setup import setup_logging
 from .measurements import make_session
 from .web import http_api, publisher
 from .web import ws as ws_module
+from .web.app_keys import (
+    COMMAND_LOCK,
+    DEVICE,
+    GNSS_TASK,
+    LOGGER,
+    PUBLISHER_TASK,
+    WS_CLIENTS,
+)
 
 
 def create_app(dev: HarogicDevice, cfg: AppConfig) -> web.Application:
-    app = web.Application()
-    app['ws'] = set()
-    app['dev'] = dev
+    app = web.Application(middlewares=[http_api.security_middleware(cfg)])
+    app[WS_CLIENTS] = set()
+    app[DEVICE] = dev
+    app[COMMAND_LOCK] = asyncio.Lock()
+    dev.command_lock = app[COMMAND_LOCK]
+    app[LOGGER] = logging.getLogger('web_sa')
 
     async def start_background(app):
-        app['publisher'] = asyncio.create_task(publisher.publisher(app, dev))
-        app['gnss'] = asyncio.create_task(_gnss_loop(app, dev))
         dev.set_session(make_session(dev, 'std'))
+        app[PUBLISHER_TASK] = asyncio.create_task(publisher.publisher(app, dev))
+        app[GNSS_TASK] = asyncio.create_task(_gnss_loop(app, dev))
 
     async def cleanup_background(app):
-        app['publisher'].cancel()
-        app['gnss'].cancel()
-        try:
-            await app['publisher']
-        except Exception:
-            pass
-        dev.close()
+        tasks = [app[PUBLISHER_TASK], app[GNSS_TASK]]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.to_thread(dev.close)
 
     app.on_startup.append(start_background)
     app.on_cleanup.append(cleanup_background)
@@ -50,14 +60,19 @@ def create_app(dev: HarogicDevice, cfg: AppConfig) -> web.Application:
 async def _gnss_loop(app, dev):
     from .config import GNSS_POLL_INTERVAL
     while True:
-        if dev.state.connected:
-            dev.state.gnss = dev.query_gnss()
+        if dev.state.connected and not dev.state.calibrating:
+            async with app[COMMAND_LOCK]:
+                dev.state.gnss = await asyncio.to_thread(dev.query_gnss)
         await asyncio.sleep(GNSS_POLL_INTERVAL)
 
 
 def main() -> None:
-    setup_logging()
     cfg = AppConfig()
+    try:
+        cfg.validate()
+    except ValueError as exc:
+        raise SystemExit(f'configuration error: {exc}') from None
+    setup_logging(cfg.log_level, cfg.log_file)
     if not cfg.static_dir:
         cfg.static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                       'frontend')
