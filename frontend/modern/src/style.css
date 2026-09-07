@@ -295,6 +295,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .marker-ops .param-row .btn[data-action="mkr-valley-right"] { width: 34px; min-width: 34px; padding: 4px 0; }
 .marker-ops .param-row label { min-width: 48px; }
 .mkr-gap { width: 34px; flex-shrink: 0; }   /* 间隔一个按钮宽度 */
+.ref-step-btn { min-width: 28px; padding: 2px 4px; }
 .mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
 .span-action-row { flex-wrap: nowrap; }

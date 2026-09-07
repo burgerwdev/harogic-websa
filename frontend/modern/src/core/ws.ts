@@ -306,6 +306,17 @@ export function updateStatus(s: any) {
   const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
   if (refInput) refInput.disabled = S.refMode === 'auto';
   if (refSet) refSet.disabled = S.refMode === 'auto';
+  const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
+  const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
+  const inAuto = S.refMode === 'auto';
+  if (refDown) {
+    refDown.disabled = inAuto || S.refLevel <= -50;
+    refDown.title = inAuto ? t('auto') : t('ref_down');
+  }
+  if (refUp) {
+    refUp.disabled = inAuto || S.refLevel >= 30;
+    refUp.title = inAuto ? t('auto') : t('ref_up');
+  }
   if (refAuto) {
     refAuto.classList.toggle('active', S.refMode === 'auto');
     refAuto.title = s.auto_ref_suspended ? 'Auto Ref requires Atten Auto' : '';

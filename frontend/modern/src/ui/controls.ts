@@ -197,6 +197,18 @@ export function setRefLevel() {
   send({ cmd: 'SET_REF', mode: 'manual', ref: value });
 }
 
+const REF_MIN = -50;
+const REF_MAX = 30;
+
+export function refStepDbm(): number {
+  return Math.max(1, S.dbPerDiv / 2);
+}
+
+export function adjustRefLevel(direction: -1 | 1) {
+  const next = Math.max(REF_MIN, Math.min(REF_MAX, S.refLevel + direction * refStepDbm()));
+  send({ cmd: 'SET_REF', mode: 'manual', ref: next });
+}
+
 export function setRefAuto() {
   if (S.refMode === 'auto') {
     send({ cmd: 'SET_REF', mode: 'manual', ref: S.refLevel });
@@ -660,6 +672,8 @@ export function bindActions() {
     'span-step-auto': () => resetSpanStepAuto(),
     'set-ref-level': () => setRefLevel(),
     'set-ref-auto': () => setRefAuto(),
+    'ref-down': () => adjustRefLevel(-1),
+    'ref-up': () => adjustRefLevel(1),
     'apply-rbw': () => applyRBW(),
     'apply-vbw': () => applyVBW(),
     'apply-points': () => applyPoints(),
