@@ -125,10 +125,12 @@ class HarogicDevice:
             'std': {
                 'candidate': None, 'candidate_since': 0.0,
                 'last_change': 0.0, 'last_peak': None,
+                'last_noise_floor': None, 'ignore_until': 0.0,
             },
             'rta': {
                 'candidate': None, 'candidate_since': 0.0,
                 'last_change': 0.0, 'last_peak': None,
+                'last_noise_floor': None, 'ignore_until': 0.0,
             },
         }
         self._pending_auto_ref: tuple[str, float] | None = None
@@ -354,6 +356,7 @@ class HarogicDevice:
             self.state.config_version += 1
             self.state.freq_version += 1
             self.state.last_error = ''
+            self.begin_auto_reference_settle('std')
             self._read_amp_atten()
             return True, 'ok'
 
@@ -410,7 +413,10 @@ class HarogicDevice:
                     return None
                 finite = p[np.isfinite(p)]
                 if finite.size:
-                    self.observe_reference_peak(self.state.mode, float(np.max(finite)))
+                    floor_index = int((finite.size - 1) * 0.3)
+                    noise_floor = float(np.partition(finite, floor_index)[floor_index])
+                    self.observe_reference_peak(
+                        self.state.mode, float(np.max(finite)), noise_floor)
                 # Return the device-native trace (consistent with v0.5.3):
                 # the backend does not resample; the frontend resampleTrace handles point counts;
                 # backend np.interp upsampling would pull narrow signals into triangle waves
@@ -502,12 +508,16 @@ class HarogicDevice:
             except Exception:
                 return {}
 
-    def observe_reference_peak(self, mode: str, peak_dbm: float) -> None:
+    def observe_reference_peak(
+        self, mode: str, peak_dbm: float, noise_floor_dbm: float | None = None
+    ) -> None:
         """Queue a stable, hysteretic automatic reference-level adjustment."""
         with self._hw:
-            self._observe_reference_peak_locked(mode, peak_dbm)
+            self._observe_reference_peak_locked(mode, peak_dbm, noise_floor_dbm)
 
-    def _observe_reference_peak_locked(self, mode: str, peak_dbm: float) -> None:
+    def _observe_reference_peak_locked(
+        self, mode: str, peak_dbm: float, noise_floor_dbm: float | None = None
+    ) -> None:
         if mode not in ('std', 'rta') or not math.isfinite(peak_dbm):
             return
         state = self.state
@@ -515,7 +525,21 @@ class HarogicDevice:
         if ref_mode != 'auto' or state.atten != -1:
             return
         tracker = self._auto_ref[mode]
+        now = time.monotonic()
+        if now < tracker['ignore_until']:
+            return
         tracker['last_peak'] = peak_dbm
+        tracker['last_noise_floor'] = noise_floor_dbm
+        if (
+            noise_floor_dbm is not None
+            and math.isfinite(noise_floor_dbm)
+            and peak_dbm - noise_floor_dbm < 10.0
+        ):
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
+                self._pending_auto_ref = None
+            return
         current = state.rta_ref_level if mode == 'rta' else state.ref_level
         target = max(-50.0, min(30.0, math.ceil((peak_dbm + 5.0) / 5.0) * 5.0))
         if abs(target - current) < 5.0:
@@ -537,11 +561,26 @@ class HarogicDevice:
             self._pending_auto_ref = (mode, target)
             tracker['last_change'] = now
 
+    def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
+        """Discard stale auto-ref observations after any acquisition reconfiguration."""
+        with self._hw:
+            tracker = self._auto_ref[mode]
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            tracker['last_peak'] = None
+            tracker['last_noise_floor'] = None
+            tracker['ignore_until'] = time.monotonic() + delay
+            if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
+                self._pending_auto_ref = None
+
     def reset_auto_reference(self, mode: str) -> None:
         with self._hw:
             tracker = self._auto_ref[mode]
             tracker['candidate'] = None
             tracker['candidate_since'] = 0.0
+            tracker['last_peak'] = None
+            tracker['last_noise_floor'] = None
+            tracker['ignore_until'] = time.monotonic() + 0.25
             if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
                 self._pending_auto_ref = None
 

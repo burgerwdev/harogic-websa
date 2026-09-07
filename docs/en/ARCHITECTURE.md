@@ -78,8 +78,9 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 - **Pk threshold**: auto = global peak −50 dB when unset; user edit locks (activeElement guard + oninput); Auto restores; no update when all markers off
 
 ## Display and Control Design
-- **Reference Level**: Manual configures the active SWP/RTA Profile. Auto follows the raw trace peak with
-  5 dB headroom, settling time, and hysteresis. Auto is suspended while Atten is manual.
+- **Reference Level**: Manual configures the active SWP/RTA Profile. Auto adjusts only when the peak is
+  at least 10 dB above noise and uses 5 dB headroom, settling time, and hysteresis. Reconfiguration discards
+  stale candidates and waits 0.75 seconds; Auto is suspended while Atten is manual.
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

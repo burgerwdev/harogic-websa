@@ -185,6 +185,7 @@ class RtaSession(MeasurementSession):
         self._aux = _sb.Full_MeasAuxInfo()
         self._ready = True
         self._error_streak = 0
+        dev.begin_auto_reference_settle('rta')
         if not recovery:
             self._recovery_attempts = 0
         dev.state.config_version += 1
@@ -362,7 +363,9 @@ class RtaSession(MeasurementSession):
         display_freq = freq[index]
         finite = spectrum[np.isfinite(spectrum)]
         if finite.size:
-            dev.observe_reference_peak('rta', float(np.max(finite)))
+            floor_index = int((finite.size - 1) * 0.3)
+            noise_floor = float(np.partition(finite, floor_index)[floor_index])
+            dev.observe_reference_peak('rta', float(np.max(finite)), noise_floor)
         if width != self.WATERFALL_WIDTH:
             row = row[np.linspace(0, width - 1, self.WATERFALL_WIDTH).astype(np.int64)]
         frame = _encode_rta(

@@ -20,7 +20,8 @@
 ## Reference Level
 
 - Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.
-- Auto Ref targets about 5 dB above the observed peak and uses 5 dB steps, settling time, and hysteresis to avoid repeated reconfiguration.
+- Auto Ref only adjusts when the peak is at least 10 dB above the estimated noise floor. After signal detection it targets about 5 dB above the peak with 5 dB steps and hysteresis. It holds current Ref when no signal is identifiable.
+- Every SWP/RTA reconfiguration clears stale candidates and waits 0.75 seconds before Auto Ref observations resume.
 - Auto Ref remains selected but is suspended under manual Atten; it resumes when Atten returns to Auto.
 - Lower Ref and RBW generally reduce the displayed noise floor, but input overload must be avoided.
 

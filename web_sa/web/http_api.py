@@ -92,7 +92,7 @@ def build_status(dev) -> dict:
     auto_trackers = getattr(dev, '_auto_ref', {})
     auto_tracker = auto_trackers.get(
         'rta' if is_rta else 'std',
-        {'last_peak': None, 'candidate': None},
+        {'last_peak': None, 'last_noise_floor': None, 'candidate': None},
     )
     pending_auto_ref = getattr(dev, '_pending_auto_ref', None)
     session = getattr(dev, 'session', None)
@@ -137,6 +137,7 @@ def build_status(dev) -> dict:
         'auto_ref_suspended': active_req['ref_mode'] == 'auto' and s.atten != -1,
         'auto_ref': {
             'last_peak': auto_tracker['last_peak'],
+            'last_noise_floor': auto_tracker.get('last_noise_floor'),
             'candidate': auto_tracker['candidate'],
             'pending': pending_auto_ref[1] if pending_auto_ref else None,
         },

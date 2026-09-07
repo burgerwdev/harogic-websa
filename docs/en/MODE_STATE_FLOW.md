@@ -144,12 +144,14 @@ On the tested hardware, Internal/External and Clock Output On/Off commands respo
 ### Auto
 
 1. `SET_REF {mode:auto}` enables mode-private Auto Ref.
-2. The backend targets about 5 dB above the raw trace peak and quantizes to 5 dB steps.
-3. Range is limited to -50 through +30 dBm.
-4. Raising Ref requires about 150 ms of stability; lowering requires 1.5 seconds.
-5. Adjustments are at least one second apart.
-6. Auto remains selected but is suspended under manual Atten and resumes with Atten Auto.
-7. `auto_ref.last_peak/candidate/pending` exposes diagnostics.
+2. A signal is recognized only when its peak is at least 10 dB above the estimated noise floor; without a signal, current Ref is held.
+3. After detection, the backend targets about 5 dB above the peak and quantizes to 5 dB steps.
+4. Every SWP/RTA reconfiguration clears stale candidates and pauses observation for 0.75 seconds.
+5. Range is limited to -50 through +30 dBm.
+6. Raising Ref requires about 150 ms of stability; lowering requires 1.5 seconds.
+7. Adjustments are at least one second apart.
+8. Auto remains selected but is suspended under manual Atten and resumes with Atten Auto.
+9. `auto_ref.last_peak/last_noise_floor/candidate/pending` exposes diagnostics.
 
 A Ref change invalidates RTA density tied to the previous amplitude grid. SWP and RTA Auto states are independent.
 

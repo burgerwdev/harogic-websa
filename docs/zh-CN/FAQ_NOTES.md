@@ -20,7 +20,8 @@
 ## Reference Level
 
 - Manual Ref 会实际配置当前 SWP/RTA Profile，不只是改变显示范围。
-- Auto Ref 以峰值上方约 5 dB 为目标，使用 5 dB 步进、稳定时间和迟滞避免反复重配置。
+- Auto Ref 仅在峰值高于估计噪底至少 10 dB 时调整；识别信号后以峰值上方约 5 dB 为目标，并使用 5 dB 步进和迟滞。无信号时保持当前 Ref，不追踪噪底。
+- 任何 SWP/RTA 重配置后都会清除旧候选并等待 0.75 秒，再恢复 Auto Ref 观测。
 - 手动 Atten 时 Auto Ref 保留但暂停；恢复 Atten Auto 后继续。
 - 降低 Ref 和 RBW 通常可以降低显示噪底，但需留意输入过载。
 
