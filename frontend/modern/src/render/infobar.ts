@@ -5,11 +5,14 @@ import { t } from '../core/i18n';
 
 // SWT field throttling: the frame-header sweep_ms may vary slightly per frame (EMA convergence jitter),
 // and high-frequency refresh would make the top bar flicker → update at most every 500ms
-let lastSwtStr = '', lastSwtAt = 0;
+let lastSwtStr = '', lastSwtAt = 0, lastSwtMode = '';
 const SWT_THROTTLE_MS = 500;
 function setSwt() {
   const now = performance.now();
-  if (now - lastSwtAt < SWT_THROTTLE_MS) return;   // skip entirely within the throttle window (regardless of whether the value changed)
+  const mode = S.rtaMode ? 'rta' : 'std';
+  const modeChanged = mode !== lastSwtMode;
+  if (!modeChanged && now - lastSwtAt < SWT_THROTTLE_MS) return;
+  lastSwtMode = mode;
   lastSwtAt = now;
   // RTA mode: show current RTA bandwidth (start~stop) instead of sweep time
   let v: string;
@@ -29,17 +32,10 @@ export function updateInfoBar() {
   // RTA mode: the SWT field shows the RTA analysis bandwidth -> label becomes "BW:"
   const swtLabel = document.querySelector('[data-i18n="swt"]');
   if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
-  // ref display = display reference (displayRef) — ref level is a pure frontend display parameter
+  // Reference level is the active mode's effective hardware value.
   set('info-ref', S.displayUnit === 'dB' ? S.displayRef.toFixed(1) + ' dB' : S.displayRef.toFixed(1) + ' dBm');
   set('info-scale', S.dbPerDiv + ' dB/div');
-  if (S.rtaMode && S.rtaData && S.rtaData.stopHz) {
-    // RTA: RBW follows span (span/2000, official auto semantics); manual shows the requested value
-    const span = S.rtaData.stopHz - S.rtaData.startHz;
-    const rbw = S.rbwMode === 'manual' ? S.currentRBW : span / 2000;
-    set('info-rbw', formatBWHz(rbw) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
-  } else {
-    set('info-rbw', formatBWHz(S.currentRBW) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
-  }
+  set('info-rbw', formatBWHz(S.currentRBW) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
   set('info-vbw', S.vbwMode === 'bypass' ? 'Bypass' : formatBWHz(S.currentVBW));
   setSwt();
   const dot = document.getElementById('connDot');

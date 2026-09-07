@@ -15,8 +15,8 @@
 ## 特性
 
 - **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 查看冻结，4 条迹线，前端平滑
-- **控制面板** — 中心/扫宽、RBW/VBW/点数、FFT 窗口（FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser，与官方一致）、衰减/前置放大/中频增益、参考时钟（内部/外部/外部强制 + 输出）
-- **Marker 与 DSP 引擎** — 4 个游标 + **全部开启/关闭**(自动分布到各峰值)、寻峰寻谷遍历
+- **控制面板** — Center/Span 与 Start/Stop 原子联动、可自定义/自动联动的 Span Step 与 `▼/Full/▲` 控制、SWP/RTA 模式私有参数、RBW/VBW/点数、FFT 窗口（FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser，与官方一致）、衰减/前置放大/中频增益、Manual/Auto Ref Level、参考时钟（内部/外部/外部强制 + 输出）
+- **Marker 与 DSP 引擎** — 4 个游标、表格行快速 On/Off、独立 Tracking toggle、多个游标按峰值排序分配并连续追踪、寻峰寻谷遍历
 
   - Savitzky-Golay 平滑（2 阶 + 梯度自适应）
   - 三级寻峰引擎：局部极值 → Escursion 双侧 ≥6dB → 抛物线亚频点拟合
@@ -45,7 +45,7 @@
 
 ### 前置条件
 
-- Python ≥ 3.10（aiohttp）
+- Python ≥ 3.10（aiohttp、NumPy；硬件冒烟工具可选 pyserial）
 - Node.js ≥ 18（仅重建前端时需要）
 - Harogic SAN 系列频谱仪 + 官方 SDK：
   - `htra_api.py` — 已包含在仓库根目录（官方 Python 包装，HAROGIC 版权）
@@ -54,8 +54,8 @@
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt          # aiohttp, pytest
-cd frontend/modern && npm install && npm run build   # 前端构建(dist 已含)
+pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
+./build.sh                               # 安装/同步前端依赖并执行 Vite 构建
 ```
 
 ### 2. 运行
@@ -64,19 +64,31 @@ cd frontend/modern && npm install && npm run build   # 前端构建(dist 已含)
 ./run.sh
 ```
 
-浏览器打开 http://localhost:8080
+浏览器打开 http://127.0.0.1:8080
+
+默认仅监听本机。远程访问必须设置令牌：
+
+```bash
+WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
+```
+
+然后访问 `http://设备地址:8080/?token=同一令牌`。完整环境变量、远程部署、日志和硬件测试见
+[`docs/zh-CN/FAQ_NOTES.md`](docs/zh-CN/FAQ_NOTES.md)；SWP/RTA 参数语义见
+[`docs/zh-CN/MODE_STATE_FLOW.md`](docs/zh-CN/MODE_STATE_FLOW.md)。
 
 ### 3. 测试
 
 ```bash
-./test.sh      # 后端 pytest + 前端 vitest
+./test.sh
+python3 -m ruff check web_sa tests tools
+cd frontend/modern && npm audit
 ```
 
 ## 目录结构
 
 ```
 harogic-websa/
-├─ web_sa/               后端 (aiohttp 单进程, 设备调用串行)
+├─ web_sa/               后端 (supervisor + aiohttp worker, 设备调用串行)
 │  ├─ hardware/          sdk_bindings.py(唯一 dll 接触点) / device.py
 │  ├─ measurements/      Std/Harmonic/PhaseNoise 会话 + framer(帧协议)
 │  └─ web/               ws.py / http_api.py / publisher.py
@@ -84,7 +96,7 @@ harogic-websa/
 │  └─ modern/            TS 前端 (Vite + TypeScript, i18n + 主题)
 │     └─ src/__tests__/  vitest 测试(DSP 引擎, 合成迹线)
 ├─ htra_api.py           官方 SDK Python 包装 (HAROGIC 版权)
-├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 重构留痕 / 已知问题 / FAQ
+├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕
 ├─ tests/                后端 pytest(协议/配置/设备状态/HTTP API)
 ├─ screenshots/          README 截图
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
@@ -95,16 +107,16 @@ harogic-websa/
 
 | 脚本 | 说明 |
 |---|---|
-| `./run.sh` | 启动服务（单次启动，不重试）|
+| `./run.sh` | 启动 supervisor + WebSA worker；SDK 崩溃/致命超时自动退避重启 |
 | `./stop.sh` | 停止服务 |
 | `./clean.sh` | 清理缓存/日志/构建产物 |
-| `./test.sh` | 后端 pytest + 前端 vitest |
+| `./test.sh` | 后端 pytest + Ruff + 前端 Vitest；任一失败返回非零状态 |
 | `make run/stop/clean/build/test` | 同 Makefile 入口 |
 
 ## 测试
 
-- **后端（14 项）**：帧协议编解码 + float32 类型守卫、配置常量与 SAN 型号能力推导、`DeviceState` 序列化与 `build_status` 载荷、HTTP API 端点（`/api/state`、`/api/config`，aiohttp TestClient + stub 设备）——**无需硬件**
-- **前端（13 项）**：DSP 引擎合成迹线测试——S-G 平滑（保峰/保边沿）、抛物线亚频点拟合、Escursion 过滤、寻峰寻谷与 25bin 凹陷合并、保峰重采样、归一化参考构建——**无需硬件**
+- **后端（50 项）**：帧协议、配置/安全默认、命令校验、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
+- **前端（22 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
 
 ## 开源说明
 

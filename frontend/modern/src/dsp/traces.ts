@@ -1,6 +1,7 @@
 // Trace processing: resampling/gapFill/spur suppression/state machine
 import * as S from '../core/store';
 import { updateNormalizeStatusUI } from './normalize';
+import { updateTrackingMarkers } from './markerTracking';
 
 // Peak-preserving resampling
 export function resampleTrace(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
@@ -151,5 +152,6 @@ export function processTraces(rawPowers: Float32Array) {
       }
     }
   });
+  updateTrackingMarkers();
   updateNormalizeStatusUI();
 }

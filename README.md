@@ -15,8 +15,8 @@ A browser-based control and measurement application for **Harogic SAN series spe
 ## Features
 
 - **Spectrum display** — Clear Write / Max Hold / Min Hold / Average / View, 4 traces, frontend smoothing
-- **Control panel** — center/span, RBW/VBW/points, FFT windows (FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser, matching official), attenuation / preamp / IF gain, reference clock (Int / Ext / ExtForce + output)
-- **Marker & DSP engine** — 4 markers with **All On/Off** (auto-distribute to peaks), peak/valley navigation
+- **Control panel** — atomic Center/Span and Start/Stop linking, custom/auto Span Step with `▼/Full/▲` controls, mode-private SWP/RTA settings, RBW/VBW/points, FFT windows (FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser, matching official), attenuation / preamp / IF gain, Manual/Auto Ref Level, reference clock (Int / Ext / ExtForce + output)
+- **Marker & DSP engine** — 4 markers, per-row On/Off toggles, independent Tracking toggles, ranked multi-marker assignment with continuous peak following, and peak/valley navigation
 
   - Savitzky-Golay smoothing (2nd order + gradient-adaptive)
   - 3-stage peak engine: local extrema → excursion (≥6 dB both sides) → parabolic sub-bin fit
@@ -45,7 +45,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 ### Prerequisites
 
-- Python ≥ 3.10 (aiohttp)
+- Python ≥ 3.10 (aiohttp, NumPy; pyserial is optional for hardware smoke tests)
 - Node.js ≥ 18 (only needed to rebuild the frontend)
 - Harogic SAN series analyzer + official SDK:
   - `htra_api.py` — included in the repo root (official Python wrapper, HAROGIC copyright)
@@ -54,8 +54,8 @@ A browser-based control and measurement application for **Harogic SAN series spe
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt          # aiohttp, pytest
-cd frontend/modern && npm install && npm run build   # frontend build (dist included)
+pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
+./build.sh                               # sync frontend dependencies and run the Vite build
 ```
 
 ### 2. Run
@@ -64,19 +64,32 @@ cd frontend/modern && npm install && npm run build   # frontend build (dist incl
 ./run.sh
 ```
 
-Open http://localhost:8080
+Open http://127.0.0.1:8080
+
+The service listens on loopback by default. Remote control requires a token:
+
+```bash
+WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
+```
+
+Then open `http://device-address:8080/?token=the-same-token`. See
+[`docs/en/FAQ_NOTES.md`](docs/en/FAQ_NOTES.md) for all environment variables, remote deployment,
+logging, and hardware tests. SWP/RTA parameter semantics are documented in
+[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md).
 
 ### 3. Test
 
 ```bash
-./test.sh      # backend pytest + frontend vitest
+./test.sh
+python3 -m ruff check web_sa tests tools
+cd frontend/modern && npm audit
 ```
 
 ## Directory Layout
 
 ```
 harogic-websa/
-├─ web_sa/               backend (aiohttp, single process, serialized device calls)
+├─ web_sa/               backend (supervisor + aiohttp worker, serialized device calls)
 │  ├─ hardware/          sdk_bindings.py (only DLL contact point) / device.py
 │  ├─ measurements/      Std/Harmonic/PhaseNoise sessions + framer (frame protocol)
 │  └─ web/               ws.py / http_api.py / publisher.py
@@ -84,7 +97,7 @@ harogic-websa/
 │  └─ modern/            TS frontend (Vite + TypeScript, i18n + themes)
 │     └─ src/__tests__/  vitest tests (DSP engine, synthetic traces)
 ├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
-├─ docs/                 docs (en/ + zh-CN/): architecture / API / refactor log / known issues / FAQ
+├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log
 ├─ tests/                backend pytest (protocol, config, device state, HTTP API)
 ├─ screenshots/          README screenshots
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
@@ -95,16 +108,16 @@ harogic-websa/
 
 | Script | Description |
 |---|---|
-| `./run.sh` | Start service (single-shot, no retry loop) |
+| `./run.sh` | Start supervisor + WebSA worker; restart after native SDK crash/fatal timeout |
 | `./stop.sh` | Stop service |
 | `./clean.sh` | Clean caches / logs / build artifacts |
-| `./test.sh` | Backend pytest + frontend vitest |
+| `./test.sh` | Backend pytest + Ruff + frontend Vitest; any failed stage returns non-zero |
 | `make run/stop/clean/build/test` | Same via Makefile |
 
 ## Tests
 
-- **Backend (14)**: frame protocol encode/decode + float32 dtype guard, config constants & SAN model capability derivation, `DeviceState` serialization & `build_status` payload, HTTP API endpoints (`/api/state`, `/api/config`) via aiohttp TestClient with a stubbed device — **no hardware required**
-- **Frontend (13)**: DSP engine with synthetic traces — S-G smoothing (peak/edge preservation), parabola sub-bin fit, excursion filter, peak/valley detection & 25-bin depression merging, peak-preserving resample, normalization reference building — **no hardware required**
+- **Backend (50)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
+- **Frontend (22)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
 
 ## Open-Source Notes
 

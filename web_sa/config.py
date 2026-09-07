@@ -7,6 +7,7 @@ capabilities (product manual V1.3)
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 
@@ -17,6 +18,12 @@ DEFAULT_POINTS = 1000
 DEFAULT_REF_DBM = 0.0
 DEFAULT_RBW_HZ = 100e3
 DEFAULT_VBW_HZ = 100e3
+DEFAULT_RTA_CENTER_HZ = 1e9
+DEFAULT_RTA_SPAN_HZ = 50.78125e6
+DEFAULT_RTA_REF_DBM = 0.0
+DEFAULT_RTA_RBW_MODE = 'auto'
+DEFAULT_RTA_VBW_MODE = 'equal'
+DEFAULT_RTA_SWEEP_MODE = 2
 PUBLISH_MIN_INTERVAL = 0.004   # ~250 fps max
 GNSS_POLL_INTERVAL = 1.0   # GNSS polling + periodic STATUS push interval (1s)
 
@@ -64,11 +71,15 @@ class DeviceCapabilities:
 @dataclass
 class AppConfig:
     """Application configuration: overridable via environment variables."""
-    host: str = os.getenv('WEBSA_HOST', '0.0.0.0')
+    host: str = os.getenv('WEBSA_HOST', '127.0.0.1')
     port: int = int(os.getenv('WEBSA_PORT', '8080'))
     log_level: str = os.getenv('WEBSA_LOG', 'INFO')
     log_file: str = os.getenv('WEBSA_LOGFILE', '')
     static_dir: str = os.getenv('WEBSA_STATIC', '')
+    auth_token: str = os.getenv('WEBSA_TOKEN', '')
+    allowed_origins: str = os.getenv('WEBSA_ALLOWED_ORIGINS', '')
+    allow_unauthenticated_remote: bool = os.getenv(
+        'WEBSA_ALLOW_UNAUTHENTICATED_REMOTE', '').lower() in ('1', 'true', 'yes')
     # Measurement defaults
     harm_f0: float = 1e9
     harm_count: int = 5
@@ -80,8 +91,53 @@ class AppConfig:
     pnm_stop: float = 10e6
     pnm_traceavg: int = 4
 
+    def validate(self) -> None:
+        """Reject accidentally exposing hardware control without authentication."""
+        try:
+            is_loopback = ipaddress.ip_address(self.host).is_loopback
+        except ValueError:
+            is_loopback = self.host.lower() == 'localhost'
+        if not is_loopback and not self.auth_token and not self.allow_unauthenticated_remote:
+            raise ValueError(
+                'Remote WEBSA_HOST requires WEBSA_TOKEN; set '
+                'WEBSA_ALLOW_UNAUTHENTICATED_REMOTE=1 only on a trusted network')
+
+    @property
+    def origin_allowlist(self) -> set[str]:
+        return {x.strip().rstrip('/') for x in self.allowed_origins.split(',') if x.strip()}
+
+
+def fit_center_span(
+    center: float, span: float, cap: DeviceCapabilities, minimum_span: float = 100.0
+) -> tuple[float, float]:
+    """Clamp center/span while preserving a symmetric span inside device limits."""
+    full_span = cap.freq_max_hz - cap.freq_min_hz
+    fitted_span = max(minimum_span, min(float(span), full_span))
+    half_span = fitted_span / 2
+    fitted_center = max(
+        cap.freq_min_hz + half_span,
+        min(cap.freq_max_hz - half_span, float(center)),
+    )
+    return fitted_center, fitted_span
+
+
+def fit_start_stop(
+    start: float, stop: float, cap: DeviceCapabilities, minimum_span: float = 100.0
+) -> tuple[float, float]:
+    """Clamp start/stop and return their canonical center/span representation."""
+    fitted_start = max(cap.freq_min_hz, min(cap.freq_max_hz, float(start)))
+    fitted_stop = max(cap.freq_min_hz, min(cap.freq_max_hz, float(stop)))
+    if fitted_stop <= fitted_start:
+        fitted_stop = min(cap.freq_max_hz, fitted_start + minimum_span)
+        if fitted_stop <= fitted_start:
+            fitted_start = max(cap.freq_min_hz, fitted_stop - minimum_span)
+    return (fitted_start + fitted_stop) / 2, fitted_stop - fitted_start
+
 
 def fit_span(center: float, span: float, cap: DeviceCapabilities) -> float:
-    """Shrink span while keeping center (consistent with the frontend fitSpan)."""
-    return max(100.0, min(float(span),
-                          2 * min(center - cap.freq_min_hz, cap.freq_max_hz - center)))
+    """Shrink span around a fixed center (legacy helper used by measurements)."""
+    symmetric_limit = 2 * min(
+        float(center) - cap.freq_min_hz,
+        cap.freq_max_hz - float(center),
+    )
+    return max(100.0, min(float(span), symmetric_limit))

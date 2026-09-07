@@ -1,6 +1,10 @@
 """config 配置常量与映射单测(无设备依赖)"""
-import os, sys
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
+
 from web_sa import config
 
 
@@ -40,8 +44,19 @@ def test_device_caps_derivation():
 
 def test_fit_span():
     c = config.DeviceCapabilities.from_model(67)
-    # span 收缩到设备范围内(保持 center)
-    s = config.fit_span(1e9, 20e9, c)
-    assert s <= 2 * min(1e9 - c.freq_min_hz, c.freq_max_hz - 1e9)
-    # 最小 span 下限
+    center, span = config.fit_center_span(1e9, 20e9, c)
+    assert center == (c.freq_min_hz + c.freq_max_hz) / 2
+    assert span == c.freq_max_hz - c.freq_min_hz
+    assert config.fit_span(1e9, 20e9, c) == 2 * (1e9 - c.freq_min_hz)
     assert config.fit_span(1e9, 10, c) >= 100.0
+
+    center, span = config.fit_start_stop(950e6, 1050e6, c)
+    assert center == 1e9
+    assert span == 100e6
+
+
+def test_remote_listener_requires_authentication():
+    with pytest.raises(ValueError, match='WEBSA_TOKEN'):
+        config.AppConfig(host='0.0.0.0').validate()
+    config.AppConfig(host='0.0.0.0', auth_token='secret').validate()
+    config.AppConfig(host='127.0.0.1').validate()

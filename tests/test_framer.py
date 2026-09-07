@@ -1,8 +1,11 @@
 """framer 编解码 + dtype guard 单测"""
-import os, sys
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
-from web_sa.measurements.framer import encode_freq, encode_powr, parse_header, decode_powr
+
+from web_sa.measurements.framer import decode_powr, encode_freq, encode_powr, parse_header
 
 
 def test_powr_float32():

@@ -21,6 +21,7 @@ class ConfigSnapshot:
     vbw_mode: str
     vbw_hz: float
     ref: float
+    ref_mode: str
     atten: int
     preamp: int
     ifgain: int
@@ -38,14 +39,19 @@ class MeasurementSession:
         self.dev = dev
         self.snapshot: ConfigSnapshot | None = None
 
-    def enter(self) -> None:
-        """Enter the session: snapshot the standard config."""
+    def snapshot_current(self) -> None:
+        """Replace the restore point with the current SWP configuration."""
         s = self.dev.state
         self.snapshot = ConfigSnapshot(
             center=s.center_hz, span=s.span_hz, points=s.points_req,
             rbw_mode=s.rbw_mode, rbw_hz=s.rbw_hz, vbw_mode=s.vbw_mode, vbw_hz=s.vbw_hz,
-            ref=s.ref_level, atten=s.atten, preamp=s.preamplifier, ifgain=s.ifgain,
+            ref=s.ref_level, ref_mode=s.ref_mode, atten=s.atten,
+            preamp=s.preamplifier, ifgain=s.ifgain,
             gain_strategy=s.gain_strategy, window=s.window, spur=s.spur_mode)
+
+    def enter(self) -> None:
+        """Enter the session: snapshot the standard config."""
+        self.snapshot_current()
 
     def exit(self) -> None:
         """Exit the session: restore the snapshot and reconfigure the device."""
@@ -57,7 +63,7 @@ class MeasurementSession:
         s.points_req = snap.points
         s.rbw_mode, s.rbw_hz = snap.rbw_mode, snap.rbw_hz
         s.vbw_mode, s.vbw_hz = snap.vbw_mode, snap.vbw_hz
-        s.ref_level = snap.ref
+        s.ref_level, s.ref_mode = snap.ref, snap.ref_mode
         s.atten, s.preamplifier = snap.atten, snap.preamp
         s.ifgain, s.gain_strategy = snap.ifgain, snap.gain_strategy
         s.window, s.spur_mode = snap.window, snap.spur

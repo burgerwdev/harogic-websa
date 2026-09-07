@@ -4,6 +4,15 @@ import { sgSmooth, smoothForDisplay } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { buildReferenceTablePub } from '../ui/normPub';
+import { percentileApprox } from '../dsp/stats';
+import {
+  niceSpanStep,
+  normalizeCenterSpan,
+  normalizeStartStop,
+  steppedSpan,
+} from '../core/frequency';
+import { setUnit } from '../core/units';
+import { updateTrackingMarkers } from '../dsp/markerTracking';
 import * as S from '../core/store';
 import { synthCW, synthBandpass, synthTwoPeaks } from './synth';
 
@@ -115,6 +124,137 @@ describe('resampleTrace 保峰重采样', () => {
     src[50] = -90;
     const out = resampleTrace(src, 50, false);
     expect(Math.min(...out)).toBeLessThan(-80);
+  });
+});
+
+describe('频率字段联动', () => {
+  it('center/span 在设备边界内生成一致的 start/stop', () => {
+    const window = normalizeCenterSpan(1e9, 100e6, 9e3, 9e9)!;
+    expect(window.start).toBe(950e6);
+    expect(window.stop).toBe(1050e6);
+  });
+
+  it('全扫宽会移动 center 并保持完整范围', () => {
+    const window = normalizeCenterSpan(1e9, 20e9, 9e3, 9e9)!;
+    expect(window.start).toBe(9e3);
+    expect(window.stop).toBe(9e9);
+  });
+
+  it('start/stop 作为一组生成 center/span', () => {
+    const window = normalizeStartStop(950e6, 1050e6, 9e3, 9e9)!;
+    expect(window.center).toBe(1e9);
+    expect(window.span).toBe(100e6);
+  });
+
+  it('默认 span step 使用联动的 1/2/5 档并限制边界', () => {
+    expect(niceSpanStep(100e6)).toBe(10e6);
+    expect(niceSpanStep(200e6)).toBe(20e6);
+    expect(niceSpanStep(50.78125e6)).toBe(5e6);
+    expect(steppedSpan(100e6, 10e6, -1, 100, 9e9)).toBe(90e6);
+    expect(steppedSpan(100, 10e6, -1, 100, 9e9)).toBe(100);
+    expect(steppedSpan(8.999e9, 10e6, 1, 100, 9e9)).toBe(9e9);
+  });
+
+  it('单位按钮未编辑时换算显示，编辑后按所选单位提交', () => {
+    const previous = document.body.innerHTML;
+    document.body.innerHTML = '<input id="input-center" value="2">' +
+      '<div id="unit-center-group"><button>MHz</button><button>GHz</button></div>';
+    S.units.center = 'MHz';
+    const commits: boolean[] = [];
+    const listener = (event: Event) => {
+      commits.push((event as CustomEvent<{ commit: boolean }>).detail.commit);
+    };
+    document.addEventListener('websa:unit-commit', listener);
+
+    setUnit('center', 'GHz');
+    const input = document.getElementById('input-center') as HTMLInputElement;
+    expect(input.value).toBe('0.002000');
+    expect(commits).toEqual([false]);
+
+    input.value = '2';
+    input.dataset.edited = '1';
+    setUnit('center', 'GHz');
+    expect(input.value).toBe('2');
+    expect(commits).toEqual([false, true]);
+    expect(S.units.center).toBe('GHz');
+
+    document.removeEventListener('websa:unit-commit', listener);
+    S.units.center = 'MHz';
+    document.body.innerHTML = previous;
+  });
+});
+
+describe('多 Marker Tracking', () => {
+  it('SWP 与 RTA 都按峰值强度分配不同信号峰', () => {
+    const previous = document.body.innerHTML;
+    document.body.innerHTML = '<input id="input-peakthr" value="-80">';
+    const powers = synthTwoPeaks(1000);
+    S.setFreqArray(new Float64Array(1000).map((_, i) => 500e6 + i * 1e6));
+    S.traces[0].powers = powers;
+    S.traces[0].mode = 'CLEAR_WRITE';
+    S.setActiveTraceIdx(0);
+    S.markers.forEach(marker => Object.assign(marker, {
+      enabled: marker.id <= 2,
+      mode: marker.id <= 2 ? 'NORMAL' : 'OFF',
+      tracking: marker.id <= 2,
+      idx: 0,
+      freq: null,
+    }));
+
+    S.setRtaMode(false);
+    expect(updateTrackingMarkers()).toBe(true);
+    const swpIndexes = [S.markers[0].idx, S.markers[1].idx];
+    expect(new Set(swpIndexes).size).toBe(2);
+    expect(powers[swpIndexes[0]]).toBeGreaterThanOrEqual(powers[swpIndexes[1]]);
+
+    S.markers[0].idx = 0;
+    S.markers[1].idx = 0;
+    S.setRtaData({ spec: powers });
+    S.setRtaDisplays([powers, null, null, null]);
+    S.setRtaMode(true);
+    expect(updateTrackingMarkers()).toBe(true);
+    const rtaIndexes = [S.markers[0].idx, S.markers[1].idx];
+    expect(rtaIndexes).toEqual(swpIndexes);
+
+    S.setRtaMode(false);
+    S.setRtaData(null);
+    S.setRtaDisplays([null, null, null, null]);
+    S.markers.forEach(marker => { marker.enabled = false; marker.mode = 'OFF'; marker.tracking = false; });
+    document.body.innerHTML = previous;
+  });
+
+  it('后续帧优先跟随邻近峰而不是跳到远端更强杂散', () => {
+    const previous = document.body.innerHTML;
+    document.body.innerHTML = '<input id="input-peakthr" value="-80">';
+    const powers = new Float32Array(1000).fill(-100);
+    powers[99] = -70; powers[100] = -10; powers[101] = -70;
+    powers[519] = -70; powers[520] = -30; powers[521] = -70;
+    S.setFreqArray(new Float64Array(1000).map((_, i) => i));
+    S.traces[0].powers = powers;
+    S.traces[0].mode = 'CLEAR_WRITE';
+    S.setRtaMode(false);
+    S.markers.forEach(marker => Object.assign(marker, {
+      enabled: marker.id === 1,
+      mode: marker.id === 1 ? 'NORMAL' : 'OFF',
+      tracking: marker.id === 1,
+      idx: marker.id === 1 ? 500 : 0,
+      freq: marker.id === 1 ? 500 : null,
+    }));
+
+    expect(updateTrackingMarkers()).toBe(true);
+    expect(S.markers[0].idx).toBe(520);
+
+    S.markers.forEach(marker => { marker.enabled = false; marker.mode = 'OFF'; marker.tracking = false; });
+    document.body.innerHTML = previous;
+  });
+});
+
+describe('实时分位数统计', () => {
+  it('无需排序即可近似噪底和峰值分位数', () => {
+    const src = new Float32Array(1000).fill(-90);
+    for (let i = 980; i < 1000; i++) src[i] = -20;
+    expect(percentileApprox(src, 0.3)).toBeCloseTo(-90, 0);
+    expect(percentileApprox(src, 0.98)).toBeCloseTo(-20, 0);
   });
 });
 

@@ -2,9 +2,18 @@
 import ctypes
 from ctypes import *
 import os
+import platform
 import sys
 
-dll = ctypes.CDLL("/opt/htraapi/lib/x86_64/libhtraapi.so")
+_arch = {
+    'x86_64': 'x86_64',
+    'amd64': 'x86_64',
+    'aarch64': 'aarch64',
+    'arm64': 'aarch64',
+    'armv7l': 'armv7',
+}.get(platform.machine().lower(), platform.machine().lower())
+_default_lib = os.path.join('/opt/htraapi/lib', _arch, 'libhtraapi.so')
+dll = ctypes.CDLL(os.getenv('HTRA_API_LIB', _default_lib))
 
 #类型申明
 c_int16_p = POINTER(c_int16)
@@ -872,6 +881,9 @@ dll.RTA_GetRealTimeSpectrum.restype = c_int
 #DSP辅助函数，启动DSP功能
 dll.DSP_Open.argtypes = [POINTER(c_void_p)]
 dll.DSP_Open.restype = c_int
+
+dll.DSP_Close.argtypes = [POINTER(c_void_p)]
+dll.DSP_Close.restype = c_int
 
 #DSP辅助函数，初始化FFT参数
 dll.DSP_FFT_DeInit.argtypes = [POINTER(DSP_FFT_TypeDef)]

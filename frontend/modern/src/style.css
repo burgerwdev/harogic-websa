@@ -297,6 +297,12 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .mkr-gap { width: 34px; flex-shrink: 0; }   /* 间隔一个按钮宽度 */
 .mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
+.span-action-row { flex-wrap: nowrap; }
+.span-action-row::before { content: ''; flex: 0 0 58px; }
+.span-action-row .span-full-button { flex: 1; min-width: 0; }
+.span-action-row .span-step-button { width: 32px; min-width: 32px; padding: 2px 0; }
+#input-span-step { width: 82px; }
+#span-step-unit { min-width: 34px; }
 .param-row label { color: var(--label); font-size: 11px; min-width: 58px; }
 /* RTA frequency controls (Center + Span rows): the frequency input and the span
    dropdown share the same width/height so the two rows grid-align. Buttons keep their
@@ -354,6 +360,12 @@ select:focus { border-color: var(--text); }
 .marker-table th { background: var(--table-head); color: var(--text); }
 .marker-table td.num { font-variant-numeric: tabular-nums; }
 .mk-cell { display: inline-flex; align-items: center; gap: 5px; font-weight: bold; }
+.marker-toggle { display: inline-flex; align-items: center; gap: 5px; min-width: 48px; height: 24px; padding: 2px 6px; border: 1px solid var(--inner-border); border-radius: 3px; background: var(--input-bg); color: var(--muted); cursor: pointer; font-weight: bold; }
+.marker-toggle:hover { border-color: var(--marker-color); color: var(--text); }
+.marker-toggle.active { border-color: var(--marker-color); color: var(--marker-color); background: var(--btn-active); }
+.marker-toggle .mk-swatch { background: var(--marker-color); }
+.mk-track-indicator { display: none; min-width: 12px; color: var(--text); font-size: 9px; text-align: center; }
+.marker-toggle.tracking .mk-track-indicator { display: inline-block; }
 .mk-swatch { width: 11px; height: 11px; border-radius: 2px; display: inline-block; flex-shrink: 0; border: 1px solid #000; }
 .status-label { padding: 2px 6px; border: 1px solid var(--input-border); border-radius: 3px; font-size: 10px; }
 .status-label.active { background: var(--btn-active); border-color: var(--text); }

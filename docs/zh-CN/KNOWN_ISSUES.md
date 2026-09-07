@@ -1,6 +1,8 @@
 # 已知限制与注意事项
 
-1. **libhtraapi 偶发段错误**: 快速重配置/极端配置可能崩溃; 重启服务恢复, 设备可能需重插拔
+1. **libhtraapi 偶发段错误/阻塞**: RTA 连续调用失败会先原地重配两次；仍失败或发生
+   native 崩溃/调用超时时，supervisor 重启 worker；设备固件完全挂死时仍可能需重插拔。
+   Web 与 SDK 的常驻进程隔离留待 VSA 架构阶段。
 2. **SAStudio4 占用**: 设备单句柄, 官方软件运行时 Device_Open 返回 -1
 3. **外部参考锁定**: 需正确设置 ExternalSystemClockFrequency=10MHz 且外部信号接入; 
    Ext 模式失锁自动回退内部(正常设备行为), 用 ExtForce 强制
@@ -18,3 +20,7 @@
 11. **Pk 阈值**: 用户编辑锁定(输入实时锁定 + 正在编辑不覆盖), Auto 按钮恢复峰值-50;
     marker 全关闭时阈值不更新(保持)
 12. **寻峰右移卡住(已修)**: pos 匹配取最近列表项(±3bin), 避免匹配相邻 bin 造成右移回到自己
+13. **Auto Ref 与手动衰减**: 手动 Atten 时 Auto Ref 保留选择但暂停；恢复 Atten Auto 后继续
+14. **远程访问**: query token 可能进入浏览器历史/代理日志，远程控制应通过 HTTPS 反向代理
+15. **快速退出**: worker 使用 `os._exit` 规避厂商 SDK 析构崩溃，因此退出时不会发送 WS close frame；浏览器会自动重连
+16. **剩余硬件验证**: USB 热拔插、GNSS 校准、慢客户端、频繁 SWP/RTA 切换及 6/7/9 GHz 长时间压力测试仍需持续覆盖

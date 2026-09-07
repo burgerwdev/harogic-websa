@@ -21,6 +21,7 @@ export interface MarkerState {
   idx: number;
   refId: number;
   freq: number | null;
+  tracking: boolean;
 }
 
 export interface ExtremaItem { i: number; v: number; sv?: number; f: number; a: number; }
@@ -32,8 +33,22 @@ export const W = canvas.width, H = canvas.height;
 export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
 
 // Frequency/amplitude state
-export const FREQ_MIN = 100e3, FREQ_MAX = 9e9;
+export let FREQ_MIN = 9e3, FREQ_MAX = 9e9;
+export function setFrequencyLimits(minimum: number, maximum: number) {
+  if (isFinite(minimum) && isFinite(maximum) && minimum > 0 && maximum > minimum) {
+    FREQ_MIN = minimum;
+    FREQ_MAX = maximum;
+  }
+}
 export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
+export let spanStepHz = 10e6;
+export let spanStepAuto = true;
+export function setSpanStepHz(v: number) { spanStepHz = v; }
+export function setSpanStepAuto(v: boolean) { spanStepAuto = v; }
+export let refMode: 'manual' | 'auto' = 'manual';
+export function setRefMode(v: 'manual' | 'auto') { refMode = v; }
+export let configVersion = 0;
+export function setConfigVersion(v: number) { configVersion = v; }
 export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
 export function setRtaCenterHz(v: number) { rtaCenterHz = v; }
 export function setCenterHz(v: number) { centerHz = v; }
@@ -62,9 +77,6 @@ export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 export let displayRef = 0.0;
 export function setDisplayRef(v: number) { displayRef = v; }
-// Today's display scale was manually set by the user (ref level = pure display param) → STATUS writes no longer override it
-export let refUserSet = false;
-export function setRefUserSet(v: boolean) { refUserSet = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 
@@ -91,10 +103,10 @@ export let activeMkrId = 1;
 export function setActiveMkrId(v: number) { activeMkrId = v; }
 export const MARKER_COLORS = ['#FF4444', '#FFD700', '#1E90FF', '#FFFFFF'];
 export const markers: MarkerState[] = [
-  { id: 1, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
-  { id: 2, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
-  { id: 3, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
-  { id: 4, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
+  { id: 1, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
+  { id: 2, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
+  { id: 3, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
+  { id: 4, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
 ];
 
 // Measurement state

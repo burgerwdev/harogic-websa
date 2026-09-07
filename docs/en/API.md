@@ -2,8 +2,11 @@
 
 Backend (`web_sa/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames).
 
-- Service: `http://localhost:8080` (WebSocket at `/ws`)
+- Service: `http://127.0.0.1:8080` (WebSocket at `/ws`)
 - Frontend: modern UI at `/`, static assets `/static/modern/dist/{file}`
+- Loopback is the secure default. Remote listeners require `WEBSA_TOKEN`; REST accepts a
+  Bearer token and browser/WS clients accept `?token=...`. WebSockets require same-origin
+  access or an origin listed in `WEBSA_ALLOWED_ORIGINS`.
 
 ---
 
@@ -45,16 +48,21 @@ Field reference:
 |---|---|---|
 | `connected` | bool | device connected |
 | `device` / `device_detail` | str / obj | device name + details (uid/model/hw/mfw/ffw/bus/api/warnings) |
-| `center` / `span` / `ref` | number | center frequency / span / reference level (Hz, dBm) |
+| `center` / `span` / `ref` | number | effective values for the active hardware mode |
+| `ref_mode` | str | active reference-level mode (manual/auto) |
 | `rbw_mode` / `rbw` | str / number | RBW mode (manual/auto), resolution bandwidth |
 | `vbw_mode` / `vbw` | str / number | VBW mode (bypass/equal/tenth/manual), video bandwidth |
 | `points` | int | requested points (frontend resample target) |
 | `window` | int | FFT window: 0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
-| `mode` | str | measurement mode (std/harmonic/pnm) |
+| `mode` | str | measurement mode (std/harmonic/pnm/rta) |
 | `caps` | obj | model capabilities (model/name/fmin/fmax) |
 | `preset_defaults` | obj | device default config (used by Preset) |
-| `req` / `actual` | obj | requested / device-actual values (points/RBW may differ) |
+| `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
+| `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
+| `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
+| `auto_ref` | obj | latest peak, candidate, and pending Auto Ref target |
+| `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
 | `amp` | obj | gain chain: atten/preamp/ifgain/gain_strategy + actual atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | reference clock source: internal/external/premium/external_forced |
 | `has_docxo` | bool | DOCXO supported |
@@ -62,6 +70,9 @@ Field reference:
 | `refclk_out` | bool | reference clock output enable |
 | `gnss` | obj | GNSS state: `lock`(0/1) `sats` `docxo`(0/1) `docxo_mode`(0=disciplined,1=hold) `antenna`(0=external,1=internal) `latitude`/`longitude`(deg) `altitude`(m) `time`(UTC, "0000-00-00 00:00:00" when invalid) |
 | `last_error` | str | recent error message |
+
+Complete parameter ownership, defaults, and mode transitions are documented in
+[`MODE_STATE_FLOW.md`](MODE_STATE_FLOW.md).
 
 ### `POST /api/config`
 
@@ -103,21 +114,29 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `CONNECT` | - | connect device (if not connected) |
 | `SET_PRESET` | - | restore device default config (Preset) |
 | `CAL_REFCLK` | `count?` | GNSS 1PPS reference clock calibration (background; `calibrating=true` meanwhile) |
-| `SET_FREQ` | `center`, `span` | set center/span (span auto-clamped to device range) |
-| `SET_REF` | `ref` | set reference level (dBm) |
+| `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
+| `SET_REF` | `mode` (manual/auto), `ref?` | active-mode reference level; manual requires ref |
 | `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
-| `SET_VBW` | `mode?` (manual/equal/tenth/bypass), `vbw?` | set video bandwidth |
+| `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
 | `SET_POINTS` | `points` (51~4000) | set sweep points |
 | `SET_SPUR` | `mode` (bypass/standard/enhanced) | spur rejection mode |
 | `SET_WINDOW` | `window` (0~4) | FFT window |
 | `SET_AMP` | `atten` (-1~33), `preamp` (0/1), `ifgain` (0~3), `gain_strategy` (0/1) | gain chain config |
-| `SET_REFCK` | `mode` (internal/external/premium/external_forced) | reference clock source |
-| `SET_REFCKOUT` | `on` (bool) | reference clock output enable |
-| `SET_MODE` | `mode` (std/harmonic/pnm) | switch measurement mode (session) |
+| `SET_REFCK` | `mode` (internal/external/premium/external_forced) | reference clock source; reconfigures the active RTA profile |
+| `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active RTA profile |
+| `SET_MODE` | `mode` (std/harmonic/pnm/rta) | switch measurement mode (session) |
+| `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
 
-> Config commands (SET_*) automatically reply with the latest STATUS.
+> Config commands (`SET_*`) reply with the latest STATUS and `response_to=<command>`;
+> periodic STATUS messages omit `response_to`.
+>
+> Commands validate finite numbers, ranges, enums, device connection, and capabilities. Invalid REST
+> commands return HTTP 400 `{"error":"..."}`; WS commands return `{"cmd":"ERROR","msg":"..."}`.
+>
+> Periodic STATUS `stream` metrics contain `clients`, `dropped_frames`, and `dropped_control` for
+> observing latest-wins drops caused by slow clients.
 
 **Command examples:**
 
@@ -216,7 +235,7 @@ async def main():
                     head = struct.unpack('<4sIIf', msg.data[:16])
                     magic, ver, pts, sweep_ms = head[0], head[1], head[2], head[3]
                     if magic == b'FREQ':
-                        freq = struct.unpack_from('<%df' % pts, msg.data, 16)
+                        freq = struct.unpack_from('<%dd' % pts, msg.data, 16)
                     elif magic == b'POWR':
                         import array
                         pwr = array.array('f')

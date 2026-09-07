@@ -23,8 +23,9 @@ class HarmonicSession(MeasurementSession):
         self._seq = None          # current per-harmonic sequence
         self._seq_n = 1
         self._base = None
-        self._scan_phase = True   # full-band scan (push real spectrum frames) / per-harmonic peak measure
+        self._scan_phase = True   # full-band scan / per-harmonic peak measure
         self._scan_cnt = 0
+        self._scan_configured = False
 
     # ---- Parameters (SET_HARM entry point) ----
     def set_params(self, f0=None, count=None, span=None):
@@ -36,6 +37,7 @@ class HarmonicSession(MeasurementSession):
         if span is not None:
             self.span = float(max(1.0, min(100e6, span)))
         self._seq = None          # parameter change restarts the sequence
+        self._scan_configured = False
 
     # ---- Full-band scan (pushes real spectrum frames) ----
     def _scan_step(self):
@@ -45,7 +47,11 @@ class HarmonicSession(MeasurementSession):
         center = (lo + hi) / 2
         span = min(hi - lo, fit_span(center, hi - lo, s.caps))
         s.center_hz, s.span_hz = center, span
-        self.dev.configure_swp()
+        if not self._scan_configured:
+            ok, _ = self.dev.configure_swp()
+            if not ok:
+                return [], []
+            self._scan_configured = True
         r = self.dev.fetch_sweep()
         frames = []
         if r is not None:
@@ -71,11 +77,14 @@ class HarmonicSession(MeasurementSession):
             self.dev.state.harm_results = res
             self._seq = None
             self._scan_phase = True   # back to full-band refresh
+            self._scan_configured = False
             return [], [{'cmd': 'HARM', 'list': res, 'f0': self.f0}]
         s = self.dev.state
         center = max(s.caps.freq_min_hz, min(f, s.caps.freq_max_hz))
         s.center_hz, s.span_hz = center, min(self.span, fit_span(center, self.span, s.caps))
-        self.dev.configure_swp()
+        ok, _ = self.dev.configure_swp()
+        if not ok:
+            return [], []
         r = None
         for _try in range(6):       # sweeping right after configure may fail; retry
             r = self.dev.fetch_sweep()
