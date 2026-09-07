@@ -201,7 +201,8 @@ const REF_MIN = -50;
 const REF_MAX = 30;
 
 export function refStepDbm(): number {
-  return Math.max(1, S.dbPerDiv / 2);
+  // One full grid division: ▲/▼ moves Ref by the current dB-per-division value.
+  return S.dbPerDiv;
 }
 
 export function adjustRefLevel(direction: -1 | 1) {

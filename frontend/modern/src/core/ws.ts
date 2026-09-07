@@ -11,6 +11,7 @@ import {
   releaseGraphModePending,
   syncFrequencyEditorStatus,
   syncSwpSpanStep,
+  syncScaleButtons,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
@@ -297,6 +298,7 @@ export function updateStatus(s: any) {
     invalidateAllTraces();
   }
   if (S.displayUnit !== 'dB') S.setDisplayRef(S.refLevel);
+  syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);

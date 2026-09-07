@@ -67,7 +67,6 @@ export function invalidateAllTraces() {
     t.reference = null; t.isNormalized = false;
   });
   S.setDisplayUnit('dBm');
-  S.setDbPerDiv(10.0);
   S.setDisplayRef(S.refLevel);
   updateNormalizeStatusUI();
 }
