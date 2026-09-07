@@ -79,8 +79,9 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 
 ## Display and Control Design
 - **Reference Level**: Manual configures the active SWP/RTA Profile. Auto adjusts only when the peak is
-  at least 10 dB above noise and uses 5 dB headroom, settling time, and hysteresis. Reconfiguration discards
-  stale candidates and waits 0.75 seconds; Auto is suspended while Atten is manual.
+  at least 15 dB above noise. Before Center/cross-mode retuning it temporarily raises a negative Ref to
+  0 dBm, then uses 5 dB headroom, settling time, and hysteresis. Reconfiguration waits 0.75 seconds;
+  Auto is suspended while Atten is manual.
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

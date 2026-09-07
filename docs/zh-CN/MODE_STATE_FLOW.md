@@ -154,14 +154,15 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 ### Auto
 
 1. `SET_REF {mode:auto}` 启用当前模式独立的 Auto Ref。
-2. 只有峰值高于估计噪底至少 10 dB 时才识别为信号；无信号时保持当前 Ref。
-3. 识别信号后以峰值上方约 5 dB 为目标，并量化到 5 dB 步进。
-4. 任何 SWP/RTA 重配置都会清除旧候选，并暂停观测 0.75 秒。
-5. 范围限制为 -50 到 +30 dBm。
-6. Ref 上调要求约 150 ms 连续稳定；Ref 下调要求目标连续稳定 1.5 秒。
-7. 两次调整至少间隔 1 秒，避免重配置振荡。
-8. 手动 Atten 时 Auto 保留但暂停；恢复 Atten Auto 后继续工作。
-9. `auto_ref.last_peak/last_noise_floor/candidate/pending` 用于诊断。
+2. 只有峰值高于估计噪底至少 15 dB 时才识别为信号；无信号时保持当前 Ref。
+3. Auto 下改变 Center 或跨模式返回时，若 Ref<0 会先临时回到 0 dBm，再以安全 Ref 调谐新频段。
+4. 识别信号后以峰值上方约 5 dB 为目标，并量化到 5 dB 步进。
+5. 任何 SWP/RTA 重配置都会清除旧候选，并暂停观测 0.75 秒。
+6. 范围限制为 -50 到 +30 dBm。
+7. Ref 上调要求约 150 ms 连续稳定；Ref 下调要求目标连续稳定 1.5 秒。
+8. 两次调整至少间隔 1 秒，避免重配置振荡。
+9. 手动 Atten 时 Auto 保留但暂停；恢复 Atten Auto 后继续工作。
+10. `auto_ref.last_peak/last_noise_floor/candidate/pending` 用于诊断。
 
 改变 Ref 会清除/重建依赖显示幅度网格的 RTA density；SWP/RTA Auto 状态互不影响。
 

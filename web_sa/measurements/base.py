@@ -68,6 +68,7 @@ class MeasurementSession:
         s.ifgain, s.gain_strategy = snap.ifgain, snap.gain_strategy
         s.window, s.spur_mode = snap.window, snap.spur
         self.snapshot = None
+        self.dev.prepare_auto_reference_retune('std')
         self.dev.configure_swp()
 
     def step(self):

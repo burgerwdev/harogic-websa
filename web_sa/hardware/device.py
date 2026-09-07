@@ -533,7 +533,7 @@ class HarogicDevice:
         if (
             noise_floor_dbm is not None
             and math.isfinite(noise_floor_dbm)
-            and peak_dbm - noise_floor_dbm < 10.0
+            and peak_dbm - noise_floor_dbm < 15.0
         ):
             tracker['candidate'] = None
             tracker['candidate_since'] = 0.0
@@ -560,6 +560,22 @@ class HarogicDevice:
         ):
             self._pending_auto_ref = (mode, target)
             tracker['last_change'] = now
+
+    def prepare_auto_reference_retune(self, mode: str) -> bool:
+        """Use a safe Ref before changing frequency when Auto Ref had lowered it."""
+        with self._hw:
+            state = self.state
+            ref_mode = state.rta_ref_mode if mode == 'rta' else state.ref_mode
+            if ref_mode != 'auto':
+                return False
+            if mode == 'rta':
+                changed = state.rta_ref_level < 0.0
+                state.rta_ref_level = max(0.0, state.rta_ref_level)
+            else:
+                changed = state.ref_level < 0.0
+                state.ref_level = max(0.0, state.ref_level)
+            self.begin_auto_reference_settle(mode)
+            return changed
 
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
         """Discard stale auto-ref observations after any acquisition reconfiguration."""

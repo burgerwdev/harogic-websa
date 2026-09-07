@@ -58,6 +58,7 @@ class RtaSession(MeasurementSession):
     def enter(self):
         """Snapshot standard config, then configure RTA."""
         super().enter()
+        self.dev.prepare_auto_reference_retune('rta')
         self._configure()
 
     def _configure(self):
@@ -234,6 +235,7 @@ class RtaSession(MeasurementSession):
             s.caps.freq_min_hz + half_span,
             min(s.caps.freq_max_hz - half_span, requested_center),
         )
+        self.dev.prepare_auto_reference_retune('rta')
         self._configure()
 
     def set_sweep(self, mode=0, time=0.0):

@@ -323,6 +323,7 @@ async def _dispatch(dev, cmd, data) -> bool:
             center = data.get('center', s.center_hz)
             span = data.get('span', s.span_hz)
             s.center_hz, s.span_hz = fit_center_span(center, span, s.caps)
+        dev.prepare_auto_reference_retune('std')
         await _configure_swp()
         return True
     if cmd == 'SET_REF':

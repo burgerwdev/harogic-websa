@@ -79,8 +79,9 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   Auto 恢复; marker 全关闭不更新
 
 ## 显示与控制设计
-- **Reference Level**: Manual 实际配置当前 SWP/RTA Profile；Auto 仅在峰值高于噪底至少 10 dB 时调整，
-  并使用 5 dB 余量、稳定时间和迟滞。重配置后丢弃旧候选并等待 0.75 秒；手动 Atten 时 Auto 暂停
+- **Reference Level**: Manual 实际配置当前 SWP/RTA Profile；Auto 仅在峰值高于噪底至少 15 dB 时调整，
+  Center/跨模式重调谐前将负 Ref 临时恢复到 0 dBm，并使用 5 dB 余量、稳定时间和迟滞；
+  重配置后等待 0.75 秒，手动 Atten 时 Auto 暂停
 - **周期 STATUS 推送(1s)**: publisher 每秒推送全量 STATUS(与 GNSS 轮询对齐),
   使 GNSS 锁定/时间、refclk_out、校准状态自动刷新, 无需刷新页面
 - **GNSS 详情浮层**: 点击 GNSS 指示器查看完整信息(锁定/卫星/天线/经纬度/海拔/UTC 时间)
