@@ -103,7 +103,7 @@ python3 -m ruff check web_sa tests tools
 cd frontend/modern && npm audit
 ```
 
-`./test.sh` 会运行后端 pytest、Ruff 和前端 Vitest，任一阶段失败都会返回非零状态。当前基线为后端 50 项、前端 22 项。
+`./test.sh` 会运行后端 pytest、Ruff 和前端 Vitest，任一阶段失败都会返回非零状态。当前基线为后端 51 项、前端 23 项。
 
 ## SAN-90 / TinySA 硬件冒烟测试
 

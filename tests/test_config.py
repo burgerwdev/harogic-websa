@@ -45,7 +45,15 @@ def test_device_caps_derivation():
 def test_fit_span():
     c = config.DeviceCapabilities.from_model(67)
     center, span = config.fit_center_span(1e9, 20e9, c)
-    assert center == (c.freq_min_hz + c.freq_max_hz) / 2
+    assert center == 1e9
+    assert span == 2 * (1e9 - c.freq_min_hz)
+    center, span = config.fit_center_span(10e6, 20e9, c)
+    assert center == 10e6
+    assert span == 2 * (10e6 - c.freq_min_hz)
+    midpoint = (c.freq_min_hz + c.freq_max_hz) / 2
+    center, span = config.fit_center_span(
+        midpoint, c.freq_max_hz - c.freq_min_hz, c)
+    assert center == midpoint
     assert span == c.freq_max_hz - c.freq_min_hz
     assert config.fit_span(1e9, 20e9, c) == 2 * (1e9 - c.freq_min_hz)
     assert config.fit_span(1e9, 10, c) >= 100.0

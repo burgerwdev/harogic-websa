@@ -103,7 +103,7 @@ python3 -m ruff check web_sa tests tools
 cd frontend/modern && npm audit
 ```
 
-`./test.sh` runs backend pytest, Ruff, and frontend Vitest, and returns a non-zero status if any stage fails. The current baseline is 50 backend tests and 22 frontend tests.
+`./test.sh` runs backend pytest, Ruff, and frontend Vitest, and returns a non-zero status if any stage fails. The current baseline is 51 backend tests and 23 frontend tests.
 
 ## SAN-90 / TinySA Hardware Smoke Test
 

@@ -80,7 +80,7 @@ The frontend refreshes the active mode from top-level effective values while the
 3. Periodic STATUS updates state but cannot overwrite dirty fields.
 4. Unit buttons have safe dual behavior: after editing, clicking Hz/kHz/MHz/GHz commits using that unit; without editing, the button only converts the displayed value and does not configure hardware.
 5. Set, Enter, or an edited field's unit button sends one `SET_FREQ {center, span}`.
-6. The backend clamps span to device range and moves center as needed to preserve symmetric start/stop.
+6. The backend preserves the user-entered center and shrinks span to the largest symmetric range available around it. Only Full Span explicitly moves center to the full-band midpoint.
 7. A successful SDK call returns STATUS with `response_to=SET_FREQ`.
 8. The frontend clears dirty state and fills Center/Span/Start/Stop from SDK actual values.
 

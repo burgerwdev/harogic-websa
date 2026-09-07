@@ -244,8 +244,13 @@ class HarogicDevice:
             if not d:
                 return {}
             s = self.state
-            s.center_hz, s.span_hz = fit_center_span(
-                d['center'], d['span'], s.caps)
+            full_span = s.caps.freq_max_hz - s.caps.freq_min_hz
+            if d['span'] >= full_span:
+                s.center_hz = (s.caps.freq_min_hz + s.caps.freq_max_hz) / 2
+                s.span_hz = full_span
+            else:
+                s.center_hz, s.span_hz = fit_center_span(
+                    d['center'], d['span'], s.caps)
             s.ref_level = d['ref']
             s.ref_mode = 'manual'
             s.rbw_hz = d['rbw']

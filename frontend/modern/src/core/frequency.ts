@@ -36,9 +36,13 @@ export function normalizeCenterSpan(
   minimumSpan = 100,
 ): FrequencyWindow | null {
   if (!isFinite(center) || !isFinite(span) || maximum <= minimum || span <= 0) return null;
-  const fittedSpan = Math.max(minimumSpan, Math.min(span, maximum - minimum));
+  const fittedCenter = Math.max(
+    minimum + minimumSpan / 2,
+    Math.min(maximum - minimumSpan / 2, center),
+  );
+  const symmetricLimit = 2 * Math.min(fittedCenter - minimum, maximum - fittedCenter);
+  const fittedSpan = Math.max(minimumSpan, Math.min(span, symmetricLimit));
   const half = fittedSpan / 2;
-  const fittedCenter = Math.max(minimum + half, Math.min(maximum - half, center));
   return {
     center: fittedCenter,
     span: fittedSpan,

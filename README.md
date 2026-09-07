@@ -116,8 +116,8 @@ harogic-websa/
 
 ## Tests
 
-- **Backend (50)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
-- **Frontend (22)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
+- **Backend (51)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
+- **Frontend (23)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
 
 ## Open-Source Notes
 

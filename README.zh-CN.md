@@ -115,8 +115,8 @@ harogic-websa/
 
 ## 测试
 
-- **后端（50 项）**：帧协议、配置/安全默认、命令校验、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
-- **前端（22 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
+- **后端（51 项）**：帧协议、配置/安全默认、命令校验、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
+- **前端（23 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
 
 ## 开源说明
 

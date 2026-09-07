@@ -134,8 +134,18 @@ describe('频率字段联动', () => {
     expect(window.stop).toBe(1050e6);
   });
 
-  it('全扫宽会移动 center 并保持完整范围', () => {
-    const window = normalizeCenterSpan(1e9, 20e9, 9e3, 9e9)!;
+  it('超大 span 会保留输入 center 并缩小到对称可用范围', () => {
+    const at1GHz = normalizeCenterSpan(1e9, 20e9, 9e3, 9e9)!;
+    expect(at1GHz.center).toBe(1e9);
+    expect(at1GHz.span).toBe(2 * (1e9 - 9e3));
+    const at10MHz = normalizeCenterSpan(10e6, 20e9, 9e3, 9e9)!;
+    expect(at10MHz.center).toBe(10e6);
+    expect(at10MHz.span).toBe(2 * (10e6 - 9e3));
+  });
+
+  it('显式 Full Span 中点仍覆盖完整设备范围', () => {
+    const midpoint = (9e3 + 9e9) / 2;
+    const window = normalizeCenterSpan(midpoint, 9e9 - 9e3, 9e3, 9e9)!;
     expect(window.start).toBe(9e3);
     expect(window.stop).toBe(9e9);
   });

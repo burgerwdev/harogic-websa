@@ -85,7 +85,7 @@ Atten、Preamp、IF Gain、Gain Strategy；Ref Mode 恢复 Manual。
 4. 单位按钮采用安全的双态语义：输入数字被编辑后，点击 `Hz/kHz/MHz/GHz` 按该单位立即提交；未编辑时只换算显示并保持物理值，不配置硬件。
 5. 点击 Set、按 Enter 或点击已编辑字段的单位，一次发送：
    `SET_FREQ {center, span}`。
-6. 后端将 span 限制在设备全范围内，再移动 center 以保持对称 start/stop。
+6. 后端保留用户输入的 center，并将 span 缩小到该 center 两侧可用的最大对称范围；只有 Full Span 会显式将 center 设为全频段中点。
 7. SDK 成功后返回带 `response_to=SET_FREQ` 的 STATUS。
 8. 前端清除 dirty，并使用 SDK actual 统一回填 Center/Span/Start/Stop。
 

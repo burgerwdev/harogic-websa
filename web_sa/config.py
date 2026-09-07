@@ -110,14 +110,16 @@ class AppConfig:
 def fit_center_span(
     center: float, span: float, cap: DeviceCapabilities, minimum_span: float = 100.0
 ) -> tuple[float, float]:
-    """Clamp center/span while preserving a symmetric span inside device limits."""
-    full_span = cap.freq_max_hz - cap.freq_min_hz
-    fitted_span = max(minimum_span, min(float(span), full_span))
-    half_span = fitted_span / 2
+    """Clamp center and shrink span to preserve a symmetric window around center."""
     fitted_center = max(
-        cap.freq_min_hz + half_span,
-        min(cap.freq_max_hz - half_span, float(center)),
+        cap.freq_min_hz + minimum_span / 2,
+        min(cap.freq_max_hz - minimum_span / 2, float(center)),
     )
+    symmetric_limit = 2 * min(
+        fitted_center - cap.freq_min_hz,
+        cap.freq_max_hz - fitted_center,
+    )
+    fitted_span = max(minimum_span, min(float(span), symmetric_limit))
     return fitted_center, fitted_span
 
 

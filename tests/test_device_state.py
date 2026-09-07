@@ -152,3 +152,29 @@ def test_rta_defaults_can_be_reset_without_touching_swp():
     assert dev.state.rta_sweep_time_mode == 2
     assert dev.state.center_hz == 2e9
     assert dev.state.rbw_hz == 200e3
+
+
+def test_full_span_preset_uses_capability_midpoint():
+    dev = HarogicDevice()
+    dev.state.caps = DeviceCapabilities.from_model(67)
+    dev.preset_defaults = {
+        'center': 4.510004e9,
+        'span': 9.019992e9,
+        'ref': 0.0,
+        'rbw': 250e3,
+        'vbw': 300e3,
+        'points': 4000,
+        'atten': -1,
+        'window': 1,
+        'rbw_mode': 'auto',
+        'vbw_mode': 'bypass',
+        'spur': 'standard',
+        'preamp': 0,
+        'ifgain': 2,
+        'gain_strategy': 0,
+        'sweep_time_mode': 0,
+        'sweep_time': 0.0,
+    }
+    dev.preset_state()
+    assert dev.state.center_hz == (9e3 + 9e9) / 2
+    assert dev.state.span_hz == 9e9 - 9e3
