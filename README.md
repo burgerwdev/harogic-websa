@@ -54,8 +54,8 @@ A browser-based control and measurement application for **Harogic SAN series spe
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt          # aiohttp, pytest
-cd frontend/modern && npm install && npm run build   # frontend build (dist included)
+pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
+./build.sh                               # sync frontend dependencies and run the Vite build
 ```
 
 ### 2. Run
@@ -73,12 +73,16 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
 ```
 
 Then open `http://device-address:8080/?token=the-same-token`. See
-[`docs/zh-CN/P0_HARDENING.md`](docs/zh-CN/P0_HARDENING.md) for hardening and hardware-test details.
+[`docs/en/FAQ_NOTES.md`](docs/en/FAQ_NOTES.md) for all environment variables, remote deployment,
+logging, and hardware tests. SWP/RTA parameter semantics are documented in
+[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md).
 
 ### 3. Test
 
 ```bash
-./test.sh      # backend pytest + frontend vitest
+./test.sh
+python3 -m ruff check web_sa tests tools
+cd frontend/modern && npm audit
 ```
 
 ## Directory Layout
@@ -93,7 +97,7 @@ harogic-websa/
 │  └─ modern/            TS frontend (Vite + TypeScript, i18n + themes)
 │     └─ src/__tests__/  vitest tests (DSP engine, synthetic traces)
 ├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
-├─ docs/                 docs (en/ + zh-CN/): architecture / API / refactor log / known issues / FAQ
+├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log
 ├─ tests/                backend pytest (protocol, config, device state, HTTP API)
 ├─ screenshots/          README screenshots
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
@@ -107,7 +111,7 @@ harogic-websa/
 | `./run.sh` | Start supervisor + WebSA worker; restart after native SDK crash/fatal timeout |
 | `./stop.sh` | Stop service |
 | `./clean.sh` | Clean caches / logs / build artifacts |
-| `./test.sh` | Backend pytest + frontend vitest |
+| `./test.sh` | Backend pytest + Ruff + frontend Vitest; any failed stage returns non-zero |
 | `make run/stop/clean/build/test` | Same via Makefile |
 
 ## Tests

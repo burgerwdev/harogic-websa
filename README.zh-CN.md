@@ -54,8 +54,8 @@
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt          # aiohttp, pytest
-cd frontend/modern && npm install && npm run build   # 前端构建(dist 已含)
+pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
+./build.sh                               # 安装/同步前端依赖并执行 Vite 构建
 ```
 
 ### 2. 运行
@@ -72,13 +72,16 @@ cd frontend/modern && npm install && npm run build   # 前端构建(dist 已含)
 WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
 ```
 
-然后访问 `http://设备地址:8080/?token=同一令牌`。详细加固和硬件测试说明见
-[`docs/zh-CN/P0_HARDENING.md`](docs/zh-CN/P0_HARDENING.md)。
+然后访问 `http://设备地址:8080/?token=同一令牌`。完整环境变量、远程部署、日志和硬件测试见
+[`docs/zh-CN/FAQ_NOTES.md`](docs/zh-CN/FAQ_NOTES.md)；SWP/RTA 参数语义见
+[`docs/zh-CN/MODE_STATE_FLOW.md`](docs/zh-CN/MODE_STATE_FLOW.md)。
 
 ### 3. 测试
 
 ```bash
-./test.sh      # 后端 pytest + 前端 vitest
+./test.sh
+python3 -m ruff check web_sa tests tools
+cd frontend/modern && npm audit
 ```
 
 ## 目录结构
@@ -93,7 +96,7 @@ harogic-websa/
 │  └─ modern/            TS 前端 (Vite + TypeScript, i18n + 主题)
 │     └─ src/__tests__/  vitest 测试(DSP 引擎, 合成迹线)
 ├─ htra_api.py           官方 SDK Python 包装 (HAROGIC 版权)
-├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 重构留痕 / 已知问题 / FAQ
+├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕
 ├─ tests/                后端 pytest(协议/配置/设备状态/HTTP API)
 ├─ screenshots/          README 截图
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
@@ -107,7 +110,7 @@ harogic-websa/
 | `./run.sh` | 启动 supervisor + WebSA worker；SDK 崩溃/致命超时自动退避重启 |
 | `./stop.sh` | 停止服务 |
 | `./clean.sh` | 清理缓存/日志/构建产物 |
-| `./test.sh` | 后端 pytest + 前端 vitest |
+| `./test.sh` | 后端 pytest + Ruff + 前端 Vitest；任一失败返回非零状态 |
 | `make run/stop/clean/build/test` | 同 Makefile 入口 |
 
 ## 测试

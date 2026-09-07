@@ -117,7 +117,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_FREQ` | `center`,`span` 或 `start`,`stop` | 原子设置 SWP 频率窗口；禁止混合两种赋值 |
 | `SET_REF` | `mode`（manual/auto）, `ref?` | 当前模式参考电平；manual 必须提供 ref |
 | `SET_RBW` | `mode?`（manual/auto）, `rbw?` | 设置分辨率带宽 |
-| `SET_VBW` | `mode?`（manual/equal/tenth/bypass）, `vbw?` | 设置视频带宽 |
+| `SET_VBW` | `mode?`（manual/equal/tenth/onethousandth/bypass）, `vbw?` | 设置视频带宽 |
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |
 | `SET_SPUR` | `mode`（bypass/standard/enhanced）| 杂散抑制模式 |
 | `SET_WINDOW` | `window`（0~4）| FFT 窗口 |

@@ -1,6 +1,6 @@
 # Known Limitations & Notes
 
-1. **Occasional libhtraapi segfault/block**: the supervisor restarts the worker after a native crash or call timeout; a fully wedged device may still require replugging. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
+1. **Occasional libhtraapi segfault/block**: RTA first attempts two in-place reconfigurations after repeated Trigger/Get failures. The supervisor restarts the worker after persistent failure, native crash, or call timeout. A fully wedged device can still require USB replugging. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
 2. **SAStudio4 exclusivity**: device is single-handle; Device_Open returns -1 while the official software is running
 3. **External reference locking**: requires ExternalSystemClockFrequency=10 MHz correctly set with external signal present;
    Ext mode falls back to internal on unlock (normal device behavior); use ExtForce to force
@@ -18,3 +18,7 @@
 11. **Pk threshold**: user edit locks (input realtime lock + activeElement guard), Auto button restores peak-50;
     threshold not updated when all markers are off (kept)
 12. **Peak right-shift stuck (fixed)**: pos match takes nearest list item (±3 bins), avoiding matching an adjacent bin that would loop right-shift to itself
+13. **Auto Ref with manual attenuation**: Auto Ref remains selected but is suspended while Atten is manual; it resumes with Atten Auto
+14. **Remote access**: query tokens can enter browser history/proxy logs; use an HTTPS reverse proxy for remote control
+15. **Fast worker exit**: the worker uses `os._exit` to avoid unstable vendor-SDK destruction, so it does not send a WS close frame; browsers reconnect automatically
+16. **Remaining hardware qualification**: continue covering USB hotplug, GNSS calibration, slow clients, frequent SWP/RTA switching, and 6/7/9 GHz soak tests

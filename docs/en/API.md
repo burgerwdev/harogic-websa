@@ -61,6 +61,8 @@ Field reference:
 | `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
+| `auto_ref` | obj | latest peak, candidate, and pending Auto Ref target |
+| `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
 | `amp` | obj | gain chain: atten/preamp/ifgain/gain_strategy + actual atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | reference clock source: internal/external/premium/external_forced |
 | `has_docxo` | bool | DOCXO supported |
@@ -68,6 +70,9 @@ Field reference:
 | `refclk_out` | bool | reference clock output enable |
 | `gnss` | obj | GNSS state: `lock`(0/1) `sats` `docxo`(0/1) `docxo_mode`(0=disciplined,1=hold) `antenna`(0=external,1=internal) `latitude`/`longitude`(deg) `altitude`(m) `time`(UTC, "0000-00-00 00:00:00" when invalid) |
 | `last_error` | str | recent error message |
+
+Complete parameter ownership, defaults, and mode transitions are documented in
+[`MODE_STATE_FLOW.md`](MODE_STATE_FLOW.md).
 
 ### `POST /api/config`
 
@@ -112,7 +117,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
 | `SET_REF` | `mode` (manual/auto), `ref?` | active-mode reference level; manual requires ref |
 | `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
-| `SET_VBW` | `mode?` (manual/equal/tenth/bypass), `vbw?` | set video bandwidth |
+| `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
 | `SET_POINTS` | `points` (51~4000) | set sweep points |
 | `SET_SPUR` | `mode` (bypass/standard/enhanced) | spur rejection mode |
 | `SET_WINDOW` | `window` (0~4) | FFT window |
@@ -124,7 +129,14 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
 
-> Config commands (SET_*) automatically reply with the latest STATUS.
+> Config commands (`SET_*`) reply with the latest STATUS and `response_to=<command>`;
+> periodic STATUS messages omit `response_to`.
+>
+> Commands validate finite numbers, ranges, enums, device connection, and capabilities. Invalid REST
+> commands return HTTP 400 `{"error":"..."}`; WS commands return `{"cmd":"ERROR","msg":"..."}`.
+>
+> Periodic STATUS `stream` metrics contain `clients`, `dropped_frames`, and `dropped_control` for
+> observing latest-wins drops caused by slow clients.
 
 **Command examples:**
 
