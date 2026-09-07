@@ -98,6 +98,14 @@ Atten、Preamp、IF Gain、Gain Strategy；Ref Mode 恢复 Manual。
 
 禁止在同一命令混合 `center/span` 与 `start/stop`。
 
+### Span Step
+
+- `▼ / Full Span / ▲` 按钮行与频率输入框左边缘对齐。
+- Auto Step 根据当前 SWP span 的约 1/10 选择最近的 1/2/5 档，例如 100 MHz→10 MHz、200 MHz→20 MHz。
+- 用户编辑 Step 后转为自定义模式；Auto 按钮恢复随 span 联动。
+- Step 保存为绝对 Hz，Span 单位变化时同步换算显示，不改变物理步进。
+- 增减 span 均通过一次原子 `SET_FREQ {center, span}`，并受设备最小/最大 span 限制。
+
 ## 6. SWP -> RTA
 
 1. 用户点击 RTA；按钮禁用并进入 pending，SWP UI 暂不乐观切换。

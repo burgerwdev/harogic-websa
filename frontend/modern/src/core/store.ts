@@ -41,6 +41,10 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
   }
 }
 export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
+export let spanStepHz = 10e6;
+export let spanStepAuto = true;
+export function setSpanStepHz(v: number) { spanStepHz = v; }
+export function setSpanStepAuto(v: boolean) { spanStepAuto = v; }
 export let refMode: 'manual' | 'auto' = 'manual';
 export function setRefMode(v: 'manual' | 'auto') { refMode = v; }
 export let configVersion = 0;

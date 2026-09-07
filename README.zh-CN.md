@@ -15,7 +15,7 @@
 ## 特性
 
 - **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 查看冻结，4 条迹线，前端平滑
-- **控制面板** — Center/Span 与 Start/Stop 原子联动、SWP/RTA 模式私有参数、RBW/VBW/点数、FFT 窗口（FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser，与官方一致）、衰减/前置放大/中频增益、Manual/Auto Ref Level、参考时钟（内部/外部/外部强制 + 输出）
+- **控制面板** — Center/Span 与 Start/Stop 原子联动、可自定义/自动联动的 Span Step 与 `▼/Full/▲` 控制、SWP/RTA 模式私有参数、RBW/VBW/点数、FFT 窗口（FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser，与官方一致）、衰减/前置放大/中频增益、Manual/Auto Ref Level、参考时钟（内部/外部/外部强制 + 输出）
 - **Marker 与 DSP 引擎** — 4 个游标、表格行快速 On/Off、独立 Tracking toggle、多个游标按峰值排序分配并连续追踪、寻峰寻谷遍历
 
   - Savitzky-Golay 平滑（2 阶 + 梯度自适应）
@@ -113,7 +113,7 @@ harogic-websa/
 ## 测试
 
 - **后端（50 项）**：帧协议、配置/安全默认、命令校验、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
-- **前端（21 项）**：DSP 引擎合成迹线、频率单位确认、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
+- **前端（22 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
 
 ## 开源说明
 

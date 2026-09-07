@@ -144,7 +144,14 @@
           <div class="param-row"><label data-i18n="stop">Stop</label><input type="number" id="input-stop" value="1050" step="any">
             <div class="unit-btn-group" id="unit-stop-group"></div>
             <button class="btn" data-action="apply-start-stop" data-i18n="set">Set</button></div>
-          <div class="param-row"><button class="btn" style="width:100%;" data-action="full-span" data-i18n="full_span">Full Span (100kHz - 9GHz)</button></div>
+          <div class="param-row"><label data-i18n="span_step">Span Step</label>
+            <input type="number" id="input-span-step" value="10" min="0.000001" step="any">
+            <span class="cur-val" id="span-step-unit">MHz</span>
+            <button class="btn active" id="btn-span-step-auto" data-action="span-step-auto" data-i18n="auto">Auto</button></div>
+          <div class="param-row span-action-row">
+            <button class="btn span-step-button" id="btn-swp-span-down" data-action="swp-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
+            <button class="btn span-full-button" data-action="full-span" data-i18n="full_span">Full Span</button>
+            <button class="btn span-step-button" id="btn-swp-span-up" data-action="swp-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
           </div>
         </div>
       </div>
@@ -403,7 +410,7 @@
       <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
       <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" title="前端版本">v1.1.2 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" title="前端版本">v1.1.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

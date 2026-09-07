@@ -30,6 +30,7 @@
 - RTA 连续 8 次调用失败时自动原地重配，两次恢复失败后升级给 supervisor 重启 worker。
 - Marker 表支持逐行 On/Off 和独立 Tracking，SWP/RTA 均按频率连续性追踪并支持多 Marker 分峰。
 - 频率输入首次获得焦点时自动全选，继续编辑时不重复抢占选区。
+- SWP 提供 `▼ / Full Span / ▲`，Step 默认跟随当前 span 的约 1/10 并归一化到 1/2/5 档；支持自定义和 Auto 恢复。
 - supervisor 在 worker 原生崩溃或硬件超时后退避重启；配置错误不循环重启。
 - NumPy/pyserial 依赖、DSP_Close、跨架构 SDK 路径和滚动日志已补齐。
 
@@ -69,7 +70,7 @@ python3 -m ruff check web_sa tests tools
 cd frontend/modern && npm audit
 ```
 
-当前基线：后端 50 项、前端 21 项，Ruff 0，npm audit 0。
+当前基线：后端 50 项、前端 22 项，Ruff 0，npm audit 0。
 
 ## 硬件冒烟测试
 

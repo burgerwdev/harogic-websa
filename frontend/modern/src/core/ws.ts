@@ -10,6 +10,7 @@ import {
   syncGraphModeStatus,
   releaseGraphModePending,
   syncFrequencyEditorStatus,
+  syncSwpSpanStep,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
@@ -288,6 +289,7 @@ export function updateStatus(s: any) {
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
+  syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
 
   const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
   if (measKey !== S.lastMeasKey) {

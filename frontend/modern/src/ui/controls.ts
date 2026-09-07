@@ -6,8 +6,13 @@ import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
 import { markerFreqHz } from '../core/markerCommon';
-import { parseFreqUnit } from '../core/units';
-import { normalizeCenterSpan, normalizeStartStop } from '../core/frequency';
+import { parseFreqUnit, toUnit } from '../core/units';
+import {
+  niceSpanStep,
+  normalizeCenterSpan,
+  normalizeStartStop,
+  steppedSpan,
+} from '../core/frequency';
 import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
 import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace } from './traceOps';
@@ -77,6 +82,7 @@ export function syncFrequencyEditorStatus(responseTo?: string, configVersion = 0
 }
 
 export function commitUnitField(field: string, commit = true) {
+  if (field === 'span') syncSwpSpanStep();
   if (!commit) return;
   if (field === 'center' || field === 'span') {
     applyCenterSpan();
@@ -125,11 +131,63 @@ export function applyStartStop() {
   send({ cmd: 'SET_FREQ', start: window!.start, stop: window!.stop });
 }
 export function applyFullSpan() {
+  beginFrequencyCommit('swp-freq-settings');
   send({
     cmd: 'SET_FREQ',
     center: (S.FREQ_MIN + S.FREQ_MAX) / 2,
     span: S.FREQ_MAX - S.FREQ_MIN,
   });
+}
+
+function formatSpanStep(value: number): string {
+  if (value >= 100) return value.toFixed(0);
+  if (value >= 10) return value.toFixed(1).replace(/\.0$/, '');
+  return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+export function syncSwpSpanStep(swpSpan = S.spanHz) {
+  if (S.spanStepAuto) S.setSpanStepHz(niceSpanStep(swpSpan));
+  const input = document.getElementById('input-span-step') as HTMLInputElement | null;
+  const unit = document.getElementById('span-step-unit');
+  if (input && document.activeElement !== input) {
+    input.value = formatSpanStep(toUnit(S.spanStepHz, 'span'));
+  }
+  if (unit) unit.textContent = S.units.span;
+  const auto = document.getElementById('btn-span-step-auto');
+  if (auto) auto.classList.toggle('active', S.spanStepAuto);
+}
+
+export function updateCustomSpanStep() {
+  const input = document.getElementById('input-span-step') as HTMLInputElement | null;
+  if (!input) return;
+  const value = Number(input.value);
+  if (!isFinite(value) || value <= 0) return;
+  const scale = S.units.span === 'GHz' ? 1e9 : S.units.span === 'MHz' ? 1e6
+    : S.units.span === 'kHz' ? 1e3 : 1;
+  S.setSpanStepAuto(false);
+  S.setSpanStepHz(Math.max(100, value * scale));
+  syncSwpSpanStep();
+}
+
+export function resetSpanStepAuto() {
+  S.setSpanStepAuto(true);
+  syncSwpSpanStep();
+}
+
+export function stepSwpSpan(direction: -1 | 1) {
+  const targetSpan = steppedSpan(
+    S.spanHz,
+    S.spanStepHz,
+    direction,
+    100,
+    S.FREQ_MAX - S.FREQ_MIN,
+  );
+  if (targetSpan === S.spanHz) return;
+  const window = normalizeCenterSpan(
+    S.centerHz, targetSpan, S.FREQ_MIN, S.FREQ_MAX);
+  if (!window) return;
+  beginFrequencyCommit('swp-freq-settings');
+  send({ cmd: 'SET_FREQ', center: window.center, span: window.span });
 }
 
 export function setRefLevel() {
@@ -597,6 +655,9 @@ export function bindActions() {
     'apply-center-span': () => applyCenterSpan(),
     'apply-start-stop': () => applyStartStop(),
     'full-span': () => applyFullSpan(),
+    'swp-span-down': () => stepSwpSpan(-1),
+    'swp-span-up': () => stepSwpSpan(1),
+    'span-step-auto': () => resetSpanStepAuto(),
     'set-ref-level': () => setRefLevel(),
     'set-ref-auto': () => setRefAuto(),
     'apply-rbw': () => applyRBW(),
@@ -677,7 +738,7 @@ export function bindActions() {
 
   const selectOnFocus = [
     'input-center', 'input-span', 'input-start', 'input-stop', 'input-rta-center',
-    'input-rbw', 'input-vbw', 'input-pnm',
+    'input-rbw', 'input-vbw', 'input-pnm', 'input-span-step',
   ];
   for (const id of selectOnFocus) {
     const input = document.getElementById(id) as HTMLInputElement | null;
@@ -737,6 +798,12 @@ export function bindActions() {
     const input = document.getElementById(id) as HTMLInputElement | null;
     input?.addEventListener('input', () => { input.dataset.edited = '1'; });
   }
+  const spanStep = document.getElementById('input-span-step') as HTMLInputElement | null;
+  if (spanStep) {
+    spanStep.addEventListener('input', () => updateCustomSpanStep());
+    spanStep.addEventListener('change', () => updateCustomSpanStep());
+  }
+  syncSwpSpanStep();
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   if (refInput) refInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') { event.preventDefault(); setRefLevel(); }

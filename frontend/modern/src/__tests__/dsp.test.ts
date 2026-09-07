@@ -5,7 +5,12 @@ import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { buildReferenceTablePub } from '../ui/normPub';
 import { percentileApprox } from '../dsp/stats';
-import { normalizeCenterSpan, normalizeStartStop } from '../core/frequency';
+import {
+  niceSpanStep,
+  normalizeCenterSpan,
+  normalizeStartStop,
+  steppedSpan,
+} from '../core/frequency';
 import { setUnit } from '../core/units';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import * as S from '../core/store';
@@ -139,6 +144,15 @@ describe('频率字段联动', () => {
     const window = normalizeStartStop(950e6, 1050e6, 9e3, 9e9)!;
     expect(window.center).toBe(1e9);
     expect(window.span).toBe(100e6);
+  });
+
+  it('默认 span step 使用联动的 1/2/5 档并限制边界', () => {
+    expect(niceSpanStep(100e6)).toBe(10e6);
+    expect(niceSpanStep(200e6)).toBe(20e6);
+    expect(niceSpanStep(50.78125e6)).toBe(5e6);
+    expect(steppedSpan(100e6, 10e6, -1, 100, 9e9)).toBe(90e6);
+    expect(steppedSpan(100, 10e6, -1, 100, 9e9)).toBe(100);
+    expect(steppedSpan(8.999e9, 10e6, 1, 100, 9e9)).toBe(9e9);
   });
 
   it('单位按钮未编辑时换算显示，编辑后按所选单位提交', () => {

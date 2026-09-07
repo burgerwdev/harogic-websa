@@ -1,3 +1,26 @@
+export function niceSpanStep(span: number): number {
+  if (!isFinite(span) || span <= 0) return 100;
+  const raw = Math.max(100, span / 10);
+  const decade = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / decade;
+  const multipliers = [1, 2, 5, 10];
+  const multiplier = multipliers.reduce((best, candidate) =>
+    Math.abs(Math.log(normalized / candidate)) < Math.abs(Math.log(normalized / best))
+      ? candidate : best);
+  return multiplier * decade;
+}
+
+export function steppedSpan(
+  span: number,
+  step: number,
+  direction: -1 | 1,
+  minimumSpan: number,
+  maximumSpan: number,
+): number {
+  if (!isFinite(span) || !isFinite(step) || step <= 0) return span;
+  return Math.max(minimumSpan, Math.min(maximumSpan, span + direction * step));
+}
+
 export interface FrequencyWindow {
   center: number;
   span: number;
