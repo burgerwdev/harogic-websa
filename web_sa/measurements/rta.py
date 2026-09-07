@@ -16,6 +16,7 @@ import time
 
 import numpy as np
 
+from ..hardware.device import DeviceError
 from .base import MeasurementSession
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ class RtaSession(MeasurementSession):
         self._trigger = None
         self._aux = None
         self._last_wf_time = 0.0
+        self._error_streak = 0
+        self._recovery_attempts = 0
+        self._last_recovery = 0.0
 
     def enter(self):
         """Snapshot standard config, then configure RTA."""
@@ -58,9 +62,9 @@ class RtaSession(MeasurementSession):
 
     def _configure(self):
         with self._lock:
-            self._configure_locked()
+            self._configure_locked(recovery=False)
 
-    def _configure_locked(self):
+    def _configure_locked(self, recovery=False):
         import htra_api as T
 
         from ..hardware import sdk_bindings as _sb
@@ -180,6 +184,9 @@ class RtaSession(MeasurementSession):
         # deterministic GPF on the 2nd fetch. Must use the full-size struct.
         self._aux = _sb.Full_MeasAuxInfo()
         self._ready = True
+        self._error_streak = 0
+        if not recovery:
+            self._recovery_attempts = 0
         dev.state.config_version += 1
         dev.state.freq_version += 1
         dev.state.last_error = ''
@@ -191,6 +198,25 @@ class RtaSession(MeasurementSession):
         # fail cleanly (st != 0 -> skip). 0.35s is a safe margin.
         self._ready_at = time.monotonic() + 0.35
         self._dbg_n = 0
+
+    def _step_failed_locked(self, stage: str, status) -> None:
+        self._error_streak += 1
+        if self._error_streak < 8:
+            return
+        now = time.monotonic()
+        if now - self._last_recovery < 1.0:
+            return
+        message = f'RTA {stage} failed repeatedly (status={status})'
+        self.dev.state.last_error = message
+        if self._recovery_attempts >= 2:
+            raise DeviceError(message)
+        self._recovery_attempts += 1
+        self._last_recovery = now
+        log.warning('%s; reconfigure attempt %d/2', message, self._recovery_attempts)
+        try:
+            self._configure_locked(recovery=True)
+        except Exception as exc:
+            raise DeviceError(f'RTA recovery configuration failed: {exc}') from exc
 
     def set_params(self, center=None, span=None):
         """Update the mode-private RTA frequency window and configure exactly once."""
@@ -286,10 +312,12 @@ class RtaSession(MeasurementSession):
                 st = T.dll.RTA_BusTriggerStart(T.pointer(dev.dev))
             except Exception as exc:
                 _dbg('STEP #%d trigger EXC %r' % (self._dbg_n, exc))
+                self._step_failed_locked('trigger exception', repr(exc))
                 return [], []
             if log_this:
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
+                self._step_failed_locked('trigger', st)
                 return [], []
             try:
                 status = T.dll.RTA_GetRealTimeSpectrum(
@@ -298,11 +326,15 @@ class RtaSession(MeasurementSession):
                     C.cast(C.byref(self._aux), T.POINTER(T.MeasAuxInfo_TypeDef)))
             except Exception as exc:
                 _dbg('STEP #%d Get EXC %r' % (self._dbg_n, exc))
+                self._step_failed_locked('get exception', repr(exc))
                 return [], []
             if log_this:
                 _dbg('STEP #%d Get ret=%s' % (self._dbg_n, status))
             if status != 0:
+                self._step_failed_locked('get', status)
                 return [], []
+            self._error_streak = 0
+            self._recovery_attempts = 0
 
             valid_points = int(info.PacketValidPoints)
             width, height = int(info.FrameWidth), int(info.FrameHeight)

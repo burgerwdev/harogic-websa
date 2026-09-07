@@ -16,7 +16,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 - **Spectrum display** — Clear Write / Max Hold / Min Hold / Average / View, 4 traces, frontend smoothing
 - **Control panel** — atomic Center/Span and Start/Stop linking, mode-private SWP/RTA settings, RBW/VBW/points, FFT windows (FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser, matching official), attenuation / preamp / IF gain, Manual/Auto Ref Level, reference clock (Int / Ext / ExtForce + output)
-- **Marker & DSP engine** — 4 markers with **All On/Off** (auto-distribute to peaks), peak/valley navigation
+- **Marker & DSP engine** — 4 markers, per-row On/Off toggles, independent Tracking toggles, ranked multi-marker assignment with continuous peak following, and peak/valley navigation
 
   - Savitzky-Golay smoothing (2nd order + gradient-adaptive)
   - 3-stage peak engine: local extrema → excursion (≥6 dB both sides) → parabolic sub-bin fit
@@ -112,8 +112,8 @@ harogic-websa/
 
 ## Tests
 
-- **Backend (49)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock reconfiguration, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
-- **Frontend (19)**: synthetic-trace DSP, frequency/unit linking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
+- **Backend (50)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
+- **Frontend (21)**: synthetic-trace DSP, frequency unit commit, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
 
 ## Open-Source Notes
 

@@ -79,14 +79,15 @@ Atten、Preamp、IF Gain、Gain Strategy；Ref Mode 恢复 Manual。
 
 ### Center / Span
 
-1. 用户编辑 Center 或 Span，整个 SWP 频率编辑区进入 dirty。
-2. 周期 STATUS 仍更新全局状态，但不得覆盖 dirty 编辑框。
-3. 单位按钮只换算显示数值，例如 `1000 MHz -> 1 GHz`，不发送命令。
-4. 点击 Set 或按 Enter，一次发送：
+1. 用户首次点击输入框时自动全选当前内容；保持焦点后的继续点击可正常放置光标。
+2. 用户编辑 Center 或 Span，整个 SWP 频率编辑区进入 dirty。
+3. 周期 STATUS 仍更新全局状态，但不得覆盖 dirty 编辑框。
+4. 单位按钮采用安全的双态语义：输入数字被编辑后，点击 `Hz/kHz/MHz/GHz` 按该单位立即提交；未编辑时只换算显示并保持物理值，不配置硬件。
+5. 点击 Set、按 Enter 或点击已编辑字段的单位，一次发送：
    `SET_FREQ {center, span}`。
-5. 后端将 span 限制在设备全范围内，再移动 center 以保持对称 start/stop。
-6. SDK 成功后返回带 `response_to=SET_FREQ` 的 STATUS。
-7. 前端清除 dirty，并使用 SDK actual 统一回填 Center/Span/Start/Stop。
+6. 后端将 span 限制在设备全范围内，再移动 center 以保持对称 start/stop。
+7. SDK 成功后返回带 `response_to=SET_FREQ` 的 STATUS。
+8. 前端清除 dirty，并使用 SDK actual 统一回填 Center/Span/Start/Stop。
 
 ### Start / Stop
 
@@ -154,7 +155,14 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 
 改变 Ref 会清除/重建依赖显示幅度网格的 RTA density；SWP/RTA Auto 状态互不影响。
 
-## 11. 真机验证基线
+## 11. Marker Toggle 与 Tracking
+
+- Marker 表第一列是每行独立 On/Off toggle；打开时按当前峰值排序选择未占用峰，关闭时保留位置和 Tracking 设置。
+- Tracking 在 SWP POWR 与 RTAF 两条路径均生效，使用当前活动 Trace（含 Hold/Average）。
+- 多个 Tracking Marker 首次按峰值强度依次占用不同峰；后续优先跟随记录频率附近的峰，避免跳到远端更强杂散。
+- SWP/RTA 频率轴变化时先按 `marker.freq` 重定位，再执行 Tracking。
+
+## 12. 真机验证基线
 
 SAN-90 + TinySA Ultra+ ZS407，1 GHz / -25 dBm：
 

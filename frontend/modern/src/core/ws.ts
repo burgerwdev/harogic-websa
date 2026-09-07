@@ -21,6 +21,7 @@ import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox } from '../dsp/stats';
+import { updateTrackingMarkers } from '../dsp/markerTracking';
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
@@ -130,7 +131,10 @@ export function connectWS() {
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
-      if (lastRtaStartHz === 0 || Math.abs(startHz - lastRtaStartHz) > 0.5 || Math.abs(stopHz - lastRtaStopHz) > 0.5) {
+      const axisChanged = lastRtaStartHz === 0
+        || Math.abs(startHz - lastRtaStartHz) > 0.5
+        || Math.abs(stopHz - lastRtaStopHz) > 0.5;
+      if (axisChanged) {
         if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
         for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
         for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
@@ -148,6 +152,7 @@ export function connectWS() {
       }
       // RTA mode has no FREQ frames; sync the frequency axis so markers map correctly
       S.setFreqArray(freq);
+      if (axisChanged) retrackMarkers();
       // 2D probability density (freq x amplitude bins): points along the signal trace
       // accumulate and fade - official-style density dots, not full columns.
       // The bin grid is anchored to the CURRENT display window (refTop..refTop-range):
@@ -226,6 +231,7 @@ export function connectWS() {
           d.set(spec);   // CLEAR_WRITE
         }
       });
+      updateTrackingMarkers();
       if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
         // bitmap rows are often all-zero; derive waterfall row from the live trace
         pushRtaRow(spec, wfRow.length, 100);   // fixed density scale; device MaxDensityValue collapses to 1 at high decimate

@@ -62,6 +62,7 @@ curl http://localhost:8080/api/state
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |
 | `auto_ref` | obj | Auto Ref 最近峰值、候选值和 pending 目标 |
+| `rta_health` | obj | 当前 RTA 连续错误数和原地恢复尝试次数 |
 | `amp` | obj | 增益链配置：atten/preamp/ifgain/gain_strategy + 实际值 atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | 参考时钟源：internal/external/premium/external_forced |
 | `has_docxo` | bool | 是否支持 DOCXO |

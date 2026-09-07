@@ -20,6 +20,7 @@ import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
+import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -45,9 +46,17 @@ function clearFrequencyEditor(editor: HTMLElement) {
   delete editor.dataset.pendingVersion;
   delete editor.dataset.pendingAt;
   delete editor.dataset.dirty;
+  editor.querySelectorAll('input').forEach(input => delete (input as HTMLElement).dataset.edited);
 }
 
 export function syncFrequencyEditorStatus(responseTo?: string, configVersion = 0) {
+  const scalarInput = responseTo === 'SET_RBW'
+    ? 'input-rbw'
+    : responseTo === 'SET_VBW' ? 'input-vbw' : responseTo === 'SET_PNM' ? 'input-pnm' : null;
+  if (scalarInput) {
+    const input = document.getElementById(scalarInput);
+    if (input) delete input.dataset.edited;
+  }
   const id = responseTo === 'SET_FREQ'
     ? 'swp-freq-settings'
     : responseTo === 'SET_RTA' ? 'rta-freq-settings' : null;
@@ -64,6 +73,27 @@ export function syncFrequencyEditorStatus(responseTo?: string, configVersion = 0
     if (configVersion >= expected && Date.now() - pendingAt >= 2500) {
       clearFrequencyEditor(editor);
     }
+  }
+}
+
+export function commitUnitField(field: string, commit = true) {
+  if (!commit) return;
+  if (field === 'center' || field === 'span') {
+    applyCenterSpan();
+  } else if (field === 'start' || field === 'stop') {
+    applyStartStop();
+  } else if (field === 'rta_center') {
+    applyRta();
+  } else if (field === 'rbw') {
+    const mode = document.getElementById('select-rbw-mode') as HTMLSelectElement | null;
+    if (mode) mode.value = 'manual';
+    applyRBW();
+  } else if (field === 'vbw') {
+    const mode = document.getElementById('select-vbw-mode') as HTMLSelectElement | null;
+    if (mode) mode.value = 'manual';
+    applyVBW();
+  } else if (field === 'pnm' && S.measOn && S.measTabSel === 'pnm') {
+    measPnmApply();
   }
 }
 
@@ -233,31 +263,29 @@ export function selectMarker(id: number) {
   m.enabled = true;
   if (m.mode === 'OFF') m.mode = 'NORMAL';
   autoTrackMarker(m);
+  syncMarkerTrackingToggle();
   renderAll();
 }
 
 function autoTrackMarker(m: S.MarkerState) {
-  const t = S.traces[S.activeTraceIdx];
-  const p = (t && t.powers) ? t.powers : getDisplayPowers();
-  if (!p || !S.freqArray) return;
-  const occupied = S.markers.filter(x => x.enabled && x.id !== m.id && x.mode !== 'OFF').map(x => x.idx);
-  const thrEl = document.getElementById('input-peakthr') as HTMLInputElement;
-  const thr = thrEl ? (parseFloat(thrEl.value) || -200) : -200;
-  const peaks: [number, number][] = [];
-  for (let i = 1; i < p.length - 1; i++) {
-    const v = p[i];
-    if (!isFinite(v)) continue;
-    if (v > thr && v >= p[i - 1] && v > p[i + 1]) peaks.push([i, v]);
-  }
-  const free = peaks.filter(pk => !occupied.some(o => Math.abs(o - pk[0]) <= 5));
-  free.sort((a, b) => b[1] - a[1]);
-  if (free.length) {
-    m.idx = free[0][0];
-    m.freq = S.freqArray[free[0][0]];
-  } else if (peaks.length) {
-    m.idx = peaks[0][0];
-    m.freq = S.freqArray[peaks[0][0]];
-  }
+  assignMarkerToBestPeak(m);
+}
+
+export function syncMarkerTrackingToggle() {
+  const marker = S.markers.find(item => item.id === S.activeMkrId);
+  const button = document.getElementById('btn-marker-tracking');
+  if (!marker || !button) return;
+  button.textContent = t('tracking');
+  button.classList.toggle('active', marker.tracking);
+  button.setAttribute('aria-pressed', String(marker.tracking));
+}
+
+export function toggleActiveMarkerTracking() {
+  const marker = S.markers.find(item => item.id === S.activeMkrId);
+  if (!marker) return;
+  toggleMarkerTracking(marker);
+  syncMarkerTrackingToggle();
+  renderAll();
 }
 
 // Graph mode changes are committed only after the backend STATUS confirms them.
@@ -437,7 +465,7 @@ export function updateMarkersAllBtn() {
 export function toggleMarkersAll() {
   const allOn = S.markers.every(m => m.enabled && m.mode !== 'OFF');
   if (allOn) {
-    S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; });
+    S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
   } else {
     // All on: track one peak at a time — M1 takes the strongest peak, later markers skip
     // occupied positions and take the next strongest
@@ -446,6 +474,7 @@ export function toggleMarkersAll() {
     S.markers.forEach(m => autoTrackMarker(m));
   }
   updateMarkersAllBtn();
+  syncMarkerTrackingToggle();
   renderAll();
 }
 
@@ -461,13 +490,14 @@ export function presetAll() {
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
   S.traces.forEach((t, i) => { t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false; t.avgSum = null; t.avgCount = 0; });
-  S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; });
+  S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
   S.setM3dB(null); S.setAmpRes(null); S.setHarm(null); S.setPnmData(null);
   S.setPeakListOn(false); S.setPeakMarks(null);
   const pl = document.getElementById('btn-peaklist');
   if (pl) pl.textContent = t('off');
   S.setActiveMkrId(1);
   S.setDefaultMkrDone(true);
+  syncMarkerTrackingToggle();
   // Preset also resets the RTA session (backend reset_defaults) and clears the RTA
   // memory + UI so re-entering RTA starts from factory defaults.
   if (S.rtaMode) {
@@ -530,6 +560,9 @@ export function syncToggleTexts() {
     rc.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
   }
   updateMarkersAllBtn();
+  syncMarkerTrackingToggle();
+  const tracking = document.getElementById('btn-marker-tracking');
+  if (tracking) tracking.textContent = t('tracking');
   const wb = document.getElementById('btn-waterfall');
   if (wb) wb.classList.toggle('active', S.waterfallOn);
 }
@@ -611,6 +644,7 @@ export function bindActions() {
     'gnss-detail': () => fillGnssDetail(),
     'gnss-close': () => closeGnssDetail(),
     'markers-all': () => toggleMarkersAll(),
+    'marker-tracking': () => toggleActiveMarkerTracking(),
     'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },
     'toggle-rta': () => setGraphMode(S.rtaMode ? 'swp' : 'rta'),
     'apply-rta': () => applyRta(),
@@ -636,6 +670,20 @@ export function bindActions() {
       el.addEventListener('click', () => handler(el as HTMLElement));
     }
   });
+  document.addEventListener('websa:unit-commit', (event) => {
+    const detail = (event as CustomEvent<{ field: string; commit: boolean }>).detail;
+    commitUnitField(detail.field, detail.commit);
+  });
+
+  const selectOnFocus = [
+    'input-center', 'input-span', 'input-start', 'input-stop', 'input-rta-center',
+    'input-rbw', 'input-vbw', 'input-pnm',
+  ];
+  for (const id of selectOnFocus) {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    input?.addEventListener('focus', () => requestAnimationFrame(() => input.select()));
+  }
+
   // Special bindings: trace tab / meas tab / marker select / scale / peakthr input
   document.querySelectorAll('[data-trace-tab]').forEach(el => {
     el.addEventListener('click', () => switchTraceTab(parseInt((el as HTMLElement).dataset.traceTab || '0')));
@@ -664,7 +712,10 @@ export function bindActions() {
   ['center', 'span', 'start', 'stop'].forEach(f => {
     const el = document.getElementById(`input-${f}`) as HTMLInputElement;
     if (!el) return;
-    el.addEventListener('input', () => markFrequencyDirty('swp-freq-settings'));
+    el.addEventListener('input', () => {
+      el.dataset.edited = '1';
+      markFrequencyDirty('swp-freq-settings');
+    });
     el.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return;
       event.preventDefault();
@@ -674,10 +725,17 @@ export function bindActions() {
   });
   const rtaCenter = document.getElementById('input-rta-center') as HTMLInputElement | null;
   if (rtaCenter) {
-    rtaCenter.addEventListener('input', () => markFrequencyDirty('rta-freq-settings'));
+    rtaCenter.addEventListener('input', () => {
+      rtaCenter.dataset.edited = '1';
+      markFrequencyDirty('rta-freq-settings');
+    });
     rtaCenter.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') { event.preventDefault(); applyRta(); }
     });
+  }
+  for (const id of ['input-rbw', 'input-vbw', 'input-pnm']) {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    input?.addEventListener('input', () => { input.dataset.edited = '1'; });
   }
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   if (refInput) refInput.addEventListener('keydown', (event) => {

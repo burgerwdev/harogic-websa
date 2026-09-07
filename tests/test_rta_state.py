@@ -2,8 +2,10 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from web_sa.config import DeviceCapabilities
-from web_sa.hardware.device import DeviceState
+from web_sa.hardware.device import DeviceError, DeviceState
 from web_sa.measurements.base import MeasurementSession
 from web_sa.measurements.rta import RtaSession
 
@@ -69,3 +71,23 @@ def test_preset_can_replace_rta_swp_restore_snapshot():
     assert state.span_hz == 500e6
     assert state.rbw_hz == 250e3
     assert configured == [True]
+
+
+def test_rta_repeated_errors_reconfigure_then_escalate():
+    _state, session = make_session()
+    recoveries = []
+
+    def recover(recovery=False):
+        recoveries.append(recovery)
+        session._error_streak = 0
+
+    session._configure_locked = recover
+    for _ in range(8):
+        session._step_failed_locked('get', -1)
+    assert recoveries == [True]
+
+    session._recovery_attempts = 2
+    session._error_streak = 7
+    session._last_recovery -= 2
+    with pytest.raises(DeviceError):
+        session._step_failed_locked('get', -1)

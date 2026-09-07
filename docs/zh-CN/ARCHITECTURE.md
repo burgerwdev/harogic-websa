@@ -74,6 +74,8 @@ SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_HARM/SET_PNM
 - **遍历语义**: 峰/谷统一频率方向(左=低频, 右=高频); pos 匹配取最近列表项(±3bin);
   不在列表(如 Valley 全局最低点非局部极小)时跳最近独立谷, 跳过同凹陷
 - **Valley**: 定位显示数据全局最低点 + 抛物线亚频点
+- **多 Marker Tracking**: Marker 表逐行 toggle；首次按峰值强度分配未占用峰，后续按 `marker.freq`
+  连续跟随邻近峰；SWP/RTA 共用策略，频率轴变化时先重定位
 - **smooth 数据源**: 开启时完全用平滑曲线(位置/幅度均平滑, 与显示一致); 关闭用原始+Raw Anchor
 - **Pk 阈值**: 未设置自动=峰值-50dB; 用户编辑锁定(activeElement 不覆盖 + oninput 实时锁定);
   Auto 恢复; marker 全关闭不更新

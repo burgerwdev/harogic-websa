@@ -1,7 +1,8 @@
 # 已知限制与注意事项
 
-1. **libhtraapi 偶发段错误/阻塞**: supervisor 会在 native 崩溃或调用超时后重启 worker；
-   设备固件完全挂死时仍可能需要重插拔。Web 与 SDK 的常驻进程隔离留待 VSA 架构阶段。
+1. **libhtraapi 偶发段错误/阻塞**: RTA 连续调用失败会先原地重配两次；仍失败或发生
+   native 崩溃/调用超时时，supervisor 重启 worker；设备固件完全挂死时仍可能需重插拔。
+   Web 与 SDK 的常驻进程隔离留待 VSA 架构阶段。
 2. **SAStudio4 占用**: 设备单句柄, 官方软件运行时 Device_Open 返回 -1
 3. **外部参考锁定**: 需正确设置 ExternalSystemClockFrequency=10MHz 且外部信号接入; 
    Ext 模式失锁自动回退内部(正常设备行为), 用 ExtForce 强制

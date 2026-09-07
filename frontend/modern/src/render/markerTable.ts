@@ -3,6 +3,8 @@ import * as S from '../core/store';
 import { formatFreqHz } from '../core/fmt';
 import { markerFreqHz } from '../core/markerCommon';
 import { renderAll } from './spectrum';
+import { t } from '../core/i18n';
+import { assignMarkerToBestPeak } from '../dsp/markerTracking';
 
 export function initMarkerTable() {
   const tbody = document.getElementById('marker-tbody');
@@ -12,7 +14,21 @@ export function initMarkerTable() {
     tr.dataset.mid = String(m.id);
 
     const td0 = document.createElement('td');
-    td0.innerHTML = `<span class="mk-cell"><span class="mk-swatch" style="background:var(--m${mi + 1})"></span>M${m.id}</span>`;
+    const toggle = document.createElement('button');
+    toggle.className = 'marker-toggle';
+    toggle.type = 'button';
+    toggle.style.setProperty('--marker-color', `var(--m${mi + 1})`);
+    toggle.setAttribute('aria-pressed', 'false');
+    toggle.onclick = () => toggleMarkerEnabled(m.id);
+    const swatch = document.createElement('span');
+    swatch.className = 'mk-swatch';
+    const label = document.createElement('span');
+    label.textContent = `M${m.id}`;
+    const tracking = document.createElement('span');
+    tracking.className = 'mk-track-indicator';
+    tracking.textContent = 'T';
+    toggle.append(swatch, label, tracking);
+    td0.appendChild(toggle);
     tr.appendChild(td0);
 
     const td1 = document.createElement('td');
@@ -51,7 +67,12 @@ export function updateMarkerTable(powers: Float32Array | null) {
     const row = tbody.children[i] as HTMLTableRowElement;
     if (!row) return;
     const cells = row.children;
-    (cells[0] as HTMLElement).style.opacity = (m.enabled && m.mode !== 'OFF') ? '1' : '0.4';
+    const markerToggle = cells[0].querySelector('.marker-toggle') as HTMLButtonElement;
+    const markerOn = m.enabled && m.mode !== 'OFF';
+    markerToggle.classList.toggle('active', markerOn);
+    markerToggle.classList.toggle('tracking', markerOn && m.tracking);
+    markerToggle.setAttribute('aria-pressed', String(markerOn));
+    markerToggle.title = markerOn ? t('off') : t('on');
     const selMode = cells[1].querySelector('select') as HTMLSelectElement;
     if (document.activeElement !== selMode && selMode.value !== m.mode) selMode.value = m.mode;
     const selRef = cells[4].querySelector('select') as HTMLSelectElement;
@@ -75,12 +96,32 @@ export function updateMarkerTable(powers: Float32Array | null) {
     if (cells[2].textContent !== fStr) cells[2].textContent = fStr;
     if (cells[3].textContent !== aStr) cells[3].textContent = aStr;
   });
+  const active = S.markers.find(marker => marker.id === S.activeMkrId);
+  const trackingButton = document.getElementById('btn-marker-tracking');
+  if (active && trackingButton) {
+    trackingButton.textContent = t('tracking');
+    trackingButton.classList.toggle('active', active.tracking);
+    trackingButton.setAttribute('aria-pressed', String(active.tracking));
+  }
+}
+
+function toggleMarkerEnabled(id: number) {
+  const marker = S.markers.find(item => item.id === id);
+  if (!marker) return;
+  marker.enabled = !marker.enabled;
+  if (marker.enabled && marker.mode === 'OFF') marker.mode = 'NORMAL';
+  if (marker.enabled) assignMarkerToBestPeak(marker);
+  renderAll();
 }
 
 function updateMarkerMode(id: number, mode: string) {
   const m = S.markers.find(x => x.id === id);
   if (!m) return;
-  if (mode === 'OFF') { m.enabled = false; m.mode = 'OFF'; }
+  if (mode === 'OFF') {
+    m.enabled = false;
+    m.mode = 'OFF';
+    m.tracking = false;
+  }
   else { m.enabled = true; m.mode = mode; }
   renderAll();
 }

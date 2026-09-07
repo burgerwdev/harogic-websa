@@ -21,6 +21,7 @@ export interface MarkerState {
   idx: number;
   refId: number;
   freq: number | null;
+  tracking: boolean;
 }
 
 export interface ExtremaItem { i: number; v: number; sv?: number; f: number; a: number; }
@@ -98,10 +99,10 @@ export let activeMkrId = 1;
 export function setActiveMkrId(v: number) { activeMkrId = v; }
 export const MARKER_COLORS = ['#FF4444', '#FFD700', '#1E90FF', '#FFFFFF'];
 export const markers: MarkerState[] = [
-  { id: 1, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
-  { id: 2, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
-  { id: 3, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
-  { id: 4, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null },
+  { id: 1, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
+  { id: 2, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
+  { id: 3, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
+  { id: 4, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
 ];
 
 // Measurement state

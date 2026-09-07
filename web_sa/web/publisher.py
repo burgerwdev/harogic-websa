@@ -7,6 +7,7 @@ import os
 import time
 
 from ..config import GNSS_POLL_INTERVAL, PUBLISH_MIN_INTERVAL
+from ..hardware.device import DeviceError
 from .app_keys import COMMAND_LOCK, WS_CLIENTS
 
 log = logging.getLogger(__name__)
@@ -77,6 +78,9 @@ async def publisher(app, dev):
                     _send_json(app, message)
             except asyncio.CancelledError:
                 raise
+            except DeviceError as exc:
+                log.critical('Fatal hardware error: %s; terminating worker', exc)
+                os._exit(70)
             except Exception as exc:
                 dev.state.last_error = f'publisher: {exc!r}'
                 if t0 - last_error_log >= ERROR_LOG_INTERVAL:

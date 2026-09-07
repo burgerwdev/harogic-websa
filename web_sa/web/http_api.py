@@ -95,6 +95,11 @@ def build_status(dev) -> dict:
         {'last_peak': None, 'candidate': None},
     )
     pending_auto_ref = getattr(dev, '_pending_auto_ref', None)
+    session = getattr(dev, 'session', None)
+    rta_health = {
+        'error_streak': getattr(session, '_error_streak', 0) if s.mode == 'rta' else 0,
+        'recovery_attempts': getattr(session, '_recovery_attempts', 0) if s.mode == 'rta' else 0,
+    }
 
     def effective(name):
         value = active_actual.get(name)
@@ -135,6 +140,7 @@ def build_status(dev) -> dict:
             'candidate': auto_tracker['candidate'],
             'pending': pending_auto_ref[1] if pending_auto_ref else None,
         },
+        'rta_health': rta_health,
         'amp': dict(atten=s.atten, preamp=s.preamplifier, ifgain=s.ifgain,
                     gain_strategy=s.gain_strategy, atten_actual=s.amp_atten,
                     preamp_actual=s.preamplifier_actual, ifgain_actual=s.ifgain),
