@@ -194,6 +194,12 @@ export function applyI18n(root: HTMLElement | Document = document) {
       if (el.dataset.i18nAttr !== 'title') el.textContent = t(k);
     }
   });
+  // Labels that are computed (not plain dictionary entries) must also follow the language.
+  // The theme button shows the *target* theme, which depends on the active theme.
+  const themeBtn = document.getElementById('btn-theme');
+  if (themeBtn) {
+    themeBtn.textContent = document.documentElement.dataset.theme === 'dark' ? t('light') : t('dark');
+  }
 }
 
 // ---------------------------------------------------------------------------
