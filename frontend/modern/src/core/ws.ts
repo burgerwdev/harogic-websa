@@ -15,7 +15,7 @@ import {
   syncSwpSpanStep,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
-import { syncAvgUI } from '../ui/traceOps';
+import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
@@ -310,7 +310,9 @@ export function updateStatus(s: any) {
   const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
   if (measKey !== S.lastMeasKey) {
     S.setLastMeasKey(measKey);
+    const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
     invalidateAllTraces();
+    if (hadNormalization) showNormalizeClearedHint();
   }
   if (S.displayUnit !== 'dB') S.setDisplayRef(S.refLevel);
   syncScaleButtons();

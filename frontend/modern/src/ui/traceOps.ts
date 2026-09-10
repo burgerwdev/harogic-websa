@@ -5,6 +5,7 @@ import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
 import { setAverageCount } from '../dsp/accumulator';
 import { renderAll } from '../render/spectrum';
+import { t } from '../core/i18n';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
 export function syncFreezeBtn() {
@@ -126,4 +127,20 @@ export function exportActiveTraceCsv(): void {
   a.download = `websa_T${t.id}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+
+// Traces' normalization references die whenever the measurement settings change (the
+// reference is no longer valid). Say so once instead of letting it vanish silently.
+let normHintTimer: number | null = null;
+
+export function showNormalizeClearedHint(): void {
+  const el = document.getElementById('norm-hint');
+  if (!el) return;
+  el.textContent = t('norm_cleared');
+  if (normHintTimer !== null) window.clearTimeout(normHintTimer);
+  normHintTimer = window.setTimeout(() => {
+    el.textContent = '';
+    normHintTimer = null;
+  }, 4000);
 }

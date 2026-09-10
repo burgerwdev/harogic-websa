@@ -381,3 +381,6 @@ Object.assign(dict.zh, {
   'tip_detector': '迹线检波器（仅普通频谱 SWP）。自动取样跟随信号（默认）；随机/正峰值/负峰值/RMS 为固定检波方式；'
     + '自动峰值不在界面提供：在 SAN-90 上实测会丢失稳定 CW 载波，仅在脉冲场景下通过 API 使用。',
 });
+
+Object.assign(dict.en, { 'norm_cleared': 'Normalization cleared (measurement settings changed)' });
+Object.assign(dict.zh, { 'norm_cleared': '归一化已清除（测量参数已变化）' });
