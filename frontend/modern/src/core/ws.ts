@@ -16,6 +16,7 @@ import {
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI } from '../ui/traceOps';
+import { accumulateTrace } from '../dsp/accumulator';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
@@ -153,7 +154,7 @@ export function connectWS() {
       if (axisChanged) {
         if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
         for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
-        for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
+        for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
         S.resetWaterfall();
       }
       lastRtaStartHz = startHz;
@@ -229,23 +230,21 @@ export function connectWS() {
       }
       // Per-trace accumulation (multi-trace like the official SW): each enabled trace
       // accumulates its own RTA display according to its mode.
+      // RTA reuses the shared accumulator (single semantics with SWP). rtaDisplays stays
+      // the storage so rendering, markers and waterfall are untouched.
       S.traces.forEach((tr, ti) => {
         if (tr.mode === 'OFF') return;
-        const d = S.rtaDisplays[ti];
-        if (!d || d.length !== spec.length) { S.rtaDisplays[ti] = new Float32Array(spec); return; }
-        if (tr.mode === 'MAX_HOLD') {
-          for (let i = 0; i < spec.length; i++) if (spec[i] > d[i]) d[i] = spec[i];
-        } else if (tr.mode === 'MIN_HOLD') {
-          for (let i = 0; i < spec.length; i++) if (spec[i] < d[i]) d[i] = spec[i];
-        } else if (tr.mode === 'AVERAGE') {
-          if (!S.rtaAvgN[ti]) { S.rtaAvgN[ti] = 1; d.set(spec); }
-          else { S.rtaAvgN[ti]++; const a = 1 / S.rtaAvgN[ti];
-            for (let i = 0; i < spec.length; i++) d[i] += (spec[i] - d[i]) * a; }
-        } else if (tr.mode === 'VIEW') {
-          // freeze
-        } else {
-          d.set(spec);   // CLEAR_WRITE
-        }
+        const shim = {
+          id: ti + 1, mode: tr.mode, prevMode: tr.prevMode,
+          raw: null, powers: S.rtaDisplays[ti], avgSum: S.rtaAvgSum[ti],
+          avgCount: S.rtaAvgN[ti], avgTarget: tr.avgTarget, done: S.rtaDone[ti],
+          reference: null, isNormalized: false,
+        } as unknown as S.TraceState;
+        accumulateTrace(shim, spec);
+        S.rtaDisplays[ti] = shim.powers;
+        S.rtaAvgSum[ti] = shim.avgSum;
+        S.rtaAvgN[ti] = shim.avgCount;
+        S.rtaDone[ti] = shim.done;
       });
       updateTrackingMarkers();
       if (S.waterfallOn && S.rtaMode && !S.wfPaused) {

@@ -49,6 +49,8 @@ export function clearRtaTrace() {
   const arr = S.rtaDisplays.slice();
   arr[idx] = null;
   S.rtaAvgN[idx] = 0;
+  S.rtaAvgSum[idx] = null;
+  S.rtaDone[idx] = false;
   S.setRtaDisplays(arr);
   if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
   renderAll();

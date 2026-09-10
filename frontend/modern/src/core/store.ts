@@ -164,6 +164,8 @@ export let rtaData: any = null;
 export function setRtaData(v: any) { rtaData = v; }
 export let rtaDisplays: (Float32Array | null)[] = [null, null, null, null];   // per-trace RTA accumulation
 export let rtaAvgN: number[] = [0, 0, 0, 0];
+export let rtaAvgSum: (Float32Array | null)[] = [null, null, null, null];
+export let rtaDone: boolean[] = [false, false, false, false];
 export function setRtaDisplays(v: (Float32Array | null)[]) { rtaDisplays = v; }
 // Density persistence params (UI-configurable in RTA mode)
 export let RTA_AMP_BINS = 128;                            // amplitude bins (~0.78 dB/bin at 100 dB)
