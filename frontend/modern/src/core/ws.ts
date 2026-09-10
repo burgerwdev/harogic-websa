@@ -22,6 +22,7 @@ import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
+import { noteFrameArrived } from '../ui/triggerEvents';
 import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
@@ -253,6 +254,7 @@ export function connectWS() {
       }
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(pts);
+      noteFrameArrived();                    // armed: this packet IS the capture
       // RTA data arrived -> redraw at ~60fps (16ms throttle)
       const now = performance.now();
       if (now - lastRender >= 16) {
@@ -273,6 +275,7 @@ export function connectWS() {
       if (version !== S.freqVersion) return;
       const raw = new Float32Array(event.data, 16, points);
       processTraces(raw);
+      noteFrameArrived();                    // armed: this trace IS the capture
       const now = performance.now();
       if (now - lastRender >= 33) {
         lastRender = now;

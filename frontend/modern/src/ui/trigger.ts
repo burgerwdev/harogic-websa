@@ -13,6 +13,7 @@ import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
+import { onTriggerHit } from './triggerEvents';
 
 const POLL_MS = 300;
 const TICK_MS = 1000;
@@ -245,6 +246,14 @@ export function initTrigger(): void {
   });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && phase !== 'free') disarm();
+  });
+  onTriggerHit(() => {
+    // packet arrived while armed -> the capture is on screen right now
+    phase = 'hit';
+    hitAt = fmtClock(new Date());
+    S.setTrigArmed(false);
+    syncOverlay();
+    renderAll();
   });
   window.setInterval(() => { if (phase === 'waiting') syncOverlay(); }, TICK_MS);
   onLangChange(() => { syncButton(); lastOverlayKey = ''; syncOverlay(); renderAll(); });
