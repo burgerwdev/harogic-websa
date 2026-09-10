@@ -322,6 +322,8 @@ describe('迹线模式语义', () => {
     // EMA with the default N=16: moves toward the new frame without freezing
     expect(t.powers![1]).toBeGreaterThan(-80);
     expect(t.powers![1]).toBeLessThan(-70);
+    // and the online average is seeded from the trace on screen, not from a blank array
+    expect(t.avgSum![1]).toBeLessThan(-70);
   });
 });
 
@@ -393,6 +395,8 @@ describe('RTA 帧合理性门限', () => {
     good[50] = -30;
     expect(plausibleSpectrum(good)).toBe(true);
     expect(plausibleSpectrum(new Float32Array(100).fill(-3))).toBe(false);  // saturated packet
+    const mostlyHigh = new Float32Array(100).fill(-95); for (let i = 80; i < 100; i++) mostlyHigh[i] = -2;
+    expect(plausibleSpectrum(mostlyHigh)).toBe(false);                      // bulk near full scale
     expect(plausibleSpectrum(new Float32Array(4))).toBe(false);
   });
 });

@@ -35,5 +35,8 @@ export function percentileApprox(values: ArrayLike<number>, quantile: number): n
 export function plausibleSpectrum(spec: ArrayLike<number>): boolean {
   if (spec.length < 8) return false;
   const floor = percentileApprox(spec, 0.3);
-  return isFinite(floor) && floor <= -20;
+  const bulk = percentileApprox(spec, 0.9);
+  // A valid trace has a low noise floor and only a minority of bins near full scale;
+  // saturated/undefined packets fail both checks.
+  return isFinite(floor) && floor <= -20 && isFinite(bulk) && bulk <= -15;
 }
