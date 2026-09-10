@@ -27,6 +27,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
+import { pendingRefClockHint } from '../core/refclock';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -266,10 +267,14 @@ export function applyPoints() {
 }
 export function setSpurMode(mode: string) { send({ cmd: 'SET_SPUR', mode }); }
 export function setWindow(v: string) { send({ cmd: 'SET_WINDOW', window: parseInt(v) }); }
-export function setRefClock(mode: string) { send({ cmd: 'SET_REFCK', mode }); }
+export function setRefClock(mode: string) {
+  pendingRefClockHint();
+  send({ cmd: 'SET_REFCK', mode });
+}
 export function toggleRefClkOut() {
   const btn = document.getElementById('btn-refclk-out');
   const cur = btn && btn.classList.contains('on');
+  pendingRefClockHint();
   send({ cmd: 'SET_REFCKOUT', on: !cur });
 }
 export function syncRefClkOut(s: any) {

@@ -14,6 +14,7 @@ import {
 } from '../core/frequency';
 import { setUnit } from '../core/units';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
+import { refClockSourceName, refClockStatus } from '../core/refclock';
 import * as S from '../core/store';
 import { synthCW, synthBandpass, synthTwoPeaks } from './synth';
 
@@ -200,6 +201,17 @@ describe('频率字段联动', () => {
     document.removeEventListener('websa:unit-commit', listener);
     S.units.center = 'MHz';
     document.body.innerHTML = previous;
+  });
+});
+
+describe('参考时钟状态判定', () => {
+  it('请求源与回读源一致为已应用，外部被回退时标记 fallback', () => {
+    expect(refClockSourceName(1)).toBe('external');
+    expect(refClockStatus('external', 1)).toBe('applied');
+    expect(refClockStatus('external', 0)).toBe('fallback');
+    expect(refClockStatus('external_forced', 3)).toBe('forced');
+    expect(refClockStatus('internal', 0)).toBe('applied');
+    expect(refClockStatus('internal', undefined)).toBe('unverified');
   });
 });
 

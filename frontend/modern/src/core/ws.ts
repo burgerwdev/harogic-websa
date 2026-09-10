@@ -17,6 +17,7 @@ import {
 import { invalidateAllTraces } from '../dsp/traces';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
+import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
 import { renderAll } from '../render/spectrum';
@@ -382,6 +383,7 @@ export function updateStatus(s: any) {
   }
   const rc = document.getElementById('select-refclk') as HTMLSelectElement;
   syncRefClkOut(s);
+  refreshRefClockHint(s, s.response_to);
   if (rc) {
     const hasOpt = rc.querySelector('option[value="premium"]');
     if (s.has_docxo && !hasOpt) {
