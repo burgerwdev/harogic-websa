@@ -77,7 +77,8 @@ function resetRtaAverage(idx: number): void {
 
 /** Average count UI: select value + "count/target" status for the active trace. */
 export function syncAvgUI(): void {
-  const t = S.traces[S.activeTraceIdx];
+  const idx = S.activeTraceIdx;
+  const t = S.traces[idx];
   const row = document.getElementById('trace-avg-row');
   if (row) row.style.display = t.mode === 'AVERAGE' ? '' : 'none';
   const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
@@ -85,7 +86,9 @@ export function syncAvgUI(): void {
   const st = document.getElementById('trace-avg-status');
   if (!st) return;
   if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }
-  st.textContent = t.avgTarget ? `${t.avgTarget}` : `${t.avgCount}`;
+  // RTA keeps its own accumulator, so the frame count lives in rtaAvgN (not traces[i].avgCount).
+  const count = S.rtaMode ? S.rtaAvgN[idx] : t.avgCount;
+  st.textContent = t.avgTarget ? `${t.avgTarget}` : `∞ (${count})`;
 }
 
 export function setTraceAverage(count: number): void {
