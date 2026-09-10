@@ -59,32 +59,34 @@ export function fillRefClockDetail(): void {
     ? ` (${t('refclk_fell_back')})` : ''}`;
 }
 
-function refClockBox(): HTMLElement | null {
-  const sel = document.getElementById('select-refclk');
-  return (sel?.closest('.info-item') as HTMLElement | null) ?? null;
+function refClockSelect(): HTMLSelectElement | null {
+  return document.getElementById('select-refclk') as HTMLSelectElement | null;
 }
 
 /**
- * Persistent border hint on the Clock Ref box:
- * amber when the reference fell back (or ExtForce), green while the clock output is on.
+ * Steady state: the dropdown box itself carries the source state (amber border when the
+ * reference fell back or is forced). The label is highlighted when the clock output is on,
+ * so "ExtForce + output" is no longer ambiguous.
  */
 export function applyRefClockSteadyState(status: any): void {
-  const box = refClockBox();
-  if (!box) return;
   const actual = status?.mode === 'rta' ? status?.rta_actual : status?.actual;
   const state = refClockStatus(String(status?.ref_clock ?? 'internal'),
     actual?.refclk_src as number | null | undefined);
   const warn = state === 'fallback' || state === 'forced';
-  box.classList.toggle('refclk-warn', warn);
-  box.classList.toggle('refclk-on', !!status?.refclk_out && !warn);
+  const sel = refClockSelect();
+  if (sel) {
+    sel.classList.toggle('refclk-warn', warn);
+    sel.title = warn ? refClockStatusText(state) : '';
+  }
+  const label = document.getElementById('refclk-label');
+  if (label) label.classList.toggle('refclk-label-on', !!status?.refclk_out);
 }
 
 let flashTimer: number | null = null;
 
 /** Subtle 3x outline flash on the Clock Ref box to confirm the switch was applied. */
 export function flashRefClockBox(status?: RefClockStatus): void {
-  const sel = document.getElementById('select-refclk');
-  const box = sel?.closest('.info-item') as HTMLElement | null;
+  const box = refClockSelect();
   if (!box) return;
   box.classList.remove('refclk-flash', 'warn');
   void box.offsetWidth;   // restart the animation on consecutive switches
