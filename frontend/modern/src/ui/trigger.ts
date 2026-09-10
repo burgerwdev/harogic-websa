@@ -13,7 +13,7 @@ import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
-import { onTriggerHit } from './triggerEvents';
+import { onTriggerHit, setBackendWaiting } from './triggerEvents';
 
 const POLL_MS = 300;
 const TICK_MS = 1000;
@@ -28,6 +28,7 @@ let armedConfirmed = false;
 let armLevel = -40;
 let armPeak: number | null = null;
 let lastOverlayKey = '';
+let lastArmAt = 0;
 
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
@@ -118,12 +119,15 @@ async function pollOnce(): Promise<void> {
     const req = (d?.req?.rta ?? {}) as Record<string, any>;
     const status = (req.trigger_actual ?? {}) as Record<string, any>;
     S.setTrigPoi(Number((d?.rta_actual ?? {}).poi ?? 0));
+    const source = String(req.trigger_source ?? 'bus');
+    const armed = source !== 'bus' && source !== 'freerun';
     const frames = Number(status.frames ?? -1);
     const advanced = lastFrames >= 0 && frames > lastFrames;
 
+    setBackendWaiting(armed && status.waiting === true);
     if (phase === 'waiting') {
-      if (!armedConfirmed && String(req.trigger_source) === 'level') {
-        armedConfirmed = true;            // device confirmed the armed source
+      if (!armedConfirmed && armed && status.waiting === true) {
+        armedConfirmed = true;            // device reports it is waiting -> baseline now
         lastFrames = frames;
       } else if (armedConfirmed && advanced) {
         phase = 'hit';
@@ -134,6 +138,26 @@ async function pollOnce(): Promise<void> {
       }
     }
     lastFrames = frames;
+    // The backend owns the armed state and it survives page reloads and mode switches, so
+    // keep the two in sync: a fresh page (or another client) must not leave the display
+    // waiting forever, and a stale local "waiting" must not survive a backend reset.
+    const backendArmed = armed;
+    // Both reconciliations below must stay quiet right after arming: the first poll can
+    // race the command dispatch (it still reads 'bus'), and acting on that would undo the
+    // arming that the user just asked for.
+    const settling = performance.now() - lastArmAt < 2000;
+    if (!settling && backendArmed && phase === 'free') {
+      disarm();                            // armed elsewhere (reload / other client)
+      return;
+    }
+    if (!settling && !backendArmed && phase !== 'free') {
+      phase = 'free';                     // backend went back to free run (mode switch, reload)
+      armedConfirmed = false;
+      setBackendWaiting(false);
+      S.setTrigArmed(false);
+      S.setTrigWaiting(false);
+      S.setTrigHit(false);
+    }
     // thresholds / parameter echo while idle
     if (phase === 'free') {
       const lvl = el<HTMLInputElement>('input-trg-level');
@@ -169,6 +193,8 @@ function arm(): void {
   S.setTrigArmed(true);
   S.setTrigWaiting(true);
   S.setTrigHit(false);
+  lastArmAt = performance.now();
+  setBackendWaiting(false);
   send({ cmd: 'SET_TRIGGER', source: 'level', level });
   syncOverlay();
   renderAll();
@@ -180,6 +206,7 @@ function disarm(): void {
   send({ cmd: 'SET_TRIGGER', source: 'bus' });
   phase = 'free';
   armedConfirmed = false;
+  setBackendWaiting(false);
   S.setTrigArmed(false);
   S.setTrigWaiting(false);
   S.setTrigHit(false);

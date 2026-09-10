@@ -69,8 +69,15 @@ class RtaSession(MeasurementSession):
         self._last_recovery = 0.0
 
     def enter(self):
-        """Snapshot standard config, then configure RTA."""
+        """Snapshot standard config, then configure RTA.
+
+        Entering RTA always starts from free run: an armed level trigger left behind by an
+        earlier session would make the device wait for a threshold crossing, so the display
+        would come up empty instead of showing the live spectrum."""
         super().enter()
+        if self.dev.state.trigger_source not in ('bus', 'freerun'):
+            self.dev.state.trigger_source = 'bus'
+            self.dev.state.trigger_actual = {}
         prepare = getattr(self.dev, 'prepare_auto_reference_retune', None)
         if prepare is not None:
             prepare('rta')
