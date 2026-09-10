@@ -74,6 +74,10 @@ export function setCurrentGapFill(v: boolean) { currentGapFill = v; }
 export let sweepMs = 0;
 export function setSweepMs(v: number) { sweepMs = v; }
 export let deviceConnected = false;
+// True while the frames we receive are unusable (saturated/undefined): shown on the canvas
+// instead of silently dropping them forever.
+export let badData = false;
+export function setBadData(v: boolean) { badData = v; }
 export function setDeviceConnected(v: boolean) { deviceConnected = v; }
 export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }
@@ -228,6 +232,14 @@ export function pushWaterfallRow(row: Uint16Array) {
 export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; }
 export let waterfallOn = false;
 export function setWaterfallOn(v: boolean) { waterfallOn = v; }
+// Waterfall colour range: Auto = per-frame relative (noise texture always visible),
+// Fixed = an absolute dBm window shared by both modes.
+export let wfRangeMode: 'auto' | 'fixed' = 'auto';
+export function setWfRangeMode(v: 'auto' | 'fixed') { wfRangeMode = v; }
+export let wfLoDbm = -110;
+export function setWfLoDbm(v: number) { wfLoDbm = v; }
+export let wfHiDbm = -30;
+export function setWfHiDbm(v: number) { wfHiDbm = v; }
 export let wfPaused = false;
 export function setWfPaused(v: boolean) { wfPaused = v; }
 export let rtaMode = false;

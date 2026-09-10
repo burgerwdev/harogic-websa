@@ -354,6 +354,8 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .span-action-row .span-full-button { flex: 0 0 162px; min-width: 0; }
 .span-action-row .span-step-button { width: 32px; min-width: 32px; padding: 2px 0; }
 #input-span-step { width: 82px; }
+#input-wf-lo, #input-wf-hi { width: 62px; }
+#input-wf-lo:disabled, #input-wf-hi:disabled { opacity: 0.45; }
 #span-step-unit { min-width: 34px; }
 .param-row label { color: var(--label); font-size: 11px; min-width: 58px; }
 /* RTA frequency controls (Center + Span rows): the frequency input and the span

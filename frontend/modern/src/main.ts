@@ -7,6 +7,7 @@ import { initMarkerTable } from './render/markerTable';
 import { initLimits, refreshLimitUnits } from './ui/limits';
 import { initControlRail } from './ui/controlRail';
 import { initTrigger } from './ui/trigger';
+import { initWfRange } from './ui/wfRange';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { renderAll } from './render/spectrum';
@@ -29,6 +30,7 @@ function init() {
   initLimits();
   initControlRail();
   initTrigger();
+  initWfRange();
   initLevelUnit(() => { refreshLimitUnits(); updateChanTable(); renderAll(); });
   syncToggleIcons();
   bindActions();

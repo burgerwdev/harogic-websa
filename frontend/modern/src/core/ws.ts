@@ -17,7 +17,7 @@ import {
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
-import { pushRtaRow, pushSwpRow } from '../render/waterfall';
+import { pushRtaRow, pushSwpRow, waterfallRowWidth } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
@@ -65,6 +65,13 @@ function scheduleReconnect() {
   }, reconnectDelay);
   reconnectDelay = Math.min(10000, reconnectDelay * 2);
 }
+
+// Unusable frames are expected for a moment after a reconfiguration; dropping them for ever
+// leaves a blank canvas with no explanation, so the drop is bounded and reported.
+const RTA_BAD_MAX_FRAMES = 20;
+const RTA_BAD_MAX_MS = 300;
+let rtaBadFirst = 0;
+let rtaBadCount = 0;
 
 export function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -148,7 +155,17 @@ export function connectWS() {
       const spec = new Float32Array(event.data, off, pts); off += pts * 4;
       const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
       const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
-      if (!plausibleSpectrum(spec)) return;   // drop saturated frames after (re)configuration
+      const plausible = plausibleSpectrum(spec);
+      if (plausible) {
+        rtaBadCount = 0;
+        if (S.badData) S.setBadData(false);
+      } else {
+        if (rtaBadCount === 0) rtaBadFirst = performance.now();
+        rtaBadCount++;
+      }
+      const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
+      if (!plausible && !settleOver) return;    // settle window only: drop quietly
+      if (!plausible) S.setBadData(true);       // past it, show the data and say so
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -252,7 +269,7 @@ export function connectWS() {
       updateTrackingMarkers();
       if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
         // bitmap rows are often all-zero; derive waterfall row from the live trace
-        pushRtaRow(spec, wfRow.length, 100);   // fixed density scale; device MaxDensityValue collapses to 1 at high decimate
+        pushRtaRow(spec, waterfallRowWidth(), 100);  // same width as the swept path (one peak-hold stage)
       }
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(pts);

@@ -75,14 +75,14 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   // the existing canvas content instead of rebuilding ~100k pixels.
   if (
     wfLastPushes === S.waterfallPushes && wfLastMax === dmax && wfLastTheme === theme
-    && wfImgKey === `${W}x${H}`
+    && wfImgKey === `${W}x${H}:${S.wfRangeMode}:${S.wfLoDbm}:${S.wfHiDbm}`
   ) {
     return;
   }
   wfLastPushes = S.waterfallPushes;
   wfLastMax = dmax;
   wfLastTheme = theme;
-  wfImgKey = `${W}x${H}`;
+  wfImgKey = `${W}x${H}:${S.wfRangeMode}:${S.wfLoDbm}:${S.wfHiDbm}`;
   if (!wfImg || wfImg.width !== W || wfImg.height !== H) wfImg = ctx.createImageData(W, H);
   const img = wfImg;
   const px = img.data;
@@ -118,49 +118,63 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   ctx.putImageData(img, 0, 0);
 }
 
-// RTA 模式: 从实时 spec 生成瀑布行, 按帧噪底动态映射 —— 底噪稳定显示为暗蓝(可见),
-// 信号随强度渐变为红。避免固定 -110~-30 映射在窄 span(dec 大, RBW 窄 -> 噪底更低)时
-// 把底噪压成全黑、只剩信号满红的两个极端。
-//
-// The "peak" is the frame MAXIMUM, not a high percentile: a CW carrier occupies 1-2 of the
-// 1001 bins, so the 98th percentile is just a noise level (~+10 dB above the floor). Using it
-// collapsed dyn to the 15 dB floor and everything within ~9 dB of the noise was painted in the
-// hot colours, which made the waterfall stripe of a narrow carrier ~8x too wide (measured:
-// 24 px vs 3 px in the swept mode, while the carrier itself was narrower in RTA).
-export function pushRtaRow(spec: Float32Array, w: number, maxDensity: number) {
-  const floor = percentileApprox(spec, 0.3);
+// One mapping for both modes (see ui/wfRange.ts): the row is a peak-held downsample of the
+// level array through a dB window.
+//   auto  : window = [frame floor (30th pct), frame max]; the floor is placed at 26% of the
+//           palette so the noise texture stays visible even at very low noise floors
+//   fixed : window = the user's dBm range, plain linear (colour = level)
+function buildRow(levels: ArrayLike<number>, w: number, maxDensity: number, lo: number, hi: number, offset: boolean): Uint16Array {
+  const span = Math.max(1e-6, hi - lo);
+  const row = new Uint16Array(w);
+  for (let i = 0; i < w; i++) {
+    const j0 = Math.floor(i * levels.length / w);
+    const j1 = Math.min(levels.length - 1, Math.ceil((i + 1) * levels.length / w));
+    let m = -Infinity;
+    for (let j = j0; j < j1; j++) {
+      const v = levels[j];
+      if (Number.isFinite(v) && v > m) m = v;
+    }
+    let frac = Number.isFinite(m) ? (m - lo) / span : 0;
+    if (offset) frac = 0.26 + frac * 0.74;
+    const lvl = Math.max(0, Math.min(maxDensity, Math.round(Math.max(0, Math.min(1.26, frac)) * maxDensity)));
+    row[i] = lvl;
+  }
+  return row;
+}
+
+/** Resolve the dB window for the current range mode. */
+function windowFor(levels: ArrayLike<number>): { lo: number; hi: number; offset: boolean } {
+  if (S.wfRangeMode === 'fixed') {
+    const lo = Math.min(S.wfLoDbm, S.wfHiDbm - 1);
+    return { lo, hi: S.wfHiDbm, offset: false };
+  }
+  const floor = percentileApprox(levels, 0.3);
   let peak = -Infinity;
-  for (let i = 0; i < spec.length; i++) {
-    const v = spec[i];
+  for (let i = 0; i < levels.length; i++) {
+    const v = levels[i];
     if (v > peak) peak = v;                     // NaN never compares greater
   }
   if (!Number.isFinite(peak)) peak = floor + 15;
-  const dyn = Math.max(15, peak - floor);
-  const row = new Uint16Array(w);
-  for (let i = 0; i < w; i++) {
-    const j0 = Math.floor(i * spec.length / w);
-    const j1 = Math.min(spec.length - 1, Math.ceil((i + 1) * spec.length / w));
-    let m = -300;
-    for (let j = j0; j < j1; j++) if (isFinite(spec[j]) && spec[j] > m) m = spec[j];
-    // noise floor lands ~26% of the LUT (clearly visible blue), a full dyn rise saturates red
-    const frac = (m - floor) / dyn;
-    const lvl = Math.max(0, Math.min(maxDensity, Math.round((0.26 + frac * 0.74) * maxDensity)));
-    row[i] = lvl;
-  }
-  S.pushWaterfallRow(row);
+  const hi = Math.max(peak, floor + 15);        // never collapse below a 15 dB window
+  return { lo: floor, hi, offset: true };
 }
 
-// SWP 模式: 从迹线生成瀑布行(保峰降采样)并累积(节流调用方控制)
+export function pushRtaRow(spec: Float32Array, w: number, maxDensity: number) {
+  const win = windowFor(spec);
+  S.pushWaterfallRow(buildRow(spec, w, maxDensity, win.lo, win.hi, win.offset));
+}
+
 export function pushSwpRow(powers: Float32Array, w: number, maxDensity: number) {
-  const row = new Uint16Array(w);
-  for (let i = 0; i < w; i++) {
-    const j0 = Math.floor(i * powers.length / w);
-    const j1 = Math.min(powers.length - 1, Math.ceil((i + 1) * powers.length / w));
-    let m = -300;
-    for (let j = j0; j < j1; j++) if (powers[j] > m) m = powers[j];
-    // 映射 dBm → 密度(0~maxDensity): 固定 -110(底噪) ~ -30(强信号) 动态范围
-    const lvl = Math.max(0, Math.min(maxDensity, Math.round((m + 110) / 80 * maxDensity)));
-    row[i] = lvl;
-  }
-  S.pushWaterfallRow(row);
+  const win = windowFor(powers);
+  S.pushWaterfallRow(buildRow(powers, w, maxDensity, win.lo, win.hi, win.offset));
+}
+
+// The row width is owned by the renderer (the canvas is DPR/CSS dependent): building rows at
+// this width removes the extra peak-hold rescale the RTA path used to need.
+let rowWidth = 800;
+export function setWaterfallRowWidth(w: number): void {
+  if (Number.isFinite(w) && w > 0) rowWidth = Math.round(w);
+}
+export function waterfallRowWidth(): number {
+  return rowWidth;
 }

@@ -77,7 +77,7 @@ def build_status(dev) -> dict:
     rta_req = {
         'center': s.rta_center_hz,
         'span': s.rta_span_hz,
-        'points': 1001,
+        'points': 3328,
         'rbw_mode': s.rta_rbw_mode,
         'rbw': s.rta_rbw_hz,
         'vbw_mode': s.rta_vbw_mode,
