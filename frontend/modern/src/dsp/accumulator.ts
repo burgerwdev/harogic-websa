@@ -44,9 +44,14 @@ export function applyMode(t: TraceState, mode: string): void {
   }
 }
 
+/** Return a supported average depth (falls back to the default). */
+export function normalizeAvgCount(count: number): number {
+  return AVG_COUNTS.includes(count as (typeof AVG_COUNTS)[number]) ? count : AVG_DEFAULT;
+}
+
 /** Set the average target and restart averaging (changing N restarts the average). */
 export function setAverageCount(t: TraceState, count: number): void {
-  t.avgTarget = AVG_COUNTS.includes(count as (typeof AVG_COUNTS)[number]) ? count : AVG_DEFAULT;
+  t.avgTarget = normalizeAvgCount(count);
   t.avgSum = null;
   t.avgCount = 0;
   t.done = false;

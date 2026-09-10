@@ -237,7 +237,7 @@ export function connectWS() {
         const shim = {
           id: ti + 1, mode: tr.mode, prevMode: tr.prevMode,
           raw: null, powers: S.rtaDisplays[ti], avgSum: S.rtaAvgSum[ti],
-          avgCount: S.rtaAvgN[ti], avgTarget: tr.avgTarget, done: S.rtaDone[ti],
+          avgCount: S.rtaAvgN[ti], avgTarget: tr.avgTargetRta ?? 16, done: S.rtaDone[ti],
           reference: null, isNormalized: false,
         } as unknown as S.TraceState;
         accumulateTrace(shim, spec);

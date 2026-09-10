@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
-import { setAverageCount } from '../dsp/accumulator';
+import { normalizeAvgCount, setAverageCount } from '../dsp/accumulator';
 import { renderAll } from '../render/spectrum';
 import { t } from '../core/i18n';
 
@@ -83,18 +83,21 @@ export function syncAvgUI(): void {
   const row = document.getElementById('trace-avg-row');
   if (row) row.style.display = t.mode === 'AVERAGE' ? '' : 'none';
   const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
-  if (sel && document.activeElement !== sel) sel.value = String(t.avgTarget ?? 16);
+  const depth = S.rtaMode ? (t.avgTargetRta ?? 16) : (t.avgTarget ?? 16);
+  if (sel && document.activeElement !== sel) sel.value = String(depth);
   const st = document.getElementById('trace-avg-status');
   if (!st) return;
   if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }
   // RTA keeps its own accumulator, so the frame count lives in rtaAvgN (not traces[i].avgCount).
   const count = S.rtaMode ? S.rtaAvgN[idx] : t.avgCount;
-  st.textContent = t.avgTarget ? `${t.avgTarget}` : `∞ (${count})`;
+  st.textContent = depth ? `${depth}` : `∞ (${count})`;
 }
 
 export function setTraceAverage(count: number): void {
   const idx = S.activeTraceIdx;
-  setAverageCount(S.traces[idx], count);
+  const trace = S.traces[idx];
+  if (S.rtaMode) trace.avgTargetRta = normalizeAvgCount(count);   // RTA depth is mode-private
+  else setAverageCount(trace, count);
   resetRtaAverage(idx);
   syncAvgUI();
   renderAll();
