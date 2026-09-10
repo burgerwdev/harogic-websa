@@ -22,3 +22,8 @@
 14. **Remote access**: query tokens can enter browser history/proxy logs; use an HTTPS reverse proxy for remote control
 15. **Fast worker exit**: the worker uses `os._exit` to avoid unstable vendor-SDK destruction, so it does not send a WS close frame; browsers reconnect automatically
 16. **Remaining hardware qualification**: continue covering USB hotplug, GNSS calibration, slow clients, frequent SWP/RTA switching, and 6/7/9 GHz soak tests
+17. **Resolution floor of the channel measurements**: channel power / OBW / ACPR are computed
+    from the *displayed* trace, so they are limited by the point count. When the RBW is far below
+    the displayed bin spacing a CW carrier only lights 1-2 bins and the OBW bottoms out there
+    (measured at span 100 MHz / 998 points: RBW 100 kHz -> OBW 401.6 kHz, RBW 10 kHz -> 200.8 kHz).
+    For a finer OBW reduce the span or raise the point count instead of only narrowing the RBW.
