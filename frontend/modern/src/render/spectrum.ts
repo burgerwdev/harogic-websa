@@ -514,7 +514,7 @@ function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number;
   if (rtaDensLayer.width !== cols || rtaDensLayer.height !== rows) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;
   const dens = S.rtaDensity2d!;
-  if (now - lastDensRebuild > 30) {   // ~33fps density refresh is plenty (fade is slow)
+  if (now - lastDensRebuild > 45) {   // ~22fps density refresh is plenty (fade is slow)
     lastDensRebuild = now;
     const lut = densityLutForRta();
     const img = lc.createImageData(cols, rows);

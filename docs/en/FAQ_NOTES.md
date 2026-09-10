@@ -15,12 +15,12 @@
 - SWP and RTA independently retain Center, Span, Ref, RBW, VBW, Sweep, and actual values. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md).
 - After eight consecutive RTA Trigger/Get failures, WebSA reconfigures RTA in place up to two times; persistent failure causes the supervisor to restart the worker.
 - Use `rta_health.error_streak/recovery_attempts` to diagnose a stalled RTA stream.
-- Spur rejection is effective only in SWP mode.
+- While a harmonic/PNM measurement is active, SWP-owned commands (frequency, Ref, RBW, VBW, sweep, points, spur, window, gain, reference clock) are rejected with an explicit error so the session cannot be disturbed; in RTA, FFT window/points/spur are also SWP-only.
 
 ## Reference Level
 
 - Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.
-- Auto Ref only adjusts when the peak is at least 15 dB above the estimated noise floor. After signal detection it targets about 5 dB above the peak with 5 dB steps and hysteresis. It holds current Ref when no signal is identifiable.
+- Auto Ref only adjusts when the peak is at least 15 dB above the estimated noise floor and the "about 5 dB above peak" target is not below -50 dBm; a high noise floor also keeps about 30 dB of headroom. With no signal or a too-weak peak it holds current Ref instead of converging to -50 dBm.
 - When Auto is active, a Center change or an SWP/RTA return temporarily raises Ref to 0 dBm if it was below zero, avoiding retuning to an unknown strong signal with an unsafe low Ref.
 - Every SWP/RTA reconfiguration clears stale candidates and waits 0.75 seconds before Auto Ref observations resume.
 - Auto Ref remains selected but is suspended under manual Atten; it resumes when Atten returns to Auto.

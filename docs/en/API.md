@@ -60,6 +60,7 @@ Field reference:
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
+| `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
 | `auto_ref` | obj | latest peak, candidate, and pending Auto Ref target |
 | `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |

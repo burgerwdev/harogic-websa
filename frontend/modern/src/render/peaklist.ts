@@ -43,11 +43,6 @@ export function findPeaks(powers: Float32Array, maxN: number): { idx: number; am
   return out;
 }
 
-export function noiseFloor(powers: Float32Array): number {
-  const s = Array.from(powers).sort((a, b) => a - b);
-  return s[Math.floor(s.length * 0.3)];
-}
-
 export function autoPeakThr(powers: Float32Array | null) {
   if (S.peakThrUserSet) return;
   if (!powers) return;

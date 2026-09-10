@@ -171,11 +171,13 @@ export function setRtaFade(v: number) { rtaFade = v; }
 export let rtaDensity2d: Float32Array | null = null;   // freq x amp probability density (signal trace path)
 export function setRtaDensity2d(v: Float32Array | null) { rtaDensity2d = v; }
 export const waterfallRows: Uint16Array[] = [];
+export let waterfallPushes = 0;   // monotonic row counter (rows array saturates at 512)
 export function pushWaterfallRow(row: Uint16Array) {
   waterfallRows.push(row);
+  waterfallPushes++;
   if (waterfallRows.length > 512) waterfallRows.shift();
 }
-export function resetWaterfall() { waterfallRows.length = 0; }
+export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; }
 export let waterfallOn = false;
 export function setWaterfallOn(v: boolean) { waterfallOn = v; }
 export let wfPaused = false;

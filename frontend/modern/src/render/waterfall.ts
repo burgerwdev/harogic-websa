@@ -28,10 +28,16 @@ function densityLUT(): Uint32Array {
   return lut;
 }
 
-// 从原始行(任意宽度)降采样到瀑布显示宽度
-function downsampleRow(src: Uint16Array, w: number): Uint16Array {
+// 从原始行(任意宽度)降采样到瀑布显示宽度(复用 scratch 缓冲区，避免每行分配)
+function downsampleRow(src: Uint16Array, w: number, reuse = false): Uint16Array {
   if (src.length === w) return src;
-  const out = new Uint16Array(w);
+  let out: Uint16Array;
+  if (reuse) {
+    if (!wfRowScratch || wfRowScratch.length !== w) wfRowScratch = new Uint16Array(w);
+    out = wfRowScratch;
+  } else {
+    out = new Uint16Array(w);
+  }
   for (let i = 0; i < w; i++) {
     const j0 = Math.floor(i * src.length / w);
     const j1 = Math.min(src.length - 1, Math.ceil((i + 1) * src.length / w));
@@ -42,6 +48,15 @@ function downsampleRow(src: Uint16Array, w: number): Uint16Array {
   return out;
 }
 
+// Reused scratch state: the waterfall redraws on every render tick while rows arrive much
+// more slowly, so buffers are kept instead of allocating an ImageData per frame.
+let wfImg: ImageData | null = null;
+let wfImgKey = '';
+let wfLastPushes = -1;
+let wfLastMax = -1;
+let wfLastTheme = '';
+let wfRowScratch: Uint16Array | null = null;
+
 // 渲染瀑布到指定 canvas(覆盖 marker 表区域)
 export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   const ctx = canvas.getContext('2d');
@@ -49,11 +64,29 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   const W = canvas.width, H = canvas.height;
   const rows = S.waterfallRows;
   const n = rows.length;
-  if (!n) { ctx.fillStyle = canvasColors().bg; ctx.fillRect(0, 0, W, H); return; }
-  const img = ctx.createImageData(W, H);
+  const theme = getTheme();
+  const dmax = Math.max(1, maxDensity || 20);
+  if (!n) {
+    ctx.fillStyle = canvasColors().bg; ctx.fillRect(0, 0, W, H);
+    wfLastPushes = S.waterfallPushes;
+    return;
+  }
+  // Nothing new since the previous frame (renders are faster than row pushes) -> keep
+  // the existing canvas content instead of rebuilding ~100k pixels.
+  if (
+    wfLastPushes === S.waterfallPushes && wfLastMax === dmax && wfLastTheme === theme
+    && wfImgKey === `${W}x${H}`
+  ) {
+    return;
+  }
+  wfLastPushes = S.waterfallPushes;
+  wfLastMax = dmax;
+  wfLastTheme = theme;
+  wfImgKey = `${W}x${H}`;
+  if (!wfImg || wfImg.width !== W || wfImg.height !== H) wfImg = ctx.createImageData(W, H);
+  const img = wfImg;
   const px = img.data;
   const lut = densityLUT();
-  const dmax = Math.max(1, maxDensity || 20);
   const bg = canvasColors().bg;
   const bgPx = [parseInt(bg.slice(1, 3), 16), parseInt(bg.slice(3, 5), 16), parseInt(bg.slice(5, 7), 16)];
   for (let y = 0; y < H; y++) {
@@ -71,7 +104,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
       }
       continue;
     }
-    const ds = downsampleRow(row, W);
+    const ds = downsampleRow(row, W, true);
     for (let x = 0; x < W; x++) {
       const lvl = Math.min(255, Math.round(ds[x] / dmax * 255));
       const c = lut[lvl];

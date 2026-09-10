@@ -156,9 +156,9 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 1. `SET_REF {mode:auto}` 启用当前模式独立的 Auto Ref。
 2. 只有峰值高于估计噪底至少 15 dB 时才识别为信号；无信号时保持当前 Ref。
 3. Auto 下改变 Center 或跨模式返回时，若 Ref<0 会先临时回到 0 dBm，再以安全 Ref 调谐新频段。
-4. 识别信号后以峰值上方约 5 dB 为目标，并量化到 5 dB 步进。
+4. 识别信号后以峰值上方约 5 dB 为目标，并量化到 5 dB 步进；目标低于 -50 dBm 时保持当前 Ref，噪底较高时保留约 30 dB 余量。
 5. 任何 SWP/RTA 重配置都会清除旧候选，并暂停观测 0.75 秒。
-6. 范围限制为 -50 到 +30 dBm。
+6. 范围限制为 -50 到 +30 dBm（生效下限由上述规则决定）。
 7. Ref 上调要求约 150 ms 连续稳定；Ref 下调要求目标连续稳定 1.5 秒。
 8. 两次调整至少间隔 1 秒，避免重配置振荡。
 9. 手动 Atten 时 Auto 保留但暂停；恢复 Atten Auto 后继续工作。

@@ -15,12 +15,12 @@
 - SWP/RTA 分别保存 Center、Span、Ref、RBW、VBW、Sweep 和 actual。完整流转见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)。
 - RTA 连续 8 次 Trigger/Get 失败后原地重配置，最多两次；仍失败时 supervisor 重启 worker。
 - `rta_health.error_streak/recovery_attempts` 可用于排查 RTA 停更。
-- 杂散抑制算法仅在 SWP 模式有效。
+- harmonic/PNM 测量进行中，SWP 专用命令（频率/Ref/RBW/VBW/Sweep/Points/Spur/Window/增益/参考时钟）会被拒绝并返回明确错误，避免打断测量会话；RTA 下 FFT 窗口/点数/杂散抑制同样只能用于 SWP。
 
 ## Reference Level
 
 - Manual Ref 会实际配置当前 SWP/RTA Profile，不只是改变显示范围。
-- Auto Ref 仅在峰值高于估计噪底至少 15 dB 时调整；识别信号后以峰值上方约 5 dB 为目标，并使用 5 dB 步进和迟滞。无信号时保持当前 Ref，不追踪噪底。
+- Auto Ref 仅在峰值高于估计噪底至少 15 dB、且“峰值上方约 5 dB”的目标不低于 -50 dBm 时调整；噪底较高时保留约 30 dB 余量。无信号或峰值过弱时保持当前 Ref，不再向 -50 dBm 收敛。
 - Auto 模式下改变 Center 或跨 SWP/RTA 返回时，若当前 Ref<0 会先临时回到 0 dBm，避免以过低 Ref 调谐到未知强信号。
 - 任何 SWP/RTA 重配置后都会清除旧候选并等待 0.75 秒，再恢复 Auto Ref 观测。
 - 手动 Atten 时 Auto Ref 保留但暂停；恢复 Atten Auto 后继续。
