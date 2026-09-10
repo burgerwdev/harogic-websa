@@ -198,7 +198,7 @@ export function applyI18n(root: HTMLElement | Document = document) {
   // The theme button shows the *target* theme, which depends on the active theme.
   const themeBtn = document.getElementById('btn-theme');
   if (themeBtn) {
-    themeBtn.textContent = document.documentElement.dataset.theme === 'dark' ? t('light') : t('dark');
+    themeBtn.textContent = document.documentElement.dataset.theme === 'dark' ? t('dark') : t('light');
   }
 }
 
@@ -517,4 +517,14 @@ Object.assign(dict.zh, {
   'tip_normalize': '直通校准：把当前迹线存为参考并开启归一化',
   'tip_theme': '在深色与浅色主题之间切换',
   'db_per_div': 'dB/格',
+});
+
+// Language / theme labels now show the current state, so the tooltips explain the click
+Object.assign(dict.en, {
+  'tip_lang': 'Language: click to switch between English and Chinese',
+  'tip_theme': 'Theme: click to switch between dark and light',
+});
+Object.assign(dict.zh, {
+  'tip_lang': '当前语言；点击在中文和 English 之间切换',
+  'tip_theme': '当前主题；点击在深色和浅色之间切换',
 });

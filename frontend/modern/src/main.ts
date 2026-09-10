@@ -41,17 +41,17 @@ function init() {
   // Theme/language toggle buttons (dev-bar, next to preset, no label)
   const btnTheme = document.getElementById('btn-theme');
   if (btnTheme) {
-    btnTheme.textContent = S_getTheme() === 'dark' ? t('light') : t('dark');
+    btnTheme.textContent = S_getTheme() === 'dark' ? t('dark') : t('light');
     btnTheme.addEventListener('click', () => {
       const th = toggleTheme();
       localStorage.setItem('web-sa-theme', th);
-      btnTheme.textContent = th === 'dark' ? t('light') : t('dark');
+      btnTheme.textContent = th === 'dark' ? t('dark') : t('light');
       renderAll();
     });
   }
   const btnLang = document.getElementById('btn-lang');
   if (btnLang) {
-    btnLang.textContent = getLang() === 'en' ? '中文' : 'EN';
+    btnLang.textContent = getLang() === 'en' ? 'EN' : '中文';
     btnLang.addEventListener('click', () => {
       const l = getLang() === 'en' ? 'zh' : 'en';
       setLang(l);
@@ -59,7 +59,7 @@ function init() {
       applyI18n();
       updateInfoBar();
       syncToggleTexts();
-      btnLang.textContent = l === 'en' ? '中文' : 'EN';
+      btnLang.textContent = l === 'en' ? 'EN' : '中文';
       renderAll();
     });
   }

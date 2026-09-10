@@ -564,7 +564,7 @@ export function toggleMarkersAll() {
   }
   updateMarkersAllBtn();
   const themeBtn = document.getElementById('btn-theme');
-  if (themeBtn) themeBtn.textContent = getTheme() === 'dark' ? t('light') : t('dark');
+  if (themeBtn) themeBtn.textContent = getTheme() === 'dark' ? t('dark') : t('light');
   syncMarkerTrackingToggle();
   renderAll();
 }
