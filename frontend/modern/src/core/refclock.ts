@@ -59,6 +59,26 @@ export function fillRefClockDetail(): void {
     ? ` (${t('refclk_fell_back')})` : ''}`;
 }
 
+function refClockBox(): HTMLElement | null {
+  const sel = document.getElementById('select-refclk');
+  return (sel?.closest('.info-item') as HTMLElement | null) ?? null;
+}
+
+/**
+ * Persistent border hint on the Clock Ref box:
+ * amber when the reference fell back (or ExtForce), green while the clock output is on.
+ */
+export function applyRefClockSteadyState(status: any): void {
+  const box = refClockBox();
+  if (!box) return;
+  const actual = status?.mode === 'rta' ? status?.rta_actual : status?.actual;
+  const state = refClockStatus(String(status?.ref_clock ?? 'internal'),
+    actual?.refclk_src as number | null | undefined);
+  const warn = state === 'fallback' || state === 'forced';
+  box.classList.toggle('refclk-warn', warn);
+  box.classList.toggle('refclk-on', !!status?.refclk_out && !warn);
+}
+
 let flashTimer: number | null = null;
 
 /** Subtle 3x outline flash on the Clock Ref box to confirm the switch was applied. */
@@ -80,6 +100,7 @@ export function flashRefClockBox(status?: RefClockStatus): void {
 /** Called from STATUS handling: flash on the command response, refresh the popover if open. */
 export function refreshRefClockHint(status: any, responseTo?: string): void {
   lastStatus = status;
+  applyRefClockSteadyState(status);
   if (responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT') {
     const actual = status?.mode === 'rta' ? status?.rta_actual : status?.actual;
     flashRefClockBox(refClockStatus(String(status?.ref_clock ?? 'internal'),

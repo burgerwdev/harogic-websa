@@ -299,6 +299,10 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 @keyframes refclk-flash { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 2px var(--dot-on); } }
 @keyframes refclk-flash-warn { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 2px #d9a300; } }
 .refclk-flash { border-radius: 3px; animation: refclk-flash .4s ease-in-out 3; }
+/* Steady state on the Clock Ref box: output enabled / reference fell back.
+   box-shadow (not border) so the top bar never shifts by a pixel. */
+.refclk-on { border-radius: 3px; box-shadow: 0 0 0 1px var(--dot-on); }
+.refclk-warn { border-radius: 3px; box-shadow: 0 0 0 1px #d9a300; }
 .refclk-flash.warn { animation-name: refclk-flash-warn; }
 .mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
