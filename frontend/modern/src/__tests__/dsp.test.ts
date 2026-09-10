@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sgSmooth, smoothForDisplay } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
+import { applyTraceMode, processTraces } from '../dsp/traces';
 import { buildReferenceTablePub } from '../ui/normPub';
 import { percentileApprox } from '../dsp/stats';
 import {
@@ -277,6 +278,46 @@ describe('多 Marker Tracking', () => {
 
     S.markers.forEach(marker => { marker.enabled = false; marker.mode = 'OFF'; marker.tracking = false; });
     document.body.innerHTML = previous;
+  });
+});
+
+describe('迹线模式语义', () => {
+  const feed = (values: number[]) => processTraces(new Float32Array(values));
+
+  beforeEach(() => {
+    S.traces.forEach((t, i) => {
+      t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF';
+      t.raw = null; t.powers = null; t.avgSum = null; t.avgCount = 0;
+      t.reference = null; t.isNormalized = false;
+    });
+    S.setActiveTraceIdx(0);
+    S.setCurrentGapFill(true);
+  });
+
+  it('OFF 隐藏但保留数据，重新启用可继续', () => {
+    const t = S.traces[0];
+    feed([-30, -40, -50]);
+    const before = Array.from(t.powers!);
+    applyTraceMode(t, 'OFF');
+    feed([-10, -10, -10]);
+    expect(Array.from(t.powers!)).toEqual(before);   // not overwritten while OFF
+  });
+
+  it('切到 MAX_HOLD 以当前迹线为累积起点', () => {
+    const t = S.traces[0];
+    feed([-30, -30, -30]);
+    applyTraceMode(t, 'MAX_HOLD');
+    feed([-60, -60, -60]);
+    expect(t.powers![1]).toBeCloseTo(-30, 4);
+  });
+
+  it('切到 AVERAGE 以当前迹线为起点并计数', () => {
+    const t = S.traces[0];
+    feed([-80, -80, -80]);
+    applyTraceMode(t, 'AVERAGE');
+    feed([-60, -60, -60]);
+    expect(t.avgCount).toBe(2);
+    expect(t.powers![1]).toBeCloseTo(-70, 4);
   });
 });
 

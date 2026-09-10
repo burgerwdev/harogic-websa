@@ -71,6 +71,30 @@ export function invalidateAllTraces() {
   updateNormalizeStatusUI();
 }
 
+/**
+ * Apply a trace mode without discarding data:
+ * - OFF hides the trace but keeps its samples, so re-enabling resumes it.
+ * - MAX/MIN/CLEAR_WRITE continue from the samples already displayed.
+ * - AVERAGE seeds the accumulator with the current trace (count = 1).
+ * Use resetTraceAccum() for the explicit Clear action.
+ */
+export function applyTraceMode(t: S.TraceState, mode: string) {
+  t.mode = mode;
+  if (mode !== 'VIEW' && mode !== t.prevMode) t.prevMode = mode;
+  if (mode === 'AVERAGE') {
+    if (t.powers && t.powers.length) {
+      t.avgSum = new Float32Array(t.powers);
+      t.avgCount = 1;
+    } else {
+      t.avgSum = null;
+      t.avgCount = 0;
+    }
+  } else {
+    t.avgSum = null;
+    t.avgCount = 0;
+  }
+}
+
 export function processTraces(rawPowers: Float32Array) {
   let data0 = gapFill(rawPowers);
   data0 = fillSpurDips(data0);

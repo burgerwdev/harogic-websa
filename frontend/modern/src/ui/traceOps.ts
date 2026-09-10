@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
-import { resetTraceAccum } from '../dsp/traces';
+import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
 import { renderAll } from '../render/spectrum';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
@@ -54,15 +54,6 @@ export function clearRtaTrace() {
 }
 
 export function setTraceMode(mode: string) {
-  const t = S.traces[S.activeTraceIdx];
-  t.mode = mode;
-  if (mode !== 'VIEW' && mode !== t.prevMode) t.prevMode = mode;
-  if (mode === 'OFF' || mode === 'CLEAR_WRITE' || mode === 'AVERAGE') {
-    t.avgSum = null; t.avgCount = 0;
-  }
-  if (mode === 'OFF') { resetTraceAccum(t); }
-  if (mode === 'MAX_HOLD' || mode === 'MIN_HOLD' || mode === 'AVERAGE' || mode === 'CLEAR_WRITE') {
-    t.powers = null; t.avgSum = null; t.avgCount = 0;
-  }
+  applyTraceMode(S.traces[S.activeTraceIdx], mode);
   syncFreezeBtn();
 }
