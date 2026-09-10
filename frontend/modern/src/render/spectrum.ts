@@ -445,32 +445,18 @@ function renderTriggerOverlay() {
   const p = plotRect();
   ctx.save();
   ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  let width = 0;
-  lines.forEach((l) => { width = Math.max(width, ctx.measureText(l).width); });
-  const lh = 15;
-  const boxW = width + 14;
-  const boxH = lines.length * lh + 8;
-  const x = p.x + p.w - boxW - 6;
-  const y = p.y + 6;
-  ctx.fillStyle = 'rgba(0,0,0,0.72)';
-  ctx.fillRect(x, y, boxW, boxH);
-  ctx.strokeStyle = S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : col_border());
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x, y, boxW, boxH);
-  ctx.textAlign = 'right';                 // lines end flush with the box's right edge
-  const rx = x + boxW - 7;
+  const rx = p.x + p.w - 6;
+  const lh = 14;
   lines.forEach((l, i) => {
+    const warn = l.startsWith('!');
     ctx.fillStyle = i === 0
       ? (S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : '#00cc00'))
-      : (l.startsWith('!') ? '#ff7043' : '#00cc00');
-    ctx.fillText(l.startsWith('!') ? l.slice(1) : l, rx, y + 8 + i * lh);
+      : (warn ? '#ff7043' : '#00cc00');
+    ctx.fillText(warn ? l.slice(1) : l, rx, p.y + 12 + i * lh);
   });
   ctx.restore();
-}
-
-function col_border(): string {
-  return canvasColors().axis;
 }
 
 // Trigger threshold line (RTA only): shows where a level trigger will fire.
