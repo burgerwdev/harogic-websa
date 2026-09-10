@@ -21,6 +21,17 @@ from ..config import (
     DEFAULT_RTA_SPAN_HZ,
     DEFAULT_RTA_SWEEP_MODE,
     DEFAULT_RTA_VBW_MODE,
+    DEFAULT_TRIGGER_ACQ_TIME_S,
+    DEFAULT_TRIGGER_DELAY_S,
+    DEFAULT_TRIGGER_EDGE,
+    DEFAULT_TRIGGER_LEVEL_DBM,
+    DEFAULT_TRIGGER_OUT,
+    DEFAULT_TRIGGER_OUT_POLARITY,
+    DEFAULT_TRIGGER_PRE_TIME_S,
+    DEFAULT_TRIGGER_RETRIGGER_COUNT,
+    DEFAULT_TRIGGER_RETRIGGER_PERIOD_S,
+    DEFAULT_TRIGGER_SAFE_TIME_S,
+    DEFAULT_TRIGGER_SOURCE,
     DeviceCapabilities,
     fit_center_span,
 )
@@ -56,6 +67,19 @@ class DeviceState:
     rta_sweep_time_mode: int = DEFAULT_RTA_SWEEP_MODE
     rta_sweep_time: float = 0.0
     rta_actual: dict = field(default_factory=dict)
+    # RTA acquisition trigger (applies to RTA sessions; SWP has no level trigger)
+    trigger_source: str = DEFAULT_TRIGGER_SOURCE
+    trigger_edge: str = DEFAULT_TRIGGER_EDGE
+    trigger_level_dbm: float = DEFAULT_TRIGGER_LEVEL_DBM
+    trigger_safe_time_s: float = DEFAULT_TRIGGER_SAFE_TIME_S
+    trigger_delay_s: float = DEFAULT_TRIGGER_DELAY_S
+    trigger_pre_time_s: float = DEFAULT_TRIGGER_PRE_TIME_S
+    trigger_acq_time_s: float = DEFAULT_TRIGGER_ACQ_TIME_S
+    trigger_retrigger_count: int = DEFAULT_TRIGGER_RETRIGGER_COUNT
+    trigger_retrigger_period_s: float = DEFAULT_TRIGGER_RETRIGGER_PERIOD_S
+    trigger_out: str = DEFAULT_TRIGGER_OUT
+    trigger_out_polarity: str = DEFAULT_TRIGGER_OUT_POLARITY
+    trigger_actual: dict = field(default_factory=dict)
     ref_level: float = 0.0
     ref_mode: str = 'manual'
     rbw_mode: str = 'manual'
@@ -234,6 +258,18 @@ class HarogicDevice:
         s.rta_sweep_time_mode = DEFAULT_RTA_SWEEP_MODE
         s.rta_sweep_time = 0.0
         s.rta_actual = {}
+        s.trigger_source = DEFAULT_TRIGGER_SOURCE
+        s.trigger_edge = DEFAULT_TRIGGER_EDGE
+        s.trigger_level_dbm = DEFAULT_TRIGGER_LEVEL_DBM
+        s.trigger_safe_time_s = DEFAULT_TRIGGER_SAFE_TIME_S
+        s.trigger_delay_s = DEFAULT_TRIGGER_DELAY_S
+        s.trigger_pre_time_s = DEFAULT_TRIGGER_PRE_TIME_S
+        s.trigger_acq_time_s = DEFAULT_TRIGGER_ACQ_TIME_S
+        s.trigger_retrigger_count = DEFAULT_TRIGGER_RETRIGGER_COUNT
+        s.trigger_retrigger_period_s = DEFAULT_TRIGGER_RETRIGGER_PERIOD_S
+        s.trigger_out = DEFAULT_TRIGGER_OUT
+        s.trigger_out_polarity = DEFAULT_TRIGGER_OUT_POLARITY
+        s.trigger_actual = {}
         self.reset_auto_reference('rta')
 
     def preset_state(self) -> dict:

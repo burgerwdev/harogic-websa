@@ -51,7 +51,7 @@ _COMMANDS = {
     'STATUS', 'CONNECT', 'SET_PRESET', 'CAL_REFCLK', 'SET_FREQ', 'SET_REF',
     'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR', 'SET_WINDOW',
     'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT', 'SET_MODE', 'SET_RTA', 'SET_HARM',
-    'SET_PNM','SET_DETECTOR',
+    'SET_PNM','SET_DETECTOR','SET_TRIGGER',
 
 }
 
@@ -187,6 +187,18 @@ def _validate_command(dev, cmd, data):
         _number(data, 'span', minimum=1000.0, maximum=50.78125e6)
         if 'center' not in data and 'span' not in data:
             raise CommandError('SET_RTA requires center or span', 'rta_requires_pair')
+    elif cmd == 'SET_TRIGGER':
+        _choice(data, 'source', ('bus', 'freerun', 'level', 'external', 'timer'))
+        _choice(data, 'edge', ('rising', 'falling', 'double'))
+        _number(data, 'level', minimum=-150.0, maximum=30.0)
+        _number(data, 'safetime', minimum=0.0, maximum=10.0)
+        _number(data, 'delay', minimum=0.0, maximum=10.0)
+        _number(data, 'pretime', minimum=0.0, maximum=10.0)
+        _number(data, 'acqtime', minimum=0.0005, maximum=60.0)
+        _integer(data, 'retrigger', minimum=0, maximum=65535)
+        _number(data, 'retriggerperiod', minimum=0.0, maximum=3600.0)
+        _choice(data, 'out', ('none', 'per_hop', 'per_sweep', 'per_profile'))
+        _choice(data, 'outpolarity', ('positive', 'negative'))
     elif cmd == 'SET_HARM':
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
@@ -481,6 +493,25 @@ async def _dispatch(dev, cmd, data) -> bool:
             raise CommandError('SET_RTA requires RTA mode', 'rta_mode_required')
         await _hw_call(
             sess.set_params, center=data.get('center'), span=data.get('span'))
+        return True
+    if cmd == 'SET_TRIGGER':
+        s = dev.state
+        for key, attr in (('source', 'trigger_source'), ('edge', 'trigger_edge'),
+                          ('out', 'trigger_out'), ('outpolarity', 'trigger_out_polarity')):
+            if key in data:
+                setattr(s, attr, data[key])
+        for key, attr in (('level', 'trigger_level_dbm'), ('safetime', 'trigger_safe_time_s'),
+                          ('delay', 'trigger_delay_s'), ('pretime', 'trigger_pre_time_s'),
+                          ('acqtime', 'trigger_acq_time_s'),
+                          ('retriggerperiod', 'trigger_retrigger_period_s')):
+            if key in data:
+                setattr(s, attr, float(data[key]))
+        if 'retrigger' in data:
+            s.trigger_retrigger_count = int(data['retrigger'])
+        # already in RTA: re-apply the profile now, otherwise the values are used on entry
+        sess = dev.session
+        if sess is not None and sess.name == 'rta':
+            await _hw_call(sess.set_trigger)
         return True
     if cmd == 'SET_HARM':
         sess = dev.session
