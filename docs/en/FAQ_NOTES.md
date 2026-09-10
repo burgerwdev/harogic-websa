@@ -147,5 +147,5 @@ The tool first disables output and sets -42 dBm, selects the output mode, sets a
 
 - `Auto Sample` (default): follows the signal type; the right choice for general viewing and CW.
 - `Sample` / `Pos Peak` / `Neg Peak` / `RMS`: fixed detectors; `Pos Peak` sits closest to the top, `RMS` shows a lower noise floor.
-- `Auto Peak`: intended for pulsed/burst capture (per-bin peak frame selection). On a steady CW signal the trace will visibly jump - expected behavior, not a fault.
+- `Auto Peak`: intended for pulsed/burst capture. Measured on SAN-90 it loses a steady CW carrier (peak -21.7 -> -85 dBm, 0.85 dB jitter), so it is **not offered in the UI**; use it via the API for pulsed signals only.
 - Detector applies to SWP only; the command is rejected during RTA and harmonic/PNM measurements.

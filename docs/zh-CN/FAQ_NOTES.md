@@ -147,5 +147,5 @@ cd frontend/modern && npm audit
 
 - `Auto Sample`（默认）：自动跟随信号类型，适合一般观察与 CW。
 - `Sample` / `Pos Peak` / `Neg Peak` / `RMS`：固定检波方式；`Pos Peak` 峰值最贴顶、`RMS` 噪底更低。
-- `Auto Peak`：面向脉冲/突发信号捕获，逐频点挑选峰值帧；对稳定 CW 信号迹线会明显跳动，属预期行为，不是故障。
+- `Auto Peak`：面向脉冲/突发信号捕获（逐频点挑选峰值帧）。SAN-90 实测对稳定 CW 会丢失载波（峰值 −21.7 → −85 dBm、抖动 0.85 dB），因此**不在界面提供**，仅在脉冲场景下通过 API 使用。
 - 检波器仅影响 SWP；RTA 与 harmonic/PNM 测量期间该命令会被拒绝。

@@ -375,9 +375,9 @@ Object.assign(dict.zh, { 'detector': '检波' });
 Object.assign(dict.en, {
   'tip_detector': 'Trace detector (SWP only). Auto Sample follows the signal (default). '
     + 'Sample / Pos Peak / Neg Peak / RMS are fixed detectors. '
-    + 'Auto Peak is meant for pulsed or burst signals - a steady CW trace will look unstable.',
+    + 'Auto Peak is not offered in the UI: measured on SAN-90 it loses a steady CW carrier, so use it only via the API for pulsed signals.',
 });
 Object.assign(dict.zh, {
   'tip_detector': '迹线检波器（仅普通频谱 SWP）。自动取样跟随信号（默认）；随机/正峰值/负峰值/RMS 为固定检波方式；'
-    + '自动峰值针对脉冲/突发信号，稳定 CW 信号下迹线会显得跳动。',
+    + '自动峰值不在界面提供：在 SAN-90 上实测会丢失稳定 CW 载波，仅在脉冲场景下通过 API 使用。',
 });
