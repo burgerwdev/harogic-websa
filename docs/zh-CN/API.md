@@ -54,6 +54,7 @@ curl http://localhost:8080/api/state
 | `points` | int | 请求点数（前端重采样目标）|
 | `window` | int | FFT 窗：0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
+| `detector` | str | 迹线检波器（auto/sample/pos_peak/neg_peak/rms/auto_peak），仅 SWP |
 | `mode` | str | 当前测量模式（std/harmonic/pnm/rta）|
 | `caps` | obj | 型号能力（model/name/fmin/fmax）|
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
@@ -122,6 +123,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |
 | `SET_SPUR` | `mode`（bypass/standard/enhanced）| 杂散抑制模式 |
 | `SET_WINDOW` | `window`（0~4）| FFT 窗口 |
+| `SET_DETECTOR` | `mode`（auto/sample/pos_peak/neg_peak/rms/auto_peak）| 迹线检波器，仅 SWP 生效 |
 | `SET_AMP` | `atten`（-1~33）, `preamp`（0/1）, `ifgain`（0~3）, `gain_strategy`（0/1）| 增益链配置 |
 | `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 参考时钟源；RTA 中重配 RTA Profile |
 | `SET_REFCKOUT` | `on`（bool）| 参考时钟输出；RTA 中重配 RTA Profile |
