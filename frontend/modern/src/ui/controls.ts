@@ -24,7 +24,7 @@ import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
 import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
-import { canvasColors } from '../core/theme';
+import { canvasColors, getTheme } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
@@ -563,6 +563,8 @@ export function toggleMarkersAll() {
     S.markers.forEach(m => autoTrackMarker(m));
   }
   updateMarkersAllBtn();
+  const themeBtn = document.getElementById('btn-theme');
+  if (themeBtn) themeBtn.textContent = getTheme() === 'dark' ? t('light') : t('dark');
   syncMarkerTrackingToggle();
   renderAll();
 }
