@@ -228,6 +228,14 @@
               <option value="OFF" data-i18n="off">Off</option>
             </select>
             <button class="btn" id="btn-view-freeze" data-action="toggle-freeze" data-i18n="freeze">Freeze</button></div>
+          <div class="param-row"><label data-i18n="avg">Avg</label>
+            <select id="select-trace-avg" data-action="set-trace-avg">
+              <option value="2">2</option><option value="4">4</option><option value="8">8</option>
+              <option value="16" selected>16</option><option value="32">32</option><option value="64">64</option>
+              <option value="128">128</option><option value="256">256</option><option value="0">∞</option>
+            </select>
+            <span class="cur-val" id="trace-avg-status">-</span>
+            <button class="btn" data-action="export-csv" data-i18n="export_csv">CSV</button></div>
           <div class="param-row"><label data-i18n="smooth">Smooth</label>
             <select id="select-smooth" data-action="set-smooth">
               <option value="1" data-i18n="off_short">Off</option><option value="3">3 pts</option>

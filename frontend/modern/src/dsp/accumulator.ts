@@ -4,7 +4,23 @@
 //   CLEAR_WRITE / MAX_HOLD / MIN_HOLD / AVERAGE (finite N or ∞) / VIEW / OFF
 // OFF is handled by the caller (data is retained); Clear uses resetTraceAccum().
 import type { TraceState } from '../core/store';
-import { resampleTrace } from './traces';
+
+/** Peak-preserving resample (local copy so this module has no cyclic import). */
+function resamplePeak(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
+  const out = new Float32Array(newLen);
+  const oldLen = src.length;
+  if (oldLen < 2 || newLen < 2) return new Float32Array(src.slice(0, newLen));
+  for (let i = 0; i < newLen; i++) {
+    const start = i * (oldLen - 1) / (newLen - 1);
+    const end = (i + 1) * (oldLen - 1) / (newLen - 1);
+    const j0 = Math.floor(start);
+    const j1 = Math.min(oldLen - 1, Math.max(j0, Math.ceil(end)));
+    let v = src[j0];
+    for (let j = j0 + 1; j <= j1; j++) v = isMaxHold ? Math.max(v, src[j]) : Math.min(v, src[j]);
+    out[i] = v;
+  }
+  return out;
+}
 
 /** Selectable average counts. 0 means continuous (unbounded) averaging. */
 export const AVG_COUNTS = [2, 4, 8, 16, 32, 64, 128, 256, 0] as const;
@@ -54,7 +70,7 @@ export function accumulateTrace(t: TraceState, data: Float32Array): boolean {
   if (!t.powers || t.powers.length !== data.length) {
     if (t.powers && (t.mode === 'MAX_HOLD' || t.mode === 'MIN_HOLD')
       && t.powers.length > 1 && data.length > 1) {
-      t.powers = resampleTrace(t.powers, data.length, t.mode === 'MAX_HOLD');
+      t.powers = resamplePeak(t.powers, data.length, t.mode === 'MAX_HOLD');
     } else {
       t.avgSum = null;
       t.avgCount = 0;

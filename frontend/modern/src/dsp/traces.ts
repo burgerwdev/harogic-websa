@@ -1,5 +1,6 @@
 // Trace processing: resampling/gapFill/spur suppression/state machine
 import * as S from '../core/store';
+import { accumulateTrace, applyMode } from './accumulator';
 import { updateNormalizeStatusUI } from './normalize';
 import { updateTrackingMarkers } from './markerTracking';
 
@@ -79,20 +80,7 @@ export function invalidateAllTraces() {
  * Use resetTraceAccum() for the explicit Clear action.
  */
 export function applyTraceMode(t: S.TraceState, mode: string) {
-  t.mode = mode;
-  if (mode !== 'VIEW' && mode !== t.prevMode) t.prevMode = mode;
-  if (mode === 'AVERAGE') {
-    if (t.powers && t.powers.length) {
-      t.avgSum = new Float32Array(t.powers);
-      t.avgCount = 1;
-    } else {
-      t.avgSum = null;
-      t.avgCount = 0;
-    }
-  } else {
-    t.avgSum = null;
-    t.avgCount = 0;
-  }
+  applyMode(t, mode);
 }
 
 export function processTraces(rawPowers: Float32Array) {
@@ -141,44 +129,7 @@ export function processTraces(rawPowers: Float32Array) {
         if (data[i] > S.NORM_POS_CAP) data[i] = S.NORM_POS_CAP;
     }
 
-    if (t.mode === 'VIEW') {
-      if (!t.powers || t.powers.length !== data.length) t.powers = new Float32Array(data);
-      return;
-    }
-
-    if (!t.powers || t.powers.length !== data.length) {
-      if (t.powers && (t.mode === 'MAX_HOLD' || t.mode === 'MIN_HOLD')
-        && t.powers.length > 1 && data.length > 1) {
-        t.powers = resampleTrace(t.powers, data.length, t.mode === 'MAX_HOLD');
-      } else {
-        t.avgSum = null; t.avgCount = 0;
-        t.powers = new Float32Array(data);
-        if (t.mode === 'AVERAGE') { t.avgSum = new Float32Array(data); t.avgCount = 1; }
-      }
-      return;
-    }
-
-    if (t.mode === 'CLEAR_WRITE') {
-      t.powers.set(data);
-    } else if (t.mode === 'MAX_HOLD') {
-      const cap = (t.reference && t.isNormalized) ? S.NORM_POS_CAP : Infinity;
-      for (let i = 0; i < data.length; i++) {
-        const v = data[i];
-        t.powers[i] = Math.max(t.powers[i], v < cap ? v : cap);
-      }
-    } else if (t.mode === 'MIN_HOLD') {
-      for (let i = 0; i < data.length; i++) t.powers[i] = Math.min(t.powers[i], data[i]);
-    } else if (t.mode === 'AVERAGE') {
-      if (!t.avgSum || t.avgSum.length !== data.length) {
-        t.avgSum = new Float32Array(data); t.avgCount = 1;
-      } else {
-        t.avgCount++;
-        for (let i = 0; i < data.length; i++) {
-          t.avgSum[i] += data[i];
-          t.powers[i] = t.avgSum[i] / t.avgCount;
-        }
-      }
-    }
+    accumulateTrace(t, data);
   });
   updateTrackingMarkers();
   updateNormalizeStatusUI();

@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
+import { setAverageCount } from '../dsp/accumulator';
 import { renderAll } from '../render/spectrum';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
@@ -56,4 +57,52 @@ export function clearRtaTrace() {
 export function setTraceMode(mode: string) {
   applyTraceMode(S.traces[S.activeTraceIdx], mode);
   syncFreezeBtn();
+}
+
+/** Average count UI: select value + "count/target" status for the active trace. */
+export function syncAvgUI(): void {
+  const t = S.traces[S.activeTraceIdx];
+  const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
+  if (sel && document.activeElement !== sel) sel.value = String(t.avgTarget ?? 16);
+  const st = document.getElementById('trace-avg-status');
+  if (!st) return;
+  if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }
+  st.textContent = t.avgTarget
+    ? `${Math.min(t.avgCount, t.avgTarget)}/${t.avgTarget}${t.done ? ' ✓' : ''}`
+    : `${t.avgCount}`;
+}
+
+export function setTraceAverage(count: number): void {
+  setAverageCount(S.traces[S.activeTraceIdx], count);
+  syncAvgUI();
+  renderAll();
+}
+
+/** Export the active trace as CSV (metadata header + freq/power pairs). */
+export function exportActiveTraceCsv(): void {
+  const t = S.traces[S.activeTraceIdx];
+  const powers = t?.powers;
+  const freq = S.freqArray;
+  if (!t || !powers || !freq) return;
+  const n = Math.min(powers.length, freq.length);
+  const head = [
+    `# trace=T${t.id}`, `mode=${t.mode}`,
+    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
+    `rbw_hz=${S.currentRBW}`, `vbw_hz=${S.currentVBW}`,
+    `display_unit=${S.displayUnit}`, `normalized=${t.isNormalized}`,
+    `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
+    'freq_hz,power',
+  ];
+  const rows: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = powers[i];
+    rows.push(`${Number(freq[i]).toFixed(3)},${isFinite(v) ? v.toFixed(3) : ''}`);
+  }
+  const blob = new Blob([head.concat(rows).join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `websa_T${t.id}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

@@ -15,6 +15,7 @@ import {
   syncSwpSpanStep,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
+import { syncAvgUI } from '../ui/traceOps';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
@@ -304,6 +305,7 @@ export function updateStatus(s: any) {
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
   syncRefLevelStatus(s.response_to);
+  syncAvgUI();
   syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
 
   const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;

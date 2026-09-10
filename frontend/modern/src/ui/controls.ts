@@ -16,7 +16,7 @@ import {
 } from '../core/frequency';
 import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv } from './traceOps';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
@@ -701,6 +701,8 @@ export function bindActions() {
     'toggle-refclkout': () => toggleRefClkOut(),
     'set-amp': () => setAmp(),
     'set-trace-mode': (el) => setTraceMode((el as HTMLSelectElement).value),
+    'set-trace-avg': (el) => setTraceAverage(parseInt((el as HTMLSelectElement).value) || 0),
+    'export-csv': () => exportActiveTraceCsv(),
     'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); renderAll(); },
     'set-norm-refwin': (el) => {
       const v = parseInt((el as HTMLSelectElement).value) || 0;

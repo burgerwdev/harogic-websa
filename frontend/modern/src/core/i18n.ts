@@ -362,3 +362,6 @@ Object.assign(dict.zh, {
   'refclk_cal_need_gnss': 'GNSS 未锁定，校准需要 1PPS 信号。',
   'refclk_cal_failed': '校准失败或超时。',
 });
+
+Object.assign(dict.en, { 'avg': 'Avg', 'export_csv': 'CSV' });
+Object.assign(dict.zh, { 'avg': '平均', 'export_csv': 'CSV' });
