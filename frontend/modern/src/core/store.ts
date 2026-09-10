@@ -13,6 +13,8 @@ export interface TraceState {
   _lastAbsorb?: number;
   _noiseFloorT?: number;
   _floorAt?: number;
+  avgTarget: number;   // finite average count (0 = continuous)
+  done: boolean;       // finite average completed
 }
 
 export interface MarkerState {
@@ -93,10 +95,10 @@ export let activeTraceIdx = 0;
 export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
 export const TRACE_COLORS = ['#00FF00', '#FFFF00', '#00FFFF', '#FF00FF'];
 export const traces: TraceState[] = [
-  { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
-  { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
-  { id: 3, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
-  { id: 4, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
+  { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
+  { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
+  { id: 3, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
+  { id: 4, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
 ];
 
 // Markers

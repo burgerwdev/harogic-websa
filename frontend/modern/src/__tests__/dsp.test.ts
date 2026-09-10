@@ -4,6 +4,7 @@ import { sgSmooth, smoothForDisplay } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { applyTraceMode, processTraces } from '../dsp/traces';
+import { AVG_COUNTS, accumulateTrace, applyMode, setAverageCount } from '../dsp/accumulator';
 import { buildReferenceTablePub } from '../ui/normPub';
 import { percentileApprox } from '../dsp/stats';
 import {
@@ -318,6 +319,50 @@ describe('迹线模式语义', () => {
     feed([-60, -60, -60]);
     expect(t.avgCount).toBe(2);
     expect(t.powers![1]).toBeCloseTo(-70, 4);
+  });
+});
+
+
+describe('共享累积模块 (SWP/RTA 共用)', () => {
+  const mk = () => ({ mode: 'CLEAR_WRITE', avgSum: null, avgCount: 0, avgTarget: 16, done: false,
+    powers: null, raw: null, reference: null, isNormalized: false, id: 1 }) as any;
+
+  it('平均档位按 2 的幂到 256 且包含 ∞', () => {
+    expect(AVG_COUNTS).toEqual([2, 4, 8, 16, 32, 64, 128, 256, 0]);
+  });
+
+  it('有限次数平均在到达 N 后停止并标记完成', () => {
+    const t = mk();
+    applyMode(t, 'AVERAGE');
+    setAverageCount(t, 4);
+    accumulateTrace(t, new Float32Array([-40, -40]));   // seeds avgCount = 1
+    accumulateTrace(t, new Float32Array([-60, -60]));
+    accumulateTrace(t, new Float32Array([-80, -80]));
+    expect(t.avgCount).toBe(3);
+    expect(t.powers[0]).toBeCloseTo(-60, 4);            // mean of -40/-60/-80
+    accumulateTrace(t, new Float32Array([-100, -100])); // 4th sample -> done
+    expect(t.avgCount).toBe(4);
+    expect(t.done).toBe(true);
+    const held = t.powers[0];
+    accumulateTrace(t, new Float32Array([0, 0]));       // ignored after completion
+    expect(t.powers[0]).toBe(held);
+  });
+
+  it('MAX_HOLD 继承已有迹线作为起点', () => {
+    const t = mk();
+    t.powers = new Float32Array([-30, -30]);
+    applyMode(t, 'MAX_HOLD');
+    accumulateTrace(t, new Float32Array([-60, -60]));
+    expect(t.powers[0]).toBeCloseTo(-30, 4);
+  });
+
+  it('∞ 模式持续平均且不结束', () => {
+    const t = mk();
+    applyMode(t, 'AVERAGE');
+    setAverageCount(t, 0);
+    for (let i = 0; i < 20; i++) accumulateTrace(t, new Float32Array([-50, -50]));
+    expect(t.done).toBe(false);
+    expect(t.avgCount).toBe(20);
   });
 });
 
