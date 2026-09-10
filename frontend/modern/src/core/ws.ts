@@ -161,7 +161,6 @@ export function connectWS() {
       lastRtaStartHz = startHz;
       lastRtaStopHz = stopHz;
       S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
-      (window as any).__rta = S.rtaData;
       // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
       const _nowU = performance.now();
       if (_nowU - lastRtaInfoAt > 400) {
