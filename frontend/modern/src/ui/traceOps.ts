@@ -57,9 +57,22 @@ export function clearRtaTrace() {
 }
 
 export function setTraceMode(mode: string) {
-  applyTraceMode(S.traces[S.activeTraceIdx], mode);
+  const idx = S.activeTraceIdx;
+  applyTraceMode(S.traces[idx], mode);
+  resetRtaAverage(idx);
   syncFreezeBtn();
   syncAvgUI();
+}
+
+/**
+ * RTA stores its own accumulator arrays, so SWP-side resets are not enough: a stale
+ * avgSum/avgCount would make a fresh average start near full scale and decay slowly
+ * (reported as "the trace descends from the top").
+ */
+function resetRtaAverage(idx: number): void {
+  S.rtaAvgSum[idx] = null;
+  S.rtaAvgN[idx] = 0;
+  S.rtaDone[idx] = false;
 }
 
 /** Average count UI: select value + "count/target" status for the active trace. */
@@ -76,7 +89,9 @@ export function syncAvgUI(): void {
 }
 
 export function setTraceAverage(count: number): void {
-  setAverageCount(S.traces[S.activeTraceIdx], count);
+  const idx = S.activeTraceIdx;
+  setAverageCount(S.traces[idx], count);
+  resetRtaAverage(idx);
   syncAvgUI();
   renderAll();
 }

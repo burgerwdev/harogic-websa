@@ -101,7 +101,7 @@ export function accumulateTrace(t: TraceState, data: Float32Array): boolean {
     // trace keeps refreshing; N sets the smoothing depth. 0 (infinity) = cumulative mean
     // since the last reset.
     const target = t.avgTarget || 0;
-    if (!t.avgSum || t.avgSum.length !== data.length) {
+    if (!t.avgSum || t.avgSum.length !== data.length || !t.avgCount) {
       // Seed from the trace already on screen when possible: an average must continue from
       // the current trace, so a single bad frame cannot define (and then decay from) the result.
       const seed = (t.powers && t.powers.length === data.length) ? t.powers : data;
