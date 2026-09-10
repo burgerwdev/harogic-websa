@@ -13,7 +13,7 @@ import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
-import { onTriggerHit, setBackendWaiting } from './triggerEvents';
+import { onTriggerHit, setArmedAt, setBackendWaiting } from './triggerEvents';
 import { armSwpTrigger, disarmSwpTrigger, onSwpHit } from './swpTrigger';
 
 const POLL_MS = 300;
@@ -225,6 +225,7 @@ function arm(): void {
   S.setTrigWaiting(true);
   S.setTrigHit(false);
   lastArmAt = performance.now();
+  setArmedAt(lastArmAt);
   setBackendWaiting(false);
   send({ cmd: 'SET_TRIGGER', source: 'level', level });
   syncOverlay();
@@ -326,7 +327,11 @@ export function initTrigger(): void {
     syncOverlay();
     renderAll();
   });
-  window.setInterval(() => { if (phase === 'waiting') syncOverlay(); }, TICK_MS);
+  window.setInterval(() => {
+    if (phase !== 'waiting') return;
+    syncOverlay();
+    renderAll();            // repaint so the elapsed seconds actually tick
+  }, TICK_MS);
   onLangChange(() => { syncButton(); lastOverlayKey = ''; syncOverlay(); renderAll(); });
   syncButton();
   schedule();
