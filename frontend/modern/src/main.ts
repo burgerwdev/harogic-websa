@@ -41,11 +41,11 @@ function init() {
   // Theme/language toggle buttons (dev-bar, next to preset, no label)
   const btnTheme = document.getElementById('btn-theme');
   if (btnTheme) {
-    btnTheme.textContent = S_getTheme() === 'dark' ? 'Light' : 'Dark';
+    btnTheme.textContent = S_getTheme() === 'dark' ? t('light') : t('dark');
     btnTheme.addEventListener('click', () => {
       const th = toggleTheme();
       localStorage.setItem('web-sa-theme', th);
-      btnTheme.textContent = th === 'dark' ? 'Light' : 'Dark';
+      btnTheme.textContent = th === 'dark' ? t('light') : t('dark');
       renderAll();
     });
   }

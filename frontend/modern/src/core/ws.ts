@@ -366,7 +366,7 @@ export function updateStatus(s: any) {
   const dd = s.device_detail;
   if (dd) {
     const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    set('dev-model', 'Model ' + dd.model);
+    set('dev-model', t('model') + ' ' + dd.model);
     set('dev-uid', dd.uid);
     set('dev-hw', dd.hw);
     set('dev-mfw', dd.mfw);
@@ -392,7 +392,7 @@ export function updateStatus(s: any) {
     const hasOpt = rc.querySelector('option[value="premium"]');
     if (s.has_docxo && !hasOpt) {
       const o = document.createElement('option');
-      o.value = 'premium'; o.textContent = 'Int+ (DOCXO)';
+      o.value = 'premium'; o.textContent = t('docxo_premium');
       rc.appendChild(o);
     } else if (!s.has_docxo && hasOpt) {
       hasOpt.remove();

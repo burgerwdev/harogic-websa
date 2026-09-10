@@ -33,7 +33,7 @@
         </div></div><span class="separator">|</span><div class="info-item"><span class="info-label" data-i18n="swt">SWT:</span><span class="info-value" id="info-swt">-</span></div><span class="separator">|</span>
       
       <div class="info-item"><span id="refclk-label" class="info-label gnss-indicator" data-action="refclk-detail" data-i18n="clock_ref">Clock Ref:</span>
-        <select id="select-refclk" data-action="set-refclock">
+        <select id="select-refclk" data-action="set-refclock" data-i18n="tip_select-refclk" data-i18n-attr="title">
           <option value="internal" data-i18n="int">Int</option><option value="external" data-i18n="ext">Ext</option>
           <option value="external_forced" data-i18n="ext_force">ExtForce</option>
         </select>
@@ -45,7 +45,7 @@
             <div class="param-row"><label data-i18n="refclk_current">Current</label><span class="info-value" id="refclk-d-current">-</span></div>
             <div class="param-row"><label data-i18n="refclk_actual_src">Actual source</label><span class="info-value" id="refclk-d-actual">-</span></div>
             <div class="param-row"><label data-i18n="output">Output</label>
-              <button class="btn" id="btn-refclk-out" data-action="toggle-refclkout" data-i18n="output">Output</button></div>
+              <button class="btn" id="btn-refclk-out" data-action="toggle-refclkout" data-i18n="output" data-i18n-title="tip_btn-refclk-out">Output</button></div>
           </div>
         </div>
 
@@ -53,7 +53,7 @@
     </div>
     <div class="info-right">
       <span id="connDot" class="dot off"></span>
-      <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect">Connect SAN-90</button>
+      <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect SAN-90</button>
     </div>
   </div>
 
@@ -94,8 +94,8 @@
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="mode">Mode</label>
-            <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall">Waterfall</button>
-            <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta">RTA</button>
+            <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
+            <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
           </div>
         </div>
       </div>
@@ -107,11 +107,11 @@
         </div>
         <div class="group-body">
           <div id="rta-freq-settings" style="display:none;">
-            <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-rta-center" value="1000" step="any">
+            <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-rta-center" value="1000" step="any" data-i18n="tip_input-rta-center" data-i18n-attr="title">
               <div class="unit-btn-group" id="unit-rta_center-group"></div>
               <button class="btn" data-action="apply-rta" data-i18n="set">Set</button></div>
             <div class="param-row"><label data-i18n="span">Span</label>
-              <select id="select-rta-span" data-action="apply-rta">
+              <select id="select-rta-span" data-action="apply-rta" data-i18n="tip_select-rta-span" data-i18n-attr="title">
                 <option value="50781250" selected>50.8 MHz</option>
                 <option value="25390625">25.4 MHz</option>
                 <option value="12695312">12.7 MHz</option>
@@ -130,13 +130,13 @@
               <button class="btn" id="btn-rta-span-up" data-action="rta-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
             <div class="param-row"><label data-i18n="persist">Persist</label>
               <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Persistence (density fade)">
-                <option value="0.95">Fast</option>
-                <option value="0.975" selected>Medium</option>
-                <option value="0.99">Slow</option>
-                <option value="0.995">Very Slow</option>
+                <option value="0.95" data-i18n="rta_fast">Fast</option>
+                <option value="0.975" selected data-i18n="rta_medium">Medium</option>
+                <option value="0.99" data-i18n="rta_slow">Slow</option>
+                <option value="0.995" data-i18n="rta_vslow">Very Slow</option>
               </select>
               <label style="min-width:auto;" data-i18n="grain">Grain</label>
-              <select id="select-rta-bins" data-action="set-rta-bins">
+              <select id="select-rta-bins" data-action="set-rta-bins" data-i18n="tip_select-rta-bins" data-i18n-attr="title">
                 <option value="64">64</option>
                 <option value="96">96</option>
                 <option value="128" selected>128</option>
@@ -144,21 +144,21 @@
               </select></div>
           </div>
           <div id="swp-freq-settings">
-          <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any">
+          <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any" data-i18n="tip_input-center" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-center-group"></div>
             <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
-          <div class="param-row"><label data-i18n="span">Span</label><input type="number" id="input-span" value="100" step="any">
+          <div class="param-row"><label data-i18n="span">Span</label><input type="number" id="input-span" value="100" step="any" data-i18n="tip_input-span" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-span-group"></div>
             <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
-          <div class="param-row"><label data-i18n="start">Start</label><input type="number" id="input-start" value="950" step="any">
+          <div class="param-row"><label data-i18n="start">Start</label><input type="number" id="input-start" value="950" step="any" data-i18n="tip_input-start" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-start-group"></div></div>
-          <div class="param-row"><label data-i18n="stop">Stop</label><input type="number" id="input-stop" value="1050" step="any">
+          <div class="param-row"><label data-i18n="stop">Stop</label><input type="number" id="input-stop" value="1050" step="any" data-i18n="tip_input-stop" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-stop-group"></div>
             <button class="btn" data-action="apply-start-stop" data-i18n="set">Set</button></div>
           <div class="param-row"><label data-i18n="span_step">Span Step</label>
-            <input type="number" id="input-span-step" value="10" min="0.000001" step="any">
+            <input type="number" id="input-span-step" value="10" min="0.000001" step="any" data-i18n="tip_input-span-step" data-i18n-attr="title">
             <span class="cur-val" id="span-step-unit">MHz</span>
-            <button class="btn active" id="btn-span-step-auto" data-action="span-step-auto" data-i18n="auto">Auto</button></div>
+            <button class="btn active" id="btn-span-step-auto" data-action="span-step-auto" data-i18n="auto" data-i18n-title="tip_btn-span-step-auto">Auto</button></div>
           <div class="param-row span-action-row">
             <button class="btn span-step-button" id="btn-swp-span-down" data-action="swp-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
             <button class="btn span-full-button" data-action="full-span" data-i18n="full_span">Full Span</button>
@@ -174,7 +174,7 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
+          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
           <div class="param-row"><label data-i18n="scale_short">Scale</label>
             <div class="unit-btn-group" id="unit-scale-group">
               <button class="unit-btn" data-scale="1">1</button>
@@ -193,16 +193,16 @@
               <option value="20">20 dB</option><option value="30">30 dB</option>
             </select><span class="cur-val" id="cur-atten">-</span></div>
           <div class="param-row"><label data-i18n="preamp">PreAmp</label>
-            <select id="select-preamp" data-action="set-amp">
+            <select id="select-preamp" data-action="set-amp" data-i18n="tip_select-preamp" data-i18n-attr="title">
               <option value="0" data-i18n="auto">Auto</option><option value="1" data-i18n="off">Off</option>
             </select><span class="cur-val" id="cur-preamp">-</span></div>
           <div class="param-row"><label data-i18n="if_gain">IF Gain</label>
-            <select id="select-ifgain" data-action="set-amp">
+            <select id="select-ifgain" data-action="set-amp" data-i18n="tip_select-ifgain" data-i18n-attr="title">
               <option value="0">0</option><option value="1">1</option>
               <option value="2" selected>2</option><option value="3">3</option>
             </select></div>
           <div class="param-row"><label data-i18n="gain_strategy">Gain St</label>
-            <select id="select-gainstrategy" data-action="set-amp">
+            <select id="select-gainstrategy" data-action="set-amp" data-i18n="tip_select-gainstrategy" data-i18n-attr="title">
               <option value="0" data-i18n="low_noise">Low Noise</option><option value="1" data-i18n="high_linearity">High Linearity</option>
             </select></div>
         </div>
@@ -222,21 +222,21 @@
             <button class="trace-btn T4" data-trace-tab="3">T4</button>
           </div>
           <div class="param-row trace-keep"><label data-i18n="mode">Mode</label>
-            <select id="select-trace-mode" data-action="set-trace-mode">
+            <select id="select-trace-mode" data-action="set-trace-mode" data-i18n="tip_select-trace-mode" data-i18n-attr="title">
               <option value="CLEAR_WRITE" data-i18n="clear_write">Clear Write</option><option value="MAX_HOLD" data-i18n="max_hold">Max Hold</option>
               <option value="MIN_HOLD" data-i18n="min_hold">Min Hold</option><option value="AVERAGE" data-i18n="average">Average</option>
               <option value="OFF" data-i18n="off">Off</option>
             </select>
-            <button class="btn" id="btn-view-freeze" data-action="toggle-freeze" data-i18n="freeze">Freeze</button></div>
+            <button class="btn" id="btn-view-freeze" data-action="toggle-freeze" data-i18n="freeze" data-i18n-title="tip_btn-view-freeze">Freeze</button></div>
           <div class="param-row trace-keep" id="trace-avg-row" style="display:none;"><label data-i18n="avg">Avg</label>
-            <select id="select-trace-avg" data-action="set-trace-avg">
+            <select id="select-trace-avg" data-action="set-trace-avg" data-i18n="tip_select-trace-avg" data-i18n-attr="title">
               <option value="2">2</option><option value="4">4</option><option value="8">8</option>
               <option value="16" selected data-i18n="avg_opt_16">16 (default)</option><option value="32">32</option><option value="64">64</option>
               <option value="128">128</option><option value="256">256</option><option value="0">∞</option>
             </select>
             <span class="cur-val" id="trace-avg-status">-</span></div>
           <div class="param-row"><label data-i18n="smooth">Smooth</label>
-            <select id="select-smooth" data-action="set-smooth">
+            <select id="select-smooth" data-action="set-smooth" data-i18n="tip_select-smooth" data-i18n-attr="title">
               <option value="1" data-i18n="off_short">Off</option><option value="3">3 pts</option>
               <option value="5">5 pts</option><option value="9">9 pts</option>
             </select></div>
@@ -265,9 +265,9 @@
             <button class="mkr-btn M3" data-marker-select="3">M3</button>
             <button class="mkr-btn M4" data-marker-select="4">M4</button>
             <span class="mkr-gap"></span>
-            <button class="btn mkr-all-btn" id="btn-markers-all" data-action="markers-all" data-i18n="all_off">All Off</button></div>
+            <button class="btn mkr-all-btn" id="btn-markers-all" data-action="markers-all" data-i18n="all_off" data-i18n-title="tip_btn-markers-all">All Off</button></div>
           <div class="param-row"><label data-i18n="tracking">Tracking</label>
-            <button class="btn" id="btn-marker-tracking" data-action="marker-tracking" data-i18n="tracking" aria-pressed="false">Tracking</button></div>
+            <button class="btn" id="btn-marker-tracking" data-action="marker-tracking" data-i18n="tracking" aria-pressed="false" data-i18n-title="tip_btn-marker-tracking">Tracking</button></div>
           <div class="param-row"><label data-i18n="peak">Peak</label>
             <button class="btn" data-action="mkr-peak" data-i18n="peak">Peak</button>
             <button class="btn" data-action="mkr-peak-left">◀</button>
@@ -282,7 +282,7 @@
             <input type="number" id="input-peakthr" value="-80" step="1" min="-150" max="0" data-i18n="tip_peakthr" data-i18n-attr="title"
                    title="Peak threshold (dBm); Auto = global peak - 50dB, manual edit keeps your value"><span class="cur-val">dBm</span>
             <button class="btn" id="btn-peakthr-auto" data-action="peakthr-auto" data-i18n="pk_auto" title="Re-enable auto threshold (peak-50dB)">Auto</button>
-            <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off">Off</button></div>
+            <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off" data-i18n-title="tip_btn-peaklist">Off</button></div>
           <div class="param-row"><label data-i18n="count">Count</label>
             <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
                    title="Number of peaks to display (1~20, single row)"><span class="cur-val">pts</span></div>
@@ -297,23 +297,23 @@
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="measure">Measure</label>
-            <button class="btn" id="btn-meas-onoff" data-action="meas-toggle" data-i18n="off">Off</button>
-            <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude">Amplitude</button>
-            <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic">Harmonic</button>
-            <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise">PhaseNoise</button></div>
+            <button class="btn" id="btn-meas-onoff" data-action="meas-toggle" data-i18n="off" data-i18n-title="tip_btn-meas-onoff">Off</button>
+            <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude" data-i18n-title="tip_tab-amp">Amplitude</button>
+            <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic" data-i18n-title="tip_tab-harm">Harmonic</button>
+            <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise" data-i18n-title="tip_tab-pnm">PhaseNoise</button></div>
           <div id="meas-amp" class="meas-tab">
             <div class="param-row"><label data-i18n="n_db">n dB</label>
               <input type="text" id="input-ampdbs" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
                      title="Comma-separated thresholds below peak (1~60 dB)">
-              <button class="btn" id="btn-amp-meas" data-action="meas-amp" data-i18n="meas">Meas</button>
-              <button class="btn" id="btn-amp-clear" data-action="clear-amp" data-i18n="clear">Clear</button></div>
+              <button class="btn" id="btn-amp-meas" data-action="meas-amp" data-i18n="meas" data-i18n-title="tip_btn-amp-meas">Meas</button>
+              <button class="btn" id="btn-amp-clear" data-action="clear-amp" data-i18n="clear" data-i18n-title="tip_btn-amp-clear">Clear</button></div>
           </div>
           <div id="meas-harm" class="meas-tab" style="display:none;">
             <div class="param-row"><label data-i18n="fund">Fund</label>
               <input type="number" id="input-harm-f0" value="1000" step="any" data-i18n="tip_harm_f0" data-i18n-attr="title"
                      title="Fundamental frequency (MHz). Span auto-selected from it, override below">
               <span class="cur-val">MHz</span>
-              <button class="btn" id="btn-harm-set" data-action="meas-harm" data-i18n="set">Set</button></div>
+              <button class="btn" id="btn-harm-set" data-action="meas-harm" data-i18n="set" data-i18n-title="tip_btn-harm-set">Set</button></div>
             <div class="param-row"><label data-i18n="span_short">Span</label>
               <select id="select-harm-span" data-i18n="tip_harm_span" data-i18n-attr="title" title="Narrow sweep span around each harmonic (auto-set by fundamental, 1Hz~100MHz)">
                 <option value="100000000">100MHz</option>
@@ -332,17 +332,17 @@
               <input type="number" id="input-pnm" value="1000" step="any" data-i18n="tip_pnm_carrier" data-i18n-attr="title"
                      title="Carrier frequency">
               <div class="unit-btn-group" id="unit-pnm-group"></div>
-              <button class="btn" id="btn-pnm-set" data-action="meas-pnm" data-i18n="set">Set</button></div>
+              <button class="btn" id="btn-pnm-set" data-action="meas-pnm" data-i18n="set" data-i18n-title="tip_btn-pnm-set">Set</button></div>
             <div class="param-row"><label data-i18n="range">Range</label>
               <span class="cur-val">100Hz - 10MHz (5 dec)</span></div>
             <div class="param-row"><label data-i18n="threshold">Threshold</label>
               <input type="number" id="input-pnm-thr" value="-50" step="1" placeholder="dBm" data-i18n="tip_pnm_thr" data-i18n-attr="title"
                      title="Carrier detect threshold (dBm), official default -50">
-              <button class="btn" id="btn-pnm-thr" data-action="meas-pnm" data-i18n="set">Set</button></div>
+              <button class="btn" id="btn-pnm-thr" data-action="meas-pnm" data-i18n="set" data-i18n-title="tip_btn-pnm-thr">Set</button></div>
             <div class="param-row trace-keep" id="trace-avg-row" style="display:none;"><label data-i18n="avg">Avg</label>
               <input type="number" id="input-pnm-avg" value="4" min="1" max="1000" step="1" data-i18n="tip_pnm_avg" data-i18n-attr="title"
                      title="Trace average count (1~1000)">
-              <button class="btn" id="btn-pnm-avg" data-action="meas-pnm" data-i18n="apply">Apply</button></div>
+              <button class="btn" id="btn-pnm-avg" data-action="meas-pnm" data-i18n="apply" data-i18n-title="tip_btn-pnm-avg">Apply</button></div>
             <div class="param-row"><label data-i18n="smooth_short">Smooth</label>
               <select id="select-pnm-smooth" data-i18n="tip_pnm_smooth" data-i18n-attr="title" title="Trace smoothing (frontend, like official software)">
                 <option value="1" data-i18n="on">On</option><option value="0" data-i18n="off">Off</option>
@@ -361,10 +361,10 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="rbw">RBW</label><input type="number" id="input-rbw" value="300" step="any">
+          <div class="param-row"><label data-i18n="rbw">RBW</label><input type="number" id="input-rbw" value="300" step="any" data-i18n="tip_input-rbw" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-rbw-group"></div></div>
           <div class="param-row"><label></label>
-            <select id="select-rbw-mode" data-action="apply-rbw">
+            <select id="select-rbw-mode" data-action="apply-rbw" data-i18n="tip_select-rbw-mode" data-i18n-attr="title">
               <option value="manual" data-i18n="manual">Manual</option><option value="auto" data-i18n="auto_span2000">Auto (Span/2000)</option>
             </select><button class="btn" data-action="apply-rbw" data-i18n="set">Set</button></div>
           <div class="param-row"><label data-i18n="window">Window</label>
@@ -383,13 +383,13 @@
               <option value="neg_peak">Neg Peak</option>
               <option value="rms">RMS</option>
             </select></div>
-          <div class="param-row"><label data-i18n="vbw">VBW</label><input type="number" id="input-vbw" value="100" step="any">
+          <div class="param-row"><label data-i18n="vbw">VBW</label><input type="number" id="input-vbw" value="100" step="any" data-i18n="tip_input-vbw" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-vbw-group"></div></div>
           <div class="param-row"><label></label>
-            <select id="select-vbw-mode" data-action="apply-vbw">
+            <select id="select-vbw-mode" data-action="apply-vbw" data-i18n="tip_select-vbw-mode" data-i18n-attr="title">
               <option value="bypass" data-i18n="bypass_10x">Bypass (10×RBW)</option><option value="equal" data-i18n="eq_rbw">= RBW</option>
               <option value="tenth" data-i18n="tenth_rbw">= 0.1×RBW</option><option value="manual" data-i18n="manual">Manual</option>
-            </select><button class="btn" id="btn-vbw-set" data-action="apply-vbw" data-i18n="set">Set</button></div>
+            </select><button class="btn" id="btn-vbw-set" data-action="apply-vbw" data-i18n="set" data-i18n-title="tip_btn-vbw-set">Set</button></div>
         </div>
       </div>
 
@@ -400,9 +400,9 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000"><button class="btn" id="btn-points" data-action="apply-points" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000" data-i18n="tip_input-points" data-i18n-attr="title"><button class="btn" id="btn-points" data-action="apply-points" data-i18n="set" data-i18n-title="tip_btn-points">Set</button></div>
           <div class="param-row"><label data-i18n="speed">Speed</label>
-            <select id="select-sweep-mode" data-action="set-sweep">
+            <select id="select-sweep-mode" data-action="set-sweep" data-i18n="tip_select-sweep-mode" data-i18n-attr="title">
               <option value="0" data-i18n="swt_min">minSWT</option>
               <option value="1">minSWTx2</option><option value="2">minSWTx4</option><option value="3">minSWTx10</option>
               <option value="4">minSWTx20</option><option value="5">minSWTx50</option>
@@ -411,19 +411,19 @@
               <option value="8">minSMPxN</option>
             </select>
             <input type="number" id="input-sweep-time" value="0" step="any" style="display:none;"
-                   title="×N: multiplier / Manual: seconds">
+                   data-i18n="tip_sweep_time" data-i18n-attr="title">
             <button class="btn" data-action="set-sweep" data-i18n="set" style="display:none;">Set</button></div>
           <div class="param-row"><label data-i18n="spur">Spur</label>
-            <select id="select-spur" data-action="set-spur">
+            <select id="select-spur" data-action="set-spur" data-i18n="tip_select-spur" data-i18n-attr="title">
               <option value="bypass" selected data-i18n="bypass">Bypass</option><option value="standard" data-i18n="standard">Standard</option><option value="enhanced" data-i18n="enhanced">Enhanced</option>
             </select>
-            <label style="min-width:auto;" data-i18n="gapfill">GapFill</label><button class="btn active" id="btn-gapfill" data-action="toggle-gapfill" data-i18n="on">On</button></div>
+            <label style="min-width:auto;" data-i18n="gapfill">GapFill</label><button class="btn active" id="btn-gapfill" data-action="toggle-gapfill" data-i18n="on" data-i18n-title="tip_btn-gapfill">On</button></div>
         </div>
       </div>
     </div>
   </div>
   <div class="dev-bar" id="dev-bar">
-    <div class="info-item"><span class="info-label">SAN-90</span><span class="info-value" id="dev-model">-</span></div><span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="device">Device</span><span class="info-value" id="dev-model">-</span></div><span class="separator">|</span>
     <div class="info-item"><span class="info-label" data-i18n="uid">UID:</span><span class="info-value" id="dev-uid">-</span></div><span class="separator">|</span>
     <div class="info-item"><span class="info-label" data-i18n="hw">HW:</span><span class="info-value" id="dev-hw">-</span></div><span class="separator">|</span>
     <div class="info-item"><span class="info-label" data-i18n="mfw">MFW:</span><span class="info-value" id="dev-mfw">-</span></div><span class="separator">|</span>

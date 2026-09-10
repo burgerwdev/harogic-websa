@@ -38,7 +38,7 @@ function currentSelectionLabel(): string {
 function sourceLabel(src: number | null | undefined): string {
   const name = refClockSourceName(src);
   if (name === 'external_forced') return t('ext_force');
-  if (name === 'premium') return 'Int+ (DOCXO)';
+  if (name === 'premium') return t('docxo_premium');
   if (name === 'external') return t('ext');
   if (name === 'internal') return t('int');
   return '—';
