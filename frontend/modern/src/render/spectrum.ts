@@ -356,6 +356,8 @@ export function renderAll() {
   if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
   if (c.viewMode === 'rta') {
     renderRta();
+    renderTriggerLevel();                           // outside renderRta: still drawn when the
+    renderTriggerOverlay();                         // canvas is empty while waiting
     renderWaterfallIfOn();
     updateLimitStatus(null);                        // limits are evaluated on the swept trace only
     const rp = getDisplayPowers();
@@ -434,29 +436,41 @@ export function renderAll() {
 }
 
 
-// While a level trigger waits the device sends no packets, so the plot shows the last
-// frame; say so explicitly instead of letting it look like a hang.
-function renderTriggerWaiting() {
-  if (!S.trigArmed || !S.trigWaiting) return;
+// Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn
+// even when the packet stream is empty (waiting), so the canvas always says which mode it
+// is in and never looks like a stale or broken picture.
+function renderTriggerOverlay() {
+  const lines = S.trigOverlay;
+  if (!lines.length) return;
   const p = plotRect();
   ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.font = 'bold 13px monospace';
-  ctx.textAlign = 'center';
+  ctx.font = 'bold 11px monospace';
   ctx.textBaseline = 'middle';
-  const label = t('trg_wait_overlay');
-  const cx = p.x + p.w / 2;
-  const cy = p.y + 22;
-  const tw = ctx.measureText(label).width;
+  let width = 0;
+  lines.forEach((l) => { width = Math.max(width, ctx.measureText(l).width); });
+  const lh = 15;
+  const boxW = width + 14;
+  const boxH = lines.length * lh + 8;
+  const x = p.x + p.w - boxW - 6;
+  const y = p.y + 6;
   ctx.fillStyle = 'rgba(0,0,0,0.72)';
-  ctx.fillRect(cx - tw / 2 - 10, cy - 13, tw + 20, 26);
-  ctx.strokeStyle = '#ff7043';
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.strokeStyle = S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : col_border());
   ctx.lineWidth = 1;
-  ctx.strokeRect(cx - tw / 2 - 10, cy - 13, tw + 20, 26);
-  ctx.fillStyle = '#ff7043';
-  ctx.fillText(label, cx, cy);
+  ctx.strokeRect(x, y, boxW, boxH);
+  ctx.textAlign = 'right';                 // lines end flush with the box's right edge
+  const rx = x + boxW - 7;
+  lines.forEach((l, i) => {
+    ctx.fillStyle = i === 0
+      ? (S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : '#00cc00'))
+      : (l.startsWith('!') ? '#ff7043' : '#00cc00');
+    ctx.fillText(l.startsWith('!') ? l.slice(1) : l, rx, y + 8 + i * lh);
+  });
   ctx.restore();
+}
+
+function col_border(): string {
+  return canvasColors().axis;
 }
 
 // Trigger threshold line (RTA only): shows where a level trigger will fire.
@@ -567,8 +581,6 @@ function renderRta() {
   const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;
   renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);
   renderOSD(actDisp.length >= 2 ? actDisp : d.spec);
-  renderTriggerLevel();
-  renderTriggerWaiting();
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)

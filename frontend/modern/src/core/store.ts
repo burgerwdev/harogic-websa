@@ -94,6 +94,10 @@ export let trigArmed = false;
 export function setTrigArmed(v: boolean) { trigArmed = v; }
 export let trigWaiting = false;
 export function setTrigWaiting(v: boolean) { trigWaiting = v; }
+export let trigHit = false;
+export function setTrigHit(v: boolean) { trigHit = v; }
+export let trigOverlay: string[] = [];      // status chip + warnings, drawn top-right
+export function setTrigOverlay(v: string[]) { trigOverlay = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 

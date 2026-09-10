@@ -1,33 +1,46 @@
-// Trigger panel: RTA acquisition trigger, on-demand capture and live state.
+// Trigger panel for the RTA acquisition trigger, with an on-demand capture workflow.
 //
-// Behaviour contract (measured on the SAN-90):
-//  - the default source is `bus`: the host bus-triggers every frame, so the display runs
-//    live at ~100 fps ("平时自由看");
-//  - a level trigger only fires on a threshold CROSSING after arming, and while it waits
-//    the device produces no packets, so the plot stays on the last frame. That is a
-//    normal state, not a hang — hence the on-canvas WAITING overlay;
-//  - "Capture" therefore arms a one-shot level trigger: the next crossing is captured and
-//    the panel returns to free run automatically, so the live view resumes by itself.
+// Workflow contract (measured on the SAN-90):
+//  - the device is in `bus` mode by default, so the display is live;
+//  - pressing Capture arms a level trigger: the canvas is CLEARED first, because while the
+//    trigger waits the device sends no packets at all and a leftover picture is
+//    indistinguishable from a live one (that ambiguity is the whole reason for this flow);
+//  - when the threshold is crossed the captured frame arrives and stays on screen
+//    (TRIGGERED), and the button returns to its default label so the capture is explicit;
+//  - Free Run (or Esc) always returns to the live view.
 import * as S from '../core/store';
-import { applyI18n, t } from '../core/i18n';
+import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
 
-const POLL_MS = 800;
-const POLL_ARMED_MS = 250;
-const ONE_SHOT_TIMEOUT_MS = 30_000;
+const POLL_MS = 300;
+const TICK_MS = 1000;
 
+type Phase = 'free' | 'waiting' | 'hit';
+
+let phase: Phase = 'free';
+let since = 0;
+let hitAt = '';
 let lastFrames = -1;
-let lastBadge = '';
-let lastHint = '';
-let oneShot = false;
 let armedConfirmed = false;
-let armedAt = 0;
-let hintUntil = 0;
+let armLevel = -40;
+let armPeak: number | null = null;
+let lastOverlayKey = '';
 
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
+}
+
+function fmtClock(d: Date): string {
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
+
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  return s < 3600 ? `${p2(Math.floor(s / 60))}:${p2(s % 60)}` : `${Math.floor(s / 3600)}h${p2(Math.floor((s % 3600) / 60))}`;
 }
 
 function fmtTime(seconds: number): string {
@@ -37,31 +50,7 @@ function fmtTime(seconds: number): string {
   return `${seconds.toFixed(2)} s`;
 }
 
-function push(payload: Record<string, unknown>): void {
-  send({ cmd: 'SET_TRIGGER', ...payload });
-}
-
-function setText(id: string, text: string, cls = ''): void {
-  const e = el(id);
-  if (!e) return;
-  if (e.textContent !== text) e.textContent = text;
-  const want = cls ? `cur-val ${cls}` : 'cur-val';
-  if (e.className !== want && e.classList.contains('cur-val')) e.className = want;
-}
-
-function setHint(key: string, params?: Record<string, string | number>, holdMs = 0): void {
-  const text = key ? t(key, params) : '-';
-  if (text !== lastHint) {
-    lastHint = text;
-    setText('trigger-hint', text);
-  }
-  if (holdMs) hintUntil = performance.now() + holdMs;
-}
-
-/** Level of the strongest displayed bin, used for the "will it ever trigger" hint.
- *  Uses the same accessor as the renderer/marker code: the RTA accumulation buffers can
- *  be empty or zero-filled, so reading them directly reports a bogus 0 dBm peak. */
-function peakLevel(): number | null {
+function peakOfDisplay(): number | null {
   const d = getDisplayPowers();
   if (!d) return null;
   let peak = -Infinity;
@@ -72,148 +61,133 @@ function peakLevel(): number | null {
   return Number.isFinite(peak) ? peak : null;
 }
 
-function syncFields(req: Record<string, any>): void {
-  const setSel = (id: string, value: unknown) => {
-    const s = el<HTMLSelectElement>(id);
-    if (s && document.activeElement !== s && value !== undefined && value !== null) s.value = String(value);
-  };
-  const setNum = (id: string, value: unknown) => {
-    const i = el<HTMLInputElement>(id);
-    if (i && document.activeElement !== i && Number.isFinite(Number(value))) i.value = String(Number(value));
-  };
-  setSel('select-trg-source', req.trigger_source);
-  setSel('select-trg-edge', req.trigger_edge);
-  setNum('input-trg-level', req.trigger_level);
-  setNum('input-trg-safetime', req.trigger_safetime);
-  setNum('input-trg-delay', req.trigger_delay);
-  setNum('input-trg-pretime', req.trigger_pretime);
-  setNum('input-trg-acqtime', req.trigger_acqtime);
-  setNum('input-trg-retrigger', req.trigger_retrigger);
-  setNum('input-trg-retriggerperiod', req.trigger_retriggerperiod);
-  setSel('select-trg-out', req.trigger_out);
-  setSel('select-trg-outpolarity', req.trigger_outpolarity);
+/** Drop the current picture so "waiting" cannot be confused with live data. */
+function clearDisplay(): void {
+  S.traces.forEach((tr) => { tr.powers = null; tr.raw = null; });
+  S.setRtaDisplays([null, null, null, null]);
+  S.setRtaData(null);
+  S.setRtaDensity2d(null);
+  S.setPeakMarks(null);
+  S.resetWaterfall();
 }
 
-function disarm(reasonKey: string, holdMs = 4000): void {
-  oneShot = false;
-  const s = el<HTMLSelectElement>('select-trg-source');
-  if (s) s.value = 'bus';
-  push({ source: 'bus' });
-  if (reasonKey) setHint(reasonKey, undefined, holdMs);
-  S.setTrigArmed(false);
-  S.setTrigWaiting(false);
-  lastBadge = '';                       // reflect the change immediately, don't wait for a poll
-  updateBadge(false, false, false);
-  renderAll();
+function button(): HTMLButtonElement | null {
+  return el<HTMLButtonElement>('btn-trg-capture');
 }
 
-function updateBadge(advanced: boolean, armed: boolean, waiting: boolean): void {
-  let key = 'trg_st_free';
-  let cls = '';
-  if (armed) {
-    if (waiting) { key = 'trg_st_wait'; cls = 'fail'; }
-    else { key = 'trg_st_trig'; cls = 'pass'; }
+function syncButton(): void {
+  const b = button();
+  if (!b) return;
+  const key = phase === 'waiting' ? 'trg_btn_stop' : phase === 'hit' ? 'trg_btn_again' : 'trg_btn_capture';
+  const label = t(key);
+  if (b.textContent !== label) b.textContent = label;
+  b.classList.toggle('active', phase === 'waiting');
+  b.setAttribute('aria-pressed', String(phase === 'waiting'));
+}
+
+function syncOverlay(): void {
+  const lines: string[] = [];
+  if (phase === 'free') {
+    lines.push(t('trg_chip_free'));
+  } else if (phase === 'waiting') {
+    lines.push(`${t('trg_chip_wait')} ${fmtElapsed(performance.now() - since)}`);
+    if (armPeak !== null && armLevel > armPeak) {
+      lines.push(`!${t('trg_never', { db: (armLevel - armPeak).toFixed(1) })}`);
+    } else {
+      lines.push(t('trg_cross'));
+    }
+    if (armPeak !== null) lines.push(t('trg_peak', { v: armPeak.toFixed(1) }));
+    if (S.trigPoi > 0) lines.push(t('trg_poi', { t: fmtTime(S.trigPoi) }));
+  } else {
+    lines.push(`${t('trg_chip_hit')} ${hitAt}`);
+    lines.push(t('trg_hit_hint'));
   }
-  const text = t(key);
-  if (text + cls !== lastBadge) {
-    lastBadge = text + cls;
-    setText('trigger-status', text, cls);
+  const key = lines.join('|');
+  if (key !== lastOverlayKey) {
+    lastOverlayKey = key;
+    S.setTrigOverlay(lines);
   }
-  void advanced;
-}
-
-function updateHint(armed: boolean, waiting: boolean, level: number): void {
-  if (performance.now() < hintUntil) return;      // transient message still on screen
-  if (!armed) { setHint(''); return; }
-  const peak = peakLevel();
-  if (peak !== null && level > peak) { setHint('trg_hint_above', { db: (level - peak).toFixed(1) }); return; }
-  if (waiting) { setHint('trg_hint_cross'); return; }
-  setHint('trg_hint_capturing');
+  syncButton();
 }
 
 async function pollOnce(): Promise<void> {
-  const body = document.querySelector('#trigger-panel .group-body') as HTMLElement | null;
-  if (body && body.offsetParent === null) return;      // panel collapsed: nothing to update
   try {
     const r = await fetch('/api/state', { cache: 'no-store' });
     const d = await r.json();
     const req = (d?.req?.rta ?? {}) as Record<string, any>;
     const status = (req.trigger_actual ?? {}) as Record<string, any>;
-    const source = String(req.trigger_source ?? 'bus');
-    const armed = source !== 'bus' && source !== 'freerun';
+    S.setTrigPoi(Number((d?.rta_actual ?? {}).poi ?? 0));
     const frames = Number(status.frames ?? -1);
     const advanced = lastFrames >= 0 && frames > lastFrames;
-    const waiting = armed ? (status.waiting === true || !advanced) : false;
 
-    S.setTrigSource(source);
-    S.setTrigLevel(Number(req.trigger_level ?? -40));
-    S.setTrigPoi(Number((d?.rta_actual ?? {}).poi ?? 0));
-    S.setTrigArmed(armed);
-    S.setTrigWaiting(waiting);
-    syncFields(req);
-
-    // one-shot: wait until the device confirms the armed source before trusting the frame
-    // counter (frames still arrive for a moment while the reconfiguration is in flight)
-    if (oneShot && armed) {
-      if (!armedConfirmed) {
-        armedConfirmed = true;
-        lastFrames = frames;               // fresh baseline
-      } else if (advanced) {
-        disarm('trg_hint_captured', 4000);
-      } else if (performance.now() - armedAt > ONE_SHOT_TIMEOUT_MS) {
-        disarm('trg_hint_timeout', 6000);
+    if (phase === 'waiting') {
+      if (!armedConfirmed && String(req.trigger_source) === 'level') {
+        armedConfirmed = true;            // device confirmed the armed source
+        lastFrames = frames;
+      } else if (armedConfirmed && advanced) {
+        phase = 'hit';
+        hitAt = fmtClock(new Date());
+        // The captured packet is already on screen; freeze it by leaving the data alone.
+        S.setTrigWaiting(false);
+        S.setTrigHit(true);
       }
     }
     lastFrames = frames;
-
-    const lvl = Number((el<HTMLInputElement>('input-trg-level')?.value ?? req.trigger_level ?? -40));
-    updateBadge(advanced, armed, waiting);
-    updateHint(S.trigArmed, S.trigWaiting, lvl);
-    const poi = el('trigger-poi');
-    if (poi) {
-      const text = S.trigPoi > 0 ? t('trg_poi', { t: fmtTime(S.trigPoi) }) : '-';
-      if (poi.textContent !== text) poi.textContent = text;
+    // thresholds / parameter echo while idle
+    if (phase === 'free') {
+      const lvl = el<HTMLInputElement>('input-trg-level');
+      if (lvl && document.activeElement !== lvl && Number.isFinite(Number(req.trigger_level))) {
+        lvl.value = String(Number(req.trigger_level));
+      }
+      armLevel = Number(req.trigger_level ?? armLevel);
     }
-    renderAll();          // redraws the threshold line and the waiting overlay
+    S.setTrigLevel(armLevel);
+    syncOverlay();
+    renderAll();
   } catch {
-    /* device offline: keep the last known state */
+    /* device offline: keep the last state */
   }
 }
 
 function schedule(): void {
-  const armed = S.trigArmed;
-  window.setTimeout(() => { void pollOnce().finally(schedule); }, armed && oneShot ? POLL_ARMED_MS : POLL_MS);
+  window.setTimeout(() => { void pollOnce().finally(schedule); }, phase === 'waiting' ? POLL_MS : 900);
 }
 
-function armOneShot(): void {
+function arm(): void {
   const input = el<HTMLInputElement>('input-trg-level');
   const level = parseFloat(input?.value ?? '');
   if (!Number.isFinite(level)) return;
-  const s = el<HTMLSelectElement>('select-trg-source');
-  if (s) s.value = 'level';
-  oneShot = true;
+  armLevel = level;
+  armPeak = peakOfDisplay();
+  const sel = el<HTMLSelectElement>('select-trg-source');
+  if (sel) sel.value = 'level';
+  clearDisplay();                       // waiting must not look like live data
+  phase = 'waiting';
+  since = performance.now();
   armedConfirmed = false;
-  armedAt = performance.now();
-  push({ source: 'level', level });
   S.setTrigArmed(true);
   S.setTrigWaiting(true);
-  lastBadge = '';
-  updateBadge(false, true, true);       // show "Waiting" at once; the poll confirms it
-  setHint('trg_hint_arming', undefined, 3000);
+  S.setTrigHit(false);
+  send({ cmd: 'SET_TRIGGER', source: 'level', level });
+  syncOverlay();
+  renderAll();
 }
 
-function levelFromMarker(): number | null {
-  const m = S.markers[0];
-  const tr = S.traces[S.activeTraceIdx];
-  if (!m?.enabled || !tr?.powers || !Number.isFinite(m.idx)) return null;
-  const v = tr.powers[m.idx];
-  return Number.isFinite(v) ? v : null;
+function disarm(): void {
+  const sel = el<HTMLSelectElement>('select-trg-source');
+  if (sel) sel.value = 'bus';
+  send({ cmd: 'SET_TRIGGER', source: 'bus' });
+  phase = 'free';
+  armedConfirmed = false;
+  S.setTrigArmed(false);
+  S.setTrigWaiting(false);
+  S.setTrigHit(false);
+  syncOverlay();
+  renderAll();
 }
 
-function setLevel(value: number): void {
-  const i = el<HTMLInputElement>('input-trg-level');
-  if (i) i.value = value.toFixed(1);
-  push({ level: Number(value.toFixed(1)) });
+function push(payload: Record<string, unknown>): void {
+  send({ cmd: 'SET_TRIGGER', ...payload });
 }
 
 function wireNumber(id: string, key: string): void {
@@ -227,12 +201,7 @@ function wireNumber(id: string, key: string): void {
 function wireSelect(id: string, key: string): void {
   const s = el<HTMLSelectElement>(id);
   s?.addEventListener('change', () => {
-    if (key === 'source') {
-      oneShot = false;
-      armedConfirmed = false;
-      if (s.value === 'level') armedAt = performance.now();
-      setHint('');
-    }
+    if (key === 'source' && s.value === 'bus') { disarm(); return; }
     push({ [key]: s.value });
   });
 }
@@ -252,17 +221,33 @@ export function initTrigger(): void {
   wireNumber('input-trg-retrigger', 'retrigger');
   wireNumber('input-trg-retriggerperiod', 'retriggerperiod');
 
-  el('btn-trg-capture')?.addEventListener('click', armOneShot);
-  el('btn-trg-free')?.addEventListener('click', () => { armedConfirmed = false; disarm('', 0); });
+  button()?.addEventListener('click', () => {
+    if (phase === 'waiting') { disarm(); return; }
+    arm();                               // "Capture again" re-arms the same way
+  });
+  el('btn-trg-free')?.addEventListener('click', disarm);
   el('btn-trg-from-mkr')?.addEventListener('click', () => {
-    const v = levelFromMarker();
-    if (v !== null) setLevel(v);
+    const m = S.markers[0];
+    const tr = S.traces[S.activeTraceIdx];
+    if (!m?.enabled || !tr?.powers || !Number.isFinite(m.idx)) return;
+    const v = tr.powers[m.idx];
+    if (!Number.isFinite(v)) return;
+    const i = el<HTMLInputElement>('input-trg-level');
+    if (i) i.value = v.toFixed(1);
+    push({ level: Number(v.toFixed(1)) });
   });
   el('btn-trg-from-peak')?.addEventListener('click', () => {
-    const peak = peakLevel();
-    if (peak !== null) setLevel(peak - 10);
+    const peak = peakOfDisplay();
+    if (peak === null) return;
+    const i = el<HTMLInputElement>('input-trg-level');
+    if (i) i.value = (peak - 10).toFixed(1);
+    push({ level: Number((peak - 10).toFixed(1)) });
   });
-
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && phase !== 'free') disarm();
+  });
+  window.setInterval(() => { if (phase === 'waiting') syncOverlay(); }, TICK_MS);
+  onLangChange(() => { syncButton(); lastOverlayKey = ''; syncOverlay(); renderAll(); });
+  syncButton();
   schedule();
-  window.addEventListener('focus', () => { void pollOnce(); });
 }
