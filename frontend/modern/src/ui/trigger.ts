@@ -170,6 +170,7 @@ async function pollOnce(): Promise<void> {
       armLevel = Number(req.trigger_level ?? armLevel);
     }
     S.setTrigLevel(armLevel);
+      S.setTrigSource(backendArmed ? 'level' : 'bus');
     syncOverlay();
     renderAll();
   } catch {
@@ -193,6 +194,7 @@ function armSwept(): void {
   armLevel = level;
   armPeak = peakOfDisplay();
   S.setTrigLevel(level);
+  S.setTrigSource('level');                 // threshold line follows the armed source
   S.setSwpEdge(edgeOf(selectValue('select-trg-edge')));
   armSwpTrigger();
   phase = 'waiting';
@@ -215,6 +217,8 @@ function arm(): void {
   if (!Number.isFinite(level)) return;
   armLevel = level;
   armPeak = peakOfDisplay();
+  S.setTrigLevel(level);
+  S.setTrigSource('level');                 // draw the threshold line while armed
   const sel = el<HTMLSelectElement>('select-trg-source');
   if (sel) sel.value = 'level';
   clearDisplay();                       // waiting must not look like live data
@@ -234,6 +238,7 @@ function arm(): void {
 
 function disarm(): void {
   disarmSwpTrigger();
+  S.setTrigSource('bus');                   // the line shows only while armed
   const sel = el<HTMLSelectElement>('select-trg-source');
   if (sel) sel.value = 'bus';
   send({ cmd: 'SET_TRIGGER', source: 'bus' });
