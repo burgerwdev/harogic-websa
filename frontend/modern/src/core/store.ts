@@ -84,6 +84,12 @@ export function setDisplayRef(v: number) { displayRef = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 
+// Limit line + pass/fail check (state owned by ui/limits.ts, math by dsp/limits.ts)
+export interface LimitPointState { freqHz: number; level: number; }
+export interface LimitsState { on: boolean; tol: number; points: LimitPointState[]; }
+export let limits: LimitsState = { on: false, tol: 0, points: [] };
+export function setLimits(v: LimitsState) { limits = v; }
+
 export let freqArray: Float64Array | null = null;
 export function setFreqArray(v: Float64Array | null) { freqArray = v; }
 export let freqVersion = -1;

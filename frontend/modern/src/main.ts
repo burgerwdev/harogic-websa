@@ -4,6 +4,7 @@ import * as S from './core/store';
 import { buildUnitGroups } from './core/units';
 import { connectWS } from './core/ws';
 import { initMarkerTable } from './render/markerTable';
+import { initLimits } from './ui/limits';
 import { renderAll } from './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
 import { applyI18n, setLang, onLangChange, t } from './core/i18n';
@@ -21,6 +22,7 @@ function init() {
 
   buildUnitGroups();
   initMarkerTable();
+  initLimits();
   syncToggleIcons();
   bindActions();
   bindCanvas();

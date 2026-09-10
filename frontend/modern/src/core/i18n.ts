@@ -531,3 +531,33 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+
+// Limit lines + pass/fail
+Object.assign(dict.en, {
+  'limits': 'Limits', 'limit_state': 'Limit', 'limit_edit': 'Edit', 'limit_add': 'Add',
+  'limit_reset': 'Span', 'limit_csv': 'CSV', 'limit_tol': 'Tol', 'limit_del': '×',
+  'limit_pass': 'PASS', 'limit_na': 'no data',
+  'limit_fail': 'FAIL {n} bins, worst +{db} dB @ {f} MHz',
+  'tip_limit_onoff': 'Toggle the limit line and the pass/fail check',
+  'tip_limit_add': 'Insert a limit point in the middle of the widest gap',
+  'tip_limit_reset': 'Reset to a flat two-point limit across the current span',
+  'tip_limit_csv': 'Export the bins that exceed the limit as CSV',
+  'tip_limit_tol': 'Tolerance in dB; a bin counts as exceeding only when it is this much above the limit',
+  'tip_limit_freq': 'Limit point frequency in MHz',
+  'tip_limit_level': 'Limit point level in dBm',
+  'tip_limit_del': 'Remove this limit point (at least two are kept)',
+});
+Object.assign(dict.zh, {
+  'limits': '限制线', 'limit_state': '限制', 'limit_edit': '编辑', 'limit_add': '加点',
+  'limit_reset': '全扫宽', 'limit_csv': 'CSV', 'limit_tol': '容差', 'limit_del': '×',
+  'limit_pass': '通过', 'limit_na': '无数据',
+  'limit_fail': '超限 {n} 点，最差 +{db} dB @ {f} MHz',
+  'tip_limit_onoff': '开启 / 关闭限制线与通过判定',
+  'tip_limit_add': '在最宽的一段区间中点插入限制点',
+  'tip_limit_reset': '重置为覆盖当前扫宽的两点平直限制线',
+  'tip_limit_csv': '把超出限制线的频点导出为 CSV',
+  'tip_limit_tol': 'dB 容差；超出限制线超过该值才判为超限',
+  'tip_limit_freq': '限制点频率（MHz）',
+  'tip_limit_level': '限制点电平（dBm）',
+  'tip_limit_del': '删除该限制点（至少保留两点）',
+});
