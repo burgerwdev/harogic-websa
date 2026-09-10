@@ -142,3 +142,10 @@ cd frontend/modern && npm audit
 - SAN-45/60/90 的标称范围分别为 9 kHz-4.5/6/9 GHz，功能相同但指标不同。
 - `RefClkFreqOffset` 在部分固件上可能恒为 0，可使用校准后的计算值。
 - RTA 当前使用 PacketFrame 中第一条频谱；硬件 bitmap/PacketFrame 的概率密度语义仍需与厂商软件对照验证。
+
+## 迹线检波器
+
+- `Auto Sample`（默认）：自动跟随信号类型，适合一般观察与 CW。
+- `Sample` / `Pos Peak` / `Neg Peak` / `RMS`：固定检波方式；`Pos Peak` 峰值最贴顶、`RMS` 噪底更低。
+- `Auto Peak`：面向脉冲/突发信号捕获，逐频点挑选峰值帧；对稳定 CW 信号迹线会明显跳动，属预期行为，不是故障。
+- 检波器仅影响 SWP；RTA 与 harmonic/PNM 测量期间该命令会被拒绝。

@@ -371,3 +371,13 @@ Object.assign(dict.zh, { 'avg_opt_16': '16（默认）' });
 
 Object.assign(dict.en, { 'detector': 'Detector' });
 Object.assign(dict.zh, { 'detector': '检波' });
+
+Object.assign(dict.en, {
+  'tip_detector': 'Trace detector (SWP only). Auto Sample follows the signal (default). '
+    + 'Sample / Pos Peak / Neg Peak / RMS are fixed detectors. '
+    + 'Auto Peak is meant for pulsed or burst signals - a steady CW trace will look unstable.',
+});
+Object.assign(dict.zh, {
+  'tip_detector': '迹线检波器（仅普通频谱 SWP）。自动取样跟随信号（默认）；随机/正峰值/负峰值/RMS 为固定检波方式；'
+    + '自动峰值针对脉冲/突发信号，稳定 CW 信号下迹线会显得跳动。',
+});

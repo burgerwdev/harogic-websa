@@ -142,3 +142,10 @@ The tool first disables output and sets -42 dBm, selects the output mode, sets a
 - SAN-45/60/90 nominal ranges are 9 kHz-4.5/6/9 GHz. Features are shared, but specifications differ.
 - Some firmware leaves `RefClkFreqOffset` at zero; use the calculated value after calibration when available.
 - RTA currently uses the first spectrum in PacketFrame. Hardware bitmap/PacketFrame density semantics still need comparison against the vendor application.
+
+## Trace Detector
+
+- `Auto Sample` (default): follows the signal type; the right choice for general viewing and CW.
+- `Sample` / `Pos Peak` / `Neg Peak` / `RMS`: fixed detectors; `Pos Peak` sits closest to the top, `RMS` shows a lower noise floor.
+- `Auto Peak`: intended for pulsed/burst capture (per-bin peak frame selection). On a steady CW signal the trace will visibly jump - expected behavior, not a fault.
+- Detector applies to SWP only; the command is rejected during RTA and harmonic/PNM measurements.

@@ -128,6 +128,8 @@ SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef
 SweepTimeMode_TypeDef = htra_api.SweepTimeMode_TypeDef
 TracePointsStrategy_TypeDef = htra_api.TracePointsStrategy_TypeDef
 TraceAlign_TypeDef = htra_api.TraceAlign_TypeDef
+TraceDetector_TypeDef = htra_api.TraceDetector_TypeDef
+TraceDetectMode_TypeDef = htra_api.TraceDetectMode_TypeDef
 SpurRejection_TypeDef = htra_api.SpurRejection_TypeDef
 RBWMode_TypeDef = htra_api.RBWMode_TypeDef
 VBWMode_TypeDef = htra_api.VBWMode_TypeDef
@@ -161,6 +163,8 @@ __all__ = [
     'SpurRejection_TypeDef',
     'SweepTimeMode_TypeDef',
     'TraceAlign_TypeDef',
+    'TraceDetector_TypeDef',
+    'TraceDetectMode_TypeDef',
     'TracePointsStrategy_TypeDef',
     'VBWMode_TypeDef',
     'Window_TypeDef',
