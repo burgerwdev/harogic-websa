@@ -378,6 +378,7 @@ export function renderAll() {
     renderTriggerLevel();                           // outside renderRta: still drawn when the
     renderTriggerOverlay();                         // canvas is empty while waiting
     if (S.limits.on) { renderLimits(getDisplayPowers()); pushStatus(limitStatusBlock()); }   // RTA too
+    if (S.badData) pushStatus({ lines: [`!${t('bad_data')}`], accent: '#ff7043' });
     renderStatusBlocks();
     renderWaterfallIfOn();
     const rp = getDisplayPowers();

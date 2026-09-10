@@ -86,7 +86,10 @@ export function exitMeasMode(updateBackend = true) {
       S.setStdSnap(null);
     }
   }
-  if (S.viewMode !== 'std') {
+  // Only the measurement views are left here: RTA is a normal analyzer view and must
+  // survive (preset used to force view=std while the backend kept streaming RTA frames,
+  // which blanked the spectrum).
+  if (S.viewMode === 'pnm' || S.viewMode === 'harm') {
     S.setViewMode('std');
     const mt = document.getElementById('marker-table');
     if (mt) mt.style.display = '';

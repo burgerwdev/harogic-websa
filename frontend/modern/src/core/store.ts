@@ -74,6 +74,10 @@ export function setCurrentGapFill(v: boolean) { currentGapFill = v; }
 export let sweepMs = 0;
 export function setSweepMs(v: number) { sweepMs = v; }
 export let deviceConnected = false;
+// True while the frames we receive are unusable (saturated/undefined): shown on the canvas
+// instead of silently dropping them forever.
+export let badData = false;
+export function setBadData(v: boolean) { badData = v; }
 export function setDeviceConnected(v: boolean) { deviceConnected = v; }
 export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }

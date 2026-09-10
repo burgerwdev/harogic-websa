@@ -531,6 +531,8 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, {'bad_data': 'NO VALID DATA (input overloaded?)'});
+Object.assign(dict.zh, {'bad_data': '无有效数据（输入是否过载？）'});
 Object.assign(dict.en, {'wf_range': 'WF Range', 'wf_auto': 'Auto', 'wf_fixed': 'Fixed', 'tip_wf_range': 'Waterfall colour range. Auto maps each frame relative to its own noise floor (the texture is always visible); Fixed maps an absolute dBm window so colours are quantitative', 'tip_wf_lo': 'Fixed range lower level: everything at or below this is drawn as background', 'tip_wf_hi': 'Fixed range upper level: everything at or above this is drawn as full-scale'});
 Object.assign(dict.zh, {'wf_range': '瀑布范围', 'wf_auto': '自动', 'wf_fixed': '固定', 'tip_wf_range': '瀑布色标范围。自动：按每帧自身噪底相对映射（底噪纹理始终可见）；固定：按绝对 dBm 区间映射，颜色可直接读电平', 'tip_wf_lo': '固定范围下限：低于该电平画为背景', 'tip_wf_hi': '固定范围上限：高于该电平画为满量程'});
 Object.assign(dict.en, {'limit_canvas_pass': 'LIMIT PASS', 'limit_canvas_fail': 'LIMIT FAIL {n}', 'limit_canvas_worst': 'worst +{db} dB @ {f}', 'limit_canvas_na': 'LIMIT -'});
