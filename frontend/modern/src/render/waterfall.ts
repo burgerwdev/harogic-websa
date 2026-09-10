@@ -121,9 +121,20 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
 // RTA 模式: 从实时 spec 生成瀑布行, 按帧噪底动态映射 —— 底噪稳定显示为暗蓝(可见),
 // 信号随强度渐变为红。避免固定 -110~-30 映射在窄 span(dec 大, RBW 窄 -> 噪底更低)时
 // 把底噪压成全黑、只剩信号满红的两个极端。
+//
+// The "peak" is the frame MAXIMUM, not a high percentile: a CW carrier occupies 1-2 of the
+// 1001 bins, so the 98th percentile is just a noise level (~+10 dB above the floor). Using it
+// collapsed dyn to the 15 dB floor and everything within ~9 dB of the noise was painted in the
+// hot colours, which made the waterfall stripe of a narrow carrier ~8x too wide (measured:
+// 24 px vs 3 px in the swept mode, while the carrier itself was narrower in RTA).
 export function pushRtaRow(spec: Float32Array, w: number, maxDensity: number) {
   const floor = percentileApprox(spec, 0.3);
-  const peak = percentileApprox(spec, 0.98);
+  let peak = -Infinity;
+  for (let i = 0; i < spec.length; i++) {
+    const v = spec[i];
+    if (v > peak) peak = v;                     // NaN never compares greater
+  }
+  if (!Number.isFinite(peak)) peak = floor + 15;
   const dyn = Math.max(15, peak - floor);
   const row = new Uint16Array(w);
   for (let i = 0; i < w; i++) {
