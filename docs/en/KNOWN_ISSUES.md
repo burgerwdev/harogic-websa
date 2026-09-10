@@ -27,3 +27,11 @@
     the displayed bin spacing a CW carrier only lights 1-2 bins and the OBW bottoms out there
     (measured at span 100 MHz / 998 points: RBW 100 kHz -> OBW 401.6 kHz, RBW 10 kHz -> 200.8 kHz).
     For a finer OBW reduce the span or raise the point count instead of only narrowing the RBW.
+18. **RTA level trigger behaviour (measured)**: a level trigger fires on a threshold **crossing**
+    (rising edge by default), so a steady signal that is already above the threshold when armed never
+    triggers and simply waits (no new data). While waiting the device sends **no packets at all**, so the
+    canvas stays on the last frame - which is why arming clears the canvas and shows a waiting chip.
+    `Intercept >= ...` (POI) is the shortest burst the current configuration is *guaranteed* to catch.
+    Of the RTA trigger sources only `bus` works here (host bus-triggered, ~100 fps, the default);
+    `freerun` delivered no data in testing and is not offered. Triggering is an RTA-domain feature:
+    the SWP profile only has internal free run and external triggers, no level trigger.
