@@ -175,51 +175,7 @@
         </div>
       </div>
 
-      <div class="control-group">
-        <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
-          <span class="group-title" data-action="toggle-group" data-i18n="level">Level</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
-        </div>
-        <div class="group-body">
-          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
-          <div class="param-row"><label data-i18n="scale_short">Scale</label>
-            <div class="unit-btn-group" id="unit-scale-group">
-              <button class="unit-btn" data-scale="1">1</button>
-              <button class="unit-btn" data-scale="2">2</button>
-              <button class="unit-btn" data-scale="5">5</button>
-              <button class="unit-btn active" data-scale="10">10</button>
-              <button class="unit-btn" data-scale="20">20</button>
-            </div><span class="cur-val" data-i18n="db_div">dB/div</span></div>
-          <div class="param-row"><label data-i18n="amp_unit">Unit</label>
-            <select id="select-level-unit" data-i18n="tip_level_unit" data-i18n-attr="title">
-              <option value="dBm">dBm</option><option value="dBmV">dBmV</option>
-              <option value="dBuV">dBuV</option><option value="dBV">dBV</option>
-            </select></div>
-          <div class="param-row"><label data-i18n="offset">Offset</label>
-            <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
-            <span class="cur-val" data-i18n="db">dB</span></div>
-          <div class="param-row"><label data-i18n="atten">Atten</label>
-            <select id="select-atten" data-action="set-amp" data-i18n="tip_atten" data-i18n-attr="title" title="Manual attenuation (Auto=-1). Manual sets Ref Level = Atten - 10 dBm">
-              <option value="-1" data-i18n="auto">Auto</option>
-              <option value="0">0 dB</option><option value="10">10 dB</option>
-              <option value="20">20 dB</option><option value="30">30 dB</option>
-            </select><span class="cur-val" id="cur-atten">-</span></div>
-          <div class="param-row"><label data-i18n="preamp">PreAmp</label>
-            <select id="select-preamp" data-action="set-amp" data-i18n="tip_select-preamp" data-i18n-attr="title">
-              <option value="0" data-i18n="auto">Auto</option><option value="1" data-i18n="off">Off</option>
-            </select><span class="cur-val" id="cur-preamp">-</span></div>
-          <div class="param-row"><label data-i18n="if_gain">IF Gain</label>
-            <select id="select-ifgain" data-action="set-amp" data-i18n="tip_select-ifgain" data-i18n-attr="title">
-              <option value="0">0</option><option value="1">1</option>
-              <option value="2" selected>2</option><option value="3">3</option>
-            </select></div>
-          <div class="param-row"><label data-i18n="gain_strategy">Gain St</label>
-            <select id="select-gainstrategy" data-action="set-amp" data-i18n="tip_select-gainstrategy" data-i18n-attr="title">
-              <option value="0" data-i18n="low_noise">Low Noise</option><option value="1" data-i18n="high_linearity">High Linearity</option>
-            </select></div>
-        </div>
-      </div>
+      
 
       <div class="control-group" id="trace-panel">
         <div class="group-head">
@@ -304,6 +260,52 @@
           <div class="param-row"><label data-i18n="count">Count</label>
             <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
                    title="Number of peaks to display (1~20, single row)"><span class="cur-val">pts</span></div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="level">Level</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
+          <div class="param-row"><label data-i18n="scale_short">Scale</label>
+            <div class="unit-btn-group" id="unit-scale-group">
+              <button class="unit-btn" data-scale="1">1</button>
+              <button class="unit-btn" data-scale="2">2</button>
+              <button class="unit-btn" data-scale="5">5</button>
+              <button class="unit-btn active" data-scale="10">10</button>
+              <button class="unit-btn" data-scale="20">20</button>
+            </div><span class="cur-val" data-i18n="db_div">dB/div</span></div>
+          <div class="param-row"><label data-i18n="amp_unit">Unit</label>
+            <select id="select-level-unit" data-i18n="tip_level_unit" data-i18n-attr="title">
+              <option value="dBm">dBm</option><option value="dBmV">dBmV</option>
+              <option value="dBuV">dBuV</option><option value="dBV">dBV</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="offset">Offset</label>
+            <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
+            <span class="cur-val" data-i18n="db">dB</span></div>
+          <div class="param-row"><label data-i18n="atten">Atten</label>
+            <select id="select-atten" data-action="set-amp" data-i18n="tip_atten" data-i18n-attr="title" title="Manual attenuation (Auto=-1). Manual sets Ref Level = Atten - 10 dBm">
+              <option value="-1" data-i18n="auto">Auto</option>
+              <option value="0">0 dB</option><option value="10">10 dB</option>
+              <option value="20">20 dB</option><option value="30">30 dB</option>
+            </select><span class="cur-val" id="cur-atten">-</span></div>
+          <div class="param-row"><label data-i18n="preamp">PreAmp</label>
+            <select id="select-preamp" data-action="set-amp" data-i18n="tip_select-preamp" data-i18n-attr="title">
+              <option value="0" data-i18n="auto">Auto</option><option value="1" data-i18n="off">Off</option>
+            </select><span class="cur-val" id="cur-preamp">-</span></div>
+          <div class="param-row"><label data-i18n="if_gain">IF Gain</label>
+            <select id="select-ifgain" data-action="set-amp" data-i18n="tip_select-ifgain" data-i18n-attr="title">
+              <option value="0">0</option><option value="1">1</option>
+              <option value="2" selected>2</option><option value="3">3</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="gain_strategy">Gain St</label>
+            <select id="select-gainstrategy" data-action="set-amp" data-i18n="tip_select-gainstrategy" data-i18n-attr="title">
+              <option value="0" data-i18n="low_noise">Low Noise</option><option value="1" data-i18n="high_linearity">High Linearity</option>
+            </select></div>
         </div>
       </div>
 
@@ -553,7 +555,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.3.0 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.3.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

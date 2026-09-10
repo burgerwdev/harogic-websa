@@ -92,7 +92,7 @@ function syncButton(): void {
 function syncOverlay(): void {
   const lines: string[] = [];
   if (phase === 'free') {
-    lines.push(t('trg_chip_free'));
+    // nothing while free running: the canvas is live, so there is no state to report
   } else if (phase === 'waiting') {
     lines.push(`${t('trg_chip_wait')} ${fmtElapsed(performance.now() - since)}`);
     if (armPeak !== null && armLevel > armPeak) {

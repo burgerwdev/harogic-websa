@@ -467,8 +467,12 @@ function renderTriggerOverlay() {
 function renderTriggerLevel() {
   if (S.trigSource !== 'level' && !S.swpArmed && !S.swpHold) return;
   const p = plotRect();
-  const y = getY(S.trigLevel);
-  if (!Number.isFinite(y) || y < p.y || y > p.y + p.h) return;
+  const raw = getY(S.trigLevel);
+  if (!Number.isFinite(raw)) return;
+  // Changing Ref (manually or through Auto Ref) re-scales the display; keep the threshold
+  // visible by pinning it to the nearest edge instead of dropping the line entirely.
+  const offscreen = raw < p.y ? -1 : raw > p.y + p.h ? 1 : 0;
+  const y = Math.min(Math.max(raw, p.y + 1), p.y + p.h - 1);
   ctx.save();
   ctx.setLineDash([6, 4]);
   ctx.lineWidth = 1.5;
@@ -482,7 +486,8 @@ function renderTriggerLevel() {
   ctx.font = 'bold 10px monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(`TRG ${S.trigLevel.toFixed(1)} dBm`, p.x + 4, y - 2);
+  ctx.fillText(`${offscreen ? (offscreen < 0 ? '\u25b2 ' : '\u25bc ') : ''}TRG ${S.trigLevel.toFixed(1)} dBm`,
+    p.x + 4, offscreen < 0 ? y + 11 : y - 2);
   ctx.restore();
 }
 
