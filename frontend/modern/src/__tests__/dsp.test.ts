@@ -7,7 +7,7 @@ import { applyTraceMode, processTraces } from '../dsp/traces';
 import { AVG_COUNTS, accumulateTrace, applyMode, setAverageCount } from '../dsp/accumulator';
 import { addPowerDb, subtractDb } from '../dsp/tracemath';
 import { buildReferenceTablePub } from '../ui/normPub';
-import { percentileApprox } from '../dsp/stats';
+import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import {
   niceSpanStep,
   normalizeCenterSpan,
@@ -383,6 +383,17 @@ describe('迹线运算', () => {
     const out = new Float32Array(1);
     subtractDb(new Float32Array([NaN]), new Float32Array([-30]), out);
     expect(Number.isNaN(out[0])).toBe(true);
+  });
+});
+
+
+describe('RTA 帧合理性门限', () => {
+  it('丢弃饱和/无效帧，接受正常噪底帧', () => {
+    const good = new Float32Array(100).fill(-95);
+    good[50] = -30;
+    expect(plausibleSpectrum(good)).toBe(true);
+    expect(plausibleSpectrum(new Float32Array(100).fill(-3))).toBe(false);  // saturated packet
+    expect(plausibleSpectrum(new Float32Array(4))).toBe(false);
   });
 });
 

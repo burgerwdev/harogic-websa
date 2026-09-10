@@ -26,3 +26,14 @@ export function percentileApprox(values: ArrayLike<number>, quantile: number): n
   }
   return HIST_MAX;
 }
+
+/**
+ * Reject implausible RTA frames: right after a reconfiguration the device can emit a
+ * saturated packet (near full scale ≈ 0 dBm) before valid data arrives. Accumulating or
+ * rendering such a frame makes an averaging trace decay slowly from the top of the graph.
+ */
+export function plausibleSpectrum(spec: ArrayLike<number>): boolean {
+  if (spec.length < 8) return false;
+  const floor = percentileApprox(spec, 0.3);
+  return isFinite(floor) && floor <= -20;
+}

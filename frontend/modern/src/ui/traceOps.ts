@@ -59,11 +59,14 @@ export function clearRtaTrace() {
 export function setTraceMode(mode: string) {
   applyTraceMode(S.traces[S.activeTraceIdx], mode);
   syncFreezeBtn();
+  syncAvgUI();
 }
 
 /** Average count UI: select value + "count/target" status for the active trace. */
 export function syncAvgUI(): void {
   const t = S.traces[S.activeTraceIdx];
+  const row = document.getElementById('trace-avg-row');
+  if (row) row.style.display = t.mode === 'AVERAGE' ? '' : 'none';
   const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
   if (sel && document.activeElement !== sel) sel.value = String(t.avgTarget ?? 16);
   const st = document.getElementById('trace-avg-status');

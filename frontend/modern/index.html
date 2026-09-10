@@ -234,10 +234,10 @@
               <option value="A-B">A−B (T1−T2)</option>
               <option value="A+B">A+B (T1+T2)</option>
             </select></div>
-          <div class="param-row trace-keep"><label data-i18n="avg">Avg</label>
+          <div class="param-row trace-keep" id="trace-avg-row" style="display:none;"><label data-i18n="avg">Avg</label>
             <select id="select-trace-avg" data-action="set-trace-avg">
               <option value="2">2</option><option value="4">4</option><option value="8">8</option>
-              <option value="16" selected>16</option><option value="32">32</option><option value="64">64</option>
+              <option value="16" selected data-i18n="avg_opt_16">16 (default)</option><option value="32">32</option><option value="64">64</option>
               <option value="128">128</option><option value="256">256</option><option value="0">∞</option>
             </select>
             <span class="cur-val" id="trace-avg-status">-</span></div>
@@ -345,7 +345,7 @@
               <input type="number" id="input-pnm-thr" value="-50" step="1" placeholder="dBm" data-i18n="tip_pnm_thr" data-i18n-attr="title"
                      title="Carrier detect threshold (dBm), official default -50">
               <button class="btn" id="btn-pnm-thr" data-action="meas-pnm" data-i18n="set">Set</button></div>
-            <div class="param-row trace-keep"><label data-i18n="avg">Avg</label>
+            <div class="param-row trace-keep" id="trace-avg-row" style="display:none;"><label data-i18n="avg">Avg</label>
               <input type="number" id="input-pnm-avg" value="4" min="1" max="1000" step="1" data-i18n="tip_pnm_avg" data-i18n-attr="title"
                      title="Trace average count (1~1000)">
               <button class="btn" id="btn-pnm-avg" data-action="meas-pnm" data-i18n="apply">Apply</button></div>

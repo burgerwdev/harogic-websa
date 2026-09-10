@@ -368,3 +368,6 @@ Object.assign(dict.zh, { 'avg': '平均', 'export_csv': 'CSV' });
 
 Object.assign(dict.en, { 'trace_math': 'Math' });
 Object.assign(dict.zh, { 'trace_math': '运算' });
+
+Object.assign(dict.en, { 'avg_opt_16': '16 (default)' });
+Object.assign(dict.zh, { 'avg_opt_16': '16（默认）' });

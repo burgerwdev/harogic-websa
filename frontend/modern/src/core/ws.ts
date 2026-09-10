@@ -26,7 +26,7 @@ import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
-import { percentileApprox } from '../dsp/stats';
+import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 
 function localizedError(msg: any): string {
@@ -145,6 +145,7 @@ export function connectWS() {
       const spec = new Float32Array(event.data, off, pts); off += pts * 4;
       const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
       const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      if (!plausibleSpectrum(spec)) return;   // drop saturated frames after (re)configuration
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
