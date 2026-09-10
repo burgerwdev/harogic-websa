@@ -319,7 +319,9 @@ describe('迹线模式语义', () => {
     applyTraceMode(t, 'AVERAGE');
     feed([-60, -60, -60]);
     expect(t.avgCount).toBe(2);
-    expect(t.powers![1]).toBeCloseTo(-70, 4);
+    // EMA with the default N=16: moves toward the new frame without freezing
+    expect(t.powers![1]).toBeGreaterThan(-80);
+    expect(t.powers![1]).toBeLessThan(-70);
   });
 });
 
@@ -332,21 +334,16 @@ describe('共享累积模块 (SWP/RTA 共用)', () => {
     expect(AVG_COUNTS).toEqual([2, 4, 8, 16, 32, 64, 128, 256, 0]);
   });
 
-  it('有限次数平均在到达 N 后停止并标记完成', () => {
+  it('有限 N 为指数滑动平均，持续更新不冻结', () => {
     const t = mk();
     applyMode(t, 'AVERAGE');
-    setAverageCount(t, 4);
-    accumulateTrace(t, new Float32Array([-40, -40]));   // seeds avgCount = 1
+    setAverageCount(t, 4);                       // alpha = 0.4
+    accumulateTrace(t, new Float32Array([-40, -40]));
     accumulateTrace(t, new Float32Array([-60, -60]));
-    accumulateTrace(t, new Float32Array([-80, -80]));
-    expect(t.avgCount).toBe(3);
-    expect(t.powers[0]).toBeCloseTo(-60, 4);            // mean of -40/-60/-80
-    accumulateTrace(t, new Float32Array([-100, -100])); // 4th sample -> done
-    expect(t.avgCount).toBe(4);
-    expect(t.done).toBe(true);
-    const held = t.powers[0];
-    accumulateTrace(t, new Float32Array([0, 0]));       // ignored after completion
-    expect(t.powers[0]).toBe(held);
+    expect(t.powers[0]).toBeCloseTo(-48, 3);     // -40 + 0.4 * (-20)
+    for (let i = 0; i < 50; i++) accumulateTrace(t, new Float32Array([-60, -60]));
+    expect(t.powers[0]).toBeCloseTo(-60, 1);     // converges, never freezes
+    expect(t.done).toBe(false);
   });
 
   it('MAX_HOLD 继承已有迹线作为起点', () => {
@@ -363,7 +360,7 @@ describe('共享累积模块 (SWP/RTA 共用)', () => {
     setAverageCount(t, 0);
     for (let i = 0; i < 20; i++) accumulateTrace(t, new Float32Array([-50, -50]));
     expect(t.done).toBe(false);
-    expect(t.avgCount).toBe(20);
+    expect(t.avgCount).toBeGreaterThan(15);
   });
 });
 

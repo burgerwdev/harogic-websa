@@ -69,9 +69,7 @@ export function syncAvgUI(): void {
   const st = document.getElementById('trace-avg-status');
   if (!st) return;
   if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }
-  st.textContent = t.avgTarget
-    ? `${Math.min(t.avgCount, t.avgTarget)}/${t.avgTarget}${t.done ? ' ✓' : ''}`
-    : `${t.avgCount}`;
+  st.textContent = t.avgTarget ? `${t.avgTarget}` : `${t.avgCount}`;
 }
 
 export function setTraceAverage(count: number): void {

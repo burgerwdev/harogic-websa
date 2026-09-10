@@ -97,15 +97,23 @@ export function accumulateTrace(t: TraceState, data: Float32Array): boolean {
     return true;
   }
   if (t.mode === 'AVERAGE') {
+    // Finite N: exponential moving average with alpha = 2/(N+1). It never stops, so the
+    // trace keeps refreshing; N sets the smoothing depth. 0 (infinity) = cumulative mean
+    // since the last reset.
     const target = t.avgTarget || 0;
-    if (t.done) return false;                       // finite N reached: hold the result
     if (!t.avgSum || t.avgSum.length !== data.length) {
-      t.avgSum = new Float32Array(t.powers);
+      t.avgSum = new Float32Array(data);
       t.avgCount = 1;
+      if (target > 0) {
+        t.powers.set(data);
+        return true;
+      }
     }
-    if (target > 0 && t.avgCount >= target) {
-      t.done = true;
-      return false;
+    if (target > 0) {
+      const alpha = 2 / (target + 1);
+      for (let i = 0; i < data.length; i++) t.powers[i] += (data[i] - t.powers[i]) * alpha;
+      t.avgCount++;
+      return true;
     }
     t.avgCount++;
     const inv = 1 / t.avgCount;
@@ -113,7 +121,6 @@ export function accumulateTrace(t: TraceState, data: Float32Array): boolean {
       t.avgSum[i] += data[i];
       t.powers[i] = t.avgSum[i] * inv;
     }
-    if (target > 0 && t.avgCount >= target) t.done = true;
     return true;
   }
   return false;
