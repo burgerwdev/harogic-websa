@@ -86,6 +86,18 @@ def build_status(dev) -> dict:
         'ref': s.rta_ref_level,
         'sweep_time_mode': s.rta_sweep_time_mode,
         'sweep_time': s.rta_sweep_time,
+        'trigger_source': s.trigger_source,
+        'trigger_edge': s.trigger_edge,
+        'trigger_level': s.trigger_level_dbm,
+        'trigger_safetime': s.trigger_safe_time_s,
+        'trigger_delay': s.trigger_delay_s,
+        'trigger_pretime': s.trigger_pre_time_s,
+        'trigger_acqtime': s.trigger_acq_time_s,
+        'trigger_retrigger': s.trigger_retrigger_count,
+        'trigger_retriggerperiod': s.trigger_retrigger_period_s,
+        'trigger_out': s.trigger_out,
+        'trigger_outpolarity': s.trigger_out_polarity,
+        'trigger_actual': s.trigger_actual,
     }
     is_rta = s.mode == 'rta'
     active_req = rta_req if is_rta else swp_req

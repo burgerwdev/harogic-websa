@@ -531,17 +531,26 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, { 'rail_trigger': 'TRG' });
+Object.assign(dict.zh, { 'rail_trigger': '触发' });
+Object.assign(dict.en, {'trg_btn_capture': 'Capture', 'trg_btn_stop': 'Stop', 'trg_btn_again': 'Capture again', 'trg_chip_free': 'FREE', 'trg_chip_wait': 'WAIT', 'trg_chip_hit': 'TRIG', 'trg_never': 'NO TRIG: +{db} dB > pk', 'trg_cross': 'needs a new crossing', 'trg_peak': 'pk {v} dBm', 'trg_hit_hint': 'captured'});
+Object.assign(dict.zh, {'trg_btn_capture': '捕获', 'trg_btn_stop': '停止', 'trg_btn_again': '再次捕获', 'trg_chip_free': '自由', 'trg_chip_wait': '等待', 'trg_chip_hit': '已触发', 'trg_never': '不会触发：门限>峰值 {db} dB', 'trg_cross': '需一次新穿越', 'trg_peak': '峰值 {v} dBm', 'trg_hit_hint': '已捕获'});
+Object.assign(dict.en, {'tip_trg_capture': 'Arm a one-shot level trigger: the next threshold crossing is captured and the panel returns to free run by itself'});
+Object.assign(dict.zh, {'tip_trg_capture': '单次捕获：武装电平触发，下一次穿越门限时捕获一次，随后自动回到自由运行'});
+// RTA trigger panel
+Object.assign(dict.en, {'trigger': 'Trigger', 'trg_source': 'Source', 'trg_bus': 'Bus', 'trg_level': 'Level', 'trg_edge': 'Edge', 'trg_rising': 'Rising', 'trg_falling': 'Falling', 'trg_double': 'Double', 'trg_debounce': 'Debounce', 'trg_delay': 'Delay', 'trg_pre': 'Pre', 'trg_acq': 'Acq', 'trg_retrig': 'Retrig', 'trg_out': 'Out', 'trg_none': 'None', 'trg_per_hop': 'Per hop', 'trg_per_sweep': 'Per sweep', 'trg_per_profile': 'Per profile', 'trg_pos': 'Pos', 'trg_neg': 'Neg', 'trg_free_btn': 'Free Run', 'trg_from_mkr': 'Mkr', 'trg_from_peak': 'Pk-10', 'trg_poi': 'Intercept ≥ {t}', 'tip_trg_source': 'Trigger source: Level uses the input level threshold, External the trigger input, Timer is periodic, Bus is the default free-running mode', 'tip_trg_level': 'Level trigger threshold in dBm: the capture starts on the selected edge crossing it', 'tip_trg_edge': 'Which threshold edge starts a capture; a signal that stays above the threshold only triggers once', 'tip_trg_safetime': 'Debounce: the level must stay above the threshold this long to count as a trigger', 'tip_trg_delay': 'Delay between the trigger event and the start of the acquisition', 'tip_trg_pretime': 'Pre-trigger time: how much data before the trigger event is kept', 'tip_trg_acqtime': 'Acquisition time after the trigger (fixed-points mode)', 'tip_trg_retrigger': 'Automatic re-trigger count after a capture (0 disables it)', 'tip_trg_retriggerperiod': 'Interval between automatic re-triggers', 'tip_trg_out': 'Trigger output: emit a pulse per hop, per sweep or per profile', 'tip_trg_outpolarity': 'Polarity of the trigger output pulse', 'tip_trg_free': 'Return to free-running acquisition (source = bus)', 'tip_trg_from_mkr': 'Take the threshold from the active marker level', 'tip_trg_from_peak': 'Take the threshold from the strongest level minus 10 dB'});
+Object.assign(dict.zh, {'trigger': '触发', 'trg_source': '触发源', 'trg_bus': '总线', 'trg_level': '电平', 'trg_edge': '边沿', 'trg_rising': '上升', 'trg_falling': '下降', 'trg_double': '双边', 'trg_debounce': '防抖', 'trg_delay': '延迟', 'trg_pre': '预触发', 'trg_acq': '采集', 'trg_retrig': '重触发', 'trg_out': '触发输出', 'trg_none': '无', 'trg_per_hop': '每跳频', 'trg_per_sweep': '每次扫描', 'trg_per_profile': '每次配置', 'trg_pos': '正', 'trg_neg': '负', 'trg_free_btn': '自由运行', 'trg_from_mkr': '取游标', 'trg_from_peak': '峰值-10', 'trg_poi': '可截获 ≥ {t}', 'tip_trg_source': '触发源：电平按输入电平门限，外部用触发输入，定时为周期触发，总线是默认的自由取帧方式', 'tip_trg_level': '电平触发门限（dBm）：选择边沿穿越它时开始捕获', 'tip_trg_edge': '以哪个边沿启动捕获；持续高于门限的信号只会触发一次', 'tip_trg_safetime': '防抖：电平需持续超过门限这么久才算一次触发', 'tip_trg_delay': '从触发事件到开始采集之间的延迟', 'tip_trg_pretime': '预触发时间：保留触发事件之前多长的数据', 'tip_trg_acqtime': '触发后的采集时长（固定点数模式）', 'tip_trg_retrigger': '捕获后自动重触发次数（0 为关闭）', 'tip_trg_retriggerperiod': '自动重触发的时间间隔', 'tip_trg_out': '触发输出：按跳频 / 每次扫描 / 每次配置输出脉冲', 'tip_trg_outpolarity': '触发输出脉冲的极性', 'tip_trg_free': '回到自由取帧（触发源 = 总线）', 'tip_trg_from_mkr': '用当前游标的电平作为门限', 'tip_trg_from_peak': '用最强电平减 10 dB 作为门限'});
 // Control-rail labels (short) and toggle
 Object.assign(dict.en, {
-  'rail_graph': 'Graph', 'rail_frequency': 'Freq', 'rail_level': 'Lvl', 'rail_trace': 'Trc',
-  'rail_marker': 'Mkr', 'rail_measurement': 'Meas', 'rail_bw': 'BW', 'rail_sweep': 'Swp',
-  'rail_limits': 'Lim',
+  'rail_graph': 'GPH', 'rail_frequency': 'FRQ', 'rail_level': 'LVL', 'rail_trace': 'TRC',
+  'rail_marker': 'MKR', 'rail_measurement': 'MEA', 'rail_bw': 'BW', 'rail_sweep': 'SWP',
+  'rail_limits': 'LIM',
   'rail_collapse': 'Collapse the jump rail', 'rail_expand': 'Expand the jump rail',
 });
 Object.assign(dict.zh, {
   'rail_graph': '图形', 'rail_frequency': '频率', 'rail_level': '电平', 'rail_trace': '迹线',
   'rail_marker': '游标', 'rail_measurement': '测量', 'rail_bw': '带宽', 'rail_sweep': '扫描',
-  'rail_limits': '限制线',
+  'rail_limits': '限值',
   'rail_collapse': '收起跳转窄条', 'rail_expand': '展开跳转窄条',
 });
 Object.assign(dict.en, { 'tip_export_csv': 'Export the active trace (frequency, power) as CSV' });

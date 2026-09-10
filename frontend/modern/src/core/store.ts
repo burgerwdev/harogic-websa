@@ -83,6 +83,21 @@ export let displayRef = 0.0;
 export function setDisplayRef(v: number) { displayRef = v; }
 export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
 export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
+// RTA trigger (mirrored from the device status so the renderer can draw the threshold)
+export let trigSource = 'bus';
+export function setTrigSource(v: string) { trigSource = v; }
+export let trigLevel = -40.0;
+export function setTrigLevel(v: number) { trigLevel = v; }
+export let trigPoi = 0.0;
+export function setTrigPoi(v: number) { trigPoi = v; }
+export let trigArmed = false;
+export function setTrigArmed(v: boolean) { trigArmed = v; }
+export let trigWaiting = false;
+export function setTrigWaiting(v: boolean) { trigWaiting = v; }
+export let trigHit = false;
+export function setTrigHit(v: boolean) { trigHit = v; }
+export let trigOverlay: string[] = [];      // status chip + warnings, drawn top-right
+export function setTrigOverlay(v: string[]) { trigOverlay = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 

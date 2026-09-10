@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';
 import { canvasColors } from '../core/theme';
+import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
 import { getDisplayPowers } from '../dsp/peaks';
 import { smoothForDisplay } from '../dsp/smooth';
@@ -355,6 +356,8 @@ export function renderAll() {
   if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
   if (c.viewMode === 'rta') {
     renderRta();
+    renderTriggerLevel();                           // outside renderRta: still drawn when the
+    renderTriggerOverlay();                         // canvas is empty while waiting
     renderWaterfallIfOn();
     updateLimitStatus(null);                        // limits are evaluated on the swept trace only
     const rp = getDisplayPowers();
@@ -432,6 +435,52 @@ export function renderAll() {
   renderWaterfallIfOn();
 }
 
+
+// Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn
+// even when the packet stream is empty (waiting), so the canvas always says which mode it
+// is in and never looks like a stale or broken picture.
+function renderTriggerOverlay() {
+  const lines = S.trigOverlay;
+  if (!lines.length) return;
+  const p = plotRect();
+  ctx.save();
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const rx = p.x + p.w - 6;
+  const lh = 14;
+  lines.forEach((l, i) => {
+    const warn = l.startsWith('!');
+    ctx.fillStyle = i === 0
+      ? (S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : '#00cc00'))
+      : (warn ? '#ff7043' : '#00cc00');
+    ctx.fillText(warn ? l.slice(1) : l, rx, p.y + 12 + i * lh);
+  });
+  ctx.restore();
+}
+
+// Trigger threshold line (RTA only): shows where a level trigger will fire.
+function renderTriggerLevel() {
+  if (S.trigSource !== 'level') return;
+  const p = plotRect();
+  const y = getY(S.trigLevel);
+  if (!Number.isFinite(y) || y < p.y || y > p.y + p.h) return;
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#ff7043';
+  ctx.beginPath();
+  ctx.moveTo(p.x, y);
+  ctx.lineTo(p.x + p.w, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#ff7043';
+  ctx.font = 'bold 10px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(`TRG ${S.trigLevel.toFixed(1)} dBm`, p.x + 4, y - 2);
+  ctx.restore();
+}
 
 // ---- RTA 实时频谱渲染 ----
 function renderRta() {

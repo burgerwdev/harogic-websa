@@ -24,6 +24,20 @@ DEFAULT_RTA_REF_DBM = 0.0
 DEFAULT_RTA_RBW_MODE = 'auto'
 DEFAULT_RTA_VBW_MODE = 'equal'
 DEFAULT_RTA_SWEEP_MODE = 2
+
+# RTA acquisition trigger. Defaults reproduce the previous behaviour exactly
+# (bus-triggered free-running frames); level triggering is opt-in.
+DEFAULT_TRIGGER_SOURCE = 'bus'            # bus | freerun | level | external | timer
+DEFAULT_TRIGGER_EDGE = 'rising'           # rising | falling | double
+DEFAULT_TRIGGER_LEVEL_DBM = -40.0
+DEFAULT_TRIGGER_SAFE_TIME_S = 0.0         # debounce
+DEFAULT_TRIGGER_DELAY_S = 0.0
+DEFAULT_TRIGGER_PRE_TIME_S = 0.0          # pre-trigger capture
+DEFAULT_TRIGGER_ACQ_TIME_S = 0.005        # post-trigger capture (FixedPoints)
+DEFAULT_TRIGGER_RETRIGGER_COUNT = 0       # 0 = disabled
+DEFAULT_TRIGGER_RETRIGGER_PERIOD_S = 0.0
+DEFAULT_TRIGGER_OUT = 'none'              # none | per_hop | per_sweep | per_profile
+DEFAULT_TRIGGER_OUT_POLARITY = 'positive'
 PUBLISH_MIN_INTERVAL = 0.004   # ~250 fps max
 GNSS_POLL_INTERVAL = 1.0   # GNSS polling + periodic STATUS push interval (1s)
 

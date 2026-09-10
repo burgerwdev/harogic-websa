@@ -26,6 +26,19 @@ def _dbg(msg: str) -> None:
     log.debug('RTA %s', msg)
 
 
+_TRIGGER_SOURCE = {'bus': 'Bus', 'freerun': 'FreeRun', 'level': 'Level',
+                   'external': 'External', 'timer': 'Timer'}
+_TRIGGER_EDGE = {'rising': 'RisingEdge', 'falling': 'FallingEdge', 'double': 'DoubleEdge'}
+_TRIGGER_OUT = {'none': 'NNone', 'per_hop': 'PerHop', 'per_sweep': 'PerSweep',
+                'per_profile': 'PerProfile'}
+_TRIGGER_POLARITY = {'positive': 'Positive', 'negative': 'Negative'}
+
+
+def _enum(cls, name, fallback):
+    """Enum member by name; the SDK lags the firmware sometimes, so never crash."""
+    return getattr(cls, name, fallback)
+
+
 class RtaSession(MeasurementSession):
     """Real-time spectrum session: continuous RTA acquisition."""
 
@@ -56,8 +69,15 @@ class RtaSession(MeasurementSession):
         self._last_recovery = 0.0
 
     def enter(self):
-        """Snapshot standard config, then configure RTA."""
+        """Snapshot standard config, then configure RTA.
+
+        Entering RTA always starts from free run: an armed level trigger left behind by an
+        earlier session would make the device wait for a threshold crossing, so the display
+        would come up empty instead of showing the live spectrum."""
         super().enter()
+        if self.dev.state.trigger_source not in ('bus', 'freerun'):
+            self.dev.state.trigger_source = 'bus'
+            self.dev.state.trigger_actual = {}
         prepare = getattr(self.dev, 'prepare_auto_reference_retune', None)
         if prepare is not None:
             prepare('rta')
@@ -132,9 +152,33 @@ class RtaSession(MeasurementSession):
         prof.VBWMode = _vbw_map.get(s.rta_vbw_mode, T.VBWMode_TypeDef.VBW_EqualToRBW)
         if s.rta_vbw_mode == 'manual' and s.rta_vbw_hz > 0:
             prof.VBW_Hz = s.rta_vbw_hz
-        prof.TriggerSource = T.RTA_TriggerSource_TypeDef.Bus
+        # Acquisition trigger. Defaults (source='bus', acq=5 ms) reproduce the previous
+        # behaviour: bus-triggered free-running frames at ~150 fps (probe-verified).
+        prof.TriggerSource = _enum(
+            T.RTA_TriggerSource_TypeDef,
+            _TRIGGER_SOURCE.get(s.trigger_source, 'Bus'),
+            T.RTA_TriggerSource_TypeDef.Bus)
         prof.TriggerMode = T.TriggerMode_TypeDef.FixedPoints
-        prof.TriggerAcqTime = 0.005   # short acq -> PacketCount=1, ~150fps (probe-verified)
+        prof.TriggerAcqTime = float(s.trigger_acq_time_s)
+        prof.TriggerEdge = _enum(
+            T.TriggerEdge_TypeDef,
+            _TRIGGER_EDGE.get(s.trigger_edge, 'RisingEdge'),
+            T.TriggerEdge_TypeDef.RisingEdge)
+        prof.TriggerLevel_dBm = float(s.trigger_level_dbm)
+        prof.TriggerLevel_SafeTime = float(s.trigger_safe_time_s)
+        prof.TriggerDelay = float(s.trigger_delay_s)
+        prof.PreTriggerTime = float(s.trigger_pre_time_s)
+        prof.EnableReTrigger = 1 if s.trigger_retrigger_count > 0 else 0
+        prof.ReTrigger_Count = int(s.trigger_retrigger_count)
+        prof.ReTrigger_Period = float(s.trigger_retrigger_period_s)
+        prof.TriggerOutMode = _enum(
+            T.TriggerOutMode_TypeDef,
+            _TRIGGER_OUT.get(s.trigger_out, 'NNone'),
+            T.TriggerOutMode_TypeDef.NNone)
+        prof.TriggerOutPulsePolarity = _enum(
+            T.TriggerOutPulsePolarity_TypeDef,
+            _TRIGGER_POLARITY.get(s.trigger_out_polarity, 'Positive'),
+            T.TriggerOutPulsePolarity_TypeDef.Positive)
         prof.SweepTimeMode = T.SweepTimeMode_TypeDef(s.rta_sweep_time_mode)
         prof.SweepTime = float(s.rta_sweep_time)
         _dbg('CONF calling RTA_Configuration dec=%s ...' % self._decimate)
@@ -159,6 +203,10 @@ class RtaSession(MeasurementSession):
             'refclk_out': bool(out.EnableReferenceClockOut),
             'atten': int(out.Atten),
             'preamp': int(out.Preamplifier.value),
+            'poi': float(getattr(info, 'POI', 0.0)),
+            'time_resolution': float(getattr(info, 'TimeResolution', 0.0)),
+            'packet_count': int(getattr(info, 'PacketCount', 0)),
+            'packet_frame': int(getattr(info, 'PacketFrame', 0)),
             'ifgain': int(out.IFGainGrade),
         }
         dev._read_amp_atten()
@@ -243,6 +291,10 @@ class RtaSession(MeasurementSession):
             prepare('rta')
         self._configure()
 
+    def set_trigger(self):
+        """Re-apply the RTA profile so new trigger settings take effect."""
+        self._configure()
+
     def set_sweep(self, mode=0, time=0.0):
         s = self.dev.state
         s.rta_sweep_time_mode = max(0, min(8, int(mode)))
@@ -307,6 +359,10 @@ class RtaSession(MeasurementSession):
         import htra_api as T
 
         dev = self.dev
+        # With a level trigger armed the device sends nothing until the threshold is
+        # crossed, so "no data" is the expected state, not a failure: never count it
+        # towards the error streak (which would otherwise reconfigure after 8 strikes).
+        armed = dev.state.trigger_source not in ('bus', 'freerun')
         self._last_get = now
         # Snapshot frame dimensions and copy the DLL-owned buffers while holding the
         # same lock as reconfiguration. Lock-free work below only touches local arrays.
@@ -325,6 +381,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
+                if armed:
+                    dev.state.trigger_actual['waiting'] = True
+                    return [], []
                 self._step_failed_locked('trigger', st)
                 return [], []
             try:
@@ -339,14 +398,31 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d Get ret=%s' % (self._dbg_n, status))
             if status != 0:
+                if armed:
+                    dev.state.trigger_actual['waiting'] = True
+                    return [], []
                 self._step_failed_locked('get', status)
                 return [], []
             self._error_streak = 0
             self._recovery_attempts = 0
+            _st = dev.state
+            _tg = self._trigger
+            _edges = int(getattr(_tg, 'InPacketTriggerEdges', 0))
+            _st.trigger_actual = {
+                'waiting': False,
+                'frames': int(_st.trigger_actual.get('frames', 0)) + 1,
+                'edges': _edges,
+                'triggered_bytes': int(getattr(_tg, 'InPacketTriggeredDataSize', 0)),
+                'first_ts': int(getattr(_tg, 'SysTimerCountOfFirstDataPoint', 0)),
+                'first_edge_ts': int(_tg.SysTimerCountOfEdges[0]) if _edges > 0 else 0,
+            }
 
             valid_points = int(info.PacketValidPoints)
             width, height = int(info.FrameWidth), int(info.FrameHeight)
             if width < 2 or height < 1 or valid_points < width:
+                if armed:
+                    _st.trigger_actual['waiting'] = True
+                    return [], []
                 raise RuntimeError('invalid RTA frame dimensions')
             trace = np.frombuffer(
                 self._trace, dtype=np.uint8, count=valid_points).copy()
