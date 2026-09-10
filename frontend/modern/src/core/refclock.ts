@@ -1,4 +1,4 @@
-// Reference-clock status derivation + transient hint (approach C: no persistent chip).
+// Reference-clock status derivation + subtle box flash on apply (approach C2).
 import { t } from './i18n';
 
 export type RefClockStatus = 'applied' | 'fallback' | 'forced' | 'unverified';
@@ -18,7 +18,7 @@ export function refClockSourceName(src: number | null | undefined): string | nul
 /**
  * Compare the requested source with the source the device actually reports.
  * 'fallback' means External was requested but the device runs on Internal (unlocked input).
- * Lock *quality* is often unavailable, so confirmation is deliberately limited to acceptance.
+ * Lock *quality* is often unavailable, so confirmation is limited to acceptance.
  */
 export function refClockStatus(
   requested: string,
@@ -39,13 +39,6 @@ const STATUS_KEYS: Record<RefClockStatus, string> = {
   unverified: 'refclk_unverified',
 };
 
-const STATUS_CLASS: Record<RefClockStatus, string> = {
-  applied: 'ok',
-  fallback: 'warn',
-  forced: 'warn',
-  unverified: 'dim',
-};
-
 function sourceLabel(src: number | null | undefined): string {
   const name = refClockSourceName(src);
   if (name === 'external_forced') return t('ext_force');
@@ -55,28 +48,38 @@ function sourceLabel(src: number | null | undefined): string {
   return '—';
 }
 
+function requestedSrcCode(requested: string): number {
+  if (requested === 'external') return 1;
+  if (requested === 'external_forced') return 3;
+  if (requested === 'premium') return 2;
+  return 0;
+}
+
 function activeActual(status: any): { src: unknown; freq: unknown } {
   const actual = status?.mode === 'rta' ? status?.rta_actual : status?.actual;
   return { src: actual?.refclk_src, freq: actual?.refclk };
 }
 
-let hintUntil = 0;
-let hintTimer: number | null = null;
+// Flash the box that contains the reference-clock controls (subtle, style-consistent).
+let flashTimer: number | null = null;
 
-function hintEl(): HTMLElement | null {
-  return document.getElementById('refclk-hint');
+export function flashRefClockBox(status: RefClockStatus): void {
+  const select = document.getElementById('select-refclk');
+  const box = select?.closest('.info-item') as HTMLElement | null;
+  if (!box) return;
+  box.classList.remove('refclk-flash', 'warn');
+  // Force reflow so the animation restarts on consecutive switches.
+  void box.offsetWidth;
+  box.classList.add('refclk-flash');
+  if (status === 'fallback' || status === 'forced') box.classList.add('warn');
+  if (flashTimer !== null) window.clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(() => {
+    box.classList.remove('refclk-flash', 'warn');
+    flashTimer = null;
+  }, 1500);
 }
 
-/** Show the transient "setting..." state right after a command is sent. */
-export function pendingRefClockHint(): void {
-  const el = hintEl();
-  if (!el) return;
-  el.textContent = t('refclk_pending') + '…';
-  el.className = 'refclk-hint dim';
-  hintUntil = Date.now() + 2000;
-}
-
-/** Refresh the hover tooltip always, and settle the transient hint after a response. */
+/** Update the hover tooltip, and flash the control box when a command response arrives. */
 export function refreshRefClockHint(status: any, responseTo?: string): void {
   const { src, freq } = activeActual(status);
   const requested = String(status?.ref_clock ?? 'internal');
@@ -88,9 +91,7 @@ export function refreshRefClockHint(status: any, responseTo?: string): void {
   const outText = status?.refclk_out ? t('on') : t('off');
 
   const lines = [
-    `${t('tip_refclk_requested')}: ${sourceLabel(
-      requested === 'external_forced' ? 3 : requested === 'external' ? 1
-        : requested === 'premium' ? 2 : 0)}`,
+    `${t('tip_refclk_requested')}: ${sourceLabel(requestedSrcCode(requested))}`,
     `${t('tip_refclk_actual')}: ${sourceLabel(src as number | null)}`,
     `${t('tip_refclk_freq')}: ${freqText}`,
     `${t('tip_refclk_ppm')}: ${ppmText}`,
@@ -104,17 +105,7 @@ export function refreshRefClockHint(status: any, responseTo?: string): void {
   const out = document.getElementById('btn-refclk-out');
   if (out) out.title = tooltip;
 
-  const el = hintEl();
-  if (!el) return;
-  const isResponse = responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT';
-  if (!isResponse && Date.now() > hintUntil) return;   // keep the steady tooltip only
-  el.textContent = `${t('refclk_label')}: ${t(STATUS_KEYS[state])}`;
-  el.className = `refclk-hint ${STATUS_CLASS[state]}`;
-  hintUntil = Date.now() + 3000;
-  if (hintTimer !== null) window.clearTimeout(hintTimer);
-  hintTimer = window.setTimeout(() => {
-    const node = hintEl();
-    if (node) { node.textContent = ''; node.className = 'refclk-hint'; }
-    hintTimer = null;
-  }, 3000);
+  if (responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT') {
+    flashRefClockBox(state);
+  }
 }

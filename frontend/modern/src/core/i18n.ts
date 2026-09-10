@@ -311,32 +311,28 @@ Object.assign(dict.zh, {
 
 // Reference-clock transient hint + hover tooltip (approach C)
 Object.assign(dict.en, {
-  'refclk_label': 'Clock ref',
-  'refclk_pending': 'Setting',
-  'refclk_applied': 'applied',
+    'refclk_applied': 'applied',
   'refclk_fallback': 'external lost lock, fell back to internal',
   'refclk_forced': 'external forced (no fallback on unlock)',
   'refclk_unverified': 'applied, lock not confirmed',
   'tip_refclk_requested': 'Requested',
   'tip_refclk_actual': 'Actual source',
-  'tip_refclk_freq': 'Reported frequency',
-  'tip_refclk_ppm': 'Frequency offset',
+  'tip_refclk_freq': 'Reported reference frequency',
+  'tip_refclk_ppm': 'Frequency offset (after GNSS calibration)',
   'tip_refclk_output': 'Clock output',
   'tip_refclk_state': 'State',
   'tip_refclk_forced_warn': 'Warning: ExtForce never falls back; a lost reference detunes the analyzer.',
 });
 
 Object.assign(dict.zh, {
-  'refclk_label': '参考时钟',
-  'refclk_pending': '设置中',
-  'refclk_applied': '已应用',
+    'refclk_applied': '已应用',
   'refclk_fallback': '外部失锁，已回退内部',
   'refclk_forced': '外部强制（失锁不回落）',
   'refclk_unverified': '已应用，锁定未确认',
   'tip_refclk_requested': '请求源',
   'tip_refclk_actual': '实际源',
-  'tip_refclk_freq': '回读频率',
-  'tip_refclk_ppm': '频率偏差',
+  'tip_refclk_freq': '回读参考频率',
+  'tip_refclk_ppm': '频率偏差（GNSS 校准后可用）',
   'tip_refclk_output': '时钟输出',
   'tip_refclk_state': '状态',
   'tip_refclk_forced_warn': '警告：外部强制失锁不回落，参考丢失会导致整机频率失准。',
