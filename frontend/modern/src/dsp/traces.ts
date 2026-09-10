@@ -1,7 +1,6 @@
 // Trace processing: resampling/gapFill/spur suppression/state machine
 import * as S from '../core/store';
 import { accumulateTrace, applyMode } from './accumulator';
-import { applyTraceMath } from './tracemath';
 import { updateNormalizeStatusUI } from './normalize';
 import { updateTrackingMarkers } from './markerTracking';
 
@@ -132,12 +131,6 @@ export function processTraces(rawPowers: Float32Array) {
 
     accumulateTrace(t, data);
   });
-  // Trace math (A = T1, B = T2) is applied on top of T1's own accumulation.
-  const a = S.traces[0], b = S.traces[1];
-  if (S.traceMath !== 'OFF' && a.powers && b.powers
-    && a.powers.length === b.powers.length) {
-    applyTraceMath(a.powers, b.powers, S.traceMath);
-  }
   updateTrackingMarkers();
   updateNormalizeStatusUI();
 }

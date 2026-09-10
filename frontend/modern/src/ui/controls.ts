@@ -701,7 +701,6 @@ export function bindActions() {
     'toggle-refclkout': () => toggleRefClkOut(),
     'set-amp': () => setAmp(),
     'set-trace-mode': (el) => setTraceMode((el as HTMLSelectElement).value),
-    'set-trace-math': (el) => { S.setTraceMath((el as HTMLSelectElement).value as 'OFF' | 'A-B' | 'A+B'); renderAll(); },
     'set-trace-avg': (el) => setTraceAverage(parseInt((el as HTMLSelectElement).value) || 0),
     'export-csv': () => exportActiveTraceCsv(),
     'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); renderAll(); },
