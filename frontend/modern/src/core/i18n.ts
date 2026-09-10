@@ -531,6 +531,8 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, { 'tip_export_csv': 'Export the active trace (frequency, power) as CSV' });
+Object.assign(dict.zh, { 'tip_export_csv': '把当前迹线导出为 CSV（频率、功率）' });
 
 // Amplitude unit + external gain/loss offset
 Object.assign(dict.en, {

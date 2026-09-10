@@ -228,6 +228,10 @@
             <button class="trace-btn T2" data-trace-tab="1">T2</button>
             <button class="trace-btn T3" data-trace-tab="2">T3</button>
             <button class="trace-btn T4" data-trace-tab="3">T4</button>
+            <div class="btn-group" style="margin-left:auto;">
+              <button class="btn" data-action="export-png" data-i18n="export_png" data-i18n-title="tip_export_png">PNG</button>
+              <button class="btn" data-action="export-csv" data-i18n="export_csv" data-i18n-title="tip_export_csv">CSV</button>
+            </div>
           </div>
           <div class="param-row trace-keep"><label data-i18n="mode">Mode</label>
             <select id="select-trace-mode" data-action="set-trace-mode" data-i18n="tip_select-trace-mode" data-i18n-attr="title">
@@ -256,7 +260,7 @@
           <div class="btn-group trace-norm-ops" style="margin-top:4px;">
             <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>
             <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
-            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span><button class="btn" data-action="export-png" data-i18n="export_png" data-i18n-title="tip_export_png">PNG</button><button class="btn" style="margin-left:auto;" data-action="export-csv" data-i18n="export_csv">CSV</button></div>
+            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span></div>
         </div>
       </div>
 
