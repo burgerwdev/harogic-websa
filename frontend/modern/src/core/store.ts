@@ -90,6 +90,10 @@ export let trigLevel = -40.0;
 export function setTrigLevel(v: number) { trigLevel = v; }
 export let trigPoi = 0.0;
 export function setTrigPoi(v: number) { trigPoi = v; }
+export let trigArmed = false;
+export function setTrigArmed(v: boolean) { trigArmed = v; }
+export let trigWaiting = false;
+export function setTrigWaiting(v: boolean) { trigWaiting = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 

@@ -315,16 +315,17 @@
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="trg_state">State</label>
-            <span class="cur-val trigger-status" id="trigger-status" data-i18n="tip_trg_status" data-i18n-attr="title">-</span>
+            <span class="cur-val trigger-status" id="trigger-status" data-i18n="tip_trg_status" data-i18n-attr="title">-</span></div>
+          <div class="param-row"><label data-i18n="trg_poi_label">POI</label>
             <span class="cur-val" id="trigger-poi" data-i18n="tip_trg_poi" data-i18n-attr="title">-</span></div>
+          <div class="param-row"><label data-i18n="trg_hint">Hint</label>
+            <span class="cur-val trigger-hint" id="trigger-hint">-</span></div>
           <div class="param-row"><label data-i18n="trg_source">Source</label>
             <select id="select-trg-source" data-i18n="tip_trg_source" data-i18n-attr="title">
               <option value="bus" data-i18n="trg_bus">Bus</option>
-              <option value="freerun" data-i18n="trg_freerun">Free run</option>
               <option value="level" data-i18n="trg_level">Level</option>
-              <option value="external" data-i18n="trg_external">External</option>
-              <option value="timer" data-i18n="trg_timer">Timer</option>
             </select>
+            <button class="btn" id="btn-trg-capture" data-i18n="trg_capture_btn" data-i18n-title="tip_trg_capture">Capture</button>
             <button class="btn" id="btn-trg-free" data-i18n="trg_free_btn" data-i18n-title="tip_trg_free">Free Run</button></div>
           <div class="param-row"><label data-i18n="trg_level">Level</label>
             <input type="number" id="input-trg-level" value="-40" step="1" min="-150" max="30"

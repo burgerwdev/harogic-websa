@@ -352,6 +352,10 @@ class RtaSession(MeasurementSession):
         import htra_api as T
 
         dev = self.dev
+        # With a level trigger armed the device sends nothing until the threshold is
+        # crossed, so "no data" is the expected state, not a failure: never count it
+        # towards the error streak (which would otherwise reconfigure after 8 strikes).
+        armed = dev.state.trigger_source not in ('bus', 'freerun')
         self._last_get = now
         # Snapshot frame dimensions and copy the DLL-owned buffers while holding the
         # same lock as reconfiguration. Lock-free work below only touches local arrays.
@@ -370,6 +374,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
+                if armed:
+                    dev.state.trigger_actual['waiting'] = True
+                    return [], []
                 self._step_failed_locked('trigger', st)
                 return [], []
             try:
@@ -384,6 +391,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d Get ret=%s' % (self._dbg_n, status))
             if status != 0:
+                if armed:
+                    dev.state.trigger_actual['waiting'] = True
+                    return [], []
                 self._step_failed_locked('get', status)
                 return [], []
             self._error_streak = 0
@@ -392,6 +402,7 @@ class RtaSession(MeasurementSession):
             _tg = self._trigger
             _edges = int(getattr(_tg, 'InPacketTriggerEdges', 0))
             _st.trigger_actual = {
+                'waiting': False,
                 'frames': int(_st.trigger_actual.get('frames', 0)) + 1,
                 'edges': _edges,
                 'triggered_bytes': int(getattr(_tg, 'InPacketTriggeredDataSize', 0)),
@@ -402,6 +413,9 @@ class RtaSession(MeasurementSession):
             valid_points = int(info.PacketValidPoints)
             width, height = int(info.FrameWidth), int(info.FrameHeight)
             if width < 2 or height < 1 or valid_points < width:
+                if armed:
+                    _st.trigger_actual['waiting'] = True
+                    return [], []
                 raise RuntimeError('invalid RTA frame dimensions')
             trace = np.frombuffer(
                 self._trace, dtype=np.uint8, count=valid_points).copy()

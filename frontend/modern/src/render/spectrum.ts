@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';
 import { canvasColors } from '../core/theme';
+import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
 import { getDisplayPowers } from '../dsp/peaks';
 import { smoothForDisplay } from '../dsp/smooth';
@@ -433,6 +434,31 @@ export function renderAll() {
 }
 
 
+// While a level trigger waits the device sends no packets, so the plot shows the last
+// frame; say so explicitly instead of letting it look like a hang.
+function renderTriggerWaiting() {
+  if (!S.trigArmed || !S.trigWaiting) return;
+  const p = plotRect();
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const label = t('trg_wait_overlay');
+  const cx = p.x + p.w / 2;
+  const cy = p.y + 22;
+  const tw = ctx.measureText(label).width;
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(cx - tw / 2 - 10, cy - 13, tw + 20, 26);
+  ctx.strokeStyle = '#ff7043';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - tw / 2 - 10, cy - 13, tw + 20, 26);
+  ctx.fillStyle = '#ff7043';
+  ctx.fillText(label, cx, cy);
+  ctx.restore();
+}
+
 // Trigger threshold line (RTA only): shows where a level trigger will fire.
 function renderTriggerLevel() {
   if (S.trigSource !== 'level') return;
@@ -542,6 +568,7 @@ function renderRta() {
   renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);
   renderOSD(actDisp.length >= 2 ? actDisp : d.spec);
   renderTriggerLevel();
+  renderTriggerWaiting();
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
