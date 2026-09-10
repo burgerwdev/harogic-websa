@@ -5,6 +5,7 @@ import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { applyTraceMode, processTraces } from '../dsp/traces';
 import { AVG_COUNTS, accumulateTrace, applyMode, setAverageCount } from '../dsp/accumulator';
+import { addPowerDb, subtractDb } from '../dsp/tracemath';
 import { buildReferenceTablePub } from '../ui/normPub';
 import { percentileApprox } from '../dsp/stats';
 import {
@@ -363,6 +364,28 @@ describe('共享累积模块 (SWP/RTA 共用)', () => {
     for (let i = 0; i < 20; i++) accumulateTrace(t, new Float32Array([-50, -50]));
     expect(t.done).toBe(false);
     expect(t.avgCount).toBe(20);
+  });
+});
+
+
+describe('迹线运算', () => {
+  it('A-B 为 dB 差且保留负值', () => {
+    const out = new Float32Array(3);
+    subtractDb(new Float32Array([-20, -30, -40]), new Float32Array([-25, -30, -35]), out);
+    expect(Array.from(out)).toEqual([5, 0, -5]);
+  });
+
+  it('A+B 按功率域合成', () => {
+    const out = new Float32Array(2);
+    addPowerDb(new Float32Array([-30, -40]), new Float32Array([-30, -40]), out);
+    expect(out[0]).toBeCloseTo(-26.99, 2);
+    expect(out[1]).toBeCloseTo(-36.99, 2);
+  });
+
+  it('非有限值结果为 NaN', () => {
+    const out = new Float32Array(1);
+    subtractDb(new Float32Array([NaN]), new Float32Array([-30]), out);
+    expect(Number.isNaN(out[0])).toBe(true);
   });
 });
 

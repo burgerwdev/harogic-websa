@@ -184,6 +184,8 @@ export let waterfallOn = false;
 export function setWaterfallOn(v: boolean) { waterfallOn = v; }
 export let wfPaused = false;
 export function setWfPaused(v: boolean) { wfPaused = v; }
+export let traceMath: 'OFF' | 'A-B' | 'A+B' = 'OFF';
+export function setTraceMath(v: 'OFF' | 'A-B' | 'A+B') { traceMath = v; }
 export let rtaMode = false;
 export function setRtaMode(v: boolean) { rtaMode = v; }
 
