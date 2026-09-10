@@ -531,6 +531,8 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, {'limit_canvas_pass': 'LIMIT PASS', 'limit_canvas_fail': 'LIMIT FAIL {n}', 'limit_canvas_worst': 'worst +{db} dB @ {f}', 'limit_canvas_na': 'LIMIT -'});
+Object.assign(dict.zh, {'limit_canvas_pass': '限值 通过', 'limit_canvas_fail': '限值 超限 {n}', 'limit_canvas_worst': '最差 +{db} dB @ {f}', 'limit_canvas_na': '限值 -'});
 Object.assign(dict.en, {'trg_swp_cross': 'needs a level crossing between sweeps', 'trg_hit_level': '{f} {v} dBm crossed', 'tip_trg_edge': 'Which threshold edge starts a capture; in SWP the crossing is taken between consecutive sweeps'});
 Object.assign(dict.zh, {'trg_swp_cross': '需要相邻两次扫描间出现电平穿越', 'trg_hit_level': '{f} {v} dBm 发生穿越', 'tip_trg_edge': '以哪个边沿启动捕获；普通模式下穿越取自相邻两次扫描之间'});
 Object.assign(dict.en, { 'rail_trigger': 'TRG' });
