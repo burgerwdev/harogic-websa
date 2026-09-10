@@ -27,16 +27,23 @@ function cur() {
   };
 }
 
+// Fixed plot rectangle: W/H/MARGIN are constants, so this is computed once instead of
+// allocating a new object for every point during trace rendering.
+const PLOT_RECT = {
+  x: MARGIN.left,
+  y: MARGIN.top,
+  w: W - MARGIN.left - MARGIN.right,
+  h: H - MARGIN.top - MARGIN.bottom,
+};
+
 export function getY(val: number): number {
-  const p = plotRect();
-  if (isFinite(val)) val += cur().displayOffset;
-  const top = cur().displayRef, bottom = cur().displayRef - S.totalDivs * cur().dbPerDiv;
+  if (isFinite(val)) val += S.displayOffset;
+  const top = S.displayRef, bottom = S.displayRef - S.totalDivs * S.dbPerDiv;
   if (!isFinite(val)) val = bottom - 10;
-  return p.y + ((top - val) / (top - bottom)) * p.h;
+  return PLOT_RECT.y + ((top - val) / (top - bottom)) * PLOT_RECT.h;
 }
 export function getX(idx: number, points: number): number {
-  const p = plotRect();
-  return p.x + (idx / (points - 1)) * p.w;
+  return PLOT_RECT.x + (idx / (points - 1)) * PLOT_RECT.w;
 }
 
 // Shared bottom frequency row (used by both SWP grid and RTA view)
@@ -507,7 +514,7 @@ function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number;
   if (rtaDensLayer.width !== cols || rtaDensLayer.height !== rows) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;
   const dens = S.rtaDensity2d!;
-  if (now - lastDensRebuild > 30) {   // ~33fps density refresh is plenty (fade is slow)
+  if (now - lastDensRebuild > 45) {   // ~22fps density refresh is plenty (fade is slow)
     lastDensRebuild = now;
     const lut = densityLutForRta();
     const img = lc.createImageData(cols, rows);

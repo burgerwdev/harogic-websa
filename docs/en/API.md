@@ -55,11 +55,13 @@ Field reference:
 | `points` | int | requested points (frontend resample target) |
 | `window` | int | FFT window: 0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
+| `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
 | `mode` | str | measurement mode (std/harmonic/pnm/rta) |
 | `caps` | obj | model capabilities (model/name/fmin/fmax) |
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
+| `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
 | `auto_ref` | obj | latest peak, candidate, and pending Auto Ref target |
 | `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
@@ -121,6 +123,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_POINTS` | `points` (51~4000) | set sweep points |
 | `SET_SPUR` | `mode` (bypass/standard/enhanced) | spur rejection mode |
 | `SET_WINDOW` | `window` (0~4) | FFT window |
+| `SET_DETECTOR` | `mode` (auto/sample/pos_peak/neg_peak/rms/auto_peak) | trace detector, SWP only |
 | `SET_AMP` | `atten` (-1~33), `preamp` (0/1), `ifgain` (0~3), `gain_strategy` (0/1) | gain chain config |
 | `SET_REFCK` | `mode` (internal/external/premium/external_forced) | reference clock source; reconfigures the active RTA profile |
 | `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active RTA profile |
@@ -156,7 +159,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 | `STATUS` | on connect / after commands / **periodic (every 1 s)** | full status (fields in §1); periodic push keeps GNSS/time/lock states fresh without page refresh |
 | `HARM` | during harmonic measurement | result: `{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | during phase noise | result: `{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
-| `ERROR` | device error | `{cmd:'ERROR', msg}` |
+| `ERROR` | device/command error | `{cmd:'ERROR', code, params?, msg}`; `code` is a stable identifier used by the frontend for localization, unknown codes fall back to the English `msg` |
 
 **PNM message fields:**
 

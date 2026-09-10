@@ -2,7 +2,7 @@
 import * as S from './store';
 import { formatBWHz, formatFreqHz, fmtAxis } from './fmt';
 import { toUnit } from './units';
-import { t } from './i18n';
+import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
   syncRefClkOut,
@@ -10,20 +10,35 @@ import {
   syncGraphModeStatus,
   releaseGraphModePending,
   syncFrequencyEditorStatus,
-  syncSwpSpanStep,
+  syncRefLevelStatus,
   syncScaleButtons,
+  syncSwpSpanStep,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
+import { syncAvgUI } from '../ui/traceOps';
+import { accumulateTrace } from '../dsp/accumulator';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
 import { setWS } from './wsSend';
+import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
 import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
-import { percentileApprox } from '../dsp/stats';
+import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
+
+function localizedError(msg: any): string {
+  const code = String(msg?.code || '');
+  const params: Record<string, string | number> = { ...(msg?.params || {}) };
+  if (params.session) {
+    params.session = t(String(params.session) === 'pnm' ? 'phase_noise' : 'harmonic');
+  }
+  const key = code ? `err_${code}` : '';
+  const text = key && hasKey(key) ? t(key, params) : (msg?.msg || t('err_command'));
+  return `${t('alert_device')}: ${text}`;
+}
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
@@ -93,7 +108,7 @@ export function connectWS() {
         else if (msg.cmd === 'PNM') onPnmResult(msg);
         else if (msg.cmd === 'ERROR') {
           releaseGraphModePending();
-          alert('Device: ' + msg.msg);
+          alert(localizedError(msg));
         }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
@@ -130,6 +145,7 @@ export function connectWS() {
       const spec = new Float32Array(event.data, off, pts); off += pts * 4;
       const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
       const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      if (!plausibleSpectrum(spec)) return;   // drop saturated frames after (re)configuration
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -139,13 +155,12 @@ export function connectWS() {
       if (axisChanged) {
         if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
         for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
-        for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
+        for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
         S.resetWaterfall();
       }
       lastRtaStartHz = startHz;
       lastRtaStopHz = stopHz;
       S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
-      (window as any).__rta = S.rtaData;
       // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
       const _nowU = performance.now();
       if (_nowU - lastRtaInfoAt > 400) {
@@ -215,23 +230,21 @@ export function connectWS() {
       }
       // Per-trace accumulation (multi-trace like the official SW): each enabled trace
       // accumulates its own RTA display according to its mode.
+      // RTA reuses the shared accumulator (single semantics with SWP). rtaDisplays stays
+      // the storage so rendering, markers and waterfall are untouched.
       S.traces.forEach((tr, ti) => {
         if (tr.mode === 'OFF') return;
-        const d = S.rtaDisplays[ti];
-        if (!d || d.length !== spec.length) { S.rtaDisplays[ti] = new Float32Array(spec); return; }
-        if (tr.mode === 'MAX_HOLD') {
-          for (let i = 0; i < spec.length; i++) if (spec[i] > d[i]) d[i] = spec[i];
-        } else if (tr.mode === 'MIN_HOLD') {
-          for (let i = 0; i < spec.length; i++) if (spec[i] < d[i]) d[i] = spec[i];
-        } else if (tr.mode === 'AVERAGE') {
-          if (!S.rtaAvgN[ti]) { S.rtaAvgN[ti] = 1; d.set(spec); }
-          else { S.rtaAvgN[ti]++; const a = 1 / S.rtaAvgN[ti];
-            for (let i = 0; i < spec.length; i++) d[i] += (spec[i] - d[i]) * a; }
-        } else if (tr.mode === 'VIEW') {
-          // freeze
-        } else {
-          d.set(spec);   // CLEAR_WRITE
-        }
+        const shim = {
+          id: ti + 1, mode: tr.mode, prevMode: tr.prevMode,
+          raw: null, powers: S.rtaDisplays[ti], avgSum: S.rtaAvgSum[ti],
+          avgCount: S.rtaAvgN[ti], avgTarget: tr.avgTarget, done: S.rtaDone[ti],
+          reference: null, isNormalized: false,
+        } as unknown as S.TraceState;
+        accumulateTrace(shim, spec);
+        S.rtaDisplays[ti] = shim.powers;
+        S.rtaAvgSum[ti] = shim.avgSum;
+        S.rtaAvgN[ti] = shim.avgCount;
+        S.rtaDone[ti] = shim.done;
       });
       updateTrackingMarkers();
       if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
@@ -290,6 +303,8 @@ export function updateStatus(s: any) {
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
+  syncRefLevelStatus(s.response_to);
+  syncAvgUI();
   syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
 
   const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
@@ -302,7 +317,8 @@ export function updateStatus(s: any) {
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
-  setInput('input-ref', S.displayUnit === 'dB' ? '0' : S.refLevel.toFixed(0));
+  const refText = Number.isInteger(S.refLevel) ? S.refLevel.toFixed(0) : S.refLevel.toFixed(1);
+  setInput('input-ref', S.displayUnit === 'dB' ? '0' : refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
@@ -321,12 +337,13 @@ export function updateStatus(s: any) {
   }
   if (refAuto) {
     refAuto.classList.toggle('active', S.refMode === 'auto');
-    refAuto.title = s.auto_ref_suspended ? 'Auto Ref requires Atten Auto' : '';
+    refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
   }
   setInput('input-points', String(S.currentPoints));
   setSelect('select-rbw-mode', S.rbwMode);
   setSelect('select-vbw-mode', S.vbwMode);
   setSelect('select-spur', S.currentSpur);
+  setSelect('select-detector', s.detector || 'auto');
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
   if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
   const sweepSelect = document.getElementById('select-sweep-mode') as HTMLSelectElement | null;
@@ -368,6 +385,7 @@ export function updateStatus(s: any) {
   }
   const rc = document.getElementById('select-refclk') as HTMLSelectElement;
   syncRefClkOut(s);
+  refreshRefClockHint(s, s.response_to);
   if (rc) {
     const hasOpt = rc.querySelector('option[value="premium"]');
     if (s.has_docxo && !hasOpt) {

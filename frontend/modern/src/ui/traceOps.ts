@@ -2,7 +2,8 @@
 import * as S from '../core/store';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
-import { resetTraceAccum } from '../dsp/traces';
+import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
+import { setAverageCount } from '../dsp/accumulator';
 import { renderAll } from '../render/spectrum';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
@@ -48,21 +49,81 @@ export function clearRtaTrace() {
   const arr = S.rtaDisplays.slice();
   arr[idx] = null;
   S.rtaAvgN[idx] = 0;
+  S.rtaAvgSum[idx] = null;
+  S.rtaDone[idx] = false;
   S.setRtaDisplays(arr);
   if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
   renderAll();
 }
 
 export function setTraceMode(mode: string) {
-  const t = S.traces[S.activeTraceIdx];
-  t.mode = mode;
-  if (mode !== 'VIEW' && mode !== t.prevMode) t.prevMode = mode;
-  if (mode === 'OFF' || mode === 'CLEAR_WRITE' || mode === 'AVERAGE') {
-    t.avgSum = null; t.avgCount = 0;
-  }
-  if (mode === 'OFF') { resetTraceAccum(t); }
-  if (mode === 'MAX_HOLD' || mode === 'MIN_HOLD' || mode === 'AVERAGE' || mode === 'CLEAR_WRITE') {
-    t.powers = null; t.avgSum = null; t.avgCount = 0;
-  }
+  const idx = S.activeTraceIdx;
+  applyTraceMode(S.traces[idx], mode);
+  resetRtaAverage(idx);
   syncFreezeBtn();
+  syncAvgUI();
+}
+
+/**
+ * RTA stores its own accumulator arrays, so SWP-side resets are not enough: a stale
+ * avgSum/avgCount would make a fresh average start near full scale and decay slowly
+ * (reported as "the trace descends from the top").
+ */
+function resetRtaAverage(idx: number): void {
+  S.rtaAvgSum[idx] = null;
+  S.rtaAvgN[idx] = 0;
+  S.rtaDone[idx] = false;
+}
+
+/** Average count UI: select value + "count/target" status for the active trace. */
+export function syncAvgUI(): void {
+  const idx = S.activeTraceIdx;
+  const t = S.traces[idx];
+  const row = document.getElementById('trace-avg-row');
+  if (row) row.style.display = t.mode === 'AVERAGE' ? '' : 'none';
+  const sel = document.getElementById('select-trace-avg') as HTMLSelectElement | null;
+  if (sel && document.activeElement !== sel) sel.value = String(t.avgTarget ?? 16);
+  const st = document.getElementById('trace-avg-status');
+  if (!st) return;
+  if (t.mode !== 'AVERAGE') { st.textContent = ''; return; }
+  // RTA keeps its own accumulator, so the frame count lives in rtaAvgN (not traces[i].avgCount).
+  const count = S.rtaMode ? S.rtaAvgN[idx] : t.avgCount;
+  st.textContent = t.avgTarget ? `${t.avgTarget}` : `∞ (${count})`;
+}
+
+export function setTraceAverage(count: number): void {
+  const idx = S.activeTraceIdx;
+  setAverageCount(S.traces[idx], count);
+  resetRtaAverage(idx);
+  syncAvgUI();
+  renderAll();
+}
+
+/** Export the active trace as CSV (metadata header + freq/power pairs). */
+export function exportActiveTraceCsv(): void {
+  const t = S.traces[S.activeTraceIdx];
+  const powers = t?.powers;
+  const freq = S.freqArray;
+  if (!t || !powers || !freq) return;
+  const n = Math.min(powers.length, freq.length);
+  const head = [
+    `# trace=T${t.id}`, `mode=${t.mode}`,
+    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
+    `rbw_hz=${S.currentRBW}`, `vbw_hz=${S.currentVBW}`,
+    `display_unit=${S.displayUnit}`, `normalized=${t.isNormalized}`,
+    `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
+    'freq_hz,power',
+  ];
+  const rows: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = powers[i];
+    rows.push(`${Number(freq[i]).toFixed(3)},${isFinite(v) ? v.toFixed(3) : ''}`);
+  }
+  const blob = new Blob([head.concat(rows).join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `websa_T${t.id}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

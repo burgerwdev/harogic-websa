@@ -54,11 +54,13 @@ curl http://localhost:8080/api/state
 | `points` | int | 请求点数（前端重采样目标）|
 | `window` | int | FFT 窗：0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
+| `detector` | str | 迹线检波器（auto/sample/pos_peak/neg_peak/rms/auto_peak），仅 SWP |
 | `mode` | str | 当前测量模式（std/harmonic/pnm/rta）|
 | `caps` | obj | 型号能力（model/name/fmin/fmax）|
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
 | `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta` 分别保存两模式配置 |
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
+| `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；`points` 与显示迹线固定为 1001 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |
 | `auto_ref` | obj | Auto Ref 最近峰值、候选值和 pending 目标 |
@@ -121,6 +123,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |
 | `SET_SPUR` | `mode`（bypass/standard/enhanced）| 杂散抑制模式 |
 | `SET_WINDOW` | `window`（0~4）| FFT 窗口 |
+| `SET_DETECTOR` | `mode`（auto/sample/pos_peak/neg_peak/rms/auto_peak）| 迹线检波器，仅 SWP 生效 |
 | `SET_AMP` | `atten`（-1~33）, `preamp`（0/1）, `ifgain`（0~3）, `gain_strategy`（0/1）| 增益链配置 |
 | `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 参考时钟源；RTA 中重配 RTA Profile |
 | `SET_REFCKOUT` | `on`（bool）| 参考时钟输出；RTA 中重配 RTA Profile |
@@ -156,7 +159,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 | `STATUS` | 连接时 / 命令后 / **周期(每 1s)** | 完整状态（字段见 §1）；周期推送使 GNSS/时间/锁定等状态自动刷新, 无需刷新页面 |
 | `HARM` | 谐波测量中 | 谐波结果：`{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | 相噪测量中 | 相噪结果：`{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
-| `ERROR` | 设备错误 | `{cmd:'ERROR', msg}` |
+| `ERROR` | 设备/命令错误 | `{cmd:'ERROR', code, params?, msg}`；`code` 为稳定错误码，前端据此本地化，未知码回退 `msg`（英文）|
 
 **PNM 消息字段：**
 

@@ -12,6 +12,9 @@ export interface TraceState {
   _settling?: boolean;
   _lastAbsorb?: number;
   _noiseFloorT?: number;
+  _floorAt?: number;
+  avgTarget: number;   // finite average count (0 = continuous)
+  done: boolean;       // finite average completed
 }
 
 export interface MarkerState {
@@ -92,10 +95,10 @@ export let activeTraceIdx = 0;
 export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
 export const TRACE_COLORS = ['#00FF00', '#FFFF00', '#00FFFF', '#FF00FF'];
 export const traces: TraceState[] = [
-  { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
-  { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
-  { id: 3, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
-  { id: 4, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false },
+  { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
+  { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
+  { id: 3, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
+  { id: 4, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, done: false },
 ];
 
 // Markers
@@ -161,6 +164,8 @@ export let rtaData: any = null;
 export function setRtaData(v: any) { rtaData = v; }
 export let rtaDisplays: (Float32Array | null)[] = [null, null, null, null];   // per-trace RTA accumulation
 export let rtaAvgN: number[] = [0, 0, 0, 0];
+export let rtaAvgSum: (Float32Array | null)[] = [null, null, null, null];
+export let rtaDone: boolean[] = [false, false, false, false];
 export function setRtaDisplays(v: (Float32Array | null)[]) { rtaDisplays = v; }
 // Density persistence params (UI-configurable in RTA mode)
 export let RTA_AMP_BINS = 128;                            // amplitude bins (~0.78 dB/bin at 100 dB)
@@ -170,11 +175,13 @@ export function setRtaFade(v: number) { rtaFade = v; }
 export let rtaDensity2d: Float32Array | null = null;   // freq x amp probability density (signal trace path)
 export function setRtaDensity2d(v: Float32Array | null) { rtaDensity2d = v; }
 export const waterfallRows: Uint16Array[] = [];
+export let waterfallPushes = 0;   // monotonic row counter (rows array saturates at 512)
 export function pushWaterfallRow(row: Uint16Array) {
   waterfallRows.push(row);
+  waterfallPushes++;
   if (waterfallRows.length > 512) waterfallRows.shift();
 }
-export function resetWaterfall() { waterfallRows.length = 0; }
+export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; }
 export let waterfallOn = false;
 export function setWaterfallOn(v: boolean) { waterfallOn = v; }
 export let wfPaused = false;

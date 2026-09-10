@@ -137,6 +137,33 @@ def test_auto_reference_raise_is_stable_and_pending_survives_other_mode():
     assert dev._pending_auto_ref == ('std', 5.0)
 
 
+def test_auto_reference_holds_ref_when_peak_is_too_weak():
+    dev = HarogicDevice()
+    dev.state.ref_mode = 'auto'
+    dev.state.ref_level = 0.0
+    dev.state.atten = -1
+    dev._auto_ref['std']['last_change'] = -10.0
+    for _ in range(3):
+        dev.observe_reference_peak('std', -80.0, -95.0)
+        dev._auto_ref['std']['candidate_since'] -= 2.0
+    # peak-5 = -85 is below the Ref minimum: hold instead of snapping to -50 dBm
+    assert dev._pending_auto_ref is None
+    assert dev._auto_ref['std']['candidate'] is None
+
+
+def test_auto_reference_keeps_headroom_above_high_noise_floor():
+    dev = HarogicDevice()
+    dev.state.ref_mode = 'auto'
+    dev.state.ref_level = -20.0
+    dev.state.atten = -1
+    dev._auto_ref['std']['last_change'] = -10.0
+    for _ in range(2):
+        dev.observe_reference_peak('std', -50.0, -70.0)
+        dev._auto_ref['std']['candidate_since'] -= 2.0
+    # peak-5 = -45, but 30 dB above the -70 floor is -40: headroom wins
+    assert dev._pending_auto_ref == ('std', -40.0)
+
+
 def test_rta_defaults_can_be_reset_without_touching_swp():
     dev = HarogicDevice()
     dev.state.center_hz = 2e9

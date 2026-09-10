@@ -11,11 +11,12 @@ import {
   niceSpanStep,
   normalizeCenterSpan,
   normalizeStartStop,
+  steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
 import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv } from './traceOps';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
@@ -26,6 +27,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
+import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -200,14 +202,27 @@ export function setRefLevel() {
 const REF_MIN = -50;
 const REF_MAX = 30;
 
+// Pending Ref target while a step command is in flight (see steppedRefLevel).
+let refPending: number | null = null;
+let refPendingAt = 0;
+
 export function refStepDbm(): number {
   // One full grid division: ▲/▼ moves Ref by the current dB-per-division value.
   return S.dbPerDiv;
 }
 
 export function adjustRefLevel(direction: -1 | 1) {
-  const next = Math.max(REF_MIN, Math.min(REF_MAX, S.refLevel + direction * refStepDbm()));
+  const base = refPending ?? S.refLevel;
+  const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
+  if (next === base) return;
+  refPending = next;
+  refPendingAt = Date.now();
   send({ cmd: 'SET_REF', mode: 'manual', ref: next });
+}
+
+export function syncRefLevelStatus(responseTo?: string) {
+  if (refPending === null) return;
+  if (responseTo === 'SET_REF' || Date.now() - refPendingAt > 2500) refPending = null;
 }
 
 export function setRefAuto() {
@@ -252,7 +267,9 @@ export function applyPoints() {
 }
 export function setSpurMode(mode: string) { send({ cmd: 'SET_SPUR', mode }); }
 export function setWindow(v: string) { send({ cmd: 'SET_WINDOW', window: parseInt(v) }); }
-export function setRefClock(mode: string) { send({ cmd: 'SET_REFCK', mode }); }
+export function setRefClock(mode: string) {
+  send({ cmd: 'SET_REFCK', mode });
+}
 export function toggleRefClkOut() {
   const btn = document.getElementById('btn-refclk-out');
   const cur = btn && btn.classList.contains('on');
@@ -405,6 +422,7 @@ export function syncGraphModeStatus(mode: string) {
   document.body.classList.toggle('rta-mode', isRta);
   const rtaDisable = [
     'select-smooth', 'select-refwin', 'btn-normalize', 'select-window',
+    'select-detector',
     'input-points', 'btn-points',
   ];
   rtaDisable.forEach((id) => {
@@ -680,10 +698,13 @@ export function bindActions() {
     'apply-points': () => applyPoints(),
     'set-window': (el) => setWindow((el as HTMLSelectElement).value),
     'set-spur': (el) => setSpurMode((el as HTMLSelectElement).value),
+    'set-detector': (el) => send({ cmd: 'SET_DETECTOR', mode: (el as HTMLSelectElement).value }),
     'set-refclock': (el) => setRefClock((el as HTMLSelectElement).value),
     'toggle-refclkout': () => toggleRefClkOut(),
     'set-amp': () => setAmp(),
     'set-trace-mode': (el) => setTraceMode((el as HTMLSelectElement).value),
+    'set-trace-avg': (el) => setTraceAverage(parseInt((el as HTMLSelectElement).value) || 0),
+    'export-csv': () => exportActiveTraceCsv(),
     'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); renderAll(); },
     'set-norm-refwin': (el) => {
       const v = parseInt((el as HTMLSelectElement).value) || 0;
@@ -719,6 +740,8 @@ export function bindActions() {
     'connect': () => connectDevice(),
     'gnss-detail': () => fillGnssDetail(),
     'gnss-close': () => closeGnssDetail(),
+    'refclk-detail': () => openRefClockDetail(),
+    'refclk-close': () => closeRefClockDetail(),
     'markers-all': () => toggleMarkersAll(),
     'marker-tracking': () => toggleActiveMarkerTracking(),
     'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },

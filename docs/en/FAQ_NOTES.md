@@ -15,12 +15,12 @@
 - SWP and RTA independently retain Center, Span, Ref, RBW, VBW, Sweep, and actual values. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md).
 - After eight consecutive RTA Trigger/Get failures, WebSA reconfigures RTA in place up to two times; persistent failure causes the supervisor to restart the worker.
 - Use `rta_health.error_streak/recovery_attempts` to diagnose a stalled RTA stream.
-- Spur rejection is effective only in SWP mode.
+- While a harmonic/PNM measurement is active, SWP-owned commands (frequency, Ref, RBW, VBW, sweep, points, spur, window, gain, reference clock) are rejected with an explicit error so the session cannot be disturbed; in RTA, FFT window/points/spur are also SWP-only.
 
 ## Reference Level
 
 - Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.
-- Auto Ref only adjusts when the peak is at least 15 dB above the estimated noise floor. After signal detection it targets about 5 dB above the peak with 5 dB steps and hysteresis. It holds current Ref when no signal is identifiable.
+- Auto Ref only adjusts when the peak is at least 15 dB above the estimated noise floor and the "about 5 dB above peak" target is not below -50 dBm; a high noise floor also keeps about 30 dB of headroom. With no signal or a too-weak peak it holds current Ref instead of converging to -50 dBm.
 - When Auto is active, a Center change or an SWP/RTA return temporarily raises Ref to 0 dBm if it was below zero, avoiding retuning to an unknown strong signal with an unsafe low Ref.
 - Every SWP/RTA reconfiguration clears stale candidates and waits 0.75 seconds before Auto Ref observations resume.
 - Auto Ref remains selected but is suspended under manual Atten; it resumes when Atten returns to Auto.
@@ -142,3 +142,11 @@ The tool first disables output and sets -42 dBm, selects the output mode, sets a
 - SAN-45/60/90 nominal ranges are 9 kHz-4.5/6/9 GHz. Features are shared, but specifications differ.
 - Some firmware leaves `RefClkFreqOffset` at zero; use the calculated value after calibration when available.
 - RTA currently uses the first spectrum in PacketFrame. Hardware bitmap/PacketFrame density semantics still need comparison against the vendor application.
+
+## Trace Detector
+
+- `Auto Sample` (default): follows the signal type; the right choice for general viewing and CW.
+- `Sample` / `Pos Peak` / `Neg Peak` / `RMS`: fixed detectors; `Pos Peak` sits closest to the top, `RMS` shows a lower noise floor.
+- `Auto Peak`: intended for pulsed/burst capture. Measured on SAN-90 it loses a steady CW carrier (peak -21.7 -> -85 dBm, 0.85 dB jitter), so it is **not offered in the UI**; use it via the API for pulsed signals only.
+- Detector applies to SWP only; the command is rejected during RTA and harmonic/PNM measurements.
+- Fix span / RBW / points when comparing detectors: with a narrow span and large RBW each point combines many frames, so all detectors converge (SAN-90 measured -21.6 dBm for all five at 10 MHz span / 1 MHz RBW). Differences appear only at wide spans (100 MHz span, RBW auto: PosPeak -21.6 / RMS -27.6 / Sample -36.6 / NegPeak -84.7 dBm). Such differences are detector semantics plus dwell conditions, not a fault.

@@ -21,6 +21,20 @@ export function steppedSpan(
   return Math.max(minimumSpan, Math.min(maximumSpan, span + direction * step));
 }
 
+// Ref-level stepping: the caller passes the pending target when a previous step has not
+// been confirmed yet, so rapid clicks accumulate instead of repeating the same value.
+export function steppedRefLevel(
+  current: number,
+  step: number,
+  direction: -1 | 1,
+  minimum = -50,
+  maximum = 30,
+): number {
+  const base = isFinite(current) ? current : 0;
+  const delta = isFinite(step) && step > 0 ? step : 1;
+  return Math.max(minimum, Math.min(maximum, base + direction * delta));
+}
+
 export interface FrequencyWindow {
   center: number;
   span: number;

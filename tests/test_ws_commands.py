@@ -1,4 +1,6 @@
 """Command validation for atomic frequency and reference controls."""
+from types import SimpleNamespace
+
 import pytest
 
 from web_sa.config import DeviceCapabilities
@@ -76,9 +78,41 @@ async def test_device_level_settings_reconfigure_active_rta_not_swp():
 
 
 @pytest.mark.asyncio
+async def test_swp_commands_are_rejected_during_measurement_sessions():
+    dev = StubDevice()
+    dev.state.mode = 'pnm'
+    dev.session = SimpleNamespace(name='pnm')
+    for cmd, payload in (
+        ('SET_FREQ', {'cmd': 'SET_FREQ', 'center': 1e9}),
+        ('SET_RBW', {'cmd': 'SET_RBW', 'mode': 'auto'}),
+        ('SET_AMP', {'cmd': 'SET_AMP', 'atten': 10}),
+    ):
+        with pytest.raises(CommandError, match='measurement is active'):
+            await _dispatch(dev, cmd, payload)
+
+
+@pytest.mark.asyncio
+async def test_swp_only_commands_are_rejected_in_rta_mode():
+    dev = StubDevice()
+    dev.state.mode = 'rta'
+    dev.session = SimpleNamespace(name='rta')
+    with pytest.raises(CommandError, match='only available in SWP mode'):
+        await _dispatch(dev, 'SET_WINDOW', {'cmd': 'SET_WINDOW', 'window': 1})
+
+
+@pytest.mark.asyncio
 async def test_set_rta_requires_rta_mode():
     dev = StubDevice()
     dev.state.mode = 'std'
     dev.session = None
     with pytest.raises(CommandError, match='requires RTA mode'):
         await _dispatch(dev, 'SET_RTA', {'cmd': 'SET_RTA', 'center': 1e9})
+
+
+def test_detector_choice_is_validated():
+    dev = StubDevice()
+    good = {'cmd': 'SET_DETECTOR', 'mode': 'rms'}
+    _validate_command(dev, good['cmd'], good)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_DETECTOR', 'mode': 'nope'}
+        _validate_command(dev, bad['cmd'], bad)

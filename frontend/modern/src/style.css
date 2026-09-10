@@ -224,7 +224,7 @@ canvas {
 .tab-btn { background: var(--panel-2); color: var(--label); border: 1px solid var(--card-border); padding: 2px 6px;
   font: 11px monospace; cursor: pointer; }
 .tab-btn.active { background: var(--btn-active); color: var(--text); border-color: var(--text); }
-body.meas-mode .control-group:not(#meas-panel) .group-body:not(.meas-allowed) { pointer-events: none; opacity: 0.45; }
+body.meas-mode .control-group:not(#meas-panel) .group-body { pointer-events: none; opacity: 0.45; }
 /* RTA mode: only the Measurement panel greys out entirely. BW/Sweep panels stay
    usable (RBW auto/manual + sweep speed apply to the RTA session); their SWP-only
    controls (Points/VBW/Window) are disabled individually via JS (rtaDisable). */
@@ -296,6 +296,14 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .marker-ops .param-row label { min-width: 48px; }
 .mkr-gap { width: 34px; flex-shrink: 0; }   /* 间隔一个按钮宽度 */
 .ref-step-btn { min-width: 28px; padding: 2px 4px; }
+@keyframes refclk-flash { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 2px var(--dot-on); } }
+@keyframes refclk-flash-warn { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 2px #d9a300; } }
+.refclk-flash { border-radius: 3px; animation: refclk-flash .4s ease-in-out 3; }
+/* Steady state on the Clock Ref box: output enabled / reference fell back.
+   box-shadow (not border) so the top bar never shifts by a pixel. */
+.refclk-label-on { color: var(--dot-on); text-decoration: underline; text-underline-offset: 2px; }
+.refclk-warn { border-radius: 3px; box-shadow: 0 0 0 1px #d9a300; }
+.refclk-flash.warn { animation-name: refclk-flash-warn; }
 .mkr-all-btn { width: auto; min-width: 0; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
 .span-action-row { flex-wrap: nowrap; }

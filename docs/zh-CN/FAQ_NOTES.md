@@ -15,12 +15,12 @@
 - SWP/RTA 分别保存 Center、Span、Ref、RBW、VBW、Sweep 和 actual。完整流转见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)。
 - RTA 连续 8 次 Trigger/Get 失败后原地重配置，最多两次；仍失败时 supervisor 重启 worker。
 - `rta_health.error_streak/recovery_attempts` 可用于排查 RTA 停更。
-- 杂散抑制算法仅在 SWP 模式有效。
+- harmonic/PNM 测量进行中，SWP 专用命令（频率/Ref/RBW/VBW/Sweep/Points/Spur/Window/增益/参考时钟）会被拒绝并返回明确错误，避免打断测量会话；RTA 下 FFT 窗口/点数/杂散抑制同样只能用于 SWP。
 
 ## Reference Level
 
 - Manual Ref 会实际配置当前 SWP/RTA Profile，不只是改变显示范围。
-- Auto Ref 仅在峰值高于估计噪底至少 15 dB 时调整；识别信号后以峰值上方约 5 dB 为目标，并使用 5 dB 步进和迟滞。无信号时保持当前 Ref，不追踪噪底。
+- Auto Ref 仅在峰值高于估计噪底至少 15 dB、且“峰值上方约 5 dB”的目标不低于 -50 dBm 时调整；噪底较高时保留约 30 dB 余量。无信号或峰值过弱时保持当前 Ref，不再向 -50 dBm 收敛。
 - Auto 模式下改变 Center 或跨 SWP/RTA 返回时，若当前 Ref<0 会先临时回到 0 dBm，避免以过低 Ref 调谐到未知强信号。
 - 任何 SWP/RTA 重配置后都会清除旧候选并等待 0.75 秒，再恢复 Auto Ref 观测。
 - 手动 Atten 时 Auto Ref 保留但暂停；恢复 Atten Auto 后继续。
@@ -142,3 +142,11 @@ cd frontend/modern && npm audit
 - SAN-45/60/90 的标称范围分别为 9 kHz-4.5/6/9 GHz，功能相同但指标不同。
 - `RefClkFreqOffset` 在部分固件上可能恒为 0，可使用校准后的计算值。
 - RTA 当前使用 PacketFrame 中第一条频谱；硬件 bitmap/PacketFrame 的概率密度语义仍需与厂商软件对照验证。
+
+## 迹线检波器
+
+- `Auto Sample`（默认）：自动跟随信号类型，适合一般观察与 CW。
+- `Sample` / `Pos Peak` / `Neg Peak` / `RMS`：固定检波方式；`Pos Peak` 峰值最贴顶、`RMS` 噪底更低。
+- `Auto Peak`：面向脉冲/突发信号捕获（逐频点挑选峰值帧）。SAN-90 实测对稳定 CW 会丢失载波（峰值 −21.7 → −85 dBm、抖动 0.85 dB），因此**不在界面提供**，仅在脉冲场景下通过 API 使用。
+- 检波器仅影响 SWP；RTA 与 harmonic/PNM 测量期间该命令会被拒绝。
+- 比较检波器时需固定 span / RBW / 点数：窄 span + 大 RBW 时每频点合帧样本极多，各检波器会收敛到同一电平（SAN-90 实测 10 MHz span、1 MHz RBW 下五档均为 −21.6 dBm）；宽 span 下差异才显现（100 MHz span、RBW auto：PosPeak −21.6 / RMS −27.6 / Sample −36.6 / NegPeak −84.7 dBm）。因此读数差异属检波器语义与驻留条件，不是故障。

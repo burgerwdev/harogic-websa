@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from .app_keys import COMMAND_LOCK, LOGGER
-from .ws import CommandError, _dispatch
+from .ws import CommandError, _dispatch, error_payload
 
 
 def _json_safe(value):
@@ -71,6 +71,7 @@ def build_status(dev) -> dict:
         'sweep_time_mode': s.sweep_time_mode,
         'sweep_time': s.sweep_time,
         'spur': s.spur_mode,
+        'detector': s.detector,
         'window': s.window,
     }
     rta_req = {
@@ -117,6 +118,7 @@ def build_status(dev) -> dict:
         'rbw_mode': active_req['rbw_mode'], 'rbw': effective('rbw'),
         'vbw_mode': active_req['vbw_mode'], 'vbw': effective('vbw'),
         'points': effective('points'), 'window': s.window, 'spur': s.spur_mode,
+        'detector': s.detector,
         'sweep_time_mode': active_req['sweep_time_mode'],
         'sweep_time': active_req['sweep_time'],
         'mode': s.mode, 'pnm_supported': s.pnm_supported,
@@ -168,15 +170,19 @@ def make_routes(app, dev, static_dir):
         try:
             data = await request.json()
         except Exception:
-            return web.json_response({'error': 'bad json'}, status=400)
+            return web.json_response({'error': 'bad json', 'code': 'bad_json'}, status=400)
         if not isinstance(data, dict):
-            return web.json_response({'error': 'JSON body must be an object'}, status=400)
+            return web.json_response(
+                {'error': 'JSON body must be an object', 'code': 'json_object_required'}, status=400)
         try:
             async with app[COMMAND_LOCK]:
                 changed = await _dispatch(dev, data.get('cmd'), data)
                 status = build_status(dev)
         except CommandError as exc:
-            return web.json_response({'error': str(exc)}, status=400)
+            payload = error_payload(exc)
+            body = {'error': payload.pop('msg')}
+            body.update(payload)
+            return web.json_response(body, status=400)
         except Exception as exc:
             request.app[LOGGER].exception('HTTP command failed')
             return web.json_response({'error': str(exc)}, status=503)

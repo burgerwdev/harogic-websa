@@ -4,10 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from collections import deque
 
 log = logging.getLogger(__name__)
 SEND_TIMEOUT = 5.0
+
+
+def _finite_json(value):
+    """Replace NaN/Inf with null so one bad measurement value cannot drop a whole message."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(item) for item in value]
+    return value
 
 
 class ClientStream:
@@ -48,7 +60,7 @@ class ClientStream:
     def publish_json(self, obj: dict) -> None:
         if self.closed:
             return
-        text = json.dumps(obj, allow_nan=False, separators=(',', ':'))
+        text = json.dumps(_finite_json(obj), allow_nan=False, separators=(',', ':'))
         if obj.get('cmd') == 'STATUS' and not obj.get('response_to'):
             self._control = deque(
                 item for item in self._control

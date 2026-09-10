@@ -3,16 +3,20 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sgSmooth, smoothForDisplay } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
+import { applyTraceMode, processTraces } from '../dsp/traces';
+import { AVG_COUNTS, accumulateTrace, applyMode, setAverageCount } from '../dsp/accumulator';
 import { buildReferenceTablePub } from '../ui/normPub';
-import { percentileApprox } from '../dsp/stats';
+import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import {
   niceSpanStep,
   normalizeCenterSpan,
   normalizeStartStop,
+  steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
 import { setUnit } from '../core/units';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
+import { refClockSourceName, refClockStatus } from '../core/refclock';
 import * as S from '../core/store';
 import { synthCW, synthBandpass, synthTwoPeaks } from './synth';
 
@@ -165,6 +169,14 @@ describe('频率字段联动', () => {
     expect(steppedSpan(8.999e9, 10e6, 1, 100, 9e9)).toBe(9e9);
   });
 
+  it('ref 步进按 scale 累加并受上下限约束', () => {
+    expect(steppedRefLevel(0, 10, 1)).toBe(10);
+    expect(steppedRefLevel(10, 10, 1)).toBe(20);
+    expect(steppedRefLevel(30, 10, 1)).toBe(30);
+    expect(steppedRefLevel(-50, 5, -1)).toBe(-50);
+    expect(steppedRefLevel(2.5, 2.5, -1)).toBe(0);
+  });
+
   it('单位按钮未编辑时换算显示，编辑后按所选单位提交', () => {
     const previous = document.body.innerHTML;
     document.body.innerHTML = '<input id="input-center" value="2">' +
@@ -191,6 +203,17 @@ describe('频率字段联动', () => {
     document.removeEventListener('websa:unit-commit', listener);
     S.units.center = 'MHz';
     document.body.innerHTML = previous;
+  });
+});
+
+describe('参考时钟状态判定', () => {
+  it('请求源与回读源一致为已应用，外部被回退时标记 fallback', () => {
+    expect(refClockSourceName(1)).toBe('external');
+    expect(refClockStatus('external', 1)).toBe('applied');
+    expect(refClockStatus('external', 0)).toBe('fallback');
+    expect(refClockStatus('external_forced', 3)).toBe('forced');
+    expect(refClockStatus('internal', 0)).toBe('applied');
+    expect(refClockStatus('internal', undefined)).toBe('unverified');
   });
 });
 
@@ -256,6 +279,104 @@ describe('多 Marker Tracking', () => {
 
     S.markers.forEach(marker => { marker.enabled = false; marker.mode = 'OFF'; marker.tracking = false; });
     document.body.innerHTML = previous;
+  });
+});
+
+describe('迹线模式语义', () => {
+  const feed = (values: number[]) => processTraces(new Float32Array(values));
+
+  beforeEach(() => {
+    S.traces.forEach((t, i) => {
+      t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF';
+      t.raw = null; t.powers = null; t.avgSum = null; t.avgCount = 0;
+      t.reference = null; t.isNormalized = false;
+    });
+    S.setActiveTraceIdx(0);
+    S.setCurrentGapFill(true);
+  });
+
+  it('OFF 隐藏但保留数据，重新启用可继续', () => {
+    const t = S.traces[0];
+    feed([-30, -40, -50]);
+    const before = Array.from(t.powers!);
+    applyTraceMode(t, 'OFF');
+    feed([-10, -10, -10]);
+    expect(Array.from(t.powers!)).toEqual(before);   // not overwritten while OFF
+  });
+
+  it('切到 MAX_HOLD 以当前迹线为累积起点', () => {
+    const t = S.traces[0];
+    feed([-30, -30, -30]);
+    applyTraceMode(t, 'MAX_HOLD');
+    feed([-60, -60, -60]);
+    expect(t.powers![1]).toBeCloseTo(-30, 4);
+  });
+
+  it('切到 AVERAGE 以当前迹线为起点并计数', () => {
+    const t = S.traces[0];
+    feed([-80, -80, -80]);
+    applyTraceMode(t, 'AVERAGE');
+    feed([-60, -60, -60]);
+    expect(t.avgCount).toBe(2);
+    // EMA with the default N=16: moves toward the new frame without freezing
+    expect(t.powers![1]).toBeGreaterThan(-80);
+    expect(t.powers![1]).toBeLessThan(-70);
+    // and the online average is seeded from the trace on screen, not from a blank array
+    expect(t.avgSum![1]).toBeLessThan(-70);
+  });
+});
+
+
+describe('共享累积模块 (SWP/RTA 共用)', () => {
+  const mk = () => ({ mode: 'CLEAR_WRITE', avgSum: null, avgCount: 0, avgTarget: 16, done: false,
+    powers: null, raw: null, reference: null, isNormalized: false, id: 1 }) as any;
+
+  it('平均档位按 2 的幂到 256 且包含 ∞', () => {
+    expect(AVG_COUNTS).toEqual([2, 4, 8, 16, 32, 64, 128, 256, 0]);
+  });
+
+  it('有限 N 为指数滑动平均，持续更新不冻结', () => {
+    const t = mk();
+    applyMode(t, 'AVERAGE');
+    setAverageCount(t, 4);                       // alpha = 0.4
+    accumulateTrace(t, new Float32Array([-40, -40]));
+    accumulateTrace(t, new Float32Array([-60, -60]));
+    expect(t.powers[0]).toBeCloseTo(-48, 3);     // -40 + 0.4 * (-20)
+    for (let i = 0; i < 50; i++) accumulateTrace(t, new Float32Array([-60, -60]));
+    expect(t.powers[0]).toBeCloseTo(-60, 1);     // converges, never freezes
+    expect(t.done).toBe(false);
+  });
+
+  it('MAX_HOLD 继承已有迹线作为起点', () => {
+    const t = mk();
+    t.powers = new Float32Array([-30, -30]);
+    applyMode(t, 'MAX_HOLD');
+    accumulateTrace(t, new Float32Array([-60, -60]));
+    expect(t.powers[0]).toBeCloseTo(-30, 4);
+  });
+
+  it('∞ 模式持续平均且不结束', () => {
+    const t = mk();
+    applyMode(t, 'AVERAGE');
+    setAverageCount(t, 0);
+    for (let i = 0; i < 20; i++) accumulateTrace(t, new Float32Array([-50, -50]));
+    expect(t.done).toBe(false);
+    expect(t.avgCount).toBeGreaterThan(15);
+  });
+});
+
+
+
+
+describe('RTA 帧合理性门限', () => {
+  it('丢弃饱和/无效帧，接受正常噪底帧', () => {
+    const good = new Float32Array(100).fill(-95);
+    good[50] = -30;
+    expect(plausibleSpectrum(good)).toBe(true);
+    expect(plausibleSpectrum(new Float32Array(100).fill(-3))).toBe(false);  // saturated packet
+    const mostlyHigh = new Float32Array(100).fill(-95); for (let i = 80; i < 100; i++) mostlyHigh[i] = -2;
+    expect(plausibleSpectrum(mostlyHigh)).toBe(false);                      // bulk near full scale
+    expect(plausibleSpectrum(new Float32Array(4))).toBe(false);
   });
 });
 

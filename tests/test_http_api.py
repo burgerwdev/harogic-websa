@@ -74,6 +74,8 @@ async def test_config_rejects_non_object_and_unknown_command():
         assert resp.status == 400
         resp = await client.post('/api/config', json={'cmd': 'NO_SUCH_COMMAND'})
         assert resp.status == 400
+        body = await resp.json()
+        assert body['code'] == 'unknown_command' and 'error' in body
         resp = await client.post('/api/config', json={'cmd': 'SET_FREQ', 'center': 'NaN'})
         assert resp.status == 400
         resp = await client.post('/api/config', json={'cmd': 'SET_SWEEP', 'mode': 7})
