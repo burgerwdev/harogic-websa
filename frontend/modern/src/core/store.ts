@@ -81,8 +81,16 @@ export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 export let displayRef = 0.0;
 export function setDisplayRef(v: number) { displayRef = v; }
+export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
+export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
+
+// Limit line + pass/fail check (state owned by ui/limits.ts, math by dsp/limits.ts)
+export interface LimitPointState { freqHz: number; level: number; }
+export interface LimitsState { on: boolean; tol: number; points: LimitPointState[]; }
+export let limits: LimitsState = { on: false, tol: 0, points: [] };
+export function setLimits(v: LimitsState) { limits = v; }
 
 export let freqArray: Float64Array | null = null;
 export function setFreqArray(v: Float64Array | null) { freqArray = v; }
@@ -139,6 +147,16 @@ export let pnmCarAcc: any = null;
 export function setPnmCarAcc(v: any) { pnmCarAcc = v; }
 export let ampRes: any = null;
 export function setAmpRes(v: any) { ampRes = v; }
+
+// Channel measurements: channel power / OBW / ACPR of the displayed trace
+export interface ChanResult {
+  centerHz: number; channelBw: number; obwPercent: number; acpOffset: number; acpBw: number;
+  mainDbm: number | null;
+  lowerDbc: number | null; upperDbc: number | null;
+  obw: number | null; obwLow: number | null; obwHigh: number | null;
+}
+export let chanRes: ChanResult | null = null;
+export function setChanRes(v: ChanResult | null) { chanRes = v; }
 export let lastHarmList: any = null;
 export function setLastHarmList(v: any) { lastHarmList = v; }
 

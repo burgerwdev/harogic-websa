@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { renderAll } from '../render/spectrum';
 import { send } from '../core/wsSend';
 import { measureAmp } from '../meas/amplitude';
+import { measureChannel, clearChannel, updateChanTable, syncChanTableVisibility } from '../meas/channel';
 import { measHarmApply } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
 import { updateInfoBar } from '../render/infobar';
@@ -27,12 +28,12 @@ export function measToggle() {
 
 export function setMeasButtons(en: boolean) {
   ['btn-amp-meas', 'btn-amp-clear', 'btn-harm-set', 'btn-harm-mode',
-    'btn-pnm-set', 'btn-pnm-apply'].forEach(id => {
+    'btn-pnm-set', 'btn-pnm-apply', 'btn-chan-meas', 'btn-chan-clear'].forEach(id => {
     const b = document.getElementById(id) as HTMLButtonElement;
     if (b) b.disabled = !en;
   });
   // modern buttons may have different ids; also support the data-action approach
-  const acts = ['meas-amp', 'clear-amp', 'meas-harm', 'meas-pnm'];
+  const acts = ['meas-amp', 'clear-amp', 'meas-harm', 'meas-pnm', 'meas-chan', 'clear-chan'];
   acts.forEach(a => {
     const el = document.querySelector(`[data-action="${a}"]`) as HTMLButtonElement;
     if (el) el.disabled = !en;
@@ -44,15 +45,20 @@ export function applyMeasTabUI() {
   const tabAmp = document.getElementById('tab-amp');
   const tabHarm = document.getElementById('tab-harm');
   const tabPnm = document.getElementById('tab-pnm');
+  const tabChan = document.getElementById('tab-chan');
   if (tabAmp) tabAmp.classList.toggle('active', t === 'amp');
   if (tabHarm) tabHarm.classList.toggle('active', t === 'harm');
   if (tabPnm) tabPnm.classList.toggle('active', t === 'pnm');
+  if (tabChan) tabChan.classList.toggle('active', t === 'chan');
   const mAmp = document.getElementById('meas-amp');
   const mHarm = document.getElementById('meas-harm');
   const mPnm = document.getElementById('meas-pnm');
+  const mChan = document.getElementById('meas-chan');
   if (mAmp) mAmp.style.display = t === 'amp' ? '' : 'none';
   if (mHarm) mHarm.style.display = t === 'harm' ? '' : 'none';
   if (mPnm) mPnm.style.display = t === 'pnm' ? '' : 'none';
+  if (mChan) mChan.style.display = t === 'chan' ? '' : 'none';
+  syncChanTableVisibility();
 }
 
 export function applyMeasNow() {
@@ -60,6 +66,7 @@ export function applyMeasNow() {
   if (S.measTabSel === 'amp') measureAmp();
   else if (S.measTabSel === 'harm') measHarmApply();
   else if (S.measTabSel === 'pnm') measPnmApply();
+  else if (S.measTabSel === 'chan') { measureChannel(); updateChanTable(); }
   applyMeasUI();
 }
 
@@ -95,8 +102,10 @@ export function exitMeasMode(updateBackend = true) {
 export function applyMeasUI() {
   const inMeas = S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm');
   document.body.classList.toggle('meas-mode', inMeas);
+  const chanTab = S.measOn && S.measTabSel === 'chan';
   const mt = document.getElementById('marker-table');
-  if (mt) mt.style.display = (S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm')) ? 'none' : '';
+  if (mt) mt.style.display = ((S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm')) || chanTab) ? 'none' : '';
+  syncChanTableVisibility();
   const ht = document.getElementById('harmonic-table');
   if (ht) ht.style.display = (S.measOn && S.viewMode === 'harm') ? '' : 'none';
   const pt = document.getElementById('pnm-table');

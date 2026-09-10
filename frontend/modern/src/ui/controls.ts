@@ -16,12 +16,14 @@ import {
 } from '../core/frequency';
 import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv } from './traceOps';
+import { exportSpectrumPng } from './exportImage';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
 import { measureAmp, clearAmp } from '../meas/amplitude';
+import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors, getTheme } from '../core/theme';
@@ -707,6 +709,8 @@ export function bindActions() {
     'set-trace-mode': (el) => setTraceMode((el as HTMLSelectElement).value),
     'set-trace-avg': (el) => setTraceAverage(parseInt((el as HTMLSelectElement).value) || 0),
     'export-csv': () => exportActiveTraceCsv(),
+    'export-png': () => exportSpectrumPng(),
+    'export-peaks-csv': () => exportPeakListCsv(),
     'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); renderAll(); },
     'set-norm-refwin': (el) => {
       const v = parseInt((el as HTMLSelectElement).value) || 0;
@@ -737,6 +741,8 @@ export function bindActions() {
     'meas-toggle': () => measToggle(),
     'meas-amp': () => measureAmp(),
     'clear-amp': () => clearAmp(),
+    'meas-chan': () => measureChannel(),
+    'clear-chan': () => clearChannel(),
     'meas-harm': () => measHarmApply(),
     'meas-pnm': () => measPnmApply(),
     'connect': () => connectDevice(),

@@ -1,5 +1,6 @@
 // Marker table (fixed layout)
 import * as S from '../core/store';
+import { fmtLevel } from '../core/level';
 import { formatFreqHz } from '../core/fmt';
 import { markerFreqHz } from '../core/markerCommon';
 import { renderAll } from './spectrum';
@@ -62,7 +63,7 @@ export function updateMarkerTable(powers: Float32Array | null) {
   initMarkerTable();
   const tbody = document.getElementById('marker-tbody');
   if (!tbody) return;
-  const unit = S.displayUnit === 'dB' ? ' dB' : ' dBm';
+  const unit = S.displayUnit === 'dB' ? ' dB' : null;
   S.markers.forEach((m, i) => {
     const row = tbody.children[i] as HTMLTableRowElement;
     if (!row) return;
@@ -82,14 +83,14 @@ export function updateMarkerTable(powers: Float32Array | null) {
     if (m.enabled && m.mode !== 'OFF' && powers) {
       const idx = Math.min(m.idx, powers.length - 1);
       const f = markerFreqHz(idx), a = powers[idx];
-      if (m.mode === 'NORMAL') { fStr = formatFreqHz(f); aStr = a.toFixed(2) + unit; }
+      if (m.mode === 'NORMAL') { fStr = formatFreqHz(f); aStr = unit ? a.toFixed(2) + unit : fmtLevel(a); }
       else if (m.mode === 'DELTA') {
         const ref = S.markers.find(x => x.id === m.refId);
         if (ref) {
           const rf = markerFreqHz(Math.min(ref.idx, powers.length - 1));
           const ra = powers[Math.min(ref.idx, powers.length - 1)];
           fStr = 'Δ' + formatFreqHz(Math.abs(f - rf)) + ' / ' + formatFreqHz(f);
-          aStr = `Δ${(a - ra).toFixed(2)} dBc / ${a.toFixed(2)}${unit}`;
+          aStr = `Δ${(a - ra).toFixed(2)} dBc / ${unit ? a.toFixed(2) + unit : fmtLevel(a)}`;
         }
       }
     }

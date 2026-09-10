@@ -83,6 +83,9 @@
       <table class="harmonic-table" id="pnm-table" style="display:none;">
         <tbody id="pnm-tbody"></tbody>
       </table>
+      <table class="harmonic-table" id="chan-table" style="display:none;">
+        <tbody id="chan-tbody"></tbody>
+      </table>
     </div>
 
     <div class="control-panel">
@@ -183,6 +186,11 @@
               <button class="unit-btn active" data-scale="10">10</button>
               <button class="unit-btn" data-scale="20">20</button>
             </div><span class="cur-val" data-i18n="db_div">dB/div</span></div>
+          <div class="param-row"><label data-i18n="amp_unit">Unit</label>
+            <select id="select-level-unit" data-i18n="tip_level_unit" data-i18n-attr="title">
+              <option value="dBm">dBm</option><option value="dBmV">dBmV</option>
+              <option value="dBuV">dBuV</option><option value="dBV">dBV</option>
+            </select></div>
           <div class="param-row"><label data-i18n="offset">Offset</label>
             <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
             <span class="cur-val" data-i18n="db">dB</span></div>
@@ -248,7 +256,7 @@
           <div class="btn-group trace-norm-ops" style="margin-top:4px;">
             <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>
             <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
-            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span><button class="btn" style="margin-left:auto;" data-action="export-csv" data-i18n="export_csv">CSV</button></div>
+            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span><button class="btn" data-action="export-png" data-i18n="export_png" data-i18n-title="tip_export_png">PNG</button><button class="btn" style="margin-left:auto;" data-action="export-csv" data-i18n="export_csv">CSV</button></div>
         </div>
       </div>
 
@@ -282,7 +290,8 @@
             <input type="number" id="input-peakthr" value="-80" step="1" min="-150" max="0" data-i18n="tip_peakthr" data-i18n-attr="title"
                    title="Peak threshold (dBm); Auto = global peak - 50dB, manual edit keeps your value"><span class="cur-val">dBm</span>
             <button class="btn" id="btn-peakthr-auto" data-action="peakthr-auto" data-i18n="pk_auto" title="Re-enable auto threshold (peak-50dB)">Auto</button>
-            <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off" data-i18n-title="tip_btn-peaklist">Off</button></div>
+            <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off" data-i18n-title="tip_btn-peaklist">Off</button>
+            <button class="btn" data-action="export-peaks-csv" data-i18n="export_csv" data-i18n-title="tip_export_peaks_csv">CSV</button></div>
           <div class="param-row"><label data-i18n="count">Count</label>
             <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
                    title="Number of peaks to display (1~20, single row)"><span class="cur-val">pts</span></div>
@@ -298,9 +307,12 @@
         <div class="group-body">
           <div class="param-row"><label data-i18n="measure">Measure</label>
             <button class="btn" id="btn-meas-onoff" data-action="meas-toggle" data-i18n="off" data-i18n-title="tip_btn-meas-onoff">Off</button>
-            <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude" data-i18n-title="tip_tab-amp">Amplitude</button>
-            <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic" data-i18n-title="tip_tab-harm">Harmonic</button>
-            <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise" data-i18n-title="tip_tab-pnm">PhaseNoise</button></div>
+            <div class="btn-group meas-tabs">
+              <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude" data-i18n-title="tip_tab-amp">Amplitude</button>
+              <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic" data-i18n-title="tip_tab-harm">Harmonic</button>
+              <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise" data-i18n-title="tip_tab-pnm">PhaseNoise</button>
+              <button class="tab-btn" id="tab-chan" data-meas-tab="chan" data-i18n="channel" data-i18n-title="tip_tab-chan">Channel</button>
+            </div></div>
           <div id="meas-amp" class="meas-tab">
             <div class="param-row"><label data-i18n="n_db">n dB</label>
               <input type="text" id="input-ampdbs" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
@@ -326,6 +338,25 @@
             <div class="param-row"><label data-i18n="orders">Orders</label>
               <input type="number" id="input-harm-count" value="5" min="1" max="10" step="1" data-i18n="tip_harm_orders" data-i18n-attr="title"
                      title="Harmonic orders 1~10"></div>
+          </div>
+          <div id="meas-chan" class="meas-tab" style="display:none;">
+            <div class="param-row"><label data-i18n="chan_center">Center</label>
+              <input type="number" id="input-chan-center" value="" placeholder="auto" step="any" data-i18n="tip_chan_center" data-i18n-attr="title">
+              <span class="cur-val">MHz</span>
+              <button class="btn" id="btn-chan-meas" data-action="meas-chan" data-i18n="meas" data-i18n-title="tip_btn-chan-meas">Meas</button>
+              <button class="btn" id="btn-chan-clear" data-action="clear-chan" data-i18n="clear" data-i18n-title="tip_btn-chan-clear">Clear</button></div>
+            <div class="param-row"><label data-i18n="chan_bw">CH BW</label>
+              <input type="number" id="input-chan-bw" value="1" step="any" min="0.001" data-i18n="tip_chan_bw" data-i18n-attr="title">
+              <span class="cur-val">MHz</span></div>
+            <div class="param-row"><label data-i18n="chan_obw">OBW</label>
+              <select id="select-chan-obw" data-i18n="tip_chan_obw" data-i18n-attr="title">
+                <option value="90">90%</option><option value="95">95%</option><option value="99" selected>99%</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="chan_acp">ACP</label>
+              <input type="number" id="input-chan-offset" value="2" step="any" min="0" data-i18n="tip_chan_offset" data-i18n-attr="title">
+              <span class="cur-val">MHz</span>
+              <input type="number" id="input-chan-adjbw" value="1" step="any" min="0.001" data-i18n="tip_chan_adjbw" data-i18n-attr="title">
+              <span class="cur-val">MHz</span></div>
           </div>
           <div id="meas-pnm" class="meas-tab" style="display:none;">
             <div class="param-row"><label data-i18n="carrier">Carrier</label>
@@ -420,6 +451,27 @@
             <label style="min-width:auto;" data-i18n="gapfill">GapFill</label><button class="btn active" id="btn-gapfill" data-action="toggle-gapfill" data-i18n="on" data-i18n-title="tip_btn-gapfill">On</button></div>
         </div>
       </div>
+
+      <div class="control-group" id="limit-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="limits">Limits</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="limit_state">Limit</label>
+            <button class="btn" id="btn-limit-onoff" data-i18n="off" data-i18n-title="tip_limit_onoff">Off</button>
+            <span class="cur-val limit-status" id="limit-status">-</span></div>
+          <div id="limit-rows"></div>
+          <div class="param-row"><label data-i18n="limit_edit">Edit</label>
+            <button class="btn" id="btn-limit-add" data-i18n="limit_add" data-i18n-title="tip_limit_add">Add</button>
+            <button class="btn" id="btn-limit-reset" data-i18n="limit_reset" data-i18n-title="tip_limit_reset">Span</button>
+            <button class="btn" id="btn-limit-csv" data-i18n="limit_csv" data-i18n-title="tip_limit_csv">CSV</button></div>
+          <div class="param-row"><label data-i18n="limit_tol">Tol</label>
+            <input type="number" id="input-limit-tol" value="0" step="0.1" min="0" max="20" data-i18n="tip_limit_tol" data-i18n-attr="title">
+            <span class="cur-val">dB</span></div>
+        </div>
+      </div>
     </div>
   </div>
   <div class="dev-bar" id="dev-bar">
@@ -436,7 +488,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.1.5 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.2.0 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

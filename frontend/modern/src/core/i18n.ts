@@ -531,3 +531,83 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+
+// Amplitude unit + external gain/loss offset
+Object.assign(dict.en, {
+  'amp_unit': 'Unit',
+  'tip_level_unit': 'Amplitude unit for trace readouts (marker, peaks, channel power, limits); differences stay in dB',
+  'tip_gain': 'External gain/loss offset in dB, added to the plot and to every trace readout (cable loss positive, amplifier gain negative)',
+});
+Object.assign(dict.zh, {
+  'amp_unit': '单位',
+  'tip_level_unit': '迹线读数（游标、峰值、信道功率、限制线）的幅度单位；差值仍以 dB 表示',
+  'tip_gain': '外部增益/线损补偿（dB），作用于图形与所有迹线读数（线损取正、放大器增益取负）',
+});
+
+// Export (PNG snapshot, peak list CSV)
+Object.assign(dict.en, {
+  'export_png': 'PNG',
+  'tip_export_png': 'Export the spectrum plot as a PNG with the acquisition settings in the header',
+  'tip_export_peaks_csv': 'Export the peak list (frequency, level, delta to strongest) as CSV',
+});
+Object.assign(dict.zh, {
+  'export_png': 'PNG',
+  'tip_export_png': '把频谱图导出为 PNG，抬头带采集参数',
+  'tip_export_peaks_csv': '把峰值列表导出为 CSV（频率、电平、相对最强峰的差值）',
+});
+
+// Channel measurements: channel power / OBW / ACPR
+Object.assign(dict.en, {
+  'channel': 'Channel', 'chan_center': 'Center', 'chan_bw': 'CH BW', 'chan_obw': 'OBW', 'chan_acp': 'ACP',
+  'chan_power': 'Channel power', 'chan_acp_l': 'ACP lower', 'chan_acp_u': 'ACP upper',
+  'tip_tab-chan': 'Channel power, occupied bandwidth and adjacent-channel power of the displayed trace',
+  'tip_chan_center': 'Channel centre in MHz; leave empty to use marker 1 or the sweep centre',
+  'tip_chan_bw': 'Channel bandwidth used for the channel-power and ACPR integrals (MHz)',
+  'tip_chan_obw': 'Power percentage used for the occupied-bandwidth band',
+  'tip_chan_offset': 'Adjacent channel centre offset from the channel centre (MHz)',
+  'tip_chan_adjbw': 'Adjacent channel bandwidth (MHz)',
+  'tip_btn-chan-meas': 'Measure channel power, OBW and ACPR from the displayed trace',
+  'tip_btn-chan-clear': 'Clear the channel measurement result',
+});
+Object.assign(dict.zh, {
+  'channel': '信道', 'chan_center': '中心', 'chan_bw': '信道带宽', 'chan_obw': 'OBW', 'chan_acp': '邻道',
+  'chan_power': '信道功率', 'chan_acp_l': '下邻道', 'chan_acp_u': '上邻道',
+  'tip_tab-chan': '对当前显示迹线计算信道功率、占用带宽与邻道功率比',
+  'tip_chan_center': '信道中心频率（MHz）；留空则使用游标 1 或扫频中心',
+  'tip_chan_bw': '用于信道功率与 ACPR 积分的信道带宽（MHz）',
+  'tip_chan_obw': '占用带宽所用的功率百分比',
+  'tip_chan_offset': '邻道中心相对信道中心的偏移（MHz）',
+  'tip_chan_adjbw': '邻道带宽（MHz）',
+  'tip_btn-chan-meas': '基于当前显示迹线测量信道功率、OBW 与 ACPR',
+  'tip_btn-chan-clear': '清除信道测量结果',
+});
+
+// Limit lines + pass/fail
+Object.assign(dict.en, {
+  'limits': 'Limits', 'limit_state': 'Limit', 'limit_edit': 'Edit', 'limit_add': 'Add',
+  'limit_reset': 'Span', 'limit_csv': 'CSV', 'limit_tol': 'Tol', 'limit_del': '×',
+  'limit_pass': 'PASS', 'limit_na': 'no data',
+  'limit_fail': 'FAIL {n} bins, worst +{db} dB @ {f} MHz',
+  'tip_limit_onoff': 'Toggle the limit line and the pass/fail check',
+  'tip_limit_add': 'Insert a limit point in the middle of the widest gap',
+  'tip_limit_reset': 'Reset to a flat two-point limit across the current span',
+  'tip_limit_csv': 'Export the bins that exceed the limit as CSV',
+  'tip_limit_tol': 'Tolerance in dB; a bin counts as exceeding only when it is this much above the limit',
+  'tip_limit_freq': 'Limit point frequency in MHz',
+  'tip_limit_level': 'Limit point level in dBm',
+  'tip_limit_del': 'Remove this limit point (at least two are kept)',
+});
+Object.assign(dict.zh, {
+  'limits': '限制线', 'limit_state': '限制', 'limit_edit': '编辑', 'limit_add': '加点',
+  'limit_reset': '全扫宽', 'limit_csv': 'CSV', 'limit_tol': '容差', 'limit_del': '×',
+  'limit_pass': '通过', 'limit_na': '无数据',
+  'limit_fail': '超限 {n} 点，最差 +{db} dB @ {f} MHz',
+  'tip_limit_onoff': '开启 / 关闭限制线与通过判定',
+  'tip_limit_add': '在最宽的一段区间中点插入限制点',
+  'tip_limit_reset': '重置为覆盖当前扫宽的两点平直限制线',
+  'tip_limit_csv': '把超出限制线的频点导出为 CSV',
+  'tip_limit_tol': 'dB 容差；超出限制线超过该值才判为超限',
+  'tip_limit_freq': '限制点频率（MHz）',
+  'tip_limit_level': '限制点电平（dBm）',
+  'tip_limit_del': '删除该限制点（至少保留两点）',
+});

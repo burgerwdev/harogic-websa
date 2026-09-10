@@ -13,8 +13,11 @@ import { updateHarmonicTable } from '../meas/harmonic';
 import { renderHarmOverlay } from '../meas/harmOverlay';
 import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
+import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow } from './waterfall';
+import { buildLimitArray, evaluateAgainst, violationRuns } from '../dsp/limits';
+import { updateLimitStatus } from '../ui/limits';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -303,6 +306,48 @@ function renderOSD(powers: Float32Array) {
   });
 }
 
+// ---- Limit line + pass/fail overlay (drawn under markers and OSD) ----
+function renderLimits(powers: Float32Array | null) {
+  const freq = S.freqArray;
+  if (!powers || !freq) { updateLimitStatus(null); return; }
+  const n = Math.min(powers.length, freq.length);
+  const lim = buildLimitArray(freq, S.limits.points, n);
+  if (!lim) { updateLimitStatus(null); return; }
+  const p = PLOT_RECT;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(p.x, p.y, p.w, p.h);
+  ctx.clip();
+  // Bins above the limit: thicker red segments over the trace
+  const runs = violationRuns(powers, lim, S.limits.tol);
+  if (runs.length) {
+    ctx.strokeStyle = 'rgba(255,64,64,0.95)';
+    ctx.lineWidth = 2.5;
+    for (const r of runs) {
+      ctx.beginPath();
+      for (let i = r.start; i <= r.end; i++) {
+        const x = getX(i, n);
+        const y = getY(powers[i]);
+        if (i === r.start) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+  // Dashed limit line itself
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#ffb300';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = getX(i, n);
+    const y = getY(lim[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.restore();
+  updateLimitStatus(evaluateAgainst(powers, lim, freq, S.limits.tol));
+}
+
 export function renderAll() {
   const c = cur();
   // Waterfall container replaces the table slot in ALL modes (incl. RTA)
@@ -311,6 +356,7 @@ export function renderAll() {
   if (c.viewMode === 'rta') {
     renderRta();
     renderWaterfallIfOn();
+    updateLimitStatus(null);                        // limits are evaluated on the swept trace only
     const rp = getDisplayPowers();
     if (S.waterfallOn) {
       ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
@@ -342,6 +388,8 @@ export function renderAll() {
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
+  if (S.limits.on) renderLimits(powers);          // limit line + violations, under markers/OSD
+  else updateLimitStatus(null);
   if (powers && S.freqArray) {
     if (c.viewMode !== 'harm' && c.viewMode !== 'pnm') {
       renderMarkersOnCanvas(powers);
@@ -350,6 +398,7 @@ export function renderAll() {
     }
     if (c.viewMode === 'harm') renderHarmonics(powers);
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
+    if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
   if (S.waterfallOn) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
@@ -364,6 +413,12 @@ export function renderAll() {
       if (mt) mt.style.display = 'none';
       updatePeakTable(powers);
       renderPeakMarks(powers);
+    } else if (c.measOn && c.measTabSel === 'chan') {
+      const mt = document.getElementById('marker-table');
+      if (mt) mt.style.display = 'none';
+      const pt = document.getElementById('peak-table');
+      if (pt) pt.style.display = 'none';
+      updateChanTable();
     } else {
       const mt = document.getElementById('marker-table');
       if (mt) mt.style.display = '';

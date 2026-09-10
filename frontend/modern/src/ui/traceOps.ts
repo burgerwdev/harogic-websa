@@ -104,6 +104,37 @@ export function setTraceAverage(count: number): void {
 }
 
 /** Export the active trace as CSV (metadata header + freq/power pairs). */
+// Peaks exactly as the peak list shows them (`n` is the list order, strongest first is
+// a coincidence of the ordering — the CSV reports the delta to the strongest explicitly).
+export function exportPeakListCsv(): void {
+  const peaks = S.peakMarks as any[] | null;
+  if (!peaks || !peaks.length) return;
+  const ampOf = (p: any): number | null => (Number.isFinite(p?.amp) ? p.amp : null);
+  let strongest = -Infinity;
+  peaks.forEach((p) => { const a = ampOf(p); if (a !== null && a > strongest) strongest = a; });
+  const thr = (document.getElementById('input-peakthr') as HTMLInputElement | null)?.value ?? '';
+  const head = [
+    '# peak_list',
+    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
+    `rbw_hz=${S.currentRBW}`, `threshold_dbm=${thr}`,
+    `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
+    'n,bin,freq_hz,level_dbm,delta_from_strongest_db',
+  ];
+  const rows = peaks.map((p) => {
+    const amp = ampOf(p);
+    const delta = amp !== null && Number.isFinite(strongest) ? (strongest - amp).toFixed(3) : '';
+    return `${p.n ?? ''},${Number.isFinite(p.idx) ? p.idx : ''},${Number(p.f).toFixed(3)},` +
+      `${amp === null ? '' : amp.toFixed(3)},${delta}`;
+  });
+  const blob = new Blob([head.concat(rows).join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `websa_peaks_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function exportActiveTraceCsv(): void {
   const t = S.traces[S.activeTraceIdx];
   const powers = t?.powers;
