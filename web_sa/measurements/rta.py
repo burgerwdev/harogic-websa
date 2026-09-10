@@ -3,7 +3,7 @@ measurements/rta.py -- Real-Time Spectrum (RTA) session
 
 Uses the device FPGA real-time spectrum engine (RTA_Configuration +
 RTA_BusTriggerStart + RTA_GetRealTimeSpectrum). Emits compact frames:
-  - RTAF: real-time trace (float32 dBm, downsampled to ~1001 points) + latest
+  - RTAF: real-time trace (float32 dBm, DISPLAY_POINTS = the device frame width, capped) + latest
     waterfall row (uint16 density, downsampled to display width) + meta.
 
 Waterfall rows are pushed one per step so the frontend can accumulate a rolling
@@ -45,7 +45,7 @@ class RtaSession(MeasurementSession):
     name = 'rta'
 
     FULL_SPAN_HZ = 50.78125e6
-    DISPLAY_POINTS = 1001
+    DISPLAY_POINTS = 3328        # upper bound: the device FFT width at full span (~15 kHz/point)
     WATERFALL_WIDTH = 860      # waterfall row width after downsample
 
     def __init__(self, dev):
@@ -196,7 +196,7 @@ class RtaSession(MeasurementSession):
             'ref': float(out.RefLevel_dBm),
             'rbw': float(out.RBW_Hz),
             'vbw': float(out.VBW_Hz),
-            'points': self.DISPLAY_POINTS,
+            'points': min(self.DISPLAY_POINTS, int(info.FrameWidth)),
             'frame_points': int(info.FrameWidth),
             'refclk': float(out.ReferenceClockFrequency),
             'refclk_src': int(out.ReferenceClockSource.value),
@@ -441,7 +441,9 @@ class RtaSession(MeasurementSession):
         spectrum = trace.astype(np.float32) * scale + offset
         spectrum = spectrum[:width]
         freq = start_hz + np.arange(width) * (stop_hz - start_hz) / width
-        index = np.linspace(0, width - 1, self.DISPLAY_POINTS).astype(np.int64)
+        # Use the device's own resolution: never upsample past the frame we received.
+        n_display = min(self.DISPLAY_POINTS, width)
+        index = np.linspace(0, width - 1, n_display).astype(np.int64)
         display_spectrum = spectrum[index].astype(np.float32)
         display_freq = freq[index]
         finite = spectrum[np.isfinite(spectrum)]

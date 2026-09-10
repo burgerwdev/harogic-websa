@@ -228,6 +228,14 @@ export function pushWaterfallRow(row: Uint16Array) {
 export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; }
 export let waterfallOn = false;
 export function setWaterfallOn(v: boolean) { waterfallOn = v; }
+// Waterfall colour range: Auto = per-frame relative (noise texture always visible),
+// Fixed = an absolute dBm window shared by both modes.
+export let wfRangeMode: 'auto' | 'fixed' = 'auto';
+export function setWfRangeMode(v: 'auto' | 'fixed') { wfRangeMode = v; }
+export let wfLoDbm = -110;
+export function setWfLoDbm(v: number) { wfLoDbm = v; }
+export let wfHiDbm = -30;
+export function setWfHiDbm(v: number) { wfHiDbm = v; }
 export let wfPaused = false;
 export function setWfPaused(v: boolean) { wfPaused = v; }
 export let rtaMode = false;

@@ -16,7 +16,7 @@ import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
-import { renderWaterfall, pushSwpRow } from './waterfall';
+import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 
@@ -616,11 +616,12 @@ function renderWaterfallIfOn() {
       const now = performance.now();
       if (now - lastSwpWfAt > 100) {
         lastSwpWfAt = now;
-        pushSwpRow(powers, wf.width, 20);
+        pushSwpRow(powers, wf.width, 100);
       }
     }
   }
-  renderWaterfall(wf, S.rtaMode ? 100 : 20);
+  setWaterfallRowWidth(wf.width);
+  renderWaterfall(wf, 100);
 }
 
 

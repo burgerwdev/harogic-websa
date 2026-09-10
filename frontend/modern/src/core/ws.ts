@@ -17,7 +17,7 @@ import {
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
-import { pushRtaRow, pushSwpRow } from '../render/waterfall';
+import { pushRtaRow, pushSwpRow, waterfallRowWidth } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
@@ -252,7 +252,7 @@ export function connectWS() {
       updateTrackingMarkers();
       if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
         // bitmap rows are often all-zero; derive waterfall row from the live trace
-        pushRtaRow(spec, wfRow.length, 100);   // fixed density scale; device MaxDensityValue collapses to 1 at high decimate
+        pushRtaRow(spec, waterfallRowWidth(), 100);  // same width as the swept path (one peak-hold stage)
       }
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(pts);
