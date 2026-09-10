@@ -63,9 +63,13 @@ function jumpTo(group: HTMLElement): void {
     const toggle = group.querySelector('.group-head .panel-toggle') as HTMLElement | null;
     toggle?.click();
   }
-  // expanding changes the layout, so position after the next frame
+  // expanding changes the layout, so position after the next frame.
+  // scrollIntoView() would also scroll the page (it acts on every scrollable ancestor),
+  // so drive the panel's own scrollTop instead: only the control area moves.
   requestAnimationFrame(() => {
-    group.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const p = panel();
+    const idx = items.findIndex((it) => it.group === group);
+    if (p && idx >= 0) p.scrollTo({ top: Math.max(0, groupTops(p)[idx]), behavior: 'smooth' });
     group.classList.add('rail-flash');
     window.setTimeout(() => group.classList.remove('rail-flash'), 700);
     // The last groups can never reach the viewport top, so the scroll spy would move the

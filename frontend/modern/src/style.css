@@ -286,6 +286,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .rail-items {
   display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto;
   min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
+  overscroll-behavior: contain;
 }
 .rail-items::-webkit-scrollbar { width: 0; height: 0; }
 .rail-item {
@@ -304,6 +305,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .control-panel {
   display: flex; flex-direction: column; gap: 8px; width: 360px; flex-shrink: 0;
   height: 100%; overflow-y: auto; padding-right: 2px;
+  overscroll-behavior: contain;   /* wheel scrolling must not chain to the page */
 }
 .control-panel { scrollbar-width: thin; scrollbar-color: var(--input-border) var(--panel-2); }
 .control-panel::-webkit-scrollbar { width: 6px; }
