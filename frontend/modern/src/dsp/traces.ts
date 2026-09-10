@@ -90,12 +90,17 @@ export function processTraces(rawPowers: Float32Array) {
 
     let data = t.raw;
     if (t.reference && t.isNormalized && t.reference.length === t.raw.length) {
-      const srt = t._noiseFloorT || 0;
-      let noiseFloor = srt;
+      let noiseFloor = t._noiseFloorT || 0;
       if (t._settling) {
-        const tmp = Float32Array.from(t.raw).sort();
-        noiseFloor = tmp[Math.floor(t.raw.length * 0.15)];
-        t._noiseFloorT = noiseFloor;
+        // Recompute the settling noise floor at most twice per second: sorting the raw
+        // trace on every frame was needless work during the 4.5 s settle window.
+        const now = performance.now();
+        if (t._noiseFloorT == null || now - (t._floorAt || 0) >= 500) {
+          const tmp = Float32Array.from(t.raw).sort();
+          noiseFloor = tmp[Math.floor(t.raw.length * 0.15)];
+          t._noiseFloorT = noiseFloor;
+          t._floorAt = now;
+        }
       }
       data = new Float32Array(t.raw.length);
       for (let i = 0; i < t.raw.length; i++) {

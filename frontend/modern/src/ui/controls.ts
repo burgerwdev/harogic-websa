@@ -11,6 +11,7 @@ import {
   niceSpanStep,
   normalizeCenterSpan,
   normalizeStartStop,
+  steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
 import { setSmoothBins } from '../core/store';
@@ -200,14 +201,27 @@ export function setRefLevel() {
 const REF_MIN = -50;
 const REF_MAX = 30;
 
+// Pending Ref target while a step command is in flight (see steppedRefLevel).
+let refPending: number | null = null;
+let refPendingAt = 0;
+
 export function refStepDbm(): number {
   // One full grid division: ▲/▼ moves Ref by the current dB-per-division value.
   return S.dbPerDiv;
 }
 
 export function adjustRefLevel(direction: -1 | 1) {
-  const next = Math.max(REF_MIN, Math.min(REF_MAX, S.refLevel + direction * refStepDbm()));
+  const base = refPending ?? S.refLevel;
+  const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
+  if (next === base) return;
+  refPending = next;
+  refPendingAt = Date.now();
   send({ cmd: 'SET_REF', mode: 'manual', ref: next });
+}
+
+export function syncRefLevelStatus(responseTo?: string) {
+  if (refPending === null) return;
+  if (responseTo === 'SET_REF' || Date.now() - refPendingAt > 2500) refPending = null;
 }
 
 export function setRefAuto() {

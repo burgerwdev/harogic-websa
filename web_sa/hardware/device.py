@@ -541,13 +541,24 @@ class HarogicDevice:
                 self._pending_auto_ref = None
             return
         current = state.rta_ref_level if mode == 'rta' else state.ref_level
-        target = max(-50.0, min(30.0, math.ceil((peak_dbm + 5.0) / 5.0) * 5.0))
+        target = math.ceil((peak_dbm + 5.0) / 5.0) * 5.0
+        # A target below the Ref minimum means the detected peak is too weak to justify
+        # zooming the display down (typically noise ripple in an empty band). Raising it to
+        # the -50 dBm limit is what used to freeze the sweep after a frequency change, so
+        # hold the current Ref instead.
+        if target < -50.0:
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            return
+        # When the noise floor is high, keep ~30 dB of headroom above it.
+        if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
+            target = max(target, noise_floor_dbm + 30.0)
+        target = min(30.0, target)
         if abs(target - current) < 5.0:
             tracker['candidate'] = None
             tracker['candidate_since'] = 0.0
             return
 
-        now = time.monotonic()
         if tracker['candidate'] != target:
             tracker['candidate'] = target
             tracker['candidate_since'] = now

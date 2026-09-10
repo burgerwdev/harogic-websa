@@ -12,6 +12,7 @@ export interface TraceState {
   _settling?: boolean;
   _lastAbsorb?: number;
   _noiseFloorT?: number;
+  _floorAt?: number;
 }
 
 export interface MarkerState {

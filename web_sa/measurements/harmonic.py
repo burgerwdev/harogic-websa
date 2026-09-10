@@ -58,6 +58,9 @@ class HarmonicSession(MeasurementSession):
             from .framer import encode_freq, encode_powr
             f, p = r
             fv = s.freq_version
+            # New WS clients receive the most recent axis, whichever session produced it.
+            self.dev.last_freq = f
+            self.dev.last_freq_ver = fv
             frames.append(encode_freq(fv, f, s.sweep_ms))
             frames.append(encode_powr(fv, p, s.sweep_ms))
         self._scan_cnt += 1

@@ -58,7 +58,9 @@ class RtaSession(MeasurementSession):
     def enter(self):
         """Snapshot standard config, then configure RTA."""
         super().enter()
-        self.dev.prepare_auto_reference_retune('rta')
+        prepare = getattr(self.dev, 'prepare_auto_reference_retune', None)
+        if prepare is not None:
+            prepare('rta')
         self._configure()
 
     def _configure(self):
@@ -150,7 +152,8 @@ class RtaSession(MeasurementSession):
             'ref': float(out.RefLevel_dBm),
             'rbw': float(out.RBW_Hz),
             'vbw': float(out.VBW_Hz),
-            'points': int(info.FrameWidth),
+            'points': self.DISPLAY_POINTS,
+            'frame_points': int(info.FrameWidth),
             'refclk': float(out.ReferenceClockFrequency),
             'refclk_src': int(out.ReferenceClockSource.value),
             'refclk_out': bool(out.EnableReferenceClockOut),
@@ -235,7 +238,9 @@ class RtaSession(MeasurementSession):
             s.caps.freq_min_hz + half_span,
             min(s.caps.freq_max_hz - half_span, requested_center),
         )
-        self.dev.prepare_auto_reference_retune('rta')
+        prepare = getattr(self.dev, 'prepare_auto_reference_retune', None)
+        if prepare is not None:
+            prepare('rta')
         self._configure()
 
     def set_sweep(self, mode=0, time=0.0):

@@ -10,8 +10,9 @@ import {
   syncGraphModeStatus,
   releaseGraphModePending,
   syncFrequencyEditorStatus,
-  syncSwpSpanStep,
+  syncRefLevelStatus,
   syncScaleButtons,
+  syncSwpSpanStep,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { pushRtaRow, pushSwpRow } from '../render/waterfall';
@@ -290,6 +291,7 @@ export function updateStatus(s: any) {
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
+  syncRefLevelStatus(s.response_to);
   syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
 
   const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
@@ -302,7 +304,8 @@ export function updateStatus(s: any) {
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
-  setInput('input-ref', S.displayUnit === 'dB' ? '0' : S.refLevel.toFixed(0));
+  const refText = Number.isInteger(S.refLevel) ? S.refLevel.toFixed(0) : S.refLevel.toFixed(1);
+  setInput('input-ref', S.displayUnit === 'dB' ? '0' : refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;

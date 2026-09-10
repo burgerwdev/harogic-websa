@@ -236,6 +236,19 @@ async def _dispatch(dev, cmd, data) -> bool:
     _validate_command(dev, cmd, data)
     s = dev.state
 
+    # Harmonic/PNM sessions own the device configuration while they run. Applying an
+    # SWP-owned command would reconfigure the device behind the session and silently break
+    # its acquisition, so reject it with an explicit error instead.
+    sess = getattr(dev, 'session', None)
+    if sess is not None and sess.name in ('harmonic', 'pnm'):
+        swp_owned = {
+            'SET_FREQ', 'SET_REF', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS',
+            'SET_SPUR', 'SET_WINDOW', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
+        }
+        if cmd in swp_owned:
+            raise CommandError(
+                f'{cmd} is not available while the {sess.name} measurement is active')
+
     async def _hw_call(fn, *a, timeout=20.0, **kw):
         try:
             return await asyncio.wait_for(asyncio.to_thread(fn, *a, **kw), timeout=timeout)
@@ -338,12 +351,12 @@ async def _dispatch(dev, cmd, data) -> bool:
             s.ref_level = data['ref']
             await _configure_swp()
         return True
-    # In RTA mode, SWP-only params (window/points/spur) are not applicable.
-    # Shared RF/front-end settings are re-applied through the active RTA profile.
+    # In RTA mode, SWP-only params (window/points/spur) are not applicable. Shared
+    # RF/front-end settings are re-applied through the active RTA profile.
     # SET_RBW/SET_VBW are NOT intercepted: RTA supports both via the session
     # (set_rbw/set_vbw below, independent from SWP and restored on exit).
-    if dev.state.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_SPUR'):
-        return False
+    if s.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_SPUR'):
+        raise CommandError(f'{cmd} is only available in SWP mode')
     if cmd == 'SET_RBW':
         sess = dev.session
         if sess is not None and sess.name == 'rta':

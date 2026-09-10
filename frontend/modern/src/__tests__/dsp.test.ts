@@ -9,6 +9,7 @@ import {
   niceSpanStep,
   normalizeCenterSpan,
   normalizeStartStop,
+  steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
 import { setUnit } from '../core/units';
@@ -163,6 +164,14 @@ describe('频率字段联动', () => {
     expect(steppedSpan(100e6, 10e6, -1, 100, 9e9)).toBe(90e6);
     expect(steppedSpan(100, 10e6, -1, 100, 9e9)).toBe(100);
     expect(steppedSpan(8.999e9, 10e6, 1, 100, 9e9)).toBe(9e9);
+  });
+
+  it('ref 步进按 scale 累加并受上下限约束', () => {
+    expect(steppedRefLevel(0, 10, 1)).toBe(10);
+    expect(steppedRefLevel(10, 10, 1)).toBe(20);
+    expect(steppedRefLevel(30, 10, 1)).toBe(30);
+    expect(steppedRefLevel(-50, 5, -1)).toBe(-50);
+    expect(steppedRefLevel(2.5, 2.5, -1)).toBe(0);
   });
 
   it('单位按钮未编辑时换算显示，编辑后按所选单位提交', () => {

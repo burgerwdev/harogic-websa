@@ -224,7 +224,7 @@ canvas {
 .tab-btn { background: var(--panel-2); color: var(--label); border: 1px solid var(--card-border); padding: 2px 6px;
   font: 11px monospace; cursor: pointer; }
 .tab-btn.active { background: var(--btn-active); color: var(--text); border-color: var(--text); }
-body.meas-mode .control-group:not(#meas-panel) .group-body:not(.meas-allowed) { pointer-events: none; opacity: 0.45; }
+body.meas-mode .control-group:not(#meas-panel) .group-body { pointer-events: none; opacity: 0.45; }
 /* RTA mode: only the Measurement panel greys out entirely. BW/Sweep panels stay
    usable (RBW auto/manual + sweep speed apply to the RTA session); their SWP-only
    controls (Points/VBW/Window) are disabled individually via JS (rtaDisable). */
