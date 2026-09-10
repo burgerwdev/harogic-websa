@@ -13,6 +13,7 @@ import { updateHarmonicTable } from '../meas/harmonic';
 import { renderHarmOverlay } from '../meas/harmOverlay';
 import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
+import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow } from './waterfall';
 import { buildLimitArray, evaluateAgainst, violationRuns } from '../dsp/limits';
@@ -397,6 +398,7 @@ export function renderAll() {
     }
     if (c.viewMode === 'harm') renderHarmonics(powers);
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
+    if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
   if (S.waterfallOn) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
@@ -411,6 +413,12 @@ export function renderAll() {
       if (mt) mt.style.display = 'none';
       updatePeakTable(powers);
       renderPeakMarks(powers);
+    } else if (c.measOn && c.measTabSel === 'chan') {
+      const mt = document.getElementById('marker-table');
+      if (mt) mt.style.display = 'none';
+      const pt = document.getElementById('peak-table');
+      if (pt) pt.style.display = 'none';
+      updateChanTable();
     } else {
       const mt = document.getElementById('marker-table');
       if (mt) mt.style.display = '';

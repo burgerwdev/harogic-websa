@@ -532,6 +532,32 @@ Object.assign(dict.zh, {
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
 
+// Channel measurements: channel power / OBW / ACPR
+Object.assign(dict.en, {
+  'channel': 'Channel', 'chan_center': 'Center', 'chan_bw': 'CH BW', 'chan_obw': 'OBW', 'chan_acp': 'ACP',
+  'chan_power': 'Channel power', 'chan_acp_l': 'ACP lower', 'chan_acp_u': 'ACP upper',
+  'tip_tab-chan': 'Channel power, occupied bandwidth and adjacent-channel power of the displayed trace',
+  'tip_chan_center': 'Channel centre in MHz; leave empty to use marker 1 or the sweep centre',
+  'tip_chan_bw': 'Channel bandwidth used for the channel-power and ACPR integrals (MHz)',
+  'tip_chan_obw': 'Power percentage used for the occupied-bandwidth band',
+  'tip_chan_offset': 'Adjacent channel centre offset from the channel centre (MHz)',
+  'tip_chan_adjbw': 'Adjacent channel bandwidth (MHz)',
+  'tip_btn-chan-meas': 'Measure channel power, OBW and ACPR from the displayed trace',
+  'tip_btn-chan-clear': 'Clear the channel measurement result',
+});
+Object.assign(dict.zh, {
+  'channel': '信道', 'chan_center': '中心', 'chan_bw': '信道带宽', 'chan_obw': 'OBW', 'chan_acp': '邻道',
+  'chan_power': '信道功率', 'chan_acp_l': '下邻道', 'chan_acp_u': '上邻道',
+  'tip_tab-chan': '对当前显示迹线计算信道功率、占用带宽与邻道功率比',
+  'tip_chan_center': '信道中心频率（MHz）；留空则使用游标 1 或扫频中心',
+  'tip_chan_bw': '用于信道功率与 ACPR 积分的信道带宽（MHz）',
+  'tip_chan_obw': '占用带宽所用的功率百分比',
+  'tip_chan_offset': '邻道中心相对信道中心的偏移（MHz）',
+  'tip_chan_adjbw': '邻道带宽（MHz）',
+  'tip_btn-chan-meas': '基于当前显示迹线测量信道功率、OBW 与 ACPR',
+  'tip_btn-chan-clear': '清除信道测量结果',
+});
+
 // Limit lines + pass/fail
 Object.assign(dict.en, {
   'limits': 'Limits', 'limit_state': 'Limit', 'limit_edit': 'Edit', 'limit_add': 'Add',

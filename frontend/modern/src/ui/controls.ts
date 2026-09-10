@@ -22,6 +22,7 @@ import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
 import { measureAmp, clearAmp } from '../meas/amplitude';
+import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors, getTheme } from '../core/theme';
@@ -737,6 +738,8 @@ export function bindActions() {
     'meas-toggle': () => measToggle(),
     'meas-amp': () => measureAmp(),
     'clear-amp': () => clearAmp(),
+    'meas-chan': () => measureChannel(),
+    'clear-chan': () => clearChannel(),
     'meas-harm': () => measHarmApply(),
     'meas-pnm': () => measPnmApply(),
     'connect': () => connectDevice(),

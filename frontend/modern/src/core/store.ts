@@ -145,6 +145,16 @@ export let pnmCarAcc: any = null;
 export function setPnmCarAcc(v: any) { pnmCarAcc = v; }
 export let ampRes: any = null;
 export function setAmpRes(v: any) { ampRes = v; }
+
+// Channel measurements: channel power / OBW / ACPR of the displayed trace
+export interface ChanResult {
+  centerHz: number; channelBw: number; obwPercent: number; acpOffset: number; acpBw: number;
+  mainDbm: number | null;
+  lowerDbc: number | null; upperDbc: number | null;
+  obw: number | null; obwLow: number | null; obwHigh: number | null;
+}
+export let chanRes: ChanResult | null = null;
+export function setChanRes(v: ChanResult | null) { chanRes = v; }
 export let lastHarmList: any = null;
 export function setLastHarmList(v: any) { lastHarmList = v; }
 
