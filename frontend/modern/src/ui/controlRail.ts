@@ -26,6 +26,15 @@ function railGroups(): HTMLElement[] {
 // Read the label from the dictionary, not from textContent: setLang() notifies
 // listeners before applyI18n() rewrites the DOM, so copying the DOM here would lag
 // one language switch behind.
+const RAIL_LS_KEY = 'web-sa-rail';
+
+/** Short rail label from the dictionary, falling back to the full group title. */
+function railLabel(group: HTMLElement): string {
+  const key = (group.querySelector('.group-title') as HTMLElement | null)?.dataset.i18n;
+  if (key && hasKey(`rail_${key}`)) return t(`rail_${key}`);
+  return titleOf(group);
+}
+
 function titleOf(group: HTMLElement): string {
   const el = group.querySelector('.group-title') as HTMLElement | null;
   const key = el?.dataset.i18n;
@@ -70,11 +79,31 @@ function jumpTo(group: HTMLElement): void {
 /** Refresh the labels (init and language switch). */
 function syncLabels(): void {
   items.forEach((it) => {
-    const label = titleOf(it.group);
-    it.el.textContent = label;
-    it.el.title = label;
-    it.el.setAttribute('aria-label', label);
+    const full = titleOf(it.group);          // tooltip keeps the full, unambiguous name
+    it.el.textContent = railLabel(it.group);
+    it.el.title = full;
+    it.el.setAttribute('aria-label', full);
   });
+  const toggle = document.getElementById('rail-toggle');
+  if (toggle) toggle.title = t(isCollapsedRail() ? 'rail_expand' : 'rail_collapse');
+}
+
+function isCollapsedRail(): boolean {
+  return document.getElementById('control-rail')?.classList.contains('collapsed') ?? false;
+}
+
+/** Collapse/expand the rail and remember it (default stays expanded). */
+function setRailCollapsed(collapsed: boolean): void {
+  const host = document.getElementById('control-rail');
+  const toggle = document.getElementById('rail-toggle');
+  if (!host) return;
+  host.classList.toggle('collapsed', collapsed);
+  if (toggle) {
+    toggle.textContent = collapsed ? '\u00bb' : '\u00ab';
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.title = t(collapsed ? 'rail_expand' : 'rail_collapse');
+  }
+  try { localStorage.setItem(RAIL_LS_KEY, collapsed ? 'collapsed' : 'expanded'); } catch { /* ignore */ }
 }
 
 /** Highlight the group the user is currently looking at. */
@@ -94,15 +123,23 @@ export function initControlRail(): void {
   const host = document.getElementById('control-rail');
   const p = panel();
   if (!host || !p) return;
-  host.innerHTML = '';
   items = railGroups().map((group) => {
     const el = document.createElement('button');
     el.type = 'button';
     el.className = 'rail-item';
     el.addEventListener('click', () => jumpTo(group));
-    host.appendChild(el);
     return { el, group };
   });
+  // The rail itself may scroll when the viewport is short; the toggle stays put.
+  const itemsHost = document.getElementById('rail-items');
+  if (itemsHost) {
+    itemsHost.innerHTML = '';
+    items.forEach((it) => itemsHost.appendChild(it.el));
+  }
+  const toggle = document.getElementById('rail-toggle');
+  toggle?.addEventListener('click', () => setRailCollapsed(!isCollapsedRail()));
+  try { setRailCollapsed(localStorage.getItem(RAIL_LS_KEY) === 'collapsed'); }
+  catch { setRailCollapsed(false); }
   syncLabels();
   p.addEventListener('scroll', () => {
     if (scrollRaf) return;

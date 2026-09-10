@@ -531,6 +531,19 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+// Control-rail labels (short) and toggle
+Object.assign(dict.en, {
+  'rail_graph': 'Graph', 'rail_frequency': 'Freq', 'rail_level': 'Lvl', 'rail_trace': 'Trc',
+  'rail_marker': 'Mkr', 'rail_measurement': 'Meas', 'rail_bw': 'BW', 'rail_sweep': 'Swp',
+  'rail_limits': 'Lim',
+  'rail_collapse': 'Collapse the jump rail', 'rail_expand': 'Expand the jump rail',
+});
+Object.assign(dict.zh, {
+  'rail_graph': '图形', 'rail_frequency': '频率', 'rail_level': '电平', 'rail_trace': '迹线',
+  'rail_marker': '游标', 'rail_measurement': '测量', 'rail_bw': '带宽', 'rail_sweep': '扫描',
+  'rail_limits': '限制线',
+  'rail_collapse': '收起跳转窄条', 'rail_expand': '展开跳转窄条',
+});
 Object.assign(dict.en, { 'tip_export_csv': 'Export the active trace (frequency, power) as CSV' });
 Object.assign(dict.zh, { 'tip_export_csv': '把当前迹线导出为 CSV（频率、功率）' });
 

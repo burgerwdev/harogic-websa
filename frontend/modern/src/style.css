@@ -265,10 +265,22 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* Left jump rail: one click per group, always visible next to the scrolling panel */
 .control-rail {
   display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
-  width: 24px; height: 100%; overflow-y: auto; overflow-x: hidden; padding: 1px 0;
-  scrollbar-width: none;
+  width: 24px; height: 100%; overflow: hidden; padding: 1px 0;
+  transition: width 0.12s ease;
 }
-.control-rail::-webkit-scrollbar { width: 0; height: 0; }
+.control-rail.collapsed { width: 14px; }
+.control-rail.collapsed .rail-items { display: none; }
+.rail-toggle {
+  flex: 0 0 auto; box-sizing: border-box; width: 100%; height: 22px; padding: 0;
+  border: 1px solid var(--card-border); background: var(--panel-2); color: var(--label);
+  font-size: 11px; line-height: 1; cursor: pointer; border-radius: 3px;
+}
+.rail-toggle:hover { color: var(--text); border-color: var(--text); background: var(--btn-hover); }
+.rail-items {
+  display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto;
+  min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none;
+}
+.rail-items::-webkit-scrollbar { width: 0; height: 0; }
 .rail-item {
   display: flex; align-items: center; justify-content: center;
   writing-mode: vertical-rl; text-orientation: mixed;
