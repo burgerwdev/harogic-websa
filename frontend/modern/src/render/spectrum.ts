@@ -18,7 +18,6 @@ import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow } from './waterfall';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
-import { updateLimitStatus } from '../ui/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
@@ -329,10 +328,10 @@ function limitStatusBlock(): { lines: string[]; accent?: string } | null {
 
 function renderLimits(powers: Float32Array | null) {
   const freq = S.freqArray;
-  if (!powers || !freq) { lastLimitEval = null; updateLimitStatus(null); return; }
+  if (!powers || !freq) { lastLimitEval = null; return; }
   const n = Math.min(powers.length, freq.length);
   const lim = buildLimitArray(freq, S.limits.points, n);
-  if (!lim) { lastLimitEval = null; updateLimitStatus(null); return; }
+  if (!lim) { lastLimitEval = null; return; }
   const p = PLOT_RECT;
   ctx.save();
   ctx.beginPath();
@@ -366,7 +365,6 @@ function renderLimits(powers: Float32Array | null) {
   ctx.stroke();
   ctx.restore();
   lastLimitEval = evaluateAgainst(powers, lim, freq, S.limits.tol);
-  updateLimitStatus(lastLimitEval);
 }
 
 export function renderAll() {
@@ -379,8 +377,7 @@ export function renderAll() {
     renderRta();
     renderTriggerLevel();                           // outside renderRta: still drawn when the
     renderTriggerOverlay();                         // canvas is empty while waiting
-    if (S.limits.on) { renderLimits(getDisplayPowers()); pushStatus(limitStatusBlock()); }
-    else updateLimitStatus(null);                   // limits work in RTA as well
+    if (S.limits.on) { renderLimits(getDisplayPowers()); pushStatus(limitStatusBlock()); }   // RTA too
     renderStatusBlocks();
     renderWaterfallIfOn();
     const rp = getDisplayPowers();
@@ -419,7 +416,6 @@ export function renderAll() {
     renderTriggerOverlay();
   }
   if (S.limits.on) { renderLimits(powers); pushStatus(limitStatusBlock()); }
-  else updateLimitStatus(null);
   if (powers && S.freqArray) {
     if (c.viewMode !== 'harm' && c.viewMode !== 'pnm') {
       renderMarkersOnCanvas(powers);
