@@ -307,6 +307,67 @@
         </div>
       </div>
 
+      <div class="control-group" id="trigger-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="trigger">Trigger</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="trg_state">State</label>
+            <span class="cur-val trigger-status" id="trigger-status" data-i18n="tip_trg_status" data-i18n-attr="title">-</span>
+            <span class="cur-val" id="trigger-poi" data-i18n="tip_trg_poi" data-i18n-attr="title">-</span></div>
+          <div class="param-row"><label data-i18n="trg_source">Source</label>
+            <select id="select-trg-source" data-i18n="tip_trg_source" data-i18n-attr="title">
+              <option value="bus" data-i18n="trg_bus">Bus</option>
+              <option value="freerun" data-i18n="trg_freerun">Free run</option>
+              <option value="level" data-i18n="trg_level">Level</option>
+              <option value="external" data-i18n="trg_external">External</option>
+              <option value="timer" data-i18n="trg_timer">Timer</option>
+            </select>
+            <button class="btn" id="btn-trg-free" data-i18n="trg_free_btn" data-i18n-title="tip_trg_free">Free Run</button></div>
+          <div class="param-row"><label data-i18n="trg_level">Level</label>
+            <input type="number" id="input-trg-level" value="-40" step="1" min="-150" max="30"
+                   data-i18n="tip_trg_level" data-i18n-attr="title"><span class="cur-val">dBm</span>
+            <button class="btn" id="btn-trg-from-mkr" data-i18n="trg_from_mkr" data-i18n-title="tip_trg_from_mkr">Mkr</button>
+            <button class="btn" id="btn-trg-from-peak" data-i18n="trg_from_peak" data-i18n-title="tip_trg_from_peak">Pk-10</button></div>
+          <div class="param-row"><label data-i18n="trg_edge">Edge</label>
+            <select id="select-trg-edge" data-i18n="tip_trg_edge" data-i18n-attr="title">
+              <option value="rising" data-i18n="trg_rising">Rising</option>
+              <option value="falling" data-i18n="trg_falling">Falling</option>
+              <option value="double" data-i18n="trg_double">Double</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="trg_debounce">Debounce</label>
+            <input type="number" id="input-trg-safetime" value="0" step="0.001" min="0" max="10"
+                   data-i18n="tip_trg_safetime" data-i18n-attr="title"><span class="cur-val">s</span>
+            <label style="min-width:auto;" data-i18n="trg_delay">Delay</label>
+            <input type="number" id="input-trg-delay" value="0" step="0.001" min="0" max="10"
+                   data-i18n="tip_trg_delay" data-i18n-attr="title"><span class="cur-val">s</span></div>
+          <div class="param-row"><label data-i18n="trg_pre">Pre</label>
+            <input type="number" id="input-trg-pretime" value="0" step="0.001" min="0" max="10"
+                   data-i18n="tip_trg_pretime" data-i18n-attr="title"><span class="cur-val">s</span>
+            <label style="min-width:auto;" data-i18n="trg_acq">Acq</label>
+            <input type="number" id="input-trg-acqtime" value="0.005" step="0.001" min="0.0005" max="60"
+                   data-i18n="tip_trg_acqtime" data-i18n-attr="title"><span class="cur-val">s</span></div>
+          <div class="param-row"><label data-i18n="trg_retrig">Retrig</label>
+            <input type="number" id="input-trg-retrigger" value="0" step="1" min="0" max="65535"
+                   data-i18n="tip_trg_retrigger" data-i18n-attr="title">
+            <input type="number" id="input-trg-retriggerperiod" value="0" step="0.01" min="0" max="3600"
+                   data-i18n="tip_trg_retriggerperiod" data-i18n-attr="title"><span class="cur-val">s</span></div>
+          <div class="param-row"><label data-i18n="trg_out">Out</label>
+            <select id="select-trg-out" data-i18n="tip_trg_out" data-i18n-attr="title">
+              <option value="none" data-i18n="trg_none">None</option>
+              <option value="per_hop" data-i18n="trg_per_hop">Per hop</option>
+              <option value="per_sweep" data-i18n="trg_per_sweep">Per sweep</option>
+              <option value="per_profile" data-i18n="trg_per_profile">Per profile</option>
+            </select>
+            <select id="select-trg-outpolarity" data-i18n="tip_trg_outpolarity" data-i18n-attr="title">
+              <option value="positive" data-i18n="trg_pos">Pos</option>
+              <option value="negative" data-i18n="trg_neg">Neg</option>
+            </select></div>
+        </div>
+      </div>
+
       <div class="control-group" id="meas-panel">
         <div class="group-head">
           <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>

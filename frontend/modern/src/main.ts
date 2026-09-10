@@ -6,6 +6,7 @@ import { connectWS } from './core/ws';
 import { initMarkerTable } from './render/markerTable';
 import { initLimits, refreshLimitUnits } from './ui/limits';
 import { initControlRail } from './ui/controlRail';
+import { initTrigger } from './ui/trigger';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { renderAll } from './render/spectrum';
@@ -27,6 +28,7 @@ function init() {
   initMarkerTable();
   initLimits();
   initControlRail();
+  initTrigger();
   initLevelUnit(() => { refreshLimitUnits(); updateChanTable(); renderAll(); });
   syncToggleIcons();
   bindActions();

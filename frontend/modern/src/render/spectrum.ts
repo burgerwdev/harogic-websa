@@ -433,6 +433,29 @@ export function renderAll() {
 }
 
 
+// Trigger threshold line (RTA only): shows where a level trigger will fire.
+function renderTriggerLevel() {
+  if (S.trigSource !== 'level') return;
+  const p = plotRect();
+  const y = getY(S.trigLevel);
+  if (!Number.isFinite(y) || y < p.y || y > p.y + p.h) return;
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#ff7043';
+  ctx.beginPath();
+  ctx.moveTo(p.x, y);
+  ctx.lineTo(p.x + p.w, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#ff7043';
+  ctx.font = 'bold 10px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(`TRG ${S.trigLevel.toFixed(1)} dBm`, p.x + 4, y - 2);
+  ctx.restore();
+}
+
 // ---- RTA 实时频谱渲染 ----
 function renderRta() {
   const col = canvasColors();
@@ -518,6 +541,7 @@ function renderRta() {
   const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;
   renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);
   renderOSD(actDisp.length >= 2 ? actDisp : d.spec);
+  renderTriggerLevel();
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
