@@ -346,6 +346,8 @@ input[type=number]:focus { outline: none; border-color: var(--text); }
 .btn:hover { background: var(--btn-hover); color: var(--text); }
 .btn.active { background: var(--btn-active); color: var(--text); border-color: var(--text); }
 .btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
+/* Measurement tabs take the rest of the row so a wrapped tab lines up with the buttons */
+.meas-tabs { flex: 1; min-width: 0; }
 /* Button row that follows a label/value column: line up with the value column above */
 .trace-norm-ops { padding-left: calc(58px + 4px); }
 /* Limit line panel: pass/fail badge and compact point rows */

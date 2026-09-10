@@ -298,27 +298,6 @@
         </div>
       </div>
 
-      <div class="control-group" id="limit-panel">
-        <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
-          <span class="group-title" data-action="toggle-group" data-i18n="limits">Limits</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
-        </div>
-        <div class="group-body">
-          <div class="param-row"><label data-i18n="limit_state">Limit</label>
-            <button class="btn" id="btn-limit-onoff" data-i18n="off" data-i18n-title="tip_limit_onoff">Off</button>
-            <span class="cur-val limit-status" id="limit-status">-</span></div>
-          <div id="limit-rows"></div>
-          <div class="param-row"><label data-i18n="limit_edit">Edit</label>
-            <button class="btn" id="btn-limit-add" data-i18n="limit_add" data-i18n-title="tip_limit_add">Add</button>
-            <button class="btn" id="btn-limit-reset" data-i18n="limit_reset" data-i18n-title="tip_limit_reset">Span</button>
-            <button class="btn" id="btn-limit-csv" data-i18n="limit_csv" data-i18n-title="tip_limit_csv">CSV</button></div>
-          <div class="param-row"><label data-i18n="limit_tol">Tol</label>
-            <input type="number" id="input-limit-tol" value="0" step="0.1" min="0" max="20" data-i18n="tip_limit_tol" data-i18n-attr="title">
-            <span class="cur-val">dB</span></div>
-        </div>
-      </div>
-
       <div class="control-group" id="meas-panel">
         <div class="group-head">
           <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
@@ -328,10 +307,12 @@
         <div class="group-body">
           <div class="param-row"><label data-i18n="measure">Measure</label>
             <button class="btn" id="btn-meas-onoff" data-action="meas-toggle" data-i18n="off" data-i18n-title="tip_btn-meas-onoff">Off</button>
-            <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude" data-i18n-title="tip_tab-amp">Amplitude</button>
-            <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic" data-i18n-title="tip_tab-harm">Harmonic</button>
-            <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise" data-i18n-title="tip_tab-pnm">PhaseNoise</button>
-            <button class="tab-btn" id="tab-chan" data-meas-tab="chan" data-i18n="channel" data-i18n-title="tip_tab-chan">Channel</button></div>
+            <div class="btn-group meas-tabs">
+              <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude" data-i18n-title="tip_tab-amp">Amplitude</button>
+              <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic" data-i18n-title="tip_tab-harm">Harmonic</button>
+              <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise" data-i18n-title="tip_tab-pnm">PhaseNoise</button>
+              <button class="tab-btn" id="tab-chan" data-meas-tab="chan" data-i18n="channel" data-i18n-title="tip_tab-chan">Channel</button>
+            </div></div>
           <div id="meas-amp" class="meas-tab">
             <div class="param-row"><label data-i18n="n_db">n dB</label>
               <input type="text" id="input-ampdbs" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
@@ -468,6 +449,27 @@
               <option value="bypass" selected data-i18n="bypass">Bypass</option><option value="standard" data-i18n="standard">Standard</option><option value="enhanced" data-i18n="enhanced">Enhanced</option>
             </select>
             <label style="min-width:auto;" data-i18n="gapfill">GapFill</label><button class="btn active" id="btn-gapfill" data-action="toggle-gapfill" data-i18n="on" data-i18n-title="tip_btn-gapfill">On</button></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="limit-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="limits">Limits</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="limit_state">Limit</label>
+            <button class="btn" id="btn-limit-onoff" data-i18n="off" data-i18n-title="tip_limit_onoff">Off</button>
+            <span class="cur-val limit-status" id="limit-status">-</span></div>
+          <div id="limit-rows"></div>
+          <div class="param-row"><label data-i18n="limit_edit">Edit</label>
+            <button class="btn" id="btn-limit-add" data-i18n="limit_add" data-i18n-title="tip_limit_add">Add</button>
+            <button class="btn" id="btn-limit-reset" data-i18n="limit_reset" data-i18n-title="tip_limit_reset">Span</button>
+            <button class="btn" id="btn-limit-csv" data-i18n="limit_csv" data-i18n-title="tip_limit_csv">CSV</button></div>
+          <div class="param-row"><label data-i18n="limit_tol">Tol</label>
+            <input type="number" id="input-limit-tol" value="0" step="0.1" min="0" max="20" data-i18n="tip_limit_tol" data-i18n-attr="title">
+            <span class="cur-val">dB</span></div>
         </div>
       </div>
     </div>
