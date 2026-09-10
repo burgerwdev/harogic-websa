@@ -528,3 +528,6 @@ Object.assign(dict.zh, {
   'tip_lang': '当前语言；点击在中文和 English 之间切换',
   'tip_theme': '当前主题；点击在深色和浅色之间切换',
 });
+
+Object.assign(dict.en, { 'tip_version': 'Frontend version' });
+Object.assign(dict.zh, { 'tip_version': '前端版本' });
