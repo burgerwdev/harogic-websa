@@ -27,7 +27,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
-import { openRefClockDetail, closeRefClockDetail, calibrateRefClock } from '../core/refclock';
+import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -738,7 +738,6 @@ export function bindActions() {
     'gnss-close': () => closeGnssDetail(),
     'refclk-detail': () => openRefClockDetail(),
     'refclk-close': () => closeRefClockDetail(),
-    'refclk-calibrate': () => calibrateRefClock(),
     'markers-all': () => toggleMarkersAll(),
     'marker-tracking': () => toggleActiveMarkerTracking(),
     'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },

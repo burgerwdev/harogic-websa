@@ -32,26 +32,19 @@
           </div>
         </div></div><span class="separator">|</span><div class="info-item"><span class="info-label" data-i18n="swt">SWT:</span><span class="info-value" id="info-swt">-</span></div><span class="separator">|</span>
       
-      <div class="info-item"><span class="info-label" data-action="refclk-detail" style="cursor:pointer" title="" data-i18n="clock_ref">Clock Ref:</span>
+      <div class="info-item"><span class="info-label gnss-indicator" data-action="refclk-detail" data-i18n="clock_ref">Clock Ref:</span>
         <select id="select-refclk" data-action="set-refclock">
           <option value="internal" data-i18n="int">Int</option><option value="external" data-i18n="ext">Ext</option>
           <option value="external_forced" data-i18n="ext_force">ExtForce</option>
         </select>
-        <button class="btn" id="btn-refclk-out" data-action="toggle-refclkout" data-i18n="output" data-i18n-attr="title" title="Reference clock output on/off">Output</button>
+        
         <div class="gnss-popover" id="refclk-popover" style="display:none;">
           <div class="gnss-popover-head"><span data-i18n="refclk_detail">Reference Clock</span>
             <button class="btn" data-action="refclk-close" data-i18n="gnss_close">Close</button></div>
           <div class="gnss-popover-body">
-            <div class="param-row"><label data-i18n="tip_refclk_requested">Requested</label><span class="info-value" id="refclk-d-requested">-</span></div>
-            <div class="param-row"><label data-i18n="tip_refclk_actual">Actual source</label><span class="info-value" id="refclk-d-actual">-</span></div>
-            <div class="param-row"><label data-i18n="tip_refclk_freq">Reported reference frequency</label><span class="info-value" id="refclk-d-freq">-</span></div>
-            <div class="param-row"><label data-i18n="tip_refclk_ppm">Frequency offset (after GNSS calibration)</label><span class="info-value" id="refclk-d-ppm">-</span></div>
-            <div class="param-row"><label data-i18n="tip_refclk_output">Clock output</label><span class="info-value" id="refclk-d-output">-</span></div>
-            <div class="param-row"><label data-i18n="tip_refclk_state">State</label><span class="info-value" id="refclk-d-state">-</span></div>
-            <div class="param-row"><label data-i18n="refclk_gnss">GNSS</label><span class="info-value" id="refclk-d-gnss">-</span></div>
-            <div class="param-row"><label data-i18n="refclk_cal">Calibration</label>
-              <span><button class="btn" id="btn-refclk-cal" data-action="refclk-calibrate" data-i18n="refclk_calibrate">Calibrate</button>
-                <span class="info-value" id="refclk-d-cal">-</span></span></div>
+            <div class="param-row"><label data-i18n="refclk_current">Current</label><span class="info-value" id="refclk-d-current">-</span></div>
+            <div class="param-row"><label data-i18n="output">Output</label>
+              <button class="btn" id="btn-refclk-out" data-action="toggle-refclkout" data-i18n="output">Output</button></div>
           </div>
         </div>
 

@@ -340,6 +340,7 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, {
   'refclk_detail': 'Reference Clock',
+  'refclk_current': 'Current',
   'refclk_gnss': 'GNSS',
   'refclk_cal': 'Calibration',
   'refclk_calibrate': 'Calibrate',
@@ -349,6 +350,7 @@ Object.assign(dict.en, {
 });
 Object.assign(dict.zh, {
   'refclk_detail': '参考时钟',
+  'refclk_current': '当前参考',
   'refclk_gnss': 'GNSS',
   'refclk_cal': '校准',
   'refclk_calibrate': '校准',
