@@ -35,9 +35,28 @@ function currentSelectionLabel(): string {
   return (option?.textContent || sel.value || '—').trim();
 }
 
+function sourceLabel(src: number | null | undefined): string {
+  const name = refClockSourceName(src);
+  if (name === 'external_forced') return t('ext_force');
+  if (name === 'premium') return 'Int+ (DOCXO)';
+  if (name === 'external') return t('ext');
+  if (name === 'internal') return t('int');
+  return '—';
+}
+
+let lastStatus: any = null;
+
 export function fillRefClockDetail(): void {
-  const el = document.getElementById('refclk-d-current');
-  if (el) el.textContent = currentSelectionLabel();
+  const requested = document.getElementById('refclk-d-current');
+  if (requested) requested.textContent = currentSelectionLabel();
+  const actualEl = document.getElementById('refclk-d-actual');
+  if (!actualEl) return;
+  const st = lastStatus;
+  const actual = st?.mode === 'rta' ? st?.rta_actual : st?.actual;
+  const src = actual?.refclk_src as number | null | undefined;
+  const state = refClockStatus(String(st?.ref_clock ?? 'internal'), src);
+  actualEl.textContent = `${sourceLabel(src)}${state === 'fallback'
+    ? ` (${t('refclk_fell_back')})` : ''}`;
 }
 
 let flashTimer: number | null = null;
@@ -60,6 +79,7 @@ export function flashRefClockBox(status?: RefClockStatus): void {
 
 /** Called from STATUS handling: flash on the command response, refresh the popover if open. */
 export function refreshRefClockHint(status: any, responseTo?: string): void {
+  lastStatus = status;
   if (responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT') {
     const actual = status?.mode === 'rta' ? status?.rta_actual : status?.actual;
     flashRefClockBox(refClockStatus(String(status?.ref_clock ?? 'internal'),
