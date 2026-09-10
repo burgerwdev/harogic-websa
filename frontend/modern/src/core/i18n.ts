@@ -550,7 +550,7 @@ Object.assign(dict.en, {
 Object.assign(dict.zh, {
   'rail_graph': '图形', 'rail_frequency': '频率', 'rail_level': '电平', 'rail_trace': '迹线',
   'rail_marker': '游标', 'rail_measurement': '测量', 'rail_bw': '带宽', 'rail_sweep': '扫描',
-  'rail_limits': '限制线',
+  'rail_limits': '限值',
   'rail_collapse': '收起跳转窄条', 'rail_expand': '展开跳转窄条',
 });
 Object.assign(dict.en, { 'tip_export_csv': 'Export the active trace (frequency, power) as CSV' });
