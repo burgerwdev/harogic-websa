@@ -52,10 +52,11 @@
       </div>
     </div>
     <div class="info-right">
+      <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false">⌨</button>
       <span id="connDot" class="dot off"></span>
       <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect SAN-90</button>
     </div>
-  </div>
+</div>
 
   <div class="screen-container">
     <div class="spectrum-area">
@@ -389,7 +390,7 @@
             </div></div>
           <div id="meas-amp" class="meas-tab">
             <div class="param-row"><label data-i18n="n_db">n dB</label>
-              <input type="text" id="input-ampdbs" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
+              <input type="text" id="input-ampdbs" data-keypad="text" data-unit="dB" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
                      title="Comma-separated thresholds below peak (1~60 dB)">
               <button class="btn" id="btn-amp-meas" data-action="meas-amp" data-i18n="meas" data-i18n-title="tip_btn-amp-meas">Meas</button>
               <button class="btn" id="btn-amp-clear" data-action="clear-amp" data-i18n="clear" data-i18n-title="tip_btn-amp-clear">Clear</button></div>
@@ -561,7 +562,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.3.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.3.4 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

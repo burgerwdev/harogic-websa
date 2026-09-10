@@ -165,3 +165,11 @@ That is a known issue: Auto Ref releases an armed RTA trigger (the button return
 threshold line disappears); the cause is not identified yet. Changing Ref **manually** is unaffected -
 even when the threshold is pushed outside the visible range the line is pinned to the edge (with an
 arrow). Change the reference manually while armed, or press `Capture` again afterwards.
+
+
+## Why does the n-dB field behave differently in the keypad?
+
+It is not a single number but a comma separated list of whole thresholds, so the pad edits it as
+text instead of replacing one value: the caret can be placed with the mouse, backspace deletes a
+single character there and `C` clears the whole entry (`OK` then drops a leading/trailing or
+doubled comma). Because the field takes whole numbers, its `.` key doubles as the `,` separator.

@@ -109,3 +109,18 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 - **Limits work in both modes**: the evaluation core (`dsp/limits.ts`) is display independent, and the
   RTA branch now calls the same `renderLimits()` as the swept path. The canvas reports `LIMIT PASS` or
   `LIMIT FAIL n` plus `worst +x dB @ f`, matching the pass/fail row in the panel.
+
+
+## Virtual keypad (v1.3.4)
+
+An optional on-screen pad for the numeric fields, disabled by default and remembered in
+`localStorage['websa-keypad']`. `ui/keypad.ts` builds it once and fills it per field:
+
+- a field with a unit button group (`UNIT_OPTIONS` in `core/units.ts`) also gets unit keys; a unit
+  key writes the value with `dataset.edited = '1'` and calls the panel's own `setUnit()`, so the
+  command is identical to clicking the panel button
+- a field marked `data-keypad="text"` (the n-dB threshold list) is edited as plain text: its display
+  line is a real input, so the mouse places the caret, backspace deletes one character there and
+  `C` clears the entry; its `.` key becomes the `,` separator
+- every other field commits through a `change` event, except the staged ones (`ref`, `points`,
+  `rbw`, `vbw`, `harm`, `pnm`, `ampdbs`) whose own Set/Meas button is clicked instead

@@ -34,6 +34,9 @@ A browser-based control and measurement application for **Harogic SAN series spe
   re-trigger, trigger out, with POI and a status chip) and a swept-mode software level trigger (crossing
   between consecutive sweeps; live display while armed, frozen on a hit)
 - **Jump rail** - one click to any control group, collapsible without consuming layout width
+- **Virtual keypad** - optional on-screen pad for the numeric fields (toggle in the top bar): unit keys
+  for the frequency-like fields, plain-text entry (digits, commas, minus) for the n-dB threshold list,
+  draggable, translucent, off by default
 - **Normalization** — through-cal, adaptive absorption, display-layer transform
 
 ## Screenshots

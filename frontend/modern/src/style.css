@@ -312,6 +312,39 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .control-panel::-webkit-scrollbar-track { background: var(--panel-2); border-left: 1px solid var(--inner-border); }
 .control-panel::-webkit-scrollbar-thumb { background: var(--btn-bg); border: 1px solid var(--input-border); border-radius: 3px; }
 .control-panel::-webkit-scrollbar-thumb:hover { background: var(--input-border); }
+/* Virtual keypad (toggle in the top bar). Semi-transparent so the plot stays readable. */
+.keypad-toggle { margin-right: 2px; }
+.keypad {
+  position: fixed; z-index: 40; width: 190px; padding: 6px; border-radius: 4px;
+  background: var(--panel-2); background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  border: 1px solid var(--input-border); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px); user-select: none;
+}
+.keypad-display {
+  display: flex; align-items: center; gap: 4px;
+  font-family: 'Courier New', monospace; font-size: 15px; color: var(--text); text-align: right;
+  background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 3px;
+  padding: 4px 6px; margin-bottom: 5px; overflow: hidden; white-space: nowrap; cursor: move;
+  touch-action: none;
+}
+.keypad-value { flex: 1; min-width: 0; }
+.keypad-text {
+  flex: 1; min-width: 0; background: transparent; border: 0; padding: 0; outline: none;
+  color: var(--text); font: inherit; text-align: right; cursor: text; touch-action: auto;
+}
+.keypad-head-unit { color: var(--label); font-size: 12px; }
+.keypad-grid, .keypad-units { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.keypad-units { margin-bottom: 5px; }
+.keypad-key {
+  background: var(--btn-bg); color: var(--text); border: 1px solid var(--card-border); border-radius: 3px;
+  font-family: 'Courier New', monospace; font-size: 14px; padding: 8px 0; cursor: pointer;
+}
+.keypad-key:hover { background: var(--btn-hover); border-color: var(--text); }
+.keypad-key:active { background: var(--btn-active); }
+.keypad-key.back, .keypad-key.clear, .keypad-key.minus { color: var(--label); }
+.keypad-key.ok { grid-column: span 2; font-weight: bold; color: var(--dot-on); }
+.keypad-key.unit { font-size: 12px; padding: 6px 0; }
+.keypad-key.unit.active { background: var(--btn-active); border-color: var(--text); }
 .control-group { border: 1px solid var(--card-border); padding: 0; background: var(--panel-2); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
 .group-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: default; user-select: none; background: var(--head-bg); }
 .group-title { color: var(--label); font-size: 12px; font-weight: bold; border: none; margin: 0; padding: 2px 4px; cursor: pointer; border-radius: 2px; }
@@ -410,6 +443,10 @@ select {
   font-family: 'Courier New', monospace; font-size: 11px; border-radius: 2px;
   outline: none; cursor: pointer; appearance: none; -webkit-appearance: none;
 }
+/* 参考时钟下拉框: 当前值居中. 框宽由最宽选项(ExtForce)决定, 右侧 16px 是下拉箭头的位置,
+   所以文字在内容区内居中, 不再额外加左内边距(那会把框撑宽、在标签后留出空白) */
+#select-refclk { text-align: center; }
+
 select:hover { border-color: var(--text); }
 select:focus { border-color: var(--text); }
 .harmonic-table { width: 100%; border-collapse: collapse; margin-top: 4px; font: 11px monospace; }

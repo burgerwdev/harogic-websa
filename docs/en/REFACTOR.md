@@ -75,4 +75,5 @@ into a modern TypeScript frontend with **feature/visual parity**, adding:
 | `src/ui/exportImage.ts` | PNG snapshot (acquisition header plus a bottom-right timestamp) |
 | `src/ui/controlRail.ts` / `src/ui/railMath.ts` | jump rail and its scroll-spy maths |
 | `src/ui/trigger.ts` / `src/ui/triggerEvents.ts` | trigger panel, status chip, RTA hit detection from the frame path |
+| `src/ui/keypad.ts` | Virtual keypad: unit keys (reusing `UNIT_OPTIONS`), `data-keypad="text"` list entry with caret editing, dragging, `localStorage` toggle |
 | `src/ui/swpTrigger.ts` | swept-mode software level trigger engine |

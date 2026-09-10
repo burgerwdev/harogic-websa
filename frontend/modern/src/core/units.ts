@@ -1,13 +1,16 @@
 // Unit helpers (from buildUnitGroups/setUnit/parseFreqUnit/toUnit)
 import { units } from './store';
 
+/** Fields that carry a unit button group, with the units each one accepts. */
+export const UNIT_OPTIONS: Record<string, string[]> = {
+  center: ['Hz', 'kHz', 'MHz', 'GHz'], span: ['Hz', 'kHz', 'MHz', 'GHz'],
+  start: ['Hz', 'kHz', 'MHz', 'GHz'], stop: ['Hz', 'kHz', 'MHz', 'GHz'],
+  rbw: ['Hz', 'kHz', 'MHz'], vbw: ['Hz', 'kHz', 'MHz'], pnm: ['Hz', 'kHz', 'MHz', 'GHz'],
+  rta_center: ['MHz', 'GHz'],
+};
+
 export function buildUnitGroups() {
-  const defs: Record<string, string[]> = {
-    center: ['Hz', 'kHz', 'MHz', 'GHz'], span: ['Hz', 'kHz', 'MHz', 'GHz'],
-    start: ['Hz', 'kHz', 'MHz', 'GHz'], stop: ['Hz', 'kHz', 'MHz', 'GHz'],
-    rbw: ['Hz', 'kHz', 'MHz'], vbw: ['Hz', 'kHz', 'MHz'], pnm: ['Hz', 'kHz', 'MHz', 'GHz'],
-    rta_center: ['MHz', 'GHz'],
-  };
+  const defs = UNIT_OPTIONS;
   for (const [f, opts] of Object.entries(defs)) {
     const grp = document.getElementById(`unit-${f}-group`);
     if (!grp) continue;

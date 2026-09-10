@@ -531,6 +531,12 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, {'kp_drag': 'Drag to move the keypad'});
+Object.assign(dict.en, {'kp_comma': 'Comma: separates the threshold values'});
+Object.assign(dict.zh, {'kp_comma': '逗号：分隔各个门限值'});
+Object.assign(dict.zh, {'kp_drag': '拖动可移动小键盘'});
+Object.assign(dict.en, {'tip_keypad': 'Virtual keypad: click a numeric field to enter the value with the mouse', 'kp_ok': 'Confirm', 'kp_clear': 'Clear', 'kp_back': 'Delete', 'kp_minus': 'Negative sign'});
+Object.assign(dict.zh, {'tip_keypad': '虚拟小键盘：点击任意数字输入框即可用鼠标输入数值', 'kp_ok': '确定', 'kp_clear': '清除', 'kp_back': '退格', 'kp_minus': '负号'});
 Object.assign(dict.en, {'bad_data': 'NO VALID DATA (input overloaded?)'});
 Object.assign(dict.zh, {'bad_data': '无有效数据（输入是否过载？）'});
 Object.assign(dict.en, {'wf_range': 'WF Range', 'wf_auto': 'Auto', 'wf_fixed': 'Fixed', 'tip_wf_range': 'Waterfall colour range. Auto maps each frame relative to its own noise floor (the texture is always visible); Fixed maps an absolute dBm window so colours are quantitative', 'tip_wf_lo': 'Fixed range lower level: everything at or below this is drawn as background', 'tip_wf_hi': 'Fixed range upper level: everything at or above this is drawn as full-scale'});

@@ -8,6 +8,7 @@ import { initLimits, refreshLimitUnits } from './ui/limits';
 import { initControlRail } from './ui/controlRail';
 import { initTrigger } from './ui/trigger';
 import { initWfRange } from './ui/wfRange';
+import { initKeypad } from './ui/keypad';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { renderAll } from './render/spectrum';
@@ -31,6 +32,7 @@ function init() {
   initControlRail();
   initTrigger();
   initWfRange();
+  initKeypad();
   initLevelUnit(() => { refreshLimitUnits(); updateChanTable(); renderAll(); });
   syncToggleIcons();
   bindActions();

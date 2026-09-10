@@ -75,4 +75,5 @@
 | `src/ui/exportImage.ts` | PNG 截图（采集参数抬头 + 右下角时间戳） |
 | `src/ui/controlRail.ts` / `src/ui/railMath.ts` | 侧边跳转窄条及其滚动监听数学 |
 | `src/ui/trigger.ts` / `src/ui/triggerEvents.ts` | 触发面板、状态角标、RTA 命中判定（帧路径） |
+| `src/ui/keypad.ts` | 虚拟数字键盘：单位键（复用 `core/units.ts` 的 `UNIT_OPTIONS`）、`data-keypad="text"` 列表文本框模式（光标编辑）、拖动、`localStorage` 开关 |
 | `src/ui/swpTrigger.ts` | 普通模式的软件电平触发引擎 |

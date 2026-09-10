@@ -103,3 +103,16 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   投递状态块（触发角标、限制线判定），按顺序向下堆叠、右对齐，因此新增指示不会与既有信息重叠。
 - **限制线在两种模式都生效**: 判定核心（`dsp/limits.ts`）与显示无关，RTA 分支与扫频分支调用同一套
   `renderLimits()`；画布上给出 `LIMIT PASS` / `LIMIT FAIL n` + `最差 +x dB @ f`，与面板内的判定一致。
+
+
+## 虚拟键盘（v1.3.4）
+
+可选的屏幕数字键盘，默认关闭，开关状态记在 `localStorage['websa-keypad']`。`ui/keypad.ts` 只创建一次，
+每次打开按字段填充：
+
+- 带单位组的字段（`core/units.ts` 的 `UNIT_OPTIONS`）额外提供单位键；按单位键会写入数值并置
+  `dataset.edited='1'`、调用面板自身的 `setUnit()`，因此与手点面板按钮发出的命令完全一致
+- 标了 `data-keypad="text"` 的字段（n dB 门限列表）按纯文本编辑：显示行是真实输入框，鼠标可定位光标、
+  退格删除光标处一个字符、`C` 清空整串；该字段的 `.` 键变为 `,` 分隔符
+- 其余字段通过 `change` 事件提交；`ref`/`points`/`rbw`/`vbw`/`harm`/`pnm`/`ampdbs` 这类"暂存 + Set/Meas
+  按钮"字段改为点击其自身按钮提交
