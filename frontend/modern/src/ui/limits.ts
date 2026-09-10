@@ -4,8 +4,9 @@
 // the persisted state and the DOM status line (so it stays free of canvas code).
 import * as S from '../core/store';
 import { applyI18n, onLangChange, t } from '../core/i18n';
-import { buildLimitArray, evaluateAgainst, normalizePoints, type LimitEval, type LimitPoint } from '../dsp/limits';
+import { buildLimitArray, normalizePoints, type LimitPoint } from '../dsp/limits';
 import { getDisplayPowers } from '../dsp/peaks';
+import { renderAll } from '../render/spectrum';
 import { toDisplayLevel, fromDisplayLevel } from '../core/level';
 
 const LS_KEY = 'websa-limits';
@@ -89,7 +90,7 @@ function renderRows(): void {
       const v = parseFloat(el.value);
       if (Number.isFinite(v)) S.limits.points[i].freqHz = v * 1e6;
       save();
-      forceStatus();
+      refreshLimitVerdict();
     });
   });
   host.querySelectorAll<HTMLInputElement>('.limit-level').forEach((el, i) => {
@@ -97,7 +98,7 @@ function renderRows(): void {
       const v = parseFloat(el.value);
       if (Number.isFinite(v)) S.limits.points[i].level = fromDisplayLevel(v);
       save();
-      forceStatus();
+      refreshLimitVerdict();
     });
   });
   host.querySelectorAll<HTMLButtonElement>('.limit-del').forEach((el) => {
@@ -106,62 +107,24 @@ function renderRows(): void {
       S.limits.points.splice(Number(el.dataset.i), 1);
       renderRows();
       save();
-      forceStatus();
+      refreshLimitVerdict();
     });
   });
 }
 
-let lastStatus = '';
+/**
+ * The verdict is shown on the canvas (render/statusStack.ts): the render pass evaluates the active
+ * trace and pushes a LIMIT PASS / LIMIT FAIL block into the shared status area, so an edit only has
+ * to ask for a repaint instead of updating a panel row.
+ */
+export function refreshLimitVerdict(): void {
+  renderAll();
+}
 
 /** Re-render the point rows after a unit change (levels stay stored in dBm). */
 export function refreshLimitUnits(): void {
   renderRows();
-  lastStatus = '';
-  forceStatus();
-}
-
-/** Called from the render loop with the fresh evaluation; only touches the DOM when the text changes. */
-export function updateLimitStatus(ev: LimitEval | null): void {
-  const el = document.getElementById('limit-status');
-  if (!el) return;
-  let text = '-';
-  let cls = '';
-  if (S.limits.on) {
-    if (!ev || !ev.checked) {
-      text = t('limit_na');
-    } else if (ev.pass) {
-      text = t('limit_pass');
-      cls = 'pass';
-    } else {
-      const w = ev.worst!;
-      text = t('limit_fail', { n: ev.violations, db: w.margin.toFixed(1), f: (w.freqHz / 1e6).toFixed(3) });
-      cls = 'fail';
-    }
-  }
-  const key = `${text}|${cls}`;
-  if (key === lastStatus) return;
-  lastStatus = key;
-  el.textContent = text;
-  el.className = `cur-val limit-status${cls ? ' ' + cls : ''}`;
-}
-
-/** Recompute the status from the current trace (used after an edit instead of waiting for a frame). */
-export function forceStatus(): void {
-  const powers = getDisplayPowers();
-  const freq = S.freqArray;
-  if (!powers || !freq) {
-    lastStatus = '';   // let the next call write even if the text is identical
-    updateLimitStatus(null);
-    return;
-  }
-  const n = Math.min(powers.length, freq.length);
-  const lim = buildLimitArray(freq, S.limits.points, n);
-  lastStatus = '';
-  if (!lim) {
-    updateLimitStatus(null);
-    return;
-  }
-  updateLimitStatus(evaluateAgainst(powers, lim, freq, S.limits.tol));
+  refreshLimitVerdict();
 }
 
 export function exportLimitCsv(): void {
@@ -219,7 +182,7 @@ function addPoint(): void {
   }
   renderRows();
   save();
-  forceStatus();
+  refreshLimitVerdict();
 }
 
 export function initLimits(): void {
@@ -232,15 +195,14 @@ export function initLimits(): void {
     if (S.limits.on && !normalizePoints(S.limits.points).length) S.limits.points = spanLimitPoints();
     syncToggle();
     save();
-    lastStatus = '';
-    forceStatus();
+    refreshLimitVerdict();
   });
   document.getElementById('btn-limit-add')?.addEventListener('click', addPoint);
   document.getElementById('btn-limit-reset')?.addEventListener('click', () => {
     S.limits.points = spanLimitPoints();
     renderRows();
     save();
-    forceStatus();
+    refreshLimitVerdict();
   });
   document.getElementById('btn-limit-csv')?.addEventListener('click', exportLimitCsv);
 
@@ -252,16 +214,15 @@ export function initLimits(): void {
       S.limits.tol = Number.isFinite(v) && v >= 0 ? v : 0;
       tol.value = String(S.limits.tol);
       save();
-      forceStatus();
+      refreshLimitVerdict();
     });
   }
 
   onLangChange(() => {
     syncToggle();
     renderRows();
-    lastStatus = '';
-    forceStatus();
+    refreshLimitVerdict();
   });
 
-  forceStatus();
+  refreshLimitVerdict();
 }

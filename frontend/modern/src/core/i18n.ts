@@ -531,6 +531,8 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, {'limit_canvas_pass': 'LIMIT PASS', 'limit_canvas_fail': 'LIMIT FAIL {n}', 'limit_canvas_worst': 'worst +{db} dB @ {f}', 'limit_canvas_na': 'LIMIT -'});
+Object.assign(dict.zh, {'limit_canvas_pass': '限值 通过', 'limit_canvas_fail': '限值 超限 {n}', 'limit_canvas_worst': '最差 +{db} dB @ {f}', 'limit_canvas_na': '限值 -'});
 Object.assign(dict.en, {'trg_swp_cross': 'needs a level crossing between sweeps', 'trg_hit_level': '{f} {v} dBm crossed', 'tip_trg_edge': 'Which threshold edge starts a capture; in SWP the crossing is taken between consecutive sweeps'});
 Object.assign(dict.zh, {'trg_swp_cross': '需要相邻两次扫描间出现电平穿越', 'trg_hit_level': '{f} {v} dBm 发生穿越', 'tip_trg_edge': '以哪个边沿启动捕获；普通模式下穿越取自相邻两次扫描之间'});
 Object.assign(dict.en, { 'rail_trigger': 'TRG' });
@@ -612,8 +614,6 @@ Object.assign(dict.zh, {
 Object.assign(dict.en, {
   'limits': 'Limits', 'limit_state': 'Limit', 'limit_edit': 'Edit', 'limit_add': 'Add',
   'limit_reset': 'Span', 'limit_csv': 'CSV', 'limit_tol': 'Tol', 'limit_del': '×',
-  'limit_pass': 'PASS', 'limit_na': 'no data',
-  'limit_fail': 'FAIL {n} bins, worst +{db} dB @ {f} MHz',
   'tip_limit_onoff': 'Toggle the limit line and the pass/fail check',
   'tip_limit_add': 'Insert a limit point in the middle of the widest gap',
   'tip_limit_reset': 'Reset to a flat two-point limit across the current span',
@@ -626,8 +626,6 @@ Object.assign(dict.en, {
 Object.assign(dict.zh, {
   'limits': '限制线', 'limit_state': '限制', 'limit_edit': '编辑', 'limit_add': '加点',
   'limit_reset': '全扫宽', 'limit_csv': 'CSV', 'limit_tol': '容差', 'limit_del': '×',
-  'limit_pass': '通过', 'limit_na': '无数据',
-  'limit_fail': '超限 {n} 点，最差 +{db} dB @ {f} MHz',
   'tip_limit_onoff': '开启 / 关闭限制线与通过判定',
   'tip_limit_add': '在最宽的一段区间中点插入限制点',
   'tip_limit_reset': '重置为覆盖当前扫宽的两点平直限制线',

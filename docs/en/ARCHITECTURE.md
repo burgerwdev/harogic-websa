@@ -101,3 +101,11 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
   arms and evaluates every trace; on a hit the frame path stops updating the canvas, which is what
   freezes the picture. The decision never depends on the display scale, so changing Ref cannot break it.
 - One set of buttons (`Capture` / `Free Run` / `Esc`) dispatches to either implementation by mode.
+
+- **The canvas status area is shared**: the top-right indicators are drawn by
+  `render/statusStack.ts` - each feature pushes a status block during a pass (trigger chip, limit
+  verdict) and the blocks are stacked, right-aligned, so a new indicator can never overlap an
+  existing one.
+- **Limits work in both modes**: the evaluation core (`dsp/limits.ts`) is display independent, and the
+  RTA branch now calls the same `renderLimits()` as the swept path. The canvas reports `LIMIT PASS` or
+  `LIMIT FAIL n` plus `worst +x dB @ f`, matching the pass/fail row in the panel.

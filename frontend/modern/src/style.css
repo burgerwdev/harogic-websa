@@ -399,8 +399,6 @@ input[type=number]:focus { outline: none; border-color: var(--text); }
 .trigger-status.fail { color: #d9a300; }
 body:not(.rta-mode) #trigger-panel .rta-only { pointer-events: none; opacity: 0.45; }
 #trigger-panel .cur-val { white-space: nowrap; }
-.limit-status.pass { color: #00c853; }
-.limit-status.fail { color: #ff5252; }
 #limit-rows .limit-freq,
 #limit-rows .limit-level { width: 66px; }
 #limit-rows .limit-del { padding: 2px 7px; }

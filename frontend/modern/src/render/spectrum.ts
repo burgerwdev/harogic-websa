@@ -17,8 +17,8 @@ import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow } from './waterfall';
-import { buildLimitArray, evaluateAgainst, violationRuns } from '../dsp/limits';
-import { updateLimitStatus } from '../ui/limits';
+import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
+import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -308,12 +308,30 @@ function renderOSD(powers: Float32Array) {
 }
 
 // ---- Limit line + pass/fail overlay (drawn under markers and OSD) ----
+let lastLimitEval: LimitEval | null = null;
+
+/** Limit verdict as a status block; the stack owns the canvas status area. */
+function limitStatusBlock(): { lines: string[]; accent?: string } | null {
+  if (!S.limits.on) return null;
+  const ev = lastLimitEval;
+  if (!ev || !ev.checked) return { lines: [t('limit_canvas_na')] };
+  if (ev.pass) return { lines: [t('limit_canvas_pass')], accent: '#00c853' };
+  const w = ev.worst!;
+  return {
+    lines: [
+      `!${t('limit_canvas_fail', { n: ev.violations })}`,
+      `!${t('limit_canvas_worst', { db: w.margin.toFixed(1), f: fmtF(w.freqHz) })}`,
+    ],
+    accent: '#ff5252',
+  };
+}
+
 function renderLimits(powers: Float32Array | null) {
   const freq = S.freqArray;
-  if (!powers || !freq) { updateLimitStatus(null); return; }
+  if (!powers || !freq) { lastLimitEval = null; return; }
   const n = Math.min(powers.length, freq.length);
   const lim = buildLimitArray(freq, S.limits.points, n);
-  if (!lim) { updateLimitStatus(null); return; }
+  if (!lim) { lastLimitEval = null; return; }
   const p = PLOT_RECT;
   ctx.save();
   ctx.beginPath();
@@ -346,11 +364,12 @@ function renderLimits(powers: Float32Array | null) {
   }
   ctx.stroke();
   ctx.restore();
-  updateLimitStatus(evaluateAgainst(powers, lim, freq, S.limits.tol));
+  lastLimitEval = evaluateAgainst(powers, lim, freq, S.limits.tol);
 }
 
 export function renderAll() {
   const c = cur();
+  resetStatusBlocks();                             // status area is rebuilt every pass
   // Waterfall container replaces the table slot in ALL modes (incl. RTA)
   const wfc = document.getElementById('waterfall-container');
   if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
@@ -358,8 +377,9 @@ export function renderAll() {
     renderRta();
     renderTriggerLevel();                           // outside renderRta: still drawn when the
     renderTriggerOverlay();                         // canvas is empty while waiting
+    if (S.limits.on) { renderLimits(getDisplayPowers()); pushStatus(limitStatusBlock()); }   // RTA too
+    renderStatusBlocks();
     renderWaterfallIfOn();
-    updateLimitStatus(null);                        // limits are evaluated on the swept trace only
     const rp = getDisplayPowers();
     if (S.waterfallOn) {
       ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
@@ -395,8 +415,7 @@ export function renderAll() {
     renderTriggerLevel();
     renderTriggerOverlay();
   }
-  if (S.limits.on) renderLimits(powers);          // limit line + violations, under markers/OSD
-  else updateLimitStatus(null);
+  if (S.limits.on) { renderLimits(powers); pushStatus(limitStatusBlock()); }
   if (powers && S.freqArray) {
     if (c.viewMode !== 'harm' && c.viewMode !== 'pnm') {
       renderMarkersOnCanvas(powers);
@@ -436,6 +455,7 @@ export function renderAll() {
       if (c.viewMode === 'harm') updateHarmonicTable();
     }
   }
+  renderStatusBlocks();
   renderWaterfallIfOn();
 }
 
@@ -445,22 +465,10 @@ export function renderAll() {
 // is in and never looks like a stale or broken picture.
 function renderTriggerOverlay() {
   const lines = S.trigOverlay;
-  if (!lines.length) return;
-  const p = plotRect();
-  ctx.save();
-  ctx.font = 'bold 11px monospace';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  const rx = p.x + p.w - 6;
-  const lh = 14;
-  lines.forEach((l, i) => {
-    const warn = l.startsWith('!');
-    ctx.fillStyle = i === 0
-      ? (S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : '#00cc00'))
-      : (warn ? '#ff7043' : '#00cc00');
-    ctx.fillText(warn ? l.slice(1) : l, rx, p.y + 12 + i * lh);
+  pushStatus({
+    lines,
+    accent: S.trigHit ? '#00c853' : (S.trigWaiting ? '#ff7043' : '#00cc00'),
   });
-  ctx.restore();
 }
 
 // Trigger threshold line (RTA only): shows where a level trigger will fire.

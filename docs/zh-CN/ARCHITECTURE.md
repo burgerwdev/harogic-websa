@@ -98,3 +98,8 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   扫描的同频点电平得到穿越事件；`ui/swpTrigger.ts` 负责启用与逐帧判定；命中后帧路径停止更新画布以实现
   定格。判定与显示刻度无关，因此改 Ref 不影响触发。
 - 界面共用一套按钮（`Capture` / `Free Run` / `Esc`），按当前模式分派到两套实现。
+
+- **画布状态区是共享的**: 右上角的指示信息由 `render/statusStack.ts` 统一绘制——各功能在一次渲染中
+  投递状态块（触发角标、限制线判定），按顺序向下堆叠、右对齐，因此新增指示不会与既有信息重叠。
+- **限制线在两种模式都生效**: 判定核心（`dsp/limits.ts`）与显示无关，RTA 分支与扫频分支调用同一套
+  `renderLimits()`；画布上给出 `LIMIT PASS` / `LIMIT FAIL n` + `最差 +x dB @ f`，与面板内的判定一致。
