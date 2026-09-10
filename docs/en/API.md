@@ -157,7 +157,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 | `STATUS` | on connect / after commands / **periodic (every 1 s)** | full status (fields in §1); periodic push keeps GNSS/time/lock states fresh without page refresh |
 | `HARM` | during harmonic measurement | result: `{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | during phase noise | result: `{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
-| `ERROR` | device error | `{cmd:'ERROR', msg}` |
+| `ERROR` | device/command error | `{cmd:'ERROR', code, params?, msg}`; `code` is a stable identifier used by the frontend for localization, unknown codes fall back to the English `msg` |
 
 **PNM message fields:**
 

@@ -52,8 +52,8 @@
       <div id="waterfall-container" class="waterfall-container" style="display:none;">
         <canvas id="waterfall" width="800" height="135"></canvas>
         <div id="wf-controls" class="wf-controls">
-          <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" title="Pause/Resume waterfall">⏸</button>
-          <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" title="Restart waterfall from scratch">↻</button>
+          <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" data-i18n="tip_waterfall_pause" data-i18n-attr="title" title="Pause/Resume waterfall">⏸</button>
+          <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" data-i18n="tip_waterfall_reset" data-i18n-attr="title" title="Restart waterfall from scratch">↻</button>
         </div>
       </div>
       <table class="marker-table" id="marker-table">
@@ -77,9 +77,9 @@
     <div class="control-panel">
       <div class="control-group" id="graph-panel">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="graph">Graph</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="mode">Mode</label>
@@ -90,9 +90,9 @@
       </div>
       <div class="control-group">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="frequency">Frequency</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div id="rta-freq-settings" style="display:none;">
@@ -118,7 +118,7 @@
               <button class="btn" id="btn-rta-span-full" data-action="rta-span-full" data-i18n="span_full_short" data-i18n-title="span_full">Full</button>
               <button class="btn" id="btn-rta-span-up" data-action="rta-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
             <div class="param-row"><label data-i18n="persist">Persist</label>
-              <select id="select-rta-fade" data-action="set-rta-fade" title="Persistence (density fade)">
+              <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Persistence (density fade)">
                 <option value="0.95">Fast</option>
                 <option value="0.975" selected>Medium</option>
                 <option value="0.99">Slow</option>
@@ -158,9 +158,9 @@
 
       <div class="control-group">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="level">Level</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
@@ -199,9 +199,9 @@
 
       <div class="control-group" id="trace-panel">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="trace">Trace</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div class="param-row trace-keep"><label data-i18n="trace">Trace</label>
@@ -236,9 +236,9 @@
 
       <div class="control-group">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="marker">Marker</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body marker-ops">
           <div class="param-row"><label data-i18n="active">Active</label>
@@ -273,9 +273,9 @@
 
       <div class="control-group" id="meas-panel">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="measurement">Measurement</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="measure">Measure</label>
@@ -338,9 +338,9 @@
 
       <div class="control-group" id="bw-panel">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="bw">BW</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="rbw">RBW</label><input type="number" id="input-rbw" value="300" step="any">
@@ -350,7 +350,7 @@
               <option value="manual" data-i18n="manual">Manual</option><option value="auto" data-i18n="auto_span2000">Auto (Span/2000)</option>
             </select><button class="btn" data-action="apply-rbw" data-i18n="set">Set</button></div>
           <div class="param-row"><label data-i18n="window">Window</label>
-            <select id="select-window" data-action="set-window" title="FFT window: FlatTop/B-Nuttall/LowSideLobe/Rectangle/Kaiser">
+            <select id="select-window" data-action="set-window" data-i18n="tip_fft_window" data-i18n-attr="title" title="FFT window: FlatTop/B-Nuttall/LowSideLobe/Rectangle/Kaiser">
               <option value="0">FlatTop</option>
               <option value="1" selected>Blackman-Nuttall</option>
               <option value="2">LowSideLobe</option>
@@ -369,9 +369,9 @@
 
       <div class="control-group" id="sweep-panel">
         <div class="group-head">
-          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" title="Collapse All / Expand All">v</span>
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
           <span class="group-title" data-action="toggle-group" data-i18n="sweep">Sweep</span>
-          <span class="gh-toggle panel-toggle" data-action="toggle-group" title="Collapse / Expand panel">-</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="4000"><button class="btn" id="btn-points" data-action="apply-points" data-i18n="set">Set</button></div>
@@ -406,9 +406,9 @@
     <div class="info-item"><span class="info-label" data-i18n="api">API:</span><span class="info-value" id="dev-api">-</span></div><span class="separator">|</span>
     <div class="info-item"><span class="info-label" data-i18n="warn">Warn:</span><span class="info-value" id="dev-warn">-</span></div>
     <div class="info-right">
-      <button class="btn" id="btn-preset" data-action="preset" data-i18n="preset" title="Restore default settings">Preset</button>
+      <button class="btn" id="btn-preset" data-action="preset" data-i18n="preset" data-i18n="tip_preset" data-i18n-attr="title" title="Restore default settings">Preset</button>
       <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
-      <button class="btn bar-btn" id="btn-lang" title="Switch language">中文</button>
+      <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
       <span class="version-tag" title="前端版本">v1.1.4 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>

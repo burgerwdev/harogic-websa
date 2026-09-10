@@ -157,7 +157,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 | `STATUS` | 连接时 / 命令后 / **周期(每 1s)** | 完整状态（字段见 §1）；周期推送使 GNSS/时间/锁定等状态自动刷新, 无需刷新页面 |
 | `HARM` | 谐波测量中 | 谐波结果：`{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | 相噪测量中 | 相噪结果：`{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
-| `ERROR` | 设备错误 | `{cmd:'ERROR', msg}` |
+| `ERROR` | 设备/命令错误 | `{cmd:'ERROR', code, params?, msg}`；`code` 为稳定错误码，前端据此本地化，未知码回退 `msg`（英文）|
 
 **PNM 消息字段：**
 

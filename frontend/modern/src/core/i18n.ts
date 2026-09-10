@@ -153,13 +153,20 @@ export type I18nKey = keyof typeof dict['en'];
 let current: Lang = 'en';
 const listeners = new Set<(l: Lang) => void>();
 
-export function t(key: string): string {
+export function t(key: string, params?: Record<string, string | number>): string {
   const en = dict.en as Record<string, string>;
-  if (current === 'zh') {
-    const zh = dict.zh as Record<string, string>;
-    return zh[key] ?? en[key] ?? key;
-  }
-  return en[key] ?? key;
+  const raw = current === 'zh'
+    ? ((dict.zh as Record<string, string>)[key] ?? en[key] ?? key)
+    : (en[key] ?? key);
+  if (!params) return raw;
+  return raw.replace(/\{(\w+)\}/g, (_, name: string) =>
+    params[name] !== undefined ? String(params[name]) : `{${name}}`);
+}
+
+/** True when the dictionary defines a key (t() falls back to the key text itself). */
+export function hasKey(key: string): boolean {
+  const en = dict.en as Record<string, string>;
+  return key in en || (dict.zh as Record<string, string>)[key] !== undefined;
 }
 
 export function getLang(): Lang { return current; }
@@ -188,3 +195,116 @@ export function applyI18n(root: HTMLElement | Document = document) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// v1.2 additions: backend error codes, measurement-mode text and remaining
+// tooltips. Kept as an additive assign so the original dictionary stays intact.
+// ---------------------------------------------------------------------------
+Object.assign(dict.en, {
+  // Backend command error codes
+  'err_command': 'Command failed',
+  'err_unknown_command': 'Unknown command: {cmd}',
+  'err_device_not_connected': 'Device is not connected',
+  'err_caps_unavailable': 'Device capabilities are unavailable',
+  'err_missing_param': 'Missing parameter: {key}',
+  'err_not_a_number': '{key} must be a number',
+  'err_not_finite': '{key} must be a finite value',
+  'err_below_min': '{key} must be >= {min}',
+  'err_above_max': '{key} must be <= {max}',
+  'err_not_an_integer': '{key} must be an integer',
+  'err_invalid_choice': '{key} must be one of {choices}',
+  'err_freq_mixed_assignment': 'Use center/span or start/stop, not both',
+  'err_freq_requires_pair': 'SET_FREQ requires center/span or start/stop',
+  'err_span_too_small': 'Stop - start must be >= 100 Hz',
+  'err_range_invalid': 'Start must be lower than stop',
+  'err_bool_required': '{key} must be a boolean',
+  'err_pnm_unsupported': 'Phase-noise measurement is not supported',
+  'err_rta_requires_pair': 'SET_RTA requires center or span',
+  'err_rta_mode_required': 'SET_RTA can only be used in RTA mode',
+  'err_json_object_required': 'JSON payload must be an object',
+  'err_cmd_unavailable_measurement': '{cmd} is not available while the {session} measurement is active',
+  'err_swp_only': '{cmd} is only available in SWP mode',
+  'err_hardware_config': 'Device rejected the configuration: {detail}',
+  'err_connect_failed': 'Device connection failed: {detail}',
+  // Frontend text
+  'alert_device': 'Device',
+  'meas_no_trace': 'No trace data',
+  'meas_no_signal': 'No signal',
+  'meas_invalid_thresholds': 'Invalid thresholds: enter comma-separated 1~60 dB values',
+  'measuring': 'measuring...',
+  'measuring_pct': 'measuring... {pct}%',
+  'measuring_updating': 'measuring... updating',
+  'please_wait': 'please wait...',
+  'pnm_title_measuring': 'PHASE NOISE  (measuring... {pct}%)',
+  'pnm_title_updating': 'PHASE NOISE  (updating...)',
+  'pnm_offset_axis': 'Offset',
+  'pnm_unit': 'dBc/Hz',
+  'pnm_carrier': 'Carrier',
+  'pnm_frequency': 'Frequency',
+  'pnm_offset': 'Offset',
+  'pnm_power': 'Power',
+  'pnm_table_title': 'Phase Noise',
+  'auto_needs_atten': 'Auto Ref requires Atten Auto',
+  // Tooltips
+  'tip_collapse_all': 'Collapse All / Expand All',
+  'tip_collapse_panel': 'Collapse / Expand panel',
+  'tip_waterfall_pause': 'Pause / Resume waterfall',
+  'tip_waterfall_reset': 'Restart waterfall from scratch',
+  'tip_preset': 'Restore default settings',
+  'tip_lang': 'Switch language',
+  'tip_fft_window': 'FFT window: FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser',
+  'tip_persist': 'Persistence (density fade)',
+});
+
+Object.assign(dict.zh, {
+  'err_command': '命令执行失败',
+  'err_unknown_command': '未知命令：{cmd}',
+  'err_device_not_connected': '设备未连接',
+  'err_caps_unavailable': '设备能力信息不可用',
+  'err_missing_param': '缺少参数：{key}',
+  'err_not_a_number': '{key} 必须是数字',
+  'err_not_finite': '{key} 必须是有限数值',
+  'err_below_min': '{key} 必须 ≥ {min}',
+  'err_above_max': '{key} 必须 ≤ {max}',
+  'err_not_an_integer': '{key} 必须是整数',
+  'err_invalid_choice': '{key} 必须是以下之一：{choices}',
+  'err_freq_mixed_assignment': '请使用 center/span 或 start/stop，两者不能混用',
+  'err_freq_requires_pair': 'SET_FREQ 需要 center/span 或 start/stop',
+  'err_span_too_small': '终止频率与起始频率之差必须 ≥ 100 Hz',
+  'err_range_invalid': '起始频率必须小于终止频率',
+  'err_bool_required': '{key} 必须是布尔值',
+  'err_pnm_unsupported': '本设备不支持相位噪声测量',
+  'err_rta_requires_pair': 'SET_RTA 需要 center 或 span',
+  'err_rta_mode_required': 'SET_RTA 仅可在实时(RTA)模式下使用',
+  'err_json_object_required': 'JSON 内容必须是对象',
+  'err_cmd_unavailable_measurement': '{session}测量进行中，无法使用 {cmd}',
+  'err_swp_only': '{cmd} 仅可在普通频谱(SWP)模式下使用',
+  'err_hardware_config': '设备拒绝该配置：{detail}',
+  'err_connect_failed': '设备连接失败：{detail}',
+  'alert_device': '设备',
+  'meas_no_trace': '暂无迹线数据',
+  'meas_no_signal': '未检测到信号',
+  'meas_invalid_thresholds': '阈值无效：请输入 1~60 dB 的逗号分隔数值',
+  'measuring': '测量中…',
+  'measuring_pct': '测量中… {pct}%',
+  'measuring_updating': '测量中… 更新中',
+  'please_wait': '请稍候…',
+  'pnm_title_measuring': '相位噪声（测量中… {pct}%）',
+  'pnm_title_updating': '相位噪声（更新中…）',
+  'pnm_offset_axis': '频偏',
+  'pnm_unit': 'dBc/Hz',
+  'pnm_carrier': '载波',
+  'pnm_frequency': '频率',
+  'pnm_offset': '频偏',
+  'pnm_power': '功率',
+  'pnm_table_title': '相位噪声',
+  'auto_needs_atten': '自动参考电平需要将衰减设为自动',
+  'tip_collapse_all': '全部折叠 / 展开',
+  'tip_collapse_panel': '折叠 / 展开面板',
+  'tip_waterfall_pause': '暂停 / 继续瀑布图',
+  'tip_waterfall_reset': '重新开始瀑布图',
+  'tip_preset': '恢复默认设置',
+  'tip_lang': '切换语言',
+  'tip_fft_window': 'FFT 窗类型：平顶 / B-Nuttall / 低旁瓣 / 矩形 / Kaiser',
+  'tip_persist': '余辉（密度衰减）',
+});

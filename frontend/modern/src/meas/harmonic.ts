@@ -1,18 +1,19 @@
 // Harmonic measurement (server auto-tunes H1~H5) + table
 import * as S from '../core/store';
 import { formatFreqHz } from '../core/fmt';
+import { t } from '../core/i18n';
 import { renderAll } from '../render/spectrum';
 
 export function measureHarmonics() {
   const dp = getDisplayPowers();
-  if (!dp || !S.freqArray || S.freqArray.length < 2) { alert('No trace data'); return; }
+  if (!dp || !S.freqArray || S.freqArray.length < 2) { alert(t('meas_no_trace')); return; }
   const inp = document.getElementById('input-harm') as HTMLInputElement;
   const count = parseInt(inp?.value || '5') || 5;
   const nPts = S.freqArray.length;
   let pi = 0, pv = -1e9;
   for (let i = 0; i < dp.length; i++) if (dp[i] > pv) { pv = dp[i]; pi = i; }
   const f0 = S.freqArray[pi];
-  if (pv <= -1e8) { alert('No signal'); return; }
+  if (pv <= -1e8) { alert(t('meas_no_signal')); return; }
   const spanHz = S.freqArray[nPts - 1] - S.freqArray[0];
   const list: { n: number; f: number; amp: number | null; dbc: number | null; idx: number; inSpan: boolean }[] = [];
   const fa = S.freqArray;
@@ -120,7 +121,7 @@ export function updateHarmonicTable() {
     // Measurement mode is on but no result yet: show the measuring state (rather than hiding)
     if (S.measOn && S.viewMode === 'harm') {
       tb.style.display = '';
-      tb2.innerHTML = '<tr><td class="harm-cell">measuring...</td></tr>';
+      tb2.innerHTML = '<tr><td class="harm-cell">' + t('measuring') + '</td></tr>';
     } else {
       tb.style.display = 'none';
     }

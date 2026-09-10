@@ -2,6 +2,7 @@
 import * as S from '../core/store';
 import { getX, getY, renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
+import { t } from '../core/i18n';
 import { fmtF } from '../core/fmt';
 import { canvasColors } from '../core/theme';
 import { plotRect } from '../render/plot';
@@ -13,7 +14,7 @@ export function measureAmp() {
   const thrs = (inp?.value || '3,10,20')
     .split(',').map(s => parseFloat(s.trim()))
     .filter(v => isFinite(v) && v >= 1 && v <= 60);
-  if (!thrs.length) { alert('Invalid thresholds: enter comma-separated 1~60 dB'); return; }
+  if (!thrs.length) { alert(t('meas_invalid_thresholds')); return; }
   let pi = 0, pv = -1e9;
   for (let i = 0; i < dp.length; i++) if (dp[i] > pv) { pv = dp[i]; pi = i; }
   const rows: { thr: number; lf: number; rf: number; bw: number; hasL: boolean; hasR: boolean }[] = [];

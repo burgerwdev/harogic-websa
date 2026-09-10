@@ -5,6 +5,7 @@ import { renderAll } from '../render/spectrum';
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measure';
 import { canvasColors } from '../core/theme';
+import { t } from '../core/i18n';
 
 // Stop showing the measuring overlay after the first complete acquisition
 // (the backend recycles progress every loop while the measurement keeps refreshing)
@@ -122,7 +123,7 @@ export function renderPnm() {
     ctx2.fillStyle = col.axis;
     ctx2.font = 'bold 11px monospace';
     ctx2.textAlign = 'left';
-    ctx2.fillText(pr >= 100 ? 'measuring... updating' : 'measuring... ' + pr + '%', 4, 12);
+    ctx2.fillText(pr >= 100 ? t('measuring_updating') : t('measuring_pct', { pct: pr }), 4, 12);
     const pbH = 5, pbY = c.height - 14;
     ctx2.fillStyle = col.grid;
     ctx2.fillRect(m.l, pbY, Wd, pbH);
@@ -149,7 +150,7 @@ export function renderPnm() {
     ctx2.textAlign = 'center'; ctx2.textBaseline = 'top';
     ctx2.fillText(fmtPnmFreq(f), x, m.t + Hd + 6);
   }
-  ctx2.fillText('Offset', m.l + Wd / 2, m.t + Hd + 20);
+  ctx2.fillText(t('pnm_offset_axis'), m.l + Wd / 2, m.t + Hd + 20);
   ctx2.strokeStyle = col.grid;
   ctx2.textAlign = 'right'; ctx2.textBaseline = 'middle';
   ctx2.font = '10px monospace';
@@ -160,7 +161,7 @@ export function renderPnm() {
     ctx2.fillText(v + '', m.l - 6, y);
   }
   ctx2.fillStyle = col.axis; ctx2.textAlign = 'left'; ctx2.textBaseline = 'top';
-  ctx2.fillText('dBc/Hz', m.l + 4, m.t + 4);
+  ctx2.fillText(t('pnm_unit'), m.l + 4, m.t + 4);
   const pnDisp = pnmSmoothOn() ? smoothArr(d.pn, pnmWinPct()) : d.pn;
   ctx2.strokeStyle = col.pnm;
   ctx2.lineWidth = 1;
@@ -221,11 +222,11 @@ export function updatePnmTable() {
     : null;
   const ready = !!c;
   const offHz = ready ? c.f - (parsePnmFreq() || 0) : 0;
-  let html = '<tr><th style="width:30%;" colspan="2">Carrier</th></tr>' +
-    '<tr><td>Frequency</td><td>' + (ready ? formatFreqHz(c.f) : 'measuring...') + '</td></tr>' +
-    '<tr><td>Offset</td><td>' + (ready ? (offHz >= 0 ? '+' : '') + fmtHzUnit(Math.abs(offHz)) : '—') + '</td></tr>' +
-    '<tr><td>Power</td><td>' + (ready ? c.p.toFixed(1) + ' dBm' : '—') + '</td></tr>' +
-    '<tr><th colspan="2">Phase Noise</th></tr>';
+  let html = '<tr><th style="width:30%;" colspan="2">' + t('pnm_carrier') + '</th></tr>' +
+    '<tr><td>' + t('pnm_frequency') + '</td><td>' + (ready ? formatFreqHz(c.f) : t('measuring')) + '</td></tr>' +
+    '<tr><td>' + t('pnm_offset') + '</td><td>' + (ready ? (offHz >= 0 ? '+' : '') + fmtHzUnit(Math.abs(offHz)) : '—') + '</td></tr>' +
+    '<tr><td>' + t('pnm_power') + '</td><td>' + (ready ? c.p.toFixed(1) + ' dBm' : '—') + '</td></tr>' +
+    '<tr><th colspan="2">' + t('pnm_table_title') + '</th></tr>';
   for (const f of S.PNM_OFFSETS) {
     const v = pnmAt(f);
     html += '<tr><td>' + fmtPnmFreq(f) + ' Hz</td><td>' + (v != null ? v.toFixed(1) + ' dBc/Hz' : '—') + '</td></tr>';
@@ -242,7 +243,7 @@ function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: 
   ctx2.fillStyle = col.text;
   ctx2.font = 'bold 16px monospace';
   ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
-  ctx2.fillText(progress >= 100 ? 'PHASE NOISE  (updating...)' : 'PHASE NOISE  (measuring... ' + progress + '%)', cx, cy - 24);
+  ctx2.fillText(progress >= 100 ? t('pnm_title_updating') : t('pnm_title_measuring', { pct: progress }), cx, cy - 24);
   // Progress bar
   const bw = 280, bh = 8, bx = cx - bw / 2, by = cy + 12;
   ctx2.fillStyle = col.grid;
@@ -255,5 +256,5 @@ function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: 
   // Hint
   ctx2.fillStyle = col.axis;
   ctx2.font = '12px monospace';
-  ctx2.fillText('please wait...', cx, by + 26);
+  ctx2.fillText(t('please_wait'), cx, by + 26);
 }

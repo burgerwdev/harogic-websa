@@ -2,7 +2,7 @@
 import * as S from './store';
 import { formatBWHz, formatFreqHz, fmtAxis } from './fmt';
 import { toUnit } from './units';
-import { t } from './i18n';
+import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
   syncRefClkOut,
@@ -25,6 +25,17 @@ import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
+
+function localizedError(msg: any): string {
+  const code = String(msg?.code || '');
+  const params: Record<string, string | number> = { ...(msg?.params || {}) };
+  if (params.session) {
+    params.session = t(String(params.session) === 'pnm' ? 'phase_noise' : 'harmonic');
+  }
+  const key = code ? `err_${code}` : '';
+  const text = key && hasKey(key) ? t(key, params) : (msg?.msg || t('err_command'));
+  return `${t('alert_device')}: ${text}`;
+}
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
@@ -94,7 +105,7 @@ export function connectWS() {
         else if (msg.cmd === 'PNM') onPnmResult(msg);
         else if (msg.cmd === 'ERROR') {
           releaseGraphModePending();
-          alert('Device: ' + msg.msg);
+          alert(localizedError(msg));
         }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
@@ -324,7 +335,7 @@ export function updateStatus(s: any) {
   }
   if (refAuto) {
     refAuto.classList.toggle('active', S.refMode === 'auto');
-    refAuto.title = s.auto_ref_suspended ? 'Auto Ref requires Atten Auto' : '';
+    refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
   }
   setInput('input-points', String(S.currentPoints));
   setSelect('select-rbw-mode', S.rbwMode);

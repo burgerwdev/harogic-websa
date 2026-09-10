@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from .app_keys import COMMAND_LOCK, LOGGER
-from .ws import CommandError, _dispatch
+from .ws import CommandError, _dispatch, error_payload
 
 
 def _json_safe(value):
@@ -168,15 +168,19 @@ def make_routes(app, dev, static_dir):
         try:
             data = await request.json()
         except Exception:
-            return web.json_response({'error': 'bad json'}, status=400)
+            return web.json_response({'error': 'bad json', 'code': 'bad_json'}, status=400)
         if not isinstance(data, dict):
-            return web.json_response({'error': 'JSON body must be an object'}, status=400)
+            return web.json_response(
+                {'error': 'JSON body must be an object', 'code': 'json_object_required'}, status=400)
         try:
             async with app[COMMAND_LOCK]:
                 changed = await _dispatch(dev, data.get('cmd'), data)
                 status = build_status(dev)
         except CommandError as exc:
-            return web.json_response({'error': str(exc)}, status=400)
+            payload = error_payload(exc)
+            body = {'error': payload.pop('msg')}
+            body.update(payload)
+            return web.json_response(body, status=400)
         except Exception as exc:
             request.app[LOGGER].exception('HTTP command failed')
             return web.json_response({'error': str(exc)}, status=503)

@@ -21,7 +21,30 @@ log = logging.getLogger(__name__)
 
 
 class CommandError(ValueError):
-    """A client command is malformed or cannot be applied in the current state."""
+    """A client command is malformed or cannot be applied in the current state.
+
+    `code` is a stable identifier the frontend maps to a localized message and `params`
+    carries the values interpolated into it. str(exc) stays English so API clients and
+    logs keep a readable diagnostic.
+    """
+
+    code = 'command_failed'
+    params: dict = {}
+
+    def __init__(self, message: str, code: str = '', **params):
+        super().__init__(message)
+        if code:
+            self.code = code
+        self.params = params
+
+
+def error_payload(exc: CommandError) -> dict:
+    """Serialize a command error for WS/REST transport."""
+    payload = {'msg': str(exc), 'code': getattr(exc, 'code', 'command_failed')}
+    params = getattr(exc, 'params', None)
+    if params:
+        payload['params'] = params
+    return payload
 
 
 _COMMANDS = {
@@ -35,21 +58,21 @@ _COMMANDS = {
 def _number(data, key, *, minimum=None, maximum=None, required=False):
     if key not in data:
         if required:
-            raise CommandError(f'missing {key}')
+            raise CommandError(f'missing {key}', 'missing_param', key=key)
         return None
     value = data[key]
     if isinstance(value, bool):
-        raise CommandError(f'{key} must be a number')
+        raise CommandError(f'{key} must be a number', 'not_a_number', key=key)
     try:
         value = float(value)
     except (TypeError, ValueError):
-        raise CommandError(f'{key} must be a number') from None
+        raise CommandError(f'{key} must be a number', 'not_a_number', key=key) from None
     if not math.isfinite(value):
-        raise CommandError(f'{key} must be finite')
+        raise CommandError(f'{key} must be finite', 'not_finite', key=key)
     if minimum is not None and value < minimum:
-        raise CommandError(f'{key} must be >= {minimum}')
+        raise CommandError(f'{key} must be >= {minimum}', 'below_min', key=key, min=minimum)
     if maximum is not None and value > maximum:
-        raise CommandError(f'{key} must be <= {maximum}')
+        raise CommandError(f'{key} must be <= {maximum}', 'above_max', key=key, max=maximum)
     data[key] = value
     return value
 
@@ -59,7 +82,7 @@ def _integer(data, key, *, minimum=None, maximum=None, required=False):
     if value is None:
         return None
     if not value.is_integer():
-        raise CommandError(f'{key} must be an integer')
+        raise CommandError(f'{key} must be an integer', 'not_an_integer', key=key)
     data[key] = int(value)
     return data[key]
 
@@ -67,43 +90,45 @@ def _integer(data, key, *, minimum=None, maximum=None, required=False):
 def _choice(data, key, choices, *, required=False):
     if key not in data:
         if required:
-            raise CommandError(f'missing {key}')
+            raise CommandError(f'missing {key}', 'missing_param', key=key)
         return None
     value = data[key]
     if value not in choices:
-        raise CommandError(f'{key} must be one of {", ".join(map(str, choices))}')
+        raise CommandError(
+            f'{key} must be one of {", ".join(map(str, choices))}', 'invalid_choice',
+            key=key, choices=', '.join(map(str, choices)))
     return value
 
 
 def _validate_command(dev, cmd, data):
     if not isinstance(data, dict) or not isinstance(cmd, str) or cmd not in _COMMANDS:
-        raise CommandError('unknown or missing command')
+        raise CommandError('unknown or missing command', 'unknown_command')
     if cmd not in ('STATUS', 'CONNECT') and not dev.state.connected:
-        raise CommandError('device is not connected')
+        raise CommandError('device is not connected', 'device_not_connected')
 
     caps = dev.state.caps
     if cmd == 'CAL_REFCLK':
         _integer(data, 'count', minimum=3, maximum=120)
     elif cmd == 'SET_FREQ':
         if caps is None:
-            raise CommandError('device capabilities are unavailable')
+            raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         has_center_span = 'center' in data or 'span' in data
         has_start_stop = 'start' in data or 'stop' in data
         if has_center_span and has_start_stop:
-            raise CommandError('use center/span or start/stop, not both')
+            raise CommandError('use center/span or start/stop, not both', 'freq_mixed_assignment')
         if has_start_stop:
             _number(data, 'start', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz,
                     required=True)
             _number(data, 'stop', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz,
                     required=True)
             if data['stop'] - data['start'] < 100.0:
-                raise CommandError('stop - start must be >= 100 Hz')
+                raise CommandError('stop - start must be >= 100 Hz', 'span_too_small')
         elif has_center_span:
             _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
             _number(data, 'span', minimum=100.0,
                     maximum=caps.freq_max_hz - caps.freq_min_hz)
         else:
-            raise CommandError('SET_FREQ requires center/span or start/stop')
+            raise CommandError('SET_FREQ requires center/span or start/stop', 'freq_requires_pair')
     elif cmd == 'SET_REF':
         mode = _choice(data, 'mode', ('manual', 'auto')) or 'manual'
         if mode == 'manual':
@@ -145,34 +170,34 @@ def _validate_command(dev, cmd, data):
         _choice(data, 'mode', ('internal', 'external', 'premium', 'external_forced'), required=True)
     elif cmd == 'SET_REFCKOUT':
         if not isinstance(data.get('on'), bool):
-            raise CommandError('on must be a boolean')
+            raise CommandError('on must be a boolean', 'bool_required', key='on')
     elif cmd == 'SET_MODE':
         mode = _choice(data, 'mode', ('std', 'harmonic', 'pnm', 'rta'), required=True)
         if mode == 'pnm' and not dev.state.pnm_supported:
-            raise CommandError('phase-noise measurement is not supported')
+            raise CommandError('phase-noise measurement is not supported', 'pnm_unsupported')
     elif cmd == 'SET_RTA':
         if caps is None:
-            raise CommandError('device capabilities are unavailable')
+            raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
         _number(data, 'span', minimum=1000.0, maximum=50.78125e6)
         if 'center' not in data and 'span' not in data:
-            raise CommandError('SET_RTA requires center or span')
+            raise CommandError('SET_RTA requires center or span', 'rta_requires_pair')
     elif cmd == 'SET_HARM':
         if caps is None:
-            raise CommandError('device capabilities are unavailable')
+            raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'f0', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
         _integer(data, 'count', minimum=1, maximum=10)
         _number(data, 'span', minimum=1.0, maximum=100e6)
     elif cmd == 'SET_PNM':
         if caps is None:
-            raise CommandError('device capabilities are unavailable')
+            raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
         _number(data, 'threshold', minimum=-150.0, maximum=30.0)
         _integer(data, 'traceavg', minimum=1, maximum=1000)
         start = _number(data, 'start', minimum=1.0, maximum=9e6)
         stop = _number(data, 'stop', minimum=10.0, maximum=10e6)
         if start is not None and stop is not None and start >= stop:
-            raise CommandError('start must be lower than stop')
+            raise CommandError('start must be lower than stop', 'range_invalid')
 
 
 def make_ws_handler(app, dev):
@@ -197,7 +222,7 @@ def make_ws_handler(app, dev):
                 try:
                     data = json.loads(msg.data)
                     if not isinstance(data, dict):
-                        raise CommandError('JSON message must be an object')
+                        raise CommandError('JSON message must be an object', 'json_object_required')
                     cmd = data.get('cmd')
                     if cmd == 'STATUS':
                         from .http_api import build_status
@@ -212,7 +237,7 @@ def make_ws_handler(app, dev):
                         status['response_to'] = cmd
                         channel.publish_json(status)
                 except CommandError as exc:
-                    channel.publish_json({'cmd': 'ERROR', 'msg': str(exc)})
+                    channel.publish_json({'cmd': 'ERROR', **error_payload(exc)})
                 except Exception:
                     log.exception('WebSocket command failed')
                     channel.publish_json({'cmd': 'ERROR', 'msg': 'command failed'})
@@ -247,7 +272,8 @@ async def _dispatch(dev, cmd, data) -> bool:
         }
         if cmd in swp_owned:
             raise CommandError(
-                f'{cmd} is not available while the {sess.name} measurement is active')
+                f'{cmd} is not available while the {sess.name} measurement is active',
+                'cmd_unavailable_measurement', cmd=cmd, session=sess.name)
 
     async def _hw_call(fn, *a, timeout=20.0, **kw):
         try:
@@ -260,7 +286,8 @@ async def _dispatch(dev, cmd, data) -> bool:
     async def _configure_swp():
         result = await _hw_call(dev.configure_swp)
         if result and result[0] is False:
-            raise CommandError(result[1])
+            raise CommandError(f'device rejected the configuration: {result[1]}',
+                               'hardware_config', detail=result[1])
 
     async def _configure_active():
         sess = dev.session
@@ -324,7 +351,7 @@ async def _dispatch(dev, cmd, data) -> bool:
             return False
         ok, err = await _hw_call(dev.open)
         if not ok:
-            raise CommandError(err)
+            raise CommandError(f'device connection failed: {err}', 'connect_failed', detail=err)
         return True
     if cmd == 'SET_FREQ':
         from ..config import fit_center_span, fit_start_stop
@@ -356,7 +383,7 @@ async def _dispatch(dev, cmd, data) -> bool:
     # SET_RBW/SET_VBW are NOT intercepted: RTA supports both via the session
     # (set_rbw/set_vbw below, independent from SWP and restored on exit).
     if s.mode == 'rta' and cmd in ('SET_WINDOW', 'SET_POINTS', 'SET_SPUR'):
-        raise CommandError(f'{cmd} is only available in SWP mode')
+        raise CommandError(f'{cmd} is only available in SWP mode', 'swp_only', cmd=cmd)
     if cmd == 'SET_RBW':
         sess = dev.session
         if sess is not None and sess.name == 'rta':
@@ -442,7 +469,7 @@ async def _dispatch(dev, cmd, data) -> bool:
     if cmd == 'SET_RTA':
         sess = dev.session
         if sess is None or sess.name != 'rta':
-            raise CommandError('SET_RTA requires RTA mode')
+            raise CommandError('SET_RTA requires RTA mode', 'rta_mode_required')
         await _hw_call(
             sess.set_params, center=data.get('center'), span=data.get('span'))
         return True
