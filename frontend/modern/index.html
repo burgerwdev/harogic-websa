@@ -315,7 +315,7 @@
         </div>
         <div class="group-body">
           <div class="param-row"><label data-i18n="trg_source">Source</label>
-            <select id="select-trg-source" data-i18n="tip_trg_source" data-i18n-attr="title">
+            <select class="rta-only" id="select-trg-source" data-i18n="tip_trg_source" data-i18n-attr="title">
               <option value="bus" data-i18n="trg_bus">Bus</option>
               <option value="level" data-i18n="trg_level">Level</option>
             </select>
@@ -332,24 +332,24 @@
               <option value="falling" data-i18n="trg_falling">Falling</option>
               <option value="double" data-i18n="trg_double">Double</option>
             </select></div>
-          <div class="param-row"><label data-i18n="trg_debounce">Debounce</label>
+          <div class="param-row rta-only"><label data-i18n="trg_debounce">Debounce</label>
             <input type="number" id="input-trg-safetime" value="0" step="0.001" min="0" max="10"
                    data-i18n="tip_trg_safetime" data-i18n-attr="title"><span class="cur-val">s</span>
             <label style="min-width:auto;" data-i18n="trg_delay">Delay</label>
             <input type="number" id="input-trg-delay" value="0" step="0.001" min="0" max="10"
                    data-i18n="tip_trg_delay" data-i18n-attr="title"><span class="cur-val">s</span></div>
-          <div class="param-row"><label data-i18n="trg_pre">Pre</label>
+          <div class="param-row rta-only"><label data-i18n="trg_pre">Pre</label>
             <input type="number" id="input-trg-pretime" value="0" step="0.001" min="0" max="10"
                    data-i18n="tip_trg_pretime" data-i18n-attr="title"><span class="cur-val">s</span>
             <label style="min-width:auto;" data-i18n="trg_acq">Acq</label>
             <input type="number" id="input-trg-acqtime" value="0.005" step="0.001" min="0.0005" max="60"
                    data-i18n="tip_trg_acqtime" data-i18n-attr="title"><span class="cur-val">s</span></div>
-          <div class="param-row"><label data-i18n="trg_retrig">Retrig</label>
+          <div class="param-row rta-only"><label data-i18n="trg_retrig">Retrig</label>
             <input type="number" id="input-trg-retrigger" value="0" step="1" min="0" max="65535"
                    data-i18n="tip_trg_retrigger" data-i18n-attr="title">
             <input type="number" id="input-trg-retriggerperiod" value="0" step="0.01" min="0" max="3600"
                    data-i18n="tip_trg_retriggerperiod" data-i18n-attr="title"><span class="cur-val">s</span></div>
-          <div class="param-row"><label data-i18n="trg_out">Out</label>
+          <div class="param-row rta-only"><label data-i18n="trg_out">Out</label>
             <select id="select-trg-out" data-i18n="tip_trg_out" data-i18n-attr="title">
               <option value="none" data-i18n="trg_none">None</option>
               <option value="per_hop" data-i18n="trg_per_hop">Per hop</option>

@@ -391,6 +391,10 @@ export function renderAll() {
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
+  if (S.swpArmed || S.swpHold) {           // SWP software trigger is visual too
+    renderTriggerLevel();
+    renderTriggerOverlay();
+  }
   if (S.limits.on) renderLimits(powers);          // limit line + violations, under markers/OSD
   else updateLimitStatus(null);
   if (powers && S.freqArray) {
@@ -461,7 +465,7 @@ function renderTriggerOverlay() {
 
 // Trigger threshold line (RTA only): shows where a level trigger will fire.
 function renderTriggerLevel() {
-  if (S.trigSource !== 'level') return;
+  if (S.trigSource !== 'level' && !S.swpArmed && !S.swpHold) return;
   const p = plotRect();
   const y = getY(S.trigLevel);
   if (!Number.isFinite(y) || y < p.y || y > p.y + p.h) return;
