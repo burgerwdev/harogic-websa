@@ -21,8 +21,20 @@ function headerParts(): string[] {
     `${n} pts`,
   ];
   if (det) parts.push(`det ${det}`);
-  parts.push(new Date().toLocaleString());
   return parts;
+}
+
+// Fixed-width local timestamp with the UTC offset (stable width, no locale surprises):
+// 2026-09-10 15:52:18 UTC+08:00
+function timeStamp(): string {
+  const d = new Date();
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  const offMin = -d.getTimezoneOffset();
+  const sign = offMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offMin);
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ` +
+    `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())} ` +
+    `UTC${sign}${p2(Math.floor(abs / 60))}:${p2(abs % 60)}`;
 }
 
 // Greedy wrap of header segments into lines that fit the available width.
@@ -63,7 +75,8 @@ export function exportSpectrumPng(): void {
     lines = wrapSegments(probe, parts, out.width - pad * 2);
   }
   const head = 10 + lines.length * lineH;
-  out.height = src.height + head + pad;   // resizing resets the context state
+  const footH = 22;                        // reserved band so the timestamp never touches the plot
+  out.height = src.height + head + footH;  // resizing resets the context state
   const c = out.getContext('2d');
   if (!c) return;
   c.fillStyle = '#000000';
@@ -73,6 +86,12 @@ export function exportSpectrumPng(): void {
   c.textBaseline = 'alphabetic';
   lines.forEach((l, i) => c.fillText(l, pad, 8 + (i + 1) * lineH - 5));
   c.drawImage(src, pad, head);
+  // Timestamp pinned to the bottom-right corner: same 12 px margin as the sides,
+  // ~7 px below the plot, so it can never collide with the header or the trace area.
+  c.font = 'bold 11px monospace';
+  c.textAlign = 'right';
+  c.fillText(timeStamp(), out.width - pad, out.height - 7);
+  c.textAlign = 'left';
   const link = document.createElement('a');
   link.href = out.toDataURL('image/png');
   link.download = `websa_sa_${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
