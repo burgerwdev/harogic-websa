@@ -532,6 +532,30 @@ Object.assign(dict.zh, {
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
 
+// Amplitude unit + external gain/loss offset
+Object.assign(dict.en, {
+  'amp_unit': 'Unit',
+  'tip_level_unit': 'Amplitude unit for trace readouts (marker, peaks, channel power, limits); differences stay in dB',
+  'tip_gain': 'External gain/loss offset in dB, added to the plot and to every trace readout (cable loss positive, amplifier gain negative)',
+});
+Object.assign(dict.zh, {
+  'amp_unit': '单位',
+  'tip_level_unit': '迹线读数（游标、峰值、信道功率、限制线）的幅度单位；差值仍以 dB 表示',
+  'tip_gain': '外部增益/线损补偿（dB），作用于图形与所有迹线读数（线损取正、放大器增益取负）',
+});
+
+// Export (PNG snapshot, peak list CSV)
+Object.assign(dict.en, {
+  'export_png': 'PNG',
+  'tip_export_png': 'Export the spectrum plot as a PNG with the acquisition settings in the header',
+  'tip_export_peaks_csv': 'Export the peak list (frequency, level, delta to strongest) as CSV',
+});
+Object.assign(dict.zh, {
+  'export_png': 'PNG',
+  'tip_export_png': '把频谱图导出为 PNG，抬头带采集参数',
+  'tip_export_peaks_csv': '把峰值列表导出为 CSV（频率、电平、相对最强峰的差值）',
+});
+
 // Channel measurements: channel power / OBW / ACPR
 Object.assign(dict.en, {
   'channel': 'Channel', 'chan_center': 'Center', 'chan_bw': 'CH BW', 'chan_obw': 'OBW', 'chan_acp': 'ACP',

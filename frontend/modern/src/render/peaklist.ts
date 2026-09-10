@@ -1,5 +1,6 @@
 // Pk list: peak detection/threshold/table/on-canvas marks
 import * as S from '../core/store';
+import { fmtLevel } from '../core/level';
 import { getX, getY } from './spectrum';
 import { fmtF } from '../core/fmt';
 import { t } from '../core/i18n';
@@ -92,7 +93,7 @@ export function updatePeakTable(powers: Float32Array | null) {
       cells += '<td class="pk-cell" title="Peak P' + (idx + 1) + '">' +
         '<span class="pk-id">P' + (idx + 1) + ':</span> ' +
         '<span class="pk-f">' + fmtF(pk.f) + '</span> / ' +
-        '<span class="pk-a">' + pk.amp.toFixed(1) + ' dBm</span></td>';
+        '<span class="pk-a">' + fmtLevel(pk.amp, 1) + '</span></td>';
     }
     if (cells) html += '<tr>' + cells + '</tr>';
   }

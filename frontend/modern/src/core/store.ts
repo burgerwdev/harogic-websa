@@ -81,6 +81,8 @@ export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 export let displayRef = 0.0;
 export function setDisplayRef(v: number) { displayRef = v; }
+export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
+export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
 

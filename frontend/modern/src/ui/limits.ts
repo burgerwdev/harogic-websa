@@ -6,6 +6,7 @@ import * as S from '../core/store';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { buildLimitArray, evaluateAgainst, normalizePoints, type LimitEval, type LimitPoint } from '../dsp/limits';
 import { getDisplayPowers } from '../dsp/peaks';
+import { toDisplayLevel, fromDisplayLevel } from '../core/level';
 
 const LS_KEY = 'websa-limits';
 const DEFAULT_LEVEL_DROP = 20;   // dB below the reference level for the initial flat limit
@@ -76,9 +77,9 @@ function renderRows(): void {
       `<input type="number" class="limit-freq" step="any" value="${fmtMHz(p.freqHz)}"` +
       ` data-i18n="tip_limit_freq" data-i18n-attr="title">` +
       `<span class="cur-val">MHz</span>` +
-      `<input type="number" class="limit-level" step="0.5" value="${p.level.toFixed(1)}"` +
+      `<input type="number" class="limit-level" step="0.5" value="${toDisplayLevel(p.level).toFixed(1)}"` +
       ` data-i18n="tip_limit_level" data-i18n-attr="title">` +
-      `<span class="cur-val">dBm</span>` +
+      `<span class="cur-val">${S.levelUnit}</span>` +
       `<button class="btn limit-del" data-i="${i}" data-i18n="limit_del" data-i18n-title="tip_limit_del">\u00d7</button>`;
     host.appendChild(row);
   });
@@ -94,7 +95,7 @@ function renderRows(): void {
   host.querySelectorAll<HTMLInputElement>('.limit-level').forEach((el, i) => {
     el.addEventListener('change', () => {
       const v = parseFloat(el.value);
-      if (Number.isFinite(v)) S.limits.points[i].level = v;
+      if (Number.isFinite(v)) S.limits.points[i].level = fromDisplayLevel(v);
       save();
       forceStatus();
     });
@@ -111,6 +112,13 @@ function renderRows(): void {
 }
 
 let lastStatus = '';
+
+/** Re-render the point rows after a unit change (levels stay stored in dBm). */
+export function refreshLimitUnits(): void {
+  renderRows();
+  lastStatus = '';
+  forceStatus();
+}
 
 /** Called from the render loop with the fresh evaluation; only touches the DOM when the text changes. */
 export function updateLimitStatus(ev: LimitEval | null): void {

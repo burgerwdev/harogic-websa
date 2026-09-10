@@ -11,6 +11,7 @@ import { plotRect } from '../render/plot';
 import { canvasColors } from '../core/theme';
 import { fmtF } from '../core/fmt';
 import { t } from '../core/i18n';
+import { fmtLevel } from '../core/level';
 
 function num(id: string, dflt: number): number {
   const el = document.getElementById(id) as HTMLInputElement | null;
@@ -81,7 +82,7 @@ export function updateChanTable(): void {
     rows.push(cell(t('chan_acp_u'), '-'));
   } else {
     rows.push(cell(`${t('chan_power')} (${fmtF(r.channelBw)})`,
-      r.mainDbm === null ? '-' : `${r.mainDbm.toFixed(2)} dBm`));
+      r.mainDbm === null ? '-' : fmtLevel(r.mainDbm)));
     rows.push(cell(`OBW ${r.obwPercent}%`,
       r.obw === null || r.obwLow === null || r.obwHigh === null
         ? '-'
