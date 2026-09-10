@@ -349,7 +349,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .param-row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
 .span-action-row { flex-wrap: nowrap; }
 .span-action-row::before { content: ''; flex: 0 0 58px; }
-.span-action-row .span-full-button { flex: 1; min-width: 0; }
+/* Fixed width: with the step arrows on the left the row ends on the Set column of the rows
+   above (measured right edge 1305 vs the Set buttons' 1304, both languages) */
+.span-action-row .span-full-button { flex: 0 0 162px; min-width: 0; }
 .span-action-row .span-step-button { width: 32px; min-width: 32px; padding: 2px 0; }
 #input-span-step { width: 82px; }
 #span-step-unit { min-width: 34px; }
