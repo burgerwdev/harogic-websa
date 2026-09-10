@@ -61,3 +61,18 @@
 - meas/ amplitude harmonic harmOverlay harmOverlay2 phaseNoise
 - ui/ controls(data-action绑定+canvas交互) measure(测量状态机) traceOps normPub
 - main.ts 入口(主题/语言持久化 localStorage)
+
+
+## 新增模块（v1.2.0 之后）
+
+| 文件 | 职责 |
+|---|---|
+| `src/dsp/limits.ts` | 限制线插值、逐 bin 判定、超限区段（纯函数 + 单测） |
+| `src/dsp/channel.ts` | 频带功率、以 f0 为中心的 OBW、ACPR（纯函数 + 单测） |
+| `src/dsp/levelCross.ts` | 扫频电平触发：相邻两次扫描的门限穿越判定（纯函数 + 单测） |
+| `src/core/level.ts` | 幅度单位（dBm/dBmV/dBuV/dBV）与外部增益/线损读数换算 |
+| `src/ui/limits.ts` | 限制线面板、持久化、超限 CSV |
+| `src/ui/exportImage.ts` | PNG 截图（采集参数抬头 + 右下角时间戳） |
+| `src/ui/controlRail.ts` / `src/ui/railMath.ts` | 侧边跳转窄条及其滚动监听数学 |
+| `src/ui/trigger.ts` / `src/ui/triggerEvents.ts` | 触发面板、状态角标、RTA 命中判定（帧路径） |
+| `src/ui/swpTrigger.ts` | 普通模式的软件电平触发引擎 |

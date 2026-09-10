@@ -172,3 +172,28 @@ SAN-90 + TinySA Ultra+ ZS407 at 1 GHz / -25 dBm:
 - SWP -> RTA: one configuration, default 50.78125 MHz / Auto RBW / Equal VBW / x4.
 - RTA -> SWP: one configuration, with SWP Center/Span/RBW/VBW restored.
 - Center/Span, Start/Stop, and RTA Center/Span each increment config version once per submission.
+
+
+## 13. Trigger state (RTA device / SWP software)
+
+Both implementations share one set of buttons but keep separate state machines:
+
+| Mode | State | Display | Button |
+|---|---|---|---|
+| RTA | free | live | `Capture` |
+| RTA | waiting (device waits for a crossing) | **cleared** (the device sends no packets at all) | `Stop` (highlighted) |
+| RTA | hit | frozen on the captured frame, chip `TRIG hh:mm:ss` | `Capture again` |
+| SWP | free | live | `Capture` |
+| SWP | waiting (software waits for a crossing) | **stays live** | `Stop` (highlighted) |
+| SWP | hit | frozen, chip `TRIG hh:mm:ss` plus the crossing frequency/level | `Capture again` |
+
+- `Free Run` or `Esc` releases either one; a hit does not release itself, so the capture stays visible.
+- Entering RTA resets the trigger source to `bus` (an armed trigger from an earlier session would come up
+  with an empty plot); **Auto Ref releases an armed trigger** (known issue, see KNOWN_ISSUES 20).
+- The chip only appears while armed or holding a capture; a free-running canvas shows no trigger text.
+
+## 14. Average depth is per mode
+
+SWP and RTA keep independent average depths (`avgTarget` / `avgTargetRta`, 2/4/.../256/inf) and never
+overwrite each other on a mode switch. Finite N is exponential averaging (alpha = 2/(N+1), never freezes);
+`inf` is the cumulative mean.

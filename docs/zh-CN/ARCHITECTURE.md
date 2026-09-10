@@ -85,3 +85,16 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **周期 STATUS 推送(1s)**: publisher 每秒推送全量 STATUS(与 GNSS 轮询对齐),
   使 GNSS 锁定/时间、refclk_out、校准状态自动刷新, 无需刷新页面
 - **GNSS 详情浮层**: 点击 GNSS 指示器查看完整信息(锁定/卫星/天线/经纬度/海拔/UTC 时间)
+
+
+## 触发架构（RTA 设备 / SWP 软件）
+
+- **RTA（设备）**: 触发参数写入 `RTA_Profile_TypeDef`（`TriggerSource/Edge/Mode`、门限、防抖、延迟、
+  预触发、采集时长、重触发、触发输出），由 `web_sa/measurements/rta.py` 在每次配置时下发；取帧循环
+  （`RTA_BusTriggerStart` + `RTA_GetRealTimeSpectrum`）在等待触发期间不产出数据包，命中后交付一帧。
+  前端 `ui/trigger.ts` 负责面板、状态角标（`FREE/WAIT/TRIG`）、门限线；`ui/triggerEvents.ts` 在**帧路径**
+  上判定"到达的包即捕获"（settle 窗口 500 ms，避免启用瞬间的在途帧被误判）。
+- **SWP（前端软件）**: 设备在普通模式下没有电平触发。`dsp/levelCross.ts`（纯函数，含单测）比较相邻两次
+  扫描的同频点电平得到穿越事件；`ui/swpTrigger.ts` 负责启用与逐帧判定；命中后帧路径停止更新画布以实现
+  定格。判定与显示刻度无关，因此改 Ref 不影响触发。
+- 界面共用一套按钮（`Capture` / `Free Run` / `Esc`），按当前模式分派到两套实现。

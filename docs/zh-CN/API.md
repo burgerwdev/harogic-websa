@@ -131,6 +131,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
+| `SET_TRIGGER` | `source`（bus/level）, `edge`（rising/falling/double）, `level`（dBm）, `safetime`/`delay`/`pretime`/`acqtime`（s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
 
 > 配置类命令（SET_*）执行后服务端自动回发最新 STATUS，并携带
 > `response_to=<命令名>`；周期 STATUS 不携带该字段。
@@ -260,3 +261,18 @@ asyncio.run(main())
 - **设备调用串行**：单进程 aiohttp，命令经 `_dispatch` 串行处理
 - **bin 协议**：`libhtraapi.so` 为专有二进制，需从 HAROGIC 官方获取（`htra_api.py` 已随仓库附带）
 - **SystemClockSource=External**：危险配置，勿用（会导致设备挂死）
+
+
+## 触发（Trigger）参考
+
+设备侧触发（RTA）与前端软件触发（SWP）是两套实现，接口上只暴露前者：
+
+| 项 | RTA（设备） | SWP（前端软件） |
+|---|---|---|
+| 触发源 | `level`（门限穿越）、`bus`（自由取帧，默认） | 电平门限，按**相邻两次扫描之间的穿越**判定 |
+| 边沿 | rising / falling / double | 同左 |
+| 时序项 | 防抖 `safetime`、延迟 `delay`、预触发 `pretime`、采集时长 `acqtime`、重触发 `retrigger`+`retriggerperiod`、触发输出 `out`+`outpolarity` | 不可用（扫频没有时间轴） |
+| 状态读取 | `STATUS.req.rta.trigger_actual`：`waiting`/`frames`/`edges`/`first_ts`/`first_edge_ts`；`rta_actual.poi`（100% 可截获的最短突发）、`rta_actual.time_resolution` | 由前端判定，无 STATUS 字段 |
+| 进入 RTA 的行为 | 进入会话时触发源重置为 `bus`（避免上次启用触发导致进来没图） | — |
+
+> `SET_TRIGGER` 的所有参数都会随 `STATUS` 的 `req.rta` 原样回读（`trigger_source`、`trigger_edge`、`trigger_level`、`trigger_safetime`、`trigger_delay`、`trigger_pretime`、`trigger_acqtime`、`trigger_retrigger`、`trigger_retriggerperiod`、`trigger_out`、`trigger_outpolarity`）。

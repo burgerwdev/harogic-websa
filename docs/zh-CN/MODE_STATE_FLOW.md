@@ -182,3 +182,26 @@ SAN-90 + TinySA Ultra+ ZS407，1 GHz / -25 dBm：
 - SWP -> RTA：一次配置，默认返回 50.78125 MHz / Auto RBW / Equal VBW / x4。
 - RTA -> SWP：一次配置，SWP Center/Span/RBW/VBW 完整恢复。
 - Center/Span、Start/Stop、RTA Center/Span 每次提交均只增加一个 config version。
+
+
+## 13. 触发状态（RTA 设备 / SWP 软件）
+
+两套实现共用一套按钮，状态机各自独立：
+
+| 模式 | 状态 | 画面 | 按钮 |
+|---|---|---|---|
+| RTA | free（自由运行） | 实时刷新 | `Capture` |
+| RTA | waiting（设备等待门限穿越） | **清空**（设备此时不发送任何数据包） | `Stop`（高亮） |
+| RTA | hit（已捕获） | 定格在捕获帧；角标 `TRIG hh:mm:ss` | `Capture again` |
+| SWP | free | 实时刷新 | `Capture` |
+| SWP | waiting（软件等待穿越） | **保持实时** | `Stop`（高亮） |
+| SWP | hit | 定格；角标 `TRIG hh:mm:ss` + 命中频率/电平 | `Capture again` |
+
+- 两者都可用 `Free Run` 或 `Esc` 解除；命中后不自动解除，便于查看捕获结果。
+- 进入 RTA 会话时触发源重置为 `bus`（避免上次启用触发导致"进来没图"）；**Auto Ref 会解除已启用的触发**（已知问题，见 KNOWN_ISSUES 20）。
+- 角标仅在触发就绪/命中时显示；自由运行时画布不显示任何触发文字。
+
+## 14. 平均档位按模式独立
+
+SWP 与 RTA 各自保存平均深度（`avgTarget` / `avgTargetRta`，档位 2/4/…/256/∞），切换模式互不覆盖。
+有限 N 为指数平均（α = 2/(N+1)，永不冻结），`∞` 为累计均值。

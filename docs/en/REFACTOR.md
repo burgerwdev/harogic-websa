@@ -61,3 +61,18 @@ into a modern TypeScript frontend with **feature/visual parity**, adding:
 - meas/ amplitude harmonic harmOverlay harmOverlay2 phaseNoise
 - ui/ controls (data-action binding + canvas interaction) measure (measure state machine) traceOps normPub
 - main.ts entry (theme/lang persisted via localStorage)
+
+
+## Modules added since v1.2.0
+
+| File | Responsibility |
+|---|---|
+| `src/dsp/limits.ts` | limit interpolation, per-bin evaluation, violation runs (pure, unit tested) |
+| `src/dsp/channel.ts` | band power, carrier-centred OBW, ACPR (pure, unit tested) |
+| `src/dsp/levelCross.ts` | swept-mode level trigger: threshold crossing between two sweeps (pure, unit tested) |
+| `src/core/level.ts` | amplitude units (dBm/dBmV/dBuV/dBV) and external gain/loss conversion |
+| `src/ui/limits.ts` | limit panel, persistence, violation CSV |
+| `src/ui/exportImage.ts` | PNG snapshot (acquisition header plus a bottom-right timestamp) |
+| `src/ui/controlRail.ts` / `src/ui/railMath.ts` | jump rail and its scroll-spy maths |
+| `src/ui/trigger.ts` / `src/ui/triggerEvents.ts` | trigger panel, status chip, RTA hit detection from the frame path |
+| `src/ui/swpTrigger.ts` | swept-mode software level trigger engine |

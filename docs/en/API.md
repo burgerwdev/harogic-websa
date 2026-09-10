@@ -131,6 +131,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
+| `SET_TRIGGER` | `source` (bus/level), `edge` (rising/falling/double), `level` (dBm), `safetime`/`delay`/`pretime`/`acqtime` (s), `retrigger` (0-65535), `retriggerperiod` (s), `out` (none/per_hop/per_sweep/per_profile), `outpolarity` (positive/negative) | RTA acquisition trigger (written into the RTA profile): reconfigured immediately while in RTA, otherwise applied on the next entry. The swept-mode level trigger runs in the frontend and does not use this command |
 
 > Config commands (`SET_*`) reply with the latest STATUS and `response_to=<command>`;
 > periodic STATUS messages omit `response_to`.
@@ -259,3 +260,22 @@ asyncio.run(main())
 - **Serialized device calls**: single-process aiohttp, commands handled serially via `_dispatch`
 - **Binary SDK**: `libhtraapi.so` is proprietary, obtain it from HAROGIC (the `htra_api.py` wrapper is bundled)
 - **SystemClockSource=External**: dangerous, do not use (hangs the device)
+
+
+## Trigger reference
+
+The device-side trigger (RTA) and the frontend software trigger (SWP) are separate
+implementations; only the former is exposed by the API:
+
+| Item | RTA (device) | SWP (frontend software) |
+|---|---|---|
+| Source | `level` (threshold crossing), `bus` (free-running frames, default) | level threshold, judged on the crossing **between two consecutive sweeps** |
+| Edge | rising / falling / double | same |
+| Timing | debounce `safetime`, `delay`, pre-trigger `pretime`, acquisition `acqtime`, re-trigger `retrigger`+`retriggerperiod`, trigger out `out`+`outpolarity` | not available (a swept trace has no time axis) |
+| Status | `STATUS.req.rta.trigger_actual`: `waiting`/`frames`/`edges`/`first_ts`/`first_edge_ts`; `rta_actual.poi` (shortest burst guaranteed to be intercepted) and `rta_actual.time_resolution` | decided in the browser, no STATUS fields |
+| On entering RTA | the trigger source is reset to `bus` (an armed trigger from an earlier session would otherwise come up with an empty plot) | - |
+
+> Every `SET_TRIGGER` parameter is echoed back in `STATUS.req.rta` (`trigger_source`,
+> `trigger_edge`, `trigger_level`, `trigger_safetime`, `trigger_delay`, `trigger_pretime`,
+> `trigger_acqtime`, `trigger_retrigger`, `trigger_retriggerperiod`, `trigger_out`,
+> `trigger_outpolarity`).

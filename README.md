@@ -15,7 +15,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 ## Features
 
 - **Spectrum display** — Clear Write / Max Hold / Min Hold / Average / View, 4 traces, frontend smoothing
-- **Control panel** — atomic Center/Span and Start/Stop linking, custom/auto Span Step with `▼/Full/▲` controls, mode-private SWP/RTA settings, RBW/VBW/points, FFT windows (FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser, matching official), attenuation / preamp / IF gain, Manual/Auto Ref Level, reference clock (Int / Ext / ExtForce + output)
+- **Control panel** — atomic Center/Span and Start/Stop linking, custom/auto span step with `▼/▲` stepping and Full Span, mode-private SWP/RTA settings, RBW/VBW/points, FFT windows (FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser, matching official), attenuation / preamp / IF gain, Manual/Auto Ref Level, reference clock (Int / Ext / ExtForce + output)
 - **Marker & DSP engine** — 4 markers, per-row On/Off toggles, independent Tracking toggles, ranked multi-marker assignment with continuous peak following, and peak/valley navigation
 
   - Savitzky-Golay smoothing (2nd order + gradient-adaptive)
@@ -25,6 +25,15 @@ A browser-based control and measurement application for **Harogic SAN series spe
 - **Real-time spectrum (RTA)** — FPGA engine, multi-trace (per-tab modes), probability-density background with fading traces, waterfall
 - **GNSS detail popover** — click the indicator for full info (lock/sats/antenna/position/UTC time); states auto-refresh every 1 s
 - **Measurements** — amplitude (n-dB bandwidth), harmonic (H1–H5 server-side auto-tune), phase noise (6 offsets 100 Hz–10 MHz)
+- **Limit lines** - up to four breakpoints, dB tolerance, pass/fail with worst margin, violation CSV
+- **Channel measurements** - channel power, occupied bandwidth (90/95/99%) and ACPR (upper/lower in dBc)
+- **Exports** - PNG snapshot (acquisition header plus a bottom-right timestamp), peak-list CSV, trace CSV
+- **Amplitude units and compensation** - dBm / dBmV / dBuV / dBV, with an external gain/loss offset that
+  applies to the plot and to every readout
+- **Trigger** - RTA device level trigger (threshold, edge, debounce, delay, pre-trigger, acquisition,
+  re-trigger, trigger out, with POI and a status chip) and a swept-mode software level trigger (crossing
+  between consecutive sweeps; live display while armed, frozen on a hit)
+- **Jump rail** - one click to any control group, collapsible without consuming layout width
 - **Normalization** — through-cal, adaptive absorption, display-layer transform
 
 ## Screenshots
@@ -116,8 +125,8 @@ harogic-websa/
 
 ## Tests
 
-- **Backend (51)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
-- **Frontend (23)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
+- **Backend (63)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
+- **Frontend (79)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
 
 ## Open-Source Notes
 

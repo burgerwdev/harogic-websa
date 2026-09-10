@@ -34,4 +34,14 @@
     `Intercept >= ...` (POI) is the shortest burst the current configuration is *guaranteed* to catch.
     Of the RTA trigger sources only `bus` works here (host bus-triggered, ~100 fps, the default);
     `freerun` delivered no data in testing and is not offered. Triggering is an RTA-domain feature:
-    the SWP profile only has internal free run and external triggers, no level trigger.
+    the SWP profile only has internal free run and external triggers, with no level trigger field; the swept-mode level trigger shown in the UI is implemented in the frontend (see the next item).
+19. **The swept-mode trigger is a software implementation**: SWP has no level trigger field, so the
+    level trigger lives in the frontend and is judged on the crossing **between two consecutive sweeps**
+    (one sweep is the smallest time unit). While armed the display stays live and it freezes on a hit.
+    The RTA device timing features (debounce, delay, pre-trigger, acquisition, re-trigger, trigger
+    output) and POI are therefore greyed out in the swept mode.
+20. **Auto Ref releases an armed trigger (to be fixed)**: in RTA, pressing Auto Ref after arming a level
+    trigger returns the button to `Capture` and the threshold line disappears (the cause is not yet
+    identified; Auto Ref does not re-enter the session). Changing Ref **manually** is unaffected - even
+    when the threshold sits outside the visible range the line is pinned to the edge (with an arrow).
+    Change the reference manually while armed, or press `Capture` again afterwards.

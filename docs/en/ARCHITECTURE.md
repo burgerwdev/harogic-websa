@@ -85,3 +85,19 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)
+
+
+## Trigger architecture (RTA device / SWP software)
+
+- **RTA (device)**: the trigger is written into `RTA_Profile_TypeDef` (source/edge/mode, threshold,
+  debounce, delay, pre-trigger, acquisition, re-trigger, trigger out) by `web_sa/measurements/rta.py` on
+  every configuration. The fetch loop (`RTA_BusTriggerStart` + `RTA_GetRealTimeSpectrum`) yields no
+  packets while armed and delivers one frame on a hit. `ui/trigger.ts` owns the panel, the canvas status
+  chip (`FREE/WAIT/TRIG`) and the threshold line; `ui/triggerEvents.ts` decides in the **frame path** that
+  an arriving packet *is* the capture (with a 500 ms settle window so the in-flight frames sent right
+  after arming are not mistaken for it).
+- **SWP (frontend)**: the swept engine has no level trigger. `dsp/levelCross.ts` (pure, unit tested)
+  compares the same bin across two consecutive sweeps to produce a crossing event; `ui/swpTrigger.ts`
+  arms and evaluates every trace; on a hit the frame path stops updating the canvas, which is what
+  freezes the picture. The decision never depends on the display scale, so changing Ref cannot break it.
+- One set of buttons (`Capture` / `Free Run` / `Esc`) dispatches to either implementation by mode.

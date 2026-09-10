@@ -150,3 +150,18 @@ The tool first disables output and sets -42 dBm, selects the output mode, sets a
 - `Auto Peak`: intended for pulsed/burst capture. Measured on SAN-90 it loses a steady CW carrier (peak -21.7 -> -85 dBm, 0.85 dB jitter), so it is **not offered in the UI**; use it via the API for pulsed signals only.
 - Detector applies to SWP only; the command is rejected during RTA and harmonic/PNM measurements.
 - Fix span / RBW / points when comparing detectors: with a narrow span and large RBW each point combines many frames, so all detectors converge (SAN-90 measured -21.6 dBm for all five at 10 MHz span / 1 MHz RBW). Differences appear only at wide spans (100 MHz span, RBW auto: PosPeak -21.6 / RMS -27.6 / Sample -36.6 / NegPeak -84.7 dBm). Such differences are detector semantics plus dwell conditions, not a fault.
+
+
+## Why does the swept mode have no debounce / delay / pre-trigger?
+
+Those are device-side timing features: RTA acquires continuously, so a jitter window and a pre-trigger
+interval can be defined in time. A swept trace dwells microseconds per point and has no time axis of its
+own, leaving exactly one decidable quantity: whether a threshold crossing happened between two
+consecutive sweeps. The panel therefore greys those rows out in the swept mode; they are RTA-only.
+
+## Why does the trigger appear to stop working after pressing Auto Ref?
+
+That is a known issue: Auto Ref releases an armed RTA trigger (the button returns to `Capture` and the
+threshold line disappears); the cause is not identified yet. Changing Ref **manually** is unaffected -
+even when the threshold is pushed outside the visible range the line is pinned to the edge (with an
+arrow). Change the reference manually while armed, or press `Capture` again afterwards.
