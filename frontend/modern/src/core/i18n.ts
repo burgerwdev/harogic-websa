@@ -506,3 +506,15 @@ Object.assign(dict.zh, {
   'rta_vslow': '很慢',
   'tip_sweep_time': '×N 为倍率；Manual 为绝对秒数',
 });
+
+// Tooltips for normalize / theme and the scale unit
+Object.assign(dict.en, {
+  'tip_normalize': 'Through calibration: store the active trace as reference and turn normalization on',
+  'tip_theme': 'Switch between the dark and light theme',
+  'db_per_div': 'dB/div',
+});
+Object.assign(dict.zh, {
+  'tip_normalize': '直通校准：把当前迹线存为参考并开启归一化',
+  'tip_theme': '在深色与浅色主题之间切换',
+  'db_per_div': 'dB/格',
+});

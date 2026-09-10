@@ -346,6 +346,8 @@ input[type=number]:focus { outline: none; border-color: var(--text); }
 .btn:hover { background: var(--btn-hover); color: var(--text); }
 .btn.active { background: var(--btn-active); color: var(--text); border-color: var(--text); }
 .btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
+/* Button row that follows a label/value column: line up with the value column above */
+.trace-norm-ops { padding-left: calc(58px + 4px); }
 select {
   background: var(--input-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%2300aa00' stroke-width='1.2' fill='none'/%3E%3C/svg%3E") no-repeat right 5px center;
   color: var(--text); border: 1px solid var(--input-border); padding: 2px 16px 2px 4px;

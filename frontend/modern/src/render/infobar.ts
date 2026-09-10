@@ -34,7 +34,7 @@ export function updateInfoBar() {
   if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
   // Reference level is the active mode's effective hardware value.
   set('info-ref', S.displayUnit === 'dB' ? S.displayRef.toFixed(1) + ' dB' : S.displayRef.toFixed(1) + ' dBm');
-  set('info-scale', S.dbPerDiv + ' dB/div');
+  set('info-scale', `${S.dbPerDiv} ${t('db_per_div')}`);
   set('info-rbw', formatBWHz(S.currentRBW) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
   set('info-vbw', S.vbwMode === 'bypass' ? 'Bypass' : formatBWHz(S.currentVBW));
   setSwt();

@@ -245,8 +245,8 @@
               <option value="0" data-i18n="auto_rbw">Auto (RBW)</option><option value="3">3 pts</option>
               <option value="5">5 pts</option><option value="7">7 pts</option><option value="9">9 pts</option>
             </select></div>
-          <div class="btn-group" style="margin-top:4px;">
-            <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-attr="title" title="Through cal: store current trace as reference and enable normalize">Normalize</button>
+          <div class="btn-group trace-norm-ops" style="margin-top:4px;">
+            <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>
             <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
             <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span><button class="btn" style="margin-left:auto;" data-action="export-csv" data-i18n="export_csv">CSV</button></div>
         </div>
@@ -433,7 +433,7 @@
     <div class="info-item"><span class="info-label" data-i18n="warn">Warn:</span><span class="info-value" id="dev-warn">-</span></div>
     <div class="info-right">
       <button class="btn" id="btn-preset" data-action="preset" data-i18n-title="tip_preset" data-i18n="preset">Preset</button>
-      <button class="btn bar-btn" id="btn-theme" title="Toggle theme">Light</button>
+      <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
       <span class="version-tag" title="前端版本">v1.1.4 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
