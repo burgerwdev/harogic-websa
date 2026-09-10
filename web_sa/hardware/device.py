@@ -65,6 +65,7 @@ class DeviceState:
     points_req: int = 1000
     window: int = 1
     spur_mode: str = 'bypass'
+    detector: str = 'auto'
     atten: int = -1
     preamplifier: int = 0
     ifgain: int = 2
@@ -210,6 +211,7 @@ class HarogicDevice:
                     rbw_mode=rbw_mode,
                     vbw_mode=vbw_modes.get(int(getattr(p.VBWMode, 'value', p.VBWMode)), 'bypass'),
                     spur=spur_modes.get(int(getattr(p.SpurRejection, 'value', p.SpurRejection)), 'bypass'),
+                    detector='auto',
                     preamp=int(getattr(p.Preamplifier, 'value', p.Preamplifier)),
                     ifgain=int(p.IFGainGrade),
                     gain_strategy=int(getattr(p.GainStrategy, 'value', p.GainStrategy)),
@@ -263,6 +265,7 @@ class HarogicDevice:
             s.rbw_mode = d['rbw_mode']
             s.vbw_mode = d['vbw_mode']
             s.spur_mode = d['spur']
+            s.detector = d.get('detector', 'auto')
             s.preamplifier = d['preamp']
             s.ifgain = d['ifgain']
             s.gain_strategy = d['gain_strategy']
@@ -328,6 +331,18 @@ class HarogicDevice:
         p.SpurRejection = T.SpurRejection_TypeDef.Standard if s.spur_mode == 'standard' else (
             T.SpurRejection_TypeDef.Enhanced if s.spur_mode == 'enhanced'
             else T.SpurRejection_TypeDef.Bypass)
+        detector_map = {
+            'sample': T.TraceDetector_TypeDef.TraceDetector_Sample,
+            'pos_peak': T.TraceDetector_TypeDef.TraceDetector_PosPeak,
+            'neg_peak': T.TraceDetector_TypeDef.TraceDetector_NegPeak,
+            'rms': T.TraceDetector_TypeDef.TraceDetector_RMS,
+            'auto_peak': T.TraceDetector_TypeDef.TraceDetector_AutoPeak,
+        }
+        if s.detector in detector_map:
+            p.TraceDetectMode = T.TraceDetectMode_TypeDef.TraceDetectMode_Manual
+            p.TraceDetector = detector_map[s.detector]
+        else:
+            p.TraceDetectMode = T.TraceDetectMode_TypeDef.TraceDetectMode_Auto
         return p
 
     def configure_swp(self):

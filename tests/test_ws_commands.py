@@ -107,3 +107,12 @@ async def test_set_rta_requires_rta_mode():
     dev.session = None
     with pytest.raises(CommandError, match='requires RTA mode'):
         await _dispatch(dev, 'SET_RTA', {'cmd': 'SET_RTA', 'center': 1e9})
+
+
+def test_detector_choice_is_validated():
+    dev = StubDevice()
+    good = {'cmd': 'SET_DETECTOR', 'mode': 'rms'}
+    _validate_command(dev, good['cmd'], good)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_DETECTOR', 'mode': 'nope'}
+        _validate_command(dev, bad['cmd'], bad)

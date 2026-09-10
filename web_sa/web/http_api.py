@@ -71,6 +71,7 @@ def build_status(dev) -> dict:
         'sweep_time_mode': s.sweep_time_mode,
         'sweep_time': s.sweep_time,
         'spur': s.spur_mode,
+        'detector': s.detector,
         'window': s.window,
     }
     rta_req = {
@@ -117,6 +118,7 @@ def build_status(dev) -> dict:
         'rbw_mode': active_req['rbw_mode'], 'rbw': effective('rbw'),
         'vbw_mode': active_req['vbw_mode'], 'vbw': effective('vbw'),
         'points': effective('points'), 'window': s.window, 'spur': s.spur_mode,
+        'detector': s.detector,
         'sweep_time_mode': active_req['sweep_time_mode'],
         'sweep_time': active_req['sweep_time'],
         'mode': s.mode, 'pnm_supported': s.pnm_supported,

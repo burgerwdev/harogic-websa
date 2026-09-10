@@ -51,7 +51,8 @@ _COMMANDS = {
     'STATUS', 'CONNECT', 'SET_PRESET', 'CAL_REFCLK', 'SET_FREQ', 'SET_REF',
     'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR', 'SET_WINDOW',
     'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT', 'SET_MODE', 'SET_RTA', 'SET_HARM',
-    'SET_PNM',
+    'SET_PNM','SET_DETECTOR',
+
 }
 
 
@@ -161,6 +162,10 @@ def _validate_command(dev, cmd, data):
         _choice(data, 'mode', ('bypass', 'standard', 'enhanced'), required=True)
     elif cmd == 'SET_WINDOW':
         _integer(data, 'window', minimum=0, maximum=4, required=True)
+    elif cmd == 'SET_DETECTOR':
+        _choice(data, 'mode',
+                ('auto', 'sample', 'pos_peak', 'neg_peak', 'rms', 'auto_peak'),
+                required=True)
     elif cmd == 'SET_AMP':
         _integer(data, 'atten', minimum=-1, maximum=33)
         _integer(data, 'preamp', minimum=0, maximum=1)
@@ -268,7 +273,7 @@ async def _dispatch(dev, cmd, data) -> bool:
     if sess is not None and sess.name in ('harmonic', 'pnm'):
         swp_owned = {
             'SET_FREQ', 'SET_REF', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS',
-            'SET_SPUR', 'SET_WINDOW', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
+            'SET_SPUR', 'SET_WINDOW', 'SET_DETECTOR', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
         }
         if cmd in swp_owned:
             raise CommandError(
@@ -434,6 +439,10 @@ async def _dispatch(dev, cmd, data) -> bool:
         return True
     if cmd == 'SET_WINDOW':
         s.window = data['window']
+        await _configure_swp()
+        return True
+    if cmd == 'SET_DETECTOR':
+        s.detector = data['mode']
         await _configure_swp()
         return True
     if cmd == 'SET_AMP':

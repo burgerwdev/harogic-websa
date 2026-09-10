@@ -422,6 +422,7 @@ export function syncGraphModeStatus(mode: string) {
   document.body.classList.toggle('rta-mode', isRta);
   const rtaDisable = [
     'select-smooth', 'select-refwin', 'btn-normalize', 'select-window',
+    'select-detector',
     'input-points', 'btn-points',
   ];
   rtaDisable.forEach((id) => {
@@ -697,6 +698,7 @@ export function bindActions() {
     'apply-points': () => applyPoints(),
     'set-window': (el) => setWindow((el as HTMLSelectElement).value),
     'set-spur': (el) => setSpurMode((el as HTMLSelectElement).value),
+    'set-detector': (el) => send({ cmd: 'SET_DETECTOR', mode: (el as HTMLSelectElement).value }),
     'set-refclock': (el) => setRefClock((el as HTMLSelectElement).value),
     'toggle-refclkout': () => toggleRefClkOut(),
     'set-amp': () => setAmp(),

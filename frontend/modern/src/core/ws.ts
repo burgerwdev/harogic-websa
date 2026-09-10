@@ -344,6 +344,7 @@ export function updateStatus(s: any) {
   setSelect('select-rbw-mode', S.rbwMode);
   setSelect('select-vbw-mode', S.vbwMode);
   setSelect('select-spur', S.currentSpur);
+  setSelect('select-detector', s.detector || 'auto');
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
   if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
   const sweepSelect = document.getElementById('select-sweep-mode') as HTMLSelectElement | null;
