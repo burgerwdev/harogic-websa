@@ -149,3 +149,4 @@ cd frontend/modern && npm audit
 - `Sample` / `Pos Peak` / `Neg Peak` / `RMS`：固定检波方式；`Pos Peak` 峰值最贴顶、`RMS` 噪底更低。
 - `Auto Peak`：面向脉冲/突发信号捕获（逐频点挑选峰值帧）。SAN-90 实测对稳定 CW 会丢失载波（峰值 −21.7 → −85 dBm、抖动 0.85 dB），因此**不在界面提供**，仅在脉冲场景下通过 API 使用。
 - 检波器仅影响 SWP；RTA 与 harmonic/PNM 测量期间该命令会被拒绝。
+- 比较检波器时需固定 span / RBW / 点数：窄 span + 大 RBW 时每频点合帧样本极多，各检波器会收敛到同一电平（SAN-90 实测 10 MHz span、1 MHz RBW 下五档均为 −21.6 dBm）；宽 span 下差异才显现（100 MHz span、RBW auto：PosPeak −21.6 / RMS −27.6 / Sample −36.6 / NegPeak −84.7 dBm）。因此读数差异属检波器语义与驻留条件，不是故障。

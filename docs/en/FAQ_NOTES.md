@@ -149,3 +149,4 @@ The tool first disables output and sets -42 dBm, selects the output mode, sets a
 - `Sample` / `Pos Peak` / `Neg Peak` / `RMS`: fixed detectors; `Pos Peak` sits closest to the top, `RMS` shows a lower noise floor.
 - `Auto Peak`: intended for pulsed/burst capture. Measured on SAN-90 it loses a steady CW carrier (peak -21.7 -> -85 dBm, 0.85 dB jitter), so it is **not offered in the UI**; use it via the API for pulsed signals only.
 - Detector applies to SWP only; the command is rejected during RTA and harmonic/PNM measurements.
+- Fix span / RBW / points when comparing detectors: with a narrow span and large RBW each point combines many frames, so all detectors converge (SAN-90 measured -21.6 dBm for all five at 10 MHz span / 1 MHz RBW). Differences appear only at wide spans (100 MHz span, RBW auto: PosPeak -21.6 / RMS -27.6 / Sample -36.6 / NegPeak -84.7 dBm). Such differences are detector semantics plus dwell conditions, not a fault.
