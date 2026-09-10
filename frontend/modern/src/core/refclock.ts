@@ -1,5 +1,6 @@
-// Reference-clock status derivation + subtle box flash on apply (approach C2).
+// Reference-clock status: GNSS-style detail popover + subtle box flash on apply.
 import { t } from './i18n';
+import { send } from './wsSend';
 
 export type RefClockStatus = 'applied' | 'fallback' | 'forced' | 'unverified';
 
@@ -60,7 +61,9 @@ function activeActual(status: any): { src: unknown; freq: unknown } {
   return { src: actual?.refclk_src, freq: actual?.refclk };
 }
 
-// Flash the box that contains the reference-clock controls (subtle, style-consistent).
+let lastStatus: any = null;
+
+/** Flash the box that contains the reference-clock controls. */
 let flashTimer: number | null = null;
 
 export function flashRefClockBox(status: RefClockStatus): void {
@@ -68,8 +71,7 @@ export function flashRefClockBox(status: RefClockStatus): void {
   const box = select?.closest('.info-item') as HTMLElement | null;
   if (!box) return;
   box.classList.remove('refclk-flash', 'warn');
-  // Force reflow so the animation restarts on consecutive switches.
-  void box.offsetWidth;
+  void box.offsetWidth;   // restart the animation on consecutive switches
   box.classList.add('refclk-flash');
   if (status === 'fallback' || status === 'forced') box.classList.add('warn');
   if (flashTimer !== null) window.clearTimeout(flashTimer);
@@ -79,33 +81,70 @@ export function flashRefClockBox(status: RefClockStatus): void {
   }, 1500);
 }
 
-/** Update the hover tooltip, and flash the control box when a command response arrives. */
-export function refreshRefClockHint(status: any, responseTo?: string): void {
-  const { src, freq } = activeActual(status);
-  const requested = String(status?.ref_clock ?? 'internal');
+function setText(id: string, value: string): void {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+export function fillRefClockDetail(): void {
+  const st = lastStatus;
+  if (!st) return;
+  const { src, freq } = activeActual(st);
+  const requested = String(st.ref_clock ?? 'internal');
   const state = refClockStatus(requested, src as number | null);
-  const ppm = Number(status?.refclk_ppm);
+  const ppm = Number(st.refclk_ppm);
   const ppmText = isFinite(ppm) && ppm !== 0 ? `${ppm.toFixed(2)} ppm` : '—';
-  const freqText = isFinite(Number(freq)) && Number(freq) > 0
-    ? `${(Number(freq) / 1e6).toFixed(4)} MHz` : '—';
-  const outText = status?.refclk_out ? t('on') : t('off');
+  const cal = Number(st.last_cal_freq);
+  const gnss = st.gnss ?? {};
 
-  const lines = [
-    `${t('tip_refclk_requested')}: ${sourceLabel(requestedSrcCode(requested))}`,
-    `${t('tip_refclk_actual')}: ${sourceLabel(src as number | null)}`,
-    `${t('tip_refclk_freq')}: ${freqText}`,
-    `${t('tip_refclk_ppm')}: ${ppmText}`,
-    `${t('tip_refclk_output')}: ${outText}`,
-    `${t('tip_refclk_state')}: ${t(STATUS_KEYS[state])}`,
-  ];
-  if (requested === 'external_forced') lines.push(t('tip_refclk_forced_warn'));
-  const tooltip = lines.join('\n');
-  const select = document.getElementById('select-refclk');
-  if (select) select.title = tooltip;
-  const out = document.getElementById('btn-refclk-out');
-  if (out) out.title = tooltip;
+  setText('refclk-d-requested', sourceLabel(requestedSrcCode(requested)));
+  setText('refclk-d-actual', sourceLabel(src as number | null));
+  setText('refclk-d-freq', isFinite(Number(freq)) && Number(freq) > 0
+    ? `${(Number(freq) / 1e6).toFixed(4)} MHz` : '—');
+  setText('refclk-d-ppm', ppmText);
+  setText('refclk-d-output', st.refclk_out ? t('on') : t('off'));
+  setText('refclk-d-state', `${t(STATUS_KEYS[state])}${requested === 'external_forced'
+    ? ` — ${t('tip_refclk_forced_warn')}` : ''}`);
+  setText('refclk-d-gnss', gnss.lock
+    ? `${t('status_locked')} (${gnss.sats ?? 0})` : t('status_nolock'));
+  setText('refclk-d-cal', cal > 0 ? `${(cal / 1e6).toFixed(4)} MHz`
+    : (st.calibrating ? '…' : '—'));
 
-  if (responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT') {
-    flashRefClockBox(state);
+  const btn = document.getElementById('btn-refclk-cal') as HTMLButtonElement | null;
+  if (btn) {
+    btn.textContent = st.calibrating ? t('refclk_calibrating') : t('refclk_calibrate');
+    btn.disabled = !!st.calibrating || !gnss.lock;
+    btn.title = !gnss.lock ? t('refclk_cal_need_gnss') : '';
   }
+}
+
+/** Update the steady-state data and the flash; fill the popover when it is open. */
+export function refreshRefClockHint(status: any, responseTo?: string): void {
+  lastStatus = status;
+  if (responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT') {
+    const { src } = activeActual(status);
+    flashRefClockBox(refClockStatus(String(status?.ref_clock ?? 'internal'),
+      src as number | null));
+  }
+  const pop = document.getElementById('refclk-popover');
+  if (pop && pop.style.display !== 'none') fillRefClockDetail();
+}
+
+export function openRefClockDetail(): void {
+  fillRefClockDetail();
+  const pop = document.getElementById('refclk-popover');
+  if (pop) pop.style.display = '';
+}
+
+export function closeRefClockDetail(): void {
+  const pop = document.getElementById('refclk-popover');
+  if (pop) pop.style.display = 'none';
+}
+
+/** GNSS 1PPS reference-clock calibration (backend runs it on a worker thread). */
+export function calibrateRefClock(): void {
+  const st = lastStatus;
+  if (st && st.calibrating) return;
+  send({ cmd: 'CAL_REFCLK', count: 10 });
+  if (st) { st.calibrating = true; fillRefClockDetail(); }
 }

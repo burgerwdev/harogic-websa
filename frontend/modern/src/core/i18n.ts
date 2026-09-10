@@ -337,3 +337,22 @@ Object.assign(dict.zh, {
   'tip_refclk_state': '状态',
   'tip_refclk_forced_warn': '警告：外部强制失锁不回落，参考丢失会导致整机频率失准。',
 });
+
+Object.assign(dict.en, {
+  'refclk_detail': 'Reference Clock',
+  'refclk_gnss': 'GNSS',
+  'refclk_cal': 'Calibration',
+  'refclk_calibrate': 'Calibrate',
+  'refclk_calibrating': 'Calibrating...',
+  'refclk_cal_need_gnss': 'GNSS is not locked; calibration needs 1PPS.',
+  'refclk_cal_failed': 'Calibration failed or timed out.',
+});
+Object.assign(dict.zh, {
+  'refclk_detail': '参考时钟',
+  'refclk_gnss': 'GNSS',
+  'refclk_cal': '校准',
+  'refclk_calibrate': '校准',
+  'refclk_calibrating': '校准中…',
+  'refclk_cal_need_gnss': 'GNSS 未锁定，校准需要 1PPS 信号。',
+  'refclk_cal_failed': '校准失败或超时。',
+});
