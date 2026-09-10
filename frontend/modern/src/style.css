@@ -395,7 +395,7 @@ input[type=number]:focus { outline: none; border-color: var(--text); }
 /* Trigger panel applies to RTA only: dim it elsewhere (same idea as the other mode rules) */
 .trigger-status.pass { color: #00c853; }
 .trigger-status.fail { color: #d9a300; }
-body:not(.rta-mode) #trigger-panel .group-body { pointer-events: none; opacity: 0.45; }
+body:not(.rta-mode) #trigger-panel .rta-only { pointer-events: none; opacity: 0.45; }
 #trigger-panel .cur-val { white-space: nowrap; }
 .limit-status.pass { color: #00c853; }
 .limit-status.fail { color: #ff5252; }

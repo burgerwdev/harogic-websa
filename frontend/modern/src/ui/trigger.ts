@@ -13,7 +13,8 @@ import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers } from '../dsp/peaks';
-import { onTriggerHit, setBackendWaiting } from './triggerEvents';
+import { onTriggerHit, setArmedAt, setBackendWaiting } from './triggerEvents';
+import { armSwpTrigger, disarmSwpTrigger, onSwpHit } from './swpTrigger';
 
 const POLL_MS = 300;
 const TICK_MS = 1000;
@@ -23,6 +24,7 @@ type Phase = 'free' | 'waiting' | 'hit';
 let phase: Phase = 'free';
 let since = 0;
 let hitAt = '';
+let hitLine = '';
 let lastFrames = -1;
 let armedConfirmed = false;
 let armLevel = -40;
@@ -90,18 +92,19 @@ function syncButton(): void {
 function syncOverlay(): void {
   const lines: string[] = [];
   if (phase === 'free') {
-    lines.push(t('trg_chip_free'));
+    // nothing while free running: the canvas is live, so there is no state to report
   } else if (phase === 'waiting') {
     lines.push(`${t('trg_chip_wait')} ${fmtElapsed(performance.now() - since)}`);
     if (armPeak !== null && armLevel > armPeak) {
       lines.push(`!${t('trg_never', { db: (armLevel - armPeak).toFixed(1) })}`);
     } else {
-      lines.push(t('trg_cross'));
+      lines.push(t(S.rtaMode ? 'trg_cross' : 'trg_swp_cross'));
     }
     if (armPeak !== null) lines.push(t('trg_peak', { v: armPeak.toFixed(1) }));
     if (S.trigPoi > 0) lines.push(t('trg_poi', { t: fmtTime(S.trigPoi) }));
   } else {
     lines.push(`${t('trg_chip_hit')} ${hitAt}`);
+    if (hitLine) lines.push(hitLine);
     lines.push(t('trg_hit_hint'));
   }
   const key = lines.join('|');
@@ -146,11 +149,11 @@ async function pollOnce(): Promise<void> {
     // race the command dispatch (it still reads 'bus'), and acting on that would undo the
     // arming that the user just asked for.
     const settling = performance.now() - lastArmAt < 2000;
-    if (!settling && backendArmed && phase === 'free') {
+    if (S.rtaMode && !settling && backendArmed && phase === 'free') {
       disarm();                            // armed elsewhere (reload / other client)
       return;
     }
-    if (!settling && !backendArmed && phase !== 'free') {
+    if (S.rtaMode && !settling && !backendArmed && phase !== 'free') {
       phase = 'free';                     // backend went back to free run (mode switch, reload)
       armedConfirmed = false;
       setBackendWaiting(false);
@@ -167,6 +170,7 @@ async function pollOnce(): Promise<void> {
       armLevel = Number(req.trigger_level ?? armLevel);
     }
     S.setTrigLevel(armLevel);
+      S.setTrigSource(backendArmed ? 'level' : 'bus');
     syncOverlay();
     renderAll();
   } catch {
@@ -178,12 +182,43 @@ function schedule(): void {
   window.setTimeout(() => { void pollOnce().finally(schedule); }, phase === 'waiting' ? POLL_MS : 900);
 }
 
+/**
+ * SWP software level trigger: the swept engine has no level trigger, so the same
+ * threshold/edge condition is evaluated across consecutive sweeps instead (the display
+ * keeps sweeping live until a crossing is found, then it freezes).
+ */
+function armSwept(): void {
+  const input = el<HTMLInputElement>('input-trg-level');
+  const level = parseFloat(input?.value ?? '');
+  if (!Number.isFinite(level)) return;
+  armLevel = level;
+  armPeak = peakOfDisplay();
+  S.setTrigLevel(level);
+  S.setTrigSource('level');                 // threshold line follows the armed source
+  S.setSwpEdge(edgeOf(selectValue('select-trg-edge')));
+  armSwpTrigger();
+  phase = 'waiting';
+  since = performance.now();
+  lastArmAt = since;
+  syncOverlay();
+  renderAll();
+}
+
+function selectValue(id: string): string {
+  return el<HTMLSelectElement>(id)?.value ?? '';
+}
+function edgeOf(v: string): 'rising' | 'falling' | 'double' {
+  return v === 'falling' ? 'falling' : v === 'double' ? 'double' : 'rising';
+}
+
 function arm(): void {
   const input = el<HTMLInputElement>('input-trg-level');
   const level = parseFloat(input?.value ?? '');
   if (!Number.isFinite(level)) return;
   armLevel = level;
   armPeak = peakOfDisplay();
+  S.setTrigLevel(level);
+  S.setTrigSource('level');                 // draw the threshold line while armed
   const sel = el<HTMLSelectElement>('select-trg-source');
   if (sel) sel.value = 'level';
   clearDisplay();                       // waiting must not look like live data
@@ -194,6 +229,7 @@ function arm(): void {
   S.setTrigWaiting(true);
   S.setTrigHit(false);
   lastArmAt = performance.now();
+  setArmedAt(lastArmAt);
   setBackendWaiting(false);
   send({ cmd: 'SET_TRIGGER', source: 'level', level });
   syncOverlay();
@@ -201,6 +237,8 @@ function arm(): void {
 }
 
 function disarm(): void {
+  disarmSwpTrigger();
+  S.setTrigSource('bus');                   // the line shows only while armed
   const sel = el<HTMLSelectElement>('select-trg-source');
   if (sel) sel.value = 'bus';
   send({ cmd: 'SET_TRIGGER', source: 'bus' });
@@ -239,6 +277,9 @@ export function initTrigger(): void {
   if (panel) applyI18n(panel);
   wireSelect('select-trg-source', 'source');
   wireSelect('select-trg-edge', 'edge');
+  el<HTMLSelectElement>('select-trg-edge')?.addEventListener('change', () => {
+    S.setSwpEdge(edgeOf(selectValue('select-trg-edge')));
+  });
   wireSelect('select-trg-out', 'out');
   wireSelect('select-trg-outpolarity', 'outpolarity');
   wireNumber('input-trg-level', 'level');
@@ -251,7 +292,8 @@ export function initTrigger(): void {
 
   button()?.addEventListener('click', () => {
     if (phase === 'waiting') { disarm(); return; }
-    arm();                               // "Capture again" re-arms the same way
+    if (S.rtaMode) arm();                // hardware device trigger
+    else armSwept();                     // software trigger on consecutive sweeps
   });
   el('btn-trg-free')?.addEventListener('click', disarm);
   el('btn-trg-from-mkr')?.addEventListener('click', () => {
@@ -274,7 +316,15 @@ export function initTrigger(): void {
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && phase !== 'free') disarm();
   });
+  onSwpHit((freqHz, level) => {
+    phase = 'hit';
+    hitAt = fmtClock(new Date());
+    hitLine = t('trg_hit_level', { f: freqHz >= 1e9 ? `${(freqHz / 1e9).toFixed(4)} GHz` : `${(freqHz / 1e6).toFixed(3)} MHz`, v: level.toFixed(1) });
+    syncOverlay();
+    renderAll();
+  });
   onTriggerHit(() => {
+    if (!S.rtaMode) return;                    // SWP has its own software detection
     // packet arrived while armed -> the capture is on screen right now
     phase = 'hit';
     hitAt = fmtClock(new Date());
@@ -282,7 +332,11 @@ export function initTrigger(): void {
     syncOverlay();
     renderAll();
   });
-  window.setInterval(() => { if (phase === 'waiting') syncOverlay(); }, TICK_MS);
+  window.setInterval(() => {
+    if (phase !== 'waiting') return;
+    syncOverlay();
+    renderAll();            // repaint so the elapsed seconds actually tick
+  }, TICK_MS);
   onLangChange(() => { syncButton(); lastOverlayKey = ''; syncOverlay(); renderAll(); });
   syncButton();
   schedule();

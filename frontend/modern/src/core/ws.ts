@@ -23,6 +23,7 @@ import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
 import { noteFrameArrived } from '../ui/triggerEvents';
+import { evaluateSwpTrigger } from '../ui/swpTrigger';
 import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
@@ -127,6 +128,7 @@ export function connectWS() {
       updateInfoBar();
     }
     if (points < 2) return;
+    if (S.swpHold) return;               // SWP software capture: hold the swept display
     if (magic === 'RTAF') {
       const processAt = performance.now();
       if (processAt - lastRtaProcess < 30) return;
@@ -275,6 +277,7 @@ export function connectWS() {
       if (version !== S.freqVersion) return;
       const raw = new Float32Array(event.data, 16, points);
       processTraces(raw);
+      if (!S.rtaMode) evaluateSwpTrigger();  // software level trigger on consecutive sweeps
       noteFrameArrived();                    // armed: this trace IS the capture
       const now = performance.now();
       if (now - lastRender >= 33) {

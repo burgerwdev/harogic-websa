@@ -88,6 +88,16 @@ export let trigSource = 'bus';
 export function setTrigSource(v: string) { trigSource = v; }
 export let trigLevel = -40.0;
 export function setTrigLevel(v: number) { trigLevel = v; }
+// SWP software level trigger: the swept engine has no level trigger, so the condition is
+// evaluated in software across consecutive sweeps (see ui/swpTrigger.ts).
+export let swpArmed = false;
+export function setSwpArmed(v: boolean) { swpArmed = v; }
+export let swpHold = false;
+export function setSwpHold(v: boolean) { swpHold = v; }
+export let swpPrev: Float32Array | null = null;
+export function setSwpPrev(v: Float32Array | null) { swpPrev = v; }
+export let swpEdge: 'rising' | 'falling' | 'double' = 'rising';
+export function setSwpEdge(v: 'rising' | 'falling' | 'double') { swpEdge = v; }
 export let trigPoi = 0.0;
 export function setTrigPoi(v: number) { trigPoi = v; }
 export let trigArmed = false;

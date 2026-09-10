@@ -531,6 +531,8 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'tip_version': 'Frontend version' });
 Object.assign(dict.zh, { 'tip_version': '前端版本' });
+Object.assign(dict.en, {'trg_swp_cross': 'needs a level crossing between sweeps', 'trg_hit_level': '{f} {v} dBm crossed', 'tip_trg_edge': 'Which threshold edge starts a capture; in SWP the crossing is taken between consecutive sweeps'});
+Object.assign(dict.zh, {'trg_swp_cross': '需要相邻两次扫描间出现电平穿越', 'trg_hit_level': '{f} {v} dBm 发生穿越', 'tip_trg_edge': '以哪个边沿启动捕获；普通模式下穿越取自相邻两次扫描之间'});
 Object.assign(dict.en, { 'rail_trigger': 'TRG' });
 Object.assign(dict.zh, { 'rail_trigger': '触发' });
 Object.assign(dict.en, {'trg_btn_capture': 'Capture', 'trg_btn_stop': 'Stop', 'trg_btn_again': 'Capture again', 'trg_chip_free': 'FREE', 'trg_chip_wait': 'WAIT', 'trg_chip_hit': 'TRIG', 'trg_never': 'NO TRIG: +{db} dB > pk', 'trg_cross': 'needs a new crossing', 'trg_peak': 'pk {v} dBm', 'trg_hit_hint': 'captured'});
