@@ -1137,6 +1137,12 @@ export function bindActions() {
   document.querySelectorAll('[data-marker-select]').forEach(el => {
     el.addEventListener('click', () => selectMarker(parseInt((el as HTMLElement).dataset.markerSelect || '1')));
   });
+  // The marker table's active-arrow dispatches this so the table can switch the active
+  // marker without importing controls (and syncs the right-hand Marker buttons).
+  document.addEventListener('websa:marker-active', (event) => {
+    const id = (event as CustomEvent<{ id: number }>).detail?.id;
+    if (id) selectMarker(Number(id));
+  });
   document.querySelectorAll('[data-scale]').forEach(el => {
     el.addEventListener('click', () => setScale(parseFloat((el as HTMLElement).dataset.scale || '10')));
   });

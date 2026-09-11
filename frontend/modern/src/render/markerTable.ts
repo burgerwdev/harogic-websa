@@ -15,6 +15,17 @@ export function initMarkerTable() {
     tr.dataset.mid = String(m.id);
 
     const td0 = document.createElement('td');
+    // Active-marker indicator: click it to make this the active marker (the same as the
+    // right-hand Marker buttons). The M toggle next to it still switches on/off.
+    const activeBtn = document.createElement('button');
+    activeBtn.className = 'mk-active';
+    activeBtn.type = 'button';
+    activeBtn.title = 'Set as active marker';
+    activeBtn.textContent = '\u25b6';
+    activeBtn.style.setProperty('--marker-color', `var(--m${mi + 1})`);
+    activeBtn.onclick = () => document.dispatchEvent(
+      new CustomEvent('websa:marker-active', { detail: { id: m.id } }));
+    td0.appendChild(activeBtn);
     const toggle = document.createElement('button');
     toggle.className = 'marker-toggle';
     toggle.type = 'button';
@@ -69,6 +80,8 @@ export function updateMarkerTable(powers: Float32Array | null) {
     if (!row) return;
     const cells = row.children;
     const markerToggle = cells[0].querySelector('.marker-toggle') as HTMLButtonElement;
+    const activeBtn = cells[0].querySelector('.mk-active') as HTMLButtonElement | null;
+    if (activeBtn) activeBtn.classList.toggle('active', m.id === S.activeMkrId);
     const markerOn = m.enabled && m.mode !== 'OFF';
     markerToggle.classList.toggle('active', markerOn);
     markerToggle.classList.toggle('tracking', markerOn && m.tracking);
