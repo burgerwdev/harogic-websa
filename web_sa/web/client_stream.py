@@ -27,20 +27,25 @@ class ClientStream:
 
     Control JSON messages are bounded and STATUS is coalesced. Frequency frames are
     retained separately so a dropped power frame can never orphan a new frequency axis.
-    High-rate POWR/RTAF frames use latest-wins semantics.
+    High-rate POWR/RTAF frames use latest-wins semantics. SDR audio (AUDF) is kept in a
+    small FIFO so it is never reordered/dropped in normal operation (drop-oldest only on
+    overrun, to bound latency).
     """
 
     CONTROL_LIMIT = 32
+    AUDIO_LIMIT = 80          # ~1.6 s of 20 ms frames
 
     def __init__(self, ws):
         self.ws = ws
         self._control: deque[str] = deque()
         self._freq: bytes | None = None
         self._data: bytes | None = None
+        self._audio: deque[bytes] = deque()
         self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
         self.dropped_frames = 0
         self.dropped_control = 0
+        self.dropped_audio = 0
         self.closed = False
 
     def start(self) -> None:
@@ -49,8 +54,14 @@ class ClientStream:
     def publish_bytes(self, frame: bytes) -> None:
         if self.closed:
             return
-        if frame[:4] == b'FREQ':
+        magic = frame[:4]
+        if magic == b'FREQ':
             self._freq = frame
+        elif magic == b'AUDF':
+            self._audio.append(frame)
+            if len(self._audio) > self.AUDIO_LIMIT:
+                self._audio.popleft()
+                self.dropped_audio += 1
         else:
             if self._data is not None:
                 self.dropped_frames += 1
@@ -91,6 +102,9 @@ class ClientStream:
                     elif self._freq is not None:
                         frame, self._freq = self._freq, None
                         await asyncio.wait_for(self.ws.send_bytes(frame), timeout=SEND_TIMEOUT)
+                    elif self._audio:
+                        await asyncio.wait_for(
+                            self.ws.send_bytes(self._audio.popleft()), timeout=SEND_TIMEOUT)
                     elif self._data is not None:
                         frame, self._data = self._data, None
                         await asyncio.wait_for(self.ws.send_bytes(frame), timeout=SEND_TIMEOUT)

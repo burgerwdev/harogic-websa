@@ -52,6 +52,7 @@ _COMMANDS = {
     'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR', 'SET_WINDOW',
     'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT', 'SET_MODE', 'SET_RTA', 'SET_HARM',
     'SET_PNM','SET_DETECTOR','SET_TRIGGER',
+    'SET_SDR', 'SET_SDR_TUNE', 'SET_SDR_DEMOD',
 
 }
 
@@ -177,9 +178,28 @@ def _validate_command(dev, cmd, data):
         if not isinstance(data.get('on'), bool):
             raise CommandError('on must be a boolean', 'bool_required', key='on')
     elif cmd == 'SET_MODE':
-        mode = _choice(data, 'mode', ('std', 'harmonic', 'pnm', 'rta'), required=True)
+        mode = _choice(data, 'mode', ('std', 'harmonic', 'pnm', 'rta', 'sdr'), required=True)
         if mode == 'pnm' and not dev.state.pnm_supported:
             raise CommandError('phase-noise measurement is not supported', 'pnm_unsupported')
+    elif cmd == 'SET_SDR':
+        if caps is None:
+            raise CommandError('device capabilities are unavailable', 'caps_unavailable')
+        _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
+        _integer(data, 'decimate', minimum=1, maximum=2048)
+        if 'center' not in data and 'decimate' not in data:
+            raise CommandError('SET_SDR requires center or decimate', 'sdr_requires_param')
+    elif cmd == 'SET_SDR_TUNE':
+        if caps is None:
+            raise CommandError('device capabilities are unavailable', 'caps_unavailable')
+        _number(data, 'listen', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz, required=True)
+    elif cmd == 'SET_SDR_DEMOD':
+        _choice(data, 'mode', ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'))
+        _number(data, 'ifbw', minimum=100.0, maximum=500000.0)
+        _number(data, 'squelch', minimum=-150.0, maximum=0.0)
+        _number(data, 'volume', minimum=0.0, maximum=2.0)
+        _number(data, 'pitch', minimum=200.0, maximum=2000.0)
+        if 'agc' in data and not isinstance(data['agc'], bool):
+            raise CommandError('agc must be a boolean', 'bool_required', key='agc')
     elif cmd == 'SET_RTA':
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
@@ -291,6 +311,12 @@ async def _dispatch(dev, cmd, data) -> bool:
             raise CommandError(
                 f'{cmd} is not available while the {sess.name} measurement is active',
                 'cmd_unavailable_measurement', cmd=cmd, session=sess.name)
+    # In SDR mode the demod chain owns the configuration: reject SWP-only commands
+    # (the SDR-specific ones are SET_SDR / SET_SDR_TUNE / SET_SDR_DEMOD).
+    if s.mode == 'sdr' and cmd in (
+            'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR',
+            'SET_WINDOW', 'SET_DETECTOR', 'SET_TRIGGER', 'SET_RTA'):
+        raise CommandError(f'{cmd} is not available in SDR mode', 'sdr_unsupported', cmd=cmd)
 
     async def _hw_call(fn, *a, timeout=20.0, **kw):
         try:
@@ -308,7 +334,7 @@ async def _dispatch(dev, cmd, data) -> bool:
 
     async def _configure_active():
         sess = dev.session
-        if sess is not None and sess.name == 'rta':
+        if sess is not None and sess.name in ('rta', 'sdr'):
             await _hw_call(sess.reconfigure)
         else:
             await _configure_swp()
@@ -386,6 +412,12 @@ async def _dispatch(dev, cmd, data) -> bool:
     if cmd == 'SET_REF':
         mode = data.get('mode', 'manual')
         sess = dev.session
+        if sess is not None and sess.name == 'sdr':
+            if mode == 'manual' and 'ref' in data:
+                s.ref_level = data['ref']
+            s.ref_mode = mode
+            await _hw_call(sess.reconfigure)
+            return True
         if sess is not None and sess.name == 'rta':
             await _hw_call(sess.set_reference, mode=mode, ref=data.get('ref'))
             return True
@@ -479,14 +511,37 @@ async def _dispatch(dev, cmd, data) -> bool:
     if cmd == 'SET_MODE':
         from ..measurements import make_session
         name = data.get('mode', 'std')
-        if name in ('std', 'harmonic', 'pnm', 'rta'):
+        if name in ('std', 'harmonic', 'pnm', 'rta', 'sdr'):
             def _sw():
                 old_sess = dev.session
                 if old_sess is not None and old_sess.name == 'rta':
                     old_sess._ready = False   # stop the RTA worker loop first (best-effort)
+                if old_sess is not None and old_sess.name == 'sdr':
+                    old_sess._ready = False   # stop the SDR worker loop first
                 dev.set_session(make_session(dev, name))
             await _hw_call(_sw)
             return True
+    if cmd == 'SET_SDR':
+        sess = dev.session
+        if sess is None or sess.name != 'sdr':
+            raise CommandError('SET_SDR requires SDR mode', 'sdr_mode_required')
+        await _hw_call(sess.set_params, center=data.get('center'),
+                       decimate=data.get('decimate'))
+        return True
+    if cmd == 'SET_SDR_TUNE':
+        sess = dev.session
+        if sess is None or sess.name != 'sdr':
+            raise CommandError('SET_SDR_TUNE requires SDR mode', 'sdr_mode_required')
+        await _hw_call(sess.set_tune, data['listen'])
+        return True
+    if cmd == 'SET_SDR_DEMOD':
+        sess = dev.session
+        if sess is None or sess.name != 'sdr':
+            raise CommandError('SET_SDR_DEMOD requires SDR mode', 'sdr_mode_required')
+        await _hw_call(sess.set_demod, mode=data.get('mode'), if_bw=data.get('ifbw'),
+                       squelch=data.get('squelch'), volume=data.get('volume'),
+                       agc=data.get('agc'), pitch=data.get('pitch'))
+        return True
     if cmd == 'SET_RTA':
         sess = dev.session
         if sess is None or sess.name != 'rta':

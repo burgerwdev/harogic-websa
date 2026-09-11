@@ -11,16 +11,31 @@ from __future__ import annotations
 import os
 import sys
 import time
-from ctypes import (POINTER, Structure, addressof, byref, c_bool, c_double, c_float,
-                    c_int, c_int16, c_uint32, c_uint64, c_void_p, cast, memmove)
+from ctypes import (
+    POINTER,
+    Structure,
+    addressof,
+    byref,
+    c_bool,
+    c_double,
+    c_float,
+    c_int,
+    c_int16,
+    c_uint32,
+    c_uint64,
+    c_void_p,
+    cast,
+    memmove,
+)
 
 import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import htra_api as T  # noqa: E402
 from tinysa import TinySA  # noqa: E402
+
+import htra_api as T  # noqa: E402
 
 
 class AMDemodParam(Structure):

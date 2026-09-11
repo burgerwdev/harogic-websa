@@ -16,7 +16,7 @@ ERROR_LOG_INTERVAL = 5.0
 
 
 def _acquisition_timeout(dev) -> float:
-    if dev.state.mode == 'rta':
+    if dev.state.mode in ('rta', 'sdr'):
         return 5.0
     estimated = float(dev.state.actual.get('est_min', 0.0) or 0.0)
     configured = dev.state.sweep_time if dev.state.sweep_time_mode == 7 else 0.0
@@ -35,6 +35,7 @@ async def publisher(app, dev):
     last_error_log = 0.0
     while True:
         t0 = time.monotonic()
+        frames = []
         clients = app[WS_CLIENTS]
         if clients:
             if t0 - last_status_push >= STATUS_PUSH_INTERVAL:
@@ -90,7 +91,14 @@ async def publisher(app, dev):
         dt = time.monotonic() - t0
         if clients:
             dev.measure_sweep(dt)
-        await asyncio.sleep(max(0.002, PUBLISH_MIN_INTERVAL - dt))
+        if dev.state.mode == 'sdr':
+            # The IQS Adaptive stream is paced by IQS_GetIQStream_PM1 itself (it blocks
+            # until a packet is ready). Any extra sleep accumulates a backlog and the
+            # device then returns BusDataError on every fetch. Only back off when a step
+            # produced nothing (transient error), to avoid a busy spin.
+            await asyncio.sleep(0.0 if frames else 0.002)
+        else:
+            await asyncio.sleep(max(0.002, PUBLISH_MIN_INTERVAL - dt))
 
 
 def _send_bytes(app, frame):

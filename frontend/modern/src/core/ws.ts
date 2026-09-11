@@ -13,6 +13,7 @@ import {
   syncRefLevelStatus,
   syncScaleButtons,
   syncSwpSpanStep,
+  syncSdrPanel,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
@@ -30,6 +31,7 @@ import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
+import { pushSdrAudio, setSdrAudioEnabled } from '../audio/sdrAudio';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -94,9 +96,12 @@ export function connectWS() {
       // First load: restore saved mode (default std). A leftover RTA session on the
       // backend would otherwise push RTAF frames with no SWP data -> blank spectrum.
       const saved = localStorage.getItem('web-sa-mode');
-      const wantRta = saved === 'rta';
-      send({ cmd: 'SET_MODE', mode: wantRta ? 'rta' : 'std' });
+      const wantMode = saved === 'rta' ? 'rta' : saved === 'sdr' ? 'sdr' : 'std';
+      const wantRta = wantMode !== 'std';
+      send({ cmd: 'SET_MODE', mode: wantMode });
       if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
+      else { S.setViewMode('rta'); S.setRtaMode(true); }
+      if (wantMode === 'sdr') setSdrAudioEnabled(true);
     }
   };
   ws.onerror = () => ws?.close();
@@ -127,6 +132,14 @@ export function connectWS() {
     if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
     const view = new DataView(event.data, 0, 16);
     const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+    if (magic === 'AUDF') {
+      // SDR audio: magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM
+      if (event.data.byteLength < 16) return;
+      const rate = view.getUint32(8, true);
+      const samples = view.getUint32(12, true);
+      pushSdrAudio(event.data, 16, samples, rate);
+      return;
+    }
     const version = view.getUint32(4, true);
     const points = view.getUint32(8, true);
     const sweepMsHdr = view.getFloat32(12, true);
@@ -325,6 +338,7 @@ export function updateStatus(s: any) {
   S.setSweepMs(s.sweep_ms || 0);
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
+  syncSdrPanel(s);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
   syncRefLevelStatus(s.response_to);
   syncAvgUI();

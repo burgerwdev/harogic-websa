@@ -31,3 +31,6 @@ libhtraapi.dylib
 .idea/
 .vscode/
 *.swp
+
+# SDR probe artifacts
+tools/sdr_probe/plots/

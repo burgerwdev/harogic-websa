@@ -30,6 +30,7 @@ import { canvasColors, getTheme } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
+import { setSdrAudioEnabled } from '../audio/sdrAudio';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -380,13 +381,16 @@ export function toggleActiveMarkerTracking() {
 
 // Graph mode changes are committed only after the backend STATUS confirms them.
 let graphModePending = false;
-let graphModeTarget: 'std' | 'rta' | '' = '';
+let graphModeTarget: 'std' | 'rta' | 'sdr' = 'std';
 let confirmedGraphMode = '';
 
+export function currentGraphMode(): string { return confirmedGraphMode || 'std'; }
+
 export function setGraphMode(mode: string) {
-  const wantsRta = mode === 'rta';
-  if (graphModePending || wantsRta === S.rtaMode) return;
-  if (wantsRta && S.measOn) {
+  const target: 'std' | 'rta' | 'sdr' =
+    mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
+  if (graphModePending || target === confirmedGraphMode) return;
+  if (target !== 'std' && S.measOn) {
     exitMeasModePub(false);
     S.setMeasOn(false);
     const button = document.getElementById('btn-meas-onoff');
@@ -394,34 +398,43 @@ export function setGraphMode(mode: string) {
     setMeasButtons(false);
   }
   graphModePending = true;
-  graphModeTarget = wantsRta ? 'rta' : 'std';
+  graphModeTarget = target;
   const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
+  const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
   if (modeButton) modeButton.disabled = true;
-  send({ cmd: 'SET_MODE', mode: wantsRta ? 'rta' : 'std' });
+  if (sdrButton) sdrButton.disabled = true;
+  // Clicking the SDR button is a user gesture: start/resume browser audio here.
+  setSdrAudioEnabled(target === 'sdr');
+  send({ cmd: 'SET_MODE', mode: target });
 }
 
 export function releaseGraphModePending() {
   graphModePending = false;
-  graphModeTarget = '';
+  graphModeTarget = 'std';
   const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
+  const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
   if (modeButton) modeButton.disabled = false;
+  if (sdrButton) sdrButton.disabled = false;
 }
 
 export function syncGraphModeStatus(mode: string) {
-  if (mode !== 'std' && mode !== 'rta') return;
-  const isRta = mode === 'rta';
+  if (mode !== 'std' && mode !== 'rta' && mode !== 'sdr') return;
   if (graphModePending && mode !== graphModeTarget) return;
   if (graphModePending) releaseGraphModePending();
   if (confirmedGraphMode === mode) return;
   confirmedGraphMode = mode;
-  S.setRtaMode(isRta);
-  S.setViewMode(isRta ? 'rta' : 'std');
+  const isRtaLike = mode === 'rta' || mode === 'sdr';
+  const isSdr = mode === 'sdr';
+  S.setRtaMode(isRtaLike);
+  S.setViewMode(isRtaLike ? 'rta' : 'std');
   const modeButton = document.getElementById('btn-mode-rta');
-  if (modeButton) modeButton.classList.toggle('active', isRta);
-  localStorage.setItem('web-sa-mode', isRta ? 'rta' : 'std');
-  if (isRta) restoreRtaDensityCfg();
+  if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
+  const sdrButton = document.getElementById('btn-mode-sdr');
+  if (sdrButton) sdrButton.classList.toggle('active', isSdr);
+  localStorage.setItem('web-sa-mode', mode);
+  if (isRtaLike) restoreRtaDensityCfg();
 
-  document.body.classList.toggle('rta-mode', isRta);
+  document.body.classList.toggle('rta-mode', isRtaLike);
   const rtaDisable = [
     'select-smooth', 'select-refwin', 'btn-normalize', 'select-window',
     'select-detector',
@@ -429,16 +442,18 @@ export function syncGraphModeStatus(mode: string) {
   ];
   rtaDisable.forEach((id) => {
     const element = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
-    if (element) element.disabled = isRta;
+    if (element) element.disabled = isRtaLike;
   });
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
-  if (resetButton) resetButton.disabled = isRta;
+  if (resetButton) resetButton.disabled = isRtaLike;
   const rtaFrequency = document.getElementById('rta-freq-settings');
   const swpFrequency = document.getElementById('swp-freq-settings');
-  if (rtaFrequency) rtaFrequency.style.display = isRta ? '' : 'none';
-  if (swpFrequency) swpFrequency.style.display = isRta ? 'none' : '';
-  if (isRta) S.resetWaterfall();
+  const sdrSettings = document.getElementById('sdr-settings');
+  if (rtaFrequency) rtaFrequency.style.display = mode === 'rta' ? '' : 'none';
+  if (swpFrequency) swpFrequency.style.display = mode === 'std' ? '' : 'none';
+  if (sdrSettings) sdrSettings.style.display = isSdr ? '' : 'none';
+  if (isRtaLike) S.resetWaterfall();
   renderAll();
 }
 
@@ -499,6 +514,81 @@ export function applyRta() {
   clearRtaAccum();
   beginFrequencyCommit('rta-freq-settings');
   send({ cmd: 'SET_RTA', center: window!.center, span: window!.span });
+}
+
+// ── SDR mode controls ──
+
+function sdrNumber(id: string, fallback: number): number {
+  const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+  const v = el ? parseFloat(el.value) : NaN;
+  return isFinite(v) ? v : fallback;
+}
+
+function sdrAgcOn(): boolean {
+  const el = document.getElementById('btn-sdr-agc');
+  return el ? el.classList.contains('active') : true;
+}
+
+export function applySdr() {
+  const centerMhz = sdrNumber('input-sdr-center', 1000);
+  const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
+  send({ cmd: 'SET_SDR', center: centerMhz * 1e6, decimate });
+}
+
+export function applySdrTune() {
+  const listenMhz = sdrNumber('input-sdr-listen', 1000);
+  send({ cmd: 'SET_SDR_TUNE', listen: listenMhz * 1e6 });
+}
+
+export function applySdrDemod() {
+  const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
+  const ifbw = sdrNumber('select-sdr-ifbw', 6000);
+  const volume = sdrNumber('input-sdr-volume', 0.8);
+  const squelch = sdrNumber('input-sdr-squelch', -110);
+  send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn() });
+}
+
+export function toggleSdrAgc(el: HTMLElement) {
+  const on = !el.classList.contains('active');
+  el.classList.toggle('active', on);
+  el.textContent = on ? t('on') : t('off');
+  send({ cmd: 'SET_SDR_DEMOD', agc: on });
+}
+
+// SDR status -> panel readouts (called on every STATUS)
+function sdrSet(id: string, value: string) {
+  const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+  if (el && document.activeElement !== el) el.value = value;
+}
+
+export function syncSdrPanel(s: any) {
+  const sdr = s?.sdr;
+  if (!sdr) return;
+  sdrSet('input-sdr-center', (Number(sdr.center) / 1e6).toFixed(4));
+  sdrSet('select-sdr-decimate', String(sdr.decimate));
+  sdrSet('input-sdr-listen', (Number(sdr.listen) / 1e6).toFixed(4));
+  sdrSet('select-sdr-demod', sdr.demod);
+  sdrSet('select-sdr-ifbw', String(Math.round(Number(sdr.if_bw))));
+  sdrSet('input-sdr-volume', String(sdr.volume));
+  sdrSet('input-sdr-squelch', String(Math.round(Number(sdr.squelch))));
+  const agc = document.getElementById('btn-sdr-agc');
+  if (agc) {
+    agc.textContent = sdr.agc ? t('on') : t('off');
+    agc.classList.toggle('active', !!sdr.agc);
+  }
+  const lvl = document.getElementById('cur-sdr-level');
+  if (lvl) lvl.textContent = Number.isFinite(sdr.level_dbfs) ? sdr.level_dbfs.toFixed(1) + ' dBFS' : '';
+  const adm = document.getElementById('cur-sdr-adm');
+  if (adm) {
+    const m = sdr.adm || {};
+    if (m.kind === 'am') {
+      adm.textContent = `AM m=${(m.mod_depth ?? 0).toFixed(0)}%  SINAD ${(m.sinad ?? 0).toFixed(1)}  SNR ${(m.snr ?? 0).toFixed(1)} dB`;
+    } else if (m.kind === 'fm') {
+      adm.textContent = `FM dev=${(m.deviation ?? 0).toFixed(0)} Hz  SINAD ${(m.sinad ?? 0).toFixed(1)}  SNR ${(m.snr ?? 0).toFixed(1)} dB`;
+    } else {
+      adm.textContent = '';
+    }
+  }
 }
 export function toggleWaterfall() {
   S.setWaterfallOn(!S.waterfallOn);
@@ -753,8 +843,13 @@ export function bindActions() {
     'markers-all': () => toggleMarkersAll(),
     'marker-tracking': () => toggleActiveMarkerTracking(),
     'set-sweep': () => { syncSweepInput(); setSweepSpeed(); },
-    'toggle-rta': () => setGraphMode(S.rtaMode ? 'swp' : 'rta'),
+    'toggle-rta': () => setGraphMode(currentGraphMode() === 'rta' ? 'swp' : 'rta'),
     'apply-rta': () => applyRta(),
+    'toggle-sdr': () => setGraphMode(currentGraphMode() === 'sdr' ? 'swp' : 'sdr'),
+    'apply-sdr': () => applySdr(),
+    'apply-sdr-tune': () => applySdrTune(),
+    'set-sdr-demod': () => applySdrDemod(),
+    'toggle-sdr-agc': (el) => toggleSdrAgc(el),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
@@ -785,11 +880,27 @@ export function bindActions() {
   const selectOnFocus = [
     'input-center', 'input-span', 'input-start', 'input-stop', 'input-rta-center',
     'input-rbw', 'input-vbw', 'input-pnm', 'input-span-step',
+    'input-sdr-center', 'input-sdr-listen',
   ];
   for (const id of selectOnFocus) {
     const input = document.getElementById(id) as HTMLInputElement | null;
     input?.addEventListener('focus', () => requestAnimationFrame(() => input.select()));
   }
+
+  // SDR demod panel: ranges commit on change (not on every drag pixel), and the
+  // frequency inputs commit on Enter.
+  ['input-sdr-volume', 'input-sdr-squelch'].forEach((id) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el) el.addEventListener('change', () => applySdrDemod());
+  });
+  const sdrCenter = document.getElementById('input-sdr-center') as HTMLInputElement | null;
+  if (sdrCenter) sdrCenter.addEventListener('keydown', (ev) => {
+    if ((ev as KeyboardEvent).key === 'Enter') applySdr();
+  });
+  const sdrListen = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+  if (sdrListen) sdrListen.addEventListener('keydown', (ev) => {
+    if ((ev as KeyboardEvent).key === 'Enter') applySdrTune();
+  });
 
   // Special bindings: trace tab / meas tab / marker select / scale / peakthr input
   document.querySelectorAll('[data-trace-tab]').forEach(el => {

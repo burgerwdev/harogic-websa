@@ -19,8 +19,9 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
 
-import htra_api as T  # noqa: E402
 from ctypes import pointer  # noqa: E402
+
+import htra_api as T  # noqa: E402
 
 
 def open_device():

@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
 import time
-from ctypes import POINTER, addressof, byref, cast, c_int16, c_void_p, memmove
+from ctypes import POINTER, addressof, byref, c_int16, c_void_p, cast, memmove
 
 import numpy as np
 
@@ -21,8 +21,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import htra_api as T  # noqa: E402
 from tinysa import TinySA  # noqa: E402
+
+import htra_api as T  # noqa: E402
 
 PLOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plots')
 os.makedirs(PLOTS, exist_ok=True)
@@ -71,10 +72,7 @@ def capture(dev, center, decimate, trigger_len, dc_cancel=0):
         st = T.dll.IQS_GetIQStream_PM1(byref(dev), byref(stream))
         if st != 0:
             raise RuntimeError(f'IQS_GetIQStream_PM1 status={st} packet={i}')
-        if i == int(info.PacketCount) - 1 and total % pkt != 0:
-            n = total % pkt
-        else:
-            n = pkt
+        n = total % pkt if (i == int(info.PacketCount) - 1 and total % pkt != 0) else pkt
         src = cast(stream.AlternIQStream, c_void_p).value
         memmove(addressof(buf) + i * pkt * 2 * 2, src, n * 2 * 2)
     T.dll.IQS_BusTriggerStop(byref(dev))

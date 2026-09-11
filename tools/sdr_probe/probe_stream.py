@@ -7,15 +7,14 @@ from __future__ import annotations
 import os
 import sys
 import time
-from ctypes import POINTER, byref, cast, c_int16, c_void_p
-
-import numpy as np
+from ctypes import POINTER, byref, c_int16, c_void_p, cast
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import htra_api as T  # noqa: E402
 from tinysa import TinySA  # noqa: E402
+
+import htra_api as T  # noqa: E402
 
 CENTER, TONE = 100e6, 100.2e6
 

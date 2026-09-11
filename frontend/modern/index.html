@@ -105,6 +105,7 @@
           <div class="param-row"><label data-i18n="mode">Mode</label>
             <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
             <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
+            <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive (demod + audio)">SDR</button>
           </div>
         </div>
       </div>
@@ -172,6 +173,58 @@
             <button class="btn span-step-button" id="btn-swp-span-down" data-action="swp-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
             <button class="btn span-step-button" id="btn-swp-span-up" data-action="swp-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button>
             <button class="btn span-full-button" data-action="full-span" data-i18n="full_span">Full Span</button></div>
+          </div>
+          <div id="sdr-settings" style="display:none;">
+            <div class="param-row"><label>Center</label><input type="number" id="input-sdr-center" value="1000" step="any" title="Wideband center (MHz)">
+              <span class="cur-val">MHz</span>
+              <button class="btn" data-action="apply-sdr">Set</button></div>
+            <div class="param-row"><label>Bandwidth</label>
+              <select id="select-sdr-decimate" data-action="apply-sdr" title="IQ capture bandwidth">
+                <option value="1">50 MHz</option>
+                <option value="2">25 MHz</option>
+                <option value="4">12.5 MHz</option>
+                <option value="8">6.25 MHz</option>
+                <option value="16">3.13 MHz</option>
+                <option value="32" selected>1.56 MHz</option>
+                <option value="64">781 kHz</option>
+                <option value="128">391 kHz</option>
+                <option value="256">195 kHz</option>
+                <option value="512">97.7 kHz</option>
+                <option value="1024">48.8 kHz</option>
+                <option value="2048">24.4 kHz</option>
+              </select></div>
+            <div class="param-row"><label>Listen</label><input type="number" id="input-sdr-listen" value="1000.2" step="any" title="Demod frequency (MHz)">
+              <span class="cur-val">MHz</span>
+              <button class="btn" data-action="apply-sdr-tune">Set</button></div>
+            <div class="param-row"><label>Demod</label>
+              <select id="select-sdr-demod" data-action="set-sdr-demod">
+                <option value="am" selected>AM</option>
+                <option value="fm">FM</option>
+                <option value="nfm">NFM</option>
+                <option value="wfm">WFM</option>
+                <option value="usb">USB</option>
+                <option value="lsb">LSB</option>
+                <option value="cw">CW</option>
+              </select>
+              <label style="min-width:auto;">IF BW</label>
+              <select id="select-sdr-ifbw" data-action="set-sdr-demod">
+                <option value="500">500 Hz</option>
+                <option value="2400">2.4 kHz</option>
+                <option value="3000">3 kHz</option>
+                <option value="6000" selected>6 kHz</option>
+                <option value="12000">12 kHz</option>
+                <option value="25000">25 kHz</option>
+                <option value="50000">50 kHz</option>
+                <option value="100000">100 kHz</option>
+                <option value="180000">180 kHz</option>
+              </select></div>
+            <div class="param-row"><label>Volume</label>
+              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
+              <span class="cur-val" id="cur-sdr-level"></span></div>
+            <div class="param-row"><label>Squelch</label>
+              <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
+              <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" title="Audio AGC">On</button></div>
+            <div class="param-row"><span class="cur-val" id="cur-sdr-adm"></span></div>
           </div>
         </div>
       </div>

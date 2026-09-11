@@ -23,10 +23,19 @@ import serial
 class TinySA:
     PROMPT = 'ch> '
 
-    def __init__(self, port='/dev/ttyACM0', baud=115200, timeout=5.0):
+    def __init__(self, port='/dev/ttyACM0', baud=115200, timeout=2.0):
         self.ser = serial.Serial(port, baud, timeout=timeout)
         time.sleep(0.3)
         self.ser.reset_input_buffer()
+        # Stop any running sweep/output as early as possible: the firmware CLI is slow
+        # to answer while a sweep is active, which makes `sync` look like a hang.
+        try:
+            self.ser.write(b'pause\r'); self.ser.flush()
+            time.sleep(0.2)
+            self.ser.write(b'output off\r'); self.ser.flush()
+            time.sleep(0.2)
+        except Exception:
+            pass
         self.sync()
 
     def _read_until_prompt(self, timeout=5.0):
@@ -50,7 +59,7 @@ class TinySA:
             text = text.split('\n', 1)[1]
         return text.replace(self.PROMPT, '').strip()
 
-    def sync(self, tries=3):
+    def sync(self, tries=1):
         for _ in range(tries):
             self.ser.write(b'\r')
             self.ser.flush()
@@ -79,7 +88,6 @@ class TinySA:
         self.cmd('pause')
         self.cmd('sweeptime 0.003')
         self.cmd('sweep abort')
-        self.cmd('sweep cw 100000000')
         return self.cmd('sweep')
 
     def cw(self, freq_hz, level_dbm=-20.0):
