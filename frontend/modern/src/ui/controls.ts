@@ -484,6 +484,24 @@ export function syncGraphModeStatus(mode: string) {
     const element = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
     if (element) element.disabled = isRtaLike;
   });
+  // SDR-only: controls that do not apply to the IQ receive path (SWP RBW/VBW/sweep/spur
+  // and the device trigger). Gain/amp, reference clock and the shared Ref stay enabled.
+  const setDisabled = (id: string, off: boolean) => {
+    const el = document.getElementById(id) as HTMLElement | null;
+    if (!el) return;
+    if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement
+        || el instanceof HTMLButtonElement) {
+      el.disabled = off;
+    }
+    el.querySelectorAll('input,select,button').forEach((c) => {
+      (c as HTMLInputElement).disabled = off;
+    });
+  };
+  ['select-rbw-mode', 'input-rbw', 'unit-rbw-group',
+    'select-vbw-mode', 'input-vbw', 'unit-vbw-group', 'btn-vbw-set',
+    'select-sweep-mode', 'sweep-panel',
+    'select-spur', 'btn-gapfill', 'trigger-panel',
+  ].forEach((id) => setDisabled(id, isSdr));
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
   if (resetButton) resetButton.disabled = isRtaLike;

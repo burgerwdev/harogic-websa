@@ -463,9 +463,10 @@ select:focus { border-color: var(--text); }
 .marker-table th, .marker-table td { border: 1px solid var(--inner-border); padding: 4px 6px; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .marker-table th { background: var(--table-head); color: var(--text); }
 .marker-table td.num { font-variant-numeric: tabular-nums; }
+.marker-table td.mk-cell { display: flex; align-items: center; gap: 4px; }
 .mk-cell { display: inline-flex; align-items: center; gap: 5px; font-weight: bold; }
-.marker-toggle { display: inline-flex; align-items: center; gap: 5px; min-width: 48px; height: 24px; padding: 2px 6px; border: 1px solid var(--inner-border); border-radius: 3px; background: var(--input-bg); color: var(--muted); cursor: pointer; font-weight: bold; }
-.mk-active { width: 18px; height: 24px; padding: 0; margin-right: 3px; vertical-align: middle; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--inner-border); cursor: pointer; font-size: 10px; line-height: 1; }
+.marker-toggle { display: inline-flex; align-items: center; gap: 5px; min-width: 48px; height: 24px; padding: 2px 6px; vertical-align: middle; border: 1px solid var(--inner-border); border-radius: 3px; background: var(--input-bg); color: var(--muted); cursor: pointer; font-weight: bold; }
+.mk-active { width: 18px; height: 24px; padding: 0; vertical-align: middle; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--inner-border); cursor: pointer; font-size: 10px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
 .mk-active:hover { border-color: var(--marker-color, var(--inner-border)); color: var(--text); }
 .mk-active.active { color: var(--marker-color, var(--text)); font-size: 12px; }
 .marker-toggle:hover { border-color: var(--marker-color); color: var(--text); }

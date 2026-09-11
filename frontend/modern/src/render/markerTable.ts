@@ -15,6 +15,7 @@ export function initMarkerTable() {
     tr.dataset.mid = String(m.id);
 
     const td0 = document.createElement('td');
+    td0.className = 'mk-cell';
     // Active-marker indicator: click it to make this the active marker (the same as the
     // right-hand Marker buttons). The M toggle next to it still switches on/off.
     const activeBtn = document.createElement('button');
@@ -81,7 +82,12 @@ export function updateMarkerTable(powers: Float32Array | null) {
     const cells = row.children;
     const markerToggle = cells[0].querySelector('.marker-toggle') as HTMLButtonElement;
     const activeBtn = cells[0].querySelector('.mk-active') as HTMLButtonElement | null;
-    if (activeBtn) activeBtn.classList.toggle('active', m.id === S.activeMkrId);
+    const anyOn = S.markers.some(mk => mk.enabled && mk.mode !== 'OFF');
+    if (activeBtn) activeBtn.classList.toggle('active', anyOn && m.id === S.activeMkrId);
+    document.querySelectorAll('.mkr-btn').forEach((btn) => {
+      const id = Number((btn as HTMLElement).getAttribute('data-marker-select'));
+      btn.classList.toggle('active', anyOn && id === S.activeMkrId);
+    });
     const markerOn = m.enabled && m.mode !== 'OFF';
     markerToggle.classList.toggle('active', markerOn);
     markerToggle.classList.toggle('tracking', markerOn && m.tracking);
