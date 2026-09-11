@@ -73,6 +73,8 @@ export function setSdrAudioEnabled(on: boolean): void {
   } else {
     available = 0;
     fade = 0;
+    rsPrev = null;
+    rsT = 0;
   }
 }
 
@@ -82,6 +84,17 @@ export function isSdrAudioEnabled(): boolean {
 
 export function setSdrAudioRate(rate: number): void {
   if (rate > 0) sourceRate = rate;
+}
+
+// Streaming linear resampler phase (input samples), carried across blocks so the audio
+// is sample-accurate even when the AudioContext rate differs from the backend rate.
+let rsT = 0;
+let rsPrev: number | null = null;
+
+function writeRing(value: number): void {
+  ring[writePos] = value;
+  writePos = (writePos + 1) % ring.length;
+  if (available < ring.length) available++;
 }
 
 export function pushSdrAudio(buffer: ArrayBuffer, offset: number, samples: number, rate: number): void {
@@ -94,24 +107,24 @@ export function pushSdrAudio(buffer: ArrayBuffer, offset: number, samples: numbe
   if (rate > 0) sourceRate = rate;
   if (samples * 2 + offset > buffer.byteLength) return;
   const pcm = new Int16Array(buffer, offset, samples);
-  // If the context runs at a different rate, do a cheap linear resample ratio.
-  const ratio = ctx ? (ctx.sampleRate / sourceRate) : 1;
-  for (let i = 0; i < samples; i++) {
-    const value = pcm[i] / 32768;
-    if (Math.abs(ratio - 1) < 1e-4) {
-      ring[writePos] = value;
-      writePos = (writePos + 1) % ring.length;
-      if (available < ring.length) available++;
-    } else {
-      // simple hold: not sample-accurate but keeps timing close
-      const reps = Math.max(1, Math.round(ratio));
-      for (let r = 0; r < reps; r++) {
-        ring[writePos] = value;
-        writePos = (writePos + 1) % ring.length;
-        if (available < ring.length) available++;
-      }
-    }
+  let buf = new Float32Array(samples);
+  for (let i = 0; i < samples; i++) buf[i] = pcm[i] / 32768;
+  const outRate = ctx ? ctx.sampleRate : sourceRate;
+  const step = sourceRate / outRate;          // input samples per output sample
+  if (rsPrev !== null) {
+    const b = new Float32Array(samples + 1);
+    b[0] = rsPrev; b.set(buf, 1); buf = b;
   }
+  const L = buf.length;
+  const n = Math.floor((L - 1 - rsT) / step) + 1;
+  for (let k = 0; k < n; k++) {
+    const pos = rsT + k * step;
+    const i0 = Math.min(Math.floor(pos), L - 2);
+    const fr = Math.min(1, Math.max(0, pos - i0));
+    writeRing(buf[i0] * (1 - fr) + buf[i0 + 1] * fr);
+  }
+  rsT = (n > 0 ? rsT + (n - 1) * step : rsT) + step - (L - 1);
+  rsPrev = buf[L - 1];
 }
 
 export function sdrAudioBufferedMs(): number {

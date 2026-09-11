@@ -303,6 +303,7 @@ export function connectWS() {
           pushDensity(nd, i, spec[i] - floorN, w);
         }
       }
+
       // Per-trace accumulation (multi-trace like the official SW): each enabled trace
       // accumulates its own RTA display according to its mode.
       // RTA reuses the shared accumulator (single semantics with SWP). rtaDisplays stays

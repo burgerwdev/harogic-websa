@@ -473,8 +473,6 @@ class SdrSession(MeasurementSession):
         if not self._ready:
             return [], []
         now = time.monotonic()
-        if now < self._ready_at:
-            return [], []
         frames = []
         import ctypes as C
 
@@ -520,6 +518,10 @@ class SdrSession(MeasurementSession):
             self._last_ok = now
             self._recovery_attempts = 0
             self._packets_ok += 1
+            if time.monotonic() < self._ready_at:
+                # Settle window: this fetch drained the device buffer, but do not process
+                # (or buffer) the data yet, so a startup burst cannot build up.
+                return [], []
             self._error_streak = 0
             self._recovery_attempts = 0
             n = int(stream.IQS_StreamInfo.PacketSamples)
