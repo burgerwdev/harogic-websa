@@ -1178,8 +1178,7 @@ export function bindActions() {
 }
 
 // Canvas click/drag
-// ── SDR canvas interaction: click to tune, wheel to zoom, drag to pan ──
-const SDR_DECIMATES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+// ── SDR canvas interaction: click to tune, drag to tune/pan ──
 let sdrDown = false;
 let sdrMoved = false;
 let sdrX0 = 0;
@@ -1207,30 +1206,6 @@ function xToFreqHz(x: number): number | null {
 export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;
-
-  canvas.addEventListener('wheel', (e) => {
-    if (currentGraphMode() !== 'sdr') return;
-    const pr = plotRectPub();
-    const x = canvasX(e, canvas);
-    if (x < pr.x || x > pr.x + pr.w) return;
-    e.preventDefault();
-    const dir = e.deltaY > 0 ? 1 : -1;      // wheel down = zoom out (wider span)
-    let idx = SDR_DECIMATES.indexOf(sdrDecimate);
-    if (idx < 0) idx = SDR_DECIMATES.indexOf(32);
-    const ni = Math.max(0, Math.min(SDR_DECIMATES.length - 1, idx + dir));
-    if (ni === idx) return;
-    const newDec = SDR_DECIMATES[ni];
-    const newSpan = 62.5e6 / newDec;
-    const f = xToFreqHz(x);
-    let center = sdrCenterHz;
-    if (f != null && sdrSpanHz > 0) {
-      // keep the frequency under the cursor fixed
-      const frac = (x - pr.x) / pr.w;
-      center = f - (frac - 0.5) * newSpan;
-    }
-    sdrCenterHz = center; sdrDecimate = newDec; sdrSpanHz = newSpan;
-    send({ cmd: 'SET_SDR', center, decimate: newDec });
-  }, { passive: false });
 
   canvas.addEventListener('mousedown', (e) => {
     const pr = plotRectPub();
@@ -1324,8 +1299,6 @@ export function bindCanvas() {
     else if (e.key === 'PageDown') sdrCycleIfbw(-1);
     else if (e.key === 'm' || e.key === 'M') sdrCycleDemod();
     else if (e.key === ' ') toggleSdrAudio();
-    else if (e.key === 'z' || e.key === 'Z') sdrZoom(-1);
-    else if (e.key === 'x' || e.key === 'X') sdrZoom(1);
     else handled = false;
     if (handled) e.preventDefault();
   });
@@ -1364,16 +1337,6 @@ function sdrCycleDemod() {
   const ni = (SDR_MODES.indexOf(cur) + 1) % SDR_MODES.length;
   if (sel) sel.value = SDR_MODES[ni];
   applySdrDemod();
-}
-
-function sdrZoom(dir: number) {
-  let idx = SDR_DECIMATES.indexOf(sdrDecimate);
-  if (idx < 0) idx = SDR_DECIMATES.indexOf(32);
-  const ni = Math.max(0, Math.min(SDR_DECIMATES.length - 1, idx + dir));
-  if (ni === idx) return;
-  sdrDecimate = SDR_DECIMATES[ni];
-  sdrSpanHz = 62.5e6 / sdrDecimate;
-  send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
 }
 
 function sdrNudgeVolume(dv: number) {
