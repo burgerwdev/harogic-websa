@@ -32,7 +32,7 @@ import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
-import { pushSdrAudio, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { pushSdrAudio } from '../audio/sdrAudio';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -103,7 +103,6 @@ export function connectWS() {
       send({ cmd: 'SET_MODE', mode: wantMode });
       if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
       else { S.setViewMode('rta'); S.setRtaMode(true); }
-      if (wantMode === 'sdr') setSdrAudioEnabled(true);
     }
   };
   ws.onerror = () => ws?.close();
@@ -184,14 +183,16 @@ export function connectWS() {
       // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
       // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
       // frame peak (with a small hysteresis) so the signal is visible.
-      if (currentGraphMode() === 'sdr') {
+      if (currentGraphMode() === 'sdr' && S.sdrRefAuto) {
         let peak = -Infinity;
         for (let i = 0; i < spec.length; i++) {
           const v = spec[i];
           if (v > peak && isFinite(v)) peak = v;
         }
         if (isFinite(peak)) {
-          const ref = Math.min(40, Math.max(-160, Math.ceil((peak + 8) / 5) * 5));
+          // ~20 dB of headroom above the peak so the noise floor is not squashed onto
+          // the top edge; the user can switch to a manual Ref at any time.
+          const ref = Math.min(40, Math.max(-160, Math.ceil((peak + 20) / 5) * 5));
           if (Math.abs(ref - lastSdrRef) >= 4) {
             lastSdrRef = ref;
             S.setDisplayRef(ref);

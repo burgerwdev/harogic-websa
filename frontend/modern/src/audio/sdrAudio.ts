@@ -8,6 +8,9 @@ let writePos = 0;
 let available = 0;
 let enabled = false;
 let sourceRate = 48000;
+let fade = 0;
+
+const FADE_STEP = 0.002;   // ~10 ms fade in/out at 48 kHz per sample-tick
 
 export function initSdrAudio(): void {
   // nothing to set up until the user enables audio (needs a gesture)
@@ -26,9 +29,11 @@ function ensureContext(): void {
     for (let i = 0; i < out.length; i++) {
       if (available > 0) {
         const idx = (writePos - available + ring.length) % ring.length;
-        out[i] = ring[idx];
+        if (fade < 1) fade = Math.min(1, fade + FADE_STEP);
+        out[i] = ring[idx] * fade;
         available--;
       } else {
+        if (fade > 0) fade = Math.max(0, fade - FADE_STEP);
         out[i] = 0;
       }
     }
@@ -55,15 +60,16 @@ function ensureContext(): void {
 export function setSdrAudioEnabled(on: boolean): void {
   enabled = on;
   if (on) {
+    fade = 0;                 // fade in to avoid a click
     try {
       ensureContext();
       void ctx?.resume();
     } catch {
       /* no audio device (e.g. headless): ignore */
     }
-  }
-  if (!on) {
+  } else {
     available = 0;
+    fade = 0;
   }
 }
 

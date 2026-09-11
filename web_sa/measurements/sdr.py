@@ -76,6 +76,7 @@ class SdrSession(MeasurementSession):
         self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
+        self._mute_until = 0.0
         self._error_streak = 0
         self._recovery_attempts = 0
         self._last_recovery = 0.0
@@ -187,6 +188,9 @@ class SdrSession(MeasurementSession):
         self._ddc.configure(fs_in, offset, decimate, self._packet_samples)
         self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
         self._audio_buf = np.zeros(0, dtype=np.float32)
+        # Brief mute after any chain reconfiguration so the DDC/filter/AGC transient
+        # (loud hiss that slowly clears) is not audible.
+        self._mute_until = time.monotonic() + 0.07
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
             ddc_offset=offset, ddc_decimate=decimate,
@@ -353,12 +357,12 @@ class SdrSession(MeasurementSession):
                 return [], []
             self._scale_to_v = float(stream.IQS_ScaleToV)
             src = C.cast(stream.AlternIQStream, C.POINTER(C.c_int16 * (n * 2))).contents
-            i16 = np.ctypeslib.as_array(src).copy()
+            arr = np.ctypeslib.as_array(src)      # view, no copy
             s = dev.state
 
             # ---- panadapter / waterfall ----
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
-                res = self._pan.process(i16[0::2], i16[1::2], self._fs_in,
+                res = self._pan.process(arr[0::2], arr[1::2], self._fs_in,
                                         s.sdr_center_hz, self._scale_to_v)
                 if res is not None:
                     freq, spec, row = res
@@ -368,8 +372,10 @@ class SdrSession(MeasurementSession):
                     self._last_pan = now
 
             # ---- channelizer + demod ----
-            i, q = self._ddc.process(i16, n)
+            i, q = self._ddc.process(src, n)      # pass the ctypes buffer directly
             audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
+            if time.monotonic() < self._mute_until and audio.size:
+                audio = np.zeros_like(audio)
             level_dbfs = float(power_dbfs) - 90.31     # int16 full-scale reference
             s.sdr_level_dbfs = float(level_dbfs)
             s.sdr_squelch_open = bool(level_dbfs >= float(s.sdr_squelch))

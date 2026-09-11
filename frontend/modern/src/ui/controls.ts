@@ -403,8 +403,10 @@ export function setGraphMode(mode: string) {
   const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
   if (modeButton) modeButton.disabled = true;
   if (sdrButton) sdrButton.disabled = true;
-  // Clicking the SDR button is a user gesture: start/resume browser audio here.
-  setSdrAudioEnabled(target === 'sdr');
+  // Audio stays OFF unless the user enabled it ("Audio" button); entering SDR does
+  // not make noise on its own.
+  if (target === 'sdr') applySdrAudioPreference();
+  else setSdrAudioEnabled(false);
   send({ cmd: 'SET_MODE', mode: target });
 }
 
@@ -595,6 +597,63 @@ function syncSdrButtons() {
   });
 }
 
+// ── SDR audio enable + amplitude reference ──
+function sdrAudioPref(): boolean {
+  try { return localStorage.getItem('web-sa-sdr-audio') === '1'; } catch { return false; }
+}
+
+function syncSdrAudioButton() {
+  const b = document.getElementById('btn-sdr-audio');
+  if (b) {
+    b.textContent = S.sdrAudioOn ? t('on') : t('off');
+    b.classList.toggle('active', S.sdrAudioOn);
+  }
+}
+
+function applySdrAudioPreference() {
+  const on = sdrAudioPref();
+  S.setSdrAudioOn(on);
+  setSdrAudioEnabled(on);
+  syncSdrAudioButton();
+}
+
+export function toggleSdrAudio() {
+  const on = !S.sdrAudioOn;
+  S.setSdrAudioOn(on);
+  setSdrAudioEnabled(on);
+  try { localStorage.setItem('web-sa-sdr-audio', on ? '1' : '0'); } catch { /* ignore */ }
+  syncSdrAudioButton();
+}
+
+function syncSdrRefUI() {
+  const b = document.getElementById('btn-sdr-ref-auto');
+  if (b) b.classList.toggle('active', S.sdrRefAuto);
+  const inp = document.getElementById('input-sdr-ref') as HTMLInputElement | null;
+  if (inp && document.activeElement !== inp) inp.value = S.displayRef.toFixed(0);
+}
+
+export function applySdrRef() {
+  const inp = document.getElementById('input-sdr-ref') as HTMLInputElement | null;
+  if (!inp) return;
+  const v = parseFloat(inp.value);
+  if (!isFinite(v)) return;
+  S.setSdrRefAuto(false);
+  S.setDisplayRef(v);
+  const cv = document.getElementById('spectrum');
+  if (cv) cv.dataset.sdrRef = String(Math.round(v));
+  try { localStorage.setItem('web-sa-sdr-ref-auto', '0'); } catch { /* ignore */ }
+  syncSdrRefUI();
+  renderAll();
+}
+
+export function toggleSdrRefAuto() {
+  const on = !S.sdrRefAuto;
+  S.setSdrRefAuto(on);
+  try { localStorage.setItem('web-sa-sdr-ref-auto', on ? '1' : '0'); } catch { /* ignore */ }
+  syncSdrRefUI();
+  renderAll();
+}
+
 // SDR status -> panel readouts (called on every STATUS)
 function sdrSet(id: string, value: string) {
   const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
@@ -630,6 +689,8 @@ export function syncSdrPanel(s: any) {
   const lvl = document.getElementById('cur-sdr-level');
   if (lvl) lvl.textContent = Number.isFinite(sdr.level_dbfs) ? sdr.level_dbfs.toFixed(1) + ' dBFS' : '';
   syncSdrButtons();
+  syncSdrAudioButton();
+  syncSdrRefUI();
   const adm = document.getElementById('cur-sdr-adm');
   if (adm) {
     const m = sdr.adm || {};
@@ -902,6 +963,9 @@ export function bindActions() {
     'apply-sdr-tune': () => applySdrTune(),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
+    'toggle-sdr-audio': () => toggleSdrAudio(),
+    'apply-sdr-ref': () => applySdrRef(),
+    'toggle-sdr-ref-auto': () => toggleSdrRefAuto(),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
@@ -966,6 +1030,15 @@ export function bindActions() {
   if (sdrListenEl) sdrListenEl.addEventListener('change', () => applySdrTune());
   const sdrCenterEl = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
+  const sdrRefEl = document.getElementById('input-sdr-ref') as HTMLInputElement | null;
+  if (sdrRefEl) sdrRefEl.addEventListener('change', () => applySdrRef());
+  // Restore persisted SDR preferences (audio off unless the user enabled it).
+  try {
+    S.setSdrRefAuto(localStorage.getItem('web-sa-sdr-ref-auto') !== '0');
+    S.setSdrAudioOn(localStorage.getItem('web-sa-sdr-audio') === '1');
+  } catch { /* ignore */ }
+  syncSdrAudioButton();
+  syncSdrRefUI();
   const sdrCenter = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenter) sdrCenter.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Enter') applySdr();
@@ -1050,6 +1123,7 @@ let sdrMoved = false;
 let sdrX0 = 0;
 let sdrCenter0 = 0;
 let sdrPanAt = 0;
+let sdrEdgeAt = 0;
 
 function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
   const rect = canvas.getBoundingClientRect();
@@ -1119,11 +1193,31 @@ export function bindCanvas() {
       const pr = plotRectPub();
       if (Math.abs(x - sdrX0) > 4) sdrMoved = true;
       if (sdrMoved && sdrSpanHz > 0) {
-        const center = sdrCenter0 - (x - sdrX0) / pr.w * sdrSpanHz;
         const now = performance.now();
-        if (now - sdrPanAt > 70) {
-          sdrPanAt = now; sdrCenterHz = center;
-          send({ cmd: 'SET_SDR', center, decimate: sdrDecimate });
+        // Drag tunes the listen frequency (cheap): only the DDC offset changes, so it
+        // stays smooth instead of reconfiguring the device on every mouse move.
+        const f = xToFreqHz(x);
+        if (f != null && now - sdrPanAt > 40) {
+          sdrPanAt = now;
+          S.setSdrListenHz(f);
+          send({ cmd: 'SET_SDR_TUNE', listen: f });
+          renderAll();
+        }
+        // Edge push: when the cursor reaches the band edge, shift the capture centre so
+        // panning can continue beyond the current window (throttled, heavier).
+        const frac = (x - pr.x) / pr.w;
+        if (now - sdrEdgeAt > 300) {
+          if (frac > 0.92) {
+            sdrEdgeAt = now;
+            sdrCenterHz += sdrSpanHz * 0.25;
+            sdrX0 += pr.w * 0.25;
+            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
+          } else if (frac < 0.08) {
+            sdrEdgeAt = now;
+            sdrCenterHz -= sdrSpanHz * 0.25;
+            sdrX0 -= pr.w * 0.25;
+            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
+          }
         }
       }
       return;
@@ -1165,6 +1259,7 @@ export function bindCanvas() {
     else if (e.key === 'PageUp') sdrCycleIfbw(1);
     else if (e.key === 'PageDown') sdrCycleIfbw(-1);
     else if (e.key === 'm' || e.key === 'M') sdrCycleDemod();
+    else if (e.key === ' ') toggleSdrAudio();
     else if (e.key === 'z' || e.key === 'Z') sdrZoom(-1);
     else if (e.key === 'x' || e.key === 'X') sdrZoom(1);
     else handled = false;

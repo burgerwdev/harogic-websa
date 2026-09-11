@@ -202,10 +202,15 @@
               </div></div>
             <div class="param-row"><label>Volume</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
-              <span class="cur-val" id="cur-sdr-level"></span></div>
+              <span class="cur-val" id="cur-sdr-level"></span>
+              <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" title="Enable/disable audio (Space)">Off</button></div>
             <div class="param-row"><label>Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" title="Audio AGC">On</button></div>
+            <div class="param-row"><label>Ref</label>
+              <input type="number" id="input-sdr-ref" step="1" style="flex:1;" title="Display reference level (dBm)">
+              <button class="btn" data-action="apply-sdr-ref">Set</button>
+              <button class="btn active" id="btn-sdr-ref-auto" data-action="toggle-sdr-ref-auto" title="Auto amplitude reference">Auto</button></div>
             <div class="param-row"><label>Band</label>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;">
                 <button class="btn" data-sdr-band="fm">FM 88-108</button>
@@ -218,10 +223,10 @@
               <span class="cur-val">MHz</span>
               <button class="btn" data-action="apply-sdr">Set</button>
               <select id="select-sdr-decimate" data-action="apply-sdr" title="IQ capture bandwidth">
-                <option value="1">50 MHz</option>
-                <option value="2">25 MHz</option>
-                <option value="4">12.5 MHz</option>
-                <option value="8">6.25 MHz</option>
+                <option value="1">50 MHz (audio ⚠)</option>
+                <option value="2">25 MHz (audio ⚠)</option>
+                <option value="4">12.5 MHz (audio ⚠)</option>
+                <option value="8">6.25 MHz (audio ⚠)</option>
                 <option value="16">3.13 MHz</option>
                 <option value="32" selected>1.56 MHz</option>
                 <option value="64">781 kHz</option>
@@ -232,7 +237,7 @@
                 <option value="2048">24.4 kHz</option>
               </select></div>
             <div class="param-row"><span class="cur-val" id="cur-sdr-adm"></span></div>
-            <div class="param-row"><span class="cur-val" style="opacity:.6;">click=tune &middot; wheel=zoom &middot; drag=pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Z/X zoom</span></div>
+            <div class="param-row"><span class="cur-val" style="opacity:.6;">click=tune &middot; wheel=zoom &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Z/X zoom &middot; Space audio</span></div>
             <div style="display:none;">
               <select id="select-sdr-demod">
                 <option value="am" selected>AM</option><option value="fm">FM</option>

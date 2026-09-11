@@ -44,12 +44,24 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
   and the wideband Center + capture-bandwidth select.
 - **Interaction (mouse and keyboard/trackpad)**:
   - spectrum: **left-click = tune** the listen frequency (green marker + passband),
-    **drag = pan** the wideband center, **wheel/two-finger scroll = zoom** the capture
-    span around the cursor (changes the decimate).
+    **drag = tune** continuously (edge-push shifts the capture centre when the cursor
+    reaches the band edge, so panning continues beyond one window), **wheel/two-finger
+    scroll = zoom** the capture span around the cursor (changes the decimate).
+  - **Audio is OFF by default**: the `Audio` button (or `Space`) enables the WebAudio
+    playback; a short fade-in/out avoids clicks. The preference is remembered.
+  - **Amplitude**: auto reference by default (peak + 20 dB headroom); a manual `Ref`
+    field + `Auto` button override it. `#spectrum[data-sdr-ref]` carries the value.
   - keyboard (when focus is not in a text field): `←/→` tune ±1 kHz
     (Shift ×100, Alt ×10), `↑/↓` volume, `PgUp/PgDn` IF bandwidth, `M` cycle demod,
-    `Z`/`X` zoom in/out. The canvas is focusable (`tabindex`).
+    `Space` audio on/off, `Z`/`X` zoom in/out. The canvas is focusable (`tabindex`).
   - the panel shows a shortcut hint line.
+- **Audio transient**: after any chain reconfiguration (tune/bandwidth change) the
+  backend mutes for ~70 ms, and the AGC settles faster, so a freshly tuned station no
+  longer starts as a loud hiss.
+- **Capture bandwidth vs CPU**: the channelizer (vendor `DSP_DDC`) cost scales with
+  the IQ rate. Measured on this 8-core host: decimate ≥ 16 (≤ 3.13 MHz) sustains audio
+  at realtime; decimate 8 ≈ 68 %, decimate 4 ≈ 35 %. The wide options are marked
+  `(audio ⚠)` in the UI — use them for viewing, not for listening.
 - **Auto-scale**: in SDR mode the amplitude reference is computed from each frame's
   peak (with hysteresis), because the SWP reference level (often 0 dBm) would push a
   −100 dBm noise floor off the bottom of the display. `#spectrum[data-sdr-ref]` carries

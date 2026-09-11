@@ -252,6 +252,12 @@ export let sdrListenHz = 0;
 export function setSdrListenHz(v: number) { sdrListenHz = v; }
 export let sdrPassbandHz = 6000;
 export function setSdrPassbandHz(v: number) { sdrPassbandHz = v; }
+// Audio is OFF until the user explicitly enables it ("Listen").
+export let sdrAudioOn = false;
+export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }
+// Auto amplitude reference (on by default); manual Ref disables it.
+export let sdrRefAuto = true;
+export function setSdrRefAuto(v: boolean) { sdrRefAuto = v; }
 
 export let lastGnss: any = null;
 export function setLastGnss(v: any) { lastGnss = v; }

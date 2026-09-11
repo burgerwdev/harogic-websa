@@ -47,7 +47,7 @@ class AnalogDemod:
         audio_cut = min(if_bw, 20000.0, 0.45 * self.audio_rate)
         self.audio_lp = StreamFilter(design_lowpass(fs, audio_cut, ntaps=129))
         self.resampler = LinearResampler(fs, self.audio_rate)
-        self.agc = Agc(target=0.2)
+        self.agc = Agc(target=0.2, attack=0.05, release=0.01)
         self._prev_z = None
         self._prev_env = 0.0
         self._configured = True
