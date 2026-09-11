@@ -46,7 +46,8 @@ export function initMarkerTable() {
 
     const td1 = document.createElement('td');
     const sel = document.createElement('select');
-    ['OFF', 'NORMAL', 'DELTA'].forEach(o => {
+    // OFF is not offered: the M toggle already switches the marker on/off.
+    ['NORMAL', 'DELTA'].forEach(o => {
       const op = document.createElement('option'); op.value = o; op.textContent = o; sel.appendChild(op);
     });
     sel.onchange = () => updateMarkerMode(m.id, sel.value);
@@ -94,9 +95,12 @@ export function updateMarkerTable(powers: Float32Array | null) {
     markerToggle.setAttribute('aria-pressed', String(markerOn));
     markerToggle.title = markerOn ? t('off') : t('on');
     const selMode = cells[1].querySelector('select') as HTMLSelectElement;
-    if (document.activeElement !== selMode && selMode.value !== m.mode) selMode.value = m.mode;
+    const showMode = m.mode === 'OFF' ? 'NORMAL' : m.mode;
+    if (document.activeElement !== selMode && selMode.value !== showMode) selMode.value = showMode;
+    selMode.disabled = !markerOn;
     const selRef = cells[4].querySelector('select') as HTMLSelectElement;
     if (document.activeElement !== selRef && selRef.value !== String(m.refId)) selRef.value = String(m.refId);
+    selRef.disabled = !markerOn;
 
     let fStr = '-', aStr = '-';
     if (m.enabled && m.mode !== 'OFF' && powers) {
