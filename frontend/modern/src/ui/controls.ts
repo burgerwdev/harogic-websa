@@ -1,7 +1,7 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
-import { updateFreqUIInputs } from '../core/ws';
+import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
@@ -20,7 +20,7 @@ import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAver
 import { exportSpectrumPng } from './exportImage';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
-import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
+import { togglePeakList, peakThrManual, peakThrAuto, setPeakListenHandler } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
 import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measureChannel, clearChannel } from '../meas/channel';
@@ -461,6 +461,7 @@ export function syncGraphModeStatus(mode: string) {
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
+  if (isSdr) resetSdrAutoRef();
   const modeButton = document.getElementById('btn-mode-rta');
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
   const sdrButton = document.getElementById('btn-mode-sdr');
@@ -638,6 +639,21 @@ export function applySdrBand(name: string) {
   send({ cmd: 'SET_SDR', center: b.center, decimate: b.decimate });
   send({ cmd: 'SET_SDR_TUNE', listen: b.center });
   applySdrDemod();
+}
+
+export function listenAtFreq(hz: number) {
+  if (!isFinite(hz) || hz <= 0) return;
+  if (currentGraphMode() === 'sdr') {
+    S.setSdrListenHz(hz);
+    send({ cmd: 'SET_SDR_TUNE', listen: hz });
+    const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+    if (lInp) lInp.value = (hz / 1e6).toFixed(6);
+    renderAll();
+    return;
+  }
+  // From the swept view: hand this frequency to SDR for demodulation.
+  pendingSdrFreq = hz;
+  setGraphMode('sdr');
 }
 
 function syncSdrButtons() {
@@ -1069,6 +1085,7 @@ export function bindActions() {
   if (sdrListenEl) sdrListenEl.addEventListener('change', () => applySdrTune());
   const sdrCenterEl = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
+  setPeakListenHandler(listenAtFreq);
   // Restore persisted SDR preferences (audio off unless the user enabled it).
   try {
     S.setSdrRefAuto(localStorage.getItem('web-sa-sdr-ref-auto') !== '0');

@@ -77,6 +77,8 @@ class SdrSession(MeasurementSession):
         self._last_pan = 0.0
         self._last_adm = 0.0
         self._mute_until = 0.0
+        self._mute_start = 0.0
+        self._ready_at = 0.0
         self._error_streak = 0
         self._recovery_attempts = 0
         self._last_recovery = 0.0
@@ -118,6 +120,10 @@ class SdrSession(MeasurementSession):
             self._open_adm_locked()
             self._last_pan = 0.0
             self._last_adm = 0.0
+            self._transient_streak = 0
+            # Settle window: the device needs a moment after IQS_Configuration; without it
+            # the first fetches return BusDataError and would trip the stall recovery.
+            self._ready_at = time.monotonic() + 0.4
             self._ready = True
 
     def _configure_iqs_locked(self):
@@ -139,7 +145,7 @@ class SdrSession(MeasurementSession):
         p.DataFormat = T.DataFormat_TypeDef.Complex16bit
         p.TriggerSource = T.IQS_TriggerSource_TypeDef.Bus
         p.TriggerMode = T.TriggerMode_TypeDef.Adaptive
-        p.BusTimeout_ms = 2000
+        p.BusTimeout_ms = 250
         p.Atten = int(s.atten)
         p.Preamplifier = (T.PreamplifierState_TypeDef.AutoOn if s.preamplifier == 0
                           else T.PreamplifierState_TypeDef.ForcedOff)
@@ -188,9 +194,10 @@ class SdrSession(MeasurementSession):
         self._ddc.configure(fs_in, offset, decimate, self._packet_samples)
         self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
         self._audio_buf = np.zeros(0, dtype=np.float32)
-        # Brief mute after any chain reconfiguration so the DDC/filter/AGC transient
-        # (loud hiss that slowly clears) is not audible.
-        self._mute_until = time.monotonic() + 0.07
+        # Fade in after any chain reconfiguration so the DDC/filter/AGC transient is not
+        # audible (a hard mute would itself click).
+        self._mute_start = time.monotonic()
+        self._mute_until = self._mute_start + 0.12
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
             ddc_offset=offset, ddc_decimate=decimate,
@@ -232,6 +239,7 @@ class SdrSession(MeasurementSession):
             # made switching stations "noisy then clear").
             offset = float(s.sdr_center_hz) - float(s.sdr_listen_hz)
             self._ddc.configure(fs, offset, self._ddc.decimate, self._packet_samples)
+            self._demod.retune()      # clear stale filter/discriminator state, keep AGC
             s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=offset,
                                 ddc_rate=self._ddc.fs_out, ddc_delay=self._ddc.delay)
 
@@ -321,6 +329,8 @@ class SdrSession(MeasurementSession):
         if not self._ready:
             return [], []
         now = time.monotonic()
+        if now < self._ready_at:
+            return [], []
         frames = []
         import ctypes as C
 
@@ -382,8 +392,10 @@ class SdrSession(MeasurementSession):
             # ---- channelizer + demod ----
             i, q = self._ddc.process(src, n)      # pass the ctypes buffer directly
             audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
-            if time.monotonic() < self._mute_until and audio.size:
-                audio = np.zeros_like(audio)
+            if audio.size and now < self._mute_until:
+                span = max(1e-3, self._mute_until - self._mute_start)
+                gain = (now - self._mute_start) / span
+                audio = audio * max(0.0, min(1.0, gain))
             level_dbfs = float(power_dbfs) - 90.31     # int16 full-scale reference
             s.sdr_level_dbfs = float(level_dbfs)
             s.sdr_squelch_open = bool(level_dbfs >= float(s.sdr_squelch))

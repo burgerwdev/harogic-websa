@@ -50,6 +50,7 @@ class AnalogDemod:
         self.agc = Agc(target=0.2, attack=0.2, release=0.08)
         self._prev_z = None
         self._prev_env = 0.0
+        self._dc_y = 0.0
         self._configured = True
 
     def reset(self) -> None:
@@ -61,6 +62,17 @@ class AnalogDemod:
         self.agc.reset()
         self._prev_z = None
         self._prev_env = 0.0
+        self._dc_y = 0.0
+
+    def retune(self) -> None:
+        """Retune to a new offset: clear the filter tail and demodulator history so the
+        first samples are clean, but KEEP the AGC gain (no re-settle, no pop)."""
+        if not self._configured:
+            return
+        self.band.reset()
+        self._prev_z = None
+        self._prev_env = 0.0
+        self._dc_y = 0.0
 
     # ---- processing ----
     def process(self, i, q, use_agc: bool = True):
@@ -78,10 +90,10 @@ class AnalogDemod:
 
         if self.kind == 'am':
             env = np.abs(zf)
-            # DC block (one-pole high-pass) so the carrier term is removed
+            # DC block (one-pole high-pass); state carried across blocks
             out = np.empty_like(env)
             prev_x = self._prev_env
-            prev_y = 0.0
+            prev_y = self._dc_y
             a = 0.9995
             for k in range(env.size):
                 y = a * (prev_y + env[k] - prev_x)
@@ -89,6 +101,7 @@ class AnalogDemod:
                 prev_x = env[k]
                 prev_y = y
             self._prev_env = prev_x
+            self._dc_y = prev_y
             audio = out
         elif self.kind == 'fm':
             if self._prev_z is not None:

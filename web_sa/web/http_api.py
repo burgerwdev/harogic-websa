@@ -56,6 +56,17 @@ def security_middleware(cfg):
     return middleware
 
 
+def _sdr_health(session) -> dict:
+    if session is None or getattr(session, 'name', '') != 'sdr':
+        return {}
+    return {
+        'ok': getattr(session, '_packets_ok', 0),
+        'err': getattr(session, '_packets_err', 0),
+        'last_status': getattr(session, '_last_status', 0),
+        'transient_streak': getattr(session, '_transient_streak', 0),
+    }
+
+
 def build_status(dev) -> dict:
     s = dev.state
     swp_req = {
@@ -160,6 +171,7 @@ def build_status(dev) -> dict:
             'level_dbfs': s.sdr_level_dbfs,
             'squelch_open': s.sdr_squelch_open,
             'adm': s.sdr_adm,
+            'health': _sdr_health(session),
         },
         'auto_ref_suspended': active_req['ref_mode'] == 'auto' and s.atten != -1,
         'auto_ref': {

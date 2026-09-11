@@ -5,6 +5,11 @@ import { getX, getY } from './spectrum';
 import { fmtF } from '../core/fmt';
 import { t } from '../core/i18n';
 
+// Clicking a peak row hands the frequency to the SDR demod (registered by controls).
+let peakListen: ((hz: number) => void) | null = null;
+let peakBound = false;
+export function setPeakListenHandler(fn: (hz: number) => void) { peakListen = fn; }
+
 export function peakListOn(): boolean { return S.peakListOn; }
 
 export function togglePeakList() {
@@ -76,6 +81,15 @@ export function updatePeakTable(powers: Float32Array | null) {
   const tb = document.getElementById('peak-table');
   const tb2 = document.getElementById('peak-tbody');
   if (!tb || !tb2) return;
+  if (!peakBound) {
+    peakBound = true;
+    tb2.addEventListener('click', (event) => {
+      const td = (event.target as HTMLElement).closest('[data-peak-freq]') as HTMLElement | null;
+      if (!td || !peakListen) return;
+      const f = parseFloat(td.dataset.peakFreq || '');
+      if (isFinite(f) && f > 0) peakListen(f);
+    });
+  }
   if (!S.peakListOn || !powers || !S.freqArray) { tb.style.display = 'none'; return; }
   const cntEl = document.getElementById('input-peakcnt') as HTMLInputElement;
   const maxN = Math.max(1, Math.min(20, cntEl ? (parseInt(cntEl.value) || 20) : 20));
@@ -90,7 +104,7 @@ export function updatePeakTable(powers: Float32Array | null) {
       const idx = r * maxCols + c;
       const pk = idx < peaks.length ? peaks[idx] : null;
       if (!pk) continue;
-      cells += '<td class="pk-cell" title="Peak P' + (idx + 1) + '">' +
+      cells += '<td class="pk-cell pk-click" data-peak-freq="' + pk.f + '" title="Click to demodulate @ ' + fmtF(pk.f) + '">' +
         '<span class="pk-id">P' + (idx + 1) + ':</span> ' +
         '<span class="pk-f">' + fmtF(pk.f) + '</span> / ' +
         '<span class="pk-a">' + fmtLevel(pk.amp, 1) + '</span></td>';

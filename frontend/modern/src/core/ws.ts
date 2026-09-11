@@ -54,6 +54,17 @@ let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
 let lastSdrRef = -999;
+let sdrNoiseEma = -120;
+let sdrPeakEma = -60;
+let lastSdrAutoAt = 0;
+
+// Re-initialise the SDR auto-scale (called when entering SDR).
+export function resetSdrAutoRef() {
+  lastSdrRef = -999;
+  sdrNoiseEma = -120;
+  sdrPeakEma = -60;
+  lastSdrAutoAt = 0;
+}
 let firstConnect = true;
 let rtaAvgN = 0;
 
@@ -190,14 +201,23 @@ export function connectWS() {
           if (v > peak && isFinite(v)) peak = v;
         }
         if (isFinite(peak)) {
-          // ~20 dB of headroom above the peak so the noise floor is not squashed onto
-          // the top edge; the user can switch to a manual Ref at any time.
-          const ref = Math.min(40, Math.max(-160, Math.ceil((peak + 20) / 5) * 5));
-          if (Math.abs(ref - lastSdrRef) >= 4) {
-            lastSdrRef = ref;
-            S.setDisplayRef(ref);
-            const cv = document.getElementById('spectrum');
-            if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
+          const noise = percentileApprox(spec, 0.3);
+          // Smooth both so a fading signal does not make the whole display jump.
+          sdrNoiseEma = sdrNoiseEma < -119 ? noise : sdrNoiseEma * 0.9 + noise * 0.1;
+          sdrPeakEma = sdrPeakEma < -119 ? peak : sdrPeakEma * 0.75 + peak * 0.25;
+          const now2 = performance.now();
+          if (now2 - lastSdrAutoAt > 400) {
+            const range = S.totalDivs * S.dbPerDiv;
+            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
+            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
+            ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
+            if (Math.abs(ref - lastSdrRef) >= 3) {
+              lastSdrRef = ref;
+              S.setDisplayRef(ref);
+              lastSdrAutoAt = now2;
+              const cv = document.getElementById('spectrum');
+              if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
+            }
           }
         }
       }

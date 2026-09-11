@@ -36,6 +36,22 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
   waterfall renderer is reused unchanged.
 - `AUDF` — `magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM`.
 
+- **Stability**: `IQS` `BusTimeout` is 250 ms and the session waits ~0.4 s after
+  `IQS_Configuration` before fetching, so entering SDR no longer produces an initial
+  `BusDataError` burst and the stream no longer stalls during steady operation
+  (verified 0 errors over 6 s and 16/16 mode switches under a live stream).
+- **Tuning is DDC-only**: `set_tune` reconfigures just the `DSP_DDC` offset and calls
+  `AnalogDemod.retune()` (clears filter/discriminator state, keeps the AGC gain), so
+  switching stations is click-free (no "noisy then clear"). A 120 ms fade-in hides any
+  reconfiguration transient.
+- **Auto-scale**: smoothed noise floor + peak (EMA, 3 dB deadband, 400 ms rate limit)
+  sets the display ref so the noise floor sits ~8 dB above the bottom and the peak is
+  never clipped; it no longer flashes when a signal fades. The shared Ref group / Auto
+  button overrides it.
+- **Peak list reuse**: peak-list rows in the swept view are clickable and hand their
+  frequency to the SDR demod (no duplicate "station list").
+- **Removed** the SDR band-preset row (superseded by the sweep -> SDR handoff).
+
 ## Recommended workflow (sweep -> locate -> demod)
 
 The SAN-90's strength is the 9 GHz swept spectrum; IQ streaming is for the narrow demod
