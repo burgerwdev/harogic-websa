@@ -36,29 +36,25 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
   waterfall renderer is reused unchanged.
 - `AUDF` — `magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM`.
 
-- **Stability**: `IQS` `BusTimeout` is 250 ms and the session waits ~0.4 s after
-  `IQS_Configuration` before fetching, so entering SDR no longer produces an initial
-  `BusDataError` burst and the stream no longer stalls during steady operation
-  (verified 0 errors over 6 s and 16/16 mode switches under a live stream).
-- **Tuning is DDC-only**: `set_tune` reconfigures just the `DSP_DDC` offset and calls
-  `AnalogDemod.retune()` (clears filter/discriminator state, keeps the AGC gain), so
-  switching stations is click-free (no "noisy then clear"). A 120 ms fade-in hides any
-  reconfiguration transient.
+- **Stability**: `IQS` `BusTimeout` is 250 ms. During the post-configuration
+  settle window the session continues fetching and discarding packets, so the device FIFO
+  cannot build up and overflow. Persistent fetch or DDC errors trigger a checked
+  stop/config/start recovery, then escalate to a fresh worker only if recovery fails.
+- **Tuning**: most listen-frequency changes use a continuous software NCO. Crossing a
+  coarse DDC grid performs a checked stop/config/start so the device FIFO cannot overflow
+  during the ~180 ms DDC filter design.
 - **Auto-scale**: smoothed noise floor + peak (EMA, 3 dB deadband, 400 ms rate limit)
   sets the display ref so the noise floor sits ~8 dB above the bottom and the peak is
   never clipped; it no longer flashes when a signal fades. The shared Ref group / Auto
   button overrides it.
-- **Peak list reuse**: peak-list rows in the swept view are clickable and hand their
-  frequency to the SDR demod (no duplicate "station list").
-- **Removed** the SDR band-preset row (superseded by the sweep -> SDR handoff).
+- **Removed** the SDR band-preset row, peak-list demod action, tuning snap and capture
+  bandwidth wheel shortcuts. Sweep `Shift`+click remains the direct SDR handoff.
 
-- **Anti-pop**: any chain reconfiguration discards ~120 ms then fades in over 100 ms
-  (the browser also fades in after any underrun); changing only the demod mode does not
-  reconfigure the DDC (same rate), so there is no audio gap.
-- **Handoff shortcuts**: `Shift`+click on the swept spectrum jumps straight to SDR at
-  that frequency; peak-list rows do the same behind a `Pk→SDR` toggle.
-- **Weak snap** (`Snap` toggle, default on): a tuning click/drag/arrow pulls to the
-  nearest strong local peak within a small window (parabolic-refined); off = exact.
+- **Anti-pop**: each tune/chain configuration sends an AUDF `seq=0` reset, clears queued
+  old-channel audio, discards 120 ms of settling samples and fades in over 100 ms. The
+  browser AudioWorklet starts with an 80 ms jitter buffer and uses 10 ms edge fades.
+- **Handoff shortcut**: `Shift`+click on the swept spectrum jumps straight to SDR at that
+  frequency.
 
 ## Recommended workflow (sweep -> locate -> demod)
 
@@ -72,8 +68,8 @@ window. The two are combined into one flow:
 3. **Listen**: press **SDR** — the SDR mode is centred on the active marker (or the SWP
    centre if no marker), auto-picks a demod (WFM for 87.5-108 MHz, AM for 118-137 MHz,
    AM otherwise), and opens a 3.13 MHz IQ window. Enable **Audio** to hear it.
-4. Inside SDR, click/drag to tune the listen frequency (smooth, DDC-only), wheel to zoom,
-   and press **SDR** again to return to the sweep.
+4. Inside SDR, click or drag to tune the listen frequency. Dragging previews locally
+   and commits on release; reaching an edge shifts the capture centre.
 5. The **Ref** group (top control panel) is shared: in SDR it sets the display reference;
    **Auto** toggles the automatic amplitude scaling.
 
@@ -82,30 +78,26 @@ above ~3.13 MHz) while still allowing real demodulation and listening.
 
 ## Frontend
 
-- `index.html`: `SDR` button + `#sdr-settings` panel. Modern layout: Listen field,
-  **Demod** quick buttons (AM/FM/NFM/WFM/USB/LSB/CW), **Filter** width buttons,
-  Volume/Squelch/AGC, **Band** presets (FM 88-108, Air 118-137, VHF 145, UHF 435),
-  and the wideband Center + capture-bandwidth select.
+- `index.html`: `SDR` button + `#sdr-settings` panel. Modern layout: Center and Listen,
+  capture-bandwidth select, Demod quick buttons, Filter width buttons, Volume/Squelch/AGC.
 - **Interaction (mouse and keyboard/trackpad)**:
-  - spectrum: **left-click = tune** the listen frequency (green marker + passband),
-    **drag = tune** continuously (edge-push shifts the capture centre when the cursor
-    reaches the band edge, so panning continues beyond one window), **wheel/two-finger
-    scroll = zoom** the capture span around the cursor (changes the decimate).
+  - spectrum: **left-click = tune** the listen frequency; dragging previews locally and
+    commits on release. Edge-push shifts the capture centre when the cursor reaches the
+    band edge.
   - **Audio is OFF by default**: the `Audio` button (or `Space`) enables the WebAudio
     playback; a short fade-in/out avoids clicks. The preference is remembered.
   - **Amplitude**: auto reference by default (peak + 20 dB headroom); the shared `Ref`
     group sets a manual value and `Auto` restores auto-scaling.
   - **Sweep -> SDR handoff**: entering SDR demodulates the active marker (set by a click
     on the swept spectrum) or the SWP centre; the demod is auto-selected by band.
-  - **Tuning is DDC-only**: `set_tune` reconfigures just the `DSP_DDC` offset and keeps
-    the demod filters/AGC, so switching stations is click-free (no "noisy then clear").
+  - **Tuning**: adjacent changes use the software NCO; only coarse-grid crossings
+    reconfigure the DDC, under a stopped IQS trigger.
   - keyboard (when focus is not in a text field): `←/→` tune ±1 kHz
     (Shift ×100, Alt ×10), `↑/↓` volume, `PgUp/PgDn` IF bandwidth, `M` cycle demod,
-    `Space` audio on/off, `Z`/`X` zoom in/out. The canvas is focusable (`tabindex`).
+    `Space` audio on/off. The canvas is focusable (`tabindex`).
   - the panel shows a shortcut hint line.
-- **Audio transient**: after any chain reconfiguration (tune/bandwidth change) the
-  backend mutes for ~70 ms, and the AGC settles faster, so a freshly tuned station no
-  longer starts as a loud hiss.
+- **Audio transient**: after any tune or chain reconfiguration the backend discards
+  120 ms and fades in over 100 ms; AUDF reset markers flush old-channel audio first.
 - **Capture bandwidth vs CPU**: the channelizer (vendor `DSP_DDC`) cost scales with
   the IQ rate. Measured on this 8-core host: decimate ≥ 16 (≤ 3.13 MHz) sustains audio
   at realtime; decimate 8 ≈ 68 %, decimate 4 ≈ 35 %. The wide options are marked
@@ -114,7 +106,9 @@ above ~3.13 MHz) while still allowing real demodulation and listening.
   peak (with hysteresis), because the SWP reference level (often 0 dBm) would push a
   −100 dBm noise floor off the bottom of the display. `#spectrum[data-sdr-ref]` carries
   the current value (debug aid).
-- `src/audio/sdrAudio.ts`: WebAudio ring-buffer player (48 kHz, ScriptProcessor).
+- `src/audio/sdrAudio.ts`: streaming resampler and AudioWorklet controller. The worklet
+  owns the 2 s ring buffer, 80 ms start threshold and underrun recovery; ScriptProcessor
+  remains only as a compatibility fallback for browsers without AudioWorklet.
 - `src/core/ws.ts`: routes `AUDF` to the player, `sdr` STATUS to the panel, auto-scale,
   and the listen marker state.
 - `src/render/spectrum.ts`: draws the SDR listen marker + passband on the RTA canvas.

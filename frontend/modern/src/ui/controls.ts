@@ -466,7 +466,16 @@ export function syncGraphModeStatus(mode: string) {
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
-  if (isSdr) resetSdrAutoRef();
+  if (isSdr) {
+    resetSdrAutoRef();
+    // Reconnect/page reload enters SDR from STATUS rather than setGraphMode(), so restore
+    // the saved audio preference here as well. AudioContext installs a gesture resume.
+    applySdrAudioPreference();
+  } else {
+    setSdrAudioEnabled(false);
+    S.setSdrAudioOn(false);
+    syncSdrAudioButton();
+  }
   const modeButton = document.getElementById('btn-mode-rta');
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
   const sdrButton = document.getElementById('btn-mode-sdr');

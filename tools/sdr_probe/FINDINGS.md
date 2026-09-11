@@ -85,13 +85,27 @@ tinySA AM 1 kHz/50 %, FM 1 kHz/25 kHz dev, SAN center 100 MHz, 1.953 MSPS:
 Note: `ModDepth` is returned as a **fraction** (0.49 for 50 %), not percent.
 `Deviation` is ~11 % below the tinySA setting.
 
-## 7. Not available
+## 7. DCC / QDC receive-path comparison
+
+Using the connected antenna and the 101.7 MHz broadcast signal at 1.953125 MSPS:
+
+- `DCCOff`, `DCCHighPassFilterMode`, and `DCCAutoOffsetMode` differed by less than
+  0.1 dB in integrated power over the centre +/-100 kHz.
+- Moving the station to +200 kHz showed no measurable image-rejection improvement from
+  `QDCAutoMode` on this weak/noisy signal (about 4.2 dB apparent desired/image ratio in
+  every mode), so that capture cannot justify changing the production default.
+- IQS configuration time remained about 5 ms for every DCC/QDC combination.
+
+Keep the bench-proven `DCCHighPassFilterMode + QDCOff` default until a strong off-centre
+CW source is physically connected for a meaningful image-rejection measurement.
+
+## 8. Not available
 
 - Digital `Demod_*` API (PSK/QAM/FSK/ASK/GMSK): `Demod_Check() == -1` — missing
   `libDigitalSigDemod.so` + license. Must be implemented in-house if required.
 - Internal signal source: none.
 
-## 8. Implication for the SDR mode
+## 9. Implication for the SDR mode
 
 The whole chain is feasible and cheap:
 `IQS Adaptive stream → DSP_DDC channelizer (float) → [ADM AM/FM | own CW/SSB/FT8/WSPR
