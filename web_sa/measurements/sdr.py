@@ -204,6 +204,7 @@ class SdrSession(MeasurementSession):
             atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
             ifgain=int(out.IFGainGrade),
         )
+        dev._read_amp_atten()
         dev.state.config_version += 1
         dev.state.freq_version += 1
         dev.state.last_error = ''
