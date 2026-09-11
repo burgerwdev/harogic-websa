@@ -1308,35 +1308,12 @@ export function bindCanvas() {
     if (!S.dragging) return;
     const x = canvasX(e, canvas);
     if (sdrDown) {
-      const pr = plotRectPub();
       if (Math.abs(x - sdrX0) > 4) sdrMoved = true;
-      if (sdrMoved && sdrSpanHz > 0) {
-        const now = performance.now();
-        // Drag tunes the listen frequency (cheap): only the DDC offset changes, so it
-        // stays smooth instead of reconfiguring the device on every mouse move.
+      if (sdrMoved) {
+        // Preview only: move the marker locally. No command is sent while the button is
+        // held (that flooded the backend and stuttered); the tune commits on release.
         const f = xToFreqHz(x);
-        if (f != null && now - sdrPanAt > 60) {
-          sdrPanAt = now;
-          // No snap while dragging, and no renderAll here: the RTA frame loop redraws.
-          S.setSdrListenHz(f);
-          send({ cmd: 'SET_SDR_TUNE', listen: f });
-        }
-        // Edge push: when the cursor reaches the band edge, shift the capture centre so
-        // panning can continue beyond the current window (throttled, heavier).
-        const frac = (x - pr.x) / pr.w;
-        if (now - sdrEdgeAt > 300) {
-          if (frac > 0.92) {
-            sdrEdgeAt = now;
-            sdrCenterHz += sdrSpanHz * 0.25;
-            sdrX0 += pr.w * 0.25;
-            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
-          } else if (frac < 0.08) {
-            sdrEdgeAt = now;
-            sdrCenterHz -= sdrSpanHz * 0.25;
-            sdrX0 -= pr.w * 0.25;
-            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
-          }
-        }
+        if (f != null) S.setSdrListenHz(f);
       }
       return;
     }
@@ -1347,16 +1324,16 @@ export function bindCanvas() {
 
   window.addEventListener('mouseup', (e) => {
     if (sdrDown) {
-      if (!sdrMoved) {
-        const raw = xToFreqHz(canvasX(e, canvas));
-        const f = raw != null ? snapFreq(raw) : null;
-        if (f != null) {
-          S.setSdrListenHz(f);
-          send({ cmd: 'SET_SDR_TUNE', listen: f });
-          renderAll();
-        }
+      // Commit the tune once, on release (click or drag).
+      const raw = xToFreqHz(canvasX(e, canvas));
+      const f = raw != null ? snapFreq(raw) : null;
+      if (f != null) {
+        S.setSdrListenHz(f);
+        send({ cmd: 'SET_SDR_TUNE', listen: f });
+        renderAll();
       }
       sdrDown = false;
+      sdrMoved = false;
       S.setDragging(false);
       return;
     }

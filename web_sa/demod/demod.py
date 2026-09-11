@@ -82,11 +82,11 @@ class AnalogDemod:
         z = np.asarray(i, dtype=np.float64) + 1j * np.asarray(q, dtype=np.float64)
         if z.size == 0:
             return np.zeros(0, dtype=np.float32), -120.0
-        power = float(np.mean(np.abs(z) ** 2) + 1e-20)
-        power_dbfs = float(10.0 * np.log10(power + 1e-20))
         zf = self.band.process(z)
         if zf.size == 0:
-            return np.zeros(0, dtype=np.float32), power_dbfs
+            return np.zeros(0, dtype=np.float32), -120.0
+        # Channel power (after the IF filter) -> meaningful S-meter / squelch.
+        power_dbfs = float(10.0 * np.log10(float(np.mean(np.abs(zf) ** 2)) + 1e-20))
 
         if self.kind == 'am':
             env = np.abs(zf)
