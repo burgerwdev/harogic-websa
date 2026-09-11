@@ -135,6 +135,21 @@ class SdrSession(MeasurementSession):
             self._last_ok = time.monotonic()
             self._ready = True
 
+    def _reset_iqs_mode_locked(self):
+        """A second IQS_Configuration after the stream has started is rejected and
+        permanently wedges the stream; an SWP_Configuration switches the device's mode and
+        lets IQS be configured again (bench-verified: this makes reconfiguration safe)."""
+        T = sb
+        try:
+            p = T.SWP_Profile_TypeDef()
+            o = T.SWP_Profile_TypeDef()
+            ti = T.SWP_TraceInfo_TypeDef()
+            T.dll.SWP_ProfileDeInit(T.pointer(self.dev.dev), T.pointer(p))
+            T.dll.SWP_Configuration(T.pointer(self.dev.dev), T.pointer(p),
+                                    T.pointer(o), T.pointer(ti))
+        except Exception:
+            pass
+
     def _configure_iqs_locked(self):
         dev = self.dev
         s = dev.state
@@ -147,6 +162,8 @@ class SdrSession(MeasurementSession):
         p = T.IQS_Profile_TypeDef()
         out = T.IQS_Profile_TypeDef()
         info = T.IQS_StreamInfo_TypeDef()
+        # Reset the device mode first so IQS_Configuration is accepted (see the note above).
+        self._reset_iqs_mode_locked()
         T.dll.IQS_ProfileDeInit(T.pointer(dev.dev), T.pointer(p))
         p.CenterFreq_Hz = float(s.sdr_center_hz)
         p.RefLevel_dBm = float(s.ref_level)
@@ -265,8 +282,21 @@ class SdrSession(MeasurementSession):
         fs_out = self._ddc.fs_out or 1.0
         rel, coarse = self._chain_coarse(fs_out)
         if abs(self._ddc.offset_hz - coarse) > 1.0:
-            self._reconfigure_full_locked()
-            return
+            # Host-only DDC reconfiguration: wrap it in a plain stop/start (which is safe)
+            # so the device buffer cannot overflow while we are not fetching.
+            T = sb
+            try:
+                T.dll.IQS_BusTriggerStop(T.pointer(self.dev.dev))
+            except Exception:
+                pass
+            self._ddc.configure(self._fs_in, coarse, self._ddc.decimate, self._packet_samples)
+            self._mix_phase = 0.0
+            try:
+                T.dll.IQS_BusTriggerStart(T.pointer(self.dev.dev))
+            except Exception:
+                pass
+            self._last_ok = time.monotonic()
+            self._ready_at = time.monotonic() + 0.15
         self._mix_freq = rel - self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
         s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=self._ddc.offset_hz,
