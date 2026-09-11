@@ -595,6 +595,19 @@ function sdrAgcOn(): boolean {
 export function applySdr() {
   const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
+  const center = centerMhz * 1e6;
+  send({ cmd: 'SET_SDR', center, decimate });
+  // Setting the wideband centre also tunes the demodulator there.
+  S.setSdrListenHz(center);
+  send({ cmd: 'SET_SDR_TUNE', listen: center });
+  const l = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+  if (l) l.value = centerMhz.toFixed(6);
+}
+
+// Changing only the capture bandwidth keeps the listen frequency unchanged.
+export function applySdrBw() {
+  const centerMhz = sdrNumber('input-sdr-center', 1000);
+  const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   send({ cmd: 'SET_SDR', center: centerMhz * 1e6, decimate });
 }
 
@@ -1026,6 +1039,7 @@ export function bindActions() {
     'apply-rta': () => applyRta(),
     'toggle-sdr': () => setGraphMode(currentGraphMode() === 'sdr' ? 'swp' : 'sdr'),
     'apply-sdr': () => applySdr(),
+    'apply-sdr-bw': () => applySdrBw(),
     'apply-sdr-tune': () => applySdrTune(),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
