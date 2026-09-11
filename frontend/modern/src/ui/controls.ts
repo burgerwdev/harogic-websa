@@ -21,7 +21,7 @@ import { exportSpectrumPng } from './exportImage';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { percentileApprox } from '../dsp/stats';
-import { togglePeakList, peakThrManual, peakThrAuto, setPeakListenHandler } from '../render/peaklist';
+import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
 import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measureChannel, clearChannel } from '../meas/channel';
@@ -599,7 +599,7 @@ function snapFreq(f: number): number {
   if (spec.length !== freq.length) return f;
   const span = freq[freq.length - 1] - freq[0];
   const binHz = span / (freq.length - 1);
-  const rangeHz = Math.max(1000, Math.min(binHz * 10, span * 0.02));
+  const rangeHz = Math.max(500, Math.min(binHz * 6, span * 0.01));
   const noise = percentileApprox(spec, 0.3);
   let best = -1;
   let bestAmp = -Infinity;
@@ -610,7 +610,7 @@ function snapFreq(f: number): number {
       bestAmp = spec[i];
     }
   }
-  if (best < 0 || bestAmp < noise + 6) return f;
+  if (best < 0 || bestAmp < noise + 8) return f;
   const y0 = spec[best - 1];
   const y1 = spec[best];
   const y2 = spec[best + 1];
@@ -748,21 +748,6 @@ export function toggleSdrSnap() {
   S.setSdrSnap(!S.sdrSnap);
   try { localStorage.setItem('web-sa-sdr-snap', S.sdrSnap ? '1' : '0'); } catch { /* ignore */ }
   syncSdrSnapButton();
-}
-
-function syncPeakDemodButton() {
-  const b = document.getElementById('btn-peak-demod');
-  if (b) {
-    b.textContent = S.peakDemodOn ? t('on') : t('off');
-    b.classList.toggle('active', S.peakDemodOn);
-  }
-}
-
-export function togglePeakDemod() {
-  S.setPeakDemodOn(!S.peakDemodOn);
-  try { localStorage.setItem('web-sa-peak-demod', S.peakDemodOn ? '1' : '0'); } catch { /* ignore */ }
-  syncPeakDemodButton();
-  renderAll();
 }
 
 function syncSdrRefUI() {
@@ -1093,7 +1078,6 @@ export function bindActions() {
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
     'toggle-sdr-audio': () => toggleSdrAudio(),
     'toggle-sdr-snap': () => toggleSdrSnap(),
-    'toggle-peak-demod': () => togglePeakDemod(),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
@@ -1158,18 +1142,15 @@ export function bindActions() {
   if (sdrListenEl) sdrListenEl.addEventListener('change', () => applySdrTune());
   const sdrCenterEl = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
-  setPeakListenHandler(listenAtFreq);
   // Restore persisted SDR preferences (audio off unless the user enabled it).
   try {
     S.setSdrRefAuto(localStorage.getItem('web-sa-sdr-ref-auto') !== '0');
     S.setSdrAudioOn(localStorage.getItem('web-sa-sdr-audio') === '1');
-    S.setSdrSnap(localStorage.getItem('web-sa-sdr-snap') !== '0');
-    S.setPeakDemodOn(localStorage.getItem('web-sa-peak-demod') !== '0');
+    S.setSdrSnap(localStorage.getItem('web-sa-sdr-snap') === '1');
   } catch { /* ignore */ }
   syncSdrAudioButton();
   syncSdrRefUI();
   syncSdrSnapButton();
-  syncPeakDemodButton();
   const sdrCenter = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenter) sdrCenter.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Enter') applySdr();
@@ -1334,12 +1315,11 @@ export function bindCanvas() {
         // Drag tunes the listen frequency (cheap): only the DDC offset changes, so it
         // stays smooth instead of reconfiguring the device on every mouse move.
         const f = xToFreqHz(x);
-        if (f != null && now - sdrPanAt > 40) {
+        if (f != null && now - sdrPanAt > 60) {
           sdrPanAt = now;
-          const g = snapFreq(f);
-          S.setSdrListenHz(g);
-          send({ cmd: 'SET_SDR_TUNE', listen: g });
-          renderAll();
+          // No snap while dragging, and no renderAll here: the RTA frame loop redraws.
+          S.setSdrListenHz(f);
+          send({ cmd: 'SET_SDR_TUNE', listen: f });
         }
         // Edge push: when the cursor reaches the band edge, shift the capture centre so
         // panning can continue beyond the current window (throttled, heavier).

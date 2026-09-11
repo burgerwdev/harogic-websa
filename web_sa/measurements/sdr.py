@@ -79,6 +79,9 @@ class SdrSession(MeasurementSession):
         self._discard_until = 0.0
         self._fade_start = 0.0
         self._fade_until = 0.0
+        self._mix_phase = 0.0
+        self._mix_freq = 0.0
+        self._applied_listen = None
         self._ready_at = 0.0
         self._error_streak = 0
         self._recovery_attempts = 0
@@ -87,6 +90,8 @@ class SdrSession(MeasurementSession):
         self._packets_ok = 0
         self._packets_err = 0
         self._transient_streak = 0
+        self._timeout_streak = 0
+        self._last_ok = 0.0
 
     # ---------------- lifecycle ----------------
     def enter(self):
@@ -122,9 +127,11 @@ class SdrSession(MeasurementSession):
             self._last_pan = 0.0
             self._last_adm = 0.0
             self._transient_streak = 0
+            self._recovery_attempts = 0
             # Settle window: the device needs a moment after IQS_Configuration; without it
             # the first fetches return BusDataError and would trip the stall recovery.
             self._ready_at = time.monotonic() + 0.4
+            self._last_ok = time.monotonic()
             self._ready = True
 
     def _configure_iqs_locked(self):
@@ -181,6 +188,7 @@ class SdrSession(MeasurementSession):
         start = T.dll.IQS_BusTriggerStart(T.pointer(dev.dev))
         if start != 0:
             raise RuntimeError(f'IQS_BusTriggerStart status={start}')
+        self._last_ok = time.monotonic()
 
     def _chain_params(self):
         """IF bandwidth and the DDC decimate it requires (>= 2.2x IF BW, >= 48 kHz)."""
@@ -198,27 +206,62 @@ class SdrSession(MeasurementSession):
         self._fade_until = self._discard_until + fade
 
     def _configure_chain_locked(self):
-        """DDC + demod. Reconfigures the DDC only when the required rate changed (a mode
-        change with the same IF bandwidth keeps the DDC stream, avoiding an audio gap)."""
+        """DDC + demod. The DDC is only re-created when the required rate changes; the
+        fine tuning is a software mix so tuning never reconfigures the (slow) DDC."""
         s = self.dev.state
         fs_in = self._fs_in or 1.0
         if_bw, decimate = self._chain_params()
-        offset = float(s.sdr_center_hz) - float(s.sdr_listen_hz)   # verified sign
-        ddc_stale = (not self._ddc._ready or self._ddc.decimate != decimate
-                     or abs(self._ddc.offset_hz - offset) > 1e-6)
-        if ddc_stale:
-            self._ddc.configure(fs_in, offset, decimate, self._packet_samples)
+        if (not self._ddc._ready) or self._ddc.decimate != decimate:
+            # Deep filter design is expensive (~180 ms); do it only on a rate change.
+            self._ddc.configure(fs_in, 0.0, decimate, self._packet_samples)
+            self._mix_phase = 0.0
+        self._apply_tuning_locked()
         self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._begin_audio_settle()
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
-            ddc_offset=offset, ddc_decimate=decimate,
-            ddc_rate=self._ddc.fs_out, ddc_delay=self._ddc.delay,
+            ddc_decimate=decimate, ddc_rate=self._ddc.fs_out, ddc_delay=self._ddc.delay,
             audio_rate=self.AUDIO_RATE,
         )
         s.sdr_actual['start'] = float(s.sdr_center_hz) - fs_in / 2.0
         s.sdr_actual['stop'] = float(s.sdr_center_hz) + fs_in / 2.0
+
+    def _apply_tuning_locked(self) -> None:
+        """Set the DDC to a coarse offset (its passband must contain the listen frequency)
+        and keep the residual for the cheap software NCO. Reconfigures the DDC only when
+        the coarse offset changes, so ordinary tuning is a state-only update."""
+        s = self.dev.state
+        if not self._ddc._ready:
+            return
+        fs_out = self._ddc.fs_out or 1.0
+        rel = float(s.sdr_listen_hz) - float(s.sdr_center_hz)
+        grid = max(1000.0, fs_out * 0.9)
+        coarse = round(rel / grid) * grid
+        if abs(self._ddc.offset_hz - coarse) > 1.0:
+            self._ddc.configure(self._fs_in, coarse, self._ddc.decimate, self._packet_samples)
+            self._mix_phase = 0.0
+        self._mix_freq = rel - self._ddc.offset_hz
+        self._applied_listen = float(s.sdr_listen_hz)
+        s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=self._ddc.offset_hz,
+                            mix_offset=self._mix_freq, ddc_rate=fs_out,
+                            ddc_delay=self._ddc.delay)
+
+    def _mix(self, i, q):
+        """Fine-tune by the residual offset with a continuous software NCO."""
+        f = getattr(self, '_mix_freq', 0.0)
+        if abs(f) < 1e-6 or i.size == 0:
+            return i, q
+        fs = self._ddc.fs_out or 1.0
+        n = i.size
+        inc = -2.0 * np.pi * f / fs
+        ph = self._mix_phase + inc * np.arange(n)
+        c = np.cos(ph)
+        sn = np.sin(ph)
+        i2 = i * c - q * sn
+        q2 = i * sn + q * c
+        self._mix_phase = (self._mix_phase + inc * n) % (2.0 * np.pi)
+        return i2, q2
 
     def _open_adm_locked(self):
         self._close_adm_locked()
@@ -240,21 +283,12 @@ class SdrSession(MeasurementSession):
         self._configure()
 
     def set_tune(self, listen_hz):
+        """Cheap, state-only: the new offset is applied in the next step() with a software
+        NCO, so tuning does not block the acquisition loop or reconfigure the DDC."""
         s = self.dev.state
         fs = self._fs_in or 1.0
         s.sdr_listen_hz = max(s.sdr_center_hz - fs / 2.0,
                               min(s.sdr_center_hz + fs / 2.0, float(listen_hz)))
-        with self._lock:
-            if not self._ready:
-                return
-            # Only the DDC offset changes: keep the demod filters and the AGC state so
-            # tuning is click-free and the AGC does not have to re-settle (this is what
-            # made switching stations "noisy then clear").
-            offset = float(s.sdr_center_hz) - float(s.sdr_listen_hz)
-            self._ddc.configure(fs, offset, self._ddc.decimate, self._packet_samples)
-            self._demod.retune()      # clear stale filter/discriminator state, keep AGC
-            s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=offset,
-                                ddc_rate=self._ddc.fs_out, ddc_delay=self._ddc.delay)
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None,
                   agc=None, pitch=None):
@@ -278,6 +312,26 @@ class SdrSession(MeasurementSession):
         self._configure()
 
     # ---------------- acquisition ----------------
+    def _recover_locked(self, reason) -> None:
+        self._last_recovery = time.monotonic()
+        self._transient_streak = 0
+        self._timeout_streak = 0
+        # In-place reconfiguration cannot always unwedge the device; after a few failed
+        # attempts escalate to a fatal error so the supervisor restarts the worker with a
+        # fresh Device_Open (which does recover).
+        self._recovery_attempts += 1
+        if self._recovery_attempts > 3:
+            raise DeviceError('SDR stream unrecoverable; restarting worker')
+        log.warning('SDR stream stalled (%s); reconfiguring %d/3', reason, self._recovery_attempts)
+        try:
+            self._configure_iqs_locked()
+            self._configure_chain_locked()
+            self._last_ok = time.monotonic()
+        except DeviceError:
+            raise
+        except Exception as exc:
+            log.warning('SDR stall recovery failed: %r', exc)
+
     def _step_failed_locked(self, stage, status):
         self._error_streak += 1
         if self._error_streak < 8:
@@ -353,6 +407,10 @@ class SdrSession(MeasurementSession):
             if not self._ready:
                 return [], []
             stream = T.IQStream_TypeDef()
+            # Watchdog: if no good packet arrived for a while the stream is wedged; a full
+            # reconfigure recovers it. This bounds any freeze to ~1.5 s.
+            if now - self._last_ok > 1.5 and now - self._last_recovery >= 1.0:
+                self._recover_locked('watchdog')
             try:
                 st = T.dll.IQS_GetIQStream_PM1(T.pointer(dev.dev), T.pointer(stream))
             except Exception as exc:
@@ -362,24 +420,21 @@ class SdrSession(MeasurementSession):
                 self._last_status = int(st)
                 self._packets_err += 1
                 if st in _TRANSIENT_IQS:
-                    # A bad packet is normally skipped, but if the stream has stalled
-                    # (device buffer overflow -> every fetch returns BusDataError) it
-                    # never recovers on its own: force a reconfigure after a while.
                     self._transient_streak += 1
-                    if self._transient_streak >= 60 and now - self._last_recovery >= 1.0:
-                        self._transient_streak = 0
-                        self._last_recovery = now
-                        log.warning('SDR stream stalled (status=%s); reconfiguring', st)
-                        try:
-                            self._configure_iqs_locked()
-                            self._configure_chain_locked()
-                        except Exception as exc:
-                            log.warning('SDR stall recovery failed: %r', exc)
+                    self._timeout_streak = self._timeout_streak + 1 if st == -10 else 0
+                    # A timeout blocks for BusTimeout each call, so recover fast on those;
+                    # BusDataError returns immediately, so a longer streak is fine.
+                    if ((self._transient_streak >= 60 or self._timeout_streak >= 3)
+                            and now - self._last_recovery >= 1.0):
+                        self._recover_locked(st)
                     return [], []
                 self._step_failed_locked('get', st)
                 return [], []
             self._last_status = 0
             self._transient_streak = 0
+            self._timeout_streak = 0
+            self._last_ok = now
+            self._recovery_attempts = 0
             self._packets_ok += 1
             self._error_streak = 0
             self._recovery_attempts = 0
@@ -403,7 +458,10 @@ class SdrSession(MeasurementSession):
                     self._last_pan = now
 
             # ---- channelizer + demod ----
+            if s.sdr_listen_hz != self._applied_listen:
+                self._apply_tuning_locked()
             i, q = self._ddc.process(src, n)      # pass the ctypes buffer directly
+            i, q = self._mix(i, q)                # software fine tuning
             audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
             if audio.size and now < self._discard_until:
                 audio = np.zeros(0, dtype=np.float32)   # discard the settling transient

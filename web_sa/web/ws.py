@@ -532,7 +532,9 @@ async def _dispatch(dev, cmd, data) -> bool:
         sess = dev.session
         if sess is None or sess.name != 'sdr':
             raise CommandError('SET_SDR_TUNE requires SDR mode', 'sdr_mode_required')
-        await _hw_call(sess.set_tune, data['listen'])
+        # State-only: no DLL call, applied by the acquisition loop with a software NCO,
+        # so dragging stays smooth (no 180 ms DDC reconfiguration per tune).
+        sess.set_tune(data['listen'])
         return True
     if cmd == 'SET_SDR_DEMOD':
         sess = dev.session

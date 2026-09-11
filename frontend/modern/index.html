@@ -201,7 +201,7 @@
                 <button class="btn" data-sdr-ifbw="180000">180k</button>
               </div></div>
             <div class="param-row"><label>Snap</label>
-              <button class="btn active" id="btn-sdr-snap" data-action="toggle-sdr-snap" title="Weak snap the tuned frequency to the nearest strong peak">On</button>
+              <button class="btn" id="btn-sdr-snap" data-action="toggle-sdr-snap" title="Weak snap the tuned frequency to the nearest strong peak">Off</button>
               <span class="cur-val" style="opacity:.6;">snap to nearest peak (weak)</span></div>
             <div class="param-row"><label>Volume</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
@@ -329,7 +329,6 @@
                    title="Peak threshold (dBm); Auto = global peak - 50dB, manual edit keeps your value"><span class="cur-val">dBm</span>
             <button class="btn" id="btn-peakthr-auto" data-action="peakthr-auto" data-i18n="pk_auto" title="Re-enable auto threshold (peak-50dB)">Auto</button>
             <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off" data-i18n-title="tip_btn-peaklist">Off</button>
-            <button class="btn active" id="btn-peak-demod" data-action="toggle-peak-demod" title="When on, clicking a peak row enters SDR at that frequency">Pk→SDR</button>
             <button class="btn" data-action="export-peaks-csv" data-i18n="export_csv" data-i18n-title="tip_export_peaks_csv">CSV</button></div>
           <div class="param-row"><label data-i18n="count">Count</label>
             <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
