@@ -236,7 +236,10 @@ class SdrSession(MeasurementSession):
         NCO. The DDC passband is +/-fs_out/2, so the residual stays well inside it."""
         s = self.dev.state
         rel = float(s.sdr_listen_hz) - float(s.sdr_center_hz)
-        grid = max(1000.0, (fs_out or 1.0) * 0.9)
+        # The DDC passband is flat only within ~0.4*fs_out (measured +-0.04 dB up to
+        # 0.4*fs_out, -12 dB at 0.45*fs_out), so the coarse grid must keep the residual
+        # (and the whole demod channel) well inside it. 0.4 keeps the residual <= 0.2*fs_out.
+        grid = max(1000.0, (fs_out or 1.0) * 0.4)
         return rel, round(rel / grid) * grid
 
     SETTLE_DISCARD = 0.12
