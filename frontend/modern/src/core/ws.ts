@@ -360,7 +360,6 @@ export function updateStatus(s: any) {
   S.setSweepMs(s.sweep_ms || 0);
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
-  syncSdrPanel(s);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
   syncRefLevelStatus(s.response_to);
   syncAvgUI();
@@ -479,6 +478,7 @@ export function updateStatus(s: any) {
     gf.classList.toggle('active', !!S.currentGapFill);
   }
   updateInfoBar();
+  syncSdrPanel(s);   // last: in SDR it owns the shared Ref widgets
 }
 
 function setInput(id: string, v: string, force = false) {

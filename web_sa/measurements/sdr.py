@@ -225,7 +225,15 @@ class SdrSession(MeasurementSession):
         s.sdr_listen_hz = max(s.sdr_center_hz - fs / 2.0,
                               min(s.sdr_center_hz + fs / 2.0, float(listen_hz)))
         with self._lock:
-            self._configure_chain_locked()
+            if not self._ready:
+                return
+            # Only the DDC offset changes: keep the demod filters and the AGC state so
+            # tuning is click-free and the AGC does not have to re-settle (this is what
+            # made switching stations "noisy then clear").
+            offset = float(s.sdr_center_hz) - float(s.sdr_listen_hz)
+            self._ddc.configure(fs, offset, self._ddc.decimate, self._packet_samples)
+            s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=offset,
+                                ddc_rate=self._ddc.fs_out, ddc_delay=self._ddc.delay)
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None,
                   agc=None, pitch=None):

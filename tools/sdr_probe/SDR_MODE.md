@@ -36,6 +36,26 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
   waterfall renderer is reused unchanged.
 - `AUDF` — `magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM`.
 
+## Recommended workflow (sweep -> locate -> demod)
+
+The SAN-90's strength is the 9 GHz swept spectrum; IQ streaming is for the narrow demod
+window. The two are combined into one flow:
+
+1. **Observe** in the normal swept (SWP) view: set center/span/start/stop freely, use the
+   span step arrows to narrow down progressively, watch markers/peaks.
+2. **Locate**: click the signal on the swept spectrum (this places/enables the active
+   marker at that frequency).
+3. **Listen**: press **SDR** — the SDR mode is centred on the active marker (or the SWP
+   centre if no marker), auto-picks a demod (WFM for 87.5-108 MHz, AM for 118-137 MHz,
+   AM otherwise), and opens a 3.13 MHz IQ window. Enable **Audio** to hear it.
+4. Inside SDR, click/drag to tune the listen frequency (smooth, DDC-only), wheel to zoom,
+   and press **SDR** again to return to the sweep.
+5. The **Ref** group (top control panel) is shared: in SDR it sets the display reference;
+   **Auto** toggles the automatic amplitude scaling.
+
+This avoids the CPU-heavy wide IQ stream for observation (the channelizer is CPU-bound
+above ~3.13 MHz) while still allowing real demodulation and listening.
+
 ## Frontend
 
 - `index.html`: `SDR` button + `#sdr-settings` panel. Modern layout: Listen field,
@@ -49,8 +69,12 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
     scroll = zoom** the capture span around the cursor (changes the decimate).
   - **Audio is OFF by default**: the `Audio` button (or `Space`) enables the WebAudio
     playback; a short fade-in/out avoids clicks. The preference is remembered.
-  - **Amplitude**: auto reference by default (peak + 20 dB headroom); a manual `Ref`
-    field + `Auto` button override it. `#spectrum[data-sdr-ref]` carries the value.
+  - **Amplitude**: auto reference by default (peak + 20 dB headroom); the shared `Ref`
+    group sets a manual value and `Auto` restores auto-scaling.
+  - **Sweep -> SDR handoff**: entering SDR demodulates the active marker (set by a click
+    on the swept spectrum) or the SWP centre; the demod is auto-selected by band.
+  - **Tuning is DDC-only**: `set_tune` reconfigures just the `DSP_DDC` offset and keeps
+    the demod filters/AGC, so switching stations is click-free (no "noisy then clear").
   - keyboard (when focus is not in a text field): `←/→` tune ±1 kHz
     (Shift ×100, Alt ×10), `↑/↓` volume, `PgUp/PgDn` IF bandwidth, `M` cycle demod,
     `Space` audio on/off, `Z`/`X` zoom in/out. The canvas is focusable (`tabindex`).

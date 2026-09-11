@@ -199,6 +199,15 @@ export function setRefLevel() {
   const el = document.getElementById('input-ref') as HTMLInputElement;
   const value = parseFloat(el.value);
   if (!isFinite(value)) return;
+  if (currentGraphMode() === 'sdr') {
+    // In SDR the Ref group drives the display reference (analog gain is automatic).
+    S.setSdrRefAuto(false);
+    S.setDisplayRef(value);
+    const cv = document.getElementById('spectrum');
+    if (cv) cv.dataset.sdrRef = String(Math.round(value));
+    renderAll();
+    return;
+  }
   send({ cmd: 'SET_REF', mode: 'manual', ref: value });
 }
 
@@ -215,6 +224,15 @@ export function refStepDbm(): number {
 }
 
 export function adjustRefLevel(direction: -1 | 1) {
+  if (currentGraphMode() === 'sdr') {
+    const next = Math.max(-160, Math.min(40, S.displayRef + direction * S.dbPerDiv));
+    S.setSdrRefAuto(false);
+    S.setDisplayRef(next);
+    const cv = document.getElementById('spectrum');
+    if (cv) cv.dataset.sdrRef = String(Math.round(next));
+    renderAll();
+    return;
+  }
   const base = refPending ?? S.refLevel;
   const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
   if (next === base) return;
@@ -229,6 +247,12 @@ export function syncRefLevelStatus(responseTo?: string) {
 }
 
 export function setRefAuto() {
+  if (currentGraphMode() === 'sdr') {
+    S.setSdrRefAuto(!S.sdrRefAuto);
+    syncSdrRefUI();
+    renderAll();
+    return;
+  }
   if (S.refMode === 'auto') {
     send({ cmd: 'SET_REF', mode: 'manual', ref: S.refLevel });
   } else {
@@ -383,6 +407,8 @@ export function toggleActiveMarkerTracking() {
 let graphModePending = false;
 let graphModeTarget: 'std' | 'rta' | 'sdr' = 'std';
 let confirmedGraphMode = '';
+// Frequency to hand off to the SDR demod when entering SDR (from the active marker).
+let pendingSdrFreq: number | null = null;
 
 export function currentGraphMode(): string { return confirmedGraphMode || 'std'; }
 
@@ -403,10 +429,15 @@ export function setGraphMode(mode: string) {
   const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
   if (modeButton) modeButton.disabled = true;
   if (sdrButton) sdrButton.disabled = true;
-  // Audio stays OFF unless the user enabled it ("Audio" button); entering SDR does
-  // not make noise on its own.
-  if (target === 'sdr') applySdrAudioPreference();
-  else setSdrAudioEnabled(false);
+  // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
+  // the user located (active marker), or the current centre if no marker is set.
+  if (target === 'sdr') {
+    const m = S.markers.find(x => x.enabled && x.freq != null);
+    pendingSdrFreq = (m && m.freq) ? m.freq : S.centerHz;
+    applySdrAudioPreference();
+  } else {
+    setSdrAudioEnabled(false);
+  }
   send({ cmd: 'SET_MODE', mode: target });
 }
 
@@ -457,6 +488,29 @@ export function syncGraphModeStatus(mode: string) {
   if (swpFrequency) swpFrequency.style.display = mode === 'std' ? '' : 'none';
   if (sdrSettings) sdrSettings.style.display = isSdr ? '' : 'none';
   if (isRtaLike) S.resetWaterfall();
+  if (isSdr && pendingSdrFreq != null && pendingSdrFreq > 0) {
+    const f = pendingSdrFreq;
+    pendingSdrFreq = null;
+    const inFm = f >= 87.5e6 && f <= 108e6;
+    const inAir = f >= 118e6 && f <= 137e6;
+    const demod = inFm ? 'wfm' : 'am';
+    const ifbw = inFm ? 180000 : (inAir ? 25000 : 12000);
+    sdrCenterHz = f;
+    sdrDecimate = 16;
+    sdrSpanHz = 62.5e6 / 16;
+    S.setSdrListenHz(f);
+    const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
+    if (modeSel) modeSel.value = demod;
+    const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
+    if (bwSel) bwSel.value = String(ifbw);
+    const cInp = document.getElementById('input-sdr-center') as HTMLInputElement | null;
+    if (cInp) cInp.value = (f / 1e6).toFixed(6);
+    const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+    if (lInp) lInp.value = (f / 1e6).toFixed(6);
+    send({ cmd: 'SET_SDR', center: f, decimate: 16 });
+    send({ cmd: 'SET_SDR_TUNE', listen: f });
+    applySdrDemod();
+  }
   renderAll();
 }
 
@@ -626,32 +680,19 @@ export function toggleSdrAudio() {
 }
 
 function syncSdrRefUI() {
-  const b = document.getElementById('btn-sdr-ref-auto');
-  if (b) b.classList.toggle('active', S.sdrRefAuto);
-  const inp = document.getElementById('input-sdr-ref') as HTMLInputElement | null;
-  if (inp && document.activeElement !== inp) inp.value = S.displayRef.toFixed(0);
-}
-
-export function applySdrRef() {
-  const inp = document.getElementById('input-sdr-ref') as HTMLInputElement | null;
-  if (!inp) return;
-  const v = parseFloat(inp.value);
-  if (!isFinite(v)) return;
-  S.setSdrRefAuto(false);
-  S.setDisplayRef(v);
-  const cv = document.getElementById('spectrum');
-  if (cv) cv.dataset.sdrRef = String(Math.round(v));
-  try { localStorage.setItem('web-sa-sdr-ref-auto', '0'); } catch { /* ignore */ }
-  syncSdrRefUI();
-  renderAll();
-}
-
-export function toggleSdrRefAuto() {
-  const on = !S.sdrRefAuto;
-  S.setSdrRefAuto(on);
-  try { localStorage.setItem('web-sa-sdr-ref-auto', on ? '1' : '0'); } catch { /* ignore */ }
-  syncSdrRefUI();
-  renderAll();
+  if (currentGraphMode() !== 'sdr') return;
+  const b = document.getElementById('btn-ref-auto');
+  if (b) {
+    b.classList.toggle('active', S.sdrRefAuto);
+    b.title = 'Auto amplitude reference';
+  }
+  const inp = document.getElementById('input-ref') as HTMLInputElement | null;
+  if (inp) {
+    inp.disabled = false;
+    if (document.activeElement !== inp) inp.value = S.displayRef.toFixed(0);
+  }
+  const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
+  if (setBtn) setBtn.disabled = false;
 }
 
 // SDR status -> panel readouts (called on every STATUS)
@@ -964,8 +1005,6 @@ export function bindActions() {
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
     'toggle-sdr-audio': () => toggleSdrAudio(),
-    'apply-sdr-ref': () => applySdrRef(),
-    'toggle-sdr-ref-auto': () => toggleSdrRefAuto(),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
@@ -1030,8 +1069,6 @@ export function bindActions() {
   if (sdrListenEl) sdrListenEl.addEventListener('change', () => applySdrTune());
   const sdrCenterEl = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
-  const sdrRefEl = document.getElementById('input-sdr-ref') as HTMLInputElement | null;
-  if (sdrRefEl) sdrRefEl.addEventListener('change', () => applySdrRef());
   // Restore persisted SDR preferences (audio off unless the user enabled it).
   try {
     S.setSdrRefAuto(localStorage.getItem('web-sa-sdr-ref-auto') !== '0');
