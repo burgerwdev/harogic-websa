@@ -531,7 +531,7 @@ function renderRta() {
   }
   // Corner label "RTA" (kept; FFT size removed)
   ctx.fillStyle = col.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillText('RTA', p.x + 4, p.y + 4);
+  ctx.fillText(S.sdrMode ? 'SDR' : 'RTA', p.x + 4, p.y + 4);
   const d = S.rtaData;
   if (!d || !d.freq || d.freq.length < 2) return;
   const n = d.freq.length;
