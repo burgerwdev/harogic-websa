@@ -29,7 +29,8 @@ class Panadapter:
         self._buf_i = np.zeros(0, dtype=np.float64)
         self._buf_q = np.zeros(0, dtype=np.float64)
 
-    def process(self, i, q, fs: float, center_hz: float, scale_to_v: float):
+    def process(self, i, q, fs: float, center_hz: float, scale_to_v: float,
+                bandwidth: float | None = None):
         """Return (freq_hz, power_dbm, wf_row_uint16) or None if not enough data."""
         i = np.asarray(i, dtype=np.float64)
         q = np.asarray(q, dtype=np.float64)
@@ -45,6 +46,10 @@ class Panadapter:
         power = vrms ** 2 / self.ref_ohms
         power_dbm = 10.0 * np.log10(power + 1e-30) + 30.0  # W -> dBm
         freq = center_hz + np.linspace(-fs / 2.0, fs / 2.0, self.fft_size, endpoint=False)
+        if bandwidth is not None and 0 < bandwidth < fs:
+            keep = np.abs(freq - center_hz) <= float(bandwidth) / 2.0
+            freq = freq[keep]
+            power_dbm = power_dbm[keep]
         row = self.waterfall_row(power_dbm)
         return freq, power_dbm.astype(np.float32), row
 

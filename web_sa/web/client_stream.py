@@ -33,7 +33,7 @@ class ClientStream:
     """
 
     CONTROL_LIMIT = 32
-    AUDIO_LIMIT = 80          # ~1.6 s of 20 ms frames
+    AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
 
     def __init__(self, ws):
         self.ws = ws
@@ -58,6 +58,13 @@ class ClientStream:
         if magic == b'FREQ':
             self._freq = frame
         elif magic == b'AUDF':
+            if len(frame) < 16:
+                self.dropped_audio += 1
+                return
+            seq = int.from_bytes(frame[4:8], 'little')
+            if seq == 0:
+                self.dropped_audio += len(self._audio)
+                self._audio.clear()
             self._audio.append(frame)
             if len(self._audio) > self.AUDIO_LIMIT:
                 self._audio.popleft()

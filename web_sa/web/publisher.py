@@ -47,6 +47,7 @@ async def publisher(app, dev):
                     'clients': len(clients),
                     'dropped_frames': sum(client.dropped_frames for client in clients),
                     'dropped_control': sum(client.dropped_control for client in clients),
+                    'dropped_audio': sum(client.dropped_audio for client in clients),
                 }
                 _send_json(app, status)
             try:

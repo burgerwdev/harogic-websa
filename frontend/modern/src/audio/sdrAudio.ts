@@ -72,6 +72,7 @@ export function setSdrAudioEnabled(on: boolean): void {
     }
   } else {
     available = 0;
+    writePos = 0;
     fade = 0;
     rsPrev = null;
     rsT = 0;
@@ -97,8 +98,19 @@ function writeRing(value: number): void {
   if (available < ring.length) available++;
 }
 
-export function pushSdrAudio(buffer: ArrayBuffer, offset: number, samples: number, rate: number): void {
+export function pushSdrAudio(
+  buffer: ArrayBuffer, offset: number, samples: number, rate: number, reset = false,
+): void {
   if (!enabled) return;
+  if (reset) {
+    available = 0;
+    writePos = 0;
+    fade = 0;
+    wasEmpty = true;
+    rsPrev = null;
+    rsT = 0;
+  }
+  if (samples === 0) return;
   try {
     ensureContext();
   } catch {
