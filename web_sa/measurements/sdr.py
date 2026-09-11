@@ -106,6 +106,10 @@ class SdrSession(MeasurementSession):
             except Exception:
                 log.exception('SDR trigger stop failed during exit')
             self._close_adm_locked()
+            # A single SWP_Configuration after IQS does not take effect: SWP_GetFullSweep
+            # then returns BusDataError (-9). A mode reset first makes the restored SWP
+            # configuration actually work (bench-verified).
+            self._reset_iqs_mode_locked()
         super().exit()
 
     def _close_adm_locked(self):
