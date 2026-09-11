@@ -427,6 +427,7 @@ export function syncGraphModeStatus(mode: string) {
   const isSdr = mode === 'sdr';
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
+  S.setSdrMode(isSdr);
   const modeButton = document.getElementById('btn-mode-rta');
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
   const sdrButton = document.getElementById('btn-mode-sdr');
@@ -555,15 +556,65 @@ export function toggleSdrAgc(el: HTMLElement) {
   send({ cmd: 'SET_SDR_DEMOD', agc: on });
 }
 
+// Band presets (centre, capture bandwidth, demod, IF bandwidth)
+const SDR_BANDS: Record<string, { center: number; decimate: number; demod: string; ifbw: number }> = {
+  fm: { center: 98e6, decimate: 2, demod: 'wfm', ifbw: 180000 },
+  air: { center: 127.5e6, decimate: 16, demod: 'am', ifbw: 25000 },
+  vhf: { center: 145e6, decimate: 16, demod: 'fm', ifbw: 12000 },
+  uhf: { center: 435e6, decimate: 16, demod: 'fm', ifbw: 12000 },
+};
+
+export function applySdrBand(name: string) {
+  const b = SDR_BANDS[name];
+  if (!b) return;
+  sdrCenterHz = b.center;
+  sdrDecimate = b.decimate;
+  sdrSpanHz = 62.5e6 / b.decimate;
+  const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
+  if (modeSel) modeSel.value = b.demod;
+  const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
+  if (bwSel) bwSel.value = String(b.ifbw);
+  const cInp = document.getElementById('input-sdr-center') as HTMLInputElement | null;
+  if (cInp) cInp.value = (b.center / 1e6).toFixed(4);
+  const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+  if (lInp) lInp.value = (b.center / 1e6).toFixed(4);
+  S.setSdrListenHz(b.center);
+  send({ cmd: 'SET_SDR', center: b.center, decimate: b.decimate });
+  send({ cmd: 'SET_SDR_TUNE', listen: b.center });
+  applySdrDemod();
+}
+
+function syncSdrButtons() {
+  const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
+  document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
+    el.classList.toggle('active', (el as HTMLElement).dataset.sdrDemod === mode);
+  });
+  const ibw = Math.round(S.sdrPassbandHz || 0);
+  document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
+    el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrIfbw) === ibw);
+  });
+}
+
 // SDR status -> panel readouts (called on every STATUS)
 function sdrSet(id: string, value: string) {
   const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
   if (el && document.activeElement !== el) el.value = value;
 }
 
+// Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
+let sdrCenterHz = 0;
+let sdrSpanHz = 0;
+let sdrDecimate = 32;
+
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
   if (!sdr) return;
+  sdrCenterHz = Number(sdr.center) || sdrCenterHz;
+  sdrDecimate = Number(sdr.decimate) || sdrDecimate;
+  const a = sdr.actual || {};
+  if (a.start != null && a.stop != null) sdrSpanHz = Number(a.stop) - Number(a.start);
+  S.setSdrListenHz(Number(sdr.listen) || 0);
+  S.setSdrPassbandHz(Number(sdr.if_bw) || 0);
   sdrSet('input-sdr-center', (Number(sdr.center) / 1e6).toFixed(4));
   sdrSet('select-sdr-decimate', String(sdr.decimate));
   sdrSet('input-sdr-listen', (Number(sdr.listen) / 1e6).toFixed(4));
@@ -578,6 +629,7 @@ export function syncSdrPanel(s: any) {
   }
   const lvl = document.getElementById('cur-sdr-level');
   if (lvl) lvl.textContent = Number.isFinite(sdr.level_dbfs) ? sdr.level_dbfs.toFixed(1) + ' dBFS' : '';
+  syncSdrButtons();
   const adm = document.getElementById('cur-sdr-adm');
   if (adm) {
     const m = sdr.adm || {};
@@ -893,6 +945,27 @@ export function bindActions() {
     const el = document.getElementById(id) as HTMLInputElement | null;
     if (el) el.addEventListener('change', () => applySdrDemod());
   });
+  document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const sel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
+      if (sel) sel.value = (el as HTMLElement).dataset.sdrDemod || 'am';
+      applySdrDemod();
+    });
+  });
+  document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
+      if (sel) sel.value = (el as HTMLElement).dataset.sdrIfbw || '6000';
+      applySdrDemod();
+    });
+  });
+  document.querySelectorAll('[data-sdr-band]').forEach((el) => {
+    el.addEventListener('click', () => applySdrBand((el as HTMLElement).dataset.sdrBand || 'fm'));
+  });
+  const sdrListenEl = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+  if (sdrListenEl) sdrListenEl.addEventListener('change', () => applySdrTune());
+  const sdrCenterEl = document.getElementById('input-sdr-center') as HTMLInputElement | null;
+  if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
   const sdrCenter = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenter) sdrCenter.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Enter') applySdr();
@@ -970,26 +1043,184 @@ export function bindActions() {
 }
 
 // Canvas click/drag
+// ── SDR canvas interaction: click to tune, wheel to zoom, drag to pan ──
+const SDR_DECIMATES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+let sdrDown = false;
+let sdrMoved = false;
+let sdrX0 = 0;
+let sdrCenter0 = 0;
+let sdrPanAt = 0;
+
+function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
+  const rect = canvas.getBoundingClientRect();
+  return (e.clientX - rect.left) * (S.W / rect.width);
+}
+
+function xToFreqHz(x: number): number | null {
+  const f = S.freqArray;
+  if (!f || f.length < 2) return null;
+  const pr = plotRectPub();
+  const t = (x - pr.x) / pr.w;
+  if (t < 0 || t > 1) return null;
+  const idx = t * (f.length - 1);
+  const i0 = Math.max(0, Math.min(f.length - 2, Math.floor(idx)));
+  const fr = idx - i0;
+  return f[i0] * (1 - fr) + f[i0 + 1] * fr;
+}
+
 export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;
-  canvas.addEventListener('mousedown', (e) => {
-    const p = getDisplayPowers(); if (!p) return;
-    const rect = canvas.getBoundingClientRect();
+
+  canvas.addEventListener('wheel', (e) => {
+    if (currentGraphMode() !== 'sdr') return;
     const pr = plotRectPub();
-    const x = (e.clientX - rect.left) * (S.W / rect.width);
+    const x = canvasX(e, canvas);
+    if (x < pr.x || x > pr.x + pr.w) return;
+    e.preventDefault();
+    const dir = e.deltaY > 0 ? 1 : -1;      // wheel down = zoom out (wider span)
+    let idx = SDR_DECIMATES.indexOf(sdrDecimate);
+    if (idx < 0) idx = SDR_DECIMATES.indexOf(32);
+    const ni = Math.max(0, Math.min(SDR_DECIMATES.length - 1, idx + dir));
+    if (ni === idx) return;
+    const newDec = SDR_DECIMATES[ni];
+    const newSpan = 62.5e6 / newDec;
+    const f = xToFreqHz(x);
+    let center = sdrCenterHz;
+    if (f != null && sdrSpanHz > 0) {
+      // keep the frequency under the cursor fixed
+      const frac = (x - pr.x) / pr.w;
+      center = f - (frac - 0.5) * newSpan;
+    }
+    sdrCenterHz = center; sdrDecimate = newDec; sdrSpanHz = newSpan;
+    send({ cmd: 'SET_SDR', center, decimate: newDec });
+  }, { passive: false });
+
+  canvas.addEventListener('mousedown', (e) => {
+    const pr = plotRectPub();
+    const x = canvasX(e, canvas);
+    if (currentGraphMode() === 'sdr') {
+      if (x < pr.x || x > pr.x + pr.w) return;
+      sdrDown = true; sdrMoved = false; sdrX0 = x; sdrCenter0 = sdrCenterHz;
+      S.setDragging(true);
+      return;
+    }
+    const p = getDisplayPowers();
+    if (!p) return;
     if (x < pr.x || x > pr.x + pr.w) return;
     S.setDragging(true);
     placeMarkerFromX(x, p);
   });
+
   window.addEventListener('mousemove', (e) => {
     if (!S.dragging) return;
-    const p = getDisplayPowers(); if (!p) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) * (S.W / rect.width);
+    const x = canvasX(e, canvas);
+    if (sdrDown) {
+      const pr = plotRectPub();
+      if (Math.abs(x - sdrX0) > 4) sdrMoved = true;
+      if (sdrMoved && sdrSpanHz > 0) {
+        const center = sdrCenter0 - (x - sdrX0) / pr.w * sdrSpanHz;
+        const now = performance.now();
+        if (now - sdrPanAt > 70) {
+          sdrPanAt = now; sdrCenterHz = center;
+          send({ cmd: 'SET_SDR', center, decimate: sdrDecimate });
+        }
+      }
+      return;
+    }
+    const p = getDisplayPowers();
+    if (!p) return;
     placeMarkerFromX(x, p);
   });
-  window.addEventListener('mouseup', () => S.setDragging(false));
+
+  window.addEventListener('mouseup', (e) => {
+    if (sdrDown) {
+      if (!sdrMoved) {
+        const f = xToFreqHz(canvasX(e, canvas));
+        if (f != null) {
+          S.setSdrListenHz(f);
+          send({ cmd: 'SET_SDR_TUNE', listen: f });
+          renderAll();
+        }
+      }
+      sdrDown = false;
+      S.setDragging(false);
+      return;
+    }
+    S.setDragging(false);
+  });
+
+  // Keyboard / trackpad-only operation (no mouse required).
+  document.addEventListener('keydown', (e) => {
+    if (currentGraphMode() !== 'sdr') return;
+    const el = document.activeElement as HTMLElement | null;
+    const tag = el?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    const mult = e.shiftKey ? 100 : (e.altKey ? 10 : 1);
+    let handled = true;
+    if (e.key === 'ArrowLeft') sdrTuneBy(-1000 * mult);
+    else if (e.key === 'ArrowRight') sdrTuneBy(1000 * mult);
+    else if (e.key === 'ArrowUp') sdrNudgeVolume(0.05);
+    else if (e.key === 'ArrowDown') sdrNudgeVolume(-0.05);
+    else if (e.key === 'PageUp') sdrCycleIfbw(1);
+    else if (e.key === 'PageDown') sdrCycleIfbw(-1);
+    else if (e.key === 'm' || e.key === 'M') sdrCycleDemod();
+    else if (e.key === 'z' || e.key === 'Z') sdrZoom(-1);
+    else if (e.key === 'x' || e.key === 'X') sdrZoom(1);
+    else handled = false;
+    if (handled) e.preventDefault();
+  });
+}
+
+// ── SDR keyboard helpers ──
+const SDR_IFBW = [500, 2400, 3000, 6000, 12000, 25000, 50000, 100000, 180000];
+const SDR_MODES = ['am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'];
+
+function sdrTuneBy(dHz: number) {
+  if (!(sdrCenterHz > 0) || !(sdrSpanHz > 0)) return;
+  const f = Math.max(sdrCenterHz - sdrSpanHz / 2,
+    Math.min(sdrCenterHz + sdrSpanHz / 2, (S.sdrListenHz || sdrCenterHz) + dHz));
+  S.setSdrListenHz(f);
+  send({ cmd: 'SET_SDR_TUNE', listen: f });
+  const inp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
+  if (inp && document.activeElement !== inp) inp.value = (f / 1e6).toFixed(6);
+  renderAll();
+}
+
+function sdrCycleIfbw(dir: number) {
+  const cur = S.sdrPassbandHz || 6000;
+  let idx = SDR_IFBW.findIndex(v => v >= cur);
+  if (idx < 0) idx = SDR_IFBW.length - 1;
+  else if (SDR_IFBW[idx] > cur) idx = Math.max(0, idx - 1);
+  const ni = Math.max(0, Math.min(SDR_IFBW.length - 1, idx + dir));
+  const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
+  if (sel) sel.value = String(SDR_IFBW[ni]);
+  applySdrDemod();
+}
+
+function sdrCycleDemod() {
+  const sel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
+  const cur = sel?.value || 'am';
+  const ni = (SDR_MODES.indexOf(cur) + 1) % SDR_MODES.length;
+  if (sel) sel.value = SDR_MODES[ni];
+  applySdrDemod();
+}
+
+function sdrZoom(dir: number) {
+  let idx = SDR_DECIMATES.indexOf(sdrDecimate);
+  if (idx < 0) idx = SDR_DECIMATES.indexOf(32);
+  const ni = Math.max(0, Math.min(SDR_DECIMATES.length - 1, idx + dir));
+  if (ni === idx) return;
+  sdrDecimate = SDR_DECIMATES[ni];
+  sdrSpanHz = 62.5e6 / sdrDecimate;
+  send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
+}
+
+function sdrNudgeVolume(dv: number) {
+  const inp = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
+  if (!inp) return;
+  inp.value = String(Math.max(0, Math.min(2, (parseFloat(inp.value) || 0.8) + dv)));
+  applySdrDemod();
 }
 function placeMarkerFromX(x: number, p: Float32Array) {
   const pr = plotRectPub();

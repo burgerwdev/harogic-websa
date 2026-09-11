@@ -14,6 +14,7 @@ import {
   syncScaleButtons,
   syncSwpSpanStep,
   syncSdrPanel,
+  currentGraphMode,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
@@ -52,6 +53,7 @@ let lastRender = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
+let lastSdrRef = -999;
 let firstConnect = true;
 let rtaAvgN = 0;
 
@@ -179,6 +181,25 @@ export function connectWS() {
       const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
       if (!plausible && !settleOver) return;    // settle window only: drop quietly
       if (!plausible) S.setBadData(true);       // past it, show the data and say so
+      // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
+      // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
+      // frame peak (with a small hysteresis) so the signal is visible.
+      if (currentGraphMode() === 'sdr') {
+        let peak = -Infinity;
+        for (let i = 0; i < spec.length; i++) {
+          const v = spec[i];
+          if (v > peak && isFinite(v)) peak = v;
+        }
+        if (isFinite(peak)) {
+          const ref = Math.min(40, Math.max(-160, Math.ceil((peak + 8) / 5) * 5));
+          if (Math.abs(ref - lastSdrRef) >= 4) {
+            lastSdrRef = ref;
+            S.setDisplayRef(ref);
+            const cv = document.getElementById('spectrum');
+            if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
+          }
+        }
+      }
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -351,7 +372,7 @@ export function updateStatus(s: any) {
     invalidateAllTraces();
     if (hadNormalization) showNormalizeClearedHint();
   }
-  if (S.displayUnit !== 'dB') S.setDisplayRef(S.refLevel);
+  if (S.displayUnit !== 'dB' && s.mode !== 'sdr') S.setDisplayRef(S.refLevel);
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';

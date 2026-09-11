@@ -38,12 +38,28 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
 
 ## Frontend
 
-- `index.html`: `SDR` button + `#sdr-settings` panel (center, bandwidth, listen,
-  demod, IF BW, volume, squelch, AGC, ADM readout).
+- `index.html`: `SDR` button + `#sdr-settings` panel. Modern layout: Listen field,
+  **Demod** quick buttons (AM/FM/NFM/WFM/USB/LSB/CW), **Filter** width buttons,
+  Volume/Squelch/AGC, **Band** presets (FM 88-108, Air 118-137, VHF 145, UHF 435),
+  and the wideband Center + capture-bandwidth select.
+- **Interaction (mouse and keyboard/trackpad)**:
+  - spectrum: **left-click = tune** the listen frequency (green marker + passband),
+    **drag = pan** the wideband center, **wheel/two-finger scroll = zoom** the capture
+    span around the cursor (changes the decimate).
+  - keyboard (when focus is not in a text field): `←/→` tune ±1 kHz
+    (Shift ×100, Alt ×10), `↑/↓` volume, `PgUp/PgDn` IF bandwidth, `M` cycle demod,
+    `Z`/`X` zoom in/out. The canvas is focusable (`tabindex`).
+  - the panel shows a shortcut hint line.
+- **Auto-scale**: in SDR mode the amplitude reference is computed from each frame's
+  peak (with hysteresis), because the SWP reference level (often 0 dBm) would push a
+  −100 dBm noise floor off the bottom of the display. `#spectrum[data-sdr-ref]` carries
+  the current value (debug aid).
 - `src/audio/sdrAudio.ts`: WebAudio ring-buffer player (48 kHz, ScriptProcessor).
-- `src/core/ws.ts`: routes `AUDF` to the player and `sdr` STATUS to the panel.
-- `src/ui/controls.ts`: graph-mode handling extended to `sdr` (reuses the RTA
-  rendering path); SDR panel actions.
+- `src/core/ws.ts`: routes `AUDF` to the player, `sdr` STATUS to the panel, auto-scale,
+  and the listen marker state.
+- `src/render/spectrum.ts`: draws the SDR listen marker + passband on the RTA canvas.
+- `src/ui/controls.ts`: graph-mode handling for `sdr` (reuses the RTA rendering path),
+  SDR panel actions, canvas interaction, keyboard shortcuts.
 
 ## Notes / limits
 
