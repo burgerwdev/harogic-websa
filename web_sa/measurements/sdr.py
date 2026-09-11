@@ -224,7 +224,11 @@ class SdrSession(MeasurementSession):
         channels do not need a (slow, stream-disrupting) full reconfiguration."""
         fs_in = self._fs_in or 1.0
         if_bw = float(max(200.0, min(self.dev.state.sdr_if_bw, fs_in * 0.4)))
-        need = max(float(self.AUDIO_RATE), 4.0 * if_bw)
+        # Keep the DDC output (and hence the per-packet DSP) small: at a high capture
+        # rate the loop runs every ~4 ms and a large demod block cannot keep up, which
+        # showed up as choppy audio. 2.5x still leaves a usable software-tuning range and
+        # anything beyond it uses the (safe) full reconfiguration.
+        need = max(float(self.AUDIO_RATE), 2.5 * if_bw)
         return if_bw, max(1, min(65536, int(np.floor(fs_in / need))))
 
     def _chain_coarse(self, fs_out):
