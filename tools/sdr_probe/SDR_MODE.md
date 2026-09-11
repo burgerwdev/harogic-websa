@@ -52,6 +52,14 @@ pitch, actual{...}, level_dbfs, squelch_open, adm}`.
   frequency to the SDR demod (no duplicate "station list").
 - **Removed** the SDR band-preset row (superseded by the sweep -> SDR handoff).
 
+- **Anti-pop**: any chain reconfiguration discards ~120 ms then fades in over 100 ms
+  (the browser also fades in after any underrun); changing only the demod mode does not
+  reconfigure the DDC (same rate), so there is no audio gap.
+- **Handoff shortcuts**: `Shift`+click on the swept spectrum jumps straight to SDR at
+  that frequency; peak-list rows do the same behind a `Pk→SDR` toggle.
+- **Weak snap** (`Snap` toggle, default on): a tuning click/drag/arrow pulls to the
+  nearest strong local peak within a small window (parabolic-refined); off = exact.
+
 ## Recommended workflow (sweep -> locate -> demod)
 
 The SAN-90's strength is the 9 GHz swept spectrum; IQ streaming is for the narrow demod
