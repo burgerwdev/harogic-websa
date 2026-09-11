@@ -54,6 +54,7 @@ class DdcChannel:
         self.fs_out = float(dout.SampleRate)
         self.out_points = int(dout.SamplePoints)
         self.delay = int(delay.value)
+        self._drop_pending = self.delay   # skip the filter transient ONCE, not per packet
         self._ready = True
 
     def process(self, int16_buf, n: int | None = None):
@@ -84,7 +85,14 @@ class DdcChannel:
             _cast(outs.AlternIQStream, T.POINTER(T.c_float * (pts * 2))).contents).copy()
         i = arr[0::2].astype(np.float64)
         q = arr[1::2].astype(np.float64)
-        d = self.delay
-        if d:
+        # Drop the DDC filter transient only on the first block after configure();
+        # dropping it from every packet would discard `delay` samples per packet and
+        # make the audio run at < realtime (verified: ~0.85x with delay=90/955).
+        d = self._drop_pending
+        if d > 0:
+            if d >= len(i):
+                self._drop_pending = d - len(i)
+                return np.zeros(0), np.zeros(0)
             i, q = i[d:], q[d:]
+            self._drop_pending = 0
         return i, q

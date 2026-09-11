@@ -82,6 +82,7 @@ class SdrSession(MeasurementSession):
         self._last_status = 0
         self._packets_ok = 0
         self._packets_err = 0
+        self._transient_streak = 0
 
     # ---------------- lifecycle ----------------
     def enter(self):
@@ -326,10 +327,24 @@ class SdrSession(MeasurementSession):
                 self._last_status = int(st)
                 self._packets_err += 1
                 if st in _TRANSIENT_IQS:
-                    return [], []      # bad packet / timeout: skip, keep streaming
+                    # A bad packet is normally skipped, but if the stream has stalled
+                    # (device buffer overflow -> every fetch returns BusDataError) it
+                    # never recovers on its own: force a reconfigure after a while.
+                    self._transient_streak += 1
+                    if self._transient_streak >= 60 and now - self._last_recovery >= 1.0:
+                        self._transient_streak = 0
+                        self._last_recovery = now
+                        log.warning('SDR stream stalled (status=%s); reconfiguring', st)
+                        try:
+                            self._configure_iqs_locked()
+                            self._configure_chain_locked()
+                        except Exception as exc:
+                            log.warning('SDR stall recovery failed: %r', exc)
+                    return [], []
                 self._step_failed_locked('get', st)
                 return [], []
             self._last_status = 0
+            self._transient_streak = 0
             self._packets_ok += 1
             self._error_streak = 0
             self._recovery_attempts = 0
