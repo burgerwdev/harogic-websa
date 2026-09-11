@@ -60,7 +60,7 @@
 
   <div class="screen-container">
     <div class="spectrum-area">
-      <canvas id="spectrum" width="860" height="480"></canvas>
+      <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
       <div id="waterfall-container" class="waterfall-container" style="display:none;">
         <canvas id="waterfall" width="800" height="135"></canvas>
         <div id="wf-controls" class="wf-controls">
@@ -105,6 +105,7 @@
           <div class="param-row"><label data-i18n="mode">Mode</label>
             <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
             <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
+            <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
           </div>
         </div>
       </div>
@@ -173,6 +174,74 @@
             <button class="btn span-step-button" id="btn-swp-span-up" data-action="swp-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button>
             <button class="btn span-full-button" data-action="full-span" data-i18n="full_span">Full Span</button></div>
           </div>
+          <div id="sdr-settings" style="display:none;">
+            <div class="param-row"><label data-i18n="center">Center</label>
+              <input type="number" id="input-sdr-center" value="1000" step="any" style="flex:1;" data-i18n-title="sdr_center_tip" data-i18n-attr="title" title="Wideband center (MHz)">
+              <span class="cur-val">MHz</span>
+              <button class="btn" data-action="apply-sdr" data-i18n="set">Set</button>
+              <select id="select-sdr-decimate" data-action="apply-sdr-bw" data-i18n-title="capture_bw" data-i18n-attr="title" title="IQ capture bandwidth">
+                <option value="1">50 MHz (audio ⚠)</option>
+                <option value="2">25 MHz (audio ⚠)</option>
+                <option value="4">12.5 MHz (audio ⚠)</option>
+                <option value="8">6.25 MHz (audio ⚠)</option>
+                <option value="16">3.13 MHz</option>
+                <option value="32" selected>1.56 MHz</option>
+                <option value="64">781 kHz</option>
+                <option value="128">391 kHz</option>
+                <option value="256">195 kHz</option>
+                <option value="512">97.7 kHz</option>
+                <option value="1024">48.8 kHz</option>
+                <option value="2048">24.4 kHz</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="listen">Listen</label>
+              <input type="number" id="input-sdr-listen" value="1000" step="any" style="flex:1;" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
+              <span class="cur-val">MHz</span>
+              <button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="demod">Demod</label>
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group">
+                <button class="btn" data-sdr-demod="am">AM</button>
+                <button class="btn" data-sdr-demod="fm">FM</button>
+                <button class="btn" data-sdr-demod="nfm">NFM</button>
+                <button class="btn" data-sdr-demod="wfm">WFM</button>
+                <button class="btn" data-sdr-demod="usb">USB</button>
+                <button class="btn" data-sdr-demod="lsb">LSB</button>
+                <button class="btn" data-sdr-demod="cw">CW</button>
+              </div></div>
+            <div class="param-row"><label data-i18n="if_filter">Filter</label>
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
+                <button class="btn" data-sdr-ifbw="500">0.5k</button>
+                <button class="btn" data-sdr-ifbw="2400">2.4k</button>
+                <button class="btn" data-sdr-ifbw="3000">3k</button>
+                <button class="btn" data-sdr-ifbw="6000">6k</button>
+                <button class="btn" data-sdr-ifbw="12000">12k</button>
+                <button class="btn" data-sdr-ifbw="25000">25k</button>
+                <button class="btn" data-sdr-ifbw="50000">50k</button>
+                <button class="btn" data-sdr-ifbw="180000">180k</button>
+              </div></div>
+            <div class="param-row"><label data-i18n="volume">Volume</label>
+              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
+              <span class="cur-val" id="cur-sdr-level"></span>
+              <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
+            <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
+              <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
+              <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
+            <div class="param-row"><span class="cur-val" id="cur-sdr-adm"></span></div>
+            <div class="param-row"><span class="cur-val" style="opacity:.6;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span></div>
+            <div style="display:none;">
+              <select id="select-sdr-demod">
+                <option value="am" selected>AM</option><option value="fm">FM</option>
+                <option value="nfm">NFM</option><option value="wfm">WFM</option>
+                <option value="usb">USB</option><option value="lsb">LSB</option><option value="cw">CW</option>
+              </select>
+              <select id="select-sdr-ifbw">
+                <option value="500">500</option><option value="2400">2400</option>
+                <option value="3000">3000</option><option value="6000" selected>6000</option>
+                <option value="12000">12000</option><option value="25000">25000</option>
+                <option value="50000">50000</option><option value="100000">100000</option>
+                <option value="180000">180000</option>
+              </select>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -234,7 +303,7 @@
         </div>
         <div class="group-body marker-ops">
           <div class="param-row"><label data-i18n="active">Active</label>
-            <button class="mkr-btn M1 active" data-marker-select="1">M1</button>
+            <button class="mkr-btn M1" data-marker-select="1">M1</button>
             <button class="mkr-btn M2" data-marker-select="2">M2</button>
             <button class="mkr-btn M3" data-marker-select="3">M3</button>
             <button class="mkr-btn M4" data-marker-select="4">M4</button>
@@ -562,7 +631,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.3.4 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.4.0 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

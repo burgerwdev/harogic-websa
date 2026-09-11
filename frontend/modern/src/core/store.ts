@@ -244,6 +244,23 @@ export let wfPaused = false;
 export function setWfPaused(v: boolean) { wfPaused = v; }
 export let rtaMode = false;
 export function setRtaMode(v: boolean) { rtaMode = v; }
+// SDR mode: reuses the RTA renderer, but auto-scales the amplitude and draws a
+// listen-frequency marker / passband.
+export let sdrMode = false;
+export function setSdrMode(v: boolean) { sdrMode = v; }
+export let sdrListenHz = 0;
+export function setSdrListenHz(v: number) { sdrListenHz = v; }
+export let sdrPassbandHz = 6000;
+export function setSdrPassbandHz(v: number) { sdrPassbandHz = v; }
+// Audio is OFF until the user explicitly enables it ("Listen").
+export let sdrAudioOn = false;
+export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }
+// Auto amplitude reference (on by default); manual Ref disables it.
+export let sdrRefAuto = true;
+export function setSdrRefAuto(v: boolean) { sdrRefAuto = v; }
+// Clicking a peak-list row enters SDR at that frequency (optional).
+export let peakDemodOn = true;
+export function setPeakDemodOn(v: boolean) { peakDemodOn = v; }
 
 export let lastGnss: any = null;
 export function setLastGnss(v: any) { lastGnss = v; }

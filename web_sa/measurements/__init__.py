@@ -7,8 +7,10 @@ from .base import ConfigSnapshot, MeasurementSession, StdSession
 from .harmonic import HarmonicSession
 from .phase_noise import PhaseNoiseSession
 from .rta import RtaSession
+from .sdr import SdrSession
 
-_SESSIONS = {'std': StdSession, 'harmonic': HarmonicSession, 'pnm': PhaseNoiseSession, 'rta': RtaSession}
+_SESSIONS = {'std': StdSession, 'harmonic': HarmonicSession, 'pnm': PhaseNoiseSession,
+             'rta': RtaSession, 'sdr': SdrSession}
 
 
 def make_session(dev, name: str) -> MeasurementSession:
@@ -28,6 +30,7 @@ __all__ = [
     'MeasurementSession',
     'PhaseNoiseSession',
     'RtaSession',
+    'SdrSession',
     'StdSession',
     'make_session',
 ]

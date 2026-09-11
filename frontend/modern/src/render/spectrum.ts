@@ -531,7 +531,7 @@ function renderRta() {
   }
   // Corner label "RTA" (kept; FFT size removed)
   ctx.fillStyle = col.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillText('RTA', p.x + 4, p.y + 4);
+  ctx.fillText(S.sdrMode ? 'SDR' : 'RTA', p.x + 4, p.y + 4);
   const d = S.rtaData;
   if (!d || !d.freq || d.freq.length < 2) return;
   const n = d.freq.length;
@@ -577,10 +577,37 @@ function renderRta() {
     ctx.stroke();
     ctx.restore();
   });
+  // SDR: listen-frequency marker + demod passband
+  if (S.sdrMode && S.sdrListenHz > 0) {
+    const span = (hi - lo) || 1;
+    const lx = p.x + (S.sdrListenHz - lo) / span * p.w;
+    if (lx >= p.x && lx <= p.x + p.w) {
+      const bw = S.sdrPassbandHz || 0;
+      if (bw > 0) {
+        const x0 = p.x + (S.sdrListenHz - bw / 2 - lo) / span * p.w;
+        const x1 = p.x + (S.sdrListenHz + bw / 2 - lo) / span * p.w;
+        ctx.fillStyle = 'rgba(0,255,160,0.12)';
+        ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
+      }
+      ctx.strokeStyle = '#00ffa0';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(lx, p.y); ctx.lineTo(lx, p.y + p.h); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
   // 频率轴
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
   // Bottom frequency row (same as SWP grid)
   drawFreqRow(lo, hi, col, p);
+  if (S.sdrMode && S.sdrListenHz > 0) {
+    const lx = p.x + (S.sdrListenHz - lo) / ((hi - lo) || 1) * p.w;
+    if (lx >= p.x && lx <= p.x + p.w) {
+      ctx.fillStyle = '#00ffa0'; ctx.font = '11px monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText('\u25bc ' + (S.sdrListenHz / 1e6).toFixed(4), lx, p.y + 2);
+    }
+  }
   // Markers on the active RTA trace (length-guarded)
   const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;
   renderMarkersOnCanvas(actDisp.length >= 2 ? actDisp : d.spec);

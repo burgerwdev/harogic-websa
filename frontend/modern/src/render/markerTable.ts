@@ -15,6 +15,18 @@ export function initMarkerTable() {
     tr.dataset.mid = String(m.id);
 
     const td0 = document.createElement('td');
+    td0.className = 'mk-cell';
+    // Active-marker indicator: click it to make this the active marker (the same as the
+    // right-hand Marker buttons). The M toggle next to it still switches on/off.
+    const activeBtn = document.createElement('button');
+    activeBtn.className = 'mk-active';
+    activeBtn.type = 'button';
+    activeBtn.title = 'Set as active marker';
+    activeBtn.textContent = '\u25b6';
+    activeBtn.style.setProperty('--marker-color', `var(--m${mi + 1})`);
+    activeBtn.onclick = () => document.dispatchEvent(
+      new CustomEvent('websa:marker-active', { detail: { id: m.id } }));
+    td0.appendChild(activeBtn);
     const toggle = document.createElement('button');
     toggle.className = 'marker-toggle';
     toggle.type = 'button';
@@ -34,7 +46,8 @@ export function initMarkerTable() {
 
     const td1 = document.createElement('td');
     const sel = document.createElement('select');
-    ['OFF', 'NORMAL', 'DELTA'].forEach(o => {
+    // OFF is not offered: the M toggle already switches the marker on/off.
+    ['NORMAL', 'DELTA'].forEach(o => {
       const op = document.createElement('option'); op.value = o; op.textContent = o; sel.appendChild(op);
     });
     sel.onchange = () => updateMarkerMode(m.id, sel.value);
@@ -69,15 +82,25 @@ export function updateMarkerTable(powers: Float32Array | null) {
     if (!row) return;
     const cells = row.children;
     const markerToggle = cells[0].querySelector('.marker-toggle') as HTMLButtonElement;
+    const activeBtn = cells[0].querySelector('.mk-active') as HTMLButtonElement | null;
+    const anyOn = S.markers.some(mk => mk.enabled && mk.mode !== 'OFF');
+    if (activeBtn) activeBtn.classList.toggle('active', anyOn && m.id === S.activeMkrId);
+    document.querySelectorAll('.mkr-btn').forEach((btn) => {
+      const id = Number((btn as HTMLElement).getAttribute('data-marker-select'));
+      btn.classList.toggle('active', anyOn && id === S.activeMkrId);
+    });
     const markerOn = m.enabled && m.mode !== 'OFF';
     markerToggle.classList.toggle('active', markerOn);
     markerToggle.classList.toggle('tracking', markerOn && m.tracking);
     markerToggle.setAttribute('aria-pressed', String(markerOn));
     markerToggle.title = markerOn ? t('off') : t('on');
     const selMode = cells[1].querySelector('select') as HTMLSelectElement;
-    if (document.activeElement !== selMode && selMode.value !== m.mode) selMode.value = m.mode;
+    const showMode = m.mode === 'OFF' ? 'NORMAL' : m.mode;
+    if (document.activeElement !== selMode && selMode.value !== showMode) selMode.value = showMode;
+    selMode.disabled = !markerOn;
     const selRef = cells[4].querySelector('select') as HTMLSelectElement;
     if (document.activeElement !== selRef && selRef.value !== String(m.refId)) selRef.value = String(m.refId);
+    selRef.disabled = !markerOn;
 
     let fStr = '-', aStr = '-';
     if (m.enabled && m.mode !== 'OFF' && powers) {

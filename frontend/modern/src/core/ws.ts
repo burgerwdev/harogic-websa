@@ -13,6 +13,8 @@ import {
   syncRefLevelStatus,
   syncScaleButtons,
   syncSwpSpanStep,
+  syncSdrPanel,
+  currentGraphMode,
 } from '../ui/controls';
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
@@ -30,6 +32,7 @@ import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
+import { pushSdrAudio } from '../audio/sdrAudio';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -50,6 +53,18 @@ let lastRender = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
+let lastSdrRef = -999;
+let sdrNoiseEma = -120;
+let sdrPeakEma = -60;
+let lastSdrAutoAt = 0;
+
+// Re-initialise the SDR auto-scale (called when entering SDR).
+export function resetSdrAutoRef() {
+  lastSdrRef = -999;
+  sdrNoiseEma = -120;
+  sdrPeakEma = -60;
+  lastSdrAutoAt = 0;
+}
 let firstConnect = true;
 let rtaAvgN = 0;
 
@@ -94,9 +109,11 @@ export function connectWS() {
       // First load: restore saved mode (default std). A leftover RTA session on the
       // backend would otherwise push RTAF frames with no SWP data -> blank spectrum.
       const saved = localStorage.getItem('web-sa-mode');
-      const wantRta = saved === 'rta';
-      send({ cmd: 'SET_MODE', mode: wantRta ? 'rta' : 'std' });
+      const wantMode = saved === 'rta' ? 'rta' : saved === 'sdr' ? 'sdr' : 'std';
+      const wantRta = wantMode !== 'std';
+      send({ cmd: 'SET_MODE', mode: wantMode });
       if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
+      else { S.setViewMode('rta'); S.setRtaMode(true); }
     }
   };
   ws.onerror = () => ws?.close();
@@ -127,6 +144,14 @@ export function connectWS() {
     if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
     const view = new DataView(event.data, 0, 16);
     const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+    if (magic === 'AUDF') {
+      // SDR audio: magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM
+      if (event.data.byteLength < 16) return;
+      const rate = view.getUint32(8, true);
+      const samples = view.getUint32(12, true);
+      pushSdrAudio(event.data, 16, samples, rate);
+      return;
+    }
     const version = view.getUint32(4, true);
     const points = view.getUint32(8, true);
     const sweepMsHdr = view.getFloat32(12, true);
@@ -166,6 +191,36 @@ export function connectWS() {
       const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
       if (!plausible && !settleOver) return;    // settle window only: drop quietly
       if (!plausible) S.setBadData(true);       // past it, show the data and say so
+      // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
+      // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
+      // frame peak (with a small hysteresis) so the signal is visible.
+      if (currentGraphMode() === 'sdr' && S.sdrRefAuto) {
+        let peak = -Infinity;
+        for (let i = 0; i < spec.length; i++) {
+          const v = spec[i];
+          if (v > peak && isFinite(v)) peak = v;
+        }
+        if (isFinite(peak)) {
+          const noise = percentileApprox(spec, 0.3);
+          // Smooth both so a fading signal does not make the whole display jump.
+          sdrNoiseEma = sdrNoiseEma < -119 ? noise : sdrNoiseEma * 0.9 + noise * 0.1;
+          sdrPeakEma = sdrPeakEma < -119 ? peak : sdrPeakEma * 0.75 + peak * 0.25;
+          const now2 = performance.now();
+          if (now2 - lastSdrAutoAt > 400) {
+            const range = S.totalDivs * S.dbPerDiv;
+            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
+            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
+            ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
+            if (Math.abs(ref - lastSdrRef) >= 3) {
+              lastSdrRef = ref;
+              S.setDisplayRef(ref);
+              lastSdrAutoAt = now2;
+              const cv = document.getElementById('spectrum');
+              if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
+            }
+          }
+        }
+      }
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -248,6 +303,7 @@ export function connectWS() {
           pushDensity(nd, i, spec[i] - floorN, w);
         }
       }
+
       // Per-trace accumulation (multi-trace like the official SW): each enabled trace
       // accumulates its own RTA display according to its mode.
       // RTA reuses the shared accumulator (single semantics with SWP). rtaDisplays stays
@@ -337,7 +393,7 @@ export function updateStatus(s: any) {
     invalidateAllTraces();
     if (hadNormalization) showNormalizeClearedHint();
   }
-  if (S.displayUnit !== 'dB') S.setDisplayRef(S.refLevel);
+  if (S.displayUnit !== 'dB' && s.mode !== 'sdr') S.setDisplayRef(S.refLevel);
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
@@ -443,6 +499,7 @@ export function updateStatus(s: any) {
     gf.classList.toggle('active', !!S.currentGapFill);
   }
   updateInfoBar();
+  syncSdrPanel(s);   // last: in SDR it owns the shared Ref widgets
 }
 
 function setInput(id: string, v: string, force = false) {

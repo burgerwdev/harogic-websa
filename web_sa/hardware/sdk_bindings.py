@@ -16,6 +16,7 @@ from ctypes import (
     POINTER,
     Structure,
     byref,
+    c_bool,
     c_double,
     c_float,
     c_int,
@@ -82,6 +83,86 @@ class Full_MeasAuxInfo(Structure):
     ]
 
 
+# ---------------------------------------------------------------------------
+# SDR support: IQS streaming (IQS_*), digital down-conversion (DSP_DDC_*),
+# analog demod (ADM_*), and the hardware capability word. Structs marked
+# "declared here" are absent from the official htra_api.py wrapper.
+# ---------------------------------------------------------------------------
+class HardWareState_TypeDef(Structure):
+    """Device_GetHardwareState (not exported by htra_api.py). Enums are c_int."""
+    _fields_ = [
+        ('GNSSPeriphType', c_int), ('GNSSType', c_int), ('OCXOType', c_int),
+        ('InternalOCXO', c_uint8), ('SignalSourceEn', c_uint8),
+        ('ADC_VariableRateEn', c_uint8), ('IM3_filter', c_uint8),
+    ]
+
+
+class AMDemodParam_TypeDef(Structure):
+    """ADM_AMDemod_PM1 output (aligned with htra_api.h)."""
+    _fields_ = [
+        ('DemodWaveform', POINTER(c_float)), ('AFSpectrum_ModDepth', POINTER(c_float)),
+        ('AFSpectrum_Freq', POINTER(c_double)), ('DemodWaveformSize', c_uint32),
+        ('ModDepth', c_float), ('ModDepthPeakPos', c_float), ('ModDepthPeakNeg', c_float),
+        ('ModDepthHalfPeak', c_float), ('ModDepthRMS', c_float), ('CarrierPower', c_float),
+        ('ModRate', c_double), ('SINAD', c_float), ('RMSPower', c_float),
+        ('FreqError', c_double), ('SNR', c_float), ('DistTotalVrms', c_float),
+        ('THD', c_float), ('PEP', c_float),
+    ]
+
+
+class FMDemodParam_TypeDef(Structure):
+    """ADM_FMDemod_PM1 output (aligned with htra_api.h)."""
+    _fields_ = [
+        ('DemodWaveform', POINTER(c_float)), ('AFSpectrum_Deviation', POINTER(c_float)),
+        ('AFSpectrum_Freq', POINTER(c_double)), ('DemodWaveformSize', c_uint32),
+        ('Deviation', c_float), ('DeviationPeakPos', c_float), ('DeviationPeakNeg', c_float),
+        ('DeviationHalfPeak', c_float), ('DeviationRMS', c_float), ('CarrierPower', c_float),
+        ('CarrierFreqErr', c_double), ('ModRate', c_double), ('SINAD', c_float),
+        ('SNR', c_float), ('DistTotalVrms', c_float), ('THD', c_float),
+    ]
+
+
+def _bind_sdr() -> dict:
+    """Bind IQS/DDC/ADM/hardware-state entry points not covered by htra_api.py."""
+    caps = {'adm': False, 'ddc_delay': False, 'hw_state': False}
+    try:
+        dll.DSP_DDC_GetDelay.argtypes = [POINTER(c_void_p), POINTER(c_uint32)]
+        dll.DSP_DDC_GetDelay.restype = None
+        caps['ddc_delay'] = True
+    except Exception:
+        pass
+    try:
+        dll.ADM_Open.argtypes = [POINTER(c_void_p)]
+        dll.ADM_Open.restype = None
+        dll.ADM_Close.argtypes = [POINTER(c_void_p)]
+        dll.ADM_Close.restype = None
+        dll.ADM_AMDemod.argtypes = [POINTER(c_void_p), c_void_p, c_int, c_uint64,
+                                    c_double, POINTER(c_float)]
+        dll.ADM_AMDemod.restype = c_int
+        dll.ADM_AMDemod_PM1.argtypes = [POINTER(c_void_p), c_void_p, c_int, c_uint64,
+                                        c_double, c_float, POINTER(AMDemodParam_TypeDef)]
+        dll.ADM_AMDemod_PM1.restype = c_int
+        dll.ADM_FMDemod.argtypes = [POINTER(c_void_p), c_void_p, c_int, c_uint64,
+                                    c_double, c_bool, POINTER(c_float)]
+        dll.ADM_FMDemod.restype = c_int
+        dll.ADM_FMDemod_PM1.argtypes = [POINTER(c_void_p), c_void_p, c_int, c_uint64,
+                                        c_double, c_float, c_bool, POINTER(FMDemodParam_TypeDef)]
+        dll.ADM_FMDemod_PM1.restype = c_int
+        caps['adm'] = True
+    except Exception:
+        pass
+    try:
+        dll.Device_GetHardwareState.argtypes = [POINTER(c_void_p), POINTER(HardWareState_TypeDef)]
+        dll.Device_GetHardwareState.restype = c_int
+        caps['hw_state'] = True
+    except Exception:
+        pass
+    return caps
+
+
+SDR_CAPS = _bind_sdr()
+
+
 def _bind_pnm() -> bool:
     """Bind the PNM functions; return False if the library does not support them."""
     try:
@@ -143,8 +224,25 @@ DeviceInfo_TypeDef = htra_api.DeviceInfo_TypeDef
 BootProfile_TypeDef = htra_api.BootProfile_TypeDef
 BootInfo_TypeDef = htra_api.BootInfo_TypeDef
 
+# SDR aliases (IQS / DDC / FFT / demod)
+IQS_Profile_TypeDef = htra_api.IQS_Profile_TypeDef
+IQS_StreamInfo_TypeDef = htra_api.IQS_StreamInfo_TypeDef
+IQStream_TypeDef = htra_api.IQStream_TypeDef
+TriggerInfo_TypeDef = htra_api.TriggerInfo_TypeDef
+DataFormat_TypeDef = htra_api.DataFormat_TypeDef
+TriggerMode_TypeDef = htra_api.TriggerMode_TypeDef
+IQS_TriggerSource_TypeDef = htra_api.IQS_TriggerSource_TypeDef
+DCCancelerMode_TypeDef = htra_api.DCCancelerMode_TypeDef
+QDCMode_TypeDef = htra_api.QDCMode_TypeDef
+DSP_DDC_TypeDef = htra_api.DSP_DDC_TypeDef
+DSP_FFT_TypeDef = htra_api.DSP_FFT_TypeDef
+
 __all__ = [
     'PNM_SUPPORTED',
+    'SDR_CAPS',
+    'AMDemodParam_TypeDef',
+    'FMDemodParam_TypeDef',
+    'HardWareState_TypeDef',
     'BootInfo_TypeDef',
     'BootProfile_TypeDef',
     'DeviceInfo_TypeDef',

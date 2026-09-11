@@ -56,6 +56,17 @@ def security_middleware(cfg):
     return middleware
 
 
+def _sdr_health(session) -> dict:
+    if session is None or getattr(session, 'name', '') != 'sdr':
+        return {}
+    return {
+        'ok': getattr(session, '_packets_ok', 0),
+        'err': getattr(session, '_packets_err', 0),
+        'last_status': getattr(session, '_last_status', 0),
+        'transient_streak': getattr(session, '_transient_streak', 0),
+    }
+
+
 def build_status(dev) -> dict:
     s = dev.state
     swp_req = {
@@ -102,6 +113,11 @@ def build_status(dev) -> dict:
     is_rta = s.mode == 'rta'
     active_req = rta_req if is_rta else swp_req
     active_actual = s.rta_actual if is_rta else s.actual
+    sdr_req = {
+        'center': s.sdr_center_hz, 'decimate': s.sdr_decimate, 'listen': s.sdr_listen_hz,
+        'demod': s.sdr_demod, 'if_bw': s.sdr_if_bw, 'squelch': s.sdr_squelch,
+        'volume': s.sdr_volume, 'agc': s.sdr_agc, 'pitch': s.sdr_pitch,
+    }
     auto_trackers = getattr(dev, '_auto_ref', {})
     auto_tracker = auto_trackers.get(
         'rta' if is_rta else 'std',
@@ -122,6 +138,7 @@ def build_status(dev) -> dict:
     request['rta_center'] = s.rta_center_hz  # protocol compatibility
     request['swp'] = swp_req
     request['rta'] = rta_req
+    request['sdr'] = sdr_req
     return _json_safe({
         'cmd': 'STATUS', 'connected': s.connected, 'device': s.label,
         'device_detail': s.device_detail,
@@ -148,6 +165,14 @@ def build_status(dev) -> dict:
         'actual': active_actual,
         'swp_actual': s.actual,
         'rta_actual': s.rta_actual,
+        'sdr': {
+            **sdr_req,
+            'actual': s.sdr_actual,
+            'level_dbfs': s.sdr_level_dbfs,
+            'squelch_open': s.sdr_squelch_open,
+            'adm': s.sdr_adm,
+            'health': _sdr_health(session),
+        },
         'auto_ref_suspended': active_req['ref_mode'] == 'auto' and s.atten != -1,
         'auto_ref': {
             'last_peak': auto_tracker['last_peak'],

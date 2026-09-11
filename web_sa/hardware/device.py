@@ -67,6 +67,20 @@ class DeviceState:
     rta_sweep_time_mode: int = DEFAULT_RTA_SWEEP_MODE
     rta_sweep_time: float = 0.0
     rta_actual: dict = field(default_factory=dict)
+    # SDR mode (IQS streaming + channelizer + demod). Independent from SWP/RTA.
+    sdr_center_hz: float = 1e9
+    sdr_decimate: int = 16
+    sdr_actual: dict = field(default_factory=dict)
+    sdr_listen_hz: float = 1e9
+    sdr_demod: str = 'am'
+    sdr_if_bw: float = 6000.0
+    sdr_squelch: float = -110.0
+    sdr_squelch_open: bool = False
+    sdr_volume: float = 0.8
+    sdr_agc: bool = True
+    sdr_pitch: float = 700.0
+    sdr_level_dbfs: float = -120.0
+    sdr_adm: dict = field(default_factory=dict)
     # RTA acquisition trigger (applies to RTA sessions; SWP has no level trigger)
     trigger_source: str = DEFAULT_TRIGGER_SOURCE
     trigger_edge: str = DEFAULT_TRIGGER_EDGE
