@@ -76,8 +76,9 @@ class SdrSession(MeasurementSession):
         self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
-        self._mute_until = 0.0
-        self._mute_start = 0.0
+        self._discard_until = 0.0
+        self._fade_start = 0.0
+        self._fade_until = 0.0
         self._ready_at = 0.0
         self._error_streak = 0
         self._recovery_attempts = 0
@@ -181,23 +182,35 @@ class SdrSession(MeasurementSession):
         if start != 0:
             raise RuntimeError(f'IQS_BusTriggerStart status={start}')
 
+    def _chain_params(self):
+        """IF bandwidth and the DDC decimate it requires (>= 2.2x IF BW, >= 48 kHz)."""
+        fs_in = self._fs_in or 1.0
+        if_bw = float(max(200.0, min(self.dev.state.sdr_if_bw, fs_in * 0.4)))
+        need = max(float(self.AUDIO_RATE), 2.2 * if_bw)
+        return if_bw, max(1, min(65536, int(np.floor(fs_in / need))))
+
+    def _begin_audio_settle(self, discard: float = 0.12, fade: float = 0.10) -> None:
+        """Discard audio for `discard` seconds, then fade in over `fade` seconds: hides
+        the DDC/filter/AGC transient of a reconfiguration without a hard-mute click."""
+        now = time.monotonic()
+        self._discard_until = now + discard
+        self._fade_start = self._discard_until
+        self._fade_until = self._discard_until + fade
+
     def _configure_chain_locked(self):
-        """DDC + demod: pick the DDC rate from the IF bandwidth, then configure."""
+        """DDC + demod. Reconfigures the DDC only when the required rate changed (a mode
+        change with the same IF bandwidth keeps the DDC stream, avoiding an audio gap)."""
         s = self.dev.state
         fs_in = self._fs_in or 1.0
-        if_bw = float(max(200.0, min(s.sdr_if_bw, fs_in * 0.4)))
-        # Need >= 2.2x the IF bandwidth, and never below the 48 kHz audio rate.
-        need = max(float(self.AUDIO_RATE), 2.2 * if_bw)
-        decimate = max(1, int(np.floor(fs_in / need)))
-        decimate = min(decimate, 65536)
+        if_bw, decimate = self._chain_params()
         offset = float(s.sdr_center_hz) - float(s.sdr_listen_hz)   # verified sign
-        self._ddc.configure(fs_in, offset, decimate, self._packet_samples)
+        ddc_stale = (not self._ddc._ready or self._ddc.decimate != decimate
+                     or abs(self._ddc.offset_hz - offset) > 1e-6)
+        if ddc_stale:
+            self._ddc.configure(fs_in, offset, decimate, self._packet_samples)
         self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
         self._audio_buf = np.zeros(0, dtype=np.float32)
-        # Fade in after any chain reconfiguration so the DDC/filter/AGC transient is not
-        # audible (a hard mute would itself click).
-        self._mute_start = time.monotonic()
-        self._mute_until = self._mute_start + 0.12
+        self._begin_audio_settle()
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
             ddc_offset=offset, ddc_decimate=decimate,
@@ -392,10 +405,12 @@ class SdrSession(MeasurementSession):
             # ---- channelizer + demod ----
             i, q = self._ddc.process(src, n)      # pass the ctypes buffer directly
             audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
-            if audio.size and now < self._mute_until:
-                span = max(1e-3, self._mute_until - self._mute_start)
-                gain = (now - self._mute_start) / span
-                audio = audio * max(0.0, min(1.0, gain))
+            if audio.size and now < self._discard_until:
+                audio = np.zeros(0, dtype=np.float32)   # discard the settling transient
+            elif audio.size and now < self._fade_until:
+                span = max(1e-3, self._fade_until - self._fade_start)
+                gain = max(0.0, min(1.0, (now - self._fade_start) / span))
+                audio = audio * gain
             level_dbfs = float(power_dbfs) - 90.31     # int16 full-scale reference
             s.sdr_level_dbfs = float(level_dbfs)
             s.sdr_squelch_open = bool(level_dbfs >= float(s.sdr_squelch))

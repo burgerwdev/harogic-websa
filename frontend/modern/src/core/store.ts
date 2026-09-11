@@ -258,6 +258,12 @@ export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }
 // Auto amplitude reference (on by default); manual Ref disables it.
 export let sdrRefAuto = true;
 export function setSdrRefAuto(v: boolean) { sdrRefAuto = v; }
+// Weak snap of the tuned frequency to the nearest strong peak.
+export let sdrSnap = true;
+export function setSdrSnap(v: boolean) { sdrSnap = v; }
+// Clicking a peak-list row enters SDR at that frequency (optional).
+export let peakDemodOn = true;
+export function setPeakDemodOn(v: boolean) { peakDemodOn = v; }
 
 export let lastGnss: any = null;
 export function setLastGnss(v: any) { lastGnss = v; }

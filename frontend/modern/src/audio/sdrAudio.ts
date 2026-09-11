@@ -9,6 +9,7 @@ let available = 0;
 let enabled = false;
 let sourceRate = 48000;
 let fade = 0;
+let wasEmpty = true;
 
 const FADE_STEP = 0.002;   // ~10 ms fade in/out at 48 kHz per sample-tick
 
@@ -28,11 +29,13 @@ function ensureContext(): void {
     const out = event.outputBuffer.getChannelData(0);
     for (let i = 0; i < out.length; i++) {
       if (available > 0) {
+        if (wasEmpty) { fade = 0; wasEmpty = false; }   // fade in after any gap
         const idx = (writePos - available + ring.length) % ring.length;
         if (fade < 1) fade = Math.min(1, fade + FADE_STEP);
         out[i] = ring[idx] * fade;
         available--;
       } else {
+        wasEmpty = true;
         if (fade > 0) fade = Math.max(0, fade - FADE_STEP);
         out[i] = 0;
       }

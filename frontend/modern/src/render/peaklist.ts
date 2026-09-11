@@ -85,7 +85,7 @@ export function updatePeakTable(powers: Float32Array | null) {
     peakBound = true;
     tb2.addEventListener('click', (event) => {
       const td = (event.target as HTMLElement).closest('[data-peak-freq]') as HTMLElement | null;
-      if (!td || !peakListen) return;
+      if (!td || !peakListen || !S.peakDemodOn) return;
       const f = parseFloat(td.dataset.peakFreq || '');
       if (isFinite(f) && f > 0) peakListen(f);
     });
@@ -104,7 +104,7 @@ export function updatePeakTable(powers: Float32Array | null) {
       const idx = r * maxCols + c;
       const pk = idx < peaks.length ? peaks[idx] : null;
       if (!pk) continue;
-      cells += '<td class="pk-cell pk-click" data-peak-freq="' + pk.f + '" title="Click to demodulate @ ' + fmtF(pk.f) + '">' +
+      cells += '<td class="pk-cell ' + (S.peakDemodOn ? 'pk-click' : '') + '" data-peak-freq="' + pk.f + '" title="' + (S.peakDemodOn ? 'Click to demodulate @ ' + fmtF(pk.f) : 'Peak P' + (idx + 1)) + '">' +
         '<span class="pk-id">P' + (idx + 1) + ':</span> ' +
         '<span class="pk-f">' + fmtF(pk.f) + '</span> / ' +
         '<span class="pk-a">' + fmtLevel(pk.amp, 1) + '</span></td>';
