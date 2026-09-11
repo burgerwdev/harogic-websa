@@ -79,6 +79,7 @@ class SdrSession(MeasurementSession):
         self._discard_until = 0.0
         self._fade_start = 0.0
         self._fade_until = 0.0
+        self._settle_pending = False
         self._mix_phase = 0.0
         self._mix_freq = 0.0
         self._applied_listen = None
@@ -234,13 +235,14 @@ class SdrSession(MeasurementSession):
         grid = max(1000.0, (fs_out or 1.0) * 0.9)
         return rel, round(rel / grid) * grid
 
-    def _begin_audio_settle(self, discard: float = 0.12, fade: float = 0.10) -> None:
-        """Discard audio for `discard` seconds, then fade in over `fade` seconds: hides
-        the DDC/filter/AGC transient of a reconfiguration without a hard-mute click."""
-        now = time.monotonic()
-        self._discard_until = now + discard
-        self._fade_start = self._discard_until
-        self._fade_until = self._discard_until + fade
+    SETTLE_DISCARD = 0.12
+    SETTLE_FADE = 0.10
+
+    def _begin_audio_settle(self) -> None:
+        """Arm a discard+fade window. It is applied when the first audio actually arrives
+        after a reconfiguration (not at configure time), otherwise the settle window would
+        elapse during the ~0.4 s acquisition settle and the transient would be audible."""
+        self._settle_pending = True
 
     def _configure_chain_locked(self):
         """DDC + demod. The DDC is configured with the coarse offset for the current
@@ -250,12 +252,16 @@ class SdrSession(MeasurementSession):
         if_bw, decimate = self._chain_params()
         fs_out = fs_in / decimate
         rel, coarse = self._chain_coarse(fs_out)
+        # DDC output frequency = f_in + offset and its passband is |f_in + offset| <
+        # fs_out/2, so passing `rel` needs offset = -coarse (bench-verified sign:
+        # offset = center - listen). The residual rel - coarse goes to the software NCO.
+        ddc_off = -coarse
         if (not self._ddc._ready) or self._ddc.decimate != decimate \
-                or abs(self._ddc.offset_hz - coarse) > 1.0:
+                or abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Deep filter design is expensive (~180 ms); run it only while stopped.
-            self._ddc.configure(fs_in, coarse, decimate, self._packet_samples)
+            self._ddc.configure(fs_in, ddc_off, decimate, self._packet_samples)
             self._mix_phase = 0.0
-        self._mix_freq = rel - self._ddc.offset_hz
+        self._mix_freq = rel + self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
         self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
         self._audio_buf = np.zeros(0, dtype=np.float32)
@@ -285,7 +291,8 @@ class SdrSession(MeasurementSession):
             return
         fs_out = self._ddc.fs_out or 1.0
         rel, coarse = self._chain_coarse(fs_out)
-        if abs(self._ddc.offset_hz - coarse) > 1.0:
+        ddc_off = -coarse
+        if abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Host-only DDC reconfiguration: wrap it in a plain stop/start (which is safe)
             # so the device buffer cannot overflow while we are not fetching.
             T = sb
@@ -293,7 +300,7 @@ class SdrSession(MeasurementSession):
                 T.dll.IQS_BusTriggerStop(T.pointer(self.dev.dev))
             except Exception:
                 pass
-            self._ddc.configure(self._fs_in, coarse, self._ddc.decimate, self._packet_samples)
+            self._ddc.configure(self._fs_in, ddc_off, self._ddc.decimate, self._packet_samples)
             self._mix_phase = 0.0
             try:
                 T.dll.IQS_BusTriggerStart(T.pointer(self.dev.dev))
@@ -301,7 +308,12 @@ class SdrSession(MeasurementSession):
                 pass
             self._last_ok = time.monotonic()
             self._ready_at = time.monotonic() + 0.15
-        self._mix_freq = rel - self._ddc.offset_hz
+        changed = abs((rel + self._ddc.offset_hz) - self._mix_freq) > 0.5
+        self._mix_freq = rel + self._ddc.offset_hz
+        if changed:
+            # A new mix frequency means the FM discriminator's previous sample belongs to
+            # another channel; clear it (keeping the AGC) so tuning does not click.
+            self._demod.retune()
         self._applied_listen = float(s.sdr_listen_hz)
         s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=self._ddc.offset_hz,
                             mix_offset=self._mix_freq, ddc_rate=fs_out,
@@ -353,20 +365,27 @@ class SdrSession(MeasurementSession):
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None,
                   agc=None, pitch=None):
         s = self.dev.state
-        if mode is not None and mode in ANALOG_MODES:
+        reconfig = False
+        if mode is not None and mode in ANALOG_MODES and mode != s.sdr_demod:
             s.sdr_demod = mode
-        if if_bw is not None:
+            reconfig = True
+        if if_bw is not None and abs(float(if_bw) - s.sdr_if_bw) > 0.5:
             s.sdr_if_bw = float(if_bw)
+            reconfig = True
+        if pitch is not None and abs(float(pitch) - s.sdr_pitch) > 0.5:
+            s.sdr_pitch = float(pitch)
+            reconfig = True
+        # Volume / squelch / AGC are applied live in step(); they must NOT reconfigure the
+        # demod (that reset the filters and produced a pop/gap on every slider move).
         if squelch is not None:
             s.sdr_squelch = float(squelch)
         if volume is not None:
             s.sdr_volume = float(max(0.0, min(2.0, volume)))
         if agc is not None:
             s.sdr_agc = bool(agc)
-        if pitch is not None:
-            s.sdr_pitch = float(pitch)
-        with self._lock:
-            self._configure_chain_locked()
+        if reconfig:
+            with self._lock:
+                self._configure_chain_locked()
 
     def reconfigure(self):
         self._configure()
@@ -526,6 +545,12 @@ class SdrSession(MeasurementSession):
             i, q = self._ddc.process(src, n)      # pass the ctypes buffer directly
             i, q = self._mix(i, q)                # software fine tuning
             audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
+            if audio.size and self._settle_pending:
+                # First audio after a reconfiguration: start the discard+fade window now.
+                self._settle_pending = False
+                self._discard_until = now + self.SETTLE_DISCARD
+                self._fade_start = self._discard_until
+                self._fade_until = self._discard_until + self.SETTLE_FADE
             if audio.size and now < self._discard_until:
                 audio = np.zeros(0, dtype=np.float32)   # discard the settling transient
             elif audio.size and now < self._fade_until:

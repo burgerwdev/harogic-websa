@@ -1310,10 +1310,28 @@ export function bindCanvas() {
     if (sdrDown) {
       if (Math.abs(x - sdrX0) > 4) sdrMoved = true;
       if (sdrMoved) {
-        // Preview only: move the marker locally. No command is sent while the button is
-        // held (that flooded the backend and stuttered); the tune commits on release.
+        // Preview the marker locally; the tune itself is committed on release.
         const f = xToFreqHz(x);
         if (f != null) S.setSdrListenHz(f);
+        // Edge push: dragging past the sides shifts the capture window so the user can
+        // walk through adjacent frequency ranges (standard SDR panning). Throttled
+        // because it retunes the device.
+        const pr = plotRectPub();
+        const frac = (x - pr.x) / pr.w;
+        const now = performance.now();
+        if (now - sdrEdgeAt > 350) {
+          if (frac > 0.9) {
+            sdrEdgeAt = now;
+            sdrCenterHz += sdrSpanHz * 0.2;
+            sdrX0 += pr.w * 0.2;
+            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
+          } else if (frac < 0.1) {
+            sdrEdgeAt = now;
+            sdrCenterHz -= sdrSpanHz * 0.2;
+            sdrX0 -= pr.w * 0.2;
+            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
+          }
+        }
       }
       return;
     }
