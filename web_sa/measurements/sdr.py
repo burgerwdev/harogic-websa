@@ -530,6 +530,11 @@ class SdrSession(MeasurementSession):
                 s.sdr_if_bw = old_if_bw
                 s.sdr_pitch = old_pitch
                 raise
+        else:
+            # Live volume/squelch/AGC changes can still create a discontinuity. Publish
+            # the same reset/settle marker used by a full demod-chain change.
+            with self._lock:
+                self._begin_audio_settle()
 
     def reconfigure(self):
         self._configure()

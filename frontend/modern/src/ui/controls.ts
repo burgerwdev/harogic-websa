@@ -315,6 +315,7 @@ export function syncRefClkOut(s: any) {
   btn.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
 }
 export function setAmp() {
+  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
   send({
     cmd: 'SET_AMP',
     atten: parseInt((document.getElementById('select-atten') as HTMLSelectElement).value),
@@ -676,9 +677,7 @@ export function applySdrDemod() {
   const ifbw = sdrNumber('select-sdr-ifbw', 6000);
   const volume = sdrNumber('input-sdr-volume', 0.8);
   const squelch = sdrNumber('input-sdr-squelch', -110);
-  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5) {
-    prepareSdrAudioTransition();
-  }
+  prepareSdrAudioTransition();
   lastSdrDemodMode = mode;
   lastSdrDemodIfbw = ifbw;
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn() });
@@ -688,6 +687,7 @@ export function toggleSdrAgc(el: HTMLElement) {
   const on = !el.classList.contains('active');
   el.classList.toggle('active', on);
   el.textContent = on ? t('on') : t('off');
+  prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR_DEMOD', agc: on });
 }
 
