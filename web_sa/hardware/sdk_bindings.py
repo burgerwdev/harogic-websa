@@ -28,6 +28,7 @@ from ctypes import (
     c_void_p,
     create_string_buffer,
     pointer,
+    sizeof,
 )
 
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))  # ../.. = Python_Examples (htra_api.py)
@@ -171,6 +172,50 @@ def _bind_sdr() -> dict:
 
 SDR_CAPS = _bind_sdr()
 
+# ---------------------------------------------------------------------------
+# Vendor wrapper gap (root cause of the native heap corruption): htra_api.py's
+# DeviceState_TypeDef still declares the obsolete `LicenseCode` where the current header
+# (/opt/htraapi/inc/htra_api.h) has `nsSinceEpoch` (uint64). That makes the struct - and
+# the IQStream_TypeDef embedding it - 8 bytes too small (720 vs 728), so
+# IQS_GetIQStream_PM1 writes 8 bytes past the end of our buffer on EVERY packet and
+# corrupts the heap (observed as "corrupted size vs. prev_size" / "munmap_chunk(): invalid
+# pointer" / SIGABRT, i.e. random worker restarts). Re-declare the stream struct with the
+# header-correct size and rebind every entry point that takes it.
+# ---------------------------------------------------------------------------
+class DeviceState_TypeDef(Structure):
+    _fields_ = list(htra_api.DeviceState_TypeDef._fields_[:15]) + [('nsSinceEpoch', c_uint64)]
+
+
+class IQStream_TypeDef(Structure):
+    _fields_ = [
+        ('AlternIQStream', POINTER(c_void_p)),
+        ('IQS_ScaleToV', c_float),
+        ('MaxPower_dBm', c_float),
+        ('MaxIndex', c_uint32),
+        ('IQS_Profile', htra_api.IQS_Profile_TypeDef),
+        ('IQS_StreamInfo', htra_api.IQS_StreamInfo_TypeDef),
+        ('IQS_TriggerInfo', htra_api.TriggerInfo_TypeDef),
+        ('DeviceInfo', htra_api.DeviceInfo_TypeDef),
+        ('DeviceState', DeviceState_TypeDef),
+    ]
+
+
+assert sizeof(IQStream_TypeDef) == 728, (
+    'IQStream_TypeDef size %d != 728: the vendor header changed; passing a short struct to '
+    'IQS_GetIQStream_PM1 corrupts the heap.' % sizeof(IQStream_TypeDef))
+
+for _name, _argtypes in (
+        ('IQS_GetIQStream_PM1', [POINTER(c_void_p), POINTER(IQStream_TypeDef)]),
+        ('IQS_GetIQStream_PM2', [POINTER(c_void_p), POINTER(IQStream_TypeDef),
+                                 POINTER(Full_MeasAuxInfo)]),
+        ('DSP_DDC_Execute', [POINTER(c_void_p), POINTER(IQStream_TypeDef),
+                             POINTER(IQStream_TypeDef)]),
+        ('DSP_FFT_IQSToSpectrum', [POINTER(c_void_p), POINTER(IQStream_TypeDef),
+                                   POINTER(c_double), POINTER(c_float)]),
+):
+    if hasattr(dll, _name):
+        getattr(dll, _name).argtypes = _argtypes
+
 
 def _bind_pnm() -> bool:
     """Bind the PNM functions; return False if the library does not support them."""
@@ -236,7 +281,7 @@ BootInfo_TypeDef = htra_api.BootInfo_TypeDef
 # SDR aliases (IQS / DDC / FFT / demod)
 IQS_Profile_TypeDef = htra_api.IQS_Profile_TypeDef
 IQS_StreamInfo_TypeDef = htra_api.IQS_StreamInfo_TypeDef
-IQStream_TypeDef = htra_api.IQStream_TypeDef
+IQStream_TypeDef = IQStream_TypeDef   # header-corrected above (see the note there)
 TriggerInfo_TypeDef = htra_api.TriggerInfo_TypeDef
 DataFormat_TypeDef = htra_api.DataFormat_TypeDef
 TriggerMode_TypeDef = htra_api.TriggerMode_TypeDef

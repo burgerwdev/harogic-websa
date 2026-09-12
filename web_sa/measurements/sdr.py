@@ -279,6 +279,9 @@ class SdrSession(MeasurementSession):
             ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
             refclk_out=bool(out.EnableReferenceClockOut),
         )
+        # Re-assert the vendor FFT only when the IQS packet geometry changed (it is the
+        # only thing the FFT size depends on).
+        self._configure_vendor_fft_locked()
         dev._read_amp_atten()
         dev.state.config_version += 1
         dev.state.freq_version += 1
@@ -437,19 +440,18 @@ class SdrSession(MeasurementSession):
         # fs_out/2, so passing `rel` needs offset = -coarse (bench-verified sign:
         # offset = center - listen). The residual rel - coarse goes to the software NCO.
         ddc_off = -coarse
-        ddc_changed = False
         if (not self._ddc._ready) or self._ddc.decimate != decimate \
                 or abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Deep filter design is expensive (~180 ms); run it only while stopped.
             self._ddc.configure(fs_in, ddc_off, decimate,
                                  self._packet_samples * self._ddc_batch)
             self._mix_phase = 0.0
-            ddc_changed = True
+        # The vendor FFT geometry depends only on the IQS packet geometry, so it is
+        # (re)configured when that changes - not on every DDC offset/decimate change. Doing
+        # it on every tuning step churned DSP_FFT_DeInit/Configuration against a live DSP
+        # handle and caused native heap corruption ("corrupted size vs. prev_size").
         frame_samples = int(self._packet_samples) * int(self._ddc_batch)
-        if ddc_changed or not self._vfft_ready or self._vfft_frame_samples != frame_samples:
-            # The vendor DDC and FFT share the DSP handle. Re-assert the FFT geometry
-            # after any DDC reconfiguration so it cannot keep a stale (resized) buffer,
-            # which corrupted the heap on mode/IF-bandwidth changes.
+        if (not self._vfft_ready) or self._vfft_frame_samples != frame_samples:
             self._configure_vendor_fft_locked()
         self._mix_freq = rel + self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
@@ -507,8 +509,6 @@ class SdrSession(MeasurementSession):
                 self._ddc.configure(
                     self._fs_in, ddc_off, self._ddc.decimate,
                     self._packet_samples * self._ddc_batch)
-                # Same shared-DSP hazard as _configure_chain_locked: re-assert the FFT.
-                self._configure_vendor_fft_locked()
                 self._mix_phase = 0.0
                 self._start_trigger_locked()
                 self._last_ok = time.monotonic()
