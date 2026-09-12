@@ -110,8 +110,12 @@ class AnalogDemod:
         self._cw_phase = 0.0
 
     # ---- processing ----
-    def process(self, i, q, use_agc: bool = True):
-        """Returns (audio float32 @ audio_rate, power_dbfs)."""
+    def process(self, i, q, use_agc: bool = True, agc_hold: bool = False):
+        """Returns (audio float32 @ audio_rate, power_dbfs).
+
+        ``agc_hold`` keeps the AGC gain frozen (it is still applied) while the caller is
+        discarding reconfiguration transients.
+        """
         if not self._configured:
             return np.zeros(0, dtype=np.float32), -120.0
         z = np.asarray(i, dtype=np.float64) + 1j * np.asarray(q, dtype=np.float64)
@@ -154,5 +158,5 @@ class AnalogDemod:
         if self._deemph is not None and a.size:
             a = self._deemph.process(a)
         if use_agc and a.size:
-            a = self.agc.process(a)
+            a = self.agc.process(a, hold=agc_hold)
         return np.ascontiguousarray(a, dtype=np.float32), power_dbfs

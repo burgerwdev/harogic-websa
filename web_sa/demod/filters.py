@@ -121,24 +121,35 @@ class LinearResampler:
 
 
 class Agc:
-    """Simple RMS AGC with independent attack/release."""
+    """RMS AGC with independent attack/release, a silence gate and a hold input.
 
-    def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4):
+    ``hold=True`` applies the current gain without adapting. The SDR path holds the AGC
+    while it is discarding a reconfiguration transient, so the gain cannot wind up on
+    audio that is never published (that wound-up gain used to be applied to the first real
+    audio block, producing an audible burst that then decayed). Near-silence below
+    ``silence_floor`` likewise never raises the gain.
+    """
+
+    def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4,
+                 silence_floor=1e-4):
         self.target = float(target)
         self.attack = float(attack)
         self.release = float(release)
         self.max_gain = float(max_gain)
+        self.silence_floor = float(silence_floor)
         self.gain = 1.0
 
     def reset(self) -> None:
         self.gain = 1.0
 
-    def process(self, x: np.ndarray) -> np.ndarray:
+    def process(self, x: np.ndarray, hold: bool = False) -> np.ndarray:
         x = np.asarray(x, dtype=np.float32)
         if x.size == 0:
             return x
-        rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-20))
-        desired = min(self.max_gain, self.target / max(rms, 1e-9))
-        coef = self.attack if desired < self.gain else self.release
-        self.gain += (desired - self.gain) * coef
+        if not hold:
+            rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-20))
+            if rms >= self.silence_floor:
+                desired = min(self.max_gain, self.target / max(rms, 1e-9))
+                coef = self.attack if desired < self.gain else self.release
+                self.gain += (desired - self.gain) * coef
         return x * self.gain

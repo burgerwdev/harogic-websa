@@ -823,13 +823,17 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
             i, q = self._mix(i, q)                # software fine tuning
-            audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
-            if audio.size and self._settle_pending:
-                # First audio after a reconfiguration: start the discard+fade window now.
+            # Arm the settle window BEFORE the demod so the AGC is held while the chain
+            # transient is discarded; otherwise it winds up on audio that is never
+            # published and the first real block comes out far too loud.
+            if self._settle_pending and i.size:
                 self._settle_pending = False
                 self._discard_until = now + self.SETTLE_DISCARD
                 self._fade_start = self._discard_until
                 self._fade_until = self._discard_until + self.SETTLE_FADE
+            settling = now < self._discard_until
+            audio, power_dbfs = self._demod.process(
+                i, q, use_agc=s.sdr_agc, agc_hold=settling)
             if audio.size and now < self._discard_until:
                 audio = np.zeros(0, dtype=np.float32)   # discard the settling transient
             elif audio.size and now < self._fade_until:

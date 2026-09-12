@@ -665,6 +665,20 @@ export function applySdr() {
   // Setting the wideband centre also tunes the demodulator there.
   S.setSdrListenHz(center);
   send({ cmd: 'SET_SDR_TUNE', listen: center });
+  // Apply the same band -> demod rule as the SWP/RTA handoff, otherwise entering SDR
+  // directly and typing a broadcast frequency keeps the previous demod (e.g. AM on an FM
+  // station = noise).
+  const inFm = center >= 87.5e6 && center <= 108e6;
+  const inAir = center >= 118e6 && center <= 137e6;
+  if (inFm || inAir) {
+    const demod = inFm ? 'wfm' : 'am';
+    const ifbw = inFm ? 180000 : 25000;
+    const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
+    if (modeSel) modeSel.value = demod;
+    const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
+    if (bwSel) bwSel.value = String(ifbw);
+    applySdrDemod();
+  }
   const l = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
   if (l) l.value = centerMhz.toFixed(6);
 }
