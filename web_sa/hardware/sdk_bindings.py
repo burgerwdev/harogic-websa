@@ -80,17 +80,29 @@ class PNM_AuxInfo_TypeDef(Structure):
 
 
 class Full_MeasAuxInfo(Structure):
-    """Full MeasAuxInfo: the first 11 fields match the official wrapper in htra_api.py
-    (DLL compatible); appends the .h trailing fields (IFAGCGain/RefClkFreqOffset/
-    nsSinceEpoch), from which ppm is read."""
+    """Full MeasAuxInfo.
+
+    The official wrapper in htra_api.py stops after Longitude (48 bytes) and the previous
+    hand-written version stopped after Longitude too (72 bytes), but the header also has
+    Altitude + SATHealth before IFAGCGain - so the struct was 72 instead of 80 and
+    SWP_GetFullSweep / RTA_GetRealTimeSpectrum wrote 8 bytes past it on EVERY call
+    (native heap corruption -> "corrupted size vs. prev_size"). Verified against
+    sizeof(MeasAuxInfo_TypeDef) compiled from /opt/htraapi/inc/htra_api.h.
+    """
     _fields_ = [
         ('MaxIndex', c_uint32), ('MaxPower_dBm', c_float), ('Temperature', c_int16),
         ('RFState', c_uint16), ('BBState', c_uint16), ('GainPattern', c_uint16),
         ('ConvertPattern', c_uint32),
         ('SysTimeStamp', c_double), ('AbsoluteTimeStamp', c_double),
         ('Latitude', c_float), ('Longitude', c_float),
+        ('Altitude', c_float), ('SATHealth', c_float),
         ('IFAGCGain', c_double), ('RefClkFreqOffset', c_double), ('nsSinceEpoch', c_uint64),
     ]
+
+
+assert sizeof(Full_MeasAuxInfo) == 80, (
+    'Full_MeasAuxInfo size %d != 80: a short struct makes the DLL write past it.'
+    % sizeof(Full_MeasAuxInfo))
 
 
 # ---------------------------------------------------------------------------
