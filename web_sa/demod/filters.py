@@ -44,6 +44,34 @@ def design_complex_bandpass(fs: float, f_lo: float, f_hi: float, ntaps: int = 25
     return h.astype(np.complex64)
 
 
+def one_pole_iir(x: np.ndarray, alpha: float, prev: float,
+                 chunk: int = 256) -> tuple[np.ndarray, float]:
+    """Streaming one-pole recursion ``y[n] = alpha*y[n-1] + x[n]``.
+
+    Vectorised with a chunked cumulative sum. The chunk length is bounded so the
+    per-chunk weight ratio cannot overflow: a fast filter (e.g. 50 us de-emphasis)
+    would otherwise blow up over a whole block. Replaces per-sample Python loops,
+    which dominated the SDR demodulator cost.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return x, float(prev)
+    alpha = float(alpha)
+    if not (0.0 < alpha < 1.0):
+        return x, float(x[-1])
+    decay = -np.log(alpha)
+    chunk = max(1, min(int(chunk), int(max(1.0, 2.0 / decay))))
+    out = np.empty_like(x)
+    y = float(prev)
+    for start in range(0, x.size, chunk):
+        seg = x[start:start + chunk]
+        w = alpha ** np.arange(seg.size, dtype=np.float64)
+        seg_out = w * (y + np.cumsum(seg / w))
+        out[start:start + seg.size] = seg_out
+        y = float(seg_out[-1])
+    return out, y
+
+
 class StreamFilter:
     """Stateful FIR (real or complex) with an overlap tail between blocks."""
 
