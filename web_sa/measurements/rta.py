@@ -158,7 +158,13 @@ class RtaSession(MeasurementSession):
             T.RTA_TriggerSource_TypeDef,
             _TRIGGER_SOURCE.get(s.trigger_source, 'Bus'),
             T.RTA_TriggerSource_TypeDef.Bus)
-        prof.TriggerMode = T.TriggerMode_TypeDef.FixedPoints
+        # Match the official SAStudio app: Adaptive streaming for the free-running
+        # bus/free trigger (measured ~140-150 fps vs ~101 fps with FixedPoints), but keep
+        # FixedPoints for real trigger sources (level/external/timer), where a bounded
+        # acquisition window is required and TriggerAcqTime applies.
+        prof.TriggerMode = (T.TriggerMode_TypeDef.Adaptive
+                            if s.trigger_source in ('bus', 'freerun')
+                            else T.TriggerMode_TypeDef.FixedPoints)
         prof.TriggerAcqTime = float(s.trigger_acq_time_s)
         prof.TriggerEdge = _enum(
             T.TriggerEdge_TypeDef,
