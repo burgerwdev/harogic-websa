@@ -491,6 +491,15 @@ export function updateStatus(s: any) {
     if (cp) cp.textContent = s.amp.preamp_actual === 1 ? t('off') : (s.amp.preamp_actual === 0 ? t('on') : '');
     const cg = document.getElementById('cur-ifgain');
     if (cg) cg.textContent = s.amp.ifgain_actual != null ? 'L' + s.amp.ifgain_actual : '';
+    // With a manual channel attenuation the device resolves the preamplifier itself
+    // (measured: it reports ForcedOff), so the Auto/Off choice has no effect. Say so
+    // instead of silently ignoring the selector.
+    const preampSel = document.getElementById('select-preamp') as HTMLSelectElement | null;
+    if (preampSel) {
+      const manualAtten = String(s.amp.atten) !== '-1';
+      preampSel.disabled = manualAtten;
+      preampSel.title = manualAtten ? t('preamp_manual_atten') : t('tip_select-preamp');
+    }
   }
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - S.displayOffset) > 0.01)
