@@ -96,8 +96,10 @@ Using the connected antenna and the 101.7 MHz broadcast signal at 1.953125 MSPS:
   every mode), so that capture cannot justify changing the production default.
 - IQS configuration time remained about 5 ms for every DCC/QDC combination.
 
-Keep the bench-proven `DCCHighPassFilterMode + QDCOff` default until a strong off-centre
-CW source is physically connected for a meaningful image-rejection measurement.
+Keep the bench-proven `DCCHighPassFilterMode + QDCOff` default. Although high-pass DCC
+can attenuate signals very close to DC, on this SAN-90 firmware `DCCOff` produces an
+invalid/noisy IQ path and loses the verified FM station; a future centre-channel mode
+needs a firmware-specific validation rather than simply selecting DCCOff.
 
 ## 8. Not available
 

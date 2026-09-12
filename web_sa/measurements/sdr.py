@@ -203,17 +203,6 @@ class SdrSession(MeasurementSession):
         p.IFGainGrade = int(s.ifgain)
         p.GainStrategy = (T.GainStrategy_TypeDef.LowNoisePreferred if s.gain_strategy == 0
                           else T.GainStrategy_TypeDef.HighLinearityPreferred)
-        rc_map = {
-            'internal': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
-            'external': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External,
-            'premium': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal_Premium,
-            'external_forced': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External_Forced,
-        }
-        p.ReferenceClockSource = rc_map.get(
-            s.ref_clock, T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
-        p.ReferenceClockFrequency = 10e6
-        p.ExternalSystemClockFrequency = 10e6
-        p.EnableReferenceClockOut = 1 if s.refclk_out else 0
         p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCHighPassFilterMode
         p.QDCMode = T.QDCMode_TypeDef.QDCOff
         st = T.dll.IQS_Configuration(T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info))
