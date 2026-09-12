@@ -211,10 +211,10 @@ export function connectWS() {
           if (now2 - lastSdrAutoAt > 400) {
             const range = S.totalDivs * S.dbPerDiv;
             // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            // Prefer the signal peak as the initial display anchor. The previous max()
-            // let a low SWP/RTA noise floor term dominate (for example, -10 dBm),
-            // leaving an SDR signal near the bottom until the user pressed Auto.
-            let ref = Math.min(sdrPeakEma + 10, sdrNoiseEma + range - 8);
+            // Leave a larger analyzer-style headroom above the strongest trace. A 10 dB
+            // anchor makes a strong SDR signal hug the top edge; 25 dB keeps the trace in
+            // the upper-middle while the noise remains in the lower part of the grid.
+            let ref = Math.min(sdrPeakEma + 25, sdrNoiseEma + range - 8);
             ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
             if (Math.abs(ref - lastSdrRef) >= 3) {
               lastSdrRef = ref;
