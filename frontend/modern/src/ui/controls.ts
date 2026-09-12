@@ -200,11 +200,13 @@ export function setRefLevel() {
   const value = parseFloat(el.value);
   if (!isFinite(value)) return;
   if (currentGraphMode() === 'sdr') {
-    // In SDR the Ref group drives the display reference (analog gain is automatic).
+    // SDR Ref controls the IQS hardware reference level as well as the display. The
+    // backend reconfigures IQS and applies the normal audio reset/fade sequence.
     S.setSdrRefAuto(false);
     S.setDisplayRef(value);
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
+    send({ cmd: 'SET_REF', mode: 'manual', ref: value });
     renderAll();
     return;
   }
@@ -230,6 +232,7 @@ export function adjustRefLevel(direction: -1 | 1) {
     S.setDisplayRef(next);
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
+    send({ cmd: 'SET_REF', mode: 'manual', ref: next });
     renderAll();
     return;
   }
