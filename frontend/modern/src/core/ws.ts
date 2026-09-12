@@ -63,7 +63,7 @@ export function resetSdrAutoRef() {
   lastSdrRef = -999;
   sdrNoiseEma = -120;
   sdrPeakEma = -60;
-  lastSdrAutoAt = -Infinity;
+  lastSdrAutoAt = 0;
 }
 let firstConnect = true;
 let rtaAvgN = 0;
@@ -211,10 +211,8 @@ export function connectWS() {
           if (now2 - lastSdrAutoAt > 400) {
             const range = S.totalDivs * S.dbPerDiv;
             // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            // Leave a larger analyzer-style headroom above the strongest trace. A 10 dB
-            // anchor makes a strong SDR signal hug the top edge; 25 dB keeps the trace in
-            // the upper-middle while the noise remains in the lower part of the grid.
-            let ref = Math.min(sdrPeakEma + 25, sdrNoiseEma + range - 8);
+            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
+            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
             ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
             if (Math.abs(ref - lastSdrRef) >= 3) {
               lastSdrRef = ref;
