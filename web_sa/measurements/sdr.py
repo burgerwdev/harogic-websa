@@ -74,6 +74,7 @@ class SdrSession(MeasurementSession):
         self._audio_seq = 0
         self._audio_reset_pending = False
         self._packet_samples = 0
+        self._ddc_batch = 1
         self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
@@ -221,6 +222,7 @@ class SdrSession(MeasurementSession):
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
         self._packet_samples = int(info.PacketSamples)
+        self._ddc_batch = 2 if fs >= 3.0e6 else 1
         self._fs_in = fs
         s.sdr_actual = dict(
             center=s.sdr_center_hz, iq_rate=fs, bandwidth=bandwidth,
@@ -302,7 +304,8 @@ class SdrSession(MeasurementSession):
         if (not self._ddc._ready) or self._ddc.decimate != decimate \
                 or abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Deep filter design is expensive (~180 ms); run it only while stopped.
-            self._ddc.configure(fs_in, ddc_off, decimate, self._packet_samples)
+            self._ddc.configure(fs_in, ddc_off, decimate,
+                                 self._packet_samples * self._ddc_batch)
             self._mix_phase = 0.0
         self._mix_freq = rel + self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
@@ -313,6 +316,7 @@ class SdrSession(MeasurementSession):
             ddc_offset=self._ddc.offset_hz, mix_offset=self._mix_freq,
             ddc_decimate=self._ddc.decimate, ddc_rate=self._ddc.fs_out,
             ddc_delay=self._ddc.delay,
+            ddc_batch=self._ddc_batch,
             audio_rate=self.AUDIO_RATE,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
@@ -357,7 +361,8 @@ class SdrSession(MeasurementSession):
             try:
                 self._stop_trigger_locked()
                 self._ddc.configure(
-                    self._fs_in, ddc_off, self._ddc.decimate, self._packet_samples)
+                    self._fs_in, ddc_off, self._ddc.decimate,
+                    self._packet_samples * self._ddc_batch)
                 self._mix_phase = 0.0
                 self._start_trigger_locked()
                 self._last_ok = time.monotonic()
@@ -602,7 +607,48 @@ class SdrSession(MeasurementSession):
                 return [], []
             self._scale_to_v = float(stream.IQS_ScaleToV)
             src = C.cast(stream.AlternIQStream, C.POINTER(C.c_int16 * (n * 2))).contents
-            arr = np.ctypeslib.as_array(src)      # view, no copy
+            arrays = [np.ctypeslib.as_array(src).copy()]
+            total_n = n
+            # At high IQ input rates the DSP work fits within one packet only barely.
+            # Fetch a second packet before invoking NumPy so two packet periods absorb
+            # scheduler jitter without changing the IQ capture bandwidth or IF filter.
+            for _ in range(1, self._ddc_batch):
+                next_stream = T.IQStream_TypeDef()
+                try:
+                    next_st = T.dll.IQS_GetIQStream_PM1(
+                        T.pointer(dev.dev), T.pointer(next_stream))
+                except Exception as exc:
+                    self._step_failed_locked('get exception', repr(exc))
+                    return frames, []
+                if next_st != 0:
+                    self._last_status = int(next_st)
+                    self._packets_err += 1
+                    if next_st in _TRANSIENT_IQS:
+                        self._transient_streak += 1
+                        self._timeout_streak = (
+                            self._timeout_streak + 1 if next_st == -10 else 0)
+                        if ((self._transient_streak >= 60 or self._timeout_streak >= 3)
+                                and time.monotonic() - self._last_recovery >= 1.0):
+                            self._recover_locked(next_st)
+                    else:
+                        self._step_failed_locked('get', next_st)
+                    return frames, []
+                self._last_status = 0
+                self._transient_streak = 0
+                self._timeout_streak = 0
+                self._last_ok = time.monotonic()
+                self._packets_ok += 1
+                next_n = int(next_stream.IQS_StreamInfo.PacketSamples)
+                if next_n < 2:
+                    return frames, []
+                next_src = C.cast(
+                    next_stream.AlternIQStream,
+                    C.POINTER(C.c_int16 * (next_n * 2))).contents
+                arrays.append(np.ctypeslib.as_array(next_src).copy())
+                total_n += next_n
+            arr = arrays[0] if len(arrays) == 1 else np.concatenate(arrays)
+            src = arr
+            n = total_n
             s = dev.state
 
             # ---- panadapter / waterfall ----

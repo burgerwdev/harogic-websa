@@ -99,8 +99,10 @@ above ~3.13 MHz) while still allowing real demodulation and listening.
 - **Audio transient**: after any tune or chain reconfiguration the backend discards
   120 ms and fades in over 100 ms; AUDF reset markers flush old-channel audio first.
 - **Capture bandwidth vs CPU**: the channelizer (vendor `DSP_DDC`) cost scales with
-  the IQ rate. Measured on this 8-core host: decimate ≥ 16 (≤ 3.13 MHz) sustains audio
-  at realtime; decimate 8 ≈ 68 %, decimate 4 ≈ 35 %. The wide options are marked
+  the IQ rate. High-rate input paths batch two IQS packets for one DDC/FIR/demod pass,
+  preserving the wider capture bandwidth while absorbing scheduler jitter; this adds
+  about 8 ms of buffering but does not change the IF bandwidth or 48 kHz audio rate.
+  Decimate 32 and slower paths remain single-packet. The wide options are marked
   `(audio ⚠)` in the UI — use them for viewing, not for listening.
 - **Auto-scale**: in SDR mode the amplitude reference is computed from each frame's
   peak (with hysteresis), because the SWP reference level (often 0 dBm) would push a

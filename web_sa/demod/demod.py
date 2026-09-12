@@ -135,15 +135,15 @@ class AnalogDemod:
             audio = zf.real
 
         if self._deemph_alpha > 0.0 and audio.size:
-            out = np.empty_like(audio)
-            prev = self._deemph_y
+            # Keep the stateful one-pole recurrence in-place to avoid an extra audio-sized
+            # allocation on every high-rate DDC packet.
             alpha = self._deemph_alpha
             feed = 1.0 - alpha
+            prev = self._deemph_y
             for k in range(audio.size):
                 prev = alpha * prev + feed * audio[k]
-                out[k] = prev
+                audio[k] = prev
             self._deemph_y = float(prev)
-            audio = out
 
         a = self.audio_lp.process(audio.astype(np.float32))
         a = self.resampler.process(a)
