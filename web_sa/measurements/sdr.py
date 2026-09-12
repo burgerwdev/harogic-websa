@@ -15,6 +15,7 @@ import logging
 import os
 import struct
 import time
+from ctypes import cast as c_cast
 
 import numpy as np
 
@@ -80,6 +81,9 @@ class SdrSession(MeasurementSession):
         self._vfft_points = 0
         self._vfft_freq = None
         self._vfft_power = None
+        self._vfft_frame_samples = 0
+        self._vfft_buffer = None
+        self._vfft_stream = None
         self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
@@ -256,16 +260,25 @@ class SdrSession(MeasurementSession):
         self._pan.reset()
 
     def _configure_vendor_fft_locked(self) -> None:
-        """Prepare the vendor FFT for the raw IQS packet path.
+        """Configure the vendor FFT over one full, contiguous IQ frame.
 
-        The FFT must receive the IQStream object returned by IQS_GetIQStream_PM1; its
-        profile/stream metadata is part of the vendor contract. NumPy remains a fallback.
+        The vendor FFT copies ``IQStream.IQS_StreamInfo.PacketSamples`` input samples into
+        an internal buffer sized from ``DSP_FFT_TypeDef.SamplePts``. Configuring a small
+        FFT while handing it a large IQS packet overflows that buffer and corrupts the
+        heap (observed as ``munmap_chunk(): invalid pointer`` / SIGSEGV). Frame size, FFT
+        size and stream metadata must therefore stay identical.
         """
         self._vfft_ready = False
         self._vfft_points = 0
         self._vfft_freq = None
         self._vfft_power = None
+        self._vfft_frame_samples = 0
+        self._vfft_buffer = None
+        self._vfft_stream = None
         try:
+            frame_samples = int(self._packet_samples) * int(self._ddc_batch)
+            if frame_samples < 64:
+                raise RuntimeError(f'vendor FFT frame too small: {frame_samples}')
             fi = sb.DSP_FFT_TypeDef()
             fo = sb.DSP_FFT_TypeDef()
             points = sb.c_uint32(0)
@@ -274,8 +287,8 @@ class SdrSession(MeasurementSession):
             fi.Calibration = 0
             fi.DetectionRatio = 1
             fi.TraceDetector = sb.TraceDetector_TypeDef.TraceDetector_PosPeak
-            fi.FFTSize = min(self._packet_samples, self.PAN_FFT)
-            fi.SamplePts = min(self._packet_samples, self.PAN_FFT)
+            fi.FFTSize = frame_samples
+            fi.SamplePts = frame_samples
             fi.Intercept = 0.8
             fi.WindowType = sb.Window_TypeDef.FlatTop
             status = sb.dll.DSP_FFT_Configuration(
@@ -283,6 +296,9 @@ class SdrSession(MeasurementSession):
                 sb.pointer(points), sb.pointer(rbw_ratio))
             if status != 0 or points.value < 2:
                 raise RuntimeError(f'DSP_FFT_Configuration status={status}')
+            self._vfft_frame_samples = frame_samples
+            self._vfft_buffer = np.empty(frame_samples * 2, dtype=np.int16)
+            self._vfft_stream = sb.IQStream_TypeDef()
             self._vfft_points = int(points.value)
             self._vfft_freq = np.empty(self._vfft_points, dtype=np.float64)
             self._vfft_power = np.empty(self._vfft_points, dtype=np.float32)
@@ -290,23 +306,50 @@ class SdrSession(MeasurementSession):
         except Exception as exc:
             log.warning('SDR vendor FFT unavailable; using NumPy fallback: %r', exc)
 
-    def _vendor_spectrum_locked(self, stream):
-        if not self._vfft_ready:
+    def _vendor_spectrum_locked(self, template, frame):
+        """Run the vendor FFT over a full contiguous IQ frame; return (freq_hz, dbm).
+
+        ``frame`` must be int16 interleaved IQ of exactly the configured frame length;
+        anything else falls back to the NumPy panadapter.
+        """
+        if not self._vfft_ready or frame is None:
+            return None
+        if frame.size != self._vfft_frame_samples * 2:
             return None
         try:
+            self._vfft_buffer[:] = frame
+            s = self.dev.state
+            vstream = self._vfft_stream
+            vstream.IQS_Profile = template.IQS_Profile
+            vstream.IQS_StreamInfo = template.IQS_StreamInfo
+            vstream.IQS_ScaleToV = template.IQS_ScaleToV
+            vstream.IQS_Profile.CenterFreq_Hz = self._iqs_center_hz
+            vstream.IQS_Profile.TriggerLength = self._vfft_frame_samples
+            vstream.IQS_StreamInfo.PacketSamples = self._vfft_frame_samples
+            vstream.IQS_StreamInfo.StreamSamples = self._vfft_frame_samples
+            vstream.IQS_StreamInfo.PacketDataSize = self._vfft_frame_samples * 4
+            vstream.IQS_StreamInfo.IQSampleRate = self._fs_in
+            vstream.IQS_StreamInfo.Bandwidth = float(
+                s.sdr_actual.get('bandwidth', self._fs_in))
+            vstream.AlternIQStream = c_cast(
+                sb.c_void_p(self._vfft_buffer.ctypes.data), sb.POINTER(sb.c_void_p))
             status = sb.dll.DSP_FFT_IQSToSpectrum(
-                sb.pointer(self.dev.dsp), sb.pointer(stream),
+                sb.pointer(self.dev.dsp), sb.pointer(vstream),
                 self._vfft_freq.ctypes.data_as(sb.POINTER(sb.c_double)),
                 self._vfft_power.ctypes.data_as(sb.POINTER(sb.c_float)))
-            if status != 0 or not np.all(np.isfinite(self._vfft_power)):
+            if status != 0:
                 return None
-            s = self.dev.state
-            lo = float(s.sdr_actual['start'])
-            hi = float(s.sdr_actual['stop'])
-            keep = (self._vfft_freq >= lo) & (self._vfft_freq <= hi)
-            if int(np.count_nonzero(keep)) < 2:
+            power = self._vfft_power
+            if not np.all(np.isfinite(power)):
                 return None
-            return self._vfft_freq[keep].copy(), self._vfft_power[keep].copy()
+            freq = self._vfft_freq
+            target = max(2, int(s.sdr_actual.get('pan_points', self.PAN_FFT)))
+            if freq.size > target:
+                # Max-pool into display buckets so narrow carriers survive the decimation.
+                starts = (np.arange(target) * freq.size // target).astype(np.int64)
+                freq = freq[starts]
+                power = np.maximum.reduceat(power, starts)
+            return freq.copy(), power.copy()
         except Exception:
             log.exception('SDR vendor FFT frame failed')
             return None
@@ -530,11 +573,6 @@ class SdrSession(MeasurementSession):
                 s.sdr_if_bw = old_if_bw
                 s.sdr_pitch = old_pitch
                 raise
-        else:
-            # Live volume/squelch/AGC changes can still create a discontinuity. Publish
-            # the same reset/settle marker used by a full demod-chain change.
-            with self._lock:
-                self._begin_audio_settle()
 
     def reconfigure(self):
         self._configure()
@@ -725,7 +763,9 @@ class SdrSession(MeasurementSession):
 
             # ---- panadapter / waterfall ----
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
-                vendor = self._vendor_spectrum_locked(stream)
+                # Rate-limit first: a failed vendor frame must not become a busy retry.
+                self._last_pan = now
+                vendor = self._vendor_spectrum_locked(stream, arr)
                 if vendor is not None:
                     freq, spec = vendor
                     row = self._pan.waterfall_row(spec)
@@ -739,7 +779,6 @@ class SdrSession(MeasurementSession):
                     frames.append(_encode_rta(dev.state.freq_version, freq, spec, row,
                                               65535, s.sdr_actual['start'],
                                               s.sdr_actual['stop']))
-                    self._last_pan = now
 
             # ---- channelizer + demod ----
             try:

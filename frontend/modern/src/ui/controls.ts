@@ -300,11 +300,15 @@ export function applyPoints() {
 export function setSpurMode(mode: string) { send({ cmd: 'SET_SPUR', mode }); }
 export function setWindow(v: string) { send({ cmd: 'SET_WINDOW', window: parseInt(v) }); }
 export function setRefClock(mode: string) {
+  // In SDR the reference clock lives in the IQS profile, so this reconfigures the
+  // capture chain; mute first so the reconfiguration transient is not audible.
+  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
   send({ cmd: 'SET_REFCK', mode });
 }
 export function toggleRefClkOut() {
   const btn = document.getElementById('btn-refclk-out');
   const cur = btn && btn.classList.contains('on');
+  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
   send({ cmd: 'SET_REFCKOUT', on: !cur });
 }
 export function syncRefClkOut(s: any) {
@@ -677,7 +681,11 @@ export function applySdrDemod() {
   const ifbw = sdrNumber('select-sdr-ifbw', 6000);
   const volume = sdrNumber('input-sdr-volume', 0.8);
   const squelch = sdrNumber('input-sdr-squelch', -110);
-  prepareSdrAudioTransition();
+  // Only a demod-mode / IF-bandwidth change rebuilds the chain and needs the reset
+  // handshake. Volume/squelch/AGC are applied live, so muting them would just add a gap.
+  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5) {
+    prepareSdrAudioTransition();
+  }
   lastSdrDemodMode = mode;
   lastSdrDemodIfbw = ifbw;
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn() });
@@ -687,7 +695,7 @@ export function toggleSdrAgc(el: HTMLElement) {
   const on = !el.classList.contains('active');
   el.classList.toggle('active', on);
   el.textContent = on ? t('on') : t('off');
-  prepareSdrAudioTransition();
+  // AGC is applied live on the backend; no chain rebuild, so no mute/reset.
   send({ cmd: 'SET_SDR_DEMOD', agc: on });
 }
 
@@ -702,6 +710,7 @@ const SDR_BANDS: Record<string, { center: number; decimate: number; demod: strin
 export function applySdrBand(name: string) {
   const b = SDR_BANDS[name];
   if (!b) return;
+  prepareSdrAudioTransition();
   sdrCenterHz = b.center;
   sdrDecimate = b.decimate;
   sdrSpanHz = 62.5e6 / b.decimate;
