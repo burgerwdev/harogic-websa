@@ -215,8 +215,8 @@ export function connectWS() {
             let ref = bounded;
             if (sdrRefInitialized) {
               const delta = bounded - lastSdrRef;
-              const step = delta >= 0 ? 10 : -5;
-              ref = lastSdrRef + Math.max(step, Math.min(-step, delta));
+              const maxStep = delta >= 0 ? 10 : 5;
+              ref = lastSdrRef + Math.max(-maxStep, Math.min(maxStep, delta));
               ref = Math.round(ref / 5) * 5;
             }
             if (!sdrRefInitialized || Math.abs(ref - lastSdrRef) >= 3) {
