@@ -31,6 +31,15 @@ from ctypes import (
 )
 
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))  # ../.. = Python_Examples (htra_api.py)
+
+# The vendor library runs its FFT/DSP through an OpenMP thread pool. With the default
+# "active" wait policy those worker threads busy-spin between calls, so once the SDR
+# panadapter calls the vendor FFT continuously they burned ~3 extra cores (measured
+# 330%% CPU vs 25%% with a passive policy, same 120 steps/s). These variables are read by
+# the OpenMP runtime when the shared library is loaded, so set them before importing it.
+os.environ.setdefault('OMP_WAIT_POLICY', 'PASSIVE')
+os.environ.setdefault('KMP_BLOCKTIME', '0')
+
 import htra_api  # official Python wrapper (../htra_api.py)
 
 dll = htra_api.dll
