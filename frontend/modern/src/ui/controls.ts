@@ -1137,7 +1137,7 @@ export function bindActions() {
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
   // Restore persisted SDR preferences (audio off unless the user enabled it).
   try {
-    S.setSdrRefAuto(false);
+    S.setSdrRefAuto(localStorage.getItem('web-sa-sdr-ref-auto') !== '0');
     S.setSdrAudioOn(localStorage.getItem('web-sa-sdr-audio') === '1');
   } catch { /* ignore */ }
   syncSdrAudioButton();
