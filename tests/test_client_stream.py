@@ -1,6 +1,7 @@
 """Bounded per-client WebSocket sender tests."""
 import asyncio
 import json
+import struct
 
 import pytest
 
@@ -93,6 +94,21 @@ async def test_command_status_is_not_coalesced_by_periodic_status():
     assert len(ws.text) == 2
     assert json.loads(ws.text[0])['response_to'] == 'SET_FREQ'
     await stream.close()
+
+
+def test_zero_audio_sequence_flushes_queued_channel_audio():
+    ws = FakeWebSocket()
+    stream = ClientStream(ws)
+
+    def audio(seq):
+        return struct.pack('<4sIII', b'AUDF', seq, 48000, 0)
+
+    stream.publish_bytes(audio(5))
+    stream.publish_bytes(audio(6))
+    stream.publish_bytes(audio(0))
+
+    assert list(stream._audio) == [audio(0)]
+    assert stream.dropped_audio == 2
 
 
 @pytest.mark.asyncio

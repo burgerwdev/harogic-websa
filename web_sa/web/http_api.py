@@ -111,13 +111,31 @@ def build_status(dev) -> dict:
         'trigger_actual': s.trigger_actual,
     }
     is_rta = s.mode == 'rta'
-    active_req = rta_req if is_rta else swp_req
-    active_actual = s.rta_actual if is_rta else s.actual
     sdr_req = {
         'center': s.sdr_center_hz, 'decimate': s.sdr_decimate, 'listen': s.sdr_listen_hz,
         'demod': s.sdr_demod, 'if_bw': s.sdr_if_bw, 'squelch': s.sdr_squelch,
         'volume': s.sdr_volume, 'agc': s.sdr_agc, 'pitch': s.sdr_pitch,
     }
+    if s.mode == 'sdr':
+        bandwidth = float(s.sdr_actual.get('bandwidth', 0.0) or s.span_hz)
+        points = int(s.sdr_actual.get('pan_points', 0) or s.points_req)
+        bin_width = bandwidth / max(1, points)
+        active_req = {
+            **swp_req,
+            'center': s.sdr_center_hz,
+            'span': bandwidth,
+            'points': points,
+            'ref_mode': s.ref_mode,
+            'ref': s.ref_level,
+            'rbw_mode': 'auto',
+            'rbw': bin_width,
+            'vbw_mode': 'equal',
+            'vbw': bin_width,
+        }
+        active_actual = s.sdr_actual
+    else:
+        active_req = rta_req if is_rta else swp_req
+        active_actual = s.rta_actual if is_rta else s.actual
     auto_trackers = getattr(dev, '_auto_ref', {})
     auto_tracker = auto_trackers.get(
         'rta' if is_rta else 'std',

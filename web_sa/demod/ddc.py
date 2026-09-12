@@ -48,11 +48,15 @@ class DdcChannel:
         T.dll.DSP_DDC_GetDelay(T.pointer(self.dsp), T.pointer(delay))
         T.dll.DSP_DDC_Reset(T.pointer(self.dsp))   # fresh stream
         self.fs_in = float(fs_in)
-        self.offset_hz = float(offset_hz)
-        self.decimate = decimate
+        self.offset_hz = float(dout.DDCOffsetFrequency)
+        self.decimate = max(1, int(round(float(dout.DecimateFactor))))
         self.sample_points = sample_points
         self.fs_out = float(dout.SampleRate)
         self.out_points = int(dout.SamplePoints)
+        if self.fs_out <= 0 or self.out_points <= 0:
+            raise RuntimeError(
+                f'DSP_DDC_Configuration returned invalid output '
+                f'rate={self.fs_out} points={self.out_points}')
         self.delay = int(delay.value)
         self._drop_pending = self.delay   # skip the filter transient ONCE, not per packet
         self._ready = True
@@ -65,11 +69,19 @@ class DdcChannel:
         if n is None:
             n = self.sample_points
         n = int(n)
+        if n <= 0 or n > self.sample_points:
+            raise ValueError(f'DDC input samples out of range: {n} (configured {self.sample_points})')
         ins = T.IQStream_TypeDef()
         if isinstance(int16_buf, np.ndarray):
+            if int16_buf.dtype != np.int16 or not int16_buf.flags.c_contiguous:
+                raise ValueError('DDC numpy input must be contiguous int16')
+            if int16_buf.size < n * 2:
+                raise ValueError(f'DDC input buffer too small: {int16_buf.size} values for {n} IQ')
             addr = int(int16_buf.ctypes.data)
         else:
             addr = _cast(int16_buf, T.c_void_p).value
+        if not addr:
+            raise ValueError('DDC input pointer is null')
         ins.AlternIQStream = _cast(T.c_void_p(addr), T.POINTER(T.c_void_p))
         ins.IQS_StreamInfo.PacketSamples = n
         ins.IQS_StreamInfo.IQSampleRate = self.fs_in
@@ -78,9 +90,21 @@ class DdcChannel:
         if st != 0:
             raise RuntimeError(f'DSP_DDC_Execute status={st}')
         pts = int(outs.IQS_StreamInfo.PacketSamples) or self.out_points
-        pts = max(0, pts)
         if pts == 0:
             return np.zeros(0), np.zeros(0)
+        max_points = self.out_points + max(self.delay, 8)
+        if pts < 0 or pts > max_points:
+            raise RuntimeError(f'DSP_DDC_Execute returned invalid points={pts}, max={max_points}')
+        if not outs.AlternIQStream:
+            raise RuntimeError('DSP_DDC_Execute returned a null output pointer')
+        data_format = int(getattr(outs.IQS_Profile.DataFormat, 'value', -1))
+        if data_format not in (0, int(T.DataFormat_TypeDef.Complexfloat)):
+            raise RuntimeError(f'DSP_DDC_Execute returned unexpected format={data_format}')
+        packet_bytes = int(outs.IQS_StreamInfo.PacketDataSize)
+        required_bytes = pts * 2 * np.dtype(np.float32).itemsize
+        if packet_bytes < required_bytes:
+            raise RuntimeError(
+                f'DSP_DDC_Execute returned short buffer={packet_bytes}, need={required_bytes}')
         arr = np.ctypeslib.as_array(
             _cast(outs.AlternIQStream, T.POINTER(T.c_float * (pts * 2))).contents).copy()
         i = arr[0::2].astype(np.float64)

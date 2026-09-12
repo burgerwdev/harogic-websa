@@ -64,8 +64,8 @@ def main():
             page.wait_for_timeout(1500)
             page.fill('#input-sdr-listen', str(LISTEN_MHZ))
             page.click('button[data-action="apply-sdr-tune"]')
-            page.select_option('#select-sdr-demod', 'am')
-            page.select_option('#select-sdr-ifbw', '6000')
+            page.click('button[data-sdr-demod="am"]')
+            page.click('button[data-sdr-ifbw="6000"]')
             page.wait_for_timeout(3500)
 
             st = json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/state', timeout=3))

@@ -2,8 +2,8 @@
 demod/demod.py -- analog demodulators for the SDR mode (numpy).
 
 Input is complex baseband (from DSP_DDC, carrier at DC) and output is real audio at
-`audio_rate`. Modes: AM, FM/NFM/WFM, USB, LSB, CW. Sideband selection is done with a
-complex FIR (positive band = USB, negative = LSB, offset band = CW sidetone).
+`audio_rate`. Modes: AM, FM/NFM/WFM, USB, LSB, CW. Sideband selection uses a
+complex FIR; CW is filtered at zero IF and then shifted to the configured sidetone.
 """
 from __future__ import annotations
 
@@ -37,20 +37,33 @@ class AnalogDemod:
             kind = 'ssb'
         elif mode == 'cw':
             w = max(50.0, if_bw) / 2.0
-            band = (self.pitch - w, self.pitch + w)
-            kind = 'ssb'
+            band = (-w, w)
+            kind = 'cw'
         else:
             band = (-if_bw / 2.0, if_bw / 2.0)
             kind = 'am' if mode == 'am' else 'fm'
         self.kind = kind
         self.band = StreamFilter(design_complex_bandpass(fs, band[0], band[1], ntaps=257))
-        audio_cut = min(if_bw, 20000.0, 0.45 * self.audio_rate)
+        if mode == 'wfm':
+            audio_cut = 15000.0
+        elif mode == 'nfm':
+            audio_cut = min(5000.0, if_bw / 2.0)
+        elif mode in ('am', 'fm'):
+            audio_cut = min(15000.0, if_bw / 2.0)
+        elif mode == 'cw':
+            audio_cut = min(5000.0, max(1000.0, self.pitch + if_bw / 2.0 + 200.0))
+        else:
+            audio_cut = min(20000.0, if_bw)
+        audio_cut = max(100.0, min(audio_cut, 0.45 * self.audio_rate, 0.45 * fs))
         self.audio_lp = StreamFilter(design_lowpass(fs, audio_cut, ntaps=129))
         self.resampler = LinearResampler(fs, self.audio_rate)
         self.agc = Agc(target=0.2, attack=0.2, release=0.08)
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
+        self._deemph_alpha = np.exp(-1.0 / (fs * 50e-6)) if mode == 'wfm' else 0.0
+        self._deemph_y = 0.0
+        self._cw_phase = 0.0
         self._configured = True
 
     def reset(self) -> None:
@@ -63,6 +76,8 @@ class AnalogDemod:
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
+        self._deemph_y = 0.0
+        self._cw_phase = 0.0
 
     def retune(self) -> None:
         """Retune to a new offset: clear the filter tail and demodulator history so the
@@ -73,6 +88,8 @@ class AnalogDemod:
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
+        self._deemph_y = 0.0
+        self._cw_phase = 0.0
 
     # ---- processing ----
     def process(self, i, q, use_agc: bool = True):
@@ -109,9 +126,24 @@ class AnalogDemod:
             self._prev_z = zf[-1]
             d = np.angle(zf[1:] * np.conj(zf[:-1]))
             audio = d * (self.fs / (2.0 * np.pi))
-        else:  # ssb / cw: real part of the sideband-selected complex signal
+        elif self.kind == 'cw':
+            inc = 2.0 * np.pi * self.pitch / self.fs
+            phase = self._cw_phase + inc * np.arange(zf.size)
+            audio = (zf * np.exp(1j * phase)).real
+            self._cw_phase = (self._cw_phase + inc * zf.size) % (2.0 * np.pi)
+        else:  # SSB: real part of the sideband-selected complex signal
             audio = zf.real
-            self._prev_z = zf[-1]
+
+        if self._deemph_alpha > 0.0 and audio.size:
+            # Keep the stateful one-pole recurrence in-place to avoid an extra audio-sized
+            # allocation on every high-rate DDC packet.
+            alpha = self._deemph_alpha
+            feed = 1.0 - alpha
+            prev = self._deemph_y
+            for k in range(audio.size):
+                prev = alpha * prev + feed * audio[k]
+                audio[k] = prev
+            self._deemph_y = float(prev)
 
         a = self.audio_lp.process(audio.astype(np.float32))
         a = self.resampler.process(a)

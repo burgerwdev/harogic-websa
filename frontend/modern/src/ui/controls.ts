@@ -409,6 +409,17 @@ let graphModeTarget: 'std' | 'rta' | 'sdr' = 'std';
 let confirmedGraphMode = '';
 // Frequency to hand off to the SDR demod when entering SDR (from the active marker).
 let pendingSdrFreq: number | null = null;
+let sdrAudioHandoffTimer: number | null = null;
+
+function deferSdrAudioPreference() {
+  if (sdrAudioHandoffTimer !== null) window.clearTimeout(sdrAudioHandoffTimer);
+  // Drop samples from the pre-SDR/default demod chain until the final SDR commands settle.
+  setSdrAudioEnabled(false);
+  sdrAudioHandoffTimer = window.setTimeout(() => {
+    sdrAudioHandoffTimer = null;
+    if (currentGraphMode() === 'sdr') applySdrAudioPreference();
+  }, 800);
+}
 
 export function currentGraphMode(): string { return confirmedGraphMode || 'std'; }
 
@@ -438,9 +449,13 @@ export function setGraphMode(mode: string) {
       const m = S.markers.find(x => x.enabled && x.freq != null);
       pendingSdrFreq = (m && m.freq) ? m.freq : S.centerHz;
     }
-    applySdrAudioPreference();
+    deferSdrAudioPreference();
   } else {
     pendingSdrFreq = null;
+    if (sdrAudioHandoffTimer !== null) {
+      window.clearTimeout(sdrAudioHandoffTimer);
+      sdrAudioHandoffTimer = null;
+    }
     setSdrAudioEnabled(false);
   }
   send({ cmd: 'SET_MODE', mode: target });
@@ -466,7 +481,14 @@ export function syncGraphModeStatus(mode: string) {
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
-  if (isSdr) resetSdrAutoRef();
+  if (isSdr) {
+    resetSdrAutoRef();
+    deferSdrAudioPreference();
+  } else {
+    setSdrAudioEnabled(false);
+    S.setSdrAudioOn(false);
+    syncSdrAudioButton();
+  }
   const modeButton = document.getElementById('btn-mode-rta');
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
   const sdrButton = document.getElementById('btn-mode-sdr');

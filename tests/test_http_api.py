@@ -48,6 +48,24 @@ async def test_state_endpoint():
         assert data['center'] == 1e9
 
 
+def test_sdr_state_uses_sdr_values_at_top_level():
+    dev = StubDevice()
+    dev.state.mode = 'sdr'
+    dev.state.sdr_center_hz = 101.7e6
+    dev.state.sdr_actual = {
+        'center': 101.7e6,
+        'bandwidth': 1.5625e6,
+        'pan_points': 1639,
+    }
+
+    data = http_api.build_status(dev)
+
+    assert data['center'] == 101.7e6
+    assert data['span'] == 1.5625e6
+    assert data['points'] == 1639
+    assert data['actual'] == dev.state.sdr_actual
+
+
 @pytest.mark.asyncio
 async def test_config_endpoint_echoes_status():
     client = make_client()
