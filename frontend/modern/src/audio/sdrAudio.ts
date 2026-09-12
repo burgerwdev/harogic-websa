@@ -12,6 +12,7 @@ let enabled = false;
 let sourceRate = 48000;
 let bufferedSamples = 0;
 let audioUnderruns = 0;
+let audioTransitionMuted = false;
 let pendingChunks: Float32Array[] = [];
 let resumeListenersInstalled = false;
 
@@ -206,7 +207,14 @@ function resetPlayback(): void {
   workletNode?.port.postMessage({ type: 'reset' });
 }
 
+export function prepareSdrAudioTransition(): void {
+  if (!enabled) return;
+  audioTransitionMuted = true;
+  resetPlayback();
+}
+
 export function setSdrAudioEnabled(on: boolean): void {
+  audioTransitionMuted = false;
   enabled = on;
   if (on) {
     try {
@@ -239,7 +247,11 @@ export function pushSdrAudio(
 ): void {
   if (!enabled) return;
   if (samples * 2 + offset > buffer.byteLength) return;
-  if (reset) resetPlayback();
+  if (reset) {
+    resetPlayback();
+    audioTransitionMuted = false;
+  }
+  if (audioTransitionMuted) return;
   if (samples === 0) return;
   if (rate > 0) sourceRate = rate;
   try {

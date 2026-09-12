@@ -30,7 +30,7 @@ import { canvasColors, getTheme } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
-import { setSdrAudioEnabled } from '../audio/sdrAudio';
+import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -206,6 +206,7 @@ export function setRefLevel() {
     S.setDisplayRef(value);
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
+    prepareSdrAudioTransition();
     send({ cmd: 'SET_REF', mode: 'manual', ref: value });
     renderAll();
     return;
@@ -232,6 +233,7 @@ export function adjustRefLevel(direction: -1 | 1) {
     S.setDisplayRef(next);
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
+    prepareSdrAudioTransition();
     send({ cmd: 'SET_REF', mode: 'manual', ref: next });
     renderAll();
     return;
@@ -639,6 +641,7 @@ export function applySdr() {
   const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   const center = centerMhz * 1e6;
+  prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center, decimate });
   // Setting the wideband centre also tunes the demodulator there.
   S.setSdrListenHz(center);
@@ -651,6 +654,7 @@ export function applySdr() {
 export function applySdrBw() {
   const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
+  prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center: centerMhz * 1e6, decimate });
 }
 
@@ -660,14 +664,23 @@ export function applySdrTune() {
   S.setSdrListenHz(f);
   const inp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
   if (inp && document.activeElement !== inp) inp.value = (f / 1e6).toFixed(6);
+  prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
 }
+
+let lastSdrDemodMode = '';
+let lastSdrDemodIfbw = -1;
 
 export function applySdrDemod() {
   const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
   const ifbw = sdrNumber('select-sdr-ifbw', 6000);
   const volume = sdrNumber('input-sdr-volume', 0.8);
   const squelch = sdrNumber('input-sdr-squelch', -110);
+  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5) {
+    prepareSdrAudioTransition();
+  }
+  lastSdrDemodMode = mode;
+  lastSdrDemodIfbw = ifbw;
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn() });
 }
 
@@ -710,6 +723,7 @@ export function listenAtFreq(hz: number) {
   if (!isFinite(hz) || hz <= 0) return;
   if (currentGraphMode() === 'sdr') {
     S.setSdrListenHz(hz);
+    prepareSdrAudioTransition();
     send({ cmd: 'SET_SDR_TUNE', listen: hz });
     const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
     if (lInp) lInp.value = (hz / 1e6).toFixed(6);
