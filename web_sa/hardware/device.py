@@ -259,6 +259,38 @@ class HarogicDevice:
             except Exception:
                 self.preset_defaults = None
 
+    def reset_sdr_state(self) -> None:
+        """Restore every SDR parameter to the power-on defaults.
+
+        The dataclass defaults are the single source of truth for "initial state", so a
+        fresh DeviceState is used instead of duplicating literals here.
+        """
+        s = self.state
+        d = DeviceState()
+        s.sdr_center_hz = d.sdr_center_hz
+        s.sdr_decimate = d.sdr_decimate
+        s.sdr_listen_hz = d.sdr_listen_hz
+        s.sdr_demod = d.sdr_demod
+        s.sdr_if_bw = d.sdr_if_bw
+        s.sdr_squelch = d.sdr_squelch
+        s.sdr_squelch_open = False
+        s.sdr_volume = d.sdr_volume
+        s.sdr_agc = d.sdr_agc
+        s.sdr_pitch = d.sdr_pitch
+        s.sdr_level_dbfs = d.sdr_level_dbfs
+        s.sdr_adm = {}
+        s.sdr_actual = {}
+
+    def reset_common_state(self) -> None:
+        """Reset the front-end settings that are shared by every mode."""
+        s = self.state
+        d = DeviceState()
+        s.ref_clock = d.ref_clock
+        s.refclk_out = d.refclk_out
+        s.refclk_ppm = 0.0
+        s.last_cal_freq = 0.0
+        s.last_error = ''
+
     def reset_rta_state(self) -> None:
         s = self.state
         s.rta_center_hz = DEFAULT_RTA_CENTER_HZ

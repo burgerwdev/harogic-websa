@@ -31,6 +31,7 @@ import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { resetLimits } from './limits';
 
 // ── Frequency linking ──
 function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
@@ -965,6 +966,25 @@ export function presetAll() {
     if (sm) { sm.value = '2'; syncSweepInput(); }
     clearRtaAccum();
   }
+  // Preset must also clear the browser-side records, otherwise a reload restores the old
+  // mode / audio / ref / RTA-fade / limit-line state instead of the power-on defaults.
+  try {
+    ['web-sa-mode', 'web-sa-sdr-audio', 'web-sa-sdr-ref-auto',
+     'rta-fade', 'rta-bins'].forEach((k) => localStorage.removeItem(k));
+  } catch { /* ignore */ }
+  resetLimits();
+  S.resetWaterfall();
+  S.setWfPaused(false);
+  S.setSmoothBins(1);
+  S.setSpanStepAuto(true);
+  setSdrAudioEnabled(false);
+  S.setSdrAudioOn(false);
+  S.setSdrRefAuto(true);
+  S.setSdrListenHz(0);
+  resetSdrAutoRef();
+  lastSdrDemodMode = '';
+  lastSdrDemodIfbw = -1;
+  refPending = null;
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); renderAll();
 }

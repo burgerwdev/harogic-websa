@@ -340,22 +340,27 @@ async def _dispatch(dev, cmd, data) -> bool:
             await _configure_swp()
 
     if cmd == 'SET_PRESET':
-        # Preset covers BOTH modes without switching the current one:
-        # 1) SWP parameters <- device defaults (preset_state, no reconfigure)
-        # 2) RTA parameters  <- RTA defaults (RtaSession.reset_defaults)
-        # Only the ACTIVE mode is reconfigured/put into effect now; the other mode's
-        # defaults apply automatically the next time it is entered.
+        # Preset restores the power-on defaults for EVERY mode without switching the
+        # current one. Previously the SDR parameters and the shared front-end settings were
+        # left untouched, and pressing Preset while in SDR reconfigured the device into SWP
+        # behind the live SDR session.
         dev.preset_state()
         dev.reset_rta_state()
+        dev.reset_sdr_state()
+        dev.reset_common_state()
         sess = dev.session
-        if sess is not None and sess.name == 'rta':
+        name = sess.name if sess is not None else 'std'
+        if name == 'rta':
             # Preset supersedes the SWP restore point captured when RTA was entered.
             sess.snapshot_current()
             # RTA active: reset + reconfigure on a worker thread (device reconfigure on
             # the asyncio thread stalls the publisher/data flow)
             await _hw_call(sess.reset_defaults)
-            return True
-        await _configure_swp()   # SWP active: apply SWP defaults now
+        elif name == 'sdr':
+            # Re-apply the IQS/DDC chain so the SDR session picks up the reset parameters.
+            await _hw_call(sess.reconfigure)
+        else:
+            await _configure_swp()   # SWP active: apply SWP defaults now
         return True
     if cmd == 'CAL_REFCLK':
         # Run GNSS 1PPS calibration on a background thread, pausing the publisher during
