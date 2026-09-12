@@ -56,6 +56,7 @@ let lastDensRef = 0, lastDensRange = 0;
 let lastSdrRef = -999;
 let sdrNoiseEma = -120;
 let sdrPeakEma = -60;
+let sdrRefInitialized = false;
 let lastSdrAutoAt = 0;
 
 // Re-initialise the SDR auto-scale (called when entering SDR).
@@ -63,6 +64,7 @@ export function resetSdrAutoRef() {
   lastSdrRef = -999;
   sdrNoiseEma = -120;
   sdrPeakEma = -60;
+  sdrRefInitialized = false;
   lastSdrAutoAt = 0;
 }
 let firstConnect = true;
@@ -197,24 +199,28 @@ export function connectWS() {
       // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
       // frame peak (with a small hysteresis) so the signal is visible.
       if (currentGraphMode() === 'sdr' && S.sdrRefAuto) {
-        let peak = -Infinity;
-        for (let i = 0; i < spec.length; i++) {
-          const v = spec[i];
-          if (v > peak && isFinite(v)) peak = v;
-        }
+        const peak = percentileApprox(spec, 0.995);
         if (isFinite(peak)) {
           const noise = percentileApprox(spec, 0.3);
           // Smooth both so a fading signal does not make the whole display jump.
           sdrNoiseEma = sdrNoiseEma < -119 ? noise : sdrNoiseEma * 0.9 + noise * 0.1;
-          sdrPeakEma = sdrPeakEma < -119 ? peak : sdrPeakEma * 0.75 + peak * 0.25;
+          sdrPeakEma = sdrPeakEma < -119 ? peak : sdrPeakEma * 0.85 + peak * 0.15;
           const now2 = performance.now();
-          if (now2 - lastSdrAutoAt > 400) {
+          if (!sdrRefInitialized || now2 - lastSdrAutoAt > 400) {
             const range = S.totalDivs * S.dbPerDiv;
-            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
-            ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
-            if (Math.abs(ref - lastSdrRef) >= 3) {
+            // Keep the noise floor near the bottom. Lift only when the robust signal
+            // peak would otherwise be clipped; this avoids chasing single-bin spurs.
+            const target = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
+            const bounded = Math.min(40, Math.max(-160, Math.ceil(target / 5) * 5));
+            let ref = bounded;
+            if (sdrRefInitialized) {
+              const delta = bounded - lastSdrRef;
+              const step = delta >= 0 ? 10 : -5;
+              ref = lastSdrRef + Math.max(step, Math.min(-step, delta));
+              ref = Math.round(ref / 5) * 5;
+            }
+            if (!sdrRefInitialized || Math.abs(ref - lastSdrRef) >= 3) {
+              sdrRefInitialized = true;
               lastSdrRef = ref;
               S.setDisplayRef(ref);
               lastSdrAutoAt = now2;
