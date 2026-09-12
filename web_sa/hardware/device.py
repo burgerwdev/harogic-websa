@@ -205,6 +205,7 @@ class HarogicDevice:
             self.configure_swp()
             self._detect_docxo()
             self.load_preset_defaults()   # read the device default config for the preset
+            self.apply_caps_from_defaults()   # device-reported full span beats the table
             # The temporary config used for DOCXO detection changes the device's actual
             # parameters (e.g. TracePoints), so the standard config must be re-issued and
             # the buffers refreshed, otherwise GetFullSweep writes out of bounds
@@ -243,6 +244,8 @@ class HarogicDevice:
                 spur_modes = {0: 'bypass', 1: 'standard', 2: 'enhanced'}
                 self.preset_defaults = dict(
                     center=float(p.CenterFreq_Hz), span=float(p.Span_Hz),
+                    fmin=float(p.CenterFreq_Hz - p.Span_Hz / 2.0),
+                    fmax=float(p.CenterFreq_Hz + p.Span_Hz / 2.0),
                     ref=float(p.RefLevel_dBm), rbw=float(p.RBW_Hz),
                     vbw=float(p.VBW_Hz), points=int(p.TracePoints), atten=int(p.Atten),
                     window=int(p.Window.value if hasattr(p.Window, 'value') else p.Window),
@@ -258,6 +261,21 @@ class HarogicDevice:
                 )
             except Exception:
                 self.preset_defaults = None
+
+    def apply_caps_from_defaults(self) -> None:
+        """Widen the model-table frequency range with the range the device reports as its
+        own full span. On this SAN-90 the device (and the official SAStudio Full Span) spans
+        8 kHz - 9.02 GHz, while the product manual table says 9 kHz - 9 GHz; the narrower
+        table clipped the preset full span and the outermost tuning range."""
+        d = self.preset_defaults
+        caps = self.state.caps
+        if not d or caps is None:
+            return
+        lo, hi = d.get('fmin'), d.get('fmax')
+        if lo is None or hi is None or hi <= lo:
+            return
+        caps.freq_min_hz = min(caps.freq_min_hz, float(lo))
+        caps.freq_max_hz = max(caps.freq_max_hz, float(hi))
 
     def reset_sdr_state(self) -> None:
         """Restore every SDR parameter to the power-on defaults.
