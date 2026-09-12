@@ -420,6 +420,7 @@ let confirmedGraphMode = '';
 // Frequency to hand off to the SDR demod when entering SDR (from the active marker).
 let pendingSdrFreq: number | null = null;
 let sdrAudioHandoffTimer: number | null = null;
+let graphModeWatchdog: number | null = null;
 
 function deferSdrAudioPreference() {
   if (sdrAudioHandoffTimer !== null) window.clearTimeout(sdrAudioHandoffTimer);
@@ -446,6 +447,14 @@ export function setGraphMode(mode: string) {
   }
   graphModePending = true;
   graphModeTarget = target;
+  // A mode switch is confirmed by a STATUS frame. If that never arrives (dropped frame,
+  // slow hardware call, reconnecting socket) the buttons would stay disabled forever, so
+  // bound the pending state.
+  if (graphModeWatchdog !== null) window.clearTimeout(graphModeWatchdog);
+  graphModeWatchdog = window.setTimeout(() => {
+    graphModeWatchdog = null;
+    if (graphModePending) releaseGraphModePending();
+  }, 8000);
   const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
   const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
   if (modeButton) modeButton.disabled = true;
@@ -472,6 +481,10 @@ export function setGraphMode(mode: string) {
 }
 
 export function releaseGraphModePending() {
+  if (graphModeWatchdog !== null) {
+    window.clearTimeout(graphModeWatchdog);
+    graphModeWatchdog = null;
+  }
   graphModePending = false;
   graphModeTarget = 'std';
   const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;

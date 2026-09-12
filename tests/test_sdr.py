@@ -180,3 +180,38 @@ def test_ddc_rejects_oversized_native_output(monkeypatch):
     iq = np.zeros(32, dtype=np.int16)
     with pytest.raises(RuntimeError, match='invalid points'):
         channel.process(iq, 16)
+
+
+def test_sdk_call_retries_transient_bus_warnings(monkeypatch):
+    """-10/-11 are documented 're-call Configuration' warnings, not hard failures."""
+    monkeypatch.setattr(sdr_module.time, 'sleep', lambda _s: None)
+    session = SdrSession.__new__(SdrSession)
+    statuses = iter([-11, -10, -11, 0])
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return next(statuses)
+
+    assert session._sdk_call(fn, 'X') == 0
+    assert len(calls) == 4
+
+
+def test_sdk_call_raises_after_retries_exhausted(monkeypatch):
+    monkeypatch.setattr(sdr_module.time, 'sleep', lambda _s: None)
+    session = SdrSession.__new__(SdrSession)
+    with pytest.raises(RuntimeError, match='mode reset status=-11'):
+        session._sdk_call(lambda: -11, 'mode reset')
+
+
+def test_sdk_call_fails_fast_on_hard_error():
+    session = SdrSession.__new__(SdrSession)
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return -9
+
+    with pytest.raises(RuntimeError, match='status=-9'):
+        session._sdk_call(fn, 'X')
+    assert len(calls) == 1
