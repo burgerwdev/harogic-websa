@@ -75,6 +75,11 @@ class SdrSession(MeasurementSession):
         self._audio_reset_pending = False
         self._packet_samples = 0
         self._ddc_batch = 1
+        self._iqs_center_hz = 0.0
+        self._vfft_ready = False
+        self._vfft_points = 0
+        self._vfft_freq = None
+        self._vfft_power = None
         self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
@@ -187,11 +192,15 @@ class SdrSession(MeasurementSession):
             raise RuntimeError(f'IQS_ProfileDeInit status={st}')
         native_rate = float(p.NativeIQSampleRate_SPS)
         expected_bw = native_rate * 0.8 / s.sdr_decimate if native_rate > 0 else 0.0
+        capture_center = float(s.sdr_center_hz)
+        if (expected_bw >= 800e3
+                and abs(float(s.sdr_listen_hz) - capture_center) < 1e3):
+            capture_center += min(200e3, expected_bw * 0.2)
         if s.caps and expected_bw > 0:
             half = expected_bw / 2.0
-            s.sdr_center_hz = max(s.caps.freq_min_hz + half,
-                                  min(s.caps.freq_max_hz - half, s.sdr_center_hz))
-        p.CenterFreq_Hz = float(s.sdr_center_hz)
+            capture_center = max(s.caps.freq_min_hz + half,
+                                 min(s.caps.freq_max_hz - half, capture_center))
+        p.CenterFreq_Hz = capture_center
         p.RefLevel_dBm = float(s.ref_level)
         p.DecimateFactor = int(s.sdr_decimate)
         p.DataFormat = T.DataFormat_TypeDef.Complex16bit
@@ -204,7 +213,7 @@ class SdrSession(MeasurementSession):
         p.IFGainGrade = int(s.ifgain)
         p.GainStrategy = (T.GainStrategy_TypeDef.LowNoisePreferred if s.gain_strategy == 0
                           else T.GainStrategy_TypeDef.HighLinearityPreferred)
-        p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCHighPassFilterMode
+        p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCAutoOffsetMode
         p.QDCMode = T.QDCMode_TypeDef.QDCOff
         st = T.dll.IQS_Configuration(T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info))
         if st != 0:
@@ -218,31 +227,89 @@ class SdrSession(MeasurementSession):
         half = bandwidth / 2.0
         configured_center = float(out.CenterFreq_Hz)
         if configured_center > 0:
-            s.sdr_center_hz = configured_center
+            self._iqs_center_hz = configured_center
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
         self._packet_samples = int(info.PacketSamples)
         self._ddc_batch = 2 if fs >= 3.0e6 else 1
         self._fs_in = fs
         s.sdr_actual = dict(
-            center=s.sdr_center_hz, iq_rate=fs, bandwidth=bandwidth,
+            center=self._iqs_center_hz, iq_rate=fs, bandwidth=bandwidth,
+            iq_center=self._iqs_center_hz,
             decimate=int(out.DecimateFactor), packet_samples=self._packet_samples,
             packet_bytes=int(info.PacketDataSize),
             pan_points=min(
                 self.PAN_FFT,
                 max(2, 2 * int(np.floor(self.PAN_FFT * bandwidth / (2.0 * fs))) + 1),
             ),
-            start=s.sdr_center_hz - half, stop=s.sdr_center_hz + half,
+            start=self._iqs_center_hz - half, stop=self._iqs_center_hz + half,
             atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
             ifgain=int(out.IFGainGrade),
             ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
             refclk_out=bool(out.EnableReferenceClockOut),
         )
+        self._configure_vendor_fft_locked()
         dev._read_amp_atten()
         dev.state.config_version += 1
         dev.state.freq_version += 1
         dev.state.last_error = ''
         self._pan.reset()
+
+    def _configure_vendor_fft_locked(self) -> None:
+        """Prepare the vendor FFT for the raw IQS packet path.
+
+        The FFT must receive the IQStream object returned by IQS_GetIQStream_PM1; its
+        profile/stream metadata is part of the vendor contract. NumPy remains a fallback.
+        """
+        self._vfft_ready = False
+        self._vfft_points = 0
+        self._vfft_freq = None
+        self._vfft_power = None
+        try:
+            fi = sb.DSP_FFT_TypeDef()
+            fo = sb.DSP_FFT_TypeDef()
+            points = sb.c_uint32(0)
+            rbw_ratio = sb.c_double(0.0)
+            sb.dll.DSP_FFT_DeInit(sb.pointer(fi))
+            fi.Calibration = 0
+            fi.DetectionRatio = 1
+            fi.TraceDetector = sb.TraceDetector_TypeDef.TraceDetector_PosPeak
+            fi.FFTSize = self._packet_samples
+            fi.SamplePts = self._packet_samples
+            fi.Intercept = 0.8
+            fi.WindowType = sb.Window_TypeDef.FlatTop
+            status = sb.dll.DSP_FFT_Configuration(
+                sb.pointer(self.dev.dsp), sb.pointer(fi), sb.pointer(fo),
+                sb.pointer(points), sb.pointer(rbw_ratio))
+            if status != 0 or points.value < 2:
+                raise RuntimeError(f'DSP_FFT_Configuration status={status}')
+            self._vfft_points = int(points.value)
+            self._vfft_freq = np.empty(self._vfft_points, dtype=np.float64)
+            self._vfft_power = np.empty(self._vfft_points, dtype=np.float32)
+            self._vfft_ready = True
+        except Exception as exc:
+            log.warning('SDR vendor FFT unavailable; using NumPy fallback: %r', exc)
+
+    def _vendor_spectrum_locked(self, stream):
+        if not self._vfft_ready:
+            return None
+        try:
+            status = sb.dll.DSP_FFT_IQSToSpectrum(
+                sb.pointer(self.dev.dsp), sb.pointer(stream),
+                self._vfft_freq.ctypes.data_as(sb.POINTER(sb.c_double)),
+                self._vfft_power.ctypes.data_as(sb.POINTER(sb.c_float)))
+            if status != 0 or not np.all(np.isfinite(self._vfft_power)):
+                return None
+            s = self.dev.state
+            lo = float(s.sdr_actual['start'])
+            hi = float(s.sdr_actual['stop'])
+            keep = (self._vfft_freq >= lo) & (self._vfft_freq <= hi)
+            if int(np.count_nonzero(keep)) < 2:
+                return None
+            return self._vfft_freq[keep].copy(), self._vfft_power[keep].copy()
+        except Exception:
+            log.exception('SDR vendor FFT frame failed')
+            return None
 
     def _start_trigger_locked(self):
         """Start streaming. Kept separate so the slow DDC configuration can run BEFORE the
@@ -270,7 +337,7 @@ class SdrSession(MeasurementSession):
         """Coarse DDC offset (a multiple of ~fs_out) plus the residual for the software
         NCO. The DDC passband is +/-fs_out/2, so the residual stays well inside it."""
         s = self.dev.state
-        rel = float(s.sdr_listen_hz) - float(s.sdr_center_hz)
+        rel = float(s.sdr_listen_hz) - float(self._iqs_center_hz or s.sdr_center_hz)
         # The DDC passband is flat only within ~0.4*fs_out (measured +-0.04 dB up to
         # 0.4*fs_out, -12 dB at 0.45*fs_out), so the coarse grid must keep the residual
         # (and the whole demod channel) well inside it. 0.4 keeps the residual <= 0.2*fs_out.
@@ -320,8 +387,8 @@ class SdrSession(MeasurementSession):
             audio_rate=self.AUDIO_RATE,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
-        s.sdr_actual['start'] = float(s.sdr_center_hz) - half
-        s.sdr_actual['stop'] = float(s.sdr_center_hz) + half
+        s.sdr_actual['start'] = float(self._iqs_center_hz) - half
+        s.sdr_actual['stop'] = float(self._iqs_center_hz) + half
 
     def _reconfigure_full_locked(self):
         """Full Stop -> Configuration -> DDC config -> Start. A DDC-only reconfiguration
@@ -653,9 +720,15 @@ class SdrSession(MeasurementSession):
 
             # ---- panadapter / waterfall ----
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
-                res = self._pan.process(
-                    arr[0::2], arr[1::2], self._fs_in, s.sdr_center_hz,
-                    self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
+                vendor = self._vendor_spectrum_locked(stream)
+                if vendor is not None:
+                    freq, spec = vendor
+                    row = self._pan.waterfall_row(spec)
+                    res = (freq, spec, row)
+                else:
+                    res = self._pan.process(
+                        arr[0::2], arr[1::2], self._fs_in, self._iqs_center_hz,
+                        self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
                 if res is not None:
                     freq, spec, row = res
                     frames.append(_encode_rta(dev.state.freq_version, freq, spec, row,
