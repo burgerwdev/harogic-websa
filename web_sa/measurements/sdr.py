@@ -274,8 +274,8 @@ class SdrSession(MeasurementSession):
             fi.Calibration = 0
             fi.DetectionRatio = 1
             fi.TraceDetector = sb.TraceDetector_TypeDef.TraceDetector_PosPeak
-            fi.FFTSize = self._packet_samples
-            fi.SamplePts = self._packet_samples
+            fi.FFTSize = min(self._packet_samples, self.PAN_FFT)
+            fi.SamplePts = min(self._packet_samples, self.PAN_FFT)
             fi.Intercept = 0.8
             fi.WindowType = sb.Window_TypeDef.FlatTop
             status = sb.dll.DSP_FFT_Configuration(
