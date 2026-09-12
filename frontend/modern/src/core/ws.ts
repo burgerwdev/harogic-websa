@@ -63,7 +63,7 @@ export function resetSdrAutoRef() {
   lastSdrRef = -999;
   sdrNoiseEma = -120;
   sdrPeakEma = -60;
-  lastSdrAutoAt = 0;
+  lastSdrAutoAt = -Infinity;
 }
 let firstConnect = true;
 let rtaAvgN = 0;
@@ -211,7 +211,10 @@ export function connectWS() {
           if (now2 - lastSdrAutoAt > 400) {
             const range = S.totalDivs * S.dbPerDiv;
             // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
+            // Prefer the signal peak as the initial display anchor. The previous max()
+            // let a low SWP/RTA noise floor term dominate (for example, -10 dBm),
+            // leaving an SDR signal near the bottom until the user pressed Auto.
+            let ref = Math.min(sdrPeakEma + 10, sdrNoiseEma + range - 8);
             ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
             if (Math.abs(ref - lastSdrRef) >= 3) {
               lastSdrRef = ref;
