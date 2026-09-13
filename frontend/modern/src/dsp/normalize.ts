@@ -1,5 +1,6 @@
 // Normalization: reference build / direct-pass calibration / display-layer transform
 import * as S from '../core/store';
+import { refLevel } from '../ui/refState';
 import { resetTraceAccum } from './traces';
 import { updateInfoBar } from '../render/infobar';
 
@@ -118,7 +119,7 @@ export function resetActiveTraceNormalize() {
   resetTraceAccum(t);
   if (!S.traces.some(x => x.isNormalized && x.reference)) {
     S.setDisplayUnit('dBm');
-    S.setDisplayRef(S.refLevel);
+    S.setDisplayRef(refLevel.get());
   }
   updateNormalizeStatusUI();
   updateInfoBar();

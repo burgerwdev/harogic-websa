@@ -3,6 +3,7 @@
 // The header is intentionally a neutral data line (version / range / settings / time)
 // rather than UI prose, so a screenshot is self-describing in a report.
 import * as S from '../core/store';
+import { refLevel } from './refState';
 import { formatFreqHz } from '../core/fmt';
 
 function headerParts(): string[] {
@@ -14,7 +15,7 @@ function headerParts(): string[] {
   const parts = [
     ver,
     `${formatFreqHz(lo)} - ${formatFreqHz(hi)}`,
-    `Ref ${S.refLevel.toFixed(1)} dBm`,
+    `Ref ${refLevel.get().toFixed(1)} dBm`,
     `${S.dbPerDiv.toFixed(0)} dB/div`,
     `RBW ${formatFreqHz(S.currentRBW)}`,
     `VBW ${formatFreqHz(S.currentVBW)}`,

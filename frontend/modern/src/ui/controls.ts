@@ -15,6 +15,7 @@ import {
 	renderSdrState,
 	resetSdrState,
 } from './sdrState';
+import { refLevel, refMode } from './refState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
 import { currentGraphMode, graphMode, isGraphMode, pendingGraphMode } from './graphMode';
@@ -234,8 +235,6 @@ const REF_MIN = -50;
 const REF_MAX = 30;
 
 // Pending Ref target while a step command is in flight (see steppedRefLevel).
-let refPending: number | null = null;
-let refPendingAt = 0;
 
 export function refStepDbm(): number {
   // One full grid division: ▲/▼ moves Ref by the current dB-per-division value.
@@ -255,17 +254,13 @@ export function adjustRefLevel(direction: -1 | 1) {
     renderAll();
     return;
   }
-  const base = refPending ?? S.refLevel;
+  const base = refLevel.get();
   const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
   if (next === base) return;
-  refPending = next;
-  refPendingAt = Date.now();
+  // The stepped value is an intent: rendered immediately and dropped by the slot's TTL if
+  // the backend never accepts it (the old code hand-rolled exactly this with refPending).
+  refLevel.set(next);
   send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-}
-
-export function syncRefLevelStatus(responseTo?: string) {
-  if (refPending === null) return;
-  if (responseTo === 'SET_REF' || Date.now() - refPendingAt > 2500) refPending = null;
 }
 
 export function setRefAuto() {
@@ -275,8 +270,8 @@ export function setRefAuto() {
     renderAll();
     return;
   }
-  if (S.refMode === 'auto') {
-    send({ cmd: 'SET_REF', mode: 'manual', ref: S.refLevel });
+  if (refMode.get() === 'auto') {
+    send({ cmd: 'SET_REF', mode: 'manual', ref: refLevel.get() });
   } else {
     // range_db = the visible window height. Auto Ref anchors the noise floor just above the
     // bottom of that window, so the backend needs to know how tall it is.
@@ -290,7 +285,7 @@ export function setScale(v: number) {
   renderAll();
   // The window height changed, so the auto-Ref target (noise floor just above the bottom)
   // changed too. Re-arm so the new spectrum lands correctly instead of keeping the old Ref.
-  if (currentGraphMode() !== 'sdr' && S.refMode === 'auto') {
+  if (currentGraphMode() !== 'sdr' && refMode.get() === 'auto') {
     send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
   }
 }
@@ -999,7 +994,6 @@ export function presetAll() {
   resetSdrState();
   renderSdrState();
   resetSdrAutoRef();
-  refPending = null;
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); renderAll();
 }

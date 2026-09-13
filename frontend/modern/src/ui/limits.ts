@@ -3,6 +3,7 @@
 // The canvas overlay is drawn in render/spectrum.ts; this module owns the panel,
 // the persisted state and the DOM status line (so it stays free of canvas code).
 import * as S from '../core/store';
+import { refLevel } from './refState';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { buildLimitArray, normalizePoints, type LimitPoint } from '../dsp/limits';
 import { getDisplayPowers } from '../dsp/peaks';
@@ -26,7 +27,7 @@ export function spanEdges(): { start: number; stop: number } {
 /** Flat two-point limit across the current span. */
 export function spanLimitPoints(): LimitPoint[] {
   const { start, stop } = spanEdges();
-  const level = Math.round(S.refLevel - DEFAULT_LEVEL_DROP);
+  const level = Math.round(refLevel.get() - DEFAULT_LEVEL_DROP);
   return [{ freqHz: start, level }, { freqHz: stop, level }];
 }
 

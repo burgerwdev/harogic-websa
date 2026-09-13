@@ -10,7 +10,6 @@ import {
   syncGraphModeStatus,
   releaseGraphModePending,
   syncFrequencyEditorStatus,
-  syncRefLevelStatus,
   syncScaleButtons,
   syncSwpSpanStep,
   syncSdrPanel,
@@ -34,6 +33,7 @@ import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { pushSdrAudio } from '../audio/sdrAudio';
 import { sdrRefAuto } from '../ui/sdrState';
+import { refLevel, refMode } from '../ui/refState';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -397,8 +397,8 @@ export function updateStatus(s: any) {
     S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
   }
   S.setSpanHz(Number(s.span));
-  S.setRefLevel(Number(s.ref));
-  S.setRefMode(s.ref_mode === 'auto' ? 'auto' : 'manual');
+  refLevel.confirm(Number(s.ref));
+  refMode.confirm(s.ref_mode === 'auto' ? 'auto' : 'manual');
   S.setConfigVersion(Number(s.config_version) || 0);
   S.setCurrentRBW(Number(s.rbw));
   S.setCurrentVBW(Number(s.vbw));
@@ -410,7 +410,6 @@ export function updateStatus(s: any) {
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
-  syncRefLevelStatus(s.response_to);
   syncAvgUI();
   syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
 
@@ -421,31 +420,32 @@ export function updateStatus(s: any) {
     invalidateAllTraces();
     if (hadNormalization) showNormalizeClearedHint();
   }
-  if (S.displayUnit !== 'dB' && s.mode !== 'sdr') S.setDisplayRef(S.refLevel);
+  if (S.displayUnit !== 'dB' && s.mode !== 'sdr') S.setDisplayRef(refLevel.get());
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
-  const refText = Number.isInteger(S.refLevel) ? S.refLevel.toFixed(0) : S.refLevel.toFixed(1);
+  const cur = refLevel.get();
+  const refText = Number.isInteger(cur) ? cur.toFixed(0) : cur.toFixed(1);
   setInput('input-ref', S.displayUnit === 'dB' ? '0' : refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
-  if (refInput) refInput.disabled = S.refMode === 'auto';
-  if (refSet) refSet.disabled = S.refMode === 'auto';
+  if (refInput) refInput.disabled = refMode.get() === 'auto';
+  if (refSet) refSet.disabled = refMode.get() === 'auto';
   const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
-  const inAuto = S.refMode === 'auto';
+  const inAuto = refMode.get() === 'auto';
   if (refDown) {
-    refDown.disabled = inAuto || S.refLevel <= -50;
+    refDown.disabled = inAuto || cur <= -50;
     refDown.title = inAuto ? t('auto') : t('ref_down');
   }
   if (refUp) {
-    refUp.disabled = inAuto || S.refLevel >= 30;
+    refUp.disabled = inAuto || cur >= 30;
     refUp.title = inAuto ? t('auto') : t('ref_up');
   }
   if (refAuto) {
-    refAuto.classList.toggle('active', S.refMode === 'auto');
+    refAuto.classList.toggle('active', inAuto);
     refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
   }
   setInput('input-points', String(S.currentPoints));

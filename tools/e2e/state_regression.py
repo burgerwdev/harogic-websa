@@ -211,6 +211,25 @@ def main() -> int:
             not page.eval_on_selector("#btn-mode-sdr", "e => e.disabled"),
         )
 
+        # 7 - SWP/RTA reference level (the refPending -> slot migration)
+        print("7) SWP reference stepping")
+        post(url, {"cmd": "SET_MODE", "mode": "std"})
+        page.wait_for_timeout(2500)
+        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": -20})
+        page.wait_for_timeout(2000)
+        before = state(url)["ref"]
+        page.click("#btn-ref-down")
+        page.wait_for_timeout(2000)
+        after = state(url)["ref"]
+        check("ref step reaches the backend", abs(after - before) >= 5,
+              f"{before} -> {after} dBm")
+        check(
+            "the stepped value is rendered while pending",
+            abs(float(page.input_value("#input-ref")) - after) < 1.5
+            or page.evaluate("document.getElementById('input-ref').disabled") is True,
+            f"input {page.input_value('#input-ref')} vs backend {after}",
+        )
+
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()
 

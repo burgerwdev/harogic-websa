@@ -44,13 +44,13 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
     FREQ_MAX = maximum;
   }
 }
-export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
+export let centerHz = 1e9, spanHz = 100e6;
 export let spanStepHz = 10e6;
 export let spanStepAuto = true;
 export function setSpanStepHz(v: number) { spanStepHz = v; }
 export function setSpanStepAuto(v: boolean) { spanStepAuto = v; }
-export let refMode: 'manual' | 'auto' = 'manual';
-export function setRefMode(v: 'manual' | 'auto') { refMode = v; }
+// (Reference level/mode live in ui/refState.ts; rta_ref_level/rta_ref_mode were unused
+// copies - the STATUS `ref` field is already the effective value for the active mode.)
 export let configVersion = 0;
 export function setConfigVersion(v: number) { configVersion = v; }
 export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
@@ -63,7 +63,6 @@ export function setCenterHz(v: number) { centerHz = v; }
 export let swpCenterHz = 0;
 export function setSwpCenterHz(v: number) { if (v > 0) swpCenterHz = v; }
 export function setSpanHz(v: number) { spanHz = v; }
-export function setRefLevel(v: number) { refLevel = v; }
 export let dbPerDiv = 10.0;
 export function setDbPerDiv(v: number) { dbPerDiv = v; }
 export const totalDivs = 10;

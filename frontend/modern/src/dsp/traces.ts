@@ -1,5 +1,6 @@
 // Trace processing: resampling/gapFill/spur suppression/state machine
 import * as S from '../core/store';
+import { refLevel } from '../ui/refState';
 import { accumulateTrace, applyMode } from './accumulator';
 import { updateNormalizeStatusUI } from './normalize';
 import { updateTrackingMarkers } from './markerTracking';
@@ -68,7 +69,7 @@ export function invalidateAllTraces() {
     t.reference = null; t.isNormalized = false;
   });
   S.setDisplayUnit('dBm');
-  S.setDisplayRef(S.refLevel);
+  S.setDisplayRef(refLevel.get());
   updateNormalizeStatusUI();
 }
 
