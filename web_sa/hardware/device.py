@@ -179,11 +179,13 @@ class HarogicDevice:
                 'candidate': None, 'candidate_since': 0.0,
                 'last_change': 0.0, 'last_peak': None,
                 'last_noise_floor': None, 'ignore_until': 0.0,
+                'floor': -50.0,
             },
             'rta': {
                 'candidate': None, 'candidate_since': 0.0,
                 'last_change': 0.0, 'last_peak': None,
                 'last_noise_floor': None, 'ignore_until': 0.0,
+                'floor': -50.0,
             },
         }
         self._pending_auto_ref: tuple[str, float] | None = None
@@ -692,14 +694,11 @@ class HarogicDevice:
             return
         current = state.rta_ref_level if mode == 'rta' else state.ref_level
         target = math.ceil((peak_dbm + 5.0) / 5.0) * 5.0
-        # A target below the Ref minimum means the detected peak is too weak to justify
-        # zooming the display down (typically noise ripple in an empty band). Raising it to
-        # the -50 dBm limit is what used to freeze the sweep after a frequency change, so
-        # hold the current Ref instead.
-        if target < -50.0:
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            return
+        # Clamp into the admissible Ref range rather than holding when the peak is too weak
+        # to justify a low Ref. Holding made clicking Auto Ref a no-op for any signal whose
+        # peak is below -55 dBm (i.e. most antennas). A Ref that then over-flows the IF is
+        # corrected upwards by nudge_reference_out_of_overflow(), so clamping is safe.
+        target = min(30.0, max(-50.0, target, tracker.get('floor', -50.0)))
         # When the noise floor is high, keep ~30 dB of headroom above it.
         if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
             target = max(target, noise_floor_dbm + 30.0)
@@ -760,6 +759,44 @@ class HarogicDevice:
             tracker['ignore_until'] = time.monotonic() + 0.25
             if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
                 self._pending_auto_ref = None
+
+    def nudge_reference_out_of_overflow(self) -> bool:
+        """Raise Ref one step when the device reports IF overflow (-12).
+
+        The vendor's remedy for -12 is to raise RefLevel_dBm. This cannot live in the normal
+        auto-reference path because that path needs a measured peak, and an overflowing IF
+        delivers no frames at all - so clicking Auto Ref after the warning appeared did
+        nothing (deadlock). Queues one step per second at most.
+        """
+        with self._hw:
+            s = self.state
+            if s.status_warning != -12 or s.mode == 'sdr':
+                return False
+            mode = s.mode
+            if mode not in ('std', 'rta'):
+                return False
+            if (s.rta_ref_mode if mode == 'rta' else s.ref_mode) != 'auto' or s.atten != -1:
+                return False
+            tracker = self._auto_ref[mode]
+            now = time.monotonic()
+            if now - tracker['last_change'] < 1.0:
+                return False
+            current = s.rta_ref_level if mode == 'rta' else s.ref_level
+            target = min(30.0, current + 5.0)
+            if target <= current:
+                return False
+            tracker['last_change'] = now
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            # Learn the usable lower bound: the IF overflows at this Ref, so never propose
+            # one this low again. Without it the peak-based rule keeps trying to go back down
+            # and the two mechanisms fight, oscillating 5-10 dB (measured).
+            tracker['floor'] = max(tracker.get('floor', -50.0), target)
+            # Cleared so the next tick does not queue another step before this one lands;
+            # the device re-reports -12 on the following frame if it is still saturating.
+            s.status_warning = 0
+            self._pending_auto_ref = (mode, target)
+            return True
 
     def apply_pending_auto_reference(self) -> bool:
         """Apply one queued auto-reference update in the active acquisition worker."""

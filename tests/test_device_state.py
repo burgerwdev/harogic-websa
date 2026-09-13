@@ -137,7 +137,13 @@ def test_auto_reference_raise_is_stable_and_pending_survives_other_mode():
     assert dev._pending_auto_ref == ('std', 5.0)
 
 
-def test_auto_reference_holds_ref_when_peak_is_too_weak():
+def test_auto_reference_clamps_target_when_peak_is_too_weak():
+    """A weak peak must still move Ref, down to the admissible minimum.
+
+    Holding Ref instead (the previous behaviour) made clicking Auto Ref a no-op for any
+    signal whose peak is below -55 dBm, i.e. for most antennas - the user had to set Ref by
+    hand. An IF that then overflows is corrected upwards (next test).
+    """
     dev = HarogicDevice()
     dev.state.ref_mode = 'auto'
     dev.state.ref_level = 0.0
@@ -146,9 +152,33 @@ def test_auto_reference_holds_ref_when_peak_is_too_weak():
     for _ in range(3):
         dev.observe_reference_peak('std', -80.0, -95.0)
         dev._auto_ref['std']['candidate_since'] -= 2.0
-    # peak-5 = -85 is below the Ref minimum: hold instead of snapping to -50 dBm
-    assert dev._pending_auto_ref is None
-    assert dev._auto_ref['std']['candidate'] is None
+    assert dev._pending_auto_ref == ('std', -50.0)
+
+
+def test_auto_reference_learns_the_if_overflow_floor():
+    """-12 means the IF saturates: raise Ref and never propose that level again.
+
+    Without the learned floor the peak-based rule kept lowering Ref again and the two
+    mechanisms fought, oscillating 5-10 dB (measured on hardware).
+    """
+    dev = HarogicDevice()
+    dev.state.mode = 'std'
+    dev.state.ref_mode = 'auto'
+    dev.state.ref_level = -50.0
+    dev.state.atten = -1
+    dev.state.status_warning = -12
+    dev._auto_ref['std']['last_change'] = -10.0
+    assert dev.nudge_reference_out_of_overflow()
+    assert dev._pending_auto_ref == ('std', -45.0)
+    assert dev._auto_ref['std']['floor'] == -45.0
+    # The peak rule can no longer drive Ref below the learned floor.
+    dev._pending_auto_ref = None
+    dev.state.status_warning = 0
+    dev._auto_ref['std']['last_change'] = -10.0      # past the 1 s apply throttle
+    for _ in range(3):
+        dev.observe_reference_peak('std', -80.0, -95.0)
+        dev._auto_ref['std']['candidate_since'] -= 2.0
+    assert dev._pending_auto_ref == ('std', -45.0)
 
 
 def test_auto_reference_keeps_headroom_above_high_noise_floor():

@@ -24,6 +24,10 @@ def _acquisition_timeout(dev) -> float:
 
 
 def _acquisition_step(dev):
+    nudge = getattr(dev, 'nudge_reference_out_of_overflow', None)
+    if nudge is not None:
+        # Must run every tick, not from the frame path: IF overflow (-12) means no frames.
+        nudge()
     if dev.apply_pending_auto_reference():
         return [], []
     return dev.step()
