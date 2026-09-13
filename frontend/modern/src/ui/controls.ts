@@ -5,6 +5,9 @@ import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
 import {
 	sdrCenterHz,
 	sdrDecimate,
+	sdrDeemph,
+	sdrDemod,
+	sdrIfbw,
 	sdrListenHz,
 	sdrSpanHz,
 	renderSdrState,
@@ -585,10 +588,9 @@ export function syncGraphModeStatus(mode: string) {
     sdrSpanHz.set(62.5e6 / 16); // estimate until the device reports the real span
     sdrListenHz.set(f);
     renderSdrState();
-    const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-    if (modeSel) modeSel.value = inFm ? 'wfm' : 'am';
-    const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-    if (bwSel) bwSel.value = String(inFm ? 180000 : (inAir ? 25000 : 12000));
+    sdrDemod.set(inFm ? 'wfm' : 'am');
+    sdrIfbw.set(inFm ? 180000 : (inAir ? 25000 : 12000));
+    renderSdrState();
     send({ cmd: 'SET_SDR', center: f, decimate: 16 });
     send({ cmd: 'SET_SDR_TUNE', listen: f });
     applySdrDemod();
@@ -687,12 +689,9 @@ export function applySdr() {
   const inFm = center >= 87.5e6 && center <= 108e6;
   const inAir = center >= 118e6 && center <= 137e6;
   if (inFm || inAir) {
-    const demod = inFm ? 'wfm' : 'am';
-    const ifbw = inFm ? 180000 : 25000;
-    const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-    if (modeSel) modeSel.value = demod;
-    const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-    if (bwSel) bwSel.value = String(ifbw);
+    sdrDemod.set(inFm ? 'wfm' : 'am');
+    sdrIfbw.set(inFm ? 180000 : 25000);
+    renderSdrState();
     applySdrDemod();
   }
   const l = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
@@ -718,25 +717,19 @@ export function applySdrTune() {
   send({ cmd: 'SET_SDR_TUNE', listen: f });
 }
 
-let lastSdrDemodMode = '';
-let lastSdrDemodIfbw = -1;
-let lastSdrDeemph = -2;
-
 export function applySdrDemod() {
-  const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
-  const ifbw = sdrNumber('select-sdr-ifbw', 6000);
-  const deemph = sdrNumber('select-sdr-deemph', -1);
+  const mode = sdrDemod.get();
+  const ifbw = sdrIfbw.get();
+  const deemph = sdrDeemph.get();
   const volume = sdrNumber('input-sdr-volume', 0.8);
   const squelch = sdrNumber('input-sdr-squelch', -110);
-  // Only a demod-mode / IF-bandwidth change rebuilds the chain and needs the reset
-  // handshake. Volume/squelch/AGC are applied live, so muting them would just add a gap.
-  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5
-      || deemph !== lastSdrDeemph) {
+  // Only a demod-mode / IF-bandwidth / de-emphasis change rebuilds the chain and needs the
+  // reset handshake. Volume/squelch/AGC are applied live, so muting them would just add a
+  // gap. "Changed" is the slot's own pending state now, not a separate copy of the last
+  // value sent (those caches were one more thing that could disagree with the truth).
+  if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  lastSdrDemodMode = mode;
-  lastSdrDemodIfbw = ifbw;
-  lastSdrDeemph = deemph;
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn(),
          deemph_us: deemph });
 }
@@ -764,10 +757,8 @@ export function applySdrBand(name: string) {
   sdrCenterHz.set(b.center);
   sdrDecimate.set(b.decimate);
   sdrSpanHz.set(62.5e6 / b.decimate); // estimate until the device reports the real span
-  const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-  if (modeSel) modeSel.value = b.demod;
-  const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-  if (bwSel) bwSel.value = String(b.ifbw);
+  sdrDemod.set(b.demod);
+  sdrIfbw.set(b.ifbw);
   sdrListenHz.set(b.center);
   renderSdrState();
   send({ cmd: 'SET_SDR', center: b.center, decimate: b.decimate });
@@ -791,16 +782,15 @@ export function listenAtFreq(hz: number) {
 }
 
 function syncSdrButtons() {
-  const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
+  const mode = sdrDemod.get();
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.classList.toggle('active', (el as HTMLElement).dataset.sdrDemod === mode);
   });
-  const ibw = Math.round(S.sdrPassbandHz || 0);
+  const ibw = Math.round(sdrIfbw.get());
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrIfbw) === ibw);
   });
-  const dsel = document.getElementById('select-sdr-deemph') as HTMLSelectElement | null;
-  const dv = dsel ? Number(dsel.value) : -1;
+  const dv = sdrDeemph.get();
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrDeemph) === dv);
   });
@@ -867,10 +857,9 @@ export function syncSdrPanel(s: any) {
   sdrDecimate.confirm(Number(sdr.decimate) || 32);
   if (a.start != null && a.stop != null) sdrSpanHz.confirm(Number(a.stop) - Number(a.start));
   sdrListenHz.confirm(Number(sdr.listen) || 0);
-  S.setSdrPassbandHz(Number(sdr.if_bw) || 0);
+  sdrDemod.confirm(String(sdr.demod || 'am'));
+  sdrIfbw.confirm(Number(sdr.if_bw) || 6000);
   renderSdrState();
-  sdrSet('select-sdr-demod', sdr.demod);
-  sdrSet('select-sdr-ifbw', String(Math.round(Number(sdr.if_bw))));
   sdrSet('input-sdr-volume', String(sdr.volume));
   sdrSet('input-sdr-squelch', String(Math.round(Number(sdr.squelch))));
   const agc = document.getElementById('btn-sdr-agc');
@@ -1020,9 +1009,6 @@ export function presetAll() {
   resetSdrState();
   renderSdrState();
   resetSdrAutoRef();
-  lastSdrDemodMode = '';
-  lastSdrDemodIfbw = -1;
-  lastSdrDeemph = -2;
   refPending = null;
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); renderAll();
@@ -1227,22 +1213,22 @@ export function bindActions() {
   });
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.addEventListener('click', () => {
-      const sel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-      if (sel) sel.value = (el as HTMLElement).dataset.sdrDemod || 'am';
+      sdrDemod.set((el as HTMLElement).dataset.sdrDemod || 'am');
+      renderSdrState();
       applySdrDemod();
     });
   });
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.addEventListener('click', () => {
-      const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-      if (sel) sel.value = (el as HTMLElement).dataset.sdrIfbw || '6000';
+      sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
+      renderSdrState();
       applySdrDemod();
     });
   });
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.addEventListener('click', () => {
-      const sel = document.getElementById('select-sdr-deemph') as HTMLSelectElement | null;
-      if (sel) sel.value = (el as HTMLElement).dataset.sdrDeemph || '-1';
+      sdrDeemph.set(Number((el as HTMLElement).dataset.sdrDeemph ?? -1));
+      renderSdrState();
       applySdrDemod();
     });
   });
@@ -1486,21 +1472,20 @@ function sdrTuneBy(dHz: number) {
 }
 
 function sdrCycleIfbw(dir: number) {
-  const cur = S.sdrPassbandHz || 6000;
+  const cur = sdrIfbw.get();
   let idx = SDR_IFBW.findIndex(v => v >= cur);
   if (idx < 0) idx = SDR_IFBW.length - 1;
   else if (SDR_IFBW[idx] > cur) idx = Math.max(0, idx - 1);
   const ni = Math.max(0, Math.min(SDR_IFBW.length - 1, idx + dir));
-  const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-  if (sel) sel.value = String(SDR_IFBW[ni]);
+  sdrIfbw.set(SDR_IFBW[ni]);
+  renderSdrState();
   applySdrDemod();
 }
 
 function sdrCycleDemod() {
-  const sel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-  const cur = sel?.value || 'am';
-  const ni = (SDR_MODES.indexOf(cur) + 1) % SDR_MODES.length;
-  if (sel) sel.value = SDR_MODES[ni];
+  const ni = (SDR_MODES.indexOf(sdrDemod.get()) + 1) % SDR_MODES.length;
+  sdrDemod.set(SDR_MODES[ni]);
+  renderSdrState();
   applySdrDemod();
 }
 

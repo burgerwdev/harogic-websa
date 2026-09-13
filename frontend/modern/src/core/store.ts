@@ -257,9 +257,8 @@ export function setRtaMode(v: boolean) { rtaMode = v; }
 // listen-frequency marker / passband.
 export let sdrMode = false;
 export function setSdrMode(v: boolean) { sdrMode = v; }
-export let sdrPassbandHz = 6000;
-export function setSdrPassbandHz(v: number) { sdrPassbandHz = v; }
-// (SDR centre/decimate/span/listen moved to ui/sdrState.ts - one owner per parameter.)
+// (Every SDR parameter - centre/decimate/span/listen/demod/ifbw/deemph - lives in
+// ui/sdrState.ts. Copies here are what let the store and the form controls disagree.)
 // Audio is OFF until the user explicitly enables it ("Listen").
 export let sdrAudioOn = false;
 export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }

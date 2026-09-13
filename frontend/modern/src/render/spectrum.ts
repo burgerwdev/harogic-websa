@@ -5,7 +5,7 @@ import { plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
-import { sdrListenHz } from '../ui/sdrState';
+import { sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
@@ -583,7 +583,7 @@ function renderRta() {
     const span = (hi - lo) || 1;
     const lx = p.x + (sdrListenHz.get() - lo) / span * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
-      const bw = S.sdrPassbandHz || 0;
+      const bw = sdrIfbw.get();
       if (bw > 0) {
         const x0 = p.x + (sdrListenHz.get() - bw / 2 - lo) / span * p.w;
         const x1 = p.x + (sdrListenHz.get() + bw / 2 - lo) / span * p.w;

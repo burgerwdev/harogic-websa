@@ -31,6 +31,13 @@ export const sdrDecimate = createParam<number>('sdr.decimate', { fallback: 32, s
 export const sdrSpanHz = createParam<number>('sdr.span', { fallback: 0, scope: 'sdr', ...hz });
 /** Demodulator listen frequency. */
 export const sdrListenHz = createParam<number>('sdr.listen', { fallback: 0, scope: 'sdr', ...hz });
+/** Demodulation mode (am/fm/nfm/wfm/usb/lsb/cw). */
+export const sdrDemod = createParam<string>('sdr.demod', { fallback: 'am', scope: 'sdr' });
+/** IF passband in Hz (also what the listen-band overlay draws). */
+export const sdrIfbw = createParam<number>('sdr.ifbw', { fallback: 6000, scope: 'sdr', ...hz });
+/** FM de-emphasis time constant in microseconds (-1 = per-mode default). */
+export const sdrDeemph = createParam<number>('sdr.deemph', { fallback: -1, scope: 'sdr', ...hz });
+
 /** Drop every pending SDR intent (Preset, or leaving the mode). */
 export function resetSdrState(): void {
 	resetAll('sdr');
@@ -54,6 +61,10 @@ export function renderSdrState(): void {
 	}
 	const dec = select('select-sdr-decimate');
 	if (dec) dec.value = String(sdrDecimate.get());
-	// The demod group (mode/IF bandwidth/de-emphasis) is not migrated yet and is still
-	// rendered by syncSdrPanel; it moves here in the next step.
+	const demod = select('select-sdr-demod');
+	if (demod) demod.value = sdrDemod.get();
+	const ifbw = select('select-sdr-ifbw');
+	if (ifbw) ifbw.value = String(Math.round(sdrIfbw.get()));
+	const deemph = select('select-sdr-deemph');
+	if (deemph) deemph.value = String(sdrDeemph.get());
 }
