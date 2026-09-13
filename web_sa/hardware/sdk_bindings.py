@@ -266,6 +266,12 @@ dll.Device_CalibrateRefClock.argtypes = [
     POINTER(c_void_p), c_int, c_double, c_uint64, c_uint8, POINTER(c_double)]
 dll.Device_CalibrateRefClock.restype = c_int
 
+# IF AGC (not bound by htra_api.py). Target is a double pointer, dBFS from ADC saturation.
+dll.Device_InitIFAGC.argtypes = [POINTER(c_void_p)]
+dll.Device_InitIFAGC.restype = c_int
+dll.Device_SetIFAGCTarget.argtypes = [POINTER(c_void_p), POINTER(c_double)]
+dll.Device_SetIFAGCTarget.restype = c_int
+
 PNM_SUPPORTED = _bind_pnm()
 
 

@@ -9,6 +9,7 @@ structure refactored.
 from __future__ import annotations
 
 import math
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -107,6 +108,12 @@ class DeviceState:
     atten: int = -1
     preamplifier: int = 0
     ifgain: int = 2
+    # IF AGC (device-specific; see _profile). Off by default because the official
+    # Profile.xml ships EnableIFAGC=0. WEBSA_IFAGC=1 flips the default for A/B testing.
+    ifagc: int = 1 if os.getenv('WEBSA_IFAGC', '0').lower() not in (
+        '0', '', 'false', 'no', 'off') else 0
+    ifagc_target: float = float(os.getenv('WEBSA_IFAGC_TARGET', '-9'))
+    ifagc_gain: float = 0.0
     gain_strategy: int = 0
     amp_atten: int = -1
     preamplifier_actual: int | None = None
@@ -380,6 +387,16 @@ class HarogicDevice:
             self.configure_swp()
             return d
 
+    def _apply_ifagc(self) -> None:
+        """Programme the IF AGC target before configuring a profile that enables it.
+
+        Target is "dBFS from ADC saturation" (header: range 0..-30); the official
+        Settings.ini uses -9. Errors are non-fatal: some models do not implement IF AGC.
+        """
+        target = sb.c_double(float(self.state.ifagc_target))
+        sb.dll.Device_InitIFAGC(sb.pointer(self.dev))
+        sb.dll.Device_SetIFAGCTarget(sb.pointer(self.dev), sb.byref(target))
+
     def _profile(self):
         T = sb
         s = self.state
@@ -410,6 +427,7 @@ class HarogicDevice:
         p.Preamplifier = T.PreamplifierState_TypeDef.AutoOn if s.preamplifier == 0 \
             else T.PreamplifierState_TypeDef.ForcedOff
         p.IFGainGrade = int(s.ifgain)
+        p.EnableIFAGC = 1 if s.ifagc else 0
         p.GainStrategy = T.GainStrategy_TypeDef.LowNoisePreferred if s.gain_strategy == 0 \
             else T.GainStrategy_TypeDef.HighLinearityPreferred
         rc_map = {'internal': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
@@ -450,6 +468,8 @@ class HarogicDevice:
             if not self.state.connected:
                 return False, 'not connected'
             pin = self._profile()
+            if self.state.ifagc:
+                self._apply_ifagc()
             pout = sb.SWP_Profile_TypeDef()
             ti = sb.SWP_TraceInfo_TypeDef()
             st = sb.dll.SWP_Configuration(sb.pointer(self.dev), sb.pointer(pin),
@@ -507,6 +527,9 @@ class HarogicDevice:
                 if st != 0:
                     return None
                 self.state.refclk_ppm = float(getattr(self._meas_aux, 'RefClkFreqOffset', 0.0))
+                # IF AGC gain actually applied by the device (dB); useful to prove whether
+                # the AGC is acting at all.
+                self.state.ifagc_gain = float(getattr(self._meas_aux, 'IFAGCGain', 0.0))
                 sb.dll.DSP_InterceptSpectrum(
                     sb.c_double(self._user_start), sb.c_double(self._user_stop),
                     self._freq_buf, self._spec_buf, sb.c_uint32(n),
