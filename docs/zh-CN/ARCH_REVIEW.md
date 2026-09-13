@@ -1,0 +1,518 @@
+# 架构与代码评估报告（v1.5.5）
+
+> 分支：`analysis/arch-review`（自 `master@03b592c` 新建，本报告只新增文档，未改动产品代码）
+> 评估日期：2026-09-13
+> 范围：仓库全量（后端 `web_sa/`、前端 `frontend/modern/src/`、`tests/`、`tools/`、构建与文档）
+> 性质：**评估 + 优化建议**，不含实现。每条结论都附可复现证据。
+
+---
+
+## 0. 结论
+
+整体判断：这是一个**成熟度明显高于同规模个人项目**的代码库。分层意图清晰、文档齐全、
+纯函数 DSP 层有单测、数据面（背压/协议/恢复）经过真实硬件打磨，工程质量门禁本地全绿
+（pytest 87、ruff clean、vitest 115、`tsc --strict` 通过）。
+
+主要问题不在"能不能跑"，而在**可演进性**：
+
+1. **没有 CI**，所有质量门依赖人工执行 `./test.sh`；
+2. **前端 UI/编排层几乎没有自动化护栏**（115 个测试全在纯 DSP/工具层），
+   而 UI 层恰恰是 churn 最高、最容易回归的地方；
+3. **前后端各自实现同一套二进制协议**，没有契约测试，错帧会被静默丢弃；
+4. **"唯一 DLL 接触点"这一自我约束已被打破**（`rta.py` 三处直接 `import htra_api`）；
+5. **两个上帝模块**：后端 `web/ws.py:_dispatch`（313 行 if/elif 链）、
+   前端 `ui/controls.ts`（1547 行 / 39 条 import）；
+6. **前端 14 条循环依赖**，`render/spectrum.ts` 是枢纽；
+7. **i18n 中文缺 77 个键**（触发面板、虚拟键盘、瀑布、限制线在中文界面下显示英文）。
+
+评分（10 分制，主观但基于上述证据）：
+
+| 维度 | 分数 | 说明 |
+|---|---|---|
+| 功能完备度 | 9 | 覆盖 SWP/RTA/SDR/测量/触发/限制线，文档同步 |
+| 分层与边界清晰度 | 6 | 目录分层清晰，但后端命令层/硬件层、前端编排层存在实际越界 |
+| 模块内聚 / 耦合 | 5 | 上帝模块 + 14 条前端循环依赖 + 全局可变单例 |
+| 数据面设计（协议/背压/恢复） | 9 | latest-wins、FREQ 保留、音频 FIFO、supervisor 恢复，设计到位 |
+| 测试有效性 | 6 | 纯函数层很好；协议契约与 UI 编排层缺失 |
+| 工程化（CI/依赖/版本/发布） | 4 | 无 CI；依赖声明不完整；版本号 4 处重复；无 CHANGELOG |
+| 可观测性 / 可诊断性 | 8 | `faulthandler`、结构化 STATUS、health 字段、探针脚本齐全 |
+| 安全默认 | 8 | loopback 校验、token、Origin 白名单、静态路径穿越防护 |
+| 文档质量 | 8 | 双语、覆盖设计取舍与已知限制；扣分在无同步校验 |
+| 性能 / 资源 | 7 | 主要瓶颈已处理；仍有每客户端重复序列化、画布缩放模糊 |
+
+**最值得马上做的三件事**：加 CI（含 i18n parity 与协议契约测试）、
+收敛硬件访问与命令层、给前端 UI 编排层补护栏（先协议解析单测，再 mock 后端 e2e）。
+
+---
+
+## 1. 评估方法与基线
+
+评估方式：全量阅读核心模块 + 静态度量（AST/正则脚本）+ 实际执行全部质量门。
+未做动态硬件测试（本机无射频信号，SDR/RTA 实时行为以文档与单测为准）。
+
+当前基线（本次实际执行，全部通过）：
+
+```
+python3 -m pytest tests/ -q          -> 87 passed
+python3 -m ruff check web_sa tests tools -> All checks passed
+npm test (vitest run)                -> 12 files / 115 tests passed
+npx tsc --noEmit                     -> 通过（strict: true）
+```
+
+规模（`git ls-files` 统计）：
+
+| 区域 | 行数 | 文件数 | 备注 |
+|---|---|---|---|
+| `web_sa/`（后端） | 5,296 | 26 | 最大：`sdr.py` 1000、`device.py` 921、`ws.py` 604 |
+| `frontend/modern/src/`（不含测试） | 9,826 | 60 | 最大：`controls.ts` 1547、`spectrum.ts` 728、`i18n.ts` 676 |
+| `frontend/modern/src/__tests__/` | 1,386 | 12 | 全部为纯函数测试 |
+| `tests/`（后端） | 1,299 | 11 | |
+| `tools/`（探针 + e2e） | 2,700 | 20 | `sdr_probe/` 14 个脚本 + 1 个 Playwright e2e |
+| `frontend/modern/index.html` | 646 | 1 | 206 个 `id`、112 个 `data-action` |
+| `htra_api.py`（厂商） | 924 | 1 | 不应改动 |
+| 提交历史 | 221 commits | — | 当前版本 1.5.5 |
+
+---
+
+## 2. 做得好的地方（应先固定住，避免重构时破坏）
+
+| 编号 | 优点 | 证据 |
+|---|---|---|
+| S-1 | **数据面设计成熟**：每客户端单一发送者、POWR/RTAF latest-wins、FREQ 单独保留（丢功率不会孤立频率轴）、音频小 FIFO、STATUS 合并 | `web/client_stream.py:25-160`；测试 `tests/test_client_stream.py` 6 例 |
+| S-2 | **可靠性工程实在**：supervisor 只在原生崩溃/超时码上重启并指数退避；采集看门狗按扫描时间缩放；会话快照恢复；设备级可重入锁串行化所有 DLL 调用 | `supervisor.py:18-19,49-53`、`publisher.py:18-24`、`measurements/base.py:33-98`、`device.py:169-174` |
+| S-3 | **参数槽位模型**（`confirmed`/`desired`/`epoch` + TTL + 单一持久化入口 + 作用域 `resetAll`）解决了真实反复出现的 bug 类，且有 15 例单测 | `core/params.ts`、`__tests__/params.test.ts` |
+| S-4 | **纯函数 DSP 层可测**：S-G 平滑、三阶段峰值、抛物线拟合、限制线、电平交叉、通道测量都是纯函数并被单测覆盖 | `dsp/*.ts`、`__tests__/{dsp,limits,levelCross,channel,grid}.test.ts` |
+| S-5 | **安全默认**：非回环监听必须配 token（或显式 opt-in）、Origin 白名单、静态路径 `commonpath` 校验、`nosniff`/`DENY` 头 | `config.py:validate`、`web/http_api.py:30-58,265-272`；测试 3 例 |
+| S-6 | **可诊断性**：`faulthandler` 打印原生崩溃时的 Python 栈、STATUS 暴露 `rta_health`/`sdr.health`/`status_warning`、`tools/sdr_probe/` 有系统化探针 | `main.py:76-79`、`http_api.py:60-67` |
+| S-7 | **文档化设计取舍**：`ARCHITECTURE.md`/`MODE_STATE_FLOW.md`/`KNOWN_ISSUES.md`（23 条实测限制）双语 | `docs/{en,zh-CN}/` |
+
+---
+
+## 3. 问题清单
+
+严重度：**P0** = 影响交付可靠性/正确性，应优先；**P1** = 结构性，持续拖慢开发；
+**P2** = 卫生/优化。
+
+### P0
+
+#### P0-1 中文界面缺 77 个 i18n 键（触发/键盘/瀑布/限制线显示英文）
+
+- **现象**：`t()` 在 zh 缺失时回退英文（`i18n.ts:171-179`），而字典被拆成
+  基础字面量（`i18n.ts:5-164`）+ 8 处 `Object.assign(dict.en|zh, {...})`（219-677 行）。
+- **证据**：自动比对（下方复现脚本）得 `en=402` 键 / `zh=325` 键，`en-zh=77` 个键
+  仅英文，例如整套触发器（`trg_source`、`trg_level`、`trg_chip_wait`、
+  `tip_trg_*`）、虚拟键盘（`kp_ok`、`kp_drag`）、瀑布（`wf_range`、`wf_auto`）、
+  限制线画布（`limit_canvas_pass|fail`）、`tip_version`、`export_csv`。
+- **附带风险**：`type I18nKey = keyof typeof dict['en']`（`i18n.ts:166`）在
+  `Object.assign` **之前**求值，因此新增的 210 个 en 键**不在类型里**；
+  另有 `avg`、`tip_gain` 两个键在基础块与 assign 块重复（后者静默覆盖前者）。
+- **影响**：中文用户看到中英混杂；键集合无类型/单测保护，后续还会漂移。
+- **建议**：
+  1. 合并为单一声明式字典（`const dict = { en: {...}, zh: {...} } as const`），
+     删除 `Object.assign`；
+  2. 加 `__tests__/i18n.test.ts`：断言 `Object.keys(en)` 与 `Object.keys(zh)` 相等、
+     无重复键、模板占位符 `{name}` 两侧一致；
+  3. 把 `I18nKey` 用于 `t()` 的参数类型（`key: I18nKey`），让 tsc 拦住拼写错误。
+
+  复现：
+  ```bash
+  python3 - <<'PY'
+  import re
+  src=open('frontend/modern/src/core/i18n.ts',encoding='utf-8').read()
+  lines=src.split('\n')
+  base_en=set(re.findall(r"'([a-z0-9_]+)':", '\n'.join(lines[4:86])))
+  base_zh=set(re.findall(r"'([a-z0-9_]+)':", '\n'.join(lines[86:163])))
+  add={'en':set(),'zh':set()}
+  for lang,body in re.findall(r"Object\.assign\(dict\.(en|zh),\s*\{(.*?)\n\}\);", src, re.S):
+      add[lang] |= set(re.findall(r"'([a-z0-9_]+)':", body))
+  en,zh = base_en|add['en'], base_zh|add['zh']
+  print(len(en), len(zh), 'en-only:', sorted(en-zh))
+  PY
+  ```
+
+#### P0-2 前端 UI/编排层没有自动化护栏
+
+- **现象**：12 个测试文件全部针对 `dsp/`、`core/`（params/level/i18n 之外）与
+  `ui/railMath`；`render/`、`ui/`（除 rail）、`meas/`、`core/ws.ts`、`audio/`
+  **零单测**。唯一的端到端回归 `tools/e2e/state_regression.py` 需要真机 + 运行中的服务，
+  被刻意排除在 `test.sh` 之外（`test.sh:20-26`）。
+- **证据**：`find frontend/modern/src/__tests__`；`tools/e2e/state_regression.py:31-36`
+  （`from playwright.sync_api import ...`，需活设备）。
+- **影响**：`controls.ts`（59 次提交）、`index.html`（67 次提交）、`core/ws.ts`（48 次）
+  这些最高 churn 文件完全没有自动回归；改错只有人工点击才发现。
+- **建议**（按性价比排序）：
+  1. 先给 **帧解析** 补单测（见 P0-3），这是纯函数、零依赖、收益最大；
+  2. 再给 `updateStatus()`/`processTraces()` 补"喂 STATUS JSON + 合成帧 → 断言槽位与
+     store" 的集成测试（jsdom 已就位）；
+  3. 最后引入 **假后端**（`web_sa/hardware/device.py` 已有明确 mock 边界，
+     只需替换 `sdk_bindings` 的 DLL 入口；或直接起一个只发合成帧的 aiohttp stub），
+     让 Playwright e2e 进 CI。
+
+#### P0-3 二进制协议在两种语言里各写一遍，且无契约测试
+
+- **现象**：magic/偏移/dtype 在 Python 与 TS 双份定义：
+  `FREQ`/`POWR`（`measurements/framer.py:14-36` ↔ `core/ws.ts:372-385`）、
+  `RTAF`（`measurements/rta.py:510-522` ↔ `core/ws.ts:162-190`）、
+  `AUDF`（`measurements/sdr.py:76-78` ↔ `core/ws.ts`）。
+  TS 侧对长度不符**静默 `return`**（`ws.ts:175,373,380`），错帧表现为"画面不动"。
+- **证据**：`tests/test_framer.py` 只断言 dtype（3 例），没有 golden 字节向量；
+  `ws.ts` 解析无单测。
+- **影响**：一次字段顺序/长度改动可静默破坏显示，且难定位（无错误、无日志）。
+- **建议**：
+  1. 把帧规格收敛为**单一来源**（如 `docs/API.md` 中的表格 + 一个
+     `protocol.json`/常量文件），Python/TS 都从它派生常量（至少自动生成头部结构体）；
+  2. 两端各加 golden 测试：Python 生成字节 → 存为 fixture；TS 测试解析该 fixture
+     断言数值；反向再各一次；
+  3. TS 解析失败改为可观测（`console.warn` 限流 + 计数进 `dataset`），便于现场诊断。
+
+#### P0-4 依赖声明不完整，干净环境跑不通 `./test.sh`
+
+- **现象**：`test.sh` 调用 `python3 -m ruff`，`build.sh` 调用
+  `python3 -m fontTools.subset`，e2e 需要 `playwright`；三者都**不在**
+  `requirements.txt`（只列 aiohttp/numpy/pytest/pytest-asyncio/pyserial），
+  ruff 仅出现在 `pyproject.toml` 的 `[project.optional-dependencies] dev`。
+- **影响**：新机器/新贡献者按 README 执行 `pip install -r requirements.txt && ./test.sh`
+  必失败；CI 若照抄也会失败。
+- **建议**：`requirements.txt` 拆为 `requirements.txt`（运行时）+
+  `requirements-dev.txt`（ruff/playwright/fonttools/pytest…），或统一指向
+  `pip install -e '.[dev]'`，README 同步。
+
+#### P0-5 没有 CI，也没有版本单一来源
+
+- **现象**：仓库无 `.github/`、无任何 CI 配置；版本号硬编码 4 处
+  （`pyproject.toml:3`、`frontend/modern/package.json:3`、
+  `frontend/modern/index.html:640`、发布提交信息），无 `CHANGELOG.md`，
+  发布靠人工按 git log 里 `chore(release): 1.5.5` 的模式操作。
+- **影响**：版本漂移、忘记跑测试、忘记 `npm run build`（历史 TODO 里已明确记录
+  "忘了 build 等于测旧包 —— 本会话犯过"）。
+- **建议**：
+  1. 加最小 CI（GitHub Actions 或本地 `pre-push` hook）：pytest + ruff + tsc + vitest，
+     不需要硬件即可全绿；
+  2. 版本单源：`pyproject.toml` 为主，构建时注入 `index.html` 的
+     `tip_version`（或由 `package.json` 生成 TS 常量），发版脚本一次改完并生成
+     CHANGELOG 段落。
+
+### P1
+
+#### P1-1 后端命令层名不副实：`ws.py` 实际承担"命令总线"，且与 HTTP 层循环依赖
+
+- **证据**：`web/http_api.py:17` 顶层 `from .ws import CommandError, _dispatch, ...`；
+  `ws.py:268,272` 在函数内 `from .http_api import build_status`（为绕开循环）。
+  模块级循环依赖已由脚本确认（`http_api ⇄ ws`）。
+- **影响**：命名误导（改 HTTP 传输要动 `ws.py`）；循环导入靠"函数内 import"维持，
+  新人极易踩坑；`_dispatch` 同时承载校验、权限、状态写入、硬件调用、返回码，
+  单测只能整体打桩。
+- **建议**：抽 `web/commands.py`：
+  ```
+  @command('SET_RBW', validate=..., modes=('std','rta'), session_exclusive=...)
+  async def set_rbw(dev, data): ...
+  ```
+  由 registry 统一完成 P0 校验/模式互斥/会话互斥（现在散在 `_validate_command` 与
+  `_dispatch` 的 4 处 `if`），`ws.py`/`http_api.py` 退化为纯传输适配。
+
+#### P1-2 命令分发是 313 行 if/elif 链，`_validate_command` 另有 135 行
+
+- **证据**：`web/ws.py:292-604`（`_dispatch`）、`web/ws.py:105-240`（`_validate_command`）、
+  `web/ws.py:50-64`（`_COMMANDS` 集合）。
+- **影响**：新增/修改一条命令要改 **3 处**，字段校验和业务逻辑分离在不同函数里，
+  参数语义容易漂移（例如 `SET_SWEEP` 的 mode 取值在 validate 与 dispatch 各写一份）。
+- **建议**：与 P1-1 合并为声明式 registry，每个命令自带 schema（`_number`/`_choice`
+  已是好用的原语，保留）；补一张"命令 → 校验 → 处理器"的生成式测试表，
+  确保 `_COMMANDS` 与 registry 不脱节（用测试断言而非人工同步）。
+
+#### P1-3 "唯一 DLL 接触点"约束已被打破
+
+- **证据**：`hardware/sdk_bindings.py:1-10` 声明是本项目唯一直接接触
+  `libhtraapi` 的模块；但 `measurements/rta.py:96,366,390` 三处
+  `import htra_api as T` 并直接调用 `T.dll.RTA_*`、`T.pointer`、
+  `T.RTA_FrameInfo_TypeDef`；`sdr.py`/`ddc.py` 用 `T = sb` 别名间接取 `sb.dll`；
+  `phase_noise.py`、`device.py` 也直接调 `sb.dll.*`（走的是 re-export，边界更模糊）。
+- **影响**：换库/模拟硬件需要改多个模块；pypy 化或做纯软件仿真时无法只替换一层。
+- **建议**：
+  1. `sdk_bindings` 补齐 `RTA_FrameInfo_TypeDef` 等缺失 re-export，
+     目标：其它模块只允许 `from ..hardware import sdk_bindings as sb`；
+  2. 加约束测试（或 `import-linter` 契约）：断言 `web_sa` 中除 `sdk_bindings.py`
+     外无 `import htra_api`、无直接 `dll.` 访问；
+  3. 顺手把 `T = sb` 这类"别名即硬件层"的写法改成显式 `sb.dll.X`。
+
+#### P1-4 前端 14 条循环依赖，`render/spectrum.ts` 是枢纽
+
+- **证据**（脚本检测，见附录 B）：
+  `meas/harmonic.ts ⇄ render/spectrum.ts ⇄ meas/phaseNoise.ts ⇄ ui/measure.ts`、
+  `render/spectrum.ts ⇄ {dsp/peaks, meas/amplitude, meas/channel, meas/harmOverlay,
+  meas/harmOverlay2, render/markerTable, render/peaklist}`、
+  `dsp/traces.ts ⇄ dsp/normalize.ts`、`core/ws.ts ⇄ ui/controls.ts`。
+- **影响**：ESM 循环在求值顺序上不可控（`import` 期取到的可能是未初始化绑定），
+  模块无法独立测试，拆分/移动代码成本高。
+- **建议**：把 `spectrum.ts` 拆成
+  (a) `render/orchestrator.ts`（只做"按模式选择绘制者"）与
+  (b) 各测量模块**只导出纯数据计算 + 纯绘制函数**（不再回读 spectrum 的全局）；
+  循环可用 `madge --circular`（加入 CI）作为验收门槛：目标 0 条。
+
+#### P1-5 `ui/controls.ts` 上帝模块 + `index.html` 字符串耦合
+
+- **证据**：`controls.ts` 1547 行、39 条 import、35 个模块；
+  `bindActions()` 232 行（`:1141`）、`bindCanvas()` 100 行（`:1398`，且以 `if (!canvas) return` 静默返回）；
+  `index.html` 646 行含 206 个 `id`、112 个 `data-action`；
+  全前端 295 处 `getElementById/querySelector` 以字符串字面量取元素。
+- **影响**：`index.html` 是提交次数最多的文件（67 次）；改一个 id 不会有任何编译错误，
+  只会在运行期静默失效（`?.` 或 `if (el)` 风格会掩盖）。
+- **建议**：
+  1. 按面板域拆分 `controls.ts`（`ui/panels/freq.ts`、`refLevel.ts`、`sdr.ts`、
+     `trigger.ts`、`amp.ts`…），共享 `data-action` 注册表；
+  2. 建立"必需 id 清单"并在 `main.ts` 启动时自检：缺失即 `throw`（快速失败优于静默）；
+     进阶做法是改用 `data-field="center"` 之类语义属性，id 只留给需要锚点的元素。
+
+#### P1-6 全局可变单例仍是前端状态主体
+
+- **证据**：`core/store.ts` 被 **33 个模块**导入，含 ~70 个 `export let` 与
+  62 个 `export function setX`；`params.ts` 的槽位模型目前只覆盖
+  `freqState`/`refState`/`swpState`/`sdrState`/`displayRef`/`graphMode`。
+  触发（`swpArmed`/`trigHit`/`trigOverlay`）、瀑布（`wfLoDbm`/`wfHiDbm`/`waterfallOn`）、
+  测量结果（`harm`/`pnmData`/`chanRes`/`m3dB`/`peakMarks`）、`traces`/`markers` 等
+  仍是裸可变量，由多个模块直接写。
+- **影响**：这正是 `params.ts` 注释里描述的"多写者、无所有者"bug 类的温床；
+  迁移只做了一半，规则不统一会让后来者不知道该用哪种写法。
+- **建议**：
+  1. **参数**继续按 `params.ts` 迁移（RTA 中心/跨度、触发阈值组、瀑布范围）；
+  2. **测量结果/迹线数据**不要塞进参数槽——它们是"数据仓库"，建议单独
+     `core/results.ts`（有明确 `set/get/subscribe`，不做 desired/confirmed 语义）；
+     明确写进 `ARCHITECTURE.md`，形成"参数用槽、结果用仓库"的统一规则。
+
+#### P1-7 `build_status` 通过私有属性读取内部状态
+
+- **证据**：`web/http_api.py:70-215`（146 行）中
+  `getattr(dev, '_auto_ref', {})`、`getattr(dev, '_pending_auto_ref', None)`、
+  `getattr(session, '_error_streak')`、`_recovery_attempts`、`_packets_ok/_err`
+  （`:60-67`）。
+- **影响**：序列化层与内部实现耦合，重命名私有字段不会有编译期/测试期报警
+  （`getattr` 默认值把错误吞掉，只会显示 0/空）。
+- **建议**：把对外可见的诊断内容显式化：`DeviceState.auto_ref_view()`、
+  `Session.health()`、`DeviceState.status_warning`（已有）；`build_status` 只做字典组装。
+
+#### P1-8 `DeviceState` 上帝对象 + `HarogicDevice` 上帝类
+
+- **证据**：`DeviceState`（`device.py:51-153`）约 100 个字段，横跨 SWP/RTA/SDR/触发/
+  GNSS/校准/测量结果；`HarogicDevice`（`device.py:159-921`）同时负责生命周期、
+  SWP profile 构造、缓冲区管理、自动参考控制环、GNSS 查询、参考时钟校准、会话宿主。
+  其中自动参考是一个隐性状态机（`_auto_ref` 字典 + `_auto_ref_geometry_seen` +
+  `_pending_auto_ref`，`_observe_reference_peak_locked` 76 行）。
+- **影响**：任何一处改动都要读 900 行上下文；单测只能覆盖到局部
+  （现有 `test_device_state.py` 13 例已尽力）。
+- **建议**（分步，风险可控）：
+  1. 先抽 `AutoReferenceController`（输入：迹线+几何+模式；输出：待应用的 ref），
+     它天然可单测，是把最难的状态机从 IO 类里剥出来的最大收益；
+  2. 再按模式把 `DeviceState` 拆为 `SwpParams`/`RtaParams`/`SdrParams`/`TriggerParams`
+     子结构（`STATUS` 形状保持不变，前端无感）；
+  3. `HarogicDevice` 只保留"生命周期 + 会话宿主 + 一次 step"。
+
+#### P1-9 会话生命周期隐式，且靠私有标志握手
+
+- **证据**：`measurements/__init__.py:16-24` 的 `make_session()` 内部直接
+  `dev.session.exit()`；`ws.py:528-539` 在切换前直接置
+  `old_sess._ready = False`，并在之后读 `sess._ready` 判断是否成功。
+- **影响**：模式切换的"进入/退出/就绪"三态没有显式接口，失败路径靠约定
+  （`_ready` 是私有属性，SDR/RTA 各自维护）。
+- **建议**：定义 `SessionManager.switch(name) -> Session`，会话暴露
+  `enter()/exit()/is_ready()`；`SET_MODE` 只调用 manager，切换失败抛
+  `CommandError`（现在已有 `mode_not_ready`，把它变成接口契约而非属性约定）。
+
+#### P1-10 进程级自杀散落在业务代码里
+
+- **证据**：`os._exit(70)` 出现在 `web/publisher.py:69,89`、`web/ws.py:330,388`；
+  `supervisor.should_restart()` 依赖退出码 70/负数。
+- **影响**：退出码是跨进程契约，却硬编码在 4 个业务位置；单测很难覆盖"该退出"的路径；
+  日志格式不统一。
+- **建议**：集中为 `web/recovery.py: fatal(reason) -> NoReturn`（记录统一格式、
+  带上 last_error、`os._exit(70)`），业务代码只调用它；`should_restart` 的输入
+  也改为常量 `EXIT_FATAL = 70`。
+
+#### P1-11 重复的 JSON 规范化 + 每客户端重复序列化
+
+- **证据**：`client_stream._finite_json`（`:14-22`）与 `http_api._json_safe`（`:20-28`）
+  语义相同；`ClientStream.publish_json`（`:87-101`）对**每个客户端**各做一次
+  `json.dumps`（N 个客户端 = N 次序列化 + N 次递归有限性检查）。
+- **影响**：当前客户端数很少，影响可忽略；但这是"扩展时才会痛"的隐性成本，
+  且两份实现可能漂移（一个改 NaN 策略另一个没改）。
+- **建议**：抽 `web/jsonutil.py`；publisher 对外 `broadcast_json(obj)`：
+  序列化一次 → 复用字符串写入各客户端队列。
+
+### P2
+
+| 编号 | 问题 | 证据 | 建议 |
+|---|---|---|---|
+| P2-1 | `store.ts` 在**导入期**访问 DOM（`document.getElementById('spectrum')`），使模块导入带副作用，测试必须 jsdom | `core/store.ts:34-36` | 改为 `initStore()`/惰性 getter；`canvas/ctx/W/H` 由 `init` 注入 |
+| P2-2 | 58 个 `controls.ts` 导出符号无任何外部引用（API 面污染）；`noUnusedLocals/Parameters=false` 掩盖未用局部 | 脚本检测（附录 B） | 去掉不必要的 `export`；开启 `noUnusedLocals` 并逐步清理 |
+| P2-3 | 前端无 lint/format（无 ESLint/Prettier 配置），风格靠约定 | `package.json` scripts 仅 dev/build/preview/test | 引入 ESLint（typescript-eslint）+ Prettier，纳入 CI；风格类规则先 warning |
+| P2-4 | 画布固定 860×480 但 CSS `width:100%` 缩放，无 `devicePixelRatio` 后端缓冲 → 宽屏/高分屏模糊 | `index.html:76`、`style.css:219-221` | 按容器尺寸 + DPR 设置 `canvas.width/height`（渲染坐标保持逻辑像素）；`store.W/H` 随之改为动态 |
+| P2-5 | 双语文档无同步校验，已出现长度差异（`ARCHITECTURE` en 126 / zh 118 行；`KNOWN_ISSUES` 62/51） | `wc -l docs/{en,zh-CN}/*.md` | 在 CI 加一个轻量检查：两侧**小节标题**集合一致（内容可意译，结构必须一致） |
+| P2-6 | 27KB 临时备忘 `TODO-frontend-state.md` 留在仓库根，靠 `.git/info/exclude` 排除（本地私有） | 文件头注释 | 已结项内容归档到 `docs/dev/`（或删除）；未结项项转成 issue/`docs/dev/ROADMAP.md`，避免"文档说未做、代码已做"的漂移（本报告第 4 节就是实例） |
+| P2-7 | 后端测量模块覆盖不均：`harmonic.py`、`phase_noise.py`、`main.py`、`logging_setup.py` 无直接单测 | 测试名清单 | 补 harmonic/PNM 的"结果解析/参数裁剪"单测（无需硬件，喂合成结构体） |
+| P2-8 | 遗留 helper 与探针脚本混放 | `config.py:153-154` `fit_span` 自注 "legacy helper"；`tools/sdr_probe/` 14 个脚本 | 删除确认无引用的 helper；探针脚本移到 `tools/sdr_probe/`（已在此）并在 `tools/README` 说明用途与是否需要硬件 |
+| P2-9 | 每条命令都全量构建 STATUS（146 行 dict + 递归有限化），高频命令浪费 | `ws.py:274`、`http_api.py:70` | 只回显与命令相关的字段（或复用上次序列化结果）——注意：前端依赖完整 STATUS 做槽位确认，改动需先看协议 |
+
+---
+
+## 4. 重构路线图
+
+原则：**先建护栏，再动结构**；每阶段结束时 `./test.sh` 与 `tsc` 必须全绿，
+且每阶段都应当是"可独立合并"的。
+
+### Phase 0 — 基线固化（0.5–1 天，零风险）
+
+| 任务 | 产出 | 验收 |
+|---|---|---|
+| 加 CI（pytest + ruff + tsc + vitest） | `.github/workflows/ci.yml` 或 `pre-push` hook + README 说明 | 干净 venv 中 CI 全绿 |
+| 依赖声明补全 | `requirements-dev.txt`（ruff/playwright/fonttools/pytest*） | `pip install -r requirements.txt -r requirements-dev.txt && ./test.sh` 通过 |
+| i18n parity 测试 | `__tests__/i18n.test.ts` | 测试先失败（暴露 77 个缺键）→ 补齐后通过 |
+| 协议 golden 测试骨架 | Python 生成 fixture + TS 解析断言（FREQ/POWR/RTAF/AUDF） | 4 类帧双端一致 |
+| 循环依赖门槛 | `madge --circular` 输出当前 14 条作为**基线**（只允许减少） | CI 中记录基线数 |
+| 版本单源 | 构建注入版本 + CHANGELOG 模板 | `index.html` 不再硬编码版本 |
+
+### Phase 1 — 低风险一致性（2–4 天）
+
+i18n 合并为单一字典并类型化；删除 P2-2 的死导出；`store` DOM 懒初始化（P2-1）；
+`fatal()` 集中（P1-10）；`_finite_json` 去重 + 单次序列化广播（P1-11）；
+`build_status` 改为显式 view 接口（P1-7）。
+
+验收：无行为变化的纯重构；`test.sh`/`tsc`/e2e 全绿。
+
+### Phase 2 — 后端命令层与硬件边界（1–2 周）
+
+1. 新增 `web/commands.py` registry（名称/校验/模式约束/会话互斥/处理器），
+   `ws.py`、`http_api.py` 只做传输（P1-1、P1-2）；
+2. `sdk_bindings` 补齐 RTA 符号，禁止其它模块 `import htra_api`，
+   加约束测试（P1-3）；
+3. `AutoReferenceController` 抽取 + 单测（P1-8 第一步）；
+4. `SessionManager` 显式化（P1-9）。
+
+验收：现有 87 个后端测试**不改断言**即通过（仅允许 import 路径调整）；
+新增命令只需加一个 registry 条目 + 一条表驱动测试；约束测试证明无越界 DLL 访问。
+
+### Phase 3 — 前端解耦（2–3 周）
+
+1. 打破 `spectrum.ts` 枢纽（P1-4），`madge --circular` 归零；
+2. 按面板拆分 `controls.ts`，`index.html` 必需 id 自检（P1-5）；
+3. 剩余参数迁移到 `params.ts`，测量结果迁到 `core/results.ts`（P1-6）；
+4. 帧解析 + `updateStatus` 集成单测（P0-2 步骤 1-2）；
+5. 画布 DPR/resize（P2-4）。
+
+验收：`madge --circular` = 0；vitest 覆盖新增的解析/状态测试；
+e2e（真机）仍全绿。
+
+### Phase 4 — 按需
+
+假后端 + Playwright 进 CI（P0-2 步骤 3）；`DeviceState` 分模式拆分（P1-8 第二步）；
+文档结构一致性检查（P2-5）。
+
+---
+
+## 5. 快速收益清单（半天内可完成，风险极低）
+
+1. `requirements-dev.txt` 补 ruff/playwright/fonttools（P0-4）——否则 README 的测试步骤是错的。
+2. `__tests__/i18n.test.ts` + 补齐 77 个中文键（P0-1）。
+3. `web_sa/hardware/sdk_bindings.py` 补 `RTA_FrameInfo_TypeDef` 等 re-export，
+   把 `rta.py` 三处 `import htra_api as T` 改为 `_sb`（P1-3，纯机械）。
+4. 删除 `controls.ts` 中无外部引用的 `export`（P2-2）。
+5. `supervisor.EXIT_FATAL = 70` + `fatal()` 集中（P1-10）。
+6. 把 `TODO-frontend-state.md` 中已结项部分归档（P2-6）——本报告已发现其
+   "仍未做：SWP/RTA 迁移"与代码现状（`swpState`/`freqState`/`displayRef`/`graphMode`
+   均已槽位化）矛盾。
+
+---
+
+## 6. 非目标（建议明确不做）
+
+1. **不引入前端框架/状态库**（React/Vue/Redux 等）。原生 DOM + `params.ts` 已能表达
+   本项目所需的单所有者状态模型；重写成本远大于收益，且会丢掉现有 e2e 契约。
+2. **不为了覆盖率写 UI 快照测试**。优先协议契约测试与状态机单测；
+   UI 层用 Playwright 断言"可观测行为"（既有 e2e 的方向是对的，应该扩大而不是替换）。
+3. **不修改 `htra_api.py`**（厂商文件，HAROGIC 版权）。所有适配放 `sdk_bindings`。
+4. **不在没有明确需求前拆分进程/做多进程服务化**（`KNOWN_ISSUES.md` 第 1 条已把
+   "Web/SDK 进程分离"推迟到 VSA 阶段）。`os._exit` + supervisor 的现状是**有意的**
+   工程取舍，不应视为缺陷。
+5. **不为"整齐"统一命名/目录**。循环依赖、上帝模块、越界访问这些**有具体代价**的
+   问题优先；纯风格问题交给 lint。
+
+---
+
+## 附录 A：度量数据
+
+| 指标 | 值 |
+|---|---|
+| 后端 Python 行数 / 文件 | 5,296 / 26 |
+| 前端源码行数 / 文件（不含测试） | 9,826 / 60 |
+| 前端测试行数 / 文件 | 1,386 / 12（115 用例） |
+| 后端测试行数 / 文件 | 1,299 / 11（87 用例） |
+| 最长后端函数 | `web/ws.py:_dispatch` 313 行、`measurements/sdr.py:step` 193 行、`measurements/rta.py:_configure_locked` 170 行、`web/http_api.py:build_status` 146 行、`web/ws.py:_validate_command` 135 行 |
+| 最长前端函数 | `core/ws.ts:connectWS` 301 行、`ui/controls.ts:bindActions` 232 行、`core/ws.ts:updateStatus` 170 行、`render/spectrum.ts:renderRta` 113 行 |
+| 前端循环依赖 | 14 条 |
+| 后端循环依赖 | 1 条（`web/http_api ⇄ web/ws`） |
+| 跨模块导入边 | 274 条（75 个模块） |
+| `store.ts` 导入者 / 可变导出 / setter | 33 / ~70 / 62 |
+| `index.html` id / data-action | 206 / 112 |
+| DOM 查询（字符串字面量） | 295 处 |
+| i18n 键 | en 402 / zh 325（缺 77） |
+| 默认分支提交数 / 版本 | 221 / 1.5.5 |
+
+## 附录 B：复现脚本
+
+```bash
+# 1) 全部门禁
+python3 -m pytest tests/ -q && python3 -m ruff check web_sa tests tools
+(cd frontend/modern && npx tsc --noEmit && npm test -- --reporter=dot)
+
+# 2) 前端循环依赖 + 导入边
+python3 - <<'PY'
+import os, re, collections
+root='frontend/modern/src'
+files=[os.path.join(dp,fn) for dp,_,fns in os.walk(root) for fn in fns if fn.endswith(('.ts','.js'))]
+g=collections.defaultdict(set)
+def res(b,s):
+    p=os.path.normpath(os.path.join(os.path.dirname(b),s))
+    return next((c for c in (p+'.ts',p+'.js',os.path.join(p,'index.ts')) if os.path.exists(c)),None)
+for f in files:
+    for m in re.finditer(r"from\s+['\"](\.[^'\"]+)['\"]", open(f).read()):
+        r=res(f,m.group(1))
+        if r: g[f].add(r)
+color={}; st=[]; cyc=[]
+def dfs(n):
+    color[n]=1; st.append(n)
+    for m in sorted(g[n]):
+        if color.get(m,0)==0: dfs(m)
+        elif color.get(m)==1: cyc.append(st[st.index(m):]+[m])
+    st.pop(); color[n]=2
+for f in files:
+    if color.get(f,0)==0: dfs(f)
+print(len(files),'modules,',sum(len(v) for v in g.values()),'imports,',len({frozenset(c) for c in cyc}),'cycles')
+for c in sorted({frozenset(c) for c in cyc}, key=len, reverse=True):
+    print('  '+' -> '.join(os.path.relpath(x,root) for x in c))
+PY
+
+# 3) 最长函数
+python3 - <<'PY'
+import ast, os
+for dp,_,fns in os.walk('web_sa'):
+    for fn in fns:
+        if fn.endswith('.py'):
+            p=os.path.join(dp,fn); t=ast.parse(open(p).read())
+            for n in ast.walk(t):
+                if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.end_lineno-n.lineno+1>=100:
+                    print(n.end_lineno-n.lineno+1, f'{p}:{n.lineno}', n.name)
+PY
+
+# 4) 未被其它模块引用的导出（前端 API 面）
+#    见正文 P0-1 / P2-2 的脚本，原理：解析 export 名 + 统计 import/命名空间访问
+```
+
+## 附录 C：与既有待办的关系（重要）
+
+根目录 `TODO-frontend-state.md`（27KB，本地私有）中"**仍未做：SWP/RTA 迁移（唯一剩余项）**"
+一节已**过期**：代码中 `ui/freqState.ts`、`ui/swpState.ts`、`ui/refState.ts`、
+`ui/displayRef.ts`、`ui/graphMode.ts` 均已使用 `core/params.ts`，对应提交
+`83ed00c`（SWP 参数槽位化）与 `ee2f987`（graphMode/displayRef 重建）。
+本报告以**代码现状**为准；建议按 P2-6 归档该文档，避免后续评估被误导。
+
+仍然成立的遗留项（本报告对应编号）：
+- `displayRef` 的多写者问题已收敛，但**触发/瀑布/测量结果**仍是裸全局（P1-6）；
+- SWP/RTA 调谐参数的迁移**已完成**，RTA 侧仅剩触发参数组与部分 store 副本（P1-6 第 1 条）。

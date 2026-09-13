@@ -87,7 +87,9 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
 Then open `http://device-address:8080/?token=the-same-token`. See
 [`docs/en/FAQ_NOTES.md`](docs/en/FAQ_NOTES.md) for all environment variables, remote deployment,
 logging, and hardware tests. SWP/RTA parameter semantics are documented in
-[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md).
+[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md). An independent architecture and code
+review with prioritized refactor recommendations is in
+[`docs/en/ARCH_REVIEW.md`](docs/en/ARCH_REVIEW.md).
 
 ### 3. Test
 
@@ -109,7 +111,7 @@ harogic-websa/
 │  └─ modern/            TS frontend (Vite + TypeScript, i18n + themes)
 │     └─ src/__tests__/  vitest tests (DSP engine, synthetic traces)
 ├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
-├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log
+├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log / arch review
 ├─ tests/                backend pytest (protocol, config, device state, HTTP API)
 ├─ screenshots/          README screenshots
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
