@@ -341,20 +341,46 @@ function renderLimits(powers: Float32Array | null) {
   ctx.beginPath();
   ctx.rect(p.x, p.y, p.w, p.h);
   ctx.clip();
-  // Bins above the limit: thicker red segments over the trace
+  // Bins above the limit: shade the whole above-limit part of the signal (the area between
+  // the limit line and the trace), then stroke that part of the trace in red. Shading only
+  // the trace line made a violation read as "just the tip changed colour".
   const runs = violationRuns(powers, lim, S.limits.tol);
-  if (runs.length) {
+  const crossFrac = (a: number, b: number): number => {
+    const denom = (powers[b] - powers[a]) - (lim[b] - lim[a]);
+    if (Math.abs(denom) < 1e-9) return 0;
+    return Math.max(0, Math.min(1, (lim[a] - powers[a]) / denom));
+  };
+  for (const r of runs) {
+    const s = r.start, e = r.end;
+    ctx.beginPath();
+    // left edge: the exact trace/limit crossing, or the end of the data
+    if (s > 0) {
+      const t = crossFrac(s - 1, s);
+      ctx.moveTo(getX(s - 1 + t, n), getY(lim[s - 1] + t * (lim[s] - lim[s - 1])));
+    } else {
+      ctx.moveTo(getX(s, n), getY(lim[s]));
+    }
+    for (let i = s; i <= e; i++) ctx.lineTo(getX(i, n), getY(powers[i]));
+    if (e < n - 1) {
+      const t = crossFrac(e, e + 1);
+      ctx.lineTo(getX(e + t, n), getY(lim[e] + t * (lim[e + 1] - lim[e])));
+    } else {
+      ctx.lineTo(getX(e, n), getY(lim[e]));
+    }
+    // back along the limit line to close the shaded area
+    for (let i = e; i >= s; i--) ctx.lineTo(getX(i, n), getY(lim[i]));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,64,64,0.22)';
+    ctx.fill();
+    // the trace segment above the limit itself
+    ctx.beginPath();
+    for (let i = s; i <= e; i++) {
+      const x = getX(i, n), y = getY(powers[i]);
+      if (i === s) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
     ctx.strokeStyle = 'rgba(255,64,64,0.95)';
     ctx.lineWidth = 2.5;
-    for (const r of runs) {
-      ctx.beginPath();
-      for (let i = r.start; i <= r.end; i++) {
-        const x = getX(i, n);
-        const y = getY(powers[i]);
-        if (i === r.start) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
+    ctx.stroke();
   }
   // Dashed limit line itself
   ctx.setLineDash([6, 4]);
@@ -369,6 +395,25 @@ function renderLimits(powers: Float32Array | null) {
   ctx.stroke();
   ctx.restore();
   lastLimitEval = evaluateAgainst(powers, lim, freq, S.limits.tol);
+  {
+    // Debug/verification aid: the geometry the overlay actually used.
+    const cv = document.getElementById('spectrum');
+    if (cv) {
+      let peakIdx = 0, peakVal = -1e9;
+      for (let i = 0; i < n; i++) {
+        const v = powers[i];
+        if (Number.isFinite(v) && v > peakVal) { peakVal = v; peakIdx = i; }
+      }
+      cv.dataset.limitsDbg = JSON.stringify({
+        n, tol: S.limits.tol,
+        runs: runs.map((r) => [r.start, r.end]),
+        above: runs.reduce((a, r) => a + (r.end - r.start + 1), 0),
+        peakIdx, peakDbm: Math.round(peakVal * 10) / 10,
+        limAtPeak: Math.round(lim[peakIdx] * 10) / 10,
+        margin: Math.round((peakVal - lim[peakIdx]) * 10) / 10,
+      });
+    }
+  }
 }
 
 export function renderAll() {
@@ -386,6 +431,10 @@ export function renderAll() {
     renderStatusBlocks();
     renderWaterfallIfOn();
     const rp = getDisplayPowers();
+    // The RTA/SDR path needs the same auto peak threshold as the swept path, otherwise the
+    // marker peak-search uses the swept (or HTML default) threshold and jumps onto the noise
+    // floor instead of the signal.
+    if (rp) autoPeakThr(rp);
     if (S.waterfallOn) {
       ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
         const el = document.getElementById(id);

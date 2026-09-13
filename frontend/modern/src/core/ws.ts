@@ -440,12 +440,18 @@ export function updateStatus(s: any) {
   syncAvgUI();
   syncSwpSpanStep(Number(s.req.swp?.span) || spanHz.get());
 
+  // The harmonic measurement retunes the device to each harmonic internally; the STATUS
+  // centre/span those retunes report are not the display window, so they must not wipe the
+  // trace (it made the canvas flash blank once per harmonic sequence).
+  const harmonicMeasuring = S.measOn && S.viewMode === 'harm';
   const measKey = `${centerHz.get()}|${spanHz.get()}|${currentPoints.get()}|${currentRBW.get()}|${rbwMode.get()}|${s.window}`;
   if (measKey !== S.lastMeasKey) {
     S.setLastMeasKey(measKey);
-    const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
-    invalidateAllTraces();
-    if (hadNormalization) showNormalizeClearedHint();
+    if (!harmonicMeasuring) {
+      const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
+      invalidateAllTraces();
+      if (hadNormalization) showNormalizeClearedHint();
+    }
   }
   noteDisplayRefReport(Number(s.ref));
   if (S.displayUnit !== 'dB') setDisplayRef('mode', refLevel.get());
