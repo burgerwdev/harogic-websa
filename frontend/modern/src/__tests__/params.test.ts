@@ -165,6 +165,21 @@ describe('authoritative slots (client-owned preferences)', () => {
 		expect(p.get()).toBe(false);
 	});
 
+	it('a new choice wins over the stored value (the bug my first test missed)', () => {
+		localStorage.setItem('pref0', '0');
+		const p = createParam<boolean>('test.pref0', {
+			fallback: false, scope: 'test', authoritative: true,
+			persistKey: 'pref0', persist: 'desired',
+			parse: (r) => r === '1', serialize: (v) => (v ? '1' : '0'),
+		});
+		expect(p.get()).toBe(false); // restored
+		p.set(true);
+		// The restored value lives in `confirmed`; with confirmed-first ordering this
+		// returned false and the UI could never show the user's choice.
+		expect(p.get()).toBe(true);
+		expect(localStorage.getItem('pref0')).toBe('1');
+	});
+
 	it('is restored from storage without any backend confirmation', () => {
 		const p = createParam<boolean>('test.pref2', {
 			fallback: false, scope: 'test', authoritative: true,

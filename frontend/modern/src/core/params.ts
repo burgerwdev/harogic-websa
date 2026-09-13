@@ -126,7 +126,12 @@ export class Param<T> {
 	/** What the UI must render. */
 	get(now = Date.now()): T {
 		if (this.#opts.authoritative) {
-			return this.#confirmed ?? this.#desired ?? this.#opts.fallback;
+			// Nothing confirms an authoritative value, so the user's choice must win. The
+			// persisted value is restored into `confirmed`, and with the opposite order it
+			// won forever: the toggle wrote `desired`, the button kept rendering the stored
+			// value, and only the audio itself changed (reported as "sound plays but the
+			// button is always Off").
+			return this.#desired ?? this.#confirmed ?? this.#opts.fallback;
 		}
 		if (this.pending(now)) return this.#desired as T;
 		return this.#confirmed ?? this.#opts.fallback;

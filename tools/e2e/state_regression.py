@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 import urllib.request
 
 from playwright.sync_api import Page, sync_playwright
@@ -177,6 +176,27 @@ def main() -> int:
             "entering SDR follows the swept centre",
             abs(d["sdr"]["center"] - 225e6) < 5e6,
             f"centre {d['sdr']['center'] / 1e6:.3f} MHz",
+        )
+
+        # 5b - the audio toggle must follow the user's choice even with a stored value
+        print("5b) audio toggle with a stored preference")
+        store = page.evaluate("localStorage.getItem('web-sa-sdr-audio')")
+        page.click("#btn-sdr-audio")
+        page.wait_for_timeout(600)
+        label = page.inner_text("#btn-sdr-audio")
+        gate = page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''")
+        check(
+            "toggle turns audio on",
+            label == "On" and "enabled=true" in gate,
+            f"label={label} gate={gate} (stored value before: {store})",
+        )
+        page.click("#btn-sdr-audio")
+        page.wait_for_timeout(600)
+        check(
+            "toggle turns audio off again",
+            page.inner_text("#btn-sdr-audio") == "Off"
+            and "enabled=false" in page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''"),
+            f"label={page.inner_text('#btn-sdr-audio')}",
         )
 
         # 6 - mode round trip leaves no stuck pending state
