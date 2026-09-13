@@ -15,13 +15,12 @@ import { markerFreqHz } from '../core/markerCommon';
 import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './peaklist';
 import { updateMarkerTable } from './markerTable';
 import { updateHarmonicTable } from '../meas/harmonic';
-import { renderHarmOverlay } from '../meas/harmOverlay';
 import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
-import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
 import { setRenderer } from './redraw';
+import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 
@@ -364,13 +363,14 @@ function renderLimits(powers: Float32Array | null) {
   }
 }
 
-export function renderAll() {
-  const c = cur();
-  resetStatusBlocks();                             // status area is rebuilt every pass
-  // Waterfall container replaces the table slot in ALL modes (incl. RTA)
-  const wfc = document.getElementById('waterfall-container');
-  if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
-  if (c.viewMode === 'rta') {
+/** Drawing primitives lent to registered views (report finding E-5). */
+function viewContext() {
+  return { renderGrid, renderTraceLine, getDisplayPowers };
+}
+
+/** RTA/SDR view: the real-time trace, trigger overlay, limits and the table swaps. */
+function renderRtaView() {
+
     renderRta();
     renderTriggerLevel();                           // outside renderRta: still drawn when the
     renderTriggerOverlay();                         // canvas is empty while waiting
@@ -401,15 +401,18 @@ export function renderAll() {
     }
     return;
   }
-  if (c.viewMode === 'pnm') { renderPnm(); updatePnmTable(); return; }
-  if (c.viewMode === 'harm') {
-    renderGrid();
-    c.traces.forEach(t => renderTraceLine(t));
-    const powers2 = getDisplayPowers();
-    if (powers2 && S.freqArray) renderHarmOverlay(powers2);
-    updateHarmonicTable();
-    return;
-  }
+
+export function renderAll() {
+  const c = cur();
+  resetStatusBlocks();                             // status area is rebuilt every pass
+  // Waterfall container replaces the table slot in ALL modes (incl. RTA)
+  const wfc = document.getElementById('waterfall-container');
+  if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
+
+  // Measurement views register themselves (report finding E-5); the swept path below is
+  // the default when nothing is registered for the active mode.
+  const view = getViewRenderer(c.viewMode);
+  if (view) { view.render(viewContext()); return; }
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
@@ -464,6 +467,8 @@ export function renderAll() {
 // The redraw seam: everyone else asks for a repaint instead of importing this hub
 // (breaks the render/spectrum.ts cycles, docs/*/ARCH_REVIEW.md finding P1-4).
 setRenderer(renderAll);
+// The real-time view is part of the hub itself, so it registers locally.
+registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
 
 
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn

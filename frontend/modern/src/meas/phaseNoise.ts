@@ -1,6 +1,7 @@
 // Phase noise (PNM) measurement: render/table/result handling
 import * as S from '../core/store';
 import { fmtHzUnit, formatFreqHz, fmtPnmFreq } from '../core/fmt';
+import { registerViewRenderer } from '../render/registry';
 import { requestRender } from '../render/redraw';
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measureUi';
@@ -258,3 +259,9 @@ function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: 
   ctx2.font = '12px monospace';
   ctx2.fillText(t('please_wait'), cx, by + 26);
 }
+
+// Register this view with the renderer hub (report finding E-5).
+registerViewRenderer({
+  mode: 'pnm',
+  render: () => { renderPnm(); updatePnmTable(); },
+});

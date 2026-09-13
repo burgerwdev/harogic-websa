@@ -2,6 +2,8 @@
 import * as S from '../core/store';
 import { formatFreqHz } from '../core/fmt';
 import { t } from '../core/i18n';
+import { renderHarmOverlay } from './harmOverlay';
+import { registerViewRenderer } from '../render/registry';
 import { requestRender } from '../render/redraw';
 
 export function autoHarmSpan() {
@@ -110,3 +112,16 @@ export function updateHarmonicTable() {
 
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measureUi';
+
+// Register this view with the renderer hub (report finding E-5). The hub passes the swept
+// drawing primitives in, so this module never imports render/spectrum.ts back.
+registerViewRenderer({
+  mode: 'harm',
+  render: (ctx) => {
+    ctx.renderGrid();
+    S.traces.forEach(t => ctx.renderTraceLine(t));
+    const powers = ctx.getDisplayPowers();
+    if (powers && S.freqArray) renderHarmOverlay(powers);
+    updateHarmonicTable();
+  },
+});
