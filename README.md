@@ -122,9 +122,10 @@ harogic-websa/
 |---|---|
 | `./run.sh` | Start supervisor + WebSA worker; restart after native SDK crash/fatal timeout |
 | `./stop.sh` | Stop service |
-| `./clean.sh` | Clean caches / logs / build artifacts |
+| `./clean.sh` | Clean caches / logs / build artifacts (`--keep-deps` keeps `node_modules`) |
 | `./test.sh` | Backend pytest + Ruff + frontend Vitest; any failed stage returns non-zero |
 | `make run/stop/clean/build/test` | Same via Makefile |
+| `make dev` | Stop, clean (deps kept), rebuild the frontend, start with `WEBSA_TRACE=1` |
 
 ## Tests
 

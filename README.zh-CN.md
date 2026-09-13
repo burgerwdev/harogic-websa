@@ -118,9 +118,10 @@ harogic-websa/
 |---|---|
 | `./run.sh` | 启动 supervisor + WebSA worker；SDK 崩溃/致命超时自动退避重启 |
 | `./stop.sh` | 停止服务 |
-| `./clean.sh` | 清理缓存/日志/构建产物 |
+| `./clean.sh` | 清理缓存/日志/构建产物（`--keep-deps` 保留 `node_modules`） |
 | `./test.sh` | 后端 pytest + Ruff + 前端 Vitest；任一失败返回非零状态 |
 | `make run/stop/clean/build/test` | 同 Makefile 入口 |
+| `make dev` | 停止、清理（保留依赖）、重建前端，并以 `WEBSA_TRACE=1` 启动 |
 
 ## 测试
 
