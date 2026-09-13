@@ -15,7 +15,7 @@ import pytest
 
 from web_sa.config import DeviceCapabilities
 from web_sa.measurements.harmonic import HarmonicSession
-from web_sa.measurements.phase_noise import pnm_payload
+from web_sa.measurements.results import pnm_payload
 
 
 class StubDevice:

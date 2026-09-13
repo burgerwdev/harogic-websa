@@ -9,22 +9,7 @@ from __future__ import annotations
 
 from ..hardware import sdk_bindings as sb
 from .base import MeasurementSession
-
-
-def pnm_payload(*, carrier_freq, carrier_power, offset, pn, ref, traceavg, done, progress):
-    """Assemble one phase-noise message (pure: the DLL-facing step only supplies values)."""
-    payload = {
-        'cmd': 'PNM',
-        'carrier_freq': float(carrier_freq),
-        'carrier_power': float(carrier_power),
-        'offset': [float(x) for x in offset],
-        'pn': [float(x) for x in pn],
-        'ref': float(ref),
-        'traceavg': float(traceavg),
-        'done': bool(done),
-        'progress': int(progress),
-    }
-    return payload
+from .results import pnm_payload
 
 
 class PhaseNoiseSession(MeasurementSession):
