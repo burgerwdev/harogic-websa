@@ -401,6 +401,11 @@ Acceptance: `madge --circular` = 0; vitest covers the new parser/state tests; th
 
 Mock backend + Playwright in CI (P0-2 step 3); split `DeviceState` per mode (P1-8 step 2); doc structure check (P2-5).
 
+> **Relation to section 7**: from the "easy to extend later" angle, five seams are still missing (E-1 parameter
+> schema, E-2 capability table, E-3 session Protocol instead of mode branches, E-4 frame codec table,
+> E-5 frontend registration points). They overlap Phase 2/3, so **fold them in** rather than running another
+> round: E-1/E-2 with the command registry, E-3 with the publisher de-branching, E-4/E-5 in Phase 3.
+
 ---
 
 ## 5. Quick wins (half a day each, very low risk)
@@ -431,6 +436,113 @@ Mock backend + Playwright in CI (P0-2 step 3); split `DeviceState` per mode (P1-
    design is a **deliberate** engineering trade-off, not a defect.
 5. **Do not unify naming/directories for tidiness alone.** Prioritise problems with concrete costs (cycles, god
    modules, boundary violations); leave pure style to the linter.
+
+---
+
+## 7. Modularization & feature-extensibility supplement
+
+Section 3 asked "what is wrong today"; this section changes the yardstick to **how large the blast radius of one
+new feature is**. That is the real modularization metric — directory layering is only step one, the
+**extension seams** are what matters.
+
+### 7.1 Measuring modularization by blast radius (measured in history)
+
+| What was added | What actually changed | Files | Note |
+|---|---|---|---|
+| One new parameter (SWP detector `SET_DETECTOR`) | `web/ws.py` (command set + validation + dispatch), `hardware/device.py` (state + profile application), `web/http_api.py` (STATUS field), `frontend/index.html` (control), `core/i18n.ts` (×2), `core/ws.ts`, `ui/controls.ts` | **8** (+1 test) | Commit `12b5b72`: 52 changed lines spread over 8 files |
+| One new hardware mode (SDR) | `demod/` (5 files), `sdk_bindings`, `device.py`, `measurements/{sdr,__init__}`, `web/{ws,http_api,publisher,client_stream}`, frontend `{ws,controls,audio}` = **16 product files**, plus 15 probe/doc files | **31** (1837 lines) | Commit `ce92d7a` |
+| One new frame type | encoder + the retention branch in `web/client_stream.py` + the parse branch in `core/ws.ts` + tests | **4** | No codec registry |
+| One new device model (e.g. SAN-200) | `config.py` (table), `ws.py` (many hard-coded limits), `rta.py` (`FULL_SPAN_HZ`/`DISPLAY_POINTS`), `http_api.py` (`rta_defaults`/`points`), frontend fallbacks | **5+** | The capability table is not the single source of limits |
+
+Conclusion: the blast radius grows **linearly** with the number of existing features, because every extension
+axis requires editing a central `if/elif`, a central dict, the frontend dispatch, two i18n dictionaries and
+`index.html`. The five missing seams are listed below, ordered by payoff.
+
+### 7.2 The five missing seams
+
+**E-1 (highest payoff) there is no single schema for parameters/commands.**
+Every parameter is described **four times**: (1) the `DeviceState` field and its default; (2) the range
+literals in `_validate_command`; (3) the `build_status` key names and `req/swp/rta/sdr` nesting
+(`points: 3328` and `rta_defaults` are hard-coded); (4) the frontend `params.ts` slot + `index.html` control
++ i18n. The eight files touched by `SET_DETECTOR` are the direct consequence.
+
+Proposal: declare `ParamSpec(name, type, min, max, unit, default, modes, scope, group, render)` once and derive
+(a) command validation, (b) the STATUS shape and `/api/schema`, (c) frontend controls and slots
+**generated** from it. Payoff: a normal parameter drops from 8 files to 1–2, and the frontend no longer
+hand-writes a control and an i18n entry per parameter. Boundary: let the schema cover numbers/enums/toggles
+only; graphics and context-dependent buttons stay hand-written — do not over-generate.
+
+**E-2 device capabilities are not the single source of limits.**
+Validation in `ws.py` hard-codes `rbw ≤ 10e6`, `points ≤ 4000`, `rta span ≤ 50.78125e6`, `ifbw ≤ 500000`,
+`decimate ≤ 2048`, `atten ≤ 33`, `pnm 1..9e6`; `50.78125e6` is written in four files and `3328` in both
+`rta.py` and `http_api.py`.
+
+Proposal: converge the capability set into `DeviceCapabilities` (`rbw_max`/`points_max`/`rta_span_max`/
+`ifbw_max`/`decimate_max`/`demod_modes`/`features{pnm,rta,sdr,trigger}`…), with conservative defaults for
+unknown models, and replace the `pnm_supported` special case with `supports('pnm')`. Payoff: supporting new
+firmware/models becomes one table row; the frontend can disable controls from it too (today it has hard-coded
+fallbacks plus greying logic).
+
+**E-3 the session interface is inconsistent, so mode policy leaks into the scheduler.**
+`std` has no `reconfigure()` (it goes through `dev.configure_swp()`), and neither do `harmonic`/`pnm` — only
+`rta`/`sdr` do (`ws.py:338-343`). Meanwhile `publisher.py` uses `mode in ('rta','sdr')` for the timeout
+(`:19`), `mode == 'std'` for FREQ de-duplication (`:71`) and `mode == 'sdr'` for the 0/2 ms pacing (`:99`);
+`ws.py` has nine `mode ==`/`sess.name ==` branches.
+
+Proposal: express mode policy as session attributes instead of scheduler branches:
+`acquisition_timeout()`, `pacing() -> float`, `dedupe_policy()`, `reconfigure()`, `reset_defaults()`,
+`is_ready()`, `status_view()`, `health()`, `param_specs()` (together with E-1). Payoff: a new mode no longer
+touches `publisher`/`ws`/`build_status`/`client_stream`, and the private `_ready` handshake (finding P1-9) goes
+away. Declare the interface as a `typing.Protocol` and assert structurally that every session satisfies it.
+
+**E-4 frame types have no codec/retention table.**
+`client_stream.publish_bytes` hard-codes retention semantics with `if magic == b'FREQ' / elif AUDF / else
+latest-wins` (`:63-79`), so a new frame type means editing `client_stream`, `ws.ts`, the encoder and both sets
+of tests. Proposal: `FRAME_POLICY = {FREQ: retain, AUDF: fifo(20), POWR: latest, RTAF: latest}` with unknown
+magics defaulting to latest; mirror it on the TS side as one decode table plus a failure counter (together
+with the golden tests from finding P0-3).
+
+**E-5 the frontend has no registration points.**
+`renderAll()` hand-dispatches on `viewMode` with `if/elif` and manually shows/hides four table elements
+(`spectrum.ts:383-432`); a new measurement panel must edit `renderAll`, the tab list in `ui/measure.ts`, both
+i18n dictionaries and `index.html`. Proposal: `registerRenderer(viewMode, {render, tables, statusBlocks})`
+and `registerMeasurementTab(...)`; split i18n into `namespace.*` files merged at startup, with the parity test
+checking per namespace. Payoff: a new measurement module is one new file plus one registration line, and
+`renderAll` stops growing.
+
+### 7.3 Order of work and dependencies
+
+1. **The command registry (findings P1-1/P1-2) is the prerequisite for E-1**: centralise
+   validation+dispatch+mode constraints first, then introduce the schema.
+2. **E-2 (capability table) can run in parallel and must come early** — otherwise the registry simply moves the
+   hard-coded limits into a new home.
+3. **E-3 (session Protocol) lands together with removing the publisher's mode branches**, in one pass, to avoid
+   two regression rounds.
+4. **E-4/E-5 belong to Phase 3** (frontend decoupling) and share the "registry + baseline counters" guard rails.
+
+**Fake seams to avoid**: do not build a generic plugin system / dynamic loading (`importlib` scanning a
+`plugins/` directory and so on). The only extender here is the author, so the payoff is small and the debugging
+cost high. Do not try to generate *all* of the UI from the schema either.
+
+### 7.4 Extensibility acceptance checklist (definition of done for a new feature)
+
+- [ ] A new parameter does **not** touch `_dispatch`; it adds only a registry/spec entry
+- [ ] Its bounds come from the spec/capability table (test asserts `ws.py` gained no limit literal)
+- [ ] A new mode does **not** touch the `mode == ...` branches in `publisher.py`/`ws.py`
+- [ ] A new frame type adds one codec table row plus one parse site
+- [ ] A new panel adds one registration plus one i18n namespace file
+- [ ] `madge --circular` = 0, i18n parity passes, tsc adds no new `any`
+- [ ] The new panel's required ids are in the startup self-check list (finding P1-5)
+
+### 7.5 Quantified guard rails (recommended for CI, against re-drift)
+
+| Guard rail | Form | Baseline (today) |
+|---|---|---|
+| Mode branches do not grow | Assert the `mode ==`/`sess.name ==` occurrence count stays at baseline | 13 (`ws.py` 9 + `publisher.py` 3 + `device.py` 1) |
+| The command layer stops bloating | Assert length caps on `_dispatch` (313) and `_validate_command` (135) | 350 / 150 |
+| Limits do not enter the validation layer | Assert the number of `maximum=<literal>` in `ws.py` matches the capability table | See the E-2 list |
+| Circular dependencies do not grow | `madge --circular` output count | 14 |
+| i18n does not drift | en/zh key sets equal + placeholders identical | 402 / 325 (77 missing) |
 
 ---
 

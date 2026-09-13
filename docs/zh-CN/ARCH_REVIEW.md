@@ -405,6 +405,11 @@ e2e（真机）仍全绿。
 假后端 + Playwright 进 CI（P0-2 步骤 3）；`DeviceState` 分模式拆分（P1-8 第二步）；
 文档结构一致性检查（P2-5）。
 
+> **与第 7 节的关系**：从“方便后续扩展”的角度，还缺五个扩展点（E-1 参数 schema、E-2 能力表、
+> E-3 会话 Protocol 去模式分支、E-4 帧 codec 表、E-5 前端注册点）。它们与 Phase 2/3 重叠，
+> 建议**合并执行**而不是另开一轮：E-1/E-2 随命令 registry 一起做，E-3 随 publisher 去分支一起做，
+> E-4/E-5 归入 Phase 3。
+
 ---
 
 ## 5. 快速收益清单（半天内可完成，风险极低）
@@ -433,6 +438,100 @@ e2e（真机）仍全绿。
    工程取舍，不应视为缺陷。
 5. **不为"整齐"统一命名/目录**。循环依赖、上帝模块、越界访问这些**有具体代价**的
    问题优先；纯风格问题交给 lint。
+
+---
+
+## 7. 模块化与功能扩展性补充
+
+前面各节按“当前代码有什么问题”展开；本节换一个尺度：**新增一个功能的改动面有多大**。
+这才是模块化真正的验收指标——目录分层只是第一步，**扩展点（seam）**才是关键。
+
+### 7.1 用“改动面”度量模块化（历史实测）
+
+| 新增的东西 | 实际改动 | 文件数 | 说明 |
+|---|---|---|---|
+| 一个新参数（SWP 检波器 `SET_DETECTOR`） | `web/ws.py`（命令集 + 校验 + 分发）、`hardware/device.py`（状态+profile 应用）、`web/http_api.py`（STATUS 字段）、`frontend/index.html`（控件）、`core/i18n.ts`（2 处）`core/ws.ts`、`ui/controls.ts` | **8**（+1 测试） | 提交 `12b5b72`：52 行改动铺在 8 个文件 |
+| 一个新硬件模式（SDR） | `demod/`（5 文件）、`sdk_bindings`、`device.py`、`measurements/{sdr,__init__}`、`web/{ws,http_api,publisher,client_stream}`、前端 `{ws,controls,audio}` = **16 个产品文件**，另加 15 个探针/文档文件 | **31**（共 1837 行） | 提交 `ce92d7a` |
+| 一个新帧类型 | 编码器 + `web/client_stream.py` 的保留策略分支 + `core/ws.ts` 解析分支 + 测试 | **4** | 无 codec 注册表 |
+| 一个新设备型号（如 SAN-200） | `config.py`（表）、`ws.py`（大量硬编码限值）、`rta.py`（`FULL_SPAN_HZ`/`DISPLAY_POINTS`）、`http_api.py`（`rta_defaults`/`points`）、前端 fallback | **5+** | 能力表不是限值唯一来源 |
+
+结论：改动面随既有功能数量**线性增长**，因为每个扩展轴都需要修改中心 `if/elif`、中心 dict、前端分发、
+两本 i18n 字典和 `index.html`。下面五个扩展点按收益排序。
+
+### 7.2 缺失的五个扩展点
+
+**E-1（最高收益）参数/命令没有单一 schema。**
+同一个参数存在 **4 份独立描述**：① `DeviceState` 字段与默认值；② `_validate_command` 里的范围字面量；
+③ `build_status` 的键名与 `req/swp/rta/sdr` 嵌套（`points: 3328`、`rta_defaults` 都是硬编码）；
+④ 前端 `params.ts` 槽位 + `index.html` 控件 + i18n。`SET_DETECTOR` 改 8 个文件就是这份清单的直接后果。
+
+建议：声明一次 `ParamSpec(name, type, min, max, unit, default, modes, scope, group, render)`，
+由它派生：(a) 命令校验；(b) STATUS 结构与 `/api/schema`；(c) 前端据此**自动生成**数值/枚举/开关控件与槽位。
+收益：普通参数的改动面从 8 文件降到 1–2；前端不再需要为每个参数手写控件与 i18n。
+边界：只让 schema 覆盖数值/枚举/开关；图形、上下文相关按钮仍需手写，不要过度生成。
+
+**E-2 设备能力不是限值的唯一来源。**
+`ws.py` 的校验里硬编码了 `rbw ≤ 10e6`、`points ≤ 4000`、`rta span ≤ 50.78125e6`、`ifbw ≤ 500000`、
+`decimate ≤ 2048`、`atten ≤ 33`、`pnm 1..9e6` 等；`50.78125e6` 在 4 个文件各写一份，
+`3328` 在 `rta.py` 与 `http_api.py` 各写一份。
+
+建议：能力集收敛到 `DeviceCapabilities`（`rbw_max`/`points_max`/`rta_span_max`/`ifbw_max`/`decimate_max`/
+`demod_modes`/`features{pnm,rta,sdr,trigger}`…），未知型号给保守默认；用 `supports('pnm')` 取代 `pnm_supported` 特例。
+收益：支持新固件/新型号 = 改一张表；前端也能据此禁用控件（现在是硬编码 fallback + 灰显）。
+
+**E-3 会话接口不一致，模式策略外泄到调度层。**
+`std` 没有 `reconfigure()`（走 `dev.configure_swp()`），`harmonic`/`pnm` 也没有（只有 `rta`/`sdr` 有，见 `ws.py:338-343`）；
+而 `publisher.py` 里 `mode in ('rta','sdr')` 决定超时（`:19`）、`mode == 'std'` 决定 FREQ 去重（`:71`）、
+`mode == 'sdr'` 决定 0/2 ms 节流（`:99`）；`ws.py` 有 8 处 `sess.name == 'rta'|'sdr'` 分支。
+
+建议：把模式策略变成会话的属性，而不是调度层的分支：
+`acquisition_timeout()`、`pacing() -> float`、`dedupe_policy()`、`reconfigure()`、`reset_defaults()`、
+`is_ready()`、`status_view()`、`health()`、`param_specs()`（配合 E-1）。
+收益：新增模式不再改 `publisher`/`ws`/`build_status`/`client_stream`；顺带修掉 `_ready` 私有握手（正文 P1-9）。
+用 `typing.Protocol` 声明接口，测试用例据静态结构断言每个会话都满足。
+
+**E-4 帧类型没有 codec/保留策略表。**
+`client_stream.publish_bytes` 用 `if magic == b'FREQ' / elif AUDF / else latest-wins` 写死了保留语义（`:63-79`）；
+新增帧型必须同时改 `client_stream`、`ws.ts`、编码器与两边测试。
+建议：`FRAME_POLICY = {FREQ: retain, AUDF: fifo(20), POWR: latest, RTAF: latest}`，
+未知 magic 默认 latest；TS 侧同样用一张 decode 表 + 失败计数（配合正文 P0-3 的 golden 测试）。
+
+**E-5 前端没有注册点。**
+`renderAll()` 用 `viewMode` 的 `if/elif` 手动调用各模块并手工开关 4 张表的 DOM（`spectrum.ts:383-432`）；
+新增测量面板要同步改 `renderAll`、`ui/measure.ts` 的 tab、两本 i18n 字典与 `index.html`。
+建议：`registerRenderer(viewMode, {render, tables, statusBlocks})` 与
+`registerMeasurementTab(...)`；i18n 按 `namespace.*` 拆文件并在启动时合并，parity 测试按 namespace 检查。
+收益：新增测量模块 = 新增一个文件 + 注册一行，`renderAll` 不再增长。
+
+### 7.3 落地顺序与相互关系
+
+1. **命令 registry（正文 P1-1/P1-2）是 E-1 的前置**：先把“校验+分发+模式约束”集中，再谈 schema。
+2. **E-2（能力表）可与命令 registry 并行**，且必须先做——否则 registry 会把硬编码限值搬进新家。
+3. **E-3（会话 Protocol）与 publisher 去 mode 分支同步做**，一次改完避免两轮回归。
+4. **E-4/E-5 放在 Phase 3**（前端解耦）一起，共享“注册表 + 基线计数”的护栏。
+
+**明确的“假扩展点”（不建议做）**：不做通用插件系统/动态加载（`importlib` 扫描 `plugins/` 之类）。
+本项目的扩展者就是作者本人，收益低而调试成本高；也不要试图由 schema 自动生成**全部**界面。
+
+### 7.4 扩展性验收清单（新增功能的完成定义）
+
+- [ ] 新增参数**不改** `_dispatch`，只加 registry/spec 条目
+- [ ] 新增参数的上下限来自 spec/能力表（测试断言 `ws.py` 未新增限值字面量）
+- [ ] 新增模式**不改** `publisher.py`/`ws.py` 的 `mode == ...` 分支
+- [ ] 新增帧型只加一张 codec 表条目 + 一处解析
+- [ ] 新增面板只加一个注册项 + 一个 i18n namespace 文件
+- [ ] `madge --circular` = 0，i18n parity 通过，`tsc` 未新增 `any`
+- [ ] 新面板的必需 id 已进入启动自检清单（正文 P1-5）
+
+### 7.5 可量化的护栏（建议进 CI，防回流）
+
+| 护栏 | 形式 | 基线（当前） |
+|---|---|---|
+| 模式分支不增加 | 断言 `ws.py` 中 `mode ==`/`sess.name ==` 出现次数不超基线 | 13 处（`ws.py` 9 + `publisher.py` 3 + `device.py` 1） |
+| 命令层不再綗胀 | 断言 `_dispatch`（313 行）与 `_validate_command`（135 行）长度上限 | 350 / 150 |
+| 限值不进校验层 | 断言 `ws.py` 中 `maximum=<字面量>` 数与能力表一致 | 见 E-2 清单 |
+| 循环依赖不增加 | `madge --circular` 输出数 | 14 |
+| i18n 不漂移 | en/zh 键集合相等 + 占位符一致 | 402 / 325（缺 77） |
 
 ---
 
