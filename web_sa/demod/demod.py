@@ -28,7 +28,8 @@ class AnalogDemod:
         self.configure(fs=48000.0, mode='am', if_bw=6000.0)
 
     # ---- configuration ----
-    def configure(self, fs: float, mode: str, if_bw: float, pitch: float = 700.0) -> None:
+    def configure(self, fs: float, mode: str, if_bw: float, pitch: float = 700.0,
+                  deemph_us: float | None = None) -> None:
         mode = mode if mode in ANALOG_MODES else 'am'
         fs = float(fs)
         if_bw = float(max(50.0, min(if_bw, fs * 0.45)))
@@ -68,14 +69,17 @@ class AnalogDemod:
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
-        # 50 us de-emphasis, run at the AUDIO rate after the resampler. Same continuous
-        # response, ~10x less work than a DDC-rate IIR (and a short FIR avoids the
-        # per-sample Python loop that used to dominate the demod cost).
+        # De-emphasis (the complement of the transmitter's pre-emphasis), run at the AUDIO
+        # rate after the resampler. `None` keeps the regional default per mode - 50 us for
+        # broadcast WFM (China/Europe; the Americas use 75 us) and none for AM/SSB/CW, where
+        # it is meaningless. 0 disables it; an explicit 50/75/300 us overrides.
+        tau_us = (50.0 if mode == 'wfm' else 0.0) if deemph_us is None else float(deemph_us)
+        self.deemph_us = tau_us
         self._deemph = None
-        if mode == 'wfm':
-            alpha = float(np.exp(-1.0 / (self.audio_rate * 50e-6)))
+        if tau_us > 0.0:
+            alpha = float(np.exp(-1.0 / (self.audio_rate * tau_us * 1e-6)))
             if 0.0 < alpha < 1.0:
-                span = int(np.clip(np.ceil(-np.log(1e-4) / -np.log(alpha)), 1, 1024))
+                span = int(np.clip(np.ceil(-np.log(1e-4) / -np.log(alpha)), 1, 2048))
                 taps = (1.0 - alpha) * alpha ** np.arange(span + 1, dtype=np.float64)
                 taps /= taps.sum()
                 self._deemph = StreamFilter(taps.astype(np.float32))

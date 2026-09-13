@@ -194,6 +194,7 @@ def _validate_command(dev, cmd, data):
         _number(data, 'listen', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz, required=True)
     elif cmd == 'SET_SDR_DEMOD':
         _choice(data, 'mode', ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'))
+        _number(data, 'deemph_us', minimum=-1.0, maximum=1000.0)
         _number(data, 'ifbw', minimum=100.0, maximum=500000.0)
         _number(data, 'squelch', minimum=-150.0, maximum=0.0)
         _number(data, 'volume', minimum=0.0, maximum=2.0)
@@ -547,7 +548,8 @@ async def _dispatch(dev, cmd, data) -> bool:
             raise CommandError('SET_SDR_DEMOD requires SDR mode', 'sdr_mode_required')
         await _hw_call(sess.set_demod, mode=data.get('mode'), if_bw=data.get('ifbw'),
                        squelch=data.get('squelch'), volume=data.get('volume'),
-                       agc=data.get('agc'), pitch=data.get('pitch'))
+                       agc=data.get('agc'), pitch=data.get('pitch'),
+                       deemph_us=data.get('deemph_us'))
         return True
     if cmd == 'SET_RTA':
         sess = dev.session

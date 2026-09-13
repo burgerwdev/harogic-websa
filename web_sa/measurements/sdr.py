@@ -524,7 +524,9 @@ class SdrSession(MeasurementSession):
         self._applied_listen = float(s.sdr_listen_hz)
         _t('chain: demod configure fs_out=%s mode=%s ifbw=%s',
            self._ddc.fs_out, s.sdr_demod, if_bw)
-        self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
+        _deemph = None if float(getattr(s, 'sdr_deemph_us', -1.0)) < 0 else float(s.sdr_deemph_us)
+        self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch,
+                              deemph_us=_deemph)
         _t('chain: demod configure ok')
         self._begin_audio_settle()
         s.sdr_actual.update(
@@ -534,6 +536,7 @@ class SdrSession(MeasurementSession):
             ddc_delay=self._ddc.delay,
             ddc_batch=self._ddc_batch,
             audio_rate=self.AUDIO_RATE,
+            deemph_us=self._demod.deemph_us,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
         s.sdr_actual['start'] = float(self._iqs_center_hz) - half
@@ -648,11 +651,12 @@ class SdrSession(MeasurementSession):
                               min(s.sdr_center_hz + bandwidth / 2.0, float(listen_hz)))
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None,
-                  agc=None, pitch=None):
+                  agc=None, pitch=None, deemph_us=None):
         s = self.dev.state
         old_demod = s.sdr_demod
         old_if_bw = s.sdr_if_bw
         old_pitch = s.sdr_pitch
+        old_deemph = float(getattr(s, 'sdr_deemph_us', -1.0))
         reconfig = False
         if mode is not None and mode in ANALOG_MODES and mode != s.sdr_demod:
             s.sdr_demod = mode
@@ -662,6 +666,9 @@ class SdrSession(MeasurementSession):
             reconfig = True
         if pitch is not None and abs(float(pitch) - s.sdr_pitch) > 0.5:
             s.sdr_pitch = float(pitch)
+            reconfig = True
+        if deemph_us is not None and abs(float(deemph_us) - old_deemph) > 1e-6:
+            s.sdr_deemph_us = float(deemph_us)
             reconfig = True
         # Volume / squelch / AGC are applied live in step(); they must NOT reconfigure the
         # demod (that reset the filters and produced a pop/gap on every slider move).
@@ -679,6 +686,7 @@ class SdrSession(MeasurementSession):
                 s.sdr_demod = old_demod
                 s.sdr_if_bw = old_if_bw
                 s.sdr_pitch = old_pitch
+                s.sdr_deemph_us = old_deemph
                 raise
 
     def reconfigure(self):

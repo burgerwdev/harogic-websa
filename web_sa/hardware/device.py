@@ -80,6 +80,9 @@ class DeviceState:
     sdr_volume: float = 0.8
     sdr_agc: bool = True
     sdr_pitch: float = 700.0
+    # FM de-emphasis time constant in microseconds. -1 = auto (50 us for WFM, none
+    # elsewhere); 0 = off; 50/75/300 = explicit (regional pre-emphasis complement).
+    sdr_deemph_us: float = -1.0
     sdr_level_dbfs: float = -120.0
     sdr_adm: dict = field(default_factory=dict)
     # RTA acquisition trigger (applies to RTA sessions; SWP has no level trigger)
@@ -302,6 +305,7 @@ class HarogicDevice:
         s.sdr_volume = d.sdr_volume
         s.sdr_agc = d.sdr_agc
         s.sdr_pitch = d.sdr_pitch
+        s.sdr_deemph_us = d.sdr_deemph_us
         s.sdr_level_dbfs = d.sdr_level_dbfs
         s.sdr_adm = {}
         s.sdr_actual = {}

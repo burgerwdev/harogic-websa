@@ -218,6 +218,14 @@
                 <button class="btn" data-sdr-ifbw="50000">50k</button>
                 <button class="btn" data-sdr-ifbw="180000">180k</button>
               </div></div>
+            <div class="param-row"><label data-i18n="deemph">De-emph</label>
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-deemph-group">
+                <button class="btn active" data-sdr-deemph="-1">Auto</button>
+                <button class="btn" data-sdr-deemph="0" data-i18n="off">Off</button>
+                <button class="btn" data-sdr-deemph="50">50µs</button>
+                <button class="btn" data-sdr-deemph="75">75µs</button>
+                <button class="btn" data-sdr-deemph="300">300µs</button>
+              </div></div>
             <div class="param-row"><label data-i18n="volume">Volume</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
               <span class="cur-val" id="cur-sdr-level"></span>
@@ -232,6 +240,11 @@
                 <option value="am" selected>AM</option><option value="fm">FM</option>
                 <option value="nfm">NFM</option><option value="wfm">WFM</option>
                 <option value="usb">USB</option><option value="lsb">LSB</option><option value="cw">CW</option>
+              </select>
+              <select id="select-sdr-deemph">
+                <option value="-1" selected>-1</option><option value="0">0</option>
+                <option value="50">50</option><option value="75">75</option>
+                <option value="300">300</option>
               </select>
               <select id="select-sdr-ifbw">
                 <option value="500">500</option><option value="2400">2400</option>

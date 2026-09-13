@@ -710,20 +710,25 @@ export function applySdrTune() {
 
 let lastSdrDemodMode = '';
 let lastSdrDemodIfbw = -1;
+let lastSdrDeemph = -2;
 
 export function applySdrDemod() {
   const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
   const ifbw = sdrNumber('select-sdr-ifbw', 6000);
+  const deemph = sdrNumber('select-sdr-deemph', -1);
   const volume = sdrNumber('input-sdr-volume', 0.8);
   const squelch = sdrNumber('input-sdr-squelch', -110);
   // Only a demod-mode / IF-bandwidth change rebuilds the chain and needs the reset
   // handshake. Volume/squelch/AGC are applied live, so muting them would just add a gap.
-  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5) {
+  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5
+      || deemph !== lastSdrDeemph) {
     prepareSdrAudioTransition();
   }
   lastSdrDemodMode = mode;
   lastSdrDemodIfbw = ifbw;
-  send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn() });
+  lastSdrDeemph = deemph;
+  send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn(),
+         deemph_us: deemph });
 }
 
 export function toggleSdrAgc(el: HTMLElement) {
@@ -787,6 +792,11 @@ function syncSdrButtons() {
   const ibw = Math.round(S.sdrPassbandHz || 0);
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrIfbw) === ibw);
+  });
+  const dsel = document.getElementById('select-sdr-deemph') as HTMLSelectElement | null;
+  const dv = dsel ? Number(dsel.value) : -1;
+  document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
+    el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrDeemph) === dv);
   });
 }
 
@@ -1008,6 +1018,7 @@ export function presetAll() {
   resetSdrAutoRef();
   lastSdrDemodMode = '';
   lastSdrDemodIfbw = -1;
+  lastSdrDeemph = -2;
   refPending = null;
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); renderAll();
@@ -1221,6 +1232,13 @@ export function bindActions() {
     el.addEventListener('click', () => {
       const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
       if (sel) sel.value = (el as HTMLElement).dataset.sdrIfbw || '6000';
+      applySdrDemod();
+    });
+  });
+  document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const sel = document.getElementById('select-sdr-deemph') as HTMLSelectElement | null;
+      if (sel) sel.value = (el as HTMLElement).dataset.sdrDeemph || '-1';
       applySdrDemod();
     });
   });
