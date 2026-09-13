@@ -159,12 +159,12 @@ interval can be defined in time. A swept trace dwells microseconds per point and
 own, leaving exactly one decidable quantity: whether a threshold crossing happened between two
 consecutive sweeps. The panel therefore greys those rows out in the swept mode; they are RTA-only.
 
-## Why does the trigger appear to stop working after pressing Auto Ref?
+## Does Auto Ref release an armed RTA trigger?
 
-That is a known issue: Auto Ref releases an armed RTA trigger (the button returns to `Capture` and the
-threshold line disappears); the cause is not identified yet. Changing Ref **manually** is unaffected -
-even when the threshold is pushed outside the visible range the line is pinned to the edge (with an
-arrow). Change the reference manually while armed, or press `Capture` again afterwards.
+It used to: arming a level trigger and then pressing Auto Ref returned the button to `Capture` and
+dropped the threshold line. That no longer reproduces (verified: the button stays on `Stop` and the
+trigger source stays `level` across Auto Ref). Changing Ref **manually** was never affected - even when
+the threshold is pushed outside the visible range the line is pinned to the edge (with an arrow).
 
 
 ## Why does the n-dB field behave differently in the keypad?
