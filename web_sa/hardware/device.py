@@ -383,7 +383,7 @@ class HarogicDevice:
     def _profile(self):
         T = sb
         s = self.state
-        p = T.SWP_Profile_TypeDef()
+        p = sb.SWP_Profile_TypeDef()
         with self._hw:
             sb.dll.SWP_ProfileDeInit(sb.pointer(self.dev), sb.pointer(p))
         start = max(s.caps.freq_min_hz, s.center_hz - s.span_hz / 2)
@@ -554,8 +554,8 @@ class HarogicDevice:
     def _detect_docxo(self) -> None:
         with self._hw:
             try:
-                prof = T.SWP_Profile_TypeDef()
-                po = T.SWP_Profile_TypeDef()
+                prof = sb.SWP_Profile_TypeDef()
+                po = sb.SWP_Profile_TypeDef()
                 ti = T.SWP_TraceInfo_TypeDef()
                 sb.dll.SWP_ProfileDeInit(sb.pointer(self.dev), sb.pointer(prof))
                 prof.CenterFreq_Hz = self.state.center_hz

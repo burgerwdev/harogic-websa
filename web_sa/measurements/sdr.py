@@ -223,8 +223,8 @@ class SdrSession(MeasurementSession):
         permanently wedges the stream; an SWP_Configuration switches the device's mode and
         lets IQS be configured again (bench-verified: this makes reconfiguration safe)."""
         T = sb
-        p = T.SWP_Profile_TypeDef()
-        o = T.SWP_Profile_TypeDef()
+        p = sb.SWP_Profile_TypeDef()
+        o = sb.SWP_Profile_TypeDef()
         ti = T.SWP_TraceInfo_TypeDef()
         self._sdk_call(
             lambda: T.dll.SWP_ProfileDeInit(T.pointer(self.dev.dev), T.pointer(p)),

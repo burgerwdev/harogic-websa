@@ -268,8 +268,58 @@ dll.Device_CalibrateRefClock.restype = c_int
 
 PNM_SUPPORTED = _bind_pnm()
 
+
+def _insert_ifagc(base, name):
+    """Rebuild a profile struct with the ``EnableIFAGC`` byte the vendor wrapper omits.
+
+    htra_api.py is stale for the SWP/RTA/DET profiles: the C header has
+
+        int8_t  Atten;
+        uint8_t EnableIFAGC;   <-- missing from the wrapper
+        <enum>  <next>;       <-- 4-byte aligned, so the byte lands in padding
+
+    The field list is rebuilt from the wrapper's own field types with the byte restored.
+    Every field offset is asserted to be unchanged: if the byte had NOT been absorbed by
+    alignment padding, some offset (or the size) would move and the assertion would fire.
+    That is why the omission never corrupted memory - it only made IF AGC unsettable.
+    """
+    fields = []
+    inserted = False
+    for fname, ftype in base._fields_:
+        fields.append((fname, ftype))
+        if fname == 'Atten':
+            fields.append(('EnableIFAGC', c_uint8))
+            inserted = True
+    if not inserted:
+        raise AssertionError(f'{name}: no Atten field to anchor EnableIFAGC to')
+    cls = type(name, (Structure,), {'_fields_': fields})
+    if sizeof(cls) != sizeof(base):
+        raise AssertionError(
+            f'{name}: size changed {sizeof(cls)} != {sizeof(base)}; EnableIFAGC is not in '
+            'padding - the struct must be re-declared field by field instead')
+    for fname, _ in base._fields_:
+        if getattr(cls, fname).offset != getattr(base, fname).offset:
+            raise AssertionError(f'{name}.{fname} moved off its C offset')
+    return cls
+
+
+SWP_Profile_TypeDef = _insert_ifagc(htra_api.SWP_Profile_TypeDef, 'SWP_Profile_TypeDef')
+RTA_Profile_TypeDef = _insert_ifagc(htra_api.RTA_Profile_TypeDef, 'RTA_Profile_TypeDef')
+DET_Profile_TypeDef = _insert_ifagc(htra_api.DET_Profile_TypeDef, 'DET_Profile_TypeDef')
+dll.SWP_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(SWP_Profile_TypeDef)]
+dll.SWP_Configuration.argtypes = [POINTER(c_void_p), POINTER(SWP_Profile_TypeDef),
+                                  POINTER(SWP_Profile_TypeDef),
+                                  POINTER(htra_api.SWP_TraceInfo_TypeDef)]
+dll.RTA_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(RTA_Profile_TypeDef)]
+dll.RTA_Configuration.argtypes = [POINTER(c_void_p), POINTER(RTA_Profile_TypeDef),
+                                 POINTER(RTA_Profile_TypeDef),
+                                 POINTER(htra_api.RTA_FrameInfo_TypeDef)]
+dll.DET_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(DET_Profile_TypeDef)]
+dll.DET_Configuration.argtypes = [POINTER(c_void_p), POINTER(DET_Profile_TypeDef),
+                                 POINTER(DET_Profile_TypeDef),
+                                 POINTER(htra_api.DET_StreamInfo_TypeDef)]
+
 # Convenient aliases (used by the business layer)
-SWP_Profile_TypeDef = htra_api.SWP_Profile_TypeDef
 SWP_TraceInfo_TypeDef = htra_api.SWP_TraceInfo_TypeDef
 SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef
 SweepTimeMode_TypeDef = htra_api.SweepTimeMode_TypeDef

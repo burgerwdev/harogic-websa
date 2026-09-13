@@ -108,8 +108,8 @@ class RtaSession(MeasurementSession):
         except Exception as e:
             _dbg('CONF BusTriggerStop EXC %r' % (e,))
         _dbg('CONF BusTriggerStop done')
-        prof = T.RTA_Profile_TypeDef()
-        out = T.RTA_Profile_TypeDef()
+        prof = _sb.RTA_Profile_TypeDef()
+        out = _sb.RTA_Profile_TypeDef()
         info = T.RTA_FrameInfo_TypeDef()
         _dbg('CONF calling RTA_ProfileDeInit ...')
         T.dll.RTA_ProfileDeInit(T.pointer(dev.dev), T.pointer(prof))
