@@ -1,10 +1,13 @@
 // Spectrum rendering main module: grid/traces/markers/OSD/3dB/peak marks
 import * as S from '../core/store';
+import { centerHz, spanHz } from '../ui/freqState';
+import { getDisplayRef } from '../ui/displayRef';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
+import { sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
@@ -23,7 +26,7 @@ import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
   return {
-    centerHz: S.centerHz, spanHz: S.spanHz, dbPerDiv: S.dbPerDiv, displayRef: S.displayRef,
+    centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: getDisplayRef(),
     displayOffset: S.displayOffset, displayUnit: S.displayUnit, viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
@@ -42,7 +45,8 @@ const PLOT_RECT = {
 
 export function getY(val: number): number {
   if (isFinite(val)) val += S.displayOffset;
-  const top = S.displayRef, bottom = S.displayRef - S.totalDivs * S.dbPerDiv;
+  const dispRef = getDisplayRef();
+  const top = dispRef, bottom = dispRef - S.totalDivs * S.dbPerDiv;
   if (!isFinite(val)) val = bottom - 10;
   return PLOT_RECT.y + ((top - val) / (top - bottom)) * PLOT_RECT.h;
 }
@@ -337,21 +341,11 @@ function renderLimits(powers: Float32Array | null) {
   ctx.beginPath();
   ctx.rect(p.x, p.y, p.w, p.h);
   ctx.clip();
-  // Bins above the limit: thicker red segments over the trace
+  // Violating bins used to be shaded/stroked red on top of the trace. The shading did not
+  // line up reliably with the trace and read as inaccurate, so the canvas now shows only the
+  // limit line plus the PASS/FAIL status block; the geometry stays in dataset.limitsDbg for
+  // diagnostics.
   const runs = violationRuns(powers, lim, S.limits.tol);
-  if (runs.length) {
-    ctx.strokeStyle = 'rgba(255,64,64,0.95)';
-    ctx.lineWidth = 2.5;
-    for (const r of runs) {
-      ctx.beginPath();
-      for (let i = r.start; i <= r.end; i++) {
-        const x = getX(i, n);
-        const y = getY(powers[i]);
-        if (i === r.start) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-  }
   // Dashed limit line itself
   ctx.setLineDash([6, 4]);
   ctx.lineWidth = 1.5;
@@ -365,6 +359,25 @@ function renderLimits(powers: Float32Array | null) {
   ctx.stroke();
   ctx.restore();
   lastLimitEval = evaluateAgainst(powers, lim, freq, S.limits.tol);
+  {
+    // Debug/verification aid: the geometry the overlay actually used.
+    const cv = document.getElementById('spectrum');
+    if (cv) {
+      let peakIdx = 0, peakVal = -1e9;
+      for (let i = 0; i < n; i++) {
+        const v = powers[i];
+        if (Number.isFinite(v) && v > peakVal) { peakVal = v; peakIdx = i; }
+      }
+      cv.dataset.limitsDbg = JSON.stringify({
+        n, tol: S.limits.tol,
+        runs: runs.map((r) => [r.start, r.end]),
+        above: runs.reduce((a, r) => a + (r.end - r.start + 1), 0),
+        peakIdx, peakDbm: Math.round(peakVal * 10) / 10,
+        limAtPeak: Math.round(lim[peakIdx] * 10) / 10,
+        margin: Math.round((peakVal - lim[peakIdx]) * 10) / 10,
+      });
+    }
+  }
 }
 
 export function renderAll() {
@@ -382,6 +395,10 @@ export function renderAll() {
     renderStatusBlocks();
     renderWaterfallIfOn();
     const rp = getDisplayPowers();
+    // The RTA/SDR path needs the same auto peak threshold as the swept path, otherwise the
+    // marker peak-search uses the swept (or HTML default) threshold and jumps onto the noise
+    // floor instead of the signal.
+    if (rp) autoPeakThr(rp);
     if (S.waterfallOn) {
       ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
         const el = document.getElementById(id);
@@ -578,14 +595,14 @@ function renderRta() {
     ctx.restore();
   });
   // SDR: listen-frequency marker + demod passband
-  if (S.sdrMode && S.sdrListenHz > 0) {
+  if (S.sdrMode && sdrListenHz.get() > 0) {
     const span = (hi - lo) || 1;
-    const lx = p.x + (S.sdrListenHz - lo) / span * p.w;
+    const lx = p.x + (sdrListenHz.get() - lo) / span * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
-      const bw = S.sdrPassbandHz || 0;
+      const bw = sdrIfbw.get();
       if (bw > 0) {
-        const x0 = p.x + (S.sdrListenHz - bw / 2 - lo) / span * p.w;
-        const x1 = p.x + (S.sdrListenHz + bw / 2 - lo) / span * p.w;
+        const x0 = p.x + (sdrListenHz.get() - bw / 2 - lo) / span * p.w;
+        const x1 = p.x + (sdrListenHz.get() + bw / 2 - lo) / span * p.w;
         ctx.fillStyle = 'rgba(0,255,160,0.12)';
         ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
       }
@@ -600,13 +617,13 @@ function renderRta() {
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
   // Bottom frequency row (same as SWP grid)
   drawFreqRow(lo, hi, col, p);
-  if (S.sdrMode && S.sdrListenHz > 0) {
-    const lx = p.x + (S.sdrListenHz - lo) / ((hi - lo) || 1) * p.w;
+  if (S.sdrMode && sdrListenHz.get() > 0) {
+    const lx = p.x + (sdrListenHz.get() - lo) / ((hi - lo) || 1) * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
       ctx.fillStyle = '#00ffa0'; ctx.font = '11px monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       // formatFreqHz keeps the unit (the label used to read "\u25bc 101.7073" with none).
-      ctx.fillText('\u25bc ' + formatFreqHz(S.sdrListenHz), lx, p.y + 2);
+      ctx.fillText('\u25bc ' + formatFreqHz(sdrListenHz.get()), lx, p.y + 2);
     }
   }
   // Markers on the active RTA trace (length-guarded)

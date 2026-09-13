@@ -6,7 +6,7 @@ const dict = {
     'ref_level': 'Ref Level:', 'scale': 'Scale:', 'rbw': 'RBW:', 'vbw': 'VBW:',
     'pts': 'Pts:', 'swt': 'SWT:', 'bw_label': 'BW:', 'gnss': 'GNSS:', 'clock_ref': 'Clock Ref:',
     'int': 'Int', 'ext': 'Ext', 'ext_force': 'ExtForce', 'output': 'Output',
-    'connect': 'Connect SAN-90',
+    'connect': 'Connect',
     'frequency': 'Frequency', 'center': 'Center', 'span': 'Span', 'start': 'Start',
     'listen': 'Listen', 'demod': 'Demod', 'if_filter': 'Filter', 'deemph': 'De-emph',
     'if_overflow_short': 'IF OVERFLOW',
@@ -88,7 +88,7 @@ const dict = {
     'ref_level': '参考电平:', 'scale': '刻度:', 'rbw': '分辨率带宽:', 'vbw': '视频带宽:',
     'pts': '点数:', 'swt': '扫描时间:', 'bw_label': '带宽:', 'gnss': 'GNSS:', 'clock_ref': '参考时钟:',
     'int': '内部', 'ext': '外部', 'ext_force': '外部强制', 'output': '输出',
-    'connect': '连接 SAN-90',
+    'connect': '连接',
     'frequency': '频率', 'center': '中心频率', 'span': '扫宽', 'start': '起始',
     'listen': '收听', 'demod': '解调', 'if_filter': '滤波', 'deemph': '去加重',
     'if_overflow_short': 'IF 饱和',
@@ -405,6 +405,18 @@ Object.assign(dict.zh, {
 
 Object.assign(dict.en, { 'norm_cleared': 'Normalization cleared (measurement settings changed)' });
 Object.assign(dict.zh, { 'norm_cleared': '归一化已清除（测量参数已变化）' });
+
+// Mode / reference request feedback (the pending state and its timeout must be visible)
+Object.assign(dict.en, {
+  'mode_switching': 'Switching to {mode}…',
+  'mode_switch_timeout': 'Mode switch to {mode} was not confirmed by the device',
+  'ref_switch_timeout': 'The device did not confirm the new reference level',
+});
+Object.assign(dict.zh, {
+  'mode_switching': '正在切换到 {mode}…',
+  'mode_switch_timeout': '切换到 {mode} 未得到设备确认',
+  'ref_switch_timeout': '设备未确认新的参考电平',
+});
 
 // Tooltips for every interactive control + remaining bottom-bar literals
 Object.assign(dict.en, {

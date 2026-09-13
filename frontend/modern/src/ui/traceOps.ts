@@ -1,8 +1,12 @@
 // Trace UI ops: tab switching / mode setting
 import * as S from '../core/store';
+import { centerHz, spanHz } from './freqState';
+import { refLevel } from './refState';
+import { currentRBW, currentVBW } from './swpState';
+import { setDisplayRef } from './displayRef';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
-import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
+import { applyTraceMode } from '../dsp/traces';
 import { normalizeAvgCount, setAverageCount } from '../dsp/accumulator';
 import { renderAll } from '../render/spectrum';
 import { t } from '../core/i18n';
@@ -37,7 +41,7 @@ export function switchTraceTab(idx: number) {
   syncFreezeBtn();
   const anyNorm = S.traces.some(x => x.isNormalized && x.reference);
   S.setDisplayUnit((t.reference && t.isNormalized) ? 'dB' : (anyNorm ? 'dB' : 'dBm'));
-  S.setDisplayRef(S.displayUnit === 'dB' ? 0.0 : S.refLevel);
+  setDisplayRef('mode', S.displayUnit === 'dB' ? 0.0 : refLevel.get());
   updateNormalizeStatusUI();
   updateInfoBar();
 }
@@ -115,8 +119,8 @@ export function exportPeakListCsv(): void {
   const thr = (document.getElementById('input-peakthr') as HTMLInputElement | null)?.value ?? '';
   const head = [
     '# peak_list',
-    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
-    `rbw_hz=${S.currentRBW}`, `threshold_dbm=${thr}`,
+    `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
+    `rbw_hz=${currentRBW.get()}`, `threshold_dbm=${thr}`,
     `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
     'n,bin,freq_hz,level_dbm,delta_from_strongest_db',
   ];
@@ -143,8 +147,8 @@ export function exportActiveTraceCsv(): void {
   const n = Math.min(powers.length, freq.length);
   const head = [
     `# trace=T${t.id}`, `mode=${t.mode}`,
-    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
-    `rbw_hz=${S.currentRBW}`, `vbw_hz=${S.currentVBW}`,
+    `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
+    `rbw_hz=${currentRBW.get()}`, `vbw_hz=${currentVBW.get()}`,
     `display_unit=${S.displayUnit}`, `normalized=${t.isNormalized}`,
     `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
     'freq_hz,power',

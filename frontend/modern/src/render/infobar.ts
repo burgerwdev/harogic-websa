@@ -2,6 +2,8 @@
 import * as S from '../core/store';
 import { formatBWHz } from '../core/fmt';
 import { t } from '../core/i18n';
+import { rbwMode, vbwMode, currentRBW, currentVBW } from '../ui/swpState';
+import { getDisplayRef } from '../ui/displayRef';
 
 // SWT field throttling: the frame-header sweep_ms may vary slightly per frame (EMA convergence jitter),
 // and high-frequency refresh would make the top bar flicker → update at most every 500ms
@@ -33,10 +35,11 @@ export function updateInfoBar() {
   const swtLabel = document.querySelector('[data-i18n="swt"]');
   if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
   // Reference level is the active mode's effective hardware value.
-  set('info-ref', S.displayUnit === 'dB' ? S.displayRef.toFixed(1) + ' dB' : S.displayRef.toFixed(1) + ' dBm');
+  const ref = getDisplayRef();
+  set('info-ref', ref.toFixed(1) + (S.displayUnit === 'dB' ? ' dB' : ' dBm'));
   set('info-scale', `${S.dbPerDiv} ${t('db_per_div')}`);
-  set('info-rbw', formatBWHz(S.currentRBW) + (S.rbwMode === 'auto' ? ' (auto)' : ''));
-  set('info-vbw', S.vbwMode === 'bypass' ? 'Bypass' : formatBWHz(S.currentVBW));
+  set('info-rbw', formatBWHz(currentRBW.get()) + (rbwMode.get() === 'auto' ? ' (auto)' : ''));
+  set('info-vbw', vbwMode.get() === 'bypass' ? 'Bypass' : formatBWHz(currentVBW.get()));
   setSwt();
   const dot = document.getElementById('connDot');
   if (dot) dot.className = 'dot ' + (S.deviceConnected ? 'on' : 'off');

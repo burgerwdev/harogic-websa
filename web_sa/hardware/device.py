@@ -149,6 +149,13 @@ class DeviceState:
     pnm_last: dict | None = None
 
 
+# Safety bound for the swept trace buffers: SWP_GetFullSweep writes the device's own trace
+# length, so the buffer must be at least as large as the largest trace it can report. This is
+# well above anything the UI can request (the points selector tops out at 4000; the widest
+# vendor FFT is ~26k) and costs ~1.5 MB.
+_SWP_TRACE_MAX = 65536
+
+
 class HarogicDevice:
     """Device wrapper: lifecycle + sweep + query + measurement session host."""
 
@@ -193,6 +200,8 @@ class HarogicDevice:
             },
         }
         self._pending_auto_ref: tuple[str, float] | None = None
+        # Geometry (span/RBW/points/window) each tracker's learned floor belongs to.
+        self._auto_ref_geometry_seen: dict[str, tuple | None] = {'std': None, 'rta': None}
 
     # ---------------- Lifecycle ----------------
     def open(self) -> tuple[bool, str]:
@@ -395,12 +404,6 @@ class HarogicDevice:
             self.reset_auto_reference('std')
             return d
 
-    def apply_preset(self) -> dict:
-        with self._hw:
-            d = self.preset_state()
-            self.configure_swp()
-            return d
-
     def _apply_ifagc(self) -> None:
         """Programme the IF AGC target before configuring a profile that enables it.
 
@@ -544,11 +547,19 @@ class HarogicDevice:
             if n <= 0 or not self.state.connected:
                 return None
             try:
-                if self._freq_buf is None or len(self._freq_buf) != n:
-                    self._freq_buf = (sb.c_double * n)()
-                    self._spec_buf = (sb.c_float * n)()
-                    self._ifreq_buf = (sb.c_double * n)()
-                    self._ispec_buf = (sb.c_float * n)()
+                # SWP_GetFullSweep takes NO length argument: the device writes its own current
+                # trace length, which can exceed the point count recorded at configuration time
+                # (an auto point strategy, or an RBW/Ref change, re-derives it). Sizing these
+                # buffers to exactly `n` let the device - and then DSP_InterceptSpectrum, which
+                # writes `_cnt` points - run past them; the damage surfaced as a SIGSEGV inside
+                # the DSP call. Allocate for the largest trace the device can produce and treat
+                # the recorded count as what we hand on, not as the buffer size.
+                cap = max(int(n), _SWP_TRACE_MAX)
+                if self._freq_buf is None or len(self._freq_buf) != cap:
+                    self._freq_buf = (sb.c_double * cap)()
+                    self._spec_buf = (sb.c_float * cap)()
+                    self._ifreq_buf = (sb.c_double * cap)()
+                    self._ispec_buf = (sb.c_float * cap)()
                 st = sb.dll.SWP_GetFullSweep(sb.pointer(self.dev), self._freq_buf,
                                              self._spec_buf, sb.pointer(self._meas_aux))
                 if st != 0:
@@ -567,6 +578,11 @@ class HarogicDevice:
                     self._ifreq_buf, self._ispec_buf, sb.pointer(self._cnt))
                 c = self._cnt.value
                 if c < 2:
+                    return None
+                if c > cap:
+                    # More points than the device can legitimately produce: refuse the frame
+                    # instead of building a view past the buffer (and report it).
+                    self.state.last_error = 'sweep: %d intercept points (cap %d)' % (c, cap)
                     return None
                 f = np.frombuffer(self._ifreq_buf, dtype=np.float64, count=c).copy()
                 p = np.frombuffer(self._ispec_buf, dtype=np.float32, count=c).copy()
@@ -724,6 +740,18 @@ class HarogicDevice:
             target = max(noise_floor_dbm + window - 8.0, peak_dbm + 10.0)
         target = math.ceil(target / 5.0) * 5.0
         target = min(30.0, max(-50.0, target, tracker.get('floor', -50.0)))
+        # Window criterion instead of a bare 5 dB dead-band: while the noise floor sits
+        # between 4 and 12 dB above the bottom edge AND the peak keeps >= 8 dB of headroom,
+        # the placement is already right, so a wobbling estimate (or a small RBW/point change
+        # that moves the noise floor by a dB or two) must not trigger a reconfiguration -
+        # each one costs a full device reconfigure and is visible as a jump.
+        if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
+            noise_above_bottom = noise_floor_dbm - (current - window)
+            headroom = current - peak_dbm
+            if 4.0 <= noise_above_bottom <= 12.0 and headroom >= 8.0:
+                tracker['candidate'] = None
+                tracker['candidate_since'] = 0.0
+                return
         # When the noise floor is high, keep ~30 dB of headroom above it.
         if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
             target = max(target, noise_floor_dbm + 30.0)
@@ -765,9 +793,32 @@ class HarogicDevice:
             self.begin_auto_reference_settle(mode)
             return changed
 
+    def _auto_ref_geometry(self, mode: str) -> tuple:
+        """Signature of the measurement geometry the learned floor belongs to.
+
+        The IF saturates at a Ref that depends on the in-band power, i.e. on span / RBW /
+        points / window - not only on the front-end. A floor learned at another geometry
+        either blocks a legitimate low Ref or invites saturation probing, so it is dropped
+        when this signature changes. Applying a new Ref does NOT change it (verified by the
+        signature itself), which is what keeps the auto-ref from clearing its own floor on
+        every application.
+        """
+        s = self.state
+        if mode == 'rta':
+            # The RTA profile takes its window from the same user setting as SWP.
+            return (s.rta_center_hz, s.rta_span_hz, s.rta_rbw_hz, s.rta_vbw_hz,
+                    s.window, getattr(s, 'rta_decimate', 0))
+        return (s.center_hz, s.span_hz, s.rbw_hz, s.vbw_hz, s.window, 0)
+
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
         """Discard stale auto-ref observations after any acquisition reconfiguration."""
         with self._hw:
+            geometry = self._auto_ref_geometry(mode)
+            if self._auto_ref_geometry_seen.get(mode) not in (None, geometry):
+                # Span/RBW/points/window changed: the learned saturation floor no longer
+                # describes this configuration.
+                self._auto_ref[mode]['floor'] = -50.0
+            self._auto_ref_geometry_seen[mode] = geometry
             tracker = self._auto_ref[mode]
             tracker['candidate'] = None
             tracker['candidate_since'] = 0.0

@@ -3,7 +3,7 @@
 // Both spectrum modes build their waterfall row through the same mapping (render/waterfall.ts),
 // so this setting applies to SWP and RTA alike.
 import * as S from '../core/store';
-import { applyI18n, t } from '../core/i18n';
+import { applyI18n } from '../core/i18n';
 import { renderAll } from '../render/spectrum';
 
 const LS_KEY = 'websa-wf-range';

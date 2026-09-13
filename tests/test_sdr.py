@@ -13,7 +13,12 @@ from web_sa.demod.demod import AnalogDemod
 from web_sa.demod.spectrum import Panadapter
 from web_sa.hardware import sdk_bindings as sb
 from web_sa.measurements import sdr as sdr_module
-from web_sa.measurements.sdr import SdrSession, _round_decimate, encode_audio
+from web_sa.measurements.sdr import (
+    SdrSession,
+    _round_decimate,
+    encode_audio,
+    sdr_spectrum_windows,
+)
 
 
 def _rms(values: np.ndarray) -> float:
@@ -25,6 +30,27 @@ def test_round_decimate_uses_supported_power_of_two():
     assert _round_decimate(31) == 16
     assert _round_decimate(2049) == 2048
     assert _round_decimate('bad') == 16
+
+
+def test_spectrum_windows_separate_display_from_capture():
+    # The device captured 200 kHz above the requested centre: the display window must stay
+    # on the request (so the user's centre is the canvas centre) and the capture window must
+    # report where the hardware really is.
+    w = sdr_spectrum_windows(101.7e6, 101.9e6, 3.125e6)
+    assert w['center'] == 101.7e6
+    assert w['start'] == pytest.approx(101.7e6 - 1.5625e6)
+    assert w['stop'] == pytest.approx(101.7e6 + 1.5625e6)
+    assert w['capture_center'] == 101.9e6
+    assert w['capture_start'] == pytest.approx(101.9e6 - 1.5625e6)
+    assert w['capture_stop'] == pytest.approx(101.9e6 + 1.5625e6)
+    # Both windows are the same width; only the centre moved.
+    assert (w['stop'] - w['start']) == pytest.approx(w['capture_stop'] - w['capture_start'])
+
+
+def test_spectrum_windows_match_when_there_is_no_offset():
+    w = sdr_spectrum_windows(101.7e6, 101.7e6, 3.125e6)
+    assert w['start'] == w['capture_start']
+    assert w['stop'] == w['capture_stop']
 
 
 def test_audio_frame_keeps_compatible_header():

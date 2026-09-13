@@ -87,7 +87,7 @@ Always run the project scripts from the repository root:
 ./stop.sh
 ```
 
-`run.sh` starts a supervisor and a WebSA worker. The supervisor restarts the worker with backoff after a native crash, fatal acquisition error, or DLL timeout; configuration errors are not restarted in a loop. A simulated worker `SIGKILL` restored the SAN-90 API in about three seconds. The default runtime log is `/tmp/san90-web.log`.
+`run.sh` starts a supervisor and a WebSA worker. The supervisor restarts the worker with backoff after a native crash, fatal acquisition error, or DLL timeout; configuration errors are not restarted in a loop. A simulated worker `SIGKILL` restored the SAN-90 API in about three seconds. The default runtime log is `/tmp/websa.log`.
 
 If the device still does not recover:
 

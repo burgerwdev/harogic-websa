@@ -3,21 +3,24 @@
 // The header is intentionally a neutral data line (version / range / settings / time)
 // rather than UI prose, so a screenshot is self-describing in a report.
 import * as S from '../core/store';
+import { centerHz, spanHz } from './freqState';
+import { refLevel } from './refState';
+import { currentRBW, currentVBW, currentPoints } from './swpState';
 import { formatFreqHz } from '../core/fmt';
 
 function headerParts(): string[] {
   const ver = (document.querySelector('.version-tag')?.textContent || '').trim().split(/\s+/)[0] || 'HAROGIC WebSA';
   const det = (document.getElementById('select-detector') as HTMLSelectElement | null)?.value || '';
-  const n = S.freqArray?.length ?? S.currentPoints;
-  const lo = S.centerHz - S.spanHz / 2;
-  const hi = S.centerHz + S.spanHz / 2;
+  const n = S.freqArray?.length ?? currentPoints.get();
+  const lo = centerHz.get() - spanHz.get() / 2;
+  const hi = centerHz.get() + spanHz.get() / 2;
   const parts = [
     ver,
     `${formatFreqHz(lo)} - ${formatFreqHz(hi)}`,
-    `Ref ${S.refLevel.toFixed(1)} dBm`,
+    `Ref ${refLevel.get().toFixed(1)} dBm`,
     `${S.dbPerDiv.toFixed(0)} dB/div`,
-    `RBW ${formatFreqHz(S.currentRBW)}`,
-    `VBW ${formatFreqHz(S.currentVBW)}`,
+    `RBW ${formatFreqHz(currentRBW.get())}`,
+    `VBW ${formatFreqHz(currentVBW.get())}`,
     `${n} pts`,
   ];
   if (det) parts.push(`det ${det}`);

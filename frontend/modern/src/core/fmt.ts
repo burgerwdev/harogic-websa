@@ -19,7 +19,6 @@ export function formatBWHz(hz: number): string {
   if (hz >= 1e3) return (hz / 1e3).toFixed(1) + ' kHz';
   return hz.toFixed(1) + ' Hz';
 }
-export function fmtFMHz(hz: number): string { return (hz / 1e6).toFixed(3) + ' MHz'; }
 export function fmtHzUnit(h: number): string {
   const a = Math.abs(h);
   if (a >= 1e6) return (h / 1e6).toFixed(3) + 'MHz';

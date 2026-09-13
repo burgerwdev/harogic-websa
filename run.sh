@@ -17,7 +17,7 @@ if pgrep -f "python3 -m web_sa.supervisor" > /dev/null 2>&1 || \
   ./stop.sh
   sleep 2
 fi
-setsid nohup python3 -m web_sa.supervisor > /tmp/san90-web.log 2>&1 < /dev/null &
+setsid nohup python3 -m web_sa.supervisor > /tmp/websa.log 2>&1 < /dev/null &
 health_port="${WEBSA_PORT:-8080}"
 health_host="${WEBSA_HOST:-127.0.0.1}"
 case "$health_host" in 0.0.0.0|::) health_host="127.0.0.1" ;; esac
@@ -33,5 +33,5 @@ for i in $(seq 1 25); do
   fi
 done
 echo "FAIL: service not ready (single-shot, no retry)"
-tail -5 /tmp/san90-web.log
+tail -5 /tmp/websa.log
 exit 1

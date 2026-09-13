@@ -2,9 +2,26 @@
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
+import {
+	sdrCenterHz,
+	sdrDecimate,
+	sdrAudioOn,
+	sdrDeemph,
+	sdrDemod,
+	sdrIfbw,
+	sdrListenHz,
+	sdrRefAuto,
+	sdrSpanHz,
+	estimatedCaptureSpanHz,
+	renderSdrState,
+	resetSdrState,
+} from './sdrState';
+import { refLevel, refMode } from './refState';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
+import { rbwMode, vbwMode } from './swpState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
-import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
+import { getDisplayPowers, nextExtreme, setMarkerIdx } from '../dsp/peaks';
 import { markerFreqHz } from '../core/markerCommon';
 import { parseFreqUnit, toUnit } from '../core/units';
 import {
@@ -14,11 +31,10 @@ import {
   steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
-import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
 import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
-import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
+import { normalizeActiveTrace, resetActiveTraceNormalize } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
@@ -26,7 +42,7 @@ import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
-import { canvasColors, getTheme } from '../core/theme';
+import { getTheme } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
@@ -151,7 +167,7 @@ function formatSpanStep(value: number): string {
   return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
-export function syncSwpSpanStep(swpSpan = S.spanHz) {
+export function syncSwpSpanStep(swpSpan = spanHz.get()) {
   if (S.spanStepAuto) S.setSpanStepHz(niceSpanStep(swpSpan));
   const input = document.getElementById('input-span-step') as HTMLInputElement | null;
   const unit = document.getElementById('span-step-unit');
@@ -182,15 +198,15 @@ export function resetSpanStepAuto() {
 
 export function stepSwpSpan(direction: -1 | 1) {
   const targetSpan = steppedSpan(
-    S.spanHz,
+    spanHz.get(),
     S.spanStepHz,
     direction,
     100,
     S.FREQ_MAX - S.FREQ_MIN,
   );
-  if (targetSpan === S.spanHz) return;
+  if (targetSpan === spanHz.get()) return;
   const window = normalizeCenterSpan(
-    S.centerHz, targetSpan, S.FREQ_MIN, S.FREQ_MAX);
+    centerHz.get(), targetSpan, S.FREQ_MIN, S.FREQ_MAX);
   if (!window) return;
   beginFrequencyCommit('swp-freq-settings');
   send({ cmd: 'SET_FREQ', center: window.center, span: window.span });
@@ -203,8 +219,8 @@ export function setRefLevel() {
   if (currentGraphMode() === 'sdr') {
     // SDR Ref controls the IQS hardware reference level as well as the display. The
     // backend reconfigures IQS and applies the normal audio reset/fade sequence.
-    S.setSdrRefAuto(false);
-    S.setDisplayRef(value);
+    sdrRefAuto.set(false);
+    setDisplayRef('user', value);
     syncSdrRefUI();                       // the Auto button must reflect the real state
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
@@ -220,8 +236,6 @@ const REF_MIN = -50;
 const REF_MAX = 30;
 
 // Pending Ref target while a step command is in flight (see steppedRefLevel).
-let refPending: number | null = null;
-let refPendingAt = 0;
 
 export function refStepDbm(): number {
   // One full grid division: ▲/▼ moves Ref by the current dB-per-division value.
@@ -230,9 +244,9 @@ export function refStepDbm(): number {
 
 export function adjustRefLevel(direction: -1 | 1) {
   if (currentGraphMode() === 'sdr') {
-    const next = Math.max(-160, Math.min(40, S.displayRef + direction * S.dbPerDiv));
-    S.setSdrRefAuto(false);
-    S.setDisplayRef(next);
+    const next = Math.max(-160, Math.min(40, getDisplayRef() + direction * S.dbPerDiv));
+    sdrRefAuto.set(false);
+    setDisplayRef('user', next);
     syncSdrRefUI();                       // ditto
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
@@ -241,28 +255,24 @@ export function adjustRefLevel(direction: -1 | 1) {
     renderAll();
     return;
   }
-  const base = refPending ?? S.refLevel;
+  const base = refLevel.get();
   const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
   if (next === base) return;
-  refPending = next;
-  refPendingAt = Date.now();
+  // The stepped value is an intent: rendered immediately and dropped by the slot's TTL if
+  // the backend never accepts it (the old code hand-rolled exactly this with refPending).
+  refLevel.set(next);
   send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-}
-
-export function syncRefLevelStatus(responseTo?: string) {
-  if (refPending === null) return;
-  if (responseTo === 'SET_REF' || Date.now() - refPendingAt > 2500) refPending = null;
 }
 
 export function setRefAuto() {
   if (currentGraphMode() === 'sdr') {
-    S.setSdrRefAuto(!S.sdrRefAuto);
+    sdrRefAuto.set(!sdrRefAuto.get());
     syncSdrRefUI();
     renderAll();
     return;
   }
-  if (S.refMode === 'auto') {
-    send({ cmd: 'SET_REF', mode: 'manual', ref: S.refLevel });
+  if (refMode.get() === 'auto') {
+    send({ cmd: 'SET_REF', mode: 'manual', ref: refLevel.get() });
   } else {
     // range_db = the visible window height. Auto Ref anchors the noise floor just above the
     // bottom of that window, so the backend needs to know how tall it is.
@@ -276,7 +286,7 @@ export function setScale(v: number) {
   renderAll();
   // The window height changed, so the auto-Ref target (noise floor just above the bottom)
   // changed too. Re-arm so the new spectrum lands correctly instead of keeping the old Ref.
-  if (currentGraphMode() !== 'sdr' && S.refMode === 'auto') {
+  if (currentGraphMode() !== 'sdr' && refMode.get() === 'auto') {
     send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
   }
 }
@@ -287,19 +297,19 @@ export function syncScaleButtons() {
 }
 export function applyRBW() {
   const sel = document.getElementById('select-rbw-mode') as HTMLSelectElement;
-  const rbwMode = sel?.value || 'auto';
-  S.setRbwMode(rbwMode);
-  const m: any = { cmd: 'SET_RBW', mode: rbwMode };
-  if (rbwMode === 'manual') m.rbw = parseFreqUnit('rbw');
+  const mode = sel?.value || 'auto';
+  rbwMode.set(mode);
+  const m: any = { cmd: 'SET_RBW', mode };
+  if (mode === 'manual') m.rbw = parseFreqUnit('rbw');
   if (S.rtaMode) clearRtaAccum();
   send(m);
 }
 export function applyVBW() {
   const sel = document.getElementById('select-vbw-mode') as HTMLSelectElement;
-  const vbwMode = sel?.value || 'bypass';
-  S.setVbwMode(vbwMode);
-  const m: any = { cmd: 'SET_VBW', mode: vbwMode };
-  if (vbwMode === 'manual') m.vbw = parseFreqUnit('vbw');
+  const mode = sel?.value || 'bypass';
+  vbwMode.set(mode);
+  const m: any = { cmd: 'SET_VBW', mode };
+  if (mode === 'manual') m.vbw = parseFreqUnit('vbw');
   if (S.rtaMode) clearRtaAccum();
   send(m);
 }
@@ -380,12 +390,12 @@ export function markerToCenter() {
   if (!m || !m.enabled) return;
   const center = markerFreqHz(m.idx);
   if (S.rtaMode) {
-    S.setRtaCenterHz(center);
+    rtaCenterHz.set(center);
     send({ cmd: 'SET_RTA', center });
   } else {
-    S.setCenterHz(center);
+    centerHz.set(center);
     updateFreqUIInputs();
-    send({ cmd: 'SET_FREQ', center: S.centerHz, span: S.spanHz });
+    send({ cmd: 'SET_FREQ', center: centerHz.get(), span: spanHz.get() });
   }
 }
 export function selectMarker(id: number) {
@@ -423,14 +433,56 @@ export function toggleActiveMarkerTracking() {
   renderAll();
 }
 
-// Graph mode changes are committed only after the backend STATUS confirms them.
-let graphModePending = false;
-let graphModeTarget: 'std' | 'rta' | 'sdr' = 'std';
-let confirmedGraphMode = '';
-// Frequency to hand off to the SDR demod when entering SDR (from the active marker).
-let pendingSdrFreq: number | null = null;
+// Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
+// They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
+// divergence); this module only translates them to the DOM.
+import {
+  currentGraphMode,
+  graphModeDiverges,
+  isGraphMode,
+  pendingGraphMode,
+  requestGraphMode,
+  confirmGraphMode,
+  resetGraphMode,
+  setGraphModeTimeoutHandler,
+} from './graphMode';
+import {
+  getDisplayRef,
+  displayRefDiverges,
+  setDisplayRef,
+  setDisplayRefTimeoutHandler,
+} from './displayRef';
+
+export { currentGraphMode };
+
 let sdrAudioHandoffTimer: number | null = null;
-let graphModeWatchdog: number | null = null;
+
+// Transient hint notices. A held notice (a timeout report) must not be overwritten by the
+// high-frequency pending-state refresh, so it owns the field until it expires.
+const hintHoldUntil = new Map<string, number>();
+function setHint(id: string, text: string, holdMs = 0): void {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const now = Date.now();
+  if (holdMs === 0 && (hintHoldUntil.get(id) ?? 0) > now) return;   // a held notice owns it
+  if (holdMs > 0) hintHoldUntil.set(id, now + holdMs);
+  else hintHoldUntil.delete(id);
+  el.textContent = text;
+}
+function flashHint(id: string, text: string, holdMs = 5000): void {
+  setHint(id, text, holdMs);
+  window.setTimeout(() => {
+    if ((hintHoldUntil.get(id) ?? 0) <= Date.now()) setHint(id, '');
+  }, holdMs + 50);
+}
+
+setGraphModeTimeoutHandler((want) => {
+  flashHint('mode-hint', t('mode_switch_timeout', { mode: want.toUpperCase() }));
+  syncModeButtons();
+});
+setDisplayRefTimeoutHandler(() => {
+  flashHint('ref-hint', t('ref_switch_timeout'));
+});
 
 function deferSdrAudioPreference() {
   if (sdrAudioHandoffTimer !== null) window.clearTimeout(sdrAudioHandoffTimer);
@@ -442,12 +494,24 @@ function deferSdrAudioPreference() {
   }, 800);
 }
 
-export function currentGraphMode(): string { return confirmedGraphMode || 'std'; }
+/** Mark the mode buttons while a request is unconfirmed. They stay enabled so that a new
+ *  click supersedes the request instead of being swallowed (discipline 2 + 4). */
+function syncModeButtons(): void {
+  const want = pendingGraphMode();
+  const busy = want !== null && graphModeDiverges();
+  for (const id of ['btn-mode-rta', 'btn-mode-sdr']) {
+    const b = document.getElementById(id) as HTMLButtonElement | null;
+    if (!b) continue;
+    b.classList.toggle('pending', busy);
+    b.disabled = false;
+  }
+  setHint('mode-hint', busy ? t('mode_switching', { mode: want!.toUpperCase() }) : '');
+}
 
 export function setGraphMode(mode: string) {
   const target: 'std' | 'rta' | 'sdr' =
     mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
-  if (graphModePending || target === confirmedGraphMode) return;
+  if (pendingGraphMode() === null && target === currentGraphMode()) return;
   if (target !== 'std' && S.measOn) {
     exitMeasModePub(false);
     S.setMeasOn(false);
@@ -455,36 +519,25 @@ export function setGraphMode(mode: string) {
     if (button) button.textContent = t('off');
     setMeasButtons(false);
   }
-  graphModePending = true;
-  graphModeTarget = target;
-  // A mode switch is confirmed by a STATUS frame. If that never arrives (dropped frame,
-  // slow hardware call, reconnecting socket) the buttons would stay disabled forever, so
-  // bound the pending state.
-  if (graphModeWatchdog !== null) window.clearTimeout(graphModeWatchdog);
-  graphModeWatchdog = window.setTimeout(() => {
-    graphModeWatchdog = null;
-    if (graphModePending) releaseGraphModePending();
-  }, 8000);
-  const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
-  const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
-  if (modeButton) modeButton.disabled = true;
-  if (sdrButton) sdrButton.disabled = true;
+  // A newer request replaces the previous one and restarts its timeout (discipline 2).
+  requestGraphMode(target);
+  syncModeButtons();
   // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
   // the user located (active marker), or the current centre if no marker is set.
   if (target === 'sdr') {
     // Respect an explicit handoff (Shift+click / peak row); otherwise use the active
     // marker, else the current centre.
-    if (pendingSdrFreq == null) {
+    if (!sdrCenterHz.pending()) {
       const m = S.markers.find(x => x.enabled && x.freq != null);
-      // Prefer the last centre confirmed by a SWP-family STATUS: S.centerHz is refreshed
+      // Prefer the last centre confirmed by a SWP-family STATUS: centerHz.get() is refreshed
       // from every STATUS (including SDR ones), so it can still hold the value from before
       // a preset/re-tune when this runs.
-      const base = S.swpCenterHz > 0 ? S.swpCenterHz : S.centerHz;
-      pendingSdrFreq = (m && m.freq) ? m.freq : base;
+      const base = swpCenterHz.get() > 0 ? swpCenterHz.get() : centerHz.get();
+      sdrCenterHz.set((m && m.freq) ? m.freq : base);
     }
     deferSdrAudioPreference();
   } else {
-    pendingSdrFreq = null;
+    sdrCenterHz.reset();
     if (sdrAudioHandoffTimer !== null) {
       window.clearTimeout(sdrAudioHandoffTimer);
       sdrAudioHandoffTimer = null;
@@ -494,25 +547,18 @@ export function setGraphMode(mode: string) {
   send({ cmd: 'SET_MODE', mode: target });
 }
 
+/** Drop a pending request (socket loss / command error): the UI follows the backend again. */
 export function releaseGraphModePending() {
-  if (graphModeWatchdog !== null) {
-    window.clearTimeout(graphModeWatchdog);
-    graphModeWatchdog = null;
-  }
-  graphModePending = false;
-  graphModeTarget = 'std';
-  const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
-  const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
-  if (modeButton) modeButton.disabled = false;
-  if (sdrButton) sdrButton.disabled = false;
+  resetGraphMode();
+  syncModeButtons();
 }
 
 export function syncGraphModeStatus(mode: string) {
-  if (mode !== 'std' && mode !== 'rta' && mode !== 'sdr') return;
-  if (graphModePending && mode !== graphModeTarget) return;
-  if (graphModePending) releaseGraphModePending();
-  if (confirmedGraphMode === mode) return;
-  confirmedGraphMode = mode;
+  if (!isGraphMode(mode)) return;
+  // Discipline 1: an older reply (a STATUS still on another mode) is not our answer.
+  const changed = confirmGraphMode(mode);
+  syncModeButtons();
+  if (!changed) return;
   const isRtaLike = mode === 'rta' || mode === 'sdr';
   const isSdr = mode === 'sdr';
   S.setRtaMode(isRtaLike);
@@ -521,9 +567,16 @@ export function syncGraphModeStatus(mode: string) {
   if (isSdr) {
     resetSdrAutoRef();
     deferSdrAudioPreference();
+    // Re-issue the reference to the device on entry. It re-applies the IQS reference level
+    // and clears a stale acquisition, so the first automatic scale has a sane frame to work
+    // with (the reported "Preset -> SDR spectrum overflows the canvas"). Auto is the client's
+    // preference here, not the swept one.
+    if (sdrRefAuto.get()) {
+      send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
+    }
   } else {
     setSdrAudioEnabled(false);
-    S.setSdrAudioOn(false);
+    sdrAudioOn.set(false);
     syncSdrAudioButton();
   }
   const modeButton = document.getElementById('btn-mode-rta');
@@ -571,25 +624,17 @@ export function syncGraphModeStatus(mode: string) {
   if (swpFrequency) swpFrequency.style.display = mode === 'std' ? '' : 'none';
   if (sdrSettings) sdrSettings.style.display = isSdr ? '' : 'none';
   if (isRtaLike) S.resetWaterfall();
-  if (isSdr && pendingSdrFreq != null && pendingSdrFreq > 0) {
-    const f = pendingSdrFreq;
-    pendingSdrFreq = null;
+  if (isSdr && sdrCenterHz.pending() && sdrCenterHz.get() > 0) {
+    const f = sdrCenterHz.get();
     const inFm = f >= 87.5e6 && f <= 108e6;
     const inAir = f >= 118e6 && f <= 137e6;
-    const demod = inFm ? 'wfm' : 'am';
-    const ifbw = inFm ? 180000 : (inAir ? 25000 : 12000);
-    sdrCenterHz = f;
-    sdrDecimate = 16;
-    sdrSpanHz = 62.5e6 / 16;
-    S.setSdrListenHz(f);
-    const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-    if (modeSel) modeSel.value = demod;
-    const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-    if (bwSel) bwSel.value = String(ifbw);
-    const cInp = document.getElementById('input-sdr-center') as HTMLInputElement | null;
-    if (cInp) cInp.value = (f / 1e6).toFixed(6);
-    const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-    if (lInp) lInp.value = (f / 1e6).toFixed(6);
+    sdrDecimate.set(16);
+    sdrSpanHz.set(estimatedCaptureSpanHz(16)); // estimate until the device reports the real span
+    sdrListenHz.set(f);
+    renderSdrState();
+    sdrDemod.set(inFm ? 'wfm' : 'am');
+    sdrIfbw.set(inFm ? 180000 : (inAir ? 25000 : 12000));
+    renderSdrState();
     send({ cmd: 'SET_SDR', center: f, decimate: 16 });
     send({ cmd: 'SET_SDR_TUNE', listen: f });
     applySdrDemod();
@@ -673,10 +718,14 @@ export function applySdr() {
   const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   const center = centerMhz * 1e6;
+  // Record what the user typed as the intent; the STATUS confirms it later.
+  sdrCenterHz.set(center);
+  sdrDecimate.set(decimate);
+  sdrListenHz.set(center);
+  renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center, decimate });
   // Setting the wideband centre also tunes the demodulator there.
-  S.setSdrListenHz(center);
   send({ cmd: 'SET_SDR_TUNE', listen: center });
   // Apply the same band -> demod rule as the SWP/RTA handoff, otherwise entering SDR
   // directly and typing a broadcast frequency keeps the previous demod (e.g. AM on an FM
@@ -684,12 +733,9 @@ export function applySdr() {
   const inFm = center >= 87.5e6 && center <= 108e6;
   const inAir = center >= 118e6 && center <= 137e6;
   if (inFm || inAir) {
-    const demod = inFm ? 'wfm' : 'am';
-    const ifbw = inFm ? 180000 : 25000;
-    const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-    if (modeSel) modeSel.value = demod;
-    const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-    if (bwSel) bwSel.value = String(ifbw);
+    sdrDemod.set(inFm ? 'wfm' : 'am');
+    sdrIfbw.set(inFm ? 180000 : 25000);
+    renderSdrState();
     applySdrDemod();
   }
   const l = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
@@ -698,41 +744,36 @@ export function applySdr() {
 
 // Changing only the capture bandwidth keeps the listen frequency unchanged.
 export function applySdrBw() {
-  const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
+  sdrDecimate.set(decimate);
+  const center = sdrCenterHz.get();
+  renderSdrState();
   prepareSdrAudioTransition();
-  send({ cmd: 'SET_SDR', center: centerMhz * 1e6, decimate });
+  send({ cmd: 'SET_SDR', center, decimate });
 }
 
 export function applySdrTune() {
   const listenMhz = sdrNumber('input-sdr-listen', 1000);
   const f = listenMhz * 1e6;
-  S.setSdrListenHz(f);
-  const inp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (inp && document.activeElement !== inp) inp.value = (f / 1e6).toFixed(6);
+  sdrListenHz.set(f);
+  renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
 }
 
-let lastSdrDemodMode = '';
-let lastSdrDemodIfbw = -1;
-let lastSdrDeemph = -2;
-
 export function applySdrDemod() {
-  const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
-  const ifbw = sdrNumber('select-sdr-ifbw', 6000);
-  const deemph = sdrNumber('select-sdr-deemph', -1);
+  const mode = sdrDemod.get();
+  const ifbw = sdrIfbw.get();
+  const deemph = sdrDeemph.get();
   const volume = sdrNumber('input-sdr-volume', 0.8);
   const squelch = sdrNumber('input-sdr-squelch', -110);
-  // Only a demod-mode / IF-bandwidth change rebuilds the chain and needs the reset
-  // handshake. Volume/squelch/AGC are applied live, so muting them would just add a gap.
-  if (mode !== lastSdrDemodMode || Math.abs(ifbw - lastSdrDemodIfbw) > 0.5
-      || deemph !== lastSdrDeemph) {
+  // Only a demod-mode / IF-bandwidth / de-emphasis change rebuilds the chain and needs the
+  // reset handshake. Volume/squelch/AGC are applied live, so muting them would just add a
+  // gap. "Changed" is the slot's own pending state now, not a separate copy of the last
+  // value sent (those caches were one more thing that could disagree with the truth).
+  if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  lastSdrDemodMode = mode;
-  lastSdrDemodIfbw = ifbw;
-  lastSdrDeemph = deemph;
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn(),
          deemph_us: deemph });
 }
@@ -757,18 +798,13 @@ export function applySdrBand(name: string) {
   const b = SDR_BANDS[name];
   if (!b) return;
   prepareSdrAudioTransition();
-  sdrCenterHz = b.center;
-  sdrDecimate = b.decimate;
-  sdrSpanHz = 62.5e6 / b.decimate;
-  const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-  if (modeSel) modeSel.value = b.demod;
-  const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-  if (bwSel) bwSel.value = String(b.ifbw);
-  const cInp = document.getElementById('input-sdr-center') as HTMLInputElement | null;
-  if (cInp) cInp.value = (b.center / 1e6).toFixed(4);
-  const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (lInp) lInp.value = (b.center / 1e6).toFixed(4);
-  S.setSdrListenHz(b.center);
+  sdrCenterHz.set(b.center);
+  sdrDecimate.set(b.decimate);
+  sdrSpanHz.set(estimatedCaptureSpanHz(b.decimate)); // estimate until the device reports the real span
+  sdrDemod.set(b.demod);
+  sdrIfbw.set(b.ifbw);
+  sdrListenHz.set(b.center);
+  renderSdrState();
   send({ cmd: 'SET_SDR', center: b.center, decimate: b.decimate });
   send({ cmd: 'SET_SDR_TUNE', listen: b.center });
   applySdrDemod();
@@ -777,60 +813,54 @@ export function applySdrBand(name: string) {
 export function listenAtFreq(hz: number) {
   if (!isFinite(hz) || hz <= 0) return;
   if (currentGraphMode() === 'sdr') {
-    S.setSdrListenHz(hz);
+    sdrListenHz.set(hz);
+    renderSdrState();
     prepareSdrAudioTransition();
     send({ cmd: 'SET_SDR_TUNE', listen: hz });
-    const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-    if (lInp) lInp.value = (hz / 1e6).toFixed(6);
     renderAll();
     return;
   }
   // From the swept view: hand this frequency to SDR for demodulation.
-  pendingSdrFreq = hz;
+  sdrCenterHz.set(hz);
   setGraphMode('sdr');
 }
 
 function syncSdrButtons() {
-  const mode = (document.getElementById('select-sdr-demod') as HTMLSelectElement | null)?.value || 'am';
+  const mode = sdrDemod.get();
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.classList.toggle('active', (el as HTMLElement).dataset.sdrDemod === mode);
   });
-  const ibw = Math.round(S.sdrPassbandHz || 0);
+  const ibw = Math.round(sdrIfbw.get());
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrIfbw) === ibw);
   });
-  const dsel = document.getElementById('select-sdr-deemph') as HTMLSelectElement | null;
-  const dv = dsel ? Number(dsel.value) : -1;
+  const dv = sdrDeemph.get();
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrDeemph) === dv);
   });
 }
 
 // ── SDR audio enable + amplitude reference ──
-function sdrAudioPref(): boolean {
-  try { return localStorage.getItem('web-sa-sdr-audio') === '1'; } catch { return false; }
-}
 
 function syncSdrAudioButton() {
   const b = document.getElementById('btn-sdr-audio');
   if (b) {
-    b.textContent = S.sdrAudioOn ? t('on') : t('off');
-    b.classList.toggle('active', S.sdrAudioOn);
+    b.textContent = sdrAudioOn.get() ? t('on') : t('off');
+    b.classList.toggle('active', sdrAudioOn.get());
   }
 }
 
 function applySdrAudioPreference() {
-  const on = sdrAudioPref();
-  S.setSdrAudioOn(on);
+  const on = sdrAudioOn.get();
+  sdrAudioOn.set(on);
   setSdrAudioEnabled(on);
   syncSdrAudioButton();
 }
 
 export function toggleSdrAudio() {
-  const on = !S.sdrAudioOn;
-  S.setSdrAudioOn(on);
+  const on = !sdrAudioOn.get();
+  sdrAudioOn.set(on); // the slot persists it (single writer)
   setSdrAudioEnabled(on);
-  try { localStorage.setItem('web-sa-sdr-audio', on ? '1' : '0'); } catch { /* ignore */ }
   syncSdrAudioButton();
 }
 
@@ -838,16 +868,33 @@ function syncSdrRefUI() {
   if (currentGraphMode() !== 'sdr') return;
   const b = document.getElementById('btn-ref-auto');
   if (b) {
-    b.classList.toggle('active', S.sdrRefAuto);
+    b.classList.toggle('active', sdrRefAuto.get());
     b.title = 'Auto amplitude reference';
   }
   const inp = document.getElementById('input-ref') as HTMLInputElement | null;
   if (inp) {
     inp.disabled = false;
-    if (document.activeElement !== inp) inp.value = S.displayRef.toFixed(0);
+    // Discipline 4: the user can see that the device has not confirmed the new level yet.
+    inp.classList.toggle('ref-pending', displayRefDiverges());
+    if (document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
   }
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = false;
+  // In SDR the reference is owned by the client (auto-scale or manual), not by the backend
+  // `ref_mode` the STATUS carries. Drive the step buttons from sdrRefAuto here, otherwise
+  // toggling Auto off left them disabled until a Set (which is what made the backend report
+  // manual). Range matches adjustRefLevel's SDR clamp.
+  const ref = getDisplayRef();
+  const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
+  if (down) {
+    down.disabled = sdrRefAuto.get() || ref <= -160;
+    down.title = sdrRefAuto.get() ? t('auto') : t('ref_down');
+  }
+  const up = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
+  if (up) {
+    up.disabled = sdrRefAuto.get() || ref >= 40;
+    up.title = sdrRefAuto.get() ? t('auto') : t('ref_up');
+  }
 }
 
 // SDR status -> panel readouts (called on every STATUS)
@@ -857,24 +904,22 @@ function sdrSet(id: string, value: string) {
 }
 
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
-let sdrCenterHz = 0;
-let sdrSpanHz = 0;
-let sdrDecimate = 32;
-
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
   if (!sdr) return;
-  sdrCenterHz = Number(sdr.center) || sdrCenterHz;
-  sdrDecimate = Number(sdr.decimate) || sdrDecimate;
   const a = sdr.actual || {};
-  if (a.start != null && a.stop != null) sdrSpanHz = Number(a.stop) - Number(a.start);
-  S.setSdrListenHz(Number(sdr.listen) || 0);
-  S.setSdrPassbandHz(Number(sdr.if_bw) || 0);
-  sdrSet('input-sdr-center', (Number(sdr.center) / 1e6).toFixed(4));
-  sdrSet('select-sdr-decimate', String(sdr.decimate));
-  sdrSet('input-sdr-listen', (Number(sdr.listen) / 1e6).toFixed(4));
-  sdrSet('select-sdr-demod', sdr.demod);
-  sdrSet('select-sdr-ifbw', String(Math.round(Number(sdr.if_bw))));
+  // Confirm the tuning group from the backend, then render it from the slots (the only
+  // writer of those controls). The demod group still uses the DOM for now.
+  sdrCenterHz.confirm(Number(sdr.center) || 0);
+  sdrDecimate.confirm(Number(sdr.decimate) || 32);
+  if (a.start != null && a.stop != null) sdrSpanHz.confirm(Number(a.stop) - Number(a.start));
+  sdrListenHz.confirm(Number(sdr.listen) || 0);
+  sdrDemod.confirm(String(sdr.demod || 'am'));
+  sdrIfbw.confirm(Number(sdr.if_bw) || 6000);
+  // The requested de-emphasis (-1 = per-mode default). Without this confirm the user's
+  // choice stayed a pending intent and fell back to Auto when the slot TTL expired.
+  if (sdr.deemph_us != null) sdrDeemph.confirm(Number(sdr.deemph_us));
+  renderSdrState();
   sdrSet('input-sdr-volume', String(sdr.volume));
   sdrSet('input-sdr-squelch', String(Math.round(Number(sdr.squelch))));
   const agc = document.getElementById('btn-sdr-agc');
@@ -887,17 +932,6 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
-  const adm = document.getElementById('cur-sdr-adm');
-  if (adm) {
-    const m = sdr.adm || {};
-    if (m.kind === 'am') {
-      adm.textContent = `AM m=${(m.mod_depth ?? 0).toFixed(0)}%  SINAD ${(m.sinad ?? 0).toFixed(1)}  SNR ${(m.snr ?? 0).toFixed(1)} dB`;
-    } else if (m.kind === 'fm') {
-      adm.textContent = `FM dev=${(m.deviation ?? 0).toFixed(0)} Hz  SINAD ${(m.sinad ?? 0).toFixed(1)}  SNR ${(m.snr ?? 0).toFixed(1)} dB`;
-    } else {
-      adm.textContent = '';
-    }
-  }
 }
 export function toggleWaterfall() {
   S.setWaterfallOn(!S.waterfallOn);
@@ -977,7 +1011,7 @@ export function presetAll() {
   const b = document.getElementById('btn-meas-onoff');
   if (b) b.textContent = t('off');
   setMeasButtons(false);
-  S.setDisplayRef(0);
+  setDisplayRef('preset', 0);
   S.setDisplayOffset(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
@@ -988,7 +1022,6 @@ export function presetAll() {
   const pl = document.getElementById('btn-peaklist');
   if (pl) pl.textContent = t('off');
   S.setActiveMkrId(1);
-  S.setDefaultMkrDone(true);
   syncMarkerTrackingToggle();
   // Preset also resets the RTA session (backend reset_defaults) and clears the RTA
   // memory + UI so re-entering RTA starts from factory defaults.
@@ -1015,17 +1048,15 @@ export function presetAll() {
   S.setSmoothBins(1);
   S.setSpanStepAuto(true);
   setSdrAudioEnabled(false);
-  S.setSdrAudioOn(false);
-  S.setSdrRefAuto(true);
-  S.setSdrListenHz(0);
-  // Preset invalidates any pending SDR hand-off: leaving it set re-applies the PRE-preset
-  // frequency (observed: preset -> SDR put the centre back on the old 101.7 MHz).
-  pendingSdrFreq = null;
+  sdrAudioOn.set(false);
+  sdrRefAuto.set(true);
+
+  // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
+  // code cleared the fields by hand and missed one, so a Preset could reapply the previous
+  // frequency.
+  resetSdrState();
+  renderSdrState();
   resetSdrAutoRef();
-  lastSdrDemodMode = '';
-  lastSdrDemodIfbw = -1;
-  lastSdrDeemph = -2;
-  refPending = null;
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); renderAll();
 }
@@ -1229,22 +1260,22 @@ export function bindActions() {
   });
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.addEventListener('click', () => {
-      const sel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-      if (sel) sel.value = (el as HTMLElement).dataset.sdrDemod || 'am';
+      sdrDemod.set((el as HTMLElement).dataset.sdrDemod || 'am');
+      renderSdrState();
       applySdrDemod();
     });
   });
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.addEventListener('click', () => {
-      const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-      if (sel) sel.value = (el as HTMLElement).dataset.sdrIfbw || '6000';
+      sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
+      renderSdrState();
       applySdrDemod();
     });
   });
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.addEventListener('click', () => {
-      const sel = document.getElementById('select-sdr-deemph') as HTMLSelectElement | null;
-      if (sel) sel.value = (el as HTMLElement).dataset.sdrDeemph || '-1';
+      sdrDeemph.set(Number((el as HTMLElement).dataset.sdrDeemph ?? -1));
+      renderSdrState();
       applySdrDemod();
     });
   });
@@ -1255,11 +1286,7 @@ export function bindActions() {
   if (sdrListenEl) sdrListenEl.addEventListener('change', () => applySdrTune());
   const sdrCenterEl = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
-  // Restore persisted SDR preferences (audio off unless the user enabled it).
-  try {
-    S.setSdrRefAuto(localStorage.getItem('web-sa-sdr-ref-auto') !== '0');
-    S.setSdrAudioOn(localStorage.getItem('web-sa-sdr-audio') === '1');
-  } catch { /* ignore */ }
+  // Persisted SDR preferences are restored by the slots themselves (core/params.ts).
   syncSdrAudioButton();
   syncSdrRefUI();
   const sdrCenter = document.getElementById('input-sdr-center') as HTMLInputElement | null;
@@ -1349,8 +1376,6 @@ export function bindActions() {
 let sdrDown = false;
 let sdrMoved = false;
 let sdrX0 = 0;
-let sdrCenter0 = 0;
-let sdrPanAt = 0;
 let sdrEdgeAt = 0;
 
 function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
@@ -1379,7 +1404,7 @@ export function bindCanvas() {
     const x = canvasX(e, canvas);
     if (currentGraphMode() === 'sdr') {
       if (x < pr.x || x > pr.x + pr.w) return;
-      sdrDown = true; sdrMoved = false; sdrX0 = x; sdrCenter0 = sdrCenterHz;
+      sdrDown = true; sdrMoved = false; sdrX0 = x;
       S.setDragging(true);
       return;
     }
@@ -1404,7 +1429,7 @@ export function bindCanvas() {
       if (sdrMoved) {
         // Preview the marker locally; the tune itself is committed on release.
         const f = xToFreqHz(x);
-        if (f != null) S.setSdrListenHz(f);
+        if (f != null) sdrListenHz.set(f);
         // Edge push: dragging past the sides shifts the capture window so the user can
         // walk through adjacent frequency ranges (standard SDR panning). Throttled
         // because it retunes the device.
@@ -1414,12 +1439,12 @@ export function bindCanvas() {
         if (now - sdrEdgeAt > 350) {
           if (frac > 0.9) {
             sdrEdgeAt = now;
-            sdrCenterHz += sdrSpanHz * 0.2;
+            sdrCenterHz.set(sdrCenterHz.get() + sdrSpanHz.get() * 0.2);
             sdrX0 += pr.w * 0.2;
             send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
           } else if (frac < 0.1) {
             sdrEdgeAt = now;
-            sdrCenterHz -= sdrSpanHz * 0.2;
+            sdrCenterHz.set(sdrCenterHz.get() - sdrSpanHz.get() * 0.2);
             sdrX0 -= pr.w * 0.2;
             send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
           }
@@ -1438,7 +1463,7 @@ export function bindCanvas() {
       const raw = xToFreqHz(canvasX(e, canvas));
       const f = raw;
       if (f != null) {
-        S.setSdrListenHz(f);
+        sdrListenHz.set(f);
         send({ cmd: 'SET_SDR_TUNE', listen: f });
         renderAll();
       }
@@ -1476,33 +1501,32 @@ const SDR_IFBW = [500, 2400, 3000, 6000, 12000, 25000, 50000, 100000, 180000];
 const SDR_MODES = ['am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'];
 
 function sdrTuneBy(dHz: number) {
-  if (!(sdrCenterHz > 0) || !(sdrSpanHz > 0)) return;
-  const raw = Math.max(sdrCenterHz - sdrSpanHz / 2,
-    Math.min(sdrCenterHz + sdrSpanHz / 2, (S.sdrListenHz || sdrCenterHz) + dHz));
-  const f = raw;
-  S.setSdrListenHz(f);
+  const center = sdrCenterHz.get();
+  const span = sdrSpanHz.get();
+  if (!(center > 0) || !(span > 0)) return;
+  const f = Math.max(center - span / 2,
+    Math.min(center + span / 2, (sdrListenHz.get() || center) + dHz));
+  sdrListenHz.set(f);
+  renderSdrState();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
-  const inp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (inp && document.activeElement !== inp) inp.value = (f / 1e6).toFixed(6);
   renderAll();
 }
 
 function sdrCycleIfbw(dir: number) {
-  const cur = S.sdrPassbandHz || 6000;
+  const cur = sdrIfbw.get();
   let idx = SDR_IFBW.findIndex(v => v >= cur);
   if (idx < 0) idx = SDR_IFBW.length - 1;
   else if (SDR_IFBW[idx] > cur) idx = Math.max(0, idx - 1);
   const ni = Math.max(0, Math.min(SDR_IFBW.length - 1, idx + dir));
-  const sel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-  if (sel) sel.value = String(SDR_IFBW[ni]);
+  sdrIfbw.set(SDR_IFBW[ni]);
+  renderSdrState();
   applySdrDemod();
 }
 
 function sdrCycleDemod() {
-  const sel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-  const cur = sel?.value || 'am';
-  const ni = (SDR_MODES.indexOf(cur) + 1) % SDR_MODES.length;
-  if (sel) sel.value = SDR_MODES[ni];
+  const ni = (SDR_MODES.indexOf(sdrDemod.get()) + 1) % SDR_MODES.length;
+  sdrDemod.set(SDR_MODES[ni]);
+  renderSdrState();
   applySdrDemod();
 }
 

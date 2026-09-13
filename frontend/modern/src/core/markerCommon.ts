@@ -1,9 +1,10 @@
 // Marker common: index/frequency/relocation (decoupled from render to avoid circular deps)
 import * as S from './store';
+import { centerHz } from '../ui/freqState';
 
 export function markerFreqHz(idx: number): number {
   if (S.freqArray && S.freqArray.length > 1) return S.freqArray[Math.min(idx, S.freqArray.length - 1)];
-  return S.centerHz;
+  return centerHz.get();
 }
 
 // After the frequency axis updates, map each enabled marker to the nearest point of the new axis by its recorded frequency

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Harogic SAN-90 Web Spectrum Analyzer</title>
+<title>Harogic SAN Series Web Spectrum Analyzer</title>
 </head>
 <body>
 <div class="analyzer-card">
@@ -67,7 +67,7 @@
                    M5.2 10.5h5.6"/>
         </svg></button>
       <span id="connDot" class="dot off"></span>
-      <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect SAN-90</button>
+      <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect</button>
     </div>
 </div>
 
@@ -118,7 +118,7 @@
           <div class="param-row"><label data-i18n="mode">Mode</label>
             <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
             <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
-            <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
+            <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button><span class="cur-val warn-hint" id="mode-hint"></span>
           </div>
         </div>
       </div>
@@ -246,27 +246,7 @@
             <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
-            <div class="param-row"><span class="cur-val" id="cur-sdr-adm"></span></div>
             <div class="param-row"><span class="cur-val" style="opacity:.6;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span></div>
-            <div style="display:none;">
-              <select id="select-sdr-demod">
-                <option value="am" selected>AM</option><option value="fm">FM</option>
-                <option value="nfm">NFM</option><option value="wfm">WFM</option>
-                <option value="usb">USB</option><option value="lsb">LSB</option><option value="cw">CW</option>
-              </select>
-              <select id="select-sdr-deemph">
-                <option value="-1" selected>-1</option><option value="0">0</option>
-                <option value="50">50</option><option value="75">75</option>
-                <option value="300">300</option>
-              </select>
-              <select id="select-sdr-ifbw">
-                <option value="500">500</option><option value="2400">2400</option>
-                <option value="3000">3000</option><option value="6000" selected>6000</option>
-                <option value="12000">12000</option><option value="25000">25000</option>
-                <option value="50000">50000</option><option value="100000">100000</option>
-                <option value="180000">180000</option>
-              </select>
-            </div>
           </div>
         </div>
       </div>
@@ -366,7 +346,7 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
+          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-50" max="30" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button><span class="cur-val warn-hint" id="ref-hint"></span></div>
           <div class="param-row"><label data-i18n="scale_short">Scale</label>
             <div class="unit-btn-group" id="unit-scale-group">
               <button class="unit-btn" data-scale="1">1</button>
@@ -657,7 +637,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.5.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.5.5 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

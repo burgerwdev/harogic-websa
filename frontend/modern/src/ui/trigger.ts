@@ -116,6 +116,9 @@ function syncOverlay(): void {
 }
 
 async function pollOnce(): Promise<void> {
+  // SDR has no SWP/RTA trigger (the panel is disabled for the IQ path) and its frames
+  // repaint the canvas, so the periodic fetch + repaint is pointless while free-running.
+  if (S.sdrMode && phase === 'free') return;
   try {
     const r = await fetch('/api/state', { cache: 'no-store' });
     const d = await r.json();
@@ -172,7 +175,9 @@ async function pollOnce(): Promise<void> {
     S.setTrigLevel(armLevel);
       S.setTrigSource(backendArmed ? 'level' : 'bus');
     syncOverlay();
-    renderAll();
+    // The live views are repainted by their frames (SWP/RTAF at 30/16 ms); only an active
+    // trigger state (waiting / triggered) needs this extra pass.
+    if (phase !== 'free') renderAll();
   } catch {
     /* device offline: keep the last state */
   }

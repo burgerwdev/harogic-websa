@@ -87,7 +87,7 @@ Query token 可能进入浏览器历史和代理日志，远程访问应使用 H
 ./stop.sh
 ```
 
-`run.sh` 启动 supervisor 和 WebSA worker。native 崩溃、致命采集错误或 DLL 调用超时后，supervisor 会退避重启 worker；配置错误不会循环重启。SAN-90 上模拟 worker `SIGKILL` 后约 3 秒恢复 API。默认运行日志为 `/tmp/san90-web.log`。
+`run.sh` 启动 supervisor 和 WebSA worker。native 崩溃、致命采集错误或 DLL 调用超时后，supervisor 会退避重启 worker；配置错误不会循环重启。SAN-90 上模拟 worker `SIGKILL` 后约 3 秒恢复 API。默认运行日志为 `/tmp/websa.log`。
 
 如果设备仍无法恢复：
 

@@ -1,20 +1,27 @@
-// SDR audio playback. AudioWorklet owns the real-time ring buffer; older/non-secure
-// browsers fall back to ScriptProcessor so LAN deployments over HTTP still have audio.
-import { StreamingPcm16Resampler } from './sdrResampler';
-
+// SDR audio playback.
+//
+// The AudioContext and the AudioWorklet must live on the main thread (Web Audio is not
+// available in workers), but the *ingress* does not: a dedicated worker owns an audio-only
+// WebSocket, resamples, and drives the worklet's MessagePort directly (the port is
+// transferred to it). Neither reception nor delivery therefore depends on the main thread,
+// which is what used to make the ring underrun whenever rendering stalled.
+//
+// Browsers without AudioWorklet keep the ScriptProcessor output, which is main-thread only;
+// there the worker posts the resampled buffers back and this module writes the legacy ring.
 let ctx: AudioContext | null = null;
 let workletNode: AudioWorkletNode | null = null;
+let worker: Worker | null = null;
 let legacyNode: ScriptProcessorNode | null = null;
 let legacyOscillator: OscillatorNode | null = null;
 let legacyPullGain: GainNode | null = null;
 let initPromise: Promise<void> | null = null;
 let enabled = false;
-let sourceRate = 48000;
+let audioTransitionMuted = false;
+let audioFrames = 0;
 let bufferedSamples = 0;
 let audioUnderruns = 0;
-let audioTransitionMuted = false;
+let audioRms = 0;
 let transitionWatchdog: number | null = null;
-let pendingChunks: Float32Array[] = [];
 let resumeListenersInstalled = false;
 
 // Legacy-only ring state.
@@ -26,20 +33,12 @@ let legacyLastSample = 0;
 let legacyTailGain = 0;
 let legacyWasEmpty = true;
 
-// Streaming linear resampler state is carried across WebSocket frames.
-const resampler = new StreamingPcm16Resampler();
-
-const PENDING_LIMIT = 100;
 const FADE_STEP = 0.002;
 const WORKLET_URL = new URL('./sdrAudioWorklet.js', import.meta.url).href;
 
-export function initSdrAudio(): void {
-  // AudioContext creation is deferred until a user enables audio.
-}
-
 function createContext(): AudioContext {
   try {
-    return new AudioContext({ sampleRate: sourceRate });
+    return new AudioContext();
   } catch {
     return new AudioContext();
   }
@@ -95,22 +94,70 @@ function writeLegacy(samples: Float32Array): void {
   bufferedSamples = legacyAvailable;
 }
 
-function deliver(samples: Float32Array): void {
-  if (workletNode) {
-    // MessagePort preserves reset/sample ordering; this fresh buffer is safe to transfer.
-    workletNode.port.postMessage({ type: 'samples', samples }, [samples.buffer]);
-  } else if (legacyNode) {
-    writeLegacy(samples);
-  } else {
-    pendingChunks.push(samples);
-    if (pendingChunks.length > PENDING_LIMIT) pendingChunks.shift();
-  }
+function installResumeListeners(): void {
+  if (resumeListenersInstalled) return;
+  resumeListenersInstalled = true;
+  const resume = () => {
+    if (!enabled || !ctx) return;
+    void ctx.resume().then(() => {
+      if (ctx?.state !== 'running') return;
+      document.removeEventListener('click', resume);
+      document.removeEventListener('keydown', resume);
+      resumeListenersInstalled = false;
+    });
+  };
+  document.addEventListener('click', resume);
+  document.addEventListener('keydown', resume);
 }
 
-function flushPending(): void {
-  const chunks = pendingChunks;
-  pendingChunks = [];
-  for (const chunk of chunks) deliver(chunk);
+/** Audio-only WebSocket URL for the worker (the display connection carries no audio). */
+function audioWorkerUrl(): string {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const token = sessionStorage.getItem('web-sa-token');
+  const q = token ? `&token=${encodeURIComponent(token)}` : '';
+  return `${protocol}//${location.host}/ws?audio=1${q}`;
+}
+
+/**
+ * Start the audio ingress worker. With `port` it drives the worklet directly; without it
+ * (legacy ScriptProcessor fallback) it posts the resampled buffers back to this thread.
+ */
+function startWorker(port: MessagePort | null): void {
+  if (worker) return;
+  worker = new Worker(new URL('./sdrAudioWorker.ts', import.meta.url), { type: 'module' });
+  worker.onmessage = (event: MessageEvent) => {
+    const d = (event.data || {}) as Record<string, any>;
+    if (d.type === 'samples' && d.samples) {
+      writeLegacy(d.samples as Float32Array);
+    } else if (d.type === 'reset') {
+      legacyAvailable = 0;
+      legacyTailGain = legacyFade;
+      legacyFade = 0;
+      legacyWasEmpty = true;
+    } else if (d.type === 'stats') {
+      if (typeof d.frames === 'number') audioFrames = d.frames;
+      if (typeof d.rms === 'number') audioRms = d.rms;
+      // The worklet path reports from the worklet, the legacy path from the ring.
+      if (workletNode) {
+        bufferedSamples = Number(d.bufferedSamples) || 0;
+        audioUnderruns = Number(d.underruns) || 0;
+      }
+      publishAudioDebug();
+    }
+  };
+  const init: Record<string, unknown> = {
+    type: 'init',
+    url: audioWorkerUrl(),
+    targetRate: ctx?.sampleRate || 48000,
+  };
+  if (port) {
+    init.port = port;
+    worker.postMessage(init, [port]);
+  } else {
+    worker.postMessage(init);
+  }
+  worker.postMessage({ type: 'enabled', value: enabled });
+  worker.postMessage({ type: 'mute', value: audioTransitionMuted });
 }
 
 async function initializeOutput(context: AudioContext): Promise<void> {
@@ -134,9 +181,6 @@ async function initializeOutput(context: AudioContext): Promise<void> {
           if (event.data?.type === 'ready') {
             window.clearTimeout(timeout);
             resolve();
-          } else if (event.data?.type === 'status') {
-            bufferedSamples = Number(event.data.available) || 0;
-            audioUnderruns = Number(event.data.underruns) || 0;
           }
         };
         candidate!.connect(context.destination);
@@ -148,10 +192,10 @@ async function initializeOutput(context: AudioContext): Promise<void> {
         candidate?.port.close();
         if (workletNode === candidate) workletNode = null;
         setupLegacyNode(context);
-        flushPending();
+        worker?.postMessage({ type: 'detach' });
       };
-      workletNode.port.postMessage({ type: 'enabled', value: enabled });
-      flushPending();
+      // Hand the worklet port to the worker: from here on it owns delivery.
+      startWorker(candidate.port);
       return;
     } catch (error) {
       candidate?.disconnect();
@@ -161,23 +205,7 @@ async function initializeOutput(context: AudioContext): Promise<void> {
     }
   }
   setupLegacyNode(context);
-  flushPending();
-}
-
-function installResumeListeners(): void {
-  if (resumeListenersInstalled) return;
-  resumeListenersInstalled = true;
-  const resume = () => {
-    if (!enabled || !ctx) return;
-    void ctx.resume().then(() => {
-      if (ctx?.state !== 'running') return;
-      document.removeEventListener('click', resume);
-      document.removeEventListener('keydown', resume);
-      resumeListenersInstalled = false;
-    });
-  };
-  document.addEventListener('click', resume);
-  document.addEventListener('keydown', resume);
+  startWorker(null);
 }
 
 function ensureContext(): void {
@@ -197,15 +225,13 @@ function ensureContext(): void {
 }
 
 function resetPlayback(): void {
-  pendingChunks = [];
   bufferedSamples = 0;
   audioUnderruns = 0;
   legacyAvailable = 0;
   legacyTailGain = legacyFade;
   legacyFade = 0;
   legacyWasEmpty = true;
-  resampler.reset();
-  workletNode?.port.postMessage({ type: 'reset' });
+  worker?.postMessage({ type: 'reset' });
 }
 
 function clearTransitionWatchdog(): void {
@@ -218,75 +244,58 @@ function clearTransitionWatchdog(): void {
 export function prepareSdrAudioTransition(): void {
   if (!enabled) return;
   audioTransitionMuted = true;
+  publishAudioDebug();
   resetPlayback();
+  worker?.postMessage({ type: 'mute', value: true });
   // Safety net: a command that does not actually re-configure the chain never sends a
   // reset marker, so bound the mute instead of leaving the audio silent forever.
   clearTransitionWatchdog();
   transitionWatchdog = window.setTimeout(() => {
     transitionWatchdog = null;
     audioTransitionMuted = false;
+    worker?.postMessage({ type: 'mute', value: false });
+    publishAudioDebug();
   }, 700);
+}
+
+/**
+ * Publish the audio gate state on the canvas so "the button says On but nothing is heard"
+ * can be told apart from "no audio data arrived": enabled = we accept frames, muted = a
+ * reconfiguration transition is swallowing them, frames = AUDF frames seen, buffered = the
+ * worklet's ring. Read it in the browser console:
+ *   document.getElementById('spectrum').dataset.sdrAudio
+ */
+function publishAudioDebug(): void {
+  const cv = document.getElementById('spectrum');
+  if (cv) {
+    cv.dataset.sdrAudio =
+      `enabled=${enabled} muted=${audioTransitionMuted} frames=${audioFrames}` +
+      ` buffered_ms=${(bufferedSamples / 48).toFixed(1)} underruns=${audioUnderruns}` +
+      ` rms=${audioRms.toFixed(4)}` +
+      // ctx=running but buffered_ms climbing, or ctx=suspended, both explain "the button
+      // says On but nothing is heard" without any state-management involvement.
+      ` ctx=${ctx ? ctx.state : 'none'} worklet=${!!workletNode} worker=${!!worker}`;
+  }
 }
 
 export function setSdrAudioEnabled(on: boolean): void {
   clearTransitionWatchdog();
   audioTransitionMuted = false;
   enabled = on;
+  publishAudioDebug();
   if (on) {
     // Start from a clean ring/resampler so a hand-off cannot replay stale tail audio.
     resetPlayback();
     try {
       ensureContext();
-      workletNode?.port.postMessage({ type: 'enabled', value: true });
+      worker?.postMessage({ type: 'enabled', value: true });
+      worker?.postMessage({ type: 'mute', value: false });
       void ctx?.resume();
     } catch {
       // Headless browsers and hosts without an audio device keep the data path harmless.
     }
   } else {
     resetPlayback();
-    workletNode?.port.postMessage({ type: 'enabled', value: false });
+    worker?.postMessage({ type: 'enabled', value: false });
   }
-}
-
-export function isSdrAudioEnabled(): boolean {
-  return enabled;
-}
-
-export function setSdrAudioRate(rate: number): void {
-  if (rate > 0) sourceRate = rate;
-}
-
-function resamplePcm(buffer: ArrayBuffer, offset: number, samples: number): Float32Array {
-  return resampler.process(buffer, offset, samples, sourceRate, ctx?.sampleRate || sourceRate);
-}
-
-export function pushSdrAudio(
-  buffer: ArrayBuffer, offset: number, samples: number, rate: number, reset = false,
-): void {
-  if (!enabled) return;
-  if (samples * 2 + offset > buffer.byteLength) return;
-  if (reset) {
-    clearTransitionWatchdog();
-    resetPlayback();
-    audioTransitionMuted = false;
-  }
-  if (audioTransitionMuted) return;
-  if (samples === 0) return;
-  if (rate > 0) sourceRate = rate;
-  try {
-    ensureContext();
-  } catch {
-    return;
-  }
-  const output = resamplePcm(buffer, offset, samples);
-  if (output.length) deliver(output);
-}
-
-export function sdrAudioBufferedMs(): number {
-  const rate = ctx?.sampleRate || sourceRate;
-  return (bufferedSamples / rate) * 1000;
-}
-
-export function sdrAudioUnderrunCount(): number {
-  return audioUnderruns;
 }

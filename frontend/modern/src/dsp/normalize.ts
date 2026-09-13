@@ -1,5 +1,8 @@
 // Normalization: reference build / direct-pass calibration / display-layer transform
 import * as S from '../core/store';
+import { refLevel } from '../ui/refState';
+import { currentRBW } from '../ui/swpState';
+import { setDisplayRef } from '../ui/displayRef';
 import { resetTraceAccum } from './traces';
 import { updateInfoBar } from '../render/infobar';
 
@@ -8,7 +11,7 @@ export function normRefWindow(): number {
   if (!S.freqArray || S.freqArray.length < 2) return 5;
   const binHz = S.freqArray[1] - S.freqArray[0];
   const spanHz = S.freqArray[S.freqArray.length - 1] - S.freqArray[0];
-  let w = Math.round(S.NORM_REF_RBW_FACTOR * S.currentRBW / binHz);
+  let w = Math.round(S.NORM_REF_RBW_FACTOR * currentRBW.get() / binHz);
   const maxByHz = Math.max(3, Math.floor(Math.min(0.02 * spanHz, 5e6) / binHz));
   w = Math.max(3, Math.min(w, maxByHz, 9));
   return w || 5;
@@ -70,19 +73,6 @@ function buildReferenceTable(powers: Float32Array): Float32Array {
   return ref;
 }
 
-function removeOutliers(p: Float32Array, thresh = 15): Float32Array {
-  let out = p;
-  for (let i = 1; i < p.length - 1; i++) {
-    const v = p[i], l = p[i - 1], r = p[i + 1];
-    if (isFinite(v) && isFinite(l) && isFinite(r) &&
-      (v < l - thresh && v < r - thresh || v > l + thresh && v > r + thresh)) {
-      if (out === p) out = new Float32Array(p);
-      out[i] = (l + r) / 2;
-    }
-  }
-  return out;
-}
-
 function cleanReference(ref: Float32Array, win = 5): Float32Array {
   const n = ref.length;
   const out = new Float32Array(ref);
@@ -107,7 +97,7 @@ export function normalizeActiveTrace() {
   t._lastAbsorb = performance.now();
   resetTraceAccum(t);
   S.setDisplayUnit('dB');
-  S.setDisplayRef(0.0);
+  setDisplayRef('mode', 0.0);
   updateNormalizeStatusUI();
   updateInfoBar();
 }
@@ -118,7 +108,7 @@ export function resetActiveTraceNormalize() {
   resetTraceAccum(t);
   if (!S.traces.some(x => x.isNormalized && x.reference)) {
     S.setDisplayUnit('dBm');
-    S.setDisplayRef(S.refLevel);
+    setDisplayRef('mode', refLevel.get());
   }
   updateNormalizeStatusUI();
   updateInfoBar();

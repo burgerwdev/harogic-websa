@@ -1,6 +1,6 @@
 // DSP engine unit tests: smoothing / parabola fit / excursion / sweep&-valley finding / resampling / normalization
 import { describe, it, expect, beforeEach } from 'vitest';
-import { sgSmooth, smoothForDisplay } from '../dsp/smooth';
+import { sgSmooth } from '../dsp/smooth';
 import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { applyTraceMode, processTraces } from '../dsp/traces';
@@ -18,7 +18,7 @@ import { setUnit } from '../core/units';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { refClockSourceName, refClockStatus } from '../core/refclock';
 import * as S from '../core/store';
-import { synthCW, synthBandpass, synthTwoPeaks } from './synth';
+import { synthBandpass, synthTwoPeaks } from './synth';
 
 beforeEach(() => {
   S.setSmoothBins(1);

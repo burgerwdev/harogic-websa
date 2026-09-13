@@ -1,6 +1,5 @@
 // WebSocket protocol layer + STATUS handling
 import * as S from './store';
-import { formatBWHz, formatFreqHz, fmtAxis } from './fmt';
 import { toUnit } from './units';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
@@ -10,7 +9,6 @@ import {
   syncGraphModeStatus,
   releaseGraphModePending,
   syncFrequencyEditorStatus,
-  syncRefLevelStatus,
   syncScaleButtons,
   syncSwpSpanStep,
   syncSdrPanel,
@@ -19,7 +17,7 @@ import {
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
-import { pushRtaRow, pushSwpRow, waterfallRowWidth } from '../render/waterfall';
+import { pushRtaRow, waterfallRowWidth } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
@@ -29,10 +27,16 @@ import { evaluateSwpTrigger } from '../ui/swpTrigger';
 import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
-import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
+import { alignToDisplayWindow } from '../dsp/grid';
+import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
-import { pushSdrAudio } from '../audio/sdrAudio';
+import { sdrRefAuto } from '../ui/sdrState';
+import { refLevel, refMode } from '../ui/refState';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
+import {
+  rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
+} from '../ui/swpState';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -50,6 +54,7 @@ let reconnectTimer: number | null = null;
 let reconnectDelay = 1000;
 let lastRtaProcess = 0;
 let lastRender = 0;
+let rtaFrames = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
@@ -64,7 +69,6 @@ export function resetSdrAutoRef() {
   lastSdrAutoAt = 0;
 }
 let firstConnect = true;
-let rtaAvgN = 0;
 
 export function send(obj: object) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -92,8 +96,12 @@ export function connectWS() {
   const queryToken = new URLSearchParams(location.search).get('token');
   if (queryToken) sessionStorage.setItem('web-sa-token', queryToken);
   const token = sessionStorage.getItem('web-sa-token');
-  const query = token ? `?token=${encodeURIComponent(token)}` : '';
-  ws = new WebSocket(`${protocol}//${location.host}/ws${query}`);
+  // The display connection carries no audio: SDR playback has its own `?audio=1` socket
+  // inside the audio worker, so a busy main thread cannot starve it.
+  const params = new URLSearchParams();
+  if (token) params.set('token', token);
+  params.set('noaudio', '1');
+  ws = new WebSocket(`${protocol}//${location.host}/ws?${params.toString()}`);
   setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
@@ -142,16 +150,6 @@ export function connectWS() {
     if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
     const view = new DataView(event.data, 0, 16);
     const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    if (magic === 'AUDF') {
-      // SDR audio: magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM.
-      // A zero sequence starts a new configuration and flushes buffered channel audio.
-      const seq = view.getUint32(4, true);
-      const rate = view.getUint32(8, true);
-      const samples = view.getUint32(12, true);
-      if (event.data.byteLength !== 16 + samples * 2) return;
-      pushSdrAudio(event.data, 16, samples, rate, seq === 0);
-      return;
-    }
     const version = view.getUint32(4, true);
     const points = view.getUint32(8, true);
     const sweepMsHdr = view.getFloat32(12, true);
@@ -176,10 +174,24 @@ export function connectWS() {
       const expectedBytes = 24 + pts * 8 + pts * 4 + wfLen * 2 + 8;
       if (pts < 2 || wfLen < 1 || event.data.byteLength !== expectedBytes) return;
       let off = 24;
-      const freq = new Float64Array(event.data, off, pts); off += pts * 8;
-      const spec = new Float32Array(event.data, off, pts); off += pts * 4;
+      const capFreq = new Float64Array(event.data, off, pts); off += pts * 8;
+      const capSpec = new Float32Array(event.data, off, pts); off += pts * 4;
       const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
       const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      // The frame header is the DISPLAY window, the freq array the CAPTURE grid. In SDR the
+      // two differ when a hardware offset moved the capture centre; rebin to the display
+      // window so the user's centre is at the canvas centre and the offset edge is a gap.
+      const { freq, spec, shifted } = alignToDisplayWindow(capFreq, capSpec, startHz, stopHz);
+      {
+        // Debug/verification aid: the windows the renderer actually uses (e2e reads it).
+        const cvW = document.getElementById('spectrum');
+        if (cvW && (shifted || currentGraphMode() === 'sdr')) {
+          cvW.dataset.sdrWindow = JSON.stringify({
+            lo: startHz, hi: stopHz,
+            capLo: Number(capFreq[0]), capHi: Number(capFreq[pts - 1]), shifted,
+          });
+        }
+      }
       const plausible = plausibleSpectrum(spec);
       if (plausible) {
         rtaBadCount = 0;
@@ -194,7 +206,7 @@ export function connectWS() {
       // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
       // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
       // frame peak (with a small hysteresis) so the signal is visible.
-      if (currentGraphMode() === 'sdr' && S.sdrRefAuto) {
+      if (currentGraphMode() === 'sdr' && sdrRefAuto.get()) {
         let peak = -Infinity;
         for (let i = 0; i < spec.length; i++) {
           const v = spec[i];
@@ -217,16 +229,16 @@ export function connectWS() {
               if (cvD) cvD.dataset.sdrRefDbg = JSON.stringify({
                 noise: Math.round(noise), peak: Math.round(peak),
                 nEma: Math.round(sdrNoiseEma), pEma: Math.round(sdrPeakEma),
-                range, ref: Math.round(ref), applied: Math.abs(ref - S.displayRef) >= 3,
-                shown: Math.round(S.displayRef),
+                range, ref: Math.round(ref), applied: Math.abs(ref - getDisplayRef()) >= 3,
+                shown: Math.round(getDisplayRef()),
               });
             }
             // Compare against the value that is ACTUALLY displayed, never a private cache:
             // other panels (preset, normalise, the manual Ref box) also write displayRef,
             // and a stale cache made auto-ref believe it had already applied `ref` and
             // silently stop correcting the display (measured: ref -15, shown 0).
-            if (Math.abs(ref - S.displayRef) >= 3) {
-              S.setDisplayRef(ref);
+            if (Math.abs(ref - getDisplayRef()) >= 3) {
+              setDisplayRef('auto', ref);
               lastSdrAutoAt = now2;
               const cv = document.getElementById('spectrum');
               if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
@@ -249,6 +261,12 @@ export function connectWS() {
       lastRtaStartHz = startHz;
       lastRtaStopHz = stopHz;
       S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
+      {
+        // Debug/verification aid: proves a frame was actually decoded and handed to the
+        // renderer, which the mode flag alone does not (e2e reads it).
+        const cvF = document.getElementById('spectrum');
+        if (cvF) cvF.dataset.rtaFrames = String(rtaFrames++);
+      }
       // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
       const _nowU = performance.now();
       if (_nowU - lastRtaInfoAt > 400) {
@@ -265,7 +283,7 @@ export function connectWS() {
       // so density and trace never drift apart. A window change rebuilds the grid.
       const dispRange = S.totalDivs * S.dbPerDiv;
       const dB_PER_BIN = dispRange / S.RTA_AMP_BINS;
-      const refTop = S.displayRef;
+      const refTop = getDisplayRef();
       if (lastDensRef !== refTop || lastDensRange !== dispRange) {
         if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
         lastDensRef = refTop; lastDensRange = dispRange;
@@ -379,9 +397,9 @@ export function updateStatus(s: any) {
   if (s.caps) S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
   // STATUS top-level fields are the effective values for the active hardware mode.
   const isRtaStatus = s.mode === 'rta';
-  if (s.req.rta?.center > 0) S.setRtaCenterHz(Number(s.req.rta.center));
-  S.setCenterHz(Number(s.center));
-  if (s.mode !== 'rta' && s.mode !== 'sdr') S.setSwpCenterHz(Number(s.center));
+  if (s.req.rta?.center > 0) rtaCenterHz.confirm(Number(s.req.rta.center));
+  centerHz.confirm(Number(s.center));
+  if (s.mode !== 'rta' && s.mode !== 'sdr') swpCenterHz.confirm(Number(s.center));
   // -12 = APIRETVAL_WARNING_IFOverflow: the IF saturates when Ref is set low (gain rises as
   // Ref falls) and the device then stops delivering frames, so the display looks frozen.
   // The vendor's remedy is to RAISE the reference level. Shown in the canvas warning stack
@@ -395,62 +413,69 @@ export function updateStatus(s: any) {
     }
     S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
   }
-  S.setSpanHz(Number(s.span));
-  S.setRefLevel(Number(s.ref));
-  S.setRefMode(s.ref_mode === 'auto' ? 'auto' : 'manual');
+  spanHz.confirm(Number(s.span));
+  refLevel.confirm(Number(s.ref));
+  refMode.confirm(s.ref_mode === 'auto' ? 'auto' : 'manual');
   S.setConfigVersion(Number(s.config_version) || 0);
-  S.setCurrentRBW(Number(s.rbw));
-  S.setCurrentVBW(Number(s.vbw));
-  S.setRbwMode(s.rbw_mode);
-  S.setVbwMode(s.vbw_mode);
-  S.setCurrentPoints(Number(s.points) || Number(s.req.swp?.points) || 1001);
-  S.setCurrentSpur(s.req.swp?.spur || s.spur || 'bypass');
+  currentRBW.confirm(Number(s.rbw));
+  currentVBW.confirm(Number(s.vbw));
+  rbwMode.confirm(s.rbw_mode);
+  vbwMode.confirm(s.vbw_mode);
+  currentPoints.confirm(Number(s.points) || Number(s.req.swp?.points) || 1001);
+  currentSpur.confirm(s.req.swp?.spur || s.spur || 'bypass');
   S.setSweepMs(s.sweep_ms || 0);
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
-  syncRefLevelStatus(s.response_to);
   syncAvgUI();
-  syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
+  syncSwpSpanStep(Number(s.req.swp?.span) || spanHz.get());
 
-  const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
+  // The harmonic measurement retunes the device to each harmonic internally; the STATUS
+  // centre/span those retunes report are not the display window, so they must not wipe the
+  // trace (it made the canvas flash blank once per harmonic sequence).
+  const harmonicMeasuring = S.measOn && S.viewMode === 'harm';
+  const measKey = `${centerHz.get()}|${spanHz.get()}|${currentPoints.get()}|${currentRBW.get()}|${rbwMode.get()}|${s.window}`;
   if (measKey !== S.lastMeasKey) {
     S.setLastMeasKey(measKey);
-    const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
-    invalidateAllTraces();
-    if (hadNormalization) showNormalizeClearedHint();
+    if (!harmonicMeasuring) {
+      const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
+      invalidateAllTraces();
+      if (hadNormalization) showNormalizeClearedHint();
+    }
   }
-  if (S.displayUnit !== 'dB' && s.mode !== 'sdr') S.setDisplayRef(S.refLevel);
+  noteDisplayRefReport(Number(s.ref));
+  if (S.displayUnit !== 'dB') setDisplayRef('mode', refLevel.get());
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
-  const refText = Number.isInteger(S.refLevel) ? S.refLevel.toFixed(0) : S.refLevel.toFixed(1);
+  const cur = refLevel.get();
+  const refText = Number.isInteger(cur) ? cur.toFixed(0) : cur.toFixed(1);
   setInput('input-ref', S.displayUnit === 'dB' ? '0' : refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
-  if (refInput) refInput.disabled = S.refMode === 'auto';
-  if (refSet) refSet.disabled = S.refMode === 'auto';
+  if (refInput) refInput.disabled = refMode.get() === 'auto';
+  if (refSet) refSet.disabled = refMode.get() === 'auto';
   const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
-  const inAuto = S.refMode === 'auto';
+  const inAuto = refMode.get() === 'auto';
   if (refDown) {
-    refDown.disabled = inAuto || S.refLevel <= -50;
+    refDown.disabled = inAuto || cur <= -50;
     refDown.title = inAuto ? t('auto') : t('ref_down');
   }
   if (refUp) {
-    refUp.disabled = inAuto || S.refLevel >= 30;
+    refUp.disabled = inAuto || cur >= 30;
     refUp.title = inAuto ? t('auto') : t('ref_up');
   }
   if (refAuto) {
-    refAuto.classList.toggle('active', S.refMode === 'auto');
+    refAuto.classList.toggle('active', inAuto);
     refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
   }
-  setInput('input-points', String(S.currentPoints));
-  setSelect('select-rbw-mode', S.rbwMode);
-  setSelect('select-vbw-mode', S.vbwMode);
-  setSelect('select-spur', S.currentSpur);
+  setInput('input-points', String(currentPoints.get()));
+  setSelect('select-rbw-mode', rbwMode.get());
+  setSelect('select-vbw-mode', vbwMode.get());
+  setSelect('select-spur', currentSpur.get());
   setSelect('select-detector', s.detector || 'auto');
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
   if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
@@ -463,7 +488,7 @@ export function updateStatus(s: any) {
     if (spanSelect && document.activeElement !== spanSelect) {
       const options = [...spanSelect.options];
       const nearest = options.reduce((best, option) =>
-        Math.abs(Number(option.value) - S.spanHz) < Math.abs(Number(best.value) - S.spanHz)
+        Math.abs(Number(option.value) - spanHz.get()) < Math.abs(Number(best.value) - spanHz.get())
           ? option : best, options[0]);
       if (nearest) spanSelect.value = nearest.value;
     }
@@ -551,23 +576,17 @@ function setSelect(id: string, v: string) {
 export function updateFreqUIInputs(force = false) {
   const swpEditor = document.getElementById('swp-freq-settings');
   if (swpEditor?.dataset.dirty !== '1') {
-    setInput('input-center', toUnit(S.centerHz, 'center').toFixed(4), force);
-    setInput('input-span', toUnit(S.spanHz, 'span').toFixed(4), force);
-    setInput('input-start', toUnit(S.centerHz - S.spanHz / 2, 'start').toFixed(4), force);
-    setInput('input-stop', toUnit(S.centerHz + S.spanHz / 2, 'stop').toFixed(4), force);
+    setInput('input-center', toUnit(centerHz.get(), 'center').toFixed(4), force);
+    setInput('input-span', toUnit(spanHz.get(), 'span').toFixed(4), force);
+    setInput('input-start', toUnit(centerHz.get() - spanHz.get() / 2, 'start').toFixed(4), force);
+    setInput('input-stop', toUnit(centerHz.get() + spanHz.get() / 2, 'stop').toFixed(4), force);
   }
-  setInput('input-rbw', toUnit(S.currentRBW, 'rbw').toFixed(2));
-  setInput('input-vbw', toUnit(S.currentVBW, 'vbw').toFixed(2));
+  setInput('input-rbw', toUnit(currentRBW.get(), 'rbw').toFixed(2));
+  setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
   const rtaEditor = document.getElementById('rta-freq-settings');
   if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
     const u = S.units.rta_center || 'MHz';
     const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
-    setInput('input-rta-center', (S.rtaCenterHz / scale).toFixed(4), force);
+    setInput('input-rta-center', (rtaCenterHz.get() / scale).toFixed(4), force);
   }
-}
-
-// i18n sync: connect button/status text
-export function syncConnectBtn() {
-  const bc = document.getElementById('btn-connect');
-  if (bc) bc.textContent = S.deviceConnected ? t('status_connected') : t('connect');
 }

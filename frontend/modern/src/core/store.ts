@@ -44,38 +44,25 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
     FREQ_MAX = maximum;
   }
 }
-export let centerHz = 1e9, spanHz = 100e6, refLevel = 0.0;
 export let spanStepHz = 10e6;
 export let spanStepAuto = true;
 export function setSpanStepHz(v: number) { spanStepHz = v; }
 export function setSpanStepAuto(v: boolean) { spanStepAuto = v; }
-export let refMode: 'manual' | 'auto' = 'manual';
-export function setRefMode(v: 'manual' | 'auto') { refMode = v; }
+// (Reference level/mode live in ui/refState.ts; rta_ref_level/rta_ref_mode were unused
+// copies - the STATUS `ref` field is already the effective value for the active mode.)
 export let configVersion = 0;
 export function setConfigVersion(v: number) { configVersion = v; }
-export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
-export function setRtaCenterHz(v: number) { rtaCenterHz = v; }
-export function setCenterHz(v: number) { centerHz = v; }
 
 // Last centre confirmed by a STATUS while the hardware was in an SWP-family mode.
 // STATUS `center` is mode-dependent (in SDR it is the SDR centre), so this is the only
 // unambiguous source for "where the swept view is" when handing off to SDR.
-export let swpCenterHz = 0;
-export function setSwpCenterHz(v: number) { if (v > 0) swpCenterHz = v; }
-export function setSpanHz(v: number) { spanHz = v; }
-export function setRefLevel(v: number) { refLevel = v; }
 export let dbPerDiv = 10.0;
 export function setDbPerDiv(v: number) { dbPerDiv = v; }
 export const totalDivs = 10;
-export let currentRBW = 300e3, currentVBW = 300e3;
-export function setCurrentRBW(v: number) { currentRBW = v; }
-export function setCurrentVBW(v: number) { currentVBW = v; }
-export let rbwMode = 'auto', vbwMode = 'bypass';
-export function setRbwMode(v: string) { rbwMode = v; }
-export function setVbwMode(v: string) { vbwMode = v; }
-export let currentPoints = 1001, currentSpur = 'standard', currentGapFill = true;
-export function setCurrentPoints(v: number) { currentPoints = v; }
-export function setCurrentSpur(v: string) { currentSpur = v; }
+// (RBW/VBW mode + effective values, points and spur mode live in ui/swpState.ts. Copies
+// here were written by the STATUS handler and by the RBW/VBW UI functions at the same time,
+// so a user choice could not be told apart from a confirmed value.)
+export let currentGapFill = true;
 export function setCurrentGapFill(v: boolean) { currentGapFill = v; }
 export let sweepMs = 0;
 export function setSweepMs(v: number) { sweepMs = v; }
@@ -89,8 +76,8 @@ export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }
 export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
-export let displayRef = 0.0;
-export function setDisplayRef(v: number) { displayRef = v; }
+// (The display reference level lives in ui/displayRef.ts: it had several writers with no
+// arbitration, so a Preset/normalise/trace reset could clobber a manually set SDR Ref.)
 export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
 export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
 // RTA trigger (mirrored from the device status so the renderer can draw the threshold)
@@ -140,7 +127,6 @@ export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start
 // Traces
 export let activeTraceIdx = 0;
 export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
-export const TRACE_COLORS = ['#00FF00', '#FFFF00', '#00FFFF', '#FF00FF'];
 export const traces: TraceState[] = [
   { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, avgTargetRta: 16, done: false },
   { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, avgTargetRta: 16, done: false },
@@ -176,7 +162,6 @@ export interface StdSnap { traces: { mode: string }[]; markers: MarkerState[]; }
 export let stdSnap: StdSnap | null = null;
 export function setStdSnap(v: StdSnap | null) { stdSnap = v; }
 export let harmValMode = 'RT';
-export function setHarmValMode(v: string) { harmValMode = v; }
 export let harmAccum: any = null;
 export function setHarmAccum(v: any) { harmAccum = v; }
 export let pnmData: any = null;
@@ -213,8 +198,6 @@ export let peakThrUserSet = false;
 export function setPeakThrUserSet(v: boolean) { peakThrUserSet = v; }
 export let normRefWinUser = 0;
 export function setNormRefWinUser(v: number) { normRefWinUser = v; }
-export let defaultMkrDone = false;
-export function setDefaultMkrDone(v: boolean) { defaultMkrDone = v; }
 // Latest GNSS status (for the detail popover)
 // RTA 实时频谱 + 瀑布
 export let rtaData: any = null;
@@ -257,26 +240,10 @@ export function setRtaMode(v: boolean) { rtaMode = v; }
 // listen-frequency marker / passband.
 export let sdrMode = false;
 export function setSdrMode(v: boolean) { sdrMode = v; }
-export let sdrListenHz = 0;
-export function setSdrListenHz(v: number) { sdrListenHz = v; }
-export let sdrPassbandHz = 6000;
-export function setSdrPassbandHz(v: number) { sdrPassbandHz = v; }
+// (Every SDR parameter - centre/decimate/span/listen/demod/ifbw/deemph - lives in
+// ui/sdrState.ts. Copies here are what let the store and the form controls disagree.)
 // Audio is OFF until the user explicitly enables it ("Listen").
-export let sdrAudioOn = false;
-export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }
-// Auto amplitude reference (on by default); manual Ref disables it.
-export let sdrRefAuto = true;
-export function setSdrRefAuto(v: boolean) {
-  sdrRefAuto = v;
-  // Single writer for the persisted preference: the UI has several paths that switch the
-  // SDR auto-scale off (the Auto toggle, the Ref Set button, the Ref arrows). Persisting in
-  // only one of them meant a stored "on" came back after a reload and silently overrode the
-  // reference level the user had just set, which reads as "the SDR Ref cannot be adjusted".
-  try { localStorage.setItem('web-sa-sdr-ref-auto', v ? '1' : '0'); } catch { /* ignore */ }
-}
-// Clicking a peak-list row enters SDR at that frequency (optional).
-export let peakDemodOn = true;
-export function setPeakDemodOn(v: boolean) { peakDemodOn = v; }
+// (The SDR auto-scale and audio preferences live in ui/sdrState.ts.)
 
 export let lastGnss: any = null;
 export function setLastGnss(v: any) { lastGnss = v; }
@@ -287,5 +254,4 @@ export function setDragging(v: boolean) { dragging = v; }
 export const NORM_POS_CAP = 0.0;
 export const ABSORB_THRESH = 0.3;
 export const NORM_REF_RBW_FACTOR = 60;
-export const NORM_SETTLE_MS = 4500;
 export const PNM_OFFSETS = [100, 1000, 10000, 100000, 1000000, 10000000];
