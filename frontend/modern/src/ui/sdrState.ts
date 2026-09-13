@@ -91,10 +91,4 @@ export function renderSdrState(): void {
 	}
 	const dec = select('select-sdr-decimate');
 	if (dec) dec.value = String(sdrDecimate.get());
-	const demod = select('select-sdr-demod');
-	if (demod) demod.value = sdrDemod.get();
-	const ifbw = select('select-sdr-ifbw');
-	if (ifbw) ifbw.value = String(Math.round(sdrIfbw.get()));
-	const deemph = select('select-sdr-deemph');
-	if (deemph) deemph.value = String(sdrDeemph.get());
 }

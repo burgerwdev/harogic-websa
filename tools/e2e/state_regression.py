@@ -184,6 +184,15 @@ def main() -> int:
         check("IF bandwidth reaches the backend", abs(d["sdr"]["if_bw"] - 12000) < 1, str(d["sdr"]["if_bw"]))
         actual = (d["sdr"].get("actual") or {}).get("deemph_us")
         check("de-emphasis is applied", actual is not None and abs(actual - 75) < 1, str(actual))
+        # ...and the selection must survive the slot TTL. The backend did not report the
+        # requested de-emphasis, so the button fell back to Auto after ~3 s.
+        page.wait_for_timeout(3500)
+        check(
+            "de-emphasis selection does not fall back to Auto",
+            page.eval_on_selector('[data-sdr-deemph="75"]', "e => e.classList.contains('active')")
+            and abs(float(state(url)["sdr"].get("deemph_us", -1)) - 75) < 1,
+            f"active={page.eval_on_selector_all('[data-sdr-deemph].active', 'e => e.map(x => x.dataset.sdrDeemph)')}",
+        )
         check(
             "button highlight follows the state",
             page.eval_on_selector_all(

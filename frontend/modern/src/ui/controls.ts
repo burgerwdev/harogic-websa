@@ -916,6 +916,9 @@ export function syncSdrPanel(s: any) {
   sdrListenHz.confirm(Number(sdr.listen) || 0);
   sdrDemod.confirm(String(sdr.demod || 'am'));
   sdrIfbw.confirm(Number(sdr.if_bw) || 6000);
+  // The requested de-emphasis (-1 = per-mode default). Without this confirm the user's
+  // choice stayed a pending intent and fell back to Auto when the slot TTL expired.
+  if (sdr.deemph_us != null) sdrDeemph.confirm(Number(sdr.deemph_us));
   renderSdrState();
   sdrSet('input-sdr-volume', String(sdr.volume));
   sdrSet('input-sdr-squelch', String(Math.round(Number(sdr.squelch))));
