@@ -605,7 +605,8 @@ function renderRta() {
     if (lx >= p.x && lx <= p.x + p.w) {
       ctx.fillStyle = '#00ffa0'; ctx.font = '11px monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      ctx.fillText('\u25bc ' + (S.sdrListenHz / 1e6).toFixed(4), lx, p.y + 2);
+      // formatFreqHz keeps the unit (the label used to read "\u25bc 101.7073" with none).
+      ctx.fillText('\u25bc ' + formatFreqHz(S.sdrListenHz), lx, p.y + 2);
     }
   }
   // Markers on the active RTA trace (length-guarded)

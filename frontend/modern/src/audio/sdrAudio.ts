@@ -12,6 +12,8 @@ let enabled = false;
 let sourceRate = 48000;
 let bufferedSamples = 0;
 let audioUnderruns = 0;
+let audioTransitionMuted = false;
+let transitionWatchdog: number | null = null;
 let pendingChunks: Float32Array[] = [];
 let resumeListenersInstalled = false;
 
@@ -206,9 +208,33 @@ function resetPlayback(): void {
   workletNode?.port.postMessage({ type: 'reset' });
 }
 
+function clearTransitionWatchdog(): void {
+  if (transitionWatchdog !== null) {
+    window.clearTimeout(transitionWatchdog);
+    transitionWatchdog = null;
+  }
+}
+
+export function prepareSdrAudioTransition(): void {
+  if (!enabled) return;
+  audioTransitionMuted = true;
+  resetPlayback();
+  // Safety net: a command that does not actually re-configure the chain never sends a
+  // reset marker, so bound the mute instead of leaving the audio silent forever.
+  clearTransitionWatchdog();
+  transitionWatchdog = window.setTimeout(() => {
+    transitionWatchdog = null;
+    audioTransitionMuted = false;
+  }, 700);
+}
+
 export function setSdrAudioEnabled(on: boolean): void {
+  clearTransitionWatchdog();
+  audioTransitionMuted = false;
   enabled = on;
   if (on) {
+    // Start from a clean ring/resampler so a hand-off cannot replay stale tail audio.
+    resetPlayback();
     try {
       ensureContext();
       workletNode?.port.postMessage({ type: 'enabled', value: true });
@@ -239,7 +265,12 @@ export function pushSdrAudio(
 ): void {
   if (!enabled) return;
   if (samples * 2 + offset > buffer.byteLength) return;
-  if (reset) resetPlayback();
+  if (reset) {
+    clearTransitionWatchdog();
+    resetPlayback();
+    audioTransitionMuted = false;
+  }
+  if (audioTransitionMuted) return;
   if (samples === 0) return;
   if (rate > 0) sourceRate = rate;
   try {

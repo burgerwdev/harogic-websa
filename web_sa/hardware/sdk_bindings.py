@@ -28,9 +28,19 @@ from ctypes import (
     c_void_p,
     create_string_buffer,
     pointer,
+    sizeof,
 )
 
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))  # ../.. = Python_Examples (htra_api.py)
+
+# The vendor library runs its FFT/DSP through an OpenMP thread pool. With the default
+# "active" wait policy those worker threads busy-spin between calls, so once the SDR
+# panadapter calls the vendor FFT continuously they burned ~3 extra cores (measured
+# 330%% CPU vs 25%% with a passive policy, same 120 steps/s). These variables are read by
+# the OpenMP runtime when the shared library is loaded, so set them before importing it.
+os.environ.setdefault('OMP_WAIT_POLICY', 'PASSIVE')
+os.environ.setdefault('KMP_BLOCKTIME', '0')
+
 import htra_api  # official Python wrapper (../htra_api.py)
 
 dll = htra_api.dll
@@ -70,17 +80,29 @@ class PNM_AuxInfo_TypeDef(Structure):
 
 
 class Full_MeasAuxInfo(Structure):
-    """Full MeasAuxInfo: the first 11 fields match the official wrapper in htra_api.py
-    (DLL compatible); appends the .h trailing fields (IFAGCGain/RefClkFreqOffset/
-    nsSinceEpoch), from which ppm is read."""
+    """Full MeasAuxInfo.
+
+    The official wrapper in htra_api.py stops after Longitude (48 bytes) and the previous
+    hand-written version stopped after Longitude too (72 bytes), but the header also has
+    Altitude + SATHealth before IFAGCGain - so the struct was 72 instead of 80 and
+    SWP_GetFullSweep / RTA_GetRealTimeSpectrum wrote 8 bytes past it on EVERY call
+    (native heap corruption -> "corrupted size vs. prev_size"). Verified against
+    sizeof(MeasAuxInfo_TypeDef) compiled from /opt/htraapi/inc/htra_api.h.
+    """
     _fields_ = [
         ('MaxIndex', c_uint32), ('MaxPower_dBm', c_float), ('Temperature', c_int16),
         ('RFState', c_uint16), ('BBState', c_uint16), ('GainPattern', c_uint16),
         ('ConvertPattern', c_uint32),
         ('SysTimeStamp', c_double), ('AbsoluteTimeStamp', c_double),
         ('Latitude', c_float), ('Longitude', c_float),
+        ('Altitude', c_float), ('SATHealth', c_float),
         ('IFAGCGain', c_double), ('RefClkFreqOffset', c_double), ('nsSinceEpoch', c_uint64),
     ]
+
+
+assert sizeof(Full_MeasAuxInfo) == 80, (
+    'Full_MeasAuxInfo size %d != 80: a short struct makes the DLL write past it.'
+    % sizeof(Full_MeasAuxInfo))
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +184,50 @@ def _bind_sdr() -> dict:
 
 SDR_CAPS = _bind_sdr()
 
+# ---------------------------------------------------------------------------
+# Vendor wrapper gap (root cause of the native heap corruption): htra_api.py's
+# DeviceState_TypeDef still declares the obsolete `LicenseCode` where the current header
+# (/opt/htraapi/inc/htra_api.h) has `nsSinceEpoch` (uint64). That makes the struct - and
+# the IQStream_TypeDef embedding it - 8 bytes too small (720 vs 728), so
+# IQS_GetIQStream_PM1 writes 8 bytes past the end of our buffer on EVERY packet and
+# corrupts the heap (observed as "corrupted size vs. prev_size" / "munmap_chunk(): invalid
+# pointer" / SIGABRT, i.e. random worker restarts). Re-declare the stream struct with the
+# header-correct size and rebind every entry point that takes it.
+# ---------------------------------------------------------------------------
+class DeviceState_TypeDef(Structure):
+    _fields_ = list(htra_api.DeviceState_TypeDef._fields_[:15]) + [('nsSinceEpoch', c_uint64)]
+
+
+class IQStream_TypeDef(Structure):
+    _fields_ = [
+        ('AlternIQStream', POINTER(c_void_p)),
+        ('IQS_ScaleToV', c_float),
+        ('MaxPower_dBm', c_float),
+        ('MaxIndex', c_uint32),
+        ('IQS_Profile', htra_api.IQS_Profile_TypeDef),
+        ('IQS_StreamInfo', htra_api.IQS_StreamInfo_TypeDef),
+        ('IQS_TriggerInfo', htra_api.TriggerInfo_TypeDef),
+        ('DeviceInfo', htra_api.DeviceInfo_TypeDef),
+        ('DeviceState', DeviceState_TypeDef),
+    ]
+
+
+assert sizeof(IQStream_TypeDef) == 728, (
+    'IQStream_TypeDef size %d != 728: the vendor header changed; passing a short struct to '
+    'IQS_GetIQStream_PM1 corrupts the heap.' % sizeof(IQStream_TypeDef))
+
+for _name, _argtypes in (
+        ('IQS_GetIQStream_PM1', [POINTER(c_void_p), POINTER(IQStream_TypeDef)]),
+        ('IQS_GetIQStream_PM2', [POINTER(c_void_p), POINTER(IQStream_TypeDef),
+                                 POINTER(Full_MeasAuxInfo)]),
+        ('DSP_DDC_Execute', [POINTER(c_void_p), POINTER(IQStream_TypeDef),
+                             POINTER(IQStream_TypeDef)]),
+        ('DSP_FFT_IQSToSpectrum', [POINTER(c_void_p), POINTER(IQStream_TypeDef),
+                                   POINTER(c_double), POINTER(c_float)]),
+):
+    if hasattr(dll, _name):
+        getattr(dll, _name).argtypes = _argtypes
+
 
 def _bind_pnm() -> bool:
     """Bind the PNM functions; return False if the library does not support them."""
@@ -200,10 +266,72 @@ dll.Device_CalibrateRefClock.argtypes = [
     POINTER(c_void_p), c_int, c_double, c_uint64, c_uint8, POINTER(c_double)]
 dll.Device_CalibrateRefClock.restype = c_int
 
+# IF AGC (not bound by htra_api.py). Target is a double pointer, dBFS from ADC saturation.
+dll.Device_InitIFAGC.argtypes = [POINTER(c_void_p)]
+dll.Device_InitIFAGC.restype = c_int
+dll.Device_SetIFAGCTarget.argtypes = [POINTER(c_void_p), POINTER(c_double)]
+dll.Device_SetIFAGCTarget.restype = c_int
+
 PNM_SUPPORTED = _bind_pnm()
 
+
+def _insert_ifagc(base, name):
+    """Rebuild a profile struct with the ``EnableIFAGC`` byte the vendor wrapper omits.
+
+    htra_api.py is stale for the SWP/RTA/DET profiles: the C header has
+
+        int8_t  Atten;
+        uint8_t EnableIFAGC;   <-- missing from the wrapper
+        <enum>  <next>;       <-- 4-byte aligned, so the byte lands in padding
+
+    The field list is rebuilt from the wrapper's own field types with the byte restored.
+    Every field offset is asserted to be unchanged: if the byte had NOT been absorbed by
+    alignment padding, some offset (or the size) would move and the assertion would fire.
+    That is why the omission never corrupted memory - it only made IF AGC unsettable.
+    """
+    fields = []
+    inserted = False
+    for fname, ftype in base._fields_:
+        fields.append((fname, ftype))
+        if fname == 'Atten':
+            fields.append(('EnableIFAGC', c_uint8))
+            inserted = True
+    if not inserted:
+        raise AssertionError(f'{name}: no Atten field to anchor EnableIFAGC to')
+    cls = type(name, (Structure,), {'_fields_': fields})
+    if sizeof(cls) != sizeof(base):
+        raise AssertionError(
+            f'{name}: size changed {sizeof(cls)} != {sizeof(base)}; EnableIFAGC is not in '
+            'padding - the struct must be re-declared field by field instead')
+    for fname, _ in base._fields_:
+        if getattr(cls, fname).offset != getattr(base, fname).offset:
+            raise AssertionError(f'{name}.{fname} moved off its C offset')
+    return cls
+
+
+SWP_Profile_TypeDef = _insert_ifagc(htra_api.SWP_Profile_TypeDef, 'SWP_Profile_TypeDef')
+RTA_Profile_TypeDef = _insert_ifagc(htra_api.RTA_Profile_TypeDef, 'RTA_Profile_TypeDef')
+DET_Profile_TypeDef = _insert_ifagc(htra_api.DET_Profile_TypeDef, 'DET_Profile_TypeDef')
+dll.SWP_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(SWP_Profile_TypeDef)]
+dll.SWP_Configuration.argtypes = [POINTER(c_void_p), POINTER(SWP_Profile_TypeDef),
+                                  POINTER(SWP_Profile_TypeDef),
+                                  POINTER(htra_api.SWP_TraceInfo_TypeDef)]
+dll.RTA_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(RTA_Profile_TypeDef)]
+dll.RTA_Configuration.argtypes = [POINTER(c_void_p), POINTER(RTA_Profile_TypeDef),
+                                 POINTER(RTA_Profile_TypeDef),
+                                 POINTER(htra_api.RTA_FrameInfo_TypeDef)]
+dll.DET_ProfileDeInit.argtypes = [POINTER(c_void_p), POINTER(DET_Profile_TypeDef)]
+dll.DET_Configuration.argtypes = [POINTER(c_void_p), POINTER(DET_Profile_TypeDef),
+                                 POINTER(DET_Profile_TypeDef),
+                                 POINTER(htra_api.DET_StreamInfo_TypeDef)]
+
+# Vendor WARNING return codes (htra_api.h). These are not failures: the acquisition loop
+# must keep running and simply report them. -12 = APIFELVAL_WARNING_IFOverflow, whose
+# documented remedy is to RAISE RefLevel_dBm (the IF saturates when Ref is set low, since
+# the total gain rises as Ref falls).
+WARN_STATUS = frozenset({-10, -11, -12, -14, -15, -16, -17, -18, -19})
+
 # Convenient aliases (used by the business layer)
-SWP_Profile_TypeDef = htra_api.SWP_Profile_TypeDef
 SWP_TraceInfo_TypeDef = htra_api.SWP_TraceInfo_TypeDef
 SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef
 SweepTimeMode_TypeDef = htra_api.SweepTimeMode_TypeDef
@@ -227,7 +355,7 @@ BootInfo_TypeDef = htra_api.BootInfo_TypeDef
 # SDR aliases (IQS / DDC / FFT / demod)
 IQS_Profile_TypeDef = htra_api.IQS_Profile_TypeDef
 IQS_StreamInfo_TypeDef = htra_api.IQS_StreamInfo_TypeDef
-IQStream_TypeDef = htra_api.IQStream_TypeDef
+IQStream_TypeDef = IQStream_TypeDef   # header-corrected above (see the note there)
 TriggerInfo_TypeDef = htra_api.TriggerInfo_TypeDef
 DataFormat_TypeDef = htra_api.DataFormat_TypeDef
 TriggerMode_TypeDef = htra_api.TriggerMode_TypeDef

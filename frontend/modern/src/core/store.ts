@@ -56,6 +56,12 @@ export function setConfigVersion(v: number) { configVersion = v; }
 export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
 export function setRtaCenterHz(v: number) { rtaCenterHz = v; }
 export function setCenterHz(v: number) { centerHz = v; }
+
+// Last centre confirmed by a STATUS while the hardware was in an SWP-family mode.
+// STATUS `center` is mode-dependent (in SDR it is the SDR centre), so this is the only
+// unambiguous source for "where the swept view is" when handing off to SDR.
+export let swpCenterHz = 0;
+export function setSwpCenterHz(v: number) { if (v > 0) swpCenterHz = v; }
 export function setSpanHz(v: number) { spanHz = v; }
 export function setRefLevel(v: number) { refLevel = v; }
 export let dbPerDiv = 10.0;
@@ -111,6 +117,9 @@ export function setTrigWaiting(v: boolean) { trigWaiting = v; }
 export let trigHit = false;
 export function setTrigHit(v: boolean) { trigHit = v; }
 export let trigOverlay: string[] = [];      // status chip + warnings, drawn top-right
+// Vendor warning lines for the same canvas stack (lines starting with '!' draw as warnings).
+export let statusWarnings: string[] = [];
+export function setStatusWarnings(v: string[]) { statusWarnings = v; }
 export function setTrigOverlay(v: string[]) { trigOverlay = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }
@@ -257,7 +266,14 @@ export let sdrAudioOn = false;
 export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }
 // Auto amplitude reference (on by default); manual Ref disables it.
 export let sdrRefAuto = true;
-export function setSdrRefAuto(v: boolean) { sdrRefAuto = v; }
+export function setSdrRefAuto(v: boolean) {
+  sdrRefAuto = v;
+  // Single writer for the persisted preference: the UI has several paths that switch the
+  // SDR auto-scale off (the Auto toggle, the Ref Set button, the Ref arrows). Persisting in
+  // only one of them meant a stored "on" came back after a reload and silently overrode the
+  // reference level the user had just set, which reads as "the SDR Ref cannot be adjusted".
+  try { localStorage.setItem('web-sa-sdr-ref-auto', v ? '1' : '0'); } catch { /* ignore */ }
+}
 // Clicking a peak-list row enters SDR at that frequency (optional).
 export let peakDemodOn = true;
 export function setPeakDemodOn(v: boolean) { peakDemodOn = v; }

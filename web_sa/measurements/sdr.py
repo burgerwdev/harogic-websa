@@ -15,6 +15,7 @@ import logging
 import os
 import struct
 import time
+from ctypes import cast as c_cast
 
 import numpy as np
 
@@ -34,7 +35,42 @@ _AUDIO_HEADER = struct.Struct('<4sIII')   # magic, seq, rate, samples
 # simply skipped and the next one is used.
 _TRANSIENT_IQS = {-8, -9, -10, -12}
 
+# Documented transient bus warnings where the vendor guide says to re-issue the
+# configuration call: -10 APIRETVAL_WARNING_BusTimeOut, -11 APIRETVAL_ERROR_BusDownLoad
+# ("re-call Configuration"). Treating -11 as fatal turned a recoverable stall into an
+# unrecoverable one and forced a worker restart.
+_BUS_RETRY = (-10, -11)
+_BUS_RETRY_TRIES = 4
+_BUS_RETRY_DELAY = 0.05
+
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
+
+# Display-spectrum FFT. Set WEBSA_SDR_FFT=0 to fall back to the NumPy panadapter: the vendor
+# FFT takes a hand-built IQStream whose metadata must match the buffer exactly, and a
+# mismatch lets it overrun an internal buffer (corrupting the process heap).
+VFFT_ENABLED = os.getenv('WEBSA_SDR_FFT', '1').lower() not in ('0', 'false', 'no', 'off')
+
+# Staged tracing for native-crash diagnosis. Enable with WEBSA_TRACE=1. It walks the SDR
+# configuration pipeline step by step so that the last line before a native abort names
+# the offending SDK call. Per-frame calls use _tn(), which logs only the first few hits.
+_TRACE = os.getenv('WEBSA_TRACE', '').lower() not in ('', '0', 'false', 'no', 'off')
+_trace_seen: dict[str, int] = {}
+
+
+
+def _t(msg: str, *args) -> None:
+    if _TRACE:
+        log.info('[trace] ' + msg, *args)
+
+
+def _tn(key: str, msg: str, *args, n: int = 3) -> None:
+    """Trace a hot-path milestone at most ``n`` times per key."""
+    if not _TRACE:
+        return
+    hit = _trace_seen.get(key, 0)
+    if hit < n:
+        _trace_seen[key] = hit + 1
+        log.info('[trace] ' + msg, *args)
 
 
 def encode_audio(seq: int, rate: int, pcm: np.ndarray) -> bytes:
@@ -75,6 +111,14 @@ class SdrSession(MeasurementSession):
         self._audio_reset_pending = False
         self._packet_samples = 0
         self._ddc_batch = 1
+        self._iqs_center_hz = 0.0
+        self._vfft_ready = False
+        self._vfft_points = 0
+        self._vfft_freq = None
+        self._vfft_power = None
+        self._vfft_frame_samples = 0
+        self._vfft_buffer = None
+        self._vfft_stream = None
         self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
@@ -99,15 +143,19 @@ class SdrSession(MeasurementSession):
     # ---------------- lifecycle ----------------
     def enter(self):
         super().enter()
+        _t('enter: IQS configure begin')
         self._configure()
+        _t('enter: IQS configure done')
 
     def exit(self):
+        _t('exit: begin')
         with self._lock:
             self._ready = False
             try:
                 sb.dll.IQS_BusTriggerStop(sb.pointer(self.dev.dev))
             except Exception:
                 log.exception('SDR trigger stop failed during exit')
+            _t('exit: trigger stopped, closing ADM')
             self._close_adm_locked()
             # A single SWP_Configuration after IQS does not take effect: SWP_GetFullSweep
             # then returns BusDataError (-9). A mode reset first makes the restored SWP
@@ -121,20 +169,27 @@ class SdrSession(MeasurementSession):
     def _close_adm_locked(self):
         if self._adm.value:
             try:
+                _t('adm: ADM_Close begin handle=%s', bool(self._adm.value))
                 sb.dll.ADM_Close(sb.pointer(self._adm))
+                _t('adm: ADM_Close ok')
             except Exception:
-                pass
+                log.exception('ADM_Close failed')
         self._adm = sb.c_void_p()
         self._adm_ok = False
 
     # ---------------- configuration ----------------
     def _configure(self):
         with self._lock:
+            _t('_configure: begin')
             self._ready = False
             self._configure_iqs_locked()
+            _t('_configure: IQS ok, configuring DDC/demod chain')
             self._configure_chain_locked()
+            _t('_configure: chain ok, opening ADM')
             self._open_adm_locked()
+            _t('_configure: ADM ok, starting trigger')
             self._start_trigger_locked()
+            _t('_configure: done (ready)')
             self._last_pan = 0.0
             self._last_adm = 0.0
             self._transient_streak = 0
@@ -145,21 +200,39 @@ class SdrSession(MeasurementSession):
             self._last_ok = time.monotonic()
             self._ready = True
 
+    def _sdk_call(self, fn, what: str, retries: int = _BUS_RETRY_TRIES):
+        """Run an SDK configuration entry point, retrying the transient bus warnings.
+
+        The device occasionally answers a configuration download with -11 (BusDownLoad)
+        or -10 (BusTimeOut); the vendor guide's remedy is simply to call Configuration
+        again. Raising on those made normal mode switches escalate to a worker restart.
+        """
+        last = 0
+        for attempt in range(retries + 1):
+            last = int(fn())
+            if last == 0:
+                return 0
+            if last in _BUS_RETRY and attempt < retries:
+                time.sleep(_BUS_RETRY_DELAY)
+                continue
+            raise RuntimeError(f'{what} status={last}')
+        raise RuntimeError(f'{what} status={last}')
+
     def _reset_iqs_mode_locked(self):
         """A second IQS_Configuration after the stream has started is rejected and
         permanently wedges the stream; an SWP_Configuration switches the device's mode and
         lets IQS be configured again (bench-verified: this makes reconfiguration safe)."""
         T = sb
-        p = T.SWP_Profile_TypeDef()
-        o = T.SWP_Profile_TypeDef()
+        p = sb.SWP_Profile_TypeDef()
+        o = sb.SWP_Profile_TypeDef()
         ti = T.SWP_TraceInfo_TypeDef()
-        st = T.dll.SWP_ProfileDeInit(T.pointer(self.dev.dev), T.pointer(p))
-        if st != 0:
-            raise RuntimeError(f'SWP_ProfileDeInit status={st}')
-        st = T.dll.SWP_Configuration(T.pointer(self.dev.dev), T.pointer(p),
-                                     T.pointer(o), T.pointer(ti))
-        if st != 0:
-            raise RuntimeError(f'SWP_Configuration mode reset status={st}')
+        self._sdk_call(
+            lambda: T.dll.SWP_ProfileDeInit(T.pointer(self.dev.dev), T.pointer(p)),
+            'SWP_ProfileDeInit')
+        self._sdk_call(
+            lambda: T.dll.SWP_Configuration(
+                T.pointer(self.dev.dev), T.pointer(p), T.pointer(o), T.pointer(ti)),
+            'SWP_Configuration mode reset')
 
     def _stop_trigger_locked(self, *, required: bool = True) -> None:
         try:
@@ -182,16 +255,21 @@ class SdrSession(MeasurementSession):
         info = T.IQS_StreamInfo_TypeDef()
         # Reset the device mode first so IQS_Configuration is accepted (see the note above).
         self._reset_iqs_mode_locked()
-        st = T.dll.IQS_ProfileDeInit(T.pointer(dev.dev), T.pointer(p))
-        if st != 0:
-            raise RuntimeError(f'IQS_ProfileDeInit status={st}')
+        self._sdk_call(
+            lambda: T.dll.IQS_ProfileDeInit(T.pointer(dev.dev), T.pointer(p)),
+            'IQS_ProfileDeInit')
+        _t('iqs: mode reset + ProfileDeInit ok')
         native_rate = float(p.NativeIQSampleRate_SPS)
         expected_bw = native_rate * 0.8 / s.sdr_decimate if native_rate > 0 else 0.0
+        capture_center = float(s.sdr_center_hz)
+        if (expected_bw >= 800e3
+                and abs(float(s.sdr_listen_hz) - capture_center) < 1e3):
+            capture_center += min(200e3, expected_bw * 0.2)
         if s.caps and expected_bw > 0:
             half = expected_bw / 2.0
-            s.sdr_center_hz = max(s.caps.freq_min_hz + half,
-                                  min(s.caps.freq_max_hz - half, s.sdr_center_hz))
-        p.CenterFreq_Hz = float(s.sdr_center_hz)
+            capture_center = max(s.caps.freq_min_hz + half,
+                                 min(s.caps.freq_max_hz - half, capture_center))
+        p.CenterFreq_Hz = capture_center
         p.RefLevel_dBm = float(s.ref_level)
         p.DecimateFactor = int(s.sdr_decimate)
         p.DataFormat = T.DataFormat_TypeDef.Complex16bit
@@ -204,11 +282,15 @@ class SdrSession(MeasurementSession):
         p.IFGainGrade = int(s.ifgain)
         p.GainStrategy = (T.GainStrategy_TypeDef.LowNoisePreferred if s.gain_strategy == 0
                           else T.GainStrategy_TypeDef.HighLinearityPreferred)
-        p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCHighPassFilterMode
+        p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCAutoOffsetMode
         p.QDCMode = T.QDCMode_TypeDef.QDCOff
-        st = T.dll.IQS_Configuration(T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info))
-        if st != 0:
-            raise RuntimeError(f'IQS_Configuration status={st}')
+        self._sdk_call(
+            lambda: T.dll.IQS_Configuration(
+                T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info)),
+            'IQS_Configuration')
+        _t('iqs: IQS_Configuration ok fs=%s bw=%s pts=%s dec=%s center=%s',
+           float(info.IQSampleRate), float(info.Bandwidth), int(info.PacketSamples),
+           int(out.DecimateFactor), float(out.CenterFreq_Hz))
         fs = float(info.IQSampleRate)
         bandwidth = float(info.Bandwidth) or fs
         if fs <= 0 or bandwidth <= 0 or int(info.PacketSamples) <= 0:
@@ -218,39 +300,157 @@ class SdrSession(MeasurementSession):
         half = bandwidth / 2.0
         configured_center = float(out.CenterFreq_Hz)
         if configured_center > 0:
-            s.sdr_center_hz = configured_center
+            self._iqs_center_hz = configured_center
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
         self._packet_samples = int(info.PacketSamples)
-        self._ddc_batch = 2 if fs >= 3.0e6 else 1
+        # One IQS packet per step. Fetching a second packet in the same step (an earlier
+        # "high-rate" optimisation) overwrote the vendor's internal packet buffer: the
+        # heap damage surfaced later as SIGSEGV / glibc "double free or corruption (out)"
+        # during an unrelated numpy free, i.e. a random crash a few seconds after entering
+        # SDR and on the next mode switch. Measured A/B: two packets per step crashes on
+        # every run, one packet per step is stable over many mode switches. The official
+        # examples also call IQS_GetIQStream once per iteration.
+        self._ddc_batch = 1
         self._fs_in = fs
         s.sdr_actual = dict(
-            center=s.sdr_center_hz, iq_rate=fs, bandwidth=bandwidth,
+            center=self._iqs_center_hz, iq_rate=fs, bandwidth=bandwidth,
+            iq_center=self._iqs_center_hz,
             decimate=int(out.DecimateFactor), packet_samples=self._packet_samples,
             packet_bytes=int(info.PacketDataSize),
             pan_points=min(
                 self.PAN_FFT,
                 max(2, 2 * int(np.floor(self.PAN_FFT * bandwidth / (2.0 * fs))) + 1),
             ),
-            start=s.sdr_center_hz - half, stop=s.sdr_center_hz + half,
+            start=self._iqs_center_hz - half, stop=self._iqs_center_hz + half,
             atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
             ifgain=int(out.IFGainGrade),
             ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
             refclk_out=bool(out.EnableReferenceClockOut),
         )
+        # Re-assert the vendor FFT only when the IQS packet geometry changed (it is the
+        # only thing the FFT size depends on).
+        self._configure_vendor_fft_locked()
         dev._read_amp_atten()
         dev.state.config_version += 1
         dev.state.freq_version += 1
         dev.state.last_error = ''
         self._pan.reset()
 
+    def _configure_vendor_fft_locked(self) -> None:
+        """Configure the vendor FFT over one full, contiguous IQ frame.
+
+        The vendor FFT copies ``IQStream.IQS_StreamInfo.PacketSamples`` input samples into
+        an internal buffer sized from ``DSP_FFT_TypeDef.SamplePts``. Configuring a small
+        FFT while handing it a large IQS packet overflows that buffer and corrupts the
+        heap (observed as ``munmap_chunk(): invalid pointer`` / SIGSEGV). Frame size, FFT
+        size and stream metadata must therefore stay identical.
+        """
+        self._vfft_ready = False
+        self._vfft_points = 0
+        self._vfft_freq = None
+        self._vfft_power = None
+        self._vfft_frame_samples = 0
+        self._vfft_buffer = None
+        self._vfft_stream = None
+        if not VFFT_ENABLED:
+            log.info('SDR vendor FFT disabled (WEBSA_SDR_FFT=%s); using NumPy panadapter'
+                     % os.getenv('WEBSA_SDR_FFT'))
+            return
+        try:
+            frame_samples = int(self._packet_samples) * int(self._ddc_batch)
+            if frame_samples < 64:
+                raise RuntimeError(f'vendor FFT frame too small: {frame_samples}')
+            fi = sb.DSP_FFT_TypeDef()
+            fo = sb.DSP_FFT_TypeDef()
+            points = sb.c_uint32(0)
+            rbw_ratio = sb.c_double(0.0)
+            sb.dll.DSP_FFT_DeInit(sb.pointer(fi))
+            _t('vfft: DeInit ok, configuring size=%s', frame_samples)
+            fi.Calibration = 0
+            fi.DetectionRatio = 1
+            fi.TraceDetector = sb.TraceDetector_TypeDef.TraceDetector_PosPeak
+            fi.FFTSize = frame_samples
+            fi.SamplePts = frame_samples
+            fi.Intercept = 0.8
+            fi.WindowType = sb.Window_TypeDef.FlatTop
+            status = sb.dll.DSP_FFT_Configuration(
+                sb.pointer(self.dev.dsp), sb.pointer(fi), sb.pointer(fo),
+                sb.pointer(points), sb.pointer(rbw_ratio))
+            if status != 0 or points.value < 2:
+                raise RuntimeError(f'DSP_FFT_Configuration status={status}')
+            _t('vfft: Configuration ok status=%s points=%s rbw=%s',
+               status, points.value, rbw_ratio.value)
+            self._vfft_frame_samples = frame_samples
+            self._vfft_buffer = np.empty(frame_samples * 2, dtype=np.int16)
+            self._vfft_stream = sb.IQStream_TypeDef()
+            self._vfft_points = int(points.value)
+            self._vfft_freq = np.empty(self._vfft_points, dtype=np.float64)
+            self._vfft_power = np.empty(self._vfft_points, dtype=np.float32)
+            self._vfft_ready = True
+        except Exception as exc:
+            log.warning('SDR vendor FFT unavailable; using NumPy fallback: %r', exc)
+
+    def _vendor_spectrum_locked(self, template, frame):
+        """Run the vendor FFT over a full contiguous IQ frame; return (freq_hz, dbm).
+
+        ``frame`` must be int16 interleaved IQ of exactly the configured frame length;
+        anything else falls back to the NumPy panadapter.
+        """
+        if not self._vfft_ready or frame is None:
+            return None
+        if frame.size != self._vfft_frame_samples * 2:
+            return None
+        try:
+            self._vfft_buffer[:] = frame
+            s = self.dev.state
+            vstream = self._vfft_stream
+            vstream.IQS_Profile = template.IQS_Profile
+            vstream.IQS_StreamInfo = template.IQS_StreamInfo
+            vstream.IQS_ScaleToV = template.IQS_ScaleToV
+            vstream.IQS_Profile.CenterFreq_Hz = self._iqs_center_hz
+            vstream.IQS_Profile.TriggerLength = self._vfft_frame_samples
+            vstream.IQS_StreamInfo.PacketSamples = self._vfft_frame_samples
+            vstream.IQS_StreamInfo.StreamSamples = self._vfft_frame_samples
+            vstream.IQS_StreamInfo.PacketDataSize = self._vfft_frame_samples * 4
+            vstream.IQS_StreamInfo.IQSampleRate = self._fs_in
+            vstream.IQS_StreamInfo.Bandwidth = float(
+                s.sdr_actual.get('bandwidth', self._fs_in))
+            vstream.AlternIQStream = c_cast(
+                sb.c_void_p(self._vfft_buffer.ctypes.data), sb.POINTER(sb.c_void_p))
+            _tn('fft_iqstospec', 'vfft: IQSToSpectrum in frame=%s',
+                self._vfft_frame_samples)
+            status = sb.dll.DSP_FFT_IQSToSpectrum(
+                sb.pointer(self.dev.dsp), sb.pointer(vstream),
+                self._vfft_freq.ctypes.data_as(sb.POINTER(sb.c_double)),
+                self._vfft_power.ctypes.data_as(sb.POINTER(sb.c_float)))
+            _tn('fft_iqstospec_ok', 'vfft: IQSToSpectrum ok status=%s points=%s',
+                status, self._vfft_points)
+            if status != 0:
+                return None
+            power = self._vfft_power
+            if not np.all(np.isfinite(power)):
+                return None
+            freq = self._vfft_freq
+            target = max(2, int(s.sdr_actual.get('pan_points', self.PAN_FFT)))
+            if freq.size > target:
+                # Max-pool into display buckets so narrow carriers survive the decimation.
+                starts = (np.arange(target) * freq.size // target).astype(np.int64)
+                freq = freq[starts]
+                power = np.maximum.reduceat(power, starts)
+            return freq.copy(), power.copy()
+        except Exception:
+            log.exception('SDR vendor FFT frame failed')
+            return None
+
     def _start_trigger_locked(self):
         """Start streaming. Kept separate so the slow DDC configuration can run BEFORE the
         trigger starts (otherwise the device buffer overflows while we are not fetching)."""
         T = sb
-        start = T.dll.IQS_BusTriggerStart(T.pointer(self.dev.dev))
-        if start != 0:
-            raise RuntimeError(f'IQS_BusTriggerStart status={start}')
+        self._sdk_call(
+            lambda: T.dll.IQS_BusTriggerStart(T.pointer(self.dev.dev)),
+            'IQS_BusTriggerStart')
+        _t('trigger: BusTriggerStart ok; streaming')
         self._last_ok = time.monotonic()
 
     def _chain_params(self):
@@ -270,7 +470,7 @@ class SdrSession(MeasurementSession):
         """Coarse DDC offset (a multiple of ~fs_out) plus the residual for the software
         NCO. The DDC passband is +/-fs_out/2, so the residual stays well inside it."""
         s = self.dev.state
-        rel = float(s.sdr_listen_hz) - float(s.sdr_center_hz)
+        rel = float(s.sdr_listen_hz) - float(self._iqs_center_hz or s.sdr_center_hz)
         # The DDC passband is flat only within ~0.4*fs_out (measured +-0.04 dB up to
         # 0.4*fs_out, -12 dB at 0.45*fs_out), so the coarse grid must keep the residual
         # (and the whole demod channel) well inside it. 0.4 keeps the residual <= 0.2*fs_out.
@@ -304,12 +504,30 @@ class SdrSession(MeasurementSession):
         if (not self._ddc._ready) or self._ddc.decimate != decimate \
                 or abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Deep filter design is expensive (~180 ms); run it only while stopped.
+            _t('chain: DDC configure fs_in=%s offset=%s decimate=%s points=%s',
+               fs_in, ddc_off, decimate, self._packet_samples * self._ddc_batch)
             self._ddc.configure(fs_in, ddc_off, decimate,
                                  self._packet_samples * self._ddc_batch)
+            _t('chain: DDC configure ok out=%s fs_out=%s delay=%s',
+               self._ddc.out_points, self._ddc.fs_out, self._ddc.delay)
             self._mix_phase = 0.0
+        # The vendor FFT geometry depends only on the IQS packet geometry, so it is
+        # (re)configured when that changes - not on every DDC offset/decimate change. Doing
+        # it on every tuning step churned DSP_FFT_DeInit/Configuration against a live DSP
+        # handle and caused native heap corruption ("corrupted size vs. prev_size").
+        frame_samples = int(self._packet_samples) * int(self._ddc_batch)
+        if (not self._vfft_ready) or self._vfft_frame_samples != frame_samples:
+            _t('chain: vendor FFT configure frame_samples=%s', frame_samples)
+            self._configure_vendor_fft_locked()
+            _t('chain: vendor FFT ready=%s points=%s', self._vfft_ready, self._vfft_points)
         self._mix_freq = rel + self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
-        self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
+        _t('chain: demod configure fs_out=%s mode=%s ifbw=%s',
+           self._ddc.fs_out, s.sdr_demod, if_bw)
+        _deemph = None if float(getattr(s, 'sdr_deemph_us', -1.0)) < 0 else float(s.sdr_deemph_us)
+        self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch,
+                              deemph_us=_deemph)
+        _t('chain: demod configure ok')
         self._begin_audio_settle()
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
@@ -318,10 +536,11 @@ class SdrSession(MeasurementSession):
             ddc_delay=self._ddc.delay,
             ddc_batch=self._ddc_batch,
             audio_rate=self.AUDIO_RATE,
+            deemph_us=self._demod.deemph_us,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
-        s.sdr_actual['start'] = float(s.sdr_center_hz) - half
-        s.sdr_actual['stop'] = float(s.sdr_center_hz) + half
+        s.sdr_actual['start'] = float(self._iqs_center_hz) - half
+        s.sdr_actual['stop'] = float(self._iqs_center_hz) + half
 
     def _reconfigure_full_locked(self):
         """Full Stop -> Configuration -> DDC config -> Start. A DDC-only reconfiguration
@@ -410,6 +629,7 @@ class SdrSession(MeasurementSession):
         try:
             sb.dll.ADM_Open(sb.pointer(self._adm))
             self._adm_ok = bool(self._adm.value)
+            _t('adm: ADM_Open ok=%s', self._adm_ok)
         except Exception:
             self._adm_ok = False
 
@@ -431,11 +651,12 @@ class SdrSession(MeasurementSession):
                               min(s.sdr_center_hz + bandwidth / 2.0, float(listen_hz)))
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None,
-                  agc=None, pitch=None):
+                  agc=None, pitch=None, deemph_us=None):
         s = self.dev.state
         old_demod = s.sdr_demod
         old_if_bw = s.sdr_if_bw
         old_pitch = s.sdr_pitch
+        old_deemph = float(getattr(s, 'sdr_deemph_us', -1.0))
         reconfig = False
         if mode is not None and mode in ANALOG_MODES and mode != s.sdr_demod:
             s.sdr_demod = mode
@@ -445,6 +666,9 @@ class SdrSession(MeasurementSession):
             reconfig = True
         if pitch is not None and abs(float(pitch) - s.sdr_pitch) > 0.5:
             s.sdr_pitch = float(pitch)
+            reconfig = True
+        if deemph_us is not None and abs(float(deemph_us) - old_deemph) > 1e-6:
+            s.sdr_deemph_us = float(deemph_us)
             reconfig = True
         # Volume / squelch / AGC are applied live in step(); they must NOT reconfigure the
         # demod (that reset the filters and produced a pop/gap on every slider move).
@@ -462,6 +686,7 @@ class SdrSession(MeasurementSession):
                 s.sdr_demod = old_demod
                 s.sdr_if_bw = old_if_bw
                 s.sdr_pitch = old_pitch
+                s.sdr_deemph_us = old_deemph
                 raise
 
     def reconfigure(self):
@@ -580,6 +805,8 @@ class SdrSession(MeasurementSession):
                 self._last_status = int(st)
                 self._packets_err += 1
                 if st in _TRANSIENT_IQS:
+                    if st in sb.WARN_STATUS:
+                        s.status_warning = int(st)
                     self._transient_streak += 1
                     self._timeout_streak = self._timeout_streak + 1 if st == -10 else 0
                     # A timeout blocks for BusTimeout each call, so recover fast on those;
@@ -591,11 +818,15 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('get', st)
                 return [], []
             self._last_status = 0
+            s.status_warning = 0
             self._transient_streak = 0
             self._timeout_streak = 0
             self._last_ok = now
             self._recovery_attempts = 0
             self._packets_ok += 1
+            if self._packets_ok == 1 or self._packets_ok % 100 == 0:
+                _t('step: packets_ok=%d err=%d status=%d', self._packets_ok,
+                   self._packets_err, self._last_status)
             if time.monotonic() < self._ready_at:
                 # Keep draining IQS while settling so the device FIFO cannot overflow, but
                 # preserve a pending audio reset marker for the clients.
@@ -653,15 +884,22 @@ class SdrSession(MeasurementSession):
 
             # ---- panadapter / waterfall ----
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
-                res = self._pan.process(
-                    arr[0::2], arr[1::2], self._fs_in, s.sdr_center_hz,
-                    self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
+                # Rate-limit first: a failed vendor frame must not become a busy retry.
+                self._last_pan = now
+                vendor = self._vendor_spectrum_locked(stream, arr)
+                if vendor is not None:
+                    freq, spec = vendor
+                    row = self._pan.waterfall_row(spec)
+                    res = (freq, spec, row)
+                else:
+                    res = self._pan.process(
+                        arr[0::2], arr[1::2], self._fs_in, self._iqs_center_hz,
+                        self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
                 if res is not None:
                     freq, spec, row = res
                     frames.append(_encode_rta(dev.state.freq_version, freq, spec, row,
                                               65535, s.sdr_actual['start'],
                                               s.sdr_actual['stop']))
-                    self._last_pan = now
 
             # ---- channelizer + demod ----
             try:
@@ -670,13 +908,17 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
             i, q = self._mix(i, q)                # software fine tuning
-            audio, power_dbfs = self._demod.process(i, q, use_agc=s.sdr_agc)
-            if audio.size and self._settle_pending:
-                # First audio after a reconfiguration: start the discard+fade window now.
+            # Arm the settle window BEFORE the demod so the AGC is held while the chain
+            # transient is discarded; otherwise it winds up on audio that is never
+            # published and the first real block comes out far too loud.
+            if self._settle_pending and i.size:
                 self._settle_pending = False
                 self._discard_until = now + self.SETTLE_DISCARD
                 self._fade_start = self._discard_until
                 self._fade_until = self._discard_until + self.SETTLE_FADE
+            settling = now < self._discard_until
+            audio, power_dbfs = self._demod.process(
+                i, q, use_agc=s.sdr_agc, agc_hold=settling)
             if audio.size and now < self._discard_until:
                 audio = np.zeros(0, dtype=np.float32)   # discard the settling transient
             elif audio.size and now < self._fade_until:

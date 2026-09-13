@@ -120,6 +120,18 @@ above ~3.13 MHz) while still allowing real demodulation and listening.
 ## Notes / limits
 
 - The demod chain is numpy; DDC is the vendor C library (~5 % realtime).
+- **OpenMP wait policy (important)**: the vendor FFT/DSP runs through an OpenMP thread
+  pool. With the default `active` wait policy its idle worker threads busy-spin, so once
+  the SDR panadapter calls the vendor FFT continuously they burn ~3 cores for no work
+  (measured 330 % CPU vs 25 % with a passive policy, identical 120 steps/s).
+  `sdk_bindings.py` therefore sets `OMP_WAIT_POLICY=PASSIVE` (and `KMP_BLOCKTIME=0`) in the
+  environment *before* dlopen-ing `libhtraapi`.
+- `-10` (BusTimeOut) and `-11` (BusDownLoad) are documented transient bus warnings whose
+  remedy is to re-issue the configuration call; `SdrSession._sdk_call()` retries them
+  instead of failing the recovery (raising on -11 used to turn a recoverable stall into a
+  worker restart and a visible reconnect).
+- The vendor DDC and FFT share one DSP handle, so the FFT geometry is re-asserted after
+  every DDC reconfiguration.
 - `-9 (BusDataError)` from `IQS_GetIQStream_PM1` is treated as a transient bad
   packet and skipped; a persistent streak triggers an in-place reconfigure.
 - The publisher does not add its 2 ms sleep in SDR mode (the IQS fetch paces the

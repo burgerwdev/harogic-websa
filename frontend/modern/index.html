@@ -52,7 +52,20 @@
       </div>
     </div>
     <div class="info-right">
-      <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false">⌨</button>
+      <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false"
+              data-i18n-title="tip_keypad" data-i18n-attr="title" title="Virtual keypad"><!--
+        Drawn, not typed: U+2328 is absent from the bundled font subset, so the glyph fell
+        back to a language-dependent system font - a real keyboard icon in English and a
+        small missing-glyph box in Chinese. An inline SVG cannot be affected by the global
+        `font-family: ... !important` rule and looks identical on every platform.
+     --><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.15" stroke-linecap="round" aria-hidden="true"
+              style="display:block;margin:0 auto;">
+          <rect x="0.8" y="3.6" width="14.4" height="8.8" rx="1.5"/>
+          <path d="M3.2 6.1h.01M5.6 6.1h.01M8 6.1h.01M10.4 6.1h.01M12.8 6.1h.01
+                   M3.2 8.3h.01M5.6 8.3h.01M8 8.3h.01M10.4 8.3h.01M12.8 8.3h.01
+                   M5.2 10.5h5.6"/>
+        </svg></button>
       <span id="connDot" class="dot off"></span>
       <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect SAN-90</button>
     </div>
@@ -218,6 +231,14 @@
                 <button class="btn" data-sdr-ifbw="50000">50k</button>
                 <button class="btn" data-sdr-ifbw="180000">180k</button>
               </div></div>
+            <div class="param-row"><label data-i18n="deemph">De-emph</label>
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-deemph-group">
+                <button class="btn active" data-sdr-deemph="-1">Auto</button>
+                <button class="btn" data-sdr-deemph="0" data-i18n="off">Off</button>
+                <button class="btn" data-sdr-deemph="50">50µs</button>
+                <button class="btn" data-sdr-deemph="75">75µs</button>
+                <button class="btn" data-sdr-deemph="300">300µs</button>
+              </div></div>
             <div class="param-row"><label data-i18n="volume">Volume</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
               <span class="cur-val" id="cur-sdr-level"></span>
@@ -232,6 +253,11 @@
                 <option value="am" selected>AM</option><option value="fm">FM</option>
                 <option value="nfm">NFM</option><option value="wfm">WFM</option>
                 <option value="usb">USB</option><option value="lsb">LSB</option><option value="cw">CW</option>
+              </select>
+              <select id="select-sdr-deemph">
+                <option value="-1" selected>-1</option><option value="0">0</option>
+                <option value="50">50</option><option value="75">75</option>
+                <option value="300">300</option>
               </select>
               <select id="select-sdr-ifbw">
                 <option value="500">500</option><option value="2400">2400</option>
@@ -365,7 +391,7 @@
             <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
             <span class="cur-val" data-i18n="db">dB</span></div>
           <div class="param-row"><label data-i18n="atten">Atten</label>
-            <select id="select-atten" data-action="set-amp" data-i18n="tip_atten" data-i18n-attr="title" title="Manual attenuation (Auto=-1). Manual sets Ref Level = Atten - 10 dBm">
+            <select id="select-atten" data-action="set-amp" data-i18n="tip_atten" data-i18n-attr="title" title="Channel attenuation (Auto = derived from Ref Level)">
               <option value="-1" data-i18n="auto">Auto</option>
               <option value="0">0 dB</option><option value="10">10 dB</option>
               <option value="20">20 dB</option><option value="30">30 dB</option>
@@ -631,7 +657,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.4.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.5.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

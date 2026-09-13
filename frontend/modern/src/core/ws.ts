@@ -53,16 +53,14 @@ let lastRender = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
-let lastSdrRef = -999;
 let sdrNoiseEma = -120;
-let sdrPeakEma = -60;
+let sdrPeakEma = -120;   // must satisfy the < -119 seed guard below
 let lastSdrAutoAt = 0;
 
 // Re-initialise the SDR auto-scale (called when entering SDR).
 export function resetSdrAutoRef() {
-  lastSdrRef = -999;
   sdrNoiseEma = -120;
-  sdrPeakEma = -60;
+  sdrPeakEma = -120;     // see the seed guard in the auto-ref block
   lastSdrAutoAt = 0;
 }
 let firstConnect = true;
@@ -213,8 +211,21 @@ export function connectWS() {
             // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
             let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
             ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
-            if (Math.abs(ref - lastSdrRef) >= 3) {
-              lastSdrRef = ref;
+            {
+              // Debug/verification aid: the raw inputs of the SDR auto-ref decision.
+              const cvD = document.getElementById('spectrum');
+              if (cvD) cvD.dataset.sdrRefDbg = JSON.stringify({
+                noise: Math.round(noise), peak: Math.round(peak),
+                nEma: Math.round(sdrNoiseEma), pEma: Math.round(sdrPeakEma),
+                range, ref: Math.round(ref), applied: Math.abs(ref - S.displayRef) >= 3,
+                shown: Math.round(S.displayRef),
+              });
+            }
+            // Compare against the value that is ACTUALLY displayed, never a private cache:
+            // other panels (preset, normalise, the manual Ref box) also write displayRef,
+            // and a stale cache made auto-ref believe it had already applied `ref` and
+            // silently stop correcting the display (measured: ref -15, shown 0).
+            if (Math.abs(ref - S.displayRef) >= 3) {
               S.setDisplayRef(ref);
               lastSdrAutoAt = now2;
               const cv = document.getElementById('spectrum');
@@ -370,6 +381,20 @@ export function updateStatus(s: any) {
   const isRtaStatus = s.mode === 'rta';
   if (s.req.rta?.center > 0) S.setRtaCenterHz(Number(s.req.rta.center));
   S.setCenterHz(Number(s.center));
+  if (s.mode !== 'rta' && s.mode !== 'sdr') S.setSwpCenterHz(Number(s.center));
+  // -12 = APIRETVAL_WARNING_IFOverflow: the IF saturates when Ref is set low (gain rises as
+  // Ref falls) and the device then stops delivering frames, so the display looks frozen.
+  // The vendor's remedy is to RAISE the reference level. Shown in the canvas warning stack
+  // (top-right) and as a pulsing outline on the Ref control. Cleared by a good frame.
+  {
+    const over = Number(s.status_warning) === -12;
+    const refEl = document.getElementById('input-ref') as HTMLInputElement | null;
+    if (refEl) {
+      refEl.classList.toggle('ref-warn', over);
+      refEl.title = over ? t('if_overflow_hint') : '';
+    }
+    S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
+  }
   S.setSpanHz(Number(s.span));
   S.setRefLevel(Number(s.ref));
   S.setRefMode(s.ref_mode === 'auto' ? 'auto' : 'manual');
@@ -491,6 +516,15 @@ export function updateStatus(s: any) {
     if (cp) cp.textContent = s.amp.preamp_actual === 1 ? t('off') : (s.amp.preamp_actual === 0 ? t('on') : '');
     const cg = document.getElementById('cur-ifgain');
     if (cg) cg.textContent = s.amp.ifgain_actual != null ? 'L' + s.amp.ifgain_actual : '';
+    // With a manual channel attenuation the device resolves the preamplifier itself
+    // (measured: it reports ForcedOff), so the Auto/Off choice has no effect. Say so
+    // instead of silently ignoring the selector.
+    const preampSel = document.getElementById('select-preamp') as HTMLSelectElement | null;
+    if (preampSel) {
+      const manualAtten = String(s.amp.atten) !== '-1';
+      preampSel.disabled = manualAtten;
+      preampSel.title = manualAtten ? t('preamp_manual_atten') : t('tip_select-preamp');
+    }
   }
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - S.displayOffset) > 0.01)

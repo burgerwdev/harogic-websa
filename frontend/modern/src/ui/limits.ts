@@ -185,6 +185,15 @@ function addPoint(): void {
   refreshLimitVerdict();
 }
 
+/** Preset: drop the stored limit points and return to the disabled default. */
+export function resetLimits(): void {
+  S.setLimits({ on: false, tol: 0, points: [] });
+  try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ }
+  renderRows();
+  syncToggle();
+  refreshLimitVerdict();
+}
+
 export function initLimits(): void {
   load();
   renderRows();

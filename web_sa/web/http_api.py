@@ -204,6 +204,8 @@ def build_status(dev) -> dict:
                     preamp_actual=s.preamplifier_actual, ifgain_actual=s.ifgain),
         'ref_clock': s.ref_clock, 'has_docxo': s.has_docxo,
         'refclk_ppm': s.refclk_ppm, 'calibrating': s.calibrating, 'refclk_out': s.refclk_out,
+        'ifagc': s.ifagc, 'ifagc_gain': s.ifagc_gain,
+        'status_warning': s.status_warning, 'ref_range_db': s.ref_range_db,
         'last_cal_freq': s.last_cal_freq,
         'gnss': s.gnss, 'last_error': s.last_error,
     })

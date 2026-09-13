@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from .filters import Agc, LinearResampler, StreamFilter, design_complex_bandpass, design_lowpass
+from .filters import (
+    Agc,
+    LinearResampler,
+    StreamFilter,
+    design_complex_bandpass,
+    design_lowpass,
+    one_pole_iir,
+)
 
 ANALOG_MODES = ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw')
 
@@ -21,7 +28,8 @@ class AnalogDemod:
         self.configure(fs=48000.0, mode='am', if_bw=6000.0)
 
     # ---- configuration ----
-    def configure(self, fs: float, mode: str, if_bw: float, pitch: float = 700.0) -> None:
+    def configure(self, fs: float, mode: str, if_bw: float, pitch: float = 700.0,
+                  deemph_us: float | None = None) -> None:
         mode = mode if mode in ANALOG_MODES else 'am'
         fs = float(fs)
         if_bw = float(max(50.0, min(if_bw, fs * 0.45)))
@@ -61,8 +69,20 @@ class AnalogDemod:
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
-        self._deemph_alpha = np.exp(-1.0 / (fs * 50e-6)) if mode == 'wfm' else 0.0
-        self._deemph_y = 0.0
+        # De-emphasis (the complement of the transmitter's pre-emphasis), run at the AUDIO
+        # rate after the resampler. `None` keeps the regional default per mode - 50 us for
+        # broadcast WFM (China/Europe; the Americas use 75 us) and none for AM/SSB/CW, where
+        # it is meaningless. 0 disables it; an explicit 50/75/300 us overrides.
+        tau_us = (50.0 if mode == 'wfm' else 0.0) if deemph_us is None else float(deemph_us)
+        self.deemph_us = tau_us
+        self._deemph = None
+        if tau_us > 0.0:
+            alpha = float(np.exp(-1.0 / (self.audio_rate * tau_us * 1e-6)))
+            if 0.0 < alpha < 1.0:
+                span = int(np.clip(np.ceil(-np.log(1e-4) / -np.log(alpha)), 1, 2048))
+                taps = (1.0 - alpha) * alpha ** np.arange(span + 1, dtype=np.float64)
+                taps /= taps.sum()
+                self._deemph = StreamFilter(taps.astype(np.float32))
         self._cw_phase = 0.0
         self._configured = True
 
@@ -76,7 +96,8 @@ class AnalogDemod:
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
-        self._deemph_y = 0.0
+        if self._deemph is not None:
+            self._deemph.reset()
         self._cw_phase = 0.0
 
     def retune(self) -> None:
@@ -88,12 +109,17 @@ class AnalogDemod:
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0
-        self._deemph_y = 0.0
+        if self._deemph is not None:
+            self._deemph.reset()
         self._cw_phase = 0.0
 
     # ---- processing ----
-    def process(self, i, q, use_agc: bool = True):
-        """Returns (audio float32 @ audio_rate, power_dbfs)."""
+    def process(self, i, q, use_agc: bool = True, agc_hold: bool = False):
+        """Returns (audio float32 @ audio_rate, power_dbfs).
+
+        ``agc_hold`` keeps the AGC gain frozen (it is still applied) while the caller is
+        discarding reconfiguration transients.
+        """
         if not self._configured:
             return np.zeros(0, dtype=np.float32), -120.0
         z = np.asarray(i, dtype=np.float64) + 1j * np.asarray(q, dtype=np.float64)
@@ -107,19 +133,16 @@ class AnalogDemod:
 
         if self.kind == 'am':
             env = np.abs(zf)
-            # DC block (one-pole high-pass); state carried across blocks
-            out = np.empty_like(env)
-            prev_x = self._prev_env
-            prev_y = self._dc_y
+            # One-pole DC block y[n] = a*y[n-1] + a*(x[n]-x[n-1]), vectorised (was a
+            # per-sample Python loop and the single most expensive part of AM demod).
             a = 0.9995
-            for k in range(env.size):
-                y = a * (prev_y + env[k] - prev_x)
-                out[k] = y
-                prev_x = env[k]
-                prev_y = y
-            self._prev_env = prev_x
-            self._dc_y = prev_y
-            audio = out
+            delta = np.empty_like(env)
+            delta[0] = env[0] - self._prev_env
+            if env.size > 1:
+                delta[1:] = env[1:] - env[:-1]
+            delta *= a
+            audio, self._dc_y = one_pole_iir(delta, a, self._dc_y)
+            self._prev_env = float(env[-1])
         elif self.kind == 'fm':
             if self._prev_z is not None:
                 zf = np.concatenate([[self._prev_z], zf])
@@ -134,19 +157,10 @@ class AnalogDemod:
         else:  # SSB: real part of the sideband-selected complex signal
             audio = zf.real
 
-        if self._deemph_alpha > 0.0 and audio.size:
-            # Keep the stateful one-pole recurrence in-place to avoid an extra audio-sized
-            # allocation on every high-rate DDC packet.
-            alpha = self._deemph_alpha
-            feed = 1.0 - alpha
-            prev = self._deemph_y
-            for k in range(audio.size):
-                prev = alpha * prev + feed * audio[k]
-                audio[k] = prev
-            self._deemph_y = float(prev)
-
         a = self.audio_lp.process(audio.astype(np.float32))
         a = self.resampler.process(a)
+        if self._deemph is not None and a.size:
+            a = self._deemph.process(a)
         if use_agc and a.size:
-            a = self.agc.process(a)
+            a = self.agc.process(a, hold=agc_hold)
         return np.ascontiguousarray(a, dtype=np.float32), power_dbfs

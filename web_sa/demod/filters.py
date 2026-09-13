@@ -44,6 +44,34 @@ def design_complex_bandpass(fs: float, f_lo: float, f_hi: float, ntaps: int = 25
     return h.astype(np.complex64)
 
 
+def one_pole_iir(x: np.ndarray, alpha: float, prev: float,
+                 chunk: int = 256) -> tuple[np.ndarray, float]:
+    """Streaming one-pole recursion ``y[n] = alpha*y[n-1] + x[n]``.
+
+    Vectorised with a chunked cumulative sum. The chunk length is bounded so the
+    per-chunk weight ratio cannot overflow: a fast filter (e.g. 50 us de-emphasis)
+    would otherwise blow up over a whole block. Replaces per-sample Python loops,
+    which dominated the SDR demodulator cost.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return x, float(prev)
+    alpha = float(alpha)
+    if not (0.0 < alpha < 1.0):
+        return x, float(x[-1])
+    decay = -np.log(alpha)
+    chunk = max(1, min(int(chunk), int(max(1.0, 2.0 / decay))))
+    out = np.empty_like(x)
+    y = float(prev)
+    for start in range(0, x.size, chunk):
+        seg = x[start:start + chunk]
+        w = alpha ** np.arange(seg.size, dtype=np.float64)
+        seg_out = w * (y + np.cumsum(seg / w))
+        out[start:start + seg.size] = seg_out
+        y = float(seg_out[-1])
+    return out, y
+
+
 class StreamFilter:
     """Stateful FIR (real or complex) with an overlap tail between blocks."""
 
@@ -93,24 +121,59 @@ class LinearResampler:
 
 
 class Agc:
-    """Simple RMS AGC with independent attack/release."""
+    """RMS AGC with independent attack/release, a silence gate and a hold input.
 
-    def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4):
+    ``hold=True`` applies the current gain without adapting. The SDR path holds the AGC
+    while it is discarding a reconfiguration transient, so the gain cannot wind up on
+    audio that is never published (that wound-up gain used to be applied to the first real
+    audio block, producing an audible burst that then decayed). Near-silence below
+    ``silence_floor`` likewise never raises the gain.
+    """
+
+    def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4,
+                 silence_floor=1e-4, ceiling=0.95):
         self.target = float(target)
         self.attack = float(attack)
         self.release = float(release)
         self.max_gain = float(max_gain)
+        self.silence_floor = float(silence_floor)
+        # Peak ceiling. An RMS target alone cannot bound the peak: FM broadcast audio has a
+        # crest factor of 4-5, so a 0.2 RMS target still clipped on loud passages (measured
+        # on a real station: 18 clipped frames in 2 s in WFM, 5 in AM). One instantaneous
+        # scale keeps the block below the ceiling without waiting for the AGC to attack.
+        self.ceiling = float(ceiling)
         self.gain = 1.0
+        self._primed = False
 
     def reset(self) -> None:
         self.gain = 1.0
+        self._primed = False
 
-    def process(self, x: np.ndarray) -> np.ndarray:
+    def process(self, x: np.ndarray, hold: bool = False) -> np.ndarray:
         x = np.asarray(x, dtype=np.float32)
         if x.size == 0:
             return x
-        rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-20))
-        desired = min(self.max_gain, self.target / max(rms, 1e-9))
-        coef = self.attack if desired < self.gain else self.release
-        self.gain += (desired - self.gain) * coef
-        return x * self.gain
+        if not hold:
+            rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-20))
+            if rms >= self.silence_floor:
+                desired = min(self.max_gain, self.target / max(rms, 1e-9))
+                # Jump straight to the safe gain when the current one would push this block
+                # past full scale, and initialise from the first block after a (re)configure.
+                # Ramping instead (attack is only 20% per block) left the signal at unity gain
+                # for tens of blocks, so the FM discriminator output - which is in Hz, up to
+                # +/-fs/2 - came out tens of times over full scale and was hard-clipped: the
+                # burst heard after every reconfigure/tune. Scaling is deployment-dependent
+                # (Hz for FM, arbitrary DDC units for AM), so the AGC must not assume gain 1
+                # is anywhere near correct.
+                if (not self._primed) or rms * self.gain > 1.0:
+                    self.gain = desired
+                    self._primed = True
+                else:
+                    coef = self.attack if desired < self.gain else self.release
+                    self.gain += (desired - self.gain) * coef
+        y = x * self.gain
+        if self.ceiling > 0.0 and y.size:
+            peak = float(np.max(np.abs(y)))
+            if peak > self.ceiling:
+                y = y * (self.ceiling / peak)
+        return y

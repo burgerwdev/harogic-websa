@@ -16,10 +16,14 @@ import time
 
 import numpy as np
 
+from ..hardware import sdk_bindings as _sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
 
 log = logging.getLogger(__name__)
+
+# Vendor WARNING return codes come from sdk_bindings (shared with the SWP/SDR paths).
+_WARN_STATUS = _sb.WARN_STATUS
 
 
 def _dbg(msg: str) -> None:
@@ -47,6 +51,7 @@ class RtaSession(MeasurementSession):
     FULL_SPAN_HZ = 50.78125e6
     DISPLAY_POINTS = 3328        # upper bound: the device FFT width at full span (~15 kHz/point)
     WATERFALL_WIDTH = 860      # waterfall row width after downsample
+    STALL_TIMEOUT = 4.0       # no good RTA frame for this long -> recover (warnings do not)
 
     def __init__(self, dev):
         super().__init__(dev)
@@ -90,7 +95,6 @@ class RtaSession(MeasurementSession):
     def _configure_locked(self, recovery=False):
         import htra_api as T
 
-        from ..hardware import sdk_bindings as _sb
         dev = self.dev
         s = dev.state
         _dbg('CONF enter ready=%s dec=%s rbw=%s sweep=%s center=%.3e' % (
@@ -108,8 +112,8 @@ class RtaSession(MeasurementSession):
         except Exception as e:
             _dbg('CONF BusTriggerStop EXC %r' % (e,))
         _dbg('CONF BusTriggerStop done')
-        prof = T.RTA_Profile_TypeDef()
-        out = T.RTA_Profile_TypeDef()
+        prof = _sb.RTA_Profile_TypeDef()
+        out = _sb.RTA_Profile_TypeDef()
         info = T.RTA_FrameInfo_TypeDef()
         _dbg('CONF calling RTA_ProfileDeInit ...')
         T.dll.RTA_ProfileDeInit(T.pointer(dev.dev), T.pointer(prof))
@@ -158,7 +162,13 @@ class RtaSession(MeasurementSession):
             T.RTA_TriggerSource_TypeDef,
             _TRIGGER_SOURCE.get(s.trigger_source, 'Bus'),
             T.RTA_TriggerSource_TypeDef.Bus)
-        prof.TriggerMode = T.TriggerMode_TypeDef.FixedPoints
+        # Match the official SAStudio app: Adaptive streaming for the free-running
+        # bus/free trigger (measured ~140-150 fps vs ~101 fps with FixedPoints), but keep
+        # FixedPoints for real trigger sources (level/external/timer), where a bounded
+        # acquisition window is required and TriggerAcqTime applies.
+        prof.TriggerMode = (T.TriggerMode_TypeDef.Adaptive
+                            if s.trigger_source in ('bus', 'freerun')
+                            else T.TriggerMode_TypeDef.FixedPoints)
         prof.TriggerAcqTime = float(s.trigger_acq_time_s)
         prof.TriggerEdge = _enum(
             T.TriggerEdge_TypeDef,
@@ -245,12 +255,33 @@ class RtaSession(MeasurementSession):
         dev.state.last_error = ''
         self._last_wf_time = 0.0
         self._last_get = 0.0
+        self._last_good = time.monotonic()
         # Short settle after configuration (Configuration returned synchronously; the
         # device is ready quickly - official UI switches instantly). With all DLL calls
         # serialized under dev._hw there is no concurrent-Get hazard; too-early Gets just
         # fail cleanly (st != 0 -> skip). 0.35s is a safe margin.
         self._ready_at = time.monotonic() + 0.35
         self._dbg_n = 0
+
+    def _note_warning(self, dev, status: int, armed: bool) -> None:
+        """Record a vendor WARNING status and carry on instead of recovering.
+
+        These are documented as warnings, not failures (htra_api.h):
+            -10 BusTimeOut        the trigger has not arrived yet
+            -11 BusDownLoad       re-issue the configuration (handled by the stall watchdog)
+            -12 IFOverflow        IF saturation - "raise RefLevel_dBm until it stops"
+            -14                   reconfiguration recommended (temperature drift)
+            -15..-19              clock unlock / ADC config warnings
+        Feeding them to the error streak made the RTA path recover-reconfigure once per
+        second, which froze the display whenever Ref was lowered far enough for the IF to
+        saturate (the gain rises as Ref falls).
+        """
+        dev.state.status_warning = int(status)
+        if status == -12:
+            dev.state.last_error = ('IF overflow (-12): raise the reference level until '
+                                    'this warning clears')
+        if armed or status == -10:
+            dev.state.trigger_actual['waiting'] = True
 
     def _step_failed_locked(self, stage: str, status) -> None:
         self._error_streak += 1
@@ -372,6 +403,15 @@ class RtaSession(MeasurementSession):
             info = self._info
             self._dbg_n += 1
             log_this = self._dbg_n % 100 == 1
+            # Stall watchdog. Warning statuses (below) no longer feed the error streak, so a
+            # genuinely wedged stream is detected by "no good frame for a while" instead.
+            # A trigger-armed session legitimately produces no frames until it fires.
+            if (now - self._last_good > self.STALL_TIMEOUT
+                    and not (dev.state.trigger_actual or {}).get('waiting')
+                    and now - self._last_recovery >= 1.0):
+                self._step_failed_locked('stall', 'no frame for %.1fs' % (now - self._last_good))
+                self._last_good = now
+                return [], []
             try:
                 st = T.dll.RTA_BusTriggerStart(T.pointer(dev.dev))
             except Exception as exc:
@@ -381,6 +421,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
+                if st in _WARN_STATUS:
+                    self._note_warning(dev, st, armed)
+                    return [], []
                 if armed:
                     dev.state.trigger_actual['waiting'] = True
                     return [], []
@@ -398,6 +441,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d Get ret=%s' % (self._dbg_n, status))
             if status != 0:
+                if status in _WARN_STATUS:
+                    self._note_warning(dev, status, armed)
+                    return [], []
                 if armed:
                     dev.state.trigger_actual['waiting'] = True
                     return [], []
@@ -405,6 +451,8 @@ class RtaSession(MeasurementSession):
                 return [], []
             self._error_streak = 0
             self._recovery_attempts = 0
+            self._last_good = time.monotonic()
+            dev.state.status_warning = 0
             _st = dev.state
             _tg = self._trigger
             _edges = int(getattr(_tg, 'InPacketTriggerEdges', 0))

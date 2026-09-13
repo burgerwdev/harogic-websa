@@ -133,6 +133,7 @@ def _validate_command(dev, cmd, data):
             raise CommandError('SET_FREQ requires center/span or start/stop', 'freq_requires_pair')
     elif cmd == 'SET_REF':
         mode = _choice(data, 'mode', ('manual', 'auto')) or 'manual'
+        _number(data, 'range_db', minimum=10.0, maximum=200.0)
         if mode == 'manual':
             _number(data, 'ref', minimum=-50.0, maximum=30.0, required=True)
     elif cmd == 'SET_RBW':
@@ -194,6 +195,7 @@ def _validate_command(dev, cmd, data):
         _number(data, 'listen', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz, required=True)
     elif cmd == 'SET_SDR_DEMOD':
         _choice(data, 'mode', ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'))
+        _number(data, 'deemph_us', minimum=-1.0, maximum=1000.0)
         _number(data, 'ifbw', minimum=100.0, maximum=500000.0)
         _number(data, 'squelch', minimum=-150.0, maximum=0.0)
         _number(data, 'volume', minimum=0.0, maximum=2.0)
@@ -340,22 +342,27 @@ async def _dispatch(dev, cmd, data) -> bool:
             await _configure_swp()
 
     if cmd == 'SET_PRESET':
-        # Preset covers BOTH modes without switching the current one:
-        # 1) SWP parameters <- device defaults (preset_state, no reconfigure)
-        # 2) RTA parameters  <- RTA defaults (RtaSession.reset_defaults)
-        # Only the ACTIVE mode is reconfigured/put into effect now; the other mode's
-        # defaults apply automatically the next time it is entered.
+        # Preset restores the power-on defaults for EVERY mode without switching the
+        # current one. Previously the SDR parameters and the shared front-end settings were
+        # left untouched, and pressing Preset while in SDR reconfigured the device into SWP
+        # behind the live SDR session.
         dev.preset_state()
         dev.reset_rta_state()
+        dev.reset_sdr_state()
+        dev.reset_common_state()
         sess = dev.session
-        if sess is not None and sess.name == 'rta':
+        name = sess.name if sess is not None else 'std'
+        if name == 'rta':
             # Preset supersedes the SWP restore point captured when RTA was entered.
             sess.snapshot_current()
             # RTA active: reset + reconfigure on a worker thread (device reconfigure on
             # the asyncio thread stalls the publisher/data flow)
             await _hw_call(sess.reset_defaults)
-            return True
-        await _configure_swp()   # SWP active: apply SWP defaults now
+        elif name == 'sdr':
+            # Re-apply the IQS/DDC chain so the SDR session picks up the reset parameters.
+            await _hw_call(sess.reconfigure)
+        else:
+            await _configure_swp()   # SWP active: apply SWP defaults now
         return True
     if cmd == 'CAL_REFCLK':
         # Run GNSS 1PPS calibration on a background thread, pausing the publisher during
@@ -411,6 +418,8 @@ async def _dispatch(dev, cmd, data) -> bool:
         return True
     if cmd == 'SET_REF':
         mode = data.get('mode', 'manual')
+        if 'range_db' in data:
+            s.ref_range_db = float(data['range_db'])
         sess = dev.session
         if sess is not None and sess.name == 'sdr':
             if mode == 'manual' and 'ref' in data:
@@ -542,7 +551,8 @@ async def _dispatch(dev, cmd, data) -> bool:
             raise CommandError('SET_SDR_DEMOD requires SDR mode', 'sdr_mode_required')
         await _hw_call(sess.set_demod, mode=data.get('mode'), if_bw=data.get('ifbw'),
                        squelch=data.get('squelch'), volume=data.get('volume'),
-                       agc=data.get('agc'), pitch=data.get('pitch'))
+                       agc=data.get('agc'), pitch=data.get('pitch'),
+                       deemph_us=data.get('deemph_us'))
         return True
     if cmd == 'SET_RTA':
         sess = dev.session

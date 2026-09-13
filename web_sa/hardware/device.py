@@ -9,6 +9,7 @@ structure refactored.
 from __future__ import annotations
 
 import math
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -79,6 +80,9 @@ class DeviceState:
     sdr_volume: float = 0.8
     sdr_agc: bool = True
     sdr_pitch: float = 700.0
+    # FM de-emphasis time constant in microseconds. -1 = auto (50 us for WFM, none
+    # elsewhere); 0 = off; 50/75/300 = explicit (regional pre-emphasis complement).
+    sdr_deemph_us: float = -1.0
     sdr_level_dbfs: float = -120.0
     sdr_adm: dict = field(default_factory=dict)
     # RTA acquisition trigger (applies to RTA sessions; SWP has no level trigger)
@@ -107,6 +111,12 @@ class DeviceState:
     atten: int = -1
     preamplifier: int = 0
     ifgain: int = 2
+    # IF AGC (device-specific; see _profile). Off by default because the official
+    # Profile.xml ships EnableIFAGC=0. WEBSA_IFAGC=1 flips the default for A/B testing.
+    ifagc: int = 1 if os.getenv('WEBSA_IFAGC', '0').lower() not in (
+        '0', '', 'false', 'no', 'off') else 0
+    ifagc_target: float = float(os.getenv('WEBSA_IFAGC_TARGET', '-9'))
+    ifagc_gain: float = 0.0
     gain_strategy: int = 0
     amp_atten: int = -1
     preamplifier_actual: int | None = None
@@ -121,6 +131,14 @@ class DeviceState:
     sweep_time: float = 0.0      # Manual=绝对秒; xN=倍率; 其他模式忽略
     freq_version: int = 0
     config_version: int = 0
+    # Height of the visible display window in dB (grid divisions x dB/div), pushed by the
+    # frontend. Auto Ref anchors the noise floor just above the bottom of this window, so it
+    # must know how tall the window is; 100 dB = the default 10 div x 10 dB/div.
+    ref_range_db: float = 100.0
+    # Last vendor WARNING status from the measurement stream (0 = none). -12 is IF
+    # overflow: the IF saturates when Ref is set low, and the vendor's remedy is to raise
+    # RefLevel_dBm. Surfaced so the UI can say so instead of the display appearing frozen.
+    status_warning: int = 0
     last_error: str = ''
     refclk_ppm: float = 0.0
     calibrating: bool = False
@@ -165,11 +183,13 @@ class HarogicDevice:
                 'candidate': None, 'candidate_since': 0.0,
                 'last_change': 0.0, 'last_peak': None,
                 'last_noise_floor': None, 'ignore_until': 0.0,
+                'floor': -50.0,
             },
             'rta': {
                 'candidate': None, 'candidate_since': 0.0,
                 'last_change': 0.0, 'last_peak': None,
                 'last_noise_floor': None, 'ignore_until': 0.0,
+                'floor': -50.0,
             },
         }
         self._pending_auto_ref: tuple[str, float] | None = None
@@ -205,6 +225,7 @@ class HarogicDevice:
             self.configure_swp()
             self._detect_docxo()
             self.load_preset_defaults()   # read the device default config for the preset
+            self.apply_caps_from_defaults()   # device-reported full span beats the table
             # The temporary config used for DOCXO detection changes the device's actual
             # parameters (e.g. TracePoints), so the standard config must be re-issued and
             # the buffers refreshed, otherwise GetFullSweep writes out of bounds
@@ -243,6 +264,8 @@ class HarogicDevice:
                 spur_modes = {0: 'bypass', 1: 'standard', 2: 'enhanced'}
                 self.preset_defaults = dict(
                     center=float(p.CenterFreq_Hz), span=float(p.Span_Hz),
+                    fmin=float(p.CenterFreq_Hz - p.Span_Hz / 2.0),
+                    fmax=float(p.CenterFreq_Hz + p.Span_Hz / 2.0),
                     ref=float(p.RefLevel_dBm), rbw=float(p.RBW_Hz),
                     vbw=float(p.VBW_Hz), points=int(p.TracePoints), atten=int(p.Atten),
                     window=int(p.Window.value if hasattr(p.Window, 'value') else p.Window),
@@ -258,6 +281,54 @@ class HarogicDevice:
                 )
             except Exception:
                 self.preset_defaults = None
+
+    def apply_caps_from_defaults(self) -> None:
+        """Widen the model-table frequency range with the range the device reports as its
+        own full span. On this SAN-90 the device (and the official SAStudio Full Span) spans
+        8 kHz - 9.02 GHz, while the product manual table says 9 kHz - 9 GHz; the narrower
+        table clipped the preset full span and the outermost tuning range."""
+        d = self.preset_defaults
+        caps = self.state.caps
+        if not d or caps is None:
+            return
+        lo, hi = d.get('fmin'), d.get('fmax')
+        if lo is None or hi is None or hi <= lo:
+            return
+        caps.freq_min_hz = min(caps.freq_min_hz, float(lo))
+        caps.freq_max_hz = max(caps.freq_max_hz, float(hi))
+
+    def reset_sdr_state(self) -> None:
+        """Restore every SDR parameter to the power-on defaults.
+
+        The dataclass defaults are the single source of truth for "initial state", so a
+        fresh DeviceState is used instead of duplicating literals here.
+        """
+        s = self.state
+        d = DeviceState()
+        s.sdr_center_hz = d.sdr_center_hz
+        s.sdr_decimate = d.sdr_decimate
+        s.sdr_listen_hz = d.sdr_listen_hz
+        s.sdr_demod = d.sdr_demod
+        s.sdr_if_bw = d.sdr_if_bw
+        s.sdr_squelch = d.sdr_squelch
+        s.sdr_squelch_open = False
+        s.sdr_volume = d.sdr_volume
+        s.sdr_agc = d.sdr_agc
+        s.sdr_pitch = d.sdr_pitch
+        s.sdr_deemph_us = d.sdr_deemph_us
+        s.sdr_level_dbfs = d.sdr_level_dbfs
+        s.sdr_adm = {}
+        s.sdr_actual = {}
+
+    def reset_common_state(self) -> None:
+        """Reset the front-end settings that are shared by every mode."""
+        s = self.state
+        d = DeviceState()
+        s.ref_clock = d.ref_clock
+        s.refclk_out = d.refclk_out
+        s.refclk_ppm = 0.0
+        s.last_cal_freq = 0.0
+        s.last_error = ''
 
     def reset_rta_state(self) -> None:
         s = self.state
@@ -330,10 +401,20 @@ class HarogicDevice:
             self.configure_swp()
             return d
 
+    def _apply_ifagc(self) -> None:
+        """Programme the IF AGC target before configuring a profile that enables it.
+
+        Target is "dBFS from ADC saturation" (header: range 0..-30); the official
+        Settings.ini uses -9. Errors are non-fatal: some models do not implement IF AGC.
+        """
+        target = sb.c_double(float(self.state.ifagc_target))
+        sb.dll.Device_InitIFAGC(sb.pointer(self.dev))
+        sb.dll.Device_SetIFAGCTarget(sb.pointer(self.dev), sb.byref(target))
+
     def _profile(self):
         T = sb
         s = self.state
-        p = T.SWP_Profile_TypeDef()
+        p = sb.SWP_Profile_TypeDef()
         with self._hw:
             sb.dll.SWP_ProfileDeInit(sb.pointer(self.dev), sb.pointer(p))
         start = max(s.caps.freq_min_hz, s.center_hz - s.span_hz / 2)
@@ -360,6 +441,7 @@ class HarogicDevice:
         p.Preamplifier = T.PreamplifierState_TypeDef.AutoOn if s.preamplifier == 0 \
             else T.PreamplifierState_TypeDef.ForcedOff
         p.IFGainGrade = int(s.ifgain)
+        p.EnableIFAGC = 1 if s.ifagc else 0
         p.GainStrategy = T.GainStrategy_TypeDef.LowNoisePreferred if s.gain_strategy == 0 \
             else T.GainStrategy_TypeDef.HighLinearityPreferred
         rc_map = {'internal': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
@@ -400,6 +482,8 @@ class HarogicDevice:
             if not self.state.connected:
                 return False, 'not connected'
             pin = self._profile()
+            if self.state.ifagc:
+                self._apply_ifagc()
             pout = sb.SWP_Profile_TypeDef()
             ti = sb.SWP_TraceInfo_TypeDef()
             st = sb.dll.SWP_Configuration(sb.pointer(self.dev), sb.pointer(pin),
@@ -425,6 +509,15 @@ class HarogicDevice:
             self._read_amp_atten()
             return True, 'ok'
 
+    def _clear_auto_ref_floor(self) -> None:
+        """Forget the learned IF-overflow floor after a front-end change.
+
+        The floor records "the IF saturated at this Ref" for a given attenuation/preamp;
+        changing either moves the saturation point, so the old bound is meaningless.
+        """
+        for tracker in self._auto_ref.values():
+            tracker['floor'] = -50.0
+
     def _read_amp_atten(self) -> None:
         with self._hw:
             """Read back the actual attenuation/preamplifier state (per Device_GetAmpAttenState from the original implementation)."""
@@ -434,6 +527,10 @@ class HarogicDevice:
                 sp = sb.c_uint8(0)
                 sb.dll.Device_GetAmpAttenState(sb.pointer(self.dev), sb.pointer(amp),
                                                sb.pointer(att), sb.pointer(sp))
+                if (self.state.amp_atten != att.value
+                        or self.state.preamplifier_actual != int(amp.value)):
+                    # Front-end changed: the learned IF-overflow floor no longer applies.
+                    self._clear_auto_ref_floor()
                 self.state.amp_atten = att.value
                 self.state.preamplifier_actual = int(amp.value)
             except Exception:
@@ -455,8 +552,15 @@ class HarogicDevice:
                 st = sb.dll.SWP_GetFullSweep(sb.pointer(self.dev), self._freq_buf,
                                              self._spec_buf, sb.pointer(self._meas_aux))
                 if st != 0:
+                    # Vendor warnings (e.g. -12 IF overflow) still mean "no usable frame",
+                    # but they must be reported, not treated as a failure.
+                    self.state.status_warning = int(st) if st in sb.WARN_STATUS else 0
                     return None
+                self.state.status_warning = 0
                 self.state.refclk_ppm = float(getattr(self._meas_aux, 'RefClkFreqOffset', 0.0))
+                # IF AGC gain actually applied by the device (dB); useful to prove whether
+                # the AGC is acting at all.
+                self.state.ifagc_gain = float(getattr(self._meas_aux, 'IFAGCGain', 0.0))
                 sb.dll.DSP_InterceptSpectrum(
                     sb.c_double(self._user_start), sb.c_double(self._user_stop),
                     self._freq_buf, self._spec_buf, sb.c_uint32(n),
@@ -504,8 +608,8 @@ class HarogicDevice:
     def _detect_docxo(self) -> None:
         with self._hw:
             try:
-                prof = T.SWP_Profile_TypeDef()
-                po = T.SWP_Profile_TypeDef()
+                prof = sb.SWP_Profile_TypeDef()
+                po = sb.SWP_Profile_TypeDef()
                 ti = T.SWP_TraceInfo_TypeDef()
                 sb.dll.SWP_ProfileDeInit(sb.pointer(self.dev), sb.pointer(prof))
                 prof.CenterFreq_Hz = self.state.center_hz
@@ -606,15 +710,20 @@ class HarogicDevice:
                 self._pending_auto_ref = None
             return
         current = state.rta_ref_level if mode == 'rta' else state.ref_level
-        target = math.ceil((peak_dbm + 5.0) / 5.0) * 5.0
-        # A target below the Ref minimum means the detected peak is too weak to justify
-        # zooming the display down (typically noise ripple in an empty band). Raising it to
-        # the -50 dBm limit is what used to freeze the sweep after a frequency change, so
-        # hold the current Ref instead.
-        if target < -50.0:
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            return
+        # Industry rule: anchor on the NOISE FLOOR so it sits just above the bottom of the
+        # display window, and lift Ref only as far as needed to keep the peak off the top
+        # edge. (Anchoring on the peak instead - the previous `peak + 5` - left the noise
+        # floor up to 7 divisions above the bottom for weak signals, which is the opposite
+        # of what a spectrum analyser does.) The window height (grid divisions x dB/div)
+        # comes from the frontend; 100 dB is the default 10 div x 10 dB/div.
+        window = max(20.0, float(getattr(state, 'ref_range_db', 100.0)))
+        if noise_floor_dbm is None or not math.isfinite(noise_floor_dbm):
+            # No floor estimate available: fall back to keeping the peak below the top edge.
+            target = peak_dbm + 10.0
+        else:
+            target = max(noise_floor_dbm + window - 8.0, peak_dbm + 10.0)
+        target = math.ceil(target / 5.0) * 5.0
+        target = min(30.0, max(-50.0, target, tracker.get('floor', -50.0)))
         # When the noise floor is high, keep ~30 dB of headroom above it.
         if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
             target = max(target, noise_floor_dbm + 30.0)
@@ -628,14 +737,17 @@ class HarogicDevice:
             tracker['candidate'] = target
             tracker['candidate_since'] = now
         # Raise the reference immediately for overload safety. Lowering waits for a
-        # time-stable peak so RTA settle/empty frames cannot collapse Ref to -50 dBm.
-        stable_for = 0.15 if target > current else 1.5
+        # time-stable peak so RTA settle/empty frames cannot collapse Ref. After a re-arm
+        # (the user pressed Auto, or a setting changed) the first decision is taken quickly
+        # in both directions: the previous observation is known to be stale.
+        fresh = bool(tracker.pop('fresh', False))
+        stable_for = 0.15 if (fresh or target > current) else 1.5
         if (
             now - tracker['candidate_since'] >= stable_for
             and now - tracker['last_change'] >= 1.0
         ):
-            self._pending_auto_ref = (mode, target)
             tracker['last_change'] = now
+            self._pending_auto_ref = (mode, target)
 
     def prepare_auto_reference_retune(self, mode: str) -> bool:
         """Use a safe Ref before changing frequency when Auto Ref had lowered it."""
@@ -662,10 +774,19 @@ class HarogicDevice:
             tracker['last_peak'] = None
             tracker['last_noise_floor'] = None
             tracker['ignore_until'] = time.monotonic() + delay
+            tracker['fresh'] = True
             if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
                 self._pending_auto_ref = None
 
     def reset_auto_reference(self, mode: str) -> None:
+        """Re-arm: drop stale observations AND force a fresh decision.
+
+        Called when the user enables Auto and whenever a setting changes that moves the
+        trace (a reconfiguration calls begin_auto_reference_settle instead, which also
+        re-arms). This is the event that answers "when should Auto act again?": a setting
+        change invalidates the level the previous decision was based on, even if the new
+        target ends up within the 5 dB dead-band.
+        """
         with self._hw:
             tracker = self._auto_ref[mode]
             tracker['candidate'] = None
@@ -673,8 +794,47 @@ class HarogicDevice:
             tracker['last_peak'] = None
             tracker['last_noise_floor'] = None
             tracker['ignore_until'] = time.monotonic() + 0.25
+            tracker['fresh'] = True
             if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
                 self._pending_auto_ref = None
+
+    def nudge_reference_out_of_overflow(self) -> bool:
+        """Raise Ref one step when the device reports IF overflow (-12).
+
+        The vendor's remedy for -12 is to raise RefLevel_dBm. This cannot live in the normal
+        auto-reference path because that path needs a measured peak, and an overflowing IF
+        delivers no frames at all - so clicking Auto Ref after the warning appeared did
+        nothing (deadlock). Queues one step per second at most.
+        """
+        with self._hw:
+            s = self.state
+            if s.status_warning != -12 or s.mode == 'sdr':
+                return False
+            mode = s.mode
+            if mode not in ('std', 'rta'):
+                return False
+            if (s.rta_ref_mode if mode == 'rta' else s.ref_mode) != 'auto' or s.atten != -1:
+                return False
+            tracker = self._auto_ref[mode]
+            now = time.monotonic()
+            if now - tracker['last_change'] < 1.0:
+                return False
+            current = s.rta_ref_level if mode == 'rta' else s.ref_level
+            target = min(30.0, current + 5.0)
+            if target <= current:
+                return False
+            tracker['last_change'] = now
+            tracker['candidate'] = None
+            tracker['candidate_since'] = 0.0
+            # Learn the usable lower bound: the IF overflows at this Ref, so never propose
+            # one this low again. Without it the peak-based rule keeps trying to go back down
+            # and the two mechanisms fight, oscillating 5-10 dB (measured).
+            tracker['floor'] = max(tracker.get('floor', -50.0), target)
+            # Cleared so the next tick does not queue another step before this one lands;
+            # the device re-reports -12 on the following frame if it is still saturating.
+            s.status_warning = 0
+            self._pending_auto_ref = (mode, target)
+            return True
 
     def apply_pending_auto_reference(self) -> bool:
         """Apply one queued auto-reference update in the active acquisition worker."""
