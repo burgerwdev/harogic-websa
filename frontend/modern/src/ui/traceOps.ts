@@ -1,5 +1,6 @@
 // Trace UI ops: tab switching / mode setting
 import * as S from '../core/store';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { refLevel } from './refState';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
@@ -116,7 +117,7 @@ export function exportPeakListCsv(): void {
   const thr = (document.getElementById('input-peakthr') as HTMLInputElement | null)?.value ?? '';
   const head = [
     '# peak_list',
-    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
+    `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
     `rbw_hz=${S.currentRBW}`, `threshold_dbm=${thr}`,
     `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
     'n,bin,freq_hz,level_dbm,delta_from_strongest_db',
@@ -144,7 +145,7 @@ export function exportActiveTraceCsv(): void {
   const n = Math.min(powers.length, freq.length);
   const head = [
     `# trace=T${t.id}`, `mode=${t.mode}`,
-    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
+    `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
     `rbw_hz=${S.currentRBW}`, `vbw_hz=${S.currentVBW}`,
     `display_unit=${S.displayUnit}`, `normalized=${t.isNormalized}`,
     `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,

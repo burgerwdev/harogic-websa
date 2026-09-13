@@ -4,6 +4,7 @@
 // numbers always match what the user sees. Results are shown in the channel table and
 // the channel / adjacent / OBW bands are shaded over the plot.
 import * as S from '../core/store';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { acpr, occupiedBandwidth } from '../dsp/channel';
 import { getX, renderAll } from '../render/spectrum';
@@ -23,7 +24,7 @@ function num(id: string, dflt: number): number {
 function defaultCenterHz(): number {
   const m = S.markers[0];
   if (m && m.enabled && m.freq) return m.freq;
-  return S.centerHz;
+  return centerHz.get();
 }
 
 export function measureChannel(): void {

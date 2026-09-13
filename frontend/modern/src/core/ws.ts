@@ -34,6 +34,7 @@ import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { pushSdrAudio } from '../audio/sdrAudio';
 import { sdrRefAuto } from '../ui/sdrState';
 import { refLevel, refMode } from '../ui/refState';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -380,9 +381,9 @@ export function updateStatus(s: any) {
   if (s.caps) S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
   // STATUS top-level fields are the effective values for the active hardware mode.
   const isRtaStatus = s.mode === 'rta';
-  if (s.req.rta?.center > 0) S.setRtaCenterHz(Number(s.req.rta.center));
-  S.setCenterHz(Number(s.center));
-  if (s.mode !== 'rta' && s.mode !== 'sdr') S.setSwpCenterHz(Number(s.center));
+  if (s.req.rta?.center > 0) rtaCenterHz.confirm(Number(s.req.rta.center));
+  centerHz.confirm(Number(s.center));
+  if (s.mode !== 'rta' && s.mode !== 'sdr') swpCenterHz.confirm(Number(s.center));
   // -12 = APIRETVAL_WARNING_IFOverflow: the IF saturates when Ref is set low (gain rises as
   // Ref falls) and the device then stops delivering frames, so the display looks frozen.
   // The vendor's remedy is to RAISE the reference level. Shown in the canvas warning stack
@@ -396,7 +397,7 @@ export function updateStatus(s: any) {
     }
     S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
   }
-  S.setSpanHz(Number(s.span));
+  spanHz.confirm(Number(s.span));
   refLevel.confirm(Number(s.ref));
   refMode.confirm(s.ref_mode === 'auto' ? 'auto' : 'manual');
   S.setConfigVersion(Number(s.config_version) || 0);
@@ -411,9 +412,9 @@ export function updateStatus(s: any) {
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
   syncAvgUI();
-  syncSwpSpanStep(Number(s.req.swp?.span) || S.spanHz);
+  syncSwpSpanStep(Number(s.req.swp?.span) || spanHz.get());
 
-  const measKey = `${S.centerHz}|${S.spanHz}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
+  const measKey = `${centerHz.get()}|${spanHz.get()}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
   if (measKey !== S.lastMeasKey) {
     S.setLastMeasKey(measKey);
     const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
@@ -464,7 +465,7 @@ export function updateStatus(s: any) {
     if (spanSelect && document.activeElement !== spanSelect) {
       const options = [...spanSelect.options];
       const nearest = options.reduce((best, option) =>
-        Math.abs(Number(option.value) - S.spanHz) < Math.abs(Number(best.value) - S.spanHz)
+        Math.abs(Number(option.value) - spanHz.get()) < Math.abs(Number(best.value) - spanHz.get())
           ? option : best, options[0]);
       if (nearest) spanSelect.value = nearest.value;
     }
@@ -552,10 +553,10 @@ function setSelect(id: string, v: string) {
 export function updateFreqUIInputs(force = false) {
   const swpEditor = document.getElementById('swp-freq-settings');
   if (swpEditor?.dataset.dirty !== '1') {
-    setInput('input-center', toUnit(S.centerHz, 'center').toFixed(4), force);
-    setInput('input-span', toUnit(S.spanHz, 'span').toFixed(4), force);
-    setInput('input-start', toUnit(S.centerHz - S.spanHz / 2, 'start').toFixed(4), force);
-    setInput('input-stop', toUnit(S.centerHz + S.spanHz / 2, 'stop').toFixed(4), force);
+    setInput('input-center', toUnit(centerHz.get(), 'center').toFixed(4), force);
+    setInput('input-span', toUnit(spanHz.get(), 'span').toFixed(4), force);
+    setInput('input-start', toUnit(centerHz.get() - spanHz.get() / 2, 'start').toFixed(4), force);
+    setInput('input-stop', toUnit(centerHz.get() + spanHz.get() / 2, 'stop').toFixed(4), force);
   }
   setInput('input-rbw', toUnit(S.currentRBW, 'rbw').toFixed(2));
   setInput('input-vbw', toUnit(S.currentVBW, 'vbw').toFixed(2));
@@ -563,7 +564,7 @@ export function updateFreqUIInputs(force = false) {
   if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
     const u = S.units.rta_center || 'MHz';
     const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
-    setInput('input-rta-center', (S.rtaCenterHz / scale).toFixed(4), force);
+    setInput('input-rta-center', (rtaCenterHz.get() / scale).toFixed(4), force);
   }
 }
 

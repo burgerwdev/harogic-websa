@@ -16,6 +16,7 @@ import {
 	resetSdrState,
 } from './sdrState';
 import { refLevel, refMode } from './refState';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
 import { currentGraphMode, graphMode, isGraphMode, pendingGraphMode } from './graphMode';
@@ -166,7 +167,7 @@ function formatSpanStep(value: number): string {
   return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
-export function syncSwpSpanStep(swpSpan = S.spanHz) {
+export function syncSwpSpanStep(swpSpan = spanHz.get()) {
   if (S.spanStepAuto) S.setSpanStepHz(niceSpanStep(swpSpan));
   const input = document.getElementById('input-span-step') as HTMLInputElement | null;
   const unit = document.getElementById('span-step-unit');
@@ -197,15 +198,15 @@ export function resetSpanStepAuto() {
 
 export function stepSwpSpan(direction: -1 | 1) {
   const targetSpan = steppedSpan(
-    S.spanHz,
+    spanHz.get(),
     S.spanStepHz,
     direction,
     100,
     S.FREQ_MAX - S.FREQ_MIN,
   );
-  if (targetSpan === S.spanHz) return;
+  if (targetSpan === spanHz.get()) return;
   const window = normalizeCenterSpan(
-    S.centerHz, targetSpan, S.FREQ_MIN, S.FREQ_MAX);
+    centerHz.get(), targetSpan, S.FREQ_MIN, S.FREQ_MAX);
   if (!window) return;
   beginFrequencyCommit('swp-freq-settings');
   send({ cmd: 'SET_FREQ', center: window.center, span: window.span });
@@ -389,12 +390,12 @@ export function markerToCenter() {
   if (!m || !m.enabled) return;
   const center = markerFreqHz(m.idx);
   if (S.rtaMode) {
-    S.setRtaCenterHz(center);
+    rtaCenterHz.set(center);
     send({ cmd: 'SET_RTA', center });
   } else {
-    S.setCenterHz(center);
+    centerHz.set(center);
     updateFreqUIInputs();
-    send({ cmd: 'SET_FREQ', center: S.centerHz, span: S.spanHz });
+    send({ cmd: 'SET_FREQ', center: centerHz.get(), span: spanHz.get() });
   }
 }
 export function selectMarker(id: number) {
@@ -472,10 +473,10 @@ export function setGraphMode(mode: string) {
     // marker, else the current centre.
     if (!sdrCenterHz.pending()) {
       const m = S.markers.find(x => x.enabled && x.freq != null);
-      // Prefer the last centre confirmed by a SWP-family STATUS: S.centerHz is refreshed
+      // Prefer the last centre confirmed by a SWP-family STATUS: centerHz.get() is refreshed
       // from every STATUS (including SDR ones), so it can still hold the value from before
       // a preset/re-tune when this runs.
-      const base = S.swpCenterHz > 0 ? S.swpCenterHz : S.centerHz;
+      const base = swpCenterHz.get() > 0 ? swpCenterHz.get() : centerHz.get();
       sdrCenterHz.set((m && m.freq) ? m.freq : base);
     }
     deferSdrAudioPreference();

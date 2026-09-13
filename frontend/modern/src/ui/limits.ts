@@ -3,6 +3,7 @@
 // The canvas overlay is drawn in render/spectrum.ts; this module owns the panel,
 // the persisted state and the DOM status line (so it stays free of canvas code).
 import * as S from '../core/store';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { refLevel } from './refState';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { buildLimitArray, normalizePoints, type LimitPoint } from '../dsp/limits';
@@ -19,8 +20,8 @@ function fmtMHz(hz: number): string {
 
 /** Sweep edges clamped to the device range. */
 export function spanEdges(): { start: number; stop: number } {
-  const start = Math.max(S.FREQ_MIN, S.centerHz - S.spanHz / 2);
-  const stop = Math.min(S.FREQ_MAX, S.centerHz + S.spanHz / 2);
+  const start = Math.max(S.FREQ_MIN, centerHz.get() - spanHz.get() / 2);
+  const stop = Math.min(S.FREQ_MAX, centerHz.get() + spanHz.get() / 2);
   return { start, stop: stop > start ? stop : start + 1e6 };
 }
 
@@ -138,7 +139,7 @@ export function exportLimitCsv(): void {
     '# limit_violations',
     `tol_db=${S.limits.tol}`,
     `points=${S.limits.points.map((p) => `${fmtMHz(p.freqHz)}MHz:${p.level.toFixed(2)}dBm`).join(' ')}`,
-    `center_hz=${S.centerHz}`, `span_hz=${S.spanHz}`,
+    `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
     `rbw_hz=${S.currentRBW}`, `points_display=${n}`,
     `time=${new Date().toISOString()}`,
     'freq_hz,level,limit,margin',

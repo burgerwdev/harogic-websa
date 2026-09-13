@@ -1,5 +1,6 @@
 // Spectrum rendering main module: grid/traces/markers/OSD/3dB/peak marks
 import * as S from '../core/store';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';
 import { canvasColors } from '../core/theme';
@@ -24,7 +25,7 @@ import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
   return {
-    centerHz: S.centerHz, spanHz: S.spanHz, dbPerDiv: S.dbPerDiv, displayRef: S.displayRef,
+    centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: S.displayRef,
     displayOffset: S.displayOffset, displayUnit: S.displayUnit, viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,

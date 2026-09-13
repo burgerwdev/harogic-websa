@@ -3,6 +3,7 @@
 // The header is intentionally a neutral data line (version / range / settings / time)
 // rather than UI prose, so a screenshot is self-describing in a report.
 import * as S from '../core/store';
+import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { refLevel } from './refState';
 import { formatFreqHz } from '../core/fmt';
 
@@ -10,8 +11,8 @@ function headerParts(): string[] {
   const ver = (document.querySelector('.version-tag')?.textContent || '').trim().split(/\s+/)[0] || 'HAROGIC WebSA';
   const det = (document.getElementById('select-detector') as HTMLSelectElement | null)?.value || '';
   const n = S.freqArray?.length ?? S.currentPoints;
-  const lo = S.centerHz - S.spanHz / 2;
-  const hi = S.centerHz + S.spanHz / 2;
+  const lo = centerHz.get() - spanHz.get() / 2;
+  const hi = centerHz.get() + spanHz.get() / 2;
   const parts = [
     ver,
     `${formatFreqHz(lo)} - ${formatFreqHz(hi)}`,
