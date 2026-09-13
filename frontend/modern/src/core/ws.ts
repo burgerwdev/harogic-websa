@@ -31,7 +31,6 @@ import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
-import { pushSdrAudio } from '../audio/sdrAudio';
 import { sdrRefAuto } from '../ui/sdrState';
 import { refLevel, refMode } from '../ui/refState';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
@@ -97,8 +96,12 @@ export function connectWS() {
   const queryToken = new URLSearchParams(location.search).get('token');
   if (queryToken) sessionStorage.setItem('web-sa-token', queryToken);
   const token = sessionStorage.getItem('web-sa-token');
-  const query = token ? `?token=${encodeURIComponent(token)}` : '';
-  ws = new WebSocket(`${protocol}//${location.host}/ws${query}`);
+  // The display connection carries no audio: SDR playback has its own `?audio=1` socket
+  // inside the audio worker, so a busy main thread cannot starve it.
+  const params = new URLSearchParams();
+  if (token) params.set('token', token);
+  params.set('noaudio', '1');
+  ws = new WebSocket(`${protocol}//${location.host}/ws?${params.toString()}`);
   setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
@@ -147,16 +150,6 @@ export function connectWS() {
     if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
     const view = new DataView(event.data, 0, 16);
     const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    if (magic === 'AUDF') {
-      // SDR audio: magic(4) + seq(u32) + rate(u32) + samples(u32) + int16 PCM.
-      // A zero sequence starts a new configuration and flushes buffered channel audio.
-      const seq = view.getUint32(4, true);
-      const rate = view.getUint32(8, true);
-      const samples = view.getUint32(12, true);
-      if (event.data.byteLength !== 16 + samples * 2) return;
-      pushSdrAudio(event.data, 16, samples, rate, seq === 0);
-      return;
-    }
     const version = view.getUint32(4, true);
     const points = view.getUint32(8, true);
     const sweepMsHdr = view.getFloat32(12, true);

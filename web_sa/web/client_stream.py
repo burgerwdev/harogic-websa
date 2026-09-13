@@ -35,8 +35,13 @@ class ClientStream:
     CONTROL_LIMIT = 32
     AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
 
-    def __init__(self, ws):
+    def __init__(self, ws, audio_only: bool = False, no_audio: bool = False):
         self.ws = ws
+        # Per-connection stream filter. The main UI connection uses no_audio (it never
+        # handles AUDF); the SDR audio worker uses audio_only so it is not fed the display
+        # frames. Default keeps the historical behaviour (everything).
+        self.audio_only = audio_only
+        self.no_audio = no_audio
         self._control: deque[str] = deque()
         self._freq: bytes | None = None
         self._data: bytes | None = None
@@ -55,6 +60,10 @@ class ClientStream:
         if self.closed:
             return
         magic = frame[:4]
+        if self.audio_only and magic != b'AUDF':
+            return
+        if self.no_audio and magic == b'AUDF':
+            return
         if magic == b'FREQ':
             self._freq = frame
         elif magic == b'AUDF':
@@ -76,7 +85,7 @@ class ClientStream:
         self._event.set()
 
     def publish_json(self, obj: dict) -> None:
-        if self.closed:
+        if self.closed or self.audio_only:
             return
         text = json.dumps(_finite_json(obj), allow_nan=False, separators=(',', ':'))
         if obj.get('cmd') == 'STATUS' and not obj.get('response_to'):
