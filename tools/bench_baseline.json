@@ -1,0 +1,54 @@
+{
+ "host": "omarchy",
+ "platform": "Linux-7.2.3-arch1-3-x86_64-with-glibc2.44",
+ "python": "3.14.7",
+ "center_hz": 100200000.0,
+ "span_hz": 10000000.0,
+ "duration_s": 4.0,
+ "swp": {
+  "mode": "swp",
+  "frames": 830,
+  "fps": 207.33,
+  "bad_frames": 0,
+  "points": [
+   166
+  ],
+  "peak_frequency_hz": 97675599.0,
+  "peak_power_dbm": -80.807,
+  "cpu_s": 0.76
+ },
+ "switch_to_rta_ms": 465.1,
+ "rta": {
+  "mode": "rta",
+  "frames": 860,
+  "fps": 214.73,
+  "bad_frames": 0,
+  "points": [
+   3328
+  ],
+  "peak_frequency_hz": 99356712.4,
+  "peak_power_dbm": -91.743,
+  "frame_bytes": [
+   41688
+  ],
+  "switch_ms": 326.3,
+  "cpu_s": 1.02
+ },
+ "switch_to_sdr_ms": 313.5,
+ "sdr": {
+  "frames": 77,
+  "fps": 19.16,
+  "bad_frames": 0,
+  "points": [
+   1639
+  ],
+  "audio": {
+   "frames": 100,
+   "fps": 49.94,
+   "samples": 96000,
+   "bad": 0
+  },
+  "cpu_s": 2.42
+ },
+ "took_s": 15.8
+}
