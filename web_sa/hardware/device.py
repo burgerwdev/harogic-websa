@@ -149,6 +149,13 @@ class DeviceState:
     pnm_last: dict | None = None
 
 
+# Safety bound for the swept trace buffers: SWP_GetFullSweep writes the device's own trace
+# length, so the buffer must be at least as large as the largest trace it can report. This is
+# well above anything the UI can request (the points selector tops out at 4000; the widest
+# vendor FFT is ~26k) and costs ~1.5 MB.
+_SWP_TRACE_MAX = 65536
+
+
 class HarogicDevice:
     """Device wrapper: lifecycle + sweep + query + measurement session host."""
 
@@ -546,11 +553,19 @@ class HarogicDevice:
             if n <= 0 or not self.state.connected:
                 return None
             try:
-                if self._freq_buf is None or len(self._freq_buf) != n:
-                    self._freq_buf = (sb.c_double * n)()
-                    self._spec_buf = (sb.c_float * n)()
-                    self._ifreq_buf = (sb.c_double * n)()
-                    self._ispec_buf = (sb.c_float * n)()
+                # SWP_GetFullSweep takes NO length argument: the device writes its own current
+                # trace length, which can exceed the point count recorded at configuration time
+                # (an auto point strategy, or an RBW/Ref change, re-derives it). Sizing these
+                # buffers to exactly `n` let the device - and then DSP_InterceptSpectrum, which
+                # writes `_cnt` points - run past them; the damage surfaced as a SIGSEGV inside
+                # the DSP call. Allocate for the largest trace the device can produce and treat
+                # the recorded count as what we hand on, not as the buffer size.
+                cap = max(int(n), _SWP_TRACE_MAX)
+                if self._freq_buf is None or len(self._freq_buf) != cap:
+                    self._freq_buf = (sb.c_double * cap)()
+                    self._spec_buf = (sb.c_float * cap)()
+                    self._ifreq_buf = (sb.c_double * cap)()
+                    self._ispec_buf = (sb.c_float * cap)()
                 st = sb.dll.SWP_GetFullSweep(sb.pointer(self.dev), self._freq_buf,
                                              self._spec_buf, sb.pointer(self._meas_aux))
                 if st != 0:
@@ -569,6 +584,11 @@ class HarogicDevice:
                     self._ifreq_buf, self._ispec_buf, sb.pointer(self._cnt))
                 c = self._cnt.value
                 if c < 2:
+                    return None
+                if c > cap:
+                    # More points than the device can legitimately produce: refuse the frame
+                    # instead of building a view past the buffer (and report it).
+                    self.state.last_error = 'sweep: %d intercept points (cap %d)' % (c, cap)
                     return None
                 f = np.frombuffer(self._ifreq_buf, dtype=np.float64, count=c).copy()
                 p = np.frombuffer(self._ispec_buf, dtype=np.float32, count=c).copy()
