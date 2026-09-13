@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.request
 
 from playwright.sync_api import Page, sync_playwright
@@ -229,6 +230,26 @@ def main() -> int:
             or page.evaluate("document.getElementById('input-ref').disabled") is True,
             f"input {page.input_value('#input-ref')} vs backend {after}",
         )
+
+        # 8 - rapid mode switching: each switch must take effect promptly and leave no stuck
+        # pending state. This is the measurable form of "switching got slow / needs a second
+        # click" - a request that blocks the next one until its timeout would fail here.
+        print("8) rapid mode switching")
+        for want, sel in (("rta", "#btn-mode-rta"), ("sdr", "#btn-mode-sdr"),
+                          ("rta", "#btn-mode-rta"), ("sdr", "#btn-mode-sdr"),
+                          ("rta", "#btn-mode-rta")):
+            t0 = time.monotonic()
+            page.click(sel)
+            settled = False
+            while time.monotonic() - t0 < 3.0:
+                if state(url)["mode"] == want:
+                    settled = True
+                    break
+                time.sleep(0.15)
+            check(f"switch to {want} within 3 s", settled,
+                  f"mode={state(url)['mode']} after {time.monotonic() - t0:.1f}s")
+        check("mode buttons usable after the burst",
+              not page.eval_on_selector("#btn-mode-sdr", "e => e.disabled"))
 
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()
