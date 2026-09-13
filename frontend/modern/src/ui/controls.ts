@@ -1,6 +1,5 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
-import { getDisplayRef, setDisplayRef } from './displayRef';
 import { send } from '../core/wsSend';
 import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
 import {
@@ -20,7 +19,6 @@ import { refLevel, refMode } from './refState';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
-import { currentGraphMode, graphMode, isGraphMode, pendingGraphMode } from './graphMode';
 import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
 import { markerFreqHz } from '../core/markerCommon';
 import { parseFreqUnit, toUnit } from '../core/units';
@@ -221,7 +219,7 @@ export function setRefLevel() {
     // SDR Ref controls the IQS hardware reference level as well as the display. The
     // backend reconfigures IQS and applies the normal audio reset/fade sequence.
     sdrRefAuto.set(false);
-    setDisplayRef('user', value);
+    S.setDisplayRef(value);
     syncSdrRefUI();                       // the Auto button must reflect the real state
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
@@ -245,9 +243,9 @@ export function refStepDbm(): number {
 
 export function adjustRefLevel(direction: -1 | 1) {
   if (currentGraphMode() === 'sdr') {
-    const next = Math.max(-160, Math.min(40, getDisplayRef() + direction * S.dbPerDiv));
+    const next = Math.max(-160, Math.min(40, S.displayRef + direction * S.dbPerDiv));
     sdrRefAuto.set(false);
-    setDisplayRef('user', next);
+    S.setDisplayRef(next);
     syncSdrRefUI();                       // ditto
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
@@ -434,7 +432,12 @@ export function toggleActiveMarkerTracking() {
   renderAll();
 }
 
+// Graph mode changes are committed only after the backend STATUS confirms them.
+let graphModePending = false;
+let graphModeTarget: 'std' | 'rta' | 'sdr' = 'std';
+let confirmedGraphMode = '';
 let sdrAudioHandoffTimer: number | null = null;
+let graphModeWatchdog: number | null = null;
 
 function deferSdrAudioPreference() {
   if (sdrAudioHandoffTimer !== null) window.clearTimeout(sdrAudioHandoffTimer);
@@ -448,14 +451,12 @@ function deferSdrAudioPreference() {
 
 
 
-export { currentGraphMode };
+export function currentGraphMode(): string { return confirmedGraphMode || 'std'; }
 
 export function setGraphMode(mode: string) {
   const target: 'std' | 'rta' | 'sdr' =
     mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
-  // A request that is still in flight, or asking for the mode we are already in, is a
-  // no-op; the graphMode slot expires a request the backend never confirms.
-  if (graphMode.pending() || target === currentGraphMode()) return;
+  if (graphModePending || target === confirmedGraphMode) return;
   if (target !== 'std' && S.measOn) {
     exitMeasModePub(false);
     S.setMeasOn(false);
@@ -463,10 +464,20 @@ export function setGraphMode(mode: string) {
     if (button) button.textContent = t('off');
     setMeasButtons(false);
   }
-  // The slot's TTL bounds the wait for the confirming STATUS (dropped frame, slow hardware
-  // call, reconnecting socket), so the buttons cannot stay disabled forever.
-  graphMode.set(target);
-  syncModeButtons();
+  graphModePending = true;
+  graphModeTarget = target;
+  // A mode switch is confirmed by a STATUS frame. If that never arrives (dropped frame,
+  // slow hardware call, reconnecting socket) the buttons would stay disabled forever, so
+  // bound the pending state.
+  if (graphModeWatchdog !== null) window.clearTimeout(graphModeWatchdog);
+  graphModeWatchdog = window.setTimeout(() => {
+    graphModeWatchdog = null;
+    if (graphModePending) releaseGraphModePending();
+  }, 8000);
+  const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
+  const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
+  if (modeButton) modeButton.disabled = true;
+  if (sdrButton) sdrButton.disabled = true;
   // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
   // the user located (active marker), or the current centre if no marker is set.
   if (target === 'sdr') {
@@ -492,27 +503,25 @@ export function setGraphMode(mode: string) {
   send({ cmd: 'SET_MODE', mode: target });
 }
 
-/** Mode buttons are disabled exactly while a request is waiting to be confirmed. */
-function syncModeButtons(): void {
-  const busy = graphMode.pending();
+export function releaseGraphModePending() {
+  if (graphModeWatchdog !== null) {
+    window.clearTimeout(graphModeWatchdog);
+    graphModeWatchdog = null;
+  }
+  graphModePending = false;
+  graphModeTarget = 'std';
   const modeButton = document.getElementById('btn-mode-rta') as HTMLButtonElement | null;
   const sdrButton = document.getElementById('btn-mode-sdr') as HTMLButtonElement | null;
-  if (modeButton) modeButton.disabled = busy;
-  if (sdrButton) sdrButton.disabled = busy;
-}
-
-export function releaseGraphModePending() {
-  graphMode.reset();
-  syncModeButtons();
+  if (modeButton) modeButton.disabled = false;
+  if (sdrButton) sdrButton.disabled = false;
 }
 
 export function syncGraphModeStatus(mode: string) {
-  if (!isGraphMode(mode)) return;
-  if (pendingGraphMode() !== null && mode !== pendingGraphMode()) return; // not our answer yet
-  const first = graphMode.confirmedValue() === null;
-  const changed = graphMode.confirm(mode);   // clears a request it matches
-  syncModeButtons();
-  if (!first && !changed) return;
+  if (mode !== 'std' && mode !== 'rta' && mode !== 'sdr') return;
+  if (graphModePending && mode !== graphModeTarget) return;
+  if (graphModePending) releaseGraphModePending();
+  if (confirmedGraphMode === mode) return;
+  confirmedGraphMode = mode;
   const isRtaLike = mode === 'rta' || mode === 'sdr';
   const isSdr = mode === 'sdr';
   S.setRtaMode(isRtaLike);
@@ -821,7 +830,7 @@ function syncSdrRefUI() {
   const inp = document.getElementById('input-ref') as HTMLInputElement | null;
   if (inp) {
     inp.disabled = false;
-    if (document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
+    if (document.activeElement !== inp) inp.value = S.displayRef.toFixed(0);
   }
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = false;
@@ -949,7 +958,7 @@ export function presetAll() {
   const b = document.getElementById('btn-meas-onoff');
   if (b) b.textContent = t('off');
   setMeasButtons(false);
-  setDisplayRef('preset', 0);
+  S.setDisplayRef(0);
   S.setDisplayOffset(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';

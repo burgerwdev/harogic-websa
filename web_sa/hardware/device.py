@@ -811,8 +811,9 @@ class HarogicDevice:
         """
         s = self.state
         if mode == 'rta':
+            # The RTA profile takes its window from the same user setting as SWP.
             return (s.rta_center_hz, s.rta_span_hz, s.rta_rbw_hz, s.rta_vbw_hz,
-                    s.rta_window, getattr(s, 'rta_decimate', 0))
+                    s.window, getattr(s, 'rta_decimate', 0))
         return (s.center_hz, s.span_hz, s.rbw_hz, s.vbw_hz, s.window, 0)
 
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
