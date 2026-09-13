@@ -621,7 +621,7 @@ e2e（真机）仍全绿。
 
 ## 9. 实施记录（分支 `refactor/arch-review-improvements`）
 
-路线图 Phase 0–3 已全部实施（19 个提交），每一步都跑 `make ci` + `make hw-test` + `make bench`。
+路线图 Phase 0–3 已全部实施（20 个提交），每一步都跑 `make ci` + `make hw-test` + `make bench`。
 
 ### 9.1 已完成
 

@@ -637,7 +637,7 @@ conventionally has `make hw-test` (real-hardware smoke + state-machine regressio
 
 ## 9. Implementation record (branch `refactor/arch-review-improvements`)
 
-Roadmap phases 0-3 are implemented (19 commits), each verified with `make ci` + `make hw-test`
+Roadmap phases 0-3 are implemented (20 commits), each verified with `make ci` + `make hw-test`
 + `make bench`.
 
 ### 9.1 Implemented
