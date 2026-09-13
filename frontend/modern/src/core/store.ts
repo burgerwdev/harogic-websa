@@ -56,6 +56,12 @@ export function setConfigVersion(v: number) { configVersion = v; }
 export let rtaCenterHz: number = 1e9;   // independent RTA-mode center
 export function setRtaCenterHz(v: number) { rtaCenterHz = v; }
 export function setCenterHz(v: number) { centerHz = v; }
+
+// Last centre confirmed by a STATUS while the hardware was in an SWP-family mode.
+// STATUS `center` is mode-dependent (in SDR it is the SDR centre), so this is the only
+// unambiguous source for "where the swept view is" when handing off to SDR.
+export let swpCenterHz = 0;
+export function setSwpCenterHz(v: number) { if (v > 0) swpCenterHz = v; }
 export function setSpanHz(v: number) { spanHz = v; }
 export function setRefLevel(v: number) { refLevel = v; }
 export let dbPerDiv = 10.0;

@@ -255,6 +255,9 @@ export function syncRefLevelStatus(responseTo?: string) {
 export function setRefAuto() {
   if (currentGraphMode() === 'sdr') {
     S.setSdrRefAuto(!S.sdrRefAuto);
+    // Persist the preference: the key was read on startup but never written, so the
+    // "auto ref on/off" choice was silently forgotten on every reload.
+    try { localStorage.setItem('web-sa-sdr-ref-auto', S.sdrRefAuto ? '1' : '0'); } catch { /* ignore */ }
     syncSdrRefUI();
     renderAll();
     return;
@@ -467,7 +470,11 @@ export function setGraphMode(mode: string) {
     // marker, else the current centre.
     if (pendingSdrFreq == null) {
       const m = S.markers.find(x => x.enabled && x.freq != null);
-      pendingSdrFreq = (m && m.freq) ? m.freq : S.centerHz;
+      // Prefer the last centre confirmed by a SWP-family STATUS: S.centerHz is refreshed
+      // from every STATUS (including SDR ones), so it can still hold the value from before
+      // a preset/re-tune when this runs.
+      const base = S.swpCenterHz > 0 ? S.swpCenterHz : S.centerHz;
+      pendingSdrFreq = (m && m.freq) ? m.freq : base;
     }
     deferSdrAudioPreference();
   } else {
@@ -995,6 +1002,9 @@ export function presetAll() {
   S.setSdrAudioOn(false);
   S.setSdrRefAuto(true);
   S.setSdrListenHz(0);
+  // Preset invalidates any pending SDR hand-off: leaving it set re-applies the PRE-preset
+  // frequency (observed: preset -> SDR put the centre back on the old 101.7 MHz).
+  pendingSdrFreq = null;
   resetSdrAutoRef();
   lastSdrDemodMode = '';
   lastSdrDemodIfbw = -1;
