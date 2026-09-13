@@ -5,6 +5,7 @@ import { t } from '../core/i18n';
 import { renderHarmOverlay } from './harmOverlay';
 import { registerViewRenderer } from '../render/registry';
 import { requestRender } from '../render/redraw';
+import { registerMeasurementTab } from '../ui/measureRegistry';
 
 export function autoHarmSpan() {
   const sel = document.getElementById('select-harm-span') as HTMLSelectElement;
@@ -125,3 +126,6 @@ registerViewRenderer({
     updateHarmonicTable();
   },
 });
+
+// Register this measurement tab with the registry (report finding E-5).
+registerMeasurementTab({ id: 'harm', domId: 'tab-harm', apply: measHarmApply, updateTable: updateHarmonicTable });

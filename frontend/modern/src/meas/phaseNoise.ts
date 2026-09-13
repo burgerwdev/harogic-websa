@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { fmtHzUnit, formatFreqHz, fmtPnmFreq } from '../core/fmt';
 import { registerViewRenderer } from '../render/registry';
 import { requestRender } from '../render/redraw';
+import { registerMeasurementTab } from '../ui/measureRegistry';
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measureUi';
 import { canvasColors } from '../core/theme';
@@ -265,3 +266,6 @@ registerViewRenderer({
   mode: 'pnm',
   render: () => { renderPnm(); updatePnmTable(); },
 });
+
+// Register this measurement tab with the registry (report finding E-5).
+registerMeasurementTab({ id: 'pnm', domId: 'tab-pnm', apply: measPnmApply, updateTable: updatePnmTable });

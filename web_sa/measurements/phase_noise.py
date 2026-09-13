@@ -11,6 +11,22 @@ from ..hardware import sdk_bindings as sb
 from .base import MeasurementSession
 
 
+def pnm_payload(*, carrier_freq, carrier_power, offset, pn, ref, traceavg, done, progress):
+    """Assemble one phase-noise message (pure: the DLL-facing step only supplies values)."""
+    payload = {
+        'cmd': 'PNM',
+        'carrier_freq': float(carrier_freq),
+        'carrier_power': float(carrier_power),
+        'offset': [float(x) for x in offset],
+        'pn': [float(x) for x in pn],
+        'ref': float(ref),
+        'traceavg': float(traceavg),
+        'done': bool(done),
+        'progress': int(progress),
+    }
+    return payload
+
+
 class PhaseNoiseSession(MeasurementSession):
     name = 'pnm'
 
@@ -125,16 +141,14 @@ class PhaseNoiseSession(MeasurementSession):
                     self._started = False
                     return [], []
                 return [], []
-            res = dict(carrier_freq=float(self._cf.value),
-                       carrier_power=float(self._cp.value),
-                       offset=list(self._freq[:n]), pn=list(self._pn[:n]),
-                       ref=float(self._rf.value), traceavg=float(self.traceavg))
-            if self._i >= info.PartialUpdateCounts:
+            done = self._i >= info.PartialUpdateCounts
+            progress = round(self._i / max(info.PartialUpdateCounts, 1) * 100)
+            res = pnm_payload(
+                carrier_freq=float(self._cf.value), carrier_power=float(self._cp.value),
+                offset=self._freq[:n], pn=self._pn[:n], ref=float(self._rf.value),
+                traceavg=float(self.traceavg), done=done, progress=progress)
+            if done:
                 self._started = False
                 self.dirty = False
-                res['done'] = True
                 self.dev.state.pnm_last = res
-                return [], [{'cmd': 'PNM', **res}]
-            res['done'] = False
-            res['progress'] = round(self._i / max(info.PartialUpdateCounts, 1) * 100)
-            return [], [{'cmd': 'PNM', **res}]
+            return [], [res]

@@ -44,3 +44,24 @@ describe('view renderer registry', () => {
 		unregisterViewRenderer('test-dupe');
 	});
 });
+
+describe('measurement tab registry', () => {
+	it('registers the shipped measurement tabs', async () => {
+		const mod = await import('../ui/measureRegistry');
+		await import('../meas/amplitude');
+		await import('../meas/harmonic');
+		await import('../meas/phaseNoise');
+		await import('../meas/channel');
+		const ids = mod.measurementTabs().map((tab) => tab.id);
+		expect(ids).toEqual(expect.arrayContaining(['amp', 'harm', 'pnm', 'chan']));
+	});
+
+	it('lets a tab register and unregister itself', async () => {
+		const mod = await import('../ui/measureRegistry');
+		const calls: string[] = [];
+		mod.registerMeasurementTab({ id: 'test-tab', domId: 'tab-test', apply: () => calls.push('applied') });
+		mod.getMeasurementTab('test-tab')?.apply();
+		expect(calls).toEqual(['applied']);
+		expect(mod.getMeasurementTab('nope')).toBeUndefined();
+	});
+});

@@ -2,6 +2,7 @@
 import * as S from '../core/store';
 import { getX, getY } from '../render/plot';
 import { requestRender } from '../render/redraw';
+import { registerMeasurementTab } from '../ui/measureRegistry';
 
 import { getDisplayPowers } from '../dsp/peaks';
 import { t } from '../core/i18n';
@@ -101,3 +102,6 @@ function getXIdx(f: number): number {
   const t = (f - fa[i0]) / (fa[i1] - fa[i0]);
   return getX(i0 + t * (i1 - i0), n);
 }
+
+// Register this measurement tab with the registry (report finding E-5).
+registerMeasurementTab({ id: 'amp', domId: 'tab-amp', apply: measureAmp });

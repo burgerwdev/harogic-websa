@@ -2,12 +2,15 @@
 import * as S from '../core/store';
 import { requestRender } from '../render/redraw';
 import { send } from '../core/wsSend';
-import { measureAmp } from '../meas/amplitude';
-import { measureChannel, updateChanTable, syncChanTableVisibility } from '../meas/channel';
-import { measHarmApply } from '../meas/harmonic';
-import { measPnmApply } from '../meas/phaseNoise';
+// Imported for their registration side effect (each module registers its own tab, E-5).
+import '../meas/amplitude';
+import { syncChanTableVisibility } from '../meas/channel';
+import '../meas/channel';
+import '../meas/harmonic';
+import '../meas/phaseNoise';
 import { updateInfoBar } from '../render/infobar';
 import { t } from '../core/i18n';
+import { getMeasurementTab, measurementTabs } from './measureRegistry';
 import { applyMeasUI, setMeasButtons } from './measureUi';
 export { applyMeasUI, setMeasButtons } from './measureUi';
 
@@ -30,32 +33,22 @@ export function measToggle() {
 
 
 export function applyMeasTabUI() {
-  const t = S.measTabSel;
-  const tabAmp = document.getElementById('tab-amp');
-  const tabHarm = document.getElementById('tab-harm');
-  const tabPnm = document.getElementById('tab-pnm');
-  const tabChan = document.getElementById('tab-chan');
-  if (tabAmp) tabAmp.classList.toggle('active', t === 'amp');
-  if (tabHarm) tabHarm.classList.toggle('active', t === 'harm');
-  if (tabPnm) tabPnm.classList.toggle('active', t === 'pnm');
-  if (tabChan) tabChan.classList.toggle('active', t === 'chan');
-  const mAmp = document.getElementById('meas-amp');
-  const mHarm = document.getElementById('meas-harm');
-  const mPnm = document.getElementById('meas-pnm');
-  const mChan = document.getElementById('meas-chan');
-  if (mAmp) mAmp.style.display = t === 'amp' ? '' : 'none';
-  if (mHarm) mHarm.style.display = t === 'harm' ? '' : 'none';
-  if (mPnm) mPnm.style.display = t === 'pnm' ? '' : 'none';
-  if (mChan) mChan.style.display = t === 'chan' ? '' : 'none';
+  // One pass over the registered tabs (report finding E-5): each tab owns its button and
+  // its panel, so adding a measurement does not touch this function.
+  const selected = S.measTabSel;
+  for (const tab of measurementTabs()) {
+    const button = document.getElementById(tab.domId);
+    if (button) button.classList.toggle('active', selected === tab.id);
+    const panel = document.getElementById(tab.domId.replace('tab-', 'meas-'));
+    if (panel) panel.style.display = selected === tab.id ? '' : 'none';
+  }
   syncChanTableVisibility();
 }
 
 export function applyMeasNow() {
   exitMeasMode();
-  if (S.measTabSel === 'amp') measureAmp();
-  else if (S.measTabSel === 'harm') measHarmApply();
-  else if (S.measTabSel === 'pnm') measPnmApply();
-  else if (S.measTabSel === 'chan') { measureChannel(); updateChanTable(); }
+  // Tabs register themselves (report finding E-5); an unknown id simply does nothing.
+  getMeasurementTab(S.measTabSel)?.apply();
   applyMeasUI();
 }
 

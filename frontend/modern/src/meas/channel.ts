@@ -9,6 +9,7 @@ import { getDisplayPowers } from '../dsp/peaks';
 import { acpr, occupiedBandwidth } from '../dsp/channel';
 import { getX } from '../render/plot';
 import { requestRender } from '../render/redraw';
+import { registerMeasurementTab } from '../ui/measureRegistry';
 
 import { plotRect } from '../render/plot';
 import { canvasColors } from '../core/theme';
@@ -169,3 +170,6 @@ export function renderChannel(_powers: Float32Array): void {
   }
   c.restore();
 }
+
+// Register this measurement tab with the registry (report finding E-5).
+registerMeasurementTab({ id: 'chan', domId: 'tab-chan', apply: () => { measureChannel(); updateChanTable(); }, updateTable: updateChanTable });
