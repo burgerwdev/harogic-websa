@@ -25,8 +25,10 @@ The problems are not about "does it work" but about **evolvability**:
 5. **Two god modules**: backend `web/ws.py:_dispatch` (313-line if/elif chain) and frontend
    `ui/controls.ts` (1547 lines / 39 imports);
 6. **14 circular dependencies** in the frontend, with `render/spectrum.ts` as the hub;
-7. **77 i18n keys have no Chinese translation** (the trigger panel, virtual keypad, waterfall and limit
-   lines fall back to English in the Chinese UI).
+7. **The i18n dictionary is structurally unsafe**: of 452 English keys exactly **one** lacks a Chinese
+   translation (the first version of this review claimed 77; that was an extraction-script bug, see
+   §8.1-4). The real problems are thirteen `Object.assign` blocks, an `I18nKey` type covering only the 194
+   base-literal keys, five duplicated keys and no consistency test at all.
 
 Scores (out of 10, subjective but grounded in the evidence above):
 
@@ -100,40 +102,67 @@ continuously; **P2** = hygiene/optimisation.
 
 ### P0
 
-#### P0-1 77 i18n keys have no Chinese translation (trigger/keypad/waterfall/limits render in English)
+#### P0-1 i18n: structural defect plus one missing zh key (the first version's "77" was wrong)
 
-- **Symptom**: `t()` falls back to English when the zh key is missing (`i18n.ts:171-179`), and the dictionary
-  is split into a base literal (`i18n.ts:5-164`) plus eight `Object.assign(dict.en|zh, {...})` blocks (lines 219-677).
-- **Evidence**: an automatic comparison (script below) yields `en=402` keys / `zh=325` keys, with `en-zh=77`
-  English-only keys — the whole trigger panel (`trg_source`, `trg_level`, `trg_chip_wait`, `tip_trg_*`),
-  the virtual keypad (`kp_ok`, `kp_drag`), waterfall (`wf_range`, `wf_auto`), the limits canvas
-  (`limit_canvas_pass|fail`), `tip_version`, `export_csv`.
-- **Related risk**: `type I18nKey = keyof typeof dict['en']` (`i18n.ts:166`) is evaluated **before** the
-  `Object.assign` calls, so the 210 keys added there are **not in the type**; `avg` and `tip_gain` are
-  duplicated between the base block and an assign block (later silently wins).
-- **Impact**: Chinese users see mixed language; the key set has neither type nor test protection, so it will
-  drift again.
-- **Recommendation**:
-  1. Merge into one declarative dictionary (`const dict = { en: {...}, zh: {...} } as const`) and drop `Object.assign`;
-  2. Add `__tests__/i18n.test.ts` asserting `Object.keys(en)` equals `Object.keys(zh)`, no duplicate keys, and
-     identical `{name}` placeholders on both sides;
-  3. Type `t()`'s key parameter as `I18nKey` so tsc catches typos.
+- **Symptom**: `t()` falls back to English when the zh key is missing (`i18n.ts:171-179`). The dictionary is
+  assembled from a base literal (`i18n.ts:5-164`) plus **thirteen** `Object.assign(dict.en|zh, {...})` blocks.
+- **Corrected evidence**: extracted with brace matching (not the flawed regex of the first version, which
+  ignored keys containing `-` and truncated at nested braces, turning one missing key into 77): the tree
+  before the refactor had **en 452 / zh 451**, the only gap being `sdr_snap_tip` ("Set as active marker").
+  After the refactor it is 452/452 (§9.1).
+- **The actual defects (independent of the missing-key count)**:
+  1. `type I18nKey = keyof typeof dict['en']` (`i18n.ts:166`) is evaluated **before** the `Object.assign`
+     calls, so the type covers only **194 of 452** keys: a typo in a key added by a later block compiles;
+  2. five keys are defined twice (`avg`, `tip_gain`, `tip_lang`, `tip_theme`, `tip_trg_edge`) and the later
+     definition silently wins at runtime;
+  3. there is no consistency test, so bilingual drift is invisible: most `ui/` text is resolved at runtime
+     through `data-i18n`, and a missing key only shows up as English text in the Chinese UI.
+- **Impact**: copy defects cannot be caught in CI and the type protection is ineffective.
+- **Recommendation** (implemented in §9.1): merge into one declaration so `keyof typeof dict.en` covers every
+  key, add `__tests__/i18n.test.ts` (equal key sets, no empty values, identical `{placeholder}`s, type
+  coverage of keys added by the old blocks) and add the one missing translation.
 
-  Reproduce:
+  Reproduce (corrected script; keys may contain `-`, and blocks must be delimited by brace matching):
   ```bash
   python3 - <<'PY'
-  import re
-  src=open('frontend/modern/src/core/i18n.ts',encoding='utf-8').read()
-  lines=src.split('\n')
-  base_en=set(re.findall(r"'([a-z0-9_]+)':", '\n'.join(lines[4:86])))
-  base_zh=set(re.findall(r"'([a-z0-9_]+)':", '\n'.join(lines[86:163])))
-  add={'en':set(),'zh':set()}
-  for lang,body in re.findall(r"Object\.assign\(dict\.(en|zh),\s*\{(.*?)\n\}\);", src, re.S):
-      add[lang] |= set(re.findall(r"'([a-z0-9_]+)':", body))
-  en,zh = base_en|add['en'], base_zh|add['zh']
-  print(len(en), len(zh), 'en-only:', sorted(en-zh))
+  import json, re, subprocess
+  src = open('frontend/modern/src/core/i18n.ts', encoding='utf-8').read()
+
+  def block(s, i):                      # string-aware brace matching
+      depth = 0; j = i; q = None; esc = False
+      while j < len(s):
+          c = s[j]
+          if q:
+              if esc: esc = False
+              elif c == '\\': esc = True
+              elif c == q: q = None
+          else:
+              if c in ('"', "'"): q = c
+              elif c == '{': depth += 1
+              elif c == '}':
+                  depth -= 1
+                  if depth == 0: return j + 1
+          j += 1
+
+  segs = []
+  m = re.search(r'const dict = \{', src)
+  segs.append(src[m.start():block(src, src.index('{', m.start()))] + ';')
+  for m in re.finditer(r'Object\.assign\(dict\.(en|zh),', src):     # legacy layout only
+      i = src.index('{', m.end()); segs.append(src[m.start():block(src, i)] + ');')
+
+  js = '\n'.join(segs) + """
+  const flat = {};
+  for (const l of ['en', 'zh']) flat[l] = Object.keys(dict[l]);
+  process.stdout.write(JSON.stringify(flat));"""
+  r = subprocess.run(['node', '-e', js], capture_output=True, text=True)
+  if r.returncode: raise SystemExit(r.stderr[:400])
+  d = json.loads(r.stdout); en, zh = set(d['en']), set(d['zh'])
+  print('en', len(en), 'zh', len(zh), 'en-only', sorted(en - zh))
   PY
   ```
+
+  **Lesson** (recorded in §8.1-4): a script that supports a conclusion must first be checked against a
+  sample whose answer is known; the wrong headline finding came from an unchecked regex.
 
 #### P0-2 The frontend UI/orchestration layer has no automated guard rails
 
@@ -367,7 +396,7 @@ every phase, and each phase should be independently mergeable.
 |---|---|---|
 | Add CI (pytest + ruff + tsc + vitest) | `.github/workflows/ci.yml` or a `pre-push` hook + README note | Green in a clean venv |
 | Complete dependency declaration | `requirements-dev.txt` (ruff/playwright/fonttools/pytest*) | `pip install -r requirements.txt -r requirements-dev.txt && ./test.sh` passes |
-| i18n parity test | `__tests__/i18n.test.ts` | Test fails first (exposing the 77 missing keys) → passes after filling them in |
+| i18n parity test | `__tests__/i18n.test.ts` | Exposes the structural problems first (type covers 194/452, five duplicated keys); passes once the dictionary is merged |
 | Protocol golden-test skeleton | Python-generated fixtures + TS assertions (FREQ/POWR/RTAF/AUDF) | All four frame types agree across languages |
 | Circular-dependency gate | `madge --circular` output (14) recorded as a **baseline** (may only decrease) | Baseline count in CI |
 | Single-source the version | Build-time version injection + CHANGELOG template | `index.html` no longer hard-codes the version |
@@ -415,7 +444,7 @@ Mock backend + Playwright in CI (P0-2 step 3); split `DeviceState` per mode (P1-
 ## 5. Quick wins (half a day each, very low risk)
 
 1. Add ruff/playwright/fonttools to a dev requirements file (P0-4) — otherwise the README's test steps are wrong.
-2. `__tests__/i18n.test.ts` + fill in the 77 Chinese keys (P0-1).
+2. `__tests__/i18n.test.ts` + merge the dictionary and add the one missing Chinese key (P0-1).
 3. Re-export `RTA_FrameInfo_TypeDef` etc. from `sdk_bindings` and replace the three `import htra_api as T`
    lines in `rta.py` with `_sb` (P1-3; purely mechanical).
 4. Remove the `export`s in `controls.ts` that nothing outside references (P2-2).
@@ -546,7 +575,7 @@ cost high. Do not try to generate *all* of the UI from the schema either.
 | The command layer stops bloating | Assert length caps on `_dispatch` (313) and `_validate_command` (135) | 350 / 150 |
 | Limits do not enter the validation layer | Assert the number of `maximum=<literal>` in `ws.py` matches the capability table | See the E-2 list |
 | Circular dependencies do not grow | `madge --circular` output count | 14 |
-| i18n does not drift | en/zh key sets equal + placeholders identical | 402 / 325 (77 missing) |
+| i18n does not drift | en/zh key sets equal + placeholders identical | 452/451 at review time (missing `sdr_snap_tip`); fixed in §9.1 and pinned by vitest |
 
 ---
 
@@ -563,6 +592,7 @@ filled three gaps the original review missed.
 | 1 | P0-2 claimed `render/`, `ui/` (except rail) and `meas/` have "zero unit tests" — inaccurate | Restated per module: of 61 modules, 23 (38%) are directly referenced by a test; `ui/{displayRef,graphMode,sdrState,swpState,normPub,railMath}`, `core/{params,level,frequency,units,refclock,store}` and `dsp/*` are covered, while the gaps cluster in `render/`, `meas/`, the UI glue and `core/ws.ts` |
 | 2 | The P0/P1/P2 labels did not state their basis | Now explicit: they are **action priority** (P0 = delivery reliability/correctness, do first), not a production-incident severity scale |
 | 3 | E-1 ("generate frontend controls from the schema") was easy to misread as "automate all UI" | Qualified: the schema covers numbers/enums/toggles only; graphics and context-dependent buttons stay hand-written |
+| 4 | **P0-1's "77 missing i18n keys" was wrong** (the most serious defect of this review): the regex behind it ignored keys containing `-` and truncated at nested braces | Recomputed with brace matching: en 452 / zh 451, only `sdr_snap_tip` missing. The finding changed from "many untranslated keys" to "structurally unsafe dictionary" (type covers 194/452, five duplicated keys, no consistency test). §3 P0-1, §5, §7.5, Appendix A and the summary above are corrected |
 
 ### 8.2 Mapping to industry practice
 
@@ -607,72 +637,77 @@ conventionally has `make hw-test` (real-hardware smoke + state-machine regressio
 
 ## 9. Implementation record (branch `refactor/arch-review-improvements`)
 
-One round of the roadmap was implemented, every phase verified with `make ci` + `make hw-test` +
-`make bench`.
+Two rounds of the roadmap were implemented (10 commits), each verified with `make ci` +
+`make hw-test` + `make bench`.
 
 ### 9.1 Implemented
 
 | Finding | What | Commit | Verified by |
 |---|---|---|---|
-| P0-1 | i18n merged into one declaration (452/452 keys), the single missing zh key added, `I18nKey` now covers every key, parity test | `4e7d9f9` | `__tests__/i18n.test.ts` (key sets, empty values, placeholders, type coverage, fallback) |
-| P0-3 | `core/frames.ts` is the single TS frame definition; `tools/gen_frame_fixtures.py` generates `tests/fixtures/frames/*.bin` from the production encoders; Python asserts the fixtures match its encoders, TS asserts the decode matches the manifest | `4e7d9f9` | 6 backend fixture tests + 7 frontend decoder tests (including truncated/malformed rejection) |
-| P0-4 / G-2 | `requirements.txt` (runtime, two-sided bounds) + `requirements-dev.txt` + `requirements-lock.txt` (verified versions) | `3d415f5` | `./test.sh` no longer fails on a clean checkout for a missing ruff |
-| P0-5 | Version single-sourced from `pyproject.toml` via `tools/sync_version.py` (`--check` in CI) | `3d415f5` | deliberately broke package.json → `--check` exits 1 |
-| G-3 | `tests/conftest.py` skips the seven vendor modules when the library is absent; `make hw-test` / `make bench` / `make ci` are the entry points | `3d415f5`, `682bb82` | offline: 30 tests pass; bench: 107 tests + 39 UI checks pass |
-| G-1 | `tools/bench.py` + `tools/bench_baseline.json` (frame rates, switch latency, CPU with regression thresholds) | `682bb82` | `make bench` passes against the baseline |
-| P1-3 | `sdk_bindings` re-exports the RTA/trigger types; `rta.py` no longer imports `htra_api` directly | `a8dc59d` | guard metric 3 → 0 |
-| P1-7 | Session `health()`, device `auto_reference_view()`/`session_health()`; `build_status` no longer reads private attributes | `a8dc59d` | STATUS unchanged (bench run + UI regression) |
-| P1-10 | `web/recovery.py` owns `EXIT_FATAL`/`fatal()`; the four `os._exit(70)` sites go through it | `a8dc59d` | `tests/test_recovery_json.py` |
-| P1-11 | `web/jsonutil.py` removes the duplicated finiteness walk; the publisher serializes once and broadcasts (`ClientStream.publish_text`) | `a8dc59d` | 4 backend + 1 frontend test |
-| E-2 | Hardware limits moved into `DeviceCapabilities`, protocol/UI bounds into `config.py` constants | `98e3bc0` | `test_model_limits_come_from_capabilities` |
-| E-3 | Sessions own `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()`; the publisher has no mode branches | `98e3bc0` | `tests/test_publisher.py` (6) + bench run |
-| P0-2 (steps 1–2) | Frame-decoder tests (above) + `updateStatus` STATUS→slot mapping test with a real payload | `6a699a8` | 132 frontend tests |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline: cycles, god-function sizes, mode branching, out-of-layer DLL access, limit literals | `3d415f5` | runs inside `make ci` |
+| P0-1 | i18n merged into one declaration (452/452 keys), the one missing zh key added, `I18nKey` covers every key, parity test | `4e7d9f9` | `__tests__/i18n.test.ts` |
+| P0-3 | `core/frames.ts` is the single TS frame definition; `tools/gen_frame_fixtures.py` generates the golden fixtures from the production encoders; Python asserts the fixtures match its encoders, TS asserts the decode matches the manifest | `4e7d9f9` | backend fixture tests + frontend decoder tests (truncated/malformed rejection) |
+| P0-4 / G-2 | `requirements.txt` (runtime, bounded) + `requirements-dev.txt` + `requirements-lock.txt` | `3d415f5` | `./test.sh` works on a clean checkout |
+| P0-5 | Version single-sourced (`tools/sync_version.py --check` in CI) | `3d415f5` | breaking package.json makes `--check` exit 1 |
+| G-3 | `tests/conftest.py` skips the seven vendor modules when the library is absent; `make hw-test`/`bench`/`ci` are the entry points | `3d415f5`, `682bb82` | 52 tests offline; hardware run green |
+| G-1 | `tools/bench.py` + baseline, **and** the device is put into a fixed configuration before measuring (otherwise the frame rate depends on leftover points/RBW - it produced a false 2.5x regression once) | `682bb82`, `78bb02d` | `make bench` passes repeatedly |
+| P1-3 | `sdk_bindings` re-exports the RTA/trigger types; `rta.py` no longer imports `htra_api` | `a8dc59d` | guard 3 -> 0 |
+| P1-7 | Session `health()`, device `auto_reference_view()`/`session_health()` | `a8dc59d` | STATUS unchanged (bench + UI regression) |
+| P1-10 | `web/recovery.py` owns `EXIT_FATAL`/`fatal()` | `a8dc59d` | `tests/test_recovery_json.py` |
+| P1-11 | `web/jsonutil.py`; the publisher serializes once and broadcasts | `a8dc59d` | new backend + frontend tests |
+| E-2 | Hardware limits in `DeviceCapabilities`, protocol bounds as `config.py` constants | `98e3bc0` | `test_model_limits_come_from_capabilities` |
+| E-3 | Sessions own `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()` | `98e3bc0` | `tests/test_publisher.py` + bench |
+| P0-2 (steps 1-2) | Frame-decoder tests + `updateStatus` STATUS→slot mapping test | `6a699a8` | 132 frontend tests |
+| **P1-1/P1-2** | **Command layer as a declarative table**: `web/commands.py` has one `CommandSpec` per command (validate/handler/needs_device); the mode and session guards became table flags (`SWP_OWNED`/`SWP_ONLY`/`NOT_IN_SDR`); `ws.py` is transport only and derives `_COMMANDS` from the table | `78bb02d` | `tests/test_command_registry.py` (10) + **`tools/command_sweep.py` executes all 24 commands and six guard rejections on the bench** |
+| **P1-4** | **Frontend cycles 14 → 0**: `render/redraw.ts` inverts the dependency (spectrum registers its renderer, everyone else calls `requestRender()`); `getX/getY/PLOT_RECT` moved to `render/plot.ts`; new leaf modules `dsp/normalizeStatus.ts`, `ui/measureUi.ts`, `ui/freqInputs.ts`, `core/sdrAutoRef.ts` | `0beadb3` | guard `frontend_cycles=0`; hardware UI regression (which asserts canvas repaints) + bench unaffected; bundle 178 → 147 kB |
+| **P1-5 (self-check half)** | **DOM id contract**: `tools/check_dom_ids.py` turns "read by TS but absent from index.html" into a build failure. Writing it found a real bug: `core/ws.ts` reads `#cur-ifgain` to show the actual IF-gain grade, but the element did not exist, so the readout never appeared (element added) | `e8bc1cc` | runs in `make ci`; all 112 ids resolve |
+| **E-4** | **Frame retention table**: `publish_bytes` no longer branches on the magic; `FRAME_POLICY` (retain/fifo/latest) is declarative with latest-wins as the documented default, and a test asserts it covers every magic the encoders emit | `e8bc1cc` | `test_every_frame_type_has_a_retention_policy` |
+| **P2-2/P2-3 (partial)** | `noUnusedLocals`/`noUnusedParameters` enabled (only six findings, all fixed): the useful half of a linter without an ESLint dependency and a formatting-only diff | `e8bc1cc` | `npx tsc --noEmit` clean |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline (cycles, god functions, mode branching, out-of-layer DLL access, limit literals, command-table size) | `3d415f5` | runs in `make ci` |
 
-### 9.2 Objective progress (guard metrics)
+### 9.2 Objective progress (guard metrics, before → now)
 
-| Metric | Before | Now | Note |
-|---|---|---|---|
-| `frontend_cycles` | 14 | 14 | frontend structure untouched (see 9.3) |
-| `backend_cycles` | 1 | 1 | unchanged |
-| `dispatch_lines` | 313 | 311 | command registry not done; only incidental change |
-| `validate_lines` | 135 | 144 | **grew**: limits now come from the capability table, which cost 9 lines (accepted) |
-| `mode_branches` | 18 | 15 | the publisher's three mode branches are gone |
-| `htra_imports_outside_bindings` | 3 | 0 | the hardware boundary holds again |
-| `validation_limit_literals` | 35 | 8 | the remaining eight are small enum domains (window 0..4 etc.) |
-| Backend tests | 87 | 107 | |
-| Frontend tests | 115 | 132 | |
-| Hardware-free CI tests | 0 (import failed) | 30 | the other 77 need the vendor library |
+| Metric | Before | Now |
+|---|---|---|
+| `frontend_cycles` | 14 | **0** |
+| `backend_cycles` | 1 | 1 (`http_api ⇄ ws`, transport-level, untouched) |
+| `dispatch_lines` (longest handler) | 313 (`_dispatch`) | **33** |
+| `validate_lines` (longest validator) | 144 (`_validate_command`) | **16** |
+| `command_specs` | – (no table) | 24 |
+| `mode_branches` | 18 | **2** |
+| `htra_imports_outside_bindings` | 3 | **0** |
+| `validation_limit_literals` | 35 | **0** |
+| Backend tests | 87 | **119** |
+| Frontend tests | 115 | **132** |
+| Hardware-free (CI) tests | 0 (import failed) | **52** (the other 67 need the vendor library) |
+| Production bundle | 178 kB | 147 kB |
 
-### 9.3 Not done, and why (honest record)
+### 9.3 Not done, and why
 
 | Finding | Why not | Next step |
 |---|---|---|
-| P1-1/P1-2 (command registry) | Large blast radius (311-line `_dispatch`, 144-line `_validate_command`, three command sets) and needs a full hardware regression round; this round took the low-risk/high-payoff items first (limits, permissions, fatal exit) | Write table-driven tests per command first, then move to `CommandSpec(name, validate, modes, session_exclusive, handler)` |
-| P1-4 (14 frontend cycles) | Splitting the `spectrum.ts` hub moves public APIs of several modules; the risk/benefit trade-off is the user's call. This round used the budget on frame decoding and the STATUS test instead | Kill `dsp/traces ⇄ dsp/normalize` and `core/ws ⇄ ui/controls` first, then split the measurement overlays |
-| P1-5 (`controls.ts` split / id self-check) | Same class of large refactor, and `index.html` inevitably changes a lot | Add the startup self-check first (throw on a missing id), then split by panel |
-| P1-6 (remaining store parameters → slots) | Migrating RTA/trigger/waterfall parameters requires updating the e2e assertions in step | Migrate one group at a time following the SDR pattern, running `make hw-test` each time |
-| P1-8 (`DeviceState`/`HarogicDevice` split) | Extracting `AutoReferenceController` is a high-risk area (control loop + hardware); this round only moved the tracker *ownership* (`auto_ref_scope`) into the session | Unit-test the control loop as pure functions first, then move it into its own class |
-| P1-9 (`SessionManager`) | Half done: lazy `session_class()` exists, `SET_MODE` still uses the `_ready` handshake | Explicit `SessionManager.switch()`, turning `_ready` into `is_ready()` |
-| E-1 (ParamSpec/schema) | Depends on the command registry (P1-1) landing first, otherwise it just moves hard-coded values around | Do it together with P1-1 |
-| E-4 (frame codec table) | The `FREQ` de-duplication semantics moved into the session (`dedupe_freq`); the retention table is still missing | `FRAME_POLICY` table + remove the magic branches in `client_stream` |
-| E-5 (frontend registration points) | Same structural frontend work as P1-4/P1-5 | Do it with P1-4 |
-| P2-1 (store DOM access at import) | Low payoff (tests already run in jsdom, no SSR), medium risk (33 importing modules) | If done: `initStore()` + lazy getters |
-| P2-2/P2-3 (dead exports / ESLint) | Pure hygiene, no correctness impact; adding ESLint would produce a large formatting-only diff across ~9k lines | Separate behaviour-free commit, easier to review |
-| P2-4 (canvas DPR) | Rendering-quality improvement, unrelated to the evolvability thread | Separate commit: size the backing store from the container and `devicePixelRatio` |
+| P1-5 (`controls.ts` split by panel) | 1547 lines, 39 imports, and the cycle count was just driven to 0; the split must not reintroduce an edge and is a mechanical round of its own. This round did the highest-value half (the id contract, which already found a real bug) | Split into `ui/panels/*` by `data-action` domain, running `madge --circular` + `make hw-test` after each step |
+| P1-6 (remaining store parameters → slots) | Migrating RTA/trigger/waterfall parameters requires updating the e2e assertions in step | Migrate one group at a time, SDR-style |
+| P1-8 (`DeviceState`/`HarogicDevice` split) | Extracting `AutoReferenceController` is high risk (control loop + hardware); this round only moved tracker ownership (`auto_ref_scope`) into the session | Unit-test the control loop as pure functions first |
+| P1-9 (`SessionManager`) | Half done (lazy `session_class()`); `SET_MODE` still uses the `_ready` handshake | Explicit `SessionManager.switch()`, `_ready` → `is_ready()` |
+| E-1 (ParamSpec/schema) | Its prerequisite (the command registry) landed in `78bb02d`, but `ParamSpec` itself (derive validation + STATUS + frontend control metadata from one schema) is the next round; validation is already one function per command, so the remaining payoff is generated frontend controls | Do it with P1-5, starting from an `/api/schema` endpoint |
+| E-5 (frontend registration points) | `render/redraw.ts` already removed the "trigger a repaint" cycles; a full renderer/measurement registry waits for the `controls.ts` split | With P1-5 |
+| P2-1 (store DOM access at import) | Low payoff (no SSR; tests run in jsdom), medium risk (33 importing modules) | If done: `initStore()` + lazy getters |
+| P2-4 (canvas DPR) | Requires touching the coordinate systems of the main canvas, the waterfall layer and the density layer plus the export path, with no pixel-level automated test; it needs its own round and a visual check | Separate commit: logical 860×480 coordinates, backing store ×DPR, `ctx.setTransform` |
+| ESLint | Only formatting-class rules are missing; `noUnusedLocals/Parameters` + `tsc --strict` cover the valuable part, and ESLint would produce a large formatting-only diff | Separate behaviour-free commit |
 
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 
 ```
-make ci           -> pytest 107 passed / ruff clean / i18n+frames parity / guard OK / build OK
-make hw-test      -> tinySA CW at 100.2 MHz measured -25.7 dBm (SWP) / -25.3 dBm (RTA)
-                     39 UI state-machine checks pass, no page errors
-make bench        -> matches the baseline: SWP 207 fps / RTA 215 fps / SDR 19 fps + 50 audio fps
-                     switches 465/310 ms, CPU 0.70/0.95/2.25 s per 4 s window
-HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 30 passed (hardware modules skipped)
+make ci        -> pytest 119 passed / ruff clean / i18n+frames parity / DOM id contract /
+                  architecture guard (cycles 0) / build OK
+make hw-test   -> tinySA CW at 100.2 MHz measured -25.7 dBm (SWP) / -25.3 dBm (RTA)
+                  tools/command_sweep.py: all 24 commands executed, all 6 guard rejections held
+                  39 UI state-machine checks pass, no page errors
+make bench     -> matches the baseline (fixed configuration: points 1001, auto RBW, ref -30,
+                  atten auto, spur bypass): SWP 174 fps, RTA 214 fps, SDR 19 fps + 50 audio
+                  fps, switches 465/310 ms
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 52 passed (67 vendor modules skipped)
 ```
-
----
 
 ## Appendix A: Metrics
 
@@ -690,7 +725,7 @@ HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 30 passed (hardware mo
 | `store.ts` importers / mutable exports / setters | 33 / ~70 / 62 |
 | `index.html` ids / data-actions | 206 / 112 |
 | DOM lookups (string literals) | 295 |
-| i18n keys | en 402 / zh 325 (77 missing) |
+| i18n keys | en 452 / zh 451 (1 missing; the first version's 402/325 was an extraction bug, §8.1-4) |
 | Default-branch commits / version | 221 / 1.5.5 |
 
 ## Appendix B: Reproduction scripts

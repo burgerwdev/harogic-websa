@@ -23,7 +23,9 @@
 5. **两个上帝模块**：后端 `web/ws.py:_dispatch`（313 行 if/elif 链）、
    前端 `ui/controls.ts`（1547 行 / 39 条 import）；
 6. **前端 14 条循环依赖**，`render/spectrum.ts` 是枢纽；
-7. **i18n 中文缺 77 个键**（触发面板、虚拟键盘、瀑布、限制线在中文界面下显示英文）。
+7. **i18n 字典结构危险**：452 个英文键中只有 **1 个**缺中文（首版报告写"缺 77 个"是提取脚本的
+   缺陷，见 §8.1-4）；真正的问题是字典被拆成 13 个 `Object.assign` 块、`I18nKey` 类型只覆盖
+   基础字面量的 194 个键、且有 3 对重复键，且没有任何一致性测试。
 
 评分（10 分制，主观但基于上述证据）：
 
@@ -95,40 +97,68 @@ npx tsc --noEmit                     -> 通过（strict: true）
 
 ### P0
 
-#### P0-1 中文界面缺 77 个 i18n 键（触发/键盘/瀑布/限制线显示英文）
+#### P0-1 i18n 字典：结构缺陷 + 缺 1 个中文键（首版报告的"77 个"是错的）
 
-- **现象**：`t()` 在 zh 缺失时回退英文（`i18n.ts:171-179`），而字典被拆成
-  基础字面量（`i18n.ts:5-164`）+ 8 处 `Object.assign(dict.en|zh, {...})`（219-677 行）。
-- **证据**：自动比对（下方复现脚本）得 `en=402` 键 / `zh=325` 键，`en-zh=77` 个键
-  仅英文，例如整套触发器（`trg_source`、`trg_level`、`trg_chip_wait`、
-  `tip_trg_*`）、虚拟键盘（`kp_ok`、`kp_drag`）、瀑布（`wf_range`、`wf_auto`）、
-  限制线画布（`limit_canvas_pass|fail`）、`tip_version`、`export_csv`。
-- **附带风险**：`type I18nKey = keyof typeof dict['en']`（`i18n.ts:166`）在
-  `Object.assign` **之前**求值，因此新增的 210 个 en 键**不在类型里**；
-  另有 `avg`、`tip_gain` 两个键在基础块与 assign 块重复（后者静默覆盖前者）。
-- **影响**：中文用户看到中英混杂；键集合无类型/单测保护，后续还会漂移。
-- **建议**：
-  1. 合并为单一声明式字典（`const dict = { en: {...}, zh: {...} } as const`），
-     删除 `Object.assign`；
-  2. 加 `__tests__/i18n.test.ts`：断言 `Object.keys(en)` 与 `Object.keys(zh)` 相等、
-     无重复键、模板占位符 `{name}` 两侧一致；
-  3. 把 `I18nKey` 用于 `t()` 的参数类型（`key: I18nKey`），让 tsc 拦住拼写错误。
+- **现象**：`t()` 在 zh 缺失时回退英文（`i18n.ts:171-179`）。字典由基础字面量
+  （`i18n.ts:5-164`）+ **13 个** `Object.assign(dict.en|zh, {...})` 块拼接而成。
+- **证据（修正后）**：用括号配对提取（而非首版报告里那条有缺陷的正则，它漏掉了含 `-` 的键并
+  在嵌套花括号处截断，因此把 1 个缺键算成了 77 个）：重构前实际是 **en 452 / zh 451**，
+  唯一缺的是 `sdr_snap_tip`（"设为当前标记"）。重构后为 452/452（§9.1）。
+- **真正的缺陷（与缺键数量无关）**：
+  1. `type I18nKey = keyof typeof dict['en']`（`i18n.ts:166`）在 `Object.assign` **之前**
+     求值 ⇒ 类型只覆盖基础字面量的 **194/452** 个键，拼错新增键 tsc 不会报；
+  2. `avg`、`tip_gain`、`tip_lang`、`tip_theme`、`tip_trg_edge` 共 **5 个键**存在重复定义，
+     运行时由后者静默覆盖前者；
+  3. 没有任何一致性测试，双语漂移不会被发现（`ui/` 大量文案靠 `data-i18n` 运行时取值，
+     缺键只表现为"界面显示英文"，不报错）。
+- **影响**：文案类缺陷无法在 CI 中被发现；类型保护形同虚设。
+- **建议**（已在 §9.1 实施）：
+  1. 合并为单一声明式字典，删除 `Object.assign`，让 `keyof typeof dict.en` 覆盖全量键；
+  2. 补 `__tests__/i18n.test.ts`：键集合相等、无空值、`{placeholder}` 两侧一致、
+     类型覆盖旧 assign 块里的键；
+  3. 缺的 `sdr_snap_tip` 一并补上。
 
-  复现：
+  复现（修正后的脚本；键名可含 `-`，且必须在括号配对范围内取块，否则会漏键并把结果算错）：
   ```bash
   python3 - <<'PY'
-  import re
-  src=open('frontend/modern/src/core/i18n.ts',encoding='utf-8').read()
-  lines=src.split('\n')
-  base_en=set(re.findall(r"'([a-z0-9_]+)':", '\n'.join(lines[4:86])))
-  base_zh=set(re.findall(r"'([a-z0-9_]+)':", '\n'.join(lines[86:163])))
-  add={'en':set(),'zh':set()}
-  for lang,body in re.findall(r"Object\.assign\(dict\.(en|zh),\s*\{(.*?)\n\}\);", src, re.S):
-      add[lang] |= set(re.findall(r"'([a-z0-9_]+)':", body))
-  en,zh = base_en|add['en'], base_zh|add['zh']
-  print(len(en), len(zh), 'en-only:', sorted(en-zh))
+  import json, re, subprocess
+  src = open('frontend/modern/src/core/i18n.ts', encoding='utf-8').read()
+
+  def block(s, i):                      # 字符串感知的括号配对
+      depth = 0; j = i; q = None; esc = False
+      while j < len(s):
+          c = s[j]
+          if q:
+              if esc: esc = False
+              elif c == '\\': esc = True
+              elif c == q: q = None
+          else:
+              if c in ('"', "'"): q = c
+              elif c == '{': depth += 1
+              elif c == '}':
+                  depth -= 1
+                  if depth == 0: return j + 1
+          j += 1
+
+  segs = []
+  m = re.search(r'const dict = \{', src)
+  segs.append(src[m.start():block(src, src.index('{', m.start()))] + ';')
+  for m in re.finditer(r'Object\.assign\(dict\.(en|zh),', src):     # 仅旧结构需要
+      i = src.index('{', m.end()); segs.append(src[m.start():block(src, i)] + ');')
+
+  js = '\n'.join(segs) + """
+  const flat = {};
+  for (const l of ['en', 'zh']) flat[l] = Object.keys(dict[l]);
+  process.stdout.write(JSON.stringify(flat));"""
+  r = subprocess.run(['node', '-e', js], capture_output=True, text=True)
+  if r.returncode: raise SystemExit(r.stderr[:400])
+  d = json.loads(r.stdout); en, zh = set(d['en']), set(d['zh'])
+  print('en', len(en), 'zh', len(zh), 'en-only', sorted(en - zh))
   PY
   ```
+
+  **教训**（写入 §8.1-4）：支撑结论的提取脚本必须先用它在"已知为真"的样本上自检；
+  本轮评估的错误结论就来自一条未自检的正则。
 
 #### P0-2 前端 UI/编排层没有自动化护栏
 
@@ -367,7 +397,7 @@ npx tsc --noEmit                     -> 通过（strict: true）
 |---|---|---|
 | 加 CI（pytest + ruff + tsc + vitest） | `.github/workflows/ci.yml` 或 `pre-push` hook + README 说明 | 干净 venv 中 CI 全绿 |
 | 依赖声明补全 | `requirements-dev.txt`（ruff/playwright/fonttools/pytest*） | `pip install -r requirements.txt -r requirements-dev.txt && ./test.sh` 通过 |
-| i18n parity 测试 | `__tests__/i18n.test.ts` | 测试先失败（暴露 77 个缺键）→ 补齐后通过 |
+| i18n parity 测试 | `__tests__/i18n.test.ts` | 先暴露结构问题（类型只覆盖 194/452、5 个重复键），合并字典后通过 |
 | 协议 golden 测试骨架 | Python 生成 fixture + TS 解析断言（FREQ/POWR/RTAF/AUDF） | 4 类帧双端一致 |
 | 循环依赖门槛 | `madge --circular` 输出当前 14 条作为**基线**（只允许减少） | CI 中记录基线数 |
 | 版本单源 | 构建注入版本 + CHANGELOG 模板 | `index.html` 不再硬编码版本 |
@@ -418,7 +448,7 @@ e2e（真机）仍全绿。
 ## 5. 快速收益清单（半天内可完成，风险极低）
 
 1. `requirements-dev.txt` 补 ruff/playwright/fonttools（P0-4）——否则 README 的测试步骤是错的。
-2. `__tests__/i18n.test.ts` + 补齐 77 个中文键（P0-1）。
+2. `__tests__/i18n.test.ts` + 合并字典并补上缺失的 1 个中文键（P0-1）。
 3. `web_sa/hardware/sdk_bindings.py` 补 `RTA_FrameInfo_TypeDef` 等 re-export，
    把 `rta.py` 三处 `import htra_api as T` 改为 `_sb`（P1-3，纯机械）。
 4. 删除 `controls.ts` 中无外部引用的 `export`（P2-2）。
@@ -534,7 +564,7 @@ e2e（真机）仍全绿。
 | 命令层不再綗胀 | 断言 `_dispatch`（313 行）与 `_validate_command`（135 行）长度上限 | 350 / 150 |
 | 限值不进校验层 | 断言 `ws.py` 中 `maximum=<字面量>` 数与能力表一致 | 见 E-2 清单 |
 | 循环依赖不增加 | `madge --circular` 输出数 | 14 |
-| i18n 不漂移 | en/zh 键集合相等 + 占位符一致 | 402 / 325（缺 77） |
+| i18n 不漂移 | en/zh 键集合相等 + 占位符一致 | 评估时为 452/451（缺 `sdr_snap_tip`）；已在 §9.1 修复并在 vitest 中固化 |
 
 ---
 
@@ -550,6 +580,7 @@ e2e（真机）仍全绿。
 | 1 | P0-2 称 “`render/`、`ui/`（除 rail）、`meas/` 零单测” 不准确 | 改为按模块统计：61 个模块中 23 个（38%）被单测直接引用；`ui/{displayRef,graphMode,sdrState,swpState,normPub,railMath}`、`core/{params,level,frequency,units,refclock,store}`、`dsp/*` 均有覆盖，未覆盖集中在 `render/`、`meas/`、UI 胶水层与 `core/ws.ts` |
 | 2 | P0/P1/P2 未说明分级依据 | 已明确：P0/P1/P2 是**行动优先级**（P0 = 影响交付可靠性/正确性，先做），不等同于线上故障等级 |
 | 3 | E-1 “由 schema 生成前端控件” 边界不清，易被误读为“全部 UI 自动化” | 已限定：schema 只覆盖数值/枚举/开关，图形与上下文相关按钮仍手写 |
+| 4 | **P0-1 “缺 77 个 i18n 键”是错的**（最严重的一处）：支撑它的正则漏掉了含 `-` 的键并在嵌套花括号处截断 | 用括号配对重算：实际 en 452 / zh 451，只缺 `sdr_snap_tip`。结论从“大量缺翻译”改为“字典结构缺陷”（类型只覆盖 194/452、5 个重复键、无一致性测试）。§3 P0-1、§5、§7.5、附录 A 与本文正文已全部更正 |
 
 ### 8.2 与业界实践对照
 
@@ -590,71 +621,75 @@ e2e（真机）仍全绿。
 
 ## 9. 实施记录（分支 `refactor/arch-review-improvements`）
 
-按照本报告的建议实施了一轮重构，每个阶段都以 `make ci` + `make hw-test` + `make bench` 验证。
+按报告建议实施了两轮重构（10 个提交），每轮都跑 `make ci` + `make hw-test` + `make bench`。
 
 ### 9.1 已完成
 
 | 报告编号 | 内容 | 提交 | 验证 |
 |---|---|---|---|
 | P0-1 | i18n 字典合并为单一声明（452/452 键）、补上缺的那一条中文、`I18nKey` 覆盖全量键、新增 parity 测试 | `4e7d9f9` | `__tests__/i18n.test.ts`（键集合、空值、占位符、类型、回退） |
-| P0-3 | 新增 `core/frames.ts` 作为 TS 侧唯一帧定义；`tools/gen_frame_fixtures.py` 用生产编码器生成 `tests/fixtures/frames/*.bin`；Python 侧断言 fixture 与编码器一致，TS 侧断言解码结果与 manifest 一致 | `4e7d9f9` | 6 个后端 fixture 测试 + 7 个前端解码测试（含截断/畸形帧拒绝） |
-| P0-4 / G-2 | `requirements.txt`（运行时、双边界）+ `requirements-dev.txt` + `requirements-lock.txt`（实测版本） | `3d415f5` | 干净环境 `./test.sh` 不再因缺 ruff 失败 |
-| P0-5 | 版本单一来源：`pyproject.toml` → `tools/sync_version.py`（`--check` 进 CI） | `3d415f5` | 人为改坏 package.json 后 `--check` 退出 1 |
-| G-3 | `tests/conftest.py` 在缺厂商库时跳过 7 个硬件模块；`make hw-test` / `make bench` / `make ci` 统一入口 | `3d415f5`、`682bb82` | 离线：30 项通过；真机：107 项 + 39 项 UI 检查全过 |
-| G-1 | `tools/bench.py` + `tools/bench_baseline.json`（帧率/切换延迟/CPU，带阈值回归判定） | `682bb82` | `make bench` 对基线通过 |
+| P0-3 | `core/frames.ts` 作为 TS 侧唯一帧定义；`tools/gen_frame_fixtures.py` 用生产编码器生成 `tests/fixtures/frames/*.bin`；Python 断言 fixture 与编码器一致，TS 断言解码与 manifest 一致 | `4e7d9f9` | 后端 fixture 测试 + 前端解码测试（含截断/畸形帧拒绝） |
+| P0-4 / G-2 | `requirements.txt`（运行时、双边界）+ `requirements-dev.txt` + `requirements-lock.txt` | `3d415f5` | 干净环境 `./test.sh` 不再因缺 ruff 失败 |
+| P0-5 | 版本单一来源（`tools/sync_version.py --check` 进 CI） | `3d415f5` | 人为改坏 package.json 后 `--check` 退出 1 |
+| G-3 | `tests/conftest.py` 在缺厂商库时跳过 7 个硬件模块；`make hw-test` / `make bench` / `make ci` 统一入口 | `3d415f5`、`682bb82` | 离线 52 项通过；真机全绿 |
+| G-1 | `tools/bench.py` + 基线；**并且**先把设备置为固定配置再测量（否则帧率取决于上一次测试残留的点数/RBW，会出现假回归——已实测到一次 2.5× 假警报） | `682bb82`、`78bb02d` | `make bench` 连续多次对基线通过 |
 | P1-3 | `sdk_bindings` 补齐 RTA/trigger 符号，`rta.py` 不再直接 `import htra_api` | `a8dc59d` | 守卫指标 3 → 0 |
-| P1-7 | 会话 `health()`、设备 `auto_reference_view()`/`session_health()`，`build_status` 不再 `getattr` 私有属性 | `a8dc59d` | STATUS 字段不变（真机 + UI 回归确认） |
-| P1-10 | `web/recovery.py` 统一 `EXIT_FATAL`/`fatal()`，四处 `os._exit(70)` 收口 | `a8dc59d` | `tests/test_recovery_json.py` |
-| P1-11 | `web/jsonutil.py` 去重两份有限化实现；publisher 序列化一次广播（`ClientStream.publish_text`） | `a8dc59d` | 后端 4 项 + 前端 1 项新测试 |
-| E-2 | 硬件限值进入 `DeviceCapabilities`，协议/UI 界限进 `config.py` 常量 | `98e3bc0` | `test_model_limits_come_from_capabilities` |
-| E-3 | 会话自有 `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()`；publisher 去 mode 分支 | `98e3bc0` | `tests/test_publisher.py` 6 项 + 真机 |
-| P0-2（步 1-2） | 帧解码单测（前面）+ `updateStatus` STATUS→槽位映射测试（真实 STATUS 载荷） | `6a699a8` | 132 项前端测试 |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline：循环依赖、上帝函数长度、mode 分支、越界 DLL 访问、限值字面量 | `3d415f5` | `make ci` 中执行 |
+| P1-7 | 会话 `health()`、设备 `auto_reference_view()`/`session_health()` | `a8dc59d` | STATUS 字段不变（真机 + UI 回归） |
+| P1-10 | `web/recovery.py` 统一 `EXIT_FATAL`/`fatal()` | `a8dc59d` | `tests/test_recovery_json.py` |
+| P1-11 | `web/jsonutil.py` 去重；publisher 序列化一次广播 | `a8dc59d` | 后端 + 前端新测试 |
+| E-2 | 硬件限值进入 `DeviceCapabilities`，协议界限进 `config.py` 常量 | `98e3bc0` | `test_model_limits_come_from_capabilities` |
+| E-3 | 会话自有 `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()` | `98e3bc0` | `tests/test_publisher.py` + 真机 |
+| P0-2（步 1-2） | 帧解码单测 + `updateStatus` STATUS→槽位映射测试 | `6a699a8` | 前端 132 项 |
+| **P1-1/P1-2** | **命令层改为声明式表**：`web/commands.py` 每条命令一个 `CommandSpec`（校验/处理器/是否需要设备），模式与会话守卫改成表标志（`SWP_OWNED`/`SWP_ONLY`/`NOT_IN_SDR`）；`ws.py` 只剩传输适配，`_COMMANDS` 由表派生 | `78bb02d` | `tests/test_command_registry.py`（10 项）+ **`tools/command_sweep.py` 真机跑完全部 24 条命令与 6 条守卫拒绝** |
+| **P1-4** | **前端循环依赖 14 → 0**：新增 `render/redraw.ts` 反向 seam（spectrum 注册渲染器，其他模块只调 `requestRender()`）；`getX/getY/PLOT_RECT` 移入 `render/plot.ts`；拆出叶子模块 `dsp/normalizeStatus.ts`、`ui/measureUi.ts`、`ui/freqInputs.ts`、`core/sdrAutoRef.ts` | `0beadb3` | 守卫 `frontend_cycles=0`；真机 UI 状态机回归（断言画布重绘）+ bench 无回归；bundle 178→147 kB |
+| **P1-5（自检部分）** | **DOM id 契约检查**：`tools/check_dom_ids.py` 把"TS 读取但 index.html 不存在"变成构建失败。写出该检查时它立刻抓到一个真 bug：`core/ws.ts` 读 `#cur-ifgain` 显示实际中频增益档，但页面里没有该元素，读数从未显示过（已补上元素） | `e8bc1cc` | `make ci` 中执行；112 个 id 全部解析成功 |
+| **E-4** | **帧保留策略表**：`client_stream.publish_bytes` 不再按 magic 分支，`FRAME_POLICY`（retain/fifo/latest）声明式；未知类型默认 latest；测试断言该表覆盖生产编码器的全部 magic | `e8bc1cc` | `test_every_frame_type_has_a_retention_policy` |
+| **P2-2/P2-3（部分）** | 开启 `noUnusedLocals`/`noUnusedParameters`（共只报 6 处，已修），获得 linter 最有价值的一半且无格式 churn | `e8bc1cc` | `npx tsc --noEmit` 干净 |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline（循环依赖、上帝函数、mode 分支、越界 DLL、限值字面量、命令表规模） | `3d415f5` | `make ci` |
 
-### 9.2 客观进展（守卫指标）
+### 9.2 客观进展（守卫指标，重构前 → 现在）
 
-| 指标 | 重构前 | 现在 | 说明 |
-|---|---|---|---|
-| `frontend_cycles` | 14 | 14 | 未动前端结构（见 9.3） |
-| `backend_cycles` | 1 | 1 | 同上 |
-| `dispatch_lines` | 313 | 311 | 命令注册表未做，仅微小变化 |
-| `validate_lines` | 135 | 144 | **变长**：限值改从能力表取，代码行多了 9 行（可接受的代价） |
-| `mode_branches` | 18 | 15 | publisher 的 3 处 mode 分支消失 |
-| `htra_imports_outside_bindings` | 3 | 0 | 硬件边界重新成立 |
-| `validation_limit_literals` | 35 | 8 | 剩余 8 处是小枚举域（window 0..4 等） |
-| 后端测试 | 87 | 107 | |
-| 前端测试 | 115 | 132 | |
-| 硬件无关 CI 可跑测试 | 0（无法导入） | 30 | 其余 77 项需厂商库 |
+| 指标 | 前 | 后 |
+|---|---|---|
+| `frontend_cycles` | 14 | **0** |
+| `backend_cycles` | 1 | 1（`http_api ⇄ ws`，属传输层，未动） |
+| `dispatch_lines`（命令处理器最长） | 313（`_dispatch`） | **33** |
+| `validate_lines`（单命令校验最长） | 144（`_validate_command`） | **16** |
+| `command_specs` | —（无表） | 24 |
+| `mode_branches` | 18 | **2** |
+| `htra_imports_outside_bindings` | 3 | **0** |
+| `validation_limit_literals` | 35 | **0** |
+| 后端测试 | 87 | **119** |
+| 前端测试 | 115 | **132** |
+| 硬件无关（CI 可跑）测试 | 0（无法导入） | **52**（另 67 项需厂商库） |
+| 生产 bundle | 178 kB | 147 kB |
 
-### 9.3 未做及原因（诚实记录）
+### 9.3 未做及原因
 
 | 编号 | 未做原因 | 下一步 |
 |---|---|---|
-| P1-1/P1-2（命令注册表） | 改动面大（`_dispatch` 311 行 + `_validate_command` 144 行 + 3 处命令集），需一轮完整硬件回归；本轮先把限值/命令权限/致命退出等“低风险高收益”项做完 | 先为每条命令写表驱动测试，再按 `CommandSpec(name, validate, modes, session_exclusive, handler)` 迁移 |
-| P1-4（前端 14 条循环依赖） | 拆 `spectrum.ts` 枢运会移动多个模块的公共 API，风险与收益需用户拍板；本轮改用它处收益更高的帧解码/STATUS 测试 | 先消灭 `dsp/traces ⇄ dsp/normalize` 与 `core/ws ⇄ ui/controls` 两对，再拆测量叠加层 |
-| P1-5（`controls.ts` 拆分 / id 自检） | 同上：属大重构，且 `index.html` 不可避免要大改 | 先加启动自检（缺 id 即抛错），再按面板拆文件 |
-| P1-6（store 剩余参数槽位化） | RTA/触发/瀑布参数迁移需要同步改 e2e 断言 | 按 SDR 组的方式逐个迁移，每次跑 `make hw-test` |
-| P1-8（DeviceState/HarogicDevice 拆分） | `AutoReferenceController` 抽取属高风险区（控制环 + 硬件）；本轮先把自动参考的“归属”（`auto_ref_scope`）与会话化 | 先为控制环写纯函数级单测，再搬到独立类 |
-| P1-9（SessionManager） | 已做一半：惰性 `session_class()`；`SET_MODE` 仍在用 `_ready` 握手 | 显式 `SessionManager.switch()`，把 `_ready` 变成 `is_ready()` |
-| E-1（ParamSpec/schema） | 依赖命令注册表（P1-1）先落地，否则会把硬编码搬个家 | 随 P1-1 一起做 |
-| E-4（帧 codec 表） | `FREQ` 去重语义已移到会话（`dedupe_freq`）；帧类型保留策略表未做 | `FRAME_POLICY` 表 + `client_stream` 去 magic 分支 |
-| E-5（前端注册点） | 与 P1-4/P1-5 同属前端结构重构 | 与 P1-4 一起做 |
-| P2-1（store 导入期访问 DOM） | 收益低（测试已用 jsdom，无 SSR），风险中等（33 个模块依赖） | 若做：`initStore()` + 惰性 getter |
-| P2-2/P2-3（死导出 / ESLint） | 纯卫生项，不影响正确性；引入 ESLint 会在现有 9000 行上产生大量纯格式 diff | 单独一个“无行为变更”的提交做，便于审阅 |
-| P2-4（画布 DPR） | 属渲染体验改进，与本轮“可演进性”主线无关 | 独立提交：按容器尺寸 + devicePixelRatio 设置 backing store |
+| P1-5（`controls.ts` 按面板拆分） | 1547 行、39 条 import，且刚把循环依赖降到 0；拆分必须保证不重新引入环，属独立一轮的机械工作。本轮先做了它最有价值的一半（id 契约自检，并已抓到真 bug） | 按 `data-action` 域拆 `ui/panels/*`，每步跑 `madge --circular` + `make hw-test` |
+| P1-6（store 剩余参数槽位化） | RTA/触发/瀑布参数迁移需同步改 e2e 断言 | 按 SDR 组方式逐组迁移 |
+| P1-8（`DeviceState`/`HarogicDevice` 拆分） | `AutoReferenceController` 抽取属高风险区（控制环 + 硬件）；本轮只把追踪器归属（`auto_ref_scope`）会话化 | 先给控制环写纯函数单测，再搬到独立类 |
+| P1-9（`SessionManager`） | 已做一半（惰性 `session_class()`）；`SET_MODE` 仍用 `_ready` 握手 | 显式 `SessionManager.switch()`，把 `_ready` 变成 `is_ready()` |
+| E-1（ParamSpec/schema） | 前置（命令注册表）已在 `78bb02d` 落地，但 `ParamSpec` 本身（由 schema 派生校验 + STATUS + 前端控件元数据）是下一轮；当前校验已由 `_v_*` 单函数承担，收益主要在前端自动生成控件 | 随 P1-5 一起做，先出 `/api/schema` |
+| E-5（前端注册点） | `render/redraw.ts` 已解决"渲染触发"的环；完整的 renderer/measurement 注册表要等 `controls.ts` 拆分 | 与 P1-5 一起做 |
+| P2-1（store 导入期访问 DOM） | 收益低（无 SSR，测试已用 jsdom）、风险中等（33 个模块依赖） | 若做：`initStore()` + 惰性 getter |
+| P2-4（画布 DPR） | 需要同时处理主画布、瀑布层、密度层的坐标系与导出逻辑，且没有像素级自动测试；属独立一轮并需人工目视验收 | 单独提交：逻辑坐标 860×480，backing store ×DPR，`ctx.setTransform` |
+| ESLint | 只差格式类规则；`noUnusedLocals/Parameters` + `tsc --strict` 已覆盖最有价值的部分，引入 ESLint 会产生大量纯格式 diff | 单独一个"无行为变更"提交 |
 
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```
-make ci           -> pytest 107 passed / ruff clean / i18n+frames parity / 守卫通过 / 构建成功
-make hw-test      -> tinySA CW 100.2 MHz 测得 -25.7 dBm(SWP) / -25.3 dBm(RTA)
-                     39 项 UI 状态机检查全过，无页面错误
-make bench        -> 对基线通过：SWP 207 fps / RTA 215 fps / SDR 19 fps + 音频 50 fps
-                     切换 465/310 ms，CPU 0.70/0.95/2.25 s（每 4 s 窗口）
-HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 30 passed（硬件模块自动跳过）
+make ci        -> pytest 119 passed / ruff clean / i18n+frames parity / DOM id 契约 /
+                  架构守卫（cycles 0）/ 构建成功
+make hw-test   -> tinySA CW 100.2 MHz 实测 -25.7 dBm(SWP) / -25.3 dBm(RTA)
+                  tools/command_sweep.py: 24 条命令全部执行 + 6 条守卫拒绝全部生效
+                  UI 状态机 39 项检查全过，无页面错误
+make bench     -> 对基线通过（固定配置 points 1001/auto RBW/ref -30/atten auto/spur bypass）：
+                  SWP 174 fps、RTA 214 fps、SDR 19 fps + 音频 50 fps、切换 465/310 ms
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 52 passed（67 个依赖厂商库的模块跳过）
 ```
-
----
 
 ## 附录 A：度量数据
 
@@ -672,7 +707,7 @@ HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 30 passed（硬件模�
 | `store.ts` 导入者 / 可变导出 / setter | 33 / ~70 / 62 |
 | `index.html` id / data-action | 206 / 112 |
 | DOM 查询（字符串字面量） | 295 处 |
-| i18n 键 | en 402 / zh 325（缺 77） |
+| i18n 键 | en 452 / zh 451（缺 1；首版报告的 402/325 是提取缺陷，§8.1-4） |
 | 默认分支提交数 / 版本 | 221 / 1.5.5 |
 
 ## 附录 B：复现脚本
