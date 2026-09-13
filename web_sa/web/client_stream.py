@@ -33,7 +33,12 @@ class ClientStream:
     """
 
     CONTROL_LIMIT = 32
-    AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
+    # Audio backlog budget, in seconds. The queue used to be counted in FRAMES with a
+    # comment claiming "400 ms of 20 ms frames", but an SDR audio frame is one DDC block
+    # (~4.2 ms, ~200 samples at 48 kHz), so the real backlog was only ~83 ms and any send
+    # jitter overflowed it and dropped audio (heard as a stutter). Budget by duration so
+    # the intent holds whatever the block size is. seq=0 flushes stale audio.
+    AUDIO_BACKLOG_S = 0.4
 
     def __init__(self, ws):
         self.ws = ws
@@ -41,6 +46,7 @@ class ClientStream:
         self._freq: bytes | None = None
         self._data: bytes | None = None
         self._audio: deque[bytes] = deque()
+        self._audio_seconds = 0.0
         self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
         self.dropped_frames = 0
@@ -65,9 +71,16 @@ class ClientStream:
             if seq == 0:
                 self.dropped_audio += len(self._audio)
                 self._audio.clear()
+                self._audio_seconds = 0.0
             self._audio.append(frame)
-            if len(self._audio) > self.AUDIO_LIMIT:
-                self._audio.popleft()
+            # AUDF header: magic, seq, rate, samples (see measurements/sdr.py).
+            rate = int.from_bytes(frame[8:12], 'little') or 48000
+            n = int.from_bytes(frame[12:16], 'little')
+            self._audio_seconds += n / float(rate)
+            while self._audio_seconds > self.AUDIO_BACKLOG_S and self._audio:
+                old = self._audio.popleft()
+                old_n = int.from_bytes(old[12:16], 'little')
+                self._audio_seconds -= old_n / float(rate)
                 self.dropped_audio += 1
         else:
             if self._data is not None:
