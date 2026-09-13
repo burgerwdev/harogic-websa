@@ -1,5 +1,6 @@
 // WebSocket protocol layer + STATUS handling
 import * as S from './store';
+import { decodeFrame } from './frames';
 import { toUnit } from './units';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
@@ -147,37 +148,28 @@ export function connectWS() {
       }
       return;
     }
-    if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
-    const view = new DataView(event.data, 0, 16);
-    const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    const version = view.getUint32(4, true);
-    const points = view.getUint32(8, true);
-    const sweepMsHdr = view.getFloat32(12, true);
-    if (magic !== 'RTAF' && sweepMsHdr > 0 && sweepMsHdr !== S.sweepMs) {
-      S.setSweepMs(sweepMsHdr);
+    if (!(event.data instanceof ArrayBuffer)) return;
+    const frame = decodeFrame(event.data);
+    if (frame === null || frame.kind === 'audio') return;   // audio has its own connection
+    const { points } = frame;
+    if (frame.kind !== 'rta' && frame.sweepMs > 0 && frame.sweepMs !== S.sweepMs) {
+      S.setSweepMs(frame.sweepMs);
       updateInfoBar();
     }
     if (points < 2) return;
     if (S.swpHold) return;               // SWP software capture: hold the swept display
-    if (magic === 'RTAF') {
+    if (frame.kind === 'rta') {
       const processAt = performance.now();
       if (processAt - lastRtaProcess < 30) return;
       lastRtaProcess = processAt;
-      // RTA 帧: magic(4) + hdr(ver u32, pts u32, wfLen u16, maxD u16, startHz f8 = 20B) → 24B 头(8 对齐)
-      // 数据: freq(f8×pts) + spec(f4×pts) + wfRow(u2×wfLen) + stopHz(f8)
-      const hdr = new DataView(event.data, 4, 20);
-      const ver = hdr.getUint32(0, true);
-      const pts = hdr.getUint32(4, true);
-      const wfLen = hdr.getUint16(8, true);
-      const maxDensity = hdr.getUint16(10, true);
-      const startHz = hdr.getFloat64(12, true);
-      const expectedBytes = 24 + pts * 8 + pts * 4 + wfLen * 2 + 8;
-      if (pts < 2 || wfLen < 1 || event.data.byteLength !== expectedBytes) return;
-      let off = 24;
-      const capFreq = new Float64Array(event.data, off, pts); off += pts * 8;
-      const capSpec = new Float32Array(event.data, off, pts); off += pts * 4;
-      const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
-      const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      // RTA frame layout lives in core/frames.ts (magic + ver + pts + wfLen + maxD +
+      // startHz, then freq(f8) + spec(f4) + wfRow(u2) + stopHz(f8)); the decoder has
+      // already validated every length, so nothing here has to re-derive strides.
+      const { version: ver, wfLen, maxDensity, startHz, stopHz } = frame;
+      const capFreq = frame.freq;
+      const capSpec = frame.spec;
+      const wfRow = frame.wfRow;
+      const pts = frame.points;
       // The frame header is the DISPLAY window, the freq array the CAPTURE grid. In SDR the
       // two differ when a hardware offset moved the capture centre; rebin to the display
       // window so the user's centre is at the canvas centre and the offset edge is a gap.
@@ -369,18 +361,15 @@ export function connectWS() {
       }
       return;
     }
-    if (magic === 'FREQ') {
-      if (event.data.byteLength !== 16 + points * 8) return;
-      S.setFreqArray(new Float64Array(event.data, 16, points));
-      S.setFreqVersion(version);
+    if (frame.kind === 'freq') {
+      S.setFreqArray(frame.freq);
+      S.setFreqVersion(frame.version);
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(points);
       retrackMarkers();
-    } else if (magic === 'POWR') {
-      if (event.data.byteLength !== 16 + points * 4) return;
-      if (version !== S.freqVersion) return;
-      const raw = new Float32Array(event.data, 16, points);
-      processTraces(raw);
+    } else if (frame.kind === 'powr') {
+      if (frame.version !== S.freqVersion) return;
+      processTraces(frame.power);
       if (!S.rtaMode) evaluateSwpTrigger();  // software level trigger on consecutive sweeps
       noteFrameArrived();                    // armed: this trace IS the capture
       const now = performance.now();

@@ -9,6 +9,7 @@
 // Browsers without AudioWorklet keep the ScriptProcessor output, which lives on the main
 // thread; there the worker posts the resampled buffers back for the legacy ring instead.
 import { StreamingPcm16Resampler } from './sdrResampler';
+import { decodeFrame } from '../core/frames';
 
 let ws: WebSocket | null = null;
 let workletPort: MessagePort | null = null;
@@ -70,8 +71,6 @@ function onAudio(buffer: ArrayBuffer, offset: number, samples: number, rate: num
   if (frames % 25 === 0) postStats();
 }
 
-const AUDF = [65, 85, 68, 70];   // 'AUDF'
-
 function connect(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   try {
@@ -84,14 +83,10 @@ function connect(): void {
   ws.onopen = () => { reconnectDelay = 500; };
   ws.onmessage = (event: MessageEvent) => {
     const d = event.data;
-    if (!(d instanceof ArrayBuffer) || d.byteLength < 16) return;
-    const v = new DataView(d, 0, 16);
-    if (v.getUint8(0) !== AUDF[0] || v.getUint8(1) !== AUDF[1]
-        || v.getUint8(2) !== AUDF[2] || v.getUint8(3) !== AUDF[3]) return;
-    const seq = v.getUint32(4, true);
-    const rate = v.getUint32(8, true);
-    const samples = v.getUint32(12, true);
-    onAudio(d, 16, samples, rate, seq === 0);
+    if (!(d instanceof ArrayBuffer)) return;
+    const frame = decodeFrame(d);
+    if (frame === null || frame.kind !== 'audio') return;
+    onAudio(d, frame.pcm.byteOffset, frame.samples, frame.rate, frame.seq === 0);
   };
   ws.onclose = () => { ws = null; scheduleReconnect(); };
   ws.onerror = () => { ws?.close(); };
