@@ -73,19 +73,6 @@ function buildReferenceTable(powers: Float32Array): Float32Array {
   return ref;
 }
 
-function removeOutliers(p: Float32Array, thresh = 15): Float32Array {
-  let out = p;
-  for (let i = 1; i < p.length - 1; i++) {
-    const v = p[i], l = p[i - 1], r = p[i + 1];
-    if (isFinite(v) && isFinite(l) && isFinite(r) &&
-      (v < l - thresh && v < r - thresh || v > l + thresh && v > r + thresh)) {
-      if (out === p) out = new Float32Array(p);
-      out[i] = (l + r) / 2;
-    }
-  }
-  return out;
-}
-
 function cleanReference(ref: Float32Array, win = 5): Float32Array {
   const n = ref.length;
   const out = new Float32Array(ref);

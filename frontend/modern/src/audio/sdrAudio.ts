@@ -34,10 +34,6 @@ const PENDING_LIMIT = 100;
 const FADE_STEP = 0.002;
 const WORKLET_URL = new URL('./sdrAudioWorklet.js', import.meta.url).href;
 
-export function initSdrAudio(): void {
-  // AudioContext creation is deferred until a user enables audio.
-}
-
 function createContext(): AudioContext {
   try {
     return new AudioContext({ sampleRate: sourceRate });
@@ -272,14 +268,6 @@ export function setSdrAudioEnabled(on: boolean): void {
   }
 }
 
-export function isSdrAudioEnabled(): boolean {
-  return enabled;
-}
-
-export function setSdrAudioRate(rate: number): void {
-  if (rate > 0) sourceRate = rate;
-}
-
 function resamplePcm(buffer: ArrayBuffer, offset: number, samples: number): Float32Array {
   return resampler.process(buffer, offset, samples, sourceRate, ctx?.sampleRate || sourceRate);
 }
@@ -306,13 +294,4 @@ export function pushSdrAudio(
   }
   const output = resamplePcm(buffer, offset, samples);
   if (output.length) deliver(output);
-}
-
-export function sdrAudioBufferedMs(): number {
-  const rate = ctx?.sampleRate || sourceRate;
-  return (bufferedSamples / rate) * 1000;
-}
-
-export function sdrAudioUnderrunCount(): number {
-  return audioUnderruns;
 }

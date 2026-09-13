@@ -1,6 +1,6 @@
 // Spectrum rendering main module: grid/traces/markers/OSD/3dB/peak marks
 import * as S from '../core/store';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
+import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';

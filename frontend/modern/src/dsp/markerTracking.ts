@@ -1,6 +1,6 @@
 // Multi-marker peak tracking using the active trace's ranked signal peaks.
 import * as S from '../core/store';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
+import { centerHz } from '../ui/freqState';
 import { smoothForDisplay } from './smooth';
 
 interface RankedPeak { idx: number; amp: number; freq: number; }

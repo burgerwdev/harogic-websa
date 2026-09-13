@@ -12,6 +12,7 @@ import {
 	sdrListenHz,
 	sdrRefAuto,
 	sdrSpanHz,
+	estimatedCaptureSpanHz,
 	renderSdrState,
 	resetSdrState,
 } from './sdrState';
@@ -20,7 +21,7 @@ import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { rbwMode, vbwMode } from './swpState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
-import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
+import { getDisplayPowers, nextExtreme, setMarkerIdx } from '../dsp/peaks';
 import { markerFreqHz } from '../core/markerCommon';
 import { parseFreqUnit, toUnit } from '../core/units';
 import {
@@ -30,11 +31,10 @@ import {
   steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
-import { setSmoothBins } from '../core/store';
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
 import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
-import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
+import { normalizeActiveTrace, resetActiveTraceNormalize } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
@@ -42,7 +42,7 @@ import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
-import { canvasColors, getTheme } from '../core/theme';
+import { getTheme } from '../core/theme';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
@@ -629,7 +629,7 @@ export function syncGraphModeStatus(mode: string) {
     const inFm = f >= 87.5e6 && f <= 108e6;
     const inAir = f >= 118e6 && f <= 137e6;
     sdrDecimate.set(16);
-    sdrSpanHz.set(62.5e6 / 16); // estimate until the device reports the real span
+    sdrSpanHz.set(estimatedCaptureSpanHz(16)); // estimate until the device reports the real span
     sdrListenHz.set(f);
     renderSdrState();
     sdrDemod.set(inFm ? 'wfm' : 'am');
@@ -800,7 +800,7 @@ export function applySdrBand(name: string) {
   prepareSdrAudioTransition();
   sdrCenterHz.set(b.center);
   sdrDecimate.set(b.decimate);
-  sdrSpanHz.set(62.5e6 / b.decimate); // estimate until the device reports the real span
+  sdrSpanHz.set(estimatedCaptureSpanHz(b.decimate)); // estimate until the device reports the real span
   sdrDemod.set(b.demod);
   sdrIfbw.set(b.ifbw);
   sdrListenHz.set(b.center);
@@ -1015,7 +1015,6 @@ export function presetAll() {
   const pl = document.getElementById('btn-peaklist');
   if (pl) pl.textContent = t('off');
   S.setActiveMkrId(1);
-  S.setDefaultMkrDone(true);
   syncMarkerTrackingToggle();
   // Preset also resets the RTA session (backend reset_defaults) and clears the RTA
   // memory + UI so re-entering RTA starts from factory defaults.
@@ -1370,8 +1369,6 @@ export function bindActions() {
 let sdrDown = false;
 let sdrMoved = false;
 let sdrX0 = 0;
-let sdrCenter0 = 0;
-let sdrPanAt = 0;
 let sdrEdgeAt = 0;
 
 function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
@@ -1400,7 +1397,7 @@ export function bindCanvas() {
     const x = canvasX(e, canvas);
     if (currentGraphMode() === 'sdr') {
       if (x < pr.x || x > pr.x + pr.w) return;
-      sdrDown = true; sdrMoved = false; sdrX0 = x; sdrCenter0 = sdrCenterHz.get();
+      sdrDown = true; sdrMoved = false; sdrX0 = x;
       S.setDragging(true);
       return;
     }

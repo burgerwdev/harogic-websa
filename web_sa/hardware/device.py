@@ -404,12 +404,6 @@ class HarogicDevice:
             self.reset_auto_reference('std')
             return d
 
-    def apply_preset(self) -> dict:
-        with self._hw:
-            d = self.preset_state()
-            self.configure_swp()
-            return d
-
     def _apply_ifagc(self) -> None:
         """Programme the IF AGC target before configuring a profile that enables it.
 

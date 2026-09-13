@@ -4,7 +4,7 @@
 // numbers always match what the user sees. Results are shown in the channel table and
 // the channel / adjacent / OBW bands are shaded over the plot.
 import * as S from '../core/store';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
+import { centerHz } from '../ui/freqState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { acpr, occupiedBandwidth } from '../dsp/channel';
 import { getX, renderAll } from '../render/spectrum';

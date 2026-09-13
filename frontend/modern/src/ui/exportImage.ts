@@ -3,7 +3,7 @@
 // The header is intentionally a neutral data line (version / range / settings / time)
 // rather than UI prose, so a screenshot is self-describing in a report.
 import * as S from '../core/store';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
+import { centerHz, spanHz } from './freqState';
 import { refLevel } from './refState';
 import { currentRBW, currentVBW, currentPoints } from './swpState';
 import { formatFreqHz } from '../core/fmt';

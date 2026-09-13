@@ -127,7 +127,6 @@ export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start
 // Traces
 export let activeTraceIdx = 0;
 export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
-export const TRACE_COLORS = ['#00FF00', '#FFFF00', '#00FFFF', '#FF00FF'];
 export const traces: TraceState[] = [
   { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, avgTargetRta: 16, done: false },
   { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, avgTargetRta: 16, done: false },
@@ -163,7 +162,6 @@ export interface StdSnap { traces: { mode: string }[]; markers: MarkerState[]; }
 export let stdSnap: StdSnap | null = null;
 export function setStdSnap(v: StdSnap | null) { stdSnap = v; }
 export let harmValMode = 'RT';
-export function setHarmValMode(v: string) { harmValMode = v; }
 export let harmAccum: any = null;
 export function setHarmAccum(v: any) { harmAccum = v; }
 export let pnmData: any = null;
@@ -200,8 +198,6 @@ export let peakThrUserSet = false;
 export function setPeakThrUserSet(v: boolean) { peakThrUserSet = v; }
 export let normRefWinUser = 0;
 export function setNormRefWinUser(v: number) { normRefWinUser = v; }
-export let defaultMkrDone = false;
-export function setDefaultMkrDone(v: boolean) { defaultMkrDone = v; }
 // Latest GNSS status (for the detail popover)
 // RTA 实时频谱 + 瀑布
 export let rtaData: any = null;
@@ -248,9 +244,6 @@ export function setSdrMode(v: boolean) { sdrMode = v; }
 // ui/sdrState.ts. Copies here are what let the store and the form controls disagree.)
 // Audio is OFF until the user explicitly enables it ("Listen").
 // (The SDR auto-scale and audio preferences live in ui/sdrState.ts.)
-// Clicking a peak-list row enters SDR at that frequency (optional).
-export let peakDemodOn = true;
-export function setPeakDemodOn(v: boolean) { peakDemodOn = v; }
 
 export let lastGnss: any = null;
 export function setLastGnss(v: any) { lastGnss = v; }
@@ -261,5 +254,4 @@ export function setDragging(v: boolean) { dragging = v; }
 export const NORM_POS_CAP = 0.0;
 export const ABSORB_THRESH = 0.3;
 export const NORM_REF_RBW_FACTOR = 60;
-export const NORM_SETTLE_MS = 4500;
 export const PNM_OFFSETS = [100, 1000, 10000, 100000, 1000000, 10000000];

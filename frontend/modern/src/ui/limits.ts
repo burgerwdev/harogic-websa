@@ -3,7 +3,7 @@
 // The canvas overlay is drawn in render/spectrum.ts; this module owns the panel,
 // the persisted state and the DOM status line (so it stays free of canvas code).
 import * as S from '../core/store';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
+import { centerHz, spanHz } from './freqState';
 import { refLevel } from './refState';
 import { currentRBW } from './swpState';
 import { applyI18n, onLangChange, t } from '../core/i18n';

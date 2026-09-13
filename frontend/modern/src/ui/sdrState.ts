@@ -60,6 +60,19 @@ export function resetSdrState(): void {
 	resetAll('sdr');
 }
 
+/**
+ * IQS native sample rate of the SAN series. The backend reads the real value from the
+ * device profile (`NativeIQSampleRate_SPS`); this is only used to show a plausible capture
+ * span for the few hundred ms before the first SDR STATUS arrives, and STATUS is the
+ * authority (it overwrites the estimate with the measured bandwidth).
+ */
+export const IQS_NATIVE_RATE_HZ = 62.5e6;
+
+/** Capture bandwidth estimate: 0.8 * native / decimate (the backend's own formula). */
+export function estimatedCaptureSpanHz(decimate: number): number {
+	return (IQS_NATIVE_RATE_HZ * 0.8) / Math.max(1, decimate);
+}
+
 const input = (id: string) => document.getElementById(id) as HTMLInputElement | null;
 const select = (id: string) => document.getElementById(id) as HTMLSelectElement | null;
 

@@ -13,8 +13,8 @@ import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { renderAll } from './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
-import { applyI18n, setLang, onLangChange, t } from './core/i18n';
-import { initTheme, setTheme, onThemeChange, toggleTheme } from './core/theme';
+import { applyI18n, setLang, t } from './core/i18n';
+import { initTheme, onThemeChange, toggleTheme } from './core/theme';
 import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
@@ -83,7 +83,7 @@ function init() {
   setInterval(() => { if (S.viewMode === 'pnm' || S.viewMode === 'harm') renderAll(); }, 200);
 }
 
-import { getTheme as S_getTheme, getTheme } from './core/theme';
+import { getTheme as S_getTheme } from './core/theme';
 import { getLang } from './core/i18n';
 
 init();

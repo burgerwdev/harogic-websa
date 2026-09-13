@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { renderAll } from '../render/spectrum';
 import { send } from '../core/wsSend';
 import { measureAmp } from '../meas/amplitude';
-import { measureChannel, clearChannel, updateChanTable, syncChanTableVisibility } from '../meas/channel';
+import { measureChannel, updateChanTable, syncChanTableVisibility } from '../meas/channel';
 import { measHarmApply } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
 import { updateInfoBar } from '../render/infobar';

@@ -4,41 +4,6 @@ import { formatFreqHz } from '../core/fmt';
 import { t } from '../core/i18n';
 import { renderAll } from '../render/spectrum';
 
-export function measureHarmonics() {
-  const dp = getDisplayPowers();
-  if (!dp || !S.freqArray || S.freqArray.length < 2) { alert(t('meas_no_trace')); return; }
-  const inp = document.getElementById('input-harm') as HTMLInputElement;
-  const count = parseInt(inp?.value || '5') || 5;
-  const nPts = S.freqArray.length;
-  let pi = 0, pv = -1e9;
-  for (let i = 0; i < dp.length; i++) if (dp[i] > pv) { pv = dp[i]; pi = i; }
-  const f0 = S.freqArray[pi];
-  if (pv <= -1e8) { alert(t('meas_no_signal')); return; }
-  const spanHz = S.freqArray[nPts - 1] - S.freqArray[0];
-  const list: { n: number; f: number; amp: number | null; dbc: number | null; idx: number; inSpan: boolean }[] = [];
-  const fa = S.freqArray;
-  for (let n = 1; n <= count; n++) {
-    const f = f0 * n;
-    if (f > S.FREQ_MAX) break;
-    const fLo = fa[0], fHi = fa[nPts - 1];
-    if (f < fLo || f > fHi) {
-      list.push({ n, f, amp: null, dbc: null, idx: -1, inSpan: false });
-      continue;
-    }
-    const win = Math.max(spanHz / 40, f * 0.02);
-    let i0 = 0, i1 = nPts - 1;
-    for (let i = 0; i < nPts; i++) { if (fa[i] >= f - win && i0 === 0) i0 = i; if (fa[i] > f + win) { i1 = i - 1; break; } }
-    i0 = Math.max(0, Math.min(i0, nPts - 1)); i1 = Math.max(i0, Math.min(i1, nPts - 1));
-    let mi = i0, mv = -1e9;
-    for (let i = i0; i <= i1; i++) if (dp[i] > mv) { mv = dp[i]; mi = i; }
-    list.push({ n, f: fa[mi], amp: mv, dbc: mv - pv, idx: mi, inSpan: true });
-  }
-  S.setHarm({ f0, p0: pv, count, list });
-  renderAll();
-}
-
-export function clearHarmonics() { S.setHarm(null); renderAll(); }
-
 export function autoHarmSpan() {
   const sel = document.getElementById('select-harm-span') as HTMLSelectElement;
   if (!sel) return;
@@ -143,6 +108,5 @@ export function updateHarmonicTable() {
   tb2.innerHTML = rows.join('');
 }
 
-import { getDisplayPowers } from '../dsp/peaks';
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measure';

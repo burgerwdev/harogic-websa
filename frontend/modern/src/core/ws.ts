@@ -1,6 +1,5 @@
 // WebSocket protocol layer + STATUS handling
 import * as S from './store';
-import { formatBWHz, formatFreqHz, fmtAxis } from './fmt';
 import { toUnit } from './units';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
@@ -18,7 +17,7 @@ import {
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
-import { pushRtaRow, pushSwpRow, waterfallRowWidth } from '../render/waterfall';
+import { pushRtaRow, waterfallRowWidth } from '../render/waterfall';
 import { setWS } from './wsSend';
 import { refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
@@ -28,7 +27,6 @@ import { evaluateSwpTrigger } from '../ui/swpTrigger';
 import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
-import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
@@ -72,7 +70,6 @@ export function resetSdrAutoRef() {
   lastSdrAutoAt = 0;
 }
 let firstConnect = true;
-let rtaAvgN = 0;
 
 export function send(obj: object) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -599,10 +596,4 @@ export function updateFreqUIInputs(force = false) {
     const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
     setInput('input-rta-center', (rtaCenterHz.get() / scale).toFixed(4), force);
   }
-}
-
-// i18n sync: connect button/status text
-export function syncConnectBtn() {
-  const bc = document.getElementById('btn-connect');
-  if (bc) bc.textContent = S.deviceConnected ? t('status_connected') : t('connect');
 }

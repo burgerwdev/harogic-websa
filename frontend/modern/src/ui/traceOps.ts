@@ -1,12 +1,12 @@
 // Trace UI ops: tab switching / mode setting
 import * as S from '../core/store';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
+import { centerHz, spanHz } from './freqState';
 import { refLevel } from './refState';
 import { currentRBW, currentVBW } from './swpState';
 import { setDisplayRef } from './displayRef';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
-import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
+import { applyTraceMode } from '../dsp/traces';
 import { normalizeAvgCount, setAverageCount } from '../dsp/accumulator';
 import { renderAll } from '../render/spectrum';
 import { t } from '../core/i18n';
