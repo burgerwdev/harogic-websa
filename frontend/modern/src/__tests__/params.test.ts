@@ -146,6 +146,40 @@ describe('Param persistence', () => {
 	});
 });
 
+describe('authoritative slots (client-owned preferences)', () => {
+	it('never expires and never falls back while set', () => {
+		vi.useFakeTimers();
+		const p = createParam<boolean>('test.pref', {
+			fallback: false, scope: 'test', authoritative: true,
+			persistKey: 'pref', persist: 'desired',
+			parse: (r) => r === '1', serialize: (v) => (v ? '1' : '0'),
+		});
+		p.set(true);
+		vi.advanceTimersByTime(60_000);
+		// A TTL here would silently revert the preference; a toggle reading the reverted
+		// value can then only ever compute "on" (the SDR audio switch bug).
+		expect(p.get()).toBe(true);
+		expect(p.pending()).toBe(false);
+		p.set(false);
+		vi.advanceTimersByTime(60_000);
+		expect(p.get()).toBe(false);
+	});
+
+	it('is restored from storage without any backend confirmation', () => {
+		const p = createParam<boolean>('test.pref2', {
+			fallback: false, scope: 'test', authoritative: true,
+			persistKey: 'pref2', persist: 'desired',
+			parse: (r) => r === '1', serialize: (v) => (v ? '1' : '0'),
+		});
+		p.set(true);
+		const again = createParam<boolean>('test.pref3', {
+			fallback: false, scope: 'test', authoritative: true,
+			persistKey: 'pref2', parse: (r) => r === '1', serialize: (v) => (v ? '1' : '0'),
+		});
+		expect(again.get()).toBe(true);
+	});
+});
+
 describe('resetAll', () => {
 	it('clears every slot in a scope, and only that scope', () => {
 		resetAll(); // start clean (slots registered by earlier tests)

@@ -47,10 +47,12 @@ const flag = {
 	serialize: (v: boolean) => (v ? '1' : '0'),
 };
 export const sdrRefAuto = createParam<boolean>('sdr.refAuto', {
-	fallback: true, scope: 'sdr', persistKey: 'web-sa-sdr-ref-auto', persist: 'desired', ...flag,
+	fallback: true, scope: 'sdr', persistKey: 'web-sa-sdr-ref-auto', persist: 'desired',
+	authoritative: true, ...flag,
 });
 export const sdrAudioOn = createParam<boolean>('sdr.audioOn', {
-	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-audio', persist: 'desired', ...flag,
+	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-audio', persist: 'desired',
+	authoritative: true, ...flag,
 });
 
 /** Drop every pending SDR intent (Preset, or leaving the mode). */

@@ -37,6 +37,13 @@ export interface ParamOptions<T> {
 	persist?: 'confirmed' | 'desired';
 	/** How long an unconfirmed intent may override the backend (a rejected command). */
 	ttlMs?: number;
+	/**
+	 * Client-owned value: nothing confirms it, so `desired` never expires and `get()` never
+	 * falls back while it is set. Preferences (audio on/off, auto-scale on/off) are of this
+	 * kind - with a TTL they would silently revert, and a toggle reading a reverted value
+	 * can only ever compute "on" (observed: the SDR audio switch stopped turning off).
+	 */
+	authoritative?: boolean;
 	parse?(raw: string): T | null;
 	serialize?(v: T): string;
 	equals?(a: T, b: T): boolean;
@@ -106,6 +113,8 @@ export class Param<T> {
 
 	/** True while an intent is waiting to be confirmed by the backend. */
 	pending(now = Date.now()): boolean {
+		// An authoritative slot has nothing to wait for (nothing confirms it).
+		if (this.#opts.authoritative) return false;
 		return this.#desired !== null && this.pendingAge(now) <= this.#ttl;
 	}
 
@@ -116,6 +125,9 @@ export class Param<T> {
 
 	/** What the UI must render. */
 	get(now = Date.now()): T {
+		if (this.#opts.authoritative) {
+			return this.#confirmed ?? this.#desired ?? this.#opts.fallback;
+		}
 		if (this.pending(now)) return this.#desired as T;
 		return this.#confirmed ?? this.#opts.fallback;
 	}
@@ -137,7 +149,7 @@ export class Param<T> {
 	 * dropped once it is older than the TTL (a rejected command must not stick).
 	 */
 	confirm(v: T): boolean {
-		if (this.#desired !== null && this.pendingAge() > this.#ttl) this.#desired = null;
+		if (!this.#opts.authoritative && this.#desired !== null && this.pendingAge() > this.#ttl) this.#desired = null;
 		const changed = this.#confirmed === null || !this.eq(this.#confirmed, v);
 		this.#confirmed = v;
 		if (this.#desired !== null && this.eq(v, this.#desired)) this.#desired = null;

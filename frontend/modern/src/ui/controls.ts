@@ -809,9 +809,8 @@ function applySdrAudioPreference() {
 
 export function toggleSdrAudio() {
   const on = !sdrAudioOn.get();
-  sdrAudioOn.set(on);
+  sdrAudioOn.set(on); // the slot persists it (single writer)
   setSdrAudioEnabled(on);
-  try { localStorage.setItem('web-sa-sdr-audio', on ? '1' : '0'); } catch { /* ignore */ }
   syncSdrAudioButton();
 }
 
