@@ -52,7 +52,20 @@
       </div>
     </div>
     <div class="info-right">
-      <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false">⌨</button>
+      <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false"
+              data-i18n-title="tip_keypad" data-i18n-attr="title" title="Virtual keypad"><!--
+        Drawn, not typed: U+2328 is absent from the bundled font subset, so the glyph fell
+        back to a language-dependent system font - a real keyboard icon in English and a
+        small missing-glyph box in Chinese. An inline SVG cannot be affected by the global
+        `font-family: ... !important` rule and looks identical on every platform.
+     --><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.15" stroke-linecap="round" aria-hidden="true"
+              style="display:block;margin:0 auto;">
+          <rect x="0.8" y="3.6" width="14.4" height="8.8" rx="1.5"/>
+          <path d="M3.2 6.1h.01M5.6 6.1h.01M8 6.1h.01M10.4 6.1h.01M12.8 6.1h.01
+                   M3.2 8.3h.01M5.6 8.3h.01M8 8.3h.01M10.4 8.3h.01M12.8 8.3h.01
+                   M5.2 10.5h5.6"/>
+        </svg></button>
       <span id="connDot" class="dot off"></span>
       <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect SAN-90</button>
     </div>
