@@ -251,6 +251,34 @@ def main() -> int:
         check("mode buttons usable after the burst",
               not page.eval_on_selector("#btn-mode-sdr", "e => e.disabled"))
 
+        # 9 - SDR manual reference must stay put. Turning the auto-scale off and setting a Ref
+        # used to be undone within a second or two (the display-mode defaults kept writing 0),
+        # and the down arrow appeared dead until the up arrow was pressed first.
+        print("9) SDR manual reference holds")
+        if sdr_panel_visible(page) is False:
+            page.click("#btn-mode-sdr")
+            page.wait_for_timeout(2500)
+        else:
+            post(url, {"cmd": "SET_MODE", "mode": "sdr"})
+            page.wait_for_timeout(2500)
+        if page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('active')"):
+            page.click("#btn-ref-auto")          # auto off: the user takes over
+            page.wait_for_timeout(800)
+        page.fill("#input-ref", "-40")
+        page.click("#btn-ref-set")
+        page.wait_for_timeout(800)
+        first = page.input_value("#input-ref")
+        check("manual Ref is applied", abs(float(first) + 40) < 1.5, f"input {first}")
+        page.wait_for_timeout(3500)              # well past any auto-refresh window
+        after = page.input_value("#input-ref")
+        check("manual Ref survives (not reset to 0)", abs(float(after) + 40) < 1.5,
+              f"input {after} after 3.5 s")
+        page.click("#btn-ref-down")
+        page.wait_for_timeout(600)
+        down = page.input_value("#input-ref")
+        check("Ref down arrow works without pressing up first", float(down) < float(after),
+              f"{after} -> {down}")
+
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()
 
