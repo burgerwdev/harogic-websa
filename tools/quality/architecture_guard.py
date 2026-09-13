@@ -156,11 +156,31 @@ def validation_limit_literals() -> int:
     return len([m for m in LIMIT_LITERAL.findall(text) if not m.startswith('maximum=caps')])
 
 
+def _longest_function(rel_path: str, prefix: str = '') -> int:
+    """Longest function (optionally name-prefixed) in a module."""
+    tree = ast.parse((ROOT / rel_path).read_text(encoding='utf-8'))
+    sizes = [node.end_lineno - node.lineno + 1 for node in ast.walk(tree)
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and node.name.startswith(prefix)]
+    if not sizes:
+        raise SystemExit(f'{rel_path}: no function with prefix {prefix!r}')
+    return max(sizes)
+
+
+def command_specs() -> int:
+    """Number of declarative command entries (only ever grows with new features)."""
+    text = (ROOT / 'web_sa/web/commands.py').read_text(encoding='utf-8')
+    return text.count('CommandSpec(')
+
+
 METRICS = {
     'frontend_cycles': frontend_cycles,
     'backend_cycles': backend_cycles,
-    'dispatch_lines': lambda: function_lines('web_sa/web/ws.py', '_dispatch'),
-    'validate_lines': lambda: function_lines('web_sa/web/ws.py', '_validate_command'),
+    # The command layer moved into web/commands.py: measure the largest single handler and
+    # validator there instead of the two god functions that used to live in ws.py.
+    'dispatch_lines': lambda: _longest_function('web_sa/web/commands.py', '_h_'),
+    'validate_lines': lambda: _longest_function('web_sa/web/commands.py', '_v_'),
+    'command_specs': command_specs,
     'mode_branches': mode_branches,
     'htra_imports_outside_bindings': htra_imports_outside_bindings,
     'validation_limit_literals': validation_limit_literals,

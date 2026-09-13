@@ -38,8 +38,9 @@ hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regressi
 		-H 'Content-Type: application/json' -d '{"cmd":"SET_MODE","mode":"std"}' >/dev/null || true
 	python3 tools/hardware_smoke.py --tinysa-port $${TINYSA_PORT:-/dev/ttyACM0} \
 		--configure-tinysa --frequency 100.2e6 --span 10e6 --duration 3
+	python3 tools/command_sweep.py
 	python3 tools/e2e/state_regression.py
-	@echo "OK: hardware smoke + UI state regression"
+	@echo "OK: hardware smoke + command sweep + UI state regression"
 
 bench:    ## Performance baseline: compare against tools/bench_baseline.json (service running)
 	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh

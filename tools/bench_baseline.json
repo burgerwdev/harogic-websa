@@ -5,50 +5,59 @@
  "center_hz": 100200000.0,
  "span_hz": 10000000.0,
  "duration_s": 4.0,
+ "configuration": {
+  "points_requested": 1000,
+  "points_device": 1001,
+  "rbw_mode": "auto",
+  "rbw_hz": 10000.0,
+  "ref_dbm": -30.0,
+  "atten": -1,
+  "spur": "bypass"
+ },
  "swp": {
   "mode": "swp",
-  "frames": 830,
-  "fps": 207.33,
+  "frames": 696,
+  "fps": 173.92,
   "bad_frames": 0,
   "points": [
-   166
+   1001
   ],
-  "peak_frequency_hz": 97675599.0,
-  "peak_power_dbm": -80.807,
-  "cpu_s": 0.76
+  "peak_frequency_hz": 97628672.3,
+  "peak_power_dbm": -108.032,
+  "cpu_s": 2.15
  },
- "switch_to_rta_ms": 465.1,
+ "switch_to_rta_ms": 463.5,
  "rta": {
   "mode": "rta",
-  "frames": 860,
-  "fps": 214.73,
+  "frames": 857,
+  "fps": 214.07,
   "bad_frames": 0,
   "points": [
    3328
   ],
-  "peak_frequency_hz": 99356712.4,
-  "peak_power_dbm": -91.743,
+  "peak_frequency_hz": 99366504.2,
+  "peak_power_dbm": -95.19,
   "frame_bytes": [
    41688
   ],
-  "switch_ms": 326.3,
-  "cpu_s": 1.02
+  "switch_ms": 329.9,
+  "cpu_s": 0.89
  },
- "switch_to_sdr_ms": 313.5,
+ "switch_to_sdr_ms": 326.8,
  "sdr": {
   "frames": 77,
-  "fps": 19.16,
+  "fps": 19.17,
   "bad_frames": 0,
   "points": [
    1639
   ],
   "audio": {
-   "frames": 100,
-   "fps": 49.94,
-   "samples": 96000,
+   "frames": 101,
+   "fps": 50.09,
+   "samples": 96960,
    "bad": 0
   },
-  "cpu_s": 2.42
+  "cpu_s": 2.1
  },
- "took_s": 15.8
+ "took_s": 16.4
 }

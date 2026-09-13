@@ -117,6 +117,48 @@ async def measure_switch(ws, mode_payload: dict, timeout: float = 10.0) -> float
     return None
 
 
+async def post_config(session, base, payload) -> tuple[int, dict]:
+    async with session.post(f'{base}/api/config', json=payload) as response:
+        return response.status, await response.json()
+
+
+async def configure_for_bench(session, base: str, args) -> dict:
+    """Put the device into the fixed configuration the baseline was recorded with.
+
+    Without this the measured frame rate depends on whatever the previous test left behind
+    (points/span/RBW change the sweep time), which produced a false 2.5x "regression" the
+    first time this comparison ran.
+    """
+    setup = [
+        {'cmd': 'SET_MODE', 'mode': 'std'},
+        {'cmd': 'SET_POINTS', 'points': args.points},
+        {'cmd': 'SET_RBW', 'mode': 'auto'},
+        {'cmd': 'SET_VBW', 'mode': 'equal'},
+        {'cmd': 'SET_SWEEP', 'mode': 0},
+        {'cmd': 'SET_SPUR', 'mode': 'bypass'},
+        {'cmd': 'SET_WINDOW', 'window': 1},
+        {'cmd': 'SET_DETECTOR', 'mode': 'auto'},
+        {'cmd': 'SET_AMP', 'atten': -1, 'preamp': 0, 'ifgain': 2, 'gain_strategy': 0},
+        {'cmd': 'SET_REF', 'mode': 'manual', 'ref': -30},
+        {'cmd': 'SET_FREQ', 'center': args.frequency, 'span': args.span},
+    ]
+    for payload in setup:
+        status, body = await post_config(session, base, payload)
+        if status != 200:
+            raise RuntimeError(f'bench setup {payload["cmd"]} failed: {status} {body}')
+    async with session.get(f'{base}/api/state') as response:
+        state = await response.json()
+    return {
+        'points_requested': args.points,
+        'points_device': state.get('points'),
+        'rbw_mode': state.get('rbw_mode'),
+        'rbw_hz': state.get('rbw'),
+        'ref_dbm': state.get('ref'),
+        'atten': (state.get('amp') or {}).get('atten'),
+        'spur': state.get('spur'),
+    }
+
+
 async def run(args) -> dict:
     result: dict = {
         'host': socket.gethostname(),
@@ -140,6 +182,9 @@ async def run(args) -> dict:
                 await session.post(f'{args.http_url}/api/config',
                                    json={'cmd': 'SET_MODE', 'mode': 'std'})
                 await asyncio.sleep(1.0)
+
+            result['configuration'] = await configure_for_bench(session, args.http_url, args)
+            await asyncio.sleep(0.5)
 
             async with session.ws_connect(f'{args.ws_url}/ws{token}',
                                           max_msg_size=32 * 1024 * 1024) as ws:
@@ -224,6 +269,8 @@ def parse_args():
     parser.add_argument('--frequency', type=float, default=100.2e6)
     parser.add_argument('--span', type=float, default=10e6)
     parser.add_argument('--duration', type=float, default=5.0)
+    parser.add_argument('--points', type=int, default=1000,
+                        help='requested points for the measurement (fixed so runs compare)')
     parser.add_argument('--write-baseline', metavar='FILE')
     parser.add_argument('--check', metavar='FILE')
     return parser.parse_args()
