@@ -205,6 +205,7 @@ export function setRefLevel() {
     // backend reconfigures IQS and applies the normal audio reset/fade sequence.
     S.setSdrRefAuto(false);
     S.setDisplayRef(value);
+    syncSdrRefUI();                       // the Auto button must reflect the real state
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
     prepareSdrAudioTransition();
@@ -232,6 +233,7 @@ export function adjustRefLevel(direction: -1 | 1) {
     const next = Math.max(-160, Math.min(40, S.displayRef + direction * S.dbPerDiv));
     S.setSdrRefAuto(false);
     S.setDisplayRef(next);
+    syncSdrRefUI();                       // ditto
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
     prepareSdrAudioTransition();
@@ -255,9 +257,6 @@ export function syncRefLevelStatus(responseTo?: string) {
 export function setRefAuto() {
   if (currentGraphMode() === 'sdr') {
     S.setSdrRefAuto(!S.sdrRefAuto);
-    // Persist the preference: the key was read on startup but never written, so the
-    // "auto ref on/off" choice was silently forgotten on every reload.
-    try { localStorage.setItem('web-sa-sdr-ref-auto', S.sdrRefAuto ? '1' : '0'); } catch { /* ignore */ }
     syncSdrRefUI();
     renderAll();
     return;

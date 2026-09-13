@@ -266,7 +266,14 @@ export let sdrAudioOn = false;
 export function setSdrAudioOn(v: boolean) { sdrAudioOn = v; }
 // Auto amplitude reference (on by default); manual Ref disables it.
 export let sdrRefAuto = true;
-export function setSdrRefAuto(v: boolean) { sdrRefAuto = v; }
+export function setSdrRefAuto(v: boolean) {
+  sdrRefAuto = v;
+  // Single writer for the persisted preference: the UI has several paths that switch the
+  // SDR auto-scale off (the Auto toggle, the Ref Set button, the Ref arrows). Persisting in
+  // only one of them meant a stored "on" came back after a reload and silently overrode the
+  // reference level the user had just set, which reads as "the SDR Ref cannot be adjusted".
+  try { localStorage.setItem('web-sa-sdr-ref-auto', v ? '1' : '0'); } catch { /* ignore */ }
+}
 // Clicking a peak-list row enters SDR at that frequency (optional).
 export let peakDemodOn = true;
 export function setPeakDemodOn(v: boolean) { peakDemodOn = v; }
