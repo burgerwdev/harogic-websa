@@ -193,6 +193,8 @@ class HarogicDevice:
             },
         }
         self._pending_auto_ref: tuple[str, float] | None = None
+        # Geometry (span/RBW/points/window) each tracker's learned floor belongs to.
+        self._auto_ref_geometry_seen: dict[str, tuple | None] = {'std': None, 'rta': None}
 
     # ---------------- Lifecycle ----------------
     def open(self) -> tuple[bool, str]:
@@ -724,6 +726,18 @@ class HarogicDevice:
             target = max(noise_floor_dbm + window - 8.0, peak_dbm + 10.0)
         target = math.ceil(target / 5.0) * 5.0
         target = min(30.0, max(-50.0, target, tracker.get('floor', -50.0)))
+        # Window criterion instead of a bare 5 dB dead-band: while the noise floor sits
+        # between 4 and 12 dB above the bottom edge AND the peak keeps >= 8 dB of headroom,
+        # the placement is already right, so a wobbling estimate (or a small RBW/point change
+        # that moves the noise floor by a dB or two) must not trigger a reconfiguration -
+        # each one costs a full device reconfigure and is visible as a jump.
+        if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
+            noise_above_bottom = noise_floor_dbm - (current - window)
+            headroom = current - peak_dbm
+            if 4.0 <= noise_above_bottom <= 12.0 and headroom >= 8.0:
+                tracker['candidate'] = None
+                tracker['candidate_since'] = 0.0
+                return
         # When the noise floor is high, keep ~30 dB of headroom above it.
         if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
             target = max(target, noise_floor_dbm + 30.0)
@@ -765,9 +779,31 @@ class HarogicDevice:
             self.begin_auto_reference_settle(mode)
             return changed
 
+    def _auto_ref_geometry(self, mode: str) -> tuple:
+        """Signature of the measurement geometry the learned floor belongs to.
+
+        The IF saturates at a Ref that depends on the in-band power, i.e. on span / RBW /
+        points / window - not only on the front-end. A floor learned at another geometry
+        either blocks a legitimate low Ref or invites saturation probing, so it is dropped
+        when this signature changes. Applying a new Ref does NOT change it (verified by the
+        signature itself), which is what keeps the auto-ref from clearing its own floor on
+        every application.
+        """
+        s = self.state
+        if mode == 'rta':
+            return (s.rta_center_hz, s.rta_span_hz, s.rta_rbw_hz, s.rta_vbw_hz,
+                    s.rta_window, getattr(s, 'rta_decimate', 0))
+        return (s.center_hz, s.span_hz, s.rbw_hz, s.vbw_hz, s.window, 0)
+
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
         """Discard stale auto-ref observations after any acquisition reconfiguration."""
         with self._hw:
+            geometry = self._auto_ref_geometry(mode)
+            if self._auto_ref_geometry_seen.get(mode) not in (None, geometry):
+                # Span/RBW/points/window changed: the learned saturation floor no longer
+                # describes this configuration.
+                self._auto_ref[mode]['floor'] = -50.0
+            self._auto_ref_geometry_seen[mode] = geometry
             tracker = self._auto_ref[mode]
             tracker['candidate'] = None
             tracker['candidate_since'] = 0.0

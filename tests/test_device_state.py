@@ -185,9 +185,10 @@ def test_auto_reference_learns_the_if_overflow_floor():
     dev._pending_auto_ref = None
     dev.state.status_warning = 0
     dev._auto_ref['std']['last_change'] = -10.0      # past the 1 s apply throttle
+    # Ref too high for this noise floor (noise 15 dB below the bottom edge), so the rule acts
+    # - and its bottom-anchored target lands under the learned floor, which must win.
+    dev.state.ref_level = -30.0
     for _ in range(3):
-        # Noise floor low enough that the bottom-anchored target lands under the floor
-        # (peak must stay >=15 dB above it or the observation is rejected as noise ripple).
         dev.observe_reference_peak('std', -125.0, -145.0)
         dev._auto_ref['std']['candidate_since'] -= 2.0
     assert dev._pending_auto_ref == ('std', -45.0)
@@ -249,3 +250,32 @@ def test_full_span_preset_uses_capability_midpoint():
     dev.preset_state()
     assert dev.state.center_hz == (9e3 + 9e9) / 2
     assert dev.state.span_hz == 9e9 - 9e3
+
+
+def test_auto_reference_holds_when_the_placement_is_already_good():
+    """The window criterion: a well-placed trace must not be re-adjusted.
+
+    Acts only when the noise floor would leave its band above the bottom edge or the peak
+    loses headroom, so a wobbling estimate (or a small RBW/points change that moves the
+    noise floor by a dB or two) cannot trigger a reconfigure.
+    """
+    dev = HarogicDevice()
+    dev.state.ref_mode = 'auto'
+    dev.state.atten = -1
+    dev.state.ref_range_db = 100.0
+    dev.state.ref_level = -50.0
+    dev._auto_ref['std']['last_change'] = -10.0
+    for _ in range(3):
+        # noise -145 sits 5 dB above the bottom edge (-150); peak keeps 75 dB of headroom.
+        dev.observe_reference_peak('std', -125.0, -145.0)
+        dev._auto_ref['std']['candidate_since'] -= 2.0
+    assert dev._pending_auto_ref is None
+
+    # A change that puts the noise floor outside its band does re-adjust (here Ref is too
+    # high for the narrower 40 dB window: the floor sits exactly on the bottom edge).
+    dev.state.ref_level = -20.0
+    dev.state.ref_range_db = 40.0
+    for _ in range(3):
+        dev.observe_reference_peak('std', -40.0, -60.0)   # -> target -25
+        dev._auto_ref['std']['candidate_since'] -= 2.0
+    assert dev._pending_auto_ref == ('std', -25.0)
