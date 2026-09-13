@@ -621,74 +621,81 @@ e2e（真机）仍全绿。
 
 ## 9. 实施记录（分支 `refactor/arch-review-improvements`）
 
-按报告建议实施了两轮重构（10 个提交），每轮都跑 `make ci` + `make hw-test` + `make bench`。
+路线图的 Phase 0–3 已全部实施（15 个提交），每一步都跑 `make ci` + `make hw-test` + `make bench`。
 
 ### 9.1 已完成
 
-| 报告编号 | 内容 | 提交 | 验证 |
-|---|---|---|---|
-| P0-1 | i18n 字典合并为单一声明（452/452 键）、补上缺的那一条中文、`I18nKey` 覆盖全量键、新增 parity 测试 | `4e7d9f9` | `__tests__/i18n.test.ts`（键集合、空值、占位符、类型、回退） |
-| P0-3 | `core/frames.ts` 作为 TS 侧唯一帧定义；`tools/gen_frame_fixtures.py` 用生产编码器生成 `tests/fixtures/frames/*.bin`；Python 断言 fixture 与编码器一致，TS 断言解码与 manifest 一致 | `4e7d9f9` | 后端 fixture 测试 + 前端解码测试（含截断/畸形帧拒绝） |
-| P0-4 / G-2 | `requirements.txt`（运行时、双边界）+ `requirements-dev.txt` + `requirements-lock.txt` | `3d415f5` | 干净环境 `./test.sh` 不再因缺 ruff 失败 |
-| P0-5 | 版本单一来源（`tools/sync_version.py --check` 进 CI） | `3d415f5` | 人为改坏 package.json 后 `--check` 退出 1 |
-| G-3 | `tests/conftest.py` 在缺厂商库时跳过 7 个硬件模块；`make hw-test` / `make bench` / `make ci` 统一入口 | `3d415f5`、`682bb82` | 离线 52 项通过；真机全绿 |
-| G-1 | `tools/bench.py` + 基线；**并且**先把设备置为固定配置再测量（否则帧率取决于上一次测试残留的点数/RBW，会出现假回归——已实测到一次 2.5× 假警报） | `682bb82`、`78bb02d` | `make bench` 连续多次对基线通过 |
-| P1-3 | `sdk_bindings` 补齐 RTA/trigger 符号，`rta.py` 不再直接 `import htra_api` | `a8dc59d` | 守卫指标 3 → 0 |
-| P1-7 | 会话 `health()`、设备 `auto_reference_view()`/`session_health()` | `a8dc59d` | STATUS 字段不变（真机 + UI 回归） |
-| P1-10 | `web/recovery.py` 统一 `EXIT_FATAL`/`fatal()` | `a8dc59d` | `tests/test_recovery_json.py` |
-| P1-11 | `web/jsonutil.py` 去重；publisher 序列化一次广播 | `a8dc59d` | 后端 + 前端新测试 |
-| E-2 | 硬件限值进入 `DeviceCapabilities`，协议界限进 `config.py` 常量 | `98e3bc0` | `test_model_limits_come_from_capabilities` |
-| E-3 | 会话自有 `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()` | `98e3bc0` | `tests/test_publisher.py` + 真机 |
-| P0-2（步 1-2） | 帧解码单测 + `updateStatus` STATUS→槽位映射测试 | `6a699a8` | 前端 132 项 |
-| **P1-1/P1-2** | **命令层改为声明式表**：`web/commands.py` 每条命令一个 `CommandSpec`（校验/处理器/是否需要设备），模式与会话守卫改成表标志（`SWP_OWNED`/`SWP_ONLY`/`NOT_IN_SDR`）；`ws.py` 只剩传输适配，`_COMMANDS` 由表派生 | `78bb02d` | `tests/test_command_registry.py`（10 项）+ **`tools/command_sweep.py` 真机跑完全部 24 条命令与 6 条守卫拒绝** |
-| **P1-4** | **前端循环依赖 14 → 0**：新增 `render/redraw.ts` 反向 seam（spectrum 注册渲染器，其他模块只调 `requestRender()`）；`getX/getY/PLOT_RECT` 移入 `render/plot.ts`；拆出叶子模块 `dsp/normalizeStatus.ts`、`ui/measureUi.ts`、`ui/freqInputs.ts`、`core/sdrAutoRef.ts` | `0beadb3` | 守卫 `frontend_cycles=0`；真机 UI 状态机回归（断言画布重绘）+ bench 无回归；bundle 178→147 kB |
-| **P1-5（自检部分）** | **DOM id 契约检查**：`tools/check_dom_ids.py` 把"TS 读取但 index.html 不存在"变成构建失败。写出该检查时它立刻抓到一个真 bug：`core/ws.ts` 读 `#cur-ifgain` 显示实际中频增益档，但页面里没有该元素，读数从未显示过（已补上元素） | `e8bc1cc` | `make ci` 中执行；112 个 id 全部解析成功 |
-| **E-4** | **帧保留策略表**：`client_stream.publish_bytes` 不再按 magic 分支，`FRAME_POLICY`（retain/fifo/latest）声明式；未知类型默认 latest；测试断言该表覆盖生产编码器的全部 magic | `e8bc1cc` | `test_every_frame_type_has_a_retention_policy` |
-| **P2-2/P2-3（部分）** | 开启 `noUnusedLocals`/`noUnusedParameters`（共只报 6 处，已修），获得 linter 最有价值的一半且无格式 churn | `e8bc1cc` | `npx tsc --noEmit` 干净 |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline（循环依赖、上帝函数、mode 分支、越界 DLL、限值字面量、命令表规模） | `3d415f5` | `make ci` |
+| 报告编号 | 内容 | 验证 |
+|---|---|---|
+| P0-1 | i18n 合并为单一声明（452/452）、补上缺失的 1 条中文、`I18nKey` 覆盖全量键、parity 测试 | `__tests__/i18n.test.ts` |
+| P0-3 | `core/frames.ts` 为 TS 侧唯一帧定义；`tools/gen_frame_fixtures.py` 生成 golden fixture，Python 与 TS 两侧各自断言 | 后端 6 项 + 前端 7 项 |
+| P0-4 / G-2 | 依赖拆分为 runtime/dev/lock 三份并加双边界 | 干净环境 `./test.sh` 通过 |
+| P0-5 | 版本单一来源 + `--check` 进 CI | 改坏 package.json 即失败 |
+| G-3 | `tests/conftest.py` 缺厂商库时跳过 7 个硬件模块；`make hw-test` / `bench` / `ci` | 离线 **72** 项通过；真机全绿 |
+| G-1 | `tools/bench.py` + 固定配置后测量（修掉一次 2.5× 假回归）+ 基线 | `make bench` 连续通过 |
+| P1-1/P1-2 | **命令层声明式表**：`web/commands.py` 每条命令一个 `CommandSpec`；守卫改为表标志；`ws.py` 仅传输适配 | `test_command_registry.py`(14) + `tools/command_sweep.py` 真机 30/30 |
+| P1-3 | `sdk_bindings` 补齐 RTA/trigger 符号，`rta.py` 不再直连 `htra_api` | 守卫指标 3 → 0 |
+| P1-4 | **前端循环依赖 14 → 0**：`render/redraw.ts` 反向 seam、`getX/getY/PLOT_RECT` 移入 `render/plot.ts`、拆出 4 个叶子模块 | 守卫 `frontend_cycles=0` + 真机 UI 回归 |
+| P1-5 | **`controls.ts` 按面板拆分**：9 个 `ui/panels/*`（frequency/resolution/rta/markers/refAmp/waterfall/gnss/groups/commit），1548 → 934 行；公共 API 用 re-export 保持不变；DOM id 契约检查（写出时抓到 `#cur-ifgain` 从未显示的 bug） | tsc + 139 前端测试 + 真机 UI 回归 + `tools/check_dom_ids.py` |
+| P1-6 | 参数槽位化：触发组（`trigSource/trigLevel/trigEdge/trigPoi` → `ui/triggerState.ts`）；SDR/频率/Ref/RBW 组此前已迁移。**剩余 store 全局是数据而非参数**（traces/rtaData/waterfallRows/peakMarks/limits…），按"参数用槽位、数据用仓库"的规则保留 | 135→139 前端测试 + 真机 |
+| P1-7 | 会话 `health()`、设备 `auto_reference_view()`/`session_health()` | STATUS 字段不变 |
+| P1-8 | **`AutoReferenceController` 独立**（`hardware/auto_reference.py`，~200 行控制逻辑）+ 16 项纯函数测试（stub 设备 + 假时钟）；`device.py` 只做委托 | 新增 16 项 + 原有 7 项行为测试 |
+| P1-9 | **会话生命周期协议**：`request_stop()`/`is_ready()` + `SessionManager.switch()`（stop→exit→construct→enter→ready），命令层不再碰私有 `_ready` | `test_command_registry.py` + 真机 |
+| P1-10 | `web/recovery.py` 统一 `fatal()`/`EXIT_FATAL` | `test_recovery_json.py` |
+| P1-11 | `web/jsonutil.py`；publisher 序列化一次广播 | 后端 + 前端测试 |
+| E-1 | **参数 schema**：`ParamSpec`（类型/边界（可为 caps 回调）/选项/单位/默认/条件必填）是唯一描述，`CommandSpec.validate()` 由其生成，交叉规则仅 6 条；`build_schema()` + `GET /api/schema`（含鉴权） | `test_command_registry.py` 4 项 + `test_http_api.py` 2 项 |
+| E-2 | 硬件限值进 `DeviceCapabilities`，协议界限进 `config.py` 常量 | `test_model_limits_come_from_capabilities` |
+| E-3 | 会话自有 `acquisition_timeout()`/`pacing()`/`dedupe_freq()`/`reconfigure()`；publisher 无 mode 分支 | `tests/test_publisher.py` |
+| E-4 | `FRAME_POLICY` 保留策略表（未知类型默认 latest）+ 覆盖性测试 | `test_every_frame_type_has_a_retention_policy` |
+| E-5 | **视图注册表**：`render/registry.ts`（叶子），pnm/harm 视图自注册、RTA 视图本地注册，`renderAll()` 只做查表，默认走扫频路径 | `__tests__/registry.test.ts`(4) |
+| P2-1 | `core/store` 导入期不再访问 DOM：`canvas/ctx/W/H` 由 `initStore()` 赋值（`let` 实时绑定），缺失时抛清晰错误；`plot.ts` 的模块级 `PLOT_RECT` 改为按需计算 | `__tests__/store.test.ts` |
+| P2-2/P2-3 | 开启 `noUnusedLocals`/`noUnusedParameters`；ESLint 见 §9.3 | tsc 干净 |
+| P2-4 | **HiDPI**：backing store = 逻辑 860×480 × devicePixelRatio（≤2），`ctx.setTransform` 保持逻辑坐标；瀑布/密度层自算尺寸不受影响 | `__tests__/store.test.ts` + 真机 UI 回归 |
+| P2-5 | 双语文档结构一致性检查（`tools/check_docs_parity.py`，7 对文件） | `make ci` |
+| P2-8 | 更正：`fit_span` 并非"遗留 helper"，harmonic 会话在用；已改注释 | — |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline（循环依赖、上帝函数、mode 分支、越界 DLL、限值字面量、命令表规模） | `make ci` |
 
 ### 9.2 客观进展（守卫指标，重构前 → 现在）
 
 | 指标 | 前 | 后 |
 |---|---|---|
 | `frontend_cycles` | 14 | **0** |
-| `backend_cycles` | 1 | 1（`http_api ⇄ ws`，属传输层，未动） |
-| `dispatch_lines`（命令处理器最长） | 313（`_dispatch`） | **33** |
-| `validate_lines`（单命令校验最长） | 144（`_validate_command`） | **16** |
+| `backend_cycles` | 1 | 1（`http_api ⇄ ws`，传输层） |
+| `dispatch_lines`（最长命令处理器） | 313（`_dispatch`） | **33** |
+| `validate_lines`（最长校验） | 144（`_validate_command`） | **16**（交叉规则） |
 | `command_specs` | —（无表） | 24 |
-| `mode_branches` | 18 | **2** |
+| `mode_branches` | 18 | **0** |
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
-| 后端测试 | 87 | **119** |
-| 前端测试 | 115 | **132** |
-| 硬件无关（CI 可跑）测试 | 0（无法导入） | **52**（另 67 项需厂商库） |
-| 生产 bundle | 178 kB | 147 kB |
+| 后端测试 | 87 | **141** |
+| 前端测试 | 115 | **139** |
+| 硬件无关（CI 可跑）测试 | 0（无法导入） | **72**（另 69 项需厂商库） |
+| `ui/controls.ts` | 1548 行 | **934 行**（+ 9 个面板模块 715 行） |
+| 生产 bundle | 178 kB | 156 kB |
 
 ### 9.3 未做及原因
 
-| 编号 | 未做原因 | 下一步 |
+| 编号 | 状态 | 原因与下一步 |
 |---|---|---|
-| P1-5（`controls.ts` 按面板拆分） | 1547 行、39 条 import，且刚把循环依赖降到 0；拆分必须保证不重新引入环，属独立一轮的机械工作。本轮先做了它最有价值的一半（id 契约自检，并已抓到真 bug） | 按 `data-action` 域拆 `ui/panels/*`，每步跑 `madge --circular` + `make hw-test` |
-| P1-6（store 剩余参数槽位化） | RTA/触发/瀑布参数迁移需同步改 e2e 断言 | 按 SDR 组方式逐组迁移 |
-| P1-8（`DeviceState`/`HarogicDevice` 拆分） | `AutoReferenceController` 抽取属高风险区（控制环 + 硬件）；本轮只把追踪器归属（`auto_ref_scope`）会话化 | 先给控制环写纯函数单测，再搬到独立类 |
-| P1-9（`SessionManager`） | 已做一半（惰性 `session_class()`）；`SET_MODE` 仍用 `_ready` 握手 | 显式 `SessionManager.switch()`，把 `_ready` 变成 `is_ready()` |
-| E-1（ParamSpec/schema） | 前置（命令注册表）已在 `78bb02d` 落地，但 `ParamSpec` 本身（由 schema 派生校验 + STATUS + 前端控件元数据）是下一轮；当前校验已由 `_v_*` 单函数承担，收益主要在前端自动生成控件 | 随 P1-5 一起做，先出 `/api/schema` |
-| E-5（前端注册点） | `render/redraw.ts` 已解决"渲染触发"的环；完整的 renderer/measurement 注册表要等 `controls.ts` 拆分 | 与 P1-5 一起做 |
-| P2-1（store 导入期访问 DOM） | 收益低（无 SSR，测试已用 jsdom）、风险中等（33 个模块依赖） | 若做：`initStore()` + 惰性 getter |
-| P2-4（画布 DPR） | 需要同时处理主画布、瀑布层、密度层的坐标系与导出逻辑，且没有像素级自动测试；属独立一轮并需人工目视验收 | 单独提交：逻辑坐标 860×480，backing store ×DPR，`ctx.setTransform` |
-| ESLint | 只差格式类规则；`noUnusedLocals/Parameters` + `tsc --strict` 已覆盖最有价值的部分，引入 ESLint 会产生大量纯格式 diff | 单独一个"无行为变更"提交 |
+| P1-6（其余 store 全局） | 部分 | 触发组已槽位化；剩下的 67 个 `export let` 中绝大多数是**数据**（traces/rtaData/waterfallRows/peakMarks/limits/markers…）与**运行态**（armed/waiting/hit/overlay），按本轮确立的规则应留在 store，而不是塞进参数槽。若继续迁移，下一步是 waterfall 显示范围（`wfLoDbm/wfHiDbm/wfRangeMode/wfPaused`）这一组参数。 |
+| P2-3（ESLint） | 受阻 | **上游不兼容**：`typescript-eslint@8` 声明 `typescript ">=4.8.4 <6.1.0"`，而本项目使用 TypeScript 7.0.2（npm ERESOLVE 已实测）。等 typescript-eslint 支持 TS 7 后接入；当前 `tsc --strict` + `noUnusedLocals/Parameters` + 架构守卫已覆盖最有价值的部分。 |
+| P2-6（根目录 27KB 临时 TODO） | 未做 | 该文件通过 `.git/info/exclude` 仅在本地可见，属于作者的工作备忘，删除/搬移应由作者决定；本轮只在报告里标明其中"SWP/RTA 迁移未做"一节已过期。 |
+| P2-7（harmonic/phase_noise 单测） | 部分 | SDR/RTA/AutoRef/命令层已补齐；harmonic 与 PNM 的结果解析仍无直接单测（需构造厂商结构体）。 |
+| P2-9（高频命令只回显变化字段） | 未做 | 需要先确认前端不依赖全量 STATUS（槽位确认依赖它）；属性能优化而非结构问题，收益在当前客户端数量下很小。 |
 
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```
-make ci        -> pytest 119 passed / ruff clean / i18n+frames parity / DOM id 契约 /
-                  架构守卫（cycles 0）/ 构建成功
+make ci        -> pytest 141 passed / ruff clean / i18n+frames parity / DOM id 契约 /
+                  双语文档结构一致 / 架构守卫（cycles 0、mode branches 0）/ 构建成功
 make hw-test   -> tinySA CW 100.2 MHz 实测 -25.7 dBm(SWP) / -25.3 dBm(RTA)
-                  tools/command_sweep.py: 24 条命令全部执行 + 6 条守卫拒绝全部生效
+                  tools/command_sweep.py：24 条命令 + 6 条守卫拒绝全部符合预期
                   UI 状态机 39 项检查全过，无页面错误
 make bench     -> 对基线通过（固定配置 points 1001/auto RBW/ref -30/atten auto/spur bypass）：
                   SWP 174 fps、RTA 214 fps、SDR 19 fps + 音频 50 fps、切换 465/310 ms
-HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 52 passed（67 个依赖厂商库的模块跳过）
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 72 passed
+逐提交验证     -> git worktree + pytest 跑过分支上每个提交（曾发现一个"测试先于实现"的提交，
+                  已重建历史修正）
 ```
 
 ## 附录 A：度量数据

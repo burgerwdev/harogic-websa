@@ -110,6 +110,8 @@ harogic-websa/
 │  └─ web/               ws.py / http_api.py / publisher.py
 ├─ frontend/
 │  └─ modern/            TS frontend (Vite + TypeScript, i18n + themes)
+│     ├─ src/ui/panels/  panel modules (frequency/resolution/rta/markers/refAmp/...)
+│     └─ src/render/registry.ts  view renderer registry (views self-register)
 │     └─ src/__tests__/  vitest tests (DSP engine, synthetic traces)
 ├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
 ├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log / arch review
@@ -137,13 +139,15 @@ harogic-websa/
 | `make bench` / `bench-record` | Compare against / re-record `tools/bench_baseline.json` |
 | `python3 tools/sync_version.py --check` | Version drift check (pyproject → package.json + index.html) |
 | `python3 tools/check_dom_ids.py` | DOM id contract: every id read from the TS sources exists in index.html |
+| `python3 tools/check_docs_parity.py` | The en/ and zh-CN/ documents keep the same section structure |
+| `GET /api/schema` | Machine-readable command/parameter schema (generated from the command table) |
 | `python3 tools/command_sweep.py` | **Bench only** — executes every command in the table plus the guard rejections |
 | `python3 tools/quality/architecture_guard.py` | Architecture fitness functions (cycles, god functions, mode branching, DLL access, limit literals) |
 
 ## Tests
 
-- **Backend (119)**: protocol + golden frame fixtures, configuration/security defaults, command validation (including capability-driven limits), SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, fatal-exit contract, HTTP/WS authentication and path protection, bounded client streaming, acquisition policy (session-owned watchdog/pacing), supervisor and TinySA safety rules
-- **Frontend (132)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization, parameter slots, i18n key parity, the binary frame decoder against the Python-generated fixtures, and the STATUS → parameter-slot mapping
+- **Backend (141)**: protocol + golden frame fixtures, configuration/security defaults, command validation (including capability-driven limits), SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, fatal-exit contract, HTTP/WS authentication and path protection, bounded client streaming, acquisition policy (session-owned watchdog/pacing), supervisor and TinySA safety rules
+- **Frontend (139)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization, parameter slots, i18n key parity, the binary frame decoder against the Python-generated fixtures, and the STATUS → parameter-slot mapping
 - **Hardware-free by default**: without `/opt/htraapi/lib/x86_64/libhtraapi.so` the seven vendor-dependent backend modules are skipped (`tests/conftest.py`), so CI and a plain checkout can run everything else. `make hw-test` and `tools/hardware_smoke.py` need the analyzer (and the tinySA for the CW source).
 
 ## Open-Source Notes

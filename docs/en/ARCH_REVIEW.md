@@ -637,76 +637,84 @@ conventionally has `make hw-test` (real-hardware smoke + state-machine regressio
 
 ## 9. Implementation record (branch `refactor/arch-review-improvements`)
 
-Two rounds of the roadmap were implemented (10 commits), each verified with `make ci` +
-`make hw-test` + `make bench`.
+Roadmap phases 0-3 are implemented (15 commits), each verified with `make ci` + `make hw-test`
++ `make bench`.
 
 ### 9.1 Implemented
 
-| Finding | What | Commit | Verified by |
-|---|---|---|---|
-| P0-1 | i18n merged into one declaration (452/452 keys), the one missing zh key added, `I18nKey` covers every key, parity test | `4e7d9f9` | `__tests__/i18n.test.ts` |
-| P0-3 | `core/frames.ts` is the single TS frame definition; `tools/gen_frame_fixtures.py` generates the golden fixtures from the production encoders; Python asserts the fixtures match its encoders, TS asserts the decode matches the manifest | `4e7d9f9` | backend fixture tests + frontend decoder tests (truncated/malformed rejection) |
-| P0-4 / G-2 | `requirements.txt` (runtime, bounded) + `requirements-dev.txt` + `requirements-lock.txt` | `3d415f5` | `./test.sh` works on a clean checkout |
-| P0-5 | Version single-sourced (`tools/sync_version.py --check` in CI) | `3d415f5` | breaking package.json makes `--check` exit 1 |
-| G-3 | `tests/conftest.py` skips the seven vendor modules when the library is absent; `make hw-test`/`bench`/`ci` are the entry points | `3d415f5`, `682bb82` | 52 tests offline; hardware run green |
-| G-1 | `tools/bench.py` + baseline, **and** the device is put into a fixed configuration before measuring (otherwise the frame rate depends on leftover points/RBW - it produced a false 2.5x regression once) | `682bb82`, `78bb02d` | `make bench` passes repeatedly |
-| P1-3 | `sdk_bindings` re-exports the RTA/trigger types; `rta.py` no longer imports `htra_api` | `a8dc59d` | guard 3 -> 0 |
-| P1-7 | Session `health()`, device `auto_reference_view()`/`session_health()` | `a8dc59d` | STATUS unchanged (bench + UI regression) |
-| P1-10 | `web/recovery.py` owns `EXIT_FATAL`/`fatal()` | `a8dc59d` | `tests/test_recovery_json.py` |
-| P1-11 | `web/jsonutil.py`; the publisher serializes once and broadcasts | `a8dc59d` | new backend + frontend tests |
-| E-2 | Hardware limits in `DeviceCapabilities`, protocol bounds as `config.py` constants | `98e3bc0` | `test_model_limits_come_from_capabilities` |
-| E-3 | Sessions own `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()` | `98e3bc0` | `tests/test_publisher.py` + bench |
-| P0-2 (steps 1-2) | Frame-decoder tests + `updateStatus` STATUS→slot mapping test | `6a699a8` | 132 frontend tests |
-| **P1-1/P1-2** | **Command layer as a declarative table**: `web/commands.py` has one `CommandSpec` per command (validate/handler/needs_device); the mode and session guards became table flags (`SWP_OWNED`/`SWP_ONLY`/`NOT_IN_SDR`); `ws.py` is transport only and derives `_COMMANDS` from the table | `78bb02d` | `tests/test_command_registry.py` (10) + **`tools/command_sweep.py` executes all 24 commands and six guard rejections on the bench** |
-| **P1-4** | **Frontend cycles 14 → 0**: `render/redraw.ts` inverts the dependency (spectrum registers its renderer, everyone else calls `requestRender()`); `getX/getY/PLOT_RECT` moved to `render/plot.ts`; new leaf modules `dsp/normalizeStatus.ts`, `ui/measureUi.ts`, `ui/freqInputs.ts`, `core/sdrAutoRef.ts` | `0beadb3` | guard `frontend_cycles=0`; hardware UI regression (which asserts canvas repaints) + bench unaffected; bundle 178 → 147 kB |
-| **P1-5 (self-check half)** | **DOM id contract**: `tools/check_dom_ids.py` turns "read by TS but absent from index.html" into a build failure. Writing it found a real bug: `core/ws.ts` reads `#cur-ifgain` to show the actual IF-gain grade, but the element did not exist, so the readout never appeared (element added) | `e8bc1cc` | runs in `make ci`; all 112 ids resolve |
-| **E-4** | **Frame retention table**: `publish_bytes` no longer branches on the magic; `FRAME_POLICY` (retain/fifo/latest) is declarative with latest-wins as the documented default, and a test asserts it covers every magic the encoders emit | `e8bc1cc` | `test_every_frame_type_has_a_retention_policy` |
-| **P2-2/P2-3 (partial)** | `noUnusedLocals`/`noUnusedParameters` enabled (only six findings, all fixed): the useful half of a linter without an ESLint dependency and a formatting-only diff | `e8bc1cc` | `npx tsc --noEmit` clean |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline (cycles, god functions, mode branching, out-of-layer DLL access, limit literals, command-table size) | `3d415f5` | runs in `make ci` |
+| Finding | What | Verified by |
+|---|---|---|
+| P0-1 | i18n merged into one declaration (452/452), the one missing zh key added, `I18nKey` covers every key, parity test | `__tests__/i18n.test.ts` |
+| P0-3 | `core/frames.ts` is the single TS frame definition; the golden fixtures are generated from the Python encoders and asserted on both sides | 6 backend + 7 frontend tests |
+| P0-4 / G-2 | Dependencies split into runtime/dev/lock with two-sided bounds | clean-checkout `./test.sh` |
+| P0-5 | Version single-sourced, `--check` in CI | breaking package.json fails |
+| G-3 | `tests/conftest.py` skips the 7 vendor modules when the library is absent; `make hw-test`/`bench`/`ci` | **72** tests pass offline; hardware run green |
+| G-1 | `tools/bench.py` + fixed device configuration before measuring (it once reported a false 2.5x regression) + baseline | `make bench` passes repeatedly |
+| P1-1/P1-2 | **Command layer as a declarative table**: one `CommandSpec` per command in `web/commands.py`, guards as table flags, `ws.py` transport-only | `test_command_registry.py` (14) + `tools/command_sweep.py` 30/30 on the bench |
+| P1-3 | `sdk_bindings` re-exports the RTA/trigger types; `rta.py` no longer imports `htra_api` | guard 3 -> 0 |
+| P1-4 | **Frontend cycles 14 -> 0**: `render/redraw.ts` inversion, `getX/getY/PLOT_RECT` into `render/plot.ts`, four new leaf modules | guard `frontend_cycles=0` + hardware UI regression |
+| P1-5 | **`controls.ts` split by panel**: 9 modules under `ui/panels/*` (frequency/resolution/rta/markers/refAmp/waterfall/gnss/groups/commit), 1548 -> 934 lines, public surface preserved by re-exports; DOM id contract check (which found `#cur-ifgain` was never displayed) | tsc + 139 frontend tests + hardware UI regression + `tools/check_dom_ids.py` |
+| P1-6 | Parameter slots: the trigger group (`trigSource/trigLevel/trigEdge/trigPoi` -> `ui/triggerState.ts`); the SDR/frequency/Ref/RBW groups were migrated earlier. **The remaining store globals are data, not parameters** (traces/rtaData/waterfallRows/peakMarks/limits...), which the "parameters use slots, data uses a store" rule keeps there | 139 frontend tests + bench |
+| P1-7 | Session `health()`, device `auto_reference_view()`/`session_health()` | STATUS unchanged |
+| P1-8 | **`AutoReferenceController` extracted** (`hardware/auto_reference.py`, ~200 lines of control logic) with 16 focused tests (stub device + fake clock); `device.py` only delegates | 16 new + the 7 existing behaviour tests |
+| P1-9 | **Session lifecycle protocol**: `request_stop()`/`is_ready()` + `SessionManager.switch()` (stop -> exit -> construct -> enter -> ready); the command layer no longer touches private `_ready` | `test_command_registry.py` + bench |
+| P1-10 | `web/recovery.py` owns `fatal()`/`EXIT_FATAL` | `test_recovery_json.py` |
+| P1-11 | `web/jsonutil.py`; the publisher serializes once for all clients | backend + frontend tests |
+| E-1 | **Parameter schema**: `ParamSpec` (type, bounds - number or capability callable -, choices, unit, default, conditional required) is the single description; `CommandSpec.validate()` is generated from it and only six cross-field rules remain; `build_schema()` + `GET /api/schema` (auth-protected) | 4 + 2 tests |
+| E-2 | Hardware limits in `DeviceCapabilities`, protocol bounds as `config.py` constants | `test_model_limits_come_from_capabilities` |
+| E-3 | Sessions own `acquisition_timeout()`/`pacing()`/`dedupe_freq()`/`reconfigure()`; the publisher has no mode branches | `tests/test_publisher.py` |
+| E-4 | `FRAME_POLICY` retention table (unknown types default to latest) + coverage test | `test_every_frame_type_has_a_retention_policy` |
+| E-5 | **View renderer registry**: `render/registry.ts` (leaf); the pnm/harm views self-register, RTA registers locally, `renderAll()` only looks the mode up with the swept path as default | `__tests__/registry.test.ts` (4) |
+| P2-1 | `core/store` no longer touches the DOM at import: `canvas/ctx/W/H` are assigned by `initStore()` (`let` live bindings) and a missing canvas fails loudly; `plot.ts` computes its rect on demand | `__tests__/store.test.ts` |
+| P2-2/P2-3 | `noUnusedLocals`/`noUnusedParameters` enabled; ESLint see §9.3 | tsc clean |
+| P2-4 | **HiDPI**: backing store = logical 860x480 x devicePixelRatio (<=2) with `ctx.setTransform`, so drawing stays logical; the waterfall/density layers compute their own sizes | `__tests__/store.test.ts` + hardware UI regression |
+| P2-5 | Bilingual docs structure check (`tools/check_docs_parity.py`, 7 file pairs) | `make ci` |
+| P2-8 | Correction: `fit_span` is not a "legacy helper", the harmonic session uses it; docstring fixed | - |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline (cycles, god functions, mode branching, out-of-layer DLL access, limit literals, command-table size) | `make ci` |
 
-### 9.2 Objective progress (guard metrics, before → now)
+### 9.2 Objective progress (guard metrics, before -> now)
 
 | Metric | Before | Now |
 |---|---|---|
 | `frontend_cycles` | 14 | **0** |
-| `backend_cycles` | 1 | 1 (`http_api ⇄ ws`, transport-level, untouched) |
+| `backend_cycles` | 1 | 1 (`http_api ⇄ ws`, transport) |
 | `dispatch_lines` (longest handler) | 313 (`_dispatch`) | **33** |
-| `validate_lines` (longest validator) | 144 (`_validate_command`) | **16** |
-| `command_specs` | – (no table) | 24 |
-| `mode_branches` | 18 | **2** |
+| `validate_lines` (longest validator) | 144 (`_validate_command`) | **16** (cross-field rules) |
+| `command_specs` | - (no table) | 24 |
+| `mode_branches` | 18 | **0** |
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
-| Backend tests | 87 | **119** |
-| Frontend tests | 115 | **132** |
-| Hardware-free (CI) tests | 0 (import failed) | **52** (the other 67 need the vendor library) |
-| Production bundle | 178 kB | 147 kB |
+| Backend tests | 87 | **141** |
+| Frontend tests | 115 | **139** |
+| Hardware-free (CI) tests | 0 (import failed) | **72** (the other 69 need the vendor library) |
+| `ui/controls.ts` | 1548 lines | **934 lines** (+ 9 panel modules, 715 lines) |
+| Production bundle | 178 kB | 156 kB |
 
 ### 9.3 Not done, and why
 
-| Finding | Why not | Next step |
+| Finding | Status | Reason and next step |
 |---|---|---|
-| P1-5 (`controls.ts` split by panel) | 1547 lines, 39 imports, and the cycle count was just driven to 0; the split must not reintroduce an edge and is a mechanical round of its own. This round did the highest-value half (the id contract, which already found a real bug) | Split into `ui/panels/*` by `data-action` domain, running `madge --circular` + `make hw-test` after each step |
-| P1-6 (remaining store parameters → slots) | Migrating RTA/trigger/waterfall parameters requires updating the e2e assertions in step | Migrate one group at a time, SDR-style |
-| P1-8 (`DeviceState`/`HarogicDevice` split) | Extracting `AutoReferenceController` is high risk (control loop + hardware); this round only moved tracker ownership (`auto_ref_scope`) into the session | Unit-test the control loop as pure functions first |
-| P1-9 (`SessionManager`) | Half done (lazy `session_class()`); `SET_MODE` still uses the `_ready` handshake | Explicit `SessionManager.switch()`, `_ready` → `is_ready()` |
-| E-1 (ParamSpec/schema) | Its prerequisite (the command registry) landed in `78bb02d`, but `ParamSpec` itself (derive validation + STATUS + frontend control metadata from one schema) is the next round; validation is already one function per command, so the remaining payoff is generated frontend controls | Do it with P1-5, starting from an `/api/schema` endpoint |
-| E-5 (frontend registration points) | `render/redraw.ts` already removed the "trigger a repaint" cycles; a full renderer/measurement registry waits for the `controls.ts` split | With P1-5 |
-| P2-1 (store DOM access at import) | Low payoff (no SSR; tests run in jsdom), medium risk (33 importing modules) | If done: `initStore()` + lazy getters |
-| P2-4 (canvas DPR) | Requires touching the coordinate systems of the main canvas, the waterfall layer and the density layer plus the export path, with no pixel-level automated test; it needs its own round and a visual check | Separate commit: logical 860×480 coordinates, backing store ×DPR, `ctx.setTransform` |
-| ESLint | Only formatting-class rules are missing; `noUnusedLocals/Parameters` + `tsc --strict` cover the valuable part, and ESLint would produce a large formatting-only diff | Separate behaviour-free commit |
+| P1-6 (remaining store globals) | Partial | The trigger group is migrated; of the remaining 67 `export let`s, most are **data** (traces/rtaData/waterfallRows/peakMarks/limits/markers...) or **runtime state** (armed/waiting/hit/overlay), which the rule established here keeps in the store rather than forcing into parameter slots. The next group worth migrating is the waterfall display range (`wfLoDbm/wfHiDbm/wfRangeMode/wfPaused`). |
+| P2-3 (ESLint) | Blocked | **Upstream incompatibility**: `typescript-eslint@8` declares `typescript ">=4.8.4 <6.1.0"` while this project builds with TypeScript 7.0.2 (npm ERESOLVE, reproduced). Adopt it once typescript-eslint supports TS 7; `tsc --strict` + `noUnusedLocals/Parameters` + the architecture guard cover the valuable part meanwhile. |
+| P2-6 (27 KB scratch TODO in the repo root) | Not done | The file is local-only (`.git/info/exclude`) and is the author's working note; deleting or relocating it is the author's call. The review only flags that its "SWP/RTA migration still to do" section is stale. |
+| P2-7 (harmonic/phase-noise unit tests) | Partial | SDR/RTA/AutoRef/command layer are covered; harmonic and PNM result parsing still have no direct tests (they need synthetic vendor structs). |
+| P2-9 (echo only changed STATUS fields for high-rate commands) | Not done | Requires confirming the frontend does not depend on the full STATUS (slot confirmation does); it is a performance optimisation, not a structural problem, and the payoff with the current client count is small. |
 
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 
 ```
-make ci        -> pytest 119 passed / ruff clean / i18n+frames parity / DOM id contract /
-                  architecture guard (cycles 0) / build OK
+make ci        -> pytest 141 passed / ruff clean / i18n+frames parity / DOM id contract /
+                  bilingual doc structure / architecture guard (cycles 0, mode branches 0) /
+                  build OK
 make hw-test   -> tinySA CW at 100.2 MHz measured -25.7 dBm (SWP) / -25.3 dBm (RTA)
-                  tools/command_sweep.py: all 24 commands executed, all 6 guard rejections held
+                  tools/command_sweep.py: all 24 commands and all 6 guard rejections as expected
                   39 UI state-machine checks pass, no page errors
 make bench     -> matches the baseline (fixed configuration: points 1001, auto RBW, ref -30,
-                  atten auto, spur bypass): SWP 174 fps, RTA 214 fps, SDR 19 fps + 50 audio
-                  fps, switches 465/310 ms
-HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 52 passed (67 vendor modules skipped)
+                  atten auto, spur bypass): SWP 174 fps, RTA 214 fps, SDR 19 + 50 audio fps,
+                  switches 465/310 ms
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 72 passed
+per-commit     -> every commit on the branch was re-checked with `git worktree` + pytest
+                  (it caught one "test committed before its implementation"; history rebuilt)
 ```
 
 ## Appendix A: Metrics

@@ -183,7 +183,7 @@ def fit_start_stop(
 
 
 def fit_span(center: float, span: float, cap: DeviceCapabilities) -> float:
-    """Shrink span around a fixed center (legacy helper used by measurements)."""
+    """Shrink a span around a fixed centre (used by the harmonic session)."""
     symmetric_limit = 2 * min(
         float(center) - cap.freq_min_hz,
         cap.freq_max_hz - float(center),
