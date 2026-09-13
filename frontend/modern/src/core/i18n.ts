@@ -406,6 +406,18 @@ Object.assign(dict.zh, {
 Object.assign(dict.en, { 'norm_cleared': 'Normalization cleared (measurement settings changed)' });
 Object.assign(dict.zh, { 'norm_cleared': '归一化已清除（测量参数已变化）' });
 
+// Mode / reference request feedback (the pending state and its timeout must be visible)
+Object.assign(dict.en, {
+  'mode_switching': 'Switching to {mode}…',
+  'mode_switch_timeout': 'Mode switch to {mode} was not confirmed by the device',
+  'ref_switch_timeout': 'The device did not confirm the new reference level',
+});
+Object.assign(dict.zh, {
+  'mode_switching': '正在切换到 {mode}…',
+  'mode_switch_timeout': '切换到 {mode} 未得到设备确认',
+  'ref_switch_timeout': '设备未确认新的参考电平',
+});
+
 // Tooltips for every interactive control + remaining bottom-bar literals
 Object.assign(dict.en, {
   'tip_select-refclk': 'Reference clock source: Int / Ext / ExtForce (output switch is in the popover)',

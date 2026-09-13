@@ -317,6 +317,19 @@ def main() -> int:
         check("mode buttons usable after the burst",
               not page.eval_on_selector("#btn-mode-sdr", "e => e.disabled"))
 
+        # 8b - a newer mode request supersedes an in-flight one (discipline 2). The buttons
+        # used to be disabled while a request was pending, so the second click was swallowed
+        # and the first target won - the "switching is slow / needs a retry" report.
+        print("8b) a newer mode request supersedes the old one")
+        post(url, {"cmd": "SET_MODE", "mode": "std"})
+        page.wait_for_timeout(2000)
+        page.click("#btn-mode-rta")
+        page.wait_for_timeout(50)          # deliberately do not wait for the confirmation
+        page.click("#btn-mode-sdr")        # supersede before the first request settles
+        page.wait_for_timeout(2500)
+        check("the newest mode request wins", state(url)["mode"] == "sdr",
+              state(url)["mode"])
+
         # 9 - SDR manual reference must stay put. Turning the auto-scale off and setting a Ref
         # used to be undone within a second or two (the display-mode defaults kept writing 0),
         # and the down arrow appeared dead until the up arrow was pressed first.

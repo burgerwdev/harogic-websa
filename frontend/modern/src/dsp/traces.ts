@@ -1,6 +1,7 @@
 // Trace processing: resampling/gapFill/spur suppression/state machine
 import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
+import { setDisplayRef } from '../ui/displayRef';
 import { accumulateTrace, applyMode } from './accumulator';
 import { updateNormalizeStatusUI } from './normalize';
 import { updateTrackingMarkers } from './markerTracking';
@@ -69,10 +70,9 @@ export function invalidateAllTraces() {
     t.reference = null; t.isNormalized = false;
   });
   S.setDisplayUnit('dBm');
-  // The SDR display scale belongs to the automatic scaler. Resetting it to the swept
-  // reference here left the trace off-canvas until the next valid frame (measured: the
-  // auto-scale decided -15 while the canvas still showed 0). Keep the last usable value.
-  if (!S.sdrMode) S.setDisplayRef(refLevel.get());
+  // A display default; in SDR the SDR session owns the scale, so this is a refused write
+  // there (see ui/displayRef.ts) - it must not clobber a manual SDR Ref.
+  setDisplayRef('mode', refLevel.get());
   updateNormalizeStatusUI();
 }
 

@@ -517,3 +517,8 @@ select:focus { border-color: var(--text); }
   50%      { border-color: #ff8a80; box-shadow: 0 0 8px 2px rgba(255, 77, 77, 0.55); }
 }
 input.ref-warn { animation: refWarnGlow 1.1s ease-in-out infinite; border: 1px solid #ff4d4d; }
+
+/* Pending request feedback: the button/mode is asked for but not confirmed yet. */
+@keyframes pendingPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.btn.pending { animation: pendingPulse 1s ease-in-out infinite; }
+input.ref-pending { border: 1px dashed #ffb300; }

@@ -2,6 +2,7 @@
 import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
 import { currentRBW } from '../ui/swpState';
+import { setDisplayRef } from '../ui/displayRef';
 import { resetTraceAccum } from './traces';
 import { updateInfoBar } from '../render/infobar';
 
@@ -109,7 +110,7 @@ export function normalizeActiveTrace() {
   t._lastAbsorb = performance.now();
   resetTraceAccum(t);
   S.setDisplayUnit('dB');
-  S.setDisplayRef(0.0);
+  setDisplayRef('mode', 0.0);
   updateNormalizeStatusUI();
   updateInfoBar();
 }
@@ -120,7 +121,7 @@ export function resetActiveTraceNormalize() {
   resetTraceAccum(t);
   if (!S.traces.some(x => x.isNormalized && x.reference)) {
     S.setDisplayUnit('dBm');
-    S.setDisplayRef(refLevel.get());
+    setDisplayRef('mode', refLevel.get());
   }
   updateNormalizeStatusUI();
   updateInfoBar();

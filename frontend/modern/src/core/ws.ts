@@ -31,6 +31,7 @@ import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { alignToDisplayWindow } from '../dsp/grid';
+import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { pushSdrAudio } from '../audio/sdrAudio';
 import { sdrRefAuto } from '../ui/sdrState';
@@ -238,16 +239,16 @@ export function connectWS() {
               if (cvD) cvD.dataset.sdrRefDbg = JSON.stringify({
                 noise: Math.round(noise), peak: Math.round(peak),
                 nEma: Math.round(sdrNoiseEma), pEma: Math.round(sdrPeakEma),
-                range, ref: Math.round(ref), applied: Math.abs(ref - S.displayRef) >= 3,
-                shown: Math.round(S.displayRef),
+                range, ref: Math.round(ref), applied: Math.abs(ref - getDisplayRef()) >= 3,
+                shown: Math.round(getDisplayRef()),
               });
             }
             // Compare against the value that is ACTUALLY displayed, never a private cache:
             // other panels (preset, normalise, the manual Ref box) also write displayRef,
             // and a stale cache made auto-ref believe it had already applied `ref` and
             // silently stop correcting the display (measured: ref -15, shown 0).
-            if (Math.abs(ref - S.displayRef) >= 3) {
-              S.setDisplayRef(ref);
+            if (Math.abs(ref - getDisplayRef()) >= 3) {
+              setDisplayRef('auto', ref);
               lastSdrAutoAt = now2;
               const cv = document.getElementById('spectrum');
               if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
@@ -292,7 +293,7 @@ export function connectWS() {
       // so density and trace never drift apart. A window change rebuilds the grid.
       const dispRange = S.totalDivs * S.dbPerDiv;
       const dB_PER_BIN = dispRange / S.RTA_AMP_BINS;
-      const refTop = S.displayRef;
+      const refTop = getDisplayRef();
       if (lastDensRef !== refTop || lastDensRange !== dispRange) {
         if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
         lastDensRef = refTop; lastDensRange = dispRange;
@@ -446,7 +447,8 @@ export function updateStatus(s: any) {
     invalidateAllTraces();
     if (hadNormalization) showNormalizeClearedHint();
   }
-  if (S.displayUnit !== 'dB' && s.mode !== 'sdr') S.setDisplayRef(refLevel.get());
+  noteDisplayRefReport(Number(s.ref));
+  if (S.displayUnit !== 'dB') setDisplayRef('mode', refLevel.get());
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
