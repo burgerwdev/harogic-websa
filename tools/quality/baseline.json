@@ -4,7 +4,7 @@
  "dispatch_lines": 33,
  "frontend_cycles": 0,
  "htra_imports_outside_bindings": 0,
- "mode_branches": 2,
+ "mode_branches": 0,
  "validate_lines": 16,
  "validation_limit_literals": 0
 }

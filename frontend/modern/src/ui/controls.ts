@@ -1,37 +1,14 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
-import { updateFreqUIInputs } from './freqInputs';
+
 import { resetSdrAutoRef } from '../core/sdrAutoRef';
-import {
-	sdrCenterHz,
-	sdrDecimate,
-	sdrAudioOn,
-	sdrDeemph,
-	sdrDemod,
-	sdrIfbw,
-	sdrListenHz,
-	sdrRefAuto,
-	sdrSpanHz,
-	estimatedCaptureSpanHz,
-	renderSdrState,
-	resetSdrState,
-} from './sdrState';
-import { refLevel, refMode } from './refState';
-import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
-import { rbwMode, vbwMode } from './swpState';
+import { sdrCenterHz, sdrDecimate, sdrAudioOn, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrRefAuto, sdrSpanHz, estimatedCaptureSpanHz, renderSdrState, resetSdrState } from './sdrState';
+import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
-import { getDisplayPowers, nextExtreme, setMarkerIdx } from '../dsp/peaks';
-import { markerFreqHz } from '../core/markerCommon';
-import { parseFreqUnit, toUnit } from '../core/units';
-import {
-  niceSpanStep,
-  normalizeCenterSpan,
-  normalizeStartStop,
-  steppedRefLevel,
-  steppedSpan,
-} from '../core/frequency';
+import { getDisplayPowers } from '../dsp/peaks';
+
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
 import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
@@ -43,418 +20,38 @@ import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measureChannel, clearChannel } from '../meas/channel';
 import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
-import { getTheme } from '../core/theme';
+
 import { t } from '../core/i18n';
-import { assignMarkerToBestPeak, toggleMarkerTracking } from '../dsp/markerTracking';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { resetLimits } from './limits';
 
+// Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
+// interaction, mode/preset orchestration) and imports the actions it dispatches; the
+// re-exports below keep the previous public surface for the rest of the app.
+import { applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetSpanStepAuto, stepSwpSpan, syncSwpSpanStep, updateCustomSpanStep } from './panels/frequency';
+import { applyPoints, applyRBW, applyVBW, setSpurMode, setWindow } from './panels/resolution';
+import { applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins } from './panels/rta';
+import { activeMarkerNextPeakLeft, activeMarkerNextPeakRight, activeMarkerNextValleyLeft, activeMarkerNextValleyRight, activeMarkerPeak, activeMarkerValley, markerToCenter, placeMarkerFromX, selectMarker, syncMarkerTrackingToggle, toggleActiveMarkerTracking, toggleMarkersAll } from './panels/markers';
+import {
+  adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
+  syncSdrRefUI, toggleGapFill, toggleRefClkOut,
+} from './panels/refAmp';
+import { resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause } from './panels/waterfall';
+import { closeGnssDetail, fillGnssDetail } from './panels/gnss';
+import { toggleAllGroups, toggleGroup } from './panels/groups';
+import { commitUnitField } from './panels/commit';
+
 // ── Frequency linking ──
-function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
-  return document.getElementById(id);
-}
 
-function markFrequencyDirty(id: 'swp-freq-settings' | 'rta-freq-settings') {
-  const editor = frequencyEditor(id);
-  if (editor) editor.dataset.dirty = '1';
-}
-
-function beginFrequencyCommit(id: 'swp-freq-settings' | 'rta-freq-settings') {
-  const editor = frequencyEditor(id);
-  if (editor) {
-    editor.dataset.pending = '1';
-    editor.dataset.pendingVersion = String(S.configVersion + 1);
-    editor.dataset.pendingAt = String(Date.now());
-  }
-}
-
-function clearFrequencyEditor(editor: HTMLElement) {
-  delete editor.dataset.pending;
-  delete editor.dataset.pendingVersion;
-  delete editor.dataset.pendingAt;
-  delete editor.dataset.dirty;
-  editor.querySelectorAll('input').forEach(input => delete (input as HTMLElement).dataset.edited);
-}
-
-export function syncFrequencyEditorStatus(responseTo?: string, configVersion = 0) {
-  const scalarInput = responseTo === 'SET_RBW'
-    ? 'input-rbw'
-    : responseTo === 'SET_VBW' ? 'input-vbw' : responseTo === 'SET_PNM' ? 'input-pnm' : null;
-  if (scalarInput) {
-    const input = document.getElementById(scalarInput);
-    if (input) delete input.dataset.edited;
-  }
-  const id = responseTo === 'SET_FREQ'
-    ? 'swp-freq-settings'
-    : responseTo === 'SET_RTA' ? 'rta-freq-settings' : null;
-  if (id) {
-    const editor = frequencyEditor(id);
-    if (editor) clearFrequencyEditor(editor);
-    return;
-  }
-  for (const editorId of ['swp-freq-settings', 'rta-freq-settings'] as const) {
-    const editor = frequencyEditor(editorId);
-    if (!editor?.dataset.pending) continue;
-    const expected = Number(editor.dataset.pendingVersion || Infinity);
-    const pendingAt = Number(editor.dataset.pendingAt || Date.now());
-    if (configVersion >= expected && Date.now() - pendingAt >= 2500) {
-      clearFrequencyEditor(editor);
-    }
-  }
-}
-
-export function commitUnitField(field: string, commit = true) {
-  if (field === 'span') syncSwpSpanStep();
-  if (!commit) return;
-  if (field === 'center' || field === 'span') {
-    applyCenterSpan();
-  } else if (field === 'start' || field === 'stop') {
-    applyStartStop();
-  } else if (field === 'rta_center') {
-    applyRta();
-  } else if (field === 'rbw') {
-    const mode = document.getElementById('select-rbw-mode') as HTMLSelectElement | null;
-    if (mode) mode.value = 'manual';
-    applyRBW();
-  } else if (field === 'vbw') {
-    const mode = document.getElementById('select-vbw-mode') as HTMLSelectElement | null;
-    if (mode) mode.value = 'manual';
-    applyVBW();
-  } else if (field === 'pnm' && S.measOn && S.measTabSel === 'pnm') {
-    measPnmApply();
-  }
-}
-
-function validateFrequencyWindow(window: unknown, ids: string[]): boolean {
-  for (const id of ids) {
-    const input = document.getElementById(id) as HTMLInputElement | null;
-    if (input) input.setCustomValidity(window ? '' : 'Invalid frequency range');
-  }
-  if (!window) {
-    (document.getElementById(ids[0]) as HTMLInputElement | null)?.reportValidity();
-    return false;
-  }
-  return true;
-}
-
-export function applyCenterSpan() {
-  const window = normalizeCenterSpan(
-    parseFreqUnit('center'), parseFreqUnit('span'), S.FREQ_MIN, S.FREQ_MAX);
-  if (!validateFrequencyWindow(window, ['input-center', 'input-span'])) return;
-  beginFrequencyCommit('swp-freq-settings');
-  send({ cmd: 'SET_FREQ', center: window!.center, span: window!.span });
-}
-
-export function applyStartStop() {
-  const window = normalizeStartStop(
-    parseFreqUnit('start'), parseFreqUnit('stop'), S.FREQ_MIN, S.FREQ_MAX);
-  if (!validateFrequencyWindow(window, ['input-start', 'input-stop'])) return;
-  beginFrequencyCommit('swp-freq-settings');
-  send({ cmd: 'SET_FREQ', start: window!.start, stop: window!.stop });
-}
-export function applyFullSpan() {
-  beginFrequencyCommit('swp-freq-settings');
-  send({
-    cmd: 'SET_FREQ',
-    center: (S.FREQ_MIN + S.FREQ_MAX) / 2,
-    span: S.FREQ_MAX - S.FREQ_MIN,
-  });
-}
-
-function formatSpanStep(value: number): string {
-  if (value >= 100) return value.toFixed(0);
-  if (value >= 10) return value.toFixed(1).replace(/\.0$/, '');
-  return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
-}
-
-export function syncSwpSpanStep(swpSpan = spanHz.get()) {
-  if (S.spanStepAuto) S.setSpanStepHz(niceSpanStep(swpSpan));
-  const input = document.getElementById('input-span-step') as HTMLInputElement | null;
-  const unit = document.getElementById('span-step-unit');
-  if (input && document.activeElement !== input) {
-    input.value = formatSpanStep(toUnit(S.spanStepHz, 'span'));
-  }
-  if (unit) unit.textContent = S.units.span;
-  const auto = document.getElementById('btn-span-step-auto');
-  if (auto) auto.classList.toggle('active', S.spanStepAuto);
-}
-
-export function updateCustomSpanStep() {
-  const input = document.getElementById('input-span-step') as HTMLInputElement | null;
-  if (!input) return;
-  const value = Number(input.value);
-  if (!isFinite(value) || value <= 0) return;
-  const scale = S.units.span === 'GHz' ? 1e9 : S.units.span === 'MHz' ? 1e6
-    : S.units.span === 'kHz' ? 1e3 : 1;
-  S.setSpanStepAuto(false);
-  S.setSpanStepHz(Math.max(100, value * scale));
-  syncSwpSpanStep();
-}
-
-export function resetSpanStepAuto() {
-  S.setSpanStepAuto(true);
-  syncSwpSpanStep();
-}
-
-export function stepSwpSpan(direction: -1 | 1) {
-  const targetSpan = steppedSpan(
-    spanHz.get(),
-    S.spanStepHz,
-    direction,
-    100,
-    S.FREQ_MAX - S.FREQ_MIN,
-  );
-  if (targetSpan === spanHz.get()) return;
-  const window = normalizeCenterSpan(
-    centerHz.get(), targetSpan, S.FREQ_MIN, S.FREQ_MAX);
-  if (!window) return;
-  beginFrequencyCommit('swp-freq-settings');
-  send({ cmd: 'SET_FREQ', center: window.center, span: window.span });
-}
-
-export function setRefLevel() {
-  const el = document.getElementById('input-ref') as HTMLInputElement;
-  const value = parseFloat(el.value);
-  if (!isFinite(value)) return;
-  if (currentGraphMode() === 'sdr') {
-    // SDR Ref controls the IQS hardware reference level as well as the display. The
-    // backend reconfigures IQS and applies the normal audio reset/fade sequence.
-    sdrRefAuto.set(false);
-    setDisplayRef('user', value);
-    syncSdrRefUI();                       // the Auto button must reflect the real state
-    const cv = document.getElementById('spectrum');
-    if (cv) cv.dataset.sdrRef = String(Math.round(value));
-    prepareSdrAudioTransition();
-    send({ cmd: 'SET_REF', mode: 'manual', ref: value });
-    requestRender();
-    return;
-  }
-  send({ cmd: 'SET_REF', mode: 'manual', ref: value });
-}
-
-const REF_MIN = -50;
-const REF_MAX = 30;
-
-// Pending Ref target while a step command is in flight (see steppedRefLevel).
-
-export function refStepDbm(): number {
-  // One full grid division: ▲/▼ moves Ref by the current dB-per-division value.
-  return S.dbPerDiv;
-}
-
-export function adjustRefLevel(direction: -1 | 1) {
-  if (currentGraphMode() === 'sdr') {
-    const next = Math.max(-160, Math.min(40, getDisplayRef() + direction * S.dbPerDiv));
-    sdrRefAuto.set(false);
-    setDisplayRef('user', next);
-    syncSdrRefUI();                       // ditto
-    const cv = document.getElementById('spectrum');
-    if (cv) cv.dataset.sdrRef = String(Math.round(next));
-    prepareSdrAudioTransition();
-    send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-    requestRender();
-    return;
-  }
-  const base = refLevel.get();
-  const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
-  if (next === base) return;
-  // The stepped value is an intent: rendered immediately and dropped by the slot's TTL if
-  // the backend never accepts it (the old code hand-rolled exactly this with refPending).
-  refLevel.set(next);
-  send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-}
-
-export function setRefAuto() {
-  if (currentGraphMode() === 'sdr') {
-    sdrRefAuto.set(!sdrRefAuto.get());
-    syncSdrRefUI();
-    requestRender();
-    return;
-  }
-  if (refMode.get() === 'auto') {
-    send({ cmd: 'SET_REF', mode: 'manual', ref: refLevel.get() });
-  } else {
-    // range_db = the visible window height. Auto Ref anchors the noise floor just above the
-    // bottom of that window, so the backend needs to know how tall it is.
-    send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
-  }
-}
-export function setScale(v: number) {
-  S.setDbPerDiv(v);
-  syncScaleButtons();
-  updateInfoBar();
-  requestRender();
-  // The window height changed, so the auto-Ref target (noise floor just above the bottom)
-  // changed too. Re-arm so the new spectrum lands correctly instead of keeping the old Ref.
-  if (currentGraphMode() !== 'sdr' && refMode.get() === 'auto') {
-    send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
-  }
-}
-export function syncScaleButtons() {
-  const grp = document.getElementById('unit-scale-group');
-  if (!grp) return;
-  for (const b of grp.children) (b as HTMLElement).classList.toggle('active', parseFloat(b.textContent || '') === S.dbPerDiv);
-}
-export function applyRBW() {
-  const sel = document.getElementById('select-rbw-mode') as HTMLSelectElement;
-  const mode = sel?.value || 'auto';
-  rbwMode.set(mode);
-  const m: any = { cmd: 'SET_RBW', mode };
-  if (mode === 'manual') m.rbw = parseFreqUnit('rbw');
-  if (S.rtaMode) clearRtaAccum();
-  send(m);
-}
-export function applyVBW() {
-  const sel = document.getElementById('select-vbw-mode') as HTMLSelectElement;
-  const mode = sel?.value || 'bypass';
-  vbwMode.set(mode);
-  const m: any = { cmd: 'SET_VBW', mode };
-  if (mode === 'manual') m.vbw = parseFreqUnit('vbw');
-  if (S.rtaMode) clearRtaAccum();
-  send(m);
-}
-export function applyPoints() {
-  const el = document.getElementById('input-points') as HTMLInputElement;
-  send({ cmd: 'SET_POINTS', points: parseInt(el?.value || '1001') || 1001 });
-}
-export function setSpurMode(mode: string) { send({ cmd: 'SET_SPUR', mode }); }
-export function setWindow(v: string) { send({ cmd: 'SET_WINDOW', window: parseInt(v) }); }
-export function setRefClock(mode: string) {
-  // In SDR the reference clock lives in the IQS profile, so this reconfigures the
-  // capture chain; mute first so the reconfiguration transient is not audible.
-  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
-  send({ cmd: 'SET_REFCK', mode });
-}
-export function toggleRefClkOut() {
-  const btn = document.getElementById('btn-refclk-out');
-  const cur = btn && btn.classList.contains('on');
-  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
-  send({ cmd: 'SET_REFCKOUT', on: !cur });
-}
-export function syncRefClkOut(s: any) {
-  const btn = document.getElementById('btn-refclk-out');
-  if (!btn) return;
-  const on = !!s.refclk_out;
-  btn.classList.toggle('on', on);
-  btn.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
-}
-export function setAmp() {
-  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
-  send({
-    cmd: 'SET_AMP',
-    atten: parseInt((document.getElementById('select-atten') as HTMLSelectElement).value),
-    preamp: parseInt((document.getElementById('select-preamp') as HTMLSelectElement).value),
-    ifgain: parseInt((document.getElementById('select-ifgain') as HTMLSelectElement).value),
-    gain_strategy: parseInt((document.getElementById('select-gainstrategy') as HTMLSelectElement).value),
-  });
-}
-export function setOffset() {
-  const v = parseFloat((document.getElementById('input-offset') as HTMLInputElement).value);
-  S.setDisplayOffset(isFinite(v) ? v : 0);
-  requestRender();
-}
-export function toggleGapFill() {
-  S.setCurrentGapFill(!S.currentGapFill);
-  const btn = document.getElementById('btn-gapfill');
-  if (btn) {
-    btn.textContent = S.currentGapFill ? t('on') : t('off');
-    btn.classList.toggle('active', S.currentGapFill);
-  }
-}
 export function connectDevice() { send({ cmd: 'CONNECT' }); }
 
 // ── Marker operations ──
-export function activeMarkerPeak() {
-  const p = getDisplayPowers(); if (!p) return;
-  let bi = 0, bv = -Infinity;
-  for (let i = 0; i < p.length; i++) { const v = p[i]; if (isFinite(v) && v > bv) { bv = v; bi = i; } }
-  setMarkerIdx(bi);
-}
-export function activeMarkerValley() {
-  const p = getDisplayPowers(); if (!p) return;
-  let bi = 0, bv = Infinity;
-  for (let i = 0; i < p.length; i++) { const v = p[i]; if (isFinite(v) && v < bv) { bv = v; bi = i; } }
-  const list = findExtremesOrderedPub('right', false);
-  S.setValleySeqPos(list.findIndex((x: any) => Math.abs(x.i - bi) <= 3));
-  if (S.valleySeqPos < 0) S.setValleySeqPos(0);
-  const fit = parabolaFitPub(p, bi);
-  const bh = (S.freqArray && S.freqArray.length > 1) ? S.freqArray[1] - S.freqArray[0] : 0;
-  setMarkerIdx(bi, S.freqArray![bi] + fit.dk * bh);
-}
-export function activeMarkerNextPeakLeft() { nextExtreme('left', true); }
-export function activeMarkerNextPeakRight() { nextExtreme('right', true); }
-export function activeMarkerNextValleyLeft() { nextExtreme('left', false); }
-export function activeMarkerNextValleyRight() { nextExtreme('right', false); }
-export function markerToCenter() {
-  const m = S.markers.find(x => x.id === S.activeMkrId);
-  if (!m || !m.enabled) return;
-  const center = markerFreqHz(m.idx);
-  if (S.rtaMode) {
-    rtaCenterHz.set(center);
-    send({ cmd: 'SET_RTA', center });
-  } else {
-    centerHz.set(center);
-    updateFreqUIInputs();
-    send({ cmd: 'SET_FREQ', center: centerHz.get(), span: spanHz.get() });
-  }
-}
-export function selectMarker(id: number) {
-  S.setActiveMkrId(id);
-  document.querySelectorAll('.mkr-btn').forEach(b => b.classList.remove('active'));
-  const b = document.querySelector(`.mkr-btn.M${id}`);
-  if (b) b.classList.add('active');
-  const m = S.markers.find(x => x.id === id);
-  if (!m) return;
-  m.enabled = true;
-  if (m.mode === 'OFF') m.mode = 'NORMAL';
-  autoTrackMarker(m);
-  syncMarkerTrackingToggle();
-  requestRender();
-}
-
-function autoTrackMarker(m: S.MarkerState) {
-  assignMarkerToBestPeak(m);
-}
-
-export function syncMarkerTrackingToggle() {
-  const marker = S.markers.find(item => item.id === S.activeMkrId);
-  const button = document.getElementById('btn-marker-tracking');
-  if (!marker || !button) return;
-  button.textContent = t('tracking');
-  button.classList.toggle('active', marker.tracking);
-  button.setAttribute('aria-pressed', String(marker.tracking));
-}
-
-export function toggleActiveMarkerTracking() {
-  const marker = S.markers.find(item => item.id === S.activeMkrId);
-  if (!marker) return;
-  toggleMarkerTracking(marker);
-  syncMarkerTrackingToggle();
-  requestRender();
-}
-
 // Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
-import {
-  currentGraphMode,
-  graphModeDiverges,
-  isGraphMode,
-  pendingGraphMode,
-  requestGraphMode,
-  confirmGraphMode,
-  resetGraphMode,
-  setGraphModeTimeoutHandler,
-} from './graphMode';
-import {
-  getDisplayRef,
-  displayRefDiverges,
-  setDisplayRef,
-  setDisplayRefTimeoutHandler,
-} from './displayRef';
-
-export { currentGraphMode };
+import { currentGraphMode, graphModeDiverges, isGraphMode, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
+import { setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
 
 let sdrAudioHandoffTimer: number | null = null;
 
@@ -643,65 +240,7 @@ export function syncGraphModeStatus(mode: string) {
   requestRender();
 }
 
-function clearRtaAccum() {
-  // A reconfiguration (span/rbw/sweep) invalidates every accumulation on the old
-  // frequency axis / resolution: probability density, per-trace displays, waterfall.
-  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
-  for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
-  for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
-  S.resetWaterfall();
-}
-
 // Density persistence/grain restored on page load + RTA entry (independent memory keys)
-export function restoreRtaDensityCfg() {
-  const f = localStorage.getItem('rta-fade');
-  if (f) { const s = document.getElementById('select-rta-fade') as HTMLSelectElement | null; if (s) s.value = f; S.setRtaFade(parseFloat(f)); }
-  const bn = localStorage.getItem('rta-bins');
-  if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; S.setRtaAmpBins(parseInt(bn) || 128); }
-}
-
-// Density grain: changing bins invalidates the current density array (ws.ts rebuilds it
-// automatically on the next frame because the length no longer matches).
-export function setRtaBins(bins: number) {
-  S.setRtaAmpBins(bins);
-  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
-  try { localStorage.setItem('rta-bins', String(bins)); } catch { /* ignore */ }
-  requestRender();
-}
-
-// Step the RTA span one notch (delta: +1 narrower ▼, -1 wider ▲) or jump to full.
-export function rtaSpanStep(delta: number) {
-  const sel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
-  if (!sel) return;
-  const idx = Array.from(sel.options).findIndex(o => o.value === sel.value);
-  const ni = Math.max(0, Math.min(sel.options.length - 1, idx + delta));
-  if (ni === idx || ni < 0) return;
-  sel.value = sel.options[ni].value;
-  applyRta();
-}
-export function rtaSpanFull() {
-  const sel = document.getElementById('select-rta-span') as HTMLSelectElement | null;
-  if (!sel || sel.options.length === 0) return;
-  sel.value = sel.options[0].value;   // options are sorted largest first (50.8M)
-  applyRta();
-}
-
-export function applyRta() {
-  const c = parseFloat((document.getElementById('input-rta-center') as HTMLInputElement).value || '1000');
-  const u = S.units.rta_center || 'MHz';
-  const requestedCenter = isFinite(c)
-    ? (u === 'GHz' ? c * 1e9 : u === 'kHz' ? c * 1e3 : c * 1e6)
-    : 1e9;
-  const spanEl = document.getElementById('select-rta-span') as HTMLSelectElement | null;
-  const requestedSpan = spanEl ? (parseFloat(spanEl.value) || 50781250) : 50781250;
-  const window = normalizeCenterSpan(
-    requestedCenter, requestedSpan, S.FREQ_MIN, S.FREQ_MAX, 1000);
-  if (!validateFrequencyWindow(window, ['input-rta-center'])) return;
-  clearRtaAccum();
-  beginFrequencyCommit('rta-freq-settings');
-  send({ cmd: 'SET_RTA', center: window!.center, span: window!.span });
-}
-
 // ── SDR mode controls ──
 
 function sdrNumber(id: string, fallback: number): number {
@@ -865,39 +404,6 @@ export function toggleSdrAudio() {
   syncSdrAudioButton();
 }
 
-function syncSdrRefUI() {
-  if (currentGraphMode() !== 'sdr') return;
-  const b = document.getElementById('btn-ref-auto');
-  if (b) {
-    b.classList.toggle('active', sdrRefAuto.get());
-    b.title = 'Auto amplitude reference';
-  }
-  const inp = document.getElementById('input-ref') as HTMLInputElement | null;
-  if (inp) {
-    inp.disabled = false;
-    // Discipline 4: the user can see that the device has not confirmed the new level yet.
-    inp.classList.toggle('ref-pending', displayRefDiverges());
-    if (document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
-  }
-  const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
-  if (setBtn) setBtn.disabled = false;
-  // In SDR the reference is owned by the client (auto-scale or manual), not by the backend
-  // `ref_mode` the STATUS carries. Drive the step buttons from sdrRefAuto here, otherwise
-  // toggling Auto off left them disabled until a Set (which is what made the backend report
-  // manual). Range matches adjustRefLevel's SDR clamp.
-  const ref = getDisplayRef();
-  const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
-  if (down) {
-    down.disabled = sdrRefAuto.get() || ref <= -160;
-    down.title = sdrRefAuto.get() ? t('auto') : t('ref_down');
-  }
-  const up = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
-  if (up) {
-    up.disabled = sdrRefAuto.get() || ref >= 40;
-    up.title = sdrRefAuto.get() ? t('auto') : t('ref_up');
-  }
-}
-
 // SDR status -> panel readouts (called on every STATUS)
 function sdrSet(id: string, value: string) {
   const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
@@ -934,77 +440,8 @@ export function syncSdrPanel(s: any) {
   syncSdrAudioButton();
   syncSdrRefUI();
 }
-export function toggleWaterfall() {
-  S.setWaterfallOn(!S.waterfallOn);
-  if (S.waterfallOn) S.resetWaterfall();
-  const wf = document.getElementById('waterfall');
-  if (wf) wf.style.display = S.waterfallOn ? '' : 'none';
-  const mt = document.getElementById('marker-table');
-  if (mt) mt.style.display = S.waterfallOn ? 'none' : '';
-  const btn = document.getElementById('btn-waterfall');
-  if (btn) btn.classList.toggle('active', S.waterfallOn);   // text stays "Waterfall", active = on
-  requestRender();
-}
-export function toggleWfPause() {
-  S.setWfPaused(!S.wfPaused);
-  const b = document.getElementById('btn-wf-pause');
-  if (b) b.classList.toggle('active', S.wfPaused);
-}
-export function resetWf() {
-  S.resetWaterfall();
-  requestRender();
-}
-export function setSweepSpeed() {
-  const sel = document.getElementById('select-sweep-mode') as HTMLSelectElement;
-  const tin = document.getElementById('input-sweep-time') as HTMLInputElement;
-  const mode = parseInt(sel?.value || '0');
-  const time = parseFloat(tin?.value || '0');
-  const m: any = { cmd: 'SET_SWEEP', mode };
-  if (mode === 6 || mode === 7 || mode === 8) {
-    const minimum = mode === 7 ? 0.001 : 1;
-    m.time = Math.max(minimum, isFinite(time) ? time : minimum);
-  }
-  send(m);
-}
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
-export function syncSweepInput() {
-  const sel = document.getElementById('select-sweep-mode') as HTMLSelectElement;
-  const tin = document.getElementById('input-sweep-time') as HTMLInputElement;
-  const btn = document.querySelector('button[data-action="set-sweep"]') as HTMLElement;
-  if (!sel) return;
-  const mode = parseInt(sel.value || '0');
-  const need = mode >= 6;   // minSWTxN(6)/Manual(7)/minSMPxN(8) need an input value
-  if (tin) { tin.style.display = need ? '' : 'none'; tin.placeholder = mode === 7 ? t('swt_sec') : t('swt_xn'); }
-  if (btn) btn.style.display = need ? '' : 'none';
-}
-
 // Turn all markers on/off at once (toggle)
-export function updateMarkersAllBtn() {
-  const allOn = S.markers.every(m => m.enabled && m.mode !== 'OFF');
-  const el = document.getElementById('btn-markers-all');
-  if (el) {
-    el.textContent = allOn ? t('all_on') : t('all_off');
-    el.classList.toggle('active', allOn);
-  }
-}
-export function toggleMarkersAll() {
-  const allOn = S.markers.every(m => m.enabled && m.mode !== 'OFF');
-  if (allOn) {
-    S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
-  } else {
-    // All on: track one peak at a time — M1 takes the strongest peak, later markers skip
-    // occupied positions and take the next strongest
-    // (consistent with the autoTrackMarker logic in selectMarker)
-    S.markers.forEach(m => { m.enabled = true; if (m.mode === 'OFF') m.mode = 'NORMAL'; });
-    S.markers.forEach(m => autoTrackMarker(m));
-  }
-  updateMarkersAllBtn();
-  const themeBtn = document.getElementById('btn-theme');
-  if (themeBtn) themeBtn.textContent = getTheme() === 'dark' ? t('dark') : t('light');
-  syncMarkerTrackingToggle();
-  requestRender();
-}
-
 // Preset
 export function presetAll() {
   exitMeasModePub();
@@ -1063,81 +500,9 @@ export function presetAll() {
 }
 
 // Current frontend time (shown when not locked)
-function fmtNow(): string {
-  const d = new Date();
-  const p2 = (n: number) => String(n).padStart(2, '0');
-  return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' +
-    p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
-}
-
 // GNSS detail popover: fill + show/close
-export function fillGnssDetail() {
-  const g = S.lastGnss || {};
-  const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('gnss-d-lock', g.lock ? t('status_locked') : t('status_nolock'));
-  set('gnss-d-sats', g.sats != null ? String(g.sats) : '-');
-  set('gnss-d-docxo', g.docxo ? t('on') : t('off'));
-  set('gnss-d-docxo_mode', g.docxo_mode === 0 ? t('gnss_docxo_lock') : (g.docxo_mode === 1 ? t('gnss_docxo_hold') : '-'));
-  set('gnss-d-antenna', g.antenna === 0 ? t('gnss_ext_ant') : (g.antenna === 1 ? t('gnss_int_ant') : '-'));
-  set('gnss-d-latitude', g.latitude != null && Math.abs(g.latitude) > 0.0001 ? g.latitude.toFixed(6) + '°' : '-');
-  set('gnss-d-longitude', g.longitude != null && Math.abs(g.longitude) > 0.0001 ? g.longitude.toFixed(6) + '°' : '-');
-  set('gnss-d-altitude', g.altitude != null ? String(g.altitude) + ' m' : '-');
-  // Time: GNSS UTC (shown only when locked and valid) + system local time (always shown)
-  set('gnss-d-utc', (g.lock && g.time && !g.time.includes('0000')) ? g.time : '-');
-  set('gnss-d-local', fmtNow());
-  const pop = document.getElementById('gnss-popover');
-  if (pop) pop.style.display = '';
-}
-export function closeGnssDetail() {
-  const pop = document.getElementById('gnss-popover');
-  if (pop) pop.style.display = 'none';
-}
-
 // Sync all toggle button texts when the language changes
-export function syncToggleTexts() {
-  const pl = document.getElementById('btn-peaklist');
-  if (pl) pl.textContent = S.peakListOn ? t('on') : t('off');
-  const gf = document.getElementById('btn-gapfill');
-  if (gf) gf.textContent = S.currentGapFill ? t('on') : t('off');
-  const mo = document.getElementById('btn-meas-onoff');
-  if (mo) mo.textContent = S.measOn ? t('on') : t('off');
-  const rc = document.getElementById('btn-refclk-out');
-  if (rc) {
-    const on = rc.classList.contains('on');
-    rc.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
-  }
-  updateMarkersAllBtn();
-  syncMarkerTrackingToggle();
-  const tracking = document.getElementById('btn-marker-tracking');
-  if (tracking) tracking.textContent = t('tracking');
-  const wb = document.getElementById('btn-waterfall');
-  if (wb) wb.classList.toggle('active', S.waterfallOn);
-}
-
 // ── Panel collapse ──
-export function toggleGroup(el: HTMLElement) {
-  const g = el.closest('.control-group');
-  if (g) {
-    g.classList.toggle('collapsed');
-    syncToggleIcons();
-  }
-}
-export function toggleAllGroups() {
-  const groups = document.querySelectorAll('.control-group');
-  const allCollapsed = Array.from(groups).every(g => g.classList.contains('collapsed'));
-  groups.forEach(g => g.classList.toggle('collapsed', !allCollapsed));
-  syncToggleIcons();
-}
-export function syncToggleIcons() {
-  const groups = Array.from(document.querySelectorAll('.control-group'));
-  const allCollapsed = groups.length && groups.every(g => g.classList.contains('collapsed'));
-  document.querySelectorAll('.global-toggle').forEach(b => { b.textContent = allCollapsed ? '^' : 'v'; });
-  groups.forEach(g => {
-    const b = g.querySelector('.panel-toggle');
-    if (b) b.textContent = g.classList.contains('collapsed') ? '+' : '-';
-  });
-}
-
 // ── data-action binding ──
 export function bindActions() {
   const act: Record<string, (el: HTMLElement) => void> = {
@@ -1537,12 +902,33 @@ function sdrNudgeVolume(dv: number) {
   inp.value = String(Math.max(0, Math.min(2, (parseFloat(inp.value) || 0.8) + dv)));
   applySdrDemod();
 }
-function placeMarkerFromX(x: number, p: Float32Array) {
-  const pr = plotRectPub();
-  const frac = (x - pr.x) / pr.w;
-  setMarkerIdx(Math.round(frac * (p.length - 1)));
-}
-
 import { plotRect as plotRectPub } from '../render/plot';
-import { findExtremesOrdered as findExtremesOrderedPub, parabolaFit as parabolaFitPub } from '../dsp/peaks';
 import { exitMeasMode as exitMeasModePub } from './measure';
+
+// ── Re-exports for the rest of the app ──
+// The panel modules own these actions; the previous public surface (everything imported
+// from ui/controls) is kept so no caller had to change (report finding P1-5).
+export {
+  applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetSpanStepAuto,
+  stepSwpSpan, syncFrequencyEditorStatus, syncSwpSpanStep, updateCustomSpanStep,
+} from './panels/frequency';
+export { applyPoints, applyRBW, applyVBW, setSpurMode, setWindow } from './panels/resolution';
+export {
+  applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins,
+} from './panels/rta';
+export {
+  activeMarkerPeak, activeMarkerValley, autoTrackMarker, markerToCenter, placeMarkerFromX,
+  selectMarker, syncMarkerTrackingToggle, toggleActiveMarkerTracking, toggleMarkersAll,
+  updateMarkersAllBtn,
+} from './panels/markers';
+export {
+  adjustRefLevel, refStepDbm, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel,
+  setScale, syncRefClkOut, syncScaleButtons, toggleGapFill, toggleRefClkOut,
+} from './panels/refAmp';
+export {
+  resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause,
+} from './panels/waterfall';
+export { closeGnssDetail, fillGnssDetail } from './panels/gnss';
+export { syncToggleIcons, syncToggleTexts, toggleAllGroups, toggleGroup } from './panels/groups';
+export { commitUnitField } from './panels/commit';
+export { currentGraphMode };

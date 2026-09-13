@@ -168,18 +168,21 @@ def _longest_function(rel_path: str, prefix: str = '') -> int:
 
 
 def command_specs() -> int:
-    """Number of declarative command entries (only ever grows with new features)."""
+    """Number of declarative command entries in the registry (grows with new features)."""
     text = (ROOT / 'web_sa/web/commands.py').read_text(encoding='utf-8')
-    return text.count('CommandSpec(')
+    registry = text[text.index('_REGISTRY = ('):text.index(')\n\n#: The command table')]
+    return len(re.findall(r"^\s*\('[A-Z_]+',", registry, re.M))
 
 
 METRICS = {
     'frontend_cycles': frontend_cycles,
     'backend_cycles': backend_cycles,
     # The command layer moved into web/commands.py: measure the largest single handler and
-    # validator there instead of the two god functions that used to live in ws.py.
+    # the largest cross-field rule there instead of the two god functions that used to live
+    # in ws.py. Per-field validation is declarative now (one ParamSpec per field), so the
+    # only hand-written validation left is the _x_ cross-field rules.
     'dispatch_lines': lambda: _longest_function('web_sa/web/commands.py', '_h_'),
-    'validate_lines': lambda: _longest_function('web_sa/web/commands.py', '_v_'),
+    'validate_lines': lambda: _longest_function('web_sa/web/commands.py', '_x_'),
     'command_specs': command_specs,
     'mode_branches': mode_branches,
     'htra_imports_outside_bindings': htra_imports_outside_bindings,
