@@ -9,10 +9,17 @@ from web_sa.web.http_api import build_status
 
 
 class StubDevice:
-    """build_status 所需的极简 stub: .state + .preset_defaults"""
+    """Minimal stub for build_status: .state + .preset_defaults + the device interface."""
     def __init__(self, state: DeviceState):
         self.state = state
         self.preset_defaults = {'center': 1e9, 'span': 100e6}
+        self.session = None
+
+    def auto_reference_view(self) -> dict:
+        return {'last_peak': None, 'last_noise_floor': None, 'candidate': None, 'pending': None}
+
+    def session_health(self) -> dict:
+        return {}
 
 
 def make_state(**kw) -> DeviceState:

@@ -2,7 +2,7 @@
  "backend_cycles": 1,
  "dispatch_lines": 313,
  "frontend_cycles": 14,
- "htra_imports_outside_bindings": 3,
+ "htra_imports_outside_bindings": 0,
  "mode_branches": 18,
  "validate_lines": 135,
  "validation_limit_literals": 35

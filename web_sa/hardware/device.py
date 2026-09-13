@@ -916,6 +916,28 @@ class HarogicDevice:
             self.session = session
             self.state.mode = session.name if session else 'std'
 
+    def auto_reference_view(self) -> dict:
+        """Auto-reference diagnostics for STATUS.
+
+        The tracker state is private to this class (it is a control loop, not device
+        state); the serializer must not reach into it directly (report finding P1-7).
+        """
+        tracker = self._auto_ref.get(getattr(self.session, 'auto_ref_scope', 'std'), {})
+        pending = self._pending_auto_ref
+        return {
+            'last_peak': tracker.get('last_peak'),
+            'last_noise_floor': tracker.get('last_noise_floor'),
+            'candidate': tracker.get('candidate'),
+            'pending': pending[1] if pending else None,
+        }
+
+    def session_health(self) -> dict:
+        """Health counters of the active measurement session (empty for plain SWP)."""
+        session = self.session
+        if session is None:
+            return {}
+        return session.health()
+
     def step(self):
         """publisher single step: forward to the current session."""
         return self.session.step() if self.session else None

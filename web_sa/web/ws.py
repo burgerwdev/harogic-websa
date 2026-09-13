@@ -10,12 +10,12 @@ import asyncio
 import json
 import logging
 import math
-import os
 
 from aiohttp import WSMsgType, web
 
 from .app_keys import COMMAND_LOCK, WS_CLIENTS
 from .client_stream import ClientStream
+from .recovery import fatal
 
 log = logging.getLogger(__name__)
 
@@ -326,8 +326,7 @@ async def _dispatch(dev, cmd, data) -> bool:
             return await asyncio.wait_for(asyncio.to_thread(fn, *a, **kw), timeout=timeout)
         except asyncio.TimeoutError:
             s.last_error = f'{getattr(fn, "__name__", "hardware call")} timed out'
-            log.critical('%s; terminating worker for supervisor recovery', s.last_error)
-            os._exit(70)
+            fatal(s.last_error)
 
     async def _configure_swp():
         result = await _hw_call(dev.configure_swp)
@@ -384,8 +383,7 @@ async def _dispatch(dev, cmd, data) -> bool:
                     dev.state.refclk_ppm = (freq / 100e6 - 1.0) * 1e6
             except asyncio.TimeoutError:
                 s.last_error = 'reference calibration timed out'
-                log.critical('%s; terminating worker for supervisor recovery', s.last_error)
-                os._exit(70)
+                fatal(s.last_error)
             except Exception as exc:
                 s.last_error = f'reference calibration failed: {exc}'
                 log.exception('Reference-clock calibration failed')

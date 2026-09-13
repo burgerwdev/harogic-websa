@@ -24,6 +24,14 @@ class StubDevice:
         )
         self.preset_defaults = {'center': 1e9, 'span': 100e6}
         self.last_freq = None
+        self.session = None
+
+    # The interface build_status relies on (mirrors HarogicDevice).
+    def auto_reference_view(self) -> dict:
+        return {'last_peak': None, 'last_noise_floor': None, 'candidate': None, 'pending': None}
+
+    def session_health(self) -> dict:
+        return {}
 
 
 def make_client(*, token=''):

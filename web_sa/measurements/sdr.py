@@ -720,6 +720,10 @@ class SdrSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def health(self) -> dict:
+        return {'ok': self._packets_ok, 'err': self._packets_err,
+                'last_status': self._last_status, 'transient_streak': self._transient_streak}
+
     # ---------------- acquisition ----------------
     def _recover_locked(self, reason) -> None:
         self._last_recovery = time.monotonic()

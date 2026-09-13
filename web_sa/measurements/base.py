@@ -34,6 +34,9 @@ class MeasurementSession:
     """Measurement session base class. name is one of {std, harmonic, pnm}."""
 
     name = 'std'
+    #: Which auto-reference tracker this session drives (device.auto_reference_view()).
+    #: Declared by the session so the device never has to branch on the mode name.
+    auto_ref_scope = 'std'
 
     def __init__(self, dev):
         self.dev = dev
@@ -76,6 +79,14 @@ class MeasurementSession:
     def step(self):
         """Run a single step (called by the publisher), returns (frames, json_msgs)."""
         return [], []
+
+    def health(self) -> dict:
+        """Session diagnostics surfaced in STATUS.
+
+        Sessions that recover from transient failures override this instead of the
+        serializer reaching into their private counters (report finding P1-7).
+        """
+        return {}
 
 
 class StdSession(MeasurementSession):

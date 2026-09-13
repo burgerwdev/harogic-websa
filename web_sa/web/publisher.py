@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 
 from ..config import GNSS_POLL_INTERVAL, PUBLISH_MIN_INTERVAL
 from ..hardware.device import DeviceError
 from .app_keys import COMMAND_LOCK, WS_CLIENTS
+from .jsonutil import dumps_json, is_periodic_status
+from .recovery import fatal
 
 log = logging.getLogger(__name__)
 STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL
@@ -65,8 +66,8 @@ async def publisher(app, dev):
                             timeout=_acquisition_timeout(dev),
                         )
                     except asyncio.TimeoutError:
-                        log.critical('Acquisition timed out; terminating worker for recovery')
-                        os._exit(70)
+                        dev.state.last_error = 'acquisition timed out'
+                        fatal('Acquisition timed out')
                 frames, msgs = result if result is not None else ([], [])
                 if dev.state.mode == 'std':
                     for frame in frames:
@@ -85,8 +86,8 @@ async def publisher(app, dev):
             except asyncio.CancelledError:
                 raise
             except DeviceError as exc:
-                log.critical('Fatal hardware error: %s; terminating worker', exc)
-                os._exit(70)
+                dev.state.last_error = f'fatal hardware error: {exc}'
+                fatal(f'Fatal hardware error: {exc}')
             except Exception as exc:
                 dev.state.last_error = f'publisher: {exc!r}'
                 if t0 - last_error_log >= ERROR_LOG_INTERVAL:
@@ -112,8 +113,12 @@ def _send_bytes(app, frame):
 
 
 def _send_json(app, obj):
+    """Serialize once and queue the same text on every client (report finding P1-11)."""
+    try:
+        text = dumps_json(obj)
+    except (TypeError, ValueError):
+        log.exception('Invalid JSON payload dropped')
+        return
+    coalesce = is_periodic_status(obj)
     for client in tuple(app[WS_CLIENTS]):
-        try:
-            client.publish_json(obj)
-        except (TypeError, ValueError):
-            log.exception('Invalid JSON payload dropped')
+        client.publish_text(text, coalesce=coalesce)

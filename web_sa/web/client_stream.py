@@ -2,24 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import math
 from collections import deque
+
+from .jsonutil import dumps_json, is_periodic_status
 
 log = logging.getLogger(__name__)
 SEND_TIMEOUT = 5.0
-
-
-def _finite_json(value):
-    """Replace NaN/Inf with null so one bad measurement value cannot drop a whole message."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {key: _finite_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_finite_json(item) for item in value]
-    return value
 
 
 class ClientStream:
@@ -85,10 +74,18 @@ class ClientStream:
         self._event.set()
 
     def publish_json(self, obj: dict) -> None:
+        """Serialize and queue one message for this client."""
+        self.publish_text(dumps_json(obj), coalesce=is_periodic_status(obj))
+
+    def publish_text(self, text: str, *, coalesce: bool = False) -> None:
+        """Queue an already-serialized message.
+
+        The publisher uses this to serialize once for all clients; ``coalesce`` marks the
+        1 Hz periodic STATUS, which supersedes an older queued one.
+        """
         if self.closed or self.audio_only:
             return
-        text = json.dumps(_finite_json(obj), allow_nan=False, separators=(',', ':'))
-        if obj.get('cmd') == 'STATUS' and not obj.get('response_to'):
+        if coalesce:
             self._control = deque(
                 item for item in self._control
                 if '"cmd":"STATUS"' not in item or '"response_to":' in item

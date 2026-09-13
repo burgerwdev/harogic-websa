@@ -96,6 +96,21 @@ async def test_command_status_is_not_coalesced_by_periodic_status():
     await stream.close()
 
 
+@pytest.mark.asyncio
+async def test_publish_text_uses_the_publishers_serialized_message():
+    """The publisher serializes once and queues the same text on every client (P1-11)."""
+    ws = FakeWebSocket()
+    stream = ClientStream(ws)
+    stream.publish_text('{"cmd":"STATUS","version":7}', coalesce=True)
+    stream.publish_text('{"cmd":"STATUS","version":8}', coalesce=True)   # supersedes 7
+    stream.start()
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert [json.loads(item)['version'] for item in ws.text] == [8]
+    await stream.close()
+
+
 def test_zero_audio_sequence_flushes_queued_channel_audio():
     ws = FakeWebSocket()
     stream = ClientStream(ws)
