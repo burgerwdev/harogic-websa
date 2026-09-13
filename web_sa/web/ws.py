@@ -527,7 +527,15 @@ async def _dispatch(dev, cmd, data) -> bool:
                     old_sess._ready = False   # stop the RTA worker loop first (best-effort)
                 if old_sess is not None and old_sess.name == 'sdr':
                     old_sess._ready = False   # stop the SDR worker loop first
-                dev.set_session(make_session(dev, name))
+                sess = make_session(dev, name)
+                dev.set_session(sess)
+                # "Requested" is not "in effect": verify the session actually became ready.
+                # Without this a failure inside a session's configure path left the mode
+                # unchanged while the command still reported success (an AttributeError in the
+                # RTA auto-recovery path did exactly that), so the UI believed it had switched.
+                if name != 'std' and not getattr(sess, '_ready', True):
+                    raise CommandError(
+                        'mode switch to %s failed to become ready' % name, 'mode_not_ready')
             await _hw_call(_sw)
             return True
     if cmd == 'SET_SDR':
