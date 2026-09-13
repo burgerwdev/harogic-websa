@@ -132,12 +132,15 @@ npx tsc --noEmit                     -> 通过（strict: true）
 
 #### P0-2 前端 UI/编排层没有自动化护栏
 
-- **现象**：12 个测试文件全部针对 `dsp/`、`core/`（params/level/i18n 之外）与
-  `ui/railMath`；`render/`、`ui/`（除 rail）、`meas/`、`core/ws.ts`、`audio/`
-  **零单测**。唯一的端到端回归 `tools/e2e/state_regression.py` 需要真机 + 运行中的服务，
+- **现象**：61 个前端源码模块中只有 **23 个（38%）**被单测直接引用；未覆盖的 38 个集中在
+  `render/`（7/7 全无）、`meas/`（6/6 全无）、`ui/`（13/19，含 `controls.ts`/`keypad.ts`/`trigger*.ts`/`limits.ts`）
+  以及 `core/ws.ts`、`core/i18n.ts`、`core/theme.ts`、`core/fmt.ts`、`core/markerCommon.ts`、
+  `dsp/normalize.ts`、`audio/sdrAudio*`。已覆盖的是 `dsp/*`、`core/{params,level,frequency,units,refclock,store}`
+  与 `ui/{displayRef,graphMode,sdrState,swpState,normPub,railMath}`（即状态机制与纯 DSP 层）。
+  唯一的端到端回归 `tools/e2e/state_regression.py` 需要真机 + 运行中的服务，
   被刻意排除在 `test.sh` 之外（`test.sh:20-26`）。
-- **证据**：`find frontend/modern/src/__tests__`；`tools/e2e/state_regression.py:31-36`
-  （`from playwright.sync_api import ...`，需活设备）。
+- **证据**：按 `__tests__/*.test.ts` 的 import 目标统计（脚本见附录 B）。
+  `tools/e2e/state_regression.py:31-36`（`from playwright.sync_api import ...`，需活设备）。
 - **影响**：`controls.ts`（59 次提交）、`index.html`（67 次提交）、`core/ws.ts`（48 次）
   这些最高 churn 文件完全没有自动回归；改错只有人工点击才发现。
 - **建议**（按性价比排序）：
@@ -535,6 +538,56 @@ e2e（真机）仍全绿。
 
 ---
 
+## 8. 本评估的自我复核（对照业界最佳实践）
+
+**结论：评估结论成立，建议方向与业界通行做法一致，未发现“反最佳实践”的建议。**
+复核中修正了 1 处事实性偏差与 2 处需要限定的表述，并补齐了原评估遗漏的 3 个点。
+
+### 8.1 已修正
+
+| # | 问题 | 修正 |
+|---|---|---|
+| 1 | P0-2 称 “`render/`、`ui/`（除 rail）、`meas/` 零单测” 不准确 | 改为按模块统计：61 个模块中 23 个（38%）被单测直接引用；`ui/{displayRef,graphMode,sdrState,swpState,normPub,railMath}`、`core/{params,level,frequency,units,refclock,store}`、`dsp/*` 均有覆盖，未覆盖集中在 `render/`、`meas/`、UI 胶水层与 `core/ws.ts` |
+| 2 | P0/P1/P2 未说明分级依据 | 已明确：P0/P1/P2 是**行动优先级**（P0 = 影响交付可靠性/正确性，先做），不等同于线上故障等级 |
+| 3 | E-1 “由 schema 生成前端控件” 边界不清，易被误读为“全部 UI 自动化” | 已限定：schema 只覆盖数值/枚举/开关，图形与上下文相关按钮仍手写 |
+
+### 8.2 与业界实践对照
+
+| 建议 | 对应实践 | 判定 |
+|---|---|---|
+| CI（pytest/ruff/tsc/vitest） | CI gate，主干开发的最低要求 | 符合 |
+| 协议 golden 测试 | 契约测试 / consumer-driven contract | 符合 |
+| i18n parity + 类型化键 | i18n lint / 本地化 CI 校验 | 符合 |
+| `madge --circular` = 0 | 架构守护测试（ArchUnit / dependency-cruiser 同思路） | 符合 |
+| 版本单源 + CHANGELOG | SemVer + 发布自动化 | 符合 |
+| 依赖声明补全 | 可复现构建 | **不完整** → 本次补 G-2 |
+| ParamSpec 单一 schema | 仪器软件惯用的“命令树 + 参数元数据”（SCPI 风格） | 符合（需限定，见 8.1-3） |
+| 会话 Protocol + 策略下沉到会话 | 端口-适配器 / 策略模式（Hexagonal） | 符合 |
+| 不做插件系统、不引入前端框架 | YAGNI / 技术选型稳定优先 | 符合 |
+| 上帝对象拆分 | SRP | 符合，但需分批（原报告已写） |
+
+顺序上也符合通行做法：**先建护栏再重构（refactor under test）**——所以 Phase 0 必须先于 Phase 2/3。
+
+### 8.3 原评估遗漏、本次补齐
+
+**G-1 没有性能/资源基线。** 原报告只做静态分析，却写下“主要瓶颈已处理”这类结论，没有测量支撑。
+→ 补：`tools/bench.py`（可重复的延迟/帧率/CPU 基线）+ 基线表；让“优化”类建议可验证。
+
+**G-2 依赖未锁定。** `aiohttp>=3.9`、`numpy>=1.24` 无上界，前端 `package.json` 用 `^`（但有
+`package-lock.json`），Python 侧没有约束文件。可复现构建要求锁定或至少记录“已验证版本矩阵”。
+
+**G-3 没有硬件在环（HIL）测试入口。** 仓库有 `tools/hardware_smoke.py` 与 Playwright e2e，
+但没有统一命令、没有基线、也没有“发版前必须跑”的约定。仪器类软件的通行做法是 `make hw-test`
+（真机冒烟 + 状态机回归）并列入发版清单。→ 本次实现（见 §9）。
+
+### 8.4 确认“不需要”的东西
+
+- 不做结构化日志/分布式追踪（单用户单进程仪器，收益低）；
+- 不追求 100% 覆盖率（测试投入应放在协议契约与状态机）；
+- 不做依赖注入容器/框架化改造（当前构造函数注入 `dev` 已足够）。
+
+---
+
 ## 附录 A：度量数据
 
 | 指标 | 值 |
@@ -602,6 +655,25 @@ PY
 
 # 4) 未被其它模块引用的导出（前端 API 面）
 #    见正文 P0-1 / P2-2 的脚本，原理：解析 export 名 + 统计 import/命名空间访问
+
+# 5) 前端单测覆盖映射（61 个源码模块中哪些被测试直接引用）
+python3 - <<'PY'
+import os, re, collections
+root='frontend/modern/src'; tdir=os.path.join(root,'__tests__')
+covered=set()
+for fn in os.listdir(tdir):
+    if not fn.endswith('.ts'): continue
+    for m in re.finditer(r"from\s+'(\.[^']+)'", open(os.path.join(tdir,fn)).read()):
+        c=os.path.normpath(os.path.join(tdir,m.group(1)))
+        for ext in ('','.ts','.js'):
+            if os.path.exists(c+ext): covered.add(c+ext); break
+srcs=[os.path.join(dp,fn) for dp,_,fns in os.walk(root) for fn in fns
+      if fn.endswith(('.ts','.js')) and '__tests__' not in dp]
+un=sorted(s for s in srcs if s not in covered)
+print(f'{len(srcs)} modules, {len(srcs)-len(un)} covered, {len(un)} uncovered')
+c=collections.Counter(os.path.dirname(os.path.relpath(s,root)) for s in un)
+for d,n in sorted(c.items()): print(f'  {n:3d}  {d}/')
+PY
 ```
 
 ## 附录 C：与既有待办的关系（重要）

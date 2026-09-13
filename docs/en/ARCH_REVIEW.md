@@ -137,12 +137,16 @@ continuously; **P2** = hygiene/optimisation.
 
 #### P0-2 The frontend UI/orchestration layer has no automated guard rails
 
-- **Symptom**: all 12 test files target `dsp/` and `core/` (mostly pure functions); `render/`, `ui/`
-  (except `railMath`), `meas/`, `core/ws.ts` and `audio/` have **zero unit tests**. The only end-to-end
-  regression, `tools/e2e/state_regression.py`, needs real hardware plus a running service and is deliberately
-  excluded from `test.sh` (`test.sh:20-26`).
-- **Evidence**: `find frontend/modern/src/__tests__`; `tools/e2e/state_regression.py:31-36`
-  (`from playwright.sync_api import ...`, needs a live device).
+- **Symptom**: of 61 frontend source modules only **23 (38%)** are directly referenced by a unit test. The
+  38 uncovered ones cluster in `render/` (7/7 uncovered), `meas/` (6/6), `ui/` (13/19, including
+  `controls.ts`/`keypad.ts`/`trigger*.ts`/`limits.ts`), plus `core/ws.ts`, `core/i18n.ts`, `core/theme.ts`,
+  `core/fmt.ts`, `core/markerCommon.ts`, `dsp/normalize.ts` and `audio/sdrAudio*`. What *is* covered is
+  `dsp/*`, `core/{params,level,frequency,units,refclock,store}` and
+  `ui/{displayRef,graphMode,sdrState,swpState,normPub,railMath}` — i.e. the state-model and pure-DSP layers.
+  The only end-to-end regression, `tools/e2e/state_regression.py`, needs real hardware plus a running service and
+  is deliberately excluded from `test.sh` (`test.sh:20-26`).
+- **Evidence**: import targets of `__tests__/*.test.ts` (script in Appendix B);
+  `tools/e2e/state_regression.py:31-36` (`from playwright.sync_api import ...`, needs a live device).
 - **Impact**: the highest-churn files — `controls.ts` (59 commits), `index.html` (67), `core/ws.ts` (48) —
   have no automated regression at all; mistakes are only found by manual clicking.
 - **Recommendation** (by cost/benefit):
@@ -546,6 +550,61 @@ cost high. Do not try to generate *all* of the UI from the schema either.
 
 ---
 
+## 8. Self-audit of this review (against industry practice)
+
+**Verdict: the conclusions hold and the recommendations match common industry practice; nothing recommended
+is anti-pattern.** The audit corrected one factual error and two statements that needed qualification, and
+filled three gaps the original review missed.
+
+### 8.1 Corrections applied
+
+| # | Problem | Correction |
+|---|---|---|
+| 1 | P0-2 claimed `render/`, `ui/` (except rail) and `meas/` have "zero unit tests" — inaccurate | Restated per module: of 61 modules, 23 (38%) are directly referenced by a test; `ui/{displayRef,graphMode,sdrState,swpState,normPub,railMath}`, `core/{params,level,frequency,units,refclock,store}` and `dsp/*` are covered, while the gaps cluster in `render/`, `meas/`, the UI glue and `core/ws.ts` |
+| 2 | The P0/P1/P2 labels did not state their basis | Now explicit: they are **action priority** (P0 = delivery reliability/correctness, do first), not a production-incident severity scale |
+| 3 | E-1 ("generate frontend controls from the schema") was easy to misread as "automate all UI" | Qualified: the schema covers numbers/enums/toggles only; graphics and context-dependent buttons stay hand-written |
+
+### 8.2 Mapping to industry practice
+
+| Recommendation | Practice it corresponds to | Verdict |
+|---|---|---|
+| CI (pytest/ruff/tsc/vitest) | CI gate, minimum for trunk-based development | Sound |
+| Protocol golden tests | Contract testing / consumer-driven contracts | Sound |
+| i18n parity + typed keys | i18n lint / localization CI check | Sound |
+| `madge --circular` = 0 | Architecture fitness function (same idea as ArchUnit / dependency-cruiser) | Sound |
+| Single-source version + CHANGELOG | SemVer + release automation | Sound |
+| Complete dependency declaration | Reproducible builds | **Incomplete** → gap G-2 added |
+| ParamSpec as one schema | The command-tree + parameter-metadata pattern common in instrument software (SCPI-like) | Sound (with the 8.1-3 qualification) |
+| Session Protocol + policy pushed into sessions | Ports-and-adapters / strategy pattern (hexagonal) | Sound |
+| No plugin system, no frontend framework | YAGNI / stability of the chosen stack | Sound |
+| Splitting the god objects | SRP | Sound, but must be staged (the report already says so) |
+
+The ordering is also conventional: **build guard rails before refactoring (refactor under test)**, which is why
+Phase 0 must precede Phase 2/3.
+
+### 8.3 Gaps the original review missed (added here)
+
+**G-1 No performance/resource baseline.** The original review was static-only yet still wrote conclusions such
+as "the main bottlenecks are handled" without measurements. → Added: `tools/bench.py` (repeatable
+latency/frame-rate/CPU baseline) plus a baseline table, so optimisation claims become verifiable.
+
+**G-2 Dependencies are not pinned.** `aiohttp>=3.9`, `numpy>=1.24` have no upper bound and the frontend
+`package.json` uses `^` (though `package-lock.json` exists); the Python side has no constraints file.
+Reproducible builds require pinning or at least a documented, tested version matrix.
+
+**G-3 No hardware-in-the-loop (HIL) entry point.** The repo has `tools/hardware_smoke.py` and the Playwright
+e2e, but no single command, no baseline and no "must run before release" rule. Instrument software
+conventionally has `make hw-test` (real-hardware smoke + state-machine regression) in the release checklist.
+→ Implemented here (see §9).
+
+### 8.4 Confirmed as unnecessary
+
+- No structured logging / distributed tracing (single-user, single-process instrument: low payoff);
+- No 100% coverage target (test budget belongs in protocol contracts and state machines);
+- No DI container / framework rewrite (constructor injection of `dev` is enough).
+
+---
+
 ## Appendix A: Metrics
 
 | Metric | Value |
@@ -613,6 +672,25 @@ PY
 
 # 4) Exports never referenced by another module (frontend API surface)
 #    See P0-1 / P2-2 for the script: parse export names, then count named/namespace usages.
+
+# 5) Frontend unit-test coverage map (which of the 61 source modules a test imports)
+python3 - <<'PY'
+import os, re, collections
+root='frontend/modern/src'; tdir=os.path.join(root,'__tests__')
+covered=set()
+for fn in os.listdir(tdir):
+    if not fn.endswith('.ts'): continue
+    for m in re.finditer(r"from\s+'(\.[^']+)'", open(os.path.join(tdir,fn)).read()):
+        c=os.path.normpath(os.path.join(tdir,m.group(1)))
+        for ext in ('','.ts','.js'):
+            if os.path.exists(c+ext): covered.add(c+ext); break
+srcs=[os.path.join(dp,fn) for dp,_,fns in os.walk(root) for fn in fns
+      if fn.endswith(('.ts','.js')) and '__tests__' not in dp]
+un=sorted(s for s in srcs if s not in covered)
+print(f'{len(srcs)} modules, {len(srcs)-len(un)} covered, {len(un)} uncovered')
+c=collections.Counter(os.path.dirname(os.path.relpath(s,root)) for s in un)
+for d,n in sorted(c.items()): print(f'  {n:3d}  {d}/')
+PY
 ```
 
 ## Appendix C: Relationship to the existing TODO (important)
