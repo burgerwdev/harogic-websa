@@ -31,10 +31,44 @@ export interface MarkerState {
 export interface ExtremaItem { i: number; v: number; sv?: number; f: number; a: number; }
 
 // Canvas
-export const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
-export const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
-export const W = canvas.width, H = canvas.height;
+//
+// These are assigned by initStore() rather than at import time: importing this module used
+// to touch the DOM, which made the import order load-bearing (report finding P2-1). They are
+// `let` bindings, so every importer sees the assigned values (ESM live bindings); layout code
+// must therefore read them inside functions, not at module scope.
+//
+// Logical drawing coordinates stay 860x480. The backing store is scaled by the device pixel
+// ratio and the context is transformed accordingly, so the canvas is sharp on HiDPI screens
+// while all the geometry (plotRect/getX/getY/margins) keeps its logical units (finding P2-4).
+export const LOGICAL_W = 860;
+export const LOGICAL_H = 480;
+export let canvas!: HTMLCanvasElement;
+export let ctx!: CanvasRenderingContext2D;
+export let W = LOGICAL_W, H = LOGICAL_H;
+export let pixelRatio = 1;
 export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
+
+/** Bind the spectrum canvas. Must run before the first render (main.ts calls it first). */
+export function initStore(): void {
+  const el = document.getElementById('spectrum') as HTMLCanvasElement | null;
+  if (!el) {
+    throw new Error('core/store: #spectrum is missing; initStore() must run after the DOM is ready');
+  }
+  const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const backingW = Math.round(LOGICAL_W * ratio);
+  const backingH = Math.round(LOGICAL_H * ratio);
+  if (el.width !== backingW || el.height !== backingH) {
+    el.width = backingW;
+    el.height = backingH;
+  }
+  canvas = el;
+  W = LOGICAL_W;
+  H = LOGICAL_H;
+  pixelRatio = ratio;
+  ctx = el.getContext('2d') as CanvasRenderingContext2D;
+  // Draw in logical pixels; the CSS box still scales the element responsively.
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+}
 
 // Frequency/amplitude state
 export let FREQ_MIN = 9e3, FREQ_MAX = 9e9;
@@ -80,11 +114,7 @@ export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 // arbitration, so a Preset/normalise/trace reset could clobber a manually set SDR Ref.)
 export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
 export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
-// RTA trigger (mirrored from the device status so the renderer can draw the threshold)
-export let trigSource = 'bus';
-export function setTrigSource(v: string) { trigSource = v; }
-export let trigLevel = -40.0;
-export function setTrigLevel(v: number) { trigLevel = v; }
+// RTA trigger parameters live in ui/triggerState.ts (slots, report finding P1-6).
 // SWP software level trigger: the swept engine has no level trigger, so the condition is
 // evaluated in software across consecutive sweeps (see ui/swpTrigger.ts).
 export let swpArmed = false;
@@ -93,10 +123,6 @@ export let swpHold = false;
 export function setSwpHold(v: boolean) { swpHold = v; }
 export let swpPrev: Float32Array | null = null;
 export function setSwpPrev(v: Float32Array | null) { swpPrev = v; }
-export let swpEdge: 'rising' | 'falling' | 'double' = 'rising';
-export function setSwpEdge(v: 'rising' | 'falling' | 'double') { swpEdge = v; }
-export let trigPoi = 0.0;
-export function setTrigPoi(v: number) { trigPoi = v; }
 export let trigArmed = false;
 export function setTrigArmed(v: boolean) { trigArmed = v; }
 export let trigWaiting = false;

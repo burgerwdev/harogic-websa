@@ -12,6 +12,9 @@ import * as S from '../core/store';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
 import { requestRender } from '../render/redraw';
+import {
+  confirmTriggerFromStatus, trigEdge, trigLevel, trigPoi, trigSource,
+} from './triggerState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { onTriggerHit, setArmedAt, setBackendWaiting } from './triggerEvents';
 import { armSwpTrigger, disarmSwpTrigger, onSwpHit } from './swpTrigger';
@@ -101,7 +104,8 @@ function syncOverlay(): void {
       lines.push(t(S.rtaMode ? 'trg_cross' : 'trg_swp_cross'));
     }
     if (armPeak !== null) lines.push(t('trg_peak', { v: armPeak.toFixed(1) }));
-    if (S.trigPoi > 0) lines.push(t('trg_poi', { t: fmtTime(S.trigPoi) }));
+    const poi = trigPoi.get();
+    if (poi > 0) lines.push(t('trg_poi', { t: fmtTime(poi) }));
   } else {
     lines.push(`${t('trg_chip_hit')} ${hitAt}`);
     if (hitLine) lines.push(hitLine);
@@ -124,7 +128,7 @@ async function pollOnce(): Promise<void> {
     const d = await r.json();
     const req = (d?.req?.rta ?? {}) as Record<string, any>;
     const status = (req.trigger_actual ?? {}) as Record<string, any>;
-    S.setTrigPoi(Number((d?.rta_actual ?? {}).poi ?? 0));
+    confirmTriggerFromStatus(req);
     const source = String(req.trigger_source ?? 'bus');
     const armed = source !== 'bus' && source !== 'freerun';
     const frames = Number(status.frames ?? -1);
@@ -172,8 +176,8 @@ async function pollOnce(): Promise<void> {
       }
       armLevel = Number(req.trigger_level ?? armLevel);
     }
-    S.setTrigLevel(armLevel);
-      S.setTrigSource(backendArmed ? 'level' : 'bus');
+    trigLevel.set(armLevel);
+      trigSource.set(backendArmed ? 'level' : 'bus');
     syncOverlay();
     // The live views are repainted by their frames (SWP/RTAF at 30/16 ms); only an active
     // trigger state (waiting / triggered) needs this extra pass.
@@ -198,9 +202,9 @@ function armSwept(): void {
   if (!Number.isFinite(level)) return;
   armLevel = level;
   armPeak = peakOfDisplay();
-  S.setTrigLevel(level);
-  S.setTrigSource('level');                 // threshold line follows the armed source
-  S.setSwpEdge(edgeOf(selectValue('select-trg-edge')));
+  trigLevel.set(level);
+  trigSource.set('level');                 // threshold line follows the armed source
+  trigEdge.set(edgeOf(selectValue('select-trg-edge')));
   armSwpTrigger();
   phase = 'waiting';
   since = performance.now();
@@ -222,8 +226,8 @@ function arm(): void {
   if (!Number.isFinite(level)) return;
   armLevel = level;
   armPeak = peakOfDisplay();
-  S.setTrigLevel(level);
-  S.setTrigSource('level');                 // draw the threshold line while armed
+  trigLevel.set(level);
+  trigSource.set('level');                 // draw the threshold line while armed
   const sel = el<HTMLSelectElement>('select-trg-source');
   if (sel) sel.value = 'level';
   clearDisplay();                       // waiting must not look like live data
@@ -243,7 +247,7 @@ function arm(): void {
 
 function disarm(): void {
   disarmSwpTrigger();
-  S.setTrigSource('bus');                   // the line shows only while armed
+  trigSource.set('bus');                   // the line shows only while armed
   const sel = el<HTMLSelectElement>('select-trg-source');
   if (sel) sel.value = 'bus';
   send({ cmd: 'SET_TRIGGER', source: 'bus' });
@@ -283,7 +287,7 @@ export function initTrigger(): void {
   wireSelect('select-trg-source', 'source');
   wireSelect('select-trg-edge', 'edge');
   el<HTMLSelectElement>('select-trg-edge')?.addEventListener('change', () => {
-    S.setSwpEdge(edgeOf(selectValue('select-trg-edge')));
+    trigEdge.set(edgeOf(selectValue('select-trg-edge')));
   });
   wireSelect('select-trg-out', 'out');
   wireSelect('select-trg-outpolarity', 'outpolarity');

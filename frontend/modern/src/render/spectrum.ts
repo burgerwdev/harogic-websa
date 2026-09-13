@@ -3,12 +3,13 @@ import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
 import { ctx, W, H } from '../core/store';
-import { PLOT_RECT, getX, getY, plotRect } from './plot';
+import { getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
 import { sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
+import { trigLevel, trigSource } from '../ui/triggerState';
 import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
 import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './peaklist';
@@ -319,7 +320,7 @@ function renderLimits(powers: Float32Array | null) {
   const n = Math.min(powers.length, freq.length);
   const lim = buildLimitArray(freq, S.limits.points, n);
   if (!lim) { lastLimitEval = null; return; }
-  const p = PLOT_RECT;
+  const p = plotRect();
   ctx.save();
   ctx.beginPath();
   ctx.rect(p.x, p.y, p.w, p.h);
@@ -478,9 +479,9 @@ function renderTriggerOverlay() {
 
 // Trigger threshold line (RTA only): shows where a level trigger will fire.
 function renderTriggerLevel() {
-  if (S.trigSource !== 'level' && !S.swpArmed && !S.swpHold) return;
+  if (trigSource.get() !== 'level' && !S.swpArmed && !S.swpHold) return;
   const p = plotRect();
-  const raw = getY(S.trigLevel);
+  const raw = getY(trigLevel.get());
   if (!Number.isFinite(raw)) return;
   // Changing Ref (manually or through Auto Ref) re-scales the display; keep the threshold
   // visible by pinning it to the nearest edge instead of dropping the line entirely.
@@ -499,7 +500,7 @@ function renderTriggerLevel() {
   ctx.font = 'bold 10px monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(`${offscreen ? (offscreen < 0 ? '\u25b2 ' : '\u25bc ') : ''}TRG ${S.trigLevel.toFixed(1)} dBm`,
+  ctx.fillText(`${offscreen ? (offscreen < 0 ? '\u25b2 ' : '\u25bc ') : ''}TRG ${trigLevel.get().toFixed(1)} dBm`,
     p.x + 4, offscreen < 0 ? y + 11 : y - 2);
   ctx.restore();
 }

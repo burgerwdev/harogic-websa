@@ -29,3 +29,8 @@ if (!globalThis.performance) {
 }
 
 export {};
+
+// The store binds the canvas in initStore() now (report finding P2-1); run it against the
+// fake canvas so the modules under test have a context and logical dimensions.
+import { initStore } from '../core/store';
+initStore();

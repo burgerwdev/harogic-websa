@@ -12,6 +12,7 @@ import { initKeypad } from './ui/keypad';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { requestRender } from './render/redraw';
+import { initStore } from './core/store';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
 import { applyI18n, setLang, t } from './core/i18n';
 import { initTheme, onThemeChange, toggleTheme } from './core/theme';
@@ -19,6 +20,7 @@ import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
 function init() {
+  initStore();   // bind the canvas before the first render
   // Theme/language (restored from localStorage)
   const savedTheme = localStorage.getItem('web-sa-theme');
   initTheme(savedTheme === 'light' ? 'light' : 'dark');
