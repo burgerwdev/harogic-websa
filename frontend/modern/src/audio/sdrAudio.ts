@@ -13,6 +13,7 @@ let sourceRate = 48000;
 let bufferedSamples = 0;
 let audioUnderruns = 0;
 let audioTransitionMuted = false;
+let audioFrames = 0;
 let transitionWatchdog: number | null = null;
 let pendingChunks: Float32Array[] = [];
 let resumeListenersInstalled = false;
@@ -137,6 +138,7 @@ async function initializeOutput(context: AudioContext): Promise<void> {
           } else if (event.data?.type === 'status') {
             bufferedSamples = Number(event.data.available) || 0;
             audioUnderruns = Number(event.data.underruns) || 0;
+            publishAudioDebug();
           }
         };
         candidate!.connect(context.destination);
@@ -218,6 +220,7 @@ function clearTransitionWatchdog(): void {
 export function prepareSdrAudioTransition(): void {
   if (!enabled) return;
   audioTransitionMuted = true;
+  publishAudioDebug();
   resetPlayback();
   // Safety net: a command that does not actually re-configure the chain never sends a
   // reset marker, so bound the mute instead of leaving the audio silent forever.
@@ -225,13 +228,34 @@ export function prepareSdrAudioTransition(): void {
   transitionWatchdog = window.setTimeout(() => {
     transitionWatchdog = null;
     audioTransitionMuted = false;
+    publishAudioDebug();
   }, 700);
+}
+
+/**
+ * Publish the audio gate state on the canvas so "the button says On but nothing is heard"
+ * can be told apart from "no audio data arrived": enabled = we accept frames, muted = a
+ * reconfiguration transition is swallowing them, frames = AUDF frames seen, buffered = the
+ * worklet's ring. Read it in the browser console:
+ *   document.getElementById('spectrum').dataset.sdrAudio
+ */
+function publishAudioDebug(): void {
+	const cv = document.getElementById('spectrum');
+	if (cv) {
+		cv.dataset.sdrAudio =
+			`enabled=${enabled} muted=${audioTransitionMuted} frames=${audioFrames}` +
+			` buffered_ms=${(bufferedSamples / 48).toFixed(1)} underruns=${audioUnderruns}` +
+			// ctx=running but buffered_ms climbing, or ctx=suspended, both explain "the button
+			// says On but nothing is heard" without any state-management involvement.
+			` ctx=${ctx ? ctx.state : 'none'} worklet=${!!workletNode}`;
+	}
 }
 
 export function setSdrAudioEnabled(on: boolean): void {
   clearTransitionWatchdog();
   audioTransitionMuted = false;
   enabled = on;
+  publishAudioDebug();
   if (on) {
     // Start from a clean ring/resampler so a hand-off cannot replay stale tail audio.
     resetPlayback();
@@ -263,6 +287,8 @@ function resamplePcm(buffer: ArrayBuffer, offset: number, samples: number): Floa
 export function pushSdrAudio(
   buffer: ArrayBuffer, offset: number, samples: number, rate: number, reset = false,
 ): void {
+  audioFrames++;
+  if (audioFrames % 25 === 0) publishAudioDebug();
   if (!enabled) return;
   if (samples * 2 + offset > buffer.byteLength) return;
   if (reset) {
