@@ -92,12 +92,12 @@ def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
                          bandwidth: float) -> dict:
     """Display window (what the user asked for) and capture window (where the hardware is).
 
-    The IQS capture is centred on ``capture_center_hz`` and a hardware offset can push it
-    away from the requested centre. Publishing both ranges lets the front end map the bins
-    by their true capture frequency and clip them to the display window, so the user's
-    centre lands at the canvas centre and the uncovered edge is a real gap (never invented
-    data). ``center`` is the display centre because every frequency the UI shows (freq axis,
-    markers, limit window) must come from one source.
+    The IQS capture is centred on ``capture_center_hz``, which normally equals the requested
+    centre; it can still differ when the band edge clamps the capture. Publishing both ranges
+    lets the front end map the bins by their true capture frequency and clip them to the
+    display window, so the user's centre lands at the canvas centre and any uncovered edge is
+    a real gap (never invented data). ``center`` is the display centre because every
+    frequency the UI shows (freq axis, markers, limit window) must come from one source.
     """
     half = float(bandwidth) / 2.0
     return {
@@ -283,10 +283,12 @@ class SdrSession(MeasurementSession):
         _t('iqs: mode reset + ProfileDeInit ok')
         native_rate = float(p.NativeIQSampleRate_SPS)
         expected_bw = native_rate * 0.8 / s.sdr_decimate if native_rate > 0 else 0.0
+        # Capture on the requested centre. The stream used to be tuned 200 kHz away from it
+        # ("avoid the zero-IF DC centre"), which pushed the lowest 200 kHz of the requested
+        # window out of the capture range and left a visible blank strip at the left edge of
+        # the panadapter. A/B on hardware (AM and FM, -20..-75 dBm) showed no demod-quality
+        # difference, so the shift was not worth a hole in the display.
         capture_center = float(s.sdr_center_hz)
-        if (expected_bw >= 800e3
-                and abs(float(s.sdr_listen_hz) - capture_center) < 1e3):
-            capture_center += min(200e3, expected_bw * 0.2)
         if s.caps and expected_bw > 0:
             half = expected_bw / 2.0
             capture_center = max(s.caps.freq_min_hz + half,

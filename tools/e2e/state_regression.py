@@ -138,6 +138,15 @@ def main() -> int:
                 f"display {win['hi'] - win['lo']:.0f} vs capture "
                 f"{actual['capture_stop'] - actual['capture_start']:.0f} Hz",
             )
+            # The capture must not be tuned away from the requested centre: the old
+            # +200 kHz "avoid the zero-IF DC centre" shift left the lowest 200 kHz of the
+            # display uncovered (a blank strip at the left edge of the panadapter).
+            check(
+                "the capture is not offset from the display window",
+                abs(actual["capture_start"] - win["lo"]) < division
+                and abs(actual["capture_stop"] - win["hi"]) < division,
+                f"offset {actual['capture_start'] - win['lo']:.0f} Hz",
+            )
         else:
             check("the display window is published on the canvas", bool(win), str(win))
 
