@@ -141,6 +141,27 @@ def main() -> int:
         else:
             check("the display window is published on the canvas", bool(win), str(win))
 
+        # 1c - entering SDR must show a usable trace: the automatic scale was armed on
+        # entry, and the value it decided is the one the canvas renders (the reported
+        # "Preset -> SDR spectrum overflows the canvas").
+        print("1c) SDR automatic scale is applied")
+        dbg = page.evaluate(
+            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
+        )
+        if dbg and "peak" in dbg:
+            check(
+                "the auto-scale decision is what the canvas shows",
+                abs(dbg.get("shown", 1e9) - dbg.get("ref", -1e9)) < 3,
+                str(dbg),
+            )
+            check(
+                "the trace fits the window (Ref - peak <= 100 dB)",
+                dbg.get("shown", 1e9) - dbg.get("peak", -1e9) <= 100,
+                str(dbg),
+            )
+        else:
+            check("the SDR auto-scale published a decision", False, str(dbg))
+
         # 2 - demod group
         print("2) demod / IF bandwidth / de-emphasis")
         page.click('[data-sdr-demod="nfm"]')

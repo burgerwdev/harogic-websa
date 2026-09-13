@@ -69,7 +69,10 @@ export function invalidateAllTraces() {
     t.reference = null; t.isNormalized = false;
   });
   S.setDisplayUnit('dBm');
-  S.setDisplayRef(refLevel.get());
+  // The SDR display scale belongs to the automatic scaler. Resetting it to the swept
+  // reference here left the trace off-canvas until the next valid frame (measured: the
+  // auto-scale decided -15 while the canvas still showed 0). Keep the last usable value.
+  if (!S.sdrMode) S.setDisplayRef(refLevel.get());
   updateNormalizeStatusUI();
 }
 

@@ -530,6 +530,13 @@ export function syncGraphModeStatus(mode: string) {
   if (isSdr) {
     resetSdrAutoRef();
     deferSdrAudioPreference();
+    // Re-issue the reference to the device on entry. It re-applies the IQS reference level
+    // and clears a stale acquisition, so the first automatic scale has a sane frame to work
+    // with (the reported "Preset -> SDR spectrum overflows the canvas"). Auto is the client's
+    // preference here, not the swept one.
+    if (sdrRefAuto.get()) {
+      send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
+    }
   } else {
     setSdrAudioEnabled(false);
     sdrAudioOn.set(false);
