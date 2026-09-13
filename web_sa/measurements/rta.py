@@ -353,6 +353,13 @@ class RtaSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def request_stop(self) -> None:
+        """Stop the fetch loop before the session is torn down."""
+        self._ready = False
+
+    def is_ready(self) -> bool:
+        return bool(self._ready)
+
     def acquisition_timeout(self) -> float:
         """The RTA fetch blocks in the DLL, so a stuck call is detected quickly."""
         return 5.0

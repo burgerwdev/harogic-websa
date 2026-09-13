@@ -18,10 +18,12 @@ from web_sa.web import ws as ws_module
 from web_sa.web.commands import (
     COMMANDS,
     NOT_IN_SDR,
+    PARAMS,
     SWP_ONLY,
     SWP_OWNED,
     CommandContext,
     CommandError,
+    build_schema,
     command_names,
     spec_for,
     validate,
@@ -141,3 +143,55 @@ def test_command_context_routes_configure_calls_through_the_hardware_wrapper():
     assert excinfo.value.code == 'hardware_config'
     assert 'bad window' in excinfo.value.params['detail']
     assert cmd.HW_CALL_TIMEOUT_S > 0
+
+
+def test_every_parameterised_command_declares_its_parameters():
+    """The schema is the single description of a parameter (report finding E-1)."""
+    for name, spec in COMMANDS.items():
+        assert spec.params == PARAMS.get(name, ()), f'{name}: params must come from PARAMS'
+    # spot-check the shape: a capability-backed bound, a choice list and a unit
+    rbw = next(p for p in COMMANDS['SET_RBW'].params if p.name == 'rbw')
+    assert rbw.unit == 'Hz' and callable(rbw.maximum)
+    assert COMMANDS['SET_WINDOW'].params[0].choices == ()
+    detector = COMMANDS['SET_DETECTOR'].params[0]
+    assert 'rms' in detector.choices and detector.required
+
+
+def test_schema_resolves_capability_bounds():
+    caps = DeviceCapabilities.from_model(67)
+    caps.rbw_max_hz = 2e6
+    caps.rta_span_max_hz = 20e6
+    dev = StubDevice()
+    dev.state.caps = caps
+    schema = build_schema(dev)['commands']
+    assert set(schema) == EXPECTED
+
+    rbw = next(p for p in schema['SET_RBW']['params'] if p['name'] == 'rbw')
+    assert rbw['max'] == 2e6 and rbw['min'] == 100.0 and rbw['unit'] == 'Hz'
+    rta_span = next(p for p in schema['SET_RTA']['params'] if p['name'] == 'span')
+    assert rta_span['max'] == 20e6
+
+    # the guard policy is published too, so a client can grey out what cannot run
+    assert schema['SET_WINDOW']['swp_only'] is True
+    assert schema['SET_FREQ']['denied_in_sdr'] is True
+    assert schema['SET_FREQ']['session_exclusive'] is True
+    assert schema['STATUS']['needs_device'] is False
+
+
+def test_schema_without_a_device_still_lists_the_commands():
+    schema = build_schema(None)['commands']
+    assert set(schema) == EXPECTED
+    rbw = next(p for p in schema['SET_RBW']['params'] if p['name'] == 'rbw')
+    assert rbw['max'] is None      # capability-backed: unknown without a device
+    assert rbw['min'] == 100.0
+
+
+def test_validation_follows_the_schema_not_a_second_copy():
+    """Tightening the schema must change validation immediately."""
+    dev = StubDevice()
+    dev.state.caps.rbw_max_hz = 500e3
+    with pytest.raises(CommandError) as excinfo:
+        validate(dev, 'SET_RBW', {'cmd': 'SET_RBW', 'mode': 'manual', 'rbw': 1e6})
+    assert excinfo.value.code == 'above_max'
+    ok = {'cmd': 'SET_RBW', 'mode': 'manual', 'rbw': 500e3}
+    validate(dev, 'SET_RBW', ok)

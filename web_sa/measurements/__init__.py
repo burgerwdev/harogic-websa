@@ -30,15 +30,41 @@ def session_class(name: str) -> type[MeasurementSession]:
     return getattr(importlib.import_module('.' + module_name, __name__), class_name)
 
 
+class SessionNotReady(RuntimeError):
+    """The session was constructed but never became usable (its configure path failed)."""
+
+
+class SessionManager:
+    """Explicit session lifecycle: stop -> exit -> construct -> enter -> ready (finding P1-9).
+
+    The previous code did this inline in the command handler and asked the session for a
+    private `_ready` flag; a failure inside a session's configure path therefore looked like
+    a successful switch. `switch()` owns the order and the readiness check.
+    """
+
+    def __init__(self, dev):
+        self.dev = dev
+
+    def current(self) -> MeasurementSession | None:
+        return self.dev.session
+
+    def switch(self, name: str) -> MeasurementSession:
+        old = self.dev.session
+        if old is not None:
+            old.request_stop()
+            old.exit()
+        session = session_class(name)(self.dev)
+        if name != 'std':
+            session.enter()
+        self.dev.set_session(session)
+        if not session.is_ready():
+            raise SessionNotReady(name)
+        return session
+
+
 def make_session(dev, name: str) -> MeasurementSession:
     """Enter/switch a measurement session (automatically exits the old session and enters the new one)."""
-    if dev.session is not None:
-        dev.session.exit()
-    cls = session_class(name)
-    sess = cls(dev)
-    if name != 'std':
-        sess.enter()
-    return sess
+    return SessionManager(dev).switch(name)
 
 
 def __getattr__(name: str):
@@ -56,6 +82,8 @@ __all__ = [
     'PhaseNoiseSession',
     'RtaSession',
     'SdrSession',
+    'SessionManager',
+    'SessionNotReady',
     'StdSession',
     'make_session',
     'session_class',

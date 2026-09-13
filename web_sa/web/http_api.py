@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from .app_keys import COMMAND_LOCK, LOGGER
+from .commands import build_schema
 from .jsonutil import finite_json
 from .ws import CommandError, _dispatch, error_payload
 
@@ -212,6 +213,10 @@ def make_routes(app, dev, static_dir):
             status = build_status(dev)
         return web.json_response(status)
 
+    async def schema(request):
+        """Machine-readable command/parameter schema (see commands.build_schema)."""
+        return web.json_response(build_schema(dev))
+
     async def config(request):
         try:
             data = await request.json()
@@ -245,6 +250,7 @@ def make_routes(app, dev, static_dir):
         return web.FileResponse(index_file)
 
     app.router.add_get('/api/state', state)
+    app.router.add_get('/api/schema', schema)
     app.router.add_post('/api/config', config)
     app.router.add_get('/', index)
     async def modern_static(request):

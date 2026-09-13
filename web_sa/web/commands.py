@@ -158,15 +158,200 @@ def _caps(dev):
 
 
 # ---------------------------------------------------------------------------
-# Per-command validation
+# Parameter schema (report finding E-1)
+#
+# One ParamSpec per wire field is the single description of a parameter: the command layer
+# validates from it, `build_schema()` publishes it on /api/schema for the frontend, and a
+# new parameter is one row (plus an optional cross-field rule) instead of edits in three
+# places. Bounds may be a number or a callable taking DeviceCapabilities, so model limits
+# stay in the capability table.
 # ---------------------------------------------------------------------------
 
 
-def _v_cal_refclk(dev, data):
-    _integer(data, 'count', minimum=REFCLK_CAL_COUNT_MIN, maximum=REFCLK_CAL_COUNT_MAX)
+@dataclass(frozen=True)
+class ParamSpec:
+    """One wire parameter: type, bounds, choices and when it is required."""
+
+    name: str
+    kind: str                                   # 'number' | 'integer' | 'choice' | 'boolean'
+    minimum: object = None                      # number or Callable[[caps], number]
+    maximum: object = None
+    choices: tuple = ()
+    unit: str = ''
+    default: object = None
+    required: bool = False
+    #: Extra condition for requiredness, e.g. only when mode == 'manual'.
+    required_if: Callable | None = None
+
+    def bound(self, caps, which: str):
+        """Resolve a bound; a capability-backed bound is None without a device."""
+        value = self.minimum if which == 'min' else self.maximum
+        if not callable(value):
+            return value
+        return value(caps) if caps is not None else None
+
+    def is_required(self, data: dict) -> bool:
+        if self.required:
+            return True
+        return bool(self.required_if and self.required_if(data))
+
+    def to_json(self, caps) -> dict:
+        return {
+            'name': self.name,
+            'type': self.kind,
+            'min': self.bound(caps, 'min'),
+            'max': self.bound(caps, 'max'),
+            'choices': list(self.choices),
+            'unit': self.unit,
+            'default': self.default,
+            'required': self.required,
+        }
 
 
-def _v_set_freq(dev, data):
+def _yes(key, value):
+    return lambda data: data.get(key) == value
+
+
+def _has_any(*keys):
+    return lambda data: any(k in data for k in keys)
+
+
+RBW_MAX = lambda caps: caps.rbw_max_hz        # noqa: E731 - capability-backed bound
+VBW_MAX = lambda caps: caps.vbw_max_hz        # noqa: E731
+POINTS_MAX = lambda caps: caps.points_max     # noqa: E731
+ATTEN_MAX = lambda caps: caps.atten_max       # noqa: E731
+IFGAIN_MAX = lambda caps: caps.ifgain_max     # noqa: E731
+DECIMATE_MAX = lambda caps: caps.decimate_max  # noqa: E731
+RTA_SPAN_MAX = lambda caps: caps.rta_span_max_hz  # noqa: E731
+REF_MIN = lambda caps: caps.ref_min_dbm       # noqa: E731
+REF_MAX = lambda caps: caps.ref_max_dbm       # noqa: E731
+TRIG_MIN = lambda caps: caps.trigger_level_min_dbm  # noqa: E731
+TRIG_MAX = lambda caps: caps.trigger_level_max_dbm  # noqa: E731
+
+#: command -> wire parameters. Cross-field rules live in EXTRA_VALIDATORS below.
+PARAMS: dict[str, tuple[ParamSpec, ...]] = {
+    'CAL_REFCLK': (
+        ParamSpec('count', 'integer', REFCLK_CAL_COUNT_MIN, REFCLK_CAL_COUNT_MAX,
+                  default=10, unit='samples'),
+    ),
+    'SET_FREQ': (
+        ParamSpec('center', 'number', unit='Hz'),
+        ParamSpec('span', 'number', 100.0, unit='Hz'),
+        ParamSpec('start', 'number', unit='Hz'),
+        ParamSpec('stop', 'number', unit='Hz'),
+    ),
+    'SET_REF': (
+        ParamSpec('mode', 'choice', choices=('manual', 'auto'), default='manual'),
+        ParamSpec('range_db', 'number', REF_RANGE_DB_MIN, REF_RANGE_DB_MAX, unit='dB'),
+        ParamSpec('ref', 'number', REF_MIN, REF_MAX, unit='dBm',
+                  required_if=_yes('mode', 'manual')),
+    ),
+    'SET_RBW': (
+        ParamSpec('mode', 'choice', choices=('manual', 'auto'), default='auto'),
+        ParamSpec('rbw', 'number', 100.0, RBW_MAX, unit='Hz',
+                  required_if=_yes('mode', 'manual')),
+    ),
+    'SET_VBW': (
+        ParamSpec('mode', 'choice',
+                  choices=('manual', 'equal', 'tenth', 'bypass', 'onethousandth'),
+                  default='bypass'),
+        ParamSpec('vbw', 'number', 10.0, VBW_MAX, unit='Hz',
+                  required_if=_yes('mode', 'manual')),
+    ),
+    'SET_SWEEP': (
+        ParamSpec('mode', 'integer', 0, 8),
+        ParamSpec('time', 'number', 0.0, 60.0, unit='s'),
+    ),
+    'SET_POINTS': (ParamSpec('points', 'integer', 51, POINTS_MAX, required=True),),
+    'SET_SPUR': (ParamSpec('mode', 'choice', choices=('bypass', 'standard', 'enhanced'),
+                           required=True),),
+    'SET_WINDOW': (ParamSpec('window', 'integer', 0, 4, required=True),),
+    'SET_DETECTOR': (ParamSpec('mode', 'choice',
+                               choices=('auto', 'sample', 'pos_peak', 'neg_peak', 'rms',
+                                        'auto_peak'), required=True),),
+    'SET_AMP': (
+        ParamSpec('atten', 'integer', -1, ATTEN_MAX, unit='dB', default=-1),
+        ParamSpec('preamp', 'integer', 0, 1, default=0),
+        ParamSpec('ifgain', 'integer', 0, IFGAIN_MAX, default=2),
+        ParamSpec('gain_strategy', 'integer', 0, 1, default=0),
+    ),
+    'SET_REFCK': (ParamSpec('mode', 'choice',
+                            choices=('internal', 'external', 'premium', 'external_forced'),
+                            required=True),),
+    'SET_REFCKOUT': (ParamSpec('on', 'boolean', required=True),),
+    'SET_MODE': (ParamSpec('mode', 'choice',
+                           choices=('std', 'harmonic', 'pnm', 'rta', 'sdr'),
+                           default='std', required=True),),
+    'SET_SDR': (
+        ParamSpec('center', 'number', unit='Hz'),
+        ParamSpec('decimate', 'integer', 1, DECIMATE_MAX),
+    ),
+    'SET_SDR_TUNE': (ParamSpec('listen', 'number', unit='Hz', required=True),),
+    'SET_SDR_DEMOD': (
+        ParamSpec('mode', 'choice', choices=('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw')),
+        ParamSpec('deemph_us', 'number', SDR_DEEMPH_MIN_US, SDR_DEEMPH_MAX_US, unit='us'),
+        ParamSpec('ifbw', 'number', SDR_IFBW_MIN_HZ, SDR_IFBW_MAX_HZ, unit='Hz'),
+        ParamSpec('squelch', 'number', SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS, unit='dBFS'),
+        ParamSpec('volume', 'number', SDR_VOLUME_MIN, SDR_VOLUME_MAX),
+        ParamSpec('pitch', 'number', SDR_PITCH_MIN_HZ, SDR_PITCH_MAX_HZ, unit='Hz'),
+        ParamSpec('agc', 'boolean'),
+    ),
+    'SET_RTA': (
+        ParamSpec('center', 'number', unit='Hz'),
+        ParamSpec('span', 'number', 1000.0, RTA_SPAN_MAX, unit='Hz'),
+    ),
+    'SET_TRIGGER': (
+        ParamSpec('source', 'choice',
+                  choices=('bus', 'freerun', 'level', 'external', 'timer')),
+        ParamSpec('edge', 'choice', choices=('rising', 'falling', 'double')),
+        ParamSpec('level', 'number', TRIG_MIN, TRIG_MAX, unit='dBm'),
+        ParamSpec('safetime', 'number', 0.0, TRIGGER_TIME_MAX_S, unit='s'),
+        ParamSpec('delay', 'number', 0.0, TRIGGER_TIME_MAX_S, unit='s'),
+        ParamSpec('pretime', 'number', 0.0, TRIGGER_TIME_MAX_S, unit='s'),
+        ParamSpec('acqtime', 'number', TRIGGER_ACQ_MIN_S, TRIGGER_ACQ_MAX_S, unit='s'),
+        ParamSpec('retrigger', 'integer', 0, TRIGGER_RETRIGGER_MAX),
+        ParamSpec('retriggerperiod', 'number', 0.0, TRIGGER_RETRIGGER_PERIOD_MAX_S, unit='s'),
+        ParamSpec('out', 'choice', choices=('none', 'per_hop', 'per_sweep', 'per_profile')),
+        ParamSpec('outpolarity', 'choice', choices=('positive', 'negative')),
+    ),
+    'SET_HARM': (
+        ParamSpec('f0', 'number', unit='Hz'),
+        ParamSpec('count', 'integer', 1, HARM_COUNT_MAX),
+        ParamSpec('span', 'number', 1.0, HARM_SPAN_MAX_HZ, unit='Hz'),
+    ),
+    'SET_PNM': (
+        ParamSpec('center', 'number', unit='Hz'),
+        ParamSpec('threshold', 'number', TRIGGER_LEVEL_MIN_DBM, TRIGGER_LEVEL_MAX_DBM,
+                  unit='dBm'),
+        ParamSpec('traceavg', 'integer', 1, 1000),
+        ParamSpec('start', 'number', PNM_CARRIER_MIN_HZ, PNM_CARRIER_MAX_HZ, unit='Hz'),
+        ParamSpec('stop', 'number', PNM_CARRIER_MIN_HZ, PNM_OFFSET_MAX_HZ, unit='Hz'),
+    ),
+}
+
+
+def _apply_spec(dev, data: dict, spec: ParamSpec) -> None:
+    """Validate one field from its spec (and coerce it in place)."""
+    if spec.kind == 'boolean':
+        if spec.name in data and not isinstance(data[spec.name], bool):
+            raise CommandError(f'{spec.name} must be a boolean', 'bool_required', key=spec.name)
+        return
+    if spec.kind == 'choice':
+        _choice(data, spec.name, spec.choices, required=spec.is_required(data))
+        return
+    caps = _caps(dev) if (callable(spec.minimum) or callable(spec.maximum)) else dev.state.caps
+    minimum = spec.bound(caps, 'min')
+    maximum = spec.bound(caps, 'max')
+    if spec.kind == 'integer':
+        _integer(data, spec.name, minimum=minimum, maximum=maximum,
+                 required=spec.is_required(data))
+    else:
+        _number(data, spec.name, minimum=minimum, maximum=maximum,
+                required=spec.is_required(data))
+
+
+# Cross-field rules that a per-field schema cannot express.
+def _x_set_freq(dev, data):
     caps = _caps(dev)
     has_center_span = 'center' in data or 'span' in data
     has_start_stop = 'start' in data or 'stop' in data
@@ -184,144 +369,46 @@ def _v_set_freq(dev, data):
         raise CommandError('SET_FREQ requires center/span or start/stop', 'freq_requires_pair')
 
 
-def _v_set_ref(dev, data):
-    mode = _choice(data, 'mode', ('manual', 'auto')) or 'manual'
-    _number(data, 'range_db', minimum=REF_RANGE_DB_MIN, maximum=REF_RANGE_DB_MAX)
-    if mode == 'manual':
-        caps = _caps(dev)
-        _number(data, 'ref', minimum=caps.ref_min_dbm, maximum=caps.ref_max_dbm, required=True)
-
-
-def _v_set_rbw(dev, data):
-    mode = _choice(data, 'mode', ('manual', 'auto')) or 'auto'
-    if mode == 'manual':
-        _number(data, 'rbw', minimum=100.0, maximum=_caps(dev).rbw_max_hz, required=True)
-
-
-def _v_set_vbw(dev, data):
-    mode = _choice(data, 'mode', ('manual', 'equal', 'tenth', 'bypass', 'onethousandth')) or 'bypass'
-    if mode == 'manual':
-        _number(data, 'vbw', minimum=10.0, maximum=_caps(dev).vbw_max_hz, required=True)
-
-
-def _v_set_sweep(dev, data):
-    mode = _integer(data, 'mode', minimum=0, maximum=8)
-    current_mode = (dev.state.rta_sweep_time_mode if dev.state.mode == 'rta'
-                    else dev.state.sweep_time_mode)
-    mode = current_mode if mode is None else mode
+def _x_set_sweep(dev, data):
+    mode = data.get('mode')
+    current = (dev.state.rta_sweep_time_mode if dev.state.mode == 'rta'
+               else dev.state.sweep_time_mode)
+    mode = current if mode is None else mode
     if mode == 7:
         _number(data, 'time', minimum=0.001, maximum=60.0, required=True)
     elif mode in (6, 8):
         _number(data, 'time', minimum=1.0, maximum=1000.0, required=True)
-    else:
-        _number(data, 'time', minimum=0.0, maximum=60.0)
 
 
-def _v_set_points(dev, data):
-    _integer(data, 'points', minimum=51, maximum=_caps(dev).points_max, required=True)
-
-
-def _v_set_spur(dev, data):
-    _choice(data, 'mode', ('bypass', 'standard', 'enhanced'), required=True)
-
-
-def _v_set_window(dev, data):
-    _integer(data, 'window', minimum=0, maximum=4, required=True)
-
-
-def _v_set_detector(dev, data):
-    _choice(data, 'mode', ('auto', 'sample', 'pos_peak', 'neg_peak', 'rms', 'auto_peak'),
-            required=True)
-
-
-def _v_set_amp(dev, data):
-    caps = _caps(dev)
-    _integer(data, 'atten', minimum=-1, maximum=caps.atten_max)
-    _integer(data, 'preamp', minimum=0, maximum=1)
-    _integer(data, 'ifgain', minimum=0, maximum=caps.ifgain_max)
-    _integer(data, 'gain_strategy', minimum=0, maximum=1)
-
-
-def _v_set_refck(dev, data):
-    _choice(data, 'mode', ('internal', 'external', 'premium', 'external_forced'), required=True)
-
-
-def _v_set_refckout(dev, data):
-    if not isinstance(data.get('on'), bool):
-        raise CommandError('on must be a boolean', 'bool_required', key='on')
-
-
-def _v_set_mode(dev, data):
-    mode = _choice(data, 'mode', ('std', 'harmonic', 'pnm', 'rta', 'sdr'), required=True)
-    if mode == 'pnm' and not dev.state.pnm_supported:
-        raise CommandError('phase-noise measurement is not supported', 'pnm_unsupported')
-
-
-def _v_set_sdr(dev, data):
-    caps = _caps(dev)
-    _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-    _integer(data, 'decimate', minimum=1, maximum=caps.decimate_max)
+def _x_set_sdr(dev, data):
     if 'center' not in data and 'decimate' not in data:
         raise CommandError('SET_SDR requires center or decimate', 'sdr_requires_param')
 
 
-def _v_set_sdr_tune(dev, data):
-    caps = _caps(dev)
-    _number(data, 'listen', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz, required=True)
-
-
-def _v_set_sdr_demod(dev, data):
-    _choice(data, 'mode', ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'))
-    _number(data, 'deemph_us', minimum=SDR_DEEMPH_MIN_US, maximum=SDR_DEEMPH_MAX_US)
-    _number(data, 'ifbw', minimum=SDR_IFBW_MIN_HZ, maximum=SDR_IFBW_MAX_HZ)
-    _number(data, 'squelch', minimum=SQUELCH_MIN_DBFS, maximum=SQUELCH_MAX_DBFS)
-    _number(data, 'volume', minimum=SDR_VOLUME_MIN, maximum=SDR_VOLUME_MAX)
-    _number(data, 'pitch', minimum=SDR_PITCH_MIN_HZ, maximum=SDR_PITCH_MAX_HZ)
-    if 'agc' in data and not isinstance(data['agc'], bool):
-        raise CommandError('agc must be a boolean', 'bool_required', key='agc')
-
-
-def _v_set_rta(dev, data):
-    caps = _caps(dev)
-    _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-    _number(data, 'span', minimum=1000.0, maximum=caps.rta_span_max_hz)
+def _x_set_rta(dev, data):
     if 'center' not in data and 'span' not in data:
         raise CommandError('SET_RTA requires center or span', 'rta_requires_pair')
 
 
-def _v_set_trigger(dev, data):
-    caps = dev.state.caps
-    lo = caps.trigger_level_min_dbm if caps else TRIGGER_LEVEL_MIN_DBM
-    hi = caps.trigger_level_max_dbm if caps else TRIGGER_LEVEL_MAX_DBM
-    _choice(data, 'source', ('bus', 'freerun', 'level', 'external', 'timer'))
-    _choice(data, 'edge', ('rising', 'falling', 'double'))
-    _number(data, 'level', minimum=lo, maximum=hi)
-    _number(data, 'safetime', minimum=0.0, maximum=TRIGGER_TIME_MAX_S)
-    _number(data, 'delay', minimum=0.0, maximum=TRIGGER_TIME_MAX_S)
-    _number(data, 'pretime', minimum=0.0, maximum=TRIGGER_TIME_MAX_S)
-    _number(data, 'acqtime', minimum=TRIGGER_ACQ_MIN_S, maximum=TRIGGER_ACQ_MAX_S)
-    _integer(data, 'retrigger', minimum=0, maximum=TRIGGER_RETRIGGER_MAX)
-    _number(data, 'retriggerperiod', minimum=0.0, maximum=TRIGGER_RETRIGGER_PERIOD_MAX_S)
-    _choice(data, 'out', ('none', 'per_hop', 'per_sweep', 'per_profile'))
-    _choice(data, 'outpolarity', ('positive', 'negative'))
-
-
-def _v_set_harm(dev, data):
-    caps = _caps(dev)
-    _number(data, 'f0', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-    _integer(data, 'count', minimum=1, maximum=HARM_COUNT_MAX)
-    _number(data, 'span', minimum=1.0, maximum=HARM_SPAN_MAX_HZ)
-
-
-def _v_set_pnm(dev, data):
-    caps = _caps(dev)
-    _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-    _number(data, 'threshold', minimum=TRIGGER_LEVEL_MIN_DBM, maximum=TRIGGER_LEVEL_MAX_DBM)
-    _integer(data, 'traceavg', minimum=1, maximum=1000)
-    start = _number(data, 'start', minimum=PNM_CARRIER_MIN_HZ, maximum=PNM_CARRIER_MAX_HZ)
-    stop = _number(data, 'stop', minimum=PNM_CARRIER_MIN_HZ, maximum=PNM_OFFSET_MAX_HZ)
+def _x_set_pnm(dev, data):
+    start, stop = data.get('start'), data.get('stop')
     if start is not None and stop is not None and start >= stop:
         raise CommandError('start must be lower than stop', 'range_invalid')
+
+
+def _x_set_mode(dev, data):
+    if data.get('mode') == 'pnm' and not dev.state.pnm_supported:
+        raise CommandError('phase-noise measurement is not supported', 'pnm_unsupported')
+
+
+EXTRA_VALIDATORS = {
+    'SET_FREQ': _x_set_freq,
+    'SET_SWEEP': _x_set_sweep,
+    'SET_SDR': _x_set_sdr,
+    'SET_RTA': _x_set_rta,
+    'SET_PNM': _x_set_pnm,
+    'SET_MODE': _x_set_mode,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +649,7 @@ async def _h_set_refckout(ctx: CommandContext, data: dict) -> bool:
 
 
 async def _h_set_mode(ctx: CommandContext, data: dict) -> bool:
-    from ..measurements import make_session
+    from ..measurements import SessionManager, SessionNotReady
 
     dev = ctx.dev
     name = data.get('mode', 'std')
@@ -570,18 +657,14 @@ async def _h_set_mode(ctx: CommandContext, data: dict) -> bool:
         return False
 
     def _switch():
-        old_session = dev.session
-        if old_session is not None and old_session.name in ('rta', 'sdr'):
-            old_session._ready = False   # stop the worker loop first (best-effort)
-        session = make_session(dev, name)
-        dev.set_session(session)
-        # "Requested" is not "in effect": verify the session actually became ready.
-        # Without this a failure inside a session's configure path left the mode unchanged
-        # while the command still reported success (an AttributeError in the RTA
-        # auto-recovery path did exactly that), so the UI believed it had switched.
-        if name != 'std' and not getattr(session, '_ready', True):
+        try:
+            SessionManager(dev).switch(name)
+        except SessionNotReady:
+            # "Requested" is not "in effect": a failure inside a session's configure path
+            # used to look like a successful switch (an AttributeError in the RTA
+            # auto-recovery path did exactly that), so the UI believed it had switched.
             raise CommandError(f'mode switch to {name} failed to become ready',
-                               'mode_not_ready')
+                               'mode_not_ready') from None
 
     await ctx.hw_call(_switch)
     return True
@@ -675,43 +758,80 @@ async def _h_status(ctx: CommandContext, data: dict) -> bool:
 
 @dataclass(frozen=True)
 class CommandSpec:
-    """One command: how to validate it, what it does, and where it may run."""
+    """One command: its parameter schema, its handler and whether it needs a device."""
 
     name: str
     run: Callable[..., Awaitable[bool]]
-    validate: Callable[[object, dict], None] | None = None
+    #: Wire parameters, validated from PARAMS (report finding E-1).
+    params: tuple[ParamSpec, ...] = ()
+    #: Cross-field rule that a per-field schema cannot express.
+    extra: Callable[[object, dict], None] | None = None
     #: Commands that need a live device (STATUS/CONNECT are the exceptions).
     needs_device: bool = True
 
+    def validate(self, dev, data) -> None:
+        for spec in self.params:
+            _apply_spec(dev, data, spec)
+        if self.extra is not None:
+            self.extra(dev, data)
 
+
+_REGISTRY = (
+    ('STATUS', _h_status, (), None, False),
+    ('CONNECT', _h_connect, (), None, False),
+    ('SET_PRESET', _h_set_preset, (), None, True),
+    ('CAL_REFCLK', _h_cal_refclk, (), None, True),
+    ('SET_FREQ', _h_set_freq, (), None, True),
+    ('SET_REF', _h_set_ref, (), None, True),
+    ('SET_RBW', _h_set_rbw, (), None, True),
+    ('SET_VBW', _h_set_vbw, (), None, True),
+    ('SET_SWEEP', _h_set_sweep, (), None, True),
+    ('SET_POINTS', _h_set_points, (), None, True),
+    ('SET_SPUR', _h_set_spur, (), None, True),
+    ('SET_WINDOW', _h_set_window, (), None, True),
+    ('SET_DETECTOR', _h_set_detector, (), None, True),
+    ('SET_AMP', _h_set_amp, (), None, True),
+    ('SET_REFCK', _h_set_refck, (), None, True),
+    ('SET_REFCKOUT', _h_set_refckout, (), None, True),
+    ('SET_MODE', _h_set_mode, (), None, True),
+    ('SET_SDR', _h_set_sdr, (), None, True),
+    ('SET_SDR_TUNE', _h_set_sdr_tune, (), None, True),
+    ('SET_SDR_DEMOD', _h_set_sdr_demod, (), None, True),
+    ('SET_RTA', _h_set_rta, (), None, True),
+    ('SET_TRIGGER', _h_set_trigger, (), None, True),
+    ('SET_HARM', _h_set_harm, (), None, True),
+    ('SET_PNM', _h_set_pnm, (), None, True),
+)
+
+#: The command table: parameter schema from PARAMS, cross-field rule from
+#: EXTRA_VALIDATORS, handler from the tuple above.
 COMMANDS: dict[str, CommandSpec] = {
-    spec.name: spec for spec in (
-        CommandSpec('STATUS', _h_status, needs_device=False),
-        CommandSpec('CONNECT', _h_connect, needs_device=False),
-        CommandSpec('SET_PRESET', _h_set_preset),
-        CommandSpec('CAL_REFCLK', _h_cal_refclk, _v_cal_refclk),
-        CommandSpec('SET_FREQ', _h_set_freq, _v_set_freq),
-        CommandSpec('SET_REF', _h_set_ref, _v_set_ref),
-        CommandSpec('SET_RBW', _h_set_rbw, _v_set_rbw),
-        CommandSpec('SET_VBW', _h_set_vbw, _v_set_vbw),
-        CommandSpec('SET_SWEEP', _h_set_sweep, _v_set_sweep),
-        CommandSpec('SET_POINTS', _h_set_points, _v_set_points),
-        CommandSpec('SET_SPUR', _h_set_spur, _v_set_spur),
-        CommandSpec('SET_WINDOW', _h_set_window, _v_set_window),
-        CommandSpec('SET_DETECTOR', _h_set_detector, _v_set_detector),
-        CommandSpec('SET_AMP', _h_set_amp, _v_set_amp),
-        CommandSpec('SET_REFCK', _h_set_refck, _v_set_refck),
-        CommandSpec('SET_REFCKOUT', _h_set_refckout, _v_set_refckout),
-        CommandSpec('SET_MODE', _h_set_mode, _v_set_mode),
-        CommandSpec('SET_SDR', _h_set_sdr, _v_set_sdr),
-        CommandSpec('SET_SDR_TUNE', _h_set_sdr_tune, _v_set_sdr_tune),
-        CommandSpec('SET_SDR_DEMOD', _h_set_sdr_demod, _v_set_sdr_demod),
-        CommandSpec('SET_RTA', _h_set_rta, _v_set_rta),
-        CommandSpec('SET_TRIGGER', _h_set_trigger, _v_set_trigger),
-        CommandSpec('SET_HARM', _h_set_harm, _v_set_harm),
-        CommandSpec('SET_PNM', _h_set_pnm, _v_set_pnm),
-    )
+    name: CommandSpec(name=name, run=run, params=PARAMS.get(name, ()),
+                      extra=EXTRA_VALIDATORS.get(name), needs_device=needs_device)
+    for name, run, _params, _extra, needs_device in _REGISTRY
 }
+
+
+def build_schema(dev=None) -> dict:
+    """Machine-readable command/parameter description (served on /api/schema).
+
+    This is the E-1 seam: the frontend can generate numeric/enum/boolean controls and their
+    bounds from the same declaration the backend validates with, instead of keeping a third
+    copy of every range (report finding E-1).
+    """
+    caps = getattr(getattr(dev, 'state', None), 'caps', None)
+    commands = {}
+    for name, spec in COMMANDS.items():
+        # A capability-backed bound resolves to None without a device attached.
+        resolved = [param.to_json(caps) for param in spec.params]
+        commands[name] = {
+            'params': resolved,
+            'needs_device': spec.needs_device,
+            'session_exclusive': name in SWP_OWNED,
+            'swp_only': name in SWP_ONLY,
+            'denied_in_sdr': name in NOT_IN_SDR,
+        }
+    return {'commands': commands}
 
 
 def command_names() -> frozenset[str]:

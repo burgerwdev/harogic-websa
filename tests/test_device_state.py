@@ -113,10 +113,10 @@ def test_auto_reference_uses_stable_peak_and_mode_private_target():
     dev.state.ref_level = 0.0
     dev.state.atten = -1
     dev.observe_reference_peak('std', -27.0)
-    dev._auto_ref['std']['candidate_since'] -= 2.0
+    dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
     dev.observe_reference_peak('std', -27.0)
     # No noise-floor estimate -> keep the peak 10 dB below the top, quantised to 5 dB.
-    assert dev._pending_auto_ref == ('std', -15.0)
+    assert dev.auto_ref.pending == ('std', -15.0)
     assert dev.state.rta_ref_level == 0.0
 
 
@@ -126,7 +126,7 @@ def test_auto_reference_is_suspended_by_manual_attenuation():
     dev.state.atten = 10
     for _ in range(20):
         dev.observe_reference_peak('std', -27.0)
-    assert dev._pending_auto_ref is None
+    assert dev.auto_ref.pending is None
 
 
 def test_auto_reference_raise_is_stable_and_pending_survives_other_mode():
@@ -135,14 +135,14 @@ def test_auto_reference_raise_is_stable_and_pending_survives_other_mode():
     dev.state.ref_mode = 'auto'
     dev.state.ref_level = -20
     dev.observe_reference_peak('std', 0)
-    assert dev._pending_auto_ref is None
-    dev._auto_ref['std']['candidate_since'] -= 0.2
+    assert dev.auto_ref.pending is None
+    dev.auto_ref.tracker('std')['candidate_since'] -= 0.2
     dev.observe_reference_peak('std', 0)
-    assert dev._pending_auto_ref == ('std', 10.0)
+    assert dev.auto_ref.pending == ('std', 10.0)
 
     dev.state.mode = 'rta'
     assert not dev.apply_pending_auto_reference()
-    assert dev._pending_auto_ref == ('std', 10.0)
+    assert dev.auto_ref.pending == ('std', 10.0)
 
 
 def test_auto_reference_anchors_on_the_noise_floor_not_the_peak():
@@ -157,19 +157,19 @@ def test_auto_reference_anchors_on_the_noise_floor_not_the_peak():
     dev.state.ref_level = -20.0
     dev.state.ref_range_db = 100.0
     dev.state.atten = -1
-    dev._auto_ref['std']['last_change'] = -10.0
+    dev.auto_ref.tracker('std')['last_change'] = -10.0
     for _ in range(3):
         dev.observe_reference_peak('std', -80.0, -95.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
+        dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
     # -95 + 100 - 8 = -3 -> 0 after quantisation (the peak would have said -70).
-    assert dev._pending_auto_ref == ('std', 0.0)
+    assert dev.auto_ref.pending == ('std', 0.0)
     # A tall window with a high noise floor pushes Ref up instead.
-    dev._pending_auto_ref = None
-    dev._auto_ref['std']['last_change'] = -10.0
+    dev.auto_ref.pending = None
+    dev.auto_ref.tracker('std')['last_change'] = -10.0
     for _ in range(3):
         dev.observe_reference_peak('std', -50.0, -70.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', 25.0)
+        dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
+    assert dev.auto_ref.pending == ('std', 25.0)
 
 
 def test_auto_reference_learns_the_if_overflow_floor():
@@ -184,21 +184,21 @@ def test_auto_reference_learns_the_if_overflow_floor():
     dev.state.ref_level = -50.0
     dev.state.atten = -1
     dev.state.status_warning = -12
-    dev._auto_ref['std']['last_change'] = -10.0
+    dev.auto_ref.tracker('std')['last_change'] = -10.0
     assert dev.nudge_reference_out_of_overflow()
-    assert dev._pending_auto_ref == ('std', -45.0)
-    assert dev._auto_ref['std']['floor'] == -45.0
+    assert dev.auto_ref.pending == ('std', -45.0)
+    assert dev.auto_ref.tracker('std')['floor'] == -45.0
     # The peak rule can no longer drive Ref below the learned floor.
-    dev._pending_auto_ref = None
+    dev.auto_ref.pending = None
     dev.state.status_warning = 0
-    dev._auto_ref['std']['last_change'] = -10.0      # past the 1 s apply throttle
+    dev.auto_ref.tracker('std')['last_change'] = -10.0      # past the 1 s apply throttle
     # Ref too high for this noise floor (noise 15 dB below the bottom edge), so the rule acts
     # - and its bottom-anchored target lands under the learned floor, which must win.
     dev.state.ref_level = -30.0
     for _ in range(3):
         dev.observe_reference_peak('std', -125.0, -145.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', -45.0)
+        dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
+    assert dev.auto_ref.pending == ('std', -45.0)
 
 
 def test_auto_reference_keeps_a_shorter_window_within_range():
@@ -208,12 +208,12 @@ def test_auto_reference_keeps_a_shorter_window_within_range():
     dev.state.ref_level = -20.0
     dev.state.ref_range_db = 50.0
     dev.state.atten = -1
-    dev._auto_ref['std']['last_change'] = -10.0
+    dev.auto_ref.tracker('std')['last_change'] = -10.0
     for _ in range(2):
         dev.observe_reference_peak('std', -50.0, -70.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
+        dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
     # -70 + 50 - 8 = -28 -> -25 after quantisation, versus 25 for the 100 dB window.
-    assert dev._pending_auto_ref == ('std', -25.0)
+    assert dev.auto_ref.pending == ('std', -25.0)
 
 
 def test_rta_defaults_can_be_reset_without_touching_swp():
@@ -271,12 +271,12 @@ def test_auto_reference_holds_when_the_placement_is_already_good():
     dev.state.atten = -1
     dev.state.ref_range_db = 100.0
     dev.state.ref_level = -50.0
-    dev._auto_ref['std']['last_change'] = -10.0
+    dev.auto_ref.tracker('std')['last_change'] = -10.0
     for _ in range(3):
         # noise -145 sits 5 dB above the bottom edge (-150); peak keeps 75 dB of headroom.
         dev.observe_reference_peak('std', -125.0, -145.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref is None
+        dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
+    assert dev.auto_ref.pending is None
 
     # A change that puts the noise floor outside its band does re-adjust (here Ref is too
     # high for the narrower 40 dB window: the floor sits exactly on the bottom edge).
@@ -284,5 +284,5 @@ def test_auto_reference_holds_when_the_placement_is_already_good():
     dev.state.ref_range_db = 40.0
     for _ in range(3):
         dev.observe_reference_peak('std', -40.0, -60.0)   # -> target -25
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', -25.0)
+        dev.auto_ref.tracker('std')['candidate_since'] -= 2.0
+    assert dev.auto_ref.pending == ('std', -25.0)

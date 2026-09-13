@@ -720,6 +720,13 @@ class SdrSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def request_stop(self) -> None:
+        """Stop the fetch loop before the session is torn down."""
+        self._ready = False
+
+    def is_ready(self) -> bool:
+        return bool(self._ready)
+
     def acquisition_timeout(self) -> float:
         return 5.0
 

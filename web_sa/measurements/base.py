@@ -120,6 +120,19 @@ class MeasurementSession:
         """
         return {}
 
+    # ---------------- Lifecycle protocol (report finding P1-9) ----------------
+    # The command layer used to poke `session._ready` directly before and after a mode
+    # switch. These two methods are that contract: stop the acquisition loop, then report
+    # whether the session actually became usable.
+
+    def request_stop(self) -> None:
+        """Ask the session to stop its acquisition loop before it is exited."""
+        return None
+
+    def is_ready(self) -> bool:
+        """True when the session finished configuring and can produce data."""
+        return True
+
 
 class StdSession(MeasurementSession):
     """Standard sweep session: continuously push FREQ/POWR frames via fetch_sweep."""
