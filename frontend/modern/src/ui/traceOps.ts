@@ -1,5 +1,6 @@
 // Trace UI ops: tab switching / mode setting
 import * as S from '../core/store';
+import { getDisplayRef, setDisplayRef } from './displayRef';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { refLevel } from './refState';
 import { updateInfoBar } from '../render/infobar';
@@ -39,7 +40,7 @@ export function switchTraceTab(idx: number) {
   syncFreezeBtn();
   const anyNorm = S.traces.some(x => x.isNormalized && x.reference);
   S.setDisplayUnit((t.reference && t.isNormalized) ? 'dB' : (anyNorm ? 'dB' : 'dBm'));
-  S.setDisplayRef(S.displayUnit === 'dB' ? 0.0 : refLevel.get());
+  setDisplayRef('mode', S.displayUnit === 'dB' ? 0.0 : refLevel.get());
   updateNormalizeStatusUI();
   updateInfoBar();
 }

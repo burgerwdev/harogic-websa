@@ -81,8 +81,7 @@ export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }
 export let displayUnit: 'dBm' | 'dB' = 'dBm';
 export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
-export let displayRef = 0.0;
-export function setDisplayRef(v: number) { displayRef = v; }
+// (The display reference lives in ui/displayRef.ts, with explicit ownership.)
 export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
 export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
 // RTA trigger (mirrored from the device status so the renderer can draw the threshold)

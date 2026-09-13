@@ -1,5 +1,6 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
+import { getDisplayRef, setDisplayRef } from './displayRef';
 import { send } from '../core/wsSend';
 import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
 import {
@@ -220,7 +221,7 @@ export function setRefLevel() {
     // SDR Ref controls the IQS hardware reference level as well as the display. The
     // backend reconfigures IQS and applies the normal audio reset/fade sequence.
     sdrRefAuto.set(false);
-    S.setDisplayRef(value);
+    setDisplayRef('user', value);
     syncSdrRefUI();                       // the Auto button must reflect the real state
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
@@ -244,9 +245,9 @@ export function refStepDbm(): number {
 
 export function adjustRefLevel(direction: -1 | 1) {
   if (currentGraphMode() === 'sdr') {
-    const next = Math.max(-160, Math.min(40, S.displayRef + direction * S.dbPerDiv));
+    const next = Math.max(-160, Math.min(40, getDisplayRef() + direction * S.dbPerDiv));
     sdrRefAuto.set(false);
-    S.setDisplayRef(next);
+    setDisplayRef('user', next);
     syncSdrRefUI();                       // ditto
     const cv = document.getElementById('spectrum');
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
@@ -820,7 +821,7 @@ function syncSdrRefUI() {
   const inp = document.getElementById('input-ref') as HTMLInputElement | null;
   if (inp) {
     inp.disabled = false;
-    if (document.activeElement !== inp) inp.value = S.displayRef.toFixed(0);
+    if (document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
   }
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = false;
@@ -948,7 +949,7 @@ export function presetAll() {
   const b = document.getElementById('btn-meas-onoff');
   if (b) b.textContent = t('off');
   setMeasButtons(false);
-  S.setDisplayRef(0);
+  setDisplayRef('preset', 0);
   S.setDisplayOffset(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';

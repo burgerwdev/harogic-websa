@@ -1,5 +1,6 @@
 // Spectrum rendering main module: grid/traces/markers/OSD/3dB/peak marks
 import * as S from '../core/store';
+import { getDisplayRef, setDisplayRef } from '../ui/displayRef';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import { ctx, W, H, MARGIN } from '../core/store';
 import { plotRect } from './plot';
@@ -25,7 +26,7 @@ import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
   return {
-    centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: S.displayRef,
+    centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: getDisplayRef(),
     displayOffset: S.displayOffset, displayUnit: S.displayUnit, viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
@@ -44,7 +45,7 @@ const PLOT_RECT = {
 
 export function getY(val: number): number {
   if (isFinite(val)) val += S.displayOffset;
-  const top = S.displayRef, bottom = S.displayRef - S.totalDivs * S.dbPerDiv;
+  const top = getDisplayRef(), bottom = getDisplayRef() - S.totalDivs * S.dbPerDiv;
   if (!isFinite(val)) val = bottom - 10;
   return PLOT_RECT.y + ((top - val) / (top - bottom)) * PLOT_RECT.h;
 }
