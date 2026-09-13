@@ -67,6 +67,11 @@ async def _gnss_loop(app, dev):
 
 
 def main() -> None:
+    # Dump the Python stack of every thread if the vendor SDK aborts the process
+    # (SIGSEGV/SIGABRT from native heap corruption). The dump names the exact ctypes call
+    # that was executing, which is the only reliable way to localise a native crash.
+    import faulthandler
+    faulthandler.enable()
     cfg = AppConfig()
     try:
         cfg.validate()

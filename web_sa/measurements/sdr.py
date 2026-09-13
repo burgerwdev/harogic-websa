@@ -45,6 +45,28 @@ _BUS_RETRY_DELAY = 0.05
 
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
 
+# Staged tracing for native-crash diagnosis. Enable with WEBSA_TRACE=1. It walks the SDR
+# configuration pipeline step by step so that the last line before a native abort names
+# the offending SDK call. Per-frame calls use _tn(), which logs only the first few hits.
+_TRACE = os.getenv('WEBSA_TRACE', '').lower() not in ('', '0', 'false', 'no', 'off')
+_trace_seen: dict[str, int] = {}
+
+
+
+def _t(msg: str, *args) -> None:
+    if _TRACE:
+        log.info('[trace] ' + msg, *args)
+
+
+def _tn(key: str, msg: str, *args, n: int = 3) -> None:
+    """Trace a hot-path milestone at most ``n`` times per key."""
+    if not _TRACE:
+        return
+    hit = _trace_seen.get(key, 0)
+    if hit < n:
+        _trace_seen[key] = hit + 1
+        log.info('[trace] ' + msg, *args)
+
 
 def encode_audio(seq: int, rate: int, pcm: np.ndarray) -> bytes:
     pcm = np.ascontiguousarray(pcm, dtype=np.int16)
@@ -116,15 +138,19 @@ class SdrSession(MeasurementSession):
     # ---------------- lifecycle ----------------
     def enter(self):
         super().enter()
+        _t('enter: IQS configure begin')
         self._configure()
+        _t('enter: IQS configure done')
 
     def exit(self):
+        _t('exit: begin')
         with self._lock:
             self._ready = False
             try:
                 sb.dll.IQS_BusTriggerStop(sb.pointer(self.dev.dev))
             except Exception:
                 log.exception('SDR trigger stop failed during exit')
+            _t('exit: trigger stopped, closing ADM')
             self._close_adm_locked()
             # A single SWP_Configuration after IQS does not take effect: SWP_GetFullSweep
             # then returns BusDataError (-9). A mode reset first makes the restored SWP
@@ -138,20 +164,27 @@ class SdrSession(MeasurementSession):
     def _close_adm_locked(self):
         if self._adm.value:
             try:
+                _t('adm: ADM_Close begin handle=%s', bool(self._adm.value))
                 sb.dll.ADM_Close(sb.pointer(self._adm))
+                _t('adm: ADM_Close ok')
             except Exception:
-                pass
+                log.exception('ADM_Close failed')
         self._adm = sb.c_void_p()
         self._adm_ok = False
 
     # ---------------- configuration ----------------
     def _configure(self):
         with self._lock:
+            _t('_configure: begin')
             self._ready = False
             self._configure_iqs_locked()
+            _t('_configure: IQS ok, configuring DDC/demod chain')
             self._configure_chain_locked()
+            _t('_configure: chain ok, opening ADM')
             self._open_adm_locked()
+            _t('_configure: ADM ok, starting trigger')
             self._start_trigger_locked()
+            _t('_configure: done (ready)')
             self._last_pan = 0.0
             self._last_adm = 0.0
             self._transient_streak = 0
@@ -220,6 +253,7 @@ class SdrSession(MeasurementSession):
         self._sdk_call(
             lambda: T.dll.IQS_ProfileDeInit(T.pointer(dev.dev), T.pointer(p)),
             'IQS_ProfileDeInit')
+        _t('iqs: mode reset + ProfileDeInit ok')
         native_rate = float(p.NativeIQSampleRate_SPS)
         expected_bw = native_rate * 0.8 / s.sdr_decimate if native_rate > 0 else 0.0
         capture_center = float(s.sdr_center_hz)
@@ -249,6 +283,9 @@ class SdrSession(MeasurementSession):
             lambda: T.dll.IQS_Configuration(
                 T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info)),
             'IQS_Configuration')
+        _t('iqs: IQS_Configuration ok fs=%s bw=%s pts=%s dec=%s center=%s',
+           float(info.IQSampleRate), float(info.Bandwidth), int(info.PacketSamples),
+           int(out.DecimateFactor), float(out.CenterFreq_Hz))
         fs = float(info.IQSampleRate)
         bandwidth = float(info.Bandwidth) or fs
         if fs <= 0 or bandwidth <= 0 or int(info.PacketSamples) <= 0:
@@ -313,6 +350,7 @@ class SdrSession(MeasurementSession):
             points = sb.c_uint32(0)
             rbw_ratio = sb.c_double(0.0)
             sb.dll.DSP_FFT_DeInit(sb.pointer(fi))
+            _t('vfft: DeInit ok, configuring size=%s', frame_samples)
             fi.Calibration = 0
             fi.DetectionRatio = 1
             fi.TraceDetector = sb.TraceDetector_TypeDef.TraceDetector_PosPeak
@@ -325,6 +363,8 @@ class SdrSession(MeasurementSession):
                 sb.pointer(points), sb.pointer(rbw_ratio))
             if status != 0 or points.value < 2:
                 raise RuntimeError(f'DSP_FFT_Configuration status={status}')
+            _t('vfft: Configuration ok status=%s points=%s rbw=%s',
+               status, points.value, rbw_ratio.value)
             self._vfft_frame_samples = frame_samples
             self._vfft_buffer = np.empty(frame_samples * 2, dtype=np.int16)
             self._vfft_stream = sb.IQStream_TypeDef()
@@ -362,10 +402,14 @@ class SdrSession(MeasurementSession):
                 s.sdr_actual.get('bandwidth', self._fs_in))
             vstream.AlternIQStream = c_cast(
                 sb.c_void_p(self._vfft_buffer.ctypes.data), sb.POINTER(sb.c_void_p))
+            _tn('fft_iqstospec', 'vfft: IQSToSpectrum in frame=%s',
+                self._vfft_frame_samples)
             status = sb.dll.DSP_FFT_IQSToSpectrum(
                 sb.pointer(self.dev.dsp), sb.pointer(vstream),
                 self._vfft_freq.ctypes.data_as(sb.POINTER(sb.c_double)),
                 self._vfft_power.ctypes.data_as(sb.POINTER(sb.c_float)))
+            _tn('fft_iqstospec_ok', 'vfft: IQSToSpectrum ok status=%s points=%s',
+                status, self._vfft_points)
             if status != 0:
                 return None
             power = self._vfft_power
@@ -390,6 +434,7 @@ class SdrSession(MeasurementSession):
         self._sdk_call(
             lambda: T.dll.IQS_BusTriggerStart(T.pointer(self.dev.dev)),
             'IQS_BusTriggerStart')
+        _t('trigger: BusTriggerStart ok; streaming')
         self._last_ok = time.monotonic()
 
     def _chain_params(self):
@@ -443,8 +488,12 @@ class SdrSession(MeasurementSession):
         if (not self._ddc._ready) or self._ddc.decimate != decimate \
                 or abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Deep filter design is expensive (~180 ms); run it only while stopped.
+            _t('chain: DDC configure fs_in=%s offset=%s decimate=%s points=%s',
+               fs_in, ddc_off, decimate, self._packet_samples * self._ddc_batch)
             self._ddc.configure(fs_in, ddc_off, decimate,
                                  self._packet_samples * self._ddc_batch)
+            _t('chain: DDC configure ok out=%s fs_out=%s delay=%s',
+               self._ddc.out_points, self._ddc.fs_out, self._ddc.delay)
             self._mix_phase = 0.0
         # The vendor FFT geometry depends only on the IQS packet geometry, so it is
         # (re)configured when that changes - not on every DDC offset/decimate change. Doing
@@ -452,10 +501,15 @@ class SdrSession(MeasurementSession):
         # handle and caused native heap corruption ("corrupted size vs. prev_size").
         frame_samples = int(self._packet_samples) * int(self._ddc_batch)
         if (not self._vfft_ready) or self._vfft_frame_samples != frame_samples:
+            _t('chain: vendor FFT configure frame_samples=%s', frame_samples)
             self._configure_vendor_fft_locked()
+            _t('chain: vendor FFT ready=%s points=%s', self._vfft_ready, self._vfft_points)
         self._mix_freq = rel + self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
+        _t('chain: demod configure fs_out=%s mode=%s ifbw=%s',
+           self._ddc.fs_out, s.sdr_demod, if_bw)
         self._demod.configure(self._ddc.fs_out, s.sdr_demod, if_bw, pitch=s.sdr_pitch)
+        _t('chain: demod configure ok')
         self._begin_audio_settle()
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
@@ -556,6 +610,7 @@ class SdrSession(MeasurementSession):
         try:
             sb.dll.ADM_Open(sb.pointer(self._adm))
             self._adm_ok = bool(self._adm.value)
+            _t('adm: ADM_Open ok=%s', self._adm_ok)
         except Exception:
             self._adm_ok = False
 
@@ -742,6 +797,9 @@ class SdrSession(MeasurementSession):
             self._last_ok = now
             self._recovery_attempts = 0
             self._packets_ok += 1
+            if self._packets_ok == 1 or self._packets_ok % 100 == 0:
+                _t('step: packets_ok=%d err=%d status=%d', self._packets_ok,
+                   self._packets_err, self._last_status)
             if time.monotonic() < self._ready_at:
                 # Keep draining IQS while settling so the device FIFO cannot overflow, but
                 # preserve a pending audio reset marker for the clients.
