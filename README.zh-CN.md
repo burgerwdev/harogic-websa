@@ -90,9 +90,10 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
 ### 3. 测试
 
 ```bash
-./test.sh
-python3 -m ruff check web_sa tests tools
-cd frontend/modern && npm audit
+pip install -r requirements-dev.txt      # 运行时 + pytest/ruff/playwright/fonttools
+make ci                                  # CI 的全部门禁（无需硬件）
+python3 tools/bench.py --check tools/bench_baseline.json   # 性能基线（需服务在跑）
+make hw-test                             # 需真机：tinySA CW + 界面状态机回归
 ```
 
 ## 目录结构
@@ -127,8 +128,9 @@ harogic-websa/
 
 ## 测试
 
-- **后端（63 项）**：帧协议、配置/安全默认、命令校验、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
-- **前端（79 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
+- **后端（107 项）**：帧协议 + golden 帧 fixture、配置/安全默认、命令校验（含能力表驱动的限值）、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、fatal 退出契约、HTTP/WS 鉴权与路径防护、有界客户端推送、采集策略（会话自有的 watchdog/节流）、supervisor/TinySA 安全规则
+- **前端（132 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化、参数槽位、i18n 键一致性、二进制帧解码（对照 Python 生成的 fixture）、STATUS → 参数槽位映射
+- **默认无需硬件**：缺少 `/opt/htraapi/lib/x86_64/libhtraapi.so` 时，7 个依赖厂商库的后端测试模块会被跳过（`tests/conftest.py`），CI 与普通检出仍可跑其余全部测试；`make hw-test` 与 `tools/hardware_smoke.py` 需要频谱仪（CW 信号需 tinySA）。
 
 ## 开源说明
 

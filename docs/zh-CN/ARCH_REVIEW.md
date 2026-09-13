@@ -588,6 +588,74 @@ e2e（真机）仍全绿。
 
 ---
 
+## 9. 实施记录（分支 `refactor/arch-review-improvements`）
+
+按照本报告的建议实施了一轮重构，每个阶段都以 `make ci` + `make hw-test` + `make bench` 验证。
+
+### 9.1 已完成
+
+| 报告编号 | 内容 | 提交 | 验证 |
+|---|---|---|---|
+| P0-1 | i18n 字典合并为单一声明（452/452 键）、补上缺的那一条中文、`I18nKey` 覆盖全量键、新增 parity 测试 | `4e7d9f9` | `__tests__/i18n.test.ts`（键集合、空值、占位符、类型、回退） |
+| P0-3 | 新增 `core/frames.ts` 作为 TS 侧唯一帧定义；`tools/gen_frame_fixtures.py` 用生产编码器生成 `tests/fixtures/frames/*.bin`；Python 侧断言 fixture 与编码器一致，TS 侧断言解码结果与 manifest 一致 | `4e7d9f9` | 6 个后端 fixture 测试 + 7 个前端解码测试（含截断/畸形帧拒绝） |
+| P0-4 / G-2 | `requirements.txt`（运行时、双边界）+ `requirements-dev.txt` + `requirements-lock.txt`（实测版本） | `3d415f5` | 干净环境 `./test.sh` 不再因缺 ruff 失败 |
+| P0-5 | 版本单一来源：`pyproject.toml` → `tools/sync_version.py`（`--check` 进 CI） | `3d415f5` | 人为改坏 package.json 后 `--check` 退出 1 |
+| G-3 | `tests/conftest.py` 在缺厂商库时跳过 7 个硬件模块；`make hw-test` / `make bench` / `make ci` 统一入口 | `3d415f5`、`682bb82` | 离线：30 项通过；真机：107 项 + 39 项 UI 检查全过 |
+| G-1 | `tools/bench.py` + `tools/bench_baseline.json`（帧率/切换延迟/CPU，带阈值回归判定） | `682bb82` | `make bench` 对基线通过 |
+| P1-3 | `sdk_bindings` 补齐 RTA/trigger 符号，`rta.py` 不再直接 `import htra_api` | `a8dc59d` | 守卫指标 3 → 0 |
+| P1-7 | 会话 `health()`、设备 `auto_reference_view()`/`session_health()`，`build_status` 不再 `getattr` 私有属性 | `a8dc59d` | STATUS 字段不变（真机 + UI 回归确认） |
+| P1-10 | `web/recovery.py` 统一 `EXIT_FATAL`/`fatal()`，四处 `os._exit(70)` 收口 | `a8dc59d` | `tests/test_recovery_json.py` |
+| P1-11 | `web/jsonutil.py` 去重两份有限化实现；publisher 序列化一次广播（`ClientStream.publish_text`） | `a8dc59d` | 后端 4 项 + 前端 1 项新测试 |
+| E-2 | 硬件限值进入 `DeviceCapabilities`，协议/UI 界限进 `config.py` 常量 | `98e3bc0` | `test_model_limits_come_from_capabilities` |
+| E-3 | 会话自有 `acquisition_timeout()`/`pacing()`/`dedupe_freq`/`reconfigure()`；publisher 去 mode 分支 | `98e3bc0` | `tests/test_publisher.py` 6 项 + 真机 |
+| P0-2（步 1-2） | 帧解码单测（前面）+ `updateStatus` STATUS→槽位映射测试（真实 STATUS 载荷） | `6a699a8` | 132 项前端测试 |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline：循环依赖、上帝函数长度、mode 分支、越界 DLL 访问、限值字面量 | `3d415f5` | `make ci` 中执行 |
+
+### 9.2 客观进展（守卫指标）
+
+| 指标 | 重构前 | 现在 | 说明 |
+|---|---|---|---|
+| `frontend_cycles` | 14 | 14 | 未动前端结构（见 9.3） |
+| `backend_cycles` | 1 | 1 | 同上 |
+| `dispatch_lines` | 313 | 311 | 命令注册表未做，仅微小变化 |
+| `validate_lines` | 135 | 144 | **变长**：限值改从能力表取，代码行多了 9 行（可接受的代价） |
+| `mode_branches` | 18 | 15 | publisher 的 3 处 mode 分支消失 |
+| `htra_imports_outside_bindings` | 3 | 0 | 硬件边界重新成立 |
+| `validation_limit_literals` | 35 | 8 | 剩余 8 处是小枚举域（window 0..4 等） |
+| 后端测试 | 87 | 107 | |
+| 前端测试 | 115 | 132 | |
+| 硬件无关 CI 可跑测试 | 0（无法导入） | 30 | 其余 77 项需厂商库 |
+
+### 9.3 未做及原因（诚实记录）
+
+| 编号 | 未做原因 | 下一步 |
+|---|---|---|
+| P1-1/P1-2（命令注册表） | 改动面大（`_dispatch` 311 行 + `_validate_command` 144 行 + 3 处命令集），需一轮完整硬件回归；本轮先把限值/命令权限/致命退出等“低风险高收益”项做完 | 先为每条命令写表驱动测试，再按 `CommandSpec(name, validate, modes, session_exclusive, handler)` 迁移 |
+| P1-4（前端 14 条循环依赖） | 拆 `spectrum.ts` 枢运会移动多个模块的公共 API，风险与收益需用户拍板；本轮改用它处收益更高的帧解码/STATUS 测试 | 先消灭 `dsp/traces ⇄ dsp/normalize` 与 `core/ws ⇄ ui/controls` 两对，再拆测量叠加层 |
+| P1-5（`controls.ts` 拆分 / id 自检） | 同上：属大重构，且 `index.html` 不可避免要大改 | 先加启动自检（缺 id 即抛错），再按面板拆文件 |
+| P1-6（store 剩余参数槽位化） | RTA/触发/瀑布参数迁移需要同步改 e2e 断言 | 按 SDR 组的方式逐个迁移，每次跑 `make hw-test` |
+| P1-8（DeviceState/HarogicDevice 拆分） | `AutoReferenceController` 抽取属高风险区（控制环 + 硬件）；本轮先把自动参考的“归属”（`auto_ref_scope`）与会话化 | 先为控制环写纯函数级单测，再搬到独立类 |
+| P1-9（SessionManager） | 已做一半：惰性 `session_class()`；`SET_MODE` 仍在用 `_ready` 握手 | 显式 `SessionManager.switch()`，把 `_ready` 变成 `is_ready()` |
+| E-1（ParamSpec/schema） | 依赖命令注册表（P1-1）先落地，否则会把硬编码搬个家 | 随 P1-1 一起做 |
+| E-4（帧 codec 表） | `FREQ` 去重语义已移到会话（`dedupe_freq`）；帧类型保留策略表未做 | `FRAME_POLICY` 表 + `client_stream` 去 magic 分支 |
+| E-5（前端注册点） | 与 P1-4/P1-5 同属前端结构重构 | 与 P1-4 一起做 |
+| P2-1（store 导入期访问 DOM） | 收益低（测试已用 jsdom，无 SSR），风险中等（33 个模块依赖） | 若做：`initStore()` + 惰性 getter |
+| P2-2/P2-3（死导出 / ESLint） | 纯卫生项，不影响正确性；引入 ESLint 会在现有 9000 行上产生大量纯格式 diff | 单独一个“无行为变更”的提交做，便于审阅 |
+| P2-4（画布 DPR） | 属渲染体验改进，与本轮“可演进性”主线无关 | 独立提交：按容器尺寸 + devicePixelRatio 设置 backing store |
+
+### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
+
+```
+make ci           -> pytest 107 passed / ruff clean / i18n+frames parity / 守卫通过 / 构建成功
+make hw-test      -> tinySA CW 100.2 MHz 测得 -25.7 dBm(SWP) / -25.3 dBm(RTA)
+                     39 项 UI 状态机检查全过，无页面错误
+make bench        -> 对基线通过：SWP 207 fps / RTA 215 fps / SDR 19 fps + 音频 50 fps
+                     切换 465/310 ms，CPU 0.70/0.95/2.25 s（每 4 s 窗口）
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 30 passed（硬件模块自动跳过）
+```
+
+---
+
 ## 附录 A：度量数据
 
 | 指标 | 值 |
