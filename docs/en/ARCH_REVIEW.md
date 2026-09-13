@@ -637,7 +637,7 @@ conventionally has `make hw-test` (real-hardware smoke + state-machine regressio
 
 ## 9. Implementation record (branch `refactor/arch-review-improvements`)
 
-Roadmap phases 0-3 are implemented (15 commits), each verified with `make ci` + `make hw-test`
+Roadmap phases 0-3 are implemented (19 commits), each verified with `make ci` + `make hw-test`
 + `make bench`.
 
 ### 9.1 Implemented
@@ -645,32 +645,33 @@ Roadmap phases 0-3 are implemented (15 commits), each verified with `make ci` + 
 | Finding | What | Verified by |
 |---|---|---|
 | P0-1 | i18n merged into one declaration (452/452), the one missing zh key added, `I18nKey` covers every key, parity test | `__tests__/i18n.test.ts` |
-| P0-3 | `core/frames.ts` is the single TS frame definition; the golden fixtures are generated from the Python encoders and asserted on both sides | 6 backend + 7 frontend tests |
-| P0-4 / G-2 | Dependencies split into runtime/dev/lock with two-sided bounds | clean-checkout `./test.sh` |
+| P0-3 | `core/frames.ts` is the single TS frame definition; golden fixtures generated from the Python encoders, asserted on both sides | 6 + 7 tests |
+| P0-4 / G-2 | Dependencies split runtime/dev/lock with two-sided bounds | clean-checkout `./test.sh` |
 | P0-5 | Version single-sourced, `--check` in CI | breaking package.json fails |
-| G-3 | `tests/conftest.py` skips the 7 vendor modules when the library is absent; `make hw-test`/`bench`/`ci` | **72** tests pass offline; hardware run green |
-| G-1 | `tools/bench.py` + fixed device configuration before measuring (it once reported a false 2.5x regression) + baseline | `make bench` passes repeatedly |
-| P1-1/P1-2 | **Command layer as a declarative table**: one `CommandSpec` per command in `web/commands.py`, guards as table flags, `ws.py` transport-only | `test_command_registry.py` (14) + `tools/command_sweep.py` 30/30 on the bench |
-| P1-3 | `sdk_bindings` re-exports the RTA/trigger types; `rta.py` no longer imports `htra_api` | guard 3 -> 0 |
-| P1-4 | **Frontend cycles 14 -> 0**: `render/redraw.ts` inversion, `getX/getY/PLOT_RECT` into `render/plot.ts`, four new leaf modules | guard `frontend_cycles=0` + hardware UI regression |
-| P1-5 | **`controls.ts` split by panel**: 9 modules under `ui/panels/*` (frequency/resolution/rta/markers/refAmp/waterfall/gnss/groups/commit), 1548 -> 934 lines, public surface preserved by re-exports; DOM id contract check (which found `#cur-ifgain` was never displayed) | tsc + 139 frontend tests + hardware UI regression + `tools/check_dom_ids.py` |
-| P1-6 | Parameter slots: the trigger group (`trigSource/trigLevel/trigEdge/trigPoi` -> `ui/triggerState.ts`); the SDR/frequency/Ref/RBW groups were migrated earlier. **The remaining store globals are data, not parameters** (traces/rtaData/waterfallRows/peakMarks/limits...), which the "parameters use slots, data uses a store" rule keeps there | 139 frontend tests + bench |
-| P1-7 | Session `health()`, device `auto_reference_view()`/`session_health()` | STATUS unchanged |
-| P1-8 | **`AutoReferenceController` extracted** (`hardware/auto_reference.py`, ~200 lines of control logic) with 16 focused tests (stub device + fake clock); `device.py` only delegates | 16 new + the 7 existing behaviour tests |
-| P1-9 | **Session lifecycle protocol**: `request_stop()`/`is_ready()` + `SessionManager.switch()` (stop -> exit -> construct -> enter -> ready); the command layer no longer touches private `_ready` | `test_command_registry.py` + bench |
-| P1-10 | `web/recovery.py` owns `fatal()`/`EXIT_FATAL` | `test_recovery_json.py` |
-| P1-11 | `web/jsonutil.py`; the publisher serializes once for all clients | backend + frontend tests |
-| E-1 | **Parameter schema**: `ParamSpec` (type, bounds - number or capability callable -, choices, unit, default, conditional required) is the single description; `CommandSpec.validate()` is generated from it and only six cross-field rules remain; `build_schema()` + `GET /api/schema` (auth-protected) | 4 + 2 tests |
-| E-2 | Hardware limits in `DeviceCapabilities`, protocol bounds as `config.py` constants | `test_model_limits_come_from_capabilities` |
-| E-3 | Sessions own `acquisition_timeout()`/`pacing()`/`dedupe_freq()`/`reconfigure()`; the publisher has no mode branches | `tests/test_publisher.py` |
-| E-4 | `FRAME_POLICY` retention table (unknown types default to latest) + coverage test | `test_every_frame_type_has_a_retention_policy` |
-| E-5 | **View renderer registry**: `render/registry.ts` (leaf); the pnm/harm views self-register, RTA registers locally, `renderAll()` only looks the mode up with the swept path as default | `__tests__/registry.test.ts` (4) |
-| P2-1 | `core/store` no longer touches the DOM at import: `canvas/ctx/W/H` are assigned by `initStore()` (`let` live bindings) and a missing canvas fails loudly; `plot.ts` computes its rect on demand | `__tests__/store.test.ts` |
-| P2-2/P2-3 | `noUnusedLocals`/`noUnusedParameters` enabled; ESLint see §9.3 | tsc clean |
-| P2-4 | **HiDPI**: backing store = logical 860x480 x devicePixelRatio (<=2) with `ctx.setTransform`, so drawing stays logical; the waterfall/density layers compute their own sizes | `__tests__/store.test.ts` + hardware UI regression |
-| P2-5 | Bilingual docs structure check (`tools/check_docs_parity.py`, 7 file pairs) | `make ci` |
-| P2-8 | Correction: `fit_span` is not a "legacy helper", the harmonic session uses it; docstring fixed | - |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline (cycles, god functions, mode branching, out-of-layer DLL access, limit literals, command-table size) | `make ci` |
+| G-3 | Seven vendor modules skipped when the library is absent; `make ci`/`hw-test`/`bench` | **78** tests pass offline |
+| G-1 | `tools/bench.py` (fixed device configuration before measuring; it caught a false 2.5x regression) + baseline | passes repeatedly |
+| P1-1/P1-2 | **Command layer as a declarative table** (`CommandSpec` + guard flags; ws.py transport-only) | 14 table tests + `command_sweep.py` 30/30 on the bench |
+| P1-3 | `rta.py` no longer imports `htra_api`; `sdk_bindings` re-exports the missing types | guard 3 -> 0 |
+| P1-4 | **Frontend cycles 14 -> 0** (redraw seam, plot geometry, four leaf modules) | guard + hardware UI regression |
+| P1-5 | **`controls.ts` split into 9 `ui/panels/*` modules** (1548 -> 934 lines) + **DOM id contract check** (which found `#cur-ifgain` was never displayed) | tsc + bench + `check_dom_ids.py` |
+| P1-6 | **All remaining parameters slot-ised**: trigger group, waterfall group (range/pause/fade/bins), display group (unit/offset/smoothing); **measurement results moved to `core/results.ts`** and shared types to `core/model.ts` (store re-exports them, call sites unchanged) | 141 frontend tests + bench; see the performance lesson in 9.3 |
+| P1-7 | Session `health()`, device `auto_reference_view()` | STATUS unchanged |
+| P1-8 | **`AutoReferenceController` extracted** + 16 focused tests | 16 new + 7 existing behaviour tests |
+| P1-9 | **Session lifecycle protocol** `request_stop()`/`is_ready()` + `SessionManager` | table tests + bench |
+| P1-10 | `web/recovery.py` owns `fatal()` | 2 tests |
+| P1-11 | `web/jsonutil.py` + single serialization per broadcast | backend + frontend tests |
+| E-1 | **`ParamSpec` schema** (capability-callable bounds) + `GET /api/schema` (auth-protected) | 6 tests |
+| E-2 | Hardware limits in `DeviceCapabilities` | `test_model_limits_come_from_capabilities` |
+| E-3 | Acquisition policy pushed into sessions (publisher has no mode branch) | `test_publisher.py` |
+| E-4 | `FRAME_POLICY` retention table + coverage test | 2 tests |
+| E-5 | **Three registration points**: views (`render/registry.ts`), measurement tabs (`ui/measureRegistry.ts`) and **i18n split into per-domain namespaces** (core 371 / trigger 50 / sdr 5 / limits 19 / keypad 7 keys per language, merged at import) | 6 registry tests + i18n parity |
+| P2-1 | `core/store` no longer touches the DOM at import (`initStore()` + fail loud) | `__tests__/store.test.ts` |
+| P2-2/P2-3 | `noUnusedLocals/Parameters`; ESLint see 9.3 (blocked upstream) | tsc clean |
+| P2-4 | **HiDPI** (backing store x DPR, logical coordinates unchanged) | store tests + bench |
+| P2-5 | Bilingual doc structure check (7 file pairs) | `make ci` |
+| P2-7 | **Measurement result assembly tests**: the harmonic sequence is driven through a stub device (order list, dBc reference, amplitude tracking, frequency-limit stop, parameter clamping) and the PNM payload became a pure `pnm_payload()` helper | 6 hardware-free tests |
+| P2-8 | Correction: `fit_span` is used by the harmonic session, not a legacy leftover | - |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline | `make ci` |
 
 ### 9.2 Objective progress (guard metrics, before -> now)
 
@@ -678,32 +679,32 @@ Roadmap phases 0-3 are implemented (15 commits), each verified with `make ci` + 
 |---|---|---|
 | `frontend_cycles` | 14 | **0** |
 | `backend_cycles` | 1 | 1 (`http_api ⇄ ws`, transport) |
-| `dispatch_lines` (longest handler) | 313 (`_dispatch`) | **33** |
-| `validate_lines` (longest validator) | 144 (`_validate_command`) | **16** (cross-field rules) |
-| `command_specs` | - (no table) | 24 |
+| `dispatch_lines` (longest handler) | 313 | **33** |
+| `validate_lines` (longest validator) | 144 | **16** |
+| `command_specs` | - | 24 |
 | `mode_branches` | 18 | **0** |
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
-| Backend tests | 87 | **141** |
-| Frontend tests | 115 | **139** |
-| Hardware-free (CI) tests | 0 (import failed) | **72** (the other 69 need the vendor library) |
-| `ui/controls.ts` | 1548 lines | **934 lines** (+ 9 panel modules, 715 lines) |
+| Backend tests | 87 | **147** |
+| Frontend tests | 115 | **141** |
+| Hardware-free (CI) tests | 0 | **78** |
+| `ui/controls.ts` | 1548 lines | **934 lines** (+ 9 panel modules) |
+| `core/store.ts` | ~285 lines (parameters and results mixed) | **226 lines** (+ `results.ts` 89 + `model.ts` 48) |
 | Production bundle | 178 kB | 156 kB |
 
-### 9.3 Not done, and why
+### 9.3 Not done, and the lessons from this round
 
-| Finding | Status | Reason and next step |
+| Finding | Status | Note |
 |---|---|---|
-| P1-6 (remaining store globals) | Partial | The trigger group is migrated; of the remaining 67 `export let`s, most are **data** (traces/rtaData/waterfallRows/peakMarks/limits/markers...) or **runtime state** (armed/waiting/hit/overlay), which the rule established here keeps in the store rather than forcing into parameter slots. The next group worth migrating is the waterfall display range (`wfLoDbm/wfHiDbm/wfRangeMode/wfPaused`). |
-| P2-3 (ESLint) | Blocked | **Upstream incompatibility**: `typescript-eslint@8` declares `typescript ">=4.8.4 <6.1.0"` while this project builds with TypeScript 7.0.2 (npm ERESOLVE, reproduced). Adopt it once typescript-eslint supports TS 7; `tsc --strict` + `noUnusedLocals/Parameters` + the architecture guard cover the valuable part meanwhile. |
-| P2-6 (27 KB scratch TODO in the repo root) | Not done | The file is local-only (`.git/info/exclude`) and is the author's working note; deleting or relocating it is the author's call. The review only flags that its "SWP/RTA migration still to do" section is stale. |
-| P2-7 (harmonic/phase-noise unit tests) | Partial | SDR/RTA/AutoRef/command layer are covered; harmonic and PNM result parsing still have no direct tests (they need synthetic vendor structs). |
-| P2-9 (echo only changed STATUS fields for high-rate commands) | Not done | Requires confirming the frontend does not depend on the full STATUS (slot confirmation does); it is a performance optimisation, not a structural problem, and the payoff with the current client count is small. |
+| P2-3 (ESLint) | Blocked | **Upstream incompatibility**: `typescript-eslint@8` requires `typescript <6.1` while this project builds with TypeScript 7.0.2 (npm ERESOLVE, reproduced). `tsc --strict` + `noUnusedLocals/Parameters` + the architecture guard cover the valuable part meanwhile. |
+| P2-6 (27 KB scratch TODO in the repo root) | Not done | It is the author's local working note (`.git/info/exclude`); deleting or relocating it is their call. The review only flags that its "SWP/RTA migration still to do" section is stale. |
+| P2-9 (echo only changed STATUS fields for high-rate commands) | Not done | Frontend slot confirmation relies on the full STATUS; it is a performance optimisation rather than a structural problem, with little payoff at the current client count. |
+| Lesson (recorded in the code) | - | **When replacing a hot-path global with a slot, hoist the `get()` out of loops**: `rtaAmpBins.get()`/`rtaFade.get()` were called ~600k times per frame inside the density accumulation, and the `Date.now()`/pending work saturated the main thread, delaying the 1 Hz STATUS processing so the mode buttons toggled from a stale value (the hardware UI regression caught it). They are read once per frame now. |
 
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 
 ```
-make ci        -> pytest 141 passed / ruff clean / i18n+frames parity / DOM id contract /
+make ci        -> pytest 147 passed / ruff clean / i18n+frames parity / DOM id contract /
                   bilingual doc structure / architecture guard (cycles 0, mode branches 0) /
                   build OK
 make hw-test   -> tinySA CW at 100.2 MHz measured -25.7 dBm (SWP) / -25.3 dBm (RTA)
@@ -712,9 +713,10 @@ make hw-test   -> tinySA CW at 100.2 MHz measured -25.7 dBm (SWP) / -25.3 dBm (R
 make bench     -> matches the baseline (fixed configuration: points 1001, auto RBW, ref -30,
                   atten auto, spur bypass): SWP 174 fps, RTA 214 fps, SDR 19 + 50 audio fps,
                   switches 465/310 ms
-HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 72 passed
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 78 passed
 per-commit     -> every commit on the branch was re-checked with `git worktree` + pytest
-                  (it caught one "test committed before its implementation"; history rebuilt)
+                  (it caught one "test committed before its implementation" and this round's
+                  hot-path performance regression)
 ```
 
 ## Appendix A: Metrics

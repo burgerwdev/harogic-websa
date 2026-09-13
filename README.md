@@ -146,8 +146,8 @@ harogic-websa/
 
 ## Tests
 
-- **Backend (141)**: protocol + golden frame fixtures, configuration/security defaults, command validation (including capability-driven limits), SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, fatal-exit contract, HTTP/WS authentication and path protection, bounded client streaming, acquisition policy (session-owned watchdog/pacing), supervisor and TinySA safety rules
-- **Frontend (139)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization, parameter slots, i18n key parity, the binary frame decoder against the Python-generated fixtures, and the STATUS → parameter-slot mapping
+- **Backend (147)**: protocol + golden frame fixtures, configuration/security defaults, command validation (including capability-driven limits), SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, fatal-exit contract, HTTP/WS authentication and path protection, bounded client streaming, acquisition policy (session-owned watchdog/pacing), supervisor and TinySA safety rules
+- **Frontend (141)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization, parameter slots, i18n key parity, the binary frame decoder against the Python-generated fixtures, and the STATUS → parameter-slot mapping
 - **Hardware-free by default**: without `/opt/htraapi/lib/x86_64/libhtraapi.so` the seven vendor-dependent backend modules are skipped (`tests/conftest.py`), so CI and a plain checkout can run everything else. `make hw-test` and `tools/hardware_smoke.py` need the analyzer (and the tinySA for the CW source).
 
 ## Open-Source Notes

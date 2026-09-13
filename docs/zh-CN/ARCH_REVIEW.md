@@ -621,39 +621,40 @@ e2e（真机）仍全绿。
 
 ## 9. 实施记录（分支 `refactor/arch-review-improvements`）
 
-路线图的 Phase 0–3 已全部实施（15 个提交），每一步都跑 `make ci` + `make hw-test` + `make bench`。
+路线图 Phase 0–3 已全部实施（19 个提交），每一步都跑 `make ci` + `make hw-test` + `make bench`。
 
 ### 9.1 已完成
 
 | 报告编号 | 内容 | 验证 |
 |---|---|---|
-| P0-1 | i18n 合并为单一声明（452/452）、补上缺失的 1 条中文、`I18nKey` 覆盖全量键、parity 测试 | `__tests__/i18n.test.ts` |
-| P0-3 | `core/frames.ts` 为 TS 侧唯一帧定义；`tools/gen_frame_fixtures.py` 生成 golden fixture，Python 与 TS 两侧各自断言 | 后端 6 项 + 前端 7 项 |
-| P0-4 / G-2 | 依赖拆分为 runtime/dev/lock 三份并加双边界 | 干净环境 `./test.sh` 通过 |
-| P0-5 | 版本单一来源 + `--check` 进 CI | 改坏 package.json 即失败 |
-| G-3 | `tests/conftest.py` 缺厂商库时跳过 7 个硬件模块；`make hw-test` / `bench` / `ci` | 离线 **72** 项通过；真机全绿 |
-| G-1 | `tools/bench.py` + 固定配置后测量（修掉一次 2.5× 假回归）+ 基线 | `make bench` 连续通过 |
-| P1-1/P1-2 | **命令层声明式表**：`web/commands.py` 每条命令一个 `CommandSpec`；守卫改为表标志；`ws.py` 仅传输适配 | `test_command_registry.py`(14) + `tools/command_sweep.py` 真机 30/30 |
-| P1-3 | `sdk_bindings` 补齐 RTA/trigger 符号，`rta.py` 不再直连 `htra_api` | 守卫指标 3 → 0 |
-| P1-4 | **前端循环依赖 14 → 0**：`render/redraw.ts` 反向 seam、`getX/getY/PLOT_RECT` 移入 `render/plot.ts`、拆出 4 个叶子模块 | 守卫 `frontend_cycles=0` + 真机 UI 回归 |
-| P1-5 | **`controls.ts` 按面板拆分**：9 个 `ui/panels/*`（frequency/resolution/rta/markers/refAmp/waterfall/gnss/groups/commit），1548 → 934 行；公共 API 用 re-export 保持不变；DOM id 契约检查（写出时抓到 `#cur-ifgain` 从未显示的 bug） | tsc + 139 前端测试 + 真机 UI 回归 + `tools/check_dom_ids.py` |
-| P1-6 | 参数槽位化：触发组（`trigSource/trigLevel/trigEdge/trigPoi` → `ui/triggerState.ts`）；SDR/频率/Ref/RBW 组此前已迁移。**剩余 store 全局是数据而非参数**（traces/rtaData/waterfallRows/peakMarks/limits…），按"参数用槽位、数据用仓库"的规则保留 | 135→139 前端测试 + 真机 |
-| P1-7 | 会话 `health()`、设备 `auto_reference_view()`/`session_health()` | STATUS 字段不变 |
-| P1-8 | **`AutoReferenceController` 独立**（`hardware/auto_reference.py`，~200 行控制逻辑）+ 16 项纯函数测试（stub 设备 + 假时钟）；`device.py` 只做委托 | 新增 16 项 + 原有 7 项行为测试 |
-| P1-9 | **会话生命周期协议**：`request_stop()`/`is_ready()` + `SessionManager.switch()`（stop→exit→construct→enter→ready），命令层不再碰私有 `_ready` | `test_command_registry.py` + 真机 |
-| P1-10 | `web/recovery.py` 统一 `fatal()`/`EXIT_FATAL` | `test_recovery_json.py` |
-| P1-11 | `web/jsonutil.py`；publisher 序列化一次广播 | 后端 + 前端测试 |
-| E-1 | **参数 schema**：`ParamSpec`（类型/边界（可为 caps 回调）/选项/单位/默认/条件必填）是唯一描述，`CommandSpec.validate()` 由其生成，交叉规则仅 6 条；`build_schema()` + `GET /api/schema`（含鉴权） | `test_command_registry.py` 4 项 + `test_http_api.py` 2 项 |
-| E-2 | 硬件限值进 `DeviceCapabilities`，协议界限进 `config.py` 常量 | `test_model_limits_come_from_capabilities` |
-| E-3 | 会话自有 `acquisition_timeout()`/`pacing()`/`dedupe_freq()`/`reconfigure()`；publisher 无 mode 分支 | `tests/test_publisher.py` |
-| E-4 | `FRAME_POLICY` 保留策略表（未知类型默认 latest）+ 覆盖性测试 | `test_every_frame_type_has_a_retention_policy` |
-| E-5 | **视图注册表**：`render/registry.ts`（叶子），pnm/harm 视图自注册、RTA 视图本地注册，`renderAll()` 只做查表，默认走扫频路径 | `__tests__/registry.test.ts`(4) |
-| P2-1 | `core/store` 导入期不再访问 DOM：`canvas/ctx/W/H` 由 `initStore()` 赋值（`let` 实时绑定），缺失时抛清晰错误；`plot.ts` 的模块级 `PLOT_RECT` 改为按需计算 | `__tests__/store.test.ts` |
-| P2-2/P2-3 | 开启 `noUnusedLocals`/`noUnusedParameters`；ESLint 见 §9.3 | tsc 干净 |
-| P2-4 | **HiDPI**：backing store = 逻辑 860×480 × devicePixelRatio（≤2），`ctx.setTransform` 保持逻辑坐标；瀑布/密度层自算尺寸不受影响 | `__tests__/store.test.ts` + 真机 UI 回归 |
-| P2-5 | 双语文档结构一致性检查（`tools/check_docs_parity.py`，7 对文件） | `make ci` |
-| P2-8 | 更正：`fit_span` 并非"遗留 helper"，harmonic 会话在用；已改注释 | — |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline（循环依赖、上帝函数、mode 分支、越界 DLL、限值字面量、命令表规模） | `make ci` |
+| P0-1 | i18n 合并为单一声明（452/452）、补上唯一缺失的中文键、`I18nKey` 覆盖全量键、parity 测试 | `__tests__/i18n.test.ts` |
+| P0-3 | `core/frames.ts` 为 TS 侧唯一帧定义；golden fixture 由 Python 编码器生成、双侧断言 | 后端 6 项 + 前端 7 项 |
+| P0-4 / G-2 | 依赖拆成 runtime/dev/lock 三份并加双边界 | 干净环境 `./test.sh` |
+| P0-5 | 版本单一来源 + `--check` | 改坏即失败 |
+| G-3 | 缺厂商库时跳过 7 个硬件模块；`make ci` / `hw-test` / `bench` | 离线 **78** 项通过 |
+| G-1 | `tools/bench.py`（固定配置后测量，修掉一次 2.5× 假回归）+ 基线 | 连续多次通过 |
+| P1-1/P1-2 | **命令层声明式表**（`CommandSpec` + 守卫标志，ws.py 仅传输） | 14 项表测试 + `command_sweep.py` 真机 30/30 |
+| P1-3 | `rta.py` 不再直连 `htra_api`；`sdk_bindings` 补齐符号 | 守卫 3 → 0 |
+| P1-4 | **前端循环依赖 14 → 0**（redraw seam + plot 几何 + 4 叶子模块） | 守卫 + 真机 UI 回归 |
+| P1-5 | **`controls.ts` 拆成 9 个 `ui/panels/*`**（1548 → 934 行）+ **DOM id 契约检查**（抓到 `#cur-ifgain` 从未显示） | tsc + 真机 + `check_dom_ids.py` |
+| P1-6 | **参数全部槽位化**：触发组、瀑布组（显示范围/暂停/淡出/分档）、显示组（单位/偏移/平滑）；**测量结果移入 `core/results.ts`**，共享类型移入 `core/model.ts`（store 仅 re-export，调用点不变） | 141 前端测试 + 真机；见 9.3 的性能教训 |
+| P1-7 | 会话 `health()`、设备 `auto_reference_view()` | STATUS 字段不变 |
+| P1-8 | **`AutoReferenceController` 独立** + 16 项纯函数测试 | 新增 16 项 + 原 7 项行为测试 |
+| P1-9 | **会话生命周期协议** `request_stop()`/`is_ready()` + `SessionManager` | 表测试 + 真机 |
+| P1-10 | `web/recovery.py` 统一 `fatal()` | 2 项 |
+| P1-11 | `web/jsonutil.py` + publisher 单次序列化广播 | 后端 + 前端测试 |
+| E-1 | **`ParamSpec` schema**（边界可为 caps 回调）+ `GET /api/schema`（含鉴权） | 6 项 |
+| E-2 | 硬件限值进 `DeviceCapabilities` | `test_model_limits_come_from_capabilities` |
+| E-3 | 采集策略下沉会话（publisher 无 mode 分支） | `test_publisher.py` |
+| E-4 | `FRAME_POLICY` 保留策略表 + 覆盖性测试 | 2 项 |
+| E-5 | **三个注册点**：视图（`render/registry.ts`）、测量页签（`ui/measureRegistry.ts`）、**i18n 按域拆命名空间**（core 371 / trigger 50 / sdr 5 / limits 19 / keypad 7，启动合并） | 6 项注册表测试 + i18n parity |
+| P2-1 | `core/store` 导入期不再访问 DOM（`initStore()` + 快速失败） | `__tests__/store.test.ts` |
+| P2-2/P2-3 | `noUnusedLocals/Parameters`；ESLint 见 9.3（上游受阻） | tsc 干净 |
+| P2-4 | **HiDPI**（backing store ×DPR，逻辑坐标不变） | store 测试 + 真机 |
+| P2-5 | 双语结构一致性检查（7 对文件） | `make ci` |
+| P2-7 | **测量结果组装测试**：谐波序列用 stub 设备驱动（阶次列表/dBc 参考/幅度跟随/频率上限停止/参数裁剪），PNM 载荷抽成纯函数 `pnm_payload()` | 6 项（硬件无关） |
+| P2-8 | 更正 `fit_span` 并非遗留 helper | — |
+| §7.5 | `tools/quality/architecture_guard.py` + baseline | `make ci` |
 
 ### 9.2 客观进展（守卫指标，重构前 → 现在）
 
@@ -661,41 +662,41 @@ e2e（真机）仍全绿。
 |---|---|---|
 | `frontend_cycles` | 14 | **0** |
 | `backend_cycles` | 1 | 1（`http_api ⇄ ws`，传输层） |
-| `dispatch_lines`（最长命令处理器） | 313（`_dispatch`） | **33** |
-| `validate_lines`（最长校验） | 144（`_validate_command`） | **16**（交叉规则） |
-| `command_specs` | —（无表） | 24 |
+| `dispatch_lines`（最长处理器） | 313 | **33** |
+| `validate_lines`（最长校验） | 144 | **16** |
+| `command_specs` | — | 24 |
 | `mode_branches` | 18 | **0** |
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
-| 后端测试 | 87 | **141** |
-| 前端测试 | 115 | **139** |
-| 硬件无关（CI 可跑）测试 | 0（无法导入） | **72**（另 69 项需厂商库） |
-| `ui/controls.ts` | 1548 行 | **934 行**（+ 9 个面板模块 715 行） |
+| 后端测试 | 87 | **147** |
+| 前端测试 | 115 | **141** |
+| 硬件无关（CI 可跑）测试 | 0 | **78** |
+| `ui/controls.ts` | 1548 行 | **934 行**（+ 9 面板模块） |
+| `core/store.ts` | ~285 行（参数+结果混放） | **226 行**（+ `results.ts` 89 + `model.ts` 48） |
 | 生产 bundle | 178 kB | 156 kB |
 
-### 9.3 未做及原因
+### 9.3 未做及原因，以及本轮学到的教训
 
-| 编号 | 状态 | 原因与下一步 |
+| 编号 | 状态 | 说明 |
 |---|---|---|
-| P1-6（其余 store 全局） | 部分 | 触发组已槽位化；剩下的 67 个 `export let` 中绝大多数是**数据**（traces/rtaData/waterfallRows/peakMarks/limits/markers…）与**运行态**（armed/waiting/hit/overlay），按本轮确立的规则应留在 store，而不是塞进参数槽。若继续迁移，下一步是 waterfall 显示范围（`wfLoDbm/wfHiDbm/wfRangeMode/wfPaused`）这一组参数。 |
-| P2-3（ESLint） | 受阻 | **上游不兼容**：`typescript-eslint@8` 声明 `typescript ">=4.8.4 <6.1.0"`，而本项目使用 TypeScript 7.0.2（npm ERESOLVE 已实测）。等 typescript-eslint 支持 TS 7 后接入；当前 `tsc --strict` + `noUnusedLocals/Parameters` + 架构守卫已覆盖最有价值的部分。 |
-| P2-6（根目录 27KB 临时 TODO） | 未做 | 该文件通过 `.git/info/exclude` 仅在本地可见，属于作者的工作备忘，删除/搬移应由作者决定；本轮只在报告里标明其中"SWP/RTA 迁移未做"一节已过期。 |
-| P2-7（harmonic/phase_noise 单测） | 部分 | SDR/RTA/AutoRef/命令层已补齐；harmonic 与 PNM 的结果解析仍无直接单测（需构造厂商结构体）。 |
-| P2-9（高频命令只回显变化字段） | 未做 | 需要先确认前端不依赖全量 STATUS（槽位确认依赖它）；属性能优化而非结构问题，收益在当前客户端数量下很小。 |
+| P2-3（ESLint） | 受阻 | **上游不兼容**：`typescript-eslint@8` 要求 `typescript <6.1`，本项目用 TypeScript 7.0.2（npm ERESOLVE 已复现）。当前由 `tsc --strict` + `noUnusedLocals/Parameters` + 架构守卫覆盖。 |
+| P2-6（根目录 27KB 临时 TODO） | 未做 | 属作者本地工作备忘（`.git/info/exclude`），删除/搬移应由作者决定；报告只标记其中"SWP/RTA 迁移未做"已过期。 |
+| P2-9（高频命令只回显变化字段） | 未做 | 前端槽位确认依赖完整 STATUS，属性能优化而非结构问题，当前客户端数下收益很小。 |
+| 教训（已写入代码注释） | — | **把热路径全局量换成槽位时，必须把 `get()` 提到循环外**：`rtaAmpBins.get()`/`rtaFade.get()` 原先在每帧约 60 万次的密度累加内层循环里被调用，`Date.now()`+pending 检查把主线程拖满，导致 1 Hz STATUS 延迟、模式按钮基于过期值切换（真机 UI 回归抓到）。现在每帧只读一次。 |
 
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```
-make ci        -> pytest 141 passed / ruff clean / i18n+frames parity / DOM id 契约 /
+make ci        -> pytest 147 passed / ruff clean / i18n+frames parity / DOM id 契约 /
                   双语文档结构一致 / 架构守卫（cycles 0、mode branches 0）/ 构建成功
 make hw-test   -> tinySA CW 100.2 MHz 实测 -25.7 dBm(SWP) / -25.3 dBm(RTA)
                   tools/command_sweep.py：24 条命令 + 6 条守卫拒绝全部符合预期
                   UI 状态机 39 项检查全过，无页面错误
 make bench     -> 对基线通过（固定配置 points 1001/auto RBW/ref -30/atten auto/spur bypass）：
                   SWP 174 fps、RTA 214 fps、SDR 19 fps + 音频 50 fps、切换 465/310 ms
-HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 72 passed
+HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 78 passed
 逐提交验证     -> git worktree + pytest 跑过分支上每个提交（曾发现一个"测试先于实现"的提交，
-                  已重建历史修正）
+                  已重建历史修正；本轮又发现并修掉一处热路径性能回归）
 ```
 
 ## 附录 A：度量数据
