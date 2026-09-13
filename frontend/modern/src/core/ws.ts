@@ -53,6 +53,7 @@ let reconnectTimer: number | null = null;
 let reconnectDelay = 1000;
 let lastRtaProcess = 0;
 let lastRender = 0;
+let rtaFrames = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
@@ -266,6 +267,12 @@ export function connectWS() {
       lastRtaStartHz = startHz;
       lastRtaStopHz = stopHz;
       S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
+      {
+        // Debug/verification aid: proves a frame was actually decoded and handed to the
+        // renderer, which the mode flag alone does not (e2e reads it).
+        const cvF = document.getElementById('spectrum');
+        if (cvF) cvF.dataset.rtaFrames = String(rtaFrames++);
+      }
       // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
       const _nowU = performance.now();
       if (_nowU - lastRtaInfoAt > 400) {

@@ -264,6 +264,20 @@ def main() -> int:
             not page.eval_on_selector("#btn-mode-sdr", "e => e.disabled"),
         )
 
+        # 6b - RTA entry must actually render frames, not only flip the mode flag (the frame
+        # counter is bumped when a decoded frame is handed to the renderer).
+        print("6b) RTA entry renders frames")
+        before_frames = page.evaluate(
+            "Number(document.getElementById('spectrum').dataset.rtaFrames || 0)"
+        )
+        post(url, {"cmd": "SET_MODE", "mode": "rta"})
+        page.wait_for_timeout(2000)
+        after_frames = page.evaluate(
+            "Number(document.getElementById('spectrum').dataset.rtaFrames || 0)"
+        )
+        check("RTA frames reach the renderer after entry", after_frames > before_frames,
+              f"{before_frames} -> {after_frames}",)
+
         # 7 - SWP/RTA reference level (the refPending -> slot migration)
         print("7) SWP reference stepping")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
