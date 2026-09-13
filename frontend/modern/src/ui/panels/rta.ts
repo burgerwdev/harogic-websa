@@ -5,11 +5,12 @@ import { normalizeCenterSpan } from '../../core/frequency';
 import { beginFrequencyCommit, validateFrequencyWindow } from './frequency';
 import { send } from '../../core/wsSend';
 import { requestRender } from '../../render/redraw';
+import { rtaAmpBins, rtaFade } from '../waterfallState';
 
 export function clearRtaAccum() {
   // A reconfiguration (span/rbw/sweep) invalidates every accumulation on the old
   // frequency axis / resolution: probability density, per-trace displays, waterfall.
-  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+  if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
   for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
   for (let ti = 0; ti < S.rtaAvgN.length; ti++) S.rtaAvgN[ti] = 0;
   S.resetWaterfall();
@@ -17,16 +18,16 @@ export function clearRtaAccum() {
 
 export function restoreRtaDensityCfg() {
   const f = localStorage.getItem('rta-fade');
-  if (f) { const s = document.getElementById('select-rta-fade') as HTMLSelectElement | null; if (s) s.value = f; S.setRtaFade(parseFloat(f)); }
+  if (f) { const s = document.getElementById('select-rta-fade') as HTMLSelectElement | null; if (s) s.value = f; rtaFade.set(parseFloat(f)); }
   const bn = localStorage.getItem('rta-bins');
-  if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; S.setRtaAmpBins(parseInt(bn) || 128); }
+  if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; rtaAmpBins.set(parseInt(bn) || 128); }
 }
 
 // Density grain: changing bins invalidates the current density array (ws.ts rebuilds it
 // automatically on the next frame because the length no longer matches).
 export function setRtaBins(bins: number) {
-  S.setRtaAmpBins(bins);
-  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+  rtaAmpBins.set(bins);
+  if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
   try { localStorage.setItem('rta-bins', String(bins)); } catch { /* ignore */ }
   requestRender();
 }

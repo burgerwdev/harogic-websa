@@ -450,7 +450,7 @@ export function presetAll() {
   if (b) b.textContent = t('off');
   setMeasButtons(false);
   setDisplayRef('preset', 0);
-  S.setDisplayOffset(0);
+  displayOffset.set(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
   S.traces.forEach((t, i) => { t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false; t.avgSum = null; t.avgCount = 0; });
@@ -482,8 +482,8 @@ export function presetAll() {
   } catch { /* ignore */ }
   resetLimits();
   S.resetWaterfall();
-  S.setWfPaused(false);
-  S.setSmoothBins(1);
+  wfPaused.set(false);
+  smoothBins.set(1);
   S.setSpanStepAuto(true);
   setSdrAudioEnabled(false);
   sdrAudioOn.set(false);
@@ -530,7 +530,7 @@ export function bindActions() {
     'export-csv': () => exportActiveTraceCsv(),
     'export-png': () => exportSpectrumPng(),
     'export-peaks-csv': () => exportPeakListCsv(),
-    'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); requestRender(); },
+    'set-smooth': (el) => { smoothBins.set(parseInt((el as HTMLSelectElement).value) || 1); requestRender(); },
     'set-norm-refwin': (el) => {
       const v = parseInt((el as HTMLSelectElement).value) || 0;
       setNormRefWinUser(v);
@@ -584,7 +584,7 @@ export function bindActions() {
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
-    'set-rta-fade': (el) => { S.setRtaFade(parseFloat((el as HTMLSelectElement).value) || 0.98); try { localStorage.setItem('rta-fade', (el as HTMLSelectElement).value); } catch {} },
+    'set-rta-fade': (el) => { rtaFade.set(parseFloat((el as HTMLSelectElement).value) || 0.98); try { localStorage.setItem('rta-fade', (el as HTMLSelectElement).value); } catch {} },
     'set-rta-bins': (el) => { setRtaBins(parseInt((el as HTMLSelectElement).value) || 128); },
     'wf-pause': () => toggleWfPause(),
     'wf-reset': () => resetWf(),
@@ -904,6 +904,8 @@ function sdrNudgeVolume(dv: number) {
 }
 import { plotRect as plotRectPub } from '../render/plot';
 import { exitMeasMode as exitMeasModePub } from './measure';
+import { rtaFade, wfPaused } from './waterfallState';
+import { displayOffset, smoothBins } from './displayState';
 
 // ── Re-exports for the rest of the app ──
 // The panel modules own these actions; the previous public surface (everything imported

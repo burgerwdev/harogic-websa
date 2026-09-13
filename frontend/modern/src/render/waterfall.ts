@@ -2,6 +2,7 @@
 import * as S from '../core/store';
 import { canvasColors, getTheme } from '../core/theme';
 import { percentileApprox } from '../dsp/stats';
+import { wfHiDbm, wfLoDbm, wfRangeMode } from '../ui/waterfallState';
 
 // 密度 → 颜色 LUT(256 级), 按主题区分: dark=荧光系(深底亮色), light=深色系(浅底高对比)
 let lutCache: { theme: string; lut: Uint32Array } | null = null;
@@ -75,14 +76,14 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   // the existing canvas content instead of rebuilding ~100k pixels.
   if (
     wfLastPushes === S.waterfallPushes && wfLastMax === dmax && wfLastTheme === theme
-    && wfImgKey === `${W}x${H}:${S.wfRangeMode}:${S.wfLoDbm}:${S.wfHiDbm}`
+    && wfImgKey === `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}`
   ) {
     return;
   }
   wfLastPushes = S.waterfallPushes;
   wfLastMax = dmax;
   wfLastTheme = theme;
-  wfImgKey = `${W}x${H}:${S.wfRangeMode}:${S.wfLoDbm}:${S.wfHiDbm}`;
+  wfImgKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}`;
   if (!wfImg || wfImg.width !== W || wfImg.height !== H) wfImg = ctx.createImageData(W, H);
   const img = wfImg;
   const px = img.data;
@@ -144,9 +145,9 @@ function buildRow(levels: ArrayLike<number>, w: number, maxDensity: number, lo: 
 
 /** Resolve the dB window for the current range mode. */
 function windowFor(levels: ArrayLike<number>): { lo: number; hi: number; offset: boolean } {
-  if (S.wfRangeMode === 'fixed') {
-    const lo = Math.min(S.wfLoDbm, S.wfHiDbm - 1);
-    return { lo, hi: S.wfHiDbm, offset: false };
+  if (wfRangeMode.get() === 'fixed') {
+    const lo = Math.min(wfLoDbm.get(), wfHiDbm.get() - 1);
+    return { lo, hi: wfHiDbm.get(), offset: false };
   }
   const floor = percentileApprox(levels, 0.3);
   let peak = -Infinity;

@@ -39,6 +39,8 @@ import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
 } from '../ui/swpState';
+import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { displayOffset, displayUnit } from '../ui/displayState';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -238,7 +240,7 @@ export function connectWS() {
         || Math.abs(startHz - lastRtaStartHz) > 0.5
         || Math.abs(stopHz - lastRtaStopHz) > 0.5;
       if (axisChanged) {
-        if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+        if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
         for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
         for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
         S.resetWaterfall();
@@ -267,13 +269,18 @@ export function connectWS() {
       // if the user changes ref level or scale (dbPerDiv) the grid moves with the trace,
       // so density and trace never drift apart. A window change rebuilds the grid.
       const dispRange = S.totalDivs * S.dbPerDiv;
-      const dB_PER_BIN = dispRange / S.RTA_AMP_BINS;
+      // Slot reads are cheap but not free: hoist them out of the per-bin loops below
+      // (bins * points iterations per frame). Reading them inside the loop made the main
+      // thread miss the 1 Hz STATUS cadence and stalled the UI during SDR/RTA entry.
+      const bins = rtaAmpBins.get();
+      const fade = rtaFade.get();
+      const dB_PER_BIN = dispRange / bins;
       const refTop = getDisplayRef();
       if (lastDensRef !== refTop || lastDensRange !== dispRange) {
-        if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+        if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
         lastDensRef = refTop; lastDensRange = dispRange;
       }
-      const len2 = spec.length * S.RTA_AMP_BINS;
+      const len2 = spec.length * bins;
       const floorN = percentileApprox(spec, 0.3);
       // Amplitude-graded weight: how far a point sits above the noise floor decides how
       // strongly it accumulates. Weak signals (>3 dB) still leave a light density cloud
@@ -284,10 +291,10 @@ export function connectWS() {
         return 0.25 + 0.75 * ((relDb - 3) / 22);
       };
       const pushDensity = (nd: Float32Array, i: number, _relDb: number, w: number) => {
-        const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
-        const o = i * S.RTA_AMP_BINS;
+        const b = Math.max(0, Math.min(bins - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
+        const o = i * bins;
         const bump = (bin: number, v: number) => {
-          if (bin < 0 || bin >= S.RTA_AMP_BINS) return;
+          if (bin < 0 || bin >= bins) return;
           const k = o + bin;
           nd[k] += v;
           if (nd[k] > 40) nd[k] = 40;
@@ -299,7 +306,7 @@ export function connectWS() {
         bump(b - 2, 1 * w);
         bump(b + 2, 1 * w);
       };
-      if (!S.rtaDensity2d || S.rtaDensity2d.length !== len2) {
+      if (!S.rtaDensity2d || S.rtaDensity2d!.length !== len2) {
         const nd = new Float32Array(len2);
         for (let i = 0; i < spec.length; i++) {
           const w = accW(spec[i] - floorN);
@@ -308,11 +315,11 @@ export function connectWS() {
         }
         S.setRtaDensity2d(nd);
       } else {
-        const nd = S.rtaDensity2d;
+        const nd = S.rtaDensity2d!;
         for (let i = 0; i < spec.length; i++) {
-          for (let b = 0; b < S.RTA_AMP_BINS; b++) {
-            const v = nd[i * S.RTA_AMP_BINS + b] * S.rtaFade;
-            nd[i * S.RTA_AMP_BINS + b] = v > 0.05 ? v : 0;
+          for (let b = 0; b < bins; b++) {
+            const v = nd![i * bins + b] * fade;
+            nd![i * bins + b] = v > 0.05 ? v : 0;
           }
           const w = accW(spec[i] - floorN);
           if (w <= 0) continue;
@@ -339,7 +346,7 @@ export function connectWS() {
         S.rtaDone[ti] = shim.done;
       });
       updateTrackingMarkers();
-      if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
+      if (waterfallOn.get() && S.rtaMode && !wfPaused.get()) {
         // bitmap rows are often all-zero; derive waterfall row from the live trace
         pushRtaRow(spec, waterfallRowWidth(), 100);  // same width as the swept path (one peak-hold stage)
       }
@@ -426,14 +433,14 @@ export function updateStatus(s: any) {
     }
   }
   noteDisplayRefReport(Number(s.ref));
-  if (S.displayUnit !== 'dB') setDisplayRef('mode', refLevel.get());
+  if (displayUnit.get() !== 'dB') setDisplayRef('mode', refLevel.get());
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
   const cur = refLevel.get();
   const refText = Number.isInteger(cur) ? cur.toFixed(0) : cur.toFixed(1);
-  setInput('input-ref', S.displayUnit === 'dB' ? '0' : refText);
+  setInput('input-ref', displayUnit.get() === 'dB' ? '0' : refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
@@ -534,8 +541,8 @@ export function updateStatus(s: any) {
     }
   }
   const of = document.getElementById('input-offset') as HTMLInputElement;
-  if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - S.displayOffset) > 0.01)
-    of.value = S.displayOffset.toFixed(1);
+  if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - displayOffset.get()) > 0.01)
+    of.value = displayOffset.get().toFixed(1);
   const gf = document.getElementById('btn-gapfill');
   if (gf) {
     gf.textContent = S.currentGapFill ? t('on') : t('off');

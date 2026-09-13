@@ -4,23 +4,24 @@ import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 import { send } from '../../core/wsSend';
 import { requestRender } from '../../render/redraw';
+import { waterfallOn, wfPaused } from '../waterfallState';
 
 export function toggleWaterfall() {
-  S.setWaterfallOn(!S.waterfallOn);
-  if (S.waterfallOn) S.resetWaterfall();
+  waterfallOn.set(!waterfallOn.get());
+  if (waterfallOn.get()) S.resetWaterfall();
   const wf = document.getElementById('waterfall');
-  if (wf) wf.style.display = S.waterfallOn ? '' : 'none';
+  if (wf) wf.style.display = waterfallOn.get() ? '' : 'none';
   const mt = document.getElementById('marker-table');
-  if (mt) mt.style.display = S.waterfallOn ? 'none' : '';
+  if (mt) mt.style.display = waterfallOn.get() ? 'none' : '';
   const btn = document.getElementById('btn-waterfall');
-  if (btn) btn.classList.toggle('active', S.waterfallOn);   // text stays "Waterfall", active = on
+  if (btn) btn.classList.toggle('active', waterfallOn.get());   // text stays "Waterfall", active = on
   requestRender();
 }
 
 export function toggleWfPause() {
-  S.setWfPaused(!S.wfPaused);
+  wfPaused.set(!wfPaused.get());
   const b = document.getElementById('btn-wf-pause');
-  if (b) b.classList.toggle('active', S.wfPaused);
+  if (b) b.classList.toggle('active', wfPaused.get());
 }
 
 export function resetWf() {

@@ -15,10 +15,10 @@ export function renderHarmOverlay(powers: Float32Array) {
   col.font = 'bold 10px monospace';
   h.list.forEach((hh: any) => {
     if (!isFinite(hh.f) || !isFinite(hh.amp)) return;
-    if (hh.f < fa[0] || hh.f > fa[fa.length - 1]) return;
+    if (hh.f < fa![0] || hh.f > fa![fa!.length - 1]) return;
     let best = 0, bd = 1e30;
-    for (let i = 0; i < fa.length; i++) {
-      const d = Math.abs(fa[i] - hh.f);
+    for (let i = 0; i < fa!.length; i++) {
+      const d = Math.abs(fa![i] - hh.f);
       if (d < bd) { bd = d; best = i; }
     }
     const x = getX(best, n);

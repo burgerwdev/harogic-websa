@@ -27,7 +27,7 @@ export function activeMarkerValley() {
   S.setValleySeqPos(list.findIndex((x: any) => Math.abs(x.i - bi) <= 3));
   if (S.valleySeqPos < 0) S.setValleySeqPos(0);
   const fit = parabolaFit(p, bi);
-  const bh = (S.freqArray && S.freqArray.length > 1) ? S.freqArray[1] - S.freqArray[0] : 0;
+  const bh = (S.freqArray && S.freqArray!.length > 1) ? S.freqArray![1] - S.freqArray![0] : 0;
   setMarkerIdx(bi, S.freqArray![bi] + fit.dk * bh);
 }
 

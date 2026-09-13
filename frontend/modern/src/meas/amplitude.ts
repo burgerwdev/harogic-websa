@@ -11,7 +11,7 @@ import { plotRect } from '../render/plot';
 
 export function measureAmp() {
   const dp = getDisplayPowers();
-  if (!dp || !S.freqArray || S.freqArray.length < 2) return;
+  if (!dp || !S.freqArray || S.freqArray!.length < 2) return;
   const inp = document.getElementById('input-ampdbs') as HTMLInputElement;
   const thrs = (inp?.value || '3,10,20')
     .split(',').map(s => parseFloat(s.trim()))
@@ -29,8 +29,8 @@ export function measureAmp() {
     const hasL = !(li === 0 && dp[0] > th);
     const hasR = !(ri === n - 1 && dp[n - 1] > th);
     if (!hasL && !hasR) continue;
-    const lf = hasL ? crossX(dp, li, th, -1) : fa[0];
-    const rf = hasR ? crossX(dp, ri, th, +1) : fa[n - 1];
+    const lf = hasL ? crossX(dp, li, th, -1) : fa![0];
+    const rf = hasR ? crossX(dp, ri, th, +1) : fa![n - 1];
     rows.push({ thr, lf, rf, bw: rf - lf, hasL, hasR });
   }
   S.setAmpRes({ rows, peak: pv, pi });

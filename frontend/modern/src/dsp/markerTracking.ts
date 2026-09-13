@@ -2,6 +2,7 @@
 import * as S from '../core/store';
 import { centerHz } from '../ui/freqState';
 import { smoothForDisplay } from './smooth';
+import { smoothBins } from '../ui/displayState';
 
 interface RankedPeak { idx: number; amp: number; freq: number; }
 
@@ -11,7 +12,7 @@ function activePowers(): Float32Array | null {
   }
   const trace = S.traces[S.activeTraceIdx];
   if (!trace?.powers) return null;
-  return S.smoothBins > 1
+  return smoothBins.get() > 1
     ? smoothForDisplay(trace.powers, trace.mode)
     : trace.powers;
 }
@@ -52,11 +53,11 @@ function assign(
     !occupied.some(index => Math.abs(index - candidate.idx) <= 5));
   if (!available.length) return false;
   let peak: RankedPeak | undefined;
-  if (preferredFrequency != null && S.freqArray && S.freqArray.length > 1) {
+  if (preferredFrequency != null && S.freqArray && S.freqArray!.length > 1) {
     const nearest = available.reduce((best, candidate) =>
       Math.abs(candidate.freq - preferredFrequency) < Math.abs(best.freq - preferredFrequency)
         ? candidate : best);
-    const span = Math.abs(S.freqArray[S.freqArray.length - 1] - S.freqArray[0]);
+    const span = Math.abs(S.freqArray![S.freqArray!.length - 1] - S.freqArray![0]);
     if (Math.abs(nearest.freq - preferredFrequency) <= span * 0.2) peak = nearest;
   } else if (preferredIndex !== undefined) {
     const nearest = available.reduce((best, candidate) =>

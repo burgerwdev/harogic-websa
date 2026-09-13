@@ -11,6 +11,7 @@ import { displayRefDiverges, getDisplayRef, setDisplayRef } from '../displayRef'
 import { currentGraphMode } from '../graphMode';
 import { refLevel, refMode } from '../refState';
 import { sdrRefAuto } from '../sdrState';
+import { displayOffset } from '../displayState';
 
 export function setRefLevel() {
   const el = document.getElementById('input-ref') as HTMLInputElement;
@@ -128,7 +129,7 @@ export function setAmp() {
 
 export function setOffset() {
   const v = parseFloat((document.getElementById('input-offset') as HTMLInputElement).value);
-  S.setDisplayOffset(isFinite(v) ? v : 0);
+  displayOffset.set(isFinite(v) ? v : 0);
   requestRender();
 }
 

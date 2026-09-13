@@ -1,35 +1,9 @@
 // Global state (centralized management of the original app.js globals)
-export interface TraceState {
-  id: number;
-  mode: string;
-  prevMode?: string;   // mode before Freeze (View) toggle, to restore on unfreeze
-  raw: Float32Array | null;
-  powers: Float32Array | null;
-  avgSum: Float32Array | null;
-  avgCount: number;
-  reference: Float32Array | null;
-  isNormalized: boolean;
-  _settling?: boolean;
-  _lastAbsorb?: number;
-  _noiseFloorT?: number;
-  _floorAt?: number;
-  avgTarget: number;      // SWP average depth (0 = continuous)
-  avgTargetRta: number;   // RTA average depth (mode-private, 0 = continuous)
-  done: boolean;       // finite average completed
-}
-
-export interface MarkerState {
-  id: number;
-  enabled: boolean;
-  mode: string; // OFF | NORMAL | DELTA
-  idx: number;
-  refId: number;
-  freq: number | null;
-  tracking: boolean;
-}
-
-export interface ExtremaItem { i: number; v: number; sv?: number; f: number; a: number; }
-
+//
+// Parameters live in ui/*State.ts slots; measurement results live in core/results.ts;
+// shared types in core/model.ts. This module keeps the runtime/UI state and re-exports the
+// moved names so existing `S.x` / `S.setX` call sites keep working.
+import type { MarkerState, TraceState } from './model';
 // Canvas
 //
 // These are assigned by initStore() rather than at import time: importing this module used
@@ -108,8 +82,6 @@ export function setBadData(v: boolean) { badData = v; }
 export function setDeviceConnected(v: boolean) { deviceConnected = v; }
 export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }
-export let displayUnit: 'dBm' | 'dB' = 'dBm';
-export function setDisplayUnit(v: 'dBm' | 'dB') { displayUnit = v; }
 // (The display reference level lives in ui/displayRef.ts: it had several writers with no
 // arbitration, so a Preset/normalise/trace reset could clobber a manually set SDR Ref.)
 export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
@@ -134,8 +106,6 @@ export let trigOverlay: string[] = [];      // status chip + warnings, drawn top
 export let statusWarnings: string[] = [];
 export function setStatusWarnings(v: string[]) { statusWarnings = v; }
 export function setTrigOverlay(v: string[]) { trigOverlay = v; }
-export let displayOffset = 0.0;
-export function setDisplayOffset(v: number) { displayOffset = v; }
 
 // Limit line + pass/fail check (state owned by ui/limits.ts, math by dsp/limits.ts)
 export interface LimitPointState { freqHz: number; level: number; }
@@ -143,16 +113,9 @@ export interface LimitsState { on: boolean; tol: number; points: LimitPointState
 export let limits: LimitsState = { on: false, tol: 0, points: [] };
 export function setLimits(v: LimitsState) { limits = v; }
 
-export let freqArray: Float64Array | null = null;
-export function setFreqArray(v: Float64Array | null) { freqArray = v; }
-export let freqVersion = -1;
-export function setFreqVersion(v: number) { freqVersion = v; }
-
 export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz', rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz' };
 
 // Traces
-export let activeTraceIdx = 0;
-export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
 export const traces: TraceState[] = [
   { id: 1, mode: 'CLEAR_WRITE', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, avgTargetRta: 16, done: false },
   { id: 2, mode: 'OFF', raw: null, powers: null, avgSum: null, avgCount: 0, reference: null, isNormalized: false, avgTarget: 16, avgTargetRta: 16, done: false },
@@ -161,8 +124,6 @@ export const traces: TraceState[] = [
 ];
 
 // Markers
-export let activeMkrId = 1;
-export function setActiveMkrId(v: number) { activeMkrId = v; }
 export const MARKER_COLORS = ['#FF4444', '#FFD700', '#1E90FF', '#FFFFFF'];
 export const markers: MarkerState[] = [
   { id: 1, enabled: false, mode: 'OFF', idx: 0, refId: 1, freq: null, tracking: false },
@@ -172,74 +133,33 @@ export const markers: MarkerState[] = [
 ];
 
 // Measurement state
-export interface M3dBResult { peak: number; thresh: number; thr: number; pi: number; li: number; ri: number; lf: number; rf: number; lv: number; rv: number; bw: number; peakF: number; }
-export let m3dB: M3dBResult | null = null;
-export function setM3dB(v: M3dBResult | null) { m3dB = v; }
-export interface HarmResult { f0: number; p0: number; count: number; list: { n: number; f: number; amp: number | null; dbc: number | null; idx: number; inSpan: boolean }[]; }
-export let harm: HarmResult | null = null;
-export function setHarm(v: HarmResult | null) { harm = v; }
+
 export let measOn = false;
 export function setMeasOn(v: boolean) { measOn = v; }
 export let measTabSel = 'amp';
 export function setMeasTabSel(v: string) { measTabSel = v; }
 export let viewMode: string = 'std';
 export function setViewMode(v: string) { viewMode = v; }
-export interface StdSnap { traces: { mode: string }[]; markers: MarkerState[]; }
-export let stdSnap: StdSnap | null = null;
-export function setStdSnap(v: StdSnap | null) { stdSnap = v; }
-export let harmValMode = 'RT';
-export let harmAccum: any = null;
-export function setHarmAccum(v: any) { harmAccum = v; }
-export let pnmData: any = null;
-export function setPnmData(v: any) { pnmData = v; }
-export let pnmCarAcc: any = null;
-export function setPnmCarAcc(v: any) { pnmCarAcc = v; }
-export let ampRes: any = null;
-export function setAmpRes(v: any) { ampRes = v; }
 
+export let harmValMode = 'RT';
 // Channel measurements: channel power / OBW / ACPR of the displayed trace
-export interface ChanResult {
-  centerHz: number; channelBw: number; obwPercent: number; acpOffset: number; acpBw: number;
-  mainDbm: number | null;
-  lowerDbc: number | null; upperDbc: number | null;
-  obw: number | null; obwLow: number | null; obwHigh: number | null;
-}
-export let chanRes: ChanResult | null = null;
-export function setChanRes(v: ChanResult | null) { chanRes = v; }
-export let lastHarmList: any = null;
-export function setLastHarmList(v: any) { lastHarmList = v; }
 
 // Smoothing / peak finding
-export let smoothBins = 1;
-export function setSmoothBins(v: number) { smoothBins = v; }
 export let valleySeqPos = 0;
 export function setValleySeqPos(v: number) { valleySeqPos = v; }
 
 // Peak list
 export let peakListOn = false;
 export function setPeakListOn(v: boolean) { peakListOn = v; }
-export let peakMarks: any[] | null = null;
-export function setPeakMarks(v: any[] | null) { peakMarks = v; }
 export let peakThrUserSet = false;
 export function setPeakThrUserSet(v: boolean) { peakThrUserSet = v; }
 export let normRefWinUser = 0;
 export function setNormRefWinUser(v: number) { normRefWinUser = v; }
 // Latest GNSS status (for the detail popover)
 // RTA 实时频谱 + 瀑布
-export let rtaData: any = null;
-export function setRtaData(v: any) { rtaData = v; }
-export let rtaDisplays: (Float32Array | null)[] = [null, null, null, null];   // per-trace RTA accumulation
-export let rtaAvgN: number[] = [0, 0, 0, 0];
-export let rtaAvgSum: (Float32Array | null)[] = [null, null, null, null];
-export let rtaDone: boolean[] = [false, false, false, false];
-export function setRtaDisplays(v: (Float32Array | null)[]) { rtaDisplays = v; }
+   // per-trace RTA accumulation
 // Density persistence params (UI-configurable in RTA mode)
-export let RTA_AMP_BINS = 128;                            // amplitude bins (~0.78 dB/bin at 100 dB)
-export let rtaFade = 0.98;                                // per-frame density decay (slower = longer persistence)
-export function setRtaAmpBins(v: number) { RTA_AMP_BINS = v; }
-export function setRtaFade(v: number) { rtaFade = v; }
-export let rtaDensity2d: Float32Array | null = null;   // freq x amp probability density (signal trace path)
-export function setRtaDensity2d(v: Float32Array | null) { rtaDensity2d = v; }
+   // freq x amp probability density (signal trace path)
 export const waterfallRows: Uint16Array[] = [];
 export let waterfallPushes = 0;   // monotonic row counter (rows array saturates at 512)
 export function pushWaterfallRow(row: Uint16Array) {
@@ -248,18 +168,8 @@ export function pushWaterfallRow(row: Uint16Array) {
   if (waterfallRows.length > 512) waterfallRows.shift();
 }
 export function resetWaterfall() { waterfallRows.length = 0; waterfallPushes = 0; }
-export let waterfallOn = false;
-export function setWaterfallOn(v: boolean) { waterfallOn = v; }
 // Waterfall colour range: Auto = per-frame relative (noise texture always visible),
 // Fixed = an absolute dBm window shared by both modes.
-export let wfRangeMode: 'auto' | 'fixed' = 'auto';
-export function setWfRangeMode(v: 'auto' | 'fixed') { wfRangeMode = v; }
-export let wfLoDbm = -110;
-export function setWfLoDbm(v: number) { wfLoDbm = v; }
-export let wfHiDbm = -30;
-export function setWfHiDbm(v: number) { wfHiDbm = v; }
-export let wfPaused = false;
-export function setWfPaused(v: boolean) { wfPaused = v; }
 export let rtaMode = false;
 export function setRtaMode(v: boolean) { rtaMode = v; }
 // SDR mode: reuses the RTA renderer, but auto-scales the amplitude and draws a
@@ -281,3 +191,16 @@ export const NORM_POS_CAP = 0.0;
 export const ABSORB_THRESH = 0.3;
 export const NORM_REF_RBW_FACTOR = 60;
 export const PNM_OFFSETS = [100, 1000, 10000, 100000, 1000000, 10000000];
+
+// ── Re-exports of the moved state (results + types) ──
+export type {
+  ChanResult, ExtremaItem, HarmResult, M3dBResult, MarkerState, StdSnap, TraceState,
+} from './model';
+export {
+  activeMkrId, activeTraceIdx, ampRes, chanRes, freqArray, freqVersion, harm, harmAccum,
+  lastHarmList, m3dB, peakMarks, pnmCarAcc, pnmData, rtaAvgN, rtaAvgSum, rtaData,
+  rtaDensity2d, rtaDisplays, rtaDone, setActiveMkrId, setActiveTraceIdx, setAmpRes,
+  setChanRes, setFreqArray, setFreqVersion, setHarm, setHarmAccum, setLastHarmList, setM3dB,
+  setPeakMarks, setPnmCarAcc, setPnmData, setRtaData,
+  setRtaDensity2d, setRtaDisplays, setStdSnap, stdSnap,
+} from './results';

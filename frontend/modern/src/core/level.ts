@@ -9,6 +9,7 @@
 //
 // Conversions are for a 50 ohm system, which is what the SAN series uses.
 import * as S from '../core/store';
+import { displayOffset } from '../ui/displayState';
 
 export type LevelUnit = 'dBm' | 'dBmV' | 'dBuV' | 'dBV';
 
@@ -27,12 +28,12 @@ export function unitOffsetDb(unit: LevelUnit): number {
 
 /** Instrument reading (dBm) -> what the user should see, including the external offset. */
 export function toDisplayLevel(dbm: number): number {
-  return dbm + unitOffsetDb(S.levelUnit) + S.displayOffset;
+  return dbm + unitOffsetDb(S.levelUnit) + displayOffset.get();
 }
 
 /** What the user typed -> instrument-domain dBm. */
 export function fromDisplayLevel(value: number): number {
-  return value - unitOffsetDb(S.levelUnit) - S.displayOffset;
+  return value - unitOffsetDb(S.levelUnit) - displayOffset.get();
 }
 
 export function levelUnit(): LevelUnit {

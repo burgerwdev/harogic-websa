@@ -30,7 +30,7 @@ export function hasExcursion(p: ArrayLike<number>, k: number, dL: number, isPeak
 }
 
 export function getTraceDisplay(t: S.TraceState): Float32Array | null {
-  if (S.smoothBins > 1 && t.powers) return smoothForDisplay(t.powers, t.mode);
+  if (smoothBins.get() > 1 && t.powers) return smoothForDisplay(t.powers, t.mode);
   return t.powers;
 }
 
@@ -46,14 +46,14 @@ export function findExtremesOrdered(_dir: string, isPeak: boolean): ExtremaItem[
   const t = S.traces[S.activeTraceIdx];
   const disp = getDisplayPowers();
   if (!disp) return [];
-  const smoothed = S.smoothBins > 1;
+  const smoothed = smoothBins.get() > 1;
   const raw = (t && t.powers) ? t.powers : disp;
   const thrEl = document.getElementById('input-peakthr') as HTMLInputElement;
   const thr = thrEl ? (parseFloat(thrEl.value) || -200) : -200;
   const isNorm = !!(t && t.reference && t.isNormalized);
   const EXCURSION = 6;
   const DEPTH = 3;
-  const binHz = (S.freqArray && S.freqArray.length > 1) ? S.freqArray[1] - S.freqArray[0] : 0;
+  const binHz = (S.freqArray && S.freqArray!.length > 1) ? S.freqArray![1] - S.freqArray![0] : 0;
   const fa = S.freqArray || new Float64Array(disp.length);
   const res: ExtremaItem[] = [];
   for (let i = 1; i < disp.length - 1; i++) {
@@ -69,7 +69,7 @@ export function findExtremesOrdered(_dir: string, isPeak: boolean): ExtremaItem[
         : (v <= l && v <= r && Math.max(l - v, r - v) >= DEPTH);
       if (isV && hasExcursion(disp, i, EXCURSION, false)) {
         if (!smoothed) {
-          const half = (S.smoothBins - 1) >> 1;
+          const half = (smoothBins.get() - 1) >> 1;
           const N = Math.max(2, half);
           let bi = i, bv = v;
           for (let j = Math.max(0, i - N); j <= Math.min(disp.length - 1, i + N); j++) {
@@ -146,7 +146,7 @@ export function setMarkerIdx(idx: number, freqHz?: number) {
   if (!m) return;
   m.enabled = true;
   if (m.mode === 'OFF') m.mode = 'NORMAL';
-  const maxI = S.freqArray ? S.freqArray.length - 1 : 1000;
+  const maxI = S.freqArray ? S.freqArray!.length - 1 : 1000;
   m.idx = Math.max(0, Math.min(maxI, Math.round(idx)));
   m.freq = (freqHz != null && isFinite(freqHz) && freqHz > 0) ? freqHz : markerFreqHz(m.idx);
   requestRender();
@@ -154,3 +154,4 @@ export function setMarkerIdx(idx: number, freqHz?: number) {
 
 import { markerFreqHz } from '../core/markerCommon';
 import { requestRender } from '../render/redraw';
+import { smoothBins } from '../ui/displayState';

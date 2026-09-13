@@ -6,6 +6,7 @@ import { markerFreqHz } from '../core/markerCommon';
 import { requestRender } from './redraw';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak } from '../dsp/markerTracking';
+import { displayUnit } from '../ui/displayState';
 
 export function initMarkerTable() {
   const tbody = document.getElementById('marker-tbody');
@@ -76,7 +77,7 @@ export function updateMarkerTable(powers: Float32Array | null) {
   initMarkerTable();
   const tbody = document.getElementById('marker-tbody');
   if (!tbody) return;
-  const unit = S.displayUnit === 'dB' ? ' dB' : null;
+  const unit = displayUnit.get() === 'dB' ? ' dB' : null;
   S.markers.forEach((m, i) => {
     const row = tbody.children[i] as HTMLTableRowElement;
     if (!row) return;

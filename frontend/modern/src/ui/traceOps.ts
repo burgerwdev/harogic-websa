@@ -10,6 +10,7 @@ import { applyTraceMode } from '../dsp/traces';
 import { normalizeAvgCount, setAverageCount } from '../dsp/accumulator';
 import { requestRender } from '../render/redraw';
 import { t } from '../core/i18n';
+import { displayUnit, smoothBins } from './displayState';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
 export function syncFreezeBtn() {
@@ -40,8 +41,8 @@ export function switchTraceTab(idx: number) {
   if (sel) sel.value = t.mode === 'VIEW' ? (t.prevMode || 'CLEAR_WRITE') : t.mode;
   syncFreezeBtn();
   const anyNorm = S.traces.some(x => x.isNormalized && x.reference);
-  S.setDisplayUnit((t.reference && t.isNormalized) ? 'dB' : (anyNorm ? 'dB' : 'dBm'));
-  setDisplayRef('mode', S.displayUnit === 'dB' ? 0.0 : refLevel.get());
+  displayUnit.set((t.reference && t.isNormalized) ? 'dB' : (anyNorm ? 'dB' : 'dBm'));
+  setDisplayRef('mode', displayUnit.get() === 'dB' ? 0.0 : refLevel.get());
   updateNormalizeStatusUI();
   updateInfoBar();
 }
@@ -57,7 +58,7 @@ export function clearRtaTrace() {
   S.rtaAvgSum[idx] = null;
   S.rtaDone[idx] = false;
   S.setRtaDisplays(arr);
-  if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+  if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
   requestRender();
 }
 
@@ -121,7 +122,7 @@ export function exportPeakListCsv(): void {
     '# peak_list',
     `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
     `rbw_hz=${currentRBW.get()}`, `threshold_dbm=${thr}`,
-    `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
+    `smooth_bins=${smoothBins.get()}`, `time=${new Date().toISOString()}`,
     'n,bin,freq_hz,level_dbm,delta_from_strongest_db',
   ];
   const rows = peaks.map((p) => {
@@ -149,8 +150,8 @@ export function exportActiveTraceCsv(): void {
     `# trace=T${t.id}`, `mode=${t.mode}`,
     `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
     `rbw_hz=${currentRBW.get()}`, `vbw_hz=${currentVBW.get()}`,
-    `display_unit=${S.displayUnit}`, `normalized=${t.isNormalized}`,
-    `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
+    `display_unit=${displayUnit.get()}`, `normalized=${t.isNormalized}`,
+    `smooth_bins=${smoothBins.get()}`, `time=${new Date().toISOString()}`,
     'freq_hz,power',
   ];
   const rows: string[] = [];

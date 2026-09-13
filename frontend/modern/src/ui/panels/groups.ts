@@ -3,6 +3,7 @@
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 import { syncMarkerTrackingToggle, updateMarkersAllBtn } from './markers';
+import { waterfallOn } from '../waterfallState';
 
 export function syncToggleTexts() {
   const pl = document.getElementById('btn-peaklist');
@@ -21,7 +22,7 @@ export function syncToggleTexts() {
   const tracking = document.getElementById('btn-marker-tracking');
   if (tracking) tracking.textContent = t('tracking');
   const wb = document.getElementById('btn-waterfall');
-  if (wb) wb.classList.toggle('active', S.waterfallOn);
+  if (wb) wb.classList.toggle('active', waterfallOn.get());
 }
 
 export function toggleGroup(el: HTMLElement) {

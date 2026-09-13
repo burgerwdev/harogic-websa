@@ -8,9 +8,9 @@ import { updateInfoBar } from '../render/infobar';
 
 export function normRefWindow(): number {
   if (S.normRefWinUser > 0) return S.normRefWinUser;
-  if (!S.freqArray || S.freqArray.length < 2) return 5;
-  const binHz = S.freqArray[1] - S.freqArray[0];
-  const spanHz = S.freqArray[S.freqArray.length - 1] - S.freqArray[0];
+  if (!S.freqArray || S.freqArray!.length < 2) return 5;
+  const binHz = S.freqArray![1] - S.freqArray![0];
+  const spanHz = S.freqArray![S.freqArray!.length - 1] - S.freqArray![0];
   let w = Math.round(S.NORM_REF_RBW_FACTOR * currentRBW.get() / binHz);
   const maxByHz = Math.max(3, Math.floor(Math.min(0.02 * spanHz, 5e6) / binHz));
   w = Math.max(3, Math.min(w, maxByHz, 9));
@@ -96,7 +96,7 @@ export function normalizeActiveTrace() {
   t._settling = true;
   t._lastAbsorb = performance.now();
   resetTraceAccum(t);
-  S.setDisplayUnit('dB');
+  displayUnit.set('dB');
   setDisplayRef('mode', 0.0);
   updateNormalizeStatusUI();
   updateInfoBar();
@@ -107,7 +107,7 @@ export function resetActiveTraceNormalize() {
   t.reference = null; t.isNormalized = false;
   resetTraceAccum(t);
   if (!S.traces.some(x => x.isNormalized && x.reference)) {
-    S.setDisplayUnit('dBm');
+    displayUnit.set('dBm');
     setDisplayRef('mode', refLevel.get());
   }
   updateNormalizeStatusUI();
@@ -115,5 +115,6 @@ export function resetActiveTraceNormalize() {
 }
 
 import { updateNormalizeStatusUI } from './normalizeStatus';
+import { displayUnit } from '../ui/displayState';
 
 export { updateNormalizeStatusUI };

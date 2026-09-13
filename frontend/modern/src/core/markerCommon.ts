@@ -3,7 +3,7 @@ import * as S from './store';
 import { centerHz } from '../ui/freqState';
 
 export function markerFreqHz(idx: number): number {
-  if (S.freqArray && S.freqArray.length > 1) return S.freqArray[Math.min(idx, S.freqArray.length - 1)];
+  if (S.freqArray && S.freqArray!.length > 1) return S.freqArray![Math.min(idx, S.freqArray!.length - 1)];
   return centerHz.get();
 }
 

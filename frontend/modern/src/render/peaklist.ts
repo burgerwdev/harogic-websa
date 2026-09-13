@@ -108,7 +108,7 @@ export function renderPeakMarks(powers: Float32Array) {
   ctx2.save();
   ctx2.beginPath(); ctx2.rect(p.x, p.y, p.w, p.h); ctx2.clip();
   ctx2.font = 'bold 9px monospace';
-  S.peakMarks.forEach((pk) => {
+  S.peakMarks!.forEach((pk) => {
     if (pk.idx < 0 || pk.idx >= n) return;
     const x = getX(pk.idx, n);
     const y = getY(pk.amp);

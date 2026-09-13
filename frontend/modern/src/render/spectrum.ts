@@ -23,15 +23,17 @@ import { setRenderer } from './redraw';
 import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
+import { rtaAmpBins, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
   return {
     centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: getDisplayRef(),
-    displayOffset: S.displayOffset, displayUnit: S.displayUnit, viewMode: S.viewMode,
+    displayOffset: displayOffset.get(), displayUnit: displayUnit.get(), viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
-    ampRes: S.ampRes, peakListOn: S.peakListOn, smoothBins: S.smoothBins,
+    ampRes: S.ampRes, peakListOn: S.peakListOn, smoothBins: smoothBins.get(),
   };
 }
 
@@ -88,7 +90,7 @@ export function renderGrid() {
   }
 
   let loHz = c.centerHz - c.spanHz / 2, hiHz = c.centerHz + c.spanHz / 2;
-  if (S.freqArray && S.freqArray.length > 1) { loHz = S.freqArray[0]; hiHz = S.freqArray[S.freqArray.length - 1]; }
+  if (S.freqArray && S.freqArray!.length > 1) { loHz = S.freqArray![0]; hiHz = S.freqArray![S.freqArray!.length - 1]; }
   drawFreqRow(loHz, hiHz, col, p);
 
   if (c.displayUnit === 'dB') {
@@ -108,7 +110,7 @@ export function renderTraceLine(t: S.TraceState) {
   const p = plotRect();
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-  const data = S.smoothBins > 1 ? smoothForDisplay(t.powers, t.mode) : t.powers;
+  const data = smoothBins.get() > 1 ? smoothForDisplay(t.powers, t.mode) : t.powers;
   const n = data.length;
   ctx.strokeStyle = col.traces[t.id - 1] || col.traces[0];
   ctx.lineWidth = 1.5;
@@ -383,7 +385,7 @@ function renderRtaView() {
     // marker peak-search uses the swept (or HTML default) threshold and jumps onto the noise
     // floor instead of the signal.
     if (rp) autoPeakThr(rp);
-    if (S.waterfallOn) {
+    if (waterfallOn.get()) {
       ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
@@ -407,7 +409,7 @@ export function renderAll() {
   resetStatusBlocks();                             // status area is rebuilt every pass
   // Waterfall container replaces the table slot in ALL modes (incl. RTA)
   const wfc = document.getElementById('waterfall-container');
-  if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
+  if (wfc) wfc.style.display = waterfallOn.get() ? '' : 'none';
 
   // Measurement views register themselves (report finding E-5); the swept path below is
   // the default when nothing is registered for the active mode.
@@ -431,7 +433,7 @@ export function renderAll() {
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
     if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
-  if (S.waterfallOn) {
+  if (waterfallOn.get()) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -552,7 +554,7 @@ function renderRta() {
   // ImageData with gamma-adjusted color), then drawImage-scaled onto the plot so the
   // hot region is continuous and smooth instead of sparse 1px dots. Row 0 = top of the
   // density matrix = displayRef (highest power), matching the plot Y direction.
-  if (S.rtaDensity2d && S.rtaDensity2d.length >= n * S.RTA_AMP_BINS) {
+  if (S.rtaDensity2d && S.rtaDensity2d!.length >= n * rtaAmpBins.get()) {
     drawRtaDensityLayer(n, p);
   } else {
     ctx.fillStyle = col.bg;
@@ -628,7 +630,7 @@ function renderRta() {
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
 let lastSwpWfAt = 0;
 function renderWaterfallIfOn() {
-  if (!S.waterfallOn) return;
+  if (!waterfallOn.get()) return;
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
   // Canvas width = spectrum plot area width (CSS px), fixed (buttons don't squeeze it)
@@ -651,7 +653,7 @@ function renderWaterfallIfOn() {
   // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
   if (!S.rtaMode) {
     const powers = getDisplayPowers();
-    if (powers && !S.wfPaused) {
+    if (powers && !wfPaused.get()) {
       const now = performance.now();
       if (now - lastSwpWfAt > 100) {
         lastSwpWfAt = now;
@@ -670,7 +672,7 @@ let lastDensRebuild = 0;
 // Build the density layer (throttled; cheap drawImage reuse between rebuilds)
 function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number; h: number }) {
   if (!rtaDensLayer) { rtaDensLayer = document.createElement('canvas'); rtaDensCtx = rtaDensLayer.getContext('2d'); }
-  const rows = S.RTA_AMP_BINS;
+  const rows = rtaAmpBins.get();
   const now = performance.now();
   if (rtaDensLayer.width !== cols || rtaDensLayer.height !== rows) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;

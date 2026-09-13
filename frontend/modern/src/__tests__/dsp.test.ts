@@ -18,10 +18,11 @@ import { setUnit } from '../core/units';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { refClockSourceName, refClockStatus } from '../core/refclock';
 import * as S from '../core/store';
+import { smoothBins } from '../ui/displayState';
 import { synthBandpass, synthTwoPeaks } from './synth';
 
 beforeEach(() => {
-  S.setSmoothBins(1);
+  smoothBins.set(1);
 });
 
 describe('sgSmooth (Savitzky-Golay 2阶 + 梯度自适应)', () => {
@@ -96,7 +97,7 @@ describe('findExtremesOrdered 寻谷(带通场景)', () => {
   it('带通两侧各识别 1 个谷(25bin 凹陷合并), 谷位置为凹陷最低', () => {
     const p = synthBandpass(1000);
     S.traces[0].powers = p;
-    S.setSmoothBins(1);
+    smoothBins.set(1);
     const valleys = findExtremesOrdered('right', false);
     expect(valleys.length).toBe(2);   // left valley + right valley
     // left valley at the passband left edge, right valley at the right edge
@@ -107,7 +108,7 @@ describe('findExtremesOrdered 寻谷(带通场景)', () => {
   it('smooth 开启时基于平滑数据定位(与显示一致)', () => {
     const p = synthBandpass(1000);
     S.traces[0].powers = p;
-    S.setSmoothBins(5);
+    smoothBins.set(5);
     const valleys = findExtremesOrdered('right', false);
     expect(valleys.length).toBe(2);
   });
