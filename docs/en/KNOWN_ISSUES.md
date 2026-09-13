@@ -45,3 +45,21 @@
     identified; Auto Ref does not re-enter the session). Changing Ref **manually** is unaffected - even
     when the threshold sits outside the visible range the line is pinned to the edge (with an arrow).
     Change the reference manually while armed, or press `Capture` again afterwards.
+21. **SDR capture centre and the zero-IF artefact**: the IQS stream is tuned exactly on the
+    requested centre now (the old "+200 kHz to avoid the DC centre" shift was removed - it left the
+    lowest 200 kHz of the displayed window uncovered, a blank strip at the left edge). The IQ DC /
+    LO-leakage artefact therefore sits at the centre of the panadapter; a signal exactly on the
+    requested centre overlaps it.
+22. **SDR audio path**: playback is received *and* delivered by a dedicated worker over a second
+    `?audio=1` WebSocket and drives the AudioWorklet directly (the display connection uses
+    `?noaudio=1` and carries no audio). A remaining audio gap is therefore a browser-side worklet
+    ring underrun, not a dropped frame; `document.getElementById('spectrum').dataset.sdrAudio`
+    exposes `enabled/muted/frames/buffered_ms/underruns/rms/worklet/worker` for diagnosis.
+23. **Vendor ADM (SINAD/SNR/THD) is a single-tone metric**: with real broadcast audio there is no
+    dominant modulation tone, so the vendor `ADM_*` values collapse to ~0 and THD is meaningless
+    (same code, 1 kHz test tone: SINAD ~7, SNR ~12). The SDR panel no longer displays it
+    (`cur-sdr-adm` removed); the raw values stay in STATUS `sdr.adm` for API use.
+24. **SDR squelch threshold is channel-power dBFS**: it depends on the demod mode / IF bandwidth
+    (a wider IF raises the noise floor), so the same number squelches differently per mode. The
+    gate has 3 dB hysteresis, a 0.3 s hold and a 5/80 ms ramp, so it does not chatter at the
+    threshold.

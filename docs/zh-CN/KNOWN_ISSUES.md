@@ -40,3 +40,15 @@
     门限线消失（原因尚未定位；Auto Ref 并不重建会话）。**手动**调整 Ref 不受影响——即使门限被推到
     可视区之外，门限线也会钉在边缘显示（带 ▲/▼）。启用触发期间需调参考电平时，请改用手动 Ref，或调完
     后重新按 `Capture`。
+21. **SDR 采集中心与零中频伪影**: IQS 现在严格按用户设定中心采集（旧版会抬高 200 kHz 规避零中频 DC，
+    副作用是显示窗最低 200 kHz 采不到、左侧留白，已移除）。因此 IQ 直流/本振泄漏伪影位于全景图中心；
+    若信号正好在设定中心，会与该伪影重叠。
+22. **SDR 音频链路**: 音频的接收与投递都由独立 worker 经单独的 `?audio=1` WebSocket 完成，并直接驱动
+    AudioWorklet（显示连接用 `?noaudio=1`，不含音频）。因此残余的音频断续属于浏览器侧 worklet 环形缓冲
+    underrun，而不是服务端丢帧；`document.getElementById('spectrum').dataset.sdrAudio` 暴露
+    `enabled/muted/frames/buffered_ms/underruns/rms/worklet/worker` 便于排查。
+23. **厂商 ADM（SINAD/SNR/THD）是单音指标**: 真实广播节目没有主导调制单音，厂商 `ADM_*` 数值会塌到 ~0，
+    THD 无意义（同一段代码对 1 kHz 单音：SINAD ~7、SNR ~12）。SDR 面板已不再显示该行（`cur-sdr-adm` 已移除）；
+    原始数值仍保留在 STATUS 的 `sdr.adm` 供 API 使用。
+24. **SDR 静噪阈值是"信道功率 dBFS"**: 与解调模式/IF 带宽相关（带宽越大噪底越高），同一个数值在不同模式
+    效果不同。门限带 3 dB 迟滞 + 0.3 s 保持 + 5/80 ms 平滑，所以不会在阈值附近抖动。

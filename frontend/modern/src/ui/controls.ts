@@ -932,17 +932,6 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
-  const adm = document.getElementById('cur-sdr-adm');
-  if (adm) {
-    const m = sdr.adm || {};
-    if (m.kind === 'am') {
-      adm.textContent = `AM m=${(m.mod_depth ?? 0).toFixed(0)}%  SINAD ${(m.sinad ?? 0).toFixed(1)}  SNR ${(m.snr ?? 0).toFixed(1)} dB`;
-    } else if (m.kind === 'fm') {
-      adm.textContent = `FM dev=${(m.deviation ?? 0).toFixed(0)} Hz  SINAD ${(m.sinad ?? 0).toFixed(1)}  SNR ${(m.snr ?? 0).toFixed(1)} dB`;
-    } else {
-      adm.textContent = '';
-    }
-  }
 }
 export function toggleWaterfall() {
   S.setWaterfallOn(!S.waterfallOn);
