@@ -215,3 +215,69 @@ def test_sdk_call_fails_fast_on_hard_error():
     with pytest.raises(RuntimeError, match='status=-9'):
         session._sdk_call(fn, 'X')
     assert len(calls) == 1
+
+
+# --- AGC: no clipping burst on (re)configure, and a hard peak ceiling -----------------
+# Measured on hardware before the fix: switching the demod on a real FM station produced
+# nine consecutive full-scale (1.0000) WFM/NFM audio frames, and 18/5 clipped frames per
+# two seconds of steady WFM/AM audio, because the AGC started at unity gain and ramped
+# toward the target at only 20% per block while the FM discriminator output is in Hz.
+
+
+def _agc_block(rms: float, n: int = 2048, seed: int = 0) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(n)
+    return (x / _rms(x) * rms).astype(np.float32)
+
+
+def test_agc_first_block_is_not_clipped_at_unity_gain():
+    from web_sa.demod.filters import Agc
+    agc = Agc(target=0.2)
+    # FM discriminator output scale: several thousand, i.e. ~4 orders of magnitude off.
+    y = agc.process(_agc_block(5000.0))
+    assert np.max(np.abs(y)) <= 1.0, 'first block must not clip'
+    assert 0.1 < _rms(y) < 0.4, 'first block should land near the target, not stay loud'
+
+
+def test_agc_never_exceeds_the_peak_ceiling():
+    from web_sa.demod.filters import Agc
+    agc = Agc(target=0.2, ceiling=0.95)
+    agc.process(_agc_block(0.2))                 # settle somewhere sensible
+    for i, rms in enumerate((0.2, 3.0, 0.5, 12.0, 0.2)):
+        y = agc.process(_agc_block(rms, seed=i + 1))
+        assert np.max(np.abs(y)) <= 0.9500001, f'block {i} peak exceeded the ceiling'
+
+
+def test_agc_hold_keeps_gain_but_still_bounds_the_peak():
+    from web_sa.demod.filters import Agc
+    agc = Agc(target=0.2)
+    agc.process(_agc_block(0.2))
+    gain_before = agc.gain
+    y = agc.process(_agc_block(900.0, seed=7), hold=True)
+    assert agc.gain == gain_before, 'hold must freeze the gain'
+    assert np.max(np.abs(y)) <= 0.9500001
+
+
+def test_agc_silence_does_not_raise_the_gain():
+    from web_sa.demod.filters import Agc
+    agc = Agc(target=0.2)
+    agc.process(_agc_block(0.2))
+    gain_before = agc.gain
+    agc.process(np.zeros(512, dtype=np.float32))
+    assert agc.gain == gain_before
+
+
+def test_analog_demod_reconfigure_does_not_burst():
+    """End-to-end: a reconfigure (new Agc at unity gain) must not emit a clipped block."""
+    demod = AnalogDemod()
+    n = 24000
+    ph = np.cumsum(np.full(n, 2.0 * np.pi * 2000.0 / 48225.0))   # +/-2 kHz deviation
+    z = np.exp(1j * (ph + 0.3 * np.sin(np.linspace(0, 60, n))))
+    demod.configure(48225.0, 'wfm', 180000.0)
+    audio, _ = demod.process(z.real, z.imag, use_agc=True)
+    assert audio.size
+    assert np.max(np.abs(audio)) <= 0.9500001
+    demod.configure(48225.0, 'nfm', 12000.0)              # fresh Agc at unity gain
+    audio2, _ = demod.process(z.real, z.imag, use_agc=True)
+    assert audio2.size
+    assert np.max(np.abs(audio2)) <= 0.9500001, 'reconfigure must not produce a burst'

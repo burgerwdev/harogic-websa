@@ -131,16 +131,23 @@ class Agc:
     """
 
     def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4,
-                 silence_floor=1e-4):
+                 silence_floor=1e-4, ceiling=0.95):
         self.target = float(target)
         self.attack = float(attack)
         self.release = float(release)
         self.max_gain = float(max_gain)
         self.silence_floor = float(silence_floor)
+        # Peak ceiling. An RMS target alone cannot bound the peak: FM broadcast audio has a
+        # crest factor of 4-5, so a 0.2 RMS target still clipped on loud passages (measured
+        # on a real station: 18 clipped frames in 2 s in WFM, 5 in AM). One instantaneous
+        # scale keeps the block below the ceiling without waiting for the AGC to attack.
+        self.ceiling = float(ceiling)
         self.gain = 1.0
+        self._primed = False
 
     def reset(self) -> None:
         self.gain = 1.0
+        self._primed = False
 
     def process(self, x: np.ndarray, hold: bool = False) -> np.ndarray:
         x = np.asarray(x, dtype=np.float32)
@@ -150,6 +157,23 @@ class Agc:
             rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-20))
             if rms >= self.silence_floor:
                 desired = min(self.max_gain, self.target / max(rms, 1e-9))
-                coef = self.attack if desired < self.gain else self.release
-                self.gain += (desired - self.gain) * coef
-        return x * self.gain
+                # Jump straight to the safe gain when the current one would push this block
+                # past full scale, and initialise from the first block after a (re)configure.
+                # Ramping instead (attack is only 20% per block) left the signal at unity gain
+                # for tens of blocks, so the FM discriminator output - which is in Hz, up to
+                # +/-fs/2 - came out tens of times over full scale and was hard-clipped: the
+                # burst heard after every reconfigure/tune. Scaling is deployment-dependent
+                # (Hz for FM, arbitrary DDC units for AM), so the AGC must not assume gain 1
+                # is anywhere near correct.
+                if (not self._primed) or rms * self.gain > 1.0:
+                    self.gain = desired
+                    self._primed = True
+                else:
+                    coef = self.attack if desired < self.gain else self.release
+                    self.gain += (desired - self.gain) * coef
+        y = x * self.gain
+        if self.ceiling > 0.0 and y.size:
+            peak = float(np.max(np.abs(y)))
+            if peak > self.ceiling:
+                y = y * (self.ceiling / peak)
+        return y
