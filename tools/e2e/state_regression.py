@@ -367,6 +367,25 @@ def main() -> int:
         check("Ref down arrow works without pressing up first", float(down) < float(after),
               f"{after} -> {down}")
 
+        # 9b - turning Auto off must enable the Ref step arrows immediately. They used to
+        # follow the backend ref_mode, which is still 'auto' after entering SDR until a
+        # Set/adjust command is sent, so the arrows stayed disabled until a Set.
+        print("9b) Auto off enables the Ref step arrows at once")
+        if not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('active')"):
+            page.click("#btn-ref-auto")          # make sure Auto is on
+            page.wait_for_timeout(700)
+        check("arrows are disabled while Auto is on",
+              page.eval_on_selector("#btn-ref-down", "e => e.disabled"),
+              "down arrow enabled with Auto on")
+        page.click("#btn-ref-auto")              # Auto off: the user takes over
+        page.wait_for_timeout(700)
+        check("arrows are enabled the moment Auto is turned off",
+              not page.eval_on_selector("#btn-ref-down", "e => e.disabled")
+              and not page.eval_on_selector("#btn-ref-up", "e => e.disabled"),
+              "arrows still disabled after Auto off")
+        page.click("#btn-ref-auto")              # restore Auto on
+        page.wait_for_timeout(500)
+
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()
 

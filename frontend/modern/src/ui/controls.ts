@@ -880,6 +880,21 @@ function syncSdrRefUI() {
   }
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = false;
+  // In SDR the reference is owned by the client (auto-scale or manual), not by the backend
+  // `ref_mode` the STATUS carries. Drive the step buttons from sdrRefAuto here, otherwise
+  // toggling Auto off left them disabled until a Set (which is what made the backend report
+  // manual). Range matches adjustRefLevel's SDR clamp.
+  const ref = getDisplayRef();
+  const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
+  if (down) {
+    down.disabled = sdrRefAuto.get() || ref <= -160;
+    down.title = sdrRefAuto.get() ? t('auto') : t('ref_down');
+  }
+  const up = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
+  if (up) {
+    up.disabled = sdrRefAuto.get() || ref >= 40;
+    up.title = sdrRefAuto.get() ? t('auto') : t('ref_up');
+  }
 }
 
 // SDR status -> panel readouts (called on every STATUS)
