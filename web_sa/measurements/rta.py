@@ -21,6 +21,9 @@ from .base import MeasurementSession
 
 log = logging.getLogger(__name__)
 
+# Vendor WARNING return codes (see _note_warning / htra_api.h)
+_WARN_STATUS = {-10, -11, -12, -14, -15, -16, -17, -18, -19}
+
 
 def _dbg(msg: str) -> None:
     log.debug('RTA %s', msg)
@@ -47,6 +50,7 @@ class RtaSession(MeasurementSession):
     FULL_SPAN_HZ = 50.78125e6
     DISPLAY_POINTS = 3328        # upper bound: the device FFT width at full span (~15 kHz/point)
     WATERFALL_WIDTH = 860      # waterfall row width after downsample
+    STALL_TIMEOUT = 4.0       # no good RTA frame for this long -> recover (warnings do not)
 
     def __init__(self, dev):
         super().__init__(dev)
@@ -251,12 +255,33 @@ class RtaSession(MeasurementSession):
         dev.state.last_error = ''
         self._last_wf_time = 0.0
         self._last_get = 0.0
+        self._last_good = time.monotonic()
         # Short settle after configuration (Configuration returned synchronously; the
         # device is ready quickly - official UI switches instantly). With all DLL calls
         # serialized under dev._hw there is no concurrent-Get hazard; too-early Gets just
         # fail cleanly (st != 0 -> skip). 0.35s is a safe margin.
         self._ready_at = time.monotonic() + 0.35
         self._dbg_n = 0
+
+    def _note_warning(self, dev, status: int, armed: bool) -> None:
+        """Record a vendor WARNING status and carry on instead of recovering.
+
+        These are documented as warnings, not failures (htra_api.h):
+            -10 BusTimeOut        the trigger has not arrived yet
+            -11 BusDownLoad       re-issue the configuration (handled by the stall watchdog)
+            -12 IFOverflow        IF saturation - "raise RefLevel_dBm until it stops"
+            -14                   reconfiguration recommended (temperature drift)
+            -15..-19              clock unlock / ADC config warnings
+        Feeding them to the error streak made the RTA path recover-reconfigure once per
+        second, which froze the display whenever Ref was lowered far enough for the IF to
+        saturate (the gain rises as Ref falls).
+        """
+        dev.state.status_warning = int(status)
+        if status == -12:
+            dev.state.last_error = ('IF overflow (-12): raise the reference level until '
+                                    'this warning clears')
+        if armed or status == -10:
+            dev.state.trigger_actual['waiting'] = True
 
     def _step_failed_locked(self, stage: str, status) -> None:
         self._error_streak += 1
@@ -378,6 +403,15 @@ class RtaSession(MeasurementSession):
             info = self._info
             self._dbg_n += 1
             log_this = self._dbg_n % 100 == 1
+            # Stall watchdog. Warning statuses (below) no longer feed the error streak, so a
+            # genuinely wedged stream is detected by "no good frame for a while" instead.
+            # A trigger-armed session legitimately produces no frames until it fires.
+            if (now - self._last_good > self.STALL_TIMEOUT
+                    and not (dev.state.trigger_actual or {}).get('waiting')
+                    and now - self._last_recovery >= 1.0):
+                self._step_failed_locked('stall', 'no frame for %.1fs' % (now - self._last_good))
+                self._last_good = now
+                return [], []
             try:
                 st = T.dll.RTA_BusTriggerStart(T.pointer(dev.dev))
             except Exception as exc:
@@ -387,6 +421,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d trigger ret=%s' % (self._dbg_n, st))
             if st != 0:
+                if st in _WARN_STATUS:
+                    self._note_warning(dev, st, armed)
+                    return [], []
                 if armed:
                     dev.state.trigger_actual['waiting'] = True
                     return [], []
@@ -404,6 +441,9 @@ class RtaSession(MeasurementSession):
             if log_this:
                 _dbg('STEP #%d Get ret=%s' % (self._dbg_n, status))
             if status != 0:
+                if status in _WARN_STATUS:
+                    self._note_warning(dev, status, armed)
+                    return [], []
                 if armed:
                     dev.state.trigger_actual['waiting'] = True
                     return [], []
@@ -411,6 +451,8 @@ class RtaSession(MeasurementSession):
                 return [], []
             self._error_streak = 0
             self._recovery_attempts = 0
+            self._last_good = time.monotonic()
+            dev.state.status_warning = 0
             _st = dev.state
             _tg = self._trigger
             _edges = int(getattr(_tg, 'InPacketTriggerEdges', 0))

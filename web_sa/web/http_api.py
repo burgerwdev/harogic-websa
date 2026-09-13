@@ -205,6 +205,7 @@ def build_status(dev) -> dict:
         'ref_clock': s.ref_clock, 'has_docxo': s.has_docxo,
         'refclk_ppm': s.refclk_ppm, 'calibrating': s.calibrating, 'refclk_out': s.refclk_out,
         'ifagc': s.ifagc, 'ifagc_gain': s.ifagc_gain,
+        'status_warning': s.status_warning,
         'last_cal_freq': s.last_cal_freq,
         'gnss': s.gnss, 'last_error': s.last_error,
     })

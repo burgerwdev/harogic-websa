@@ -131,6 +131,10 @@ class DeviceState:
     sweep_time: float = 0.0      # Manual=绝对秒; xN=倍率; 其他模式忽略
     freq_version: int = 0
     config_version: int = 0
+    # Last vendor WARNING status from the measurement stream (0 = none). -12 is IF
+    # overflow: the IF saturates when Ref is set low, and the vendor's remedy is to raise
+    # RefLevel_dBm. Surfaced so the UI can say so instead of the display appearing frozen.
+    status_warning: int = 0
     last_error: str = ''
     refclk_ppm: float = 0.0
     calibrating: bool = False
