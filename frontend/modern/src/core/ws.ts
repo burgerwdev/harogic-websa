@@ -30,6 +30,7 @@ import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
+import { alignToDisplayWindow } from '../dsp/grid';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { pushSdrAudio } from '../audio/sdrAudio';
 import { sdrRefAuto } from '../ui/sdrState';
@@ -178,10 +179,24 @@ export function connectWS() {
       const expectedBytes = 24 + pts * 8 + pts * 4 + wfLen * 2 + 8;
       if (pts < 2 || wfLen < 1 || event.data.byteLength !== expectedBytes) return;
       let off = 24;
-      const freq = new Float64Array(event.data, off, pts); off += pts * 8;
-      const spec = new Float32Array(event.data, off, pts); off += pts * 4;
+      const capFreq = new Float64Array(event.data, off, pts); off += pts * 8;
+      const capSpec = new Float32Array(event.data, off, pts); off += pts * 4;
       const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
       const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      // The frame header is the DISPLAY window, the freq array the CAPTURE grid. In SDR the
+      // two differ when a hardware offset moved the capture centre; rebin to the display
+      // window so the user's centre is at the canvas centre and the offset edge is a gap.
+      const { freq, spec, shifted } = alignToDisplayWindow(capFreq, capSpec, startHz, stopHz);
+      {
+        // Debug/verification aid: the windows the renderer actually uses (e2e reads it).
+        const cvW = document.getElementById('spectrum');
+        if (cvW && (shifted || currentGraphMode() === 'sdr')) {
+          cvW.dataset.sdrWindow = JSON.stringify({
+            lo: startHz, hi: stopHz,
+            capLo: Number(capFreq[0]), capHi: Number(capFreq[pts - 1]), shifted,
+          });
+        }
+      }
       const plausible = plausibleSpectrum(spec);
       if (plausible) {
         rtaBadCount = 0;

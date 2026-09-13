@@ -88,6 +88,28 @@ def _round_decimate(value) -> int:
     return 1 << (v.bit_length() - 1) if v & (v - 1) else v
 
 
+def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
+                         bandwidth: float) -> dict:
+    """Display window (what the user asked for) and capture window (where the hardware is).
+
+    The IQS capture is centred on ``capture_center_hz`` and a hardware offset can push it
+    away from the requested centre. Publishing both ranges lets the front end map the bins
+    by their true capture frequency and clip them to the display window, so the user's
+    centre lands at the canvas centre and the uncovered edge is a real gap (never invented
+    data). ``center`` is the display centre because every frequency the UI shows (freq axis,
+    markers, limit window) must come from one source.
+    """
+    half = float(bandwidth) / 2.0
+    return {
+        'center': float(center_hz),
+        'capture_center': float(capture_center_hz),
+        'capture_start': float(capture_center_hz) - half,
+        'capture_stop': float(capture_center_hz) + half,
+        'start': float(center_hz) - half,
+        'stop': float(center_hz) + half,
+    }
+
+
 class SdrSession(MeasurementSession):
     name = 'sdr'
 
@@ -314,7 +336,7 @@ class SdrSession(MeasurementSession):
         self._ddc_batch = 1
         self._fs_in = fs
         s.sdr_actual = dict(
-            center=self._iqs_center_hz, iq_rate=fs, bandwidth=bandwidth,
+            iq_rate=fs, bandwidth=bandwidth,
             iq_center=self._iqs_center_hz,
             decimate=int(out.DecimateFactor), packet_samples=self._packet_samples,
             packet_bytes=int(info.PacketDataSize),
@@ -322,7 +344,7 @@ class SdrSession(MeasurementSession):
                 self.PAN_FFT,
                 max(2, 2 * int(np.floor(self.PAN_FFT * bandwidth / (2.0 * fs))) + 1),
             ),
-            start=self._iqs_center_hz - half, stop=self._iqs_center_hz + half,
+            **sdr_spectrum_windows(s.sdr_center_hz, self._iqs_center_hz, bandwidth),
             atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
             ifgain=int(out.IFGainGrade),
             ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
@@ -539,8 +561,8 @@ class SdrSession(MeasurementSession):
             deemph_us=self._demod.deemph_us,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
-        s.sdr_actual['start'] = float(self._iqs_center_hz) - half
-        s.sdr_actual['stop'] = float(self._iqs_center_hz) + half
+        s.sdr_actual.update(sdr_spectrum_windows(
+            s.sdr_center_hz, self._iqs_center_hz or s.sdr_center_hz, half * 2.0))
 
     def _reconfigure_full_locked(self):
         """Full Stop -> Configuration -> DDC config -> Start. A DDC-only reconfiguration

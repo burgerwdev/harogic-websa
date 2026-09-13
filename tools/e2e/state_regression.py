@@ -110,6 +110,37 @@ def main() -> int:
             f"input {page.input_value('#input-sdr-center')}",
         )
 
+        # 1b - SDR centre alignment: the canvas maps the frame's display window across its
+        # width, so the canvas centre is (start+stop)/2. It must equal the requested centre
+        # within one division, whatever the hardware capture offset did.
+        print("1b) SDR centre alignment")
+        win = page.evaluate(
+            "JSON.parse(document.getElementById('spectrum').dataset.sdrWindow || '{}')"
+        )
+        actual = d["sdr"].get("actual") or {}
+        if win and win.get("hi", 0) > win.get("lo", 0):
+            division = (win["hi"] - win["lo"]) / 10
+            check(
+                "the display window is centred on the requested frequency",
+                abs((win["lo"] + win["hi"]) / 2 - 90.5e6) < division,
+                f"window {(win['lo'] + win['hi']) / 2 / 1e6:.4f} MHz (1 div = {division / 1e3:.1f} kHz)",
+            )
+            check(
+                "the capture window is published separately",
+                "capture_start" in actual and "capture_stop" in actual
+                and actual["capture_stop"] > actual["capture_start"],
+                f"capture {actual.get('capture_start')}..{actual.get('capture_stop')}",
+            )
+            check(
+                "the display and capture windows have the same width",
+                abs((win["hi"] - win["lo"])
+                    - (actual["capture_stop"] - actual["capture_start"])) < 2 * division,
+                f"display {win['hi'] - win['lo']:.0f} vs capture "
+                f"{actual['capture_stop'] - actual['capture_start']:.0f} Hz",
+            )
+        else:
+            check("the display window is published on the canvas", bool(win), str(win))
+
         # 2 - demod group
         print("2) demod / IF bandwidth / de-emphasis")
         page.click('[data-sdr-demod="nfm"]')
