@@ -1,0 +1,67 @@
+name: CI
+
+# Hardware-free gates only: the analyzer tests (tools/hardware_smoke.py,
+# tools/e2e/state_regression.py) need a real SAN-90 + tinySA and stay on the bench.
+# See docs/*/ARCH_REVIEW.md Phase 0.
+
+on:
+  push:
+    branches: [master, 'feature/**', 'refactor/**', 'analysis/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt -c requirements-lock.txt
+      # The vendor SDK is not installed in CI; the binding layer must import without it.
+      - name: Python static checks
+        run: python -m ruff check web_sa tests tools
+      - name: Version is single-sourced
+        run: python tools/sync_version.py --check
+      - name: Frame fixtures match the encoders
+        run: python tools/gen_frame_fixtures.py --check
+      - name: Tests
+        run: python -m pytest tests/ -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/modern
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/modern/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Tests (includes i18n parity and the frame decoder contract)
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Guard rails (cycles, god functions, mode branching, DLL access)
+        run: python tools/quality/architecture_guard.py

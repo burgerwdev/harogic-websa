@@ -1,0 +1,15 @@
+# Development and tooling dependencies.
+#
+#   pip install -r requirements-dev.txt
+#
+# `./test.sh` needs pytest + pytest-asyncio + ruff + vitest (npm), `./build.sh` needs
+# fonttools only when the self-hosted CJK font has to be regenerated, and
+# tools/e2e/state_regression.py needs playwright (plus `playwright install chromium`).
+-r requirements.txt
+
+pytest>=8,<10
+pytest-asyncio>=0.23,<2
+ruff>=0.6,<1
+pyserial>=3.5,<4
+fonttools>=4.50,<5
+playwright>=1.40,<2

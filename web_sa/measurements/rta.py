@@ -19,6 +19,7 @@ import numpy as np
 from ..hardware import sdk_bindings as _sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
+from .framer import encode_rta
 
 log = logging.getLogger(__name__)
 
@@ -501,22 +502,7 @@ class RtaSession(MeasurementSession):
             dev.observe_reference_peak('rta', float(np.max(finite)), noise_floor)
         if width != self.WATERFALL_WIDTH:
             row = row[np.linspace(0, width - 1, self.WATERFALL_WIDTH).astype(np.int64)]
-        frame = _encode_rta(
+        frame = encode_rta(
             freq_version, display_freq, display_spectrum, row, max_density,
             start_hz, stop_hz)
         return [frame], []
-
-
-def _encode_rta(version, freq_hz, spec_dbm, wf_row, max_density, start_hz, stop_hz):
-    """RTA frame: hdr(magic+ver+pts+wfLen+maxD+startHz) + freq(f8×pts) + spec(f4×pts)
-    + wfRow(u2×wfLen) + stopHz(f8)."""
-    import struct
-    pts = len(spec_dbm)
-    max_density = max(0, min(65535, int(max_density)))
-    hdr = b'RTAF' + struct.pack(
-        '<IIHHd', version, pts, len(wf_row), max_density, float(start_hz))
-    payload = (freq_hz.astype(np.float64).tobytes() +
-               spec_dbm.astype(np.float32).tobytes() +
-               wf_row.astype(np.uint16).tobytes())
-    meta = struct.pack('<d', float(stop_hz))
-    return hdr + payload + meta

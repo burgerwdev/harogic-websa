@@ -24,9 +24,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from web_sa.measurements.framer import encode_freq, encode_powr  # noqa: E402
-from web_sa.measurements.rta import _encode_rta  # noqa: E402
-from web_sa.measurements.sdr import encode_audio  # noqa: E402
+from web_sa.measurements.framer import (  # noqa: E402
+    encode_audio,
+    encode_freq,
+    encode_powr,
+    encode_rta,
+)
 
 OUT = ROOT / 'tests' / 'fixtures' / 'frames'
 
@@ -72,7 +75,7 @@ def build():
     files = {
         'freq.bin': encode_freq(FREQ['version'], freq, FREQ['sweep_ms']),
         'powr.bin': encode_powr(POWR['version'], power, POWR['sweep_ms']),
-        'rta.bin': _encode_rta(RTA['version'], rta_freq, rta_spec, rta_row,
+        'rta.bin': encode_rta(RTA['version'], rta_freq, rta_spec, rta_row,
                                RTA['max_density'], RTA['start_hz'], RTA['stop_hz']),
         'audio.bin': encode_audio(AUDIO['seq'], AUDIO['rate'], pcm),
     }

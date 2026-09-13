@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import struct
 import time
 from ctypes import cast as c_cast
 
@@ -23,12 +22,9 @@ from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
-from .rta import _encode_rta
+from .framer import encode_audio, encode_rta
 
 log = logging.getLogger(__name__)
-
-MAGIC_AUDIO = b'AUDF'
-_AUDIO_HEADER = struct.Struct('<4sIII')   # magic, seq, rate, samples
 
 # IQS return codes that are transient (bad packet / timeout) rather than fatal.
 # The official examples never check IQS_GetIQStream's return value; a bad packet is
@@ -73,9 +69,6 @@ def _tn(key: str, msg: str, *args, n: int = 3) -> None:
         log.info('[trace] ' + msg, *args)
 
 
-def encode_audio(seq: int, rate: int, pcm: np.ndarray) -> bytes:
-    pcm = np.ascontiguousarray(pcm, dtype=np.int16)
-    return _AUDIO_HEADER.pack(MAGIC_AUDIO, int(seq), int(rate), pcm.size) + pcm.tobytes()
 
 
 def _round_decimate(value) -> int:
@@ -932,7 +925,7 @@ class SdrSession(MeasurementSession):
                         self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
                 if res is not None:
                     freq, spec, row = res
-                    frames.append(_encode_rta(dev.state.freq_version, freq, spec, row,
+                    frames.append(encode_rta(dev.state.freq_version, freq, spec, row,
                                               65535, s.sdr_actual['start'],
                                               s.sdr_actual['stop']))
 
