@@ -38,6 +38,21 @@ export const sdrIfbw = createParam<number>('sdr.ifbw', { fallback: 6000, scope: 
 /** FM de-emphasis time constant in microseconds (-1 = per-mode default). */
 export const sdrDeemph = createParam<number>('sdr.deemph', { fallback: -1, scope: 'sdr', ...hz });
 
+/**
+ * Client-side preferences the backend does not report. Persisted here (the slot's own
+ * single writer) instead of by whichever UI path happened to remember to write it.
+ */
+const flag = {
+	parse: (raw: string) => raw === '1',
+	serialize: (v: boolean) => (v ? '1' : '0'),
+};
+export const sdrRefAuto = createParam<boolean>('sdr.refAuto', {
+	fallback: true, scope: 'sdr', persistKey: 'web-sa-sdr-ref-auto', persist: 'desired', ...flag,
+});
+export const sdrAudioOn = createParam<boolean>('sdr.audioOn', {
+	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-audio', persist: 'desired', ...flag,
+});
+
 /** Drop every pending SDR intent (Preset, or leaving the mode). */
 export function resetSdrState(): void {
 	resetAll('sdr');

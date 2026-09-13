@@ -33,6 +33,7 @@ import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { pushSdrAudio } from '../audio/sdrAudio';
+import { sdrRefAuto } from '../ui/sdrState';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -194,7 +195,7 @@ export function connectWS() {
       // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
       // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
       // frame peak (with a small hysteresis) so the signal is visible.
-      if (currentGraphMode() === 'sdr' && S.sdrRefAuto) {
+      if (currentGraphMode() === 'sdr' && sdrRefAuto.get()) {
         let peak = -Infinity;
         for (let i = 0; i < spec.length; i++) {
           const v = spec[i];
