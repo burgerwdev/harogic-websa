@@ -265,7 +265,9 @@ export function setRefAuto() {
   if (S.refMode === 'auto') {
     send({ cmd: 'SET_REF', mode: 'manual', ref: S.refLevel });
   } else {
-    send({ cmd: 'SET_REF', mode: 'auto' });
+    // range_db = the visible window height. Auto Ref anchors the noise floor just above the
+    // bottom of that window, so the backend needs to know how tall it is.
+    send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
   }
 }
 export function setScale(v: number) {
@@ -273,6 +275,11 @@ export function setScale(v: number) {
   syncScaleButtons();
   updateInfoBar();
   renderAll();
+  // The window height changed, so the auto-Ref target (noise floor just above the bottom)
+  // changed too. Re-arm so the new spectrum lands correctly instead of keeping the old Ref.
+  if (currentGraphMode() !== 'sdr' && S.refMode === 'auto') {
+    send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
+  }
 }
 export function syncScaleButtons() {
   const grp = document.getElementById('unit-scale-group');

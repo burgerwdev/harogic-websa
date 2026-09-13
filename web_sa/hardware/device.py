@@ -131,6 +131,10 @@ class DeviceState:
     sweep_time: float = 0.0      # Manual=绝对秒; xN=倍率; 其他模式忽略
     freq_version: int = 0
     config_version: int = 0
+    # Height of the visible display window in dB (grid divisions x dB/div), pushed by the
+    # frontend. Auto Ref anchors the noise floor just above the bottom of this window, so it
+    # must know how tall the window is; 100 dB = the default 10 div x 10 dB/div.
+    ref_range_db: float = 100.0
     # Last vendor WARNING status from the measurement stream (0 = none). -12 is IF
     # overflow: the IF saturates when Ref is set low, and the vendor's remedy is to raise
     # RefLevel_dBm. Surfaced so the UI can say so instead of the display appearing frozen.
@@ -505,6 +509,15 @@ class HarogicDevice:
             self._read_amp_atten()
             return True, 'ok'
 
+    def _clear_auto_ref_floor(self) -> None:
+        """Forget the learned IF-overflow floor after a front-end change.
+
+        The floor records "the IF saturated at this Ref" for a given attenuation/preamp;
+        changing either moves the saturation point, so the old bound is meaningless.
+        """
+        for tracker in self._auto_ref.values():
+            tracker['floor'] = -50.0
+
     def _read_amp_atten(self) -> None:
         with self._hw:
             """Read back the actual attenuation/preamplifier state (per Device_GetAmpAttenState from the original implementation)."""
@@ -514,6 +527,10 @@ class HarogicDevice:
                 sp = sb.c_uint8(0)
                 sb.dll.Device_GetAmpAttenState(sb.pointer(self.dev), sb.pointer(amp),
                                                sb.pointer(att), sb.pointer(sp))
+                if (self.state.amp_atten != att.value
+                        or self.state.preamplifier_actual != int(amp.value)):
+                    # Front-end changed: the learned IF-overflow floor no longer applies.
+                    self._clear_auto_ref_floor()
                 self.state.amp_atten = att.value
                 self.state.preamplifier_actual = int(amp.value)
             except Exception:
@@ -693,11 +710,19 @@ class HarogicDevice:
                 self._pending_auto_ref = None
             return
         current = state.rta_ref_level if mode == 'rta' else state.ref_level
-        target = math.ceil((peak_dbm + 5.0) / 5.0) * 5.0
-        # Clamp into the admissible Ref range rather than holding when the peak is too weak
-        # to justify a low Ref. Holding made clicking Auto Ref a no-op for any signal whose
-        # peak is below -55 dBm (i.e. most antennas). A Ref that then over-flows the IF is
-        # corrected upwards by nudge_reference_out_of_overflow(), so clamping is safe.
+        # Industry rule: anchor on the NOISE FLOOR so it sits just above the bottom of the
+        # display window, and lift Ref only as far as needed to keep the peak off the top
+        # edge. (Anchoring on the peak instead - the previous `peak + 5` - left the noise
+        # floor up to 7 divisions above the bottom for weak signals, which is the opposite
+        # of what a spectrum analyser does.) The window height (grid divisions x dB/div)
+        # comes from the frontend; 100 dB is the default 10 div x 10 dB/div.
+        window = max(20.0, float(getattr(state, 'ref_range_db', 100.0)))
+        if noise_floor_dbm is None or not math.isfinite(noise_floor_dbm):
+            # No floor estimate available: fall back to keeping the peak below the top edge.
+            target = peak_dbm + 10.0
+        else:
+            target = max(noise_floor_dbm + window - 8.0, peak_dbm + 10.0)
+        target = math.ceil(target / 5.0) * 5.0
         target = min(30.0, max(-50.0, target, tracker.get('floor', -50.0)))
         # When the noise floor is high, keep ~30 dB of headroom above it.
         if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
@@ -712,14 +737,17 @@ class HarogicDevice:
             tracker['candidate'] = target
             tracker['candidate_since'] = now
         # Raise the reference immediately for overload safety. Lowering waits for a
-        # time-stable peak so RTA settle/empty frames cannot collapse Ref to -50 dBm.
-        stable_for = 0.15 if target > current else 1.5
+        # time-stable peak so RTA settle/empty frames cannot collapse Ref. After a re-arm
+        # (the user pressed Auto, or a setting changed) the first decision is taken quickly
+        # in both directions: the previous observation is known to be stale.
+        fresh = bool(tracker.pop('fresh', False))
+        stable_for = 0.15 if (fresh or target > current) else 1.5
         if (
             now - tracker['candidate_since'] >= stable_for
             and now - tracker['last_change'] >= 1.0
         ):
-            self._pending_auto_ref = (mode, target)
             tracker['last_change'] = now
+            self._pending_auto_ref = (mode, target)
 
     def prepare_auto_reference_retune(self, mode: str) -> bool:
         """Use a safe Ref before changing frequency when Auto Ref had lowered it."""
@@ -746,10 +774,19 @@ class HarogicDevice:
             tracker['last_peak'] = None
             tracker['last_noise_floor'] = None
             tracker['ignore_until'] = time.monotonic() + delay
+            tracker['fresh'] = True
             if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
                 self._pending_auto_ref = None
 
     def reset_auto_reference(self, mode: str) -> None:
+        """Re-arm: drop stale observations AND force a fresh decision.
+
+        Called when the user enables Auto and whenever a setting changes that moves the
+        trace (a reconfiguration calls begin_auto_reference_settle instead, which also
+        re-arms). This is the event that answers "when should Auto act again?": a setting
+        change invalidates the level the previous decision was based on, even if the new
+        target ends up within the 5 dB dead-band.
+        """
         with self._hw:
             tracker = self._auto_ref[mode]
             tracker['candidate'] = None
@@ -757,6 +794,7 @@ class HarogicDevice:
             tracker['last_peak'] = None
             tracker['last_noise_floor'] = None
             tracker['ignore_until'] = time.monotonic() + 0.25
+            tracker['fresh'] = True
             if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
                 self._pending_auto_ref = None
 

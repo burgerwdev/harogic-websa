@@ -133,6 +133,7 @@ def _validate_command(dev, cmd, data):
             raise CommandError('SET_FREQ requires center/span or start/stop', 'freq_requires_pair')
     elif cmd == 'SET_REF':
         mode = _choice(data, 'mode', ('manual', 'auto')) or 'manual'
+        _number(data, 'range_db', minimum=10.0, maximum=200.0)
         if mode == 'manual':
             _number(data, 'ref', minimum=-50.0, maximum=30.0, required=True)
     elif cmd == 'SET_RBW':
@@ -417,6 +418,8 @@ async def _dispatch(dev, cmd, data) -> bool:
         return True
     if cmd == 'SET_REF':
         mode = data.get('mode', 'manual')
+        if 'range_db' in data:
+            s.ref_range_db = float(data['range_db'])
         sess = dev.session
         if sess is not None and sess.name == 'sdr':
             if mode == 'manual' and 'ref' in data:

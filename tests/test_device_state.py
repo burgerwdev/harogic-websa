@@ -108,7 +108,8 @@ def test_auto_reference_uses_stable_peak_and_mode_private_target():
     dev.observe_reference_peak('std', -27.0)
     dev._auto_ref['std']['candidate_since'] -= 2.0
     dev.observe_reference_peak('std', -27.0)
-    assert dev._pending_auto_ref == ('std', -20.0)
+    # No noise-floor estimate -> keep the peak 10 dB below the top, quantised to 5 dB.
+    assert dev._pending_auto_ref == ('std', -15.0)
     assert dev.state.rta_ref_level == 0.0
 
 
@@ -130,29 +131,38 @@ def test_auto_reference_raise_is_stable_and_pending_survives_other_mode():
     assert dev._pending_auto_ref is None
     dev._auto_ref['std']['candidate_since'] -= 0.2
     dev.observe_reference_peak('std', 0)
-    assert dev._pending_auto_ref == ('std', 5.0)
+    assert dev._pending_auto_ref == ('std', 10.0)
 
     dev.state.mode = 'rta'
     assert not dev.apply_pending_auto_reference()
-    assert dev._pending_auto_ref == ('std', 5.0)
+    assert dev._pending_auto_ref == ('std', 10.0)
 
 
-def test_auto_reference_clamps_target_when_peak_is_too_weak():
-    """A weak peak must still move Ref, down to the admissible minimum.
+def test_auto_reference_anchors_on_the_noise_floor_not_the_peak():
+    """Auto Ref places the NOISE FLOOR just above the bottom of the display window.
 
-    Holding Ref instead (the previous behaviour) made clicking Auto Ref a no-op for any
-    signal whose peak is below -55 dBm, i.e. for most antennas - the user had to set Ref by
-    hand. An IF that then overflows is corrected upwards (next test).
+    That is what a spectrum analyser does (it maximises the visible dynamic range above the
+    noise), and it is why the peak must not drive the decision: with peak+5 the noise floor
+    ended up mid-screen for weak signals. Window = ref_range_db (10 div x 10 dB = 100 dB).
     """
     dev = HarogicDevice()
     dev.state.ref_mode = 'auto'
-    dev.state.ref_level = 0.0
+    dev.state.ref_level = -20.0
+    dev.state.ref_range_db = 100.0
     dev.state.atten = -1
     dev._auto_ref['std']['last_change'] = -10.0
     for _ in range(3):
         dev.observe_reference_peak('std', -80.0, -95.0)
         dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', -50.0)
+    # -95 + 100 - 8 = -3 -> 0 after quantisation (the peak would have said -70).
+    assert dev._pending_auto_ref == ('std', 0.0)
+    # A tall window with a high noise floor pushes Ref up instead.
+    dev._pending_auto_ref = None
+    dev._auto_ref['std']['last_change'] = -10.0
+    for _ in range(3):
+        dev.observe_reference_peak('std', -50.0, -70.0)
+        dev._auto_ref['std']['candidate_since'] -= 2.0
+    assert dev._pending_auto_ref == ('std', 25.0)
 
 
 def test_auto_reference_learns_the_if_overflow_floor():
@@ -176,22 +186,26 @@ def test_auto_reference_learns_the_if_overflow_floor():
     dev.state.status_warning = 0
     dev._auto_ref['std']['last_change'] = -10.0      # past the 1 s apply throttle
     for _ in range(3):
-        dev.observe_reference_peak('std', -80.0, -95.0)
+        # Noise floor low enough that the bottom-anchored target lands under the floor
+        # (peak must stay >=15 dB above it or the observation is rejected as noise ripple).
+        dev.observe_reference_peak('std', -125.0, -145.0)
         dev._auto_ref['std']['candidate_since'] -= 2.0
     assert dev._pending_auto_ref == ('std', -45.0)
 
 
-def test_auto_reference_keeps_headroom_above_high_noise_floor():
+def test_auto_reference_keeps_a_shorter_window_within_range():
+    """A 5 dB/div window (50 dB tall) must not push Ref off the top of its range."""
     dev = HarogicDevice()
     dev.state.ref_mode = 'auto'
     dev.state.ref_level = -20.0
+    dev.state.ref_range_db = 50.0
     dev.state.atten = -1
     dev._auto_ref['std']['last_change'] = -10.0
     for _ in range(2):
         dev.observe_reference_peak('std', -50.0, -70.0)
         dev._auto_ref['std']['candidate_since'] -= 2.0
-    # peak-5 = -45, but 30 dB above the -70 floor is -40: headroom wins
-    assert dev._pending_auto_ref == ('std', -40.0)
+    # -70 + 50 - 8 = -28 -> -25 after quantisation, versus 25 for the 100 dB window.
+    assert dev._pending_auto_ref == ('std', -25.0)
 
 
 def test_rta_defaults_can_be_reset_without_touching_swp():
