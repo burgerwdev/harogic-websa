@@ -2,6 +2,14 @@
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
+import {
+	sdrCenterHz,
+	sdrDecimate,
+	sdrListenHz,
+	sdrSpanHz,
+	renderSdrState,
+	resetSdrState,
+} from './sdrState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
@@ -427,8 +435,6 @@ export function toggleActiveMarkerTracking() {
 let graphModePending = false;
 let graphModeTarget: 'std' | 'rta' | 'sdr' = 'std';
 let confirmedGraphMode = '';
-// Frequency to hand off to the SDR demod when entering SDR (from the active marker).
-let pendingSdrFreq: number | null = null;
 let sdrAudioHandoffTimer: number | null = null;
 let graphModeWatchdog: number | null = null;
 
@@ -474,17 +480,17 @@ export function setGraphMode(mode: string) {
   if (target === 'sdr') {
     // Respect an explicit handoff (Shift+click / peak row); otherwise use the active
     // marker, else the current centre.
-    if (pendingSdrFreq == null) {
+    if (!sdrCenterHz.pending()) {
       const m = S.markers.find(x => x.enabled && x.freq != null);
       // Prefer the last centre confirmed by a SWP-family STATUS: S.centerHz is refreshed
       // from every STATUS (including SDR ones), so it can still hold the value from before
       // a preset/re-tune when this runs.
       const base = S.swpCenterHz > 0 ? S.swpCenterHz : S.centerHz;
-      pendingSdrFreq = (m && m.freq) ? m.freq : base;
+      sdrCenterHz.set((m && m.freq) ? m.freq : base);
     }
     deferSdrAudioPreference();
   } else {
-    pendingSdrFreq = null;
+    sdrCenterHz.reset();
     if (sdrAudioHandoffTimer !== null) {
       window.clearTimeout(sdrAudioHandoffTimer);
       sdrAudioHandoffTimer = null;
@@ -571,25 +577,18 @@ export function syncGraphModeStatus(mode: string) {
   if (swpFrequency) swpFrequency.style.display = mode === 'std' ? '' : 'none';
   if (sdrSettings) sdrSettings.style.display = isSdr ? '' : 'none';
   if (isRtaLike) S.resetWaterfall();
-  if (isSdr && pendingSdrFreq != null && pendingSdrFreq > 0) {
-    const f = pendingSdrFreq;
-    pendingSdrFreq = null;
+  if (isSdr && sdrCenterHz.pending() && sdrCenterHz.get() > 0) {
+    const f = sdrCenterHz.get();
     const inFm = f >= 87.5e6 && f <= 108e6;
     const inAir = f >= 118e6 && f <= 137e6;
-    const demod = inFm ? 'wfm' : 'am';
-    const ifbw = inFm ? 180000 : (inAir ? 25000 : 12000);
-    sdrCenterHz = f;
-    sdrDecimate = 16;
-    sdrSpanHz = 62.5e6 / 16;
-    S.setSdrListenHz(f);
+    sdrDecimate.set(16);
+    sdrSpanHz.set(62.5e6 / 16); // estimate until the device reports the real span
+    sdrListenHz.set(f);
+    renderSdrState();
     const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
-    if (modeSel) modeSel.value = demod;
+    if (modeSel) modeSel.value = inFm ? 'wfm' : 'am';
     const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
-    if (bwSel) bwSel.value = String(ifbw);
-    const cInp = document.getElementById('input-sdr-center') as HTMLInputElement | null;
-    if (cInp) cInp.value = (f / 1e6).toFixed(6);
-    const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-    if (lInp) lInp.value = (f / 1e6).toFixed(6);
+    if (bwSel) bwSel.value = String(inFm ? 180000 : (inAir ? 25000 : 12000));
     send({ cmd: 'SET_SDR', center: f, decimate: 16 });
     send({ cmd: 'SET_SDR_TUNE', listen: f });
     applySdrDemod();
@@ -673,10 +672,14 @@ export function applySdr() {
   const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   const center = centerMhz * 1e6;
+  // Record what the user typed as the intent; the STATUS confirms it later.
+  sdrCenterHz.set(center);
+  sdrDecimate.set(decimate);
+  sdrListenHz.set(center);
+  renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR', center, decimate });
   // Setting the wideband centre also tunes the demodulator there.
-  S.setSdrListenHz(center);
   send({ cmd: 'SET_SDR_TUNE', listen: center });
   // Apply the same band -> demod rule as the SWP/RTA handoff, otherwise entering SDR
   // directly and typing a broadcast frequency keeps the previous demod (e.g. AM on an FM
@@ -698,18 +701,19 @@ export function applySdr() {
 
 // Changing only the capture bandwidth keeps the listen frequency unchanged.
 export function applySdrBw() {
-  const centerMhz = sdrNumber('input-sdr-center', 1000);
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
+  sdrDecimate.set(decimate);
+  const center = sdrCenterHz.get();
+  renderSdrState();
   prepareSdrAudioTransition();
-  send({ cmd: 'SET_SDR', center: centerMhz * 1e6, decimate });
+  send({ cmd: 'SET_SDR', center, decimate });
 }
 
 export function applySdrTune() {
   const listenMhz = sdrNumber('input-sdr-listen', 1000);
   const f = listenMhz * 1e6;
-  S.setSdrListenHz(f);
-  const inp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (inp && document.activeElement !== inp) inp.value = (f / 1e6).toFixed(6);
+  sdrListenHz.set(f);
+  renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
 }
@@ -757,18 +761,15 @@ export function applySdrBand(name: string) {
   const b = SDR_BANDS[name];
   if (!b) return;
   prepareSdrAudioTransition();
-  sdrCenterHz = b.center;
-  sdrDecimate = b.decimate;
-  sdrSpanHz = 62.5e6 / b.decimate;
+  sdrCenterHz.set(b.center);
+  sdrDecimate.set(b.decimate);
+  sdrSpanHz.set(62.5e6 / b.decimate); // estimate until the device reports the real span
   const modeSel = document.getElementById('select-sdr-demod') as HTMLSelectElement | null;
   if (modeSel) modeSel.value = b.demod;
   const bwSel = document.getElementById('select-sdr-ifbw') as HTMLSelectElement | null;
   if (bwSel) bwSel.value = String(b.ifbw);
-  const cInp = document.getElementById('input-sdr-center') as HTMLInputElement | null;
-  if (cInp) cInp.value = (b.center / 1e6).toFixed(4);
-  const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (lInp) lInp.value = (b.center / 1e6).toFixed(4);
-  S.setSdrListenHz(b.center);
+  sdrListenHz.set(b.center);
+  renderSdrState();
   send({ cmd: 'SET_SDR', center: b.center, decimate: b.decimate });
   send({ cmd: 'SET_SDR_TUNE', listen: b.center });
   applySdrDemod();
@@ -777,16 +778,15 @@ export function applySdrBand(name: string) {
 export function listenAtFreq(hz: number) {
   if (!isFinite(hz) || hz <= 0) return;
   if (currentGraphMode() === 'sdr') {
-    S.setSdrListenHz(hz);
+    sdrListenHz.set(hz);
+    renderSdrState();
     prepareSdrAudioTransition();
     send({ cmd: 'SET_SDR_TUNE', listen: hz });
-    const lInp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-    if (lInp) lInp.value = (hz / 1e6).toFixed(6);
     renderAll();
     return;
   }
   // From the swept view: hand this frequency to SDR for demodulation.
-  pendingSdrFreq = hz;
+  sdrCenterHz.set(hz);
   setGraphMode('sdr');
 }
 
@@ -857,22 +857,18 @@ function sdrSet(id: string, value: string) {
 }
 
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
-let sdrCenterHz = 0;
-let sdrSpanHz = 0;
-let sdrDecimate = 32;
-
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
   if (!sdr) return;
-  sdrCenterHz = Number(sdr.center) || sdrCenterHz;
-  sdrDecimate = Number(sdr.decimate) || sdrDecimate;
   const a = sdr.actual || {};
-  if (a.start != null && a.stop != null) sdrSpanHz = Number(a.stop) - Number(a.start);
-  S.setSdrListenHz(Number(sdr.listen) || 0);
+  // Confirm the tuning group from the backend, then render it from the slots (the only
+  // writer of those controls). The demod group still uses the DOM for now.
+  sdrCenterHz.confirm(Number(sdr.center) || 0);
+  sdrDecimate.confirm(Number(sdr.decimate) || 32);
+  if (a.start != null && a.stop != null) sdrSpanHz.confirm(Number(a.stop) - Number(a.start));
+  sdrListenHz.confirm(Number(sdr.listen) || 0);
   S.setSdrPassbandHz(Number(sdr.if_bw) || 0);
-  sdrSet('input-sdr-center', (Number(sdr.center) / 1e6).toFixed(4));
-  sdrSet('select-sdr-decimate', String(sdr.decimate));
-  sdrSet('input-sdr-listen', (Number(sdr.listen) / 1e6).toFixed(4));
+  renderSdrState();
   sdrSet('select-sdr-demod', sdr.demod);
   sdrSet('select-sdr-ifbw', String(Math.round(Number(sdr.if_bw))));
   sdrSet('input-sdr-volume', String(sdr.volume));
@@ -1017,10 +1013,12 @@ export function presetAll() {
   setSdrAudioEnabled(false);
   S.setSdrAudioOn(false);
   S.setSdrRefAuto(true);
-  S.setSdrListenHz(0);
-  // Preset invalidates any pending SDR hand-off: leaving it set re-applies the PRE-preset
-  // frequency (observed: preset -> SDR put the centre back on the old 101.7 MHz).
-  pendingSdrFreq = null;
+
+  // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
+  // code cleared the fields by hand and missed one, so a Preset could reapply the previous
+  // frequency.
+  resetSdrState();
+  renderSdrState();
   resetSdrAutoRef();
   lastSdrDemodMode = '';
   lastSdrDemodIfbw = -1;
@@ -1379,7 +1377,7 @@ export function bindCanvas() {
     const x = canvasX(e, canvas);
     if (currentGraphMode() === 'sdr') {
       if (x < pr.x || x > pr.x + pr.w) return;
-      sdrDown = true; sdrMoved = false; sdrX0 = x; sdrCenter0 = sdrCenterHz;
+      sdrDown = true; sdrMoved = false; sdrX0 = x; sdrCenter0 = sdrCenterHz.get();
       S.setDragging(true);
       return;
     }
@@ -1404,7 +1402,7 @@ export function bindCanvas() {
       if (sdrMoved) {
         // Preview the marker locally; the tune itself is committed on release.
         const f = xToFreqHz(x);
-        if (f != null) S.setSdrListenHz(f);
+        if (f != null) sdrListenHz.set(f);
         // Edge push: dragging past the sides shifts the capture window so the user can
         // walk through adjacent frequency ranges (standard SDR panning). Throttled
         // because it retunes the device.
@@ -1414,12 +1412,12 @@ export function bindCanvas() {
         if (now - sdrEdgeAt > 350) {
           if (frac > 0.9) {
             sdrEdgeAt = now;
-            sdrCenterHz += sdrSpanHz * 0.2;
+            sdrCenterHz.set(sdrCenterHz.get() + sdrSpanHz.get() * 0.2);
             sdrX0 += pr.w * 0.2;
             send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
           } else if (frac < 0.1) {
             sdrEdgeAt = now;
-            sdrCenterHz -= sdrSpanHz * 0.2;
+            sdrCenterHz.set(sdrCenterHz.get() - sdrSpanHz.get() * 0.2);
             sdrX0 -= pr.w * 0.2;
             send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
           }
@@ -1438,7 +1436,7 @@ export function bindCanvas() {
       const raw = xToFreqHz(canvasX(e, canvas));
       const f = raw;
       if (f != null) {
-        S.setSdrListenHz(f);
+        sdrListenHz.set(f);
         send({ cmd: 'SET_SDR_TUNE', listen: f });
         renderAll();
       }
@@ -1476,14 +1474,14 @@ const SDR_IFBW = [500, 2400, 3000, 6000, 12000, 25000, 50000, 100000, 180000];
 const SDR_MODES = ['am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'];
 
 function sdrTuneBy(dHz: number) {
-  if (!(sdrCenterHz > 0) || !(sdrSpanHz > 0)) return;
-  const raw = Math.max(sdrCenterHz - sdrSpanHz / 2,
-    Math.min(sdrCenterHz + sdrSpanHz / 2, (S.sdrListenHz || sdrCenterHz) + dHz));
-  const f = raw;
-  S.setSdrListenHz(f);
+  const center = sdrCenterHz.get();
+  const span = sdrSpanHz.get();
+  if (!(center > 0) || !(span > 0)) return;
+  const f = Math.max(center - span / 2,
+    Math.min(center + span / 2, (sdrListenHz.get() || center) + dHz));
+  sdrListenHz.set(f);
+  renderSdrState();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
-  const inp = document.getElementById('input-sdr-listen') as HTMLInputElement | null;
-  if (inp && document.activeElement !== inp) inp.value = (f / 1e6).toFixed(6);
   renderAll();
 }
 

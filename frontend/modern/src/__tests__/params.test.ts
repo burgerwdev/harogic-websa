@@ -1,0 +1,179 @@
+/**
+ * Parameter slot semantics.
+ *
+ * These tests pin down the behaviour the rest of the UI now relies on: user intent wins
+ * while it is in flight, an older reply cannot clobber it, a rejected command expires, and
+ * persistence happens in exactly one place.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Param, allParams, createParam, resetAll } from '../core/params';
+
+const slot = (over: Partial<Parameters<typeof createParam<number>>[1]> = {}) =>
+	createParam<number>('test.value', { fallback: 0, scope: 'test', ...over });
+
+beforeEach(() => {
+	localStorage.clear();
+	vi.useRealTimers();
+});
+
+describe('Param', () => {
+	it('renders the fallback until the backend reports something', () => {
+		const p = slot({ fallback: 42 });
+		expect(p.get()).toBe(42);
+		expect(p.confirmedValue()).toBeNull();
+	});
+
+	it('a user intent wins immediately and survives an in-flight reply', () => {
+		const p = slot();
+		p.confirm(10);
+		p.set(30); // user asks for 30; the backend still reports 10 for a while
+		expect(p.get()).toBe(30);
+		expect(p.confirm(10)).toBe(false); // same value as before: no change
+		expect(p.get()).toBe(30); // ...and the intent is NOT reverted
+		expect(p.pending()).toBe(true);
+	});
+
+	it('a contradicting reply after a newer intent cannot win while the intent is fresh', () => {
+		const p = slot();
+		p.confirm(10);
+		p.set(30);
+		p.confirm(20); // an older command's reply arrives late
+		expect(p.confirmedValue()).toBe(20);
+		expect(p.get()).toBe(30);
+		p.confirm(30); // backend caught up
+		expect(p.pending()).toBe(false);
+		expect(p.get()).toBe(30);
+	});
+
+	it('drops an intent the backend never accepts once the TTL expires', () => {
+		vi.useFakeTimers();
+		const p = slot({ fallback: 5, ttlMs: 1000 });
+		p.confirm(10);
+		p.set(30);
+		expect(p.get()).toBe(30);
+		vi.advanceTimersByTime(1500);
+		p.confirm(10); // still 10: the command was rejected
+		expect(p.pending()).toBe(false);
+		expect(p.get()).toBe(10);
+	});
+
+	it('re-setting the same value keeps the original timestamp (no endless extension)', () => {
+		vi.useFakeTimers();
+		const p = slot({ ttlMs: 1000 });
+		p.set(7);
+		const epoch = p.epoch;
+		vi.advanceTimersByTime(600);
+		p.set(7);
+		expect(p.epoch).toBe(epoch); // no new intent, no epoch bump
+		expect(p.pendingAge()).toBe(600);
+	});
+
+	it('bumps the epoch on every distinct intent', () => {
+		const p = slot();
+		p.set(1);
+		p.set(2);
+		expect(p.epoch).toBe(2);
+	});
+
+	it('reset drops the intent without touching the confirmed value', () => {
+		const p = slot();
+		p.confirm(10);
+		p.set(30);
+		p.reset();
+		expect(p.pending()).toBe(false);
+		expect(p.get()).toBe(10);
+		expect(p.confirmedValue()).toBe(10);
+	});
+
+	it('uses a custom equality (float tolerance)', () => {
+		const p = createParam<number>('test.f', {
+			fallback: 0,
+			scope: 'test',
+			equals: (a, b) => Math.abs(a - b) < 0.5,
+		});
+		p.set(10);
+		p.confirm(10.2);
+		expect(p.pending()).toBe(false); // 10.2 is "the same" as 10
+	});
+});
+
+describe('Param persistence', () => {
+	it("persists the confirmed value only, by default, and restores it on creation", () => {
+		const p = createParam<number>('test.a', {
+			fallback: 1,
+			scope: 'test',
+			persistKey: 'k',
+			serialize: String,
+			parse: Number,
+		});
+		p.set(9);
+		expect(localStorage.getItem('k')).toBeNull(); // intent is not persisted yet
+		p.confirm(9);
+		expect(localStorage.getItem('k')).toBe('9');
+		const again = createParam<number>('test.b', {
+			fallback: 1,
+			scope: 'test',
+			persistKey: 'k',
+			serialize: String,
+			parse: Number,
+		});
+		expect(again.get()).toBe(9); // known before the first STATUS
+	});
+
+	it("persists user intent when persist: 'desired'", () => {
+		const p = createParam<boolean>('test.flag', {
+			fallback: false,
+			scope: 'test',
+			persistKey: 'flag',
+			persist: 'desired',
+		});
+		p.set(true);
+		expect(localStorage.getItem('flag')).toBe('true');
+	});
+
+	it('never throws when storage is unavailable', () => {
+		const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+			throw new Error('denied');
+		});
+		const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+			throw new Error('denied');
+		});
+		const p = createParam<number>('test.c', { fallback: 3, scope: 'test', persistKey: 'c' });
+		p.confirm(4);
+		expect(p.get()).toBe(4);
+		get.mockRestore();
+		set.mockRestore();
+	});
+});
+
+describe('resetAll', () => {
+	it('clears every slot in a scope, and only that scope', () => {
+		resetAll(); // start clean (slots registered by earlier tests)
+		const sdr = createParam<number>('test.sdr', { fallback: 0, scope: 'sdr' });
+		const swp = createParam<number>('test.swp', { fallback: 0, scope: 'swp' });
+		sdr.confirm(1);
+		swp.confirm(2);
+		sdr.set(10);
+		swp.set(20);
+		resetAll('sdr');
+		expect(sdr.get()).toBe(1); // intent dropped
+		expect(swp.get()).toBe(20); // untouched
+		resetAll();
+		expect(swp.get()).toBe(2);
+	});
+
+	it('registers every created slot', () => {
+		const before = allParams().length;
+		createParam<number>('test.reg', { fallback: 0, scope: 'test' });
+		expect(allParams().length).toBe(before + 1);
+	});
+});
+
+describe('Param class shape', () => {
+	it('exposes name/scope and keeps internals private', () => {
+		const p = new Param<number>('n', { fallback: 0, scope: 's' });
+		expect(p.name).toBe('n');
+		expect(p.scope).toBe('s');
+		expect(Object.keys(p)).not.toContain('_confirmed');
+	});
+});

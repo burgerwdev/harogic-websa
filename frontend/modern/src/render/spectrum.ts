@@ -5,6 +5,7 @@ import { plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
+import { sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
@@ -578,14 +579,14 @@ function renderRta() {
     ctx.restore();
   });
   // SDR: listen-frequency marker + demod passband
-  if (S.sdrMode && S.sdrListenHz > 0) {
+  if (S.sdrMode && sdrListenHz.get() > 0) {
     const span = (hi - lo) || 1;
-    const lx = p.x + (S.sdrListenHz - lo) / span * p.w;
+    const lx = p.x + (sdrListenHz.get() - lo) / span * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
       const bw = S.sdrPassbandHz || 0;
       if (bw > 0) {
-        const x0 = p.x + (S.sdrListenHz - bw / 2 - lo) / span * p.w;
-        const x1 = p.x + (S.sdrListenHz + bw / 2 - lo) / span * p.w;
+        const x0 = p.x + (sdrListenHz.get() - bw / 2 - lo) / span * p.w;
+        const x1 = p.x + (sdrListenHz.get() + bw / 2 - lo) / span * p.w;
         ctx.fillStyle = 'rgba(0,255,160,0.12)';
         ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
       }
@@ -600,13 +601,13 @@ function renderRta() {
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
   // Bottom frequency row (same as SWP grid)
   drawFreqRow(lo, hi, col, p);
-  if (S.sdrMode && S.sdrListenHz > 0) {
-    const lx = p.x + (S.sdrListenHz - lo) / ((hi - lo) || 1) * p.w;
+  if (S.sdrMode && sdrListenHz.get() > 0) {
+    const lx = p.x + (sdrListenHz.get() - lo) / ((hi - lo) || 1) * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
       ctx.fillStyle = '#00ffa0'; ctx.font = '11px monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       // formatFreqHz keeps the unit (the label used to read "\u25bc 101.7073" with none).
-      ctx.fillText('\u25bc ' + formatFreqHz(S.sdrListenHz), lx, p.y + 2);
+      ctx.fillText('\u25bc ' + formatFreqHz(sdrListenHz.get()), lx, p.y + 2);
     }
   }
   // Markers on the active RTA trace (length-guarded)
