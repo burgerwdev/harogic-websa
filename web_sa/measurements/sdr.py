@@ -148,6 +148,11 @@ class SdrSession(MeasurementSession):
         self._fade_start = 0.0
         self._fade_until = 0.0
         self._settle_pending = False
+        # Squelch gate state: a bare level>=threshold comparator chattered at ~12 Hz when a
+        # signal sat near the threshold (measured on hardware), so the gate has hysteresis,
+        # a hold time and a smoothed gain for click-free open/close.
+        self._squelch_gain = 1.0
+        self._squelch_hold_until = 0.0
         self._mix_phase = 0.0
         self._mix_freq = 0.0
         self._applied_listen = None
@@ -503,6 +508,12 @@ class SdrSession(MeasurementSession):
 
     SETTLE_DISCARD = 0.12
     SETTLE_FADE = 0.10
+    # Squelch: open at the threshold, close 3 dB lower, keep open for 0.3 s after the last
+    # above-threshold block, and ramp the gate gain (5 ms attack / 80 ms release).
+    SQUELCH_HYST_DB = 3.0
+    SQUELCH_HOLD_S = 0.30
+    SQUELCH_ATTACK_S = 0.005
+    SQUELCH_RELEASE_S = 0.080
 
     def _begin_audio_settle(self) -> None:
         """Arm a discard+fade window. It is applied when the first audio actually arrives
@@ -951,10 +962,25 @@ class SdrSession(MeasurementSession):
                 audio = audio * gain
             level_dbfs = float(power_dbfs) - 90.31     # int16 full-scale reference
             s.sdr_level_dbfs = float(level_dbfs)
-            s.sdr_squelch_open = bool(level_dbfs >= float(s.sdr_squelch))
+            thr = float(s.sdr_squelch)
+            if level_dbfs >= thr:
+                self._squelch_hold_until = now + self.SQUELCH_HOLD_S
+                s.sdr_squelch_open = True
+            elif (level_dbfs < thr - self.SQUELCH_HYST_DB
+                    and now >= self._squelch_hold_until):
+                s.sdr_squelch_open = False
             if audio.size:
-                audio = (audio * float(s.sdr_volume) if s.sdr_squelch_open
-                         else np.zeros_like(audio))
+                # Smooth the gate instead of hard-zeroing one block: a step from full level
+                # to zero audibly clicks, and a bare comparator chatters at the threshold.
+                target = 1.0 if s.sdr_squelch_open else 0.0
+                dt = audio.size / max(1.0, float(self.AUDIO_RATE))
+                tau = (self.SQUELCH_ATTACK_S if target > self._squelch_gain
+                       else self.SQUELCH_RELEASE_S)
+                alpha = 1.0 - float(np.exp(-dt / max(1e-4, tau)))
+                new_gain = self._squelch_gain + (target - self._squelch_gain) * alpha
+                gate = np.linspace(self._squelch_gain, new_gain, audio.size)
+                self._squelch_gain = new_gain
+                audio = audio * float(s.sdr_volume) * gate
                 self._audio_buf = np.concatenate([self._audio_buf, audio])
                 while self._audio_buf.size >= self.AUDIO_FRAME:
                     chunk = self._audio_buf[:self.AUDIO_FRAME]

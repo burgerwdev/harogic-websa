@@ -341,47 +341,11 @@ function renderLimits(powers: Float32Array | null) {
   ctx.beginPath();
   ctx.rect(p.x, p.y, p.w, p.h);
   ctx.clip();
-  // Bins above the limit: shade the whole above-limit part of the signal (the area between
-  // the limit line and the trace), then stroke that part of the trace in red. Shading only
-  // the trace line made a violation read as "just the tip changed colour".
+  // Violating bins used to be shaded/stroked red on top of the trace. The shading did not
+  // line up reliably with the trace and read as inaccurate, so the canvas now shows only the
+  // limit line plus the PASS/FAIL status block; the geometry stays in dataset.limitsDbg for
+  // diagnostics.
   const runs = violationRuns(powers, lim, S.limits.tol);
-  const crossFrac = (a: number, b: number): number => {
-    const denom = (powers[b] - powers[a]) - (lim[b] - lim[a]);
-    if (Math.abs(denom) < 1e-9) return 0;
-    return Math.max(0, Math.min(1, (lim[a] - powers[a]) / denom));
-  };
-  for (const r of runs) {
-    const s = r.start, e = r.end;
-    ctx.beginPath();
-    // left edge: the exact trace/limit crossing, or the end of the data
-    if (s > 0) {
-      const t = crossFrac(s - 1, s);
-      ctx.moveTo(getX(s - 1 + t, n), getY(lim[s - 1] + t * (lim[s] - lim[s - 1])));
-    } else {
-      ctx.moveTo(getX(s, n), getY(lim[s]));
-    }
-    for (let i = s; i <= e; i++) ctx.lineTo(getX(i, n), getY(powers[i]));
-    if (e < n - 1) {
-      const t = crossFrac(e, e + 1);
-      ctx.lineTo(getX(e + t, n), getY(lim[e] + t * (lim[e + 1] - lim[e])));
-    } else {
-      ctx.lineTo(getX(e, n), getY(lim[e]));
-    }
-    // back along the limit line to close the shaded area
-    for (let i = e; i >= s; i--) ctx.lineTo(getX(i, n), getY(lim[i]));
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(255,64,64,0.22)';
-    ctx.fill();
-    // the trace segment above the limit itself
-    ctx.beginPath();
-    for (let i = s; i <= e; i++) {
-      const x = getX(i, n), y = getY(powers[i]);
-      if (i === s) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = 'rgba(255,64,64,0.95)';
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-  }
   // Dashed limit line itself
   ctx.setLineDash([6, 4]);
   ctx.lineWidth = 1.5;
