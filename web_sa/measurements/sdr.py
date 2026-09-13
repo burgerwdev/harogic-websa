@@ -117,7 +117,7 @@ class SdrSession(MeasurementSession):
     PAN_MIN_INTERVAL = 1.0 / 20.0      # panadapter/waterfall ~20 fps
     AUDIO_RATE = 48000
     AUDIO_FRAME = 960                  # 20 ms
-    ADM_MIN_INTERVAL = 0.5             # metrics update
+    ADM_MIN_INTERVAL = 1.0             # metrics update (matches the 1 s STATUS cadence)
 
     def __init__(self, dev):
         super().__init__(dev)
