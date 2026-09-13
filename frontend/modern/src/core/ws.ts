@@ -4,7 +4,6 @@ import { sdrAutoRef } from './sdrAutoRef';
 import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
-import { toUnit } from './units';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
@@ -159,7 +158,7 @@ export function connectWS() {
       // RTA frame layout lives in core/frames.ts (magic + ver + pts + wfLen + maxD +
       // startHz, then freq(f8) + spec(f4) + wfRow(u2) + stopHz(f8)); the decoder has
       // already validated every length, so nothing here has to re-derive strides.
-      const { version: ver, wfLen, maxDensity, startHz, stopHz } = frame;
+      const { version: ver, maxDensity, startHz, stopHz } = frame;
       const capFreq = frame.freq;
       const capSpec = frame.spec;
       const wfRow = frame.wfRow;
@@ -284,7 +283,7 @@ export function connectWS() {
         if (relDb >= 25) return 1;
         return 0.25 + 0.75 * ((relDb - 3) / 22);
       };
-      const pushDensity = (nd: Float32Array, i: number, relDb: number, w: number) => {
+      const pushDensity = (nd: Float32Array, i: number, _relDb: number, w: number) => {
         const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
         const o = i * S.RTA_AMP_BINS;
         const bump = (bin: number, v: number) => {

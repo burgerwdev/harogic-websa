@@ -32,6 +32,8 @@ jobs:
         run: python tools/sync_version.py --check
       - name: Frame fixtures match the encoders
         run: python tools/gen_frame_fixtures.py --check
+      - name: DOM id contract (every id read from TS exists in index.html)
+        run: python tools/check_dom_ids.py
       - name: Tests
         run: python -m pytest tests/ -q
 

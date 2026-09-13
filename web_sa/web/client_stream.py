@@ -10,6 +10,21 @@ from .jsonutil import dumps_json, is_periodic_status
 log = logging.getLogger(__name__)
 SEND_TIMEOUT = 5.0
 
+#: Retention policy per frame type (report finding E-4). A new frame type is one row here
+#: instead of another branch in the send path; anything unlisted behaves like data.
+RETAIN = 'retain'      # keep the newest and drop older ones (a frequency axis is context)
+LATEST = 'latest'      # newest wins, the previous frame is dropped (traces, bitmaps)
+FIFO = 'fifo'          # ordered queue, drop-oldest on overrun (audio)
+FRAME_POLICY = {
+    b'FREQ': RETAIN,
+    b'AUDF': FIFO,
+    b'POWR': LATEST,
+    b'RTAF': LATEST,
+}
+DEFAULT_POLICY = LATEST
+#: Marker the connection filters use (audio has its own socket in the frontend).
+AUDIO_MAGIC = b'AUDF'
+
 
 class ClientStream:
     """Own the only writer for one WebSocket.
@@ -49,13 +64,14 @@ class ClientStream:
         if self.closed:
             return
         magic = frame[:4]
-        if self.audio_only and magic != b'AUDF':
+        if self.audio_only and magic != AUDIO_MAGIC:
             return
-        if self.no_audio and magic == b'AUDF':
+        if self.no_audio and magic == AUDIO_MAGIC:
             return
-        if magic == b'FREQ':
+        policy = FRAME_POLICY.get(magic, DEFAULT_POLICY)
+        if policy is RETAIN:
             self._freq = frame
-        elif magic == b'AUDF':
+        elif policy is FIFO:
             if len(frame) < 16:
                 self.dropped_audio += 1
                 return

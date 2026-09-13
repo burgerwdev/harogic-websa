@@ -6,7 +6,8 @@ import struct
 import pytest
 
 import web_sa.web.client_stream as client_stream_module
-from web_sa.web.client_stream import ClientStream
+from web_sa.measurements import framer
+from web_sa.web.client_stream import DEFAULT_POLICY, FRAME_POLICY, ClientStream
 
 
 class FakeWebSocket:
@@ -139,3 +140,25 @@ async def test_stalled_client_is_closed(monkeypatch):
     await asyncio.sleep(0.03)
     assert stream.closed
     assert ws.closed
+
+
+def test_every_frame_type_has_a_retention_policy():
+    """A new frame type must declare how it is retained (report finding E-4).
+
+    The magics come from the production encoders, so adding an encoder without a policy row
+    (and therefore silently getting latest-wins) fails here.
+    """
+    encoded = {
+        framer.MAGIC_FREQ, framer.MAGIC_POWR, framer.MAGIC_RTA, framer.MAGIC_AUDIO,
+    }
+    assert encoded == set(FRAME_POLICY), (
+        f'frame types without a policy: {sorted(encoded - set(FRAME_POLICY))}; '
+        f'policies for unknown types: {sorted(set(FRAME_POLICY) - encoded)}')
+    # Unknown magics fall back to latest-wins rather than being dropped silently.
+    assert DEFAULT_POLICY == 'latest'
+
+
+def test_fifo_policy_is_what_the_audio_path_expects():
+    assert FRAME_POLICY[framer.MAGIC_AUDIO] == 'fifo'
+    assert FRAME_POLICY[framer.MAGIC_FREQ] == 'retain'
+    assert FRAME_POLICY[framer.MAGIC_POWR] == 'latest'

@@ -27,6 +27,7 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	./test.sh
 	python3 tools/sync_version.py --check
 	python3 tools/gen_frame_fixtures.py --check
+	python3 tools/check_dom_ids.py
 	python3 tools/quality/architecture_guard.py
 	./build.sh
 	@echo "OK: same gates as .github/workflows/ci.yml"

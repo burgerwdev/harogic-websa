@@ -42,7 +42,7 @@ export function getDisplayPowers(): Float32Array | null {
   return any ? getTraceDisplay(any) : null;
 }
 
-export function findExtremesOrdered(dir: string, isPeak: boolean): ExtremaItem[] {
+export function findExtremesOrdered(_dir: string, isPeak: boolean): ExtremaItem[] {
   const t = S.traces[S.activeTraceIdx];
   const disp = getDisplayPowers();
   if (!disp) return [];

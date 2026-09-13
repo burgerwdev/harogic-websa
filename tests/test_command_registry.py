@@ -8,11 +8,11 @@ HTTP/WS tests and (on the bench) tools/command_sweep.py.
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
 from web_sa.config import DeviceCapabilities
-from web_sa.hardware.device import DeviceState
 from web_sa.web import commands as cmd
 from web_sa.web import ws as ws_module
 from web_sa.web.commands import (
@@ -35,10 +35,16 @@ EXPECTED = {
 }
 
 
+def make_state(mode: str = 'std') -> SimpleNamespace:
+    """Only the fields the command layer touches (keeps this test hardware-free)."""
+    return SimpleNamespace(connected=True, mode=mode, caps=DeviceCapabilities.from_model(67),
+                           pnm_supported=True, sweep_time_mode=0, rta_sweep_time_mode=2,
+                           last_error='')
+
+
 class StubDevice:
     def __init__(self, mode: str = 'std', session_name: str | None = None):
-        self.state = DeviceState(connected=True, mode=mode,
-                                 caps=DeviceCapabilities.from_model(67), pnm_supported=True)
+        self.state = make_state(mode)
         self.session = None if session_name is None else type('S', (), {'name': session_name})()
 
 
@@ -109,7 +115,7 @@ def test_command_context_routes_configure_calls_through_the_hardware_wrapper():
     calls: list[str] = []
 
     class Dev:
-        state = DeviceState(connected=True, caps=DeviceCapabilities.from_model(67))
+        state = make_state()
         session = None
 
         def configure_swp(self):

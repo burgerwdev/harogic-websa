@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
-import { ctx, W, H, MARGIN } from '../core/store';
+import { ctx, W, H } from '../core/store';
 import { PLOT_RECT, getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';

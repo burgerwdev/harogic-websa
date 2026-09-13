@@ -47,7 +47,7 @@ function crossX(powers: Float32Array, i: number, th: number, dir: number): numbe
 
 export function clearAmp() { S.setAmpRes(null); requestRender(); }
 
-export function renderAmp(powers: Float32Array) {
+export function renderAmp(_powers: Float32Array) {
   const ar = S.ampRes;
   if (!ar || !ar.rows.length || !S.freqArray) return;
   const col = canvasColors();
