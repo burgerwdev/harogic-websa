@@ -136,12 +136,6 @@ class SdrSession(MeasurementSession):
         self._last_status = 0
         self._packets_ok = 0
         self._packets_err = 0
-        # Sample accounting: the audio must be produced at exactly AUDIO_RATE. A mismatch
-        # here means samples are duplicated/lost, which shows up as a stutter on the client
-        # (the worklet plays at a fixed rate and has to discard the excess).
-        self._ddc_in_samples = 0
-        self._audio_out_samples = 0
-        self._account_t0 = time.monotonic()
         self._transient_streak = 0
         self._timeout_streak = 0
         self._last_ok = 0.0
@@ -543,13 +537,6 @@ class SdrSession(MeasurementSession):
             ddc_batch=self._ddc_batch,
             audio_rate=self.AUDIO_RATE,
             deemph_us=self._demod.deemph_us,
-            ddc_in_samples=self._ddc_in_samples,
-            audio_out_samples=self._audio_out_samples,
-            audio_ratio=((self._audio_out_samples / max(1e-9, time.monotonic() - self._account_t0))
-                         / self.AUDIO_RATE),
-            ddc_pts_ratio=(self._ddc_in_samples
-                           / max(1e-9, self._ddc.fs_out or 1.0)
-                           / max(1e-9, time.monotonic() - self._account_t0)),
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
         s.sdr_actual['start'] = float(self._iqs_center_hz) - half
@@ -914,7 +901,6 @@ class SdrSession(MeasurementSession):
             # ---- channelizer + demod ----
             try:
                 i, q = self._ddc.process(src, n)  # pass the ctypes buffer directly
-                self._ddc_in_samples += int(n)
             except (RuntimeError, ValueError) as exc:
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
@@ -930,14 +916,6 @@ class SdrSession(MeasurementSession):
             settling = now < self._discard_until
             audio, power_dbfs = self._demod.process(
                 i, q, use_agc=s.sdr_agc, agc_hold=settling)
-            self._audio_out_samples += int(audio.size)
-            s.sdr_actual['diag_audio_total'] = self._audio_out_samples
-            s.sdr_actual['diag_ddc_in_total'] = self._ddc_in_samples
-            s.sdr_actual['diag_pts'] = int(getattr(self._ddc, 'last_pts', 0))
-            s.sdr_actual['diag_consumed_pts'] = int(getattr(self._ddc, 'consumed_points', 0))
-            s.sdr_actual['diag_consumed_in'] = int(getattr(self._ddc, 'consumed_in', 0))
-            s.sdr_actual['diag_out_points'] = int(self._ddc.out_points)
-            s.sdr_actual['diag_delay'] = int(self._ddc.delay)
             if audio.size and now < self._discard_until:
                 audio = np.zeros(0, dtype=np.float32)   # discard the settling transient
             elif audio.size and now < self._fade_until:

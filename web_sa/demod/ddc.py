@@ -90,12 +90,6 @@ class DdcChannel:
         if st != 0:
             raise RuntimeError(f'DSP_DDC_Execute status={st}')
         pts = int(outs.IQS_StreamInfo.PacketSamples) or self.out_points
-        # Diagnostics: how many points the SDK hands back versus how many NEW samples this
-        # input block can actually produce (n / decimate). A ratio above 1 means we consume
-        # the filter's delay tail again on every block (duplicated audio, fast timeline).
-        self.last_pts = pts
-        self.consumed_points = getattr(self, 'consumed_points', 0) + pts
-        self.consumed_in = getattr(self, 'consumed_in', 0) + n
         if pts == 0:
             return np.zeros(0), np.zeros(0)
         max_points = self.out_points + max(self.delay, 8)

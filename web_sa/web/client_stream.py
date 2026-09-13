@@ -33,11 +33,7 @@ class ClientStream:
     """
 
     CONTROL_LIMIT = 32
-    # Audio backlog budget, in seconds (frames are ~20 ms; seq=0 flushes stale audio).
-    # The backlog is DERIVED from the queue contents, never cached: the sender removes
-    # frames from this deque too, and a counter decremented only on our own drops would
-    # drift upwards until every frame was discarded on arrival (no audio at all).
-    AUDIO_BACKLOG_S = 0.4
+    AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
 
     def __init__(self, ws):
         self.ws = ws
@@ -55,15 +51,6 @@ class ClientStream:
     def start(self) -> None:
         self._task = asyncio.create_task(self._sender())
 
-    @staticmethod
-    def _frame_seconds(frame: bytes) -> float:
-        """AUDF header: magic, seq, rate, samples (see measurements/sdr.py)."""
-        rate = int.from_bytes(frame[8:12], 'little') or 48000
-        return int.from_bytes(frame[12:16], 'little') / float(rate)
-
-    def audio_backlog_seconds(self) -> float:
-        return sum(self._frame_seconds(f) for f in self._audio)
-
     def publish_bytes(self, frame: bytes) -> None:
         if self.closed:
             return
@@ -79,7 +66,7 @@ class ClientStream:
                 self.dropped_audio += len(self._audio)
                 self._audio.clear()
             self._audio.append(frame)
-            while len(self._audio) > 1 and self.audio_backlog_seconds() > self.AUDIO_BACKLOG_S:
+            if len(self._audio) > self.AUDIO_LIMIT:
                 self._audio.popleft()
                 self.dropped_audio += 1
         else:

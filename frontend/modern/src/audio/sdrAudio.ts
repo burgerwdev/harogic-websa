@@ -137,13 +137,6 @@ async function initializeOutput(context: AudioContext): Promise<void> {
           } else if (event.data?.type === 'status') {
             bufferedSamples = Number(event.data.available) || 0;
             audioUnderruns = Number(event.data.underruns) || 0;
-            // Live diagnostic: while listening for dropouts, watch these on the canvas.
-            // `underruns` climbing means the client-side buffer ran dry (a gap caused by
-            // delivery jitter), not by the backend dropping audio.
-            const cv = document.getElementById('spectrum');
-            if (cv) {
-              cv.dataset.sdrAudio = `underruns=${audioUnderruns} buffered_ms=${(bufferedSamples / 48).toFixed(1)}`;
-            }
           }
         };
         candidate!.connect(context.destination);
