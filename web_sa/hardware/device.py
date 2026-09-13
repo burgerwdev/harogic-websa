@@ -533,7 +533,11 @@ class HarogicDevice:
                 st = sb.dll.SWP_GetFullSweep(sb.pointer(self.dev), self._freq_buf,
                                              self._spec_buf, sb.pointer(self._meas_aux))
                 if st != 0:
+                    # Vendor warnings (e.g. -12 IF overflow) still mean "no usable frame",
+                    # but they must be reported, not treated as a failure.
+                    self.state.status_warning = int(st) if st in sb.WARN_STATUS else 0
                     return None
+                self.state.status_warning = 0
                 self.state.refclk_ppm = float(getattr(self._meas_aux, 'RefClkFreqOffset', 0.0))
                 # IF AGC gain actually applied by the device (dB); useful to prove whether
                 # the AGC is acting at all.

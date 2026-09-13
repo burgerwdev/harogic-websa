@@ -3,7 +3,7 @@
 // Every indicator that wants to show state on the canvas pushes a block here during a
 // render pass; the blocks are drawn stacked and right-aligned. Putting them in one place is
 // what keeps them from overlapping each other (trigger chip, limit verdict, ...).
-import { ctx } from '../core/store';
+import { ctx, statusWarnings } from '../core/store';
 import { plotRect } from './plot';
 
 export interface StatusBlock {
@@ -23,6 +23,10 @@ export function pushStatus(block: StatusBlock | null | undefined): void {
 }
 
 export function renderStatusBlocks(): void {
+  // Vendor warnings (e.g. -12 IF overflow) join the same stack as the trigger chip so every
+  // canvas indicator lives in one place. Pushed here, not by a view, so it shows in every
+  // mode (an unarmed SWP view never pushes the trigger chip).
+  if (statusWarnings.length) pushStatus({ lines: statusWarnings, accent: '#ff7043' });
   if (!blocks.length) return;
   const p = plotRect();
   ctx.save();

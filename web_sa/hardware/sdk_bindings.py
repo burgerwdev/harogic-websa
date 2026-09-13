@@ -325,6 +325,12 @@ dll.DET_Configuration.argtypes = [POINTER(c_void_p), POINTER(DET_Profile_TypeDef
                                  POINTER(DET_Profile_TypeDef),
                                  POINTER(htra_api.DET_StreamInfo_TypeDef)]
 
+# Vendor WARNING return codes (htra_api.h). These are not failures: the acquisition loop
+# must keep running and simply report them. -12 = APIFELVAL_WARNING_IFOverflow, whose
+# documented remedy is to RAISE RefLevel_dBm (the IF saturates when Ref is set low, since
+# the total gain rises as Ref falls).
+WARN_STATUS = frozenset({-10, -11, -12, -14, -15, -16, -17, -18, -19})
+
 # Convenient aliases (used by the business layer)
 SWP_TraceInfo_TypeDef = htra_api.SWP_TraceInfo_TypeDef
 SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef

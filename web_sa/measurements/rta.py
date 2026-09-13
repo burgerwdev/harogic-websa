@@ -16,13 +16,14 @@ import time
 
 import numpy as np
 
+from ..hardware import sdk_bindings as _sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
 
 log = logging.getLogger(__name__)
 
-# Vendor WARNING return codes (see _note_warning / htra_api.h)
-_WARN_STATUS = {-10, -11, -12, -14, -15, -16, -17, -18, -19}
+# Vendor WARNING return codes come from sdk_bindings (shared with the SWP/SDR paths).
+_WARN_STATUS = _sb.WARN_STATUS
 
 
 def _dbg(msg: str) -> None:
@@ -94,7 +95,6 @@ class RtaSession(MeasurementSession):
     def _configure_locked(self, recovery=False):
         import htra_api as T
 
-        from ..hardware import sdk_bindings as _sb
         dev = self.dev
         s = dev.state
         _dbg('CONF enter ready=%s dec=%s rbw=%s sweep=%s center=%.3e' % (

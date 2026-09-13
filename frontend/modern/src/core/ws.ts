@@ -384,17 +384,16 @@ export function updateStatus(s: any) {
   if (s.mode !== 'rta' && s.mode !== 'sdr') S.setSwpCenterHz(Number(s.center));
   // -12 = APIRETVAL_WARNING_IFOverflow: the IF saturates when Ref is set low (gain rises as
   // Ref falls) and the device then stops delivering frames, so the display looks frozen.
-  // The vendor's remedy is to RAISE the reference level. Say so instead of freezing
-  // silently. Cleared as soon as a good frame arrives.
+  // The vendor's remedy is to RAISE the reference level. Shown in the canvas warning stack
+  // (top-right) and as a pulsing outline on the Ref control. Cleared by a good frame.
   {
     const over = Number(s.status_warning) === -12;
     const refEl = document.getElementById('input-ref') as HTMLInputElement | null;
     if (refEl) {
-      refEl.style.outline = over ? '1px solid #ff4d4d' : '';
+      refEl.classList.toggle('ref-warn', over);
       refEl.title = over ? t('if_overflow_hint') : '';
     }
-    const warnEl = document.getElementById('dev-warn');
-    if (warnEl && over) warnEl.textContent = t('if_overflow_short');
+    S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
   }
   S.setSpanHz(Number(s.span));
   S.setRefLevel(Number(s.ref));

@@ -117,6 +117,9 @@ export function setTrigWaiting(v: boolean) { trigWaiting = v; }
 export let trigHit = false;
 export function setTrigHit(v: boolean) { trigHit = v; }
 export let trigOverlay: string[] = [];      // status chip + warnings, drawn top-right
+// Vendor warning lines for the same canvas stack (lines starting with '!' draw as warnings).
+export let statusWarnings: string[] = [];
+export function setStatusWarnings(v: string[]) { statusWarnings = v; }
 export function setTrigOverlay(v: string[]) { trigOverlay = v; }
 export let displayOffset = 0.0;
 export function setDisplayOffset(v: number) { displayOffset = v; }

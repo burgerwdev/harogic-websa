@@ -805,6 +805,8 @@ class SdrSession(MeasurementSession):
                 self._last_status = int(st)
                 self._packets_err += 1
                 if st in _TRANSIENT_IQS:
+                    if st in sb.WARN_STATUS:
+                        s.status_warning = int(st)
                     self._transient_streak += 1
                     self._timeout_streak = self._timeout_streak + 1 if st == -10 else 0
                     # A timeout blocks for BusTimeout each call, so recover fast on those;
@@ -816,6 +818,7 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('get', st)
                 return [], []
             self._last_status = 0
+            s.status_warning = 0
             self._transient_streak = 0
             self._timeout_streak = 0
             self._last_ok = now
