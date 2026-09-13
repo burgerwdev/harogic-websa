@@ -45,6 +45,11 @@ _BUS_RETRY_DELAY = 0.05
 
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
 
+# Display-spectrum FFT. Set WEBSA_SDR_FFT=0 to fall back to the NumPy panadapter: the vendor
+# FFT takes a hand-built IQStream whose metadata must match the buffer exactly, and a
+# mismatch lets it overrun an internal buffer (corrupting the process heap).
+VFFT_ENABLED = os.getenv('WEBSA_SDR_FFT', '1').lower() not in ('0', 'false', 'no', 'off')
+
 # Staged tracing for native-crash diagnosis. Enable with WEBSA_TRACE=1. It walks the SDR
 # configuration pipeline step by step so that the last line before a native abort names
 # the offending SDK call. Per-frame calls use _tn(), which logs only the first few hits.
@@ -299,7 +304,14 @@ class SdrSession(MeasurementSession):
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
         self._packet_samples = int(info.PacketSamples)
-        self._ddc_batch = 2 if fs >= 3.0e6 else 1
+        # One IQS packet per step. Fetching a second packet in the same step (an earlier
+        # "high-rate" optimisation) overwrote the vendor's internal packet buffer: the
+        # heap damage surfaced later as SIGSEGV / glibc "double free or corruption (out)"
+        # during an unrelated numpy free, i.e. a random crash a few seconds after entering
+        # SDR and on the next mode switch. Measured A/B: two packets per step crashes on
+        # every run, one packet per step is stable over many mode switches. The official
+        # examples also call IQS_GetIQStream once per iteration.
+        self._ddc_batch = 1
         self._fs_in = fs
         s.sdr_actual = dict(
             center=self._iqs_center_hz, iq_rate=fs, bandwidth=bandwidth,
@@ -341,6 +353,10 @@ class SdrSession(MeasurementSession):
         self._vfft_frame_samples = 0
         self._vfft_buffer = None
         self._vfft_stream = None
+        if not VFFT_ENABLED:
+            log.info('SDR vendor FFT disabled (WEBSA_SDR_FFT=%s); using NumPy panadapter'
+                     % os.getenv('WEBSA_SDR_FFT'))
+            return
         try:
             frame_samples = int(self._packet_samples) * int(self._ddc_batch)
             if frame_samples < 64:
