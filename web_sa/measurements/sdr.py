@@ -720,6 +720,18 @@ class SdrSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def acquisition_timeout(self) -> float:
+        return 5.0
+
+    def pacing(self, dt: float, produced: bool) -> float:
+        """The IQS Adaptive stream paces itself.
+
+        IQS_GetIQStream_PM1 blocks until a packet is ready, so any extra sleep accumulates a
+        backlog and the device then returns BusDataError on every fetch. Only back off when
+        a step produced nothing (transient error), to avoid a busy spin.
+        """
+        return 0.0 if produced else 0.002
+
     def health(self) -> dict:
         return {'ok': self._packets_ok, 'err': self._packets_err,
                 'last_status': self._last_status, 'transient_streak': self._transient_streak}

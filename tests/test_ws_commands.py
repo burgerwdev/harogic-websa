@@ -116,3 +116,48 @@ def test_detector_choice_is_validated():
     with pytest.raises(CommandError):
         bad = {'cmd': 'SET_DETECTOR', 'mode': 'nope'}
         _validate_command(dev, bad['cmd'], bad)
+
+
+def test_model_limits_come_from_capabilities():
+    """A new SAN model must be a DeviceCapabilities row, not an edit to the validation chain.
+
+    Tightening the capability fields below must immediately change what the command layer
+    accepts; if a hard-coded bound is ever reintroduced, one of these asserts fails
+    (report finding E-2, guard rail in tools/quality/architecture_guard.py).
+    """
+    caps = DeviceCapabilities.from_model(67)
+    caps.rbw_max_hz = 1e6
+    caps.vbw_max_hz = 1e6
+    caps.points_max = 1001
+    caps.atten_max = 20
+    caps.ifgain_max = 1
+    caps.decimate_max = 64
+    caps.rta_span_max_hz = 10e6
+    caps.ref_max_dbm = 0.0
+    dev = StubDevice()
+    dev.state.caps = caps
+
+    ok = {'cmd': 'SET_RBW', 'mode': 'manual', 'rbw': 1e6}
+    _validate_command(dev, ok['cmd'], ok)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_RBW', 'mode': 'manual', 'rbw': 2e6}
+        _validate_command(dev, bad['cmd'], bad)
+
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_POINTS', 'points': 1002}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_AMP', 'atten': 21}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_AMP', 'ifgain': 2}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_SDR', 'decimate': 65}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_RTA', 'span': 11e6}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_REF', 'mode': 'manual', 'ref': 1.0}
+        _validate_command(dev, bad['cmd'], bad)

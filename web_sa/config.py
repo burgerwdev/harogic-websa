@@ -58,6 +58,25 @@ VBW_MODE = {
 }
 WINDOW_MAP = {0: 'FlatTop', 1: 'BlackmanNuttall', 2: 'Blackman', 3: 'Hamming', 4: 'Hanning'}
 
+# ---- Protocol / UI bounds (not model dependent, so they live here once instead of as
+# literals inside the command validation chain) ----
+REF_RANGE_DB_MIN, REF_RANGE_DB_MAX = 10.0, 200.0     # visible window height, dB
+PNM_CARRIER_MIN_HZ, PNM_CARRIER_MAX_HZ = 1.0, 9e6    # offset sweep for phase noise
+PNM_OFFSET_MAX_HZ = 10e6
+HARM_COUNT_MAX = 10
+HARM_SPAN_MAX_HZ = 100e6
+SDR_IFBW_MIN_HZ, SDR_IFBW_MAX_HZ = 100.0, 500000.0
+SDR_VOLUME_MIN, SDR_VOLUME_MAX = 0.0, 2.0
+SDR_PITCH_MIN_HZ, SDR_PITCH_MAX_HZ = 200.0, 2000.0
+SDR_DEEMPH_MIN_US, SDR_DEEMPH_MAX_US = -1.0, 1000.0
+SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS = -150.0, 0.0
+TRIGGER_LEVEL_MIN_DBM, TRIGGER_LEVEL_MAX_DBM = -150.0, 30.0
+TRIGGER_TIME_MAX_S = 10.0
+TRIGGER_ACQ_MIN_S, TRIGGER_ACQ_MAX_S = 0.0005, 60.0
+TRIGGER_RETRIGGER_MAX = 65535
+TRIGGER_RETRIGGER_PERIOD_MAX_S = 3600.0
+REFCLK_CAL_COUNT_MIN, REFCLK_CAL_COUNT_MAX = 3, 120
+
 
 @dataclass
 class DeviceCapabilities:
@@ -67,6 +86,19 @@ class DeviceCapabilities:
     freq_max_hz: float
     name: str
     pnm_supported: bool = True
+    #: Hardware limits used by command validation. One row per model in `from_model`:
+    #: a new SAN model must not require editing the validation chain (report finding E-2).
+    rbw_max_hz: float = 10e6
+    vbw_max_hz: float = 10e6
+    points_max: int = 4000
+    atten_max: int = 33
+    ifgain_max: int = 3
+    decimate_max: int = 2048
+    rta_span_max_hz: float = DEFAULT_RTA_SPAN_HZ
+    ref_min_dbm: float = -50.0
+    ref_max_dbm: float = 30.0
+    trigger_level_min_dbm: float = TRIGGER_LEVEL_MIN_DBM
+    trigger_level_max_dbm: float = TRIGGER_LEVEL_MAX_DBM
 
     @classmethod
     def from_model(cls, model: int, pnm_supported: bool = True) -> DeviceCapabilities:

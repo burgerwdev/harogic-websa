@@ -9,6 +9,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..config import PUBLISH_MIN_INTERVAL
+
+
+def _sweep_timeout(state) -> float:
+    """Watchdog for one swept acquisition, scaled to the requested sweep time."""
+    estimated = float(state.actual.get('est_min', 0.0) or 0.0)
+    configured = state.sweep_time if state.sweep_time_mode == 7 else 0.0
+    return max(10.0, min(180.0, max(estimated, configured) * 1.5 + 5.0))
+
 
 @dataclass
 class ConfigSnapshot:
@@ -37,6 +46,9 @@ class MeasurementSession:
     #: Which auto-reference tracker this session drives (device.auto_reference_view()).
     #: Declared by the session so the device never has to branch on the mode name.
     auto_ref_scope = 'std'
+    #: Rate limit for the publisher (250 fps max); SDR overrides it because the IQS
+    #: stream paces itself.
+    publish_min_interval = PUBLISH_MIN_INTERVAL
 
     def __init__(self, dev):
         self.dev = dev
@@ -80,6 +92,26 @@ class MeasurementSession:
         """Run a single step (called by the publisher), returns (frames, json_msgs)."""
         return [], []
 
+    # ---------------- Acquisition policy ----------------
+    # The publisher asks the session instead of branching on the mode name; a new mode
+    # therefore cannot require editing the scheduler (report finding E-3).
+
+    #: True when repeated frequency axes should be sent only once (the swept path
+    #: re-sends the same axis every sweep; RTA/SDR frames carry their own grid).
+    dedupe_freq = False
+
+    def acquisition_timeout(self) -> float:
+        """Watchdog for one step. A hung DLL call must not be waited on for ever."""
+        return _sweep_timeout(self.dev.state)
+
+    def pacing(self, dt: float, produced: bool) -> float:
+        """Seconds to sleep after a step that took ``dt`` and produced frames (or not)."""
+        return max(0.002, self.publish_min_interval - dt)
+
+    def reconfigure(self) -> None:
+        """Re-apply the current device configuration for this session."""
+        self.dev.configure_swp()
+
     def health(self) -> dict:
         """Session diagnostics surfaced in STATUS.
 
@@ -93,6 +125,8 @@ class StdSession(MeasurementSession):
     """Standard sweep session: continuously push FREQ/POWR frames via fetch_sweep."""
 
     name = 'std'
+    #: The swept path re-sends an identical frequency axis on every sweep; send it once.
+    dedupe_freq = True
 
     def step(self):
         r = self.dev.fetch_sweep()

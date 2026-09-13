@@ -13,6 +13,34 @@ import math
 
 from aiohttp import WSMsgType, web
 
+from ..config import (
+    HARM_COUNT_MAX,
+    HARM_SPAN_MAX_HZ,
+    PNM_CARRIER_MAX_HZ,
+    PNM_CARRIER_MIN_HZ,
+    PNM_OFFSET_MAX_HZ,
+    REF_RANGE_DB_MAX,
+    REF_RANGE_DB_MIN,
+    REFCLK_CAL_COUNT_MAX,
+    REFCLK_CAL_COUNT_MIN,
+    SDR_DEEMPH_MAX_US,
+    SDR_DEEMPH_MIN_US,
+    SDR_IFBW_MAX_HZ,
+    SDR_IFBW_MIN_HZ,
+    SDR_PITCH_MAX_HZ,
+    SDR_PITCH_MIN_HZ,
+    SDR_VOLUME_MAX,
+    SDR_VOLUME_MIN,
+    SQUELCH_MAX_DBFS,
+    SQUELCH_MIN_DBFS,
+    TRIGGER_ACQ_MAX_S,
+    TRIGGER_ACQ_MIN_S,
+    TRIGGER_LEVEL_MAX_DBM,
+    TRIGGER_LEVEL_MIN_DBM,
+    TRIGGER_RETRIGGER_MAX,
+    TRIGGER_RETRIGGER_PERIOD_MAX_S,
+    TRIGGER_TIME_MAX_S,
+)
 from .app_keys import COMMAND_LOCK, WS_CLIENTS
 from .client_stream import ClientStream
 from .recovery import fatal
@@ -110,7 +138,7 @@ def _validate_command(dev, cmd, data):
 
     caps = dev.state.caps
     if cmd == 'CAL_REFCLK':
-        _integer(data, 'count', minimum=3, maximum=120)
+        _integer(data, 'count', minimum=REFCLK_CAL_COUNT_MIN, maximum=REFCLK_CAL_COUNT_MAX)
     elif cmd == 'SET_FREQ':
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
@@ -133,17 +161,24 @@ def _validate_command(dev, cmd, data):
             raise CommandError('SET_FREQ requires center/span or start/stop', 'freq_requires_pair')
     elif cmd == 'SET_REF':
         mode = _choice(data, 'mode', ('manual', 'auto')) or 'manual'
-        _number(data, 'range_db', minimum=10.0, maximum=200.0)
+        _number(data, 'range_db', minimum=REF_RANGE_DB_MIN, maximum=REF_RANGE_DB_MAX)
         if mode == 'manual':
-            _number(data, 'ref', minimum=-50.0, maximum=30.0, required=True)
+            if caps is None:
+                raise CommandError('device capabilities are unavailable', 'caps_unavailable')
+            _number(data, 'ref', minimum=caps.ref_min_dbm, maximum=caps.ref_max_dbm,
+                    required=True)
     elif cmd == 'SET_RBW':
         mode = _choice(data, 'mode', ('manual', 'auto')) or 'auto'
         if mode == 'manual':
-            _number(data, 'rbw', minimum=100.0, maximum=10e6, required=True)
+            if caps is None:
+                raise CommandError('device capabilities are unavailable', 'caps_unavailable')
+            _number(data, 'rbw', minimum=100.0, maximum=caps.rbw_max_hz, required=True)
     elif cmd == 'SET_VBW':
         mode = _choice(data, 'mode', ('manual', 'equal', 'tenth', 'bypass', 'onethousandth')) or 'bypass'
         if mode == 'manual':
-            _number(data, 'vbw', minimum=10.0, maximum=10e6, required=True)
+            if caps is None:
+                raise CommandError('device capabilities are unavailable', 'caps_unavailable')
+            _number(data, 'vbw', minimum=10.0, maximum=caps.vbw_max_hz, required=True)
     elif cmd == 'SET_SWEEP':
         mode = _integer(data, 'mode', minimum=0, maximum=8)
         current_mode = (
@@ -159,7 +194,8 @@ def _validate_command(dev, cmd, data):
         else:
             _number(data, 'time', minimum=0.0, maximum=60.0)
     elif cmd == 'SET_POINTS':
-        _integer(data, 'points', minimum=51, maximum=4000, required=True)
+        _integer(data, 'points', minimum=51, maximum=caps.points_max if caps else 4000,
+                 required=True)
     elif cmd == 'SET_SPUR':
         _choice(data, 'mode', ('bypass', 'standard', 'enhanced'), required=True)
     elif cmd == 'SET_WINDOW':
@@ -169,9 +205,9 @@ def _validate_command(dev, cmd, data):
                 ('auto', 'sample', 'pos_peak', 'neg_peak', 'rms', 'auto_peak'),
                 required=True)
     elif cmd == 'SET_AMP':
-        _integer(data, 'atten', minimum=-1, maximum=33)
+        _integer(data, 'atten', minimum=-1, maximum=caps.atten_max if caps else 33)
         _integer(data, 'preamp', minimum=0, maximum=1)
-        _integer(data, 'ifgain', minimum=0, maximum=3)
+        _integer(data, 'ifgain', minimum=0, maximum=caps.ifgain_max if caps else 3)
         _integer(data, 'gain_strategy', minimum=0, maximum=1)
     elif cmd == 'SET_REFCK':
         _choice(data, 'mode', ('internal', 'external', 'premium', 'external_forced'), required=True)
@@ -186,7 +222,7 @@ def _validate_command(dev, cmd, data):
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-        _integer(data, 'decimate', minimum=1, maximum=2048)
+        _integer(data, 'decimate', minimum=1, maximum=caps.decimate_max)
         if 'center' not in data and 'decimate' not in data:
             raise CommandError('SET_SDR requires center or decimate', 'sdr_requires_param')
     elif cmd == 'SET_SDR_TUNE':
@@ -195,46 +231,47 @@ def _validate_command(dev, cmd, data):
         _number(data, 'listen', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz, required=True)
     elif cmd == 'SET_SDR_DEMOD':
         _choice(data, 'mode', ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'))
-        _number(data, 'deemph_us', minimum=-1.0, maximum=1000.0)
-        _number(data, 'ifbw', minimum=100.0, maximum=500000.0)
-        _number(data, 'squelch', minimum=-150.0, maximum=0.0)
-        _number(data, 'volume', minimum=0.0, maximum=2.0)
-        _number(data, 'pitch', minimum=200.0, maximum=2000.0)
+        _number(data, 'deemph_us', minimum=SDR_DEEMPH_MIN_US, maximum=SDR_DEEMPH_MAX_US)
+        _number(data, 'ifbw', minimum=SDR_IFBW_MIN_HZ, maximum=SDR_IFBW_MAX_HZ)
+        _number(data, 'squelch', minimum=SQUELCH_MIN_DBFS, maximum=SQUELCH_MAX_DBFS)
+        _number(data, 'volume', minimum=SDR_VOLUME_MIN, maximum=SDR_VOLUME_MAX)
+        _number(data, 'pitch', minimum=SDR_PITCH_MIN_HZ, maximum=SDR_PITCH_MAX_HZ)
         if 'agc' in data and not isinstance(data['agc'], bool):
             raise CommandError('agc must be a boolean', 'bool_required', key='agc')
     elif cmd == 'SET_RTA':
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-        _number(data, 'span', minimum=1000.0, maximum=50.78125e6)
+        _number(data, 'span', minimum=1000.0, maximum=caps.rta_span_max_hz)
         if 'center' not in data and 'span' not in data:
             raise CommandError('SET_RTA requires center or span', 'rta_requires_pair')
     elif cmd == 'SET_TRIGGER':
         _choice(data, 'source', ('bus', 'freerun', 'level', 'external', 'timer'))
         _choice(data, 'edge', ('rising', 'falling', 'double'))
-        _number(data, 'level', minimum=-150.0, maximum=30.0)
-        _number(data, 'safetime', minimum=0.0, maximum=10.0)
-        _number(data, 'delay', minimum=0.0, maximum=10.0)
-        _number(data, 'pretime', minimum=0.0, maximum=10.0)
-        _number(data, 'acqtime', minimum=0.0005, maximum=60.0)
-        _integer(data, 'retrigger', minimum=0, maximum=65535)
-        _number(data, 'retriggerperiod', minimum=0.0, maximum=3600.0)
+        _number(data, 'level', minimum=caps.trigger_level_min_dbm if caps else TRIGGER_LEVEL_MIN_DBM,
+                maximum=caps.trigger_level_max_dbm if caps else TRIGGER_LEVEL_MAX_DBM)
+        _number(data, 'safetime', minimum=0.0, maximum=TRIGGER_TIME_MAX_S)
+        _number(data, 'delay', minimum=0.0, maximum=TRIGGER_TIME_MAX_S)
+        _number(data, 'pretime', minimum=0.0, maximum=TRIGGER_TIME_MAX_S)
+        _number(data, 'acqtime', minimum=TRIGGER_ACQ_MIN_S, maximum=TRIGGER_ACQ_MAX_S)
+        _integer(data, 'retrigger', minimum=0, maximum=TRIGGER_RETRIGGER_MAX)
+        _number(data, 'retriggerperiod', minimum=0.0, maximum=TRIGGER_RETRIGGER_PERIOD_MAX_S)
         _choice(data, 'out', ('none', 'per_hop', 'per_sweep', 'per_profile'))
         _choice(data, 'outpolarity', ('positive', 'negative'))
     elif cmd == 'SET_HARM':
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'f0', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-        _integer(data, 'count', minimum=1, maximum=10)
-        _number(data, 'span', minimum=1.0, maximum=100e6)
+        _integer(data, 'count', minimum=1, maximum=HARM_COUNT_MAX)
+        _number(data, 'span', minimum=1.0, maximum=HARM_SPAN_MAX_HZ)
     elif cmd == 'SET_PNM':
         if caps is None:
             raise CommandError('device capabilities are unavailable', 'caps_unavailable')
         _number(data, 'center', minimum=caps.freq_min_hz, maximum=caps.freq_max_hz)
-        _number(data, 'threshold', minimum=-150.0, maximum=30.0)
+        _number(data, 'threshold', minimum=TRIGGER_LEVEL_MIN_DBM, maximum=TRIGGER_LEVEL_MAX_DBM)
         _integer(data, 'traceavg', minimum=1, maximum=1000)
-        start = _number(data, 'start', minimum=1.0, maximum=9e6)
-        stop = _number(data, 'stop', minimum=10.0, maximum=10e6)
+        start = _number(data, 'start', minimum=PNM_CARRIER_MIN_HZ, maximum=PNM_CARRIER_MAX_HZ)
+        stop = _number(data, 'stop', minimum=PNM_CARRIER_MIN_HZ, maximum=PNM_OFFSET_MAX_HZ)
         if start is not None and stop is not None and start >= stop:
             raise CommandError('start must be lower than stop', 'range_invalid')
 
@@ -336,7 +373,7 @@ async def _dispatch(dev, cmd, data) -> bool:
 
     async def _configure_active():
         sess = dev.session
-        if sess is not None and sess.name in ('rta', 'sdr'):
+        if sess is not None:
             await _hw_call(sess.reconfigure)
         else:
             await _configure_swp()

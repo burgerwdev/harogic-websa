@@ -7,6 +7,7 @@ import time
 
 from ..config import GNSS_POLL_INTERVAL, PUBLISH_MIN_INTERVAL
 from ..hardware.device import DeviceError
+from ..measurements.base import _sweep_timeout
 from .app_keys import COMMAND_LOCK, WS_CLIENTS
 from .jsonutil import dumps_json, is_periodic_status
 from .recovery import fatal
@@ -17,11 +18,11 @@ ERROR_LOG_INTERVAL = 5.0
 
 
 def _acquisition_timeout(dev) -> float:
-    if dev.state.mode in ('rta', 'sdr'):
-        return 5.0
-    estimated = float(dev.state.actual.get('est_min', 0.0) or 0.0)
-    configured = dev.state.sweep_time if dev.state.sweep_time_mode == 7 else 0.0
-    return max(10.0, min(180.0, max(estimated, configured) * 1.5 + 5.0))
+    """Watchdog for one acquisition step (the active session owns the policy)."""
+    session = getattr(dev, 'session', None)
+    if session is not None:
+        return session.acquisition_timeout()
+    return _sweep_timeout(dev.state)
 
 
 def _acquisition_step(dev):
@@ -69,7 +70,7 @@ async def publisher(app, dev):
                         dev.state.last_error = 'acquisition timed out'
                         fatal('Acquisition timed out')
                 frames, msgs = result if result is not None else ([], [])
-                if dev.state.mode == 'std':
+                if dev.session is not None and dev.session.dedupe_freq:
                     for frame in frames:
                         magic = frame[:4]
                         version = int.from_bytes(frame[4:8], 'little')
@@ -97,12 +98,9 @@ async def publisher(app, dev):
         dt = time.monotonic() - t0
         if clients:
             dev.measure_sweep(dt)
-        if dev.state.mode == 'sdr':
-            # The IQS Adaptive stream is paced by IQS_GetIQStream_PM1 itself (it blocks
-            # until a packet is ready). Any extra sleep accumulates a backlog and the
-            # device then returns BusDataError on every fetch. Only back off when a step
-            # produced nothing (transient error), to avoid a busy spin.
-            await asyncio.sleep(0.0 if frames else 0.002)
+        session = dev.session
+        if session is not None:
+            await asyncio.sleep(session.pacing(dt, bool(frames)))
         else:
             await asyncio.sleep(max(0.002, PUBLISH_MIN_INTERVAL - dt))
 

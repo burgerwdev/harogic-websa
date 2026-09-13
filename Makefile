@@ -33,6 +33,9 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 
 hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regression (SAN-90 required)
 	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
+	@# The smoke test needs std mode; a previous e2e run may have left SDR/RTA active.
+	@curl -s -X POST http://127.0.0.1:$${WEBSA_PORT:-8080}/api/config \
+		-H 'Content-Type: application/json' -d '{"cmd":"SET_MODE","mode":"std"}' >/dev/null || true
 	python3 tools/hardware_smoke.py --tinysa-port $${TINYSA_PORT:-/dev/ttyACM0} \
 		--configure-tinysa --frequency 100.2e6 --span 10e6 --duration 3
 	python3 tools/e2e/state_regression.py

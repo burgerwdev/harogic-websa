@@ -353,6 +353,10 @@ class RtaSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def acquisition_timeout(self) -> float:
+        """The RTA fetch blocks in the DLL, so a stuck call is detected quickly."""
+        return 5.0
+
     def health(self) -> dict:
         return {'error_streak': self._error_streak,
                 'recovery_attempts': self._recovery_attempts}
