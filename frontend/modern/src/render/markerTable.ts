@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { fmtLevel } from '../core/level';
 import { formatFreqHz } from '../core/fmt';
 import { markerFreqHz } from '../core/markerCommon';
-import { renderAll } from './spectrum';
+import { requestRender } from './redraw';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak } from '../dsp/markerTracking';
 
@@ -64,7 +64,7 @@ export function initMarkerTable() {
     selr.onchange = () => {
       m.refId = parseInt(selr.value);
       if (m.mode !== 'OFF') m.mode = 'DELTA';
-      renderAll();
+      requestRender();
     };
     td4.appendChild(selr); tr.appendChild(td4);
 
@@ -135,7 +135,7 @@ function toggleMarkerEnabled(id: number) {
   marker.enabled = !marker.enabled;
   if (marker.enabled && marker.mode === 'OFF') marker.mode = 'NORMAL';
   if (marker.enabled) assignMarkerToBestPeak(marker);
-  renderAll();
+  requestRender();
 }
 
 function updateMarkerMode(id: number, mode: string) {
@@ -147,5 +147,5 @@ function updateMarkerMode(id: number, mode: string) {
     m.tracking = false;
   }
   else { m.enabled = true; m.mode = mode; }
-  renderAll();
+  requestRender();
 }

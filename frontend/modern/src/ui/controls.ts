@@ -1,7 +1,8 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
-import { updateFreqUIInputs, resetSdrAutoRef } from '../core/ws';
+import { updateFreqUIInputs } from './freqInputs';
+import { resetSdrAutoRef } from '../core/sdrAutoRef';
 import {
 	sdrCenterHz,
 	sdrDecimate,
@@ -20,7 +21,7 @@ import { refLevel, refMode } from './refState';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { rbwMode, vbwMode } from './swpState';
 import { updateInfoBar } from '../render/infobar';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 import { getDisplayPowers, nextExtreme, setMarkerIdx } from '../dsp/peaks';
 import { markerFreqHz } from '../core/markerCommon';
 import { parseFreqUnit, toUnit } from '../core/units';
@@ -226,7 +227,7 @@ export function setRefLevel() {
     if (cv) cv.dataset.sdrRef = String(Math.round(value));
     prepareSdrAudioTransition();
     send({ cmd: 'SET_REF', mode: 'manual', ref: value });
-    renderAll();
+    requestRender();
     return;
   }
   send({ cmd: 'SET_REF', mode: 'manual', ref: value });
@@ -252,7 +253,7 @@ export function adjustRefLevel(direction: -1 | 1) {
     if (cv) cv.dataset.sdrRef = String(Math.round(next));
     prepareSdrAudioTransition();
     send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-    renderAll();
+    requestRender();
     return;
   }
   const base = refLevel.get();
@@ -268,7 +269,7 @@ export function setRefAuto() {
   if (currentGraphMode() === 'sdr') {
     sdrRefAuto.set(!sdrRefAuto.get());
     syncSdrRefUI();
-    renderAll();
+    requestRender();
     return;
   }
   if (refMode.get() === 'auto') {
@@ -283,7 +284,7 @@ export function setScale(v: number) {
   S.setDbPerDiv(v);
   syncScaleButtons();
   updateInfoBar();
-  renderAll();
+  requestRender();
   // The window height changed, so the auto-Ref target (noise floor just above the bottom)
   // changed too. Re-arm so the new spectrum lands correctly instead of keeping the old Ref.
   if (currentGraphMode() !== 'sdr' && refMode.get() === 'auto') {
@@ -351,7 +352,7 @@ export function setAmp() {
 export function setOffset() {
   const v = parseFloat((document.getElementById('input-offset') as HTMLInputElement).value);
   S.setDisplayOffset(isFinite(v) ? v : 0);
-  renderAll();
+  requestRender();
 }
 export function toggleGapFill() {
   S.setCurrentGapFill(!S.currentGapFill);
@@ -409,7 +410,7 @@ export function selectMarker(id: number) {
   if (m.mode === 'OFF') m.mode = 'NORMAL';
   autoTrackMarker(m);
   syncMarkerTrackingToggle();
-  renderAll();
+  requestRender();
 }
 
 function autoTrackMarker(m: S.MarkerState) {
@@ -430,7 +431,7 @@ export function toggleActiveMarkerTracking() {
   if (!marker) return;
   toggleMarkerTracking(marker);
   syncMarkerTrackingToggle();
-  renderAll();
+  requestRender();
 }
 
 // Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
@@ -639,7 +640,7 @@ export function syncGraphModeStatus(mode: string) {
     send({ cmd: 'SET_SDR_TUNE', listen: f });
     applySdrDemod();
   }
-  renderAll();
+  requestRender();
 }
 
 function clearRtaAccum() {
@@ -665,7 +666,7 @@ export function setRtaBins(bins: number) {
   S.setRtaAmpBins(bins);
   if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
   try { localStorage.setItem('rta-bins', String(bins)); } catch { /* ignore */ }
-  renderAll();
+  requestRender();
 }
 
 // Step the RTA span one notch (delta: +1 narrower ▼, -1 wider ▲) or jump to full.
@@ -817,7 +818,7 @@ export function listenAtFreq(hz: number) {
     renderSdrState();
     prepareSdrAudioTransition();
     send({ cmd: 'SET_SDR_TUNE', listen: hz });
-    renderAll();
+    requestRender();
     return;
   }
   // From the swept view: hand this frequency to SDR for demodulation.
@@ -942,7 +943,7 @@ export function toggleWaterfall() {
   if (mt) mt.style.display = S.waterfallOn ? 'none' : '';
   const btn = document.getElementById('btn-waterfall');
   if (btn) btn.classList.toggle('active', S.waterfallOn);   // text stays "Waterfall", active = on
-  renderAll();
+  requestRender();
 }
 export function toggleWfPause() {
   S.setWfPaused(!S.wfPaused);
@@ -951,7 +952,7 @@ export function toggleWfPause() {
 }
 export function resetWf() {
   S.resetWaterfall();
-  renderAll();
+  requestRender();
 }
 export function setSweepSpeed() {
   const sel = document.getElementById('select-sweep-mode') as HTMLSelectElement;
@@ -1001,7 +1002,7 @@ export function toggleMarkersAll() {
   const themeBtn = document.getElementById('btn-theme');
   if (themeBtn) themeBtn.textContent = getTheme() === 'dark' ? t('dark') : t('light');
   syncMarkerTrackingToggle();
-  renderAll();
+  requestRender();
 }
 
 // Preset
@@ -1058,7 +1059,7 @@ export function presetAll() {
   renderSdrState();
   resetSdrAutoRef();
   send({ cmd: 'SET_PRESET' });
-  updateInfoBar(); applyMeasUI(); renderAll();
+  updateInfoBar(); applyMeasUI(); requestRender();
 }
 
 // Current frontend time (shown when not locked)
@@ -1164,7 +1165,7 @@ export function bindActions() {
     'export-csv': () => exportActiveTraceCsv(),
     'export-png': () => exportSpectrumPng(),
     'export-peaks-csv': () => exportPeakListCsv(),
-    'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); renderAll(); },
+    'set-smooth': (el) => { S.setSmoothBins(parseInt((el as HTMLSelectElement).value) || 1); requestRender(); },
     'set-norm-refwin': (el) => {
       const v = parseInt((el as HTMLSelectElement).value) || 0;
       setNormRefWinUser(v);
@@ -1173,7 +1174,7 @@ export function bindActions() {
         const ref = buildReferenceTablePub(t.powers);
         t.reference = smoothRefWindow(ref, normRefWindow());
       }
-      renderAll();
+      requestRender();
     },
     'toggle-freeze': () => toggleFreeze(),
     'normalize': () => normalizeActiveTrace(),
@@ -1465,7 +1466,7 @@ export function bindCanvas() {
       if (f != null) {
         sdrListenHz.set(f);
         send({ cmd: 'SET_SDR_TUNE', listen: f });
-        renderAll();
+        requestRender();
       }
       sdrDown = false;
       sdrMoved = false;
@@ -1509,7 +1510,7 @@ function sdrTuneBy(dHz: number) {
   sdrListenHz.set(f);
   renderSdrState();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
-  renderAll();
+  requestRender();
 }
 
 function sdrCycleIfbw(dir: number) {

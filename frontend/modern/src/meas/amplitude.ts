@@ -1,6 +1,8 @@
 // Amplitude measurement: multi-threshold n-dB auto-location
 import * as S from '../core/store';
-import { getX, getY, renderAll } from '../render/spectrum';
+import { getX, getY } from '../render/plot';
+import { requestRender } from '../render/redraw';
+
 import { getDisplayPowers } from '../dsp/peaks';
 import { t } from '../core/i18n';
 import { fmtF } from '../core/fmt';
@@ -32,7 +34,7 @@ export function measureAmp() {
     rows.push({ thr, lf, rf, bw: rf - lf, hasL, hasR });
   }
   S.setAmpRes({ rows, peak: pv, pi });
-  renderAll();
+  requestRender();
 }
 
 function crossX(powers: Float32Array, i: number, th: number, dir: number): number {
@@ -43,7 +45,7 @@ function crossX(powers: Float32Array, i: number, th: number, dir: number): numbe
   return fa[i] + t * (fa[i + dir] - fa[i]);
 }
 
-export function clearAmp() { S.setAmpRes(null); renderAll(); }
+export function clearAmp() { S.setAmpRes(null); requestRender(); }
 
 export function renderAmp(powers: Float32Array) {
   const ar = S.ampRes;

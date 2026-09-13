@@ -1,7 +1,7 @@
 // Pk list: peak detection/threshold/table/on-canvas marks
 import * as S from '../core/store';
 import { fmtLevel } from '../core/level';
-import { getX, getY } from './spectrum';
+import { getX, getY } from './plot';
 import { fmtF } from '../core/fmt';
 import { t } from '../core/i18n';
 
@@ -11,8 +11,8 @@ export function togglePeakList() {
   S.setPeakListOn(!S.peakListOn);
   const btn = document.getElementById('btn-peaklist');
   if (btn) btn.textContent = S.peakListOn ? t('on') : t('off');
-  if (S.peakListOn) renderAll();
-  renderAll();
+  if (S.peakListOn) requestRender();
+  requestRender();
 }
 
 export function findPeaks(powers: Float32Array, maxN: number): { idx: number; amp: number; f: number }[] {
@@ -59,7 +59,7 @@ export function autoPeakThr(powers: Float32Array | null) {
   }
 }
 
-export function peakThrManual() { S.setPeakThrUserSet(true); renderAll(); }
+export function peakThrManual() { S.setPeakThrUserSet(true); requestRender(); }
 export function peakThrAuto() {
   S.setPeakThrUserSet(false);
   const dp = getDisplayPowers();
@@ -69,7 +69,7 @@ export function peakThrAuto() {
     const el = document.getElementById('input-peakthr') as HTMLInputElement;
     if (el && peak > -200) el.value = String(Math.round(peak - 50));
   }
-  renderAll();
+  requestRender();
 }
 
 export function updatePeakTable(powers: Float32Array | null) {
@@ -134,4 +134,4 @@ import { ctx as ctx2, W as _W, H as _H, MARGIN as _M } from '../core/store';
 import { plotRect as plotRectLocal } from './plot';
 import { canvasColors as getColors } from '../core/theme';
 import { getDisplayPowers } from '../dsp/peaks';
-import { renderAll } from './spectrum';
+import { requestRender } from './redraw';

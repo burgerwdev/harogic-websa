@@ -1,9 +1,9 @@
 // Phase noise (PNM) measurement: render/table/result handling
 import * as S from '../core/store';
 import { fmtHzUnit, formatFreqHz, fmtPnmFreq } from '../core/fmt';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 import { send } from '../core/wsSend';
-import { applyMeasUI } from '../ui/measure';
+import { applyMeasUI } from '../ui/measureUi';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 
@@ -66,7 +66,7 @@ export function onPnmResult(d: any) {
       S.pnmCarAcc.sumP -= S.pnmCarAcc.p.shift();
     }
   }
-  renderAll();
+  requestRender();
 }
 
 function pnmSmoothOn(): boolean {

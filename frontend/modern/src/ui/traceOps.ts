@@ -8,7 +8,7 @@ import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { applyTraceMode } from '../dsp/traces';
 import { normalizeAvgCount, setAverageCount } from '../dsp/accumulator';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 import { t } from '../core/i18n';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
@@ -27,7 +27,7 @@ export function toggleFreeze() {
     t.prevMode = t.mode;
     setTraceMode('VIEW');
   }
-  renderAll();
+  requestRender();
 }
 
 export function switchTraceTab(idx: number) {
@@ -58,7 +58,7 @@ export function clearRtaTrace() {
   S.rtaDone[idx] = false;
   S.setRtaDisplays(arr);
   if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
-  renderAll();
+  requestRender();
 }
 
 export function setTraceMode(mode: string) {
@@ -104,7 +104,7 @@ export function setTraceAverage(count: number): void {
   else setAverageCount(trace, count);
   resetRtaAverage(idx);
   syncAvgUI();
-  renderAll();
+  requestRender();
 }
 
 /** Export the active trace as CSV (metadata header + freq/power pairs). */

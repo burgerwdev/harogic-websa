@@ -4,7 +4,7 @@
 // so this setting applies to SWP and RTA alike.
 import * as S from '../core/store';
 import { applyI18n } from '../core/i18n';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 
 const LS_KEY = 'websa-wf-range';
 
@@ -46,20 +46,20 @@ export function initWfRange(): void {
     S.setWfRangeMode((e.target as HTMLSelectElement).value === 'fixed' ? 'fixed' : 'auto');
     save();
     syncUi();
-    renderAll();
+    requestRender();
   });
   el<HTMLInputElement>('input-wf-lo')?.addEventListener('change', (e) => {
     const v = parseFloat((e.target as HTMLInputElement).value);
     if (Number.isFinite(v)) S.setWfLoDbm(v);
     save();
     syncUi();
-    renderAll();
+    requestRender();
   });
   el<HTMLInputElement>('input-wf-hi')?.addEventListener('change', (e) => {
     const v = parseFloat((e.target as HTMLInputElement).value);
     if (Number.isFinite(v)) S.setWfHiDbm(v);
     save();
     syncUi();
-    renderAll();
+    requestRender();
   });
 }

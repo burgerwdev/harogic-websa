@@ -114,8 +114,6 @@ export function resetActiveTraceNormalize() {
   updateInfoBar();
 }
 
-export function updateNormalizeStatusUI() {
-  const t = S.traces[S.activeTraceIdx];
-  const btn = document.getElementById('btn-normalize');
-  if (btn) btn.classList.toggle('active', !!(t.reference && t.isNormalized));
-}
+import { updateNormalizeStatusUI } from './normalizeStatus';
+
+export { updateNormalizeStatusUI };

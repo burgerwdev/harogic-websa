@@ -11,7 +11,7 @@
 import * as S from '../core/store';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { send } from '../core/wsSend';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 import { onTriggerHit, setArmedAt, setBackendWaiting } from './triggerEvents';
 import { armSwpTrigger, disarmSwpTrigger, onSwpHit } from './swpTrigger';
@@ -177,7 +177,7 @@ async function pollOnce(): Promise<void> {
     syncOverlay();
     // The live views are repainted by their frames (SWP/RTAF at 30/16 ms); only an active
     // trigger state (waiting / triggered) needs this extra pass.
-    if (phase !== 'free') renderAll();
+    if (phase !== 'free') requestRender();
   } catch {
     /* device offline: keep the last state */
   }
@@ -206,7 +206,7 @@ function armSwept(): void {
   since = performance.now();
   lastArmAt = since;
   syncOverlay();
-  renderAll();
+  requestRender();
 }
 
 function selectValue(id: string): string {
@@ -238,7 +238,7 @@ function arm(): void {
   setBackendWaiting(false);
   send({ cmd: 'SET_TRIGGER', source: 'level', level });
   syncOverlay();
-  renderAll();
+  requestRender();
 }
 
 function disarm(): void {
@@ -254,7 +254,7 @@ function disarm(): void {
   S.setTrigWaiting(false);
   S.setTrigHit(false);
   syncOverlay();
-  renderAll();
+  requestRender();
 }
 
 function push(payload: Record<string, unknown>): void {
@@ -326,7 +326,7 @@ export function initTrigger(): void {
     hitAt = fmtClock(new Date());
     hitLine = t('trg_hit_level', { f: freqHz >= 1e9 ? `${(freqHz / 1e9).toFixed(4)} GHz` : `${(freqHz / 1e6).toFixed(3)} MHz`, v: level.toFixed(1) });
     syncOverlay();
-    renderAll();
+    requestRender();
   });
   onTriggerHit(() => {
     if (!S.rtaMode) return;                    // SWP has its own software detection
@@ -335,14 +335,14 @@ export function initTrigger(): void {
     hitAt = fmtClock(new Date());
     S.setTrigArmed(false);
     syncOverlay();
-    renderAll();
+    requestRender();
   });
   window.setInterval(() => {
     if (phase !== 'waiting') return;
     syncOverlay();
-    renderAll();            // repaint so the elapsed seconds actually tick
+    requestRender();            // repaint so the elapsed seconds actually tick
   }, TICK_MS);
-  onLangChange(() => { syncButton(); lastOverlayKey = ''; syncOverlay(); renderAll(); });
+  onLangChange(() => { syncButton(); lastOverlayKey = ''; syncOverlay(); requestRender(); });
   syncButton();
   schedule();
 }

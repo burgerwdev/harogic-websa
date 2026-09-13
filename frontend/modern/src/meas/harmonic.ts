@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { formatFreqHz } from '../core/fmt';
 import { t } from '../core/i18n';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 
 export function autoHarmSpan() {
   const sel = document.getElementById('select-harm-span') as HTMLSelectElement;
@@ -55,7 +55,7 @@ export function onHarmResult(list: any[]) {
     a.cnt++;
   }
   const disp = buildHarmDisplay();
-  if (disp) { S.setHarm(disp); renderAll(); }
+  if (disp) { S.setHarm(disp); requestRender(); }
 }
 
 function buildHarmDisplay(): any {
@@ -109,4 +109,4 @@ export function updateHarmonicTable() {
 }
 
 import { send } from '../core/wsSend';
-import { applyMeasUI } from '../ui/measure';
+import { applyMeasUI } from '../ui/measureUi';

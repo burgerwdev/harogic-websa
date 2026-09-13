@@ -7,7 +7,9 @@ import * as S from '../core/store';
 import { centerHz } from '../ui/freqState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { acpr, occupiedBandwidth } from '../dsp/channel';
-import { getX, renderAll } from '../render/spectrum';
+import { getX } from '../render/plot';
+import { requestRender } from '../render/redraw';
+
 import { plotRect } from '../render/plot';
 import { canvasColors } from '../core/theme';
 import { fmtF } from '../core/fmt';
@@ -51,13 +53,13 @@ export function measureChannel(): void {
     obwHigh: obw?.high ?? null,
   });
   updateChanTable();
-  renderAll();
+  requestRender();
 }
 
 export function clearChannel(): void {
   S.setChanRes(null);
   updateChanTable();
-  renderAll();
+  requestRender();
 }
 
 /** Visibility is owned here so the tab machinery and the render loop cannot disagree. */

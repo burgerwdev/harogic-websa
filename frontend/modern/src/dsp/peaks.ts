@@ -149,8 +149,8 @@ export function setMarkerIdx(idx: number, freqHz?: number) {
   const maxI = S.freqArray ? S.freqArray.length - 1 : 1000;
   m.idx = Math.max(0, Math.min(maxI, Math.round(idx)));
   m.freq = (freqHz != null && isFinite(freqHz) && freqHz > 0) ? freqHz : markerFreqHz(m.idx);
-  renderAll();
+  requestRender();
 }
 
 import { markerFreqHz } from '../core/markerCommon';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';

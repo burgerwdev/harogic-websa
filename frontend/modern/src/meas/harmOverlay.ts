@@ -1,6 +1,7 @@
 // Harmonic annotation lines (on the real spectrum) — renderHarmOverlay
 import * as S from '../core/store';
-import { getX } from '../render/spectrum';
+import { getX } from '../render/plot';
+
 import { plotRect } from '../render/plot';
 
 export function renderHarmOverlay(powers: Float32Array) {

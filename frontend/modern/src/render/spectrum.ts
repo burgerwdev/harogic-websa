@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
 import { ctx, W, H, MARGIN } from '../core/store';
-import { plotRect } from './plot';
+import { PLOT_RECT, getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
@@ -20,6 +20,7 @@ import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
+import { setRenderer } from './redraw';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 
@@ -36,24 +37,6 @@ function cur() {
 
 // Fixed plot rectangle: W/H/MARGIN are constants, so this is computed once instead of
 // allocating a new object for every point during trace rendering.
-const PLOT_RECT = {
-  x: MARGIN.left,
-  y: MARGIN.top,
-  w: W - MARGIN.left - MARGIN.right,
-  h: H - MARGIN.top - MARGIN.bottom,
-};
-
-export function getY(val: number): number {
-  if (isFinite(val)) val += S.displayOffset;
-  const dispRef = getDisplayRef();
-  const top = dispRef, bottom = dispRef - S.totalDivs * S.dbPerDiv;
-  if (!isFinite(val)) val = bottom - 10;
-  return PLOT_RECT.y + ((top - val) / (top - bottom)) * PLOT_RECT.h;
-}
-export function getX(idx: number, points: number): number {
-  return PLOT_RECT.x + (idx / (points - 1)) * PLOT_RECT.w;
-}
-
 // Shared bottom frequency row (used by both SWP grid and RTA view)
 function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   ctx.font = '11px monospace';
@@ -476,6 +459,10 @@ export function renderAll() {
   renderStatusBlocks();
   renderWaterfallIfOn();
 }
+
+// The redraw seam: everyone else asks for a repaint instead of importing this hub
+// (breaks the render/spectrum.ts cycles, docs/*/ARCH_REVIEW.md finding P1-4).
+setRenderer(renderAll);
 
 
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn

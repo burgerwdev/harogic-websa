@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
 import { setDisplayRef } from '../ui/displayRef';
 import { accumulateTrace, applyMode } from './accumulator';
-import { updateNormalizeStatusUI } from './normalize';
+import { updateNormalizeStatusUI } from './normalizeStatus';
 import { updateTrackingMarkers } from './markerTracking';
 
 // Peak-preserving resampling

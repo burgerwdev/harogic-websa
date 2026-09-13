@@ -1,4 +1,7 @@
 // WebSocket protocol layer + STATUS handling
+import { requestRender } from '../render/redraw';
+import { sdrAutoRef } from './sdrAutoRef';
+import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
 import { toUnit } from './units';
@@ -25,7 +28,6 @@ import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
 import { noteFrameArrived } from '../ui/triggerEvents';
 import { evaluateSwpTrigger } from '../ui/swpTrigger';
-import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
@@ -59,16 +61,8 @@ let rtaFrames = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
-let sdrNoiseEma = -120;
-let sdrPeakEma = -120;   // must satisfy the < -119 seed guard below
-let lastSdrAutoAt = 0;
 
 // Re-initialise the SDR auto-scale (called when entering SDR).
-export function resetSdrAutoRef() {
-  sdrNoiseEma = -120;
-  sdrPeakEma = -120;     // see the seed guard in the auto-ref block
-  lastSdrAutoAt = 0;
-}
 let firstConnect = true;
 
 export function send(obj: object) {
@@ -207,20 +201,20 @@ export function connectWS() {
         if (isFinite(peak)) {
           const noise = percentileApprox(spec, 0.3);
           // Smooth both so a fading signal does not make the whole display jump.
-          sdrNoiseEma = sdrNoiseEma < -119 ? noise : sdrNoiseEma * 0.9 + noise * 0.1;
-          sdrPeakEma = sdrPeakEma < -119 ? peak : sdrPeakEma * 0.75 + peak * 0.25;
+          sdrAutoRef.noiseEma = sdrAutoRef.noiseEma < -119 ? noise : sdrAutoRef.noiseEma * 0.9 + noise * 0.1;
+          sdrAutoRef.peakEma = sdrAutoRef.peakEma < -119 ? peak : sdrAutoRef.peakEma * 0.75 + peak * 0.25;
           const now2 = performance.now();
-          if (now2 - lastSdrAutoAt > 400) {
+          if (now2 - sdrAutoRef.lastAt > 400) {
             const range = S.totalDivs * S.dbPerDiv;
             // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
+            let ref = Math.max(sdrAutoRef.noiseEma + range - 8, sdrAutoRef.peakEma + 10);
             ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
             {
               // Debug/verification aid: the raw inputs of the SDR auto-ref decision.
               const cvD = document.getElementById('spectrum');
               if (cvD) cvD.dataset.sdrRefDbg = JSON.stringify({
                 noise: Math.round(noise), peak: Math.round(peak),
-                nEma: Math.round(sdrNoiseEma), pEma: Math.round(sdrPeakEma),
+                nEma: Math.round(sdrAutoRef.noiseEma), pEma: Math.round(sdrAutoRef.peakEma),
                 range, ref: Math.round(ref), applied: Math.abs(ref - getDisplayRef()) >= 3,
                 shown: Math.round(getDisplayRef()),
               });
@@ -231,7 +225,7 @@ export function connectWS() {
             // silently stop correcting the display (measured: ref -15, shown 0).
             if (Math.abs(ref - getDisplayRef()) >= 3) {
               setDisplayRef('auto', ref);
-              lastSdrAutoAt = now2;
+              sdrAutoRef.lastAt = now2;
               const cv = document.getElementById('spectrum');
               if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
             }
@@ -357,7 +351,7 @@ export function connectWS() {
       const now = performance.now();
       if (now - lastRender >= 16) {
         lastRender = now;
-        renderAll();
+        requestRender();
       }
       return;
     }
@@ -375,7 +369,7 @@ export function connectWS() {
       const now = performance.now();
       if (now - lastRender >= 33) {
         lastRender = now;
-        renderAll();
+        requestRender();
       }
     }
   };
@@ -562,20 +556,3 @@ function setSelect(id: string, v: string) {
 }
 
 // Sync frequency input fields
-export function updateFreqUIInputs(force = false) {
-  const swpEditor = document.getElementById('swp-freq-settings');
-  if (swpEditor?.dataset.dirty !== '1') {
-    setInput('input-center', toUnit(centerHz.get(), 'center').toFixed(4), force);
-    setInput('input-span', toUnit(spanHz.get(), 'span').toFixed(4), force);
-    setInput('input-start', toUnit(centerHz.get() - spanHz.get() / 2, 'start').toFixed(4), force);
-    setInput('input-stop', toUnit(centerHz.get() + spanHz.get() / 2, 'stop').toFixed(4), force);
-  }
-  setInput('input-rbw', toUnit(currentRBW.get(), 'rbw').toFixed(2));
-  setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
-  const rtaEditor = document.getElementById('rta-freq-settings');
-  if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
-    const u = S.units.rta_center || 'MHz';
-    const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
-    setInput('input-rta-center', (rtaCenterHz.get() / scale).toFixed(4), force);
-  }
-}
