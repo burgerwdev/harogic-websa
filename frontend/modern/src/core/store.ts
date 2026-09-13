@@ -59,15 +59,10 @@ export function setConfigVersion(v: number) { configVersion = v; }
 export let dbPerDiv = 10.0;
 export function setDbPerDiv(v: number) { dbPerDiv = v; }
 export const totalDivs = 10;
-export let currentRBW = 300e3, currentVBW = 300e3;
-export function setCurrentRBW(v: number) { currentRBW = v; }
-export function setCurrentVBW(v: number) { currentVBW = v; }
-export let rbwMode = 'auto', vbwMode = 'bypass';
-export function setRbwMode(v: string) { rbwMode = v; }
-export function setVbwMode(v: string) { vbwMode = v; }
-export let currentPoints = 1001, currentSpur = 'standard', currentGapFill = true;
-export function setCurrentPoints(v: number) { currentPoints = v; }
-export function setCurrentSpur(v: string) { currentSpur = v; }
+// (RBW/VBW mode + effective values, points and spur mode live in ui/swpState.ts. Copies
+// here were written by the STATUS handler and by the RBW/VBW UI functions at the same time,
+// so a user choice could not be told apart from a confirmed value.)
+export let currentGapFill = true;
 export function setCurrentGapFill(v: boolean) { currentGapFill = v; }
 export let sweepMs = 0;
 export function setSweepMs(v: number) { sweepMs = v; }

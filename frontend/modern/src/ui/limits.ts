@@ -5,6 +5,7 @@
 import * as S from '../core/store';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { refLevel } from './refState';
+import { currentRBW } from './swpState';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { buildLimitArray, normalizePoints, type LimitPoint } from '../dsp/limits';
 import { getDisplayPowers } from '../dsp/peaks';
@@ -140,7 +141,7 @@ export function exportLimitCsv(): void {
     `tol_db=${S.limits.tol}`,
     `points=${S.limits.points.map((p) => `${fmtMHz(p.freqHz)}MHz:${p.level.toFixed(2)}dBm`).join(' ')}`,
     `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
-    `rbw_hz=${S.currentRBW}`, `points_display=${n}`,
+    `rbw_hz=${currentRBW.get()}`, `points_display=${n}`,
     `time=${new Date().toISOString()}`,
     'freq_hz,level,limit,margin',
   ];

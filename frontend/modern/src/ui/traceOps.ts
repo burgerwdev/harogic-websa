@@ -2,6 +2,7 @@
 import * as S from '../core/store';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
 import { refLevel } from './refState';
+import { currentRBW, currentVBW } from './swpState';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { applyTraceMode, resetTraceAccum } from '../dsp/traces';
@@ -118,7 +119,7 @@ export function exportPeakListCsv(): void {
   const head = [
     '# peak_list',
     `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
-    `rbw_hz=${S.currentRBW}`, `threshold_dbm=${thr}`,
+    `rbw_hz=${currentRBW.get()}`, `threshold_dbm=${thr}`,
     `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
     'n,bin,freq_hz,level_dbm,delta_from_strongest_db',
   ];
@@ -146,7 +147,7 @@ export function exportActiveTraceCsv(): void {
   const head = [
     `# trace=T${t.id}`, `mode=${t.mode}`,
     `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
-    `rbw_hz=${S.currentRBW}`, `vbw_hz=${S.currentVBW}`,
+    `rbw_hz=${currentRBW.get()}`, `vbw_hz=${currentVBW.get()}`,
     `display_unit=${S.displayUnit}`, `normalized=${t.isNormalized}`,
     `smooth_bins=${S.smoothBins}`, `time=${new Date().toISOString()}`,
     'freq_hz,power',

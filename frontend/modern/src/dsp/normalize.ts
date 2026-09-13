@@ -1,6 +1,7 @@
 // Normalization: reference build / direct-pass calibration / display-layer transform
 import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
+import { currentRBW } from '../ui/swpState';
 import { resetTraceAccum } from './traces';
 import { updateInfoBar } from '../render/infobar';
 
@@ -9,7 +10,7 @@ export function normRefWindow(): number {
   if (!S.freqArray || S.freqArray.length < 2) return 5;
   const binHz = S.freqArray[1] - S.freqArray[0];
   const spanHz = S.freqArray[S.freqArray.length - 1] - S.freqArray[0];
-  let w = Math.round(S.NORM_REF_RBW_FACTOR * S.currentRBW / binHz);
+  let w = Math.round(S.NORM_REF_RBW_FACTOR * currentRBW.get() / binHz);
   const maxByHz = Math.max(3, Math.floor(Math.min(0.02 * spanHz, 5e6) / binHz));
   w = Math.max(3, Math.min(w, maxByHz, 9));
   return w || 5;

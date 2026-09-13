@@ -36,6 +36,9 @@ import { pushSdrAudio } from '../audio/sdrAudio';
 import { sdrRefAuto } from '../ui/sdrState';
 import { refLevel, refMode } from '../ui/refState';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
+import {
+  rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
+} from '../ui/swpState';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -423,12 +426,12 @@ export function updateStatus(s: any) {
   refLevel.confirm(Number(s.ref));
   refMode.confirm(s.ref_mode === 'auto' ? 'auto' : 'manual');
   S.setConfigVersion(Number(s.config_version) || 0);
-  S.setCurrentRBW(Number(s.rbw));
-  S.setCurrentVBW(Number(s.vbw));
-  S.setRbwMode(s.rbw_mode);
-  S.setVbwMode(s.vbw_mode);
-  S.setCurrentPoints(Number(s.points) || Number(s.req.swp?.points) || 1001);
-  S.setCurrentSpur(s.req.swp?.spur || s.spur || 'bypass');
+  currentRBW.confirm(Number(s.rbw));
+  currentVBW.confirm(Number(s.vbw));
+  rbwMode.confirm(s.rbw_mode);
+  vbwMode.confirm(s.vbw_mode);
+  currentPoints.confirm(Number(s.points) || Number(s.req.swp?.points) || 1001);
+  currentSpur.confirm(s.req.swp?.spur || s.spur || 'bypass');
   S.setSweepMs(s.sweep_ms || 0);
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
@@ -436,7 +439,7 @@ export function updateStatus(s: any) {
   syncAvgUI();
   syncSwpSpanStep(Number(s.req.swp?.span) || spanHz.get());
 
-  const measKey = `${centerHz.get()}|${spanHz.get()}|${S.currentPoints}|${S.currentRBW}|${S.rbwMode}|${s.window}`;
+  const measKey = `${centerHz.get()}|${spanHz.get()}|${currentPoints.get()}|${currentRBW.get()}|${rbwMode.get()}|${s.window}`;
   if (measKey !== S.lastMeasKey) {
     S.setLastMeasKey(measKey);
     const hadNormalization = S.traces.some(trace => trace.isNormalized && trace.reference);
@@ -471,10 +474,10 @@ export function updateStatus(s: any) {
     refAuto.classList.toggle('active', inAuto);
     refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
   }
-  setInput('input-points', String(S.currentPoints));
-  setSelect('select-rbw-mode', S.rbwMode);
-  setSelect('select-vbw-mode', S.vbwMode);
-  setSelect('select-spur', S.currentSpur);
+  setInput('input-points', String(currentPoints.get()));
+  setSelect('select-rbw-mode', rbwMode.get());
+  setSelect('select-vbw-mode', vbwMode.get());
+  setSelect('select-spur', currentSpur.get());
   setSelect('select-detector', s.detector || 'auto');
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
   if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
@@ -580,8 +583,8 @@ export function updateFreqUIInputs(force = false) {
     setInput('input-start', toUnit(centerHz.get() - spanHz.get() / 2, 'start').toFixed(4), force);
     setInput('input-stop', toUnit(centerHz.get() + spanHz.get() / 2, 'stop').toFixed(4), force);
   }
-  setInput('input-rbw', toUnit(S.currentRBW, 'rbw').toFixed(2));
-  setInput('input-vbw', toUnit(S.currentVBW, 'vbw').toFixed(2));
+  setInput('input-rbw', toUnit(currentRBW.get(), 'rbw').toFixed(2));
+  setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
   const rtaEditor = document.getElementById('rta-freq-settings');
   if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
     const u = S.units.rta_center || 'MHz';

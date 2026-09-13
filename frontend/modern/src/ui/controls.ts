@@ -17,6 +17,7 @@ import {
 } from './sdrState';
 import { refLevel, refMode } from './refState';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from './freqState';
+import { rbwMode, vbwMode } from './swpState';
 import { updateInfoBar } from '../render/infobar';
 import { renderAll } from '../render/spectrum';
 import { getDisplayPowers, nextExtreme, setMarkerIdx, getTraceDisplay } from '../dsp/peaks';
@@ -296,19 +297,19 @@ export function syncScaleButtons() {
 }
 export function applyRBW() {
   const sel = document.getElementById('select-rbw-mode') as HTMLSelectElement;
-  const rbwMode = sel?.value || 'auto';
-  S.setRbwMode(rbwMode);
-  const m: any = { cmd: 'SET_RBW', mode: rbwMode };
-  if (rbwMode === 'manual') m.rbw = parseFreqUnit('rbw');
+  const mode = sel?.value || 'auto';
+  rbwMode.set(mode);
+  const m: any = { cmd: 'SET_RBW', mode };
+  if (mode === 'manual') m.rbw = parseFreqUnit('rbw');
   if (S.rtaMode) clearRtaAccum();
   send(m);
 }
 export function applyVBW() {
   const sel = document.getElementById('select-vbw-mode') as HTMLSelectElement;
-  const vbwMode = sel?.value || 'bypass';
-  S.setVbwMode(vbwMode);
-  const m: any = { cmd: 'SET_VBW', mode: vbwMode };
-  if (vbwMode === 'manual') m.vbw = parseFreqUnit('vbw');
+  const mode = sel?.value || 'bypass';
+  vbwMode.set(mode);
+  const m: any = { cmd: 'SET_VBW', mode };
+  if (mode === 'manual') m.vbw = parseFreqUnit('vbw');
   if (S.rtaMode) clearRtaAccum();
   send(m);
 }
