@@ -279,6 +279,9 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | "测试先于实现"的提交 | 提交时未从干净树跑测试 | 每个提交都必须能通过测试 | worktree 逐提交验证流程 |
 | Auto 提示"已调整"，但画布与 Ref 输入框仍是旧值 | 客户端有个"现在归用户所有"的标志，挡住了自动纠偏去改显示，于是只有器件电平变了 | 自动纠偏必须作用到用户能看到的一切（画布 + 输入框 + 提示），否则就不要播报；保护手动值要用"是否是新决策"来判定，而不是拒绝跟随纠偏 | e2e 9a2（画布 + 输入框）、`refAutoScale.test.ts`（跟随自动纠偏；残留目标不重复应用） |
 | Auto 之后 Ref 输入框显示旧值 | SDR 里输入框在后端电平写完之后又被客户端显示 ref 覆盖；dB（相对）模式下还被钉成 `0` | 每个显示值只有一个所有者：输入框显示 dBm 参考电平（就是 Set 下发的值）；相对刻度顶端只是渲染细节 | e2e 9a2、`status.test.ts` |
+| Auto 的提示把 Ref 按钮挤来挤去 | 提示被写进了它所描述的那一行；移到组头只是把问题挪了个位置 | 瞬态反馈进画布状态栈（无宽度限制，且紧邻它所回应的条件）；一个显示值只有一个所有者 | e2e `ui_smoke` 2a（`dataset.notice`、行 box 不变）、`refAutoScale.test.ts`（提示 TTL/世代） |
+| 按 Ref 上箭头后 Auto 把迹线拉回去 | 量程纠正了"噪声底低于下沿"这个方向——那是显示选择，不是故障，等于撤销用户刚按的按钮 | 自动纠偏只做**保护方向**（器件过载、严重削顶），绝不反转用户刚用过的控件；否则只报告，让显式动作去修 | e2e `state_regression` 9c、`test_auto_reference.py`、`test_device_state.py` |
+| SDR 里 `AUTO_SCALE` 被静默拒绝（显示在 -60 dBm） | `current_ref` 是**显示值**，却按器件 Ref 范围校验 | 按"值的所有者"的范围校验，而不是按它最终影响的器件范围 | `test_ws_commands.py::test_auto_scale_accepts_a_display_ref_outside_the_device_ref_range` |
 | 干净环境 `./test.sh` 失败 | 依赖声明不完整 | 运行时/开发/锁定三份依赖文件 | CI 在干净环境安装 |
 
 ---

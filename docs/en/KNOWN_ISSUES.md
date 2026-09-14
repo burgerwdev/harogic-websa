@@ -21,7 +21,7 @@
     is pressed; nothing is updated while all markers are off
 12. **Peak/valley navigation matches the nearest list item (±3 bins)**: a right jump cannot loop back to the same bin (matching an adjacent bin used to make right-shift appear stuck)
 13. **Auto with manual attenuation**: no longer suspended. Auto Scale is a one-shot action and the
-    overload/out-of-window safety ranger runs whatever the Atten setting is (before, selecting a manual
+    protective safety ranger (IF overflow, gross clipping) runs whatever the Atten setting is (before, selecting a manual
     attenuator silently disabled overload protection, so an IF overflow (-12) could freeze the display)
 14. **Remote access**: query tokens can enter browser history/proxy logs; use an HTTPS reverse proxy for remote control
 15. **Fast worker exit**: the worker uses `os._exit` to avoid unstable vendor-SDK destruction, so it does not send a WS close frame; browsers reconnect automatically

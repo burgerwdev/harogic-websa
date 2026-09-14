@@ -125,9 +125,11 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
   (`AUTO_SCALE`), not a tracking mode: it computes one target from the newest trace (noise floor just
   above the bottom of the display window, >=10 dB of headroom for the peak, 5 dB quantisation, never
   below a learned IF-saturation floor) and applies it once; an already-good placement costs nothing.
-  A **safety ranger runs always**, independently of any user setting: IF overflow (-12) raises Ref one
-  5 dB step per second, and a trace that has left the display window (peak above the top edge, or noise
-  floor below the bottom edge) is fitted once, rate-limited. The 15 dB peak-above-noise test only
+  A **safety ranger runs always**, independently of any user setting, but only in the protective
+  direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak grossly clipped above the
+  top edge (>= 10 dB over) is raised once, rate-limited. Lowering is never automatic: a level that pushes
+  the noise floor below the bottom edge is a display choice and is left alone (press Auto to re-fit),
+  because undoing it would undo the button the user just pressed (`clipped` vs `below_window`). The 15 dB peak-above-noise test only
   applies *inside* the window, so a weak signal is reported as `no_signal` instead of silently doing
   nothing. Before Center/cross-mode retuning a Ref that a fit had lowered is raised to 0 dBm. Each
   reconfiguration waits 0.75 s before observations are trusted again.
@@ -135,8 +137,9 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
   applies the reported target to its display scale, and the IQS level is only written when it is more
   than 3 dB off (that write interrupts the audio). The command carries the level on screen
   (`current_ref`), because in SDR the device level is not what the user sees. A manual Ref therefore
-  holds, except that a level leaving the whole trace outside the window is corrected once; the display
-  follows such a correction only while Auto owns the scale (i.e. until the user edits Ref).
+  holds: raising it is never undone, and only a grossly clipped peak or an IF overflow is corrected on the
+  device's own initiative. When a correction does happen, the display follows it (the SDR client applies
+  the reported target to its scale).
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

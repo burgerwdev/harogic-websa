@@ -28,13 +28,14 @@
   well), `no_signal` (peak less than 15 dB above the noise floor *and* the trace inside the window),
   `no_data` (no trace since the last reconfiguration). The button glows while a change is queued or
   settling, and the hint names the outcome.
-- A **safety ranger runs always**, whatever the Atten setting and whether or not Auto was ever pressed:
-  IF overflow (-12) raises Ref one 5 dB step per second, and a trace that has left the display window
-  (peak above the top edge, or noise floor below the bottom edge) is fitted once, rate-limited. This is
-  also what a manual Atten used to disable - overload protection now cannot be switched off by accident.
-  Consequence: a *manual* Ref that leaves the whole trace outside the window is corrected once (the
-  alternative is an empty display with no explanation); setting a level the trace fits in is how the user
-  keeps control, and pressing Auto re-syncs everything.
+- A **safety ranger runs always**, whatever the Atten setting and whether or not Auto was ever pressed -
+  but only in the protective direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak
+  grossly clipped above the top edge (>= 10 dB over) is raised once, rate-limited. This is also what a
+  manual Atten used to disable: overload protection now cannot be switched off by accident.
+  **Raising Ref is never undone.** A level that pushes the noise floor below the bottom edge is a display
+  choice, not a fault (`below_window`), so the up arrow keeps what it did; press Auto when you want the
+  placement re-fitted. Only information loss (clipping) and device overload are corrected behind your
+  back.
 - **SDR uses the same fit** as SWP/RTA (`AUTO_SCALE`, one implementation): the backend computes the target
   from the panadapter trace, the client applies it to its display scale, and the IQS level is only
   rewritten when it is more than 3 dB off, so a display-only fit never interrupts the audio. Entering SDR

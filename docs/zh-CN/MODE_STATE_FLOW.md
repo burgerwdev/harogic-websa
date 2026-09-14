@@ -157,11 +157,11 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 2. 放置已经合理时（噪声底在底沿上方 4-12 dB 且峰值余量 >= 8 dB）不应用任何变更：在已稳定的画面上点 Auto 不应重配器件。
 3. 否则目标为：噪声底落在显示窗口底部稍上、峰值留 >= 10 dB 余量（噪底高时约 30 dB）、5 dB 量化、不低于学到的 IF 饱和下界与 -50 dBm；范围 -50..+30 dBm。
 4. 峰值比估计噪底高不足 15 dB 时报 `no_signal`（保持当前 Ref）——但仅在迹线仍在窗口内时；已离开窗口的迹线一定会被拟合。
-5. **安全量程始终运行**，与 Atten 设置、是否按过 Auto 无关：IF 溢出（-12）每秒抬 5 dB；出窗迹线拟合一次，限速 2 秒。
+5. **安全量程始终运行**，与 Atten 设置、是否按过 Auto 无关，但只做**保护方向**：IF 溢出（-12）每秒抬 5 dB；峰值高出上沿 10 dB 以上的严重削顶时抬一次，限速 2 秒。**绝不自动降低**——把噪声底推到下沿之外只是显示选择（`below_window`），量程不动它（要重新拟合请点 Auto）。
 6. 拟合调低过 Ref 后，改变 Center 或跨模式返回会先抬回 0 dBm 再调谐。
 7. 任何 SWP/RTA 重配置都会清除旧观测并暂停 0.75 秒。
 8. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` 用于诊断；`adjusting` 同时驱动按钮的
-   忙碌指示，`result` 给出结果名（`applied`/`ok`/`no_signal`/`no_data`/`out_of_window`/`overflow`），`seq` 每次
+   忙碌指示，`result` 给出结果名（`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`），`seq` 每次
    决策自增，使 UI 能把"新答复"与"上次决策的残留"区分开。
 9. SDR 走同一套拟合：命令带上 `current_ref`（屏上电平，因为显示刻度由客户端负责），客户端把上报的 target
    应用到该刻度；只有 IQS 电平差超过 3 dB 时才写器件。

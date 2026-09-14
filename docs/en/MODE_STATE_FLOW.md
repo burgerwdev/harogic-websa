@@ -147,12 +147,12 @@ On the tested hardware, Internal/External and Clock Output On/Off commands respo
 2. The fit applies nothing when the placement is already good (noise floor 4-12 dB above the bottom edge and >= 8 dB of headroom for the peak): pressing Auto on a settled display must not reconfigure the device.
 3. Otherwise it targets the noise floor just above the bottom of the display window with >= 10 dB of headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB, never below a learned IF-saturation floor or -50 dBm; range is -50 through +30 dBm.
 4. A peak less than 15 dB above the estimated noise floor means `no_signal` (current Ref is held) - but only while the trace is inside the window; a trace that has left it is always fitted.
-5. A **safety ranger runs always**, independent of Atten and of whether Auto was ever pressed: IF overflow (-12) raises Ref one 5 dB step per second, and an out-of-window trace is fitted once with a 2 s rate limit.
+5. A **safety ranger runs always**, independent of Atten and of whether Auto was ever pressed, but only in the PROTECTIVE direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak that is grossly clipped above the top edge (>= 10 dB) is raised once, with a 2 s rate limit. Lowering is never automatic - a level that pushes the noise floor below the bottom edge is a display choice (`below_window`), and the ranger leaves it to the user (press Auto to re-fit).
 6. After a fit has lowered Ref, a Center change or cross-mode return raises it to 0 dBm before retuning.
 7. Every SWP/RTA reconfiguration clears stale observations and pauses them for 0.75 seconds.
 8. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` exposes diagnostics;
    `adjusting` also drives the button's busy indication, `result` names the outcome
-   (`applied`/`ok`/`no_signal`/`no_data`/`out_of_window`/`overflow`), and `seq` increments per decision
+   (`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), and `seq` increments per decision
    so the UI can tell a new answer from the sticky remainder of the previous one.
 9. SDR runs the same fit: the command carries `current_ref` (the level on screen, because the display
    scale is client-side) and the client applies the reported target to that scale; the IQS level is only
