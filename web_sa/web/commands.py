@@ -532,6 +532,12 @@ async def _h_set_freq(ctx: CommandContext, data: dict) -> bool:
         span = data.get('span', s.span_hz)
         s.center_hz, s.span_hz = fit_center_span(center, span, s.caps)
     ctx.dev.prepare_auto_reference_retune('std')
+    session = ctx.dev.session
+    if session is not None and session.name == 'rta':
+        # In RTA the swept window is a stored preference: issuing SWP_Configuration here would
+        # switch the device out of RTA behind the live session, and the RTA fetch would answer
+        # a run of -9 until it reconfigured itself (the same class of bug Preset had for SDR).
+        return True
     await ctx.configure_swp()
     return True
 
@@ -651,6 +657,11 @@ async def _h_set_window(ctx: CommandContext, data: dict) -> bool:
 
 async def _h_set_detector(ctx: CommandContext, data: dict) -> bool:
     ctx.state.detector = data['mode']
+    session = ctx.dev.session
+    if session is not None and session.name == 'rta':
+        # RTA has no trace detector; keep the value as the swept-mode preference without
+        # issuing SWP_Configuration (see _h_set_freq).
+        return True
     await ctx.configure_swp()
     return True
 

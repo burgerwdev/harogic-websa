@@ -159,8 +159,7 @@ def test_demod_reconfiguration_rolls_back_state_on_failure():
 def test_settle_window_still_drains_iqs(monkeypatch):
     state = SimpleNamespace(sdr_listen_hz=101.7e6)
     session = SdrSession.__new__(SdrSession)
-    session.dev = SimpleNamespace(state=state, dev=sb.c_void_p(),
-                                  note_link_status=lambda *a, **k: False)
+    session.dev = SimpleNamespace(state=state, dev=sb.c_void_p())
     session._lock = threading.RLock()
     session._ready = True
     session._ready_at = 11.0
