@@ -24,6 +24,15 @@ class StubDevice:
         )
         self.preset_defaults = {'center': 1e9, 'span': 100e6}
         self.last_freq = None
+        self.session = None
+
+    # The interface build_status relies on (mirrors HarogicDevice).
+    def auto_reference_view(self) -> dict:
+        return {'last_peak': None, 'last_noise_floor': None, 'target': None,
+                'result': 'idle', 'seq': 0, 'pending': None, 'adjusting': False}
+
+    def session_health(self) -> dict:
+        return {}
 
 
 def make_client(*, token=''):
@@ -137,3 +146,29 @@ async def test_websocket_rejects_cross_origin_and_missing_token():
             headers={'Origin': 'http://evil.example'},
         )
         assert response.status == 403
+
+
+@pytest.mark.asyncio
+async def test_schema_endpoint_describes_the_commands():
+    """/api/schema publishes the same declaration the command layer validates with (E-1)."""
+    client = make_client()
+    async with client:
+        resp = await client.get('/api/schema')
+        assert resp.status == 200
+        body = await resp.json()
+    commands = body['commands']
+    assert 'SET_RBW' in commands and 'STATUS' in commands
+    rbw = next(p for p in commands['SET_RBW']['params'] if p['name'] == 'rbw')
+    assert rbw['unit'] == 'Hz' and rbw['min'] == 100.0
+    assert rbw['max'] == DeviceCapabilities.from_model(67).rbw_max_hz
+    assert commands['SET_WINDOW']['swp_only'] is True
+    assert commands['STATUS']['needs_device'] is False
+
+
+@pytest.mark.asyncio
+async def test_schema_endpoint_requires_authentication_like_the_rest():
+    client = make_client(token='secret')
+    async with client:
+        assert (await client.get('/api/schema')).status == 401
+        assert (await client.get('/api/schema',
+                                 headers={'Authorization': 'Bearer secret'})).status == 200

@@ -9,6 +9,7 @@
 //
 // Conversions are for a 50 ohm system, which is what the SAN series uses.
 import * as S from '../core/store';
+import { displayOffset, displayUnit } from '../ui/displayState';
 
 export type LevelUnit = 'dBm' | 'dBmV' | 'dBuV' | 'dBV';
 
@@ -27,16 +28,39 @@ export function unitOffsetDb(unit: LevelUnit): number {
 
 /** Instrument reading (dBm) -> what the user should see, including the external offset. */
 export function toDisplayLevel(dbm: number): number {
-  return dbm + unitOffsetDb(S.levelUnit) + S.displayOffset;
+  return dbm + unitOffsetDb(S.levelUnit) + displayOffset.get();
 }
 
 /** What the user typed -> instrument-domain dBm. */
 export function fromDisplayLevel(value: number): number {
-  return value - unitOffsetDb(S.levelUnit) - S.displayOffset;
+  return value - unitOffsetDb(S.levelUnit) - displayOffset.get();
 }
 
 export function levelUnit(): LevelUnit {
   return S.levelUnit;
+}
+
+/**
+ * Absolute level for a READOUT (marker table, marker OSD on the canvas, peak list).
+ *
+ * In dB (relative) mode the values on screen are differences against the reference, and
+ * differences are never converted - that is why the offset must not be added there.
+ */
+export function fmtReadoutLevel(dbm: number, digits = 2): string {
+  if (displayUnit.get() === 'dB') return dbm.toFixed(digits) + ' dB';
+  return fmtLevel(dbm, digits);
+}
+
+/**
+ * Y-axis tick label, e.g. the top line of the graticule.
+ *
+ * The trace is displaced by the external offset in getY(), so the axis has to be labelled in the
+ * same domain, otherwise the numbers disagrees with the trace by exactly the offset (reported:
+ * "the Level offset and the amplitude numbers on the plot do not track each other").
+ */
+export function fmtAxisLevel(dbm: number): string {
+  if (displayUnit.get() === 'dB') return dbm.toFixed(0);   // relative axis: raw dB, no conversion
+  return toDisplayLevel(dbm).toFixed(0);
 }
 
 /** Formatted absolute level in the selected unit, e.g. "-22.46 dBuV". */

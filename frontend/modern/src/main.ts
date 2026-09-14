@@ -11,7 +11,14 @@ import { initWfRange } from './ui/wfRange';
 import { initKeypad } from './ui/keypad';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
-import { renderAll } from './render/spectrum';
+import { requestRender } from './render/redraw';
+import { initStore } from './core/store';
+// Imported for its registration side effects: render/spectrum.ts is the swept/RTA view hub
+// and calls setRenderer(renderAll) + registerViewRenderer('rta') at module scope. Nothing
+// imports it any more (that is what broke the render/spectrum cycles in the first place), so
+// the entry point must pull it in explicitly - otherwise requestRender() has no renderer and
+// the canvas stays blank.
+import './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
 import { applyI18n, setLang, t } from './core/i18n';
 import { initTheme, onThemeChange, toggleTheme } from './core/theme';
@@ -19,6 +26,7 @@ import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
 function init() {
+  initStore();   // bind the canvas before the first render
   // Theme/language (restored from localStorage)
   const savedTheme = localStorage.getItem('web-sa-theme');
   initTheme(savedTheme === 'light' ? 'light' : 'dark');
@@ -33,7 +41,7 @@ function init() {
   initTrigger();
   initWfRange();
   initKeypad();
-  initLevelUnit(() => { refreshLimitUnits(); updateChanTable(); renderAll(); });
+  initLevelUnit(() => { refreshLimitUnits(); updateChanTable(); requestRender(); });
   syncToggleIcons();
   bindActions();
   bindCanvas();
@@ -59,7 +67,7 @@ function init() {
       const th = toggleTheme();
       localStorage.setItem('web-sa-theme', th);
       btnTheme.textContent = th === 'dark' ? t('dark') : t('light');
-      renderAll();
+      requestRender();
     });
   }
   const btnLang = document.getElementById('btn-lang');
@@ -73,14 +81,14 @@ function init() {
       updateInfoBar();
       syncToggleTexts();
       btnLang.textContent = l === 'en' ? 'EN' : '中文';
-      renderAll();
+      requestRender();
     });
   }
-  onThemeChange(() => { renderAll(); });
+  onThemeChange(() => { requestRender(); });
 
   // WS + periodic render (measurement view)
   connectWS();
-  setInterval(() => { if (S.viewMode === 'pnm' || S.viewMode === 'harm') renderAll(); }, 200);
+  setInterval(() => { if (S.viewMode === 'pnm' || S.viewMode === 'harm') requestRender(); }, 200);
 }
 
 import { getTheme as S_getTheme } from './core/theme';

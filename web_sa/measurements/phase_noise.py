@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ..hardware import sdk_bindings as sb
 from .base import MeasurementSession
+from .results import pnm_payload
 
 
 class PhaseNoiseSession(MeasurementSession):
@@ -125,16 +126,14 @@ class PhaseNoiseSession(MeasurementSession):
                     self._started = False
                     return [], []
                 return [], []
-            res = dict(carrier_freq=float(self._cf.value),
-                       carrier_power=float(self._cp.value),
-                       offset=list(self._freq[:n]), pn=list(self._pn[:n]),
-                       ref=float(self._rf.value), traceavg=float(self.traceavg))
-            if self._i >= info.PartialUpdateCounts:
+            done = self._i >= info.PartialUpdateCounts
+            progress = round(self._i / max(info.PartialUpdateCounts, 1) * 100)
+            res = pnm_payload(
+                carrier_freq=float(self._cf.value), carrier_power=float(self._cp.value),
+                offset=self._freq[:n], pn=self._pn[:n], ref=float(self._rf.value),
+                traceavg=float(self.traceavg), done=done, progress=progress)
+            if done:
                 self._started = False
                 self.dirty = False
-                res['done'] = True
                 self.dev.state.pnm_last = res
-                return [], [{'cmd': 'PNM', **res}]
-            res['done'] = False
-            res['progress'] = round(self._i / max(info.PartialUpdateCounts, 1) * 100)
-            return [], [{'cmd': 'PNM', **res}]
+            return [], [res]

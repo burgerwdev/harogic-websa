@@ -1,5 +1,5 @@
+import { smoothBins } from '../ui/displayState';
 // Smoothing: 2nd-order SG + gradient-adaptive / window smoothing
-import * as S from '../core/store';
 
 // P2: Savitzky-Golay 2nd-order smoothing (preserve peaks/edges)
 export function sgSmooth(src: Float32Array, w: number, adaptive: boolean): Float32Array {
@@ -37,7 +37,7 @@ export function sgSmooth(src: Float32Array, w: number, adaptive: boolean): Float
 }
 
 export function smoothForDisplay(src: Float32Array, mode: string): Float32Array {
-  const w = S.smoothBins;
+  const w = smoothBins.get();
   const half = (w - 1) >> 1;
   const out = new Float32Array(src.length);
   if (mode === 'MAX_HOLD' || mode === 'MIN_HOLD') {

@@ -365,6 +365,17 @@ QDCMode_TypeDef = htra_api.QDCMode_TypeDef
 DSP_DDC_TypeDef = htra_api.DSP_DDC_TypeDef
 DSP_FFT_TypeDef = htra_api.DSP_FFT_TypeDef
 
+# RTA aliases. These used to be imported straight from htra_api by
+# measurements/rta.py, which bypassed this module (the only intended contact point with
+# the vendor library, see the module docstring). Re-exported here instead.
+RTA_FrameInfo_TypeDef = htra_api.RTA_FrameInfo_TypeDef
+RTA_TriggerInfo_TypeDef = htra_api.RTA_TriggerInfo_TypeDef
+RTA_PlotInfo_TypeDef = htra_api.RTA_PlotInfo_TypeDef
+RTA_TriggerSource_TypeDef = htra_api.RTA_TriggerSource_TypeDef
+TriggerEdge_TypeDef = htra_api.TriggerEdge_TypeDef
+TriggerOutMode_TypeDef = htra_api.TriggerOutMode_TypeDef
+TriggerOutPulsePolarity_TypeDef = htra_api.TriggerOutPulsePolarity_TypeDef
+
 __all__ = [
     'PNM_SUPPORTED',
     'SDR_CAPS',
@@ -394,6 +405,13 @@ __all__ = [
     'TracePointsStrategy_TypeDef',
     'VBWMode_TypeDef',
     'Window_TypeDef',
+    'RTA_FrameInfo_TypeDef',
+    'RTA_TriggerInfo_TypeDef',
+    'RTA_PlotInfo_TypeDef',
+    'RTA_TriggerSource_TypeDef',
+    'TriggerEdge_TypeDef',
+    'TriggerOutMode_TypeDef',
+    'TriggerOutPulsePolarity_TypeDef',
     'byref',
     'create_string_buffer',
     'dll',

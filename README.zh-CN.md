@@ -84,13 +84,18 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
 然后访问 `http://设备地址:8080/?token=同一令牌`。完整环境变量、远程部署、日志和硬件测试见
 [`docs/zh-CN/FAQ_NOTES.md`](docs/zh-CN/FAQ_NOTES.md)；SWP/RTA 参数语义见
 [`docs/zh-CN/MODE_STATE_FLOW.md`](docs/zh-CN/MODE_STATE_FLOW.md)。
+独立的架构与代码评估（含分阶段重构建议）见
+[`docs/zh-CN/ARCH_REVIEW.md`](docs/zh-CN/ARCH_REVIEW.md)；开发指南（分层归属、状态归属、
+新增功能清单、测试与性能规则、守卫清单、排障手册与教训台账）见
+[`docs/zh-CN/DEVELOPMENT.md`](docs/zh-CN/DEVELOPMENT.md)。
 
 ### 3. 测试
 
 ```bash
-./test.sh
-python3 -m ruff check web_sa tests tools
-cd frontend/modern && npm audit
+pip install -r requirements-dev.txt      # 运行时 + pytest/ruff/playwright/fonttools
+make ci                                  # CI 的全部门禁（无需硬件）
+python3 tools/bench.py --check tools/bench_baseline.json   # 性能基线（需服务在跑）
+make hw-test                             # 需真机：tinySA CW + 界面状态机回归
 ```
 
 ## 目录结构
@@ -105,7 +110,8 @@ harogic-websa/
 │  └─ modern/            TS 前端 (Vite + TypeScript, i18n + 主题)
 │     └─ src/__tests__/  vitest 测试(DSP 引擎, 合成迹线)
 ├─ htra_api.py           官方 SDK Python 包装 (HAROGIC 版权)
-├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕
+├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕 /
+│                        架构评估 / 开发指南
 ├─ tests/                后端 pytest(协议/配置/设备状态/HTTP API)
 ├─ screenshots/          README 截图
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
@@ -125,8 +131,9 @@ harogic-websa/
 
 ## 测试
 
-- **后端（63 项）**：帧协议、配置/安全默认、命令校验、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、HTTP/WS 鉴权与路径防护、有界客户端推送、采集 watchdog、supervisor/TinySA 安全规则——**常规测试无需硬件**
-- **前端（79 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化和实时分位数统计——**无需硬件**
+- **后端（147 项）**：帧协议 + golden 帧 fixture、配置/安全默认、命令校验（含能力表驱动的限值）、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、fatal 退出契约、HTTP/WS 鉴权与路径防护、有界客户端推送、采集策略（会话自有的 watchdog/节流）、supervisor/TinySA 安全规则
+- **前端（141 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化、参数槽位、i18n 键一致性、二进制帧解码（对照 Python 生成的 fixture）、STATUS → 参数槽位映射
+- **默认无需硬件**：缺少 `/opt/htraapi/lib/x86_64/libhtraapi.so` 时，7 个依赖厂商库的后端测试模块会被跳过（`tests/conftest.py`），CI 与普通检出仍可跑其余全部测试；`make hw-test` 与 `tools/hardware_smoke.py` 需要频谱仪（CW 信号需 tinySA）。
 
 ## 开源说明
 

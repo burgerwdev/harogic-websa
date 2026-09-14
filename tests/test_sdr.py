@@ -13,10 +13,10 @@ from web_sa.demod.demod import AnalogDemod
 from web_sa.demod.spectrum import Panadapter
 from web_sa.hardware import sdk_bindings as sb
 from web_sa.measurements import sdr as sdr_module
+from web_sa.measurements.framer import encode_audio
 from web_sa.measurements.sdr import (
     SdrSession,
     _round_decimate,
-    encode_audio,
     sdr_spectrum_windows,
 )
 

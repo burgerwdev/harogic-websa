@@ -1,7 +1,8 @@
 // vitest setup: mock canvas/DOM so the store module (which accesses the spectrum canvas at the top level) can load
 // The tests do not do real rendering, only pure logic (smoothing/peak-finding/resampling/normalization)
 const fakeCtx = new Proxy({}, {
-  get: () => () => {},
+  // measureText must return a TextMetrics-like object: the renderer accumulates its width.
+  get: (_target, prop) => (prop === 'measureText' ? () => ({ width: 0 }) : () => {}),
   set: () => true,
 }) as unknown as CanvasRenderingContext2D;
 
@@ -10,6 +11,11 @@ const fakeCanvas = {
   height: 480,
   getContext: () => fakeCtx,
   getBoundingClientRect: () => ({ left: 0, top: 0, width: 860, height: 480 }),
+  // Code paths that annotate the canvas for e2e/diagnostics (dataset.sdrAudio,
+  // dataset.sdrWindow) must not explode in jsdom.
+  dataset: {} as Record<string, string>,
+  style: {} as Record<string, string>,
+  classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
 } as unknown as HTMLCanvasElement;
 
 // Keep the original getElementById, only return the fake canvas for 'spectrum'
@@ -23,3 +29,8 @@ if (!globalThis.performance) {
 }
 
 export {};
+
+// The store binds the canvas in initStore() now (report finding P2-1); run it against the
+// fake canvas so the modules under test have a context and logical dimensions.
+import { initStore } from '../core/store';
+initStore();

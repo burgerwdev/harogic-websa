@@ -2,24 +2,28 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import math
 from collections import deque
+
+from .jsonutil import dumps_json, is_periodic_status
 
 log = logging.getLogger(__name__)
 SEND_TIMEOUT = 5.0
 
-
-def _finite_json(value):
-    """Replace NaN/Inf with null so one bad measurement value cannot drop a whole message."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {key: _finite_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_finite_json(item) for item in value]
-    return value
+#: Retention policy per frame type (report finding E-4). A new frame type is one row here
+#: instead of another branch in the send path; anything unlisted behaves like data.
+RETAIN = 'retain'      # keep the newest and drop older ones (a frequency axis is context)
+LATEST = 'latest'      # newest wins, the previous frame is dropped (traces, bitmaps)
+FIFO = 'fifo'          # ordered queue, drop-oldest on overrun (audio)
+FRAME_POLICY = {
+    b'FREQ': RETAIN,
+    b'AUDF': FIFO,
+    b'POWR': LATEST,
+    b'RTAF': LATEST,
+}
+DEFAULT_POLICY = LATEST
+#: Marker the connection filters use (audio has its own socket in the frontend).
+AUDIO_MAGIC = b'AUDF'
 
 
 class ClientStream:
@@ -60,13 +64,14 @@ class ClientStream:
         if self.closed:
             return
         magic = frame[:4]
-        if self.audio_only and magic != b'AUDF':
+        if self.audio_only and magic != AUDIO_MAGIC:
             return
-        if self.no_audio and magic == b'AUDF':
+        if self.no_audio and magic == AUDIO_MAGIC:
             return
-        if magic == b'FREQ':
+        policy = FRAME_POLICY.get(magic, DEFAULT_POLICY)
+        if policy is RETAIN:
             self._freq = frame
-        elif magic == b'AUDF':
+        elif policy is FIFO:
             if len(frame) < 16:
                 self.dropped_audio += 1
                 return
@@ -85,10 +90,18 @@ class ClientStream:
         self._event.set()
 
     def publish_json(self, obj: dict) -> None:
+        """Serialize and queue one message for this client."""
+        self.publish_text(dumps_json(obj), coalesce=is_periodic_status(obj))
+
+    def publish_text(self, text: str, *, coalesce: bool = False) -> None:
+        """Queue an already-serialized message.
+
+        The publisher uses this to serialize once for all clients; ``coalesce`` marks the
+        1 Hz periodic STATUS, which supersedes an older queued one.
+        """
         if self.closed or self.audio_only:
             return
-        text = json.dumps(_finite_json(obj), allow_nan=False, separators=(',', ':'))
-        if obj.get('cmd') == 'STATUS' and not obj.get('response_to'):
+        if coalesce:
             self._control = deque(
                 item for item in self._control
                 if '"cmd":"STATUS"' not in item or '"response_to":' in item

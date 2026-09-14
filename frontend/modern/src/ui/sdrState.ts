@@ -23,20 +23,51 @@ const hz = {
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.5,
 };
 
+// Every SDR setting the backend confirms is also the user's preference: it is persisted
+// (`persist: 'confirmed'` stores what the device accepted) and re-applied when SDR is entered, so
+// leaving the mode and coming back - or reloading the page - does not silently discard the tuning
+// and the listening setup (reported: SDR settings were re-derived from the swept centre on every
+// entry). `resetAll('sdr')` (Preset) drops the stored values too, so factory defaults really are
+// defaults.
 /** Requested wideband centre. `set()` here is what the old `pendingSdrFreq` hand-off did. */
-export const sdrCenterHz = createParam<number>('sdr.center', { fallback: 0, scope: 'sdr', ...hz });
+export const sdrCenterHz = createParam<number>('sdr.center', {
+	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-center', ...hz,
+});
 /** Requested IQ decimation (capture bandwidth = 62.5 MHz / decimate). */
-export const sdrDecimate = createParam<number>('sdr.decimate', { fallback: 32, scope: 'sdr', ...hz });
+export const sdrDecimate = createParam<number>('sdr.decimate', {
+	fallback: 32, scope: 'sdr', persistKey: 'web-sa-sdr-decimate', ...hz,
+});
 /** Actual capture span reported by the device (`stop - start`); confirmed only. */
 export const sdrSpanHz = createParam<number>('sdr.span', { fallback: 0, scope: 'sdr', ...hz });
 /** Demodulator listen frequency. */
-export const sdrListenHz = createParam<number>('sdr.listen', { fallback: 0, scope: 'sdr', ...hz });
+export const sdrListenHz = createParam<number>('sdr.listen', {
+	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-listen', ...hz,
+});
 /** Demodulation mode (am/fm/nfm/wfm/usb/lsb/cw). */
-export const sdrDemod = createParam<string>('sdr.demod', { fallback: 'am', scope: 'sdr' });
+export const sdrDemod = createParam<string>('sdr.demod', {
+	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod',
+});
 /** IF passband in Hz (also what the listen-band overlay draws). */
-export const sdrIfbw = createParam<number>('sdr.ifbw', { fallback: 6000, scope: 'sdr', ...hz });
+export const sdrIfbw = createParam<number>('sdr.ifbw', {
+	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz,
+});
 /** FM de-emphasis time constant in microseconds (-1 = per-mode default). */
-export const sdrDeemph = createParam<number>('sdr.deemph', { fallback: -1, scope: 'sdr', ...hz });
+export const sdrDeemph = createParam<number>('sdr.deemph', {
+	fallback: -1, scope: 'sdr', persistKey: 'web-sa-sdr-deemph', ...hz,
+});
+/** Audio volume (0..2). */
+export const sdrVolume = createParam<number>('sdr.volume', {
+	fallback: 0.8, scope: 'sdr', persistKey: 'web-sa-sdr-volume', ...hz,
+});
+/** Squelch threshold in dBFS. */
+export const sdrSquelch = createParam<number>('sdr.squelch', {
+	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch', ...hz,
+});
+/** Audio AGC. */
+export const sdrAgc = createParam<boolean>('sdr.agc', {
+	fallback: true, scope: 'sdr', persistKey: 'web-sa-sdr-agc',
+	parse: (raw: string) => raw === '1', serialize: (v: boolean) => (v ? '1' : '0'),
+});
 
 /**
  * Client-side preferences the backend does not report. Persisted here (the slot's own
@@ -46,18 +77,42 @@ const flag = {
 	parse: (raw: string) => raw === '1',
 	serialize: (v: boolean) => (v ? '1' : '0'),
 };
-export const sdrRefAuto = createParam<boolean>('sdr.refAuto', {
-	fallback: true, scope: 'sdr', persistKey: 'web-sa-sdr-ref-auto', persist: 'desired',
-	authoritative: true, ...flag,
-});
 export const sdrAudioOn = createParam<boolean>('sdr.audioOn', {
 	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-audio', persist: 'desired',
 	authoritative: true, ...flag,
 });
 
-/** Drop every pending SDR intent (Preset, or leaving the mode). */
+/** Every persisted SDR preference (Preset removes them, so defaults really are defaults). */
+export const SDR_PREF_KEYS = [
+	'web-sa-sdr-audio', 'web-sa-sdr-center', 'web-sa-sdr-listen', 'web-sa-sdr-decimate',
+	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
+	'web-sa-sdr-squelch', 'web-sa-sdr-agc',
+];
+
+/**
+ * True when the user has an SDR preference stored (i.e. SDR has been set up before).
+ *
+ * The swept-centre hand-off and the band-derived demod are first-run conveniences: once the user
+ * has their own setup, that setup wins (a mode switch is not a reset).
+ */
+export function hasStoredSdrPrefs(): boolean {
+	if (typeof localStorage === 'undefined') return false;
+	try {
+		return SDR_PREF_KEYS.some((key) => localStorage.getItem(key) !== null);
+	} catch {
+		return false;
+	}
+}
+
+/** Drop every pending SDR intent AND the stored preferences (Preset). */
 export function resetSdrState(): void {
 	resetAll('sdr');
+	if (typeof localStorage === 'undefined') return;
+	try {
+		SDR_PREF_KEYS.forEach((key) => localStorage.removeItem(key));
+	} catch {
+		/* storage disabled: nothing to clear */
+	}
 }
 
 /**

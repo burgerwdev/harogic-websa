@@ -14,7 +14,7 @@
 //    can be placed anywhere with the mouse, backspace deletes one character at the caret and the
 //    C key clears the whole entry
 import { t } from '../core/i18n';
-import { setUnit, UNIT_OPTIONS } from '../core/units';
+import { fieldForInput, setUnit, UNIT_OPTIONS } from '../core/units';
 
 const LS_KEY = 'websa-keypad';
 
@@ -64,8 +64,7 @@ function isServed(input: EventTarget | null): input is HTMLInputElement {
 
 /** units[] key for an input id (`input-center` -> `center`) when it has a unit group. */
 function fieldOf(input: HTMLInputElement): string {
-  const key = input.id.startsWith('input-') ? input.id.slice('input-'.length) : '';
-  return key && UNIT_OPTIONS[key] ? key : '';
+  return fieldForInput(input);
 }
 
 /** Unit shown on the display line: the group's active unit, or the sibling value label. */

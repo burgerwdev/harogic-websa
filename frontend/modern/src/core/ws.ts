@@ -1,6 +1,8 @@
 // WebSocket protocol layer + STATUS handling
+import { requestRender } from '../render/redraw';
+import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
-import { toUnit } from './units';
+import { decodeFrame } from './frames';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
@@ -24,19 +26,43 @@ import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
 import { noteFrameArrived } from '../ui/triggerEvents';
 import { evaluateSwpTrigger } from '../ui/swpTrigger';
-import { renderAll } from '../render/spectrum';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
-import { sdrRefAuto } from '../ui/sdrState';
-import { refLevel, refMode } from '../ui/refState';
+import { refLevel } from '../ui/refState';
+import { maybeRequestSdrFit, noteTraceObservation, postRefNotice, syncAutoScaleStatus }
+  from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
 } from '../ui/swpState';
+import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { displayOffset, displayUnit } from '../ui/displayState';
+
+/** The last (requested, reported) Ref pair announced, so the notice fires on a change only. */
+let lastRefLimit: string | null = null;
+
+/**
+ * Report a reference level the device did not accept verbatim.
+ *
+ * `req` is what we asked the profile for, `actual` what the hardware programmed and echoed; the
+ * difference is the device's own limit for its current front end, which the UI otherwise follows
+ * silently (reported: "Ref 30 dBm jumps back to 27 after a few seconds - why?").
+ */
+function syncRefLimitNotice(s: any): void {
+  const mode = String(s?.mode ?? '');
+  if (mode === 'sdr') return;                       // the SDR display scale is client-side
+  const reqRef = Number((mode === 'rta' ? s?.req?.rta : s?.req?.swp)?.ref);
+  const actualRef = Number(s?.actual?.ref ?? s?.ref);
+  const clamped = isFinite(reqRef) && isFinite(actualRef) && Math.abs(reqRef - actualRef) >= 1;
+  const key = clamped ? `${reqRef}->${actualRef}` : null;
+  if (key === lastRefLimit) return;
+  lastRefLimit = key;
+  if (clamped) postRefNotice(t('ref_limited', { ref: actualRef.toFixed(0) }), 5000);
+}
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -58,16 +84,8 @@ let rtaFrames = 0;
 let lastRtaInfoAt = 0;
 let lastRtaStartHz = 0, lastRtaStopHz = 0;
 let lastDensRef = 0, lastDensRange = 0;
-let sdrNoiseEma = -120;
-let sdrPeakEma = -120;   // must satisfy the < -119 seed guard below
-let lastSdrAutoAt = 0;
 
 // Re-initialise the SDR auto-scale (called when entering SDR).
-export function resetSdrAutoRef() {
-  sdrNoiseEma = -120;
-  sdrPeakEma = -120;     // see the seed guard in the auto-ref block
-  lastSdrAutoAt = 0;
-}
 let firstConnect = true;
 
 export function send(obj: object) {
@@ -89,6 +107,8 @@ const RTA_BAD_MAX_FRAMES = 20;
 const RTA_BAD_MAX_MS = 300;
 let rtaBadFirst = 0;
 let rtaBadCount = 0;
+
+let lastOverflowWarning = false;
 
 export function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -147,37 +167,28 @@ export function connectWS() {
       }
       return;
     }
-    if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
-    const view = new DataView(event.data, 0, 16);
-    const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    const version = view.getUint32(4, true);
-    const points = view.getUint32(8, true);
-    const sweepMsHdr = view.getFloat32(12, true);
-    if (magic !== 'RTAF' && sweepMsHdr > 0 && sweepMsHdr !== S.sweepMs) {
-      S.setSweepMs(sweepMsHdr);
+    if (!(event.data instanceof ArrayBuffer)) return;
+    const frame = decodeFrame(event.data);
+    if (frame === null || frame.kind === 'audio') return;   // audio has its own connection
+    const { points } = frame;
+    if (frame.kind !== 'rta' && frame.sweepMs > 0 && frame.sweepMs !== S.sweepMs) {
+      S.setSweepMs(frame.sweepMs);
       updateInfoBar();
     }
     if (points < 2) return;
     if (S.swpHold) return;               // SWP software capture: hold the swept display
-    if (magic === 'RTAF') {
+    if (frame.kind === 'rta') {
       const processAt = performance.now();
       if (processAt - lastRtaProcess < 30) return;
       lastRtaProcess = processAt;
-      // RTA 帧: magic(4) + hdr(ver u32, pts u32, wfLen u16, maxD u16, startHz f8 = 20B) → 24B 头(8 对齐)
-      // 数据: freq(f8×pts) + spec(f4×pts) + wfRow(u2×wfLen) + stopHz(f8)
-      const hdr = new DataView(event.data, 4, 20);
-      const ver = hdr.getUint32(0, true);
-      const pts = hdr.getUint32(4, true);
-      const wfLen = hdr.getUint16(8, true);
-      const maxDensity = hdr.getUint16(10, true);
-      const startHz = hdr.getFloat64(12, true);
-      const expectedBytes = 24 + pts * 8 + pts * 4 + wfLen * 2 + 8;
-      if (pts < 2 || wfLen < 1 || event.data.byteLength !== expectedBytes) return;
-      let off = 24;
-      const capFreq = new Float64Array(event.data, off, pts); off += pts * 8;
-      const capSpec = new Float32Array(event.data, off, pts); off += pts * 4;
-      const wfRow = new Uint16Array(event.data, off, wfLen); off += wfLen * 2;
-      const stopHz = new DataView(event.data, off, 8).getFloat64(0, true);
+      // RTA frame layout lives in core/frames.ts (magic + ver + pts + wfLen + maxD +
+      // startHz, then freq(f8) + spec(f4) + wfRow(u2) + stopHz(f8)); the decoder has
+      // already validated every length, so nothing here has to re-derive strides.
+      const { version: ver, maxDensity, startHz, stopHz } = frame;
+      const capFreq = frame.freq;
+      const capSpec = frame.spec;
+      const wfRow = frame.wfRow;
+      const pts = frame.points;
       // The frame header is the DISPLAY window, the freq array the CAPTURE grid. In SDR the
       // two differ when a hardware offset moved the capture centre; rebin to the display
       // window so the user's centre is at the canvas centre and the offset edge is a gap.
@@ -203,49 +214,10 @@ export function connectWS() {
       const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
       if (!plausible && !settleOver) return;    // settle window only: drop quietly
       if (!plausible) S.setBadData(true);       // past it, show the data and say so
-      // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
-      // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
-      // frame peak (with a small hysteresis) so the signal is visible.
-      if (currentGraphMode() === 'sdr' && sdrRefAuto.get()) {
-        let peak = -Infinity;
-        for (let i = 0; i < spec.length; i++) {
-          const v = spec[i];
-          if (v > peak && isFinite(v)) peak = v;
-        }
-        if (isFinite(peak)) {
-          const noise = percentileApprox(spec, 0.3);
-          // Smooth both so a fading signal does not make the whole display jump.
-          sdrNoiseEma = sdrNoiseEma < -119 ? noise : sdrNoiseEma * 0.9 + noise * 0.1;
-          sdrPeakEma = sdrPeakEma < -119 ? peak : sdrPeakEma * 0.75 + peak * 0.25;
-          const now2 = performance.now();
-          if (now2 - lastSdrAutoAt > 400) {
-            const range = S.totalDivs * S.dbPerDiv;
-            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            let ref = Math.max(sdrNoiseEma + range - 8, sdrPeakEma + 10);
-            ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
-            {
-              // Debug/verification aid: the raw inputs of the SDR auto-ref decision.
-              const cvD = document.getElementById('spectrum');
-              if (cvD) cvD.dataset.sdrRefDbg = JSON.stringify({
-                noise: Math.round(noise), peak: Math.round(peak),
-                nEma: Math.round(sdrNoiseEma), pEma: Math.round(sdrPeakEma),
-                range, ref: Math.round(ref), applied: Math.abs(ref - getDisplayRef()) >= 3,
-                shown: Math.round(getDisplayRef()),
-              });
-            }
-            // Compare against the value that is ACTUALLY displayed, never a private cache:
-            // other panels (preset, normalise, the manual Ref box) also write displayRef,
-            // and a stale cache made auto-ref believe it had already applied `ref` and
-            // silently stop correcting the display (measured: ref -15, shown 0).
-            if (Math.abs(ref - getDisplayRef()) >= 3) {
-              setDisplayRef('auto', ref);
-              lastSdrAutoAt = now2;
-              const cv = document.getElementById('spectrum');
-              if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
-            }
-          }
-        }
-      }
+      // SDR: the swept reference level is meaningless here (often 0 dBm against a -100 dBm
+      // noise floor), so entering the mode asks the backend for one fit; the client applies the
+      // reported target to the display scale (see ui/refAutoScale.ts). Nothing runs unattended.
+      if (currentGraphMode() === 'sdr') maybeRequestSdrFit();
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -253,7 +225,7 @@ export function connectWS() {
         || Math.abs(startHz - lastRtaStartHz) > 0.5
         || Math.abs(stopHz - lastRtaStopHz) > 0.5;
       if (axisChanged) {
-        if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+        if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
         for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
         for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
         S.resetWaterfall();
@@ -282,13 +254,18 @@ export function connectWS() {
       // if the user changes ref level or scale (dbPerDiv) the grid moves with the trace,
       // so density and trace never drift apart. A window change rebuilds the grid.
       const dispRange = S.totalDivs * S.dbPerDiv;
-      const dB_PER_BIN = dispRange / S.RTA_AMP_BINS;
+      // Slot reads are cheap but not free: hoist them out of the per-bin loops below
+      // (bins * points iterations per frame). Reading them inside the loop made the main
+      // thread miss the 1 Hz STATUS cadence and stalled the UI during SDR/RTA entry.
+      const bins = rtaAmpBins.get();
+      const fade = rtaFade.get();
+      const dB_PER_BIN = dispRange / bins;
       const refTop = getDisplayRef();
       if (lastDensRef !== refTop || lastDensRange !== dispRange) {
-        if (S.rtaDensity2d) S.rtaDensity2d.fill(0);
+        if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
         lastDensRef = refTop; lastDensRange = dispRange;
       }
-      const len2 = spec.length * S.RTA_AMP_BINS;
+      const len2 = spec.length * bins;
       const floorN = percentileApprox(spec, 0.3);
       // Amplitude-graded weight: how far a point sits above the noise floor decides how
       // strongly it accumulates. Weak signals (>3 dB) still leave a light density cloud
@@ -298,11 +275,11 @@ export function connectWS() {
         if (relDb >= 25) return 1;
         return 0.25 + 0.75 * ((relDb - 3) / 22);
       };
-      const pushDensity = (nd: Float32Array, i: number, relDb: number, w: number) => {
-        const b = Math.max(0, Math.min(S.RTA_AMP_BINS - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
-        const o = i * S.RTA_AMP_BINS;
+      const pushDensity = (nd: Float32Array, i: number, _relDb: number, w: number) => {
+        const b = Math.max(0, Math.min(bins - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
+        const o = i * bins;
         const bump = (bin: number, v: number) => {
-          if (bin < 0 || bin >= S.RTA_AMP_BINS) return;
+          if (bin < 0 || bin >= bins) return;
           const k = o + bin;
           nd[k] += v;
           if (nd[k] > 40) nd[k] = 40;
@@ -314,7 +291,7 @@ export function connectWS() {
         bump(b - 2, 1 * w);
         bump(b + 2, 1 * w);
       };
-      if (!S.rtaDensity2d || S.rtaDensity2d.length !== len2) {
+      if (!S.rtaDensity2d || S.rtaDensity2d!.length !== len2) {
         const nd = new Float32Array(len2);
         for (let i = 0; i < spec.length; i++) {
           const w = accW(spec[i] - floorN);
@@ -323,11 +300,11 @@ export function connectWS() {
         }
         S.setRtaDensity2d(nd);
       } else {
-        const nd = S.rtaDensity2d;
+        const nd = S.rtaDensity2d!;
         for (let i = 0; i < spec.length; i++) {
-          for (let b = 0; b < S.RTA_AMP_BINS; b++) {
-            const v = nd[i * S.RTA_AMP_BINS + b] * S.rtaFade;
-            nd[i * S.RTA_AMP_BINS + b] = v > 0.05 ? v : 0;
+          for (let b = 0; b < bins; b++) {
+            const v = nd![i * bins + b] * fade;
+            nd![i * bins + b] = v > 0.05 ? v : 0;
           }
           const w = accW(spec[i] - floorN);
           if (w <= 0) continue;
@@ -354,7 +331,7 @@ export function connectWS() {
         S.rtaDone[ti] = shim.done;
       });
       updateTrackingMarkers();
-      if (S.waterfallOn && S.rtaMode && !S.wfPaused) {
+      if (waterfallOn.get() && S.rtaMode && !wfPaused.get()) {
         // bitmap rows are often all-zero; derive waterfall row from the live trace
         pushRtaRow(spec, waterfallRowWidth(), 100);  // same width as the swept path (one peak-hold stage)
       }
@@ -365,28 +342,25 @@ export function connectWS() {
       const now = performance.now();
       if (now - lastRender >= 16) {
         lastRender = now;
-        renderAll();
+        requestRender();
       }
       return;
     }
-    if (magic === 'FREQ') {
-      if (event.data.byteLength !== 16 + points * 8) return;
-      S.setFreqArray(new Float64Array(event.data, 16, points));
-      S.setFreqVersion(version);
+    if (frame.kind === 'freq') {
+      S.setFreqArray(frame.freq);
+      S.setFreqVersion(frame.version);
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(points);
       retrackMarkers();
-    } else if (magic === 'POWR') {
-      if (event.data.byteLength !== 16 + points * 4) return;
-      if (version !== S.freqVersion) return;
-      const raw = new Float32Array(event.data, 16, points);
-      processTraces(raw);
+    } else if (frame.kind === 'powr') {
+      if (frame.version !== S.freqVersion) return;
+      processTraces(frame.power);
       if (!S.rtaMode) evaluateSwpTrigger();  // software level trigger on consecutive sweeps
       noteFrameArrived();                    // armed: this trace IS the capture
       const now = performance.now();
       if (now - lastRender >= 33) {
         lastRender = now;
-        renderAll();
+        requestRender();
       }
     }
   };
@@ -394,7 +368,10 @@ export function connectWS() {
 
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
-  if (s.caps) S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
+  if (s.caps) {
+    S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
+    S.setRefLimits(Number(s.caps.ref_min), Number(s.caps.ref_max));
+  }
   // STATUS top-level fields are the effective values for the active hardware mode.
   const isRtaStatus = s.mode === 'rta';
   if (s.req.rta?.center > 0) rtaCenterHz.confirm(Number(s.req.rta.center));
@@ -412,10 +389,16 @@ export function updateStatus(s: any) {
       refEl.title = over ? t('if_overflow_hint') : '';
     }
     S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
+  // The warning must be visible even though an overflowing IF stops sending frames: without
+  // this repaint the canvas kept the previous pass (no warning), and it only appeared for one
+  // frame after Ref was raised again (the user saw exactly that flash).
+  if (over !== lastOverflowWarning) {
+    lastOverflowWarning = over;
+    requestRender();
+  }
   }
   spanHz.confirm(Number(s.span));
   refLevel.confirm(Number(s.ref));
-  refMode.confirm(s.ref_mode === 'auto' ? 'auto' : 'manual');
   S.setConfigVersion(Number(s.config_version) || 0);
   currentRBW.confirm(Number(s.rbw));
   currentVBW.confirm(Number(s.vbw));
@@ -444,34 +427,44 @@ export function updateStatus(s: any) {
     }
   }
   noteDisplayRefReport(Number(s.ref));
-  if (S.displayUnit !== 'dB') setDisplayRef('mode', refLevel.get());
+  if (displayUnit.get() !== 'dB') setDisplayRef('mode', refLevel.get());
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
   const cur = refLevel.get();
   const refText = Number.isInteger(cur) ? cur.toFixed(0) : cur.toFixed(1);
-  setInput('input-ref', S.displayUnit === 'dB' ? '0' : refText);
+  // The box always holds the reference LEVEL in dBm - it is what the Set button sends and what
+  // the device reports. It used to be pinned to '0' in dB (relative) display mode, which made a
+  // background change invisible (and made Set send 0 dBm); the relative axis top is a rendering
+  // detail, not a different reference.
+  setInput('input-ref', refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
-  const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
-  if (refInput) refInput.disabled = refMode.get() === 'auto';
-  if (refSet) refSet.disabled = refMode.get() === 'auto';
+  // Nothing locks the reference any more: Auto Scale is a one-shot action, so the input, the
+  // Set button and the step arrows stay usable and only their pending state is shown.
+  if (refInput) refInput.disabled = false;
+  if (refSet) refSet.disabled = false;
   const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
-  const inAuto = refMode.get() === 'auto';
   if (refDown) {
-    refDown.disabled = inAuto || cur <= -50;
-    refDown.title = inAuto ? t('auto') : t('ref_down');
+    refDown.disabled = currentGraphMode() !== 'sdr' && cur <= -50;
+    refDown.title = t('ref_down');
   }
   if (refUp) {
-    refUp.disabled = inAuto || cur >= 30;
-    refUp.title = inAuto ? t('auto') : t('ref_up');
+    refUp.disabled = currentGraphMode() !== 'sdr' && cur >= 30;
+    refUp.title = t('ref_up');
   }
-  if (refAuto) {
-    refAuto.classList.toggle('active', inAuto);
-    refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
-  }
+  // Auto Scale feedback: the button glows while a fit is in flight (the backend reports it via
+  // auto_ref.adjusting, and the client keeps its own fallback timer), then reports the result.
+  syncAutoScaleStatus(s);
+  // A refusal notice describes the trace in front of the user: withdraw it the moment the trace
+  // no longer matches (first frame arrived, or the peak moved away from the decision's basis).
+  noteTraceObservation(s.auto_ref);
+  // The device may clamp the reference (its own maximum depends on the attenuation/IF-gain it
+  // picks: requesting +30 dBm on the SAN-90 comes back as +27). Say so instead of letting the
+  // number change on its own.
+  syncRefLimitNotice(s);
   setInput('input-points', String(currentPoints.get()));
   setSelect('select-rbw-mode', rbwMode.get());
   setSelect('select-vbw-mode', vbwMode.get());
@@ -552,8 +545,8 @@ export function updateStatus(s: any) {
     }
   }
   const of = document.getElementById('input-offset') as HTMLInputElement;
-  if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - S.displayOffset) > 0.01)
-    of.value = S.displayOffset.toFixed(1);
+  if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - displayOffset.get()) > 0.01)
+    of.value = displayOffset.get().toFixed(1);
   const gf = document.getElementById('btn-gapfill');
   if (gf) {
     gf.textContent = S.currentGapFill ? t('on') : t('off');
@@ -573,20 +566,3 @@ function setSelect(id: string, v: string) {
 }
 
 // Sync frequency input fields
-export function updateFreqUIInputs(force = false) {
-  const swpEditor = document.getElementById('swp-freq-settings');
-  if (swpEditor?.dataset.dirty !== '1') {
-    setInput('input-center', toUnit(centerHz.get(), 'center').toFixed(4), force);
-    setInput('input-span', toUnit(spanHz.get(), 'span').toFixed(4), force);
-    setInput('input-start', toUnit(centerHz.get() - spanHz.get() / 2, 'start').toFixed(4), force);
-    setInput('input-stop', toUnit(centerHz.get() + spanHz.get() / 2, 'stop').toFixed(4), force);
-  }
-  setInput('input-rbw', toUnit(currentRBW.get(), 'rbw').toFixed(2));
-  setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
-  const rtaEditor = document.getElementById('rta-freq-settings');
-  if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
-    const u = S.units.rta_center || 'MHz';
-    const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
-    setInput('input-rta-center', (rtaCenterHz.get() / scale).toFixed(4), force);
-  }
-}

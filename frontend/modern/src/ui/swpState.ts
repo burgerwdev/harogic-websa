@@ -27,3 +27,12 @@ export const currentVBW = createParam<number>('swp.vbw', { fallback: 300e3, scop
 export const currentPoints = createParam<number>('swp.points', { fallback: 1001, scope: 'swp', ...hz });
 /** Spur suppression mode. */
 export const currentSpur = createParam<string>('swp.spur', { fallback: 'standard', scope: 'swp' });
+
+/** Span step used by the ▼/▲ buttons (Hz); Auto makes it follow the current span. */
+export const spanStepHz = createParam<number>('swp.spanStepHz', {
+	fallback: 10e6, scope: 'swp', authoritative: true, parse: Number, serialize: String,
+	equals: (a, b) => Math.abs(a - b) < 0.5,
+});
+export const spanStepAuto = createParam<boolean>('swp.spanStepAuto', {
+	fallback: true, scope: 'swp', authoritative: true,
+});

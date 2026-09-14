@@ -87,14 +87,19 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
 Then open `http://device-address:8080/?token=the-same-token`. See
 [`docs/en/FAQ_NOTES.md`](docs/en/FAQ_NOTES.md) for all environment variables, remote deployment,
 logging, and hardware tests. SWP/RTA parameter semantics are documented in
-[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md).
+[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md). An independent architecture and code
+review with prioritized refactor recommendations is in
+[`docs/en/ARCH_REVIEW.md`](docs/en/ARCH_REVIEW.md); the development guide (layer map, state
+ownership, feature checklists, testing/perf rules, guard rails, debugging playbook and a lesson
+ledger) is [`docs/en/DEVELOPMENT.md`](docs/en/DEVELOPMENT.md).
 
 ### 3. Test
 
 ```bash
-./test.sh
-python3 -m ruff check web_sa tests tools
-cd frontend/modern && npm audit
+pip install -r requirements-dev.txt      # runtime + pytest/ruff/playwright/fonttools
+make ci                                  # everything CI runs (no hardware needed)
+python3 tools/bench.py --check tools/bench_baseline.json   # performance, service running
+make hw-test                             # bench only: tinySA CW + UI state regression
 ```
 
 ## Directory Layout
@@ -107,10 +112,16 @@ harogic-websa/
 │  └─ web/               ws.py / http_api.py / publisher.py
 ├─ frontend/
 │  └─ modern/            TS frontend (Vite + TypeScript, i18n + themes)
+│     ├─ src/ui/panels/  panel modules (frequency/resolution/rta/markers/refAmp/...)
+│     └─ src/render/registry.ts  view renderer registry (views self-register)
 │     └─ src/__tests__/  vitest tests (DSP engine, synthetic traces)
 ├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
-├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log
+├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ /
+│                        refactor log / arch review / development guide
 ├─ tests/                backend pytest (protocol, config, device state, HTTP API)
+│  └─ fixtures/frames/   golden binary frames shared with the TS decoder test
+├─ tools/                hardware smoke + e2e + bench + quality guards
+│  └─ quality/           architecture_guard.py + baseline.json (fitness functions)
 ├─ screenshots/          README screenshots
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
 ├─ pyproject.toml / requirements.txt / LICENSE / .gitignore
@@ -126,11 +137,21 @@ harogic-websa/
 | `./test.sh` | Backend pytest + Ruff + frontend Vitest; any failed stage returns non-zero |
 | `make run/stop/clean/build/test` | Same via Makefile |
 | `make dev` | Stop, clean (deps kept), rebuild the frontend, start with `WEBSA_TRACE=1` |
+| `make ci` | Everything CI runs locally: test.sh + version check + frame fixtures + architecture guard + build |
+| `make hw-test` | **Bench only** — tinySA CW through the SWP/RTA smoke test, then the Playwright UI state regression |
+| `make bench` / `bench-record` | Compare against / re-record `tools/bench_baseline.json` |
+| `python3 tools/sync_version.py --check` | Version drift check (pyproject → package.json + index.html) |
+| `python3 tools/check_dom_ids.py` | DOM id contract: every id read from the TS sources exists in index.html |
+| `python3 tools/check_docs_parity.py` | The en/ and zh-CN/ documents keep the same section structure |
+| `GET /api/schema` | Machine-readable command/parameter schema (generated from the command table) |
+| `python3 tools/command_sweep.py` | **Bench only** — executes every command in the table plus the guard rejections |
+| `python3 tools/quality/architecture_guard.py` | Architecture fitness functions (cycles, god functions, mode branching, DLL access, limit literals) |
 
 ## Tests
 
-- **Backend (63)**: protocol, configuration/security defaults, command validation, SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, HTTP/WS authentication and path protection, bounded client streaming, acquisition watchdog, supervisor and TinySA safety rules — **normal tests require no hardware**
-- **Frontend (79)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization and real-time percentile estimation — **no hardware required**
+- **Backend (147)**: protocol + golden frame fixtures, configuration/security defaults, command validation (including capability-driven limits), SWP/RTA state isolation, Auto Ref, RTA reference-clock and repeated-failure recovery, JSON sanitization, fatal-exit contract, HTTP/WS authentication and path protection, bounded client streaming, acquisition policy (session-owned watchdog/pacing), supervisor and TinySA safety rules
+- **Frontend (141)**: synthetic-trace DSP, frequency unit commit, Span Step, SWP/RTA marker tracking, S-G smoothing, peak/valley detection, resampling, normalization, parameter slots, i18n key parity, the binary frame decoder against the Python-generated fixtures, and the STATUS → parameter-slot mapping
+- **Hardware-free by default**: without `/opt/htraapi/lib/x86_64/libhtraapi.so` the seven vendor-dependent backend modules are skipped (`tests/conftest.py`), so CI and a plain checkout can run everything else. `make hw-test` and `tools/hardware_smoke.py` need the analyzer (and the tinySA for the CW source).
 
 ## Open-Source Notes
 

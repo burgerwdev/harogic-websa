@@ -20,6 +20,8 @@ DEFAULT_RBW_HZ = 100e3
 DEFAULT_VBW_HZ = 100e3
 DEFAULT_RTA_CENTER_HZ = 1e9
 DEFAULT_RTA_SPAN_HZ = 50.78125e6
+#: Display width of the RTA FFT at full span (the device's frame width; ~15 kHz/point).
+DEFAULT_RTA_POINTS = 3328
 DEFAULT_RTA_REF_DBM = 0.0
 DEFAULT_RTA_RBW_MODE = 'auto'
 DEFAULT_RTA_VBW_MODE = 'equal'
@@ -58,6 +60,30 @@ VBW_MODE = {
 }
 WINDOW_MAP = {0: 'FlatTop', 1: 'BlackmanNuttall', 2: 'Blackman', 3: 'Hamming', 4: 'Hanning'}
 
+# ---- Protocol / UI bounds (not model dependent, so they live here once instead of as
+# literals inside the command validation chain) ----
+REF_RANGE_DB_MIN, REF_RANGE_DB_MAX = 10.0, 200.0     # visible window height, dB
+#: Fallback Ref range when no device is attached (the per-model row in DeviceCapabilities owns it).
+FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM = -50.0, 30.0
+# The level the CLIENT displays (SDR owns its display scale, so it may sit outside the device's
+# Ref range; the placement rules clamp the target to the device bounds themselves).
+DISPLAY_REF_MIN_DBM, DISPLAY_REF_MAX_DBM = -160.0, 40.0
+PNM_CARRIER_MIN_HZ, PNM_CARRIER_MAX_HZ = 1.0, 9e6    # offset sweep for phase noise
+PNM_OFFSET_MAX_HZ = 10e6
+HARM_COUNT_MAX = 10
+HARM_SPAN_MAX_HZ = 100e6
+SDR_IFBW_MIN_HZ, SDR_IFBW_MAX_HZ = 100.0, 500000.0
+SDR_VOLUME_MIN, SDR_VOLUME_MAX = 0.0, 2.0
+SDR_PITCH_MIN_HZ, SDR_PITCH_MAX_HZ = 200.0, 2000.0
+SDR_DEEMPH_MIN_US, SDR_DEEMPH_MAX_US = -1.0, 1000.0
+SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS = -150.0, 0.0
+TRIGGER_LEVEL_MIN_DBM, TRIGGER_LEVEL_MAX_DBM = -150.0, 30.0
+TRIGGER_TIME_MAX_S = 10.0
+TRIGGER_ACQ_MIN_S, TRIGGER_ACQ_MAX_S = 0.0005, 60.0
+TRIGGER_RETRIGGER_MAX = 65535
+TRIGGER_RETRIGGER_PERIOD_MAX_S = 3600.0
+REFCLK_CAL_COUNT_MIN, REFCLK_CAL_COUNT_MAX = 3, 120
+
 
 @dataclass
 class DeviceCapabilities:
@@ -67,6 +93,19 @@ class DeviceCapabilities:
     freq_max_hz: float
     name: str
     pnm_supported: bool = True
+    #: Hardware limits used by command validation. One row per model in `from_model`:
+    #: a new SAN model must not require editing the validation chain (report finding E-2).
+    rbw_max_hz: float = 10e6
+    vbw_max_hz: float = 10e6
+    points_max: int = 4000
+    atten_max: int = 33
+    ifgain_max: int = 3
+    decimate_max: int = 2048
+    rta_span_max_hz: float = DEFAULT_RTA_SPAN_HZ
+    ref_min_dbm: float = FALLBACK_REF_MIN_DBM
+    ref_max_dbm: float = FALLBACK_REF_MAX_DBM
+    trigger_level_min_dbm: float = TRIGGER_LEVEL_MIN_DBM
+    trigger_level_max_dbm: float = TRIGGER_LEVEL_MAX_DBM
 
     @classmethod
     def from_model(cls, model: int, pnm_supported: bool = True) -> DeviceCapabilities:
@@ -80,6 +119,27 @@ class DeviceCapabilities:
         name, lo, hi = table.get(model, ('SAN-' + str(model), 9e3, 9e9))
         return cls(model=model, freq_min_hz=lo, freq_max_hz=hi,
                    name=name, pnm_supported=pnm_supported)
+
+
+def ref_bounds(caps) -> tuple[float, float]:
+    """The Ref range this device accepts, from the capability row that owns it.
+
+    Every place that limits a reference level reads it from here - the command validator (through
+    the ParamSpec bounds), the profile written to the SDK and the auto-reference loop's target
+    clamp - so a model with a different range needs one edit in `from_model`, not four literals
+    (found while auditing hard-coded device values).
+    """
+    if caps is None:
+        return FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM
+    lo = float(getattr(caps, 'ref_min_dbm', FALLBACK_REF_MIN_DBM))
+    hi = float(getattr(caps, 'ref_max_dbm', FALLBACK_REF_MAX_DBM))
+    return (lo, hi) if lo < hi else (FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM)
+
+
+def clamp_ref_dbm(caps, value: float) -> float:
+    """Clamp a reference level to the range this device accepts (see `ref_bounds`)."""
+    lo, hi = ref_bounds(caps)
+    return min(hi, max(lo, float(value)))
 
 
 @dataclass
@@ -151,7 +211,7 @@ def fit_start_stop(
 
 
 def fit_span(center: float, span: float, cap: DeviceCapabilities) -> float:
-    """Shrink span around a fixed center (legacy helper used by measurements)."""
+    """Shrink a span around a fixed centre (used by the harmonic session)."""
     symmetric_limit = 2 * min(
         float(center) - cap.freq_min_hz,
         cap.freq_max_hz - float(center),

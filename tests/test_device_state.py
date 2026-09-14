@@ -3,16 +3,30 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from web_sa.config import DeviceCapabilities
+from web_sa.config import (
+    DEFAULT_RTA_POINTS,
+    DEFAULT_RTA_SPAN_HZ,
+    FALLBACK_REF_MAX_DBM,
+    FALLBACK_REF_MIN_DBM,
+    DeviceCapabilities,
+)
 from web_sa.hardware.device import DeviceState, HarogicDevice
 from web_sa.web.http_api import build_status
 
 
 class StubDevice:
-    """build_status 所需的极简 stub: .state + .preset_defaults"""
+    """Minimal stub for build_status: .state + .preset_defaults + the device interface."""
     def __init__(self, state: DeviceState):
         self.state = state
         self.preset_defaults = {'center': 1e9, 'span': 100e6}
+        self.session = None
+
+    def auto_reference_view(self) -> dict:
+        return {'last_peak': None, 'last_noise_floor': None, 'target': None,
+                'result': 'idle', 'seq': 0, 'pending': None, 'adjusting': False}
+
+    def session_health(self) -> dict:
+        return {}
 
 
 def make_state(**kw) -> DeviceState:
@@ -46,11 +60,15 @@ def test_build_status_defaults():
     dev = StubDevice(make_state())   # 全默认
     st = build_status(dev)
     assert st['connected'] is False
-    assert st['caps'] == {'model': 0, 'name': '', 'fmin': 0, 'fmax': 0}
+    # The capability report carries the numeric limits the client needs (it used to hard-code the
+    # Ref range on its side and in the backend's profile clamp).
+    assert st['caps'] == {'model': 0, 'name': '', 'fmin': 0, 'fmax': 0,
+                          'ref_min': FALLBACK_REF_MIN_DBM, 'ref_max': FALLBACK_REF_MAX_DBM,
+                          'rta_span_max': 0, 'rta_points': DEFAULT_RTA_POINTS}
     assert st['ref_clock'] == 'internal'
     assert st['has_docxo'] is False
     assert st['ref_mode'] == 'manual'
-    assert st['rta_defaults']['span'] == 50.78125e6
+    assert st['rta_defaults']['span'] == DEFAULT_RTA_SPAN_HZ
 
 
 def test_build_status_keeps_swp_and_rta_settings_independent():
@@ -63,12 +81,12 @@ def test_build_status_keeps_swp_and_rta_settings_independent():
         vbw_mode='manual',
         vbw_hz=50e3,
         rta_center_hz=1e9,
-        rta_span_hz=50.78125e6,
+        rta_span_hz=DEFAULT_RTA_SPAN_HZ,
         rta_rbw_mode='auto',
         rta_vbw_mode='equal',
         rta_actual={
             'center': 1e9,
-            'span': 50.78125e6,
+            'span': DEFAULT_RTA_SPAN_HZ,
             'ref': 0.0,
             'rbw': 30153.0,
             'vbw': 30153.0,
@@ -76,13 +94,13 @@ def test_build_status_keeps_swp_and_rta_settings_independent():
         },
     )
     status = build_status(StubDevice(state))
-    assert status['span'] == 50.78125e6
+    assert status['span'] == DEFAULT_RTA_SPAN_HZ
     assert status['rbw_mode'] == 'auto'
     assert status['vbw_mode'] == 'equal'
     assert status['rbw'] == 30153.0
     assert status['req']['swp']['rbw'] == 200e3
     assert status['req']['swp']['vbw'] == 50e3
-    assert status['req']['rta']['span'] == 50.78125e6
+    assert status['req']['rta']['span'] == DEFAULT_RTA_SPAN_HZ
 
 
 def test_device_state_serializable():
@@ -99,43 +117,39 @@ def test_device_state_serializable():
     assert s.harm_results[0]['amp'] == -20.5
 
 
-def test_auto_reference_uses_stable_peak_and_mode_private_target():
+def test_auto_scale_places_the_reference_once():
+    """Auto Scale is an action, not a mode: one decision, and no target for the other mode."""
     dev = HarogicDevice()
     dev.state.mode = 'std'
-    dev.state.ref_mode = 'auto'
     dev.state.ref_level = 0.0
-    dev.state.atten = -1
     dev.observe_reference_peak('std', -27.0)
-    dev._auto_ref['std']['candidate_since'] -= 2.0
-    dev.observe_reference_peak('std', -27.0)
+    assert dev.auto_ref.pending is None          # observing never moves the level by itself
     # No noise-floor estimate -> keep the peak 10 dB below the top, quantised to 5 dB.
-    assert dev._pending_auto_ref == ('std', -15.0)
+    assert dev.auto_scale('std') == ('applied', -15.0)
+    assert dev.auto_ref.pending == ('std', -15.0)
     assert dev.state.rta_ref_level == 0.0
 
 
-def test_auto_reference_is_suspended_by_manual_attenuation():
+def test_auto_scale_is_a_no_op_when_the_placement_is_good():
     dev = HarogicDevice()
-    dev.state.ref_mode = 'auto'
-    dev.state.atten = 10
-    for _ in range(20):
-        dev.observe_reference_peak('std', -27.0)
-    assert dev._pending_auto_ref is None
+    dev.state.ref_level = -50.0
+    dev.state.ref_range_db = 100.0
+    dev.observe_reference_peak('std', -125.0, -145.0)
+    assert dev.auto_scale('std') == ('ok', None)
+    assert dev.auto_ref.pending is None
 
 
-def test_auto_reference_raise_is_stable_and_pending_survives_other_mode():
+def test_auto_scale_target_survives_another_mode():
     dev = HarogicDevice()
     dev.state.mode = 'std'
-    dev.state.ref_mode = 'auto'
     dev.state.ref_level = -20
     dev.observe_reference_peak('std', 0)
-    assert dev._pending_auto_ref is None
-    dev._auto_ref['std']['candidate_since'] -= 0.2
-    dev.observe_reference_peak('std', 0)
-    assert dev._pending_auto_ref == ('std', 10.0)
+    assert dev.auto_scale('std') == ('applied', 10.0)
+    assert dev.auto_ref.pending == ('std', 10.0)
 
     dev.state.mode = 'rta'
     assert not dev.apply_pending_auto_reference()
-    assert dev._pending_auto_ref == ('std', 10.0)
+    assert dev.auto_ref.pending == ('std', 10.0)
 
 
 def test_auto_reference_anchors_on_the_noise_floor_not_the_peak():
@@ -146,23 +160,15 @@ def test_auto_reference_anchors_on_the_noise_floor_not_the_peak():
     ended up mid-screen for weak signals. Window = ref_range_db (10 div x 10 dB = 100 dB).
     """
     dev = HarogicDevice()
-    dev.state.ref_mode = 'auto'
     dev.state.ref_level = -20.0
     dev.state.ref_range_db = 100.0
-    dev.state.atten = -1
-    dev._auto_ref['std']['last_change'] = -10.0
-    for _ in range(3):
-        dev.observe_reference_peak('std', -80.0, -95.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
+    dev.observe_reference_peak('std', -80.0, -95.0)
     # -95 + 100 - 8 = -3 -> 0 after quantisation (the peak would have said -70).
-    assert dev._pending_auto_ref == ('std', 0.0)
+    assert dev.auto_scale('std') == ('applied', 0.0)
     # A tall window with a high noise floor pushes Ref up instead.
-    dev._pending_auto_ref = None
-    dev._auto_ref['std']['last_change'] = -10.0
-    for _ in range(3):
-        dev.observe_reference_peak('std', -50.0, -70.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', 25.0)
+    dev.auto_ref.pending = None
+    dev.observe_reference_peak('std', -50.0, -70.0)
+    assert dev.auto_scale('std') == ('applied', 25.0)
 
 
 def test_auto_reference_learns_the_if_overflow_floor():
@@ -173,40 +179,27 @@ def test_auto_reference_learns_the_if_overflow_floor():
     """
     dev = HarogicDevice()
     dev.state.mode = 'std'
-    dev.state.ref_mode = 'auto'
     dev.state.ref_level = -50.0
-    dev.state.atten = -1
     dev.state.status_warning = -12
-    dev._auto_ref['std']['last_change'] = -10.0
     assert dev.nudge_reference_out_of_overflow()
-    assert dev._pending_auto_ref == ('std', -45.0)
-    assert dev._auto_ref['std']['floor'] == -45.0
-    # The peak rule can no longer drive Ref below the learned floor.
-    dev._pending_auto_ref = None
+    assert dev.auto_ref.pending == ('std', -45.0)
+    assert dev.auto_ref.tracker('std')['floor'] == -45.0
+    # Neither the overflow escape nor a later Auto Scale may drive Ref below the learned floor.
+    dev.auto_ref.pending = None
     dev.state.status_warning = 0
-    dev._auto_ref['std']['last_change'] = -10.0      # past the 1 s apply throttle
-    # Ref too high for this noise floor (noise 15 dB below the bottom edge), so the rule acts
-    # - and its bottom-anchored target lands under the learned floor, which must win.
     dev.state.ref_level = -30.0
-    for _ in range(3):
-        dev.observe_reference_peak('std', -125.0, -145.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', -45.0)
+    dev.observe_reference_peak('std', -125.0, -145.0)
+    assert dev.auto_scale('std') == ('applied', -45.0)
 
 
 def test_auto_reference_keeps_a_shorter_window_within_range():
     """A 5 dB/div window (50 dB tall) must not push Ref off the top of its range."""
     dev = HarogicDevice()
-    dev.state.ref_mode = 'auto'
     dev.state.ref_level = -20.0
     dev.state.ref_range_db = 50.0
-    dev.state.atten = -1
-    dev._auto_ref['std']['last_change'] = -10.0
-    for _ in range(2):
-        dev.observe_reference_peak('std', -50.0, -70.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
+    dev.observe_reference_peak('std', -50.0, -70.0)
     # -70 + 50 - 8 = -28 -> -25 after quantisation, versus 25 for the 100 dB window.
-    assert dev._pending_auto_ref == ('std', -25.0)
+    assert dev.auto_scale('std') == ('applied', -25.0)
 
 
 def test_rta_defaults_can_be_reset_without_touching_swp():
@@ -218,7 +211,7 @@ def test_rta_defaults_can_be_reset_without_touching_swp():
     dev.state.rta_vbw_mode = 'manual'
     dev.reset_rta_state()
     assert dev.state.rta_center_hz == 1e9
-    assert dev.state.rta_span_hz == 50.78125e6
+    assert dev.state.rta_span_hz == DEFAULT_RTA_SPAN_HZ
     assert dev.state.rta_rbw_mode == 'auto'
     assert dev.state.rta_vbw_mode == 'equal'
     assert dev.state.rta_sweep_time_mode == 2
@@ -260,22 +253,54 @@ def test_auto_reference_holds_when_the_placement_is_already_good():
     noise floor by a dB or two) cannot trigger a reconfigure.
     """
     dev = HarogicDevice()
-    dev.state.ref_mode = 'auto'
-    dev.state.atten = -1
     dev.state.ref_range_db = 100.0
     dev.state.ref_level = -50.0
-    dev._auto_ref['std']['last_change'] = -10.0
     for _ in range(3):
         # noise -145 sits 5 dB above the bottom edge (-150); peak keeps 75 dB of headroom.
         dev.observe_reference_peak('std', -125.0, -145.0)
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref is None
+    assert dev.auto_ref.pending is None
+    assert dev.auto_scale('std') == ('ok', None)
 
-    # A change that puts the noise floor outside its band does re-adjust (here Ref is too
-    # high for the narrower 40 dB window: the floor sits exactly on the bottom edge).
+    # A placement that has left its band is fitted on request: here Ref is far too high for
+    # the 40 dB window, so the floor sits on the bottom edge with no room above it.
     dev.state.ref_level = -20.0
     dev.state.ref_range_db = 40.0
-    for _ in range(3):
-        dev.observe_reference_peak('std', -40.0, -60.0)   # -> target -25
-        dev._auto_ref['std']['candidate_since'] -= 2.0
-    assert dev._pending_auto_ref == ('std', -25.0)
+    dev.observe_reference_peak('std', -40.0, -60.0)      # -> target -25
+    assert dev.auto_scale('std') == ('applied', -25.0)
+    assert dev.auto_ref.pending == ('std', -25.0)
+
+
+def test_raising_ref_is_respected_and_only_fitted_on_request():
+    """Measured regression (first report) plus the second report's rule.
+
+    Ref 0 dBm with an 80 dB window leaves everything at -108 dBm below the window: the old loop
+    refused to move (its guard wanted a peak 15 dB above the noise floor), and the first fix made
+    the ranger correct it on its own - which then fought the user pressing the up arrow. The
+    ranger now respects that direction and Auto Scale is what fixes it.
+    """
+    dev = HarogicDevice()
+    dev.state.ref_level = 0.0
+    dev.state.ref_range_db = 80.0
+    dev.observe_reference_peak('std', -98.0, -108.0)
+    assert dev.auto_ref.pending is None                      # not behind the user's back
+    assert dev.auto_scale('std') == ('applied', -35.0)       # floor + window - 8 = -36 -> -35
+
+
+def test_a_grossly_clipped_trace_is_raised_automatically():
+    """Raising is the protective direction: a peak far above the top edge is information loss."""
+    dev = HarogicDevice()
+    dev.state.ref_level = -40.0
+    dev.state.ref_range_db = 100.0
+    dev.observe_reference_peak('std', 0.0, -95.0)
+    assert dev.auto_ref.pending == ('std', 10.0)
+    assert dev.auto_ref.view('std')['result'] == 'clipped'
+
+
+def test_manual_attenuation_does_not_disable_the_overflow_escape():
+    """Selecting a manual attenuator used to switch overload protection off silently."""
+    dev = HarogicDevice()
+    dev.state.atten = 10
+    dev.state.ref_level = -40.0
+    dev.state.status_warning = -12
+    assert dev.nudge_reference_out_of_overflow()
+    assert dev.auto_ref.pending == ('std', -35.0)

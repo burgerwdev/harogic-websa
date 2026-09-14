@@ -153,7 +153,23 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 
 ### Auto
 
-1. `SET_REF {mode:auto}` 启用当前模式独立的 Auto Ref。
+进入 SDR 会恢复用户自己的 SDR 设置（调谐、捕获带宽、解调模式、IF 带宽、去加重、音量、静噪、AGC）：
+它们被持久化并在进入时重新应用，因为切换模式不是复位。扫频中心交接属于显式手势（Shift+点击 / 峰值
+「听这里」，它**同时**设置捕获中心与解调频率），以及首次使用（尚无任何已存设置，此时还会按频段推导
+解调/IF 带宽）。
+
+1. `AUTO_SCALE`（或旧写法 `SET_REF {mode:auto}`）按最新迹线**执行一次**放置；不存在「持续跟踪」模式，`ref_mode` 恒为 `manual`。
+2. 放置已经合理时（噪声底在底沿上方 4-12 dB 且峰值余量 >= 8 dB）不应用任何变更：在已稳定的画面上点 Auto 不应重配器件。
+3. 否则目标为：噪声底落在显示窗口底部稍上、峰值留 >= 10 dB 余量（噪底高时约 30 dB）、5 dB 量化、不低于学到的 IF 饱和下界与 -50 dBm；范围 -50..+30 dBm。
+4. 峰值比估计噪底高不足 15 dB 时报 `no_signal`（保持当前 Ref）——但仅在迹线仍在窗口内时；已离开窗口的迹线一定会被拟合。
+5. **安全量程始终运行**，与 Atten 设置、是否按过 Auto 无关，但只做**保护方向**：IF 溢出（-12）每秒抬 5 dB；峰值高出上沿 10 dB 以上的严重削顶时抬一次，限速 2 秒。**绝不自动降低**——把噪声底推到下沿之外只是显示选择（`below_window`），量程不动它（要重新拟合请点 Auto）。
+6. 拟合调低过 Ref 后，改变 Center 或跨模式返回会先抬回 0 dBm 再调谐。
+7. 任何 SWP/RTA 重配置都会清除旧观测并暂停 0.75 秒。
+8. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` 用于诊断；`adjusting` 同时驱动按钮的
+   忙碌指示，`result` 给出结果名（`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`），`seq` 每次
+   决策自增，使 UI 能把"新答复"与"上次决策的残留"区分开。
+9. SDR 走同一套拟合：命令带上 `current_ref`（屏上电平，因为显示刻度由客户端负责），客户端把上报的 target
+   应用到该刻度；只有 IQS 电平差超过 3 dB 时才写器件。
 2. 只有峰值高于估计噪底至少 15 dB 时才识别为信号；无信号时保持当前 Ref。
 3. Auto 下改变 Center 或跨模式返回时，若 Ref<0 会先临时回到 0 dBm，再以安全 Ref 调谐新频段。
 4. 识别信号后以峰值上方约 5 dB 为目标，并量化到 5 dB 步进；目标低于 -50 dBm 时保持当前 Ref，噪底较高时保留约 30 dB 余量。
@@ -177,8 +193,9 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 
 SAN-90 + TinySA Ultra+ ZS407，1 GHz / -25 dBm：
 
-- SWP Auto Ref：峰值约 -26.8 dBm，Ref 从 0 dBm 收敛到 -20 dBm。
-- RTA Auto Ref：峰值约 -29.67 dBm，Ref 从 0 dBm 收敛到 -20 dBm。
+- SWP Auto Scale：载波 -18.5 dBm、Ref 故意高 6 dB 时，一步落到拟合电平，耗时 0.11-0.12 秒（三次实测）；
+  第二次点击报 `ok` 且 `config_version` 不变。
+- RTA Auto Scale：同一套规则经 RTA profile 生效（`session._configure`）。
 - SWP -> RTA：一次配置，默认返回 50.78125 MHz / Auto RBW / Equal VBW / x4。
 - RTA -> SWP：一次配置，SWP Center/Span/RBW/VBW 完整恢复。
 - Center/Span、Start/Stop、RTA Center/Span 每次提交均只增加一个 config version。
@@ -198,7 +215,7 @@ SAN-90 + TinySA Ultra+ ZS407，1 GHz / -25 dBm：
 | SWP | hit | 定格；角标 `TRIG hh:mm:ss` + 命中频率/电平 | `Capture again` |
 
 - 两者都可用 `Free Run` 或 `Esc` 解除；命中后不自动解除，便于查看捕获结果。
-- 进入 RTA 会话时触发源重置为 `bus`（避免上次启用触发导致"进来没图"）；**Auto Ref 会解除已启用的触发**（已知问题，见 KNOWN_ISSUES 20）。
+- 进入 RTA 会话时触发源重置为 `bus`（避免上次启用触发导致"进来没图"）；Auto Scale 不再影响触发（见 KNOWN_ISSUES 20）。
 - 角标仅在触发就绪/命中时显示；自由运行时画布不显示任何触发文字。
 
 ## 14. 平均档位按模式独立

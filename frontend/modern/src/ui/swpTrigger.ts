@@ -5,6 +5,7 @@
 // here: while armed the display keeps sweeping live, and the first sweep whose trace
 // crosses the threshold (relative to the previous sweep) is frozen and marked TRIGGERED.
 import * as S from '../core/store';
+import { trigEdge, trigLevel } from './triggerState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { levelCrossing } from '../dsp/levelCross';
 
@@ -42,7 +43,7 @@ export function evaluateSwpTrigger(): void {
   const n = Math.min(d.length, f.length);
   const prev = S.swpPrev;
   if (prev && prev.length === n) {
-    const idx = levelCrossing(prev, d, S.trigLevel, S.swpEdge, n);
+    const idx = levelCrossing(prev, d, trigLevel.get(), trigEdge.get(), n);
     if (idx >= 0) {
       S.setSwpArmed(false);
       S.setSwpHold(true);                 // freeze the swept display

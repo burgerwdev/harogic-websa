@@ -116,3 +116,185 @@ def test_detector_choice_is_validated():
     with pytest.raises(CommandError):
         bad = {'cmd': 'SET_DETECTOR', 'mode': 'nope'}
         _validate_command(dev, bad['cmd'], bad)
+
+
+def test_model_limits_come_from_capabilities():
+    """A new SAN model must be a DeviceCapabilities row, not an edit to the validation chain.
+
+    Tightening the capability fields below must immediately change what the command layer
+    accepts; if a hard-coded bound is ever reintroduced, one of these asserts fails
+    (report finding E-2, guard rail in tools/quality/architecture_guard.py).
+    """
+    caps = DeviceCapabilities.from_model(67)
+    caps.rbw_max_hz = 1e6
+    caps.vbw_max_hz = 1e6
+    caps.points_max = 1001
+    caps.atten_max = 20
+    caps.ifgain_max = 1
+    caps.decimate_max = 64
+    caps.rta_span_max_hz = 10e6
+    caps.ref_max_dbm = 0.0
+    dev = StubDevice()
+    dev.state.caps = caps
+
+    ok = {'cmd': 'SET_RBW', 'mode': 'manual', 'rbw': 1e6}
+    _validate_command(dev, ok['cmd'], ok)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_RBW', 'mode': 'manual', 'rbw': 2e6}
+        _validate_command(dev, bad['cmd'], bad)
+
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_POINTS', 'points': 1002}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_AMP', 'atten': 21}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_AMP', 'ifgain': 2}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_SDR', 'decimate': 65}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_RTA', 'span': 11e6}
+        _validate_command(dev, bad['cmd'], bad)
+    with pytest.raises(CommandError):
+        bad = {'cmd': 'SET_REF', 'mode': 'manual', 'ref': 1.0}
+        _validate_command(dev, bad['cmd'], bad)
+
+
+class ScaleDevice(StubDevice):
+    """Device state plus the real reference controller, for the Auto Scale command."""
+
+    def __init__(self):
+        super().__init__()
+        import threading
+
+        from web_sa.hardware.auto_reference import AutoReferenceController
+
+        self.state.ref_level = -20.0
+        self.state.ref_range_db = 100.0
+        self._hw = threading.RLock()
+        self.session = None
+        self.configured = 0
+        self.auto_ref = AutoReferenceController(self)
+
+    def configure_swp(self):
+        self.configured += 1
+        return True, 'ok'
+
+    def auto_scale(self, mode, current=None):
+        return self.auto_ref.fit(mode, current)
+
+    def apply_pending_auto_reference(self):
+        return self.auto_ref.apply_pending()
+
+    def auto_reference_scope(self):
+        return getattr(self.session, 'auto_ref_scope', 'std')
+
+    def observe_reference_peak(self, mode, peak, floor=None):
+        self.auto_ref.observe_peak(mode, peak, floor)
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_places_the_reference_once():
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)   # floor 25 dB above the bottom: too high
+    assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    assert dev.auto_ref.pending == ('std', 0.0)
+
+    # Applied, then a second press on a well-placed trace must not re-enter the device. The
+    # command still reports (a STATUS push carries `result: ok` to the UI), but nothing moves.
+    assert dev.apply_pending_auto_reference()
+    assert dev.state.ref_level == 0.0
+    assert dev.configured == 1
+    dev.observe_reference_peak('std', -25.0, -95.0)
+    await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    assert dev.auto_ref.pending is None
+    assert dev.auto_ref.view('std')['result'] == 'ok'
+    assert dev.configured == 1                    # no second reconfiguration
+
+
+@pytest.mark.asyncio
+async def test_legacy_set_ref_auto_runs_one_fit_and_latches_no_mode():
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)
+    assert await _dispatch(dev, 'SET_REF', {'cmd': 'SET_REF', 'mode': 'auto', 'range_db': 100.0})
+    assert dev.auto_ref.pending == ('std', 0.0)
+    assert dev.state.ref_mode == 'manual'      # there is no tracking mode to latch any more
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_is_rejected_while_a_measurement_owns_the_device():
+    dev = ScaleDevice()
+    dev.state.mode = 'pnm'
+    dev.session = SimpleNamespace(name='pnm')
+    with pytest.raises(CommandError, match='measurement is active'):
+        await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE'})
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_judges_the_level_the_client_shows():
+    """In SDR the display scale is client-side, so the fit must use the visible level.
+
+    Measured on the fake backend: the device level was well placed while the display was clipped,
+    so judging by the device level answered 'ok' and pressing Auto appeared to do nothing.
+    """
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)
+    dev.state.ref_level = 0.0
+    # The device level is fine, but the client shows -40 dBm (the trace is clipped at the top).
+    assert await _dispatch(dev, 'AUTO_SCALE',
+                           {'cmd': 'AUTO_SCALE', 'range_db': 100.0, 'current_ref': -40.0})
+    assert dev.auto_ref.view('std')['result'] == 'applied'
+    assert dev.auto_ref.view('std')['target'] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_accepts_a_display_ref_outside_the_device_ref_range():
+    """`current_ref` is a DISPLAY value: in SDR the client may show -60 dBm, which the device itself
+    would refuse. Validating it as a device Ref rejected a legitimate fit (the press looked dead)."""
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)
+    assert await _dispatch(dev, 'AUTO_SCALE',
+                           {'cmd': 'AUTO_SCALE', 'range_db': 100.0, 'current_ref': -60.0})
+    assert dev.auto_ref.view('std')['result'] == 'applied'
+    with pytest.raises(CommandError):        # the display scale has bounds of its own
+        await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'current_ref': -200.0})
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_works_in_sdr_through_the_same_command():
+    """The SDR fit goes through AUTO_SCALE like the other modes (one implementation).
+
+    The client applies the reported target to its display scale; the device level is only
+    written when it is off by more than the dead band.
+    """
+    dev = ScaleDevice()
+    dev.state.mode = 'sdr'
+
+    class SdrSession:
+        name = 'sdr'
+        auto_ref_scope = 'sdr'
+        reconfigures = 0
+
+        def reconfigure(self):
+            self.reconfigures += 1
+
+    dev.session = SdrSession()
+    assert not await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE'})   # no trace yet
+    assert dev.auto_ref.view('sdr')['result'] == 'no_data'
+
+    dev.observe_reference_peak('sdr', -30.0, -95.0)
+    assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    assert dev.auto_ref.pending == ('sdr', 0.0)
+    assert dev.state.ref_level == -20.0                    # not applied yet
+    assert dev.apply_pending_auto_reference()
+    assert dev.state.ref_level == 0.0
+    assert dev.session.reconfigures == 1
+
+    # A fitted level within the dead band of the device level must not touch IQS at all
+    # (that write interrupts the audio), while the target is still reported.
+    dev.auto_ref.pending = ('sdr', 2.0)
+    assert not dev.apply_pending_auto_reference()
+    assert dev.session.reconfigures == 1

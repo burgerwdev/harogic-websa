@@ -16,9 +16,11 @@ import time
 
 import numpy as np
 
+from ..config import DEFAULT_RTA_POINTS, DEFAULT_RTA_SPAN_HZ
 from ..hardware import sdk_bindings as _sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
+from .framer import encode_rta
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +49,12 @@ class RtaSession(MeasurementSession):
     """Real-time spectrum session: continuous RTA acquisition."""
 
     name = 'rta'
+    auto_ref_scope = 'rta'
 
-    FULL_SPAN_HZ = 50.78125e6
-    DISPLAY_POINTS = 3328        # upper bound: the device FFT width at full span (~15 kHz/point)
+    # Both come from the device/RTA constants in config.py: the RTA profile's own span limit and
+    # the FFT width it reports at that span (they were literals here and in http_api.py).
+    FULL_SPAN_HZ = DEFAULT_RTA_SPAN_HZ
+    DISPLAY_POINTS = DEFAULT_RTA_POINTS
     WATERFALL_WIDTH = 860      # waterfall row width after downsample
     STALL_TIMEOUT = 4.0       # no good RTA frame for this long -> recover (warnings do not)
 
@@ -93,8 +98,6 @@ class RtaSession(MeasurementSession):
             self._configure_locked(recovery=False)
 
     def _configure_locked(self, recovery=False):
-        import htra_api as T
-
         dev = self.dev
         s = dev.state
         _dbg('CONF enter ready=%s dec=%s rbw=%s sweep=%s center=%.3e' % (
@@ -108,72 +111,72 @@ class RtaSession(MeasurementSession):
         self._ready = False
         _dbg('CONF calling RTA_BusTriggerStop ...')
         try:
-            T.dll.RTA_BusTriggerStop(T.pointer(dev.dev))
+            _sb.dll.RTA_BusTriggerStop(_sb.pointer(dev.dev))
         except Exception as e:
             _dbg('CONF BusTriggerStop EXC %r' % (e,))
         _dbg('CONF BusTriggerStop done')
         prof = _sb.RTA_Profile_TypeDef()
         out = _sb.RTA_Profile_TypeDef()
-        info = T.RTA_FrameInfo_TypeDef()
+        info = _sb.RTA_FrameInfo_TypeDef()
         _dbg('CONF calling RTA_ProfileDeInit ...')
-        T.dll.RTA_ProfileDeInit(T.pointer(dev.dev), T.pointer(prof))
+        _sb.dll.RTA_ProfileDeInit(_sb.pointer(dev.dev), _sb.pointer(prof))
         _dbg('CONF RTA_ProfileDeInit done')
         prof.CenterFreq_Hz = s.rta_center_hz
         prof.RefLevel_dBm = s.rta_ref_level
         prof.DecimateFactor = self._decimate
         prof.Atten = int(s.atten)
         prof.Preamplifier = (
-            T.PreamplifierState_TypeDef.AutoOn
+            _sb.PreamplifierState_TypeDef.AutoOn
             if s.preamplifier == 0
-            else T.PreamplifierState_TypeDef.ForcedOff
+            else _sb.PreamplifierState_TypeDef.ForcedOff
         )
         prof.IFGainGrade = int(s.ifgain)
         prof.GainStrategy = (
-            T.GainStrategy_TypeDef.LowNoisePreferred
+            _sb.GainStrategy_TypeDef.LowNoisePreferred
             if s.gain_strategy == 0
-            else T.GainStrategy_TypeDef.HighLinearityPreferred
+            else _sb.GainStrategy_TypeDef.HighLinearityPreferred
         )
         ref_clock_map = {
-            'internal': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
-            'external': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External,
-            'premium': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal_Premium,
-            'external_forced': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External_Forced,
+            'internal': _sb.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
+            'external': _sb.ReferenceClockSource_TypeDef.ReferenceClockSource_External,
+            'premium': _sb.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal_Premium,
+            'external_forced': _sb.ReferenceClockSource_TypeDef.ReferenceClockSource_External_Forced,
         }
         prof.ReferenceClockSource = ref_clock_map.get(
-            s.ref_clock, T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
+            s.ref_clock, _sb.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
         prof.ExternalSystemClockFrequency = 10e6
         prof.EnableReferenceClockOut = 1 if s.refclk_out else 0
         if s.rta_rbw_mode == 'manual' and s.rta_rbw_hz > 0:
-            prof.RBWMode = T.RBWMode_TypeDef.RBW_Manual
+            prof.RBWMode = _sb.RBWMode_TypeDef.RBW_Manual
             prof.RBW_Hz = s.rta_rbw_hz
         else:
-            prof.RBWMode = T.RBWMode_TypeDef.RBW_Auto   # RBW follows span (span/2000)
-        _vbw_map = {'manual': T.VBWMode_TypeDef.VBW_Manual,
-                    'equal': T.VBWMode_TypeDef.VBW_EqualToRBW,
-                    'tenth': T.VBWMode_TypeDef.VBW_TenPercentRBW,
-                    'onethousandth': T.VBWMode_TypeDef.VBW_OnePercentRBW,
-                    'bypass': T.VBWMode_TypeDef.VBW_TenTimesRBW}
-        prof.VBWMode = _vbw_map.get(s.rta_vbw_mode, T.VBWMode_TypeDef.VBW_EqualToRBW)
+            prof.RBWMode = _sb.RBWMode_TypeDef.RBW_Auto   # RBW follows span (span/2000)
+        _vbw_map = {'manual': _sb.VBWMode_TypeDef.VBW_Manual,
+                    'equal': _sb.VBWMode_TypeDef.VBW_EqualToRBW,
+                    'tenth': _sb.VBWMode_TypeDef.VBW_TenPercentRBW,
+                    'onethousandth': _sb.VBWMode_TypeDef.VBW_OnePercentRBW,
+                    'bypass': _sb.VBWMode_TypeDef.VBW_TenTimesRBW}
+        prof.VBWMode = _vbw_map.get(s.rta_vbw_mode, _sb.VBWMode_TypeDef.VBW_EqualToRBW)
         if s.rta_vbw_mode == 'manual' and s.rta_vbw_hz > 0:
             prof.VBW_Hz = s.rta_vbw_hz
         # Acquisition trigger. Defaults (source='bus', acq=5 ms) reproduce the previous
         # behaviour: bus-triggered free-running frames at ~150 fps (probe-verified).
         prof.TriggerSource = _enum(
-            T.RTA_TriggerSource_TypeDef,
+            _sb.RTA_TriggerSource_TypeDef,
             _TRIGGER_SOURCE.get(s.trigger_source, 'Bus'),
-            T.RTA_TriggerSource_TypeDef.Bus)
+            _sb.RTA_TriggerSource_TypeDef.Bus)
         # Match the official SAStudio app: Adaptive streaming for the free-running
         # bus/free trigger (measured ~140-150 fps vs ~101 fps with FixedPoints), but keep
         # FixedPoints for real trigger sources (level/external/timer), where a bounded
         # acquisition window is required and TriggerAcqTime applies.
-        prof.TriggerMode = (T.TriggerMode_TypeDef.Adaptive
+        prof.TriggerMode = (_sb.TriggerMode_TypeDef.Adaptive
                             if s.trigger_source in ('bus', 'freerun')
-                            else T.TriggerMode_TypeDef.FixedPoints)
+                            else _sb.TriggerMode_TypeDef.FixedPoints)
         prof.TriggerAcqTime = float(s.trigger_acq_time_s)
         prof.TriggerEdge = _enum(
-            T.TriggerEdge_TypeDef,
+            _sb.TriggerEdge_TypeDef,
             _TRIGGER_EDGE.get(s.trigger_edge, 'RisingEdge'),
-            T.TriggerEdge_TypeDef.RisingEdge)
+            _sb.TriggerEdge_TypeDef.RisingEdge)
         prof.TriggerLevel_dBm = float(s.trigger_level_dbm)
         prof.TriggerLevel_SafeTime = float(s.trigger_safe_time_s)
         prof.TriggerDelay = float(s.trigger_delay_s)
@@ -182,17 +185,17 @@ class RtaSession(MeasurementSession):
         prof.ReTrigger_Count = int(s.trigger_retrigger_count)
         prof.ReTrigger_Period = float(s.trigger_retrigger_period_s)
         prof.TriggerOutMode = _enum(
-            T.TriggerOutMode_TypeDef,
+            _sb.TriggerOutMode_TypeDef,
             _TRIGGER_OUT.get(s.trigger_out, 'NNone'),
-            T.TriggerOutMode_TypeDef.NNone)
+            _sb.TriggerOutMode_TypeDef.NNone)
         prof.TriggerOutPulsePolarity = _enum(
-            T.TriggerOutPulsePolarity_TypeDef,
+            _sb.TriggerOutPulsePolarity_TypeDef,
             _TRIGGER_POLARITY.get(s.trigger_out_polarity, 'Positive'),
-            T.TriggerOutPulsePolarity_TypeDef.Positive)
-        prof.SweepTimeMode = T.SweepTimeMode_TypeDef(s.rta_sweep_time_mode)
+            _sb.TriggerOutPulsePolarity_TypeDef.Positive)
+        prof.SweepTimeMode = _sb.SweepTimeMode_TypeDef(s.rta_sweep_time_mode)
         prof.SweepTime = float(s.rta_sweep_time)
         _dbg('CONF calling RTA_Configuration dec=%s ...' % self._decimate)
-        st = T.dll.RTA_Configuration(T.pointer(dev.dev), T.pointer(prof), T.pointer(out), T.pointer(info))
+        st = _sb.dll.RTA_Configuration(_sb.pointer(dev.dev), _sb.pointer(prof), _sb.pointer(out), _sb.pointer(info))
         _dbg('CONF RTA_Configuration ret=%s' % st)
         if st != 0:
             dev.state.last_error = 'RTA_Configuration status=%d' % st
@@ -235,10 +238,10 @@ class RtaSession(MeasurementSession):
             or bitmap_points > max_buffer_points
         ):
             raise RuntimeError('invalid RTA buffer dimensions')
-        self._trace = (T.c_uint8 * n)()
-        self._bitmap = (T.c_uint16 * (bitmap_points + 65536))()
-        self._plot = T.RTA_PlotInfo_TypeDef()
-        self._trigger = T.RTA_TriggerInfo_TypeDef()
+        self._trace = (_sb.c_uint8 * n)()
+        self._bitmap = (_sb.c_uint16 * (bitmap_points + 65536))()
+        self._plot = _sb.RTA_PlotInfo_TypeDef()
+        self._trigger = _sb.RTA_TriggerInfo_TypeDef()
         # CRITICAL: MeasAuxInfo_TypeDef in the official htra_api.py wrapper is 48 bytes but
         # the DLL writes the FULL structure (72 bytes incl. IFAGCGain/RefClkFreqOffset/
         # nsSinceEpoch -- see sdk_bindings.Full_MeasAuxInfo). Using the 48-byte struct made
@@ -353,6 +356,21 @@ class RtaSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def request_stop(self) -> None:
+        """Stop the fetch loop before the session is torn down."""
+        self._ready = False
+
+    def is_ready(self) -> bool:
+        return bool(self._ready)
+
+    def acquisition_timeout(self) -> float:
+        """The RTA fetch blocks in the DLL, so a stuck call is detected quickly."""
+        return 5.0
+
+    def health(self) -> dict:
+        return {'error_streak': self._error_streak,
+                'recovery_attempts': self._recovery_attempts}
+
     def set_reference(self, mode='manual', ref=None):
         s = self.dev.state
         s.rta_ref_mode = mode
@@ -363,12 +381,10 @@ class RtaSession(MeasurementSession):
 
     def exit(self):
         """Exit RTA after stopping acquisition, then restore the SWP snapshot."""
-        import htra_api as T
-
         with self._lock:
             self._ready = False
             try:
-                T.dll.RTA_BusTriggerStop(T.pointer(self.dev.dev))
+                _sb.dll.RTA_BusTriggerStop(_sb.pointer(self.dev.dev))
             except Exception:
                 log.exception('RTA trigger stop failed during session exit')
         super().exit()
@@ -386,8 +402,6 @@ class RtaSession(MeasurementSession):
         if now - self._last_get < self.GET_MIN_INTERVAL:
             return [], []
         import ctypes as C
-
-        import htra_api as T
 
         dev = self.dev
         # With a level trigger armed the device sends nothing until the threshold is
@@ -413,7 +427,7 @@ class RtaSession(MeasurementSession):
                 self._last_good = now
                 return [], []
             try:
-                st = T.dll.RTA_BusTriggerStart(T.pointer(dev.dev))
+                st = _sb.dll.RTA_BusTriggerStart(_sb.pointer(dev.dev))
             except Exception as exc:
                 _dbg('STEP #%d trigger EXC %r' % (self._dbg_n, exc))
                 self._step_failed_locked('trigger exception', repr(exc))
@@ -430,10 +444,10 @@ class RtaSession(MeasurementSession):
                 self._step_failed_locked('trigger', st)
                 return [], []
             try:
-                status = T.dll.RTA_GetRealTimeSpectrum(
+                status = _sb.dll.RTA_GetRealTimeSpectrum(
                     dev.dev, self._trace, self._bitmap,
-                    T.pointer(self._plot), T.pointer(self._trigger),
-                    C.cast(C.byref(self._aux), T.POINTER(T.MeasAuxInfo_TypeDef)))
+                    _sb.pointer(self._plot), _sb.pointer(self._trigger),
+                    C.cast(C.byref(self._aux), _sb.POINTER(_sb.MeasAuxInfo_TypeDef)))
             except Exception as exc:
                 _dbg('STEP #%d Get EXC %r' % (self._dbg_n, exc))
                 self._step_failed_locked('get exception', repr(exc))
@@ -501,22 +515,7 @@ class RtaSession(MeasurementSession):
             dev.observe_reference_peak('rta', float(np.max(finite)), noise_floor)
         if width != self.WATERFALL_WIDTH:
             row = row[np.linspace(0, width - 1, self.WATERFALL_WIDTH).astype(np.int64)]
-        frame = _encode_rta(
+        frame = encode_rta(
             freq_version, display_freq, display_spectrum, row, max_density,
             start_hz, stop_hz)
         return [frame], []
-
-
-def _encode_rta(version, freq_hz, spec_dbm, wf_row, max_density, start_hz, stop_hz):
-    """RTA frame: hdr(magic+ver+pts+wfLen+maxD+startHz) + freq(f8×pts) + spec(f4×pts)
-    + wfRow(u2×wfLen) + stopHz(f8)."""
-    import struct
-    pts = len(spec_dbm)
-    max_density = max(0, min(65535, int(max_density)))
-    hdr = b'RTAF' + struct.pack(
-        '<IIHHd', version, pts, len(wf_row), max_density, float(start_hz))
-    payload = (freq_hz.astype(np.float64).tobytes() +
-               spec_dbm.astype(np.float32).tobytes() +
-               wf_row.astype(np.uint16).tobytes())
-    meta = struct.pack('<d', float(stop_hz))
-    return hdr + payload + meta

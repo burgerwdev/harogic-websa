@@ -17,14 +17,73 @@
 - Use `rta_health.error_streak/recovery_attempts` to diagnose a stalled RTA stream.
 - While a harmonic/PNM measurement is active, SWP-owned commands (frequency, Ref, RBW, VBW, sweep, points, spur, window, gain, reference clock) are rejected with an explicit error so the session cannot be disturbed; in RTA, FFT window/points/spur are also SWP-only.
 
+## SDR settings
+
+- **Your SDR setup is kept**: the tuning (capture centre + listen frequency), the capture
+  bandwidth (decimate), the demodulator, the IF bandwidth, de-emphasis, volume, squelch and AGC all
+  survive leaving the mode, a page reload and a service restart. A mode switch is not a reset; it
+  used to re-derive everything from the swept view, which discarded what you had left in SDR.
+- **The frequency is handed over explicitly**: Shift+click on the spectrum (or a peak/marker
+  "listen here") enters SDR *at that frequency*; the band presets (FM / AIR / VHF / UHF) set the
+  whole listening setup for a band. A plain return to SDR restores your own tuning instead.
+- **A first run picks sensible defaults**: with nothing stored yet, entering SDR follows the swept
+  centre and derives the demodulator/IF bandwidth from the band (WFM/180 kHz on FM broadcast, AM/25
+  kHz in the airband). Once you have chosen, your choice is what is restored.
+- **Preset** restores the factory defaults and clears the stored SDR preferences, so "defaults"
+  really means defaults.
+
+## SDR audio
+
+- **Audio on is the user's preference and it survives a trip to another mode**: leaving SDR stops the
+  audio pipeline, not the setting, so coming back with audio on applies it again (it used to be
+  written off on the way out, which turned "on" into "off" for good). The state is persisted, so it
+  also survives a page reload; **Preset** is the one action that restores the factory default (off).
+- Button label, pipeline state and ring-buffer diagnostics are all visible:
+  `#spectrum.dataset.sdrAudio` reads `enabled=... muted=... buffered_ms=... underruns=... rms=...`.
+
 ## Reference Level
 
 - Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.
-- Auto Ref only adjusts when the peak is at least 15 dB above the estimated noise floor and the "about 5 dB above peak" target is not below -50 dBm; a high noise floor also keeps about 30 dB of headroom. With no signal or a too-weak peak it holds current Ref instead of converging to -50 dBm.
-- When Auto is active, a Center change or an SWP/RTA return temporarily raises Ref to 0 dBm if it was below zero, avoiding retuning to an unknown strong signal with an unsafe low Ref.
-- Every SWP/RTA reconfiguration clears stale candidates and waits 0.75 seconds before Auto Ref observations resume.
-- Auto Ref remains selected but is suspended under manual Atten; it resumes when Atten returns to Auto.
+- **Auto is a one-shot action** (`AUTO_SCALE`), like `Auto Scale` on a bench analyser: it places the
+  reference once from the newest trace, and an already-good placement does nothing (no reconfiguration).
+  Measured on the SAN-90: 0.11-0.12 s from the click to the level landing, where the previous tracking
+  loop needed 1.86 s (it waited for a settled frame, then a 0.75 s settle window).
+- The fit reports what it did in `auto_ref.result`: `applied` (with `target`), `ok` (already placed
+  well), `no_signal` (peak less than 15 dB above the noise floor *and* the trace inside the window),
+  `no_data` (no trace since the last reconfiguration). The button glows while a change is queued or
+  settling, and the hint names the outcome.
+- A **safety ranger runs always**, whatever the Atten setting and whether or not Auto was ever pressed -
+  but only in the protective direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak
+  grossly clipped above the top edge (>= 10 dB over) is raised once, rate-limited. This is also what a
+  manual Atten used to disable: overload protection now cannot be switched off by accident.
+  **Raising Ref is never undone.** A level that pushes the noise floor below the bottom edge is a display
+  choice, not a fault (`below_window`), so the up arrow keeps what it did; press Auto when you want the
+  placement re-fitted. Only information loss (clipping) and device overload are corrected behind your
+  back.
+- **SDR uses the same fit** as SWP/RTA (`AUTO_SCALE`, one implementation): the backend computes the target
+  from the panadapter trace, the client applies it to its display scale, and the IQS level is only
+  rewritten when it is more than 3 dB off, so a display-only fit never interrupts the audio. Entering SDR
+  asks for one fit as soon as a frame arrives (this replaces the old persisted "auto" toggle).
+- The placement keeps the noise floor just above the bottom of the display window with at least 10 dB of
+  headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB and never below a
+  learned IF-saturation floor or -50 dBm.
+- When a fit has lowered Ref, a Center change or an SWP/RTA return raises it to 0 dBm first, avoiding
+  retuning to an unknown strong signal with an unsafe low Ref.
+- Every SWP/RTA reconfiguration clears stale observations and waits 0.75 s before they are trusted again.
 - Lower Ref and RBW generally reduce the displayed noise floor, but input overload must be avoided.
+- **The amplitude offset is a display-domain shift**: the trace is displaced by it, so every absolute
+  readout follows it too - the y-axis labels (`fmtAxisLevel`), the marker table, the marker readout on
+  the canvas, the peak list and the channel results (`fmtReadoutLevel`). Differences (dB/div, dBc,
+  deltas) are never converted, and device parameters (Ref, attenuation, trigger level) stay in dBm:
+  they describe the instrument, not the signal after your cable or amplifier.
+- **The Ref range is [Ref min, Ref max] = -50 .. +30 dBm** for the SAN-90: the frontend clamps the
+  step arrows, the command validator rejects anything outside it, and the profile is clamped before it
+  reaches the SDK (`device.py`). The **device then decides its own maximum**, which depends on the
+  attenuation/IF-gain setting it picks: asking for +30 dBm on this bench is accepted and comes back as
+  **+27 dBm** (`actual.ref`), because the profile echoes the value the hardware actually programmed.
+  The UI follows that reported value, and says so: the canvas status stack shows
+  **"Device limited Ref to 27 dBm"** when `req` and `actual` disagree (once per distinct pair, so it
+  does not re-post every second). Nothing in the Auto Scale path moved the level.
 
 ## Reference Clock
 

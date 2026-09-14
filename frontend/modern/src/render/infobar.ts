@@ -4,6 +4,7 @@ import { formatBWHz } from '../core/fmt';
 import { t } from '../core/i18n';
 import { rbwMode, vbwMode, currentRBW, currentVBW } from '../ui/swpState';
 import { getDisplayRef } from '../ui/displayRef';
+import { displayUnit } from '../ui/displayState';
 
 // SWT field throttling: the frame-header sweep_ms may vary slightly per frame (EMA convergence jitter),
 // and high-frequency refresh would make the top bar flicker → update at most every 500ms
@@ -36,7 +37,7 @@ export function updateInfoBar() {
   if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
   // Reference level is the active mode's effective hardware value.
   const ref = getDisplayRef();
-  set('info-ref', ref.toFixed(1) + (S.displayUnit === 'dB' ? ' dB' : ' dBm'));
+  set('info-ref', ref.toFixed(1) + (displayUnit.get() === 'dB' ? ' dB' : ' dBm'));
   set('info-scale', `${S.dbPerDiv} ${t('db_per_div')}`);
   set('info-rbw', formatBWHz(currentRBW.get()) + (rbwMode.get() === 'auto' ? ' (auto)' : ''));
   set('info-vbw', vbwMode.get() === 'bypass' ? 'Bypass' : formatBWHz(currentVBW.get()));

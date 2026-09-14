@@ -31,7 +31,8 @@ Example response:
   "center": 1000000000.0, "span": 600000000.0, "ref": 0.0,
   "rbw_mode": "auto", "rbw": 100000.0, "vbw_mode": "bypass", "vbw": 1000000.0,
   "points": 1000, "window": 1, "spur": "standard", "mode": "std", "pnm_supported": true,
-  "caps": { "model": 67, "name": "SAN-90", "fmin": 9000, "fmax": 9000000000 },
+  "caps": { "model": 67, "name": "SAN-90", "fmin": 9000, "fmax": 9000000000,
+            "ref_min": -50, "ref_max": 30, "rta_span_max": 50781250, "rta_points": 3328 },
   "preset_defaults": { "center": 1000000000, "span": 100000000, "rbw": 100000, "points": 1000, "ref": 0, "atten": -1 },
   "req": { "center": 1000000000, "span": 600000000, "points": 1000, "rbw_mode": "auto", "rbw": 100000, "vbw_mode": "bypass", "vbw": 1000000, "ref": 0, "spur": "standard" },
   "actual": { "center": 1000000000, "span": 600000000, "points": 985, "rbw": 100000, "vbw": 1000000 },
@@ -49,7 +50,7 @@ Field reference:
 | `connected` | bool | device connected |
 | `device` / `device_detail` | str / obj | device name + details (uid/model/hw/mfw/ffw/bus/api/warnings) |
 | `center` / `span` / `ref` | number | effective values for the active hardware mode |
-| `ref_mode` | str | active reference-level mode (manual/auto) |
+| `ref_mode` | str | always `manual`: Auto Scale is a one-shot action, not a tracking mode |
 | `rbw_mode` / `rbw` | str / number | RBW mode (manual/auto), resolution bandwidth |
 | `vbw_mode` / `vbw` | str / number | VBW mode (bypass/equal/tenth/manual), video bandwidth |
 | `points` | int | requested points (frontend resample target) |
@@ -57,13 +58,13 @@ Field reference:
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
 | `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
 | `mode` | str | measurement mode (std/harmonic/pnm/rta) |
-| `caps` | obj | model capabilities (model/name/fmin/fmax) |
+| `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm), `rta_span_max` (Hz), `rta_points` |
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
 | `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
-| `auto_ref` | obj | latest peak, candidate, and pending Auto Ref target |
+| `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling) |
 | `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
 | `amp` | obj | gain chain: atten/preamp/ifgain/gain_strategy + actual atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | reference clock source: internal/external/premium/external_forced |
@@ -117,7 +118,8 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_PRESET` | - | restore device default config (Preset) |
 | `CAL_REFCLK` | `count?` | GNSS 1PPS reference clock calibration (background; `calibrating=true` meanwhile) |
 | `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
-| `SET_REF` | `mode` (manual/auto), `ref?` | active-mode reference level; manual requires ref |
+| `SET_REF` | `mode` (manual/auto), `ref?`, `range_db?` | active-mode reference level; manual requires ref. `mode=auto` is the legacy spelling of one Auto Scale (see `AUTO_SCALE`) and does **not** latch a tracking mode |
+| `AUTO_SCALE` | `range_db?`, `current_ref?` | place the reference once, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. `current_ref` is the level the user is looking at - a DISPLAY value, so it is validated against the display bounds, not the device Ref range (in SDR the client owns the scale). Does nothing when the placement is already good (no reconfiguration). The result is reported in `auto_ref.result`/`target`/`seq` |
 | `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
 | `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
 | `SET_POINTS` | `points` (51~4000) | set sweep points |

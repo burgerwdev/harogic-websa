@@ -1,6 +1,9 @@
 // Amplitude measurement: multi-threshold n-dB auto-location
 import * as S from '../core/store';
-import { getX, getY, renderAll } from '../render/spectrum';
+import { getX, getY } from '../render/plot';
+import { requestRender } from '../render/redraw';
+import { registerMeasurementTab } from '../ui/measureRegistry';
+
 import { getDisplayPowers } from '../dsp/peaks';
 import { t } from '../core/i18n';
 import { fmtF } from '../core/fmt';
@@ -9,7 +12,7 @@ import { plotRect } from '../render/plot';
 
 export function measureAmp() {
   const dp = getDisplayPowers();
-  if (!dp || !S.freqArray || S.freqArray.length < 2) return;
+  if (!dp || !S.freqArray || S.freqArray!.length < 2) return;
   const inp = document.getElementById('input-ampdbs') as HTMLInputElement;
   const thrs = (inp?.value || '3,10,20')
     .split(',').map(s => parseFloat(s.trim()))
@@ -27,12 +30,12 @@ export function measureAmp() {
     const hasL = !(li === 0 && dp[0] > th);
     const hasR = !(ri === n - 1 && dp[n - 1] > th);
     if (!hasL && !hasR) continue;
-    const lf = hasL ? crossX(dp, li, th, -1) : fa[0];
-    const rf = hasR ? crossX(dp, ri, th, +1) : fa[n - 1];
+    const lf = hasL ? crossX(dp, li, th, -1) : fa![0];
+    const rf = hasR ? crossX(dp, ri, th, +1) : fa![n - 1];
     rows.push({ thr, lf, rf, bw: rf - lf, hasL, hasR });
   }
   S.setAmpRes({ rows, peak: pv, pi });
-  renderAll();
+  requestRender();
 }
 
 function crossX(powers: Float32Array, i: number, th: number, dir: number): number {
@@ -43,9 +46,9 @@ function crossX(powers: Float32Array, i: number, th: number, dir: number): numbe
   return fa[i] + t * (fa[i + dir] - fa[i]);
 }
 
-export function clearAmp() { S.setAmpRes(null); renderAll(); }
+export function clearAmp() { S.setAmpRes(null); requestRender(); }
 
-export function renderAmp(powers: Float32Array) {
+export function renderAmp(_powers: Float32Array) {
   const ar = S.ampRes;
   if (!ar || !ar.rows.length || !S.freqArray) return;
   const col = canvasColors();
@@ -99,3 +102,6 @@ function getXIdx(f: number): number {
   const t = (f - fa[i0]) / (fa[i1] - fa[i0]);
   return getX(i0 + t * (i1 - i0), n);
 }
+
+// Register this measurement tab with the registry (report finding E-5).
+registerMeasurementTab({ id: 'amp', domId: 'tab-amp', apply: measureAmp });

@@ -60,6 +60,49 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
   away and disappears after switching to RTA (fixed)
 
+## Reachability of registration points (import side effects)
+
+Some modules register themselves when imported (`render/spectrum.ts` registers the renderer,
+the measurement modules register their tabs, the i18n namespaces merge). **After breaking the
+cycles, "nothing imports it any more" is itself a failure**: the registration never runs and
+the feature dies silently (this happened: no renderer -> `requestRender()` was a no-op -> a
+blank canvas, with no exception and no console error).
+
+Therefore:
+
+- the entry point `main.ts` must pull those modules in with a **side-effect import**
+  (`import './render/spectrum';`);
+- `tools/check_registrations.py` computes import reachability from `main.ts`; a module that
+  registers but is unreachable fails `make ci`;
+- tests must assert the **user-visible result** (canvas pixels, DOM text), not an upstream
+  counter or dataset: `dataset.rtaFrames` only says a frame was handed to the renderer, not
+  that anything was drawn. The e2e now counts non-transparent canvas pixels after load and
+  after switching to RTA.
+
+## State ownership (parameters use slots, results use a store)
+
+Frontend state falls into two kinds, and putting one in the wrong place is a bug class this
+project hit repeatedly:
+
+- **Parameters** (user-set, backend-confirmed): use the slots in `core/params.ts`; each
+  parameter has exactly one owner. Only the STATUS handler calls `confirm()`, only a user
+  action calls `set()`, readers use `get()`. `desired`/`confirmed`/`epoch` plus a TTL mean a
+  just-set value is never reverted by an in-flight reply and a rejected command expires
+  instead of sticking. The groups live in `ui/{freqState,refState,swpState,sdrState,triggerState,waterfallState,displayState,graphMode,displayRef}.ts`.
+  A client-owned preference the backend never reports (display unit/offset, waterfall range,
+  audio switch, ...) must be declared `authoritative: true` or it reverts when the TTL ends.
+- **Results** (data produced by measurements/display): use `core/results.ts` - plain data with
+  an explicit setter and no desired/confirmed semantics.
+
+`core/model.ts` holds the types both sides share (a leaf module). `core/store.ts` keeps the
+runtime state (connection, trigger runtime, current mode, ...) and re-exports the two groups,
+so existing `S.x` / `S.setX()` call sites keep working.
+
+In a hot path (loops running tens of thousands of times per frame) do not call a slot `get()`
+inside the loop body: it performs a `Date.now()` plus pending checks, and the density
+accumulation calling it hundreds of thousands of times per frame saturated the main thread
+(1 Hz STATUS fell behind and the mode buttons toggled from a stale value).
+
 ## Frontend DSP Engine (marker peak/valley)
 Implemented after modern analyzer architecture (Keysight/R&S style), all in the TS frontend:
 - **S-G smoothing** `sgSmooth(src,w,adaptive)`: 2nd-order Savitzky-Golay + gradient-adaptive
@@ -75,13 +118,28 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 - **Marker Tracking**: per-row On/Off toggles; initial assignment uses ranked unoccupied peaks, while later
   updates follow a nearby `marker.freq`. The same strategy runs in SWP and RTA, with relocation after axis changes.
 - **smooth data source**: when enabled, fully based on smoothed curve (position/amplitude smoothed, matches display); when disabled, raw + Raw Anchor
-- **Pk threshold**: auto = global peak −50 dB when unset; user edit locks (activeElement guard + oninput); Auto restores; no update when all markers off
+- **Pk threshold**: value lives in a slot (`meas` group); readers no longer parse the input element. Auto = **one decision per measurement geometry**: fitted (median of a few frames of the trace's 99.5th percentile, −50 dB) when span/RBW/Ref/dB-per-div/points/centre change, latched otherwise so a signal swing cannot move it or reshuffle the peak table/marker search; a manual edit locks it until Auto is pressed again; no update when all markers are off
 
 ## Display and Control Design
-- **Reference Level**: Manual configures the active SWP/RTA Profile. Auto adjusts only when the peak is
-  at least 15 dB above noise. Before Center/cross-mode retuning it temporarily raises a negative Ref to
-  0 dBm, then uses 5 dB headroom, settling time, and hysteresis. Reconfiguration waits 0.75 seconds;
-  Auto is suspended while Atten is manual.
+- **Reference Level**: Manual configures the active SWP/RTA Profile. **Auto Scale is a one-shot action**
+  (`AUTO_SCALE`), not a tracking mode: it computes one target from the newest trace (noise floor just
+  above the bottom of the display window, >=10 dB of headroom for the peak, 5 dB quantisation, never
+  below a learned IF-saturation floor) and applies it once; an already-good placement costs nothing.
+  A **safety ranger runs always**, independently of any user setting, but only in the protective
+  direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak grossly clipped above the
+  top edge (>= 10 dB over) is raised once, rate-limited. Lowering is never automatic: a level that pushes
+  the noise floor below the bottom edge is a display choice and is left alone (press Auto to re-fit),
+  because undoing it would undo the button the user just pressed (`clipped` vs `below_window`). The 15 dB peak-above-noise test only
+  applies *inside* the window, so a weak signal is reported as `no_signal` instead of silently doing
+  nothing. Before Center/cross-mode retuning a Ref that a fit had lowered is raised to 0 dBm. Each
+  reconfiguration waits 0.75 s before observations are trusted again.
+  **SDR runs the same rule** (own tracker, fed by the panadapter frames): the backend fits, the client
+  applies the reported target to its display scale, and the IQS level is only written when it is more
+  than 3 dB off (that write interrupts the audio). The command carries the level on screen
+  (`current_ref`), because in SDR the device level is not what the user sees. A manual Ref therefore
+  holds: raising it is never undone, and only a grossly clipped peak or an IF overflow is corrected on the
+  device's own initiative. When a correction does happen, the display follows it (the SDR client applies
+  the reported target to its scale).
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

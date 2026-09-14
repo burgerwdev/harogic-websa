@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import struct
 import time
 from ctypes import cast as c_cast
 
@@ -23,12 +22,9 @@ from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
-from .rta import _encode_rta
+from .framer import encode_audio, encode_rta
 
 log = logging.getLogger(__name__)
-
-MAGIC_AUDIO = b'AUDF'
-_AUDIO_HEADER = struct.Struct('<4sIII')   # magic, seq, rate, samples
 
 # IQS return codes that are transient (bad packet / timeout) rather than fatal.
 # The official examples never check IQS_GetIQStream's return value; a bad packet is
@@ -73,9 +69,6 @@ def _tn(key: str, msg: str, *args, n: int = 3) -> None:
         log.info('[trace] ' + msg, *args)
 
 
-def encode_audio(seq: int, rate: int, pcm: np.ndarray) -> bytes:
-    pcm = np.ascontiguousarray(pcm, dtype=np.int16)
-    return _AUDIO_HEADER.pack(MAGIC_AUDIO, int(seq), int(rate), pcm.size) + pcm.tobytes()
 
 
 def _round_decimate(value) -> int:
@@ -112,6 +105,8 @@ def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
 
 class SdrSession(MeasurementSession):
     name = 'sdr'
+    #: SDR drives its own reference tracker (its level is the IQS level, not a swept profile).
+    auto_ref_scope = 'sdr'
 
     PAN_FFT = 2048
     PAN_MIN_INTERVAL = 1.0 / 20.0      # panadapter/waterfall ~20 fps
@@ -727,6 +722,29 @@ class SdrSession(MeasurementSession):
     def reconfigure(self):
         self._configure()
 
+    def request_stop(self) -> None:
+        """Stop the fetch loop before the session is torn down."""
+        self._ready = False
+
+    def is_ready(self) -> bool:
+        return bool(self._ready)
+
+    def acquisition_timeout(self) -> float:
+        return 5.0
+
+    def pacing(self, dt: float, produced: bool) -> float:
+        """The IQS Adaptive stream paces itself.
+
+        IQS_GetIQStream_PM1 blocks until a packet is ready, so any extra sleep accumulates a
+        backlog and the device then returns BusDataError on every fetch. Only back off when
+        a step produced nothing (transient error), to avoid a busy spin.
+        """
+        return 0.0 if produced else 0.002
+
+    def health(self) -> dict:
+        return {'ok': self._packets_ok, 'err': self._packets_err,
+                'last_status': self._last_status, 'transient_streak': self._transient_streak}
+
     # ---------------- acquisition ----------------
     def _recover_locked(self, reason) -> None:
         self._last_recovery = time.monotonic()
@@ -932,7 +950,15 @@ class SdrSession(MeasurementSession):
                         self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
                 if res is not None:
                     freq, spec, row = res
-                    frames.append(_encode_rta(dev.state.freq_version, freq, spec, row,
+                    finite = spec[np.isfinite(spec)]
+                    if finite.size:
+                        # Same observation the swept paths hand the reference loop, so an SDR
+                        # Auto Scale uses the identical placement rule.
+                        floor_index = int((finite.size - 1) * 0.3)
+                        dev.observe_reference_peak(
+                            'sdr', float(np.max(finite)),
+                            float(np.partition(finite, floor_index)[floor_index]))
+                    frames.append(encode_rta(dev.state.freq_version, freq, spec, row,
                                               65535, s.sdr_actual['start'],
                                               s.sdr_actual['stop']))
 

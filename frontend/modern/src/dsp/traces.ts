@@ -3,8 +3,9 @@ import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
 import { setDisplayRef } from '../ui/displayRef';
 import { accumulateTrace, applyMode } from './accumulator';
-import { updateNormalizeStatusUI } from './normalize';
+import { updateNormalizeStatusUI } from './normalizeStatus';
 import { updateTrackingMarkers } from './markerTracking';
+import { displayUnit } from '../ui/displayState';
 
 // Peak-preserving resampling
 export function resampleTrace(src: Float32Array, newLen: number, isMaxHold: boolean): Float32Array {
@@ -69,7 +70,7 @@ export function invalidateAllTraces() {
     resetTraceAccum(t);
     t.reference = null; t.isNormalized = false;
   });
-  S.setDisplayUnit('dBm');
+  displayUnit.set('dBm');
   // A display default; in SDR the SDR session owns the scale, so this is a refused write
   // there (see ui/displayRef.ts) - it must not clobber a manual SDR Ref.
   setDisplayRef('mode', refLevel.get());

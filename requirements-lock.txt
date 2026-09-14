@@ -1,0 +1,12 @@
+# Exact versions this tree is verified against (see docs/*/ARCH_REVIEW.md G-2).
+# Docker/CI use this to reproduce a known-good environment:
+#   pip install -r requirements-dev.txt -c requirements-lock.txt
+# Regenerate after a deliberate upgrade: python3 -m pip freeze | grep -Ei '^(aiohttp|numpy|pytest|pytest-asyncio|ruff|pyserial|fonttools|playwright)=='
+aiohttp==3.14.3
+numpy==2.5.2
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.4
+pyserial==3.5
+fonttools==4.63.0
+playwright==1.62.0

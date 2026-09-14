@@ -6,25 +6,28 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
-import math
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
+from ..config import (
+    DEFAULT_RTA_CENTER_HZ,
+    DEFAULT_RTA_POINTS,
+    DEFAULT_RTA_REF_DBM,
+    DEFAULT_RTA_SPAN_HZ,
+    ref_bounds,
+)
 from .app_keys import COMMAND_LOCK, LOGGER
+from .commands import build_schema
+from .jsonutil import finite_json
 from .ws import CommandError, _dispatch, error_payload
 
 
 def _json_safe(value):
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {key: _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
+    """Backwards-compatible alias (the implementation lives in jsonutil)."""
+    return finite_json(value)
 
 
 def security_middleware(cfg):
@@ -57,14 +60,8 @@ def security_middleware(cfg):
 
 
 def _sdr_health(session) -> dict:
-    if session is None or getattr(session, 'name', '') != 'sdr':
-        return {}
-    return {
-        'ok': getattr(session, '_packets_ok', 0),
-        'err': getattr(session, '_packets_err', 0),
-        'last_status': getattr(session, '_last_status', 0),
-        'transient_streak': getattr(session, '_transient_streak', 0),
-    }
+    """Kept for API compatibility; the session reports its own counters."""
+    return {} if session is None else session.health()
 
 
 def build_status(dev) -> dict:
@@ -140,16 +137,12 @@ def build_status(dev) -> dict:
     else:
         active_req = rta_req if is_rta else swp_req
         active_actual = s.rta_actual if is_rta else s.actual
-    auto_trackers = getattr(dev, '_auto_ref', {})
-    auto_tracker = auto_trackers.get(
-        'rta' if is_rta else 'std',
-        {'last_peak': None, 'last_noise_floor': None, 'candidate': None},
-    )
-    pending_auto_ref = getattr(dev, '_pending_auto_ref', None)
+    auto_ref = dev.auto_reference_view()
     session = getattr(dev, 'session', None)
+    session_health = dev.session_health() if session is not None else {}
     rta_health = {
-        'error_streak': getattr(session, '_error_streak', 0) if s.mode == 'rta' else 0,
-        'recovery_attempts': getattr(session, '_recovery_attempts', 0) if s.mode == 'rta' else 0,
+        'error_streak': session_health.get('error_streak', 0) if s.mode == 'rta' else 0,
+        'recovery_attempts': session_health.get('recovery_attempts', 0) if s.mode == 'rta' else 0,
     }
 
     def effective(name):
@@ -176,10 +169,16 @@ def build_status(dev) -> dict:
         'config_version': s.config_version,
         'caps': dict(model=s.caps.model if s.caps else 0, name=s.caps.name if s.caps else '',
                      fmin=s.caps.freq_min_hz if s.caps else 0,
-                     fmax=s.caps.freq_max_hz if s.caps else 0),
+                     fmax=s.caps.freq_max_hz if s.caps else 0,
+                     # The numeric limits the client needs (it used to hard-code them).
+                     ref_min=ref_bounds(s.caps)[0], ref_max=ref_bounds(s.caps)[1],
+                     rta_span_max=s.caps.rta_span_max_hz if s.caps else 0,
+                     rta_points=DEFAULT_RTA_POINTS),
         'preset_defaults': dev.preset_defaults,
         'rta_defaults': {
-            'center': 1e9, 'span': 50.78125e6, 'ref': 0.0, 'ref_mode': 'manual',
+            # The device's own RTA defaults, from the constants the session uses.
+            'center': DEFAULT_RTA_CENTER_HZ, 'span': DEFAULT_RTA_SPAN_HZ,
+            'ref': DEFAULT_RTA_REF_DBM, 'ref_mode': 'manual',
             'rbw_mode': 'auto', 'rbw': 0.0, 'vbw_mode': 'equal', 'vbw': 0.0,
             'sweep_time_mode': 2, 'sweep_time': 0.0,
         },
@@ -193,14 +192,16 @@ def build_status(dev) -> dict:
             'level_dbfs': s.sdr_level_dbfs,
             'squelch_open': s.sdr_squelch_open,
             'adm': s.sdr_adm,
-            'health': _sdr_health(session),
+            'health': session_health if s.mode == 'sdr' else {},
         },
-        'auto_ref_suspended': active_req['ref_mode'] == 'auto' and s.atten != -1,
         'auto_ref': {
-            'last_peak': auto_tracker['last_peak'],
-            'last_noise_floor': auto_tracker.get('last_noise_floor'),
-            'candidate': auto_tracker['candidate'],
-            'pending': pending_auto_ref[1] if pending_auto_ref else None,
+            'last_peak': auto_ref['last_peak'],
+            'last_noise_floor': auto_ref['last_noise_floor'],
+            'target': auto_ref['target'],
+            'result': auto_ref['result'],
+            'seq': auto_ref['seq'],
+            'pending': auto_ref['pending'],
+            'adjusting': auto_ref['adjusting'],
         },
         'rta_health': rta_health,
         'amp': dict(atten=s.atten, preamp=s.preamplifier, ifgain=s.ifgain,
@@ -226,6 +227,10 @@ def make_routes(app, dev, static_dir):
         async with app[COMMAND_LOCK]:
             status = build_status(dev)
         return web.json_response(status)
+
+    async def schema(request):
+        """Machine-readable command/parameter schema (see commands.build_schema)."""
+        return web.json_response(build_schema(dev))
 
     async def config(request):
         try:
@@ -260,6 +265,7 @@ def make_routes(app, dev, static_dir):
         return web.FileResponse(index_file)
 
     app.router.add_get('/api/state', state)
+    app.router.add_get('/api/schema', schema)
     app.router.add_post('/api/config', config)
     app.router.add_get('/', index)
     async def modern_static(request):

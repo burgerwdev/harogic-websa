@@ -8,145 +8,21 @@ structure refactored.
 """
 from __future__ import annotations
 
-import math
-import os
-import time
-from dataclasses import dataclass, field
-
 import numpy as np
 
 from ..config import (
-    DEFAULT_RTA_CENTER_HZ,
-    DEFAULT_RTA_RBW_MODE,
-    DEFAULT_RTA_REF_DBM,
-    DEFAULT_RTA_SPAN_HZ,
-    DEFAULT_RTA_SWEEP_MODE,
-    DEFAULT_RTA_VBW_MODE,
-    DEFAULT_TRIGGER_ACQ_TIME_S,
-    DEFAULT_TRIGGER_DELAY_S,
-    DEFAULT_TRIGGER_EDGE,
-    DEFAULT_TRIGGER_LEVEL_DBM,
-    DEFAULT_TRIGGER_OUT,
-    DEFAULT_TRIGGER_OUT_POLARITY,
-    DEFAULT_TRIGGER_PRE_TIME_S,
-    DEFAULT_TRIGGER_RETRIGGER_COUNT,
-    DEFAULT_TRIGGER_RETRIGGER_PERIOD_S,
-    DEFAULT_TRIGGER_SAFE_TIME_S,
-    DEFAULT_TRIGGER_SOURCE,
     DeviceCapabilities,
+    clamp_ref_dbm,
     fit_center_span,
 )
 from . import sdk_bindings as sb
+from .auto_reference import AutoReferenceController
+from .errors import DeviceError  # noqa: F401 (re-exported for the business layer)
+from .state import DeviceState, RtaParams, SdrParams, TriggerParams  # noqa: F401 (re-export)
 
 # Convenient aliases for hardware enums
 SWP = sb
 T = sb  # type aliases
-
-
-class DeviceError(RuntimeError):
-    pass
-
-
-@dataclass
-class DeviceState:
-    """Device read-only state (serialized to WS STATUS)."""
-    connected: bool = False
-    label: str = ''
-    detail: str = ''
-    device_detail: dict = field(default_factory=dict)
-    caps: DeviceCapabilities = None          # model capabilities
-    center_hz: float = 1e9          # SWP-mode center
-    span_hz: float = 100e6
-    rta_center_hz: float = DEFAULT_RTA_CENTER_HZ
-    rta_span_hz: float = DEFAULT_RTA_SPAN_HZ
-    rta_ref_level: float = DEFAULT_RTA_REF_DBM
-    rta_ref_mode: str = 'manual'
-    rta_rbw_mode: str = DEFAULT_RTA_RBW_MODE
-    rta_rbw_hz: float = 0.0
-    rta_vbw_mode: str = DEFAULT_RTA_VBW_MODE
-    rta_vbw_hz: float = 0.0
-    rta_sweep_time_mode: int = DEFAULT_RTA_SWEEP_MODE
-    rta_sweep_time: float = 0.0
-    rta_actual: dict = field(default_factory=dict)
-    # SDR mode (IQS streaming + channelizer + demod). Independent from SWP/RTA.
-    sdr_center_hz: float = 1e9
-    sdr_decimate: int = 16
-    sdr_actual: dict = field(default_factory=dict)
-    sdr_listen_hz: float = 1e9
-    sdr_demod: str = 'am'
-    sdr_if_bw: float = 6000.0
-    sdr_squelch: float = -110.0
-    sdr_squelch_open: bool = False
-    sdr_volume: float = 0.8
-    sdr_agc: bool = True
-    sdr_pitch: float = 700.0
-    # FM de-emphasis time constant in microseconds. -1 = auto (50 us for WFM, none
-    # elsewhere); 0 = off; 50/75/300 = explicit (regional pre-emphasis complement).
-    sdr_deemph_us: float = -1.0
-    sdr_level_dbfs: float = -120.0
-    sdr_adm: dict = field(default_factory=dict)
-    # RTA acquisition trigger (applies to RTA sessions; SWP has no level trigger)
-    trigger_source: str = DEFAULT_TRIGGER_SOURCE
-    trigger_edge: str = DEFAULT_TRIGGER_EDGE
-    trigger_level_dbm: float = DEFAULT_TRIGGER_LEVEL_DBM
-    trigger_safe_time_s: float = DEFAULT_TRIGGER_SAFE_TIME_S
-    trigger_delay_s: float = DEFAULT_TRIGGER_DELAY_S
-    trigger_pre_time_s: float = DEFAULT_TRIGGER_PRE_TIME_S
-    trigger_acq_time_s: float = DEFAULT_TRIGGER_ACQ_TIME_S
-    trigger_retrigger_count: int = DEFAULT_TRIGGER_RETRIGGER_COUNT
-    trigger_retrigger_period_s: float = DEFAULT_TRIGGER_RETRIGGER_PERIOD_S
-    trigger_out: str = DEFAULT_TRIGGER_OUT
-    trigger_out_polarity: str = DEFAULT_TRIGGER_OUT_POLARITY
-    trigger_actual: dict = field(default_factory=dict)
-    ref_level: float = 0.0
-    ref_mode: str = 'manual'
-    rbw_mode: str = 'manual'
-    rbw_hz: float = 100e3
-    vbw_mode: str = 'manual'
-    vbw_hz: float = 100e3
-    points_req: int = 1000
-    window: int = 1
-    spur_mode: str = 'bypass'
-    detector: str = 'auto'
-    atten: int = -1
-    preamplifier: int = 0
-    ifgain: int = 2
-    # IF AGC (device-specific; see _profile). Off by default because the official
-    # Profile.xml ships EnableIFAGC=0. WEBSA_IFAGC=1 flips the default for A/B testing.
-    ifagc: int = 1 if os.getenv('WEBSA_IFAGC', '0').lower() not in (
-        '0', '', 'false', 'no', 'off') else 0
-    ifagc_target: float = float(os.getenv('WEBSA_IFAGC_TARGET', '-9'))
-    ifagc_gain: float = 0.0
-    gain_strategy: int = 0
-    amp_atten: int = -1
-    preamplifier_actual: int | None = None
-    ref_clock: str = 'internal'
-    has_docxo: bool = False
-    mode: str = 'std'
-    pnm_supported: bool = False
-    actual: dict = field(default_factory=dict)
-    gnss: dict = field(default_factory=dict)
-    sweep_ms: float = 0.0
-    sweep_time_mode: int = 0     # SweepTimeMode_TypeDef: 0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN
-    sweep_time: float = 0.0      # Manual=绝对秒; xN=倍率; 其他模式忽略
-    freq_version: int = 0
-    config_version: int = 0
-    # Height of the visible display window in dB (grid divisions x dB/div), pushed by the
-    # frontend. Auto Ref anchors the noise floor just above the bottom of this window, so it
-    # must know how tall the window is; 100 dB = the default 10 div x 10 dB/div.
-    ref_range_db: float = 100.0
-    # Last vendor WARNING status from the measurement stream (0 = none). -12 is IF
-    # overflow: the IF saturates when Ref is set low, and the vendor's remedy is to raise
-    # RefLevel_dBm. Surfaced so the UI can say so instead of the display appearing frozen.
-    status_warning: int = 0
-    last_error: str = ''
-    refclk_ppm: float = 0.0
-    calibrating: bool = False
-    last_cal_freq: float = 0.0
-    refclk_out: bool = False   # reference clock output enable
-    # Measurement results
-    harm_results: list = field(default_factory=list)
-    pnm_last: dict | None = None
 
 
 # Safety bound for the swept trace buffers: SWP_GetFullSweep writes the device's own trace
@@ -185,23 +61,8 @@ class HarogicDevice:
         self.last_freq = None      # most recent frequency axis (pushed to new WS clients on connect)
         self.last_freq_ver = 0
         self._sweep_ema = None
-        self._auto_ref = {
-            'std': {
-                'candidate': None, 'candidate_since': 0.0,
-                'last_change': 0.0, 'last_peak': None,
-                'last_noise_floor': None, 'ignore_until': 0.0,
-                'floor': -50.0,
-            },
-            'rta': {
-                'candidate': None, 'candidate_since': 0.0,
-                'last_change': 0.0, 'last_peak': None,
-                'last_noise_floor': None, 'ignore_until': 0.0,
-                'floor': -50.0,
-            },
-        }
-        self._pending_auto_ref: tuple[str, float] | None = None
-        # Geometry (span/RBW/points/window) each tracker's learned floor belongs to.
-        self._auto_ref_geometry_seen: dict[str, tuple | None] = {'std': None, 'rta': None}
+        # Auto-reference control loop: decision logic, not device I/O (report finding P1-8).
+        self.auto_ref = AutoReferenceController(self)
 
     # ---------------- Lifecycle ----------------
     def open(self) -> tuple[bool, str]:
@@ -307,27 +168,8 @@ class HarogicDevice:
         caps.freq_max_hz = max(caps.freq_max_hz, float(hi))
 
     def reset_sdr_state(self) -> None:
-        """Restore every SDR parameter to the power-on defaults.
-
-        The dataclass defaults are the single source of truth for "initial state", so a
-        fresh DeviceState is used instead of duplicating literals here.
-        """
-        s = self.state
-        d = DeviceState()
-        s.sdr_center_hz = d.sdr_center_hz
-        s.sdr_decimate = d.sdr_decimate
-        s.sdr_listen_hz = d.sdr_listen_hz
-        s.sdr_demod = d.sdr_demod
-        s.sdr_if_bw = d.sdr_if_bw
-        s.sdr_squelch = d.sdr_squelch
-        s.sdr_squelch_open = False
-        s.sdr_volume = d.sdr_volume
-        s.sdr_agc = d.sdr_agc
-        s.sdr_pitch = d.sdr_pitch
-        s.sdr_deemph_us = d.sdr_deemph_us
-        s.sdr_level_dbfs = d.sdr_level_dbfs
-        s.sdr_adm = {}
-        s.sdr_actual = {}
+        """Restore every SDR parameter to the power-on defaults (fresh group dataclass)."""
+        self.state.sdr = SdrParams()
 
     def reset_common_state(self) -> None:
         """Reset the front-end settings that are shared by every mode."""
@@ -340,30 +182,9 @@ class HarogicDevice:
         s.last_error = ''
 
     def reset_rta_state(self) -> None:
-        s = self.state
-        s.rta_center_hz = DEFAULT_RTA_CENTER_HZ
-        s.rta_span_hz = DEFAULT_RTA_SPAN_HZ
-        s.rta_ref_level = DEFAULT_RTA_REF_DBM
-        s.rta_ref_mode = 'manual'
-        s.rta_rbw_mode = DEFAULT_RTA_RBW_MODE
-        s.rta_rbw_hz = 0.0
-        s.rta_vbw_mode = DEFAULT_RTA_VBW_MODE
-        s.rta_vbw_hz = 0.0
-        s.rta_sweep_time_mode = DEFAULT_RTA_SWEEP_MODE
-        s.rta_sweep_time = 0.0
-        s.rta_actual = {}
-        s.trigger_source = DEFAULT_TRIGGER_SOURCE
-        s.trigger_edge = DEFAULT_TRIGGER_EDGE
-        s.trigger_level_dbm = DEFAULT_TRIGGER_LEVEL_DBM
-        s.trigger_safe_time_s = DEFAULT_TRIGGER_SAFE_TIME_S
-        s.trigger_delay_s = DEFAULT_TRIGGER_DELAY_S
-        s.trigger_pre_time_s = DEFAULT_TRIGGER_PRE_TIME_S
-        s.trigger_acq_time_s = DEFAULT_TRIGGER_ACQ_TIME_S
-        s.trigger_retrigger_count = DEFAULT_TRIGGER_RETRIGGER_COUNT
-        s.trigger_retrigger_period_s = DEFAULT_TRIGGER_RETRIGGER_PERIOD_S
-        s.trigger_out = DEFAULT_TRIGGER_OUT
-        s.trigger_out_polarity = DEFAULT_TRIGGER_OUT_POLARITY
-        s.trigger_actual = {}
+        """Restore the RTA window and the trigger defaults (fresh group dataclasses)."""
+        self.state.rta = RtaParams()
+        self.state.trigger = TriggerParams()
         self.reset_auto_reference('rta')
 
     def preset_state(self) -> dict:
@@ -427,7 +248,9 @@ class HarogicDevice:
         p.FreqAssignment = T.SWP_FreqAssignment_TypeDef.StartStop
         p.StartFreq_Hz = start
         p.StopFreq_Hz = stop
-        p.RefLevel_dBm = max(-50, min(30, s.ref_level))
+        # The device's own range, from its capability row (a preset or a stale client value can
+        # still arrive outside it).
+        p.RefLevel_dBm = clamp_ref_dbm(s.caps, s.ref_level)
         if s.rbw_mode == 'auto':
             p.RBWMode = T.RBWMode_TypeDef.RBW_Auto
         else:
@@ -518,8 +341,7 @@ class HarogicDevice:
         The floor records "the IF saturated at this Ref" for a given attenuation/preamp;
         changing either moves the saturation point, so the old bound is meaningless.
         """
-        for tracker in self._auto_ref.values():
-            tracker['floor'] = -50.0
+        self.auto_ref.clear_learned_floor()
 
     def _read_amp_atten(self) -> None:
         with self._hw:
@@ -693,228 +515,61 @@ class HarogicDevice:
             except Exception:
                 return {}
 
-    def observe_reference_peak(
-        self, mode: str, peak_dbm: float, noise_floor_dbm: float | None = None
-    ) -> None:
-        """Queue a stable, hysteretic automatic reference-level adjustment."""
-        with self._hw:
-            self._observe_reference_peak_locked(mode, peak_dbm, noise_floor_dbm)
+    # ---------------- Auto reference (control loop lives in auto_reference.py) ----------------
 
-    def _observe_reference_peak_locked(
-        self, mode: str, peak_dbm: float, noise_floor_dbm: float | None = None
-    ) -> None:
-        if mode not in ('std', 'rta') or not math.isfinite(peak_dbm):
-            return
-        state = self.state
-        ref_mode = state.rta_ref_mode if mode == 'rta' else state.ref_mode
-        if ref_mode != 'auto' or state.atten != -1:
-            return
-        tracker = self._auto_ref[mode]
-        now = time.monotonic()
-        if now < tracker['ignore_until']:
-            return
-        tracker['last_peak'] = peak_dbm
-        tracker['last_noise_floor'] = noise_floor_dbm
-        if (
-            noise_floor_dbm is not None
-            and math.isfinite(noise_floor_dbm)
-            and peak_dbm - noise_floor_dbm < 15.0
-        ):
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
-                self._pending_auto_ref = None
-            return
-        current = state.rta_ref_level if mode == 'rta' else state.ref_level
-        # Industry rule: anchor on the NOISE FLOOR so it sits just above the bottom of the
-        # display window, and lift Ref only as far as needed to keep the peak off the top
-        # edge. (Anchoring on the peak instead - the previous `peak + 5` - left the noise
-        # floor up to 7 divisions above the bottom for weak signals, which is the opposite
-        # of what a spectrum analyser does.) The window height (grid divisions x dB/div)
-        # comes from the frontend; 100 dB is the default 10 div x 10 dB/div.
-        window = max(20.0, float(getattr(state, 'ref_range_db', 100.0)))
-        if noise_floor_dbm is None or not math.isfinite(noise_floor_dbm):
-            # No floor estimate available: fall back to keeping the peak below the top edge.
-            target = peak_dbm + 10.0
-        else:
-            target = max(noise_floor_dbm + window - 8.0, peak_dbm + 10.0)
-        target = math.ceil(target / 5.0) * 5.0
-        target = min(30.0, max(-50.0, target, tracker.get('floor', -50.0)))
-        # Window criterion instead of a bare 5 dB dead-band: while the noise floor sits
-        # between 4 and 12 dB above the bottom edge AND the peak keeps >= 8 dB of headroom,
-        # the placement is already right, so a wobbling estimate (or a small RBW/point change
-        # that moves the noise floor by a dB or two) must not trigger a reconfiguration -
-        # each one costs a full device reconfigure and is visible as a jump.
-        if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
-            noise_above_bottom = noise_floor_dbm - (current - window)
-            headroom = current - peak_dbm
-            if 4.0 <= noise_above_bottom <= 12.0 and headroom >= 8.0:
-                tracker['candidate'] = None
-                tracker['candidate_since'] = 0.0
-                return
-        # When the noise floor is high, keep ~30 dB of headroom above it.
-        if noise_floor_dbm is not None and math.isfinite(noise_floor_dbm):
-            target = max(target, noise_floor_dbm + 30.0)
-        target = min(30.0, target)
-        if abs(target - current) < 5.0:
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            return
-
-        if tracker['candidate'] != target:
-            tracker['candidate'] = target
-            tracker['candidate_since'] = now
-        # Raise the reference immediately for overload safety. Lowering waits for a
-        # time-stable peak so RTA settle/empty frames cannot collapse Ref. After a re-arm
-        # (the user pressed Auto, or a setting changed) the first decision is taken quickly
-        # in both directions: the previous observation is known to be stale.
-        fresh = bool(tracker.pop('fresh', False))
-        stable_for = 0.15 if (fresh or target > current) else 1.5
-        if (
-            now - tracker['candidate_since'] >= stable_for
-            and now - tracker['last_change'] >= 1.0
-        ):
-            tracker['last_change'] = now
-            self._pending_auto_ref = (mode, target)
+    def observe_reference_peak(self, mode: str, peak_dbm: float,
+                               noise_floor_dbm: float | None = None) -> None:
+        """Feed one trace observation to the Auto Ref control loop."""
+        self.auto_ref.observe_peak(mode, peak_dbm, noise_floor_dbm)
 
     def prepare_auto_reference_retune(self, mode: str) -> bool:
-        """Use a safe Ref before changing frequency when Auto Ref had lowered it."""
-        with self._hw:
-            state = self.state
-            ref_mode = state.rta_ref_mode if mode == 'rta' else state.ref_mode
-            if ref_mode != 'auto':
-                return False
-            if mode == 'rta':
-                changed = state.rta_ref_level < 0.0
-                state.rta_ref_level = max(0.0, state.rta_ref_level)
-            else:
-                changed = state.ref_level < 0.0
-                state.ref_level = max(0.0, state.ref_level)
-            self.begin_auto_reference_settle(mode)
-            return changed
+        """Use a safe Ref before changing frequency when a fit had lowered it."""
+        return self.auto_ref.prepare_retune(mode)
 
-    def _auto_ref_geometry(self, mode: str) -> tuple:
-        """Signature of the measurement geometry the learned floor belongs to.
+    def auto_scale(self, mode: str, current: float | None = None) -> tuple[str, float | None]:
+        """Place the reference level once, from the newest trace (the user's Auto Scale)."""
+        return self.auto_ref.fit(mode, current)
 
-        The IF saturates at a Ref that depends on the in-band power, i.e. on span / RBW /
-        points / window - not only on the front-end. A floor learned at another geometry
-        either blocks a legitimate low Ref or invites saturation probing, so it is dropped
-        when this signature changes. Applying a new Ref does NOT change it (verified by the
-        signature itself), which is what keeps the auto-ref from clearing its own floor on
-        every application.
-        """
-        s = self.state
-        if mode == 'rta':
-            # The RTA profile takes its window from the same user setting as SWP.
-            return (s.rta_center_hz, s.rta_span_hz, s.rta_rbw_hz, s.rta_vbw_hz,
-                    s.window, getattr(s, 'rta_decimate', 0))
-        return (s.center_hz, s.span_hz, s.rbw_hz, s.vbw_hz, s.window, 0)
+    def auto_reference_scope(self) -> str:
+        """Which tracker the active session drives ('std' for plain SWP)."""
+        return getattr(self.session, 'auto_ref_scope', 'std')
 
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
         """Discard stale auto-ref observations after any acquisition reconfiguration."""
-        with self._hw:
-            geometry = self._auto_ref_geometry(mode)
-            if self._auto_ref_geometry_seen.get(mode) not in (None, geometry):
-                # Span/RBW/points/window changed: the learned saturation floor no longer
-                # describes this configuration.
-                self._auto_ref[mode]['floor'] = -50.0
-            self._auto_ref_geometry_seen[mode] = geometry
-            tracker = self._auto_ref[mode]
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            tracker['last_peak'] = None
-            tracker['last_noise_floor'] = None
-            tracker['ignore_until'] = time.monotonic() + delay
-            tracker['fresh'] = True
-            if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
-                self._pending_auto_ref = None
+        self.auto_ref.begin_settle(mode, delay)
 
     def reset_auto_reference(self, mode: str) -> None:
-        """Re-arm: drop stale observations AND force a fresh decision.
-
-        Called when the user enables Auto and whenever a setting changes that moves the
-        trace (a reconfiguration calls begin_auto_reference_settle instead, which also
-        re-arms). This is the event that answers "when should Auto act again?": a setting
-        change invalidates the level the previous decision was based on, even if the new
-        target ends up within the 5 dB dead-band.
-        """
-        with self._hw:
-            tracker = self._auto_ref[mode]
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            tracker['last_peak'] = None
-            tracker['last_noise_floor'] = None
-            tracker['ignore_until'] = time.monotonic() + 0.25
-            tracker['fresh'] = True
-            if self._pending_auto_ref and self._pending_auto_ref[0] == mode:
-                self._pending_auto_ref = None
+        """Re-arm Auto Ref so the next observation decides again."""
+        self.auto_ref.reset(mode)
 
     def nudge_reference_out_of_overflow(self) -> bool:
-        """Raise Ref one step when the device reports IF overflow (-12).
-
-        The vendor's remedy for -12 is to raise RefLevel_dBm. This cannot live in the normal
-        auto-reference path because that path needs a measured peak, and an overflowing IF
-        delivers no frames at all - so clicking Auto Ref after the warning appeared did
-        nothing (deadlock). Queues one step per second at most.
-        """
-        with self._hw:
-            s = self.state
-            if s.status_warning != -12 or s.mode == 'sdr':
-                return False
-            mode = s.mode
-            if mode not in ('std', 'rta'):
-                return False
-            if (s.rta_ref_mode if mode == 'rta' else s.ref_mode) != 'auto' or s.atten != -1:
-                return False
-            tracker = self._auto_ref[mode]
-            now = time.monotonic()
-            if now - tracker['last_change'] < 1.0:
-                return False
-            current = s.rta_ref_level if mode == 'rta' else s.ref_level
-            target = min(30.0, current + 5.0)
-            if target <= current:
-                return False
-            tracker['last_change'] = now
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            # Learn the usable lower bound: the IF overflows at this Ref, so never propose
-            # one this low again. Without it the peak-based rule keeps trying to go back down
-            # and the two mechanisms fight, oscillating 5-10 dB (measured).
-            tracker['floor'] = max(tracker.get('floor', -50.0), target)
-            # Cleared so the next tick does not queue another step before this one lands;
-            # the device re-reports -12 on the following frame if it is still saturating.
-            s.status_warning = 0
-            self._pending_auto_ref = (mode, target)
-            return True
+        """Raise Ref one step when the device reports IF overflow (-12)."""
+        return self.auto_ref.nudge_out_of_overflow()
 
     def apply_pending_auto_reference(self) -> bool:
         """Apply one queued auto-reference update in the active acquisition worker."""
-        with self._hw:
-            pending = self._pending_auto_ref
-            if pending is None or pending[0] != self.state.mode:
-                return False
-            self._pending_auto_ref = None
-            mode, target = pending
-            tracker = self._auto_ref[mode]
-            tracker['candidate'] = None
-            tracker['candidate_since'] = 0.0
-            if mode == 'rta' and self.session is not None and self.session.name == 'rta':
-                self.state.rta_ref_level = target
-                self.session._configure()
-            elif mode == 'std':
-                self.state.ref_level = target
-                ok, _ = self.configure_swp()
-                if not ok:
-                    return False
-            else:
-                return False
-            return True
+        return self.auto_ref.apply_pending()
 
     # ---------------- Session host ----------------
     def set_session(self, session) -> None:
         with self._hw:
             self.session = session
             self.state.mode = session.name if session else 'std'
+
+    def auto_reference_view(self) -> dict:
+        """Auto-reference diagnostics for STATUS.
+
+        The tracker state is private to this class (it is a control loop, not device
+        state); the serializer must not reach into it directly (report finding P1-7).
+        """
+        return self.auto_ref.view(getattr(self.session, 'auto_ref_scope', 'std'))
+
+    def session_health(self) -> dict:
+        """Health counters of the active measurement session (empty for plain SWP)."""
+        session = self.session
+        if session is None:
+            return {}
+        return session.health()
 
     def step(self):
         """publisher single step: forward to the current session."""

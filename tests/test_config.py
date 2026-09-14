@@ -68,3 +68,38 @@ def test_remote_listener_requires_authentication():
         config.AppConfig(host='0.0.0.0').validate()
     config.AppConfig(host='0.0.0.0', auth_token='secret').validate()
     config.AppConfig(host='127.0.0.1').validate()
+
+
+def _caps(ref_min: float, ref_max: float):
+    """A capability row for this bench's model with the given Ref range."""
+    from web_sa.config import DeviceCapabilities
+    caps = DeviceCapabilities.from_model(67)
+    caps.ref_min_dbm, caps.ref_max_dbm = ref_min, ref_max
+    return caps
+
+
+def test_ref_range_comes_from_the_capability_row():
+    """One source for a device limit: validation, the SDK profile and the Auto Ref loop.
+
+    Found while auditing hard-coded device values: the range was written as literals in
+    `device.py` (profile clamp) and `auto_reference.py` (target clamp) while the capability row
+    already declared it. A model with a different range would have been silently clamped by the
+    wrong numbers.
+    """
+    from web_sa.config import (
+        FALLBACK_REF_MAX_DBM,
+        FALLBACK_REF_MIN_DBM,
+        clamp_ref_dbm,
+        ref_bounds,
+        )
+    caps = _caps(-40.0, 10.0)
+    assert ref_bounds(caps) == (-40.0, 10.0)
+    assert clamp_ref_dbm(caps, 30.0) == 10.0
+    assert clamp_ref_dbm(caps, -60.0) == -40.0
+    assert clamp_ref_dbm(caps, -5.0) == -5.0
+    # No device attached yet: the documented fallback, never a silent 0.
+    assert ref_bounds(None) == (FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM)
+    assert clamp_ref_dbm(None, 100.0) == FALLBACK_REF_MAX_DBM
+    # A nonsense row must not produce an inverted range.
+    broken = _caps(10.0, -10.0)
+    assert ref_bounds(broken) == (FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM)

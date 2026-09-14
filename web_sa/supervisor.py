@@ -9,6 +9,7 @@ import sys
 import time
 
 from .logging_setup import setup_logging
+from .web.recovery import EXIT_FATAL
 
 log = logging.getLogger(__name__)
 _stopping = False
@@ -16,7 +17,7 @@ _child: subprocess.Popen | None = None
 
 
 def should_restart(return_code: int) -> bool:
-    return return_code < 0 or return_code == 70
+    return return_code < 0 or return_code == EXIT_FATAL
 
 
 def _stop(signum, _frame) -> None:

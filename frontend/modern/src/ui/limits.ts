@@ -9,7 +9,7 @@ import { currentRBW } from './swpState';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { buildLimitArray, normalizePoints, type LimitPoint } from '../dsp/limits';
 import { getDisplayPowers } from '../dsp/peaks';
-import { renderAll } from '../render/spectrum';
+import { requestRender } from '../render/redraw';
 import { toDisplayLevel, fromDisplayLevel } from '../core/level';
 
 const LS_KEY = 'websa-limits';
@@ -121,7 +121,7 @@ function renderRows(): void {
  * to ask for a repaint instead of updating a panel row.
  */
 export function refreshLimitVerdict(): void {
-  renderAll();
+  requestRender();
 }
 
 /** Re-render the point rows after a unit change (levels stay stored in dBm). */

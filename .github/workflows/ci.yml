@@ -1,0 +1,114 @@
+name: CI
+
+# Hardware-free gates only. The bench keeps the analyzer-level checks (tools/hardware_smoke.py
+# and the tinySA-driven parts); the two Playwright scripts also run here against the fake
+# backend, so the user-visible rendering checks and the parameter state-machine contract are
+# gated on every push. See docs/*/ARCH_REVIEW.md (A1) and docs/*/DEVELOPMENT.md.
+
+
+on:
+  push:
+    branches: [master, 'feature/**', 'refactor/**', 'analysis/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt -c requirements-lock.txt
+      # The vendor SDK is not installed in CI; the binding layer must import without it.
+      - name: Python static checks
+        run: python -m ruff check web_sa tests tools
+      - name: Version is single-sourced
+        run: python tools/sync_version.py --check
+      - name: Frame fixtures match the encoders
+        run: python tools/gen_frame_fixtures.py --check
+      - name: DOM id contract (every id read from TS exists in index.html)
+        run: python tools/check_dom_ids.py
+      - name: Bilingual docs keep the same section structure
+        run: python tools/check_docs_parity.py
+      - name: Every module-scope registration is reachable from the entry point
+        run: python tools/check_registrations.py
+      - name: Tests
+        run: python -m pytest tests/ -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/modern
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/modern/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Tests (includes i18n parity and the frame decoder contract)
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  ui-smoke:
+    # The only test that asserts user-visible results (canvas pixels, DOM text, real clicks).
+    # It runs against the fake backend, so it needs neither the analyzer nor libhtraapi.
+    runs-on: ubuntu-latest
+    env:
+      WEBSA_FAKE: '1'
+      WEBSA_PORT: '8099'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/modern/package-lock.json
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt -c requirements-lock.txt
+          python -m playwright install --with-deps chromium
+      - name: Build the frontend (the service serves dist/)
+        run: cd frontend/modern && npm ci && npm run build
+      - name: Start the fake-backend service
+        run: |
+          setsid nohup python -m web_sa.supervisor > /tmp/websa-fake.log 2>&1 < /dev/null &
+          for i in $(seq 1 25); do sleep 1; curl -sf -o /dev/null http://127.0.0.1:8099/api/state && break; done
+          curl -sf http://127.0.0.1:8099/api/state | head -c 120
+      - name: UI smoke - rendering and wiring (fake backend)
+        run: python tools/e2e/ui_smoke.py --url http://127.0.0.1:8099
+      - name: Parameter state-machine contract (fake backend)
+        # The same script as the bench run: it is device-agnostic by construction, so the
+        # historical slot/pending/hand-off/preset regressions are now gated in CI too.
+        run: python tools/e2e/state_regression.py --url http://127.0.0.1:8099
+      - name: Service log on failure
+        if: failure()
+        run: tail -50 /tmp/websa-fake.log
+
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Guard rails (cycles, god functions, mode branching, DLL access)
+        run: python tools/quality/architecture_guard.py

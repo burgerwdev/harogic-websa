@@ -2,58 +2,43 @@
 import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
-import { ctx, W, H, MARGIN } from '../core/store';
-import { plotRect } from './plot';
+import { ctx, W, H } from '../core/store';
+import { getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
 import { sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
+import { trigLevel, trigSource } from '../ui/triggerState';
 import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
 import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './peaklist';
 import { updateMarkerTable } from './markerTable';
-import { updateHarmonicTable } from '../meas/harmonic';
-import { renderHarmOverlay } from '../meas/harmOverlay';
-import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
-import { renderPnm, updatePnmTable } from '../meas/phaseNoise';
 import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
+import { setRenderer } from './redraw';
+import { peakListVisible } from '../ui/measurePrefs';
+import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
+import { rtaAmpBins, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
+import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
   return {
     centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: getDisplayRef(),
-    displayOffset: S.displayOffset, displayUnit: S.displayUnit, viewMode: S.viewMode,
+    displayOffset: displayOffset.get(), displayUnit: displayUnit.get(), viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
-    ampRes: S.ampRes, peakListOn: S.peakListOn, smoothBins: S.smoothBins,
+    ampRes: S.ampRes, peakListOn: peakListVisible.get(), smoothBins: smoothBins.get(),
   };
 }
 
 // Fixed plot rectangle: W/H/MARGIN are constants, so this is computed once instead of
 // allocating a new object for every point during trace rendering.
-const PLOT_RECT = {
-  x: MARGIN.left,
-  y: MARGIN.top,
-  w: W - MARGIN.left - MARGIN.right,
-  h: H - MARGIN.top - MARGIN.bottom,
-};
-
-export function getY(val: number): number {
-  if (isFinite(val)) val += S.displayOffset;
-  const dispRef = getDisplayRef();
-  const top = dispRef, bottom = dispRef - S.totalDivs * S.dbPerDiv;
-  if (!isFinite(val)) val = bottom - 10;
-  return PLOT_RECT.y + ((top - val) / (top - bottom)) * PLOT_RECT.h;
-}
-export function getX(idx: number, points: number): number {
-  return PLOT_RECT.x + (idx / (points - 1)) * PLOT_RECT.w;
-}
-
 // Shared bottom frequency row (used by both SWP grid and RTA view)
 function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   ctx.font = '11px monospace';
@@ -95,17 +80,10 @@ export function renderGrid() {
   ctx.strokeStyle = col.axis;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
 
-  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const labelX = p.x + p.w + 42;
-  for (let i = 0; i <= S.totalDivs; i++) {
-    const y = p.y + i * p.h / S.totalDivs;
-    const v = c.displayRef - i * c.dbPerDiv;
-    ctx.fillText(v.toFixed(0), labelX, y);
-  }
+  drawYAxisLabels(p, col, c.displayRef, c.dbPerDiv);
 
   let loHz = c.centerHz - c.spanHz / 2, hiHz = c.centerHz + c.spanHz / 2;
-  if (S.freqArray && S.freqArray.length > 1) { loHz = S.freqArray[0]; hiHz = S.freqArray[S.freqArray.length - 1]; }
+  if (S.freqArray && S.freqArray!.length > 1) { loHz = S.freqArray![0]; hiHz = S.freqArray![S.freqArray!.length - 1]; }
   drawFreqRow(loHz, hiHz, col, p);
 
   if (c.displayUnit === 'dB') {
@@ -125,7 +103,7 @@ export function renderTraceLine(t: S.TraceState) {
   const p = plotRect();
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-  const data = S.smoothBins > 1 ? smoothForDisplay(t.powers, t.mode) : t.powers;
+  const data = smoothBins.get() > 1 ? smoothForDisplay(t.powers, t.mode) : t.powers;
   const n = data.length;
   ctx.strokeStyle = col.traces[t.id - 1] || col.traces[0];
   ctx.lineWidth = 1.5;
@@ -281,7 +259,6 @@ function renderOSD(powers: Float32Array) {
   const col = canvasColors();
   const active = c.markers.filter(m => m.enabled && m.mode !== 'OFF');
   if (!active.length) return;
-  const unit = c.displayUnit === 'dB' ? 'dB' : 'dBm';
   const p = plotRect();
   ctx.font = '11px monospace';
   ctx.textAlign = 'left';
@@ -293,7 +270,10 @@ function renderOSD(powers: Float32Array) {
     const f = markerFreqHz(idx), a = powers[idx];
     let txt: string;
     if (m.mode === 'NORMAL') {
-      txt = `M${m.id} ${formatFreqHz(f)}  ${a.toFixed(2)}${unit}`;
+      // Same rule as the marker table: display unit + external offset (fmtLevel), raw dB only in
+      // relative mode. Printing the raw value here is what made the on-canvas readout ignore the
+      // Level offset while the trace moved with it.
+      txt = `M${m.id} ${formatFreqHz(f)}  ${fmtReadoutLevel(a)}`;
     } else if (m.mode === 'DELTA') {
       const ref = c.markers.find(x => x.id === m.refId);
       if (ref) {
@@ -336,7 +316,7 @@ function renderLimits(powers: Float32Array | null) {
   const n = Math.min(powers.length, freq.length);
   const lim = buildLimitArray(freq, S.limits.points, n);
   if (!lim) { lastLimitEval = null; return; }
-  const p = PLOT_RECT;
+  const p = plotRect();
   ctx.save();
   ctx.beginPath();
   ctx.rect(p.x, p.y, p.w, p.h);
@@ -380,13 +360,14 @@ function renderLimits(powers: Float32Array | null) {
   }
 }
 
-export function renderAll() {
-  const c = cur();
-  resetStatusBlocks();                             // status area is rebuilt every pass
-  // Waterfall container replaces the table slot in ALL modes (incl. RTA)
-  const wfc = document.getElementById('waterfall-container');
-  if (wfc) wfc.style.display = S.waterfallOn ? '' : 'none';
-  if (c.viewMode === 'rta') {
+/** Drawing primitives lent to registered views (report finding E-5). */
+function viewContext() {
+  return { renderGrid, renderTraceLine, getDisplayPowers };
+}
+
+/** RTA/SDR view: the real-time trace, trigger overlay, limits and the table swaps. */
+function renderRtaView() {
+
     renderRta();
     renderTriggerLevel();                           // outside renderRta: still drawn when the
     renderTriggerOverlay();                         // canvas is empty while waiting
@@ -399,12 +380,12 @@ export function renderAll() {
     // marker peak-search uses the swept (or HTML default) threshold and jumps onto the noise
     // floor instead of the signal.
     if (rp) autoPeakThr(rp);
-    if (S.waterfallOn) {
+    if (waterfallOn.get()) {
       ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
       });
-    } else if (S.peakListOn) {
+    } else if (peakListVisible.get()) {
       const mt2 = document.getElementById('marker-table');
       if (mt2) mt2.style.display = 'none';
       if (rp) { updatePeakTable(rp); renderPeakMarks(rp); }
@@ -417,15 +398,18 @@ export function renderAll() {
     }
     return;
   }
-  if (c.viewMode === 'pnm') { renderPnm(); updatePnmTable(); return; }
-  if (c.viewMode === 'harm') {
-    renderGrid();
-    c.traces.forEach(t => renderTraceLine(t));
-    const powers2 = getDisplayPowers();
-    if (powers2 && S.freqArray) renderHarmOverlay(powers2);
-    updateHarmonicTable();
-    return;
-  }
+
+export function renderAll() {
+  const c = cur();
+  resetStatusBlocks();                             // status area is rebuilt every pass
+  // Waterfall container replaces the table slot in ALL modes (incl. RTA)
+  const wfc = document.getElementById('waterfall-container');
+  if (wfc) wfc.style.display = waterfallOn.get() ? '' : 'none';
+
+  // Measurement views register themselves (report finding E-5); the swept path below is
+  // the default when nothing is registered for the active mode.
+  const view = getViewRenderer(c.viewMode);
+  if (view) { view.render(viewContext()); return; }
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
@@ -435,22 +419,21 @@ export function renderAll() {
   }
   if (S.limits.on) { renderLimits(powers); pushStatus(limitStatusBlock()); }
   if (powers && S.freqArray) {
-    if (c.viewMode !== 'harm' && c.viewMode !== 'pnm') {
-      renderMarkersOnCanvas(powers);
-      renderOSD(powers);
-      render3dB(powers);
-    }
-    if (c.viewMode === 'harm') renderHarmonics(powers);
+    // Markers/OSD/3 dB are drawn only on the swept path; the measurement views own their
+    // own overlays (see render/registry.ts). The amplitude/channel measurements are also
+    // overlays on the swept trace, so they stay here.
+    renderMarkersOnCanvas(powers);
+    renderOSD(powers);
+    render3dB(powers);
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
     if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
-  if (S.waterfallOn) {
+  if (waterfallOn.get()) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
-  } else {
-    if (powers) {
+  } else if (powers) {
     autoPeakThr(powers);
     if (peakListOn() && c.viewMode === 'std') {
       const mt = document.getElementById('marker-table');
@@ -470,13 +453,41 @@ export function renderAll() {
       if (pt) pt.style.display = 'none';
       updateMarkerTable(powers);
     }
-      if (c.viewMode === 'harm') updateHarmonicTable();
-    }
   }
   renderStatusBlocks();
   renderWaterfallIfOn();
 }
 
+// The redraw seam: everyone else asks for a repaint instead of importing this hub
+// (breaks the render/spectrum.ts cycles, docs/*/ARCH_REVIEW.md finding P1-4).
+setRenderer(renderAll);
+// The real-time view is part of the hub itself, so it registers locally.
+registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
+
+
+/**
+ * Y-axis tick labels (right of the graticule), in the display domain.
+ *
+ * The trace is displaced by the external offset in getY(), so the axis must be labelled with the
+ * same conversion - `fmtAxisLevel` - or every number disagrees with the trace by the offset.
+ * The labels also become the `dataset.yLabels` diagnostic/e2e hook.
+ */
+function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
+                         col: { axis: string }, displayRef: number, dbPerDiv: number) {
+  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  const labelX = p.x + p.w + 42;
+  const labels: string[] = [];
+  for (let i = 0; i <= S.totalDivs; i++) {
+    const y = p.y + i * p.h / S.totalDivs;
+    const text = fmtAxisLevel(displayRef - i * dbPerDiv);
+    labels.push(text);
+    ctx.fillText(text, labelX, y);
+  }
+  // Written only on change (this runs on every pass; they change with ref/dB-per-div/offset/unit).
+  const text = labels.join(',');
+  if (ctx.canvas.dataset.yLabels !== text) ctx.canvas.dataset.yLabels = text;
+}
 
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn
 // even when the packet stream is empty (waiting), so the canvas always says which mode it
@@ -491,9 +502,9 @@ function renderTriggerOverlay() {
 
 // Trigger threshold line (RTA only): shows where a level trigger will fire.
 function renderTriggerLevel() {
-  if (S.trigSource !== 'level' && !S.swpArmed && !S.swpHold) return;
+  if (trigSource.get() !== 'level' && !S.swpArmed && !S.swpHold) return;
   const p = plotRect();
-  const raw = getY(S.trigLevel);
+  const raw = getY(trigLevel.get());
   if (!Number.isFinite(raw)) return;
   // Changing Ref (manually or through Auto Ref) re-scales the display; keep the threshold
   // visible by pinning it to the nearest edge instead of dropping the line entirely.
@@ -512,7 +523,7 @@ function renderTriggerLevel() {
   ctx.font = 'bold 10px monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(`${offscreen ? (offscreen < 0 ? '\u25b2 ' : '\u25bc ') : ''}TRG ${S.trigLevel.toFixed(1)} dBm`,
+  ctx.fillText(`${offscreen ? (offscreen < 0 ? '\u25b2 ' : '\u25bc ') : ''}TRG ${trigLevel.get().toFixed(1)} dBm`,
     p.x + 4, offscreen < 0 ? y + 11 : y - 2);
   ctx.restore();
 }
@@ -537,15 +548,7 @@ function renderRta() {
   ctx.stroke();
   ctx.strokeStyle = col.axis;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
-  // Y 轴标签
-  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const labelX = p.x + p.w + 42;
-  for (let i = 0; i <= S.totalDivs; i++) {
-    const y = p.y + i * p.h / S.totalDivs;
-    const v = cur().displayRef - i * cur().dbPerDiv;
-    ctx.fillText(v.toFixed(0), labelX, y);
-  }
+  drawYAxisLabels(p, col, cur().displayRef, cur().dbPerDiv);
   // Corner label "RTA" (kept; FFT size removed)
   ctx.fillStyle = col.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
   ctx.fillText(S.sdrMode ? 'SDR' : 'RTA', p.x + 4, p.y + 4);
@@ -559,7 +562,7 @@ function renderRta() {
   // ImageData with gamma-adjusted color), then drawImage-scaled onto the plot so the
   // hot region is continuous and smooth instead of sparse 1px dots. Row 0 = top of the
   // density matrix = displayRef (highest power), matching the plot Y direction.
-  if (S.rtaDensity2d && S.rtaDensity2d.length >= n * S.RTA_AMP_BINS) {
+  if (S.rtaDensity2d && S.rtaDensity2d!.length >= n * rtaAmpBins.get()) {
     drawRtaDensityLayer(n, p);
   } else {
     ctx.fillStyle = col.bg;
@@ -635,7 +638,7 @@ function renderRta() {
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
 let lastSwpWfAt = 0;
 function renderWaterfallIfOn() {
-  if (!S.waterfallOn) return;
+  if (!waterfallOn.get()) return;
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
   // Canvas width = spectrum plot area width (CSS px), fixed (buttons don't squeeze it)
@@ -658,7 +661,7 @@ function renderWaterfallIfOn() {
   // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
   if (!S.rtaMode) {
     const powers = getDisplayPowers();
-    if (powers && !S.wfPaused) {
+    if (powers && !wfPaused.get()) {
       const now = performance.now();
       if (now - lastSwpWfAt > 100) {
         lastSwpWfAt = now;
@@ -677,7 +680,7 @@ let lastDensRebuild = 0;
 // Build the density layer (throttled; cheap drawImage reuse between rebuilds)
 function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number; h: number }) {
   if (!rtaDensLayer) { rtaDensLayer = document.createElement('canvas'); rtaDensCtx = rtaDensLayer.getContext('2d'); }
-  const rows = S.RTA_AMP_BINS;
+  const rows = rtaAmpBins.get();
   const now = performance.now();
   if (rtaDensLayer.width !== cols || rtaDensLayer.height !== rows) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;

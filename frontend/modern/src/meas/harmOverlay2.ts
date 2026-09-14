@@ -1,6 +1,7 @@
 // Canvas overlay: vertical lines + diamonds + labels for each harmonic — renderHarmonics
 import * as S from '../core/store';
-import { getX, getY } from '../render/spectrum';
+import { getX, getY } from '../render/plot';
+
 import { plotRect } from '../render/plot';
 
 export function renderHarmonics(powers: Float32Array) {

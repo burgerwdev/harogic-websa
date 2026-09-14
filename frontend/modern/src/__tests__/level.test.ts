@@ -1,11 +1,12 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import * as S from '../core/store';
+import { displayOffset } from '../ui/displayState';
 import { fmtLevel, fromDisplayLevel, toDisplayLevel, unitOffsetDb } from '../core/level';
 
 describe('amplitude unit conversion (50 ohm)', () => {
   beforeEach(() => {
     S.setLevelUnit('dBm');
-    S.setDisplayOffset(0);
+    displayOffset.set(0);
   });
 
   it('uses the standard dBm offsets', () => {
@@ -30,7 +31,7 @@ describe('amplitude unit conversion (50 ohm)', () => {
   });
 
   it('adds the external gain/loss offset to readouts', () => {
-    S.setDisplayOffset(10);
+    displayOffset.set(10);
     expect(toDisplayLevel(-20)).toBeCloseTo(-10, 9);
     expect(fromDisplayLevel(-10)).toBeCloseTo(-20, 9);
     S.setLevelUnit('dBmV');
@@ -41,7 +42,7 @@ describe('amplitude unit conversion (50 ohm)', () => {
     expect(fmtLevel(-22.463)).toBe('-22.46 dBm');
     S.setLevelUnit('dBuV');
     expect(fmtLevel(-22.463)).toBe('84.53 dBuV');
-    S.setDisplayOffset(-3);
+    displayOffset.set(-3);
     expect(fmtLevel(-22.463, 1)).toBe('81.5 dBuV');
     expect(fmtLevel(NaN)).toBe('-');
   });

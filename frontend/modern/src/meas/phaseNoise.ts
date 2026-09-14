@@ -1,9 +1,12 @@
 // Phase noise (PNM) measurement: render/table/result handling
 import * as S from '../core/store';
 import { fmtHzUnit, formatFreqHz, fmtPnmFreq } from '../core/fmt';
-import { renderAll } from '../render/spectrum';
+import { registerViewRenderer } from '../render/registry';
+import { requestRender } from '../render/redraw';
+import { registerMeasurementTab } from '../ui/measureRegistry';
+import { units } from '../core/units';
 import { send } from '../core/wsSend';
-import { applyMeasUI } from '../ui/measure';
+import { applyMeasUI } from '../ui/measureUi';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 
@@ -30,7 +33,7 @@ export function measPnmApply() {
 function parsePnmFreq(): number {
   const el = document.getElementById('input-pnm') as HTMLInputElement;
   const v = parseFloat(el?.value || '') || 0;
-  const u = S.units.pnm;
+  const u = units().pnm;
   return u === 'GHz' ? v * 1e9 : u === 'MHz' ? v * 1e6 : u === 'kHz' ? v * 1e3 : v;
 }
 
@@ -66,7 +69,7 @@ export function onPnmResult(d: any) {
       S.pnmCarAcc.sumP -= S.pnmCarAcc.p.shift();
     }
   }
-  renderAll();
+  requestRender();
 }
 
 function pnmSmoothOn(): boolean {
@@ -258,3 +261,12 @@ function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: 
   ctx2.font = '12px monospace';
   ctx2.fillText(t('please_wait'), cx, by + 26);
 }
+
+// Register this view with the renderer hub (report finding E-5).
+registerViewRenderer({
+  mode: 'pnm',
+  render: () => { renderPnm(); updatePnmTable(); },
+});
+
+// Register this measurement tab with the registry (report finding E-5).
+registerMeasurementTab({ id: 'pnm', domId: 'tab-pnm', apply: measPnmApply, updateTable: updatePnmTable });
