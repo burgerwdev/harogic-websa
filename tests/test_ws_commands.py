@@ -16,6 +16,9 @@ class StubDevice:
             pnm_supported=True,
         )
 
+    def prepare_auto_reference_retune(self, mode):
+        return False
+
 
 def test_frequency_accepts_atomic_start_stop():
     data = {'cmd': 'SET_FREQ', 'start': 950e6, 'stop': 1050e6}
@@ -75,6 +78,25 @@ async def test_device_level_settings_reconfigure_active_rta_not_swp():
 
     assert await _dispatch(dev, 'SET_SWEEP', {'cmd': 'SET_SWEEP', 'time': 0.5})
     assert dev.session.sweep == (2, 0.5)
+
+
+@pytest.mark.asyncio
+async def test_swept_only_commands_do_not_steal_the_device_from_rta():
+    """SET_FREQ / SET_DETECTOR in RTA must not issue SWP_Configuration.
+
+    Root cause of the bench -9 burst: the SWP profile command switched the device out of RTA
+    behind the live session, so the RTA fetch answered a run of -9 until it reconfigured.
+    The swept values still move (they are the SWP preference for when std is re-entered).
+    """
+    dev = StubDevice()
+    dev.state.mode = 'rta'
+    dev.session = SimpleNamespace(name='rta')
+    dev.configure_swp = lambda: (_ for _ in ()).throw(AssertionError('SWP configured'))
+
+    assert await _dispatch(dev, 'SET_FREQ', {'cmd': 'SET_FREQ', 'center': 433e6, 'span': 5e6})
+    assert dev.state.center_hz == 433e6
+    assert await _dispatch(dev, 'SET_DETECTOR', {'cmd': 'SET_DETECTOR', 'mode': 'rms'})
+    assert dev.state.detector == 'rms'
 
 
 @pytest.mark.asyncio
