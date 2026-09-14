@@ -12,6 +12,7 @@ import numpy as np
 
 from ..config import (
     DeviceCapabilities,
+    clamp_ref_dbm,
     fit_center_span,
 )
 from . import sdk_bindings as sb
@@ -247,7 +248,9 @@ class HarogicDevice:
         p.FreqAssignment = T.SWP_FreqAssignment_TypeDef.StartStop
         p.StartFreq_Hz = start
         p.StopFreq_Hz = stop
-        p.RefLevel_dBm = max(-50, min(30, s.ref_level))
+        # The device's own range, from its capability row (a preset or a stale client value can
+        # still arrive outside it).
+        p.RefLevel_dBm = clamp_ref_dbm(s.caps, s.ref_level)
         if s.rbw_mode == 'auto':
             p.RBWMode = T.RBWMode_TypeDef.RBW_Auto
         else:

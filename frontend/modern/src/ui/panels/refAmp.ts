@@ -40,7 +40,7 @@ export function refStepDbm(): number {
 
 export function adjustRefLevel(direction: -1 | 1) {
   if (currentGraphMode() === 'sdr') {
-    const next = Math.max(-160, Math.min(40, getDisplayRef() + direction * S.dbPerDiv));
+    const next = Math.max(SDR_REF_MIN, Math.min(SDR_REF_MAX, getDisplayRef() + direction * S.dbPerDiv));
     clearAutoScaleHint();
     setDisplayRef('user', next);
     syncSdrRefUI();                       // ditto
@@ -52,7 +52,8 @@ export function adjustRefLevel(direction: -1 | 1) {
     return;
   }
   const base = refLevel.get();
-  const next = steppedRefLevel(base, refStepDbm(), direction, REF_MIN, REF_MAX);
+  // The device's own range (STATUS caps), not a UI constant.
+  const next = steppedRefLevel(base, refStepDbm(), direction, S.REF_MIN_DBM, S.REF_MAX_DBM);
   if (next === base) return;
   // The stepped value is an intent: rendered immediately and dropped by the slot's TTL if
   // the backend never accepts it (the old code hand-rolled exactly this with refPending).
@@ -132,9 +133,10 @@ export function toggleGapFill() {
   }
 }
 
-// Ref Level bounds (moved with the panel).
-const REF_MIN = -50;
-const REF_MAX = 30;
+// SDR's display scale belongs to the client, so its clamp is a client convention; the backend
+// validates `AUTO_SCALE.current_ref` against the same numbers (config.DISPLAY_REF_*_DBM).
+const SDR_REF_MIN = -160;
+const SDR_REF_MAX = 40;
 
 export function syncSdrRefUI() {
   if (currentGraphMode() !== 'sdr') return;
@@ -157,12 +159,12 @@ export function syncSdrRefUI() {
   const ref = getDisplayRef();
   const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   if (down) {
-    down.disabled = ref <= -160;
+    down.disabled = ref <= SDR_REF_MIN;
     down.title = t('ref_down');
   }
   const up = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
   if (up) {
-    up.disabled = ref >= 40;
+    up.disabled = ref >= SDR_REF_MAX;
     up.title = t('ref_up');
   }
 }

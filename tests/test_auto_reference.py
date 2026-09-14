@@ -380,3 +380,27 @@ def test_a_pending_fit_is_dropped_by_a_manual_takeover(clock):
     ctl.reset('std')                      # the manual SET_REF path does this
     assert ctl.apply_pending() is False   # the queued level must not be written
     assert dev.state.ref_level == -20.0
+
+
+def _caps(ref_min: float, ref_max: float):
+    """A capability row for this bench's model with the given Ref range."""
+    from web_sa.config import DeviceCapabilities
+    caps = DeviceCapabilities.from_model(67)
+    caps.ref_min_dbm, caps.ref_max_dbm = ref_min, ref_max
+    return caps
+
+
+def test_the_target_clamp_follows_the_device_capability(clock):
+    """The loop's ceiling/floor come from the device's capability row, not from literals."""
+    dev = StubDevice(ref_level=-20.0)
+    dev.state.caps = _caps(-45.0, 10.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-25.0, floor=-40.0)   # would target ~30 dBm with the old literals
+    result, target = ctl.fit('std')
+    assert result == 'applied'
+    assert target == 10.0                        # clamped to the reported maximum
+    dev.state.ref_level = 6.0                    # and the overflow escape cannot exceed it
+    dev.state.status_warning = -12
+    ctl.tracker('std')['last_change'] = -10.0
+    assert ctl.nudge_out_of_overflow() is True
+    assert ctl.pending == ('std', 10.0)

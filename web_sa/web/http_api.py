@@ -12,6 +12,13 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
+from ..config import (
+    DEFAULT_RTA_CENTER_HZ,
+    DEFAULT_RTA_POINTS,
+    DEFAULT_RTA_REF_DBM,
+    DEFAULT_RTA_SPAN_HZ,
+    ref_bounds,
+)
 from .app_keys import COMMAND_LOCK, LOGGER
 from .commands import build_schema
 from .jsonutil import finite_json
@@ -162,10 +169,16 @@ def build_status(dev) -> dict:
         'config_version': s.config_version,
         'caps': dict(model=s.caps.model if s.caps else 0, name=s.caps.name if s.caps else '',
                      fmin=s.caps.freq_min_hz if s.caps else 0,
-                     fmax=s.caps.freq_max_hz if s.caps else 0),
+                     fmax=s.caps.freq_max_hz if s.caps else 0,
+                     # The numeric limits the client needs (it used to hard-code them).
+                     ref_min=ref_bounds(s.caps)[0], ref_max=ref_bounds(s.caps)[1],
+                     rta_span_max=s.caps.rta_span_max_hz if s.caps else 0,
+                     rta_points=DEFAULT_RTA_POINTS),
         'preset_defaults': dev.preset_defaults,
         'rta_defaults': {
-            'center': 1e9, 'span': 50.78125e6, 'ref': 0.0, 'ref_mode': 'manual',
+            # The device's own RTA defaults, from the constants the session uses.
+            'center': DEFAULT_RTA_CENTER_HZ, 'span': DEFAULT_RTA_SPAN_HZ,
+            'ref': DEFAULT_RTA_REF_DBM, 'ref_mode': 'manual',
             'rbw_mode': 'auto', 'rbw': 0.0, 'vbw_mode': 'equal', 'vbw': 0.0,
             'sweep_time_mode': 2, 'sweep_time': 0.0,
         },

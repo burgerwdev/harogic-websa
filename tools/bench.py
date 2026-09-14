@@ -36,7 +36,7 @@ import aiohttp
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from tools.hardware_smoke import collect_rta, collect_swp, wait_status  # noqa: E402
+from tools.hardware_smoke import collect_rta, collect_swp, rta_span_limit, wait_status  # noqa: E402
 
 FPS_FLOOR = 0.70          # delivered fps must stay above this fraction of the baseline
 SWITCH_CEIL = 2.0         # mode switch may not take longer than this multiple
@@ -193,7 +193,7 @@ async def run(args) -> dict:
             async with session.ws_connect(f'{args.ws_url}/ws{token}',
                                           max_msg_size=32 * 1024 * 1024) as ws:
                 await ws.send_json({'cmd': 'SET_FREQ', 'center': args.frequency, 'span': args.span})
-                await wait_status(ws, lambda s: abs(s['span'] - args.span) < 1)
+                caps = (await wait_status(ws, lambda s: abs(s['span'] - args.span) < 1)).get('caps')
 
                 meter = CpuMeter()
                 swp = await collect_swp(ws, args.duration)
@@ -204,7 +204,7 @@ async def run(args) -> dict:
                 result['switch_to_rta_ms'] = await measure_switch(
                     ws, {'cmd': 'SET_MODE', 'mode': 'rta'})
                 await ws.send_json({'cmd': 'SET_RTA', 'center': args.frequency,
-                                    'span': min(args.span, 50.78125e6)})
+                                    'span': min(args.span, rta_span_limit(caps))})
                 await wait_status(ws, lambda s: s.get('mode') == 'rta')
                 meter = CpuMeter()
                 result['rta'] = await collect_rta(ws, args.duration, time.monotonic())

@@ -42,13 +42,15 @@ from __future__ import annotations
 import math
 import time
 
+from ..config import FALLBACK_REF_MAX_DBM, FALLBACK_REF_MIN_DBM, ref_bounds
+
 #: Default display window height (10 divisions x 10 dB/div) when the frontend has not
 #: reported one; the window is what the fit anchors the noise floor to.
 DEFAULT_WINDOW_DB = 100.0
-#: Lowest Ref the loop will ever propose.
-FLOOR_MIN_DBM = -50.0
-#: Highest Ref the device accepts here.
-CEILING_DBM = 30.0
+#: Fallback bounds when the device does not report a capability row; the real range comes from
+#: `config.ref_bounds(dev.state.caps)` so the loop, the validator and the profile agree.
+FLOOR_MIN_DBM = FALLBACK_REF_MIN_DBM
+CEILING_DBM = FALLBACK_REF_MAX_DBM
 #: Ref step used for the IF-overflow escape, and its rate limit.
 OVERFLOW_STEP_DB = 5.0
 OVERFLOW_INTERVAL_S = 1.0
@@ -135,6 +137,10 @@ class AutoReferenceController:
             # 'std' and 'sdr' both keep the level the IQS/SWP profile uses (the SDR session
             # saves and restores it with its snapshot).
             state.ref_level = value
+
+    def ref_bounds(self) -> tuple[float, float]:
+        """The range this device accepts, from its capability row (see config.ref_bounds)."""
+        return ref_bounds(getattr(self.dev.state, 'caps', None))
 
     def window_db(self) -> float:
         return max(20.0, float(getattr(self.dev.state, 'ref_range_db', DEFAULT_WINDOW_DB)))
@@ -247,10 +253,11 @@ class AutoReferenceController:
         # No floor estimate: keep the peak below the top edge (the best available rule).
         target = peak + 10.0 if floor is None else max(floor + window - 8.0, peak + 10.0)
         target = math.ceil(target / 5.0) * 5.0
-        target = min(CEILING_DBM, max(FLOOR_MIN_DBM, target, tracker.get('floor', FLOOR_MIN_DBM)))
+        ref_lo, ref_hi = self.ref_bounds()
+        target = min(ref_hi, max(ref_lo, target, tracker.get('floor', ref_lo)))
         if floor is not None and kind == 'inside':
             # A high noise floor needs room: 30 dB of headroom above it.
-            target = min(CEILING_DBM, max(target, floor + 30.0))
+            target = min(ref_hi, max(target, floor + 30.0))
         if abs(target - current) < MIN_CHANGE_DB:
             return 'ok', current
         return ('applied' if kind == 'inside' else kind), target
@@ -357,13 +364,14 @@ class AutoReferenceController:
             if now - tracker['last_change'] < OVERFLOW_INTERVAL_S:
                 return False
             current = self.ref_level(mode)
-            target = min(CEILING_DBM, current + OVERFLOW_STEP_DB)
+            ref_lo, ref_hi = self.ref_bounds()
+            target = min(ref_hi, current + OVERFLOW_STEP_DB)
             if target <= current:
                 return False
             # Learn the usable lower bound: the IF overflows at this Ref, so never propose one
             # this low again. Without it the peak-based rule keeps trying to go back down and
             # the two mechanisms fight, oscillating 5-10 dB (measured).
-            tracker['floor'] = max(tracker.get('floor', FLOOR_MIN_DBM), target)
+            tracker['floor'] = max(tracker.get('floor', ref_lo), target)
             # Cleared so the next tick does not queue another step before this one lands; the
             # device re-reports -12 on the following frame if it is still saturating.
             s.status_warning = 0

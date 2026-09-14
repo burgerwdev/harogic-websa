@@ -57,6 +57,15 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
     FREQ_MAX = maximum;
   }
 }
+// The Ref range is a device fact, not a UI constant: STATUS carries it in `caps` for every model
+// (it used to be hard-coded here and in the backend's profile clamp).
+export let REF_MIN_DBM = -50, REF_MAX_DBM = 30;
+export function setRefLimits(minimum: number, maximum: number) {
+  if (isFinite(minimum) && isFinite(maximum) && minimum < maximum) {
+    REF_MIN_DBM = minimum;
+    REF_MAX_DBM = maximum;
+  }
+}
 // (Reference level/mode live in ui/refState.ts; rta_ref_level/rta_ref_mode were unused
 // copies - the STATUS `ref` field is already the effective value for the active mode.)
 export let configVersion = 0;

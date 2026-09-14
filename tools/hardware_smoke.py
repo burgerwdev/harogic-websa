@@ -90,6 +90,19 @@ class TinySaSource:
         self.serial.close()
 
 
+def rta_span_limit(status_caps: dict | None) -> float:
+    """The device's own RTA span limit, as reported in the STATUS capabilities.
+
+    It used to be the literal 50.78125e6 here and in bench.py; asking the device keeps the two
+    tools right for a model with a different limit (the capability row owns it).
+    """
+    try:
+        limit = float((status_caps or {}).get('rta_span_max') or 0.0)
+    except (TypeError, ValueError):
+        limit = 0.0
+    return limit if limit > 0 else float('inf')
+
+
 async def wait_status(ws, predicate, timeout: float = 15.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -253,7 +266,8 @@ async def run(args) -> dict:
                 result['invalid_command_error'] = error
 
                 await ws.send_json({'cmd': 'SET_FREQ', 'center': args.frequency, 'span': args.span})
-                await wait_status(ws, lambda status: abs(status['span'] - args.span) < 1)
+                caps = (await wait_status(ws, lambda status: abs(status['span'] - args.span) < 1)
+                        ).get('caps')
                 result['swp'] = await collect_swp(ws, args.duration)
 
                 command_time = time.monotonic()
@@ -261,7 +275,9 @@ async def run(args) -> dict:
                 await ws.send_json({
                     'cmd': 'SET_RTA',
                     'center': args.frequency,
-                    'span': min(args.span, 50.78125e6),
+                    # The device's own RTA span limit, from its capability report (it was a literal
+                    # here and in bench.py).
+                    'span': min(args.span, rta_span_limit(caps)),
                 })
                 result['rta'] = await collect_rta(ws, args.duration, command_time)
     finally:

@@ -368,7 +368,10 @@ export function connectWS() {
 
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
-  if (s.caps) S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
+  if (s.caps) {
+    S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
+    S.setRefLimits(Number(s.caps.ref_min), Number(s.caps.ref_max));
+  }
   // STATUS top-level fields are the effective values for the active hardware mode.
   const isRtaStatus = s.mode === 'rta';
   if (s.req.rta?.center > 0) rtaCenterHz.confirm(Number(s.req.rta.center));

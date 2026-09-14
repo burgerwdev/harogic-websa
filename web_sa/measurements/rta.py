@@ -16,6 +16,7 @@ import time
 
 import numpy as np
 
+from ..config import DEFAULT_RTA_POINTS, DEFAULT_RTA_SPAN_HZ
 from ..hardware import sdk_bindings as _sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
@@ -50,8 +51,10 @@ class RtaSession(MeasurementSession):
     name = 'rta'
     auto_ref_scope = 'rta'
 
-    FULL_SPAN_HZ = 50.78125e6
-    DISPLAY_POINTS = 3328        # upper bound: the device FFT width at full span (~15 kHz/point)
+    # Both come from the device/RTA constants in config.py: the RTA profile's own span limit and
+    # the FFT width it reports at that span (they were literals here and in http_api.py).
+    FULL_SPAN_HZ = DEFAULT_RTA_SPAN_HZ
+    DISPLAY_POINTS = DEFAULT_RTA_POINTS
     WATERFALL_WIDTH = 860      # waterfall row width after downsample
     STALL_TIMEOUT = 4.0       # no good RTA frame for this long -> recover (warnings do not)
 

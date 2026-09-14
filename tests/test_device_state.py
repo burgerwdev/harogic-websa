@@ -3,7 +3,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from web_sa.config import DeviceCapabilities
+from web_sa.config import (
+    DEFAULT_RTA_POINTS,
+    DEFAULT_RTA_SPAN_HZ,
+    FALLBACK_REF_MAX_DBM,
+    FALLBACK_REF_MIN_DBM,
+    DeviceCapabilities,
+)
 from web_sa.hardware.device import DeviceState, HarogicDevice
 from web_sa.web.http_api import build_status
 
@@ -54,11 +60,15 @@ def test_build_status_defaults():
     dev = StubDevice(make_state())   # 全默认
     st = build_status(dev)
     assert st['connected'] is False
-    assert st['caps'] == {'model': 0, 'name': '', 'fmin': 0, 'fmax': 0}
+    # The capability report carries the numeric limits the client needs (it used to hard-code the
+    # Ref range on its side and in the backend's profile clamp).
+    assert st['caps'] == {'model': 0, 'name': '', 'fmin': 0, 'fmax': 0,
+                          'ref_min': FALLBACK_REF_MIN_DBM, 'ref_max': FALLBACK_REF_MAX_DBM,
+                          'rta_span_max': 0, 'rta_points': DEFAULT_RTA_POINTS}
     assert st['ref_clock'] == 'internal'
     assert st['has_docxo'] is False
     assert st['ref_mode'] == 'manual'
-    assert st['rta_defaults']['span'] == 50.78125e6
+    assert st['rta_defaults']['span'] == DEFAULT_RTA_SPAN_HZ
 
 
 def test_build_status_keeps_swp_and_rta_settings_independent():
@@ -71,12 +81,12 @@ def test_build_status_keeps_swp_and_rta_settings_independent():
         vbw_mode='manual',
         vbw_hz=50e3,
         rta_center_hz=1e9,
-        rta_span_hz=50.78125e6,
+        rta_span_hz=DEFAULT_RTA_SPAN_HZ,
         rta_rbw_mode='auto',
         rta_vbw_mode='equal',
         rta_actual={
             'center': 1e9,
-            'span': 50.78125e6,
+            'span': DEFAULT_RTA_SPAN_HZ,
             'ref': 0.0,
             'rbw': 30153.0,
             'vbw': 30153.0,
@@ -84,13 +94,13 @@ def test_build_status_keeps_swp_and_rta_settings_independent():
         },
     )
     status = build_status(StubDevice(state))
-    assert status['span'] == 50.78125e6
+    assert status['span'] == DEFAULT_RTA_SPAN_HZ
     assert status['rbw_mode'] == 'auto'
     assert status['vbw_mode'] == 'equal'
     assert status['rbw'] == 30153.0
     assert status['req']['swp']['rbw'] == 200e3
     assert status['req']['swp']['vbw'] == 50e3
-    assert status['req']['rta']['span'] == 50.78125e6
+    assert status['req']['rta']['span'] == DEFAULT_RTA_SPAN_HZ
 
 
 def test_device_state_serializable():
@@ -201,7 +211,7 @@ def test_rta_defaults_can_be_reset_without_touching_swp():
     dev.state.rta_vbw_mode = 'manual'
     dev.reset_rta_state()
     assert dev.state.rta_center_hz == 1e9
-    assert dev.state.rta_span_hz == 50.78125e6
+    assert dev.state.rta_span_hz == DEFAULT_RTA_SPAN_HZ
     assert dev.state.rta_rbw_mode == 'auto'
     assert dev.state.rta_vbw_mode == 'equal'
     assert dev.state.rta_sweep_time_mode == 2
