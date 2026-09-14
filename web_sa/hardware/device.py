@@ -338,8 +338,7 @@ class HarogicDevice:
         The floor records "the IF saturated at this Ref" for a given attenuation/preamp;
         changing either moves the saturation point, so the old bound is meaningless.
         """
-        for tracker in self._auto_ref.values():
-            tracker['floor'] = -50.0
+        self.auto_ref.clear_learned_floor()
 
     def _read_amp_atten(self) -> None:
         with self._hw:
@@ -521,8 +520,16 @@ class HarogicDevice:
         self.auto_ref.observe_peak(mode, peak_dbm, noise_floor_dbm)
 
     def prepare_auto_reference_retune(self, mode: str) -> bool:
-        """Use a safe Ref before changing frequency when Auto Ref had lowered it."""
+        """Use a safe Ref before changing frequency when a fit had lowered it."""
         return self.auto_ref.prepare_retune(mode)
+
+    def auto_scale(self, mode: str) -> tuple[str, float | None]:
+        """Place the reference level once, from the newest trace (the user's Auto Scale)."""
+        return self.auto_ref.fit(mode)
+
+    def auto_reference_scope(self) -> str:
+        """Which tracker the active session drives ('std' for plain SWP)."""
+        return getattr(self.session, 'auto_ref_scope', 'std')
 
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
         """Discard stale auto-ref observations after any acquisition reconfiguration."""

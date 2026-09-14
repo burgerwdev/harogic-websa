@@ -60,7 +60,7 @@ HW_CALL_TIMEOUT_S = 20.0
 #: Commands the swept engine owns. While a Harmonic/PNM measurement runs it owns the
 #: device configuration, so re-applying these behind its back would break its acquisition.
 SWP_OWNED = frozenset({
-    'SET_FREQ', 'SET_REF', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS',
+    'SET_REF', 'AUTO_SCALE', 'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS',
     'SET_SPUR', 'SET_WINDOW', 'SET_DETECTOR', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
 })
 #: SWP-only parameters that make no sense inside an RTA profile.
@@ -245,6 +245,9 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('range_db', 'number', REF_RANGE_DB_MIN, REF_RANGE_DB_MAX, unit='dB'),
         ParamSpec('ref', 'number', REF_MIN, REF_MAX, unit='dBm',
                   required_if=_yes('mode', 'manual')),
+    ),
+    'AUTO_SCALE': (
+        ParamSpec('range_db', 'number', REF_RANGE_DB_MIN, REF_RANGE_DB_MAX, unit='dB'),
     ),
     'SET_RBW': (
         ParamSpec('mode', 'choice', choices=('manual', 'auto'), default='auto'),
@@ -531,20 +534,43 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
         s.ref_range_db = float(data['range_db'])
     session = dev.session
     if session is not None and session.name == 'sdr':
-        if mode == 'manual' and 'ref' in data:
+        # The SDR display scale is client-side, so there is no fit to run here: 'auto' means
+        # "re-apply the current level" (the client does the display fit itself).
+        if 'ref' in data:
             s.ref_level = data['ref']
-        s.ref_mode = mode
+        s.ref_mode = 'manual'
+        dev.reset_auto_reference('std')     # a manual level ends any fit's authorship
         await ctx.hw_call(session.reconfigure)
         return True
+    if mode == 'auto':
+        # Legacy spelling of the one-shot fit (presets and scripts sent it). There is no
+        # tracking mode any more: quoting "auto" must not leave a mode latched on.
+        return await _run_auto_scale(ctx)
     if session is not None and session.name == 'rta':
-        await ctx.hw_call(session.set_reference, mode=mode, ref=data.get('ref'))
+        await ctx.hw_call(session.set_reference, mode='manual', ref=data.get('ref'))
         return True
-    s.ref_mode = mode
+    s.ref_mode = 'manual'
+    s.ref_level = data['ref']
+    # The user owns the level now: forget the placement this loop made (the retune safety
+    # must not lift a level the user chose) and the observations that went with it.
     dev.reset_auto_reference('std')
-    if mode == 'manual':
-        s.ref_level = data['ref']
-        await ctx.configure_swp()
+    await ctx.configure_swp()
     return True
+
+
+async def _run_auto_scale(ctx: CommandContext) -> bool:
+    """One-shot reference placement; returns whether the configuration changed."""
+    dev = ctx.dev
+    if dev.state.mode not in ('std', 'rta'):
+        return False
+    result, _target = dev.auto_scale(dev.auto_reference_scope())
+    return result == 'applied'
+
+
+async def _h_auto_scale(ctx: CommandContext, data: dict) -> bool:
+    if 'range_db' in data:
+        ctx.state.ref_range_db = float(data['range_db'])
+    return await _run_auto_scale(ctx)
 
 
 async def _h_set_rbw(ctx: CommandContext, data: dict) -> bool:
@@ -783,6 +809,7 @@ _REGISTRY = (
     ('CAL_REFCLK', _h_cal_refclk, (), None, True),
     ('SET_FREQ', _h_set_freq, (), None, True),
     ('SET_REF', _h_set_ref, (), None, True),
+    ('AUTO_SCALE', _h_auto_scale, (), None, True),
     ('SET_RBW', _h_set_rbw, (), None, True),
     ('SET_VBW', _h_set_vbw, (), None, True),
     ('SET_SWEEP', _h_set_sweep, (), None, True),

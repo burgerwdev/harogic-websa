@@ -28,7 +28,8 @@ class StubDevice:
 
     # The interface build_status relies on (mirrors HarogicDevice).
     def auto_reference_view(self) -> dict:
-        return {'last_peak': None, 'last_noise_floor': None, 'candidate': None, 'pending': None}
+        return {'last_peak': None, 'last_noise_floor': None, 'target': None,
+                'result': 'idle', 'pending': None, 'adjusting': False}
 
     def session_health(self) -> dict:
         return {}

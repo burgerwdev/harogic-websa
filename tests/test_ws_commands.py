@@ -161,3 +161,79 @@ def test_model_limits_come_from_capabilities():
     with pytest.raises(CommandError):
         bad = {'cmd': 'SET_REF', 'mode': 'manual', 'ref': 1.0}
         _validate_command(dev, bad['cmd'], bad)
+
+
+class ScaleDevice(StubDevice):
+    """Device state plus the real reference controller, for the Auto Scale command."""
+
+    def __init__(self):
+        super().__init__()
+        import threading
+
+        from web_sa.hardware.auto_reference import AutoReferenceController
+
+        self.state.ref_level = -20.0
+        self.state.ref_range_db = 100.0
+        self._hw = threading.RLock()
+        self.session = None
+        self.configured = 0
+        self.auto_ref = AutoReferenceController(self)
+
+    def configure_swp(self):
+        self.configured += 1
+        return True, 'ok'
+
+    def auto_scale(self, mode):
+        return self.auto_ref.fit(mode)
+
+    def apply_pending_auto_reference(self):
+        return self.auto_ref.apply_pending()
+
+    def auto_reference_scope(self):
+        return getattr(self.session, 'auto_ref_scope', 'std')
+
+    def observe_reference_peak(self, mode, peak, floor=None):
+        self.auto_ref.observe_peak(mode, peak, floor)
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_places_the_reference_once():
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)   # floor 25 dB above the bottom: too high
+    assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    assert dev.auto_ref.pending == ('std', 0.0)
+
+    # Applied, then a second press on a well-placed trace must not re-enter the device.
+    assert dev.apply_pending_auto_reference()
+    assert dev.state.ref_level == 0.0
+    dev.observe_reference_peak('std', -25.0, -95.0)
+    assert not await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    assert dev.auto_ref.pending is None
+    assert dev.auto_ref.view('std')['result'] == 'ok'
+
+
+@pytest.mark.asyncio
+async def test_legacy_set_ref_auto_runs_one_fit_and_latches_no_mode():
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)
+    assert await _dispatch(dev, 'SET_REF', {'cmd': 'SET_REF', 'mode': 'auto', 'range_db': 100.0})
+    assert dev.auto_ref.pending == ('std', 0.0)
+    assert dev.state.ref_mode == 'manual'      # there is no tracking mode to latch any more
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_is_rejected_while_a_measurement_owns_the_device():
+    dev = ScaleDevice()
+    dev.state.mode = 'pnm'
+    dev.session = SimpleNamespace(name='pnm')
+    with pytest.raises(CommandError, match='measurement is active'):
+        await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE'})
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_in_sdr_changes_nothing():
+    """The SDR display scale belongs to the client, so the backend fit is a no-op there."""
+    dev = ScaleDevice()
+    dev.state.mode = 'sdr'
+    assert not await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE'})
+    assert dev.auto_ref.pending is None

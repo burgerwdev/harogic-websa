@@ -1,4 +1,4 @@
-"""Auto-reference control loop (web_sa/hardware/auto_reference.py).
+"""Reference placement: the one-shot fit plus the always-armed safety ranger.
 
 These tests drive the controller directly with a stub device and a fake clock, so the
 decisions are deterministic and need no hardware. The behaviour-level tests in
@@ -11,7 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from web_sa.hardware.auto_reference import FLOOR_MIN_DBM, AutoReferenceController
+from web_sa.hardware.auto_reference import (
+    FLOOR_MIN_DBM,
+    OVERFLOW_INTERVAL_S,
+    SAFETY_INTERVAL_S,
+    AutoReferenceController,
+)
 
 
 class StubDevice:
@@ -19,7 +24,7 @@ class StubDevice:
 
     def __init__(self, **state):
         base = dict(
-            ref_mode='auto', ref_level=0.0, rta_ref_mode='auto', rta_ref_level=0.0,
+            ref_mode='manual', ref_level=0.0, rta_ref_mode='manual', rta_ref_level=0.0,
             atten=-1, ref_range_db=100.0, status_warning=0, mode='std',
             center_hz=1e9, span_hz=10e6, rbw_hz=1e5, vbw_hz=1e5, window=1,
             rta_center_hz=1e9, rta_span_hz=10e6, rta_rbw_hz=0.0, rta_vbw_hz=0.0,
@@ -57,94 +62,129 @@ def observe(dev, controller, peak, floor=None, mode='std'):
     controller.observe_peak(mode, peak, floor)
 
 
-def test_anchors_the_noise_floor_below_the_top_edge(clock):
-    dev = StubDevice(ref_level=-20.0)           # 25 dB of floor above the bottom: too high
+# ---------------- the user's Auto Scale (one-shot) ----------------
+
+def test_fit_anchors_the_noise_floor_and_applies_once(clock):
+    dev = StubDevice(ref_level=-20.0)            # floor 25 dB above the bottom: too high
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-30.0, floor=-95.0)  # first observation arms the candidate
-    assert ctl.pending is None
-    clock[0] += 0.2
     observe(dev, ctl, peak=-30.0, floor=-95.0)
+    assert ctl.pending is None                   # observing alone never moves the reference
     # target = floor + window - 8 = -3, rounded up to the next 5 dB step
+    assert ctl.fit('std') == ('applied', 0.0)
     assert ctl.pending == ('std', 0.0)
+    assert ctl.view('std')['result'] == 'applied'
 
 
-def test_raise_is_immediate_and_lowering_waits(clock):
+def test_fit_raises_to_the_instrument_ceiling(clock):
     dev = StubDevice(ref_level=10.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-10.0, floor=-40.0)   # arms the candidate
-    clock[0] += 0.2                              # a fresh tracker commits after 0.15 s
     observe(dev, ctl, peak=-10.0, floor=-40.0)
-    assert ctl.pending == ('std', 30.0)          # clamped to the instrument ceiling
-
-    dev2 = StubDevice(ref_level=10.0)
-    ctl2 = AutoReferenceController(dev2)
-    ctl2.reset('std')
-    clock[0] += 0.3                              # past the reset guard
-    observe(dev2, ctl2, peak=-40.0, floor=-95.0)  # target well below the current level
-    assert ctl2.pending is None                   # lowering needs ~1.5 s of stability
-    clock[0] += 1.6
-    observe(dev2, ctl2, peak=-40.0, floor=-95.0)
-    assert ctl2.pending == ('std', 0.0)
+    assert ctl.fit('std') == ('applied', 30.0)
 
 
-def test_holds_when_the_placement_is_already_good(clock):
+def test_fit_does_nothing_when_the_placement_is_already_good(clock):
     dev = StubDevice(ref_level=-20.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
     # noise floor 8 dB above the bottom (current - window = -120), peak 20 dB below the top
     observe(dev, ctl, peak=-40.0, floor=-112.0)
-    assert ctl.pending is None
-    assert ctl.tracker('std')['candidate'] is None
+    assert ctl.fit('std') == ('ok', None)
+    assert ctl.pending is None                   # no pointless reconfiguration
+    assert ctl.view('std')['result'] == 'ok'
 
 
-def test_needs_a_signal_above_the_noise_floor(clock):
+def test_fit_needs_a_signal_above_the_noise_floor(clock):
     dev = StubDevice()
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-100.0, floor=-105.0)   # < 15 dB above the floor
+    observe(dev, ctl, peak=-100.0, floor=-95.0)    # 5 dB above the floor, inside the window
+    assert ctl.fit('std') == ('no_signal', None)
     assert ctl.pending is None
+    assert ctl.view('std')['result'] == 'no_signal'
 
 
-def test_does_nothing_without_auto_or_with_manual_attenuation(clock):
-    manual_ref = StubDevice(ref_mode='manual')
-    ctl = AutoReferenceController(manual_ref)
-    observe(manual_ref, ctl, peak=-30.0, floor=-95.0)
-    assert ctl.pending is None
-
-    manual_atten = StubDevice(atten=10)
-    ctl2 = AutoReferenceController(manual_atten)
-    observe(manual_atten, ctl2, peak=-30.0, floor=-95.0)
-    assert ctl2.pending is None
+def test_fit_reports_missing_data_before_the_first_trace(clock):
+    dev = StubDevice()
+    ctl = AutoReferenceController(dev)
+    assert ctl.fit('std') == ('no_data', None)
 
 
-def test_ignores_observations_during_the_settle_window(clock):
+def test_fit_uses_the_observation_recorded_during_a_settle_window(clock):
+    """A user action overrides the settle guard: the newest frame is what they are looking at."""
     dev = StubDevice(ref_level=10.0)
     ctl = AutoReferenceController(dev)
     ctl.begin_settle('std', delay=0.75)
-    observe(dev, ctl, peak=-10.0, floor=-40.0)
+    observe(dev, ctl, peak=-10.0, floor=-40.0)   # recorded, but the ranger stays quiet
     assert ctl.pending is None
-    clock[0] += 0.8
-    observe(dev, ctl, peak=-10.0, floor=-40.0)   # arms after the settle window
-    clock[0] += 0.2
-    observe(dev, ctl, peak=-10.0, floor=-40.0)
-    assert ctl.pending == ('std', 30.0)
+    assert ctl.fit('std') == ('applied', 30.0)
 
 
-def test_geometry_change_drops_the_learned_overflow_floor(clock):
-    dev = StubDevice()
-    ctl = AutoReferenceController(dev)
-    ctl.begin_settle('std')
-    ctl.tracker('std')['floor'] = 10.0          # learned by an overflow escape
-    dev.state.span_hz = 20e6                     # geometry change
-    ctl.begin_settle('std')
-    assert ctl.tracker('std')['floor'] == FLOOR_MIN_DBM
-
-
-def test_mode_private_trackers():
-    dev = StubDevice()
+def test_fit_is_mode_private(clock):
+    dev = StubDevice(ref_level=-20.0, rta_ref_level=-20.0)
+    dev.session = Session()
     ctl = AutoReferenceController(dev)
     observe(dev, ctl, peak=-30.0, floor=-95.0, mode='rta')
-    assert ctl.tracker('rta')['last_peak'] == -30.0
-    assert ctl.tracker('std')['last_peak'] is None
+    assert ctl.fit('rta') == ('applied', 0.0)
+    assert ctl.pending == ('rta', 0.0)
+    assert ctl.view('std')['last_peak'] is None
+    dev.state.mode = 'rta'                       # the worker only applies its own mode
+    assert ctl.apply_pending() is True
+    assert dev.state.rta_ref_level == 0.0
 
+
+# ---------------- the safety ranger (always armed) ----------------
+
+def test_safety_fit_fixes_a_trace_below_the_window(clock):
+    """Measured with the SAN-90: Ref 0 dBm, 80 dB window, everything at -108 dBm.
+
+    The old loop refused this because the peak was less than 15 dB above the floor, and left
+    the display empty for as long as the signal stayed away.
+    """
+    dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    assert ctl.pending == ('std', -35.0)         # floor + window - 8 = -36 -> -35
+    assert ctl.view('std')['result'] == 'out_of_window'
+
+
+def test_safety_fit_raises_a_clipped_trace(clock):
+    dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=0.0, floor=-95.0)     # peak above the top edge
+    assert ctl.pending == ('std', 10.0)          # peak + 10 dB of headroom
+
+
+def test_safety_ranger_leaves_a_good_placement_alone(clock):
+    dev = StubDevice(ref_level=-20.0, ref_range_db=100.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-40.0, floor=-112.0)
+    observe(dev, ctl, peak=-41.0, floor=-111.0)
+    assert ctl.pending is None
+
+
+def test_safety_fit_is_rate_limited(clock):
+    dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    assert ctl.pending is not None
+    ctl.apply_pending()
+    dev.state.ref_level = 0.0                   # pretend the device ignored it
+    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    assert ctl.pending is None                  # inside the settle window
+    clock[0] += 1.0
+    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    assert ctl.pending is None                  # still inside SAFETY_INTERVAL_S
+    clock[0] += SAFETY_INTERVAL_S
+    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    assert ctl.pending == ('std', -35.0)
+
+
+def test_safety_fit_needs_a_supported_mode(clock):
+    dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-98.0, floor=-108.0, mode='sdr')
+    assert ctl.pending is None
+
+
+# ---------------- IF overflow escape ----------------
 
 def test_overflow_nudge_raises_one_step_and_learns_the_floor(clock):
     dev = StubDevice(ref_level=-40.0, status_warning=-12)
@@ -156,16 +196,52 @@ def test_overflow_nudge_raises_one_step_and_learns_the_floor(clock):
 
     dev.state.status_warning = -12
     assert ctl.nudge_out_of_overflow() is False  # rate limited to one step per second
-    clock[0] += 1.1
+    clock[0] += OVERFLOW_INTERVAL_S + 0.1
     assert ctl.nudge_out_of_overflow() is True
 
 
-def test_overflow_nudge_needs_auto_mode_and_a_supported_mode():
-    dev = StubDevice(status_warning=-12, ref_mode='manual')
-    assert AutoReferenceController(dev).nudge_out_of_overflow() is False
-    dev2 = StubDevice(status_warning=-12, mode='sdr')
-    assert AutoReferenceController(dev2).nudge_out_of_overflow() is False
+def test_overflow_escape_works_with_manual_attenuation_and_manual_ref(clock):
+    """Selecting a manual attenuator used to disable overload protection entirely."""
+    dev = StubDevice(ref_level=-40.0, status_warning=-12, atten=10, ref_mode='manual')
+    assert AutoReferenceController(dev).nudge_out_of_overflow() is True
 
+
+def test_overflow_nudge_still_needs_a_supported_mode():
+    dev = StubDevice(status_warning=-12, mode='sdr')
+    assert AutoReferenceController(dev).nudge_out_of_overflow() is False
+
+
+# ---------------- housekeeping ----------------
+
+def test_geometry_change_drops_the_learned_overflow_floor(clock):
+    dev = StubDevice()
+    ctl = AutoReferenceController(dev)
+    ctl.begin_settle('std')
+    ctl.tracker('std')['floor'] = 10.0          # learned by an overflow escape
+    dev.state.span_hz = 20e6                     # geometry change
+    ctl.begin_settle('std')
+    assert ctl.tracker('std')['floor'] == FLOOR_MIN_DBM
+
+
+def test_front_end_change_can_clear_the_learned_floor():
+    dev = StubDevice()
+    ctl = AutoReferenceController(dev)
+    ctl.tracker('std')['floor'] = 5.0
+    ctl.clear_learned_floor()
+    assert ctl.tracker('std')['floor'] == FLOOR_MIN_DBM
+
+
+def test_reset_forgets_observations_and_pending(clock):
+    dev = StubDevice()
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-30.0, floor=-95.0)
+    ctl.pending = ('std', 0.0)
+    ctl.reset('std')
+    assert ctl.pending is None
+    assert ctl.fit('std') == ('no_data', None)
+
+
+# ---------------- application in the worker ----------------
 
 def test_apply_pending_configures_the_swp_path():
     dev = StubDevice(mode='std')
@@ -208,18 +284,22 @@ def test_apply_pending_reports_a_rejected_configuration():
     assert ctl.apply_pending() is False
 
 
-def test_prepare_retune_clamps_lowered_refs_and_re_arms(clock):
+# ---------------- retune safety ----------------
+
+def test_prepare_retune_clamps_a_ref_the_fit_had_lowered(clock):
     dev = StubDevice(ref_level=-25.0)
     ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-30.0, floor=-95.0)
+    ctl.fit('std')                               # the loop owns this level now
+    ctl.tracker('std')['last_target'] = -25.0
     assert ctl.prepare_retune('std') is True
     assert dev.state.ref_level == 0.0
-    assert ctl.tracker('std')['fresh'] is True
-
-    dev2 = StubDevice(ref_level=5.0)
+    assert ctl.prepare_retune('std') is False    # already safe
+    dev2 = StubDevice(ref_level=-25.0)           # a level the user set: leave it alone
     assert AutoReferenceController(dev2).prepare_retune('std') is False
-    dev3 = StubDevice(ref_mode='manual')
-    assert AutoReferenceController(dev3).prepare_retune('std') is False
 
+
+# ---------------- diagnostics for STATUS ----------------
 
 def test_view_reports_the_diagnostics_for_status(clock):
     dev = StubDevice(ref_level=-20.0)
@@ -228,9 +308,13 @@ def test_view_reports_the_diagnostics_for_status(clock):
     view = ctl.view('std')
     assert view['last_peak'] == -30.0
     assert view['last_noise_floor'] == -95.0
-    assert view['candidate'] == 0.0     # armed, not yet committed
-    assert view['pending'] is None
-    clock[0] += 0.2
-    observe(dev, ctl, peak=-30.0, floor=-95.0)
-    assert ctl.view('std')['pending'] == 0.0
+    assert view['target'] is None
+    assert view['result'] == 'idle'
+    assert view['adjusting'] is False
+    ctl.fit('std')
+    view = ctl.view('std')
+    assert view['target'] == 0.0
+    assert view['result'] == 'applied'
+    assert view['pending'] == 0.0
+    assert view['adjusting'] is True             # the button glows while it is applied
     assert ctl.view('rta')['last_peak'] is None

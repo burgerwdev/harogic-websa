@@ -1,6 +1,6 @@
 {
  "backend_cycles": 1,
- "command_specs": 24,
+ "command_specs": 25,
  "dispatch_lines": 33,
  "frontend_cycles": 0,
  "htra_imports_outside_bindings": 0,

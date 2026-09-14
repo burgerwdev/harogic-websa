@@ -97,8 +97,14 @@ class FakeRtaSession(_FakeRtaBase):
 
     def set_reference(self, mode='manual', ref=None) -> None:
         self.dev.state.rta_ref_mode = mode
+        self.dev.reset_auto_reference('rta')
         if mode == 'manual' and ref is not None:
             self.dev.state.rta_ref_level = float(ref)
+            self._configure()
+
+    def _configure(self) -> None:
+        """Re-apply the profile (the real session's call; the fake just stays ready)."""
+        self._ready = True
 
     def set_trigger(self) -> None:
         self.dev.state.trigger_actual = {'waiting': False, 'frames': self._tick, 'edges': 0,
@@ -111,6 +117,10 @@ class FakeRtaSession(_FakeRtaBase):
         s = self.dev.state
         center, span = float(s.rta_center_hz), float(s.rta_span_hz)
         freq, spec = self._spectrum(center, span, RTA_POINTS)
+        finite = np.sort(spec[np.isfinite(spec)])
+        if finite.size:
+            self.dev.observe_reference_peak(
+                'rta', float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
         s.rta_actual = {
             'center': center, 'span': span, 'start': center - span / 2,
             'stop': center + span / 2, 'ref': float(s.rta_ref_level),

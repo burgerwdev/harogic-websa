@@ -15,6 +15,7 @@ import threading
 import numpy as np
 
 from ..config import DEFAULT_SPAN_HZ, DeviceCapabilities
+from .auto_reference import AutoReferenceController
 from .state import DeviceState, RtaParams, SdrParams, TriggerParams
 
 #: Model the fake reports; SAN-90 so the frontend enables every control.
@@ -38,6 +39,9 @@ class FakeDevice:
         self._rng = np.random.default_rng(20260914)   # deterministic frames
         self._sweep_count = 0
         self._window: tuple | None = None
+        # The real control loop, not a stub: the fake feeds it the same observations the
+        # device does, so the CI UI checks exercise the actual placement rules.
+        self.auto_ref = AutoReferenceController(self)
 
     # ---------------- lifecycle ----------------
 
@@ -133,6 +137,12 @@ class FakeDevice:
         width = max(1.0, points / 200.0)
         powers = floor + (peak - NOISE_DBM) * np.exp(
             -0.5 * ((np.arange(points) - points / 2.0) / width) ** 2)
+        # Same observation the real device hands the reference loop: peak plus the 30th
+        # percentile as the noise floor.
+        finite = np.sort(powers[np.isfinite(powers)])
+        if finite.size:
+            self.observe_reference_peak(s.mode, float(finite[-1]),
+                                        float(finite[int((finite.size - 1) * 0.3)]))
         s.sweep_ms = 5.0
         s.actual = {
             'center': center, 'span': span, 'start': center - span / 2,
@@ -168,30 +178,35 @@ class FakeDevice:
     def calibrate_ref_clock(self, count: int = 10) -> tuple[bool, float]:
         return True, 100e6
 
-    # ---------------- auto reference (state-only stubs) ----------------
+    # ---------------- auto reference (the real control loop) ----------------
 
     def observe_reference_peak(self, mode: str, peak_dbm: float,
                                noise_floor_dbm: float | None = None) -> None:
-        """The fake has no auto-ref control loop; the recorder keeps the call site cheap."""
-        self.last_observation = (mode, peak_dbm, noise_floor_dbm)
+        self.auto_ref.observe_peak(mode, peak_dbm, noise_floor_dbm)
 
     def prepare_auto_reference_retune(self, mode: str) -> bool:
-        return False
+        return self.auto_ref.prepare_retune(mode)
 
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
-        return None
+        self.auto_ref.begin_settle(mode, delay)
 
     def reset_auto_reference(self, mode: str) -> None:
-        return None
+        self.auto_ref.reset(mode)
 
     def nudge_reference_out_of_overflow(self) -> bool:
-        return False
+        return self.auto_ref.nudge_out_of_overflow()
 
     def apply_pending_auto_reference(self) -> bool:
-        return False
+        return self.auto_ref.apply_pending()
+
+    def auto_scale(self, mode: str) -> tuple[str, float | None]:
+        return self.auto_ref.fit(mode)
+
+    def auto_reference_scope(self) -> str:
+        return getattr(self.session, 'auto_ref_scope', 'std')
 
     def auto_reference_view(self) -> dict:
-        return {'last_peak': None, 'last_noise_floor': None, 'candidate': None, 'pending': None}
+        return self.auto_ref.view(self.auto_reference_scope())
 
 
 def create_device() -> FakeDevice:
