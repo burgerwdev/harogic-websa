@@ -86,6 +86,21 @@ describe('SWP/RTA Auto Scale', () => {
 		expect(hint.textContent).toBe('No signal to fit');
 	});
 
+	it('keeps a repeated message visible for its own hold time', () => {
+		vi.useFakeTimers();
+		const el = document.createElement('span');
+		el.id = 'ref-hint';
+		document.body.appendChild(el);
+		status({ adjusting: false, result: 'no_signal', seq: 1 });
+		vi.advanceTimersByTime(4000);
+		status({ adjusting: false, result: 'no_signal', seq: 2 });   // the same message again
+		vi.advanceTimersByTime(3000);                               // past the FIRST hold
+		expect(el.textContent).toBe('No signal to fit');            // the newest hold owns it
+		vi.advanceTimersByTime(3100);
+		expect(el.textContent).toBe('');
+		vi.useRealTimers();
+	});
+
 	it('keeps glowing while the backend is still adjusting', () => {
 		const btn = document.createElement('button');
 		btn.id = 'btn-ref-auto';

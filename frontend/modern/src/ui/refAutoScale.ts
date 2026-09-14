@@ -48,12 +48,20 @@ function button(): HTMLButtonElement | null {
 	return document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
 }
 
+/** Generation of the last hint, so an older timer cannot clear a newer message.
+ *
+ * Comparing the text instead looked fine until the same message was shown twice in a row (an
+ * entry fit and a press both reporting "no signal"): the first timer then wiped the second one
+ * early, and the user saw nothing. */
+let hintSeq = 0;
+
 function hint(text: string, holdMs = 4000): void {
 	const el = document.getElementById('ref-hint');
 	if (!el) return;
+	const id = ++hintSeq;
 	el.textContent = text;
 	if (holdMs > 0) window.setTimeout(() => {
-		if (el.textContent === text) el.textContent = '';
+		if (id === hintSeq) el.textContent = '';
 	}, holdMs);
 }
 
@@ -161,11 +169,13 @@ export function syncAutoScaleStatus(s: any): void {
 		// repeated on every frame, and each of those decisions cleared the button's glow.
 		entryFitPending = false;
 		const before = Math.round(getDisplayRef());
-		// The display scale belongs to the client: apply the level the backend fitted. Any
-		// decision that carries a target qualifies, including an automatic safety correction; an
-		// unchanged target is skipped so a sticky result cannot overwrite a later manual Ref, and
-		// `ownDisplay` keeps an autonomous correction away from a level the user just set.
-		const move = target != null && Number(target) !== appliedTarget && ownDisplay;
+		// The display scale belongs to the client: apply the level the backend placed. Only the
+		// results that come back from an application do that ('applied' and the automatic safety
+		// corrections) - a refusal carries a stale target and must never move the display. The
+		// target check skips a repeat, and `ownDisplay` keeps an autonomous correction away from a
+		// level the user just set.
+		const placed = result === 'applied' || result === 'out_of_window' || result === 'overflow';
+		const move = placed && target != null && Number(target) !== appliedTarget && ownDisplay;
 		if (move) {
 			appliedTarget = Number(target);
 			setDisplayRef('auto', appliedTarget);
