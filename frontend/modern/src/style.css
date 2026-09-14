@@ -356,6 +356,10 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   min-width: 18px; text-align: center;
 }
 .gh-toggle:hover { background: var(--btn-hover); color: var(--text); border-color: var(--text); }
+/* A hint that must not move the controls it belongs to: it lives in the group head (its own fixed
+   row) and, being the only item with min-width:0, it clips instead of squeezing the title or the
+   collapse toggle when the message is long. */
+.group-head-hint { margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .panel-toggle { margin-left: auto; }
 .control-group.collapsed .group-body { display: none; }
 .group-body { padding: 8px 10px; }
