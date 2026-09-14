@@ -60,6 +60,30 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
   away and disappears after switching to RTA (fixed)
 
+## State ownership (parameters use slots, results use a store)
+
+Frontend state falls into two kinds, and putting one in the wrong place is a bug class this
+project hit repeatedly:
+
+- **Parameters** (user-set, backend-confirmed): use the slots in `core/params.ts`; each
+  parameter has exactly one owner. Only the STATUS handler calls `confirm()`, only a user
+  action calls `set()`, readers use `get()`. `desired`/`confirmed`/`epoch` plus a TTL mean a
+  just-set value is never reverted by an in-flight reply and a rejected command expires
+  instead of sticking. The groups live in `ui/{freqState,refState,swpState,sdrState,triggerState,waterfallState,displayState,graphMode,displayRef}.ts`.
+  A client-owned preference the backend never reports (display unit/offset, waterfall range,
+  audio switch, ...) must be declared `authoritative: true` or it reverts when the TTL ends.
+- **Results** (data produced by measurements/display): use `core/results.ts` - plain data with
+  an explicit setter and no desired/confirmed semantics.
+
+`core/model.ts` holds the types both sides share (a leaf module). `core/store.ts` keeps the
+runtime state (connection, trigger runtime, current mode, ...) and re-exports the two groups,
+so existing `S.x` / `S.setX()` call sites keep working.
+
+In a hot path (loops running tens of thousands of times per frame) do not call a slot `get()`
+inside the loop body: it performs a `Date.now()` plus pending checks, and the density
+accumulation calling it hundreds of thousands of times per frame saturated the main thread
+(1 Hz STATUS fell behind and the mode buttons toggled from a stale value).
+
 ## Frontend DSP Engine (marker peak/valley)
 Implemented after modern analyzer architecture (Keysight/R&S style), all in the TS frontend:
 - **S-G smoothing** `sgSmooth(src,w,adaptive)`: 2nd-order Savitzky-Golay + gradient-adaptive

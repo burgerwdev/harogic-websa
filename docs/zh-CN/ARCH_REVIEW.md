@@ -621,7 +621,7 @@ e2e（真机）仍全绿。
 
 ## 9. 实施记录（分支 `refactor/arch-review-improvements`）
 
-路线图 Phase 0–3 已全部实施（20 个提交），每一步都跑 `make ci` + `make hw-test` + `make bench`。
+路线图 Phase 0–3 已全部实施（自评估提交起 21 个；连同 3 个评估文档提交，相对 master 共 24 个），每一步都跑 `make ci` + `make hw-test` + `make bench`。
 
 ### 9.1 已完成
 
@@ -637,7 +637,7 @@ e2e（真机）仍全绿。
 | P1-3 | `rta.py` 不再直连 `htra_api`；`sdk_bindings` 补齐符号 | 守卫 3 → 0 |
 | P1-4 | **前端循环依赖 14 → 0**（redraw seam + plot 几何 + 4 叶子模块） | 守卫 + 真机 UI 回归 |
 | P1-5 | **`controls.ts` 拆成 9 个 `ui/panels/*`**（1548 → 934 行）+ **DOM id 契约检查**（抓到 `#cur-ifgain` 从未显示） | tsc + 真机 + `check_dom_ids.py` |
-| P1-6 | **参数全部槽位化**：触发组、瀑布组（显示范围/暂停/淡出/分档）、显示组（单位/偏移/平滑）；**测量结果移入 `core/results.ts`**，共享类型移入 `core/model.ts`（store 仅 re-export，调用点不变） | 141 前端测试 + 真机；见 9.3 的性能教训 |
+| P1-6 | **参数槽位化补完**：触发组、瀑布组（显示范围/暂停/淡出/分档）、显示组（单位/偏移/平滑）；**测量结果移入 `core/results.ts`**，共享类型移入 `core/model.ts`（store 仅 re-export，调用点不变）。规则已写入 `ARCHITECTURE.md`（参数用槽位、结果用仓库、热路径勿在循环内 `get()`）。仍留在 store 的 `spanStepHz/spanStepAuto`、`dbPerDiv`、`levelUnit` 是单一写入者的显示/前端状态，不属于本项针对的多写者 bug 类 | 141 前端测试 + 真机；见 9.3 的性能教训 |
 | P1-7 | 会话 `health()`、设备 `auto_reference_view()` | STATUS 字段不变 |
 | P1-8 | **`AutoReferenceController` 独立** + 16 项纯函数测试 | 新增 16 项 + 原 7 项行为测试 |
 | P1-9 | **会话生命周期协议** `request_stop()`/`is_ready()` + `SessionManager` | 表测试 + 真机 |

@@ -116,3 +116,21 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   退格删除光标处一个字符、`C` 清空整串；该字段的 `.` 键变为 `,` 分隔符
 - 其余字段通过 `change` 事件提交；`ref`/`points`/`rbw`/`vbw`/`harm`/`pnm`/`ampdbs` 这类"暂存 + Set/Meas
   按钮"字段改为点击其自身按钮提交
+
+## 状态归属规则（参数用槽位，结果用仓库）
+
+前端有两类状态，放错地方就是历史上一类反复出现的 bug：
+
+- **参数**（用户设定 + 后端确认的值）：使用 `core/params.ts` 的槽位，
+  每个参数只有一个所有者。只有 STATUS 处理器调用 `confirm()`，只有用户动作调用 `set()`，
+  读取方一律走 `get()`；`desired/confirmed/epoch` + TTL 保证"刚设的值不会被在途回包覆盖"，
+  被拒绝的指令会过期而不是永久卡住。分组见 `ui/{freqState,refState,swpState,sdrState,triggerState,waterfallState,displayState,graphMode,displayRef}.ts`。
+  客户端独有、后端从不上报的偏好（显示单位/偏移、瀑布显示范围、音频开关等）声明 `authoritative: true`，
+  否则会在 TTL 到期后回退。
+- **结果**（测量/显示产生的数据）：使用 `core/results.ts`，只是数据 + 显式 setter，没有 desired/confirmed 语义。
+
+`core/model.ts` 放两者共用的类型（叶子模块）。`core/store.ts` 保留运行态（连接状态、触发运行态、
+当前模式等）并 re-export 上面两类，所以旧调用点 `S.xxx` / `S.setXxx()` 仍然有效。
+
+热路径（每帧数万次以上的循环）不要把槽位 `get()` 放在循环体内：它带 `Date.now()` 与 pending 检查，
+密度累加那样每帧数十万次的调用会拖满主线程（曾导致 1 Hz STATUS 延迟、模式按钮基于过期值切换）。

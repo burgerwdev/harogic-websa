@@ -637,7 +637,7 @@ conventionally has `make hw-test` (real-hardware smoke + state-machine regressio
 
 ## 9. Implementation record (branch `refactor/arch-review-improvements`)
 
-Roadmap phases 0-3 are implemented (20 commits), each verified with `make ci` + `make hw-test`
+Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from master including the three review-doc commits), each verified with `make ci` + `make hw-test`
 + `make bench`.
 
 ### 9.1 Implemented
@@ -654,7 +654,7 @@ Roadmap phases 0-3 are implemented (20 commits), each verified with `make ci` + 
 | P1-3 | `rta.py` no longer imports `htra_api`; `sdk_bindings` re-exports the missing types | guard 3 -> 0 |
 | P1-4 | **Frontend cycles 14 -> 0** (redraw seam, plot geometry, four leaf modules) | guard + hardware UI regression |
 | P1-5 | **`controls.ts` split into 9 `ui/panels/*` modules** (1548 -> 934 lines) + **DOM id contract check** (which found `#cur-ifgain` was never displayed) | tsc + bench + `check_dom_ids.py` |
-| P1-6 | **All remaining parameters slot-ised**: trigger group, waterfall group (range/pause/fade/bins), display group (unit/offset/smoothing); **measurement results moved to `core/results.ts`** and shared types to `core/model.ts` (store re-exports them, call sites unchanged) | 141 frontend tests + bench; see the performance lesson in 9.3 |
+| P1-6 | **Parameter slot migration completed**: trigger group, waterfall group (range/pause/fade/bins), display group (unit/offset/smoothing); **measurement results moved to `core/results.ts`** and shared types to `core/model.ts` (store re-exports them, call sites unchanged). The rule is now written down in `ARCHITECTURE.md` (parameters use slots, results use a store, never call `get()` inside a hot loop). The remaining store globals `spanStepHz/spanStepAuto`, `dbPerDiv` and `levelUnit` are single-writer display/frontend state, not the multi-writer bug class this finding targets | 141 frontend tests + bench; see the performance lesson in 9.3 |
 | P1-7 | Session `health()`, device `auto_reference_view()` | STATUS unchanged |
 | P1-8 | **`AutoReferenceController` extracted** + 16 focused tests | 16 new + 7 existing behaviour tests |
 | P1-9 | **Session lifecycle protocol** `request_stop()`/`is_ready()` + `SessionManager` | table tests + bench |

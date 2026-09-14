@@ -14,8 +14,6 @@ import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
 import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './peaklist';
 import { updateMarkerTable } from './markerTable';
-import { updateHarmonicTable } from '../meas/harmonic';
-import { renderHarmonics } from '../meas/harmOverlay2';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
@@ -424,12 +422,12 @@ export function renderAll() {
   }
   if (S.limits.on) { renderLimits(powers); pushStatus(limitStatusBlock()); }
   if (powers && S.freqArray) {
-    if (c.viewMode !== 'harm' && c.viewMode !== 'pnm') {
-      renderMarkersOnCanvas(powers);
-      renderOSD(powers);
-      render3dB(powers);
-    }
-    if (c.viewMode === 'harm') renderHarmonics(powers);
+    // Markers/OSD/3 dB are drawn only on the swept path; the measurement views own their
+    // own overlays (see render/registry.ts). The amplitude/channel measurements are also
+    // overlays on the swept trace, so they stay here.
+    renderMarkersOnCanvas(powers);
+    renderOSD(powers);
+    render3dB(powers);
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
     if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
@@ -438,8 +436,7 @@ export function renderAll() {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
-  } else {
-    if (powers) {
+  } else if (powers) {
     autoPeakThr(powers);
     if (peakListOn() && c.viewMode === 'std') {
       const mt = document.getElementById('marker-table');
@@ -458,8 +455,6 @@ export function renderAll() {
       const pt = document.getElementById('peak-table');
       if (pt) pt.style.display = 'none';
       updateMarkerTable(powers);
-    }
-      if (c.viewMode === 'harm') updateHarmonicTable();
     }
   }
   renderStatusBlocks();
