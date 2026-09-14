@@ -90,7 +90,7 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **smooth 数据源**: 开启时完全用平滑曲线(位置/幅度均平滑, 与显示一致); 关闭用原始+Raw Anchor
 - **Pk 阈值**: 值存于槽位（`meas` 组），读取方不再解析输入框；自动 = **每个测量几何一次决策**
   （span/RBW/Ref/dB per div/points/中心变化时按若干帧迹线 99.5 分位数的中位数 −50 dB 重新拟合，
-  其余时间锁存）——信号幅度变化不会再移动门限、也不会重排峰值表/marker 峰搜索；用户编辑后锁定
+  其余时间保持不变）——信号幅度变化不会再移动门限、也不会重排峰值表/marker 峰搜索；用户编辑后锁定
   直到再次点 Auto；marker 全关闭时不更新
 
 ## 显示与控制设计

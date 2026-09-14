@@ -153,7 +153,7 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 
 ### Auto
 
-1. `AUTO_SCALE`（或旧写法 `SET_REF {mode:auto}`）按最新迹线**执行一次**放置；不再有可锁存的跟踪模式，`ref_mode` 恒为 `manual`。
+1. `AUTO_SCALE`（或旧写法 `SET_REF {mode:auto}`）按最新迹线**执行一次**放置；不存在「持续跟踪」模式，`ref_mode` 恒为 `manual`。
 2. 放置已经合理时（噪声底在底沿上方 4-12 dB 且峰值余量 >= 8 dB）不应用任何变更：在已稳定的画面上点 Auto 不应重配器件。
 3. 否则目标为：噪声底落在显示窗口底部稍上、峰值留 >= 10 dB 余量（噪底高时约 30 dB）、5 dB 量化、不低于学到的 IF 饱和下界与 -50 dBm；范围 -50..+30 dBm。
 4. 峰值比估计噪底高不足 15 dB 时报 `no_signal`（保持当前 Ref）——但仅在迹线仍在窗口内时；已离开窗口的迹线一定会被拟合。
