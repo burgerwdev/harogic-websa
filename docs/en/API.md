@@ -31,7 +31,8 @@ Example response:
   "center": 1000000000.0, "span": 600000000.0, "ref": 0.0,
   "rbw_mode": "auto", "rbw": 100000.0, "vbw_mode": "bypass", "vbw": 1000000.0,
   "points": 1000, "window": 1, "spur": "standard", "mode": "std", "pnm_supported": true,
-  "caps": { "model": 67, "name": "SAN-90", "fmin": 9000, "fmax": 9000000000 },
+  "caps": { "model": 67, "name": "SAN-90", "fmin": 9000, "fmax": 9000000000,
+            "ref_min": -50, "ref_max": 30, "rta_span_max": 50781250, "rta_points": 3328 },
   "preset_defaults": { "center": 1000000000, "span": 100000000, "rbw": 100000, "points": 1000, "ref": 0, "atten": -1 },
   "req": { "center": 1000000000, "span": 600000000, "points": 1000, "rbw_mode": "auto", "rbw": 100000, "vbw_mode": "bypass", "vbw": 1000000, "ref": 0, "spur": "standard" },
   "actual": { "center": 1000000000, "span": 600000000, "points": 985, "rbw": 100000, "vbw": 1000000 },
@@ -57,7 +58,7 @@ Field reference:
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
 | `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
 | `mode` | str | measurement mode (std/harmonic/pnm/rta) |
-| `caps` | obj | model capabilities (model/name/fmin/fmax) |
+| `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm), `rta_span_max` (Hz), `rta_points` |
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |

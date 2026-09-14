@@ -179,7 +179,11 @@ action with visible feedback, not a tracking toggle:
    very field it is adjusting reads as a bug (that is what the old tracking `Auto` did);
 5. background *safety* correction is separate, always armed, and rate-limited (IF overload, a trace that
    left the display window) - never something the user has to switch on;
-6. a REFUSAL message is withdrawn the moment its reason stops being true, not when a timer runs out:
+6. a DEVICE LIMIT is published once and read everywhere: the Ref range, the RTA span/points, the
+   trigger range. Validation, the SDK profile, the auto-reference loop and the client all read the
+   capability row (`caps` in STATUS / `config.ref_bounds`), never their own copy - this model was
+   once clamped by three different literals (found while auditing hard-coded device values);
+7. a REFUSAL message is withdrawn the moment its reason stops being true, not when a timer runs out:
    "waiting for a trace" ends with the first trace, "no signal to fit" ends when the peak moves away
    from the level the decision was based on. Posting a statement about the measurement and then leaving
    it on screen after the measurement changed is how a message becomes noise (reported: the trace was
@@ -319,6 +323,8 @@ nobody can tell "deliberate" from "silent regression".
 | The Level offset displaced the trace but not the amplitude numbers on the plot | Two layers drew the same quantity: `getY()` shifted the trace, while the axis labels and the marker readout printed raw device dBm | A value that is drawn in more than one layer must be converted in ONE place (`fmtAxisLevel`/`fmtReadoutLevel`); an axis is part of the display domain, not of the device domain | `peakThr.test.ts` (readout rule), e2e `ui_smoke` 2a2 (`dataset.yLabels` follows the offset) |
 | "No signal to fit" stayed on screen after the signal appeared | The refusal was posted with a fixed 6 s hold, and only a *new decision* could replace it | A refusal is a statement about the measurement: record the observation it was based on and withdraw it when that observation moves (or when the first trace arrives), instead of relying on timing | `refAutoScale.test.ts` (withdraw on trace change / first trace), bench probe |
 | Ref 30 dBm "jumped" to 27 with no explanation | The device clamps the level to its own maximum (which depends on the attenuation it picks) and echoes it; the UI followed the echo silently | When a device echo differs from the request, say so (`req` vs `actual`) - the same rule as announcing a refusal | `status.test.ts` (clamp notice, once per distinct pair), FAQ |
+| The Ref range / RTA span lived as literals in three places | The capability row declared them, but `device.py`'s profile clamp, the Auto Ref loop and the client each kept their own copy | A device limit is published once (`caps` in STATUS, `config.ref_bounds`) and read everywhere; a test asserts the loop and the clamp follow the capability row | `test_config.py` (`ref_bounds`), `test_auto_reference.py` (target clamp follows caps), `test_device_state.py` (caps payload) |
+| A test asserted a device value with one sample ("30 -> 27") | Test data was mistaken for the property under test: the message had to follow the reported value | Assert the RELATIONSHIP (several pairs, or a value that changes), never one recorded number; a hard-coded implementation must fail the test | `status.test.ts` (data-driven pairs + "follows the device when the limit moves") |
 | `./test.sh` failed on a clean checkout | Incomplete dependency declaration | Three files: runtime / dev / lock | CI installs in a clean environment |
 
 ---

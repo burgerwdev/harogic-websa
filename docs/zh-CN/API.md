@@ -30,7 +30,8 @@ curl http://localhost:8080/api/state
   "center": 1000000000.0, "span": 600000000.0, "ref": 0.0,
   "rbw_mode": "auto", "rbw": 100000.0, "vbw_mode": "bypass", "vbw": 1000000.0,
   "points": 1000, "window": 1, "spur": "standard", "mode": "std", "pnm_supported": true,
-  "caps": { "model": 67, "name": "SAN-90", "fmin": 9000, "fmax": 9000000000 },
+  "caps": { "model": 67, "name": "SAN-90", "fmin": 9000, "fmax": 9000000000,
+            "ref_min": -50, "ref_max": 30, "rta_span_max": 50781250, "rta_points": 3328 },
   "preset_defaults": { "center": 1000000000, "span": 100000000, "rbw": 100000, "points": 1000, "ref": 0, "atten": -1 },
   "req": { "center": 1000000000, "span": 600000000, "points": 1000, "rbw_mode": "auto", "rbw": 100000, "vbw_mode": "bypass", "vbw": 1000000, "ref": 0, "spur": "standard" },
   "actual": { "center": 1000000000, "span": 600000000, "points": 985, "rbw": 100000, "vbw": 1000000 },
@@ -56,7 +57,7 @@ curl http://localhost:8080/api/state
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
 | `detector` | str | 迹线检波器（auto/sample/pos_peak/neg_peak/rms/auto_peak），仅 SWP |
 | `mode` | str | 当前测量模式（std/harmonic/pnm/rta）|
-| `caps` | obj | 型号能力（model/name/fmin/fmax）|
+| `caps` | obj | 型号能力：`model`/`name`/`fmin`/`fmax`，以及客户端不应硬编码的数值界限——`ref_min`/`ref_max`（dBm）、`rta_span_max`（Hz）、`rta_points` |
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
 | `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta` 分别保存两模式配置 |
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
