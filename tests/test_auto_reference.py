@@ -318,3 +318,21 @@ def test_view_reports_the_diagnostics_for_status(clock):
     assert view['pending'] == 0.0
     assert view['adjusting'] is True             # the button glows while it is applied
     assert ctl.view('rta')['last_peak'] is None
+
+
+def test_a_fit_result_survives_the_settle_it_causes(clock):
+    """Applying a target reconfigures the device; that settle must not say "idle".
+
+    Measured on the bench: the UI reported no decision at all for a fit that had just landed,
+    because begin_settle() cleared the result the application had set.
+    """
+    dev = StubDevice(ref_level=-20.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-30.0, floor=-95.0)
+    assert ctl.fit('std') == ('applied', 0.0)
+    ctl.apply_pending()
+    ctl.begin_settle('std')                      # what configure_swp() does next
+    assert ctl.view('std')['result'] == 'applied'
+    assert ctl.view('std')['target'] == 0.0
+    ctl.reset('std')                             # a mode switch/preset is a real reset
+    assert ctl.view('std')['result'] == 'idle'

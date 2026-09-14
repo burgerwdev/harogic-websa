@@ -11,6 +11,7 @@ import { normalizeAvgCount, setAverageCount } from '../dsp/accumulator';
 import { requestRender } from '../render/redraw';
 import { t } from '../core/i18n';
 import { displayUnit, smoothBins } from './displayState';
+import { peakThr } from './measurePrefs';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
 export function syncFreezeBtn() {
@@ -117,7 +118,7 @@ export function exportPeakListCsv(): void {
   const ampOf = (p: any): number | null => (Number.isFinite(p?.amp) ? p.amp : null);
   let strongest = -Infinity;
   peaks.forEach((p) => { const a = ampOf(p); if (a !== null && a > strongest) strongest = a; });
-  const thr = (document.getElementById('input-peakthr') as HTMLInputElement | null)?.value ?? '';
+  const thr = String(peakThr.get());
   const head = [
     '# peak_list',
     `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,

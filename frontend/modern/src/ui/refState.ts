@@ -20,9 +20,3 @@ const dB = {
 
 /** Reference level in dBm for the swept / real-time display (also the hardware ref). */
 export const refLevel = createParam<number>('ref.level', { fallback: 0, scope: 'ref', ...dB });
-
-/** 'auto' lets the backend choose the reference from the measured peak. */
-export const refMode = createParam<'manual' | 'auto'>('ref.mode', {
-	fallback: 'manual',
-	scope: 'ref',
-});

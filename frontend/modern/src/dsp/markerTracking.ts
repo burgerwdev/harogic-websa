@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { centerHz } from '../ui/freqState';
 import { smoothForDisplay } from './smooth';
 import { smoothBins } from '../ui/displayState';
+import { peakThr } from '../ui/measurePrefs';
 
 interface RankedPeak { idx: number; amp: number; freq: number; }
 
@@ -18,9 +19,8 @@ function activePowers(): Float32Array | null {
 }
 
 function peakThreshold(): number {
-  const input = document.getElementById('input-peakthr') as HTMLInputElement | null;
-  const value = input ? Number(input.value) : -200;
-  return isFinite(value) ? value : -200;
+  const value = peakThr.get();
+  return isFinite(value) ? value : -80;
 }
 
 export function rankedSignalPeaks(): RankedPeak[] {

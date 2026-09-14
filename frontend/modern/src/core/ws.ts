@@ -1,6 +1,5 @@
 // WebSocket protocol layer + STATUS handling
 import { requestRender } from '../render/redraw';
-import { sdrAutoRef } from './sdrAutoRef';
 import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
@@ -33,8 +32,8 @@ import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
-import { sdrRefAuto } from '../ui/sdrState';
-import { refLevel, refMode } from '../ui/refState';
+import { refLevel } from '../ui/refState';
+import { maybeFitSdrFrame, syncAutoScaleStatus } from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
@@ -193,48 +192,9 @@ export function connectWS() {
       if (!plausible && !settleOver) return;    // settle window only: drop quietly
       if (!plausible) S.setBadData(true);       // past it, show the data and say so
       // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
-      // -100 dBm noise floor onto the bottom edge. Auto-scale the display ref to the
-      // frame peak (with a small hysteresis) so the signal is visible.
-      if (currentGraphMode() === 'sdr' && sdrRefAuto.get()) {
-        let peak = -Infinity;
-        for (let i = 0; i < spec.length; i++) {
-          const v = spec[i];
-          if (v > peak && isFinite(v)) peak = v;
-        }
-        if (isFinite(peak)) {
-          const noise = percentileApprox(spec, 0.3);
-          // Smooth both so a fading signal does not make the whole display jump.
-          sdrAutoRef.noiseEma = sdrAutoRef.noiseEma < -119 ? noise : sdrAutoRef.noiseEma * 0.9 + noise * 0.1;
-          sdrAutoRef.peakEma = sdrAutoRef.peakEma < -119 ? peak : sdrAutoRef.peakEma * 0.75 + peak * 0.25;
-          const now2 = performance.now();
-          if (now2 - sdrAutoRef.lastAt > 400) {
-            const range = S.totalDivs * S.dbPerDiv;
-            // Noise floor ~8 dB above the bottom; never clip the peak (>=10 dB headroom).
-            let ref = Math.max(sdrAutoRef.noiseEma + range - 8, sdrAutoRef.peakEma + 10);
-            ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
-            {
-              // Debug/verification aid: the raw inputs of the SDR auto-ref decision.
-              const cvD = document.getElementById('spectrum');
-              if (cvD) cvD.dataset.sdrRefDbg = JSON.stringify({
-                noise: Math.round(noise), peak: Math.round(peak),
-                nEma: Math.round(sdrAutoRef.noiseEma), pEma: Math.round(sdrAutoRef.peakEma),
-                range, ref: Math.round(ref), applied: Math.abs(ref - getDisplayRef()) >= 3,
-                shown: Math.round(getDisplayRef()),
-              });
-            }
-            // Compare against the value that is ACTUALLY displayed, never a private cache:
-            // other panels (preset, normalise, the manual Ref box) also write displayRef,
-            // and a stale cache made auto-ref believe it had already applied `ref` and
-            // silently stop correcting the display (measured: ref -15, shown 0).
-            if (Math.abs(ref - getDisplayRef()) >= 3) {
-              setDisplayRef('auto', ref);
-              sdrAutoRef.lastAt = now2;
-              const cv = document.getElementById('spectrum');
-              if (cv) cv.dataset.sdrRef = String(ref);   // debug/verification aid
-            }
-          }
-        }
-      }
+      // -100 dBm noise floor onto the bottom edge. Auto Scale fits the display once, on
+      // request (entering SDR asks for one fit); nothing here runs unattended any more.
+      if (currentGraphMode() === 'sdr') maybeFitSdrFrame(spec);
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -413,7 +373,6 @@ export function updateStatus(s: any) {
   }
   spanHz.confirm(Number(s.span));
   refLevel.confirm(Number(s.ref));
-  refMode.confirm(s.ref_mode === 'auto' ? 'auto' : 'manual');
   S.setConfigVersion(Number(s.config_version) || 0);
   currentRBW.confirm(Number(s.rbw));
   currentVBW.confirm(Number(s.vbw));
@@ -452,24 +411,23 @@ export function updateStatus(s: any) {
   setInput('input-ref', displayUnit.get() === 'dB' ? '0' : refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
-  const refAuto = document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
-  if (refInput) refInput.disabled = refMode.get() === 'auto';
-  if (refSet) refSet.disabled = refMode.get() === 'auto';
+  // Nothing locks the reference any more: Auto Scale is a one-shot action, so the input, the
+  // Set button and the step arrows stay usable and only their pending state is shown.
+  if (refInput) refInput.disabled = false;
+  if (refSet) refSet.disabled = false;
   const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
-  const inAuto = refMode.get() === 'auto';
   if (refDown) {
-    refDown.disabled = inAuto || cur <= -50;
-    refDown.title = inAuto ? t('auto') : t('ref_down');
+    refDown.disabled = currentGraphMode() !== 'sdr' && cur <= -50;
+    refDown.title = t('ref_down');
   }
   if (refUp) {
-    refUp.disabled = inAuto || cur >= 30;
-    refUp.title = inAuto ? t('auto') : t('ref_up');
+    refUp.disabled = currentGraphMode() !== 'sdr' && cur >= 30;
+    refUp.title = t('ref_up');
   }
-  if (refAuto) {
-    refAuto.classList.toggle('active', inAuto);
-    refAuto.title = s.auto_ref_suspended ? t('auto_needs_atten') : '';
-  }
+  // Auto Scale feedback: the button glows while a fit is in flight (the backend reports it via
+  // auto_ref.adjusting, and the client keeps its own fallback timer), then reports the result.
+  syncAutoScaleStatus(s);
   setInput('input-points', String(currentPoints.get()));
   setSelect('select-rbw-mode', rbwMode.get());
   setSelect('select-vbw-mode', vbwMode.get());

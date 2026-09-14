@@ -9,8 +9,8 @@ import { updateInfoBar } from '../../render/infobar';
 import { requestRender } from '../../render/redraw';
 import { displayRefDiverges, getDisplayRef, setDisplayRef } from '../displayRef';
 import { currentGraphMode } from '../graphMode';
-import { refLevel, refMode } from '../refState';
-import { sdrRefAuto } from '../sdrState';
+import { refLevel } from '../refState';
+import { autoScaleBusy, autoScaleRequest, clearAutoScaleHint } from '../refAutoScale';
 import { displayOffset } from '../displayState';
 
 export function setRefLevel() {
@@ -20,7 +20,7 @@ export function setRefLevel() {
   if (currentGraphMode() === 'sdr') {
     // SDR Ref controls the IQS hardware reference level as well as the display. The
     // backend reconfigures IQS and applies the normal audio reset/fade sequence.
-    sdrRefAuto.set(false);
+    clearAutoScaleHint();
     setDisplayRef('user', value);
     syncSdrRefUI();                       // the Auto button must reflect the real state
     const cv = document.getElementById('spectrum');
@@ -41,7 +41,7 @@ export function refStepDbm(): number {
 export function adjustRefLevel(direction: -1 | 1) {
   if (currentGraphMode() === 'sdr') {
     const next = Math.max(-160, Math.min(40, getDisplayRef() + direction * S.dbPerDiv));
-    sdrRefAuto.set(false);
+    clearAutoScaleHint();
     setDisplayRef('user', next);
     syncSdrRefUI();                       // ditto
     const cv = document.getElementById('spectrum');
@@ -60,20 +60,13 @@ export function adjustRefLevel(direction: -1 | 1) {
   send({ cmd: 'SET_REF', mode: 'manual', ref: next });
 }
 
+/**
+ * Auto Scale: one action, not a mode. The fit (and its busy/result feedback) lives in
+ * ui/refAutoScale.ts; this is the button's entry point.
+ */
 export function setRefAuto() {
-  if (currentGraphMode() === 'sdr') {
-    sdrRefAuto.set(!sdrRefAuto.get());
-    syncSdrRefUI();
-    requestRender();
-    return;
-  }
-  if (refMode.get() === 'auto') {
-    send({ cmd: 'SET_REF', mode: 'manual', ref: refLevel.get() });
-  } else {
-    // range_db = the visible window height. Auto Ref anchors the noise floor just above the
-    // bottom of that window, so the backend needs to know how tall it is.
-    send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
-  }
+  autoScaleRequest();
+  requestRender();
 }
 
 export function setScale(v: number) {
@@ -81,11 +74,8 @@ export function setScale(v: number) {
   syncScaleButtons();
   updateInfoBar();
   requestRender();
-  // The window height changed, so the auto-Ref target (noise floor just above the bottom)
-  // changed too. Re-arm so the new spectrum lands correctly instead of keeping the old Ref.
-  if (currentGraphMode() !== 'sdr' && refMode.get() === 'auto') {
-    send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
-  }
+  // The window height changed, so a placement that was right is not right any more - but the
+  // reference is the user's now: re-fit only when they ask (Auto Scale carries the new window).
 }
 
 export function syncScaleButtons() {
@@ -150,8 +140,8 @@ export function syncSdrRefUI() {
   if (currentGraphMode() !== 'sdr') return;
   const b = document.getElementById('btn-ref-auto');
   if (b) {
-    b.classList.toggle('active', sdrRefAuto.get());
-    b.title = 'Auto amplitude reference';
+    b.classList.toggle('busy', autoScaleBusy());
+    b.title = t('tip_btn-ref-auto');
   }
   const inp = document.getElementById('input-ref') as HTMLInputElement | null;
   if (inp) {
@@ -162,19 +152,17 @@ export function syncSdrRefUI() {
   }
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = false;
-  // In SDR the reference is owned by the client (auto-scale or manual), not by the backend
-  // `ref_mode` the STATUS carries. Drive the step buttons from sdrRefAuto here, otherwise
-  // toggling Auto off left them disabled until a Set (which is what made the backend report
-  // manual). Range matches adjustRefLevel's SDR clamp.
+  // The reference is never locked by a tracking mode any more, so the step buttons are always
+  // usable. Range matches adjustRefLevel's SDR clamp.
   const ref = getDisplayRef();
   const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   if (down) {
-    down.disabled = sdrRefAuto.get() || ref <= -160;
-    down.title = sdrRefAuto.get() ? t('auto') : t('ref_down');
+    down.disabled = ref <= -160;
+    down.title = t('ref_down');
   }
   const up = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
   if (up) {
-    up.disabled = sdrRefAuto.get() || ref >= 40;
-    up.title = sdrRefAuto.get() ? t('auto') : t('ref_up');
+    up.disabled = ref >= 40;
+    up.title = t('ref_up');
   }
 }

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 import urllib.request
@@ -388,7 +389,9 @@ def main() -> int:
         post(url, {"cmd": "SET_REF", "mode": "manual", "ref": -20})
         page.wait_for_timeout(2000)
         before = state(url)["ref"]
-        page.click("#btn-ref-down")
+        # Step up: the fake carrier is at -25 dBm, so a step down would put it above the top
+        # edge and the safety ranger would (correctly) raise the reference again.
+        page.click("#btn-ref-up")
         page.wait_for_timeout(2000)
         after = state(url)["ref"]
         check("ref step reaches the backend", abs(after - before) >= 5,
@@ -456,9 +459,8 @@ def main() -> int:
         check("the newest mode request wins", state(url)["mode"] == "sdr",
               state(url)["mode"])
 
-        # 9 - SDR manual reference must stay put. Turning the auto-scale off and setting a Ref
-        # used to be undone within a second or two (the display-mode defaults kept writing 0),
-        # and the down arrow appeared dead until the up arrow was pressed first.
+        # 9 - SDR manual reference must stay put. It used to be undone within a second or two
+        # (the display-mode defaults kept writing 0) while a tracking auto-scale fought it.
         print("9) SDR manual reference holds")
         if sdr_panel_visible(page) is False:
             page.click("#btn-mode-sdr")
@@ -466,9 +468,7 @@ def main() -> int:
         else:
             post(url, {"cmd": "SET_MODE", "mode": "sdr"})
             page.wait_for_timeout(2500)
-        if page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('active')"):
-            page.click("#btn-ref-auto")          # auto off: the user takes over
-            page.wait_for_timeout(800)
+        page.wait_for_timeout(1200)
         page.fill("#input-ref", "-40")
         page.click("#btn-ref-set")
         page.wait_for_timeout(800)
@@ -484,24 +484,96 @@ def main() -> int:
         check("Ref down arrow works without pressing up first", float(down) < float(after),
               f"{after} -> {down}")
 
-        # 9b - turning Auto off must enable the Ref step arrows immediately. They used to
-        # follow the backend ref_mode, which is still 'auto' after entering SDR until a
-        # Set/adjust command is sent, so the arrows stayed disabled until a Set.
-        print("9b) Auto off enables the Ref step arrows at once")
-        if not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('active')"):
-            page.click("#btn-ref-auto")          # make sure Auto is on
-            page.wait_for_timeout(700)
-        check("arrows are disabled while Auto is on",
-              page.eval_on_selector("#btn-ref-down", "e => e.disabled"),
-              "down arrow enabled with Auto on")
-        page.click("#btn-ref-auto")              # Auto off: the user takes over
-        page.wait_for_timeout(700)
-        check("arrows are enabled the moment Auto is turned off",
-              not page.eval_on_selector("#btn-ref-down", "e => e.disabled")
-              and not page.eval_on_selector("#btn-ref-up", "e => e.disabled"),
-              "arrows still disabled after Auto off")
-        page.click("#btn-ref-auto")              # restore Auto on
-        page.wait_for_timeout(500)
+        # 9b - Auto Scale is an ACTION, not a mode: it must show that it is working, act once,
+        # and never lock the reference. The old tracking mode gave no feedback for the ~1.9 s
+        # the device needs and disabled the Ref controls while it was "on".
+        print("9b) Auto Scale is a one-shot action with feedback")
+        check("the reference is never locked (no tracking mode)",
+              not page.eval_on_selector("#input-ref", "e => e.disabled")
+              and not page.eval_on_selector("#btn-ref-down", "e => e.disabled"),
+              "input or arrows disabled")
+        page.click("#btn-ref-auto")
+        glowing = page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')")
+        check("pressing Auto Scale shows that it is working", glowing, "no busy state")
+        page.wait_for_timeout(2500)
+        dbg = page.evaluate(
+            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
+        check("the SDR fit ran and published its decision", bool(dbg.get("ref") is not None
+                                                                 or dbg.get("applied") is not None),
+              str(dbg))
+        check("the display shows the level the fit decided",
+              abs(float(dbg.get("shown", 1e9)) - float(dbg.get("ref", -1e9))) < 3, str(dbg))
+        check("the glow is gone once the fit landed",
+              not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')"),
+              str(dbg))
+        check("the reference is still usable afterwards",
+              not page.eval_on_selector("#input-ref", "e => e.disabled"),
+              "input disabled after a fit")
+
+        # 9c - SWP: a trace that has left the window is fitted WITHOUT being asked. Measured
+        # regression: Ref 0 dBm with an 80 dB window and everything at -108 dBm, the old loop
+        # refused to move (its guard wanted a peak 15 dB above the noise floor) and left the
+        # display empty for as long as the signal stayed away. A 20 dB window makes the whole
+        # trace sit below the bottom edge, whatever the signal level is today.
+        print("9c) SWP: a trace outside the window is fitted automatically")
+        post(url, {"cmd": "SET_MODE", "mode": "std"})
+        page.wait_for_timeout(3000)
+        # Pick a reference that this bench's own noise floor cannot fit in, so the check does
+        # not depend on today's signal level: Ref above (floor + window + 3) puts the whole
+        # trace below the bottom edge.
+        measure = state(url)
+        floor = measure["auto_ref"].get("last_noise_floor")
+        window = 100.0
+        bad_ref = max(-50.0, min(30.0, math.ceil((floor or -120.0) + window + 10.0)))
+        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": bad_ref, "range_db": window})
+        page.wait_for_timeout(4500)
+        placed = state(url)
+        floor = placed["auto_ref"].get("last_noise_floor")
+        check("the reference is moved out of the window on its own",
+              placed["ref"] != bad_ref,
+              f'ref {placed["ref"]} (was {bad_ref}) result {placed["auto_ref"].get("result")}')
+        check("the fitted placement puts the noise floor back inside the window",
+              floor is not None and placed["ref"] - window <= floor <= placed["ref"],
+              f'floor {floor} ref {placed["ref"]} window {window}')
+
+        # 9d - Auto Scale itself: one decision per press, no pointless reconfiguration.
+        print("9d) Auto Scale in SWP: a decision per press, and no needless reconfiguration")
+        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": 10, "range_db": 100})
+        page.wait_for_timeout(3000)
+        before = state(url)
+        page.click("#btn-ref-auto")
+        page.wait_for_timeout(3500)
+        after = state(url)
+        result = after["auto_ref"].get("result")
+        check("pressing Auto Scale produces a decision (never silence)",
+              result in ("applied", "ok", "no_signal", "no_data"), str(after["auto_ref"]))
+        if result == "applied":
+            check("the applied target is the level the device reports",
+                  abs(float(after["ref"]) - float(after["auto_ref"]["target"])) < 0.01,
+                  f'ref {after["ref"]} target {after["auto_ref"]["target"]}')
+            check("the fit moved the reference once", after["ref"] != before["ref"],
+                  f'{before["ref"]} -> {after["ref"]}')
+        else:
+            # 'ok' (already placed well), 'no_signal' (nothing to anchor to) and 'no_data' all
+            # mean the level must be left alone.
+            check(f"a '{result}' decision leaves the reference where it was",
+                  after["ref"] == before["ref"], f'{before["ref"]} -> {after["ref"]}')
+        check("the fitted value is the one that is rendered",
+              abs(float(page.input_value("#input-ref")) - float(after["ref"])) < 1.5,
+              f'input {page.input_value("#input-ref")} vs ref {after["ref"]}')
+        check("the glow is gone once the fit landed",
+              not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')"),
+              str(after["auto_ref"]))
+
+        version = after["config_version"]
+        page.click("#btn-ref-auto")
+        page.wait_for_timeout(3500)
+        again = state(url)
+        check("a second press reports how the placement stands, not silence",
+              again["auto_ref"].get("result") in ("ok", "no_signal"), str(again["auto_ref"]))
+        check("and a settled placement is not reconfigured again",
+              again["config_version"] == version,
+              f'config_version {version} -> {again["config_version"]}')
 
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()

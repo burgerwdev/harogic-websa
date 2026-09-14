@@ -15,7 +15,7 @@ import { updateStatus } from '../core/ws';
 import * as S from '../core/store';
 import { resetAll } from '../core/params';
 import { centerHz, spanHz, rtaCenterHz, swpCenterHz } from '../ui/freqState';
-import { refLevel, refMode } from '../ui/refState';
+import { refLevel } from '../ui/refState';
 import { currentPoints, currentRBW, currentSpur, currentVBW, rbwMode, vbwMode } from '../ui/swpState';
 import { currentGraphMode } from '../ui/graphMode';
 import { sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
@@ -67,7 +67,8 @@ const SWP_STATUS = {
 	},
 	actual: { center: 225000000, span: 3125000, start: 223437500, stop: 226562500, ref: -30, rbw: 100000, vbw: 100000, points: 103, est_min: 0 },
 	sdr: { health: {} },
-	auto_ref: { last_peak: null, last_noise_floor: null, candidate: null, pending: null },
+	auto_ref: { last_peak: null, last_noise_floor: null, target: null, result: 'idle',
+		pending: null, adjusting: false },
 	rta_health: { error_streak: 0, recovery_attempts: 0 },
 };
 
@@ -99,7 +100,6 @@ describe('updateStatus', () => {
 		expect(centerHz.get()).toBe(225000000);
 		expect(spanHz.get()).toBe(3125000);
 		expect(refLevel.get()).toBe(-30);
-		expect(refMode.get()).toBe('manual');
 		expect(rbwMode.get()).toBe('manual');
 		expect(currentRBW.get()).toBe(100000);
 		expect(currentVBW.get()).toBe(100000);

@@ -16,6 +16,11 @@ export const harmValMode = createParam<string>('harm.valMode', {
 export const peakListVisible = createParam<boolean>('peak.listOn', {
 	fallback: false, scope: 'meas', authoritative: true,
 });
+/** Peak search threshold in dBm: the value every peak/marker path reads. */
+export const peakThr = createParam<number>('peak.thr', {
+	fallback: -80, scope: 'meas', authoritative: true, parse: Number, serialize: String,
+	equals: (a, b) => Math.abs(a - b) < 0.05,
+});
 /** True once the user edited the peak threshold (locks the auto value). */
 export const peakThrUserSet = createParam<boolean>('peak.thrUserSet', {
 	fallback: false, scope: 'meas', authoritative: true,

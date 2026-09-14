@@ -104,6 +104,23 @@ def main() -> int:
               abs(state(args.url)['center'] - 433e6) < 1e3, f"{state(args.url)['center'] / 1e6} MHz")
         check('the canvas is still drawn after re-tuning', painted_pixels(page) > args.painted_min)
 
+        print('2b) the peak list works off the threshold slot')
+        # The threshold moved from the input element into a parameter slot (one decision per
+        # measurement geometry, see render/peaklist.ts). Peak finding, marker peak search and
+        # the CSV export all read that slot now, so a desync would empty the table.
+        js_click(page, '#btn-markers-all')        # All On: the auto threshold needs a marker
+        page.wait_for_timeout(1200)
+        js_click(page, '#btn-peaklist')
+        page.wait_for_timeout(1500)
+        rows = page.eval_on_selector_all('#peak-tbody tr', 'els => els.length')
+        threshold = page.input_value('#input-peakthr')
+        check('the peak list finds peaks above the threshold', rows > 0, f'{rows} rows')
+        check('the auto threshold is a level, not the input default',
+              float(threshold) > -150, f'threshold {threshold} dBm')
+        js_click(page, '#btn-peaklist')
+        js_click(page, '#btn-markers-all')        # back to All Off
+        page.wait_for_timeout(600)
+
         print('3) mode switching keeps drawing')
         for mode, selector, clicks in (('rta', '#btn-mode-rta', 1), ('sdr', '#btn-mode-sdr', 1),
                                        ('std', '#btn-mode-rta', 2)):

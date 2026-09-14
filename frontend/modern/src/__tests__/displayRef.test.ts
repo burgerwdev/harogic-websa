@@ -12,7 +12,6 @@ import {
   setDisplayRefTimeoutHandler,
 } from '../ui/displayRef';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
-import { sdrRefAuto } from '../ui/sdrState';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -30,8 +29,7 @@ afterEach(() => {
 });
 
 describe('display reference ownership', () => {
-  it('applies display defaults in SWP/RTA even with the SDR auto-scale preference on', () => {
-    sdrRefAuto.set(true);
+  it('applies display defaults in SWP/RTA', () => {
     graphMode.confirm('std');
     expect(setDisplayRef('mode', -20)).toBe(true);
     expect(getDisplayRef()).toBe(-20);
@@ -41,7 +39,6 @@ describe('display reference ownership', () => {
 
   it('refuses a background mode write in SDR (manual Ref must survive)', () => {
     graphMode.confirm('sdr');
-    sdrRefAuto.set(false);              // manual: the user owns the scale
     expect(setDisplayRef('user', -40)).toBe(true);
     expect(setDisplayRef('mode', 0)).toBe(false);
     expect(getDisplayRef()).toBe(-40);
@@ -50,9 +47,8 @@ describe('display reference ownership', () => {
     expect(getDisplayRef()).toBe(0);
   });
 
-  it('still lets the SDR auto-scale write while it owns the value', () => {
+  it('lets the one-shot SDR fit write the scale', () => {
     graphMode.confirm('sdr');
-    sdrRefAuto.set(true);
     expect(setDisplayRef('auto', -15)).toBe(true);
     expect(getDisplayRef()).toBe(-15);
   });

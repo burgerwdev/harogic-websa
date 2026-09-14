@@ -48,8 +48,7 @@ export function findExtremesOrdered(_dir: string, isPeak: boolean): ExtremaItem[
   if (!disp) return [];
   const smoothed = smoothBins.get() > 1;
   const raw = (t && t.powers) ? t.powers : disp;
-  const thrEl = document.getElementById('input-peakthr') as HTMLInputElement;
-  const thr = thrEl ? (parseFloat(thrEl.value) || -200) : -200;
+  const thr = peakThr.get();
   const isNorm = !!(t && t.reference && t.isNormalized);
   const EXCURSION = 6;
   const DEPTH = 3;
@@ -155,3 +154,4 @@ export function setMarkerIdx(idx: number, freqHz?: number) {
 import { markerFreqHz } from '../core/markerCommon';
 import { requestRender } from '../render/redraw';
 import { smoothBins } from '../ui/displayState';
+import { peakThr } from '../ui/measurePrefs';

@@ -269,14 +269,17 @@ class AutoReferenceController:
         """Forget observations after a mode switch or a preset (the trace is gone)."""
         with self.dev._hw:
             self._rearm(mode, 0.25)
+            # Nothing is pending and the last decision is no longer about this configuration.
+            self._trackers[mode]['result'] = 'idle'
 
     def _rearm(self, mode: str, delay: float) -> None:
         tracker = self._trackers[mode]
         tracker['last_peak'] = None
         tracker['last_noise_floor'] = None
         tracker['ignore_until'] = time.monotonic() + delay
-        if tracker['result'] == 'applied':
-            tracker['result'] = 'idle'
+        # The result deliberately survives: applying a target reconfigures the device, and that
+        # settle must not erase the very decision it is settling (measured: the UI reported
+        # 'idle' for a fit it had just made, and the fallback glow outlived it).
         self._drop_pending(mode)
 
     def _drop_pending(self, mode: str) -> None:

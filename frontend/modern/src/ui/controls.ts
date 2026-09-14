@@ -3,7 +3,8 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { resetSdrAutoRef } from '../core/sdrAutoRef';
-import { sdrCenterHz, sdrDecimate, sdrAudioOn, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrRefAuto, sdrSpanHz, estimatedCaptureSpanHz, renderSdrState, resetSdrState } from './sdrState';
+import { requestSdrEntryFit } from './refAutoScale';
+import { sdrCenterHz, sdrDecimate, sdrAudioOn, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, estimatedCaptureSpanHz, renderSdrState, resetSdrState } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
@@ -14,7 +15,7 @@ import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAver
 import { exportSpectrumPng } from './exportImage';
 import { normalizeActiveTrace, resetActiveTraceNormalize } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
-import { togglePeakList, peakThrManual, peakThrAuto } from '../render/peaklist';
+import { togglePeakList, peakThrManual, peakThrAuto, resetPeakThr } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
 import { measureAmp, clearAmp } from '../meas/amplitude';
 import { measureChannel, clearChannel } from '../meas/channel';
@@ -165,13 +166,11 @@ export function syncGraphModeStatus(mode: string) {
   if (isSdr) {
     resetSdrAutoRef();
     deferSdrAudioPreference();
-    // Re-issue the reference to the device on entry. It re-applies the IQS reference level
-    // and clears a stale acquisition, so the first automatic scale has a sane frame to work
-    // with (the reported "Preset -> SDR spectrum overflows the canvas"). Auto is the client's
-    // preference here, not the swept one.
-    if (sdrRefAuto.get()) {
-      send({ cmd: 'SET_REF', mode: 'auto', range_db: S.totalDivs * S.dbPerDiv });
-    }
+    // Entering SDR always fits the display reference once: the swept level is meaningless for
+    // an IQS panadapter (often 0 dBm against a -100 dBm floor), which is what produced the
+    // reported "Preset -> SDR spectrum overflows the canvas". The fit happens on the first
+    // plausible frame, so it uses a real trace instead of a guess.
+    requestSdrEntryFit();
   } else {
     setSdrAudioEnabled(false);
     sdrAudioOn.set(false);
@@ -457,6 +456,7 @@ export function presetAll() {
   S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
   S.setM3dB(null); S.setAmpRes(null); S.setHarm(null); S.setPnmData(null);
   peakListVisible.set(false); S.setPeakMarks(null);
+  resetPeakThr();
   const pl = document.getElementById('btn-peaklist');
   if (pl) pl.textContent = t('off');
   S.setActiveMkrId(1);
@@ -487,7 +487,6 @@ export function presetAll() {
   spanStepAuto.set(true);
   setSdrAudioEnabled(false);
   sdrAudioOn.set(false);
-  sdrRefAuto.set(true);
 
   // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
   // code cleared the fields by hand and missed one, so a Preset could reapply the previous
