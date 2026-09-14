@@ -8,34 +8,15 @@ structure refactored.
 """
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
-
 import numpy as np
 
 from ..config import (
-    DEFAULT_RTA_CENTER_HZ,
-    DEFAULT_RTA_RBW_MODE,
-    DEFAULT_RTA_REF_DBM,
-    DEFAULT_RTA_SPAN_HZ,
-    DEFAULT_RTA_SWEEP_MODE,
-    DEFAULT_RTA_VBW_MODE,
-    DEFAULT_TRIGGER_ACQ_TIME_S,
-    DEFAULT_TRIGGER_DELAY_S,
-    DEFAULT_TRIGGER_EDGE,
-    DEFAULT_TRIGGER_LEVEL_DBM,
-    DEFAULT_TRIGGER_OUT,
-    DEFAULT_TRIGGER_OUT_POLARITY,
-    DEFAULT_TRIGGER_PRE_TIME_S,
-    DEFAULT_TRIGGER_RETRIGGER_COUNT,
-    DEFAULT_TRIGGER_RETRIGGER_PERIOD_S,
-    DEFAULT_TRIGGER_SAFE_TIME_S,
-    DEFAULT_TRIGGER_SOURCE,
     DeviceCapabilities,
     fit_center_span,
 )
 from . import sdk_bindings as sb
 from .auto_reference import AutoReferenceController
+from .state import DeviceState, RtaParams, SdrParams, TriggerParams  # noqa: F401 (re-export)
 
 # Convenient aliases for hardware enums
 SWP = sb
@@ -44,108 +25,6 @@ T = sb  # type aliases
 
 class DeviceError(RuntimeError):
     pass
-
-
-@dataclass
-class DeviceState:
-    """Device read-only state (serialized to WS STATUS)."""
-    connected: bool = False
-    label: str = ''
-    detail: str = ''
-    device_detail: dict = field(default_factory=dict)
-    caps: DeviceCapabilities = None          # model capabilities
-    center_hz: float = 1e9          # SWP-mode center
-    span_hz: float = 100e6
-    rta_center_hz: float = DEFAULT_RTA_CENTER_HZ
-    rta_span_hz: float = DEFAULT_RTA_SPAN_HZ
-    rta_ref_level: float = DEFAULT_RTA_REF_DBM
-    rta_ref_mode: str = 'manual'
-    rta_rbw_mode: str = DEFAULT_RTA_RBW_MODE
-    rta_rbw_hz: float = 0.0
-    rta_vbw_mode: str = DEFAULT_RTA_VBW_MODE
-    rta_vbw_hz: float = 0.0
-    rta_sweep_time_mode: int = DEFAULT_RTA_SWEEP_MODE
-    rta_sweep_time: float = 0.0
-    rta_actual: dict = field(default_factory=dict)
-    # SDR mode (IQS streaming + channelizer + demod). Independent from SWP/RTA.
-    sdr_center_hz: float = 1e9
-    sdr_decimate: int = 16
-    sdr_actual: dict = field(default_factory=dict)
-    sdr_listen_hz: float = 1e9
-    sdr_demod: str = 'am'
-    sdr_if_bw: float = 6000.0
-    sdr_squelch: float = -110.0
-    sdr_squelch_open: bool = False
-    sdr_volume: float = 0.8
-    sdr_agc: bool = True
-    sdr_pitch: float = 700.0
-    # FM de-emphasis time constant in microseconds. -1 = auto (50 us for WFM, none
-    # elsewhere); 0 = off; 50/75/300 = explicit (regional pre-emphasis complement).
-    sdr_deemph_us: float = -1.0
-    sdr_level_dbfs: float = -120.0
-    sdr_adm: dict = field(default_factory=dict)
-    # RTA acquisition trigger (applies to RTA sessions; SWP has no level trigger)
-    trigger_source: str = DEFAULT_TRIGGER_SOURCE
-    trigger_edge: str = DEFAULT_TRIGGER_EDGE
-    trigger_level_dbm: float = DEFAULT_TRIGGER_LEVEL_DBM
-    trigger_safe_time_s: float = DEFAULT_TRIGGER_SAFE_TIME_S
-    trigger_delay_s: float = DEFAULT_TRIGGER_DELAY_S
-    trigger_pre_time_s: float = DEFAULT_TRIGGER_PRE_TIME_S
-    trigger_acq_time_s: float = DEFAULT_TRIGGER_ACQ_TIME_S
-    trigger_retrigger_count: int = DEFAULT_TRIGGER_RETRIGGER_COUNT
-    trigger_retrigger_period_s: float = DEFAULT_TRIGGER_RETRIGGER_PERIOD_S
-    trigger_out: str = DEFAULT_TRIGGER_OUT
-    trigger_out_polarity: str = DEFAULT_TRIGGER_OUT_POLARITY
-    trigger_actual: dict = field(default_factory=dict)
-    ref_level: float = 0.0
-    ref_mode: str = 'manual'
-    rbw_mode: str = 'manual'
-    rbw_hz: float = 100e3
-    vbw_mode: str = 'manual'
-    vbw_hz: float = 100e3
-    points_req: int = 1000
-    window: int = 1
-    spur_mode: str = 'bypass'
-    detector: str = 'auto'
-    atten: int = -1
-    preamplifier: int = 0
-    ifgain: int = 2
-    # IF AGC (device-specific; see _profile). Off by default because the official
-    # Profile.xml ships EnableIFAGC=0. WEBSA_IFAGC=1 flips the default for A/B testing.
-    ifagc: int = 1 if os.getenv('WEBSA_IFAGC', '0').lower() not in (
-        '0', '', 'false', 'no', 'off') else 0
-    ifagc_target: float = float(os.getenv('WEBSA_IFAGC_TARGET', '-9'))
-    ifagc_gain: float = 0.0
-    gain_strategy: int = 0
-    amp_atten: int = -1
-    preamplifier_actual: int | None = None
-    ref_clock: str = 'internal'
-    has_docxo: bool = False
-    mode: str = 'std'
-    pnm_supported: bool = False
-    actual: dict = field(default_factory=dict)
-    gnss: dict = field(default_factory=dict)
-    sweep_ms: float = 0.0
-    sweep_time_mode: int = 0     # SweepTimeMode_TypeDef: 0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN
-    sweep_time: float = 0.0      # Manual=绝对秒; xN=倍率; 其他模式忽略
-    freq_version: int = 0
-    config_version: int = 0
-    # Height of the visible display window in dB (grid divisions x dB/div), pushed by the
-    # frontend. Auto Ref anchors the noise floor just above the bottom of this window, so it
-    # must know how tall the window is; 100 dB = the default 10 div x 10 dB/div.
-    ref_range_db: float = 100.0
-    # Last vendor WARNING status from the measurement stream (0 = none). -12 is IF
-    # overflow: the IF saturates when Ref is set low, and the vendor's remedy is to raise
-    # RefLevel_dBm. Surfaced so the UI can say so instead of the display appearing frozen.
-    status_warning: int = 0
-    last_error: str = ''
-    refclk_ppm: float = 0.0
-    calibrating: bool = False
-    last_cal_freq: float = 0.0
-    refclk_out: bool = False   # reference clock output enable
-    # Measurement results
-    harm_results: list = field(default_factory=list)
-    pnm_last: dict | None = None
 
 
 # Safety bound for the swept trace buffers: SWP_GetFullSweep writes the device's own trace
@@ -291,27 +170,8 @@ class HarogicDevice:
         caps.freq_max_hz = max(caps.freq_max_hz, float(hi))
 
     def reset_sdr_state(self) -> None:
-        """Restore every SDR parameter to the power-on defaults.
-
-        The dataclass defaults are the single source of truth for "initial state", so a
-        fresh DeviceState is used instead of duplicating literals here.
-        """
-        s = self.state
-        d = DeviceState()
-        s.sdr_center_hz = d.sdr_center_hz
-        s.sdr_decimate = d.sdr_decimate
-        s.sdr_listen_hz = d.sdr_listen_hz
-        s.sdr_demod = d.sdr_demod
-        s.sdr_if_bw = d.sdr_if_bw
-        s.sdr_squelch = d.sdr_squelch
-        s.sdr_squelch_open = False
-        s.sdr_volume = d.sdr_volume
-        s.sdr_agc = d.sdr_agc
-        s.sdr_pitch = d.sdr_pitch
-        s.sdr_deemph_us = d.sdr_deemph_us
-        s.sdr_level_dbfs = d.sdr_level_dbfs
-        s.sdr_adm = {}
-        s.sdr_actual = {}
+        """Restore every SDR parameter to the power-on defaults (fresh group dataclass)."""
+        self.state.sdr = SdrParams()
 
     def reset_common_state(self) -> None:
         """Reset the front-end settings that are shared by every mode."""
@@ -324,30 +184,9 @@ class HarogicDevice:
         s.last_error = ''
 
     def reset_rta_state(self) -> None:
-        s = self.state
-        s.rta_center_hz = DEFAULT_RTA_CENTER_HZ
-        s.rta_span_hz = DEFAULT_RTA_SPAN_HZ
-        s.rta_ref_level = DEFAULT_RTA_REF_DBM
-        s.rta_ref_mode = 'manual'
-        s.rta_rbw_mode = DEFAULT_RTA_RBW_MODE
-        s.rta_rbw_hz = 0.0
-        s.rta_vbw_mode = DEFAULT_RTA_VBW_MODE
-        s.rta_vbw_hz = 0.0
-        s.rta_sweep_time_mode = DEFAULT_RTA_SWEEP_MODE
-        s.rta_sweep_time = 0.0
-        s.rta_actual = {}
-        s.trigger_source = DEFAULT_TRIGGER_SOURCE
-        s.trigger_edge = DEFAULT_TRIGGER_EDGE
-        s.trigger_level_dbm = DEFAULT_TRIGGER_LEVEL_DBM
-        s.trigger_safe_time_s = DEFAULT_TRIGGER_SAFE_TIME_S
-        s.trigger_delay_s = DEFAULT_TRIGGER_DELAY_S
-        s.trigger_pre_time_s = DEFAULT_TRIGGER_PRE_TIME_S
-        s.trigger_acq_time_s = DEFAULT_TRIGGER_ACQ_TIME_S
-        s.trigger_retrigger_count = DEFAULT_TRIGGER_RETRIGGER_COUNT
-        s.trigger_retrigger_period_s = DEFAULT_TRIGGER_RETRIGGER_PERIOD_S
-        s.trigger_out = DEFAULT_TRIGGER_OUT
-        s.trigger_out_polarity = DEFAULT_TRIGGER_OUT_POLARITY
-        s.trigger_actual = {}
+        """Restore the RTA window and the trigger defaults (fresh group dataclasses)."""
+        self.state.rta = RtaParams()
+        self.state.trigger = TriggerParams()
         self.reset_auto_reference('rta')
 
     def preset_state(self) -> dict:

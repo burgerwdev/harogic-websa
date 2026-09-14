@@ -699,6 +699,8 @@ e2e（真机）仍全绿。
 
 | **B4：剩余单写者客户端偏好槽位化** | **已完成（3 项有意保留）** | 触发/瀑布/显示之外，又把 8 个单写者偏好迁入槽位：`spanStepHz/spanStepAuto`（`ui/swpState.ts`）、`harmValMode/peakListOn/peakThrUserSet/normRefWinUser/valleySeqPos`（新增 `ui/measurePrefs.ts`，全部 `authoritative`）、以及单位选择表 `units`（改为 `core/units.ts` 内的 `unitMap` 槽位，读方走 `units()`，写方走 `setUnit()`）。`dbPerDiv`、`levelUnit`、`currentGapFill` **有意保留为普通值**：它们是单写者，但在每帧循环里被读取（`getY`／电平换算／gap fill），在那里调槽位 `get()` 正是曾拖满主线程的做法（见 DEVELOPMENT §3 热路径规则）。新增测试断言"客户端偏好不会因 TTL 回退"与 `resetAll` 行为。 |
 
+| **B1：`DeviceState` 按模式拆分** | **已完成** | 新增 `hardware/state.py`：`SwpParams`(17) / `RtaParams`(11) / `SdrParams`(14) / `TriggerParams`(12) 四个组，共享前端（衰减/预放/中频增益/参考时钟）与 meta 字段留在 `DeviceState`；`reset_rta_state`/`reset_sdr_state` 现在是"换一个默认组"的一行。为过渡保留了**扁平别名**（`state.center_hz` ⇔ `state.swp.center_hz`，由一张映射表安装为 property），523 处调用点、全部测试与 STATUS 形状均不变；`device.py` 921 → 569 行。新增 `tests/test_device_state_grouping.py`（4 项）锁定别名读写、两种构造方式、reset 语义与 STATUS 不变。 |
+
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```

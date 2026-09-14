@@ -31,6 +31,7 @@ Shortest path: `make ci` (green without hardware) -> `make hw-test` with the dev
 | Module | Responsibility | Must not |
 |---|---|---|
 | `hardware/sdk_bindings.py` | **The only** place that touches `libhtraapi` (incl. the hand-declared PNM/ADM/IQStream structs) | Contain business logic; other modules may not `import htra_api` (guarded) |
+| `hardware/state.py` | Device state: `Swp/Rta/Sdr/Trigger` parameter groups plus the shared front-end/meta fields; grouped fields also keep flat aliases during the transition | Business logic; new code should use the groups (`state.rta.span_hz`) |
 | `hardware/device.py` | Device lifecycle, buffers, one `step()`, session host | Control-loop decisions, protocol encoding |
 | `hardware/auto_reference.py` | Auto Ref control loop (pure decisions, unit-testable) | Call the DLL directly |
 | `measurements/base.py` | Session interface: `enter/exit/step` + acquisition policy (`acquisition_timeout/pacing/dedupe_freq/reconfigure`) + `is_ready/request_stop` + `health` | Know specific mode names |

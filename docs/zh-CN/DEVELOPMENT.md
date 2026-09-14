@@ -27,6 +27,7 @@
 | 模块 | 职责 | 不该做的事 |
 |---|---|---|
 | `hardware/sdk_bindings.py` | **唯一**直接接触 `libhtraapi` 的地方（含手写的 PNM/ADM/IQStream 结构体） | 业务逻辑；其它模块禁止 `import htra_api`（有守卫） |
+| `hardware/state.py` | 设备状态：按所有者分组的 `Swp/Rta/Sdr/Trigger` 参数 + 共享前端/meta 字段；分组字段同时保留扁平别名（过渡期） | 业务逻辑；新代码应使用分组（`state.rta.span_hz`） |
 | `hardware/device.py` | 设备生命周期、缓冲区、一次 `step()`、会话宿主 | 控制环决策、协议编码 |
 | `hardware/auto_reference.py` | Auto Ref 控制环（纯决策，可单测） | 直接调 DLL |
 | `measurements/base.py` | 会话接口：`enter/exit/step` + 采集策略（`acquisition_timeout/pacing/dedupe_freq/reconfigure`）+ `is_ready/request_stop` + `health` | 感知具体模式名 |
