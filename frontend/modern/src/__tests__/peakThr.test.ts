@@ -12,6 +12,8 @@ import { autoPeakThr, peakThrAuto, peakThrManual, resetPeakThr } from '../render
 import { peakThr, peakThrUserSet } from '../ui/measurePrefs';
 import { currentRBW, rbwMode } from '../ui/swpState';
 import { resetAll } from '../core/params';
+import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
+import { displayOffset, displayUnit } from '../ui/displayState';
 import * as S from '../core/store';
 
 function trace(peakDbm: number): Float32Array {
@@ -102,5 +104,28 @@ describe('auto peak threshold', () => {
 		expect(peakThr.get()).toBe(-80);
 		expect(el.value).toBe('-80');
 		expect(peakThrUserSet.get()).toBe(false);
+	});
+});
+
+describe('absolute readouts follow the display rule', () => {
+	it('applies the external offset to the axis and the readouts', () => {
+		displayUnit.set('dBm');
+		displayOffset.set(0);
+		expect(fmtAxisLevel(-20)).toBe('-20');
+		expect(fmtReadoutLevel(-25.5)).toBe('-25.50 dBm');
+		displayOffset.set(20);                      // a 20 dB amplifier in front of the analyser
+		expect(fmtAxisLevel(-20)).toBe('0');        // the top line now means 0 dBm at the antenna
+		expect(fmtReadoutLevel(-25.5)).toBe('-5.50 dBm');
+	});
+
+	it('converts the unit and leaves relative values alone', () => {
+		displayOffset.set(0);
+		displayUnit.set('dBm');
+		expect(fmtAxisLevel(0)).toBe('0');
+		expect(fmtReadoutLevel(0)).toBe('0.00 dBm');
+		displayUnit.set('dB');
+		displayOffset.set(20);                      // differences are never converted
+		expect(fmtAxisLevel(-20)).toBe('-20');
+		expect(fmtReadoutLevel(-25.5)).toBe('-25.50 dB');
 	});
 });

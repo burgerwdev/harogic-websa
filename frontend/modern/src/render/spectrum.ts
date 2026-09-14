@@ -24,6 +24,7 @@ import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from 
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaAmpBins, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
+import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -79,14 +80,7 @@ export function renderGrid() {
   ctx.strokeStyle = col.axis;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
 
-  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const labelX = p.x + p.w + 42;
-  for (let i = 0; i <= S.totalDivs; i++) {
-    const y = p.y + i * p.h / S.totalDivs;
-    const v = c.displayRef - i * c.dbPerDiv;
-    ctx.fillText(v.toFixed(0), labelX, y);
-  }
+  drawYAxisLabels(p, col, c.displayRef, c.dbPerDiv);
 
   let loHz = c.centerHz - c.spanHz / 2, hiHz = c.centerHz + c.spanHz / 2;
   if (S.freqArray && S.freqArray!.length > 1) { loHz = S.freqArray![0]; hiHz = S.freqArray![S.freqArray!.length - 1]; }
@@ -265,7 +259,6 @@ function renderOSD(powers: Float32Array) {
   const col = canvasColors();
   const active = c.markers.filter(m => m.enabled && m.mode !== 'OFF');
   if (!active.length) return;
-  const unit = c.displayUnit === 'dB' ? 'dB' : 'dBm';
   const p = plotRect();
   ctx.font = '11px monospace';
   ctx.textAlign = 'left';
@@ -277,7 +270,10 @@ function renderOSD(powers: Float32Array) {
     const f = markerFreqHz(idx), a = powers[idx];
     let txt: string;
     if (m.mode === 'NORMAL') {
-      txt = `M${m.id} ${formatFreqHz(f)}  ${a.toFixed(2)}${unit}`;
+      // Same rule as the marker table: display unit + external offset (fmtLevel), raw dB only in
+      // relative mode. Printing the raw value here is what made the on-canvas readout ignore the
+      // Level offset while the trace moved with it.
+      txt = `M${m.id} ${formatFreqHz(f)}  ${fmtReadoutLevel(a)}`;
     } else if (m.mode === 'DELTA') {
       const ref = c.markers.find(x => x.id === m.refId);
       if (ref) {
@@ -469,6 +465,28 @@ setRenderer(renderAll);
 registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
 
 
+/**
+ * Y-axis tick labels (right of the graticule), in the display domain.
+ *
+ * The trace is displaced by the external offset in getY(), so the axis must be labelled with the
+ * same conversion - `fmtAxisLevel` - or every number disagrees with the trace by the offset.
+ * The labels also become the `dataset.yLabels` diagnostic/e2e hook.
+ */
+function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
+                         col: { axis: string }, displayRef: number, dbPerDiv: number) {
+  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  const labelX = p.x + p.w + 42;
+  const labels: string[] = [];
+  for (let i = 0; i <= S.totalDivs; i++) {
+    const y = p.y + i * p.h / S.totalDivs;
+    const text = fmtAxisLevel(displayRef - i * dbPerDiv);
+    labels.push(text);
+    ctx.fillText(text, labelX, y);
+  }
+  ctx.canvas.dataset.yLabels = labels.join(',');
+}
+
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn
 // even when the packet stream is empty (waiting), so the canvas always says which mode it
 // is in and never looks like a stale or broken picture.
@@ -528,15 +546,7 @@ function renderRta() {
   ctx.stroke();
   ctx.strokeStyle = col.axis;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
-  // Y 轴标签
-  ctx.fillStyle = col.axis; ctx.font = '11px monospace';
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const labelX = p.x + p.w + 42;
-  for (let i = 0; i <= S.totalDivs; i++) {
-    const y = p.y + i * p.h / S.totalDivs;
-    const v = cur().displayRef - i * cur().dbPerDiv;
-    ctx.fillText(v.toFixed(0), labelX, y);
-  }
+  drawYAxisLabels(p, col, cur().displayRef, cur().dbPerDiv);
   // Corner label "RTA" (kept; FFT size removed)
   ctx.fillStyle = col.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
   ctx.fillText(S.sdrMode ? 'SDR' : 'RTA', p.x + 4, p.y + 4);

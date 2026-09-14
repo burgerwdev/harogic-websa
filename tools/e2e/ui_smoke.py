@@ -124,6 +124,38 @@ def main() -> int:
         check('the Ref row does not move when the notice appears', before == after,
               f'{before} -> {after}')
 
+        print('2a2) the Level offset moves the plot amplitude numbers')
+        # Reported: the offset shifted the trace but not the amplitude numbers on the plot. The
+        # trace is displaced in getY(), so the axis has to be labelled with the same conversion
+        # (fmtAxisLevel); the labels are exposed as dataset.yLabels because canvas text is not DOM.
+        def y_labels():
+            return (page.evaluate("document.getElementById('spectrum').dataset.yLabels") or '').split(',')
+
+        def set_offset(value):
+            page.fill('#input-offset', str(value))
+            page.dispatch_event('#input-offset', 'change')
+            page.wait_for_timeout(700)
+
+        set_offset(0)
+        base = y_labels()
+        set_offset(20)
+        shifted = y_labels()
+        set_offset(-10)
+        negated = y_labels()
+        set_offset(0)
+        restored = y_labels()
+        check('the axis is labelled at all', len(base) > 1 and base[0].strip() != '', str(base[:3]))
+        check('a +20 dB offset lifts every axis label by 20 dB',
+              len(shifted) == len(base)
+              and all(abs(float(b) + 20 - float(s)) < 0.6 for b, s in zip(base, shifted, strict=True)),
+              f'{base[:3]} -> {shifted[:3]}')
+        check('a negative offset moves them the other way',
+              len(negated) == len(base)
+              and all(abs(float(b) - 10 - float(n)) < 0.6 for b, n in zip(base, negated, strict=True)),
+              f'{base[:3]} -> {negated[:3]}')
+        check('offset 0 restores the original numbers', restored == base,
+              f'{base[:3]} -> {restored[:3]}')
+
         print('2b) the peak list works off the threshold slot')
         # The threshold moved from the input element into a parameter slot (one decision per
         # measurement geometry, see render/peaklist.ts). Peak finding, marker peak search and
