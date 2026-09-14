@@ -672,6 +672,12 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | P2-7 | **Measurement result assembly tests**: the harmonic sequence is driven through a stub device (order list, dBc reference, amplitude tracking, frequency-limit stop, parameter clamping) and the PNM payload became a pure `pnm_payload()` helper | 6 hardware-free tests |
 | P2-8 | Correction: `fit_span` is used by the harmonic session, not a legacy leftover | - |
 | §7.5 | `tools/quality/architecture_guard.py` + baseline | `make ci` |
+| **A1** | Fake backend + UI smoke in CI (see §9.3): `hardware/fake_device.py` imports no vendor module, `measurements/fake.py` synthesises RTAF/AUDF frames, `tools/e2e/ui_smoke.py` runs 20 user-visible checks, CI gained the `ui-smoke` job | backend tests + `make e2e-fake` green |
+| **A1 extension** | The full `state_regression.py` (45 parameter state-machine checks) also runs against the fake backend; `make e2e-fake` runs both scripts, as does CI | measured 45/45 with no script change |
+| **B1** | `DeviceState` split by owner: `SwpParams` (17) / `RtaParams` (11) / `SdrParams` (14) / `TriggerParams` (12) plus flat aliases for the transition; `device.py` 921 -> 566 lines | `tests/test_device_state_grouping.py` (4 tests) + bench |
+| **B4** | The remaining single-writer client preferences slot-ised (8 values) and the unit map became `unitMap`; `dbPerDiv/levelUnit/currentGapFill` stay plain on purpose (hot-path rule) | `params.test.ts` (incl. "no revert past the TTL") + bench |
+| **C2** | The 27 KB scratch TODO archived into tracked docs and deleted (closed findings -> KNOWN_ISSUES 24-27, failure modes -> DEVELOPMENT §3, diagnostic keys -> §11) | `check_docs_parity` (8 pairs) + file removed |
+| **C4** | The bench records `stream.clients` from the periodic STATUS and warns when several clients are connected (it previously recorded only the device warning) | `make bench` |
 
 ### 9.2 Objective progress (guard metrics, before -> now)
 
@@ -685,7 +691,7 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | `mode_branches` | 18 | **0** |
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
-| Backend tests | 87 | **147** |
+| Backend tests | 87 | **156** |
 | Frontend tests | 115 | **152** |
 | Hardware-free (CI) tests | 0 | **78** |
 | `ui/controls.ts` | 1548 lines | **934 lines** (exports 97 -> 16; + 9 panel modules) |
@@ -694,33 +700,20 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | e2e assertions (hardware) | 27 | **45** |
 | Production bundle | 178 kB | 156 kB |
 
-### 9.3 Open items (complete list after the v1.5.6 re-check)
+### 9.3 Open / blocked / decided (v1.5.6 wrap-up re-check)
 
-| Finding | Status | Note and next step |
+Implemented items are in §9.1; what follows is only what is still open, blocked upstream, or
+explicitly decided against.
+
+| Item | Status | Note and next step |
 |---|---|---|
-| ~~Phase 4: fake backend + e2e in CI~~ | **Done (A1)** | See the A1 row below; what remains is the optional extension of pointing the *full* `state_regression.py` at the fake too (CI currently runs `ui_smoke.py`, covering rendering/controls/modes/tabs/waterfall/i18n/keypad). |
-| **e2e coverage for Firefox** | Open | Playwright has only Chromium installed here; manual testing uses Firefox. Next: `playwright install firefox` and run the e2e as a two-browser matrix. |
-| **P1-8 step 2: split `DeviceState` per mode** | Open | The control loop (`AutoReferenceController`) is extracted and the field count dropped from ~100 to 83; the rest is still one dataclass. Structural payoff, no current defect driving it. Next: `SwpParams/RtaParams/SdrParams/TriggerParams` sub-structures with the STATUS shape unchanged. |
-| **P2-2 remainder: unused exports in `controls.ts`** | Partial | After the panel split `controls.ts` has 16 exports, 11 of which nothing outside references (they can lose `export`). Pure hygiene. |
-| **P2-3: ESLint** | Blocked (upstream) | `typescript-eslint@8` requires `typescript <6.1` while this project uses TypeScript 7.0.2 (npm ERESOLVE reproduced). Covered meanwhile by `tsc --strict` + `noUnusedLocals/Parameters` plus the architecture, registration, DOM-id and docs guards. Adopt once upstream supports it. |
-| **P2-6: 27 KB scratch TODO in the repo root** | Open | It is the author's local working note (`.git/info/exclude`); deleting or moving it is their call. Suggestion: fold its design decisions into `DEVELOPMENT.md` and drop the stale debugging logs. |
-| **P2-9: echo only changed STATUS fields for high-rate commands** | Open | Frontend slot confirmation relies on the full STATUS; it is an optimisation, not a structural problem, with little payoff at the current client count. Revisit if STATUS grows. |
-| **Frontend unit coverage (P0-2 remainder)** | Partial (deliberate) | 31 of 88 modules are directly referenced by a unit test (including five i18n data files); the rest are DOM layers (`ui/`, `render/`, `meas/`, `ui/panels/`) covered by the e2e (45 assertions) instead. Add unit tests when one of them grows pure logic, rather than chasing module coverage. |
-| **Bench client-count comparability** | Recorded, not automated | Extra WS clients (several browser tabs) multiply the fan-out work. The bench records the device warning state but not the client count; check that only one client is connected before comparing. |
-
-| **Whether to migrate the single-writer client preferences** | Optional | `spanStepHz/spanStepAuto`, `dbPerDiv`, `levelUnit`, `currentGapFill`, `units`, `harmValMode`, `peakListOn`, `peakThrUserSet`, `normRefWinUser` and `valleySeqPos` are single-writer display/UI preferences the backend never reports, so they are not the multi-writer problem P1-6 targeted. Migrating them only buys consistency (nobody has to guess which pattern to use) at the cost of a dozen read/write sites. Recommendation: migrate one opportunistically when touching it, do not dedicate a round. |
-| **Automate the bench client count** | Open | The bench records the device warning state (`device_warning`) but not the number of WS clients: extra browser tabs multiply the fan-out work and make the CPU numbers incomparable. Next: parse the periodic STATUS `stream.clients` inside the `collect_*` helpers of `tools/hardware_smoke.py` and warn when it is not 1. |
-
-| **B2: the 11 "unreferenced exports" in `controls.ts`** | **Intentionally kept (user decision)** | Re-checked: the functions are all live (action table / DOM listeners / keyboard shortcut), they are just not imported by another module. The user chose to **keep them as public capability exports** (useful for scripts, e2e, debugging), so this is not a cleanup item - minimising the API surface is not a goal in itself. |
-| **Three low-priority candidates rescued from the deleted scratch TODO** | Open (recorded) | (1) `sdrPeakEma/sdrNoiseEma` first-frame seeding: a post-reconfigure transient can seed a bad value, a median seed would be steadier; (2) restoring `web-sa-mode` while the backend is already in another mode; (3) STATUS replies interleaving with HTTP `/api/config` (ordered within WS, not across transports). The scratch file (`TODO-frontend-state.md`) was deleted per C2; its closed findings moved into `KNOWN_ISSUES.md` items 24-27, the failure modes into `DEVELOPMENT.md` §3 and the diagnostic keys into §11. |
-
-| **B4: remaining single-writer client preferences slot-ised** | **Done (three intentionally left)** | Beyond trigger/waterfall/display, eight more single-writer preferences moved into slots: `spanStepHz/spanStepAuto` (`ui/swpState.ts`), `harmValMode/peakListOn/peakThrUserSet/normRefWinUser/valleySeqPos` (new `ui/measurePrefs.ts`, all `authoritative`) and the unit-selection map `units` (now the `unitMap` slot inside `core/units.ts`; readers use `units()`, writers go through `setUnit()`). `dbPerDiv`, `levelUnit` and `currentGapFill` **stay plain values on purpose**: single writers, but read inside per-frame loops (`getY` / level conversions / gap fill), and calling a slot `get()` there is exactly what saturated the main thread once (DEVELOPMENT.md §3, hot-path rule). New tests assert that a client-owned preference does not revert when the TTL expires, and that `resetAll` clears intents. |
-
-| **B1: `DeviceState` split per mode** | **Done** | New `hardware/state.py`: `SwpParams` (17), `RtaParams` (11), `SdrParams` (14) and `TriggerParams` (12) groups, while the shared front end (attenuation/preamp/IF gain/reference clock) and the meta fields stay on `DeviceState`; `reset_rta_state`/`reset_sdr_state` are now a one-line "fresh default group". **Flat aliases** are kept for the transition (`state.center_hz` is `state.swp.center_hz`, installed as properties from a single mapping table), so the 523 call sites, the whole test suite and the STATUS shape are unchanged; `device.py` went from 921 to 569 lines. New `tests/test_device_state_grouping.py` (4 tests) pins alias reads/writes, both construction styles, the reset semantics and that STATUS is unaffected. |
-
-| **A1: fake backend + UI smoke in CI** | **Done** | New `hardware/fake_device.py` (imports no vendor module, so it runs where libhtraapi does not exist) plus `measurements/fake.py` (fake RTA/SDR sessions emitting synthetic RTAF/AUDF frames); with `WEBSA_FAKE=1`, `main._make_device()` selects the fake and swaps the session factory. `tools/e2e/ui_smoke.py` runs 20 **user-visible** checks against it (canvas pixels, controls reaching the backend, mode switches still drawing, measurement tabs, waterfall yielding, i18n, keypad, no page errors); `make e2e-fake` runs it locally and CI gained a `ui-smoke` job (build dist + `playwright install chromium` + start the fake service + run the smoke). `DeviceError` moved to `hardware/errors.py` so the scheduler path (publisher) no longer pulls in the vendor library. New `tests/test_fake_device.py` (5 tests) pins the fake's contract. |
-
-| **A1 extension: the full `state_regression.py` also runs on the fake backend** | **Done** | Measured: the script is device-agnostic by construction (17 sections / 45 checks, every expectation read from `/api/state` or the DOM, no device constants) and passes **with no script change and no extra fake fidelity**. `make e2e-fake` now runs both scripts (rendering smoke + parameter state-machine contract) and the CI `ui-smoke` job runs the same pair; the script gained an explicit `check(..., require_device=True)` skip hook (nothing needs it today) and its header states the discipline: **never relax an assertion to make the fake pass**, because that would weaken the bench run too. |
+| **e2e coverage for Firefox (A2)** | Open (not chosen this round) | Manual testing uses Firefox while CI runs Chromium. Next: `playwright install firefox` and run both scripts of `make e2e-fake` as a two-browser matrix. |
+| **P2-3: ESLint** | Blocked (upstream) | `typescript-eslint@8` requires `typescript <6.1` while this project uses TypeScript 7.0.2 (npm ERESOLVE reproduced). Covered meanwhile by `tsc --strict` + `noUnusedLocals/Parameters` and the architecture / registration / DOM-id / docs guards. Adopt once upstream supports it. |
+| **P2-9: echo only changed STATUS fields for high-rate commands** | Open (low payoff) | Frontend slot confirmation relies on the full STATUS; an optimisation rather than a structural problem. Revisit if STATUS grows or the client count rises. |
+| **Frontend DOM-layer unit tests (P0-2 remainder)** | Deliberate policy | 31 of 88 modules are directly referenced by a unit test; the rest are DOM layers (`ui/`, `render/`, `meas/`, `ui/panels/`) covered by the hardware-free e2e (`ui_smoke` 20 checks + `state_regression` 45 checks). Add a unit test when a module grows pure logic, not to raise module coverage. |
+| **Three low-priority candidates** (from the deleted scratch TODO) | Open (recorded) | (1) `sdrPeakEma/sdrNoiseEma` first-frame seeding: a post-reconfigure transient can seed a bad value, a median seed is steadier; (2) restoring `web-sa-mode` while the backend is already in another mode; (3) STATUS replies interleaving with HTTP `/api/config`. |
+| **`dbPerDiv` / `levelUnit` / `currentGapFill` stay plain values** | Decided: intentionally kept | Single writers, but read on per-frame hot paths (`getY` / level conversions / gap fill), and a slot `get()` there is exactly what saturated the main thread once (DEVELOPMENT §3 hot-path rule). Migrate if those reads ever move off the hot path. |
+| **The 11 unreferenced exports in `controls.ts`** | Decided: kept as public API | The functions are all live (action table / DOM listeners / keyboard shortcut), they are simply not imported by another module; the user chose to keep them as public capability exports (scripts, e2e, debugging). Minimising the API surface is not a goal in itself. |
 
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 

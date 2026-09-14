@@ -34,3 +34,6 @@ libhtraapi.dylib
 
 # SDR probe artifacts
 tools/sdr_probe/plots/
+
+# pi agent state (session goals/ledger; local only)
+.pi/

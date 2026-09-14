@@ -651,10 +651,16 @@ e2e（真机）仍全绿。
 | P2-1 | `core/store` 导入期不再访问 DOM（`initStore()` + 快速失败） | `__tests__/store.test.ts` |
 | P2-2/P2-3 | `noUnusedLocals/Parameters`；ESLint 见 9.3（上游受阻） | tsc 干净 |
 | P2-4 | **HiDPI**（backing store ×DPR，逻辑坐标不变） | store 测试 + 真机 |
-| P2-5 | 双语结构一致性检查（7 对文件） | `make ci` |
+| P2-5 | 双语结构一致性检查（8 对文件） | `make ci` |
 | P2-7 | **测量结果组装测试**：谐波序列用 stub 设备驱动（阶次列表/dBc 参考/幅度跟随/频率上限停止/参数裁剪），PNM 载荷抽成纯函数 `pnm_payload()` | 6 项（硬件无关） |
 | P2-8 | 更正 `fit_span` 并非遗留 helper | — |
 | §7.5 | `tools/quality/architecture_guard.py` + baseline | `make ci` |
+| **A1** | 假后端 + UI 冒烟进 CI（见 §9.3 说明）：`hardware/fake_device.py` 不 import 厂商库，`measurements/fake.py` 合成 RTAF/AUDF，`tools/e2e/ui_smoke.py` 20 项用户可见检查，CI `ui-smoke` job | 156→按需后端测试 + `make e2e-fake` 全绿 |
+| **A1 延伸** | 完整 `state_regression.py`（45 项参数状态机契约）也跑在假后端上；`make e2e-fake` 串跑两个脚本，CI 同款 | 实测 45/45 通过，脚本零修改 |
+| **B1** | `DeviceState` 按所有者拆分：`SwpParams`(17)/`RtaParams`(11)/`SdrParams`(14)/`TriggerParams`(12) + 扁平别名过渡；`device.py` 921→566 行 | `tests/test_device_state_grouping.py`（4 项）+ 真机 |
+| **B4** | 剩余单写者客户端偏好槽位化（8 项）+ 单位表改 `unitMap`；`dbPerDiv/levelUnit/currentGapFill` 按热路径规则有意保留 | `params.test.ts`（含 TTL 不回退）+ 真机 |
+| **C2** | 根目录 27 KB 临时 TODO 归档进受版本控制的文档后删除（结项结论→KNOWN_ISSUES 24–27，失败模式→DEVELOPMENT §3，诊断键→§11） | `check_docs_parity`（8 对）+ 文件已删 |
+| **C4** | bench 记录周期性 STATUS 的 `stream.clients`，多客户端时警告（此前只记录设备告警） | `make bench` |
 
 ### 9.2 客观进展（守卫指标，重构前 → 现在）
 
@@ -668,7 +674,7 @@ e2e（真机）仍全绿。
 | `mode_branches` | 18 | **0** |
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
-| 后端测试 | 87 | **147** |
+| 后端测试 | 87 | **156** |
 | 前端测试 | 115 | **152** |
 | 硬件无关（CI 可跑）测试 | 0 | **78** |
 | `ui/controls.ts` | 1548 行 | **934 行**（+ 9 面板模块） |
@@ -677,33 +683,19 @@ e2e（真机）仍全绿。
 | e2e 断言数（真机） | 27 | **45** |
 | 生产 bundle | 178 kB | 156 kB |
 
-### 9.3 未做项（v1.5.6 复核后的完整清单）
+### 9.3 未做 / 受阻 / 已决策（v1.5.6 收尾复核）
 
-| 编号 | 状态 | 说明与下一步 |
+已完成项见 §9.1；这里只列仍然开放、受上游阻塞或已明确决定不做的项。
+
+| 项 | 状态 | 说明与下一步 |
 |---|---|---|
-| ~~Phase 4：假后端 + e2e 进 CI~~ | **已完成（A1）** | 见下方 A1 行；剩下的只是"把完整 `state_regression.py` 也接到假后端"这一可选延伸（当前 CI 跑的是 `ui_smoke.py`，覆盖渲染/控件/模式/页签/瀑布/i18n/键盘）。 |
-| **e2e 覆盖 Firefox** | 未做 | 本机 Playwright 只装了 Chromium；人工测试使用的是 Firefox。下一步：`playwright install firefox`，把 e2e 跑成双浏览器矩阵。 |
-| **P1-8 第二步：`DeviceState` 按模式拆分** | 未做 | 控制环（`AutoReferenceController`）已抽出，字段从 ~100 降到 83；剩下的仍是单一大 dataclass。属结构性收益，无当前故障驱动。下一步：按 `SwpParams/RtaParams/SdrParams/TriggerParams` 拆子结构，STATUS 形状保持不变。 |
-| **P2-2 剩余：`controls.ts` 的无用导出** | 部分 | 面板拆分后 `controls.ts` 只剩 16 个导出，其中 11 个没有外部引用（可直接去掉 `export`）。纯卫生项。 |
-| **P2-3：ESLint** | 受阻（上游） | `typescript-eslint@8` 要求 `typescript <6.1`，本项目用 TypeScript 7.0.2（npm ERESOLVE 已复现）。当前由 `tsc --strict` + `noUnusedLocals/Parameters` + 架构/注册/ID/文档四类守卫覆盖。等上游支持后接入。 |
-| **P2-6：根目录 27 KB 临时 TODO** | 未做 | 属作者本地工作备忘（`.git/info/exclude`），删除/搬移应由作者决定。建议将该文件中的"设计决策"部分并入 `DEVELOPMENT.md`，把过期的排查记录删掉。 |
-| **P2-9：高频命令只回显变化字段** | 未做 | 前端槽位确认依赖完整 STATUS，属性能优化而非结构问题；当前客户端数下收益很小。若将来 STATUS 变大，再做增量字段。 |
-| **前端单测覆盖（P0-2 剩余）** | 部分（有意为之） | 88 个模块中 31 个被单测直接引用（含 5 个 i18n 数据文件）；未覆盖集中在 `ui/`、`render/`、`meas/`、`ui/panels/` 等 DOM 层——按现在的策略由 e2e 覆盖（45 项断言）。若这些模块出现纯逻辑分支，再按需补单测，而不是追求模块覆盖率。 |
-| **bench 的客户端数可比性** | 记录未自动化 | 多个 WS 客户端（多开浏览器）会成倍增加 fan-out 工作，bench 已记录设备告警状态但未记录客户端数；重跑 bench 前先确认只有一个客户端。 |
-
-| **单写者客户端偏好是否迁移** | 可选 | `spanStepHz/spanStepAuto`、`dbPerDiv`、`levelUnit`、`currentGapFill`、`units`、`harmValMode`、`peakListOn`、`peakThrUserSet`、`normRefWinUser`、`valleySeqPos` 都是单写者、后端不上报的显示/UI 偏好，不属于 P1-6 的多写者问题。迁移的收益只是"规则统一"（后来者不必猜哪种写法），成本是十来处读写点。建议：只有在改动到某个参数时顺手迁移，不专门开一轮。 |
-| **bench 客户端数自动化** | 未做 | bench 已记录设备告警状态（`device_warning`），但仍不记录 WS 客户端数：多开浏览器会成倍增加 fan-out 工作，使 CPU 不可比。下一步：在 `tools/hardware_smoke.py` 的 `collect_*` 里解析周期性 STATUS 的 `stream.clients` 并记录，>1 时给出警告。 |
-
-| **B2：`controls.ts` 的 11 个"无外部引用导出"** | **有意保留（用户决定）** | 复核确认：这些函数本身都在用（动作表/DOM 监听/快捷键），只是没有其它模块 import。用户选择**保留为公开能力导出**（便于脚本/e2e/调试调用），因此不作为"清理项"；最小化 API 表面不是目标本身。 |
-| **来自已删除的临时 TODO 的三条低优先候选** | 未做（记录备查） | ① `sdrPeakEma/sdrNoiseEma` 首帧种子：若首帧是重配后暂态会用坏值初始化，用中位数初始化更稳；② `web-sa-mode` 恢复时与后端实际模式冲突的处理；③ STATUS 回包与 HTTP `/api/config` 并存时的交错（WS 内有序，跨通道无）。该临时文件（`TODO-frontend-state.md`）已按 C2 删除，其结项结论已并入 `KNOWN_ISSUES.md` 第 24–27 条，失败模式并入 `DEVELOPMENT.md` §3，诊断键并入 §11。 |
-
-| **B4：剩余单写者客户端偏好槽位化** | **已完成（3 项有意保留）** | 触发/瀑布/显示之外，又把 8 个单写者偏好迁入槽位：`spanStepHz/spanStepAuto`（`ui/swpState.ts`）、`harmValMode/peakListOn/peakThrUserSet/normRefWinUser/valleySeqPos`（新增 `ui/measurePrefs.ts`，全部 `authoritative`）、以及单位选择表 `units`（改为 `core/units.ts` 内的 `unitMap` 槽位，读方走 `units()`，写方走 `setUnit()`）。`dbPerDiv`、`levelUnit`、`currentGapFill` **有意保留为普通值**：它们是单写者，但在每帧循环里被读取（`getY`／电平换算／gap fill），在那里调槽位 `get()` 正是曾拖满主线程的做法（见 DEVELOPMENT §3 热路径规则）。新增测试断言"客户端偏好不会因 TTL 回退"与 `resetAll` 行为。 |
-
-| **B1：`DeviceState` 按模式拆分** | **已完成** | 新增 `hardware/state.py`：`SwpParams`(17) / `RtaParams`(11) / `SdrParams`(14) / `TriggerParams`(12) 四个组，共享前端（衰减/预放/中频增益/参考时钟）与 meta 字段留在 `DeviceState`；`reset_rta_state`/`reset_sdr_state` 现在是"换一个默认组"的一行。为过渡保留了**扁平别名**（`state.center_hz` ⇔ `state.swp.center_hz`，由一张映射表安装为 property），523 处调用点、全部测试与 STATUS 形状均不变；`device.py` 921 → 569 行。新增 `tests/test_device_state_grouping.py`（4 项）锁定别名读写、两种构造方式、reset 语义与 STATUS 不变。 |
-
-| **A1：假后端 + UI 冒烟进 CI** | **已完成** | 新增 `hardware/fake_device.py`（不 import 厂商库，因此在无 libhtraapi 的 CI 也能跑）+ `measurements/fake.py`（合成 RTAF/AUDF 帧的假 RTA/SDR 会话）；`WEBSA_FAKE=1` 时 `main._make_device()` 选择假设备并替换会话工厂。`tools/e2e/ui_smoke.py` 在假后端上做 20 项**用户可见**检查（画布像素、控件到达后端、模式切换仍绘制、测量页签、瀑布让位、i18n、键盘、无页面错误），`make e2e-fake` 本地可跑，CI 新增 `ui-smoke` job（构建 dist + `playwright install chromium` + 启动假服务 + 跑冒烟）。`DeviceError` 抽到 `hardware/errors.py`，使调度路径（publisher）不再拉入厂商库。新增 `tests/test_fake_device.py`（5 项）守住假设备契约。 |
-
-| **A1 延伸：完整 `state_regression.py` 也跑在假后端** | **已完成** | 实测确认该脚本"按构造与器件无关"（17 组 / 45 项检查，全部从 `/api/state` 与 DOM 取值，无器件常量），**无需修改脚本、无需提高假设备保真度即可全过**。`make e2e-fake` 现在串跑两个脚本（渲染冒烟 + 参数状态机契约），CI 的 `ui-smoke` job 同步；脚本新增 `check(..., require_device=True)` 显式跳过机制（当前无一项需要），并在文件头写明纪律：**不得为让假后端通过而放宽断言**，否则会同时削弱真机那轮。 |
+| **e2e 覆盖 Firefox（A2）** | 未做（本轮未选） | 人工测试用的是 Firefox，CI 只跑 Chromium。下一步：`playwright install firefox`，把 `make e2e-fake` 的两个脚本跑成双浏览器矩阵。 |
+| **P2-3：ESLint** | 受阻（上游） | `typescript-eslint@8` 要求 `typescript <6.1`，本项目用 TypeScript 7.0.2（npm ERESOLVE 已复现）。当前由 `tsc --strict` + `noUnusedLocals/Parameters` + 架构/注册/DOM-id/文档四类守卫覆盖；等上游支持后接入。 |
+| **P2-9：高频命令只回显变化字段** | 未做（低收益） | 前端槽位确认依赖完整 STATUS；属性能优化而非结构问题。若将来 STATUS 变大或客户端增多再做增量字段。 |
+| **前端 DOM 层单测（P0-2 剩余）** | 有意为之（策略） | 88 个模块中 31 个被单测直接引用；未覆盖集中在 `ui/`、`render/`、`meas/`、`ui/panels/`——由无硬件的 e2e 覆盖（`ui_smoke` 20 项 + `state_regression` 45 项）。只在某个模块出现纯逻辑分支时补单测，不追求模块覆盖率。 |
+| **三条低优先候选**（来自已删除的临时 TODO） | 未做（记录备查） | ① `sdrPeakEma/sdrNoiseEma` 首帧种子：重配后的暂态可能用坏值初始化，中位数初始化更稳；② `web-sa-mode` 恢复时与后端实际模式的冲突处理；③ STATUS 回包与 HTTP `/api/config` 并存时的交错。 |
+| **`dbPerDiv` / `levelUnit` / `currentGapFill` 保持普通值** | 已决策：有意保留 | 单写者，但位于每帧热路径（`getY`／电平换算／gap fill），在那里调槽位 `get()` 正是曾拖满主线程的做法（DEVELOPMENT §3 热路径规则）。若将来这些读取移到冷路径，再迁移。 |
+| **`controls.ts` 的 11 个无外部引用导出** | 已决策：保留为公开 API | 函数本身都在用（动作表/DOM 监听/快捷键），只是没有其它模块 import；用户选择保留为公开能力导出（脚本/e2e/调试可用）。最小化 API 表面不是目标本身。 |
 
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
