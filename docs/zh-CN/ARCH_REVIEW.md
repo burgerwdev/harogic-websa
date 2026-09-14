@@ -669,20 +669,27 @@ e2e（真机）仍全绿。
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
 | 后端测试 | 87 | **147** |
-| 前端测试 | 115 | **141** |
+| 前端测试 | 115 | **152** |
 | 硬件无关（CI 可跑）测试 | 0 | **78** |
 | `ui/controls.ts` | 1548 行 | **934 行**（+ 9 面板模块） |
-| `core/store.ts` | ~285 行（参数+结果混放） | **226 行**（+ `results.ts` 89 + `model.ts` 48） |
+| `core/store.ts` | ~285 行 / 70 个可变全局 | **226 行 / 37 个**（+ `results.ts` 89 + `model.ts` 48） |
+| `DeviceState` 字段 | ~100 | **83**（控制环已抽出） |
+| e2e 断言数（真机） | 27 | **45** |
 | 生产 bundle | 178 kB | 156 kB |
 
-### 9.3 未做及原因，以及本轮学到的教训
+### 9.3 未做项（v1.5.6 复核后的完整清单）
 
-| 编号 | 状态 | 说明 |
+| 编号 | 状态 | 说明与下一步 |
 |---|---|---|
-| P2-3（ESLint） | 受阻 | **上游不兼容**：`typescript-eslint@8` 要求 `typescript <6.1`，本项目用 TypeScript 7.0.2（npm ERESOLVE 已复现）。当前由 `tsc --strict` + `noUnusedLocals/Parameters` + 架构守卫覆盖。 |
-| P2-6（根目录 27KB 临时 TODO） | 未做 | 属作者本地工作备忘（`.git/info/exclude`），删除/搬移应由作者决定；报告只标记其中"SWP/RTA 迁移未做"已过期。 |
-| P2-9（高频命令只回显变化字段） | 未做 | 前端槽位确认依赖完整 STATUS，属性能优化而非结构问题，当前客户端数下收益很小。 |
-| 教训（已写入代码注释） | — | **把热路径全局量换成槽位时，必须把 `get()` 提到循环外**：`rtaAmpBins.get()`/`rtaFade.get()` 原先在每帧约 60 万次的密度累加内层循环里被调用，`Date.now()`+pending 检查把主线程拖满，导致 1 Hz STATUS 延迟、模式按钮基于过期值切换（真机 UI 回归抓到）。现在每帧只读一次。 |
+| **Phase 4：假后端 + Playwright 进 CI** | **未做（当前最高价值）** | e2e 现在是唯一断言"用户可见结果"（画布像素、DOM 文本、真实点击）的测试，却只能在有真机的机器上手工跑。2026-09 的"画布全空"故障正是它抓到的。下一步：用 `web_sa/hardware/device.py` 的边界做一个假设备（合成 SWP/RTA/SDR 帧），把 `tools/e2e/state_regression.py` 接上去，纳入 CI。 |
+| **e2e 覆盖 Firefox** | 未做 | 本机 Playwright 只装了 Chromium；人工测试使用的是 Firefox。下一步：`playwright install firefox`，把 e2e 跑成双浏览器矩阵。 |
+| **P1-8 第二步：`DeviceState` 按模式拆分** | 未做 | 控制环（`AutoReferenceController`）已抽出，字段从 ~100 降到 83；剩下的仍是单一大 dataclass。属结构性收益，无当前故障驱动。下一步：按 `SwpParams/RtaParams/SdrParams/TriggerParams` 拆子结构，STATUS 形状保持不变。 |
+| **P2-2 剩余：`controls.ts` 的无用导出** | 部分 | 面板拆分后 `controls.ts` 只剩 16 个导出，其中 11 个没有外部引用（可直接去掉 `export`）。纯卫生项。 |
+| **P2-3：ESLint** | 受阻（上游） | `typescript-eslint@8` 要求 `typescript <6.1`，本项目用 TypeScript 7.0.2（npm ERESOLVE 已复现）。当前由 `tsc --strict` + `noUnusedLocals/Parameters` + 架构/注册/ID/文档四类守卫覆盖。等上游支持后接入。 |
+| **P2-6：根目录 27 KB 临时 TODO** | 未做 | 属作者本地工作备忘（`.git/info/exclude`），删除/搬移应由作者决定。建议将该文件中的"设计决策"部分并入 `DEVELOPMENT.md`，把过期的排查记录删掉。 |
+| **P2-9：高频命令只回显变化字段** | 未做 | 前端槽位确认依赖完整 STATUS，属性能优化而非结构问题；当前客户端数下收益很小。若将来 STATUS 变大，再做增量字段。 |
+| **前端单测覆盖（P0-2 剩余）** | 部分（有意为之） | 88 个模块中 31 个被单测直接引用（含 5 个 i18n 数据文件）；未覆盖集中在 `ui/`、`render/`、`meas/`、`ui/panels/` 等 DOM 层——按现在的策略由 e2e 覆盖（45 项断言）。若这些模块出现纯逻辑分支，再按需补单测，而不是追求模块覆盖率。 |
+| **bench 的客户端数可比性** | 记录未自动化 | 多个 WS 客户端（多开浏览器）会成倍增加 fan-out 工作，bench 已记录设备告警状态但未记录客户端数；重跑 bench 前先确认只有一个客户端。 |
 
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
@@ -698,6 +705,27 @@ HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 78 passed
 逐提交验证     -> git worktree + pytest 跑过分支上每个提交（曾发现一个"测试先于实现"的提交，
                   已重建历史修正；本轮又发现并修掉一处热路径性能回归）
 ```
+
+### 9.5 目标完成情况复核（v1.5.6）
+
+按"评估文档里的每个建议 → 代码现状"逐项复核（v1.5.6，`make ci` 全绿）：
+
+| 目标 | 状态 | 证据 |
+|---|---|---|
+| Phase 0：CI、依赖锁定、版本单源、i18n/帧契约、性能基线、HIL 入口、四类守卫（架构/ID/文档/注册可达性） | **全部完成** | `make ci` 依次执行并通过 |
+| Phase 1：P1-1…P1-11 | **全部完成** | 命令表、循环依赖 0、面板拆分、参数槽位、health/auto_ref 视图、会话协议、fatal、JSON 边界 |
+| Phase 2：E-1…E-5 | **全部完成** | `ParamSpec`+`/api/schema`、能力表限值、会话策略、帧保留策略表、视图/页签/i18n 命名空间三个注册点 |
+| Phase 3：前端解耦 | **全部完成** | 循环依赖 14→0、面板拆分、结果仓库、帧解析单测、画布 DPR |
+| G-1/G-2/G-3 | **完成** | 性能基线、依赖锁定、`make hw-test` |
+| §7 扩展点 E-1…E-5 | **完成** | 同上；新增 `check_registrations.py` 保证注册点可达 |
+| 剩余未做项 | 见 §9.3 | 唯二有实际价值的是"假后端 + e2e 进 CI"与"Firefox e2e"，其余为受影响项或低收益优化 |
+
+**本轮之后发生的两次真实故障**（评估/重构本身没有覆盖到的）：
+
+1. **画布全空（用户报告"系统无法使用"）**：破环后 `render/spectrum.ts` 不再被任何模块 import，其模块级 `setRenderer(renderAll)` 未执行，`requestRender()` 空转。没有异常、没有 console 报错；所有既有测试都过，因为它们断言的是**代理量**（帧计数、dataset、控件值）。→ 规则：注册副作用必须由入口显式 import，并用 `tools/check_registrations.py` 守护；测试必须断言用户可见结果（e2e 现在数画布非透明像素）。
+2. **三个 UI 缺陷**（RTA 中心单位/键盘失效、测量时未禁用瀑布、溢出告警不可见）：分别源于"字段键 `rta_center` 与输入框 id `input-rta-center` 不一致"、"测量面板与瀑布图抢同一个显示位"、"溢出时设备不发帧而告警只在帧循环里绘制"。→ 规则：跨模块的字符串标识必须成对解析（`inputForField/fieldForInput`）；一个显示位只能有一个所有者；状态变化要主动重绘，不能只依赖数据流。
+
+这两次故障的教训已写入 `DEVELOPMENT.md`（开发指南）的"教训台账"，并按"每条规则都要有守卫或测试"的要求落到了代码/CI 中。
 
 ## 附录 A：度量数据
 

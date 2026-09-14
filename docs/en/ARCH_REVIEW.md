@@ -686,20 +686,27 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | `htra_imports_outside_bindings` | 3 | **0** |
 | `validation_limit_literals` | 35 | **0** |
 | Backend tests | 87 | **147** |
-| Frontend tests | 115 | **141** |
+| Frontend tests | 115 | **152** |
 | Hardware-free (CI) tests | 0 | **78** |
-| `ui/controls.ts` | 1548 lines | **934 lines** (+ 9 panel modules) |
-| `core/store.ts` | ~285 lines (parameters and results mixed) | **226 lines** (+ `results.ts` 89 + `model.ts` 48) |
+| `ui/controls.ts` | 1548 lines | **934 lines** (exports 97 -> 16; + 9 panel modules) |
+| `core/store.ts` | ~285 lines / 70 mutable globals | **226 lines / 37** (+ `results.ts` 89 + `model.ts` 48) |
+| `DeviceState` fields | ~100 | **83** (control loop extracted) |
+| e2e assertions (hardware) | 27 | **45** |
 | Production bundle | 178 kB | 156 kB |
 
-### 9.3 Not done, and the lessons from this round
+### 9.3 Open items (complete list after the v1.5.6 re-check)
 
-| Finding | Status | Note |
+| Finding | Status | Note and next step |
 |---|---|---|
-| P2-3 (ESLint) | Blocked | **Upstream incompatibility**: `typescript-eslint@8` requires `typescript <6.1` while this project builds with TypeScript 7.0.2 (npm ERESOLVE, reproduced). `tsc --strict` + `noUnusedLocals/Parameters` + the architecture guard cover the valuable part meanwhile. |
-| P2-6 (27 KB scratch TODO in the repo root) | Not done | It is the author's local working note (`.git/info/exclude`); deleting or relocating it is their call. The review only flags that its "SWP/RTA migration still to do" section is stale. |
-| P2-9 (echo only changed STATUS fields for high-rate commands) | Not done | Frontend slot confirmation relies on the full STATUS; it is a performance optimisation rather than a structural problem, with little payoff at the current client count. |
-| Lesson (recorded in the code) | - | **When replacing a hot-path global with a slot, hoist the `get()` out of loops**: `rtaAmpBins.get()`/`rtaFade.get()` were called ~600k times per frame inside the density accumulation, and the `Date.now()`/pending work saturated the main thread, delaying the 1 Hz STATUS processing so the mode buttons toggled from a stale value (the hardware UI regression caught it). They are read once per frame now. |
+| **Phase 4: fake backend + Playwright in CI** | **Open (highest value now)** | The e2e is the only test that asserts user-visible results (canvas pixels, DOM text, real clicks), yet it can only run by hand on a machine with the hardware. The blank-canvas defect was caught by exactly that check. Next: build a fake device behind the `web_sa/hardware/device.py` boundary (synthetic SWP/RTA/SDR frames), point `tools/e2e/state_regression.py` at it and run it in CI. |
+| **e2e coverage for Firefox** | Open | Playwright has only Chromium installed here; manual testing uses Firefox. Next: `playwright install firefox` and run the e2e as a two-browser matrix. |
+| **P1-8 step 2: split `DeviceState` per mode** | Open | The control loop (`AutoReferenceController`) is extracted and the field count dropped from ~100 to 83; the rest is still one dataclass. Structural payoff, no current defect driving it. Next: `SwpParams/RtaParams/SdrParams/TriggerParams` sub-structures with the STATUS shape unchanged. |
+| **P2-2 remainder: unused exports in `controls.ts`** | Partial | After the panel split `controls.ts` has 16 exports, 11 of which nothing outside references (they can lose `export`). Pure hygiene. |
+| **P2-3: ESLint** | Blocked (upstream) | `typescript-eslint@8` requires `typescript <6.1` while this project uses TypeScript 7.0.2 (npm ERESOLVE reproduced). Covered meanwhile by `tsc --strict` + `noUnusedLocals/Parameters` plus the architecture, registration, DOM-id and docs guards. Adopt once upstream supports it. |
+| **P2-6: 27 KB scratch TODO in the repo root** | Open | It is the author's local working note (`.git/info/exclude`); deleting or moving it is their call. Suggestion: fold its design decisions into `DEVELOPMENT.md` and drop the stale debugging logs. |
+| **P2-9: echo only changed STATUS fields for high-rate commands** | Open | Frontend slot confirmation relies on the full STATUS; it is an optimisation, not a structural problem, with little payoff at the current client count. Revisit if STATUS grows. |
+| **Frontend unit coverage (P0-2 remainder)** | Partial (deliberate) | 31 of 88 modules are directly referenced by a unit test (including five i18n data files); the rest are DOM layers (`ui/`, `render/`, `meas/`, `ui/panels/`) covered by the e2e (45 assertions) instead. Add unit tests when one of them grows pure logic, rather than chasing module coverage. |
+| **Bench client-count comparability** | Recorded, not automated | Extra WS clients (several browser tabs) multiply the fan-out work. The bench records the device warning state but not the client count; check that only one client is connected before comparing. |
 
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 
@@ -718,6 +725,27 @@ per-commit     -> every commit on the branch was re-checked with `git worktree` 
                   (it caught one "test committed before its implementation" and this round's
                   hot-path performance regression)
 ```
+
+### 9.5 Goal completion re-check (v1.5.6)
+
+Every recommendation in this document was re-checked against the code at v1.5.6 (`make ci` green):
+
+| Goal | Status | Evidence |
+|---|---|---|
+| Phase 0: CI, pinned deps, single-source version, i18n/frame contracts, performance baseline, HIL entry, four guard classes (architecture / DOM id / docs / registration reachability) | **Done** | `make ci` runs them in sequence and passes |
+| Phase 1: P1-1...P1-11 | **Done** | command table, cycles 0, panel split, parameter slots, health/auto-ref views, session protocol, fatal exit, JSON boundary |
+| Phase 2: E-1...E-5 | **Done** | `ParamSpec` + `/api/schema`, capability limits, session-owned policy, frame retention table, the three registration points (views, tabs, i18n namespaces) |
+| Phase 3: frontend decoupling | **Done** | cycles 14 -> 0, panel split, results module, frame-parser tests, canvas DPR |
+| G-1/G-2/G-3 | **Done** | performance baseline, dependency lock, `make hw-test` |
+| §7 extension seams E-1...E-5 | **Done** | as above; `check_registrations.py` now guards seam reachability |
+| Remaining open items | see §9.3 | Only two carry real value: "fake backend + e2e in CI" and "Firefox e2e"; the rest are blocked upstream or low-payoff |
+
+**Two real defects happened after this review, which it had not covered:**
+
+1. **Blank canvas (the user reported "the system is unusable")**: after the cycles were broken, nothing imported `render/spectrum.ts`, so its module-scope `setRenderer(renderAll)` never ran and `requestRender()` was a no-op. No exception, no console error; every existing test passed because they assert **proxies** (frame counters, datasets, control values). Lesson: a registration side effect requires an explicit entry-point import, guarded by `tools/check_registrations.py`, and tests must assert user-visible results (the e2e now counts non-transparent canvas pixels).
+2. **Three UI defects** (RTA centre unit/keypad dead, waterfall not disabled while measuring, IF-overflow warning invisible until Ref was raised): root causes were a field-key/input-id mismatch (`rta_center` vs `input-rta-center`), two features competing for one display slot, and a warning that is only drawn in the frame loop while an overflowing IF sends no frames. Lesson: resolve cross-module string identifiers through one helper (`inputForField`/`fieldForInput`), give each display slot a single owner, and repaint on state transitions instead of relying on the data flow.
+
+Both incidents are recorded in the lesson ledger of `DEVELOPMENT.md`, and every derived rule landed as a guard or a test.
 
 ## Appendix A: Metrics
 

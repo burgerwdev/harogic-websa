@@ -85,7 +85,9 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
 [`docs/zh-CN/FAQ_NOTES.md`](docs/zh-CN/FAQ_NOTES.md)；SWP/RTA 参数语义见
 [`docs/zh-CN/MODE_STATE_FLOW.md`](docs/zh-CN/MODE_STATE_FLOW.md)。
 独立的架构与代码评估（含分阶段重构建议）见
-[`docs/zh-CN/ARCH_REVIEW.md`](docs/zh-CN/ARCH_REVIEW.md)。
+[`docs/zh-CN/ARCH_REVIEW.md`](docs/zh-CN/ARCH_REVIEW.md)；开发指南（分层归属、状态归属、
+新增功能清单、测试与性能规则、守卫清单、排障手册与教训台账）见
+[`docs/zh-CN/DEVELOPMENT.md`](docs/zh-CN/DEVELOPMENT.md)。
 
 ### 3. 测试
 
@@ -108,7 +110,8 @@ harogic-websa/
 │  └─ modern/            TS 前端 (Vite + TypeScript, i18n + 主题)
 │     └─ src/__tests__/  vitest 测试(DSP 引擎, 合成迹线)
 ├─ htra_api.py           官方 SDK Python 包装 (HAROGIC 版权)
-├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕 / 架构评估
+├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕 /
+│                        架构评估 / 开发指南
 ├─ tests/                后端 pytest(协议/配置/设备状态/HTTP API)
 ├─ screenshots/          README 截图
 ├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile

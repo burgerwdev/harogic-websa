@@ -4,8 +4,9 @@
 `pyproject.toml` is the single source of truth (report finding P0-5); the two files that
 must display it are rewritten from it:
 
-  frontend/modern/package.json   "version"
-  frontend/modern/index.html     the top-bar `vX.Y.Z` tag
+  frontend/modern/package.json       "version"
+  frontend/modern/package-lock.json  "version" (root + the "" package entry)
+  frontend/modern/index.html         the top-bar `vX.Y.Z` tag
 
 Usage:
     python3 tools/sync_version.py            # apply
@@ -22,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / 'pyproject.toml'
 PACKAGE = ROOT / 'frontend' / 'modern' / 'package.json'
+LOCK = ROOT / 'frontend' / 'modern' / 'package-lock.json'
 INDEX = ROOT / 'frontend' / 'modern' / 'index.html'
 
 VERSION_TAG = re.compile(r'(<span class="version-tag"[^>]*>v)(\d+\.\d+\.\d+)')
@@ -52,6 +54,17 @@ def main() -> int:
             pkg_text = re.sub(r'("version"\s*:\s*")[^"]+(")',
                               lambda m: m.group(1) + version + m.group(2), pkg_text, count=1)
             PACKAGE.write_text(pkg_text, encoding='utf-8')
+
+    # npm records the package version in the lock file too (root + the "" entry); keep it in
+    # step or the next `npm install` produces an unrelated diff (and --check would miss it).
+    lock = json.loads(LOCK.read_text(encoding='utf-8'))
+    lock_versions = {lock.get('version'), lock.get('packages', {}).get('', {}).get('version')}
+    if lock_versions != {version}:
+        problems.append(f'package-lock.json: {sorted(v for v in lock_versions if v)} != {version}')
+        if not args.check:
+            lock['version'] = version
+            lock.setdefault('packages', {}).setdefault('', {})['version'] = version
+            LOCK.write_text(json.dumps(lock, indent=2) + '\n', encoding='utf-8')
 
     index_text = INDEX.read_text(encoding='utf-8')
     found = VERSION_TAG.search(index_text)

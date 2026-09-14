@@ -89,7 +89,9 @@ Then open `http://device-address:8080/?token=the-same-token`. See
 logging, and hardware tests. SWP/RTA parameter semantics are documented in
 [`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md). An independent architecture and code
 review with prioritized refactor recommendations is in
-[`docs/en/ARCH_REVIEW.md`](docs/en/ARCH_REVIEW.md).
+[`docs/en/ARCH_REVIEW.md`](docs/en/ARCH_REVIEW.md); the development guide (layer map, state
+ownership, feature checklists, testing/perf rules, guard rails, debugging playbook and a lesson
+ledger) is [`docs/en/DEVELOPMENT.md`](docs/en/DEVELOPMENT.md).
 
 ### 3. Test
 
@@ -114,7 +116,8 @@ harogic-websa/
 │     └─ src/render/registry.ts  view renderer registry (views self-register)
 │     └─ src/__tests__/  vitest tests (DSP engine, synthetic traces)
 ├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
-├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ / refactor log / arch review
+├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ /
+│                        refactor log / arch review / development guide
 ├─ tests/                backend pytest (protocol, config, device state, HTTP API)
 │  └─ fixtures/frames/   golden binary frames shared with the TS decoder test
 ├─ tools/                hardware smoke + e2e + bench + quality guards
