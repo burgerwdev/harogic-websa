@@ -178,7 +178,12 @@ action with visible feedback, not a tracking toggle:
 4. nothing about the control is disabled while the action runs - a mode that locks the user out of the
    very field it is adjusting reads as a bug (that is what the old tracking `Auto` did);
 5. background *safety* correction is separate, always armed, and rate-limited (IF overload, a trace that
-   left the display window) - never something the user has to switch on.
+   left the display window) - never something the user has to switch on;
+6. a REFUSAL message is withdrawn the moment its reason stops being true, not when a timer runs out:
+   "waiting for a trace" ends with the first trace, "no signal to fit" ends when the peak moves away
+   from the level the decision was based on. Posting a statement about the measurement and then leaving
+   it on screen after the measurement changed is how a message becomes noise (reported: the trace was
+   already drawn while the message stayed for its full 6 s).
 
 ---
 
@@ -312,6 +317,8 @@ nobody can tell "deliberate" from "silent regression".
 | The Ref up arrow triggered Auto to pull the trace back down | The ranger corrected "noise floor below the bottom edge", which is a display choice, not a fault - it undid the button the user had just pressed | An automatic correction acts only in the PROTECTIVE direction (device overload, gross clipping) and never reverses a control the user just used; otherwise report and leave the explicit action to fix it | e2e `state_regression` 9c, `test_auto_reference.py`, `test_device_state.py` |
 | `AUTO_SCALE` was silently refused in SDR while the display showed -60 dBm | `current_ref` is a DISPLAY value but was validated against the device Ref range | Validate a value against the bounds of its owner, not of the device it eventually influences | `test_ws_commands.py::test_auto_scale_accepts_a_display_ref_outside_the_device_ref_range` |
 | The Level offset displaced the trace but not the amplitude numbers on the plot | Two layers drew the same quantity: `getY()` shifted the trace, while the axis labels and the marker readout printed raw device dBm | A value that is drawn in more than one layer must be converted in ONE place (`fmtAxisLevel`/`fmtReadoutLevel`); an axis is part of the display domain, not of the device domain | `peakThr.test.ts` (readout rule), e2e `ui_smoke` 2a2 (`dataset.yLabels` follows the offset) |
+| "No signal to fit" stayed on screen after the signal appeared | The refusal was posted with a fixed 6 s hold, and only a *new decision* could replace it | A refusal is a statement about the measurement: record the observation it was based on and withdraw it when that observation moves (or when the first trace arrives), instead of relying on timing | `refAutoScale.test.ts` (withdraw on trace change / first trace), bench probe |
+| Ref 30 dBm "jumped" to 27 with no explanation | The device clamps the level to its own maximum (which depends on the attenuation it picks) and echoes it; the UI followed the echo silently | When a device echo differs from the request, say so (`req` vs `actual`) - the same rule as announcing a refusal | `status.test.ts` (clamp notice, once per distinct pair), FAQ |
 | `./test.sh` failed on a clean checkout | Incomplete dependency declaration | Three files: runtime / dev / lock | CI installs in a clean environment |
 
 ---

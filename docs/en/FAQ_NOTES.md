@@ -57,7 +57,9 @@
   reaches the SDK (`device.py`). The **device then decides its own maximum**, which depends on the
   attenuation/IF-gain setting it picks: asking for +30 dBm on this bench is accepted and comes back as
   **+27 dBm** (`actual.ref`), because the profile echoes the value the hardware actually programmed.
-  The UI follows that reported value - nothing in the Auto Scale path moved it.
+  The UI follows that reported value, and says so: the canvas status stack shows
+  **"Device limited Ref to 27 dBm"** when `req` and `actual` disagree (once per distinct pair, so it
+  does not re-post every second). Nothing in the Auto Scale path moved the level.
 
 ## Reference Clock
 
