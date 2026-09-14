@@ -38,9 +38,10 @@ A browser-based control and measurement application for **Harogic SAN series spe
   for the frequency-like fields, plain-text entry (digits, commas, minus) for the n-dB threshold list,
   draggable, translucent, off by default
 - **Normalization** — through-cal, adaptive absorption, display-layer transform
-- **Device link monitor** — a bus error or unplug flips STATUS to `connected: false` (the canvas says
-  DEVICE DISCONNECTED instead of showing a frozen trace), and the worker reopens the analyzer and
-  re-enters the active mode automatically when it is plugged back in — no service restart
+- **Device link monitor** — a run of bus errors on the swept path (an unplug) flips STATUS to
+  `connected: false` (the canvas says DEVICE DISCONNECTED instead of showing a frozen trace), and the
+  worker reopens the analyzer when it is plugged back in — no service restart. RTA/SDR recover through
+  their own in-place reconfiguration
 
 ## Screenshots
 

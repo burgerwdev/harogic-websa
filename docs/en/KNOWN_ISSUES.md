@@ -1,6 +1,6 @@
 # Known Limitations & Notes
 
-1. **Occasional libhtraapi segfault/block**: RTA first attempts two in-place reconfigurations after repeated Trigger/Get failures. The supervisor restarts the worker after persistent failure, native crash, or call timeout. A USB unplug (a run of bus errors) is detected and reported as `connected: false`, and plugging the analyzer back in makes the worker reopen it and resume the same mode; a device whose firmware is fully wedged can still require the process to be restarted. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
+1. **Occasional libhtraapi segfault/block**: RTA first attempts two in-place reconfigurations after repeated Trigger/Get failures. The supervisor restarts the worker after persistent failure, native crash, or call timeout. A USB unplug is detected on the swept path (a run of bus errors) and reported as `connected: false`; plugging the analyzer back in makes the worker reopen it and resume. RTA/SDR recover through their own reconfiguration and, if that fails, a worker restart, after which the link loop reopens the device. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
 2. **SAStudio4 exclusivity**: device is single-handle; Device_Open returns -1 while the official software is running
 3. **External reference locking**: requires ExternalSystemClockFrequency=10 MHz correctly set with external signal present;
    Ext mode falls back to internal on unlock (normal device behavior); use ExtForce to force

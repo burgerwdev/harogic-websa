@@ -299,7 +299,8 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 每次进入 SDR 都从扫频视图重新推导设置 | 模式入口把"切模式"当成重新开始（频率取扫频中心、解调按频段猜、decimate 写死 16），于是用户自己的调谐与收听设置被丢弃 | 模式的用户设置就是**偏好**：持久化并在进入时重新应用；交接频率靠显式手势（Shift+点击 / 频段预置），只有首次使用才推导默认值 | e2e `state_regression` 5（往返保持 + Shift+点击仍可交接）、`status.test.ts`（音频偏好保持）、FAQ |
 | Shift+点击进入 SDR 落在了错误频率 | `listenAtFreq` 只设置了捕获中心，旧的解调频率留着，后端为追它把捕获中心搬走（实测：点 216 MHz 落到 987 MHz） | 「听这里」= **同时**设置捕获中心与解调频率；只设置一对中的一半，等于把 bug 留给另一半 | e2e `state_regression` 5（`Shift+click hands that frequency to SDR`） |
 | 干净环境 `./test.sh` 失败 | 依赖声明不完整 | 运行时/开发/锁定三份依赖文件 | CI 在干净环境安装 |
-| 拔出频谱仪后画面定格，但 STATUS 仍报 `connected: true`，重新接入也不恢复 | 从未检测断开：采集路径把总线错误当成“没取到帧”，只有 native 崩溃/超时才惊动 supervisor | 传输故障是前端必须看到的状态：连续总线错误置 `connected=false`，调度器停止步进死句柄，worker 链路循环重开设备并恢复原模式 | `test_link_recovery.py`（链路循环恢复会话；连续 -8 翻转 `connected`）、`test_publisher.py`（断开时不做采集）、`status.test.ts`（断开告警 + 重绘） |
+| 拔出频谱仪后画面定格，但 STATUS 仍报 `connected: true`，重新接入也不恢复 | 从未检测断开：采集路径把总线错误当成“没取到帧”，只有 native 崩溃/超时才惊动 supervisor | 传输故障是前端必须看到的状态：在没有原地恢复能力的路径（扫描）上，连续总线错误置 `connected=false`，调度器停止步进死句柄，worker 链路循环重开设备 | `test_link_recovery.py`（链路循环恢复会话；连续 -8 翻转 `connected`）、`test_publisher.py`（断开时不做采集）、`status.test.ts`（断开告警 + 重绘） |
+| 真机 RTA 在 `SET_FREQ` 后出现一连串 `-9`，链路看门狗误判为拔线并关闭设备 | 扫描模式命令在 RTA 会话持有设备时下发了 `SWP_Configuration`，把设备从 RTA 切走（与 Preset 在 SDR 下的同一类 bug）；可自恢复的错误串随后被当成了拔线 | 命令只能重配拥有设备的那个模式：RTA 下扫描参数只作为存储偏好（不下发 `SWP_Configuration`）；可自恢复的错误串不得升级为链路丢失——链路检测只放在没有原地恢复能力的路径 | `test_ws_commands.py`（RTA 下 SET_FREQ/SET_DETECTOR 绝不调 `configure_swp`）、真机 `state_regression` + `hw-test` |
 
 ---
 

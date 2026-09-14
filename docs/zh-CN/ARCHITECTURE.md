@@ -24,7 +24,7 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 4. **帧协议**: 16 字节头(magic+ver+points+sweep_ms) + 数据; POWR 强制 float32
 5. **客户端背压**: 每个 WS 独立发送任务；FREQ/JSON 保留，POWR/RTAF 采用 latest-wins
 6. **安全默认**: loopback 监听；远程模式要求 token；静态资源限制在构建目录内
-7. **故障恢复**: SDK 调用离开 asyncio 主线程；native 崩溃/致命超时由 supervisor 重启 worker；连续总线错误（拔线）会置 `connected=false`，worker 的链路循环重开设备并恢复原模式
+7. **故障恢复**: SDK 调用离开 asyncio 主线程；native 崩溃/致命超时由 supervisor 重启 worker。扫描路径还会在连续总线错误（拔线）时置 `connected=false`，避免把定格画面当成已连接；RTA/SDR 保留各自的原地重配恢复。worker 链路循环会重开已断开的设备并恢复原模式
 8. **模式私有状态**: SWP/RTA 分别保存 Center/Span/Ref/RBW/VBW/Sweep 和 actual；
    模式切换只发送一次 SET_MODE，完整流转见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)
 
