@@ -691,6 +691,9 @@ e2e（真机）仍全绿。
 | **前端单测覆盖（P0-2 剩余）** | 部分（有意为之） | 88 个模块中 31 个被单测直接引用（含 5 个 i18n 数据文件）；未覆盖集中在 `ui/`、`render/`、`meas/`、`ui/panels/` 等 DOM 层——按现在的策略由 e2e 覆盖（45 项断言）。若这些模块出现纯逻辑分支，再按需补单测，而不是追求模块覆盖率。 |
 | **bench 的客户端数可比性** | 记录未自动化 | 多个 WS 客户端（多开浏览器）会成倍增加 fan-out 工作，bench 已记录设备告警状态但未记录客户端数；重跑 bench 前先确认只有一个客户端。 |
 
+| **单写者客户端偏好是否迁移** | 可选 | `spanStepHz/spanStepAuto`、`dbPerDiv`、`levelUnit`、`currentGapFill`、`units`、`harmValMode`、`peakListOn`、`peakThrUserSet`、`normRefWinUser`、`valleySeqPos` 都是单写者、后端不上报的显示/UI 偏好，不属于 P1-6 的多写者问题。迁移的收益只是"规则统一"（后来者不必猜哪种写法），成本是十来处读写点。建议：只有在改动到某个参数时顺手迁移，不专门开一轮。 |
+| **bench 客户端数自动化** | 未做 | bench 已记录设备告警状态（`device_warning`），但仍不记录 WS 客户端数：多开浏览器会成倍增加 fan-out 工作，使 CPU 不可比。下一步：在 `tools/hardware_smoke.py` 的 `collect_*` 里解析周期性 STATUS 的 `stream.clients` 并记录，>1 时给出警告。 |
+
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```
@@ -823,6 +826,15 @@ PY
 `83ed00c`（SWP 参数槽位化）与 `ee2f987`（graphMode/displayRef 重建）。
 本报告以**代码现状**为准；建议按 P2-6 归档该文档，避免后续评估被误导。
 
-仍然成立的遗留项（本报告对应编号）：
-- `displayRef` 的多写者问题已收敛，但**触发/瀑布/测量结果**仍是裸全局（P1-6）；
-- SWP/RTA 调谐参数的迁移**已完成**，RTA 侧仅剩触发参数组与部分 store 副本（P1-6 第 1 条）。
+**本节此前列出的两条"仍然成立的遗留项"也已完成**（v1.5.6 复核）：
+
+| 当时的结论 | 现状 | 证据 |
+|---|---|---|
+| 触发/瀑布/测量结果仍是裸全局（P1-6） | **已完成** | 触发组 `ui/triggerState.ts`、瀑布组 `ui/waterfallState.ts`、显示组 `ui/displayState.ts` 均为 `createParam` 槽位（提交 `514c2b8`、`829907d`）；测量结果移入 `core/results.ts`（20 项数据 + 显式 setter） |
+| RTA 侧仅剩触发参数组与部分 store 副本（P1-6 第 1 条） | **已完成** | `trigSource/trigLevel/trigEdge/trigPoi` 已槽位化，store 只 re-export；`store.ts` 的可变全局从 ~70 降到 37，且剩余项为运行态/数据/常量（连接状态、触发运行态、迹线/密度/限制线数据、模式状态机） |
+
+**未完成项的唯一权威清单在 §9.3**（本附录不再单独维护，避免两份清单再次不同步）。
+`store.ts` 中仍保留的**单写者客户端偏好**（`spanStepHz/spanStepAuto`、`dbPerDiv`、`levelUnit`、
+`currentGapFill`、`units`、`harmValMode`、`peakListOn`、`peakThrUserSet`、`normRefWinUser`、
+`valleySeqPos`）不属于 P1-6 针对的"多写者"问题，是否迁移见 §9.3 的说明。
+

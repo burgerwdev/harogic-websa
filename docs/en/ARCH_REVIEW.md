@@ -708,6 +708,9 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | **Frontend unit coverage (P0-2 remainder)** | Partial (deliberate) | 31 of 88 modules are directly referenced by a unit test (including five i18n data files); the rest are DOM layers (`ui/`, `render/`, `meas/`, `ui/panels/`) covered by the e2e (45 assertions) instead. Add unit tests when one of them grows pure logic, rather than chasing module coverage. |
 | **Bench client-count comparability** | Recorded, not automated | Extra WS clients (several browser tabs) multiply the fan-out work. The bench records the device warning state but not the client count; check that only one client is connected before comparing. |
 
+| **Whether to migrate the single-writer client preferences** | Optional | `spanStepHz/spanStepAuto`, `dbPerDiv`, `levelUnit`, `currentGapFill`, `units`, `harmValMode`, `peakListOn`, `peakThrUserSet`, `normRefWinUser` and `valleySeqPos` are single-writer display/UI preferences the backend never reports, so they are not the multi-writer problem P1-6 targeted. Migrating them only buys consistency (nobody has to guess which pattern to use) at the cost of a dozen read/write sites. Recommendation: migrate one opportunistically when touching it, do not dedicate a round. |
+| **Automate the bench client count** | Open | The bench records the device warning state (`device_warning`) but not the number of WS clients: extra browser tabs multiply the fan-out work and make the CPU numbers incomparable. Next: parse the periodic STATUS `stream.clients` inside the `collect_*` helpers of `tools/hardware_smoke.py` and warn when it is not 1. |
+
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 
 ```
@@ -843,8 +846,15 @@ The "**still to do: SWP/RTA migration (the only remaining item)**" section in th
 (commits `83ed00c` for SWP parameter slots and `ee2f987` for the graphMode/displayRef rebuild).
 This review follows the **code as it is**; consider archiving that file per P2-6 so future reviews are not misled.
 
-Items that genuinely remain (with their IDs in this report):
-- The multi-writer problem for `displayRef` is resolved, but **trigger/waterfall/measurement results** are still
-  bare globals (P1-6);
-- Migration of the SWP/RTA tuning parameters is **done**; on the RTA side only the trigger parameter group and
-  some `store` copies remain (P1-6, item 1).
+**The two "items that genuinely remain" listed here before are also done now** (re-checked at v1.5.6):
+
+| What it said then | Status now | Evidence |
+|---|---|---|
+| Trigger/waterfall/measurement results are still bare globals (P1-6) | **Done** | The trigger group lives in `ui/triggerState.ts`, the waterfall group in `ui/waterfallState.ts` and the display group in `ui/displayState.ts`, all `createParam` slots (commits `514c2b8`, `829907d`); measurement results moved to `core/results.ts` (20 data entries with explicit setters) |
+| On the RTA side only the trigger parameter group and some store copies remain (P1-6, item 1) | **Done** | `trigSource/trigLevel/trigEdge/trigPoi` are slots and the store only re-exports them; `store.ts` went from ~70 mutable globals to 37, and what is left is runtime state, data collections and constants (connection, trigger runtime, traces/density/limits, the mode state machine) |
+
+**The single authoritative list of open work is §9.3** (this appendix no longer maintains its own
+copy, so the two cannot drift apart again). The **single-writer client preferences** still in
+`store.ts` (`spanStepHz/spanStepAuto`, `dbPerDiv`, `levelUnit`, `currentGapFill`, `units`,
+`harmValMode`, `peakListOn`, `peakThrUserSet`, `normRefWinUser`, `valleySeqPos`) are not the
+multi-writer problem P1-6 targeted; whether to migrate them is discussed in §9.3.
