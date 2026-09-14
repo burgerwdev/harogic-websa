@@ -1,4 +1,4 @@
-# Development Guide (v1.5.6)
+# Development Guide (v1.6.0)
 
 > **This is not a baseline standard but a working agreement that keeps improving.** It records
 > what actually went wrong during the 2026-09 architecture review and refactor, and the
@@ -165,6 +165,21 @@ Pure functions go to `dsp/` (or backend `demod/`), **unit-test first, wire up se
 computation inside a render loop; every DLL call runs under the device lock on a `to_thread` worker with
 a watchdog (§7).
 
+### 5.7 Interaction rule: "auto-like" buttons are one-shot actions, never silent
+
+Anything whose result costs a device reconfiguration (Auto Scale, a fit, a calibration) is a momentary
+action with visible feedback, not a tracking toggle:
+
+1. the press produces exactly one decision - compute, apply once, done;
+2. an already-good state must cost nothing (no reconfiguration, no visible jump);
+3. the button shows that work is in flight (glow/busy class driven by the backend's `adjusting`, with a
+   client-side fallback timer) and then names the outcome (`applied`/`ok`/`no_signal`/`no_data`), so a
+   refusal is never silent;
+4. nothing about the control is disabled while the action runs - a mode that locks the user out of the
+   very field it is adjusting reads as a bug (that is what the old tracking `Auto` did);
+5. background *safety* correction is separate, always armed, and rate-limited (IF overload, a trace that
+   left the display window) - never something the user has to switch on.
+
 ---
 
 ## 6. Testing strategy: what to assert at which layer
@@ -174,7 +189,7 @@ a watchdog (§7).
 | Pure logic | vitest / pytest | Algorithms, state machines, contracts (i18n parity, frame fixtures, schema, slot semantics) | - |
 | Session/device boundary | pytest + stub device | Result assembly, policy, error paths (**no vendor library needed**) | Connecting to the real device just to test logic |
 | Protocol | Golden fixtures on both sides | Byte layout | Testing only one side |
-| **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 20 checks) + `state_regression.py` (parameter state-machine contract, 45 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad; slots/in-flight/hand-off/Preset/reload/rapid switching | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
+| **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 22 checks) + `state_regression.py` (parameter state-machine contract, 56 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad, the peak list off its threshold slot; slots/in-flight/hand-off/Preset/reload/rapid switching; a one-shot Auto Scale (glow -> one step -> `ok` with no reconfiguration) | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
 | **End to end (hardware)** | Playwright + the bench | **User-visible results**: canvas pixels, DOM text, device state after a real click | `dataset.rtaFrames` (it only says a frame was handed to the renderer, not that anything was drawn) |
 | Performance | `tools/bench.py` + baseline | **Comparable** frame-rate/latency/CPU numbers | Comparing while the device warns or leftover load runs |
 | Hardware smoke | `tools/hardware_smoke.py` + tinySA | Levels/frame integrity with a real signal | - |
@@ -269,7 +284,9 @@ nobody can tell "deliberate" from "silent regression".
 
 - Frontend **diagnostic keys** (read these for auto-ref/scaling problems instead of adding logs):
   `#spectrum.dataset.sdrRef` (applied value) and `dataset.sdrRefDbg` (the whole auto-ref state:
-  `noise/peak/nEma/pEma/range/ref/applied/shown`); SDR audio state lives in `dataset.sdrAudio`.
+  `noise/peak/range/ref/applied/before/shown` - the last two make "the decision is what the user
+  sees" checkable from outside); `auto_ref.{result,target,adjusting}` in STATUS is the backend half
+  of the same story. SDR audio state lives in `dataset.sdrAudio`.
 - Backend: `WEBSA_TRACE=1 ./run.sh` -> `grep '\[trace\]' /tmp/websa.log`; a native crash prints the
   stack of every thread (`faulthandler`), and the supervisor's exit codes/restarts land in the same log.
 

@@ -1,4 +1,4 @@
-# 开发指南（v1.5.6）
+# 开发指南（v1.6.0）
 
 > **这份指南不是基准规范，而是一份会持续改进的工作约定。** 它记录了本项目在
 > 2026-09 的架构评估与重构中真实踩过的坑，以及从那之后固定下来的做法。
@@ -145,8 +145,20 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 
 ### 5.6 新增 DSP/SDR 处理块
 
-纯函数放 `dsp/`（或后端 `demod/`），**先写单测再接入**；不要在渲染循环里做重计算；
-DLL 调用一律在设备锁下、放到 `to_thread`，并确保有看门狗（见 §7）。
+纯函数放 `dsp/`（或后端 `demod/`），**先写单测再接上**；渲染循环内不做重计算；每个 DLL 调用都在设备锁下
+跑在 `to_thread` worker 上并有看门狗（见 §7）。
+
+### 5.7 交互规则：「自动」类按钮是一次性动作，且不得静默
+
+凡是结果要付一次器件重配代价的操作（Auto Scale、拟合、校准），都是**瞬时动作 + 可见反馈**，不是跟踪开关：
+
+1. 一次点击只产生一个决策——算一次、应用一次、结束；
+2. 已经处于良好状态时必须零代价（不重配、不跳变）；
+3. 按钮要显示"正在做"（由后端 `adjusting` 驱动发光/busy，并有客户端兜底计时器），完成后说明结果
+   （`applied`/`ok`/`no_signal`/`no_data`），拒绝也绝不静默；
+4. 动作进行中**不锁定**任何相关控件——一个把用户锁在它正在调整的那个字段之外的"模式"，读起来就是 bug
+   （旧的跟踪式 `Auto` 正是如此）；
+5. 后台**安全纠偏**是另一件事：始终武装、限速运行（IF 过载、迹线离开显示窗口），不需要用户去打开。
 
 ---
 
@@ -157,7 +169,7 @@ DLL 调用一律在设备锁下、放到 `to_thread`，并确保有看门狗（�
 | 纯逻辑 | vitest / pytest | 算法、状态机、契约（i18n parity、帧 fixture、schema、槽位语义） | — |
 | 会话/设备边界 | pytest + stub 设备 | 结果组装、策略、错误路径（**不需要厂商库**） | 为了测试去连真机 |
 | 协议 | 两端 golden fixture | 字节布局 | 只在一边测 |
-| **端到端（无硬件）** | `make e2e-fake`：`ui_smoke.py`（渲染与接线，20 项）+ `state_regression.py`（参数状态机契约，45 项），同一假服务，CI 运行 | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘；槽位/在途/交接/Preset/刷新/快速连切 | 只断言 dataset/计数器；**为让假后端通过而放宽断言**（会同时削弱真机轮次；器件相关检查用 `require_device=True` 显式跳过） |
+| **端到端（无硬件）** | `make e2e-fake`：`ui_smoke.py`（渲染与接线，22 项）+ `state_regression.py`（参数状态机契约，56 项），同一假服务，CI 运行 | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘、峰值表使用槽位门限；槽位/在途/交接/Preset/刷新/快速连切；一次性 Auto Scale（发光 → 一步落定 → `ok` 且不重配） | 只断言 dataset/计数器；**为让假后端通过而放宽断言**（会同时削弱真机轮次；器件相关检查用 `require_device=True` 显式跳过） |
 | **端到端（真机）** | Playwright + 真机 | **用户可见结果**：画布像素、DOM 文本、真实点击后的设备状态 | `dataset.rtaFrames`（只说明帧交给了渲染器，不代表画出来了） |
 | 性能 | `tools/bench.py` + 基线 | 帧率/切换延迟/CPU 的**可比**数值 | 在设备告警或残留负载下比较 |
 | 硬件冒烟 | `tools/hardware_smoke.py` + tinySA | 真实信号下的电平/帧完整性 | — |
@@ -244,7 +256,8 @@ DLL 调用一律在设备锁下、放到 `to_thread`，并确保有看门狗（�
 
 - 前端**诊断键**（排查 auto-ref/缩放类问题直接读它们，不必加日志）：
   `#spectrum.dataset.sdrRef`（已应用值）与 `dataset.sdrRefDbg`（auto-ref 全部内部量：
-  `noise/peak/nEma/pEma/range/ref/applied/shown`）；SDR 音频状态在 `dataset.sdrAudio`。
+  `noise/peak/range/ref/applied/before/shown`——后两个让"决策即用户所见"可从外部断言）；
+  STATUS 里的 `auto_ref.{result,target,adjusting}` 是同一件事的后端一半；SDR 音频状态在 `dataset.sdrAudio`。
 - 后端：`WEBSA_TRACE=1 ./run.sh` → `grep '\[trace\]' /tmp/websa.log`；原生崩溃会打印全线程栈
   （`faulthandler`），supervisor 的退出码/重启记录也在同一份日志里。
 

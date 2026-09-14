@@ -20,10 +20,24 @@
 ## Reference Level
 
 - Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.
-- Auto Ref only adjusts when the peak is at least 15 dB above the estimated noise floor and the "about 5 dB above peak" target is not below -50 dBm; a high noise floor also keeps about 30 dB of headroom. With no signal or a too-weak peak it holds current Ref instead of converging to -50 dBm.
-- When Auto is active, a Center change or an SWP/RTA return temporarily raises Ref to 0 dBm if it was below zero, avoiding retuning to an unknown strong signal with an unsafe low Ref.
-- Every SWP/RTA reconfiguration clears stale candidates and waits 0.75 seconds before Auto Ref observations resume.
-- Auto Ref remains selected but is suspended under manual Atten; it resumes when Atten returns to Auto.
+- **Auto is a one-shot action** (`AUTO_SCALE`), like `Auto Scale` on a bench analyser: it places the
+  reference once from the newest trace, and an already-good placement does nothing (no reconfiguration).
+  Measured on the SAN-90: 0.11-0.12 s from the click to the level landing, where the previous tracking
+  loop needed 1.86 s (it waited for a settled frame, then a 0.75 s settle window).
+- The fit reports what it did in `auto_ref.result`: `applied` (with `target`), `ok` (already placed
+  well), `no_signal` (peak less than 15 dB above the noise floor *and* the trace inside the window),
+  `no_data` (no trace since the last reconfiguration). The button glows while a change is queued or
+  settling, and the hint names the outcome.
+- A **safety ranger runs always**, whatever the Atten setting and whether or not Auto was ever pressed:
+  IF overflow (-12) raises Ref one 5 dB step per second, and a trace that has left the display window
+  (peak above the top edge, or noise floor below the bottom edge) is fitted once, rate-limited. This is
+  also what a manual Atten used to disable - overload protection now cannot be switched off by accident.
+- The placement keeps the noise floor just above the bottom of the display window with at least 10 dB of
+  headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB and never below a
+  learned IF-saturation floor or -50 dBm.
+- When a fit has lowered Ref, a Center change or an SWP/RTA return raises it to 0 dBm first, avoiding
+  retuning to an unknown strong signal with an unsafe low Ref.
+- Every SWP/RTA reconfiguration clears stale observations and waits 0.75 s before they are trusted again.
 - Lower Ref and RBW generally reduce the displayed noise floor, but input overload must be avoided.
 
 ## Reference Clock

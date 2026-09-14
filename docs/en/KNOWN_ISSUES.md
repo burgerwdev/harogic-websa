@@ -15,10 +15,14 @@
    (rebuilt as depression-wide display minimum), jumping back to the deepest valley has no offset
 10. **smooth & peak/valley detection**: when smooth is on, extrema detection is fully based on the smoothed curve (matches display), amplitude uses smoothed value;
     when off, raw data is used (Raw Anchor real extremum in raw neighborhood); valley sort/dedup: peaks 3 bins, valleys 25 bins (depression merge)
-11. **Pk threshold**: user edit locks (input realtime lock + activeElement guard), Auto button restores peak-50;
-    threshold not updated when all markers are off (kept)
+11. **Pk threshold**: the value lives in a slot and is fitted **once per measurement geometry**
+    (span/RBW/Ref/dB-per-div/points/centre); a signal swing alone cannot move it, so the peak table and
+    marker peak search no longer reshuffle with the amplitude. A user edit locks it until the Auto button
+    is pressed; nothing is updated while all markers are off
 12. **Peak/valley navigation matches the nearest list item (±3 bins)**: a right jump cannot loop back to the same bin (matching an adjacent bin used to make right-shift appear stuck)
-13. **Auto Ref with manual attenuation**: Auto Ref remains selected but is suspended while Atten is manual; it resumes with Atten Auto
+13. **Auto with manual attenuation**: no longer suspended. Auto Scale is a one-shot action and the
+    overload/out-of-window safety ranger runs whatever the Atten setting is (before, selecting a manual
+    attenuator silently disabled overload protection, so an IF overflow (-12) could freeze the display)
 14. **Remote access**: query tokens can enter browser history/proxy logs; use an HTTPS reverse proxy for remote control
 15. **Fast worker exit**: the worker uses `os._exit` to avoid unstable vendor-SDK destruction, so it does not send a WS close frame; browsers reconnect automatically
 16. **Remaining hardware qualification**: USB hotplug, GNSS/1PPS calibration and 6/7/9 GHz soak are
