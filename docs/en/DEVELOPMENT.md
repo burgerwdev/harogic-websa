@@ -83,6 +83,16 @@ frame (it does a `Date.now()` plus pending checks). The density accumulation cal
 frame and saturated the main thread -> STATUS fell behind -> the mode buttons toggled from a stale value.
 **Read once, outside the loop.**
 
+**The rule exists because six failure modes really happened** (from the parameter-state
+investigation; all fixed and pinned since): (1) reading a value during the intent window and using
+it while confirming (preset then immediately entering SDR handed over the stale centre); (2) a
+private cache drifting from the rendered value and then refusing to correct itself because the
+delta looked "already applied"; (3) an incomplete global reset (Preset did not invalidate the
+"last action" memory, so an old intent came back); (4) several writers for one parameter
+(`displayRef` had seven, with no ownership rule); (5) persistence that was not closed-loop
+(a preference was read but never written, so a reload lost it); (6) sentinel values meaning
+"unset" (0 Hz is also a legal frequency). Check new state against these six.
+
 ---
 
 ## 4. Extension points and registration
@@ -254,6 +264,12 @@ nobody can tell "deliberate" from "silent regression".
 | Unit buttons / virtual keypad do nothing | What does `fieldForInput(input)` return? | Field key and input id spellings diverge |
 | A warning is visible only for an instant | Is there an independent repaint trigger? | Drawing depends on the frame loop, and that state has no frames |
 | Frontend change has no effect | Was `npm run build` run? Was the browser reloaded? | The service serves `dist/`; without a rebuild it is the old bundle |
+
+- Frontend **diagnostic keys** (read these for auto-ref/scaling problems instead of adding logs):
+  `#spectrum.dataset.sdrRef` (applied value) and `dataset.sdrRefDbg` (the whole auto-ref state:
+  `noise/peak/nEma/pEma/range/ref/applied/shown`); SDR audio state lives in `dataset.sdrAudio`.
+- Backend: `WEBSA_TRACE=1 ./run.sh` -> `grep '\[trace\]' /tmp/websa.log`; a native crash prints the
+  stack of every thread (`faulthandler`), and the supervisor's exit codes/restarts land in the same log.
 
 ---
 

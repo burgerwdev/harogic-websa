@@ -694,6 +694,9 @@ e2e（真机）仍全绿。
 | **单写者客户端偏好是否迁移** | 可选 | `spanStepHz/spanStepAuto`、`dbPerDiv`、`levelUnit`、`currentGapFill`、`units`、`harmValMode`、`peakListOn`、`peakThrUserSet`、`normRefWinUser`、`valleySeqPos` 都是单写者、后端不上报的显示/UI 偏好，不属于 P1-6 的多写者问题。迁移的收益只是"规则统一"（后来者不必猜哪种写法），成本是十来处读写点。建议：只有在改动到某个参数时顺手迁移，不专门开一轮。 |
 | **bench 客户端数自动化** | 未做 | bench 已记录设备告警状态（`device_warning`），但仍不记录 WS 客户端数：多开浏览器会成倍增加 fan-out 工作，使 CPU 不可比。下一步：在 `tools/hardware_smoke.py` 的 `collect_*` 里解析周期性 STATUS 的 `stream.clients` 并记录，>1 时给出警告。 |
 
+| **B2：`controls.ts` 的 11 个"无外部引用导出"** | **有意保留（用户决定）** | 复核确认：这些函数本身都在用（动作表/DOM 监听/快捷键），只是没有其它模块 import。用户选择**保留为公开能力导出**（便于脚本/e2e/调试调用），因此不作为"清理项"；最小化 API 表面不是目标本身。 |
+| **来自已删除的临时 TODO 的三条低优先候选** | 未做（记录备查） | ① `sdrPeakEma/sdrNoiseEma` 首帧种子：若首帧是重配后暂态会用坏值初始化，用中位数初始化更稳；② `web-sa-mode` 恢复时与后端实际模式冲突的处理；③ STATUS 回包与 HTTP `/api/config` 并存时的交错（WS 内有序，跨通道无）。该临时文件（`TODO-frontend-state.md`）已按 C2 删除，其结项结论已并入 `KNOWN_ISSUES.md` 第 24–27 条，失败模式并入 `DEVELOPMENT.md` §3，诊断键并入 §11。 |
+
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```

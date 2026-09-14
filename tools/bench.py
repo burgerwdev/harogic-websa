@@ -294,6 +294,12 @@ def main() -> int:
         print(f'baseline written: {args.write_baseline}')
     if args.check:
         baseline = json.loads(Path(args.check).read_text())
+        clients = (result.get('swp') or {}).get('clients')
+        if clients not in (None, 1):
+            # Extra WS clients (e.g. a browser tab left open) multiply the per-frame fan-out,
+            # so the CPU numbers are not comparable with a single-client baseline.
+            print(f'WARNING: {clients} WS clients were connected during the run; the numbers '
+                  'are only comparable with a single client', file=sys.stderr)
         problems = compare(result, baseline)
         if problems and not args.no_retry:
             # The machine is shared and CPU/frame-rate sampling is noisy (a single busy

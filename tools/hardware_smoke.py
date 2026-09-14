@@ -104,13 +104,36 @@ async def wait_status(ws, predicate, timeout: float = 15.0) -> dict:
     raise TimeoutError('timed out waiting for WebSA status')
 
 
+def note_clients(message, current: int) -> int:
+    """Track the WS client count the publisher reports (extra clients inflate fan-out cost).
+
+    The periodic STATUS carries `stream.clients`; the collectors see it but used to drop every
+    text message. Recording it lets the bench warn instead of comparing incomparable numbers.
+    """
+    if message.type != aiohttp.WSMsgType.TEXT:
+        return current
+    try:
+        payload = json.loads(message.data)
+    except ValueError:
+        return current
+    stream = payload.get('stream')
+    if isinstance(stream, dict):
+        try:
+            return max(current, int(stream.get('clients') or 0))
+        except (TypeError, ValueError):
+            return current
+    return current
+
+
 async def collect_swp(ws, duration: float) -> dict:
     axes: dict[int, np.ndarray] = {}
     peaks: list[tuple[float, float, int]] = []
     bad_frames = 0
+    clients = 0
     started = time.monotonic()
     while time.monotonic() - started < duration:
         message = await asyncio.wait_for(ws.receive(), timeout=3)
+        clients = note_clients(message, clients)
         if message.type != aiohttp.WSMsgType.BINARY:
             continue
         frame = message.data
@@ -130,13 +153,16 @@ async def collect_swp(ws, duration: float) -> dict:
             index = int(np.nanargmax(power))
             peaks.append((float(axes[version][index]), float(power[index]), int(points)))
     elapsed = time.monotonic() - started
-    return summarize('swp', peaks, elapsed, bad_frames)
+    result = summarize('swp', peaks, elapsed, bad_frames)
+    result['clients'] = clients or None
+    return result
 
 
 async def collect_rta(ws, duration: float, command_time: float) -> dict:
     peaks: list[tuple[float, float, int]] = []
     bad_frames = 0
     frame_sizes: set[int] = set()
+    clients = 0
     first_frame_at = None
     started = time.monotonic()
     deadline = started + 15 + duration
@@ -144,6 +170,7 @@ async def collect_rta(ws, duration: float, command_time: float) -> dict:
         if first_frame_at is not None and time.monotonic() - first_frame_at >= duration:
             break
         message = await asyncio.wait_for(ws.receive(), timeout=3)
+        clients = note_clients(message, clients)
         if message.type != aiohttp.WSMsgType.BINARY or message.data[:4] != b'RTAF':
             continue
         frame = message.data
@@ -165,6 +192,7 @@ async def collect_rta(ws, duration: float, command_time: float) -> dict:
         frame_sizes.add(len(frame))
     elapsed = time.monotonic() - (first_frame_at or started)
     result = summarize('rta', peaks, elapsed, bad_frames)
+    result['clients'] = clients or None
     result['frame_bytes'] = sorted(frame_sizes)
     result['switch_ms'] = (
         round((first_frame_at - command_time) * 1000, 1) if first_frame_at else None)

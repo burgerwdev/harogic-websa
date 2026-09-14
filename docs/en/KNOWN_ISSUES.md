@@ -60,3 +60,27 @@
     (a wider IF raises the noise floor), so the same number squelches differently per mode. The
     gate has 3 dB hysteresis, a 0.3 s hold and a 5/80 ms ramp, so it does not chatter at the
     threshold.
+24. **IF AGC stays off (`EnableIFAGC=0`)**: it matches the official `Profile.xml` and the
+    hardware available here cannot saturate the IF, so AGC has no observable effect. The wiring
+    and the `ifagc_gain` readback remain for diagnostics (`WEBSA_IFAGC=1` flips the default for
+    A/B tests). Measurement caveat worth remembering: the **tinySA Ultra+ output tops out around
+    -18.5 dBm**; an earlier "receiver compression" reading at 0 dBm was the source limiting
+    itself, not the analyzer. With the source at -18.5 dBm the SAN-90 error is about -0.68 dB,
+    and with `preamp=AutoOn` the device keeps `preamp_actual=1` (it refuses to bypass).
+25. **No frequency-response compensation is needed**: the factory calibration is burned into the
+    firmware, so `Devcie_SetFreqResponseCompensation` (external file) must not be called.
+    Measured baseline with a known tinySA source (-18.5 dBm, atten 0, preamp off): 100 MHz error
+    -0.68 dB; the -30..-18.5 dBm range stays within 0.4-0.7 dB and the attenuator tracking is
+    correct. When checking wideband flatness remember the tinySA's own flatness (typically
+    +-2 dB) is part of the result.
+26. **Integer-family spurs at 1.000/2.000 GHz are device-internal**: the same spur appears in all
+    three modes (SWP/RTA/SDR) at exactly integer GHz, and it is **after** the input attenuator -
+    adding 10 dB of attenuation raises its apparent level by ~10-13 dB (an external CW source
+    stays flat), so it is an internal IF/ADC/clock spur, not a received signal. SWP hides it only
+    because of the RBW (it emerges at 1.9 kHz and below). Software cannot remove it; report the
+    1/2 GHz and rotation-harmonic family to the vendor if needed.
+27. **Unexplained (low priority): "inverted attenuation" in the FM broadcast band.** At 101.7 MHz,
+    span 1 MHz, `preamp=AutoOn`, raising the actual attenuation from 3 to 18 dB made the reading
+    *rise* by ~15 dB (-71.4 -> -56.4 dBm). A CW source retest does not reproduce it, so the
+    working hypothesis is front-end overload from multi-carrier composite power; confirming it
+    needs a known source in a strong-signal environment.
