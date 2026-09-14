@@ -18,6 +18,7 @@ import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
 import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
 import { setRenderer } from './redraw';
+import { peakListVisible } from '../ui/measurePrefs';
 import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
@@ -31,7 +32,7 @@ function cur() {
     displayOffset: displayOffset.get(), displayUnit: displayUnit.get(), viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
-    ampRes: S.ampRes, peakListOn: S.peakListOn, smoothBins: smoothBins.get(),
+    ampRes: S.ampRes, peakListOn: peakListVisible.get(), smoothBins: smoothBins.get(),
   };
 }
 
@@ -388,7 +389,7 @@ function renderRtaView() {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
       });
-    } else if (S.peakListOn) {
+    } else if (peakListVisible.get()) {
       const mt2 = document.getElementById('marker-table');
       if (mt2) mt2.style.display = 'none';
       if (rp) { updatePeakTable(rp); renderPeakMarks(rp); }

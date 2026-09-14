@@ -1,8 +1,8 @@
 // Normalization public exports (avoids circular dependency with controls)
-import * as S from '../core/store';
+import { normRefWinUser } from './measurePrefs';
 import { smoothRefWindow, normRefWindow } from '../dsp/normalize';
 
-export function setNormRefWinUser(v: number) { S.setNormRefWinUser(v); }
+export function setNormRefWinUser(v: number) { normRefWinUser.set(v); }
 export { smoothRefWindow, normRefWindow };
 
 export function buildReferenceTablePub(powers: Float32Array): Float32Array {

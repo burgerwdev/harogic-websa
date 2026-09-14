@@ -9,6 +9,7 @@ import { assignMarkerToBestPeak, toggleMarkerTracking } from '../../dsp/markerTr
 import { findExtremesOrdered, getDisplayPowers, nextExtreme, parabolaFit, setMarkerIdx } from '../../dsp/peaks';
 import { plotRect } from '../../render/plot';
 import { requestRender } from '../../render/redraw';
+import { valleySeqPos } from '../measurePrefs';
 import { updateFreqUIInputs } from '../freqInputs';
 import { centerHz, rtaCenterHz, spanHz } from '../freqState';
 
@@ -24,8 +25,8 @@ export function activeMarkerValley() {
   let bi = 0, bv = Infinity;
   for (let i = 0; i < p.length; i++) { const v = p[i]; if (isFinite(v) && v < bv) { bv = v; bi = i; } }
   const list = findExtremesOrdered('right', false);
-  S.setValleySeqPos(list.findIndex((x: any) => Math.abs(x.i - bi) <= 3));
-  if (S.valleySeqPos < 0) S.setValleySeqPos(0);
+  valleySeqPos.set(list.findIndex((x: any) => Math.abs(x.i - bi) <= 3));
+  if (valleySeqPos.get() < 0) valleySeqPos.set(0);
   const fit = parabolaFit(p, bi);
   const bh = (S.freqArray && S.freqArray!.length > 1) ? S.freqArray![1] - S.freqArray![0] : 0;
   setMarkerIdx(bi, S.freqArray![bi] + fit.dk * bh);

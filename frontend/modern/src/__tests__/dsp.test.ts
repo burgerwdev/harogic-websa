@@ -14,7 +14,7 @@ import {
   steppedRefLevel,
   steppedSpan,
 } from '../core/frequency';
-import { setUnit } from '../core/units';
+import { setUnit, unitMap, units } from '../core/units';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { refClockSourceName, refClockStatus } from '../core/refclock';
 import * as S from '../core/store';
@@ -182,7 +182,7 @@ describe('频率字段联动', () => {
     const previous = document.body.innerHTML;
     document.body.innerHTML = '<input id="input-center" value="2">' +
       '<div id="unit-center-group"><button>MHz</button><button>GHz</button></div>';
-    S.units.center = 'MHz';
+    unitMap.set({ ...units(), center: 'MHz' });
     const commits: boolean[] = [];
     const listener = (event: Event) => {
       commits.push((event as CustomEvent<{ commit: boolean }>).detail.commit);
@@ -199,10 +199,10 @@ describe('频率字段联动', () => {
     setUnit('center', 'GHz');
     expect(input.value).toBe('2');
     expect(commits).toEqual([false, true]);
-    expect(S.units.center).toBe('GHz');
+    expect(units().center).toBe('GHz');
 
     document.removeEventListener('websa:unit-commit', listener);
-    S.units.center = 'MHz';
+    unitMap.set({ ...units(), center: 'MHz' });
     document.body.innerHTML = previous;
   });
 });

@@ -2,12 +2,13 @@
 // Extracted from ui/controls.ts (report finding P1-5).
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
+import { peakListVisible } from '../measurePrefs';
 import { syncMarkerTrackingToggle, updateMarkersAllBtn } from './markers';
 import { waterfallOn } from '../waterfallState';
 
 export function syncToggleTexts() {
   const pl = document.getElementById('btn-peaklist');
-  if (pl) pl.textContent = S.peakListOn ? t('on') : t('off');
+  if (pl) pl.textContent = peakListVisible.get() ? t('on') : t('off');
   const gf = document.getElementById('btn-gapfill');
   if (gf) gf.textContent = S.currentGapFill ? t('on') : t('off');
   const mo = document.getElementById('btn-meas-onoff');

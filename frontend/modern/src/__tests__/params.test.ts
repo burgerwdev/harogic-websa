@@ -226,3 +226,42 @@ describe('Param class shape', () => {
 		expect(Object.keys(p)).not.toContain('_confirmed');
 	});
 });
+
+describe('client-owned preferences stay authoritative (P1-6 / B4)', () => {
+	it('does not revert when no backend report arrives (no TTL expiry)', async () => {
+		const { harmValMode, peakListVisible, peakThrUserSet, normRefWinUser, valleySeqPos } =
+			await import('../ui/measurePrefs');
+		const { spanStepAuto, spanStepHz } = await import('../ui/swpState');
+		const { unitMap, units } = await import('../core/units');
+
+		// The display unit once reverted after the intent TTL because it was not marked
+		// authoritative; the same trap applies to every client-owned preference.
+		harmValMode.set('Peak');
+		peakListVisible.set(true);
+		peakThrUserSet.set(true);
+		normRefWinUser.set(9);
+		valleySeqPos.set(3);
+		spanStepAuto.set(false);
+		spanStepHz.set(2.5e6);
+		unitMap.set({ ...units(), span: 'GHz' });
+
+		vi.useFakeTimers();
+		vi.setSystemTime(Date.now() + 60_000);      // far past any TTL
+		expect(harmValMode.get()).toBe('Peak');
+		expect(peakListVisible.get()).toBe(true);
+		expect(peakThrUserSet.get()).toBe(true);
+		expect(normRefWinUser.get()).toBe(9);
+		expect(valleySeqPos.get()).toBe(3);
+		expect(spanStepAuto.get()).toBe(false);
+		expect(spanStepHz.get()).toBe(2.5e6);
+		expect(units().span).toBe('GHz');
+		vi.useRealTimers();
+	});
+
+	it('resetAll clears the pending values of a scope', async () => {
+		const { harmValMode } = await import('../ui/measurePrefs');
+		harmValMode.set('Avg');
+		harmValMode.reset();
+		expect(harmValMode.get()).toBe('RT');       // back to the declared fallback
+	});
+});

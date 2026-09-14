@@ -4,6 +4,7 @@ import { formatFreqHz } from '../core/fmt';
 import { t } from '../core/i18n';
 import { renderHarmOverlay } from './harmOverlay';
 import { registerViewRenderer } from '../render/registry';
+import { harmValMode } from '../ui/measurePrefs';
 import { requestRender } from '../render/redraw';
 import { registerMeasurementTab } from '../ui/measureRegistry';
 
@@ -41,18 +42,18 @@ export function onHarmResult(list: any[]) {
   S.setLastHarmList(list);
   if (!S.harmAccum) S.setHarmAccum({ peak: [], sum: [], cnt: 0, frozen: null });
   const a = S.harmAccum;
-  if (S.harmValMode === 'Peak') {
+  if (harmValMode.get() === 'Peak') {
     for (let i = 0; i < list.length; i++) {
       const cur = a.peak[i];
       if (!cur || list[i].amp > cur.amp) a.peak[i] = Object.assign({}, list[i]);
     }
-  } else if (S.harmValMode === 'Avg') {
+  } else if (harmValMode.get() === 'Avg') {
     for (let i = 0; i < list.length; i++) {
       if (!a.sum[i]) a.sum[i] = 0;
       a.sum[i] += list[i].amp;
     }
     a.cnt++;
-  } else if (S.harmValMode === 'Frz') {
+  } else if (harmValMode.get() === 'Frz') {
     if (!a.frozen) a.frozen = list.map((x: any) => Object.assign({}, x));
   } else {
     a.cnt++;
@@ -66,9 +67,9 @@ function buildHarmDisplay(): any {
   if (!last) return null;
   const a = S.harmAccum;
   let list: any[];
-  if (S.harmValMode === 'RT') list = last;
-  else if (S.harmValMode === 'Peak') list = a.peak;
-  else if (S.harmValMode === 'Frz') list = a.frozen || last;
+  if (harmValMode.get() === 'RT') list = last;
+  else if (harmValMode.get() === 'Peak') list = a.peak;
+  else if (harmValMode.get() === 'Frz') list = a.frozen || last;
   else list = a.sum.map((s: number, i: number) => {
     const o = last[i]; if (!o) return null;
     const am = a.cnt ? s / a.cnt : o.amp;

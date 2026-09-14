@@ -5,13 +5,13 @@ import { getX, getY } from './plot';
 import { fmtF } from '../core/fmt';
 import { t } from '../core/i18n';
 
-export function peakListOn(): boolean { return S.peakListOn; }
+export function peakListOn(): boolean { return peakListVisible.get(); }
 
 export function togglePeakList() {
-  S.setPeakListOn(!S.peakListOn);
+  peakListVisible.set(!peakListVisible.get());
   const btn = document.getElementById('btn-peaklist');
-  if (btn) btn.textContent = S.peakListOn ? t('on') : t('off');
-  if (S.peakListOn) requestRender();
+  if (btn) btn.textContent = peakListVisible.get() ? t('on') : t('off');
+  if (peakListVisible.get()) requestRender();
   requestRender();
 }
 
@@ -45,7 +45,7 @@ export function findPeaks(powers: Float32Array, maxN: number): { idx: number; am
 }
 
 export function autoPeakThr(powers: Float32Array | null) {
-  if (S.peakThrUserSet) return;
+  if (peakThrUserSet.get()) return;
   if (!powers) return;
   if (!S.markers.some(m => m.enabled)) return;
   const el = document.getElementById('input-peakthr') as HTMLInputElement;
@@ -59,9 +59,9 @@ export function autoPeakThr(powers: Float32Array | null) {
   }
 }
 
-export function peakThrManual() { S.setPeakThrUserSet(true); requestRender(); }
+export function peakThrManual() { peakThrUserSet.set(true); requestRender(); }
 export function peakThrAuto() {
-  S.setPeakThrUserSet(false);
+  peakThrUserSet.set(false);
   const dp = getDisplayPowers();
   if (dp) {
     let peak = -1e9;
@@ -76,7 +76,7 @@ export function updatePeakTable(powers: Float32Array | null) {
   const tb = document.getElementById('peak-table');
   const tb2 = document.getElementById('peak-tbody');
   if (!tb || !tb2) return;
-  if (!S.peakListOn || !powers || !S.freqArray) { tb.style.display = 'none'; return; }
+  if (!peakListVisible.get() || !powers || !S.freqArray) { tb.style.display = 'none'; return; }
   const cntEl = document.getElementById('input-peakcnt') as HTMLInputElement;
   const maxN = Math.max(1, Math.min(20, cntEl ? (parseInt(cntEl.value) || 20) : 20));
   const peaks = findPeaks(powers, maxN);
@@ -101,7 +101,7 @@ export function updatePeakTable(powers: Float32Array | null) {
 }
 
 export function renderPeakMarks(powers: Float32Array) {
-  if (!S.peakListOn || !S.peakMarks || !S.freqArray) return;
+  if (!peakListVisible.get() || !S.peakMarks || !S.freqArray) return;
   const col = getColors();
   const p = plotRectLocal();
   const n = powers.length;
@@ -135,3 +135,4 @@ import { plotRect as plotRectLocal } from './plot';
 import { canvasColors as getColors } from '../core/theme';
 import { getDisplayPowers } from '../dsp/peaks';
 import { requestRender } from './redraw';
+import { peakListVisible, peakThrUserSet } from '../ui/measurePrefs';

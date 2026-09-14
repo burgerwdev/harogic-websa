@@ -45,6 +45,11 @@ export function initStore(): void {
 }
 
 // Frequency/amplitude state
+//
+// `dbPerDiv`, `levelUnit` and `currentGapFill` intentionally stay plain values: they are
+// single-writer, but they are read inside per-frame loops (getY / level conversions / gap
+// fill), and calling a slot get() there is exactly what saturated the main thread once
+// (DEVELOPMENT.md §3, hot-path rule).
 export let FREQ_MIN = 9e3, FREQ_MAX = 9e9;
 export function setFrequencyLimits(minimum: number, maximum: number) {
   if (isFinite(minimum) && isFinite(maximum) && minimum > 0 && maximum > minimum) {
@@ -52,10 +57,6 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
     FREQ_MAX = maximum;
   }
 }
-export let spanStepHz = 10e6;
-export let spanStepAuto = true;
-export function setSpanStepHz(v: number) { spanStepHz = v; }
-export function setSpanStepAuto(v: boolean) { spanStepAuto = v; }
 // (Reference level/mode live in ui/refState.ts; rta_ref_level/rta_ref_mode were unused
 // copies - the STATUS `ref` field is already the effective value for the active mode.)
 export let configVersion = 0;
@@ -113,7 +114,6 @@ export interface LimitsState { on: boolean; tol: number; points: LimitPointState
 export let limits: LimitsState = { on: false, tol: 0, points: [] };
 export function setLimits(v: LimitsState) { limits = v; }
 
-export const units: Record<string, string> = { center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz', rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz' };
 
 // Traces
 export const traces: TraceState[] = [
@@ -141,20 +141,11 @@ export function setMeasTabSel(v: string) { measTabSel = v; }
 export let viewMode: string = 'std';
 export function setViewMode(v: string) { viewMode = v; }
 
-export let harmValMode = 'RT';
 // Channel measurements: channel power / OBW / ACPR of the displayed trace
 
 // Smoothing / peak finding
-export let valleySeqPos = 0;
-export function setValleySeqPos(v: number) { valleySeqPos = v; }
 
 // Peak list
-export let peakListOn = false;
-export function setPeakListOn(v: boolean) { peakListOn = v; }
-export let peakThrUserSet = false;
-export function setPeakThrUserSet(v: boolean) { peakThrUserSet = v; }
-export let normRefWinUser = 0;
-export function setNormRefWinUser(v: number) { normRefWinUser = v; }
 // Latest GNSS status (for the detail popover)
 // RTA 实时频谱 + 瀑布
    // per-trace RTA accumulation

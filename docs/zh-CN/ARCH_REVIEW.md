@@ -697,6 +697,8 @@ e2e（真机）仍全绿。
 | **B2：`controls.ts` 的 11 个"无外部引用导出"** | **有意保留（用户决定）** | 复核确认：这些函数本身都在用（动作表/DOM 监听/快捷键），只是没有其它模块 import。用户选择**保留为公开能力导出**（便于脚本/e2e/调试调用），因此不作为"清理项"；最小化 API 表面不是目标本身。 |
 | **来自已删除的临时 TODO 的三条低优先候选** | 未做（记录备查） | ① `sdrPeakEma/sdrNoiseEma` 首帧种子：若首帧是重配后暂态会用坏值初始化，用中位数初始化更稳；② `web-sa-mode` 恢复时与后端实际模式冲突的处理；③ STATUS 回包与 HTTP `/api/config` 并存时的交错（WS 内有序，跨通道无）。该临时文件（`TODO-frontend-state.md`）已按 C2 删除，其结项结论已并入 `KNOWN_ISSUES.md` 第 24–27 条，失败模式并入 `DEVELOPMENT.md` §3，诊断键并入 §11。 |
 
+| **B4：剩余单写者客户端偏好槽位化** | **已完成（3 项有意保留）** | 触发/瀑布/显示之外，又把 8 个单写者偏好迁入槽位：`spanStepHz/spanStepAuto`（`ui/swpState.ts`）、`harmValMode/peakListOn/peakThrUserSet/normRefWinUser/valleySeqPos`（新增 `ui/measurePrefs.ts`，全部 `authoritative`）、以及单位选择表 `units`（改为 `core/units.ts` 内的 `unitMap` 槽位，读方走 `units()`，写方走 `setUnit()`）。`dbPerDiv`、`levelUnit`、`currentGapFill` **有意保留为普通值**：它们是单写者，但在每帧循环里被读取（`getY`／电平换算／gap fill），在那里调槽位 `get()` 正是曾拖满主线程的做法（见 DEVELOPMENT §3 热路径规则）。新增测试断言"客户端偏好不会因 TTL 回退"与 `resetAll` 行为。 |
+
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```

@@ -6,6 +6,7 @@ import { beginFrequencyCommit, validateFrequencyWindow } from './frequency';
 import { send } from '../../core/wsSend';
 import { requestRender } from '../../render/redraw';
 import { rtaAmpBins, rtaFade } from '../waterfallState';
+import { units } from '../../core/units';
 
 export function clearRtaAccum() {
   // A reconfiguration (span/rbw/sweep) invalidates every accumulation on the old
@@ -52,7 +53,7 @@ export function rtaSpanFull() {
 
 export function applyRta() {
   const c = parseFloat((document.getElementById('input-rta-center') as HTMLInputElement).value || '1000');
-  const u = S.units.rta_center || 'MHz';
+  const u = units().rta_center || 'MHz';
   const requestedCenter = isFinite(c)
     ? (u === 'GHz' ? c * 1e9 : u === 'kHz' ? c * 1e3 : c * 1e6)
     : 1e9;

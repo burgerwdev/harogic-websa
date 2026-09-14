@@ -9,6 +9,7 @@ import * as S from '../core/store';
 import { toUnit } from '../core/units';
 import { centerHz, rtaCenterHz, spanHz } from './freqState';
 import { currentRBW, currentVBW } from './swpState';
+import { units } from '../core/units';
 
 function setInput(id: string, v: string, force = false) {
   const el = document.getElementById(id) as HTMLInputElement;
@@ -27,7 +28,7 @@ export function updateFreqUIInputs(force = false) {
   setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
   const rtaEditor = document.getElementById('rta-freq-settings');
   if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
-    const u = S.units.rta_center || 'MHz';
+    const u = units().rta_center || 'MHz';
     const scale = u === 'GHz' ? 1e9 : u === 'kHz' ? 1e3 : 1e6;
     setInput('input-rta-center', (rtaCenterHz.get() / scale).toFixed(4), force);
   }

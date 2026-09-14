@@ -6,6 +6,8 @@ import { niceSpanStep, normalizeCenterSpan, normalizeStartStop, steppedSpan } fr
 import { parseFreqUnit, toUnit } from '../../core/units';
 import { send } from '../../core/wsSend';
 import { centerHz, spanHz } from '../freqState';
+import { spanStepAuto, spanStepHz } from '../swpState';
+import { units } from '../../core/units';
 
 export function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): HTMLElement | null {
   return document.getElementById(id);
@@ -104,15 +106,15 @@ function formatSpanStep(value: number): string {
 }
 
 export function syncSwpSpanStep(swpSpan = spanHz.get()) {
-  if (S.spanStepAuto) S.setSpanStepHz(niceSpanStep(swpSpan));
+  if (spanStepAuto.get()) spanStepHz.set(niceSpanStep(swpSpan));
   const input = document.getElementById('input-span-step') as HTMLInputElement | null;
   const unit = document.getElementById('span-step-unit');
   if (input && document.activeElement !== input) {
-    input.value = formatSpanStep(toUnit(S.spanStepHz, 'span'));
+    input.value = formatSpanStep(toUnit(spanStepHz.get(), 'span'));
   }
-  if (unit) unit.textContent = S.units.span;
+  if (unit) unit.textContent = units().span;
   const auto = document.getElementById('btn-span-step-auto');
-  if (auto) auto.classList.toggle('active', S.spanStepAuto);
+  if (auto) auto.classList.toggle('active', spanStepAuto.get());
 }
 
 export function updateCustomSpanStep() {
@@ -120,22 +122,22 @@ export function updateCustomSpanStep() {
   if (!input) return;
   const value = Number(input.value);
   if (!isFinite(value) || value <= 0) return;
-  const scale = S.units.span === 'GHz' ? 1e9 : S.units.span === 'MHz' ? 1e6
-    : S.units.span === 'kHz' ? 1e3 : 1;
-  S.setSpanStepAuto(false);
-  S.setSpanStepHz(Math.max(100, value * scale));
+  const u = units().span;
+  const scale = u === 'GHz' ? 1e9 : u === 'MHz' ? 1e6 : u === 'kHz' ? 1e3 : 1;
+  spanStepAuto.set(false);
+  spanStepHz.set(Math.max(100, value * scale));
   syncSwpSpanStep();
 }
 
 export function resetSpanStepAuto() {
-  S.setSpanStepAuto(true);
+  spanStepAuto.set(true);
   syncSwpSpanStep();
 }
 
 export function stepSwpSpan(direction: -1 | 1) {
   const targetSpan = steppedSpan(
     spanHz.get(),
-    S.spanStepHz,
+    spanStepHz.get(),
     direction,
     100,
     S.FREQ_MAX - S.FREQ_MIN,

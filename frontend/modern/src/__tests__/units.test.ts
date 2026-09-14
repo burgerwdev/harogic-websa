@@ -8,7 +8,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fieldForInput, inputForField, setUnit, UNIT_OPTIONS } from '../core/units';
-import { units } from '../core/store';
+import { unitMap, units } from '../core/units';
 
 const mount = (id: string, value = '433') => {
 	const el = document.createElement('input');
@@ -48,19 +48,19 @@ describe('unit field resolution', () => {
 
 	it('converts and commits when the unit button is used on an untouched field', () => {
 		const input = mount('input-rta-center', '1000');
-		units.rta_center = 'MHz';
+		unitMap.set({ ...units(), rta_center: 'MHz' });
 		const events: Array<{ field: string; unit: string; commit: boolean }> = [];
 		document.addEventListener('websa:unit-commit', (e) => events.push((e as CustomEvent).detail));
 		setUnit('rta_center', 'GHz');
 		expect(input.value).toBe('1.000000');            // 1000 MHz -> 1 GHz
-		expect(units.rta_center).toBe('GHz');
+		expect(units().rta_center).toBe('GHz');
 		expect(events).toHaveLength(1);
 		expect(events[0]).toEqual({ field: 'rta_center', unit: 'GHz', commit: false });
 	});
 
 	it('does not convert but commits when the user typed a value', () => {
 		const input = mount('input-rta-center', '433');
-		units.rta_center = 'MHz';
+		unitMap.set({ ...units(), rta_center: 'MHz' });
 		input.dataset.edited = '1';
 		const events: Array<{ commit: boolean }> = [];
 		document.addEventListener('websa:unit-commit', (e) => events.push((e as CustomEvent).detail));

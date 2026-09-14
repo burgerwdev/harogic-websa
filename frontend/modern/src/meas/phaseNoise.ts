@@ -4,6 +4,7 @@ import { fmtHzUnit, formatFreqHz, fmtPnmFreq } from '../core/fmt';
 import { registerViewRenderer } from '../render/registry';
 import { requestRender } from '../render/redraw';
 import { registerMeasurementTab } from '../ui/measureRegistry';
+import { units } from '../core/units';
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measureUi';
 import { canvasColors } from '../core/theme';
@@ -32,7 +33,7 @@ export function measPnmApply() {
 function parsePnmFreq(): number {
   const el = document.getElementById('input-pnm') as HTMLInputElement;
   const v = parseFloat(el?.value || '') || 0;
-  const u = S.units.pnm;
+  const u = units().pnm;
   return u === 'GHz' ? v * 1e9 : u === 'MHz' ? v * 1e6 : u === 'kHz' ? v * 1e3 : v;
 }
 

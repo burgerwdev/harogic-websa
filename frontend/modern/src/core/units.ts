@@ -1,5 +1,9 @@
 // Unit helpers (from buildUnitGroups/setUnit/parseFreqUnit/toUnit)
-import { units } from './store';
+//
+// The per-field unit selection is a client-owned preference, so it is a slot here (where the
+// unit semantics live) instead of a mutable map in core/store.ts: writers go through setUnit()
+// and readers through unitMap.get(). It is `authoritative` because nothing confirms it.
+import { createParam } from './params';
 
 /** Fields that carry a unit button group, with the units each one accepts. */
 export const UNIT_OPTIONS: Record<string, string[]> = {
@@ -9,6 +13,19 @@ export const UNIT_OPTIONS: Record<string, string[]> = {
   rta_center: ['MHz', 'GHz'],
 };
 
+/** Currently selected unit per field key (`center`, `span`, `rta_center`, ...). */
+export const unitMap = createParam<Record<string, string>>('units.map', {
+  fallback: {
+    center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz',
+    rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz',
+  },
+  scope: 'units',
+  // Client-owned: nothing reports it back, so a pending value must not expire.
+  authoritative: true,
+});
+
+export function units(): Record<string, string> { return unitMap.get(); }
+
 export function buildUnitGroups() {
   const defs = UNIT_OPTIONS;
   for (const [f, opts] of Object.entries(defs)) {
@@ -17,7 +34,7 @@ export function buildUnitGroups() {
     grp.innerHTML = '';
     for (const u of opts) {
       const b = document.createElement('button');
-      b.className = 'unit-btn' + (units[f] === u ? ' active' : '');
+      b.className = 'unit-btn' + (units()[f] === u ? ' active' : '');
       b.textContent = u;
       b.onclick = () => setUnit(f, u);
       grp.appendChild(b);
@@ -69,7 +86,7 @@ export function fieldForInput(input: { id: string }): string {
 }
 
 export function setUnit(field: string, unit: string) {
-  const previous = units[field];
+  const previous = units()[field];
   const input = inputForField(field);
   const edited = input?.dataset.edited === '1';
   if (input && !edited) {
@@ -77,7 +94,7 @@ export function setUnit(field: string, unit: string) {
     if (isFinite(value)) input.value = formatUnitValue(
       convertUnitValue(value, previous, unit), unit);
   }
-  units[field] = unit;
+  unitMap.set({ ...unitMap.get(), [field]: unit });
   const grp = document.getElementById(`unit-${field}-group`);
   if (grp) for (const b of grp.children) (b as HTMLElement).classList.toggle('active', b.textContent === unit);
   document.dispatchEvent(new CustomEvent<UnitCommitDetail>(
@@ -86,10 +103,10 @@ export function setUnit(field: string, unit: string) {
 export function parseFreqUnit(field: string): number {
   const el = inputForField(field);
   const v = parseFloat(el?.value || '') || 0;
-  const u = units[field];
+  const u = units()[field];
   return u === 'GHz' ? v * 1e9 : u === 'MHz' ? v * 1e6 : u === 'kHz' ? v * 1e3 : v;
 }
 export function toUnit(hz: number, field: string): number {
-  const u = units[field];
+  const u = units()[field];
   return u === 'GHz' ? hz / 1e9 : u === 'MHz' ? hz / 1e6 : u === 'kHz' ? hz / 1e3 : hz;
 }

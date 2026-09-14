@@ -456,7 +456,7 @@ export function presetAll() {
   S.traces.forEach((t, i) => { t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false; t.avgSum = null; t.avgCount = 0; });
   S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
   S.setM3dB(null); S.setAmpRes(null); S.setHarm(null); S.setPnmData(null);
-  S.setPeakListOn(false); S.setPeakMarks(null);
+  peakListVisible.set(false); S.setPeakMarks(null);
   const pl = document.getElementById('btn-peaklist');
   if (pl) pl.textContent = t('off');
   S.setActiveMkrId(1);
@@ -484,7 +484,7 @@ export function presetAll() {
   S.resetWaterfall();
   wfPaused.set(false);
   smoothBins.set(1);
-  S.setSpanStepAuto(true);
+  spanStepAuto.set(true);
   setSdrAudioEnabled(false);
   sdrAudioOn.set(false);
   sdrRefAuto.set(true);
@@ -906,6 +906,8 @@ import { plotRect as plotRectPub } from '../render/plot';
 import { exitMeasMode as exitMeasModePub } from './measure';
 import { rtaFade, wfPaused } from './waterfallState';
 import { displayOffset, smoothBins } from './displayState';
+import { peakListVisible } from './measurePrefs';
+import { spanStepAuto } from './swpState';
 
 // ── Re-exports for the rest of the app ──
 // The panel modules own these actions; the previous public surface (everything imported
