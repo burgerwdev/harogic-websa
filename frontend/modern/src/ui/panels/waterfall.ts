@@ -6,16 +6,22 @@ import { send } from '../../core/wsSend';
 import { requestRender } from '../../render/redraw';
 import { waterfallOn, wfPaused } from '../waterfallState';
 
-export function toggleWaterfall() {
-  waterfallOn.set(!waterfallOn.get());
-  if (waterfallOn.get()) S.resetWaterfall();
+/** Turn the waterfall on/off (the measurement panel forces it off while measuring). */
+export function setWaterfall(on: boolean) {
+  if (waterfallOn.get() === on) return;
+  waterfallOn.set(on);
+  if (on) S.resetWaterfall();
   const wf = document.getElementById('waterfall');
-  if (wf) wf.style.display = waterfallOn.get() ? '' : 'none';
+  if (wf) wf.style.display = on ? '' : 'none';
   const mt = document.getElementById('marker-table');
-  if (mt) mt.style.display = waterfallOn.get() ? 'none' : '';
+  if (mt) mt.style.display = on ? 'none' : '';
   const btn = document.getElementById('btn-waterfall');
-  if (btn) btn.classList.toggle('active', waterfallOn.get());   // text stays "Waterfall", active = on
+  if (btn) btn.classList.toggle('active', on);   // text stays "Waterfall", active = on
   requestRender();
+}
+
+export function toggleWaterfall() {
+  setWaterfall(!waterfallOn.get());
 }
 
 export function toggleWfPause() {

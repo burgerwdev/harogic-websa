@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { updateStatus } from '../core/ws';
+import * as S from '../core/store';
 import { resetAll } from '../core/params';
 import { centerHz, spanHz, rtaCenterHz, swpCenterHz } from '../ui/freqState';
 import { refLevel, refMode } from '../ui/refState';
@@ -135,5 +136,58 @@ describe('updateStatus', () => {
 		delete (partial as { actual?: unknown }).actual;
 		updateStatus(partial);                        // malformed: the guard must reject it
 		expect(spanHz.get()).toBe(before);
+	});
+});
+
+
+describe('IF-overflow warning repaint', () => {
+	it('repaints when the warning appears and when it clears', async () => {
+		const { renderRequestCount } = await import('../render/redraw');
+		const overflow = structuredClone(SWP_STATUS) as Record<string, any>;
+		overflow.status_warning = -12;
+
+		const before = renderRequestCount();
+		updateStatus(overflow);
+		const afterAppear = renderRequestCount();
+		// The overflowing IF sends no frames, so the canvas would otherwise keep the previous
+		// pass and never show the warning (the user saw it only after raising Ref again).
+		expect(afterAppear).toBeGreaterThan(before);
+
+		updateStatus(structuredClone(SWP_STATUS));      // status_warning back to 0
+		const afterClear = renderRequestCount();
+		expect(afterClear).toBeGreaterThan(afterAppear);
+
+		// a repeat of the same state must not repaint on every STATUS
+		updateStatus(structuredClone(SWP_STATUS));
+		expect(renderRequestCount()).toBe(afterClear);
+	});
+});
+
+describe('waterfall is disabled while measuring', () => {
+	it('turns the waterfall off, disables the buttons, and restores the choice afterwards', async () => {
+		const { applyMeasUI } = await import('../ui/measureUi');
+		const { waterfallOn } = await import('../ui/waterfallState');
+		const { setWaterfall } = await import('../ui/panels/waterfall');
+		const button = document.createElement('button');
+		button.id = 'btn-waterfall';
+		const pause = document.createElement('button');
+		pause.id = 'btn-wf-pause';
+		document.body.append(button, pause);
+
+		setWaterfall(true);
+		expect(waterfallOn.get()).toBe(true);
+
+		S.setMeasOn(true);
+		applyMeasUI();
+		expect(waterfallOn.get()).toBe(false);
+		expect(button.disabled).toBe(true);
+		expect(pause.disabled).toBe(true);
+
+		S.setMeasOn(false);
+		applyMeasUI();
+		expect(waterfallOn.get()).toBe(true);        // the user's choice comes back
+		expect(button.disabled).toBe(false);
+		button.remove();
+		pause.remove();
 	});
 });

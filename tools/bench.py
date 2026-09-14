@@ -156,6 +156,10 @@ async def configure_for_bench(session, base: str, args) -> dict:
         'ref_dbm': state.get('ref'),
         'atten': (state.get('amp') or {}).get('atten'),
         'spur': state.get('spur'),
+        # A vendor warning (e.g. -12 IF overflow) changes the acquisition path, so the CPU
+        # numbers stop being comparable with a clean baseline. Record it so a "regression"
+        # can be attributed instead of investigated from scratch.
+        'device_warning': state.get('status_warning', 0),
     }
 
 

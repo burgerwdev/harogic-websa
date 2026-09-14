@@ -86,6 +86,8 @@ const RTA_BAD_MAX_MS = 300;
 let rtaBadFirst = 0;
 let rtaBadCount = 0;
 
+let lastOverflowWarning = false;
+
 export function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -401,6 +403,13 @@ export function updateStatus(s: any) {
       refEl.title = over ? t('if_overflow_hint') : '';
     }
     S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
+  // The warning must be visible even though an overflowing IF stops sending frames: without
+  // this repaint the canvas kept the previous pass (no warning), and it only appeared for one
+  // frame after Ref was raised again (the user saw exactly that flash).
+  if (over !== lastOverflowWarning) {
+    lastOverflowWarning = over;
+    requestRender();
+  }
   }
   spanHz.confirm(Number(s.span));
   refLevel.confirm(Number(s.ref));

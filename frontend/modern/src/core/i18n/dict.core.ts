@@ -1,6 +1,7 @@
 // i18n namespace 'core' (report finding E-5: dictionaries are split by domain and
 // merged in core/i18n.ts; the parity test checks the merged result).
 export const en = {
+	"tip_wf_meas": "Waterfall is unavailable while a measurement is active",
 	"ref_level": "Ref Level:",
 	"scale": "Scale:",
 	"rbw": "RBW:",
@@ -375,6 +376,7 @@ export const en = {
 } as const;
 
 export const zh = {
+	"tip_wf_meas": "测量模式下不可用水瀑图",
 	"ref_level": "参考电平:",
 	"scale": "刻度:",
 	"rbw": "分辨率带宽:",

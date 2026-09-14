@@ -7,7 +7,37 @@
  * (docs/.../ARCH_REVIEW.md finding P1-4).
  */
 import * as S from '../core/store';
+import { t } from '../core/i18n';
 import { syncChanTableVisibility } from '../meas/channel';
+import { setWaterfall } from './panels/waterfall';
+import { waterfallOn } from './waterfallState';
+
+//: Waterfall state before the measurement took it over (null = not measuring).
+let waterfallBeforeMeasure: boolean | null = null;
+
+/**
+ * A measurement owns the display: the waterfall panel replaces the result table, so it is
+ * turned off and disabled while any measurement is active, and the user's previous choice is
+ * restored when the measurement ends.
+ */
+function syncWaterfallAvailability(): void {
+  const button = document.getElementById('btn-waterfall') as HTMLButtonElement | null;
+  const pause = document.getElementById('btn-wf-pause') as HTMLButtonElement | null;
+  if (S.measOn) {
+    if (waterfallBeforeMeasure === null) waterfallBeforeMeasure = waterfallOn.get();
+    if (waterfallOn.get()) setWaterfall(false);
+    if (button) {
+      button.disabled = true;
+      button.title = t('tip_wf_meas');
+    }
+    if (pause) pause.disabled = true;
+  } else {
+    if (button) button.disabled = false;
+    if (pause) pause.disabled = false;
+    if (waterfallBeforeMeasure) setWaterfall(true);
+    waterfallBeforeMeasure = null;
+  }
+}
 
 export function setMeasButtons(en: boolean) {
   ['btn-amp-meas', 'btn-amp-clear', 'btn-harm-set', 'btn-harm-mode',
@@ -24,6 +54,7 @@ export function setMeasButtons(en: boolean) {
 }
 
 export function applyMeasUI() {
+  syncWaterfallAvailability();
   const inMeas = S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm');
   document.body.classList.toggle('meas-mode', inMeas);
   const chanTab = S.measOn && S.measTabSel === 'chan';

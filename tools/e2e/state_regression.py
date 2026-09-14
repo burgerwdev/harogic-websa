@@ -322,6 +322,41 @@ def main() -> int:
         check("the RTA view is actually drawn", painted_rta > 5000,
               f"{painted_rta} painted pixels")
 
+        # 6c - the RTA centre unit buttons and the virtual keypad must reach the device
+        # (the unit group is keyed `rta_center` while the input id is `input-rta-center`;
+        # the mismatch made both silently do nothing)
+        print("6c) RTA centre unit buttons and keypad")
+        post(url, {"cmd": "SET_MODE", "mode": "rta"})
+        page.wait_for_timeout(2000)
+        post(url, {"cmd": "SET_RTA", "center": 1.0e9, "span": 10e6})
+        page.wait_for_timeout(1500)
+        before = state(url)["req"]["rta"]["center"]
+        page.fill("#input-rta-center", "450")
+        page.click("#unit-rta_center-group button:nth-child(1)")   # MHz
+        page.wait_for_timeout(1800)
+        after = state(url)["req"]["rta"]["center"]
+        check("a unit click applies the RTA centre (no Set needed)",
+              abs(after - 450e6) < 1e3, f"{before/1e6} -> {after/1e6} MHz")
+
+        page.click("#btn-keypad")
+        page.wait_for_timeout(300)
+        page.click("#input-rta-center")
+        page.wait_for_timeout(400)
+        unit_keys = page.evaluate(
+            """() => [...document.querySelectorAll('#keypad button')]
+                     .map(b => b.textContent).filter(x => /MHz|GHz/.test(x))""")
+        check("the keypad offers units for the RTA centre", unit_keys == ["MHz", "GHz"],
+              f"unit keys: {unit_keys}")
+        for digit in "460":
+            page.click(f'#keypad button:text-is("{digit}")')
+        page.click('#keypad button:text-is("OK")')
+        page.wait_for_timeout(1800)
+        after_ok = state(url)["req"]["rta"]["center"]
+        check("the keypad OK applies the RTA centre", abs(after_ok - 460e6) < 1e3,
+              f"{after_ok/1e6} MHz")
+        page.click("#btn-keypad")
+        page.wait_for_timeout(200)
+
         # 7 - SWP/RTA reference level (the refPending -> slot migration)
         print("7) SWP reference stepping")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
@@ -340,6 +375,29 @@ def main() -> int:
             or page.evaluate("document.getElementById('input-ref').disabled") is True,
             f"input {page.input_value('#input-ref')} vs backend {after}",
         )
+
+        # 7b - a measurement owns the display: the waterfall is turned off and disabled
+        print("7b) waterfall is disabled while measuring")
+        post(url, {"cmd": "SET_MODE", "mode": "std"})
+        page.wait_for_timeout(2000)
+        if not page.evaluate("document.getElementById('btn-waterfall').classList.contains('active')"):
+            page.click("[data-action='toggle-waterfall']")
+            page.wait_for_timeout(800)
+        page.click("#btn-meas-onoff")
+        page.wait_for_timeout(1200)
+        check("the waterfall is turned off while measuring",
+              not page.evaluate("document.getElementById('btn-waterfall').classList.contains('active')"),
+              page.evaluate("document.getElementById('btn-waterfall').className"))
+        check("the waterfall button is disabled while measuring",
+              page.eval_on_selector("#btn-waterfall", "e => e.disabled") is True, "button enabled")
+        page.click("#btn-meas-onoff")
+        page.wait_for_timeout(1200)
+        check("the user's waterfall choice comes back after the measurement",
+              page.eval_on_selector("#btn-waterfall", "e => e.disabled") is False
+              and page.evaluate("document.getElementById('btn-waterfall').classList.contains('active')"),
+              page.evaluate("document.getElementById('btn-waterfall').className"))
+        page.click("[data-action='toggle-waterfall']")   # leave it off for the next step
+        page.wait_for_timeout(600)
 
         # 8 - rapid mode switching: each switch must take effect promptly and leave no stuck
         # pending state. This is the measurable form of "switching got slow / needs a second

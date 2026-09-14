@@ -43,9 +43,34 @@ function formatUnitValue(value: number, unit: string): string {
   return value.toFixed(digits);
 }
 
+/**
+ * Input element for a unit-group key.
+ *
+ * Unit groups are keyed with an underscore (`rta_center`, matching `units[]`) while the
+ * input ids use a hyphen (`input-rta-center`). Looking up `input-rta_center` silently found
+ * nothing, so the unit buttons neither converted the value nor committed it, and the virtual
+ * keypad could not resolve the field (no unit row, OK did nothing).
+ */
+export function inputForField(field: string): HTMLInputElement | null {
+  for (const id of [`input-${field}`, `input-${field.replace(/_/g, '-')}`]) {
+    const el = document.getElementById(id);
+    if (el) return el as HTMLInputElement;
+  }
+  return null;
+}
+
+/** Canonical units[] key for an input element (`input-rta-center` -> `rta_center`), or ''. */
+export function fieldForInput(input: { id: string }): string {
+  const key = input.id.startsWith('input-') ? input.id.slice('input-'.length) : '';
+  if (!key) return '';
+  if (UNIT_OPTIONS[key]) return key;
+  const underscored = key.replace(/-/g, '_');
+  return UNIT_OPTIONS[underscored] ? underscored : '';
+}
+
 export function setUnit(field: string, unit: string) {
   const previous = units[field];
-  const input = document.getElementById(`input-${field}`) as HTMLInputElement | null;
+  const input = inputForField(field);
   const edited = input?.dataset.edited === '1';
   if (input && !edited) {
     const value = Number(input.value);
@@ -59,7 +84,7 @@ export function setUnit(field: string, unit: string) {
     'websa:unit-commit', { detail: { field, unit, commit: edited } }));
 }
 export function parseFreqUnit(field: string): number {
-  const el = document.getElementById(`input-${field}`) as HTMLInputElement;
+  const el = inputForField(field);
   const v = parseFloat(el?.value || '') || 0;
   const u = units[field];
   return u === 'GHz' ? v * 1e9 : u === 'MHz' ? v * 1e6 : u === 'kHz' ? v * 1e3 : v;
