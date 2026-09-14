@@ -16,15 +16,12 @@ from ..config import (
 )
 from . import sdk_bindings as sb
 from .auto_reference import AutoReferenceController
+from .errors import DeviceError  # noqa: F401 (re-exported for the business layer)
 from .state import DeviceState, RtaParams, SdrParams, TriggerParams  # noqa: F401 (re-export)
 
 # Convenient aliases for hardware enums
 SWP = sb
 T = sb  # type aliases
-
-
-class DeviceError(RuntimeError):
-    pass
 
 
 # Safety bound for the swept trace buffers: SWP_GetFullSweep writes the device's own trace

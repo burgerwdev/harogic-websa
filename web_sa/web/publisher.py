@@ -6,7 +6,7 @@ import logging
 import time
 
 from ..config import GNSS_POLL_INTERVAL, PUBLISH_MIN_INTERVAL
-from ..hardware.device import DeviceError
+from ..hardware.errors import DeviceError
 from ..measurements.base import _sweep_timeout
 from .app_keys import COMMAND_LOCK, WS_CLIENTS
 from .jsonutil import dumps_json, is_periodic_status

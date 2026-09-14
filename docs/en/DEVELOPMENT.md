@@ -174,7 +174,8 @@ a watchdog (§7).
 | Pure logic | vitest / pytest | Algorithms, state machines, contracts (i18n parity, frame fixtures, schema, slot semantics) | - |
 | Session/device boundary | pytest + stub device | Result assembly, policy, error paths (**no vendor library needed**) | Connecting to the real device just to test logic |
 | Protocol | Golden fixtures on both sides | Byte layout | Testing only one side |
-| **End to end** | Playwright (hardware or fake backend) | **User-visible results**: canvas pixels, DOM text, device state after a real click | `dataset.rtaFrames` (it only says a frame was handed to the renderer, not that anything was drawn) |
+| **End to end (no hardware)** | `make e2e-fake` + `tools/e2e/ui_smoke.py` (fake backend, runs in CI) | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad | Asserting only datasets/counters |
+| **End to end (hardware)** | Playwright + the bench | **User-visible results**: canvas pixels, DOM text, device state after a real click | `dataset.rtaFrames` (it only says a frame was handed to the renderer, not that anything was drawn) |
 | Performance | `tools/bench.py` + baseline | **Comparable** frame-rate/latency/CPU numbers | Comparing while the device warns or leftover load runs |
 | Hardware smoke | `tools/hardware_smoke.py` + tinySA | Levels/frame integrity with a real signal | - |
 
@@ -296,6 +297,7 @@ nobody can tell "deliberate" from "silent regression".
 ```bash
 make ci                      # all hardware-free gates (tests/static/contracts/guards/build)
 make run | make stop         # start/stop the service (supervisor + worker)
+make e2e-fake                # no hardware: UI smoke on the fake backend (20 checks, also in CI)
 make hw-test                 # hardware: tinySA smoke + 24-command sweep + UI state regression (45 checks)
 make bench                   # compare frame rate/switch latency/CPU against the baseline
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record (verify a clean state first)

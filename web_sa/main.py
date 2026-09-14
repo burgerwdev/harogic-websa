@@ -14,7 +14,6 @@ import signal
 from aiohttp import web
 
 from .config import AppConfig
-from .hardware.device import HarogicDevice
 from .logging_setup import setup_logging
 from .measurements import make_session
 from .web import http_api, publisher
@@ -29,7 +28,22 @@ from .web.app_keys import (
 )
 
 
-def create_app(dev: HarogicDevice, cfg: AppConfig) -> web.Application:
+def _make_device():
+    """Real device, or the synthetic one when WEBSA_FAKE=1 (CI runs the UI regression there).
+
+    The vendor module is imported lazily so the fake path never loads libhtraapi.
+    """
+    if os.getenv('WEBSA_FAKE', '').lower() in ('1', 'true', 'yes'):
+        from .hardware.fake_device import create_device, install_fake_sessions
+
+        install_fake_sessions()
+        return create_device()
+    from .hardware.device import HarogicDevice
+
+    return HarogicDevice()
+
+
+def create_app(dev, cfg: AppConfig) -> web.Application:
     app = web.Application(middlewares=[http_api.security_middleware(cfg)])
     app[WS_CLIENTS] = set()
     app[DEVICE] = dev
@@ -81,7 +95,7 @@ def main() -> None:
     if not cfg.static_dir:
         cfg.static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                       'frontend')
-    dev = HarogicDevice()
+    dev = _make_device()
     ok, err = dev.open()
     print('Device open:', err if not ok else dev.state.label)
 

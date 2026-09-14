@@ -681,7 +681,7 @@ e2e（真机）仍全绿。
 
 | 编号 | 状态 | 说明与下一步 |
 |---|---|---|
-| **Phase 4：假后端 + Playwright 进 CI** | **未做（当前最高价值）** | e2e 现在是唯一断言"用户可见结果"（画布像素、DOM 文本、真实点击）的测试，却只能在有真机的机器上手工跑。2026-09 的"画布全空"故障正是它抓到的。下一步：用 `web_sa/hardware/device.py` 的边界做一个假设备（合成 SWP/RTA/SDR 帧），把 `tools/e2e/state_regression.py` 接上去，纳入 CI。 |
+| ~~Phase 4：假后端 + e2e 进 CI~~ | **已完成（A1）** | 见下方 A1 行；剩下的只是"把完整 `state_regression.py` 也接到假后端"这一可选延伸（当前 CI 跑的是 `ui_smoke.py`，覆盖渲染/控件/模式/页签/瀑布/i18n/键盘）。 |
 | **e2e 覆盖 Firefox** | 未做 | 本机 Playwright 只装了 Chromium；人工测试使用的是 Firefox。下一步：`playwright install firefox`，把 e2e 跑成双浏览器矩阵。 |
 | **P1-8 第二步：`DeviceState` 按模式拆分** | 未做 | 控制环（`AutoReferenceController`）已抽出，字段从 ~100 降到 83；剩下的仍是单一大 dataclass。属结构性收益，无当前故障驱动。下一步：按 `SwpParams/RtaParams/SdrParams/TriggerParams` 拆子结构，STATUS 形状保持不变。 |
 | **P2-2 剩余：`controls.ts` 的无用导出** | 部分 | 面板拆分后 `controls.ts` 只剩 16 个导出，其中 11 个没有外部引用（可直接去掉 `export`）。纯卫生项。 |
@@ -700,6 +700,8 @@ e2e（真机）仍全绿。
 | **B4：剩余单写者客户端偏好槽位化** | **已完成（3 项有意保留）** | 触发/瀑布/显示之外，又把 8 个单写者偏好迁入槽位：`spanStepHz/spanStepAuto`（`ui/swpState.ts`）、`harmValMode/peakListOn/peakThrUserSet/normRefWinUser/valleySeqPos`（新增 `ui/measurePrefs.ts`，全部 `authoritative`）、以及单位选择表 `units`（改为 `core/units.ts` 内的 `unitMap` 槽位，读方走 `units()`，写方走 `setUnit()`）。`dbPerDiv`、`levelUnit`、`currentGapFill` **有意保留为普通值**：它们是单写者，但在每帧循环里被读取（`getY`／电平换算／gap fill），在那里调槽位 `get()` 正是曾拖满主线程的做法（见 DEVELOPMENT §3 热路径规则）。新增测试断言"客户端偏好不会因 TTL 回退"与 `resetAll` 行为。 |
 
 | **B1：`DeviceState` 按模式拆分** | **已完成** | 新增 `hardware/state.py`：`SwpParams`(17) / `RtaParams`(11) / `SdrParams`(14) / `TriggerParams`(12) 四个组，共享前端（衰减/预放/中频增益/参考时钟）与 meta 字段留在 `DeviceState`；`reset_rta_state`/`reset_sdr_state` 现在是"换一个默认组"的一行。为过渡保留了**扁平别名**（`state.center_hz` ⇔ `state.swp.center_hz`，由一张映射表安装为 property），523 处调用点、全部测试与 STATUS 形状均不变；`device.py` 921 → 569 行。新增 `tests/test_device_state_grouping.py`（4 项）锁定别名读写、两种构造方式、reset 语义与 STATUS 不变。 |
+
+| **A1：假后端 + UI 冒烟进 CI** | **已完成** | 新增 `hardware/fake_device.py`（不 import 厂商库，因此在无 libhtraapi 的 CI 也能跑）+ `measurements/fake.py`（合成 RTAF/AUDF 帧的假 RTA/SDR 会话）；`WEBSA_FAKE=1` 时 `main._make_device()` 选择假设备并替换会话工厂。`tools/e2e/ui_smoke.py` 在假后端上做 20 项**用户可见**检查（画布像素、控件到达后端、模式切换仍绘制、测量页签、瀑布让位、i18n、键盘、无页面错误），`make e2e-fake` 本地可跑，CI 新增 `ui-smoke` job（构建 dist + `playwright install chromium` + 启动假服务 + 跑冒烟）。`DeviceError` 抽到 `hardware/errors.py`，使调度路径（publisher）不再拉入厂商库。新增 `tests/test_fake_device.py`（5 项）守住假设备契约。 |
 
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 

@@ -1,5 +1,5 @@
 # Unified entry
-.PHONY: run stop clean build test dev all help ci hw-test bench
+.PHONY: run stop clean build test dev all help ci hw-test bench e2e-fake bench-record
 
 run:      ## Start service
 	./run.sh
@@ -48,6 +48,16 @@ hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regressi
 bench:    ## Performance baseline: compare against tools/bench_baseline.json (service running)
 	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
 	python3 tools/bench.py --check tools/bench_baseline.json
+
+e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
+	@./stop.sh >/dev/null 2>&1 || true
+	@WEBSA_FAKE=1 WEBSA_PORT=$${WEBSA_FAKE_PORT:-8099} setsid nohup python3 -m web_sa.supervisor \
+		> /tmp/websa-fake.log 2>&1 < /dev/null & echo $$! > /tmp/websa-fake.pid
+	@for i in $$(seq 1 25); do sleep 1; \
+		curl -sf -o /dev/null http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}/api/state && break; done
+	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
+	@kill $$(cat /tmp/websa-fake.pid) 2>/dev/null || true; rm -f /tmp/websa-fake.pid
+	@echo "OK: fake-backend UI smoke (no hardware needed)"
 
 bench-record:  ## Re-record the performance baseline on this host
 	python3 tools/bench.py --duration 4 --write-baseline tools/bench_baseline.json
