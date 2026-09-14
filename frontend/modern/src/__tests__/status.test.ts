@@ -96,23 +96,41 @@ beforeEach(() => {
 });
 
 describe('a reference level the device did not accept', () => {
-	it('is announced instead of changing the number silently', () => {
-		// Measured on the SAN-90: requesting +30 dBm comes back as +27 (the device's own maximum
-		// depends on the attenuation it picks). The UI follows the echo, so it has to say why.
+	// (what the UI asked the profile for, what the hardware programmed and echoed back). The pair
+	// is only test data: at runtime the value comes from `actual.ref` in the STATUS, which is why
+	// several pairs are checked - a hard-coded level would pass a single case.
+	const limited = [[30, 27], [30, 25], [25, 22], [-5, -8]] as const;
+
+	it.each(limited)('names the level the device actually programmed (%i -> %i)', (asked, reported) => {
 		const status = structuredClone(SWP_STATUS) as any;
-		status.req.swp.ref = 30;
-		status.actual.ref = 27;
-		status.ref = 27;
+		status.req.swp.ref = asked;
+		status.actual.ref = reported;
+		status.ref = reported;
 		updateStatus(status);
-		expect(noticeText).toBe('Device limited Ref to 27 dBm');
+		expect(noticeText).toBe(`Device limited Ref to ${reported} dBm`);
+	});
+
+	it('follows the device when the limit moves', () => {
+		const post = (asked: number, reported: number) => {
+			const status = structuredClone(SWP_STATUS) as any;
+			status.req.swp.ref = asked;
+			status.actual.ref = reported;
+			status.ref = reported;
+			updateStatus(status);
+		};
+		post(30, 26);
+		expect(noticeText).toBe('Device limited Ref to 26 dBm');
+		post(30, 24);                                  // the device picked another attenuation
+		expect(noticeText).toBe('Device limited Ref to 24 dBm');
 	});
 
 	it('is not repeated while the same limit stands', () => {
 		const status = structuredClone(SWP_STATUS) as any;
 		status.req.swp.ref = 30;
-		status.actual.ref = 27;
-		status.ref = 27;
+		status.actual.ref = 23;
+		status.ref = 23;
 		updateStatus(status);
+		expect(noticeText).toBe('Device limited Ref to 23 dBm');
 		S.setNoticeText('something else');            // the user's own message is not overwritten
 		updateStatus(status);
 		expect(noticeText).toBe('something else');
