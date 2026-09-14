@@ -109,6 +109,9 @@ let rtaBadFirst = 0;
 let rtaBadCount = 0;
 
 let lastOverflowWarning = false;
+// The canvas repaint for a link change is driven here, not by the frame loop: a disconnected
+// device sends no frames, so the warning would otherwise never be drawn (same rule as -12).
+let lastDisconnected = false;
 
 export function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -383,17 +386,25 @@ export function updateStatus(s: any) {
   // (top-right) and as a pulsing outline on the Ref control. Cleared by a good frame.
   {
     const over = Number(s.status_warning) === -12;
+    const disconnected = s.connected === false;
     const refEl = document.getElementById('input-ref') as HTMLInputElement | null;
     if (refEl) {
       refEl.classList.toggle('ref-warn', over);
       refEl.title = over ? t('if_overflow_hint') : '';
     }
-    S.setStatusWarnings(over ? ['!' + t('if_overflow_short'), '!' + t('if_overflow_hint')] : []);
+    const warnings: string[] = [];
+    if (over) warnings.push('!' + t('if_overflow_short'), '!' + t('if_overflow_hint'));
+    if (disconnected) {
+      warnings.push('!' + t('device_disconnected_short'), '!' + t('device_disconnected_hint'));
+    }
+    S.setStatusWarnings(warnings);
   // The warning must be visible even though an overflowing IF stops sending frames: without
   // this repaint the canvas kept the previous pass (no warning), and it only appeared for one
-  // frame after Ref was raised again (the user saw exactly that flash).
-  if (over !== lastOverflowWarning) {
+  // frame after Ref was raised again (the user saw exactly that flash). A disconnected link
+  // has no frames at all, so it needs the same independent repaint trigger.
+  if (over !== lastOverflowWarning || disconnected !== lastDisconnected) {
     lastOverflowWarning = over;
+    lastDisconnected = disconnected;
     requestRender();
   }
   }

@@ -8,6 +8,8 @@ structure refactored.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 from ..config import (
@@ -20,6 +22,8 @@ from .auto_reference import AutoReferenceController
 from .errors import DeviceError  # noqa: F401 (re-exported for the business layer)
 from .state import DeviceState, RtaParams, SdrParams, TriggerParams  # noqa: F401 (re-export)
 
+log = logging.getLogger(__name__)
+
 # Convenient aliases for hardware enums
 SWP = sb
 T = sb  # type aliases
@@ -30,6 +34,12 @@ T = sb  # type aliases
 # well above anything the UI can request (the points selector tops out at 4000; the widest
 # vendor FFT is ~26k) and costs ~1.5 MB.
 _SWP_TRACE_MAX = 65536
+
+#: Consecutive transport errors (sdk_bindings.LINK_LOST_STATUS) with no successful SDK call in
+#: between before the USB link is declared lost. A single bus error is tolerated because the
+#: vendor remedies it by re-issuing the configuration; a physical unplug produces a run of them
+#: (at the acquisition rate this declares the disconnect within a frame or two).
+_LINK_ERROR_LIMIT = 8
 
 
 class HarogicDevice:
@@ -61,6 +71,8 @@ class HarogicDevice:
         self.last_freq = None      # most recent frequency axis (pushed to new WS clients on connect)
         self.last_freq_ver = 0
         self._sweep_ema = None
+        # Consecutive transport errors; a successful SDK call clears it (note_link_status).
+        self._link_errors = 0
         # Auto-reference control loop: decision logic, not device I/O (report finding P1-8).
         self.auto_ref = AutoReferenceController(self)
 
@@ -99,6 +111,7 @@ class HarogicDevice:
             # The temporary config used for DOCXO detection changes the device's actual
             # parameters (e.g. TracePoints), so the standard config must be re-issued and
             # the buffers refreshed, otherwise GetFullSweep writes out of bounds
+            self._link_errors = 0
             self.configure_swp()
             return True, 'ok'
 
@@ -117,6 +130,51 @@ class HarogicDevice:
             self.dsp = sb.c_void_p()
             self.dev = sb.c_void_p()
             self.state.connected = False
+
+    def reopen(self) -> tuple[bool, str]:
+        """Recover the USB link: close the dead handle and open the device again.
+
+        The vendor's remedy for a bus error is to reopen the device (API guide, -8/-9), and a
+        physical unplug makes the open fail - which is fine, the caller (the worker link loop,
+        `main._link_loop`) simply retries until the analyzer is plugged back in.
+        """
+        with self._hw:
+            self.close()
+            self._link_errors = 0
+            self.state.last_error = ''
+            return self.open()
+
+    # ---------------- Link health ----------------
+    def note_link_status(self, status: int, where: str) -> bool:
+        """Feed one SDK return status to the transport watchdog.
+
+        Returns True when this call just declared the link lost. A run of
+        :data:`sdk_bindings.LINK_LOST_STATUS` (bus error / bad data) with no successful call in
+        between means the analyzer is no longer answering; a single one is tolerated because the
+        vendor remedies it with a reconfiguration (and the SDR stream sees bad packets routinely).
+        """
+        if status == 0:
+            self._link_errors = 0
+            return False
+        if status not in sb.LINK_LOST_STATUS:
+            self._link_errors = 0
+            return False
+        self._link_errors += 1
+        if self._link_errors >= _LINK_ERROR_LIMIT and self.state.connected:
+            self.mark_link_lost(f'{where} status={status}')
+            return True
+        return False
+
+    def mark_link_lost(self, reason: str) -> None:
+        """Declare the USB link dead so STATUS reports `connected=false`.
+
+        The acquisition loop stops stepping the (dead) handle and the worker link loop reopens
+        the device; the page shows the disconnect instead of a silently frozen trace.
+        """
+        if self.state.connected:
+            log.warning('device link lost: %s', reason)
+        self.state.connected = False
+        self.state.last_error = reason
 
     # ---------------- Configuration (ported from web_sa/server.py) ----------------
     def load_preset_defaults(self) -> None:
@@ -315,8 +373,10 @@ class HarogicDevice:
             st = sb.dll.SWP_Configuration(sb.pointer(self.dev), sb.pointer(pin),
                                           sb.pointer(pout), sb.pointer(ti))
             if st != 0:
+                self.note_link_status(st, 'SWP_Configuration')
                 self.state.last_error = 'SWP_Configuration status=%d' % st
                 return False, self.state.last_error
+            self.note_link_status(0, 'SWP_Configuration')
             self.state.actual = dict(center=pout.CenterFreq_Hz, span=pout.Span_Hz,
                                      start=pout.StartFreq_Hz, stop=pout.StopFreq_Hz,
                                      ref=pout.RefLevel_dBm, rbw=pout.RBW_Hz, vbw=pout.VBW_Hz,
@@ -386,9 +446,14 @@ class HarogicDevice:
                                              self._spec_buf, sb.pointer(self._meas_aux))
                 if st != 0:
                     # Vendor warnings (e.g. -12 IF overflow) still mean "no usable frame",
-                    # but they must be reported, not treated as a failure.
+                    # but they must be reported, not treated as a failure. A run of bus errors
+                    # means the analyzer is gone: declare the link lost (connected=false), so
+                    # the page stops showing a frozen trace as "connected" and the worker can
+                    # reopen the device when it comes back.
+                    self.note_link_status(st, 'SWP_GetFullSweep')
                     self.state.status_warning = int(st) if st in sb.WARN_STATUS else 0
                     return None
+                self.note_link_status(0, 'SWP_GetFullSweep')
                 self.state.status_warning = 0
                 self.state.refclk_ppm = float(getattr(self._meas_aux, 'RefClkFreqOffset', 0.0))
                 # IF AGC gain actually applied by the device (dB); useful to prove whether

@@ -15,17 +15,20 @@ from aiohttp import web
 
 from .config import AppConfig
 from .logging_setup import setup_logging
-from .measurements import make_session
+from .measurements import SessionManager, SessionNotReady, make_session
 from .web import http_api, publisher
 from .web import ws as ws_module
 from .web.app_keys import (
     COMMAND_LOCK,
     DEVICE,
     GNSS_TASK,
+    LINK_TASK,
     LOGGER,
     PUBLISHER_TASK,
     WS_CLIENTS,
 )
+
+log = logging.getLogger(__name__)
 
 
 def _make_device():
@@ -55,9 +58,10 @@ def create_app(dev, cfg: AppConfig) -> web.Application:
         dev.set_session(make_session(dev, 'std'))
         app[PUBLISHER_TASK] = asyncio.create_task(publisher.publisher(app, dev))
         app[GNSS_TASK] = asyncio.create_task(_gnss_loop(app, dev))
+        app[LINK_TASK] = asyncio.create_task(_link_loop(app, dev))
 
     async def cleanup_background(app):
-        tasks = [app[PUBLISHER_TASK], app[GNSS_TASK]]
+        tasks = [app[PUBLISHER_TASK], app[GNSS_TASK], app[LINK_TASK]]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -78,6 +82,70 @@ async def _gnss_loop(app, dev):
             async with app[COMMAND_LOCK]:
                 dev.state.gnss = await asyncio.to_thread(dev.query_gnss)
         await asyncio.sleep(GNSS_POLL_INTERVAL)
+
+
+async def _link_loop(app, dev):
+    """Reopen the device after a bus error / unplug and re-enter the active mode.
+
+    The acquisition path already declares the link lost (`connected=false` in STATUS), so the
+    page reports the disconnect right away; this loop is what makes the page come back on its
+    own when the analyzer is plugged in again, instead of requiring a service restart. The
+    session is re-entered in place, so the mode and its settings survive the outage.
+    """
+
+    def said(previous, reason):
+        """Keep retrying quietly: report a failure only when it changes."""
+        if reason != previous:
+            log.warning('%s', reason)
+        return reason
+
+    from .config import LINK_CALL_TIMEOUT, LINK_POLL_INTERVAL
+    last_reason = None
+    stuck = False
+    while True:
+        await asyncio.sleep(LINK_POLL_INTERVAL)
+        if dev.state.connected:
+            last_reason = None
+            stuck = False
+            continue
+        if stuck:
+            # A previous reopen attempt timed out; its worker thread cannot be killed and still
+            # owns the hardware lock, so a new attempt would only block (and leak a thread).
+            # Wait for it: if it ever completes it flips `connected` back on its own.
+            continue
+        # Serialized with acquisition/commands: reopening closes and reopens the one device
+        # handle, so no other SDK call may be in flight (the session re-entry configures the
+        # device too, so it stays inside the lock).
+        async with app[COMMAND_LOCK]:
+            try:
+                ok, err = await asyncio.wait_for(
+                    asyncio.to_thread(dev.reopen), timeout=LINK_CALL_TIMEOUT)
+            except asyncio.TimeoutError:
+                stuck = True
+                last_reason = said(last_reason, 'device reopen timed out after %.0fs; '
+                                   'waiting for the outstanding attempt' % LINK_CALL_TIMEOUT)
+                continue
+            except Exception as exc:
+                last_reason = said(last_reason, 'device reopen failed: %r' % exc)
+                continue
+            if not ok:
+                # A missing analyzer is the normal state until the cable is back; say it when
+                # it changes, then keep retrying quietly (a dev box without hardware stays quiet).
+                last_reason = said(last_reason, 'device still unreachable: %s' % err)
+                continue
+            name = getattr(getattr(dev, 'session', None), 'name', 'std') or 'std'
+            try:
+                await asyncio.to_thread(SessionManager(dev).switch, name)
+                log.info('device link restored; %s mode resumed', name)
+            except SessionNotReady:
+                log.warning('link restored but %s mode did not become ready; falling back to std',
+                            name)
+                try:
+                    await asyncio.to_thread(SessionManager(dev).switch, 'std')
+                except Exception:
+                    log.exception('fallback to std failed after link restore')
+            except Exception:
+                log.exception('link restored but re-entering %s failed', name)
 
 
 def main() -> None:

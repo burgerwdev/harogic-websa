@@ -198,8 +198,10 @@ class RtaSession(MeasurementSession):
         st = _sb.dll.RTA_Configuration(_sb.pointer(dev.dev), _sb.pointer(prof), _sb.pointer(out), _sb.pointer(info))
         _dbg('CONF RTA_Configuration ret=%s' % st)
         if st != 0:
+            dev.note_link_status(st, 'RTA_Configuration')
             dev.state.last_error = 'RTA_Configuration status=%d' % st
             raise RuntimeError(dev.state.last_error)
+        dev.note_link_status(0, 'RTA_Configuration')
         s.rta_span_hz = float(info.StopFrequency_Hz - info.StartFrequency_Hz)
         s.rta_actual = {
             'center': float(s.rta_center_hz),
@@ -438,6 +440,8 @@ class RtaSession(MeasurementSession):
                 if st in _WARN_STATUS:
                     self._note_warning(dev, st, armed)
                     return [], []
+                if dev.note_link_status(st, 'RTA_BusTriggerStart'):
+                    return [], []
                 if armed:
                     dev.state.trigger_actual['waiting'] = True
                     return [], []
@@ -457,6 +461,8 @@ class RtaSession(MeasurementSession):
             if status != 0:
                 if status in _WARN_STATUS:
                     self._note_warning(dev, status, armed)
+                    return [], []
+                if dev.note_link_status(status, 'RTA_GetRealTimeSpectrum'):
                     return [], []
                 if armed:
                     dev.state.trigger_actual['waiting'] = True

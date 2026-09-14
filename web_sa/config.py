@@ -42,6 +42,10 @@ DEFAULT_TRIGGER_OUT = 'none'              # none | per_hop | per_sweep | per_pro
 DEFAULT_TRIGGER_OUT_POLARITY = 'positive'
 PUBLISH_MIN_INTERVAL = 0.004   # ~250 fps max
 GNSS_POLL_INTERVAL = 1.0   # GNSS polling + periodic STATUS push interval (1s)
+# Link monitor: how often the worker tries to reopen a disconnected device, and the watchdog
+# for one reopen attempt (Device_Open must not be able to hang the worker for ever).
+LINK_POLL_INTERVAL = 2.0
+LINK_CALL_TIMEOUT = 15.0
 
 # Spur rejection mapping (SWP_Profile.SpurRejection)
 SPUR_BY_MODE = {

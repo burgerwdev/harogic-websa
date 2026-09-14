@@ -1,11 +1,18 @@
 # Unified entry
-.PHONY: run stop clean build test dev all help ci hw-test bench e2e-fake bench-record
+.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record
 
 run:      ## Start service
 	./run.sh
 
 stop:     ## Stop service
 	./stop.sh
+
+restart:  ## Restart service (stop + start)
+	./stop.sh
+	./run.sh
+
+status:   ## Show service status (pid, uptime, memory, CPU, log path/size)
+	./status.sh
 
 clean:    ## Clean caches/logs/artifacts (also removes node_modules)
 	./clean.sh

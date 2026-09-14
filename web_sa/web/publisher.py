@@ -15,6 +15,9 @@ from .recovery import fatal
 log = logging.getLogger(__name__)
 STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL
 ERROR_LOG_INTERVAL = 5.0
+#: Idle period while the device link is down. The worker link loop (`main._link_loop`) owns
+#: reopening; the scheduler just must not step a dead handle or spin the event loop.
+DISCONNECTED_IDLE_INTERVAL = 0.1
 
 
 def _acquisition_timeout(dev) -> float:
@@ -39,11 +42,18 @@ async def publisher(app, dev):
     last_freq_ver = -1
     last_status_push = 0.0
     last_error_log = 0.0
+    # None so the first pass pushes STATUS immediately; a transport change (unplug/reconnect)
+    # also pushes right away instead of waiting for the 1 Hz tick, so the page reflects the
+    # disconnect as soon as the acquisition path declares it.
+    last_connected = None
     while True:
         t0 = time.monotonic()
         frames = []
         clients = app[WS_CLIENTS]
         if clients:
+            if dev.state.connected != last_connected:
+                last_connected = dev.state.connected
+                last_status_push = 0.0
             if t0 - last_status_push >= STATUS_PUSH_INTERVAL:
                 last_status_push = t0
                 from .http_api import build_status
@@ -56,6 +66,12 @@ async def publisher(app, dev):
                     'dropped_audio': sum(client.dropped_audio for client in clients),
                 }
                 _send_json(app, status)
+            if not dev.state.connected:
+                # Link down: no acquisition (a dead handle must not be stepped). STATUS keeps
+                # flowing above, so the UI reports the disconnect; the link loop reopens the
+                # device and the same session resumes without a worker restart.
+                await asyncio.sleep(DISCONNECTED_IDLE_INTERVAL)
+                continue
             try:
                 # All SDK access runs outside the event loop and shares command_lock with
                 # configuration/GNSS operations. This prevents old-data fetches from

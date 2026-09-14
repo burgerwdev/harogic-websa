@@ -513,7 +513,9 @@ async def _h_cal_refclk(ctx: CommandContext, data: dict) -> bool:
 async def _h_connect(ctx: CommandContext, data: dict) -> bool:
     if ctx.state.connected:
         return False
-    ok, err = await ctx.hw_call(ctx.dev.open)
+    # reopen (close + open): the handle may be a dead one left by a bus error, so a plain
+    # open() is not enough to recover (see HarogicDevice.reopen).
+    ok, err = await ctx.hw_call(ctx.dev.reopen)
     if not ok:
         raise CommandError(f'device connection failed: {err}', 'connect_failed', detail=err)
     return True
