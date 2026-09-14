@@ -507,35 +507,33 @@ def main() -> int:
         check("Ref down arrow works without pressing up first", float(down) < float(after),
               f"{after} -> {down}")
 
-        # 9a2 - A correctable manual level must actually be corrected on screen. Reported: Ref
-        # set to -50 dBm, warning + automatic adjustment, the hint named a new level, but the
-        # canvas and the Ref box kept the manual value (the correction only reached the device).
+        # 9a2 - When the ranger does act (the protective direction), the correction must be
+        # visible on screen. Reported: the hint named a new level while the canvas and the Ref box
+        # kept the manual value, because the correction only reached the device.
         print("9a2) SDR: an automatic correction is visible, not just announced")
         if sdr_panel_visible(page) is False:
             page.click("#btn-mode-sdr")
             page.wait_for_timeout(2500)
-        # A level this trace cannot fit: pushing Ref up by (floor + window + 10) leaves the noise
-        # floor below the bottom edge (with a strong carrier, lowering Ref clips it instead - both
-        # are the same 'out of window' condition). Derived from the measurement for the same reason
-        # as check 9.
-        now = state(url)["auto_ref"]
-        floor_db = now.get("last_noise_floor")
-        bad_ref = max(-50, min(30, math.ceil((floor_db if floor_db is not None else -120.0)
-                                             + 100 + 10)))
-        page.fill("#input-ref", str(bad_ref))
-        page.click("#btn-ref-set")
-        page.wait_for_timeout(3500)
-        sdr_after = state(url)
-        dbg_after = page.evaluate(
-            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
-        result_now = sdr_after["auto_ref"].get("result")
-        floor_after = sdr_after["auto_ref"].get("last_noise_floor")
-        placed_ref = float(sdr_after["ref"])
-        inside_window = (floor_after is not None
-                         and placed_ref - 100.0 <= floor_after <= placed_ref)
-        if result_now in ("applied", "out_of_window", "overflow"):
-            check("the unfittable manual level is corrected", True,
-                  f'asked {bad_ref}: {sdr_after["auto_ref"]}')
+        sdr_now = state(url)
+        sdr_peak = sdr_now["auto_ref"].get("last_peak")
+        clip_ref = None
+        if sdr_peak is not None and sdr_peak - 15.0 >= -50.0:
+            # 15 dB over the top edge: past the gross-clipping margin (10 dB), so raising Ref is
+            # the protective action the ranger takes on its own.
+            clip_ref = math.ceil((sdr_peak - 15.0) / 5.0) * 5.0
+        if clip_ref is None:
+            skip("an automatic correction is visible",
+                 f"SDR peak {sdr_peak} cannot be clipped within the device Ref range on this bench")
+        else:
+            page.fill("#input-ref", str(clip_ref))
+            page.click("#btn-ref-set")
+            page.wait_for_timeout(3500)
+            sdr_after = state(url)
+            dbg_after = page.evaluate(
+                "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
+            check("the clipped manual level is corrected",
+                  sdr_after["auto_ref"].get("result") in ("applied", "clipped", "overflow"),
+                  f'asked {clip_ref}: {sdr_after["auto_ref"]}')
             check("the display follows the correction (the trace moves)",
                   dbg_after.get("applied") is True
                   and dbg_after.get("shown") != dbg_after.get("before"),
@@ -546,15 +544,6 @@ def main() -> int:
             check("the Ref box shows the corrected level, not the typed one",
                   isinstance(target, (int, float)) and abs(box - float(target)) < 1.5,
                   f'box {box} target {target}')
-        elif inside_window:
-            # No correction was needed because this bench cannot make the trace leave the window
-            # at any level the device accepts (weak signal, 100 dB window). The display and the
-            # box were already checked to follow the *manual* value in 9.
-            skip("an automatic correction is visible",
-                 f"asked {bad_ref}: floor {floor_after} still inside the window at ref {placed_ref}")
-        else:
-            check("a trace outside the window is corrected", False,
-                  f'asked {bad_ref}: {sdr_after["auto_ref"]}')
 
         # 9b - Auto Scale is an ACTION, not a mode: it must show that it is working, act once,
         # and never lock the reference. The old tracking mode gave no feedback for the ~1.9 s
@@ -578,7 +567,7 @@ def main() -> int:
         dbg = page.evaluate(
             "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
         check("the SDR fit is a backend decision, like the other modes",
-              sdr_ref.get("result") in ("applied", "ok", "no_signal", "no_data", "out_of_window"),
+              sdr_ref.get("result") in ("applied", "ok", "no_signal", "no_data", "clipped"),
               str(sdr_ref))
         check("the display shows the level the fit decided",
               not dbg or abs(float(dbg.get("shown", 1e9)) - float(dbg.get("ref", -1e9))) < 3,
@@ -595,26 +584,45 @@ def main() -> int:
         # refused to move (its guard wanted a peak 15 dB above the noise floor) and left the
         # display empty for as long as the signal stayed away. A 20 dB window makes the whole
         # trace sit below the bottom edge, whatever the signal level is today.
-        print("9c) SWP: a trace outside the window is fitted automatically")
+        print("9c) SWP: raising Ref is the user's choice, gross clipping is not")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
         page.wait_for_timeout(3000)
-        # Pick a reference that this bench's own noise floor cannot fit in, so the check does
-        # not depend on today's signal level: Ref above (floor + window + 3) puts the whole
-        # trace below the bottom edge.
+        # (a) Raising Ref pushes the noise floor below the bottom edge. Reported: pressing the up
+        # arrow made Auto pull the trace back down. That is a display choice, so nothing may happen
+        # on its own. The level is derived from the measurement so it holds on any signal level.
         measure = state(url)
         floor = measure["auto_ref"].get("last_noise_floor")
         window = 100.0
-        bad_ref = max(-50.0, min(30.0, math.ceil((floor or -120.0) + window + 10.0)))
-        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": bad_ref, "range_db": window})
+        raised_ref = max(-50.0, min(30.0, math.ceil((floor if floor is not None else -120.0)
+                                                   + window + 10.0)))
+        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": raised_ref, "range_db": window})
         page.wait_for_timeout(4500)
-        placed = state(url)
-        floor = placed["auto_ref"].get("last_noise_floor")
-        check("the reference is moved out of the window on its own",
-              placed["ref"] != bad_ref,
-              f'ref {placed["ref"]} (was {bad_ref}) result {placed["auto_ref"].get("result")}')
-        check("the fitted placement puts the noise floor back inside the window",
-              floor is not None and placed["ref"] - window <= floor <= placed["ref"],
-              f'floor {floor} ref {placed["ref"]} window {window}')
+        kept = state(url)
+        check("a level the user raised is left alone",
+              kept["ref"] == raised_ref,
+              f'asked {raised_ref}, device {kept["ref"]} result {kept["auto_ref"].get("result")}')
+
+        # (b) The protective direction still works: a grossly clipped peak (far above the top
+        # edge) loses information, so the ranger raises Ref. -15 dB below the peak clips by 15 dB,
+        # which is past the gross-clipping margin on both backends.
+        clip = state(url)
+        peak = clip["auto_ref"].get("last_peak")
+        if peak is not None and peak - 15.0 >= -50.0:
+            clip_ref = math.ceil((peak - 15.0) / 5.0) * 5.0
+            post(url, {"cmd": "SET_REF", "mode": "manual", "ref": clip_ref, "range_db": 100})
+            page.wait_for_timeout(4500)
+            fixed = state(url)
+            check("a grossly clipped trace is raised automatically",
+                  fixed["ref"] > clip_ref and fixed["auto_ref"].get("result") == "clipped",
+                  f'peak {peak:.0f}, asked {clip_ref}, device {fixed["ref"]} '
+                  f'result {fixed["auto_ref"].get("result")}')
+            floor_now = fixed["auto_ref"].get("last_noise_floor")
+            check("the raised level keeps the trace inside the window",
+                  floor_now is None or fixed["ref"] - 100.0 <= floor_now,
+                  f'floor {floor_now} ref {fixed["ref"]}')
+        else:
+            skip("a grossly clipped trace is raised automatically",
+                 f"peak {peak} cannot be clipped within the device Ref range on this bench")
 
         # 9d - Auto Scale itself: one decision per press, no pointless reconfiguration.
         print("9d) Auto Scale in SWP: a decision per press, and no needless reconfiguration")
@@ -645,15 +653,30 @@ def main() -> int:
               not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')"),
               str(after["auto_ref"]))
 
+        # The second press must also produce a decision, and it must not churn: either the
+        # placement is reported as already good (no reconfiguration at all), or the estimate
+        # really moved and the new target differs from the previous one by at least the 5 dB
+        # quantum (the front-end gain chain follows Ref on the bench, so the noise floor estimate
+        # can legitimately move between two presses).
         version = after["config_version"]
+        previous_target = after["auto_ref"].get("target")
         page.click("#btn-ref-auto")
         page.wait_for_timeout(3500)
         again = state(url)
-        check("a second press reports how the placement stands, not silence",
-              again["auto_ref"].get("result") in ("ok", "no_signal"), str(again["auto_ref"]))
-        check("and a settled placement is not reconfigured again",
-              again["config_version"] == version,
-              f'config_version {version} -> {again["config_version"]}')
+        result2 = again["auto_ref"].get("result")
+        if result2 == "ok":
+            check("a settled placement is not reconfigured again",
+                  again["config_version"] == version,
+                  f'config_version {version} -> {again["config_version"]}')
+        elif result2 in ("applied", "clipped", "below_window"):
+            check("a moved estimate is followed with a real step, not churn",
+                  previous_target is None
+                  or abs(float(again["auto_ref"].get("target")) - float(previous_target)) >= 5.0,
+                  f'target {previous_target} -> {again["auto_ref"].get("target")} '
+                  f'config_version {version} -> {again["config_version"]}')
+        else:
+            check("a second press reports how the placement stands, not silence",
+                  result2 in ("no_signal", "no_data"), str(again["auto_ref"]))
 
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()

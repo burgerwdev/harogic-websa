@@ -106,6 +106,11 @@ export let trigOverlay: string[] = [];      // status chip + warnings, drawn top
 // Vendor warning lines for the same canvas stack (lines starting with '!' draw as warnings).
 export let statusWarnings: string[] = [];
 export function setStatusWarnings(v: string[]) { statusWarnings = v; }
+//: One transient message drawn in the canvas status stack (below the warnings). Written by the
+//: reference Auto Scale feedback, read by render/statusStack.ts; a single slot, so a newer
+//: message replaces the previous one instead of piling up.
+export let noticeText: string | null = null;
+export function setNoticeText(v: string | null) { noticeText = v; }
 export function setTrigOverlay(v: string[]) { trigOverlay = v; }
 
 // Limit line + pass/fail check (state owned by ui/limits.ts, math by dsp/limits.ts)

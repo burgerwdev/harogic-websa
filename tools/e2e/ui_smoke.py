@@ -104,36 +104,25 @@ def main() -> int:
               abs(state(args.url)['center'] - 433e6) < 1e3, f"{state(args.url)['center'] / 1e6} MHz")
         check('the canvas is still drawn after re-tuning', painted_pixels(page) > args.painted_min)
 
-        print('2a) the Auto Scale hint does not move the Ref controls')
-        # The hint lives in the Level group head, not in the Ref parameter row: it used to be the
-        # last item of that row, so every message shifted the input, the buttons and the arrows
-        # sideways (reported). Measure the row instead of trusting the CSS.
+        print('2a) the Auto Scale message goes to the canvas status stack')
+        # It used to be the last item of the Ref parameter row, so every message moved the input,
+        # the buttons and the arrows sideways (reported twice); it now lives in the canvas stack
+        # with the warnings, which also has no width limit.
         row_box = ("() => { const r = document.getElementById('input-ref').getBoundingClientRect();"
                    " const s = document.getElementById('btn-ref-set').getBoundingClientRect();"
                    " const u = document.getElementById('btn-ref-up').getBoundingClientRect();"
                    " return [Math.round(r.left), Math.round(r.top), Math.round(s.left),"
                    " Math.round(u.right)]; }")
         before = page.evaluate(row_box)
-        page.click('#btn-ref-auto')                  # a real decision puts text in the hint
-        page.wait_for_timeout(1500)
-        hint_text = page.inner_text('#ref-hint')
+        page.click('#btn-ref-auto')                  # a real decision posts a notice
+        page.wait_for_timeout(1200)
+        notice = page.evaluate("document.getElementById('spectrum').dataset.notice")
         after = page.evaluate(row_box)
-        long_text = page.evaluate(
-            "() => { document.getElementById('ref-hint').textContent ="
-            " 'Ref -> -25 dBm automatic correction with a deliberately long message';"
-            " const r = document.getElementById('input-ref').getBoundingClientRect();"
-            " const s = document.getElementById('btn-ref-set').getBoundingClientRect();"
-            " const u = document.getElementById('btn-ref-up').getBoundingClientRect();"
-            " return [Math.round(r.left), Math.round(r.top), Math.round(s.left),"
-            " Math.round(u.right)]; }")
-        page.evaluate("document.getElementById('ref-hint').textContent = ''")
-        check('a decision writes the hint text', bool(hint_text.strip()), repr(hint_text))
-        check('the hint sits in the Level group head', page.evaluate(
-            "() => { const h = document.getElementById('ref-hint');"
-            " const head = h.closest('.group-head');"
-            " return !!head && head.contains(h.previousElementSibling || h); }"))
-        check('the Ref row does not move when the hint appears',
-              before == after == long_text, f'{before} -> {after} -> {long_text}')
+        check('a decision posts a canvas notice', bool((notice or '').strip()), repr(notice))
+        check('the notice is drawn on the canvas, not in the control row',
+              page.evaluate("!document.getElementById('ref-hint')"))
+        check('the Ref row does not move when the notice appears', before == after,
+              f'{before} -> {after}')
 
         print('2b) the peak list works off the threshold slot')
         # The threshold moved from the input element into a parameter slot (one decision per

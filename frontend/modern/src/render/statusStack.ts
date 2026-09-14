@@ -3,7 +3,7 @@
 // Every indicator that wants to show state on the canvas pushes a block here during a
 // render pass; the blocks are drawn stacked and right-aligned. Putting them in one place is
 // what keeps them from overlapping each other (trigger chip, limit verdict, ...).
-import { ctx, statusWarnings } from '../core/store';
+import { ctx, noticeText, statusWarnings } from '../core/store';
 import { plotRect } from './plot';
 
 export interface StatusBlock {
@@ -27,6 +27,12 @@ export function renderStatusBlocks(): void {
   // canvas indicator lives in one place. Pushed here, not by a view, so it shows in every
   // mode (an unarmed SWP view never pushes the trigger chip).
   if (statusWarnings.length) pushStatus({ lines: statusWarnings, accent: '#ff7043' });
+  // Transient feedback (Auto Scale outcome) below the warnings, in the normal (green) colour: the
+  // stack is where the condition it answers is drawn, so cause and result sit together.
+  if (noticeText) pushStatus({ lines: [noticeText], accent: '#00cc00' });
+  // Canvas text is not DOM text: the e2e reads the message from here (same convention as the
+  // other dataset diagnostic hooks).
+  ctx.canvas.dataset.notice = noticeText ?? '';
   if (!blocks.length) return;
   const p = plotRect();
   ctx.save();

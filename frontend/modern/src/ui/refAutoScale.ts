@@ -19,6 +19,9 @@ import * as S from '../core/store';
 import { currentGraphMode } from './graphMode';
 import { requestRender } from '../render/redraw';
 
+/** Results that mean "a level was placed": the only ones the display may follow. */
+const PLACED_RESULTS = new Set(['applied', 'clipped', 'below_window', 'overflow']);
+
 /** How long the button keeps glowing when the backend gives no answer at all. */
 const BUSY_FALLBACK_MS = 4000;
 /** SDR: the display fit is asked for on the first frame after entering the mode. */
@@ -40,20 +43,32 @@ function button(): HTMLButtonElement | null {
 	return document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
 }
 
-/** Generation of the last hint, so an older timer cannot clear a newer message.
+/** Generation of the last notice, so an older timer cannot clear a newer message.
  *
  * Comparing the text instead looked fine until the same message was shown twice in a row (an
  * entry fit and a press both reporting "no signal"): the first timer then wiped the second one
  * early, and the user saw nothing. */
-let hintSeq = 0;
+let noticeSeq = 0;
 
-function hint(text: string, holdMs = 4000): void {
-	const el = document.getElementById('ref-hint');
-	if (!el) return;
-	const id = ++hintSeq;
-	el.textContent = text;
+/**
+ * Post a transient message to the canvas status stack (under the warnings).
+ *
+ * It used to sit in the Ref parameter row, where every message moved the input, the buttons and
+ * the arrows sideways; the group head only moved the problem. The canvas is also where the
+ * condition this answers is drawn (`!IF overflow`), so cause and result are seen together.
+ *
+ * Canvas text is painted during a render pass, so both posting and clearing must ask for a
+ * repaint: an overflowing IF sends no frames, and a message posted from that state would simply
+ * never appear (DEVELOPMENT §8).
+ */
+export function postRefNotice(text: string, holdMs = 4000): void {
+	const id = ++noticeSeq;
+	S.setNoticeText(text);
+	requestRender();
 	if (holdMs > 0) window.setTimeout(() => {
-		if (id === hintSeq) el.textContent = '';
+		if (id !== noticeSeq) return;
+		S.setNoticeText(null);
+		requestRender();
 	}, holdMs);
 }
 
@@ -64,13 +79,13 @@ function setBusy(on: boolean): void {
 
 /** Say what the fit decided. The level is always named when one was applied. */
 function announce(result: string, target: unknown): void {
-	if (result === 'no_signal') hint(t('auto_scale_no_signal'), 6000);
-	else if (result === 'no_data') hint(t('auto_scale_no_data'), 6000);
-	else if (result === 'ok') hint(t('auto_scale_ok'), 2500);
+	if (result === 'no_signal') postRefNotice(t('auto_scale_no_signal'), 6000);
+	else if (result === 'no_data') postRefNotice(t('auto_scale_no_data'), 6000);
+	else if (result === 'ok') postRefNotice(t('auto_scale_ok'), 2500);
 	else if (target != null) {
 		// 'applied', but also the automatic safety corrections ('out_of_window', 'overflow'):
 		// when the display moves on its own, the reason and the new level must be visible.
-		hint(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000);
+		postRefNotice(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000);
 	}
 }
 
@@ -160,9 +175,14 @@ export function syncAutoScaleStatus(s: any): void {
 		entryFitPending = false;
 		const before = Math.round(getDisplayRef());
 		// The display scale belongs to the client: apply the level the backend placed. Only the
-		// results that come back from an application do that ('applied' and the automatic safety
-		// corrections) - a refusal carries a stale target and must never move the display - and the
+		// results that come back from an application do that - a refusal carries a stale target
+		// (`auto_ref.target` is the last APPLIED level) and must never move the display - and the
 		// target check skips a repeat.
+		//
+		// The names mirror auto_reference.py's vocabulary: 'applied' from a fit, 'clipped' and
+		// 'below_window' when the fit itself classified the placement, 'overflow' from the IF
+		// escape. Renaming one there without updating this list is what the e2e caught once (the
+		// SDR correction stopped reaching the screen).
 		//
 		// An automatic correction moves the display even when the user set the level by hand: it
 		// fires precisely because that level left the trace clipped or off-screen, and the hint
@@ -170,7 +190,7 @@ export function syncAutoScaleStatus(s: any): void {
 		// (reported: "Ref decreased to -50 dBm, warning, hint says it adjusted, but the trace and
 		// the Ref box did not move"). A queued update from before the manual edit is dropped by the
 		// backend epoch instead.
-		const placed = result === 'applied' || result === 'out_of_window' || result === 'overflow';
+		const placed = PLACED_RESULTS.has(result);
 		const move = placed && target != null && Number(target) !== appliedTarget;
 		if (move) {
 			appliedTarget = Number(target);
@@ -219,8 +239,9 @@ export function clearAutoScaleHint(): void {
 	busyUntil = 0;
 	appliedTarget = null;                  // a new press may land on the same level again
 	setBusy(false);
-	// Drop a hint left over from an earlier decision: it describes a level that is no longer the
+	// Drop a notice left over from an earlier decision: it describes a level that is no longer the
 	// one being asked for, and reads as "the app adjusted something just now".
-	const el = document.getElementById('ref-hint');
-	if (el) el.textContent = '';
+	noticeSeq++;
+	S.setNoticeText(null);
+	requestRender();
 }

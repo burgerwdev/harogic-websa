@@ -10,12 +10,14 @@ import { getDisplayRef, setDisplayRef } from '../ui/displayRef';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
+import { noticeText } from '../core/store';
 import { setWS } from '../core/wsSend';
 import {
 	autoScaleBusy,
 	autoScaleRequest,
 	clearAutoScaleHint,
 	maybeRequestSdrFit,
+	postRefNotice,
 	requestSdrEntryFit,
 	resetAutoScaleState,
 	syncAutoScaleStatus,
@@ -23,6 +25,8 @@ import {
 import { refLevel } from '../ui/refState';
 
 const sent: any[] = [];
+/** Monotonic sequence for the synthetic statuses below (a status is "new" when seq moves). */
+let lastSeqSeed = 100;
 
 function openSocket() {
 	sent.length = 0;
@@ -56,9 +60,6 @@ describe('SWP/RTA Auto Scale', () => {
 
 	it('stops glowing when the backend reports that the fit landed, and names the result', () => {
 		autoScaleRequest();
-		const hint = document.createElement('span');
-		hint.id = 'ref-hint';
-		document.body.appendChild(hint);
 		// A decision is "new" when its sequence number moves: a sticky old result must not clear
 		// the glow while the press is still in flight.
 		status({ adjusting: false, result: 'applied', target: -10, seq: 1 });   // the old decision
@@ -67,38 +68,36 @@ describe('SWP/RTA Auto Scale', () => {
 		expect(autoScaleBusy()).toBe(true);
 		status({ adjusting: false, result: 'applied', target: -10, seq: 2 });   // the new answer
 		expect(autoScaleBusy()).toBe(false);
-		expect(hint.textContent).toBe('Ref \u2192 -10 dBm');
+		expect(noticeText).toBe('Ref \u2192 -10 dBm');
 	});
 
 	it('announces a level whenever one was applied, including a safety correction', () => {
-		const hint = document.createElement('span');
-		hint.id = 'ref-hint';
-		document.body.appendChild(hint);
-		status({ adjusting: false, result: 'out_of_window', target: -35, seq: 3 });
-		expect(hint.textContent).toBe('Ref \u2192 -35 dBm');
+		status({ adjusting: false, result: 'clipped', target: -35, seq: 3 });
+		expect(noticeText).toBe('Ref \u2192 -35 dBm');
 	});
 
 	it('explains a refusal instead of doing nothing', () => {
-		const hint = document.createElement('span');
-		hint.id = 'ref-hint';
-		document.body.appendChild(hint);
 		status({ adjusting: false, result: 'no_signal', seq: 1 });
-		expect(hint.textContent).toBe('No signal to fit');
+		expect(noticeText).toBe('No signal to fit');
 	});
 
 	it('keeps a repeated message visible for its own hold time', () => {
 		vi.useFakeTimers();
-		const el = document.createElement('span');
-		el.id = 'ref-hint';
-		document.body.appendChild(el);
 		status({ adjusting: false, result: 'no_signal', seq: 1 });
 		vi.advanceTimersByTime(4000);
 		status({ adjusting: false, result: 'no_signal', seq: 2 });   // the same message again
 		vi.advanceTimersByTime(3000);                               // past the FIRST hold
-		expect(el.textContent).toBe('No signal to fit');            // the newest hold owns it
+		expect(noticeText).toBe('No signal to fit');                // the newest hold owns it
 		vi.advanceTimersByTime(3100);
-		expect(el.textContent).toBe('');
+		expect(noticeText).toBeNull();
 		vi.useRealTimers();
+	});
+
+	it('posts the notice to the canvas stack and clears it on demand', () => {
+		postRefNotice('Ref \u2192 0 dBm', 1000);
+		expect(noticeText).toBe('Ref \u2192 0 dBm');
+		clearAutoScaleHint();
+		expect(noticeText).toBeNull();
 	});
 
 	it('keeps glowing while the backend is still adjusting', () => {
@@ -175,14 +174,34 @@ describe('SDR Auto Scale', () => {
 		expect(getDisplayRef()).toBe(-40);
 	});
 
-	it('drops a leftover hint when the user edits Ref', () => {
-		const el = document.createElement('span');
-		el.id = 'ref-hint';
-		document.body.appendChild(el);
+	it('follows every result that placed a level, and only those', () => {
+		// Mirrors auto_reference.py's vocabulary. A drift here once stopped a correction from
+		// reaching the screen (the backend renamed its result), which the e2e then caught.
+		graphMode.confirm('sdr');
+		const placed = [['applied', -10], ['clipped', -15], ['below_window', -20],
+			['overflow', -25]] as const;
+		for (const [result, target] of placed) {
+			clearAutoScaleHint();
+			setDisplayRef('preset', 0);
+			lastSeqSeed += 1;
+			syncAutoScaleStatus({ auto_ref: { adjusting: false, result, target, seq: lastSeqSeed } });
+			expect(getDisplayRef(), result).toBe(target);
+		}
+		for (const result of ['ok', 'no_signal', 'no_data']) {
+			clearAutoScaleHint();
+			setDisplayRef('preset', 0);
+			lastSeqSeed += 1;
+			// A refusal reports the sticky previous target: it must not move the display.
+			syncAutoScaleStatus({ auto_ref: { adjusting: false, result, target: -10, seq: lastSeqSeed } });
+			expect(getDisplayRef(), result).toBe(0);
+		}
+	});
+
+	it('drops a leftover notice when the user edits Ref', () => {
 		status({ adjusting: false, result: 'applied', target: -30, seq: 1 });
-		expect(el.textContent).toBe('Ref \u2192 -30 dBm');
+		expect(noticeText).toBe('Ref \u2192 -30 dBm');
 		clearAutoScaleHint();
-		expect(el.textContent).toBe('');
+		expect(noticeText).toBeNull();
 	});
 
 	it('does not write the display for a refusal', () => {

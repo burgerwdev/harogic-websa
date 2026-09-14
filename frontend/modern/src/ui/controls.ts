@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
-import { requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
+import { postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { sdrCenterHz, sdrDecimate, sdrAudioOn, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, estimatedCaptureSpanHz, renderSdrState, resetSdrState } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
@@ -79,7 +79,9 @@ setGraphModeTimeoutHandler((want) => {
   syncModeButtons();
 });
 setDisplayRefTimeoutHandler(() => {
-  flashHint('ref-hint', t('ref_switch_timeout'));
+  // Same place as the Auto Scale outcome: it is a message about the reference the user is
+  // looking at, and the input already carries the local "unconfirmed" outline (ref-pending).
+  postRefNotice(t('ref_switch_timeout'), 5000);
 });
 
 function deferSdrAudioPreference() {
