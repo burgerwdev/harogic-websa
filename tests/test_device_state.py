@@ -260,18 +260,30 @@ def test_auto_reference_holds_when_the_placement_is_already_good():
     assert dev.auto_ref.pending == ('std', -25.0)
 
 
-def test_out_of_window_trace_is_fitted_without_being_asked():
-    """Measured regression: Ref 0 dBm, 80 dB window, everything at -108 dBm.
+def test_raising_ref_is_respected_and_only_fitted_on_request():
+    """Measured regression (first report) plus the second report's rule.
 
-    The old loop needed a peak more than 15 dB above the noise floor and therefore refused to
-    move, leaving the display empty while the signal was away. The safety ranger fixes a trace
-    that has left the window regardless of its peak-to-noise ratio.
+    Ref 0 dBm with an 80 dB window leaves everything at -108 dBm below the window: the old loop
+    refused to move (its guard wanted a peak 15 dB above the noise floor), and the first fix made
+    the ranger correct it on its own - which then fought the user pressing the up arrow. The
+    ranger now respects that direction and Auto Scale is what fixes it.
     """
     dev = HarogicDevice()
     dev.state.ref_level = 0.0
     dev.state.ref_range_db = 80.0
     dev.observe_reference_peak('std', -98.0, -108.0)
-    assert dev.auto_ref.pending == ('std', -35.0)
+    assert dev.auto_ref.pending is None                      # not behind the user's back
+    assert dev.auto_scale('std') == ('applied', -35.0)       # floor + window - 8 = -36 -> -35
+
+
+def test_a_grossly_clipped_trace_is_raised_automatically():
+    """Raising is the protective direction: a peak far above the top edge is information loss."""
+    dev = HarogicDevice()
+    dev.state.ref_level = -40.0
+    dev.state.ref_range_db = 100.0
+    dev.observe_reference_peak('std', 0.0, -95.0)
+    assert dev.auto_ref.pending == ('std', 10.0)
+    assert dev.auto_ref.view('std')['result'] == 'clipped'
 
 
 def test_manual_attenuation_does_not_disable_the_overflow_escape():

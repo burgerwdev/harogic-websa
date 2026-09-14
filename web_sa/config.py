@@ -61,6 +61,9 @@ WINDOW_MAP = {0: 'FlatTop', 1: 'BlackmanNuttall', 2: 'Blackman', 3: 'Hamming', 4
 # ---- Protocol / UI bounds (not model dependent, so they live here once instead of as
 # literals inside the command validation chain) ----
 REF_RANGE_DB_MIN, REF_RANGE_DB_MAX = 10.0, 200.0     # visible window height, dB
+# The level the CLIENT displays (SDR owns its display scale, so it may sit outside the device's
+# Ref range; the placement rules clamp the target to the device bounds themselves).
+DISPLAY_REF_MIN_DBM, DISPLAY_REF_MAX_DBM = -160.0, 40.0
 PNM_CARRIER_MIN_HZ, PNM_CARRIER_MAX_HZ = 1.0, 9e6    # offset sweep for phase noise
 PNM_OFFSET_MAX_HZ = 10e6
 HARM_COUNT_MAX = 10

@@ -251,10 +251,16 @@ async def test_auto_scale_judges_the_level_the_client_shows():
 
 
 @pytest.mark.asyncio
-async def test_auto_scale_rejects_a_current_ref_outside_the_device_range():
+async def test_auto_scale_accepts_a_display_ref_outside_the_device_ref_range():
+    """`current_ref` is a DISPLAY value: in SDR the client may show -60 dBm, which the device itself
+    would refuse. Validating it as a device Ref rejected a legitimate fit (the press looked dead)."""
     dev = ScaleDevice()
-    with pytest.raises(CommandError):
-        await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'current_ref': -120.0})
+    dev.observe_reference_peak('std', -30.0, -95.0)
+    assert await _dispatch(dev, 'AUTO_SCALE',
+                           {'cmd': 'AUTO_SCALE', 'range_db': 100.0, 'current_ref': -60.0})
+    assert dev.auto_ref.view('std')['result'] == 'applied'
+    with pytest.raises(CommandError):        # the display scale has bounds of its own
+        await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'current_ref': -200.0})
 
 
 @pytest.mark.asyncio

@@ -15,11 +15,14 @@ continuously is the overload protection):
    a live-tracking mode. It reuses the placement rules below, and does nothing at all when the
    trace is already placed well - clicking Auto Scale must not cost a pointless glitch.
 
-2. `observe_peak()` -> safety ranger - armed always, never user-controlled:
+2. `observe_peak()` -> safety ranger - armed always, never user-controlled, and only in the
+   PROTECTIVE direction:
    * IF overflow (-12) raises Ref one 5 dB step per second (that path has no frames at all, so
      the peak-based rule cannot act; it deadlocked before),
-   * a trace that is entirely outside the display window (peak above the top edge, or noise
-     floor below the bottom edge) is fitted once, rate-limited.
+   * a peak that is grossly clipped above the top edge (>= AUTO_CLIP_MARGIN_DB) is raised once,
+     rate-limited. Lowering is never automatic: a level that pushes the noise floor under the
+     bottom edge is a display choice, and correcting it would undo the button the user just
+     pressed (press Auto to re-fit).
    Both used to require `ref_mode == 'auto'` AND auto attenuation, so selecting a manual
    attenuator silently disabled overload protection altogether (measured: with `atten != -1`
    the device kept reporting -12 and nothing raised the level).
@@ -51,6 +54,15 @@ OVERFLOW_STEP_DB = 5.0
 OVERFLOW_INTERVAL_S = 1.0
 #: A trace is "outside the window" once it misses an edge by this much.
 OUT_OF_WINDOW_MARGIN_DB = 3.0
+#: How far ABOVE the top edge the peak has to be before the ranger raises Ref on its own.
+#:
+#: A peak over the top edge loses information (the trace is cut off), so raising the level is the
+#: protective direction - but the user may have moved Ref there deliberately, so only a gross
+#: clipping is corrected. The opposite direction (a noise floor pushed below the bottom edge by
+#: RAISING Ref) is never corrected: it is a display choice, not a fault, and undoing it means
+#: undoing the button the user just pressed (reported: "raising Ref with the up arrow triggers
+#: Auto to pull the trace back down").
+AUTO_CLIP_MARGIN_DB = 10.0
 #: At most one safety fit per this many seconds (a fit that did not help must not hunt).
 SAFETY_INTERVAL_S = 2.0
 #: Ref changes smaller than this are not worth a reconfiguration.
@@ -156,11 +168,17 @@ class AutoReferenceController:
                                     and math.isfinite(noise_floor_dbm)) else None
         current = self.ref_level(mode)
         kind, target = self._decide(peak_dbm, floor, current, self.window_db(), tracker)
-        if kind != 'out_of_window':
+        # Only the protective direction, and only when the loss is gross:
+        #   * 'clipped'      - the peak is above the top edge: raising Ref brings it back.
+        #   * 'below_window' - RAISING Ref pushed the noise floor under the bottom edge. That is a
+        #     display choice the user just made; it is fixed by pressing Auto, not behind their back.
+        if kind != 'clipped' or peak_dbm <= current + AUTO_CLIP_MARGIN_DB:
             return
+        if target <= current:
+            return                     # never move against the protective direction on our own
         if now - tracker['last_change'] < SAFETY_INTERVAL_S:
             return
-        self._queue(mode, target, tracker, now, result='out_of_window')
+        self._queue(mode, target, tracker, now, result='clipped')
 
     # ---------------- the user's Auto Scale ----------------
 
@@ -210,9 +228,9 @@ class AutoReferenceController:
         """Classify the placement and compute the target that fixes it."""
         bottom = current - window
         if peak > current + OUT_OF_WINDOW_MARGIN_DB:
-            kind = 'out_of_window'          # clipped at the top edge: always fix
+            kind = 'clipped'                # peak above the top edge: information is cut off
         elif floor is not None and floor < bottom - OUT_OF_WINDOW_MARGIN_DB:
-            kind = 'out_of_window'          # whole trace below the window: always fix
+            kind = 'below_window'           # whole trace below the bottom edge
         else:
             kind = 'inside'
 
@@ -235,7 +253,7 @@ class AutoReferenceController:
             target = min(CEILING_DBM, max(target, floor + 30.0))
         if abs(target - current) < MIN_CHANGE_DB:
             return 'ok', current
-        return ('applied' if kind == 'inside' else 'out_of_window'), target
+        return ('applied' if kind == 'inside' else kind), target
 
     def _queue(self, mode: str, target: float, tracker: dict, now: float,
                result: str) -> None:

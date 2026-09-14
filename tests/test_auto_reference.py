@@ -132,24 +132,40 @@ def test_fit_is_mode_private(clock):
 
 # ---------------- the safety ranger (always armed) ----------------
 
-def test_safety_fit_fixes_a_trace_below_the_window(clock):
-    """Measured with the SAN-90: Ref 0 dBm, 80 dB window, everything at -108 dBm.
+def test_raising_ref_is_respected_and_not_undone(clock):
+    """Reported: pressing the up arrow to raise Ref made Auto pull the trace back down.
 
-    The old loop refused this because the peak was less than 15 dB above the floor, and left
-    the display empty for as long as the signal stayed away.
+    Raising Ref pushes the noise floor below the bottom edge. That is a display choice the user
+    just made, not a fault, so the ranger leaves it alone - pressing Auto re-fits it.
     """
     dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
     ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-98.0, floor=-108.0)   # floor below the bottom edge (-80)
+    assert ctl.pending is None                   # nothing happens behind the user's back
+    clock[0] += 5.0
     observe(dev, ctl, peak=-98.0, floor=-108.0)
-    assert ctl.pending == ('std', -35.0)         # floor + window - 8 = -36 -> -35
-    assert ctl.view('std')['result'] == 'out_of_window'
+    assert ctl.pending is None
+    # ...but the explicit press still fits it (measured case: the old loop refused even that).
+    assert ctl.fit('std') == ('applied', -35.0)  # floor + window - 8 = -36 -> -35
+    assert ctl.view('std')['result'] == 'applied'
 
 
 def test_safety_fit_raises_a_clipped_trace(clock):
     dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=0.0, floor=-95.0)     # peak above the top edge
+    observe(dev, ctl, peak=0.0, floor=-95.0)     # peak 40 dB above the top edge: gross clipping
     assert ctl.pending == ('std', 10.0)          # peak + 10 dB of headroom
+    assert ctl.view('std')['result'] == 'clipped'
+
+
+def test_safety_fit_leaves_a_slight_clip_alone(clock):
+    """The ranger only intervenes when the loss is gross: a level the user chose is respected."""
+    dev = StubDevice(ref_level=-5.0, ref_range_db=100.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-4.0, floor=-95.0)    # 1 dB over the top edge: not gross
+    assert ctl.pending is None
+    # The explicit press still tidies it up (the fit uses the tight margin).
+    assert ctl.fit('std')[0] == 'applied'
 
 
 def test_safety_ranger_leaves_a_good_placement_alone(clock):
@@ -161,27 +177,27 @@ def test_safety_ranger_leaves_a_good_placement_alone(clock):
 
 
 def test_safety_fit_is_rate_limited(clock):
-    dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
+    dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    observe(dev, ctl, peak=0.0, floor=-95.0)     # grossly clipped
     assert ctl.pending is not None
     ctl.apply_pending()
-    dev.state.ref_level = 0.0                   # pretend the device ignored it
-    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    dev.state.ref_level = -40.0                 # pretend the device ignored it
+    observe(dev, ctl, peak=0.0, floor=-95.0)
     assert ctl.pending is None                  # inside the settle window
     clock[0] += 1.0
-    observe(dev, ctl, peak=-98.0, floor=-108.0)
+    observe(dev, ctl, peak=0.0, floor=-95.0)
     assert ctl.pending is None                  # still inside SAFETY_INTERVAL_S
     clock[0] += SAFETY_INTERVAL_S
-    observe(dev, ctl, peak=-98.0, floor=-108.0)
-    assert ctl.pending == ('std', -35.0)
+    observe(dev, ctl, peak=0.0, floor=-95.0)
+    assert ctl.pending == ('std', 10.0)
 
 
 def test_safety_fit_needs_a_supported_mode(clock):
     """Harmonic/PNM sweeps own the device, so their observations are ignored."""
-    dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
+    dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-98.0, floor=-108.0, mode='harmonic')
+    observe(dev, ctl, peak=0.0, floor=-95.0, mode='harmonic')
     assert ctl.pending is None
 
 

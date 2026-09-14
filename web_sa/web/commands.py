@@ -22,6 +22,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..config import (
+    DISPLAY_REF_MAX_DBM,
+    DISPLAY_REF_MIN_DBM,
     HARM_COUNT_MAX,
     HARM_SPAN_MAX_HZ,
     PNM_CARRIER_MAX_HZ,
@@ -248,8 +250,11 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     'AUTO_SCALE': (
         ParamSpec('range_db', 'number', REF_RANGE_DB_MIN, REF_RANGE_DB_MAX, unit='dB'),
-        # The level the user is looking at (the display scale is client-side in SDR).
-        ParamSpec('current_ref', 'number', REF_MIN, REF_MAX, unit='dBm'),
+        # The level the user is looking at. It is a DISPLAY value, not a device Ref: in SDR the
+        # client owns the scale and clamps it to its own range, so validating it against the
+        # device's Ref bounds rejected legitimate fits (measured on the bench: the SDR display
+        # sat at -60 dBm, the command was refused and pressing Auto looked dead).
+        ParamSpec('current_ref', 'number', DISPLAY_REF_MIN_DBM, DISPLAY_REF_MAX_DBM, unit='dBm'),
     ),
     'SET_RBW': (
         ParamSpec('mode', 'choice', choices=('manual', 'auto'), default='auto'),
