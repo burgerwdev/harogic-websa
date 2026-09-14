@@ -1,6 +1,6 @@
 # Known Limitations & Notes
 
-1. **Occasional libhtraapi segfault/block**: RTA first attempts two in-place reconfigurations after repeated Trigger/Get failures. The supervisor restarts the worker after persistent failure, native crash, or call timeout. A fully wedged device can still require USB replugging. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
+1. **Occasional libhtraapi segfault/block**: RTA first attempts two in-place reconfigurations after repeated Trigger/Get failures. The supervisor restarts the worker after persistent failure, native crash, or call timeout. A USB unplug (a run of bus errors) is detected and reported as `connected: false`, and plugging the analyzer back in makes the worker reopen it and resume the same mode; a device whose firmware is fully wedged can still require the process to be restarted. Persistent Web/SDK process separation is deferred to the VSA architecture phase.
 2. **SAStudio4 exclusivity**: device is single-handle; Device_Open returns -1 while the official software is running
 3. **External reference locking**: requires ExternalSystemClockFrequency=10 MHz correctly set with external signal present;
    Ext mode falls back to internal on unlock (normal device behavior); use ExtForce to force
@@ -25,8 +25,9 @@
     attenuator silently disabled overload protection, so an IF overflow (-12) could freeze the display)
 14. **Remote access**: query tokens can enter browser history/proxy logs; use an HTTPS reverse proxy for remote control
 15. **Fast worker exit**: the worker uses `os._exit` to avoid unstable vendor-SDK destruction, so it does not send a WS close frame; browsers reconnect automatically
-16. **Remaining hardware qualification**: USB hotplug, GNSS/1PPS calibration and 6/7/9 GHz soak are
-    still to be covered. Frequent SWP/RTA switching, slow clients and 60 s SDR audio continuity are now
+16. **Remaining hardware qualification**: GNSS/1PPS calibration and 6/7/9 GHz soak are
+    still to be covered (USB hotplug detection/recovery is now implemented and covered by the
+    link-recovery tests). Frequent SWP/RTA switching, slow clients and 60 s SDR audio continuity are now
     exercised by the Playwright state regression (0 worklet underruns with the audio worker).
 17. **Resolution floor of the channel measurements**: channel power / OBW / ACPR are computed
     from the *displayed* trace, so they are limited by the point count. When the RBW is far below

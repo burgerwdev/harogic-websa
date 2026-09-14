@@ -35,6 +35,8 @@
 - **触发** — RTA 设备电平触发（门限/边沿/防抖/延迟/预触发/采集时长/重触发/触发输出，含 POI 与状态角标）；
   普通模式的软件电平触发（相邻两次扫描间的穿越判定，启用触发后画面实时、命中定格）
 - **侧边跳转窄条** — 一键定位到任一分组，可收起（收起时不占布局宽度）
+- **设备链路监控** — 总线错误或拔线会把 STATUS 置为 `connected: false`（画布显示“设备已断开”，
+  而不是定格假死），重新接入后 worker 自动重开设备并恢复原模式，无需重启服务
 
 ## 界面截图
 
@@ -75,6 +77,9 @@ pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
 
 浏览器打开 http://127.0.0.1:8080
 
+拔掉频谱仪会被检测并上报，重新接入后自动恢复原模式，无需重启；`make status` 查看实时链路，
+`make restart` 重启服务。
+
 默认仅监听本机。远程访问必须设置令牌：
 
 ```bash
@@ -114,7 +119,7 @@ harogic-websa/
 │                        架构评估 / 开发指南
 ├─ tests/                后端 pytest(协议/配置/设备状态/HTTP API)
 ├─ screenshots/          README 截图
-├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
+├─ run.sh / stop.sh / status.sh / clean.sh / build.sh / test.sh / Makefile
 ├─ pyproject.toml / requirements.txt / LICENSE / .gitignore
 ```
 
@@ -124,9 +129,11 @@ harogic-websa/
 |---|---|
 | `./run.sh` | 启动 supervisor + WebSA worker；SDK 崩溃/致命超时自动退避重启 |
 | `./stop.sh` | 停止服务 |
+| `make restart` | 重启服务（停止 + 启动） |
+| `make status` | 服务状态：运行状态、PID/运行时长、内存与 CPU、日志路径/大小、设备链路 |
 | `./clean.sh` | 清理缓存/日志/构建产物（`--keep-deps` 保留 `node_modules`） |
 | `./test.sh` | 后端 pytest + Ruff + 前端 Vitest；任一失败返回非零状态 |
-| `make run/stop/clean/build/test` | 同 Makefile 入口 |
+| `make run/stop/restart/status/clean/build/test` | 同 Makefile 入口 |
 | `make dev` | 停止、清理（保留依赖）、重建前端，并以 `WEBSA_TRACE=1` 启动 |
 
 ## 测试

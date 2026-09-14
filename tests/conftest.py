@@ -16,6 +16,7 @@ import pytest
 # session, a profile struct, a DLL symbol).
 NEEDS_VENDOR = (
     'test_device_state.py',
+    'test_device_state_grouping.py',
     'test_http_api.py',
     'test_publisher.py',
     'test_rta_state.py',

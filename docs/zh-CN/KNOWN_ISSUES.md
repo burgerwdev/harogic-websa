@@ -1,7 +1,8 @@
 # 已知限制与注意事项
 
 1. **libhtraapi 偶发段错误/阻塞**: RTA 连续调用失败会先原地重配两次；仍失败或发生
-   native 崩溃/调用超时时，supervisor 重启 worker；设备固件完全挂死时仍可能需重插拔。
+   native 崩溃/调用超时时，supervisor 重启 worker；USB 拔线（连续总线错误）会被检测并上报为
+   `connected: false`，重新接入后 worker 会自动重开设备并恢复原模式；仅当固件完全挂死时才需重启进程。
    Web 与 SDK 的常驻进程隔离留待 VSA 架构阶段。
 2. **SAStudio4 占用**: 设备单句柄, 官方软件运行时 Device_Open 返回 -1
 3. **外部参考锁定**: 需正确设置 ExternalSystemClockFrequency=10MHz 且外部信号接入; 
@@ -25,7 +26,8 @@
     与 Atten 设置无关地始终运行（此前手动衰减会静默关闭过载保护，IF 溢出（-12）时画面会冻住）
 14. **远程访问**: query token 可能进入浏览器历史/代理日志，远程控制应通过 HTTPS 反向代理
 15. **快速退出**: worker 使用 `os._exit` 规避厂商 SDK 析构崩溃，因此退出时不会发送 WS close frame；浏览器会自动重连
-16. **剩余硬件验证**: USB 热拔插、GNSS/1PPS 校准及 6/7/9 GHz 长时间压力测试仍需覆盖；
+16. **剩余硬件验证**: GNSS/1PPS 校准及 6/7/9 GHz 长时间压力测试仍需覆盖
+    （USB 热拔插的检测/恢复已实现，并由链路恢复测试覆盖）；
     频繁 SWP/RTA 切换、慢客户端与 60 s SDR 音频连续性已由 Playwright 状态回归覆盖（音频 worker 下 worklet underrun 为 0）。
 17. **信道类测量的分辨率下限**: 信道功率/OBW/ACPR 基于显示迹线计算，因此受点数限制。
     当 RBW 远小于显示 bin 间隔时，CW 载波只占 1~2 个显示 bin，OBW 会停在该量级

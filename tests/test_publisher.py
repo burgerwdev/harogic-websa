@@ -1,12 +1,15 @@
 """Acquisition policy: the session owns the watchdog and the pacing (report finding E-3)."""
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 
 from web_sa.hardware.device import DeviceState
 from web_sa.measurements.base import StdSession
 from web_sa.measurements.rta import RtaSession
 from web_sa.measurements.sdr import SdrSession
+from web_sa.web.app_keys import COMMAND_LOCK, WS_CLIENTS
 from web_sa.web.publisher import _acquisition_timeout
 
 
@@ -59,3 +62,73 @@ def test_only_the_swept_session_dedupes_the_frequency_axis():
     assert StdSession(StubDevice(DeviceState())).dedupe_freq is True
     assert RtaSession(StubDevice(DeviceState(mode='rta'))).dedupe_freq is False
     assert SdrSession(StubDevice(DeviceState(mode='sdr'))).dedupe_freq is False
+
+
+class Client:
+    """Minimal ClientStream stand-in: records what the publisher fanned out."""
+
+    dropped_frames = dropped_control = dropped_audio = 0
+
+    def __init__(self):
+        self.texts: list[str] = []
+        self.frames: list[bytes] = []
+
+    def publish_bytes(self, frame):
+        self.frames.append(frame)
+
+    def publish_text(self, text, coalesce=False):
+        self.texts.append(text)
+
+
+class DisconnectedDevice:
+    """Device whose USB link was declared lost; stepping it must never happen."""
+
+    def __init__(self):
+        self.state = DeviceState()
+        self.state.connected = False
+        self.preset_defaults = None
+        self.session = None
+        self.stepped = False
+
+    def auto_reference_view(self):
+        return {'last_peak': None, 'last_noise_floor': None, 'target': None,
+                'result': 'idle', 'seq': 0, 'pending': None, 'adjusting': False}
+
+    def session_health(self):
+        return {}
+
+    def nudge_reference_out_of_overflow(self):
+        raise AssertionError('no hardware call while the link is down')
+
+    def apply_pending_auto_reference(self):
+        raise AssertionError('no hardware call while the link is down')
+
+    def step(self):
+        self.stepped = True
+        return [], []
+
+    def measure_sweep(self, dt):
+        pass
+
+
+def test_publisher_stops_acquisition_and_reports_a_disconnected_link():
+    """A dead link must not be stepped, and STATUS must say so (the reported frozen spectrum)."""
+    from web_sa.web import publisher as pub
+
+    dev = DisconnectedDevice()
+    client = Client()
+    app = {WS_CLIENTS: {client}, COMMAND_LOCK: asyncio.Lock()}
+
+    async def run():
+        task = asyncio.create_task(pub.publisher(app, dev))
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+    assert dev.stepped is False
+    assert dev.state.last_error == ''
+    statuses = [json.loads(text) for text in client.texts if '"STATUS"' in text]
+    assert statuses, 'the disconnect must be pushed to the client'
+    assert statuses[-1]['connected'] is False

@@ -857,6 +857,12 @@ class SdrSession(MeasurementSession):
             if st != 0:
                 self._last_status = int(st)
                 self._packets_err += 1
+                # Past the post-configuration settle, a run of bus errors means the link is
+                # gone rather than a bad packet: report it so the page shows the disconnect and
+                # the worker reopens the device (the same transport watchdog as the SWP path).
+                # During the settle the first fetches legitimately answer BusDataError.
+                if now >= self._ready_at and dev.note_link_status(st, 'IQS_GetIQStream'):
+                    return [], []
                 if st in _TRANSIENT_IQS:
                     if st in sb.WARN_STATUS:
                         s.status_warning = int(st)
@@ -872,6 +878,7 @@ class SdrSession(MeasurementSession):
                 return [], []
             self._last_status = 0
             s.status_warning = 0
+            dev.note_link_status(0, 'IQS_GetIQStream')
             self._transient_streak = 0
             self._timeout_streak = 0
             self._last_ok = now

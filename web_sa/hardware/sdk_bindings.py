@@ -331,6 +331,13 @@ dll.DET_Configuration.argtypes = [POINTER(c_void_p), POINTER(DET_Profile_TypeDef
 # the total gain rises as Ref falls).
 WARN_STATUS = frozenset({-10, -11, -12, -14, -15, -16, -17, -18, -19})
 
+# Vendor ERROR return codes that mean the USB transport itself is unusable: -8 BusError
+# ("bus communication error", remedy re-open the device) and -9 BusDataError (a packet arrived
+# with the wrong content). A physical unplug surfaces as a run of these with no good frame in
+# between, so a sustained run - not a single glitch - is what declares the link lost
+# (hardware/device.py note_link_status).
+LINK_LOST_STATUS = frozenset({-8, -9})
+
 # Convenient aliases (used by the business layer)
 SWP_TraceInfo_TypeDef = htra_api.SWP_TraceInfo_TypeDef
 SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef
@@ -379,6 +386,8 @@ TriggerOutPulsePolarity_TypeDef = htra_api.TriggerOutPulsePolarity_TypeDef
 __all__ = [
     'PNM_SUPPORTED',
     'SDR_CAPS',
+    'LINK_LOST_STATUS',
+    'WARN_STATUS',
     'AMDemodParam_TypeDef',
     'FMDemodParam_TypeDef',
     'HardWareState_TypeDef',

@@ -62,6 +62,19 @@ class FakeDevice:
     def close(self) -> None:
         self.state.connected = False
 
+    def reopen(self) -> tuple[bool, str]:
+        """Parity with HarogicDevice: the link loop calls this to recover the device."""
+        self.close()
+        return self.open()
+
+    def note_link_status(self, status: int, where: str) -> bool:
+        """The fake never loses its link (no vendor transport to fail)."""
+        return False
+
+    def mark_link_lost(self, reason: str) -> None:
+        self.state.connected = False
+        self.state.last_error = reason
+
     def load_preset_defaults(self) -> None:
         self.preset_defaults = dict(
             center=1e9, span=DEFAULT_SPAN_HZ, fmin=1e9 - DEFAULT_SPAN_HZ / 2,

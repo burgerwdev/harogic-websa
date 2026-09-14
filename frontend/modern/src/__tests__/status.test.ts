@@ -241,6 +241,34 @@ describe('IF-overflow warning repaint', () => {
 	});
 });
 
+describe('device-disconnect warning', () => {
+	// The reported bug: after an unplug the trace froze while STATUS still said connected. The
+	// link now flips to false; the canvas must say so (and repaint on its own, since a
+	// disconnected device sends no frame to drive the frame loop).
+	it('marks the device disconnected and repaints on the transition', async () => {
+		const { renderRequestCount } = await import('../render/redraw');
+		const gone = structuredClone(SWP_STATUS) as Record<string, any>;
+		gone.connected = false;
+
+		const before = renderRequestCount();
+		updateStatus(gone);
+		expect(S.deviceConnected).toBe(false);
+		expect(S.statusWarnings.join(' ')).toContain('DEVICE DISCONNECTED');
+		const afterAppear = renderRequestCount();
+		expect(afterAppear).toBeGreaterThan(before);
+
+		updateStatus(structuredClone(SWP_STATUS));      // reconnected
+		expect(S.deviceConnected).toBe(true);
+		expect(S.statusWarnings.join(' ')).not.toContain('DEVICE DISCONNECTED');
+		const afterClear = renderRequestCount();
+		expect(afterClear).toBeGreaterThan(afterAppear);
+
+		// a repeat of the same (connected) state must not repaint on every STATUS
+		updateStatus(structuredClone(SWP_STATUS));
+		expect(renderRequestCount()).toBe(afterClear);
+	});
+});
+
 describe('waterfall is disabled while measuring', () => {
 	it('turns the waterfall off, disables the buttons, and restores the choice afterwards', async () => {
 		const { applyMeasUI } = await import('../ui/measureUi');
