@@ -1,8 +1,10 @@
 name: CI
 
-# Hardware-free gates only: the analyzer tests (tools/hardware_smoke.py,
-# tools/e2e/state_regression.py) need a real SAN-90 + tinySA and stay on the bench.
-# See docs/*/ARCH_REVIEW.md Phase 0.
+# Hardware-free gates only. The bench keeps the analyzer-level checks (tools/hardware_smoke.py
+# and the tinySA-driven parts); the two Playwright scripts also run here against the fake
+# backend, so the user-visible rendering checks and the parameter state-machine contract are
+# gated on every push. See docs/*/ARCH_REVIEW.md (A1) and docs/*/DEVELOPMENT.md.
+
 
 on:
   push:
@@ -91,8 +93,12 @@ jobs:
           setsid nohup python -m web_sa.supervisor > /tmp/websa-fake.log 2>&1 < /dev/null &
           for i in $(seq 1 25); do sleep 1; curl -sf -o /dev/null http://127.0.0.1:8099/api/state && break; done
           curl -sf http://127.0.0.1:8099/api/state | head -c 120
-      - name: UI smoke (fake backend)
+      - name: UI smoke - rendering and wiring (fake backend)
         run: python tools/e2e/ui_smoke.py --url http://127.0.0.1:8099
+      - name: Parameter state-machine contract (fake backend)
+        # The same script as the bench run: it is device-agnostic by construction, so the
+        # historical slot/pending/hand-off/preset regressions are now gated in CI too.
+        run: python tools/e2e/state_regression.py --url http://127.0.0.1:8099
       - name: Service log on failure
         if: failure()
         run: tail -50 /tmp/websa-fake.log

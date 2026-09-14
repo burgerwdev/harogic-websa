@@ -720,6 +720,8 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 
 | **A1: fake backend + UI smoke in CI** | **Done** | New `hardware/fake_device.py` (imports no vendor module, so it runs where libhtraapi does not exist) plus `measurements/fake.py` (fake RTA/SDR sessions emitting synthetic RTAF/AUDF frames); with `WEBSA_FAKE=1`, `main._make_device()` selects the fake and swaps the session factory. `tools/e2e/ui_smoke.py` runs 20 **user-visible** checks against it (canvas pixels, controls reaching the backend, mode switches still drawing, measurement tabs, waterfall yielding, i18n, keypad, no page errors); `make e2e-fake` runs it locally and CI gained a `ui-smoke` job (build dist + `playwright install chromium` + start the fake service + run the smoke). `DeviceError` moved to `hardware/errors.py` so the scheduler path (publisher) no longer pulls in the vendor library. New `tests/test_fake_device.py` (5 tests) pins the fake's contract. |
 
+| **A1 extension: the full `state_regression.py` also runs on the fake backend** | **Done** | Measured: the script is device-agnostic by construction (17 sections / 45 checks, every expectation read from `/api/state` or the DOM, no device constants) and passes **with no script change and no extra fake fidelity**. `make e2e-fake` now runs both scripts (rendering smoke + parameter state-machine contract) and the CI `ui-smoke` job runs the same pair; the script gained an explicit `check(..., require_device=True)` skip hook (nothing needs it today) and its header states the discipline: **never relax an assertion to make the fake pass**, because that would weaken the bench run too. |
+
 ### 9.4 Verification record (this bench, SAN-90 + tinySA attached)
 
 ```

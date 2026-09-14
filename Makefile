@@ -56,8 +56,9 @@ e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
 	@for i in $$(seq 1 25); do sleep 1; \
 		curl -sf -o /dev/null http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}/api/state && break; done
 	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
+	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
 	@kill $$(cat /tmp/websa-fake.pid) 2>/dev/null || true; rm -f /tmp/websa-fake.pid
-	@echo "OK: fake-backend UI smoke (no hardware needed)"
+	@echo "OK: fake-backend UI smoke + state-machine contract (no hardware needed)"
 
 bench-record:  ## Re-record the performance baseline on this host
 	python3 tools/bench.py --duration 4 --write-baseline tools/bench_baseline.json

@@ -157,7 +157,7 @@ DLL 调用一律在设备锁下、放到 `to_thread`，并确保有看门狗（�
 | 纯逻辑 | vitest / pytest | 算法、状态机、契约（i18n parity、帧 fixture、schema、槽位语义） | — |
 | 会话/设备边界 | pytest + stub 设备 | 结果组装、策略、错误路径（**不需要厂商库**） | 为了测试去连真机 |
 | 协议 | 两端 golden fixture | 字节布局 | 只在一边测 |
-| **端到端（无硬件）** | `make e2e-fake` + `tools/e2e/ui_smoke.py`（假后端，CI 运行） | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘 | 只断言 dataset/计数器 |
+| **端到端（无硬件）** | `make e2e-fake`：`ui_smoke.py`（渲染与接线，20 项）+ `state_regression.py`（参数状态机契约，45 项），同一假服务，CI 运行 | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘；槽位/在途/交接/Preset/刷新/快速连切 | 只断言 dataset/计数器；**为让假后端通过而放宽断言**（会同时削弱真机轮次；器件相关检查用 `require_device=True` 显式跳过） |
 | **端到端（真机）** | Playwright + 真机 | **用户可见结果**：画布像素、DOM 文本、真实点击后的设备状态 | `dataset.rtaFrames`（只说明帧交给了渲染器，不代表画出来了） |
 | 性能 | `tools/bench.py` + 基线 | 帧率/切换延迟/CPU 的**可比**数值 | 在设备告警或残留负载下比较 |
 | 硬件冒烟 | `tools/hardware_smoke.py` + tinySA | 真实信号下的电平/帧完整性 | — |
@@ -272,7 +272,7 @@ DLL 调用一律在设备锁下、放到 `to_thread`，并确保有看门狗（�
 ```bash
 make ci                      # 全部无硬件门禁（测试/静态检查/契约/守卫/构建）
 make run | make stop         # 启停服务（supervisor + worker）
-make e2e-fake                # 无硬件：假后端上的 UI 冒烟（20 项，CI 也跑这个）
+make e2e-fake                # 无硬件：假后端上跑 ui_smoke（20 项）+ state_regression（45 项），CI 同款
 make hw-test                 # 真机：tinySA 冒烟 + 24 命令扫描 + UI 状态机回归（45 项）
 make bench                   # 与基线比较帧率/切换延迟/CPU
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # 重录基线（先确认干净状态）

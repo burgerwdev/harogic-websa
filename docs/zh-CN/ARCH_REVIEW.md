@@ -703,6 +703,8 @@ e2e（真机）仍全绿。
 
 | **A1：假后端 + UI 冒烟进 CI** | **已完成** | 新增 `hardware/fake_device.py`（不 import 厂商库，因此在无 libhtraapi 的 CI 也能跑）+ `measurements/fake.py`（合成 RTAF/AUDF 帧的假 RTA/SDR 会话）；`WEBSA_FAKE=1` 时 `main._make_device()` 选择假设备并替换会话工厂。`tools/e2e/ui_smoke.py` 在假后端上做 20 项**用户可见**检查（画布像素、控件到达后端、模式切换仍绘制、测量页签、瀑布让位、i18n、键盘、无页面错误），`make e2e-fake` 本地可跑，CI 新增 `ui-smoke` job（构建 dist + `playwright install chromium` + 启动假服务 + 跑冒烟）。`DeviceError` 抽到 `hardware/errors.py`，使调度路径（publisher）不再拉入厂商库。新增 `tests/test_fake_device.py`（5 项）守住假设备契约。 |
 
+| **A1 延伸：完整 `state_regression.py` 也跑在假后端** | **已完成** | 实测确认该脚本"按构造与器件无关"（17 组 / 45 项检查，全部从 `/api/state` 与 DOM 取值，无器件常量），**无需修改脚本、无需提高假设备保真度即可全过**。`make e2e-fake` 现在串跑两个脚本（渲染冒烟 + 参数状态机契约），CI 的 `ui-smoke` job 同步；脚本新增 `check(..., require_device=True)` 显式跳过机制（当前无一项需要），并在文件头写明纪律：**不得为让假后端通过而放宽断言**，否则会同时削弱真机那轮。 |
+
 ### 9.4 验证记录（本机，SAN-90 + tinySA 已连）
 
 ```

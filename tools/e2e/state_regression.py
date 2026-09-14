@@ -19,6 +19,17 @@ break - not the implementation:
 
 Usage:  python3 tools/e2e/state_regression.py [--url http://127.0.0.1:8080]
 
+This script is device-agnostic by construction (every expectation is read from /api/state or
+the DOM) and runs unchanged against the fake backend, which is how CI covers the parameter
+state machine:
+    WEBSA_FAKE=1 WEBSA_PORT=8099 python3 -m web_sa.supervisor &
+    python3 tools/e2e/state_regression.py --url http://127.0.0.1:8099
+
+Discipline: never relax or branch an assertion to make it pass on the fake - that would
+weaken the bench run too. A genuinely device-only check (e.g. one that needs a real trace
+length or the IF-overflow warning) passes `require_device=True`, which skips it with a visible
+SKIP line when the backend is the fake. No check needs that today.
+
 Exit status is non-zero when any check fails, so it can be used in CI (the service has to
 be running; the acquisition loop requires a WebSocket client, which this script is).
 """
@@ -33,6 +44,19 @@ import urllib.request
 from playwright.sync_api import Page, sync_playwright
 
 FAILURES: list[str] = []
+
+#: True when the service runs the fake backend (see hardware/fake_device.py); set in main().
+FAKE_BACKEND = False
+
+
+def check(name: str, ok: bool, detail: str = "", require_device: bool = False) -> None:
+    """Record one check. `require_device` skips it (visibly) on the fake backend."""
+    if require_device and FAKE_BACKEND:
+        print(f"  SKIP  {name}  <- needs the analyzer")
+        return
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}{('  <- ' + detail) if detail else ''}")
+    if not ok:
+        FAILURES.append(name)
 
 
 def post(url: str, cmd: dict) -> dict:
@@ -73,12 +97,6 @@ def painted_pixels(page) -> int:
     )
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    print(f"  {'PASS' if ok else 'FAIL'}  {name}{('  <- ' + detail) if detail else ''}")
-    if not ok:
-        FAILURES.append(name)
-
-
 def sdr_panel_visible(page: Page) -> bool:
     return page.is_visible("#sdr-settings")
 
@@ -91,10 +109,16 @@ def enter_sdr(page: Page) -> None:
 
 
 def main() -> int:
+    global FAKE_BACKEND
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8080")
     args = ap.parse_args()
     url = args.url.rstrip("/")
+    try:
+        FAKE_BACKEND = str(state(url).get("device", "")).startswith("FAKE")
+    except Exception:
+        FAKE_BACKEND = False
+    print(f"backend: {'fake' if FAKE_BACKEND else 'device'} ({url})")
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
