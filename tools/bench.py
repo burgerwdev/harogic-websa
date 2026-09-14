@@ -256,9 +256,22 @@ def compare(current: dict, baseline: dict) -> list[str]:
         now = current.get(key)
         if base and now and now > base * SWITCH_CEIL:
             problems.append(f'{key} {now} > {base * SWITCH_CEIL:.0f} (baseline {base})')
+    # CPU is only comparable with a single WS client: a browser tab that is open on the app makes
+    # the worker fan every frame out twice and competes for the CPU on a laptop (measured: RTA CPU
+    # 2.5x while SWP moved 1.1x, with `stream.clients` = 2 in the same run). The collectors already
+    # record the count (report finding C4); here it decides whether the verdict may be given.
+    base_clients = int((baseline.get('swp') or {}).get('clients') or 1)
+    now_clients = int((current.get('swp') or {}).get('clients') or 1)
+    extra_clients = now_clients > max(1, base_clients)
+    if extra_clients:
+        print(f'note: {now_clients} WS clients attached (baseline recorded {base_clients}) - '
+              f'cpu_s is not comparable, skipping the CPU verdict '
+              f'(close other tabs/clients and re-run for a cpu comparison)')
     for mode in ('swp', 'rta', 'sdr'):
         base = (baseline.get(mode) or {}).get('cpu_s')
         now = (current.get(mode) or {}).get('cpu_s')
+        if extra_clients:
+            continue
         if base and now and now > base * CPU_CEIL:
             problems.append(f'{mode} cpu {now}s > {base * CPU_CEIL:.2f}s (baseline {base})')
     return problems
