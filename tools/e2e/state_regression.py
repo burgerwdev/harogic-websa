@@ -291,21 +291,77 @@ def main() -> int:
             f"input {shown:.4f} vs backend {d['sdr']['center'] / 1e6:.4f} MHz",
         )
 
-        # 5 - hand-off from the swept view
-        print("5) swept view -> SDR hand-off")
-        if sdr_panel_visible(page):
-            page.click("#btn-mode-sdr")  # toggle out
-            page.wait_for_timeout(2000)
-        post(url, {"cmd": "SET_FREQ", "center": 225e6, "span": 10e6})
-        page.wait_for_timeout(2000)
-        enter_sdr(page)
+        # 5 - the user's SDR setup survives a plain mode round trip, and the gesture still hands
+        # off a frequency. The old behaviour re-derived everything (frequency, capture bandwidth,
+        # demod) from the swept view on every entry, which silently discarded the setup the user
+        # had left in SDR (reported).
+        print("5) the user's SDR setup survives a mode round trip")
+        if not sdr_panel_visible(page):
+            enter_sdr(page)
+            page.wait_for_timeout(1500)
+
+        # The setup the user leaves in SDR: a frequency, a demod, an IF bandwidth and a volume.
+        page.fill("#input-sdr-center", "100")
+        page.click('[data-action="apply-sdr"]')
+        page.wait_for_timeout(2200)
+        page.click('[data-sdr-demod="usb"]')
+        page.wait_for_timeout(900)
+        page.click('[data-sdr-ifbw="2400"]')
+        page.wait_for_timeout(900)
+        page.evaluate("() => { const v = document.getElementById('input-sdr-volume'); v.value = '0.5';"
+                      " v.dispatchEvent(new Event('change', {bubbles: true})); }")
         page.wait_for_timeout(1500)
-        d = state(url)
-        check(
-            "entering SDR follows the swept centre",
-            abs(d["sdr"]["center"] - 225e6) < 5e6,
-            f"centre {d['sdr']['center'] / 1e6:.3f} MHz",
-        )
+        left = state(url)["sdr"]
+        check("the user's SDR setup is applied",
+              abs(left["center"] - 100e6) < 1e6 and left["demod"] == "usb"
+              and abs(float(left["if_bw"]) - 2400) < 1 and abs(float(left["volume"]) - 0.5) < 0.01,
+              f'centre {left["center"] / 1e6:.3f} MHz demod {left["demod"]} '
+              f'if_bw {left["if_bw"]} volume {left["volume"]}')
+
+        # Leave SDR, move the sweep somewhere else, come back with the plain mode button.
+        page.click("#btn-mode-rta")
+        page.wait_for_timeout(2500)
+        post(url, {"cmd": "SET_FREQ", "center": 433e6, "span": 5e6})
+        page.wait_for_timeout(2000)
+        page.click("#btn-mode-sdr")
+        page.wait_for_timeout(3000)
+        back = state(url)
+        check("a plain return keeps the user's frequency",
+              abs(back["sdr"]["center"] - 100e6) < 1e6,
+              f'centre {back["sdr"]["center"] / 1e6:.3f} MHz (swept centre '
+              f'{back["req"]["swp"]["center"] / 1e6:.3f} MHz)')
+        check("...and the rest of the listening setup",
+              back["sdr"]["demod"] == "usb" and abs(float(back["sdr"]["if_bw"]) - 2400) < 1
+              and abs(float(back["sdr"]["volume"]) - 0.5) < 0.01,
+              f'demod {back["sdr"]["demod"]} if_bw {back["sdr"]["if_bw"]} '
+              f'volume {back["sdr"]["volume"]}')
+
+        # The explicit gesture still hands off: Shift+click on the swept view enters SDR there.
+        page.click("#btn-mode-rta")
+        page.wait_for_timeout(2500)
+        post(url, {"cmd": "SET_FREQ", "center": 225e6, "span": 20e6})
+        page.wait_for_timeout(2000)
+        box = page.eval_on_selector("#spectrum", """el => {
+            const r = el.getBoundingClientRect();
+            return {x: r.left + r.width * 0.25, y: r.top + r.height * 0.5};
+        }""")
+        page.keyboard.down("Shift")
+        page.mouse.click(box["x"], box["y"])
+        page.keyboard.up("Shift")
+        page.wait_for_timeout(3000)
+        gesture = state(url)
+        # The click lands at 25% of the canvas width; the plot shows the RTA window (that is the
+        # axis `xToFreqHz` maps through), so the expectation comes from the reported RTA frame,
+        # not from the SWP snapshot. The tolerance still separates the click from the SDR tuning
+        # the previous check left at 100 MHz.
+        axis = gesture["rta_actual"] or gesture["swp_actual"]
+        expected = axis["start"] + 0.25 * (axis["stop"] - axis["start"])
+        check("Shift+click hands that frequency to SDR",
+              gesture["mode"] == "sdr" and abs(gesture["sdr"]["center"] - expected) < 2e6
+              and abs(gesture["sdr"]["center"] - 100e6) > 5e6,
+              f'centre {gesture["sdr"]["center"] / 1e6:.3f} MHz vs clicked '
+              f'{expected / 1e6:.3f} MHz (axis {axis["start"] / 1e6:.1f}'
+              f'..{axis["stop"] / 1e6:.1f} MHz)')
 
         # 5b - the audio toggle must follow the user's choice even with a stored value
         print("5b) audio toggle with a stored preference")

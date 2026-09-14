@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrCenterHz, sdrDecimate, sdrAudioOn, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, estimatedCaptureSpanHz, renderSdrState, resetSdrState } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
@@ -125,15 +125,22 @@ export function setGraphMode(mode: string) {
   // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
   // the user located (active marker), or the current centre if no marker is set.
   if (target === 'sdr') {
-    // Respect an explicit handoff (Shift+click / peak row); otherwise use the active
-    // marker, else the current centre.
+    // Priority: an explicit hand-off (Shift+click / peak row already called sdrCenterHz.set), then
+    // the user's own SDR tuning, then - first run only - the active marker or the swept centre.
+    // Returning to SDR used to re-derive everything from the swept view, which discarded the
+    // tuning and the listening setup the user had left there (reported).
     if (!sdrCenterHz.pending()) {
-      const m = S.markers.find(x => x.enabled && x.freq != null);
-      // Prefer the last centre confirmed by a SWP-family STATUS: centerHz.get() is refreshed
-      // from every STATUS (including SDR ones), so it can still hold the value from before
-      // a preset/re-tune when this runs.
-      const base = swpCenterHz.get() > 0 ? swpCenterHz.get() : centerHz.get();
-      sdrCenterHz.set((m && m.freq) ? m.freq : base);
+      const remembered = sdrCenterHz.confirmedValue();
+      if (remembered !== null && remembered > 0) {
+        sdrCenterHz.set(remembered);           // re-assert: the entry below sends it
+      } else {
+        const m = S.markers.find(x => x.enabled && x.freq != null);
+        // Prefer the last centre confirmed by a SWP-family STATUS: centerHz.get() is refreshed
+        // from every STATUS (including SDR ones), so it can still hold the value from before
+        // a preset/re-tune when this runs.
+        const base = swpCenterHz.get() > 0 ? swpCenterHz.get() : centerHz.get();
+        sdrCenterHz.set((m && m.freq) ? m.freq : base);
+      }
     }
     deferSdrAudioPreference();
   } else {
@@ -225,17 +232,23 @@ export function syncGraphModeStatus(mode: string) {
   if (isRtaLike) S.resetWaterfall();
   if (isSdr && sdrCenterHz.pending() && sdrCenterHz.get() > 0) {
     const f = sdrCenterHz.get();
-    const inFm = f >= 87.5e6 && f <= 108e6;
-    const inAir = f >= 118e6 && f <= 137e6;
-    sdrDecimate.set(16);
-    sdrSpanHz.set(estimatedCaptureSpanHz(16)); // estimate until the device reports the real span
-    sdrListenHz.set(f);
+    if (!hasStoredSdrPrefs()) {
+      // First run (or right after a Preset): pick a sensible listening setup for the band the
+      // user landed in. Once they have their own preferences, those win - the band presets
+      // (FM/AIR/VHF/UHF) are the deliberate way to switch bands.
+      const inFm = f >= 87.5e6 && f <= 108e6;
+      const inAir = f >= 118e6 && f <= 137e6;
+      sdrDecimate.set(16);
+      sdrDemod.set(inFm ? 'wfm' : 'am');
+      sdrIfbw.set(inFm ? 180000 : (inAir ? 25000 : 12000));
+      sdrDeemph.set(-1);
+    }
+    const decimate = sdrDecimate.get() || 16;
+    sdrSpanHz.set(estimatedCaptureSpanHz(decimate));  // estimate until the device reports it
+    sdrListenHz.set(sdrListenHz.get() > 0 ? sdrListenHz.get() : f);
     renderSdrState();
-    sdrDemod.set(inFm ? 'wfm' : 'am');
-    sdrIfbw.set(inFm ? 180000 : (inAir ? 25000 : 12000));
-    renderSdrState();
-    send({ cmd: 'SET_SDR', center: f, decimate: 16 });
-    send({ cmd: 'SET_SDR_TUNE', listen: f });
+    send({ cmd: 'SET_SDR', center: f, decimate });
+    send({ cmd: 'SET_SDR_TUNE', listen: sdrListenHz.get() });
     applySdrDemod();
   }
   requestRender();
@@ -248,11 +261,6 @@ function sdrNumber(id: string, fallback: number): number {
   const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
   const v = el ? parseFloat(el.value) : NaN;
   return isFinite(v) ? v : fallback;
-}
-
-function sdrAgcOn(): boolean {
-  const el = document.getElementById('btn-sdr-agc');
-  return el ? el.classList.contains('active') : true;
 }
 
 export function applySdr() {
@@ -306,8 +314,8 @@ export function applySdrDemod() {
   const mode = sdrDemod.get();
   const ifbw = sdrIfbw.get();
   const deemph = sdrDeemph.get();
-  const volume = sdrNumber('input-sdr-volume', 0.8);
-  const squelch = sdrNumber('input-sdr-squelch', -110);
+  const volume = sdrVolume.get();
+  const squelch = sdrSquelch.get();
   // Only a demod-mode / IF-bandwidth / de-emphasis change rebuilds the chain and needs the
   // reset handshake. Volume/squelch/AGC are applied live, so muting them would just add a
   // gap. "Changed" is the slot's own pending state now, not a separate copy of the last
@@ -315,12 +323,13 @@ export function applySdrDemod() {
   if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgcOn(),
+  send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgc.get(),
          deemph_us: deemph });
 }
 
 export function toggleSdrAgc(el: HTMLElement) {
-  const on = !el.classList.contains('active');
+  const on = !sdrAgc.get();
+  sdrAgc.set(on);
   el.classList.toggle('active', on);
   el.textContent = on ? t('on') : t('off');
   // AGC is applied live on the backend; no chain rebuild, so no mute/reset.
@@ -361,8 +370,12 @@ export function listenAtFreq(hz: number) {
     requestRender();
     return;
   }
-  // From the swept view: hand this frequency to SDR for demodulation.
+  // From the swept view: hand this frequency to SDR for demodulation. BOTH the capture centre and
+  // the listen frequency go there - setting only the centre left the previous listen frequency in
+  // place, so the backend re-centred the capture to chase a channel the user never asked for
+  // (measured: Shift+click at 216 MHz landed SDR at 987 MHz).
   sdrCenterHz.set(hz);
+  sdrListenHz.set(hz);
   setGraphMode('sdr');
 }
 
@@ -427,13 +440,18 @@ export function syncSdrPanel(s: any) {
   // The requested de-emphasis (-1 = per-mode default). Without this confirm the user's
   // choice stayed a pending intent and fell back to Auto when the slot TTL expired.
   if (sdr.deemph_us != null) sdrDeemph.confirm(Number(sdr.deemph_us));
+  sdrVolume.confirm(Number(sdr.volume));
+  sdrSquelch.confirm(Number(sdr.squelch));
+  sdrAgc.confirm(!!sdr.agc);
   renderSdrState();
-  sdrSet('input-sdr-volume', String(sdr.volume));
-  sdrSet('input-sdr-squelch', String(Math.round(Number(sdr.squelch))));
+  // The demod group's controls are projections of the slots (the slots own the values, so a
+  // preference restored from storage cannot disagree with the form).
+  sdrSet('input-sdr-volume', String(sdrVolume.get()));
+  sdrSet('input-sdr-squelch', String(Math.round(sdrSquelch.get())));
   const agc = document.getElementById('btn-sdr-agc');
   if (agc) {
-    agc.textContent = sdr.agc ? t('on') : t('off');
-    agc.classList.toggle('active', !!sdr.agc);
+    agc.textContent = sdrAgc.get() ? t('on') : t('off');
+    agc.classList.toggle('active', sdrAgc.get());
   }
   const lvl = document.getElementById('cur-sdr-level');
   if (lvl) lvl.textContent = Number.isFinite(sdr.level_dbfs) ? sdr.level_dbfs.toFixed(1) + ' dBFS' : '';
@@ -621,9 +639,15 @@ export function bindActions() {
 
   // SDR demod panel: ranges commit on change (not on every drag pixel), and the
   // frequency inputs commit on Enter.
-  ['input-sdr-volume', 'input-sdr-squelch'].forEach((id) => {
-    const el = document.getElementById(id) as HTMLInputElement | null;
-    if (el) el.addEventListener('change', () => applySdrDemod());
+  const volumeEl = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
+  volumeEl?.addEventListener('change', () => {
+    sdrVolume.set(parseFloat(volumeEl.value) || 0.8);
+    applySdrDemod();
+  });
+  const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
+  squelchEl?.addEventListener('change', () => {
+    sdrSquelch.set(parseFloat(squelchEl.value) || -110);
+    applySdrDemod();
   });
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -898,9 +922,10 @@ function sdrCycleDemod() {
 }
 
 function sdrNudgeVolume(dv: number) {
+  const next = Math.max(0, Math.min(2, (sdrVolume.get() || 0.8) + dv));
+  sdrVolume.set(next);
   const inp = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
-  if (!inp) return;
-  inp.value = String(Math.max(0, Math.min(2, (parseFloat(inp.value) || 0.8) + dv)));
+  if (inp) inp.value = String(next);
   applySdrDemod();
 }
 import { plotRect as plotRectPub } from '../render/plot';
