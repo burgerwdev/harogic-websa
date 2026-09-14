@@ -17,6 +17,15 @@
 - Use `rta_health.error_streak/recovery_attempts` to diagnose a stalled RTA stream.
 - While a harmonic/PNM measurement is active, SWP-owned commands (frequency, Ref, RBW, VBW, sweep, points, spur, window, gain, reference clock) are rejected with an explicit error so the session cannot be disturbed; in RTA, FFT window/points/spur are also SWP-only.
 
+## SDR audio
+
+- **Audio on is the user's preference and it survives a trip to another mode**: leaving SDR stops the
+  audio pipeline, not the setting, so coming back with audio on applies it again (it used to be
+  written off on the way out, which turned "on" into "off" for good). The state is persisted, so it
+  also survives a page reload; **Preset** is the one action that restores the factory default (off).
+- Button label, pipeline state and ring-buffer diagnostics are all visible:
+  `#spectrum.dataset.sdrAudio` reads `enabled=... muted=... buffered_ms=... underruns=... rms=...`.
+
 ## Reference Level
 
 - Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.

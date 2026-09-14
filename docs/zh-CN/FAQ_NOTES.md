@@ -17,6 +17,14 @@
 - `rta_health.error_streak/recovery_attempts` 可用于排查 RTA 停更。
 - harmonic/PNM 测量进行中，SWP 专用命令（频率/Ref/RBW/VBW/Sweep/Points/Spur/Window/增益/参考时钟）会被拒绝并返回明确错误，避免打断测量会话；RTA 下 FFT 窗口/点数/杂散抑制同样只能用于 SWP。
 
+## SDR 音频
+
+- **「音频开」是用户的偏好，切换模式后依然保持**：离开 SDR 只停止音频通路，不改这个设置，因此带着「开」
+  回到 SDR 会重新启用（过去在离开时被写成「关」，于是「开」永久变成了「关」）。该状态会被持久化，刷新
+  页面也保留；**Preset** 是唯一恢复出厂默认（关）的操作。
+- 按钮文字、通路状态与环形缓冲诊断都可直接查看：
+  `#spectrum.dataset.sdrAudio` 内容为 `enabled=... muted=... buffered_ms=... underruns=... rms=...`。
+
 ## Reference Level
 
 - Manual Ref 会实际配置当前 SWP/RTA Profile，不只是改变显示范围。
