@@ -306,6 +306,8 @@ nobody can tell "deliberate" from "silent regression".
 | IF-overflow warning invisible | It is drawn only in the frame loop, and an overflow has no frames | Repaint on state transitions | `status.test` case |
 | Bench reported false 2.5x/1.9x CPU regressions | Leftover device configuration/signal; single-sample noise | Fixed configuration, clean state, re-measure before judging | bench determinism + `device_warning` |
 | A commit with "test before implementation" | Tests were not run from a clean tree before committing | Every commit must pass the suite | per-commit worktree verification |
+| Auto announced a new Ref while the canvas and the Ref box kept the old value | A client-side "the user owns the scale now" flag blocked the automatic correction from moving the display, so only the device level changed | An automatic correction must reach everything the user sees (display + box + hint), or it must not be announced; protect a manual level with a *new-decision* test, not by refusing to follow corrections | e2e 9a2 (display + box), `refAutoScale.test.ts` (follows an automatic correction; a sticky target is not re-applied) |
+| Ref box showed a stale value after Auto | In SDR the box was projected from the client display ref *after* the backend level had been written, and in dB (relative) mode it was pinned to `0` | One owner per displayed value: the box shows the reference level in dBm (what Set sends); the relative axis top is a rendering detail | e2e 9a2, `status.test.ts` |
 | `./test.sh` failed on a clean checkout | Incomplete dependency declaration | Three files: runtime / dev / lock | CI installs in a clean environment |
 
 ---
