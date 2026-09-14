@@ -179,11 +179,16 @@ action with visible feedback, not a tracking toggle:
    very field it is adjusting reads as a bug (that is what the old tracking `Auto` did);
 5. background *safety* correction is separate, always armed, and rate-limited (IF overload, a trace that
    left the display window) - never something the user has to switch on;
-6. a DEVICE LIMIT is published once and read everywhere: the Ref range, the RTA span/points, the
+6. a mode's USER SETTINGS are preferences: persist them (`persistKey`) and re-apply them when the
+   mode is entered. A mode switch is not a reset - SDR re-derived its frequency, capture bandwidth
+   and demodulator from the swept view on every entry, so the setup the user had left there was
+   silently discarded. The deliberate gesture (Shift+click / band preset) is what hands something
+   over, and only a first run derives defaults;
+7. a DEVICE LIMIT is published once and read everywhere: the Ref range, the RTA span/points, the
    trigger range. Validation, the SDK profile, the auto-reference loop and the client all read the
    capability row (`caps` in STATUS / `config.ref_bounds`), never their own copy - this model was
    once clamped by three different literals (found while auditing hard-coded device values);
-7. a REFUSAL message is withdrawn the moment its reason stops being true, not when a timer runs out:
+8. a REFUSAL message is withdrawn the moment its reason stops being true, not when a timer runs out:
    "waiting for a trace" ends with the first trace, "no signal to fit" ends when the peak moves away
    from the level the decision was based on. Posting a statement about the measurement and then leaving
    it on screen after the measurement changed is how a message becomes noise (reported: the trace was
@@ -325,6 +330,8 @@ nobody can tell "deliberate" from "silent regression".
 | Ref 30 dBm "jumped" to 27 with no explanation | The device clamps the level to its own maximum (which depends on the attenuation it picks) and echoes it; the UI followed the echo silently | When a device echo differs from the request, say so (`req` vs `actual`) - the same rule as announcing a refusal | `status.test.ts` (clamp notice, once per distinct pair), FAQ |
 | The Ref range / RTA span lived as literals in three places | The capability row declared them, but `device.py`'s profile clamp, the Auto Ref loop and the client each kept their own copy | A device limit is published once (`caps` in STATUS, `config.ref_bounds`) and read everywhere; a test asserts the loop and the clamp follow the capability row | `test_config.py` (`ref_bounds`), `test_auto_reference.py` (target clamp follows caps), `test_device_state.py` (caps payload) |
 | A test asserted a device value with one sample ("30 -> 27") | Test data was mistaken for the property under test: the message had to follow the reported value | Assert the RELATIONSHIP (several pairs, or a value that changes), never one recorded number; a hard-coded implementation must fail the test | `status.test.ts` (data-driven pairs + "follows the device when the limit moves") |
+| SDR settings were re-derived from the swept view on every entry | The mode-entry path treated a mode switch as a fresh start (frequency from the sweep, demod from the band, decimate hard-coded), so the user's own tuning and listening setup were discarded | A mode's user settings are PREFERENCES: persist them and re-apply them on entry; the deliberate gesture (Shift+click / band preset) is what hands a frequency over, and only a first run derives defaults | e2e `state_regression` 5 (setup survives a round trip, Shift+click still hands off), `status.test.ts` (audio preference survives), FAQ |
+| Shift+click into SDR landed on the wrong frequency | `listenAtFreq` set only the capture centre; the previous listen frequency stayed, and the backend re-centred the capture to chase it (measured: click at 216 MHz landed at 987 MHz) | "Listen here" means BOTH the capture centre and the listen frequency; a hand-off that sets half of a pair is a bug waiting for the other half | e2e `state_regression` 5 (`Shift+click hands that frequency to SDR`) |
 | `./test.sh` failed on a clean checkout | Incomplete dependency declaration | Three files: runtime / dev / lock | CI installs in a clean environment |
 
 ---

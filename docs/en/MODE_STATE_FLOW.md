@@ -143,6 +143,12 @@ On the tested hardware, Internal/External and Clock Output On/Off commands respo
 
 ### Auto
 
+Entering SDR restores the user's own SDR setup (tuning, capture bandwidth, demodulator, IF bandwidth,
+de-emphasis, volume, squelch, AGC): it is persisted and re-applied, because a mode switch is not a
+reset. The swept-centre hand-off belongs to the explicit gesture (Shift+click / a peak "listen
+here"), which sets BOTH the capture centre and the listen frequency, and to a first run (nothing
+stored yet), which also derives the demodulator/IF bandwidth from the band.
+
 1. `AUTO_SCALE` (or the legacy `SET_REF {mode:auto}`) runs ONE placement from the newest trace; there is no tracking mode to latch, so `ref_mode` stays `manual`.
 2. The fit applies nothing when the placement is already good (noise floor 4-12 dB above the bottom edge and >= 8 dB of headroom for the peak): pressing Auto on a settled display must not reconfigure the device.
 3. Otherwise it targets the noise floor just above the bottom of the display window with >= 10 dB of headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB, never below a learned IF-saturation floor or -50 dBm; range is -50 through +30 dBm.

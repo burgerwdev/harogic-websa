@@ -17,6 +17,21 @@
 - Use `rta_health.error_streak/recovery_attempts` to diagnose a stalled RTA stream.
 - While a harmonic/PNM measurement is active, SWP-owned commands (frequency, Ref, RBW, VBW, sweep, points, spur, window, gain, reference clock) are rejected with an explicit error so the session cannot be disturbed; in RTA, FFT window/points/spur are also SWP-only.
 
+## SDR settings
+
+- **Your SDR setup is kept**: the tuning (capture centre + listen frequency), the capture
+  bandwidth (decimate), the demodulator, the IF bandwidth, de-emphasis, volume, squelch and AGC all
+  survive leaving the mode, a page reload and a service restart. A mode switch is not a reset; it
+  used to re-derive everything from the swept view, which discarded what you had left in SDR.
+- **The frequency is handed over explicitly**: Shift+click on the spectrum (or a peak/marker
+  "listen here") enters SDR *at that frequency*; the band presets (FM / AIR / VHF / UHF) set the
+  whole listening setup for a band. A plain return to SDR restores your own tuning instead.
+- **A first run picks sensible defaults**: with nothing stored yet, entering SDR follows the swept
+  centre and derives the demodulator/IF bandwidth from the band (WFM/180 kHz on FM broadcast, AM/25
+  kHz in the airband). Once you have chosen, your choice is what is restored.
+- **Preset** restores the factory defaults and clears the stored SDR preferences, so "defaults"
+  really means defaults.
+
 ## SDR audio
 
 - **Audio on is the user's preference and it survives a trip to another mode**: leaving SDR stops the
