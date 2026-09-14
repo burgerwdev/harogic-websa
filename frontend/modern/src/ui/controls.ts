@@ -2,8 +2,7 @@
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
-import { resetSdrAutoRef } from '../core/sdrAutoRef';
-import { requestSdrEntryFit } from './refAutoScale';
+import { requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { sdrCenterHz, sdrDecimate, sdrAudioOn, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, estimatedCaptureSpanHz, renderSdrState, resetSdrState } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
@@ -164,12 +163,11 @@ export function syncGraphModeStatus(mode: string) {
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
   if (isSdr) {
-    resetSdrAutoRef();
     deferSdrAudioPreference();
-    // Entering SDR always fits the display reference once: the swept level is meaningless for
-    // an IQS panadapter (often 0 dBm against a -100 dBm floor), which is what produced the
-    // reported "Preset -> SDR spectrum overflows the canvas". The fit happens on the first
-    // plausible frame, so it uses a real trace instead of a guess.
+    // Entering SDR always fits the reference once: the swept level is meaningless for an IQS
+    // panadapter (often 0 dBm against a -100 dBm floor), which is what produced the reported
+    // "Preset -> SDR spectrum overflows the canvas". The backend needs a trace, so the client
+    // asks for the fit as soon as frames arrive (same AUTO_SCALE command as the other modes).
     requestSdrEntryFit();
   } else {
     setSdrAudioEnabled(false);
@@ -493,7 +491,7 @@ export function presetAll() {
   // frequency.
   resetSdrState();
   renderSdrState();
-  resetSdrAutoRef();
+  resetAutoScaleState();               // the reference is about to be reset: forget the last fit
   send({ cmd: 'SET_PRESET' });
   updateInfoBar(); applyMeasUI(); requestRender();
 }

@@ -178,10 +178,26 @@ def test_safety_fit_is_rate_limited(clock):
 
 
 def test_safety_fit_needs_a_supported_mode(clock):
+    """Harmonic/PNM sweeps own the device, so their observations are ignored."""
     dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-98.0, floor=-108.0, mode='sdr')
+    observe(dev, ctl, peak=-98.0, floor=-108.0, mode='harmonic')
     assert ctl.pending is None
+
+
+def test_sdr_is_fitted_with_the_same_rule(clock):
+    """SDR has its own tracker, driving the IQS level (the client applies the display scale)."""
+    dev = StubDevice(ref_level=-20.0, ref_range_db=100.0, mode='sdr')
+    dev.session = Session()
+    dev.session.name = 'sdr'
+    dev.session.reconfigure = dev.session._configure
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-30.0, floor=-95.0, mode='sdr')
+    assert ctl.pending is None                   # observing alone never moves the level
+    assert ctl.fit('sdr') == ('applied', 0.0)
+    assert ctl.view('std')['last_peak'] is None  # the SDR tracker is its own
+    ctl.apply_pending()
+    assert dev.state.ref_level == 0.0
 
 
 # ---------------- IF overflow escape ----------------
@@ -207,7 +223,7 @@ def test_overflow_escape_works_with_manual_attenuation_and_manual_ref(clock):
 
 
 def test_overflow_nudge_still_needs_a_supported_mode():
-    dev = StubDevice(status_warning=-12, mode='sdr')
+    dev = StubDevice(status_warning=-12, mode='harmonic')
     assert AutoReferenceController(dev).nudge_out_of_overflow() is False
 
 
@@ -336,3 +352,15 @@ def test_a_fit_result_survives_the_settle_it_causes(clock):
     assert ctl.view('std')['target'] == 0.0
     ctl.reset('std')                             # a mode switch/preset is a real reset
     assert ctl.view('std')['result'] == 'idle'
+
+
+def test_a_pending_fit_is_dropped_by_a_manual_takeover(clock):
+    """Measured in SDR: a safety fit queued a moment earlier landed on the level the user set."""
+    dev = StubDevice(ref_level=-20.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-30.0, floor=-95.0)
+    ctl.fit('std')
+    assert ctl.pending == ('std', 0.0)
+    ctl.reset('std')                      # the manual SET_REF path does this
+    assert ctl.apply_pending() is False   # the queued level must not be written
+    assert dev.state.ref_level == -20.0

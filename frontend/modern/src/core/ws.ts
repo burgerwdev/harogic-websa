@@ -33,7 +33,7 @@ import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { refLevel } from '../ui/refState';
-import { maybeFitSdrFrame, syncAutoScaleStatus } from '../ui/refAutoScale';
+import { maybeRequestSdrFit, syncAutoScaleStatus } from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
@@ -191,10 +191,10 @@ export function connectWS() {
       const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
       if (!plausible && !settleOver) return;    // settle window only: drop quietly
       if (!plausible) S.setBadData(true);       // past it, show the data and say so
-      // SDR: the SWP reference level is meaningless (often 0 dBm) and would squash a
-      // -100 dBm noise floor onto the bottom edge. Auto Scale fits the display once, on
-      // request (entering SDR asks for one fit); nothing here runs unattended any more.
-      if (currentGraphMode() === 'sdr') maybeFitSdrFrame(spec);
+      // SDR: the swept reference level is meaningless here (often 0 dBm against a -100 dBm
+      // noise floor), so entering the mode asks the backend for one fit; the client applies the
+      // reported target to the display scale (see ui/refAutoScale.ts). Nothing runs unattended.
+      if (currentGraphMode() === 'sdr') maybeRequestSdrFit();
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.

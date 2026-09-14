@@ -105,6 +105,8 @@ def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
 
 class SdrSession(MeasurementSession):
     name = 'sdr'
+    #: SDR drives its own reference tracker (its level is the IQS level, not a swept profile).
+    auto_ref_scope = 'sdr'
 
     PAN_FFT = 2048
     PAN_MIN_INTERVAL = 1.0 / 20.0      # panadapter/waterfall ~20 fps
@@ -948,6 +950,14 @@ class SdrSession(MeasurementSession):
                         self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
                 if res is not None:
                     freq, spec, row = res
+                    finite = spec[np.isfinite(spec)]
+                    if finite.size:
+                        # Same observation the swept paths hand the reference loop, so an SDR
+                        # Auto Scale uses the identical placement rule.
+                        floor_index = int((finite.size - 1) * 0.3)
+                        dev.observe_reference_peak(
+                            'sdr', float(np.max(finite)),
+                            float(np.partition(finite, floor_index)[floor_index]))
                     frames.append(encode_rta(dev.state.freq_version, freq, spec, row,
                                               65535, s.sdr_actual['start'],
                                               s.sdr_actual['stop']))

@@ -248,6 +248,8 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     'AUTO_SCALE': (
         ParamSpec('range_db', 'number', REF_RANGE_DB_MIN, REF_RANGE_DB_MAX, unit='dB'),
+        # The level the user is looking at (the display scale is client-side in SDR).
+        ParamSpec('current_ref', 'number', REF_MIN, REF_MAX, unit='dBm'),
     ),
     'SET_RBW': (
         ParamSpec('mode', 'choice', choices=('manual', 'auto'), default='auto'),
@@ -533,19 +535,18 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
     if 'range_db' in data:
         s.ref_range_db = float(data['range_db'])
     session = dev.session
+    if mode == 'auto':
+        # Legacy spelling of the one-shot fit (presets and scripts sent it). There is no
+        # tracking mode any more: quoting "auto" must not leave a mode latched on. In SDR the
+        # client applies the reported target to its display reference.
+        return await _run_auto_scale(ctx)
     if session is not None and session.name == 'sdr':
-        # The SDR display scale is client-side, so there is no fit to run here: 'auto' means
-        # "re-apply the current level" (the client does the display fit itself).
         if 'ref' in data:
             s.ref_level = data['ref']
         s.ref_mode = 'manual'
-        dev.reset_auto_reference('std')     # a manual level ends any fit's authorship
+        dev.reset_auto_reference('sdr')     # a manual level ends any fit's authorship
         await ctx.hw_call(session.reconfigure)
         return True
-    if mode == 'auto':
-        # Legacy spelling of the one-shot fit (presets and scripts sent it). There is no
-        # tracking mode any more: quoting "auto" must not leave a mode latched on.
-        return await _run_auto_scale(ctx)
     if session is not None and session.name == 'rta':
         await ctx.hw_call(session.set_reference, mode='manual', ref=data.get('ref'))
         return True
@@ -558,19 +559,21 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
     return True
 
 
-async def _run_auto_scale(ctx: CommandContext) -> bool:
+async def _run_auto_scale(ctx: CommandContext, current: float | None = None) -> bool:
     """One-shot reference placement; returns whether the configuration changed."""
     dev = ctx.dev
-    if dev.state.mode not in ('std', 'rta'):
+    if dev.state.mode not in ('std', 'rta', 'sdr'):
         return False
-    result, _target = dev.auto_scale(dev.auto_reference_scope())
-    return result == 'applied'
+    result, _target = dev.auto_scale(dev.auto_reference_scope(), current)
+    # The client must re-read `auto_ref.target` (SDR applies it to the display scale), so a STATUS
+    # push is needed even when the device itself was not reconfigured.
+    return result != 'no_data'
 
 
 async def _h_auto_scale(ctx: CommandContext, data: dict) -> bool:
     if 'range_db' in data:
         ctx.state.ref_range_db = float(data['range_db'])
-    return await _run_auto_scale(ctx)
+    return await _run_auto_scale(ctx, data.get('current_ref'))
 
 
 async def _h_set_rbw(ctx: CommandContext, data: dict) -> bool:

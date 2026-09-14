@@ -183,8 +183,8 @@ class ScaleDevice(StubDevice):
         self.configured += 1
         return True, 'ok'
 
-    def auto_scale(self, mode):
-        return self.auto_ref.fit(mode)
+    def auto_scale(self, mode, current=None):
+        return self.auto_ref.fit(mode, current)
 
     def apply_pending_auto_reference(self):
         return self.auto_ref.apply_pending()
@@ -203,13 +203,16 @@ async def test_auto_scale_places_the_reference_once():
     assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
     assert dev.auto_ref.pending == ('std', 0.0)
 
-    # Applied, then a second press on a well-placed trace must not re-enter the device.
+    # Applied, then a second press on a well-placed trace must not re-enter the device. The
+    # command still reports (a STATUS push carries `result: ok` to the UI), but nothing moves.
     assert dev.apply_pending_auto_reference()
     assert dev.state.ref_level == 0.0
+    assert dev.configured == 1
     dev.observe_reference_peak('std', -25.0, -95.0)
-    assert not await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
     assert dev.auto_ref.pending is None
     assert dev.auto_ref.view('std')['result'] == 'ok'
+    assert dev.configured == 1                    # no second reconfiguration
 
 
 @pytest.mark.asyncio
@@ -231,9 +234,61 @@ async def test_auto_scale_is_rejected_while_a_measurement_owns_the_device():
 
 
 @pytest.mark.asyncio
-async def test_auto_scale_in_sdr_changes_nothing():
-    """The SDR display scale belongs to the client, so the backend fit is a no-op there."""
+async def test_auto_scale_judges_the_level_the_client_shows():
+    """In SDR the display scale is client-side, so the fit must use the visible level.
+
+    Measured on the fake backend: the device level was well placed while the display was clipped,
+    so judging by the device level answered 'ok' and pressing Auto appeared to do nothing.
+    """
+    dev = ScaleDevice()
+    dev.observe_reference_peak('std', -30.0, -95.0)
+    dev.state.ref_level = 0.0
+    # The device level is fine, but the client shows -40 dBm (the trace is clipped at the top).
+    assert await _dispatch(dev, 'AUTO_SCALE',
+                           {'cmd': 'AUTO_SCALE', 'range_db': 100.0, 'current_ref': -40.0})
+    assert dev.auto_ref.view('std')['result'] == 'applied'
+    assert dev.auto_ref.view('std')['target'] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_rejects_a_current_ref_outside_the_device_range():
+    dev = ScaleDevice()
+    with pytest.raises(CommandError):
+        await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'current_ref': -120.0})
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_works_in_sdr_through_the_same_command():
+    """The SDR fit goes through AUTO_SCALE like the other modes (one implementation).
+
+    The client applies the reported target to its display scale; the device level is only
+    written when it is off by more than the dead band.
+    """
     dev = ScaleDevice()
     dev.state.mode = 'sdr'
-    assert not await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE'})
-    assert dev.auto_ref.pending is None
+
+    class SdrSession:
+        name = 'sdr'
+        auto_ref_scope = 'sdr'
+        reconfigures = 0
+
+        def reconfigure(self):
+            self.reconfigures += 1
+
+    dev.session = SdrSession()
+    assert not await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE'})   # no trace yet
+    assert dev.auto_ref.view('sdr')['result'] == 'no_data'
+
+    dev.observe_reference_peak('sdr', -30.0, -95.0)
+    assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
+    assert dev.auto_ref.pending == ('sdr', 0.0)
+    assert dev.state.ref_level == -20.0                    # not applied yet
+    assert dev.apply_pending_auto_reference()
+    assert dev.state.ref_level == 0.0
+    assert dev.session.reconfigures == 1
+
+    # A fitted level within the dead band of the device level must not touch IQS at all
+    # (that write interrupts the audio), while the target is still reported.
+    dev.auto_ref.pending = ('sdr', 2.0)
+    assert not dev.apply_pending_auto_reference()
+    assert dev.session.reconfigures == 1

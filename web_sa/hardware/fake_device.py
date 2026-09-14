@@ -199,8 +199,8 @@ class FakeDevice:
     def apply_pending_auto_reference(self) -> bool:
         return self.auto_ref.apply_pending()
 
-    def auto_scale(self, mode: str) -> tuple[str, float | None]:
-        return self.auto_ref.fit(mode)
+    def auto_scale(self, mode: str, current: float | None = None) -> tuple[str, float | None]:
+        return self.auto_ref.fit(mode, current)
 
     def auto_reference_scope(self) -> str:
         return getattr(self.session, 'auto_ref_scope', 'std')

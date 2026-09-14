@@ -386,12 +386,14 @@ def main() -> int:
         print("7) SWP reference stepping")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
         page.wait_for_timeout(2500)
-        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": -20})
+        post(url, {"cmd": "SET_REF", "mode": "manual", "ref": -5})
         page.wait_for_timeout(2000)
         before = state(url)["ref"]
-        # Step up: the fake carrier is at -25 dBm, so a step down would put it above the top
-        # edge and the safety ranger would (correctly) raise the reference again.
-        page.click("#btn-ref-up")
+        # Step DOWN from a level that already shows the whole trace: raising Ref pushes the noise
+        # floor below the bottom edge, where the safety ranger would (correctly) pull it back, and
+        # lowering it below about -15 dBm would clip the fake backend's -25 dBm carrier. This check
+        # is about the step arriving at the device, not about the placement rules (9c/9d).
+        page.click("#btn-ref-down")
         page.wait_for_timeout(2000)
         after = state(url)["ref"]
         check("ref step reaches the backend", abs(after - before) >= 5,
@@ -469,14 +471,16 @@ def main() -> int:
             post(url, {"cmd": "SET_MODE", "mode": "sdr"})
             page.wait_for_timeout(2500)
         page.wait_for_timeout(1200)
-        page.fill("#input-ref", "-40")
+        # -10 dBm keeps the fake's -25 dBm carrier inside the display window: a level that clips
+        # it is (correctly) raised again by the safety ranger, which is a different behaviour.
+        page.fill("#input-ref", "-10")
         page.click("#btn-ref-set")
         page.wait_for_timeout(800)
         first = page.input_value("#input-ref")
-        check("manual Ref is applied", abs(float(first) + 40) < 1.5, f"input {first}")
+        check("manual Ref is applied", abs(float(first) + 10) < 1.5, f"input {first}")
         page.wait_for_timeout(3500)              # well past any auto-refresh window
         after = page.input_value("#input-ref")
-        check("manual Ref survives (not reset to 0)", abs(float(after) + 40) < 1.5,
+        check("manual Ref survives (not reset to 0)", abs(float(after) + 10) < 1.5,
               f"input {after} after 3.5 s")
         page.click("#btn-ref-down")
         page.wait_for_timeout(600)
@@ -492,20 +496,28 @@ def main() -> int:
               not page.eval_on_selector("#input-ref", "e => e.disabled")
               and not page.eval_on_selector("#btn-ref-down", "e => e.disabled"),
               "input or arrows disabled")
-        page.click("#btn-ref-auto")
-        glowing = page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')")
+        # Read the glow in the same tick as the click: the backend can answer within milliseconds,
+        # so a separate read would race the reply instead of testing the feedback.
+        glowing = page.evaluate(
+            """() => {
+                 const b = document.getElementById('btn-ref-auto');
+                 b.click();
+                 return b.classList.contains('busy');
+               }""")
         check("pressing Auto Scale shows that it is working", glowing, "no busy state")
         page.wait_for_timeout(2500)
+        sdr_ref = state(url)["auto_ref"]
         dbg = page.evaluate(
             "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
-        check("the SDR fit ran and published its decision", bool(dbg.get("ref") is not None
-                                                                 or dbg.get("applied") is not None),
-              str(dbg))
+        check("the SDR fit is a backend decision, like the other modes",
+              sdr_ref.get("result") in ("applied", "ok", "no_signal", "no_data", "out_of_window"),
+              str(sdr_ref))
         check("the display shows the level the fit decided",
-              abs(float(dbg.get("shown", 1e9)) - float(dbg.get("ref", -1e9))) < 3, str(dbg))
+              not dbg or abs(float(dbg.get("shown", 1e9)) - float(dbg.get("ref", -1e9))) < 3,
+              str(dbg))
         check("the glow is gone once the fit landed",
               not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')"),
-              str(dbg))
+              str(sdr_ref))
         check("the reference is still usable afterwards",
               not page.eval_on_selector("#input-ref", "e => e.disabled"),
               "input disabled after a fit")

@@ -7,7 +7,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDisplayRef, setDisplayRef } from '../ui/displayRef';
-import { resetGraphMode } from '../ui/graphMode';
+import { graphMode, resetGraphMode } from '../ui/graphMode';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { setWS } from '../core/wsSend';
@@ -15,8 +15,9 @@ import {
 	autoScaleBusy,
 	autoScaleRequest,
 	clearAutoScaleHint,
-	maybeFitSdrFrame,
+	maybeRequestSdrFit,
 	requestSdrEntryFit,
+	resetAutoScaleState,
 	syncAutoScaleStatus,
 } from '../ui/refAutoScale';
 import { refLevel } from '../ui/refState';
@@ -35,6 +36,7 @@ function status(auto_ref: Record<string, unknown>) {
 beforeEach(() => {
 	document.body.replaceChildren();
 	resetAll();
+	resetAutoScaleState();
 	resetGraphMode();
 	setDisplayRef('preset', 0);
 	openSocket();
@@ -45,7 +47,10 @@ beforeEach(() => {
 describe('SWP/RTA Auto Scale', () => {
 	it('asks the backend for one fit and carries the window height', () => {
 		autoScaleRequest();
-		expect(sent).toEqual([{ cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv }]);
+		expect(sent).toEqual([{
+			cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
+			current_ref: getDisplayRef(),          // the level the user is looking at
+		}]);
 		expect(autoScaleBusy()).toBe(true);
 	});
 
@@ -54,16 +59,30 @@ describe('SWP/RTA Auto Scale', () => {
 		const hint = document.createElement('span');
 		hint.id = 'ref-hint';
 		document.body.appendChild(hint);
-		status({ adjusting: false, result: 'applied', target: -10 });
+		// A decision is "new" when its sequence number moves: a sticky old result must not clear
+		// the glow while the press is still in flight.
+		status({ adjusting: false, result: 'applied', target: -10, seq: 1 });   // the old decision
+		autoScaleRequest();
+		status({ adjusting: false, result: 'applied', target: -10, seq: 1 });   // still sticky
+		expect(autoScaleBusy()).toBe(true);
+		status({ adjusting: false, result: 'applied', target: -10, seq: 2 });   // the new answer
 		expect(autoScaleBusy()).toBe(false);
 		expect(hint.textContent).toBe('Ref \u2192 -10 dBm');
+	});
+
+	it('announces a level whenever one was applied, including a safety correction', () => {
+		const hint = document.createElement('span');
+		hint.id = 'ref-hint';
+		document.body.appendChild(hint);
+		status({ adjusting: false, result: 'out_of_window', target: -35, seq: 3 });
+		expect(hint.textContent).toBe('Ref \u2192 -35 dBm');
 	});
 
 	it('explains a refusal instead of doing nothing', () => {
 		const hint = document.createElement('span');
 		hint.id = 'ref-hint';
 		document.body.appendChild(hint);
-		status({ adjusting: false, result: 'no_signal' });
+		status({ adjusting: false, result: 'no_signal', seq: 1 });
 		expect(hint.textContent).toBe('No signal to fit');
 	});
 
@@ -72,12 +91,12 @@ describe('SWP/RTA Auto Scale', () => {
 		btn.id = 'btn-ref-auto';
 		document.body.appendChild(btn);
 		autoScaleRequest();
-		syncAutoScaleStatus({ auto_ref: { adjusting: true, result: 'applied' } });
+		syncAutoScaleStatus({ auto_ref: { adjusting: true, result: 'applied', seq: 1 } });
 		expect(btn.classList.contains('busy')).toBe(true);
 		expect(autoScaleBusy()).toBe(true);
 		// A status that does not belong to a press must not start a glow of its own.
 		clearAutoScaleHint();
-		syncAutoScaleStatus({ auto_ref: { adjusting: true, result: 'applied' } });
+		syncAutoScaleStatus({ auto_ref: { adjusting: true, result: 'applied', seq: 2 } });
 		expect(btn.classList.contains('busy')).toBe(false);
 	});
 
@@ -92,48 +111,49 @@ describe('SWP/RTA Auto Scale', () => {
 });
 
 describe('SDR Auto Scale', () => {
-	it('fits once on request and then leaves the display alone', () => {
-		resetGraphMode();
-		// Entering SDR asks for the fit; the first plausible frame answers it.
+	it('uses the same command as the other modes, and follows the reported target', () => {
+		graphMode.confirm('sdr');
+		// Entering SDR asks the backend as soon as frames arrive.
 		requestSdrEntryFit();
-		const frame = new Float32Array(1000).fill(-100);
-		for (let i = 480; i < 520; i++) frame[i] = -20;
-		maybeFitSdrFrame(frame);
-		const fitted = getDisplayRef();
-		expect(fitted).toBeGreaterThan(-160);      // the trace was placed in the window
+		maybeRequestSdrFit();
+		expect(sent.filter(m => m.cmd === 'AUTO_SCALE').length).toBe(1);
 
-		// A later frame with a much louder signal must NOT move the display by itself.
-		const louder = new Float32Array(1000).fill(-60);
-		maybeFitSdrFrame(louder);
-		expect(getDisplayRef()).toBe(fitted);
-	});
-
-	it('leaves a signal-free frame alone', () => {
-		requestSdrEntryFit();
-		maybeFitSdrFrame(new Float32Array(1000).fill(-200));
-		expect(getDisplayRef()).toBe(0);
-	});
-
-	it('writes the device level only when it is off, so the audio is not interrupted', () => {
-		requestSdrEntryFit();
-		const frame = new Float32Array(1000).fill(-100);
-		for (let i = 480; i < 520; i++) frame[i] = -20;
-		refLevel.set(0);                            // the device is already within 3 dB
-		maybeFitSdrFrame(frame);
-		const settled = getDisplayRef();
-		refLevel.set(settled);
-		requestSdrEntryFit();
-		maybeFitSdrFrame(frame);
-		// 'SET_REF' only appears for a level the device does not already have.
-		expect(sent.filter(m => m.cmd === 'SET_REF').length).toBeLessThanOrEqual(1);
-	});
-
-	it('a manual Ref edit ends the pending fit', () => {
-		requestSdrEntryFit();
+		// The backend fits and reports the target: the display scale follows it once.
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
+		});
+		expect(getDisplayRef()).toBe(-15);
+		// A sticky result must not overwrite a later manual Ref.
 		clearAutoScaleHint();
-		const frame = new Float32Array(1000).fill(-100);
-		for (let i = 480; i < 520; i++) frame[i] = -20;
-		maybeFitSdrFrame(frame);
-		expect(getDisplayRef()).toBe(0);
+		setDisplayRef('user', -40);
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
+		});
+		expect(getDisplayRef()).toBe(-40);
+	});
+
+	it('does not let an autonomous correction move a level the user just set', () => {
+		graphMode.confirm('sdr');
+		setDisplayRef('preset', -40);
+		clearAutoScaleHint();                    // a manual Ref edit takes the scale over
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'out_of_window', target: -10, seq: 5 },
+		});
+		expect(getDisplayRef()).toBe(-40);
+		// An explicit press claims it back.
+		autoScaleRequest();
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'applied', target: -10, seq: 6 },
+		});
+		expect(getDisplayRef()).toBe(-10);
+	});
+
+	it('does not write the display for a refusal', () => {
+		graphMode.confirm('sdr');
+		setDisplayRef('preset', -40);
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'no_signal', target: null, seq: 1 },
+		});
+		expect(getDisplayRef()).toBe(-40);
 	});
 });

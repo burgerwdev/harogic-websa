@@ -138,7 +138,7 @@ class FakeSdrSession(_FakeRtaBase):
     """SDR session emitting a synthetic panadapter (RTAF) plus 20 ms audio frames (AUDF)."""
 
     name = 'sdr'
-    auto_ref_scope = 'std'
+    auto_ref_scope = 'sdr'
 
     def enter(self) -> None:
         super().enter()
@@ -200,6 +200,10 @@ class FakeSdrSession(_FakeRtaBase):
         # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it
         bandwidth = 50e6 / max(1, int(s.sdr_decimate or 16))
         freq, spec = self._spectrum(center, bandwidth, SDR_PAN_POINTS)
+        finite = np.sort(spec[np.isfinite(spec)])
+        if finite.size:
+            self.dev.observe_reference_peak(
+                'sdr', float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
         s.sdr_actual = {
             'iq_rate': 62.5e6 / max(1, int(s.sdr_decimate or 16)),
             'bandwidth': bandwidth, 'iq_center': center,

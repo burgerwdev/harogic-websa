@@ -2,32 +2,47 @@
  * Auto Scale - one-shot reference placement (the Ref panel's Auto button).
  *
  * The reference used to be a tracking mode: the backend re-decided every frame and paid a full
- * device reconfiguration whenever the value changed. Measured on the bench, one correction
- * takes 1.86 s end to end and is a single step; after it the loop sat idle. So "Auto" is an
- * action, not a mode (as on a bench analyser: Keysight Auto Scale, R&S Auto Level, Anritsu
- * Auto Scale), and pressing it must show that something is happening - the old code gave no
- * feedback at all for those 1.86 s.
+ * device reconfiguration whenever the value changed. Measured on the bench, one correction takes
+ * 1.86 s while the loop sat idle afterwards, and nothing in the UI showed that anything was
+ * happening. So "Auto" is an action, not a mode (as on a bench analyser: Keysight Auto Scale,
+ * R&S Auto Level, Anritsu Auto Scale), and pressing it must show what it is doing.
  *
- * SWP/RTA: the backend owns the fit (`AUTO_SCALE`), because the target depends on the
- * reference semantics and the display window. SDR: the display scale is client-side, so the fit
- * happens here from the current frame - and entering SDR fits once automatically.
+ * One implementation, three modes: the backend runs the placement rule (`AUTO_SCALE`) - SDR
+ * included, where the target is still its IQS level. SDR's *display* scale is client-side, so this
+ * module applies the reported target to the display reference there; in SWP/RTA the displayed
+ * scale is the device reference, which the backend has already applied.
  */
-import { percentileApprox } from '../dsp/stats';
 import { t } from '../core/i18n';
 import { getDisplayRef, setDisplayRef } from './displayRef';
-import { refLevel } from './refState';
-import { resetSdrAutoRef } from '../core/sdrAutoRef';
 import { send } from '../core/wsSend';
 import * as S from '../core/store';
 import { currentGraphMode } from './graphMode';
+import { requestRender } from '../render/redraw';
 
 /** How long the button keeps glowing when the backend gives no answer at all. */
 const BUSY_FALLBACK_MS = 4000;
+/** SDR: the display fit is asked for on the first frame after entering the mode. */
+const ENTRY_FIT_MAX_ATTEMPTS = 12;
+/** ...and repeated at most this often while the backend has no trace yet. */
+const ENTRY_FIT_RETRY_MS = 500;
 
 let busyUntil = 0;
-/** Set when SDR is entered: the next plausible panadapter frame is fitted once. */
 let entryFitPending = false;
-let lastResult = 'idle';
+let entryFitAttempts = 0;
+let nextEntryAttempt = 0;
+/** The last decision the UI has seen (`auto_ref.seq`), so a sticky result is not mistaken for
+ * the answer to a press that is still in flight. */
+let lastSeq = -1;
+/** SDR: the target that was already written to the display reference. */
+let appliedTarget: number | null = null;
+/**
+ * SDR: does Auto own the display scale?
+ *
+ * True after entering the mode or pressing Auto. A manual Ref edit takes the scale over, and from
+ * then on only an explicit press may move it again - an autonomous safety correction updates the
+ * device level, not the level the user just chose.
+ */
+let ownDisplay = true;
 
 function button(): HTMLButtonElement | null {
 	return document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
@@ -47,139 +62,156 @@ function setBusy(on: boolean): void {
 	if (b) b.classList.toggle('busy', on);
 }
 
-/** Say what the fit decided (SWP/RTA learn it from STATUS, SDR knows it locally). */
+/** Say what the fit decided. The level is always named when one was applied. */
 function announce(result: string, target: unknown): void {
-	if (result === lastResult) return;
-	lastResult = result;
 	if (result === 'no_signal') hint(t('auto_scale_no_signal'), 6000);
 	else if (result === 'no_data') hint(t('auto_scale_no_data'), 6000);
 	else if (result === 'ok') hint(t('auto_scale_ok'), 2500);
-	else if (result === 'applied' && target != null) {
-		hint(`Ref \u2192 ${Math.round(Number(target))} dBm`, 2500);
+	else if (target != null) {
+		// 'applied', but also the automatic safety corrections ('out_of_window', 'overflow'):
+		// when the display moves on its own, the reason and the new level must be visible.
+		hint(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000);
 	}
 }
 
-/** True while a fit is in flight: drives the glow (the STATUS handler clears it). */
+/** True while a fit is in flight: drives the glow (cleared by the STATUS handler). */
 export function autoScaleBusy(): boolean {
 	return performance.now() < busyUntil;
 }
 
 /** The user pressed Auto Scale. */
 export function autoScaleRequest(): void {
-	if (currentGraphMode() === 'sdr') {
-		// Client-side and instant: fit the display on the next frame (the trace is the input).
-		entryFitPending = true;
-		resetSdrAutoRef();
-		lastResult = 'idle';
-		busyUntil = performance.now() + 800;
-		setBusy(true);
-		return;
-	}
-	// A new press is a new event: the same result as last time must be announced again.
-	lastResult = 'idle';
-	// range_db = the visible window height: the fit anchors the noise floor just above the
-	// bottom of that window, and the backend cannot see the client's dB/div setting.
-	send({ cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv });
+	// A press supersedes an entry fit that is still looking for a trace, and claims the display.
+	entryFitPending = false;
+	appliedTarget = null;
+	ownDisplay = true;
+	// range_db = the visible window height. The fit anchors the noise floor just above the bottom
+	// of that window, and the backend cannot see the client's dB/div setting.
+	send({
+		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
+		// The level the user sees: in SDR the display scale is client-side, and judging the fit
+		// against the device level instead left a clipped display unchanged (measured).
+		current_ref: getDisplayRef(),
+	});
 	busyUntil = performance.now() + BUSY_FALLBACK_MS;
 	setBusy(true);
 }
 
-/** Entering SDR always fits once (the previous reference may belong to a swept window). */
+/** Entering SDR asks for one fit as soon as a frame has been observed. */
 export function requestSdrEntryFit(): void {
 	entryFitPending = true;
-	resetSdrAutoRef();
-	lastResult = 'idle';
+	entryFitAttempts = 0;
+	nextEntryAttempt = 0;
+	appliedTarget = null;
+	ownDisplay = true;
 	busyUntil = performance.now() + 3000;
 	setBusy(true);
 }
 
 /**
- * One-shot SDR display fit, evaluated on the frame the user is looking at.
+ * Called for every SDR frame: place the reference once after entering the mode.
  *
- * The old continuous version smoothed the peak and the noise floor with EMAs and only acted
- * every 400 ms, because it had to keep a fading signal from moving the display. A one-shot fit
- * needs none of that: it is asked for once, so the current frame *is* the answer.
+ * The backend needs a trace to fit, so the request is repeated until it has one (or the attempt
+ * budget runs out, in which case the user can press Auto).
  */
-export function maybeFitSdrFrame(spec: Float32Array | null): void {
+export function maybeRequestSdrFit(): void {
 	if (!entryFitPending || currentGraphMode() !== 'sdr') return;
-	if (!spec || spec.length === 0) return;
-	let peak = -Infinity;
-	for (let i = 0; i < spec.length; i++) {
-		const v = spec[i];
-		if (v > peak && isFinite(v)) peak = v;
+	const now = performance.now();
+	if (now < nextEntryAttempt) return;          // one request per settle period, not per frame
+	if (entryFitAttempts++ >= ENTRY_FIT_MAX_ATTEMPTS) {
+		entryFitPending = false;
+		return;
 	}
-	if (!isFinite(peak)) return;
-	// Same 30th-percentile noise floor the backend uses for the swept fit. The old guard here
-	// (< -119 dBm) belonged to the EMAs of the continuous version and blocked the fit outright
-	// on a quiet bench; percentileApprox returns its -220 floor when a frame has no usable bin.
-	const noise = percentileApprox(spec, 0.3);
-	if (!isFinite(noise) || noise <= -210) return;
-	entryFitPending = false;
-	const range = S.totalDivs * S.dbPerDiv;
-	// Noise floor ~8 dB above the bottom; never clip the peak (>= 10 dB of headroom).
-	let ref = Math.max(noise + range - 8, peak + 10);
-	ref = Math.min(40, Math.max(-160, Math.ceil(ref / 5) * 5));
-	const before = Math.round(getDisplayRef());
-	const applied = Math.abs(ref - before) >= 3;
-	if (applied) setDisplayRef('auto', ref);
-	const shown = Math.round(getDisplayRef());
-	// The IQS chain needs a sane level too, but only when it is actually off: writing it
-	// reconfigures the capture and interrupts the audio.
-	const device = refLevel.get();
-	if (applied && Math.abs(ref - device) >= 3) send({ cmd: 'SET_REF', mode: 'manual', ref });
-	const cv = document.getElementById('spectrum');
-	if (cv) {
-		// `before` is the level the canvas had, `shown` the one it renders now: the pair is what
-		// makes "the decision is what the user sees" checkable from the outside.
-		cv.dataset.sdrRefDbg = JSON.stringify({
-			noise: Math.round(noise), peak: Math.round(peak), range,
-			ref: Math.round(ref), applied, before, shown,
-		});
-		if (applied) cv.dataset.sdrRef = String(ref);
-	}
-	// The fit is done (display ref written, device level sent when it was off): report it and
-	// keep the confirmation glow just long enough to be visible.
-	busyUntil = performance.now() + 600;
-	setBusy(true);
-	announce('applied', ref);
+	nextEntryAttempt = now + ENTRY_FIT_RETRY_MS;
+	send({
+		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
+		current_ref: getDisplayRef(),
+	});
+	busyUntil = now + BUSY_FALLBACK_MS;
 }
 
 /**
- * STATUS arrived: clear the glow and report what the fit decided.
+ * STATUS arrived: clear the glow, follow the decision in SDR and report the outcome.
  *
- * `auto_ref.result` is the backend's outcome for the last one-shot fit ('ok' = already placed
- * well, 'no_signal' = nothing to anchor to, 'no_data' = no trace yet). It is sticky, so only a
- * change is announced - otherwise the message would reappear after every unrelated status.
+ * `auto_ref.result` is sticky, so only a change is announced - otherwise the message would
+ * reappear after every unrelated status.
  */
 export function syncAutoScaleStatus(s: any): void {
 	const a = s?.auto_ref;
 	if (!a) return;
-	if (currentGraphMode() === 'sdr') {
-		// The SDR fit is client-side: its result was announced where it happened, so the
-		// swept tracker's (possibly stale) result must not speak for it.
-		setBusy(autoScaleBusy());
-		return;
-	}
-	if (a.adjusting) {
-		// A change is queued or still settling: keep glowing, but never extend the deadline -
-		// `adjusting` is also true for settle windows this press did not ask for.
-		setBusy(autoScaleBusy());
-		return;
-	}
 	const result = String(a.result ?? 'idle');
-	if (result === 'idle') {               // no decision to report yet
+	const target = a.target;
+	const seq = Number(a.seq ?? -1);
+
+	// While the device is still settling, a decision is not yet the final word: keep glowing and
+	// do not consume the sequence number, so the settled report is still treated as the answer.
+	if (a.adjusting) {
 		setBusy(autoScaleBusy());
 		return;
 	}
+	if (result === 'idle' || seq === lastSeq) {
+		// No new decision: a press that is still in flight keeps its glow.
+		setBusy(autoScaleBusy());
+		return;
+	}
+	lastSeq = seq;
+
+	if (currentGraphMode() === 'sdr' && result !== 'no_data') {
+		// The backend answered, so the entry fit has done its job: without this the request was
+		// repeated on every frame, and each of those decisions cleared the button's glow.
+		entryFitPending = false;
+		const before = Math.round(getDisplayRef());
+		// The display scale belongs to the client: apply the level the backend fitted. Any
+		// decision that carries a target qualifies, including an automatic safety correction; an
+		// unchanged target is skipped so a sticky result cannot overwrite a later manual Ref, and
+		// `ownDisplay` keeps an autonomous correction away from a level the user just set.
+		const move = target != null && Number(target) !== appliedTarget && ownDisplay;
+		if (move) {
+			appliedTarget = Number(target);
+			setDisplayRef('auto', appliedTarget);
+		}
+		const cv = document.getElementById('spectrum');
+		if (cv) {
+			// `before`/`shown` make "the decision is what the user sees" checkable from outside;
+			// the record is written for every decision, so "nothing needed changing" is visible
+			// too (`applied: false`).
+			const shown = Math.round(getDisplayRef());
+			if (move) cv.dataset.sdrRef = String(shown);
+			cv.dataset.sdrRefDbg = JSON.stringify({
+				noise: a.last_noise_floor == null ? null : Math.round(a.last_noise_floor),
+				peak: a.last_peak == null ? null : Math.round(a.last_peak),
+				range: S.totalDivs * S.dbPerDiv,
+				ref: move ? shown : before, applied: move, before, shown,
+			});
+		}
+		if (move) requestRender();
+	}
+
 	busyUntil = 0;                         // the device answered: drop the local fallback
 	setBusy(false);
-	announce(result, a.target);
+	announce(result, target);
 }
 
-/** A manual Ref edit takes the level over: there is nothing left to report. */
-export function clearAutoScaleHint(): void {
-	lastResult = 'idle';
+/** Preset (or a fresh start): forget what Auto last did, so nothing stale blocks a new fit. */
+export function resetAutoScaleState(): void {
+	lastSeq = -1;
+	appliedTarget = null;
 	entryFitPending = false;
+	ownDisplay = true;
+	busyUntil = 0;
+	setBusy(false);
+}
+
+/**
+ * A manual Ref edit takes the level over.
+ *
+ * `appliedTarget` deliberately survives: the backend reports a sticky result, so a manual level
+ * must not be overwritten by the same old decision on the next STATUS. A new press clears it
+ * (see `autoScaleRequest`/`requestSdrEntryFit`), so a fresh fit can still land on that value.
+ */
+export function clearAutoScaleHint(): void {
+	entryFitPending = false;
+	ownDisplay = false;                    // the user owns the scale now
 	busyUntil = 0;
 	setBusy(false);
 }

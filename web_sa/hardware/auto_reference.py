@@ -57,6 +57,9 @@ SAFETY_INTERVAL_S = 2.0
 MIN_CHANGE_DB = 5.0
 #: Peak-to-noise ratio below which there is nothing worth anchoring to (inside the window).
 MIN_SIGNAL_DB = 15.0
+#: SDR: how far the fitted level must be from the device level before it is worth reconfiguring
+#: IQS (that write interrupts the audio, so a display-only fit stays free).
+SDR_DEVICE_DEADBAND_DB = 3.0
 
 
 def new_tracker() -> dict:
@@ -67,18 +70,32 @@ def new_tracker() -> dict:
         'ignore_until': 0.0,          # observations are stale until then (settle window)
         'floor': FLOOR_MIN_DBM,       # learned lower bound (IF saturation)
         'result': 'idle',             # last fit outcome, for the UI ('ok', 'no_signal', ...)
+        'seq': 0,                     # increments per DECISION, so the UI can tell a new answer
+                                      # from the sticky remainder of the previous one
     }
 
 
 class AutoReferenceController:
-    """Per-mode reference placement for the swept ('std') and RTA paths."""
+    """Per-mode reference placement for the swept ('std'), RTA and SDR paths.
 
-    MODES = ('std', 'rta')
+    SDR is included so that the fit has ONE implementation: the rule is the same whether the
+    reference is a swept profile level or an IQS level/display scale. The frontend still owns the
+    SDR *display* mapping, so it applies the reported target to its own display reference; the
+    device level is only written when it is actually off (that write reconfigures the capture and
+    interrupts the audio).
+    """
+
+    MODES = ('std', 'rta', 'sdr')
 
     def __init__(self, dev) -> None:
         self.dev = dev                      # provides state, _hw lock, configure_swp, session
         self._trackers = {mode: new_tracker() for mode in self.MODES}
         self._pending: tuple[str, float] | None = None
+        # Incremented by reset(): a queued update from before a manual takeover/mode change must
+        # not be applied afterwards (measured: a safety fit queued a moment earlier landed on top
+        # of the level the user had just set).
+        self._epoch = 0
+        self._pending_epoch = 0
         self._geometry_seen: dict[str, tuple | None] = {mode: None for mode in self.MODES}
 
     # ---------------- state access ----------------
@@ -103,6 +120,8 @@ class AutoReferenceController:
         if mode == 'rta':
             state.rta_ref_level = value
         else:
+            # 'std' and 'sdr' both keep the level the IQS/SWP profile uses (the SDR session
+            # saves and restores it with its snapshot).
             state.ref_level = value
 
     def window_db(self) -> float:
@@ -145,8 +164,12 @@ class AutoReferenceController:
 
     # ---------------- the user's Auto Scale ----------------
 
-    def fit(self, mode: str) -> tuple[str, float | None]:
+    def fit(self, mode: str, current: float | None = None) -> tuple[str, float | None]:
         """Place the reference once, from the newest trace. Returns (result, target).
+
+        `current` is the level the user is looking at. In SDR the display scale belongs to the
+        client, so the device level is not what the placement is judged against; passing the
+        visible level keeps the decision (and the reported target) about what is on screen.
 
         result: 'applied'    - one reconfiguration queued for `target`
                 'ok'         - already placed well, nothing changed
@@ -160,16 +183,20 @@ class AutoReferenceController:
             peak = tracker['last_peak']
             if peak is None:
                 tracker['result'] = 'no_data'
+                tracker['seq'] += 1
                 return 'no_data', None
             floor = tracker['last_noise_floor']
             floor = floor if (floor is not None and math.isfinite(floor)) else None
-            current = self.ref_level(mode)
+            if current is None or not math.isfinite(current):
+                current = self.ref_level(mode)
             kind, target = self._decide(peak, floor, current, self.window_db(), tracker)
             if kind == 'ok':
                 tracker['result'] = 'ok'
+                tracker['seq'] += 1
                 return 'ok', None
             if kind == 'no_signal':
                 tracker['result'] = 'no_signal'
+                tracker['seq'] += 1
                 return 'no_signal', None
             # An explicit user action overrides the settle window: the observation the user is
             # looking at is the one to fit, even if it arrived during a reconfiguration.
@@ -215,7 +242,9 @@ class AutoReferenceController:
         tracker['last_change'] = now
         tracker['last_target'] = target
         tracker['result'] = result
+        tracker['seq'] += 1
         self._pending = (mode, target)
+        self._pending_epoch = self._epoch
 
     # ---------------- retune safety ----------------
 
@@ -252,6 +281,9 @@ class AutoReferenceController:
             # The RTA profile takes its window from the same user setting as SWP.
             return (s.rta_center_hz, s.rta_span_hz, s.rta_rbw_hz, s.rta_vbw_hz,
                     s.window, getattr(s, 'rta_decimate', 0))
+        if mode == 'sdr':
+            # The saturation point follows the captured bandwidth (decimation) and the centre.
+            return (s.sdr_center_hz, getattr(s, 'sdr_decimate', 0), s.sdr_if_bw, 0, 0)
         return (s.center_hz, s.span_hz, s.rbw_hz, s.vbw_hz, s.window, 0)
 
     def begin_settle(self, mode: str, delay: float = 0.75) -> None:
@@ -266,8 +298,9 @@ class AutoReferenceController:
             self._rearm(mode, delay)
 
     def reset(self, mode: str) -> None:
-        """Forget observations after a mode switch or a preset (the trace is gone)."""
+        """Forget observations after a mode switch, a preset or a manual takeover."""
         with self.dev._hw:
+            self._epoch += 1
             self._rearm(mode, 0.25)
             # Nothing is pending and the last decision is no longer about this configuration.
             self._trackers[mode]['result'] = 'idle'
@@ -325,12 +358,26 @@ class AutoReferenceController:
             pending = self._pending
             if pending is None or pending[0] != self.dev.state.mode:
                 return False
+            if self._pending_epoch != self._epoch:
+                # Superseded by a manual takeover/mode change: dropping it is the whole point of
+                # the epoch (the user's level wins).
+                self._pending = None
+                return False
             self._pending = None
             mode, target = pending
             session = self.dev.session
             if mode == 'rta' and session is not None and session.name == 'rta':
                 self.dev.state.rta_ref_level = target
                 session._configure()
+            elif mode == 'sdr':
+                if session is None or session.name != 'sdr':
+                    return False
+                # The display scale is client-side, so a fit within a few dB of the device level
+                # needs no device traffic at all (reconfiguring IQS interrupts the audio).
+                if abs(target - self.dev.state.ref_level) < SDR_DEVICE_DEADBAND_DB:
+                    return False
+                self.dev.state.ref_level = target
+                session.reconfigure()
             elif mode == 'std':
                 self.dev.state.ref_level = target
                 ok, _ = self.dev.configure_swp()
@@ -349,6 +396,7 @@ class AutoReferenceController:
             'last_noise_floor': tracker.get('last_noise_floor'),
             'target': tracker.get('last_target'),
             'result': tracker.get('result', 'idle'),
+            'seq': tracker.get('seq', 0),
             'pending': pending[1] if pending else None,
             # True while a change is queued or still settling: drives the button's busy glow.
             'adjusting': pending is not None or time.monotonic() < tracker.get('ignore_until', 0.0),

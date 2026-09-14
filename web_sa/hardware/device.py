@@ -523,9 +523,9 @@ class HarogicDevice:
         """Use a safe Ref before changing frequency when a fit had lowered it."""
         return self.auto_ref.prepare_retune(mode)
 
-    def auto_scale(self, mode: str) -> tuple[str, float | None]:
+    def auto_scale(self, mode: str, current: float | None = None) -> tuple[str, float | None]:
         """Place the reference level once, from the newest trace (the user's Auto Scale)."""
-        return self.auto_ref.fit(mode)
+        return self.auto_ref.fit(mode, current)
 
     def auto_reference_scope(self) -> str:
         """Which tracker the active session drives ('std' for plain SWP)."""

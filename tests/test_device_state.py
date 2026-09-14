@@ -17,7 +17,7 @@ class StubDevice:
 
     def auto_reference_view(self) -> dict:
         return {'last_peak': None, 'last_noise_floor': None, 'target': None,
-                'result': 'idle', 'pending': None, 'adjusting': False}
+                'result': 'idle', 'seq': 0, 'pending': None, 'adjusting': False}
 
     def session_health(self) -> dict:
         return {}

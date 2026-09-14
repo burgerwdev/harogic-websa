@@ -186,6 +186,7 @@ def build_status(dev) -> dict:
             'last_noise_floor': auto_ref['last_noise_floor'],
             'target': auto_ref['target'],
             'result': auto_ref['result'],
+            'seq': auto_ref['seq'],
             'pending': auto_ref['pending'],
             'adjusting': auto_ref['adjusting'],
         },

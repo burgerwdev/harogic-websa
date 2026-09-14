@@ -69,7 +69,7 @@ def test_status_shape_is_independent_of_the_grouping():
 
         def auto_reference_view(self):
             return {'last_peak': None, 'last_noise_floor': None, 'target': None,
-                    'result': 'idle', 'pending': None, 'adjusting': False}
+                    'result': 'idle', 'seq': 0, 'pending': None, 'adjusting': False}
 
         def session_health(self):
             return {}
