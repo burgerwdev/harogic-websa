@@ -58,6 +58,19 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **已知坑**: `renderRta` 用外层 `save/clip(plotRect)` 包裹密度+迹线, 画底部频率行前必须
   `restore` —— 否则绘图区外的频率行被 clip 裁掉, 切到 RTA 后消失(已修复)
 
+## 注册点的可达性（import 副作用）
+
+有些模块在被导入时注册自己（`render/spectrum.ts` 注册渲染器、测量模块注册页签、i18n 命名空间合并）。
+**破坏循环依赖之后，"没有任何模块导入它"本身就是一个故障**：注册不会发生，功能静默失效
+（曾发生：渲染器未注册 → `requestRender()` 空转 → 画布全空，且没有任何异常或 console 报错）。
+
+因此：
+
+- 入口 `main.ts` 必须用**副作用 import** 拉入这些模块（例如 `import './render/spectrum';`）；
+- `tools/check_registrations.py` 从 `main.ts` 计算 import 可达性，任何"注册了但不可达"的模块都会让 `make ci` 失败；
+- 测试必须断言**用户可见结果**（画布像素、DOM 文本），而不是上游计数器/数据集：`dataset.rtaFrames` 只说明帧交给了渲染器，
+  不代表真的画出来了。e2e 现在会统计画布非透明像素（加载后、切到 RTA 后各一次）。
+
 ## 前端 DSP 引擎 (marker 寻峰寻谷)
 按现代频谱仪架构(Keysight/R&S 思路)实现, 位于 TypeScript DSP/渲染模块:
 - **S-G 平滑** `sgSmooth(src,w,adaptive)`: 2 阶 Savitzky-Golay + 梯度自适应

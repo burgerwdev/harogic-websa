@@ -53,6 +53,26 @@ def state(url: str) -> dict:
         return json.load(r)
 
 
+
+def painted_pixels(page) -> int:
+    """Number of non-transparent pixels on the spectrum canvas (0 = nothing drawn).
+
+    The regression used to assert frames/datasets only, so a renderer that was never
+    registered (the hub module lost its import) passed every check while the user saw a
+    blank canvas. Counting painted pixels is the direct check.
+    """
+    return page.evaluate(
+        """() => {
+          const c = document.getElementById('spectrum');
+          const g = c.getContext('2d');
+          const d = g.getImageData(0, 0, c.width, c.height).data;
+          let n = 0;
+          for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+          return n;
+        }"""
+    )
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}{('  <- ' + detail) if detail else ''}")
     if not ok:
@@ -93,6 +113,9 @@ def main() -> int:
 
         # 1 - tune
         print("1) tune")
+        painted = painted_pixels(page)
+        check("spectrum is actually drawn (renderer registered)",
+              painted > 5000, f"{painted} painted pixels")
         enter_sdr(page)
         page.fill("#input-sdr-center", "90.5")
         page.click('[data-action="apply-sdr"]')
@@ -295,6 +318,9 @@ def main() -> int:
         )
         check("RTA frames reach the renderer after entry", after_frames > before_frames,
               f"{before_frames} -> {after_frames}",)
+        painted_rta = painted_pixels(page)
+        check("the RTA view is actually drawn", painted_rta > 5000,
+              f"{painted_rta} painted pixels")
 
         # 7 - SWP/RTA reference level (the refPending -> slot migration)
         print("7) SWP reference stepping")

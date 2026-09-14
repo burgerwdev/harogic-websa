@@ -28,6 +28,7 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	python3 tools/sync_version.py --check
 	python3 tools/gen_frame_fixtures.py --check
 	python3 tools/check_dom_ids.py
+	python3 tools/check_registrations.py
 	python3 tools/check_docs_parity.py
 	python3 tools/quality/architecture_guard.py
 	./build.sh

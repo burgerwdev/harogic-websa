@@ -31,3 +31,12 @@ export function requestRender(): void {
 export function renderRequestCount(): number {
 	return requests;
 }
+
+/**
+ * True when a renderer is registered. The UI regression asserts this (and that pixels were
+ * actually painted): the hub registers itself only if `render/spectrum.ts` is imported, and
+ * a missing import once left the canvas blank with no error at all.
+ */
+export function hasRenderer(): boolean {
+	return renderer !== null;
+}

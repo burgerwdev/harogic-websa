@@ -273,6 +273,8 @@ def parse_args():
                         help='requested points for the measurement (fixed so runs compare)')
     parser.add_argument('--write-baseline', metavar='FILE')
     parser.add_argument('--check', metavar='FILE')
+    parser.add_argument('--no-retry', action='store_true',
+                        help='report a regression from a single sample instead of re-measuring once')
     return parser.parse_args()
 
 
@@ -289,6 +291,14 @@ def main() -> int:
     if args.check:
         baseline = json.loads(Path(args.check).read_text())
         problems = compare(result, baseline)
+        if problems and not args.no_retry:
+            # The machine is shared and CPU/frame-rate sampling is noisy (a single busy
+            # window produced a false 1.9x RTA-CPU "regression" once). Re-measure before
+            # reporting: a real regression is reproducible.
+            print('first measurement looked regressed; re-measuring once ...', file=sys.stderr)
+            result = asyncio.run(run(args))
+            print(json.dumps(result, indent=1))
+            problems = compare(result, baseline)
         if problems:
             print('bench regression:', file=sys.stderr)
             for problem in problems:

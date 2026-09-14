@@ -60,6 +60,25 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
   away and disappears after switching to RTA (fixed)
 
+## Reachability of registration points (import side effects)
+
+Some modules register themselves when imported (`render/spectrum.ts` registers the renderer,
+the measurement modules register their tabs, the i18n namespaces merge). **After breaking the
+cycles, "nothing imports it any more" is itself a failure**: the registration never runs and
+the feature dies silently (this happened: no renderer -> `requestRender()` was a no-op -> a
+blank canvas, with no exception and no console error).
+
+Therefore:
+
+- the entry point `main.ts` must pull those modules in with a **side-effect import**
+  (`import './render/spectrum';`);
+- `tools/check_registrations.py` computes import reachability from `main.ts`; a module that
+  registers but is unreachable fails `make ci`;
+- tests must assert the **user-visible result** (canvas pixels, DOM text), not an upstream
+  counter or dataset: `dataset.rtaFrames` only says a frame was handed to the renderer, not
+  that anything was drawn. The e2e now counts non-transparent canvas pixels after load and
+  after switching to RTA.
+
 ## State ownership (parameters use slots, results use a store)
 
 Frontend state falls into two kinds, and putting one in the wrong place is a bug class this

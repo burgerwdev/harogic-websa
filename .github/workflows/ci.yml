@@ -36,6 +36,8 @@ jobs:
         run: python tools/check_dom_ids.py
       - name: Bilingual docs keep the same section structure
         run: python tools/check_docs_parity.py
+      - name: Every module-scope registration is reachable from the entry point
+        run: python tools/check_registrations.py
       - name: Tests
         run: python -m pytest tests/ -q
 
