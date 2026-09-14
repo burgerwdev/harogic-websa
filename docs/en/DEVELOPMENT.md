@@ -1,4 +1,4 @@
-# Development Guide (v1.7.1)
+# Development Guide (v1.7.2)
 
 > **This is not a baseline standard but a working agreement that keeps improving.** It records
 > what actually went wrong during the 2026-09 architecture review and refactor, and the
