@@ -661,7 +661,7 @@ e2e（真机）仍全绿。
 | **B4** | 剩余单写者客户端偏好槽位化（8 项）+ 单位表改 `unitMap`；`dbPerDiv/levelUnit/currentGapFill` 按热路径规则有意保留 | `params.test.ts`（含 TTL 不回退）+ 真机 |
 | **C2** | 根目录 27 KB 临时 TODO 归档进受版本控制的文档后删除（结项结论→KNOWN_ISSUES 24–27，失败模式→DEVELOPMENT §3，诊断键→§11） | `check_docs_parity`（8 对）+ 文件已删 |
 | **C4** | bench 记录周期性 STATUS 的 `stream.clients`，多客户端时警告（此前只记录设备告警） | `make bench` |
-| **Auto Scale 一次性化** | Ref 的 "Auto" 改为一次性动作（`AUTO_SCALE`），带忙碌/结果提示；IF 溢出安全量程始终武装（手动衰减不再使其失效），离开窗口的迹线会自动拟合；峰值表门限改为每个几何只从鲁棒估计拟合一次。真机实测：点击→落定 0.11-0.12 s（原 1.86 s），第二次点击报 `ok` 且不重配 | `make ci`、`make e2e-fake`、`make hw-test` |
+| **Auto Scale 一次性化** | Ref 的 "Auto" 改为一次性动作（`AUTO_SCALE`），带忙碌/结果提示；IF 溢出安全量程始终武装（手动衰减不再使其失效），离开窗口的迹线会自动拟合；峰值表门限改为每个几何只从鲁棒估计拟合一次。真机实测：点击→落定 0.11-0.12 s（原 1.86 s），第二次点击报 `ok` 且不重配。SDR 也并到同一条 `AUTO_SCALE` 路径（此前在 TypeScript 里重复实现规则、STATUS 看不到）：后端按泛解析度迹线拟合，客户端把 target 应用到自己的显示刻度 | `make ci`、`make e2e-fake`、`make hw-test` |
 
 ### 9.2 客观进展（守卫指标，重构前 → 现在）
 

@@ -150,9 +150,13 @@ On the tested hardware, Internal/External and Clock Output On/Off commands respo
 5. A **safety ranger runs always**, independent of Atten and of whether Auto was ever pressed: IF overflow (-12) raises Ref one 5 dB step per second, and an out-of-window trace is fitted once with a 2 s rate limit.
 6. After a fit has lowered Ref, a Center change or cross-mode return raises it to 0 dBm before retuning.
 7. Every SWP/RTA reconfiguration clears stale observations and pauses them for 0.75 seconds.
-8. `auto_ref.last_peak/last_noise_floor/target/result/pending/adjusting` exposes diagnostics;
-   `adjusting` also drives the button's busy indication, and `result` names the outcome
-   (`applied`/`ok`/`no_signal`/`no_data`/`out_of_window`/`overflow`).
+8. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` exposes diagnostics;
+   `adjusting` also drives the button's busy indication, `result` names the outcome
+   (`applied`/`ok`/`no_signal`/`no_data`/`out_of_window`/`overflow`), and `seq` increments per decision
+   so the UI can tell a new answer from the sticky remainder of the previous one.
+9. SDR runs the same fit: the command carries `current_ref` (the level on screen, because the display
+   scale is client-side) and the client applies the reported target to that scale; the IQS level is only
+   written when it is more than 3 dB off.
 
 A Ref change invalidates RTA density tied to the previous amplitude grid. SWP and RTA Auto states are independent.
 

@@ -63,7 +63,7 @@ Field reference:
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
 | `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
-| `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`out_of_window`/`overflow`), `pending` (queued level), `adjusting` (a change is queued or still settling) |
+| `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`out_of_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling) |
 | `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
 | `amp` | obj | gain chain: atten/preamp/ifgain/gain_strategy + actual atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | reference clock source: internal/external/premium/external_forced |
@@ -118,7 +118,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `CAL_REFCLK` | `count?` | GNSS 1PPS reference clock calibration (background; `calibrating=true` meanwhile) |
 | `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
 | `SET_REF` | `mode` (manual/auto), `ref?`, `range_db?` | active-mode reference level; manual requires ref. `mode=auto` is the legacy spelling of one Auto Scale (see `AUTO_SCALE`) and does **not** latch a tracking mode |
-| `AUTO_SCALE` | `range_db?` | place the reference once, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. Does nothing when the placement is already good (no reconfiguration). The result is reported in `auto_ref.result`; unavailable in SDR (the display scale is client-side there) |
+| `AUTO_SCALE` | `range_db?`, `current_ref?` | place the reference once, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. `current_ref` is the level the user is looking at - in SDR the display scale is client-side, so that is what the placement must be judged against. Does nothing when the placement is already good (no reconfiguration). The result is reported in `auto_ref.result`/`target`/`seq` |
 | `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
 | `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
 | `SET_POINTS` | `points` (51~4000) | set sweep points |

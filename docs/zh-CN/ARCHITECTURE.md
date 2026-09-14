@@ -88,13 +88,22 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **多 Marker Tracking**: Marker 表逐行 toggle；首次按峰值强度分配未占用峰，后续按 `marker.freq`
   连续跟随邻近峰；SWP/RTA 共用策略，频率轴变化时先重定位
 - **smooth 数据源**: 开启时完全用平滑曲线(位置/幅度均平滑, 与显示一致); 关闭用原始+Raw Anchor
-- **Pk 阈值**: 未设置自动=峰值-50dB; 用户编辑锁定(activeElement 不覆盖 + oninput 实时锁定);
-  Auto 恢复; marker 全关闭不更新
+- **Pk 阈值**: 值存于槽位（`meas` 组），读取方不再解析输入框；自动 = **每个测量几何一次决策**
+  （span/RBW/Ref/dB per div/points/中心变化时按若干帧迹线 99.5 分位数的中位数 −50 dB 重新拟合，
+  其余时间锁存）——信号幅度变化不会再移动门限、也不会重排峰值表/marker 峰搜索；用户编辑后锁定
+  直到再次点 Auto；marker 全关闭时不更新
 
 ## 显示与控制设计
-- **Reference Level**: Manual 实际配置当前 SWP/RTA Profile；Auto 仅在峰值高于噪底至少 15 dB 时调整，
-  Center/跨模式重调谐前将负 Ref 临时恢复到 0 dBm，并使用 5 dB 余量、稳定时间和迟滞；
-  重配置后等待 0.75 秒，手动 Atten 时 Auto 暂停
+- **Reference Level**: Manual 实际配置当前 SWP/RTA Profile。**Auto Scale 是一次性动作**（`AUTO_SCALE`），
+  不是跟踪模式：用最新迹线算一个目标（噪声底落在显示窗口底部稍上、峰值留 >=10 dB 余量、5 dB 量化、
+  不低于学到的 IF 饱和下界）并应用一次；已经放好时不付任何代价。**安全量程始终运行**，与用户设置无关：
+  IF 溢出（-12）每秒抬 5 dB；整条迹线离开显示窗口（峰高于上沿或噪声底低于下沿）时拟合一次并限速。
+  15 dB 峰噪判据只在窗口内生效，因此弱信号会明确报 `no_signal` 而不是静默无动作。Center/跨模式重调前，
+  会把拟合调低过的 Ref 抬到 0 dBm。每次重配后 0.75 秒内不信任观测。
+  **SDR 走同一套规则**（自己的 tracker，由泛解析度帧喂观测）：后端拟合、客户端把上报的 target 应用到
+  显示刻度；只有 IQS 电平差超过 3 dB 才写器件（该写会打断音频）。命令带上屏上电平（`current_ref`），
+  因为 SDR 里器件电平不等于用户所见。因此手动 Ref 会保持，除非该电平让整条迹线离开窗口（此时纠正一次）；
+  只有 Auto 仍拥有刻度时显示才跟随该纠正（用户手动编辑 Ref 后不再跟随）。
 - **周期 STATUS 推送(1s)**: publisher 每秒推送全量 STATUS(与 GNSS 轮询对齐),
   使 GNSS 锁定/时间、refclk_out、校准状态自动刷新, 无需刷新页面
 - **GNSS 详情浮层**: 点击 GNSS 指示器查看完整信息(锁定/卫星/天线/经纬度/海拔/UTC 时间)

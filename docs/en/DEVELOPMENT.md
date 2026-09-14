@@ -189,7 +189,7 @@ action with visible feedback, not a tracking toggle:
 | Pure logic | vitest / pytest | Algorithms, state machines, contracts (i18n parity, frame fixtures, schema, slot semantics) | - |
 | Session/device boundary | pytest + stub device | Result assembly, policy, error paths (**no vendor library needed**) | Connecting to the real device just to test logic |
 | Protocol | Golden fixtures on both sides | Byte layout | Testing only one side |
-| **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 22 checks) + `state_regression.py` (parameter state-machine contract, 56 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad, the peak list off its threshold slot; slots/in-flight/hand-off/Preset/reload/rapid switching; a one-shot Auto Scale (glow -> one step -> `ok` with no reconfiguration) | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
+| **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 22 checks) + `state_regression.py` (parameter state-machine contract, 59 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad, the peak list off its threshold slot; slots/in-flight/hand-off/Preset/reload/rapid switching; a one-shot Auto Scale (glow -> one step -> `ok` with no reconfiguration) | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
 | **End to end (hardware)** | Playwright + the bench | **User-visible results**: canvas pixels, DOM text, device state after a real click | `dataset.rtaFrames` (it only says a frame was handed to the renderer, not that anything was drawn) |
 | Performance | `tools/bench.py` + baseline | **Comparable** frame-rate/latency/CPU numbers | Comparing while the device warns or leftover load runs |
 | Hardware smoke | `tools/hardware_smoke.py` + tinySA | Levels/frame integrity with a real signal | - |
@@ -284,9 +284,10 @@ nobody can tell "deliberate" from "silent regression".
 
 - Frontend **diagnostic keys** (read these for auto-ref/scaling problems instead of adding logs):
   `#spectrum.dataset.sdrRef` (applied value) and `dataset.sdrRefDbg` (the whole auto-ref state:
-  `noise/peak/range/ref/applied/before/shown` - the last two make "the decision is what the user
-  sees" checkable from outside); `auto_ref.{result,target,adjusting}` in STATUS is the backend half
-  of the same story. SDR audio state lives in `dataset.sdrAudio`.
+  `noise/peak/range/ref/applied/before/shown` - `before`/`shown` make "the decision is what the user
+  sees" checkable from outside, and the record is written for every decision, so "nothing needed
+  changing" is visible too); `auto_ref.{result,target,seq,adjusting}` in STATUS is the backend half of
+  the same story (`seq` tells a new answer from a sticky old one). SDR audio state lives in `dataset.sdrAudio`.
 - Backend: `WEBSA_TRACE=1 ./run.sh` -> `grep '\[trace\]' /tmp/websa.log`; a native crash prints the
   stack of every thread (`faulthandler`), and the supervisor's exit codes/restarts land in the same log.
 
@@ -314,7 +315,7 @@ nobody can tell "deliberate" from "silent regression".
 ```bash
 make ci                      # all hardware-free gates (tests/static/contracts/guards/build)
 make run | make stop         # start/stop the service (supervisor + worker)
-make e2e-fake                # no hardware: ui_smoke (20 checks) + state_regression (45 checks) on the fake backend, same as CI
+make e2e-fake                # no hardware: ui_smoke (22 checks) + state_regression (59 checks) on the fake backend, same as CI
 make hw-test                 # hardware: tinySA smoke + 24-command sweep + UI state regression (45 checks)
 make bench                   # compare frame rate/switch latency/CPU against the baseline
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record (verify a clean state first)

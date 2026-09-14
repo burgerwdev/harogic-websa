@@ -118,13 +118,25 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
 - **Marker Tracking**: per-row On/Off toggles; initial assignment uses ranked unoccupied peaks, while later
   updates follow a nearby `marker.freq`. The same strategy runs in SWP and RTA, with relocation after axis changes.
 - **smooth data source**: when enabled, fully based on smoothed curve (position/amplitude smoothed, matches display); when disabled, raw + Raw Anchor
-- **Pk threshold**: auto = global peak −50 dB when unset; user edit locks (activeElement guard + oninput); Auto restores; no update when all markers off
+- **Pk threshold**: value lives in a slot (`meas` group); readers no longer parse the input element. Auto = **one decision per measurement geometry**: fitted (median of a few frames of the trace's 99.5th percentile, −50 dB) when span/RBW/Ref/dB-per-div/points/centre change, latched otherwise so a signal swing cannot move it or reshuffle the peak table/marker search; a manual edit locks it until Auto is pressed again; no update when all markers are off
 
 ## Display and Control Design
-- **Reference Level**: Manual configures the active SWP/RTA Profile. Auto adjusts only when the peak is
-  at least 15 dB above noise. Before Center/cross-mode retuning it temporarily raises a negative Ref to
-  0 dBm, then uses 5 dB headroom, settling time, and hysteresis. Reconfiguration waits 0.75 seconds;
-  Auto is suspended while Atten is manual.
+- **Reference Level**: Manual configures the active SWP/RTA Profile. **Auto Scale is a one-shot action**
+  (`AUTO_SCALE`), not a tracking mode: it computes one target from the newest trace (noise floor just
+  above the bottom of the display window, >=10 dB of headroom for the peak, 5 dB quantisation, never
+  below a learned IF-saturation floor) and applies it once; an already-good placement costs nothing.
+  A **safety ranger runs always**, independently of any user setting: IF overflow (-12) raises Ref one
+  5 dB step per second, and a trace that has left the display window (peak above the top edge, or noise
+  floor below the bottom edge) is fitted once, rate-limited. The 15 dB peak-above-noise test only
+  applies *inside* the window, so a weak signal is reported as `no_signal` instead of silently doing
+  nothing. Before Center/cross-mode retuning a Ref that a fit had lowered is raised to 0 dBm. Each
+  reconfiguration waits 0.75 s before observations are trusted again.
+  **SDR runs the same rule** (own tracker, fed by the panadapter frames): the backend fits, the client
+  applies the reported target to its display scale, and the IQS level is only written when it is more
+  than 3 dB off (that write interrupts the audio). The command carries the level on screen
+  (`current_ref`), because in SDR the device level is not what the user sees. A manual Ref therefore
+  holds, except that a level leaving the whole trace outside the window is corrected once; the display
+  follows such a correction only while Auto owns the scale (i.e. until the user edits Ref).
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

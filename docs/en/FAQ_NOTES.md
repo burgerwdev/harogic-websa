@@ -32,6 +32,13 @@
   IF overflow (-12) raises Ref one 5 dB step per second, and a trace that has left the display window
   (peak above the top edge, or noise floor below the bottom edge) is fitted once, rate-limited. This is
   also what a manual Atten used to disable - overload protection now cannot be switched off by accident.
+  Consequence: a *manual* Ref that leaves the whole trace outside the window is corrected once (the
+  alternative is an empty display with no explanation); setting a level the trace fits in is how the user
+  keeps control, and pressing Auto re-syncs everything.
+- **SDR uses the same fit** as SWP/RTA (`AUTO_SCALE`, one implementation): the backend computes the target
+  from the panadapter trace, the client applies it to its display scale, and the IQS level is only
+  rewritten when it is more than 3 dB off, so a display-only fit never interrupts the audio. Entering SDR
+  asks for one fit as soon as a frame arrives (this replaces the old persisted "auto" toggle).
 - The placement keeps the noise floor just above the bottom of the display window with at least 10 dB of
   headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB and never below a
   learned IF-saturation floor or -50 dBm.

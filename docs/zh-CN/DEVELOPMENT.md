@@ -169,7 +169,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 纯逻辑 | vitest / pytest | 算法、状态机、契约（i18n parity、帧 fixture、schema、槽位语义） | — |
 | 会话/设备边界 | pytest + stub 设备 | 结果组装、策略、错误路径（**不需要厂商库**） | 为了测试去连真机 |
 | 协议 | 两端 golden fixture | 字节布局 | 只在一边测 |
-| **端到端（无硬件）** | `make e2e-fake`：`ui_smoke.py`（渲染与接线，22 项）+ `state_regression.py`（参数状态机契约，56 项），同一假服务，CI 运行 | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘、峰值表使用槽位门限；槽位/在途/交接/Preset/刷新/快速连切；一次性 Auto Scale（发光 → 一步落定 → `ok` 且不重配） | 只断言 dataset/计数器；**为让假后端通过而放宽断言**（会同时削弱真机轮次；器件相关检查用 `require_device=True` 显式跳过） |
+| **端到端（无硬件）** | `make e2e-fake`：`ui_smoke.py`（渲染与接线，22 项）+ `state_regression.py`（参数状态机契约，59 项），同一假服务，CI 运行 | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘、峰值表使用槽位门限；槽位/在途/交接/Preset/刷新/快速连切；一次性 Auto Scale（发光 → 一步落定 → `ok` 且不重配） | 只断言 dataset/计数器；**为让假后端通过而放宽断言**（会同时削弱真机轮次；器件相关检查用 `require_device=True` 显式跳过） |
 | **端到端（真机）** | Playwright + 真机 | **用户可见结果**：画布像素、DOM 文本、真实点击后的设备状态 | `dataset.rtaFrames`（只说明帧交给了渲染器，不代表画出来了） |
 | 性能 | `tools/bench.py` + 基线 | 帧率/切换延迟/CPU 的**可比**数值 | 在设备告警或残留负载下比较 |
 | 硬件冒烟 | `tools/hardware_smoke.py` + tinySA | 真实信号下的电平/帧完整性 | — |
@@ -256,8 +256,9 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 
 - 前端**诊断键**（排查 auto-ref/缩放类问题直接读它们，不必加日志）：
   `#spectrum.dataset.sdrRef`（已应用值）与 `dataset.sdrRefDbg`（auto-ref 全部内部量：
-  `noise/peak/range/ref/applied/before/shown`——后两个让"决策即用户所见"可从外部断言）；
-  STATUS 里的 `auto_ref.{result,target,adjusting}` 是同一件事的后端一半；SDR 音频状态在 `dataset.sdrAudio`。
+  `noise/peak/range/ref/applied/before/shown`——`before`/`shown` 让"决策即用户所见"可从外部断言，
+  且每次决策都会记录，因此"本来就无需改动"也可见）；STATUS 里的 `auto_ref.{result,target,seq,adjusting}`
+  是同一件事的后端一半（`seq` 用于区分新答复与残留的旧答复）；SDR 音频状态在 `dataset.sdrAudio`。
 - 后端：`WEBSA_TRACE=1 ./run.sh` → `grep '\[trace\]' /tmp/websa.log`；原生崩溃会打印全线程栈
   （`faulthandler`），supervisor 的退出码/重启记录也在同一份日志里。
 
@@ -285,7 +286,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 ```bash
 make ci                      # 全部无硬件门禁（测试/静态检查/契约/守卫/构建）
 make run | make stop         # 启停服务（supervisor + worker）
-make e2e-fake                # 无硬件：假后端上跑 ui_smoke（20 项）+ state_regression（45 项），CI 同款
+make e2e-fake                # 无硬件：假后端上跑 ui_smoke（22 项）+ state_regression（59 项），CI 同款
 make hw-test                 # 真机：tinySA 冒烟 + 24 命令扫描 + UI 状态机回归（45 项）
 make bench                   # 与基线比较帧率/切换延迟/CPU
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # 重录基线（先确认干净状态）
