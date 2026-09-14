@@ -408,7 +408,11 @@ export function updateStatus(s: any) {
   updateFreqUIInputs(frequencyCommitted);
   const cur = refLevel.get();
   const refText = Number.isInteger(cur) ? cur.toFixed(0) : cur.toFixed(1);
-  setInput('input-ref', displayUnit.get() === 'dB' ? '0' : refText);
+  // The box always holds the reference LEVEL in dBm - it is what the Set button sends and what
+  // the device reports. It used to be pinned to '0' in dB (relative) display mode, which made a
+  // background change invisible (and made Set send 0 dBm); the relative axis top is a rendering
+  // detail, not a different reference.
+  setInput('input-ref', refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   const refSet = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   // Nothing locks the reference any more: Auto Scale is a one-shot action, so the input, the

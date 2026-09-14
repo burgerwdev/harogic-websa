@@ -379,7 +379,7 @@ export const en = {
 } as const;
 
 export const zh = {
-	"tip_wf_meas": "测量模式下不可用水瀑图",
+	"tip_wf_meas": "测量模式下不可用瀑布图",
 	"ref_level": "参考电平:",
 	"scale": "刻度:",
 	"rbw": "分辨率带宽:",

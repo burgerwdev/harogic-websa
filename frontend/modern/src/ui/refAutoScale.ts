@@ -35,14 +35,6 @@ let nextEntryAttempt = 0;
 let lastSeq = -1;
 /** SDR: the target that was already written to the display reference. */
 let appliedTarget: number | null = null;
-/**
- * SDR: does Auto own the display scale?
- *
- * True after entering the mode or pressing Auto. A manual Ref edit takes the scale over, and from
- * then on only an explicit press may move it again - an autonomous safety correction updates the
- * device level, not the level the user just chose.
- */
-let ownDisplay = true;
 
 function button(): HTMLButtonElement | null {
 	return document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
@@ -89,10 +81,9 @@ export function autoScaleBusy(): boolean {
 
 /** The user pressed Auto Scale. */
 export function autoScaleRequest(): void {
-	// A press supersedes an entry fit that is still looking for a trace, and claims the display.
+	// A press supersedes an entry fit that is still looking for a trace.
 	entryFitPending = false;
 	appliedTarget = null;
-	ownDisplay = true;
 	// range_db = the visible window height. The fit anchors the noise floor just above the bottom
 	// of that window, and the backend cannot see the client's dB/div setting.
 	send({
@@ -111,7 +102,6 @@ export function requestSdrEntryFit(): void {
 	entryFitAttempts = 0;
 	nextEntryAttempt = 0;
 	appliedTarget = null;
-	ownDisplay = true;
 	busyUntil = performance.now() + 3000;
 	setBusy(true);
 }
@@ -171,11 +161,17 @@ export function syncAutoScaleStatus(s: any): void {
 		const before = Math.round(getDisplayRef());
 		// The display scale belongs to the client: apply the level the backend placed. Only the
 		// results that come back from an application do that ('applied' and the automatic safety
-		// corrections) - a refusal carries a stale target and must never move the display. The
-		// target check skips a repeat, and `ownDisplay` keeps an autonomous correction away from a
-		// level the user just set.
+		// corrections) - a refusal carries a stale target and must never move the display - and the
+		// target check skips a repeat.
+		//
+		// An automatic correction moves the display even when the user set the level by hand: it
+		// fires precisely because that level left the trace clipped or off-screen, and the hint
+		// names the new level, so leaving the canvas alone announced a change that never happened
+		// (reported: "Ref decreased to -50 dBm, warning, hint says it adjusted, but the trace and
+		// the Ref box did not move"). A queued update from before the manual edit is dropped by the
+		// backend epoch instead.
 		const placed = result === 'applied' || result === 'out_of_window' || result === 'overflow';
-		const move = placed && target != null && Number(target) !== appliedTarget && ownDisplay;
+		const move = placed && target != null && Number(target) !== appliedTarget;
 		if (move) {
 			appliedTarget = Number(target);
 			setDisplayRef('auto', appliedTarget);
@@ -207,21 +203,24 @@ export function resetAutoScaleState(): void {
 	lastSeq = -1;
 	appliedTarget = null;
 	entryFitPending = false;
-	ownDisplay = true;
 	busyUntil = 0;
 	setBusy(false);
 }
 
 /**
- * A manual Ref edit takes the level over.
+ * A manual Ref edit happened: forget the pending bookkeeping and any leftover message.
  *
- * `appliedTarget` deliberately survives: the backend reports a sticky result, so a manual level
- * must not be overwritten by the same old decision on the next STATUS. A new press clears it
- * (see `autoScaleRequest`/`requestSdrEntryFit`), so a fresh fit can still land on that value.
+ * A sticky STATUS is already harmless - it carries the sequence number of a decision the UI has
+ * seen, so it is never mistaken for a new answer (`syncAutoScaleStatus`) - and clearing
+ * `appliedTarget` here means a later press may land on the same level again.
  */
 export function clearAutoScaleHint(): void {
 	entryFitPending = false;
-	ownDisplay = false;                    // the user owns the scale now
 	busyUntil = 0;
+	appliedTarget = null;                  // a new press may land on the same level again
 	setBusy(false);
+	// Drop a hint left over from an earlier decision: it describes a level that is no longer the
+	// one being asked for, and reads as "the app adjusted something just now".
+	const el = document.getElementById('ref-hint');
+	if (el) el.textContent = '';
 }

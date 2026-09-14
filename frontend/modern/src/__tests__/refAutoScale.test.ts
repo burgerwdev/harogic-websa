@@ -147,20 +147,42 @@ describe('SDR Auto Scale', () => {
 		expect(getDisplayRef()).toBe(-40);
 	});
 
-	it('does not let an autonomous correction move a level the user just set', () => {
+	it('follows an automatic correction even after a manual Ref edit', () => {
+		// Reported: Ref set to -50 dBm, overflow warning, the hint announced an adjustment, but
+		// the canvas and the Ref box kept the manual value - the correction only reached the
+		// device level. The trace must follow, or the announcement is a lie.
 		graphMode.confirm('sdr');
-		setDisplayRef('preset', -40);
-		clearAutoScaleHint();                    // a manual Ref edit takes the scale over
+		setDisplayRef('user', -50);
+		clearAutoScaleHint();                    // a manual Ref edit
 		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'out_of_window', target: -10, seq: 5 },
+			auto_ref: { adjusting: false, result: 'overflow', target: -25, seq: 5 },
+		});
+		expect(getDisplayRef()).toBe(-25);
+	});
+
+	it('does not re-apply a decision it has already followed', () => {
+		graphMode.confirm('sdr');
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
+		});
+		expect(getDisplayRef()).toBe(-15);
+		clearAutoScaleHint();                    // a manual Ref edit
+		setDisplayRef('user', -40);
+		// The same (sticky) decision must not overwrite the manual level again.
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
 		});
 		expect(getDisplayRef()).toBe(-40);
-		// An explicit press claims it back.
-		autoScaleRequest();
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'applied', target: -10, seq: 6 },
-		});
-		expect(getDisplayRef()).toBe(-10);
+	});
+
+	it('drops a leftover hint when the user edits Ref', () => {
+		const el = document.createElement('span');
+		el.id = 'ref-hint';
+		document.body.appendChild(el);
+		status({ adjusting: false, result: 'applied', target: -30, seq: 1 });
+		expect(el.textContent).toBe('Ref \u2192 -30 dBm');
+		clearAutoScaleHint();
+		expect(el.textContent).toBe('');
 	});
 
 	it('does not write the display for a refusal', () => {

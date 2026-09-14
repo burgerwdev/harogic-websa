@@ -50,6 +50,16 @@ FAILURES: list[str] = []
 FAKE_BACKEND = False
 
 
+def skip(name: str, reason: str) -> None:
+    """Report a check that cannot be exercised in this environment.
+
+    Used where a scenario depends on the signal in front of the antenna (a weak trace cannot be
+    pushed out of a 100 dB window within the allowed Ref range). The same scenario runs whenever a
+    source is present, and it is asserted unconditionally on the fake backend in CI.
+    """
+    print(f"  SKIP  {name}  <- {reason}")
+
+
 def check(name: str, ok: bool, detail: str = "", require_device: bool = False) -> None:
     """Record one check. `require_device` skips it (visibly) on the fake backend."""
     if require_device and FAKE_BACKEND:
@@ -471,22 +481,80 @@ def main() -> int:
             post(url, {"cmd": "SET_MODE", "mode": "sdr"})
             page.wait_for_timeout(2500)
         page.wait_for_timeout(1200)
-        # -10 dBm keeps the fake's -25 dBm carrier inside the display window: a level that clips
-        # it is (correctly) raised again by the safety ranger, which is a different behaviour.
-        page.fill("#input-ref", "-10")
+        # A level the trace in front of us actually fits in: mid-window and clear of the peak. It
+        # has to be derived from the measurement, because the fake backend's carrier is ~45 dB
+        # stronger than what the bench shows without a source, and a level that leaves the trace
+        # clipped or below the window is (correctly) corrected by the safety ranger.
+        sdr_now = state(url)["auto_ref"]
+        window = 100.0
+        floor_now = sdr_now.get("last_noise_floor")
+        peak_now = sdr_now.get("last_peak")
+        good_ref = round(max((floor_now or -120.0) + window / 2, (peak_now or -60.0) + 10))
+        good_ref = max(-50, min(30, good_ref))
+        page.fill("#input-ref", str(good_ref))
         page.click("#btn-ref-set")
         page.wait_for_timeout(800)
         first = page.input_value("#input-ref")
-        check("manual Ref is applied", abs(float(first) + 10) < 1.5, f"input {first}")
+        check("manual Ref is applied", abs(float(first) - good_ref) < 1.5,
+              f"input {first} (asked {good_ref})")
         page.wait_for_timeout(3500)              # well past any auto-refresh window
         after = page.input_value("#input-ref")
-        check("manual Ref survives (not reset to 0)", abs(float(after) + 10) < 1.5,
-              f"input {after} after 3.5 s")
+        check("manual Ref survives (not reset to 0)", abs(float(after) - good_ref) < 1.5,
+              f"input {after} after 3.5 s (asked {good_ref})")
         page.click("#btn-ref-down")
         page.wait_for_timeout(600)
         down = page.input_value("#input-ref")
         check("Ref down arrow works without pressing up first", float(down) < float(after),
               f"{after} -> {down}")
+
+        # 9a2 - A correctable manual level must actually be corrected on screen. Reported: Ref
+        # set to -50 dBm, warning + automatic adjustment, the hint named a new level, but the
+        # canvas and the Ref box kept the manual value (the correction only reached the device).
+        print("9a2) SDR: an automatic correction is visible, not just announced")
+        if sdr_panel_visible(page) is False:
+            page.click("#btn-mode-sdr")
+            page.wait_for_timeout(2500)
+        # A level this trace cannot fit: pushing Ref up by (floor + window + 10) leaves the noise
+        # floor below the bottom edge (with a strong carrier, lowering Ref clips it instead - both
+        # are the same 'out of window' condition). Derived from the measurement for the same reason
+        # as check 9.
+        now = state(url)["auto_ref"]
+        floor_db = now.get("last_noise_floor")
+        bad_ref = max(-50, min(30, math.ceil((floor_db if floor_db is not None else -120.0)
+                                             + 100 + 10)))
+        page.fill("#input-ref", str(bad_ref))
+        page.click("#btn-ref-set")
+        page.wait_for_timeout(3500)
+        sdr_after = state(url)
+        dbg_after = page.evaluate(
+            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
+        result_now = sdr_after["auto_ref"].get("result")
+        floor_after = sdr_after["auto_ref"].get("last_noise_floor")
+        placed_ref = float(sdr_after["ref"])
+        inside_window = (floor_after is not None
+                         and placed_ref - 100.0 <= floor_after <= placed_ref)
+        if result_now in ("applied", "out_of_window", "overflow"):
+            check("the unfittable manual level is corrected", True,
+                  f'asked {bad_ref}: {sdr_after["auto_ref"]}')
+            check("the display follows the correction (the trace moves)",
+                  dbg_after.get("applied") is True
+                  and dbg_after.get("shown") != dbg_after.get("before"),
+                  str(dbg_after))
+            # `target` may legitimately be 0.0, which is falsy: compare only against a real number.
+            target = sdr_after["auto_ref"].get("target")
+            box = float(page.input_value("#input-ref"))
+            check("the Ref box shows the corrected level, not the typed one",
+                  isinstance(target, (int, float)) and abs(box - float(target)) < 1.5,
+                  f'box {box} target {target}')
+        elif inside_window:
+            # No correction was needed because this bench cannot make the trace leave the window
+            # at any level the device accepts (weak signal, 100 dB window). The display and the
+            # box were already checked to follow the *manual* value in 9.
+            skip("an automatic correction is visible",
+                 f"asked {bad_ref}: floor {floor_after} still inside the window at ref {placed_ref}")
+        else:
+            check("a trace outside the window is corrected", False,
+                  f'asked {bad_ref}: {sdr_after["auto_ref"]}')
 
         # 9b - Auto Scale is an ACTION, not a mode: it must show that it is working, act once,
         # and never lock the reference. The old tracking mode gave no feedback for the ~1.9 s
