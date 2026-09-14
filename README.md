@@ -38,6 +38,9 @@ A browser-based control and measurement application for **Harogic SAN series spe
   for the frequency-like fields, plain-text entry (digits, commas, minus) for the n-dB threshold list,
   draggable, translucent, off by default
 - **Normalization** — through-cal, adaptive absorption, display-layer transform
+- **Device link monitor** — a bus error or unplug flips STATUS to `connected: false` (the canvas says
+  DEVICE DISCONNECTED instead of showing a frozen trace), and the worker reopens the analyzer and
+  re-enters the active mode automatically when it is plugged back in — no service restart
 
 ## Screenshots
 
@@ -77,6 +80,9 @@ pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
 ```
 
 Open http://127.0.0.1:8080
+
+Unplugging the analyzer is detected and reported, and plugging it back in resumes the same mode
+without a restart; `make status` shows the live link, and `make restart` restarts the service.
 
 The service listens on loopback by default. Remote control requires a token:
 
@@ -123,7 +129,7 @@ harogic-websa/
 ├─ tools/                hardware smoke + e2e + bench + quality guards
 │  └─ quality/           architecture_guard.py + baseline.json (fitness functions)
 ├─ screenshots/          README screenshots
-├─ run.sh / stop.sh / clean.sh / build.sh / test.sh / Makefile
+├─ run.sh / stop.sh / status.sh / clean.sh / build.sh / test.sh / Makefile
 ├─ pyproject.toml / requirements.txt / LICENSE / .gitignore
 ```
 
@@ -133,9 +139,11 @@ harogic-websa/
 |---|---|
 | `./run.sh` | Start supervisor + WebSA worker; restart after native SDK crash/fatal timeout |
 | `./stop.sh` | Stop service |
+| `make restart` | Restart service (stop + start) |
+| `make status` | Service status: state, PID/uptime, memory + CPU, log path/size, live device link |
 | `./clean.sh` | Clean caches / logs / build artifacts (`--keep-deps` keeps `node_modules`) |
 | `./test.sh` | Backend pytest + Ruff + frontend Vitest; any failed stage returns non-zero |
-| `make run/stop/clean/build/test` | Same via Makefile |
+| `make run/stop/restart/status/clean/build/test` | Same via Makefile |
 | `make dev` | Stop, clean (deps kept), rebuild the frontend, start with `WEBSA_TRACE=1` |
 | `make ci` | Everything CI runs locally: test.sh + version check + frame fixtures + architecture guard + build |
 | `make hw-test` | **Bench only** — tinySA CW through the SWP/RTA smoke test, then the Playwright UI state regression |

@@ -24,7 +24,7 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 4. **Frame protocol**: 16-byte header (magic+ver+points+sweep_ms) + data; POWR forced to float32
 5. **Client backpressure**: one sender per WS; retain FREQ/JSON and use latest-wins for POWR/RTAF
 6. **Secure default**: loopback listener, token required remotely, static files confined to the build root
-7. **Failure recovery**: SDK calls leave the asyncio thread; supervisor restarts after native crash/fatal timeout
+7. **Failure recovery**: SDK calls leave the asyncio thread; supervisor restarts after native crash/fatal timeout; a run of bus errors (unplug) declares `connected=false` and the worker's link loop reopens the device and re-enters the active mode
 8. **Mode-private settings**: SWP/RTA independently retain Center/Span/Ref/RBW/VBW/Sweep and actual values; mode changes issue one SET_MODE command. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md).
 
 ## Frame Protocol

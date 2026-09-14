@@ -299,6 +299,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 每次进入 SDR 都从扫频视图重新推导设置 | 模式入口把"切模式"当成重新开始（频率取扫频中心、解调按频段猜、decimate 写死 16），于是用户自己的调谐与收听设置被丢弃 | 模式的用户设置就是**偏好**：持久化并在进入时重新应用；交接频率靠显式手势（Shift+点击 / 频段预置），只有首次使用才推导默认值 | e2e `state_regression` 5（往返保持 + Shift+点击仍可交接）、`status.test.ts`（音频偏好保持）、FAQ |
 | Shift+点击进入 SDR 落在了错误频率 | `listenAtFreq` 只设置了捕获中心，旧的解调频率留着，后端为追它把捕获中心搬走（实测：点 216 MHz 落到 987 MHz） | 「听这里」= **同时**设置捕获中心与解调频率；只设置一对中的一半，等于把 bug 留给另一半 | e2e `state_regression` 5（`Shift+click hands that frequency to SDR`） |
 | 干净环境 `./test.sh` 失败 | 依赖声明不完整 | 运行时/开发/锁定三份依赖文件 | CI 在干净环境安装 |
+| 拔出频谱仪后画面定格，但 STATUS 仍报 `connected: true`，重新接入也不恢复 | 从未检测断开：采集路径把总线错误当成“没取到帧”，只有 native 崩溃/超时才惊动 supervisor | 传输故障是前端必须看到的状态：连续总线错误置 `connected=false`，调度器停止步进死句柄，worker 链路循环重开设备并恢复原模式 | `test_link_recovery.py`（链路循环恢复会话；连续 -8 翻转 `connected`）、`test_publisher.py`（断开时不做采集）、`status.test.ts`（断开告警 + 重绘） |
 
 ---
 
@@ -307,6 +308,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 ```bash
 make ci                      # 全部无硬件门禁（测试/静态检查/契约/守卫/构建）
 make run | make stop         # 启停服务（supervisor + worker）
+make restart | make status   # 重启服务 / PID、运行时长、内存、CPU、日志路径与大小、实时链路
 make e2e-fake                # 无硬件：假后端上跑 ui_smoke（22 项）+ state_regression（59 项），CI 同款
 make hw-test                 # 真机：tinySA 冒烟 + 24 命令扫描 + UI 状态机回归（45 项）
 make bench                   # 与基线比较帧率/切换延迟/CPU

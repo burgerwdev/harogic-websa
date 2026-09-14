@@ -333,6 +333,7 @@ nobody can tell "deliberate" from "silent regression".
 | SDR settings were re-derived from the swept view on every entry | The mode-entry path treated a mode switch as a fresh start (frequency from the sweep, demod from the band, decimate hard-coded), so the user's own tuning and listening setup were discarded | A mode's user settings are PREFERENCES: persist them and re-apply them on entry; the deliberate gesture (Shift+click / band preset) is what hands a frequency over, and only a first run derives defaults | e2e `state_regression` 5 (setup survives a round trip, Shift+click still hands off), `status.test.ts` (audio preference survives), FAQ |
 | Shift+click into SDR landed on the wrong frequency | `listenAtFreq` set only the capture centre; the previous listen frequency stayed, and the backend re-centred the capture to chase it (measured: click at 216 MHz landed at 987 MHz) | "Listen here" means BOTH the capture centre and the listen frequency; a hand-off that sets half of a pair is a bug waiting for the other half | e2e `state_regression` 5 (`Shift+click hands that frequency to SDR`) |
 | `./test.sh` failed on a clean checkout | Incomplete dependency declaration | Three files: runtime / dev / lock | CI installs in a clean environment |
+| An unplugged analyzer froze the spectrum while STATUS still said `connected: true`, and replugging did not resume it | Disconnect was never detected: the acquisition path read a bus error as "no frame", and only a native crash/timeout reached the supervisor | A transport failure is a state the UI must see: a run of bus errors declares `connected=false`, the scheduler stops stepping the dead handle, and a worker link loop reopens the device and re-enters the active mode | `test_link_recovery.py` (link loop resumes the session; repeated -8 flips `connected`), `test_publisher.py` (no step while disconnected), `status.test.ts` (disconnect warning + repaint) |
 
 ---
 
@@ -341,6 +342,7 @@ nobody can tell "deliberate" from "silent regression".
 ```bash
 make ci                      # all hardware-free gates (tests/static/contracts/guards/build)
 make run | make stop         # start/stop the service (supervisor + worker)
+make restart | make status   # restart the service / pid, uptime, memory, CPU, log path+size, live link
 make e2e-fake                # no hardware: ui_smoke (22 checks) + state_regression (59 checks) on the fake backend, same as CI
 make hw-test                 # hardware: tinySA smoke + 24-command sweep + UI state regression (45 checks)
 make bench                   # compare frame rate/switch latency/CPU against the baseline
