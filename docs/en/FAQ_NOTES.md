@@ -47,6 +47,17 @@
   retuning to an unknown strong signal with an unsafe low Ref.
 - Every SWP/RTA reconfiguration clears stale observations and waits 0.75 s before they are trusted again.
 - Lower Ref and RBW generally reduce the displayed noise floor, but input overload must be avoided.
+- **The amplitude offset is a display-domain shift**: the trace is displaced by it, so every absolute
+  readout follows it too - the y-axis labels (`fmtAxisLevel`), the marker table, the marker readout on
+  the canvas, the peak list and the channel results (`fmtReadoutLevel`). Differences (dB/div, dBc,
+  deltas) are never converted, and device parameters (Ref, attenuation, trigger level) stay in dBm:
+  they describe the instrument, not the signal after your cable or amplifier.
+- **The Ref range is [Ref min, Ref max] = -50 .. +30 dBm** for the SAN-90: the frontend clamps the
+  step arrows, the command validator rejects anything outside it, and the profile is clamped before it
+  reaches the SDK (`device.py`). The **device then decides its own maximum**, which depends on the
+  attenuation/IF-gain setting it picks: asking for +30 dBm on this bench is accepted and comes back as
+  **+27 dBm** (`actual.ref`), because the profile echoes the value the hardware actually programmed.
+  The UI follows that reported value - nothing in the Auto Scale path moved it.
 
 ## Reference Clock
 
