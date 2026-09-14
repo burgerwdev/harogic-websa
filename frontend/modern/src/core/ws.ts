@@ -33,13 +33,36 @@ import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { refLevel } from '../ui/refState';
-import { maybeRequestSdrFit, syncAutoScaleStatus } from '../ui/refAutoScale';
+import { maybeRequestSdrFit, noteTraceObservation, postRefNotice, syncAutoScaleStatus }
+  from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
 } from '../ui/swpState';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
+
+/** The last (requested, reported) Ref pair announced, so the notice fires on a change only. */
+let lastRefLimit: string | null = null;
+
+/**
+ * Report a reference level the device did not accept verbatim.
+ *
+ * `req` is what we asked the profile for, `actual` what the hardware programmed and echoed; the
+ * difference is the device's own limit for its current front end, which the UI otherwise follows
+ * silently (reported: "Ref 30 dBm jumps back to 27 after a few seconds - why?").
+ */
+function syncRefLimitNotice(s: any): void {
+  const mode = String(s?.mode ?? '');
+  if (mode === 'sdr') return;                       // the SDR display scale is client-side
+  const reqRef = Number((mode === 'rta' ? s?.req?.rta : s?.req?.swp)?.ref);
+  const actualRef = Number(s?.actual?.ref ?? s?.ref);
+  const clamped = isFinite(reqRef) && isFinite(actualRef) && Math.abs(reqRef - actualRef) >= 1;
+  const key = clamped ? `${reqRef}->${actualRef}` : null;
+  if (key === lastRefLimit) return;
+  lastRefLimit = key;
+  if (clamped) postRefNotice(t('ref_limited', { ref: actualRef.toFixed(0) }), 5000);
+}
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -432,6 +455,13 @@ export function updateStatus(s: any) {
   // Auto Scale feedback: the button glows while a fit is in flight (the backend reports it via
   // auto_ref.adjusting, and the client keeps its own fallback timer), then reports the result.
   syncAutoScaleStatus(s);
+  // A refusal notice describes the trace in front of the user: withdraw it the moment the trace
+  // no longer matches (first frame arrived, or the peak moved away from the decision's basis).
+  noteTraceObservation(s.auto_ref);
+  // The device may clamp the reference (its own maximum depends on the attenuation/IF-gain it
+  // picks: requesting +30 dBm on the SAN-90 comes back as +27). Say so instead of letting the
+  // number change on its own.
+  syncRefLimitNotice(s);
   setInput('input-points', String(currentPoints.get()));
   setSelect('select-rbw-mode', rbwMode.get());
   setSelect('select-vbw-mode', vbwMode.get());

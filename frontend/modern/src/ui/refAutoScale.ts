@@ -51,6 +51,19 @@ function button(): HTMLButtonElement | null {
 let noticeSeq = 0;
 
 /**
+ * What the current notice is about.
+ *
+ * A *refusal* ("no signal to fit", "waiting for a trace") is a statement about the measurement in
+ * front of the user, so it must be withdrawn as soon as that statement stops being true - it used
+ * to sit there for its full 6 s while the signal was already on the display (reported). Timing
+ * alone cannot know that, so the observation the decision was made from is kept here.
+ */
+let noticeAbout: { result: string; peak: number | null; floor: number | null } | null = null;
+
+/** The observation has to move this much before a refusal is considered stale. */
+const NOTICE_STALE_DB = 3.0;
+
+/**
  * Post a transient message to the canvas status stack (under the warnings).
  *
  * It used to sit in the Ref parameter row, where every message moved the input, the buttons and
@@ -61,15 +74,46 @@ let noticeSeq = 0;
  * repaint: an overflowing IF sends no frames, and a message posted from that state would simply
  * never appear (DEVELOPMENT §8).
  */
-export function postRefNotice(text: string, holdMs = 4000): void {
+export function postRefNotice(text: string, holdMs = 4000,
+                              about: typeof noticeAbout = null): void {
 	const id = ++noticeSeq;
+	noticeAbout = about;
 	S.setNoticeText(text);
 	requestRender();
 	if (holdMs > 0) window.setTimeout(() => {
 		if (id !== noticeSeq) return;
+		noticeAbout = null;
 		S.setNoticeText(null);
 		requestRender();
 	}, holdMs);
+}
+
+function withdrawNotice(): void {
+	noticeSeq++;                       // cancel the pending timer and any older clear
+	noticeAbout = null;
+	S.setNoticeText(null);
+	requestRender();
+}
+
+/**
+ * A trace observation arrived (STATUS carries the newest peak/floor the backend saw).
+ *
+ * Withdraws a refusal that no longer describes reality: "waiting for a trace" stops being true
+ * with the first trace, and "no signal to fit" stops being true when the peak moves away from the
+ * level the decision was based on.
+ */
+export function noteTraceObservation(a: any): void {
+	if (!a || noticeAbout === null || S.noticeText === null) return;
+	const peak = a.last_peak == null ? null : Number(a.last_peak);
+	if (peak === null || !isFinite(peak)) return;
+	if (noticeAbout.result === 'no_data') {
+		withdrawNotice();
+		return;
+	}
+	if (noticeAbout.result === 'no_signal') {
+		const was = noticeAbout.peak;
+		if (was === null || Math.abs(peak - was) >= NOTICE_STALE_DB) withdrawNotice();
+	}
 }
 
 function setBusy(on: boolean): void {
@@ -78,14 +122,17 @@ function setBusy(on: boolean): void {
 }
 
 /** Say what the fit decided. The level is always named when one was applied. */
-function announce(result: string, target: unknown): void {
-	if (result === 'no_signal') postRefNotice(t('auto_scale_no_signal'), 6000);
-	else if (result === 'no_data') postRefNotice(t('auto_scale_no_data'), 6000);
-	else if (result === 'ok') postRefNotice(t('auto_scale_ok'), 2500);
+function announce(result: string, target: unknown, a?: any): void {
+	// The observation the decision came from, so a refusal can be withdrawn when it goes stale.
+	const about = { result, peak: a?.last_peak ?? null, floor: a?.last_noise_floor ?? null };
+	if (result === 'no_signal') postRefNotice(t('auto_scale_no_signal'), 6000, about);
+	else if (result === 'no_data') postRefNotice(t('auto_scale_no_data'), 6000, about);
+	else if (result === 'ok') postRefNotice(t('auto_scale_ok'), 2500, about);
 	else if (target != null) {
-		// 'applied', but also the automatic safety corrections ('out_of_window', 'overflow'):
-		// when the display moves on its own, the reason and the new level must be visible.
-		postRefNotice(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000);
+		// 'applied', but also the automatic safety corrections ('clipped'/'below_window'/
+		// 'overflow'): when the display moves on its own, the reason and the new level must be
+		// visible.
+		postRefNotice(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000, about);
 	}
 }
 
@@ -215,7 +262,7 @@ export function syncAutoScaleStatus(s: any): void {
 
 	busyUntil = 0;                         // the device answered: drop the local fallback
 	setBusy(false);
-	announce(result, target);
+	announce(result, target, a);
 }
 
 /** Preset (or a fresh start): forget what Auto last did, so nothing stale blocks a new fit. */
@@ -241,7 +288,5 @@ export function clearAutoScaleHint(): void {
 	setBusy(false);
 	// Drop a notice left over from an earlier decision: it describes a level that is no longer the
 	// one being asked for, and reads as "the app adjusted something just now".
-	noticeSeq++;
-	S.setNoticeText(null);
-	requestRender();
+	withdrawNotice();
 }

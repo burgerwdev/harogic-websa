@@ -484,7 +484,9 @@ function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
     labels.push(text);
     ctx.fillText(text, labelX, y);
   }
-  ctx.canvas.dataset.yLabels = labels.join(',');
+  // Written only on change (this runs on every pass; they change with ref/dB-per-div/offset/unit).
+  const text = labels.join(',');
+  if (ctx.canvas.dataset.yLabels !== text) ctx.canvas.dataset.yLabels = text;
 }
 
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn

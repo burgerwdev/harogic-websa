@@ -17,6 +17,7 @@ import {
 	autoScaleRequest,
 	clearAutoScaleHint,
 	maybeRequestSdrFit,
+	noteTraceObservation,
 	postRefNotice,
 	requestSdrEntryFit,
 	resetAutoScaleState,
@@ -195,6 +196,32 @@ describe('SDR Auto Scale', () => {
 			syncAutoScaleStatus({ auto_ref: { adjusting: false, result, target: -10, seq: lastSeqSeed } });
 			expect(getDisplayRef(), result).toBe(0);
 		}
+	});
+
+	it('withdraws a refusal as soon as the trace no longer matches it', () => {
+		// "No signal to fit" describes the measurement: it must go when the signal shows up, not
+		// after its 6 s. Reported: the trace was already on screen while the message stayed.
+		status({ adjusting: false, result: 'no_signal', seq: 1,
+			last_peak: -110, last_noise_floor: -120 });
+		expect(noticeText).toBe('No signal to fit');
+		noteTraceObservation({ last_peak: -110, last_noise_floor: -120 });   // unchanged: keep it
+		expect(noticeText).toBe('No signal to fit');
+		noteTraceObservation({ last_peak: -60, last_noise_floor: -110 });    // a signal appeared
+		expect(noticeText).toBeNull();
+	});
+
+	it('withdraws "waiting for a trace" with the first trace', () => {
+		status({ adjusting: false, result: 'no_data', seq: 1, last_peak: null });
+		expect(noticeText).toBe('Waiting for a trace');
+		noteTraceObservation({ last_peak: -80, last_noise_floor: -100 });
+		expect(noticeText).toBeNull();
+	});
+
+	it('keeps an outcome notice until its own timer, not tied to the trace', () => {
+		status({ adjusting: false, result: 'applied', target: -20, seq: 1, last_peak: -40 });
+		expect(noticeText).toBe('Ref \u2192 -20 dBm');
+		noteTraceObservation({ last_peak: -80, last_noise_floor: -100 });
+		expect(noticeText).toBe('Ref \u2192 -20 dBm');   // it reports what happened, not a state
 	});
 
 	it('drops a leftover notice when the user edits Ref', () => {

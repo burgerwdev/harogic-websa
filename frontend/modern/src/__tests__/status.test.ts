@@ -19,6 +19,7 @@ import { refLevel } from '../ui/refState';
 import { currentPoints, currentRBW, currentSpur, currentVBW, rbwMode, vbwMode } from '../ui/swpState';
 import { currentGraphMode } from '../ui/graphMode';
 import { sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { noticeText } from '../core/store';
 
 const SWP_STATUS = {
 	cmd: 'STATUS',
@@ -92,6 +93,40 @@ const SDR_STATUS = {
 beforeEach(() => {
 	resetAll();
 	localStorage.clear();
+});
+
+describe('a reference level the device did not accept', () => {
+	it('is announced instead of changing the number silently', () => {
+		// Measured on the SAN-90: requesting +30 dBm comes back as +27 (the device's own maximum
+		// depends on the attenuation it picks). The UI follows the echo, so it has to say why.
+		const status = structuredClone(SWP_STATUS) as any;
+		status.req.swp.ref = 30;
+		status.actual.ref = 27;
+		status.ref = 27;
+		updateStatus(status);
+		expect(noticeText).toBe('Device limited Ref to 27 dBm');
+	});
+
+	it('is not repeated while the same limit stands', () => {
+		const status = structuredClone(SWP_STATUS) as any;
+		status.req.swp.ref = 30;
+		status.actual.ref = 27;
+		status.ref = 27;
+		updateStatus(status);
+		S.setNoticeText('something else');            // the user's own message is not overwritten
+		updateStatus(status);
+		expect(noticeText).toBe('something else');
+	});
+
+	it('says nothing when the device accepted the request', () => {
+		const status = structuredClone(SWP_STATUS) as any;
+		status.req.swp.ref = -20;
+		status.actual.ref = -20;
+		status.ref = -20;
+		S.setNoticeText('');                          // nothing posted means this is left alone
+		updateStatus(status);
+		expect(noticeText).toBe('');
+	});
 });
 
 describe('updateStatus', () => {
