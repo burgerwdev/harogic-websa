@@ -172,8 +172,10 @@ export function syncGraphModeStatus(mode: string) {
     // asks for the fit as soon as frames arrive (same AUTO_SCALE command as the other modes).
     requestSdrEntryFit();
   } else {
+    // Leaving SDR stops the audio PIPELINE; the user's preference is theirs and must survive the
+    // trip. Writing it off here is what made "audio on" silently become "audio off" after a visit
+    // to RTA/SWP (measured: localStorage flipped 1 -> 0 on the way out).
     setSdrAudioEnabled(false);
-    sdrAudioOn.set(false);
     syncSdrAudioButton();
   }
   const modeButton = document.getElementById('btn-mode-rta');

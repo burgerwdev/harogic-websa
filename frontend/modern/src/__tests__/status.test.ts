@@ -18,7 +18,7 @@ import { centerHz, spanHz, rtaCenterHz, swpCenterHz } from '../ui/freqState';
 import { refLevel } from '../ui/refState';
 import { currentPoints, currentRBW, currentSpur, currentVBW, rbwMode, vbwMode } from '../ui/swpState';
 import { currentGraphMode } from '../ui/graphMode';
-import { sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { noticeText } from '../core/store';
 
 const SWP_STATUS = {
@@ -144,6 +144,31 @@ describe('a reference level the device did not accept', () => {
 		S.setNoticeText('');                          // nothing posted means this is left alone
 		updateStatus(status);
 		expect(noticeText).toBe('');
+	});
+});
+
+describe("the user's SDR audio preference", () => {
+	it('survives leaving and re-entering SDR', () => {
+		// Reported: with audio on, a visit to RTA/SWP turned it off for good (the mode-exit path
+		// wrote the preference off). Leaving a mode stops the runtime, not the user's setting.
+		const sdr = (mode: string) => {
+			const status = structuredClone(SWP_STATUS) as any;
+			status.mode = mode;
+			updateStatus(status);
+		};
+		sdr('sdr');
+		sdrAudioOn.set(true);
+		sdr('rta');
+		expect(sdrAudioOn.get()).toBe(true);
+		sdr('std');
+		expect(sdrAudioOn.get()).toBe(true);
+		sdr('sdr');
+		expect(sdrAudioOn.get()).toBe(true);
+		// ...and an explicit "off" stays off, so the check above cannot pass by accident.
+		sdrAudioOn.set(false);
+		sdr('rta');
+		sdr('sdr');
+		expect(sdrAudioOn.get()).toBe(false);
 	});
 });
 

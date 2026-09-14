@@ -319,12 +319,37 @@ def main() -> int:
             label == "On" and "enabled=true" in gate,
             f"label={label} gate={gate} (stored value before: {store})",
         )
+        # The preference must survive a trip to another mode: leaving SDR stops the pipeline, and
+        # writing the preference off there turned "audio on" into "audio off" for good (reported).
+        page.click("#btn-mode-rta")
+        page.wait_for_timeout(2500)
+        page.click("#btn-mode-sdr")
+        page.wait_for_timeout(3000)
+        gate_back = page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''")
+        check(
+            "audio on survives a mode round trip",
+            page.inner_text("#btn-sdr-audio") == "On" and "enabled=true" in gate_back,
+            f"label={page.inner_text('#btn-sdr-audio')} gate={gate_back}",
+        )
+
         page.click("#btn-sdr-audio")
         page.wait_for_timeout(600)
         check(
             "toggle turns audio off again",
             page.inner_text("#btn-sdr-audio") == "Off"
             and "enabled=false" in page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''"),
+            f"label={page.inner_text('#btn-sdr-audio')}",
+        )
+        # ...and "off" is a preference too: it comes back as off.
+        page.click("#btn-mode-rta")
+        page.wait_for_timeout(2500)
+        page.click("#btn-mode-sdr")
+        page.wait_for_timeout(3000)
+        check(
+            "audio off survives a mode round trip",
+            page.inner_text("#btn-sdr-audio") == "Off"
+            and "enabled=false" in page.evaluate(
+                "document.getElementById('spectrum')?.dataset.sdrAudio || ''"),
             f"label={page.inner_text('#btn-sdr-audio')}",
         )
 
@@ -489,23 +514,42 @@ def main() -> int:
         window = 100.0
         floor_now = sdr_now.get("last_noise_floor")
         peak_now = sdr_now.get("last_peak")
+        caps = state(url)["caps"]
         good_ref = round(max((floor_now or -120.0) + window / 2, (peak_now or -60.0) + 10))
-        good_ref = max(-50, min(30, good_ref))
+        good_ref = max(float(caps["ref_min"]), min(float(caps["ref_max"]), good_ref))
         page.fill("#input-ref", str(good_ref))
         page.click("#btn-ref-set")
-        page.wait_for_timeout(800)
-        first = page.input_value("#input-ref")
-        check("manual Ref is applied", abs(float(first) - good_ref) < 1.5,
-              f"input {first} (asked {good_ref})")
-        page.wait_for_timeout(3500)              # well past any auto-refresh window
+        # A low level can saturate the IQS chain: the device then reports IF overflow (-12) and the
+        # protective ranger raises Ref by 5 dB per second until it stops. That is protection, not a
+        # failure, so wait for the level to settle first and judge what follows.
+        ref_now, stable_since, overflowed = state(url)["ref"], time.time(), False
+        for _ in range(30):
+            page.wait_for_timeout(500)
+            s = state(url)
+            overflowed = overflowed or s["status_warning"] == -12
+            if s["ref"] != ref_now:
+                ref_now, stable_since = s["ref"], time.time()
+            elif time.time() - stable_since >= 1.5:
+                break
+        settled = state(url)
         after = page.input_value("#input-ref")
-        check("manual Ref survives (not reset to 0)", abs(float(after) - good_ref) < 1.5,
-              f"input {after} after 3.5 s (asked {good_ref})")
+        check("the Ref box shows the level the device reports",
+              abs(float(after) - float(settled["ref"])) < 1.5,
+              f"input {after} vs device {settled['ref']} (asked {good_ref})")
+        check("a change from the asked level is explained by the device",
+              abs(float(settled["ref"]) - good_ref) < 1.5
+              or settled["auto_ref"].get("result") in ("overflow", "clipped", "applied"),
+              f'asked {good_ref}, device {settled["ref"]}, '
+              f'result {settled["auto_ref"].get("result")}, overflow seen {overflowed}')
+        page.wait_for_timeout(3500)              # well past any auto-refresh settle window
+        held = state(url)["ref"]
+        check("the settled level then holds (not reset to 0)", abs(held - settled["ref"]) < 1.5,
+              f'{settled["ref"]} -> {held} after 3.5 s')
         page.click("#btn-ref-down")
         page.wait_for_timeout(600)
         down = page.input_value("#input-ref")
-        check("Ref down arrow works without pressing up first", float(down) < float(after),
-              f"{after} -> {down}")
+        check("Ref down arrow works without pressing up first", float(down) < float(held),
+              f"{held} -> {down}")
 
         # 9a2 - When the ranger does act (the protective direction), the correction must be
         # visible on screen. Reported: the hint named a new level while the canvas and the Ref box
