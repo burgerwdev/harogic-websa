@@ -1,3 +1,8 @@
+> **Status.** This document is the frozen feasibility analysis: its numbers are what the
+> probe suite measured. What has since been built, what is verified and what is still open
+> lives in [VSA_ROADMAP.md](VSA_ROADMAP.md), and `tools/vsa_probe/FINDINGS.md` section 15
+> reconciles these numbers with the shipped feature.
+
 # VSA feasibility on the SAN-90 (WebSA)
 
 Vector signal analysis (VSA) means measuring *and demodulating* a digitally

@@ -494,3 +494,34 @@ Two implementation lessons worth keeping:
   optimum (measured differences of 0.01 % between 0.64 and 0.75 samples at 30 dB), so a
   parabola fitted to it is noise-dominated; the decision-directed EVM is sharply curved
   (4 % at 0.25 samples, 8 % at 0.5) and pins the phase to 0.001 samples at 30 dB.
+
+
+## 15. Production reconciliation (final run, task-8)
+
+Same bench, same source (tinySA CW, 100.2 MHz, −25.0 dBm into the analyzer), `RefLevel 0`,
+decimate 16. The left column is what the probe suite measured while the feature was only a
+feasibility study; the right column is what the shipped feature measures through the running
+service (`tools/vsa_probe/vsa_service_check.py`, `vsa_frame_check.py`, `tools/command_sweep.py`).
+
+| Quantity | Probe (analysis) | Production (feature) |
+|---|---|---|
+| Level of a −25 dBm CW tone | within 0.4 dB; −24.5 dBm at the centre | mean **−25.23 dBm**, tone level **−25.2 dBm** (0.2 dB from the source) |
+| Peak bin vs tone level | — (the probe used the coherent estimator) | bin peak −28.25 dBm, i.e. the 2.00-bin window ENBW (3.0 dB) below the tone, reported as a separate field |
+| Noise floor | — | −138.9 dBm/Hz (median density) |
+| Duty of a carrier | — | 1.0 (a trace with no two levels is continuous) |
+| Deep capture | 2^24 samples, 0 packet errors, 1.04–1.83× signal duration | **16777216/16777216 samples, 0 errors, 1034/1034 planned packets, 1.41×** |
+| Short capture (2^18) | — | 262144/262144 samples, 0 errors, 17/17 packets, 2.28× (the fixed settle/arm cost dominates a 67 ms frame) |
+| Streaming Tier 1 | 40 s soak, 0 errors, worst 10 s window 0.99848 | stream view refreshes through the shared panadapter, `busy` false, frames flowing; soak-length stability not re-run |
+| Frame path | — | RTAF + VSAD reach the display WebSocket; the newest VSAD decodes with NumPy alone; a 2 s stall still leaves only the newest cloud |
+| Tier 2 EVM vs the matched-filter bound | 1.003–1.023 over 8–30 dB (probe chain) | median 0.99 over 8–30 dB (no bias); one 8 dB realisation reads 1.15, which is the estimator's own variance there |
+| Tier 2 timing | ≤0.03 samples at 25 dB | **≤0.026 samples over 8–30 dB**, 0.001 at 30 dB |
+| Tier 2 carrier | 0.1 Hz at 1 % of the symbol rate | total (M-th power + tracker) ≤0.03 Hz |
+| Tier 2 cost | 1.3–12× real time, "the per-symbol loop dominates" | 5.0× at 2^17, 14× at 2^20; the vectorised tracker is 10× faster than that loop and no longer dominates (the FFTs and the matched filters do) |
+| Blind rate on a carrier | (not applicable: a CW tone has no symbol line) | an arbitrary 554.95 kHz, reported as a blind estimate, with `sps_too_low`/`no_symbol_line` the explicit refusals |
+| Command registry | — | 33/33 commands swept, every guard rail held (`SET_FREQ` in VSA → `vsa_unsupported`) |
+
+**Still unverified** (unchanged by this work, and listed in the roadmap section 6): Tier 2 on a
+real modulated signal (the bench has no PSK/QAM source, so every symbol-level claim is
+synthetic), `IQS_TriggerSource` other than `Bus`, `TriggerLength` above 2^24, capture through
+`DSP_DDC`, hour-scale stability, `QDCAutoMode`'s effect, and the frontend against a real device
+(the UI smoke runs against the fake backend, by design).

@@ -14,7 +14,10 @@
 * **[已做]** Phase 1 会话层:`SET_MODE 'vsa'` 已端到端可用。`VsaSession` + `VsaParams` 遵循
   `MeasurementSession` 契约,`SET_VSA` 已进命令表,`FakeVsaSession` 支撑假后端,真机 SAN-90 一次
   抓满 2^24 样本帧、0 包错误(`tools/vsa_probe/vsa_service_check.py`)。
-* **[待做]** Phase 1 其余部分:Tier1 测量模块、`VSAD` 帧、前端,以及收口对账(2.3、2.5、2.6、2.7)。
+* **[已做]** 本轮范围内的 Phase 1 与 Phase 2:Tier1 测量模块、带按帧类型 latest-wins 的 `VSAD`
+  帧、Tier2 解调链路、VSA 前端(模式、设置组、测量面板、带旋转控件的星座)、测试与假后端 UI 冒烟,
+  以及一次真机对账(`tools/vsa_probe/FINDINGS.md` 第 15 节)。Phase 3(SDK 子进程)与本分支合并仍
+  不在范围内;仍未验证的项见第 6 节。
 
 ## 2. Phase 1 — Tier 1 端到端
 
@@ -163,6 +166,7 @@
 | 抓帧取数比值(经服务端) | 2^24 点为信号时长的 1.22 倍;131072 点为 1.92 倍(固定 settle/装帧开销主导短帧) |
 | Tier1 绝对电平(经服务端,五种测量) | tinySA CW −25.0 dBm → 均值 −25.00 dBm(经帧通路在 120 MHz 复测)、单音电平 −25.2 dBm、峰值 bin −28.3 dBm(窗 ENBW 2.00 bin)、噪声密度 −138.9 dBm/Hz |
 | VSA 帧通路 | 深度 2^17/抽取 16 时 3 s 内 6 个 RTAF + 6 个 VSAD;最新 VSAD 仅靠 NumPy 可解;2 s 停顿后仍只挂最新点云 |
+| 产物与探针对账 | FINDINGS 第 15 节:−25 dBm 源 → 均值 −25.23/单音 −25.2 dBm;2^24 点 0 错误、1.41 倍信号时长;Tier2 定时 8–30 dB 内 ≤0.026 样本;命令 33/33 通过;未验证清单与第 6 节一致 |
 | 载波上的盲符号率 | CW 单音没有符号谱线:估计给出任意的 554.95 kHz,因此 Tier1 绝不把它当测量值呈现(Phase 2 必须拒绝) |
 | 流式开销 | 纯取数占单核 1.5–18 %;Welch 25 %;频谱图 120 % |
 | 盲符号率 | 需要 sps ≥ 4;sps 2 时估计崩溃 |

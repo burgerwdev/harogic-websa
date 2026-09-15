@@ -17,8 +17,12 @@ analysis) into a working mode. Every item names the measured number that drives 
   `VsaParams` follow the `MeasurementSession` contract, `SET_VSA` is in the command table,
   `FakeVsaSession` backs the fake device, and a real SAN-90 run captured a full 2^24-sample
   frame with 0 packet errors (`tools/vsa_probe/vsa_service_check.py`).
-* **[todo]** The rest of Phase 1: the Tier 1 measurement module, the `VSAD` frame, the
-  frontend, and the closing reconciliation (sections 2.3, 2.5, 2.6, 2.7).
+* **[done]** Phase 1 and Phase 2 as scoped for this round: the Tier 1 measurement module,
+  the `VSAD` frame with per-frame-type latest-wins, the Tier 2 demodulation chain, the VSA
+  frontend (mode, settings group, measurement panel, constellation with the rotation control),
+  the tests and the fake-backend UI smoke, and one real-device reconciliation
+  (`tools/vsa_probe/FINDINGS.md` section 15). Phase 3 (SDK child process) and merging this
+  branch stay out of scope; the still-unverified items are section 6.
 
 ## 2. Phase 1 — Tier 1 end to end
 
@@ -147,7 +151,12 @@ analysis) into a working mode. Every item names the measured number that drives 
   validation table (`tests/test_vsa_session.py`, 15 cases, no vendor library).
 * **[done]** Fake-backend end-to-end: entering and leaving `vsa` without disturbing the other
   modes (`test_fake_backend_round_trips_through_vsa`).
-* **[todo]** A UI smoke that fails on a blank canvas or a JS error (with section 2.6).
+* **[done]** A UI smoke that fails on a blank canvas or a JS error: the Playwright
+  fake-backend smoke (`tools/e2e/ui_smoke.py`, `make e2e-fake`) switches into VSA, asserts the
+  panel is shown, the spectrum canvas keeps drawing, the constellation panel is drawn (measured
+  1893 non-background pixels), the readout names the requested measurement, the metrics carry
+  numbers, the ambiguity is reported, a curve replaces the cloud for another measurement, the
+  return to the sweep works, and no page error occurred.
 
 ## 3. Phase 2 — Tier 2 demodulation
 
@@ -225,6 +234,7 @@ analysis) into a working mode. Every item names the measured number that drives 
 | Capture transfer ratio (through the service) | 1.22× signal duration for 2^24 samples; 1.92× for 131072 samples (the fixed settle/arm overhead dominates a short frame) |
 | Tier 1 absolute level (service, all five measurements) | tinySA CW −25.0 dBm → mean −25.00 dBm (re-measured through the frame path at 120 MHz), tone level −25.2 dBm, bin peak −28.3 dBm (window ENBW 2.00 bins), noise density −138.9 dBm/Hz |
 | VSA frame path | 6 RTAF + 6 VSAD frames in 3 s at depth 2^17/decimate 16; the newest VSAD decodes with NumPy alone; a 2 s stall still leaves the newest cloud pending |
+| Production vs probe reconciliation | FINDINGS section 15: −25 dBm source → mean −25.23/short −25.2 dBm; 2^24 samples with 0 errors at 1.41× signal duration; Tier 2 timing ≤0.026 samples over 8–30 dB; 33/33 commands swept; the same still-unverified list as section 6 |
 | Blind rate on a carrier | a CW tone has no symbol line: the estimate returned an arbitrary 554.95 kHz, so Tier 1 never presents a rate as measured (Phase 2 must reject it) |
 | Streaming cost | raw fetch 1.5–18 % of a core; Welch 25 %; spectrogram 120 % |
 | Blind symbol rate | needs sps ≥ 4; at sps 2 the estimate collapses |
