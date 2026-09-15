@@ -300,7 +300,7 @@ nobody can tell "deliberate" from "silent regression".
 | Service will not start / device busy | `pgrep -af web_sa`, `fuser -v /dev/ttyACM0`, `tail /tmp/websa.log` | A probe process never exited; "one process owns the device" |
 | **Blank canvas, no error at all** | Canvas pixel count (the e2e's `painted_pixels`), `check_registrations.py` | The renderer was never registered (module not imported); `dist/` not rebuilt |
 | Mode will not switch / needs two clicks | Is STATUS arriving (1 Hz push)? Is an intent pending? | Main thread saturated (hot-path `get()`); pending TTL not expired |
-| Acquisition timeouts / worker restart loops | `tail -50 /tmp/websa.log` (incl. the `faulthandler` dump), supervisor exit codes | DLL hang or native crash; the watchdog scales with sweep time |
+| Acquisition timeouts / worker restart loops | `tail -50 /tmp/websa.log` (supervisor restarts) and `/tmp/websa.err` (the `faulthandler` dump), supervisor exit codes | DLL hang or native crash; the watchdog scales with sweep time |
 | UI value disagrees with the device | STATUS `req` (requested) vs `actual` | A slot `desired` was never confirmed (rejected/in flight); treat STATUS as truth |
 | Unit buttons / virtual keypad do nothing | What does `fieldForInput(input)` return? | Field key and input id spellings diverge |
 | A warning is visible only for an instant | Is there an independent repaint trigger? | Drawing depends on the frame loop, and that state has no frames |
@@ -313,7 +313,8 @@ nobody can tell "deliberate" from "silent regression".
   changing" is visible too); `auto_ref.{result,target,seq,adjusting}` in STATUS is the backend half of
   the same story (`seq` tells a new answer from a sticky old one). SDR audio state lives in `dataset.sdrAudio`.
 - Backend: `WEBSA_TRACE=1 ./run.sh` -> `grep '\[trace\]' /tmp/websa.log`; a native crash prints the
-  stack of every thread (`faulthandler`), and the supervisor's exit codes/restarts land in the same log.
+  stack of every thread (`faulthandler`) into `/tmp/websa.err`, while the supervisor's exit
+  codes/restarts land in `/tmp/websa.log`.
 
 ---
 

@@ -73,6 +73,12 @@ class HarogicDevice:
         self._sweep_ema = None
         # Consecutive transport errors; a successful SDK call clears it (note_link_status).
         self._link_errors = 0
+        # True only while `dev`/`dsp` come from a successful Device_Open/DSP_Open. A handle
+        # whose link is already known dead must never be handed back to the vendor library:
+        # Device_Close on a stale handle segfaults inside libhtraapi (measured, 8 core dumps
+        # at Device_Close+0x7799c, including the worker crash loop while the analyzer was
+        # unplugged). `connected` is the user-visible state; this is the library-facing one.
+        self._handle_ok = False
         # Auto-reference control loop: decision logic, not device I/O (report finding P1-8).
         self.auto_ref = AutoReferenceController(self)
 
@@ -85,13 +91,22 @@ class HarogicDevice:
             bp.PhysicalInterface = sb.htra_api.PhysicalInterface_TypeDef.USB
             st = sb.dll.Device_Open(sb.pointer(self.dev), sb.c_int(0), sb.pointer(bp), sb.pointer(bi))
             if st != 0 and st != -49:
+                # A failed open can still leave something in the handle slot; it is not a
+                # usable handle, so drop it instead of ever passing it to Device_Close.
+                self.dev = sb.c_void_p()
+                self._handle_ok = False
                 self.state.last_error = 'Device_Open status=%d' % st
                 return False, self.state.last_error
             dsp_status = sb.dll.DSP_Open(sb.pointer(self.dsp))
             if dsp_status != 0:
+                # Device_Open succeeded, so this close is safe (the handle is live).
                 sb.dll.Device_Close(sb.pointer(self.dev))
+                self.dev = sb.c_void_p()
+                self.dsp = sb.c_void_p()
+                self._handle_ok = False
                 self.state.last_error = f'DSP_Open status={dsp_status}'
                 return False, self.state.last_error
+            self._handle_ok = True
             self.state.pnm_supported = sb.PNM_SUPPORTED
             di = bi.DeviceInfo
             self.state.label = 'UID:%012X Model:%d HW:%d MFW:%d FFW:%d' % (
@@ -116,27 +131,40 @@ class HarogicDevice:
             return True, 'ok'
 
     def close(self) -> None:
+        """Release the handles. ``Device_Close`` runs only while the handle is trusted.
+
+        After an unplug (or a failed open) the handle is stale, and the vendor library
+        segfaults in ``Device_Close`` on it — a native crash Python cannot catch, which
+        turned the link loop into a restart loop that wrote a core dump per attempt
+        (measured: 8 cores, all ``Device_Close+0x7799c``). Dropping the handle without
+        calling into the library is the only safe thing to do there; nothing is leaked on
+        the device side because the analyzer is gone or reassigned anyway.
+        """
         with self._hw:
-            try:
-                if self.dsp.value:
-                    sb.dll.DSP_Close(sb.pointer(self.dsp))
-            except Exception:
-                pass
-            try:
-                if self.dev.value:
-                    sb.dll.Device_Close(sb.pointer(self.dev))
-            except Exception:
-                pass
+            if self._handle_ok:
+                try:
+                    if self.dsp.value:
+                        sb.dll.DSP_Close(sb.pointer(self.dsp))
+                except Exception:
+                    pass
+                try:
+                    if self.dev.value:
+                        sb.dll.Device_Close(sb.pointer(self.dev))
+                except Exception:
+                    pass
+            self._handle_ok = False
             self.dsp = sb.c_void_p()
             self.dev = sb.c_void_p()
             self.state.connected = False
 
     def reopen(self) -> tuple[bool, str]:
-        """Recover the USB link: close the dead handle and open the device again.
+        """Recover the USB link: drop whatever handle we hold and open the device again.
 
         The vendor's remedy for a bus error is to reopen the device (API guide, -8/-9), and a
         physical unplug makes the open fail - which is fine, the caller (the worker link loop,
-        `main._link_loop`) simply retries until the analyzer is plugged back in.
+        `main._link_loop`) simply retries until the analyzer is plugged back in. `close()` is
+        deliberately still called first: it is the one place that decides whether the handle
+        may be given back to the vendor library, and after `mark_link_lost` it is not.
         """
         with self._hw:
             self.close()
@@ -173,6 +201,8 @@ class HarogicDevice:
         """
         if self.state.connected:
             log.warning('device link lost: %s', reason)
+        # The handle is not trustworthy any more: never hand it to Device_Close again.
+        self._handle_ok = False
         self.state.connected = False
         self.state.last_error = reason
 
