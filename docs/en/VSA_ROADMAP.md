@@ -139,19 +139,32 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 ## 3. Phase 2 — Tier 2 demodulation
 
-* **[todo]** Promote the probe chain into `web_sa/demod/digital.py`: symbol rate, timing,
-  carrier recovery, slicing, EVM/SER, symbol table. Measured reference: EVM/theory
-  1.003–1.023 for QPSK/16QAM over 8–30 dB.
-* **[todo]** Vectorise (or decimate) the decision-directed PLL: the per-symbol Python loop is
-  the whole cost (chain is 1.3–12× real time), and Tier 2 is a capture-and-analyse
-  operation.
-* **[todo]** Handle the 4-fold phase ambiguity explicitly — a known preamble/pilot when one
-  exists, otherwise a user-controlled rotation with the ambiguity reported as a number, never
-  a silently rotated symbol table.
-* **[todo]** Refuse impossible inputs with a clear error instead of a wrong number
-  (sps < 4 collapses the blind rate estimate).
-* **[todo]** Degradation tests that record where it breaks (carrier offset beyond ~1 % of the
-  symbol rate, timing error, roll-off extremes).
+* **[done]** The chain lives in `web_sa/demod/digital.py` (`demodulate`): symbol rate,
+  timing, carrier recovery, slicing, EVM/MER/SNR, SER/BER and the Gray-coded symbol table.
+  Measured on synthetic QPSK/16-QAM over 8–30 dB: EVM/theory median 0.99 (no bias; one 8 dB
+  realisation in five reads 15 % high, which is the estimator's own variance there),
+  SER/BER 0 with the preamble resolving the rotation, total carrier error ≤ 0.03 Hz.
+* **[done]** The per-symbol PLL is gone: `track_carrier` fits one phase/frequency line per
+  pass with the decisions as the reference (vectorised, three passes, outlier rejection).
+  Measured 2.3 ms for 4000 symbols and 50 ms for 65000, i.e. **10× faster** than the probe's
+  loop, and no longer the cost driver — the FFT stages and the matched filters are.
+* **[done]** The 4-fold ambiguity is explicit: `resolve_ambiguity` either matches a known
+  preamble (reporting every candidate's SER, and only one of the four reaches 0) or applies
+  the user's rotation and reports it (`resolved_by` = `reference`/`user`/`none` plus the
+  angle); a capture with no reference and no rotation comes back as `none`, never silently
+  rotated.
+* **[done]** Impossible inputs are refused with a code instead of a wrong number:
+  `sps_too_low` (blind rate collapses below 4 samples/symbol), `no_symbol_line`, `silent`,
+  `too_short`; `tier1_cloud` flags the same case with `sps_too_low`.
+* **[done]** The timing stage is decision-aided: the blind |x|^2 estimate alone reached
+  0.05 samples only at 30 dB (0.31 samples mean at 8 dB), so `refine_timing` minimises the
+  decision-directed EVM over the sampling phase. Measured worst case 0.026 samples over
+  8–30 dB, and 0.001 at 30 dB.
+* **[done]** Degradation is recorded where the tests can see it: the 8 dB EVM spread (above),
+  the sps < 4 collapse, and the clock case in section 7 (a CW carrier has no symbol line, so
+  Tier 1 must never present the blind rate as a measurement).
+* **[todo]** Roll-off extremes (0.1–0.9) and carrier offsets beyond ~1 % of the symbol rate
+  are measured by the probes but are not pinned by a unit test yet.
 * Honest scope: symbol-level claims are validated on synthetic IQ — the bench has no
   calibrated PSK/QAM source (the tinySA produces CW/AM/FM only).
 

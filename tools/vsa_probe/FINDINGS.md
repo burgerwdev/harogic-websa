@@ -467,3 +467,30 @@ most (`tools/vsa_probe/vsa_service_check.py` writes the record).
   (`mode low output` keeps radiating); switch back with `mode input`. Measured: 100.2 MHz
   stayed at −25.3 dBm across `pause`/`modulation off`/`output off` and dropped to
   −73.4 dBm only after `mode input`.
+
+### 14.2 Tier 2 in production: the vectorised chain (measured while implementing task-6)
+
+The probe chain's per-symbol PLL was the reported cost driver; the production chain replaces
+it with a decision-directed phase/frequency **line fit** (three vectorised passes, outliers
+rejected) and adds a decision-aided timing stage. Measured on synthetic QPSK/16-QAM
+(3.906 MSPS, sps 16, 4096 symbols, 2.5 kHz carrier offset, 0.4 samples timing):
+
+| Quantity | Measured |
+|---|---|
+| EVM / matched-filter bound | median 0.99 over 8–30 dB (no systematic bias); individual realisations 0.989–1.007 except one 8 dB case at 1.147, which is the estimator's own variance there |
+| SER / BER, 8–30 dB | 0 (preamble resolves the 4-fold rotation: exactly one of the four candidates reaches SER 0) |
+| Timing error | ≤ 0.026 sample over 8–30 dB, 0.001 at 30 dB. The blind `|x|^2` stage alone needs 30 dB to reach 0.05 (0.31 samples mean at 8 dB) |
+| Carrier offset (total) | ≤ 0.03 Hz |
+| Tracker cost | 2.34 ms for 4076 symbols, 50.5 ms for 65515 — **10× faster** than the probe's per-symbol PLL (25.4 ms / 494 ms) |
+| Whole chain | 169 ms for a 2^17-sample capture (503 % of real time), 3.76 s for 2^20 (1402 %); the FFT stages and the two matched filters dominate, not the tracker |
+| Noiseless EVM floor | 0.017 % (span-20 matcher; the truncation floor is 0.013 %) |
+
+Two implementation lessons worth keeping:
+
+* **The timing stage must run after the carrier is removed.** With a few kHz of offset the
+  constellation rotates tens of times across a block, so any decision-directed timing
+  statistic averages to nothing (measured: the eye-opening objective collapsed).
+* **Minimise the EVM, not the eye opening.** The matched-filter eye is very flat near the
+  optimum (measured differences of 0.01 % between 0.64 and 0.75 samples at 30 dB), so a
+  parabola fitted to it is noise-dominated; the decision-directed EVM is sharply curved
+  (4 % at 0.25 samples, 8 % at 0.5) and pins the phase to 0.001 samples at 30 dB.

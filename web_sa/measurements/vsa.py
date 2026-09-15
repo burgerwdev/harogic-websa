@@ -300,7 +300,8 @@ class VsaSession(MeasurementSession):
         else:
             measured = vector.measure(volts, fs, kind=s.vsa_measure,
                                       symbol_rate=s.vsa_symbol_rate or None,
-                                      rolloff=s.vsa_rolloff, modulation=s.vsa_modulation)
+                                      rolloff=s.vsa_rolloff, modulation=s.vsa_modulation,
+                                      phase_rot_deg=s.vsa_phase_rot_deg)
             freq = measured['spectrum'][0] + float(s.vsa_actual['iq_center'])
             spec = measured['spectrum'][1]
             keep = np.abs(freq - s.vsa_actual['iq_center']) <= s.vsa_actual['bandwidth'] / 2.0

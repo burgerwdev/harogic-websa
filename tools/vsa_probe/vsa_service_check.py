@@ -7,6 +7,10 @@ Task-3 acceptance, hardware-in-the-loop (the service must be running and connect
     python3 tools/vsa_probe/vsa_service_check.py --depth 262144
     python3 tools/vsa_probe/vsa_service_check.py --expect-dbm -25     # with a known source
 
+The service only runs the acquisition while at least one display WebSocket is connected
+(the publisher idles with no client), so this check holds one open for its duration and
+reads STATUS over HTTP.
+
 It checks, in order:
   1. `SET_MODE {mode:'vsa'}` makes `STATUS.mode` `vsa` and publishes a `vsa` request block.
   2. A complete capture frame arrives with **no packet shortfall**: the frame delivered at
@@ -41,6 +45,15 @@ async def post(session, base, payload):
 async def state(session, base):
     async with session.get(f'{base}/api/state') as response:
         return await response.json()
+
+
+async def _hold_client(ws) -> None:
+    """Keep a display client connected for the duration of the check, discarding frames."""
+    try:
+        async for _message in ws:
+            pass
+    except Exception:                                       # closed/aborted: the check reports
+        pass
 
 
 async def set_mode(session, base, mode):
@@ -80,7 +93,16 @@ async def run(args) -> int:
     problems: list[str] = []
     record: dict = {'depth': args.depth, 'view': None, 'started': time.time()}
 
-    async with aiohttp.ClientSession(headers=headers) as session:
+    url = args.ws_url + (f'?token={args.token}&noaudio=1' if args.token else '?noaudio=1')
+    async with (aiohttp.ClientSession(headers=headers) as session,
+                session.ws_connect(url, max_msg_size=0) as ws):
+        return await _run_with_client(args, session, ws, problems, record)
+
+
+async def _run_with_client(args, session, ws, problems, record) -> int:
+    """The checks themselves, with a display client held open (see the module docstring)."""
+    holder = asyncio.create_task(_hold_client(ws))
+    try:
         before = await state(session, args.http_url)
         if not before.get('connected'):
             print('SAN device is not connected', file=sys.stderr)
@@ -184,6 +206,9 @@ async def run(args) -> int:
                   f'peak {peak:.1f} dBm within {args.tolerance} dB of {args.expect_dbm} dBm',
                   problems)
 
+    finally:
+        holder.cancel()
+
     record['problems'] = problems
     record['ok'] = not problems
     OUT.write_text(json.dumps(record, indent=2) + '\n')
@@ -196,6 +221,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--http-url', default='http://127.0.0.1:8080')
+    parser.add_argument('--ws-url', default='ws://127.0.0.1:8080/ws',
+                        help='display socket that keeps the publisher acquiring')
     parser.add_argument('--token', default='')
     parser.add_argument('--center', type=float, default=100.2e6)
     parser.add_argument('--decimate', type=int, default=16)

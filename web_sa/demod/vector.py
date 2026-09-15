@@ -305,66 +305,35 @@ def spectrogram(iq: np.ndarray, fs: float, nfft: int = 256, hop: int = 128) -> t
 def constellation(iq: np.ndarray, fs: float, *, modulation: str = 'qpsk',
                   rolloff: float = 0.35, symbol_rate: float | None = None,
                   sps: int = 8, compensate_cfo: bool = True) -> dict:
-    """Tier 1 symbol cloud: timing and (optional) carrier correction, no slicing.
+    """Tier 1 symbol cloud: the DSP lives in ``demod/digital.py`` (``tier1_cloud``).
 
-    Returns a dict with the cloud and its measured scale:
-
-    ``symbols``            complex volts at the symbol instants
-    ``nominal``            the nominal unit-RMS grid scaled to the cloud's RMS, for
-                           the overlay a UI draws behind the cloud
-    ``rms_v``              RMS symbol magnitude in volts (the cloud's own scale)
-    ``mean_dbm``           the cloud's mean power in dBm (same convention as here)
-    ``symbol_rate_est``    blind estimate from the |x|^2 line
-    ``symbol_rate_used``   what the correction actually used (given or estimated)
-    ``cfo_hz``/``timing_samples``  what was removed
-    ``sps_too_low``        True when the blind estimate cannot be trusted (sps < 4)
-
-    Without a symbol rate and with fewer than 4 samples per symbol the blind
-    estimate collapses, so the caller gets an explicit flag instead of a silently
-    wrong cloud.
+    Kept as a named Tier 1 product because it is what a VSA shows before any decision is
+    made; the decision-directed metrics are a separate call (``digital.demodulate``) so a
+    viewer can display a cloud that the chain would refuse to slice.
     """
-    x = np.asarray(iq)
-    est_rate, _ = D.estimate_symbol_rate(x, fs)
-    rate = float(symbol_rate or est_rate)
-    out = {'symbols': np.zeros(0, dtype=complex), 'nominal': np.zeros(0, dtype=complex),
-           'rms_v': 0.0, 'mean_dbm': float('-inf'), 'symbol_rate_est': float(est_rate),
-           'symbol_rate_used': rate, 'cfo_hz': 0.0, 'timing_samples': 0.0,
-           'sps_too_low': False}
-    if rate <= 0 or not len(x):
-        return out
-    sps_in = fs / rate
-    if sps_in < 4.0:
-        out['sps_too_low'] = True
-        return out
-    n_out = int(round(len(x) * sps * rate / fs))
-    xs = D.fft_resample(x, n_out)
-    fs_out = sps * rate
-    if compensate_cfo:
-        # Tier 1 has no decisions, so the M-th power estimate runs on the matched
-        # filter output (the M-th power needs symbol-spaced samples).
-        mf = D.matched_filter_symbols(xs, sps, rolloff)
-        if len(mf) > 16:
-            out['cfo_hz'] = D.estimate_cfo_mth(mf, rate)
-            del mf
-        else:
-            # Too short to estimate: fall back to the spectral centroid of the block,
-            # which is what a VSA shows when it cannot decide symbols either.
-            _, dbm = spectrum(x, fs, nfft=min(4096, len(x)))
-            freqs = np.fft.fftshift(np.fft.fftfreq(min(4096, len(x)), d=1 / fs))
-            out['cfo_hz'] = spectral_centroid(freqs, dbm, band_hz=rate)
-    out['timing_samples'] = D.resolve_timing(xs, sps, rolloff,
-                                            D.estimate_timing(xs, sps))
-    if out['timing_samples']:
-        xs = D.add_timing(xs, -out['timing_samples'])
-    if out['cfo_hz']:
-        xs = D.remove_cfo(xs, out['cfo_hz'], fs_out)
-    sym = D.matched_filter_symbols(xs, sps, rolloff)
-    out['symbols'] = sym
-    if len(sym):
-        rms = float(np.sqrt(np.mean(np.abs(sym) ** 2)))
-        out['rms_v'] = rms
-        out['mean_dbm'] = float(dbm_of_power(rms ** 2))
-        out['nominal'] = D.nominal_points(modulation) * rms
+    return D.tier1_cloud(iq, fs, modulation=modulation, rolloff=rolloff,
+                         symbol_rate=symbol_rate, sps=sps, compensate_cfo=compensate_cfo)
+
+
+def demodulation(iq: np.ndarray, fs: float, *, modulation: str = 'qpsk',
+                 rolloff: float = 0.35, symbol_rate: float | None = None, sps: int = 8,
+                 phase_rot_deg: float = 0.0, reference=None) -> dict:
+    """Tier 1 cloud plus the Tier 2 decisions and metrics (see ``digital.demodulate``).
+
+    Returns the same keys as :func:`constellation` (so the payload builders do not care
+    which one produced it) with the measured link added: EVM, MER, SNR, SER/BER when a
+    reference is given, the phase-rotation report and the chain's own cost. A capture the
+    chain refuses comes back with ``error`` set and an empty cloud.
+    """
+    res = D.demodulate(iq, fs, modulation, rolloff=rolloff, symbol_rate=symbol_rate,
+                       sps=sps, phase_rot_deg=phase_rot_deg, reference=reference)
+    syms = res.symbols
+    out = {'symbols': syms, 'nominal': res.ideal, 'rms_v': res.rms_v,
+           'mean_dbm': res.mean_dbm, 'symbol_rate_est': res.symbol_rate_hz,
+           'symbol_rate_used': res.symbol_rate_used, 'cfo_hz': res.cfo_hz,
+           'timing_samples': res.timing_samples, 'sps_too_low': res.error == 'sps_too_low',
+           'error': res.error}
+    out.update(res.summary())
     return out
 
 
@@ -448,7 +417,7 @@ def measure(iq: np.ndarray, fs: float, *, kind: str = 'spectrum',
             window_name: str = 'blackman-harris', nfft: int = 4096,
             overlap: float = 0.5, block: int = 256, modulation: str = 'qpsk',
             rolloff: float = 0.35, symbol_rate: float | None = None,
-            sps: int = 8) -> dict:
+            sps: int = 8, phase_rot_deg: float = 0.0, reference=None) -> dict:
     """Run one Tier 1 measurement and return its numbers plus its arrays.
 
     The levels and the Welch spectrum are always included (the spectrum is the
@@ -459,7 +428,9 @@ def measure(iq: np.ndarray, fs: float, *, kind: str = 'spectrum',
     * ``power``         -- envelope trace in dBm plus the measured duty cycle
     * ``ccdf``          -- per-sample CCDF plus the probabilities at ``CCDF_LEVELS_DB``
     * ``spectrogram``   -- STFT matrix (capture only: 120 % of real time)
-    * ``constellation`` -- symbol cloud with rate/timing/CFO corrected (capture only)
+    * ``constellation`` -- symbol cloud with rate/timing/CFO corrected, sliced, with EVM,
+      MER, SNR and SER (capture only). ``phase_rot_deg`` is the user's answer to the 4-fold
+      ambiguity; ``reference`` (known preamble symbols) resolves it automatically instead.
 
     Raises ``ValueError`` for an unknown kind and for a capture-only kind used on a
     stream (the caller is expected to refuse that earlier, in the command layer).
@@ -496,8 +467,9 @@ def measure(iq: np.ndarray, fs: float, *, kind: str = 'spectrum',
         out['spectrogram'] = rows
         out['rows'] = int(rows.shape[0])
     elif kind == 'constellation':
-        cloud = constellation(x, fs, modulation=modulation, rolloff=rolloff,
-                              symbol_rate=symbol_rate, sps=sps)
+        cloud = demodulation(x, fs, modulation=modulation, rolloff=rolloff,
+                             symbol_rate=symbol_rate, sps=sps,
+                             phase_rot_deg=phase_rot_deg, reference=reference)
         out.update(cloud)
         out['symbols_n'] = int(len(cloud['symbols']))
     return out
