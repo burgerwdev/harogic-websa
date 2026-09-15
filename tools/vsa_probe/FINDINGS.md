@@ -384,7 +384,7 @@ production transient-streak recovery.
 
 ## 13. The device-link crash, fixed and re-verified
 
-The crash analysed in §7/§11.2 was fixed on branch `fix/device-close-on-lost-link`
+The crash analysed in §7/§11.2 was fixed and shipped in v1.7.4
 (`web_sa/hardware/device.py`, `web_sa/supervisor.py`):
 
 * `HarogicDevice.close()` calls `DSP_Close`/`Device_Close` **only** while

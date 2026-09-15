@@ -332,10 +332,10 @@ Recommendation, smallest useful step first:
 3. **Later**: full separation (an SDK daemon owning the device, the web worker
    purely a client) — only worth it if more than one consumer needs the device.
 
-Step 1 is implemented and bench-verified (`fix/device-close-on-lost-link`: no new core
- dump with the analyzer unavailable, quiet retry, automatic resume when it is released,
- clean stop in both link states; the supervisor now stops after 5 consecutive crashes that
- each lasted under 10 s). Steps 2 and 3 remain.
+Step 1 is implemented and bench-verified (shipped in **v1.7.4**: no new core dump with the
+ analyzer unavailable, quiet retry, automatic resume when it is released, clean stop in both
+ link states; the supervisor now stops after 5 consecutive crashes that each lasted under
+ 10 s). Steps 2 and 3 remain.
 
 Impact on the existing recovery chain: steps 1–2 do not change RTA/SDR session
 reconfiguration, the link watchdog, or the mode switch; they change *where* the
