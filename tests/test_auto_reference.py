@@ -14,6 +14,7 @@ import pytest
 from web_sa.hardware.auto_reference import (
     FLOOR_MIN_DBM,
     OVERFLOW_INTERVAL_S,
+    REFIT_ATTEMPTS,
     SAFETY_INTERVAL_S,
     AutoReferenceController,
 )
@@ -327,7 +328,7 @@ def test_front_end_change_can_clear_the_learned_floor():
 
 def test_a_settings_change_arms_one_automatic_refit(clock):
     """A span/centre/RBW change invalidates the level that was right for the old geometry: the
-    first settled frame of the new one places it again - once, never as a tracking loop."""
+    first settled frame of the new one places it again."""
     dev = StubDevice(ref_level=0.0, span_hz=100e6)
     ctl = AutoReferenceController(dev)
     ctl.begin_settle('std')                       # the initial settle is not a change
@@ -340,11 +341,105 @@ def test_a_settings_change_arms_one_automatic_refit(clock):
     observe(dev, ctl, peak=-100.5, floor=-101.0)
     assert ctl.pending == ('std', -5.0)
     assert ctl.view('std')['result'] == 'applied'
+    # The loop is closed: it keeps placing while the trace is still outside, and stops as soon as
+    # the placement is good - so a device that lands the target ends the loop after one step.
     ctl.apply_pending()
-    dev.state.ref_level = 0.0                     # pretend the device did not land it
-    clock[0] += 3 * SAFETY_INTERVAL_S
+    dev.state.ref_level = -5.0                    # the device landed it (the stub is inert)
+    clock[0] += SAFETY_INTERVAL_S + 1.0
     observe(dev, ctl, peak=-100.5, floor=-101.0)
-    assert ctl.pending is None                    # one placement per settings change, not a loop
+    assert ctl.pending is None
+
+
+def test_the_refit_keeps_going_when_a_step_undershoots(clock):
+    """Measured on the SAN-90: the trace follows Ref by roughly half, so one step lands short.
+
+    At centre 20 MHz / span 1 MHz with the automatic attenuator on, Ref -10/-20/-30/-40/-50 dBm
+    put the noise floor 12.3/13.9/11.0/2.7/-7.2 dB below the bottom edge of a 100 dB window
+    (attenuation 12/15/6/0/0 dB). An open-loop fit from the -115 dBm floor at Ref 0 computed
+    -20 dBm and left the trace 14 dB under the canvas - the reported "Auto adjusted but the trace
+    is still invisible". The loop re-measures after every step and reaches Ref -50 dBm, the first
+    level where the trace is on the canvas.
+    """
+    # floor(ref) from the measured table; below -10 dBm the -10/-20 slope is extrapolated.
+    measured = ((-10.0, -122.3), (-20.0, -133.9), (-30.0, -141.0), (-40.0, -142.7),
+                (-50.0, -142.8))
+
+    def floor_at(ref: float) -> float:
+        pts = sorted(measured)
+        if ref <= pts[0][0]:
+            return pts[0][1]
+        for (r0, f0), (r1, f1) in zip(pts, pts[1:], strict=False):
+            if r0 <= ref <= r1:
+                return f0 + (f1 - f0) * (ref - r0) / (r1 - r0)
+        return pts[-1][1]
+
+    def trace_at(ref: float):
+        floor = floor_at(ref)
+        return floor + 2.0, floor               # no signal: the peak is the noise
+
+    dev = StubDevice(ref_level=0.0)
+    ctl = AutoReferenceController(dev)
+    ctl.begin_settle('std')                    # the first settle records the geometry
+    dev.state.span_hz = 1e6                    # the user's settings change...
+    ctl.begin_settle('std')                    # ...arms the closed loop
+
+    def step():
+        """One settled frame of the closed loop; returns the level applied, if any."""
+        clock[0] += SAFETY_INTERVAL_S + 1.0
+        peak, floor = trace_at(ctl.ref_level('std'))
+        observe(dev, ctl, peak=peak, floor=floor)
+        if ctl.pending is None:
+            return None
+        applied = ctl.pending[1]
+        ctl.apply_pending()
+        dev.state.ref_level = applied           # the device landed it
+        return applied
+
+    first = step()
+    assert first is not None
+    # The open-loop step does NOT fit the trace (this is the reported failure).
+    floor_after = trace_at(first)[1]
+    assert floor_after < first - ctl.window_db()
+    applied = [first]
+    while len(applied) <= REFIT_ATTEMPTS:
+        nxt = step()
+        if nxt is None:
+            break
+        applied.append(nxt)
+    assert len(applied) >= 2                  # the loop was needed
+    ref = ctl.ref_level('std')
+    assert ctl.tracker('std')['last_noise_floor'] >= ref - ctl.window_db()   # finally inside
+    assert ctl.pending is None
+    clock[0] += 10 * SAFETY_INTERVAL_S
+    peak, floor = trace_at(ref)
+    observe(dev, ctl, peak=peak, floor=floor)
+    assert ctl.pending is None                 # and it stopped there: no hunting
+
+
+def test_the_refit_gives_up_after_its_budget(clock):
+    """A trace that reacts MORE than Ref (so no level settles it) must stop, not hunt.
+
+    The formula is a contraction while the trace follows Ref by less than 1:1 (the real device);
+    with a 2:1 reaction each step asks for another 5 dB and only the budget ends it.
+    """
+    dev = StubDevice(ref_level=0.0)
+    ctl = AutoReferenceController(dev)
+    ctl.begin_settle('std')
+    dev.state.span_hz = 1e6
+    ctl.begin_settle('std')
+    steps = 0
+    for _ in range(REFIT_ATTEMPTS + 3):
+        clock[0] += SAFETY_INTERVAL_S + 1.0
+        floor = -100.0 + 2.0 * ctl.ref_level('std')      # runs away from the formula
+        observe(dev, ctl, peak=floor + 2.0, floor=floor)
+        if ctl.pending is None:
+            break
+        steps += 1
+        dev.state.ref_level = ctl.pending[1]
+        ctl.apply_pending()
+    assert steps == REFIT_ATTEMPTS                     # bounded, then it stops
+    assert ctl.pending is None
+    assert ctl.tracker('std')['refit_due'] is False
 
 
 def test_a_manual_ref_survives_a_later_settings_change(clock):

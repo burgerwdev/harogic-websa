@@ -161,14 +161,14 @@ protection, not scaling; the same split is used here (rules 7-8 below).
 The numbers below are this project's constants (`hardware/auto_reference.py`); no vendor figure is
 quoted, because the vendors do not publish the same quantities.
 
-1. `AUTO_SCALE` (or the legacy `SET_REF {mode:auto}`) runs ONE placement from the newest trace; there is no tracking mode to latch, so `ref_mode` stays `manual`.
+1. `AUTO_SCALE` (or the legacy `SET_REF {mode:auto}`) asks for ONE placement from the newest trace; there is no tracking mode to latch, so `ref_mode` stays `manual`. Applying a target is one step of a **bounded closed loop** (rule 5): a press may therefore step the level two or three times before reporting `ok`, and the button glows while it does.
 2. The anchor is the **NOISE FLOOR, not the peak**: the target puts the floor `FLOOR_ANCHOR_DB` (8 dB, i.e. ~1 division at the default 10 dB/div) above the bottom edge and lifts Ref only as far as the peak needs (>= 10 dB of headroom, ~30 dB when the noise floor is high). Quantised to the 5 dB Ref grid, the floor actually lands 3-8 dB above the bottom - as flush as a 5 dB step allows.
 3. **There is no signal-level gate.** Anchoring on a peak needed a signal; anchoring on the floor does not. The old `peak - floor < 15 dB -> no_signal` refusal was a dead zone (table below): a noise-only trace a couple of dB under the bottom edge classified as `inside` and then refused to move, so Auto answered `no_signal`, held the level, and the trace stayed partly off the canvas (measured: SWP 20 MHz / 1 MHz, floor -101 dBm at Ref 0 with the 100 dB default window). `no_signal` stays in the STATUS vocabulary - the field's values are a contract - but the placement no longer produces it.
 4. The fit applies nothing when the placement is already good: floor 2-12 dB above the bottom edge and >= 8 dB of headroom for the peak. The lower bound is one dB above the 5 dB grid's resolution, so anything lower is genuinely not reliably on the canvas and is fitted; the upper bound keeps a wobbling estimate from triggering a reconfiguration.
-5. **A settings change arms ONE automatic re-fit** (span, centre/start-stop, RBW, VBW, window function or SDR decimation - anything in `geometry()`). It runs on the first settled frame of the new geometry, because the level that was right for the old one is not right for the new one. It is armed only by a real change of that signature, is disarmed by its first decision, and is rate-limited by `SAFETY_INTERVAL_S` (2 s), so it cannot become a tracking loop. The *initial* settle of a mode arms nothing: connecting or entering a mode never moves the level on its own.
-6. **A level the user typed is never reversed** - not by the per-frame logic and not by the settings-change re-fit (`user_level` is set by the manual `SET_REF` paths and cleared by an applied fit). Pressing Auto Scale is what re-fits it. A dB/div change is display-only: the window height reaches the backend with the Auto Scale request, so it is fitted on the next press (unchanged).
+5. **A settings change arms a BOUNDED CLOSED-LOOP placement** (span, centre/start-stop, RBW, VBW, window function or SDR decimation - anything in `geometry()`), and so does a press. The loop is necessary because the trace is NOT independent of Ref: with the automatic attenuator the device re-picks attenuation as Ref moves, so the trace follows Ref by roughly half, in discrete jumps (measured curve below). One open-loop computation therefore lands short - measured: a fit that computed -20 dBm from a -115 dBm floor left the trace 14 dB under the canvas. Each settled frame re-measures and applies the next step until the placement is good (`ok`), the budget `REFIT_ATTEMPTS` (4) is used up, or a level the user typed appears; steps are rate-limited by `SAFETY_INTERVAL_S` (2 s). The *initial* settle of a mode arms nothing, so connecting or entering a mode never moves the level on its own, and the loop stops at the first good placement - it is not a tracking mode.
+6. **A level the user typed is never reversed** - not by the per-frame logic and not by the settings-change loop (`user_level` is set by the manual `SET_REF` paths and cleared by an applied fit). Pressing Auto Scale places it. A dB/div change is display-only: the window height reaches the backend with the Auto Scale request, so it is fitted on the next press (unchanged).
 7. A **safety ranger runs always**, independent of Atten and of whether Auto was ever pressed, but only in the PROTECTIVE direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak that is grossly clipped above the top edge (>= 10 dB) is raised once, with a 2 s rate limit. Lowering is never automatic - a level that pushes the noise floor below the bottom edge is a display choice (`below_window`), and the ranger leaves it to the user (press Auto to re-fit).
-8. After a fit has lowered Ref, a Center change or cross-mode return raises it to 0 dBm before retuning (`prepare_retune`); the new geometry then gets its own one-shot re-fit from rule 5.
+8. After a fit has lowered Ref, a Center change or cross-mode return raises it to 0 dBm before retuning (`prepare_retune`); the new geometry then gets its own bounded placement from rule 5.
 9. Every SWP/RTA/SDR reconfiguration clears stale observations and pauses them for 0.75 seconds.
 10. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` exposes diagnostics;
    `adjusting` also drives the button's busy indication, `result` names the outcome
@@ -180,10 +180,12 @@ quoted, because the vendors do not publish the same quantities.
 
 A Ref change invalidates RTA density tied to the previous amplitude grid. SWP and RTA Auto states are independent.
 
-### Where the old rule went wrong
+### Where the old rules went wrong
 
-The reported symptom ("small span, no external signal: the trace is not on the canvas, or only a
-sliver under the bottom edge") was a dead zone in the *classification*, not in the target formula:
+Two separate mistakes produced one symptom ("small span, no external signal: the trace is not on
+the canvas, or only a sliver under the bottom edge").
+
+*First*, a dead zone in the *classification*:
 
 | peak - floor | floor vs the bottom edge | old `_decide` | new `_decide` |
 |---|---|---|---|
@@ -195,11 +197,29 @@ sliver under the bottom edge") was a dead zone in the *classification*, not in t
 The gate existed because the fit once anchored on the peak. Once the anchor is the floor, there is
 always something to place, so a missing signal is a placement like any other.
 
+*Second*, and only visible once the first was fixed: **the placement was open loop.** The trace is
+not independent of Ref - the automatic attenuator re-picks with it - so the computed target is a
+*prediction*, and it routinely lands short. Measured on the SAN-90 at centre 20 MHz / span 1 MHz
+(auto Atten, 100 dB window, no signal):
+
+| Ref | atten_actual | trace max | noise floor | floor vs the bottom edge |
+|---|---|---|---|---|
+| -10 dBm | 12 dB | -110.2 | -122.3 | **-12.3 dB** |
+| -20 dBm | 15 dB | -121.9 | -133.9 | -13.9 dB |
+| -30 dBm | 6 dB | -129.9 | -141.0 | -11.0 dB |
+| -40 dBm | 0 dB | -129.8 | -142.7 | -2.7 dB |
+| -50 dBm | 0 dB | -130.6 | -142.8 | **+7.2 dB (visible)** |
+
+A 20 dB Ref change moved the trace ~10 dB, and the attenuation jumps (12 -> 15 -> 6 -> 0) make the
+relationship non-monotonic. So a fit from the -115 dBm floor at Ref 0 computed -20 dBm, the floor
+ended up 14 dB *under* the bottom edge, and because that one shot was consumed nothing retried -
+the reported "Auto adjusted to -20 dBm and the trace is still invisible". The loop now re-measures
+after every step, and on this device converges 0 -> -20 -> -40 -> -50 dBm in ~6 s.
+
 ### Verification of the three reported settings
 
-No external signal; the default 100 dB window at Ref 0 dBm has its bottom edge at -100 dBm. The
-observation is the one the acquisition paths hand the loop (the 30th percentile as the noise floor,
-the frame maximum as the peak, here a couple of dB over it because there is no carrier):
+No external signal; the default 100 dB window at Ref 0 dBm has its bottom edge at -100 dBm. On the
+*fake* backend the trace is independent of Ref, so one step lands it:
 
 | Mode / setting | floor observed | trace at Ref 0 | after the settings change |
 |---|---|---|---|
@@ -209,10 +229,25 @@ the frame maximum as the peak, here a couple of dB over it because there is no c
 
 Evidence: `tests/test_auto_reference.py::test_the_reported_scenarios_through_the_fake_backend`
 drives the fake device and its sessions with a noise-only trace through the real loop (frame ->
-observation -> settings change -> one re-fit -> apply); the same scenarios are checked at the
+observation -> settings change -> placement -> apply); the same scenarios are checked at the
 decision level (`test_the_reported_no_signal_scenario_ends_inside_the_window`). The e2e fake keeps
 its synthetic carrier, so `state_regression` 9e covers the wiring instead: a settings change does
 not undo a manual level, and Auto Scale then puts the whole trace inside the window.
+
+On the **bench** (SAN-90, no source, `WEBSA` service + a browser; the publisher only steps the
+device while a client is connected) the reported flow was reproduced end to end:
+
+| Step | Ref | window | trace max | noise floor | on the canvas? |
+|---|---|---|---|---|---|
+| preset -> centre 20 MHz / span 1 MHz, first placement | -20 dBm | [-120, -20] | -122.4 | -133.7 | no (14 dB short) |
+| second step | -40 dBm | [-140, -40] | -130.1 | -142.7 | no (2.7 dB short) |
+| third step (`ok`) | -50 dBm | [-150, -50] | -130.5 | -142.5 | **yes** |
+
+The loop stopped there (12 s of further watching moved neither `ref` nor `seq`), and a manual Ref
+of 0 dBm - which pushes the trace off the canvas - was held for 8 s without being reversed; a
+press of Auto Scale then converged the same way. Unit tests model the measured curve
+(`test_the_refit_keeps_going_when_a_step_undershoots`) and the budget
+(`test_the_refit_gives_up_after_its_budget`).
 
 
 ## 11. Marker Toggle and Tracking

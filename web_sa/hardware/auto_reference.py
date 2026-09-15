@@ -16,11 +16,14 @@ continuously is the overload protection):
    trace is already placed well - clicking Auto Scale must not cost a pointless glitch.
 
 2. `observe_peak()` - two things, neither of them a tracking loop:
-   a) a ONE-SHOT re-fit armed by a settings change (`begin_settle` sees a new geometry). The
-      reference that was right for the old span/RBW/decimation is not right for the new one, so
-      the first frame of the new geometry places it again - once, then disarmed. A level the user
-      set by hand is left alone (press Auto to re-fit it), and only the geometry that changed can
-      arm it, so nothing moves on its own while the settings stand still.
+   a) a BOUNDED CLOSED-LOOP placement armed by a settings change (`begin_settle` sees a new
+      geometry) or by the user's Auto press. The reference that was right for the old
+      span/RBW/decimation is not right for the new one, and one computation cannot land it: the
+      trace is not independent of Ref (with the automatic attenuator the device re-picks
+      attenuation as Ref moves, so the trace follows Ref by roughly half, in jumps). Each settled
+      frame therefore re-measures and applies the next step until the placement is good, the
+      budget (`REFIT_ATTEMPTS`) is used up, or a level the user set by hand appears - so it can
+      never become a tracking mode, and nothing moves while the settings stand still.
    b) the safety ranger - armed always, never user-controlled, and only in the PROTECTIVE
       direction:
       * IF overflow (-12) raises Ref one 5 dB step per second (that path has no frames at all, so
@@ -104,6 +107,18 @@ FLOOR_ANCHOR_DB = 8.0
 #: failure mode of the small-span / no-signal case.
 FLOOR_INSIDE_MIN_DB = 2.0
 FLOOR_INSIDE_MAX_DB = 12.0
+#: How many placements one arming may apply before it gives up (see `_observe_locked`).
+#:
+#: The placement is a CLOSED loop, not a single computation, because the trace is not independent
+#: of the reference: with the automatic attenuator the device re-picks attenuation as Ref moves,
+#: so the trace follows Ref by roughly half and in discrete jumps. Measured on the SAN-90 at
+#: centre 20 MHz / span 1 MHz (auto Atten, 100 dB window, no signal): Ref -10/-20/-30/-40/-50 dBm
+#: gave attenuation 12/15/6/0/0 dB and a noise floor 12.3/13.9/11.0/2.7/-7.2 dB BELOW the bottom
+#: edge - i.e. only Ref -50 dBm actually shows the trace, and no single open-loop step reaches
+#: it (a fit that computed -20 from a -115 dBm floor left the trace 14 dB under the canvas).
+#: So each attempt re-measures; this bounds the loop, and it stops at the first good placement
+#: (`ok`), so it can never become a tracking mode.
+REFIT_ATTEMPTS = 4
 #: SDR: how far the fitted level must be from the device level before it is worth reconfiguring
 #: IQS (that write interrupts the audio, so a display-only fit stays free).
 SDR_DEVICE_DEADBAND_DB = 3.0
@@ -131,7 +146,8 @@ def new_tracker(floor: float = FLOOR_MIN_DBM) -> dict:
                                       # from the sticky remainder of the previous one
         'user_level': False,           # the level was set BY HAND for this geometry: the
                                       # automatic re-fit must not reverse it
-        'refit_due': False,            # a settings change asked for ONE automatic re-fit
+        'refit_due': False,            # a settings change (or a press) asked for a placement
+        'refit_left': 0,               # placements still allowed for that request
     }
 
 
@@ -238,16 +254,22 @@ class AutoReferenceController:
         current = self.ref_level(mode)
         kind, target = self._decide(mode, peak_dbm, floor, current, self.window_db(), tracker)
         if tracker['refit_due']:
-            # The settings change that armed this is the user's own action, so one placement is
-            # expected - and it is the only way an observation may move the reference by itself.
-            # A manual level is still respected, and the rate limit keeps a burst of settings
-            # changes from reconfiguring back to back (the request stays armed until it lands).
+            # A settings change (or an Auto press) asked for a placement. It is the only way an
+            # observation may move the reference by itself, and it is a CLOSED loop: the trace
+            # follows Ref by ~half and in jumps (the automatic attenuator re-picks with Ref), so
+            # the first target usually lands short - each attempt re-measures, and the loop ends
+            # at the first good placement (`ok`), when a manual level appears, or when the budget
+            # is used up. That is what keeps it a bounded placement and not a tracking mode.
             if tracker['user_level'] or kind == 'ok':
                 tracker['refit_due'] = False
-            elif now - tracker['last_change'] >= SAFETY_INTERVAL_S:
-                tracker['refit_due'] = False
+                tracker['refit_left'] = 0
+            elif (tracker['refit_left'] > 0
+                  and now - tracker['last_change'] >= SAFETY_INTERVAL_S):
+                tracker['refit_left'] -= 1
                 self._queue(mode, target, tracker, now, result='applied')
                 return
+            elif tracker['refit_left'] <= 0:
+                tracker['refit_due'] = False    # gave up: stop, never hunt
         # Only the protective direction, and only when the loss is gross:
         #   * 'clipped'      - the peak is above the top edge: raising Ref brings it back.
         #   * 'below_window' - RAISING Ref pushed the noise floor under the bottom edge. That is a
@@ -269,7 +291,9 @@ class AutoReferenceController:
         client, so the device level is not what the placement is judged against; passing the
         visible level keeps the decision (and the reported target) about what is on screen.
 
-        result: 'applied'    - one reconfiguration queued for `target`
+        result: 'applied'    - the first step is queued for `target`, and (unless the trace is
+                               then already in the window) the bounded loop keeps going on the
+                               following settled frames
                 'ok'         - already placed well, nothing changed
                 'no_data'    - no trace observed yet (just switched mode / geometry)
 
@@ -296,8 +320,10 @@ class AutoReferenceController:
                 return 'ok', None
             # An explicit user action overrides the settle window: the observation the user is
             # looking at is the one to fit, even if it arrived during a reconfiguration. It also
-            # clears any queued automatic re-fit: the user asked, so only one answer may land.
-            tracker['refit_due'] = False
+            # arms the same bounded loop, so a press that undershoots (the usual case when the
+            # automatic attenuator moves with Ref) keeps going until the trace is on the canvas.
+            tracker['refit_due'] = True
+            tracker['refit_left'] = REFIT_ATTEMPTS - 1
             self._queue(mode, target, tracker, time.monotonic(), result='applied')
             return 'applied', target
 
@@ -400,6 +426,7 @@ class AutoReferenceController:
                 tracker = self._trackers[mode]
                 tracker['floor'] = _floor_default(mode)
                 tracker['refit_due'] = True
+                tracker['refit_left'] = REFIT_ATTEMPTS
             self._geometry_seen[mode] = geometry
             self._rearm(mode, delay)
 
@@ -417,6 +444,7 @@ class AutoReferenceController:
             tracker['result'] = 'idle'
             tracker['user_level'] = bool(manual)
             tracker['refit_due'] = False
+            tracker['refit_left'] = 0
 
     def _rearm(self, mode: str, delay: float) -> None:
         tracker = self._trackers[mode]

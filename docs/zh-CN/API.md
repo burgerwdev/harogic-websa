@@ -119,7 +119,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `CAL_REFCLK` | `count?` | GNSS 1PPS 参考时钟校准（后台线程，期间校准状态 `calibrating=true`）|
 | `SET_FREQ` | `center`,`span` 或 `start`,`stop` | 原子设置 SWP 频率窗口；禁止混合两种赋值 |
 | `SET_REF` | `mode`（manual/auto）, `ref?`, `range_db?` | 当前模式参考电平；manual 必须提供 ref。`mode=auto` 是「执行一次 Auto Scale」的旧写法（见 `AUTO_SCALE`），**不再**进入跟踪模式 |
-| `AUTO_SCALE` | `range_db?`, `current_ref?` | 按最新迹线一次性放置参考电平：噪声底落在 `range_db` 高窗口底部稍上。不会因为无信号而拒绝。`current_ref` 是用户当前看到的电平——它是**显示值**，因此按显示范围校验而非器件 Ref 范围（SDR 的显示刻度由客户端负责，其 target 也按显示范围夹取）。放置已合理时不做任何事（不重配器件）：已稳定的画面不会为一次按下付出代价。设置变更（span/中心/RBW/VBW/窗函数/抽取率）还会预备**一次**自动放置，在新几何的首个稳定帧执行；它绝不会反转用户手输的电平。结果通过 `auto_ref.result`/`target`/`seq` 报告 |
+| `AUTO_SCALE` | `range_db?`, `current_ref?` | 按最新迹线放置参考电平：噪声底落在 `range_db` 高窗口底部稍上。不会因为无信号而拒绝。`current_ref` 是用户当前看到的电平——它是**显示值**，因此按显示范围校验而非器件 Ref 范围（SDR 的显示刻度由客户端负责，其 target 也按显示范围夹取）。应用一个 target 只是**有界闭环**的一步：迹线并非与 Ref 无关（自动衰减器会随 Ref 重选），因此一次请求可能走两三步才放置合理——看 `auto_ref.adjusting`/`seq`/`pending`。放置已合理时不做任何事（不重配器件）。设置变更（span/中心/RBW/VBW/窗函数/抽取率）会预备同一个有界循环；它绝不会反转用户手输的电平。结果通过 `auto_ref.result`/`target`/`seq` 报告 |
 | `SET_RBW` | `mode?`（manual/auto）, `rbw?` | 设置分辨率带宽 |
 | `SET_VBW` | `mode?`（manual/equal/tenth/onethousandth/bypass）, `vbw?` | 设置视频带宽 |
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |
