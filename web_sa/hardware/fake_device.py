@@ -96,6 +96,10 @@ class FakeDevice:
             self._window = window
             self.state.freq_version += 1
         self.state.config_version += 1
+        # Same hook as HarogicDevice.configure_swp. The control loop arms its one-shot re-fit from
+        # the geometry it sees here, so skipping it in the fake would make the CI checks exercise
+        # a rule the real device never triggers.
+        self.begin_auto_reference_settle('std')
         return True, 'ok'
 
     def preset_state(self) -> dict:
@@ -203,8 +207,8 @@ class FakeDevice:
     def begin_auto_reference_settle(self, mode: str, delay: float = 0.75) -> None:
         self.auto_ref.begin_settle(mode, delay)
 
-    def reset_auto_reference(self, mode: str) -> None:
-        self.auto_ref.reset(mode)
+    def reset_auto_reference(self, mode: str, manual: bool = False) -> None:
+        self.auto_ref.reset(mode, manual)
 
     def nudge_reference_out_of_overflow(self) -> bool:
         return self.auto_ref.nudge_out_of_overflow()

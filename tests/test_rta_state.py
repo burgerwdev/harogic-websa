@@ -23,7 +23,7 @@ def make_session():
     dev = SimpleNamespace(
         state=state,
         _hw=threading.RLock(),
-        reset_auto_reference=lambda _mode: None,
+        reset_auto_reference=lambda _mode, manual=False: None,
     )
     session = RtaSession(dev)
     session._configure = lambda: None

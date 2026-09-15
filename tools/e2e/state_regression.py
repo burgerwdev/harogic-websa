@@ -778,6 +778,44 @@ def main() -> int:
             check("a second press reports how the placement stands, not silence",
                   result2 in ("no_signal", "no_data"), str(again["auto_ref"]))
 
+        # 9e - a settings change arms one automatic re-fit, but it is not a loophole for undoing a
+        # level the user typed: that stays theirs, and the press is what brings the trace back.
+        # This is the reported failure shape (small span / capture bandwidth with only noise:
+        # the floor sits under the bottom edge), which Auto used to answer with `no_signal` and
+        # no action at all.
+        print("9e) a settings change keeps the user's level, and Auto still fixes the trace")
+        dev = state(url)
+        window = float(dev.get("ref_range_db") or 100.0)
+        floor = dev["auto_ref"].get("last_noise_floor")
+        if floor is None:
+            skip("a settings change keeps the user's level", "no noise-floor estimate yet")
+        else:
+            caps = dev["caps"]
+            low = math.ceil((float(floor) + window + 5.0) / 5.0) * 5.0   # floor 5 dB under the edge
+            low = max(float(caps["ref_min"]), min(float(caps["ref_max"]), low))
+            post(url, {"cmd": "SET_REF", "mode": "manual", "ref": low, "range_db": window})
+            page.wait_for_timeout(3000)
+            # The settings change that used to leave the trace under the canvas.
+            post(url, {"cmd": "SET_FREQ", "center": 20e6, "span": 1e6})
+            page.wait_for_timeout(4000)
+            kept = state(url)
+            check("a settings change does not undo a level the user set",
+                  abs(float(kept["ref"]) - low) < 1.5, f'asked {low}, device {kept["ref"]}')
+            page.click("#btn-ref-auto")
+            page.wait_for_timeout(4000)
+            fixed = state(url)
+            fixed_floor = fixed["auto_ref"].get("last_noise_floor")
+            fixed_peak = fixed["auto_ref"].get("last_peak")
+            bottom, top = float(fixed["ref"]) - window, float(fixed["ref"])
+            check("the fit never refuses: it reports applied or ok",
+                  fixed["auto_ref"].get("result") in ("applied", "ok"),
+                  str(fixed["auto_ref"]))
+            check("Auto Scale puts the whole trace inside the window after the change",
+                  (fixed_floor is None or fixed_floor >= bottom)
+                  and (fixed_peak is None or fixed_peak <= top),
+                  f'ref {fixed["ref"]} window [{bottom}, {top}] '
+                  f'floor {fixed_floor} peak {fixed_peak}')
+
         check("no page errors", not errors, "; ".join(errors[:3]))
         browser.close()
 

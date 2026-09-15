@@ -147,6 +147,28 @@ describe('SDR Auto Scale', () => {
 		expect(getDisplayRef()).toBe(-40);
 	});
 
+	it('follows an automatic re-fit that no press asked for', () => {
+		// A settings change (capture centre / bandwidth) arms ONE fit in the backend. The display
+		// must follow that decision even though no press and no entry fit requested it, and it
+		// must accept a level below the DEVICE Ref range: the SDR window is client-owned and
+		// reaches -160 dBm, which is what lets a low noise floor be shown inside it.
+		graphMode.confirm('sdr');
+		const cv = document.getElementById('spectrum') as unknown as {
+			dataset: Record<string, string>;
+		};
+		delete cv.dataset.sdrRef;                          // setup.ts shares one fake canvas
+		delete cv.dataset.sdrRefDbg;
+		expect(sent.length).toBe(0);                       // nothing asked for this fit
+		syncAutoScaleStatus({
+			auto_ref: { adjusting: false, result: 'applied', target: -85, seq: 42 },
+		});
+		expect(getDisplayRef()).toBe(-85);
+		expect(cv.dataset.sdrRef).toBe('-85');
+		const dbg = JSON.parse(cv.dataset.sdrRefDbg || '{}');
+		expect(dbg.applied).toBe(true);
+		expect(dbg.ref).toBe(-85);
+	});
+
 	it('follows an automatic correction even after a manual Ref edit', () => {
 		// Reported: Ref set to -50 dBm, overflow warning, the hint announced an adjustment, but
 		// the canvas and the Ref box kept the manual value - the correction only reached the

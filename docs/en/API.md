@@ -64,7 +64,7 @@ Field reference:
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
 | `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
-| `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling) |
+| `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling). The placement no longer produces `no_signal` (it is floor-anchored, so a missing signal is not a refusal) - the value stays in the vocabulary because the field's values are a contract |
 | `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
 | `amp` | obj | gain chain: atten/preamp/ifgain/gain_strategy + actual atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | reference clock source: internal/external/premium/external_forced |
@@ -119,7 +119,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `CAL_REFCLK` | `count?` | GNSS 1PPS reference clock calibration (background; `calibrating=true` meanwhile) |
 | `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
 | `SET_REF` | `mode` (manual/auto), `ref?`, `range_db?` | active-mode reference level; manual requires ref. `mode=auto` is the legacy spelling of one Auto Scale (see `AUTO_SCALE`) and does **not** latch a tracking mode |
-| `AUTO_SCALE` | `range_db?`, `current_ref?` | place the reference once, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. `current_ref` is the level the user is looking at - a DISPLAY value, so it is validated against the display bounds, not the device Ref range (in SDR the client owns the scale). Does nothing when the placement is already good (no reconfiguration). The result is reported in `auto_ref.result`/`target`/`seq` |
+| `AUTO_SCALE` | `range_db?`, `current_ref?` | place the reference once, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. Never refuses for lack of a signal. `current_ref` is the level the user is looking at - a DISPLAY value, so it is validated against the display bounds, not the device Ref range (in SDR the client owns the scale, and its target is clamped to that display range too). Does nothing when the placement is already good (no reconfiguration): a settled display never pays for a press. A settings change (span/centre/RBW/VBW/window/decimation) additionally arms ONE automatic placement, run on the first settled frame of the new geometry; a level the user typed is never reversed by it. The result is reported in `auto_ref.result`/`target`/`seq` |
 | `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
 | `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
 | `SET_POINTS` | `points` (51~4000) | set sweep points |

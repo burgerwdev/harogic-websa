@@ -221,6 +221,10 @@ class SdrSession(MeasurementSession):
             self._ready_at = time.monotonic() + 0.4
             self._last_ok = time.monotonic()
             self._ready = True
+        # Same hook as the swept/RTA paths: an IQS reconfiguration changes the capture geometry,
+        # so stale observations are dropped and a settings change (centre / capture bandwidth /
+        # IF bandwidth) arms ONE automatic re-fit (see auto_reference.begin_settle).
+        self.dev.begin_auto_reference_settle('sdr')
 
     def _sdk_call(self, fn, what: str, retries: int = _BUS_RETRY_TRIES):
         """Run an SDK configuration entry point, retrying the transient bus warnings.

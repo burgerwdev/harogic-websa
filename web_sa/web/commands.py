@@ -557,7 +557,7 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
         if 'ref' in data:
             s.ref_level = data['ref']
         s.ref_mode = 'manual'
-        dev.reset_auto_reference('sdr')     # a manual level ends any fit's authorship
+        dev.reset_auto_reference('sdr', manual=True)   # a manual level ends any fit's authorship
         await ctx.hw_call(session.reconfigure)
         return True
     if session is not None and session.name == 'rta':
@@ -566,8 +566,9 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
     s.ref_mode = 'manual'
     s.ref_level = data['ref']
     # The user owns the level now: forget the placement this loop made (the retune safety
-    # must not lift a level the user chose) and the observations that went with it.
-    dev.reset_auto_reference('std')
+    # must not lift a level the user chose, and a later settings change must not re-fit it)
+    # and the observations that went with it.
+    dev.reset_auto_reference('std', manual=True)
     await ctx.configure_swp()
     return True
 
