@@ -603,9 +603,13 @@ class HarogicDevice:
         """Discard stale auto-ref observations after any acquisition reconfiguration."""
         self.auto_ref.begin_settle(mode, delay)
 
-    def reset_auto_reference(self, mode: str) -> None:
-        """Re-arm Auto Ref so the next observation decides again."""
-        self.auto_ref.reset(mode)
+    def reset_auto_reference(self, mode: str, manual: bool = False) -> None:
+        """Re-arm Auto Ref so the next observation decides again.
+
+        `manual` marks a reference the user typed: the automatic re-fit after a later settings
+        change must not reverse it.
+        """
+        self.auto_ref.reset(mode, manual)
 
     def nudge_reference_out_of_overflow(self) -> bool:
         """Raise Ref one step when the device reports IF overflow (-12)."""

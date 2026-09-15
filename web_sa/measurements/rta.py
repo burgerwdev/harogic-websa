@@ -374,7 +374,9 @@ class RtaSession(MeasurementSession):
     def set_reference(self, mode='manual', ref=None):
         s = self.dev.state
         s.rta_ref_mode = mode
-        self.dev.reset_auto_reference('rta')
+        # A manual level belongs to the user: the automatic re-fit after a later settings
+        # change must not reverse it (press Auto to re-fit it).
+        self.dev.reset_auto_reference('rta', manual=(mode == 'manual'))
         if mode == 'manual':
             s.rta_ref_level = float(ref)
             self._configure()

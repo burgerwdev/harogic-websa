@@ -1,4 +1,4 @@
-# Development Guide (v1.7.2)
+# Development Guide (v1.7.3)
 
 > **This is not a baseline standard but a working agreement that keeps improving.** It records
 > what actually went wrong during the 2026-09 architecture review and refactor, and the
@@ -173,12 +173,20 @@ action with visible feedback, not a tracking toggle:
 1. the press produces exactly one decision - compute, apply once, done;
 2. an already-good state must cost nothing (no reconfiguration, no visible jump);
 3. the button shows that work is in flight (glow/busy class driven by the backend's `adjusting`, with a
-   client-side fallback timer) and then names the outcome (`applied`/`ok`/`no_signal`/`no_data`), so a
-   refusal is never silent;
+   client-side fallback timer) and then names the outcome (`applied`/`ok`/`no_data`), so a refusal is never
+   silent. A placement does not refuse for lack of a signal: it anchors on the noise floor, so
+   "no signal" is a level to place, not a reason to do nothing;
 4. nothing about the control is disabled while the action runs - a mode that locks the user out of the
    very field it is adjusting reads as a bug (that is what the old tracking `Auto` did);
-5. background *safety* correction is separate, always armed, and rate-limited (IF overload, a trace that
-   left the display window) - never something the user has to switch on;
+5. background *safety* correction is separate, always armed, rate-limited and PROTECTIVE-only (IF
+   overload, gross clipping) - never something the user has to switch on, and never a reversal of a
+   control the user just used. A settings change (span/centre/RBW/window/decimation) - and a press -
+   is the one exception that may move a level the loop itself placed: it arms a BOUNDED closed-loop
+   placement for the new geometry (each settled frame re-measures and steps again, until it is good,
+   the budget is used up, or a level the user typed appears), while a level the user typed stays
+   theirs. An OPEN-loop placement is not enough here: the trace is not independent of Ref (the
+   automatic attenuator re-picks with it, so the trace follows by ~half, in jumps), and a computed
+   target that lands short used to leave the trace off the canvas with nothing to retry it;
 6. a mode's USER SETTINGS are preferences: persist them (`persistKey`) and re-apply them when the
    mode is entered. A mode switch is not a reset - SDR re-derived its frequency, capture bandwidth
    and demodulator from the swept view on every entry, so the setup the user had left there was
@@ -189,10 +197,12 @@ action with visible feedback, not a tracking toggle:
    capability row (`caps` in STATUS / `config.ref_bounds`), never their own copy - this model was
    once clamped by three different literals (found while auditing hard-coded device values);
 8. a REFUSAL message is withdrawn the moment its reason stops being true, not when a timer runs out:
-   "waiting for a trace" ends with the first trace, "no signal to fit" ends when the peak moves away
-   from the level the decision was based on. Posting a statement about the measurement and then leaving
-   it on screen after the measurement changed is how a message becomes noise (reported: the trace was
-   already drawn while the message stayed for its full 6 s).
+   "waiting for a trace" ends with the first trace, and a notice that records the observation it came
+   from (peak/floor) is withdrawn when that observation moves. Posting a statement about the
+   measurement and then leaving it on screen after the measurement changed is how a message becomes
+   noise (reported: the trace was already drawn while the message stayed for its full 6 s). The
+   no-signal refusal no longer has a producer (see item 3), so that path now exists for the
+   vocabulary rather than for a live decision.
 
 ---
 
@@ -203,7 +213,7 @@ action with visible feedback, not a tracking toggle:
 | Pure logic | vitest / pytest | Algorithms, state machines, contracts (i18n parity, frame fixtures, schema, slot semantics) | - |
 | Session/device boundary | pytest + stub device | Result assembly, policy, error paths (**no vendor library needed**) | Connecting to the real device just to test logic |
 | Protocol | Golden fixtures on both sides | Byte layout | Testing only one side |
-| **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 22 checks) + `state_regression.py` (parameter state-machine contract, 59 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad, the peak list off its threshold slot; slots/in-flight/hand-off/Preset/reload/rapid switching; a one-shot Auto Scale (glow -> one step -> `ok` with no reconfiguration) | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
+| **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 29 checks) + `state_regression.py` (parameter state-machine contract, 72 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad, the peak list off its threshold slot; slots/in-flight/hand-off/Preset/reload/rapid switching; a one-shot Auto Scale (glow -> one step -> `ok` with no reconfiguration); a settings change re-fits once and never undoes a manual level | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
 | **End to end (hardware)** | Playwright + the bench | **User-visible results**: canvas pixels, DOM text, device state after a real click | `dataset.rtaFrames` (it only says a frame was handed to the renderer, not that anything was drawn) |
 | Performance | `tools/bench.py` + baseline | **Comparable** frame-rate/latency/CPU numbers | Comparing while the device warns or leftover load runs |
 | Hardware smoke | `tools/hardware_smoke.py` + tinySA | Levels/frame integrity with a real signal | - |
@@ -325,6 +335,9 @@ nobody can tell "deliberate" from "silent regression".
 | Auto Scale messages moved the Ref buttons sideways | The message was written into the row it describes; moving it to the group head only moved the problem | Transient feedback goes to the canvas status stack (no width limit, next to the condition it answers); a displayed value has one owner | e2e `ui_smoke` 2a (`dataset.notice`, unchanged row boxes), `refAutoScale.test.ts` (notice TTL/generation) |
 | The Ref up arrow triggered Auto to pull the trace back down | The ranger corrected "noise floor below the bottom edge", which is a display choice, not a fault - it undid the button the user had just pressed | An automatic correction acts only in the PROTECTIVE direction (device overload, gross clipping) and never reverses a control the user just used; otherwise report and leave the explicit action to fix it | e2e `state_regression` 9c, `test_auto_reference.py`, `test_device_state.py` |
 | `AUTO_SCALE` was silently refused in SDR while the display showed -60 dBm | `current_ref` is a DISPLAY value but was validated against the device Ref range | Validate a value against the bounds of its owner, not of the device it eventually influences | `test_ws_commands.py::test_auto_scale_accepts_a_display_ref_outside_the_device_ref_range` |
+| **"The trace is not in the canvas, or only a sliver is under the bottom edge"** with a small span and no external signal, and Auto answered `no_signal` without moving | The fit still carried the signal gate (`peak - floor < 15 dB -> no_signal`) from the time it anchored on the PEAK. Anchoring on the noise floor needs no signal, so the gate refused exactly the case the floor anchor handles - and the `inside` classification hid it (0-3 dB under the edge counted as inside) | An auto-like action must act on what it actually anchors to: with the floor as the anchor, a missing signal is a placement like any other (`ok` when nothing needs changing, otherwise a level). A classifier that says `inside` and then refuses to move is a contradiction | `test_auto_reference.py` (noise-only under/at the edge and all three reported settings end inside the window), e2e `state_regression` 9e |
+| A settings change (span / capture bandwidth) left the trace under the bottom edge until Auto was pressed; and an SDR fit could not go below the device Ref range even though its window can | The placement only ever ran on demand, so a new geometry inherited the old level; and the SDR target is a DISPLAY level but was clamped to the DEVICE row | A settings change invalidates the placement: arm exactly ONE re-fit for the new geometry (never a tracking loop, rate-limited, disarmed by its first decision), while a level the user typed stays theirs; and clamp each value against the bounds of its OWNER - a display target against the display range, the IQS write against the device range | `test_auto_reference.py` (one re-fit per geometry change, a manual level survives it, the SDR fit follows the display range and the IQS write does not), e2e 9e, `refAutoScale.test.ts` (an unpressed SDR decision moves the display) |
+| **Auto adjusted to -20 dBm and the trace was still invisible** (preset, centre 20 MHz / span 1 MHz, no source) | The one-shot placement was OPEN loop: it computed a target as if the trace were independent of Ref, but the automatic attenuator re-picks with Ref, so the trace follows Ref by ~half and in jumps. Measured (SAN-90, 100 dB window): Ref -10/-20/-30/-40/-50 dBm gave attenuation 12/15/6/0/0 dB and a noise floor 12.3/13.9/11.0/2.7/-7.2 dB below the bottom edge - only -50 dBm shows the trace, and the computed -20 dBm left it 14 dB under the canvas. Worse, the single shot was consumed, so nothing retried | A placement whose input depends on its own output must be CLOSED loop: re-measure after each step and keep stepping until the placement is good, the budget is spent, or the user takes the level over. The first good placement ends it (never a tracking mode), and "it computed a plausible number" is not evidence that the target was reached | `test_auto_reference.py::test_the_refit_keeps_going_when_a_step_undershoots` (models the measured curve) and `::test_the_refit_gives_up_after_its_budget`, bench run (0 -> -20 -> -40 -> -50 dBm in ~6 s, then 12 s of no movement; a manual Ref held for 8 s) |
 | The Level offset displaced the trace but not the amplitude numbers on the plot | Two layers drew the same quantity: `getY()` shifted the trace, while the axis labels and the marker readout printed raw device dBm | A value that is drawn in more than one layer must be converted in ONE place (`fmtAxisLevel`/`fmtReadoutLevel`); an axis is part of the display domain, not of the device domain | `peakThr.test.ts` (readout rule), e2e `ui_smoke` 2a2 (`dataset.yLabels` follows the offset) |
 | "No signal to fit" stayed on screen after the signal appeared | The refusal was posted with a fixed 6 s hold, and only a *new decision* could replace it | A refusal is a statement about the measurement: record the observation it was based on and withdraw it when that observation moves (or when the first trace arrives), instead of relying on timing | `refAutoScale.test.ts` (withdraw on trace change / first trace), bench probe |
 | Ref 30 dBm "jumped" to 27 with no explanation | The device clamps the level to its own maximum (which depends on the attenuation it picks) and echoes it; the UI followed the echo silently | When a device echo differs from the request, say so (`req` vs `actual`) - the same rule as announcing a refusal | `status.test.ts` (clamp notice, once per distinct pair), FAQ |
@@ -344,7 +357,7 @@ nobody can tell "deliberate" from "silent regression".
 make ci                      # all hardware-free gates (tests/static/contracts/guards/build)
 make run | make stop         # start/stop the service (supervisor + worker)
 make restart | make status   # restart the service / pid, uptime, memory, CPU, log path+size, live link
-make e2e-fake                # no hardware: ui_smoke (22 checks) + state_regression (59 checks) on the fake backend, same as CI
+make e2e-fake                # no hardware: ui_smoke (29 checks) + state_regression (72 checks) on the fake backend, same as CI
 make hw-test                 # hardware: tinySA smoke + 24-command sweep + UI state regression (45 checks)
 make bench                   # compare frame rate/switch latency/CPU against the baseline
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record (verify a clean state first)

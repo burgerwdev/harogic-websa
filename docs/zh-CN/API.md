@@ -64,7 +64,7 @@ curl http://localhost:8080/api/state
 | `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；`points` 与显示迹线固定为 1001 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |
-| `auto_ref` | obj | 参考电平放置状态：`last_peak`/`last_noise_floor`（最新迹线）、`target`（上次拟合应用的电平）、`result`（`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`）、`seq`（每次决策自增）、`pending`（排队中的电平）、`adjusting`（有变更排队或正在稳定） |
+| `auto_ref` | obj | 参考电平放置状态：`last_peak`/`last_noise_floor`（最新迹线）、`target`（上次拟合应用的电平）、`result`（`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`）、`seq`（每次决策自增）、`pending`（排队中的电平）、`adjusting`（有变更排队或正在稳定）。放置逻辑不再产生 `no_signal`（锚点是噪底，无信号不是拒绝理由）——该取值保留在取值表中，因为字段取值是契约 |
 | `rta_health` | obj | 当前 RTA 连续错误数和原地恢复尝试次数 |
 | `amp` | obj | 增益链配置：atten/preamp/ifgain/gain_strategy + 实际值 atten_actual/preamp_actual/ifgain_actual |
 | `ref_clock` | str | 参考时钟源：internal/external/premium/external_forced |
@@ -119,7 +119,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `CAL_REFCLK` | `count?` | GNSS 1PPS 参考时钟校准（后台线程，期间校准状态 `calibrating=true`）|
 | `SET_FREQ` | `center`,`span` 或 `start`,`stop` | 原子设置 SWP 频率窗口；禁止混合两种赋值 |
 | `SET_REF` | `mode`（manual/auto）, `ref?`, `range_db?` | 当前模式参考电平；manual 必须提供 ref。`mode=auto` 是「执行一次 Auto Scale」的旧写法（见 `AUTO_SCALE`），**不再**进入跟踪模式 |
-| `AUTO_SCALE` | `range_db?`, `current_ref?` | 按最新迹线一次性放置参考电平：噪声底落在 `range_db` 高窗口底部稍上。`current_ref` 是用户当前看到的电平——它是**显示值**，因此按显示范围校验而非器件 Ref 范围（SDR 的显示刻度由客户端负责）。放置已合理时不做任何事（不重配器件）。结果通过 `auto_ref.result`/`target`/`seq` 报告 |
+| `AUTO_SCALE` | `range_db?`, `current_ref?` | 按最新迹线放置参考电平：噪声底落在 `range_db` 高窗口底部稍上。不会因为无信号而拒绝。`current_ref` 是用户当前看到的电平——它是**显示值**，因此按显示范围校验而非器件 Ref 范围（SDR 的显示刻度由客户端负责，其 target 也按显示范围夹取）。应用一个 target 只是**有界闭环**的一步：迹线并非与 Ref 无关（自动衰减器会随 Ref 重选），因此一次请求可能走两三步才放置合理——看 `auto_ref.adjusting`/`seq`/`pending`。放置已合理时不做任何事（不重配器件）。设置变更（span/中心/RBW/VBW/窗函数/抽取率）会预备同一个有界循环；它绝不会反转用户手输的电平。结果通过 `auto_ref.result`/`target`/`seq` 报告 |
 | `SET_RBW` | `mode?`（manual/auto）, `rbw?` | 设置分辨率带宽 |
 | `SET_VBW` | `mode?`（manual/equal/tenth/onethousandth/bypass）, `vbw?` | 设置视频带宽 |
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |

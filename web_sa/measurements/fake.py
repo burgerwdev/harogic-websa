@@ -67,10 +67,10 @@ class FakeRtaSession(_FakeRtaBase):
 
     def enter(self) -> None:
         super().enter()
-        self._ready = True
+        self._configure()
 
     def reconfigure(self) -> None:
-        self._ready = True
+        self._configure()
 
     def reset_defaults(self) -> None:
         self._ready = True
@@ -81,19 +81,22 @@ class FakeRtaSession(_FakeRtaBase):
             s.rta_center_hz = float(center)
         if span is not None:
             s.rta_span_hz = max(1000.0, min(float(span), 50.78125e6))
-        self._ready = True
+        self._configure()
 
     def set_rbw(self, mode='auto', rbw=0.0) -> None:
         self.dev.state.rta_rbw_mode = mode
         self.dev.state.rta_rbw_hz = float(rbw or 0.0)
+        self._configure()
 
     def set_vbw(self, mode='equal', vbw=0.0) -> None:
         self.dev.state.rta_vbw_mode = mode
         self.dev.state.rta_vbw_hz = float(vbw or 0.0)
+        self._configure()
 
     def set_sweep(self, mode=0, time=0.0) -> None:
         self.dev.state.rta_sweep_time_mode = int(mode)
         self.dev.state.rta_sweep_time = float(time or 0.0)
+        self._configure()
 
     def set_reference(self, mode='manual', ref=None) -> None:
         self.dev.state.rta_ref_mode = mode
@@ -103,8 +106,14 @@ class FakeRtaSession(_FakeRtaBase):
             self._configure()
 
     def _configure(self) -> None:
-        """Re-apply the profile (the real session's call; the fake just stays ready)."""
+        """Re-apply the profile (the real session's call; the fake just stays ready).
+
+        It still runs the same auto-ref settle hook as `measurements/rta.py::_configure`, so an
+        RTA settings change arms the one-shot re-fit in the e2e too (the CI checks would
+        otherwise exercise a rule the real session never triggers).
+        """
         self._ready = True
+        self.dev.begin_auto_reference_settle(self.name)
 
     def set_trigger(self) -> None:
         self.dev.state.trigger_actual = {'waiting': False, 'frames': self._tick, 'edges': 0,
@@ -142,7 +151,7 @@ class FakeSdrSession(_FakeRtaBase):
 
     def enter(self) -> None:
         super().enter()
-        self._ready = True
+        self._configure()
 
     def exit(self) -> None:
         self._ready = False
@@ -159,7 +168,7 @@ class FakeSdrSession(_FakeRtaBase):
             self.snapshot = None
 
     def reconfigure(self) -> None:
-        self._ready = True
+        self._configure()
 
     def set_params(self, center=None, decimate=None) -> None:
         s = self.dev.state
@@ -168,7 +177,16 @@ class FakeSdrSession(_FakeRtaBase):
             s.sdr_listen_hz = float(center)
         if decimate is not None:
             s.sdr_decimate = int(decimate)
+        self._configure()
+
+    def _configure(self) -> None:
+        """Re-apply the capture (the fake just stays ready) and run the auto-ref settle hook.
+
+        Mirrors `measurements/sdr.py::_configure`: an IQS reconfiguration changes the capture
+        geometry, so a centre/bandwidth change arms the one-shot auto-ref re-fit.
+        """
         self._ready = True
+        self.dev.begin_auto_reference_settle(self.name)
 
     def set_tune(self, listen_hz) -> None:
         self.dev.state.sdr_listen_hz = float(listen_hz)

@@ -49,9 +49,15 @@
   Measured on the SAN-90: 0.11-0.12 s from the click to the level landing, where the previous tracking
   loop needed 1.86 s (it waited for a settled frame, then a 0.75 s settle window).
 - The fit reports what it did in `auto_ref.result`: `applied` (with `target`), `ok` (already placed
-  well), `no_signal` (peak less than 15 dB above the noise floor *and* the trace inside the window),
-  `no_data` (no trace since the last reconfiguration). The button glows while a change is queued or
-  settling, and the hint names the outcome.
+  well), `no_data` (no trace since the last reconfiguration). It never refuses for lack of a signal:
+  the anchor is the noise floor, so a noise-only trace is a placement like any other. (`no_signal`
+  remains in the vocabulary for compatibility but the placement no longer produces it.) The button
+  glows while a change is queued or settling, and the hint names the outcome.
+- A **settings change places the trace again**, as a bounded closed loop: span, centre/start-stop,
+  RBW, VBW, window function or SDR capture bandwidth arms it, and each settled frame re-measures and
+  steps the level until the placement is good (usually two or three steps, ~6 s - the automatic
+  attenuator moves the trace by only about half of a Ref change, so one step lands short). It stops
+  at the first good placement, and never reverses a level you typed - press Auto for that.
 - A **safety ranger runs always**, whatever the Atten setting and whether or not Auto was ever pressed -
   but only in the protective direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak
   grossly clipped above the top edge (>= 10 dB over) is raised once, rate-limited. This is also what a
