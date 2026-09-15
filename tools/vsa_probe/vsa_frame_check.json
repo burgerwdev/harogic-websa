@@ -1,0 +1,42 @@
+{
+  "measure": "constellation",
+  "counts": {
+    "FREQ": 1,
+    "RTAF": 6,
+    "VSAD": 6
+  },
+  "vsad": {
+    "kind": "constellation",
+    "shape": [
+      4096,
+      2
+    ],
+    "ideal_shape": [
+      4,
+      2
+    ],
+    "symbol_rate_hz": 554951.5,
+    "cfo_hz": -13.09453010559082,
+    "measurements": {
+      "mean_dbm": -25.213298797607422,
+      "peak_dbm": -25.213829040527344,
+      "peak_bin_dbm": -28.23419189453125,
+      "peak_hz": 0.0,
+      "floor_dbm": -109.14164733886719,
+      "floor_1hz_dbm": -138.93565368652344,
+      "centroid_hz": -14.557110786437988,
+      "rms_v": 0.012269308790564537,
+      "samples": 131072.0,
+      "symbols_n": 18581.0,
+      "evm_percent": 0.768315851688385,
+      "mer_db": 42.28920364379883,
+      "snr_db": 42.28920364379883
+    }
+  },
+  "after_stall": {
+    "RTAF": 6,
+    "VSAD": 6
+  },
+  "problems": [],
+  "ok": true
+}

@@ -1,0 +1,90 @@
+{
+  "title": "IQS capture capability (soak)",
+  "started": "2026-09-15 15:38:26",
+  "device": {
+    "uid": "5230500C00380025",
+    "model": 67,
+    "hw": 8,
+    "mfw": 14184,
+    "ffw": 14184,
+    "api": 14169,
+    "bus_mbps": 3
+  },
+  "hardware": {
+    "status": 0,
+    "GNSSPeriphType": 0,
+    "GNSSType": 1,
+    "OCXOType": 0,
+    "InternalOCXO": 0,
+    "SignalSourceEn": 0,
+    "ADC_VariableRateEn": 0,
+    "IM3_filter": 1
+  },
+  "values": {
+    "device uid": "5230500C00380025",
+    "model": 67,
+    "api version": 14169,
+    "SignalSourceEn": 0,
+    "dec 4 settle-drained packets": 240,
+    "dec 4 error statuses": "{}",
+    "dec 4 window rate ratios": "1.00000 0.99988 0.99990 0.99995",
+    "dec 16 settle-drained packets": 60,
+    "dec 16 error statuses": "{}",
+    "dec 16 window rate ratios": "1.00000 0.99978 0.99999 0.99968",
+    "dec 64 settle-drained packets": 15,
+    "dec 64 error statuses": "{}",
+    "dec 64 window rate ratios": "1.00011 0.99903 0.99962 0.99848",
+    "note": "CPU % is this process (IQS fetch + NumPy copy) over the run wall time"
+  },
+  "bench conditions": {
+    "center_hz": 100000000.0,
+    "decimate": 8,
+    "trigger_mode": "fixed_points",
+    "trigger_length": 262144,
+    "ref_level_dbm": 0.0,
+    "dcc": "high_pass",
+    "qdc": "off",
+    "data_format": "complex16",
+    "antenna": "rf_in",
+    "bus_timeout_ms": 2000,
+    "tone_freq_hz": 100200000.0,
+    "tone_dbm": -25.0
+  },
+  "Adaptive soak (40 s per decimate)": {
+    "rows": [
+      [
+        4,
+        15.6248,
+        38485,
+        0,
+        0.0014,
+        18.0
+      ],
+      [
+        16,
+        3.9063,
+        9622,
+        0,
+        -0.0023,
+        5.1
+      ],
+      [
+        64,
+        0.9766,
+        2406,
+        0,
+        -0.0031,
+        1.5
+      ]
+    ],
+    "headers": [
+      "dec",
+      "eff MSPS",
+      "pkts ok",
+      "pkts err",
+      "rate deficit %",
+      "CPU %"
+    ]
+  },
+  "finished": "2026-09-15 15:40:27"
+}

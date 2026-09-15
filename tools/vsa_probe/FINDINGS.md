@@ -477,7 +477,7 @@ rejected) and adds a decision-aided timing stage. Measured on synthetic QPSK/16-
 
 | Quantity | Measured |
 |---|---|
-| EVM / matched-filter bound | median 0.99 over 8–30 dB (no systematic bias); individual realisations 0.989–1.007 except one 8 dB case at 1.147, which is the estimator's own variance there |
+| EVM / matched-filter bound | never above **1.05** from 12 dB up (the promised bound); median over seeds 0.99–1.00, i.e. the chain sits at the bound. Realisations 0.989–1.007, except one 8 dB case at 1.147 (the estimator's own ~10 % variance there). The literal lower edge (>= 1.00) is not asserted: theory is an expectation, so 0.99 is a favourable draw, not slack |
 | SER / BER, 8–30 dB | 0 (preamble resolves the 4-fold rotation: exactly one of the four candidates reaches SER 0) |
 | Timing error | ≤ 0.026 sample over 8–30 dB, 0.001 at 30 dB. The blind `|x|^2` stage alone needs 30 dB to reach 0.05 (0.31 samples mean at 8 dB) |
 | Carrier offset (total) | ≤ 0.03 Hz |
@@ -513,7 +513,7 @@ service (`tools/vsa_probe/vsa_service_check.py`, `vsa_frame_check.py`, `tools/co
 | Short capture (2^18) | — | 262144/262144 samples, 0 errors, 17/17 packets, 2.28× (the fixed settle/arm cost dominates a 67 ms frame) |
 | Streaming Tier 1 | 40 s soak, 0 errors, worst 10 s window 0.99848 | stream view refreshes through the shared panadapter, `busy` false, frames flowing; soak-length stability not re-run |
 | Frame path | — | RTAF + VSAD reach the display WebSocket; the newest VSAD decodes with NumPy alone; a 2 s stall still leaves only the newest cloud |
-| Tier 2 EVM vs the matched-filter bound | 1.003–1.023 over 8–30 dB (probe chain) | median 0.99 over 8–30 dB (no bias); one 8 dB realisation reads 1.15, which is the estimator's own variance there |
+| Tier 2 EVM vs the matched-filter bound | 1.003–1.023 over 8–30 dB (probe chain) | never above 1.05 from 12 dB up; median 0.99–1.00; one 8 dB realisation reads 1.15 (the estimator's own ~10 % variance there) |
 | Tier 2 timing | ≤0.03 samples at 25 dB | **≤0.026 samples over 8–30 dB**, 0.001 at 30 dB |
 | Tier 2 carrier | 0.1 Hz at 1 % of the symbol rate | total (M-th power + tracker) ≤0.03 Hz |
 | Tier 2 cost | 1.3–12× real time, "the per-symbol loop dominates" | 5.0× at 2^17, 14× at 2^20; the vectorised tracker is 10× faster than that loop and no longer dominates (the FFTs and the matched filters do) |

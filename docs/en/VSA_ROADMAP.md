@@ -85,10 +85,11 @@ analysis) into a working mode. Every item names the measured number that drives 
   same order; its CCDF figure used a block-averaged envelope, which is not comparable to
   Rayleigh. A capture-only pair (`spectrogram`, `constellation`) is refused in the stream
   view instead of being silently dropped.
-* **[todo]** The constellation is shown with `sps_too_low` set when the blind rate implies
-  fewer than 4 samples/symbol (measured: the estimate collapses at sps 2). Still open: the
-  4-fold phase ambiguity in the UI (Phase 2 plus the frontend rotation control) and the
-  drive-dependent DC bin (0.2–1.6 dB).
+* **[done]** The constellation is shown with `sps_too_low` set when the blind rate implies
+  fewer than 4 samples/symbol (measured: the estimate collapses at sps 2), and the 4-fold phase
+  ambiguity is on screen: the panel carries the rotation control, shows `resolved_by · rotation`
+  and warns while it is unresolved. The drive-dependent DC bin (0.2–1.6 dB) is a documented
+  input caveat rather than a UI feature — the session keeps the probe-verified DCC default.
 
 ### 2.4 Acquisition paths
 
@@ -138,15 +139,20 @@ analysis) into a working mode. Every item names the measured number that drives 
   is *disabled* in the stream view rather than refused by the backend later, and entering VSA
   sends the whole geometry in one `SET_VSA` (a second configure in quick succession is the
   measured wedge hazard) after tuning to the marker/centre the user was looking at.
-* **[done]** The reference level keeps using the shared Ref group, i.e. the measured input
-  gain, and the depth/decimation lists are the ones the device accepts; no new client-side
-  limits were invented.
+* **[done]** The reference level keeps using the shared Ref group and the control now says
+  what it is: swept/RTA it is the display scale, SDR/VSA it is the `RefLevel_dBm` *input gain*,
+  with the measured linearity stated in the panel and in the tooltip (linear to ≈ −20 dBm at
+  Ref 0 dBm, a −25 dBm tone reading −25.2 dBm; at −15 dBm it reads 3.9 dB low). The depth and
+  decimation lists are the ones the device accepts; no client-side limits were invented.
 * **[done]** i18n for both languages (`core/i18n/dict.vsa.ts`) and a hint row in the panel.
 
 ### 2.7 Tests for Phase 1
 
-* **[todo]** Unit tests on synthetic IQ where the answer is known (burst duty 0.500,
-  noise CCDF against Rayleigh, symbol-rate error, constellation scale).
+* **[done]** Unit tests on synthetic IQ where the answer is known:
+  `tests/test_vector.py` pins the burst duty (0.500), the noise CCDF against the closed-form
+  Rayleigh curve (worst deviation < 0.01), the symbol-rate error (< 1 Hz) and the constellation
+  cloud's scale/CFO/timing, and `tests/test_digital.py` pins EVM against the matched-filter
+  bound, timing, carrier, SER and the ambiguity handling.
 * **[done]** Session lifecycle: mode-private snapshot/restore, `health`, `SET_MODE`
   validation table (`tests/test_vsa_session.py`, 15 cases, no vendor library).
 * **[done]** Fake-backend end-to-end: entering and leaving `vsa` without disturbing the other
@@ -162,9 +168,13 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 * **[done]** The chain lives in `web_sa/demod/digital.py` (`demodulate`): symbol rate,
   timing, carrier recovery, slicing, EVM/MER/SNR, SER/BER and the Gray-coded symbol table.
-  Measured on synthetic QPSK/16-QAM over 8–30 dB: EVM/theory median 0.99 (no bias; one 8 dB
-  realisation in five reads 15 % high, which is the estimator's own variance there),
-  SER/BER 0 with the preamble resolving the rotation, total carrier error ≤ 0.03 Hz.
+  Measured on synthetic QPSK/16-QAM over 8–30 dB: EVM/theory **never exceeds 1.05 from
+  12 dB up** (the bound this roadmap asked for) and its median over seeds is 0.99–1.00 — the
+  chain sits at the bound. The literal lower edge (≥ 1.00) is deliberately not asserted: the
+  theory value is an expectation, so a realisation reading 0.99 is a favourable noise draw, not
+  a defect. At 8 dB one realisation in five reads up to 1.15 because the EVM estimator's own
+  variance is ~10 % there. SER/BER 0 with the preamble resolving the rotation, total carrier
+  error ≤ 0.03 Hz.
 * **[done]** The per-symbol PLL is gone: `track_carrier` fits one phase/frequency line per
   pass with the decisions as the reference (vectorised, three passes, outlier rejection).
   Measured 2.3 ms for 4000 symbols and 50 ms for 65000, i.e. **10× faster** than the probe's

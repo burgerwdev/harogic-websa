@@ -1,0 +1,121 @@
+{
+  "title": "IQS capture capability (framed)",
+  "started": "2026-09-15 16:19:19",
+  "device": {
+    "uid": "5230500C00380025",
+    "model": 67,
+    "hw": 8,
+    "mfw": 14184,
+    "ffw": 14184,
+    "bus_mbps": 3,
+    "bus_version": 14088,
+    "api_version_raw": 14169
+  },
+  "hardware": {
+    "status": 0,
+    "GNSSPeriphType": 0,
+    "GNSSType": 1,
+    "OCXOType": 0,
+    "InternalOCXO": 0,
+    "SignalSourceEn": 0,
+    "ADC_VariableRateEn": 0,
+    "IM3_filter": 1
+  },
+  "values": {
+    "device uid": "5230500C00380025",
+    "model": 67,
+    "firmware mfw/ffw": "14184/14184",
+    "bus Mbps": 3,
+    "SignalSourceEn": 0,
+    "peak frequency mean Hz": 199984.5475821493,
+    "peak frequency stdev Hz": 0.014927793124547372,
+    "peak power mean dBm": -24.47514851724215,
+    "peak power stdev dB": 0.006501515842310234,
+    "expected offset Hz": 200000.0,
+    "peak offset error Hz": -15.452417850698112,
+    "summary.requested": 262144,
+    "summary.samples": 262144,
+    "summary.packets_ok": 17,
+    "summary.packets_err": 0,
+    "summary.trigger_s": 0.0001,
+    "summary.elapsed_s": 0.0355,
+    "summary.first_status": 0,
+    "summary.packets_reported": 17,
+    "summary.shortfall": 0,
+    "summary.scale_to_v": 2.310688068973832e-05,
+    "summary.fs": 7812500.0,
+    "packet sample counts (first 5)": "[16240, 16240, 16240, 16240, 16240]",
+    "phase-increment stdev rad": 0.005069658986811101,
+    "packet-boundary |residual| max rad": 0.015288679132936522,
+    "interior |residual| max rad": 0.023405944730257033
+  },
+  "bench conditions": {
+    "center_hz": 100000000.0,
+    "decimate": 8,
+    "trigger_mode": "fixed_points",
+    "trigger_length": 262144,
+    "ref_level_dbm": 0.0,
+    "dcc": "high_pass",
+    "qdc": "off",
+    "data_format": "complex16",
+    "antenna": "rf_in",
+    "bus_timeout_ms": 2000,
+    "tone_freq_hz": 100200000.0,
+    "tone_dbm": -25.0
+  },
+  "FixedPoints frame capture": {
+    "rows": [
+      [
+        0,
+        262144,
+        17,
+        0,
+        0,
+        199984.5,
+        -24.47
+      ],
+      [
+        1,
+        262144,
+        17,
+        0,
+        0,
+        199984.5,
+        -24.48
+      ],
+      [
+        2,
+        262144,
+        17,
+        0,
+        0,
+        199984.6,
+        -24.48
+      ]
+    ],
+    "headers": [
+      "run",
+      "samples",
+      "pkts ok",
+      "pkts err",
+      "status",
+      "peak Hz",
+      "peak dBm"
+    ],
+    "repeat_count": 3,
+    "summary": {
+      "requested": 262144,
+      "samples": 262144,
+      "packets_ok": 17,
+      "packets_err": 0,
+      "trigger_s": 0.0001,
+      "elapsed_s": 0.0355,
+      "first_status": 0,
+      "packets_reported": 17,
+      "shortfall": 0,
+      "scale_to_v": 2.310688068973832e-05,
+      "fs": 7812500.0
+    }
+  },
+  "finished": "2026-09-15 16:19:20"
+}

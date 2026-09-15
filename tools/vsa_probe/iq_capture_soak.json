@@ -1,0 +1,70 @@
+{
+  "title": "IQS capture capability (soak)",
+  "started": "2026-09-15 16:07:21",
+  "device": {
+    "uid": "5230500C00380025",
+    "model": 67,
+    "hw": 8,
+    "mfw": 14184,
+    "ffw": 14184,
+    "bus_mbps": 3,
+    "bus_version": 14088,
+    "api_version_raw": 14169
+  },
+  "hardware": {
+    "status": 0,
+    "GNSSPeriphType": 0,
+    "GNSSType": 1,
+    "OCXOType": 0,
+    "InternalOCXO": 0,
+    "SignalSourceEn": 0,
+    "ADC_VariableRateEn": 0,
+    "IM3_filter": 1
+  },
+  "values": {
+    "device uid": "5230500C00380025",
+    "model": 67,
+    "firmware mfw/ffw": "14184/14184",
+    "bus Mbps": 3,
+    "SignalSourceEn": 0,
+    "dec 64 settle-drained packets": 15,
+    "dec 64 error statuses": "{}",
+    "dec 64 window rate ratios": "0.99997 0.99879 0.99931 0.99989 0.99875 0.99931",
+    "note": "CPU % is this process (IQS fetch + NumPy copy) over the run wall time"
+  },
+  "bench conditions": {
+    "center_hz": 100000000.0,
+    "decimate": 8,
+    "trigger_mode": "fixed_points",
+    "trigger_length": 262144,
+    "ref_level_dbm": 0.0,
+    "dcc": "high_pass",
+    "qdc": "off",
+    "data_format": "complex16",
+    "antenna": "rf_in",
+    "bus_timeout_ms": 2000,
+    "tone_freq_hz": 100200000.0,
+    "tone_dbm": -25.0
+  },
+  "Adaptive soak (60 s per decimate)": {
+    "rows": [
+      [
+        64,
+        0.9765,
+        3608,
+        0,
+        0.0022,
+        1.3
+      ]
+    ],
+    "headers": [
+      "dec",
+      "eff MSPS",
+      "pkts ok",
+      "pkts err",
+      "rate deficit %",
+      "CPU %"
+    ]
+  },
+  "finished": "2026-09-15 16:08:21"
+}

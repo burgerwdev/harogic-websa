@@ -1,0 +1,325 @@
+{
+  "depth": 16777216,
+  "view": null,
+  "started": 1789477947.908248,
+  "entry_view": "stream",
+  "capture": {
+    "elapsed_s": 6.075706617004471,
+    "actual": {
+      "iq_rate": 3906250.0,
+      "bandwidth": 3125000.0,
+      "iq_center": 100200000.0,
+      "decimate": 16,
+      "packet_samples": 16240,
+      "packet_bytes": 64960,
+      "start": 98637500.0,
+      "stop": 101762500.0,
+      "depth": 16777216,
+      "packets": 1034
+    },
+    "health": {
+      "ok": 1035,
+      "err": 0,
+      "last_status": 0,
+      "transient_streak": 0,
+      "phase": "settle",
+      "progress": 0.0,
+      "frames": 1,
+      "recovery_attempts": 0
+    },
+    "last": {
+      "kind": "spectrum",
+      "samples": 16777216,
+      "mean_dbm": -25.174190171375635,
+      "peak_bin_dbm": -28.194890625921182,
+      "floor_1hz_dbm": -138.90540370592475,
+      "centroid_hz": -14.669456323269475,
+      "points": 3277,
+      "peak_dbm": -25.174496121519212,
+      "floor_dbm": -108.56542027718993,
+      "peak_hz": 100200000.0,
+      "mode": "capture",
+      "packets": 1034
+    },
+    "progress": [
+      {
+        "progress": 0.001,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.013,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.025,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.037,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.049,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.061,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.074,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.086,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.098,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.11,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.122,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.135,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.146,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.159,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.17,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.183,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.195,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.207,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.219,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.231,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.243,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.256,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.267,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.28,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.291,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.304,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.316,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.328,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.341,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.352,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.365,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.377,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.389,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.402,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.413,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.426,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.438,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.45,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.462,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      },
+      {
+        "progress": 0.474,
+        "busy": true,
+        "frames": 0,
+        "samples": 32480
+      }
+    ],
+    "measure": "spectrum"
+  },
+  "stream": {
+    "actual": {
+      "iq_rate": 3906250.0,
+      "bandwidth": 3125000.0,
+      "iq_center": 100200000.0,
+      "decimate": 16,
+      "packet_samples": 16240,
+      "packet_bytes": 64960,
+      "start": 98637500.0,
+      "stop": 101762500.0,
+      "depth": 0,
+      "packets": 0
+    },
+    "health": {
+      "ok": 1138,
+      "err": 0,
+      "last_status": 0,
+      "transient_streak": 0,
+      "phase": "stream",
+      "progress": 0.0,
+      "frames": 1,
+      "recovery_attempts": 0
+    },
+    "last": {
+      "kind": "spectrum",
+      "points": 1639,
+      "peak_dbm": -22.179712295532227,
+      "peak_bin_dbm": -22.179712295532227,
+      "floor_dbm": -103.19969177246094,
+      "peak_hz": 100200000.0,
+      "mode": "stream",
+      "samples": 32480,
+      "packets": null
+    }
+  },
+  "problems": [],
+  "ok": true
+}

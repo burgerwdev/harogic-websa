@@ -40,6 +40,7 @@ export const en = {
 	"vsa_error_silent": "Capture is silent.",
 	"vsa_error_too_short": "Capture is too short for the chain.",
 	"vsa_hint": "capture = one frame, analysed once · stream = spectrum/waterfall · the constellation needs a capture",
+	"vsa_ref_headroom": "Ref is the IQS input gain here: measured linear to about -20 dBm at Ref 0 dBm (a -25 dBm tone reads -25.2 dBm); at -15 dBm it reads 3.9 dB low.",
 } as const;
 
 export const zh = {
@@ -82,4 +83,5 @@ export const zh = {
 	"vsa_error_silent": "抓帧是静默的。",
 	"vsa_error_too_short": "抓帧太短,链路无法处理。",
 	"vsa_hint": "capture = 单帧分析一次 · stream = 频谱/瀑布 · 星座需要 capture",
+	"vsa_ref_headroom": "此处 Ref 是 IQS 输入增益:实测 Ref 0 dBm 时线性到约 −20 dBm(−25 dBm 单音读 −25.2 dBm);到 −15 dBm 会低读 3.9 dB。",
 } as const;
