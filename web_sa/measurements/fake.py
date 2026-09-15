@@ -143,6 +143,118 @@ class FakeRtaSession(_FakeRtaBase):
         return [frame], []
 
 
+class FakeVsaSession(_FakeRtaBase):
+    """Vector session for the fake backend: a synthetic capture cycle and one RTAF frame.
+
+    It models what the real session reports while a frame transfers (``vsa_busy`` and a
+    ``vsa_progress`` that climbs to 1), because the UI has to show that state instead of
+    pretending the capture is live. The frame itself is the same synthetic spectrum the fake
+    RTA emits.
+    """
+
+    name = 'vsa'
+    #: Same IQ-domain display as SDR (see measurements/vsa.py).
+    auto_ref_scope = 'sdr'
+    #: Steps a fake capture takes to "transfer" its frame.
+    CAPTURE_STEPS = 3
+
+    def __init__(self, dev):
+        super().__init__(dev)
+        self._progress = 0
+        self._phase = 'idle'
+
+    def enter(self) -> None:
+        super().enter()
+        self._configure()
+
+    def reconfigure(self) -> None:
+        self._configure()
+
+    def reset_defaults(self) -> None:
+        self._ready = True
+
+    def set_params(self, center=None, decimate=None, view=None, depth=None, measure=None,
+                   modulation=None, symbol_rate=None, rolloff=None, phase_rot=None) -> None:
+        s = self.dev.state
+        if center is not None:
+            s.vsa_center_hz = float(center)
+        if decimate is not None:
+            s.vsa_decimate = int(decimate)
+        if view is not None:
+            s.vsa_view = str(view)
+        if depth is not None:
+            s.vsa_depth = int(depth)
+        if measure is not None:
+            s.vsa_measure = str(measure)
+        if modulation is not None:
+            s.vsa_modulation = str(modulation)
+        if symbol_rate is not None:
+            s.vsa_symbol_rate = float(symbol_rate)
+        if rolloff is not None:
+            s.vsa_rolloff = float(rolloff)
+        if phase_rot is not None:
+            s.vsa_phase_rot_deg = float(phase_rot) % 360.0
+        self._configure()
+
+    def _configure(self) -> None:
+        s = self.dev.state
+        self._ready = True
+        self._progress = 0
+        capture = s.vsa_view == 'capture'
+        self._phase = 'capture' if capture else 'stream'
+        s.vsa_busy = capture
+        s.vsa_progress = 0.0
+        s.vsa_actual = {
+            'iq_rate': 62.5e6 / max(1, int(s.vsa_decimate)),
+            'bandwidth': 50e6 / max(1, int(s.vsa_decimate)),
+            'iq_center': float(s.vsa_center_hz),
+            'decimate': int(s.vsa_decimate),
+            'packet_samples': 16240, 'packet_bytes': 16240 * 4,
+            'start': float(s.vsa_center_hz) - 25e6 / max(1, int(s.vsa_decimate)),
+            'stop': float(s.vsa_center_hz) + 25e6 / max(1, int(s.vsa_decimate)),
+            'depth': int(s.vsa_depth) if capture else 0,
+            'packets': (int(s.vsa_depth) + 16239) // 16240 if capture else 0,
+        }
+        self.dev.begin_auto_reference_settle(self.auto_ref_scope)
+
+    def health(self) -> dict:
+        return {'ok': self._tick, 'err': 0, 'last_status': 0, 'transient_streak': 0,
+                'phase': self._phase, 'progress': float(self.dev.state.vsa_progress),
+                'frames': self._tick, 'recovery_attempts': 0}
+
+    def step(self):
+        if not self._ready:
+            return [], []
+        s = self.dev.state
+        if s.vsa_view == 'capture' and self._progress < self.CAPTURE_STEPS:
+            self._progress += 1
+            s.vsa_progress = self._progress / self.CAPTURE_STEPS
+            s.vsa_busy = self._progress < self.CAPTURE_STEPS
+            if self._progress < self.CAPTURE_STEPS:
+                return [], []
+        self._tick += 1
+        center = float(s.vsa_center_hz)
+        span = float(s.vsa_actual['bandwidth'])
+        freq, spec = self._spectrum(center, span, RTA_POINTS)
+        finite = np.sort(spec[np.isfinite(spec)])
+        if finite.size:
+            self.dev.observe_reference_peak(
+                self.auto_ref_scope, float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
+        s.vsa_progress = 1.0
+        s.vsa_busy = False
+        s.vsa_last = {'points': RTA_POINTS, 'peak_dbm': float(finite[-1]) if finite.size else 0.0,
+                      'floor_dbm': float(finite[int((finite.size - 1) * 0.3)]) if finite.size else 0.0,
+                      'mode': s.vsa_view,
+                      'samples': int(s.vsa_actual.get('depth') or 16240),
+                      'packets': int(s.vsa_actual.get('packets') or 1)}
+        frame = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
+                           float(s.vsa_actual['start']), float(s.vsa_actual['stop']))
+        if s.vsa_view == 'capture':
+            self._progress = 0                     # arm the next frame like the real session
+            s.vsa_busy = True
+        return [frame], []
+
+
 class FakeSdrSession(_FakeRtaBase):
     """SDR session emitting a synthetic panadapter (RTAF) plus 20 ms audio frames (AUDF)."""
 

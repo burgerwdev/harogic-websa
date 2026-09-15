@@ -24,6 +24,7 @@ from ..hardware.device import DeviceError
 from .base import MeasurementSession
 from .framer import encode_audio, encode_rta
 from .iqs import BUS_RETRY_TRIES, IqsStream, sdk_call
+from .iqs import round_decimate as _round_decimate
 
 log = logging.getLogger(__name__)
 
@@ -62,16 +63,6 @@ def _tn(key: str, msg: str, *args, n: int = 3) -> None:
         log.info('[trace] ' + msg, *args)
 
 
-
-
-def _round_decimate(value) -> int:
-    """IQS DecimateFactor is power-of-two only (verified); clamp to 1..2048."""
-    try:
-        v = int(value)
-    except (TypeError, ValueError):
-        v = 16
-    v = max(1, min(2048, v))
-    return 1 << (v.bit_length() - 1) if v & (v - 1) else v
 
 
 def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
@@ -863,7 +854,7 @@ class SdrSession(MeasurementSession):
                     self._step_failed_locked('get exception', got.error)
                     return [], []
                 if got.transient:
-                    if got.status in sb.WARN_STATUS:
+                    if got.warn:
                         s.status_warning = int(got.status)
                     # A timeout blocks for BusTimeout each call, so recover fast on those;
                     # BusDataError returns immediately, so a longer streak is fine. The

@@ -107,6 +107,17 @@ def build_status(dev) -> dict:
         'trigger_outpolarity': s.trigger_out_polarity,
         'trigger_actual': s.trigger_actual,
     }
+    vsa_req = {
+        'center': s.vsa_center_hz,
+        'decimate': s.vsa_decimate,
+        'view': s.vsa_view,
+        'depth': s.vsa_depth,
+        'measure': s.vsa_measure,
+        'modulation': s.vsa_modulation,
+        'symbol_rate': s.vsa_symbol_rate,
+        'rolloff': s.vsa_rolloff,
+        'phase_rot': s.vsa_phase_rot_deg,
+    }
     is_rta = s.mode == 'rta'
     sdr_req = {
         'center': s.sdr_center_hz, 'decimate': s.sdr_decimate, 'listen': s.sdr_listen_hz,
@@ -117,7 +128,24 @@ def build_status(dev) -> dict:
         # expires back to Auto after the TTL.
         'deemph_us': s.sdr_deemph_us,
     }
-    if s.mode == 'sdr':
+    if s.mode == 'vsa':
+        bandwidth = float(s.vsa_actual.get('bandwidth', 0.0) or s.span_hz)
+        points = int(s.vsa_actual.get('packet_samples', 0) or s.points_req)
+        bin_width = bandwidth / max(1, points)
+        active_req = {
+            **swp_req,
+            'center': s.vsa_center_hz,
+            'span': bandwidth,
+            'points': points,
+            'ref_mode': s.ref_mode,
+            'ref': s.ref_level,
+            'rbw_mode': 'auto',
+            'rbw': bin_width,
+            'vbw_mode': 'equal',
+            'vbw': bin_width,
+        }
+        active_actual = s.vsa_actual
+    elif s.mode == 'sdr':
         bandwidth = float(s.sdr_actual.get('bandwidth', 0.0) or s.span_hz)
         points = int(s.sdr_actual.get('pan_points', 0) or s.points_req)
         bin_width = bandwidth / max(1, points)
@@ -154,6 +182,7 @@ def build_status(dev) -> dict:
     request['swp'] = swp_req
     request['rta'] = rta_req
     request['sdr'] = sdr_req
+    request['vsa'] = vsa_req
     return _json_safe({
         'cmd': 'STATUS', 'connected': s.connected, 'device': s.label,
         'device_detail': s.device_detail,
@@ -186,6 +215,14 @@ def build_status(dev) -> dict:
         'actual': active_actual,
         'swp_actual': s.actual,
         'rta_actual': s.rta_actual,
+        'vsa': {
+            **vsa_req,
+            'actual': s.vsa_actual,
+            'busy': s.vsa_busy,
+            'progress': s.vsa_progress,
+            'last': s.vsa_last,
+            'health': session_health if s.mode == 'vsa' else {},
+        },
         'sdr': {
             **sdr_req,
             'actual': s.sdr_actual,

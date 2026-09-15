@@ -20,7 +20,13 @@ from ..config import (
 from . import sdk_bindings as sb
 from .auto_reference import AutoReferenceController
 from .errors import DeviceError  # noqa: F401 (re-exported for the business layer)
-from .state import DeviceState, RtaParams, SdrParams, TriggerParams  # noqa: F401 (re-export)
+from .state import (  # noqa: F401 (re-export)
+    DeviceState,
+    RtaParams,
+    SdrParams,
+    TriggerParams,
+    VsaParams,
+)
 
 log = logging.getLogger(__name__)
 
@@ -274,6 +280,12 @@ class HarogicDevice:
         self.state.rta = RtaParams()
         self.state.trigger = TriggerParams()
         self.reset_auto_reference('rta')
+
+    def reset_vsa_state(self) -> None:
+        """Restore every VSA parameter to the power-on defaults (fresh group dataclass)."""
+        self.state.vsa = VsaParams()
+        # VSA's spectrum is an IQ-domain display and shares SDR's reference tracker.
+        self.reset_auto_reference('sdr')
 
     def preset_state(self) -> dict:
         """Write the cached device defaults into dev.state (SWP parameters) WITHOUT

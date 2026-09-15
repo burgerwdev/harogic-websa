@@ -57,6 +57,16 @@ DCC_MODES = {'off': 'DCCOff', 'high_pass': 'DCCHighPassFilterMode',
 QDC_MODES = {'off': 'QDCOff', 'auto': 'QDCAutoMode', 'manual': 'QDCManualMode'}
 
 
+def round_decimate(value) -> int:
+    """Clamp an IQS DecimateFactor request: power-of-two only, 1..2048 (verified)."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        v = 16
+    v = max(1, min(2048, v))
+    return 1 << (v.bit_length() - 1) if v & (v - 1) else v
+
+
 def default_sdk():
     """The vendor binding layer, imported on first use (it loads libhtraapi at import)."""
     from ..hardware import sdk_bindings as sb
@@ -107,10 +117,11 @@ class IqsInfo:
 class Fetch:
     """One ``IQS_GetIQStream_PM1`` outcome."""
 
-    __slots__ = ('status', 'raw', 'samples', 'scale_to_v', 'transient', 'recover', 'error')
+    __slots__ = ('status', 'raw', 'samples', 'scale_to_v', 'transient', 'recover', 'error',
+                 'warn')
 
     def __init__(self, status, raw=None, samples=0, scale_to_v=1.0,
-                 transient=False, recover=False, error=''):
+                 transient=False, recover=False, error='', warn=False):
         self.status = status
         self.raw = raw
         self.samples = samples
@@ -119,6 +130,8 @@ class Fetch:
         self.recover = recover
         #: repr() of an exception raised by the SDK call (a DLL hang/abort), else ''.
         self.error = error
+        #: True for the vendor's documented *warning* statuses (IF overflow, bus timeout).
+        self.warn = warn
 
     @property
     def ok(self) -> bool:
@@ -143,6 +156,9 @@ class IqsStream:
         self.transient_streak = 0
         self.timeout_streak = 0
         self.last_status = 0
+        #: Which statuses count as warnings rather than failures (vendor doc); resolved from
+        #: the injected SDK so callers never import the binding layer for this.
+        self.warn_statuses = frozenset(getattr(self.sb, 'WARN_STATUS', TRANSIENT))
         self.last_ok = 0.0
         self.last_recovery = 0.0
         self.ready_at = 0.0
@@ -279,7 +295,7 @@ class IqsStream:
             due = (self.transient_streak >= TRANSIENT_STREAK_LIMIT
                    or self.timeout_streak >= TIMEOUT_STREAK_LIMIT)
             recover = due and (t - self.last_recovery) >= RECOVERY_COOLDOWN_S
-            return Fetch(st, transient=True, recover=recover)
+            return Fetch(st, transient=True, recover=recover, warn=st in self.warn_statuses)
         self.transient_streak = 0
         self.timeout_streak = 0
         self.last_ok = t

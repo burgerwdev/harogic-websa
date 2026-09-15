@@ -14,11 +14,11 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 ## Backend Layers
 - `hardware/sdk_bindings.py`: all ctypes bindings (only DLL contact point), incl. PNM structs & calibration functions
 - `hardware/device.py`: device abstraction (open/configure/fetch/query) + DeviceState + model capability derivation
-- `measurements/`: measurement session objects (Std/RTA/Harmonic/PhaseNoise) + framer (frame encode/decode)
+- `measurements/`: measurement session objects (Std/RTA/Harmonic/PhaseNoise/SDR/VSA) + the shared IQS stream layer (`iqs.py`) + framer (frame encode/decode)
 - `web/`: ws.py (command table) + http_api.py (STATUS/REST) + publisher.py (mode-aware scheduling)
 
 ## Key Design
-1. **Session objects**: std/rta/harmonic/pnm share one interface; enter/exit restores configuration snapshots
+1. **Session objects**: std/rta/harmonic/pnm/sdr/vsa share one interface; enter/exit restores configuration snapshots
 2. **Model capability derivation**: DeviceCapabilities (SAN-45/60/90 frequency ranges), no hardcoding
 3. **Frontend peak-preserving resampling**: backend sends device-native traces; frontend `resampleTrace` handles points (peak-preserving, no interpolation artifacts)
 4. **Frame protocol**: 16-byte header (magic+ver+points+sweep_ms) + data; POWR forced to float32
@@ -35,7 +35,8 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 
 ## WS Commands
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
-SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/SET_HARM/SET_PNM
+SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/SET_HARM/SET_PNM/
+SET_SDR/SET_SDR_TUNE/SET_SDR_DEMOD/SET_TRIGGER/SET_VSA
 
 ## RTA Real-Time Spectrum (SWP/RTA modes)
 - **Session** (`web_sa/measurements/rta.py`, `RtaSession`): built on the official SDK path

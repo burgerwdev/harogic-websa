@@ -236,3 +236,4 @@ def install_fake_sessions() -> None:
 
     _SESSIONS['rta'] = ('fake', 'FakeRtaSession')
     _SESSIONS['sdr'] = ('fake', 'FakeSdrSession')
+    _SESSIONS['vsa'] = ('fake', 'FakeVsaSession')

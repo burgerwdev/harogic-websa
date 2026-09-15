@@ -51,6 +51,9 @@ SWEEP: list[tuple[str, dict, str | None]] = [
     ('SET_SDR_DEMOD', {'mode': 'am', 'ifbw': 12000, 'squelch': -110, 'volume': 0.8,
                        'agc': True, 'pitch': 700, 'deemph_us': -1}, 'sdr'),
     ('SET_REF', {'mode': 'auto'}, 'sdr'),
+    ('SET_MODE', {'mode': 'vsa'}, None),
+    ('SET_VSA', {'center': 100.2e6, 'decimate': 16, 'view': 'stream', 'depth': 1 << 17}, 'vsa'),
+    ('SET_REF', {'mode': 'auto'}, 'vsa'),
     ('SET_MODE', {'mode': 'std'}, None),
 ]
 
@@ -62,6 +65,7 @@ REJECTIONS = [
     ('SET_WINDOW', {'window': 1}, 'rta', 'swp_only'),
     ('SET_FREQ', {'center': 1e9, 'span': 1e6}, 'sdr', 'sdr_unsupported'),
     ('SET_RBW', {'mode': 'manual', 'rbw': 1e6}, 'harmonic', 'cmd_unavailable_measurement'),
+    ('SET_FREQ', {'center': 1e9, 'span': 1e6}, 'vsa', 'vsa_unsupported'),
 ]
 
 

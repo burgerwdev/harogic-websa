@@ -17,6 +17,7 @@ _SESSIONS = {
     'pnm': ('phase_noise', 'PhaseNoiseSession'),
     'rta': ('rta', 'RtaSession'),
     'sdr': ('sdr', 'SdrSession'),
+    'vsa': ('vsa', 'VsaSession'),
 }
 
 
@@ -82,6 +83,7 @@ __all__ = [
     'PhaseNoiseSession',
     'RtaSession',
     'SdrSession',
+    'VsaSession',
     'SessionManager',
     'SessionNotReady',
     'StdSession',

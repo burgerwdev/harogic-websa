@@ -110,6 +110,36 @@ class SdrParams:
 
 
 @dataclass
+class VsaParams:
+    """Vector signal analysis: IQ capture geometry and what the session measures.
+
+    Mode-private in the MODE_STATE_FLOW sense: entering VSA keeps what the user set here,
+    and leaving it does not disturb SWP/RTA/SDR.
+    """
+
+    vsa_center_hz: float = 1e9
+    vsa_decimate: int = 16
+    #: 'capture' = one triggered frame, analysed once; 'stream' = Adaptive Tier 1 spectrum.
+    vsa_view: str = 'capture'
+    #: Requested frame depth in samples. The device rounds it to whole packets; the achieved
+    #: geometry is reported in `vsa_actual`.
+    vsa_depth: int = 262144
+    #: Which Tier 1 measurement the captured frame produces (vector.py adds the rest).
+    vsa_measure: str = 'spectrum'
+    #: Tier 2 settings, used when the modulation is known rather than estimated.
+    vsa_modulation: str = 'qpsk'
+    vsa_symbol_rate: float = 0.0        # 0 = blind estimate
+    vsa_rolloff: float = 0.35
+    #: The user's answer to the 4-fold carrier phase ambiguity, in degrees (0/90/180/270).
+    vsa_phase_rot_deg: float = 0.0
+    #: Live state: what the device configured, transfer progress, and the last result.
+    vsa_actual: dict = field(default_factory=dict)
+    vsa_progress: float = 0.0
+    vsa_busy: bool = False
+    vsa_last: dict = field(default_factory=dict)
+
+
+@dataclass
 class TriggerParams:
     """RTA acquisition trigger (the swept engine has no level trigger)."""
 
@@ -133,6 +163,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     'swp': tuple(SwpParams.__dataclass_fields__),
     'rta': tuple(RtaParams.__dataclass_fields__),
     'sdr': tuple(SdrParams.__dataclass_fields__),
+    'vsa': tuple(VsaParams.__dataclass_fields__),
     'trigger': tuple(TriggerParams.__dataclass_fields__),
 }
 
@@ -197,6 +228,7 @@ class DeviceState:
         self.swp = SwpParams()
         self.rta = RtaParams()
         self.sdr = SdrParams()
+        self.vsa = VsaParams()
         self.trigger = TriggerParams()
         for key, value in overrides.items():
             if not hasattr(self, key):

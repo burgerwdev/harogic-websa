@@ -72,6 +72,9 @@ NOT_IN_SDR = frozenset({
     'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR',
     'SET_WINDOW', 'SET_DETECTOR', 'SET_TRIGGER', 'SET_RTA',
 })
+#: VSA owns the IQS capture geometry for the same reason (and by coincidence the same
+#: list): if either policy changes, split these two names apart.
+NOT_IN_VSA = NOT_IN_SDR
 
 
 class CommandError(ValueError):
@@ -224,6 +227,10 @@ POINTS_MAX = lambda caps: caps.points_max     # noqa: E731
 ATTEN_MAX = lambda caps: caps.atten_max       # noqa: E731
 IFGAIN_MAX = lambda caps: caps.ifgain_max     # noqa: E731
 DECIMATE_MAX = lambda caps: caps.decimate_max  # noqa: E731
+#: VSA frame depth in samples. The device returned 2^24 with zero packet errors (measured);
+#: the lower bound keeps a frame longer than one packet.
+VSA_DEPTH_MIN = 1024
+VSA_DEPTH_MAX = 1 << 24
 RTA_SPAN_MAX = lambda caps: caps.rta_span_max_hz  # noqa: E731
 REF_MIN = lambda caps: caps.ref_min_dbm       # noqa: E731
 REF_MAX = lambda caps: caps.ref_max_dbm       # noqa: E731
@@ -290,8 +297,21 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
                             required=True),),
     'SET_REFCKOUT': (ParamSpec('on', 'boolean', required=True),),
     'SET_MODE': (ParamSpec('mode', 'choice',
-                           choices=('std', 'harmonic', 'pnm', 'rta', 'sdr'),
+                           choices=('std', 'harmonic', 'pnm', 'rta', 'sdr', 'vsa'),
                            default='std', required=True),),
+    'SET_VSA': (
+        ParamSpec('center', 'number', unit='Hz'),
+        ParamSpec('decimate', 'integer', 1, DECIMATE_MAX),
+        ParamSpec('view', 'choice', choices=('capture', 'stream')),
+        ParamSpec('depth', 'integer', VSA_DEPTH_MIN, VSA_DEPTH_MAX, unit='samples'),
+        # The measurement list grows with the vector module: only what the session can
+        # actually produce is accepted here (a refusal is better than a wrong picture).
+        ParamSpec('measure', 'choice', choices=('spectrum',)),
+        ParamSpec('modulation', 'choice', choices=('qpsk', '16qam')),
+        ParamSpec('symbol_rate', 'number', 0.0, 5e6, unit='Hz'),
+        ParamSpec('rolloff', 'number', 0.0, 1.0),
+        ParamSpec('phase_rot', 'number', 0.0, 360.0, unit='deg'),
+    ),
     'SET_SDR': (
         ParamSpec('center', 'number', unit='Hz'),
         ParamSpec('decimate', 'integer', 1, DECIMATE_MAX),
@@ -395,6 +415,12 @@ def _x_set_sdr(dev, data):
         raise CommandError('SET_SDR requires center or decimate', 'sdr_requires_param')
 
 
+def _x_set_vsa(dev, data):
+    if not any(key in data for key in ('center', 'decimate', 'view', 'depth', 'measure',
+                                       'modulation', 'symbol_rate', 'rolloff', 'phase_rot')):
+        raise CommandError('SET_VSA requires at least one parameter', 'vsa_requires_param')
+
+
 def _x_set_rta(dev, data):
     if 'center' not in data and 'span' not in data:
         raise CommandError('SET_RTA requires center or span', 'rta_requires_pair')
@@ -415,6 +441,7 @@ EXTRA_VALIDATORS = {
     'SET_FREQ': _x_set_freq,
     'SET_SWEEP': _x_set_sweep,
     'SET_SDR': _x_set_sdr,
+    'SET_VSA': _x_set_vsa,
     'SET_RTA': _x_set_rta,
     'SET_PNM': _x_set_pnm,
     'SET_MODE': _x_set_mode,
@@ -460,6 +487,7 @@ async def _h_set_preset(ctx: CommandContext, data: dict) -> bool:
     dev.preset_state()
     dev.reset_rta_state()
     dev.reset_sdr_state()
+    dev.reset_vsa_state()
     dev.reset_common_state()
     session = dev.session
     name = session.name if session is not None else 'std'
@@ -553,10 +581,11 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
         # tracking mode any more: quoting "auto" must not leave a mode latched on. In SDR the
         # client applies the reported target to its display reference.
         return await _run_auto_scale(ctx)
-    if session is not None and session.name == 'sdr':
+    if session is not None and session.name in ('sdr', 'vsa'):
         if 'ref' in data:
             s.ref_level = data['ref']
         s.ref_mode = 'manual'
+        # VSA shares SDR's tracker: both display an IQ-domain spectrum.
         dev.reset_auto_reference('sdr', manual=True)   # a manual level ends any fit's authorship
         await ctx.hw_call(session.reconfigure)
         return True
@@ -576,7 +605,7 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
 async def _run_auto_scale(ctx: CommandContext, current: float | None = None) -> bool:
     """One-shot reference placement; returns whether the configuration changed."""
     dev = ctx.dev
-    if dev.state.mode not in ('std', 'rta', 'sdr'):
+    if dev.state.mode not in ('std', 'rta', 'sdr', 'vsa'):
         return False
     result, _target = dev.auto_scale(dev.auto_reference_scope(), current)
     # The client must re-read `auto_ref.target` (SDR applies it to the display scale), so a STATUS
@@ -701,7 +730,7 @@ async def _h_set_mode(ctx: CommandContext, data: dict) -> bool:
 
     dev = ctx.dev
     name = data.get('mode', 'std')
-    if name not in ('std', 'harmonic', 'pnm', 'rta', 'sdr'):
+    if name not in ('std', 'harmonic', 'pnm', 'rta', 'sdr', 'vsa'):
         return False
 
     def _switch():
@@ -724,6 +753,19 @@ async def _h_set_sdr(ctx: CommandContext, data: dict) -> bool:
         raise CommandError('SET_SDR requires SDR mode', 'sdr_mode_required')
     await ctx.hw_call(session.set_params, center=data.get('center'),
                       decimate=data.get('decimate'))
+    return True
+
+
+async def _h_set_vsa(ctx: CommandContext, data: dict) -> bool:
+    session = ctx.dev.session
+    if session is None or session.name != 'vsa':
+        raise CommandError('SET_VSA requires VSA mode', 'vsa_mode_required')
+    await ctx.hw_call(session.set_params, center=data.get('center'),
+                      decimate=data.get('decimate'), view=data.get('view'),
+                      depth=data.get('depth'), measure=data.get('measure'),
+                      modulation=data.get('modulation'),
+                      symbol_rate=data.get('symbol_rate'), rolloff=data.get('rolloff'),
+                      phase_rot=data.get('phase_rot'))
     return True
 
 
@@ -844,6 +886,7 @@ _REGISTRY = (
     ('SET_REFCKOUT', _h_set_refckout, (), None, True),
     ('SET_MODE', _h_set_mode, (), None, True),
     ('SET_SDR', _h_set_sdr, (), None, True),
+    ('SET_VSA', _h_set_vsa, (), None, True),
     ('SET_SDR_TUNE', _h_set_sdr_tune, (), None, True),
     ('SET_SDR_DEMOD', _h_set_sdr_demod, (), None, True),
     ('SET_RTA', _h_set_rta, (), None, True),
@@ -914,6 +957,8 @@ def validate(dev, cmd, data) -> CommandSpec:
             'cmd_unavailable_measurement', cmd=cmd, session=session.name)
     if dev.state.mode == 'sdr' and cmd in NOT_IN_SDR:
         raise CommandError(f'{cmd} is not available in SDR mode', 'sdr_unsupported', cmd=cmd)
+    if dev.state.mode == 'vsa' and cmd in NOT_IN_VSA:
+        raise CommandError(f'{cmd} is not available in VSA mode', 'vsa_unsupported', cmd=cmd)
     if dev.state.mode == 'rta' and cmd in SWP_ONLY:
         raise CommandError(f'{cmd} is only available in SWP mode', 'swp_only', cmd=cmd)
 

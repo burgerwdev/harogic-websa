@@ -11,7 +11,10 @@
 * **[已做]** 分析中提出要修的那条设备链路崩溃(把失效句柄交回厂商库)以及 supervisor 的
   启动崩溃护栏 —— 已随 **v1.7.4** 发布,master 也已合入本分支。
 * **[已做]** 日志滚动策略真正生效(v1.7.4)。
-* **[待做]** 以下全部:`SET_MODE 'vsa'` 目前还不存在,所以分析仍只是分析。
+* **[已做]** Phase 1 会话层:`SET_MODE 'vsa'` 已端到端可用。`VsaSession` + `VsaParams` 遵循
+  `MeasurementSession` 契约,`SET_VSA` 已进命令表,`FakeVsaSession` 支撑假后端,真机 SAN-90 一次
+  抓满 2^24 样本帧、0 包错误(`tools/vsa_probe/vsa_service_check.py`)。
+* **[待做]** Phase 1 其余部分:Tier1 测量模块、`VSAD` 帧、前端,以及收口对账(2.3、2.5、2.6、2.7)。
 
 ## 2. Phase 1 — Tier 1 端到端
 
@@ -31,13 +34,13 @@
 
 ### 2.2 会话、参数、模式
 
-* **[待做]** `VsaSession`,遵循 `MeasurementSession` 契约(enter/exit 带配置快照、`step`、
-  `health`、`request_stop`、`pacing`、`reconfigure`)。
-* **[待做]** `VsaParams` 作为与 `SwpParams`/`RtaParams` 并列的模式私有块,重入时恢复
-  (见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md))。
-* **[待做]** 把 `'vsa'` 注册进 `measurements/__init__.py` 与 `web_sa/web/commands.py` 的
-  `SET_MODE` 选项表。
-* **[待做]** `FakeVsaSession`,让该模式在无硬件时也能测试与演示(假后端正是 CI 与 UI 冒烟
+* **[已做]** `VsaSession`,遵循 `MeasurementSession` 契约(enter/exit 带配置快照、`step`、
+  `health`、`request_stop`、`pacing`、`reconfigure`),位于 `web_sa/measurements/vsa.py`。
+* **[已做]** `VsaParams` 作为与 `SwpParams`/`RtaParams` 并列的模式私有块,重入时恢复
+  (见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md))。真机验证:退出 `vsa` 后扫频中心/跨度精确还原。
+* **[已做]** 把 `'vsa'` 注册进 `measurements/__init__.py` 与 `web_sa/web/commands.py` 的
+  `SET_MODE` 选项表,并新增 `SET_VSA` 与 `NOT_IN_VSA` 护栏集合。
+* **[已做]** `FakeVsaSession`,让该模式在无硬件时也能测试与演示(假后端正是 CI 与 UI 冒烟
   使用的路径)。
 
 ### 2.3 Tier1 测量
@@ -53,10 +56,12 @@
 
 ### 2.4 采集通路
 
-* **[待做]** 先捕获再分析:按所需深度取一帧 `FixedPoints`,分析后发布。深度已验证到 2^24 点
-  且零丢包;取数约等于实时(信号的 1.04–1.83 倍),因此界面需要有忙碌/进度态,而不是伪装实时。
-* **[待做]** 流式 Tier1(频谱/瀑布):`Adaptive` 配同款丢弃,显示刷新 ≤30 Hz。Welch(25 %)
-  放得下;频谱图(120 %)放不下,必须归入分析步骤。
+* **[已做]** 先捕获再分析:按所需深度取一帧 `FixedPoints`,分析后发布,随后立刻装上下一帧
+  (抓帧视图上报 `busy` 与 `progress`,不伪装实时)。深度到 2^24 点零丢包,探针与服务两侧都验证;
+  取数约等于实时(逐帧实测 1.00–1.01 倍;经服务端到端 2^24 为 1.22 倍;短到受 USB 带宽限制的帧
+  可达约 2.5 倍)。
+* **[已做]** 流式 Tier1(频谱/瀑布):`Adaptive` 配同款丢弃,显示刷新 ≤20 Hz
+  (`PAN_MIN_INTERVAL`)。Welch(25 %)放得下;频谱图(120 %)放不下,必须归入分析步骤(2.3)。
 
 ### 2.5 帧协议
 
@@ -79,9 +84,11 @@
 
 * **[待做]** 用合成 IQ 断言已知答案的单测(突发占空比 0.500、噪声 CCDF 对 Rayleigh、
   符号率误差、星座尺度)。
-* **[待做]** 会话生命周期:模式私有状态快照/恢复、`health`、`SET_MODE` 校验表。
-* **[待做]** 假后端端到端:进入/退出 `vsa` 且不干扰其它模式,以及一个在画布空白或出现 JS
-  错误时就失败的 UI 冒烟。
+* **[已做]** 会话生命周期:模式私有状态快照/恢复、`health`、`SET_MODE` 校验表
+  (`tests/test_vsa_session.py`,15 例,不需要厂商库)。
+* **[已做]** 假后端端到端:进入/退出 `vsa` 且不干扰其它模式
+  (`test_fake_backend_round_trips_through_vsa`)。
+* **[待做]** 一个在画布空白或出现 JS 错误时就失败的 UI 冒烟(随 2.6)。
 
 ## 3. Phase 2 — Tier2 解调
 
@@ -136,6 +143,9 @@
 | `RefLevel_dBm` 是输入增益 | RefLevel 0 时线性到约 −20 dBm;−15 dBm 时低读 3.9 dB |
 | `ScaleToV` 跨 RefLevel | 30 dB 设置对应 33.7 倍 —— 已是绝对伏特,无需额外因子 |
 | 深捕获深度 | 2^24 点、零丢包、取数约等于实时 |
+| **`FixedPoints` 取数配方** | 触发后**逐包连续读、读前不做任何取数**:连续读 3/3 次拿满 2^24 点(比值 1.00);帧中途插一次读会精确丢一包(114832/131072,并耗 20 s 的 `-10`);在稳定窗内读则直接毁帧(0 点、永久 `-10`)。Bus 触发启动本身就是冲队列,所以抓帧不丢弃 |
+| 抓帧深度粒度 | `PacketCount` = ceil(深度 / `PacketSamples`):131072 点为 9 包,2^24 为 1034 包 —— 每一次运行里计划包数与实到包数都一致 |
+| 抓帧取数比值(经服务端) | 2^24 点为信号时长的 1.22 倍;131072 点为 1.92 倍(固定 settle/装帧开销主导短帧) |
 | 流式开销 | 纯取数占单核 1.5–18 %;Welch 25 %;频谱图 120 % |
 | 盲符号率 | 需要 sps ≥ 4;sps 2 时估计崩溃 |
 | 载波相位 | M 次方估计器固有四重模糊 |

@@ -13,8 +13,12 @@ analysis) into a working mode. Every item names the measured number that drives 
   the vendor library) plus the supervisor startup-crash guard — shipped in **v1.7.4**, and
   master is merged into this branch.
 * **[done]** Log rotation policy actually applies (v1.7.4).
-* **[todo]** Everything below: `SET_MODE 'vsa'` does not exist yet, so today the analysis
-  is still analysis.
+* **[done]** Phase 1 session layer: `SET_MODE 'vsa'` works end to end. `VsaSession` +
+  `VsaParams` follow the `MeasurementSession` contract, `SET_VSA` is in the command table,
+  `FakeVsaSession` backs the fake device, and a real SAN-90 run captured a full 2^24-sample
+  frame with 0 packet errors (`tools/vsa_probe/vsa_service_check.py`).
+* **[todo]** The rest of Phase 1: the Tier 1 measurement module, the `VSAD` frame, the
+  frontend, and the closing reconciliation (sections 2.3, 2.5, 2.6, 2.7).
 
 ## 2. Phase 1 — Tier 1 end to end
 
@@ -26,27 +30,33 @@ analysis) into a working mode. Every item names the measured number that drives 
   to rebuild the vendor FFT/DDC/demod chain. Verified by `tests/test_iqs.py` (16 cases,
   no vendor library needed) and a live SDR stream: 361 packets, 0 errors, 46 spectrum
   frames, 2.46 s of AM audio at a 994.7 Hz tone.
-* **[todo]** The shared layer must consume `IQStream_TypeDef` from
+* **[done]** The shared layer consumes `IQStream_TypeDef` from
   `web_sa/hardware/sdk_bindings` (728 bytes); the vendor wrapper's copy is 8 bytes short and
   the SDK writes past it on every packet.
-* **[todo]** Keep the ~0.25 s post-configuration drain: measured 10824/10824 failed fetches
-  without it, 0 with it.
-* **[todo]** Keep the `-9` recovery: 2 of 6 decimate changes in multi-rate soaks wedged the
-  stream permanently without it.
+* **[done]** The ~0.25 s post-configuration drain stays on the streaming path: measured
+  10824/10824 failed fetches without it, 0 with it. A `FixedPoints` capture must **not**
+  drain — see the recipe in section 7.
+* **[done]** The `-9` recovery is reused rather than rebuilt: 2 of 6 decimate changes in
+  multi-rate soaks wedged the stream permanently without it; both VSA paths re-arm in place
+  off the shared verdict and escalate to a worker restart after `RECOVERY_LIMIT` attempts.
 * **[todo]** Anything narrowband reuses what already exists rather than new DSP: the
   channelizer `demod/ddc.py` and the streaming FIR/resampler/AGC in `demod/filters.py`.
+  (Tier 1 already reuses the shared panadapter `demod/spectrum.py` — the same windowed FFT
+  the SDR display draws.)
 * Constraint: SDR behaviour must not change (its tests plus one live SDR stream are the
   proof).
 
 ### 2.2 Session, parameters, mode
 
-* **[todo]** `VsaSession` following the `MeasurementSession` contract (`enter`/`exit` with a
-  configuration snapshot, `step`, `health`, `request_stop`, `pacing`, `reconfigure`).
-* **[todo]** `VsaParams` as a mode-private block next to `SwpParams`/`RtaParams`, restored on
-  re-entry (see [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)).
-* **[todo]** `'vsa'` registered in `measurements/__init__.py` and in the `SET_MODE` choice
-  list in `web_sa/web/commands.py`.
-* **[todo]** `FakeVsaSession` so the mode is testable and demonstrable without hardware (the
+* **[done]** `VsaSession` following the `MeasurementSession` contract (`enter`/`exit` with a
+  configuration snapshot, `step`, `health`, `request_stop`, `pacing`, `reconfigure`), in
+  `web_sa/measurements/vsa.py`.
+* **[done]** `VsaParams` as a mode-private block next to `SwpParams`/`RtaParams`, restored on
+  re-entry (see [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)). Verified on the bench: leaving
+  `vsa` puts the swept centre/span back exactly.
+* **[done]** `'vsa'` registered in `measurements/__init__.py` and in the `SET_MODE` choice
+  list in `web_sa/web/commands.py`, with `SET_VSA` and a `NOT_IN_VSA` guard set.
+* **[done]** `FakeVsaSession` so the mode is testable and demonstrable without hardware (the
   fake backend is what CI and the UI smoke use).
 
 ### 2.3 Tier 1 measurements
@@ -64,13 +74,15 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 ### 2.4 Acquisition paths
 
-* **[todo]** Capture-and-analyse: one `FixedPoints` frame at the requested depth, then
-  analyse and publish. Depth is verified to 2^24 samples with 0 packet errors; the transfer
-  is roughly real time (1.04–1.83× signal duration), so the UI needs a busy/progress state
-  instead of pretending to be live.
-* **[todo]** Streaming Tier 1 for spectrum/waterfall: `Adaptive` with the same drain, display
-  at ≤30 Hz. Fits for Welch (25 %); the spectrogram (120 %) does not stream and must be part
-  of the analyse step.
+* **[done]** Capture-and-analyse: one `FixedPoints` frame at the requested depth, then
+  analyse and publish, then arm the next frame (a capture view reports `busy` plus
+  `progress`, it does not pretend to be live). Depth verified to 2^24 samples with 0 packet
+  errors both off the probe and through the service; the transfer is roughly real time
+  (1.00–1.01× signal duration measured per frame, 1.22× end-to-end through the service for
+  2^24 samples, up to ~2.5× for frames short enough to be USB-bandwidth bound).
+* **[done]** Streaming Tier 1 for spectrum/waterfall: `Adaptive` with the same drain, display
+  at ≤20 Hz (`PAN_MIN_INTERVAL`). Fits for Welch (25 %); the spectrogram (120 %) does not
+  stream and must be part of the analyse step (section 2.3).
 
 ### 2.5 Frame protocol
 
@@ -94,10 +106,11 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 * **[todo]** Unit tests on synthetic IQ where the answer is known (burst duty 0.500,
   noise CCDF against Rayleigh, symbol-rate error, constellation scale).
-* **[todo]** Session lifecycle: mode-private snapshot/restore, `health`, `SET_MODE`
-  validation table.
-* **[todo]** Fake-backend end-to-end: entering and leaving `vsa` without disturbing the other
-  modes, plus a UI smoke that fails on a blank canvas or a JS error.
+* **[done]** Session lifecycle: mode-private snapshot/restore, `health`, `SET_MODE`
+  validation table (`tests/test_vsa_session.py`, 15 cases, no vendor library).
+* **[done]** Fake-backend end-to-end: entering and leaving `vsa` without disturbing the other
+  modes (`test_fake_backend_round_trips_through_vsa`).
+* **[todo]** A UI smoke that fails on a blank canvas or a JS error (with section 2.6).
 
 ## 3. Phase 2 — Tier 2 demodulation
 
@@ -157,6 +170,9 @@ analysis) into a working mode. Every item names the measured number that drives 
 | `RefLevel_dBm` is the input gain | linear to ≈ −20 dBm at RefLevel 0; −15 dBm reads 3.9 dB low |
 | `ScaleToV` across RefLevel | 33.7× for a 30 dB change — absolute volts, no extra factor |
 | Deep capture depth | 2^24 samples, 0 packet errors, transfer ≈ real time |
+| **FixedPoints read recipe** | Read **packet after packet with no read before the trigger**: back-to-back reads returned 2^24 samples in 3/3 runs (ratio 1.00) while one mid-frame read lost exactly one packet (114832/131072, 20 s of `-10`) and a read inside the settle window destroyed the frame (0 samples, `-10` forever). The Bus trigger start is the flush, so a capture does not drain |
+| Capture depth granularity | `PacketCount` = ceil(depth / `PacketSamples`): 9 packets for 131072 samples, 1034 for 2^24 — planned count matched delivered count in every run |
+| Capture transfer ratio (through the service) | 1.22× signal duration for 2^24 samples; 1.92× for 131072 samples (the fixed settle/arm overhead dominates a short frame) |
 | Streaming cost | raw fetch 1.5–18 % of a core; Welch 25 %; spectrogram 120 % |
 | Blind symbol rate | needs sps ≥ 4; at sps 2 the estimate collapses |
 | Carrier phase | 4-fold ambiguity inherent to the M-th power estimator |

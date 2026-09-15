@@ -411,3 +411,37 @@ Unit tests pin the new behaviour (`tests/test_link_recovery.py`:
 `test_failed_open_leaves_no_handle_to_close`, `test_close_releases_a_live_handle`,
 `test_reopen_does_not_close_a_dead_handle`; `tests/test_supervisor.py`: crash-loop
 give-up and counter reset).
+
+## 14. FixedPoints capture recipe and the service transfer budget (measured while implementing)
+
+Found while making `SET_MODE 'vsa'` work (task-3 of the roadmap): the production session
+first drained the stream through the settle window like SDR does, and every frame came back
+as `-10` forever. Each recipe was run three times, interleaved, on the bench
+(depth 131072, decimate 16, `BusTimeout_ms` 5000):
+
+| Recipe | Result |
+|---|---|
+| read packet after packet right after `IQS_BusTriggerStart` | **3/3 full frames**, 131072/131072 samples, all statuses 0, 0.05–0.06 s |
+| wait `TriggerLength / IQSampleRate` (33 ms) and then read | **3/3 full frames**, 0.11 s |
+| one read immediately, then wait 33 ms, then read the rest | **3/3 lost exactly one packet** (114832/131072) and spent 20 s in `-10` |
+| read inside the settle window (the SDR drain) | **3/3 destroyed the frame**: 0 samples, `-10` on every later read for 65 s |
+
+So a fixed frame must be read straight through with nothing reading before the trigger; the
+`IQS_BusTriggerStart` after `IQS_Configuration` is the flush that makes the ~0.25 s
+post-configuration drain unnecessary here. The session implements exactly that
+(`measurements/vsa.py`: the capture path skips the settle drain, the stream path keeps it).
+
+Deep frames with the chosen recipe, one packet per step and a 2 ms pause between steps
+(what the session's step loop does), all with 0 packet errors and the planned packet count:
+
+| Depth | Decimate | IQ rate | Signal | Transfer | Ratio |
+|---|---|---|---|---|---|
+| 2^20 | 16 | 3.906 MS/s | 0.27 s | 0.27 s | 1.01 |
+| 2^22 | 16 | 3.906 MS/s | 1.07 s | 1.08 s | 1.00 |
+| 2^24 | 16 | 3.906 MS/s | 4.29 s | 4.30 s | 1.00 |
+| 2^20 | 4 | 15.625 MS/s | 0.07 s | 0.17 s | 2.50 |
+
+The last row is the USB-bandwidth bound, not a capture problem: 4 MB at ~24 MB/s. Through
+the running service the same frames cost 1.92x (131072 samples) and 1.22x (2^24 samples) of
+their signal duration, the extra being the settle/arm overhead that a short frame feels
+most (`tools/vsa_probe/vsa_service_check.py` writes the record).

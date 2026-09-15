@@ -14,11 +14,11 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 ## 后端分层
 - `hardware/sdk_bindings.py`: 全部 ctypes 绑定(唯一 dll 接触点), 含 PNM 结构/校准函数
 - `hardware/device.py`: 设备抽象(open/configure/fetch/query) + DeviceState + 型号能力推导
-- `measurements/`: 测量会话对象化 (Std/RTA/Harmonic/PhaseNoise) + framer(帧编解码)
+- `measurements/`: 测量会话对象化 (Std/RTA/Harmonic/PhaseNoise/SDR/VSA) + 共享 IQS 流层(`iqs.py`)+ framer(帧编解码)
 - `web/`: ws.py(命令表) + http_api.py(STATUS/REST) + publisher.py(按模式调度)
 
 ## 关键设计
-1. **会话对象化**: std/rta/harmonic/pnm 统一接口, enter/exit 配置快照恢复
+1. **会话对象化**: std/rta/harmonic/pnm/sdr/vsa 统一接口, enter/exit 配置快照恢复
 2. **型号能力推导**: DeviceCapabilities(SAN-45/60/90 频率范围), 不硬编码
 3. **前端保峰重采样**: 后端返回设备原生迹线, 前端 resampleTrace 处理点数(保峰, 无插值三角)
 4. **帧协议**: 16 字节头(magic+ver+points+sweep_ms) + 数据; POWR 强制 float32
@@ -36,7 +36,8 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 
 ## WS 命令
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
-SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/SET_HARM/SET_PNM
+SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/SET_HARM/SET_PNM/
+SET_SDR/SET_SDR_TUNE/SET_SDR_DEMOD/SET_TRIGGER/SET_VSA
 
 ## RTA 实时频谱 (SWP/RTA 模式)
 - **会话** (`web_sa/measurements/rta.py`, `RtaSession`): 基于官方 SDK 路径
