@@ -61,16 +61,30 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 ### 2.3 Tier 1 measurements
 
-* **[todo]** Promote the probe modules into `web_sa/demod/vector.py`: Welch spectrum,
-  power-versus-time, CCDF, spectrogram, carrier/timing-corrected constellation cloud.
-* **[todo]** One absolute-dBm convention, documented once: `10*log10(mean|v|^2/50)+30` with
-  the vendor `IQS_ScaleToV` — no extra 3 dB bandpass factor (measured: within 0.4 dB of the
-  source with a linear front end).
-* **[todo]** Record the cost of each measurement next to it (measured: power-time 22 %,
-  CCDF 3 %, Welch 25 %, spectrogram 120 %, Tier-1 constellation 316 % of real time).
-* **[todo]** The constellation must be shown with its measured uncertainty: blind symbol
-  rate needs sps ≥ 4; a 4-fold phase ambiguity is inherent; the DC bin is drive-dependent
-  (0.2–1.6 dB).
+* **[done]** `web_sa/demod/vector.py`: Welch spectrum, power-versus-time, CCDF (plus the
+  closed-form Rayleigh reference), spectrogram and the carrier/timing-corrected
+  constellation cloud, selecting what runs through one entry point per `SET_VSA measure`.
+  The symbol-level estimators it needs live next door in `web_sa/demod/digital.py`
+  (`fft_resample`, Oerder-Meyr rate, timing + its half-symbol tie-break, M-th power CFO,
+  the RRC matcher, the nominal grids); the decision-directed stages join them in Phase 2.
+* **[done]** One absolute-dBm convention, documented once: `10*log10(mean|v|^2/50)+30` with
+  the vendor `IQS_ScaleToV` — no extra 3 dB bandpass factor. Re-measured through the
+  service against a known source (tinySA CW, 100.2 MHz, −25.0 dBm, `RefLevel 0`,
+  decimate 16, 2^18 samples): mean −25.24 dBm, tone level −25.2 dBm, bin peak −28.27 dBm
+  (the 2.00-bin window ENBW), noise density −138.9 dBm/Hz. The same **tone level** is what
+  the reference tracker consumes; the bin peak is reported separately because a per-bin
+  trace reads a CW tone ~3 dB low, and `duty` is 1.0 for a trace with no two levels.
+* **[done]** Measured cost per measurement, recorded in the module docstring for the
+  default 2^17 capture and for a deep 2^20 frame (one core, as % of real time):
+  spectrum+levels 21/6, power-time 23/7, CCDF 57/21, spectrogram 136/44,
+  constellation 389/181. The probe suite's 22/3/25/120/316 % over 100k-sample blocks is the
+  same order; its CCDF figure used a block-averaged envelope, which is not comparable to
+  Rayleigh. A capture-only pair (`spectrogram`, `constellation`) is refused in the stream
+  view instead of being silently dropped.
+* **[todo]** The constellation is shown with `sps_too_low` set when the blind rate implies
+  fewer than 4 samples/symbol (measured: the estimate collapses at sps 2). Still open: the
+  4-fold phase ambiguity in the UI (Phase 2 plus the frontend rotation control) and the
+  drive-dependent DC bin (0.2–1.6 dB).
 
 ### 2.4 Acquisition paths
 
@@ -173,6 +187,7 @@ analysis) into a working mode. Every item names the measured number that drives 
 | **FixedPoints read recipe** | Read **packet after packet with no read before the trigger**: back-to-back reads returned 2^24 samples in 3/3 runs (ratio 1.00) while one mid-frame read lost exactly one packet (114832/131072, 20 s of `-10`) and a read inside the settle window destroyed the frame (0 samples, `-10` forever). The Bus trigger start is the flush, so a capture does not drain |
 | Capture depth granularity | `PacketCount` = ceil(depth / `PacketSamples`): 9 packets for 131072 samples, 1034 for 2^24 — planned count matched delivered count in every run |
 | Capture transfer ratio (through the service) | 1.22× signal duration for 2^24 samples; 1.92× for 131072 samples (the fixed settle/arm overhead dominates a short frame) |
+| Tier 1 absolute level (service, all five measurements) | tinySA CW −25.0 dBm → mean −25.2 dBm, tone level −25.2 dBm, bin peak −28.3 dBm (window ENBW 2.00 bins), noise density −138.9 dBm/Hz |
 | Streaming cost | raw fetch 1.5–18 % of a core; Welch 25 %; spectrogram 120 % |
 | Blind symbol rate | needs sps ≥ 4; at sps 2 the estimate collapses |
 | Carrier phase | 4-fold ambiguity inherent to the M-th power estimator |

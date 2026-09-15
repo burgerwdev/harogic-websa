@@ -266,11 +266,42 @@ def test_set_vsa_spec_is_registered_with_bounded_parameters(device):
     assert set(by_name) == {'center', 'decimate', 'view', 'depth', 'measure', 'modulation',
                             'symbol_rate', 'rolloff', 'phase_rot'}
     assert by_name['view'].choices == ('capture', 'stream')
-    assert by_name['measure'].choices == ('spectrum',)     # only what the session produces
+    # Only what demod/vector.py can produce, with the capture-only pair refused below.
+    assert by_name['measure'].choices == ('spectrum', 'power', 'ccdf', 'spectrogram',
+                                          'constellation')
     assert by_name['depth'].minimum == 1024
     with pytest.raises(CommandError, match='at least one parameter'):
         validate(_dev_for_validate(device), 'SET_VSA', {})
     validate(_dev_for_validate(device), 'SET_VSA', {'depth': 1 << 20})     # accepted
+
+
+def test_stream_view_refuses_the_capture_only_measurements(device):
+    dev = _dev_for_validate(device)
+    for kind in ('spectrogram', 'constellation'):
+        with pytest.raises(CommandError) as exc:
+            validate(dev, 'SET_VSA', {'view': 'stream', 'measure': kind})
+        assert exc.value.code == 'vsa_measure_needs_capture'
+        # ...and the same pair is accepted in the capture view.
+        validate(dev, 'SET_VSA', {'view': 'capture', 'measure': kind})
+    # The cheap measurements stream fine, and the rule also holds when the view is
+    # already stream and only the measurement is being changed.
+    validate(dev, 'SET_VSA', {'view': 'stream', 'measure': 'ccdf'})
+    dev.state.vsa_view = 'stream'
+    with pytest.raises(CommandError):
+        validate(dev, 'SET_VSA', {'measure': 'spectrogram'})
+
+
+def test_the_session_runs_the_requested_measurement(device):
+    iqs = FakeIqs()
+    session = _session(device, iqs)
+    device.state.vsa_depth = PACKET
+    device.state.vsa_measure = 'ccdf'
+    session.enter()
+    frames, _ = session.step()
+    assert len(frames) == 1 and frames[0][:4] == b'RTAF'      # the frame is unchanged
+    last = device.state.vsa_last
+    assert last['kind'] == 'ccdf' and 'ccdf_table' in last
+    assert last['samples'] == PACKET
 
 
 def test_vsa_mode_refuses_the_commands_it_owns_itself(device):

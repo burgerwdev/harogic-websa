@@ -33,6 +33,7 @@ import time
 
 import numpy as np
 
+from ..demod import vector
 from ..demod.spectrum import Panadapter
 from ..hardware.errors import DeviceError
 from .base import MeasurementSession
@@ -277,31 +278,55 @@ class VsaSession(MeasurementSession):
         return self._analyse(s, got.raw, accumulate=True), []
 
     def _analyse(self, s, raw, accumulate: bool = False, packets: int = 0):
-        """Tier 1 analysis of the captured block; publishes one RTAF frame.
+        """Tier 1 analysis of the block; publishes one RTAF frame (the shared renderer).
 
-        The spectrum here is the shared panadapter -- one windowed FFT of the block, the
-        same code the SDR display uses (measured to track the true level within ~1 dB). The
-        next task replaces it with the validated vector module (Welch average over the whole
-        capture, power-time, CCDF, spectrogram, constellation): see VSA_ROADMAP.md 2.3.
+        The capture path runs the measurement `SET_VSA measure` selects through the Tier 1
+        module (`demod/vector.py`), which always includes the Welch spectrum: that spectrum
+        is the RTAF frame and the reference tracker's input, so it is paid for once. The
+        streaming path stays on the shared panadapter, which is what the SDR display draws
+        and what fits the 20 Hz budget -- a spectrogram (120 %) or a constellation (300 %+)
+        needs the whole capture, so those are capture-only (VSA_ROADMAP.md 2.3).
         """
+        fs = float(s.vsa_actual['iq_rate'])
         volts = IqsStream.to_volts(raw, self.iqs.scale_to_v)
-        res = self._pan.process(volts.real, volts.imag, float(s.vsa_actual['iq_rate']),
-                                float(s.vsa_actual['iq_center']), 1.0,
-                                bandwidth=float(s.vsa_actual['bandwidth']))
-        if res is None:
-            return []
-        freq, spec, row = res
-        peak = float(np.max(spec))
+        if accumulate:
+            res = self._pan.process(volts.real, volts.imag, fs,
+                                    float(s.vsa_actual['iq_center']), 1.0,
+                                    bandwidth=float(s.vsa_actual['bandwidth']))
+            if res is None:
+                return []
+            freq, spec, row = res
+            extra = {'kind': 'spectrum'}
+        else:
+            measured = vector.measure(volts, fs, kind=s.vsa_measure,
+                                      symbol_rate=s.vsa_symbol_rate or None,
+                                      rolloff=s.vsa_rolloff, modulation=s.vsa_modulation)
+            freq = measured['spectrum'][0] + float(s.vsa_actual['iq_center'])
+            spec = measured['spectrum'][1]
+            keep = np.abs(freq - s.vsa_actual['iq_center']) <= s.vsa_actual['bandwidth'] / 2.0
+            freq, spec = freq[keep], spec[keep]
+            row = self._pan.waterfall_row(spec)
+            extra = vector.summary(measured)
+            extra.pop('peak_dbm', None)          # recomputed below on the display window
+            extra.pop('floor_dbm', None)
+            extra.pop('peak_hz', None)
+        peak_bin = float(np.max(spec))
+        # The capture's trace is the Tier 1 Welch spectrum (power *per bin*), so the
+        # strongest tone reads as its main-lobe integral; the streaming trace is the
+        # shared panadapter (equivalent-sinusoid amplitude, SDR's convention), where the
+        # peak bin already is the tone's level. Both end up as "the tone's level".
+        peak = peak_bin if accumulate else vector.tone_level_dbm(spec)
         floor_index = int((spec.size - 1) * 0.3)
         floor = float(np.partition(spec, floor_index)[floor_index])
         self.dev.observe_reference_peak(self.auto_ref_scope, peak, floor)
-        s.vsa_last = {'points': int(spec.size), 'peak_dbm': peak, 'floor_dbm': floor,
-                      'mode': s.vsa_view,
+        s.vsa_last = {**extra, 'points': int(spec.size), 'peak_dbm': peak,
+                      'peak_bin_dbm': peak_bin, 'floor_dbm': floor,
+                      'peak_hz': float(freq[int(np.argmax(spec))]), 'mode': s.vsa_view,
                       # Evidence of "no shortfall": what the frame actually delivered
                       # (raw holds interleaved int16 I/Q, so two values per IQ sample).
                       'samples': int(raw.size // 2) if not accumulate else int(raw.size),
                       'packets': packets or None}
-        return [encode_rta(s.freq_version, freq, spec, row, 65535,
+        return [encode_rta(s.freq_version, freq, spec.astype(np.float32), row, 65535,
                            float(s.vsa_actual['start']), float(s.vsa_actual['stop']))]
 
     # ---------------- recovery ----------------

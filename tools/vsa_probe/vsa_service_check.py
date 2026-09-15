@@ -104,7 +104,7 @@ async def run(args) -> int:
         status, body = await post(session, args.http_url,
                                   {'cmd': 'SET_VSA', 'center': args.center,
                                    'decimate': args.decimate, 'view': 'capture',
-                                   'depth': args.depth})
+                                   'depth': args.depth, 'measure': args.measure})
         check(status == 200, f'SET_VSA accepted ({status})', problems)
         t0 = time.monotonic()
         now, progress = await wait_for_frame(session, args.http_url, timeout=args.timeout,
@@ -148,10 +148,16 @@ async def run(args) -> int:
         print(f'     frame in {elapsed:.2f}s, peak {peak:.1f} dBm, '
               f'floor {(vsa.get("last") or {}).get("floor_dbm")}')
         record['capture'] = {'elapsed_s': elapsed, 'actual': actual, 'health': health,
-                             'last': vsa.get('last'), 'progress': progress[:40]}
+                             'last': vsa.get('last'), 'progress': progress[:40],
+                             'measure': args.measure}
+        print(f'     measure {args.measure}: ' + json.dumps(
+            {k: v for k, v in (vsa.get('last') or {}).items()
+             if k not in ('peak_dbm', 'floor_dbm', 'peak_hz')})[:220])
 
         # 3. streaming view
-        status, _ = await post(session, args.http_url, {'cmd': 'SET_VSA', 'view': 'stream'})
+        status, _ = await post(session, args.http_url,
+                               {'cmd': 'SET_VSA', 'view': 'stream',
+                                'measure': 'spectrum'})
         check(status == 200, f'SET_VSA view=stream accepted ({status})', problems)
         first = (await state(session, args.http_url)).get('vsa', {}).get('last')
         now, _ = await wait_for_frame(session, args.http_url, timeout=args.timeout,
@@ -193,6 +199,8 @@ def parse_args():
     parser.add_argument('--token', default='')
     parser.add_argument('--center', type=float, default=100.2e6)
     parser.add_argument('--decimate', type=int, default=16)
+    parser.add_argument('--measure', default='spectrum',
+                        help='Tier 1 measurement to request (demod/vector.py)')
     parser.add_argument('--depth', type=int, default=1 << 17)
     parser.add_argument('--timeout', type=float, default=60.0)
     parser.add_argument('--expect-dbm', type=float, default=None)

@@ -231,6 +231,11 @@ DECIMATE_MAX = lambda caps: caps.decimate_max  # noqa: E731
 #: the lower bound keeps a frame longer than one packet.
 VSA_DEPTH_MIN = 1024
 VSA_DEPTH_MAX = 1 << 24
+#: Every field SET_VSA accepts (the cross-field rule needs "at least one of these").
+_VSA_KEYS = ('center', 'decimate', 'view', 'depth', 'measure', 'modulation', 'symbol_rate',
+             'rolloff', 'phase_rot')
+#: Tier 1 measurements that need the whole capture (demod/vector.py: CAPTURE_ONLY).
+VECTOR_CAPTURE_ONLY = frozenset({'spectrogram', 'constellation'})
 RTA_SPAN_MAX = lambda caps: caps.rta_span_max_hz  # noqa: E731
 REF_MIN = lambda caps: caps.ref_min_dbm       # noqa: E731
 REF_MAX = lambda caps: caps.ref_max_dbm       # noqa: E731
@@ -304,9 +309,10 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('decimate', 'integer', 1, DECIMATE_MAX),
         ParamSpec('view', 'choice', choices=('capture', 'stream')),
         ParamSpec('depth', 'integer', VSA_DEPTH_MIN, VSA_DEPTH_MAX, unit='samples'),
-        # The measurement list grows with the vector module: only what the session can
-        # actually produce is accepted here (a refusal is better than a wrong picture).
-        ParamSpec('measure', 'choice', choices=('spectrum',)),
+        # Only what the vector module can actually produce is accepted here (a refusal is
+        # better than a wrong picture); see demod/vector.py for the cost of each.
+        ParamSpec('measure', 'choice',
+                  choices=('spectrum', 'power', 'ccdf', 'spectrogram', 'constellation')),
         ParamSpec('modulation', 'choice', choices=('qpsk', '16qam')),
         ParamSpec('symbol_rate', 'number', 0.0, 5e6, unit='Hz'),
         ParamSpec('rolloff', 'number', 0.0, 1.0),
@@ -416,9 +422,13 @@ def _x_set_sdr(dev, data):
 
 
 def _x_set_vsa(dev, data):
-    if not any(key in data for key in ('center', 'decimate', 'view', 'depth', 'measure',
-                                       'modulation', 'symbol_rate', 'rolloff', 'phase_rot')):
+    if not any(key in data for key in _VSA_KEYS):
         raise CommandError('SET_VSA requires at least one parameter', 'vsa_requires_param')
+    # The spectrogram and the constellation need the whole capture (120 %/300 % of real
+    # time), so they cannot ride the 20 Hz streaming path: refuse instead of ignoring.
+    kind = data.get('measure', dev.state.vsa_measure)
+    if data.get('view', dev.state.vsa_view) == 'stream' and kind in VECTOR_CAPTURE_ONLY:
+        raise CommandError(f'{kind} needs the capture view', 'vsa_measure_needs_capture')
 
 
 def _x_set_rta(dev, data):

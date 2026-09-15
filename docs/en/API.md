@@ -130,7 +130,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_REFCK` | `mode` (internal/external/premium/external_forced) | reference clock source; reconfigures the active RTA profile |
 | `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active RTA profile |
 | `SET_MODE` | `mode` (std/harmonic/pnm/rta/sdr/vsa) | switch measurement mode (session) |
-| `SET_VSA` | `center?`, `decimate?`, `view?` (capture/stream), `depth?` (1024..2^24), `measure?` (spectrum), `modulation?` (qpsk/16qam), `symbol_rate?`, `rolloff?`, `phase_rot?` | VSA geometry and measurement; only the measurements the session can produce are accepted (`spectrum` today), and the view/depth/decimation are mode-private state restored on re-entry |
+| `SET_VSA` | `center?`, `decimate?`, `view?` (capture/stream), `depth?` (1024..2^24), `measure?` (spectrum/power/ccdf/spectrogram/constellation; the last two need `view=capture`), `modulation?` (qpsk/16qam), `symbol_rate?`, `rolloff?`, `phase_rot?` | VSA geometry and measurement; only the measurements the session can produce are accepted (`spectrum` today), and the view/depth/decimation are mode-private state restored on re-entry |
 | `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |

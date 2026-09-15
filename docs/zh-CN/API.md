@@ -130,7 +130,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 参考时钟源；RTA 中重配 RTA Profile |
 | `SET_REFCKOUT` | `on`（bool）| 参考时钟输出；RTA 中重配 RTA Profile |
 | `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr/vsa）| 切换测量模式（会话）|
-| `SET_VSA` | `center?`, `decimate?`, `view?`（capture/stream）, `depth?`（1024..2^24）, `measure?`（spectrum）, `modulation?`（qpsk/16qam）, `symbol_rate?`, `rolloff?`, `phase_rot?` | VSA 采集几何与测量项;只接受会话真能产出的测量(目前 `spectrum`);视图/深度/抽取为模式私有状态,重入时恢复 |
+| `SET_VSA` | `center?`, `decimate?`, `view?`（capture/stream）, `depth?`（1024..2^24）, `measure?`（spectrum/power/ccdf/spectrogram/constellation;后两项需要 `view=capture`）, `modulation?`（qpsk/16qam）, `symbol_rate?`, `rolloff?`, `phase_rot?` | VSA 采集几何与测量项;只接受会话真能产出的测量(目前 `spectrum`);视图/深度/抽取为模式私有状态,重入时恢复 |
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
