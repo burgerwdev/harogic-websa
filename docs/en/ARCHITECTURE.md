@@ -22,7 +22,7 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 2. **Model capability derivation**: DeviceCapabilities (SAN-45/60/90 frequency ranges), no hardcoding
 3. **Frontend peak-preserving resampling**: backend sends device-native traces; frontend `resampleTrace` handles points (peak-preserving, no interpolation artifacts)
 4. **Frame protocol**: 16-byte header (magic+ver+points+sweep_ms) + data; POWR forced to float32
-5. **Client backpressure**: one sender per WS; retain FREQ/JSON and use latest-wins for POWR/RTAF
+5. **Client backpressure**: one sender per WS; retain FREQ/JSON and use latest-wins **per frame type** for POWR/RTAF/VSAD
 6. **Secure default**: loopback listener, token required remotely, static files confined to the build root
 7. **Failure recovery**: SDK calls leave the asyncio thread; supervisor restarts after native crash/fatal timeout. The swept acquisition also declares `connected=false` on a run of bus errors (unplug) so the page never shows a frozen trace as connected; RTA/SDR keep their own in-place reconfiguration recovery. A worker link loop reopens a disconnected device and re-enters the active mode
 8. **Mode-private settings**: SWP/RTA independently retain Center/Span/Ref/RBW/VBW/Sweep and actual values; mode changes issue one SET_MODE command. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md).
@@ -46,6 +46,10 @@ SET_SDR/SET_SDR_TUNE/SET_SDR_DEMOD/SET_TRIGGER/SET_VSA
   connections; frontend RTA processing is throttled to about 33 Hz and SWP rendering to about 30 Hz.
 - **RTAF frame** (`measurements/rta.py`): magic `RTAF` + `freq` (f8) + `spec` (f4) + `wfRow` (u2)
   + `stopHz`; each dtype is packed separately. The current trace uses the first spectrum in PacketFrame.
+- **VSAD frame** (`measurements/framer.py`): magic `VSAD` + 6 u32 head + 5 f32 scalars + a float32
+  `(rows, cols)` measurement matrix + an optional ideal grid + a positional float32 measurement
+  block. It carries what a VSA panel draws (symbol cloud, power trace, CCDF, spectrogram) for one
+  capture, next to the RTAF spectrum; the arrays stay out of STATUS.
 - **Multi-trace (T1-T4)**: per-trace accumulators (`rtaDisplays[4]`) with their own modes, rendered
   overlaid (own color + glow); **Freeze/View** is a standalone toggle button next to the trace-mode
   dropdown (VIEW = freeze accumulation; unfreeze restores the previous mode); Clear resets the active trace

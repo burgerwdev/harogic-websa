@@ -22,7 +22,7 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 2. **型号能力推导**: DeviceCapabilities(SAN-45/60/90 频率范围), 不硬编码
 3. **前端保峰重采样**: 后端返回设备原生迹线, 前端 resampleTrace 处理点数(保峰, 无插值三角)
 4. **帧协议**: 16 字节头(magic+ver+points+sweep_ms) + 数据; POWR 强制 float32
-5. **客户端背压**: 每个 WS 独立发送任务；FREQ/JSON 保留，POWR/RTAF 采用 latest-wins
+5. **客户端背压**: 每个 WS 独立发送任务；FREQ/JSON 保留，POWR/RTAF/VSAD **按帧类型**采用 latest-wins
 6. **安全默认**: loopback 监听；远程模式要求 token；静态资源限制在构建目录内
 7. **故障恢复**: SDK 调用离开 asyncio 主线程；native 崩溃/致命超时由 supervisor 重启 worker。扫描路径还会在连续总线错误（拔线）时置 `connected=false`，避免把定格画面当成已连接；RTA/SDR 保留各自的原地重配恢复。worker 链路循环会重开已断开的设备并恢复原模式
 8. **模式私有状态**: SWP/RTA 分别保存 Center/Span/Ref/RBW/VBW/Sweep 和 actual；
@@ -47,6 +47,9 @@ SET_SDR/SET_SDR_TUNE/SET_SDR_DEMOD/SET_TRIGGER/SET_VSA
   节流约 33 Hz，SWP 绘制约 30 Hz
 - **RTAF 帧** (`measurements/rta.py`): magic `RTAF` + `freq`(f8) + `spec`(f4) +
   `wfRow`(u2) + `stopHz`; 各 dtype 分别 `tobytes` 打包，当前迹线使用 PacketFrame 中第一条频谱
+- **VSAD 帧** (`measurements/framer.py`): magic `VSAD` + 6 个 u32 头 + 5 个 f32 标量 + float32
+  `(rows, cols)` 测量矩阵 + 可选理想点阵 + 位置式 float32 测量块。它承载一次抓帧中 VSA 面板要画的
+  内容(点云、功率迹线、CCDF、频谱图)，与 RTAF 频谱并列下发；数组不进 STATUS
 - **多迹线 (T1-T4)**: 各迹线独立累积(`rtaDisplays[4]`)并按各自 mode 叠加显示(各自颜色 + 辉光);
   **Freeze/View** 为 trace mode 下拉右侧的独立 toggle 按钮(VIEW = 冻结累积; 解冻恢复之前的模式);
   Clear 清空当前迹线

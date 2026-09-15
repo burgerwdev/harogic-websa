@@ -445,3 +445,25 @@ The last row is the USB-bandwidth bound, not a capture problem: 4 MB at ~24 MB/s
 the running service the same frames cost 1.92x (131072 samples) and 1.22x (2^24 samples) of
 their signal duration, the extra being the settle/arm overhead that a short frame feels
 most (`tools/vsa_probe/vsa_service_check.py` writes the record).
+
+### 14.1 The VSA data frame and the client path (measured while implementing task-5)
+
+* **Both frames reach a client per capture.** A constellation capture at depth 2^17 and
+  decimate 16 delivers 6 RTAF + 6 VSAD frames in 3 s to the display WebSocket
+  (`tools/vsa_probe/vsa_frame_check.py`), and the newest VSAD decodes with NumPy alone:
+  cloud (4096, 2), ideal grid (4, 2), symbol rate/CFO/timing in the head and the
+  measurement block by name.
+* **Latest-wins is per frame type.** RTAF and VSAD are published together, so with one
+  shared latest-wins slot one of the pair would always be dropped; each type now keeps its
+  own newest frame and they drain in first-inserted order (pinned by
+  `tests/test_client_stream.py`).
+* **A CW carrier has no symbol rate.** The blind Oerder-Meyr estimate on the CW test
+  source returned 554.95 kHz (and a 6.8-sample timing) — an arbitrary answer, because a CW
+  tone has no symbol line. Nothing in Tier 1 may present that as a measurement: the
+  decision-directed chain (Phase 2) has to reject it.
+* **Level, re-confirmed through the frame path**: tinySA CW −25.0 dBm at 120 MHz, decimate
+  16, `RefLevel 0` → capture mean **−25.0007 dBm**.
+* **tinySA bench note**: `output off` does *not* stop the generator on this firmware
+  (`mode low output` keeps radiating); switch back with `mode input`. Measured: 100.2 MHz
+  stayed at −25.3 dBm across `pause`/`modulation off`/`output off` and dropped to
+  −73.4 dBm only after `mode input`.

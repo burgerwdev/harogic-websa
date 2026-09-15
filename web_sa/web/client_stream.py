@@ -20,6 +20,7 @@ FRAME_POLICY = {
     b'AUDF': FIFO,
     b'POWR': LATEST,
     b'RTAF': LATEST,
+    b'VSAD': LATEST,
 }
 DEFAULT_POLICY = LATEST
 #: Marker the connection filters use (audio has its own socket in the frontend).
@@ -31,9 +32,11 @@ class ClientStream:
 
     Control JSON messages are bounded and STATUS is coalesced. Frequency frames are
     retained separately so a dropped power frame can never orphan a new frequency axis.
-    High-rate POWR/RTAF frames use latest-wins semantics. SDR audio (AUDF) is kept in a
-    small FIFO so it is never reordered/dropped in normal operation (drop-oldest only on
-    overrun, to bound latency).
+    High-rate frames (POWR/RTAF/VSAD) use latest-wins semantics *per frame type*: a VSA
+    capture publishes a spectrum (RTAF) and a measurement (VSAD) together, so one slot per
+    magic keeps the newest of each instead of letting them evict each other. SDR audio
+    (AUDF) is kept in a small FIFO so it is never reordered/dropped in normal operation
+    (drop-oldest only on overrun, to bound latency).
     """
 
     CONTROL_LIMIT = 32
@@ -48,7 +51,9 @@ class ClientStream:
         self.no_audio = no_audio
         self._control: deque[str] = deque()
         self._freq: bytes | None = None
-        self._data: bytes | None = None
+        #: Newest frame per magic, in first-inserted order (insertion order is the send
+        #: order, so a slow client still gets each frame type in a fair rotation).
+        self._data: dict[bytes, bytes] = {}
         self._audio: deque[bytes] = deque()
         self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -84,9 +89,9 @@ class ClientStream:
                 self._audio.popleft()
                 self.dropped_audio += 1
         else:
-            if self._data is not None:
+            if magic in self._data:
                 self.dropped_frames += 1
-            self._data = frame
+            self._data[magic] = frame
         self._event.set()
 
     def publish_json(self, obj: dict) -> None:
@@ -134,8 +139,9 @@ class ClientStream:
                     elif self._audio:
                         await asyncio.wait_for(
                             self.ws.send_bytes(self._audio.popleft()), timeout=SEND_TIMEOUT)
-                    elif self._data is not None:
-                        frame, self._data = self._data, None
+                    elif self._data:
+                        magic, frame = next(iter(self._data.items()))
+                        del self._data[magic]
                         await asyncio.wait_for(self.ws.send_bytes(frame), timeout=SEND_TIMEOUT)
                     else:
                         break

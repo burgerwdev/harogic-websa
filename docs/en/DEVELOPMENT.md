@@ -36,7 +36,7 @@ Shortest path: `make ci` (green without hardware) -> `make hw-test` with the dev
 | `hardware/auto_reference.py` | Auto Ref control loop (pure decisions, unit-testable) | Call the DLL directly |
 | `measurements/base.py` | Session interface: `enter/exit/step` + acquisition policy (`acquisition_timeout/pacing/dedupe_freq/reconfigure`) + `is_ready/request_stop` + `health` | Know specific mode names |
 | `measurements/{harmonic,phase_noise,rta,sdr}.py` | Per-mode sessions: configure the device, produce frames | Handle HTTP/WS |
-| `measurements/framer.py` | **The only** frame encoder (FREQ/POWR/RTAF/AUDF) | Depend on hardware |
+| `measurements/framer.py` | **The only** frame encoder (FREQ/POWR/RTAF/VSAD/AUDF) | Depend on hardware |
 | `measurements/results.py` | Pure result-payload builders (unit-testable) | Call the DLL |
 | `web/commands.py` | Declarative command table: `CommandSpec` + `ParamSpec` + guard flags | Transport details |
 | `web/ws.py` / `web/http_api.py` | Transport adapters (WebSocket / REST + STATUS serialisation) | Business branching |
@@ -146,7 +146,8 @@ numbers in command validation. Special cases such as `pnm_supported` should beco
 
 ### 5.4 A new frame type
 
-Add the encoder to `measurements/framer.py` -> add a retention policy row to `FRAME_POLICY` in
+Add the encoder to `measurements/framer.py` (and its decoder to `frontend/modern/src/core/frames.ts`,
+with a fixture from `tools/gen_frame_fixtures.py`) -> add a retention policy row to `FRAME_POLICY` in
 `web/client_stream.py` (unknown types default to latest-wins) -> add the decoder to `core/frames.ts` ->
 extend `tools/gen_frame_fixtures.py` to emit a golden fixture -> assert on both sides (Python asserts the
 fixture matches its encoders, TS asserts the decode matches the manifest).

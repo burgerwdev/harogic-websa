@@ -150,6 +150,7 @@ def test_every_frame_type_has_a_retention_policy():
     """
     encoded = {
         framer.MAGIC_FREQ, framer.MAGIC_POWR, framer.MAGIC_RTA, framer.MAGIC_AUDIO,
+        framer.MAGIC_VSA,
     }
     assert encoded == set(FRAME_POLICY), (
         f'frame types without a policy: {sorted(encoded - set(FRAME_POLICY))}; '
@@ -162,3 +163,49 @@ def test_fifo_policy_is_what_the_audio_path_expects():
     assert FRAME_POLICY[framer.MAGIC_AUDIO] == 'fifo'
     assert FRAME_POLICY[framer.MAGIC_FREQ] == 'retain'
     assert FRAME_POLICY[framer.MAGIC_POWR] == 'latest'
+    assert FRAME_POLICY[framer.MAGIC_RTA] == 'latest'
+
+
+@pytest.mark.asyncio
+async def test_latest_wins_is_per_frame_type():
+    """A VSA capture sends a spectrum and a measurement together: neither evicts the other.
+
+    With one shared latest-wins slot the second of the pair would replace the first, and a
+    constellation panel would never see its spectrum (or vice versa).
+    """
+    ws = FakeWebSocket()
+    stream = ClientStream(ws)
+    stream.publish_bytes(b'RTAF-spectrum-1')
+    stream.publish_bytes(b'VSAD-cloud-1')
+    stream.publish_bytes(b'RTAF-spectrum-2')
+    stream.publish_bytes(b'VSAD-cloud-2')
+    stream.start()
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert ws.binary == [b'RTAF-spectrum-2', b'VSAD-cloud-2']
+    assert stream.dropped_frames == 2
+    await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_client_only_sees_the_newest_cloud():
+    """Slow client: the cloud is a snapshot, so it gets the newest one and never blocks."""
+    ws = FakeWebSocket()
+    ws.block_first = True
+    stream = ClientStream(ws)
+    stream.publish_bytes(b'RTAF-spectrum')
+    stream.publish_bytes(b'VSAD-cloud-1')
+    stream.start()
+    await ws.first_send_started.wait()
+
+    for i in range(2, 12):
+        stream.publish_bytes(b'VSAD-cloud-%d' % i)
+    assert stream.dropped_frames == 10        # 11 clouds published, 1 delivered
+    assert set(stream._data) == {b'VSAD'}                 # one pending cloud, not a queue
+
+    ws.release_first_send.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert ws.binary == [b'RTAF-spectrum', b'VSAD-cloud-11']
+    await stream.close()

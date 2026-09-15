@@ -15,6 +15,7 @@ import pytest
 from web_sa.hardware.errors import DeviceError
 from web_sa.hardware.fake_device import FakeDevice, install_fake_sessions
 from web_sa.measurements import _SESSIONS, make_session
+from web_sa.measurements.framer import decode_vsa
 from web_sa.measurements.iqs import Fetch
 from web_sa.measurements.vsa import VsaSession
 from web_sa.web.commands import COMMANDS, CommandError, validate
@@ -298,10 +299,51 @@ def test_the_session_runs_the_requested_measurement(device):
     device.state.vsa_measure = 'ccdf'
     session.enter()
     frames, _ = session.step()
-    assert len(frames) == 1 and frames[0][:4] == b'RTAF'      # the frame is unchanged
+    # One capture publishes the spectrum (RTAF) and the measurement (VSAD).
+    assert [f[:4] for f in frames] == [b'RTAF', b'VSAD']
+    vsad = decode_vsa(frames[1])
+    assert vsad['kind'] == 'ccdf' and vsad['data'].shape[1] == 2
+    assert vsad['data'].shape[0] > 0
+    assert vsad['measurements']['samples'] == PACKET
     last = device.state.vsa_last
     assert last['kind'] == 'ccdf' and 'ccdf_table' in last
     assert last['samples'] == PACKET
+    assert 'symbols' not in last and 'ccdf' not in last     # arrays stay out of STATUS
+
+
+def test_the_stream_view_publishes_only_the_spectrum(device):
+    iqs = FakeIqs()
+    session = _session(device, iqs)
+    device.state.vsa_view = 'stream'
+    session.enter()
+    session.iqs.ready_at = 0.0
+    frames, _ = session.step()
+    assert [f[:4] for f in frames] == [b'RTAF']
+
+
+def test_the_fake_backend_publishes_a_cloud_with_its_grid(device):
+    original = dict(_SESSIONS)
+    install_fake_sessions()
+    try:
+        fake = make_session(device, 'vsa')
+        device.state.vsa_measure = 'constellation'
+        frames, _ = fake.step()
+        # The fake models the capture cycle, so a couple of steps pass before the frame.
+        for _ in range(fake.CAPTURE_STEPS + 1):
+            if len(frames) > 1:
+                break
+            frames, _ = fake.step()
+        assert [f[:4] for f in frames] == [b'RTAF', b'VSAD']
+        vsad = decode_vsa(frames[1])
+        assert vsad['kind'] == 'constellation'
+        assert vsad['data'].shape == (256, 2)          # the synthetic cloud
+        assert vsad['ideal'].shape == (4, 2)           # qpsk grid on the cloud's scale
+        assert vsad['symbol_rate_hz'] == pytest.approx(250e3)
+        assert vsad['measurements']['rms_v'] == pytest.approx(1e-3, rel=0.5)
+        assert vsad['evm_percent'] != vsad['evm_percent']    # NaN until Phase 2
+    finally:
+        _SESSIONS.clear()
+        _SESSIONS.update(original)
 
 
 def test_vsa_mode_refuses_the_commands_it_owns_itself(device):

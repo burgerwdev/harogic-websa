@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..demod import digital as digital_dsp
+from ..demod import vector as vector_dsp
 from .base import MeasurementSession
-from .framer import encode_audio, encode_rta
+from .framer import encode_audio, encode_rta, encode_vsa
 
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
@@ -249,10 +251,34 @@ class FakeVsaSession(_FakeRtaBase):
                       'packets': int(s.vsa_actual.get('packets') or 1)}
         frame = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
                            float(s.vsa_actual['start']), float(s.vsa_actual['stop']))
-        if s.vsa_view == 'capture':
+        frames = [frame]
+        if s.vsa_view == 'capture' and s.vsa_measure != 'spectrum':
+            frames.append(self._vsad_frame(s))
             self._progress = 0                     # arm the next frame like the real session
             s.vsa_busy = True
-        return [frame], []
+        return frames, []
+
+    def _vsad_frame(self, s) -> bytes:
+        """Synthetic measurement payload: the fake has no capture, only *a* frame to draw.
+
+        It goes through the production encoder and the production payload mapping, so the
+        UI smoke exercises the same wire format and the same keys as a real capture would.
+        """
+        rng = np.random.default_rng(self._tick + 1)
+        pts = digital_dsp.nominal_points(s.vsa_modulation)
+        rms = 1e-3
+        cloud = (np.repeat(pts, 64) * rms
+                 + (rng.normal(0.0, rms * 0.03, 256) + 1j * rng.normal(0.0, rms * 0.03, 256)))
+        result = {'kind': 'constellation', 'symbols': cloud, 'nominal': pts * rms,
+                  'symbol_rate_used': 250e3, 'cfo_hz': 12.5, 'timing_samples': 0.25,
+                  'rms_v': rms, 'symbols_n': len(cloud), 'mean_dbm': -30.0,
+                  'peak_dbm': -30.0, 'peak_bin_dbm': -30.0, 'peak_hz': 0.0,
+                  'floor_dbm': -80.0, 'floor_1hz_dbm': -110.0, 'centroid_hz': 0.0,
+                  'duty': 1.0, 'points': RTA_POINTS}
+        payload = vector_dsp.frame_payload(result)
+        return encode_vsa(s.freq_version, payload['kind'], payload['data'],
+                          ideal=payload['ideal'], scalars=payload['scalars'],
+                          measurements=payload['measurements'])
 
 
 class FakeSdrSession(_FakeRtaBase):

@@ -18,11 +18,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tools.gen_frame_fixtures import build  # noqa: E402
+from web_sa.measurements.framer import VSA_MEASURE_KEYS, decode_vsa  # noqa: E402
 
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'frames'
 
 
-@pytest.mark.parametrize('name', ['freq.bin', 'powr.bin', 'rta.bin', 'audio.bin'])
+@pytest.mark.parametrize('name', ['freq.bin', 'powr.bin', 'rta.bin', 'audio.bin', 'vsa.bin'])
 def test_committed_fixture_matches_the_encoder(name):
     files, _manifest = build()
     path = FIXTURES / name
@@ -54,3 +55,26 @@ def test_freq_and_powr_layout():
     assert len(powr) == 16 + manifest['powr']['points'] * 4
     # POWR must stay float32 (the frontend reads it as f4) even when given float64 input.
     assert np.frombuffer(powr, dtype='<f4', offset=16).tolist() == manifest['powr']['power']
+
+
+def test_vsa_layout():
+    """Pin the documented VSAD head, strides and the positional measurement block."""
+    files, manifest = build()
+    vsa = files['vsa.bin']
+    assert vsa[:4] == b'VSAD'
+    out = decode_vsa(vsa)
+    entry = manifest['vsa']
+    assert out['version'] == entry['version'] and out['kind'] == entry['kind']
+    assert out['data'].tolist() == [[np.float32(v) for v in row] for row in entry['cloud']]
+    assert out['ideal'].tolist() == [[np.float32(v) for v in row] for row in entry['ideal']]
+    for key, value in entry['scalars'].items():
+        if value is None:
+            assert out[key] != out[key]                      # NaN: not measured in this tier
+        else:
+            assert out[key] == np.float32(value)
+    for key, value in entry['measurements'].items():
+        assert out['measurements'][key] == np.float32(value)
+    # 48-byte head (8-byte aligned like RTAF), then the two float32 matrices and the block.
+    rows = len(entry['cloud'])
+    ideal_rows = len(entry['ideal'])
+    assert len(vsa) == 48 + (rows * 2 + ideal_rows * 2 + 1 + len(VSA_MEASURE_KEYS)) * 4

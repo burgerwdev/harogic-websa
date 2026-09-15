@@ -15,6 +15,9 @@
  *   RTAF  magic + ver(u32) pts(u32) wfLen(u16) maxD(u16) startHz(f64)   (8-byte aligned)
  *         + float64[pts] + float32[pts] + uint16[wfLen] + stopHz(f64)
  *   AUDF  magic + seq(u32) rate(u32) samples(u32) + int16[samples]      (mono PCM)
+ *   VSAD  magic + ver(u32) kind(u32) rows(u32) cols(u32) idealRows(u32) idealCols(u32)
+ *         + float32[5] scalars + float32[rows*cols] + float32[idealRows*idealCols]
+ *         + uint32[1] metaLen + float32[metaLen]                          (VSA measurement)
  *
  * Lengths are validated strictly: a frame whose declared size does not match the buffer is
  * rejected instead of being interpreted with a wrong stride. Returns null for anything that
@@ -25,10 +28,24 @@ export const MAGIC_FREQ = 'FREQ';
 export const MAGIC_POWR = 'POWR';
 export const MAGIC_RTAF = 'RTAF';
 export const MAGIC_AUDIO = 'AUDF';
+export const MAGIC_VSA = 'VSAD';
 
 export const COMMON_HEADER_BYTES = 16;      // magic + version + points + sweep_ms
 export const RTA_HEADER_BYTES = 24;         // magic + ver + pts + wfLen + maxD + startHz
 export const AUDIO_HEADER_BYTES = 16;       // magic + seq + rate + samples
+export const VSA_HEADER_BYTES = 48;         // magic + 6 u32 + 5 f32 (8-byte aligned head)
+
+/** VSAD payload kinds, numbered in the order the `kind` field uses. */
+export const VSA_KINDS = ['constellation', 'power', 'ccdf', 'spectrogram'] as const;
+/**
+ * The VSAD measurement block is positional: index i of the float32 block is this key.
+ * A slot the backend cannot fill yet is NaN, so a panel can hide it instead of drawing 0.
+ */
+export const VSA_MEASURE_KEYS = [
+	'mean_dbm', 'peak_dbm', 'peak_bin_dbm', 'peak_hz', 'floor_dbm', 'floor_1hz_dbm',
+	'centroid_hz', 'rms_v', 'duty', 'samples', 'symbols_n', 'points', 'evm_percent',
+	'mer_db', 'snr_db',
+] as const;
 
 export interface FrameHeader {
 	version: number;
@@ -65,7 +82,28 @@ export interface AudioFrame {
 	pcm: Int16Array;
 }
 
-export type DecodedFrame = FreqFrame | PowrFrame | RtaFrame | AudioFrame;
+export interface VsaFrame {
+	kind: 'vsa';
+	version: number;
+	/** Payload kind: a symbol cloud, a power trace, a CCDF curve or a spectrogram. */
+	measure: (typeof VSA_KINDS)[number] | string;
+	/** `data` is (rows, cols): interleaved I/Q for a cloud, (x, y) pairs for a curve. */
+	rows: number;
+	cols: number;
+	data: Float32Array;
+	ideal: Float32Array;
+	idealRows: number;
+	idealCols: number;
+	symbolRateHz: number;
+	cfoHz: number;
+	timingSamples: number;
+	evmPercent: number;
+	snrDb: number;
+	/** Named scalars of the whole capture (see VSA_MEASURE_KEYS); NaN when absent. */
+	measurements: Record<string, number>;
+}
+
+export type DecodedFrame = FreqFrame | PowrFrame | RtaFrame | AudioFrame | VsaFrame;
 
 /** ASCII magic of a binary frame, or '' when the buffer is too short. */
 export function frameMagic(data: ArrayBuffer): string {
@@ -78,6 +116,7 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 	if (data.byteLength < 4) return null;
 	const magic = frameMagic(data);
 	if (magic === MAGIC_AUDIO) return decodeAudio(data);
+	if (magic === MAGIC_VSA) return decodeVsad(data);
 	if (data.byteLength < COMMON_HEADER_BYTES) return null;
 	const head = new DataView(data, 4, 12);
 	const version = head.getUint32(0, true);
@@ -110,6 +149,54 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 		return { kind: 'rta', version, points, sweepMs, wfLen, maxDensity, startHz, stopHz, freq, spec, wfRow };
 	}
 	return null;
+}
+
+/**
+ * VSAD (VSA data): a Tier 1 measurement as a float32 matrix plus its scalar block.
+ *
+ * `rows`/`cols` describe what a display can use (an evenly decimated slice), not the
+ * capture, so the frame stays bounded however deep the capture was. Lengths are validated
+ * strictly: a frame that does not match its declared shape is rejected rather than read
+ * with a wrong stride.
+ */
+export function decodeVsad(data: ArrayBuffer): VsaFrame | null {
+	if (data.byteLength < VSA_HEADER_BYTES) return null;
+	const h = new DataView(data, 4, 44);
+	const version = h.getUint32(0, true);
+	const kindId = h.getUint32(4, true);
+	const rows = h.getUint32(8, true);
+	const cols = h.getUint32(12, true);
+	const idealRows = h.getUint32(16, true);
+	const idealCols = h.getUint32(20, true);
+	if (cols < 1 || idealCols < 0) return null;
+	const arraysBytes = (rows * cols + idealRows * idealCols) * 4;
+	if (data.byteLength < VSA_HEADER_BYTES + arraysBytes + 4) return null;
+	const metaLen = new DataView(data, VSA_HEADER_BYTES + arraysBytes, 4).getUint32(0, true);
+	if (data.byteLength !== VSA_HEADER_BYTES + arraysBytes + 4 + metaLen * 4) return null;
+	const scalars = new DataView(data, 4 + 24, 20);
+	let off = VSA_HEADER_BYTES;
+	const cloud = new Float32Array(data, off, rows * cols);
+	off += rows * cols * 4;
+	const ideal = new Float32Array(data, off, idealRows * idealCols);
+	off += idealRows * idealCols * 4;
+	const meta = new Float32Array(data, off + 4, metaLen);
+	const measurements: Record<string, number> = {};
+	for (let i = 0; i < metaLen && i < VSA_MEASURE_KEYS.length; i++) {
+		measurements[VSA_MEASURE_KEYS[i]] = meta[i];
+	}
+	return {
+		kind: 'vsa',
+		version,
+		measure: VSA_KINDS[kindId] ?? String(kindId),
+		rows, cols, data: cloud,
+		ideal, idealRows, idealCols,
+		symbolRateHz: scalars.getFloat32(0, true),
+		cfoHz: scalars.getFloat32(4, true),
+		timingSamples: scalars.getFloat32(8, true),
+		evmPercent: scalars.getFloat32(12, true),
+		snrDb: scalars.getFloat32(16, true),
+		measurements,
+	};
 }
 
 function decodeAudio(data: ArrayBuffer): AudioFrame | null {

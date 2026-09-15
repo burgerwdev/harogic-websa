@@ -10,7 +10,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { decodeFrame, frameMagic, MAGIC_AUDIO, MAGIC_FREQ, MAGIC_POWR, MAGIC_RTAF } from '../core/frames';
+import {
+	decodeFrame, frameMagic, MAGIC_AUDIO, MAGIC_FREQ, MAGIC_POWR, MAGIC_RTAF, MAGIC_VSA,
+	VSA_MEASURE_KEYS,
+} from '../core/frames';
 
 // vitest runs with the frontend package as cwd; the fixtures live at the repository root.
 const DIR = resolve(process.cwd(), '..', '..', 'tests', 'fixtures', 'frames') + '/';
@@ -23,6 +26,15 @@ const manifest = JSON.parse(readFileSync(`${DIR}manifest.json`, 'utf8')) as {
 		start_hz: number; stop_hz: number; freq: number[]; spec: number[]; wf_row: number[];
 	};
 	audio: { seq: number; rate: number; pcm: number[] };
+	vsa: {
+		version: number; kind: string;
+		scalars: {
+			symbol_rate_hz: number; cfo_hz: number; timing_samples: number;
+			evm_percent: number | null; snr_db: number | null;
+		};
+		cloud: number[][]; ideal: number[][];
+		measurements: Record<string, number>;
+	};
 };
 
 /** Copy the bytes so the fixture buffer is never mutated by a view. */
@@ -78,11 +90,46 @@ describe('decodeFrame', () => {
 		expect(Array.from(f.pcm)).toEqual(manifest.audio.pcm);
 	});
 
+	it('decodes VSAD (VSA cloud + ideal grid + measurement block)', () => {
+		const f = decodeFrame(bytes('vsa.bin'));
+		expect(f?.kind).toBe('vsa');
+		if (f?.kind !== 'vsa') return;
+		const entry = manifest.vsa;
+		expect(f.version).toBe(entry.version);
+		expect(f.measure).toBe(entry.kind);
+		expect(f.rows).toBe(entry.cloud.length);
+		expect(f.cols).toBe(2);
+		const fround = (m: number[][]) => m.flat().map((v) => Math.fround(v));
+		expect(Array.from(f.data)).toEqual(fround(entry.cloud));
+		expect(Array.from(f.ideal)).toEqual(fround(entry.ideal));
+		expect(f.idealRows).toBe(entry.ideal.length);
+		expect(f.idealCols).toBe(2);
+		expect(f.symbolRateHz).toBeCloseTo(entry.scalars.symbol_rate_hz, 3);
+		expect(f.cfoHz).toBeCloseTo(entry.scalars.cfo_hz, 3);
+		expect(f.timingSamples).toBeCloseTo(entry.scalars.timing_samples, 3);
+		expect(f.snrDb).toBeCloseTo(entry.scalars.snr_db as number, 3);
+		// A slot this tier cannot fill is NaN, never 0.
+		expect(Number.isNaN(f.evmPercent)).toBe(true);
+		// The measurement block is positional, so every documented key must be readable.
+		expect(Object.keys(f.measurements)).toEqual(VSA_MEASURE_KEYS.slice(0, VSA_MEASURE_KEYS.length));
+		expect(f.measurements.mean_dbm).toBeCloseTo(entry.measurements.mean_dbm, 3);
+		expect(f.measurements.duty).toBeCloseTo(entry.measurements.duty, 3);
+		expect(f.measurements.samples).toBeCloseTo(entry.measurements.samples, 3);
+		expect(Number.isNaN(f.measurements.evm_percent)).toBe(true);
+	});
+
+	it('rejects a VSAD frame whose declared shape does not match its length', () => {
+		const vsa = new Uint8Array(bytes('vsa.bin'));
+		expect(decodeFrame(vsa.slice(0, 40).buffer)).toBeNull();                 // partial head
+		expect(decodeFrame(vsa.slice(0, vsa.length - 4).buffer)).toBeNull();     // block short
+	});
+
 	it('reports the magic of each frame', () => {
 		expect(frameMagic(bytes('freq.bin'))).toBe(MAGIC_FREQ);
 		expect(frameMagic(bytes('powr.bin'))).toBe(MAGIC_POWR);
 		expect(frameMagic(bytes('rta.bin'))).toBe(MAGIC_RTAF);
 		expect(frameMagic(bytes('audio.bin'))).toBe(MAGIC_AUDIO);
+		expect(frameMagic(bytes('vsa.bin'))).toBe(MAGIC_VSA);
 	});
 
 	it('rejects truncated and mis-sized frames instead of guessing', () => {

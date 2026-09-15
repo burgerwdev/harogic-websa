@@ -37,7 +37,7 @@ from ..demod import vector
 from ..demod.spectrum import Panadapter
 from ..hardware.errors import DeviceError
 from .base import MeasurementSession
-from .framer import encode_rta
+from .framer import encode_rta, encode_vsa
 from .iqs import IqsStream, round_decimate
 
 log = logging.getLogger(__name__)
@@ -326,8 +326,16 @@ class VsaSession(MeasurementSession):
                       # (raw holds interleaved int16 I/Q, so two values per IQ sample).
                       'samples': int(raw.size // 2) if not accumulate else int(raw.size),
                       'packets': packets or None}
-        return [encode_rta(s.freq_version, freq, spec.astype(np.float32), row, 65535,
-                           float(s.vsa_actual['start']), float(s.vsa_actual['stop']))]
+        frames = [encode_rta(s.freq_version, freq, spec.astype(np.float32), row, 65535,
+                             float(s.vsa_actual['start']), float(s.vsa_actual['stop']))]
+        if not accumulate and s.vsa_measure != 'spectrum':
+            # The measurement itself rides in a VSAD frame next to the spectrum (the arrays
+            # are deliberately kept out of STATUS.vsa.last: a cloud is thousands of points).
+            payload = vector.frame_payload(measured)
+            frames.append(encode_vsa(s.freq_version, payload['kind'], payload['data'],
+                                     ideal=payload['ideal'], scalars=payload['scalars'],
+                                     measurements=payload['measurements']))
+        return frames
 
     # ---------------- recovery ----------------
     def _rearm(self, reason) -> None:

@@ -227,6 +227,50 @@ def test_measure_unknown_kind_raises():
         V.measure(S.noise(1024, seed=29), FS, kind='evm')
 
 
+def test_frame_payload_shapes_for_every_kind():
+    """The VSAD payload is display-sized: one shape per kind, capped, never empty."""
+    x, _sym = S.modulate('qpsk', n_sym=1 << 12, sps=16, amplitude=1e-3, seed=32)
+    x = S.add_awgn(x, 30.0, seed=33)
+    cloud = V.frame_payload(V.measure(x, FS, kind='constellation',
+                                      symbol_rate=FS / 16.0, sps=16))
+    assert cloud['kind'] == 'constellation'
+    assert cloud['data'].shape[1] == 2 and 0 < cloud['data'].shape[0] <= V.FRAME_MAX_POINTS
+    assert cloud['ideal'].shape == (4, 2)
+    assert len(cloud['scalars']) == 3
+    assert cloud['scalars'][0] == pytest.approx(FS / 16.0)
+    assert cloud['measurements']['rms_v'] == pytest.approx(1e-3, rel=0.05)
+
+    power = V.frame_payload(V.measure(x, FS, kind='power'))
+    assert power['data'].shape[1] == 2 and power['ideal'] is None
+    assert power['measurements']['duty'] == pytest.approx(1.0)
+
+    ccdf = V.frame_payload(V.measure(x, FS, kind='ccdf'))
+    assert ccdf['data'].shape[1] == 2 and 0 < ccdf['data'].shape[0] <= V.FRAME_MAX_POINTS
+
+    spec = V.frame_payload(V.measure(x, FS, kind='spectrogram'))
+    assert spec['data'].shape[1] == 256 and spec['data'].shape[0] <= V.FRAME_MAX_ROWS
+
+    with pytest.raises(ValueError, match='no VSAD payload'):
+        V.frame_payload({'kind': 'spectrum'})
+
+
+def test_frame_payload_thins_a_deep_capture():
+    """A 2^18-sample capture would be tens of thousands of points; the frame is capped."""
+    x, _sym = S.modulate('qpsk', n_sym=1 << 15, sps=16, amplitude=1e-3, seed=34)
+    result = V.measure(x, FS, kind='constellation', symbol_rate=FS / 16.0, sps=16)
+    assert result['symbols_n'] > V.FRAME_MAX_POINTS
+    payload = V.frame_payload(result)
+    assert payload['data'].shape == (V.FRAME_MAX_POINTS, 2)
+    assert payload['measurements']['symbols_n'] == result['symbols_n']   # the whole capture
+
+
+def test_measure_block_keeps_numbers_only():
+    block = V.measure_block({'kind': 'ccdf', 'mean_dbm': -25.5, 'duty': 1.0,
+                             'ccdf_table': {0.0: 0.5}, 'sps_too_low': False,
+                             'missing': float('nan'), 'spectrum': (np.zeros(2), np.zeros(2))})
+    assert block == {'mean_dbm': -25.5, 'duty': 1.0}
+
+
 def test_summary_is_json_safe_for_every_kind():
     x = S.add_awgn(S.modulate('qpsk', n_sym=1 << 11, sps=16, amplitude=1e-3, seed=30)[0],
                    25.0, seed=31)

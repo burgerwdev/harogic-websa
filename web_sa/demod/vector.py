@@ -368,6 +368,75 @@ def constellation(iq: np.ndarray, fs: float, *, modulation: str = 'qpsk',
     return out
 
 
+#: Points a VSAD frame carries at most. A panel draws a few thousand points at most, and
+#: an unbounded cloud would make the frame megabytes on a deep capture.
+FRAME_MAX_POINTS = 4096
+#: Spectrogram rows per frame: a waterfall scrolls, so it never needs the whole matrix.
+FRAME_MAX_ROWS = 512
+
+
+def measure_block(result: dict) -> dict:
+    """The scalar measurements of a result, ready for the VSAD measurement block.
+
+    Arrays, nested dicts, booleans and missing (NaN) values stay out; the frame encoder
+    owns the key order and fills the slots this returns nothing for with NaN.
+    """
+    return {k: float(v) for k, v in result.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v}
+
+
+def _thin(values, limit: int):
+    """Evenly decimate to at most ``limit`` entries (keeps the first and last)."""
+    values = np.asarray(values)
+    if limit <= 0 or len(values) <= limit:
+        return values
+    return values[np.linspace(0, len(values) - 1, limit).astype(np.int64)]
+
+
+def _iq_matrix(symbols) -> np.ndarray:
+    symbols = np.asarray(symbols, dtype=complex)
+    if not len(symbols):
+        return np.zeros((0, 2), dtype=np.float32)
+    return np.column_stack([symbols.real, symbols.imag]).astype(np.float32)
+
+
+def frame_payload(result: dict, *, max_points: int = FRAME_MAX_POINTS,
+                  max_rows: int = FRAME_MAX_ROWS) -> dict:
+    """Display-sized VSAD payload for a measurement result (see ``framer.encode_vsa``).
+
+    A capture holds far more points than any panel draws (2^18 samples give tens of
+    thousands of symbols) and a spectrogram many more rows than a waterfall shows, so what
+    goes on the wire is an evenly decimated slice; the measurement block describes the whole
+    capture. A symbol cloud ships as ``(points, 2)`` interleaved I/Q volts with the nominal
+    grid on the cloud's own scale; a power trace and a CCDF ship as ``(points, 2)`` (x, y);
+    a spectrogram ships as ``(rows, bins)`` relative dB. ``spectrum`` has no VSAD payload --
+    the RTAF frame is the spectrum -- and asking for one raises instead of sending an empty
+    frame that a panel would draw as blank.
+    """
+    kind = result.get('kind', 'spectrum')
+    out = {'kind': kind, 'data': np.zeros((0, 2), dtype=np.float32), 'ideal': None,
+           'scalars': (), 'measurements': measure_block(result)}
+    if kind == 'constellation':
+        out['data'] = _iq_matrix(_thin(result.get('symbols', []), max_points))
+        out['ideal'] = _iq_matrix(result.get('nominal', []))
+        out['scalars'] = (result.get('symbol_rate_used', float('nan')),
+                          result.get('cfo_hz', float('nan')),
+                          result.get('timing_samples', float('nan')))
+    elif kind == 'power':
+        t, trace = result['power_vs_time']
+        out['data'] = np.column_stack([_thin(t, max_points),
+                                       _thin(trace, max_points)]).astype(np.float32)
+    elif kind == 'ccdf':
+        level, prob = result['ccdf']
+        out['data'] = np.column_stack([_thin(level, max_points),
+                                       _thin(prob, max_points)]).astype(np.float32)
+    elif kind == 'spectrogram':
+        out['data'] = _thin(result['spectrogram'], max_rows).astype(np.float32)
+    else:
+        raise ValueError(f'no VSAD payload for measurement {kind!r}')
+    return out
+
+
 def summary(result: dict) -> dict:
     """The JSON-safe scalars of a :func:`measure` result (everything but arrays)."""
     skip = {'spectrum', 'spectrogram', 'symbols', 'nominal', 'power_vs_time'}

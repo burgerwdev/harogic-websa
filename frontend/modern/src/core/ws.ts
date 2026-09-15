@@ -173,6 +173,13 @@ export function connectWS() {
     if (!(event.data instanceof ArrayBuffer)) return;
     const frame = decodeFrame(event.data);
     if (frame === null || frame.kind === 'audio') return;   // audio has its own connection
+    if (frame.kind === 'vsa') {
+      // VSAD carries one Tier 1 measurement (symbol cloud, power trace, CCDF,
+      // spectrogram) next to the RTAF spectrum. The decoder and its golden fixture are in
+      // place; the panels that draw it arrive with the VSA view (VSA_ROADMAP 2.6), so the
+      // frame is dropped here rather than half-rendered.
+      return;
+    }
     const { points } = frame;
     if (frame.kind !== 'rta' && frame.sweepMs > 0 && frame.sweepMs !== S.sweepMs) {
       S.setSweepMs(frame.sweepMs);

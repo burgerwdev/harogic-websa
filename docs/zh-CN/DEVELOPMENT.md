@@ -32,7 +32,7 @@
 | `hardware/auto_reference.py` | Auto Ref 控制环（纯决策，可单测） | 直接调 DLL |
 | `measurements/base.py` | 会话接口：`enter/exit/step` + 采集策略（`acquisition_timeout/pacing/dedupe_freq/reconfigure`）+ `is_ready/request_stop` + `health` | 感知具体模式名 |
 | `measurements/{harmonic,phase_noise,rta,sdr}.py` | 各模式会话：配置设备、产生帧 | 处理 HTTP/WS |
-| `measurements/framer.py` | **唯一**的帧编码（FREQ/POWR/RTAF/AUDF） | 依赖硬件 |
+| `measurements/framer.py` | **唯一**的帧编码（FREQ/POWR/RTAF/VSAD/AUDF） | 依赖硬件 |
 | `measurements/results.py` | 纯结果载荷构造（可单测） | 调 DLL |
 | `web/commands.py` | 声明式命令表：`CommandSpec` + `ParamSpec` + 守卫标志 | 传输细节 |
 | `web/ws.py` / `web/http_api.py` | 传输适配（WebSocket / REST + STATUS 序列化） | 业务分支 |

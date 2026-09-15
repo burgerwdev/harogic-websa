@@ -100,12 +100,23 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 ### 2.5 Frame protocol
 
-* **[todo]** `VSAD` frame in `measurements/framer.py`: symbol cloud (float32 interleaved
-  I/Q), ideal points, and a compact measurement dict (EVM, MER, carrier offset, symbol rate,
-  timing, SNR estimate).
-* **[todo]** Register it in `web_sa/web/client_stream.py`'s latest-wins policy (a
-  constellation is a snapshot) and keep `gen_frame_fixtures.py --check` green.
-* **[todo]** Reuse `RTAF` unchanged for the spectrum/waterfall view.
+* **[done]** `VSAD` frame in `measurements/framer.py`: a float32 `(rows, cols)` matrix
+  (interleaved I/Q for a cloud, `(x, y)` for a trace and a CCDF, a matrix for a
+  spectrogram), the optional ideal grid, five head scalars (symbol rate, carrier offset,
+  timing, EVM, SNR) and the **positional** measurement block named by `VSA_MEASURE_KEYS`
+  (EVM/MER/SNR stay NaN until Phase 2). `decode_vsa` reads it with NumPy alone and refuses
+  a frame whose declared shape does not match its length; `vector.frame_payload` produces
+  display-sized slices (a 2^18-sample capture would otherwise be tens of thousands of
+  points) so the frame stays bounded however deep the capture was.
+* **[done]** Registered in `web_sa/web/client_stream.py`: latest-wins **per frame type**,
+  because a capture publishes the spectrum (RTAF) and the measurement (VSAD) together and a
+  single slot would let one evict the other. A slow client gets the newest cloud only, on
+  both the unit-test level and a real 2 s stall on hardware.
+* **[done]** Golden fixture `tests/fixtures/frames/vsa.bin` + manifest entry, produced by
+  the production encoder, checked on both sides (`tests/test_frame_fixtures.py`, TS
+  `frames.test.ts` → `decodeVsad`).
+* **[done]** `RTAF` is reused unchanged for the spectrum/waterfall view; a capture publishes
+  both frames, and the cloud never rides in `STATUS.vsa.last`.
 
 ### 2.6 Frontend
 
@@ -187,7 +198,9 @@ analysis) into a working mode. Every item names the measured number that drives 
 | **FixedPoints read recipe** | Read **packet after packet with no read before the trigger**: back-to-back reads returned 2^24 samples in 3/3 runs (ratio 1.00) while one mid-frame read lost exactly one packet (114832/131072, 20 s of `-10`) and a read inside the settle window destroyed the frame (0 samples, `-10` forever). The Bus trigger start is the flush, so a capture does not drain |
 | Capture depth granularity | `PacketCount` = ceil(depth / `PacketSamples`): 9 packets for 131072 samples, 1034 for 2^24 — planned count matched delivered count in every run |
 | Capture transfer ratio (through the service) | 1.22× signal duration for 2^24 samples; 1.92× for 131072 samples (the fixed settle/arm overhead dominates a short frame) |
-| Tier 1 absolute level (service, all five measurements) | tinySA CW −25.0 dBm → mean −25.2 dBm, tone level −25.2 dBm, bin peak −28.3 dBm (window ENBW 2.00 bins), noise density −138.9 dBm/Hz |
+| Tier 1 absolute level (service, all five measurements) | tinySA CW −25.0 dBm → mean −25.00 dBm (re-measured through the frame path at 120 MHz), tone level −25.2 dBm, bin peak −28.3 dBm (window ENBW 2.00 bins), noise density −138.9 dBm/Hz |
+| VSA frame path | 6 RTAF + 6 VSAD frames in 3 s at depth 2^17/decimate 16; the newest VSAD decodes with NumPy alone; a 2 s stall still leaves the newest cloud pending |
+| Blind rate on a carrier | a CW tone has no symbol line: the estimate returned an arbitrary 554.95 kHz, so Tier 1 never presents a rate as measured (Phase 2 must reject it) |
 | Streaming cost | raw fetch 1.5–18 % of a core; Welch 25 %; spectrogram 120 % |
 | Blind symbol rate | needs sps ≥ 4; at sps 2 the estimate collapses |
 | Carrier phase | 4-fold ambiguity inherent to the M-th power estimator |
