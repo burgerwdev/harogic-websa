@@ -9,6 +9,7 @@ import { initControlRail } from './ui/controlRail';
 import { initTrigger } from './ui/trigger';
 import { initWfRange } from './ui/wfRange';
 import { initKeypad } from './ui/keypad';
+import { initVsaPanel } from './core/vsaState';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { requestRender } from './render/redraw';
@@ -41,6 +42,7 @@ function init() {
   initTrigger();
   initWfRange();
   initKeypad();
+  initVsaPanel();   // VSA panel controls (one canvas for every Tier 1 payload)
   initLevelUnit(() => { refreshLimitUnits(); updateChanTable(); requestRender(); });
   syncToggleIcons();
   bindActions();

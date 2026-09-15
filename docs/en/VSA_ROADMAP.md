@@ -120,12 +120,24 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 ### 2.6 Frontend
 
-* **[todo]** A VSA mode switch, Tier 1 views on the existing RTA canvas, a constellation
-  panel with a phase-rotation control (see the ambiguity), and a VSA settings group.
-* **[todo]** Settings must be honest about the hardware: `RefLevel_dBm` is the input gain
-  (linear to about −20 dBm at `RefLevel = 0`), and device limits come from
-  `DeviceCapabilities`/`HardWareState`/`IQS_StreamInfo`, never from constants.
-* **[todo]** i18n for both languages and the usual shortcut hints.
+* **[done]** A VSA mode switch (`#btn-mode-vsa`, `graphMode` accepts `vsa`), the Tier 1
+  spectrum/waterfall on the existing RTA canvas (RTAF, reused unchanged), and a panel that
+  draws the measurement a VSAD frame carries: a symbol cloud against its ideal grid, a
+  power-versus-time trace, a CCDF curve or a spectrogram (one canvas, because all four are a
+  float32 matrix — see `core/vsaState.ts`).
+* **[done]** The constellation panel owns the phase-rotation control. It writes `phase_rot`
+  through `SET_VSA`, shows `resolved_by · rotation` and states which of the three answers it
+  is (a preamble, the user, or nothing yet) — the ambiguity is never silent, and the panel
+  warns while it is unresolved.
+* **[done]** A VSA settings group: centre, decimation, depth, view (capture/stream),
+  measurement, modulation, roll-off, symbol rate and the rotation. A capture-only measurement
+  is *disabled* in the stream view rather than refused by the backend later, and entering VSA
+  sends the whole geometry in one `SET_VSA` (a second configure in quick succession is the
+  measured wedge hazard) after tuning to the marker/centre the user was looking at.
+* **[done]** The reference level keeps using the shared Ref group, i.e. the measured input
+  gain, and the depth/decimation lists are the ones the device accepts; no new client-side
+  limits were invented.
+* **[done]** i18n for both languages (`core/i18n/dict.vsa.ts`) and a hint row in the panel.
 
 ### 2.7 Tests for Phase 1
 

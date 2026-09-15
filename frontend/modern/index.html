@@ -119,6 +119,7 @@
           <div class="param-row"><label data-i18n="mode">Mode</label>
             <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
             <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
+            <button class="btn" id="btn-mode-vsa" data-action="toggle-vsa" data-i18n-title="vsa_mode_tip" data-i18n-attr="title" title="Vector signal analysis: capture IQ and measure it. Click again to return to the sweep." data-i18n="vsa">VSA</button>
             <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
           </div>
         </div>
@@ -248,6 +249,73 @@
               <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
             <div class="param-row"><span class="cur-val" style="opacity:.6;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span></div>
+          </div>
+          <div id="vsa-settings" style="display:none;">
+            <div class="param-row"><label data-i18n="vsa_center">Center</label>
+              <input type="number" id="input-vsa-center" value="1000" step="any" style="flex:1;" data-i18n-title="vsa_center" data-i18n-attr="title" title="Capture centre (MHz)">
+              <button class="btn" data-action="apply-vsa" data-i18n="vsa_set">Set</button></div>
+            <div class="param-row"><label data-i18n="vsa_decimate">Decimate</label>
+              <select id="select-vsa-decimate" style="flex:1;">
+                <option value="1">1 (62.5 MHz)</option>
+                <option value="2">2 (31.25 MHz)</option>
+                <option value="4">4 (15.6 MHz)</option>
+                <option value="8">8 (7.8 MHz)</option>
+                <option value="16">16 (3.9 MHz)</option>
+                <option value="32">32 (1.95 MHz)</option>
+                <option value="64">64 (976 kHz)</option>
+                <option value="128">128 (488 kHz)</option>
+                <option value="256">256 (244 kHz)</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="vsa_depth">Depth</label>
+              <select id="select-vsa-depth" style="flex:1;">
+                <option value="16384">16 k</option>
+                <option value="65536">64 k</option>
+                <option value="131072">128 k</option>
+                <option value="262144">256 k</option>
+                <option value="1048576">1 M</option>
+                <option value="4194304">4 M</option>
+                <option value="16777216">16 M</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="vsa_view">View</label>
+              <select id="select-vsa-view" style="flex:1;">
+                <option value="capture" data-i18n="vsa_measure_capture">capture</option>
+                <option value="stream" data-i18n="vsa_measure_stream">stream</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="vsa_measure">Measure</label>
+              <select id="select-vsa-measure" style="flex:1;">
+                <option value="spectrum" data-i18n="vsa_measure_spectrum">Spectrum</option>
+                <option value="power" data-i18n="vsa_measure_power">Power/time</option>
+                <option value="ccdf" data-i18n="vsa_measure_ccdf">CCDF</option>
+                <option value="spectrogram" data-i18n="vsa_measure_spectrogram">Spectrogram</option>
+                <option value="constellation" data-i18n="vsa_measure_constellation">Constellation</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="vsa_modulation">Modulation</label>
+              <select id="select-vsa-modulation" style="flex:1;">
+                <option value="qpsk">QPSK</option>
+                <option value="16qam">16-QAM</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="vsa_symbol_rate">Symbol rate</label>
+              <input type="number" id="input-vsa-symbol-rate" step="any" style="flex:1;" placeholder="auto" data-i18n-attr="placeholder" data-i18n-title="vsa_symbol_rate_auto" title="Symbol rate in sym/s; empty = blind estimate">
+              <label data-i18n="vsa_rolloff">Roll-off</label>
+              <input type="number" id="input-vsa-rolloff" value="0.35" step="0.05" min="0" max="1" style="width:5em;"></div>
+            <div class="param-row"><label data-i18n="vsa_phase_rot">Phase rot</label>
+              <input type="number" id="input-vsa-phase-rot" value="0" step="90" style="width:5em;">
+              <button class="btn" data-vsa-rot="90" data-i18n="vsa_rotate">Rotate 90&deg;</button>
+              <span class="cur-val" id="vsa-metric-ambiguity" title="resolved_by · rotation">none · 0.0&deg;</span></div>
+            <div class="param-row"><span class="cur-val" style="opacity:.75;" id="vsa-ambiguity-note"></span></div>
+            <div class="param-row"><canvas id="vsa-constellation" width="260" height="200" style="width:100%;background:#0b0f14;border:1px solid var(--line,#2a3543);"></canvas></div>
+            <div class="param-row"><span class="cur-val" id="vsa-metric-error" style="color:#ff8a65;"></span>
+              <progress id="vsa-progress" max="1" value="0" style="flex:1;display:none;"></progress></div>
+            <div class="param-row"><label data-i18n="vsa_kind">Kind</label><span class="cur-val" id="vsa-metric-kind">&mdash;</span>
+              <label data-i18n="vsa_samples">Samples</label><span class="cur-val" id="vsa-metric-samples">&mdash;</span></div>
+            <div class="param-row"><label data-i18n="vsa_symbols_n">Symbols</label><span class="cur-val" id="vsa-metric-symbols">&mdash;</span>
+              <label data-i18n="vsa_ser">SER</label><span class="cur-val" id="vsa-metric-ser">&mdash;</span></div>
+            <div class="param-row"><label>Rate</label><span class="cur-val" id="vsa-metric-rate">&mdash;</span>
+              <label data-i18n="vsa_cfo">Carrier</label><span class="cur-val" id="vsa-metric-cfo">&mdash;</span>
+              <label data-i18n="vsa_timing">Timing</label><span class="cur-val" id="vsa-metric-timing">&mdash;</span></div>
+            <div class="param-row"><label data-i18n="vsa_evm">EVM</label><span class="cur-val" id="vsa-metric-evm">&mdash;</span>
+              <label data-i18n="vsa_mer">MER</label><span class="cur-val" id="vsa-metric-mer">&mdash;</span></div>
+            <div class="param-row"><span class="cur-val" style="opacity:.6;" data-i18n="vsa_hint">capture = one frame, analysed once &middot; stream = spectrum/waterfall &middot; the constellation needs a capture</span></div>
           </div>
         </div>
       </div>

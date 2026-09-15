@@ -21,10 +21,10 @@
  */
 import { createParam } from '../core/params';
 
-export type GraphMode = 'std' | 'rta' | 'sdr';
+export type GraphMode = 'std' | 'rta' | 'sdr' | 'vsa';
 
 export function isGraphMode(v: string): v is GraphMode {
-	return v === 'std' || v === 'rta' || v === 'sdr';
+	return v === 'std' || v === 'rta' || v === 'sdr' || v === 'vsa';
 }
 
 /** How long a mode request may stay unconfirmed before the UI stops waiting for it. */

@@ -51,6 +51,7 @@ export function connectDevice() { send({ cmd: 'CONNECT' }); }
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
 import { currentGraphMode, graphModeDiverges, isGraphMode, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
+import { applyVsa, hasStoredVsaPrefs, renderVsaState, vsaCenterHz, vsaDecimate, vsaDepth, vsaMeasure, vsaModulation, vsaRolloff, vsaSymbolRate, vsaView } from '../core/vsaState';
 import { setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
 
 let sdrAudioHandoffTimer: number | null = null;
@@ -109,8 +110,8 @@ function syncModeButtons(): void {
 }
 
 export function setGraphMode(mode: string) {
-  const target: 'std' | 'rta' | 'sdr' =
-    mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
+  const target: 'std' | 'rta' | 'sdr' | 'vsa' =
+    mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : mode === 'vsa' ? 'vsa' : 'std';
   if (pendingGraphMode() === null && target === currentGraphMode()) return;
   if (target !== 'std' && S.measOn) {
     exitMeasModePub(false);
@@ -166,8 +167,9 @@ export function syncGraphModeStatus(mode: string) {
   const changed = confirmGraphMode(mode);
   syncModeButtons();
   if (!changed) return;
-  const isRtaLike = mode === 'rta' || mode === 'sdr';
+  const isRtaLike = mode === 'rta' || mode === 'sdr' || mode === 'vsa';
   const isSdr = mode === 'sdr';
+  const isVsa = mode === 'vsa';
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
@@ -185,10 +187,28 @@ export function syncGraphModeStatus(mode: string) {
     setSdrAudioEnabled(false);
     syncSdrAudioButton();
   }
+  if (isVsa) {
+    // Entering VSA tunes to what the user was looking at (the hand-off SDR does) and sends the
+    // whole geometry in ONE command: a second configure in quick succession is the measured
+    // wedge hazard, so entry must not be split into several SET_VSA calls.
+    if (!vsaCenterHz.pending() && vsaCenterHz.get() <= 0) {
+      const m = S.markers.find(x => x.enabled && x.freq != null);
+      vsaCenterHz.set(m?.freq ?? centerHz.get());
+    }
+    if (!hasStoredVsaPrefs()) vsaCenterHz.set(vsaCenterHz.get() || centerHz.get());
+    renderVsaState();
+    send({
+      cmd: 'SET_VSA', center: vsaCenterHz.get(), decimate: vsaDecimate.get(),
+      depth: vsaDepth.get(), measure: vsaMeasure.get(), modulation: vsaModulation.get(),
+      rolloff: vsaRolloff.get(), symbol_rate: vsaSymbolRate.get(), view: vsaView.get(),
+    });
+  }
   const modeButton = document.getElementById('btn-mode-rta');
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
   const sdrButton = document.getElementById('btn-mode-sdr');
   if (sdrButton) sdrButton.classList.toggle('active', isSdr);
+  const vsaButton = document.getElementById('btn-mode-vsa');
+  if (vsaButton) vsaButton.classList.toggle('active', isVsa);
   localStorage.setItem('web-sa-mode', mode);
   if (isRtaLike) restoreRtaDensityCfg();
 
@@ -229,6 +249,9 @@ export function syncGraphModeStatus(mode: string) {
   if (rtaFrequency) rtaFrequency.style.display = mode === 'rta' ? '' : 'none';
   if (swpFrequency) swpFrequency.style.display = mode === 'std' ? '' : 'none';
   if (sdrSettings) sdrSettings.style.display = isSdr ? '' : 'none';
+  const vsaSettings = document.getElementById('vsa-settings');
+  if (vsaSettings) vsaSettings.style.display = isVsa ? '' : 'none';
+  if (isVsa) renderVsaState();
   if (isRtaLike) S.resetWaterfall();
   if (isSdr && sdrCenterHz.pending() && sdrCenterHz.get() > 0) {
     const f = sdrCenterHz.get();
@@ -594,6 +617,8 @@ export function bindActions() {
     'toggle-rta': () => setGraphMode(currentGraphMode() === 'rta' ? 'swp' : 'rta'),
     'apply-rta': () => applyRta(),
     'toggle-sdr': () => setGraphMode(currentGraphMode() === 'sdr' ? 'swp' : 'sdr'),
+    'toggle-vsa': () => setGraphMode(currentGraphMode() === 'vsa' ? 'swp' : 'vsa'),
+    'apply-vsa': () => applyVsa(),
     'apply-sdr': () => applySdr(),
     'apply-sdr-bw': () => applySdrBw(),
     'apply-sdr-tune': () => applySdrTune(),

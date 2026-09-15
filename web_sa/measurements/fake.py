@@ -244,11 +244,18 @@ class FakeVsaSession(_FakeRtaBase):
                 self.auto_ref_scope, float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
         s.vsa_progress = 1.0
         s.vsa_busy = False
-        s.vsa_last = {'points': RTA_POINTS, 'peak_dbm': float(finite[-1]) if finite.size else 0.0,
+        s.vsa_last = {'kind': s.vsa_measure, 'points': RTA_POINTS,
+                      'peak_dbm': float(finite[-1]) if finite.size else 0.0,
                       'floor_dbm': float(finite[int((finite.size - 1) * 0.3)]) if finite.size else 0.0,
                       'mode': s.vsa_view,
                       'samples': int(s.vsa_actual.get('depth') or 16240),
-                      'packets': int(s.vsa_actual.get('packets') or 1)}
+                      'packets': int(s.vsa_actual.get('packets') or 1),
+                      # The real session reports how the 4-fold ambiguity was decided; the fake
+                      # has a synthetic (unrotated) cloud, so it mirrors the user rotation only.
+                      'resolved_by': 'user' if s.vsa_phase_rot_deg else 'none',
+                      'rotation_deg': float(s.vsa_phase_rot_deg),
+                      'symbols_n': 256 if s.vsa_measure == 'constellation' else 0,
+                      'rms_v': 1e-3, 'evm_percent': 2.4, 'mer_db': 32.4, 'ser': 0.0}
         frame = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
                            float(s.vsa_actual['start']), float(s.vsa_actual['stop']))
         frames = [frame]

@@ -41,6 +41,7 @@ import {
 } from '../ui/swpState';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
+import { setVsaPayload, setVsaStatus } from './vsaState';
 
 /** The last (requested, reported) Ref pair announced, so the notice fires on a change only. */
 let lastRefLimit: string | null = null;
@@ -138,7 +139,7 @@ export function connectWS() {
       // First load: restore saved mode (default std). A leftover RTA session on the
       // backend would otherwise push RTAF frames with no SWP data -> blank spectrum.
       const saved = localStorage.getItem('web-sa-mode');
-      const wantMode = saved === 'rta' ? 'rta' : saved === 'sdr' ? 'sdr' : 'std';
+      const wantMode = saved === 'rta' ? 'rta' : saved === 'sdr' ? 'sdr' : saved === 'vsa' ? 'vsa' : 'std';
       const wantRta = wantMode !== 'std';
       send({ cmd: 'SET_MODE', mode: wantMode });
       if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
@@ -174,10 +175,10 @@ export function connectWS() {
     const frame = decodeFrame(event.data);
     if (frame === null || frame.kind === 'audio') return;   // audio has its own connection
     if (frame.kind === 'vsa') {
-      // VSAD carries one Tier 1 measurement (symbol cloud, power trace, CCDF,
-      // spectrogram) next to the RTAF spectrum. The decoder and its golden fixture are in
-      // place; the panels that draw it arrive with the VSA view (VSA_ROADMAP 2.6), so the
-      // frame is dropped here rather than half-rendered.
+      // VSAD carries one Tier 1/Tier 2 measurement (symbol cloud with its ideal grid, power
+      // trace, CCDF curve or spectrogram) next to the RTAF spectrum. A constellation is a
+      // snapshot: the newest frame wins and the panel redraws itself (ui/vsaState.ts).
+      setVsaPayload(frame);
       return;
     }
     const { points } = frame;
@@ -386,7 +387,7 @@ export function updateStatus(s: any) {
   const isRtaStatus = s.mode === 'rta';
   if (s.req.rta?.center > 0) rtaCenterHz.confirm(Number(s.req.rta.center));
   centerHz.confirm(Number(s.center));
-  if (s.mode !== 'rta' && s.mode !== 'sdr') swpCenterHz.confirm(Number(s.center));
+  if (s.mode !== 'rta' && s.mode !== 'sdr' && s.mode !== 'vsa') swpCenterHz.confirm(Number(s.center));
   // -12 = APIRETVAL_WARNING_IFOverflow: the IF saturates when Ref is set low (gain rises as
   // Ref falls) and the device then stops delivering frames, so the display looks frozen.
   // The vendor's remedy is to RAISE the reference level. Shown in the canvas warning stack
@@ -427,6 +428,7 @@ export function updateStatus(s: any) {
   S.setSweepMs(s.sweep_ms || 0);
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
+  if (s.vsa) setVsaStatus(s.vsa);   // the VSA block is mode-private state (center/depth/view + metrics)
   syncFrequencyEditorStatus(s.response_to, S.configVersion);
   syncAvgUI();
   syncSwpSpanStep(Number(s.req.swp?.span) || spanHz.get());

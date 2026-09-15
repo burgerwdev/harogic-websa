@@ -59,6 +59,33 @@ def painted_pixels(page) -> int:
         }""")
 
 
+def painted_on(page, canvas_id: str) -> int:
+    """Non-background pixels on one canvas, i.e. "did anything get drawn there".
+
+    The VSA panel paints an opaque background, so count what differs from the most common
+    colour (that background) instead of counting alpha.
+    """
+    return page.evaluate(
+        """(id) => {
+          const c = document.getElementById(id);
+          const g = c.getContext('2d');
+          const d = g.getImageData(0, 0, c.width, c.height).data;
+          const counts = new Map();
+          for (let i = 0; i < d.length; i += 4) {
+            const key = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+            counts.set(key, (counts.get(key) || 0) + 1);
+          }
+          let background = -1, best = 0;
+          for (const [key, value] of counts) if (value > best) { best = value; background = key; }
+          let n = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            const key = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+            if (key !== background) n++;
+          }
+          return n;
+        }""", canvas_id)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', default='http://127.0.0.1:8099')
@@ -184,6 +211,38 @@ def main() -> int:
             check(f'{mode} mode is applied', state(args.url)['mode'] == mode,
                   state(args.url)['mode'])
             check(f'{mode} view is drawn', painted > args.painted_min, f'{painted} pixels')
+
+        print('3b) VSA mode draws its spectrum and its measurement panel')
+        page.click('#btn-mode-vsa')
+        page.wait_for_timeout(2500)
+        check('VSA mode is applied', state(args.url)['mode'] == 'vsa', state(args.url)['mode'])
+        check('the VSA settings panel is shown', page.evaluate(
+            "(() => { const el = document.getElementById('vsa-settings'); "
+            "return !!el && getComputedStyle(el).display !== 'none'; })()"))
+        check('the spectrum canvas keeps drawing in VSA', painted_pixels(page) > args.painted_min,
+              f'{painted_pixels(page)} pixels')
+        page.select_option('#select-vsa-measure', 'constellation')
+        page.wait_for_timeout(3000)          # a capture takes a few frames (fake backend)
+        cloud = painted_on(page, 'vsa-constellation')
+        check('the constellation panel is drawn', cloud > 200, f'{cloud} pixels')
+        check('the readout names the requested measurement', page.evaluate(
+            "document.getElementById('vsa-metric-kind').textContent.trim() === 'constellation'"),
+            page.evaluate("document.getElementById('vsa-metric-kind').textContent"))
+        check('the metrics carry link numbers, not placeholders', page.evaluate(
+            "document.getElementById('vsa-metric-evm').textContent.includes('%')"),
+            page.evaluate("document.getElementById('vsa-metric-evm').textContent"))
+        check('the ambiguity is reported, never silent', page.evaluate(
+            "document.getElementById('vsa-metric-ambiguity').textContent.includes('\\u00b7')"),
+            page.evaluate("document.getElementById('vsa-metric-ambiguity').textContent"))
+        page.select_option('#select-vsa-measure', 'power')
+        page.wait_for_timeout(2500)
+        check('a curve replaces the cloud on the same panel',
+              painted_on(page, 'vsa-constellation') > 200,
+              f'{painted_on(page, "vsa-constellation")} pixels')
+        page.click('#btn-mode-vsa')          # back to the sweep for the next checks
+        page.wait_for_timeout(2500)
+        check('returning to the sweep works', state(args.url)['mode'] == 'std',
+              state(args.url)['mode'])
 
         print('4) measurement tabs render')
         js_click(page, '#btn-meas-onoff')
