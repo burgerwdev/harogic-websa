@@ -3,7 +3,7 @@
 1. **libhtraapi 偶发段错误/阻塞**: RTA 连续调用失败会先原地重配两次；仍失败或发生
    native 崩溃/调用超时时，supervisor 重启 worker；USB 拔线在扫描路径上会被检测（连续总线错误）
    并上报为 `connected: false`，重新接入后 worker 自动重开设备并恢复。RTA/SDR 走各自的原地重配恢复，
-   仍失败时由 worker 重启，重启后链路循环会重开设备。Web 与 SDK 的常驻进程隔离留待 VSA 架构阶段。
+   仍失败时由 worker 重启，重启后链路循环会重开设备。Web 与 SDK 的常驻进程隔离仍留待 VSA 阶段，但那条崩溃路径已先修掉：**已判定失效的句柄绝不再交回厂商库**——对失效句柄调用 `Device_Close` 会在 `libhtraapi` 里段错误（`Device_Close+0x7799c`，共 8 个 core），使链路循环在设备拔出期间变成重启循环，并让「掉线期间执行停机」也崩。`HarogicDevice.close()` 现在只在句柄来自一次成功 `Device_Open`（`_handle_ok`）时才真正关闭；supervisor 在连续 5 次「启动后 10 秒内崩溃」后打出 critical 并停止，而不是一轮一轮空转、每次留一个 core。台面已验证：不再产生 core、安静地重试「device still unreachable」、设备释放后自动恢复、两种链路状态下都能干净停机。
 2. **SAStudio4 占用**: 设备单句柄, 官方软件运行时 Device_Open 返回 -1
 3. **外部参考锁定**: 需正确设置 ExternalSystemClockFrequency=10MHz 且外部信号接入; 
    Ext 模式失锁自动回退内部(正常设备行为), 用 ExtForce 强制

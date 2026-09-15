@@ -136,12 +136,73 @@ def test_fetch_sweep_reports_a_disconnect_in_connected(vendor_required, monkeypa
     assert dev.state.connected is False
 
 
-def test_reopen_closes_the_dead_handle_before_opening(vendor_required, monkeypatch):
+def test_close_releases_a_live_handle(vendor_required, monkeypatch):
+    """An orderly shutdown while connected still closes the SDK handle."""
+    from web_sa.hardware import sdk_bindings as sb
     from web_sa.hardware.device import HarogicDevice
 
     dev = HarogicDevice()
+    dev.state.connected = True
+    dev._handle_ok = True
+    dev.dev = sb.c_void_p(1)
+    closed = []
+    monkeypatch.setattr(sb.dll, 'Device_Close', lambda handle: closed.append(handle))
+    monkeypatch.setattr(sb.dll, 'DSP_Close', lambda handle: 0)
+    dev.close()
+    assert len(closed) == 1
+    assert dev.dev.value in (0, None)
+    assert dev.state.connected is False
+
+
+def test_close_skips_device_close_once_the_link_is_lost(vendor_required, monkeypatch):
+    """The measured crash: Device_Close on a stale handle dies inside libhtraapi.
+
+    Eight core dumps, all ``Device_Close (libhtraapi.so+0x7799c)``, were produced while
+    the analyzer was unplugged - the link loop reopened, closed the dead handle and the
+    whole worker died, so the supervisor restarted it into the same crash.
+    """
+    from web_sa.hardware import sdk_bindings as sb
+    from web_sa.hardware.device import HarogicDevice
+
+    dev = HarogicDevice()
+    dev.state.connected = True
+    dev._handle_ok = True
+    dev.dev = sb.c_void_p(1)
+    dev.mark_link_lost('SWP_GetFullSweep status=-8')
+
+    def boom(handle):
+        raise AssertionError('Device_Close must not be called on a dead handle')
+
+    monkeypatch.setattr(sb.dll, 'Device_Close', boom)
+    monkeypatch.setattr(sb.dll, 'DSP_Close', boom)
+    dev.close()                                   # must be a safe no-op
+    assert dev.dev.value in (0, None)
+    assert dev._handle_ok is False
+
+
+def test_reopen_does_not_close_a_dead_handle(vendor_required, monkeypatch):
+    """Reopening a lost link drops the handle without calling into the vendor library."""
+    from web_sa.hardware import sdk_bindings as sb
+    from web_sa.hardware.device import HarogicDevice
+
+    dev = HarogicDevice()
+    dev.state.connected = False                 # the state the link loop reopens from
+    dev._handle_ok = False
+    dev.dev = sb.c_void_p(1)
     calls = []
     monkeypatch.setattr(dev, 'close', lambda: calls.append('close'))
     monkeypatch.setattr(dev, 'open', lambda: (calls.append('open'), (False, 'no device'))[1])
     assert dev.reopen() == (False, 'no device')
-    assert calls == ['close', 'open']
+    assert calls == ['close', 'open']           # close is called, but it is a no-op
+
+
+def test_failed_open_leaves_no_handle_to_close(vendor_required, monkeypatch):
+    from web_sa.hardware import sdk_bindings as sb
+    from web_sa.hardware.device import HarogicDevice
+
+    dev = HarogicDevice()
+    monkeypatch.setattr(sb.dll, 'Device_Open', lambda *args: -1)
+    ok, err = dev.open()
+    assert ok is False and 'Device_Open' in err
+    assert dev._handle_ok is False
+    assert dev.dev.value in (0, None)
