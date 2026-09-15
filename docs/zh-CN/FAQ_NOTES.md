@@ -95,7 +95,7 @@
 | `WEBSA_ALLOWED_ORIGINS` | 空 | 额外允许的 Origin，多个值用逗号分隔 |
 | `WEBSA_ALLOW_UNAUTHENTICATED_REMOTE` | 空 | 显式允许无 Token 远程监听，仅限可信隔离网络 |
 | `WEBSA_LOG` | `INFO` | Python 日志级别 |
-| `WEBSA_LOGFILE` | 空 | 可选滚动日志文件（5 MiB，3 个备份）|
+| `WEBSA_LOGFILE` | 空（`run.sh` 设为 `/tmp/websa.log`） | 日志文件，由 worker 负责旋转：5 MiB + 3 个备份，跨重启上限 20 MiB；supervisor 用 `WatchedFileHandler` 追加，旋转后会自动重开文件。`WEBSA_ERR`（`run.sh`：`/tmp/websa.err`）保存日志模块看不到的解释器级崩溃输出 |
 | `WEBSA_STATIC` | 自动 | 前端目录覆盖路径 |
 | `HTRA_API_LIB` | 按架构从 `/opt/htraapi` 推导 | `libhtraapi.so` 完整路径覆盖 |
 
@@ -130,7 +130,7 @@ Query token 可能进入浏览器历史和代理日志，远程访问应使用 H
 ./stop.sh
 ```
 
-`run.sh` 启动 supervisor 和 WebSA worker。native 崩溃、致命采集错误或 DLL 调用超时后，supervisor 会退避重启 worker；配置错误不会循环重启。SAN-90 上模拟 worker `SIGKILL` 后约 3 秒恢复 API。默认运行日志为 `/tmp/websa.log`。
+`run.sh` 启动 supervisor 和 WebSA worker。native 崩溃、致命采集错误或 DLL 调用超时后，supervisor 会退避重启 worker；配置错误不会循环重启。SAN-90 上模拟 worker `SIGKILL` 后约 3 秒恢复 API。默认运行日志为 `/tmp/websa.log`（5 MiB + 3 个备份）；日志模块看不到的崩溃输出在 `/tmp/websa.err`。
 
 如果设备仍无法恢复：
 

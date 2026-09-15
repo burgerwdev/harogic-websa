@@ -6,6 +6,11 @@ set -u
 cd "$(dirname "$0")"
 
 LOG_FILE="${WEBSA_LOGFILE:-/tmp/websa.log}"
+ERR_FILE="${WEBSA_ERR:-/tmp/websa.err}"
+#: Keep in sync with web_sa/logging_setup.py (MAX_BYTES * (BACKUP_COUNT + 1)).
+LOG_CAP_MB=20
+LOG_ACTIVE_MB=5
+LOG_BACKUPS=3
 PORT="${WEBSA_PORT:-8080}"
 HOST="${WEBSA_HOST:-127.0.0.1}"
 case "$HOST" in 0.0.0.0|::) HOST="127.0.0.1" ;; esac
@@ -72,10 +77,18 @@ echo
 
 echo "Log:"
 if [ -f "$LOG_FILE" ]; then
+  total_bytes=$(du -cb "$LOG_FILE" "$LOG_FILE".* 2>/dev/null | tail -1 | cut -f1)
+  rotations=0
+  for rotated in "$LOG_FILE".*; do
+    [ -f "$rotated" ] || continue
+    rotations=$((rotations + 1))
+  done
   echo "  path:      $LOG_FILE"
   echo "  size:      $(du -h "$LOG_FILE" | cut -f1)  ($(stat -c%s "$LOG_FILE") bytes)"
   echo "  lines:     $(wc -l < "$LOG_FILE")"
   echo "  modified:  $(date -r "$LOG_FILE" '+%Y-%m-%d %H:%M:%S')"
+  echo "  policy:    ${LOG_ACTIVE_MB} MiB + ${LOG_BACKUPS} backups (cap ${LOG_CAP_MB} MiB), rotated by the worker"
+  echo "  on disk:   $(awk -v v="${total_bytes:-0}" 'BEGIN {if (v < 1048576) printf "%d KB", v/1024; else printf "%.1f MiB", v/1048576}') total, ${rotations} backup(s)"
   for rotated in "$LOG_FILE".*; do
     [ -f "$rotated" ] || continue
     echo "  rotated:   $rotated ($(du -h "$rotated" | cut -f1))"
@@ -84,6 +97,9 @@ if [ -f "$LOG_FILE" ]; then
   tail -n 5 "$LOG_FILE" | sed 's/^/    /'
 else
   echo "  path:      $LOG_FILE (absent)"
+fi
+if [ -s "$ERR_FILE" ]; then
+  echo "  stderr:    $ERR_FILE ($(du -h "$ERR_FILE" | cut -f1)) - interpreter-level output (crash dumps)"
 fi
 echo
 

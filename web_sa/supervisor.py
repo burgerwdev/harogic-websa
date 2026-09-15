@@ -39,7 +39,9 @@ def _stop(signum, _frame) -> None:
 
 def main() -> None:
     global _child
-    setup_logging(os.getenv('WEBSA_LOG', 'INFO'), os.getenv('WEBSA_LOGFILE', ''))
+    # rotate=False: the worker owns the rotation of the shared log file (logging_setup.py).
+    setup_logging(os.getenv('WEBSA_LOG', 'INFO'), os.getenv('WEBSA_LOGFILE', ''),
+                  rotate=False)
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
@@ -63,7 +65,8 @@ def main() -> None:
             log.critical(
                 'WebSA worker crashed %d times in a row within %.0fs of starting (last '
                 'status %s); giving up instead of spinning. Check the analyzer (USB link, '
-                'power), then restart the service. Log: tail -f /tmp/websa.log; recent '
+                'power), then restart the service. Log: tail -f /tmp/websa.log '
+                '(crash dumps: /tmp/websa.err); recent '
                 'crashes: coredumpctl list',
                 fast_exits, FAST_EXIT_S, return_code,
             )

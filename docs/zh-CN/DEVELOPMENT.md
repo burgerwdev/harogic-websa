@@ -264,7 +264,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 服务起不来 / 设备被占用 | `pgrep -af web_sa`、`fuser -v /dev/ttyACM0`、`tail /tmp/websa.log` | 上一个探针进程没退出；必须"一个进程拥有设备" |
 | **画布全空、无任何报错** | 画布像素数（e2e 的 `painted_pixels`）、`check_registrations.py` | 渲染器未注册（模块没被 import）；`dist/` 未重新构建 |
 | 模式切不动 / 要按两次 | STATUS 是否在到达（后端 1 Hz 推送）、是否有 pending 意图 | 主线程被拖满（热路径 `get()`）；pending TTL 未到期 |
-| 采集超时 / worker 反复重启 | `tail -50 /tmp/websa.log`（含 `faulthandler` 栈）、supervisor 退出码 | DLL 卡死或原生崩溃；超时看门狗按扫描时间缩放 |
+| 采集超时 / worker 反复重启 | `tail -50 /tmp/websa.log`（supervisor 重启记录）与 `/tmp/websa.err`（`faulthandler` 栈）、supervisor 退出码 | DLL 卡死或原生崩溃；超时看门狗按扫描时间缩放 |
 | UI 值与设备不一致 | STATUS 的 `req`（请求）与 `actual`（实际） | 槽位 `desired` 未确认（命令被拒/在途）；把 STATUS 当唯一事实 |
 | 单位按钮/虚拟键盘不生效 | `fieldForInput(input)` 是否返回字段名 | 字段键与输入框 id 拼写不一致 |
 | 告警/提示只在某瞬间可见 | 是否有独立的重绘触发 | 只依赖帧循环绘制，而该状态恰好没有帧 |
@@ -276,7 +276,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
   且每次决策都会记录，因此"本来就无需改动"也可见）；STATUS 里的 `auto_ref.{result,target,seq,adjusting}`
   是同一件事的后端一半（`seq` 用于区分新答复与残留的旧答复）；SDR 音频状态在 `dataset.sdrAudio`。
 - 后端：`WEBSA_TRACE=1 ./run.sh` → `grep '\[trace\]' /tmp/websa.log`；原生崩溃会打印全线程栈
-  （`faulthandler`），supervisor 的退出码/重启记录也在同一份日志里。
+  （`faulthandler`）到 `/tmp/websa.err`，而 supervisor 的退出码/重启记录在 `/tmp/websa.log`。
 
 ---
 

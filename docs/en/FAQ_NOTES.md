@@ -117,7 +117,7 @@
 | `WEBSA_ALLOWED_ORIGINS` | empty | Additional allowed Origins, comma-separated |
 | `WEBSA_ALLOW_UNAUTHENTICATED_REMOTE` | empty | Explicitly allow remote access without a token; trusted isolated networks only |
 | `WEBSA_LOG` | `INFO` | Python log level |
-| `WEBSA_LOGFILE` | empty | Optional rotating log file (5 MiB, 3 backups) |
+| `WEBSA_LOGFILE` | empty (`run.sh` sets `/tmp/websa.log`) | Log file, rotated by the worker: 5 MiB + 3 backups, a 20 MiB ceiling across restarts. The supervisor appends through a `WatchedFileHandler` that reopens the file after a rotation. `WEBSA_ERR` (`run.sh`: `/tmp/websa.err`) keeps interpreter-level crash output that the logging module never sees |
 | `WEBSA_STATIC` | automatic | Override frontend directory |
 | `HTRA_API_LIB` | derived from `/opt/htraapi` and host architecture | Full `libhtraapi.so` path override |
 
@@ -152,7 +152,7 @@ Always run the project scripts from the repository root:
 ./stop.sh
 ```
 
-`run.sh` starts a supervisor and a WebSA worker. The supervisor restarts the worker with backoff after a native crash, fatal acquisition error, or DLL timeout; configuration errors are not restarted in a loop. A simulated worker `SIGKILL` restored the SAN-90 API in about three seconds. The default runtime log is `/tmp/websa.log`.
+`run.sh` starts a supervisor and a WebSA worker. The supervisor restarts the worker with backoff after a native crash, fatal acquisition error, or DLL timeout; configuration errors are not restarted in a loop. A simulated worker `SIGKILL` restored the SAN-90 API in about three seconds. The default runtime log is `/tmp/websa.log` (5 MiB + 3 backups); uncaught crash output that the logging module never sees goes to `/tmp/websa.err`.
 
 If the device still does not recover:
 
