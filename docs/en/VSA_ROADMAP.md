@@ -20,9 +20,12 @@ analysis) into a working mode. Every item names the measured number that drives 
 
 ### 2.1 IQS reuse layer
 
-* **[todo]** Extract the IQS plumbing `SdrSession` already owns (configure, post-config
-  drain, fetch, transient streak handling, in-place reconfigure) into one shared module and
-  call it from both sessions.
+* **[done]** `measurements/iqs.py` owns the IQS plumbing (profile, mode reset,
+  post-configuration drain, one-packet fetch, the transient/fatal split, the wedge verdict)
+  and `SdrSession` calls it; the SDR recovery *action* stays with the session because it has
+  to rebuild the vendor FFT/DDC/demod chain. Verified by `tests/test_iqs.py` (16 cases,
+  no vendor library needed) and a live SDR stream: 361 packets, 0 errors, 46 spectrum
+  frames, 2.46 s of AM audio at a 994.7 Hz tone.
 * **[todo]** The shared layer must consume `IQStream_TypeDef` from
   `web_sa/hardware/sdk_bindings` (728 bytes); the vendor wrapper's copy is 8 bytes short and
   the SDK writes past it on every packet.

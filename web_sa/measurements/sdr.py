@@ -23,21 +23,14 @@ from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
 from .framer import encode_audio, encode_rta
+from .iqs import BUS_RETRY_TRIES, IqsStream, sdk_call
 
 log = logging.getLogger(__name__)
 
-# IQS return codes that are transient (bad packet / timeout) rather than fatal.
-# The official examples never check IQS_GetIQStream's return value; a bad packet is
-# simply skipped and the next one is used.
-_TRANSIENT_IQS = {-8, -9, -10, -12}
-
-# Documented transient bus warnings where the vendor guide says to re-issue the
-# configuration call: -10 APIRETVAL_WARNING_BusTimeOut, -11 APIRETVAL_ERROR_BusDownLoad
-# ("re-call Configuration"). Treating -11 as fatal turned a recoverable stall into an
-# unrecoverable one and forced a worker restart.
-_BUS_RETRY = (-10, -11)
-_BUS_RETRY_TRIES = 4
-_BUS_RETRY_DELAY = 0.05
+# The IQS stream plumbing (profile, mode reset, post-configuration drain, one-packet fetch,
+# the transient/fatal split and the "is the stream wedged?" verdict) lives in iqs.py, so the
+# vector session reuses the same measured rules instead of re-deriving them. SDR keeps the
+# DSP side: the vendor FFT, the DDC/demod chain, and its own recovery action.
 
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
 
@@ -126,9 +119,12 @@ class SdrSession(MeasurementSession):
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._audio_seq = 0
         self._audio_reset_pending = False
-        self._packet_samples = 0
         self._ddc_batch = 1
         self._iqs_center_hz = 0.0
+        # IQS stream state (packet geometry, counters, streaks, settle window) lives in the
+        # shared layer; the accessors below keep this module, its health() and the bench
+        # probe reading it under the same names as before.
+        self.iqs = IqsStream(dev)
         self._vfft_ready = False
         self._vfft_points = 0
         self._vfft_freq = None
@@ -136,7 +132,6 @@ class SdrSession(MeasurementSession):
         self._vfft_frame_samples = 0
         self._vfft_buffer = None
         self._vfft_stream = None
-        self._scale_to_v = 1.0
         self._last_pan = 0.0
         self._last_adm = 0.0
         self._discard_until = 0.0
@@ -151,16 +146,85 @@ class SdrSession(MeasurementSession):
         self._mix_phase = 0.0
         self._mix_freq = 0.0
         self._applied_listen = None
-        self._ready_at = 0.0
         self._error_streak = 0
         self._recovery_attempts = 0
-        self._last_recovery = 0.0
-        self._last_status = 0
-        self._packets_ok = 0
-        self._packets_err = 0
-        self._transient_streak = 0
-        self._timeout_streak = 0
-        self._last_ok = 0.0
+
+    # ---------------- IQS stream state (owned by measurements/iqs.py) ----------------
+    #
+    # These names predate the extraction; they are still how this module, its health() and the
+    # bench probe read the stream state, but the storage is now the shared IqsStream.
+
+    @property
+    def _packet_samples(self) -> int:
+        return self.iqs.packet_samples
+
+    @property
+    def _scale_to_v(self) -> float:
+        return self.iqs.scale_to_v
+
+    @property
+    def _ready_at(self) -> float:
+        return self.iqs.ready_at
+
+    @_ready_at.setter
+    def _ready_at(self, value: float) -> None:
+        self.iqs.ready_at = value
+
+    @property
+    def _last_ok(self) -> float:
+        return self.iqs.last_ok
+
+    @_last_ok.setter
+    def _last_ok(self, value: float) -> None:
+        self.iqs.last_ok = value
+
+    @property
+    def _last_recovery(self) -> float:
+        return self.iqs.last_recovery
+
+    @_last_recovery.setter
+    def _last_recovery(self, value: float) -> None:
+        self.iqs.last_recovery = value
+
+    @property
+    def _last_status(self) -> int:
+        return self.iqs.last_status
+
+    @_last_status.setter
+    def _last_status(self, value: int) -> None:
+        self.iqs.last_status = value
+
+    @property
+    def _packets_ok(self) -> int:
+        return self.iqs.packets_ok
+
+    @_packets_ok.setter
+    def _packets_ok(self, value: int) -> None:
+        self.iqs.packets_ok = value
+
+    @property
+    def _packets_err(self) -> int:
+        return self.iqs.packets_err
+
+    @_packets_err.setter
+    def _packets_err(self, value: int) -> None:
+        self.iqs.packets_err = value
+
+    @property
+    def _transient_streak(self) -> int:
+        return self.iqs.transient_streak
+
+    @_transient_streak.setter
+    def _transient_streak(self, value: int) -> None:
+        self.iqs.transient_streak = value
+
+    @property
+    def _timeout_streak(self) -> int:
+        return self.iqs.timeout_streak
+
+    @_timeout_streak.setter
+    def _timeout_streak(self, value: int) -> None:
+        self.iqs.timeout_streak = value
 
     # ---------------- lifecycle ----------------
     def enter(self):
@@ -218,73 +282,45 @@ class SdrSession(MeasurementSession):
             self._recovery_attempts = 0
             # Settle window: the device needs a moment after IQS_Configuration; without it
             # the first fetches return BusDataError and would trip the stall recovery.
-            self._ready_at = time.monotonic() + 0.4
-            self._last_ok = time.monotonic()
+            self.iqs.arm_settle(delay=0.4)
             self._ready = True
         # Same hook as the swept/RTA paths: an IQS reconfiguration changes the capture geometry,
         # so stale observations are dropped and a settings change (centre / capture bandwidth /
         # IF bandwidth) arms ONE automatic re-fit (see auto_reference.begin_settle).
         self.dev.begin_auto_reference_settle('sdr')
 
-    def _sdk_call(self, fn, what: str, retries: int = _BUS_RETRY_TRIES):
+    def _sdk_call(self, fn, what: str, retries: int = BUS_RETRY_TRIES):
         """Run an SDK configuration entry point, retrying the transient bus warnings.
 
         The device occasionally answers a configuration download with -11 (BusDownLoad)
         or -10 (BusTimeOut); the vendor guide's remedy is simply to call Configuration
         again. Raising on those made normal mode switches escalate to a worker restart.
+        The retry loop itself lives in the shared IQS layer.
         """
-        last = 0
-        for attempt in range(retries + 1):
-            last = int(fn())
-            if last == 0:
-                return 0
-            if last in _BUS_RETRY and attempt < retries:
-                time.sleep(_BUS_RETRY_DELAY)
-                continue
-            raise RuntimeError(f'{what} status={last}')
-        raise RuntimeError(f'{what} status={last}')
+        return sdk_call(fn, what, retries=retries)
 
     def _reset_iqs_mode_locked(self):
         """A second IQS_Configuration after the stream has started is rejected and
         permanently wedges the stream; an SWP_Configuration switches the device's mode and
-        lets IQS be configured again (bench-verified: this makes reconfiguration safe)."""
-        T = sb
-        p = sb.SWP_Profile_TypeDef()
-        o = sb.SWP_Profile_TypeDef()
-        ti = T.SWP_TraceInfo_TypeDef()
-        self._sdk_call(
-            lambda: T.dll.SWP_ProfileDeInit(T.pointer(self.dev.dev), T.pointer(p)),
-            'SWP_ProfileDeInit')
-        self._sdk_call(
-            lambda: T.dll.SWP_Configuration(
-                T.pointer(self.dev.dev), T.pointer(p), T.pointer(o), T.pointer(ti)),
-            'SWP_Configuration mode reset')
+        lets IQS be configured again (bench-verified: this makes reconfiguration safe).
+        The sequence itself lives in the shared IQS layer."""
+        self.iqs.mode_reset()
 
     def _stop_trigger_locked(self, *, required: bool = True) -> None:
-        try:
-            st = sb.dll.IQS_BusTriggerStop(sb.pointer(self.dev.dev))
-        except Exception:
-            if required:
-                raise
-            return
-        if required and st != 0:
-            raise RuntimeError(f'IQS_BusTriggerStop status={st}')
+        self.iqs.stop(required=required)
 
     def _configure_iqs_locked(self):
-        dev = self.dev
-        s = dev.state
-        T = sb
+        s = self.dev.state
         self._stop_trigger_locked(required=False)
         s.sdr_decimate = _round_decimate(s.sdr_decimate)
-        p = T.IQS_Profile_TypeDef()
-        out = T.IQS_Profile_TypeDef()
-        info = T.IQS_StreamInfo_TypeDef()
-        # Reset the device mode first so IQS_Configuration is accepted (see the note above).
-        self._reset_iqs_mode_locked()
-        self._sdk_call(
-            lambda: T.dll.IQS_ProfileDeInit(T.pointer(dev.dev), T.pointer(p)),
-            'IQS_ProfileDeInit')
-        _t('iqs: mode reset + ProfileDeInit ok')
+        # Profile, mode reset and validation come from the shared IQS layer. DCC/QDC stay at
+        # the bench-verified defaults (auto DC offset, QDC off; see tools/sdr_probe/FINDINGS).
+        p = self.iqs.profile(center_hz=s.sdr_center_hz, decimate=s.sdr_decimate,
+                             ref_level_dbm=s.ref_level, trigger_mode='adaptive',
+                             bus_timeout_ms=250, dcc='auto', qdc='off',
+                             atten=s.atten, preamplifier=s.preamplifier,
+                             ifgain=s.ifgain, gain_strategy=s.gain_strategy)
+        _t('iqs: ProfileDeInit ok')
         native_rate = float(p.NativeIQSampleRate_SPS)
         expected_bw = native_rate * 0.8 / s.sdr_decimate if native_rate > 0 else 0.0
         # Capture on the requested centre. The stream used to be tuned 200 kHz away from it
@@ -298,40 +334,17 @@ class SdrSession(MeasurementSession):
             capture_center = max(s.caps.freq_min_hz + half,
                                  min(s.caps.freq_max_hz - half, capture_center))
         p.CenterFreq_Hz = capture_center
-        p.RefLevel_dBm = float(s.ref_level)
-        p.DecimateFactor = int(s.sdr_decimate)
-        p.DataFormat = T.DataFormat_TypeDef.Complex16bit
-        p.TriggerSource = T.IQS_TriggerSource_TypeDef.Bus
-        p.TriggerMode = T.TriggerMode_TypeDef.Adaptive
-        p.BusTimeout_ms = 250
-        p.Atten = int(s.atten)
-        p.Preamplifier = (T.PreamplifierState_TypeDef.AutoOn if s.preamplifier == 0
-                          else T.PreamplifierState_TypeDef.ForcedOff)
-        p.IFGainGrade = int(s.ifgain)
-        p.GainStrategy = (T.GainStrategy_TypeDef.LowNoisePreferred if s.gain_strategy == 0
-                          else T.GainStrategy_TypeDef.HighLinearityPreferred)
-        p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCAutoOffsetMode
-        p.QDCMode = T.QDCMode_TypeDef.QDCOff
-        self._sdk_call(
-            lambda: T.dll.IQS_Configuration(
-                T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info)),
-            'IQS_Configuration')
+        info = self.iqs.configure(p, mode_reset=True)
         _t('iqs: IQS_Configuration ok fs=%s bw=%s pts=%s dec=%s center=%s',
-           float(info.IQSampleRate), float(info.Bandwidth), int(info.PacketSamples),
-           int(out.DecimateFactor), float(out.CenterFreq_Hz))
-        fs = float(info.IQSampleRate)
-        bandwidth = float(info.Bandwidth) or fs
-        if fs <= 0 or bandwidth <= 0 or int(info.PacketSamples) <= 0:
-            raise RuntimeError(
-                f'IQS_Configuration returned invalid stream info '
-                f'rate={fs} bandwidth={bandwidth} samples={int(info.PacketSamples)}')
+           info.fs, info.bandwidth, info.packet_samples, info.decimate, info.center_hz)
+        fs = info.fs
+        bandwidth = info.bandwidth
         half = bandwidth / 2.0
-        configured_center = float(out.CenterFreq_Hz)
+        configured_center = info.center_hz
         if configured_center > 0:
             self._iqs_center_hz = configured_center
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
-        self._packet_samples = int(info.PacketSamples)
         # One IQS packet per step. Fetching a second packet in the same step (an earlier
         # "high-rate" optimisation) overwrote the vendor's internal packet buffer: the
         # heap damage surfaced later as SIGSEGV / glibc "double free or corruption (out)"
@@ -344,25 +357,25 @@ class SdrSession(MeasurementSession):
         s.sdr_actual = dict(
             iq_rate=fs, bandwidth=bandwidth,
             iq_center=self._iqs_center_hz,
-            decimate=int(out.DecimateFactor), packet_samples=self._packet_samples,
-            packet_bytes=int(info.PacketDataSize),
+            decimate=info.decimate, packet_samples=info.packet_samples,
+            packet_bytes=info.packet_bytes,
             pan_points=min(
                 self.PAN_FFT,
                 max(2, 2 * int(np.floor(self.PAN_FFT * bandwidth / (2.0 * fs))) + 1),
             ),
             **sdr_spectrum_windows(s.sdr_center_hz, self._iqs_center_hz, bandwidth),
-            atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
-            ifgain=int(out.IFGainGrade),
-            ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
-            refclk_out=bool(out.EnableReferenceClockOut),
+            atten=info.atten, preamp=info.preamp,
+            ifgain=info.ifgain,
+            ref_clock_source=info.refclk_source,
+            refclk_out=info.refclk_out,
         )
         # Re-assert the vendor FFT only when the IQS packet geometry changed (it is the
         # only thing the FFT size depends on).
         self._configure_vendor_fft_locked()
-        dev._read_amp_atten()
-        dev.state.config_version += 1
-        dev.state.freq_version += 1
-        dev.state.last_error = ''
+        self.dev._read_amp_atten()
+        self.dev.state.config_version += 1
+        self.dev.state.freq_version += 1
+        self.dev.state.last_error = ''
         self._pan.reset()
 
     def _configure_vendor_fft_locked(self) -> None:
@@ -474,10 +487,7 @@ class SdrSession(MeasurementSession):
     def _start_trigger_locked(self):
         """Start streaming. Kept separate so the slow DDC configuration can run BEFORE the
         trigger starts (otherwise the device buffer overflows while we are not fetching)."""
-        T = sb
-        self._sdk_call(
-            lambda: T.dll.IQS_BusTriggerStart(T.pointer(self.dev.dev)),
-            'IQS_BusTriggerStart')
+        self.iqs.start()
         _t('trigger: BusTriggerStart ok; streaming')
         self._last_ok = time.monotonic()
 
@@ -751,9 +761,7 @@ class SdrSession(MeasurementSession):
 
     # ---------------- acquisition ----------------
     def _recover_locked(self, reason) -> None:
-        self._last_recovery = time.monotonic()
-        self._transient_streak = 0
-        self._timeout_streak = 0
+        self.iqs.note_recovery()
         # In-place reconfiguration cannot always unwedge the device; after a few failed
         # attempts escalate to a fatal error so the supervisor restarts the worker with a
         # fresh Device_Open (which does recover).
@@ -832,9 +840,6 @@ class SdrSession(MeasurementSession):
             return [], []
         now = time.monotonic()
         frames = []
-        import ctypes as C
-
-        T = sb
         dev = self.dev
         with self._lock:
             if not self._ready:
@@ -848,92 +853,53 @@ class SdrSession(MeasurementSession):
                 frames.append(encode_audio(
                     self._audio_seq, self.AUDIO_RATE, np.zeros(0, dtype=np.int16)))
                 self._audio_reset_pending = False
-            stream = T.IQStream_TypeDef()
             # Watchdog: if no good packet arrived for a while the stream is wedged; a full
             # reconfigure recovers it. This bounds any freeze to ~1.5 s.
-            if now - self._last_ok > 1.5 and now - self._last_recovery >= 1.0:
+            if self.iqs.watchdog_expired(now):
                 self._recover_locked('watchdog')
-            try:
-                st = T.dll.IQS_GetIQStream_PM1(T.pointer(dev.dev), T.pointer(stream))
-            except Exception as exc:
-                self._step_failed_locked('get exception', repr(exc))
-                return [], []
-            if st != 0:
-                self._last_status = int(st)
-                self._packets_err += 1
-                if st in _TRANSIENT_IQS:
-                    if st in sb.WARN_STATUS:
-                        s.status_warning = int(st)
-                    self._transient_streak += 1
-                    self._timeout_streak = self._timeout_streak + 1 if st == -10 else 0
-                    # A timeout blocks for BusTimeout each call, so recover fast on those;
-                    # BusDataError returns immediately, so a longer streak is fine.
-                    if ((self._transient_streak >= 60 or self._timeout_streak >= 3)
-                            and now - self._last_recovery >= 1.0):
-                        self._recover_locked(st)
+            got = self.iqs.fetch(now)
+            if not got.ok:
+                if got.error:
+                    self._step_failed_locked('get exception', got.error)
                     return [], []
-                self._step_failed_locked('get', st)
+                if got.transient:
+                    if got.status in sb.WARN_STATUS:
+                        s.status_warning = int(got.status)
+                    # A timeout blocks for BusTimeout each call, so recover fast on those;
+                    # BusDataError returns immediately, so a longer streak is fine. The
+                    # streak limits and the cooldown live in the shared IQS layer.
+                    if got.recover:
+                        self._recover_locked(got.status)
+                    return [], []
+                self._step_failed_locked('get', got.status)
                 return [], []
-            self._last_status = 0
             s.status_warning = 0
-            self._transient_streak = 0
-            self._timeout_streak = 0
-            self._last_ok = now
             self._recovery_attempts = 0
-            self._packets_ok += 1
-            if self._packets_ok == 1 or self._packets_ok % 100 == 0:
-                _t('step: packets_ok=%d err=%d status=%d', self._packets_ok,
-                   self._packets_err, self._last_status)
-            if time.monotonic() < self._ready_at:
+            if self.iqs.packets_ok == 1 or self.iqs.packets_ok % 100 == 0:
+                _t('step: packets_ok=%d err=%d status=%d', self.iqs.packets_ok,
+                   self.iqs.packets_err, self.iqs.last_status)
+            if self.iqs.settling(now):
                 # Keep draining IQS while settling so the device FIFO cannot overflow, but
                 # preserve a pending audio reset marker for the clients.
                 return frames, []
             self._error_streak = 0
             self._recovery_attempts = 0
-            n = int(stream.IQS_StreamInfo.PacketSamples)
+            n = got.samples
             if n < 2:
                 return [], []
-            self._scale_to_v = float(stream.IQS_ScaleToV)
-            src = C.cast(stream.AlternIQStream, C.POINTER(C.c_int16 * (n * 2))).contents
-            arrays = [np.ctypeslib.as_array(src).copy()]
+            arrays = [got.raw]
             total_n = n
-            # At high IQ input rates the DSP work fits within one packet only barely.
-            # Fetch a second packet before invoking NumPy so two packet periods absorb
-            # scheduler jitter without changing the IQ capture bandwidth or IF filter.
+            # Kept for the record: batching two packets per step is NOT safe -- it
+            # overwrote the vendor's internal packet buffer and corrupted the heap -- so
+            # `_ddc_batch` stays 1 and this loop does not run.
             for _ in range(1, self._ddc_batch):
-                next_stream = T.IQStream_TypeDef()
-                try:
-                    next_st = T.dll.IQS_GetIQStream_PM1(
-                        T.pointer(dev.dev), T.pointer(next_stream))
-                except Exception as exc:
-                    self._step_failed_locked('get exception', repr(exc))
+                nxt = self.iqs.fetch(now)
+                if not nxt.ok:
+                    if nxt.error:
+                        self._step_failed_locked('get exception', nxt.error)
                     return frames, []
-                if next_st != 0:
-                    self._last_status = int(next_st)
-                    self._packets_err += 1
-                    if next_st in _TRANSIENT_IQS:
-                        self._transient_streak += 1
-                        self._timeout_streak = (
-                            self._timeout_streak + 1 if next_st == -10 else 0)
-                        if ((self._transient_streak >= 60 or self._timeout_streak >= 3)
-                                and time.monotonic() - self._last_recovery >= 1.0):
-                            self._recover_locked(next_st)
-                    else:
-                        self._step_failed_locked('get', next_st)
-                    return frames, []
-                self._last_status = 0
-                self._transient_streak = 0
-                self._timeout_streak = 0
-                self._last_ok = time.monotonic()
-                self._packets_ok += 1
-                next_n = int(next_stream.IQS_StreamInfo.PacketSamples)
-                if next_n < 2:
-                    return frames, []
-                next_src = C.cast(
-                    next_stream.AlternIQStream,
-                    C.POINTER(C.c_int16 * (next_n * 2))).contents
-                arrays.append(np.ctypeslib.as_array(next_src).copy())
-                total_n += next_n
+                arrays.append(nxt.raw)
+                total_n += nxt.samples
             arr = arrays[0] if len(arrays) == 1 else np.concatenate(arrays)
             src = arr
             n = total_n
@@ -943,7 +909,7 @@ class SdrSession(MeasurementSession):
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
                 # Rate-limit first: a failed vendor frame must not become a busy retry.
                 self._last_pan = now
-                vendor = self._vendor_spectrum_locked(stream, arr)
+                vendor = self._vendor_spectrum_locked(self.iqs.stream, arr)
                 if vendor is not None:
                     freq, spec = vendor
                     row = self._pan.waterfall_row(spec)

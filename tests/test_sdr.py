@@ -25,6 +25,17 @@ def _rms(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.asarray(values, dtype=np.float64) ** 2)))
 
 
+def _attach_iqs(session):
+    """A __new__-built session still needs the shared IQS stream object.
+
+    The stream state (packet geometry, counters, streaks, settle window) lives in
+    measurements/iqs.py; production creates it in SdrSession.__init__.
+    """
+    from web_sa.measurements.iqs import IqsStream
+    session.iqs = IqsStream(session.dev)
+    return session
+
+
 def test_round_decimate_uses_supported_power_of_two():
     assert _round_decimate(1) == 1
     assert _round_decimate(31) == 16
@@ -104,6 +115,7 @@ def test_wfm_applies_50us_deemphasis():
 def test_hard_failure_recovery_restarts_full_chain(monkeypatch):
     session = SdrSession.__new__(SdrSession)
     session.dev = SimpleNamespace(state=SimpleNamespace(last_error=''))
+    _attach_iqs(session)
     session._error_streak = 7
     session._last_recovery = 0.0
     session._recovery_attempts = 0
@@ -126,6 +138,7 @@ def test_demod_reconfiguration_stops_stream_first(monkeypatch):
     session.dev = SimpleNamespace(state=state)
     session._lock = threading.RLock()
     calls = []
+    _attach_iqs(session)
     session._stop_trigger_locked = lambda: calls.append('stop')
     session._configure_chain_locked = lambda: calls.append('configure')
     session._start_trigger_locked = lambda: calls.append('start')
@@ -160,6 +173,7 @@ def test_settle_window_still_drains_iqs(monkeypatch):
     state = SimpleNamespace(sdr_listen_hz=101.7e6)
     session = SdrSession.__new__(SdrSession)
     session.dev = SimpleNamespace(state=state, dev=sb.c_void_p())
+    _attach_iqs(session)
     session._lock = threading.RLock()
     session._ready = True
     session._ready_at = 11.0
