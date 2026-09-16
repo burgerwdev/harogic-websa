@@ -325,7 +325,8 @@ def fmt(metrics: dict) -> list[str]:
 
 
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
-            mode: str = 'swp', mode_clicks: list[str] | None = None) -> dict:
+            mode: str = 'swp', mode_clicks: list[str] | None = None,
+            shot_path: Path | None = None) -> dict:
     ctx = browser.new_context(viewport={'width': w, 'height': h}, device_scale_factor=dpr)
     page = ctx.new_page()
     errors: list[str] = []
@@ -336,6 +337,9 @@ def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
         page.click(selector)
         page.wait_for_timeout(3000)
     metrics = page.evaluate(PROBE, LANDMARKS)
+    if shot_path is not None:
+        page.screenshot(path=str(shot_path), full_page=False)
+        print(f"  screenshot    : {shot_path.relative_to(ROOT)}")
     metrics['label'] = label
     metrics['mode'] = mode
     metrics['errors'] = errors
@@ -500,6 +504,10 @@ def main() -> int:
     parser.add_argument('--modes', default='swp,rta+waterfall',
                         help='comma list of UI modes to measure '
                              f"({','.join(m[0] for m in MODES)})")
+    parser.add_argument('--shots', default='',
+                        help='comma list of viewport labels to screenshot during the sweep')
+    parser.add_argument('--shot-suffix', default='current',
+                        help='filename suffix for those screenshots')
     parser.add_argument('--no-inventory', action='store_true')
     parser.add_argument('--no-restore-std', dest='restore_std', action='store_false',
                         help='do not POST SET_MODE std after measuring (the last mode wins)')
@@ -510,6 +518,7 @@ def main() -> int:
 
     wanted = [m.strip() for m in args.modes.split(',') if m.strip()]
     selected = [(name, sels) for name, sels in MODES if name in wanted]
+    shot_labels = [s.strip() for s in args.shots.split(',') if s.strip()]
     if not selected:
         print(f'no mode matches {args.modes!r}; known: {[m[0] for m in MODES]}')
         return 1
@@ -538,7 +547,12 @@ def main() -> int:
             for mode, mode_clicks in selected:
                 title = f'{label} [{mode}]'
                 print(f"\n=== {title} ===")
-                m = collect(browser, args.url, label, w, h, dpr, mode, mode_clicks)
+                shot = None
+                if label in shot_labels:
+                    SHOT_DIR.mkdir(parents=True, exist_ok=True)
+                    safe = title.replace(' [', '-').replace(']', '').replace('+', '-')
+                    shot = SHOT_DIR / f'{safe}-{args.shot_suffix}.png'
+                m = collect(browser, args.url, label, w, h, dpr, mode, mode_clicks, shot)
                 lines, findings = fmt(m)
                 for line in lines:
                     print(line)

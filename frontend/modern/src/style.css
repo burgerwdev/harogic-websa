@@ -153,14 +153,34 @@ input, select, button, textarea { font-size: 11px; }
   --m4: #333333; --m4-bg: #e0e0e0;
 }
 
+/* ---- Adaptive frame ----------------------------------------------------------------
+   Everything below used to be written against one 1366x768 panel: a 1280px card, an 860px
+   floor under the plot column, a 360px control panel and a `calc(100vh - 96px)` middle row
+   that wrapped inside `overflow: hidden`. Below 1280 that clipped the control panel away
+   entirely (no scrollbar, unreachable) and in RTA mode it pushed the plot out of the top of
+   its own container. The frame is now a flex column - the two bars keep their intrinsic
+   height and the middle row takes whatever is left, so there is no viewport arithmetic to
+   drift when the bars wrap - and the middle row is a nowrap flex row in which only the plot
+   column may give width back. Below the stacking breakpoint (bottom of this file) the areas
+   become rows and the page scrolls instead of clipping. */
 body {
   background-color: var(--bg); color: var(--text);
   font-family: 'Courier New', monospace;
   font-size: 12px;
-  display: flex; justify-content: center; align-items: center;
+  /* stretch, not center: a card taller than the viewport used to overflow above the top edge
+     (a centred flex item overflows in both directions), putting content out of reach. */
+  display: flex; justify-content: center; align-items: stretch;
   min-height: 100vh; margin: 0; padding: 0; box-sizing: border-box;
 }
-.analyzer-card { background: var(--panel); width: 1280px; max-width: 100%; }
+/* Control panel column: its widest row (the span action row, 296px) starts clipping at a
+   320px column, so the floor stays above that; the ceiling keeps the plot the larger share on
+   a wide screen, and neither end is tied to a particular panel resolution. */
+:root { --panel-w: clamp(330px, 26vw, 440px); }
+.analyzer-card {
+  background: var(--panel);
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-width: 0; min-height: 100vh;
+}
 .info-bar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   background: var(--panel-2); border: 1px solid var(--card-border);
@@ -212,13 +232,15 @@ select:disabled { color: var(--label); }
 .gnss-popover .param-row label { min-width: 0; }
 .info-item { position: relative; }
 .screen-container {
-  display: flex; flex-direction: row; gap: 12px; align-items: stretch; flex-wrap: wrap;
-  height: calc(100vh - 96px); min-height: 420px; overflow: hidden;
+  display: flex; flex-direction: row; gap: 12px; align-items: stretch;
+  flex: 1 1 auto; min-height: 0;
 }
-.spectrum-area { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 860px; height: 100%; }
+/* The only column that may shrink: min-width 0 lets the plot give width back instead of
+   pushing the row past the card. */
+.spectrum-area { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-width: 0; min-height: 0; }
 canvas {
   background-color: var(--sa-bg); border: 1px solid var(--card-border); display: block; cursor: crosshair;
-  width: 100%; height: auto; flex: 0 1 auto; min-height: 0;
+  width: 100%; height: auto; flex: 0 1 auto; min-height: 120px;   /* may shrink, never collapse */
   box-sizing: border-box;   /* width includes the 1px border -> aligns with the 100% marker table below */
 }
 .tab-btn { background: var(--panel-2); color: var(--label); border: 1px solid var(--card-border); padding: 2px 6px;
@@ -303,8 +325,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .control-group.rail-flash { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
 
 .control-panel {
-  display: flex; flex-direction: column; gap: 8px; width: 360px; flex-shrink: 0;
-  height: 100%; overflow-y: auto; padding-right: 2px;
+  display: flex; flex-direction: column; gap: 8px;
+  flex: 0 0 var(--panel-w); min-width: 0; min-height: 0;
+  overflow-y: auto; padding-right: 2px;
   overscroll-behavior: contain;   /* wheel scrolling must not chain to the page */
 }
 .control-panel { scrollbar-width: thin; scrollbar-color: var(--input-border) var(--panel-2); }
@@ -526,3 +549,27 @@ input.ref-warn { animation: refWarnGlow 1.1s ease-in-out infinite; border: 1px s
 @keyframes pendingPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .btn.pending { animation: pendingPulse 1s ease-in-out infinite; }
 input.ref-pending { border: 1px dashed #ffb300; }
+
+/* ---- Stacking breakpoint -----------------------------------------------------------
+   Under this width the plot floor + the panel floor + the rail no longer fit side by side
+   (24 + plot + 24 + panel, with the panel floor at 330px), so the row stacks instead of
+   overflowing: plot and rail on top, the panel full width underneath, reachable by scrolling.
+   The rail turns horizontal rather than becoming a 24px-tall sliver, and the panel keeps a
+   floor so the plot cannot squeeze it out. This is a "nothing overflows or overlaps" layout,
+   not a touch/phone layout: no touch target work is in scope. */
+@media (max-width: 1000px) {
+  .screen-container { flex-direction: column; }
+  .spectrum-area { min-height: 260px; }
+  .control-panel { flex: 1 1 auto; }
+  .control-rail { flex-direction: row; width: auto; height: auto; padding: 0; }
+  .control-rail.collapsed { width: auto; margin-left: 0; }
+  .rail-items { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .rail-item { writing-mode: horizontal-tb; padding: 4px 10px; }
+  /* the collapsed toggle is absolutely placed for the vertical rail; in a row it is inline */
+  .control-rail.collapsed .rail-toggle { position: static; width: 34px; height: 22px; }
+}
+/* Below this the marker table's five columns are the widest thing left; keep the table
+   scrollable rather than letting it push the card wider than the viewport. */
+@media (max-width: 700px) {
+  .marker-table { display: block; overflow-x: auto; }
+}
