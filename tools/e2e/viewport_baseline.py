@@ -114,9 +114,78 @@ PROBE = """(landmarks) => {
     const cssH = c.clientHeight > 0 ? c.clientHeight : r.height;
     let ratio = Math.max(1, Math.min(4, dpr * ui));
     if (cssW * cssH * ratio * ratio > 8000000) ratio = Math.max(1, Math.sqrt(8000000 / (cssW * cssH)));
-    let lit = null, sampled = 0;
+    let lit = null, sampled = 0, plot = null;
     const g = c.getContext('2d');
-    if (g && c.width && c.height) {
+    if (g && c.width && c.height && c.width * c.height <= 12_000_000) {
+      try {
+        const d = g.getImageData(0, 0, c.width, c.height).data;
+        // Full-resolution scan: the strided one below answers "is anything painted", but the
+        // plot extent needs single-pixel columns to be comparable with the margins.
+        const colLit = new Int32Array(c.width), rowLit = new Int32Array(c.height);
+        let minX = c.width, maxX = -1, minY = c.height, maxY = -1, n = 0;
+        for (let y = 0; y < c.height; y++) {
+          const rowBase = y * c.width * 4;
+          for (let x = 0; x < c.width; x++) {
+            if (d[rowBase + x * 4 + 3] > 0) {
+              colLit[x]++; rowLit[y]++; n++;
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+        sampled = c.width * c.height;
+        lit = n;
+        // The plot rectangle is measured from the graticule: the outermost mostly-lit column and
+        // row are the plot's left/top edges (a trace can only be inside them), and the *longest
+        // contiguous lit run* inside those gives the plot's extent - axis text in the margins has
+        // no long run, so it cannot be mistaken for an edge at narrow widths.
+        const firstMostly = (counts, total) => {
+          for (let i = 0; i < counts.length; i++) if (counts[i] / total >= 0.5) return i;
+          return -1;
+        };
+        const longestRun = (from, to, at) => {
+          let first = -1, last = -1, best = -1, bestFirst = -1, bestLast = -1, run = -1;
+          for (let i = from; i < to; i++) {
+            const on = at(i);
+            if (on) {
+              if (run < 0) run = i;
+              if (i - run > best) { best = i - run; bestFirst = run; bestLast = i; }
+              if (first < 0) first = i;
+              last = i;
+            } else run = -1;
+          }
+          return [bestFirst, bestLast, first, last];
+        };
+        const col = firstMostly(colLit, c.height);
+        const row = firstMostly(rowLit, c.width);
+        if (col >= 0 && row >= 0) {
+          const alphaAt = (x, y) => d[(y * c.width + x) * 4 + 3] > 0;
+          const [top, bottom] = longestRun(0, c.height, (y) => alphaAt(col, y));
+          const [left, right] = longestRun(0, c.width, (x) => alphaAt(x, row));
+          // Sharpness by hand: the graticule is a 1-logical-pixel hairline, so it must be as
+          // thick as the device ratio in device pixels - never 1 px on a 2x screen (drawn at
+          // logical scale) and never smeared wider. Measured on the top grid line, which has no
+          // trace under it, at columns where nothing else is lit; the thinnest sighting wins
+          // because a spike crossing the line would widen it.
+          let gridThickness = 99;
+          if (left >= 0 && right > left && bottom > top) {
+            for (const frac of [0.3, 0.45, 0.6, 0.75]) {
+              const x = Math.round(left + (right - left) * frac);
+              let run = 0;
+              for (let y = top; y < c.height && alphaAt(x, y); y++) run++;
+              if (run > 0 && run < gridThickness) gridThickness = run;
+            }
+          }
+          plot = { minX, minY, maxX, maxY, left, right, top, bottom,
+                   gridThickness: gridThickness === 99 ? 0 : gridThickness };
+        } else {
+          plot = { minX, minY, maxX, maxY, left: -1, right: -1, top: -1, bottom: -1,
+                   gridThickness: 0 };
+        }
+      } catch (e) { /* tainted or no 2d context */ }
+    } else if (g && c.width && c.height) {
       try {
         const d = g.getImageData(0, 0, c.width, c.height).data;
         const step = Math.max(1, Math.floor(Math.sqrt((c.width * c.height) / 4000)));
@@ -126,7 +195,7 @@ PROBE = """(landmarks) => {
             if (d[(y * c.width + x) * 4 + 3] > 0) lit = (lit || 0) + 1;
           }
         }
-      } catch (e) { /* tainted or no 2d context */ }
+      } catch (e) { /* tainted */ }
     }
     out.canvases.push({
       id: c.id || '(anon)', cssW: +cssW.toFixed(1), cssH: +cssH.toFixed(1),
@@ -136,6 +205,7 @@ PROBE = """(landmarks) => {
       ratio: +ratio.toFixed(3),
       expectedW: Math.round(cssW * ratio), expectedH: Math.round(cssH * ratio),
       litRatio: sampled ? +((lit || 0) / sampled).toFixed(4) : null, sampled: sampled,
+      plot: plot,
     });
   }
   // Landmark boxes, overlaps (DOM-containment pairs excluded) and clipping.
@@ -319,6 +389,8 @@ def fmt(metrics: dict) -> list[str]:
             findings.append(f"canvas {c['id']} bitmap stretched {c['stretch']}x (blur)")
         if c['litRatio'] == 0:
             findings.append(f"canvas {c['id']} has no painted pixels")
+        elif c['id'] == 'spectrum':
+            findings += plot_geometry(c)
     fonts = metrics['fonts']
     if fonts:
         ui = vp.get('uiScale', 1)
@@ -362,6 +434,48 @@ def fmt(metrics: dict) -> list[str]:
     if metrics['docBottom']:
         lines.append(f"  page taller than the viewport by {metrics['docBottom']}px")
     return lines, findings
+
+
+# The plot rectangle in logical (drawing) units - render/plot.ts MARGIN, which does not depend
+# on the window size. The graticule is drawn on its edges, so the drawn plot must land there in
+# *device* pixels at any resolution; a stale transform or an off-by-a-factor scale shows up as a
+# shifted or clipped plot, which "some pixels were painted" would never catch.
+MARGIN = {'left': 10, 'right': 50, 'top': 14, 'bottom': 26}
+
+
+def plot_geometry(c: dict) -> list[str]:
+    plot = c.get('plot')
+    if not plot:
+        return []
+    k = c['backingW'] / c['cssW'] if c['cssW'] else 1          # device px per logical px
+    want = {'left': MARGIN['left'] * k, 'top': MARGIN['top'] * k,
+            'right': (c['cssW'] - MARGIN['right']) * k,
+            'bottom': (c['cssH'] - MARGIN['bottom']) * k}
+    got = {side: plot.get(side, -1) for side in want}
+    if any(v < 0 for v in got.values()):
+        return [f"canvas {c['id']} has no graticule to measure the plot rectangle from"]
+    tol = max(3.0, k)
+    off = {side: round(got[side] - want[side], 1) for side in want
+           if abs(got[side] - want[side]) > tol}
+    out: list[str] = []
+    if off:
+        out.append(f"canvas {c['id']} plot rectangle off by {off} device px (got {got}, "
+                   f"expected { {s: round(v, 1) for s, v in want.items()} })")
+    # Pixel-level sharpness: a 1-logical-pixel graticule must be as thick as the device ratio.
+    # 1 px on a 2x screen means the drawing happened at logical scale (the old fixed-bitmap
+    # failure mode); a very thick line means a smear.
+    thick = plot.get('gridThickness') or 0
+    if thick:
+        # ceil(ratio) + 2 leaves room for antialiasing a fractional width across a row boundary:
+        # a 1.25-device-pixel line at a fractional offset legitimately lights three rows.
+        limit = int(k) + 1 + 2
+        if thick > limit:
+            out.append(f"canvas {c['id']} graticule is {thick} device px at ratio {k:.2f} "
+                       f"(a 1px line should be about {max(1, round(k))})")
+        elif k >= 1.9 and thick < 2:
+            out.append(f"canvas {c['id']} graticule is {thick} device px at ratio {k:.2f}: "
+                       'the drawing is not at device resolution')
+    return out
 
 
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
@@ -436,16 +550,19 @@ def hyprctl(args: list[str]) -> str:
     return out.stdout.strip()
 
 
-def screens(url: str, port: int = 9411) -> int:
+def screens(url: str, port: int = 9411, scales: list[float | None] | None = None) -> int:
     """Real-session capture: the actual browser on the actual output, grabbed by the compositor.
 
     Wayland does not let a client place its own window, so the sequence is: focus the target
     output, start the system Chromium (it picks up the user's Wayland flags from
     ~/.config/chromium-flags.conf, so this is the real rendering path), maximise that window
-    through the compositor, measure the page as it really is (real DPR, real viewport), then
-    grim the window's own region. Only the window this script started is ever touched - the
-    window is located by the browser process id, never by focus, so a mis-targeted dispatch
-    cannot move or fullscreen anything of the user's.
+    through the compositor, measure the page as it really is (real DPR, real viewport, real UI
+    scale), then grim the window's own region. Only the window this script started is ever
+    touched - the window is located by the browser process id, never by focus, so a
+    mis-targeted dispatch cannot move or fullscreen anything of the user's.
+
+    `scales` takes one or more UI scales (None = whatever the page picks for the screen), so
+    each output gets a set of screenshots at different zoom levels.
     """
     from playwright.sync_api import sync_playwright
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -453,17 +570,20 @@ def screens(url: str, port: int = 9411) -> int:
     previous_focus = next((m['name'] for m in mons if m['focused']), None)
     rc = 0
     with sync_playwright() as p:
-        rc = screens_for_monitors(p, mons, url, port)
+        for scale in (scales or [None]):
+            rc |= screens_for_monitors(p, mons, url, port, scale)
     if previous_focus:
         hyprctl(['dispatch', f'hl.dsp.focus({{monitor="{previous_focus}"}})'])
     return rc
 
 
-def screens_for_monitors(p, mons: list[dict], url: str, port: int) -> int:
+def screens_for_monitors(p, mons: list[dict], url: str, port: int,
+                         ui_scale: float | None = None) -> int:
     rc = 0
+    tag = f"ui{ui_scale}" if ui_scale else 'auto'
     for mon in mons:
         print(f"--- {mon['name']} {mon['lw']}x{mon['lh']} @{mon['scale']} "
-              f"logical ({mon['x']},{mon['y']})")
+              f"logical ({mon['x']},{mon['y']})  scale {tag}")
         profile = f'/tmp/websa-baseline-{mon["name"]}'
         shutil.rmtree(profile, ignore_errors=True)
         hyprctl(['dispatch', f'hl.dsp.focus({{monitor="{mon["name"]}"}})'])
@@ -479,6 +599,11 @@ def screens_for_monitors(p, mons: list[dict], url: str, port: int) -> int:
                     print('    WARN: the browser never exposed the page')
                     rc = 1
                     continue
+                if ui_scale:
+                    page.evaluate(f"try {{ localStorage.setItem('web-sa-ui-scale', "
+                                 f"'{ui_scale}') }} catch (e) {{}}")
+                    page.reload(wait_until='networkidle')
+                    page.wait_for_timeout(2000)
                 # Maximise this window (located by browser pid) and let the layout settle.
                 addr = next((c['address'] for c in clients()
                              if c.get('pid') == proc.pid or c.get('class') == 'chromium'), '')
@@ -489,29 +614,31 @@ def screens_for_monitors(p, mons: list[dict], url: str, port: int) -> int:
                              f'window="address:{addr}"}})'])
                 page.wait_for_timeout(3000)
                 measured = page.evaluate(PROBE, LANDMARKS)
-                page.screenshot(path=str(SHOT_DIR / f"{mon['name']}-baseline-page.png"))
+                page.screenshot(path=str(SHOT_DIR / f"{mon['name']}-{tag}-page.png"))
                 window = next((c for c in clients() if c['address'] == addr), {}) if addr else {}
                 geo = {k: window.get(k) for k in ('address', 'at', 'size', 'monitor')}
                 # Capture while the window is still on screen, or the region shows what is behind it.
-                shot = SHOT_DIR / f"{mon['name']}-baseline.png"
+                shot = SHOT_DIR / f"{mon['name']}-{tag}.png"
                 subprocess.run(['grim', '-g',
                                 f"{mon['x']},{mon['y']} {mon['lw']}x{mon['lh']}", str(shot)],
                                check=True)
-                (SHOT_DIR / f"{mon['name']}-baseline.json").write_text(
-                    json.dumps({'monitor': mon, 'url': url, 'window': geo, 'metrics': measured},
+                (SHOT_DIR / f"{mon['name']}-{tag}.json").write_text(
+                    json.dumps({'monitor': mon, 'url': url, 'uiScale': ui_scale,
+                                'window': geo, 'metrics': measured},
                                indent=2, ensure_ascii=False), encoding='utf-8')
                 vp = measured['viewport']
                 card = measured.get('card') or {}
                 print(f"    browser reported dpr {vp['dpr']:.3f}, viewport "
-                      f"{vp['w']}x{vp['h']} css on a {vp['svw']}x{vp['svh']} logical screen")
+                      f"{vp['w']}x{vp['h']} css, UI scale {vp.get('uiScale')} "
+                      f"on a {vp['svw']}x{vp['svh']} logical screen")
                 print(f"    window {geo.get('at')} {geo.get('size')}")
                 for c in measured['canvases']:
-                    print(f"    canvas {c['id']}: css {c['cssW']}x{c['cssH']} "
+                    print(f"    canvas {c['id']}: local {c['cssW']}x{c['cssH']} "
                           f"backing {c['backingW']}x{c['backingH']} stretch {c['stretch']}")
                 print(f"    card {card.get('w')}x{card.get('h')} -> "
                       f"{100 - card.get('w', 0) / vp['w'] * 100:.1f}% of the width unused")
                 print(f"    screenshot: {shot.relative_to(ROOT)}"
-                      f" + {mon['name']}-baseline-page.png (browser-side capture)")
+                      f" + {mon['name']}-{tag}-page.png (browser-side capture)")
                 if not shot.exists() or shot.stat().st_size == 0:
                     print('    WARN: screenshot is empty')
                     rc = 1
@@ -553,6 +680,9 @@ def main() -> int:
                         help='exit non-zero when a viewport reports a finding')
     parser.add_argument('--screens', action='store_true',
                         help='also grab one real-session screenshot per attached monitor')
+    parser.add_argument('--screens-scales', default='',
+                        help='comma list of UI scales for the real-session screenshots '
+                             '(default: whatever the page picks)')
     parser.add_argument('--screens-only', action='store_true')
     parser.add_argument('--ui-scales', default='',
                         help='comma list of UI scales to sweep (e.g. 1,1.5,2); default: the page decides')
@@ -569,7 +699,8 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.screens_only:
-        return screens(args.url)
+        only = [float(s) for s in args.screens_scales.split(',') if s.strip()] or [None]
+        return screens(args.url, scales=only)
 
     wanted = [m.strip() for m in args.modes.split(',') if m.strip()]
     selected = [(name, sels) for name, sels in MODES if name in wanted]
@@ -659,10 +790,10 @@ def main() -> int:
         except Exception as exc:                                   # noqa: BLE001
             print(f'  WARN: could not restore sweep mode: {exc}')
 
-    if args.screens:
+    if args.screens_only or args.screens:
         print('\n=== real-session screenshots ===')
-        rc = screens(args.url)
-        if rc:
+        scales = [float(s) for s in args.screens_scales.split(',') if s.strip()] or [None]
+        if screens(args.url, scales=scales):
             total_findings += 1
 
     if args.check and total_findings:
