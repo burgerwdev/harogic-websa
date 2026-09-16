@@ -187,6 +187,18 @@ body {
   height: 100vh;
   height: 100dvh;
   min-height: 320px;
+  /* Global UI scale: one number (core/uiScale.ts) that sizes fonts, spacing, control widths
+     and the canvas together. `zoom` is the only mechanism that scales a stylesheet written in
+     px without rewriting every declaration, and it re-rasterises text and canvases instead of
+     stretching them. It also scales this element's own box, so the two viewport-relative
+     sizes are divided by it - otherwise the frame would be `scale` times larger than the
+     window. The canvas compensates separately (core/store.ts backingRatio), because a zoomed
+     canvas covers more device pixels than its local clientWidth suggests.
+     --ui is owned by core/uiScale.ts on :root; the fallback keeps the frame at 1:1 when the
+     stylesheet is loaded without it (styles-only tests, a stripped-down page). */
+  zoom: var(--ui, 1);
+  width: calc(100% / var(--ui, 1));
+  height: calc(100dvh / var(--ui, 1));
 }
 .info-bar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
@@ -574,7 +586,7 @@ input.ref-pending { border: 1px dashed #ffb300; }
    This is a "nothing overflows or overlaps, everything reachable" layout, not a touch
    layout: no touch-target work is in scope. */
 @media (max-width: 1000px) {
-  .analyzer-card { height: auto; min-height: 100dvh; }
+  .analyzer-card { height: auto; min-height: calc(100dvh / var(--ui, 1)); }
   .screen-container { flex-direction: column; }
   .spectrum-area { flex: 0 0 auto; }
   .spectrum-box { min-height: 260px; }

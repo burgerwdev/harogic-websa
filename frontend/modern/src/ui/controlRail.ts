@@ -4,6 +4,7 @@
 // its own and follows a language switch automatically. Collapsing is delegated to the
 // group's own toggle button, keeping a single owner for the collapse state.
 import { hasKey, onLangChange, t } from '../core/i18n';
+import { getUiScale } from '../core/uiScale';
 import { activeIndex } from './railMath';
 
 interface RailItem { el: HTMLButtonElement; group: HTMLElement; }
@@ -49,8 +50,11 @@ function isCollapsed(group: HTMLElement): boolean {
 
 /** Group tops in scroll coordinates, independent of the offsetParent chain. */
 function groupTops(p: HTMLElement): number[] {
+  // The rects are in screen px, scrollTop is in local px: under a UI scale they differ by the
+  // zoom factor, so divide it out before mixing them (core/uiScale.ts).
+  const scale = getUiScale();
   const panelTop = p.getBoundingClientRect().top;
-  return items.map((it) => it.group.getBoundingClientRect().top - panelTop + p.scrollTop);
+  return items.map((it) => (it.group.getBoundingClientRect().top - panelTop) / scale + p.scrollTop);
 }
 
 function markActive(group: HTMLElement | null): void {

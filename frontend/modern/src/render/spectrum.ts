@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
-import { ctx, pixelRatio, W, H } from '../core/store';
+import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
@@ -636,31 +636,42 @@ function renderRta() {
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
 let lastSwpWfAt = 0;
-// The container's own CSS height, borders included (.waterfall-container in src/style.css),
-// and its canvas fills that content box (height: 100%). Reading the box here would be a
-// layout read per frame, and a DPR-scaled canvas must not be sized from its own attribute
-// (that is the feedback loop core/store.ts documents).
-const WF_CSS_H = 135;
+// The waterfall canvas is sized here, never inside the frame loop: reading clientWidth/
+// clientHeight per frame forces a layout per frame (render/dsp/meas are covered by
+// hotPathLayout.test.ts). It is re-derived when the plot box changes - core/store.ts pushes
+// that through onCanvasResize below - and when the waterfall is switched on.
+let wfSized = false;
+onCanvasResize(() => { wfSized = false; });
+
+function sizeWaterfall(wf: HTMLCanvasElement): void {
+  // Drawing units are CSS px of the spectrum content box, so the waterfall's CSS box is the
+  // plot rectangle as-is: no scale factor, no conversion.
+  const pr = plotRect();
+  const left = pr.x.toFixed(3) + 'px';
+  if (wf.style.left !== left) wf.style.left = left;
+  const width = pr.w.toFixed(3) + 'px';
+  if (wf.style.width !== width) wf.style.width = width;
+  // Backing store from the box it actually got x the ratio the spectrum canvas uses, so the
+  // bitmap is never resampled. The box has to be read rather than assumed: the browser rounds
+  // a zoomed box to its own grid, so a constant differs from the real content box by a pixel
+  // or two (measured: 134 vs the nominal 133). layout-read-ok: resize path only - wfSized is
+  // false only after a resize/zoom or when the waterfall is switched on, never per frame.
+  const backW = Math.max(60, Math.round(wf.clientWidth * pixelRatio));    // layout-read-ok: resize path only
+  const backH = Math.max(40, Math.round(wf.clientHeight * pixelRatio));   // layout-read-ok: resize path only
+  if (wf.width !== backW) wf.width = backW;
+  if (wf.height !== backH) wf.height = backH;
+  setWaterfallRowWidth(wf.width);
+  wfSized = true;
+}
+
 function renderWaterfallIfOn() {
-  if (!waterfallOn.get()) return;
+  if (!waterfallOn.get()) {
+    wfSized = false;
+    return;
+  }
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
-  // Drawing units are CSS px of the spectrum content box, so the waterfall's CSS box is the
-  // plot rectangle as-is: no scale factor and no per-frame getBoundingClientRect().
-  const pr = plotRect();
-  const wCss = Math.max(60, pr.w);
-  const hCss = Math.max(40, WF_CSS_H - 2);
-  // Backing store from the CSS box x the same ratio the spectrum canvas uses: the waterfall
-  // draws raw ImageData in device pixels, so this is the whole sharpness story for it.
-  const w = Math.round(wCss * pixelRatio);
-  const h = Math.round(hCss * pixelRatio);
-  if (wf.width !== w || wf.height !== h) { wf.width = w; wf.height = h; }
-  // Pin the CSS box to the plot area: left AND right edge align with the spectrum X
-  // axis; explicit width prevents the default canvas sizing from drifting
-  const ls = pr.x.toFixed(3) + 'px';
-  if (wf.style.left !== ls) wf.style.left = ls;
-  const ws = wCss.toFixed(3) + 'px';
-  if (wf.style.width !== ws) wf.style.width = ws;
+  if (!wfSized) sizeWaterfall(wf);
   // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
   if (!S.rtaMode) {
     const powers = getDisplayPowers();
@@ -672,7 +683,6 @@ function renderWaterfallIfOn() {
       }
     }
   }
-  setWaterfallRowWidth(wf.width);
   renderWaterfall(wf, 100);
 }
 

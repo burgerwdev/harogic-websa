@@ -89,7 +89,10 @@ PROBE = """(landmarks) => {
   const de = document.documentElement;
   const vw = window.innerWidth, vh = window.innerHeight;
   const dpr = window.devicePixelRatio || 1;
-  out.viewport = { w: vw, h: vh, dpr: dpr,
+  // The global UI scale (core/uiScale.ts) is CSS `zoom` on the frame, so a canvas in it covers
+  // scale times more device pixels than its local px suggest.
+  const ui = parseFloat(document.documentElement.dataset.uiScale || '1') || 1;
+  out.viewport = { w: vw, h: vh, dpr: dpr, uiScale: ui,
                    zoom: window.visualViewport ? window.visualViewport.scale : null,
                    svw: screen.width, svh: screen.height };
   out.doc = { scrollW: de.scrollWidth, clientW: de.clientWidth,
@@ -102,13 +105,14 @@ PROBE = """(landmarks) => {
   // Canvas: CSS content box vs backing store. `stretch` ~1 is sharp; >1 means an upscaled
   // bitmap. The bitmap is painted into the content box (borders excluded), so that is the box
   // the backing store has to match - `expectedW/H` is round(box x ratio) with the same policy
-  // core/store.ts uses (ratio capped at 2, reduced only past an 8M device-pixel budget).
+  // core/store.ts uses (ratio = DPR x UI scale, capped at 4, reduced only past an 8M
+  // device-pixel budget, never below 1).
   out.canvases = [];
   for (const c of document.querySelectorAll('canvas')) {
     const r = c.getBoundingClientRect();
     const cssW = c.clientWidth > 0 ? c.clientWidth : r.width;
     const cssH = c.clientHeight > 0 ? c.clientHeight : r.height;
-    let ratio = Math.max(1, Math.min(2, dpr));
+    let ratio = Math.max(1, Math.min(4, dpr * ui));
     if (cssW * cssH * ratio * ratio > 8000000) ratio = Math.max(1, Math.sqrt(8000000 / (cssW * cssH)));
     let lit = null, sampled = 0;
     const g = c.getContext('2d');
@@ -126,9 +130,9 @@ PROBE = """(landmarks) => {
     }
     out.canvases.push({
       id: c.id || '(anon)', cssW: +cssW.toFixed(1), cssH: +cssH.toFixed(1),
-      borderW: +(r.width - cssW).toFixed(1), borderH: +(r.height - cssH).toFixed(1),
+      screenW: +r.width.toFixed(1), screenH: +r.height.toFixed(1),
       backingW: c.width, backingH: c.height,
-      stretch: cssW > 0 ? +((cssW * dpr) / c.width).toFixed(3) : null,
+      stretch: cssW > 0 ? +((cssW * dpr * ui) / c.width).toFixed(3) : null,
       ratio: +ratio.toFixed(3),
       expectedW: Math.round(cssW * ratio), expectedH: Math.round(cssH * ratio),
       litRatio: sampled ? +((lit || 0) / sampled).toFixed(4) : null, sampled: sampled,
@@ -184,7 +188,18 @@ PROBE = """(landmarks) => {
     }
   }
   // Outermost elements reaching past the left/right edge of the viewport, measured on the
-  // reachable rect (inside a clipped ancestor they are cut off, not overflowing).
+  // reachable rect (inside a clipped ancestor they are cut off, not overflowing). An element
+  // inside a horizontally scrollable ancestor is reachable by scrolling that ancestor, so it is
+  // not an offender.
+  const scrollableInX = (el) => {
+    let p = el.parentElement;
+    while (p && p !== document.documentElement) {
+      const ox = getComputedStyle(p).overflowX;
+      if (ox === 'auto' || ox === 'scroll') return true;
+      p = p.parentElement;
+    }
+    return false;
+  };
   const clipped = [];
   for (const el of document.querySelectorAll('body *')) {
     const r = el.getBoundingClientRect();
@@ -194,6 +209,7 @@ PROBE = """(landmarks) => {
     const c = clip(el);
     if (area(c) <= 0) continue;
     if (c.right <= vw + 1 && c.left >= -1) continue;
+    if (scrollableInX(el)) continue;
     clipped.push([el, c]);
   }
   out.clipped = [];
@@ -264,7 +280,8 @@ def fmt(metrics: dict) -> list[str]:
     lines: list[str] = []
     findings: list[str] = []
     vp, doc = metrics['viewport'], metrics['doc']
-    lines.append(f"[{metrics.get('mode', 'swp')}] viewport {vp['w']}x{vp['h']} css, dpr {vp['dpr']}"
+    lines.append(f"viewport {vp['w']}x{vp['h']} css, dpr {vp['dpr']}"
+                 + (f", ui scale {vp['uiScale']}" if vp.get('uiScale', 1) != 1 else '')
                  + (f", visualViewport.scale {vp['zoom']}" if vp['zoom'] not in (None, 1) else ''))
     ov_x = doc['scrollW'] - doc['clientW']
     ov_y = doc['scrollH'] - doc['clientH']
@@ -283,25 +300,36 @@ def fmt(metrics: dict) -> list[str]:
         if c['cssW'] <= 0 or c['cssH'] <= 0:
             lines.append(f"  canvas {c['id']:<10}: css {c['cssW']}x{c['cssH']} (not rendered)")
             continue
-        lines.append(f"  canvas {c['id']:<10}: box {c['cssW']}x{c['cssH']} (+border "
-                     f"{c['borderW']}x{c['borderH']})  backing {c['backingW']}x{c['backingH']}"
+        lines.append(f"  canvas {c['id']:<10}: local box {c['cssW']}x{c['cssH']}"
+                     f"  screen {c['screenW']}x{c['screenH']}"
+                     f"  backing {c['backingW']}x{c['backingH']}"
                      f"  expected {c['expectedW']}x{c['expectedH']} at ratio {c['ratio']}"
                      f"  stretch {c['stretch']}x  lit {c['litRatio']}")
-        if (c['backingW'] != c['expectedW'] or c['backingH'] != c['expectedH']):
+        if (abs(c['backingW'] - c['expectedW']) > 2 or abs(c['backingH'] - c['expectedH']) > 2):
             findings.append(f"canvas {c['id']} backing {c['backingW']}x{c['backingH']} != "
                             f"round(box x ratio) {c['expectedW']}x{c['expectedH']}")
+        elif c['backingW'] != c['expectedW'] or c['backingH'] != c['expectedH']:
+            # Within 2 device px: a zoomed box is rounded to the device grid, and a canvas sized
+            # from that same box one frame earlier can land a pixel off. Not a blur - the
+            # stretch check below is what would catch a real mismatch.
+            lines.append(f"    (backing differs from the box by "
+                         f"{c['backingW'] - c['expectedW']}x{c['backingH'] - c['expectedH']} "
+                         f"device px: zoomed-box rounding)")
         if c['stretch'] and c['stretch'] > 1.02:
             findings.append(f"canvas {c['id']} bitmap stretched {c['stretch']}x (blur)")
         if c['litRatio'] == 0:
             findings.append(f"canvas {c['id']} has no painted pixels")
     fonts = metrics['fonts']
     if fonts:
+        ui = vp.get('uiScale', 1)
         label = fonts.get('label', fonts.get('body'))
-        per_1000 = label / vp['h'] * 1000
+        # The UI scale is CSS zoom, so a computed font size is local px while the viewport is
+        # screen px: what the eye sees is fontSize x scale against the screen height.
+        per_1000 = label * ui / vp['h'] * 1000
         lines.append(f"  text          : body {fonts.get('body')}px, labels {label}px, "
-                     f"inputs {fonts.get('input')}px -> {per_1000:.1f} px per 1000 logical px "
-                     f"of height ({fonts.get('body')}*{vp['dpr']} = "
-                     f"{fonts.get('body', 0) * vp['dpr']:.1f} device px)")
+                     f"inputs {fonts.get('input')}px -> {per_1000:.1f} px per 1000 px of "
+                     f"viewport height (local {label} x scale {ui} = "
+                     f"{label * ui:.1f} screen px of {vp['h']}, dpr {vp['dpr']})")
         if per_1000 < 10:
             findings.append(f'label text shrinks to {per_1000:.1f}px per 1000px of height')
     boxes = {k: v for k, v in metrics['boxes'].items()}
@@ -338,8 +366,13 @@ def fmt(metrics: dict) -> list[str]:
 
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
             mode: str = 'swp', mode_clicks: list[str] | None = None,
-            shot_path: Path | None = None) -> dict:
+            shot_path: Path | None = None, ui_scale: float | None = None) -> dict:
     ctx = browser.new_context(viewport={'width': w, 'height': h}, device_scale_factor=dpr)
+    if ui_scale is not None:
+        # Seed the stored override the way a returning user would have it, so the same sweep
+        # can run at several UI scales (the control itself is exercised by tools/e2e/ui_smoke.py).
+        ctx.add_init_script(
+            f"try {{ localStorage.setItem('web-sa-ui-scale', '{ui_scale}') }} catch (e) {{}}")
     page = ctx.new_page()
     errors: list[str] = []
     page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
@@ -361,6 +394,7 @@ def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
         print(f"  screenshot    : {shot_path.relative_to(ROOT)}")
     metrics['label'] = label
     metrics['mode'] = mode
+    metrics['uiScale'] = ui_scale if ui_scale is not None else 1
     metrics['errors'] = errors
     ctx.close()
     return metrics
@@ -520,6 +554,8 @@ def main() -> int:
     parser.add_argument('--screens', action='store_true',
                         help='also grab one real-session screenshot per attached monitor')
     parser.add_argument('--screens-only', action='store_true')
+    parser.add_argument('--ui-scales', default='',
+                        help='comma list of UI scales to sweep (e.g. 1,1.5,2); default: the page decides')
     parser.add_argument('--modes', default='swp,rta+waterfall',
                         help='comma list of UI modes to measure '
                              f"({','.join(m[0] for m in MODES)})")
@@ -537,6 +573,7 @@ def main() -> int:
 
     wanted = [m.strip() for m in args.modes.split(',') if m.strip()]
     selected = [(name, sels) for name, sels in MODES if name in wanted]
+    scales = [float(s) for s in args.ui_scales.split(',') if s.strip()] or [None]
     shot_labels = [s.strip() for s in args.shots.split(',') if s.strip()]
     if not selected:
         print(f'no mode matches {args.modes!r}; known: {[m[0] for m in MODES]}')
@@ -563,32 +600,35 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         for label, w, h, dpr in VIEWPORTS:
-            for mode, mode_clicks in selected:
-                title = f'{label} [{mode}]'
-                print(f"\n=== {title} ===")
-                shot = None
-                if label in shot_labels:
-                    SHOT_DIR.mkdir(parents=True, exist_ok=True)
-                    safe = title.replace(' [', '-').replace(']', '').replace('+', '-')
-                    shot = SHOT_DIR / f'{safe}-{args.shot_suffix}.png'
-                m = collect(browser, args.url, label, w, h, dpr, mode, mode_clicks, shot)
-                lines, findings = fmt(m)
-                for line in lines:
-                    print(line)
-                for e in m['errors']:
-                    print(f"  JS ERROR      : {e}")
-                    findings.append('JS error')
-                if findings:
-                    print('  FINDINGS      : ' + '; '.join(findings))
-                else:
-                    print('  FINDINGS      : none')
-                total_findings += len(findings)
-                results.append({'label': title, 'mode': mode, 'findings': findings,
+            for ui_scale in scales:
+                for mode, mode_clicks in selected:
+                    title = f'{label} [{mode}]' + (f' ui{ui_scale}' if ui_scale else '')
+                    print(f"\n=== {title} ===")
+                    shot = None
+                    if label in shot_labels:
+                        SHOT_DIR.mkdir(parents=True, exist_ok=True)
+                        safe = title.replace(' [', '-').replace(']', '').replace('+', '-')
+                        safe = safe.replace(' ', '')
+                        shot = SHOT_DIR / f'{safe}-{args.shot_suffix}.png'
+                    m = collect(browser, args.url, label, w, h, dpr, mode, mode_clicks,
+                                shot, ui_scale)
+                    lines, findings = fmt(m)
+                    for line in lines:
+                        print(line)
+                    for e in m['errors']:
+                        print(f"  JS ERROR      : {e}")
+                        findings.append('JS error')
+                    if findings:
+                        print('  FINDINGS      : ' + '; '.join(findings))
+                    else:
+                        print('  FINDINGS      : none')
+                    total_findings += len(findings)
+                    results.append({'label': title, 'mode': mode, 'findings': findings,
                                 'metrics': m})
         browser.close()
 
     print('\n=== summary ===')
-    print(f"  {'viewport [mode]':<32} {'card':>6} {'canvas css':>12} {'backing':>12} "
+    print(f"  {'viewport [mode]':<32} {'card':>6} {'canvas local':>12} {'backing':>12} "
           f"{'stretch':>8} {'unused':>7} {'findings':>8}")
     for r in results:
         m = r['metrics']
