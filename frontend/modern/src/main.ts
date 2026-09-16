@@ -13,6 +13,7 @@ import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { requestRender } from './render/redraw';
 import { initStore } from './core/store';
+import { initUiScale } from './core/uiScale';
 // Imported for its registration side effects: render/spectrum.ts is the swept/RTA view hub
 // and calls setRenderer(renderAll) + registerViewRenderer('rta') at module scope. Nothing
 // imports it any more (that is what broke the render/spectrum cycles in the first place), so
@@ -26,6 +27,9 @@ import { updateInfoBar } from './render/infobar';
 import { syncToggleTexts } from './ui/controls';
 
 function init() {
+  // The UI scale first: the frame is CSS-zoomed, so it decides the box the canvas gets when
+  // initStore() sizes it (core/uiScale.ts, core/store.ts).
+  initUiScale();
   initStore();   // bind the canvas before the first render
   // Theme/language (restored from localStorage)
   const savedTheme = localStorage.getItem('web-sa-theme');

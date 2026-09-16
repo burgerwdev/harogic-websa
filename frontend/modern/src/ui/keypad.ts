@@ -14,6 +14,7 @@
 //    can be placed anywhere with the mouse, backspace deletes one character at the caret and the
 //    C key clears the whole entry
 import { t } from '../core/i18n';
+import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { fieldForInput, setUnit, UNIT_OPTIONS } from '../core/units';
 
 const LS_KEY = 'websa-keypad';
@@ -207,10 +208,10 @@ function makeDraggable(handle: HTMLElement): void {
       try { handle.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     }
     if (!dragging || !pad) return;
-    const x = Math.min(Math.max(2, e.clientX - dx), window.innerWidth - pad.offsetWidth - 2);
-    const y = Math.min(Math.max(2, e.clientY - dy), window.innerHeight - pad.offsetHeight - 2);
-    pad.style.left = `${Math.round(x)}px`;
-    pad.style.top = `${Math.round(y)}px`;
+    const { w: pw, h: ph } = padBox();
+    const x = Math.min(Math.max(2, e.clientX - dx), window.innerWidth - pw - 2);
+    const y = Math.min(Math.max(2, e.clientY - dy), window.innerHeight - ph - 2);
+    placePad(x, y);
     moved = true;
   });
   const stop = (e: PointerEvent) => {
@@ -245,14 +246,36 @@ function buildUnits(): void {
 function place(): void {
   if (!pad || !target || moved) return;
   const r = target.getBoundingClientRect();
-  const pw = pad.offsetWidth || 190;
-  const ph = pad.offsetHeight || 250;
+  const { w: pw, h: ph } = padBox();
   let x = Math.min(Math.max(6, r.left), window.innerWidth - pw - 6);
   let y = r.bottom + 6;
   if (y + ph > window.innerHeight - 6) y = Math.max(6, r.top - ph - 6);
-  pad.style.left = `${Math.round(x)}px`;
-  pad.style.top = `${Math.round(y)}px`;
+  placePad(x, y);
 }
+
+/**
+ * The keypad lives in <body>, outside the zoomed frame, and carries the same UI scale itself
+ * (core/uiScale.ts). That makes its own offsetWidth/offsetHeight local px while the pointer,
+ * the target rect and the window are screen px - so the two conversions below are the whole
+ * reason this is not a one-liner.
+ */
+function padBox(): { w: number; h: number } {
+  const scale = getUiScale();
+  return { w: (pad?.offsetWidth || 190) * scale, h: (pad?.offsetHeight || 250) * scale };
+}
+
+function placePad(x: number, y: number): void {
+  if (!pad) return;
+  const scale = getUiScale();
+  pad.style.left = `${Math.round(x / scale)}px`;
+  pad.style.top = `${Math.round(y / scale)}px`;
+}
+
+/** Follow the UI scale (the pad is not inside the zoomed frame). */
+function applyPadScale(): void {
+  if (pad) pad.style.zoom = String(getUiScale());
+}
+onUiScaleChange(applyPadScale);
 
 function open(input: HTMLInputElement): void {
   if (!enabled) return;
@@ -267,6 +290,7 @@ function open(input: HTMLInputElement): void {
   // building the rows first left the first open of a session without unit keys.
   if (!pad) pad = buildPad();
   if (!pad.isConnected) document.body.appendChild(pad);
+  applyPadScale();
   // A text field has no decimals, so the '.' key becomes the list separator there, and its
   // display line becomes an editable input so the caret can be placed with the mouse.
   const text = isTextField(input);

@@ -1,5 +1,5 @@
 # Unified entry
-.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record
+.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record viewport-baseline viewport-check
 
 run:      ## Start service
 	./run.sh
@@ -64,11 +64,22 @@ e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
 		curl -sf -o /dev/null http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}/api/state && break; done
 	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
 	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
+	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099} \
+		--check --no-inventory
 	@kill $$(cat /tmp/websa-fake.pid) 2>/dev/null || true; rm -f /tmp/websa-fake.pid
-	@echo "OK: fake-backend UI smoke + state-machine contract (no hardware needed)"
+	@echo "OK: fake-backend UI smoke + state-machine contract + resolution sweep (no hardware)"
 
 bench-record:  ## Re-record the performance baseline on this host
 	python3 tools/bench.py --duration 4 --write-baseline tools/bench_baseline.json
+
+viewport-baseline:  ## Layout/resolution baseline over every attached output (needs a running service)
+	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
+	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_PORT:-8080} \
+		--json tools/e2e/viewport_baseline.json
+
+viewport-check:  ## Resolution/geometry gate: every viewport must come back clean (needs a running service)
+	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_PORT:-8080} \
+		--check --no-inventory
 
 all:      ## Build + test + run
 	./build.sh && ./test.sh && ./run.sh

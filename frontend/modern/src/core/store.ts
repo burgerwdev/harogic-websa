@@ -4,6 +4,8 @@
 // shared types in core/model.ts. This module keeps the runtime/UI state and re-exports the
 // moved names so existing `S.x` / `S.setX` call sites keep working.
 import type { MarkerState, TraceState } from './model';
+import { requestRender } from '../render/redraw';
+import { getUiScale } from './uiScale';
 // Canvas
 //
 // These are assigned by initStore() rather than at import time: importing this module used
@@ -11,9 +13,18 @@ import type { MarkerState, TraceState } from './model';
 // `let` bindings, so every importer sees the assigned values (ESM live bindings); layout code
 // must therefore read them inside functions, not at module scope.
 //
-// Logical drawing coordinates stay 860x480. The backing store is scaled by the device pixel
-// ratio and the context is transformed accordingly, so the canvas is sharp on HiDPI screens
-// while all the geometry (plotRect/getX/getY/margins) keeps its logical units (finding P2-4).
+// Drawing coordinates are CSS pixels of the canvas *content box* (W/H below), not a fixed
+// 860x480 grid: the frame is fluid, so the plot uses the box it is actually given and the
+// backing store follows it (`round(box x ratio)`), which is what keeps it sharp - a fixed
+// backing store stretched by CSS is what "soft on a bigger screen" looked like. Geometry
+// (plotRect/getX/getY/MARGIN, peak/marker readouts) stays in these logical units, so no
+// readout depends on the window size.
+//
+// The size is re-derived from a ResizeObserver, never from inside a frame: a per-frame
+// getBoundingClientRect() is a forced layout every frame, which render/spectrum.ts used to do
+// for the waterfall's CSS width (see 'the waterfall never reads layout' in the DOM guard).
+// Fallback drawing space in CSS px, used when there is nothing to measure (jsdom, a hidden
+// tab, before the first layout); the live values are W/H below.
 export const LOGICAL_W = 860;
 export const LOGICAL_H = 480;
 export let canvas!: HTMLCanvasElement;
@@ -22,26 +33,97 @@ export let W = LOGICAL_W, H = LOGICAL_H;
 export let pixelRatio = 1;
 export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
 
+// ── Backing-store policy: the one place to change it ──
+// The bitmap is stretched onto the content box, so the backing store must be
+// `round(box x ratio)`; anything else is resampled by the browser and looks soft.
+// The ratio is the device pixels per *local* CSS px of this element, which is the device pixel
+// ratio times the UI scale: the frame is CSS-zoomed (core/uiScale.ts), so a canvas inside it
+// covers `scale` times more device pixels than its local clientWidth suggests.
+//   * MAX_SCALE 4 - past that the extra samples are not visible on the panels this runs on,
+//     and the canvas is repainted for every delivered frame.
+//   * PIXEL_BUDGET 8M device pixels (~32MB for this canvas) - a 3840px-wide window at 2x
+//     would otherwise allocate a 25M-pixel bitmap that is cleared whenever the size changes.
+//     Past the budget the ratio is reduced, never below 1.
+//   * The ratio is clamped *up* to 1: a scale below 1 is real (with a desktop text scale set,
+//     Chromium reports 0.906 on this laptop's panel), and an undersampled bitmap is blurrier
+//     than an oversized one.
+const MAX_SCALE = 4;
+const PIXEL_BUDGET = 8_000_000;
+
+let lastBox = { w: -1, h: -1, ratio: -1 };
+let resizeObserver: ResizeObserver | null = null;
+const resizeListeners = new Set<() => void>();
+
+/**
+ * Notified when the drawing space or the ratio changed. render/spectrum.ts uses it to
+ * re-derive the waterfall canvas' box and backing store on a resize/zoom instead of reading
+ * layout inside the frame loop.
+ */
+export function onCanvasResize(fn: () => void): void {
+  resizeListeners.add(fn);
+}
+
+/** The canvas content box in CSS px - the box the bitmap is painted into. */
+function cssBox(el: HTMLCanvasElement): { w: number; h: number } {
+  // clientWidth/Height exclude the border and are integers, which keeps the
+  // `backing == round(box x ratio)` contract exact; the rect is the pre-layout fallback and
+  // the constants cover "no layout at all" (jsdom).
+  if (el.clientWidth > 0 && el.clientHeight > 0) return { w: el.clientWidth, h: el.clientHeight };
+  const rect = el.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0) return { w: rect.width, h: rect.height };
+  return { w: LOGICAL_W, h: LOGICAL_H };
+}
+
+function backingRatio(w: number, h: number): number {
+  const wanted = Math.min(MAX_SCALE, Math.max(1, (window.devicePixelRatio || 1) * getUiScale()));
+  if (w * h * wanted * wanted <= PIXEL_BUDGET) return wanted;
+  return Math.max(1, Math.sqrt(PIXEL_BUDGET / (w * h)));
+}
+
+/**
+ * Re-derive the drawing space and the backing store from the current box and DPR, and
+ * re-apply the context transform. Returns true when anything changed (the caller repaints).
+ */
+export function syncCanvasSize(): boolean {
+  const { w, h } = cssBox(canvas);
+  const ratio = backingRatio(w, h);
+  const backingW = Math.round(w * ratio);
+  const backingH = Math.round(h * ratio);
+  if (w === lastBox.w && h === lastBox.h && ratio === lastBox.ratio
+      && canvas.width === backingW && canvas.height === backingH) {
+    return false;
+  }
+  lastBox = { w, h, ratio };
+  W = w;
+  H = h;
+  pixelRatio = ratio;
+  // Setting width/height also clears the bitmap, so only do it when the value moves.
+  if (canvas.width !== backingW) canvas.width = backingW;
+  if (canvas.height !== backingH) canvas.height = backingH;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  resizeListeners.forEach((fn) => fn());
+  return true;
+}
+
 /** Bind the spectrum canvas. Must run before the first render (main.ts calls it first). */
 export function initStore(): void {
   const el = document.getElementById('spectrum') as HTMLCanvasElement | null;
   if (!el) {
     throw new Error('core/store: #spectrum is missing; initStore() must run after the DOM is ready');
   }
-  const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-  const backingW = Math.round(LOGICAL_W * ratio);
-  const backingH = Math.round(LOGICAL_H * ratio);
-  if (el.width !== backingW || el.height !== backingH) {
-    el.width = backingW;
-    el.height = backingH;
-  }
   canvas = el;
-  W = LOGICAL_W;
-  H = LOGICAL_H;
-  pixelRatio = ratio;
   ctx = el.getContext('2d') as CanvasRenderingContext2D;
-  // Draw in logical pixels; the CSS box still scales the element responsively.
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  lastBox = { w: -1, h: -1, ratio: -1 };   // force the first derivation to apply
+  syncCanvasSize();
+  // A fluid frame means the plot box changes with the window, a UI zoom level or a display
+  // switch. Repaint on those, and only on those. jsdom has no ResizeObserver and a fixed box.
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver?.disconnect();
+    resizeObserver = new ResizeObserver(() => {
+      if (syncCanvasSize()) requestRender();
+    });
+    resizeObserver.observe(el);
+  }
 }
 
 // Frequency/amplitude state

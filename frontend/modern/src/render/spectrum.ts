@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
-import { ctx, W, H } from '../core/store';
+import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
@@ -37,9 +37,8 @@ function cur() {
   };
 }
 
-// Fixed plot rectangle: W/H/MARGIN are constants, so this is computed once instead of
-// allocating a new object for every point during trace rendering.
-// Shared bottom frequency row (used by both SWP grid and RTA view)
+// Fixed plot rectangle: W/H/MARGIN move with the window, so this is recomputed per draw
+// rather than cached - allocating one small object per frame is not the hot path (points are).
 function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   ctx.font = '11px monospace';
   ctx.textBaseline = 'top';
@@ -637,27 +636,42 @@ function renderRta() {
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
 let lastSwpWfAt = 0;
+// The waterfall canvas is sized here, never inside the frame loop: reading clientWidth/
+// clientHeight per frame forces a layout per frame (render/dsp/meas are covered by
+// hotPathLayout.test.ts). It is re-derived when the plot box changes - core/store.ts pushes
+// that through onCanvasResize below - and when the waterfall is switched on.
+let wfSized = false;
+onCanvasResize(() => { wfSized = false; });
+
+function sizeWaterfall(wf: HTMLCanvasElement): void {
+  // Drawing units are CSS px of the spectrum content box, so the waterfall's CSS box is the
+  // plot rectangle as-is: no scale factor, no conversion.
+  const pr = plotRect();
+  const left = pr.x.toFixed(3) + 'px';
+  if (wf.style.left !== left) wf.style.left = left;
+  const width = pr.w.toFixed(3) + 'px';
+  if (wf.style.width !== width) wf.style.width = width;
+  // Backing store from the box it actually got x the ratio the spectrum canvas uses, so the
+  // bitmap is never resampled. The box has to be read rather than assumed: the browser rounds
+  // a zoomed box to its own grid, so a constant differs from the real content box by a pixel
+  // or two (measured: 134 vs the nominal 133). layout-read-ok: resize path only - wfSized is
+  // false only after a resize/zoom or when the waterfall is switched on, never per frame.
+  const backW = Math.max(60, Math.round(wf.clientWidth * pixelRatio));    // layout-read-ok: resize path only
+  const backH = Math.max(40, Math.round(wf.clientHeight * pixelRatio));   // layout-read-ok: resize path only
+  if (wf.width !== backW) wf.width = backW;
+  if (wf.height !== backH) wf.height = backH;
+  setWaterfallRowWidth(wf.width);
+  wfSized = true;
+}
+
 function renderWaterfallIfOn() {
-  if (!waterfallOn.get()) return;
+  if (!waterfallOn.get()) {
+    wfSized = false;
+    return;
+  }
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
-  // Canvas width = spectrum plot area width (CSS px), fixed (buttons don't squeeze it)
-  const spec = document.getElementById('spectrum') as HTMLCanvasElement;
-  const sRect = spec.getBoundingClientRect();
-  const scale = sRect.width / S.W;
-  const pr = plotRect();
-  const wCss = pr.w * scale;                       // plot width in CSS px
-  const leftCss = pr.x * scale;                    // plot left edge in CSS px
-  const w = Math.max(60, Math.round(wCss));
-  const h = Math.max(40, 135 - 2);
-  if (wf.width !== w || wf.height !== h) { wf.width = w; wf.height = h; }
-  // Pin the CSS box to the plot area: left AND right edge align with the spectrum X
-  // axis (canvas is CSS-scaled, so the internal margins render at *scale on screen;
-  // explicit width prevents the default canvas sizing from drifting)
-  const ls = leftCss.toFixed(3) + 'px';
-  if (wf.style.left !== ls) wf.style.left = ls;
-  const ws = wCss.toFixed(3) + 'px';
-  if (wf.style.width !== ws) wf.style.width = ws;
+  if (!wfSized) sizeWaterfall(wf);
   // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
   if (!S.rtaMode) {
     const powers = getDisplayPowers();
@@ -669,7 +683,6 @@ function renderWaterfallIfOn() {
       }
     }
   }
-  setWaterfallRowWidth(wf.width);
   renderWaterfall(wf, 100);
 }
 

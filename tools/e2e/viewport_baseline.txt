@@ -1,0 +1,362 @@
+=== environment (the outputs and scales the numbers depend on) ===
+  output eDP-1: 1366x768 logical (compositor scale 1, at 0,0)
+  output HDMI-A-2: 1280x960 logical (compositor scale 1.6, at 1366,0)
+  GNOME text-scaling-factor = 0.90910000000000002: Chromium multiplies its device scale factor by it, so the real browser reports dpr = compositor scale x this value
+  measured in the real browser (screenshots/resolution-baseline/*.json): eDP-1 dpr 0.906 over a 1481x708 css viewport; HDMI-A-2 dpr 1.450 over a 1386x920 css viewport
+=== fixed sizes still in src/style.css (grep-able) ===
+--- structural locks the goal names:
+  fixed card width: gone (width: 1280px is no longer in the file)
+  spectrum column floor: gone (min-width: 860px is no longer in the file)
+  control panel width: gone (width: 360px is no longer in the file)
+  container height: gone (calc(100vh - 96px) is no longer in the file)
+--- all px width/height declarations (frontend/modern/src/style.css):
+  frontend/modern/src/style.css:189: min-height: 320px
+  frontend/modern/src/style.css:210: width: 9px
+  frontend/modern/src/style.css:210: height: 9px
+  frontend/modern/src/style.css:225: min-width: 62px
+  frontend/modern/src/style.css:241: min-width: 210px
+  frontend/modern/src/style.css:263: min-height: 120px
+  frontend/modern/src/style.css:298: height: 135px
+  frontend/modern/src/style.css:310: width: 26px
+  frontend/modern/src/style.css:318: width: 24px
+  frontend/modern/src/style.css:326: width: 12px
+  frontend/modern/src/style.css:326: height: 26px
+  frontend/modern/src/style.css:330: height: 22px
+  frontend/modern/src/style.css:361: width: 6px
+  frontend/modern/src/style.css:368: width: 190px
+  frontend/modern/src/style.css:406: min-width: 18px
+  frontend/modern/src/style.css:419: width: 88px
+  frontend/modern/src/style.css:419: min-width: 88px
+  frontend/modern/src/style.css:423: width: 34px
+  frontend/modern/src/style.css:423: min-width: 34px
+  frontend/modern/src/style.css:424: min-width: 48px
+  frontend/modern/src/style.css:425: width: 34px
+  frontend/modern/src/style.css:426: min-width: 28px
+  frontend/modern/src/style.css:442: width: 32px
+  frontend/modern/src/style.css:442: min-width: 32px
+  frontend/modern/src/style.css:443: width: 82px
+  frontend/modern/src/style.css:444: width: 62px
+  frontend/modern/src/style.css:446: min-width: 34px
+  frontend/modern/src/style.css:447: min-width: 58px
+  frontend/modern/src/style.css:453: min-width: 52px
+  frontend/modern/src/style.css:456: width: 108px
+  frontend/modern/src/style.css:456: height: 22px
+  frontend/modern/src/style.css:458: height: 22px
+  frontend/modern/src/style.css:463: height: 22px
+  frontend/modern/src/style.css:466: width: 24px
+  frontend/modern/src/style.css:468: width: 68px
+  frontend/modern/src/style.css:471: width: 68px
+  frontend/modern/src/style.css:492: width: 66px
+  frontend/modern/src/style.css:522: min-width: 48px
+  frontend/modern/src/style.css:522: height: 24px
+  frontend/modern/src/style.css:523: width: 18px
+  frontend/modern/src/style.css:523: height: 24px
+  frontend/modern/src/style.css:529: min-width: 12px
+  frontend/modern/src/style.css:531: width: 11px
+  frontend/modern/src/style.css:531: height: 11px
+  frontend/modern/src/style.css:535: min-width: 28px
+  frontend/modern/src/style.css:540: min-width: 28px
+  frontend/modern/src/style.css:588: max-width: 1000px) {
+  frontend/modern/src/style.css:592: min-height: 260px
+  frontend/modern/src/style.css:599: width: 34px
+  frontend/modern/src/style.css:599: height: 22px
+  frontend/modern/src/style.css:603: max-width: 700px) {
+  frontend/modern/src/style.css:608: max-height: 560px) {
+
+=== laptop-1366x768 [swp] ===
+viewport 1366x768 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1366 / clientW 1366)
+  card          : 1366x768 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 959x514  screen 960.8x516  backing 959x514  expected 959x514 at ratio 1  stretch 1x  lit 0.1222
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 768, dpr 1)
+  boxes         : info-bar 1366x35@0  spectrum-area 960.8x684@43  canvas#spectrum 960.8x516@43  waterfall 0x0@0  marker-table 960.8x160@567  rail 24x686@43  panel 357.2x684@43  dev-bar 1366x33@735
+  FINDINGS      : none
+
+=== laptop-1366x768 [rta+waterfall] ===
+viewport 1366x768 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1366 / clientW 1366)
+  card          : 1366x768 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 959x539  screen 960.8x541  backing 959x539  expected 959x539 at ratio 1  stretch 1x  lit 0.8784
+  canvas waterfall : local box 899x133  screen 899x133  backing 899x133  expected 899x133 at ratio 1  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 768, dpr 1)
+  boxes         : info-bar 1366x35@0  spectrum-area 960.8x684@43  canvas#spectrum 960.8x541@43  waterfall 960.8x135@592  marker-table 0x0@0  rail 24x686@43  panel 357.2x684@43  dev-bar 1366x33@735
+  FINDINGS      : none
+
+=== desktop-1600x1000 [swp] ===
+viewport 1600x1000 css, dpr 1, ui scale 1.25
+  overflow      : x=0px  y=0px  (scrollW 1600 / clientW 1600)
+  card          : 1600x1000 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 812x548  screen 1017.5x687.5  backing 1015x685  expected 1015x685 at ratio 1.25  stretch 1x  lit 0.1259
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 px of viewport height (local 11 x scale 1.25 = 13.8 screen px of 1000, dpr 1)
+  boxes         : info-bar 1600x43.5@0  spectrum-area 1017.5x895.5@53.5  canvas#spectrum 1017.5x687.5@53.5  waterfall 0x0@0  marker-table 1017.5x198@751  rail 30x898@53.5  panel 522.5x895.5@53.5  dev-bar 1600x41@959
+  FINDINGS      : none
+
+=== desktop-1600x1000 [rta+waterfall] ===
+viewport 1600x1000 css, dpr 1, ui scale 1.25
+  overflow      : x=0px  y=0px  (scrollW 1600 / clientW 1600)
+  card          : 1600x1000 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 812x572  screen 1017.5x716.8  backing 1015x715  expected 1015x715 at ratio 1.25  stretch 1x  lit 0.8734
+  canvas waterfall : local box 752x133  screen 940x166.8  backing 940x166  expected 940x166 at ratio 1.25  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 px of viewport height (local 11 x scale 1.25 = 13.8 screen px of 1000, dpr 1)
+  boxes         : info-bar 1600x43.5@0  spectrum-area 1017.5x895.5@53.5  canvas#spectrum 1017.5x716.8@53.5  waterfall 1017.5x168.8@780.3  marker-table 0x0@0  rail 30x898@53.5  panel 522.5x895.5@53.5  dev-bar 1600x41@959
+  FINDINGS      : none
+
+=== fhd-1920x1080 [swp] ===
+viewport 1920x1080 css, dpr 1, ui scale 1.25
+  overflow      : x=0px  y=0px  (scrollW 1920 / clientW 1920)
+  card          : 1920x1080 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1044x612  screen 1307.5x767.5  backing 1305x765  expected 1305x765 at ratio 1.25  stretch 1x  lit 0.111
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 12.7 px per 1000 px of viewport height (local 11 x scale 1.25 = 13.8 screen px of 1080, dpr 1)
+  boxes         : info-bar 1920x43.5@0  spectrum-area 1307.5x975.5@53.5  canvas#spectrum 1307.5x767.5@53.5  waterfall 0x0@0  marker-table 1307.5x198@831  rail 30x978@53.5  panel 552.5x975.5@53.5  dev-bar 1920x41@1039
+  FINDINGS      : none
+
+=== fhd-1920x1080 [rta+waterfall] ===
+viewport 1920x1080 css, dpr 1, ui scale 1.25
+  overflow      : x=0px  y=0px  (scrollW 1920 / clientW 1920)
+  card          : 1920x1080 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1044x636  screen 1307.5x796.8  backing 1305x795  expected 1305x795 at ratio 1.25  stretch 1x  lit 0.8928
+  canvas waterfall : local box 984x133  screen 1230x166.8  backing 1230x166  expected 1230x166 at ratio 1.25  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 12.7 px per 1000 px of viewport height (local 11 x scale 1.25 = 13.8 screen px of 1080, dpr 1)
+  boxes         : info-bar 1920x43.5@0  spectrum-area 1307.5x975.5@53.5  canvas#spectrum 1307.5x796.8@53.5  waterfall 1307.5x168.8@860.3  marker-table 0x0@0  rail 30x978@53.5  panel 552.5x975.5@53.5  dev-bar 1920x41@1039
+  FINDINGS      : none
+
+=== qhd-2560x1440 [swp] ===
+viewport 2560x1440 css, dpr 1, ui scale 1.5
+  overflow      : x=0px  y=0px  (scrollW 2560 / clientW 2560)
+  card          : 2560x1440 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1215x714  screen 1825x1073  backing 1823x1071  expected 1823x1071 at ratio 1.5  stretch 1x  lit 0.0878
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 11.5 px per 1000 px of viewport height (local 11 x scale 1.5 = 16.5 screen px of 1440, dpr 1)
+  boxes         : info-bar 2560x50@0  spectrum-area 1825x1319@62  canvas#spectrum 1825x1073@62  waterfall 0x0@0  marker-table 1825x234@1147  rail 36x1322@62  panel 663x1319@62  dev-bar 2560x47@1393
+  FINDINGS      : none
+
+=== qhd-2560x1440 [rta+waterfall] ===
+viewport 2560x1440 css, dpr 1, ui scale 1.5
+  overflow      : x=0px  y=0px  (scrollW 2560 / clientW 2560)
+  card          : 2560x1440 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1215x735  screen 1825x1104.5  backing 1823x1103  expected 1823x1103 at ratio 1.5  stretch 1x  lit 0.087
+  canvas waterfall : local box 1155x134  screen 1732.5x200.5  backing 1733x201  expected 1733x201 at ratio 1.5  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 11.5 px per 1000 px of viewport height (local 11 x scale 1.5 = 16.5 screen px of 1440, dpr 1)
+  boxes         : info-bar 2560x50@0  spectrum-area 1825x1319@62  canvas#spectrum 1825x1104.5@62  waterfall 1825x202.5@1178.5  marker-table 0x0@0  rail 36x1322@62  panel 663x1319@62  dev-bar 2560x47@1393
+  FINDINGS      : none
+
+=== uhd-3840x2160 [swp] ===
+viewport 3840x2160 css, dpr 1, ui scale 2
+  overflow      : x=0px  y=0px  (scrollW 3840 / clientW 3840)
+  card          : 3840x2160 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1428x826  screen 2860x1656  backing 2856x1652  expected 2856x1652 at ratio 2  stretch 1x  lit 0.0738
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 10.2 px per 1000 px of viewport height (local 11 x scale 2 = 22.0 screen px of 2160, dpr 1)
+  boxes         : info-bar 3840x70@0  spectrum-area 2860x1992@86  canvas#spectrum 2860x1656@86  waterfall 0x0@0  marker-table 2860x320@1758  rail 48x1996@86  panel 884x1992@86  dev-bar 3840x66@2094
+  FINDINGS      : none
+
+=== uhd-3840x2160 [rta+waterfall] ===
+viewport 3840x2160 css, dpr 1, ui scale 2
+  overflow      : x=0px  y=0px  (scrollW 3840 / clientW 3840)
+  card          : 3840x2160 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1428x851  screen 2860x1706  backing 2856x1702  expected 2856x1702 at ratio 2  stretch 1x  lit 0.0722
+  canvas waterfall : local box 1368x133  screen 2736x266  backing 2736x266  expected 2736x266 at ratio 2  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 10.2 px per 1000 px of viewport height (local 11 x scale 2 = 22.0 screen px of 2160, dpr 1)
+  boxes         : info-bar 3840x70@0  spectrum-area 2860x1992@86  canvas#spectrum 2860x1706@86  waterfall 2860x270@1808  marker-table 0x0@0  rail 48x1996@86  panel 884x1992@86  dev-bar 3840x66@2094
+  FINDINGS      : none
+
+=== external-1280x960-dpr1.6 [swp] ===
+viewport 1280x960 css, dpr 1.600000023841858
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x960 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 895x706  screen 897.2x708  backing 1432x1130  expected 1432x1130 at ratio 1.6  stretch 1x  lit 0.0982
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 11.5 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 960, dpr 1.600000023841858)
+  boxes         : info-bar 1280x35@0  spectrum-area 897.2x876@43  canvas#spectrum 897.2x708@43  waterfall 0x0@0  marker-table 897.2x160@759  rail 24x878@43  panel 334.8x876@43  dev-bar 1280x33@927
+  FINDINGS      : none
+
+=== external-1280x960-dpr1.6 [rta+waterfall] ===
+viewport 1280x960 css, dpr 1.600000023841858
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x960 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 895x731  screen 897.2x733  backing 1432x1170  expected 1432x1170 at ratio 1.6  stretch 1x  lit 0.8882
+  canvas waterfall : local box 835x133  screen 835x133  backing 1336x213  expected 1336x213 at ratio 1.6  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 11.5 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 960, dpr 1.600000023841858)
+  boxes         : info-bar 1280x35@0  spectrum-area 897.2x876@43  canvas#spectrum 897.2x733@43  waterfall 897.2x135@784  marker-table 0x0@0  rail 24x878@43  panel 334.8x876@43  dev-bar 1280x33@927
+  FINDINGS      : none
+
+=== zoom200-1280x720-dpr2 [swp] ===
+viewport 1280x720 css, dpr 2
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x720 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 895x466  screen 897.2x468  backing 1790x932  expected 1790x932 at ratio 2  stretch 1x  lit 0.102
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 15.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 720, dpr 2)
+  boxes         : info-bar 1280x35@0  spectrum-area 897.2x636@43  canvas#spectrum 897.2x468@43  waterfall 0x0@0  marker-table 897.2x160@519  rail 24x638@43  panel 334.8x636@43  dev-bar 1280x33@687
+  FINDINGS      : none
+
+=== zoom200-1280x720-dpr2 [rta+waterfall] ===
+viewport 1280x720 css, dpr 2
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x720 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 895x491  screen 897.2x493  backing 1790x982  expected 1790x982 at ratio 2  stretch 1x  lit 0.8644
+  canvas waterfall : local box 835x133  screen 835x133  backing 1670x266  expected 1670x266 at ratio 2  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 15.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 720, dpr 2)
+  boxes         : info-bar 1280x35@0  spectrum-area 897.2x636@43  canvas#spectrum 897.2x493@43  waterfall 897.2x135@544  marker-table 0x0@0  rail 24x638@43  panel 334.8x636@43  dev-bar 1280x33@687
+  FINDINGS      : none
+
+=== real-laptop-1481x708-dpr0.906 [swp] ===
+viewport 1481x708 css, dpr 0.906000018119812
+  overflow      : x=0px  y=0px  (scrollW 1481 / clientW 1481)
+  card          : 1481x708 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1044x454  screen 1046x456  backing 1044x454  expected 1044x454 at ratio 1  stretch 0.906x  lit 0.1259
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 15.5 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 708, dpr 0.906000018119812)
+  boxes         : info-bar 1481x35@0  spectrum-area 1046x624@43  canvas#spectrum 1046x456@43  waterfall 0x0@0  marker-table 1046x160@507  rail 24x626@43  panel 387x624@43  dev-bar 1481x33@675
+  FINDINGS      : none
+
+=== real-laptop-1481x708-dpr0.906 [rta+waterfall] ===
+viewport 1481x708 css, dpr 0.906000018119812
+  overflow      : x=0px  y=0px  (scrollW 1481 / clientW 1481)
+  card          : 1481x708 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 1044x479  screen 1046x481  backing 1044x479  expected 1044x479 at ratio 1  stretch 0.906x  lit 0.8748
+  canvas waterfall : local box 984x133  screen 984x133  backing 984x133  expected 984x133 at ratio 1  stretch 0.906x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 15.5 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 708, dpr 0.906000018119812)
+  boxes         : info-bar 1481x35@0  spectrum-area 1046x624@43  canvas#spectrum 1046x481@43  waterfall 1046x135@532  marker-table 0x0@0  rail 24x626@43  panel 387x624@43  dev-bar 1481x33@675
+  FINDINGS      : none
+
+=== real-2k-1386x920-dpr1.45 [swp] ===
+viewport 1386x920 css, dpr 1.4500000476837158
+  overflow      : x=0px  y=0px  (scrollW 1386 / clientW 1386)
+  card          : 1386x920 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 974x666  screen 975.6x668  backing 1412x966  expected 1412x966 at ratio 1.45  stretch 1x  lit 0.0984
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 12.0 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 920, dpr 1.4500000476837158)
+  boxes         : info-bar 1386x35@0  spectrum-area 975.6x836@43  canvas#spectrum 975.6x668@43  waterfall 0x0@0  marker-table 975.6x160@719  rail 24x838@43  panel 362.4x836@43  dev-bar 1386x33@887
+  FINDINGS      : none
+
+=== real-2k-1386x920-dpr1.45 [rta+waterfall] ===
+viewport 1386x920 css, dpr 1.4500000476837158
+  overflow      : x=0px  y=0px  (scrollW 1386 / clientW 1386)
+  card          : 1386x920 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 974x691  screen 975.6x693  backing 1412x1002  expected 1412x1002 at ratio 1.45  stretch 1x  lit 0.8915
+  canvas waterfall : local box 914x133  screen 914x133  backing 1325x193  expected 1325x193 at ratio 1.45  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 12.0 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 920, dpr 1.4500000476837158)
+  boxes         : info-bar 1386x35@0  spectrum-area 975.6x836@43  canvas#spectrum 975.6x693@43  waterfall 975.6x135@744  marker-table 0x0@0  rail 24x838@43  panel 362.4x836@43  dev-bar 1386x33@887
+  FINDINGS      : none
+
+=== narrow-1200x800 [swp] ===
+viewport 1200x800 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1200 / clientW 1200)
+  card          : 1200x800 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 818x527  screen 820x529  backing 818x527  expected 818x527 at ratio 1  stretch 1x  lit 0.129
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 800, dpr 1)
+  boxes         : info-bar 1200x35@0  spectrum-area 820x697@43  canvas#spectrum 820x529@43  waterfall 0x0@0  marker-table 820x160@580  rail 24x699@43  panel 332x697@43  dev-bar 1200x52@748
+  FINDINGS      : none
+
+=== narrow-1200x800 [rta+waterfall] ===
+viewport 1200x800 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1200 / clientW 1200)
+  card          : 1200x800 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 818x552  screen 820x554  backing 818x552  expected 818x552 at ratio 1  stretch 1x  lit 0.871
+  canvas waterfall : local box 758x133  screen 758x133  backing 758x133  expected 758x133 at ratio 1  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 800, dpr 1)
+  boxes         : info-bar 1200x35@0  spectrum-area 820x697@43  canvas#spectrum 820x554@43  waterfall 820x135@605  marker-table 0x0@0  rail 24x699@43  panel 332x697@43  dev-bar 1200x52@748
+  FINDINGS      : none
+
+=== narrow-1024x768 [swp] ===
+viewport 1024x768 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1024 / clientW 1024)
+  card          : 1024x768 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 642x476  screen 644x478  backing 642x476  expected 642x476 at ratio 1  stretch 1x  lit 0.1442
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 768, dpr 1)
+  boxes         : info-bar 1024x54@0  spectrum-area 644x646@62  canvas#spectrum 644x478@62  waterfall 0x0@0  marker-table 644x160@548  rail 24x648@62  panel 332x646@62  dev-bar 1024x52@716
+  FINDINGS      : none
+
+=== narrow-1024x768 [rta+waterfall] ===
+viewport 1024x768 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1024 / clientW 1024)
+  card          : 1024x768 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 642x501  screen 644x503  backing 642x501  expected 642x501 at ratio 1  stretch 1x  lit 0.8489
+  canvas waterfall : local box 582x133  screen 582x133  backing 582x133  expected 582x133 at ratio 1  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 768, dpr 1)
+  boxes         : info-bar 1024x54@0  spectrum-area 644x646@62  canvas#spectrum 644x503@62  waterfall 644x135@573  marker-table 0x0@0  rail 24x648@62  panel 332x646@62  dev-bar 1024x52@716
+  FINDINGS      : none
+
+=== narrow-800x600 [swp] ===
+viewport 800x600 css, dpr 1
+  overflow      : x=0px  y=1851px  (scrollW 800 / clientW 800)
+  card          : 800x2451 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 798x258  screen 800x260  backing 798x258  expected 798x258 at ratio 1  stretch 1x  lit 0.1721
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 18.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 600, dpr 1)
+  boxes         : info-bar 800x74@0  spectrum-area 800x428@82  canvas#spectrum 800x260@82  waterfall 0x0@0  marker-table 800x160@350  rail 800x22@522  panel 800x1835@556  dev-bar 800x52@2399
+  page taller than the viewport by 1851px
+  FINDINGS      : none
+
+=== narrow-800x600 [rta+waterfall] ===
+viewport 800x600 css, dpr 1
+  overflow      : x=0px  y=1756px  (scrollW 800 / clientW 800)
+  card          : 800x2356 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 798x258  screen 800x260  backing 798x258  expected 798x258 at ratio 1  stretch 1x  lit 0.8036
+  canvas waterfall : local box 738x133  screen 738x133  backing 738x133  expected 738x133 at ratio 1  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 18.3 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 600, dpr 1)
+  boxes         : info-bar 800x74@-21  spectrum-area 800x403@61  canvas#spectrum 800x260@61  waterfall 800x135@329  marker-table 0x0@0  rail 800x22@476  panel 800x1765@510  dev-bar 800x52@2283
+  page taller than the viewport by 1756px
+  FINDINGS      : none
+
+=== narrow-480x800 [swp] ===
+viewport 480x800 css, dpr 1
+  overflow      : x=0px  y=1692px  (scrollW 480 / clientW 480)
+  card          : 480x2491.5 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 478x258  screen 480x260  backing 478x258  expected 478x258 at ratio 1  stretch 1x  lit 0.1928
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 800, dpr 1)
+  boxes         : info-bar 480x94@0  spectrum-area 480x429.5@102  canvas#spectrum 480x260@102  waterfall 0x0@0  marker-table 480x161.5@370  rail 480x22@543.5  panel 480x1835@577.5  dev-bar 480x71@2420.5
+  page taller than the viewport by 1692px
+  FINDINGS      : none
+
+=== narrow-480x800 [rta+waterfall] ===
+viewport 480x800 css, dpr 1
+  overflow      : x=0px  y=1595px  (scrollW 480 / clientW 480)
+  card          : 480x2395 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : local box 478x258  screen 480x260  backing 478x258  expected 478x258 at ratio 1  stretch 1x  lit 0.7695
+  canvas waterfall : local box 418x133  screen 418x133  backing 418x133  expected 418x133 at ratio 1  stretch 1x  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 px of viewport height (local 11 x scale 1 = 11.0 screen px of 800, dpr 1)
+  boxes         : info-bar 480x94@0  spectrum-area 480x403@102  canvas#spectrum 480x260@102  waterfall 480x135@370  marker-table 0x0@0  rail 480x22@517  panel 480x1765@551  dev-bar 480x71@2324
+  page taller than the viewport by 1595px
+  FINDINGS      : none
+
+=== summary ===
+  viewport [mode]                    card canvas local      backing  stretch  unused findings
+  laptop-1366x768 [swp]              1366      959x514      959x514        1      0%        0
+  laptop-1366x768 [rta+waterfall]    1366      959x539      959x539        1      0%        0
+  desktop-1600x1000 [swp]            1600      812x548     1015x685        1      0%        0
+  desktop-1600x1000 [rta+waterfall]   1600      812x572     1015x715        1      0%        0
+  fhd-1920x1080 [swp]                1920     1044x612     1305x765        1      0%        0
+  fhd-1920x1080 [rta+waterfall]      1920     1044x636     1305x795        1      0%        0
+  qhd-2560x1440 [swp]                2560     1215x714    1823x1071        1      0%        0
+  qhd-2560x1440 [rta+waterfall]      2560     1215x735    1823x1103        1      0%        0
+  uhd-3840x2160 [swp]                3840     1428x826    2856x1652        1      0%        0
+  uhd-3840x2160 [rta+waterfall]      3840     1428x851    2856x1702        1      0%        0
+  external-1280x960-dpr1.6 [swp]     1280      895x706    1432x1130        1      0%        0
+  external-1280x960-dpr1.6 [rta+waterfall]   1280      895x731    1432x1170        1      0%        0
+  zoom200-1280x720-dpr2 [swp]        1280      895x466     1790x932        1      0%        0
+  zoom200-1280x720-dpr2 [rta+waterfall]   1280      895x491     1790x982        1      0%        0
+  real-laptop-1481x708-dpr0.906 [swp]   1481     1044x454     1044x454    0.906      0%        0
+  real-laptop-1481x708-dpr0.906 [rta+waterfall]   1481     1044x479     1044x479    0.906      0%        0
+  real-2k-1386x920-dpr1.45 [swp]     1386      974x666     1412x966        1      0%        0
+  real-2k-1386x920-dpr1.45 [rta+waterfall]   1386      974x691    1412x1002        1      0%        0
+  narrow-1200x800 [swp]              1200      818x527      818x527        1      0%        0
+  narrow-1200x800 [rta+waterfall]    1200      818x552      818x552        1      0%        0
+  narrow-1024x768 [swp]              1024      642x476      642x476        1      0%        0
+  narrow-1024x768 [rta+waterfall]    1024      642x501      642x501        1      0%        0
+  narrow-800x600 [swp]                800      798x258      798x258        1      0%        0
+  narrow-800x600 [rta+waterfall]      800      798x258      798x258        1      0%        0
+  narrow-480x800 [swp]                480      478x258      478x258        1      0%        0
+  narrow-480x800 [rta+waterfall]      480      478x258      478x258        1      0%        0
+  total findings: 0
+  json: tools/e2e/viewport_baseline.json
+  restored the instrument to sweep (SET_MODE std)
+
+OK: measurement only (no thresholds applied)

@@ -22,6 +22,7 @@ import { measHarmApply, autoHarmSpan } from '../meas/harmonic';
 import { measPnmApply } from '../meas/phaseNoise';
 
 import { t } from '../core/i18n';
+import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { resetLimits } from './limits';
@@ -770,8 +771,14 @@ let sdrX0 = 0;
 let sdrEdgeAt = 0;
 
 function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
+  // The drawing space is the canvas content box (core/store.ts W). Under a UI scale the
+  // element is CSS-zoomed, so clientWidth is in *local* px while the pointer and the rect are
+  // in screen px: convert with the zoomed width (rect includes the 1px border on each side).
   const rect = canvas.getBoundingClientRect();
-  return (e.clientX - rect.left) * (S.W / rect.width);
+  const scale = getUiScale();
+  const border = (parseFloat(getComputedStyle(canvas).borderLeftWidth) || 0) * scale;
+  const box = Math.max(1, rect.width - 2 * border);
+  return (e.clientX - rect.left - border) * (S.W / box);
 }
 
 function xToFreqHz(x: number): number | null {

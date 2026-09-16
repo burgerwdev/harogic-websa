@@ -108,11 +108,15 @@ def main() -> int:
         # It used to be the last item of the Ref parameter row, so every message moved the input,
         # the buttons and the arrows sideways (reported twice); it now lives in the canvas stack
         # with the warnings, which also has no width limit.
+        #
+        # Measured as offsets *within* the row: absolute coordinates also move when the panel
+        # scrolls (clicking a below-the-fold button scrolls it into view) or when the UI scale
+        # changes, neither of which says anything about this row.
         row_box = ("() => { const r = document.getElementById('input-ref').getBoundingClientRect();"
                    " const s = document.getElementById('btn-ref-set').getBoundingClientRect();"
                    " const u = document.getElementById('btn-ref-up').getBoundingClientRect();"
-                   " return [Math.round(r.left), Math.round(r.top), Math.round(s.left),"
-                   " Math.round(u.right)]; }")
+                   " return [Math.round(s.left - r.left), Math.round(s.top - r.top),"
+                   "         Math.round(u.right - r.left), Math.round(u.top - r.top)]; }")
         before = page.evaluate(row_box)
         page.click('#btn-ref-auto')                  # a real decision posts a notice
         page.wait_for_timeout(1200)
@@ -232,6 +236,76 @@ def main() -> int:
             "return !!el && getComputedStyle(el).display !== 'none'; })()"))
         js_click(page, '#btn-keypad')
         page.wait_for_timeout(300)
+
+        print('10) the global UI scale is one control, usable in every view')
+        # The scale is CSS zoom on the frame, so it has to be checked as a *rendered* size: a
+        # computed font-size stays 11px whatever the scale is. The frame must stay exactly one
+        # viewport (no scrollbar appears) and the plot must stay painted at every step.
+        def scale_state():
+            return page.evaluate(
+                "() => { const de = document.documentElement; return {"
+                "  applied: de.dataset.uiScale,"
+                "  stored: (() => { try { return localStorage.getItem('web-sa-ui-scale'); }"
+                "                    catch (e) { return null; } })(),"
+                "  overflowX: de.scrollWidth - de.clientWidth,"
+                "  viewportH: window.innerHeight,"
+                "  frameH: Math.round(document.querySelector('.analyzer-card')"
+                "            .getBoundingClientRect().height),"
+                "  labelH: +document.querySelector('.info-label')"
+                "            .getBoundingClientRect().height.toFixed(2),"
+                "  labelW: +document.querySelector('.info-label')"
+                "            .getBoundingClientRect().width.toFixed(2),"
+                "  panelW: +document.querySelector('.control-panel')"
+                "            .getBoundingClientRect().width.toFixed(2) }; }")
+
+        check('the control exists in the top bar', page.evaluate(
+            "!!document.getElementById('ui-scale')"))
+        first = scale_state()
+        check('a first visit scales for the screen instead of leaving it at 100%',
+              first['applied'] not in (None, '', '1'), f"scale {first['applied']}")
+        check('nothing is stored until the user chooses', first['stored'] is None,
+              repr(first['stored']))
+
+        baseline_label = first['labelH']
+        for backend_mode, view in (('std', 'SWP'), ('rta', 'RTA'), ('sdr', 'SDR')):
+            post(args.url, {'cmd': 'SET_MODE', 'mode': backend_mode})
+            page.wait_for_timeout(2500)
+            page.select_option('#ui-scale', '1.5')
+            page.wait_for_timeout(1200)
+            st = scale_state()
+            check(f'{view}: 150% applies while the plot keeps drawing',
+                  st['applied'] == '1.5' and painted_pixels(page) > args.painted_min,
+                  f"scale {st['applied']}, {painted_pixels(page)} pixels")
+            check(f'{view}: the whole frame still fits the viewport at 150%',
+                  st['overflowX'] <= 0 and st['frameH'] <= st['viewportH'] + 1,
+                  f"overflowX {st['overflowX']}, frame {st['frameH']} of {st['viewportH']}")
+            # 1.5 / 1.25 is what every dimension must grow by if the scale is global: the label
+            # is text, the panel column is pure spacing (a CSS clamp of the viewport).
+            grown = 1.5 / float(first['applied'])
+            check(f'{view}: spacing scales with the UI, not just the font',
+                  abs(st['panelW'] / first['panelW'] - grown) <= 0.06,
+                  f"panel {first['panelW']} -> {st['panelW']} (expected x{grown:.2f})")
+            check(f'{view}: text is rendered larger, not re-laid out',
+                  st['labelW'] / first['labelW'] >= grown - 0.06,
+                  f"label {first['labelW']} -> {st['labelW']}px; box height "
+                  f"{baseline_label} -> {st['labelH']}px")
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(1500)
+
+        page.reload(wait_until='networkidle')
+        page.wait_for_timeout(2500)
+        after = scale_state()
+        check('a manual scale survives a reload',
+              after['applied'] == '1.5' and after['stored'] == '1.5',
+              f"applied {after['applied']}, stored {after['stored']}")
+        check('the reloaded page is still sharp and painted',
+              painted_pixels(page) > args.painted_min)
+        page.select_option('#ui-scale', 'auto')
+        page.wait_for_timeout(1200)
+        auto = scale_state()
+        check('Auto forgets the override and follows the screen again',
+              auto['stored'] is None and auto['applied'] == first['applied'],
+              f"applied {auto['applied']}, stored {auto['stored']}")
 
         check('no page errors', not errors, '; '.join(errors[:3]))
         browser.close()
