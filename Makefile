@@ -1,5 +1,5 @@
 # Unified entry
-.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record
+.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record viewport-baseline
 
 run:      ## Start service
 	./run.sh
@@ -69,6 +69,11 @@ e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
 
 bench-record:  ## Re-record the performance baseline on this host
 	python3 tools/bench.py --duration 4 --write-baseline tools/bench_baseline.json
+
+viewport-baseline:  ## Layout/resolution baseline over every attached output (needs a running service)
+	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
+	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_PORT:-8080} \
+		--json tools/e2e/viewport_baseline.json
 
 all:      ## Build + test + run
 	./build.sh && ./test.sh && ./run.sh

@@ -1,0 +1,3498 @@
+[
+  {
+    "label": "laptop-1366x768 [swp]",
+    "mode": "swp",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1366,
+        "h": 768,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1366,
+        "svh": 768
+      },
+      "doc": {
+        "scrollW": 1366,
+        "clientW": 1366,
+        "scrollH": 768,
+        "clientH": 768
+      },
+      "card": {
+        "w": 1280,
+        "h": 756,
+        "left": 43
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.2631,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 43,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 43,
+          "y": 49,
+          "w": 870,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 43,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 43,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 925,
+          "y": 49,
+          "w": 24,
+          "h": 674,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 961,
+          "y": 49,
+          "w": 362,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 43,
+          "y": 729,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "laptop-1366x768",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "laptop-1366x768 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1366,
+        "h": 768,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1366,
+        "svh": 768
+      },
+      "doc": {
+        "scrollW": 1366,
+        "clientW": 1366,
+        "scrollH": 768,
+        "clientH": 768
+      },
+      "card": {
+        "w": 1280,
+        "h": 756,
+        "left": 43
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 809,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 43,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 43,
+          "y": 49,
+          "w": 870,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 43,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 43,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 925,
+          "y": 49,
+          "w": 24,
+          "h": 674,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 961,
+          "y": 49,
+          "w": 362,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 43,
+          "y": 729,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "laptop-1366x768",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "desktop-1600x1000 [swp]",
+    "mode": "swp",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1600,
+        "h": 1000,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1600,
+        "svh": 1000
+      },
+      "doc": {
+        "scrollW": 1600,
+        "clientW": 1600,
+        "scrollH": 1000,
+        "clientH": 1000
+      },
+      "card": {
+        "w": 1280,
+        "h": 988,
+        "left": 160
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.2665,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 160,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 160,
+          "y": 49,
+          "w": 870,
+          "h": 904,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 160,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 160,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1042,
+          "y": 49,
+          "w": 24,
+          "h": 906,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 1078,
+          "y": 49,
+          "w": 362,
+          "h": 904,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 160,
+          "y": 961,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "desktop-1600x1000",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "desktop-1600x1000 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1600,
+        "h": 1000,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1600,
+        "svh": 1000
+      },
+      "doc": {
+        "scrollW": 1600,
+        "clientW": 1600,
+        "scrollH": 1000,
+        "clientH": 1000
+      },
+      "card": {
+        "w": 1280,
+        "h": 988,
+        "left": 160
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 809,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 160,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 160,
+          "y": 49,
+          "w": 870,
+          "h": 904,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 160,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 160,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1042,
+          "y": 49,
+          "w": 24,
+          "h": 906,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 1078,
+          "y": 49,
+          "w": 362,
+          "h": 904,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 160,
+          "y": 961,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "desktop-1600x1000",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "fhd-1920x1080 [swp]",
+    "mode": "swp",
+    "findings": [
+      "card covers only 67% of the viewport width"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1920,
+        "h": 1080,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1920,
+        "svh": 1080
+      },
+      "doc": {
+        "scrollW": 1920,
+        "clientW": 1920,
+        "scrollH": 1080,
+        "clientH": 1080
+      },
+      "card": {
+        "w": 1280,
+        "h": 1068,
+        "left": 320
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.2616,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 320,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 320,
+          "y": 49,
+          "w": 870,
+          "h": 984,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 320,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 320,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1202,
+          "y": 49,
+          "w": 24,
+          "h": 986,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 1238,
+          "y": 49,
+          "w": 362,
+          "h": 984,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 320,
+          "y": 1041,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "fhd-1920x1080",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "fhd-1920x1080 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "card covers only 67% of the viewport width"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1920,
+        "h": 1080,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1920,
+        "svh": 1080
+      },
+      "doc": {
+        "scrollW": 1920,
+        "clientW": 1920,
+        "scrollH": 1080,
+        "clientH": 1080
+      },
+      "card": {
+        "w": 1280,
+        "h": 1068,
+        "left": 320
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 809,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 320,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 320,
+          "y": 49,
+          "w": 870,
+          "h": 984,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 320,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 320,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1202,
+          "y": 49,
+          "w": 24,
+          "h": 986,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 1238,
+          "y": 49,
+          "w": 362,
+          "h": 984,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 320,
+          "y": 1041,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "fhd-1920x1080",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "qhd-2560x1440 [swp]",
+    "mode": "swp",
+    "findings": [
+      "card covers only 50% of the viewport width",
+      "label text shrinks to 7.6px per 1000px of height"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 2560,
+        "h": 1440,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 2560,
+        "svh": 1440
+      },
+      "doc": {
+        "scrollW": 2560,
+        "clientW": 2560,
+        "scrollH": 1440,
+        "clientH": 1440
+      },
+      "card": {
+        "w": 1280,
+        "h": 1428,
+        "left": 640
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.2653,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 640,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 640,
+          "y": 49,
+          "w": 870,
+          "h": 1344,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 640,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 640,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1522,
+          "y": 49,
+          "w": 24,
+          "h": 1346,
+          "visible": true,
+          "visibleFrac": 0.999
+        },
+        "panel": {
+          "x": 1558,
+          "y": 49,
+          "w": 362,
+          "h": 1344,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 640,
+          "y": 1401,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "qhd-2560x1440",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "qhd-2560x1440 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "card covers only 50% of the viewport width",
+      "label text shrinks to 7.6px per 1000px of height"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 2560,
+        "h": 1440,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 2560,
+        "svh": 1440
+      },
+      "doc": {
+        "scrollW": 2560,
+        "clientW": 2560,
+        "scrollH": 1440,
+        "clientH": 1440
+      },
+      "card": {
+        "w": 1280,
+        "h": 1428,
+        "left": 640
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 809,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 640,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 640,
+          "y": 49,
+          "w": 870,
+          "h": 1344,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 640,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 640,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1522,
+          "y": 49,
+          "w": 24,
+          "h": 1346,
+          "visible": true,
+          "visibleFrac": 0.999
+        },
+        "panel": {
+          "x": 1558,
+          "y": 49,
+          "w": 362,
+          "h": 1344,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 640,
+          "y": 1401,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "qhd-2560x1440",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "uhd-3840x2160 [swp]",
+    "mode": "swp",
+    "findings": [
+      "card covers only 33% of the viewport width",
+      "label text shrinks to 5.1px per 1000px of height"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 3840,
+        "h": 2160,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 3840,
+        "svh": 2160
+      },
+      "doc": {
+        "scrollW": 3840,
+        "clientW": 3840,
+        "scrollH": 2160,
+        "clientH": 2160
+      },
+      "card": {
+        "w": 1280,
+        "h": 2148,
+        "left": 1280
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.2662,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 1280,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 1280,
+          "y": 49,
+          "w": 870,
+          "h": 2064,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 1280,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 1280,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 2162,
+          "y": 49,
+          "w": 24,
+          "h": 2066,
+          "visible": true,
+          "visibleFrac": 0.999
+        },
+        "panel": {
+          "x": 2198,
+          "y": 49,
+          "w": 362,
+          "h": 2064,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 1280,
+          "y": 2121,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "uhd-3840x2160",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "uhd-3840x2160 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "card covers only 33% of the viewport width",
+      "label text shrinks to 5.1px per 1000px of height"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 3840,
+        "h": 2160,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 3840,
+        "svh": 2160
+      },
+      "doc": {
+        "scrollW": 3840,
+        "clientW": 3840,
+        "scrollH": 2160,
+        "clientH": 2160
+      },
+      "card": {
+        "w": 1280,
+        "h": 2148,
+        "left": 1280
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.012,
+          "derivedW": 870,
+          "derivedH": 486,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 809,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 1280,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 1280,
+          "y": 49,
+          "w": 870,
+          "h": 2064,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 1280,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 1280,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 2162,
+          "y": 49,
+          "w": 24,
+          "h": 2066,
+          "visible": true,
+          "visibleFrac": 0.999
+        },
+        "panel": {
+          "x": 2198,
+          "y": 49,
+          "w": 362,
+          "h": 2064,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 1280,
+          "y": 2121,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "uhd-3840x2160",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "external-1280x960-dpr1.6 [swp]",
+    "mode": "swp",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1280,
+        "h": 960,
+        "dpr": 1.600000023841858,
+        "zoom": 1,
+        "svw": 1280,
+        "svh": 960
+      },
+      "doc": {
+        "scrollW": 1280,
+        "clientW": 1280,
+        "scrollH": 960,
+        "clientH": 960
+      },
+      "card": {
+        "w": 1280,
+        "h": 948,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 1376,
+          "backingH": 768,
+          "stretch": 1.012,
+          "derivedW": 1392,
+          "derivedH": 778,
+          "litRatio": 0.2602,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 864,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 882,
+          "y": 49,
+          "w": 24,
+          "h": 866,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 918,
+          "y": 49,
+          "w": 362,
+          "h": 864,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 921,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "external-1280x960-dpr1.6",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "external-1280x960-dpr1.6 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "canvas waterfall bitmap stretched 1.601x (blur)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1280,
+        "h": 960,
+        "dpr": 1.600000023841858,
+        "zoom": 1,
+        "svw": 1280,
+        "svh": 960
+      },
+      "doc": {
+        "scrollW": 1280,
+        "clientW": 1280,
+        "scrollH": 960,
+        "clientH": 960
+      },
+      "card": {
+        "w": 1280,
+        "h": 948,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 1376,
+          "backingH": 768,
+          "stretch": 1.012,
+          "derivedW": 1392,
+          "derivedH": 778,
+          "litRatio": 0.8716,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1.601,
+          "derivedW": 1295,
+          "derivedH": 210,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 864,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 882,
+          "y": 49,
+          "w": 24,
+          "h": 866,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 918,
+          "y": 49,
+          "w": 362,
+          "h": 864,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 921,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "external-1280x960-dpr1.6",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "zoom200-1280x720-dpr2 [swp]",
+    "mode": "swp",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1280,
+        "h": 720,
+        "dpr": 2,
+        "zoom": 1,
+        "svw": 1280,
+        "svh": 720
+      },
+      "doc": {
+        "scrollW": 1280,
+        "clientW": 1280,
+        "scrollH": 720,
+        "clientH": 720
+      },
+      "card": {
+        "w": 1280,
+        "h": 708,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 456,
+          "backingW": 1720,
+          "backingH": 960,
+          "stretch": 1.012,
+          "derivedW": 1740,
+          "derivedH": 912,
+          "litRatio": 0.2597,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 624,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 456,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 513,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 882,
+          "y": 49,
+          "w": 24,
+          "h": 626,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 918,
+          "y": 49,
+          "w": 362,
+          "h": 624,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 681,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "zoom200-1280x720-dpr2",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "zoom200-1280x720-dpr2 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "canvas waterfall bitmap stretched 2.001x (blur)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1280,
+        "h": 720,
+        "dpr": 2,
+        "zoom": 1,
+        "svw": 1280,
+        "svh": 720
+      },
+      "doc": {
+        "scrollW": 1280,
+        "clientW": 1280,
+        "scrollH": 720,
+        "clientH": 720
+      },
+      "card": {
+        "w": 1280,
+        "h": 708,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 481,
+          "backingW": 1720,
+          "backingH": 960,
+          "stretch": 1.012,
+          "derivedW": 1740,
+          "derivedH": 962,
+          "litRatio": 0.8716,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 2.001,
+          "derivedW": 1619,
+          "derivedH": 262,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 624,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 49,
+          "w": 870,
+          "h": 481,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 538,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 882,
+          "y": 49,
+          "w": 24,
+          "h": 626,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 918,
+          "y": 49,
+          "w": 362,
+          "h": 624,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 681,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "zoom200-1280x720-dpr2",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "real-laptop-1481x708-dpr0.906 [swp]",
+    "mode": "swp",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1481,
+        "h": 708,
+        "dpr": 0.906000018119812,
+        "zoom": 1,
+        "svw": 1481,
+        "svh": 708
+      },
+      "doc": {
+        "scrollW": 1481,
+        "clientW": 1481,
+        "scrollH": 708,
+        "clientH": 708
+      },
+      "card": {
+        "w": 1280,
+        "h": 696,
+        "left": 100.5
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 444,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 0.917,
+          "derivedW": 870,
+          "derivedH": 444,
+          "litRatio": 0.2689,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 100.5,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 100.5,
+          "y": 49,
+          "w": 870,
+          "h": 612,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 100.5,
+          "y": 49,
+          "w": 870,
+          "h": 444,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 100.5,
+          "y": 501,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 982.5,
+          "y": 49,
+          "w": 24,
+          "h": 614,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 1018.5,
+          "y": 49,
+          "w": 362,
+          "h": 612,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 100.5,
+          "y": 669,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "real-laptop-1481x708-dpr0.906",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "real-laptop-1481x708-dpr0.906 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1481,
+        "h": 708,
+        "dpr": 0.906000018119812,
+        "zoom": 1,
+        "svw": 1481,
+        "svh": 708
+      },
+      "doc": {
+        "scrollW": 1481,
+        "clientW": 1481,
+        "scrollH": 708,
+        "clientH": 708
+      },
+      "card": {
+        "w": 1280,
+        "h": 696,
+        "left": 100.5
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 469,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 0.917,
+          "derivedW": 870,
+          "derivedH": 469,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 0.906,
+          "derivedW": 809,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 100.5,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 100.5,
+          "y": 49,
+          "w": 870,
+          "h": 612,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 100.5,
+          "y": 49,
+          "w": 870,
+          "h": 469,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 100.5,
+          "y": 526,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 982.5,
+          "y": 49,
+          "w": 24,
+          "h": 614,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 1018.5,
+          "y": 49,
+          "w": 362,
+          "h": 612,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 100.5,
+          "y": 669,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "real-laptop-1481x708-dpr0.906",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "real-2k-1386x920-dpr1.45 [swp]",
+    "mode": "swp",
+    "findings": [],
+    "metrics": {
+      "viewport": {
+        "w": 1386,
+        "h": 920,
+        "dpr": 1.4500000476837158,
+        "zoom": 1,
+        "svw": 1386,
+        "svh": 920
+      },
+      "doc": {
+        "scrollW": 1386,
+        "clientW": 1386,
+        "scrollH": 920,
+        "clientH": 920
+      },
+      "card": {
+        "w": 1280,
+        "h": 908,
+        "left": 53
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 1247,
+          "backingH": 696,
+          "stretch": 1.012,
+          "derivedW": 1262,
+          "derivedH": 705,
+          "litRatio": 0.1864,
+          "sampled": 4500
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 53,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 53,
+          "y": 49,
+          "w": 870,
+          "h": 824,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 53,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 53,
+          "y": 543.5,
+          "w": 870,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 935,
+          "y": 49,
+          "w": 24,
+          "h": 826,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 971,
+          "y": 49,
+          "w": 362,
+          "h": 824,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 53,
+          "y": 881,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "real-2k-1386x920-dpr1.45",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "real-2k-1386x920-dpr1.45 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "canvas waterfall bitmap stretched 1.451x (blur)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1386,
+        "h": 920,
+        "dpr": 1.4500000476837158,
+        "zoom": 1,
+        "svw": 1386,
+        "svh": 920
+      },
+      "doc": {
+        "scrollW": 1386,
+        "clientW": 1386,
+        "scrollH": 920,
+        "clientH": 920
+      },
+      "card": {
+        "w": 1280,
+        "h": 908,
+        "left": 53
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 870,
+          "cssH": 486.5,
+          "backingW": 1247,
+          "backingH": 696,
+          "stretch": 1.012,
+          "derivedW": 1262,
+          "derivedH": 705,
+          "litRatio": 0.8553,
+          "sampled": 4500
+        },
+        {
+          "id": "waterfall",
+          "cssW": 809.3,
+          "cssH": 131,
+          "backingW": 809,
+          "backingH": 133,
+          "stretch": 1.451,
+          "derivedW": 1173,
+          "derivedH": 190,
+          "litRatio": 1,
+          "sampled": 4374
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 53,
+          "y": 6,
+          "w": 1280,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 53,
+          "y": 49,
+          "w": 870,
+          "h": 824,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 53,
+          "y": 49,
+          "w": 870,
+          "h": 486.5,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 53,
+          "y": 543.5,
+          "w": 870,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 935,
+          "y": 49,
+          "w": 24,
+          "h": 826,
+          "visible": true,
+          "visibleFrac": 0.998
+        },
+        "panel": {
+          "x": 971,
+          "y": 49,
+          "w": 362,
+          "h": 824,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "dev-bar": {
+          "x": 53,
+          "y": 881,
+          "w": 1280,
+          "h": 33,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 0,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "real-2k-1386x920-dpr1.45",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-1200x800 [swp]",
+    "mode": "swp",
+    "findings": [
+      "canvas spectrum bitmap stretched 1.353x (blur)",
+      "panel is clipped away (unreachable)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1200,
+        "h": 800,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1200,
+        "svh": 800
+      },
+      "doc": {
+        "scrollW": 1200,
+        "clientW": 1200,
+        "scrollH": 807,
+        "clientH": 800
+      },
+      "card": {
+        "w": 1200,
+        "h": 807,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 1164,
+          "cssH": 536,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.353,
+          "derivedW": 1164,
+          "derivedH": 536,
+          "litRatio": 0.2636,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 1200,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 43,
+          "w": 1164,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 43,
+          "w": 1164,
+          "h": 536,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 587,
+          "w": 1164,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1176,
+          "y": 43,
+          "w": 24,
+          "h": 706,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 0,
+          "y": 761,
+          "w": 362,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 755,
+          "w": 1200,
+          "h": 52,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 7,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-1200x800",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-1200x800 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "canvas spectrum bitmap stretched 1.353x (blur)",
+      "spectrum-area is 60% clipped",
+      "canvas#spectrum is 75% clipped",
+      "rail is 60% clipped",
+      "panel is 42% clipped"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1200,
+        "h": 800,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1200,
+        "svh": 800
+      },
+      "doc": {
+        "scrollW": 1200,
+        "clientW": 1200,
+        "scrollH": 807,
+        "clientH": 800
+      },
+      "card": {
+        "w": 1200,
+        "h": 807,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 1164,
+          "cssH": 561,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.353,
+          "derivedW": 1164,
+          "derivedH": 561,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 1082.8,
+          "cssH": 131,
+          "backingW": 1083,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 1083,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4163
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 1200,
+          "h": 35,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": -377,
+          "w": 1164,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0.403
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": -377,
+          "w": 1164,
+          "h": 561,
+          "visible": true,
+          "visibleFrac": 0.251
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 192,
+          "w": 1164,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1176,
+          "y": -377,
+          "w": 24,
+          "h": 706,
+          "visible": true,
+          "visibleFrac": 0.405
+        },
+        "panel": {
+          "x": 0,
+          "y": 341,
+          "w": 362,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0.577
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 755,
+          "w": 1200,
+          "h": 52,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 7,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-1200x800",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-1024x768 [swp]",
+    "mode": "swp",
+    "findings": [
+      "canvas spectrum bitmap stretched 1.149x (blur)",
+      "panel is clipped away (unreachable)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1024,
+        "h": 768,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1024,
+        "svh": 768
+      },
+      "doc": {
+        "scrollW": 1024,
+        "clientW": 1024,
+        "scrollH": 794,
+        "clientH": 768
+      },
+      "card": {
+        "w": 1024,
+        "h": 794,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 988,
+          "cssH": 504,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.149,
+          "derivedW": 988,
+          "derivedH": 504,
+          "litRatio": 0.2691,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 1024,
+          "h": 54,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 62,
+          "w": 988,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 62,
+          "w": 988,
+          "h": 504,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 574,
+          "w": 988,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1000,
+          "y": 62,
+          "w": 24,
+          "h": 674,
+          "visible": true,
+          "visibleFrac": 0.997
+        },
+        "panel": {
+          "x": 0,
+          "y": 748,
+          "w": 362,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 0
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 742,
+          "w": 1024,
+          "h": 52,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 26,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-1024x768",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-1024x768 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "canvas spectrum bitmap stretched 1.149x (blur)",
+      "spectrum-area is 60% clipped",
+      "canvas#spectrum is 76% clipped",
+      "rail is 60% clipped",
+      "panel is 42% clipped"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 1024,
+        "h": 768,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 1024,
+        "svh": 768
+      },
+      "doc": {
+        "scrollW": 1024,
+        "clientW": 1024,
+        "scrollH": 794,
+        "clientH": 768
+      },
+      "card": {
+        "w": 1024,
+        "h": 794,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 988,
+          "cssH": 529,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1.149,
+          "derivedW": 988,
+          "derivedH": 529,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 919.1,
+          "cssH": 131,
+          "backingW": 919,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 919,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4968
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 1024,
+          "h": 54,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": -342,
+          "w": 988,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 0.399
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": -342,
+          "w": 988,
+          "h": 529,
+          "visible": true,
+          "visibleFrac": 0.236
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 195,
+          "w": 988,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 1000,
+          "y": -342,
+          "w": 24,
+          "h": 674,
+          "visible": true,
+          "visibleFrac": 0.401
+        },
+        "panel": {
+          "x": 0,
+          "y": 344,
+          "w": 362,
+          "h": 672,
+          "visible": true,
+          "visibleFrac": 0.58
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 742,
+          "w": 1024,
+          "h": 52,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 26,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-1024x768",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-800x600 [swp]",
+    "mode": "swp",
+    "findings": [
+      "spectrum-area is 7% clipped",
+      "canvas#spectrum is 7% clipped",
+      "marker-table is 7% clipped",
+      "rail is clipped away (unreachable)",
+      "panel is clipped away (unreachable)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 800,
+        "h": 600,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 800,
+        "svh": 600
+      },
+      "doc": {
+        "scrollW": 800,
+        "clientW": 800,
+        "scrollH": 646,
+        "clientH": 600
+      },
+      "card": {
+        "w": 800,
+        "h": 646,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 860,
+          "cssH": 336,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1,
+          "derivedW": 860,
+          "derivedH": 336,
+          "litRatio": 0.2628,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 800,
+          "h": 74,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 82,
+          "w": 860,
+          "h": 504,
+          "visible": true,
+          "visibleFrac": 0.93
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 82,
+          "w": 860,
+          "h": 336,
+          "visible": true,
+          "visibleFrac": 0.93
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 426,
+          "w": 860,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 0.93
+        },
+        "rail": {
+          "x": 0,
+          "y": 598,
+          "w": 24,
+          "h": 506,
+          "visible": true,
+          "visibleFrac": 0
+        },
+        "panel": {
+          "x": 36,
+          "y": 598,
+          "w": 362,
+          "h": 504,
+          "visible": true,
+          "visibleFrac": 0
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 594,
+          "w": 800,
+          "h": 52,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 46,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-800x600",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-800x600 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "spectrum-area is 66% clipped",
+      "canvas#spectrum is 89% clipped",
+      "waterfall is 7% clipped",
+      "rail is 40% clipped",
+      "panel is 39% clipped"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 800,
+        "h": 600,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 800,
+        "svh": 600
+      },
+      "doc": {
+        "scrollW": 800,
+        "clientW": 800,
+        "scrollH": 646,
+        "clientH": 600
+      },
+      "card": {
+        "w": 800,
+        "h": 646,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 860,
+          "cssH": 361,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1,
+          "derivedW": 860,
+          "derivedH": 361,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 800,
+          "cssH": 131,
+          "backingW": 800,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 800,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 800,
+          "h": 74,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": -236,
+          "w": 860,
+          "h": 504,
+          "visible": true,
+          "visibleFrac": 0.343
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": -236,
+          "w": 860,
+          "h": 361,
+          "visible": true,
+          "visibleFrac": 0.111
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 133,
+          "w": 860,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 0.93
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 0,
+          "y": 280,
+          "w": 24,
+          "h": 506,
+          "visible": true,
+          "visibleFrac": 0.605
+        },
+        "panel": {
+          "x": 36,
+          "y": 280,
+          "w": 362,
+          "h": 504,
+          "visible": true,
+          "visibleFrac": 0.607
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 594,
+          "w": 800,
+          "h": 52,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 46,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-800x600",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-480x800 [swp]",
+    "mode": "swp",
+    "findings": [
+      "spectrum-area is 44% clipped",
+      "canvas#spectrum is 44% clipped",
+      "marker-table is 44% clipped",
+      "rail is clipped away (unreachable)",
+      "panel is clipped away (unreachable)"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 480,
+        "h": 800,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 480,
+        "svh": 800
+      },
+      "doc": {
+        "scrollW": 480,
+        "clientW": 480,
+        "scrollH": 885,
+        "clientH": 800
+      },
+      "card": {
+        "w": 480,
+        "h": 885,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 860,
+          "cssH": 480.9,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1,
+          "derivedW": 860,
+          "derivedH": 481,
+          "litRatio": 0.2643,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 0,
+          "cssH": 0,
+          "backingW": 800,
+          "backingH": 135,
+          "stretch": null,
+          "derivedW": 0,
+          "derivedH": 0,
+          "litRatio": 0,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 480,
+          "h": 94,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": 102,
+          "w": 860,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0.558
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": 102,
+          "w": 860,
+          "h": 480.9,
+          "visible": true,
+          "visibleFrac": 0.558
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 590.9,
+          "w": 860,
+          "h": 160,
+          "visible": true,
+          "visibleFrac": 0.558
+        },
+        "rail": {
+          "x": 0,
+          "y": 818,
+          "w": 24,
+          "h": 706,
+          "visible": true,
+          "visibleFrac": 0
+        },
+        "panel": {
+          "x": 36,
+          "y": 818,
+          "w": 362,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 814,
+          "w": 480,
+          "h": 71,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 85,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-480x800",
+      "mode": "swp",
+      "errors": []
+    }
+  },
+  {
+    "label": "narrow-480x800 [rta+waterfall]",
+    "mode": "rta+waterfall",
+    "findings": [
+      "spectrum-area is 77% clipped",
+      "canvas#spectrum is 93% clipped",
+      "waterfall is 44% clipped",
+      "rail is 43% clipped",
+      "panel is 42% clipped"
+    ],
+    "metrics": {
+      "viewport": {
+        "w": 480,
+        "h": 800,
+        "dpr": 1,
+        "zoom": 1,
+        "svw": 480,
+        "svh": 800
+      },
+      "doc": {
+        "scrollW": 480,
+        "clientW": 480,
+        "scrollH": 885,
+        "clientH": 800
+      },
+      "card": {
+        "w": 480,
+        "h": 885,
+        "left": 0
+      },
+      "canvases": [
+        {
+          "id": "spectrum",
+          "cssW": 860,
+          "cssH": 480.9,
+          "backingW": 860,
+          "backingH": 480,
+          "stretch": 1,
+          "derivedW": 860,
+          "derivedH": 481,
+          "litRatio": 0.8726,
+          "sampled": 4128
+        },
+        {
+          "id": "waterfall",
+          "cssW": 800,
+          "cssH": 131,
+          "backingW": 800,
+          "backingH": 133,
+          "stretch": 1,
+          "derivedW": 800,
+          "derivedH": 131,
+          "litRatio": 1,
+          "sampled": 4320
+        }
+      ],
+      "boxes": {
+        "info-bar": {
+          "x": 0,
+          "y": 0,
+          "w": 480,
+          "h": 94,
+          "visible": true,
+          "visibleFrac": 1
+        },
+        "spectrum-area": {
+          "x": 0,
+          "y": -316,
+          "w": 860,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0.227
+        },
+        "canvas#spectrum": {
+          "x": 0,
+          "y": -316,
+          "w": 860,
+          "h": 480.9,
+          "visible": true,
+          "visibleFrac": 0.073
+        },
+        "waterfall": {
+          "x": 0,
+          "y": 172.9,
+          "w": 860,
+          "h": 135,
+          "visible": true,
+          "visibleFrac": 0.558
+        },
+        "marker-table": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "visible": false,
+          "visibleFrac": 1
+        },
+        "rail": {
+          "x": 0,
+          "y": 400,
+          "w": 24,
+          "h": 706,
+          "visible": true,
+          "visibleFrac": 0.575
+        },
+        "panel": {
+          "x": 36,
+          "y": 400,
+          "w": 362,
+          "h": 704,
+          "visible": true,
+          "visibleFrac": 0.577
+        },
+        "dev-bar": {
+          "x": 0,
+          "y": 814,
+          "w": 480,
+          "h": 71,
+          "visible": true,
+          "visibleFrac": 1
+        }
+      },
+      "overlaps": [],
+      "clipped": [],
+      "docBottom": 85,
+      "fonts": {
+        "body": 12,
+        "label": 11,
+        "value": 12,
+        "groupTitle": 12,
+        "paramLabel": 11,
+        "input": 11
+      },
+      "label": "narrow-480x800",
+      "mode": "rta+waterfall",
+      "errors": []
+    }
+  }
+]

@@ -1,0 +1,364 @@
+=== environment (the outputs and scales the numbers depend on) ===
+  output eDP-1: 1366x768 logical (compositor scale 1, at 0,0)
+  output HDMI-A-2: 1280x960 logical (compositor scale 1.6, at 1366,0)
+  GNOME text-scaling-factor = 0.90910000000000002: Chromium multiplies its device scale factor by it, so the real browser reports dpr = compositor scale x this value
+  measured in the real browser (screenshots/resolution-baseline/*.json): eDP-1 dpr 0.906 over a 1481x708 css viewport; HDMI-A-2 dpr 1.450 over a 1386x920 css viewport
+=== fixed sizes still in src/style.css (grep-able) ===
+--- structural locks the goal names:
+  fixed card width: width: 1280px  (frontend/modern/src/style.css:163)
+  spectrum column floor: min-width: 860px  (frontend/modern/src/style.css:218)
+  control panel width: width: 360px  (frontend/modern/src/style.css:305)
+  container height: calc(100vh - 96px)  (frontend/modern/src/style.css:214)
+--- all px width/height declarations (frontend/modern/src/style.css):
+  frontend/modern/src/style.css:163: width: 1280px
+  frontend/modern/src/style.css:171: width: 9px
+  frontend/modern/src/style.css:171: height: 9px
+  frontend/modern/src/style.css:186: min-width: 62px
+  frontend/modern/src/style.css:202: min-width: 210px
+  frontend/modern/src/style.css:216: height: calc(100vh - 96px)
+  frontend/modern/src/style.css:216: min-height: 420px
+  frontend/modern/src/style.css:218: min-width: 860px
+  frontend/modern/src/style.css:249: height: 135px
+  frontend/modern/src/style.css:256: height: calc(100% - 2px)
+  frontend/modern/src/style.css:261: width: 26px
+  frontend/modern/src/style.css:269: width: 24px
+  frontend/modern/src/style.css:277: width: 12px
+  frontend/modern/src/style.css:277: height: 26px
+  frontend/modern/src/style.css:281: height: 22px
+  frontend/modern/src/style.css:306: width: 360px
+  frontend/modern/src/style.css:311: width: 6px
+  frontend/modern/src/style.css:318: width: 190px
+  frontend/modern/src/style.css:356: min-width: 18px
+  frontend/modern/src/style.css:369: width: 88px
+  frontend/modern/src/style.css:369: min-width: 88px
+  frontend/modern/src/style.css:373: width: 34px
+  frontend/modern/src/style.css:373: min-width: 34px
+  frontend/modern/src/style.css:374: min-width: 48px
+  frontend/modern/src/style.css:375: width: 34px
+  frontend/modern/src/style.css:376: min-width: 28px
+  frontend/modern/src/style.css:392: width: 32px
+  frontend/modern/src/style.css:392: min-width: 32px
+  frontend/modern/src/style.css:393: width: 82px
+  frontend/modern/src/style.css:394: width: 62px
+  frontend/modern/src/style.css:396: min-width: 34px
+  frontend/modern/src/style.css:397: min-width: 58px
+  frontend/modern/src/style.css:403: min-width: 52px
+  frontend/modern/src/style.css:406: width: 108px
+  frontend/modern/src/style.css:406: height: 22px
+  frontend/modern/src/style.css:408: height: 22px
+  frontend/modern/src/style.css:413: height: 22px
+  frontend/modern/src/style.css:416: width: 24px
+  frontend/modern/src/style.css:418: width: 68px
+  frontend/modern/src/style.css:421: width: 68px
+  frontend/modern/src/style.css:442: width: 66px
+  frontend/modern/src/style.css:472: min-width: 48px
+  frontend/modern/src/style.css:472: height: 24px
+  frontend/modern/src/style.css:473: width: 18px
+  frontend/modern/src/style.css:473: height: 24px
+  frontend/modern/src/style.css:479: min-width: 12px
+  frontend/modern/src/style.css:481: width: 11px
+  frontend/modern/src/style.css:481: height: 11px
+  frontend/modern/src/style.css:485: min-width: 28px
+  frontend/modern/src/style.css:490: min-width: 28px
+
+=== laptop-1366x768 [swp] ===
+[swp] viewport 1366x768 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1366 / clientW 1366)
+  card          : 1280x756 at x=43  -> 6.3% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.2631
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x672@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x674@49 vis 100%  panel 362x672@49  dev-bar 1280x33@729
+  FINDINGS      : none
+
+=== laptop-1366x768 [rta+waterfall] ===
+[rta+waterfall] viewport 1366x768 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1366 / clientW 1366)
+  card          : 1280x756 at x=43  -> 6.3% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.8726
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1x  (derived would be 809x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x672@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x674@49 vis 100%  panel 362x672@49  dev-bar 1280x33@729
+  FINDINGS      : none
+
+=== desktop-1600x1000 [swp] ===
+[swp] viewport 1600x1000 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1600 / clientW 1600)
+  card          : 1280x988 at x=160  -> 20.0% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.2665
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 11.0 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x904@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x906@49 vis 100%  panel 362x904@49  dev-bar 1280x33@961
+  FINDINGS      : none
+
+=== desktop-1600x1000 [rta+waterfall] ===
+[rta+waterfall] viewport 1600x1000 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1600 / clientW 1600)
+  card          : 1280x988 at x=160  -> 20.0% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.8726
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1x  (derived would be 809x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 11.0 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x904@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x906@49 vis 100%  panel 362x904@49  dev-bar 1280x33@961
+  FINDINGS      : none
+
+=== fhd-1920x1080 [swp] ===
+[swp] viewport 1920x1080 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1920 / clientW 1920)
+  card          : 1280x1068 at x=320  -> 33.3% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.2616
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 10.2 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x984@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x986@49 vis 100%  panel 362x984@49  dev-bar 1280x33@1041
+  FINDINGS      : card covers only 67% of the viewport width
+
+=== fhd-1920x1080 [rta+waterfall] ===
+[rta+waterfall] viewport 1920x1080 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 1920 / clientW 1920)
+  card          : 1280x1068 at x=320  -> 33.3% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.8726
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1x  (derived would be 809x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 10.2 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x984@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x986@49 vis 100%  panel 362x984@49  dev-bar 1280x33@1041
+  FINDINGS      : card covers only 67% of the viewport width
+
+=== qhd-2560x1440 [swp] ===
+[swp] viewport 2560x1440 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 2560 / clientW 2560)
+  card          : 1280x1428 at x=640  -> 50.0% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.2653
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 7.6 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x1344@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x1346@49  panel 362x1344@49  dev-bar 1280x33@1401
+  FINDINGS      : card covers only 50% of the viewport width; label text shrinks to 7.6px per 1000px of height
+
+=== qhd-2560x1440 [rta+waterfall] ===
+[rta+waterfall] viewport 2560x1440 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 2560 / clientW 2560)
+  card          : 1280x1428 at x=640  -> 50.0% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.8726
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1x  (derived would be 809x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 7.6 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x1344@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x1346@49  panel 362x1344@49  dev-bar 1280x33@1401
+  FINDINGS      : card covers only 50% of the viewport width; label text shrinks to 7.6px per 1000px of height
+
+=== uhd-3840x2160 [swp] ===
+[swp] viewport 3840x2160 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 3840 / clientW 3840)
+  card          : 1280x2148 at x=1280  -> 66.7% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.2662
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 5.1 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x2064@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x2066@49  panel 362x2064@49  dev-bar 1280x33@2121
+  FINDINGS      : card covers only 33% of the viewport width; label text shrinks to 5.1px per 1000px of height
+
+=== uhd-3840x2160 [rta+waterfall] ===
+[rta+waterfall] viewport 3840x2160 css, dpr 1
+  overflow      : x=0px  y=0px  (scrollW 3840 / clientW 3840)
+  card          : 1280x2148 at x=1280  -> 66.7% of the width unused
+  canvas spectrum  : css 870x486.5  backing 860x480  stretch 1.012x  (derived would be 870x486)  lit 0.8726
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1x  (derived would be 809x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 5.1 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x2064@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x2066@49  panel 362x2064@49  dev-bar 1280x33@2121
+  FINDINGS      : card covers only 33% of the viewport width; label text shrinks to 5.1px per 1000px of height
+
+=== external-1280x960-dpr1.6 [swp] ===
+[swp] viewport 1280x960 css, dpr 1.600000023841858
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x948 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 870x486.5  backing 1376x768  stretch 1.012x  (derived would be 1392x778)  lit 0.2602
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 11.5 px per 1000 logical px of height (12*1.600000023841858 = 19.2 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x864@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x866@49 vis 100%  panel 362x864@49  dev-bar 1280x33@921
+  FINDINGS      : none
+
+=== external-1280x960-dpr1.6 [rta+waterfall] ===
+[rta+waterfall] viewport 1280x960 css, dpr 1.600000023841858
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x948 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 870x486.5  backing 1376x768  stretch 1.012x  (derived would be 1392x778)  lit 0.8716
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1.601x  (derived would be 1295x210)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 11.5 px per 1000 logical px of height (12*1.600000023841858 = 19.2 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x864@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x866@49 vis 100%  panel 362x864@49  dev-bar 1280x33@921
+  FINDINGS      : canvas waterfall bitmap stretched 1.601x (blur)
+
+=== zoom200-1280x720-dpr2 [swp] ===
+[swp] viewport 1280x720 css, dpr 2
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x708 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 870x456  backing 1720x960  stretch 1.012x  (derived would be 1740x912)  lit 0.2597
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 15.3 px per 1000 logical px of height (12*2 = 24.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x624@49  canvas#spectrum 870x456@49  waterfall 0x0@0  marker-table 870x160@513  rail 24x626@49 vis 100%  panel 362x624@49  dev-bar 1280x33@681
+  FINDINGS      : none
+
+=== zoom200-1280x720-dpr2 [rta+waterfall] ===
+[rta+waterfall] viewport 1280x720 css, dpr 2
+  overflow      : x=0px  y=0px  (scrollW 1280 / clientW 1280)
+  card          : 1280x708 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 870x481  backing 1720x960  stretch 1.012x  (derived would be 1740x962)  lit 0.8716
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 2.001x  (derived would be 1619x262)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 15.3 px per 1000 logical px of height (12*2 = 24.0 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x624@49  canvas#spectrum 870x481@49  waterfall 870x135@538  marker-table 0x0@0  rail 24x626@49 vis 100%  panel 362x624@49  dev-bar 1280x33@681
+  FINDINGS      : canvas waterfall bitmap stretched 2.001x (blur)
+
+=== real-laptop-1481x708-dpr0.906 [swp] ===
+[swp] viewport 1481x708 css, dpr 0.906000018119812
+  overflow      : x=0px  y=0px  (scrollW 1481 / clientW 1481)
+  card          : 1280x696 at x=100.5  -> 13.6% of the width unused
+  canvas spectrum  : css 870x444  backing 860x480  stretch 0.917x  (derived would be 870x444)  lit 0.2689
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 15.5 px per 1000 logical px of height (12*0.906000018119812 = 10.9 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x612@49  canvas#spectrum 870x444@49  waterfall 0x0@0  marker-table 870x160@501  rail 24x614@49 vis 100%  panel 362x612@49  dev-bar 1280x33@669
+  FINDINGS      : none
+
+=== real-laptop-1481x708-dpr0.906 [rta+waterfall] ===
+[rta+waterfall] viewport 1481x708 css, dpr 0.906000018119812
+  overflow      : x=0px  y=0px  (scrollW 1481 / clientW 1481)
+  card          : 1280x696 at x=100.5  -> 13.6% of the width unused
+  canvas spectrum  : css 870x469  backing 860x480  stretch 0.917x  (derived would be 870x469)  lit 0.8726
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 0.906x  (derived would be 809x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 15.5 px per 1000 logical px of height (12*0.906000018119812 = 10.9 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x612@49  canvas#spectrum 870x469@49  waterfall 870x135@526  marker-table 0x0@0  rail 24x614@49 vis 100%  panel 362x612@49  dev-bar 1280x33@669
+  FINDINGS      : none
+
+=== real-2k-1386x920-dpr1.45 [swp] ===
+[swp] viewport 1386x920 css, dpr 1.4500000476837158
+  overflow      : x=0px  y=0px  (scrollW 1386 / clientW 1386)
+  card          : 1280x908 at x=53  -> 7.6% of the width unused
+  canvas spectrum  : css 870x486.5  backing 1247x696  stretch 1.012x  (derived would be 1262x705)  lit 0.1864
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 12.0 px per 1000 logical px of height (12*1.4500000476837158 = 17.4 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x824@49  canvas#spectrum 870x486.5@49  waterfall 0x0@0  marker-table 870x160@543.5  rail 24x826@49 vis 100%  panel 362x824@49  dev-bar 1280x33@881
+  FINDINGS      : none
+
+=== real-2k-1386x920-dpr1.45 [rta+waterfall] ===
+[rta+waterfall] viewport 1386x920 css, dpr 1.4500000476837158
+  overflow      : x=0px  y=0px  (scrollW 1386 / clientW 1386)
+  card          : 1280x908 at x=53  -> 7.6% of the width unused
+  canvas spectrum  : css 870x486.5  backing 1247x696  stretch 1.012x  (derived would be 1262x705)  lit 0.8553
+  canvas waterfall : css 809.3x131  backing 809x133  stretch 1.451x  (derived would be 1173x190)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 12.0 px per 1000 logical px of height (12*1.4500000476837158 = 17.4 device px)
+  boxes         : info-bar 1280x35@6  spectrum-area 870x824@49  canvas#spectrum 870x486.5@49  waterfall 870x135@543.5  marker-table 0x0@0  rail 24x826@49 vis 100%  panel 362x824@49  dev-bar 1280x33@881
+  FINDINGS      : canvas waterfall bitmap stretched 1.451x (blur)
+
+=== narrow-1200x800 [swp] ===
+[swp] viewport 1200x800 css, dpr 1
+  overflow      : x=0px  y=7px  (scrollW 1200 / clientW 1200)
+  card          : 1200x807 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 1164x536  backing 860x480  stretch 1.353x  (derived would be 1164x536)  lit 0.2636
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1200x35@0  spectrum-area 1164x704@43  canvas#spectrum 1164x536@43  waterfall 0x0@0  marker-table 1164x160@587  rail 24x706@43 vis 100%  panel 362x704@761 vis 0%  dev-bar 1200x52@755
+  page taller than the viewport by 7px
+  FINDINGS      : canvas spectrum bitmap stretched 1.353x (blur); panel is clipped away (unreachable)
+
+=== narrow-1200x800 [rta+waterfall] ===
+[rta+waterfall] viewport 1200x800 css, dpr 1
+  overflow      : x=0px  y=7px  (scrollW 1200 / clientW 1200)
+  card          : 1200x807 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 1164x561  backing 860x480  stretch 1.353x  (derived would be 1164x561)  lit 0.8726
+  canvas waterfall : css 1082.8x131  backing 1083x133  stretch 1x  (derived would be 1083x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1200x35@0  spectrum-area 1164x704@-377 vis 40%  canvas#spectrum 1164x561@-377 vis 25%  waterfall 1164x135@192  marker-table 0x0@0  rail 24x706@-377 vis 40%  panel 362x704@341 vis 58%  dev-bar 1200x52@755
+  page taller than the viewport by 7px
+  FINDINGS      : canvas spectrum bitmap stretched 1.353x (blur); spectrum-area is 60% clipped; canvas#spectrum is 75% clipped; rail is 60% clipped; panel is 42% clipped
+
+=== narrow-1024x768 [swp] ===
+[swp] viewport 1024x768 css, dpr 1
+  overflow      : x=0px  y=26px  (scrollW 1024 / clientW 1024)
+  card          : 1024x794 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 988x504  backing 860x480  stretch 1.149x  (derived would be 988x504)  lit 0.2691
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1024x54@0  spectrum-area 988x672@62  canvas#spectrum 988x504@62  waterfall 0x0@0  marker-table 988x160@574  rail 24x674@62 vis 100%  panel 362x672@748 vis 0%  dev-bar 1024x52@742
+  page taller than the viewport by 26px
+  FINDINGS      : canvas spectrum bitmap stretched 1.149x (blur); panel is clipped away (unreachable)
+
+=== narrow-1024x768 [rta+waterfall] ===
+[rta+waterfall] viewport 1024x768 css, dpr 1
+  overflow      : x=0px  y=26px  (scrollW 1024 / clientW 1024)
+  card          : 1024x794 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 988x529  backing 860x480  stretch 1.149x  (derived would be 988x529)  lit 0.8726
+  canvas waterfall : css 919.1x131  backing 919x133  stretch 1x  (derived would be 919x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 14.3 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 1024x54@0  spectrum-area 988x672@-342 vis 40%  canvas#spectrum 988x529@-342 vis 24%  waterfall 988x135@195  marker-table 0x0@0  rail 24x674@-342 vis 40%  panel 362x672@344 vis 58%  dev-bar 1024x52@742
+  page taller than the viewport by 26px
+  FINDINGS      : canvas spectrum bitmap stretched 1.149x (blur); spectrum-area is 60% clipped; canvas#spectrum is 76% clipped; rail is 60% clipped; panel is 42% clipped
+
+=== narrow-800x600 [swp] ===
+[swp] viewport 800x600 css, dpr 1
+  overflow      : x=0px  y=46px  (scrollW 800 / clientW 800)
+  card          : 800x646 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 860x336  backing 860x480  stretch 1x  (derived would be 860x336)  lit 0.2628
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 18.3 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 800x74@0  spectrum-area 860x504@82 vis 93%  canvas#spectrum 860x336@82 vis 93%  waterfall 0x0@0  marker-table 860x160@426 vis 93%  rail 24x506@598 vis 0%  panel 362x504@598 vis 0%  dev-bar 800x52@594
+  page taller than the viewport by 46px
+  FINDINGS      : spectrum-area is 7% clipped; canvas#spectrum is 7% clipped; marker-table is 7% clipped; rail is clipped away (unreachable); panel is clipped away (unreachable)
+
+=== narrow-800x600 [rta+waterfall] ===
+[rta+waterfall] viewport 800x600 css, dpr 1
+  overflow      : x=0px  y=46px  (scrollW 800 / clientW 800)
+  card          : 800x646 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 860x361  backing 860x480  stretch 1x  (derived would be 860x361)  lit 0.8726
+  canvas waterfall : css 800x131  backing 800x133  stretch 1x  (derived would be 800x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 18.3 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 800x74@0  spectrum-area 860x504@-236 vis 34%  canvas#spectrum 860x361@-236 vis 11%  waterfall 860x135@133 vis 93%  marker-table 0x0@0  rail 24x506@280 vis 60%  panel 362x504@280 vis 61%  dev-bar 800x52@594
+  page taller than the viewport by 46px
+  FINDINGS      : spectrum-area is 66% clipped; canvas#spectrum is 89% clipped; waterfall is 7% clipped; rail is 40% clipped; panel is 39% clipped
+
+=== narrow-480x800 [swp] ===
+[swp] viewport 480x800 css, dpr 1
+  overflow      : x=0px  y=85px  (scrollW 480 / clientW 480)
+  card          : 480x885 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 860x480.9  backing 860x480  stretch 1x  (derived would be 860x481)  lit 0.2643
+  canvas waterfall : css 0x0 (not rendered)
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 480x94@0  spectrum-area 860x704@102 vis 56%  canvas#spectrum 860x480.9@102 vis 56%  waterfall 0x0@0  marker-table 860x160@590.9 vis 56%  rail 24x706@818 vis 0%  panel 362x704@818 vis 0%  dev-bar 480x71@814
+  page taller than the viewport by 85px
+  FINDINGS      : spectrum-area is 44% clipped; canvas#spectrum is 44% clipped; marker-table is 44% clipped; rail is clipped away (unreachable); panel is clipped away (unreachable)
+
+=== narrow-480x800 [rta+waterfall] ===
+[rta+waterfall] viewport 480x800 css, dpr 1
+  overflow      : x=0px  y=85px  (scrollW 480 / clientW 480)
+  card          : 480x885 at x=0  -> 0.0% of the width unused
+  canvas spectrum  : css 860x480.9  backing 860x480  stretch 1x  (derived would be 860x481)  lit 0.8726
+  canvas waterfall : css 800x131  backing 800x133  stretch 1x  (derived would be 800x131)  lit 1
+  text          : body 12px, labels 11px, inputs 11px -> 13.8 px per 1000 logical px of height (12*1 = 12.0 device px)
+  boxes         : info-bar 480x94@0  spectrum-area 860x704@-316 vis 23%  canvas#spectrum 860x480.9@-316 vis 7%  waterfall 860x135@172.9 vis 56%  marker-table 0x0@0  rail 24x706@400 vis 57%  panel 362x704@400 vis 58%  dev-bar 480x71@814
+  page taller than the viewport by 85px
+  FINDINGS      : spectrum-area is 77% clipped; canvas#spectrum is 93% clipped; waterfall is 44% clipped; rail is 43% clipped; panel is 42% clipped
+
+=== summary ===
+  viewport [mode]                    card   canvas css      backing  stretch  unused findings
+  laptop-1366x768 [swp]              1280    870x486.5      860x480    1.012      6%        0
+  laptop-1366x768 [rta+waterfall]    1280    870x486.5      860x480    1.012      6%        0
+  desktop-1600x1000 [swp]            1280    870x486.5      860x480    1.012     20%        0
+  desktop-1600x1000 [rta+waterfall]   1280    870x486.5      860x480    1.012     20%        0
+  fhd-1920x1080 [swp]                1280    870x486.5      860x480    1.012     33%        1
+  fhd-1920x1080 [rta+waterfall]      1280    870x486.5      860x480    1.012     33%        1
+  qhd-2560x1440 [swp]                1280    870x486.5      860x480    1.012     50%        2
+  qhd-2560x1440 [rta+waterfall]      1280    870x486.5      860x480    1.012     50%        2
+  uhd-3840x2160 [swp]                1280    870x486.5      860x480    1.012     67%        2
+  uhd-3840x2160 [rta+waterfall]      1280    870x486.5      860x480    1.012     67%        2
+  external-1280x960-dpr1.6 [swp]     1280    870x486.5     1376x768    1.012      0%        0
+  external-1280x960-dpr1.6 [rta+waterfall]   1280    870x486.5     1376x768    1.012      0%        1
+  zoom200-1280x720-dpr2 [swp]        1280      870x456     1720x960    1.012      0%        0
+  zoom200-1280x720-dpr2 [rta+waterfall]   1280      870x481     1720x960    1.012      0%        1
+  real-laptop-1481x708-dpr0.906 [swp]   1280      870x444      860x480    0.917     14%        0
+  real-laptop-1481x708-dpr0.906 [rta+waterfall]   1280      870x469      860x480    0.917     14%        0
+  real-2k-1386x920-dpr1.45 [swp]     1280    870x486.5     1247x696    1.012      8%        0
+  real-2k-1386x920-dpr1.45 [rta+waterfall]   1280    870x486.5     1247x696    1.012      8%        1
+  narrow-1200x800 [swp]              1200     1164x536      860x480    1.353      0%        2
+  narrow-1200x800 [rta+waterfall]    1200     1164x561      860x480    1.353      0%        5
+  narrow-1024x768 [swp]              1024      988x504      860x480    1.149      0%        2
+  narrow-1024x768 [rta+waterfall]    1024      988x529      860x480    1.149      0%        5
+  narrow-800x600 [swp]                800      860x336      860x480        1      0%        5
+  narrow-800x600 [rta+waterfall]      800      860x361      860x480        1      0%        5
+  narrow-480x800 [swp]                480    860x480.9      860x480        1      0%        5
+  narrow-480x800 [rta+waterfall]      480    860x480.9      860x480        1      0%        5
+  total findings: 47
+  json: tools/e2e/viewport_baseline.json
+  restored the instrument to sweep (SET_MODE std)
+
+OK: measurement only (no thresholds applied)
