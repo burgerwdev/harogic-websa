@@ -73,7 +73,12 @@
 
   <div class="screen-container">
     <div class="spectrum-area">
-      <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
+      <!-- The box owns the plot geometry: a canvas' intrinsic size comes from its own
+           width/height attributes, which syncCanvasSize() rewrites, so sizing the element
+           from that ratio would feed every new bitmap size straight back into the layout. -->
+      <div class="spectrum-box">
+        <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
+      </div>
       <div id="waterfall-container" class="waterfall-container" style="display:none;">
         <canvas id="waterfall" width="800" height="135"></canvas>
         <div id="wf-controls" class="wf-controls">

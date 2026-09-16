@@ -179,7 +179,14 @@ body {
 .analyzer-card {
   background: var(--panel);
   display: flex; flex-direction: column;
-  flex: 1 1 auto; min-width: 0; min-height: 100vh;
+  flex: 1 1 auto; min-width: 0;
+  /* A definite height, so the middle row's height is "what the bars leave" instead of "how
+     tall the control panel's content happens to be": the panel scrolls inside its column
+     (it always did), and no viewport arithmetic has to know the bars' heights. dvh over vh
+     because a mobile-style dynamic toolbar changes the visible height. */
+  height: 100vh;
+  height: 100dvh;
+  min-height: 320px;
 }
 .info-bar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
@@ -238,9 +245,17 @@ select:disabled { color: var(--label); }
 /* The only column that may shrink: min-width 0 lets the plot give width back instead of
    pushing the row past the card. */
 .spectrum-area { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-width: 0; min-height: 0; }
+/* The plot box takes the height the frame leaves and the bitmap fills it; the canvas itself
+   is absolutely placed so its intrinsic ratio (its own width/height attributes, rewritten by
+   core/store.ts on every resize) can never influence the layout it is measured from. */
+.spectrum-box { position: relative; width: 100%; flex: 1 1 0; min-height: 120px; overflow: hidden; }
+.spectrum-box > canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 1px solid var(--card-border); box-sizing: border-box;
+  background-color: var(--sa-bg); display: block; cursor: crosshair;
+}
 canvas {
   background-color: var(--sa-bg); border: 1px solid var(--card-border); display: block; cursor: crosshair;
-  width: 100%; height: auto; flex: 0 1 auto; min-height: 120px;   /* may shrink, never collapse */
   box-sizing: border-box;   /* width includes the 1px border -> aligns with the 100% marker table below */
 }
 .tab-btn { background: var(--panel-2); color: var(--label); border: 1px solid var(--card-border); padding: 2px 6px;
@@ -275,7 +290,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* Canvas: fixed width = spectrum plot area (left 10px, width set by JS);
    buttons sit absolutely at the right, never squeezing the canvas */
 .waterfall-container canvas {
-  position: absolute; left: 10px; top: 0; height: calc(100% - 2px);
+  position: absolute; left: 10px; top: 0; height: 100%;
   width: auto;   /* override global `canvas { width:100% }`; width set by JS */
   border: none; display: block;
 }
@@ -552,15 +567,18 @@ input.ref-pending { border: 1px dashed #ffb300; }
 
 /* ---- Stacking breakpoint -----------------------------------------------------------
    Under this width the plot floor + the panel floor + the rail no longer fit side by side
-   (24 + plot + 24 + panel, with the panel floor at 330px), so the row stacks instead of
-   overflowing: plot and rail on top, the panel full width underneath, reachable by scrolling.
-   The rail turns horizontal rather than becoming a 24px-tall sliver, and the panel keeps a
-   floor so the plot cannot squeeze it out. This is a "nothing overflows or overlaps" layout,
-   not a touch/phone layout: no touch target work is in scope. */
+   (24 + plot + 24 + panel, with the panel floor at 330px), so the row becomes a normal
+   scrolling document: plot and rail first, then the whole control panel. The card stops being
+   viewport-tall here on purpose - three areas inside one screen height would either overlap
+   or shrink the plot to a sliver, and a narrow window is scrolled anyway.
+   This is a "nothing overflows or overlaps, everything reachable" layout, not a touch
+   layout: no touch-target work is in scope. */
 @media (max-width: 1000px) {
+  .analyzer-card { height: auto; min-height: 100dvh; }
   .screen-container { flex-direction: column; }
-  .spectrum-area { min-height: 260px; }
-  .control-panel { flex: 1 1 auto; }
+  .spectrum-area { flex: 0 0 auto; }
+  .spectrum-box { min-height: 260px; }
+  .control-panel { flex: 0 0 auto; overflow-y: visible; }
   .control-rail { flex-direction: row; width: auto; height: auto; padding: 0; }
   .control-rail.collapsed { width: auto; margin-left: 0; }
   .rail-items { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
@@ -572,4 +590,9 @@ input.ref-pending { border: 1px dashed #ffb300; }
    scrollable rather than letting it push the card wider than the viewport. */
 @media (max-width: 700px) {
   .marker-table { display: block; overflow-x: auto; }
+}
+/* A window shorter than the plot column's floor (120px canvas + waterfall + tables) cannot
+   fit them at once: scroll the middle row instead of letting it overlap the status bar. */
+@media (max-height: 560px) {
+  .screen-container { overflow-y: auto; }
 }

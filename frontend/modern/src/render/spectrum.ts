@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
-import { ctx, W, H } from '../core/store';
+import { ctx, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
@@ -37,9 +37,8 @@ function cur() {
   };
 }
 
-// Fixed plot rectangle: W/H/MARGIN are constants, so this is computed once instead of
-// allocating a new object for every point during trace rendering.
-// Shared bottom frequency row (used by both SWP grid and RTA view)
+// Fixed plot rectangle: W/H/MARGIN move with the window, so this is recomputed per draw
+// rather than cached - allocating one small object per frame is not the hot path (points are).
 function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   ctx.font = '11px monospace';
   ctx.textBaseline = 'top';
@@ -637,24 +636,28 @@ function renderRta() {
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
 let lastSwpWfAt = 0;
+// The container's own CSS height, borders included (.waterfall-container in src/style.css),
+// and its canvas fills that content box (height: 100%). Reading the box here would be a
+// layout read per frame, and a DPR-scaled canvas must not be sized from its own attribute
+// (that is the feedback loop core/store.ts documents).
+const WF_CSS_H = 135;
 function renderWaterfallIfOn() {
   if (!waterfallOn.get()) return;
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
-  // Canvas width = spectrum plot area width (CSS px), fixed (buttons don't squeeze it)
-  const spec = document.getElementById('spectrum') as HTMLCanvasElement;
-  const sRect = spec.getBoundingClientRect();
-  const scale = sRect.width / S.W;
+  // Drawing units are CSS px of the spectrum content box, so the waterfall's CSS box is the
+  // plot rectangle as-is: no scale factor and no per-frame getBoundingClientRect().
   const pr = plotRect();
-  const wCss = pr.w * scale;                       // plot width in CSS px
-  const leftCss = pr.x * scale;                    // plot left edge in CSS px
-  const w = Math.max(60, Math.round(wCss));
-  const h = Math.max(40, 135 - 2);
+  const wCss = Math.max(60, pr.w);
+  const hCss = Math.max(40, WF_CSS_H - 2);
+  // Backing store from the CSS box x the same ratio the spectrum canvas uses: the waterfall
+  // draws raw ImageData in device pixels, so this is the whole sharpness story for it.
+  const w = Math.round(wCss * pixelRatio);
+  const h = Math.round(hCss * pixelRatio);
   if (wf.width !== w || wf.height !== h) { wf.width = w; wf.height = h; }
   // Pin the CSS box to the plot area: left AND right edge align with the spectrum X
-  // axis (canvas is CSS-scaled, so the internal margins render at *scale on screen;
-  // explicit width prevents the default canvas sizing from drifting)
-  const ls = leftCss.toFixed(3) + 'px';
+  // axis; explicit width prevents the default canvas sizing from drifting
+  const ls = pr.x.toFixed(3) + 'px';
   if (wf.style.left !== ls) wf.style.left = ls;
   const ws = wCss.toFixed(3) + 'px';
   if (wf.style.width !== ws) wf.style.width = ws;

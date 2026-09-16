@@ -770,8 +770,12 @@ let sdrX0 = 0;
 let sdrEdgeAt = 0;
 
 function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
+  // The drawing space is the canvas content box (core/store.ts W), so map the pointer into it
+  // from the same box: the border offset and the box width both matter at the right edge.
   const rect = canvas.getBoundingClientRect();
-  return (e.clientX - rect.left) * (S.W / rect.width);
+  const border = parseFloat(getComputedStyle(canvas).borderLeftWidth) || 0;
+  const box = Math.max(1, canvas.clientWidth || rect.width);
+  return (e.clientX - rect.left - border) * (S.W / box);
 }
 
 function xToFreqHz(x: number): number | null {

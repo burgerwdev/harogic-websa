@@ -99,12 +99,17 @@ PROBE = """(landmarks) => {
     const r = card.getBoundingClientRect();
     out.card = { w: +r.width.toFixed(1), h: +r.height.toFixed(1), left: +r.left.toFixed(1) };
   }
-  // Canvas: CSS box vs backing store. `stretch` ~1 is sharp; >1 means an upscaled bitmap.
+  // Canvas: CSS content box vs backing store. `stretch` ~1 is sharp; >1 means an upscaled
+  // bitmap. The bitmap is painted into the content box (borders excluded), so that is the box
+  // the backing store has to match - `expectedW/H` is round(box x ratio) with the same policy
+  // core/store.ts uses (ratio capped at 2, reduced only past an 8M device-pixel budget).
   out.canvases = [];
   for (const c of document.querySelectorAll('canvas')) {
     const r = c.getBoundingClientRect();
-    const cssW = r.width, cssH = r.height;
-    const want = Math.max(1, Math.min(2, dpr));
+    const cssW = c.clientWidth > 0 ? c.clientWidth : r.width;
+    const cssH = c.clientHeight > 0 ? c.clientHeight : r.height;
+    let ratio = Math.max(1, Math.min(2, dpr));
+    if (cssW * cssH * ratio * ratio > 8000000) ratio = Math.max(1, Math.sqrt(8000000 / (cssW * cssH)));
     let lit = null, sampled = 0;
     const g = c.getContext('2d');
     if (g && c.width && c.height) {
@@ -117,14 +122,15 @@ PROBE = """(landmarks) => {
             if (d[(y * c.width + x) * 4 + 3] > 0) lit = (lit || 0) + 1;
           }
         }
-      } catch (e) { /* tainted or no 2d context: WebGL layer */ }
+      } catch (e) { /* tainted or no 2d context */ }
     }
     out.canvases.push({
       id: c.id || '(anon)', cssW: +cssW.toFixed(1), cssH: +cssH.toFixed(1),
+      borderW: +(r.width - cssW).toFixed(1), borderH: +(r.height - cssH).toFixed(1),
       backingW: c.width, backingH: c.height,
       stretch: cssW > 0 ? +((cssW * dpr) / c.width).toFixed(3) : null,
-      // what the backing store would be if it were derived from the box
-      derivedW: Math.round(cssW * want), derivedH: Math.round(cssH * want),
+      ratio: +ratio.toFixed(3),
+      expectedW: Math.round(cssW * ratio), expectedH: Math.round(cssH * ratio),
       litRatio: sampled ? +((lit || 0) / sampled).toFixed(4) : null, sampled: sampled,
     });
   }
@@ -246,7 +252,7 @@ def lock_report() -> list[str]:
     for label, pattern, shown in LOCKS:
         m = re.search(pattern, css)
         if not m:
-            out.append(f'  {label}: NOT FOUND (pattern {pattern})')
+            out.append(f'  {label}: gone ({shown} is no longer in the file)')
             continue
         lineno = css[:m.start()].count('\n') + 1
         out.append(f'  {label}: {shown}  (frontend/modern/src/style.css:{lineno})')
@@ -277,10 +283,13 @@ def fmt(metrics: dict) -> list[str]:
         if c['cssW'] <= 0 or c['cssH'] <= 0:
             lines.append(f"  canvas {c['id']:<10}: css {c['cssW']}x{c['cssH']} (not rendered)")
             continue
-        lines.append(f"  canvas {c['id']:<10}: css {c['cssW']}x{c['cssH']}  backing "
-                     f"{c['backingW']}x{c['backingH']}  stretch {c['stretch']}x"
-                     f"  (derived would be {c['derivedW']}x{c['derivedH']})"
-                     f"  lit {c['litRatio']}")
+        lines.append(f"  canvas {c['id']:<10}: box {c['cssW']}x{c['cssH']} (+border "
+                     f"{c['borderW']}x{c['borderH']})  backing {c['backingW']}x{c['backingH']}"
+                     f"  expected {c['expectedW']}x{c['expectedH']} at ratio {c['ratio']}"
+                     f"  stretch {c['stretch']}x  lit {c['litRatio']}")
+        if (c['backingW'] != c['expectedW'] or c['backingH'] != c['expectedH']):
+            findings.append(f"canvas {c['id']} backing {c['backingW']}x{c['backingH']} != "
+                            f"round(box x ratio) {c['expectedW']}x{c['expectedH']}")
         if c['stretch'] and c['stretch'] > 1.02:
             findings.append(f"canvas {c['id']} bitmap stretched {c['stretch']}x (blur)")
         if c['litRatio'] == 0:
@@ -319,6 +328,9 @@ def fmt(metrics: dict) -> list[str]:
         lines.append(f"  past right edge: {total} outermost element(s): " + ', '.join(
             f"{c['el']} right={c['right']} (w {c['w']})" for c in metrics['clipped'][:6]))
         findings.append(f'{total} element(s) past the right edge')
+    if not metrics.get('settled', True):
+        lines.append('  canvas sizes changed again 700ms later (layout feedback loop)')
+        findings.append('canvas size never settles')
     if metrics['docBottom']:
         lines.append(f"  page taller than the viewport by {metrics['docBottom']}px")
     return lines, findings
@@ -337,6 +349,13 @@ def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
         page.click(selector)
         page.wait_for_timeout(3000)
     metrics = page.evaluate(PROBE, LANDMARKS)
+    # A backing store derived from the box must settle: if the size keeps changing, the layout
+    # is feeding the bitmap back into itself (the trap the canvas CSS now avoids).
+    before = [[c['backingW'], c['backingH']] for c in metrics['canvases']]
+    page.wait_for_timeout(700)
+    after = page.evaluate("() => [...document.querySelectorAll('canvas')]"
+                          '.map((c) => [c.width, c.height])')
+    metrics['settled'] = before == after
     if shot_path is not None:
         page.screenshot(path=str(shot_path), full_page=False)
         print(f"  screenshot    : {shot_path.relative_to(ROOT)}")
