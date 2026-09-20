@@ -1,0 +1,24 @@
+[package]
+name = "websa-dsp"
+version = "0.1.0"
+edition = "2021"
+description = "Real-time SDR DSP core for harogic-websa (DDC, demodulators, audio enhancement), built for wasm32"
+license = "MIT"
+publish = false
+
+# No dependencies on purpose: the module must build with `cargo build --target
+# wasm32-unknown-unknown` and nothing else (no wasm-bindgen, no wasm-pack), so the artifact can
+# be committed and CI needs no Rust toolchain. See docs/*/ARCHITECTURE.md.
+[dependencies]
+
+[lib]
+# cdylib for the wasm module; rlib so `cargo test` can link the same kernels natively.
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+# `name` section out, so the artifact only depends on the code and stays byte-reproducible.
+strip = true

@@ -1,5 +1,5 @@
 # Unified entry
-.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record viewport-baseline viewport-check
+.PHONY: run stop restart status clean build test dev all help ci hw-test bench e2e-fake bench-record viewport-baseline viewport-check wasm wasm-check
 
 run:      ## Start service
 	./run.sh
@@ -37,9 +37,16 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	python3 tools/check_dom_ids.py
 	python3 tools/check_registrations.py
 	python3 tools/check_docs_parity.py
+	python3 tools/check_wasm_artifact.py
 	python3 tools/quality/architecture_guard.py
 	./build.sh
 	@echo "OK: same gates as .github/workflows/ci.yml"
+
+wasm:     ## Build the Rust/WASM DSP core and publish the committed artifact (needs Rust)
+	./wasm/build.sh
+
+wasm-check: ## Rebuild the WASM core and fail if the committed artifact differs (needs Rust)
+	./wasm/build.sh --check
 
 hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regression (SAN-90 required)
 	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh

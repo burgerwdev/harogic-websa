@@ -365,6 +365,8 @@ python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record 
 python3 tools/command_sweep.py        # command-layer contract only (hardware)
 python3 tools/e2e/state_regression.py # UI state regression only (hardware)
 python3 tools/check_registrations.py  # registration reachability
+make wasm | make wasm-check            # Rust/WASM DSP core: build+commit the artifact / verify it
+python3 tools/check_wasm_artifact.py  # artifact hash + exports (stdlib only, CI runs this)
 python3 tools/quality/architecture_guard.py --baseline   # show the current architecture metrics
 ```
 
@@ -376,3 +378,33 @@ See `ARCH_REVIEW.md` §9.3: fake backend + e2e in CI (highest value now), Firefo
 `DeviceState` per mode, the remaining unused exports in `controls.ts`, ESLint (blocked by the upstream
 `typescript-eslint` / TypeScript 7 incompatibility), archiving the root scratch TODO, and per-command
 STATUS trimming. **This guide evolves together with that list**: finishing an item updates both places.
+
+---
+
+## 15. Rust/WASM DSP core (build and artifact policy)
+
+The real-time SDR DSP (DDC, demodulators, audio enhancement) is the Rust crate in `wasm/`, running
+in a Web Worker. It has **no crate dependencies** and exactly one toolchain requirement:
+
+```bash
+rustup target add wasm32-unknown-unknown
+make wasm           # cargo test + release build + publish frontend/modern/public/dsp.wasm
+make wasm-check     # rebuild and fail when the committed artifact differs (release gate)
+```
+
+Rules that keep it buildable without Rust everywhere else:
+
+- `frontend/modern/public/dsp.wasm` is **committed**, and `wasm/dsp.artifact.json` records its
+  sha256, size, toolchain and export list. `./build.sh` never calls cargo, so a machine (and CI)
+  without Rust still builds and serves the app.
+- `tools/check_wasm_artifact.py` (part of `make ci`) verifies the recorded hash *and* parses the
+  module's export section with the stdlib alone: a stale, truncated or renamed artifact fails
+  without a Rust toolchain.
+- The release profile pins `lto`, one codegen unit and `strip`, so the build is byte-reproducible;
+  `make wasm-check` compares bytes, not behaviour.
+- The ABI is a pointer plus a length into the module's linear memory — no wasm-bindgen, no
+  wasm-pack. `frontend/modern/src/sdr/wasm.ts` wraps it and `__tests__/wasm.test.ts` asserts the
+  exported signatures, the version gate and the view rules against the committed bytes.
+- The crate also builds natively, which is what `cargo test` runs the kernels against.
+- A view over the module's memory must be created **after** the last allocation: growing the
+  memory detaches existing views, and a detached view reads as length 0 instead of throwing.

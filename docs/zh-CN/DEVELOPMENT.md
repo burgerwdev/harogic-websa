@@ -327,6 +327,8 @@ python3 tools/bench.py --write-baseline tools/bench_baseline.json   # 重录基�
 python3 tools/command_sweep.py        # 单独跑命令层契约（真机）
 python3 tools/e2e/state_regression.py # 单独跑 UI 状态机回归（真机）
 python3 tools/check_registrations.py  # 注册点可达性
+make wasm | make wasm-check            # Rust/WASM DSP 内核：构建并入库产物 / 校验产物
+python3 tools/check_wasm_artifact.py  # 产物哈希 + 导出符号（仅标准库，CI 跑这条）
 python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指标
 ```
 
@@ -337,3 +339,31 @@ python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指
 见 `ARCH_REVIEW.md` §9.3：假后端 + e2e 进 CI（当前最高价值）、e2e 覆盖 Firefox、`DeviceState` 按模式拆分、
 `controls.ts` 剩余无用导出、ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）、
 根目录临时 TODO 归档、按命令裁剪 STATUS。**本指南与那份清单一起演进**：完成一项就更新两处。
+
+---
+
+## 15. Rust/WASM DSP 内核（构建与产物策略）
+
+实时 SDR DSP（DDC、解调器、音频增强）是 `wasm/` 下的 Rust crate，运行在 Web Worker 中。它**没有任何
+ crate 依赖**，工具链要求只有一条：
+
+```bash
+rustup target add wasm32-unknown-unknown
+make wasm           # cargo test + release 构建 + 发布 frontend/modern/public/dsp.wasm
+make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
+```
+
+让其他地方都不需要 Rust 的规则：
+
+- `frontend/modern/public/dsp.wasm` **入库**，`wasm/dsp.artifact.json` 记录其 sha256、大小、工具链与
+  导出列表。`./build.sh` 绝不调用 cargo，因此没有 Rust 的机器（和 CI）照样能构建并服务应用。
+- `tools/check_wasm_artifact.py`（`make ci` 的一部分）只用标准库校验记录的哈希，**并解析模块的导出段**：
+  产物陈旧、被截断或导出被改名都会在没有 Rust 的情况下失败。
+- release profile 固定 `lto`、单一 codegen unit 与 `strip`，构建逐字节可复现；`make wasm-check`
+  比较的是字节，不只是行为。
+- ABI 是指向模块线性内存的“指针 + 长度”——没有 wasm-bindgen，也没有 wasm-pack。
+  `frontend/modern/src/sdr/wasm.ts` 负责包装，`__tests__/wasm.test.ts` 针对入库字节断言导出签名、
+  版本门禁与视图规则。
+- 该 crate 也能本机编译，`cargo test` 就是针对内核运行它。
+- 内存视图必须在**最后一次分配之后**创建：内存增长会让已有视图 detach，而 detach 的视图读出来是长度 0
+  而不是抛异常。

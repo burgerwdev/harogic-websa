@@ -11,6 +11,9 @@ frontend/modern/dist/
 frontend/modern/public/fonts/WebSASCJK-*.woff2
 npm-debug.log*
 
+# Rust/WASM 构建产物（入库的是发布后的 frontend/modern/public/dsp.wasm）
+wasm/target/
+
 # 日志/运行时
 *.log
 *.pid

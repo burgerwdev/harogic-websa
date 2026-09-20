@@ -1,0 +1,18 @@
+{
+ "bytes": 15125,
+ "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+ "exports": [
+  "memory",
+  "websa_dsp_version",
+  "websa_dsp_alloc",
+  "websa_dsp_free",
+  "websa_dsp_f32_bytes",
+  "websa_dsp_block_align"
+ ],
+ "file": "frontend/modern/public/dsp.wasm",
+ "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
+ "profile": "release",
+ "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+ "sha256": "a8619bb9e6c252885a62e800fe31e0fbf09eca87689df7b4ba0f4ff85d804583",
+ "target": "wasm32-unknown-unknown"
+}
