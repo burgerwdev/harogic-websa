@@ -123,6 +123,24 @@ path allocates nothing per block.
 and fails if the committed artifact differs from the fresh build.
 - `wasm/` also builds natively, which is what `cargo test` runs the kernels against.
 
+### DDC numerics (the port must not change the audio)
+
+The kernels are ports, not rewrites: `web_sa/demod/filters.py` (`design_lowpass`, `StreamFilter`,
+`LinearResampler`, `Agc`) and `sdr.py::_mix` are the reference, and `tests/fixtures/dsp/` holds
+their output for a committed IQ block, stage by stage (`mix`, `fir`, `dec`, `res`, `agc`).
+`wasm/tests/ddc_reference.rs` compares the Rust kernels against those bytes within the tolerance
+recorded in the fixture manifest (1e-5 absolute on an f32 full scale of 1.0, about -100 dBFS).
+Measured worst case: mixer, FIR and decimation exactly 0; resampler and AGC about 3e-8.
+
+`tools/gen_dsp_fixtures.py --check` is a CI gate (the reference cannot drift silently), and the
+Rust side runs with `make wasm-test`. `wasm/tests/ddc_bench.rs` records the per-block cost —
+native release: about 1.2 ms per 4096-sample block, 290 ns per complex sample, ~0.3 of real time
+at 1 MSps — and fails if the chain becomes quadratic or starts allocating per block.
+
+The vendor `DSP_DDC` is a hardware call that cannot be reproduced in software, so the Rust DDC
+*takes its place*; the numeric reference is the software chain Python ran around it. The `IQDF`
+stream is therefore the raw IQS block, and the browser performs the whole channelization.
+
 ## Reachability of registration points (import side effects)
 
 Some modules register themselves when imported (`render/spectrum.ts` registers the renderer,

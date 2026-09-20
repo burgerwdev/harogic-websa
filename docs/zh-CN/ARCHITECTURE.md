@@ -114,6 +114,21 @@ wasm32-unknown-unknown` 就是全部工具链。
 新构建不一致时失败。
 - `wasm/` 同时可本机编译，`cargo test` 就是针对内核运行它。
 
+### DDC 数值（移植不能改变声音）
+
+这些内核是移植而不是重写：参考实现是 `web_sa/demod/filters.py`（`design_lowpass`、`StreamFilter`、
+`LinearResampler`、`Agc`）与 `sdr.py::_mix`，`tests/fixtures/dsp/` 针对一个入库的 IQ 块逐级保存了它们
+的输出（`mix`、`fir`、`dec`、`res`、`agc`）。`wasm/tests/ddc_reference.rs` 在 fixture manifest 记录的容差
+（f32 满量程 1.0 上绝对 1e-5，约 -100 dBFS）内把 Rust 内核与这些字节做比对。实测最差：混频、FIR、抽取
+为精确 0；重采样与 AGC 约 3e-8。
+
+`tools/gen_dsp_fixtures.py --check` 是 CI 门禁（参考实现不能静默漂移），Rust 侧用 `make wasm-test`。
+`wasm/tests/ddc_bench.rs` 记录每块开销——本机 release：4096 点块约 1.2 ms，每复数点 290 ns，1 MSps 下约
+0.3 倍实时——并在链路退化为平方级或开始逐块分配时失败。
+
+厂商 `DSP_DDC` 是硬件调用，无法用软件复现，因此 Rust DDC *取而代之*；数值参考是 Python 围绕它跑的软件链路。
+`IQDF` 因此是原始 IQS 块，整个信道化都在浏览器里完成。
+
 ## 注册点的可达性（import 副作用）
 
 有些模块在被导入时注册自己（`render/spectrum.ts` 注册渲染器、测量模块注册页签、i18n 命名空间合并）。

@@ -34,6 +34,10 @@ jobs:
         run: python tools/sync_version.py --check
       - name: Frame fixtures match the encoders
         run: python tools/gen_frame_fixtures.py --check
+      - name: DSP fixtures match the Python reference kernels
+        # The Rust tests in wasm/ compare against these bytes; CI has no Rust, so this side of
+        # the contract (the reference did not change) is what is gated here.
+        run: python tools/gen_dsp_fixtures.py --check
       - name: DOM id contract (every id read from TS exists in index.html)
         run: python tools/check_dom_ids.py
       - name: Bilingual docs keep the same section structure

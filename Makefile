@@ -34,6 +34,7 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	./test.sh
 	python3 tools/sync_version.py --check
 	python3 tools/gen_frame_fixtures.py --check
+	python3 tools/gen_dsp_fixtures.py --check
 	python3 tools/check_dom_ids.py
 	python3 tools/check_registrations.py
 	python3 tools/check_docs_parity.py
@@ -47,6 +48,9 @@ wasm:     ## Build the Rust/WASM DSP core and publish the committed artifact (ne
 
 wasm-check: ## Rebuild the WASM core and fail if the committed artifact differs (needs Rust)
 	./wasm/build.sh --check
+
+wasm-test: ## Run the Rust DSP kernel tests (numeric agreement with the Python reference)
+	cd wasm && cargo test
 
 hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regression (SAN-90 required)
 	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh

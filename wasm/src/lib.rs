@@ -12,6 +12,7 @@
 //! `wasm32-unknown-unknown` (the artifact the browser loads), with no dependencies.
 
 pub mod abi;
+pub mod ddc;
 
 /// The ABI version the loader checks before it trusts any exported signature.
 #[no_mangle]
