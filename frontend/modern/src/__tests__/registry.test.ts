@@ -85,15 +85,19 @@ describe('the plugin manifest read from dsp.wasm', () => {
 	});
 
 	it('exposes family accessors backed by the same manifest', async () => {
-		setPluginManifest(await manifest());
+		const plugins = await manifest();
+		setPluginManifest(plugins);
 		expect(analogModeIds()).toEqual(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm']);
 		expect(digitalModeIds()).toEqual(['ft8']);
 		expect(ddcStageIds()).toContain('nco');
 		expect(audioStageIds()).toContain('dc_block');
-		// A declared-but-unwritten mode is listed and reported as unavailable, never as usable.
-		expect(audioStageIds()).toContain('wiener');
-		expect(isModeAvailable('dc_block')).toBe(true);
-		expect(isModeAvailable('wiener')).toBe(false);
+		// Availability is read from the manifest, not frozen here: every id the module reports as
+		// implemented must be available, and an id nobody declares must not be. (Asserting a
+		// specific stage's state would break every time a kernel lands.)
+		for (const plugin of plugins) {
+			expect(isModeAvailable(plugin.id)).toBe(plugin.implemented);
+		}
+		expect(plugins.some((p) => p.implemented)).toBe(true);
 		expect(isModeAvailable('no_such_mode')).toBe(false);
 		setPluginManifest(null);
 	});

@@ -86,12 +86,12 @@ pub const DIGITAL_PLUGINS: &[PluginDescriptor] = &[
 /// **analog-path only** — see `pipeline`.
 pub const AUDIO_PLUGINS: &[PluginDescriptor] = &[
     audio("dc_block", true),
-    audio("lpf", false),
-    audio("agc", false),
-    audio("squelch", false),
-    audio("wiener", false),
-    audio("notch", false),
-    audio("blanker", false),
+    audio("lpf", true),
+    audio("agc", true),
+    audio("squelch", true),
+    audio("wiener", true),
+    audio("notch", true),
+    audio("blanker", true),
 ];
 
 /// The DDC base layer's stages: always present, and the only stage set both paths share.

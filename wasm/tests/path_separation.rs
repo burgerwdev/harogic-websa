@@ -78,7 +78,10 @@ fn ddc() -> Ddc {
 }
 
 fn chain() -> AudioChain {
-    AudioChain::from_registry(&[("dc_block", || Box::new(DcBlock::reference()) as Box<dyn websa_dsp::plugin::AudioStage>)])
+    // The *full* chain, not a token stage: the separation claim is about everything the analog path
+    // runs (dc block, lpf, agc, squelch, wiener, notch, blanker), and using the real one is what
+    // makes the comparison below meaningful.
+    websa_dsp::audio::default_chain()
 }
 
 #[test]
@@ -156,7 +159,7 @@ fn the_audio_chain_only_contains_implemented_stages() {
     // The chain is built from the registry, and a stage whose kernel is not written yet is skipped
     // instead of being stubbed with a pass-through that would silently do nothing.
     let built = chain();
-    assert_eq!(built.ids(), vec!["dc_block"]);
+    assert_eq!(built.ids().len(), 7, "the analog chain must contain every implemented stage");
     for id in built.ids() {
         assert!(
             websa_dsp::plugin::find(PluginKind::Audio, id).map(|p| p.implemented).unwrap_or(false),

@@ -30,6 +30,13 @@ impl AnalogPcm {
         &self.samples
     }
 
+    /// Mutable access for the stages that own the buffer (and for tests that build a block).
+    /// The type is still the only way into `AudioChain`, so the RAW/digital paths cannot obtain
+    /// one — which is the guarantee this newtype exists for.
+    pub fn samples_mut(&mut self) -> &mut Vec<f32> {
+        &mut self.samples
+    }
+
     pub fn into_inner(self) -> Vec<f32> {
         self.samples
     }
@@ -44,16 +51,26 @@ pub enum PathKind {
     Digital,
 }
 
+/// One stage of the chain plus the per-stage switch a mode can flip.
+struct StageEntry {
+    stage: Box<dyn AudioStage>,
+    enabled: bool,
+}
+
 /// The audio-enhancement chain. Stages run in registration order.
 pub struct AudioChain {
-    stages: Vec<Box<dyn AudioStage>>,
+    stages: Vec<StageEntry>,
     scratch: Vec<f32>,
     enabled: bool,
 }
 
 impl AudioChain {
     pub fn new(stages: Vec<Box<dyn AudioStage>>) -> Self {
-        Self { stages, scratch: Vec::new(), enabled: true }
+        Self {
+            stages: stages.into_iter().map(|stage| StageEntry { stage, enabled: true }).collect(),
+            scratch: Vec::new(),
+            enabled: true,
+        }
     }
 
     /// Build the chain for the plugins that are implemented, in `AUDIO_PLUGINS` order.
@@ -71,7 +88,34 @@ impl AudioChain {
     }
 
     pub fn ids(&self) -> Vec<&'static str> {
-        self.stages.iter().map(|stage| stage.id()).collect()
+        self.stages.iter().map(|entry| entry.stage.id()).collect()
+    }
+
+    /// Stage ids that would actually run right now (the ones the tests and the status readout care
+    /// about: a disabled stage must not be reported as processing).
+    pub fn active_ids(&self) -> Vec<&'static str> {
+        self.stages
+            .iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.stage.id())
+            .collect()
+    }
+
+    /// Enable/disable one stage by id. A mode that must not be enhanced (CW: the notch would
+    /// remove the very carrier the operator is listening to) turns the stage off here instead of
+    /// keeping a second chain.
+    pub fn set_stage_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        match self.stages.iter_mut().find(|entry| entry.stage.id() == id) {
+            Some(entry) => {
+                entry.enabled = enabled;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn is_stage_enabled(&self, id: &str) -> bool {
+        self.stages.iter().any(|entry| entry.stage.id() == id && entry.enabled)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -87,8 +131,8 @@ impl AudioChain {
     }
 
     pub fn reset(&mut self) {
-        for stage in self.stages.iter_mut() {
-            stage.reset();
+        for entry in self.stages.iter_mut() {
+            entry.stage.reset();
         }
     }
 
@@ -99,8 +143,11 @@ impl AudioChain {
             return;
         }
         for index in 0..self.stages.len() {
+            if !self.stages[index].enabled {
+                continue;
+            }
             let mut out = core::mem::take(&mut self.scratch);
-            self.stages[index].process_into(&pcm.samples, hold, &mut out);
+            self.stages[index].stage.process_into(&pcm.samples, hold, &mut out);
             pcm.samples.clear();
             pcm.samples.extend_from_slice(&out);
             self.scratch = out;
