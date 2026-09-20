@@ -7,7 +7,7 @@
 //
 // Kept out of `controls.ts` so the rendering can be unit tested without the whole control layer,
 // and so the dependency direction stays one-way (controls passes its actions in).
-import { analogModeIds, isModeAvailable, loadPluginManifest, pluginManifest } from '../sdr/registry';
+import { analogModeIds, digitalModeIds, isModeAvailable, loadPluginManifest, pluginManifest } from '../sdr/registry';
 import { dspWasmUrl } from '../sdr/wasm';
 
 export interface DemodGroupHooks {
@@ -67,8 +67,9 @@ export async function initSdrDemodGroup(
 		// offering modes nothing can run. The Python fallback path serves audio in that case.
 		return [];
 	}
-	// Render from the registry, after the manifest is in place: `isModeAvailable` reads it.
-	const ids = analogModeIds();
+	// Render from the registry, after the manifest is in place: `isModeAvailable` reads it. Both
+	// families are offered: the analog modes produce audio, the digital ones (FT8) produce text.
+	const ids = [...analogModeIds(), ...digitalModeIds()];
 	renderSdrDemodGroup(container, ids, hooks);
 	return ids;
 }
@@ -76,7 +77,7 @@ export async function initSdrDemodGroup(
 /** Re-render from the already-loaded manifest (a preset or a status confirm can change it). */
 export function refreshSdrDemodGroup(container: HTMLElement, hooks: DemodGroupHooks): string[] {
 	if (!pluginManifest()) return [];
-	const ids = analogModeIds();
+	const ids = [...analogModeIds(), ...digitalModeIds()];
 	renderSdrDemodGroup(container, ids, hooks);
 	return ids;
 }

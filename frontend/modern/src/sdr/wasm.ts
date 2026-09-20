@@ -34,6 +34,13 @@ export interface DspExports {
 	websa_dsp_plugin_id(kind: number, index: number, buf: number, capacity: number): number;
 	websa_dsp_plugin_implemented(kind: number, index: number): number;
 	websa_dsp_plugin_audio_enhancement(kind: number, index: number): number;
+	// FT8: the digital path's decoder (RAW baseband in, decoded text out)
+	websa_dsp_ft8_new(rate: number): number;
+	websa_dsp_ft8_push(handle: number, iqPtr: number, samples: number): number;
+	websa_dsp_ft8_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
+	websa_dsp_ft8_count(handle: number): number;
+	websa_dsp_ft8_reset(handle: number): number;
+	websa_dsp_ft8_free(handle: number): number;
 	// The whole analog receive pipeline: one handle, one call per IQ block
 	websa_dsp_pipeline_new(fsIn: number, offsetHz: number, decimate: number, outRate: number, modePtr: number, modeLen: number, ifBw: number, pitch: number): number;
 	websa_dsp_pipeline_process(handle: number, iqPtr: number, samples: number, outPtr: number, capacity: number, audioHold: number): number;
@@ -52,6 +59,8 @@ export interface DspModule {
 	f32View(ptr: number, length: number): Float32Array;
 	/** Interleaved int16 view at an ABI pointer (raw IQ blocks). */
 	i16View(ptr: number, length: number): Int16Array;
+	/** Float64 view at an ABI pointer (the FT8 message's measurements). */
+	f64View(ptr: number, length: number): Float64Array;
 	/** Byte view at an ABI pointer (plugin ids and other strings). */
 	u8View(ptr: number, length: number): Uint8Array;
 }
@@ -87,6 +96,8 @@ export function wrapDsp(instance: WebAssembly.Instance): DspModule {
 			new Float32Array(exports.memory.buffer, ptr, length),
 		i16View: (ptr: number, length: number) =>
 			new Int16Array(exports.memory.buffer, ptr, length),
+		f64View: (ptr: number, length: number) =>
+			new Float64Array(exports.memory.buffer, ptr, length),
 		u8View: (ptr: number, length: number) =>
 			new Uint8Array(exports.memory.buffer, ptr, length),
 	};

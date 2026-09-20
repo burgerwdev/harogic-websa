@@ -97,8 +97,10 @@ async def capture(url: str, seconds: float) -> tuple[np.ndarray, float, float, d
     gaps = 0
     frames = 0
     deadline = time.monotonic() + seconds
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(f'{url}/ws?iq=1', max_msg_size=32 * 1024 * 1024) as ws:
+    async with (
+        aiohttp.ClientSession() as session,
+        session.ws_connect(f'{url}/ws?iq=1', max_msg_size=32 * 1024 * 1024) as ws,
+    ):
             while time.monotonic() < deadline:
                 try:
                     message = await asyncio.wait_for(

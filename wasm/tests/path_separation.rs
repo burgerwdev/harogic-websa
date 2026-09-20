@@ -187,3 +187,63 @@ fn every_registered_plugin_can_be_resolved_by_its_own_family() {
         assert!(websa_dsp::plugin::find(kind, id).is_some(), "{kind:?}/{id} is not registered");
     }
 }
+
+/// The FT8 fixture, quantised to int16 exactly as the pipeline receives IQ from the device.
+fn ft8_iq_i16() -> Vec<i16> {
+    const BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
+    BYTES
+        .chunks_exact(4)
+        .map(|q| {
+            let value = f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25;
+            (value.clamp(-1.0, 1.0) * 32767.0) as i16
+        })
+        .collect()
+}
+
+/// A DDC configured for a baseband stream that is already at the channel rate.
+fn baseband_ddc() -> Ddc {
+    Ddc::new(DdcConfig {
+        fs_in: 48_000.0,
+        offset_hz: 0.0,
+        cutoff_hz: 19_200.0,
+        decimate: 1,
+        out_rate: 48_000.0,
+        ntaps: 129,
+    })
+}
+
+#[test]
+fn the_ft8_decoder_reads_the_raw_path_untouched_by_the_audio_chain() {
+    // The strongest form of the separation claim, with the *real* digital decoder: the same IQ
+    // decodes to the same message whether the analog enhancement chain is on or off, and the RAW
+    // samples the decoder reads are bit-identical in both runs.
+    use websa_dsp::digital::ft8::Ft8Plugin;
+
+    let iq = ft8_iq_i16();
+    let run = |audio_enabled: bool| {
+        let mut pipeline = Pipeline::new(baseband_ddc(), PathKind::Digital, chain());
+        pipeline.set_digital_demod(Box::new(Ft8Plugin::new(48_000.0)));
+        pipeline.set_audio_enabled(audio_enabled);
+        let mut decoded: Vec<String> = Vec::new();
+        let mut raw_checksum = 0.0_f64;
+        let mut out = PipelineOutput::default();
+        for block in iq.chunks(8_192 * 2) {
+            pipeline.process_i16_into(block, false, &mut out);
+            decoded.extend(out.decoded.iter().cloned());
+            for (index, sample) in out.raw.iter().enumerate() {
+                raw_checksum += (*sample as f64) * (1.0 + index as f64 % 7.0);
+            }
+        }
+        (decoded, raw_checksum)
+    };
+
+    let (decoded_on, raw_on) = run(true);
+    let (decoded_off, raw_off) = run(false);
+    assert_eq!(
+        decoded_on,
+        vec!["CQ JO1WKO PM95".to_string()],
+        "the FT8 decoder must decode the fixture through the pipeline"
+    );
+    assert_eq!(decoded_on, decoded_off, "the decoded messages must not depend on the audio chain");
+    assert_eq!(raw_on, raw_off, "the RAW stream must be bit-identical with the chain on and off");
+}

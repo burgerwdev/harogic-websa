@@ -140,13 +140,14 @@ wasm32-unknown-unknown` 就是全部工具链。
 | [sdr-web](https://github.com/kwakasa/sdr-web) | 浏览器数据流：worker 持有 socket、worklet 负责播放 | 无 |
 | [Radioband](https://github.com/hightemp/radioband) | 工程结构：每个阶段一个模块、每类插件一个注册表 | 无 |
 | [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT 性能预期（FFT plan 按尺寸缓存的原因） | 无 |
+| [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT） | FT8 协议：Costas 图案、Gray 映射、CRC-14 多项式、LDPC(174,91) 矩阵 | **常量表**，由 `tools/port_ft8_tables.py` 生成到 `wasm/src/digital/ft8/tables.rs`（该脚本记录了来源与许可证）；解码器与 fixture 编码器依据规范实现，编码器逐音与参考比对验证 |
 | [BrowSDR](https://github.com/jLynx/BrowSDR)（AGPL-3.0） | 仅阅读架构 | **无**——AGPL，刻意不作为来源 |
 
 归属规则：算法可以从宽松许可的来源重新推导，但绝不从不兼容的许可证复制代码；每个内核的数值参考都是本仓库自己的 Python 实现。这也是对等测试与 Python 而非其他 SDR 应用输出比对的原因。
 
 ### 尚未接线的部分
 
-- FT8 数字解调器已在注册表中声明但尚未实现：数字路径（RAW 基带、分离保证）已存在，但还没有协议解码器在其上运行。
+- FT8 已端到端实现：仅接收（设备没有发射功能），仅支持标准报文类型 1/2（不支持哈希呼号、自由文本、比赛/遥测类型）；同步搜索覆盖时隙边缘（约 ±0.128 s），因为 FT8 是时隙同步的——宽带扫描器需要全时隙搜索，代价约 15 倍。FT4 与其他数字协议目前是注册表接缝，而非实现。
 - 浏览器模块不可用时，Python DSP 路径仍是实际的音频来源；它同时作为回退与数值参考被保留。
 
 ## 注册点的可达性（import 副作用）

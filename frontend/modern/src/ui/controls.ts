@@ -480,7 +480,9 @@ export function syncSdrPanel(s: any) {
         offsetHz: Number(sdr.listen || 0) - captureCenter,
         decimate: Math.max(1, Math.floor(iqRate / (48000 * 4))),
         outRate: 48000,
-        mode: String(sdr.demod || 'am'),
+        // The *UI's* selection drives the DSP worker, not the backend's demod: a digital mode
+        // (ft8) has no backend DSP at all, and the Python fallback keeps its own demod anyway.
+        mode: String(sdrDemod.get() || 'am'),
         ifBw: Number(sdr.if_bw) || 6000,
         pitch: Number(sdr.pitch) || 700,
       },

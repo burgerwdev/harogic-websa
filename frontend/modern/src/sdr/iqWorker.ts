@@ -12,12 +12,17 @@
 import { decodeFrame, type IqFrame } from '../core/frames';
 import { loadDsp, type DspModule } from './wasm';
 import { WasmPipeline, type PipelineParams } from './wasmPipeline';
+import { Ft8Session } from './ft8';
 
 let ws: WebSocket | null = null;
 let wsUrl = '';
 let wasmUrl = '';
 let module: DspModule | null = null;
 let pipeline: WasmPipeline | null = null;
+/// The digital path: FT8 reads the RAW baseband and produces text (no audio at all).
+let ft8: Ft8Session | null = null;
+let ft8Rate = 0;
+let ft8Messages = 0;
 let params: PipelineParams | null = null;
 let audioEnabled = true;
 let volume = 1;
@@ -46,12 +51,27 @@ function postStats(): void {
   post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
     pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
+    ft8Messages,
   });
 }
 
 /** Create or rebuild the pipeline for the current parameters. */
 function syncPipeline(): void {
   if (!enabled || !params || !module) return;
+  if (params.mode === 'ft8') {
+    // Digital mode: the analog chain and the worklet are not used, and FT8 needs no audio.
+    pipeline?.free();
+    pipeline = null;
+    if (!ft8 || ft8Rate !== params.outRate) {
+      ft8?.free();
+      ft8 = new Ft8Session(module, params.outRate);
+      ft8Rate = params.outRate;
+    }
+    postStats();
+    return;
+  }
+  ft8?.free();
+  ft8 = null;
   if (pipeline && pipeline.mode === params.mode) {
     pipeline.setVolume(volume);
     pipeline.setAudioEnabled(audioEnabled);
@@ -107,7 +127,15 @@ function onIq(frame: IqFrame): void {
   centerHz = frame.centerHz;
   blocks++;
   samples += frame.samples;
-  if (pipeline) deliver(pipeline.process(frame.iq));
+  if (ft8) {
+    const message = ft8.push(frame.iq);
+    if (message) {
+      ft8Messages = ft8.count();
+      post({ type: 'ft8', ...message, count: ft8Messages });
+    }
+  } else if (pipeline) {
+    deliver(pipeline.process(frame.iq));
+  }
   if (blocks % 25 === 0) postStats();
 }
 
@@ -165,8 +193,11 @@ self.onmessage = (event: MessageEvent) => {
     if (wsUrl) connect();
   } else if (msg.type === 'enabled') {
     enabled = Boolean(msg.value);
-    if (!enabled) pipeline?.free();
-    pipeline = enabled ? pipeline : null;
+    if (!enabled) {
+      pipeline?.free();
+      ft8?.free();
+      ft8 = null;
+    }
     syncPipeline();
     postStats();
   } else if (msg.type === 'configure') {

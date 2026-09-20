@@ -153,6 +153,7 @@ the architecture was designed from, and what was (and was not) taken from each:
 | [sdr-web](https://github.com/kwakasa/sdr-web) | The browser dataflow: worker owns the socket, worklet owns playback | none |
 | [Radioband](https://github.com/hightemp/radioband) | Project structure: one module per stage, a registry per plugin family | none |
 | [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT performance expectations (why the FFT plans are cached per size) | none |
+| [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT) | The FT8 protocol: Costas pattern, Gray map, CRC-14 polynomial, LDPC(174,91) matrices | **The constant tables**, generated into `wasm/src/digital/ft8/tables.rs` by `tools/port_ft8_tables.py` (which records the source and licence); the decoder and the fixture encoder are written against the specification, and the encoder is verified tone-for-tone against it |
 | [BrowSDR](https://github.com/jLynx/BrowSDR) (AGPL-3.0) | Architecture reading only | **none** — AGPL, deliberately avoided as a source |
 
 Attribution rule: an algorithm may be re-derived from a permissive source, but nothing is copied
@@ -162,8 +163,11 @@ another SDR application's output.
 
 ### What is not wired yet
 
-- The FT8 digital demodulator is declared in the registry and not implemented: the digital path
-  exists (RAW baseband, separation enforced) but no protocol decoder runs on it yet.
+- FT8 is implemented end to end: decode only (the device has no transmitter), standard message
+  types 1/2 only (no hashed callsigns, no free text, no contest/telemetry types), and the sync
+  search covers the slot edge (about +/- 0.128 s) because FT8 is slot-synchronised — a wideband
+  skimmer would need a full-slot search at roughly 15x the cost. FT4 and the other digital
+  protocols are registry seams, not implementations.
 - The Python DSP path is still the active audio source when the browser module is unavailable; it is
   kept as the fallback and as the numeric reference.
 

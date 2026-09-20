@@ -63,6 +63,10 @@ import hashlib, json, pathlib, subprocess, sys
 
 out, manifest, target = sys.argv[1], sys.argv[2], sys.argv[3]
 data = pathlib.Path(out).read_bytes()
+# The export list is read from the binary, not hardcoded: a new ABI function that the manifest
+# never mentions would otherwise pass the CI check (which verifies the manifest is a subset).
+sys.path.insert(0, str(pathlib.Path('..') / 'tools'))
+from check_wasm_artifact import wasm_exports  # noqa: E402
 document = {
     'note': 'Written by wasm/build.sh. The .wasm is committed so the frontend build needs no '
             'Rust; tools/check_wasm_artifact.py verifies this manifest in CI.',
@@ -73,9 +77,8 @@ document = {
     'profile': 'release',
     'rustc': subprocess.run(['rustc', '--version'], capture_output=True, text=True).stdout.strip(),
     'cargo': subprocess.run(['cargo', '--version'], capture_output=True, text=True).stdout.strip(),
-    # The exports the loader calls; checked against the binary's export section in CI.
-    'exports': ['memory', 'websa_dsp_version', 'websa_dsp_alloc', 'websa_dsp_free',
-                'websa_dsp_f32_bytes', 'websa_dsp_block_align'],
+    # The exports the loader calls, read from the binary itself.
+    'exports': sorted(wasm_exports(data)),
 }
 pathlib.Path(manifest).write_text(json.dumps(document, indent=1, sort_keys=True) + '\n')
 print(f"published {out} -> {pathlib.Path(out).parent}/../.. "

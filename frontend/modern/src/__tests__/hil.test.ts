@@ -31,28 +31,13 @@ interface Capture {
 	pitch: number;
 	out_rate: number;
 	decimate: number;
+	expected_tone_hz?: number;
 }
 
 const artifactBytes = (): ArrayBuffer => {
 	const buf = readFileSync(ARTIFACT);
 	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 };
-
-/** Hann-windowed DFT magnitude at one frequency (coherent gain corrected). */
-function amplitudeAt(pcm: Float32Array, rate: number, hz: number): number {
-	const n = pcm.length;
-	let re = 0;
-	let im = 0;
-	let wsum = 0;
-	for (let k = 0; k < n; k++) {
-		const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * k) / n);
-		const ph = (2 * Math.PI * hz * k) / rate;
-		re += pcm[k] * w * Math.cos(ph);
-		im -= pcm[k] * w * Math.sin(ph);
-		wsum += w;
-	}
-	return Math.sqrt(re * re + im * im) / wsum;
-}
 
 /**
  * Offset of the strongest tone in the capture, in Hz relative to the capture centre.
@@ -108,38 +93,6 @@ function toneOffsetHz(iq: Int16Array, fsIn: number): number {
 	fineStep /= 20;
 	for (let hz = best - fineStep * 20; hz <= best + fineStep * 20; hz += fineStep) {
 		const magnitude = magnitudeAt(hz);
-		if (magnitude > bestMagnitude) {
-			bestMagnitude = magnitude;
-			best = hz;
-		}
-	}
-	return best;
-}
-
-/** Strongest frequency in an audio band, coarse then fine (diagnostics for a failed measurement). */
-function peakHz(pcm: Float32Array, rate: number, lo: number, hi: number): number {
-	const dft = (hz: number): number => {
-		let re = 0;
-		let im = 0;
-		for (let k = 0; k < pcm.length; k++) {
-			const ph = (2 * Math.PI * hz * k) / rate;
-			re += pcm[k] * Math.cos(ph);
-			im -= pcm[k] * Math.sin(ph);
-		}
-		return Math.sqrt(re * re + im * im);
-	};
-	let best = lo;
-	let bestMagnitude = -1;
-	for (let hz = lo; hz <= hi; hz += 10) {
-		const magnitude = dft(hz);
-		if (magnitude > bestMagnitude) {
-			bestMagnitude = magnitude;
-			best = hz;
-		}
-	}
-	const coarse = best;
-	for (let hz = coarse - 10; hz <= coarse + 10; hz += 0.5) {
-		const magnitude = dft(hz);
 		if (magnitude > bestMagnitude) {
 			bestMagnitude = magnitude;
 			best = hz;

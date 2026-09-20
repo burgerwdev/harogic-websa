@@ -15,6 +15,7 @@ pub mod abi;
 pub mod analog;
 pub mod audio;
 pub mod ddc;
+pub mod digital;
 pub mod fft;
 pub mod pipeline;
 pub mod pipeline_abi;
