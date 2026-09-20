@@ -141,6 +141,32 @@ The vendor `DSP_DDC` is a hardware call that cannot be reproduced in software, s
 *takes its place*; the numeric reference is the software chain Python ran around it. The `IQDF`
 stream is therefore the raw IQS block, and the browser performs the whole channelization.
 
+### Reference projects and licences
+
+The DSP here is written against published technique, not copied from a project. The reference list
+the architecture was designed from, and what was (and was not) taken from each:
+
+| Project | What it informed | Code taken |
+|---|---|---|
+| [liquid-dsp](https://github.com/jgaeddert/liquid-dsp) (MIT) | Algorithm shapes: windowed-sinc design, NCO/phased-lock structure, RMS AGC, resampler | none — the kernels are written to match this repo's own Python reference (`demod/filters.py`), and are compared against it byte-for-byte |
+| [tpt-dsp](https://github.com/tpt-solutions/tpt-dsp) | The Rust DSP-core layout: no-allocation block processing, state carried in `struct`s, `f32`/`f64` split between kernels and PCM | none |
+| [sdr-web](https://github.com/kwakasa/sdr-web) | The browser dataflow: worker owns the socket, worklet owns playback | none |
+| [Radioband](https://github.com/hightemp/radioband) | Project structure: one module per stage, a registry per plugin family | none |
+| [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT performance expectations (why the FFT plans are cached per size) | none |
+| [BrowSDR](https://github.com/jLynx/BrowSDR) (AGPL-3.0) | Architecture reading only | **none** — AGPL, deliberately avoided as a source |
+
+Attribution rule: an algorithm may be re-derived from a permissive source, but nothing is copied
+from an incompatible licence, and the numeric reference for every kernel is this repository's own
+Python implementation. That is also why the parity tests compare against Python rather than against
+another SDR application's output.
+
+### What is not wired yet
+
+- The FT8 digital demodulator is declared in the registry and not implemented: the digital path
+  exists (RAW baseband, separation enforced) but no protocol decoder runs on it yet.
+- The Python DSP path is still the active audio source when the browser module is unavailable; it is
+  kept as the fallback and as the numeric reference.
+
 ## Reachability of registration points (import side effects)
 
 Some modules register themselves when imported (`render/spectrum.ts` registers the renderer,

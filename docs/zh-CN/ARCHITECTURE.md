@@ -129,6 +129,26 @@ wasm32-unknown-unknown` 就是全部工具链。
 厂商 `DSP_DDC` 是硬件调用，无法用软件复现，因此 Rust DDC *取而代之*；数值参考是 Python 围绕它跑的软件链路。
 `IQDF` 因此是原始 IQS 块，整个信道化都在浏览器里完成。
 
+### 参考项目与许可证
+
+这里的 DSP 是依据公开技术写的，没有从任何项目复制。下边是架构设计所参考的项目，以及各自取用（与未取用）了什么：
+
+| 项目 | 影响的部分 | 取用的代码 |
+|---|---|---|
+| [liquid-dsp](https://github.com/jgaeddert/liquid-dsp)（MIT） | 算法形态：窗函数 sinc 设计、NCO 结构、RMS AGC、重采样 | 无——内核按本仓库自己的 Python 参考（`demod/filters.py`）编写，并与之逐字节比对 |
+| [tpt-dsp](https://github.com/tpt-solutions/tpt-dsp) | Rust DSP 内核组织：无分配的块处理、状态放在 `struct` 里 | 无 |
+| [sdr-web](https://github.com/kwakasa/sdr-web) | 浏览器数据流：worker 持有 socket、worklet 负责播放 | 无 |
+| [Radioband](https://github.com/hightemp/radioband) | 工程结构：每个阶段一个模块、每类插件一个注册表 | 无 |
+| [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT 性能预期（FFT plan 按尺寸缓存的原因） | 无 |
+| [BrowSDR](https://github.com/jLynx/BrowSDR)（AGPL-3.0） | 仅阅读架构 | **无**——AGPL，刻意不作为来源 |
+
+归属规则：算法可以从宽松许可的来源重新推导，但绝不从不兼容的许可证复制代码；每个内核的数值参考都是本仓库自己的 Python 实现。这也是对等测试与 Python 而非其他 SDR 应用输出比对的原因。
+
+### 尚未接线的部分
+
+- FT8 数字解调器已在注册表中声明但尚未实现：数字路径（RAW 基带、分离保证）已存在，但还没有协议解码器在其上运行。
+- 浏览器模块不可用时，Python DSP 路径仍是实际的音频来源；它同时作为回退与数值参考被保留。
+
 ## 注册点的可达性（import 副作用）
 
 有些模块在被导入时注册自己（`render/spectrum.ts` 注册渲染器、测量模块注册页签、i18n 命名空间合并）。
