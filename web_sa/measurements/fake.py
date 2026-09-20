@@ -20,6 +20,11 @@ FT8_FIXTURE = Path(__file__).resolve().parents[2] / 'tests' / 'fixtures' / 'ft8'
 #: Rate the fixture is replayed at (it is 48 kHz baseband): low enough that a 12.64 s transmission
 #: arrives quickly in a test, and a rate the analyzer can legitimately be configured for.
 FT8_IQ_RATE = 48_000.0
+#: The stream is SLOT-shaped: one 12.64 s transmission followed by the rest of the 15 s slot as
+#: silence, repeating. A real FT8 band looks like this, and the period matters: replaying the
+#: transmission back-to-back makes the stream periodic in exactly the amount a decoder discards
+#: between attempts, so a mis-aligned window would never sweep into alignment.
+FT8_SLOT_SECONDS = 15.0
 
 #: Demod ids the fake treats as digital protocols (they get the protocol fixture instead of a tone).
 DIGITAL_DEMODS = ('ft8',)
@@ -258,10 +263,15 @@ class FakeSdrSession(_FakeRtaBase):
             FakeSdrSession._ft8_q = np.clip(raw[:, 1] * scale, -32768, 32767).astype(np.int16)
         i = FakeSdrSession._ft8_i
         q = FakeSdrSession._ft8_q
+        slot = int(FT8_IQ_RATE * FT8_SLOT_SECONDS)
         start = FakeSdrSession._ft8_pos
-        index = (np.arange(SDR_IQ_SAMPLES) + start) % i.size
-        FakeSdrSession._ft8_pos = (start + SDR_IQ_SAMPLES) % i.size
-        block = np.stack([i[index], q[index]], axis=1).reshape(-1)
+        position = (np.arange(SDR_IQ_SAMPLES) + start) % slot
+        inside = position < i.size                       # the transmission occupies the slot's head
+        index = np.where(inside, position % i.size, 0)
+        block = np.empty(SDR_IQ_SAMPLES * 2, dtype=np.int16)
+        block[0::2] = np.where(inside, i[index], 0)
+        block[1::2] = np.where(inside, q[index], 0)
+        FakeSdrSession._ft8_pos = (start + SDR_IQ_SAMPLES) % slot
         self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
         return encode_iq(IQ_VERSION, self._iq_seq, FT8_IQ_RATE, 100.2e6, block)
 

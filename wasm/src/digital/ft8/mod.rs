@@ -125,14 +125,17 @@ impl Ft8Decoder {
 
     /// Costas correlation over (time, frequency) — the signal has to be found before it is read.
     ///
-    /// The time search covers the slot edge (+/- 0.128 s): FT8 is slot-synchronised, so this is the
-    /// window a slot-driven receiver needs, and it is stated rather than implied.
+    /// Two stages: a cheap decimated sweep locates the burst anywhere in the buffered window (the
+    /// worker has no slot clock), then this fine search covers the slot edge (+/- 0.128 s) around
+    /// that location together with the frequency offsets. FT8 transmissions are slot-synchronised,
+    /// so once the burst is found the fine window is exactly the jitter a receiver must tolerate.
     fn find_sync(&self, symbol_samples: usize) -> Option<(usize, f64, f64)> {
         let mut best: Option<(usize, f64, f64)> = None;
         let step = TONE_SPACING_HZ / 2.0;
         let time_step = symbol_samples / (TIME_OFFSET_STEPS as usize + 1);
+        let coarse = self.coarse_offset(symbol_samples);
         for time_index in -(TIME_OFFSET_STEPS as i64)..=(TIME_OFFSET_STEPS as i64) {
-            let base = (time_index * time_step as i64).max(0) as usize;
+            let base = (coarse as i64 + time_index * time_step as i64).max(0) as usize;
             for freq_index in -FREQ_OFFSET_STEPS..=FREQ_OFFSET_STEPS {
                 let offset = freq_index as f64 * step;
                 let mut sync = 0.0;
@@ -172,6 +175,62 @@ impl Ft8Decoder {
             return None;
         }
         Some((base, offset, 10.0 * (correlation / (1.0 - correlation).max(1e-9)).log10()))
+    }
+
+    /// Magnitude² of one tone over one symbol window, sampled every `decimate` samples.
+    ///
+    /// The coarse pass only ranks offsets, so it can afford this: an 8x decimated DFT is ~8x
+    /// cheaper and still peaks at the right alignment.
+    fn tone_energy_decimated(&self, start: usize, length: usize, frequency: f64, decimate: usize) -> f64 {
+        let step = -2.0 * core::f64::consts::PI * frequency / self.rate;
+        let (mut re, mut im) = (0.0_f64, 0.0_f64);
+        let mut k = 0;
+        while k < length {
+            let index = (start + k) * 2;
+            if index + 1 >= self.samples.len() {
+                break;
+            }
+            let (i, q) = (self.samples[index] as f64, self.samples[index + 1] as f64);
+            let phase = step * k as f64;
+            let (s, c) = phase.sin_cos();
+            re += i * c - q * s;
+            im += i * s + q * c;
+            k += decimate.max(1);
+        }
+        re * re + im * im
+    }
+
+    /// Where a transmission most likely starts inside the buffered window.
+    ///
+    /// The worker receives a rolling stream and has no slot clock, so its window does not have to
+    /// begin at a transmission - and discarding a whole slot never changed that phase, which is why
+    /// the live path decoded nothing while the same IQ decoded fine when handed over aligned
+    /// (measured: `dsp_buffered` cycling 720k and `ft8=0` in the browser). This finds the burst: a
+    /// cheap decimated Costas correlation swept over the offsets where a whole transmission fits,
+    /// refined afterwards by the full-rate search.
+    fn coarse_offset(&self, symbol_samples: usize) -> usize {
+        let total = self.samples.len() / 2;
+        let span = NUM_SYMBOLS * symbol_samples;
+        if total < span {
+            return 0;
+        }
+        let limit = total - span;
+        let step = (symbol_samples / 4).max(1);      // ~0.04 s
+        let mut best = (0usize, f64::MIN);
+        let mut offset = 0;
+        while offset <= limit {
+            let mut score = 0.0;
+            for (symbol_index, expected) in COSTAS.iter().enumerate() {
+                let start = offset + symbol_index * symbol_samples;
+                let frequency = BASE_SEARCH_HZ + *expected as f64 * TONE_SPACING_HZ;
+                score += self.tone_energy_decimated(start, symbol_samples, frequency, 8);
+            }
+            if score > best.1 {
+                best = (offset, score);
+            }
+            offset += step;
+        }
+        best.0
     }
 
     /// Magnitude² of one tone over one symbol window.
@@ -612,6 +671,15 @@ impl Ft8Plugin {
     pub fn last(&self) -> Option<&Ft8Message> {
         self.last.as_ref()
     }
+
+    /// Complex samples currently buffered towards the next decode attempt.
+    ///
+    /// Diagnostics with a purpose: "the decoder is running" and "the decoder is 90 % of the way
+    /// through a transmission" look identical from the outside otherwise, and a buffer that keeps
+    /// restarting is the difference between a broken stream and a quiet band.
+    pub fn buffered(&self) -> usize {
+        self.decoder.buffered()
+    }
 }
 
 impl DigitalDemodulator for Ft8Plugin {
@@ -621,8 +689,14 @@ impl DigitalDemodulator for Ft8Plugin {
 
     fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
         self.decoder.push_iq(iq);
-        let transmission = self.decoder.transmission_samples();
-        if self.decoder.buffered() < transmission {
+        // A SLOT, not a transmission: the live stream is a rolling buffer, so decoding a
+        // transmission-sized window and then discarding exactly that much would land on the same
+        // phase every time and never align with a transmission that starts at a slot boundary
+        // (measured in the browser: 1100 blocks of real fixture IQ, `dsp_buffered` stuck around
+        // 540k, no decode). Advancing by a whole slot makes the windows slot-aligned, which is what
+        // FT8's 15 s schedule is.
+        let slot = self.decoder.slot_samples();
+        if self.decoder.buffered() < slot {
             return Vec::new();
         }
         match self.decoder.decode() {
@@ -630,14 +704,18 @@ impl DigitalDemodulator for Ft8Plugin {
                 self.decoded_messages += 1;
                 let text = message.text.clone();
                 self.last = Some(message);
-                // The transmission has been consumed: the next decode starts from a fresh buffer.
+                // The slot has been consumed: the next decode starts from a fresh buffer.
                 self.decoder.reset();
                 vec![text]
             }
             None => {
-                // Nothing there. Drop this transmission so the decoder does not re-try the same
-                // samples on every following block (which would burn the search cost per block).
-                self.decoder.discard_oldest(transmission);
+                // Nothing there. Drop one TRANSMISSION, not the whole slot: dropping a slot leaves
+                // the window phase unchanged, so a mis-aligned window would stay mis-aligned for
+                // ever (measured: `dsp_buffered` cycling and never decoding in the browser). The
+                // overlap advances the phase by `slot - transmission` each attempt, which sweeps
+                // the alignment quickly, and the coarse search finds the burst at whatever offset
+                // it lands on.
+                self.decoder.discard_oldest(self.decoder.transmission_samples());
                 Vec::new()
             }
         }
@@ -646,6 +724,10 @@ impl DigitalDemodulator for Ft8Plugin {
     fn reset(&mut self) {
         self.decoder.reset();
         self.last = None;
+    }
+
+    fn buffered_input(&self) -> usize {
+        self.buffered()
     }
 
     fn last_report(&self) -> Option<DigitalReport> {
@@ -797,29 +879,72 @@ mod plugin_tests {
             .collect()
     }
 
+    /// The fixture padded to a full slot with the quiet tail a real slot has.
+    ///
+    /// The plugin decodes slots (FT8 is a 15 s slot mode and the live stream is a rolling buffer),
+    /// so a test that feeds only the 12.64 s transmission would wait forever.
+    fn fixture_slot() -> Vec<f32> {
+        let mut slot = fixture();
+        let slot_complex = (48_000.0 * tables::SLOT_SECONDS) as usize;
+        let have = slot.len() / 2;
+        assert!(slot_complex > have, "the slot must be longer than the transmission");
+        slot.extend(std::iter::repeat(0.0).take((slot_complex - have) * 2));
+        slot
+    }
+
+
     #[test]
-    fn the_plugin_decodes_the_fixture_and_clears_its_buffer() {
+    fn the_plugin_decodes_the_fixture_from_a_slot_and_clears_its_buffer() {
         let mut plugin = Ft8Plugin::new(48_000.0);
-        let iq = fixture();
-        // Feed the slot in 20 ms blocks, the way the worker does.
+        // One SLOT of input (the transmission is 12.64 s of a 15 s slot).
+        let slot = fixture_slot();
+        // Feed it in 20 ms blocks, the way the worker does.
         let mut decoded: Vec<String> = Vec::new();
-        for block in iq.chunks(960 * 2) {
+        for block in slot.chunks(960 * 2) {
             decoded.extend(plugin.process_iq(block));
         }
         assert_eq!(decoded, vec!["CQ JO1WKO PM95".to_string()]);
         assert_eq!(plugin.decoded_messages(), 1);
         let last = plugin.last().expect("a message");
         assert!((last.frequency_hz - 1_000.0).abs() < 25.0);
-        // The transmission was consumed: a single further block must not decode anything, because
-        // a full transmission is no longer buffered (re-feeding a whole transmission is a new one).
-        assert!(plugin.process_iq(&iq[..960 * 2]).is_empty());
+        // The slot was consumed: a single further block must not decode anything.
+        assert!(plugin.process_iq(&slot[..960 * 2]).is_empty());
+    }
+
+
+    #[test]
+    fn decodes_a_transmission_that_starts_inside_the_window() {
+        // The live stream is a rolling buffer with no slot clock, so a window generally does NOT
+        // start at a transmission - and the browser path decoded nothing until this worked
+        // (`dsp_buffered` cycling through slots with `ft8=0`). The decoder has to find the burst.
+        // A 12.64 s transmission fits in a 15 s slot only if it starts within the first 2.36 s,
+        // which is the range a rolling buffer can land on.
+        for offset_seconds in [0.0_f64, 0.4, 0.8, 1.5, 2.3] {
+            let slot_len = (48_000.0 * tables::SLOT_SECONDS) as usize * 2;
+            let mut slot = vec![0.0_f32; slot_len];
+            let iq = fixture();
+            let start = (offset_seconds * 48_000.0) as usize * 2;
+            assert!(start + iq.len() <= slot_len, "the transmission must fit in the slot");
+            slot[start..start + iq.len()].copy_from_slice(&iq);
+
+            let mut plugin = Ft8Plugin::new(48_000.0);
+            let mut decoded: Vec<String> = Vec::new();
+            for block in slot.chunks(960 * 2) {
+                decoded.extend(plugin.process_iq(block));
+            }
+            assert_eq!(
+                decoded,
+                vec!["CQ JO1WKO PM95".to_string()],
+                "a transmission starting at {offset_seconds}s must decode"
+            );
+        }
     }
 
     #[test]
     fn the_abi_handle_path_decodes_and_reports_the_message() {
         let handle = abi::websa_dsp_ft8_new(48_000.0);
         assert_ne!(handle, 0);
-        let iq = fixture();
+        let iq = fixture_slot();
         let ptr = crate::abi::websa_dsp_alloc(iq.len() * 4) as *mut f32;
         assert!(!ptr.is_null());
         let mut text = vec![0_u8; 64];

@@ -288,10 +288,13 @@ mod tests {
         // same rate): what this checks is that the digital path runs the *pipeline*, i.e. the DDC
         // feeds the protocol decoder, rather than the decoder being fed raw IQ.
         const BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
-        let iq: Vec<i16> = BYTES
+        let mut iq: Vec<i16> = BYTES
             .chunks_exact(4)
             .map(|q| (f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25 * 32767.0) as i16)
             .collect();
+        // A full slot, not just the transmission: the decoder consumes slots (see Ft8Plugin), and a
+        // real slot carries the transmission plus its quiet tail.
+        iq.resize(48_000 * 15 * 2, 0);
         let mode = "ft8";
         let handle = unsafe {
             websa_dsp_digital_new(48_000.0, 0.0, 1, 48_000.0, mode.as_ptr(), mode.len() as u32)
@@ -441,6 +444,14 @@ pub unsafe extern "C" fn websa_dsp_digital_message(
         text.len() as u32
     })
     .unwrap_or(0)
+}
+
+/// Complex samples the digital decoder has buffered towards its next attempt.
+#[no_mangle]
+pub extern "C" fn websa_dsp_digital_buffered(handle: u32) -> u32 {
+    // The pipeline owns the demodulator behind the trait object, so the count comes from the
+    // trait's own accessor rather than from a downcast.
+    with_pipeline(handle, |state| state.pipeline.digital_buffered() as u32).unwrap_or(0)
 }
 
 /// Messages decoded by this pipeline (status readout).

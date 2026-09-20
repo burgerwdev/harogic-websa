@@ -362,7 +362,9 @@ def main() -> int:
               button is not None and button.get_attribute('disabled') is None)
         if button is not None:
             js_click(page, '[data-sdr-demod="ft8"]')
-        page.wait_for_timeout(12000)          # a 12.64 s transmission at 48 kHz, plus decoding
+        # The worker has no slot clock, so it finds the burst and sweeps the window phase across
+        # attempts (each attempt costs a transmission of stream plus one decode): give it room.
+        page.wait_for_timeout(45000)
         readout = page.evaluate("document.getElementById('ft8-readout').textContent") or ''
         iq_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
         detail = f'readout={readout!r} iq=[{iq_dbg}]'

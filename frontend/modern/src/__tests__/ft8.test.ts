@@ -32,6 +32,18 @@ interface Manifest {
 const manifest = (): Manifest =>
 	JSON.parse(readFileSync(resolve(FIXTURE, 'manifest.json'), 'utf8')) as Manifest;
 
+/**
+ * The fixture padded to a full FT8 slot (15 s), which is what the decoder consumes: the mode is
+ * slot-scheduled and the live stream is a rolling buffer, so a transmission-sized buffer would
+ * never be decoded.
+ */
+const fixtureSlot = (): Int16Array => {
+	const meta = manifest();
+	const slot = new Int16Array(meta.rate * 15 * 2);
+	slot.set(fixtureIq());
+	return slot;
+};
+
 const fixtureIq = (): Int16Array => {
 	const meta = manifest();
 	const bytes = readFileSync(resolve(FIXTURE, 'ft8_cq_iq.bin'));
@@ -52,7 +64,7 @@ describe('FT8 through the committed artifact', () => {
 		const session = new Ft8Session(module, meta.rate);
 		expect(session.ok).toBe(true);
 
-		const iq = fixtureIq();
+		const iq = fixtureSlot();
 		let decoded = null;
 		for (let start = 0; start < iq.length; start += meta.symbol_samples * 2) {
 			const block = iq.subarray(start, Math.min(start + meta.symbol_samples * 2, iq.length));
@@ -65,7 +77,7 @@ describe('FT8 through the committed artifact', () => {
 		expect(Math.abs(decoded!.timeOffsetS)).toBeLessThan(0.2);
 		expect(session.count()).toBe(1);
 
-		// The transmission was consumed: one more block must not decode it again.
+		// The slot was consumed: one more block must not decode it again.
 		expect(session.push(iq.subarray(0, meta.symbol_samples * 2))).toBeNull();
 
 		// Reset and free are safe to call repeatedly (the worker does on stop and on detach).
@@ -88,7 +100,11 @@ describe('FT8 through the committed artifact', () => {
 			mode: 'ft8',
 		});
 		expect(pipeline.ok).toBe(true);
-		const iq = fixtureIq();
+		// A full slot, with the transmission followed by the quiet tail a real slot has: the
+		// decoder consumes slots (FT8's 15 s schedule), not a transmission-sized window.
+		const transmission = fixtureIq();
+		const iq = new Int16Array(meta.rate * 15 * 2);
+		iq.set(transmission);
 		const block = 4096 * 2;          // 4096 complex samples, the IQS block shape
 		let decoded = null;
 		for (let start = 0; start < iq.length; start += block) {
@@ -111,16 +127,16 @@ describe('FT8 through the committed artifact', () => {
 		const meta = manifest();
 		const module = await instantiateDsp(artifactBytes());
 		const session = new Ft8Session(module, meta.rate);
-		// Deterministic noise, the size of a transmission: CRC is what keeps this from "decoding".
-		const noise = new Int16Array(meta.symbol_samples * 2);
+		// Deterministic noise, the size of a SLOT: CRC is what keeps this from "decoding".
+		const noise = new Int16Array(meta.rate * 15 * 2);
 		let state = 123456789;
 		for (let index = 0; index < noise.length; index++) {
 			state = (state * 1103515245 + 12345) & 0x7fffffff;
 			noise[index] = ((state >> 8) % 2048) - 1024;
 		}
 		let decoded = null;
-		for (let start = 0; start + meta.symbol_samples * 2 <= noise.length; start += meta.symbol_samples * 2) {
-			decoded = session.push(noise.subarray(start, start + meta.symbol_samples * 2)) ?? decoded;
+		for (let start = 0; start < noise.length; start += meta.symbol_samples * 2) {
+			decoded = session.push(noise.subarray(start, Math.min(start + meta.symbol_samples * 2, noise.length))) ?? decoded;
 		}
 		expect(decoded).toBeNull();
 		session.free();

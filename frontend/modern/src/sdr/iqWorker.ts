@@ -25,6 +25,12 @@ let pipeline: WasmPipeline | null = null;
 let digital: DigitalPipeline | null = null;
 let digitalGeometry = '';
 let ft8Messages = 0;
+/// Diagnostics: how often the digital pipeline was (re)built and fed, and how full its decoder
+/// buffer is. A buffer that keeps restarting looks exactly like a quiet band from the outside.
+let digitalCreates = 0;
+let digitalPushes = 0;
+let digitalBuffered = 0;
+let digitalResets = 0;
 /// Ids the module declares as digital protocols; the registry is the single source of truth, so a
 /// new protocol becomes reachable here without a second list in the worker.
 let digitalIds = new Set<string>();
@@ -56,7 +62,7 @@ function postStats(): void {
   post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
     pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
-    ft8Messages,
+    ft8Messages, digitalCreates, digitalPushes, digitalBuffered, digitalResets,
   });
 }
 
@@ -70,6 +76,7 @@ function syncPipeline(): void {
     pipeline = null;
     const geometry = `${params.mode}:${params.fsIn}:${params.decimate}:${params.outRate}:${params.offsetHz}`;
     if (!digital || digitalGeometry !== geometry) {
+      digitalCreates += 1;
       digital?.free();
       digital = new DigitalPipeline(module, {
         fsIn: params.fsIn,
@@ -135,6 +142,10 @@ function onIq(frame: IqFrame): void {
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
     dropped += frame.seq - lastSeq - 1;      // a gap the client never saw (overrun on the wire)
+    // A gap tears the buffered slot: decoding it can only fail, and a failed decode costs a whole
+    // search. Start the next slot clean instead (the counter above is what makes this visible).
+    digital?.reset();
+    digitalResets += 1;
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
   rate = frame.rate;
@@ -142,7 +153,9 @@ function onIq(frame: IqFrame): void {
   blocks++;
   samples += frame.samples;
   if (digital) {
+    digitalPushes += 1;
     const message = digital.push(frame.iq);
+    digitalBuffered = digital.buffered();
     if (message) {
       ft8Messages = message.count;
       post({ type: 'ft8', ...message, count: ft8Messages });

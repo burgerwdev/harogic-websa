@@ -46,6 +46,7 @@ export interface DspExports {
 	websa_dsp_digital_push(handle: number, iqPtr: number, samples: number): number;
 	websa_dsp_digital_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
 	websa_dsp_digital_count(handle: number): number;
+	websa_dsp_digital_buffered(handle: number): number;
 	websa_dsp_digital_reset(handle: number): number;
 	websa_dsp_digital_free(handle: number): number;
 	// The whole analog receive pipeline: one handle, one call per IQ block

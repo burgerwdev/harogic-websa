@@ -171,6 +171,13 @@ pub trait DigitalDemodulator: Send {
     fn last_report(&self) -> Option<DigitalReport> {
         None
     }
+
+    /// Input samples buffered towards the next decode attempt (0 when the protocol decodes per
+    /// block). Used by the status readout, so "running but never finishing a transmission" is
+    /// visible instead of looking like a quiet band.
+    fn buffered_input(&self) -> usize {
+        0
+    }
 }
 
 /// One stage of the analog audio chain (LPF/AGC/squelch/Wiener/notch/blanker).

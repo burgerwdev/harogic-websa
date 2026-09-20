@@ -189,15 +189,20 @@ fn every_registered_plugin_can_be_resolved_by_its_own_family() {
 }
 
 /// The FT8 fixture, quantised to int16 exactly as the pipeline receives IQ from the device.
+///
+/// Padded to a full slot: the decoder consumes slots (FT8 is a 15 s slot mode and the live stream is
+/// a rolling buffer), so a transmission-sized buffer would never be decoded.
 fn ft8_iq_i16() -> Vec<i16> {
     const BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
-    BYTES
+    let mut iq: Vec<i16> = BYTES
         .chunks_exact(4)
         .map(|q| {
             let value = f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25;
             (value.clamp(-1.0, 1.0) * 32767.0) as i16
         })
-        .collect()
+        .collect();
+    iq.resize(48_000 * 15 * 2, 0);
+    iq
 }
 
 /// A DDC configured for a baseband stream that is already at the channel rate.

@@ -32,6 +32,9 @@ let fallbackReason = '';
 let ft8Text = '';
 let ft8Count = 0;
 let ft8Detail = '';
+//: Digital-path diagnostics (see the worker): is the decoder being fed, and is it getting through
+//: a transmission, or is its buffer restarting?
+let digitalDiagnostics = '';
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -51,7 +54,7 @@ function publishIqDebug(): void {
       ` rate=${rate.toFixed(0)} center_hz=${centerHz.toFixed(0)} dropped=${dropped}` +
       ` flushes=${flushes} pcm_frames=${pcmFrames} pcm_samples=${pcmSamples}` +
       ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '') +
-      ` fallback=${fallbackReason} ft8=${ft8Count}`;
+      ` fallback=${fallbackReason} ft8=${ft8Count}` + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
 }
 
@@ -84,6 +87,11 @@ function startWorker(): void {
     if (typeof d.centerHz === 'number') centerHz = d.centerHz;
     if (typeof d.dropped === 'number') dropped = d.dropped;
     if (typeof d.flushes === 'number') flushes = d.flushes;
+    if (typeof d.digitalCreates === 'number' && typeof d.digitalPushes === 'number') {
+      digitalDiagnostics =
+        `dsp_creates=${d.digitalCreates} dsp_pushes=${d.digitalPushes}` +
+        ` dsp_buffered=${d.digitalBuffered} dsp_resets=${d.digitalResets} dsp_mode=${d.mode || ''}`;
+    }
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
     pipelineReady = Boolean(d.pipeline);

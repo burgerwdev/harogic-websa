@@ -66,6 +66,11 @@ export class DigitalPipeline {
 		return this.handle ? this.module.exports.websa_dsp_digital_count(this.handle) : 0;
 	}
 
+	/** Complex samples buffered towards the next decode attempt (0 when unusable). */
+	buffered(): number {
+		return this.handle ? this.module.exports.websa_dsp_digital_buffered(this.handle) : 0;
+	}
+
 	/** Feed one IQ block; returns the decoded message when this block completed one. */
 	push(iq: Int16Array): Ft8Report | null {
 		if (!this.handle || iq.length === 0) return null;

@@ -45,9 +45,14 @@ class ClientStream:
 
     CONTROL_LIMIT = 32
     AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
-    #: IQ blocks are much larger than audio frames and the browser DSP only needs continuity,
-    #: not 400 ms of buffer: 8 blocks bound the latency and the FIFO memory.
-    IQ_LIMIT = 8
+    #: IQ blocks are much larger than audio frames. The bound is set by what the browser does
+    #: between reads: a digital mode decodes a whole slot synchronously in the worker (seconds),
+    #: during which nobody drains this FIFO - at 8 blocks it overran and the decoder's input came
+    #: back with gaps, which no FT8 decode survives (measured: `dropped=1526` and no decode in the
+    #: browser, while the same artifact decoded the same IQ directly). 48 blocks ~= 4 s of IQ at
+    #: 48 kHz / 4096 samples (~0.8 MB per client), which covers the worst decode and still bounds
+    #: the memory and the latency.
+    IQ_LIMIT = 48
     #: Minimum sane header length per streaming frame type (IQDF's header is 32 bytes).
     FIFO_MIN_BYTES = {AUDIO_MAGIC: 16, IQ_MAGIC: 32}
 

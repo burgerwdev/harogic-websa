@@ -202,6 +202,11 @@ impl Pipeline {
         self.decoded_total
     }
 
+    /// Input samples the digital demodulator has buffered towards its next decode attempt.
+    pub fn digital_buffered(&self) -> usize {
+        self.digital.as_ref().map(|demod| demod.buffered_input()).unwrap_or(0)
+    }
+
     /// What the digital demodulator reports about its most recent decode (frequency, slot offset,
     /// SNR). The UI shows the timing with the text: a decoded message without it is of little use
     /// to an operator watching a band.
