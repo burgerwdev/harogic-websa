@@ -26,7 +26,7 @@ import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
-import { resetSdrIq, setSdrIqEnabled } from '../sdr/iqStream';
+import { resetSdrIq, setSdrIqEnabled, configureSdrPipeline } from '../sdr/iqStream';
 import { resetLimits } from './limits';
 
 // Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
@@ -467,6 +467,26 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
+  // Push the confirmed demod parameters to the browser DSP. The IQ stream already arrives at the
+  // DDC input rate, so the browser decimates from there down to a few times the audio rate (a
+  // resampler alone would alias); the offset is what the user listens to minus where the capture
+  // actually sits, which is exactly what the NCO has to remove.
+  const iqRate = Number(sdr.actual?.iq_rate) || 0;
+  const captureCenter = Number(sdr.actual?.capture_center ?? sdr.actual?.center) || 0;
+  if (iqRate > 0) {
+    configureSdrPipeline(
+      {
+        fsIn: iqRate,
+        offsetHz: Number(sdr.listen || 0) - captureCenter,
+        decimate: Math.max(1, Math.floor(iqRate / (48000 * 4))),
+        outRate: 48000,
+        mode: String(sdr.demod || 'am'),
+        ifBw: Number(sdr.if_bw) || 6000,
+        pitch: Number(sdr.pitch) || 700,
+      },
+      { volume: Number(sdr.volume ?? 0.8), audioEnabled: true },
+    );
+  }
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)

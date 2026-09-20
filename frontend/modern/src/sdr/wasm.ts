@@ -34,6 +34,13 @@ export interface DspExports {
 	websa_dsp_plugin_id(kind: number, index: number, buf: number, capacity: number): number;
 	websa_dsp_plugin_implemented(kind: number, index: number): number;
 	websa_dsp_plugin_audio_enhancement(kind: number, index: number): number;
+	// The whole analog receive pipeline: one handle, one call per IQ block
+	websa_dsp_pipeline_new(fsIn: number, offsetHz: number, decimate: number, outRate: number, modePtr: number, modeLen: number, ifBw: number, pitch: number): number;
+	websa_dsp_pipeline_process(handle: number, iqPtr: number, samples: number, outPtr: number, capacity: number, audioHold: number): number;
+	websa_dsp_pipeline_retune(handle: number, offsetHz: number): number;
+	websa_dsp_pipeline_set_audio(handle: number, enabled: number): number;
+	websa_dsp_pipeline_reset(handle: number): number;
+	websa_dsp_pipeline_free(handle: number): number;
 }
 
 export interface DspModule {
@@ -121,8 +128,17 @@ export async function loadDsp(url: string): Promise<DspModule> {
 	return loading;
 }
 
-/** Where the artifact sits, derived from the page the app was served from. */
+/** Where the artifact sits, derived from the app's static base.
+ *
+ * The page can be served from `/` (the backend's index route) while the assets live under
+ * `/static/modern/dist/`, so `document.baseURI` is *not* where `dsp.wasm` is: deriving the path
+ * from the document produced a 404 against the served page. Vite's base is the one source of
+ * truth for both the dev server and the built bundle (`vite.config.ts`), so it is used here and
+ * `base` remains overridable for tests.
+ */
 export function dspWasmUrl(base?: string): string {
-	const root = base ?? document.baseURI;
-	return new URL('dsp.wasm', root).href;
+	if (base) return new URL('dsp.wasm', base).href;
+	const viteBase = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL;
+	if (viteBase) return new URL('dsp.wasm', new URL(viteBase, location.origin)).href;
+	return new URL('/static/modern/dist/dsp.wasm', location.origin).href;
 }

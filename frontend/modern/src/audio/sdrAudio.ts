@@ -11,6 +11,27 @@
 let ctx: AudioContext | null = null;
 let workletNode: AudioWorkletNode | null = null;
 let worker: Worker | null = null;
+//: True once the worklet's port has been handed to the WASM DSP worker. Its port can only be
+//: transferred once (a second transfer throws "Port at index 0 is already neutered"), so both the
+//: handoff and the Python audio worker's own transfer have to respect this.
+let workletPortHandedOff = false;
+//: Ports that have already been transferred at least once. A MessagePort cannot be transferred
+//: twice, and the two consumers (the Python audio worker and the WASM DSP worker) can both reach
+//: the same port through different code paths; this makes the mistake impossible at the point of
+//: transfer instead of relying on every caller to check a flag.
+const transferredPorts = new WeakSet<MessagePort>();
+
+/** Transfer `port` to `send` at most once; returns false when the port was already moved. */
+function transferOnce(port: MessagePort, send: (port: MessagePort) => void): boolean {
+  if (transferredPorts.has(port)) return false;
+  try {
+    send(port);
+  } catch {
+    return false;
+  }
+  transferredPorts.add(port);
+  return true;
+}
 let legacyNode: ScriptProcessorNode | null = null;
 let legacyOscillator: OscillatorNode | null = null;
 let legacyPullGain: GainNode | null = null;
@@ -150,10 +171,12 @@ function startWorker(port: MessagePort | null): void {
     url: audioWorkerUrl(),
     targetRate: ctx?.sampleRate || 48000,
   };
-  if (port) {
+  if (port && !workletPortHandedOff) {
     init.port = port;
-    worker.postMessage(init, [port]);
+    transferOnce(port, (moved) => worker!.postMessage(init, [moved]));
   } else {
+    // Without a port (legacy output) or after the DSP took it over: the worker must not be handed a
+    // neutered port, and the Python path keeps its socket either way.
     worker.postMessage(init);
   }
   worker.postMessage({ type: 'enabled', value: enabled });
@@ -191,6 +214,7 @@ async function initializeOutput(context: AudioContext): Promise<void> {
         candidate?.disconnect();
         candidate?.port.close();
         if (workletNode === candidate) workletNode = null;
+        workletPortHandedOff = false;
         setupLegacyNode(context);
         worker?.postMessage({ type: 'detach' });
       };
@@ -201,6 +225,7 @@ async function initializeOutput(context: AudioContext): Promise<void> {
       candidate?.disconnect();
       candidate?.port.close();
       workletNode = null;
+      workletPortHandedOff = false;
       console.warn('AudioWorklet unavailable; using compatibility audio output', error);
     }
   }
@@ -276,6 +301,23 @@ function publishAudioDebug(): void {
       // says On but nothing is heard" without any state-management involvement.
       ` ctx=${ctx ? ctx.state : 'none'} worklet=${!!workletNode} worker=${!!worker}`;
   }
+}
+
+/**
+ * Hand the worklet's MessagePort to another worker (the WASM DSP host).
+ *
+ * Returns false when there is no worklet to hand over (the legacy ScriptProcessor fallback): the
+ * caller must then keep the Python audio path, so this answers instead of throwing. The Python
+ * audio worker is detached first — two writers on one port would interleave two different sample
+ * streams into the ring.
+ */
+export function routeWorkletPortTo(target: Worker): boolean {
+  if (!workletNode || workletPortHandedOff) return false;
+  worker?.postMessage({ type: 'detach' });
+  const moved = transferOnce(workletNode.port, (port) =>
+    target.postMessage({ type: 'worklet-port', port }, [port]));
+  if (moved) workletPortHandedOff = true;
+  return moved;
 }
 
 export function setSdrAudioEnabled(on: boolean): void {

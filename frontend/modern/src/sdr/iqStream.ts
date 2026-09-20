@@ -1,11 +1,16 @@
-// SDR IQ stream — the DSP worker's lifecycle and diagnostics.
+// SDR IQ stream — the DSP worker's lifecycle, parameters and diagnostics.
 //
-// The main thread owns neither the socket nor the DSP: it only starts/stops the worker and
-// mirrors what the worker reports. A separate module (rather than a branch inside the audio
-// path) because the IQ ingress is a different stream with a different lifetime: it runs while
-// SDR mode is active, independent of whether the speaker is unmuted.
+// The main thread owns neither the socket nor the DSP: it starts/stops the worker, pushes the
+// demodulator parameters the backend confirmed, and mirrors what the worker reports. Once the
+// worker says its WASM pipeline is producing PCM, the AudioWorklet port is handed to it, so
+// playback is fed by the browser DSP; until then the Python audio path keeps playing.
 //
-// Task scope: transport + diagnostics. The DSP stages consume the decoded blocks in the worker.
+// A separate module from the audio path because the IQ ingress is a different stream with a
+// different lifetime: it runs while SDR mode is active, independent of whether the speaker is on.
+import { routeWorkletPortTo } from '../audio/sdrAudio';
+import { dspWasmUrl } from './wasm';
+import type { PipelineParams } from './wasmPipeline';
+
 let worker: Worker | null = null;
 let enabled = false;
 let blocks = 0;
@@ -14,6 +19,11 @@ let rate = 0;
 let centerHz = 0;
 let dropped = 0;
 let flushes = 0;
+let pcmFrames = 0;
+let pcmSamples = 0;
+let pipelineReady = false;
+let handedOff = false;
+let lastError = '';
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -31,7 +41,8 @@ function publishIqDebug(): void {
     cv.dataset.sdrIq =
       `enabled=${enabled} blocks=${blocks} samples=${samples} buffered_ms=${ms.toFixed(0)}` +
       ` rate=${rate.toFixed(0)} center_hz=${centerHz.toFixed(0)} dropped=${dropped}` +
-      ` flushes=${flushes}`;
+      ` flushes=${flushes} pcm_frames=${pcmFrames} pcm_samples=${pcmSamples}` +
+      ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '');
   }
 }
 
@@ -48,6 +59,11 @@ function startWorker(): void {
   }
   worker.onmessage = (event: MessageEvent) => {
     const d = (event.data || {}) as Record<string, any>;
+    if (d.type === 'error') {
+      lastError = String(d.message || 'error');
+      publishIqDebug();
+      return;
+    }
     if (d.type !== 'stats') return;
     if (typeof d.blocks === 'number') blocks = d.blocks;
     if (typeof d.samples === 'number') samples = d.samples;
@@ -55,16 +71,48 @@ function startWorker(): void {
     if (typeof d.centerHz === 'number') centerHz = d.centerHz;
     if (typeof d.dropped === 'number') dropped = d.dropped;
     if (typeof d.flushes === 'number') flushes = d.flushes;
+    if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
+    if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
+    pipelineReady = Boolean(d.pipeline);
+    // One handoff, and only once the DSP is actually producing PCM: handing the worklet to a
+    // worker whose pipeline failed would silence the radio, which is the failure this ordering
+    // (and the Python fallback behind it) exists to prevent.
+    if (pipelineReady && !handedOff && worker) {
+      handedOff = routeWorkletPortTo(worker);
+    }
     publishIqDebug();
   };
-  worker.postMessage({ type: 'init', url: iqWorkerUrl() });
+  worker.postMessage({ type: 'init', url: iqWorkerUrl(), wasmUrl: dspWasmUrl() });
   worker.postMessage({ type: 'enabled', value: enabled });
+}
+
+/** Push the confirmed demodulator parameters (and listener preferences) to the DSP worker. */
+export function configureSdrPipeline(
+  params: PipelineParams,
+  options: { volume?: number; audioEnabled?: boolean } = {},
+): void {
+  worker?.postMessage({
+    type: 'configure',
+    params,
+    volume: options.volume,
+    audioEnabled: options.audioEnabled,
+  });
+}
+
+/** Volume is a listener preference: applied in the worker, where the PCM is produced. */
+export function setSdrPipelineVolume(volume: number): void {
+  worker?.postMessage({ type: 'volume', value: volume });
+}
+
+/** Turn the WASM audio-enhancement chain on/off (RAW/digital comparisons flip this). */
+export function setSdrPipelineAudio(enabled: boolean): void {
+  worker?.postMessage({ type: 'audio', value: enabled });
 }
 
 /**
  * Enter/leave the IQ ingress. Called on the SDR mode edge: the stream is pointless outside SDR
- * (the backend only produces IQ while an SDR session runs) and a lingering socket would keep
- * the backend encoding raw IQ for nobody.
+ * (the backend only produces IQ while an SDR session runs) and a lingering socket would keep the
+ * backend encoding raw IQ for nobody.
  */
 export function setSdrIqEnabled(on: boolean): void {
   enabled = on;
@@ -77,7 +125,7 @@ export function setSdrIqEnabled(on: boolean): void {
   publishIqDebug();
 }
 
-/** Drop the worker (preset/reset): counters restart with the new capture geometry. */
+/** Drop the worker's stream state (preset/reset): counters restart with the new capture geometry. */
 export function resetSdrIq(): void {
   blocks = 0;
   samples = 0;
@@ -85,11 +133,21 @@ export function resetSdrIq(): void {
   flushes = 0;
   rate = 0;
   centerHz = 0;
+  pcmFrames = 0;
+  pcmSamples = 0;
+  lastError = '';
   worker?.postMessage({ type: 'reset' });
   publishIqDebug();
 }
 
-// Diagnostics for the e2e and for tests that need the transport counters.
-export function sdrIqStats(): { enabled: boolean; blocks: number; samples: number; dropped: number } {
-  return { enabled, blocks, samples, dropped };
+/** Diagnostics for the e2e and for tests: the transport counters and the DSP state. */
+export function sdrIqStats(): {
+  enabled: boolean;
+  blocks: number;
+  samples: number;
+  dropped: number;
+  pcmFrames: number;
+  pipelineReady: boolean;
+} {
+  return { enabled, blocks, samples, dropped, pcmFrames, pipelineReady };
 }

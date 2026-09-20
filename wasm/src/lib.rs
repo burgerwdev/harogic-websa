@@ -17,6 +17,7 @@ pub mod audio;
 pub mod ddc;
 pub mod fft;
 pub mod pipeline;
+pub mod pipeline_abi;
 pub mod plugin;
 pub mod plugin_abi;
 

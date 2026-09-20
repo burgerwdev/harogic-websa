@@ -190,15 +190,17 @@ def main() -> int:
                   state(args.url)['mode'])
             check(f'{mode} view is drawn', painted > args.painted_min, f'{painted} pixels')
             if mode == 'sdr':
-                # The DSP input is its own `?iq=1` socket in a worker; the canvas dataset is
-                # where the worker's counters surface, so this asserts the whole transport
-                # (backend encoder -> WS -> worker decoder), not just that a socket opened.
-                page.wait_for_timeout(1500)
+                # The DSP input is its own `?iq=1` socket in a worker, and the same dataset reports
+                # what the WASM pipeline produced, so this asserts the whole chain
+                # (backend encoder -> WS -> worker decoder -> Rust DSP -> PCM for the worklet).
+                page.wait_for_timeout(2500)
                 dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
                 blocks = int(m.group(1)) if (m := re.search(r'blocks=(\d+)', dbg)) else 0
                 check('the SDR IQ stream reaches the DSP worker', blocks > 0, dbg)
                 check('the IQ worker learns the capture rate and centre',
                       'rate=0' not in dbg and 'center_hz=0' not in dbg, dbg)
+                pcm_frames = int(m.group(1)) if (m := re.search(r'pcm_frames=(\d+)', dbg)) else 0
+                check('the WASM pipeline turns IQ into PCM for the worklet', pcm_frames > 0, dbg)
 
         print('4) measurement tabs render')
         js_click(page, '#btn-meas-onoff')

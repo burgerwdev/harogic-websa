@@ -274,6 +274,16 @@ impl Pipeline {
         self.baseband = baseband;
     }
 
+    /// Retune within the same capture: a new NCO offset, and the demodulator's channel history is
+    /// cleared. The level controls are deliberately kept (resetting them is what made every tune
+    /// start with a loud burst).
+    pub fn retune(&mut self, offset_hz: f64) {
+        self.ddc.retune(offset_hz);
+        if let Some(demod) = self.analog.as_mut() {
+            demod.retune();
+        }
+    }
+
     pub fn reset(&mut self) {
         self.ddc.reset();
         if let Some(demod) = self.analog.as_mut() {
