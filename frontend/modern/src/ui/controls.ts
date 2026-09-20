@@ -25,6 +25,7 @@ import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { initSdrDemodGroup } from './sdrDemodGroup';
 import { resetSdrIq, setSdrIqEnabled } from '../sdr/iqStream';
 import { resetLimits } from './limits';
 
@@ -348,8 +349,8 @@ export function toggleSdrAgc(el: HTMLElement) {
 const SDR_BANDS: Record<string, { center: number; decimate: number; demod: string; ifbw: number }> = {
   fm: { center: 98e6, decimate: 2, demod: 'wfm', ifbw: 180000 },
   air: { center: 127.5e6, decimate: 16, demod: 'am', ifbw: 25000 },
-  vhf: { center: 145e6, decimate: 16, demod: 'fm', ifbw: 12000 },
-  uhf: { center: 435e6, decimate: 16, demod: 'fm', ifbw: 12000 },
+  vhf: { center: 145e6, decimate: 16, demod: 'nfm', ifbw: 12000 },
+  uhf: { center: 435e6, decimate: 16, demod: 'nfm', ifbw: 12000 },
 };
 
 export function applySdrBand(name: string) {
@@ -659,13 +660,18 @@ export function bindActions() {
     sdrSquelch.set(parseFloat(squelchEl.value) || -110);
     applySdrDemod();
   });
-  document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
-    el.addEventListener('click', () => {
-      sdrDemod.set((el as HTMLElement).dataset.sdrDemod || 'am');
-      renderSdrState();
-      applySdrDemod();
+  // The demod group is generated from the DSP plugin registry, so the mode buttons and the
+  // kernels cannot disagree; the handler is the same path the panel always used.
+  const demodGroup = document.getElementById('sdr-demod-group');
+  if (demodGroup) {
+    void initSdrDemodGroup(demodGroup, {
+      onSelect: (id) => {
+        sdrDemod.set(id);
+        renderSdrState();
+        applySdrDemod();
+      },
     });
-  });
+  }
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.addEventListener('click', () => {
       sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);

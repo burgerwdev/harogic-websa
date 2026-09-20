@@ -12,6 +12,7 @@
 //! `wasm32-unknown-unknown` (the artifact the browser loads), with no dependencies.
 
 pub mod abi;
+pub mod analog;
 pub mod audio;
 pub mod ddc;
 pub mod pipeline;

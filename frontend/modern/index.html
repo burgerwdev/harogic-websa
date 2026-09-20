@@ -230,15 +230,9 @@
               <span class="cur-val">MHz</span>
               <button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></div>
             <div class="param-row"><label data-i18n="demod">Demod</label>
-              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group">
-                <button class="btn" data-sdr-demod="am">AM</button>
-                <button class="btn" data-sdr-demod="fm">FM</button>
-                <button class="btn" data-sdr-demod="nfm">NFM</button>
-                <button class="btn" data-sdr-demod="wfm">WFM</button>
-                <button class="btn" data-sdr-demod="usb">USB</button>
-                <button class="btn" data-sdr-demod="lsb">LSB</button>
-                <button class="btn" data-sdr-demod="cw">CW</button>
-              </div></div>
+              <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
+                   mode list lives in wasm/src/plugin.rs, not here. -->
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group"></div></div>
             <div class="param-row"><label data-i18n="if_filter">Filter</label>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
                 <button class="btn" data-sdr-ifbw="500">0.5k</button>

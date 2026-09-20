@@ -13,6 +13,6 @@
  "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "b045398725456319ee678f315390a5db434c3d1fce4bf9dd8cbb1240931ee8ad",
+ "sha256": "724e859f70baad1eb74107b585eab63139f08e3e229fa7c0141f0677e48a7032",
  "target": "wasm32-unknown-unknown"
 }

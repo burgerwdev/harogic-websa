@@ -223,6 +223,88 @@ impl IqFilter {
     }
 }
 
+/// A complex-tap FIR (sideband selection): `out = z * h` with `h = re + j*im`.
+///
+/// Unlike [`IqFilter`], the taps are complex, so the two output components mix the two input
+/// components:
+///
+/// ```text
+///   out_i = conv(i, re) - conv(q, im)
+///   out_q = conv(i, im) + conv(q, re)
+/// ```
+///
+/// Four histories, one tap set: this is what makes USB/LSB selection and any asymmetric band
+/// possible.
+#[derive(Debug, Clone)]
+pub struct ComplexBandFilter {
+    re_i: FirState,
+    im_q: FirState,
+    im_i: FirState,
+    re_q: FirState,
+    scratch_a: Vec<f64>,
+    scratch_b: Vec<f64>,
+    out_a: Vec<f64>,
+    out_b: Vec<f64>,
+}
+
+impl ComplexBandFilter {
+    /// `(re, im)` are the tap components from [`design_complex_bandpass`].
+    pub fn new(re: Vec<f64>, im: Vec<f64>) -> Self {
+        Self {
+            re_i: FirState::new(re.clone()),
+            im_q: FirState::new(im.clone()),
+            im_i: FirState::new(im),
+            re_q: FirState::new(re),
+            scratch_a: Vec::new(),
+            scratch_b: Vec::new(),
+            out_a: Vec::new(),
+            out_b: Vec::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.re_i.reset();
+        self.im_q.reset();
+        self.im_i.reset();
+        self.re_q.reset();
+    }
+
+    /// Clear the filter history only (a retune drops the old channel's tail).
+    pub fn clear_tail(&mut self) {
+        self.re_i.clear_tail();
+        self.im_q.clear_tail();
+        self.im_i.clear_tail();
+        self.re_q.clear_tail();
+    }
+
+    /// Filter interleaved complex `iq` into interleaved complex `out`.
+    pub fn process_complex_into(&mut self, iq: &[f64], out: &mut Vec<f64>) {
+        let n = iq.len() / 2;
+        self.scratch_a.clear();
+        self.scratch_a.extend((0..n).map(|k| iq[2 * k]));
+        self.scratch_b.clear();
+        self.scratch_b.extend((0..n).map(|k| iq[2 * k + 1]));
+        // Reuse the scratch slots for the four convolutions through two passes.
+        let mut conv_i_re = core::mem::take(&mut self.out_a);
+        let mut conv_q_im = core::mem::take(&mut self.out_b);
+        self.re_i.process_into(&self.scratch_a, &mut conv_i_re);
+        self.im_q.process_into(&self.scratch_b, &mut conv_q_im);
+        let mut conv_i_im = Vec::with_capacity(n);
+        let mut conv_q_re = Vec::with_capacity(n);
+        self.im_i.process_into(&self.scratch_a, &mut conv_i_im);
+        self.re_q.process_into(&self.scratch_b, &mut conv_q_re);
+
+        out.clear();
+        out.reserve(conv_i_re.len() * 2);
+        for k in 0..conv_i_re.len() {
+            out.push(conv_i_re[k] - conv_q_im.get(k).copied().unwrap_or(0.0));
+            out.push(conv_i_im.get(k).copied().unwrap_or(0.0) + conv_q_re.get(k).copied().unwrap_or(0.0));
+        }
+        self.out_a = conv_i_re;
+        self.out_b = conv_q_im;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

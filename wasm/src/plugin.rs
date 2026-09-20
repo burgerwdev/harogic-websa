@@ -67,14 +67,14 @@ const fn ddc(id: &'static str) -> PluginDescriptor {
 /// Analog demodulator families. The `am`/`fm` pair is the first to land; the rest follow the same
 /// interface, and `dsb`/`ssb`/`cw`/`pm` differ only in their band selection and detector.
 pub const ANALOG_PLUGINS: &[PluginDescriptor] = &[
-    analog("am", false),
-    analog("dsb", false),
+    analog("am", true),
+    analog("dsb", true),
     analog("usb", false),
     analog("lsb", false),
     analog("cw", false),
-    analog("nfm", false),
-    analog("wfm", false),
-    analog("pm", false),
+    analog("nfm", true),
+    analog("wfm", true),
+    analog("pm", true),
 ];
 
 /// Digital demodulators. FT8 is the first; the seam is what the others will plug into.
