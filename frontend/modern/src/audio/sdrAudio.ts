@@ -8,6 +8,8 @@
 //
 // Browsers without AudioWorklet keep the ScriptProcessor output, which is main-thread only;
 // there the worker posts the resampled buffers back and this module writes the legacy ring.
+import { wasmDspAllowed } from '../sdr/capability';
+
 let ctx: AudioContext | null = null;
 let workletNode: AudioWorkletNode | null = null;
 let worker: Worker | null = null;
@@ -171,12 +173,17 @@ function startWorker(port: MessagePort | null): void {
     url: audioWorkerUrl(),
     targetRate: ctx?.sampleRate || 48000,
   };
-  if (port && !workletPortHandedOff) {
+  // Who owns playback: when the browser DSP is available the IQ worker claims the worklet port
+  // (`routeWorkletPortTo`), and a MessagePort can only be transferred once - handing it to the
+  // Python audio worker here would leave the WASM PCM with nowhere to go, which is exactly the
+  // reported "one blip, then silence" after switching the audio on: the ring was fed by nobody.
+  const dspOwnsPlayback = wasmDspAllowed();
+  if (port && !workletPortHandedOff && !dspOwnsPlayback) {
     init.port = port;
     transferOnce(port, (moved) => worker!.postMessage(init, [moved]));
   } else {
-    // Without a port (legacy output) or after the DSP took it over: the worker must not be handed a
-    // neutered port, and the Python path keeps its socket either way.
+    // Without a port (legacy output), with the DSP owning it, or after it moved: the worker must
+    // not be handed a neutered port, and the Python path keeps its socket either way.
     worker.postMessage(init);
   }
   worker.postMessage({ type: 'enabled', value: enabled });
@@ -311,6 +318,20 @@ function publishAudioDebug(): void {
  * audio worker is detached first — two writers on one port would interleave two different sample
  * streams into the ring.
  */
+/**
+ * The output device's sample rate, i.e. what the DSP must produce.
+ *
+ * The worklet plays its input as-is, so a pipeline that always emitted 48 kHz would play at the
+ * wrong pitch and speed whenever the device runs at 44.1 kHz.
+ */
+export function audioSampleRate(): number {
+  try {
+    return ctx?.sampleRate || 48000;
+  } catch {
+    return 48000;
+  }
+}
+
 export function routeWorkletPortTo(target: Worker): boolean {
   if (!workletNode || workletPortHandedOff) return false;
   worker?.postMessage({ type: 'detach' });

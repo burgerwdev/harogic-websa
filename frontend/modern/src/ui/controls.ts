@@ -24,7 +24,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
-import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { resetSdrIq, setSdrIqEnabled, configureSdrPipeline } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
@@ -480,7 +480,9 @@ export function syncSdrPanel(s: any) {
         fsIn: iqRate,
         offsetHz: Number(sdr.listen || 0) - captureCenter,
         decimate: Math.max(1, Math.floor(iqRate / (48000 * 4))),
-        outRate: 48000,
+        // The worklet plays the PCM as-is, so the DSP has to produce the device's rate (44.1 kHz
+        // on many systems); the DDC resamples, so this stays a single write of the filter corner.
+        outRate: audioSampleRate(),
         // The *UI's* selection drives the DSP worker, not the backend's demod: a digital mode
         // (ft8) has no backend DSP at all, and the Python fallback keeps its own demod anyway.
         mode: String(sdrDemod.get() || 'am'),

@@ -25,6 +25,10 @@ let pipeline: WasmPipeline | null = null;
 let digital: DigitalPipeline | null = null;
 let digitalGeometry = '';
 let ft8Messages = 0;
+/// What the worklet reports about its own ring (relayed to the page's diagnostics).
+let workletAvailable = 0;
+let workletUnderruns = 0;
+let workletReceived = 0;
 /// Diagnostics: how often the digital pipeline was (re)built and fed, and how full its decoder
 /// buffer is. A buffer that keeps restarting looks exactly like a quiet band from the outside.
 let digitalCreates = 0;
@@ -63,6 +67,7 @@ function postStats(): void {
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
     pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
     ft8Messages, digitalCreates, digitalPushes, digitalBuffered, digitalResets,
+    worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
   });
 }
 
@@ -263,6 +268,13 @@ self.onmessage = (event: MessageEvent) => {
     const port = msg.port as MessagePort | undefined;
     if (port) {
       workletPort = port;
+      workletPort.onmessage = (event: MessageEvent) => {
+        const status = (event.data || {}) as Record<string, any>;
+        if (status.type !== 'status') return;
+        workletAvailable = Number(status.available) || 0;
+        workletUnderruns = Number(status.underruns) || 0;
+        workletReceived = Number(status.received) || 0;
+      };
       workletPort.start();
       workletPort.postMessage({ type: 'enabled', value: enabled });
     }

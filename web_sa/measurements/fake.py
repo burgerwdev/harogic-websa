@@ -38,7 +38,10 @@ AUDIO_TONE_HZ = 1000.0
 #: Synthetic IQ block: the browser DSP's input, so the fake backend exercises the same path
 #: as the analyzer (a tone offset from the capture centre, i.e. a signal to tune to).
 SDR_IQ_SAMPLES = 4096
-SDR_IQ_TONE_HZ = 25.0e3
+#: An amplitude-modulated tone inside the DDC's output band, so the analog demodulators and the
+#: audio chain have something real to work on (a bare carrier has no envelope to detect).
+SDR_IQ_TONE_HZ = 8.0e3
+SDR_IQ_MOD_HZ = 1.0e3
 
 
 class _FakeRtaBase(MeasurementSession):
@@ -93,8 +96,9 @@ class _FakeRtaBase(MeasurementSession):
         n = SDR_IQ_SAMPLES
         t = (np.arange(n) + self._tick * n) / max(1.0, rate)
         ph = 2 * np.pi * SDR_IQ_TONE_HZ * t
-        i = (0.25 * np.cos(ph) * 32767).astype(np.int16)
-        q = (0.25 * np.sin(ph) * 32767).astype(np.int16)
+        envelope = 0.25 * (1.0 + 0.5 * np.cos(2 * np.pi * SDR_IQ_MOD_HZ * t))
+        i = (envelope * np.cos(ph) * 32767).astype(np.int16)
+        q = (envelope * np.sin(ph) * 32767).astype(np.int16)
         self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
         return encode_iq(IQ_VERSION, self._iq_seq, rate, center_hz,
                          np.stack([i, q], axis=1).reshape(-1))

@@ -444,6 +444,14 @@ With a −25 dBm tone connected, one further check (`a settings change does not 
 set`) fails because the device's documented IF-overflow safety raises the reference to 0 dBm against
 the hot input; it passes with the generator's output off.
 
-Reproduce: `make hw-test`; `python3 tools/hil_audio_check.py --modulation am`;
-`WEBSA_HIL_IQ=/tmp/hil_iq.json npx vitest run src/__tests__/hil.test.ts`;
-`python3 tools/hil_reference_check.py /tmp/hil_iq.json`.
+Reproduce (the tone-quality numbers are measured with the enhancement chain **off**, because its
+adaptive notch removes a lone tone by design, and the AM case needs the 6 kHz IF the table lists):
+
+```bash
+make hw-test
+python3 tools/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
+WEBSA_HIL_IQ=/tmp/hil_iq.json WEBSA_HIL_NO_CHAIN=1 npx vitest run src/__tests__/hil.test.ts
+python3 tools/hil_reference_check.py /tmp/hil_iq.json
+```
+
+For NFM add `--modulation fm --ifbw 25000 --deviation 6000`, and for CW `--modulation cw --ifbw 500`.

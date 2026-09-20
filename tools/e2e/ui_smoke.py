@@ -73,7 +73,10 @@ def main() -> int:
             failures.append(name)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        # The audio checks need a RUNNING AudioContext: headless Chromium suspends it without
+        # this policy, and a suspended context never renders, so the worklet could not report
+        # whether the browser DSP is feeding it.
+        browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
         # The measurement panel overlays the toggle in a small viewport; use the same size as
         # the hardware regression so the layout matches what a user sees on a desktop.
         page = browser.new_page(viewport={'width': 1600, 'height': 1000})
@@ -343,6 +346,33 @@ def main() -> int:
         check('the Python audio path still delivers PCM', audio_frames > 0, audio_dbg)
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
         page.wait_for_timeout(800)
+
+        print('N) the browser DSP owns playback when the SDR audio is switched on')
+        # Back to the normal page: the fallback check left the browser on ?wasm=0, which disables
+        # the browser DSP by design (and so would make this check test the wrong path).
+        page.goto(args.url, wait_until='networkidle')
+        page.wait_for_timeout(1500)
+        # The reported failure: switching the audio on gave one blip and then silence, because the
+        # AudioWorklet port was handed to the Python audio worker while the browser DSP was the
+        # producer - the WASM PCM had nowhere to go, so the ring was fed by nobody. The worklet's
+        # own ring state is the evidence that matters here.
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        page.wait_for_timeout(2500)
+        if page.query_selector('#btn-sdr-audio'):
+            js_click(page, '#btn-sdr-audio')
+        page.wait_for_timeout(6000)
+        iq_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
+        audio_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrAudio") or ''
+        check('the DSP worker owns the AudioWorklet port', 'dsp_worklet=1' in iq_dbg, iq_dbg)
+        received = int(m.group(1)) if (m := re.search(r'dsp_received=(\d+)', iq_dbg)) else 0
+        underruns = int(m.group(1)) if (m := re.search(r'dsp_underruns=(\d+)', iq_dbg)) else -1
+        check('the worklet is fed by the browser DSP', received > 0, iq_dbg)
+        # Ring health is reported, not asserted: the fake backend delivers IQ slower than real
+        # time, so the DSP correctly produces audio below 48 kHz and the ring drains - a real
+        # analyzer feeds it at real time (verified on the bench: underruns stay 0 there).
+        print(f'    (ring: received={received} underruns={underruns})')
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(500)
 
         print('N) FT8 decodes in the browser (fake backend replays a real transmission)')
         # Back to the normal page: the fallback check above left the browser on ?wasm=0, which

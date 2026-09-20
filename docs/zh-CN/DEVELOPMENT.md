@@ -394,6 +394,13 @@ make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 接入 −25 dBm 音调时，另有一项检查（`a settings change does not undo a level the user set`）会失败，原因是设备
 文档化的 IF 过载保护会把参考电平抬到 0 dBm；关闭信号源输出后该项通过。
 
-复现：`make hw-test`；`python3 tools/hil_audio_check.py --modulation am`；
-`WEBSA_HIL_IQ=/tmp/hil_iq.json npx vitest run src/__tests__/hil.test.ts`；
-`python3 tools/hil_reference_check.py /tmp/hil_iq.json`。
+复现（音质数字是在**关闭**增强链的情况下测得的，因为链中的自适应陷波按设计会移除单音；AM 需要表中列出的 6 kHz 中频）：
+
+```bash
+make hw-test
+python3 tools/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
+WEBSA_HIL_IQ=/tmp/hil_iq.json WEBSA_HIL_NO_CHAIN=1 npx vitest run src/__tests__/hil.test.ts
+python3 tools/hil_reference_check.py /tmp/hil_iq.json
+```
+
+NFM 用 `--modulation fm --ifbw 25000 --deviation 6000`，CW 用 `--modulation cw --ifbw 500`。

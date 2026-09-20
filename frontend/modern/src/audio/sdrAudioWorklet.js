@@ -16,6 +16,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.resumeThreshold = Math.max(128, Math.floor(sampleRate * 0.02));
     this.reportCountdown = 0;
     this.underruns = 0;
+    this.received = 0;
     this.port.onmessage = (event) => {
       const message = event.data || {};
       if (message.type === 'samples' && message.samples) {
@@ -52,6 +53,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       this.ring[this.writePos] = samples[i];
       this.writePos = (this.writePos + 1) % this.ring.length;
       if (this.available < this.ring.length) this.available++;
+      this.received++;
     }
   }
 
@@ -94,6 +96,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         type: 'status',
         available: this.available,
         underruns: this.underruns,
+        received: this.received,
       });
     }
     return true;

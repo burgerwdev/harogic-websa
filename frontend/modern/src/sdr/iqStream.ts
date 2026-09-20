@@ -35,6 +35,11 @@ let ft8Detail = '';
 //: Digital-path diagnostics (see the worker): is the decoder being fed, and is it getting through
 //: a transmission, or is its buffer restarting?
 let digitalDiagnostics = '';
+//: True when the DSP worker owns the AudioWorklet port (i.e. the browser is what you hear).
+let dspOwnsWorklet = false;
+let dspWorkletAvailable = 0;
+let dspWorkletUnderruns = 0;
+let dspWorkletReceived = 0;
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -54,7 +59,9 @@ function publishIqDebug(): void {
       ` rate=${rate.toFixed(0)} center_hz=${centerHz.toFixed(0)} dropped=${dropped}` +
       ` flushes=${flushes} pcm_frames=${pcmFrames} pcm_samples=${pcmSamples}` +
       ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '') +
-      ` fallback=${fallbackReason} ft8=${ft8Count}` + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
+      ` fallback=${fallbackReason} ft8=${ft8Count} dsp_worklet=${dspOwnsWorklet ? 1 : 0}` +
+      ` dsp_avail=${dspWorkletAvailable} dsp_underruns=${dspWorkletUnderruns}` +
+      ` dsp_received=${dspWorkletReceived}` + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
 }
 
@@ -92,6 +99,10 @@ function startWorker(): void {
         `dsp_creates=${d.digitalCreates} dsp_pushes=${d.digitalPushes}` +
         ` dsp_buffered=${d.digitalBuffered} dsp_resets=${d.digitalResets} dsp_mode=${d.mode || ''}`;
     }
+    if (typeof d.worklet === 'number') dspOwnsWorklet = d.worklet === 1;
+    if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;
+    if (typeof d.workletUnderruns === 'number') dspWorkletUnderruns = d.workletUnderruns;
+    if (typeof d.workletReceived === 'number') dspWorkletReceived = d.workletReceived;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
     pipelineReady = Boolean(d.pipeline);
