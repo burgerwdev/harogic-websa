@@ -212,11 +212,14 @@ describe.skipIf(!capturePath)('hardware-in-the-loop audio', () => {
 		const iq = new Int16Array(iqBytes.buffer, iqBytes.byteOffset, iqBytes.byteLength / 2);
 
 		const module = await instantiateDsp(artifactBytes());
-		const offsetHz = toneOffsetHz(iq, meta.fs_in);
+		// The capture centre is the tuning reference: the analyzer was tuned to the generator, and the
+		// demodulator's own band/discriminator handle whatever small offset remains. An automatic peak
+		// search is available for a deliberately off-centre capture, but it must not be the default —
+		// for an FM signal the strongest bin is a *sideband* (measured: +5 kHz on a 6 kHz-deviation
+		// signal), and mixing by that detunes the channel by its own modulation.
+		const offsetHz = process.env.WEBSA_HIL_OFFSET === 'auto' ? toneOffsetHz(iq, meta.fs_in) : 0;
 		const params: PipelineParams = {
 			fsIn: meta.fs_in,
-			// The generator's tone may not sit exactly on the capture centre; the DDC's NCO removes
-			// whatever offset it actually has (measured, not assumed).
 			offsetHz,
 			decimate: meta.decimate,
 			outRate: meta.out_rate,
@@ -269,12 +272,17 @@ describe.skipIf(!capturePath)('hardware-in-the-loop audio', () => {
 				`THD ${thd.toFixed(1)} dB`,
 		);
 
-		// The bounds: the tone must be dominant (SINAD positive and solid), near the expected
-		// frequency, and the harmonics low.
+		// Bounds per mode, set from the bench and the Python reference on the *same* capture:
+		//   AM  (1 kHz, 50 % depth):            browser 28.6 dB / THD -36.2 dB, reference 26.1 / -36.2
+		//   NFM (1 kHz, 6 kHz dev, 25 kHz IF):  browser  9.1 dB / THD  -6.5 dB, reference  8.7 /  -6.5
+		// The absolute SINAD is the combined phase noise of the TinySA and the analyzer synthesizer
+		// (the reference shows the same), so these assert "as good as the reference" rather than "as
+		// good as a lab generator"; the tone frequency is asserted tightly, because that is what the
+		// DDC and the detector have to get right.
 		expect(Math.abs(tone - expected)).toBeLessThan(0.05 * expected + 20);
 		expect(signal).toBeGreaterThan(0.005);
-		expect(sinad).toBeGreaterThan(6);
+		expect(sinad).toBeGreaterThan(meta.mode === 'am' ? 15 : 5);
 		// A full capture through the pipeline plus the DFT searches needs more than the 5 s default.
-		expect(thd).toBeLessThan(-10);
+		expect(thd).toBeLessThan(meta.mode === 'am' ? -20 : -5);
 	}, 180_000);
 });

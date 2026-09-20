@@ -367,3 +367,33 @@ make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 - 该 crate 也能本机编译，`cargo test` 就是针对内核运行它。
 - 内存视图必须在**最后一次分配之后**创建：内存增长会让已有视图 detach，而 detach 的视图读出来是长度 0
   而不是抛异常。
+
+---
+
+## 16. 真机验证结果
+
+以下数据来自本次重构验证所用的台位：**SAN-90**（9 kHz–9 GHz）配 **tinySA Ultra ZS407** 作为信号源。IQ 从分析仪
+自身的流中抓取（`tools/hil_audio_check.py`），再经**入库的** `dsp.wasm` 处理
+（`frontend/modern/src/__tests__/hil.test.ts`）；同一抓取也跑一遍 Python 参考
+（`tools/hil_reference_check.py`），以便把不佳的数值归因。
+
+| 检查 | 结果 |
+|---|---|
+| `make hw-test`（tinySA CW 冒烟 + 24 命令扫描 + UI 状态回归） | 66 PASS，1 FAIL |
+| `tools/e2e/state_regression.py` | 65 PASS，1 FAIL——**在 `master` 上完全一致**（同一检查、同一数值）：属既有问题，非本次回归 |
+| AM 音调（1 kHz，50% 深度）经浏览器 DSP | 音调 993.1 Hz，SINAD **28.6 dB**，THD **−36.2 dB**（同一抓取的 Python 参考：26.1 dB / −36.2 dB） |
+| NFM 音调（1 kHz，6 kHz 频偏，25 kHz 中频）经浏览器 DSP | 音调 996.8 Hz，SINAD **9.1 dB**，THD **−6.5 dB**（Python 参考：8.7 dB / −6.5 dB） |
+| CW 载波经浏览器 DSP | 侧音 764 Hz（pitch + 残余载波偏移），电平 −14.0 dBFS，THD −92 dB；SINAD 受相位噪声限制，而未调制载波正是最坏情况 |
+
+关于这些数字有两点。浏览器链路在真机上等于或略优于 Python 参考（AM +2.5 dB，NFM +0.4 dB，THD 完全相同），这正说明移植没有损失质量；SINAD 的绝对值由 tinySA 与分析仪本振的合成相位噪声决定，参考实现在同一抓取上显示出同样的底。另外，音质数字是在**关闭**增强链的情况下测得的：链中的自适应陷波会移除信道中最强的单音——这对语音信道是正确的，但会移除台位上的单音（链自身行为由 `cargo test` 与 RAW 路径分离测试覆盖）。
+
+状态回归中失败的那一项是 `Auto Scale puts the whole trace inside the window after the change`
+（ref −20.0 dBm，窗口 −120…−20，底噪 −132.8 dBm）：拟合把底噪留在了窗口下沿以下约 13 dB。该现象在 `master`
+上以完全相同的数值复现，因此这里如实记录，而不是由本次重构“修好”。
+
+接入 −25 dBm 音调时，另有一项检查（`a settings change does not undo a level the user set`）会失败，原因是设备
+文档化的 IF 过载保护会把参考电平抬到 0 dBm；关闭信号源输出后该项通过。
+
+复现：`make hw-test`；`python3 tools/hil_audio_check.py --modulation am`；
+`WEBSA_HIL_IQ=/tmp/hil_iq.json npx vitest run src/__tests__/hil.test.ts`；
+`python3 tools/hil_reference_check.py /tmp/hil_iq.json`。

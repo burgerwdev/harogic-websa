@@ -408,3 +408,42 @@ Rules that keep it buildable without Rust everywhere else:
 - The crate also builds natively, which is what `cargo test` runs the kernels against.
 - A view over the module's memory must be created **after** the last allocation: growing the
   memory detaches existing views, and a detached view reads as length 0 instead of throwing.
+
+---
+
+## 16. Hardware-in-the-loop results
+
+Measured on the bench this refactor was verified against: **SAN-90** (9 kHz–9 GHz) with a **tinySA
+Ultra ZS407** as the signal source. IQ was captured from the analyzer's own stream
+(`tools/hil_audio_check.py`) and processed through the **committed** `dsp.wasm`
+(`frontend/modern/src/__tests__/hil.test.ts`), with the Python reference run over the same capture
+(`tools/hil_reference_check.py`) so a weak number can be attributed.
+
+| Check | Result |
+|---|---|
+| `make hw-test` (tinySA CW smoke + 24-command sweep + UI state regression) | 66 PASS, 1 FAIL |
+| `tools/e2e/state_regression.py` | 65 PASS, 1 FAIL — **identical on `master`** (same check, same numbers): pre-existing, not a regression |
+| AM tone (1 kHz, 50 % depth) through the browser DSP | tone 993.1 Hz, SINAD **28.6 dB**, THD **−36.2 dB** (Python reference on the same capture: 26.1 dB / −36.2 dB) |
+| NFM tone (1 kHz, 6 kHz deviation, 25 kHz IF) through the browser DSP | tone 996.8 Hz, SINAD **9.1 dB**, THD **−6.5 dB** (Python reference: 8.7 dB / −6.5 dB) |
+| CW carrier through the browser DSP | sidetone 764 Hz (pitch + residual carrier offset), level −14.0 dBFS, THD −92 dB; SINAD is phase-noise limited, which is the worst case for an unmodulated carrier |
+
+Two things about those numbers. The browser chain is at or slightly above the Python reference on real
+hardware (AM +2.5 dB, NFM +0.4 dB, identical THD), which is what says the port did not cost quality;
+the absolute SINAD is set by the combined phase noise of the TinySA and the analyzer synthesizer, and
+the reference shows the same floor. And the tone-quality numbers are measured with the enhancement
+chain **off**: its adaptive notch removes the strongest single tone in the channel, which is correct
+for a voice channel and removes a lone bench tone (the chain's own behaviour is covered by
+`cargo test`, and the RAW-path separation test).
+
+The failing state-regression check is `Auto Scale puts the whole trace inside the window after the
+change` (ref −20.0 dBm, window −120…−20, floor −132.8 dBm): the fit leaves the noise floor about
+13 dB below the window. It reproduces on `master` with the same numbers, which is why it is recorded
+here rather than “fixed” by this refactor.
+
+With a −25 dBm tone connected, one further check (`a settings change does not undo a level the user
+set`) fails because the device's documented IF-overflow safety raises the reference to 0 dBm against
+the hot input; it passes with the generator's output off.
+
+Reproduce: `make hw-test`; `python3 tools/hil_audio_check.py --modulation am`;
+`WEBSA_HIL_IQ=/tmp/hil_iq.json npx vitest run src/__tests__/hil.test.ts`;
+`python3 tools/hil_reference_check.py /tmp/hil_iq.json`.
