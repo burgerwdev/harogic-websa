@@ -320,6 +320,30 @@ def main() -> int:
               auto['stored'] is None and auto['applied'] == first['applied'],
               f"applied {auto['applied']}, stored {auto['stored']}")
 
+        print('N) the Python fallback still plays when the browser DSP is disabled')
+        # `?wasm=0` is the documented way to run the reference implementation: the worker is started
+        # without the module, so it must never take the worklet port, and the Python audio path
+        # (?audio=1) has to keep delivering. Both halves are asserted, because "no audio" and "the
+        # wrong path silently took over" look identical from the UI.
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        page.goto(f'{args.url}/?wasm=0', wait_until='networkidle')
+        page.wait_for_timeout(2000)
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        page.wait_for_timeout(2500)
+        if page.query_selector('#btn-sdr-audio'):
+            js_click(page, '#btn-sdr-audio')      # start the Python audio pipeline
+        page.wait_for_timeout(3500)
+        iq_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
+        audio_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrAudio") or ''
+        check('the browser DSP is off because it was asked to be',
+              'pipeline=false' in iq_dbg and 'fallback=requested' in iq_dbg, iq_dbg)
+        check('the worker never took the worklet port while the fallback is active',
+              'pcm_frames=0' in iq_dbg, iq_dbg)
+        audio_frames = int(m.group(1)) if (m := re.search(r'frames=(\d+)', audio_dbg)) else 0
+        check('the Python audio path still delivers PCM', audio_frames > 0, audio_dbg)
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(800)
+
         check('no page errors', not errors, '; '.join(errors[:3]))
         browser.close()
 

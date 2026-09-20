@@ -8,6 +8,7 @@
 // A separate module from the audio path because the IQ ingress is a different stream with a
 // different lifetime: it runs while SDR mode is active, independent of whether the speaker is on.
 import { routeWorkletPortTo } from '../audio/sdrAudio';
+import { wasmDspAllowed, wasmDspReason } from './capability';
 import { dspWasmUrl } from './wasm';
 import type { PipelineParams } from './wasmPipeline';
 
@@ -24,6 +25,9 @@ let pcmSamples = 0;
 let pipelineReady = false;
 let handedOff = false;
 let lastError = '';
+//: Why the browser DSP is off (empty when it is on): 'requested', 'no-webassembly',
+//: 'stored-preference' or a fetch/instantiation failure. The Python path is playing in that case.
+let fallbackReason = '';
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -42,7 +46,8 @@ function publishIqDebug(): void {
       `enabled=${enabled} blocks=${blocks} samples=${samples} buffered_ms=${ms.toFixed(0)}` +
       ` rate=${rate.toFixed(0)} center_hz=${centerHz.toFixed(0)} dropped=${dropped}` +
       ` flushes=${flushes} pcm_frames=${pcmFrames} pcm_samples=${pcmSamples}` +
-      ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '');
+      ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '') +
+      ` fallback=${fallbackReason}`;
   }
 }
 
@@ -82,7 +87,15 @@ function startWorker(): void {
     }
     publishIqDebug();
   };
-  worker.postMessage({ type: 'init', url: iqWorkerUrl(), wasmUrl: dspWasmUrl() });
+  // The browser DSP is used only when the policy allows it: with `?wasm=0` (or without WebAssembly)
+  // the worker is started without a module, so it never produces PCM and never takes the worklet
+  // port — the Python audio path (`?audio=1`) keeps playing, which is the documented fallback.
+  fallbackReason = wasmDspAllowed() ? '' : wasmDspReason();
+  worker.postMessage({
+    type: 'init',
+    url: iqWorkerUrl(),
+    wasmUrl: fallbackReason ? '' : dspWasmUrl(),
+  });
   worker.postMessage({ type: 'enabled', value: enabled });
 }
 
@@ -148,6 +161,7 @@ export function sdrIqStats(): {
   dropped: number;
   pcmFrames: number;
   pipelineReady: boolean;
+  fallbackReason: string;
 } {
-  return { enabled, blocks, samples, dropped, pcmFrames, pipelineReady };
+  return { enabled, blocks, samples, dropped, pcmFrames, pipelineReady, fallbackReason };
 }
