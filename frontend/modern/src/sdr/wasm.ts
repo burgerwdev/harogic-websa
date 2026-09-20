@@ -19,6 +19,21 @@ export interface DspExports {
 	websa_dsp_free(ptr: number, bytes: number): void;
 	websa_dsp_f32_bytes(): number;
 	websa_dsp_block_align(): number;
+	// DDC base layer (shared by both paths)
+	websa_dsp_ddc_new(fsIn: number, offsetHz: number, cutoffHz: number, decimate: number, outRate: number, ntaps: number): number;
+	websa_dsp_ddc_retune(handle: number, offsetHz: number): number;
+	websa_dsp_ddc_reset(handle: number): number;
+	websa_dsp_ddc_free(handle: number): number;
+	websa_dsp_ddc_process(handle: number, iqPtr: number, samples: number, outPtr: number, outCapacity: number): number;
+	websa_dsp_ddc_agc(handle: number, ptr: number, samples: number, hold: number): number;
+	websa_dsp_ddc_agc_gain(handle: number): number;
+	// Plugin manifest: the UI's mode list is read from here, never hardcoded
+	websa_dsp_plugin_kind_count(): number;
+	websa_dsp_plugin_count(kind: number): number;
+	websa_dsp_plugin_id_len(kind: number, index: number): number;
+	websa_dsp_plugin_id(kind: number, index: number, buf: number, capacity: number): number;
+	websa_dsp_plugin_implemented(kind: number, index: number): number;
+	websa_dsp_plugin_audio_enhancement(kind: number, index: number): number;
 }
 
 export interface DspModule {
@@ -30,6 +45,8 @@ export interface DspModule {
 	f32View(ptr: number, length: number): Float32Array;
 	/** Interleaved int16 view at an ABI pointer (raw IQ blocks). */
 	i16View(ptr: number, length: number): Int16Array;
+	/** Byte view at an ABI pointer (plugin ids and other strings). */
+	u8View(ptr: number, length: number): Uint8Array;
 }
 
 function asExports(exports: WebAssembly.Exports): DspExports {
@@ -63,6 +80,8 @@ export function wrapDsp(instance: WebAssembly.Instance): DspModule {
 			new Float32Array(exports.memory.buffer, ptr, length),
 		i16View: (ptr: number, length: number) =>
 			new Int16Array(exports.memory.buffer, ptr, length),
+		u8View: (ptr: number, length: number) =>
+			new Uint8Array(exports.memory.buffer, ptr, length),
 	};
 }
 

@@ -1,67 +1,106 @@
 /**
- * View renderer registry (report finding E-5).
+ * Plugin registry contract test.
  *
- * `renderAll()` used to name every measurement module in an if/elif chain. Views register
- * themselves now, so this test pins both the registry mechanics and the fact that the
- * shipped views actually register when their modules are imported.
+ * The registry is read out of the *committed* DSP artifact over the ABI, which is what makes the
+ * "one list of modes" rule real: this test fails if the module's manifest cannot be read, if a
+ * documented mode disappears from it, or if a stage is claimed as implemented while the registry
+ * says otherwise. It is the TypeScript half of
+ * `wasm/tests/path_separation.rs::every_registered_plugin_can_be_resolved_by_its_own_family`.
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-	getViewRenderer, registeredViews, registerViewRenderer, unregisterViewRenderer,
-} from '../render/registry';
+	analogModeIds,
+	audioStageIds,
+	ddcStageIds,
+	digitalModeIds,
+	isModeAvailable,
+	readPluginManifest,
+	PLUGIN_KINDS,
+	setPluginManifest,
+} from '../sdr/registry';
+import { instantiateDsp } from '../sdr/wasm';
 
-// Importing these modules is what registers their views (side effect on purpose).
-import '../meas/phaseNoise';
-import '../meas/harmonic';
-import '../render/spectrum';
+const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
 
-describe('view renderer registry', () => {
-	it('registers the shipped measurement views', () => {
-		const modes = registeredViews();
-		expect(modes).toContain('rta');
-		expect(modes).toContain('pnm');
-		expect(modes).toContain('harm');
+const artifactBytes = (): ArrayBuffer => {
+	const buf = readFileSync(ARTIFACT);
+	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+};
+
+async function manifest() {
+	return readPluginManifest(await instantiateDsp(artifactBytes()));
+}
+
+describe('the plugin manifest read from dsp.wasm', () => {
+	it('lists every family the architecture defines', async () => {
+		const plugins = await manifest();
+		expect(plugins.length).toBeGreaterThan(0);
+		for (const plugin of plugins) {
+			expect(PLUGIN_KINDS).toContain(plugin.kind);
+			expect(plugin.id).toMatch(/^[a-z0-9_]+$/);
+			// An id may not appear twice inside a family: the UI keys off it.
+			const sameKind = plugins.filter((p) => p.kind === plugin.kind && p.id === plugin.id);
+			expect(sameKind).toHaveLength(1);
+		}
+		for (const kind of PLUGIN_KINDS) {
+			expect(plugins.some((plugin) => plugin.kind === kind)).toBe(true);
+		}
 	});
 
-	it('returns the renderer for a mode and undefined otherwise', () => {
-		expect(getViewRenderer('pnm')?.mode).toBe('pnm');
-		expect(getViewRenderer('does-not-exist')).toBeUndefined();
+	it('declares every analog mode the architecture promises', async () => {
+		const plugins = await manifest();
+		const analog = plugins.filter((p) => p.kind === 'analog').map((p) => p.id);
+		expect(analog).toEqual(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm']);
 	});
 
-	it('lets a view register and unregister itself', () => {
-		const calls: string[] = [];
-		registerViewRenderer({ mode: 'test-view', render: () => calls.push('rendered') });
-		getViewRenderer('test-view')?.render({} as never);
-		expect(calls).toEqual(['rendered']);
-		unregisterViewRenderer('test-view');
-		expect(getViewRenderer('test-view')).toBeUndefined();
+	it('declares FT8 as the first digital protocol', async () => {
+		const plugins = await manifest();
+		const digital = plugins.filter((p) => p.kind === 'digital').map((p) => p.id);
+		expect(digital).toContain('ft8');
 	});
 
-	it('replaces a renderer when the same mode registers twice', () => {
-		registerViewRenderer({ mode: 'test-dupe', render: () => {} });
-		registerViewRenderer({ mode: 'test-dupe', render: () => {} });
-		expect(registeredViews().filter((m) => m === 'test-dupe')).toHaveLength(1);
-		unregisterViewRenderer('test-dupe');
-	});
-});
-
-describe('measurement tab registry', () => {
-	it('registers the shipped measurement tabs', async () => {
-		const mod = await import('../ui/measureRegistry');
-		await import('../meas/amplitude');
-		await import('../meas/harmonic');
-		await import('../meas/phaseNoise');
-		await import('../meas/channel');
-		const ids = mod.measurementTabs().map((tab) => tab.id);
-		expect(ids).toEqual(expect.arrayContaining(['amp', 'harm', 'pnm', 'chan']));
+	it('marks the DDC stages as shared base-layer plugins, not audio enhancement', async () => {
+		const plugins = await manifest();
+		const ddc = plugins.filter((p) => p.kind === 'ddc');
+		expect(ddc.map((p) => p.id)).toEqual(['nco', 'fir', 'decimate', 'resample', 'agc']);
+		// The DDC is shared by both paths, so it must never be marked as audio enhancement: only
+		// the analog PCM chain may be.
+		expect(ddc.every((p) => !p.audioEnhancement)).toBe(true);
 	});
 
-	it('lets a tab register and unregister itself', async () => {
-		const mod = await import('../ui/measureRegistry');
-		const calls: string[] = [];
-		mod.registerMeasurementTab({ id: 'test-tab', domId: 'tab-test', apply: () => calls.push('applied') });
-		mod.getMeasurementTab('test-tab')?.apply();
-		expect(calls).toEqual(['applied']);
-		expect(mod.getMeasurementTab('nope')).toBeUndefined();
+	it('only marks audio stages as audio enhancement', async () => {
+		const plugins = await manifest();
+		for (const plugin of plugins) {
+			expect(plugin.audioEnhancement).toBe(plugin.kind === 'audio');
+		}
+	});
+
+	it('reports the DC blocker as implemented (it is the first real chain stage)', async () => {
+		const plugins = await manifest();
+		const dcBlock = plugins.find((p) => p.id === 'dc_block');
+		expect(dcBlock?.kind).toBe('audio');
+		expect(dcBlock?.implemented).toBe(true);
+	});
+
+	it('exposes family accessors backed by the same manifest', async () => {
+		setPluginManifest(await manifest());
+		expect(analogModeIds()).toEqual(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm']);
+		expect(digitalModeIds()).toEqual(['ft8']);
+		expect(ddcStageIds()).toContain('nco');
+		expect(audioStageIds()).toContain('dc_block');
+		// A declared-but-unwritten mode is listed and reported as unavailable, never as usable.
+		expect(audioStageIds()).toContain('wiener');
+		expect(isModeAvailable('dc_block')).toBe(true);
+		expect(isModeAvailable('wiener')).toBe(false);
+		expect(isModeAvailable('no_such_mode')).toBe(false);
+		setPluginManifest(null);
+	});
+
+	it('returns an empty list before the manifest is loaded instead of inventing one', () => {
+		setPluginManifest(null);
+		expect(analogModeIds()).toEqual([]);
+		expect(isModeAvailable('am')).toBe(false);
 	});
 });
