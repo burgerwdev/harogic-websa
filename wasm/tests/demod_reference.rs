@@ -144,10 +144,8 @@ fn cross_check(case: &Case) -> Result<f64, String> {
             at = index;
         }
     }
-    println!(
-        "{}: worst difference vs the reference {worst:e} (at sample {at}: {} vs {})",
-        case.mode, audio[at], reference[at]
-    );
+    println!("{}: worst difference vs the reference {worst:e}", case.mode);
+    println!("{}:   at sample {at}: {} vs {}", case.mode, audio[at], reference[at]);
     if worst > case.tolerance {
         return Err(format!(
             "{}: worst difference {worst:e} exceeds its bound {:e}",
