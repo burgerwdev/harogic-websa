@@ -69,9 +69,9 @@ const fn ddc(id: &'static str) -> PluginDescriptor {
 pub const ANALOG_PLUGINS: &[PluginDescriptor] = &[
     analog("am", true),
     analog("dsb", true),
-    analog("usb", false),
-    analog("lsb", false),
-    analog("cw", false),
+    analog("usb", true),
+    analog("lsb", true),
+    analog("cw", true),
     analog("nfm", true),
     analog("wfm", true),
     analog("pm", true),

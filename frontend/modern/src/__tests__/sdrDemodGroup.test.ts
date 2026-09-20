@@ -26,21 +26,35 @@ describe('the SDR demodulator group', () => {
 		setPluginManifest(readPluginManifest(await instantiateDsp(artifactBytes())));
 		const container = document.createElement('div');
 		const selected: string[] = [];
-		renderSdrDemodGroup(container, ['am', 'dsb', 'usb', 'cw'], { onSelect: (id) => selected.push(id) });
+		// 'am' is implemented; an id the registry does not know cannot be run, so it must be
+		// disabled. Asserting the *property* (disabled iff unavailable) keeps this test true as
+		// modes land, instead of freezing today's set of finished kernels.
+		renderSdrDemodGroup(container, ['am', 'not_a_mode'], { onSelect: (id) => selected.push(id) });
 
 		const buttons = Array.from(container.querySelectorAll('button'));
-		expect(buttons.map((b) => b.dataset.sdrDemod)).toEqual(['am', 'dsb', 'usb', 'cw']);
-		expect(buttons.map((b) => b.textContent)).toEqual(['AM', 'DSB', 'USB', 'CW']);
-		// usb/cw have no kernel yet in this build: they must be disabled, not clickable.
+		expect(buttons.map((b) => b.dataset.sdrDemod)).toEqual(['am', 'not_a_mode']);
+		expect(buttons.map((b) => b.textContent)).toEqual(['AM', 'NOT_A_MODE']);
 		expect(buttons[0].disabled).toBe(false);
-		expect(buttons[2].disabled).toBe(true);
-		expect(buttons[3].disabled).toBe(true);
-		expect(buttons[2].title).toMatch(/not implemented/);
+		expect(buttons[1].disabled).toBe(true);
+		expect(buttons[1].title).toMatch(/not implemented/);
 
 		buttons[0].click();
 		expect(selected).toEqual(['am']);
-		buttons[2].click();
+		buttons[1].click();
 		expect(selected).toEqual(['am']);          // a disabled mode reports nothing
+		setPluginManifest(null);
+	});
+
+	it('enables exactly the modes the registry reports as implemented', async () => {
+		const manifest = readPluginManifest(await instantiateDsp(artifactBytes()));
+		setPluginManifest(manifest);
+		const analog = manifest.filter((p) => p.kind === 'analog');
+		const container = document.createElement('div');
+		renderSdrDemodGroup(container, analog.map((p) => p.id), { onSelect: () => {} });
+		for (const button of Array.from(container.querySelectorAll('button'))) {
+			const expected = analog.find((p) => p.id === button.dataset.sdrDemod);
+			expect(button.disabled).toBe(!expected?.implemented);
+		}
 		setPluginManifest(null);
 	});
 

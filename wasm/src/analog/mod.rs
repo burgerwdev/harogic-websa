@@ -12,6 +12,10 @@
 //! a mode is adding a spec (and, for a genuinely new detector, a match arm) — the mode list the UI
 //! shows is the registry's, and a spec's absence is what `implemented: false` means.
 //!
+//! The band is complex on purpose: `usb`, `lsb` and `cw` select an *asymmetric* slice of the
+//! spectrum, which a real low-pass cannot express. That is why the same filter serves the
+//! symmetric modes (a band around DC) and the sideband modes (a band on one side of it).
+//!
 //! The framework is deliberately streaming: every filter keeps its tail and every detector keeps
 //! its last sample, because a per-block reset is audible as a click at every block boundary.
 
@@ -26,6 +30,7 @@ const BAND_TAPS: usize = 257;
 const AUDIO_TAPS: usize = 129;
 /// DC-block pole from the reference's AM branch (~3.3 Hz corner at 48 kHz).
 const DC_A: f64 = 0.9995;
+const TAU: f64 = 2.0 * core::f64::consts::PI;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Detector {
@@ -36,35 +41,77 @@ pub enum Detector {
     Fm,
     /// The phase itself, DC blocked: PM.
     Phase,
+    /// The real part of the sideband-selected signal: USB and LSB.
+    Ssb,
+    /// Filter at zero IF, then shift to the sidetone pitch: CW.
+    Cw,
 }
+
+/// A frequency band `(lo, hi)` in Hz at the demodulator's input rate.
+pub type BandSelector = fn(f64, f64) -> (f64, f64);
 
 /// Everything that distinguishes one analog mode from another.
 #[derive(Debug, Clone, Copy)]
 pub struct ModeSpec {
     pub id: &'static str,
     pub detector: Detector,
-    /// Audio low-pass corner as a function of the mode's IF bandwidth.
-    audio_cut: fn(f64) -> f64,
+    /// Audio low-pass corner as a function of (IF bandwidth, sidetone pitch).
+    audio_cut: fn(f64, f64) -> f64,
+    /// The band this mode selects, as a function of (IF bandwidth, sidetone pitch).
+    band: BandSelector,
     /// De-emphasis time constant in microseconds (0 = none).
     pub deemph_us: f64,
 }
 
 impl ModeSpec {
-    pub fn audio_cut_hz(&self, if_bw: f64) -> f64 {
-        (self.audio_cut)(if_bw)
+    pub fn audio_cut_hz(&self, if_bw: f64, pitch: f64) -> f64 {
+        (self.audio_cut)(if_bw, pitch)
+    }
+
+    pub fn band_hz(&self, if_bw: f64, pitch: f64) -> (f64, f64) {
+        (self.band)(if_bw, pitch)
     }
 }
 
-fn am_cut(if_bw: f64) -> f64 {
+fn am_cut(if_bw: f64, _pitch: f64) -> f64 {
     (if_bw / 2.0).min(15_000.0)
 }
 
-fn nfm_cut(if_bw: f64) -> f64 {
+fn nfm_cut(if_bw: f64, _pitch: f64) -> f64 {
     (if_bw / 2.0).min(5_000.0)
 }
 
-fn wfm_cut(_if_bw: f64) -> f64 {
+fn wfm_cut(_if_bw: f64, _pitch: f64) -> f64 {
     15_000.0
+}
+
+fn ssb_cut(if_bw: f64, _pitch: f64) -> f64 {
+    if_bw.min(20_000.0)
+}
+
+fn cw_cut(if_bw: f64, pitch: f64) -> f64 {
+    (pitch + if_bw / 2.0 + 200.0).max(1_000.0).min(5_000.0)
+}
+
+/// A band centred on DC: AM, DSB, NFM, WFM, PM.
+fn band_symmetric(if_bw: f64, _pitch: f64) -> (f64, f64) {
+    (-if_bw / 2.0, if_bw / 2.0)
+}
+
+/// The upper sideband, with a guard against the carrier.
+fn band_usb(if_bw: f64, _pitch: f64) -> (f64, f64) {
+    ((if_bw * 0.1).clamp(100.0, 300.0), if_bw)
+}
+
+/// The lower sideband (negative frequencies), with the same guard.
+fn band_lsb(if_bw: f64, _pitch: f64) -> (f64, f64) {
+    (-if_bw, -(if_bw * 0.1).clamp(100.0, 300.0))
+}
+
+/// CW: a narrow band around zero IF, shifted to the sidetone by the detector.
+fn band_cw(if_bw: f64, _pitch: f64) -> (f64, f64) {
+    let half = if_bw.max(50.0) / 2.0;
+    (-half, half)
 }
 
 /// The mode table. `None` means the kernel is not written yet, which is exactly what
@@ -72,11 +119,38 @@ fn wfm_cut(_if_bw: f64) -> f64 {
 /// agree, so a mode cannot be advertised without being buildable.
 pub fn spec_for(id: &str) -> Option<ModeSpec> {
     Some(match id {
-        "am" => ModeSpec { id: "am", detector: Detector::Envelope, audio_cut: am_cut, deemph_us: 0.0 },
-        "dsb" => ModeSpec { id: "dsb", detector: Detector::Envelope, audio_cut: am_cut, deemph_us: 0.0 },
-        "nfm" => ModeSpec { id: "nfm", detector: Detector::Fm, audio_cut: nfm_cut, deemph_us: 0.0 },
-        "wfm" => ModeSpec { id: "wfm", detector: Detector::Fm, audio_cut: wfm_cut, deemph_us: 50.0 },
-        "pm" => ModeSpec { id: "pm", detector: Detector::Phase, audio_cut: am_cut, deemph_us: 0.0 },
+        "am" => ModeSpec {
+            id: "am", detector: Detector::Envelope, audio_cut: am_cut,
+            band: band_symmetric, deemph_us: 0.0,
+        },
+        "dsb" => ModeSpec {
+            id: "dsb", detector: Detector::Envelope, audio_cut: am_cut,
+            band: band_symmetric, deemph_us: 0.0,
+        },
+        "usb" => ModeSpec {
+            id: "usb", detector: Detector::Ssb, audio_cut: ssb_cut,
+            band: band_usb, deemph_us: 0.0,
+        },
+        "lsb" => ModeSpec {
+            id: "lsb", detector: Detector::Ssb, audio_cut: ssb_cut,
+            band: band_lsb, deemph_us: 0.0,
+        },
+        "cw" => ModeSpec {
+            id: "cw", detector: Detector::Cw, audio_cut: cw_cut,
+            band: band_cw, deemph_us: 0.0,
+        },
+        "nfm" => ModeSpec {
+            id: "nfm", detector: Detector::Fm, audio_cut: nfm_cut,
+            band: band_symmetric, deemph_us: 0.0,
+        },
+        "wfm" => ModeSpec {
+            id: "wfm", detector: Detector::Fm, audio_cut: wfm_cut,
+            band: band_symmetric, deemph_us: 50.0,
+        },
+        "pm" => ModeSpec {
+            id: "pm", detector: Detector::Phase, audio_cut: am_cut,
+            band: band_symmetric, deemph_us: 0.0,
+        },
         _ => return None,
     })
 }
@@ -90,6 +164,7 @@ pub fn build(id: &str, config: DemodConfig) -> Option<AnalogDemod> {
 pub struct AnalogDemod {
     spec: ModeSpec,
     fs: f64,
+    pitch: f64,
     band: ComplexBandFilter,
     audio_lp: FirState,
     resampler: LinearResampler,
@@ -99,6 +174,7 @@ pub struct AnalogDemod {
     prev_z: Option<(f64, f64)>,
     env_prev: f64,
     dc_y: f64,
+    cw_phase: f64,
     // Scratch buffers reused per block (no allocation in the hot path).
     z: Vec<f64>,
     det: Vec<f32>,
@@ -111,12 +187,18 @@ impl AnalogDemod {
     pub fn new(spec: ModeSpec, config: DemodConfig) -> Self {
         let fs = config.fs.max(1.0);
         let if_bw = config.if_bw.max(50.0).min(fs * 0.45);
-        let (lo, hi) = (-if_bw / 2.0, if_bw / 2.0);
+        let pitch = if config.pitch > 0.0 { config.pitch } else { 700.0 };
+        let (lo, hi) = spec.band_hz(if_bw, pitch);
         let (re, im) = design_complex_bandpass(fs, lo, hi, BAND_TAPS);
-        let audio_cut = spec.audio_cut_hz(if_bw).max(100.0).min(0.45 * AUDIO_RATE).min(0.45 * fs);
+        let audio_cut = spec
+            .audio_cut_hz(if_bw, pitch)
+            .max(100.0)
+            .min(0.45 * AUDIO_RATE)
+            .min(0.45 * fs);
         Self {
             spec,
             fs,
+            pitch,
             band: ComplexBandFilter::new(re, im),
             audio_lp: FirState::new(design_lowpass(fs, audio_cut, AUDIO_TAPS)),
             resampler: LinearResampler::new(fs, AUDIO_RATE),
@@ -125,6 +207,7 @@ impl AnalogDemod {
             prev_z: None,
             env_prev: 0.0,
             dc_y: 0.0,
+            cw_phase: 0.0,
             z: Vec::new(),
             det: Vec::new(),
             lp: Vec::new(),
@@ -137,9 +220,13 @@ impl AnalogDemod {
         self.spec
     }
 
-    pub fn audio_cut_hz(&self) -> f64 {
-        // The filter length is the observable; the design constant is what the tests pin.
-        self.audio_lp.taps().len() as f64
+    pub fn pitch(&self) -> f64 {
+        self.pitch
+    }
+
+    /// Number of audio-filter taps (the design constant the tests pin).
+    pub fn audio_taps(&self) -> usize {
+        self.audio_lp.taps().len()
     }
 
     fn deemph_taps(tau_us: f64) -> Option<FirState> {
@@ -205,7 +292,7 @@ impl AnalogDemod {
                 out.extend_from_slice(&blocked);
             }
             Detector::Fm => {
-                let scale = self.fs / (2.0 * core::f64::consts::PI);
+                let scale = self.fs / TAU;
                 for k in 0..n {
                     let (i, q) = (z[2 * k], z[2 * k + 1]);
                     if let Some((pi, pq)) = self.prev_z {
@@ -216,6 +303,24 @@ impl AnalogDemod {
                     }
                     self.prev_z = Some((i, q));
                 }
+            }
+            Detector::Ssb => {
+                // A sideband signal is already audio once the band filter has removed the other
+                // sideband: the real part *is* the message (no envelope, no discriminator).
+                for k in 0..n {
+                    out.push(z[2 * k] as f32);
+                }
+            }
+            Detector::Cw => {
+                // A narrow band around zero IF, shifted up to the sidetone pitch. The phase is kept
+                // across blocks so the sidetone does not restart at every block boundary.
+                let inc = TAU * self.pitch / self.fs;
+                for k in 0..n {
+                    let ph = self.cw_phase + inc * k as f64;
+                    let (i, q) = (z[2 * k], z[2 * k + 1]);
+                    out.push((i * ph.cos() - q * ph.sin()) as f32);
+                }
+                self.cw_phase = (self.cw_phase + inc * n as f64) % TAU;
             }
         }
     }
@@ -273,6 +378,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        self.cw_phase = 0.0;
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
         }
@@ -289,6 +395,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        self.cw_phase = 0.0;
     }
 }
 
@@ -299,16 +406,15 @@ mod tests {
     const FS: f64 = 100_000.0;
     const IF_BW: f64 = 12_000.0;
     const TONE_HZ: f64 = 1_000.0;
+    const PITCH: f64 = 700.0;
 
     /// Hann-windowed amplitude of `audio` at one frequency (coherent gain corrected).
-    fn amplitude_at(audio: &[f32], rate: f64, hz: f64) -> f64 {
+    pub(crate) fn amplitude_at(audio: &[f32], rate: f64, hz: f64) -> f64 {
         let n = audio.len() as f64;
-        let mut re = 0.0;
-        let mut im = 0.0;
-        let mut wsum = 0.0;
+        let (mut re, mut im, mut wsum) = (0.0, 0.0, 0.0);
         for (k, value) in audio.iter().enumerate() {
-            let w = 0.5 - 0.5 * (2.0 * core::f64::consts::PI * k as f64 / n).cos();
-            let ph = 2.0 * core::f64::consts::PI * hz * k as f64 / rate;
+            let w = 0.5 - 0.5 * (TAU * k as f64 / n).cos();
+            let ph = TAU * hz * k as f64 / rate;
             re += *value as f64 * w * ph.cos();
             im -= *value as f64 * w * ph.sin();
             wsum += w;
@@ -317,7 +423,7 @@ mod tests {
     }
 
     /// Dominant frequency of the recovered audio, searched around `expect`.
-    fn recovered_hz(audio: &[f32], expect: f64) -> f64 {
+    pub(crate) fn recovered_hz(audio: &[f32], expect: f64) -> f64 {
         let mut best = (expect, f64::MIN);
         let mut hz = expect - 60.0;
         while hz <= expect + 60.0 {
@@ -335,9 +441,10 @@ mod tests {
     }
 
     /// Demodulate one block of `n` samples built by `modulate(time_seconds)`.
-    fn run(id: &str, n: usize, modulate: impl Fn(f64) -> (f64, f64)) -> Vec<f32> {
-        let demod = build(id, DemodConfig::new(FS, IF_BW)).expect("mode must exist");
-        let mut demod = demod;
+    fn run_with(id: &str, n: usize, if_bw: f64, pitch: f64, modulate: impl Fn(f64) -> (f64, f64)) -> Vec<f32> {
+        let mut config = DemodConfig::new(FS, if_bw);
+        config.pitch = pitch;
+        let mut demod = build(id, config).expect("mode must exist");
         let mut iq = Vec::with_capacity(n * 2);
         for k in 0..n {
             let (i, q) = modulate(k as f64 / FS);
@@ -349,13 +456,13 @@ mod tests {
         audio
     }
 
-    fn tau() -> f64 {
-        2.0 * core::f64::consts::PI
+    fn run(id: &str, n: usize, modulate: impl Fn(f64) -> (f64, f64)) -> Vec<f32> {
+        run_with(id, n, IF_BW, PITCH, modulate)
     }
 
     #[test]
     fn am_recovers_the_modulation_tone() {
-        let audio = run("am", 20_000, |t| (1.0 + 0.5 * (tau() * TONE_HZ * t).cos(), 0.0));
+        let audio = run("am", 20_000, |t| (1.0 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0));
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "AM audio tone");
         let level = rms(&audio);
         assert!((0.1..0.35).contains(&level), "AM audio level {level} (AGC target 0.2)");
@@ -365,7 +472,7 @@ mod tests {
     fn dsb_recovers_the_modulation_tone() {
         // DSB needs a residual carrier for envelope detection; 0.8 carrier + 0.5 modulation keeps
         // the envelope positive, which is what a real transmitter's carrier insertion does.
-        let audio = run("dsb", 20_000, |t| (0.8 + 0.5 * (tau() * TONE_HZ * t).cos(), 0.0));
+        let audio = run("dsb", 20_000, |t| (0.8 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0));
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "DSB audio tone");
         assert!(rms(&audio) > 0.05, "DSB must produce audio");
     }
@@ -373,7 +480,7 @@ mod tests {
     #[test]
     fn nfm_recovers_the_modulation_tone() {
         let audio = run("nfm", 20_000, |t| {
-            let ph = 1.0 * (tau() * TONE_HZ * t).sin();
+            let ph = 1.0 * (TAU * TONE_HZ * t).sin();
             (ph.cos(), ph.sin())
         });
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "NFM audio tone");
@@ -383,7 +490,7 @@ mod tests {
     #[test]
     fn wfm_recovers_the_modulation_tone_through_de_emphasis() {
         let audio = run("wfm", 20_000, |t| {
-            let ph = 3.0 * (tau() * TONE_HZ * t).sin();
+            let ph = 3.0 * (TAU * TONE_HZ * t).sin();
             (ph.cos(), ph.sin())
         });
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "WFM audio tone");
@@ -394,18 +501,96 @@ mod tests {
     #[test]
     fn pm_recovers_the_modulation_tone() {
         let audio = run("pm", 20_000, |t| {
-            let ph = 0.6 * (tau() * TONE_HZ * t).cos();
+            let ph = 0.6 * (TAU * TONE_HZ * t).cos();
             (ph.cos(), ph.sin())
         });
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "PM audio tone");
         assert!(rms(&audio) > 0.05, "PM must produce audio");
     }
 
+    /// Two mirrored tones, used to show which sideband a mode accepts.
+    fn single_upper(t: f64) -> (f64, f64) {
+        (0.5 * (TAU * 1_200.0 * t).cos(), 0.5 * (TAU * 1_200.0 * t).sin())
+    }
+
+    fn single_lower(t: f64) -> (f64, f64) {
+        (0.5 * (TAU * -1_200.0 * t).cos(), 0.5 * (TAU * -1_200.0 * t).sin())
+    }
+
+    /// Steady-state gain of a mode's band filter at `hz` for a unit complex tone.
+    ///
+    /// Sideband rejection is measured here, not on the demodulated audio: the audio is real, so a
+    /// DFT at +f and -f is identical by construction, and the AGC would boost whatever leaks
+    /// through back to its target level anyway.
+    fn band_gain(id: &str, if_bw: f64, pitch: f64, hz: f64) -> f64 {
+        let spec = spec_for(id).expect("mode spec");
+        let (lo, hi) = spec.band_hz(if_bw, pitch);
+        let (re, im) = design_complex_bandpass(FS, lo, hi, BAND_TAPS);
+        let mut filter = ComplexBandFilter::new(re, im);
+        let n = 8_192;
+        let mut iq = Vec::with_capacity(n * 2);
+        for k in 0..n {
+            let ph = TAU * hz * k as f64 / FS;
+            iq.push(ph.cos());
+            iq.push(ph.sin());
+        }
+        let mut out = Vec::new();
+        filter.process_complex_into(&iq, &mut out);
+        let skip = BAND_TAPS;   // past the filter transient
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for k in skip..(out.len() / 2) {
+            sum += (out[2 * k].powi(2) + out[2 * k + 1].powi(2)).sqrt();
+            count += 1.0;
+        }
+        sum / count
+    }
+
+    #[test]
+    fn usb_selects_the_upper_sideband_only() {
+        let wanted = band_gain("usb", 2_400.0, PITCH, 1_200.0);
+        let image = band_gain("usb", 2_400.0, PITCH, -1_200.0);
+        assert!(wanted > 0.5, "USB must pass the upper sideband: gain {wanted}");
+        assert!(wanted / image > 100.0, "USB must reject the lower sideband: {wanted} vs {image}");
+        // The accepted sideband becomes audio at its own frequency.
+        let audio = run_with("usb", 20_000, 2_400.0, PITCH, single_upper);
+        assert_eq!(recovered_hz(&audio, 1_200.0), 1_200.0, "USB audio tone");
+    }
+
+    #[test]
+    fn lsb_selects_the_lower_sideband_only() {
+        let wanted = band_gain("lsb", 2_400.0, PITCH, -1_200.0);
+        let image = band_gain("lsb", 2_400.0, PITCH, 1_200.0);
+        assert!(wanted > 0.5, "LSB must pass the lower sideband: gain {wanted}");
+        assert!(wanted / image > 100.0, "LSB must reject the upper sideband: {wanted} vs {image}");
+        // A lower-sideband tone demodulates to the same positive audio frequency (it is the
+        // mirror image that ends up at +1200 Hz).
+        let audio = run_with("lsb", 20_000, 2_400.0, PITCH, single_lower);
+        assert_eq!(recovered_hz(&audio, 1_200.0), 1_200.0, "LSB audio tone");
+    }
+
+    #[test]
+    fn cw_puts_the_carrier_on_the_sidetone_pitch() {
+        // A carrier exactly at zero IF (the CW signal the operator tuned onto) plus an off-channel
+        // interferer 3 kHz away that the narrow band must reject.
+        let audio = run_with("cw", 20_000, 500.0, PITCH, |t| {
+            (
+                1.0 + 0.5 * (TAU * 3_000.0 * t).cos(),
+                0.5 * (TAU * 3_000.0 * t).sin(),
+            )
+        });
+        assert_eq!(recovered_hz(&audio, PITCH), PITCH, "CW sidetone");
+        let sidetone = amplitude_at(&audio, AUDIO_RATE, PITCH);
+        assert!(sidetone > 0.02, "the sidetone must be present, level {sidetone}");
+        // The 3 kHz interferer is outside the band: it cannot add energy at its own offset.
+        let interferer = amplitude_at(&audio, AUDIO_RATE, 3_000.0);
+        assert!(interferer < sidetone, "CW band filter must reject the interferer");
+    }
+
     #[test]
     fn the_output_rate_is_the_audio_rate_and_blocks_are_continuous() {
-        let demod = build("am", DemodConfig::new(FS, IF_BW)).unwrap();
-        let mut demod = demod;
-        let modulate = |t: f64| (1.0 + 0.5 * (tau() * TONE_HZ * t).cos(), 0.0);
+        let mut demod = build("am", DemodConfig::new(FS, IF_BW)).unwrap();
+        let modulate = |t: f64| (1.0 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0);
         let mut iq = Vec::new();
         for k in 0..10_000 {
             let (i, q) = modulate(k as f64 / FS);
@@ -424,22 +609,18 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_modes_are_not_buildable() {
+    fn every_mode_builds_and_reports_its_registry_id() {
         for descriptor in crate::plugin::ANALOG_PLUGINS {
-            let built = build(descriptor.id, DemodConfig::new(FS, IF_BW)).is_some();
+            let built = build(descriptor.id, DemodConfig::new(FS, IF_BW));
             assert_eq!(
-                built, descriptor.implemented,
-                "{}: registry says implemented={} but build() says {built}",
-                descriptor.id, descriptor.implemented
+                built.is_some(), descriptor.implemented,
+                "{}: registry says implemented={} but build() says {}",
+                descriptor.id, descriptor.implemented, built.is_some()
             );
-        }
-    }
-
-    #[test]
-    fn every_implemented_mode_reports_its_registry_id() {
-        for descriptor in crate::plugin::ANALOG_PLUGINS.iter().filter(|p| p.implemented) {
-            let demod = build(descriptor.id, DemodConfig::new(FS, IF_BW)).expect("implemented");
-            assert_eq!(demod.id(), descriptor.id);
+            if let Some(demod) = built {
+                assert_eq!(demod.id(), descriptor.id);
+                assert_eq!(demod.audio_taps(), AUDIO_TAPS);
+            }
         }
     }
 }
