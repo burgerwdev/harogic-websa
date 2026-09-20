@@ -16,7 +16,7 @@
 //! enhancement) and is therefore not part of `AudioChain`.
 
 use crate::ddc::Ddc;
-use crate::plugin::{AnalogDemodulator, AudioStage, DigitalDemodulator, PluginKind, AUDIO_PLUGINS};
+use crate::plugin::{AnalogDemodulator, AudioStage, DigitalDemodulator, DigitalReport, PluginKind, AUDIO_PLUGINS};
 
 /// Real PCM destined for the speaker. Only the analog path produces one of these, and only the
 /// audio chain accepts one.
@@ -176,6 +176,7 @@ pub struct Pipeline {
     chain: AudioChain,
     baseband: Vec<f32>,
     pcm: AnalogPcm,
+    decoded_total: u64,
 }
 
 impl Pipeline {
@@ -188,11 +189,24 @@ impl Pipeline {
             chain,
             baseband: Vec::new(),
             pcm: AnalogPcm::default(),
+            decoded_total: 0,
         }
     }
 
     pub fn kind(&self) -> PathKind {
         self.kind
+    }
+
+    /// How many messages this pipeline's digital demodulator has decoded.
+    pub fn decoded_total(&self) -> u64 {
+        self.decoded_total
+    }
+
+    /// What the digital demodulator reports about its most recent decode (frequency, slot offset,
+    /// SNR). The UI shows the timing with the text: a decoded message without it is of little use
+    /// to an operator watching a band.
+    pub fn digital_report(&self) -> Option<DigitalReport> {
+        self.digital.as_ref().and_then(|demod| demod.last_report())
     }
 
     pub fn chain(&self) -> &AudioChain {
@@ -267,6 +281,9 @@ impl Pipeline {
             PathKind::Digital => {
                 if let Some(demod) = self.digital.as_mut() {
                     out.decoded = demod.process_iq(&baseband);
+                    if !out.decoded.is_empty() {
+                        self.decoded_total += out.decoded.len() as u64;
+                    }
                 }
             }
         }

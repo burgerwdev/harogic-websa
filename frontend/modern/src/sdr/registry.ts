@@ -96,6 +96,16 @@ export function ddcStageIds(): string[] {
 	return idsOf('ddc');
 }
 
+/**
+ * Every mode the SDR panel offers: the analog demodulators and the digital protocols, in registry
+ * order. One list for the button group and the keyboard cycle, so a mode cannot exist in one and be
+ * missing from the other (the earlier hardcoded cycle in the panel carried `fm`, which is not a
+ * plugin id at all and made the DSP report "no pipeline for mode fm").
+ */
+export function sdrModeIds(): string[] {
+	return [...analogModeIds(), ...digitalModeIds()];
+}
+
 /** True when the mode is declared and its kernel exists. */
 export function isModeAvailable(id: string): boolean {
 	return (manifest ?? []).some((plugin) => plugin.id === id && plugin.implemented);

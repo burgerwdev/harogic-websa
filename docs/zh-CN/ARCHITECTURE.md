@@ -76,20 +76,24 @@ SAN-90 ──IQ──▶ Python 后端 ──IQ 帧──▶ Web Worker ──WA
 
 | 阶段 | 模块 |
 |---|---|
-| SAN-90 IQ 源 | `web_sa/measurements/sdr.py` (IQS 流)、`web_sa/hardware/sdk_bindings.py` |
+| SAN-90 IQ 源 | `web_sa/measurements/sdr.py`（IQS 流）、`web_sa/hardware/sdk_bindings.py` |
 | Python 设备 / 控制 | `web_sa/hardware/`、`web_sa/measurements/`、`web_sa/web/` |
-| WebSocket 传输 IQ | `web_sa/measurements/framer.py` (`IQDF`)、`web_sa/web/client_stream.py` |
-| Web Worker DSP 宿主 | `frontend/modern/src/sdr/worker.ts` |
+| WebSocket 传输 IQ | `web_sa/measurements/framer.py`（`IQDF`）、`web_sa/web/client_stream.py` |
+| Worker IQ 入口 | `frontend/modern/src/sdr/iqWorker.ts` |
+| Worker DSP 编排 | `frontend/modern/src/sdr/iqStream.ts`、`frontend/modern/src/sdr/wasmPipeline.ts`、`frontend/modern/src/sdr/digitalPipeline.ts` |
 | WASM 边界（裸 ABI） | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/abi.rs` |
-| DDC (NCO / FIR / 重采样 / AGC) | `wasm/src/ddc/{nco,fir,resampler,agc}.rs` |
-| 模拟解调器 | `wasm/src/analog/{am,dsb,ssb,cw,fm,pm}.rs`、`frontend/modern/src/sdr/analog.ts` |
-| 数字解调器 (FT8) | `wasm/src/digital/ft8/`、`frontend/modern/src/sdr/digital/` |
-| 音频 DSP（仅模拟 PCM） | `wasm/src/audio/{lpf,agc,squelch,wiener,notch,blanker}.rs`、`wasm/src/fft.rs` |
-| 音频 PCM 输出 | `frontend/modern/src/audio/sdrAudioWorklet.js`、`audio/sdrAudio.ts` |
-| RAW / DSP 数据流 | `frontend/modern/src/sdr/digital/`（解码器 + 视图） |
-| 插件注册表 | `frontend/modern/src/sdr/registry.ts` |
-| Python 回退与参考 | `web_sa/demod/`（不变）、`tools/dsp_parity.py` |
+| DDC（NCO / FIR / 重采样 / AGC） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`，由 `wasm/src/ddc/mod.rs` 串联 |
+| 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
+| 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs`、`frontend/modern/src/sdr/ft8.ts` |
+| 音频 DSP（仅模拟 PCM） | `wasm/src/audio/stages.rs`、`wasm/src/audio/dc_block.rs`、`wasm/src/audio/wiener.rs`、`wasm/src/audio/notch.rs`、`wasm/src/audio/blanker.rs`、`wasm/src/fft.rs` |
+| 路径组装与分离规则 | `wasm/src/pipeline.rs` |
+| 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/modern/src/sdr/registry.ts` |
+| ABI 入口 | `wasm/src/pipeline_abi.rs`（模拟与数字流水线）、`wasm/src/abi.rs`（内存） |
+| 音频 PCM 输出 | `frontend/modern/src/audio/sdrAudioWorklet.js`、`frontend/modern/src/audio/sdrAudio.ts`、`frontend/modern/src/audio/sdrAudioWorker.ts` |
+| Python 回退与参考 | `web_sa/demod/`（不变）、`tools/dsp_parity.py`、`tools/gen_dsp_fixtures.py` |
 | WASM 产物构建 | `wasm/build.sh` → `frontend/modern/public/dsp.wasm`（入库） |
+
+`tools/check_doc_paths.py` 会校验本表中的每个路径都存在，因此这份映射不会描述被改名或从未存在的模块。
 
 ### DSP 路径与分离规则
 

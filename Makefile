@@ -39,6 +39,7 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	python3 tools/check_dom_ids.py
 	python3 tools/check_registrations.py
 	python3 tools/check_docs_parity.py
+	python3 tools/check_doc_paths.py
 	python3 tools/check_wasm_artifact.py
 	python3 tools/quality/architecture_guard.py
 	./build.sh

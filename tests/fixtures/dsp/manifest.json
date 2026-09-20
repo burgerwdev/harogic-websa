@@ -9,6 +9,34 @@
  "decimate": 10,
  "demod": [
   {
+   "audio_file": "demod_am.bin",
+   "audio_rate": 48000.0,
+   "audio_samples": 4800,
+   "expect_hz": 1000.0,
+   "fs": 96000.0,
+   "if_bw": 12000.0,
+   "iq_file": "demod_am_iq.bin",
+   "mode": "am",
+   "pitch": 700.0,
+   "reference": "AnalogDemod(am)",
+   "samples": 9600,
+   "tolerance": 0.002
+  },
+  {
+   "audio_file": "demod_dsb.bin",
+   "audio_rate": 48000.0,
+   "audio_samples": 4800,
+   "expect_hz": 1000.0,
+   "fs": 96000.0,
+   "if_bw": 12000.0,
+   "iq_file": "demod_dsb_iq.bin",
+   "mode": "dsb",
+   "pitch": 700.0,
+   "reference": "AnalogDemod(am)",
+   "samples": 9600,
+   "tolerance": 0.002
+  },
+  {
    "audio_file": "demod_usb.bin",
    "audio_rate": 48000.0,
    "audio_samples": 4800,
@@ -18,7 +46,9 @@
    "iq_file": "demod_usb_iq.bin",
    "mode": "usb",
    "pitch": 700.0,
-   "samples": 9600
+   "reference": "AnalogDemod(usb)",
+   "samples": 9600,
+   "tolerance": 1e-05
   },
   {
    "audio_file": "demod_lsb.bin",
@@ -30,7 +60,9 @@
    "iq_file": "demod_lsb_iq.bin",
    "mode": "lsb",
    "pitch": 700.0,
-   "samples": 9600
+   "reference": "AnalogDemod(lsb)",
+   "samples": 9600,
+   "tolerance": 1e-05
   },
   {
    "audio_file": "demod_cw.bin",
@@ -42,7 +74,51 @@
    "iq_file": "demod_cw_iq.bin",
    "mode": "cw",
    "pitch": 700.0,
-   "samples": 9600
+   "reference": "AnalogDemod(cw)",
+   "samples": 9600,
+   "tolerance": 1e-05
+  },
+  {
+   "audio_file": "demod_nfm.bin",
+   "audio_rate": 48000.0,
+   "audio_samples": 4800,
+   "expect_hz": 1000.0,
+   "fs": 96000.0,
+   "if_bw": 12000.0,
+   "iq_file": "demod_nfm_iq.bin",
+   "mode": "nfm",
+   "pitch": 700.0,
+   "reference": "AnalogDemod(nfm)",
+   "samples": 9600,
+   "tolerance": 1e-05
+  },
+  {
+   "audio_file": "demod_wfm.bin",
+   "audio_rate": 48000.0,
+   "audio_samples": 4800,
+   "expect_hz": 1000.0,
+   "fs": 96000.0,
+   "if_bw": 180000.0,
+   "iq_file": "demod_wfm_iq.bin",
+   "mode": "wfm",
+   "pitch": 700.0,
+   "reference": "AnalogDemod(wfm)",
+   "samples": 9600,
+   "tolerance": 1e-05
+  },
+  {
+   "audio_file": "demod_pm.bin",
+   "audio_rate": 48000.0,
+   "audio_samples": 4800,
+   "expect_hz": 1000.0,
+   "fs": 96000.0,
+   "if_bw": 12000.0,
+   "iq_file": "demod_pm_iq.bin",
+   "mode": "pm",
+   "pitch": 700.0,
+   "reference": "pm-reference (primitives assembled in this tool)",
+   "samples": 9600,
+   "tolerance": 0.002
   }
  ],
  "fs_in": 1000000.0,

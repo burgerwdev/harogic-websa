@@ -344,6 +344,33 @@ def main() -> int:
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
         page.wait_for_timeout(800)
 
+        print('N) FT8 decodes in the browser (fake backend replays a real transmission)')
+        # Back to the normal page: the fallback check above left the browser on ?wasm=0, which
+        # disables the browser DSP by design.
+        page.goto(args.url, wait_until='networkidle')
+        page.wait_for_timeout(1500)
+        # The digital path end to end: the fake backend emits the committed FT8 fixture as IQ, the
+        # worker runs the shared DDC and the protocol decoder, and the panel shows the text plus the
+        # slot timing. This is the check that the decoder is *reachable* in the product, not only in
+        # unit tests.
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'ft8', 'ifbw': 2400, 'pitch': 700,
+                        'volume': 1.0, 'squelch': -140.0, 'agc': True})
+        page.wait_for_timeout(2500)
+        button = page.query_selector('[data-sdr-demod="ft8"]')
+        check('the FT8 mode button is offered and enabled',
+              button is not None and button.get_attribute('disabled') is None)
+        if button is not None:
+            js_click(page, '[data-sdr-demod="ft8"]')
+        page.wait_for_timeout(12000)          # a 12.64 s transmission at 48 kHz, plus decoding
+        readout = page.evaluate("document.getElementById('ft8-readout').textContent") or ''
+        iq_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
+        detail = f'readout={readout!r} iq=[{iq_dbg}]'
+        check('the FT8 message is decoded in the browser', 'CQ JO1WKO PM95' in readout, detail)
+        check('the FT8 readout carries the slot timing', 'Hz' in readout, detail)
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(500)
+
         check('no page errors', not errors, '; '.join(errors[:3]))
         browser.close()
 

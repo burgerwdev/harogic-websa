@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -175,7 +176,11 @@ class ParamSpec:
     """One wire parameter: type, bounds, choices and when it is required."""
 
     name: str
-    kind: str                                   # 'number' | 'integer' | 'choice' | 'boolean'
+    #: 'number' | 'integer' | 'choice' | 'boolean' | 'token'
+    #: ('token' is a lowercase id such as a demodulator name: its set is owned by the DSP plugin
+    #: registry, so validating the shape keeps the backend from carrying a duplicated list that
+    #: would reject a mode the module actually implements.)
+    kind: str
     minimum: object = None                      # number or Callable[[caps], number]
     maximum: object = None
     choices: tuple = ()
@@ -298,7 +303,9 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     'SET_SDR_TUNE': (ParamSpec('listen', 'number', unit='Hz', required=True),),
     'SET_SDR_DEMOD': (
-        ParamSpec('mode', 'choice', choices=('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw')),
+        # A token, not a fixed list: the mode ids are the DSP plugin registry's (analog and
+        # digital alike), and the Python fallback runs the subset it implements.
+        ParamSpec('mode', 'token'),
         ParamSpec('deemph_us', 'number', SDR_DEEMPH_MIN_US, SDR_DEEMPH_MAX_US, unit='us'),
         ParamSpec('ifbw', 'number', SDR_IFBW_MIN_HZ, SDR_IFBW_MAX_HZ, unit='Hz'),
         ParamSpec('squelch', 'number', SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS, unit='dBFS'),
@@ -340,6 +347,22 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
 }
 
 
+def _token(data: dict, name: str, required: bool = False) -> None:
+    """Validate a mode/id token: `[a-z0-9_]{1,16}`.
+
+    The shape is checked rather than a list, because the ids belong to the DSP plugin registry: a
+    list here would reject a mode the module implements (exactly what kept FT8 from being
+    selectable) and would have to be kept in step with the registry by hand.
+    """
+    if name not in data or data[name] is None:
+        if required:
+            raise CommandError(f'{name} is required', 'param_required', key=name)
+        return
+    value = data[name]
+    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9_]{1,16}', value):
+        raise CommandError(f'{name} must be a mode id', 'token_invalid', key=name)
+
+
 def _apply_spec(dev, data: dict, spec: ParamSpec) -> None:
     """Validate one field from its spec (and coerce it in place)."""
     if spec.kind == 'boolean':
@@ -348,6 +371,9 @@ def _apply_spec(dev, data: dict, spec: ParamSpec) -> None:
         return
     if spec.kind == 'choice':
         _choice(data, spec.name, spec.choices, required=spec.is_required(data))
+        return
+    if spec.kind == 'token':
+        _token(data, spec.name, required=spec.is_required(data))
         return
     caps = _caps(dev) if (callable(spec.minimum) or callable(spec.maximum)) else dev.state.caps
     minimum = spec.bound(caps, 'min')

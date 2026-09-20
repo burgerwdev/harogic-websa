@@ -6,10 +6,23 @@ fake device implements.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from .base import MeasurementSession
 from .framer import IQ_VERSION, encode_audio, encode_iq, encode_rta
+
+#: The committed FT8 fixture, replayed when the demod is a digital protocol. The fake backend is the
+#: only place a protocol waveform can come from in CI, and using the real fixture keeps the browser
+#: path honest: the decoder sees an actual FT8 transmission, not a second encoder's output.
+FT8_FIXTURE = Path(__file__).resolve().parents[2] / 'tests' / 'fixtures' / 'ft8' / 'ft8_cq_iq.bin'
+#: Rate the fixture is replayed at (it is 48 kHz baseband): low enough that a 12.64 s transmission
+#: arrives quickly in a test, and a rate the analyzer can legitimately be configured for.
+FT8_IQ_RATE = 48_000.0
+
+#: Demod ids the fake treats as digital protocols (they get the protocol fixture instead of a tone).
+DIGITAL_DEMODS = ('ft8',)
 
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
@@ -65,7 +78,13 @@ class _FakeRtaBase(MeasurementSession):
         return encode_audio(self._audio_seq, SDR_AUDIO_RATE, pcm)
 
     def _iq(self, rate: float, center_hz: float) -> bytes:
-        """One synthetic IQ block, interleaved int16, as the IQS stream delivers it."""
+        """One IQ block, interleaved int16, as the IQS stream delivers it.
+
+        For a digital mode this replays the committed FT8 fixture (at the fixture's rate), so the
+        whole browser path — DDC, decoder, UI readout — runs against a real transmission.
+        """
+        if str(self.dev.state.sdr_demod) == 'ft8':
+            return self._ft8_iq()
         n = SDR_IQ_SAMPLES
         t = (np.arange(n) + self._tick * n) / max(1.0, rate)
         ph = 2 * np.pi * SDR_IQ_TONE_HZ * t
@@ -225,6 +244,27 @@ class FakeSdrSession(_FakeRtaBase):
         if deemph_us is not None:
             s.sdr_deemph_us = float(deemph_us)
 
+    # Replay position into the FT8 fixture (looped: the decoder consumes one transmission per
+    # decode attempt and then waits for the next).
+    _ft8_i: np.ndarray | None = None
+    _ft8_q: np.ndarray | None = None
+    _ft8_pos = 0
+
+    def _ft8_iq(self) -> bytes:
+        if FakeSdrSession._ft8_i is None:
+            raw = np.frombuffer(FT8_FIXTURE.read_bytes(), dtype='<f4').reshape(-1, 2)
+            scale = 0.25 * 32767.0
+            FakeSdrSession._ft8_i = np.clip(raw[:, 0] * scale, -32768, 32767).astype(np.int16)
+            FakeSdrSession._ft8_q = np.clip(raw[:, 1] * scale, -32768, 32767).astype(np.int16)
+        i = FakeSdrSession._ft8_i
+        q = FakeSdrSession._ft8_q
+        start = FakeSdrSession._ft8_pos
+        index = (np.arange(SDR_IQ_SAMPLES) + start) % i.size
+        FakeSdrSession._ft8_pos = (start + SDR_IQ_SAMPLES) % i.size
+        block = np.stack([i[index], q[index]], axis=1).reshape(-1)
+        self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+        return encode_iq(IQ_VERSION, self._iq_seq, FT8_IQ_RATE, 100.2e6, block)
+
     def step(self):
         if not self._ready:
             return [], []
@@ -232,14 +272,15 @@ class FakeSdrSession(_FakeRtaBase):
         s = self.dev.state
         center = float(s.sdr_center_hz)
         # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it
-        bandwidth = 50e6 / max(1, int(s.sdr_decimate or 16))
+        bandwidth = 48_000.0 if str(s.sdr_demod) in DIGITAL_DEMODS else 50e6 / max(1, int(s.sdr_decimate or 16))
         freq, spec = self._spectrum(center, bandwidth, SDR_PAN_POINTS)
         finite = np.sort(spec[np.isfinite(spec)])
         if finite.size:
             self.dev.observe_reference_peak(
                 'sdr', float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
+        digital = str(s.sdr_demod) in DIGITAL_DEMODS
         s.sdr_actual = {
-            'iq_rate': 62.5e6 / max(1, int(s.sdr_decimate or 16)),
+            'iq_rate': FT8_IQ_RATE if digital else 62.5e6 / max(1, int(s.sdr_decimate or 16)),
             'bandwidth': bandwidth, 'iq_center': center,
             'decimate': int(s.sdr_decimate or 16), 'packet_samples': 16240,
             'packet_bytes': 64960, 'pan_points': SDR_PAN_POINTS, 'center': center,

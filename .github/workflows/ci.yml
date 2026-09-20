@@ -44,6 +44,10 @@ jobs:
         run: python tools/gen_ft8_fixtures.py --check
       - name: DOM id contract (every id read from TS exists in index.html)
         run: python tools/check_dom_ids.py
+      - name: Every path named in the architecture docs exists
+        # The stage map is the architecture's contract; without this it can name modules that were
+        # renamed or never written (it did, which is how the objection was raised).
+        run: python tools/check_doc_paths.py
       - name: Bilingual docs keep the same section structure
         run: python tools/check_docs_parity.py
       - name: Every module-scope registration is reachable from the entry point

@@ -27,6 +27,7 @@ import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { resetSdrIq, setSdrIqEnabled, configureSdrPipeline } from '../sdr/iqStream';
+import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
 // Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
@@ -933,7 +934,6 @@ export function bindCanvas() {
 
 // ── SDR keyboard helpers ──
 const SDR_IFBW = [500, 2400, 3000, 6000, 12000, 25000, 50000, 100000, 180000];
-const SDR_MODES = ['am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'];
 
 function sdrTuneBy(dHz: number) {
   const center = sdrCenterHz.get();
@@ -959,8 +959,13 @@ function sdrCycleIfbw(dir: number) {
 }
 
 function sdrCycleDemod() {
-  const ni = (SDR_MODES.indexOf(sdrDemod.get()) + 1) % SDR_MODES.length;
-  sdrDemod.set(SDR_MODES[ni]);
+  // The cycle is the registry's list (analog then digital), not a copy of it: a mode added to the
+  // DSP appears here without another edit.
+  const modes = sdrModeIds();
+  if (modes.length === 0) return;                 // manifest not loaded yet: keep the current mode
+  const current = sdrDemod.get();
+  const index = modes.indexOf(current);
+  sdrDemod.set(modes[(index + 1) % modes.length]);
   renderSdrState();
   applySdrDemod();
 }

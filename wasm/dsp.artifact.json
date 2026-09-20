@@ -1,5 +1,5 @@
 {
- "bytes": 121709,
+ "bytes": 125212,
  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
  "exports": [
   "memory",
@@ -12,6 +12,12 @@
   "websa_dsp_ddc_process",
   "websa_dsp_ddc_reset",
   "websa_dsp_ddc_retune",
+  "websa_dsp_digital_count",
+  "websa_dsp_digital_free",
+  "websa_dsp_digital_message",
+  "websa_dsp_digital_new",
+  "websa_dsp_digital_push",
+  "websa_dsp_digital_reset",
   "websa_dsp_f32_bytes",
   "websa_dsp_free",
   "websa_dsp_ft8_count",
@@ -38,6 +44,6 @@
  "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "ae56338d168f86912109d476b74fa31bb42b740d8b8bd8fd5d91417d5fb8d21d",
+ "sha256": "d5d5971f7250ddc08b655affc31e8f7ac7edaae09657fb9562d213430cd0f230",
  "target": "wasm32-unknown-unknown"
 }

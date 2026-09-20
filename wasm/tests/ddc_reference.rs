@@ -24,12 +24,16 @@ const DECIMATE: usize = 10;
 const OUT_RATE: f64 = 48_000.0;
 const NTAPS: usize = 129;
 
+/// The top-level (DDC-stage) tolerance from the manifest.
+///
+/// Matched at the start of a line: the demod entries carry their own `tolerance` field, and a plain
+/// first-occurrence search picked one of those up (the JSON is dumped with an indent, so a top-level
+/// key starts one space in).
 fn tolerance() -> f64 {
-    // The manifest is JSON without a parser dependency: read the one number that matters.
-    let key = "\"tolerance\":";
-    let start = MANIFEST.find(key).expect("manifest has a tolerance") + key.len();
+    let key = "\n \"tolerance\": ";
+    let start = MANIFEST.find(key).expect("manifest has a top-level tolerance") + key.len();
     let rest = &MANIFEST[start..];
-    let end = rest.find(',').unwrap_or(rest.len());
+    let end = rest.find(|c: char| c == ',' || c == '\n').unwrap_or(rest.len());
     rest[..end].trim().parse().expect("tolerance is a number")
 }
 

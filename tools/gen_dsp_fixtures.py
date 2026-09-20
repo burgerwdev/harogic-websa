@@ -143,25 +143,88 @@ class DemodCase(NamedTuple):
     if_bw: float
     pitch: float
     expect_hz: float
+    #: Bound on the absolute difference against the reference for this mode.
+    #:
+    #: Modes whose detector is followed by the one-pole DC blocker are bounded two orders looser on
+    #: purpose: that blocker's noise gain is 1/(1-0.9995) = 2000, so the ~1e-7 difference between the
+    #: Rust FIR and numpy's convolution (which the modes *without* a blocker show directly, at 1.8e-7)
+    #: is amplified to ~1e-3 here. The measured worst for those modes is 7.4e-4; the bound is set just
+    #: above it and the reason is recorded rather than hidden in a global constant.
+    tolerance: float = 1.0e-5
 
 
-#: One case per sideband/CW behaviour: an upper-sideband tone, a lower-sideband tone, and a CW
-#: carrier with an off-channel interferer the narrow band must reject.
+#: Every analog mode the registry declares: the parity harness has to cover the whole family, not
+#: the three modes that happened to be written first.
 DEMOD_CASES: tuple[DemodCase, ...] = (
+    DemodCase('am', 12_000.0, 700.0, 1_000.0, tolerance=2.0e-3),
+    DemodCase('dsb', 12_000.0, 700.0, 1_000.0, tolerance=2.0e-3),
     DemodCase('usb', 2_400.0, 700.0, 1_200.0),
     DemodCase('lsb', 2_400.0, 700.0, 1_200.0),
     DemodCase('cw', 500.0, 700.0, 700.0),
+    DemodCase('nfm', 12_000.0, 700.0, 1_000.0),
+    DemodCase('wfm', 180_000.0, 700.0, 1_000.0),
+    DemodCase('pm', 12_000.0, 700.0, 1_000.0, tolerance=2.0e-3),
 )
 
 
 def _demod_baseband(mode: str) -> np.ndarray:
+    """The baseband a given mode is meant to receive, one case per family behaviour."""
     t = np.arange(DEMOD_SAMPLES) / DEMOD_RATE
+    if mode == 'am':
+        # Carrier with a 1 kHz modulation; the envelope detector must recover the tone.
+        return (1.0 + 0.5 * np.cos(2 * np.pi * 1_000.0 * t)) + 0j
+    if mode == 'dsb':
+        # DSB with a residual carrier (a fully suppressed carrier has no envelope to detect).
+        return (0.8 + 0.5 * np.cos(2 * np.pi * 1_000.0 * t)) + 0j
     if mode == 'usb':
         return 0.5 * np.exp(2j * np.pi * 1_200.0 * t)
     if mode == 'lsb':
         return 0.5 * np.exp(2j * np.pi * -1_200.0 * t)
-    # CW: the carrier the operator tuned onto, plus an interferer 3 kHz away.
-    return 1.0 + 0.5 * np.exp(2j * np.pi * 3_000.0 * t)
+    if mode == 'cw':
+        # The carrier the operator tuned onto, plus an interferer 3 kHz away.
+        return 1.0 + 0.5 * np.exp(2j * np.pi * 3_000.0 * t)
+    if mode == 'nfm':
+        return np.exp(1j * (1.0 * np.sin(2 * np.pi * 1_000.0 * t)))
+    if mode == 'wfm':
+        # Broadcast-like deviation, so the de-emphasis stage is exercised as well.
+        return np.exp(1j * (3.0 * np.sin(2 * np.pi * 1_000.0 * t)))
+    if mode == 'pm':
+        return np.exp(1j * (0.6 * np.cos(2 * np.pi * 1_000.0 * t)))
+    raise SystemExit(f'no fixture signal defined for mode {mode!r}')
+
+
+#: Python modes that do not exist in `web_sa/demod` and how their reference is produced:
+#:   dsb -> the `am` branch (DSB with a residual carrier is detected by the same envelope + DC block)
+#:   pm  -> a phase detector assembled here from the same primitives, because the Python module has
+#:          no PM kernel and the browser port must still be compared against something independent
+#:          (adding PM to the production Python DSP would violate the "no new DSP in Python" rule).
+REFERENCE_ALIAS = {'dsb': 'am'}
+
+
+def _pm_reference(baseband: np.ndarray, if_bw: float) -> np.ndarray:
+    """PM reference from the project's own DSP primitives (phase, DC block, LPF, resample, AGC)."""
+    from web_sa.demod.filters import (
+        Agc,
+        LinearResampler,
+        StreamFilter,
+        design_complex_bandpass,
+        design_lowpass,
+        one_pole_iir,
+    )
+
+    band = StreamFilter(design_complex_bandpass(DEMOD_RATE, -if_bw / 2.0, if_bw / 2.0, ntaps=257))
+    filtered = band.process(baseband)
+    phase = np.angle(filtered).astype(np.float32)
+    a = 0.9995
+    delta = np.empty_like(phase)
+    delta[0] = phase[0]
+    delta[1:] = np.diff(phase)
+    delta *= a
+    blocked, _state = one_pole_iir(delta, a, 0.0)
+    audio_lp = StreamFilter(design_lowpass(DEMOD_RATE, min(15_000.0, if_bw / 2.0), ntaps=129))
+    audio = audio_lp.process(blocked.astype(np.float32))
+    audio = LinearResampler(DEMOD_RATE, DEMOD_AUDIO_RATE).process(audio)
+    return Agc(target=0.2, attack=0.2, release=0.08).process(audio)
 
 
 def build_demod_reference() -> tuple[dict[str, bytes], list[dict]]:
@@ -172,15 +235,24 @@ def build_demod_reference() -> tuple[dict[str, bytes], list[dict]]:
     entries: list[dict] = []
     for case in DEMOD_CASES:
         baseband = _demod_baseband(case.mode)
-        demod = AnalogDemod(audio_rate=DEMOD_AUDIO_RATE)
-        demod.configure(fs=DEMOD_RATE, mode=case.mode, if_bw=case.if_bw, pitch=case.pitch)
-        audio, _power = demod.process(baseband.real.copy(), baseband.imag.copy())
+        if case.mode == 'pm':
+            audio = _pm_reference(baseband, case.if_bw)
+            reference = 'pm-reference (primitives assembled in this tool)'
+            demod_audio = audio
+        else:
+            demod = AnalogDemod(audio_rate=DEMOD_AUDIO_RATE)
+            python_mode = REFERENCE_ALIAS.get(case.mode, case.mode)
+            demod.configure(fs=DEMOD_RATE, mode=python_mode, if_bw=case.if_bw, pitch=case.pitch)
+            demod_audio, _power = demod.process(baseband.real.copy(), baseband.imag.copy())
+            reference = f'AnalogDemod({python_mode})'
+        audio = np.asarray(demod_audio)
         iq_name = f'demod_{case.mode}_iq.bin'
         audio_name = f'demod_{case.mode}.bin'
         files[iq_name] = _complex_bytes(baseband)
         files[audio_name] = np.ascontiguousarray(audio, dtype=np.float32).tobytes()
         entries.append({
             'mode': case.mode, 'if_bw': case.if_bw, 'pitch': case.pitch,
+            'reference': reference, 'tolerance': case.tolerance,
             'expect_hz': case.expect_hz, 'fs': DEMOD_RATE, 'audio_rate': DEMOD_AUDIO_RATE,
             'samples': DEMOD_SAMPLES, 'iq_file': iq_name, 'audio_file': audio_name,
             'audio_samples': int(audio.size),

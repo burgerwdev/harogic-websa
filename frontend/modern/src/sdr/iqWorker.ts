@@ -12,17 +12,22 @@
 import { decodeFrame, type IqFrame } from '../core/frames';
 import { loadDsp, type DspModule } from './wasm';
 import { WasmPipeline, type PipelineParams } from './wasmPipeline';
-import { Ft8Session } from './ft8';
+import { DigitalPipeline } from './digitalPipeline';
+import { readPluginManifest } from './registry';
 
 let ws: WebSocket | null = null;
 let wsUrl = '';
 let wasmUrl = '';
 let module: DspModule | null = null;
 let pipeline: WasmPipeline | null = null;
-/// The digital path: FT8 reads the RAW baseband and produces text (no audio at all).
-let ft8: Ft8Session | null = null;
-let ft8Rate = 0;
+/// The digital path: a protocol decoder over the *same* DDC the analog path uses, producing text
+/// (and no audio at all).
+let digital: DigitalPipeline | null = null;
+let digitalGeometry = '';
 let ft8Messages = 0;
+/// Ids the module declares as digital protocols; the registry is the single source of truth, so a
+/// new protocol becomes reachable here without a second list in the worker.
+let digitalIds = new Set<string>();
 let params: PipelineParams | null = null;
 let audioEnabled = true;
 let volume = 1;
@@ -58,20 +63,29 @@ function postStats(): void {
 /** Create or rebuild the pipeline for the current parameters. */
 function syncPipeline(): void {
   if (!enabled || !params || !module) return;
-  if (params.mode === 'ft8') {
-    // Digital mode: the analog chain and the worklet are not used, and FT8 needs no audio.
+  if (digitalIds.has(params.mode)) {
+    // Digital mode: the DDC still runs (the decoder reads channelized baseband), the audio chain
+    // and the worklet do not.
     pipeline?.free();
     pipeline = null;
-    if (!ft8 || ft8Rate !== params.outRate) {
-      ft8?.free();
-      ft8 = new Ft8Session(module, params.outRate);
-      ft8Rate = params.outRate;
+    const geometry = `${params.mode}:${params.fsIn}:${params.decimate}:${params.outRate}:${params.offsetHz}`;
+    if (!digital || digitalGeometry !== geometry) {
+      digital?.free();
+      digital = new DigitalPipeline(module, {
+        fsIn: params.fsIn,
+        offsetHz: params.offsetHz,
+        decimate: params.decimate,
+        outRate: params.outRate,
+        mode: params.mode,
+      });
+      digitalGeometry = geometry;
     }
     postStats();
     return;
   }
-  ft8?.free();
-  ft8 = null;
+  digital?.free();
+  digital = null;
+  digitalGeometry = '';
   if (pipeline && pipeline.mode === params.mode) {
     pipeline.setVolume(volume);
     pipeline.setAudioEnabled(audioEnabled);
@@ -127,10 +141,10 @@ function onIq(frame: IqFrame): void {
   centerHz = frame.centerHz;
   blocks++;
   samples += frame.samples;
-  if (ft8) {
-    const message = ft8.push(frame.iq);
+  if (digital) {
+    const message = digital.push(frame.iq);
     if (message) {
-      ft8Messages = ft8.count();
+      ft8Messages = message.count;
       post({ type: 'ft8', ...message, count: ft8Messages });
     }
   } else if (pipeline) {
@@ -182,6 +196,13 @@ self.onmessage = (event: MessageEvent) => {
       void loadDsp(wasmUrl)
         .then((loaded) => {
           module = loaded;
+          // Which ids are protocols (as opposed to audio demodulators) comes from the module's own
+          // plugin manifest: the worker does not carry a list of its own.
+          digitalIds = new Set(
+            readPluginManifest(loaded)
+              .filter((plugin) => plugin.kind === 'digital')
+              .map((plugin) => plugin.id),
+          );
           syncPipeline();
         })
         .catch(() => {
@@ -195,8 +216,9 @@ self.onmessage = (event: MessageEvent) => {
     enabled = Boolean(msg.value);
     if (!enabled) {
       pipeline?.free();
-      ft8?.free();
-      ft8 = null;
+      digital?.free();
+      digital = null;
+      digitalGeometry = '';
     }
     syncPipeline();
     postStats();

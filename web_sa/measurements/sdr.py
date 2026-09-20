@@ -698,9 +698,12 @@ class SdrSession(MeasurementSession):
         old_pitch = s.sdr_pitch
         old_deemph = float(getattr(s, 'sdr_deemph_us', -1.0))
         reconfig = False
-        if mode is not None and mode in ANALOG_MODES and mode != s.sdr_demod:
+        if mode is not None and mode != s.sdr_demod:
+            # The requested demod is recorded even when this Python chain has no kernel for it (a
+            # digital protocol runs in the browser): STATUS then reports what the user chose, and
+            # the Python DSP keeps demodulating the analog subset it implements.
             s.sdr_demod = mode
-            reconfig = True
+            reconfig = mode in ANALOG_MODES
         if if_bw is not None and abs(float(if_bw) - s.sdr_if_bw) > 0.5:
             s.sdr_if_bw = float(if_bw)
             reconfig = True

@@ -585,7 +585,7 @@ mod tests {
 
 // ---------------------------------------------------------------- plugin + ABI
 
-use crate::plugin::DigitalDemodulator;
+use crate::plugin::{DigitalDemodulator, DigitalReport};
 
 /// FT8 as a `DigitalDemodulator`: it consumes RAW baseband blocks and emits decoded text.
 ///
@@ -646,6 +646,14 @@ impl DigitalDemodulator for Ft8Plugin {
     fn reset(&mut self) {
         self.decoder.reset();
         self.last = None;
+    }
+
+    fn last_report(&self) -> Option<DigitalReport> {
+        self.last.as_ref().map(|message| DigitalReport {
+            frequency_hz: message.frequency_hz,
+            time_offset_s: message.time_offset_s,
+            snr_db: message.snr_db,
+        })
     }
 }
 

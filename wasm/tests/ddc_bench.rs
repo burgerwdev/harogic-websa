@@ -12,6 +12,10 @@
 //!     cargo test --release --test ddc_bench -- --nocapture
 use std::time::Instant;
 
+// The recorded number is the BEST block: the whole test suite runs in parallel, so a mean over a few
+// hundred blocks measures the scheduler as much as the kernel, and the budget is a statement about
+// the kernel.
+
 use websa_dsp::ddc::{Ddc, DdcConfig};
 
 /// One IQS packet is a few thousand complex samples; 4096 is the shape the worker sees.
@@ -40,11 +44,13 @@ fn measure(iterations: usize) -> f64 {
     let mut out = Vec::new();
     // Warm up: the first block pays for the tap design and the allocations.
     ddc.process_i16_into(&iq, &mut out);
-    let start = Instant::now();
+    let mut best = f64::MAX;
     for _ in 0..iterations {
+        let start = Instant::now();
         ddc.process_i16_into(&iq, &mut out);
+        best = best.min(start.elapsed().as_secs_f64());
     }
-    start.elapsed().as_secs_f64() / iterations as f64
+    best
 }
 
 #[test]

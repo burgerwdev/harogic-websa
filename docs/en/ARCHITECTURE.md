@@ -84,17 +84,22 @@ path here does not exist yet.
 | SAN-90 IQ source | `web_sa/measurements/sdr.py` (IQS stream), `web_sa/hardware/sdk_bindings.py` |
 | Python device / control | `web_sa/hardware/`, `web_sa/measurements/`, `web_sa/web/` |
 | IQ over WebSocket | `web_sa/measurements/framer.py` (`IQDF`), `web_sa/web/client_stream.py` |
-| Web Worker DSP host | `frontend/modern/src/sdr/worker.ts` |
+| Worker IQ ingress | `frontend/modern/src/sdr/iqWorker.ts` |
+| Worker DSP orchestration | `frontend/modern/src/sdr/iqStream.ts`, `frontend/modern/src/sdr/wasmPipeline.ts`, `frontend/modern/src/sdr/digitalPipeline.ts` |
 | WASM boundary (raw ABI) | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/abi.rs` |
-| DDC (NCO / FIR / resampler / AGC) | `wasm/src/ddc/{nco,fir,resampler,agc}.rs` |
-| Analog demodulators | `wasm/src/analog/{am,dsb,ssb,cw,fm,pm}.rs`, `frontend/modern/src/sdr/analog.ts` |
-| Digital demodulator (FT8) | `wasm/src/digital/ft8/`, `frontend/modern/src/sdr/digital/` |
-| Audio DSP (analog PCM only) | `wasm/src/audio/{lpf,agc,squelch,wiener,notch,blanker}.rs`, `wasm/src/fft.rs` |
-| Audio PCM output | `frontend/modern/src/audio/sdrAudioWorklet.js`, `audio/sdrAudio.ts` |
-| RAW / DSP data stream | `frontend/modern/src/sdr/digital/` (decoder + view) |
-| Plugin registries | `frontend/modern/src/sdr/registry.ts` |
-| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/dsp_parity.py` |
+| DDC (NCO / FIR / resampler / AGC) | `wasm/src/ddc/nco.rs`, `wasm/src/ddc/fir.rs`, `wasm/src/ddc/resampler.rs`, `wasm/src/ddc/agc.rs`, chained by `wasm/src/ddc/mod.rs` |
+| Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
+| Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs`, `frontend/modern/src/sdr/ft8.ts` |
+| Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
+| Path assembly and the separation rule | `wasm/src/pipeline.rs` |
+| Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/modern/src/sdr/registry.ts` |
+| ABI entry points | `wasm/src/pipeline_abi.rs` (analog and digital pipelines), `wasm/src/abi.rs` (memory) |
+| Audio PCM output | `frontend/modern/src/audio/sdrAudioWorklet.js`, `frontend/modern/src/audio/sdrAudio.ts`, `frontend/modern/src/audio/sdrAudioWorker.ts` |
+| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/dsp_parity.py`, `tools/gen_dsp_fixtures.py` |
 | WASM artifact build | `wasm/build.sh` → `frontend/modern/public/dsp.wasm` (committed) |
+
+`tools/check_doc_paths.py` verifies every path in this table exists, so the map cannot describe a
+module that was renamed or never written.
 
 ### DSP paths and the separation rule
 

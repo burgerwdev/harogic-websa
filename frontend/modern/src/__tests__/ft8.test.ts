@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Ft8Session } from '../sdr/ft8';
+import { DigitalPipeline } from '../sdr/digitalPipeline';
 import { instantiateDsp } from '../sdr/wasm';
 
 const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
@@ -72,6 +73,30 @@ describe('FT8 through the committed artifact', () => {
 		session.free();
 		expect(session.push(iq.subarray(0, 960))).toBeNull();
 		expect(() => session.free()).not.toThrow();
+	}, 180_000);
+
+	it('decodes through the digital *pipeline* (DDC + decoder) with wire-sized blocks', async () => {
+		// This is the path the worker uses for a digital mode: the shared DDC feeds the protocol
+		// decoder, and the IQ arrives in the frame-sized blocks the socket delivers.
+		const meta = manifest();
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new DigitalPipeline(module, {
+			fsIn: meta.rate,
+			offsetHz: 0,
+			decimate: 1,                 // the fixture is already at the channel rate
+			outRate: meta.rate,
+			mode: 'ft8',
+		});
+		expect(pipeline.ok).toBe(true);
+		const iq = fixtureIq();
+		const block = 4096 * 2;          // 4096 complex samples, the IQS block shape
+		let decoded = null;
+		for (let start = 0; start < iq.length; start += block) {
+			decoded = pipeline.push(iq.subarray(start, Math.min(start + block, iq.length))) ?? decoded;
+		}
+		expect(decoded?.text).toBe(meta.message);
+		expect(pipeline.count()).toBeGreaterThan(0);
+		pipeline.free();
 	}, 180_000);
 
 	it('refuses to create a session for an invalid rate instead of failing later', async () => {

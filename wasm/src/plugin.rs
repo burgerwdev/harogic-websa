@@ -79,7 +79,7 @@ pub const ANALOG_PLUGINS: &[PluginDescriptor] = &[
 
 /// Digital demodulators. FT8 is the first; the seam is what the others will plug into.
 pub const DIGITAL_PLUGINS: &[PluginDescriptor] = &[
-    digital("ft8", false),
+    digital("ft8", true),
 ];
 
 /// Audio-enhancement stages, in the order the chain applies them. Every one of these is
@@ -147,6 +147,14 @@ pub trait AnalogDemodulator: Send {
     fn reset(&mut self);
 }
 
+/// What a protocol knows about its most recent decode (shown in the UI).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DigitalReport {
+    pub frequency_hz: f64,
+    pub time_offset_s: f64,
+    pub snr_db: f64,
+}
+
 /// A digital demodulator: complex baseband in, whatever the protocol produces out.
 ///
 /// The output is deliberately opaque: FT8 produces a decoded message, not audio. A protocol that
@@ -157,6 +165,12 @@ pub trait DigitalDemodulator: Send {
     /// this block (empty when the block completed no message).
     fn process_iq(&mut self, iq: &[f32]) -> Vec<String>;
     fn reset(&mut self);
+
+    /// Measurements for the most recent decode (frequency, slot offset, SNR), when the protocol
+    /// has any to report. Defaults to nothing: a protocol is not obliged to measure anything.
+    fn last_report(&self) -> Option<DigitalReport> {
+        None
+    }
 }
 
 /// One stage of the analog audio chain (LPF/AGC/squelch/Wiener/notch/blanker).

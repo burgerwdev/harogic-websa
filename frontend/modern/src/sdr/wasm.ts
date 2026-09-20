@@ -41,6 +41,13 @@ export interface DspExports {
 	websa_dsp_ft8_count(handle: number): number;
 	websa_dsp_ft8_reset(handle: number): number;
 	websa_dsp_ft8_free(handle: number): number;
+	// The digital *pipeline*: the shared DDC feeding a protocol decoder
+	websa_dsp_digital_new(fsIn: number, offsetHz: number, decimate: number, outRate: number, modePtr: number, modeLen: number): number;
+	websa_dsp_digital_push(handle: number, iqPtr: number, samples: number): number;
+	websa_dsp_digital_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
+	websa_dsp_digital_count(handle: number): number;
+	websa_dsp_digital_reset(handle: number): number;
+	websa_dsp_digital_free(handle: number): number;
 	// The whole analog receive pipeline: one handle, one call per IQ block
 	websa_dsp_pipeline_new(fsIn: number, offsetHz: number, decimate: number, outRate: number, modePtr: number, modeLen: number, ifBw: number, pitch: number): number;
 	websa_dsp_pipeline_process(handle: number, iqPtr: number, samples: number, outPtr: number, capacity: number, audioHold: number): number;

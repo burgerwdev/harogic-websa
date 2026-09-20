@@ -248,22 +248,27 @@ impl AnalogDemod {
     }
 
     /// One-pole DC block, `y[n] = a*y[n-1] + a*(x[n] - x[n-1])`, block-crossing.
-    fn dc_block(&mut self, x: &[f32], out: &mut Vec<f32>) {
+    ///
+    /// The input stays in f64 (the reference computes the envelope and the phase in float64 and only
+    /// narrows the *result* to float32). Narrowing the detector output first — as an earlier version
+    /// did — destroys the small differences the block works on, which measured as ~1e-4 disagreement
+    /// on exactly the modes that use it and left the others at ~1e-7.
+    fn dc_block(&mut self, x: &[f64], out: &mut Vec<f32>) {
         out.clear();
         out.reserve(x.len());
-        let mut prev = if x.is_empty() { 0.0 } else { x[0] as f64 };
+        let mut prev = if x.is_empty() { 0.0 } else { x[0] };
         for (index, sample) in x.iter().enumerate() {
             let delta = if index == 0 {
-                (*sample as f64 - self.env_prev) * DC_A
+                (*sample - self.env_prev) * DC_A
             } else {
-                (*sample as f64 - prev) * DC_A
+                (*sample - prev) * DC_A
             };
             self.dc_y = DC_A * self.dc_y + delta;
-            prev = *sample as f64;
+            prev = *sample;
             out.push(self.dc_y as f32);
         }
         if let Some(last) = x.last() {
-            self.env_prev = *last as f64;
+            self.env_prev = *last;
         }
     }
 
@@ -276,7 +281,7 @@ impl AnalogDemod {
                 let mut env = Vec::with_capacity(n);
                 for k in 0..n {
                     let (i, q) = (z[2 * k], z[2 * k + 1]);
-                    env.push((i * i + q * q).sqrt() as f32);
+                    env.push((i * i + q * q).sqrt());
                 }
                 let mut blocked = Vec::new();
                 self.dc_block(&env, &mut blocked);
@@ -285,7 +290,7 @@ impl AnalogDemod {
             Detector::Phase => {
                 let mut phase = Vec::with_capacity(n);
                 for k in 0..n {
-                    phase.push(z[2 * k + 1].atan2(z[2 * k]) as f32);
+                    phase.push(z[2 * k + 1].atan2(z[2 * k]));
                 }
                 let mut blocked = Vec::new();
                 self.dc_block(&phase, &mut blocked);
