@@ -50,6 +50,10 @@ async def publisher(app, dev):
         t0 = time.monotonic()
         frames = []
         clients = app[WS_CLIENTS]
+        # Whether the active session must encode raw IQ is a property of the connected
+        # clients, not of the session: only the browser DSP worker opens `?iq=1`, and with no
+        # subscriber the ~MB/s encode and fan-out would be pure waste.
+        dev.iq_clients = sum(1 for client in clients if client.accepts_iq)
         if clients:
             if dev.state.connected != last_connected:
                 last_connected = dev.state.connected
@@ -64,6 +68,7 @@ async def publisher(app, dev):
                     'dropped_frames': sum(client.dropped_frames for client in clients),
                     'dropped_control': sum(client.dropped_control for client in clients),
                     'dropped_audio': sum(client.dropped_audio for client in clients),
+                    'dropped_iq': sum(client.dropped_iq for client in clients),
                 }
                 _send_json(app, status)
             if not dev.state.connected:

@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from .base import MeasurementSession
-from .framer import encode_audio, encode_rta
+from .framer import IQ_VERSION, encode_audio, encode_iq, encode_rta
 
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
@@ -17,6 +17,10 @@ SDR_PAN_POINTS = 512
 SDR_AUDIO_RATE = 48000
 SDR_AUDIO_SAMPLES = 960          # 20 ms at 48 kHz, what the real SDR emits
 AUDIO_TONE_HZ = 1000.0
+#: Synthetic IQ block: the browser DSP's input, so the fake backend exercises the same path
+#: as the analyzer (a tone offset from the capture centre, i.e. a signal to tune to).
+SDR_IQ_SAMPLES = 4096
+SDR_IQ_TONE_HZ = 25.0e3
 
 
 class _FakeRtaBase(MeasurementSession):
@@ -30,6 +34,7 @@ class _FakeRtaBase(MeasurementSession):
         self._tick = 0
         self._rng = np.random.default_rng(7)
         self._audio_seq = 0
+        self._iq_seq = 0
 
     # lifecycle protocol the command layer relies on
     def request_stop(self) -> None:
@@ -58,6 +63,17 @@ class _FakeRtaBase(MeasurementSession):
         pcm = (0.2 * np.sin(2 * np.pi * AUDIO_TONE_HZ * t) * 32767).astype(np.int16)
         self._audio_seq += 1
         return encode_audio(self._audio_seq, SDR_AUDIO_RATE, pcm)
+
+    def _iq(self, rate: float, center_hz: float) -> bytes:
+        """One synthetic IQ block, interleaved int16, as the IQS stream delivers it."""
+        n = SDR_IQ_SAMPLES
+        t = (np.arange(n) + self._tick * n) / max(1.0, rate)
+        ph = 2 * np.pi * SDR_IQ_TONE_HZ * t
+        i = (0.25 * np.cos(ph) * 32767).astype(np.int16)
+        q = (0.25 * np.sin(ph) * 32767).astype(np.int16)
+        self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+        return encode_iq(IQ_VERSION, self._iq_seq, rate, center_hz,
+                         np.stack([i, q], axis=1).reshape(-1))
 
 
 class FakeRtaSession(_FakeRtaBase):
@@ -240,4 +256,8 @@ class FakeSdrSession(_FakeRtaBase):
         s.sdr_squelch_open = True
         pan = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
                          center - bandwidth / 2, center + bandwidth / 2)
-        return [pan, self._audio()], []
+        frames = [pan]
+        if getattr(self.dev, 'iq_clients', 0):
+            frames.append(self._iq(s.sdr_actual['iq_rate'], center))
+        frames.append(self._audio())
+        return frames, []

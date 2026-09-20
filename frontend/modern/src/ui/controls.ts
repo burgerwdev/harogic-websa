@@ -25,6 +25,7 @@ import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { resetSdrIq, setSdrIqEnabled } from '../sdr/iqStream';
 import { resetLimits } from './limits';
 
 // Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
@@ -151,6 +152,7 @@ export function setGraphMode(mode: string) {
       sdrAudioHandoffTimer = null;
     }
     setSdrAudioEnabled(false);
+    setSdrIqEnabled(false);
   }
   send({ cmd: 'SET_MODE', mode: target });
 }
@@ -173,6 +175,10 @@ export function syncGraphModeStatus(mode: string) {
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
   if (isSdr) {
+    // The IQ ingress runs while SDR mode is active, independent of the audio switch: the
+    // backend only produces IQ during an SDR session, and the DSP input must not depend on
+    // whether the speaker is muted.
+    setSdrIqEnabled(true);
     deferSdrAudioPreference();
     // Entering SDR always fits the reference once: the swept level is meaningless for an IQS
     // panadapter (often 0 dBm against a -100 dBm floor), which is what produced the reported
@@ -184,6 +190,7 @@ export function syncGraphModeStatus(mode: string) {
     // trip. Writing it off here is what made "audio on" silently become "audio off" after a visit
     // to RTA/SWP (measured: localStorage flipped 1 -> 0 on the way out).
     setSdrAudioEnabled(false);
+    setSdrIqEnabled(false);
     syncSdrAudioButton();
   }
   const modeButton = document.getElementById('btn-mode-rta');
@@ -507,6 +514,8 @@ export function presetAll() {
   smoothBins.set(1);
   spanStepAuto.set(true);
   setSdrAudioEnabled(false);
+  setSdrIqEnabled(false);
+  resetSdrIq();
   sdrAudioOn.set(false);
 
   // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old

@@ -33,7 +33,7 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 频率轴 |
 | POWR | POWR + ... | float32 功率 dBm |
-| IQDF | IQDF + ver(4) + seq(4) + rate(f4) + samples(4) + center_hz(f8) | interleaved int16 IQ (I,Q) |
+| IQDF | IQDF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | interleaved int16 IQ (I,Q pairs); seq=0 flushes |
 
 ## WS 命令
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/

@@ -15,6 +15,8 @@
  *   RTAF  magic + ver(u32) pts(u32) wfLen(u16) maxD(u16) startHz(f64)   (8-byte aligned)
  *         + float64[pts] + float32[pts] + uint16[wfLen] + stopHz(f64)
  *   AUDF  magic + seq(u32) rate(u32) samples(u32) + int16[samples]      (mono PCM)
+ *   IQDF  magic + ver(u32) seq(u32) samples(u32) rate(f64) centerHz(f64) + int16[2*samples]
+ *                                                                    (interleaved IQ)
  *
  * Lengths are validated strictly: a frame whose declared size does not match the buffer is
  * rejected instead of being interpreted with a wrong stride. Returns null for anything that
@@ -25,10 +27,14 @@ export const MAGIC_FREQ = 'FREQ';
 export const MAGIC_POWR = 'POWR';
 export const MAGIC_RTAF = 'RTAF';
 export const MAGIC_AUDIO = 'AUDF';
+export const MAGIC_IQ = 'IQDF';
 
 export const COMMON_HEADER_BYTES = 16;      // magic + version + points + sweep_ms
 export const RTA_HEADER_BYTES = 24;         // magic + ver + pts + wfLen + maxD + startHz
 export const AUDIO_HEADER_BYTES = 16;       // magic + seq + rate + samples
+// The two f64 fields sit before the payload so the int16 IQ block starts at byte 32: a
+// typed-array view at an odd byte offset throws, and the DSP must not have to copy.
+export const IQ_HEADER_BYTES = 32;          // magic + ver + seq + samples + rate + centre
 
 export interface FrameHeader {
 	version: number;
@@ -65,7 +71,19 @@ export interface AudioFrame {
 	pcm: Int16Array;
 }
 
-export type DecodedFrame = FreqFrame | PowrFrame | RtaFrame | AudioFrame;
+export interface IqFrame {
+	kind: 'iq';
+	version: number;
+	/** Frame counter; 0 means "flush": the queued blocks belong to another centre. */
+	seq: number;
+	rate: number;
+	centerHz: number;
+	/** Complex samples: `samples` I/Q pairs, interleaved in `iq` (2 int16 each). */
+	samples: number;
+	iq: Int16Array;
+}
+
+export type DecodedFrame = FreqFrame | PowrFrame | RtaFrame | AudioFrame | IqFrame;
 
 /** ASCII magic of a binary frame, or '' when the buffer is too short. */
 export function frameMagic(data: ArrayBuffer): string {
@@ -78,6 +96,7 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 	if (data.byteLength < 4) return null;
 	const magic = frameMagic(data);
 	if (magic === MAGIC_AUDIO) return decodeAudio(data);
+	if (magic === MAGIC_IQ) return decodeIq(data);
 	if (data.byteLength < COMMON_HEADER_BYTES) return null;
 	const head = new DataView(data, 4, 12);
 	const version = head.getUint32(0, true);
@@ -120,4 +139,18 @@ function decodeAudio(data: ArrayBuffer): AudioFrame | null {
 	const samples = v.getUint32(8, true);
 	if (data.byteLength !== AUDIO_HEADER_BYTES + samples * 2) return null;
 	return { kind: 'audio', seq, rate, samples, pcm: new Int16Array(data, AUDIO_HEADER_BYTES, samples) };
+}
+
+function decodeIq(data: ArrayBuffer): IqFrame | null {
+	if (data.byteLength < IQ_HEADER_BYTES) return null;
+	const v = new DataView(data, 4, 28);
+	const version = v.getUint32(0, true);
+	const seq = v.getUint32(4, true);
+	const samples = v.getUint32(8, true);
+	const rate = v.getFloat64(12, true);
+	const centerHz = v.getFloat64(20, true);
+	// `samples` is complex samples, so the payload is twice as wide as the count suggests.
+	if (data.byteLength !== IQ_HEADER_BYTES + samples * 4) return null;
+	return { kind: 'iq', version, seq, rate, centerHz, samples,
+		iq: new Int16Array(data, IQ_HEADER_BYTES, samples * 2) };
 }

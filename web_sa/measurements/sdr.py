@@ -22,7 +22,7 @@ from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
-from .framer import encode_audio, encode_rta
+from .framer import IQ_VERSION, encode_audio, encode_iq, encode_rta
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +126,10 @@ class SdrSession(MeasurementSession):
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._audio_seq = 0
         self._audio_reset_pending = False
+        # Raw IQ to the browser DSP (IQDF). The sequence restarts after a reconfiguration so
+        # the client flushes blocks that belong to the previous capture geometry.
+        self._iq_seq = 0
+        self._iq_reset_pending = False
         self._packet_samples = 0
         self._ddc_batch = 1
         self._iqs_center_hz = 0.0
@@ -522,6 +526,8 @@ class SdrSession(MeasurementSession):
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._audio_seq = 0
         self._audio_reset_pending = True
+        self._iq_seq = 0
+        self._iq_reset_pending = True
 
     def _configure_chain_locked(self):
         """DDC + demod. The DDC is configured with the coarse offset for the current
@@ -938,6 +944,20 @@ class SdrSession(MeasurementSession):
             src = arr
             n = total_n
             s = dev.state
+
+            # ---- raw IQ to the browser DSP (IQDF) ----
+            # Only while a DSP socket is subscribed: the encode plus fan-out is the largest
+            # frame on the wire, and a display-only client must not pay for it.
+            if getattr(dev, 'iq_clients', 0):
+                if self._iq_reset_pending:
+                    frames.append(encode_iq(IQ_VERSION, 0, self._fs_in, self._iqs_center_hz,
+                                            np.zeros(0, dtype=np.int16)))
+                    self._iq_reset_pending = False
+                if arr.size:
+                    # seq never repeats 0: that value means "flush" to the client.
+                    self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+                    frames.append(encode_iq(IQ_VERSION, self._iq_seq, self._fs_in,
+                                            self._iqs_center_hz, arr))
 
             # ---- panadapter / waterfall ----
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:

@@ -18,12 +18,19 @@ FIFO = 'fifo'          # ordered queue, drop-oldest on overrun (audio)
 FRAME_POLICY = {
     b'FREQ': RETAIN,
     b'AUDF': FIFO,
+    b'IQDF': FIFO,
     b'POWR': LATEST,
     b'RTAF': LATEST,
 }
 DEFAULT_POLICY = LATEST
-#: Marker the connection filters use (audio has its own socket in the frontend).
+#: Markers the connection filters use (audio and IQ have their own sockets in the frontend).
 AUDIO_MAGIC = b'AUDF'
+IQ_MAGIC = b'IQDF'
+#: Byte offset of the u32 sequence number in each streaming (FIFO) frame. AUDF puts it first
+#: (seq, rate, samples); IQDF keeps the version first (ver, seq, samples, rate, centre).
+FIFO_SEQ_OFFSET = {AUDIO_MAGIC: 4, IQ_MAGIC: 8}
+#: Dropped-frame counter per streaming frame type, for STATUS.stream.
+FIFO_DROPPED_FIELD = {AUDIO_MAGIC: 'dropped_audio', IQ_MAGIC: 'dropped_iq'}
 
 
 class ClientStream:
@@ -31,31 +38,52 @@ class ClientStream:
 
     Control JSON messages are bounded and STATUS is coalesced. Frequency frames are
     retained separately so a dropped power frame can never orphan a new frequency axis.
-    High-rate POWR/RTAF frames use latest-wins semantics. SDR audio (AUDF) is kept in a
-    small FIFO so it is never reordered/dropped in normal operation (drop-oldest only on
-    overrun, to bound latency).
+    High-rate POWR/RTAF frames use latest-wins semantics. The SDR streaming frames (AUDF
+    audio, IQDF IQ) are kept in small FIFOs so they are never reordered/dropped in normal
+    operation (drop-oldest only on overrun, to bound latency).
     """
 
     CONTROL_LIMIT = 32
     AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
+    #: IQ blocks are much larger than audio frames and the browser DSP only needs continuity,
+    #: not 400 ms of buffer: 8 blocks bound the latency and the FIFO memory.
+    IQ_LIMIT = 8
+    #: Minimum sane header length per streaming frame type (IQDF's header is 32 bytes).
+    FIFO_MIN_BYTES = {AUDIO_MAGIC: 16, IQ_MAGIC: 32}
 
-    def __init__(self, ws, audio_only: bool = False, no_audio: bool = False):
+    def __init__(self, ws, audio_only: bool = False, no_audio: bool = False,
+                 iq_only: bool = False, no_iq: bool = False):
         self.ws = ws
-        # Per-connection stream filter. The main UI connection uses no_audio (it never
-        # handles AUDF); the SDR audio worker uses audio_only so it is not fed the display
-        # frames. Default keeps the historical behaviour (everything).
+        # Per-connection stream filter. The main UI connection uses no_audio/no_iq (it
+        # handles neither AUDF nor IQDF); the SDR audio worker uses audio_only and the SDR
+        # IQ worker uses iq_only, so neither is fed the display frames. Default keeps the
+        # historical behaviour (everything).
         self.audio_only = audio_only
         self.no_audio = no_audio
+        self.iq_only = iq_only
+        self.no_iq = no_iq
         self._control: deque[str] = deque()
         self._freq: bytes | None = None
         self._data: bytes | None = None
         self._audio: deque[bytes] = deque()
+        self._iq: deque[bytes] = deque()
         self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
         self.dropped_frames = 0
         self.dropped_control = 0
         self.dropped_audio = 0
+        self.dropped_iq = 0
         self.closed = False
+
+    @property
+    def accepts_iq(self) -> bool:
+        """True when this connection would actually keep an IQDF frame.
+
+        The publisher asks this before the session encodes an IQ block, so the raw-IQ
+        encode+fan-out only happens while a browser DSP socket is really subscribed: an
+        audio-only socket discards IQ, and counting it would encode megabytes for nobody.
+        """
+        return not self.closed and not self.no_iq and not self.audio_only
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._sender())
@@ -66,28 +94,39 @@ class ClientStream:
         magic = frame[:4]
         if self.audio_only and magic != AUDIO_MAGIC:
             return
+        if self.iq_only and magic != IQ_MAGIC:
+            return
         if self.no_audio and magic == AUDIO_MAGIC:
+            return
+        if self.no_iq and magic == IQ_MAGIC:
             return
         policy = FRAME_POLICY.get(magic, DEFAULT_POLICY)
         if policy is RETAIN:
             self._freq = frame
         elif policy is FIFO:
-            if len(frame) < 16:
-                self.dropped_audio += 1
+            if len(frame) < self.FIFO_MIN_BYTES[magic]:
+                self._drop_fifo(magic, 1)
                 return
-            seq = int.from_bytes(frame[4:8], 'little')
-            if seq == 0:
-                self.dropped_audio += len(self._audio)
-                self._audio.clear()
-            self._audio.append(frame)
-            if len(self._audio) > self.AUDIO_LIMIT:
-                self._audio.popleft()
-                self.dropped_audio += 1
+            queue = self._iq if magic == IQ_MAGIC else self._audio
+            limit = self.IQ_LIMIT if magic == IQ_MAGIC else self.AUDIO_LIMIT
+            offset = FIFO_SEQ_OFFSET[magic]
+            if int.from_bytes(frame[offset:offset + 4], 'little') == 0:
+                self._drop_fifo(magic, len(queue))
+                queue.clear()
+            queue.append(frame)
+            if len(queue) > limit:
+                queue.popleft()
+                self._drop_fifo(magic, 1)
         else:
             if self._data is not None:
                 self.dropped_frames += 1
             self._data = frame
         self._event.set()
+
+    def _drop_fifo(self, magic: bytes, count: int) -> None:
+        """Count dropped streaming frames on the same counter STATUS.stream reports."""
+        field = FIFO_DROPPED_FIELD[magic]
+        setattr(self, field, getattr(self, field) + count)
 
     def publish_json(self, obj: dict) -> None:
         """Serialize and queue one message for this client."""
@@ -99,7 +138,7 @@ class ClientStream:
         The publisher uses this to serialize once for all clients; ``coalesce`` marks the
         1 Hz periodic STATUS, which supersedes an older queued one.
         """
-        if self.closed or self.audio_only:
+        if self.closed or self.audio_only or self.iq_only:
             return
         if coalesce:
             self._control = deque(
@@ -134,6 +173,9 @@ class ClientStream:
                     elif self._audio:
                         await asyncio.wait_for(
                             self.ws.send_bytes(self._audio.popleft()), timeout=SEND_TIMEOUT)
+                    elif self._iq:
+                        await asyncio.wait_for(
+                            self.ws.send_bytes(self._iq.popleft()), timeout=SEND_TIMEOUT)
                     elif self._data is not None:
                         frame, self._data = self._data, None
                         await asyncio.wait_for(self.ws.send_bytes(frame), timeout=SEND_TIMEOUT)

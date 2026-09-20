@@ -22,7 +22,7 @@ from tools.gen_frame_fixtures import build  # noqa: E402
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'frames'
 
 
-@pytest.mark.parametrize('name', ['freq.bin', 'powr.bin', 'rta.bin', 'audio.bin'])
+@pytest.mark.parametrize('name', ['freq.bin', 'powr.bin', 'rta.bin', 'audio.bin', 'iq.bin'])
 def test_committed_fixture_matches_the_encoder(name):
     files, _manifest = build()
     path = FIXTURES / name
@@ -54,3 +54,23 @@ def test_freq_and_powr_layout():
     assert len(powr) == 16 + manifest['powr']['points'] * 4
     # POWR must stay float32 (the frontend reads it as f4) even when given float64 input.
     assert np.frombuffer(powr, dtype='<f4', offset=16).tolist() == manifest['powr']['power']
+
+
+def test_iq_layout_keeps_the_payload_aligned():
+    """IQDF: magic + ver + seq + samples + rate(f8) + centre(f8) + int16 I/Q pairs.
+
+    The two f64 fields live *before* the payload so the int16 block starts at byte 32: a
+    typed-array view on an odd offset throws in the browser, and the client must be able to
+    read the samples without copying.
+    """
+    files, manifest = build()
+    iq = files['iq.bin']
+    iq_m = manifest['iq']
+    assert iq[:4] == b'IQDF'
+    ver, seq, samples = np.frombuffer(iq, dtype='<u4', count=3, offset=4)
+    assert (int(ver), int(seq), int(samples)) == (iq_m['version'], iq_m['seq'], iq_m['samples'])
+    rate, center = np.frombuffer(iq, dtype='<f8', count=2, offset=16)
+    assert float(rate) == iq_m['rate']
+    assert float(center) == iq_m['center_hz']
+    assert len(iq) == 32 + iq_m['samples'] * 2 * 2
+    assert np.frombuffer(iq, dtype='<i2', offset=32).tolist() == iq_m['iq']

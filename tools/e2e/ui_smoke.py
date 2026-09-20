@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.request
 
@@ -188,6 +189,16 @@ def main() -> int:
             check(f'{mode} mode is applied', state(args.url)['mode'] == mode,
                   state(args.url)['mode'])
             check(f'{mode} view is drawn', painted > args.painted_min, f'{painted} pixels')
+            if mode == 'sdr':
+                # The DSP input is its own `?iq=1` socket in a worker; the canvas dataset is
+                # where the worker's counters surface, so this asserts the whole transport
+                # (backend encoder -> WS -> worker decoder), not just that a socket opened.
+                page.wait_for_timeout(1500)
+                dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
+                blocks = int(m.group(1)) if (m := re.search(r'blocks=(\d+)', dbg)) else 0
+                check('the SDR IQ stream reaches the DSP worker', blocks > 0, dbg)
+                check('the IQ worker learns the capture rate and centre',
+                      'rate=0' not in dbg and 'center_hz=0' not in dbg, dbg)
 
         print('4) measurement tabs render')
         js_click(page, '#btn-meas-onoff')
