@@ -33,6 +33,7 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 频率轴 |
 | POWR | POWR + ... | float32 功率 dBm |
+| IQDF | IQDF + ver(4) + seq(4) + rate(f4) + samples(4) + center_hz(f8) | interleaved int16 IQ (I,Q) |
 
 ## WS 命令
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
@@ -57,6 +58,61 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   抛出致命硬件错误，由 supervisor 重启 worker；STATUS 暴露 `rta_health`
 - **已知坑**: `renderRta` 用外层 `save/clip(plotRect)` 包裹密度+迹线, 画底部频率行前必须
   `restore` —— 否则绘图区外的频率行被 clip 裁掉, 切到 RTA 后消失(已修复)
+
+## SDR DSP 流水线（目标架构，分支 `refactor/wasm-dsp`）
+
+SDR 路径把实时 DSP 从 Python 移到运行在 Web Worker 里的 Rust/WASM 模块。Python 只保留设备、
+命令/状态层和传输；信号处理在浏览器里做。现有的 Python DSP **不删除**：它作为不支持 WASM 时的
+回退路径，同时作为 Rust 内核比对的数值参考。
+
+```
+SAN-90 ──IQ──▶ Python 后端 ──IQ 帧──▶ Web Worker ──WASM──▶ DDC ──┬─▶ 模拟解调 ─▶ 音频 DSP ─▶ AudioWorklet ─▶ 扬声器
+                                                                  └─▶ 数字解调 ─▶ 解码 / 视图
+```
+
+### 阶段映射
+
+图中的每个阶段都对应一个具名模块。下表就是契约：没有路径的阶段即尚未存在。
+
+| 阶段 | 模块 |
+|---|---|
+| SAN-90 IQ 源 | `web_sa/measurements/sdr.py` (IQS 流)、`web_sa/hardware/sdk_bindings.py` |
+| Python 设备 / 控制 | `web_sa/hardware/`、`web_sa/measurements/`、`web_sa/web/` |
+| WebSocket 传输 IQ | `web_sa/measurements/framer.py` (`IQDF`)、`web_sa/web/client_stream.py` |
+| Web Worker DSP 宿主 | `frontend/modern/src/sdr/worker.ts` |
+| WASM 边界（裸 ABI） | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/abi.rs` |
+| DDC (NCO / FIR / 重采样 / AGC) | `wasm/src/ddc/{nco,fir,resampler,agc}.rs` |
+| 模拟解调器 | `wasm/src/analog/{am,dsb,ssb,cw,fm,pm}.rs`、`frontend/modern/src/sdr/analog.ts` |
+| 数字解调器 (FT8) | `wasm/src/digital/ft8/`、`frontend/modern/src/sdr/digital/` |
+| 音频 DSP（仅模拟 PCM） | `wasm/src/audio/{lpf,agc,squelch,wiener,notch,blanker}.rs`、`wasm/src/fft.rs` |
+| 音频 PCM 输出 | `frontend/modern/src/audio/sdrAudioWorklet.js`、`audio/sdrAudio.ts` |
+| RAW / DSP 数据流 | `frontend/modern/src/sdr/digital/`（解码器 + 视图） |
+| 插件注册表 | `frontend/modern/src/sdr/registry.ts` |
+| Python 回退与参考 | `web_sa/demod/`（不变）、`tools/dsp_parity.py` |
+| WASM 产物构建 | `wasm/build.sh` → `frontend/modern/public/dsp.wasm`（入库） |
+
+### DSP 路径与分离规则
+
+DDC 是公共基础层：所有模拟与数字模式拿到的都是同一路混频、滤波、重采样、电平归一后的数据流。
+在它之上，两条路径刻意分开：
+
+- **模拟路径** — `AnalogDemod` → 音频 DSP → PCM。音频链（隔直、LPF、AGC、静噪、STFT Wiener、
+自适应陷波、IF 噪声消除）面向人耳调优。
+- **数字路径 / RAW** — `DigitalDemod` → 解码器与可视化，**完全不经过音频增强**。语音降噪作用在
+FT8 音调上会毁掉解码所需的信息，因此该分离由自动化测试保证（开关音频级时 RAW 输出必须逐位相同），
+而不是靠约定。
+
+新增模式就是在注册表里加一个插件：模拟模式实现解调器接口（已有 am、dsb、usb、lsb、cw、nfm、wfm、pm），
+数字协议实现解码器接口（首先 FT8）。UI 的模式列表从注册表读取，新增模式不会在面板里被遗漏。
+
+### WASM 边界与构建
+
+- 该 crate **无任何依赖**（不用 wasm-bindgen，也不用 wasm-pack）；`cargo build --target
+wasm32-unknown-unknown` 就是全部工具链。
+- 数组以指向模块线性内存的指针按块跨越边界；热路径每块零分配。
+- 构建出的 `.wasm` 入库，因此 CI 不需要 Rust 工具链。`wasm/build.sh` 重新构建，并在入库产物与
+新构建不一致时失败。
+- `wasm/` 同时可本机编译，`cargo test` 就是针对内核运行它。
 
 ## 注册点的可达性（import 副作用）
 

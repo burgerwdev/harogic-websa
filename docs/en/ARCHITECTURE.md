@@ -32,6 +32,7 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 frequency axis |
 | POWR | POWR + ... | float32 power dBm |
+| IQDF | IQDF + ver(4) + seq(4) + rate(f4) + samples(4) + center_hz(f8) | interleaved int16 IQ (I,Q) |
 
 ## WS Commands
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
@@ -59,6 +60,68 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **Known quirk**: `renderRta` wraps density+traces in an outer `save/clip(plotRect)` that must be
   `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
   away and disappears after switching to RTA (fixed)
+
+## SDR DSP Pipeline (target architecture, branch `refactor/wasm-dsp`)
+
+The SDR path moves the real-time DSP out of Python and into a Rust/WASM module that runs
+inside a Web Worker. Python keeps the device, the command/state layer and the transport;
+the browser does the signal processing. The Python DSP that exists today is **not deleted**:
+it stays as the no-WASM fallback and as the numerical reference the Rust kernels are
+compared against.
+
+```
+SAN-90 ──IQ──▶ Python backend ──IQ frames──▶ Web Worker ──WASM──▶ DDC ──┬─▶ AnalogDemod ─▶ Audio DSP ─▶ AudioWorklet ─▶ speaker
+                                                                      └─▶ DigitalDemod ─▶ decoder / view
+```
+
+### Stage map
+
+Every stage of the diagram is a named module. The table is the contract: a stage that has no
+path here does not exist yet.
+
+| Stage | Module |
+|---|---|
+| SAN-90 IQ source | `web_sa/measurements/sdr.py` (IQS stream), `web_sa/hardware/sdk_bindings.py` |
+| Python device / control | `web_sa/hardware/`, `web_sa/measurements/`, `web_sa/web/` |
+| IQ over WebSocket | `web_sa/measurements/framer.py` (`IQDF`), `web_sa/web/client_stream.py` |
+| Web Worker DSP host | `frontend/modern/src/sdr/worker.ts` |
+| WASM boundary (raw ABI) | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/abi.rs` |
+| DDC (NCO / FIR / resampler / AGC) | `wasm/src/ddc/{nco,fir,resampler,agc}.rs` |
+| Analog demodulators | `wasm/src/analog/{am,dsb,ssb,cw,fm,pm}.rs`, `frontend/modern/src/sdr/analog.ts` |
+| Digital demodulator (FT8) | `wasm/src/digital/ft8/`, `frontend/modern/src/sdr/digital/` |
+| Audio DSP (analog PCM only) | `wasm/src/audio/{lpf,agc,squelch,wiener,notch,blanker}.rs`, `wasm/src/fft.rs` |
+| Audio PCM output | `frontend/modern/src/audio/sdrAudioWorklet.js`, `audio/sdrAudio.ts` |
+| RAW / DSP data stream | `frontend/modern/src/sdr/digital/` (decoder + view) |
+| Plugin registries | `frontend/modern/src/sdr/registry.ts` |
+| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/dsp_parity.py` |
+| WASM artifact build | `wasm/build.sh` → `frontend/modern/public/dsp.wasm` (committed) |
+
+### DSP paths and the separation rule
+
+DDC is the shared base layer: every analog and digital mode receives the same mixed,
+filtered, resampled and levelled stream. Above it the two paths are deliberately separate:
+
+- **Analog path** — `AnalogDemod` → Audio DSP → PCM. The audio chain (DC block, LPF, AGC,
+squelch, STFT Wiener, adaptive notch, IF noise blanker) is tuned for the human ear.
+- **Digital path / RAW** — `DigitalDemod` → decoder and visualization, with **no audio
+enhancement at all**. A voice denoiser on an FT8 tone would destroy the information the
+decoder needs, so the separation is enforced by an automated test (RAW output must be
+bit-identical with the audio stage enabled and disabled), not by convention.
+
+Adding a mode is adding a plugin to a registry: an analog mode implements the demodulator
+interface (already: am, dsb, usb, lsb, cw, nfm, wfm, pm), a digital protocol implements the
+decoder interface (FT8 first). The UI mode list is read from the registry so a new mode
+cannot be forgotten in the panel.
+
+### WASM boundary and build
+
+- The crate has **no dependencies** (no wasm-bindgen, no wasm-pack); `cargo build --target
+wasm32-unknown-unknown` is the whole toolchain.
+- Arrays cross the boundary as pointers into the module's linear memory, block-wise; the hot
+path allocates nothing per block.
+- The built `.wasm` is committed so CI needs no Rust toolchain. `wasm/build.sh` rebuilds it
+and fails if the committed artifact differs from the fresh build.
+- `wasm/` also builds natively, which is what `cargo test` runs the kernels against.
 
 ## Reachability of registration points (import side effects)
 
