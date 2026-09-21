@@ -322,6 +322,9 @@ export function applySdrTune() {
 
 export function applySdrDemod() {
   const mode = sdrDemod.get();
+  // The browser DSP is told now, not at the next STATUS: the demodulator is what the listener is
+  // changing, and waiting up to a second for it felt like the button had not worked.
+  pushSdrPipeline();
   const ifbw = sdrIfbw.get();
   const deemph = sdrDeemph.get();
   const volume = sdrVolume.get();
@@ -426,6 +429,49 @@ function syncSdrButtons() {
 
 // ── SDR audio enable + amplitude reference ──
 
+/** The last channelizer facts from STATUS (`sdr.actual`): the DSP worker needs the rate the
+ * backend's DDC produces, and only the device knows it. */
+let sdrActual: Record<string, unknown> = {};
+
+/**
+ * Push the current SDR settings to the browser DSP.
+ *
+ * Called from the STATUS handler *and* from every user action that changes one of them: the panel
+ * used to wait for the 1 Hz STATUS round trip before the worker learned about a new demodulator, so
+ * the spectrum reacted at once while the audio followed a second later (reported: the demod and
+ * audio controls felt unresponsive). The channelizer's rate still comes from STATUS because the
+ * device owns it.
+ */
+function pushSdrPipeline(): void {
+  const basebandRate = Number(sdrActual.ddc_rate) || 0;
+  if (basebandRate <= 0) return;
+  configureSdrPipeline(
+    {
+      fsIn: basebandRate,
+      // The worklet plays the PCM as-is, so the DSP has to produce the device's rate (44.1 kHz
+      // on many systems).
+      outRate: audioSampleRate(),
+      // The *UI's* selection drives the DSP worker, not the backend's demod: a digital mode
+      // (ft8) has no backend DSP at all, and the Python fallback keeps its own demod anyway.
+      mode: String(sdrDemod.get() || 'am'),
+      ifBw: Number(sdrIfbw.get()) || 6000,
+      pitch: Number(sdrPitchHz()) || 700,
+    },
+    {
+      volume: sdrVolume.get(),
+      audioEnabled: true,
+      nr: sdrNr.get(),
+      nrStrength: sdrNrStrength.get(),
+      squelch: sdrSquelch.get(),
+    },
+  );
+}
+
+/** The CW sidetone the backend confirmed (the panel has no control for it yet). */
+function sdrPitchHz(): number {
+  return Number(sdrActual.pitch) || 0;
+}
+
 function syncSdrAudioButton() {
   const b = document.getElementById('btn-sdr-audio');
   if (b) {
@@ -494,32 +540,10 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
-  // Push the confirmed demod parameters to the browser DSP. The backend's DDC has already
-  // channelized and tuned the stream (its output rate is `ddc_rate`), so the browser only needs the
-  // rate the demodulator will read, the rate the worklet plays at, and the mode's own parameters.
-  const basebandRate = Number(sdr.actual?.ddc_rate) || 0;
-  if (basebandRate > 0) {
-    configureSdrPipeline(
-      {
-        fsIn: basebandRate,
-        // The worklet plays the PCM as-is, so the DSP has to produce the device's rate (44.1 kHz
-        // on many systems).
-        outRate: audioSampleRate(),
-        // The *UI's* selection drives the DSP worker, not the backend's demod: a digital mode
-        // (ft8) has no backend DSP at all, and the Python fallback keeps its own demod anyway.
-        mode: String(sdrDemod.get() || 'am'),
-        ifBw: Number(sdr.if_bw) || 6000,
-        pitch: Number(sdr.pitch) || 700,
-      },
-      {
-        volume: Number(sdr.volume ?? 0.8),
-        audioEnabled: true,
-        nr: sdrNr.get(),
-        nrStrength: sdrNrStrength.get(),
-        squelch: sdrSquelch.get(),
-      },
-    );
-  }
+  // The demodulator parameters were confirmed by this STATUS: hand them to the browser DSP (the
+  // user actions push them immediately as well, this keeps the two in step after a reconnect).
+  sdrActual = (sdr.actual || {}) as Record<string, unknown>;
+  pushSdrPipeline();
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)
@@ -708,6 +732,7 @@ export function bindActions() {
   const volumeEl = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
   volumeEl?.addEventListener('change', () => {
     sdrVolume.set(parseFloat(volumeEl.value) || 0.8);
+    pushSdrPipeline();
     applySdrDemod();
   });
   const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
@@ -732,6 +757,7 @@ export function bindActions() {
     el.addEventListener('click', () => {
       sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
       renderSdrState();
+      pushSdrPipeline();
       applySdrDemod();
     });
   });

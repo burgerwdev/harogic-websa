@@ -141,6 +141,9 @@ class SdrSession(MeasurementSession):
         self._bb_window_start = 0.0
         # True while the Python demodulator is skipped because nobody subscribes to audio.
         self._audio_paused = False
+        # True when a demodulator setting changed while the browser had the audio: the Python chain
+        # is rebuilt the next time it actually demodulates.
+        self._chain_stale = False
         self._packet_samples = 0
         self._ddc_batch = 1
         self._iqs_center_hz = 0.0
@@ -502,11 +505,12 @@ class SdrSession(MeasurementSession):
         channels do not need a (slow, stream-disrupting) full reconfiguration."""
         fs_in = self._fs_in or 1.0
         if_bw = float(max(200.0, min(self.dev.state.sdr_if_bw, fs_in * 0.4)))
-        # Keep the DDC output (and hence the per-packet DSP) small: at a high capture
-        # rate the loop runs every ~4 ms and a large demod block cannot keep up, which
-        # showed up as choppy audio. 2.5x still leaves a usable software-tuning range and
-        # anything beyond it uses the (safe) full reconfiguration.
-        need = max(float(self.AUDIO_RATE), 2.5 * if_bw)
+        # The DDC output rate is the browser demodulator's cost, one for one: the demodulator runs a
+        # 257-tap complex band filter at it (measured: 2.5x the IF bandwidth put WFM at 97.5% of real
+        # time, i.e. it could not keep up and the playback had to stretch). 1.6x still leaves
+        # +/-0.8x if_bw of instant software tuning, and the band itself is +/-0.5x if_bw, so the
+        # filter has margin; anything beyond the passband uses a (cheap) stream restart.
+        need = max(float(self.AUDIO_RATE), 1.6 * if_bw)
         return if_bw, max(1, min(65536, int(np.floor(fs_in / need))))
 
     def _chain_coarse(self, fs_out):
@@ -670,6 +674,14 @@ class SdrSession(MeasurementSession):
         """
         return bool(getattr(dev, 'audio_clients', 1))
 
+    def _mark_chain_stale(self) -> None:
+        """Record that the Python chain needs a rebuild before it demodulates again."""
+        self._chain_stale = True
+
+    def _audio_is_paused(self, dev) -> bool:
+        """True when the Python audio path is idle (the browser is demodulating)."""
+        return not bool(getattr(dev, 'audio_clients', 1))
+
     def _audio_paused_state(self, dev) -> bool:
         """True when the Python demodulator is being skipped, logging the transition once.
 
@@ -801,22 +813,36 @@ class SdrSession(MeasurementSession):
         old_if_bw = s.sdr_if_bw
         old_pitch = s.sdr_pitch
         old_deemph = float(getattr(s, 'sdr_deemph_us', -1.0))
+        # The mode, the sidetone pitch and the de-emphasis are properties of the *demodulator*. The
+        # browser runs it, so while it owns the audio the backend's channelizer must not be touched:
+        # a reconfiguration stops the stream for ~0.5 s, which is why the demod buttons used to feel
+        # unresponsive (reported). The settings are recorded, and the chain is rebuilt when the
+        # Python path takes over again (`_chain_stale`).
+        browser_demodulates = self._audio_is_paused(self.dev)
         reconfig = False
         if mode is not None and mode != s.sdr_demod:
             # The requested demod is recorded even when this Python chain has no kernel for it (a
             # digital protocol runs in the browser): STATUS then reports what the user chose, and
             # the Python DSP keeps demodulating the analog subset it implements.
             s.sdr_demod = mode
-            reconfig = mode in ANALOG_MODES
+            reconfig = (not browser_demodulates) and mode in ANALOG_MODES
+            if browser_demodulates and mode in ANALOG_MODES:
+                self._mark_chain_stale()
         if if_bw is not None and abs(float(if_bw) - s.sdr_if_bw) > 0.5:
+            # The IF bandwidth *does* move the channelizer: the DDC's output rate is derived from it,
+            # and the browser's demodulator reads that stream.
             s.sdr_if_bw = float(if_bw)
             reconfig = True
         if pitch is not None and abs(float(pitch) - s.sdr_pitch) > 0.5:
             s.sdr_pitch = float(pitch)
-            reconfig = True
+            reconfig = not browser_demodulates
+            if browser_demodulates:
+                self._mark_chain_stale()
         if deemph_us is not None and abs(float(deemph_us) - old_deemph) > 1e-6:
             s.sdr_deemph_us = float(deemph_us)
-            reconfig = True
+            reconfig = not browser_demodulates
+            if browser_demodulates:
+                self._mark_chain_stale()
         # Volume / squelch / AGC are applied live in step(); they must NOT reconfigure the
         # demod (that reset the filters and produced a pop/gap on every slider move).
         if squelch is not None:
@@ -873,9 +899,19 @@ class SdrSession(MeasurementSession):
         self._recovery_attempts += 1
         if self._recovery_attempts > 3:
             raise DeviceError('SDR stream unrecoverable; restarting worker')
-        log.warning('SDR stream stalled (%s); reconfiguring %d/3', reason, self._recovery_attempts)
+        # The first attempt restarts the stream *without* reconfiguring the device: measured on the
+        # bench, a full reconfiguration costs a ~400 ms hole in the baseband (and the same in the
+        # audio), while a trigger restart with the geometry kept is a fraction of that. Escalate to
+        # the full reconfiguration only when the stream is still wedged afterwards.
+        cheap = self._recovery_attempts == 1
+        log.warning('SDR stream stalled (%s); %s (%d/3)', reason,
+                    'restarting the stream' if cheap else 'reconfiguring the device',
+                    self._recovery_attempts)
         try:
-            self._reconfigure_full_locked()
+            if cheap:
+                self._reconfigure_chain_runtime_locked()
+            else:
+                self._reconfigure_full_locked()
         except DeviceError:
             raise
         except Exception as exc:
@@ -1121,6 +1157,13 @@ class SdrSession(MeasurementSession):
             # is the most expensive stage of the step (measured: it dominated the SDR loop).
             if self._audio_paused_state(dev):
                 return frames, []
+            if getattr(self, '_chain_stale', False):
+                # The listener changed the mode/pitch/de-emphasis while the browser was demodulating:
+                # the Python chain is only now brought up to date (and this costs a stream restart,
+                # so it is done once, when it actually matters).
+                self._chain_stale = False
+                log.info('SDR: applying the deferred demodulator settings for the Python path')
+                self._reconfigure_chain_runtime_locked()
             audio, power_dbfs = self._demod.process(
                 i, q, use_agc=s.sdr_agc, agc_hold=settling)
             if audio.size and now < self._discard_until:

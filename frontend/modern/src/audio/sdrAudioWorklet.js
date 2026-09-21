@@ -18,14 +18,28 @@
  *     latency: past `MAX_FILL` the oldest samples are dropped (the audio stays live, which is what
  *     a listener wants after a retune).
  */
-const TARGET_S = 0.25;          // steady-state fill: burst tolerance
-const PRIME_S = 0.12;           // start playing as soon as this much is buffered
-const MAX_FILL_S = 0.5;         // never hold more than this (a live edge beats low latency here)
+// The fill sizes: the *prime* is both the start threshold and (with a well-behaved producer) the
+// steady state, because a matched producer leaves the fill wherever it started playing. The ceiling
+// is the headroom a mismatch gets before it is corrected OR trimmed - measured jitter is a few
+// milliseconds and the analyzer's stalls reach a few hundred, so priming at 250 ms rides them out.
+const PRIME_S = 0.25;           // start playing once this much is buffered
+const TARGET_S = 0.3;           // the fill the corrector aims at (and the trend's reference)
+// Past this the oldest samples are dropped: a producer that outruns the clock must not become
+// growing latency, and one window of an uncorrected mismatch (~3%) still fits.
+const MAX_FILL_S = 0.9;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
-const RATIO_GAIN = 0.25;        // how hard the fill error steers the ratio, per report window
+/// How long the fill is observed before the producer/sink ratio is re-estimated.
+///
+/// The correction is a *pitch*, so it must not follow jitter: over this window the packet burst
+/// pattern averages out (measured jitter is a few milliseconds, i.e. below 0.05% here), and the
+/// estimate is one exact step rather than a glide. A proportional loop instead modulated the pitch
+/// continuously - the listener heard the audio speed up and slow down.
+const FILL_WINDOW_S = 20;
+/// Below this rate difference the fill's walk is left alone (0.05%; drifting 20 ms per window).
+const OFFSET_DEADBAND = 0.0005;
 
 class SdrAudioProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -47,6 +61,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.fadeStep = 1 / Math.max(1, sampleRate * FADE_S);
     // Drift correction: input samples consumed per output sample, steered by the fill.
     this.ratio = 1;
+    this.steerCountdown = Math.floor(sampleRate * FILL_WINDOW_S);
+    /// Fill at the start of the current window; -1 means "anchor on the next look".
+    this.fillAnchor = -1;
     this.frac = 0;
     this.received = 0;
     this.underruns = 0;
@@ -80,6 +97,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   /** Drop everything buffered: the stream was retuned, and the old audio must not be played. */
   reset() {
     this.resets++;
+    this.fillAnchor = -1;
     this.tailGain = this.fade;
     this.writePos = 0;
     this.readPos = 0;
@@ -130,6 +148,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         if (this.available < this.prime) continue;    // still priming: output silence
         this.playing = true;
         this.primed = true;
+        this.fillAnchor = -1;      // the fill rises to the target by design from here
         this.fade = 0;
       }
       if (this.available < 2) {                        // nothing to interpolate between
@@ -152,10 +171,14 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.available--;
       }
     }
+    this.steerCountdown -= out.length;
+    if (this.steerCountdown <= 0) {
+      this.steerCountdown = Math.floor(sampleRate * FILL_WINDOW_S);
+      this.steerRatio();
+    }
     this.reportCountdown -= out.length;
     if (this.reportCountdown <= 0) {
       this.reportCountdown = Math.floor(sampleRate * REPORT_S);
-      this.steerRatio();
       this.port.postMessage({
         type: 'status',
         available: this.available,
@@ -170,17 +193,30 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   }
 
   /**
-   * Steer the resampling ratio from the fill error.
+   * Re-estimate the producer/sink rate ratio from how far the fill moved over one window.
    *
-   * Above the target the producer is ahead (or was bursty): consume faster. Below it, slower. The
-   * loop settles on the true producer/sink rate ratio, which is what keeps the fill (and the
-   * latency) bounded without dropping or repeating samples.
+   * `fill` grows by (producer rate - consumed rate) samples per second, so the change over a known
+   * window *is* the offset: one measurement, one exact correction, and nothing in between. The
+   * priming transient (the fill rising from the priming threshold to the target by design) is
+   * skipped, and so is jitter, because both are smaller than the window and the deadband - which is
+   * what keeps the pitch still. A previous proportional version corrected on the fill's *level* and
+   * so modulated the pitch: the listener heard the audio speeding up and slowing down.
    */
   steerRatio() {
-    if (!this.primed) return;
-    const error = (this.available - this.target) / Math.max(1, this.target);
-    const next = 1 + RATIO_GAIN * error;
-    this.ratio = Math.min(RATIO_MAX, Math.max(RATIO_MIN, next));
+    if (!this.primed) {
+      this.fillAnchor = -1;
+      return;
+    }
+    if (this.fillAnchor < 0) {
+      this.fillAnchor = this.available;      // (re)anchor after a start or a reset
+      return;
+    }
+    const delta = this.available - this.fillAnchor;
+    this.fillAnchor = this.available;
+    const offset = delta / (FILL_WINDOW_S * sampleRate);
+    if (Math.abs(offset) > OFFSET_DEADBAND) {
+      this.ratio = Math.min(RATIO_MAX, Math.max(RATIO_MIN, this.ratio + offset));
+    }
   }
 }
 

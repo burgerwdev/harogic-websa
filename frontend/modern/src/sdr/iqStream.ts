@@ -44,6 +44,7 @@ let dspError = '';
 let dspRingResets = 0;
 let dspPending = 0;
 let dspDelivered = 0;
+let dspMode = '';
 let dspSlipped = 0;
 let dspRatio = 1;
 let dspNr = false;
@@ -74,7 +75,7 @@ function publishIqDebug(): void {
       ` dsp_avail=${dspWorkletAvailable} dsp_underruns=${dspWorkletUnderruns}` +
       ` dsp_delivered=${dspDelivered} dsp_received=${dspWorkletReceived}` +
       ` dsp_pending=${dspPending} dsp_ring_resets=${dspRingResets}` +
-      ` dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
+      ` dsp_mode=${dspMode} dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
@@ -136,6 +137,7 @@ function startWorker(): void {
     if (typeof d.nrStrength === 'number') dspNrStrength = d.nrStrength;
     if (typeof d.squelchDbfs === 'number') dspSquelch = d.squelchDbfs;
     if (typeof d.rms === 'number') dspRms = d.rms;
+    if (typeof d.mode === 'string' && d.mode) dspMode = d.mode;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
     pipelineReady = Boolean(d.pipeline);

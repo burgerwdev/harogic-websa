@@ -88,33 +88,98 @@ function run(producerSps: number, seconds = 6, block = 960): Outcome {
 }
 
 describe('the SDR playback buffer', () => {
-	it('plays a matched producer without an underrun and holds the target fill', () => {
-		const r = run(RATE);
+	it('plays a matched producer without an underrun and holds its fill', () => {
+		const r = run(RATE, 30);
 		expect(r.underruns).toBe(0);
 		expect(r.slipped).toBe(0);
-		expect(Math.abs(r.ratio - 1)).toBeLessThan(0.02);
-		// The fill is steered to the target (250 ms) and stays there: that is the jitter budget.
-		expect(r.fill).toBeGreaterThan(RATE * 0.15);
+		// A matched producer leaves the fill where it started playing (the priming threshold), and
+		// nothing walks it away: no correction is needed, so the ratio stays exactly 1 (the pitch is
+		// the thing being protected here).
+		expect(r.ratio).toBe(1);
+		expect(r.fill).toBeGreaterThan(RATE * 0.2);
 		expect(r.fill).toBeLessThan(RATE * 0.4);
 	});
 
-	it('absorbs a producer that runs fast by resampling, not by dropping samples', () => {
-		// +2%: a real device/daemon mismatch (and the shape of the reported stutter when it was not
-		// absorbed). Without the drift corrector the ring filled and the writer lapped the reader.
-		const r = run(RATE * 1.02, 12);
-		expect(r.underruns).toBe(0);
-		expect(r.slipped).toBe(0);
-		expect(r.ratio).toBeGreaterThan(1.005);
-		expect(r.ratio).toBeLessThan(1.04);
-		// The pitch is corrected rather than the buffer drained: the fill stays bounded.
-		expect(r.fill).toBeLessThanOrEqual(r.maxFillSeen);
+	it('absorbs a small rate mismatch by resampling, without dropping a sample', () => {
+		// A fraction of a percent is what is left after the backend reports the baseband rate it
+		// actually delivers and the DSP is told the consumer's rate: that is what this corrector is
+		// for. It measures once per window and steps once, so no sample is dropped and the pitch
+		// moves by the true offset rather than wobbling.
+		for (const offset of [1.003, 0.997]) {
+			const r = run(RATE * offset, 60);
+			expect(r.underruns).toBe(0);
+			expect(r.slipped).toBe(0);
+			expect(Math.abs(r.ratio - offset)).toBeLessThan(0.002);
+		}
 	});
 
-	it('absorbs a producer that runs slow by resampling', () => {
-		const r = run(RATE * 0.98, 12);
-		expect(r.underruns).toBe(0);
-		expect(r.ratio).toBeLessThan(0.995);
-		expect(r.ratio).toBeGreaterThan(0.96);
+	it('does not pretend to absorb a rate that is simply wrong', () => {
+		// A 2% mismatch cannot be buffered away: the fill walks one window's worth of it (~960 ms at
+		// 20 s), which the ceiling trims (fast producer) or the priming threshold starves (slow one).
+		// That is why the backend *measures* the baseband rate instead of trusting the vendor's
+		// nominal figure - the buffer is the last resort, not the mechanism.
+		const fast = run(RATE * 1.02, 60);
+		expect(fast.slipped).toBeGreaterThan(0);
+		expect(fast.fill).toBeLessThanOrEqual(fast.maxFillSeen);
+		const slow = run(RATE * 0.98, 60);
+		expect(slow.underruns).toBeGreaterThan(0);
+	});
+
+	it('re-corrects at most once per window (no pitch glide)', () => {
+		// The correction is a pitch, so it must be a rare step rather than a continuous drag: over a
+		// minute at a 1% offset the ratio may change twice (2 windows), not 240 times (the report
+		// cadence a proportional loop used).
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		const out = new Float32Array(128);
+		const outputs = [[out]];
+		let pushed = 0;
+		let t = 0;
+		const changes: number[] = [];
+		let last = proc.ratio;
+		while (t < 60 * RATE) {
+			while (Math.floor((RATE * 1.01 * t) / RATE) - pushed >= 960) {
+				proc.push(new Float32Array(960));
+				pushed += 960;
+			}
+			proc.process(null, outputs);
+			t += 128;
+			if (proc.ratio !== last) {
+				changes.push(proc.ratio);
+				last = proc.ratio;
+			}
+		}
+		expect(changes.length).toBeLessThanOrEqual(3);
+		expect(last).toBeGreaterThan(1.005);
+		expect(proc.underruns).toBe(0);
+	});
+
+	it('does not modulate the pitch on jitter', () => {
+		// The reported defect: the fill was steered proportionally, so ordinary arrival jitter moved
+		// the resampling ratio and the audio wandered (the listener heard "faster and slower"). The
+		// ratio must hold still while the fill stays inside the deadband.
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		const out = new Float32Array(128);
+		const outputs = [[out]];
+		let pushed = 0;
+		let t = 0;
+		const ratios: number[] = [];
+		// A matched producer that delivers in bursts of two blocks every other quantum: the fill
+		// swings, the average rate is exact.
+		while (t < 20 * RATE) {
+			const owed = Math.floor((RATE * t) / RATE) - pushed;
+			if ((t / 128) % 2 === 0 && owed < 1920) {
+				proc.push(new Float32Array(960));
+				pushed += 960;
+			}
+			proc.process(null, outputs);
+			t += 128;
+			if ((t / 128) % 40 === 0) ratios.push(proc.ratio);
+		}
+		const spread = Math.max(...ratios) - Math.min(...ratios);
+		expect(spread).toBe(0);
+		expect(proc.underruns).toBe(0);
 	});
 
 	it('keeps the latency bounded when the producer floods the ring', () => {

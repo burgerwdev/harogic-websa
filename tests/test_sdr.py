@@ -190,6 +190,27 @@ def test_settle_window_still_drains_iqs(monkeypatch):
     assert struct.unpack_from('<4sIII', frames[0]) == (b'AUDF', 0, 48000, 0)
 
 
+def test_ddc_rate_stays_close_to_the_if_bandwidth():
+    """The DDC's output rate is the *browser* demodulator's per-sample cost.
+
+    A rate 2.5x the IF bandwidth put WFM (180 kHz) at a 460 kHz baseband, where the demodulator
+    measured 97.5% of real time - it could not keep up, so the playback stretched instead of playing.
+    1.6x keeps the band (0.5x) plus its filter transition inside the requested rate.
+    """
+    session = SdrSession.__new__(SdrSession)
+    session._fs_in = 62.5e6 / 8                      # 7.8 MSps capture
+    session.dev = SimpleNamespace(state=SimpleNamespace(sdr_if_bw=180_000.0))
+    if_bw, decimate = session._chain_params()
+    assert if_bw == pytest.approx(180_000.0)
+    fs_out = session._fs_in / decimate
+    assert fs_out < 2.0 * if_bw, fs_out          # 1.6x, not the old 2.5x
+    assert fs_out > if_bw, fs_out                # and never below the band itself
+    # A narrow mode still gets the 48 kHz floor (the demodulator's own rate).
+    session.dev = SimpleNamespace(state=SimpleNamespace(sdr_if_bw=6_000.0))
+    _, decimate = session._chain_params()
+    assert session._fs_in / decimate == pytest.approx(48_000.0, rel=0.05)
+
+
 def test_baseband_rate_is_measured_not_assumed():
     """The browser maps baseband samples onto the sound card's clock.
 
