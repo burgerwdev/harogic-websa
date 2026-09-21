@@ -19,7 +19,23 @@ fn as_f32(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// Ignored while it does not pass: the vector is committed so the work can continue offline, and a
-/// failing test in CI would hide everything else. `cargo test --release --test ft8_real_slot -- --ignored
+/// failing test in CI would hide everything else.
+///
+/// What the reference (`ft8_lib`, which the Android app uses) does differently, read from its source
+/// and confirmed by building it (`tools/ft8_reference/`):
+///
+///   * the sync score is a *local contrast* (`ft8_sync_score`): each Costas tone against one tone
+///     lower and higher in frequency and against the same tone in the neighbouring symbols. Ours is
+///     an energy *fraction* of the symbol, which is a whole-band statement - and on a busy band a
+///     weak transmission scores badly against the band's total even when its seven tones are clear.
+///     A local-contrast version was tried here and reverted: it shifted the candidates enough to break
+///     a passing test (`decodes_a_transmission_that_starts_inside_the_window`) without decoding this
+///     slot, so it needs the reference's *candidate selection* alongside it, not instead of it.
+///   * candidates are a heap of the best ~30 above a score gate over `time_offset` (in symbols),
+///     `time_sub` and `freq_sub` - a joint oversampled grid, not a coarse search followed by a finer
+///     one.
+///   * the soft-decision stage is max-log with a variance normalization (ported, committed).
+/// `cargo test --release --test ft8_real_slot -- --ignored
 /// --nocapture` prints where the decoder loses the signal.
 #[test]
 #[ignore = "known gap: the sync is found, the time alignment is ~0.3 s off, so the LDPC never converges"]
