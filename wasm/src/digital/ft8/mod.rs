@@ -132,6 +132,21 @@ impl Ft8Decoder {
         None
     }
 
+    /// Debug: every coarse candidate and what the fine search made of it, as
+    /// `(frequency_hz, correlation, start_seconds)`. Not part of the product ABI; it exists so a
+    /// known-good signal (see `tests/ft8_real_slot.rs`) can be asked *where* the decoder lost it.
+    pub fn debug_sync(&self) -> Vec<(f64, f64, f64)> {
+        let symbol_samples = symbol_samples_at(self.rate);
+        self.candidates(symbol_samples)
+            .into_iter()
+            .filter_map(|(time, hz)| {
+                self.find_sync_at(symbol_samples, hz, time).map(|(best_time, offset, correlation)| {
+                    (hz + offset, correlation, best_time as f64 / self.rate)
+                })
+            })
+            .collect()
+    }
+
     /// The band's strongest Costas candidates over the buffered slot, as `(time, base frequency)`.
     ///
     /// A decimated correlation (every 8th sample: the tones survive, the noise aliases) swept over the
@@ -237,15 +252,14 @@ impl Ft8Decoder {
                     let mut energies = [0.0_f64; 8];
                     for (tone, energy) in energies.iter_mut().enumerate() {
                         let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
-                        // Decimated like the coarse pass. The full-rate search cost 99 time/frequency
-                        // offsets x 7 symbols x 8 tones x one symbol window each - about 430M flops per
-                        // candidate, tens of seconds in wasm - and with a handful of candidates the
-                        // decoder worker sat inside a single call for minutes: its frame counter froze
-                        // and nothing was ever decoded (measured: `buffered` pinned at exactly one slot,
-                        // 719602 complex samples). Every 8th sample still estimates the correlation,
-                        // and the *start* is still sample-exact (the offsets around the candidate carry
-                        // the timing), so what is given up is a little of the estimate's variance.
-                        *energy = self.tone_energy_decimated(start, symbol_samples, frequency, 8);
+                        // Full rate. Decimating this (8x, for speed) cost the *alignment* of a weak
+                        // signal: on a real slot the phone decoded, the decimated search settled on a
+                        // start 320 ms away from where a fine grid puts the transmission, and the tone
+                        // sequence read from there is the wrong one - the sync correlation still looks
+                        // good (it only measures the seven Costas symbols), so the failure shows up
+                        // later, as an LDPC stage that never converges. Speed was never the constraint:
+                        // a whole slot decodes in 0.09 s natively on a noise slot.
+                        *energy = self.tone_energy(start, symbol_samples, frequency);
                     }
                     let sum: f64 = energies.iter().sum();
                     sync += energies[*expected as usize];
@@ -400,6 +414,15 @@ fn symbols_to_llr(energies: &[[f64; 8]]) -> [f64; 174] {
             llr[data_index] = ((one + 1e-12) / (zero + 1e-12)).ln();
             data_index += 1;
         }
+    }
+    // The reference scales the soft information and clips it (`ft8_lib`'s `ft8_decode`: `llr[i] *= 2.83f`
+    // with a clamp). It matters for weak signals: the log-ratio of two noise-like tone energies is a
+    // small number, and a small number leaves the sum-product iterations nearly indifferent, so they do
+    // not converge on a signal the phone decodes (measured: this real slot's Costas correlation is 0.193
+    // against a chance level of 0.125). The scale changes nothing about the sign - the hard decision -
+    // only how much the iterations are willing to move.
+    for value in llr.iter_mut() {
+        *value = (*value * 2.83).clamp(-20.0, 20.0);
     }
     llr
 }
