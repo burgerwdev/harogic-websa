@@ -401,6 +401,13 @@ const CANDIDATE_MARGIN: f64 = 1.1;
 /// first version returned log(p0/p1) — inverted — which showed up as 24 failing parity checks and a
 /// decoder that never converged, on a signal whose tones were detected perfectly.
 fn symbols_to_llr(energies: &[[f64; 8]]) -> [f64; 174] {
+    // The reference's formula (`ft8_lib`'s `ft8_extract_symbol`): for each bit, the largest magnitude
+    // among the tones that carry a one minus the largest among those that carry a zero - a max-log
+    // likelihood, in Gray-map order. The log-ratio-of-sums this replaces is fragile exactly where it
+    // matters: on a weak signal the sums are dominated by noise, so the ratio is noisy too, while a
+    // maximum still finds the tone that stands out. Together with the variance normalization below it
+    // is what lets the reference decode a -73 dB signal that this decoder found and then lost.
+    let max4 = |a: f64, b: f64, c: f64, d: f64| a.max(b).max(c).max(d);
     let mut llr = [0.0_f64; 174];
     let mut data_index = 0;
     for symbol_index in 0..NUM_SYMBOLS {
@@ -408,29 +415,29 @@ fn symbols_to_llr(energies: &[[f64; 8]]) -> [f64; 174] {
             continue;
         }
         let symbol = &energies[symbol_index];
-        for bit_index in 0..3 {
-            let mut zero = 0.0;
-            let mut one = 0.0;
-            for (pattern, tone) in GRAY.iter().enumerate() {
-                let bit = (pattern >> (2 - bit_index)) & 1;
-                if bit == 0 {
-                    zero += symbol[*tone as usize];
-                } else {
-                    one += symbol[*tone as usize];
-                }
-            }
-            llr[data_index] = ((one + 1e-12) / (zero + 1e-12)).ln();
-            data_index += 1;
+        let mut s2 = [0.0_f64; 8];
+        for (j, value) in s2.iter_mut().enumerate() {
+            *value = symbol[GRAY[j] as usize];
         }
+        llr[data_index] = max4(s2[4], s2[5], s2[6], s2[7]) - max4(s2[0], s2[1], s2[2], s2[3]);
+        llr[data_index + 1] =
+            max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5]);
+        llr[data_index + 2] =
+            max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6]);
+        data_index += 3;
     }
-    // The reference scales the soft information and clips it (`ft8_lib`'s `ft8_decode`: `llr[i] *= 2.83f`
-    // with a clamp). It matters for weak signals: the log-ratio of two noise-like tone energies is a
-    // small number, and a small number leaves the sum-product iterations nearly indifferent, so they do
-    // not converge on a signal the phone decodes (measured: this real slot's Costas correlation is 0.193
-    // against a chance level of 0.125). The scale changes nothing about the sign - the hard decision -
-    // only how much the iterations are willing to move.
-    for value in llr.iter_mut() {
-        *value = (*value * 2.83).clamp(-20.0, 20.0);
+    // Scale to a fixed variance (`ftx_normalize_logl`: `sqrt(24 / variance)`), which is what the
+    // LDPC stage's convergence actually depends on; a fixed factor cannot be right for signals whose
+    // strengths differ by 20 dB. The scale changes nothing about the signs - the hard decisions.
+    let n = llr.len() as f64;
+    let sum: f64 = llr.iter().sum();
+    let sum2: f64 = llr.iter().map(|v| v * v).sum();
+    let variance = (sum2 - sum * sum / n) / n;
+    if variance > 0.0 {
+        let factor = (24.0 / variance).sqrt();
+        for value in llr.iter_mut() {
+            *value *= factor;
+        }
     }
     llr
 }
