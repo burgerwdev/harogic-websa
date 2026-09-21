@@ -160,15 +160,23 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
     slotFilled += frame.iq.length;
   }
   pushes += 1;
-  post({
-    type: 'ft8-stats',
-    pushes,
-    buffered: pipeline.buffered(),
-    decodes: pipeline.count(),
-    dropped,
-    skipped,
-    attempts,
-  });
+  // The stats are throttled, and that is not cosmetic: the audio worker relays them to the page, and
+  // one per frame is ~120 messages a second. That traffic - which exists only in a digital mode,
+  // because only then is this worker running - saturated the page's message plumbing enough that the
+  // PCM reaching the AudioWorklet arrived in bursts: measured in the live page, the playback ring swung
+  // between 0 and its 897 ms ceiling and dropped 30308 samples to the ceiling trim, which the listener
+  // hears as a periodic stutter. Four a second says the same thing.
+  if (pushes % 30 === 0 || slotFilled === 0) {
+    post({
+      type: 'ft8-stats',
+      pushes,
+      buffered: pipeline.buffered(),
+      decodes: pipeline.count(),
+      dropped,
+      skipped,
+      attempts,
+    });
+  }
 }
 
 /** (Re)build the decoder for the current parameters. */
