@@ -21,13 +21,23 @@ pub mod tables;
 
 use tables::*;
 
-/// Tones searched: the eight FT8 tones plus the frequency-offset range around the nominal base.
-const FREQ_OFFSET_STEPS: i32 = 2;         // +/- 2 * (TONE_SPACING/2) = +/- 6.25 Hz, one band step
-/// Time search: +/- 4 steps of 1/5 symbol each = +/- 0.128 s. FT8 transmissions are slot-aligned
+/// Frequency refinement: 8 steps of 1/8 tone spacing each, so +/- one coarse step (+/- 6.25 Hz) is
+/// covered at a resolution of 0.78 Hz.
+///
+/// The resolution is what matters, not the range. FT8 tones are 6.25 Hz apart and the energies are
+/// measured over one symbol window, so an estimate half a tone away (the old step of TONE_SPACING/2 =
+/// 3.125 Hz, which is exactly half) sits between two tones: each tone's energy leaks into its
+/// neighbour, the soft decisions come out wrong, and the LDPC never converges. That is invisible in
+/// the sync correlation - which only measures the seven Costas symbols - and it is why a weak signal
+/// that a phone decodes was found by the search and then lost. The reference refinements are finer
+/// than half a tone for this reason.
+const FREQ_OFFSET_STEPS: i32 = 8;
+const FREQ_OFFSET_STEP_HZ: f64 = TONE_SPACING_HZ / 8.0;
+/// Time search: +/- 8 steps of 1/5 symbol each = +/- 0.256 s. FT8 transmissions are slot-aligned
 /// (operators are clock-disciplined), so the receiver searches the slot edge rather than the whole
 /// slot: a full-slot scan would cost ~15x more for a case a slot-driven receiver does not have.
-const TIME_OFFSET_STEPS: i32 = 4;
-const MAX_LDPC_ITERATIONS: usize = 30;
+const TIME_OFFSET_STEPS: i32 = 8;
+const MAX_LDPC_ITERATIONS: usize = 40;
 /// A tone must stand this far above the symbol's mean tone energy to be trusted for the search.
 const SYNC_MARGIN: f64 = 1.0;
 
@@ -225,7 +235,7 @@ impl Ft8Decoder {
         coarse: usize,
     ) -> Option<(usize, f64, f64)> {
         let mut best: Option<(usize, f64, f64)> = None;
-        let step = TONE_SPACING_HZ / 2.0;
+        let step = FREQ_OFFSET_STEP_HZ;
         let time_step = symbol_samples / (TIME_OFFSET_STEPS as usize + 1);
         // A candidate is only usable when a whole transmission fits after it: the symbol loop below
         // `break`s on a short window, and a base that never got that far would still be recorded (its
@@ -252,14 +262,12 @@ impl Ft8Decoder {
                     let mut energies = [0.0_f64; 8];
                     for (tone, energy) in energies.iter_mut().enumerate() {
                         let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
-                        // Full rate. Decimating this (8x, for speed) cost the *alignment* of a weak
-                        // signal: on a real slot the phone decoded, the decimated search settled on a
-                        // start 320 ms away from where a fine grid puts the transmission, and the tone
-                        // sequence read from there is the wrong one - the sync correlation still looks
-                        // good (it only measures the seven Costas symbols), so the failure shows up
-                        // later, as an LDPC stage that never converges. Speed was never the constraint:
-                        // a whole slot decodes in 0.09 s natively on a noise slot.
-                        *energy = self.tone_energy(start, symbol_samples, frequency);
+                        // Decimated 4x, and only for *scoring*: this search ranks (time, frequency)
+                        // offsets, while the tone energies that feed the LLRs are read at full rate
+                        // afterwards (`tone_energies`). Full rate here cost ~25 s per slot with the
+                        // finer frequency grid below, which does not fit a 15 s slot; a 4x-decimated
+                        // correlation still ranks correctly.
+                        *energy = self.tone_energy_decimated(start, symbol_samples, frequency, 4);
                     }
                     let sum: f64 = energies.iter().sum();
                     sync += energies[*expected as usize];
@@ -379,7 +387,7 @@ const BAND_STEP_HZ: f64 = 12.5;
 /// A bound on the work, not a ranking rule: the fine search is linear in this, and the candidates are
 /// the band's local maxima (a busy band has many). The fine search is decimated, so this stays inside
 /// a slot's budget.
-const MAX_CANDIDATES: usize = 24;
+const MAX_CANDIDATES: usize = 12;
 /// A candidate must beat the whole scan's average score by this factor.
 ///
 /// Most slots carry nothing, and without a gate every empty slot paid six full sync searches plus six
