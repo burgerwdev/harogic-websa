@@ -138,6 +138,19 @@ export class WasmPipeline {
 	 * blocks here would leave the next `process` writing to a null pointer, which reads as a silent
 	 * zero-length block). */
 	reconfigure(params: PipelineParams, digital: boolean): void {
+		// Idempotent: a caller that re-sends the configuration it already has (a STATUS-driven sync,
+		// once a second) must not cost the chain its state. Rebuilding resets the filters and the
+		// level stage, and the first blocks after that are silence - a dropout the listener hears as a
+		// periodic pulse on a quiet band.
+		if (this.handle && this.digital === digital && this.params
+			&& this.params.mode === params.mode
+			&& this.params.ifBw === params.ifBw
+			&& this.params.pitch === params.pitch
+			&& this.params.outRate === params.outRate
+			&& this.params.deemphUs === params.deemphUs
+			&& Math.abs(this.params.fsIn - params.fsIn) <= Math.max(200, params.fsIn * 0.01)) {
+			return;
+		}
 		if (this.handle) {
 			this.module.exports.websa_dsp_demod_free(this.handle);
 			this.handle = 0;

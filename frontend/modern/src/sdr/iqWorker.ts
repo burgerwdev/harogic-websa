@@ -27,6 +27,8 @@ let module: DspModule | null = null;
 let pipeline: WasmPipeline | null = null;
 /// The analog companion a digital protocol plays its audio through (USB for FT8), or null.
 let companion: WasmPipeline | null = null;
+/// The shape the companion was last built or reconfigured for (see `sameShape`).
+let companionShape: PipelineParams | null = null;
 /// The FT8 decoder's own worker: a slot decode blocks for seconds, and doing it here would starve the
 /// audio (measured: one underrun and a ~2.5 s gap per slot when both ran in this thread).
 let decoder: Worker | null = null;
@@ -223,6 +225,21 @@ function syncPipeline(): void {
  * output keeps the separation rule intact: the decoder reads the baseband untouched, and the audio
  * chain only ever sees the companion's PCM. An analog mode has no companion (it *is* the audio).
  */
+/// True when a pipeline already describes this exact channel shape.
+///
+/// The baseband rate is a *measured* value, so it wobbles by a fraction of a percent between
+/// windows; anything smaller than that is the same channel. This is the same rule the main
+/// pipeline's rebuild check uses.
+function sameShape(current: PipelineParams | null, next: PipelineParams): boolean {
+  if (!current) return false;
+  if (current.mode !== next.mode) return false;
+  if (current.outRate !== next.outRate) return false;
+  if (current.ifBw !== next.ifBw) return false;
+  if (current.pitch !== next.pitch) return false;
+  if (current.deemphUs !== next.deemphUs) return false;
+  return Math.abs(current.fsIn - next.fsIn) <= Math.max(200, next.fsIn * 0.01);
+}
+
 function syncCompanion(isDigital: boolean): void {
   // The decoder runs next door, not here (see `decoder`).
   pushDecoderParams();
@@ -233,14 +250,25 @@ function syncCompanion(isDigital: boolean): void {
   if (!module || !wanted || !shape) {
     companion?.free();
     companion = null;
+    companionShape = null;
+    return;
+  }
+  // A `configure` arrives on every STATUS, once a second, and re-sending an unchanged shape used to
+  // rebuild the companion: `reconfigure` frees the DSP handle and makes a new one, so the chain lost
+  // its state and its output was momentarily silent - a 1 Hz dropout, audible only on a quiet band
+  // and only in a digital mode, because only then is there a companion at all. Rebuilding is for a
+  // real change; the shape is compared first.
+  if (companion && companion.mode === wanted && companion.ok && sameShape(companionShape, shape)) {
     return;
   }
   if (companion && companion.mode === wanted && companion.ok) {
+    companionShape = shape;
     companion.reconfigure(shape, false);
     return;
   }
   companion?.free();
   companion = new WasmPipeline(module, shape, false);
+  companionShape = shape;
   pipelineBuilds += 1;
   if (!companion.ok) {
     companion.free();
