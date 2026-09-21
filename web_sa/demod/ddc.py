@@ -23,7 +23,12 @@ class DdcChannel:
         self.dsp = dsp                 # c_void_p DSP handle (dev.dsp)
         self.fs_in = 0.0
         self.offset_hz = 0.0
+        #: The factor as *we* requested it. The vendor echoes its own field in different units
+        #: (measured: 65000 for a requested 65), so comparing the echoed value against the requested
+        #: one reported a change on every call - and every reconfiguration redesigns the DDC filter
+        #: (~180 ms) for nothing.
         self.decimate = 0
+        self.requested_decimate = 0
         self.sample_points = 0
         self.fs_out = 0.0
         self.out_points = 0
@@ -50,6 +55,7 @@ class DdcChannel:
         self.fs_in = float(fs_in)
         self.offset_hz = float(dout.DDCOffsetFrequency)
         self.decimate = max(1, int(round(float(dout.DecimateFactor))))
+        self.requested_decimate = int(decimate)
         self.sample_points = sample_points
         self.fs_out = float(dout.SampleRate)
         self.out_points = int(dout.SamplePoints)

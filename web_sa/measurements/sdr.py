@@ -57,8 +57,12 @@ _TIME_ENABLED = os.getenv('WEBSA_SDR_TIME', '').lower() not in ('', '0', 'false'
 def _time_phases(enabled: bool, phases: dict, steps: int) -> None:
     if not enabled or steps <= 0:
         return
-    log.info('SDR step timing (mean of %d steps): %s', steps,
-             ' '.join(f'{name}={ms / steps:.2f}ms' for name, ms in phases.items()))
+    shaped = ' '.join(
+        (f'decimate={int(ms)}' if name == 'decimate' else f'iq={ms:.0f}kHz' if name == 'iq_rate_ms'
+         else f'{name}={ms / steps:.2f}ms')
+        for name, ms in phases.items()
+    )
+    log.info('SDR step timing (mean of %d steps): %s', steps, shaped)
 
 
 # Staged tracing for native-crash diagnosis. Enable with WEBSA_TRACE=1. It walks the SDR
@@ -571,7 +575,7 @@ class SdrSession(MeasurementSession):
         # fs_out/2, so passing `rel` needs offset = -coarse (bench-verified sign:
         # offset = center - listen). The residual rel - coarse goes to the software NCO.
         ddc_off = -coarse
-        if (not self._ddc._ready) or self._ddc.decimate != decimate \
+        if (not self._ddc._ready) or self._ddc.requested_decimate != decimate \
                 or abs(self._ddc.offset_hz - ddc_off) > 1.0:
             # Deep filter design is expensive (~180 ms); run it only while stopped.
             _t('chain: DDC configure fs_in=%s offset=%s decimate=%s points=%s',
@@ -688,6 +692,30 @@ class SdrSession(MeasurementSession):
         report the count is treated as subscribed, i.e. the previous behaviour.
         """
         return bool(getattr(dev, 'audio_clients', 1))
+
+    def _record_step_timing(self, phases: dict) -> None:
+        """Accumulate one step's phase costs and log their means every 200 steps (WEBSA_SDR_TIME=1)."""
+        if not _TIME_ENABLED or not phases:
+            return
+        # The capture geometry belongs in the line: the per-packet cost is fixed while the packet
+        # *rate* is what changes, so a number without it cannot be compared with another.
+        phases = dict(phases)
+        phases['iq_rate_ms'] = self._fs_in / 1e3
+        phases['decimate'] = float(self._decimate_for_log())
+        acc = getattr(self, '_time_phases_acc', None)
+        if acc is None:
+            acc = self._time_phases_acc = {}
+        for name, ms in phases.items():
+            acc[name] = acc.get(name, 0.0) + ms
+        self._time_steps = getattr(self, '_time_steps', 0) + 1
+        if self._time_steps >= 200:
+            _time_phases(True, acc, self._time_steps)
+            self._time_phases_acc = {}
+            self._time_steps = 0
+
+    def _decimate_for_log(self) -> int:
+        ddc = getattr(self, '_ddc', None)
+        return int(getattr(ddc, 'requested_decimate', 0) or 0) if ddc else 0
 
     def _mark_chain_stale(self) -> None:
         """Record that the Python chain needs a rebuild before it demodulates again."""
@@ -1188,6 +1216,12 @@ class SdrSession(MeasurementSession):
             # client subscribes to audio. With the browser DSP owning playback nobody does, and this
             # is the most expensive stage of the step (measured: it dominated the SDR loop).
             if self._audio_paused_state(dev):
+                # The browser owns the demodulator: everything before this point is what the backend
+                # still pays (fetch, DDC, panadapter, the baseband encode), and it is the path whose
+                # budget matters. Record it before returning.
+                if _TIME_ENABLED:
+                    _t_phases['pre_demod'] = _t_phases.get('pre_demod', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                self._record_step_timing(_t_phases)
                 return frames, []
             if getattr(self, '_chain_stale', False):
                 # The listener changed the mode/pitch/de-emphasis while the browser was demodulating:
@@ -1244,4 +1278,7 @@ class SdrSession(MeasurementSession):
                 self._adm_metrics_locked(i, q)
                 self._last_adm = now
 
+        if _TIME_ENABLED:
+            _t_phases['rest'] = _t_phases.get('rest', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+        self._record_step_timing(_t_phases)
         return frames, []
