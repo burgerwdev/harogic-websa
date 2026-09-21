@@ -532,7 +532,7 @@ mod tests {
         let audio = run("am", 20_000, |t| (1.0 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0));
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "AM audio tone");
         let level = rms(&audio);
-        assert!((0.1..0.35).contains(&level), "AM audio level {level} (AGC target 0.2)");
+        assert!((0.05..0.2).contains(&level), "AM audio level {level} (AGC target 0.1)");
     }
 
     #[test]

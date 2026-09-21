@@ -260,7 +260,7 @@ mod tests {
         let mut stage = AgcStage::reference();
         let mut out = Vec::new();
         stage.process_into(&tone(960, 1_000.0, 0.01), false, &mut out);
-        assert!((rms(&out) - 0.2).abs() < 0.03, "level {}", rms(&out));
+        assert!((rms(&out) - 0.1).abs() < 0.03, "level {}", rms(&out));
         assert!(stage.gain() > 5.0, "the gain must have come up: {}", stage.gain());
     }
 

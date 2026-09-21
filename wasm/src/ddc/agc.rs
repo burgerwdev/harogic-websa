@@ -23,6 +23,7 @@ pub struct RmsAgc {
     silence_floor: f64,
     ceiling: f64,
     gain: f64,
+    limit: f64,
     primed: bool,
 }
 
@@ -36,22 +37,38 @@ impl RmsAgc {
             silence_floor: 1.0e-4,
             ceiling: 0.95,
             gain: 1.0,
+            limit: 1.0,
             primed: false,
         }
     }
 
-    /// The reference configuration (`Agc(target=0.2, attack=0.2, release=0.08)`).
+    /// The reference configuration (`Agc(target=0.1, attack=0.2, release=0.02)`).
+    ///
+    /// The target is deliberately well below full scale: a noise floor has a block crest factor of
+    /// about 4.5, so a 0.2 target puts the block peak at the 0.95 ceiling and the ceiling then works
+    /// continuously - on noise it was the level itself that moved (2.2x measured, AM). At 0.1 the
+    /// ceiling stays out of the way of ordinary noise and only catches a real burst.
+    ///
+    /// The release is slow (~1 s) for the same reason: on a noise floor a fast release makes the gain
+    /// follow the noise's own fluctuation instead of ignoring it, which the listener hears as the
+    /// level breathing (irregular, because the noise is). A second is the usual AGC release for AM/SSB.
     pub fn reference() -> Self {
-        Self::new(0.2, 0.2, 0.08)
+        Self::new(0.1, 0.2, 0.02)
     }
 
     pub fn reset(&mut self) {
         self.gain = 1.0;
+        self.limit = 1.0;
         self.primed = false;
     }
 
     pub fn gain(&self) -> f64 {
         self.gain
+    }
+
+    /// The RMS the AGC drives the output to (the tests read it rather than repeating the number).
+    pub fn target(&self) -> f64 {
+        self.target
     }
 
     /// Apply the AGC to a real block, writing into `out` (cleared first).
@@ -84,10 +101,26 @@ impl RmsAgc {
             }
             out.push(scaled as f32);
         }
-        if self.ceiling > 0.0 && peak > self.ceiling {
-            let scale = self.ceiling / peak;
-            for value in out.iter_mut() {
-                *value = ((*value as f64) * scale) as f32;
+        if self.ceiling > 0.0 {
+            // A limiter *gain* (instant down, slow up) rather than a per-block rescale. A per-block
+            // rescale modulates the level by that block's crest factor: on a noise floor the crest
+            // factor varies block to block, so the level swung by up to 2.2x (measured on AM noise)
+            // with a step at every block boundary - the periodic sound heard on a quiet frequency.
+            // The limiter holds a steady value on steady input, so the level holds steady too.
+            let wanted = if peak > self.ceiling {
+                self.ceiling / peak
+            } else {
+                1.0
+            };
+            if wanted < self.limit {
+                self.limit = wanted;
+            } else {
+                self.limit += (wanted - self.limit) * self.release;
+            }
+            if self.limit < 1.0 {
+                for value in out.iter_mut() {
+                    *value = ((*value as f64) * self.limit) as f32;
+                }
             }
         }
     }
@@ -109,7 +142,7 @@ mod tests {
         let mut out = Vec::new();
         agc.process_into(&sine(960, 0.01), false, &mut out);
         let rms = (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
-        assert!((rms - 0.2).abs() < 0.02, "rms {rms}");
+        assert!((rms - agc.target()).abs() < 0.02, "rms {rms}");
     }
 
     #[test]
@@ -139,6 +172,32 @@ mod tests {
     }
 
     #[test]
+    fn the_limiter_releases_instead_of_scaling_each_block() {
+        // The ceiling used to scale each block by its own peak, so the level followed the block's
+        // crest factor - a breathing, rough noise floor with a step at every block boundary
+        // (measured 2.2x on AM noise through the browser, and reproduced offline from a capture).
+        // It is a limiter *gain* now: instant down, slow up, so this state exists and holds steady
+        // on steady input. (The old code had no such state to assert, which is the point.)
+        let mut agc = RmsAgc::reference();
+        let mut out = Vec::new();
+        agc.process_into(&sine(960, 0.3), false, &mut out);
+        assert_eq!(agc.limit, 1.0, "a block inside the ceiling is not limited");
+        let mut peaky = sine(960, 0.3);
+        for (i, v) in peaky.iter_mut().enumerate() {
+            if i % 97 == 0 {
+                *v = 12.0;
+            }
+        }
+        agc.process_into(&peaky, false, &mut out);
+        let caught = agc.limit;
+        assert!(caught < 0.5, "a burst past the ceiling must pull the limiter down: {caught}");
+        // Recovery is slow (the AGC's release), not instant: it takes several blocks.
+        agc.process_into(&sine(960, 0.3), false, &mut out);
+        assert!(agc.limit > caught, "the limiter recovers");
+        assert!(agc.limit < 1.0, "but not within one block: {caught} -> {}", agc.limit);
+    }
+
+    #[test]
     fn the_ceiling_bounds_the_block() {
         let mut agc = RmsAgc::reference();
         let mut out = Vec::new();
@@ -154,6 +213,6 @@ mod tests {
         let mut out = Vec::new();
         agc.process_into(&sine(960, 0.001), false, &mut out);
         let rms = (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
-        assert!((rms - 0.2).abs() < 0.02, "first block rms {rms}");
+        assert!((rms - agc.target()).abs() < 0.02, "first block rms {rms}");
     }
 }

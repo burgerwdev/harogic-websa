@@ -18,6 +18,13 @@ from .filters import (
     one_pole_iir,
 )
 
+#: The reference AGC configuration, shared with the fixture generator and mirrored by
+#: `RmsAgc::reference()` in the WASM audio chain (the parity fixtures catch any drift). The target is
+#: well under full scale so a noise floor's block crest factor (~4.5) stays below the peak ceiling,
+#: and the release is slow (~1 s, the usual AM/SSB figure) so the gain does not follow the noise
+#: floor's own fluctuation - the "breathing" a listener hears on a quiet frequency.
+AGC_REFERENCE = {'target': 0.1, 'attack': 0.2, 'release': 0.02}
+
 ANALOG_MODES = ('am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw')
 
 
@@ -65,7 +72,7 @@ class AnalogDemod:
         audio_cut = max(100.0, min(audio_cut, 0.45 * self.audio_rate, 0.45 * fs))
         self.audio_lp = StreamFilter(design_lowpass(fs, audio_cut, ntaps=129))
         self.resampler = LinearResampler(fs, self.audio_rate)
-        self.agc = Agc(target=0.2, attack=0.2, release=0.08)
+        self.agc = Agc(**AGC_REFERENCE)
         self._prev_z = None
         self._prev_env = 0.0
         self._dc_y = 0.0

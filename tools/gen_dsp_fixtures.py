@@ -37,6 +37,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from web_sa.demod.demod import AGC_REFERENCE  # noqa: E402
 from web_sa.demod.filters import (  # noqa: E402
     Agc,
     LinearResampler,
@@ -110,7 +111,7 @@ def reference_chain(iq: np.ndarray):
     im = LinearResampler(fs_dec, OUT_RATE).process(decimated.imag.astype(np.float32))
     resampled = re.astype(np.float64) + 1j * im.astype(np.float64)
 
-    agc = Agc(target=0.2, attack=0.2, release=0.08)
+    agc = Agc(**AGC_REFERENCE)
     levelled = agc.process(resampled.real.astype(np.float32))
     return mixed, filtered, decimated, resampled, levelled
 
@@ -224,7 +225,7 @@ def _pm_reference(baseband: np.ndarray, if_bw: float) -> np.ndarray:
     audio_lp = StreamFilter(design_lowpass(DEMOD_RATE, min(15_000.0, if_bw / 2.0), ntaps=129))
     audio = audio_lp.process(blocked.astype(np.float32))
     audio = LinearResampler(DEMOD_RATE, DEMOD_AUDIO_RATE).process(audio)
-    return Agc(target=0.2, attack=0.2, release=0.08).process(audio)
+    return Agc(**AGC_REFERENCE).process(audio)
 
 
 def build_demod_reference() -> tuple[dict[str, bytes], list[dict]]:

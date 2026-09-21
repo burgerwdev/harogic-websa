@@ -130,7 +130,7 @@ class Agc:
     ``silence_floor`` likewise never raises the gain.
     """
 
-    def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4,
+    def __init__(self, target=0.1, attack=0.02, release=0.002, max_gain=1e4,
                  silence_floor=1e-4, ceiling=0.95):
         self.target = float(target)
         self.attack = float(attack)
@@ -139,14 +139,22 @@ class Agc:
         self.silence_floor = float(silence_floor)
         # Peak ceiling. An RMS target alone cannot bound the peak: FM broadcast audio has a
         # crest factor of 4-5, so a 0.2 RMS target still clipped on loud passages (measured
-        # on a real station: 18 clipped frames in 2 s in WFM, 5 in AM). One instantaneous
-        # scale keeps the block below the ceiling without waiting for the AGC to attack.
+        # on a real station: 18 clipped frames in 2 s in WFM, 5 in AM).
+        #
+        # It is applied as a limiter *gain* (instant down, slow up) rather than by scaling each
+        # block by its own peak. Scaling per block is what a peaky signal hears as a level: on a
+        # noise floor the crest factor varies block to block, so the level was modulated by up to
+        # 2.2x (measured on AM noise) with a step at every block boundary - the periodic, level-
+        # dependent sound a listener hears on a quiet frequency and loses as soon as a station
+        # arrives. The limiter's gain holds a steady value on steady input, so the level is steady.
         self.ceiling = float(ceiling)
+        self.limit = 1.0
         self.gain = 1.0
         self._primed = False
 
     def reset(self) -> None:
         self.gain = 1.0
+        self.limit = 1.0
         self._primed = False
 
     def process(self, x: np.ndarray, hold: bool = False) -> np.ndarray:
@@ -174,6 +182,17 @@ class Agc:
         y = x * self.gain
         if self.ceiling > 0.0 and y.size:
             peak = float(np.max(np.abs(y)))
-            if peak > self.ceiling:
-                y = y * (self.ceiling / peak)
+            wanted = self.ceiling / peak if peak > self.ceiling else 1.0
+            # Instant down, slow up: the release is the one the gain already uses, so the level
+            # recovers in a few hundred milliseconds instead of tracking each block's crest factor.
+            if wanted < self.limit:
+                self.limit = wanted
+            else:
+                self.limit += (wanted - self.limit) * self.release
+            if self.limit < 1.0:
+                y = y * self.limit
         return y
+
+    def level(self) -> float:
+        """The gain the last block came out with (the AGC gain times the limiter's), for tests."""
+        return self.gain * self.limit
