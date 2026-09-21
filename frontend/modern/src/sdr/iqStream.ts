@@ -7,7 +7,7 @@
 //
 // A separate module from the audio path because the IQ ingress is a different stream with a
 // different lifetime: it runs while SDR mode is active, independent of whether the speaker is on.
-import { routeWorkletPortTo } from '../audio/sdrAudio';
+import { enablePythonAudioFallback, routeWorkletPortTo } from '../audio/sdrAudio';
 import { wasmDspAllowed, wasmDspReason } from './capability';
 import { dspWasmUrl } from './wasm';
 import type { PipelineParams } from './wasmPipeline';
@@ -44,6 +44,13 @@ let dspError = '';
 let dspRingResets = 0;
 let dspPending = 0;
 let dspDelivered = 0;
+let dspSlipped = 0;
+let dspRatio = 1;
+let dspNr = false;
+let dspNrStrength = 0.6;
+let dspSquelch = -110;
+/// The PCM level the browser DSP measured (the S-meter reading when it owns playback).
+let dspRms = 0;
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -67,6 +74,8 @@ function publishIqDebug(): void {
       ` dsp_avail=${dspWorkletAvailable} dsp_underruns=${dspWorkletUnderruns}` +
       ` dsp_delivered=${dspDelivered} dsp_received=${dspWorkletReceived}` +
       ` dsp_pending=${dspPending} dsp_ring_resets=${dspRingResets}` +
+      ` dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
+      ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
 }
@@ -90,6 +99,10 @@ function startWorker(): void {
     const d = (event.data || {}) as Record<string, any>;
     if (d.type === 'error') {
       lastError = String(d.message || 'error');
+      // The browser DSP cannot run (no module, no kernel for the mode, a delivery failure): the
+      // Python path is the documented fallback and only now is it started.
+      fallbackReason = 'dsp-error';
+      enablePythonAudioFallback();
       publishIqDebug();
       return;
     }
@@ -117,6 +130,12 @@ function startWorker(): void {
     if (typeof d.workletRingResets === 'number') dspRingResets = d.workletRingResets;
     if (typeof d.pcmPending === 'number') dspPending = d.pcmPending;
     if (typeof d.deliveredSamples === 'number') dspDelivered = d.deliveredSamples;
+    if (typeof d.workletSlipped === 'number') dspSlipped = d.workletSlipped;
+    if (typeof d.workletRatio === 'number') dspRatio = d.workletRatio;
+    if (typeof d.nr === 'boolean') dspNr = d.nr;
+    if (typeof d.nrStrength === 'number') dspNrStrength = d.nrStrength;
+    if (typeof d.squelchDbfs === 'number') dspSquelch = d.squelchDbfs;
+    if (typeof d.rms === 'number') dspRms = d.rms;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
     pipelineReady = Boolean(d.pipeline);
@@ -143,14 +162,33 @@ function startWorker(): void {
 /** Push the confirmed demodulator parameters (and listener preferences) to the DSP worker. */
 export function configureSdrPipeline(
   params: PipelineParams,
-  options: { volume?: number; audioEnabled?: boolean } = {},
+  options: {
+    volume?: number;
+    audioEnabled?: boolean;
+    nr?: boolean;
+    nrStrength?: number;
+    squelch?: number;
+  } = {},
 ): void {
   worker?.postMessage({
     type: 'configure',
     params,
     volume: options.volume,
     audioEnabled: options.audioEnabled,
+    nr: options.nr,
+    nrStrength: options.nrStrength,
+    squelch: options.squelch,
   });
+}
+
+/** Noise reduction on/off and its strength: applied live, no pipeline rebuild. */
+export function setSdrPipelineNr(on: boolean, strength: number): void {
+  worker?.postMessage({ type: 'nr', enabled: on, strength });
+}
+
+/** The squelch threshold in dBFS: applied live. */
+export function setSdrPipelineSquelch(dbfs: number): void {
+  worker?.postMessage({ type: 'squelch', value: dbfs });
 }
 
 /** Volume is a listener preference: applied in the worker, where the PCM is produced. */
@@ -228,6 +266,18 @@ export function renderFt8Message(report: Ft8Report): void {
 /** The last decoded FT8 message (tests and diagnostics). */
 export function lastFt8Message(): { text: string; count: number; detail: string } {
   return { text: ft8Text, count: ft8Count, detail: ft8Detail };
+}
+
+/**
+ * The level of what the browser DSP is playing, in dBFS, or NaN when it is not the audio source.
+ *
+ * The S-meter used to come from the backend's Python demodulator; when the browser owns playback
+ * that demodulator is not running (that is the point of the fallback split), so the level comes
+ * from the PCM the browser produced.
+ */
+export function dspLevelDbfs(): number {
+  if (!dspOwnsWorklet || dspRms <= 0) return Number.NaN;
+  return 20 * Math.log10(dspRms);
 }
 
 /** Diagnostics for the e2e and for tests: the transport counters and the DSP state. */

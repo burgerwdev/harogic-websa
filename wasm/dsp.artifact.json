@@ -1,5 +1,5 @@
 {
- "bytes": 115488,
+ "bytes": 121085,
  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
  "exports": [
   "memory",
@@ -15,6 +15,8 @@
   "websa_dsp_demod_reset",
   "websa_dsp_demod_retune",
   "websa_dsp_demod_set_audio",
+  "websa_dsp_demod_set_nr",
+  "websa_dsp_demod_set_squelch",
   "websa_dsp_f32_bytes",
   "websa_dsp_free",
   "websa_dsp_plugin_audio_enhancement",
@@ -29,6 +31,6 @@
  "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "96699c239dc3201f072524d33c63c5480207ebb08593b303c3d29bf00725d11e",
+ "sha256": "19194a6297ff58600cce06079de665e755299f374dc3cd08c04e3c781884f632",
  "target": "wasm32-unknown-unknown"
 }

@@ -8,6 +8,7 @@
 //!
 //! The demodulators here are test stand-ins: the real modes land on top of the same interfaces,
 //! and this test keeps the interfaces honest.
+use websa_dsp::audio::AudioPolicy;
 use websa_dsp::pipeline::{AudioChain, PathKind, Pipeline, PipelineOutput};
 use websa_dsp::plugin::{AnalogDemodulator, DigitalDemodulator, PluginKind};
 
@@ -74,11 +75,15 @@ fn chain() -> AudioChain {
 #[test]
 fn the_raw_stream_is_bit_identical_with_the_audio_chain_enabled_or_not() {
     let iq = baseband(4096);
-    let mut with_chain = Pipeline::new(PathKind::Analog, chain());
+    // The chain must actually process for this comparison to say anything: the *default* policy is a
+    // pass-through (the Python reference runs no enhancement), so the noise reducer is switched on
+    // for the "with chain" run.
+    let nr = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbfs: -110.0 };
+    let mut with_chain = Pipeline::new(PathKind::Analog, chain(), nr);
     with_chain.set_analog_demod(Box::new(RealPartDemod));
     with_chain.set_audio_enabled(true);
 
-    let mut without = Pipeline::new(PathKind::Analog, chain());
+    let mut without = Pipeline::new(PathKind::Analog, chain(), nr);
     without.set_analog_demod(Box::new(RealPartDemod));
     without.set_audio_enabled(false);
 
@@ -95,10 +100,10 @@ fn the_raw_stream_is_bit_identical_with_the_audio_chain_enabled_or_not() {
     // ...and the audio genuinely went through the chain, or the comparison above proves nothing.
     assert_eq!(a.audio.len(), b.audio.len());
     let changed = a.audio.iter().zip(b.audio.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
-    assert!(changed > a.audio.len() / 2, "the DC blocker must change the audio ({changed} samples)");
-    let mean = a.audio.iter().map(|v| *v as f64).sum::<f64>() / a.audio.len() as f64;
-    let mean_off = b.audio.iter().map(|v| *v as f64).sum::<f64>() / b.audio.len() as f64;
-    assert!(mean.abs() < mean_off.abs(), "the chain must remove the offset ({mean} vs {mean_off})");
+    assert!(changed > a.audio.len() / 2, "the reducer must change the audio ({changed} samples)");
+    // The RAW stream is what the decoder reads, and it never changes: the guarantee the newtype
+    // carries is asserted here, bit for bit.
+    assert_eq!(a.raw.len(), iq.len());
 }
 
 #[test]
@@ -106,7 +111,7 @@ fn the_digital_path_ignores_the_audio_chain_completely() {
     let iq = baseband(4096);
 
     let run = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(PathKind::Digital, chain());
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain(), AudioPolicy::default());
         pipeline.set_digital_demod(Box::new(Fingerprint::default()), 96_000.0, 96_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut out = PipelineOutput::default();
@@ -128,7 +133,7 @@ fn the_digital_path_ignores_the_audio_chain_completely() {
 fn the_decoder_sees_the_same_samples_in_both_runs() {
     let iq = baseband(4096);
     let fingerprint = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(PathKind::Digital, chain());
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain(), AudioPolicy::default());
         pipeline.set_digital_demod(Box::new(Fingerprint::default()), 96_000.0, 96_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut out = PipelineOutput::default();
@@ -162,7 +167,7 @@ fn the_digital_path_adapts_the_baseband_rate_to_the_decoder() {
 
     let iq = baseband(8_192);
     let seen = Arc::new(AtomicUsize::new(0));
-    let mut pipeline = Pipeline::new(PathKind::Digital, AudioChain::new(Vec::new()));
+    let mut pipeline = Pipeline::new(PathKind::Digital, AudioChain::new(Vec::new()), AudioPolicy::default());
     pipeline.set_digital_demod(Box::new(Counting(seen.clone())), 96_000.0, 48_000.0);
     let mut out = PipelineOutput::default();
     pipeline.process_f32_into(&iq, false, &mut out);
@@ -202,7 +207,7 @@ fn every_registered_plugin_can_be_resolved_by_its_own_family() {
         }
     }
     // The pipeline reports only plugins that exist in a family (the UI reads this list).
-    let mut pipeline = Pipeline::new(PathKind::Analog, chain());
+    let mut pipeline = Pipeline::new(PathKind::Analog, chain(), AudioPolicy::default());
     pipeline.set_analog_demod(Box::new(RealPartDemod));
     for (id, kind) in pipeline.active_plugins() {
         assert!(websa_dsp::plugin::find(kind, id).is_some(), "{kind:?}/{id} is not registered");
@@ -233,7 +238,7 @@ fn the_ft8_decoder_reads_the_raw_path_untouched_by_the_audio_chain() {
 
     let iq = ft8_baseband();
     let run = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(PathKind::Digital, chain());
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain(), AudioPolicy::default());
         pipeline.set_digital_demod(Box::new(Ft8Plugin::new(48_000.0)), 48_000.0, 48_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut decoded: Vec<String> = Vec::new();

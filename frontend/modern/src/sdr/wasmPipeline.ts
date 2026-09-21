@@ -82,6 +82,18 @@ export class WasmPipeline {
 		if (this.handle) this.module.exports.websa_dsp_demod_set_audio(this.handle, on ? 1 : 0);
 	}
 
+	/** Noise reduction on/off plus its strength (0..1): the panel's NR control. */
+	setNr(on: boolean, strength: number): void {
+		if (this.handle) {
+			this.module.exports.websa_dsp_demod_set_nr(this.handle, on ? 1 : 0, strength);
+		}
+	}
+
+	/** The squelch gate's threshold in dBFS (<= -100 leaves it wide open). */
+	setSquelch(dbfs: number): void {
+		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbfs);
+	}
+
 	setVolume(volume: number): void {
 		this.volume = Number.isFinite(volume) ? Math.max(0, Math.min(4, volume)) : 1;
 	}

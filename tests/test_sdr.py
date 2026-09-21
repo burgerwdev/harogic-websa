@@ -190,6 +190,67 @@ def test_settle_window_still_drains_iqs(monkeypatch):
     assert struct.unpack_from('<4sIII', frames[0]) == (b'AUDF', 0, 48000, 0)
 
 
+def test_baseband_rate_is_measured_not_assumed():
+    """The browser maps baseband samples onto the sound card's clock.
+
+    A vendor's nominal DDC rate is not the rate the device delivers, so a session that declared the
+    nominal figure made the browser produce slightly the wrong number of samples per second - the
+    ring drained and the audio puffed about once a second. The rate is measured over a window
+    instead, and the nominal value is only used until the first window closes.
+    """
+    session = SdrSession.__new__(SdrSession)
+    session._ddc = SimpleNamespace(fs_out=48_828.125)
+    session._bb_rate = 0.0
+    session._bb_window_samples = 0
+    session._bb_window_start = 0.0
+    # Before any measurement the nominal rate is reported (the first second or so of a stream).
+    assert session._baseband_rate() == pytest.approx(48_828.125)
+    assert session._audio_rate() == pytest.approx(session.AUDIO_RATE)
+
+    # 406 samples every 8.3 ms: a stream that really runs at 48.9 kHz.
+    now = 100.0
+    session._measure_baseband_rate(0, now)                 # a step that produced nothing
+    for _ in range(250):                                    # >2 s of packets
+        session._measure_baseband_rate(406, now)
+        now += 406 / 48_900.0
+    measured = session._measured_bb_rate()
+    assert measured == pytest.approx(48_900.0, rel=0.002), measured
+    assert session._baseband_rate() == pytest.approx(measured)
+    # The Python demodulator's audio carries the same correction (it resamples from the nominal
+    # rate, so its true output rate is scaled by the same factor).
+    assert session._audio_rate() == pytest.approx(48_000.0 * measured / 48_828.125, rel=1e-6)
+    # And a later window moves the estimate only slowly (the pitch must not wobble).
+    # A later window moves the estimate only slowly: the declared rate is what the browser turns
+    # into a resampling ratio, so a wobble would be a pitch wobble.
+    before = session._baseband_rate()
+    for _ in range(250):
+        session._measure_baseband_rate(406, now)
+        now += 406 / 48_900.0
+    assert abs(session._baseband_rate() - before) < 150.0
+
+
+def test_python_audio_path_only_runs_while_someone_listens():
+    """The Python demodulator is the fallback/reference, not a second audio path.
+
+    With the browser DSP owning playback nothing subscribes to AUDF, and the demodulator (the most
+    expensive stage of the step) must not run for sockets that would discard its output.
+    """
+    session = SdrSession.__new__(SdrSession)
+    assert session._audio_subscribed(SimpleNamespace(audio_clients=1)) is True
+    assert session._audio_subscribed(SimpleNamespace(audio_clients=0)) is False
+    # A device that does not report the count keeps the previous behaviour (the path runs).
+    assert session._audio_subscribed(SimpleNamespace()) is True
+
+    # The pause/resume decision (and its one-time log) is the branch `step()` acts on, and it must
+    # survive a session built without `__init__` (a test stub, or an object being reused).
+    listening = SimpleNamespace(audio_clients=1)
+    silent = SimpleNamespace(audio_clients=0)
+    assert session._audio_paused_state(listening) is False
+    assert session._audio_paused_state(silent) is True
+    assert session._audio_paused_state(silent) is True          # no repeated transition
+    assert session._audio_paused_state(listening) is False
+
+
 def test_ddc_rejects_oversized_native_output(monkeypatch):
     channel = DdcChannel(sb.c_void_p())
     channel._ready = True

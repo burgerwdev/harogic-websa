@@ -19,6 +19,7 @@
 //! The audio chain is not a DDC stage: it exists for the human ear, so it is not part of the
 //! channelizer.
 
+use crate::audio::AudioPolicy;
 use crate::ddc::resampler::ComplexResampler;
 use crate::plugin::{AnalogDemodulator, AudioStage, DigitalDemodulator, DigitalReport, PluginKind, AUDIO_PLUGINS};
 
@@ -78,10 +79,13 @@ impl AudioChain {
     }
 
     /// Build the chain for the plugins that are implemented, in `AUDIO_PLUGINS` order, at the
-    /// consumer's rate.
+    /// consumer's rate, with every stage **disabled**: the policy decides what runs.
     ///
     /// Stages whose kernels are not written yet are skipped rather than faked, so the chain can
-    /// never "pass audio through" while pretending to process it.
+    /// never "pass audio through" while pretending to process it. Installing a stage off is what
+    /// keeps the default honest — the notch used to run because nobody said otherwise, and it
+    /// removed the signal itself whenever the signal was a tone (measured: -33 dB on an AM test
+    /// tone, which also made every A/B against the Python reference meaningless).
     pub fn from_registry(
         factories: &[(&'static str, fn(f64) -> Box<dyn AudioStage>)],
         rate: f64,
@@ -92,7 +96,11 @@ impl AudioChain {
                 stages.push(build(rate));
             }
         }
-        Self::new(stages)
+        let mut chain = Self::new(stages);
+        for entry in chain.stages.iter_mut() {
+            entry.enabled = false;
+        }
+        chain
     }
 
     pub fn ids(&self) -> Vec<&'static str> {
@@ -124,6 +132,24 @@ impl AudioChain {
 
     pub fn is_stage_enabled(&self, id: &str) -> bool {
         self.stages.iter().any(|entry| entry.stage.id() == id && entry.enabled)
+    }
+
+    /// Hand a strength to every stage that has one; `false` when none does.
+    pub fn set_strength(&mut self, strength: f64) -> bool {
+        let mut taken = false;
+        for entry in self.stages.iter_mut() {
+            taken |= entry.stage.set_strength(strength);
+        }
+        taken
+    }
+
+    /// Hand a dBFS threshold to every stage that has one; `false` when none does.
+    pub fn set_threshold(&mut self, dbfs: f64) -> bool {
+        let mut taken = false;
+        for entry in self.stages.iter_mut() {
+            taken |= entry.stage.set_threshold(dbfs);
+        }
+        taken
     }
 
     pub fn is_empty(&self) -> bool {
@@ -183,6 +209,8 @@ pub struct Pipeline {
     /// 48 kHz. `None` when the rates already match (the common case).
     resample: Option<ComplexResampler>,
     chain: AudioChain,
+    /// What the listener asked the audio chain to do (the panel's NR/squelch controls).
+    policy: AudioPolicy,
     /// Rate-converted baseband for the digital path.
     converted: Vec<f32>,
     pcm: AnalogPcm,
@@ -190,17 +218,44 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new(kind: PathKind, chain: AudioChain) -> Self {
+    pub fn new(kind: PathKind, mut chain: AudioChain, policy: AudioPolicy) -> Self {
+        crate::audio::apply_policy(&mut chain, policy);
         Self {
             kind,
             analog: None,
             digital: None,
             resample: None,
             chain,
+            policy,
             converted: Vec::new(),
             pcm: AnalogPcm::default(),
             decoded_total: 0,
         }
+    }
+
+    /// The audio-chain policy in force (the panel's NR/squelch settings).
+    pub fn audio_policy(&self) -> AudioPolicy {
+        self.policy
+    }
+
+    /// Turn noise reduction on/off and set its strength. The stages that run are the policy's.
+    pub fn set_noise_reduction(&mut self, on: bool, strength: f64) -> bool {
+        self.policy.nr = on;
+        self.policy.nr_strength = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.6 };
+        let known = crate::audio::apply_policy(&mut self.chain, self.policy);
+        // CW never runs the notch (a carrier is not interference); the policy does not ask for it
+        // either, but the rule is recorded here because it is a property of the mode, not of the
+        // listener's setting.
+        self.chain.set_stage_enabled("notch", false);
+        known
+    }
+
+    /// Set the squelch threshold in dBFS (`<= -100` leaves the gate wide open and inert).
+    pub fn set_squelch_dbfs(&mut self, dbfs: f64) -> bool {
+        if dbfs.is_finite() {
+            self.policy.squelch_dbfs = dbfs.clamp(-160.0, 0.0);
+        }
+        crate::audio::apply_policy(&mut self.chain, self.policy)
     }
 
     pub fn kind(&self) -> PathKind {

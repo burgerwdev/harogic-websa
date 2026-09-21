@@ -157,19 +157,20 @@ impl Squelch {
             self.open = false;
         }
         let target = if self.open { 1.0 } else { 0.0 };
-        let tau = if target > self.gain { self.attack_s } else { self.release_s };
-        let alpha = 1.0 - (-dt / tau.max(1e-4)).exp();
+        let tau = if target > self.gain { self.attack_s } else { self.release_s }.max(1e-4);
+        let alpha = 1.0 - (-dt / tau).exp();
         let start = self.gain;
         self.gain += (target - self.gain) * alpha;
+        // The gate ramps over its own time constant, not over the whole block: a block is 20 ms in
+        // the live path, but a caller that hands over a second of audio must not get a one-second
+        // fade (measured: -6 dB on a steady tone).
+        let ramp = (tau * self.rate).max(1.0);
         out.clear();
         out.reserve(n);
-        if n == 1 {
-            out.push(input[0] * self.gain as f32);
-        } else {
-            for (index, sample) in input.iter().enumerate() {
-                let gate = start + (self.gain - start) * (index as f64 / (n - 1) as f64);
-                out.push((*sample as f64 * gate) as f32);
-            }
+        for (index, sample) in input.iter().enumerate() {
+            let progress = (index as f64 / ramp).min(1.0);
+            let gate = start + (self.gain - start) * progress;
+            out.push((*sample as f64 * gate) as f32);
         }
         self.now_s += dt;
     }
@@ -178,11 +179,23 @@ impl Squelch {
     pub fn status(&self) -> (f64, f64, bool) {
         (self.threshold_dbfs, self.gain, self.open)
     }
+
+    /// The gate's threshold in dBFS (the panel's squelch control).
+    pub fn set_threshold_dbfs(&mut self, dbfs: f64) {
+        if dbfs.is_finite() {
+            self.threshold_dbfs = dbfs.clamp(-160.0, 0.0);
+        }
+    }
 }
 
 impl AudioStage for Squelch {
     fn id(&self) -> &'static str {
         "squelch"
+    }
+
+    fn set_threshold(&mut self, dbfs: f64) -> bool {
+        self.set_threshold_dbfs(dbfs);
+        true
     }
 
     fn process_into(&mut self, input: &[f32], _hold: bool, out: &mut Vec<f32>) {

@@ -35,6 +35,10 @@ let workletReceived = 0;
 /// The last failure seen while handing PCM to the worklet ('' when it is fine).
 let workletError = '';
 let workletRingResets = 0;
+/// Samples the worklet had to drop because the producer outran its clock (latency stays bounded).
+let workletSlipped = 0;
+/// The worklet's drift-correcting resampling ratio (1 = the producer matches the sound card).
+let workletRatio = 1;
 /// PCM waiting for a full delivery block, and the block size (20 ms at the output rate).
 let pendingPcm: Float32Array[] = [];
 let pendingSamples = 0;
@@ -50,6 +54,10 @@ let digitalResets = 0;
 let digitalIds = new Set<string>();
 let audioEnabled = true;
 let volume = 1;
+/// Noise reduction (the panel's NR control) and the squelch threshold.
+let nr = false;
+let nrStrength = 0.6;
+let squelchDbfs = -110;
 let workletPort: MessagePort | null = null;
 let enabled = false;
 let blocks = 0;
@@ -77,7 +85,8 @@ function postStats(): void {
     pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
     ft8Messages, digitalPushes, digitalBuffered, digitalResets,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
-    workletError, workletRingResets, pcmPending: pendingSamples, deliveredSamples,
+    workletError, workletRingResets, workletSlipped, workletRatio,
+    pcmPending: pendingSamples, deliveredSamples, nr, nrStrength, squelchDbfs,
   });
 }
 
@@ -86,8 +95,7 @@ function syncPipeline(): void {
   if (!enabled || !params || !module) return;
   const isDigital = digitalIds.has(params.mode);
   if (pipeline && pipeline.mode === params.mode && pipeline.isDigital === isDigital) {
-    pipeline.setVolume(volume);
-    pipeline.setAudioEnabled(audioEnabled);
+    applyListenerControls();
     return;
   }
   if (pipeline) {
@@ -104,10 +112,18 @@ function syncPipeline(): void {
     return;
   }
   digital = isDigital;
-  pipeline.setVolume(volume);
-  pipeline.setAudioEnabled(audioEnabled);
+  applyListenerControls();
   post({ type: 'ready', mode: params.mode });
   postStats();
+}
+
+/** Push the listener's settings into the pipeline (volume, chain, NR, squelch). */
+function applyListenerControls(): void {
+  if (!pipeline) return;
+  pipeline.setVolume(volume);
+  pipeline.setAudioEnabled(audioEnabled);
+  pipeline.setNr(nr, nrStrength);
+  pipeline.setSquelch(squelchDbfs);
 }
 
 /** Drop the worker's queued PCM and tell the worklet to drop the ring it already holds. */
@@ -277,6 +293,9 @@ self.onmessage = (event: MessageEvent) => {
       params = next;
       if (typeof msg.volume === 'number') volume = msg.volume;
       if (typeof msg.audioEnabled === 'boolean') audioEnabled = msg.audioEnabled;
+      if (typeof msg.nr === 'boolean') nr = msg.nr;
+      if (typeof msg.nrStrength === 'number') nrStrength = msg.nrStrength;
+      if (typeof msg.squelch === 'number') squelchDbfs = msg.squelch;
       const geometryChanged =
         !previous ||
         previous.mode !== next.mode ||
@@ -293,8 +312,7 @@ self.onmessage = (event: MessageEvent) => {
           post({ type: 'error', message: `no DSP pipeline for mode ${next.mode}` });
         }
       }
-      pipeline?.setVolume(volume);
-      pipeline?.setAudioEnabled(audioEnabled);
+      applyListenerControls();
       syncPipeline();
     }
   } else if (msg.type === 'volume') {
@@ -303,6 +321,15 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'audio') {
     audioEnabled = Boolean(msg.value);
     pipeline?.setAudioEnabled(audioEnabled);
+  } else if (msg.type === 'nr') {
+    nr = Boolean(msg.enabled);
+    if (typeof msg.strength === 'number') nrStrength = msg.strength;
+    pipeline?.setNr(nr, nrStrength);
+    postStats();
+  } else if (msg.type === 'squelch') {
+    squelchDbfs = Number(msg.value) || -110;
+    pipeline?.setSquelch(squelchDbfs);
+    postStats();
   } else if (msg.type === 'worklet-port') {
     // The main thread handed the worklet over once this worker reported a running pipeline.
     const port = msg.port as MessagePort | undefined;
@@ -315,6 +342,8 @@ self.onmessage = (event: MessageEvent) => {
         workletUnderruns = Number(status.underruns) || 0;
         workletReceived = Number(status.received) || 0;
         workletRingResets = Number(status.resets) || 0;
+        workletSlipped = Number(status.slipped) || 0;
+        workletRatio = Number(status.ratio) || 1;
       };
       workletPort.start();
       workletPort.postMessage({ type: 'enabled', value: enabled });

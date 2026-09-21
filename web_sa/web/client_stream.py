@@ -80,6 +80,16 @@ class ClientStream:
         self.closed = False
 
     @property
+    def accepts_audio(self) -> bool:
+        """True when this connection would actually keep an AUDF frame.
+
+        The SDR session asks before running its Python demodulator: with the browser doing the
+        demodulation (its own socket carries the channelized baseband) nobody subscribes to audio,
+        and an audio chain computed for a socket that discards it would be pure CPU.
+        """
+        return not self.closed and not self.no_audio and not self.iq_only
+
+    @property
     def accepts_iq(self) -> bool:
         """True when this connection would actually keep an IQBF frame.
 

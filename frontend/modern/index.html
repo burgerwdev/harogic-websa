@@ -263,6 +263,13 @@
             <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
+            <div class="param-row"><label data-i18n="nr">NR</label>
+              <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
+              <select id="select-sdr-nr-strength" data-action="set-sdr-nr-strength" style="flex:1;" data-i18n-title="nr_strength_tip" data-i18n-attr="title">
+                <option value="0.25" data-i18n="nr_light">Light</option>
+                <option value="0.6" selected data-i18n="nr_medium">Medium</option>
+                <option value="1" data-i18n="nr_strong">Strong</option>
+              </select></div>
             <div class="param-row"><span class="cur-val" style="opacity:.6;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span></div>
           </div>
         </div>

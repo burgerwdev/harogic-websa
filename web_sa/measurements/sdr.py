@@ -130,6 +130,17 @@ class SdrSession(MeasurementSession):
         # reconfiguration so the client flushes blocks that belong to the previous tuning.
         self._iq_seq = 0
         self._iq_reset_pending = False
+        # The rate the channelized baseband actually arrives at. The vendor's nominal
+        # `SampleRate` is not the rate the device delivers (measured 1.09% high on a SAN-90 at
+        # decimate=32), and the browser maps baseband samples onto the AudioWorklet's clock, so a
+        # nominal figure makes it produce ~1% fewer samples per second than the sound card consumes:
+        # the ring drains and the audio puffs about once a second. Measured here, over a window, and
+        # published in the frame header instead.
+        self._bb_rate = 0.0
+        self._bb_window_samples = 0
+        self._bb_window_start = 0.0
+        # True while the Python demodulator is skipped because nobody subscribes to audio.
+        self._audio_paused = False
         self._packet_samples = 0
         self._ddc_batch = 1
         self._iqs_center_hz = 0.0
@@ -562,6 +573,9 @@ class SdrSession(MeasurementSession):
             _t('chain: vendor FFT ready=%s points=%s', self._vfft_ready, self._vfft_points)
         self._mix_freq = rel + self._ddc.offset_hz
         self._applied_listen = float(s.sdr_listen_hz)
+        self._bb_rate = 0.0                 # a new geometry: re-measure before it is trusted
+        self._bb_window_samples = 0
+        self._bb_window_start = 0.0
         _t('chain: demod configure fs_out=%s mode=%s ifbw=%s',
            self._ddc.fs_out, s.sdr_demod, if_bw)
         _deemph = None if float(getattr(s, 'sdr_deemph_us', -1.0)) < 0 else float(s.sdr_deemph_us)
@@ -572,10 +586,10 @@ class SdrSession(MeasurementSession):
         s.sdr_actual.update(
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
             ddc_offset=self._ddc.offset_hz, mix_offset=self._mix_freq,
-            ddc_decimate=self._ddc.decimate, ddc_rate=self._ddc.fs_out,
+            ddc_decimate=self._ddc.decimate, ddc_rate=self._baseband_rate(),
             ddc_delay=self._ddc.delay,
             ddc_batch=self._ddc_batch,
-            audio_rate=self.AUDIO_RATE,
+            audio_rate=self._audio_rate(),
             deemph_us=self._demod.deemph_us,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
@@ -643,8 +657,98 @@ class SdrSession(MeasurementSession):
             self._begin_audio_settle()
         self._applied_listen = float(s.sdr_listen_hz)
         s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=self._ddc.offset_hz,
-                            mix_offset=self._mix_freq, ddc_rate=fs_out,
+                            mix_offset=self._mix_freq, ddc_rate=self._baseband_rate(),
                             ddc_delay=self._ddc.delay)
+
+    def _audio_subscribed(self, dev) -> bool:
+        """True when some client is listening to this Python audio path.
+
+        The path is the fallback and the numeric reference. With the browser DSP owning playback no
+        client subscribes to AUDF, and the demodulator (the most expensive stage of the step, and
+        one whose output would be discarded by every socket) is skipped. A device that does not
+        report the count is treated as subscribed, i.e. the previous behaviour.
+        """
+        return bool(getattr(dev, 'audio_clients', 1))
+
+    def _audio_paused_state(self, dev) -> bool:
+        """True when the Python demodulator is being skipped, logging the transition once.
+
+        The path is the fallback and the numeric reference; with the browser DSP owning playback
+        nothing subscribes to AUDF and the demodulator (the most expensive stage of the step) is
+        skipped instead of computing a stream every socket would discard.
+        """
+        subscribed = self._audio_subscribed(dev)
+        paused = bool(getattr(self, '_audio_paused', False))
+        if subscribed == paused:                       # subscribed && !paused, or !subscribed && paused
+            if subscribed:
+                log.info('SDR: an audio client subscribed; the Python demodulator resumed')
+            else:
+                log.info('SDR: no audio client; the Python demodulator is paused '
+                         '(the browser DSP produces the audio)')
+        self._audio_paused = not subscribed
+        return not subscribed
+
+    def _measured_bb_rate(self) -> float:
+        """The smoothed measurement, 0.0 while it is still unknown (or on a bare test stub)."""
+        try:
+            return float(getattr(self, '_bb_rate', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _measure_baseband_rate(self, samples: int, now: float) -> None:
+        """Track the rate the channelized baseband *actually* arrives at.
+
+        A window (1 s) rather than a per-packet estimate: the packet timing jitters by a few
+        milliseconds, and a per-packet rate would wobble the pitch the browser produces. The window
+        estimate is smoothed across windows, and the nominal rate is used until the first one
+        completes.
+        """
+        if samples <= 0:
+            return
+        if self._bb_window_start == 0.0:
+            # The clock starts with the window's first packet, and that packet's samples are not
+            # counted: counting them against zero elapsed time would bias the estimate high by one
+            # packet per window (~0.8% here, which is the same order as the error being measured).
+            self._bb_window_start = now
+            self._bb_window_samples = 0
+            return
+        self._bb_window_samples += samples
+        elapsed = now - self._bb_window_start
+        if elapsed < 2.0:
+            return
+        measured = self._bb_window_samples / elapsed
+        self._bb_rate = measured if self._bb_rate <= 0.0 else 0.7 * self._bb_rate + 0.3 * measured
+        self._bb_window_samples = 0
+        self._bb_window_start = now
+
+    def _ddc_fs_out(self) -> float:
+        """The channelizer's nominal output rate (0 when it is not configured yet)."""
+        ddc = getattr(self, '_ddc', None)
+        try:
+            return float(getattr(ddc, 'fs_out', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _baseband_rate(self) -> float:
+        """The rate to publish for the baseband: measured when known, nominal before that."""
+        measured = self._measured_bb_rate()
+        if measured > 0.0:
+            return measured
+        nominal = self._ddc_fs_out()
+        return nominal if nominal > 0.0 else float(self.AUDIO_RATE)
+
+    def _audio_rate(self) -> float:
+        """The rate the Python demodulator's audio actually comes out at.
+
+        The demod resamples from the DDC's *nominal* output rate, so its true output rate carries
+        the same correction; declaring the nominal 48 kHz made the browser play ~1% more samples
+        than the demod produced (the same drain, on the fallback path).
+        """
+        nominal = self._ddc_fs_out()
+        measured = self._measured_bb_rate()
+        if measured <= 0.0 or nominal <= 0.0:
+            return float(self.AUDIO_RATE)
+        return float(self.AUDIO_RATE) * (measured / nominal)
 
     def _mix(self, i, q):
         """Fine-tune by the residual offset with a continuous software NCO."""
@@ -855,7 +959,7 @@ class SdrSession(MeasurementSession):
                 self._apply_tuning_locked()
             if self._audio_reset_pending:
                 frames.append(encode_audio(
-                    self._audio_seq, self.AUDIO_RATE, np.zeros(0, dtype=np.int16)))
+                    self._audio_seq, self._audio_rate(), np.zeros(0, dtype=np.int16)))
                 self._audio_reset_pending = False
             stream = T.IQStream_TypeDef()
             # Watchdog: if no good packet arrived for a while the stream is wedged; a full
@@ -988,10 +1092,11 @@ class SdrSession(MeasurementSession):
             # decimation on the device, fine tuning here) stays on this side, so the browser's cost
             # and the wire traffic no longer scale with the analyzer's raw IQ rate. Only while a DSP
             # socket is subscribed: with no subscriber nobody should pay for the encode.
+            self._measure_baseband_rate(i.size, now)
             if getattr(dev, 'iq_clients', 0):
                 if self._iq_reset_pending:
                     frames.append(encode_baseband(
-                        BASEBAND_VERSION, 0, self._ddc.fs_out, s.sdr_listen_hz,
+                        BASEBAND_VERSION, 0, self._baseband_rate(), s.sdr_listen_hz,
                         np.zeros(0, dtype=np.float32)))
                     self._iq_reset_pending = False
                 if i.size:
@@ -1001,7 +1106,7 @@ class SdrSession(MeasurementSession):
                     baseband[0::2] = i
                     baseband[1::2] = q
                     frames.append(encode_baseband(BASEBAND_VERSION, self._iq_seq,
-                                                  self._ddc.fs_out, s.sdr_listen_hz, baseband))
+                                                  self._baseband_rate(), s.sdr_listen_hz, baseband))
             # Arm the settle window BEFORE the demod so the AGC is held while the chain
             # transient is discarded; otherwise it winds up on audio that is never
             # published and the first real block comes out far too loud.
@@ -1011,6 +1116,11 @@ class SdrSession(MeasurementSession):
                 self._fade_start = self._discard_until
                 self._fade_until = self._discard_until + self.SETTLE_FADE
             settling = now < self._discard_until
+            # The Python demodulator is the fallback and the numeric reference: it only runs while a
+            # client subscribes to audio. With the browser DSP owning playback nobody does, and this
+            # is the most expensive stage of the step (measured: it dominated the SDR loop).
+            if self._audio_paused_state(dev):
+                return frames, []
             audio, power_dbfs = self._demod.process(
                 i, q, use_agc=s.sdr_agc, agc_hold=settling)
             if audio.size and now < self._discard_until:
@@ -1046,7 +1156,7 @@ class SdrSession(MeasurementSession):
                     self._audio_buf = self._audio_buf[self.AUDIO_FRAME:]
                     pcm = np.clip(chunk, -1.0, 1.0) * 32767.0
                     frames.append(encode_audio(
-                        self._audio_seq, self.AUDIO_RATE, pcm.astype(np.int16)))
+                        self._audio_seq, self._audio_rate(), pcm.astype(np.int16)))
                     self._audio_seq = (self._audio_seq + 1) & 0xFFFFFFFF
                 if self._audio_buf.size > self.AUDIO_RATE:
                     self._audio_buf = self._audio_buf[-self.AUDIO_FRAME:]

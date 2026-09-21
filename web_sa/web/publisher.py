@@ -54,6 +54,9 @@ async def publisher(app, dev):
         # clients, not of the session: only the browser DSP worker opens `?iq=1`, and with no
         # subscriber the ~MB/s encode and fan-out would be pure waste.
         dev.iq_clients = sum(1 for client in clients if client.accepts_iq)
+        # Same idea for audio: the Python demodulator chain is the fallback/reference, so it only
+        # runs while something actually listens to it.
+        dev.audio_clients = sum(1 for client in clients if client.accepts_audio)
         if clients:
             if dev.state.connected != last_connected:
                 last_connected = dev.state.connected

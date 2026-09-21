@@ -1,10 +1,20 @@
 // SDR audio playback.
 //
+// Two producers can feed the worklet, and exactly one of them runs:
+//
+//   * the browser DSP (`sdr/iqStream.ts`): it is handed the worklet's port once its pipeline is
+//     producing PCM, and this module then starts no Python audio path at all - no `?audio=1`
+//     socket, no resampling worker (measured: running both meant the backend computed a second
+//     demodulator chain and shipped audio the browser discarded);
+//   * the Python reference (`?wasm=0`, a browser without WebAssembly, or a DSP failure): the
+//     worker below owns the audio-only socket and drives the port, or posts the resampled blocks
+//     back for the legacy ScriptProcessor output.
+//
 // The AudioContext and the AudioWorklet must live on the main thread (Web Audio is not
-// available in workers), but the *ingress* does not: a dedicated worker owns an audio-only
-// WebSocket, resamples, and drives the worklet's MessagePort directly (the port is
-// transferred to it). Neither reception nor delivery therefore depends on the main thread,
-// which is what used to make the ring underrun whenever rendering stalled.
+// available in workers), but the *ingress* does not: the worker owns the socket and drives the
+// worklet's MessagePort directly (the port is transferred to it). Neither reception nor delivery
+// therefore depends on the main thread, which is what used to make the ring underrun whenever
+// rendering stalled.
 //
 // Browsers without AudioWorklet keep the ScriptProcessor output, which is main-thread only;
 // there the worker posts the resampled buffers back and this module writes the legacy ring.
@@ -225,8 +235,9 @@ async function initializeOutput(context: AudioContext): Promise<void> {
         setupLegacyNode(context);
         worker?.postMessage({ type: 'detach' });
       };
-      // Hand the worklet port to the worker: from here on it owns delivery.
-      startWorker(candidate.port);
+      // The browser DSP owns playback when the policy allows it: then the Python audio path is not
+      // started (it is the fallback, `enablePythonAudioFallback` starts it if the DSP fails).
+      if (!wasmDspAllowed()) startWorker(candidate.port);
       return;
     } catch (error) {
       candidate?.disconnect();
@@ -237,7 +248,25 @@ async function initializeOutput(context: AudioContext): Promise<void> {
     }
   }
   setupLegacyNode(context);
-  startWorker(null);
+  if (!wasmDspAllowed()) startWorker(null);
+}
+
+/**
+ * Start the Python audio path as the fallback.
+ *
+ * Called when the browser DSP reports that it cannot run (a module that failed to load, an ABI it
+ * does not understand, a mode with no kernel). Returns false when there is nothing to fall back to
+ * or when the path is already running, so a caller can report the difference.
+ */
+export function enablePythonAudioFallback(): boolean {
+  if (worker || !enabled || !ctx) return false;
+  try {
+    // `startWorker` already sends the current enabled/mute state to the new worker.
+    startWorker(workletNode && !workletPortHandedOff ? workletNode.port : null);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function ensureContext(): void {

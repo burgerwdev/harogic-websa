@@ -167,6 +167,21 @@ def test_short_iq_frame_is_counted_and_dropped():
     assert stream.dropped_iq == 1
 
 
+def test_accepts_audio_is_false_for_sockets_that_would_discard_it():
+    """The SDR session asks before running its Python demodulator.
+
+    The browser DSP opens an IQ-only socket, and the display socket never wanted audio: counting
+    either as an audio subscriber would keep the backend computing a stream nobody reads.
+    """
+    assert ClientStream(FakeWebSocket(), audio_only=True).accepts_audio is True
+    assert ClientStream(FakeWebSocket(), iq_only=True).accepts_audio is False
+    assert ClientStream(FakeWebSocket(), no_audio=True).accepts_audio is False
+    assert ClientStream(FakeWebSocket()).accepts_audio is True
+    closed = ClientStream(FakeWebSocket(), audio_only=True)
+    closed.closed = True
+    assert closed.accepts_audio is False
+
+
 def test_stream_filters_route_audio_and_iq_to_their_own_connections():
     audio = struct.pack('<4sIII', b'AUDF', 1, 48000, 0)
     iq = _iq(1)

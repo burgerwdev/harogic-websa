@@ -12,9 +12,9 @@
 use core::cell::RefCell;
 
 use crate::analog;
-use crate::audio;
+use crate::audio::{self, AudioPolicy};
 use crate::digital;
-use crate::pipeline::{AudioChain, PathKind, Pipeline, PipelineOutput};
+use crate::pipeline::{PathKind, Pipeline, PipelineOutput};
 use crate::plugin::DemodConfig;
 
 struct PipelineState {
@@ -88,16 +88,16 @@ pub unsafe extern "C" fn websa_dsp_demod_new(
     // The CW sidetone (and nothing else) uses it; the registry's modes ignore it.
     config.pitch = pitch;
     if let Some(demod) = analog::build(&mode, config, out_rate) {
-        let mut chain = audio::chain_for_mode(&mode, out_rate);
-        // The demodulator already runs the reference AGC (that is what the Python parity fixtures
-        // pin down), so the chain's AGC is disabled here rather than left in series to fight it.
-        chain.set_stage_enabled("agc", false);
-        let mut pipeline = Pipeline::new(PathKind::Analog, chain);
+        // The policy is the listener's (the panel's NR/squelch); its default is "no enhancement",
+        // which is what the Python reference runs, so the two paths can be compared.
+        let chain = audio::chain_for_mode(&mode, out_rate, AudioPolicy::default());
+        let mut pipeline = Pipeline::new(PathKind::Analog, chain, AudioPolicy::default());
         pipeline.set_analog_demod(Box::new(demod));
         return register(PipelineState { pipeline, out: PipelineOutput::default() });
     }
     if let Some(demod) = digital::build(&mode, out_rate) {
-        let mut pipeline = Pipeline::new(PathKind::Digital, AudioChain::new(Vec::new()));
+        let blank = audio::chain_for_mode(&mode, out_rate, AudioPolicy::default());
+        let mut pipeline = Pipeline::new(PathKind::Digital, blank, AudioPolicy::default());
         pipeline.set_digital_demod(demod, fs_in, out_rate);
         return register(PipelineState { pipeline, out: PipelineOutput::default() });
     }
@@ -213,6 +213,21 @@ pub extern "C" fn websa_dsp_demod_buffered(handle: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_count(handle: u32) -> u32 {
     with_pipeline(handle, |state| state.pipeline.decoded_total() as u32).unwrap_or(0)
+}
+
+/// Noise reduction on/off plus its strength (0..1) — the panel's NR control.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_set_nr(handle: u32, enabled: u32, strength: f64) -> u32 {
+    with_pipeline(handle, |state| {
+        u32::from(state.pipeline.set_noise_reduction(enabled != 0, strength))
+    })
+    .unwrap_or(0)
+}
+
+/// The squelch gate's threshold in dBFS — the panel's squelch control.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_set_squelch(handle: u32, dbfs: f64) -> u32 {
+    with_pipeline(handle, |state| u32::from(state.pipeline.set_squelch_dbfs(dbfs))).unwrap_or(0)
 }
 
 /// Turn the audio-enhancement chain on/off (the RAW-path separation test uses this).

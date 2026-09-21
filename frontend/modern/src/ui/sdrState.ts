@@ -82,11 +82,30 @@ export const sdrAudioOn = createParam<boolean>('sdr.audioOn', {
 	authoritative: true, ...flag,
 });
 
+/**
+ * Noise reduction. The browser runs the reducer, so the backend never reports it: the slot is the
+ * single owner (authoritative, so the STATUS confirm loop cannot revert it) and it is persisted
+ * with the other SDR preferences.
+ *
+ * Off by default: the default policy is a pass-through, which is what the Python reference
+ * produces, so the two paths can be compared sample for sample.
+ */
+export const sdrNr = createParam<boolean>('sdr.nr', {
+	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-nr', persist: 'desired',
+	authoritative: true, ...flag,
+});
+/** How hard the reducer pushes, 0.05..1 (the panel's strength control). */
+export const sdrNrStrength = createParam<number>('sdr.nrStrength', {
+	fallback: 0.6, scope: 'sdr', persistKey: 'web-sa-sdr-nr-strength', persist: 'desired',
+	authoritative: true, parse: Number, serialize: String,
+	equals: (a: number, b: number) => Math.abs(a - b) < 0.005,
+});
+
 /** Every persisted SDR preference (Preset removes them, so defaults really are defaults). */
 export const SDR_PREF_KEYS = [
 	'web-sa-sdr-audio', 'web-sa-sdr-center', 'web-sa-sdr-listen', 'web-sa-sdr-decimate',
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
-	'web-sa-sdr-squelch', 'web-sa-sdr-agc',
+	'web-sa-sdr-squelch', 'web-sa-sdr-agc', 'web-sa-sdr-nr', 'web-sa-sdr-nr-strength',
 ];
 
 /**
@@ -146,4 +165,21 @@ export function renderSdrState(): void {
 	}
 	const dec = select('select-sdr-decimate');
 	if (dec) dec.value = String(sdrDecimate.get());
+	const nrButton = document.getElementById('btn-sdr-nr');
+	if (nrButton) {
+		nrButton.classList.toggle('active', sdrNr.get());
+		nrButton.textContent = sdrNr.get() ? 'On' : 'Off';
+	}
+	const nrStrength = select('select-sdr-nr-strength');
+	if (nrStrength) {
+		// The nearest preset: the slot holds a number (a custom answer is possible via storage).
+		const value = sdrNrStrength.get();
+		let nearest = '0.6';
+		for (const option of Array.from(nrStrength.options)) {
+			if (Math.abs(Number(option.value) - value) < Math.abs(Number(nearest) - value)) {
+				nearest = option.value;
+			}
+		}
+		nrStrength.value = nearest;
+	}
 }

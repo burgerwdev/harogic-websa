@@ -19,8 +19,66 @@ pub use dc_block::DcBlock;
 pub use stages::{stage_factories, AgcStage, Lpf, Squelch, DEFAULT_AUDIO_RATE};
 
 /// The default analog-PCM enhancement chain for a consumer running at `rate`, in registry order.
+///
+/// Every stage is installed; which ones *run* is [`AudioPolicy`]'s decision, so a listener who has
+/// not asked for anything gets the Python reference's behaviour (no enhancement at all) and a
+/// setting can be changed without rebuilding the chain.
 pub fn default_chain(rate: f64) -> crate::pipeline::AudioChain {
     crate::pipeline::AudioChain::from_registry(&stage_factories(), rate)
+}
+
+/// What the listener asked the audio chain to do.
+///
+/// The Python reference has no enhancement chain at all, so the default is "nothing on" — the
+/// browser path then produces the same audio the reference does, and the two can be compared. The
+/// noise reducer is the switch the panel owns; the squelch is the level gate, always meaningful,
+/// and only engaged once it is set above "wide open".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioPolicy {
+    /// Noise reduction on/off.
+    pub nr: bool,
+    /// How hard the noise reducer pushes (0..1).
+    pub nr_strength: f64,
+    /// Squelch threshold in dBFS (`<= -100` means wide open).
+    pub squelch_dbfs: f64,
+}
+
+impl Default for AudioPolicy {
+    fn default() -> Self {
+        Self { nr: false, nr_strength: 0.6, squelch_dbfs: -110.0 }
+    }
+}
+
+/// The squelch threshold at or below which the gate is a pass-through (the reference's default).
+pub const SQUELCH_OPEN_DBFS: f64 = -100.0;
+
+impl AudioPolicy {
+    /// The stages that must run for this policy, in registry order.
+    pub fn active_stages(&self) -> Vec<&'static str> {
+        let mut stages = Vec::new();
+        if self.squelch_dbfs > SQUELCH_OPEN_DBFS {
+            stages.push("squelch");
+        }
+        if self.nr {
+            // The reducer is the noise reduction; the blanker removes impulse noise (clicks), which
+            // is the other half of a quiet band and cannot hurt a tonal signal.
+            stages.push("wiener");
+            stages.push("blanker");
+        }
+        stages
+    }
+}
+
+/// Apply `policy` to `chain`: exactly the stages it asks for run.
+pub fn apply_policy(chain: &mut crate::pipeline::AudioChain, policy: AudioPolicy) -> bool {
+    let wanted = policy.active_stages();
+    let mut known = true;
+    for id in chain.ids() {
+        known &= chain.set_stage_enabled(id, wanted.contains(&id));
+    }
+    chain.set_strength(policy.nr_strength);
+    chain.set_threshold(policy.squelch_dbfs);
+    known
 }
 
 /// The chain as a specific mode should run it.
@@ -29,9 +87,11 @@ pub fn default_chain(rate: f64) -> crate::pipeline::AudioChain {
 /// which for CW is the carrier the operator is listening to (and for a lone test tone is the signal
 /// itself). Voice modes keep it, because there a single steady tone is interference. This is the one
 /// place that knows the difference; the stages themselves stay mode-agnostic.
-pub fn chain_for_mode(mode: &str, rate: f64) -> crate::pipeline::AudioChain {
+pub fn chain_for_mode(mode: &str, rate: f64, policy: AudioPolicy) -> crate::pipeline::AudioChain {
     let mut chain = default_chain(rate);
+    apply_policy(&mut chain, policy);
     if mode == "cw" {
+        // Belt and braces: whatever the policy says, a CW carrier is never notched.
         chain.set_stage_enabled("notch", false);
     }
     chain
@@ -70,11 +130,10 @@ mod tests {
     }
 
     #[test]
-    fn the_chain_turns_a_quiet_voice_like_signal_into_audible_pcm() {
-        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
-        // A voice-like signal (a tone plus noise), not a lone tone: the adaptive notch is part of
-        // the default chain and would remove a single steady tone by design. The level is above
-        // the squelch threshold so the test measures the chain rather than the gate.
+    fn noise_reduction_turns_the_chain_on_and_the_default_leaves_the_audio_alone() {
+        // The Python reference has no enhancement chain, so the default policy must not change a
+        // single sample (that is what makes the two paths comparable); the NR switch is what
+        // enables the reducer, and its strength reaches the stage.
         let mut seed = 21_u32;
         let input: Vec<f32> = (0..9_600)
             .map(|k| {
@@ -83,21 +142,31 @@ mod tests {
                 (noise + 0.05 * (2.0 * PI * 1_000.0 * k as f64 / 48_000.0).sin()) as f32
             })
             .collect();
+        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
+        let mut pcm = crate::pipeline::AnalogPcm::default();
+        pcm.samples_mut().extend_from_slice(&input);
+        chain.process(&mut pcm, false);
+        assert_eq!(pcm.samples(), &input[..], "the default policy is a bit-exact pass-through");
+        assert!(chain.active_ids().is_empty(), "no stage runs before the listener asks");
+
+        apply_policy(&mut chain, AudioPolicy { nr: true, ..AudioPolicy::default() });
+        assert_eq!(chain.active_ids(), vec!["wiener", "blanker"]);
+        assert!(!chain.is_stage_enabled("notch"), "the notch is not part of any policy");
+        assert!(!chain.is_stage_enabled("agc"), "the demodulator already runs the reference AGC");
         let mut pcm = crate::pipeline::AnalogPcm::default();
         pcm.samples_mut().extend_from_slice(&input);
         chain.process(&mut pcm, false);
         assert_eq!(pcm.samples().len(), input.len());
-        let rms = (pcm.samples().iter().map(|v| (*v as f64).powi(2)).sum::<f64>()
-            / pcm.samples().len() as f64)
-            .sqrt();
-        assert!(rms > 0.05, "the AGC must bring the signal up: rms {rms}");
+        assert_ne!(pcm.samples(), &input[..], "the reducer must actually process the block");
         assert!(AudioChain::new(Vec::new()).is_empty());
     }
 
     #[test]
-    fn the_default_chain_notches_a_lone_tone_away_and_the_cw_chain_does_not() {
-        // Documents the policy that `chain_for_mode` encodes: the notch treats a single steady tone
-        // as interference, so a CW carrier must run with it disabled.
+    fn a_lone_carrier_survives_every_policy_the_panel_can_ask_for() {
+        // The old default enabled an adaptive notch, which removed the signal itself when the signal
+        // was a tone (measured: -33 dB on an AM test tone, and it made every A/B against the Python
+        // reference meaningless). No policy enables it now, so a CW carrier - the case that policy
+        // existed for - survives, and so does a tone in any other mode.
         let input: Vec<f32> = (0..9_600)
             .map(|k| (0.2 * (2.0 * PI * 1_000.0 * k as f64 / 48_000.0).sin()) as f32)
             .collect();
@@ -115,14 +184,14 @@ mod tests {
             }
             (re * re + im * im).sqrt() * 2.0 / n
         };
-        let with_notch = tone_after(&mut default_chain(DEFAULT_AUDIO_RATE));
-        let mut cw_chain = chain_for_mode("cw", DEFAULT_AUDIO_RATE);
-        assert!(!cw_chain.is_stage_enabled("notch"), "CW must run without the notch");
-        let without_notch = tone_after(&mut cw_chain);
-        println!("chain: lone 1 kHz tone -> {with_notch:.4} (default) vs {without_notch:.4} (cw)");
-        assert!(
-            without_notch > 10.0 * with_notch,
-            "the CW chain must keep its carrier: {without_notch} vs {with_notch}"
-        );
+        let level = tone_after(&mut default_chain(DEFAULT_AUDIO_RATE));
+        assert!(level > 0.15, "the default chain must keep the tone: {level}");
+        for mode in ["am", "cw", "nfm", "wfm"] {
+            let policy = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbfs: -60.0 };
+            let mut chain = chain_for_mode(mode, DEFAULT_AUDIO_RATE, policy);
+            assert!(!chain.is_stage_enabled("notch"), "{mode}: a carrier is never notched");
+            let level = tone_after(&mut chain);
+            assert!(level > 0.15, "{mode}: the tone must survive the chain, got {level}");
+        }
     }
 }

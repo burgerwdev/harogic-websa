@@ -181,11 +181,25 @@ pub trait DigitalDemodulator: Send {
 }
 
 /// One stage of the analog audio chain (LPF/AGC/squelch/Wiener/notch/blanker).
+///
+/// Two stages expose a control the listener owns (the noise reducer's strength, the squelch's
+/// threshold). They are optional capabilities rather than a separate interface: a stage that has
+/// neither answers `false`, and the chain reports whether the setting reached a stage at all.
 pub trait AudioStage: Send {
     fn id(&self) -> &'static str;
     /// Process real PCM in place. `hold` freezes any adaptation (a reconfiguration transient).
     fn process_into(&mut self, input: &[f32], hold: bool, out: &mut Vec<f32>);
     fn reset(&mut self);
+
+    /// How hard the stage should work, 0..1. `false` when it has no such knob.
+    fn set_strength(&mut self, _strength: f64) -> bool {
+        false
+    }
+
+    /// A level threshold in dBFS (the squelch gate). `false` when the stage has no such knob.
+    fn set_threshold(&mut self, _dbfs: f64) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

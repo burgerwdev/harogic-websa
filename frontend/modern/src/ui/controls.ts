@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
@@ -26,7 +26,7 @@ import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
-import { resetSdrIq, setSdrIqEnabled, configureSdrPipeline } from '../sdr/iqStream';
+import { dspLevelDbfs, resetSdrIq, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
@@ -337,7 +337,27 @@ export function applySdrDemod() {
          deemph_us: deemph });
 }
 
-export function toggleSdrAgc(el: HTMLElement) {
+/**
+ * Noise reduction on/off. The browser runs the reducer, so this is a client-owned preference: the
+ * worker is told directly and the backend is not involved (its Python audio path is only the
+ * fallback/reference now).
+ */
+export function toggleSdrNr() {
+  const on = !sdrNr.get();
+  sdrNr.set(on);
+  setSdrPipelineNr(on, sdrNrStrength.get());
+  renderSdrState();
+}
+
+/** How hard the reducer pushes (0..1), applied live. */
+export function setSdrNrStrength(strength: number) {
+  if (!Number.isFinite(strength)) return;
+  sdrNrStrength.set(strength);
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get());
+  renderSdrState();
+}
+
+function toggleSdrAgc(el: HTMLElement) {
   const on = !sdrAgc.get();
   sdrAgc.set(on);
   el.classList.toggle('active', on);
@@ -464,7 +484,13 @@ export function syncSdrPanel(s: any) {
     agc.classList.toggle('active', sdrAgc.get());
   }
   const lvl = document.getElementById('cur-sdr-level');
-  if (lvl) lvl.textContent = Number.isFinite(sdr.level_dbfs) ? sdr.level_dbfs.toFixed(1) + ' dBFS' : '';
+  if (lvl) {
+    // The browser DSP measures the PCM it produces; when it owns playback the backend's Python
+    // demodulator is not running, so its level is not the one on screen.
+    const level = dspLevelDbfs();
+    const value = Number.isFinite(level) ? level : Number(sdr.level_dbfs);
+    lvl.textContent = Number.isFinite(value) ? value.toFixed(1) + ' dBFS' : '';
+  }
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
@@ -485,7 +511,13 @@ export function syncSdrPanel(s: any) {
         ifBw: Number(sdr.if_bw) || 6000,
         pitch: Number(sdr.pitch) || 700,
       },
-      { volume: Number(sdr.volume ?? 0.8), audioEnabled: true },
+      {
+        volume: Number(sdr.volume ?? 0.8),
+        audioEnabled: true,
+        nr: sdrNr.get(),
+        nrStrength: sdrNrStrength.get(),
+        squelch: sdrSquelch.get(),
+      },
     );
   }
 }
@@ -631,6 +663,8 @@ export function bindActions() {
     'apply-sdr-tune': () => applySdrTune(),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
+    'toggle-sdr-nr': () => toggleSdrNr(),
+    'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
@@ -679,6 +713,7 @@ export function bindActions() {
   const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
   squelchEl?.addEventListener('change', () => {
     sdrSquelch.set(parseFloat(squelchEl.value) || -110);
+    setSdrPipelineSquelch(sdrSquelch.get());
     applySdrDemod();
   });
   // The demod group is generated from the DSP plugin registry, so the mode buttons and the

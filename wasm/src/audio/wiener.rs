@@ -18,7 +18,10 @@ use crate::plugin::AudioStage;
 
 const FRAME: usize = 512;
 const HOP: usize = FRAME / 4;
-const GAIN_FLOOR: f64 = 0.1;        // -20 dB: the musical-noise guard
+const GAIN_FLOOR: f64 = 0.1;        // -20 dB: the musical-noise guard (strength 1.0)
+/// The gentlest suppression a strength of 0 asks for (-6 dB): a knob that goes to "off" is the
+/// switch's job, so the weakest setting still removes something audible.
+const GAIN_FLOOR_WEAK: f64 = 0.501_187_233_627_296_4;   // 10^(-6/20), -6 dB
 
 pub struct Wiener {
     fft: Fft,
@@ -39,6 +42,8 @@ pub struct Wiener {
     fft_im: Vec<f64>,
     /// COLA normalisation: the sum of the squared window over the overlapping frames.
     norm: f64,
+    /// The lowest gain the Wiener shape may apply (the musical-noise guard).
+    gain_floor: f64,
     pub frames: u64,
 }
 
@@ -50,6 +55,12 @@ impl Default for Wiener {
 
 impl Wiener {
     pub fn new() -> Self {
+        Self::with_strength(1.0)
+    }
+
+    /// `strength` (0..1) sets how far the noise floor may be pushed down: -6 dB at 0, -20 dB at 1.
+    /// The musical-noise guard is this same floor, so one number controls both.
+    pub fn with_strength(strength: f64) -> Self {
         let n = FRAME;
         let mut window = vec![0.0; n];
         for (k, value) in window.iter_mut().enumerate() {
@@ -76,15 +87,31 @@ impl Wiener {
             fft_re: vec![0.0; n],
             fft_im: vec![0.0; n],
             norm: norm.max(1e-9),
+            gain_floor: Self::floor_for(strength),
             frames: 0,
         }
+    }
+
+    /// The gain floor a strength asks for, interpolated in dB between -6 and -20.
+    fn floor_for(strength: f64) -> f64 {
+        let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 1.0 };
+        GAIN_FLOOR_WEAK * (GAIN_FLOOR / GAIN_FLOOR_WEAK).powf(s)
+    }
+
+    /// Change how hard the reducer pushes the noise down (0..1).
+    pub fn set_strength(&mut self, strength: f64) {
+        self.gain_floor = Self::floor_for(strength);
+    }
+
+    pub fn gain_floor(&self) -> f64 {
+        self.gain_floor
     }
 
     /// Per-bin gain: the Wiener shape against the estimated noise floor.
     pub fn gains(&self) -> Vec<f64> {
         let mut gains = vec![0.0; self.power.len()];
         for (k, gain) in gains.iter_mut().enumerate() {
-            *gain = (1.0 - self.floor / (self.power[k] + 1e-12)).clamp(GAIN_FLOOR, 1.0);
+            *gain = (1.0 - self.floor / (self.power[k] + 1e-12)).clamp(self.gain_floor, 1.0);
         }
         gains
     }
@@ -209,6 +236,11 @@ impl AudioStage for Wiener {
         self.out_buf.iter_mut().for_each(|v| *v = 0.0);
         self.pending.clear();
         self.frames = 0;
+    }
+
+    fn set_strength(&mut self, strength: f64) -> bool {
+        Wiener::set_strength(self, strength);
+        true
     }
 }
 
