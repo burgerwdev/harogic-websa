@@ -1,0 +1,10 @@
+{
+ "audio_hz_phone": 799.0,
+ "expected_text": "JA0TXU BG7BVP -73",
+ "fs_in": 48840.130763116205,
+ "iq_file": "real_slot_ja0txu.iq",
+ "mode": "ft8",
+ "note": "A real 40m FT8 slot the phone app decoded from our own audio: \"JA0TXU BG7BVP -73\" at 799 Hz audio (~1099 Hz in this channelized baseband). Our decoder returns nothing on it, so it is a fixed, offline sensitivity vector (weak signal, busy band).",
+ "out_rate": 48000.0,
+ "samples": 732601
+}

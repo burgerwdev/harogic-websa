@@ -165,12 +165,32 @@ impl Ft8Decoder {
             return Vec::new();
         }
         let mean = scored.iter().map(|entry| entry.0).sum::<f64>() / scored.len() as f64;
+        // Candidates are the *local maxima* along the frequency axis at each time step, not the global
+        // top few. A transmission is a narrow peak in the band, so it is a local maximum whether or not
+        // it is among the strongest things on the air - and on a busy band it is not: a signal the phone
+        // decoded at -73 dB sat in a band with several stronger traces, and a global top-8 (the old
+        // rule) kept only those stronger ones, so the weak signal was never handed to the fine search.
+        // This is the ranking the reference decoders use; the cap is only to bound the work.
+        const BASE_INDEX: f64 = BAND_STEP_HZ;
+        let mut local: Vec<(f64, usize, f64)> = scored
+            .iter()
+            .filter(|(score, time, base)| {
+                let neighbours = scored.iter().filter(|(_, t, _)| t == time).filter(|(_, _, b)| {
+                    (b - base).abs() <= BASE_INDEX + 1e-9 && (*b - *base).abs() > 1e-9
+                });
+                neighbours.into_iter().all(|(other, _, _)| other < score)
+            })
+            .cloned()
+            .collect();
+        if local.is_empty() {
+            local = scored.clone();
+        }
+        local.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+        local.truncate(MAX_CANDIDATES);
+        // An empty slot is rejected here, in the cheap stage, instead of in the expensive one; a real
+        // transmission's candidate is above the average of the whole scan.
         let floor = mean * CANDIDATE_MARGIN;
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-        scored.truncate(MAX_CANDIDATES);
-        // An empty slot is rejected here, in the cheap stage, instead of six times in the expensive
-        // one; a real transmission's candidate is far above the average.
-        scored
+        local
             .into_iter()
             .filter(|(score, _, _)| *score > floor)
             .map(|(_, time, hz)| (time, hz))
@@ -342,9 +362,10 @@ const BAND_HIGH_HZ: f64 = 3_000.0;
 const BAND_STEP_HZ: f64 = 12.5;
 /// Candidates that go on to the fine search and the CRC. Each costs a full sync search, and only one
 /// of them can be the transmission (a 24-bit CRC decides), so this is a cost/false-positive trade.
-/// Kept small on purpose: the fine search is linear in this, and a real transmission is among the
-/// strongest candidates by a wide margin. Sixteen candidates cost minutes of wasm time per slot.
-const MAX_CANDIDATES: usize = 8;
+/// A bound on the work, not a ranking rule: the fine search is linear in this, and the candidates are
+/// the band's local maxima (a busy band has many). The fine search is decimated, so this stays inside
+/// a slot's budget.
+const MAX_CANDIDATES: usize = 24;
 /// A candidate must beat the whole scan's average score by this factor.
 ///
 /// Most slots carry nothing, and without a gate every empty slot paid six full sync searches plus six
