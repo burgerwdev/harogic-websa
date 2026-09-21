@@ -408,6 +408,33 @@ export function sampleSpectrum(
   return out;
 }
 
+/**
+ * The level of what is being played, in 20 ms steps: the shape a "periodic sound" has in time.
+ *
+ * A spectrum cannot show it - the reported sound is a level that rises and falls, not a tone (the
+ * final node's spectrum is a flat noise floor, measured). `min`/`max` say how deep it is and the
+ * series says how fast, so a period can be read straight off it.
+ */
+export function sampleEnvelope(ms = 1000): Record<string, number | number[]> {
+  if (!spectrumProbe) return { stepMs: 20, count: 0, min: 0, mean: 0, max: 0, ratio: 1, levels: [] };
+  const step = Math.round(spectrumProbe.context.sampleRate * 0.02);
+  const buffer = new Float32Array(step);
+  const levels: number[] = [];
+  // The analyser holds the most recent `step` samples, so reading it repeatedly samples the live
+  // signal: enough to see a level that breathes, which is what this is for.
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    spectrumProbe.getFloatTimeDomainData(buffer);
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
+    levels.push(Math.sqrt(sum / buffer.length));
+  }
+  const min = Math.min(...levels);
+  const max = Math.max(...levels);
+  const mean = levels.reduce((a, b) => a + b, 0) / levels.length;
+  return { stepMs: 20, count: levels.length, min, mean, max, ratio: max / Math.max(min, 1e-9), levels };
+}
+
 export function audioSampleRate(): number {
   try {
     return ctx?.sampleRate || 48000;
