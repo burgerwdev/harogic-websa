@@ -10,7 +10,7 @@
 import { enablePythonAudioFallback, routeWorkletPortTo } from '../audio/sdrAudio';
 import { wasmDspAllowed, wasmDspReason } from './capability';
 import { dspWasmUrl } from './wasm';
-import type { PipelineParams } from './wasmPipeline';
+import type { Ft8Report, PipelineParams } from './types';
 
 let worker: Worker | null = null;
 let enabled = false;
@@ -237,15 +237,6 @@ export function resetSdrIq(): void {
   publishIqDebug();
 }
 
-/** A decoded FT8 transmission as the worker reports it. */
-export interface Ft8Report {
-  text: string;
-  frequencyHz: number;
-  timeOffsetS: number;
-  snrDb: number;
-  count: number;
-}
-
 /**
  * Show a decoded transmission: the text plus the timing it was found at.
  *
@@ -279,6 +270,8 @@ export function dspLevelDbfs(): number {
   if (!dspOwnsWorklet || dspRms <= 0) return Number.NaN;
   return 20 * Math.log10(dspRms);
 }
+
+export type { Ft8Report };
 
 /** Diagnostics for the e2e and for tests: the transport counters and the DSP state. */
 export function sdrIqStats(): {

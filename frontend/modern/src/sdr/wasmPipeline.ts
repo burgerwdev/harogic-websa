@@ -10,22 +10,13 @@
 // Views are created after every allocation (growing the memory detaches existing views, which
 // reads as length 0 rather than throwing).
 import type { DspModule } from './wasm';
-import type { Ft8Report } from './iqStream';
-
-export interface PipelineParams {
-	/** Rate of the channelized baseband (`STATUS.sdr.actual.ddc_rate`). */
-	fsIn: number;
-	/** Rate the consumer plays at: the AudioWorklet's `sampleRate`. */
-	outRate: number;
-	/** Plugin id (am/dsb/usb/lsb/cw/nfm/wfm/pm, or a digital protocol such as ft8). */
-	mode: string;
-	ifBw: number;
-	pitch: number;
-}
+import type { Ft8Report, PipelineParams } from './types';
 
 /** Blocks larger than this are truncated rather than reallocating in the audio path. */
 const MAX_COMPLEX_SAMPLES = 32_768;
 const TEXT_CAPACITY = 64;
+
+export type { Ft8Report, PipelineParams };
 
 export class WasmPipeline {
 	private inPtr = 0;

@@ -33,7 +33,7 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 频率轴 |
 | POWR | POWR + ... | float32 功率 dBm |
-| IQDF | IQDF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | interleaved int16 IQ (I,Q pairs); seq=0 flushes |
+| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | 信道化后的交错复 float32 基带（DDC 输出）；seq=0 表示清流 |
 
 ## WS 命令
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
@@ -59,15 +59,20 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **已知坑**: `renderRta` 用外层 `save/clip(plotRect)` 包裹密度+迹线, 画底部频率行前必须
   `restore` —— 否则绘图区外的频率行被 clip 裁掉, 切到 RTA 后消失(已修复)
 
-## SDR DSP 流水线（目标架构，分支 `refactor/wasm-dsp`）
+## SDR DSP 流水线（分支 `refactor/wasm-dsp`）
 
-SDR 路径把实时 DSP 从 Python 移到运行在 Web Worker 里的 Rust/WASM 模块。Python 只保留设备、
-命令/状态层和传输；信号处理在浏览器里做。现有的 Python DSP **不删除**：它作为不支持 WASM 时的
-回退路径，同时作为 Rust 内核比对的数值参考。
+解调器与音频链运行在 Web Worker 里的 Rust/WASM 模块中；**信道化不在浏览器里**。粗抽取与调谐留在
+硬件本来就做的地方——设备自带的 DDC 加后端软件 NCO：把它们搬到浏览器与设备能力不匹配（原始 IQS
+流是 2–31 MSps；实测传输上限约 2.3 MSps，浏览器自己的 129 抽头 FIR 也跑不动默认档位要求的
+3.9 MSps），于是 AudioWorklet 环形缓冲被抽干，声音变成与调谐无关的固定周期性噗噗声。浏览器现在
+收到的是**信道化基带**（约 48–63 kHz，约 0.4 MB/s），也正是 Python 解调器原本读的那路信号。
+
+Python DSP **不删除**：它是无 WASM 时的回退路径与数值参考，并且只在有客户端订阅其音频时才运行
+（浏览器接管播放时后端直接跳过这条链）。
 
 ```
-SAN-90 ──IQ──▶ Python 后端 ──IQ 帧──▶ Web Worker ──WASM──▶ DDC ──┬─▶ 模拟解调 ─▶ 音频 DSP ─▶ AudioWorklet ─▶ 扬声器
-                                                                  └─▶ 数字解调 ─▶ 解码 / 视图
+SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）──▶ Web Worker ──WASM──▶ 模拟解调 ─▶ 音频 DSP ─▶ AudioWorklet ─▶ 扬声器
+  (IQS)        DDC + 调谐 NCO  └─ AUDF 音频（仅回退）──▶ （DSP 无法运行时由同一个 worklet 播放）
 ```
 
 ### 阶段映射
@@ -78,18 +83,18 @@ SAN-90 ──IQ──▶ Python 后端 ──IQ 帧──▶ Web Worker ──WA
 |---|---|
 | SAN-90 IQ 源 | `web_sa/measurements/sdr.py`（IQS 流）、`web_sa/hardware/sdk_bindings.py` |
 | Python 设备 / 控制 | `web_sa/hardware/`、`web_sa/measurements/`、`web_sa/web/` |
-| WebSocket 传输 IQ | `web_sa/measurements/framer.py`（`IQDF`）、`web_sa/web/client_stream.py` |
-| Worker IQ 入口 | `frontend/modern/src/sdr/iqWorker.ts` |
-| Worker DSP 编排 | `frontend/modern/src/sdr/iqStream.ts`、`frontend/modern/src/sdr/wasmPipeline.ts`、`frontend/modern/src/sdr/digitalPipeline.ts` |
-| WASM 边界（裸 ABI） | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/abi.rs` |
-| DDC（NCO / FIR / 重采样 / AGC） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`，由 `wasm/src/ddc/mod.rs` 串联 |
+| 信道化器（DDC + 调谐） | `web_sa/demod/ddc.py`（厂商 `DSP_DDC`）、`web_sa/measurements/sdr.py`（`_chain_coarse`、`_mix`） |
+| WebSocket 传输基带 | `web_sa/measurements/framer.py`（`IQBF`）、`web_sa/web/client_stream.py` |
+| 基带入口 | `frontend/modern/src/sdr/iqWorker.ts` |
+| Worker DSP 编排 | `frontend/modern/src/sdr/iqStream.ts`、`frontend/modern/src/sdr/wasmPipeline.ts` |
+| WASM 边界（裸 ABI） | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`、`wasm/src/abi.rs` |
 | 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
-| 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs`、`frontend/modern/src/sdr/ft8.ts` |
+| 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs` |
 | 音频 DSP（仅模拟 PCM） | `wasm/src/audio/stages.rs`、`wasm/src/audio/dc_block.rs`、`wasm/src/audio/wiener.rs`、`wasm/src/audio/notch.rs`、`wasm/src/audio/blanker.rs`、`wasm/src/fft.rs` |
 | 路径组装与分离规则 | `wasm/src/pipeline.rs` |
+| DDC 内核（保留，兼作参考链） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`、`wasm/src/ddc/mod.rs` |
 | 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/modern/src/sdr/registry.ts` |
-| ABI 入口 | `wasm/src/pipeline_abi.rs`（模拟与数字流水线）、`wasm/src/abi.rs`（内存） |
-| 音频 PCM 输出 | `frontend/modern/src/audio/sdrAudioWorklet.js`、`frontend/modern/src/audio/sdrAudio.ts`、`frontend/modern/src/audio/sdrAudioWorker.ts` |
+| 音频 PCM 输出与抖动缓冲 | `frontend/modern/src/audio/sdrAudioWorklet.js`、`frontend/modern/src/audio/sdrAudio.ts`、`frontend/modern/src/audio/sdrAudioWorker.ts` |
 | Python 回退与参考 | `web_sa/demod/`（不变）、`tools/dsp_parity.py`、`tools/gen_dsp_fixtures.py` |
 | WASM 产物构建 | `wasm/build.sh` → `frontend/modern/public/dsp.wasm`（入库） |
 
@@ -131,7 +136,8 @@ wasm32-unknown-unknown` 就是全部工具链。
 0.3 倍实时——并在链路退化为平方级或开始逐块分配时失败。
 
 厂商 `DSP_DDC` 是硬件调用，无法用软件复现，因此 Rust DDC *取而代之*；数值参考是 Python 围绕它跑的软件链路。
-`IQDF` 因此是原始 IQS 块，整个信道化都在浏览器里完成。
+信道化现在完全在后端完成，所以 Rust 的 DDC 内核保留为**参考链**（`wasm/tests/ddc_reference.rs`
+用同一批 Python 夹具比对），而不再作为浏览器的前端。
 
 ### 参考项目与许可证
 
@@ -148,6 +154,25 @@ wasm32-unknown-unknown` 就是全部工具链。
 | [BrowSDR](https://github.com/jLynx/BrowSDR)（AGPL-3.0） | 仅阅读架构 | **无**——AGPL，刻意不作为来源 |
 
 归属规则：算法可以从宽松许可的来源重新推导，但绝不从不兼容的许可证复制代码；每个内核的数值参考都是本仓库自己的 Python 实现。这也是对等测试与 Python 而非其他 SDR 应用输出比对的原因。
+
+### 音频播放、降噪与回退分工
+
+扬声器前的最后一级是 `frontend/modern/src/audio/sdrAudioWorklet.js`，它不是普通环形缓冲：PCM 按
+分析仪的数据包节奏以约 20 ms 块到达，而该处理器跑在声卡时钟上，两者相差一个谁也无法控制的千分
+之几。因此它维护一个受控抖动缓冲（目标 250 ms、上限 500 ms）：读指针按填充量驱动出的比例推进，
+于是持续性的速率差通过重采样吸收（音高保持正确），而不是把缓冲抽干或灌满；超过上限则丢弃最旧的
+样本，让“产出快于时钟”不会变成不断增长的延迟。换台会清空该缓冲，所以上一个电台的声音不会继续
+播。`frontend/modern/src/__tests__/sdrAudioWorklet.test.ts` 直接驱动这个环（速率一致、±2% 漂移、
+灌爆、复位四种情形）。
+
+降噪是面板控件（开/关 + 轻/中/强），经 `websa_dsp_demod_set_nr` 到达 WASM 音频链；静噪滑块经
+`websa_dsp_demod_set_squelch` 到达同一条链。默认策略**不启用任何**增强级，也就是 Python 参考实现
+的产出——过去默认启用的一级里包含自适应陷波，而信号本身是单音时它会把信号一起滤掉（实测：1 kHz
+AM 测试音被压低 33 dB），有它在时与参考实现的 A/B 根本无法比较。
+
+Python 音频路径只作回退与参考：浏览器 DSP 接管播放时前端不再打开 `?audio=1`，且
+`web_sa/measurements/sdr.py` 在没有客户端订阅 AUDF 时跳过其解调器。此时 S 表读数来自浏览器自己的
+PCM（`dspLevelDbfs`）。
 
 ### 尚未接线的部分
 
