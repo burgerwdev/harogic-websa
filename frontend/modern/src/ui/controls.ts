@@ -468,20 +468,16 @@ export function syncSdrPanel(s: any) {
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
-  // Push the confirmed demod parameters to the browser DSP. The IQ stream already arrives at the
-  // DDC input rate, so the browser decimates from there down to a few times the audio rate (a
-  // resampler alone would alias); the offset is what the user listens to minus where the capture
-  // actually sits, which is exactly what the NCO has to remove.
-  const iqRate = Number(sdr.actual?.iq_rate) || 0;
-  const captureCenter = Number(sdr.actual?.capture_center ?? sdr.actual?.center) || 0;
-  if (iqRate > 0) {
+  // Push the confirmed demod parameters to the browser DSP. The backend's DDC has already
+  // channelized and tuned the stream (its output rate is `ddc_rate`), so the browser only needs the
+  // rate the demodulator will read, the rate the worklet plays at, and the mode's own parameters.
+  const basebandRate = Number(sdr.actual?.ddc_rate) || 0;
+  if (basebandRate > 0) {
     configureSdrPipeline(
       {
-        fsIn: iqRate,
-        offsetHz: Number(sdr.listen || 0) - captureCenter,
-        decimate: Math.max(1, Math.floor(iqRate / (48000 * 4))),
+        fsIn: basebandRate,
         // The worklet plays the PCM as-is, so the DSP has to produce the device's rate (44.1 kHz
-        // on many systems); the DDC resamples, so this stays a single write of the filter corner.
+        // on many systems).
         outRate: audioSampleRate(),
         // The *UI's* selection drives the DSP worker, not the backend's demod: a digital mode
         // (ft8) has no backend DSP at all, and the Python fallback keeps its own demod anyway.

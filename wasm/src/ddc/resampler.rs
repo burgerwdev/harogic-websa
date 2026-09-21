@@ -114,6 +114,20 @@ impl ComplexResampler {
         self.scratch_q.clear();
         self.scratch_i.extend((0..n).map(|k| iq[2 * k]));
         self.scratch_q.extend((0..n).map(|k| iq[2 * k + 1]));
+        self.resample_scratch(out);
+    }
+
+    /// The same for a baseband that already arrives as f32 (the backend's DDC output).
+    pub fn process_f32_into(&mut self, iq: &[f32], out: &mut Vec<f32>) {
+        let n = iq.len() / 2;
+        self.scratch_i.clear();
+        self.scratch_q.clear();
+        self.scratch_i.extend((0..n).map(|k| iq[2 * k] as f64));
+        self.scratch_q.extend((0..n).map(|k| iq[2 * k + 1] as f64));
+        self.resample_scratch(out);
+    }
+
+    fn resample_scratch(&mut self, out: &mut Vec<f32>) {
         self.i.process_into(&self.scratch_i, &mut self.out_i);
         self.q.process_into(&self.scratch_q, &mut self.out_q);
         out.clear();

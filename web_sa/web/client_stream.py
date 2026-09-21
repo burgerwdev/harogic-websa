@@ -18,16 +18,16 @@ FIFO = 'fifo'          # ordered queue, drop-oldest on overrun (audio)
 FRAME_POLICY = {
     b'FREQ': RETAIN,
     b'AUDF': FIFO,
-    b'IQDF': FIFO,
+    b'IQBF': FIFO,
     b'POWR': LATEST,
     b'RTAF': LATEST,
 }
 DEFAULT_POLICY = LATEST
-#: Markers the connection filters use (audio and IQ have their own sockets in the frontend).
+#: Markers the connection filters use (audio and baseband have their own sockets in the frontend).
 AUDIO_MAGIC = b'AUDF'
-IQ_MAGIC = b'IQDF'
+IQ_MAGIC = b'IQBF'
 #: Byte offset of the u32 sequence number in each streaming (FIFO) frame. AUDF puts it first
-#: (seq, rate, samples); IQDF keeps the version first (ver, seq, samples, rate, centre).
+#: (seq, rate, samples); IQBF keeps the version first (ver, seq, samples, rate, centre).
 FIFO_SEQ_OFFSET = {AUDIO_MAGIC: 4, IQ_MAGIC: 8}
 #: Dropped-frame counter per streaming frame type, for STATUS.stream.
 FIFO_DROPPED_FIELD = {AUDIO_MAGIC: 'dropped_audio', IQ_MAGIC: 'dropped_iq'}
@@ -39,28 +39,27 @@ class ClientStream:
     Control JSON messages are bounded and STATUS is coalesced. Frequency frames are
     retained separately so a dropped power frame can never orphan a new frequency axis.
     High-rate POWR/RTAF frames use latest-wins semantics. The SDR streaming frames (AUDF
-    audio, IQDF IQ) are kept in small FIFOs so they are never reordered/dropped in normal
-    operation (drop-oldest only on overrun, to bound latency).
+    audio, IQBF channelized baseband) are kept in small FIFOs so they are never
+    reordered/dropped in normal operation (drop-oldest only on overrun, to bound latency).
     """
 
     CONTROL_LIMIT = 32
     AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
-    #: IQ blocks are much larger than audio frames. The bound is set by what the browser does
-    #: between reads: a digital mode decodes a whole slot synchronously in the worker (seconds),
-    #: during which nobody drains this FIFO - at 8 blocks it overran and the decoder's input came
-    #: back with gaps, which no FT8 decode survives (measured: `dropped=1526` and no decode in the
-    #: browser, while the same artifact decoded the same IQ directly). 48 blocks ~= 4 s of IQ at
-    #: 48 kHz / 4096 samples (~0.8 MB per client), which covers the worst decode and still bounds
-    #: the memory and the latency.
+    #: Baseband blocks are per acquisition step (~8 ms at the DDC output rate). The bound is set by
+    #: what the browser does between reads: a digital mode decodes a whole slot synchronously in the
+    #: worker (seconds), during which nobody drains this FIFO - at 8 blocks it overran and the
+    #: decoder's input came back with gaps, which no FT8 decode survives (measured: `dropped=1526`
+    #: and no decode in the browser, while the same artifact decoded the same baseband directly).
+    #: 48 blocks ~= 0.4 s, which covers the worst decode and still bounds the memory and the latency.
     IQ_LIMIT = 48
-    #: Minimum sane header length per streaming frame type (IQDF's header is 32 bytes).
+    #: Minimum sane header length per streaming frame type (IQBF's header is 32 bytes).
     FIFO_MIN_BYTES = {AUDIO_MAGIC: 16, IQ_MAGIC: 32}
 
     def __init__(self, ws, audio_only: bool = False, no_audio: bool = False,
                  iq_only: bool = False, no_iq: bool = False):
         self.ws = ws
         # Per-connection stream filter. The main UI connection uses no_audio/no_iq (it
-        # handles neither AUDF nor IQDF); the SDR audio worker uses audio_only and the SDR
+        # handles neither AUDF nor IQBF); the SDR audio worker uses audio_only and the SDR
         # IQ worker uses iq_only, so neither is fed the display frames. Default keeps the
         # historical behaviour (everything).
         self.audio_only = audio_only
@@ -82,7 +81,7 @@ class ClientStream:
 
     @property
     def accepts_iq(self) -> bool:
-        """True when this connection would actually keep an IQDF frame.
+        """True when this connection would actually keep an IQBF frame.
 
         The publisher asks this before the session encodes an IQ block, so the raw-IQ
         encode+fan-out only happens while a browser DSP socket is really subscribed: an

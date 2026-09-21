@@ -8,8 +8,6 @@
 //!
 //! The demodulators here are test stand-ins: the real modes land on top of the same interfaces,
 //! and this test keeps the interfaces honest.
-use websa_dsp::audio::DcBlock;
-use websa_dsp::ddc::{Ddc, DdcConfig};
 use websa_dsp::pipeline::{AudioChain, PathKind, Pipeline, PipelineOutput};
 use websa_dsp::plugin::{AnalogDemodulator, DigitalDemodulator, PluginKind};
 
@@ -54,51 +52,40 @@ impl DigitalDemodulator for Fingerprint {
     }
 }
 
-fn iq_block(n: usize) -> Vec<i16> {
-    // A channel tone with a DC offset, so a DC blocker has something to remove and the audio
-    // output legitimately changes when the chain is enabled.
+/// A channelized baseband block (the pipeline's input): a channel tone with a DC offset, so a DC
+/// blocker has something to remove and the audio output legitimately changes with the chain on.
+fn baseband(n: usize) -> Vec<f32> {
     let mut iq = Vec::with_capacity(n * 2);
     for k in 0..n {
         let ph = 2.0 * core::f64::consts::PI * 12_000.0 / 96_000.0 * k as f64;
-        iq.push(((0.3 + 0.4 * ph.cos()) * 32768.0) as i16);
-        iq.push((0.4 * ph.sin() * 32768.0) as i16);
+        iq.push((0.3 + 0.4 * ph.cos()) as f32);
+        iq.push((0.4 * ph.sin()) as f32);
     }
     iq
-}
-
-fn ddc() -> Ddc {
-    Ddc::new(DdcConfig {
-        fs_in: 1.0e6,
-        offset_hz: 0.0,
-        cutoff_hz: 40_000.0,
-        decimate: 10,
-        out_rate: 96_000.0,
-        ntaps: 129,
-    })
 }
 
 fn chain() -> AudioChain {
     // The *full* chain, not a token stage: the separation claim is about everything the analog path
     // runs (dc block, lpf, agc, squelch, wiener, notch, blanker), and using the real one is what
     // makes the comparison below meaningful.
-    websa_dsp::audio::default_chain()
+    websa_dsp::audio::default_chain(96_000.0)
 }
 
 #[test]
 fn the_raw_stream_is_bit_identical_with_the_audio_chain_enabled_or_not() {
-    let iq = iq_block(4096);
-    let mut with_chain = Pipeline::new(ddc(), PathKind::Analog, chain());
+    let iq = baseband(4096);
+    let mut with_chain = Pipeline::new(PathKind::Analog, chain());
     with_chain.set_analog_demod(Box::new(RealPartDemod));
     with_chain.set_audio_enabled(true);
 
-    let mut without = Pipeline::new(ddc(), PathKind::Analog, chain());
+    let mut without = Pipeline::new(PathKind::Analog, chain());
     without.set_analog_demod(Box::new(RealPartDemod));
     without.set_audio_enabled(false);
 
     let mut a = PipelineOutput::default();
     let mut b = PipelineOutput::default();
-    with_chain.process_i16_into(&iq, false, &mut a);
-    without.process_i16_into(&iq, false, &mut b);
+    with_chain.process_f32_into(&iq, false, &mut a);
+    without.process_f32_into(&iq, false, &mut b);
 
     // Bit-for-bit, not "close enough": the RAW stream is the decoder's input.
     assert_eq!(a.raw.len(), b.raw.len());
@@ -116,14 +103,14 @@ fn the_raw_stream_is_bit_identical_with_the_audio_chain_enabled_or_not() {
 
 #[test]
 fn the_digital_path_ignores_the_audio_chain_completely() {
-    let iq = iq_block(4096);
+    let iq = baseband(4096);
 
-    let mut run = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(ddc(), PathKind::Digital, chain());
-        pipeline.set_digital_demod(Box::new(Fingerprint::default()));
+    let run = |audio_enabled: bool| {
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain());
+        pipeline.set_digital_demod(Box::new(Fingerprint::default()), 96_000.0, 96_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut out = PipelineOutput::default();
-        pipeline.process_i16_into(&iq, false, &mut out);
+        pipeline.process_f32_into(&iq, false, &mut out);
         out
     };
 
@@ -139,19 +126,53 @@ fn the_digital_path_ignores_the_audio_chain_completely() {
 
 #[test]
 fn the_decoder_sees_the_same_samples_in_both_runs() {
-    let iq = iq_block(4096);
+    let iq = baseband(4096);
     let fingerprint = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(ddc(), PathKind::Digital, chain());
-        pipeline.set_digital_demod(Box::new(Fingerprint::default()));
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain());
+        pipeline.set_digital_demod(Box::new(Fingerprint::default()), 96_000.0, 96_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut out = PipelineOutput::default();
-        pipeline.process_i16_into(&iq, false, &mut out);
+        pipeline.process_f32_into(&iq, false, &mut out);
         out
     };
     let on = fingerprint(true);
     let off = fingerprint(false);
     assert_eq!(on.decoded, off.decoded);
     assert_eq!(on.raw, off.raw, "the decoder's input must not depend on the audio settings");
+}
+
+#[test]
+fn the_digital_path_adapts_the_baseband_rate_to_the_decoder() {
+    // The backend's DDC hands over whatever channel rate its IF bandwidth needs; FT8 needs 48 kHz.
+    // The pipeline owns that conversion, so at half the rate the decoder sees half the samples.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Counting(Arc<AtomicUsize>);
+    impl DigitalDemodulator for Counting {
+        fn id(&self) -> &'static str {
+            "ft8"
+        }
+        fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
+            self.0.fetch_add(iq.len() / 2, Ordering::Relaxed);
+            Vec::new()
+        }
+        fn reset(&mut self) {}
+    }
+
+    let iq = baseband(8_192);
+    let seen = Arc::new(AtomicUsize::new(0));
+    let mut pipeline = Pipeline::new(PathKind::Digital, AudioChain::new(Vec::new()));
+    pipeline.set_digital_demod(Box::new(Counting(seen.clone())), 96_000.0, 48_000.0);
+    let mut out = PipelineOutput::default();
+    pipeline.process_f32_into(&iq, false, &mut out);
+    let complex_in = iq.len() / 2;
+    let complex_out = seen.load(Ordering::Relaxed);
+    assert_eq!(out.raw.len(), iq.len(), "the RAW stream is the input, untouched");
+    assert!(
+        (complex_out as f64 - complex_in as f64 / 2.0).abs() < complex_in as f64 * 0.01,
+        "a 96 kHz baseband must reach a 48 kHz decoder at half the sample count: {complex_out} vs {complex_in}"
+    );
 }
 
 #[test]
@@ -181,40 +202,26 @@ fn every_registered_plugin_can_be_resolved_by_its_own_family() {
         }
     }
     // The pipeline reports only plugins that exist in a family (the UI reads this list).
-    let mut pipeline = Pipeline::new(ddc(), PathKind::Analog, chain());
+    let mut pipeline = Pipeline::new(PathKind::Analog, chain());
     pipeline.set_analog_demod(Box::new(RealPartDemod));
     for (id, kind) in pipeline.active_plugins() {
         assert!(websa_dsp::plugin::find(kind, id).is_some(), "{kind:?}/{id} is not registered");
     }
 }
 
-/// The FT8 fixture, quantised to int16 exactly as the pipeline receives IQ from the device.
+/// The FT8 fixture: the channelized 48 kHz baseband of a real CQ transmission, which is what the
+/// backend's DDC hands the browser.
 ///
 /// Padded to a full slot: the decoder consumes slots (FT8 is a 15 s slot mode and the live stream is
 /// a rolling buffer), so a transmission-sized buffer would never be decoded.
-fn ft8_iq_i16() -> Vec<i16> {
+fn ft8_baseband() -> Vec<f32> {
     const BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
-    let mut iq: Vec<i16> = BYTES
+    let mut iq: Vec<f32> = BYTES
         .chunks_exact(4)
-        .map(|q| {
-            let value = f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25;
-            (value.clamp(-1.0, 1.0) * 32767.0) as i16
-        })
+        .map(|q| f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25 * 32767.0)
         .collect();
-    iq.resize(48_000 * 15 * 2, 0);
+    iq.resize(48_000 * 15 * 2, 0.0);
     iq
-}
-
-/// A DDC configured for a baseband stream that is already at the channel rate.
-fn baseband_ddc() -> Ddc {
-    Ddc::new(DdcConfig {
-        fs_in: 48_000.0,
-        offset_hz: 0.0,
-        cutoff_hz: 19_200.0,
-        decimate: 1,
-        out_rate: 48_000.0,
-        ntaps: 129,
-    })
 }
 
 #[test]
@@ -224,16 +231,16 @@ fn the_ft8_decoder_reads_the_raw_path_untouched_by_the_audio_chain() {
     // samples the decoder reads are bit-identical in both runs.
     use websa_dsp::digital::ft8::Ft8Plugin;
 
-    let iq = ft8_iq_i16();
+    let iq = ft8_baseband();
     let run = |audio_enabled: bool| {
-        let mut pipeline = Pipeline::new(baseband_ddc(), PathKind::Digital, chain());
-        pipeline.set_digital_demod(Box::new(Ft8Plugin::new(48_000.0)));
+        let mut pipeline = Pipeline::new(PathKind::Digital, chain());
+        pipeline.set_digital_demod(Box::new(Ft8Plugin::new(48_000.0)), 48_000.0, 48_000.0);
         pipeline.set_audio_enabled(audio_enabled);
         let mut decoded: Vec<String> = Vec::new();
         let mut raw_checksum = 0.0_f64;
         let mut out = PipelineOutput::default();
         for block in iq.chunks(8_192 * 2) {
-            pipeline.process_i16_into(block, false, &mut out);
+            pipeline.process_f32_into(block, false, &mut out);
             decoded.extend(out.decoded.iter().cloned());
             for (index, sample) in out.raw.iter().enumerate() {
                 raw_checksum += (*sample as f64) * (1.0 + index as f64 % 7.0);

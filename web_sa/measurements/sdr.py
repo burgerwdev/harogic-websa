@@ -22,7 +22,7 @@ from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
-from .framer import IQ_VERSION, encode_audio, encode_iq, encode_rta
+from .framer import BASEBAND_VERSION, encode_audio, encode_baseband, encode_rta
 
 log = logging.getLogger(__name__)
 
@@ -126,8 +126,8 @@ class SdrSession(MeasurementSession):
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._audio_seq = 0
         self._audio_reset_pending = False
-        # Raw IQ to the browser DSP (IQDF). The sequence restarts after a reconfiguration so
-        # the client flushes blocks that belong to the previous capture geometry.
+        # Channelized baseband to the browser demodulator (IQBF). The sequence restarts after a
+        # reconfiguration so the client flushes blocks that belong to the previous tuning.
         self._iq_seq = 0
         self._iq_reset_pending = False
         self._packet_samples = 0
@@ -948,20 +948,6 @@ class SdrSession(MeasurementSession):
             n = total_n
             s = dev.state
 
-            # ---- raw IQ to the browser DSP (IQDF) ----
-            # Only while a DSP socket is subscribed: the encode plus fan-out is the largest
-            # frame on the wire, and a display-only client must not pay for it.
-            if getattr(dev, 'iq_clients', 0):
-                if self._iq_reset_pending:
-                    frames.append(encode_iq(IQ_VERSION, 0, self._fs_in, self._iqs_center_hz,
-                                            np.zeros(0, dtype=np.int16)))
-                    self._iq_reset_pending = False
-                if arr.size:
-                    # seq never repeats 0: that value means "flush" to the client.
-                    self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
-                    frames.append(encode_iq(IQ_VERSION, self._iq_seq, self._fs_in,
-                                            self._iqs_center_hz, arr))
-
             # ---- panadapter / waterfall ----
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
                 # Rate-limit first: a failed vendor frame must not become a busy retry.
@@ -996,6 +982,26 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
             i, q = self._mix(i, q)                # software fine tuning
+
+            # ---- channelized baseband to the browser demodulator (IQBF) ----
+            # The browser runs the demodulator and the audio chain; the channelization (coarse
+            # decimation on the device, fine tuning here) stays on this side, so the browser's cost
+            # and the wire traffic no longer scale with the analyzer's raw IQ rate. Only while a DSP
+            # socket is subscribed: with no subscriber nobody should pay for the encode.
+            if getattr(dev, 'iq_clients', 0):
+                if self._iq_reset_pending:
+                    frames.append(encode_baseband(
+                        BASEBAND_VERSION, 0, self._ddc.fs_out, s.sdr_listen_hz,
+                        np.zeros(0, dtype=np.float32)))
+                    self._iq_reset_pending = False
+                if i.size:
+                    # seq never repeats 0: that value means "flush" to the client.
+                    self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+                    baseband = np.empty(i.size * 2, dtype=np.float32)
+                    baseband[0::2] = i
+                    baseband[1::2] = q
+                    frames.append(encode_baseband(BASEBAND_VERSION, self._iq_seq,
+                                                  self._ddc.fs_out, s.sdr_listen_hz, baseband))
             # Arm the settle window BEFORE the demod so the AGC is held while the chain
             # transient is discarded; otherwise it winds up on audio that is never
             # published and the first real block comes out far too loud.

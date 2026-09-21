@@ -128,13 +128,13 @@ def test_zero_audio_sequence_flushes_queued_channel_audio():
 
 
 def _iq(seq, samples=2):
-    """Minimal IQDF frame: magic + ver + seq + samples + rate(f8) + centre(f8) + payload."""
-    return (struct.pack('<4sIIIdd', b'IQDF', 1, seq, samples, 62.5e6 / 1024, 100.2e6)
-            + b'\x00' * (samples * 4))
+    """Minimal IQBF frame: magic + ver + seq + samples + rate(f8) + centre(f8) + payload."""
+    return (struct.pack('<4sIIIdd', b'IQBF', 1, seq, samples, 62.5e6 / 1024 / 32, 100.2e6)
+            + b'\x00' * (samples * 8))
 
 
 def test_zero_iq_sequence_flushes_the_iq_queue_not_the_audio_one():
-    """IQDF carries its sequence at offset 8 (after the version), AUDF at offset 4.
+    """IQBF carries its sequence at offset 8 (after the version), AUDF at offset 4.
 
     Reading the wrong offset would flush on an unrelated field: the two streaming frames keep
     their own queue and their own counter.
@@ -162,7 +162,7 @@ def test_iq_queue_is_bounded_and_drops_the_oldest_block():
 
 def test_short_iq_frame_is_counted_and_dropped():
     stream = ClientStream(FakeWebSocket())
-    stream.publish_bytes(b'IQDF' + b'\x00' * 8)   # below FIFO_MIN_BYTES[IQDF] = 32
+    stream.publish_bytes(b'IQBF' + b'\x00' * 8)   # below FIFO_MIN_BYTES[IQBF] = 32
     assert not stream._iq
     assert stream.dropped_iq == 1
 
@@ -215,7 +215,7 @@ def test_every_frame_type_has_a_retention_policy():
     """
     encoded = {
         framer.MAGIC_FREQ, framer.MAGIC_POWR, framer.MAGIC_RTA, framer.MAGIC_AUDIO,
-        framer.MAGIC_IQ,
+        framer.MAGIC_BASEBAND,
     }
     assert encoded == set(FRAME_POLICY), (
         f'frame types without a policy: {sorted(encoded - set(FRAME_POLICY))}; '
@@ -226,6 +226,6 @@ def test_every_frame_type_has_a_retention_policy():
 
 def test_fifo_policy_is_what_the_audio_path_expects():
     assert FRAME_POLICY[framer.MAGIC_AUDIO] == 'fifo'
-    assert FRAME_POLICY[framer.MAGIC_IQ] == 'fifo'
+    assert FRAME_POLICY[framer.MAGIC_BASEBAND] == 'fifo'
     assert FRAME_POLICY[framer.MAGIC_FREQ] == 'retain'
     assert FRAME_POLICY[framer.MAGIC_POWR] == 'latest'

@@ -27,14 +27,14 @@ export const MAGIC_FREQ = 'FREQ';
 export const MAGIC_POWR = 'POWR';
 export const MAGIC_RTAF = 'RTAF';
 export const MAGIC_AUDIO = 'AUDF';
-export const MAGIC_IQ = 'IQDF';
+export const MAGIC_BASEBAND = 'IQBF';
 
 export const COMMON_HEADER_BYTES = 16;      // magic + version + points + sweep_ms
 export const RTA_HEADER_BYTES = 24;         // magic + ver + pts + wfLen + maxD + startHz
 export const AUDIO_HEADER_BYTES = 16;       // magic + seq + rate + samples
-// The two f64 fields sit before the payload so the int16 IQ block starts at byte 32: a
-// typed-array view at an odd byte offset throws, and the DSP must not have to copy.
-export const IQ_HEADER_BYTES = 32;          // magic + ver + seq + samples + rate + centre
+// The two f64 fields sit before the payload so the sample block starts at byte 32: a
+// typed-array view at an odd byte offset throws, and the demodulator must not have to copy.
+export const BASEBAND_HEADER_BYTES = 32;    // magic + ver + seq + samples + rate + centre
 
 export interface FrameHeader {
 	version: number;
@@ -71,19 +71,21 @@ export interface AudioFrame {
 	pcm: Int16Array;
 }
 
-export interface IqFrame {
-	kind: 'iq';
+export interface BasebandFrame {
+	kind: 'baseband';
 	version: number;
-	/** Frame counter; 0 means "flush": the queued blocks belong to another centre. */
+	/** Frame counter; 0 means "flush": the queued blocks belong to another tuning. */
 	seq: number;
+	/** Rate of the channelized baseband (the backend's DDC output rate). */
 	rate: number;
+	/** Centre the baseband is tuned to (the listen frequency). */
 	centerHz: number;
-	/** Complex samples: `samples` I/Q pairs, interleaved in `iq` (2 int16 each). */
+	/** Complex samples: `samples` I/Q pairs, interleaved in `iq` (2 float32 each). */
 	samples: number;
-	iq: Int16Array;
+	iq: Float32Array;
 }
 
-export type DecodedFrame = FreqFrame | PowrFrame | RtaFrame | AudioFrame | IqFrame;
+export type DecodedFrame = FreqFrame | PowrFrame | RtaFrame | AudioFrame | BasebandFrame;
 
 /** ASCII magic of a binary frame, or '' when the buffer is too short. */
 export function frameMagic(data: ArrayBuffer): string {
@@ -96,7 +98,7 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 	if (data.byteLength < 4) return null;
 	const magic = frameMagic(data);
 	if (magic === MAGIC_AUDIO) return decodeAudio(data);
-	if (magic === MAGIC_IQ) return decodeIq(data);
+	if (magic === MAGIC_BASEBAND) return decodeBaseband(data);
 	if (data.byteLength < COMMON_HEADER_BYTES) return null;
 	const head = new DataView(data, 4, 12);
 	const version = head.getUint32(0, true);
@@ -141,8 +143,8 @@ function decodeAudio(data: ArrayBuffer): AudioFrame | null {
 	return { kind: 'audio', seq, rate, samples, pcm: new Int16Array(data, AUDIO_HEADER_BYTES, samples) };
 }
 
-function decodeIq(data: ArrayBuffer): IqFrame | null {
-	if (data.byteLength < IQ_HEADER_BYTES) return null;
+function decodeBaseband(data: ArrayBuffer): BasebandFrame | null {
+	if (data.byteLength < BASEBAND_HEADER_BYTES) return null;
 	const v = new DataView(data, 4, 28);
 	const version = v.getUint32(0, true);
 	const seq = v.getUint32(4, true);
@@ -150,7 +152,7 @@ function decodeIq(data: ArrayBuffer): IqFrame | null {
 	const rate = v.getFloat64(12, true);
 	const centerHz = v.getFloat64(20, true);
 	// `samples` is complex samples, so the payload is twice as wide as the count suggests.
-	if (data.byteLength !== IQ_HEADER_BYTES + samples * 4) return null;
-	return { kind: 'iq', version, seq, rate, centerHz, samples,
-		iq: new Int16Array(data, IQ_HEADER_BYTES, samples * 2) };
+	if (data.byteLength !== BASEBAND_HEADER_BYTES + samples * 8) return null;
+	return { kind: 'baseband', version, seq, rate, centerHz, samples,
+		iq: new Float32Array(data, BASEBAND_HEADER_BYTES, samples * 2) };
 }

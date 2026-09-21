@@ -1,5 +1,9 @@
 // The WASM boundary: load the committed DSP module and expose typed views over its memory.
 //
+// One entry point family: `websa_dsp_demod_*`, the demodulator that turns the backend's channelized
+// baseband into PCM (analog modes) or decoded text (digital protocols). The channelizer itself is
+// not here — it runs on the backend, where the device's own DDC does the expensive part.
+//
 // No wasm-bindgen: the module exports its own memory and a handful of C-style functions, so the
 // whole bridge is this file. The DSP works on sample blocks, which is why the ABI is a pointer
 // plus a length — the caller allocates once per stream and the kernels process in place.
@@ -19,14 +23,17 @@ export interface DspExports {
 	websa_dsp_free(ptr: number, bytes: number): void;
 	websa_dsp_f32_bytes(): number;
 	websa_dsp_block_align(): number;
-	// DDC base layer (shared by both paths)
-	websa_dsp_ddc_new(fsIn: number, offsetHz: number, cutoffHz: number, decimate: number, outRate: number, ntaps: number): number;
-	websa_dsp_ddc_retune(handle: number, offsetHz: number): number;
-	websa_dsp_ddc_reset(handle: number): number;
-	websa_dsp_ddc_free(handle: number): number;
-	websa_dsp_ddc_process(handle: number, iqPtr: number, samples: number, outPtr: number, outCapacity: number): number;
-	websa_dsp_ddc_agc(handle: number, ptr: number, samples: number, hold: number): number;
-	websa_dsp_ddc_agc_gain(handle: number): number;
+	// The demodulator: baseband in, PCM or decoded text out
+	websa_dsp_demod_new(fsIn: number, outRate: number, modePtr: number, modeLen: number, ifBw: number, pitch: number): number;
+	websa_dsp_demod_process(handle: number, iqPtr: number, samples: number, outPtr: number, capacity: number, audioHold: number): number;
+	websa_dsp_demod_push(handle: number, iqPtr: number, samples: number): number;
+	websa_dsp_demod_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
+	websa_dsp_demod_buffered(handle: number): number;
+	websa_dsp_demod_count(handle: number): number;
+	websa_dsp_demod_set_audio(handle: number, enabled: number): number;
+	websa_dsp_demod_retune(handle: number): number;
+	websa_dsp_demod_reset(handle: number): number;
+	websa_dsp_demod_free(handle: number): number;
 	// Plugin manifest: the UI's mode list is read from here, never hardcoded
 	websa_dsp_plugin_kind_count(): number;
 	websa_dsp_plugin_count(kind: number): number;
@@ -34,28 +41,6 @@ export interface DspExports {
 	websa_dsp_plugin_id(kind: number, index: number, buf: number, capacity: number): number;
 	websa_dsp_plugin_implemented(kind: number, index: number): number;
 	websa_dsp_plugin_audio_enhancement(kind: number, index: number): number;
-	// FT8: the digital path's decoder (RAW baseband in, decoded text out)
-	websa_dsp_ft8_new(rate: number): number;
-	websa_dsp_ft8_push(handle: number, iqPtr: number, samples: number): number;
-	websa_dsp_ft8_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
-	websa_dsp_ft8_count(handle: number): number;
-	websa_dsp_ft8_reset(handle: number): number;
-	websa_dsp_ft8_free(handle: number): number;
-	// The digital *pipeline*: the shared DDC feeding a protocol decoder
-	websa_dsp_digital_new(fsIn: number, offsetHz: number, decimate: number, outRate: number, modePtr: number, modeLen: number): number;
-	websa_dsp_digital_push(handle: number, iqPtr: number, samples: number): number;
-	websa_dsp_digital_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
-	websa_dsp_digital_count(handle: number): number;
-	websa_dsp_digital_buffered(handle: number): number;
-	websa_dsp_digital_reset(handle: number): number;
-	websa_dsp_digital_free(handle: number): number;
-	// The whole analog receive pipeline: one handle, one call per IQ block
-	websa_dsp_pipeline_new(fsIn: number, offsetHz: number, decimate: number, outRate: number, modePtr: number, modeLen: number, ifBw: number, pitch: number): number;
-	websa_dsp_pipeline_process(handle: number, iqPtr: number, samples: number, outPtr: number, capacity: number, audioHold: number): number;
-	websa_dsp_pipeline_retune(handle: number, offsetHz: number): number;
-	websa_dsp_pipeline_set_audio(handle: number, enabled: number): number;
-	websa_dsp_pipeline_reset(handle: number): number;
-	websa_dsp_pipeline_free(handle: number): number;
 }
 
 export interface DspModule {

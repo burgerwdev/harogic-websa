@@ -16,11 +16,11 @@ pub mod stages;
 pub mod wiener;
 
 pub use dc_block::DcBlock;
-pub use stages::{stage_factories, AgcStage, Lpf, Squelch, AUDIO_RATE};
+pub use stages::{stage_factories, AgcStage, Lpf, Squelch, DEFAULT_AUDIO_RATE};
 
-/// The default analog-PCM enhancement chain, in registry order.
-pub fn default_chain() -> crate::pipeline::AudioChain {
-    crate::pipeline::AudioChain::from_registry(&stage_factories())
+/// The default analog-PCM enhancement chain for a consumer running at `rate`, in registry order.
+pub fn default_chain(rate: f64) -> crate::pipeline::AudioChain {
+    crate::pipeline::AudioChain::from_registry(&stage_factories(), rate)
 }
 
 /// The chain as a specific mode should run it.
@@ -29,8 +29,8 @@ pub fn default_chain() -> crate::pipeline::AudioChain {
 /// which for CW is the carrier the operator is listening to (and for a lone test tone is the signal
 /// itself). Voice modes keep it, because there a single steady tone is interference. This is the one
 /// place that knows the difference; the stages themselves stay mode-agnostic.
-pub fn chain_for_mode(mode: &str) -> crate::pipeline::AudioChain {
-    let mut chain = default_chain();
+pub fn chain_for_mode(mode: &str, rate: f64) -> crate::pipeline::AudioChain {
+    let mut chain = default_chain(rate);
     if mode == "cw" {
         chain.set_stage_enabled("notch", false);
     }
@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn every_implemented_audio_plugin_is_in_the_default_chain() {
-        let chain = default_chain();
+        let chain = default_chain(DEFAULT_AUDIO_RATE);
         let ids = chain.ids();
         for descriptor in crate::plugin::AUDIO_PLUGINS.iter().filter(|p| p.implemented) {
             assert!(ids.contains(&descriptor.id), "{} is implemented but not in the chain", descriptor.id);
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn the_chain_preserves_the_block_length_and_leaves_silence_quiet() {
-        let mut chain = default_chain();
+        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
         let mut pcm = crate::pipeline::AnalogPcm::default();
         pcm.samples_mut().extend(std::iter::repeat(0.0).take(960));
         chain.process(&mut pcm, false);
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn the_chain_turns_a_quiet_voice_like_signal_into_audible_pcm() {
-        let mut chain = default_chain();
+        let mut chain = default_chain(DEFAULT_AUDIO_RATE);
         // A voice-like signal (a tone plus noise), not a lone tone: the adaptive notch is part of
         // the default chain and would remove a single steady tone by design. The level is above
         // the squelch threshold so the test measures the chain rather than the gate.
@@ -115,8 +115,8 @@ mod tests {
             }
             (re * re + im * im).sqrt() * 2.0 / n
         };
-        let with_notch = tone_after(&mut default_chain());
-        let mut cw_chain = chain_for_mode("cw");
+        let with_notch = tone_after(&mut default_chain(DEFAULT_AUDIO_RATE));
+        let mut cw_chain = chain_for_mode("cw", DEFAULT_AUDIO_RATE);
         assert!(!cw_chain.is_stage_enabled("notch"), "CW must run without the notch");
         let without_notch = tone_after(&mut cw_chain);
         println!("chain: lone 1 kHz tone -> {with_notch:.4} (default) vs {without_notch:.4} (cw)");

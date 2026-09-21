@@ -4,8 +4,12 @@
 //!
 //! ```text
 //!   complex baseband ─▶ complex band filter ─▶ detector ─▶ audio LPF ─▶ resample ─▶ de-emphasis ─▶ AGC ─▶ PCM
-//!                                                          (@channel rate)   (48 kHz)   (WFM only)
+//!                                                          (@baseband rate)  (@out_rate)  (WFM only)
 //! ```
+//!
+//! `fs` is the rate of the baseband it is handed (the backend's DDC output) and `out_rate` is what
+//! the consumer plays at (the AudioWorklet's `sampleRate`). Both are explicit: a demodulator that
+//! assumed one rate for both played 8.8% slow on a 44.1 kHz device.
 //!
 //! A mode is a *specification*, not a code path: which band it selects, which detector turns the
 //! complex signal into audio, where its audio filter sits and whether it has de-emphasis. Adding
@@ -24,8 +28,10 @@ use crate::ddc::resampler::LinearResampler;
 use crate::ddc::RmsAgc;
 use crate::plugin::{AnalogDemodulator, DemodConfig};
 
-/// Output rate of every analog mode, in Hz (the audio path's rate).
-pub const AUDIO_RATE: f64 = 48_000.0;
+/// The rate every analog mode produced before the consumer's rate became configurable (the
+/// AudioWorklet's rate is passed in as `out_rate` now; this stays the default and the tests'
+/// reference).
+pub const DEFAULT_AUDIO_RATE: f64 = 48_000.0;
 const BAND_TAPS: usize = 257;
 const AUDIO_TAPS: usize = 129;
 /// DC-block pole from the reference's AM branch (~3.3 Hz corner at 48 kHz).
@@ -155,15 +161,17 @@ pub fn spec_for(id: &str) -> Option<ModeSpec> {
     })
 }
 
-/// Build a demodulator for `id`, or `None` when its kernel does not exist.
-pub fn build(id: &str, config: DemodConfig) -> Option<AnalogDemod> {
-    spec_for(id).map(|spec| AnalogDemod::new(spec, config))
+/// Build a demodulator for `id` (audio at `out_rate`), or `None` when its kernel does not exist.
+pub fn build(id: &str, config: DemodConfig, out_rate: f64) -> Option<AnalogDemod> {
+    spec_for(id).map(|spec| AnalogDemod::new(spec, config, out_rate))
 }
 
 /// The streaming demodulator: one instance per active mode.
 pub struct AnalogDemod {
     spec: ModeSpec,
     fs: f64,
+    /// Rate the PCM is produced at (the consumer's rate).
+    out_rate: f64,
     pitch: f64,
     band: ComplexBandFilter,
     audio_lp: FirState,
@@ -184,25 +192,29 @@ pub struct AnalogDemod {
 }
 
 impl AnalogDemod {
-    pub fn new(spec: ModeSpec, config: DemodConfig) -> Self {
+    pub fn new(spec: ModeSpec, config: DemodConfig, out_rate: f64) -> Self {
         let fs = config.fs.max(1.0);
+        let out_rate = if out_rate > 0.0 { out_rate } else { DEFAULT_AUDIO_RATE };
         let if_bw = config.if_bw.max(50.0).min(fs * 0.45);
         let pitch = if config.pitch > 0.0 { config.pitch } else { 700.0 };
         let (lo, hi) = spec.band_hz(if_bw, pitch);
         let (re, im) = design_complex_bandpass(fs, lo, hi, BAND_TAPS);
+        // The audio low-pass runs at the baseband rate but must also stay below the output rate's
+        // Nyquist: it is designed before the resampler, so both bounds apply.
         let audio_cut = spec
             .audio_cut_hz(if_bw, pitch)
             .max(100.0)
-            .min(0.45 * AUDIO_RATE)
+            .min(0.45 * out_rate)
             .min(0.45 * fs);
         Self {
             spec,
             fs,
+            out_rate,
             pitch,
             band: ComplexBandFilter::new(re, im),
             audio_lp: FirState::new(design_lowpass(fs, audio_cut, AUDIO_TAPS)),
-            resampler: LinearResampler::new(fs, AUDIO_RATE),
-            deemph: Self::deemph_taps(spec.deemph_us),
+            resampler: LinearResampler::new(fs, out_rate),
+            deemph: Self::deemph_taps(spec.deemph_us, out_rate),
             agc: RmsAgc::reference(),
             prev_z: None,
             env_prev: 0.0,
@@ -224,16 +236,21 @@ impl AnalogDemod {
         self.pitch
     }
 
+    /// The rate this demodulator produces PCM at.
+    pub fn out_rate(&self) -> f64 {
+        self.out_rate
+    }
+
     /// Number of audio-filter taps (the design constant the tests pin).
     pub fn audio_taps(&self) -> usize {
         self.audio_lp.taps().len()
     }
 
-    fn deemph_taps(tau_us: f64) -> Option<FirState> {
+    fn deemph_taps(tau_us: f64, out_rate: f64) -> Option<FirState> {
         if tau_us <= 0.0 {
             return None;
         }
-        let alpha = (-1.0 / (AUDIO_RATE * tau_us * 1e-6)).exp();
+        let alpha = (-1.0 / (out_rate * tau_us * 1e-6)).exp();
         if !(0.0 < alpha && alpha < 1.0) {
             return None;
         }
@@ -412,6 +429,7 @@ mod tests {
     const IF_BW: f64 = 12_000.0;
     const TONE_HZ: f64 = 1_000.0;
     const PITCH: f64 = 700.0;
+    const AUDIO_RATE: f64 = DEFAULT_AUDIO_RATE;
 
     /// Hann-windowed amplitude of `audio` at one frequency (coherent gain corrected).
     pub(crate) fn amplitude_at(audio: &[f32], rate: f64, hz: f64) -> f64 {
@@ -447,9 +465,15 @@ mod tests {
 
     /// Demodulate one block of `n` samples built by `modulate(time_seconds)`.
     fn run_with(id: &str, n: usize, if_bw: f64, pitch: f64, modulate: impl Fn(f64) -> (f64, f64)) -> Vec<f32> {
+        run_at(id, n, if_bw, pitch, AUDIO_RATE, modulate)
+    }
+
+    /// Demodulate `n` samples of a baseband at `FS` and produce audio at `out_rate`.
+    fn run_at(id: &str, n: usize, if_bw: f64, pitch: f64, out_rate: f64,
+              modulate: impl Fn(f64) -> (f64, f64)) -> Vec<f32> {
         let mut config = DemodConfig::new(FS, if_bw);
         config.pitch = pitch;
-        let mut demod = build(id, config).expect("mode must exist");
+        let mut demod = build(id, config, out_rate).expect("mode must exist");
         let mut iq = Vec::with_capacity(n * 2);
         for k in 0..n {
             let (i, q) = modulate(k as f64 / FS);
@@ -592,9 +616,33 @@ mod tests {
         assert!(interferer < sidetone, "CW band filter must reject the interferer");
     }
 
+    /// The consumer's rate is what the PCM comes out at (44.1 kHz devices played 8.8% slow when
+    /// the output rate was a constant).
+    #[test]
+    fn the_output_rate_follows_the_configured_rate() {
+        let modulate = |t: f64| (1.0 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0);
+        for out_rate in [48_000.0, 44_100.0, 96_000.0] {
+            let audio = run_at("am", 20_000, IF_BW, PITCH, out_rate, modulate);
+            let expected = 20_000.0 * out_rate / FS;
+            assert!(audio.len().abs_diff(expected as usize) <= 2,
+                    "out_rate {out_rate}: produced {} samples, expected {expected:.0}",
+                    audio.len());
+            // The modulation tone is a frequency, not a sample count: it must land where it was
+            // sent whatever the output rate is.
+            let mut hz = TONE_HZ - 60.0;
+            let mut best = (TONE_HZ, f64::MIN);
+            while hz <= TONE_HZ + 60.0 {
+                let level = amplitude_at(&audio, out_rate, hz);
+                if level > best.1 { best = (hz, level); }
+                hz += 0.5;
+            }
+            assert_eq!(best.0, TONE_HZ, "tone at {out_rate} Hz output");
+        }
+    }
+
     #[test]
     fn the_output_rate_is_the_audio_rate_and_blocks_are_continuous() {
-        let mut demod = build("am", DemodConfig::new(FS, IF_BW)).unwrap();
+        let mut demod = build("am", DemodConfig::new(FS, IF_BW), AUDIO_RATE).unwrap();
         let modulate = |t: f64| (1.0 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0);
         let mut iq = Vec::new();
         for k in 0..10_000 {
@@ -616,7 +664,7 @@ mod tests {
     #[test]
     fn every_mode_builds_and_reports_its_registry_id() {
         for descriptor in crate::plugin::ANALOG_PLUGINS {
-            let built = build(descriptor.id, DemodConfig::new(FS, IF_BW));
+            let built = build(descriptor.id, DemodConfig::new(FS, IF_BW), AUDIO_RATE);
             assert_eq!(
                 built.is_some(), descriptor.implemented,
                 "{}: registry says implemented={} but build() says {}",

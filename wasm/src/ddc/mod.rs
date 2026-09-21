@@ -6,8 +6,13 @@
 //!
 //! Numerics are the Python reference's (`web_sa/demod/filters.py` + `sdr.py::_mix`); the
 //! committed fixtures under `tests/fixtures/dsp/` pin them down stage by stage.
+//!
+//! The DDC itself runs on the backend now (the analyzer's DSP_DDC plus a software NCO), so the
+//! browser only sees its output. What stays here are the kernels the demodulators need (FIR,
+//! resampler, AGC) plus [`Ddc`], the orchestrator they were verified as a chain against — kept
+//! because the parity fixtures compare exactly that chain, and because a future wideband path would
+//! need it again.
 
-pub mod abi;
 pub mod agc;
 pub mod fir;
 pub mod nco;

@@ -9,27 +9,35 @@ use crate::ddc::fir::{design_lowpass, FirState};
 use crate::ddc::RmsAgc;
 use crate::plugin::AudioStage;
 
-/// Rate every audio stage runs at, in Hz.
-pub const AUDIO_RATE: f64 = 48_000.0;
+/// The rate the chain ran at before the consumer's rate became a parameter (the tests' reference
+/// and the fallback when a caller does not know it).
+pub const DEFAULT_AUDIO_RATE: f64 = 48_000.0;
 
 /// Anti-alias / hiss low-pass. Default corner is speech bandwidth, not the full 15 kHz: the
 /// narrow modes benefit and a wider setting is one constructor argument away.
 pub struct Lpf {
     filter: FirState,
     cutoff_hz: f64,
+    rate: f64,
 }
 
 impl Lpf {
-    pub fn new(cutoff_hz: f64) -> Self {
-        let cutoff = cutoff_hz.clamp(100.0, 0.45 * AUDIO_RATE);
+    pub fn new(cutoff_hz: f64, rate: f64) -> Self {
+        let rate = if rate > 0.0 { rate } else { DEFAULT_AUDIO_RATE };
+        let cutoff = cutoff_hz.clamp(100.0, 0.45 * rate);
         Self {
-            filter: FirState::new(design_lowpass(AUDIO_RATE, cutoff, 129)),
+            filter: FirState::new(design_lowpass(rate, cutoff, 129)),
             cutoff_hz: cutoff,
+            rate,
         }
     }
 
-    pub fn speech() -> Self {
-        Self::new(8_000.0)
+    pub fn speech(rate: f64) -> Self {
+        Self::new(8_000.0, rate)
+    }
+
+    pub fn rate(&self) -> f64 {
+        self.rate
     }
 
     pub fn cutoff_hz(&self) -> f64 {
@@ -96,6 +104,8 @@ impl AudioStage for AgcStage {
 /// not with a stage that only sees PCM.
 pub struct Squelch {
     threshold_dbfs: f64,
+    /// The rate the gate's time constants are expressed at.
+    rate: f64,
     hysteresis_db: f64,
     hold_s: f64,
     attack_s: f64,
@@ -107,9 +117,10 @@ pub struct Squelch {
 }
 
 impl Squelch {
-    pub fn new(threshold_dbfs: f64) -> Self {
+    pub fn new(threshold_dbfs: f64, rate: f64) -> Self {
         Self {
             threshold_dbfs,
+            rate: if rate > 0.0 { rate } else { DEFAULT_AUDIO_RATE },
             hysteresis_db: 3.0,
             hold_s: 0.15,
             attack_s: 0.01,
@@ -138,7 +149,7 @@ impl Squelch {
             let mean_sq = input.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64;
             10.0 * (mean_sq + 1e-20).log10()
         };
-        let dt = n as f64 / AUDIO_RATE;
+        let dt = n as f64 / self.rate;
         if level >= self.threshold_dbfs {
             self.open = true;
             self.hold_until_s = self.now_s + self.hold_s;
@@ -186,16 +197,16 @@ impl AudioStage for Squelch {
     }
 }
 
-/// The default chain, in `plugin::AUDIO_PLUGINS` order.
-pub fn stage_factories() -> Vec<(&'static str, fn() -> Box<dyn AudioStage>)> {
+/// The default chain, in `plugin::AUDIO_PLUGINS` order. Each factory takes the consumer's rate.
+pub fn stage_factories() -> Vec<(&'static str, fn(f64) -> Box<dyn AudioStage>)> {
     vec![
-        ("dc_block", || Box::new(DcBlock::reference()) as Box<dyn AudioStage>),
-        ("lpf", || Box::new(Lpf::speech()) as Box<dyn AudioStage>),
-        ("agc", || Box::new(AgcStage::reference()) as Box<dyn AudioStage>),
-        ("squelch", || Box::new(Squelch::new(-110.0)) as Box<dyn AudioStage>),
-        ("wiener", || Box::new(crate::audio::wiener::Wiener::new()) as Box<dyn AudioStage>),
-        ("notch", || Box::new(crate::audio::notch::AdaptiveNotch::new()) as Box<dyn AudioStage>),
-        ("blanker", || Box::new(crate::audio::blanker::ImpulseBlanker::new()) as Box<dyn AudioStage>),
+        ("dc_block", |_rate| Box::new(DcBlock::reference()) as Box<dyn AudioStage>),
+        ("lpf", |rate| Box::new(Lpf::speech(rate)) as Box<dyn AudioStage>),
+        ("agc", |_rate| Box::new(AgcStage::reference()) as Box<dyn AudioStage>),
+        ("squelch", |rate| Box::new(Squelch::new(-110.0, rate)) as Box<dyn AudioStage>),
+        ("wiener", |_rate| Box::new(crate::audio::wiener::Wiener::new()) as Box<dyn AudioStage>),
+        ("notch", |rate| Box::new(crate::audio::notch::AdaptiveNotch::new(rate)) as Box<dyn AudioStage>),
+        ("blanker", |_rate| Box::new(crate::audio::blanker::ImpulseBlanker::new()) as Box<dyn AudioStage>),
     ]
 }
 
@@ -203,6 +214,8 @@ pub fn stage_factories() -> Vec<(&'static str, fn() -> Box<dyn AudioStage>)> {
 mod tests {
     use super::*;
     use core::f64::consts::PI;
+
+    const AUDIO_RATE: f64 = DEFAULT_AUDIO_RATE;
 
     fn tone(n: usize, hz: f64, amp: f32) -> Vec<f32> {
         (0..n)
@@ -216,7 +229,7 @@ mod tests {
 
     #[test]
     fn the_low_pass_attenuates_what_is_above_its_corner() {
-        let mut lpf = Lpf::new(3_000.0);
+        let mut lpf = Lpf::new(3_000.0, AUDIO_RATE);
         let mut out = Vec::new();
         // 1 kHz passes; 12 kHz does not.
         lpf.process_into(&tone(4_800, 1_000.0, 0.5), false, &mut out);
@@ -240,7 +253,7 @@ mod tests {
 
     #[test]
     fn the_squelch_mutes_noise_and_opens_on_signal() {
-        let mut squelch = Squelch::new(-40.0);
+        let mut squelch = Squelch::new(-40.0, AUDIO_RATE);
         let mut out = Vec::new();
         // -60 dBFS noise: closed.
         squelch.process_block(&tone(960, 1_000.0, 0.001), &mut out);
@@ -256,7 +269,7 @@ mod tests {
 
     #[test]
     fn the_squelch_hysteresis_holds_the_gate_through_a_fade() {
-        let mut squelch = Squelch::new(-40.0);
+        let mut squelch = Squelch::new(-40.0, AUDIO_RATE);
         let mut out = Vec::new();
         for _ in 0..6 {
             squelch.process_block(&tone(960, 1_000.0, 0.3), &mut out);

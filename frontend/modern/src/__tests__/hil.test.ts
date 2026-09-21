@@ -24,13 +24,13 @@ const capturePath = process.env.WEBSA_HIL_IQ;
 interface Capture {
 	iq_file: string;
 	samples: number;
-	fs_in: number;
+	/** The DDC's output rate: the demodulator's input rate. */
+	rate: number;
 	center_hz: number;
 	mode: string;
 	if_bw: number;
 	pitch: number;
 	out_rate: number;
-	decimate: number;
 	expected_tone_hz?: number;
 }
 
@@ -38,68 +38,6 @@ const artifactBytes = (): ArrayBuffer => {
 	const buf = readFileSync(ARTIFACT);
 	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 };
-
-/**
- * Offset of the strongest tone in the capture, in Hz relative to the capture centre.
- *
- * The bench generator's frequency is not guaranteed to land exactly on the analyzer's centre (it
- * ended up 200 kHz low on the first measurement run), and the DDC's NCO is precisely what handles
- * that: the measurement finds the tone and mixes it to DC, which also exercises the NCO on real
- * data instead of assuming the tuning was perfect.
- */
-function toneOffsetHz(iq: Int16Array, fsIn: number): number {
-	// Contiguous samples only, and *never* decimated: taking every n-th sample aliases the spectrum
-	// (the first version of this function did that and reported a 386 kHz offset for a tone that
-	// was 200 kHz low, so the NCO mixed noise down and the measurement read as silence).
-	const count = Math.min(4096, iq.length / 2);
-	const re = new Float64Array(count);
-	const im = new Float64Array(count);
-	for (let k = 0; k < count; k++) {
-		const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * k) / count);
-		re[k] = (iq[2 * k] / 32768) * w;
-		im[k] = (iq[2 * k + 1] / 32768) * w;
-	}
-	const magnitudeAt = (hz: number): number => {
-		let accRe = 0;
-		let accIm = 0;
-		for (let k = 0; k < count; k++) {
-			const ph = (2 * Math.PI * hz * k) / fsIn;
-			accRe += re[k] * Math.cos(ph) - im[k] * Math.sin(ph);
-			accIm += re[k] * Math.sin(ph) + im[k] * Math.cos(ph);
-		}
-		return Math.sqrt(accRe * accRe + accIm * accIm);
-	};
-	// Coarse sweep over the captured span, then refine around the winner.
-	let best = 0;
-	let bestMagnitude = -1;
-	const coarseStep = fsIn / 1024;
-	for (let hz = -fsIn / 2; hz < fsIn / 2; hz += coarseStep) {
-		const magnitude = magnitudeAt(hz);
-		if (magnitude > bestMagnitude) {
-			bestMagnitude = magnitude;
-			best = hz;
-		}
-	}
-	let fineStep = coarseStep / 50;
-	let fineBest = best;
-	for (let hz = best - coarseStep; hz <= best + coarseStep; hz += fineStep) {
-		const magnitude = magnitudeAt(hz);
-		if (magnitude > bestMagnitude) {
-			bestMagnitude = magnitude;
-			fineBest = hz;
-		}
-	}
-	best = fineBest;
-	fineStep /= 20;
-	for (let hz = best - fineStep * 20; hz <= best + fineStep * 20; hz += fineStep) {
-		const magnitude = magnitudeAt(hz);
-		if (magnitude > bestMagnitude) {
-			bestMagnitude = magnitude;
-			best = hz;
-		}
-	}
-	return best;
-}
 
 /**
  * Tone power and SINAD over a bounded analysis segment.
@@ -161,32 +99,30 @@ const rms = (pcm: Float32Array): number => {
 describe.skipIf(!capturePath)('hardware-in-the-loop audio', () => {
 	it('demodulates the bench tone through the shipped WASM artifact', async () => {
 		const meta = JSON.parse(readFileSync(capturePath!, 'utf8')) as Capture;
-		const iqBytes = readFileSync(resolve(dirname(capturePath!), meta.iq_file));
-		const iq = new Int16Array(iqBytes.buffer, iqBytes.byteOffset, iqBytes.byteLength / 2);
+		const basebandBytes = readFileSync(resolve(dirname(capturePath!), meta.iq_file));
+		const iq = new Float32Array(
+			basebandBytes.buffer,
+			basebandBytes.byteOffset,
+			basebandBytes.byteLength / 4,
+		);
 
 		const module = await instantiateDsp(artifactBytes());
-		// The capture centre is the tuning reference: the analyzer was tuned to the generator, and the
-		// demodulator's own band/discriminator handle whatever small offset remains. An automatic peak
-		// search is available for a deliberately off-centre capture, but it must not be the default —
-		// for an FM signal the strongest bin is a *sideband* (measured: +5 kHz on a 6 kHz-deviation
-		// signal), and mixing by that detunes the channel by its own modulation.
-		const offsetHz = process.env.WEBSA_HIL_OFFSET === 'auto' ? toneOffsetHz(iq, meta.fs_in) : 0;
+		// The capture is already channelized and tuned by the backend (the DDC's output), so the
+		// demodulator reads it as it arrives: no offset search, no decimation.
 		const params: PipelineParams = {
-			fsIn: meta.fs_in,
-			offsetHz,
-			decimate: meta.decimate,
+			fsIn: meta.rate,
 			outRate: meta.out_rate,
 			mode: meta.mode,
 			ifBw: meta.if_bw,
 			pitch: meta.pitch,
 		};
-		const pipeline = new WasmPipeline(module, params);
+		const pipeline = new WasmPipeline(module, params, false);
 		expect(pipeline.ok).toBe(true);
 		// The audio chain can be switched off for a measurement: with it on, the chain's policy (the
 		// notch, the denoiser) shapes the result, and separating the two is what localises a failure.
 		if (process.env.WEBSA_HIL_NO_CHAIN === '1') pipeline.setAudioEnabled(false);
 
-		const block = 8_192;
+		const block = 4_096;             // one IQBF frame's worth of baseband
 		const chunks: Float32Array[] = [];
 		for (let start = 0; start + block * 2 <= iq.length; start += block * 2) {
 			chunks.push(pipeline.process(iq.subarray(start, start + block * 2)));
@@ -217,8 +153,8 @@ describe.skipIf(!capturePath)('hardware-in-the-loop audio', () => {
 				Math.max(signal, 1e-12),
 		);
 		console.log(
-			`HIL ${meta.mode} @ ${(meta.center_hz / 1e6).toFixed(4)} MHz (tone offset ` +
-				`${(offsetHz / 1e3).toFixed(1)} kHz, chain ${process.env.WEBSA_HIL_NO_CHAIN === '1' ? 'off' : 'on'}): ` +
+			`HIL ${meta.mode} @ ${(meta.center_hz / 1e6).toFixed(4)} MHz (baseband ` +
+				`${(meta.rate / 1e3).toFixed(1)} kSps, chain ${process.env.WEBSA_HIL_NO_CHAIN === '1' ? 'off' : 'on'}): ` +
 				`sidetone ${tone.toFixed(1)} Hz (nominal ${expected.toFixed(0)} Hz, ` +
 				`offset ${(tone - expected).toFixed(1)} Hz), level ` +
 				`${(20 * Math.log10(level + 1e-12)).toFixed(1)} dBFS, SINAD ${sinad.toFixed(1)} dB, ` +

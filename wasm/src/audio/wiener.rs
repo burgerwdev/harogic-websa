@@ -19,8 +19,6 @@ use crate::plugin::AudioStage;
 const FRAME: usize = 512;
 const HOP: usize = FRAME / 4;
 const GAIN_FLOOR: f64 = 0.1;        // -20 dB: the musical-noise guard
-/// Fraction of the bin powers treated as the noise floor.
-const FLOOR_QUANTILE: f64 = 0.25;
 
 pub struct Wiener {
     fft: Fft,

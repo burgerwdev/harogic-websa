@@ -1,21 +1,25 @@
-//! The pipeline: one DDC base layer, two consumers, and one rule that cannot be broken.
+//! The pipeline: one channelized baseband, two consumers, and one rule that cannot be broken.
 //!
 //! ```text
-//!   IQ ──▶ DDC ──┬──▶ RAW baseband  (always emitted; the digital decoder and the display read this)
-//!                ├──▶ AnalogDemod ──▶ PCM ──▶ AudioChain ──▶ speaker
-//!                └──▶ DigitalDemod ─────────────────────────▶ decoded messages
+//!   baseband ──┬──▶ RAW baseband  (the digital decoder and the measurements read this)
+//!   (DDC out)  ├──▶ AnalogDemod ──▶ PCM ──▶ AudioChain ──▶ speaker
+//!              └──▶ DigitalDemod ─────────────────────────▶ decoded messages
 //! ```
+//!
+//! The baseband arrives already channelized: the coarse decimation and the tuning happen on the
+//! backend (the analyzer's DSP_DDC + a software NCO), exactly as the Python reference does it. What
+//! runs here is the demodulator and the audio chain — the CPU-cheap half — which is why the browser
+//! can keep up with it while it could not keep up with a 129-tap FIR at the raw IQ rate.
 //!
 //! The rule: **the audio-enhancement chain only ever receives [`AnalogPcm`]** — a newtype that the
 //! RAW/digital paths cannot produce. A voice denoiser on an FT8 tone destroys the information the
 //! decoder needs, so the separation is a type, not a comment, and
-//! `wasm/tests/path_separation.rs` proves it bit-for-bit by toggling the chain and comparing the
-//! RAW output.
+//! `wasm/tests/path_separation.rs` proves it by toggling the chain and comparing the RAW output.
 //!
-//! The DDC stage set is shared on purpose (it is level control and channel selection, not speech
-//! enhancement) and is therefore not part of `AudioChain`.
+//! The audio chain is not a DDC stage: it exists for the human ear, so it is not part of the
+//! channelizer.
 
-use crate::ddc::Ddc;
+use crate::ddc::resampler::ComplexResampler;
 use crate::plugin::{AnalogDemodulator, AudioStage, DigitalDemodulator, DigitalReport, PluginKind, AUDIO_PLUGINS};
 
 /// Real PCM destined for the speaker. Only the analog path produces one of these, and only the
@@ -73,15 +77,19 @@ impl AudioChain {
         }
     }
 
-    /// Build the chain for the plugins that are implemented, in `AUDIO_PLUGINS` order.
+    /// Build the chain for the plugins that are implemented, in `AUDIO_PLUGINS` order, at the
+    /// consumer's rate.
     ///
     /// Stages whose kernels are not written yet are skipped rather than faked, so the chain can
     /// never "pass audio through" while pretending to process it.
-    pub fn from_registry(factories: &[(&'static str, fn() -> Box<dyn AudioStage>)]) -> Self {
+    pub fn from_registry(
+        factories: &[(&'static str, fn(f64) -> Box<dyn AudioStage>)],
+        rate: f64,
+    ) -> Self {
         let mut stages: Vec<Box<dyn AudioStage>> = Vec::new();
         for descriptor in AUDIO_PLUGINS.iter().filter(|p| p.implemented) {
             if let Some((_, build)) = factories.iter().find(|(id, _)| *id == descriptor.id) {
-                stages.push(build());
+                stages.push(build(rate));
             }
         }
         Self::new(stages)
@@ -155,11 +163,10 @@ impl AudioChain {
     }
 }
 
-/// One processed IQ block: everything the consumers need, produced in one pass.
+/// One processed baseband block: everything the consumers need, produced in one pass.
 #[derive(Debug, Default)]
 pub struct PipelineOutput {
-    /// Interleaved complex baseband at the channel rate — the RAW stream. Never modified by the
-    /// audio chain.
+    /// The channelized baseband as it arrived — the RAW stream. Never modified by the audio chain.
     pub raw: Vec<f32>,
     /// Analog audio (after the enhancement chain when it is enabled). Empty in the digital path.
     pub audio: Vec<f32>,
@@ -169,25 +176,28 @@ pub struct PipelineOutput {
 
 /// The assembled receiver.
 pub struct Pipeline {
-    ddc: Ddc,
     kind: PathKind,
     analog: Option<Box<dyn AnalogDemodulator>>,
     digital: Option<Box<dyn DigitalDemodulator>>,
+    /// The decoder's rate adapter: the baseband arrives at the backend's DDC rate and FT8 needs
+    /// 48 kHz. `None` when the rates already match (the common case).
+    resample: Option<ComplexResampler>,
     chain: AudioChain,
-    baseband: Vec<f32>,
+    /// Rate-converted baseband for the digital path.
+    converted: Vec<f32>,
     pcm: AnalogPcm,
     decoded_total: u64,
 }
 
 impl Pipeline {
-    pub fn new(ddc: Ddc, kind: PathKind, chain: AudioChain) -> Self {
+    pub fn new(kind: PathKind, chain: AudioChain) -> Self {
         Self {
-            ddc,
             kind,
             analog: None,
             digital: None,
+            resample: None,
             chain,
-            baseband: Vec::new(),
+            converted: Vec::new(),
             pcm: AnalogPcm::default(),
             decoded_total: 0,
         }
@@ -223,14 +233,28 @@ impl Pipeline {
     }
 
     /// Install the analog demodulator (the analog path's only way to produce PCM).
+    ///
+    /// The demodulator owns the rate conversion to the consumer's rate (it already resampled its
+    /// detector output, so the baseband rate and the audio rate are both just parameters).
     pub fn set_analog_demod(&mut self, demod: Box<dyn AnalogDemodulator>) {
         self.analog = Some(demod);
         self.kind = PathKind::Analog;
     }
 
-    /// Install the digital demodulator. The audio chain stays installed but is unreachable: the
-    /// digital path has no way to hand it an [`AnalogPcm`].
-    pub fn set_digital_demod(&mut self, demod: Box<dyn DigitalDemodulator>) {
+    /// Install the digital demodulator, adapting `fs_in` to the decoder's `out_rate` when they
+    /// differ. The audio chain stays installed but is unreachable: the digital path has no way to
+    /// hand it an [`AnalogPcm`].
+    pub fn set_digital_demod(
+        &mut self,
+        demod: Box<dyn DigitalDemodulator>,
+        fs_in: f64,
+        out_rate: f64,
+    ) {
+        self.resample = if fs_in > 0.0 && out_rate > 0.0 && (fs_in - out_rate).abs() > 1e-9 {
+            Some(ComplexResampler::new(fs_in, out_rate))
+        } else {
+            None
+        };
         self.digital = Some(demod);
         self.kind = PathKind::Digital;
     }
@@ -239,10 +263,10 @@ impl Pipeline {
         self.chain.set_enabled(enabled);
     }
 
-    /// The plugins this pipeline actually uses, for the plugin-manifest contract test.
+    /// The plugins this pipeline actually uses, for the plugin-manifest contract test. The DDC base
+    /// layer is *not* one of them any more: the backend performs the channelization.
     pub fn active_plugins(&self) -> Vec<(&'static str, PluginKind)> {
-        let mut active = vec![("nco", PluginKind::Ddc), ("fir", PluginKind::Ddc),
-                              ("decimate", PluginKind::Ddc), ("resample", PluginKind::Ddc)];
+        let mut active = Vec::new();
         if let Some(analog) = self.analog.as_ref() {
             active.push((analog.id(), PluginKind::Analog));
         }
@@ -255,28 +279,28 @@ impl Pipeline {
         active
     }
 
-    /// Process one int16 IQ block into `out`.
+    /// Process one block of channelized baseband (interleaved complex f32) into `out`.
     ///
     /// `audio_hold` freezes the audio chain's adaptation (used while a reconfiguration transient
     /// is being discarded).
-    pub fn process_i16_into(&mut self, iq: &[i16], audio_hold: bool, out: &mut PipelineOutput) {
+    pub fn process_f32_into(&mut self, baseband: &[f32], audio_hold: bool, out: &mut PipelineOutput) {
         out.raw.clear();
         out.audio.clear();
         out.decoded.clear();
-
-        let mut baseband = core::mem::take(&mut self.baseband);
-        self.ddc.process_i16_into(iq, &mut baseband);
-
+        let n = baseband.len() & !1;              // a torn block would desync I/Q
+        if n == 0 {
+            return;
+        }
+        let baseband = &baseband[..n];
         // The RAW stream is a copy taken before any per-mode processing: this is what the digital
-        // decoder and the visualization consume, and it is bit-identical whatever the analog side
-        // is configured to do.
-        out.raw.extend_from_slice(&baseband);
+        // decoder reads, and it is bit-identical whatever the analog side is configured to do.
+        out.raw.extend_from_slice(baseband);
 
         match self.kind {
             PathKind::Analog => {
                 if let Some(demod) = self.analog.as_mut() {
                     let mut pcm = core::mem::take(&mut self.pcm);
-                    demod.process_into(&baseband, &mut pcm.samples);
+                    demod.process_into(baseband, &mut pcm.samples);
                     // Only here, and only with an AnalogPcm, can the enhancement chain run.
                     self.chain.process(&mut pcm, audio_hold);
                     out.audio.extend_from_slice(pcm.samples());
@@ -284,38 +308,46 @@ impl Pipeline {
                 }
             }
             PathKind::Digital => {
+                let fed: &[f32] = match self.resample.as_mut() {
+                    Some(resampler) => {
+                        let mut converted = core::mem::take(&mut self.converted);
+                        resampler.process_f32_into(&out.raw, &mut converted);
+                        self.converted = converted;
+                        &self.converted
+                    }
+                    None => &out.raw,
+                };
                 if let Some(demod) = self.digital.as_mut() {
-                    out.decoded = demod.process_iq(&baseband);
+                    out.decoded = demod.process_iq(fed);
                     if !out.decoded.is_empty() {
                         self.decoded_total += out.decoded.len() as u64;
                     }
                 }
             }
         }
-
-        self.baseband = baseband;
     }
 
-    /// Retune within the same capture: a new NCO offset, and the demodulator's channel history is
-    /// cleared. The level controls are deliberately kept (resetting them is what made every tune
+    /// A retune on the backend: the channel moved, so the demodulator's history describes another
+    /// channel. The level controls are deliberately kept (resetting them is what made every tune
     /// start with a loud burst).
-    pub fn retune(&mut self, offset_hz: f64) {
-        self.ddc.retune(offset_hz);
+    pub fn retune(&mut self) {
         if let Some(demod) = self.analog.as_mut() {
             demod.retune();
         }
     }
 
     pub fn reset(&mut self) {
-        self.ddc.reset();
         if let Some(demod) = self.analog.as_mut() {
             demod.reset();
         }
         if let Some(demod) = self.digital.as_mut() {
             demod.reset();
         }
+        if let Some(resampler) = self.resample.as_mut() {
+            resampler.reset();
+        }
         self.chain.reset();
-        self.baseband.clear();
+        self.converted.clear();
         self.pcm.samples.clear();
     }
 }

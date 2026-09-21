@@ -1,29 +1,32 @@
-// SDR IQ ingress worker — the DSP host.
+// SDR baseband ingress worker — the DSP host.
 //
-// Owns a dedicated `?iq=1` WebSocket, decodes the IQDF frames the backend publishes at the DDC
-// input rate, runs the Rust/WASM receive pipeline over them (DDC -> analog demod -> audio chain)
-// and hands the resulting PCM to the AudioWorklet's port, which the main thread transfers here.
-// Neither reception, DSP nor playback delivery touches the main thread, so a busy render loop can
-// no longer starve the audio.
+// Owns a dedicated `?iq=1` WebSocket, decodes the IQBF frames the backend publishes (the channelized
+// baseband its DDC produced, at the DDC's output rate) and runs the Rust/WASM demodulator over them:
+// analog modes produce PCM, digital protocols produce text. The PCM goes to the AudioWorklet's port,
+// which the main thread transfers here. Neither reception, DSP nor playback delivery touches the main
+// thread, so a busy render loop can no longer starve the audio.
+//
+// The channelization (coarse decimation on the analyzer, fine tuning on the backend) stays on the
+// backend, which is what keeps this worker's cost independent of the analyzer's raw IQ rate: the
+// device used to hand the browser megabytes per second and the browser had to filter them, which
+// could not keep up at the SDR settings the UI offers.
 //
 // If the pipeline cannot be created (an unknown mode, a module that failed to load) the worker says
 // so in its stats and the main thread keeps the Python audio path: the DSP moving to the browser
 // must never be the reason there is no audio.
-import { decodeFrame, type IqFrame } from '../core/frames';
+import { decodeFrame, type BasebandFrame } from '../core/frames';
 import { loadDsp, type DspModule } from './wasm';
 import { WasmPipeline, type PipelineParams } from './wasmPipeline';
-import { DigitalPipeline } from './digitalPipeline';
 import { readPluginManifest } from './registry';
 
 let ws: WebSocket | null = null;
 let wsUrl = '';
 let wasmUrl = '';
 let module: DspModule | null = null;
+/// The demodulator: one handle for both paths (analog PCM, digital text).
 let pipeline: WasmPipeline | null = null;
-/// The digital path: a protocol decoder over the *same* DDC the analog path uses, producing text
-/// (and no audio at all).
-let digital: DigitalPipeline | null = null;
-let digitalGeometry = '';
+let params: PipelineParams | null = null;
+let digital = false;
 let ft8Messages = 0;
 /// What the worklet reports about its own ring (relayed to the page's diagnostics).
 let workletAvailable = 0;
@@ -37,16 +40,14 @@ let pendingPcm: Float32Array[] = [];
 let pendingSamples = 0;
 let pcmBlockSamples = 960;
 let deliveredSamples = 0;
-/// Diagnostics: how often the digital pipeline was (re)built and fed, and how full its decoder
-/// buffer is. A buffer that keeps restarting looks exactly like a quiet band from the outside.
-let digitalCreates = 0;
+/// Diagnostics: how full a digital decoder's buffer is (a buffer that keeps restarting looks exactly
+/// like a quiet band from the outside).
 let digitalPushes = 0;
 let digitalBuffered = 0;
 let digitalResets = 0;
 /// Ids the module declares as digital protocols; the registry is the single source of truth, so a
 /// new protocol becomes reachable here without a second list in the worker.
 let digitalIds = new Set<string>();
-let params: PipelineParams | null = null;
 let audioEnabled = true;
 let volume = 1;
 let workletPort: MessagePort | null = null;
@@ -74,7 +75,7 @@ function postStats(): void {
   post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
     pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
-    ft8Messages, digitalCreates, digitalPushes, digitalBuffered, digitalResets,
+    ft8Messages, digitalPushes, digitalBuffered, digitalResets,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, pcmPending: pendingSamples, deliveredSamples,
   });
@@ -83,60 +84,46 @@ function postStats(): void {
 /** Create or rebuild the pipeline for the current parameters. */
 function syncPipeline(): void {
   if (!enabled || !params || !module) return;
-  if (digitalIds.has(params.mode)) {
-    // Digital mode: the DDC still runs (the decoder reads channelized baseband), the audio chain
-    // and the worklet do not.
-    pipeline?.free();
-    pipeline = null;
-    const geometry = `${params.mode}:${params.fsIn}:${params.decimate}:${params.outRate}:${params.offsetHz}`;
-    if (!digital || digitalGeometry !== geometry) {
-      digitalCreates += 1;
-      digital?.free();
-      digital = new DigitalPipeline(module, {
-        fsIn: params.fsIn,
-        offsetHz: params.offsetHz,
-        decimate: params.decimate,
-        outRate: params.outRate,
-        mode: params.mode,
-      });
-      digitalGeometry = geometry;
-    }
-    postStats();
-    return;
-  }
-  digital?.free();
-  digital = null;
-  digitalGeometry = '';
-  if (pipeline && pipeline.mode === params.mode) {
+  const isDigital = digitalIds.has(params.mode);
+  if (pipeline && pipeline.mode === params.mode && pipeline.isDigital === isDigital) {
     pipeline.setVolume(volume);
     pipeline.setAudioEnabled(audioEnabled);
     return;
   }
-  const next = new WasmPipeline(module, params);
-  if (!next.ok) {
+  if (pipeline) {
+    pipeline.reconfigure(params, isDigital);
+  } else {
+    pipeline = new WasmPipeline(module, params, isDigital);
+  }
+  if (!pipeline.ok) {
     // Declared but not runnable: report it instead of pretending it works.
-    next.free();
+    pipeline.free();
     pipeline = null;
     post({ type: 'error', message: `no DSP pipeline for mode ${params.mode}` });
     postStats();
     return;
   }
-  pipeline?.free();
-  pipeline = next;
+  digital = isDigital;
   pipeline.setVolume(volume);
   pipeline.setAudioEnabled(audioEnabled);
   post({ type: 'ready', mode: params.mode });
   postStats();
 }
 
+/** Drop the worker's queued PCM and tell the worklet to drop the ring it already holds. */
+function resetDelivery(): void {
+  pendingPcm = [];
+  pendingSamples = 0;
+  workletPort?.postMessage({ type: 'reset' });
+}
+
 /**
  * Hand PCM to the worklet in ~20 ms blocks.
  *
- * The pipeline emits a small block per IQ frame (a few ms), but the worklet only resumes after an
- * underrun once it holds 20 ms - so a stream of tiny bursts made the ring oscillate around zero
- * (measured: available 75..3946 samples with ~1 underrun/s) and every underrun is an audible
- * fade-out/re-prime, i.e. the reported periodic puffing. The Python path always sent 20 ms frames
- * for the same reason. Batching costs at most one block of latency.
+ * The pipeline emits a small block per baseband frame (a few ms), but the worklet only resumes after
+ * an underrun once it holds 20 ms — a stream of tiny bursts makes the ring oscillate around zero and
+ * every underrun is an audible fade-out/re-prime. `out_rate` is the AudioWorklet's rate, so one block
+ * is always 20 ms of output whatever the device runs at.
  */
 function deliver(pcm: Float32Array): void {
   if (pcm.length === 0) return;
@@ -173,20 +160,25 @@ function deliver(pcm: Float32Array): void {
 function resetStream(): void {
   lastSeq = -1;
   flushes++;
-  pipeline?.free();
-  pipeline = null;
-  syncPipeline();
+  pipeline?.reset();
+  resetDelivery();
 }
 
-function onIq(frame: IqFrame): void {
+function onBaseband(frame: BasebandFrame): void {
   if (frame.seq === 0) {
-    resetStream();
+    // The backend retuned or reconfigured: the queued blocks and the demodulator's history belong to
+    // another channel. A retune only clears the channel history (the level control is kept), while a
+    // geometry change rebuilds the whole pipeline through `configure`.
+    lastSeq = -1;
+    flushes++;
+    pipeline?.retune();
+    resetDelivery();
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
     dropped += frame.seq - lastSeq - 1;      // a gap the client never saw (overrun on the wire)
     // A gap tears the buffered slot: decoding it can only fail, and a failed decode costs a whole
     // search. Start the next slot clean instead (the counter above is what makes this visible).
-    digital?.reset();
+    pipeline?.reset();
     digitalResets += 1;
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
@@ -194,10 +186,10 @@ function onIq(frame: IqFrame): void {
   centerHz = frame.centerHz;
   blocks++;
   samples += frame.samples;
-  if (digital) {
+  if (pipeline && digital) {
     digitalPushes += 1;
-    const message = digital.push(frame.iq);
-    digitalBuffered = digital.buffered();
+    const message = pipeline.push(frame.iq);
+    digitalBuffered = pipeline.buffered();
     if (message) {
       ft8Messages = message.count;
       post({ type: 'ft8', ...message, count: ft8Messages });
@@ -222,8 +214,8 @@ function connect(): void {
     const d = event.data;
     if (!(d instanceof ArrayBuffer)) return;
     const frame = decodeFrame(d);
-    if (frame === null || frame.kind !== 'iq') return;
-    onIq(frame);
+    if (frame === null || frame.kind !== 'baseband') return;
+    onBaseband(frame);
   };
   ws.onclose = () => { ws = null; scheduleReconnect(); };
   ws.onerror = () => { ws?.close(); };
@@ -271,31 +263,38 @@ self.onmessage = (event: MessageEvent) => {
     enabled = Boolean(msg.value);
     if (!enabled) {
       pipeline?.free();
-      digital?.free();
-      digital = null;
-      digitalGeometry = '';
-      pendingPcm = [];
-      pendingSamples = 0;
+      pipeline = null;
+      resetDelivery();
     }
     syncPipeline();
     postStats();
   } else if (msg.type === 'configure') {
     const next = msg.params as PipelineParams;
-    if (next && Number(next.fsIn) > 0) {
+    if (next && Number(next.fsIn) > 0 && Number(next.outRate) > 0) {
       // 20 ms at the output rate: the worklet's own re-prime threshold.
       pcmBlockSamples = Math.max(128, Math.round(Number(next.outRate) * 0.02));
-      const geometryChanged =
-        !params ||
-        params.mode !== next.mode ||
-        params.ifBw !== next.ifBw ||
-        params.decimate !== next.decimate ||
-        params.outRate !== next.outRate ||
-        params.pitch !== next.pitch;
+      const previous = params;
       params = next;
-      if (pipeline && geometryChanged) pipeline.reconfigure(next);
-      else if (pipeline && params) pipeline.retune(next.offsetHz);
       if (typeof msg.volume === 'number') volume = msg.volume;
       if (typeof msg.audioEnabled === 'boolean') audioEnabled = msg.audioEnabled;
+      const geometryChanged =
+        !previous ||
+        previous.mode !== next.mode ||
+        previous.ifBw !== next.ifBw ||
+        previous.fsIn !== next.fsIn ||
+        previous.outRate !== next.outRate ||
+        previous.pitch !== next.pitch;
+      if (pipeline && geometryChanged) {
+        // The baseband geometry changed: the demodulator's filters describe another channel.
+        pipeline.reconfigure(next, digitalIds.has(next.mode));
+        if (!pipeline.ok) {
+          pipeline.free();
+          pipeline = null;
+          post({ type: 'error', message: `no DSP pipeline for mode ${next.mode}` });
+        }
+      }
+      pipeline?.setVolume(volume);
+      pipeline?.setAudioEnabled(audioEnabled);
       syncPipeline();
     }
   } else if (msg.type === 'volume') {

@@ -23,6 +23,7 @@ const BLOCK: usize = 960;
 const AUDIO_RATE: f64 = 48_000.0;
 /// Budget per block in release. The chain (including the STFT) is far below this on the bench
 /// host; the value is a tripwire for an accidental O(n^2) or per-block allocation.
+#[cfg(not(debug_assertions))]
 const RELEASE_BUDGET_MS: f64 = 8.0;
 
 fn block() -> Vec<f32> {
@@ -40,7 +41,7 @@ fn block() -> Vec<f32> {
 }
 
 fn measure(iterations: usize) -> f64 {
-    let mut chain = default_chain();
+    let mut chain = default_chain(AUDIO_RATE);
     let input = block();
     let mut pcm = AnalogPcm::default();
     for _ in 0..10 {
@@ -80,7 +81,7 @@ fn records_the_per_block_cost_of_the_audio_chain() {
 #[test]
 fn the_chain_does_not_grow_its_state_per_block() {
     // A per-block allocation shows up as steady growth of the chain's own buffers.
-    let mut chain = default_chain();
+    let mut chain = default_chain(AUDIO_RATE);
     let input = block();
     let mut pcm = AnalogPcm::default();
     for _ in 0..200 {

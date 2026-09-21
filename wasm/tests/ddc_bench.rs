@@ -22,6 +22,7 @@ use websa_dsp::ddc::{Ddc, DdcConfig};
 const BLOCK_SAMPLES: usize = 4096;
 /// Budget per block in release: generous (the chain is ~0.2 ms for this block on the bench
 /// host), but far below anything that would sound like a dropout.
+#[cfg(not(debug_assertions))]
 const RELEASE_BUDGET_US: f64 = 2_000.0;
 
 fn block() -> Vec<i16> {

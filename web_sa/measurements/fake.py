@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .base import MeasurementSession
-from .framer import IQ_VERSION, encode_audio, encode_iq, encode_rta
+from .framer import BASEBAND_VERSION, encode_audio, encode_baseband, encode_rta
 
 #: The committed FT8 fixture, replayed when the demod is a digital protocol. The fake backend is the
 #: only place a protocol waveform can come from in CI, and using the real fixture keeps the browser
@@ -35,13 +35,15 @@ SDR_PAN_POINTS = 512
 SDR_AUDIO_RATE = 48000
 SDR_AUDIO_SAMPLES = 960          # 20 ms at 48 kHz, what the real SDR emits
 AUDIO_TONE_HZ = 1000.0
-#: Synthetic IQ block: the browser DSP's input, so the fake backend exercises the same path
-#: as the analyzer (a tone offset from the capture centre, i.e. a signal to tune to).
-SDR_IQ_SAMPLES = 4096
-#: An amplitude-modulated tone inside the DDC's output band, so the analog demodulators and the
-#: audio chain have something real to work on (a bare carrier has no envelope to detect).
-SDR_IQ_TONE_HZ = 8.0e3
-SDR_IQ_MOD_HZ = 1.0e3
+#: Rate of the channelized baseband the fake publishes: what the real backend's DDC produces, and
+#: low enough that the whole demodulator path is exercised at its real rate.
+SDR_BASEBAND_RATE = 48_000.0
+#: One baseband block per acquisition step (85 ms at 48 kHz).
+SDR_BASEBAND_SAMPLES = 4096
+#: The modulation the synthetic baseband carries: a carrier at DC (where the DDC puts the tuned
+#: channel) with an AM envelope, so the analog demodulators and the audio chain have something real
+#: to work on (a bare carrier has no envelope to detect).
+SDR_BASEBAND_MOD_HZ = 1.0e3
 
 
 class _FakeRtaBase(MeasurementSession):
@@ -85,23 +87,22 @@ class _FakeRtaBase(MeasurementSession):
         self._audio_seq += 1
         return encode_audio(self._audio_seq, SDR_AUDIO_RATE, pcm)
 
-    def _iq(self, rate: float, center_hz: float) -> bytes:
-        """One IQ block, interleaved int16, as the IQS stream delivers it.
+    def _baseband(self, rate: float, center_hz: float) -> bytes:
+        """One channelized baseband block, interleaved complex float32, as the DDC produces it.
 
-        For a digital mode this replays the committed FT8 fixture (at the fixture's rate), so the
-        whole browser path — DDC, decoder, UI readout — runs against a real transmission.
+        For a digital mode this replays the committed FT8 fixture (the fixture *is* 48 kHz baseband),
+        so the whole browser path — decoder, UI readout — runs against a real transmission.
         """
         if str(self.dev.state.sdr_demod) == 'ft8':
-            return self._ft8_iq()
-        n = SDR_IQ_SAMPLES
+            return self._ft8_baseband()
+        n = SDR_BASEBAND_SAMPLES
         t = (np.arange(n) + self._tick * n) / max(1.0, rate)
-        ph = 2 * np.pi * SDR_IQ_TONE_HZ * t
-        envelope = 0.25 * (1.0 + 0.5 * np.cos(2 * np.pi * SDR_IQ_MOD_HZ * t))
-        i = (envelope * np.cos(ph) * 32767).astype(np.int16)
-        q = (envelope * np.sin(ph) * 32767).astype(np.int16)
+        envelope = 0.25 * (1.0 + 0.5 * np.cos(2 * np.pi * SDR_BASEBAND_MOD_HZ * t))
+        block = np.empty(n * 2, dtype=np.float32)
+        block[0::2] = envelope          # the carrier sits at DC after the channelizer's mix
+        block[1::2] = 0.0
         self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
-        return encode_iq(IQ_VERSION, self._iq_seq, rate, center_hz,
-                         np.stack([i, q], axis=1).reshape(-1))
+        return encode_baseband(BASEBAND_VERSION, self._iq_seq, rate, center_hz, block)
 
 
 class FakeRtaSession(_FakeRtaBase):
@@ -259,25 +260,25 @@ class FakeSdrSession(_FakeRtaBase):
     _ft8_q: np.ndarray | None = None
     _ft8_pos = 0
 
-    def _ft8_iq(self) -> bytes:
+    def _ft8_baseband(self) -> bytes:
         if FakeSdrSession._ft8_i is None:
             raw = np.frombuffer(FT8_FIXTURE.read_bytes(), dtype='<f4').reshape(-1, 2)
-            scale = 0.25 * 32767.0
-            FakeSdrSession._ft8_i = np.clip(raw[:, 0] * scale, -32768, 32767).astype(np.int16)
-            FakeSdrSession._ft8_q = np.clip(raw[:, 1] * scale, -32768, 32767).astype(np.int16)
+            # The fixture is baseband at unit scale, which is the scale the DDC output arrives in.
+            FakeSdrSession._ft8_i = raw[:, 0].astype(np.float32)
+            FakeSdrSession._ft8_q = raw[:, 1].astype(np.float32)
         i = FakeSdrSession._ft8_i
         q = FakeSdrSession._ft8_q
         slot = int(FT8_IQ_RATE * FT8_SLOT_SECONDS)
         start = FakeSdrSession._ft8_pos
-        position = (np.arange(SDR_IQ_SAMPLES) + start) % slot
+        position = (np.arange(SDR_BASEBAND_SAMPLES) + start) % slot
         inside = position < i.size                       # the transmission occupies the slot's head
         index = np.where(inside, position % i.size, 0)
-        block = np.empty(SDR_IQ_SAMPLES * 2, dtype=np.int16)
-        block[0::2] = np.where(inside, i[index], 0)
-        block[1::2] = np.where(inside, q[index], 0)
-        FakeSdrSession._ft8_pos = (start + SDR_IQ_SAMPLES) % slot
+        block = np.empty(SDR_BASEBAND_SAMPLES * 2, dtype=np.float32)
+        block[0::2] = np.where(inside, i[index], 0.0)
+        block[1::2] = np.where(inside, q[index], 0.0)
+        FakeSdrSession._ft8_pos = (start + SDR_BASEBAND_SAMPLES) % slot
         self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
-        return encode_iq(IQ_VERSION, self._iq_seq, FT8_IQ_RATE, 100.2e6, block)
+        return encode_baseband(BASEBAND_VERSION, self._iq_seq, FT8_IQ_RATE, 100.2e6, block)
 
     def step(self):
         if not self._ready:
@@ -295,6 +296,8 @@ class FakeSdrSession(_FakeRtaBase):
         digital = str(s.sdr_demod) in DIGITAL_DEMODS
         s.sdr_actual = {
             'iq_rate': FT8_IQ_RATE if digital else 62.5e6 / max(1, int(s.sdr_decimate or 16)),
+            # The rate of the channelized baseband this session actually publishes.
+            'ddc_rate': FT8_IQ_RATE if digital else SDR_BASEBAND_RATE,
             'bandwidth': bandwidth, 'iq_center': center,
             'decimate': int(s.sdr_decimate or 16), 'packet_samples': 16240,
             'packet_bytes': 64960, 'pan_points': SDR_PAN_POINTS, 'center': center,
@@ -304,7 +307,7 @@ class FakeSdrSession(_FakeRtaBase):
             'ifgain': s.ifgain, 'ref_clock_source': 0, 'refclk_out': s.refclk_out,
             'listen': float(s.sdr_listen_hz), 'demod': s.sdr_demod,
             'if_bw': float(s.sdr_if_bw), 'ddc_offset': 0.0, 'mix_offset': 0.0,
-            'ddc_decimate': 81, 'ddc_rate': 48225.3, 'ddc_delay': 102, 'ddc_batch': 1,
+            'ddc_decimate': 81, 'ddc_delay': 102, 'ddc_batch': 1,
             'audio_rate': SDR_AUDIO_RATE, 'deemph_us': float(s.sdr_deemph_us),
         }
         s.sdr_level_dbfs = -60.0
@@ -313,6 +316,6 @@ class FakeSdrSession(_FakeRtaBase):
                          center - bandwidth / 2, center + bandwidth / 2)
         frames = [pan]
         if getattr(self.dev, 'iq_clients', 0):
-            frames.append(self._iq(s.sdr_actual['iq_rate'], center))
+            frames.append(self._baseband(s.sdr_actual['ddc_rate'], center))
         frames.append(self._audio())
         return frames, []

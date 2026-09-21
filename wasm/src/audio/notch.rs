@@ -38,18 +38,20 @@ pub struct AdaptiveNotch {
 
 impl Default for AdaptiveNotch {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::audio::DEFAULT_AUDIO_RATE)
     }
 }
 
 impl AdaptiveNotch {
-    pub fn new() -> Self {
+    /// `rate` is the rate the audio runs at (the AudioWorklet's rate): the FFT bin mapping and the
+    /// biquad both depend on it.
+    pub fn new(rate: f64) -> Self {
         let mut window = vec![0.0; FRAME];
         for (k, value) in window.iter_mut().enumerate() {
             *value = 0.5 - 0.5 * (2.0 * core::f64::consts::PI * k as f64 / FRAME as f64).cos();
         }
         let mut notch = Self {
-            rate: 48_000.0,
+            rate: if rate > 0.0 { rate } else { crate::audio::DEFAULT_AUDIO_RATE },
             fft: Fft::new(FRAME),
             window,
             re: vec![0.0; FRAME],
@@ -189,10 +191,6 @@ mod tests {
         (re * re + im * im).sqrt() / wsum
     }
 
-    fn band_rms(values: &[f32]) -> f64 {
-        (values.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
-    }
-
     /// Broadband noise with one strong tone at `tone_hz`.
     fn noise_plus_tone(n: usize, tone_hz: f64) -> Vec<f32> {
         let mut seed = 999_u32;
@@ -229,7 +227,7 @@ mod tests {
     #[test]
     fn a_single_tone_is_notched_out_without_taking_the_channel_with_it() {
         let input = noise_plus_tone(24_000, 1_000.0);
-        let mut notch = AdaptiveNotch::new();
+        let mut notch = AdaptiveNotch::new(RATE);
         let mut out = Vec::new();
         notch.process_into(&input, false, &mut out);
 
@@ -261,7 +259,7 @@ mod tests {
                     + 0.15 * (2.0 * PI * 3_000.0 * k as f64 / RATE).sin()) as f32
             })
             .collect();
-        let mut notch = AdaptiveNotch::new();
+        let mut notch = AdaptiveNotch::new(RATE);
         let mut out = Vec::new();
         notch.process_into(&input, false, &mut out);
         let wanted = amplitude_at(&out, 3_000.0) / amplitude_at(&input, 3_000.0);
@@ -285,7 +283,7 @@ mod tests {
                 ((state >> 40) as f64 / 16_777_216.0 - 0.5) as f32 * 0.2
             })
             .collect();
-        let mut notch = AdaptiveNotch::new();
+        let mut notch = AdaptiveNotch::new(RATE);
         let mut out = Vec::new();
         notch.process_into(&input, false, &mut out);
         assert_eq!(notch.frequency_hz(), 0.0, "noise must not be treated as a tone");
@@ -294,7 +292,7 @@ mod tests {
 
     #[test]
     fn the_output_keeps_the_block_length() {
-        let mut notch = AdaptiveNotch::new();
+        let mut notch = AdaptiveNotch::new(RATE);
         let mut out = Vec::new();
         for size in [1_usize, 960, 4096] {
             notch.process_into(&noise_plus_tone(size, 1_000.0), false, &mut out);

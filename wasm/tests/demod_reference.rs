@@ -9,8 +9,13 @@
 //!
 //! The table is the coverage contract: adding a mode to the registry without a fixture here leaves
 //! the previous `every_mode_in_the_registry_has_a_reference_fixture` test failing.
-use websa_dsp::analog::{build, AUDIO_RATE};
+use websa_dsp::analog::{build, DEFAULT_AUDIO_RATE as AUDIO_RATE};
 use websa_dsp::plugin::{AnalogDemodulator, DemodConfig};
+
+/// Build a demodulator that produces audio at the reference rate (every fixture is 48 kHz).
+fn build_at(id: &str, config: DemodConfig) -> Option<websa_dsp::analog::AnalogDemod> {
+    build(id, config, AUDIO_RATE)
+}
 
 const AM_IQ: &[u8] = include_bytes!("../../tests/fixtures/dsp/demod_am_iq.bin");
 const AM_AUDIO: &[u8] = include_bytes!("../../tests/fixtures/dsp/demod_am.bin");
@@ -126,7 +131,7 @@ fn cross_check(case: &Case) -> Result<f64, String> {
 
     let mut config = DemodConfig::new(FS, case.if_bw);
     config.pitch = PITCH;
-    let Some(mut demod) = build(case.mode, config) else {
+    let Some(mut demod) = build_at(case.mode, config) else {
         return Err(format!("{}: no kernel", case.mode));
     };
     let mut audio = Vec::new();

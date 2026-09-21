@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Hardware-in-the-loop audio check: real IQ from the analyzer, measured through the browser DSP.
+"""Hardware-in-the-loop audio check: the analyzer's channelized baseband, measured through the browser DSP.
 
-The DSP moved into the browser, so the verification that matters is on real hardware: point the
-analyzer at a signal from the TinySA, capture the raw IQ the browser receives, run it through the
+The demodulator lives in the browser, so the verification that matters is on real hardware: point the
+analyzer at a signal from the TinySA, capture the channelized baseband the browser receives (the
+DDC's output, exactly the samples the Python demodulator would consume), run it through the
 *committed* WASM artifact, and measure the demodulated audio (SINAD and THD at the mode's expected
 tone). The measurement runs in Node through the same TypeScript wrapper the worker uses, so what is
 measured is the artifact that ships, not a re-implementation.
@@ -32,7 +33,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.hardware_smoke import TinySaSource, safe_tinysa_level  # noqa: E402
 
-IQ_HEADER = struct.Struct('<4sIIIdd')     # magic, ver, seq, samples, rate, center
+BASEBAND_HEADER = struct.Struct('<4sIIIdd')   # magic, ver, seq, samples, rate, center
 
 
 async def command(session: aiohttp.ClientSession, url: str, payload: dict) -> dict:
@@ -81,13 +82,16 @@ def configure_tinysa(
 
 
 async def capture(url: str, seconds: float) -> tuple[np.ndarray, float, float, dict]:
-    """Collect IQDF frames from the `?iq=1` socket for `seconds`.
+    """Collect IQBF frames (the channelized baseband) from the `?iq=1` socket for `seconds`.
 
-    Only a *contiguous* run is usable for a measurement: IQ is a continuous signal, so a dropped
-    frame is a phase discontinuity, and a demodulator fed one produces broadband splatter that
-    looks like terrible SINAD while the tone is perfectly fine. Frames are therefore tracked by
-    sequence number, split into runs at every gap, and the longest run is returned (with the gap
-    count reported) instead of blindly concatenating whatever arrived.
+    Only a *contiguous* run is usable for a measurement: a dropped frame is a phase discontinuity,
+    and a demodulator fed one produces broadband splatter that looks like terrible SINAD while the
+    tone is perfectly fine. Frames are therefore tracked by sequence number, split into runs at
+    every gap, and the longest run is returned (with the gap count reported) instead of blindly
+    concatenating whatever arrived.
+
+    What arrives is the DDC's output — the same samples the Python demodulator consumes — so the
+    capture can be re-measured through the shipped WASM demodulator offline.
     """
     runs: list[list[np.ndarray]] = []
     current: list[np.ndarray] = []
@@ -110,10 +114,11 @@ async def capture(url: str, seconds: float) -> tuple[np.ndarray, float, float, d
                 if message.type != aiohttp.WSMsgType.BINARY:
                     continue
                 data = message.data
-                if len(data) < IQ_HEADER.size or data[:4] != b'IQDF':
+                if len(data) < BASEBAND_HEADER.size or data[:4] != b'IQBF':
                     continue
-                _magic, _ver, seq, samples, rate, center = IQ_HEADER.unpack_from(data, 0)
-                payload = np.frombuffer(data, dtype='<i2', count=samples * 2, offset=IQ_HEADER.size)
+                _magic, _ver, seq, samples, rate, center = BASEBAND_HEADER.unpack_from(data, 0)
+                payload = np.frombuffer(data, dtype='<f4', count=samples * 2,
+                                        offset=BASEBAND_HEADER.size)
                 frames += 1
                 if seq == 0 or (last_seq is not None and seq != (last_seq + 1) & 0xFFFFFFFF):
                     # seq == 0 is the stream's own flush marker; anything else is a gap.
@@ -123,11 +128,11 @@ async def capture(url: str, seconds: float) -> tuple[np.ndarray, float, float, d
                     if seq != 0 and last_seq is not None:
                         gaps += 1
                 last_seq = seq
-                current.append(payload.astype(np.int16))
+                current.append(payload.astype(np.float32))
     if current:
         runs.append(current)
     if not runs:
-        raise SystemExit('no IQ arrived: is the service in SDR mode with the DSP socket open?')
+        raise SystemExit('no baseband arrived: is the service in SDR mode with the DSP socket open?')
     longest = max(runs, key=len)
     stats = {
         'frames': frames,
@@ -169,16 +174,17 @@ async def run(args) -> int:
             'pitch': args.pitch, 'volume': 1.0, 'squelch': -140.0, 'agc': True,
         })
         await asyncio.sleep(2.0)                     # let the stream and the settle window pass
-        iq, rate, center, stats = await capture(url, args.seconds)
+        baseband, rate, center, stats = await capture(url, args.seconds)
         await command(session, url, {'cmd': 'SET_MODE', 'mode': 'std'})
 
     iq_path = Path(args.out).with_suffix('.iq')
-    iq_path.write_bytes(iq.tobytes())
+    iq_path.write_bytes(baseband.tobytes())
     meta = {
-        'note': 'Captured by tools/hil_audio_check.py from the SAN-90 IQ stream; measured by '
-                'frontend/modern/src/__tests__/hil.test.ts through the committed dsp.wasm.',
+        'note': 'Captured by tools/hil_audio_check.py from the SAN-90 channelized baseband '
+                '(IQBF); measured by frontend/modern/src/__tests__/hil.test.ts through the '
+                'committed dsp.wasm.',
         'iq_file': iq_path.name,
-        'samples': int(iq.size // 2),
+        'samples': int(baseband.size // 2),
         'fs_in': float(rate),
         'center_hz': float(center),
         'mode': demod_mode,
@@ -188,12 +194,11 @@ async def run(args) -> int:
         'mod_freq_hz': float(args.mod_freq),
         'expected_tone_hz': float(args.mod_freq) if args.modulation in ('am', 'fm') else float(args.pitch),
         'out_rate': 48_000.0,
-        'decimate': max(1, int(rate // (48_000 * 4))) if rate > 0 else 1,
         'tiny_sa_hz': float(args.frequency),
         'capture': stats,
     }
     Path(args.out).write_text(json.dumps(meta, indent=1, sort_keys=True) + '\n')
-    print(f'captured {meta["samples"]} complex samples at {rate/1e6:.4f} MSps -> {args.out}')
+    print(f'captured {meta["samples"]} baseband samples at {rate/1e3:.2f} kSps -> {args.out}')
     print(f'capture integrity: {stats["frames"]} frames, {stats["gaps"]} gap(s), '
           f'longest contiguous run {stats["run_frames"]} frames / {stats["run_samples"]} samples')
     print(f'measure with: WEBSA_HIL_IQ={args.out} npx vitest run src/__tests__/hil.test.ts')

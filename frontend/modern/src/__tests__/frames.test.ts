@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { decodeFrame, frameMagic, MAGIC_AUDIO, MAGIC_FREQ, MAGIC_IQ, MAGIC_POWR, MAGIC_RTAF } from '../core/frames';
+import { decodeFrame, frameMagic, MAGIC_AUDIO, MAGIC_BASEBAND, MAGIC_FREQ, MAGIC_POWR, MAGIC_RTAF } from '../core/frames';
 
 // vitest runs with the frontend package as cwd; the fixtures live at the repository root.
 const DIR = resolve(process.cwd(), '..', '..', 'tests', 'fixtures', 'frames') + '/';
@@ -23,7 +23,7 @@ const manifest = JSON.parse(readFileSync(`${DIR}manifest.json`, 'utf8')) as {
 		start_hz: number; stop_hz: number; freq: number[]; spec: number[]; wf_row: number[];
 	};
 	audio: { seq: number; rate: number; pcm: number[] };
-	iq: {
+	baseband: {
 		version: number; seq: number; samples: number; rate: number; center_hz: number; iq: number[];
 	};
 };
@@ -81,18 +81,20 @@ describe('decodeFrame', () => {
 		expect(Array.from(f.pcm)).toEqual(manifest.audio.pcm);
 	});
 
-	it('decodes IQDF (interleaved int16 IQ)', () => {
-		const f = decodeFrame(bytes('iq.bin'));
-		expect(f?.kind).toBe('iq');
-		if (f?.kind !== 'iq') return;
-		expect(f.version).toBe(manifest.iq.version);
-		expect(f.seq).toBe(manifest.iq.seq);
-		expect(f.samples).toBe(manifest.iq.samples);
-		expect(f.rate).toBeCloseTo(manifest.iq.rate, 6);
-		expect(f.centerHz).toBeCloseTo(manifest.iq.center_hz, 6);
-		// `iq` holds 2 int16 per complex sample, so the view is twice the declared count.
-		expect(f.iq.length).toBe(manifest.iq.samples * 2);
-		expect(Array.from(f.iq)).toEqual(manifest.iq.iq);
+	it('decodes IQBF (interleaved complex float32 baseband)', () => {
+		const f = decodeFrame(bytes('baseband.bin'));
+		expect(f?.kind).toBe('baseband');
+		if (f?.kind !== 'baseband') return;
+		expect(f.version).toBe(manifest.baseband.version);
+		expect(f.seq).toBe(manifest.baseband.seq);
+		expect(f.samples).toBe(manifest.baseband.samples);
+		expect(f.rate).toBeCloseTo(manifest.baseband.rate, 6);
+		expect(f.centerHz).toBeCloseTo(manifest.baseband.center_hz, 6);
+		// `iq` holds 2 float32 per complex sample, so the view is twice the declared count.
+		expect(f.iq.length).toBe(manifest.baseband.samples * 2);
+		for (let i = 0; i < f.iq.length; i++) {
+			expect(f.iq[i]).toBeCloseTo(manifest.baseband.iq[i], 7);
+		}
 	});
 
 	it('reports the magic of each frame', () => {
@@ -100,7 +102,7 @@ describe('decodeFrame', () => {
 		expect(frameMagic(bytes('powr.bin'))).toBe(MAGIC_POWR);
 		expect(frameMagic(bytes('rta.bin'))).toBe(MAGIC_RTAF);
 		expect(frameMagic(bytes('audio.bin'))).toBe(MAGIC_AUDIO);
-		expect(frameMagic(bytes('iq.bin'))).toBe(MAGIC_IQ);
+		expect(frameMagic(bytes('baseband.bin'))).toBe(MAGIC_BASEBAND);
 	});
 
 	it('rejects truncated and mis-sized frames instead of guessing', () => {
@@ -115,9 +117,9 @@ describe('decodeFrame', () => {
 		const audio = new Uint8Array(bytes('audio.bin'));
 		expect(decodeFrame(audio.slice(0, audio.length - 2).buffer)).toBeNull(); // odd sample tail
 
-		const iq = new Uint8Array(bytes('iq.bin'));
-		expect(decodeFrame(iq.slice(0, 16).buffer)).toBeNull();                  // < IQ header
-		expect(decodeFrame(iq.slice(0, iq.length - 2).buffer)).toBeNull();       // one IQ pair short
+		const baseband = new Uint8Array(bytes('baseband.bin'));
+		expect(decodeFrame(baseband.slice(0, 16).buffer)).toBeNull();            // < baseband header
+		expect(decodeFrame(baseband.slice(0, baseband.length - 4).buffer)).toBeNull();  // one I/Q short
 	});
 
 	it('ignores unknown magics and empty buffers', () => {

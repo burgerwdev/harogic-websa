@@ -178,7 +178,7 @@ export function connectWS() {
     // Audio and IQ each have their own connection (this socket sends noaudio=1&noiq=1), so a
     // frame of either kind here is stale or mis-routed; treating it as display data would
     // feed the renderer a buffer with a different header layout.
-    if (frame === null || frame.kind === 'audio' || frame.kind === 'iq') return;
+    if (frame === null || frame.kind === 'audio' || frame.kind === 'baseband') return;
     const { points } = frame;
     if (frame.kind !== 'rta' && frame.sweepMs > 0 && frame.sweepMs !== S.sweepMs) {
       S.setSweepMs(frame.sweepMs);
