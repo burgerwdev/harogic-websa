@@ -17,6 +17,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.reportCountdown = 0;
     this.underruns = 0;
     this.received = 0;
+    this.resets = 0;
     this.port.onmessage = (event) => {
       const message = event.data || {};
       if (message.type === 'samples' && message.samples) {
@@ -39,6 +40,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   }
 
   reset() {
+    this.resets++;
     this.tailGain = this.fade;
     this.writePos = 0;
     this.available = 0;
@@ -97,6 +99,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         available: this.available,
         underruns: this.underruns,
         received: this.received,
+        resets: this.resets,
       });
     }
     return true;

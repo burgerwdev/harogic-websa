@@ -367,6 +367,17 @@ def main() -> int:
         received = int(m.group(1)) if (m := re.search(r'dsp_received=(\d+)', iq_dbg)) else 0
         underruns = int(m.group(1)) if (m := re.search(r'dsp_underruns=(\d+)', iq_dbg)) else -1
         check('the worklet is fed by the browser DSP', received > 0, iq_dbg)
+        delivered = int(m.group(1)) if (m := re.search(r'dsp_delivered=(\d+)', iq_dbg)) else 0
+        # The reported bug was "produced but never heard": the DSP handed PCM over and the ring
+        # stayed empty. Comparing handed-over against pushed-in is that invariant, exactly.
+        # `received` comes from the worklet's status message, which is up to one reporting window
+        # (0.25 s of audio) behind `delivered`, so a tenth of slack is expected and enough to catch
+        # the reported failure, where the ring stayed empty while the DSP kept handing audio over.
+        check('every delivered sample reaches the worklet ring',
+              delivered > 0 and received >= delivered * 0.9,
+              f'delivered={delivered} received={received}')
+        # A delivery that throws used to be invisible while the counters kept climbing.
+        check('audio delivery did not fail', 'dsp_error=' not in iq_dbg, iq_dbg)
         # Ring health is reported, not asserted: the fake backend delivers IQ slower than real
         # time, so the DSP correctly produces audio below 48 kHz and the ring drains - a real
         # analyzer feeds it at real time (verified on the bench: underruns stay 0 there).

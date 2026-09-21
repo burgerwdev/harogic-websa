@@ -29,6 +29,14 @@ let ft8Messages = 0;
 let workletAvailable = 0;
 let workletUnderruns = 0;
 let workletReceived = 0;
+/// The last failure seen while handing PCM to the worklet ('' when it is fine).
+let workletError = '';
+let workletRingResets = 0;
+/// PCM waiting for a full delivery block, and the block size (20 ms at the output rate).
+let pendingPcm: Float32Array[] = [];
+let pendingSamples = 0;
+let pcmBlockSamples = 960;
+let deliveredSamples = 0;
 /// Diagnostics: how often the digital pipeline was (re)built and fed, and how full its decoder
 /// buffer is. A buffer that keeps restarting looks exactly like a quiet band from the outside.
 let digitalCreates = 0;
@@ -68,6 +76,7 @@ function postStats(): void {
     pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
     ft8Messages, digitalCreates, digitalPushes, digitalBuffered, digitalResets,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
+    workletError, workletRingResets, pcmPending: pendingSamples, deliveredSamples,
   });
 }
 
@@ -120,16 +129,44 @@ function syncPipeline(): void {
   postStats();
 }
 
+/**
+ * Hand PCM to the worklet in ~20 ms blocks.
+ *
+ * The pipeline emits a small block per IQ frame (a few ms), but the worklet only resumes after an
+ * underrun once it holds 20 ms - so a stream of tiny bursts made the ring oscillate around zero
+ * (measured: available 75..3946 samples with ~1 underrun/s) and every underrun is an audible
+ * fade-out/re-prime, i.e. the reported periodic puffing. The Python path always sent 20 ms frames
+ * for the same reason. Batching costs at most one block of latency.
+ */
 function deliver(pcm: Float32Array): void {
   if (pcm.length === 0) return;
-  pcmFrames++;
-  pcmSamples += pcm.length;
   let sum = 0;
   for (let index = 0; index < pcm.length; index++) sum += pcm[index] * pcm[index];
   rms = Math.sqrt(sum / pcm.length);
-  if (workletPort) {
-    // Transferred, so the audio thread never waits for a copy.
-    workletPort.postMessage({ type: 'samples', samples: pcm }, [pcm.buffer]);
+  pcmFrames++;
+  pcmSamples += pcm.length;
+  if (!workletPort) return;                          // produced, but nobody to hand it to
+  pendingPcm.push(pcm);
+  pendingSamples += pcm.length;
+  if (pendingSamples < pcmBlockSamples) return;
+  const block = new Float32Array(pendingSamples);
+  let offset = 0;
+  for (const part of pendingPcm) {
+    block.set(part, offset);
+    offset += part.length;
+  }
+  pendingPcm = [];
+  pendingSamples = 0;
+  deliveredSamples += block.length;
+  // Transferred, so the audio thread never waits for a copy. A failure here used to be silent: the
+  // counters keep climbing while nothing reaches the ring, which is exactly the "produced but
+  // never heard" shape, so it is recorded and published.
+  try {
+    workletPort.postMessage({ type: 'samples', samples: block }, [block.buffer]);
+    workletError = '';
+  } catch (error) {
+    workletError = String((error as Error)?.message || error);
+    post({ type: 'error', message: `audio delivery failed: ${workletError}` });
   }
 }
 
@@ -237,12 +274,16 @@ self.onmessage = (event: MessageEvent) => {
       digital?.free();
       digital = null;
       digitalGeometry = '';
+      pendingPcm = [];
+      pendingSamples = 0;
     }
     syncPipeline();
     postStats();
   } else if (msg.type === 'configure') {
     const next = msg.params as PipelineParams;
     if (next && Number(next.fsIn) > 0) {
+      // 20 ms at the output rate: the worklet's own re-prime threshold.
+      pcmBlockSamples = Math.max(128, Math.round(Number(next.outRate) * 0.02));
       const geometryChanged =
         !params ||
         params.mode !== next.mode ||
@@ -274,6 +315,7 @@ self.onmessage = (event: MessageEvent) => {
         workletAvailable = Number(status.available) || 0;
         workletUnderruns = Number(status.underruns) || 0;
         workletReceived = Number(status.received) || 0;
+        workletRingResets = Number(status.resets) || 0;
       };
       workletPort.start();
       workletPort.postMessage({ type: 'enabled', value: enabled });
@@ -282,6 +324,8 @@ self.onmessage = (event: MessageEvent) => {
     resetStream();
   } else if (msg.type === 'detach') {
     workletPort = null;
+    pendingPcm = [];
+    pendingSamples = 0;
   }
 };
 

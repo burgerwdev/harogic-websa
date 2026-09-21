@@ -40,6 +40,10 @@ let dspOwnsWorklet = false;
 let dspWorkletAvailable = 0;
 let dspWorkletUnderruns = 0;
 let dspWorkletReceived = 0;
+let dspError = '';
+let dspRingResets = 0;
+let dspPending = 0;
+let dspDelivered = 0;
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -61,7 +65,9 @@ function publishIqDebug(): void {
       ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '') +
       ` fallback=${fallbackReason} ft8=${ft8Count} dsp_worklet=${dspOwnsWorklet ? 1 : 0}` +
       ` dsp_avail=${dspWorkletAvailable} dsp_underruns=${dspWorkletUnderruns}` +
-      ` dsp_received=${dspWorkletReceived}` + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
+      ` dsp_delivered=${dspDelivered} dsp_received=${dspWorkletReceived}` +
+      ` dsp_pending=${dspPending} dsp_ring_resets=${dspRingResets}` +
+      (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
 }
 
@@ -76,6 +82,10 @@ function startWorker(): void {
     worker = null;
     return;
   }
+  worker.onerror = (event: ErrorEvent) => {
+    dspError = `worker: ${event.message || 'error'}`;
+    publishIqDebug();
+  };
   worker.onmessage = (event: MessageEvent) => {
     const d = (event.data || {}) as Record<string, any>;
     if (d.type === 'error') {
@@ -103,6 +113,10 @@ function startWorker(): void {
     if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;
     if (typeof d.workletUnderruns === 'number') dspWorkletUnderruns = d.workletUnderruns;
     if (typeof d.workletReceived === 'number') dspWorkletReceived = d.workletReceived;
+    if (typeof d.workletError === 'string') dspError = d.workletError;
+    if (typeof d.workletRingResets === 'number') dspRingResets = d.workletRingResets;
+    if (typeof d.pcmPending === 'number') dspPending = d.pcmPending;
+    if (typeof d.deliveredSamples === 'number') dspDelivered = d.deliveredSamples;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
     pipelineReady = Boolean(d.pipeline);
