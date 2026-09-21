@@ -30,9 +30,29 @@ let dropped = 0;
 let pushes = 0;
 /// Frames dropped because they queued up behind a decode attempt and went stale.
 let skipped = 0;
-/// How old a queued frame may be before it is useless: a slot, past which the decoder's buffer has
-/// moved on anyway.
-const MAX_FRAME_AGE_MS = 16_000;
+/// Decode attempts made (one per UTC slot, which is the point of the slot clock below).
+let attempts = 0;
+/// Baseband accumulated for the slot being filled, and how much of it is real.
+let slotBuffer = new Float32Array(0);
+let slotFilled = 0;
+/// Wall-clock anchor: the sample index and the time it corresponded to.
+let anchorSamples = -1;
+let anchorMs = 0;
+let samplesSeen = 0;
+/// The UTC slot the buffer belongs to (`floor(ms / 15000)`), or -1 before the first frame.
+let slotIndex = -1;
+/// How much of the *next* slot to include before decoding.
+///
+/// FT8 transmissions are UTC-slot aligned (:00, :15, :30, :45) and run for 12.64 s of the 15 s
+/// slot, so decoding a *slot-aligned* window is exact: the transmission is inside it, and the
+/// decoder's scan of start positions covers it. The rolling window this replaces could only examine
+/// the first 2.4 s of a 15 s buffer (a transmission has to fit after its start), so a transmission
+/// whose start fell anywhere else was skipped - and one attempt to cover each start takes a whole
+/// stream-slot each, which is how "waiting for a decode" happened while a phone decoded the same
+/// audio. The margin after the slot end absorbs the clock's own error and the analyzer's timing.
+const SLOT_MS = 15_000;
+const TRANSMISSION_MS = 12_640;
+const SLOT_TAIL_MS = 400;
 
 function post(msg: Record<string, unknown>): void {
   (self as unknown as { postMessage: (m: unknown) => void }).postMessage(msg);
@@ -59,29 +79,6 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'socket') {
     // A reconnect (the audio worker watches its own socket; this one does the same).
     if (!ws) connect();
-  } else if (msg.type === 'frame') {
-    if (!enabled || !pipeline || !(msg.iq instanceof Float32Array)) return;
-    // (Kept for a caller that feeds frames directly; the socket path above is the product one.)
-    // A decode attempt blocks this thread for seconds (the band search plus the LDPC stage), during
-    // which the audio worker keeps sending the live stream. Feeding that backlog would only make the
-    // decoder fall further behind - it would fill a slot again and start another attempt immediately -
-    // and the decoder is a live listener, not an archive: audio older than a slot is dropped.
-    const at = Number(msg.at) || 0;
-    if (at > 0 && Date.now() - at > MAX_FRAME_AGE_MS) {
-      skipped += 1;
-      if (skipped % 50 === 1) post({ type: 'ft8-stats', pushes, buffered: pipeline.buffered(), decodes: pipeline.count(), skipped });
-      return;
-    }
-    pushes += 1;
-    const decoded = pipeline.push(msg.iq as Float32Array);
-    post({
-      type: 'ft8-stats',
-      pushes: pushes,
-      buffered: pipeline.buffered(),
-      decodes: pipeline.count(),
-      skipped,
-    });
-    if (decoded) post({ type: 'ft8', ...decoded, centerHz: msg.centerHz, count: decoded.count });
   } else if (msg.type === 'stop') {
     pipeline?.free();
     pipeline = null;
@@ -124,31 +121,54 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
   if (!enabled || !pipeline || frame.iq.length === 0) return;
-  // Keep only the newest slot's worth of baseband.
-  //
-  // A decode attempt blocks this thread, so frames that arrive during it queue up; when the backlog
-  // reaches a couple of slots the decoder is working on a transmission that has already ended, and it
-  // never catches up (measured: the push counter froze for ~30 s at a time, one slot's worth of frames
-  // arriving in a burst, and the UI sat on "waiting for a decode" all the while). FT8 slots are
-  // independent, so the lazy correct answer is to drop the stale ones and decode the newest: at worst
-  // one slot is torn, instead of every slot being unreadable. The buffer is bounded to a little over a
-  // slot, so the frames dropped here are ones no decode could have used anyway.
-  // `buffered()` counts *complex* samples, so a slot is 15 s of them at the baseband rate.
-  const budget = params ? params.fsIn * 15 * 1.5 : 0;
-  if (budget > 0 && pipeline.buffered() > budget) {
-    skipped += 1;
-    pipeline.reset();
+  const rate = params ? params.fsIn : 0;
+  const complex = frame.iq.length / 2;
+  // The slot clock, from the wall clock anchored on the first frame and advanced by the samples
+  // actually received. A gap (a reconnect, a tuning change) re-anchors, because the samples that
+  // were missed cannot be invented.
+  if (anchorSamples < 0 || frame.seq === 0) {
+    anchorSamples = 0;
+    anchorMs = Date.now();
+    samplesSeen = 0;
   }
-  const decoded = pipeline.push(frame.iq);
+  samplesSeen += complex;
+  const nowMs = anchorMs + (rate > 0 ? (samplesSeen * 1000) / rate : 0);
+  const wanted = Math.floor(nowMs / SLOT_MS);
+  if (slotIndex < 0) {
+    slotIndex = wanted;
+    slotFilled = 0;
+  }
+  if (wanted !== slotIndex) {
+    // The slot ended: decode what was collected for it (a full slot and the start of the next one,
+    // which is the tail a transmission's own start jitter can fall into).
+    const ready = slotFilled >= Math.floor((rate * TRANSMISSION_MS) / 1000) * 2;
+    if (ready) {
+      attempts += 1;
+      const decoded = pipeline.push(slotBuffer.subarray(0, slotFilled));
+      if (decoded) post({ type: 'ft8', ...decoded, centerHz: frame.centerHz, count: decoded.count });
+      // The next slot starts from an empty buffer: FT8 slots are independent.
+      pipeline.reset();
+    }
+    slotIndex = wanted;
+    slotFilled = 0;
+  }
+  // The window runs one slot plus the tail, so a transmission that starts a little late is inside.
+  const capacity = Math.ceil((rate * (SLOT_MS + SLOT_TAIL_MS)) / 1000) * 2;
+  if (slotBuffer.length !== capacity) slotBuffer = new Float32Array(capacity);
+  if (slotFilled + frame.iq.length <= slotBuffer.length) {
+    slotBuffer.set(frame.iq, slotFilled);
+    slotFilled += frame.iq.length;
+  }
+  pushes += 1;
   post({
     type: 'ft8-stats',
-    pushes: pushes,
+    pushes,
     buffered: pipeline.buffered(),
     decodes: pipeline.count(),
     dropped,
     skipped,
+    attempts,
   });
-  if (decoded) post({ type: 'ft8', ...decoded, centerHz: frame.centerHz, count: decoded.count });
 }
 
 /** (Re)build the decoder for the current parameters. */
