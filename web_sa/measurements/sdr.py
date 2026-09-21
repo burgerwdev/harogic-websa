@@ -46,6 +46,21 @@ ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no'
 # mismatch lets it overrun an internal buffer (corrupting the process heap).
 VFFT_ENABLED = os.getenv('WEBSA_SDR_FFT', '1').lower() not in ('0', 'false', 'no', 'off')
 
+# Per-phase step timing (WEBSA_SDR_TIME=1): where does the per-packet budget go?
+#
+# The SDR loop must finish one IQS packet inside the packet's own period (about 1 ms at a 15.6 MSps
+# capture), and the phases have different answers: the vendor DDC is native, the marshalling is numpy
+# copies, the panadapter is an FFT. This exists to say which one to optimize instead of guessing.
+_TIME_ENABLED = os.getenv('WEBSA_SDR_TIME', '').lower() not in ('', '0', 'false', 'no', 'off')
+
+
+def _time_phases(enabled: bool, phases: dict, steps: int) -> None:
+    if not enabled or steps <= 0:
+        return
+    log.info('SDR step timing (mean of %d steps): %s', steps,
+             ' '.join(f'{name}={ms / steps:.2f}ms' for name, ms in phases.items()))
+
+
 # Staged tracing for native-crash diagnosis. Enable with WEBSA_TRACE=1. It walks the SDR
 # configuration pipeline step by step so that the last line before a native abort names
 # the offending SDK call. Per-frame calls use _tn(), which logs only the first few hits.
@@ -980,6 +995,8 @@ class SdrSession(MeasurementSession):
         if not self._ready:
             return [], []
         now = time.monotonic()
+        _t_phase = time.perf_counter()
+        _t_phases = {}
         frames = []
         import ctypes as C
 
@@ -1007,6 +1024,9 @@ class SdrSession(MeasurementSession):
             except Exception as exc:
                 self._step_failed_locked('get exception', repr(exc))
                 return [], []
+            if _TIME_ENABLED:
+                _t_phases['fetch'] = _t_phases.get('fetch', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                _t_phase = time.perf_counter()
             if st != 0:
                 self._last_status = int(st)
                 self._packets_err += 1
@@ -1092,6 +1112,9 @@ class SdrSession(MeasurementSession):
             if now - self._last_pan >= self.PAN_MIN_INTERVAL:
                 # Rate-limit first: a failed vendor frame must not become a busy retry.
                 self._last_pan = now
+                if _TIME_ENABLED:
+                    _t_phases['pre_pan'] = _t_phases.get('pre_pan', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                    _t_phase = time.perf_counter()
                 vendor = self._vendor_spectrum_locked(stream, arr)
                 if vendor is not None:
                     freq, spec = vendor
@@ -1114,10 +1137,16 @@ class SdrSession(MeasurementSession):
                     frames.append(encode_rta(dev.state.freq_version, freq, spec, row,
                                               65535, s.sdr_actual['start'],
                                               s.sdr_actual['stop']))
+                if _TIME_ENABLED:
+                    _t_phases['panadapter'] = _t_phases.get('panadapter', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                    _t_phase = time.perf_counter()
 
             # ---- channelizer + demod ----
             try:
                 i, q = self._ddc.process(src, n)  # pass the ctypes buffer directly
+                if _TIME_ENABLED:
+                    _t_phases['ddc'] = _t_phases.get('ddc', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                    _t_phase = time.perf_counter()
             except (RuntimeError, ValueError) as exc:
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
@@ -1143,6 +1172,9 @@ class SdrSession(MeasurementSession):
                     baseband[1::2] = q
                     frames.append(encode_baseband(BASEBAND_VERSION, self._iq_seq,
                                                   self._baseband_rate(), s.sdr_listen_hz, baseband))
+                    if _TIME_ENABLED:
+                        _t_phases['publish_encode'] = _t_phases.get('publish_encode', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                        _t_phase = time.perf_counter()
             # Arm the settle window BEFORE the demod so the AGC is held while the chain
             # transient is discarded; otherwise it winds up on audio that is never
             # published and the first real block comes out far too loud.
@@ -1166,6 +1198,9 @@ class SdrSession(MeasurementSession):
                 self._reconfigure_chain_runtime_locked()
             audio, power_dbfs = self._demod.process(
                 i, q, use_agc=s.sdr_agc, agc_hold=settling)
+            if _TIME_ENABLED:
+                _t_phases['python_demod'] = _t_phases.get('python_demod', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                _t_phase = time.perf_counter()
             if audio.size and now < self._discard_until:
                 audio = np.zeros(0, dtype=np.float32)   # discard the settling transient
             elif audio.size and now < self._fade_until:

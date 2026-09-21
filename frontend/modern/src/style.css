@@ -236,6 +236,9 @@ select:disabled { color: var(--label); }
 .gnss-indicator { cursor: pointer; }
 .gnss-indicator:hover { text-decoration: underline; }
 .ft8-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* The hint row carries the level readout on the right (it is status, not a control). */
+.sdr-hint-row { display: flex; align-items: center; gap: 8px; }
+.sdr-hint-row #cur-sdr-level { font-family: 'Courier New', monospace; white-space: nowrap; }
 /* FT8 decode window: a floating table (draggable by its head, resizable by its corner). */
 .ft8-window {
   position: fixed; z-index: 45; display: none; flex-direction: column;

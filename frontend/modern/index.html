@@ -285,8 +285,7 @@
                 <button class="btn" data-sdr-deemph="300">300µs</button>
               </div></div>
             <div class="param-row"><label data-i18n="volume">Volume</label>
-              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" value="0.8" style="flex:1;">
-              <span class="cur-val" id="cur-sdr-level"></span>
+              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
               <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
             <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
@@ -298,7 +297,12 @@
                 <option value="0.6" selected data-i18n="nr_medium">Medium</option>
                 <option value="1" data-i18n="nr_strong">Strong</option>
               </select></div>
-            <div class="param-row"><span class="cur-val" style="opacity:.6;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span></div>
+            <div class="param-row sdr-hint-row">
+              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span>
+              <!-- The level readout sits with the hint: the volume row is cramped and the level is a
+                   status, not a control. -->
+              <span class="cur-val" id="cur-sdr-level"></span>
+            </div>
           </div>
         </div>
       </div>
