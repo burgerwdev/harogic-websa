@@ -1188,6 +1188,9 @@ class SdrSession(MeasurementSession):
             self._measure_baseband_rate(i.size, now)
             if getattr(dev, 'iq_clients', 0):
                 if self._iq_reset_pending:
+                    # Logged: a flush drops the browser's playback buffer and re-primes it, which is
+                    # audible. A periodic one has to be attributable, not guessed at.
+                    log.info('SDR: baseband flush -> the client drops and re-primes its audio')
                     frames.append(encode_baseband(
                         BASEBAND_VERSION, 0, self._baseband_rate(), s.sdr_listen_hz,
                         np.zeros(0, dtype=np.float32)))

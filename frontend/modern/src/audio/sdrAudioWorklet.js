@@ -31,16 +31,29 @@ const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
-/// How long the fill is observed before the producer/sink ratio is re-estimated.
+/// How often the fill's window mean is compared against its band.
+const FILL_WINDOW_S = 10;
+/// Target fill (the ring's occupancy the listener is meant to hear through).
+const FILL_TARGET_S = 0.3;
+/// The proportional gain, expressed as "a fill error this large asks for a full step" (seconds): a
+/// proportional loop parks the fill `offset / gain` from the target, and this keeps that within the
+/// band for the residual this stage is sized for.
+const FILL_ERROR_FOR_FULL_STEP = 0.05;
+/// The largest correction one window may make: 0.05% ~ 0.9 cent, a step the ear does not hear.
 ///
-/// The correction is a *pitch*, so it must not follow jitter: over this window the packet burst
-/// pattern averages out (measured jitter is a few milliseconds, i.e. below 0.05% here), and the
-/// estimate is one exact step rather than a glide. A proportional loop instead modulated the pitch
-/// continuously - the listener heard the audio speed up and slow down.
-const FILL_WINDOW_S = 20;
-/// Below this rate difference the fill's walk is left alone (0.05%; drifting 20 ms per window).
-const OFFSET_DEADBAND = 0.0005;
-
+/// The correction is a *pitch*, so this stage only ever touches it in steps this size and the step
+/// shrinks as the fill approaches its target - when the loop has converged, the ratio stops changing
+/// entirely, which is what the listener hears as a steady tone.
+///
+/// A fixed-size step instead (bang-bang) chatters around the band's edge: the step can be smaller than
+/// the offset, so the fill sits on the edge and every window adds another step - the ratio then walks
+/// past the offset, which is an audible few-cent wander. A proportional term sized for the real
+/// residual (~0.05%) parks the fill a little off target (offset / gain) and leaves the pitch alone.
+///
+/// ponytail: that parking offset means a mismatch several times the design range pushes the fill to
+/// the ceiling and its trim drops samples. That is the right trade here - the real residual measured
+/// 0.05%, and a proportional term would only be worth it if that grew much larger.
+const DRIFT_STEP = 0.0005;
 class SdrAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -62,11 +75,12 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     // Drift correction: input samples consumed per output sample, steered by the fill.
     this.ratio = 1;
     this.steerCountdown = Math.floor(sampleRate * FILL_WINDOW_S);
-    /// Fill at the start of the current window; -1 means "anchor on the next look".
-    this.fillAnchor = -1;
     this.frac = 0;
     this.received = 0;
     this.underruns = 0;
+    /// Per-window fill accumulation (the trend is taken from the means, not from point samples).
+    this.fillSum = 0;
+    this.fillCount = 0;
     this.resets = 0;
     this.slipped = 0;
     this.reportCountdown = 0;
@@ -97,7 +111,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   /** Drop everything buffered: the stream was retuned, and the old audio must not be played. */
   reset() {
     this.resets++;
-    this.fillAnchor = -1;
     this.tailGain = this.fade;
     this.writePos = 0;
     this.readPos = 0;
@@ -148,7 +161,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         if (this.available < this.prime) continue;    // still priming: output silence
         this.playing = true;
         this.primed = true;
-        this.fillAnchor = -1;      // the fill rises to the target by design from here
         this.fade = 0;
       }
       if (this.available < 2) {                        // nothing to interpolate between
@@ -171,6 +183,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.available--;
       }
     }
+    this.fillSum += this.available;
+    this.fillCount += 1;
     this.steerCountdown -= out.length;
     if (this.steerCountdown <= 0) {
       this.steerCountdown = Math.floor(sampleRate * FILL_WINDOW_S);
@@ -193,29 +207,28 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   }
 
   /**
-   * Re-estimate the producer/sink rate ratio from how far the fill moved over one window.
+   * Steer the resampling ratio by the fill's window-mean error: one small, shrinking step per window.
    *
-   * `fill` grows by (producer rate - consumed rate) samples per second, so the change over a known
-   * window *is* the offset: one measurement, one exact correction, and nothing in between. The
-   * priming transient (the fill rising from the priming threshold to the target by design) is
-   * skipped, and so is jitter, because both are smaller than the window and the deadband - which is
-   * what keeps the pitch still. A previous proportional version corrected on the fill's *level* and
-   * so modulated the pitch: the listener heard the audio speeding up and slowing down.
+   * The fill jitters by hundreds of milliseconds as the producer's blocks land, so only the window
+   * *mean* says anything about the rate. A controller that read the instantaneous fill - or that took
+   * the difference of two point samples as the rate - moved the pitch on that jitter, and the listener
+   * heard the audio speed up and slow down every few seconds. What is left after averaging is small
+   * enough for one proportional step per window, clamped to under a cent.
    */
   steerRatio() {
     if (!this.primed) {
-      this.fillAnchor = -1;
+      this.fillSum = 0;
+      this.fillCount = 0;
       return;
     }
-    if (this.fillAnchor < 0) {
-      this.fillAnchor = this.available;      // (re)anchor after a start or a reset
-      return;
-    }
-    const delta = this.available - this.fillAnchor;
-    this.fillAnchor = this.available;
-    const offset = delta / (FILL_WINDOW_S * sampleRate);
-    if (Math.abs(offset) > OFFSET_DEADBAND) {
-      this.ratio = Math.min(RATIO_MAX, Math.max(RATIO_MIN, this.ratio + offset));
+    const mean = this.fillSum / Math.max(1, this.fillCount);
+    this.fillSum = 0;
+    this.fillCount = 0;
+    const errorSeconds = mean / sampleRate - FILL_TARGET_S;
+    const step = Math.max(-DRIFT_STEP, Math.min(DRIFT_STEP,
+      (errorSeconds / FILL_ERROR_FOR_FULL_STEP) * DRIFT_STEP));
+    if (step !== 0) {
+      this.ratio = Math.min(RATIO_MAX, Math.max(RATIO_MIN, this.ratio + step));
     }
   }
 }

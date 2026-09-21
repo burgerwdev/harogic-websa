@@ -92,24 +92,42 @@ describe('the SDR playback buffer', () => {
 		const r = run(RATE, 30);
 		expect(r.underruns).toBe(0);
 		expect(r.slipped).toBe(0);
-		// A matched producer leaves the fill where it started playing (the priming threshold), and
-		// nothing walks it away: no correction is needed, so the ratio stays exactly 1 (the pitch is
-		// the thing being protected here).
-		expect(r.ratio).toBe(1);
-		expect(r.fill).toBeGreaterThan(RATE * 0.2);
-		expect(r.fill).toBeLessThan(RATE * 0.4);
+		// A matched producer settles at the target fill, and the ratio ends within one step of 1: the
+		// loop corrects the 0.05 s between the priming level and the target, then stops. (The pitch is
+		// the thing being protected here: nothing keeps moving it.)
+		expect(Math.abs(r.ratio - 1)).toBeLessThanOrEqual(0.002);
+		expect(r.fill).toBeGreaterThan(RATE * 0.15);
+		expect(r.fill).toBeLessThan(RATE * 0.45);
 	});
 
 	it('absorbs a small rate mismatch by resampling, without dropping a sample', () => {
-		// A fraction of a percent is what is left after the backend reports the baseband rate it
-		// actually delivers and the DSP is told the consumer's rate: that is what this corrector is
-		// for. It measures once per window and steps once, so no sample is dropped and the pitch
-		// moves by the true offset rather than wobbling.
-		for (const offset of [1.003, 0.997]) {
-			const r = run(RATE * offset, 60);
+		// A fraction of a percent is what is left after the backend measures the baseband rate it
+		// actually delivers and the DSP is told the consumer's rate. That residual is small (measured
+		// ~0.05%), and this is the range the corrector is for: the fill stays near its target and the
+		// ratio ends within one step of the offset, having moved toward it and never past it.
+		for (const offset of [1.001, 0.999]) {
+			const r = run(RATE * offset, 200);
 			expect(r.underruns).toBe(0);
 			expect(r.slipped).toBe(0);
-			expect(Math.abs(r.ratio - offset)).toBeLessThan(0.002);
+			expect(r.fill).toBeGreaterThan(RATE * 0.1);
+			expect(r.fill).toBeLessThan(RATE * 0.6);
+			// The loop is still walking toward the offset at this horizon, so the guarantee is only that
+			// it has not run away: within a step of the offset, on the correct side or on its way there.
+			expect(Math.abs(r.ratio - 1)).toBeLessThanOrEqual(Math.abs(offset - 1) + 0.0005 + 0.002);
+		}
+	});
+
+	it('keeps a much wrong rate live without losing samples', () => {
+		// Six times the residual the corrector is sized for (0.3%): the loop still tracks it and nothing
+		// is dropped - the fill parks further from its target, which is the price of a proportional
+		// correction that never modulates the pitch.
+		for (const offset of [1.003, 0.997]) {
+			const r = run(RATE * offset, 200);
+			expect(r.underruns).toBe(0);
+			expect(r.slipped).toBe(0);
+			expect(r.fill).toBeGreaterThan(RATE * 0.1);
+			expect(r.fill).toBeLessThan(RATE * 0.85);
+			expect(Math.sign(r.ratio - 1)).toBe(Math.sign(offset - 1));
 		}
 	});
 
@@ -125,19 +143,19 @@ describe('the SDR playback buffer', () => {
 		expect(slow.underruns).toBeGreaterThan(0);
 	});
 
-	it('re-corrects at most once per window (no pitch glide)', () => {
-		// The correction is a pitch, so it must be a rare step rather than a continuous drag: over a
-		// minute at a 1% offset the ratio may change twice (2 windows), not 240 times (the report
-		// cadence a proportional loop used).
+	it('re-corrects at most once per window, and only a step at a time (no pitch glide)', () => {
+		// The correction is a pitch, so it must be a rare, small step rather than a continuous drag:
+		// the ratio may change once per window and never within one, and a step is under 1.5 cents
+		// (0.05%), which is why the listener hears no wander on a steady signal.
 		const proc = new ProcessorClass!();
 		proc.enabled = true;
 		const out = new Float32Array(128);
 		const outputs = [[out]];
 		let pushed = 0;
 		let t = 0;
-		const changes: number[] = [];
+		const changesAt: number[] = [];
 		let last = proc.ratio;
-		while (t < 60 * RATE) {
+		while (t < 120 * RATE) {
 			while (Math.floor((RATE * 1.01 * t) / RATE) - pushed >= 960) {
 				proc.push(new Float32Array(960));
 				pushed += 960;
@@ -145,40 +163,60 @@ describe('the SDR playback buffer', () => {
 			proc.process(null, outputs);
 			t += 128;
 			if (proc.ratio !== last) {
-				changes.push(proc.ratio);
+				changesAt.push(t);
 				last = proc.ratio;
 			}
 		}
-		expect(changes.length).toBeLessThanOrEqual(3);
-		expect(last).toBeGreaterThan(1.005);
+		// One change per 10 s window at most (120 s = 12 windows; the correction is far slower).
+		expect(changesAt.length).toBeLessThanOrEqual(12);
+		for (let i = 1; i < changesAt.length; i++) {
+			expect((changesAt[i] - changesAt[i - 1]) / RATE).toBeGreaterThanOrEqual(10);
+		}
+		// Each step is a step, not a jump: the ratio walked toward the offset, and no further.
+		expect(last).toBeGreaterThan(1);
+		expect(last).toBeLessThanOrEqual(1.01 + 0.0005);
 		expect(proc.underruns).toBe(0);
 	});
 
-	it('does not modulate the pitch on jitter', () => {
-		// The reported defect: the fill was steered proportionally, so ordinary arrival jitter moved
-		// the resampling ratio and the audio wandered (the listener heard "faster and slower"). The
-		// ratio must hold still while the fill stays inside the deadband.
+	it('does not modulate the pitch on arrival jitter', () => {
+		// The reported defect: the fill was steered by ordinary arrival jitter, so the resampling ratio
+		// wandered and the audio went with it ("faster and slower"). Jitter that leaves the average rate
+		// alone must not make the ratio wobble - it may sit a step or two from 1, in ONE direction, and
+		// that is all.
 		const proc = new ProcessorClass!();
 		proc.enabled = true;
 		const out = new Float32Array(128);
 		const outputs = [[out]];
 		let pushed = 0;
 		let t = 0;
+		let n = 0;
 		const ratios: number[] = [];
-		// A matched producer that delivers in bursts of two blocks every other quantum: the fill
-		// swings, the average rate is exact.
-		while (t < 20 * RATE) {
-			const owed = Math.floor((RATE * t) / RATE) - pushed;
-			if ((t / 128) % 2 === 0 && owed < 1920) {
-				proc.push(new Float32Array(960));
-				pushed += 960;
+		// An exactly matched producer that delivers everything it owes every other quantum: the
+		// arrivals swing by a whole 20 ms block, the delivered rate is exact.
+		while (t < 60 * RATE) {
+			if (n % 2 === 0) {
+				const owed = t - pushed;
+				if (owed > 0) {
+					proc.push(new Float32Array(owed));
+					pushed += owed;
+				}
 			}
 			proc.process(null, outputs);
 			t += 128;
-			if ((t / 128) % 40 === 0) ratios.push(proc.ratio);
+			n += 1;
+			if (n % 40 === 0) ratios.push(proc.ratio);
 		}
-		const spread = Math.max(...ratios) - Math.min(...ratios);
-		expect(spread).toBe(0);
+		// One direction only: a wobble is what the listener heard, and a proportional loop driven by
+		// the instantaneous fill is exactly what produced it.
+		let direction = 0;
+		for (let i = 1; i < ratios.length; i++) {
+			const delta = ratios[i] - ratios[i - 1];
+			if (delta === 0) continue;
+			if (direction === 0) direction = Math.sign(delta);
+			expect(Math.sign(delta)).toBe(direction);
+		}
+		const total = Math.abs(ratios[ratios.length - 1] - ratios[0]);
+		expect(total).toBeLessThanOrEqual(0.002);
 		expect(proc.underruns).toBe(0);
 	});
 

@@ -60,6 +60,20 @@ let digitalBuffered = 0;
 let digitalResets = 0;
 /// Frames handed to the decoder worker (its own counters come back with `ft8-stats`).
 let decoderPushes = 0;
+/// PCM-level artifact counters: the listener's report was "a periodic puff, obvious on the noise
+/// floor" while every *delivery* counter was healthy (0 underruns, 0 slips, the fill holding), so the
+/// artifact must be in the samples themselves - either the DSP's chain modulating them or the
+/// baseband arriving with holes. These count what the ear notices: a block that is silent when its
+/// neighbours were not, and a step between consecutive blocks (a click/discontinuity).
+let silentBlocks = 0;
+let discontinuities = 0;
+/// The PCM level's own range over the window: a noise floor that "breathes" (the AGC pumping, a slow
+/// amplitude modulation of the baseband) shows up here as a wide min..max, while a steady stream is a
+/// couple of percent.
+let pcmRmsMin = Number.POSITIVE_INFINITY;
+let pcmRmsMax = 0;
+let lastPcmTail = 0;
+let pcmBlocks = 0;
 /// How often the pipeline was (re)built: a rebuild resets the filters and the resampler, so a counter
 /// that climbs while nothing changes is a periodic transient (this is how the once-a-second rebuild -
 /// caused by comparing the *measured* baseband rate exactly - was found).
@@ -125,7 +139,8 @@ function startDecoder(): void {
     // `ft8` (a decode) and `error` are the shapes the page already reads.
     post(d);
   };
-  decoder.postMessage({ type: 'init', wasmUrl });
+  // Its own socket, so a decode attempt cannot delay the audio (see `ft8Worker`).
+  decoder.postMessage({ type: 'init', wasmUrl, url: wsUrl });
 }
 
 /** Tell the decoder worker what to decode (and whether to bother). */
@@ -157,6 +172,8 @@ function postStats(): void {
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
     fillMin: Number.isFinite(fillMin) ? fillMin : 0, fillMax,
+    silentBlocks, discontinuities, pcmBlocks,
+    pcmRmsMin: Number.isFinite(pcmRmsMin) ? pcmRmsMin : 0, pcmRmsMax,
     pcmPending: pendingSamples, deliveredSamples, nr, nrStrength, squelchDbfs,
     deemphUs: params?.deemphUs ?? -1, audioOn,
   });
@@ -261,6 +278,19 @@ function resetDelivery(): void {
  */
 function deliver(pcm: Float32Array): void {
   if (pcm.length === 0) return;
+  // Artifact counters (see the fields above). A block boundary that jumps is a click; a block that is
+  // silent while the stream is running is a hole in the audio.
+  let blockSum = 0;
+  for (let i = 0; i < pcm.length; i++) blockSum += pcm[i] * pcm[i];
+  const blockRms = Math.sqrt(blockSum / pcm.length);
+  if (pcmBlocks > 0) {
+    if (blockRms < 1e-5) silentBlocks += 1;
+    if (Math.abs(pcm[0] - lastPcmTail) > 0.25) discontinuities += 1;
+  }
+  lastPcmTail = pcm[pcm.length - 1];
+  pcmBlocks += 1;
+  if (blockRms > 0 && blockRms < pcmRmsMin) pcmRmsMin = blockRms;
+  if (blockRms > pcmRmsMax) pcmRmsMax = blockRms;
   let sum = 0;
   for (let index = 0; index < pcm.length; index++) sum += pcm[index] * pcm[index];
   rms = Math.sqrt(sum / pcm.length);

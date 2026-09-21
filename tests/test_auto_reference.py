@@ -251,16 +251,24 @@ def test_the_sdr_fit_follows_the_display_range_not_the_device_range(clock):
     the device accepts only -50..+30 dBm. Clamping the fit to the device row left a low noise
     floor under the bottom edge of a window that could have shown it; the IQS write is the half
     that must stay a device value.
+
+    The write is *not* made from the fit: measured on the bench, writing it reconfigured the stream
+    and moved the trace the fit was reading, so the fit wrote again (0 -> -15 -> -20 -> -25 -> -20 dBm
+    in three seconds). Each write is an audio dropout and a level step, and a digital mode cannot
+    integrate a slot across them, so SDR's fit is display-only and the device level is left alone (the
+    overflow ranger still protects the ADC).
     """
     dev = StubDevice(ref_level=0.0, ref_range_db=100.0, mode='sdr')
     dev.session = Session('sdr')
     ctl = AutoReferenceController(dev)
     observe(dev, ctl, peak=-179.5, floor=-180.0, mode='sdr')   # display target -88 -> -85 dBm
     assert ctl.fit('sdr') == ('applied', -85.0)
-    assert ctl.apply_pending() is True
-    assert ctl.ref_level('sdr') == -50.0                       # IQS level kept in range
-    assert dev.session.reconfigured == 1
-    # ...and the fitted display level really does put the trace inside its window.
+    # The fit is reported to the client (its display scale owns the placement) ...
+    assert ctl.view('sdr')['target'] == -85.0
+    # ... and no device traffic is generated, in either direction.
+    assert ctl.apply_pending() is False
+    assert dev.state.ref_level == 0.0
+    assert dev.session.reconfigured == 0
     assert ctl.tracker('sdr')['last_noise_floor'] >= -85.0 - ctl.window_db()
 
 
@@ -275,8 +283,10 @@ def test_sdr_is_fitted_with_the_same_rule(clock):
     assert ctl.pending is None                   # observing alone never moves the level
     assert ctl.fit('sdr') == ('applied', 0.0)
     assert ctl.view('std')['last_peak'] is None  # the SDR tracker is its own
-    ctl.apply_pending()
-    assert dev.state.ref_level == 0.0
+    # The fit target is published for the client's display scale; the device level stays.
+    assert ctl.apply_pending() is False
+    assert ctl.view('sdr')['target'] == 0.0
+    assert dev.state.ref_level == -20.0
 
 
 # ---------------- IF overflow escape ----------------
@@ -508,9 +518,16 @@ def test_the_reported_no_signal_scenario_ends_inside_the_window(clock, mode, geo
     clock[0] += 1.0
     observe(dev, ctl, peak=-100.5, floor=-101.0, mode=mode)
     assert ctl.view(mode)['result'] == 'applied'
-    assert ctl.apply_pending()
+    # SDR's fit is display-only (writing the IQS level reconfigures the stream and moves the very
+    # trace the fit reads, which oscillates); the other modes own the device level.
+    if mode != 'sdr':
+        assert ctl.apply_pending()
+    else:
+        assert ctl.apply_pending() is False
     # The whole trace is inside the window now: floor above the bottom edge, peak under the top.
-    tracker, ref = ctl.tracker(mode), ctl.ref_level(mode)
+    # SDR's reference is the fitted display level (the client applies it to its scale), not the device
+    # level - which is exactly why the fit no longer writes the device.
+    tracker, ref = ctl.tracker(mode), (ctl.view('sdr')['target'] if mode == 'sdr' else ctl.ref_level(mode))
     assert tracker['last_noise_floor'] >= ref - ctl.window_db()
     assert tracker['last_peak'] <= ref
     clock[0] += 3 * SAFETY_INTERVAL_S
@@ -575,7 +592,12 @@ def test_the_reported_scenarios_through_the_fake_backend(clock, monkeypatch):
             clock[0] += 1.0
             dev.step()                             # the first settled frame of the new geometry
         assert dev.auto_ref.view(mode)['result'] == 'applied', mode
-        assert dev.apply_pending_auto_reference(), mode
+        # SDR's fit is display-only: writing the IQS level reconfigures the stream (and moves the trace
+        # the fit reads), so nothing is applied for it - the client's display scale owns the placement.
+        if mode == 'sdr':
+            assert dev.apply_pending_auto_reference() is False, mode
+        else:
+            assert dev.apply_pending_auto_reference(), mode
         # Applying reconfigures (and clears the observation), so read the placement from the next
         # settled frame - which must not queue anything: one re-fit per settings change.
         clock[0] += 3 * SAFETY_INTERVAL_S
@@ -584,7 +606,11 @@ def test_the_reported_scenarios_through_the_fake_backend(clock, monkeypatch):
         else:
             dev.step()
         assert dev.auto_ref.pending is None, mode
-        tracker, ref = dev.auto_ref.tracker(mode), dev.auto_ref.ref_level(mode)
+        tracker = dev.auto_ref.tracker(mode)
+        # SDR's reference is the fit's display target (the client applies it to its own scale); the
+        # device level is deliberately left alone (see AutoReferenceController.apply_pending).
+        ref = (dev.auto_ref.view('sdr')['target'] if mode == 'sdr'
+               else dev.auto_ref.ref_level(mode))
         assert tracker['last_noise_floor'] >= ref - dev.auto_ref.window_db(), f'{mode} floor'
         assert tracker['last_peak'] <= ref, f'{mode} peak'
 

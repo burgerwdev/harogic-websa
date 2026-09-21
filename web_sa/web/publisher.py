@@ -14,6 +14,10 @@ from .recovery import fatal
 
 log = logging.getLogger(__name__)
 STATUS_PUSH_INTERVAL = GNSS_POLL_INTERVAL
+#: A step that takes longer than this, or an inter-step gap this long, is logged with what caused it.
+#: The SDR stream is device-paced (a packet is ~1-8 ms), so a gap of tens of milliseconds means the
+#: loop was *held* - and every held loop is a hole in the IQ the listener hears as a puff.
+SLOW_STEP_S = 0.05
 ERROR_LOG_INTERVAL = 5.0
 #: Idle period while the device link is down. The worker link loop (`main._link_loop`) owns
 #: reopening; the scheduler just must not step a dead handle or spin the event loop.
@@ -39,6 +43,7 @@ def _acquisition_step(dev):
 
 
 async def publisher(app, dev):
+    last_step_s = 0.0
     last_freq_ver = -1
     last_status_push = 0.0
     last_error_log = 0.0
@@ -46,6 +51,7 @@ async def publisher(app, dev):
     # also pushes right away instead of waiting for the 1 Hz tick, so the page reflects the
     # disconnect as soon as the acquisition path declares it.
     last_connected = None
+    previous_end = 0.0
     while True:
         t0 = time.monotonic()
         frames = []
@@ -80,6 +86,11 @@ async def publisher(app, dev):
                 # device and the same session resumes without a worker restart.
                 await asyncio.sleep(DISCONNECTED_IDLE_INTERVAL)
                 continue
+            if previous_end and t0 - previous_end > SLOW_STEP_S:
+                # The loop was held between steps: this is the gap the audio hears. The line right
+                # before it (a command, a GNSS poll, a level write) names the holder.
+                log.warning('acquisition gap %.0f ms (step %.0f ms)',
+                            (t0 - previous_end) * 1e3, last_step_s * 1e3)
             try:
                 # All SDK access runs outside the event loop and shares command_lock with
                 # configuration/GNSS operations. This prevents old-data fetches from
@@ -120,6 +131,11 @@ async def publisher(app, dev):
                     log.exception('Acquisition step failed')
 
         dt = time.monotonic() - t0
+        last_step_s = dt
+        previous_end = time.monotonic()
+        if dt > SLOW_STEP_S:
+            log.warning('acquisition step took %.0f ms (mode=%s)', dt * 1e3,
+                        getattr(dev.state, 'mode', '?'))
         if clients:
             dev.measure_sweep(dt)
         session = dev.session

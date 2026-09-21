@@ -311,12 +311,10 @@ async def test_auto_scale_works_in_sdr_through_the_same_command():
     assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
     assert dev.auto_ref.pending == ('sdr', 0.0)
     assert dev.state.ref_level == -20.0                    # not applied yet
-    assert dev.apply_pending_auto_reference()
-    assert dev.state.ref_level == 0.0
-    assert dev.session.reconfigures == 1
-
-    # A fitted level within the dead band of the device level must not touch IQS at all
-    # (that write interrupts the audio), while the target is still reported.
-    dev.auto_ref.pending = ('sdr', 2.0)
+    # SDR's fit is display-only: any device write reconfigures IQS, and the reconfiguration moves the
+    # trace the fit read, so the fit wrote again (measured: four writes in three seconds, each an audio
+    # dropout). The target is still reported for the client's display scale.
     assert not dev.apply_pending_auto_reference()
-    assert dev.session.reconfigures == 1
+    assert dev.auto_ref.view('sdr')['target'] == 0.0
+    assert dev.state.ref_level == -20.0
+    assert dev.session.reconfigures == 0

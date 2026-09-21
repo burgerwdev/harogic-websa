@@ -60,6 +60,13 @@ let dspFillMin = 0;
 let dspFillMax = 0;
 /// Pipeline (re)builds this session; a number that keeps climbing is a periodic transient.
 let dspBuilds = 0;
+/// PCM-level artifact counters (a silent block in a running stream, a step between blocks).
+let dspSilent = 0;
+let dspDisc = 0;
+let dspPcmBlocks = 0;
+/// The PCM level's range over the last window (a breathing noise floor shows a wide range).
+let dspRmsMin = 0;
+let dspRmsMax = 0;
 /// True while the listener's audio switch is on (the DSP's own playback gate).
 let dspAudio = true;
 
@@ -88,7 +95,9 @@ function publishIqDebug(): void {
       ` dsp_mode=${dspMode} dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
       ` dsp_audio=${dspAudio ? 1 : 0} dsp_deemph=${dspDeemph}` +
       ` dsp_fill_ms=${(dspFillMin / 48).toFixed(0)}..${(dspFillMax / 48).toFixed(0)}` +
-      ` dsp_builds=${dspBuilds}` +
+      ` dsp_builds=${dspBuilds} dsp_pcm_blocks=${dspPcmBlocks}` +
+      ` dsp_silent_blocks=${dspSilent} dsp_discontinuities=${dspDisc}` +
+      ` dsp_pcm_rms=${dspRmsMin.toFixed(4)}..${dspRmsMax.toFixed(4)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
@@ -157,6 +166,13 @@ function startWorker(): void {
     if (typeof d.fillMin === 'number') dspFillMin = d.fillMin;
     if (typeof d.fillMax === 'number') dspFillMax = d.fillMax;
     if (typeof d.pipelineBuilds === 'number') dspBuilds = d.pipelineBuilds;
+    // `dsp_silent_blocks` / `dsp_discontinuities` are cumulative since the stream started: a number
+    // that climbs while listening is the artifact the ear reports.
+    if (typeof d.silentBlocks === 'number') dspSilent = d.silentBlocks;
+    if (typeof d.discontinuities === 'number') dspDisc = d.discontinuities;
+    if (typeof d.pcmBlocks === 'number') dspPcmBlocks = d.pcmBlocks;
+    if (typeof d.pcmRmsMin === 'number') dspRmsMin = d.pcmRmsMin;
+    if (typeof d.pcmRmsMax === 'number') dspRmsMax = d.pcmRmsMax;
     if (typeof d.audioOn === 'boolean') dspAudio = d.audioOn;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;

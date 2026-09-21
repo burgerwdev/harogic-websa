@@ -59,6 +59,7 @@ still fitted on the next press - the frontend owns that gesture and says so (`se
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 
@@ -69,6 +70,8 @@ from ..config import (
     FALLBACK_REF_MIN_DBM,
     ref_bounds,
 )
+
+log = logging.getLogger(__name__)
 
 #: Default display window height (10 divisions x 10 dB/div) when the frontend has not
 #: reported one; the window is what the fit anchors the noise floor to.
@@ -512,18 +515,28 @@ class AutoReferenceController:
                 self.dev.state.rta_ref_level = target
                 session._configure()
             elif mode == 'sdr':
+                # SDR applies a *display* fit only: the client owns its display scale, and writing the
+                # IQS level reconfigures the whole stream (the audio drops out for about half a second
+                # and re-primes). Measured on the bench: writing it from the fit oscillated - each
+                # write moved the trace the fit was reading, so it wrote again (0 -> -15 -> -20 -> -25
+                # -> -20 dBm in three seconds, one full reconfiguration and one audio flush each). That
+                # is an audible puff on every level step, and a digital mode cannot integrate a slot
+                # across the holes it leaves. The ADC is still protected: the safety ranger raises the
+                # level on an IF overflow independently of this (`nudge_reference_out_of_overflow`).
                 if session is None or session.name != 'sdr':
                     return False
-                # The display scale is client-side, so a fit within a few dB of the device level
-                # needs no device traffic at all (reconfiguring IQS interrupts the audio). The
-                # IQS level itself must stay a DEVICE value even when the display target went
-                # below the device range (the display scale owns the placement).
-                ref_lo, ref_hi = self.device_ref_bounds()
-                level = min(ref_hi, max(ref_lo, target))
-                if abs(level - self.dev.state.ref_level) < SDR_DEVICE_DEADBAND_DB:
-                    return False
-                self.dev.state.ref_level = level
-                session.reconfigure()
+                # Consume the pending and settle the tracker exactly as an applied fit does (the fit
+                # target is the client's input; without this the next observation re-fits, because
+                # nothing about the trace changed) - but write nothing to the device.
+                log.info('SDR auto-reference: the fit target %.1f dBm goes to the client display; '
+                         'the device level is left alone', target)
+                # Not `_rearm`: that also clears the observations, and nothing moved (no device
+                # write happened), so the diagnostics keep the trace the fit was made from.
+                tracker = self._trackers[mode]
+                tracker['ignore_until'] = time.monotonic() + 0.75
+                tracker['refit_due'] = False
+                tracker['refit_left'] = 0
+                return False
             elif mode == 'std':
                 self.dev.state.ref_level = target
                 ok, _ = self.dev.configure_swp()
