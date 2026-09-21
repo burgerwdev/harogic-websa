@@ -22,7 +22,7 @@ pub mod tables;
 use tables::*;
 
 /// Tones searched: the eight FT8 tones plus the frequency-offset range around the nominal base.
-const FREQ_OFFSET_STEPS: i32 = 8;         // +/- 8 * (TONE_SPACING/2) = +/- 25 Hz
+const FREQ_OFFSET_STEPS: i32 = 4;         // +/- 4 * (TONE_SPACING/2) = +/- 12.5 Hz, one band step
 /// Time search: +/- 4 steps of 1/5 symbol each = +/- 0.128 s. FT8 transmissions are slot-aligned
 /// (operators are clock-disciplined), so the receiver searches the slot edge rather than the whole
 /// slot: a full-slot scan would cost ~15x more for a case a slot-driven receiver does not have.
@@ -80,21 +80,6 @@ impl Ft8Decoder {
     /// Complex samples in one FT8 slot at this rate (15 s: the slot the mode is scheduled on).
     pub fn slot_samples(&self) -> usize {
         self.slot_samples
-    }
-
-    /// Complex samples in one FT8 *transmission* (79 symbols = 12.64 s).
-    ///
-    /// The plugin waits for this, not for the full 15 s slot: a transmission is shorter than its
-    /// slot, so waiting for a whole slot meant the decoder never ran at all.
-    pub fn transmission_samples(&self) -> usize {
-        NUM_SYMBOLS * symbol_samples_at(self.rate)
-    }
-
-    /// Drop the oldest `samples` complex samples (used when a decode attempt fails, so the next
-    /// attempt happens on a fresh transmission instead of re-trying the same buffer every block).
-    pub fn discard_oldest(&mut self, samples: usize) {
-        let drop = (samples * 2).min(self.samples.len());
-        self.samples.drain(..drop);
     }
 
     /// Try to decode the buffered slot. `None` when nothing passes the CRC (the common case: most
@@ -196,8 +181,19 @@ impl Ft8Decoder {
         let mut best: Option<(usize, f64, f64)> = None;
         let step = TONE_SPACING_HZ / 2.0;
         let time_step = symbol_samples / (TIME_OFFSET_STEPS as usize + 1);
+        // A candidate is only usable when a whole transmission fits after it: the symbol loop below
+        // `break`s on a short window, and a base that never got that far would still be recorded (its
+        // correlation is 0, which beats an empty `best`) - the reader then indexed past the buffer and
+        // the decoder worker died silently on the first real band (measured: `dsp_pushes` frozen with
+        // its buffer left 65 samples short of a slot). Skipping unusable candidates is also the honest
+        // answer: there is no transmission there to find.
+        let span = NUM_SYMBOLS * symbol_samples;
+        let total = self.samples.len() / 2;
         for time_index in -(TIME_OFFSET_STEPS as i64)..=(TIME_OFFSET_STEPS as i64) {
             let base = (coarse as i64 + time_index * time_step as i64).max(0) as usize;
+            if base + span > total {
+                continue;
+            }
             for freq_index in -FREQ_OFFSET_STEPS..=FREQ_OFFSET_STEPS {
                 let offset = freq_index as f64 * step;
                 let mut sync = 0.0;
@@ -210,10 +206,11 @@ impl Ft8Decoder {
                     let mut energies = [0.0_f64; 8];
                     for (tone, energy) in energies.iter_mut().enumerate() {
                         let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
-                        // Decimated by 4: this stage is a *search* (the LLR stage below re-reads the
-                        // signal at full rate), and a decimated correlation keeps the tone while
-                        // costing a quarter of the samples.
-                        *energy = self.tone_energy_decimated(start, symbol_samples, frequency, 4);
+                        // Full rate: a decimated correlation finds the signal but quantizes the *time*
+                        // it starts at (measured: a transmission 25 ms into the window was reported at
+                        // 0), and the slot timing is shown to the operator. The band candidates are
+                        // narrow enough now that the full-rate search fits the slot budget.
+                        *energy = self.tone_energy(start, symbol_samples, frequency);
                     }
                     let sum: f64 = energies.iter().sum();
                     sync += energies[*expected as usize];
@@ -247,7 +244,31 @@ impl Ft8Decoder {
     /// The coarse pass only ranks offsets, so it can afford this: an 8x decimated DFT is ~8x
     /// cheaper and still peaks at the right alignment.
     fn tone_energy_decimated(&self, start: usize, length: usize, frequency: f64, decimate: usize) -> f64 {
-        let step = -2.0 * core::f64::consts::PI * frequency / self.rate;
+        self.tone_energy_rotating(start, length, frequency, decimate)
+    }
+
+    /// Magnitude² of one tone over one symbol window.
+    ///
+    /// The local oscillator is a recursive rotator: the frequency is fixed for the call, so the
+    /// per-sample twiddle is one complex multiply instead of a `sin_cos()` pair. Those transcendentals
+    /// were the entire cost of the search - a slot decode took 9.3 s through the shipped artifact on a
+    /// busy band (against 0.6 s natively), which is long enough that the decoder fell behind the live
+    /// stream. The rotation is exact to f64 rounding over one symbol window.
+    fn tone_energy(&self, start: usize, length: usize, frequency: f64) -> f64 {
+        self.tone_energy_rotating(start, length, frequency, 1)
+    }
+
+    /// `tone_energy` with an optional decimation of the *summed* samples (the search's cheap stage).
+    fn tone_energy_rotating(
+        &self,
+        start: usize,
+        length: usize,
+        frequency: f64,
+        decimate: usize,
+    ) -> f64 {
+        let step = -2.0 * core::f64::consts::PI * frequency / self.rate * decimate.max(1) as f64;
+        let (step_sin, step_cos) = step.sin_cos();
+        let (mut rot_re, mut rot_im) = (1.0_f64, 0.0_f64);
         let (mut re, mut im) = (0.0_f64, 0.0_f64);
         let mut k = 0;
         while k < length {
@@ -256,29 +277,13 @@ impl Ft8Decoder {
                 break;
             }
             let (i, q) = (self.samples[index] as f64, self.samples[index + 1] as f64);
-            let phase = step * k as f64;
-            let (s, c) = phase.sin_cos();
-            re += i * c - q * s;
-            im += i * s + q * c;
+            re += i * rot_re - q * rot_im;
+            im += i * rot_im + q * rot_re;
+            let next_re = rot_re * step_cos - rot_im * step_sin;
+            let next_im = rot_re * step_sin + rot_im * step_cos;
+            rot_re = next_re;
+            rot_im = next_im;
             k += decimate.max(1);
-        }
-        re * re + im * im
-    }
-
-    /// Magnitude² of one tone over one symbol window.
-    fn tone_energy(&self, start: usize, length: usize, frequency: f64) -> f64 {
-        let step = -2.0 * core::f64::consts::PI * frequency / self.rate;
-        let (mut re, mut im) = (0.0_f64, 0.0_f64);
-        for k in 0..length {
-            let index = (start + k) * 2;
-            if index + 1 >= self.samples.len() {
-                break;
-            }
-            let (i, q) = (self.samples[index] as f64, self.samples[index + 1] as f64);
-            let phase = step * k as f64;
-            let (s, c) = phase.sin_cos();
-            re += i * c - q * s;
-            im += i * s + q * c;
         }
         re * re + im * im
     }
@@ -319,10 +324,10 @@ const BAND_LOW_HZ: f64 = 200.0;
 const BAND_HIGH_HZ: f64 = 3_000.0;
 /// Spacing of the coarse candidates. The fine search covers +/-25 Hz around each, so 50 Hz leaves no
 /// gap in the band.
-const BAND_STEP_HZ: f64 = 50.0;
+const BAND_STEP_HZ: f64 = 25.0;
 /// Candidates that go on to the fine search and the CRC. Each costs a full sync search, and only one
 /// of them can be the transmission (a 24-bit CRC decides), so this is a cost/false-positive trade.
-const MAX_CANDIDATES: usize = 6;
+const MAX_CANDIDATES: usize = 4;
 /// A candidate must beat the whole scan's average score by this factor.
 ///
 /// Most slots carry nothing, and without a gate every empty slot paid six full sync searches plus six
@@ -763,13 +768,18 @@ impl DigitalDemodulator for Ft8Plugin {
                 vec![text]
             }
             None => {
-                // Nothing there. Drop one TRANSMISSION, not the whole slot: dropping a slot leaves
-                // the window phase unchanged, so a mis-aligned window would stay mis-aligned for
-                // ever (measured: `dsp_buffered` cycling and never decoding in the browser). The
-                // overlap advances the phase by `slot - transmission` each attempt, which sweeps
-                // the alignment quickly, and the coarse search finds the burst at whatever offset
-                // it lands on.
-                self.decoder.discard_oldest(self.decoder.transmission_samples());
+                // Nothing there. Clear the buffer: the next attempt then needs a whole slot again,
+                // which is the cadence this mode runs on (one attempt per 15 s).
+                //
+                // Dropping only one transmission instead left the buffer at or above a slot whenever
+                // it had grown, so *every* following block triggered another attempt - each one
+                // costing up to two seconds while the stream delivers 120 blocks a second. The
+                // decoder fell behind on the first busy band and never caught up (measured: the
+                // decoder worker stopped reporting while its buffer sat just short of a slot).
+                //
+                // The window phase does not need to be swept: the coarse search scans the whole slot
+                // for the burst, so an attempt that starts anywhere inside a slot still finds it.
+                self.decoder.reset();
                 Vec::new()
             }
         }

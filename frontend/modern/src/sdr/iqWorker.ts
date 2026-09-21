@@ -60,6 +60,10 @@ let digitalBuffered = 0;
 let digitalResets = 0;
 /// Frames handed to the decoder worker (its own counters come back with `ft8-stats`).
 let decoderPushes = 0;
+/// How often the pipeline was (re)built: a rebuild resets the filters and the resampler, so a counter
+/// that climbs while nothing changes is a periodic transient (this is how the once-a-second rebuild -
+/// caused by comparing the *measured* baseband rate exactly - was found).
+let pipelineBuilds = 0;
 /// True while the current mode is a protocol decoder (their audio comes from the companion).
 let digital = false;
 /// Ids the module declares as digital protocols; the registry is the single source of truth, so a
@@ -97,6 +101,11 @@ function startDecoder(): void {
     decoder = null;
     return;
   }
+  // A decoder worker that dies takes the decode list with it, silently: surface it like any other
+  // DSP failure (the page shows it and can still fall back).
+  decoder.onerror = (event: ErrorEvent) => {
+    post({ type: 'error', message: `FT8 decoder failed: ${event.message || 'error'}` });
+  };
   decoder.onmessage = (event: MessageEvent) => {
     const d = (event.data || {}) as Record<string, any>;
     if (d.type === 'ready') {
@@ -109,6 +118,7 @@ function startDecoder(): void {
       if (typeof d.pushes === 'number') digitalPushes = d.pushes;
       if (typeof d.buffered === 'number') digitalBuffered = d.buffered;
       if (typeof d.decodes === 'number') ft8Messages = d.decodes;
+      if (typeof d.skipped === 'number') digitalResets = d.skipped;   // reported as dsp_resets
       postStats();
       return;
     }
@@ -143,7 +153,7 @@ function postStats(): void {
     // for a digital one it is the companion demodulator that plays the channel. The page hands the
     // AudioWorklet port over on this flag, so a digital mode without it never gets heard.
     pipeline: Boolean(pipeline?.ok || companion?.ok),
-    ft8Messages, digitalPushes, digitalBuffered, digitalResets,
+    ft8Messages, digitalPushes, digitalBuffered, digitalResets, pipelineBuilds,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
     fillMin: Number.isFinite(fillMin) ? fillMin : 0, fillMax,
@@ -214,6 +224,7 @@ function syncCompanion(isDigital: boolean): void {
   }
   companion?.free();
   companion = new WasmPipeline(module, shape, false);
+  pipelineBuilds += 1;
   if (!companion.ok) {
     companion.free();
     companion = null;
@@ -318,9 +329,12 @@ function onBaseband(frame: BasebandFrame): void {
     // buffer, and nothing here needs it afterwards). A slow decode therefore cannot starve the audio.
     if (decoder && decoderReady) {
       try {
-        decoder.postMessage({ type: 'frame', iq: frame.iq, centerHz }, [frame.iq.buffer]);
+        // `at` is the frame's arrival: the decoder worker drops frames that queued up while it was
+        // busy (see there), because a decode attempt can take seconds and the backlog must not grow.
+        decoder.postMessage({ type: 'frame', iq: frame.iq, centerHz, at: Date.now() },
+                            [frame.iq.buffer]);
       } catch {
-        decoder?.postMessage({ type: 'frame', iq: frame.iq.slice(), centerHz });
+        decoder?.postMessage({ type: 'frame', iq: frame.iq.slice(), centerHz, at: Date.now() });
       }
     }
   } else if (pipeline) {
@@ -413,11 +427,18 @@ self.onmessage = (event: MessageEvent) => {
       if (typeof msg.nr === 'boolean') nr = msg.nr;
       if (typeof msg.nrStrength === 'number') nrStrength = msg.nrStrength;
       if (typeof msg.squelch === 'number') squelchDbfs = msg.squelch;
+      // A rate or bandwidth change rebuilds the demodulator (its filters describe the rate they were
+      // designed for), but only a *real* change: the baseband rate the backend reports is measured, so
+      // it wobbles by a fraction of a percent every window - and a strict comparison rebuilt the whole
+      // pipeline once a second, which is an audible transient every second (reported as a weak 1 Hz
+      // sound in every mode). An IF-bandwidth change moves the rate by far more than this tolerance.
+      const rateChanged =
+        !!previous && Math.abs(previous.fsIn - next.fsIn) > Math.max(200, next.fsIn * 0.01);
       const geometryChanged =
         !previous ||
         previous.mode !== next.mode ||
         previous.ifBw !== next.ifBw ||
-        previous.fsIn !== next.fsIn ||
+        rateChanged ||
         previous.outRate !== next.outRate ||
         previous.pitch !== next.pitch;
       if (pipeline && geometryChanged && !digitalIds.has(next.mode)) {

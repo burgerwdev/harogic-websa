@@ -58,6 +58,8 @@ let dspDeemph = -1;
 /// The playback fill's range in the last window (samples); a periodic dip shows an audible hitch.
 let dspFillMin = 0;
 let dspFillMax = 0;
+/// Pipeline (re)builds this session; a number that keeps climbing is a periodic transient.
+let dspBuilds = 0;
 /// True while the listener's audio switch is on (the DSP's own playback gate).
 let dspAudio = true;
 
@@ -86,6 +88,7 @@ function publishIqDebug(): void {
       ` dsp_mode=${dspMode} dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
       ` dsp_audio=${dspAudio ? 1 : 0} dsp_deemph=${dspDeemph}` +
       ` dsp_fill_ms=${(dspFillMin / 48).toFixed(0)}..${(dspFillMax / 48).toFixed(0)}` +
+      ` dsp_builds=${dspBuilds}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
@@ -153,6 +156,7 @@ function startWorker(): void {
     if (typeof d.deemphUs === 'number') dspDeemph = d.deemphUs;
     if (typeof d.fillMin === 'number') dspFillMin = d.fillMin;
     if (typeof d.fillMax === 'number') dspFillMax = d.fillMax;
+    if (typeof d.pipelineBuilds === 'number') dspBuilds = d.pipelineBuilds;
     if (typeof d.audioOn === 'boolean') dspAudio = d.audioOn;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
@@ -257,8 +261,7 @@ export function resetSdrIq(): void {
   ft8Count = 0;
   ft8Detail = '';
   clearFt8Spots();
-  const readout = document.getElementById('ft8-readout');
-  if (readout) readout.textContent = '—';
+  lastFt8 = '';
   blocks = 0;
   samples = 0;
   dropped = 0;
@@ -273,10 +276,11 @@ export function resetSdrIq(): void {
 }
 
 /**
- * Show a decoded transmission: the text plus the timing it was found at.
+ * Record a decoded transmission.
  *
- * Both parts are shown because an FT8 message without its slot timing is of little use to an
- * operator watching a band. Exported so the rendering is unit tested without a worker.
+ * The panel used to carry a one-line readout of the newest decode; the decode table replaced it
+ * (a single line is unreadable on a busy band), so this appends to the log the window renders and
+ * keeps the diagnostic string for the status line. Exported so it is unit tested without a worker.
  */
 export function renderFt8Message(report: Ft8Report): void {
   addFt8Spot(report);
@@ -285,14 +289,16 @@ export function renderFt8Message(report: Ft8Report): void {
   ft8Detail =
     `${ft8Text}  @ ${(Number(report.frequencyHz) || 0).toFixed(0)} Hz, ` +
     `+${(Number(report.timeOffsetS) || 0).toFixed(2)} s, ${(Number(report.snrDb) || 0).toFixed(0)} dB`;
-  const readout = document.getElementById('ft8-readout');
-  if (readout) readout.textContent = ft8Detail;
+  lastFt8 = ft8Detail;
   publishIqDebug();
 }
 
+/// The newest decode, for the status line and tests (the window shows the log).
+let lastFt8 = '';
+
 /** The last decoded FT8 message (tests and diagnostics). */
 export function lastFt8Message(): { text: string; count: number; detail: string } {
-  return { text: ft8Text, count: ft8Count, detail: ft8Detail };
+  return { text: ft8Text, count: ft8Count, detail: lastFt8 };
 }
 
 /**

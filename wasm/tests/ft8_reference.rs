@@ -113,5 +113,75 @@ fn the_decoder_finds_a_signal_that_does_not_start_at_sample_zero() {
     decoder.push_iq(&buffer);
     let decoded = decoder.decode().expect("must decode a signal inside the search window");
     assert_eq!(decoded.text, expected);
-    assert!(decoded.time_offset_s > 0.0, "offset {}", decoded.time_offset_s);
+    // The reported start is quantized to the fine search's 1/5-symbol grid (32 ms), so a transmission
+    // 25 ms into the window may legitimately be reported at 0: what this test is about is that the
+    // search finds and reads a signal that is not at the buffer start, not the sub-grid precision.
+    assert!(decoded.time_offset_s >= 0.0 && decoded.time_offset_s < 0.2,
+            "offset {}", decoded.time_offset_s);
+}
+
+/// A candidate near the end of the buffer must not reach the reader.
+///
+/// The fine search records a base whose symbols were cut off by the end of the window (its correlation
+/// is 0, which beats an empty best), and reading it indexed past the buffer: a wasm panic that killed
+/// the decoder worker silently on the first real band (measured: `dsp_pushes` stopped with the buffer
+/// 65 samples short of a slot). This is that shape: a transmission pushed so late in the buffer that
+/// only its head fits.
+#[test]
+fn a_transmission_too_late_in_the_buffer_is_skipped_not_indexed() {
+    let rate = manifest_number("rate");
+    let symbol_samples = (rate * 0.160) as usize;
+    let span = 79 * symbol_samples;                 // NUM_SYMBOLS
+    let mut iq = as_f32(IQ_BYTES);
+    // Pad so the burst starts 200 ms before the end: less than a transmission fits.
+    let total = iq.len() / 2 + (span - symbol_samples / 2);
+    let mut padded = vec![0.0_f32; total * 2];
+    let start = total - iq.len() / 2 - symbol_samples / 2;
+    padded[start * 2..start * 2 + iq.len()].copy_from_slice(&iq);
+    iq = padded;
+    let mut decoder = Ft8Decoder::new(rate);
+    decoder.push_iq(&iq);
+    // Either it finds nothing (the honest answer) or it finds the message; never a panic.
+    let _ = decoder.decode();
+}
+
+/// A busy band must not kill the decoder.
+///
+/// Reported from the bench: on a real 40 m band the decoder worker stopped reporting after its first
+/// attempt (the page showed no error because the worker died silently). A number of stations, each a
+/// tone with its own offset, is the shape that band has, and every stage of the search has to stay
+/// inside its buffers while it looks at all of them.
+#[test]
+fn a_busy_band_is_searched_without_a_panic() {
+    let rate = manifest_number("rate");
+    let seconds = 20.0_f64;
+    let total = (rate * seconds) as usize;
+    let mut seed = 0x1234_5678_u32;
+    let mut noise = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        ((seed >> 8) as f64 / 16_777_216.0 - 0.5) * 0.05
+    };
+    // Twenty stations, spread over the band, each 8-FSK at a different offset.
+    let stations: Vec<f64> = (0..20).map(|i| 250.0 + i as f64 * 137.0).collect();
+    let mut iq = Vec::with_capacity(total * 2);
+    for k in 0..total {
+        let t = k as f64 / rate;
+        let (mut i, mut q) = (noise(), noise());
+        for (index, base) in stations.iter().enumerate() {
+            let tone = (k / 7_680 + index) % 8;
+            let hz = base + tone as f64 * 6.25;
+            let ph = 2.0 * core::f64::consts::PI * hz * t;
+            i += 0.05 * ph.cos();
+            q += 0.05 * ph.sin();
+        }
+        iq.push(i as f32);
+        iq.push(q as f32);
+    }
+    let mut decoder = Ft8Decoder::new(rate);
+    for block in iq.chunks(48_000 * 2) {
+        decoder.push_iq(block);
+        // Every block that completes a slot attempts a decode; none of them may panic, and none may
+        // stop the decoder from accepting the next block.
+        let _ = decoder.decode();
+    }
 }

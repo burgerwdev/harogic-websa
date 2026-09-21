@@ -1,39 +1,42 @@
 /**
- * The FT8 readout: what the panel shows after a decode.
+ * The FT8 ingress record: a decode lands in the log the window renders, and a stream reset clears it.
  *
- * The decoder's correctness is covered elsewhere (the Rust fixture test and the artifact-level
- * test); this covers the last metre — that a decoded message reaches the panel with its slot
- * timing, and that a reset clears it.
+ * The panel's one-line readout is gone (the decode table replaced it), so what matters is the log and
+ * the diagnostic string the status line reads.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { lastFt8Message, renderFt8Message, resetSdrIq } from '../sdr/iqStream';
+import { ft8Spots } from '../sdr/ft8Log';
 
-const readout = (): HTMLElement => {
-	const existing = document.getElementById('ft8-readout');
-	if (existing) return existing as HTMLElement;
-	const element = document.createElement('div');
-	element.id = 'ft8-readout';
-	document.body.appendChild(element);
-	return element;
-};
+const report = (over: Record<string, unknown> = {}) => ({
+	text: 'CQ JO1WKO PM95',
+	frequencyHz: 1000,
+	timeOffsetS: 0.02,
+	snrDb: 12,
+	count: 1,
+	centerHz: 21_074_000,
+	...over,
+});
 
-describe('the FT8 readout', () => {
-	it('shows the decoded text with its frequency and slot timing', () => {
-		readout();                       // the panel exists before a message arrives
-		renderFt8Message({ text: 'CQ JO1WKO PM95', frequencyHz: 1000, timeOffsetS: 0.02, snrDb: 12, count: 1, centerHz: 21_074_000 });
-		expect(readout().textContent).toContain('CQ JO1WKO PM95');
-		expect(readout().textContent).toContain('1000 Hz');
-		expect(readout().textContent).toContain('+0.02 s');
+describe('the FT8 decode record', () => {
+	beforeEach(() => resetSdrIq());
+
+	it('appends the decode to the log and keeps the diagnostic detail', () => {
+		renderFt8Message(report());
+		expect(ft8Spots().length).toBe(1);
+		expect(ft8Spots()[0].text).toBe('CQ JO1WKO PM95');
 		expect(lastFt8Message().text).toBe('CQ JO1WKO PM95');
+		expect(lastFt8Message().detail).toContain('1000 Hz');
+		expect(lastFt8Message().detail).toContain('+0.02 s');
 		expect(lastFt8Message().count).toBe(1);
 	});
 
-	it('keeps a count across messages and clears on reset', () => {
-		renderFt8Message({ text: 'K1ABC W9XYZ EN37', frequencyHz: 1200, timeOffsetS: 0.01, snrDb: 5, count: 2, centerHz: 21_074_000 });
-		expect(lastFt8Message().count).toBe(2);
+	it('clears both the log and the detail on a stream reset', () => {
+		renderFt8Message(report());
+		expect(ft8Spots().length).toBe(1);
 		resetSdrIq();
+		expect(ft8Spots()).toEqual([]);
 		expect(lastFt8Message().text).toBe('');
-		expect(lastFt8Message().count).toBe(0);
-		expect(readout().textContent).toBe('—');
+		expect(lastFt8Message().detail).toBe('');
 	});
 });

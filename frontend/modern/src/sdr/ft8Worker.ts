@@ -17,6 +17,11 @@ let pipeline: WasmPipeline | null = null;
 let params: PipelineParams | null = null;
 let enabled = false;
 let pushes = 0;
+/// Frames dropped because they queued up behind a decode attempt and went stale.
+let skipped = 0;
+/// How old a queued frame may be before it is useless: a slot, past which the decoder's buffer has
+/// moved on anyway.
+const MAX_FRAME_AGE_MS = 16_000;
 
 function post(msg: Record<string, unknown>): void {
   (self as unknown as { postMessage: (m: unknown) => void }).postMessage(msg);
@@ -40,6 +45,16 @@ self.onmessage = (event: MessageEvent) => {
     build();
   } else if (msg.type === 'frame') {
     if (!enabled || !pipeline || !(msg.iq instanceof Float32Array)) return;
+    // A decode attempt blocks this thread for seconds (the band search plus the LDPC stage), during
+    // which the audio worker keeps sending the live stream. Feeding that backlog would only make the
+    // decoder fall further behind - it would fill a slot again and start another attempt immediately -
+    // and the decoder is a live listener, not an archive: audio older than a slot is dropped.
+    const at = Number(msg.at) || 0;
+    if (at > 0 && Date.now() - at > MAX_FRAME_AGE_MS) {
+      skipped += 1;
+      if (skipped % 50 === 1) post({ type: 'ft8-stats', pushes, buffered: pipeline.buffered(), decodes: pipeline.count(), skipped });
+      return;
+    }
     pushes += 1;
     const decoded = pipeline.push(msg.iq as Float32Array);
     post({
@@ -47,6 +62,7 @@ self.onmessage = (event: MessageEvent) => {
       pushes: pushes,
       buffered: pipeline.buffered(),
       decodes: pipeline.count(),
+      skipped,
     });
     if (decoded) post({ type: 'ft8', ...decoded, centerHz: msg.centerHz, count: decoded.count });
   } else if (msg.type === 'stop') {
