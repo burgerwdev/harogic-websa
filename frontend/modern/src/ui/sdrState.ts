@@ -57,7 +57,12 @@ export const sdrDeemph = createParam<number>('sdr.deemph', {
 });
 /** Audio volume (0..2). */
 export const sdrVolume = createParam<number>('sdr.volume', {
-	fallback: 0.8, scope: 'sdr', persistKey: 'web-sa-sdr-volume', ...hz,
+	fallback: 0.8, scope: 'sdr', persistKey: 'web-sa-sdr-volume',
+	// Not `hz`: its 0.5 comparison exists for frequencies and treats 0.8 and 0.5 as the same volume,
+	// so a slider move inside half a step was never sent. 0 has to be a value here, not "unset".
+	parse: Number,
+	serialize: String,
+	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
 });
 /** Squelch threshold in dBFS. */
 export const sdrSquelch = createParam<number>('sdr.squelch', {

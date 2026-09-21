@@ -742,7 +742,11 @@ export function bindActions() {
   // frequency inputs commit on Enter.
   const volumeEl = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
   volumeEl?.addEventListener('change', () => {
-    sdrVolume.set(parseFloat(volumeEl.value) || 0.8);
+    // A slider at its left end means 0, which is silence - `x || 0.8` read that 0 as "unset" and put
+    // the volume back to 0.8, so the listener heard the noise floor at nearly full level, louder than
+    // at the settings just beside it, and no amount of turning the level down reached silence.
+    const wanted = Number.parseFloat(volumeEl.value);
+    sdrVolume.set(Number.isFinite(wanted) ? Math.max(0, Math.min(2, wanted)) : 0.8);
     pushSdrPipeline();
     applySdrDemod();
   });
@@ -1050,7 +1054,9 @@ function sdrCycleDemod() {
 }
 
 function sdrNudgeVolume(dv: number) {
-  const next = Math.max(0, Math.min(2, (sdrVolume.get() || 0.8) + dv));
+  // `|| 0.8` here had the same defect as the slider's: at 0 the nudge started from 0.8 again.
+  const from = Number.isFinite(sdrVolume.get()) ? sdrVolume.get() : 0.8;
+  const next = Math.max(0, Math.min(2, from + dv));
   sdrVolume.set(next);
   const inp = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
   if (inp) inp.value = String(next);

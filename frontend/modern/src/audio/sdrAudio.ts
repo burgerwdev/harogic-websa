@@ -22,6 +22,9 @@ import { wasmDspAllowed } from '../sdr/capability';
 
 let ctx: AudioContext | null = null;
 let workletNode: AudioWorkletNode | null = null;
+/// A tap on the final audio node, for answering "what is actually reaching the speaker?" live.
+let spectrumProbe: AnalyserNode | null = null;
+let spectrumProbeBin = 1;
 let worker: Worker | null = null;
 //: True once the worklet's port has been handed to the WASM DSP worker. Its port can only be
 //: transferred once (a second transfer throws "Port at index 0 is already neutered"), so both the
@@ -224,6 +227,20 @@ async function initializeOutput(context: AudioContext): Promise<void> {
           }
         };
         candidate!.connect(context.destination);
+        // A spectrum probe on the *final* node, which is what the speaker gets: the PCM the DSP hands
+        // over is not the whole story (the ring, its resampler and the fades come after it), so a
+        // "periodic sound" that no amount of PCM analysis explains can be looked for here - and by
+        // whoever is listening, from the console, while it is audible. `window.websaSpectrum()` returns
+        // the strongest components (Hz, dB relative to the loudest) around the current playback.
+        try {
+          spectrumProbe?.disconnect();
+          spectrumProbe = context.createAnalyser();
+          spectrumProbe.fftSize = 16384;
+          candidate!.connect(spectrumProbe);
+          spectrumProbeBin = context.sampleRate / spectrumProbe.fftSize;
+        } catch {
+          spectrumProbe = null;
+        }
       });
       workletNode = candidate;
       candidate.onprocessorerror = () => {
@@ -353,6 +370,44 @@ function publishAudioDebug(): void {
  * The worklet plays its input as-is, so a pipeline that always emitted 48 kHz would play at the
  * wrong pitch and speed whenever the device runs at 44.1 kHz.
  */
+/**
+ * The strongest components of what is actually being played right now (the final node, after every
+ * stage), as `{ hz, db }` with the levels relative to the loudest one.
+ *
+ * Attached to `window.websaSpectrum` so it can be called from the console the moment a sound is
+ * audible - a listener's report of "a periodic sound" that the PCM cannot explain (bit-identical to
+ * the reference, and clean under an FFT) is either in this node's output or outside the browser.
+ */
+export function sampleSpectrum(
+  top = 6,
+): Array<{ hz: number; db: number; relativeDb: number; loudestDb: number }> {
+  if (!spectrumProbe) return [];
+  const bins = new Float32Array(spectrumProbe.frequencyBinCount);
+  spectrumProbe.getFloatFrequencyData(bins);
+  // The absolute level of the loudest bin is the difference between "this sound is here" and
+  // "this node is silent" - a relative spectrum alone cannot tell them apart.
+  const loudest = Math.max(...bins);
+  const index: number[] = [];
+  for (let i = 1; i < bins.length; i++) index.push(i);
+  index.sort((a, b) => bins[b] - bins[a]);
+  const out: Array<{ hz: number; db: number; relativeDb: number; loudestDb: number }> = [];
+  const used: number[] = [];
+  for (const i of index) {
+    if (!Number.isFinite(bins[i])) continue;
+    // One entry per peak: neighbouring bins of the same component are not separate findings.
+    if (used.some((u) => Math.abs(u - i) < 4)) continue;
+    used.push(i);
+    out.push({
+      hz: i * spectrumProbeBin,
+      db: bins[i],
+      relativeDb: bins[i] - bins[index[0]],
+      loudestDb: loudest,
+    });
+    if (out.length >= top) break;
+  }
+  return out;
+}
+
 export function audioSampleRate(): number {
   try {
     return ctx?.sampleRate || 48000;

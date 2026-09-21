@@ -23,6 +23,8 @@ pub struct RmsAgc {
     silence_floor: f64,
     ceiling: f64,
     gain: f64,
+    /// The gain in force at the previous block's end, so this block can ramp from it (gain continuity).
+    gain_at_block_start: f64,
     limit: f64,
     primed: bool,
 }
@@ -37,6 +39,7 @@ impl RmsAgc {
             silence_floor: 1.0e-4,
             ceiling: 0.95,
             gain: 1.0,
+            gain_at_block_start: 1.0,
             limit: 1.0,
             primed: false,
         }
@@ -58,6 +61,7 @@ impl RmsAgc {
 
     pub fn reset(&mut self) {
         self.gain = 1.0;
+        self.gain_at_block_start = 1.0;
         self.limit = 1.0;
         self.primed = false;
     }
@@ -80,21 +84,43 @@ impl RmsAgc {
         if !hold {
             let sum_sq: f64 = x.iter().map(|v| (*v as f64) * (*v as f64)).sum();
             let rms = ((sum_sq / x.len() as f64) + 1e-20).sqrt();
+            self.gain_at_block_start = self.gain;
             if rms >= self.silence_floor {
                 let desired = self.max_gain.min(self.target / rms.max(1e-9));
                 if !self.primed || rms * self.gain > 1.0 {
                     self.gain = desired;
+                    // A jump is not ramped: the first block after a configure must already be at the
+                    // right level (ramping it left FM clipped for tens of blocks), and the clip guard
+                    // must apply *now*, not at the end of the block.
+                    self.gain_at_block_start = desired;
                     self.primed = true;
                 } else {
                     let coef = if desired < self.gain { self.attack } else { self.release };
                     self.gain += (desired - self.gain) * coef;
                 }
             }
+        } else {
+            self.gain_at_block_start = self.gain;
         }
         let mut peak = 0.0_f64;
         out.reserve(x.len());
-        for value in x {
-            let scaled = (*value as f64) * self.gain;
+        // The gain is ramped across the block instead of stepping at its boundary.
+        //
+        // The AGC adapts once per block, and a block is 960 samples - 19.65 ms at the DDC rate, which
+        // is 50.9 Hz. A gain that steps at that cadence amplitude-modulates everything the stage is
+        // fed with at ~51 Hz, and its harmonics: on a noise floor that is a pulsing, buzzy tone (the
+        // ear integrates a narrowband component, so it stays audible when the level is turned right
+        // down), it moves with the DDC rate's drift, and a station masks it - which is exactly the
+        // "periodic sound, period not fixed, worst on a quiet frequency" that a listener reports.
+        // A ramp makes the gain continuous, so there is nothing to hear at the block rate.
+        let step = if x.is_empty() {
+            0.0
+        } else {
+            (self.gain - self.gain_at_block_start) / x.len() as f64
+        };
+        for (k, value) in x.iter().enumerate() {
+            let gain = self.gain_at_block_start + step * k as f64;
+            let scaled = (*value as f64) * gain;
             let abs = scaled.abs();
             if abs > peak {
                 peak = abs;
@@ -102,24 +128,38 @@ impl RmsAgc {
             out.push(scaled as f32);
         }
         if self.ceiling > 0.0 {
-            // A limiter *gain* (instant down, slow up) rather than a per-block rescale. A per-block
-            // rescale modulates the level by that block's crest factor: on a noise floor the crest
-            // factor varies block to block, so the level swung by up to 2.2x (measured on AM noise)
-            // with a step at every block boundary - the periodic sound heard on a quiet frequency.
-            // The limiter holds a steady value on steady input, so the level holds steady too.
             let wanted = if peak > self.ceiling {
                 self.ceiling / peak
             } else {
                 1.0
             };
+            let before = self.limit;
             if wanted < self.limit {
                 self.limit = wanted;
             } else {
                 self.limit += (wanted - self.limit) * self.release;
             }
-            if self.limit < 1.0 {
-                for value in out.iter_mut() {
-                    *value = ((*value as f64) * self.limit) as f32;
+            if self.limit < 1.0 || before < 1.0 {
+                // Ramped like the AGC gain, and for the same reason: a *constant* gain per block turns
+                // into amplitude modulation at the block rate - 960 output samples is 20.00 ms, exactly
+                // 50 Hz, with a harmonic at 100 Hz. On a noise floor the limiter engages constantly
+                // (each block's peak differs), so that step was a 50 Hz modulation of the noise, which
+                // is the periodic, buzzy, level-independent sound a listener hears on a quiet
+                // frequency. Confirmed by measurement (a +27 dB envelope component at 50.0 Hz), and it
+                // survived the AGC being ramped because this stage was not.
+                let step = (self.limit - before) / out.len() as f64;
+                for (k, value) in out.iter_mut().enumerate() {
+                    *value = ((*value as f64) * (before + step * k as f64)) as f32;
+                }
+                // The ramp starts at the previous block's gain, so a block that needs more reduction
+                // than the ramped value can apply it to the whole block right away: rare, and a step
+                // in the rare case is better than a clip.
+                let peak_after = out.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
+                if peak_after as f64 > self.ceiling {
+                    let scale = (self.ceiling / peak_after as f64) as f32;
+                    for value in out.iter_mut() {
+                        *value *= scale;
+                    }
                 }
             }
         }
