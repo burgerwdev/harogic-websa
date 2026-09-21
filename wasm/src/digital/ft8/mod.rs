@@ -217,11 +217,15 @@ impl Ft8Decoder {
                     let mut energies = [0.0_f64; 8];
                     for (tone, energy) in energies.iter_mut().enumerate() {
                         let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
-                        // Full rate: a decimated correlation finds the signal but quantizes the *time*
-                        // it starts at (measured: a transmission 25 ms into the window was reported at
-                        // 0), and the slot timing is shown to the operator. The band candidates are
-                        // narrow enough now that the full-rate search fits the slot budget.
-                        *energy = self.tone_energy(start, symbol_samples, frequency);
+                        // Decimated like the coarse pass. The full-rate search cost 99 time/frequency
+                        // offsets x 7 symbols x 8 tones x one symbol window each - about 430M flops per
+                        // candidate, tens of seconds in wasm - and with a handful of candidates the
+                        // decoder worker sat inside a single call for minutes: its frame counter froze
+                        // and nothing was ever decoded (measured: `buffered` pinned at exactly one slot,
+                        // 719602 complex samples). Every 8th sample still estimates the correlation,
+                        // and the *start* is still sample-exact (the offsets around the candidate carry
+                        // the timing), so what is given up is a little of the estimate's variance.
+                        *energy = self.tone_energy_decimated(start, symbol_samples, frequency, 8);
                     }
                     let sum: f64 = energies.iter().sum();
                     sync += energies[*expected as usize];
@@ -338,7 +342,9 @@ const BAND_HIGH_HZ: f64 = 3_000.0;
 const BAND_STEP_HZ: f64 = 12.5;
 /// Candidates that go on to the fine search and the CRC. Each costs a full sync search, and only one
 /// of them can be the transmission (a 24-bit CRC decides), so this is a cost/false-positive trade.
-const MAX_CANDIDATES: usize = 16;
+/// Kept small on purpose: the fine search is linear in this, and a real transmission is among the
+/// strongest candidates by a wide margin. Sixteen candidates cost minutes of wasm time per slot.
+const MAX_CANDIDATES: usize = 8;
 /// A candidate must beat the whole scan's average score by this factor.
 ///
 /// Most slots carry nothing, and without a gate every empty slot paid six full sync searches plus six

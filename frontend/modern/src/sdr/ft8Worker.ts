@@ -124,9 +124,21 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
   if (!enabled || !pipeline || frame.iq.length === 0) return;
-  // No age/skip logic: with its own socket this worker receives the live stream at its own pace, and
-  // the buffer it hands the decoder is contiguous (which a slot needs). A decode that takes a second
-  // simply delays the next attempt, exactly as the mode's cadence intends.
+  // Keep only the newest slot's worth of baseband.
+  //
+  // A decode attempt blocks this thread, so frames that arrive during it queue up; when the backlog
+  // reaches a couple of slots the decoder is working on a transmission that has already ended, and it
+  // never catches up (measured: the push counter froze for ~30 s at a time, one slot's worth of frames
+  // arriving in a burst, and the UI sat on "waiting for a decode" all the while). FT8 slots are
+  // independent, so the lazy correct answer is to drop the stale ones and decode the newest: at worst
+  // one slot is torn, instead of every slot being unreadable. The buffer is bounded to a little over a
+  // slot, so the frames dropped here are ones no decode could have used anyway.
+  // `buffered()` counts *complex* samples, so a slot is 15 s of them at the baseband rate.
+  const budget = params ? params.fsIn * 15 * 1.5 : 0;
+  if (budget > 0 && pipeline.buffered() > budget) {
+    skipped += 1;
+    pipeline.reset();
+  }
   const decoded = pipeline.push(frame.iq);
   post({
     type: 'ft8-stats',
@@ -134,6 +146,7 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
     buffered: pipeline.buffered(),
     decodes: pipeline.count(),
     dropped,
+    skipped,
   });
   if (decoded) post({ type: 'ft8', ...decoded, centerHz: frame.centerHz, count: decoded.count });
 }
