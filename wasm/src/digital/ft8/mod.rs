@@ -106,21 +106,79 @@ impl Ft8Decoder {
             return None;
         }
 
-        let (best_time, best_freq, snr) = self.find_sync(symbol_samples)?;
-        let energies = self.tone_energies(best_time, best_freq, symbol_samples);
-        let llr = symbols_to_llr(&energies);
-        let bits = ldpc_decode(&llr, MAX_LDPC_ITERATIONS)?;
-        if !crc_ok(&bits) {
-            return None;
+        // The band's strongest sync candidates, best first: the coarse scan is cheap, and the
+        // expensive stages (fine search, LDPC, CRC) only run on the few that could be a transmission.
+        for (candidate_time, candidate_hz) in self.candidates(symbol_samples) {
+            let Some((best_time, best_freq, snr)) =
+                self.find_sync_at(symbol_samples, candidate_hz, candidate_time)
+            else {
+                continue;
+            };
+            let energies = self.tone_energies(best_time, best_freq, symbol_samples, candidate_hz);
+            let llr = symbols_to_llr(&energies);
+            let Some(bits) = ldpc_decode(&llr, MAX_LDPC_ITERATIONS) else {
+                continue;
+            };
+            if !crc_ok(&bits) {
+                continue;
+            }
+            let payload: [u8; 77] = core::array::from_fn(|i| bits[i]);
+            let Some(text) = unpack_message(&payload) else {
+                continue;
+            };
+            return Some(Ft8Message {
+                text,
+                frequency_hz: candidate_hz + best_freq,
+                time_offset_s: best_time as f64 / self.rate,
+                snr_db: snr,
+            });
         }
-        let payload: [u8; 77] = core::array::from_fn(|i| bits[i]);
-        let text = unpack_message(&payload)?;
-        Some(Ft8Message {
-            text,
-            frequency_hz: BASE_SEARCH_HZ + best_freq,
-            time_offset_s: best_time as f64 / self.rate,
-            snr_db: snr,
-        })
+        None
+    }
+
+    /// The band's strongest Costas candidates over the buffered slot, as `(time, base frequency)`.
+    ///
+    /// A decimated correlation (every 8th sample: the tones survive, the noise aliases) swept over the
+    /// slot and over the band. One symbol of time resolution is enough because the fine search covers
+    /// +/-0.128 s around whatever this picks.
+    fn candidates(&self, symbol_samples: usize) -> Vec<(usize, f64)> {
+        let total = self.samples.len() / 2;
+        let span = NUM_SYMBOLS * symbol_samples;
+        if total < span {
+            return Vec::new();
+        }
+        let limit = total - span;
+        let time_step = symbol_samples.max(1);
+        let mut scored: Vec<(f64, usize, f64)> = Vec::new();
+        let mut base = BAND_LOW_HZ;
+        while base <= BAND_HIGH_HZ {
+            let mut time = 0;
+            while time <= limit {
+                let mut score = 0.0;
+                for (symbol_index, expected) in COSTAS.iter().enumerate() {
+                    let start = time + symbol_index * symbol_samples;
+                    let frequency = base + *expected as f64 * TONE_SPACING_HZ;
+                    score += self.tone_energy_decimated(start, symbol_samples, frequency, 8);
+                }
+                scored.push((score, time, base));
+                time += time_step;
+            }
+            base += BAND_STEP_HZ;
+        }
+        if scored.is_empty() {
+            return Vec::new();
+        }
+        let mean = scored.iter().map(|entry| entry.0).sum::<f64>() / scored.len() as f64;
+        let floor = mean * CANDIDATE_MARGIN;
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+        scored.truncate(MAX_CANDIDATES);
+        // An empty slot is rejected here, in the cheap stage, instead of six times in the expensive
+        // one; a real transmission's candidate is far above the average.
+        scored
+            .into_iter()
+            .filter(|(score, _, _)| *score > floor)
+            .map(|(_, time, hz)| (time, hz))
+            .collect()
     }
 
     /// Costas correlation over (time, frequency) — the signal has to be found before it is read.
@@ -129,11 +187,15 @@ impl Ft8Decoder {
     /// worker has no slot clock), then this fine search covers the slot edge (+/- 0.128 s) around
     /// that location together with the frequency offsets. FT8 transmissions are slot-synchronised,
     /// so once the burst is found the fine window is exactly the jitter a receiver must tolerate.
-    fn find_sync(&self, symbol_samples: usize) -> Option<(usize, f64, f64)> {
+    fn find_sync_at(
+        &self,
+        symbol_samples: usize,
+        base_hz: f64,
+        coarse: usize,
+    ) -> Option<(usize, f64, f64)> {
         let mut best: Option<(usize, f64, f64)> = None;
         let step = TONE_SPACING_HZ / 2.0;
         let time_step = symbol_samples / (TIME_OFFSET_STEPS as usize + 1);
-        let coarse = self.coarse_offset(symbol_samples);
         for time_index in -(TIME_OFFSET_STEPS as i64)..=(TIME_OFFSET_STEPS as i64) {
             let base = (coarse as i64 + time_index * time_step as i64).max(0) as usize;
             for freq_index in -FREQ_OFFSET_STEPS..=FREQ_OFFSET_STEPS {
@@ -147,8 +209,11 @@ impl Ft8Decoder {
                     }
                     let mut energies = [0.0_f64; 8];
                     for (tone, energy) in energies.iter_mut().enumerate() {
-                        let frequency = BASE_SEARCH_HZ + offset + tone as f64 * TONE_SPACING_HZ;
-                        *energy = self.tone_energy(start, symbol_samples, frequency);
+                        let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
+                        // Decimated by 4: this stage is a *search* (the LLR stage below re-reads the
+                        // signal at full rate), and a decimated correlation keeps the tone while
+                        // costing a quarter of the samples.
+                        *energy = self.tone_energy_decimated(start, symbol_samples, frequency, 4);
                     }
                     let sum: f64 = energies.iter().sum();
                     sync += energies[*expected as usize];
@@ -200,39 +265,6 @@ impl Ft8Decoder {
         re * re + im * im
     }
 
-    /// Where a transmission most likely starts inside the buffered window.
-    ///
-    /// The worker receives a rolling stream and has no slot clock, so its window does not have to
-    /// begin at a transmission - and discarding a whole slot never changed that phase, which is why
-    /// the live path decoded nothing while the same IQ decoded fine when handed over aligned
-    /// (measured: `dsp_buffered` cycling 720k and `ft8=0` in the browser). This finds the burst: a
-    /// cheap decimated Costas correlation swept over the offsets where a whole transmission fits,
-    /// refined afterwards by the full-rate search.
-    fn coarse_offset(&self, symbol_samples: usize) -> usize {
-        let total = self.samples.len() / 2;
-        let span = NUM_SYMBOLS * symbol_samples;
-        if total < span {
-            return 0;
-        }
-        let limit = total - span;
-        let step = (symbol_samples / 4).max(1);      // ~0.04 s
-        let mut best = (0usize, f64::MIN);
-        let mut offset = 0;
-        while offset <= limit {
-            let mut score = 0.0;
-            for (symbol_index, expected) in COSTAS.iter().enumerate() {
-                let start = offset + symbol_index * symbol_samples;
-                let frequency = BASE_SEARCH_HZ + *expected as f64 * TONE_SPACING_HZ;
-                score += self.tone_energy_decimated(start, symbol_samples, frequency, 8);
-            }
-            if score > best.1 {
-                best = (offset, score);
-            }
-            offset += step;
-        }
-        best.0
-    }
-
     /// Magnitude² of one tone over one symbol window.
     fn tone_energy(&self, start: usize, length: usize, frequency: f64) -> f64 {
         let step = -2.0 * core::f64::consts::PI * frequency / self.rate;
@@ -252,13 +284,19 @@ impl Ft8Decoder {
     }
 
     /// The eight tone energies of every symbol, at the located (time, frequency).
-    fn tone_energies(&self, base: usize, offset: f64, symbol_samples: usize) -> Vec<[f64; 8]> {
+    fn tone_energies(
+        &self,
+        base: usize,
+        offset: f64,
+        symbol_samples: usize,
+        base_hz: f64,
+    ) -> Vec<[f64; 8]> {
         let mut out = Vec::with_capacity(NUM_SYMBOLS);
         for symbol_index in 0..NUM_SYMBOLS {
             let start = base + symbol_index * symbol_samples;
             let mut energies = [0.0_f64; 8];
             for (tone, energy) in energies.iter_mut().enumerate() {
-                let frequency = BASE_SEARCH_HZ + offset + tone as f64 * TONE_SPACING_HZ;
+                let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
                 *energy = self.tone_energy(start, symbol_samples, frequency);
             }
             out.push(energies);
@@ -272,9 +310,25 @@ fn symbol_samples_at(rate: f64) -> usize {
     (rate * SYMBOL_PERIOD_S) as usize
 }
 
-/// Nominal audio frequency the search starts from (the fixture and the UI both use 1 kHz).
-const BASE_SEARCH_HZ: f64 = 1_000.0;
-
+/// The audio band FT8 occupies, in Hz.
+///
+/// A receiver that searched only around one nominal frequency (1 kHz) decoded the committed fixture -
+/// which happens to sit exactly there - and nothing on a real band: reported from the bench after a
+/// phone app decoded a transmission this decoder could not see. The tones are anywhere in this band.
+const BAND_LOW_HZ: f64 = 200.0;
+const BAND_HIGH_HZ: f64 = 3_000.0;
+/// Spacing of the coarse candidates. The fine search covers +/-25 Hz around each, so 50 Hz leaves no
+/// gap in the band.
+const BAND_STEP_HZ: f64 = 50.0;
+/// Candidates that go on to the fine search and the CRC. Each costs a full sync search, and only one
+/// of them can be the transmission (a 24-bit CRC decides), so this is a cost/false-positive trade.
+const MAX_CANDIDATES: usize = 6;
+/// A candidate must beat the whole scan's average score by this factor.
+///
+/// Most slots carry nothing, and without a gate every empty slot paid six full sync searches plus six
+/// LDPC attempts (measured: a noise slot took seconds). A transmission's Costas block lifts its
+/// candidate well above the band's average; noise does not lift any of them.
+const CANDIDATE_MARGIN: f64 = 1.5;
 /// LLRs for the 174 data bits from the per-symbol tone energies.
 ///
 /// The sign convention is the reference's (`decode.c`: "log likelihood log(p(1)/p(0))"), and the

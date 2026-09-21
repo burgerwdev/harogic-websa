@@ -49,9 +49,9 @@ export class WasmPipeline {
 		return this.digital;
 	}
 
-	/** The de-emphasis this pipeline is running, in microseconds (diagnostics). */
+	/** The requested de-emphasis in microseconds (`< 0` = the mode's default). */
 	get deemphUs(): number {
-		return this.params.deemphUs > 0 ? this.params.deemphUs : 0;
+		return this.params.deemphUs;
 	}
 
 	private create(): void {
@@ -90,11 +90,24 @@ export class WasmPipeline {
 		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbfs);
 	}
 
-	/** De-emphasis in microseconds (<= 0 = none). The panel's De-emph control. */
+	/**
+	 * De-emphasis in microseconds. `< 0` is the panel's Auto: the DSP resolves it against its own
+	 * mode table (50 us for broadcast WFM, none elsewhere), `0` switches it off, a positive value
+	 * sets it. Mapping Auto to 0 here is what made the control look dead *and* left WFM running with
+	 * its de-emphasis off.
+	 */
 	setDeemph(tauUs: number): void {
 		if (!this.handle || this.digital) return;
-		const tau = Number.isFinite(tauUs) && tauUs > 0 ? tauUs : 0;
-		this.module.exports.websa_dsp_demod_set_deemph(this.handle, tau);
+		this.module.exports.websa_dsp_demod_set_deemph(
+			this.handle,
+			Number.isFinite(tauUs) ? tauUs : -1,
+		);
+	}
+
+	/** The de-emphasis in force, in microseconds (0 = none), as the DSP resolved it. */
+	deemphInForce(): number {
+		if (!this.handle || this.digital) return 0;
+		return this.module.exports.websa_dsp_demod_deemph(this.handle);
 	}
 
 	setVolume(volume: number): void {

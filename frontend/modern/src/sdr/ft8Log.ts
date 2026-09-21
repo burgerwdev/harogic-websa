@@ -21,6 +21,28 @@ export interface Ft8Spot {
 	timeOffsetS: number;
 }
 
+/**
+ * Where the decoder looks for tones, in Hz of audio (the FT8 band).
+ *
+ * The protocol puts its eight tones across this band, so it is a property of FT8 and not of the UI's
+ * IF filter: that filter sets the channel the device hands over and the analog modes' audio passband,
+ * while the decoder reads the whole channelized baseband either way.
+ */
+export const FT8_SEARCH_LOW_HZ = 200;
+export const FT8_SEARCH_HIGH_HZ = 3000;
+/** The frequency inside that band a clicked decode is parked at (WSJT-X does the same). */
+export const FT8_TUNE_HZ = 1_000;
+
+/**
+ * The dial frequency that puts a decoded signal at [`FT8_TUNE_HZ`] inside the decoder's band.
+ *
+ * Tuning to the signal's own frequency would put it at DC, outside the band the decoder searches -
+ * which is how a clicked row used to make a signal undecodable.
+ */
+export function ft8DialFor(signalHz: number): number {
+	return signalHz - FT8_TUNE_HZ;
+}
+
 /** How many decodes are kept (a band's worth of traffic; the window scrolls). */
 export const MAX_FT8_SPOTS = 200;
 

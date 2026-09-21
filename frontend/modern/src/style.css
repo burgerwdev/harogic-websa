@@ -235,6 +235,8 @@ select:disabled { color: var(--label); }
 /* GNSS 指示器 + 详情浮层 */
 .gnss-indicator { cursor: pointer; }
 .gnss-indicator:hover { text-decoration: underline; }
+.ft8-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ft8-line #ft8-readout { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* FT8 decode window: a floating table (draggable by its head, resizable by its corner). */
 .ft8-window {
   position: fixed; z-index: 45; display: none; flex-direction: column;

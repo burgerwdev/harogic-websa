@@ -64,12 +64,16 @@ function writeGeometry(geometry: Geometry): void {
 }
 
 function clampToViewport(geometry: Geometry): Geometry {
+	// At least a head's worth of the window stays on screen, so it can always be dragged back.
 	const maxX = Math.max(0, window.innerWidth - 120);
 	const maxY = Math.max(0, window.innerHeight - 40);
+	const maxW = Math.max(260, window.innerWidth);
+	const maxH = Math.max(120, window.innerHeight);
 	return {
-		...geometry,
 		x: Math.min(Math.max(0, geometry.x), maxX),
 		y: Math.min(Math.max(0, geometry.y), maxY),
+		w: Math.min(Math.max(260, geometry.w), maxW),
+		h: Math.min(Math.max(120, geometry.h), maxH),
 	};
 }
 
@@ -193,13 +197,25 @@ export function initFt8Window(next: Ft8WindowHooks): void {
 
 	const geometry = readGeometry();
 	if (geometry) {
+		// A stored position from a bigger window (or a broken one) is pulled back into view: a window
+		// the user cannot reach is worse than a moved one.
 		const clamped = clampToViewport(geometry);
 		win.style.left = `${clamped.x}px`;
 		win.style.top = `${clamped.y}px`;
 		win.style.width = `${clamped.w}px`;
 		win.style.height = `${clamped.h}px`;
 	} else {
-		// First run: bottom-left of the spectrum area, out of the way of the panel and the canvas.
+		// First run: an explicit position inside the viewport. Leaving `left`/`top` unset made the
+		// window land wherever its (fixed) static position happened to be - off-screen with its head
+		// out of reach, which is a window that cannot be dragged back (reported).
+		const start = clampToViewport({
+			x: Math.round((window.innerWidth - DEFAULT_SIZE.w) / 2),
+			y: Math.max(60, Math.round(window.innerHeight * 0.25)),
+			w: DEFAULT_SIZE.w,
+			h: DEFAULT_SIZE.h,
+		});
+		win.style.left = `${start.x}px`;
+		win.style.top = `${start.y}px`;
 		win.style.width = `${DEFAULT_SIZE.w}px`;
 		win.style.height = `${DEFAULT_SIZE.h}px`;
 	}

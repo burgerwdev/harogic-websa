@@ -134,6 +134,34 @@ describe('FT8 through the committed artifact', () => {
 		pipeline.free();
 	}, 180_000);
 
+	it('decodes a transmission that is not at the nominal 1 kHz', async () => {
+		// Reported from the bench: a phone app decoded a transmission this decoder could not see,
+		// because the search only covered 1 kHz +/-25 Hz (and the committed fixture happens to sit
+		// exactly at 1 kHz, so it passed while a real band decoded nothing). A real FT8 signal is
+		// anywhere in the 200-3000 Hz audio band; this is that case, through the shipped artifact.
+		const meta = manifest();
+		const shift = 1_400.0;
+		const baseband = fixtureBaseband();
+		const slot = new Float32Array(meta.rate * 15 * 2);
+		for (let k = 0; k < baseband.length / 2; k++) {
+			const ph = (2 * Math.PI * shift * k) / meta.rate;
+			const i = baseband[2 * k];
+			const q = baseband[2 * k + 1];
+			slot[2 * k] = (i * Math.cos(ph) - q * Math.sin(ph)) * 0.25 * 32767;
+			slot[2 * k + 1] = (i * Math.sin(ph) + q * Math.cos(ph)) * 0.25 * 32767;
+		}
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new WasmPipeline(module, params(), true);
+		let decoded = null;
+		for (let start = 0; start < slot.length / 2; start += 4_096) {
+			const block = slot.subarray(start * 2, Math.min(start + 4_096, slot.length / 2) * 2);
+			decoded = pipeline.push(block) ?? decoded;
+		}
+		expect(decoded?.text).toBe(meta.message);
+		expect(Math.abs((decoded?.frequencyHz ?? 0) - (meta.base_hz + shift))).toBeLessThan(40);
+		pipeline.free();
+	}, 180_000);
+
 	it('refuses to create a pipeline for an invalid geometry instead of failing later', async () => {
 		const module = await instantiateDsp(artifactBytes());
 		const pipeline = new WasmPipeline(module, params({ outRate: 0 }), true);
@@ -160,5 +188,5 @@ describe('FT8 through the committed artifact', () => {
 		}
 		expect(decoded).toBeNull();
 		pipeline.free();
-	});
+	}, 30_000);
 });

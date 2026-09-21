@@ -33,6 +33,7 @@ export interface DspExports {
 	websa_dsp_demod_set_audio(handle: number, enabled: number): number;
 	websa_dsp_demod_set_nr(handle: number, enabled: number, strength: number): number;
 	websa_dsp_demod_set_deemph(handle: number, tauUs: number): number;
+	websa_dsp_demod_deemph(handle: number): number;
 	websa_dsp_demod_set_squelch(handle: number, dbfs: number): number;
 	websa_dsp_demod_retune(handle: number): number;
 	websa_dsp_demod_reset(handle: number): number;

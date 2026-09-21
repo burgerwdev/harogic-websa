@@ -230,6 +230,12 @@ pub extern "C" fn websa_dsp_demod_set_deemph(handle: u32, tau_us: f64) -> u32 {
     with_pipeline(handle, |state| u32::from(state.pipeline.set_deemph_us(tau_us))).unwrap_or(0)
 }
 
+/// The de-emphasis in force, in microseconds (0 = none): what the panel's setting resolved to.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_deemph(handle: u32) -> f64 {
+    with_pipeline(handle, |state| state.pipeline.deemph_us()).unwrap_or(-1.0)
+}
+
 /// The squelch gate's threshold in dBFS — the panel's squelch control.
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_set_squelch(handle: u32, dbfs: f64) -> u32 {

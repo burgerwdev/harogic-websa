@@ -53,6 +53,28 @@ fn the_committed_fixture_decodes_to_the_exact_transmitted_message() {
     assert!(decoded.time_offset_s.abs() < 0.2, "start at {}", decoded.time_offset_s);
 }
 
+/// One slot decode has to fit inside its own slot with room to spare.
+///
+/// The search covers the whole FT8 audio band now (200-3000 Hz of candidates, each refined and then
+/// handed to the LDPC/CRC stage), which is what makes a real band decodable at all; this keeps the
+/// cost honest - the decoder runs in its own worker, but a slot that took longer than a slot would
+/// fall behind the stream forever. Release-only: a debug build is unoptimized.
+#[test]
+fn a_slot_decode_stays_well_inside_a_slot() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let rate = manifest_number("rate");
+    let iq = as_f32(IQ_BYTES);
+    let mut decoder = Ft8Decoder::new(rate);
+    decoder.push_iq(&iq);
+    let start = std::time::Instant::now();
+    let decoded = decoder.decode().expect("the fixture must decode");
+    let seconds = start.elapsed().as_secs_f64();
+    println!("FT8 slot decode: {:.3} s for '{}'", seconds, decoded.text);
+    assert!(seconds < 4.0, "a slot decode took {seconds:.3} s");
+}
+
 #[test]
 fn the_decoder_rejects_a_slot_that_carries_no_signal() {
     // The CRC is what separates "decoded" from "invented": noise must produce nothing.

@@ -26,6 +26,7 @@ import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
+import { ft8DialFor } from '../sdr/ft8Log';
 import { initFt8Window, setFt8WindowAvailable, toggleFt8Window } from './ft8Window';
 import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
@@ -755,7 +756,8 @@ export function bindActions() {
   // kernels cannot disagree; the handler is the same path the panel always used.
   // The FT8 decode window: its toggle lives next to the readout, its rows come from the log, and a
   // row click tunes the receiver (the only action an FT8 operator takes on a decode).
-  initFt8Window({ onTune: (hz) => listenAtFreq(hz) });
+  // A row tunes the *dial* so the signal lands inside the decoder's band (see `ft8DialFor`).
+  initFt8Window({ onTune: (hz) => listenAtFreq(ft8DialFor(hz)) });
   const demodGroup = document.getElementById('sdr-demod-group');
   if (demodGroup) {
     void initSdrDemodGroup(demodGroup, {
