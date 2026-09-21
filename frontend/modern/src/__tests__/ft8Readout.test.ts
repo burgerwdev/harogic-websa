@@ -20,7 +20,7 @@ const readout = (): HTMLElement => {
 describe('the FT8 readout', () => {
 	it('shows the decoded text with its frequency and slot timing', () => {
 		readout();                       // the panel exists before a message arrives
-		renderFt8Message({ text: 'CQ JO1WKO PM95', frequencyHz: 1000, timeOffsetS: 0.02, snrDb: 12, count: 1 });
+		renderFt8Message({ text: 'CQ JO1WKO PM95', frequencyHz: 1000, timeOffsetS: 0.02, snrDb: 12, count: 1, centerHz: 21_074_000 });
 		expect(readout().textContent).toContain('CQ JO1WKO PM95');
 		expect(readout().textContent).toContain('1000 Hz');
 		expect(readout().textContent).toContain('+0.02 s');
@@ -29,7 +29,7 @@ describe('the FT8 readout', () => {
 	});
 
 	it('keeps a count across messages and clears on reset', () => {
-		renderFt8Message({ text: 'K1ABC W9XYZ EN37', frequencyHz: 1200, timeOffsetS: 0.01, snrDb: 5, count: 2 });
+		renderFt8Message({ text: 'K1ABC W9XYZ EN37', frequencyHz: 1200, timeOffsetS: 0.01, snrDb: 5, count: 2, centerHz: 21_074_000 });
 		expect(lastFt8Message().count).toBe(2);
 		resetSdrIq();
 		expect(lastFt8Message().text).toBe('');

@@ -1,0 +1,73 @@
+// The FT8 decode log: what the protocol decoded, newest first.
+//
+// The worker reports one transmission at a time (text plus the timing it was found at); this keeps
+// the recent ones so the operator can read a band's worth of traffic instead of the last line. A
+// leaf module on purpose: the worker's ingress fills it, the window renders it, and neither needs to
+// know about the other.
+import type { Ft8Report } from './types';
+
+export interface Ft8Spot {
+	/** Wall clock (epoch ms) the decode arrived - the operator's own clock, for the table's order. */
+	at: number;
+	/** Absolute frequency of tone 0 in Hz: the channel's centre plus the audio offset. */
+	hz: number;
+	/** The decoded text (`CQ JO1WKO PM95`). */
+	text: string;
+	/** Sync-correlation SNR estimate in dB (a diagnostic, not a calibrated measurement). */
+	snrDb: number;
+	/** Audio offset inside the channel, in Hz (the `DF` an FT8 operator reads). */
+	offsetHz: number;
+	/** Where the transmission started relative to the slot, in seconds. */
+	timeOffsetS: number;
+}
+
+/** How many decodes are kept (a band's worth of traffic; the window scrolls). */
+export const MAX_FT8_SPOTS = 200;
+
+let spots: Ft8Spot[] = [];
+const listeners = new Set<(spots: Ft8Spot[]) => void>();
+
+function notify(): void {
+	for (const listener of listeners) listener(spots);
+}
+
+/** Record one decode (newest first). Returns the spot that was appended. */
+export function addFt8Spot(report: Ft8Report, at = Date.now()): Ft8Spot {
+	const spot: Ft8Spot = {
+		at,
+		hz: (Number(report.centerHz) || 0) + (Number(report.frequencyHz) || 0),
+		text: String(report.text || ''),
+		snrDb: Number(report.snrDb) || 0,
+		offsetHz: Number(report.frequencyHz) || 0,
+		timeOffsetS: Number(report.timeOffsetS) || 0,
+	};
+	spots = [spot, ...spots].slice(0, MAX_FT8_SPOTS);
+	notify();
+	return spot;
+}
+
+/** The decodes, newest first. */
+export function ft8Spots(): Ft8Spot[] {
+	return spots;
+}
+
+export function clearFt8Spots(): void {
+	if (spots.length === 0) return;
+	spots = [];
+	notify();
+}
+
+/** Watch the log (the window re-renders); returns the unsubscribe function. */
+export function subscribeFt8Spots(listener: (spots: Ft8Spot[]) => void): () => void {
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+
+/** UTC time of day for the table (`12:34:56`), which is what an FT8 operator schedules on. */
+export function utcClock(at: number): string {
+	const d = new Date(at);
+	const pad = (value: number) => String(value).padStart(2, '0');
+	return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}

@@ -26,7 +26,8 @@ import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
-import { dspLevelDbfs, resetSdrIq, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
+import { initFt8Window, setFt8WindowAvailable, toggleFt8Window } from './ft8Window';
+import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
@@ -456,6 +457,8 @@ function pushSdrPipeline(): void {
       mode: String(sdrDemod.get() || 'am'),
       ifBw: Number(sdrIfbw.get()) || 6000,
       pitch: Number(sdrPitchHz()) || 700,
+      // -1 = the mode's default: the DSP resolves it against its own mode table.
+      deemphUs: sdrDeemph.get(),
     },
     {
       volume: sdrVolume.get(),
@@ -484,13 +487,17 @@ function applySdrAudioPreference() {
   const on = sdrAudioOn.get();
   sdrAudioOn.set(on);
   setSdrAudioEnabled(on);
+  setSdrDspAudioEnabled(on);
   syncSdrAudioButton();
 }
 
 export function toggleSdrAudio() {
   const on = !sdrAudioOn.get();
   sdrAudioOn.set(on); // the slot persists it (single writer)
+  // Both audio owners are told: the Python worker (the fallback) and the browser DSP worker, which
+  // is the one holding the worklet's port when it is the audio source.
   setSdrAudioEnabled(on);
+  setSdrDspAudioEnabled(on);
   syncSdrAudioButton();
 }
 
@@ -544,6 +551,8 @@ export function syncSdrPanel(s: any) {
   // user actions push them immediately as well, this keeps the two in step after a reconnect).
   sdrActual = (sdr.actual || {}) as Record<string, unknown>;
   pushSdrPipeline();
+  // The FT8 table only means something while FT8 is the demodulator (the registry's id, not a label).
+  setFt8WindowAvailable(String(sdr.demod || '') === 'ft8');
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)
@@ -688,6 +697,7 @@ export function bindActions() {
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
     'toggle-sdr-nr': () => toggleSdrNr(),
+    'toggle-ft8-window': () => toggleFt8Window(),
     'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
     'rta-span-down': () => rtaSpanStep(1),
@@ -743,12 +753,16 @@ export function bindActions() {
   });
   // The demod group is generated from the DSP plugin registry, so the mode buttons and the
   // kernels cannot disagree; the handler is the same path the panel always used.
+  // The FT8 decode window: its toggle lives next to the readout, its rows come from the log, and a
+  // row click tunes the receiver (the only action an FT8 operator takes on a decode).
+  initFt8Window({ onTune: (hz) => listenAtFreq(hz) });
   const demodGroup = document.getElementById('sdr-demod-group');
   if (demodGroup) {
     void initSdrDemodGroup(demodGroup, {
       onSelect: (id) => {
         sdrDemod.set(id);
         renderSdrState();
+        setFt8WindowAvailable(id === 'ft8');
         applySdrDemod();
       },
     });
@@ -763,7 +777,11 @@ export function bindActions() {
   });
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.addEventListener('click', () => {
-      sdrDeemph.set(Number((el as HTMLElement).dataset.sdrDeemph ?? -1));
+      const value = Number((el as HTMLElement).dataset.sdrDeemph ?? -1);
+      sdrDeemph.set(value);
+      // The browser runs the audio chain, so it gets the change now (the backend's command only
+      // records it for the fallback and, with the browser demodulating, must not reconfigure).
+      setSdrPipelineDeemph(value);
       renderSdrState();
       applySdrDemod();
     });

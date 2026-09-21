@@ -145,6 +145,16 @@ pub trait AnalogDemodulator: Send {
     /// New centre within the same capture: drop the channel history, keep the level.
     fn retune(&mut self);
     fn reset(&mut self);
+
+    /// Change the de-emphasis time constant (microseconds, `<= 0` = none). A mode with no such
+    /// control ignores it; the analog modes all have one (it is what a broadcast pre-emphasis needs
+    /// undone), so the default is a no-op for stand-ins only.
+    fn set_deemph_us(&mut self, _tau_us: f64) {}
+
+    /// The de-emphasis in force, in microseconds (0 = none). Diagnostics and the status readout.
+    fn deemph_us(&self) -> f64 {
+        0.0
+    }
 }
 
 /// What a protocol knows about its most recent decode (shown in the UI).

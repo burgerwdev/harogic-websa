@@ -106,6 +106,20 @@ export function sdrModeIds(): string[] {
 	return [...analogModeIds(), ...digitalModeIds()];
 }
 
+/**
+ * The analog demodulator that plays a digital protocol's audio, or null when the mode has its own.
+ *
+ * A protocol decoder produces text and no audio, but the operator still wants to *hear* the channel
+ * (FT8 is USB in practice). The two run side by side over the same baseband: the decoder reads it
+ * unmodified, and the companion demodulator produces PCM through the audio chain - the pipeline's
+ * separation rule keeps the chain away from the decoder's samples, so the two cannot interfere.
+ */
+export function audioCompanionFor(id: string): string | null {
+	const plugin = (manifest ?? []).find((entry) => entry.id === id);
+	if (!plugin || plugin.kind !== 'digital') return null;
+	return id === 'ft8' ? 'usb' : 'usb';
+}
+
 /** True when the mode is declared and its kernel exists. */
 export function isModeAvailable(id: string): boolean {
 	return (manifest ?? []).some((plugin) => plugin.id === id && plugin.implemented);

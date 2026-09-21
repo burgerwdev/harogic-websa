@@ -115,6 +115,7 @@ describe.skipIf(!capturePath)('hardware-in-the-loop audio', () => {
 			mode: meta.mode,
 			ifBw: meta.if_bw,
 			pitch: meta.pitch,
+			deemphUs: -1,               // the mode's default, as the panel's Auto sends
 		};
 		const pipeline = new WasmPipeline(module, params, false);
 		expect(pipeline.ok).toBe(true);

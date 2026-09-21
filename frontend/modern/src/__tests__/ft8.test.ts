@@ -64,6 +64,7 @@ const params = (over: Partial<PipelineParams> = {}): PipelineParams => ({
 	mode: 'ft8',
 	ifBw: 2_400,
 	pitch: 700,
+	deemphUs: -1,
 	...over,
 });
 

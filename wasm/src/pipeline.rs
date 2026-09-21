@@ -250,6 +250,22 @@ impl Pipeline {
         known
     }
 
+    /// The de-emphasis time constant in microseconds (`<= 0` = none). Only the analog path has one.
+    pub fn set_deemph_us(&mut self, tau_us: f64) -> bool {
+        match self.analog.as_mut() {
+            Some(demod) => {
+                demod.set_deemph_us(tau_us);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The de-emphasis in force, in microseconds (diagnostics).
+    pub fn deemph_us(&self) -> f64 {
+        self.analog.as_ref().map(|demod| demod.deemph_us()).unwrap_or(0.0)
+    }
+
     /// Set the squelch threshold in dBFS (`<= -100` leaves the gate wide open and inert).
     pub fn set_squelch_dbfs(&mut self, dbfs: f64) -> bool {
         if dbfs.is_finite() {

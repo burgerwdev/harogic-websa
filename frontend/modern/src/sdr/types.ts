@@ -14,15 +14,23 @@ export interface PipelineParams {
 	mode: string;
 	ifBw: number;
 	pitch: number;
+	/** De-emphasis in microseconds for the browser's audio chain (0 = off, < 0 = the mode's default). */
+	deemphUs: number;
 }
 
 /** A decoded FT8 transmission, as the worker reports it. */
 export interface Ft8Report {
 	text: string;
+	/** Audio frequency of tone 0 inside the channel, in Hz (about 200..3000). */
 	frequencyHz: number;
+	/** Where the transmission started inside the pushed buffer, in seconds. */
 	timeOffsetS: number;
+	/** Sync-correlation SNR estimate in dB (a diagnostic, not a calibrated measurement). */
 	snrDb: number;
+	/** Decodes this session (the readout's counter). */
 	count: number;
+	/** Centre of the channel the transmission was found in, in Hz (the tuned frequency). */
+	centerHz: number;
 }
 
 /** The wrapper's own module type, re-exported so callers need one import. */

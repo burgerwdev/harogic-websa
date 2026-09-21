@@ -57,6 +57,7 @@ class _FakeRtaBase(MeasurementSession):
         self._tick = 0
         self._rng = np.random.default_rng(7)
         self._audio_seq = 0
+        self._audio_pos = 0
         self._iq_seq = 0
 
     # lifecycle protocol the command layer relies on
@@ -82,7 +83,8 @@ class _FakeRtaBase(MeasurementSession):
         return self._rng.integers(0, 4096, width, dtype=np.uint16)
 
     def _audio(self, samples: int = SDR_AUDIO_SAMPLES) -> bytes:
-        t = (np.arange(samples) + self._tick * samples) / SDR_AUDIO_RATE
+        t = (np.arange(samples) + self._audio_pos) / SDR_AUDIO_RATE
+        self._audio_pos += samples
         pcm = (0.2 * np.sin(2 * np.pi * AUDIO_TONE_HZ * t) * 32767).astype(np.int16)
         self._audio_seq += 1
         return encode_audio(self._audio_seq, SDR_AUDIO_RATE, pcm)
@@ -280,6 +282,17 @@ class FakeSdrSession(_FakeRtaBase):
         self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
         return encode_baseband(BASEBAND_VERSION, self._iq_seq, FT8_IQ_RATE, 100.2e6, block)
 
+    def pacing(self, dt: float, produced: bool) -> float:
+        """Pace the synthetic stream to the rate it declares.
+
+        The generic loop runs at ~250 Hz, and one step carries 85 ms of baseband: the browser then
+        received about 20x real time, its playback buffer pinned at the ceiling and every audio
+        assertion measured the overflow path instead of playback. A real analyzer paces itself by
+        the packet (see `SdrSession.pacing`), so the fake does the same with the block it produces.
+        """
+        block_seconds = SDR_BASEBAND_SAMPLES / max(1.0, SDR_BASEBAND_RATE)
+        return max(0.0, block_seconds - dt)
+
     def step(self):
         if not self._ready:
             return [], []
@@ -317,5 +330,9 @@ class FakeSdrSession(_FakeRtaBase):
         frames = [pan]
         if getattr(self.dev, 'iq_clients', 0):
             frames.append(self._baseband(s.sdr_actual['ddc_rate'], center))
-        frames.append(self._audio())
+        # The audio that belongs to this block's worth of time (the stream is paced to the baseband,
+        # so one 20 ms frame per step would be four times too slow).
+        block_seconds = SDR_BASEBAND_SAMPLES / max(1.0, SDR_BASEBAND_RATE)
+        for _ in range(max(1, int(round(block_seconds * SDR_AUDIO_RATE / SDR_AUDIO_SAMPLES)))):
+            frames.append(self._audio())
         return frames, []

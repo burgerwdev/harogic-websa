@@ -49,6 +49,11 @@ export class WasmPipeline {
 		return this.digital;
 	}
 
+	/** The de-emphasis this pipeline is running, in microseconds (diagnostics). */
+	get deemphUs(): number {
+		return this.params.deemphUs > 0 ? this.params.deemphUs : 0;
+	}
+
 	private create(): void {
 		const mode = new TextEncoder().encode(this.params.mode);
 		const ptr = this.module.alloc(mode.length);
@@ -83,6 +88,13 @@ export class WasmPipeline {
 	/** The squelch gate's threshold in dBFS (<= -100 leaves it wide open). */
 	setSquelch(dbfs: number): void {
 		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbfs);
+	}
+
+	/** De-emphasis in microseconds (<= 0 = none). The panel's De-emph control. */
+	setDeemph(tauUs: number): void {
+		if (!this.handle || this.digital) return;
+		const tau = Number.isFinite(tauUs) && tauUs > 0 ? tauUs : 0;
+		this.module.exports.websa_dsp_demod_set_deemph(this.handle, tau);
 	}
 
 	setVolume(volume: number): void {
@@ -178,6 +190,9 @@ export class WasmPipeline {
 			timeOffsetS: metrics[1],
 			snrDb: metrics[2],
 			count: this.count(),
+			// The decoder measures inside its channel; the caller knows which channel that was (it
+			// is the baseband frame's centre) and fills this in.
+			centerHz: 0,
 		};
 	}
 

@@ -28,6 +28,7 @@ const PARAMS: PipelineParams = {
 	mode: 'am',
 	ifBw: 12_000,
 	pitch: 700,
+	deemphUs: -1,             // the mode's default (Auto)
 };
 
 /** The DDC's output for a real AM signal: a carrier at DC, modulated at 1 kHz. */

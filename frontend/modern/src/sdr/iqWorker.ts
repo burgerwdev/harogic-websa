@@ -15,9 +15,9 @@
 // so in its stats and the main thread keeps the Python audio path: the DSP moving to the browser
 // must never be the reason there is no audio.
 import { decodeFrame, type BasebandFrame } from '../core/frames';
-import { loadDsp, type DspModule } from './wasm';
+import { dsp, type DspModule } from './wasm';
 import { WasmPipeline, type PipelineParams } from './wasmPipeline';
-import { readPluginManifest } from './registry';
+import { audioCompanionFor, loadPluginManifest } from './registry';
 
 let ws: WebSocket | null = null;
 let wsUrl = '';
@@ -25,8 +25,13 @@ let wasmUrl = '';
 let module: DspModule | null = null;
 /// The demodulator: one handle for both paths (analog PCM, digital text).
 let pipeline: WasmPipeline | null = null;
+/// The analog companion a digital protocol plays its audio through (USB for FT8), or null.
+let companion: WasmPipeline | null = null;
+/// The FT8 decoder's own worker: a slot decode blocks for seconds, and doing it here would starve the
+/// audio (measured: one underrun and a ~2.5 s gap per slot when both ran in this thread).
+let decoder: Worker | null = null;
+let decoderReady = false;
 let params: PipelineParams | null = null;
-let digital = false;
 let ft8Messages = 0;
 /// What the worklet reports about its own ring (relayed to the page's diagnostics).
 let workletAvailable = 0;
@@ -37,6 +42,10 @@ let workletError = '';
 let workletRingResets = 0;
 /// Samples the worklet had to drop because the producer outran its clock (latency stays bounded).
 let workletSlipped = 0;
+/// The playback fill's range over the last reporting window: a periodic dip (an audible hitch) shows
+/// up here as a min far below the target, which a single sampled value cannot tell you.
+let fillMin = Number.POSITIVE_INFINITY;
+let fillMax = 0;
 /// The worklet's drift-correcting resampling ratio (1 = the producer matches the sound card).
 let workletRatio = 1;
 /// PCM waiting for a full delivery block, and the block size (20 ms at the output rate).
@@ -49,10 +58,16 @@ let deliveredSamples = 0;
 let digitalPushes = 0;
 let digitalBuffered = 0;
 let digitalResets = 0;
+/// Frames handed to the decoder worker (its own counters come back with `ft8-stats`).
+let decoderPushes = 0;
+/// True while the current mode is a protocol decoder (their audio comes from the companion).
+let digital = false;
 /// Ids the module declares as digital protocols; the registry is the single source of truth, so a
 /// new protocol becomes reachable here without a second list in the worker.
 let digitalIds = new Set<string>();
 let audioEnabled = true;
+/// The listener's audio switch (the worklet's playback gate), separate from the chain switch above.
+let audioOn = true;
 let volume = 1;
 /// Noise reduction (the panel's NR control) and the squelch threshold.
 let nr = false;
@@ -73,6 +88,47 @@ let lastSeq = -1;
 let reconnectTimer: number | null = null;
 let reconnectDelay = 500;
 
+/** Start the decoder worker (once) and relay its messages to the page. */
+function startDecoder(): void {
+  if (decoder || typeof Worker === 'undefined') return;
+  try {
+    decoder = new Worker(new URL('./ft8Worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    decoder = null;
+    return;
+  }
+  decoder.onmessage = (event: MessageEvent) => {
+    const d = (event.data || {}) as Record<string, any>;
+    if (d.type === 'ready') {
+      decoderReady = true;
+      pushDecoderParams();
+      return;
+    }
+    if (d.type === 'ft8-stats') {
+      // The decoder's own counters stand in for the ones this worker used to keep.
+      if (typeof d.pushes === 'number') digitalPushes = d.pushes;
+      if (typeof d.buffered === 'number') digitalBuffered = d.buffered;
+      if (typeof d.decodes === 'number') ft8Messages = d.decodes;
+      postStats();
+      return;
+    }
+    // `ft8` (a decode) and `error` are the shapes the page already reads.
+    post(d);
+  };
+  decoder.postMessage({ type: 'init', wasmUrl });
+}
+
+/** Tell the decoder worker what to decode (and whether to bother). */
+function pushDecoderParams(): void {
+  if (!decoder || !decoderReady) return;
+  const wanted = params && digitalIds.has(params.mode);
+  decoder.postMessage({
+    type: 'configure',
+    enabled: Boolean(wanted),
+    params: wanted ? params : null,
+  });
+}
+
 function post(msg: Record<string, unknown>, transfer?: Transferable[]): void {
   // WorkerGlobalScope.postMessage(message, transferList)
   (self as unknown as { postMessage: (m: unknown, t?: Transferable[]) => void })
@@ -82,11 +138,17 @@ function post(msg: Record<string, unknown>, transfer?: Transferable[]): void {
 function postStats(): void {
   post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
-    pcmFrames, pcmSamples, rms, pipeline: pipeline?.ok ?? false, mode: params?.mode ?? '',
+    pcmFrames, pcmSamples, rms, mode: params?.mode ?? '',
+    // "The browser DSP is the audio source": for an analog mode that is the demodulator itself, and
+    // for a digital one it is the companion demodulator that plays the channel. The page hands the
+    // AudioWorklet port over on this flag, so a digital mode without it never gets heard.
+    pipeline: Boolean(pipeline?.ok || companion?.ok),
     ft8Messages, digitalPushes, digitalBuffered, digitalResets,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
+    fillMin: Number.isFinite(fillMin) ? fillMin : 0, fillMax,
     pcmPending: pendingSamples, deliveredSamples, nr, nrStrength, squelchDbfs,
+    deemphUs: params?.deemphUs ?? -1, audioOn,
   });
 }
 
@@ -94,36 +156,81 @@ function postStats(): void {
 function syncPipeline(): void {
   if (!enabled || !params || !module) return;
   const isDigital = digitalIds.has(params.mode);
-  if (pipeline && pipeline.mode === params.mode && pipeline.isDigital === isDigital) {
+  digital = isDigital;
+  if (pipeline && pipeline.mode === params.mode && !isDigital) {
     applyListenerControls();
+    syncCompanion(isDigital);
     return;
   }
-  if (pipeline) {
-    pipeline.reconfigure(params, isDigital);
+  if (isDigital) {
+    // A protocol decoder lives in its own worker (`decoder`): this thread keeps only the companion
+    // demodulator, so a multi-second slot decode cannot starve the audio (measured before the split:
+    // one underrun and a ~2.5 s gap per slot).
+    pipeline?.free();
+    pipeline = null;
+  } else if (pipeline) {
+    pipeline.reconfigure(params, false);
   } else {
-    pipeline = new WasmPipeline(module, params, isDigital);
+    pipeline = new WasmPipeline(module, params, false);
   }
-  if (!pipeline.ok) {
+  if (!isDigital && !pipeline?.ok) {
     // Declared but not runnable: report it instead of pretending it works.
-    pipeline.free();
+    pipeline?.free();
     pipeline = null;
     post({ type: 'error', message: `no DSP pipeline for mode ${params.mode}` });
     postStats();
     return;
   }
-  digital = isDigital;
+  syncCompanion(isDigital);
+  pushDecoderParams();
   applyListenerControls();
   post({ type: 'ready', mode: params.mode });
   postStats();
 }
 
+/**
+ * The analog companion for a digital protocol (USB for FT8).
+ *
+ * A decoder produces text and no audio; the operator still wants to hear the channel, so the same
+ * baseband is fed to a second handle running an SSB demodulator. Two handles rather than one mixed
+ * output keeps the separation rule intact: the decoder reads the baseband untouched, and the audio
+ * chain only ever sees the companion's PCM. An analog mode has no companion (it *is* the audio).
+ */
+function syncCompanion(isDigital: boolean): void {
+  // The decoder runs next door, not here (see `decoder`).
+  pushDecoderParams();
+  const wanted = isDigital && params ? audioCompanionFor(params.mode) : null;
+  const shape = params
+    ? { ...params, mode: wanted ?? '', ifBw: Math.max(3000, Number(params.ifBw) || 0) }
+    : null;
+  if (!module || !wanted || !shape) {
+    companion?.free();
+    companion = null;
+    return;
+  }
+  if (companion && companion.mode === wanted && companion.ok) {
+    companion.reconfigure(shape, false);
+    return;
+  }
+  companion?.free();
+  companion = new WasmPipeline(module, shape, false);
+  if (!companion.ok) {
+    companion.free();
+    companion = null;
+    post({ type: 'error', message: `no audio companion for mode ${params?.mode}` });
+  }
+}
+
 /** Push the listener's settings into the pipeline (volume, chain, NR, squelch). */
 function applyListenerControls(): void {
-  if (!pipeline) return;
-  pipeline.setVolume(volume);
-  pipeline.setAudioEnabled(audioEnabled);
-  pipeline.setNr(nr, nrStrength);
-  pipeline.setSquelch(squelchDbfs);
+  for (const target of [pipeline, companion]) {
+    if (!target) continue;
+    target.setVolume(volume);
+    target.setAudioEnabled(audioEnabled);
+    target.setNr(nr, nrStrength);
+    target.setSquelch(squelchDbfs);
+    target.setDeemph(params?.deemphUs ?? -1);
+  }
 }
 
 /** Drop the worker's queued PCM and tell the worklet to drop the ring it already holds. */
@@ -202,13 +309,19 @@ function onBaseband(frame: BasebandFrame): void {
   centerHz = frame.centerHz;
   blocks++;
   samples += frame.samples;
-  if (pipeline && digital) {
-    digitalPushes += 1;
-    const message = pipeline.push(frame.iq);
-    digitalBuffered = pipeline.buffered();
-    if (message) {
-      ft8Messages = message.count;
-      post({ type: 'ft8', ...message, count: ft8Messages });
+  if (digital) {
+    // Audio first, *then* hand the samples to the decoder: transferring a buffer detaches the view it
+    // came from, and reading a detached view yields length 0 (silence) rather than an error.
+    if (companion) deliver(companion.process(frame.iq));
+    decoderPushes += 1;
+    // The decoder gets the baseband in its own thread; the transfer costs nothing (this frame's
+    // buffer, and nothing here needs it afterwards). A slow decode therefore cannot starve the audio.
+    if (decoder && decoderReady) {
+      try {
+        decoder.postMessage({ type: 'frame', iq: frame.iq, centerHz }, [frame.iq.buffer]);
+      } catch {
+        decoder?.postMessage({ type: 'frame', iq: frame.iq.slice(), centerHz });
+      }
     }
   } else if (pipeline) {
     deliver(pipeline.process(frame.iq));
@@ -255,16 +368,18 @@ self.onmessage = (event: MessageEvent) => {
       workletPort = msg.port as MessagePort;
       workletPort.start();
     }
+    startDecoder();
     if (wasmUrl) {
-      void loadDsp(wasmUrl)
-        .then((loaded) => {
-          module = loaded;
+      // `loadPluginManifest` is the registry's loader: it caches the manifest, which the registry's
+      // helpers (which modes are protocols, which companion a protocol needs) read. Reading the
+      // manifest into a local variable instead left those helpers looking at nothing.
+      void loadPluginManifest(wasmUrl)
+        .then((plugins) => {
+          module = dsp();
           // Which ids are protocols (as opposed to audio demodulators) comes from the module's own
           // plugin manifest: the worker does not carry a list of its own.
           digitalIds = new Set(
-            readPluginManifest(loaded)
-              .filter((plugin) => plugin.kind === 'digital')
-              .map((plugin) => plugin.id),
+            plugins.filter((plugin) => plugin.kind === 'digital').map((plugin) => plugin.id),
           );
           syncPipeline();
         })
@@ -280,6 +395,8 @@ self.onmessage = (event: MessageEvent) => {
     if (!enabled) {
       pipeline?.free();
       pipeline = null;
+      companion?.free();
+      companion = null;
       resetDelivery();
     }
     syncPipeline();
@@ -303,15 +420,17 @@ self.onmessage = (event: MessageEvent) => {
         previous.fsIn !== next.fsIn ||
         previous.outRate !== next.outRate ||
         previous.pitch !== next.pitch;
-      if (pipeline && geometryChanged) {
+      if (pipeline && geometryChanged && !digitalIds.has(next.mode)) {
         // The baseband geometry changed: the demodulator's filters describe another channel.
-        pipeline.reconfigure(next, digitalIds.has(next.mode));
+        pipeline.reconfigure(next, false);
         if (!pipeline.ok) {
           pipeline.free();
           pipeline = null;
           post({ type: 'error', message: `no DSP pipeline for mode ${next.mode}` });
         }
       }
+      // A digital mode's decoder is rebuilt by its own worker; here only the companion changes.
+      syncCompanion(digitalIds.has(next.mode));
       applyListenerControls();
       syncPipeline();
     }
@@ -321,6 +440,16 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'audio') {
     audioEnabled = Boolean(msg.value);
     pipeline?.setAudioEnabled(audioEnabled);
+  } else if (msg.type === 'audio-enabled') {
+    // The listener's audio switch. The worklet owns playback (the browser DSP handed it the port),
+    // so the switch has to reach *it*: an empty ring is silence, and a silent worklet is what "Off"
+    // means. The chain setting above is separate (it is the RAW/enhancement switch).
+    audioOn = Boolean(msg.value);
+    workletPort?.postMessage({ type: 'enabled', value: audioOn });
+    // While the switch was off the producer kept running and the ring filled to its ceiling: drop
+    // that window so switching back on plays the live stream instead of the recent past.
+    if (audioOn) workletPort?.postMessage({ type: 'reset' });
+    postStats();
   } else if (msg.type === 'nr') {
     nr = Boolean(msg.enabled);
     if (typeof msg.strength === 'number') nrStrength = msg.strength;
@@ -329,6 +458,10 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'squelch') {
     squelchDbfs = Number(msg.value) || -110;
     pipeline?.setSquelch(squelchDbfs);
+    postStats();
+  } else if (msg.type === 'deemph') {
+    params = params ? { ...params, deemphUs: Number(msg.value) } : params;
+    pipeline?.setDeemph(Number(msg.value));
     postStats();
   } else if (msg.type === 'worklet-port') {
     // The main thread handed the worklet over once this worker reported a running pipeline.
@@ -344,6 +477,9 @@ self.onmessage = (event: MessageEvent) => {
         workletRingResets = Number(status.resets) || 0;
         workletSlipped = Number(status.slipped) || 0;
         workletRatio = Number(status.ratio) || 1;
+        const fill = Number(status.available) || 0;
+        fillMin = Math.min(fillMin, fill);
+        fillMax = Math.max(fillMax, fill);
       };
       workletPort.start();
       workletPort.postMessage({ type: 'enabled', value: enabled });

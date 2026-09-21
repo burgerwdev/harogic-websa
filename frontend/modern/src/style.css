@@ -235,6 +235,36 @@ select:disabled { color: var(--label); }
 /* GNSS 指示器 + 详情浮层 */
 .gnss-indicator { cursor: pointer; }
 .gnss-indicator:hover { text-decoration: underline; }
+/* FT8 decode window: a floating table (draggable by its head, resizable by its corner). */
+.ft8-window {
+  position: fixed; z-index: 45; display: none; flex-direction: column;
+  min-width: 260px; min-height: 120px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--input-border); border-radius: 4px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5); color: var(--text);
+}
+.ft8-window-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+  background: var(--panel); border-bottom: 1px solid var(--inner-border);
+  color: var(--label); font-size: 12px; cursor: move; touch-action: none; user-select: none;
+}
+.ft8-window-head .spacer { flex: 1 1 auto; }
+.ft8-window-head .count { font-family: 'Courier New', monospace; color: var(--text); }
+.ft8-window-body { flex: 1 1 auto; overflow: auto; }
+.ft8-window table { width: 100%; border-collapse: collapse; font: 11px 'Courier New', monospace; }
+.ft8-window th {
+  position: sticky; top: 0; background: var(--panel); color: var(--label); font-weight: normal;
+  text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--inner-border);
+}
+.ft8-window td { padding: 2px 6px; white-space: nowrap; }
+.ft8-window td:last-child { width: 100%; }
+.ft8-window tr.ft8-row { cursor: pointer; }
+.ft8-window tr.ft8-row:hover { background: var(--btn-active); }
+.ft8-window .ft8-empty { color: var(--label); padding: 8px 6px; }
+.ft8-resize {
+  position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--label) 50%); opacity: 0.5;
+  touch-action: none;
+}
 .gnss-popover {
   position: absolute; z-index: 100; top: 26px; left: 0;
   background: var(--panel-2); border: 1px solid var(--card-border);

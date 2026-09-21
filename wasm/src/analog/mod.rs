@@ -170,6 +170,9 @@ pub fn build(id: &str, config: DemodConfig, out_rate: f64) -> Option<AnalogDemod
 pub struct AnalogDemod {
     spec: ModeSpec,
     fs: f64,
+    /// The de-emphasis in force, in microseconds (0 = none). Starts at the mode's default and can be
+    /// overridden by the listener (the panel's De-emph control).
+    deemph_us: f64,
     /// Rate the PCM is produced at (the consumer's rate).
     out_rate: f64,
     pitch: f64,
@@ -209,6 +212,7 @@ impl AnalogDemod {
         Self {
             spec,
             fs,
+            deemph_us: spec.deemph_us,
             out_rate,
             pitch,
             band: ComplexBandFilter::new(re, im),
@@ -239,6 +243,35 @@ impl AnalogDemod {
     /// The rate this demodulator produces PCM at.
     pub fn out_rate(&self) -> f64 {
         self.out_rate
+    }
+
+    /// The de-emphasis time constant in microseconds in force (0 = none).
+    pub fn deemph_us(&self) -> f64 {
+        self.deemph_us
+    }
+
+    /// Change the de-emphasis at runtime.
+    ///
+    /// `tau_us < 0` restores the *mode's* default (the panel's Auto: 50 us for broadcast WFM, none
+    /// for the modes where it is meaningless), `0` switches it off, and a positive value sets it.
+    /// Keeping the "auto" resolution here means the mode table stays in one place.
+    ///
+    /// The FIR is rebuilt rather than reset, because the time constant *is* the filter: a WFM
+    /// listener switching 50 -> 75 us is asking for a different filter, not for different state.
+    pub fn set_deemph_us(&mut self, tau_us: f64) {
+        if !tau_us.is_finite() {
+            return;
+        }
+        let tau = if tau_us < 0.0 {
+            self.spec.deemph_us
+        } else {
+            tau_us.max(0.0)
+        };
+        if (tau - self.deemph_us).abs() < 1e-9 {
+            return;
+        }
+        self.deemph_us = tau;
+        self.deemph = Self::deemph_taps(tau, self.out_rate);
     }
 
     /// Number of audio-filter taps (the design constant the tests pin).
@@ -394,6 +427,10 @@ impl AnalogDemodulator for AnalogDemod {
         self.levelled = levelled;
     }
 
+    fn deemph_us(&self) -> f64 {
+        self.deemph_us
+    }
+
     fn retune(&mut self) {
         // Keep the AGC gain: resetting it made every tune start with a loud burst.
         self.band.clear_tail();
@@ -410,6 +447,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.band.reset();
         self.audio_lp.reset();
         self.resampler.reset();
+        // The de-emphasis setting is the listener's, not the stream's: reset() keeps it.
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
         }
@@ -638,6 +676,49 @@ mod tests {
             }
             assert_eq!(best.0, TONE_HZ, "tone at {out_rate} Hz output");
         }
+    }
+
+    /// The panel's De-emph control: Auto (the mode's default), Off, or an explicit constant.
+    #[test]
+    fn de_emphasis_is_a_setting_the_listener_owns() {
+        let tone = 3_000.0;
+        let modulate = |t: f64| {
+            let ph = 3.0 * (TAU * tone * t).sin();
+            (ph.cos(), ph.sin())
+        };
+        let mut demod = build("wfm", DemodConfig::new(FS, IF_BW), AUDIO_RATE).unwrap();
+        assert_eq!(demod.deemph_us(), 50.0, "WFM's default is 50 us");
+
+        demod.set_deemph_us(0.0);
+        let mut audio = Vec::new();
+        let mut iq: Vec<f32> = Vec::new();
+        for k in 0..20_000 {
+            let (i, q) = modulate(k as f64 / FS);
+            iq.push(i as f32);
+            iq.push(q as f32);
+        }
+        demod.process_into(&iq, &mut audio);
+        let flat = amplitude_at(&audio, AUDIO_RATE, tone);
+
+        demod.set_deemph_us(300.0);
+        let mut shaped = Vec::new();
+        demod.process_into(&iq, &mut shaped);
+        let rolled = amplitude_at(&shaped, AUDIO_RATE, tone);
+        assert!(
+            rolled < flat * 0.9,
+            "300 us must roll the tone off (flat {flat:.4}, shaped {rolled:.4})"
+        );
+        // ...and the choice survives a stream reset: it is a setting, not stream state.
+        demod.reset();
+        assert_eq!(demod.deemph_us(), 300.0);
+        // Auto (`< 0`) restores the mode's own default, which is where a fresh demodulator starts.
+        demod.set_deemph_us(0.0);
+        demod.set_deemph_us(-1.0);
+        assert_eq!(demod.deemph_us(), 50.0, "Auto means the mode's default");
+        demod.set_deemph_us(50.0);
+        let mut again = Vec::new();
+        demod.process_into(&iq, &mut again);
+        assert!(amplitude_at(&again, AUDIO_RATE, tone) > rolled);
     }
 
     #[test]

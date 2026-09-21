@@ -9,6 +9,7 @@
 // different lifetime: it runs while SDR mode is active, independent of whether the speaker is on.
 import { enablePythonAudioFallback, routeWorkletPortTo } from '../audio/sdrAudio';
 import { wasmDspAllowed, wasmDspReason } from './capability';
+import { addFt8Spot, clearFt8Spots } from './ft8Log';
 import { dspWasmUrl } from './wasm';
 import type { Ft8Report, PipelineParams } from './types';
 
@@ -52,6 +53,13 @@ let dspNrStrength = 0.6;
 let dspSquelch = -110;
 /// The PCM level the browser DSP measured (the S-meter reading when it owns playback).
 let dspRms = 0;
+/// The de-emphasis the browser chain is running (microseconds; < 0 = the mode's default).
+let dspDeemph = -1;
+/// The playback fill's range in the last window (samples); a periodic dip shows an audible hitch.
+let dspFillMin = 0;
+let dspFillMax = 0;
+/// True while the listener's audio switch is on (the DSP's own playback gate).
+let dspAudio = true;
 
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 function iqWorkerUrl(): string {
@@ -76,6 +84,8 @@ function publishIqDebug(): void {
       ` dsp_delivered=${dspDelivered} dsp_received=${dspWorkletReceived}` +
       ` dsp_pending=${dspPending} dsp_ring_resets=${dspRingResets}` +
       ` dsp_mode=${dspMode} dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
+      ` dsp_audio=${dspAudio ? 1 : 0} dsp_deemph=${dspDeemph}` +
+      ` dsp_fill_ms=${(dspFillMin / 48).toFixed(0)}..${(dspFillMax / 48).toFixed(0)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
@@ -118,10 +128,12 @@ function startWorker(): void {
     if (typeof d.centerHz === 'number') centerHz = d.centerHz;
     if (typeof d.dropped === 'number') dropped = d.dropped;
     if (typeof d.flushes === 'number') flushes = d.flushes;
-    if (typeof d.digitalCreates === 'number' && typeof d.digitalPushes === 'number') {
+    // The digital path's own counters: is the decoder being fed, and is its buffer growing towards
+    // a slot, or restarting? (A digital mode produces no audio, so these are the only evidence.)
+    if (typeof d.digitalPushes === 'number') {
       digitalDiagnostics =
-        `dsp_creates=${d.digitalCreates} dsp_pushes=${d.digitalPushes}` +
-        ` dsp_buffered=${d.digitalBuffered} dsp_resets=${d.digitalResets} dsp_mode=${d.mode || ''}`;
+        `dsp_pushes=${d.digitalPushes} dsp_buffered=${d.digitalBuffered}` +
+        ` dsp_resets=${d.digitalResets} dsp_decodes=${d.ft8Messages ?? 0}`;
     }
     if (typeof d.worklet === 'number') dspOwnsWorklet = d.worklet === 1;
     if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;
@@ -138,6 +150,10 @@ function startWorker(): void {
     if (typeof d.squelchDbfs === 'number') dspSquelch = d.squelchDbfs;
     if (typeof d.rms === 'number') dspRms = d.rms;
     if (typeof d.mode === 'string' && d.mode) dspMode = d.mode;
+    if (typeof d.deemphUs === 'number') dspDeemph = d.deemphUs;
+    if (typeof d.fillMin === 'number') dspFillMin = d.fillMin;
+    if (typeof d.fillMax === 'number') dspFillMax = d.fillMax;
+    if (typeof d.audioOn === 'boolean') dspAudio = d.audioOn;
     if (typeof d.pcmFrames === 'number') pcmFrames = d.pcmFrames;
     if (typeof d.pcmSamples === 'number') pcmSamples = d.pcmSamples;
     pipelineReady = Boolean(d.pipeline);
@@ -188,6 +204,22 @@ export function setSdrPipelineNr(on: boolean, strength: number): void {
   worker?.postMessage({ type: 'nr', enabled: on, strength });
 }
 
+/**
+ * The listener's audio switch, when the browser DSP owns playback.
+ *
+ * The worklet is the thing that produces sound, and the browser DSP is the one holding its port, so
+ * the switch has to be sent here - `sdrAudio.ts` only knows the Python path (that was the "the On/Off
+ * button does nothing" report).
+ */
+export function setSdrDspAudioEnabled(on: boolean): void {
+  worker?.postMessage({ type: 'audio-enabled', value: on });
+}
+
+/** De-emphasis in microseconds for the browser chain (< 0 = the mode's default). */
+export function setSdrPipelineDeemph(tauUs: number): void {
+  worker?.postMessage({ type: 'deemph', value: tauUs });
+}
+
 /** The squelch threshold in dBFS: applied live. */
 export function setSdrPipelineSquelch(dbfs: number): void {
   worker?.postMessage({ type: 'squelch', value: dbfs });
@@ -224,6 +256,7 @@ export function resetSdrIq(): void {
   ft8Text = '';
   ft8Count = 0;
   ft8Detail = '';
+  clearFt8Spots();
   const readout = document.getElementById('ft8-readout');
   if (readout) readout.textContent = '—';
   blocks = 0;
@@ -246,6 +279,7 @@ export function resetSdrIq(): void {
  * operator watching a band. Exported so the rendering is unit tested without a worker.
  */
 export function renderFt8Message(report: Ft8Report): void {
+  addFt8Spot(report);
   ft8Text = String(report.text || '');
   ft8Count = Number(report.count) || ft8Count + 1;
   ft8Detail =

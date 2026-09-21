@@ -12,6 +12,17 @@ export const en = {
 	"nr_light": "Light",
 	"nr_medium": "Medium",
 	"nr_strong": "Strong",
+	"ft8_title": "FT8 decodes",
+	"ft8_window_tip": "Show the FT8 decode table (FT8 demodulator only)",
+	"ft8_window_needs_ft8": "Select the FT8 demodulator first",
+	"ft8_waiting": "waiting for a decode…",
+	"ft8_tune_tip": "Click to tune to this signal",
+	"ft8_time": "UTC",
+	"ft8_snr": "SNR",
+	"ft8_df": "DF",
+	"ft8_freq": "MHz",
+	"ft8_message": "Message",
+	"ft8_resize_tip": "Drag to resize",
 } as const;
 
 export const zh = {
@@ -26,5 +37,16 @@ export const zh = {
 	"nr_light": "轻",
 	"nr_medium": "中",
 	"nr_strong": "强",
+	"ft8_title": "FT8 解码",
+	"ft8_window_tip": "显示 FT8 解码表（仅在 FT8 解调时可用）",
+	"ft8_window_needs_ft8": "请先选择 FT8 解调",
+	"ft8_waiting": "等待解码…",
+	"ft8_tune_tip": "点击调到该信号",
+	"ft8_time": "UTC",
+	"ft8_snr": "SNR",
+	"ft8_df": "DF",
+	"ft8_freq": "MHz",
+	"ft8_message": "消息",
+	"ft8_resize_tip": "拖动改变大小",
 } as const;
 
