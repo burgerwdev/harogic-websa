@@ -253,6 +253,7 @@ select:disabled { color: var(--label); }
 }
 .ft8-window-head .spacer { flex: 1 1 auto; }
 .ft8-window-head .count { font-family: 'Courier New', monospace; color: var(--text); }
+.ft8-window-head .ft8-opacity { width: 64px; height: 14px; margin: 0 2px; cursor: pointer; }
 .ft8-window-body { flex: 1 1 auto; overflow: auto; }
 .ft8-window table { width: 100%; border-collapse: collapse; font: 11px 'Courier New', monospace; }
 .ft8-window th {

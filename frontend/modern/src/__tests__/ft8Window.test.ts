@@ -14,6 +14,7 @@ function shell(): void {
 			<div class="ft8-window-head" id="ft8-window-head">
 				<span>FT8</span><span class="count" id="ft8-window-count">0</span>
 				<span class="spacer"></span>
+				<input id="ft8-window-opacity" type="range" min="35" max="100" step="5" value="100" />
 				<button class="btn" id="btn-ft8-clear">Clear</button>
 				<button class="btn" id="btn-ft8-close">Close</button>
 			</div>
@@ -107,5 +108,30 @@ describe('the FT8 decode window', () => {
 		const stored = JSON.parse(localStorage.getItem('websa-ft8-window') || '{}');
 		expect(typeof stored.x).toBe('number');
 		expect(stored.w).toBeGreaterThan(0);
+	});
+
+	it('dims the window from its head, remembers the level, and stays grabbable', () => {
+		setFt8WindowAvailable(true);
+		const win = document.getElementById('ft8-window') as HTMLElement;
+		const slider = document.getElementById('ft8-window-opacity') as HTMLInputElement;
+		expect(win.style.opacity).toBe('1');
+
+		slider.value = '60';
+		slider.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(win.style.opacity).toBe('0.6');
+		expect(JSON.parse(localStorage.getItem('websa-ft8-window') || '{}').opacity).toBeCloseTo(0.6);
+
+		// The floor is a guard, not a preference: an invisible window cannot be dragged back, which is
+		// the same reason the position is clamped into the viewport instead of restored blindly.
+		slider.value = '0';
+		slider.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(win.style.opacity).toBe('0.35');
+
+		// The slider is a control in the drag handle: grabbing it must move the handle, not the window.
+		const before = win.style.left;
+		slider.dispatchEvent(new PointerEvent('pointerdown', { clientX: 100, clientY: 100, bubbles: true }));
+		(document.getElementById('ft8-window-head') as HTMLElement)
+			.dispatchEvent(new PointerEvent('pointermove', { clientX: 260, clientY: 220, bubbles: true }));
+		expect(win.style.left).toBe(before);
 	});
 });

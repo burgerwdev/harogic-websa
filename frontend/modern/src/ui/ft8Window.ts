@@ -22,6 +22,11 @@ export interface Ft8WindowHooks {
 
 const LS_KEY = 'websa-ft8-window';
 const DEFAULT_SIZE = { w: 460, h: 240 };
+/// The floor keeps the window grabbable. An invisible would be worse than a moved one: the same
+/// reason the position is clamped into the viewport rather than restored blindly.
+const MIN_OPACITY = 0.35;
+/// Live opacity, persisted alongside the geometry (one record, one writer).
+let opacity = 1;
 /** Rows rendered; the log holds more, but a table nobody scrolls should not cost layout time. */
 const MAX_ROWS = 100;
 
@@ -42,8 +47,10 @@ function readGeometry(): Geometry | null {
 	try {
 		const raw = localStorage.getItem(LS_KEY);
 		if (!raw) return null;
-		const parsed = JSON.parse(raw) as Partial<Geometry>;
+		const parsed = JSON.parse(raw) as Partial<Geometry> & { opacity?: number };
 		if (typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null;
+		const stored = Number(parsed.opacity);
+		opacity = Number.isFinite(stored) ? Math.min(1, Math.max(MIN_OPACITY, stored)) : 1;
 		return {
 			x: parsed.x,
 			y: parsed.y,
@@ -57,7 +64,8 @@ function readGeometry(): Geometry | null {
 
 function writeGeometry(geometry: Geometry): void {
 	try {
-		localStorage.setItem(LS_KEY, JSON.stringify(geometry));
+		// The opacity rides along: one record, one writer, so the two can never drift apart.
+		localStorage.setItem(LS_KEY, JSON.stringify({ ...geometry, opacity }));
 	} catch {
 		/* storage disabled: the window still works for this session */
 	}
@@ -222,12 +230,25 @@ export function initFt8Window(next: Ft8WindowHooks): void {
 	element('btn-ft8-clear')?.addEventListener('click', () => clearFt8Spots());
 	element('btn-ft8-close')?.addEventListener('click', () => setOpen(false));
 
+	// Opacity slider. `input` (not `change`) so the window dims while the handle moves.
+	win.style.opacity = String(opacity);
+	const slider = element('ft8-window-opacity') as HTMLInputElement | null;
+	if (slider) {
+		slider.value = String(Math.round(opacity * 100));
+		slider.addEventListener('input', () => {
+			const percent = Number(slider.value);
+			opacity = Number.isFinite(percent) ? Math.min(1, Math.max(MIN_OPACITY, percent / 100)) : 1;
+			win.style.opacity = String(opacity);
+			writeGeometry(currentGeometry(win));
+		});
+	}
+
 	if (head) {
 		let dragging = false;
 		let offsetX = 0;
 		let offsetY = 0;
 		head.addEventListener('pointerdown', (event) => {
-			if ((event.target as HTMLElement).closest('button')) return;   // the head's own buttons
+			if ((event.target as HTMLElement).closest('button, input')) return;   // the head's own controls
 			const box = win.getBoundingClientRect();
 			dragging = true;
 			offsetX = event.clientX - box.left;

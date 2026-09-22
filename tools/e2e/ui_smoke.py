@@ -406,11 +406,37 @@ def main() -> int:
         # The worker has no slot clock, so it finds the burst and sweeps the window phase across
         # attempts (each attempt costs a transmission of stream plus one decode): give it room.
         page.wait_for_timeout(45000)
-        readout = page.evaluate("document.getElementById('ft8-readout').textContent") or ''
+        # The one-line readout this used to read was replaced by the decode window (see the note in
+        # sdr/iqStream.ts): the table is where a decode is visible now, so that is what is asserted.
+        window_button = page.query_selector('#btn-ft8-window')
+        check('the FT8 window toggle is offered', window_button is not None)
+        if window_button is not None:
+            js_click(page, '#btn-ft8-window')
+            page.wait_for_timeout(500)
+        rows_text = page.evaluate("document.getElementById('ft8-window-rows').textContent") or ''
+        row_title = page.evaluate(
+            "() => { const r = document.querySelector('#ft8-window-rows tr');"
+            " return r ? (r.getAttribute('title') || '') : ''; }") or ''
         iq_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
-        detail = f'readout={readout!r} iq=[{iq_dbg}]'
-        check('the FT8 message is decoded in the browser', 'CQ JO1WKO PM95' in readout, detail)
-        check('the FT8 readout carries the slot timing', 'Hz' in readout, detail)
+        detail = f'rows={rows_text[:120]!r} title={row_title[:120]!r} iq=[{iq_dbg}]'
+        check('the FT8 message is decoded in the browser', 'CQ JO1WKO PM95' in rows_text, detail)
+        check('the decode carries its measured frequency', 'MHz' in row_title, detail)
+
+        # The same head carries an opacity slider (user-visible behaviour, DEVELOPMENT §6): move it and
+        # assert the window's own style changed *and* persisted.
+        if window_button is not None:
+            page.evaluate("""() => {
+                const slider = document.getElementById('ft8-window-opacity');
+                slider.value = '60';
+                slider.dispatchEvent(new Event('input', { bubbles: true }));
+            }""")
+            dimmed = page.evaluate("document.getElementById('ft8-window').style.opacity")
+            saved = page.evaluate(
+                "JSON.parse(localStorage.getItem('websa-ft8-window') || '{}').opacity")
+            check('the FT8 window opacity slider dims the window and stores the level',
+                  dimmed == '0.6' and saved is not None and abs(saved - 0.6) < 1e-6,
+                  f'opacity={dimmed!r} stored={saved!r}')
+
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
         page.wait_for_timeout(500)
 

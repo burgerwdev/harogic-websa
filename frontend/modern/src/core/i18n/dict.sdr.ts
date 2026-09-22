@@ -22,6 +22,7 @@ export const en = {
 	"ft8_df": "DF",
 	"ft8_freq": "MHz",
 	"ft8_message": "Message",
+	"ft8_opacity_tip": "Window opacity (the window stays readable enough to grab)",
 	"ft8_resize_tip": "Drag to resize",
 } as const;
 
@@ -47,6 +48,7 @@ export const zh = {
 	"ft8_df": "DF",
 	"ft8_freq": "MHz",
 	"ft8_message": "消息",
+	"ft8_opacity_tip": "浮窗透明度（最低一档仍保证能抓住窗口）",
 	"ft8_resize_tip": "拖动改变大小",
 } as const;
 
