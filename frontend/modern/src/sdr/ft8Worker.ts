@@ -30,29 +30,11 @@ let dropped = 0;
 let pushes = 0;
 /// Frames dropped because they queued up behind a decode attempt and went stale.
 let skipped = 0;
-/// Decode attempts made (one per UTC slot, which is the point of the slot clock below).
+/// Decode attempts. The decoder owns the windowing now, so the feeder observes an attempt as the
+/// decoder's window sliding -- which shows up as its buffered length dropping.
 let attempts = 0;
-/// Baseband accumulated for the slot being filled, and how much of it is real.
-let slotBuffer = new Float32Array(0);
-let slotFilled = 0;
-/// Wall-clock anchor: the sample index and the time it corresponded to.
-let anchorSamples = -1;
-let anchorMs = 0;
-let samplesSeen = 0;
-/// The UTC slot the buffer belongs to (`floor(ms / 15000)`), or -1 before the first frame.
-let slotIndex = -1;
-/// How much of the *next* slot to include before decoding.
-///
-/// FT8 transmissions are UTC-slot aligned (:00, :15, :30, :45) and run for 12.64 s of the 15 s
-/// slot, so decoding a *slot-aligned* window is exact: the transmission is inside it, and the
-/// decoder's scan of start positions covers it. The rolling window this replaces could only examine
-/// the first 2.4 s of a 15 s buffer (a transmission has to fit after its start), so a transmission
-/// whose start fell anywhere else was skipped - and one attempt to cover each start takes a whole
-/// stream-slot each, which is how "waiting for a decode" happened while a phone decoded the same
-/// audio. The margin after the slot end absorbs the clock's own error and the analyzer's timing.
-const SLOT_MS = 15_000;
-const TRANSMISSION_MS = 12_640;
-const SLOT_TAIL_MS = 400;
+/// Decoder buffered length at the previous frame, used to spot that slide.
+let lastBuffered = 0;
 
 function post(msg: Record<string, unknown>): void {
   (self as unknown as { postMessage: (m: unknown) => void }).postMessage(msg);
@@ -121,44 +103,20 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
   if (!enabled || !pipeline || frame.iq.length === 0) return;
-  const rate = params ? params.fsIn : 0;
-  const complex = frame.iq.length / 2;
-  // The slot clock, from the wall clock anchored on the first frame and advanced by the samples
-  // actually received. A gap (a reconnect, a tuning change) re-anchors, because the samples that
-  // were missed cannot be invented.
-  if (anchorSamples < 0 || frame.seq === 0) {
-    anchorSamples = 0;
-    anchorMs = Date.now();
-    samplesSeen = 0;
+  // The decoder owns the windowing: it accumulates a *sliding* window of `hop + burst`, searches all
+  // of it, then advances one hop and keeps the overlap. So the feeder just hands over the stream.
+  //
+  // Feeding a per-slot block and clearing in between (what this used to do) made decoding depend on
+  // the feeder's own alignment with the 15 s schedule: the window began at the feeder's boundary,
+  // which is anchored on frame *arrival* while the samples were captured earlier, so it started late
+  // in signal-time and cut the head of every burst. A burst at a seam was simply in no window.
+  const reports = pipeline.push(frame.iq);
+  for (const report of reports) {
+    post({ type: 'ft8', ...report, centerHz: frame.centerHz });
   }
-  samplesSeen += complex;
-  const nowMs = anchorMs + (rate > 0 ? (samplesSeen * 1000) / rate : 0);
-  const wanted = Math.floor(nowMs / SLOT_MS);
-  if (slotIndex < 0) {
-    slotIndex = wanted;
-    slotFilled = 0;
-  }
-  if (wanted !== slotIndex) {
-    // The slot ended: decode what was collected for it (a full slot and the start of the next one,
-    // which is the tail a transmission's own start jitter can fall into).
-    const ready = slotFilled >= Math.floor((rate * TRANSMISSION_MS) / 1000) * 2;
-    if (ready) {
-      attempts += 1;
-      const decoded = pipeline.push(slotBuffer.subarray(0, slotFilled));
-      if (decoded) post({ type: 'ft8', ...decoded, centerHz: frame.centerHz, count: decoded.count });
-      // The next slot starts from an empty buffer: FT8 slots are independent.
-      pipeline.reset();
-    }
-    slotIndex = wanted;
-    slotFilled = 0;
-  }
-  // The window runs one slot plus the tail, so a transmission that starts a little late is inside.
-  const capacity = Math.ceil((rate * (SLOT_MS + SLOT_TAIL_MS)) / 1000) * 2;
-  if (slotBuffer.length !== capacity) slotBuffer = new Float32Array(capacity);
-  if (slotFilled + frame.iq.length <= slotBuffer.length) {
-    slotBuffer.set(frame.iq, slotFilled);
-    slotFilled += frame.iq.length;
-  }
+  const buffered = pipeline.buffered();
+  if (buffered < lastBuffered) attempts += 1;
+  lastBuffered = buffered;
   pushes += 1;
   // The stats are throttled, and that is not cosmetic: the audio worker relays them to the page, and
   // one per frame is ~120 messages a second. That traffic - which exists only in a digital mode,
@@ -166,7 +124,7 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
   // PCM reaching the AudioWorklet arrived in bursts: measured in the live page, the playback ring swung
   // between 0 and its 897 ms ceiling and dropped 30308 samples to the ceiling trim, which the listener
   // hears as a periodic stutter. Four a second says the same thing.
-  if (pushes % 30 === 0 || slotFilled === 0) {
+  if (pushes % 30 === 0) {
     post({
       type: 'ft8-stats',
       pushes,

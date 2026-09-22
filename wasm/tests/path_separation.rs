@@ -9,6 +9,7 @@
 //! The demodulators here are test stand-ins: the real modes land on top of the same interfaces,
 //! and this test keeps the interfaces honest.
 use websa_dsp::audio::AudioPolicy;
+use websa_dsp::digital::ft8::Ft8Decoder;
 use websa_dsp::pipeline::{AudioChain, PathKind, Pipeline, PipelineOutput};
 use websa_dsp::plugin::{AnalogDemodulator, DigitalDemodulator, PluginKind};
 
@@ -223,7 +224,7 @@ fn ft8_baseband() -> Vec<f32> {
     const BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
     let mut iq: Vec<f32> = BYTES
         .chunks_exact(4)
-        .map(|q| f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25 * 32767.0)
+        .map(|q| f32::from_le_bytes([q[0], q[1], q[2], q[3]]))
         .collect();
     iq.resize(48_000 * 15 * 2, 0.0);
     iq
@@ -236,7 +237,12 @@ fn the_ft8_decoder_reads_the_raw_path_untouched_by_the_audio_chain() {
     // samples the decoder reads are bit-identical in both runs.
     use websa_dsp::digital::ft8::Ft8Plugin;
 
-    let iq = ft8_baseband();
+    if cfg!(debug_assertions) {
+        return;
+    }
+    // Pad to one sliding window (`hop + burst`), which is what the decoder waits for.
+    let mut iq = ft8_baseband();
+    iq.resize(Ft8Decoder::new(48_000.0).window_samples() * 2, 0.0);
     let run = |audio_enabled: bool| {
         let mut pipeline = Pipeline::new(PathKind::Digital, chain(), AudioPolicy::default());
         pipeline.set_digital_demod(Box::new(Ft8Plugin::new(48_000.0)), 48_000.0, 48_000.0);

@@ -27,7 +27,7 @@ export interface DspExports {
 	websa_dsp_demod_new(fsIn: number, outRate: number, modePtr: number, modeLen: number, ifBw: number, pitch: number): number;
 	websa_dsp_demod_process(handle: number, iqPtr: number, samples: number, outPtr: number, capacity: number, audioHold: number): number;
 	websa_dsp_demod_push(handle: number, iqPtr: number, samples: number): number;
-	websa_dsp_demod_message(handle: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
+	websa_dsp_demod_message_at(handle: number, index: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
 	websa_dsp_demod_buffered(handle: number): number;
 	websa_dsp_demod_count(handle: number): number;
 	websa_dsp_demod_set_audio(handle: number, enabled: number): number;

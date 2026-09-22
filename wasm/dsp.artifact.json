@@ -1,5 +1,5 @@
 {
- "bytes": 129753,
+ "bytes": 138048,
  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
  "exports": [
   "memory",
@@ -9,7 +9,7 @@
   "websa_dsp_demod_count",
   "websa_dsp_demod_deemph",
   "websa_dsp_demod_free",
-  "websa_dsp_demod_message",
+  "websa_dsp_demod_message_at",
   "websa_dsp_demod_new",
   "websa_dsp_demod_process",
   "websa_dsp_demod_push",
@@ -33,6 +33,6 @@
  "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "2e1a7c6754af3cac189b5fffa696c4b53f5c034c64d6576cea209a2880c8103b",
+ "sha256": "e7ccedba94983eec3714cd8f529c62fc5581d8ae19bbf3cef17ee0b6844b609a",
  "target": "wasm32-unknown-unknown"
 }

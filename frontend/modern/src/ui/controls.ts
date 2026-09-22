@@ -601,18 +601,23 @@ export function presetAll() {
   wfPaused.set(false);
   smoothBins.set(1);
   spanStepAuto.set(true);
-  setSdrAudioEnabled(false);
-  setSdrIqEnabled(false);
+  // Preset resets the device, not the listener: the audio switch and the IQ ingress survive. The
+  // backend's reconfigure re-anchors the stream with its own flush frame, so stopping the ingress
+  // here only orphaned it (re-enabling audio afterwards still heard nothing until a reload).
+  const audioWasOn = sdrAudioOn.get();
   resetSdrIq();
-  sdrAudioOn.set(false);
 
   // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
   // code cleared the fields by hand and missed one, so a Preset could reapply the previous
   // frequency.
   resetSdrState();
+  sdrAudioOn.set(audioWasOn);
   renderSdrState();
   resetAutoScaleState();               // the reference is about to be reset: forget the last fit
   send({ cmd: 'SET_PRESET' });
+  setSdrDspAudioEnabled(audioWasOn);
+  setSdrAudioEnabled(audioWasOn);
+  syncSdrAudioButton();
   updateInfoBar(); applyMeasUI(); requestRender();
 }
 

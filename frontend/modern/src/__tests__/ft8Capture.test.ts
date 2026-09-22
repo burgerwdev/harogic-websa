@@ -43,9 +43,9 @@ describe.skipIf(!capturePath)('FT8 on a captured baseband', () => {
 		const decodes: string[] = [];
 		let blocks = 0;
 		for (let start = 0; start + block * 2 <= iq.length; start += block * 2) {
-			const message = pipeline.push(iq.subarray(start, start + block * 2));
+			const reports = pipeline.push(iq.subarray(start, start + block * 2));
 			blocks += 1;
-			if (message) {
+			for (const message of reports) {
 				decodes.push(`${message.text} @ ${message.frequencyHz.toFixed(0)} Hz snr ` +
 					`${message.snrDb.toFixed(0)} dB`);
 				// eslint-disable-next-line no-console

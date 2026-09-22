@@ -431,6 +431,10 @@ impl AnalogDemodulator for AnalogDemod {
         self.deemph_us
     }
 
+    fn set_deemph_us(&mut self, tau_us: f64) {
+        AnalogDemod::set_deemph_us(self, tau_us);
+    }
+
     fn retune(&mut self) {
         // Keep the AGC gain: resetting it made every tune start with a loud burst.
         self.band.clear_tail();
@@ -719,6 +723,35 @@ mod tests {
         let mut again = Vec::new();
         demod.process_into(&iq, &mut again);
         assert!(amplitude_at(&again, AUDIO_RATE, tone) > rolled);
+    }
+
+    /// The pipeline holds the demodulator behind `Box<dyn AnalogDemodulator>`; a setting that is
+    /// only an inherent method would silently no-op there (the de-emphasis regression).
+    #[test]
+    fn de_emphasis_reaches_the_demodulator_through_the_trait_object() {
+        let tone = 3_000.0;
+        let modulate = |t: f64| {
+            let ph = 3.0 * (TAU * tone * t).sin();
+            (ph.cos(), ph.sin())
+        };
+        let mut demod: Box<dyn AnalogDemodulator> =
+            Box::new(AnalogDemod::new(spec_for("wfm").unwrap(), DemodConfig::new(FS, IF_BW), AUDIO_RATE));
+        let mut iq: Vec<f32> = Vec::new();
+        for k in 0..20_000 {
+            let (i, q) = modulate(k as f64 / FS);
+            iq.push(i as f32);
+            iq.push(q as f32);
+        }
+        demod.set_deemph_us(0.0);
+        let mut flat = Vec::new();
+        demod.process_into(&iq, &mut flat);
+        demod.set_deemph_us(300.0);
+        let mut rolled = Vec::new();
+        demod.process_into(&iq, &mut rolled);
+        assert!(
+            amplitude_at(&rolled, AUDIO_RATE, tone) < amplitude_at(&flat, AUDIO_RATE, tone) * 0.9,
+            "300 us must roll the tone off through the trait object"
+        );
     }
 
     #[test]

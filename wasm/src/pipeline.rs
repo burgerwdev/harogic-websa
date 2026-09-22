@@ -295,6 +295,11 @@ impl Pipeline {
         self.digital.as_ref().and_then(|demod| demod.last_report())
     }
 
+    /// Every message the digital demodulator decoded in its most recent block, with measurements.
+    pub fn digital_decoded(&self) -> Vec<(String, DigitalReport)> {
+        self.digital.as_ref().map(|demod| demod.decoded()).unwrap_or_default()
+    }
+
     pub fn chain(&self) -> &AudioChain {
         &self.chain
     }

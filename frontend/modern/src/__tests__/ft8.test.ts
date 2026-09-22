@@ -43,18 +43,16 @@ const fixtureBaseband = (): Float32Array => {
 };
 
 /**
- * The fixture padded to a full FT8 slot (15 s), which is what the decoder consumes: the mode is
- * slot-scheduled and the live stream is a rolling buffer, so a transmission-sized buffer would
- * never be decoded.
+ * The fixture padded to one sliding decode window: a hop (the 15 s schedule) plus a whole burst plus
+ * the decoder's margin = 28.04 s. The decoder searches the whole window, so the burst must be inside
+ * it; padding past the retention would trim the *head* and cut the burst instead.
  */
 const fixtureSlot = (): Float32Array => {
 	const meta = manifest();
-	const slot = new Float32Array(meta.rate * 15 * 2);
+	const slot = new Float32Array(Math.ceil(meta.rate * 28.2) * 2);
 	const transmission = fixtureBaseband();
-	// The fixture is full scale; the decoder is level-relative, so a constant scale is all this is.
-	for (let index = 0; index < transmission.length; index++) {
-		slot[index] = transmission[index] * 0.25 * 32767;
-	}
+	// The fixture is already at the decoder's full scale: fed as-is.
+	slot.set(transmission);
 	return slot;
 };
 
@@ -77,25 +75,26 @@ describe('FT8 through the committed artifact', () => {
 		expect(pipeline.isDigital).toBe(true);
 
 		const iq = fixtureSlot();
-		let decoded = null;
+		let decoded: { text: string; frequencyHz: number; timeOffsetS: number } | null = null;
 		for (let start = 0; start < iq.length / 2; start += meta.symbol_samples) {
 			const block = iq.subarray(start * 2, Math.min(start + meta.symbol_samples, iq.length / 2) * 2);
-			decoded = pipeline.push(block) ?? decoded;
+			decoded = pipeline.push(block).at(-1) ?? decoded;
 		}
 		expect(decoded).not.toBeNull();
 		expect(decoded!.text).toBe(meta.message);
 		// The fixture sits at the base frequency with no deliberate offset.
 		expect(Math.abs(decoded!.frequencyHz - meta.base_hz)).toBeLessThan(25);
-		expect(Math.abs(decoded!.timeOffsetS)).toBeLessThan(0.2);
+		// The reported time is the waterfall block time (the window leads the signal by a symbol).
+		expect(Math.abs(decoded!.timeOffsetS)).toBeLessThan(1.0);
 		expect(pipeline.count()).toBe(1);
 
 		// The slot was consumed: one more block must not decode it again.
-		expect(pipeline.push(iq.subarray(0, meta.symbol_samples * 2))).toBeNull();
+		expect(pipeline.push(iq.subarray(0, meta.symbol_samples * 2))).toHaveLength(0);
 
 		// Reset and free are safe to call repeatedly (the worker does on stop and on detach).
 		pipeline.reset();
 		pipeline.free();
-		expect(pipeline.push(iq.subarray(0, 960))).toBeNull();
+		expect(pipeline.push(iq.subarray(0, 960))).toHaveLength(0);
 		expect(() => pipeline.free()).not.toThrow();
 	}, 180_000);
 
@@ -106,9 +105,9 @@ describe('FT8 through the committed artifact', () => {
 		expect(pipeline.ok).toBe(true);
 		const iq = fixtureSlot();
 		const block = 4096 * 2;          // 4096 complex samples per baseband frame
-		let decoded = null;
+		let decoded: { text: string } | null = null;
 		for (let start = 0; start < iq.length; start += block) {
-			decoded = pipeline.push(iq.subarray(start, Math.min(start + block, iq.length))) ?? decoded;
+			decoded = pipeline.push(iq.subarray(start, Math.min(start + block, iq.length))).at(-1) ?? decoded;
 		}
 		expect(decoded?.text).toBe(meta.message);
 		expect(pipeline.count()).toBeGreaterThan(0);
@@ -123,10 +122,10 @@ describe('FT8 through the committed artifact', () => {
 		const pipeline = new WasmPipeline(module, params({ fsIn: 48_828.125 }), true);
 		expect(pipeline.ok).toBe(true);
 		const iq = fixtureSlot();
-		let decoded = null;
+		let decoded: { text: string } | null = null;
 		for (let start = 0; start < iq.length / 2; start += 4_096) {
 			const block = iq.subarray(start * 2, Math.min(start + 4_096, iq.length / 2) * 2);
-			decoded = pipeline.push(block) ?? decoded;
+			decoded = pipeline.push(block).at(-1) ?? decoded;
 		}
 		// The resampler shifts the tones slightly, which is why the decoder is level-relative but the
 		// frequency estimate moves: what this asserts is that the path runs and reports a message.
@@ -142,20 +141,21 @@ describe('FT8 through the committed artifact', () => {
 		const meta = manifest();
 		const shift = 1_400.0;
 		const baseband = fixtureBaseband();
-		const slot = new Float32Array(meta.rate * 15 * 2);
+		// One sliding decode window, matching fixtureSlot().
+		const slot = new Float32Array(Math.ceil(meta.rate * 28.2) * 2);
 		for (let k = 0; k < baseband.length / 2; k++) {
 			const ph = (2 * Math.PI * shift * k) / meta.rate;
 			const i = baseband[2 * k];
 			const q = baseband[2 * k + 1];
-			slot[2 * k] = (i * Math.cos(ph) - q * Math.sin(ph)) * 0.25 * 32767;
-			slot[2 * k + 1] = (i * Math.sin(ph) + q * Math.cos(ph)) * 0.25 * 32767;
+			slot[2 * k] = i * Math.cos(ph) - q * Math.sin(ph);
+			slot[2 * k + 1] = i * Math.sin(ph) + q * Math.cos(ph);
 		}
 		const module = await instantiateDsp(artifactBytes());
 		const pipeline = new WasmPipeline(module, params(), true);
-		let decoded = null;
+		let decoded: { text: string; frequencyHz: number } | null = null;
 		for (let start = 0; start < slot.length / 2; start += 4_096) {
 			const block = slot.subarray(start * 2, Math.min(start + 4_096, slot.length / 2) * 2);
-			decoded = pipeline.push(block) ?? decoded;
+			decoded = pipeline.push(block).at(-1) ?? decoded;
 		}
 		expect(decoded?.text).toBe(meta.message);
 		expect(Math.abs((decoded?.frequencyHz ?? 0) - (meta.base_hz + shift))).toBeLessThan(40);
@@ -166,7 +166,7 @@ describe('FT8 through the committed artifact', () => {
 		const module = await instantiateDsp(artifactBytes());
 		const pipeline = new WasmPipeline(module, params({ outRate: 0 }), true);
 		expect(pipeline.ok).toBe(false);
-		expect(pipeline.push(new Float32Array(128))).toBeNull();
+		expect(pipeline.push(new Float32Array(128))).toHaveLength(0);
 		pipeline.free();
 	}, 30_000);
 
@@ -181,10 +181,10 @@ describe('FT8 through the committed artifact', () => {
 			state = (state * 1103515245 + 12345) & 0x7fffffff;
 			noise[index] = (((state >> 8) % 2048) - 1024) / 1024;
 		}
-		let decoded = null;
+		let decoded: { text: string } | null = null;
 		for (let start = 0; start < noise.length / 2; start += meta.symbol_samples) {
 			const block = noise.subarray(start * 2, Math.min(start + meta.symbol_samples, noise.length / 2) * 2);
-			decoded = pipeline.push(block) ?? decoded;
+			decoded = pipeline.push(block).at(-1) ?? decoded;
 		}
 		expect(decoded).toBeNull();
 		pipeline.free();

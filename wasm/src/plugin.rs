@@ -182,6 +182,12 @@ pub trait DigitalDemodulator: Send {
         None
     }
 
+    /// Every message the most recent `process_iq` decoded, with its measurements, so the UI can
+    /// show each transmission a busy slot contained. Empty when the block decoded nothing.
+    fn decoded(&self) -> Vec<(String, DigitalReport)> {
+        Vec::new()
+    }
+
     /// Input samples buffered towards the next decode attempt (0 when the protocol decodes per
     /// block). Used by the status readout, so "running but never finishing a transmission" is
     /// visible instead of looking like a quiet band.

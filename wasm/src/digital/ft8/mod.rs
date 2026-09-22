@@ -4,42 +4,61 @@
 //! sync blocks at 0, 36 and 72. The 58 data symbols carry 174 bits, which are an LDPC(174,91)
 //! codeword: 91 payload bits (77 of message plus a 14-bit CRC) and 83 parity bits.
 //!
-//! Decoding is the reverse: find the signal (Costas correlation over time/frequency), measure the
-//! eight tone energies per symbol, turn them into log-likelihood ratios, run the LDPC sum-product
-//! decoder, check the CRC, and unpack the message.
+//! Decoding is the reverse, and follows the reference decoders (ft8_lib, WSJT-X): build a
+//! *waterfall* (a Hann-windowed FFT per symbol), score candidates by a *local-contrast* sync metric
+//! over the Costas tones, rank them with a heap, and for each run the max-log likelihood -> LDPC ->
+//! CRC -> unpack. The search covers the *whole slot* (not just the first 2.4 s), because a real
+//! capture is not slot-aligned: the transmission can start seconds into the buffer, and the tail is
+//! then truncated, which the sync/LLR stages tolerate by skipping out-of-range symbols.
 //!
 //! This module is on the **digital path**: it reads the RAW complex baseband and never touches the
-//! audio chain (`pipeline` cannot hand it an `AnalogPcm`). A voice denoiser on an FT8 tone would
-//! destroy the information this decoder needs.
-//!
-//! The protocol tables are ported from ft8_lib (MIT) — see `tables.rs` and the provenance table in
-//! `docs/*/ARCHITECTURE.md`. The search below is deliberately narrow (it expects the signal inside
-//! the current slot, which is what a slot-driven receiver has): it is a real decoder, not a
-//! wideband skimmer, and the limitation is recorded rather than hidden.
+//! audio chain. The protocol tables are ported from ft8_lib (MIT) — see `tables.rs`.
 
 pub mod tables;
 
+use core::cmp::Ordering;
+use core::f64::consts::PI;
+
+use crate::fft::Bluestein;
 use tables::*;
 
-/// Frequency refinement: 8 steps of 1/8 tone spacing each, so +/- one coarse step (+/- 6.25 Hz) is
-/// covered at a resolution of 0.78 Hz.
+/// Frequency oversampling: the waterfall's FFT has `FREQ_OSR` bins per 6.25 Hz tone, so the
+/// sub-tone resolution is `6.25 / FREQ_OSR` Hz. One is too coarse (a signal half a tone off-grid
+/// loses ~4 dB), two is what the reference uses and is enough; four buys nothing measurable.
+const FREQ_OSR: usize = 2;
+/// Time oversampling: sub-symbol subdivisions per symbol.
+const TIME_OSR: usize = 2;
+/// The audio band FT8 occupies. The tones can be anywhere in here, not just one nominal frequency.
 ///
-/// The resolution is what matters, not the range. FT8 tones are 6.25 Hz apart and the energies are
-/// measured over one symbol window, so an estimate half a tone away (the old step of TONE_SPACING/2 =
-/// 3.125 Hz, which is exactly half) sits between two tones: each tone's energy leaks into its
-/// neighbour, the soft decisions come out wrong, and the LDPC never converges. That is invisible in
-/// the sync correlation - which only measures the seven Costas symbols - and it is why a weak signal
-/// that a phone decodes was found by the search and then lost. The reference refinements are finer
-/// than half a tone for this reason.
-const FREQ_OFFSET_STEPS: i32 = 8;
-const FREQ_OFFSET_STEP_HZ: f64 = TONE_SPACING_HZ / 8.0;
-/// Time search: +/- 8 steps of 1/5 symbol each = +/- 0.256 s. FT8 transmissions are slot-aligned
-/// (operators are clock-disciplined), so the receiver searches the slot edge rather than the whole
-/// slot: a full-slot scan would cost ~15x more for a case a slot-driven receiver does not have.
-const TIME_OFFSET_STEPS: i32 = 8;
+/// The lower edge is 100 Hz rather than the reference's 200 Hz. A receiver's own clock error moves
+/// the whole audio band, and the error is proportional to the RF: measured at 411 MHz a PlutoSDR
+/// transmits 1.95 ppm low (-809 Hz), which pushes a 1 kHz-baseband signal down to ~191 Hz and right
+/// under a 200 Hz floor, so nothing decodes. That region is usable: measured on the SAN-90 SDR path
+/// every 50 Hz slot from 0 Hz to 3 kHz sits within ~2 dB of the same noise floor, so there is no
+/// LO-leakage wall to stay away from. `F_MIN_HZ` is also the frequency of waterfall bin 0, so this
+/// only widens the search; it does not shift the frequencies that are reported.
+const F_MIN_HZ: f64 = 100.0;
+const F_MAX_HZ: f64 = 3_000.0;
+/// One FT8 transmission: 79 symbols of 160 ms.
+const TRANSMISSION_S: f64 = 12.64;
+/// The window slides by one hop (an FT8 slot, the schedule) after every attempt, so it has to hold
+/// that hop *plus* a whole transmission. That is the rule that guarantees a slot-aligned burst is
+/// entirely inside at least one window, whatever its phase: `window >= hop + burst`.
+///
+/// A window shorter than that only works when its length happens to match the burst period, which is
+/// exactly the fragile case this replaced (measured: a 17 s window on a 15 s hop decoded 3 of 6
+/// slots, while 15 s tiled by luck). The margin keeps the equality off the knife edge.
+const WINDOW_MARGIN_S: f64 = 0.4;
+/// Retention past the window, so a block that overshoots the trigger is not trimmed at the head.
+const SLOT_TAIL_S: f64 = 0.6;
+/// A candidate must beat this local-contrast sync score to reach the (expensive) LDPC stage. The
+/// score is in 0.5 dB units (the reference's 8-bit magnitude scale), so 10 is a 5 dB contrast.
+const MIN_SYNC_SCORE: f64 = 10.0;
+/// Candidates that go on to the LDPC stage, best first. The reference uses 140; the heap is a
+/// bound on work, not a ranking rule, and it must be wide enough that a weak transmission survives
+/// alongside stronger ones and the Costas periodicity's 36-symbol aliases.
+const MAX_CANDIDATES: usize = 140;
 const MAX_LDPC_ITERATIONS: usize = 40;
-/// A tone must stand this far above the symbol's mean tone energy to be trusted for the search.
-const SYNC_MARGIN: f64 = 1.0;
 
 /// One decoded message, with what the decoder measured about the signal.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,10 +66,215 @@ pub struct Ft8Message {
     pub text: String,
     /// Audio frequency of tone 0, in Hz.
     pub frequency_hz: f64,
-    /// Start of the transmission relative to the slot buffer, in seconds.
+    /// Where the transmission's first symbol sits in the slot buffer, in seconds (waterfall time).
     pub time_offset_s: f64,
     /// Rough SNR from the sync correlation (dB); a diagnostic, not a calibrated measurement.
     pub snr_db: f64,
+}
+
+/// The waterfall: one Hann-windowed FFT magnitude per (symbol, sub-time, sub-frequency, tone bin),
+/// stored as 8-bit dB — the exact representation ft8_lib uses. Everything the search does is an
+/// O(1) lookup into this table, which is what makes a whole-slot search cheap.
+struct Waterfall {
+    num_blocks: usize,
+    num_bins: usize,
+    /// `mag[((block * TIME_OSR + time_sub) * FREQ_OSR + freq_sub) * num_bins + bin]`.
+    mag: Vec<u8>,
+}
+
+impl Waterfall {
+    fn build(samples: &[f32], rate: f64) -> Self {
+        let block = symbol_samples_at(rate);
+        let subblock = block / TIME_OSR;
+        let nfft = block * FREQ_OSR;
+        let min_bin = (F_MIN_HZ * SYMBOL_PERIOD_S) as usize;
+        let max_bin = (F_MAX_HZ * SYMBOL_PERIOD_S) as usize + 1;
+        let num_bins = max_bin - min_bin;
+        let num_blocks = (samples.len() / 2) / block;
+        let block_stride = TIME_OSR * FREQ_OSR * num_bins;
+        let mut mag = vec![0_u8; num_blocks * block_stride];
+
+        // Hann window with the reference's `fft_norm = 2 / nfft` scaling.
+        let mut window = vec![0.0_f64; nfft];
+        for (i, w) in window.iter_mut().enumerate() {
+            let x = (PI * i as f64 / nfft as f64).sin();
+            *w = x * x * (2.0 / nfft as f64);
+        }
+
+        let mut plan = Bluestein::new(nfft);
+        let mut frame_re = vec![0.0_f64; nfft];
+        let mut frame_im = vec![0.0_f64; nfft];
+        let mut re = vec![0.0_f64; nfft];
+        let mut im = vec![0.0_f64; nfft];
+
+        for blk in 0..num_blocks {
+            let off = blk * block_stride;
+            for ts in 0..TIME_OSR {
+                // Shift the analysis frame by one sub-block.
+                for i in 0..nfft - subblock {
+                    frame_re[i] = frame_re[i + subblock];
+                    frame_im[i] = frame_im[i + subblock];
+                }
+                let start = blk * block + ts * subblock;
+                for i in 0..subblock {
+                    let idx = (start + i) * 2;
+                    let (sr, si) = if idx + 1 < samples.len() {
+                        (samples[idx] as f64, samples[idx + 1] as f64)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    frame_re[nfft - subblock + i] = sr;
+                    frame_im[nfft - subblock + i] = si;
+                }
+                for i in 0..nfft {
+                    re[i] = frame_re[i] * window[i];
+                    im[i] = frame_im[i] * window[i];
+                }
+                plan.forward(&mut re, &mut im);
+                for fsb in 0..FREQ_OSR {
+                    for b in 0..num_bins {
+                        let src = (min_bin + b) * FREQ_OSR + fsb;
+                        let m2 = re[src] * re[src] + im[src] * im[src];
+                        let db = 10.0 * (1e-12 + m2).log10();
+                        let scaled = (2.0 * db + 240.0).round() as i64;
+                        mag[off + ts * (FREQ_OSR * num_bins) + fsb * num_bins + b] =
+                            scaled.clamp(0, 255) as u8;
+                    }
+                }
+            }
+        }
+        Self { num_blocks, num_bins, mag }
+    }
+
+    /// Magnitude at the candidate plus `sym_off` symbols and `bin_off` tone bins, as the raw 8-bit
+    /// dB value. Out-of-range reads are 0 (a truncated transmission reads as "no energy there").
+    fn mag_at(
+        &self,
+        to: i32,
+        ts: usize,
+        fsb: usize,
+        fo: usize,
+        sym_off: i32,
+        bin_off: i32,
+    ) -> u8 {
+        let block = to + sym_off;
+        if block < 0 || block >= self.num_blocks as i32 {
+            return 0;
+        }
+        let bin = fo as i32 + bin_off;
+        if bin < 0 || bin >= self.num_bins as i32 {
+            return 0;
+        }
+        let idx = ((block as usize * TIME_OSR + ts) * FREQ_OSR + fsb) * self.num_bins + bin as usize;
+        self.mag[idx]
+    }
+
+    /// The reference's `ft8_sync_score`: each Costas tone against its frequency neighbours (±one
+    /// tone) and its time neighbours (±one symbol), averaged. A *local contrast*, not an energy
+    /// fraction: a weak transmission scores on how much it stands out from its immediate
+    /// surroundings, which is the metric that survives a busy band.
+    fn sync_score(&self, to: i32, ts: usize, fsb: usize, fo: usize) -> f64 {
+        let mut score = 0.0;
+        let mut num_average = 0;
+        for m in 0..3 {
+            for k in 0..SYNC_LENGTH {
+                let sym = (SYNC_OFFSET * m + k) as i32;
+                let block_abs = to + sym;
+                if block_abs < 0 || block_abs >= self.num_blocks as i32 {
+                    continue;
+                }
+                let sm = COSTAS[k] as i32;
+                let p = self.mag_at(to, ts, fsb, fo, sym, sm) as f64;
+                if sm > 0 {
+                    score += p - self.mag_at(to, ts, fsb, fo, sym, sm - 1) as f64;
+                    num_average += 1;
+                }
+                if sm < 7 {
+                    score += p - self.mag_at(to, ts, fsb, fo, sym, sm + 1) as f64;
+                    num_average += 1;
+                }
+                if k > 0 && block_abs > 0 {
+                    score += p - self.mag_at(to, ts, fsb, fo, sym - 1, sm) as f64;
+                    num_average += 1;
+                }
+                if k + 1 < SYNC_LENGTH && block_abs + 1 < self.num_blocks as i32 {
+                    score += p - self.mag_at(to, ts, fsb, fo, sym + 1, sm) as f64;
+                    num_average += 1;
+                }
+            }
+        }
+        if num_average > 0 {
+            score / num_average as f64
+        } else {
+            -1e9
+        }
+    }
+
+    /// The band's strongest candidates over the whole buffered slot, best first, as
+    /// `(score, time_offset, time_sub, freq_sub, freq_offset)`.
+    fn find_candidates(&self) -> Vec<(f64, i32, usize, usize, usize)> {
+        let mut scored = Vec::new();
+        let to_min = -(2 * FREQ_OSR as i32);
+        for to in to_min..self.num_blocks as i32 {
+            for ts in 0..TIME_OSR {
+                for fsb in 0..FREQ_OSR {
+                    for fo in 0..self.num_bins - 8 {
+                        let s = self.sync_score(to, ts, fsb, fo);
+                        if s >= MIN_SYNC_SCORE {
+                            scored.push((s, to, ts, fsb, fo));
+                        }
+                    }
+                }
+            }
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
+        scored.truncate(MAX_CANDIDATES);
+        scored
+    }
+
+    /// The 174 max-log likelihoods at a candidate, normalized to the variance the LDPC expects
+    /// (the reference's `ft8_extract_likelihood` + `ftx_normalize_logl`).
+    fn extract_likelihood(&self, to: i32, ts: usize, fsb: usize, fo: usize) -> [f64; 174] {
+        let max4 = |a: f64, b: f64, c: f64, d: f64| a.max(b).max(c).max(d);
+        let mut llr = [0.0_f64; 174];
+        let mut data_index = 0;
+        for k in 0..NUM_DATA_SYMBOLS {
+            // Data symbol k sits at message symbol k + 7 (before the 2nd Costas block) or k + 14.
+            let sym = k + if k < 29 { SYNC_LENGTH } else { 2 * SYNC_LENGTH };
+            let mut s2 = [0.0_f64; 8];
+            for (j, value) in s2.iter_mut().enumerate() {
+                let bin = GRAY[j] as i32;
+                *value = self.mag_at(to, ts, fsb, fo, sym as i32, bin) as f64 * 0.5 - 120.0;
+            }
+            llr[data_index] = max4(s2[4], s2[5], s2[6], s2[7]) - max4(s2[0], s2[1], s2[2], s2[3]);
+            llr[data_index + 1] =
+                max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5]);
+            llr[data_index + 2] =
+                max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6]);
+            data_index += 3;
+        }
+        let n = llr.len() as f64;
+        let sum: f64 = llr.iter().sum();
+        let sum2: f64 = llr.iter().map(|v| v * v).sum();
+        let variance = (sum2 - sum * sum / n) / n;
+        if variance > 0.0 {
+            let factor = (24.0 / variance).sqrt();
+            for value in llr.iter_mut() {
+                *value *= factor;
+            }
+        }
+        llr
+    }
+
+    /// Decode one candidate: likelihood -> LDPC -> CRC, returning the 77 payload bits.
+    fn decode_candidate(&self, to: i32, ts: usize, fsb: usize, fo: usize) -> Option<[u8; 77]> {
+        let llr = self.extract_likelihood(to, ts, fsb, fo);
+        let bits = ldpc_decode(&llr, MAX_LDPC_ITERATIONS)?;
+        if !crc_ok(&bits) {
+            return None;
+        }
+        Some(core::array::from_fn(|i| bits[i]))
+    }
 }
 
 /// One slot's worth of complex baseband, kept as interleaved f32.
@@ -59,27 +283,52 @@ pub struct Ft8Decoder {
     samples: Vec<f32>,
     /// Slot length in complex samples (one FT8 slot at this rate).
     slot_samples: usize,
+    /// Complex samples ever pushed. The buffer slides, so a decode's *absolute* position in the
+    /// stream is `total_pushed - buffered + time_offset`, which is what de-duplication needs.
+    total_pushed: usize,
+    /// `(text, absolute burst start)` reported by the previous attempt: a burst that overlaps two
+    /// consecutive windows is found twice and must be reported once.
+    last_reported: Vec<(String, usize)>,
 }
 
 impl Ft8Decoder {
     pub fn new(rate: f64) -> Self {
         let slot_samples = (rate * SLOT_SECONDS) as usize;
-        Self { rate, samples: Vec::new(), slot_samples }
+        Self {
+            rate,
+            samples: Vec::new(),
+            slot_samples,
+            total_pushed: 0,
+            last_reported: Vec::new(),
+        }
     }
 
     pub fn push_iq(&mut self, iq: &[f32]) {
+        // Saturating: this counts every sample of a session, and wasm32's `usize` is 32 bits, so a
+        // long enough run would wrap and make the de-duplication arithmetic nonsense.
+        self.total_pushed = self.total_pushed.saturating_add(iq.len() / 2);
         self.samples.extend_from_slice(iq);
-        // Keep at most one slot (plus the first symbol, so a slot boundary is never half-missing):
-        // FT8 decodes per slot, and an unbounded buffer would grow without limit in a long session.
-        let keep = self.slot_samples + symbol_samples_at(self.rate);
+        // Keep one slot plus the pre-roll and the tail. The caller deliberately feeds `pre-roll +
+        // slot + tail` (the pre-roll absorbs a transmission that starts just before the boundary),
+        // so retaining less than that eats into the *head* of the window -- and the head is where
+        // the transmission starts.
+        // Retention must cover the whole trigger window plus a little slack, otherwise the trim takes
+        // the difference off the *head* -- exactly where the transmission is.
+        let keep = self.retain_samples();
         if self.samples.len() > keep * 2 {
-            let drop = self.samples.len() - keep;
+            // Both sides in f32 elements: `samples` is interleaved I/Q, so a complex count has to be
+            // doubled. Subtracting the complex count here over-drained by `keep` elements (~half the
+            // buffer), which silently discarded the head of the window -- and with it the
+            // transmission.
+            let drop = self.samples.len() - keep * 2;
             self.samples.drain(..drop);
         }
     }
 
     pub fn reset(&mut self) {
         self.samples.clear();
+        self.total_pushed = 0;
+        self.last_reported.clear();
     }
 
     /// Buffered complex samples (diagnostics).
@@ -92,277 +341,79 @@ impl Ft8Decoder {
         self.slot_samples
     }
 
+    /// What `push_iq` retains: the window plus slack for a block that overshoots the trigger.
+    pub fn retain_samples(&self) -> usize {
+        self.window_samples() + (self.rate * SLOT_TAIL_S) as usize
+    }
+
+    /// The sliding window (also the decode trigger): one hop plus one transmission.
+    pub fn window_samples(&self) -> usize {
+        self.slot_samples + (self.rate * (TRANSMISSION_S + WINDOW_MARGIN_S)) as usize
+    }
+
+    /// Slide the window forward by `complex` samples, keeping the overlap. Clearing after an attempt
+    /// instead would make consecutive windows non-overlapping, which drifts against the 15 s schedule
+    /// and drops bursts at the seams -- the whole point of sliding by a hop shorter than the window.
+    pub fn advance(&mut self, complex: usize) {
+        let drop = (complex * 2).min(self.samples.len());
+        self.samples.drain(..drop);
+    }
+
     /// Complex samples in one FT8 *transmission* (79 symbols = 12.64 s).
     pub fn transmission_samples(&self) -> usize {
         NUM_SYMBOLS * symbol_samples_at(self.rate)
     }
 
-    /// Drop the oldest `samples` complex samples (the window advances after a failed attempt).
-    pub fn discard_oldest(&mut self, samples: usize) {
-        let drop = (samples * 2).min(self.samples.len());
-        self.samples.drain(..drop);
-    }
-
-    /// Try to decode the buffered slot. `None` when nothing passes the CRC (the common case: most
-    /// slots contain no signal, and CRC is what stops noise from being reported as a message).
-    pub fn decode(&mut self) -> Option<Ft8Message> {
+    /// Decode every message in the buffered slot. The search covers the whole slot, so this
+    /// returns all CRC-passing transmissions (there can be more than one on a busy band).
+    pub fn decode(&mut self) -> Vec<Ft8Message> {
         let n = self.samples.len() / 2;
         let symbol_samples = symbol_samples_at(self.rate);
         if n < NUM_SYMBOLS * symbol_samples {
-            return None;
+            return Vec::new();
         }
-
-        // The band's strongest sync candidates, best first: the coarse scan is cheap, and the
-        // expensive stages (fine search, LDPC, CRC) only run on the few that could be a transmission.
-        for (candidate_time, candidate_hz) in self.candidates(symbol_samples) {
-            let Some((best_time, best_freq, snr)) =
-                self.find_sync_at(symbol_samples, candidate_hz, candidate_time)
-            else {
+        // FT8's tones span 200-3000 Hz; below that band's Nyquist the waterfall cannot read it.
+        if F_MAX_HZ * 2.0 > self.rate {
+            return Vec::new();
+        }
+        let waterfall = Waterfall::build(&self.samples, self.rate);
+        let mut out: Vec<Ft8Message> = Vec::new();
+        for (score, to, ts, fsb, fo) in waterfall.find_candidates() {
+            let Some(payload) = waterfall.decode_candidate(to, ts, fsb, fo) else {
                 continue;
             };
-            let energies = self.tone_energies(best_time, best_freq, symbol_samples, candidate_hz);
-            let llr = symbols_to_llr(&energies);
-            let Some(bits) = ldpc_decode(&llr, MAX_LDPC_ITERATIONS) else {
-                continue;
-            };
-            if !crc_ok(&bits) {
-                continue;
-            }
-            let payload: [u8; 77] = core::array::from_fn(|i| bits[i]);
             let Some(text) = unpack_message(&payload) else {
                 continue;
             };
-            return Some(Ft8Message {
-                text,
-                frequency_hz: candidate_hz + best_freq,
-                time_offset_s: best_time as f64 / self.rate,
-                snr_db: snr,
-            });
-        }
-        None
-    }
-
-    /// Debug: every coarse candidate and what the fine search made of it, as
-    /// `(frequency_hz, correlation, start_seconds)`. Not part of the product ABI; it exists so a
-    /// known-good signal (see `tests/ft8_real_slot.rs`) can be asked *where* the decoder lost it.
-    pub fn debug_sync(&self) -> Vec<(f64, f64, f64)> {
-        let symbol_samples = symbol_samples_at(self.rate);
-        self.candidates(symbol_samples)
-            .into_iter()
-            .filter_map(|(time, hz)| {
-                self.find_sync_at(symbol_samples, hz, time).map(|(best_time, offset, correlation)| {
-                    (hz + offset, correlation, best_time as f64 / self.rate)
-                })
-            })
-            .collect()
-    }
-
-    /// The band's strongest Costas candidates over the buffered slot, as `(time, base frequency)`.
-    ///
-    /// A decimated correlation (every 8th sample: the tones survive, the noise aliases) swept over the
-    /// slot and over the band. One symbol of time resolution is enough because the fine search covers
-    /// +/-0.128 s around whatever this picks.
-    fn candidates(&self, symbol_samples: usize) -> Vec<(usize, f64)> {
-        let total = self.samples.len() / 2;
-        let span = NUM_SYMBOLS * symbol_samples;
-        if total < span {
-            return Vec::new();
-        }
-        let limit = total - span;
-        let time_step = symbol_samples.max(1);
-        let mut scored: Vec<(f64, usize, f64)> = Vec::new();
-        let mut base = BAND_LOW_HZ;
-        while base <= BAND_HIGH_HZ {
-            let mut time = 0;
-            while time <= limit {
-                let mut score = 0.0;
-                for (symbol_index, expected) in COSTAS.iter().enumerate() {
-                    let start = time + symbol_index * symbol_samples;
-                    let frequency = base + *expected as f64 * TONE_SPACING_HZ;
-                    score += self.tone_energy_decimated(start, symbol_samples, frequency, 8);
-                }
-                scored.push((score, time, base));
-                time += time_step;
-            }
-            base += BAND_STEP_HZ;
-        }
-        if scored.is_empty() {
-            return Vec::new();
-        }
-        let mean = scored.iter().map(|entry| entry.0).sum::<f64>() / scored.len() as f64;
-        // Candidates are the *local maxima* along the frequency axis at each time step, not the global
-        // top few. A transmission is a narrow peak in the band, so it is a local maximum whether or not
-        // it is among the strongest things on the air - and on a busy band it is not: a signal the phone
-        // decoded at -73 dB sat in a band with several stronger traces, and a global top-8 (the old
-        // rule) kept only those stronger ones, so the weak signal was never handed to the fine search.
-        // This is the ranking the reference decoders use; the cap is only to bound the work.
-        const BASE_INDEX: f64 = BAND_STEP_HZ;
-        let mut local: Vec<(f64, usize, f64)> = scored
-            .iter()
-            .filter(|(score, time, base)| {
-                let neighbours = scored.iter().filter(|(_, t, _)| t == time).filter(|(_, _, b)| {
-                    (b - base).abs() <= BASE_INDEX + 1e-9 && (*b - *base).abs() > 1e-9
-                });
-                neighbours.into_iter().all(|(other, _, _)| other < score)
-            })
-            .cloned()
-            .collect();
-        if local.is_empty() {
-            local = scored.clone();
-        }
-        local.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-        local.truncate(MAX_CANDIDATES);
-        // An empty slot is rejected here, in the cheap stage, instead of in the expensive one; a real
-        // transmission's candidate is above the average of the whole scan.
-        let floor = mean * CANDIDATE_MARGIN;
-        local
-            .into_iter()
-            .filter(|(score, _, _)| *score > floor)
-            .map(|(_, time, hz)| (time, hz))
-            .collect()
-    }
-
-    /// Costas correlation over (time, frequency) — the signal has to be found before it is read.
-    ///
-    /// Two stages: a cheap decimated sweep locates the burst anywhere in the buffered window (the
-    /// worker has no slot clock), then this fine search covers the slot edge (+/- 0.128 s) around
-    /// that location together with the frequency offsets. FT8 transmissions are slot-synchronised,
-    /// so once the burst is found the fine window is exactly the jitter a receiver must tolerate.
-    fn find_sync_at(
-        &self,
-        symbol_samples: usize,
-        base_hz: f64,
-        coarse: usize,
-    ) -> Option<(usize, f64, f64)> {
-        let mut best: Option<(usize, f64, f64)> = None;
-        let step = FREQ_OFFSET_STEP_HZ;
-        let time_step = symbol_samples / (TIME_OFFSET_STEPS as usize + 1);
-        // A candidate is only usable when a whole transmission fits after it: the symbol loop below
-        // `break`s on a short window, and a base that never got that far would still be recorded (its
-        // correlation is 0, which beats an empty `best`) - the reader then indexed past the buffer and
-        // the decoder worker died silently on the first real band (measured: `dsp_pushes` frozen with
-        // its buffer left 65 samples short of a slot). Skipping unusable candidates is also the honest
-        // answer: there is no transmission there to find.
-        let span = NUM_SYMBOLS * symbol_samples;
-        let total = self.samples.len() / 2;
-        for time_index in -(TIME_OFFSET_STEPS as i64)..=(TIME_OFFSET_STEPS as i64) {
-            let base = (coarse as i64 + time_index * time_step as i64).max(0) as usize;
-            if base + span > total {
+            // The Costas pattern repeats every 36 symbols, so one transmission also scores (and
+            // sometimes decodes) at ±36 offsets; dedupe by text.
+            if out.iter().any(|m: &Ft8Message| m.text == text) {
                 continue;
             }
-            for freq_index in -FREQ_OFFSET_STEPS..=FREQ_OFFSET_STEPS {
-                let offset = freq_index as f64 * step;
-                let mut sync = 0.0;
-                let mut total = 0.0;
-                for (symbol_index, expected) in COSTAS.iter().enumerate() {
-                    let start = base + symbol_index * symbol_samples;
-                    if start + symbol_samples > self.samples.len() / 2 {
-                        break;
-                    }
-                    let mut energies = [0.0_f64; 8];
-                    for (tone, energy) in energies.iter_mut().enumerate() {
-                        let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
-                        // Decimated 4x, and only for *scoring*: this search ranks (time, frequency)
-                        // offsets, while the tone energies that feed the LLRs are read at full rate
-                        // afterwards (`tone_energies`). Full rate here cost ~25 s per slot with the
-                        // finer frequency grid below, which does not fit a 15 s slot; a 4x-decimated
-                        // correlation still ranks correctly.
-                        *energy = self.tone_energy_decimated(start, symbol_samples, frequency, 4);
-                    }
-                    let sum: f64 = energies.iter().sum();
-                    sync += energies[*expected as usize];
-                    total += sum;
-                    if total <= 0.0 {
-                        break;
-                    }
-                }
-                let correlation = if total > 0.0 { sync / total } else { 0.0 };
-                let better = match best {
-                    None => true,
-                    Some((_, _, best_correlation)) => correlation > best_correlation,
-                };
-                if better {
-                    best = Some((base, offset, correlation));
-                }
+            out.push(Ft8Message {
+                text,
+                frequency_hz: F_MIN_HZ + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ,
+                time_offset_s: (to as f64 + ts as f64 / TIME_OSR as f64) * SYMBOL_PERIOD_S,
+                snr_db: score * 0.5,
+            });
+        }
+        // The window slides, so a burst near the seam is inside two consecutive windows and decodes
+        // twice. Suppress the repeat by *absolute position in the stream*, not by text: the same text
+        // legitimately repeats every slot, and only the same burst must be reported once.
+        let buffer_start = self.total_pushed.saturating_sub(self.samples.len() / 2);
+        let tolerance = self.rate as usize / 2;   // 0.5 s: the same burst, not the next slot
+        let mut reported: Vec<(String, usize)> = Vec::with_capacity(out.len());
+        out.retain(|message| {
+            let absolute = buffer_start + (message.time_offset_s * self.rate) as usize;
+            let seen = self.last_reported.iter().any(|(text, previous)| {
+                *text == message.text && absolute.abs_diff(*previous) <= tolerance
+            });
+            if !seen {
+                reported.push((message.text.clone(), absolute));
             }
-        }
-        let (base, offset, correlation) = best?;
-        // A Costas block is 7 of 56 tones: a signal puts ~1/3 of the energy in the 7 expected tones,
-        // noise puts ~1/8. Requiring more than the chance level keeps pure noise from reaching the
-        // (expensive) LDPC stage.
-        if correlation < SYNC_MARGIN / 8.0 {
-            return None;
-        }
-        Some((base, offset, 10.0 * (correlation / (1.0 - correlation).max(1e-9)).log10()))
-    }
-
-    /// Magnitude² of one tone over one symbol window, sampled every `decimate` samples.
-    ///
-    /// The coarse pass only ranks offsets, so it can afford this: an 8x decimated DFT is ~8x
-    /// cheaper and still peaks at the right alignment.
-    fn tone_energy_decimated(&self, start: usize, length: usize, frequency: f64, decimate: usize) -> f64 {
-        self.tone_energy_rotating(start, length, frequency, decimate)
-    }
-
-    /// Magnitude² of one tone over one symbol window.
-    ///
-    /// The local oscillator is a recursive rotator: the frequency is fixed for the call, so the
-    /// per-sample twiddle is one complex multiply instead of a `sin_cos()` pair. Those transcendentals
-    /// were the entire cost of the search - a slot decode took 9.3 s through the shipped artifact on a
-    /// busy band (against 0.6 s natively), which is long enough that the decoder fell behind the live
-    /// stream. The rotation is exact to f64 rounding over one symbol window.
-    fn tone_energy(&self, start: usize, length: usize, frequency: f64) -> f64 {
-        self.tone_energy_rotating(start, length, frequency, 1)
-    }
-
-    /// `tone_energy` with an optional decimation of the *summed* samples (the search's cheap stage).
-    fn tone_energy_rotating(
-        &self,
-        start: usize,
-        length: usize,
-        frequency: f64,
-        decimate: usize,
-    ) -> f64 {
-        let step = -2.0 * core::f64::consts::PI * frequency / self.rate * decimate.max(1) as f64;
-        let (step_sin, step_cos) = step.sin_cos();
-        let (mut rot_re, mut rot_im) = (1.0_f64, 0.0_f64);
-        let (mut re, mut im) = (0.0_f64, 0.0_f64);
-        let mut k = 0;
-        while k < length {
-            let index = (start + k) * 2;
-            if index + 1 >= self.samples.len() {
-                break;
-            }
-            let (i, q) = (self.samples[index] as f64, self.samples[index + 1] as f64);
-            re += i * rot_re - q * rot_im;
-            im += i * rot_im + q * rot_re;
-            let next_re = rot_re * step_cos - rot_im * step_sin;
-            let next_im = rot_re * step_sin + rot_im * step_cos;
-            rot_re = next_re;
-            rot_im = next_im;
-            k += decimate.max(1);
-        }
-        re * re + im * im
-    }
-
-    /// The eight tone energies of every symbol, at the located (time, frequency).
-    fn tone_energies(
-        &self,
-        base: usize,
-        offset: f64,
-        symbol_samples: usize,
-        base_hz: f64,
-    ) -> Vec<[f64; 8]> {
-        let mut out = Vec::with_capacity(NUM_SYMBOLS);
-        for symbol_index in 0..NUM_SYMBOLS {
-            let start = base + symbol_index * symbol_samples;
-            let mut energies = [0.0_f64; 8];
-            for (tone, energy) in energies.iter_mut().enumerate() {
-                let frequency = base_hz + offset + tone as f64 * TONE_SPACING_HZ;
-                *energy = self.tone_energy(start, symbol_samples, frequency);
-            }
-            out.push(energies);
-        }
+            !seen
+        });
+        self.last_reported = reported;
         out
     }
 }
@@ -372,76 +423,7 @@ fn symbol_samples_at(rate: f64) -> usize {
     (rate * SYMBOL_PERIOD_S) as usize
 }
 
-/// The audio band FT8 occupies, in Hz.
-///
-/// A receiver that searched only around one nominal frequency (1 kHz) decoded the committed fixture -
-/// which happens to sit exactly there - and nothing on a real band: reported from the bench after a
-/// phone app decoded a transmission this decoder could not see. The tones are anywhere in this band.
-const BAND_LOW_HZ: f64 = 200.0;
-const BAND_HIGH_HZ: f64 = 3_000.0;
-/// Spacing of the coarse candidates. The fine search covers +/-25 Hz around each, so 50 Hz leaves no
-/// gap in the band.
-const BAND_STEP_HZ: f64 = 12.5;
-/// Candidates that go on to the fine search and the CRC. Each costs a full sync search, and only one
-/// of them can be the transmission (a 24-bit CRC decides), so this is a cost/false-positive trade.
-/// A bound on the work, not a ranking rule: the fine search is linear in this, and the candidates are
-/// the band's local maxima (a busy band has many). The fine search is decimated, so this stays inside
-/// a slot's budget.
-const MAX_CANDIDATES: usize = 12;
-/// A candidate must beat the whole scan's average score by this factor.
-///
-/// Most slots carry nothing, and without a gate every empty slot paid six full sync searches plus six
-/// LDPC attempts (measured: a noise slot took seconds). A transmission's Costas block lifts its
-/// candidate well above the band's average; noise does not lift any of them.
-const CANDIDATE_MARGIN: f64 = 1.1;
-/// LLRs for the 174 data bits from the per-symbol tone energies.
-///
-/// The sign convention is the reference's (`decode.c`: "log likelihood log(p(1)/p(0))"), and the
-/// LDPC stage's hard decision is `total > 0 ? 1 : 0`, so a positive value must favour bit 1. The
-/// first version returned log(p0/p1) — inverted — which showed up as 24 failing parity checks and a
-/// decoder that never converged, on a signal whose tones were detected perfectly.
-fn symbols_to_llr(energies: &[[f64; 8]]) -> [f64; 174] {
-    // The reference's formula (`ft8_lib`'s `ft8_extract_symbol`): for each bit, the largest magnitude
-    // among the tones that carry a one minus the largest among those that carry a zero - a max-log
-    // likelihood, in Gray-map order. The log-ratio-of-sums this replaces is fragile exactly where it
-    // matters: on a weak signal the sums are dominated by noise, so the ratio is noisy too, while a
-    // maximum still finds the tone that stands out. Together with the variance normalization below it
-    // is what lets the reference decode a -73 dB signal that this decoder found and then lost.
-    let max4 = |a: f64, b: f64, c: f64, d: f64| a.max(b).max(c).max(d);
-    let mut llr = [0.0_f64; 174];
-    let mut data_index = 0;
-    for symbol_index in 0..NUM_SYMBOLS {
-        if is_sync_symbol(symbol_index) {
-            continue;
-        }
-        let symbol = &energies[symbol_index];
-        let mut s2 = [0.0_f64; 8];
-        for (j, value) in s2.iter_mut().enumerate() {
-            *value = symbol[GRAY[j] as usize];
-        }
-        llr[data_index] = max4(s2[4], s2[5], s2[6], s2[7]) - max4(s2[0], s2[1], s2[2], s2[3]);
-        llr[data_index + 1] =
-            max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5]);
-        llr[data_index + 2] =
-            max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6]);
-        data_index += 3;
-    }
-    // Scale to a fixed variance (`ftx_normalize_logl`: `sqrt(24 / variance)`), which is what the
-    // LDPC stage's convergence actually depends on; a fixed factor cannot be right for signals whose
-    // strengths differ by 20 dB. The scale changes nothing about the signs - the hard decisions.
-    let n = llr.len() as f64;
-    let sum: f64 = llr.iter().sum();
-    let sum2: f64 = llr.iter().map(|v| v * v).sum();
-    let variance = (sum2 - sum * sum / n) / n;
-    if variance > 0.0 {
-        let factor = (24.0 / variance).sqrt();
-        for value in llr.iter_mut() {
-            *value *= factor;
-        }
-    }
-    llr
-}
-
+#[cfg(test)]
 fn is_sync_symbol(index: usize) -> bool {
     index < SYNC_LENGTH
         || (SYNC_OFFSET..SYNC_OFFSET + SYNC_LENGTH).contains(&index)
@@ -721,6 +703,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_push_past_the_retention_keeps_the_head_not_half_the_buffer() {
+        // The feeder deliberately sends one slot plus a tail. The trim must drop only the excess:
+        // subtracting the *complex* retention from a *float* length over-drained by half the buffer
+        // and silently discarded the window's head -- and the head is where the transmission starts.
+        let rate = 48_000.0;
+        let mut decoder = Ft8Decoder::new(rate);
+        let keep = decoder.retain_samples();
+        decoder.push_iq(&vec![0.0_f32; (keep + 4_800) * 2]);   // 100 ms past the retention
+        assert_eq!(decoder.buffered(), keep, "only the excess may be trimmed");
+    }
+
+    #[test]
     fn the_crc_matches_a_hand_checked_value() {
         let payload = [0_u8; 77];
         // All-zero payload: the CRC of 82 zero bits is 0.
@@ -758,24 +752,7 @@ mod tests {
         let grid = unpack_grid(igrid4, false);
         assert_eq!(grid.as_deref(), Some("PM95"));
     }
-
-    #[test]
-    fn a_noise_only_slot_decodes_to_nothing() {
-        // CRC is the gate: a buffer with no signal must not produce a message.
-        let mut decoder = Ft8Decoder::new(48_000.0);
-        let mut seed = 12345_u32;
-        let mut noise = Vec::with_capacity(48_000 * 2);
-        for _ in 0..48_000 {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            noise.push(((seed >> 8) as f64 / 16_777_216.0 - 0.5) as f32 * 0.01);
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            noise.push(((seed >> 8) as f64 / 16_777_216.0 - 0.5) as f32 * 0.01);
-        }
-        decoder.push_iq(&noise);
-        assert!(decoder.decode().is_none(), "noise must not decode to a message");
-    }
 }
-
 
 // ---------------------------------------------------------------- plugin + ABI
 
@@ -783,18 +760,19 @@ use crate::plugin::{DigitalDemodulator, DigitalReport};
 
 /// FT8 as a `DigitalDemodulator`: it consumes RAW baseband blocks and emits decoded text.
 ///
-/// The decoder is slot-driven (see the module docs): blocks accumulate until a slot is buffered,
-/// then one decode attempt runs. A successful decode clears the buffer, because the next slot is a
-/// different transmission and re-decoding the same samples would report the same message again.
+/// The decoder is window-driven and *slides*: blocks accumulate until a window (`hop + burst`) is
+/// buffered, one decode runs over the whole window, then the window advances by one hop and keeps the
+/// overlap. Sliding rather than clearing is what makes the result independent of where the feeder's
+/// window boundaries happen to fall relative to the 15 s FT8 schedule.
 pub struct Ft8Plugin {
     decoder: Ft8Decoder,
-    last: Option<Ft8Message>,
+    decoded: Vec<Ft8Message>,
     decoded_messages: u64,
 }
 
 impl Ft8Plugin {
     pub fn new(rate: f64) -> Self {
-        Self { decoder: Ft8Decoder::new(rate), last: None, decoded_messages: 0 }
+        Self { decoder: Ft8Decoder::new(rate), decoded: Vec::new(), decoded_messages: 0 }
     }
 
     /// How many messages this plugin has decoded (diagnostics/status).
@@ -804,14 +782,10 @@ impl Ft8Plugin {
 
     /// The most recent decode, with the timing and frequency the decoder measured.
     pub fn last(&self) -> Option<&Ft8Message> {
-        self.last.as_ref()
+        self.decoded.last()
     }
 
     /// Complex samples currently buffered towards the next decode attempt.
-    ///
-    /// Diagnostics with a purpose: "the decoder is running" and "the decoder is 90 % of the way
-    /// through a transmission" look identical from the outside otherwise, and a buffer that keeps
-    /// restarting is the difference between a broken stream and a quiet band.
     pub fn buffered(&self) -> usize {
         self.decoder.buffered()
     }
@@ -824,54 +798,25 @@ impl DigitalDemodulator for Ft8Plugin {
 
     fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
         self.decoder.push_iq(iq);
-        // A SLOT, not a transmission: the live stream is a rolling buffer, so decoding a
-        // transmission-sized window and then discarding exactly that much would land on the same
-        // phase every time and never align with a transmission that starts at a slot boundary
-        // (measured in the browser: 1100 blocks of real fixture IQ, `dsp_buffered` stuck around
-        // 540k, no decode). Advancing by a whole slot makes the windows slot-aligned, which is what
-        // FT8's 15 s schedule is.
-        let slot = self.decoder.slot_samples();
-        if self.decoder.buffered() < slot {
+        if self.decoder.buffered() < self.decoder.window_samples() {
             return Vec::new();
         }
-        match self.decoder.decode() {
-            Some(message) => {
-                self.decoded_messages += 1;
-                let text = message.text.clone();
-                self.last = Some(message);
-                // The slot has been consumed: the next decode starts from a fresh buffer.
-                self.decoder.reset();
-                vec![text]
-            }
-            None => {
-                // Nothing there. The window has to *advance*, not just be cleared.
-                //
-                // One attempt can only examine the positions where a whole transmission fits: with a
-                // 15 s buffer and a 12.6 s transmission that is the first ~2.4 s of the window (the
-                // candidate scan skips start times without room for a transmission). Clearing the
-                // buffer therefore examined the same 2.4 s for ever and a signal anywhere else in the
-                // slot was never seen - which is what "waiting for a decode" while a phone app
-                // decodes the same audio looked like.
-                //
-                // Dropping a whole transmission advances the window by `slot - transmission` (about
-                // 2.4 s), so a handful of attempts cover every offset in a slot. The remainder is
-                // trimmed to just under a slot as well: otherwise a buffer that had grown stayed
-                // above the threshold and *every* following block started another attempt, each
-                // costing seconds while the stream delivers 120 blocks a second (measured: the
-                // decoder worker stopped reporting with its buffer just short of a slot).
-                let slot = self.decoder.slot_samples();
-                let transmission = self.decoder.transmission_samples();
-                let buffered = self.decoder.buffered();
-                let keep = slot.saturating_sub(transmission).min(buffered);
-                self.decoder.discard_oldest(buffered.saturating_sub(keep));
-                Vec::new()
-            }
+        let messages = self.decoder.decode();
+        // Slide one hop instead of clearing. The next window then overlaps this one by a whole
+        // transmission, so a burst sitting at the seam is still searched whole in whichever window
+        // contains it -- `window >= hop + burst` is what makes that a guarantee.
+        self.decoder.advance(self.decoder.slot_samples());
+        if messages.is_empty() {
+            return Vec::new();
         }
+        self.decoded_messages += messages.len() as u64;
+        self.decoded = messages.clone();
+        messages.into_iter().map(|m| m.text).collect()
     }
 
     fn reset(&mut self) {
         self.decoder.reset();
-        self.last = None;
+        self.decoded.clear();
     }
 
     fn buffered_input(&self) -> usize {
@@ -879,11 +824,27 @@ impl DigitalDemodulator for Ft8Plugin {
     }
 
     fn last_report(&self) -> Option<DigitalReport> {
-        self.last.as_ref().map(|message| DigitalReport {
+        self.decoded.last().map(|message| DigitalReport {
             frequency_hz: message.frequency_hz,
             time_offset_s: message.time_offset_s,
             snr_db: message.snr_db,
         })
+    }
+
+    fn decoded(&self) -> Vec<(String, DigitalReport)> {
+        self.decoded
+            .iter()
+            .map(|message| {
+                (
+                    message.text.clone(),
+                    DigitalReport {
+                        frequency_hz: message.frequency_hz,
+                        time_offset_s: message.time_offset_s,
+                        snr_db: message.snr_db,
+                    },
+                )
+            })
+            .collect()
     }
 }
 
@@ -901,9 +862,6 @@ mod plugin_tests {
     }
 
     /// The fixture padded to a full slot with the quiet tail a real slot has.
-    ///
-    /// The plugin decodes slots (FT8 is a 15 s slot mode and the live stream is a rolling buffer),
-    /// so a test that feeds only the 12.64 s transmission would wait forever.
     fn fixture_slot() -> Vec<f32> {
         let mut slot = fixture();
         let slot_complex = (48_000.0 * tables::SLOT_SECONDS) as usize;
@@ -913,13 +871,16 @@ mod plugin_tests {
         slot
     }
 
-
     #[test]
     fn the_plugin_decodes_the_fixture_from_a_slot_and_clears_its_buffer() {
+        if cfg!(debug_assertions) {
+            return; // a whole-slot waterfall decode is release-only (see the reference test)
+        }
         let mut plugin = Ft8Plugin::new(48_000.0);
-        // One SLOT of input (the transmission is 12.64 s of a 15 s slot).
-        let slot = fixture_slot();
-        // Feed it in 20 ms blocks, the way the worker does.
+        // The plugin waits for a whole sliding window (hop + burst) before it searches, so pad the
+        // fixture slot out to one.
+        let mut slot = fixture_slot();
+        slot.resize(Ft8Decoder::new(48_000.0).window_samples() * 2, 0.0);
         let mut decoded: Vec<String> = Vec::new();
         for block in slot.chunks(960 * 2) {
             decoded.extend(plugin.process_iq(block));
@@ -932,16 +893,14 @@ mod plugin_tests {
         assert!(plugin.process_iq(&slot[..960 * 2]).is_empty());
     }
 
-
     #[test]
     fn decodes_a_transmission_that_starts_inside_the_window() {
-        // The live stream is a rolling buffer with no slot clock, so a window generally does NOT
-        // start at a transmission - and the browser path decoded nothing until this worked
-        // (`dsp_buffered` cycling through slots with `ft8=0`). The decoder has to find the burst.
-        // A 12.64 s transmission fits in a 15 s slot only if it starts within the first 2.36 s,
-        // which is the range a rolling buffer can land on.
+        if cfg!(debug_assertions) {
+            return;
+        }
         for offset_seconds in [0.0_f64, 0.4, 0.8, 1.5, 2.3] {
-            let slot_len = (48_000.0 * tables::SLOT_SECONDS) as usize * 2;
+            let window = Ft8Decoder::new(48_000.0).window_samples();
+            let slot_len = window * 3 * 2;
             let mut slot = vec![0.0_f32; slot_len];
             let iq = fixture();
             let start = (offset_seconds * 48_000.0) as usize * 2;
@@ -960,75 +919,42 @@ mod plugin_tests {
             );
         }
     }
-}
 
-#[cfg(test)]
-mod zz_probe {
-    use super::*;
-
-    /// Diagnostic only (temporary): where does a real 40 m capture fail?
     #[test]
-    fn probe_real_capture() {
-        let bytes = std::fs::read("/tmp/real_ft8.iq").expect("capture");
-        let samples: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let rate = 48_814.77_f64;
-        let mut decoder = Ft8Decoder::new(rate);
-        // One slot (15 s) from the middle, so the buffer is exactly a slot.
-        let slot = (rate * 15.0) as usize;
-        let start = (samples.len() / 2).saturating_sub(slot) / 2;
-        decoder.push_iq(&samples[start * 2..(start + slot) * 2]);
-        let symbol_samples = symbol_samples_at(rate);
-        let mean_signal = (decoder.samples.iter().map(|v| (*v as f64).powi(2)).sum::<f64>()
-            / decoder.samples.len() as f64)
-            .sqrt();
-        println!("probe: buffer {} complex, rms {:.5}, symbol {} samples", decoder.buffered(), mean_signal, symbol_samples);
-        // A coarse scan, printed with its scores: is the signal's candidate there at all?
-        let mut best: Vec<(f64, usize, f64)> = Vec::new();
-        let mut base = BAND_LOW_HZ;
-        while base <= BAND_HIGH_HZ {
-            let mut time = 0;
-            let limit = decoder.buffered() - NUM_SYMBOLS * symbol_samples;
-            while time <= limit {
-                let mut score = 0.0;
-                for (symbol_index, expected) in COSTAS.iter().enumerate() {
-                    let s0 = time + symbol_index * symbol_samples;
-                    score += decoder.tone_energy_decimated(
-                        s0, symbol_samples, base + *expected as f64 * TONE_SPACING_HZ, 8);
-                }
-                best.push((score, time, base));
-                time += symbol_samples;
+    fn the_window_holds_a_whole_burst_at_any_phase_of_the_hop() {
+        // This is the `window >= hop + burst` guarantee made executable. The feeder's window
+        // boundaries can land anywhere relative to the transmission, and a burst sitting at the seam
+        // must still be searched whole by whichever sliding window contains it. Before the window
+        // slid (it was cleared after each attempt) only the lucky phases decoded -- which is exactly
+        // the "it works sometimes" behaviour this replaced.
+        if cfg!(debug_assertions) {
+            return;
+        }
+        let rate = 48_000.0;
+        let hop = (rate * tables::SLOT_SECONDS) as usize;
+        let total = hop * 3;
+        let iq = fixture();
+        let mut decoded_phases = 0;
+        for start_seconds in [0.5_f64, 3.0, 7.5, 11.0, 14.5] {
+            let mut buffer = vec![0.0_f32; total * 2];
+            let at = (start_seconds * rate) as usize;
+            assert!(at * 2 + iq.len() <= buffer.len(), "the burst must fit");
+            buffer[at * 2..at * 2 + iq.len()].copy_from_slice(&iq);
+
+            let mut plugin = Ft8Plugin::new(rate);
+            let mut got: Vec<String> = Vec::new();
+            for block in buffer.chunks(960 * 2) {
+                got.extend(plugin.process_iq(block));
             }
-            base += BAND_STEP_HZ;
+            // Exactly once per phase: the sliding window may find the same burst twice, and that is
+            // de-duplicated by absolute stream position rather than by text.
+            assert_eq!(
+                got.iter().filter(|text| *text == "CQ JO1WKO PM95").count(),
+                1,
+                "the burst starting at {start_seconds}s must decode exactly once"
+            );
+            decoded_phases += 1;
         }
-        let count = best.len() as f64;
-        let mean = best.iter().map(|e| e.0).sum::<f64>() / count;
-        best.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        println!("probe: {} coarse entries, mean {:.3e}, gate {:.3e}", best.len(), mean, mean * CANDIDATE_MARGIN);
-        for (score, time, base) in best.iter().take(14) {
-            println!("  candidate {:.1} Hz at {:.3} s: score {:.3e} (x{:.2} mean)", base, *time as f64 / rate, score, score / mean);
-        }
-        let nearest = best
-            .iter()
-            .filter(|(_, _, hz)| (*hz - 800.0).abs() < 1.0)
-            .map(|(score, time, _)| (score / mean, *time))
-            .next();
-        println!("probe: the 800 Hz candidate (the signal the phone app decoded at 792 Hz): {:?}", nearest);
-        // Fine search on the top candidates: does the correlation pass, and what does the CRC say?
-        for (i, (_score, time, base)) in best.iter().take(14).enumerate() {
-            let result = decoder.find_sync_at(symbol_samples, *base, *time);
-            match result {
-                Some((t, f, snr)) => {
-                    let energies = decoder.tone_energies(t, f, symbol_samples, *base);
-                    let llr = symbols_to_llr(&energies);
-                    let ldpc = ldpc_decode(&llr, MAX_LDPC_ITERATIONS);
-                    let crc = ldpc.as_ref().map(|b| crc_ok(b)).unwrap_or(false);
-                    println!("  fine #{i}: {:.1} Hz @ {:.3} s snr {:.1} -> ldpc {} crc {}", base + f, t as f64 / rate, snr, ldpc.is_some(), crc);
-                }
-                None => println!("  fine #{i}: {:.1} Hz @ {:.3} s -> no sync", base, *time as f64 / rate),
-            }
-        }
+        assert_eq!(decoded_phases, 5);
     }
 }

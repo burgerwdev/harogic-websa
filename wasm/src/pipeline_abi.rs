@@ -6,7 +6,7 @@
 //! stays in Rust, where the path separation is enforced by types.
 //!
 //! Analog path: `websa_dsp_demod_process` produces PCM. Digital path: `websa_dsp_demod_push` and
-//! `websa_dsp_demod_message` produce decoded text. One handle table serves both, so a mode that
+//! `websa_dsp_demod_message_at` produce decoded text. One handle table serves both, so a mode that
 //! changes from `am` to `ft8` is one free plus one new.
 
 use core::cell::RefCell;
@@ -46,6 +46,14 @@ unsafe fn read_str(ptr: *const u8, len: u32) -> Option<String> {
     let bytes = core::slice::from_raw_parts(ptr, len as usize);
     core::str::from_utf8(bytes).ok().map(|s| s.to_string())
 }
+
+/// Largest baseband block this ABI accepts, in complex samples (8 MiB of f32 pairs).
+///
+/// The bound is a guard, not a performance limit: `samples as usize * 2` is computed on wasm32,
+/// where `usize` is 32 bits, so any `samples >= 2^31` wraps and hands `from_raw_parts` a length that
+/// is not the one the caller allocated. The browser feeds 32k-sample blocks, so this is ~32x the
+/// largest real call.
+const MAX_PUSH_SAMPLES: u32 = 1 << 20;
 
 fn register(state: PipelineState) -> u32 {
     PIPELINES.with(|slot| {
@@ -122,7 +130,7 @@ pub unsafe extern "C" fn websa_dsp_demod_process(
     capacity: u32,
     audio_hold: u32,
 ) -> u32 {
-    if iq_ptr.is_null() || out_ptr.is_null() || samples == 0 {
+    if iq_ptr.is_null() || out_ptr.is_null() || samples == 0 || samples > MAX_PUSH_SAMPLES {
         return 0;
     }
     let input = core::slice::from_raw_parts(iq_ptr, samples as usize * 2);
@@ -142,13 +150,14 @@ pub unsafe extern "C" fn websa_dsp_demod_process(
     .unwrap_or(0)
 }
 
-/// Feed one baseband block to the digital pipeline; returns 1 when the block completed a decode.
+/// Feed one baseband block to the digital pipeline; returns how many messages this block decoded
+/// (0 when it completed nothing).
 ///
 /// # Safety
 /// `iq_ptr` must point to `samples * 2` readable f32 values inside this module's linear memory.
 #[no_mangle]
 pub unsafe extern "C" fn websa_dsp_demod_push(handle: u32, iq_ptr: *const f32, samples: u32) -> u32 {
-    if iq_ptr.is_null() || samples == 0 {
+    if iq_ptr.is_null() || samples == 0 || samples > MAX_PUSH_SAMPLES {
         return 0;
     }
     let input = core::slice::from_raw_parts(iq_ptr, samples as usize * 2);
@@ -157,19 +166,21 @@ pub unsafe extern "C" fn websa_dsp_demod_push(handle: u32, iq_ptr: *const f32, s
             return 0;
         }
         state.pipeline.process_f32_into(input, false, &mut state.out);
-        u32::from(!state.out.decoded.is_empty())
+        state.out.decoded.len() as u32
     })
     .unwrap_or(0)
 }
 
-/// Copy the last decoded text into `text_ptr` and its measurements into `metrics_ptr`
-/// (`[frequency_hz, time_offset_s, snr_db]`). Returns the text length, or 0 when there is none.
+/// Copy the `index`-th decoded message of the last block into `text_ptr` and its measurements
+/// into `metrics_ptr` (`[frequency_hz, time_offset_s, snr_db]`). Returns the text length, or 0
+/// when there is no such message.
 ///
 /// # Safety
 /// `text_ptr` must point to `text_capacity` writable bytes and `metrics_ptr` to 3 writable f64s.
 #[no_mangle]
-pub unsafe extern "C" fn websa_dsp_demod_message(
+pub unsafe extern "C" fn websa_dsp_demod_message_at(
     handle: u32,
+    index: u32,
     text_ptr: *mut u8,
     text_capacity: u32,
     metrics_ptr: *mut f64,
@@ -178,7 +189,8 @@ pub unsafe extern "C" fn websa_dsp_demod_message(
         return 0;
     }
     with_pipeline(handle, |state| {
-        let Some(text) = state.out.decoded.last() else {
+        let Some((text, report)) = state.pipeline.digital_decoded().into_iter().nth(index as usize)
+        else {
             return 0;
         };
         if text.len() > text_capacity as usize {
@@ -186,18 +198,9 @@ pub unsafe extern "C" fn websa_dsp_demod_message(
         }
         core::ptr::copy_nonoverlapping(text.as_ptr(), text_ptr, text.len());
         let metrics = core::slice::from_raw_parts_mut(metrics_ptr, 3);
-        match state.pipeline.digital_report() {
-            Some(report) => {
-                metrics[0] = report.frequency_hz;
-                metrics[1] = report.time_offset_s;
-                metrics[2] = report.snr_db;
-            }
-            None => {
-                metrics[0] = 0.0;
-                metrics[1] = 0.0;
-                metrics[2] = 0.0;
-            }
-        }
+        metrics[0] = report.frequency_hz;
+        metrics[1] = report.time_offset_s;
+        metrics[2] = report.snr_db;
         text.len() as u32
     })
     .unwrap_or(0)
@@ -411,17 +414,20 @@ mod tests {
 
     #[test]
     fn a_digital_mode_produces_text_and_no_audio() {
+        if cfg!(debug_assertions) {
+            return;
+        }
         // The fixture is the channelized 48 kHz baseband of a real CQ transmission, which is exactly
         // what the backend now hands the decoder.
         const BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
         let mut iq: Vec<f32> = BYTES
             .chunks_exact(4)
-            .map(|q| f32::from_le_bytes([q[0], q[1], q[2], q[3]]) * 0.25 * 32767.0)
+            .map(|q| f32::from_le_bytes([q[0], q[1], q[2], q[3]]))
             .collect();
-        // A full slot, not just the transmission: the decoder consumes slots (see Ft8Plugin), and a
-        // real slot carries the transmission plus its quiet tail.
-        iq.resize(48_000 * 15 * 2, 0.0);
-        let handle = new("ft8", 2_400.0, FS_IN);
+        // A whole sliding window, not just a slot: the decoder searches `hop + burst` so that a
+        // transmission is found whatever phase the feeder's window boundaries have.
+        iq.resize(crate::digital::ft8::Ft8Decoder::new(FS_IN as f64).window_samples() * 2, 0.0);
+        let handle = new("ft8", OUT_RATE, FS_IN);
         assert_ne!(handle, 0, "the decoder must be created");
         let ptr = crate::abi::websa_dsp_alloc(iq.len() * 4) as *mut f32;
         let mut text = vec![0_u8; 64];
@@ -439,8 +445,8 @@ mod tests {
                 decoded = decoded.max(websa_dsp_demod_push(handle, ptr.add(start * 2), count as u32));
             }
             assert_eq!(decoded, 1, "the slot must decode");
-            let written = websa_dsp_demod_message(
-                handle, text.as_mut_ptr(), text.len() as u32, metrics.as_mut_ptr());
+            let written = websa_dsp_demod_message_at(
+                handle, 0, text.as_mut_ptr(), text.len() as u32, metrics.as_mut_ptr());
             assert_eq!(&text[..written as usize], b"CQ JO1WKO PM95");
             assert_eq!(websa_dsp_demod_count(handle), 1);
             assert!(metrics[0] > 900.0 && metrics[0] < 1_100.0, "frequency {}", metrics[0]);

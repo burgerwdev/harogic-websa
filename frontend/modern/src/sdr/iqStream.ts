@@ -145,7 +145,9 @@ function startWorker(): void {
     if (typeof d.digitalPushes === 'number') {
       digitalDiagnostics =
         `dsp_pushes=${d.digitalPushes} dsp_buffered=${d.digitalBuffered}` +
-        ` dsp_resets=${d.digitalResets} dsp_decodes=${d.ft8Messages ?? 0}`;
+        ` dsp_resets=${d.digitalResets} dsp_decodes=${d.ft8Messages ?? 0}` +
+        ` dsp_attempts=${d.digitalAttempts ?? 0} dsp_skipped=${d.digitalResets ?? 0}` +
+        ` dsp_dropped=${d.digitalDropped ?? 0}`;
     }
     if (typeof d.worklet === 'number') dspOwnsWorklet = d.worklet === 1;
     if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;

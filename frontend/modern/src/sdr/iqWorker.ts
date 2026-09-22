@@ -60,6 +60,11 @@ let deliveredSamples = 0;
 let digitalPushes = 0;
 let digitalBuffered = 0;
 let digitalResets = 0;
+//: Kept so "no decode" can be told apart from "no attempt". The decoder computes these and they
+//: were being discarded here, which left the decode table as the only evidence -- and it cannot
+//: distinguish a slot that was skipped from one that was attempted and failed.
+let digitalAttempts = 0;
+let digitalDropped = 0;
 /// Frames handed to the decoder worker (its own counters come back with `ft8-stats`).
 let decoderPushes = 0;
 /// PCM-level artifact counters: the listener's report was "a periodic puff, obvious on the noise
@@ -135,6 +140,8 @@ function startDecoder(): void {
       if (typeof d.buffered === 'number') digitalBuffered = d.buffered;
       if (typeof d.decodes === 'number') ft8Messages = d.decodes;
       if (typeof d.skipped === 'number') digitalResets = d.skipped;   // reported as dsp_resets
+      if (typeof d.attempts === 'number') digitalAttempts = d.attempts;
+      if (typeof d.dropped === 'number') digitalDropped = d.dropped;
       postStats();
       return;
     }
@@ -171,6 +178,7 @@ function postStats(): void {
     // AudioWorklet port over on this flag, so a digital mode without it never gets heard.
     pipeline: Boolean(pipeline?.ok || companion?.ok),
     ft8Messages, digitalPushes, digitalBuffered, digitalResets, pipelineBuilds,
+    digitalAttempts, digitalDropped,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
     fillMin: Number.isFinite(fillMin) ? fillMin : 0, fillMax,

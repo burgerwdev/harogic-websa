@@ -194,32 +194,38 @@ export class WasmPipeline {
 		return pcm;
 	}
 
-	/** Feed one baseband block to the digital path; returns the decoded message when there is one. */
-	push(baseband: Float32Array): Ft8Report | null {
-		if (!this.handle || !this.digital || baseband.length === 0) return null;
+	/** Feed one baseband block to the digital path; returns every message decoded by it. */
+	push(baseband: Float32Array): Ft8Report[] {
+		if (!this.handle || !this.digital || baseband.length === 0) return [];
 		const complex = this.writeInput(baseband);
-		if (complex === 0) return null;
-		const decoded = this.module.exports.websa_dsp_demod_push(this.handle, this.inPtr, complex);
-		if (decoded !== 1) return null;
-		const metrics = this.module.f64View(this.metricsPtr, 3);
-		const length = this.module.exports.websa_dsp_demod_message(
-			this.handle,
-			this.textPtr,
-			TEXT_CAPACITY,
-			this.metricsPtr,
-		);
-		if (length === 0) return null;
-		const text = new TextDecoder().decode(this.module.u8View(this.textPtr, length));
-		return {
-			text,
-			frequencyHz: metrics[0],
-			timeOffsetS: metrics[1],
-			snrDb: metrics[2],
-			count: this.count(),
-			// The decoder measures inside its channel; the caller knows which channel that was (it
-			// is the baseband frame's centre) and fills this in.
-			centerHz: 0,
-		};
+		if (complex === 0) return [];
+		const count = this.module.exports.websa_dsp_demod_push(this.handle, this.inPtr, complex);
+		if (count === 0) return [];
+		const reports: Ft8Report[] = [];
+		const total = this.count();
+		for (let index = 0; index < count; index++) {
+			const metrics = this.module.f64View(this.metricsPtr, 3);
+			const length = this.module.exports.websa_dsp_demod_message_at(
+				this.handle,
+				index,
+				this.textPtr,
+				TEXT_CAPACITY,
+				this.metricsPtr,
+			);
+			if (length === 0) continue;
+			const text = new TextDecoder().decode(this.module.u8View(this.textPtr, length));
+			reports.push({
+				text,
+				frequencyHz: metrics[0],
+				timeOffsetS: metrics[1],
+				snrDb: metrics[2],
+				count: total,
+				// The decoder measures inside its channel; the caller knows which channel that was (it
+				// is the baseband frame's centre) and fills this in.
+				centerHz: 0,
+			});
+		}
+		return reports;
 	}
 
 	free(): void {

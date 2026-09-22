@@ -111,6 +111,106 @@ impl Fft {
     }
 }
 
+/// Bluestein (chirp-z) DFT for an arbitrary size `n`, computed with a power-of-two `Fft` of size
+/// `m = next_pow2(2n-1)`.
+///
+/// The FT8 waterfall needs an FFT whose size is `block * freq_osr` (e.g. 7680 * 2 = 15360 at
+/// 48 kHz), which is not a power of two but whose bin spacing must match the 6.25 Hz tone grid
+/// *exactly* — zero-padding to the next power of two and rounding to a bin was tried and lost the
+/// weak-signal margin. The kernel's FFT is precomputed once, so one transform is two FFTs plus two
+/// chirp multiplies.
+pub struct Bluestein {
+    n: usize,
+    fft: Fft,
+    /// `chirp[k] = exp(-pi i k^2 / n)` for `k` in `0..n`.
+    chirp_re: Vec<f64>,
+    chirp_im: Vec<f64>,
+    /// Precomputed FFT of the kernel `b[j] = conj(chirp[j])`, padded for the linear convolution.
+    b_re: Vec<f64>,
+    b_im: Vec<f64>,
+    /// Reusable scratch (length `m`).
+    scratch_re: Vec<f64>,
+    scratch_im: Vec<f64>,
+}
+
+impl Bluestein {
+    pub fn new(n: usize) -> Self {
+        assert!(n > 0, "DFT size must be positive");
+        let m = (2 * n - 1).next_power_of_two();
+        let fft = Fft::new(m);
+        let mut chirp_re = vec![0.0; m];
+        let mut chirp_im = vec![0.0; m];
+        let mut b_re = vec![0.0; m];
+        let mut b_im = vec![0.0; m];
+        for k in 0..n {
+            // angle = -pi * (k^2 mod 2n) / n  ->  exp(-pi i k^2 / n)
+            let k2 = ((k * k) % (2 * n)) as f64;
+            let angle = -PI * k2 / n as f64;
+            let (c_re, c_im) = (angle.cos(), angle.sin());
+            chirp_re[k] = c_re;
+            chirp_im[k] = c_im;
+            // kernel b = conj(chirp), and b is symmetric so b[M-k] = b[k] for k > 0.
+            b_re[k] = c_re;
+            b_im[k] = -c_im;
+            if k > 0 {
+                b_re[m - k] = c_re;
+                b_im[m - k] = -c_im;
+            }
+        }
+        fft.transform(&mut b_re, &mut b_im, false);
+        Self {
+            n,
+            fft,
+            chirp_re,
+            chirp_im,
+            b_re,
+            b_im,
+            scratch_re: vec![0.0; m],
+            scratch_im: vec![0.0; m],
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// In-place forward complex DFT: `re`/`im` (length `n`) are overwritten with the spectrum.
+    pub fn forward(&mut self, re: &mut [f64], im: &mut [f64]) {
+        let n = self.n;
+        let m = self.fft.len();
+        assert!(re.len() == n && im.len() == n, "buffers must match the plan");
+        self.scratch_re.fill(0.0);
+        self.scratch_im.fill(0.0);
+        // a[k] = x[k] * chirp[k], zero-padded to m.
+        for k in 0..n {
+            let (xr, xi) = (re[k], im[k]);
+            let (cr, ci) = (self.chirp_re[k], self.chirp_im[k]);
+            self.scratch_re[k] = xr * cr - xi * ci;
+            self.scratch_im[k] = xr * ci + xi * cr;
+        }
+        self.fft.transform(&mut self.scratch_re, &mut self.scratch_im, false);
+        // Pointwise multiply by the kernel's FFT.
+        for k in 0..m {
+            let (ar, ai) = (self.scratch_re[k], self.scratch_im[k]);
+            let (br, bi) = (self.b_re[k], self.b_im[k]);
+            self.scratch_re[k] = ar * br - ai * bi;
+            self.scratch_im[k] = ar * bi + ai * br;
+        }
+        self.fft.transform(&mut self.scratch_re, &mut self.scratch_im, true);
+        // X[k] = chirp[k] * c[k] for k in 0..n.
+        for k in 0..n {
+            let (cr, ci) = (self.scratch_re[k], self.scratch_im[k]);
+            let (wr, wi) = (self.chirp_re[k], self.chirp_im[k]);
+            re[k] = cr * wr - ci * wi;
+            im[k] = cr * wi + ci * wr;
+        }
+    }
+}
+
 /// Cache of plans by size: building a plan is O(n) and the stages keep their size for a session.
 pub struct FftCache {
     plans: HashMap<usize, Fft>,
@@ -203,5 +303,40 @@ mod tests {
         assert_eq!(cache.get(64).len(), 64);
         assert_eq!(cache.get(64).len(), 64);
         assert_eq!(cache.get(512).len(), 512);
+    }
+
+    #[test]
+    fn bluestein_matches_a_naive_dft_at_a_non_power_of_two_size() {
+        let n = 12; // 3 * 4, deliberately not a power of two
+        let mut plan = Bluestein::new(n);
+        let input: Vec<f64> = (0..n).map(|k| ((k * 37 % 11) as f64) - 5.0).collect();
+        let (mut re, mut im) = (input.clone(), vec![0.0; n]);
+        plan.forward(&mut re, &mut im);
+        for k in 0..n {
+            let (want_re, want_im) = naive_dft(&input, k);
+            assert!((re[k] - want_re).abs() < 1e-9, "bin {k} re {} vs {want_re}", re[k]);
+            assert!((im[k] - want_im).abs() < 1e-9, "bin {k} im {} vs {want_im}", im[k]);
+        }
+    }
+
+    #[test]
+    fn bluestein_matches_a_complex_naive_dft() {
+        let n = 20; // 4 * 5, non-pow2, with a complex input
+        let mut plan = Bluestein::new(n);
+        let mut re: Vec<f64> = (0..n).map(|k| (k as f64 * 0.31).sin()).collect();
+        let mut im: Vec<f64> = (0..n).map(|k| (k as f64 * 0.17).cos()).collect();
+        let (want_re, want_im) = (re.clone(), im.clone());
+        plan.forward(&mut re, &mut im);
+        for k in 0..n {
+            let (mut wr, mut wi) = (0.0, 0.0);
+            for (idx, (&xr, &xi)) in want_re.iter().zip(want_im.iter()).enumerate() {
+                let angle = -2.0 * PI * k as f64 * idx as f64 / n as f64;
+                let (c, s) = (angle.cos(), angle.sin());
+                wr += xr * c - xi * s;
+                wi += xr * s + xi * c;
+            }
+            assert!((re[k] - wr).abs() < 1e-9, "bin {k} re {} vs {wr}", re[k]);
+            assert!((im[k] - wi).abs() < 1e-9, "bin {k} im {} vs {wi}", im[k]);
+        }
     }
 }
