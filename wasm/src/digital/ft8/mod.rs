@@ -7,9 +7,13 @@
 //! Decoding is the reverse, and follows the reference decoders (ft8_lib, WSJT-X): build a
 //! *waterfall* (a Hann-windowed FFT per symbol), score candidates by a *local-contrast* sync metric
 //! over the Costas tones, rank them with a heap, and for each run the max-log likelihood -> LDPC ->
-//! CRC -> unpack. The search covers the *whole slot* (not just the first 2.4 s), because a real
-//! capture is not slot-aligned: the transmission can start seconds into the buffer, and the tail is
-//! then truncated, which the sync/LLR stages tolerate by skipping out-of-range symbols.
+//! CRC -> unpack. Decoding is *multi-pass* the way WSJT-X does it: everything one pass finds is
+//! synthesized again and subtracted from the samples (frequency, time and per-symbol amplitude and
+//! phase fitted against the actual data), then the search runs on what is left, so a signal that
+//! was buried under a stronger neighbour comes out of the second pass. The search covers the *whole
+//! slot* (not just the first 2.4 s), because a real capture is not slot-aligned: the transmission
+//! can start seconds into the buffer, and the tail is then truncated, which the sync/LLR stages
+//! tolerate by skipping out-of-range symbols.
 //!
 //! This module is on the **digital path**: it reads the RAW complex baseband and never touches the
 //! audio chain. The protocol tables are ported from ft8_lib (MIT) — see `tables.rs`.
@@ -24,7 +28,11 @@ use tables::*;
 
 /// Frequency oversampling: the waterfall's FFT has `FREQ_OSR` bins per 6.25 Hz tone, so the
 /// sub-tone resolution is `6.25 / FREQ_OSR` Hz. One is too coarse (a signal half a tone off-grid
-/// loses ~4 dB), two is what the reference uses and is enough; four buys nothing measurable.
+/// loses ~4 dB), two is what the reference uses. Four was tried and is a trap: the FFT frame is
+/// `block * FREQ_OSR` samples long, so a finer grid also means a *longer analysis window*, and the
+/// Hann window then dilutes a tone that only fills one symbol of it — a -16 dB signal halfway
+/// between sub-bins still lost its sync contrast (measured: candidate score 29.5 at two, 4-7 at
+/// four). Sub-bin granularity has to come from somewhere that does not stretch the window in time.
 const FREQ_OSR: usize = 2;
 /// Time oversampling: sub-symbol subdivisions per symbol.
 const TIME_OSR: usize = 2;
@@ -59,6 +67,16 @@ const MIN_SYNC_SCORE: f64 = 10.0;
 /// alongside stronger ones and the Costas periodicity's 36-symbol aliases.
 const MAX_CANDIDATES: usize = 140;
 const MAX_LDPC_ITERATIONS: usize = 40;
+/// Decode passes over one window: find and decode everything, subtract the successes, search what
+/// is left again. WSJT-X's structure. One pass is the old behaviour and still the common case (a
+/// quiet band decodes everything first try and pass two finds nothing); the cap bounds the worst
+/// case on a very busy band, where each pass costs a waterfall rebuild.
+const MAX_PASSES: usize = 4;
+/// A decoded candidate is only worth subtracting if the fit actually found a signal: the fitted
+/// per-symbol amplitude of a unit-envelope transmission is its true amplitude, so anything below
+/// ~-30 dB is a spurious CRC hit (or a stale ±36-symbol alias whose position holds nothing) and
+/// subtracting it would only carve noise out of the window.
+const MIN_FIT_AMPLITUDE: f64 = 0.03;
 
 /// One decoded message, with what the decoder measured about the signal.
 #[derive(Debug, Clone, PartialEq)]
@@ -266,14 +284,26 @@ impl Waterfall {
         llr
     }
 
-    /// Decode one candidate: likelihood -> LDPC -> CRC, returning the 77 payload bits.
-    fn decode_candidate(&self, to: i32, ts: usize, fsb: usize, fo: usize) -> Option<[u8; 77]> {
+    /// Decode one candidate: likelihood -> LDPC -> CRC, returning the full 174-bit codeword (the
+    /// first 91 bits are payload+CRC, the rest parity). The codeword is what a subtraction needs:
+    /// re-encoding the 77 payload bits through the generator gives the same parity, but the LDPC
+    /// output already has it, and the tones come from all 174 bits. When the max-log LDPC does not
+    /// converge (or converges onto a CRC miss), the ordered-statistics fallback gets one bounded
+    /// shot at the same likelihoods -- that fallback is worth roughly 2 dB of sensitivity on this
+    /// code (see `ft8_snr_sweep`'s baseline).
+    fn decode_candidate(&self, to: i32, ts: usize, fsb: usize, fo: usize) -> Option<[u8; 174]> {
         let llr = self.extract_likelihood(to, ts, fsb, fo);
-        let bits = ldpc_decode(&llr, MAX_LDPC_ITERATIONS)?;
-        if !crc_ok(&bits) {
-            return None;
+        if let Some(bits) = ldpc_decode(&llr, MAX_LDPC_ITERATIONS) {
+            if crc_ok(&bits) {
+                return Some(bits);
+            }
         }
-        Some(core::array::from_fn(|i| bits[i]))
+        let bits = osd_decode(&llr)?;
+        if crc_ok(&bits) {
+            Some(bits)
+        } else {
+            None
+        }
     }
 }
 
@@ -364,8 +394,11 @@ impl Ft8Decoder {
         NUM_SYMBOLS * symbol_samples_at(self.rate)
     }
 
-    /// Decode every message in the buffered slot. The search covers the whole slot, so this
-    /// returns all CRC-passing transmissions (there can be more than one on a busy band).
+    /// Decode every message in the buffered slot. The search runs in passes: one pass decodes what
+    /// it can, every success is subtracted from a scratch copy of the window (never from the
+    /// buffer itself — the window slides and the next attempt re-searches the overlap), and the
+    /// search runs again on what is left, so a signal that was buried under a stronger neighbour
+    /// surfaces in a later pass. The buffer the caller keeps is never modified.
     pub fn decode(&mut self) -> Vec<Ft8Message> {
         let n = self.samples.len() / 2;
         let symbol_samples = symbol_samples_at(self.rate);
@@ -376,26 +409,40 @@ impl Ft8Decoder {
         if F_MAX_HZ * 2.0 > self.rate {
             return Vec::new();
         }
-        let waterfall = Waterfall::build(&self.samples, self.rate);
+        let mut scratch = self.samples.clone();
         let mut out: Vec<Ft8Message> = Vec::new();
-        for (score, to, ts, fsb, fo) in waterfall.find_candidates() {
-            let Some(payload) = waterfall.decode_candidate(to, ts, fsb, fo) else {
-                continue;
-            };
-            let Some(text) = unpack_message(&payload) else {
-                continue;
-            };
-            // The Costas pattern repeats every 36 symbols, so one transmission also scores (and
-            // sometimes decodes) at ±36 offsets; dedupe by text.
-            if out.iter().any(|m: &Ft8Message| m.text == text) {
-                continue;
+        for _pass in 0..MAX_PASSES {
+            let waterfall = Waterfall::build(&scratch, self.rate);
+            let mut found_this_pass = 0;
+            for (score, to, ts, fsb, fo) in waterfall.find_candidates() {
+                let Some(codeword) = waterfall.decode_candidate(to, ts, fsb, fo) else {
+                    continue;
+                };
+                let payload: [u8; 77] = core::array::from_fn(|i| codeword[i]);
+                let Some(text) = unpack_message(&payload) else {
+                    continue;
+                };
+                // The Costas pattern repeats every 36 symbols, so one transmission also scores (and
+                // sometimes decodes) at ±36 offsets; dedupe by text. Subtract only on the first
+                // decode of a text: candidates are score-ordered, so the true peak lands first,
+                // and a later duplicate (the same transmission one sub-bin over) or a ±36 alias
+                // would re-run the whole fit for nothing -- the fit-amplitude gate neutralizes
+                // them, but skipping known texts saves real time on a busy band.
+                if !out.iter().any(|m: &Ft8Message| m.text == text) {
+                    subtract_transmission(&mut scratch, self.rate, &codeword, to, ts, fsb, fo);
+                    found_this_pass += 1;
+                    out.push(Ft8Message {
+                        text,
+                        frequency_hz: F_MIN_HZ
+                            + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ,
+                        time_offset_s: (to as f64 + ts as f64 / TIME_OSR as f64) * SYMBOL_PERIOD_S,
+                        snr_db: score * 0.5,
+                    });
+                }
             }
-            out.push(Ft8Message {
-                text,
-                frequency_hz: F_MIN_HZ + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ,
-                time_offset_s: (to as f64 + ts as f64 / TIME_OSR as f64) * SYMBOL_PERIOD_S,
-                snr_db: score * 0.5,
-            });
+            if found_this_pass == 0 {
+                break;
+            }
         }
         // The window slides, so a burst near the seam is inside two consecutive windows and decodes
         // twice. Suppress the repeat by *absolute position in the stream*, not by text: the same text
@@ -423,11 +470,187 @@ fn symbol_samples_at(rate: f64) -> usize {
     (rate * SYMBOL_PERIOD_S) as usize
 }
 
-#[cfg(test)]
 fn is_sync_symbol(index: usize) -> bool {
     index < SYNC_LENGTH
         || (SYNC_OFFSET..SYNC_OFFSET + SYNC_LENGTH).contains(&index)
         || (2 * SYNC_OFFSET..2 * SYNC_OFFSET + SYNC_LENGTH).contains(&index)
+}
+
+/// The 79 transmitted tones for a codeword: the inverse of the tone->LLR extraction. A subtraction
+/// re-generates exactly what a transmitter would have sent for the decoded bits.
+fn tones_from_codeword(codeword: &[u8; 174]) -> [u8; NUM_SYMBOLS] {
+    let mut tones = [0_u8; NUM_SYMBOLS];
+    for block in 0..3 {
+        for (k, tone) in COSTAS.iter().enumerate() {
+            tones[block * SYNC_OFFSET + k] = *tone;
+        }
+    }
+    let mut data_index = 0;
+    for position in 0..NUM_SYMBOLS {
+        if is_sync_symbol(position) {
+            continue;
+        }
+        let bits3 =
+            (codeword[data_index] << 2) | (codeword[data_index + 1] << 1) | codeword[data_index + 2];
+        data_index += 3;
+        tones[position] = GRAY[bits3 as usize];
+    }
+    tones
+}
+
+/// Match a synthesized transmission against the samples at `start` (symbol 0's first complex
+/// sample). Every symbol is a unit-amplitude tone, so a least-squares fit of the complex gain is
+/// just a correlation: `g_k = <y, s_k> / sym`, and the total fit power `sum_k |z_k|^2` is what a
+/// frequency/time refinement maximizes. Returns the power and the per-symbol gains (out-of-window
+/// symbols get zero on both sides, the same tolerance the sync/LLR stages have for a truncated
+/// tail). One call is one pass over the transmission's samples, so the refinement grids are kept
+/// coarse (a few Hz, a few hundred samples) on purpose.
+fn fit_model(
+    samples: &[f32],
+    tones: &[u8; NUM_SYMBOLS],
+    base_freq: f64,
+    rate: f64,
+    start: i64,
+) -> (f64, [(f64, f64); NUM_SYMBOLS]) {
+    let sym = symbol_samples_at(rate);
+    let n_complex = samples.len() / 2;
+    let mut gains = [(0.0_f64, 0.0_f64); NUM_SYMBOLS];
+    let mut power = 0.0_f64;
+    for (k, tone) in tones.iter().enumerate() {
+        let s0 = start + (k as i64) * sym as i64;
+        if s0 < 0 || s0 + sym as i64 > n_complex as i64 {
+            continue;
+        }
+        let f = base_freq + *tone as f64 * TONE_SPACING_HZ;
+        let step = core::f64::consts::TAU * f / rate;
+        let (ds, dc) = step.sin_cos(); // f64::sin_cos returns (sin, cos)
+        let (mut wr, mut wi) = (1.0_f64, 0.0_f64);
+        let (mut zr, mut zi) = (0.0_f64, 0.0_f64);
+        for i in 0..sym {
+            let idx = (s0 as usize + i) * 2;
+            let (yr, yi) = (samples[idx] as f64, samples[idx + 1] as f64);
+            zr += yr * wr + yi * wi;
+            zi += yi * wr - yr * wi;
+            let nwr = wr * dc - wi * ds;
+            wi = wr * ds + wi * dc;
+            wr = nwr;
+        }
+        gains[k] = (zr / sym as f64, zi / sym as f64);
+        power += zr * zr + zi * zi;
+    }
+    (power, gains)
+}
+
+/// Remove one decoded transmission from the samples, the way WSJT-X does between passes.
+///
+/// The waterfall only localizes the signal to a sub-bin (`FREQ_OSR` bins per tone) and a
+/// sub-symbol (`TIME_OSR` blocks per symbol), and its block time carries up to a symbol of lead
+/// (the analysis window straddles the symbols) — far too coarse to cancel against: one bin of
+/// residual frequency error rotates the phase a full circle every ~0.3 s and the subtraction
+/// destroys itself. So the model is fitted to the data first — coarse time, then frequency, then
+/// fine time, each round maximizing the correlation power — and the per-symbol complex gains of
+/// the final fit are what gets subtracted. The per-symbol fit also absorbs phase drift between
+/// transmitter and receiver.
+fn subtract_transmission(
+    samples: &mut [f32],
+    rate: f64,
+    codeword: &[u8; 174],
+    to: i32,
+    ts: usize,
+    fsb: usize,
+    fo: usize,
+) {
+    let tones = tones_from_codeword(codeword);
+    let freq = F_MIN_HZ + (fo as f64 + fsb as f64 / FREQ_OSR as f64) * TONE_SPACING_HZ;
+    let sym = symbol_samples_at(rate);
+    let t0 = (to as f64 + ts as f64 / TIME_OSR as f64) * sym as f64;
+    let sub_bin = TONE_SPACING_HZ / FREQ_OSR as f64;
+
+    // Coarse time first: the waterfall's block time is only known to about a symbol, and with the
+    // model one symbol off, every symbol correlates against the wrong tone — the frequency round
+    // would only be optimizing noise. A 1/8-symbol grid over ±1.5 symbols absorbs the block-time
+    // lead plus the TIME_OSR quantization.
+    let mut best_t0 = t0 as i64;
+    let mut best_power = -1.0_f64;
+    for step in -12_i32..=12 {
+        let start = t0 as i64 + step as i64 * (sym as i64 / 8);
+        let (power, _) = fit_model(samples, &tones, freq, rate, start);
+        if power > best_power {
+            best_power = power;
+            best_t0 = start;
+        }
+    }
+    // Frequency at that alignment: a 1/8-sub-bin grid over ±1 sub-bin, the waterfall's own
+    // quantization plus change.
+    let mut best_freq = freq;
+    best_power = -1.0;
+    for step in -8_i32..=8 {
+        let f = freq + step as f64 * sub_bin / 8.0;
+        let (power, _) = fit_model(samples, &tones, f, rate, best_t0);
+        if power > best_power {
+            best_power = power;
+            best_freq = f;
+        }
+    }
+    // Fine time at that frequency: the remainder of the alignment error.
+    best_power = -1.0;
+    for step in -8_i32..=8 {
+        let start = best_t0 + (step as f64 * (sym as f64 / 16.0)) as i64;
+        let (power, _) = fit_model(samples, &tones, best_freq, rate, start);
+        if power > best_power {
+            best_power = power;
+            best_t0 = start;
+        }
+    }
+    // Polish: the residual cancellation scales with the square of the amplitude error, and an
+    // alignment a few hundred samples off leaves several percent of a strong signal behind —
+    // enough to keep masking a weak co-channel neighbour. A 1/128-symbol grid takes the timing
+    // error down to ~0.4 % of a symbol.
+    best_power = -1.0;
+    for step in -8_i32..=8 {
+        let start = best_t0 + (step as f64 * (sym as f64 / 128.0)) as i64;
+        let (power, _) = fit_model(samples, &tones, best_freq, rate, start);
+        if power > best_power {
+            best_power = power;
+            best_t0 = start;
+        }
+    }
+    let (power, gains) = fit_model(samples, &tones, best_freq, rate, best_t0);
+    let fitted = gains.iter().filter(|g| *g != &(0.0, 0.0)).count();
+    if fitted == 0 {
+        return;
+    }
+    // Mean fitted amplitude of the unit-envelope model. A real transmission lands near its true
+    // amplitude; a stale candidate (already subtracted, or an alias whose window holds nothing)
+    // lands near zero and must not be "subtracted".
+    let amplitude = (power / fitted as f64).sqrt() / sym as f64;
+    if amplitude < MIN_FIT_AMPLITUDE {
+        return;
+    }
+    let n_complex = samples.len() / 2;
+    for (k, tone) in tones.iter().enumerate() {
+        let (gr, gi) = gains[k];
+        if gr == 0.0 && gi == 0.0 {
+            continue;
+        }
+        let s0 = best_t0 + (k as i64) * sym as i64;
+        if s0 < 0 || s0 + sym as i64 > n_complex as i64 {
+            continue;
+        }
+        let f = best_freq + *tone as f64 * TONE_SPACING_HZ;
+        let step = core::f64::consts::TAU * f / rate;
+        let (ds, dc) = step.sin_cos(); // f64::sin_cos returns (sin, cos)
+        let (mut wr, mut wi) = (1.0_f64, 0.0_f64);
+        for i in 0..sym {
+            let idx = (s0 as usize + i) * 2;
+            // y - g_k * w, with w the same unit rotation the fit correlated against.
+            samples[idx] = (samples[idx] as f64 - (gr * wr - gi * wi)) as f32;
+            samples[idx + 1] = (samples[idx + 1] as f64 - (gr * wi + gi * wr)) as f32;
+            let nwr = wr * dc - wi * ds;
+            wi = wr * ds + wi * dc;
+            wr = nwr;
+        }
+    }
 }
 
 // ---------------------------------------------------------------- LDPC (sum-product)
@@ -518,6 +741,140 @@ fn atanh_approx(x: f64) -> f64 {
     let a = x * (945.0 + x2 * (-735.0 + x2 * 64.0));
     let b = 945.0 + x2 * (-1050.0 + x2 * 225.0);
     a / b
+}
+
+// ---------------------------------------------------------------- OSD (ordered statistics)
+
+/// Ordered-statistics decoding: the fallback for a candidate whose max-log LDPC run does not
+/// converge. This is the other half of what WSJT-X (and FT8CN after it) do at the sensitivity
+/// edge: the hard decisions are re-ordered by reliability, the 83 checks get their pivot columns
+/// by Gaussian elimination on the check matrix, and the remaining 91 columns -- the *information
+/// set* -- are re-encoded over a bounded set of error patterns. Every pattern yields a word that
+/// satisfies all parity checks, so the discriminator is not the syndrome but the distance to the
+/// received LLRs: patterns are ranked by the reliability-weighted cost of the bits they move, and
+/// only the single best word is CRC-checked. Gating one candidate instead of ~4200 individually
+/// is what keeps the false-positive rate at the LDPC decoder's level -- CRC-checking every
+/// pattern would pass by chance at roughly 2^-14 per pattern.
+///
+/// Enumeration covers weight 0, 1 and 2 on the information set (WSJT-X's OSD-2, without parity
+/// bit flips: flipping a computed parity bit would leave valid-LDPC space, and the weight-2 sweep
+/// is where the measured gain over plain max-log LDPC saturates for FT8's code).
+fn osd_decode(llr: &[f64; 174]) -> Option<[u8; 174]> {
+    // Hard decisions and the reliability order (most reliable first).
+    let mut order: [usize; 174] = core::array::from_fn(|i| i);
+    order.sort_unstable_by(|a, b| llr[*b].abs().total_cmp(&llr[*a].abs()));
+
+    // The check matrix as bitsets over the original bit positions.
+    let mut rows = [[0_u64; 3]; 83];
+    for (m, row) in rows.iter_mut().enumerate() {
+        for index in 0..LDPC_NUM_ROWS[m] as usize {
+            let n = LDPC_NM[m][index] as usize - 1;
+            row[n / 64] |= 1 << (n % 64);
+        }
+    }
+
+    // Gaussian elimination in reliability order: every check gets a pivot column among the most
+    // reliable ones that keep the matrix full-rank, and the columns never picked -- the ones the
+    // rank condition skipped -- form the information set. Skipping (rather than swapping) keeps
+    // that set the most reliable columns the constraint allows, which is the whole premise of the
+    // method: the hard decisions there are the ones worth trusting.
+    let mut in_info = [true; 174];
+    let mut pivot_pos = [0_usize; 83];
+    let mut rank = 0;
+    for &col in order.iter() {
+        if rank == 83 {
+            break;
+        }
+        let word = col / 64;
+        let bit = 1_u64 << (col % 64);
+        let Some(r) = (rank..83).find(|&r| rows[r][word] & bit != 0) else {
+            continue; // linearly dependent on the pivots already chosen: stays in the info set
+        };
+        rows.swap(rank, r);
+        for r2 in 0..83 {
+            if r2 != rank && rows[r2][word] & bit != 0 {
+                for w in 0..3 {
+                    rows[r2][w] ^= rows[rank][w];
+                }
+            }
+        }
+        pivot_pos[rank] = col;
+        in_info[col] = false;
+        rank += 1;
+    }
+    if rank != 83 {
+        return None; // the check matrix lost rank: cannot re-encode (cannot happen for FT8's H)
+    }
+    let info_pos: Vec<usize> = order.iter().copied().filter(|c| in_info[*c]).collect();
+
+    // Per-check coefficient vectors over the information set (bit j = check i involves info bit
+    // j), the packed hard decisions, and both sides' reliabilities.
+    let mut coef = [[0_u64; 2]; 83];
+    let mut hard_par = [0_u8; 83];
+    let mut hard_info = [0_u64; 2];
+    let mut rel_info = [0.0_f64; 91];
+    for (i, c) in coef.iter_mut().enumerate() {
+        for (j, &p) in info_pos.iter().enumerate() {
+            if rows[i][p / 64] >> (p % 64) & 1 == 1 {
+                c[j / 64] |= 1 << (j % 64);
+                hard_par[i] ^= (llr[p] > 0.0) as u8;
+            }
+        }
+    }
+    for (j, &p) in info_pos.iter().enumerate() {
+        hard_info[j / 64] |= ((llr[p] > 0.0) as u64) << (j % 64);
+        rel_info[j] = llr[p].abs();
+    }
+    let rel_pivot: [f64; 83] = core::array::from_fn(|i| llr[pivot_pos[i]].abs());
+
+    // The distance between a re-encoded word and the received LLRs: the reliability of every
+    // information bit the pattern flips plus every parity position the re-encoding moved.
+    let evaluate = |v: [u64; 2], flip_cost: f64| -> f64 {
+        let mut dist = flip_cost;
+        for (i, c) in coef.iter().enumerate() {
+            let par = ((c[0] & v[0]).count_ones() ^ (c[1] & v[1]).count_ones()) & 1;
+            if par as u8 != hard_par[i] {
+                dist += rel_pivot[i];
+            }
+        }
+        dist
+    };
+    let mut best_v = hard_info;
+    let mut best_dist = evaluate(hard_info, 0.0);
+    for j1 in 0..91_usize {
+        let flip1 = 1_u64 << (j1 % 64);
+        let mut v1 = hard_info;
+        v1[j1 / 64] ^= flip1;
+        let dist1 = evaluate(v1, rel_info[j1]);
+        if dist1 < best_dist {
+            best_dist = dist1;
+            best_v = v1;
+        }
+        for j2 in j1 + 1..91 {
+            let mut v2 = v1;
+            v2[j2 / 64] ^= 1_u64 << (j2 % 64);
+            let dist2 = evaluate(v2, rel_info[j1] + rel_info[j2]);
+            if dist2 < best_dist {
+                best_dist = dist2;
+                best_v = v2;
+            }
+        }
+    }
+
+    // Assemble the best word and hand it to the CRC. No other word is checked.
+    let mut cw = [0_u8; 174];
+    for (j, &p) in info_pos.iter().enumerate() {
+        cw[p] = ((best_v[j / 64] >> (j % 64)) & 1) as u8;
+    }
+    for (i, c) in coef.iter().enumerate() {
+        let par = ((c[0] & best_v[0]).count_ones() ^ (c[1] & best_v[1]).count_ones()) & 1;
+        cw[pivot_pos[i]] = par as u8;
+    }
+    if crc_ok(&cw) {
+        Some(cw)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------- CRC and message
@@ -733,6 +1090,50 @@ mod tests {
     }
 
     #[test]
+    fn fit_model_recovers_a_synthetic_transmission() {
+        // Arbitrary payload through the pub generator -> codeword -> tones -> unit waveform at
+        // 1000 Hz. The fit must land on the true start with amplitude ~= 1; if it does not, the
+        // subtraction has no model to cancel with and the failure is here, not in the search.
+        let mut payload = [0_u8; 91];
+        for (i, bit) in payload.iter_mut().enumerate() {
+            *bit = ((i * 7 + 3) % 2) as u8;
+        }
+        let mut codeword = payload.to_vec();
+        for row in LDPC_GENERATOR {
+            let mut parity = 0_u8;
+            for (byte_index, byte) in row.iter().enumerate() {
+                for bit in 0..8 {
+                    let k = byte_index * 8 + bit;
+                    if k < 91 && (byte >> (7 - bit)) & 1 == 1 {
+                        parity ^= payload[k];
+                    }
+                }
+            }
+            codeword.push(parity);
+        }
+        let codeword: [u8; 174] = codeword.try_into().unwrap();
+        let tones = tones_from_codeword(&codeword);
+        let rate = 48_000.0_f64;
+        let sym = symbol_samples_at(rate);
+        let mut iq = vec![0.0_f32; NUM_SYMBOLS * sym * 2];
+        let mut phase = 0.0_f64;
+        for (k, tone) in tones.iter().enumerate() {
+            let step = core::f64::consts::TAU * (1_000.0 + *tone as f64 * TONE_SPACING_HZ) / rate;
+            for i in 0..sym {
+                let idx = (k * sym + i) * 2;
+                iq[idx] = phase.cos() as f32;
+                iq[idx + 1] = phase.sin() as f32;
+                phase += step;
+            }
+        }
+        let (power, gains) = fit_model(&iq, &tones, 1_000.0, rate, 0);
+        let amplitude = (power / 79.0).sqrt() / sym as f64;
+        assert!(amplitude > 0.9, "fit amplitude {amplitude}");
+        let strong = gains.iter().filter(|g| g.0.hypot(g.1) > 0.5).count();
+        assert!(strong > 70, "only {strong}/79 symbols fit above 0.5");
+    }
+
+    #[test]
     fn a_grid_report_and_token_round_trip() {
         // "CQ JO1WKO PM95" is the fixture's message: its callsign token unpacks to itself.
         assert_eq!(unpack28(2).as_deref(), Some("CQ"));
@@ -763,16 +1164,26 @@ use crate::plugin::{DigitalDemodulator, DigitalReport};
 /// The decoder is window-driven and *slides*: blocks accumulate until a window (`hop + burst`) is
 /// buffered, one decode runs over the whole window, then the window advances by one hop and keeps the
 /// overlap. Sliding rather than clearing is what makes the result independent of where the feeder's
-/// window boundaries happen to fall relative to the 15 s FT8 schedule.
+/// window boundaries happen to fall relative to the 15 s FT8 schedule. A fresh stream gets one
+/// *early attempt* as soon as its first slot (15 s) is buffered -- anything that slot contains
+/// whole is searchable, and waiting for the full window would push the first decode ~13 s past the
+/// first slot boundary for nothing; the window keeps filling and the absolute-position
+/// de-duplication absorbs the full window's re-decode of the same burst.
 pub struct Ft8Plugin {
     decoder: Ft8Decoder,
     decoded: Vec<Ft8Message>,
     decoded_messages: u64,
+    early_attempt_done: bool,
 }
 
 impl Ft8Plugin {
     pub fn new(rate: f64) -> Self {
-        Self { decoder: Ft8Decoder::new(rate), decoded: Vec::new(), decoded_messages: 0 }
+        Self {
+            decoder: Ft8Decoder::new(rate),
+            decoded: Vec::new(),
+            decoded_messages: 0,
+            early_attempt_done: false,
+        }
     }
 
     /// How many messages this plugin has decoded (diagnostics/status).
@@ -789,6 +1200,15 @@ impl Ft8Plugin {
     pub fn buffered(&self) -> usize {
         self.decoder.buffered()
     }
+
+    fn record(&mut self, messages: Vec<Ft8Message>) -> Vec<String> {
+        if messages.is_empty() {
+            return Vec::new();
+        }
+        self.decoded_messages += messages.len() as u64;
+        self.decoded = messages.clone();
+        messages.into_iter().map(|m| m.text).collect()
+    }
 }
 
 impl DigitalDemodulator for Ft8Plugin {
@@ -798,25 +1218,30 @@ impl DigitalDemodulator for Ft8Plugin {
 
     fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
         self.decoder.push_iq(iq);
-        if self.decoder.buffered() < self.decoder.window_samples() {
-            return Vec::new();
+        let buffered = self.decoder.buffered();
+        if buffered < self.decoder.window_samples() {
+            // The early attempt, once per stream. The steady state never re-enters this zone: after
+            // a slide the buffer cycles 13.04 s -> 28.04 s, crossing one slot only on the way up to
+            // a full window, so the latch never needs clearing until `reset`.
+            if self.early_attempt_done || buffered < self.decoder.slot_samples() {
+                return Vec::new();
+            }
+            self.early_attempt_done = true;
+            let messages = self.decoder.decode();
+            return self.record(messages);
         }
         let messages = self.decoder.decode();
         // Slide one hop instead of clearing. The next window then overlaps this one by a whole
         // transmission, so a burst sitting at the seam is still searched whole in whichever window
         // contains it -- `window >= hop + burst` is what makes that a guarantee.
         self.decoder.advance(self.decoder.slot_samples());
-        if messages.is_empty() {
-            return Vec::new();
-        }
-        self.decoded_messages += messages.len() as u64;
-        self.decoded = messages.clone();
-        messages.into_iter().map(|m| m.text).collect()
+        self.record(messages)
     }
 
     fn reset(&mut self) {
         self.decoder.reset();
         self.decoded.clear();
+        self.early_attempt_done = false;
     }
 
     fn buffered_input(&self) -> usize {
@@ -956,5 +1381,53 @@ mod plugin_tests {
             decoded_phases += 1;
         }
         assert_eq!(decoded_phases, 5);
+    }
+
+    #[test]
+    fn the_first_slot_of_a_fresh_stream_decodes_without_the_full_window() {
+        // The early attempt: a burst half a second into a fresh stream is fully contained in the
+        // first slot, and the first decode must happen on that slot -- not ~13 s later when the
+        // sliding window (hop + burst) has filled.
+        if cfg!(debug_assertions) {
+            return;
+        }
+        let rate = 48_000.0_f64;
+        let mut plugin = Ft8Plugin::new(rate);
+        let mut first_slot = vec![0.0_f32; (rate * tables::SLOT_SECONDS) as usize * 2];
+        let iq = fixture();
+        let at = (0.5 * rate) as usize * 2;
+        first_slot[at..at + iq.len()].copy_from_slice(&iq);
+
+        let window = Ft8Decoder::new(rate).window_samples();
+        let mut fed = 0_usize;
+        let mut got: Vec<String> = Vec::new();
+        for chunk in first_slot.chunks(960 * 2) {
+            got.extend(plugin.process_iq(chunk));
+            fed += chunk.len() / 2;
+            if !got.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(got, vec!["CQ JO1WKO PM95".to_string()], "the first slot's burst decodes");
+        assert!(
+            (fed as f64 / rate) < window as f64 / rate,
+            "decoded after {:.2} s; the old trigger waited {:.2} s",
+            fed as f64 / rate,
+            window as f64 / rate
+        );
+        // Continuing the stream: the full window re-searches the same burst and must not report it
+        // twice, the steady state must not re-run the early attempt, and the message count stays
+        // at exactly one for exactly one physical transmission.
+        let tail_len = window - fed + 961;
+        let tail = vec![0.0_f32; tail_len * 2];
+        for chunk in tail.chunks(960 * 2) {
+            got.extend(plugin.process_iq(chunk));
+        }
+        assert_eq!(
+            got.iter().filter(|t| *t == "CQ JO1WKO PM95").count(),
+            1,
+            "the early decode must be reported exactly once"
+        );
+        assert_eq!(plugin.decoded_messages(), 1);
     }
 }

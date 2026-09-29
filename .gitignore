@@ -40,3 +40,5 @@ tools/sdr_probe/plots/
 
 # pi agent state (session goals/ledger; local only)
 .pi/
+tools/ft8_reference/decode_ref
+tools/ft8_reference/ft8_lib/

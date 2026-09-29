@@ -15,7 +15,7 @@ int main(int argc, char** argv) {
     int max_samples = 48000 * 20;
     float* signal = malloc(sizeof(float) * max_samples);
     int num_samples = max_samples, wav_rate = 0;   // capacity in, count out
-    if (!load_wav(signal, &num_samples, &wav_rate, path)) { printf("cannot open %s\n", path); return 1; }
+    if (load_wav(signal, &num_samples, &wav_rate, path) != 0) { printf("cannot open %s\n", path); return 1; }
 
     monitor_config_t cfg = { .f_min = 100, .f_max = 3000, .sample_rate = rate,
                              .time_osr = time_osr, .freq_osr = freq_osr, .protocol = FTX_PROTOCOL_FT8 };
