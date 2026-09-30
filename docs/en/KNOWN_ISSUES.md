@@ -57,6 +57,9 @@
     `?noaudio=1` and carries no audio). A remaining audio gap is therefore a browser-side worklet
     ring underrun, not a dropped frame; `document.getElementById('spectrum').dataset.sdrAudio`
     exposes `enabled/muted/frames/buffered_ms/underruns/rms/worklet/worker` for diagnosis.
+    The panadapter overlay likewise publishes the band the active demodulator reads as
+    `dataset.demodBand` (Hz relative to the dial, e.g. `100..3000` for FT8) — the e2e contract
+    reads it because the 12% tint cannot be measured off the waterfall pixels reliably.
 22. **Vendor ADM (SINAD/SNR/THD) is a single-tone metric**: with real broadcast audio there is no
     dominant modulation tone, so the vendor `ADM_*` values collapse to ~0 and THD is meaningless
     (same code, 1 kHz test tone: SINAD ~7, SNR ~12). The SDR panel no longer displays it

@@ -91,6 +91,8 @@ SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）─
 | 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
 | 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs` |
 | 音频 DSP（仅模拟 PCM） | `wasm/src/audio/stages.rs`、`wasm/src/audio/dc_block.rs`、`wasm/src/audio/wiener.rs`、`wasm/src/audio/notch.rs`、`wasm/src/audio/blanker.rs`、`wasm/src/fft.rs` |
+| 降噪（DeepFilterNet3，流式） | `frontend/modern/src/sdr/dfnWorker.ts`、`frontend/modern/src/sdr/dfnWasm.ts`、`wasm-dfn/src/wasm.rs` |
+| DFN 产物与模型 | `wasm-dfn/build.sh` → `frontend/modern/public/dfn/df_bg.wasm`（入库）、`frontend/modern/public/models/dfn/DeepFilterNet3_onnx.tar.gz`（运行时拉取，绝不内嵌） |
 | 路径组装与分离规则 | `wasm/src/pipeline.rs` |
 | DDC 内核（保留，兼作参考链） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`、`wasm/src/ddc/mod.rs` |
 | 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/modern/src/sdr/registry.ts` |
@@ -165,8 +167,11 @@ wasm32-unknown-unknown` 就是全部工具链。
 播。`frontend/modern/src/__tests__/sdrAudioWorklet.test.ts` 直接驱动这个环（速率一致、±2% 漂移、
 灌爆、复位四种情形）。
 
-降噪是面板控件（开/关 + 轻/中/强），经 `websa_dsp_demod_set_nr` 到达 WASM 音频链；静噪滑块经
-`websa_dsp_demod_set_squelch` 到达同一条链。默认策略**不启用任何**增强级，也就是 Python 参考实现
+降噪是面板控件，算法选择在两者之间：STFT Wiener（开/关 + 轻/中/强，经 `websa_dsp_demod_set_nr` 到达
+WASM 音频链），与 DeepFilterNet3——经专用 worker（`dfnWorker.ts` → `dfnWasm.ts` → 自研 `wasm-dfn`
+运行时，每帧一个 480 样本 hop，模型运行时拉取后交给 `df_create`）流式推理的 ML 降噪器，它没有强度档，
+选中时强度下拉随之隐藏。算法是客户端自有偏好（`sdr.nrAlgo`，与其他 SDR 偏好一起持久化），因为
+Python 回退路径自身不带降噪；静噪滑块经 `websa_dsp_demod_set_squelch` 到达同一条链。默认策略**不启用任何**增强级，也就是 Python 参考实现
 的产出——过去默认启用的一级里包含自适应陷波，而信号本身是单音时它会把信号一起滤掉（实测：1 kHz
 AM 测试音被压低 33 dB），有它在时与参考实现的 A/B 根本无法比较。
 

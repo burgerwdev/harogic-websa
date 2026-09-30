@@ -98,6 +98,8 @@ path here does not exist yet.
 | Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
 | Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
 | Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
+| Noise reduction (DeepFilterNet3, streamed) | `frontend/modern/src/sdr/dfnWorker.ts`, `frontend/modern/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
+| DFN artifact and model | `wasm-dfn/build.sh` → `frontend/modern/public/dfn/df_bg.wasm` (committed), `frontend/modern/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
 | Path assembly and the separation rule | `wasm/src/pipeline.rs` |
 | DDC kernels (kept, and the reference chain) | `wasm/src/ddc/nco.rs`, `wasm/src/ddc/fir.rs`, `wasm/src/ddc/resampler.rs`, `wasm/src/ddc/agc.rs`, `wasm/src/ddc/mod.rs` |
 | Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/modern/src/sdr/registry.ts` |
@@ -187,8 +189,14 @@ dropped so a producer that outruns the clock cannot become growing latency. A re
 the previous station never plays on. `frontend/modern/src/__tests__/sdrAudioWorklet.test.ts` drives
 the ring directly (a matched producer, ±2% drift, a flood, a reset).
 
-Noise reduction is a panel control (off/on, light/medium/strong) that reaches the WASM audio chain
-over `websa_dsp_demod_set_nr`; the squelch slider reaches it over `websa_dsp_demod_set_squelch`. The
+Noise reduction is a panel control whose algorithm select picks between STFT Wiener (off/on,
+light/medium/strong, reaching the WASM audio chain over `websa_dsp_demod_set_nr`) and
+DeepFilterNet3 — an ML denoiser streamed through a dedicated worker (`dfnWorker.ts` → `dfnWasm.ts`
+→ the vendored `wasm-dfn` runtime, one 480-sample hop per frame, model fetched at runtime and
+handed to `df_create`) that has no strength knob, so the strength select hides while it is active.
+The algorithm is a client-owned preference (`sdr.nrAlgo`, persisted with the other SDR
+preferences) because the Python fallback path carries no NR of its own; the squelch slider reaches
+the audio chain over `websa_dsp_demod_set_squelch`. The
 default policy runs **no** enhancement stage, which is what the Python reference produces — the
 stages that used to run by default included an adaptive notch that removed the signal itself when the
 signal was a tone (measured: -33 dB on an AM test tone), and a `std`/browser A/B could not be
