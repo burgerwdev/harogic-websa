@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
-import sys
 import wave
 from pathlib import Path
 
@@ -71,7 +69,6 @@ def run_reference(samples: np.ndarray) -> list[str]:
 
 
 def run_ours(json_path: str) -> list[str]:
-    report = Path("/tmp/ft8_live_decodes.txt")
     out = Path("/tmp/ft8_reference_compare_ours.txt")
     env = {"PATH": subprocess.os.environ.get("PATH", ""), "WEBSA_FT8_IQ": str(json_path),
            "WEBSA_FT8_OUT": str(out)}
