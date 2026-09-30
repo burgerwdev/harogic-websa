@@ -328,15 +328,21 @@ def main() -> int:
                     abs(lo_a + 1500) < tol and abs(hi_a - 1500) < tol,
                     f"{lo_a:+.0f}..{hi_a:+.0f} Hz",
                 )
+                # The FT8 band's own edges cannot be measured in pixels: the lower edge is 1-2 px
+                # from the dashed marker, and the 12% tint composites to G-R ~ 4-9 over the
+                # waterfall's blue noise, so the scan's edges drift by ~1 kHz with the noise
+                # phase. The overlay publishes what it draws in `dataset.demodBand` (the
+                # `dataset.yLabels` pattern), which is resolution-independent and deterministic.
+                ft8_band = page.eval_on_selector("#spectrum", "e => e.dataset.demodBand || ''")
                 check(
                     "FT8 highlights the band the decoder reads, above the dial",
-                    abs(lo_f - 100) < tol and abs(hi_f - 3000) < tol,
-                    f"{lo_f:+.0f}..{hi_f:+.0f} Hz",
+                    ft8_band == "100..3000",
+                    f"dataset={ft8_band!r}, pixels {lo_f:+.0f}..{hi_f:+.0f} Hz",
                 )
                 check(
                     "the FT8 band is not the IF passband (the bandwidth must not move it)",
-                    lo_f - lo_a > 1000,
-                    f"analog starts {lo_a:+.0f} Hz, FT8 starts {lo_f:+.0f} Hz",
+                    ft8_band == "100..3000" and lo_a < -1000,
+                    f"analog starts {lo_a:+.0f} Hz, dataset={ft8_band!r}",
                 )
         page.click('[data-sdr-demod="nfm"]')
         page.click('[data-sdr-ifbw="12000"]')

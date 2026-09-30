@@ -604,6 +604,13 @@ function renderRta() {
     const lx = p.x + (sdrListenHz.get() - lo) / span * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
       const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), sdrIfbw.get());
+      // Diagnostic/e2e hook (same pattern as `dataset.yLabels`/`dataset.limitsDbg`): what the
+      // overlay claims, in Hz relative to the dial. The pixel scan cannot read these edges off
+      // the canvas - the 12% tint composites to G-R ~ 4-9 over the waterfall's blue noise and
+      // the lower edge sits 1-2 px from the dashed marker - so the contract is read from here,
+      // with the analog passband still pinned in pixels at its far-from-the-marker edges.
+      const ds = `${bandLo}..${bandHi}`;
+      if (ctx.canvas.dataset.demodBand !== ds) ctx.canvas.dataset.demodBand = ds;
       if (bandHi > bandLo) {
         const x0 = p.x + (sdrListenHz.get() + bandLo - lo) / span * p.w;
         const x1 = p.x + (sdrListenHz.get() + bandHi - lo) / span * p.w;
