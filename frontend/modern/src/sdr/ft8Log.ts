@@ -22,14 +22,22 @@ export interface Ft8Spot {
 }
 
 /**
- * Where the decoder looks for tones, in Hz of audio (the FT8 band).
+ * Where the decoder looks for tones, in Hz of audio **above the dial** (the FT8 band).
  *
  * The protocol puts its eight tones across this band, so it is a property of FT8 and not of the UI's
  * IF filter: that filter sets the channel the device hands over and the analog modes' audio passband,
  * while the decoder reads the whole channelized baseband either way.
+ *
+ * These are the decoder's own `F_MIN_HZ`/`F_MAX_HZ` (`wasm/src/digital/ft8/mod.rs`) and they are the
+ * authority: the panadapter draws this band as the FT8 passband (`demodBandHz`), so a value that
+ * drifts from the decoder highlights a band the decoder does not read. It said 200 while the decoder
+ * said 100 (the lower edge is 100 on purpose: a PlutoSDR's clock error at 411 MHz measures -809 Hz,
+ * which pushes a 1 kHz-offset signal under a 200 Hz floor). The lower edge is also what the band
+ * *above the dial* starts at - the decoder's audio frequency is measured from the listen frequency,
+ * never symmetrically about it.
  */
-export const FT8_SEARCH_LOW_HZ = 200;
-export const FT8_SEARCH_HIGH_HZ = 3000;
+export const FT8_SEARCH_LOW_HZ = 100;
+export const FT8_SEARCH_HIGH_HZ = 3_000;
 /** The frequency inside that band a clicked decode is parked at (WSJT-X does the same). */
 export const FT8_TUNE_HZ = 1_000;
 

@@ -14,6 +14,10 @@ npm-debug.log*
 # Rust/WASM 构建产物（入库的是发布后的 frontend/modern/public/dsp.wasm）
 wasm/target/
 
+# DFN 降噪运行时构建产物（入库的是发布后的 public/dfn 与 public/models）
+wasm-dfn/target/
+wasm-dfn/pkg/
+
 # 日志/运行时
 *.log
 *.pid

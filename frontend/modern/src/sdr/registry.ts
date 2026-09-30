@@ -86,6 +86,18 @@ export function digitalModeIds(): string[] {
 	return idsOf('digital');
 }
 
+/**
+ * True when `id` is a protocol decoder rather than a demodulator.
+ *
+ * The difference reaches the display: a decoder reads a fixed band of its own (FT8: 100..3000 Hz
+ * above the dial) instead of an IF passband centred on it, so what the panadapter highlights has to
+ * follow the kind. False before the manifest has loaded, which is safe: a digital mode cannot be
+ * selected before then (its button comes from the same manifest).
+ */
+export function isDigitalMode(id: string): boolean {
+	return digitalModeIds().includes(id);
+}
+
 /** Audio-enhancement stage ids, in chain order (analog PCM path only). */
 export function audioStageIds(): string[] {
 	return idsOf('audio');

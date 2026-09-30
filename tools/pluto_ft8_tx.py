@@ -37,6 +37,20 @@ re-applies it on every run and puts the previous value back on the way out.
     python3 tools/pluto_ft8_tx.py --dry-run                    # encode + plan, no radio
     python3 tools/pluto_ft8_tx.py --slots 4                    # transmit 4 slots
     python3 tools/pluto_ft8_tx.py --message 'CQ WE0BSA PM95'
+
+**`--gain -70` is too low to decode reliably** (measured on the bench, SAN-90 listening on a
+411 MHz antenna a few metres away). The received tone, in the channelized baseband, against the
+noise floor beside it:
+
+| `--gain` | tone | tone / floor | product decodes |
+|---------|------|--------------|-----------------|
+| -70 dB | +29 dB | +6 dB | 1..6 of 6 slots, `snr` 10-14 dB - a coin flip |
+| -40 dB | +60 dB | +35 dB | every slot in the middle of a run (5 of 6; the two ends are the 28 s window pre-roll and the truncated tail) |
+
+30 dB of TX gain bought exactly 30 dB of SNR with the floor unchanged (`status_warning` 0,
+attenuator 15 dB, IF gain 2), so there is no compression to trade against - and the decoder's
+miss rate at -70 dB is a link-budget symptom, not a decoder one. Raise the gain until the tone
+stands ~30 dB over the floor, and check the analyzer for IF overflow (-12) once.
 """
 from __future__ import annotations
 

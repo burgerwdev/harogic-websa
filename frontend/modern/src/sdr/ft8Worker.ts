@@ -28,13 +28,26 @@ let wsUrl = '';
 let lastSeq = -1;
 let dropped = 0;
 let pushes = 0;
-/// Frames dropped because they queued up behind a decode attempt and went stale.
-let skipped = 0;
-/// Decode attempts. The decoder owns the windowing now, so the feeder observes an attempt as the
-/// decoder's window sliding -- which shows up as its buffered length dropping.
+/// Windows the decoder searched (one per slot by design), and how often its buffer was thrown away.
+///
+/// Both were invisible before, and the two look identical from the buffer length alone: a search
+/// drops it by one hop, a reset drops it to zero. Counting a reset as a search is what made a live
+/// session unreadable -- 41 "attempts" that could be 41 searches or 20 searches and 21 resets, which
+/// is the difference between "the decoder missed 36 transmissions" and "it never had a clean window".
 let attempts = 0;
+let resets = 0;
+/// A reset zeroes the buffer, so the next frame's length looks like a search's drop. Latched here so
+/// the reset is not also counted as a search.
+let afterReset = false;
 /// Decoder buffered length at the previous frame, used to spot that slide.
 let lastBuffered = 0;
+
+/** Drop the decoder's window: a flush or a gap tore the stream, so the slot in it is unrecoverable. */
+function forgetWindow(): void {
+  pipeline?.reset();
+  resets += 1;
+  afterReset = true;
+}
 
 function post(msg: Record<string, unknown>): void {
   (self as unknown as { postMessage: (m: unknown) => void }).postMessage(msg);
@@ -95,11 +108,11 @@ function scheduleReconnect(): void {
 function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }): void {
   if (frame.seq === 0) {
     lastSeq = -1;
-    pipeline?.reset();
+    forgetWindow();
     if (frame.iq.length === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
     dropped += frame.seq - lastSeq - 1;
-    pipeline?.reset();                    // a gap tears a slot: start the next one clean
+    forgetWindow();                       // a gap tears a slot: start the next one clean
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
   if (!enabled || !pipeline || frame.iq.length === 0) return;
@@ -115,7 +128,10 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
     post({ type: 'ft8', ...report, centerHz: frame.centerHz });
   }
   const buffered = pipeline.buffered();
-  if (buffered < lastBuffered) attempts += 1;
+  if (buffered < lastBuffered) {
+    if (afterReset) afterReset = false;
+    else attempts += 1;                   // the window slid: the decoder searched it
+  }
   lastBuffered = buffered;
   pushes += 1;
   // The stats are throttled, and that is not cosmetic: the audio worker relays them to the page, and
@@ -131,7 +147,7 @@ function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }):
       buffered: pipeline.buffered(),
       decodes: pipeline.count(),
       dropped,
-      skipped,
+      resets,
       attempts,
     });
   }

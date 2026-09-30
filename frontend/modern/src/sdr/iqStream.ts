@@ -12,6 +12,7 @@ import { wasmDspAllowed, wasmDspReason } from './capability';
 import { addFt8Spot, clearFt8Spots } from './ft8Log';
 import { dspWasmUrl } from './wasm';
 import type { Ft8Report, PipelineParams } from './types';
+import { t } from '../core/i18n';
 
 let worker: Worker | null = null;
 let enabled = false;
@@ -51,6 +52,9 @@ let dspRatio = 1;
 let dspNr = false;
 let dspNrStrength = 0.6;
 let dspSquelch = -110;
+/// DeepFilterNet3 stage status reported by the worker ('', 'loading', 'ready', 'fallback').
+let dspDfnState = '';
+let dspDfnReason = '';
 /// The PCM level the browser DSP measured (the S-meter reading when it owns playback).
 let dspRms = 0;
 /// The de-emphasis the browser chain is running (microseconds; < 0 = the mode's default).
@@ -99,7 +103,27 @@ function publishIqDebug(): void {
       ` dsp_silent_blocks=${dspSilent} dsp_discontinuities=${dspDisc}` +
       ` dsp_pcm_rms=${dspRmsMin.toFixed(4)}..${dspRmsMax.toFixed(4)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
+      (dspDfnState ? ` dsp_nr_algo=${dspDfnState}` + (dspDfnReason ? `:${dspDfnReason}` : '') : '') +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
+  }
+}
+
+/** Show the DeepFilterNet3 stage's loading/fallback state in the NR row. */
+function renderDfnStatus(): void {
+  const el = document.getElementById('nr-dfn-status');
+  if (!el) return;
+  if (dspDfnState === 'loading') {
+    el.style.display = '';
+    el.textContent = t('nr_dfn_loading');
+    el.title = '';
+  } else if (dspDfnState === 'fallback') {
+    el.style.display = '';
+    el.textContent = t('nr_dfn_fallback');
+    el.title = dspDfnReason || '';
+  } else {
+    el.style.display = 'none';
+    el.textContent = '';
+    el.title = '';
   }
 }
 
@@ -133,6 +157,12 @@ function startWorker(): void {
       renderFt8Message(d as unknown as Ft8Report);
       return;
     }
+    if (d.type === 'dfn-status') {
+      dspDfnState = String(d.state || '');
+      dspDfnReason = String(d.reason || '');
+      renderDfnStatus();
+      return;
+    }
     if (d.type !== 'stats') return;
     if (typeof d.blocks === 'number') blocks = d.blocks;
     if (typeof d.samples === 'number') samples = d.samples;
@@ -140,14 +170,17 @@ function startWorker(): void {
     if (typeof d.centerHz === 'number') centerHz = d.centerHz;
     if (typeof d.dropped === 'number') dropped = d.dropped;
     if (typeof d.flushes === 'number') flushes = d.flushes;
-    // The digital path's own counters: is the decoder being fed, and is its buffer growing towards
-    // a slot, or restarting? (A digital mode produces no audio, so these are the only evidence.)
+    // The digital path's own counters: is the decoder being fed, how many windows has it searched,
+    // and how often was one thrown away? (A digital mode produces no audio, so these are the only
+    // evidence.) `dsp_attempts` counts searches only; a reset costs a whole `window >= hop + burst`
+    // accumulation, so the two belong apart - reporting them together hid a session in which most
+    // "attempts" were resets.
     if (typeof d.digitalPushes === 'number') {
       digitalDiagnostics =
         `dsp_pushes=${d.digitalPushes} dsp_buffered=${d.digitalBuffered}` +
-        ` dsp_resets=${d.digitalResets} dsp_decodes=${d.ft8Messages ?? 0}` +
-        ` dsp_attempts=${d.digitalAttempts ?? 0} dsp_skipped=${d.digitalResets ?? 0}` +
-        ` dsp_dropped=${d.digitalDropped ?? 0}`;
+        ` dsp_decodes=${d.ft8Messages ?? 0}` +
+        ` dsp_attempts=${d.digitalAttempts ?? 0} dsp_resets=${d.decoderResets ?? 0}` +
+        ` dsp_audio_resets=${d.digitalResets ?? 0} dsp_dropped=${d.digitalDropped ?? 0}`;
     }
     if (typeof d.worklet === 'number') dspOwnsWorklet = d.worklet === 1;
     if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;
@@ -207,6 +240,8 @@ export function configureSdrPipeline(
     audioEnabled?: boolean;
     nr?: boolean;
     nrStrength?: number;
+    nrAlgo?: 'wiener' | 'dfn';
+    nrAtten?: number;
     squelch?: number;
   } = {},
 ): void {
@@ -217,13 +252,15 @@ export function configureSdrPipeline(
     audioEnabled: options.audioEnabled,
     nr: options.nr,
     nrStrength: options.nrStrength,
+    nrAlgo: options.nrAlgo,
+    nrAtten: options.nrAtten,
     squelch: options.squelch,
   });
 }
 
-/** Noise reduction on/off and its strength: applied live, no pipeline rebuild. */
-export function setSdrPipelineNr(on: boolean, strength: number): void {
-  worker?.postMessage({ type: 'nr', enabled: on, strength });
+/** Noise reduction on/off, its strength, algorithm and the DFN attenuation limit: applied live. */
+export function setSdrPipelineNr(on: boolean, strength: number, algo: 'wiener' | 'dfn', atten: number): void {
+  worker?.postMessage({ type: 'nr', enabled: on, strength, algo, atten });
 }
 
 /**

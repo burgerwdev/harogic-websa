@@ -15,6 +15,8 @@
  *   - nothing else keeps a copy of these values; read them with `get()`
  */
 import { createParam, resetAll } from '../core/params';
+import { isDigitalMode } from '../sdr/registry';
+import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 
 /** Frequency-like equality: sub-Hz differences are the same value. */
 const hz = {
@@ -51,6 +53,24 @@ export const sdrDemod = createParam<string>('sdr.demod', {
 export const sdrIfbw = createParam<number>('sdr.ifbw', {
 	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz,
 });
+
+/**
+ * The band the active demodulator actually reads, in Hz relative to the listen frequency.
+ *
+ * An analog demodulator reads its IF passband, symmetric about the listen frequency. A protocol
+ * decoder does not: FT8 reads 100..3000 Hz *above* the dial, so highlighting a symmetric passband
+ * claims half a band the decoder cannot read and hides half of the one it can.
+ *
+ * That is not cosmetic. Measured on the bench with a Pluto transmitting at 411.0015 MHz and the dial
+ * parked on the tone (offset 0), the decoder returned nothing in 5 of 5 slots while the overlay still
+ * covered the signal - the tones sit at 0..44 Hz, under the decoder's 100 Hz floor. Highlighting the
+ * decoder's real band is what turns "the signal is inside the marked band and still does not decode"
+ * into a visible "the signal is not inside the band the decoder reads".
+ */
+export function demodBandHz(demod: string, ifBw: number): [number, number] {
+	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
+	return [-ifBw / 2, ifBw / 2];
+}
 /** FM de-emphasis time constant in microseconds (-1 = per-mode default). */
 export const sdrDeemph = createParam<number>('sdr.deemph', {
 	fallback: -1, scope: 'sdr', persistKey: 'web-sa-sdr-deemph', ...hz,
@@ -106,11 +126,30 @@ export const sdrNrStrength = createParam<number>('sdr.nrStrength', {
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.005,
 });
 
+/** The noise-reduction algorithm: the WASM Wiener or the browser DeepFilterNet3 stage. */
+export type NrAlgo = 'wiener' | 'dfn';
+export const sdrNrAlgo = createParam<NrAlgo>('sdr.nrAlgo', {
+	fallback: 'wiener', scope: 'sdr', persistKey: 'web-sa-sdr-nr-algo', persist: 'desired',
+	authoritative: true,
+	parse: (raw: string) => (raw === 'dfn' || raw === 'dfn2' ? 'dfn' : 'wiener'), // 'dfn2' = old persisted key
+	serialize: String,
+	equals: (a: NrAlgo, b: NrAlgo) => a === b,
+});
+
+/** DeepFilterNet3's attenuation limit in dB (0 = full passthrough, higher = stronger denoising
+ * but clean signals are attenuated more). */
+export const sdrNrAtten = createParam<number>('sdr.nrAtten', {
+	fallback: 6, scope: 'sdr', persistKey: 'web-sa-sdr-nr-atten', persist: 'desired',
+	authoritative: true, parse: Number, serialize: String,
+	equals: (a: number, b: number) => Math.abs(a - b) < 0.5,
+});
+
 /** Every persisted SDR preference (Preset removes them, so defaults really are defaults). */
 export const SDR_PREF_KEYS = [
 	'web-sa-sdr-audio', 'web-sa-sdr-center', 'web-sa-sdr-listen', 'web-sa-sdr-decimate',
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
 	'web-sa-sdr-squelch', 'web-sa-sdr-agc', 'web-sa-sdr-nr', 'web-sa-sdr-nr-strength',
+	'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
 ];
 
 /**
@@ -175,8 +214,30 @@ export function renderSdrState(): void {
 		nrButton.classList.toggle('active', sdrNr.get());
 		nrButton.textContent = sdrNr.get() ? 'On' : 'Off';
 	}
+	const nrAlgo = select('select-sdr-nr-algo');
+	if (nrAlgo) nrAlgo.value = sdrNrAlgo.get();
+	// The dfn loading/fallback hint only makes sense while dfn is the selected algorithm.
+	const dfnSelected = sdrNrAlgo.get() === 'dfn';
+	const dfnStatus = document.getElementById('nr-dfn-status');
+	if (dfnStatus && !dfnSelected) {
+		dfnStatus.style.display = 'none';
+		dfnStatus.textContent = '';
+	}
+	// The DeepFilterNet3 attenuation slider is only meaningful for dfn (Wiener has its own strength).
+	const attenRow = document.getElementById('nr-atten-row');
+	const attenInput = input('input-sdr-nr-atten');
+	if (attenRow) attenRow.style.display = dfnSelected ? '' : 'none';
+	if (attenInput) {
+		attenInput.value = String(sdrNrAtten.get());
+		const attenLabel = document.getElementById('cur-nr-atten');
+		if (attenLabel) attenLabel.textContent = `${sdrNrAtten.get()} dB`;
+	}
 	const nrStrength = select('select-sdr-nr-strength');
 	if (nrStrength) {
+		// DeepFilterNet3 has no strength knob; the selector takes the space instead.
+		const dfn = sdrNrAlgo.get() === 'dfn';
+		nrStrength.hidden = dfn;
+		nrStrength.disabled = dfn;
 		// The nearest preset: the slot holds a number (a custom answer is possible via storage).
 		const value = sdrNrStrength.get();
 		let nearest = '0.6';

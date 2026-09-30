@@ -294,11 +294,19 @@
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
             <div class="param-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
+              <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" style="flex:1;" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
+                <option value="wiener" data-i18n="nr_algo_wiener">Wiener</option>
+                <option value="dfn" data-i18n="nr_algo_dfn">DeepFilterNet3</option>
+              </select>
               <select id="select-sdr-nr-strength" data-action="set-sdr-nr-strength" style="flex:1;" data-i18n-title="nr_strength_tip" data-i18n-attr="title">
                 <option value="0.25" data-i18n="nr_light">Light</option>
                 <option value="0.6" selected data-i18n="nr_medium">Medium</option>
                 <option value="1" data-i18n="nr_strong">Strong</option>
-              </select></div>
+              </select>
+              <span class="cur-val" id="nr-dfn-status" style="display:none;"></span></div>
+            <div class="param-row" id="nr-atten-row" style="display:none;"><label data-i18n="nr_atten">Attn</label>
+              <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
+              <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
             <div class="param-row sdr-hint-row">
               <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span>
               <!-- The level readout sits with the hint: the volume row is cramped and the level is a

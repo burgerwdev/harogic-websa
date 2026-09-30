@@ -60,6 +60,10 @@ let deliveredSamples = 0;
 let digitalPushes = 0;
 let digitalBuffered = 0;
 let digitalResets = 0;
+/// Resets reported by the decoder worker itself (its own window thrown away). Kept apart from
+/// `digitalResets`, which is this worker's companion pipeline: they were the same variable, so the
+/// decoder's resets overwrote the audio path's and neither was readable.
+let decoderResets = 0;
 //: Kept so "no decode" can be told apart from "no attempt". The decoder computes these and they
 //: were being discarded here, which left the decode table as the only evidence -- and it cannot
 //: distinguish a slot that was skipped from one that was attempted and failed.
@@ -97,6 +101,20 @@ let volume = 1;
 /// Noise reduction (the panel's NR control) and the squelch threshold.
 let nr = false;
 let nrStrength = 0.6;
+/// DeepFilterNet3's attenuation limit in dB (0 = passthrough, higher = stronger denoising).
+let nrAtten = 6;
+/// The noise-reduction algorithm: 'wiener' (WASM) or 'dfn' (browser DeepFilterNet3 stage).
+let nrAlgo: 'wiener' | 'dfn' = 'wiener';
+/// The DeepFilterNet3 worker (own thread: the tract WASM blocks ~5.6 ms/hop and must not starve
+/// this worker's WebSocket receive on wide modes like WFM 180 kHz).
+let dfnWorker: Worker | null = null;
+let dfnReady = false;
+let dfnLoading = false;
+let dfnError = '';
+/// True while the listener asked for dfn but the WASM Wiener is standing in for it.
+let dfnFellBack = false;
+/// Monotonic sequence for ordering the async dfn worker responses.
+let dfnSeq = 0;
 let squelchDbfs = -110;
 let workletPort: MessagePort | null = null;
 let enabled = false;
@@ -139,7 +157,7 @@ function startDecoder(): void {
       if (typeof d.pushes === 'number') digitalPushes = d.pushes;
       if (typeof d.buffered === 'number') digitalBuffered = d.buffered;
       if (typeof d.decodes === 'number') ft8Messages = d.decodes;
-      if (typeof d.skipped === 'number') digitalResets = d.skipped;   // reported as dsp_resets
+      if (typeof d.resets === 'number') decoderResets = d.resets;
       if (typeof d.attempts === 'number') digitalAttempts = d.attempts;
       if (typeof d.dropped === 'number') digitalDropped = d.dropped;
       postStats();
@@ -177,14 +195,16 @@ function postStats(): void {
     // for a digital one it is the companion demodulator that plays the channel. The page hands the
     // AudioWorklet port over on this flag, so a digital mode without it never gets heard.
     pipeline: Boolean(pipeline?.ok || companion?.ok),
-    ft8Messages, digitalPushes, digitalBuffered, digitalResets, pipelineBuilds,
+    ft8Messages, digitalPushes, digitalBuffered, digitalResets, decoderResets, pipelineBuilds,
     digitalAttempts, digitalDropped,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
     fillMin: Number.isFinite(fillMin) ? fillMin : 0, fillMax,
     silentBlocks, discontinuities, pcmBlocks,
     pcmRmsMin: Number.isFinite(pcmRmsMin) ? pcmRmsMin : 0, pcmRmsMax,
-    pcmPending: pendingSamples, deliveredSamples, nr, nrStrength, squelchDbfs,
+    pcmPending: pendingSamples, deliveredSamples, nr, nrStrength, nrAlgo, squelchDbfs,
+    dfn: dfnReady ? 'ready' : dfnLoading ? 'loading' : dfnError ? 'fallback' : 'off',
+    dfnError,
     deemphUs: params?.deemphUs ?? -1, audioOn,
   });
 }
@@ -287,20 +307,103 @@ function syncCompanion(isDigital: boolean): void {
 
 /** Push the listener's settings into the pipeline (volume, chain, NR, squelch). */
 function applyListenerControls(): void {
+  // The WASM Wiener is the NR only when the algorithm is Wiener, or when dfn was requested but
+  // has fallen back (load failure, wrong rate, or too slow) — the two never stack.
+  const wasmNr = nr && (nrAlgo === 'wiener' || dfnFellBack);
   for (const target of [pipeline, companion]) {
     if (!target) continue;
     target.setVolume(volume);
     target.setAudioEnabled(audioEnabled);
-    target.setNr(nr, nrStrength);
+    target.setNr(wasmNr, nrStrength);
     target.setSquelch(squelchDbfs);
     target.setDeemph(params?.deemphUs ?? -1);
   }
+}
+
+/** Bring the DeepFilterNet3 worker into line with the listener's NR selection. */
+function syncDfn(): void {
+  const wanted = nr && nrAlgo === 'dfn';
+  if (!wanted) {
+    // Stop forwarding; keep the worker for reuse. A later on→cycle re-inits it (fresh stream).
+    dfnReady = false;
+    dfnLoading = false;
+    dfnFellBack = false;
+    dfnError = '';
+    return;
+  }
+  if ((params?.outRate ?? 0) !== 48000) {
+    dfnFellBack = true;
+    dfnError = `rate ${params?.outRate}`;
+    applyListenerControls();
+    post({ type: 'dfn-status', state: 'fallback', reason: dfnError });
+    return;
+  }
+  // Spawn the dedicated worker once; it caches the model and reports 'ready' when it can process.
+  if (!dfnWorker) {
+    try {
+      dfnWorker = new Worker(new URL('./dfnWorker.ts', import.meta.url), { type: 'module' });
+    } catch {
+      dfnWorker = null;
+      dfnFellBack = true;
+      dfnError = 'no Worker support';
+      applyListenerControls();
+      post({ type: 'dfn-status', state: 'fallback', reason: dfnError });
+      return;
+    }
+    dfnWorker.onerror = (event: ErrorEvent) => {
+      dfnFellBack = true;
+      dfnReady = false;
+      dfnLoading = false;
+      dfnError = String(event.message || 'dfn worker failed');
+      applyListenerControls();
+      post({ type: 'dfn-status', state: 'fallback', reason: dfnError });
+    };
+    dfnWorker.onmessage = (event: MessageEvent) => {
+      const d = (event.data || {}) as Record<string, any>;
+      if (d.type === 'ready') {
+        dfnLoading = false;
+        // The listener may have switched NR off (or to Wiener) while the model was loading.
+        if (!(nr && nrAlgo === 'dfn')) return;
+        dfnReady = true;
+        dfnFellBack = false;
+        post({ type: 'dfn-status', state: 'ready' });
+      } else if (d.type === 'error') {
+        dfnLoading = false;
+        if (!(nr && nrAlgo === 'dfn')) return;
+        dfnFellBack = true;
+        dfnReady = false;
+        dfnError = String(d.message || 'dfn error');
+        applyListenerControls();
+        post({ type: 'dfn-status', state: 'fallback', reason: dfnError });
+      } else if (d.type === 'pcm') {
+        deliver(d.out as Float32Array);
+      }
+    };
+  }
+  // (Re-)initialize whenever the worker exists but is not ready — freshly spawned, or after an NR
+  // off→on cycle (the off-branch cleared `dfnReady`). Guarded by `dfnLoading` so a configure and an
+  // nr message in quick succession don't double-init.
+  if (!dfnReady && !dfnLoading) {
+    dfnLoading = true;
+    dfnFellBack = false;
+    post({ type: 'dfn-status', state: 'loading' });
+    dfnWorker.postMessage({ type: 'init', atten: nrAtten });
+  }
+}
+
+/** Forward one PCM block to the dfn worker (async: the response arrives on its 'pcm' message). */
+function deliverViaDfn(pcm: Float32Array): void {
+  if (!dfnWorker || !dfnReady) return;
+  dfnWorker.postMessage({ type: 'process', seq: dfnSeq++, pcm }, [pcm.buffer]);
 }
 
 /** Drop the worker's queued PCM and tell the worklet to drop the ring it already holds. */
 function resetDelivery(): void {
   pendingPcm = [];
   pendingSamples = 0;
+  // The dfn stream's lookahead buffer holds the previous channel: flush it too, so a retune does
+  // not play a burst of the old station through the fresh channel.
+  dfnWorker?.postMessage({ type: 'reset' });
   workletPort?.postMessage({ type: 'reset' });
 }
 
@@ -364,7 +467,7 @@ function resetStream(): void {
   resetDelivery();
 }
 
-function onBaseband(frame: BasebandFrame): void {
+async function onBaseband(frame: BasebandFrame): Promise<void> {
   if (frame.seq === 0) {
     // The backend retuned or reconfigured: the queued blocks and the demodulator's history belong to
     // another channel. A retune only clears the channel history (the level control is kept), while a
@@ -404,7 +507,14 @@ function onBaseband(frame: BasebandFrame): void {
       }
     }
   } else if (pipeline) {
-    deliver(pipeline.process(frame.iq));
+    const pcm = pipeline.process(frame.iq);
+    // DeepFilterNet3 owns the PCM only while the listener has it selected and it is ready; a
+    // failed/slow model has already fallen back, so the block passes through the Wiener chain.
+    if (nr && nrAlgo === 'dfn' && dfnReady) {
+      deliverViaDfn(pcm); // async: the dfn worker's 'pcm' response is delivered on its message
+    } else {
+      deliver(pcm);
+    }
   }
   if (blocks % 25 === 0) postStats();
 }
@@ -492,6 +602,8 @@ self.onmessage = (event: MessageEvent) => {
       if (typeof msg.audioEnabled === 'boolean') audioEnabled = msg.audioEnabled;
       if (typeof msg.nr === 'boolean') nr = msg.nr;
       if (typeof msg.nrStrength === 'number') nrStrength = msg.nrStrength;
+      if (typeof msg.nrAlgo === 'string') nrAlgo = msg.nrAlgo === 'dfn' ? 'dfn' : 'wiener';
+      if (typeof msg.nrAtten === 'number') nrAtten = msg.nrAtten;
       if (typeof msg.squelch === 'number') squelchDbfs = msg.squelch;
       // A rate or bandwidth change rebuilds the demodulator (its filters describe the rate they were
       // designed for), but only a *real* change: the baseband rate the backend reports is measured, so
@@ -519,6 +631,7 @@ self.onmessage = (event: MessageEvent) => {
       // A digital mode's decoder is rebuilt by its own worker; here only the companion changes.
       syncCompanion(digitalIds.has(next.mode));
       applyListenerControls();
+      syncDfn();
       syncPipeline();
     }
   } else if (msg.type === 'volume') {
@@ -540,7 +653,12 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'nr') {
     nr = Boolean(msg.enabled);
     if (typeof msg.strength === 'number') nrStrength = msg.strength;
-    pipeline?.setNr(nr, nrStrength);
+    if (typeof msg.algo === 'string') nrAlgo = msg.algo === 'dfn' ? 'dfn' : 'wiener';
+    if (typeof msg.atten === 'number') nrAtten = msg.atten;
+    applyListenerControls();
+    syncDfn();
+    // Live-update the attenuation limit on an already-running stream (syncDfn only rebuilds).
+    dfnWorker?.postMessage({ type: 'atten', value: nrAtten });
     postStats();
   } else if (msg.type === 'squelch') {
     squelchDbfs = Number(msg.value) || -110;

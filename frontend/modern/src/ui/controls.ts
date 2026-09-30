@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, type NrAlgo } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
@@ -350,7 +350,7 @@ export function applySdrDemod() {
 export function toggleSdrNr() {
   const on = !sdrNr.get();
   sdrNr.set(on);
-  setSdrPipelineNr(on, sdrNrStrength.get());
+  setSdrPipelineNr(on, sdrNrStrength.get(), sdrNrAlgo.get(), sdrNrAtten.get());
   renderSdrState();
 }
 
@@ -358,7 +358,22 @@ export function toggleSdrNr() {
 export function setSdrNrStrength(strength: number) {
   if (!Number.isFinite(strength)) return;
   sdrNrStrength.set(strength);
-  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get());
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), sdrNrAlgo.get(), sdrNrAtten.get());
+  renderSdrState();
+}
+
+/** Which algorithm the NR switch drives: the WASM Wiener or the browser DeepFilterNet3 stage. */
+export function setSdrNrAlgo(algo: NrAlgo) {
+  sdrNrAlgo.set(algo);
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), algo, sdrNrAtten.get());
+  renderSdrState();
+}
+
+/** DeepFilterNet3's attenuation limit in dB, applied live. */
+export function setSdrNrAtten(atten: number) {
+  if (!Number.isFinite(atten)) return;
+  sdrNrAtten.set(atten);
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), sdrNrAlgo.get(), atten);
   renderSdrState();
 }
 
@@ -466,6 +481,8 @@ function pushSdrPipeline(): void {
       audioEnabled: true,
       nr: sdrNr.get(),
       nrStrength: sdrNrStrength.get(),
+      nrAlgo: sdrNrAlgo.get(),
+      nrAtten: sdrNrAtten.get(),
       squelch: sdrSquelch.get(),
     },
   );
@@ -705,6 +722,8 @@ export function bindActions() {
     'toggle-sdr-nr': () => toggleSdrNr(),
     'toggle-ft8-window': () => toggleFt8Window(),
     'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
+    'set-sdr-nr-algo': (el) => setSdrNrAlgo((el as HTMLSelectElement).value === 'dfn' ? 'dfn' : 'wiener'),
+    'set-sdr-nr-atten': (el) => setSdrNrAtten(Number((el as HTMLInputElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),

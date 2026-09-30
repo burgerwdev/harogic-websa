@@ -7,7 +7,7 @@ import { getX, getY, plotRect } from './plot';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
-import { sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { demodBandHz, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { trigLevel, trigSource } from '../ui/triggerState';
 import { smoothForDisplay } from '../dsp/smooth';
@@ -596,15 +596,17 @@ function renderRta() {
     ctx.stroke();
     ctx.restore();
   });
-  // SDR: listen-frequency marker + demod passband
+  // SDR: listen-frequency marker + the band the active demodulator actually reads. A protocol
+  // decoder reads a band above the dial, not a passband centred on it (`demodBandHz`), so a
+  // symmetric overlay would mark audio the decoder never reads.
   if (S.sdrMode && sdrListenHz.get() > 0) {
     const span = (hi - lo) || 1;
     const lx = p.x + (sdrListenHz.get() - lo) / span * p.w;
     if (lx >= p.x && lx <= p.x + p.w) {
-      const bw = sdrIfbw.get();
-      if (bw > 0) {
-        const x0 = p.x + (sdrListenHz.get() - bw / 2 - lo) / span * p.w;
-        const x1 = p.x + (sdrListenHz.get() + bw / 2 - lo) / span * p.w;
+      const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), sdrIfbw.get());
+      if (bandHi > bandLo) {
+        const x0 = p.x + (sdrListenHz.get() + bandLo - lo) / span * p.w;
+        const x1 = p.x + (sdrListenHz.get() + bandHi - lo) / span * p.w;
         ctx.fillStyle = 'rgba(0,255,160,0.12)';
         ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
       }
