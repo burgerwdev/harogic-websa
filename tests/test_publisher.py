@@ -67,7 +67,10 @@ def test_only_the_swept_session_dedupes_the_frequency_axis():
 class Client:
     """Minimal ClientStream stand-in: records what the publisher fanned out."""
 
-    dropped_frames = dropped_control = dropped_audio = 0
+    dropped_frames = dropped_control = dropped_audio = dropped_iq = 0
+    #: The publisher asks whether a client wants raw IQ before the session encodes it.
+    accepts_iq = False
+    accepts_audio = True
 
     def __init__(self):
         self.texts: list[str] = []

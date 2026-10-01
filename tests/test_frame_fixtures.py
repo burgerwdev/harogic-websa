@@ -22,7 +22,7 @@ from tools.gen_frame_fixtures import build  # noqa: E402
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'frames'
 
 
-@pytest.mark.parametrize('name', ['freq.bin', 'powr.bin', 'rta.bin', 'audio.bin'])
+@pytest.mark.parametrize('name', ['freq.bin', 'powr.bin', 'rta.bin', 'audio.bin', 'baseband.bin'])
 def test_committed_fixture_matches_the_encoder(name):
     files, _manifest = build()
     path = FIXTURES / name
@@ -54,3 +54,24 @@ def test_freq_and_powr_layout():
     assert len(powr) == 16 + manifest['powr']['points'] * 4
     # POWR must stay float32 (the frontend reads it as f4) even when given float64 input.
     assert np.frombuffer(powr, dtype='<f4', offset=16).tolist() == manifest['powr']['power']
+
+
+def test_baseband_layout_keeps_the_payload_aligned():
+    """IQBF: magic + ver + seq + samples + rate(f8) + centre(f8) + float32 I/Q pairs.
+
+    The two f64 fields live *before* the payload so the f32 block starts at byte 32: a typed-array
+    view on an unaligned offset throws in the browser, and the demodulator must be able to read the
+    samples without copying.
+    """
+    files, manifest = build()
+    baseband = files['baseband.bin']
+    meta = manifest['baseband']
+    assert baseband[:4] == b'IQBF'
+    ver, seq, samples = np.frombuffer(baseband, dtype='<u4', count=3, offset=4)
+    assert (int(ver), int(seq), int(samples)) == (meta['version'], meta['seq'], meta['samples'])
+    rate, center = np.frombuffer(baseband, dtype='<f8', count=2, offset=16)
+    assert float(rate) == meta['rate']
+    assert float(center) == meta['center_hz']
+    assert len(baseband) == 32 + meta['samples'] * 2 * 4
+    got = np.frombuffer(baseband, dtype='<f4', offset=32).tolist()
+    assert got == pytest.approx(meta['iq'])

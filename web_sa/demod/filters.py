@@ -130,7 +130,7 @@ class Agc:
     ``silence_floor`` likewise never raises the gain.
     """
 
-    def __init__(self, target=0.2, attack=0.02, release=0.002, max_gain=1e4,
+    def __init__(self, target=0.1, attack=0.02, release=0.002, max_gain=1e4,
                  silence_floor=1e-4, ceiling=0.95):
         self.target = float(target)
         self.attack = float(attack)
@@ -139,20 +139,29 @@ class Agc:
         self.silence_floor = float(silence_floor)
         # Peak ceiling. An RMS target alone cannot bound the peak: FM broadcast audio has a
         # crest factor of 4-5, so a 0.2 RMS target still clipped on loud passages (measured
-        # on a real station: 18 clipped frames in 2 s in WFM, 5 in AM). One instantaneous
-        # scale keeps the block below the ceiling without waiting for the AGC to attack.
+        # on a real station: 18 clipped frames in 2 s in WFM, 5 in AM).
+        #
+        # It is applied as a limiter *gain* (instant down, slow up) rather than by scaling each
+        # block by its own peak. Scaling per block is what a peaky signal hears as a level: on a
+        # noise floor the crest factor varies block to block, so the level was modulated by up to
+        # 2.2x (measured on AM noise) with a step at every block boundary - the periodic, level-
+        # dependent sound a listener hears on a quiet frequency and loses as soon as a station
+        # arrives. The limiter's gain holds a steady value on steady input, so the level is steady.
         self.ceiling = float(ceiling)
+        self.limit = 1.0
         self.gain = 1.0
         self._primed = False
 
     def reset(self) -> None:
         self.gain = 1.0
+        self.limit = 1.0
         self._primed = False
 
     def process(self, x: np.ndarray, hold: bool = False) -> np.ndarray:
         x = np.asarray(x, dtype=np.float32)
         if x.size == 0:
             return x
+        gain_before = self.gain
         if not hold:
             rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2) + 1e-20))
             if rms >= self.silence_floor:
@@ -167,13 +176,45 @@ class Agc:
                 # is anywhere near correct.
                 if (not self._primed) or rms * self.gain > 1.0:
                     self.gain = desired
+                    # A jump is not ramped: the first block after a configure must already be at the
+                    # right level (ramping it left FM clipped for tens of blocks), and the clip guard
+                    # must apply now, not at the end of the block.
+                    gain_before = desired
                     self._primed = True
                 else:
                     coef = self.attack if desired < self.gain else self.release
                     self.gain += (desired - self.gain) * coef
-        y = x * self.gain
+        # The gain is ramped across the block instead of stepping at its boundary. The AGC adapts once
+        # per block and a block is 19.65 ms at the DDC rate - 50.9 Hz - so a stepped gain
+        # amplitude-modulates everything at ~51 Hz and its harmonics. On a noise floor that is a
+        # pulsing, buzzy tone (the ear integrates a narrowband component, so it survives the level
+        # being turned right down), it moves as the DDC rate drifts, and a station masks it: the
+        # "periodic sound, period not fixed, worst on a quiet frequency" a listener reports.
+        y = x * np.linspace(gain_before, self.gain, x.size, dtype=np.float64).astype(np.float32)
         if self.ceiling > 0.0 and y.size:
             peak = float(np.max(np.abs(y)))
-            if peak > self.ceiling:
-                y = y * (self.ceiling / peak)
+            wanted = self.ceiling / peak if peak > self.ceiling else 1.0
+            before = self.limit
+            # Instant down, slow up: the release is the one the gain already uses, so the level
+            # recovers in a few hundred milliseconds instead of tracking each block's crest factor.
+            if wanted < self.limit:
+                self.limit = wanted
+            else:
+                self.limit += (wanted - self.limit) * self.release
+            if self.limit < 1.0 or before < 1.0:
+                # Ramped for the same reason the AGC's gain is: a constant gain per block is amplitude
+                # modulation at the block rate, and a block is 960 output samples = 20.00 ms = exactly
+                # 50 Hz (with a 100 Hz harmonic). The limiter engages constantly on a noise floor, so
+                # that step was a 50 Hz modulation of the noise - the periodic sound heard on a quiet
+                # frequency. Measured: +27 dB envelope component at 50.0 Hz before this ramp.
+                y = y * np.linspace(before, self.limit, y.size, dtype=np.float64).astype(np.float32)
+                peak_after = float(np.max(np.abs(y)))
+                if peak_after > self.ceiling:
+                    # The ramp starts at the previous block's gain; a block needing more reduction than
+                    # that applies it to the whole block at once (rare, and better than a clip).
+                    y = y * np.float32(self.ceiling / peak_after)
         return y
+
+    def level(self) -> float:
+        """The gain the last block came out with (the AGC gain times the limiter's), for tests."""
+        return self.gain * self.limit

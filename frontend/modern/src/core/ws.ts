@@ -119,11 +119,14 @@ export function connectWS() {
   const queryToken = new URLSearchParams(location.search).get('token');
   if (queryToken) sessionStorage.setItem('web-sa-token', queryToken);
   const token = sessionStorage.getItem('web-sa-token');
-  // The display connection carries no audio: SDR playback has its own `?audio=1` socket
-  // inside the audio worker, so a busy main thread cannot starve it.
+  // The display connection carries neither audio nor IQ: SDR playback has its own `?audio=1`
+  // socket inside the audio worker and the DSP has its own `?iq=1` socket inside the IQ
+  // worker, so a busy main thread cannot starve either of them - and the display socket never
+  // pays for a stream it does not render.
   const params = new URLSearchParams();
   if (token) params.set('token', token);
   params.set('noaudio', '1');
+  params.set('noiq', '1');
   ws = new WebSocket(`${protocol}//${location.host}/ws?${params.toString()}`);
   setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
@@ -172,7 +175,10 @@ export function connectWS() {
     }
     if (!(event.data instanceof ArrayBuffer)) return;
     const frame = decodeFrame(event.data);
-    if (frame === null || frame.kind === 'audio') return;   // audio has its own connection
+    // Audio and IQ each have their own connection (this socket sends noaudio=1&noiq=1), so a
+    // frame of either kind here is stale or mis-routed; treating it as display data would
+    // feed the renderer a buffer with a different header layout.
+    if (frame === null || frame.kind === 'audio' || frame.kind === 'baseband') return;
     const { points } = frame;
     if (frame.kind !== 'rta' && frame.sweepMs > 0 && frame.sweepMs !== S.sweepMs) {
       S.setSweepMs(frame.sweepMs);

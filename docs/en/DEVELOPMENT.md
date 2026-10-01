@@ -1,4 +1,4 @@
-# Development Guide (v1.7.3)
+# Development Guide (v1.8.0)
 
 > **This is not a baseline standard but a working agreement that keeps improving.** It records
 > what actually went wrong during the 2026-09 architecture review and refactor, and the
@@ -19,7 +19,8 @@ Look at it at three moments:
 3. **Before committing**: how to assert in tests (§6), commits and versioning (§9), and the guard list
    in §10 (`make ci`).
 
-Shortest path: `make ci` (green without hardware) -> `make hw-test` with the device attached ->
+Shortest path: `make ci` (green without hardware) + `make e2e-fake` (the browser e2e, also
+hardware-free — CI runs it as its own job) -> `make hw-test` with the device attached ->
 `make bench` whenever the data path was touched.
 
 ---
@@ -349,13 +350,15 @@ nobody can tell "deliberate" from "silent regression".
 | `./test.sh` failed on a clean checkout | Incomplete dependency declaration | Three files: runtime / dev / lock | CI installs in a clean environment |
 | An unplugged analyzer froze the spectrum while STATUS still said `connected: true`, and replugging did not resume it | Disconnect was never detected: the acquisition path read a bus error as "no frame", and only a native crash/timeout reached the supervisor | A transport failure is a state the UI must see: a run of bus errors declares `connected=false` on the path that has no in-place recovery (swept), the scheduler stops stepping the dead handle, and a worker link loop reopens the device | `test_link_recovery.py` (link loop resumes the session; repeated -8 flips `connected`), `test_publisher.py` (no step while disconnected), `status.test.ts` (disconnect warning + repaint) |
 | The bench RTA run answered a run of `-9` right after a `SET_FREQ` and the link watchdog closed the device | A swept-mode command issued `SWP_Configuration` while the RTA session owned the device, switching it out of RTA behind the live session (the same class Preset already had for SDR); the recoverable error run then looked like an unplug | A command may only reconfigure the mode that owns the device: in RTA the swept values are a stored preference (no `SWP_Configuration`), and a recoverable error run must not be escalated to a transport loss - link-loss detection lives where there is no in-place recovery | `test_ws_commands.py` (SET_FREQ/SET_DETECTOR in RTA never call `configure_swp`), bench `state_regression` + `hw-test` |
+| **"The signal is inside the highlighted band and FT8 still decodes nothing"**, and the same session recorded 5 decodes out of 41 "attempts" with no way to tell what happened | The panadapter drew the IF passband symmetric about the listen frequency, but the decoder reads 100..3000 Hz **above** the dial. Measured (Pluto transmitting at 411.0015 MHz, dial parked on the tone): 0 decodes in 5 slots while the overlay still covered the signal - the tones sit at 0..44 Hz, under the decoder's 100 Hz floor. The overlay was also free to drift from the decoder it points at, and did: it said 200 Hz at the lower edge while the decoder said 100 | What the display claims a hidden stage reads must be derived from *that* stage, not from a neighbouring one (`demodBandHz`: the decoder's own band for a protocol decoder, the IF passband only for an analog demodulator), and the two must not be free to diverge (a test reads the Rust constants back). The same rule covers the counters: a reset is not a search, so report them apart - `dsp_attempts` counted both, which hid whether 41 attempts were 41 searches or 20 searches and 21 thrown-away windows | `sdrDemodBand.test.ts` (symmetric for analog, above-the-dial for FT8, constants must match `wasm/src/digital/ft8/mod.rs`), bench HIL: 5 consecutive slots decoded at the correct dial, 0 decodes with the dial 49.7 kHz off |
 
 ---
 
 ## 13. Daily commands
 
 ```bash
-make ci                      # all hardware-free gates (tests/static/contracts/guards/build)
+make ci                      # all in-process hardware-free gates (tests/static/contracts/guards/build)
+make e2e-fake                # the browser e2e on the fake backend (CI runs it as its own job)
 make run | make stop         # start/stop the service (supervisor + worker)
 make restart | make status   # restart the service / pid, uptime, memory, CPU, log path+size, live link
 make e2e-fake                # no hardware: ui_smoke (29 checks) + state_regression (72 checks) on the fake backend, same as CI
@@ -365,6 +368,8 @@ python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record 
 python3 tools/command_sweep.py        # command-layer contract only (hardware)
 python3 tools/e2e/state_regression.py # UI state regression only (hardware)
 python3 tools/check_registrations.py  # registration reachability
+make wasm | make wasm-check            # Rust/WASM DSP core: build+commit the artifact / verify it
+python3 tools/check_wasm_artifact.py  # artifact hash + exports (stdlib only, CI runs this)
 python3 tools/quality/architecture_guard.py --baseline   # show the current architecture metrics
 ```
 
@@ -372,7 +377,86 @@ python3 tools/quality/architecture_guard.py --baseline   # show the current arch
 
 ## 14. Known open work (pointer)
 
-See `ARCH_REVIEW.md` §9.3: fake backend + e2e in CI (highest value now), Firefox e2e coverage, split
-`DeviceState` per mode, the remaining unused exports in `controls.ts`, ESLint (blocked by the upstream
-`typescript-eslint` / TypeScript 7 incompatibility), archiving the root scratch TODO, and per-command
-STATUS trimming. **This guide evolves together with that list**: finishing an item updates both places.
+See `ARCH_REVIEW.md` §9.3: Firefox e2e coverage, per-command STATUS trimming (P2-9), the three
+low-priority candidates recorded there, and ESLint (blocked by the upstream
+`typescript-eslint` / TypeScript 7 incompatibility). The fake-backend e2e in CI, the
+`DeviceState` per-mode split and the scratch-TODO archive listed here earlier are done
+(§9.1 A1/B1/C2). **This guide evolves together with that list**: finishing an item updates
+both places.
+
+---
+
+## 15. Rust/WASM DSP core (build and artifact policy)
+
+The real-time SDR DSP (DDC, demodulators, audio enhancement) is the Rust crate in `wasm/`, running
+in a Web Worker. It has **no crate dependencies** and exactly one toolchain requirement:
+
+```bash
+rustup target add wasm32-unknown-unknown
+make wasm           # cargo test + release build + publish frontend/modern/public/dsp.wasm
+make wasm-check     # rebuild and fail when the committed artifact differs (release gate)
+```
+
+Rules that keep it buildable without Rust everywhere else:
+
+- `frontend/modern/public/dsp.wasm` is **committed**, and `wasm/dsp.artifact.json` records its
+  sha256, size, toolchain and export list. `./build.sh` never calls cargo, so a machine (and CI)
+  without Rust still builds and serves the app.
+- `tools/check_wasm_artifact.py` (part of `make ci`) verifies the recorded hash *and* parses the
+  module's export section with the stdlib alone: a stale, truncated or renamed artifact fails
+  without a Rust toolchain.
+- The release profile pins `lto`, one codegen unit and `strip`, so the build is byte-reproducible;
+  `make wasm-check` compares bytes, not behaviour.
+- The ABI is a pointer plus a length into the module's linear memory — no wasm-bindgen, no
+  wasm-pack. `frontend/modern/src/sdr/wasm.ts` wraps it and `__tests__/wasm.test.ts` asserts the
+  exported signatures, the version gate and the view rules against the committed bytes.
+- The crate also builds natively, which is what `cargo test` runs the kernels against.
+- A view over the module's memory must be created **after** the last allocation: growing the
+  memory detaches existing views, and a detached view reads as length 0 instead of throwing.
+
+---
+
+## 16. Hardware-in-the-loop results
+
+Measured on the bench this refactor was verified against: **SAN-90** (9 kHz–9 GHz) with a **tinySA
+Ultra ZS407** as the signal source. IQ was captured from the analyzer's own stream
+(`tools/hil_audio_check.py`) and processed through the **committed** `dsp.wasm`
+(`frontend/modern/src/__tests__/hil.test.ts`), with the Python reference run over the same capture
+(`tools/hil_reference_check.py`) so a weak number can be attributed.
+
+| Check | Result |
+|---|---|
+| `make hw-test` (tinySA CW smoke + 24-command sweep + UI state regression) | 66 PASS, 1 FAIL |
+| `tools/e2e/state_regression.py` | 65 PASS, 1 FAIL — **identical on `master`** (same check, same numbers): pre-existing, not a regression |
+| AM tone (1 kHz, 50 % depth) through the browser DSP | tone 993.1 Hz, SINAD **28.6 dB**, THD **−36.2 dB** (Python reference on the same capture: 26.1 dB / −36.2 dB) |
+| NFM tone (1 kHz, 6 kHz deviation, 25 kHz IF) through the browser DSP | tone 996.8 Hz, SINAD **9.1 dB**, THD **−6.5 dB** (Python reference: 8.7 dB / −6.5 dB) |
+| CW carrier through the browser DSP | sidetone 764 Hz (pitch + residual carrier offset), level −14.0 dBFS, THD −92 dB; SINAD is phase-noise limited, which is the worst case for an unmodulated carrier |
+
+Two things about those numbers. The browser chain is at or slightly above the Python reference on real
+hardware (AM +2.5 dB, NFM +0.4 dB, identical THD), which is what says the port did not cost quality;
+the absolute SINAD is set by the combined phase noise of the TinySA and the analyzer synthesizer, and
+the reference shows the same floor. And the tone-quality numbers are measured with the enhancement
+chain **off**: its adaptive notch removes the strongest single tone in the channel, which is correct
+for a voice channel and removes a lone bench tone (the chain's own behaviour is covered by
+`cargo test`, and the RAW-path separation test).
+
+The failing state-regression check is `Auto Scale puts the whole trace inside the window after the
+change` (ref −20.0 dBm, window −120…−20, floor −132.8 dBm): the fit leaves the noise floor about
+13 dB below the window. It reproduces on `master` with the same numbers, which is why it is recorded
+here rather than “fixed” by this refactor.
+
+With a −25 dBm tone connected, one further check (`a settings change does not undo a level the user
+set`) fails because the device's documented IF-overflow safety raises the reference to 0 dBm against
+the hot input; it passes with the generator's output off.
+
+Reproduce (the tone-quality numbers are measured with the enhancement chain **off**, because its
+adaptive notch removes a lone tone by design, and the AM case needs the 6 kHz IF the table lists):
+
+```bash
+make hw-test
+python3 tools/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
+WEBSA_HIL_IQ=/tmp/hil_iq.json WEBSA_HIL_NO_CHAIN=1 npx vitest run src/__tests__/hil.test.ts
+python3 tools/hil_reference_check.py /tmp/hil_iq.json
+```
+
+For NFM add `--modulation fm --ifbw 25000 --deviation 6000`, and for CW `--modulation cw --ifbw 500`.

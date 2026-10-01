@@ -235,6 +235,125 @@ select:disabled { color: var(--label); }
 /* GNSS 指示器 + 详情浮层 */
 .gnss-indicator { cursor: pointer; }
 .gnss-indicator:hover { text-decoration: underline; }
+.ft8-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* The hint row carries the level readout on the right (it is status, not a control). */
+.sdr-hint-row { display: flex; align-items: center; gap: 8px; }
+.sdr-hint-row #cur-sdr-level { font-family: 'Courier New', monospace; white-space: nowrap; }
+/* FT8 decode window: a floating table (draggable by its head, resizable by its corner). Lives in
+   <body> outside the zoomed frame and carries the UI scale itself (like the keypad) - a fixed
+   element inside the zoomed card renders its left/top in zoomed coordinates while pointer events
+   stay viewport coordinates, which broke dragging on scaled UIs. border-box keeps a stored
+   width round-tripping exactly through getBoundingClientRect (the rect is border-inclusive). */
+.decode-window {
+  position: fixed; z-index: 45; display: none; flex-direction: column;
+  min-width: 260px; min-height: 120px; overflow: hidden; box-sizing: border-box;
+  background: var(--panel-2); border: 1px solid var(--input-border); border-radius: 4px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5); color: var(--text);
+}
+.decode-window-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+  background: var(--panel); border-bottom: 1px solid var(--inner-border);
+  color: var(--label); font-size: 12px; cursor: move; touch-action: none; user-select: none;
+}
+.decode-window-head .spacer { flex: 1 1 auto; }
+.decode-window-head .count { font-family: 'Courier New', monospace; color: var(--text); }
+.decode-window-head .decode-opacity { width: 64px; height: 14px; margin: 0 2px; cursor: pointer; }
+.decode-window-body { flex: 1 1 auto; overflow: auto; }
+/* The rail's themed scrollbar, repeated here: this window lives outside the zoomed frame, so
+   that rule does not reach it (a default scrollbar next to the page's thin one, reported). */
+.decode-window-body { scrollbar-width: thin; scrollbar-color: var(--input-border) var(--panel-2); }
+.decode-window-body::-webkit-scrollbar { width: 6px; height: 6px; }
+.decode-window-body::-webkit-scrollbar-track { background: var(--panel-2); border-left: 1px solid var(--inner-border); }
+.decode-window-body::-webkit-scrollbar-thumb { background: var(--btn-bg); border: 1px solid var(--input-border); border-radius: 3px; }
+.decode-window-body::-webkit-scrollbar-thumb:hover { background: var(--input-border); }
+.decode-window table { width: 100%; border-collapse: collapse; font: 11px 'Courier New', monospace; }
+.decode-window th {
+  position: sticky; top: 0; background: var(--panel); color: var(--label); font-weight: normal;
+  text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--inner-border);
+}
+.decode-window td { padding: 2px 6px; white-space: nowrap; }
+.decode-window td:last-child { width: 100%; }
+/* CW pane: the decoded text. Monospace and wrapped, one line per transmission, the in-progress
+   line marked - readability is the point of the pane. */
+.decode-cw {
+  padding: 3px 6px; font: 11px 'Courier New', monospace; line-height: 1.5;
+}
+.cw-line { display: flex; gap: 8px; align-items: baseline; }
+.cw-time { color: var(--label); flex: 0 0 auto; }
+.cw-text { color: var(--table-cell); white-space: pre-wrap; word-break: break-word; min-width: 0; }
+
+/* A doubtful character: the tone gate read less than half its level in the sidetone's band, so the
+   character is shown as the guess it is instead of being mixed into the text (hover for the share). */
+.cw-ch.weak {
+  color: var(--table-cell-dim);
+  border-bottom: 1px dotted var(--sub);
+  cursor: help;
+}
+/* A word-length pause: the sender is thinking, not the page stuck. Drawn by CSS so the text stays
+   clean (see the renderer). */
+.cw-gap { padding: 0 3px; cursor: help; }
+.cw-gap::before { content: '·'; color: var(--sub); }
+
+/* The live line, separated from the confirmed history above it by the sender's own pause. */
+.cw-live { margin-top: 4px; border-top: 1px dashed var(--separator); padding-top: 4px; }
+.cw-cursor { color: var(--text); animation: cw-cursor 1.1s ease-in-out infinite; }
+@keyframes cw-cursor { 0%, 100% { opacity: 1 } 50% { opacity: 0.25 } }
+
+/* Keyed lamp + level meter (CW only; the head's other controls are shared with FT8). */
+/* The head's controls follow the theme: the browser default put a blue slider in a green instrument
+   (reported). `accent-color` is the native way to do it, so no slider is rebuilt by hand. */
+.decode-window-head { accent-color: var(--text); }
+.decode-opacity { accent-color: var(--text); background: var(--input-bg); }
+
+.cw-meter { display: inline-flex; align-items: center; gap: 6px; }
+.cw-led {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--inner-border);
+  border: 1px solid var(--separator);
+  transition: background 60ms linear, box-shadow 60ms linear;
+}
+.cw-led.on { background: var(--dot-on); box-shadow: 0 0 6px var(--dot-on); }
+/* Narrow and vertical on purpose: it sits beside the lamp inside the head, so it must not change the
+   head's height or push the title around. */
+.cw-vu {
+  display: inline-flex; align-items: flex-end;
+  width: 5px; height: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--inner-border);
+  border-radius: 1px; overflow: hidden;
+}
+.cw-vu > i {
+  display: block; width: 100%; height: 0;
+  background: linear-gradient(0deg, var(--sub), var(--label) 60%, var(--text));
+  transition: height 60ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cw-cursor { animation: none; }
+}
+/* The line being keyed right now: the labels' green (the palette's emphasis colour) and a caret. */
+.cw-line.current .cw-text { color: var(--text); }
+.cw-empty, .ft8-empty { color: var(--label); padding: 6px; }
+.decode-window tr.ft8-row { cursor: pointer; }
+.decode-window tr.ft8-row:hover { background: var(--btn-active); }
+.decode-window .ft8-empty { color: var(--label); padding: 8px 6px; }
+/* Resize handles: four edges (thin, inset from the corners) and four corners on top of them.
+   The layer itself is transparent to the pointer, so the head/body keep their own events. */
+.decode-resize-layer { position: absolute; inset: 0; pointer-events: none; }
+.decode-rz { position: absolute; pointer-events: auto; touch-action: none; }
+.decode-rz.n, .decode-rz.s { left: 9px; right: 9px; height: 5px; }
+.decode-rz.w, .decode-rz.e { top: 9px; bottom: 9px; width: 5px; }
+.decode-rz.n { top: 0; cursor: ns-resize; }
+.decode-rz.s { bottom: 0; cursor: ns-resize; }
+.decode-rz.w { left: 0; cursor: ew-resize; }
+.decode-rz.e { right: 0; cursor: ew-resize; }
+.decode-rz.nw, .decode-rz.ne, .decode-rz.sw, .decode-rz.se { width: 11px; height: 11px; }
+.decode-rz.nw { left: 0; top: 0; cursor: nwse-resize; }
+.decode-rz.ne { right: 0; top: 0; cursor: nesw-resize; }
+.decode-rz.sw { left: 0; bottom: 0; cursor: nesw-resize; }
+.decode-rz.se {
+  right: 0; bottom: 0; cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--label) 50%); opacity: 0.5;
+}
 .gnss-popover {
   position: absolute; z-index: 100; top: 26px; left: 0;
   background: var(--panel-2); border: 1px solid var(--card-border);
@@ -294,6 +413,14 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .pk-a { color: var(--table-cell-dim); }
 .marker-table { flex-shrink: 0; }
 /* 瀑布图: 绝对定位覆盖 marker 表区域(关闭时隐藏) */
+/* The spectrum/waterfall divider: a grab strip between the two. Dragging it sets the split
+   (render/../panels/waterfall.ts); its visibility follows the waterfall, so the spectrum owns
+   the whole area whenever the waterfall is off. */
+.wf-split {
+  flex: 0 0 6px; height: 6px; margin: 1px 0; cursor: ns-resize; touch-action: none;
+  background: var(--card-border); opacity: 0.55;
+}
+.wf-split:hover, .wf-split.dragging { opacity: 1; background: var(--input-border); }
 .waterfall-container {
   position: relative; flex-shrink: 0; height: 135px;
   width: 100%; box-sizing: border-box;

@@ -3,16 +3,16 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, type NrAlgo } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv, syncFreezeBtn, syncAvgUI } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
-import { normalizeActiveTrace, resetActiveTraceNormalize } from '../dsp/normalize';
+import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto, resetPeakThr } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
@@ -24,7 +24,12 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
-import { prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
+import { initSdrDemodGroup } from './sdrDemodGroup';
+import { ft8DialFor } from '../sdr/ft8Log';
+import { initDecodeWindow, setDecodeWindowAvailable, toggleDecodeWindow } from './decodeWindow';
+import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
+import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
 // Panel modules (report finding P1-5). controls.ts keeps the wiring (event binding, canvas
@@ -38,7 +43,7 @@ import {
   adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
   syncSdrRefUI, toggleGapFill, toggleRefClkOut,
 } from './panels/refAmp';
-import { resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause } from './panels/waterfall';
+import { resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause, initWfSplit, resetWfSplit } from './panels/waterfall';
 import { closeGnssDetail, fillGnssDetail } from './panels/gnss';
 import { toggleAllGroups, toggleGroup } from './panels/groups';
 import { commitUnitField } from './panels/commit';
@@ -151,6 +156,7 @@ export function setGraphMode(mode: string) {
       sdrAudioHandoffTimer = null;
     }
     setSdrAudioEnabled(false);
+    setSdrIqEnabled(false);
   }
   send({ cmd: 'SET_MODE', mode: target });
 }
@@ -173,6 +179,10 @@ export function syncGraphModeStatus(mode: string) {
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
   if (isSdr) {
+    // The IQ ingress runs while SDR mode is active, independent of the audio switch: the
+    // backend only produces IQ during an SDR session, and the DSP input must not depend on
+    // whether the speaker is muted.
+    setSdrIqEnabled(true);
     deferSdrAudioPreference();
     // Entering SDR always fits the reference once: the swept level is meaningless for an IQS
     // panadapter (often 0 dBm against a -100 dBm floor), which is what produced the reported
@@ -184,6 +194,7 @@ export function syncGraphModeStatus(mode: string) {
     // trip. Writing it off here is what made "audio on" silently become "audio off" after a visit
     // to RTA/SWP (measured: localStorage flipped 1 -> 0 on the way out).
     setSdrAudioEnabled(false);
+    setSdrIqEnabled(false);
     syncSdrAudioButton();
   }
   const modeButton = document.getElementById('btn-mode-rta');
@@ -313,6 +324,9 @@ export function applySdrTune() {
 
 export function applySdrDemod() {
   const mode = sdrDemod.get();
+  // The browser DSP is told now, not at the next STATUS: the demodulator is what the listener is
+  // changing, and waiting up to a second for it felt like the button had not worked.
+  pushSdrPipeline();
   const ifbw = sdrIfbw.get();
   const deemph = sdrDeemph.get();
   const volume = sdrVolume.get();
@@ -328,7 +342,42 @@ export function applySdrDemod() {
          deemph_us: deemph });
 }
 
-export function toggleSdrAgc(el: HTMLElement) {
+/**
+ * Noise reduction on/off. The browser runs the reducer, so this is a client-owned preference: the
+ * worker is told directly and the backend is not involved (its Python audio path is only the
+ * fallback/reference now).
+ */
+export function toggleSdrNr() {
+  const on = !sdrNr.get();
+  sdrNr.set(on);
+  setSdrPipelineNr(on, sdrNrStrength.get(), sdrNrAlgo.get(), sdrNrAtten.get());
+  renderSdrState();
+}
+
+/** How hard the reducer pushes (0..1), applied live. */
+export function setSdrNrStrength(strength: number) {
+  if (!Number.isFinite(strength)) return;
+  sdrNrStrength.set(strength);
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), sdrNrAlgo.get(), sdrNrAtten.get());
+  renderSdrState();
+}
+
+/** Which algorithm the NR switch drives: the WASM Wiener or the browser DeepFilterNet3 stage. */
+export function setSdrNrAlgo(algo: NrAlgo) {
+  sdrNrAlgo.set(algo);
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), algo, sdrNrAtten.get());
+  renderSdrState();
+}
+
+/** DeepFilterNet3's attenuation limit in dB, applied live. */
+export function setSdrNrAtten(atten: number) {
+  if (!Number.isFinite(atten)) return;
+  sdrNrAtten.set(atten);
+  if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), sdrNrAlgo.get(), atten);
+  renderSdrState();
+}
+
+function toggleSdrAgc(el: HTMLElement) {
   const on = !sdrAgc.get();
   sdrAgc.set(on);
   el.classList.toggle('active', on);
@@ -341,8 +390,8 @@ export function toggleSdrAgc(el: HTMLElement) {
 const SDR_BANDS: Record<string, { center: number; decimate: number; demod: string; ifbw: number }> = {
   fm: { center: 98e6, decimate: 2, demod: 'wfm', ifbw: 180000 },
   air: { center: 127.5e6, decimate: 16, demod: 'am', ifbw: 25000 },
-  vhf: { center: 145e6, decimate: 16, demod: 'fm', ifbw: 12000 },
-  uhf: { center: 435e6, decimate: 16, demod: 'fm', ifbw: 12000 },
+  vhf: { center: 145e6, decimate: 16, demod: 'nfm', ifbw: 12000 },
+  uhf: { center: 435e6, decimate: 16, demod: 'nfm', ifbw: 12000 },
 };
 
 export function applySdrBand(name: string) {
@@ -397,6 +446,71 @@ function syncSdrButtons() {
 
 // ── SDR audio enable + amplitude reference ──
 
+/** The last channelizer facts from STATUS (`sdr.actual`): the DSP worker needs the rate the
+ * backend's DDC produces, and only the device knows it. */
+let sdrActual: Record<string, unknown> = {};
+
+/**
+ * The demodulator's IF-bandwidth courtesy: the first time a decoding mode is selected (and again
+ * after a Preset) an out-of-range filter is narrowed to 3 kHz.
+ *
+ * It is a *courtesy*, so it must never override a choice: once the operator has clicked a bandwidth
+ * button in this page session, the auto-pick stays out of the way, and each mode only gets one
+ * auto-pick per session (reported: the auto-pick ran on every selection and undid a deliberate
+ * narrow filter).
+ *
+ * Deliberately *session* state, not the stored preference: the store holds a value after any SDR
+ * change, so reading it as "the operator chose this bandwidth" made the courtesy dead on arrival
+ * for anyone with saved settings (reported: the first CW selection in a fresh session no longer
+ * picked 3 kHz). A stored bandwidth is a starting point, and the courtesy is exactly what the first
+ * selection is for; a bandwidth clicked during the session is the choice that must survive.
+ */
+let ifbwChosenByUser = false;
+const ifbwAutoPicked = new Set<string>();
+
+/**
+ * Push the current SDR settings to the browser DSP.
+ *
+ * Called from the STATUS handler *and* from every user action that changes one of them: the panel
+ * used to wait for the 1 Hz STATUS round trip before the worker learned about a new demodulator, so
+ * the spectrum reacted at once while the audio followed a second later (reported: the demod and
+ * audio controls felt unresponsive). The channelizer's rate still comes from STATUS because the
+ * device owns it.
+ */
+function pushSdrPipeline(): void {
+  const basebandRate = Number(sdrActual.ddc_rate) || 0;
+  if (basebandRate <= 0) return;
+  configureSdrPipeline(
+    {
+      fsIn: basebandRate,
+      // The worklet plays the PCM as-is, so the DSP has to produce the device's rate (44.1 kHz
+      // on many systems).
+      outRate: audioSampleRate(),
+      // The *UI's* selection drives the DSP worker, not the backend's demod: a digital mode
+      // (ft8) has no backend DSP at all, and the Python fallback keeps its own demod anyway.
+      mode: String(sdrDemod.get() || 'am'),
+      ifBw: Number(sdrIfbw.get()) || 6000,
+      pitch: Number(sdrPitchHz()) || 700,
+      // -1 = the mode's default: the DSP resolves it against its own mode table.
+      deemphUs: sdrDeemph.get(),
+    },
+    {
+      volume: sdrVolume.get(),
+      audioEnabled: true,
+      nr: sdrNr.get(),
+      nrStrength: sdrNrStrength.get(),
+      nrAlgo: sdrNrAlgo.get(),
+      nrAtten: sdrNrAtten.get(),
+      squelch: sdrSquelch.get(),
+    },
+  );
+}
+
+/** The CW sidetone the backend confirmed (the panel has no control for it yet). */
+function sdrPitchHz(): number {
+  return Number(sdrActual.pitch) || 0;
+}
+
 function syncSdrAudioButton() {
   const b = document.getElementById('btn-sdr-audio');
   if (b) {
@@ -409,13 +523,17 @@ function applySdrAudioPreference() {
   const on = sdrAudioOn.get();
   sdrAudioOn.set(on);
   setSdrAudioEnabled(on);
+  setSdrDspAudioEnabled(on);
   syncSdrAudioButton();
 }
 
 export function toggleSdrAudio() {
   const on = !sdrAudioOn.get();
   sdrAudioOn.set(on); // the slot persists it (single writer)
+  // Both audio owners are told: the Python worker (the fallback) and the browser DSP worker, which
+  // is the one holding the worklet's port when it is the audio source.
   setSdrAudioEnabled(on);
+  setSdrDspAudioEnabled(on);
   syncSdrAudioButton();
 }
 
@@ -455,10 +573,22 @@ export function syncSdrPanel(s: any) {
     agc.classList.toggle('active', sdrAgc.get());
   }
   const lvl = document.getElementById('cur-sdr-level');
-  if (lvl) lvl.textContent = Number.isFinite(sdr.level_dbfs) ? sdr.level_dbfs.toFixed(1) + ' dBFS' : '';
+  if (lvl) {
+    // The browser DSP measures the PCM it produces; when it owns playback the backend's Python
+    // demodulator is not running, so its level is not the one on screen.
+    const level = dspLevelDbfs();
+    const value = Number.isFinite(level) ? level : Number(sdr.level_dbfs);
+    lvl.textContent = Number.isFinite(value) ? value.toFixed(1) + ' dBFS' : '';
+  }
   syncSdrButtons();
   syncSdrAudioButton();
   syncSdrRefUI();
+  // The demodulator parameters were confirmed by this STATUS: hand them to the browser DSP (the
+  // user actions push them immediately as well, this keeps the two in step after a reconnect).
+  sdrActual = (sdr.actual || {}) as Record<string, unknown>;
+  pushSdrPipeline();
+  // The FT8 table only means something while FT8 is the demodulator (the registry's id, not a label).
+  setDecodeWindowAvailable(String(sdr.demod || ''));
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)
@@ -473,7 +603,28 @@ export function presetAll() {
   displayOffset.set(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
-  S.traces.forEach((t, i) => { t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false; t.avgSum = null; t.avgCount = 0; });
+  S.traces.forEach((t, i) => {
+    t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false;
+    t.avgSum = null; t.avgCount = 0; t.avgTarget = 16; t.avgTargetRta = 16; t.prevMode = undefined; t.done = false;
+  });
+  // The trace panel must follow the state back to the factory defaults (reported: after a
+  // Preset the panel still showed the last trace's Mode/Avg/Freeze and the Smooth/RefWin
+  // selects kept their old values, while the traces themselves were already reset - the
+  // display and the state disagreed until the next reload). switchTraceTab's display-side
+  // effects are deliberately NOT reused here: it would re-derive the display ref from the
+  // not-yet-reset ref level; the panel widgets are synced directly instead.
+  S.setActiveTraceIdx(0);
+  document.querySelectorAll('.trace-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
+  const modeSel = document.getElementById('select-trace-mode') as HTMLSelectElement | null;
+  if (modeSel) modeSel.value = 'CLEAR_WRITE';
+  syncFreezeBtn();
+  syncAvgUI();
+  updateNormalizeStatusUI();
+  const smoothSel = document.getElementById('select-smooth') as HTMLSelectElement | null;
+  if (smoothSel) smoothSel.value = '1';
+  const refwinSel = document.getElementById('select-refwin') as HTMLSelectElement | null;
+  if (refwinSel) refwinSel.value = '0';
+  setNormRefWinUser(0);
   S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
   S.setM3dB(null); S.setAmpRes(null); S.setHarm(null); S.setPnmData(null);
   peakListVisible.set(false); S.setPeakMarks(null);
@@ -504,18 +655,30 @@ export function presetAll() {
   resetLimits();
   S.resetWaterfall();
   wfPaused.set(false);
+  resetWfSplit();                       // the dragged spectrum/waterfall split goes back to default
   smoothBins.set(1);
   spanStepAuto.set(true);
-  setSdrAudioEnabled(false);
-  sdrAudioOn.set(false);
+  // Preset resets the device, not the listener: the audio switch and the IQ ingress survive. The
+  // backend's reconfigure re-anchors the stream with its own flush frame, so stopping the ingress
+  // here only orphaned it (re-enabling audio afterwards still heard nothing until a reload).
+  // A Preset restores the factory defaults, so the auto-pick is offered again on the next
+  // demodulator selection (the same reasoning as the trace and window resets around it).
+  ifbwChosenByUser = false;
+  ifbwAutoPicked.clear();
+  const audioWasOn = sdrAudioOn.get();
+  resetSdrIq();
 
   // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
   // code cleared the fields by hand and missed one, so a Preset could reapply the previous
   // frequency.
   resetSdrState();
+  sdrAudioOn.set(audioWasOn);
   renderSdrState();
   resetAutoScaleState();               // the reference is about to be reset: forget the last fit
   send({ cmd: 'SET_PRESET' });
+  setSdrDspAudioEnabled(audioWasOn);
+  setSdrAudioEnabled(audioWasOn);
+  syncSdrAudioButton();
   updateInfoBar(); applyMeasUI(); requestRender();
 }
 
@@ -600,6 +763,11 @@ export function bindActions() {
     'apply-sdr-tune': () => applySdrTune(),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
+    'toggle-sdr-nr': () => toggleSdrNr(),
+    'toggle-decode-window': () => toggleDecodeWindow(),
+    'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
+    'set-sdr-nr-algo': (el) => setSdrNrAlgo((el as HTMLSelectElement).value === 'dfn' ? 'dfn' : 'wiener'),
+    'set-sdr-nr-atten': (el) => setSdrNrAtten(Number((el as HTMLInputElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
@@ -642,31 +810,72 @@ export function bindActions() {
   // frequency inputs commit on Enter.
   const volumeEl = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
   volumeEl?.addEventListener('change', () => {
-    sdrVolume.set(parseFloat(volumeEl.value) || 0.8);
+    // A slider at its left end means 0, which is silence - `x || 0.8` read that 0 as "unset" and put
+    // the volume back to 0.8, so the listener heard the noise floor at nearly full level, louder than
+    // at the settings just beside it, and no amount of turning the level down reached silence.
+    const wanted = Number.parseFloat(volumeEl.value);
+    sdrVolume.set(Number.isFinite(wanted) ? Math.max(0, Math.min(2, wanted)) : 0.8);
+    pushSdrPipeline();
     applySdrDemod();
   });
   const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
   squelchEl?.addEventListener('change', () => {
     sdrSquelch.set(parseFloat(squelchEl.value) || -110);
+    setSdrPipelineSquelch(sdrSquelch.get());
     applySdrDemod();
   });
-  document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
-    el.addEventListener('click', () => {
-      sdrDemod.set((el as HTMLElement).dataset.sdrDemod || 'am');
-      renderSdrState();
-      applySdrDemod();
+  // The demod group is generated from the DSP plugin registry, so the mode buttons and the
+  // kernels cannot disagree; the handler is the same path the panel always used.
+  // The FT8 decode window: its toggle lives next to the readout, its rows come from the log, and a
+  // row click tunes the receiver (the only action an FT8 operator takes on a decode).
+  // A row tunes the *dial* so the signal lands inside the decoder's band (see `ft8DialFor`).
+  initDecodeWindow({ onTune: (hz) => listenAtFreq(ft8DialFor(hz)) });
+  const demodGroup = document.getElementById('sdr-demod-group');
+  if (demodGroup) {
+    void initSdrDemodGroup(demodGroup, {
+      onSelect: (id) => {
+        sdrDemod.set(id);
+        // FT8 occupies ~3 kHz (the decoder searches 100-3000 Hz) - the industry setting is a
+        // normal SSB filter, 2.4-3 kHz. A wider IF BW only adds broadband power through the
+        // chain: measured, a strong nearby transmitter with a 391 kHz capture clipped the
+        // baseband (+10 dBFS peaks) and nothing decoded, while the same signal through 3 kHz
+        // decoded every slot. So selecting FT8 narrows an out-of-range filter to 3 kHz; a
+        // deliberate pick inside 2.4-6 kHz is left alone.
+        //
+        // CW gets the same 3 kHz, which is not the classic narrow CW filter but is what the mode
+        // wants *here*: the demodulator's band sits at the Pitch and is exactly `ifbw` wide, so a
+        // wider band needs less precise tuning (measured on the bench: 3 kHz decodes with the
+        // signal anywhere within +/-1.5 kHz of the Pitch, and narrower filters lost it whenever
+        // the two radios' clocks put the tone a little off - 180 Hz at 411 MHz).
+        const ibw = sdrIfbw.get();
+        const decodingMode = id === 'ft8' || id === 'cw';
+        if (decodingMode && !ifbwChosenByUser && !ifbwAutoPicked.has(id)
+            && (ibw > 6000 || ibw < 2400)) {
+          sdrIfbw.set(3000);
+        }
+        if (decodingMode) ifbwAutoPicked.add(id);  // once per mode per session, or after a Preset
+        renderSdrState();
+        setDecodeWindowAvailable(id);
+        applySdrDemod();
+      },
     });
-  });
+  }
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.addEventListener('click', () => {
+      ifbwChosenByUser = true;                   // the operator's own choice: never auto-override it
       sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
       renderSdrState();
+      pushSdrPipeline();
       applySdrDemod();
     });
   });
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.addEventListener('click', () => {
-      sdrDeemph.set(Number((el as HTMLElement).dataset.sdrDeemph ?? -1));
+      const value = Number((el as HTMLElement).dataset.sdrDeemph ?? -1);
+      sdrDeemph.set(value);
+      // The browser runs the audio chain, so it gets the change now (the backend's command only
+      // records it for the fallback and, with the browser demodulating, must not reconfigure).
+      setSdrPipelineDeemph(value);
       renderSdrState();
       applySdrDemod();
     });
@@ -700,6 +909,8 @@ export function bindActions() {
 
   const wfBtn = document.getElementById('btn-waterfall');
   if (wfBtn) wfBtn.addEventListener('click', () => toggleWaterfall());
+  // The spectrum/waterfall divider: it restores the remembered split and follows the toggle.
+  initWfSplit();
   document.querySelectorAll('[data-marker-select]').forEach(el => {
     el.addEventListener('click', () => selectMarker(parseInt((el as HTMLElement).dataset.markerSelect || '1')));
   });
@@ -896,7 +1107,6 @@ export function bindCanvas() {
 
 // ── SDR keyboard helpers ──
 const SDR_IFBW = [500, 2400, 3000, 6000, 12000, 25000, 50000, 100000, 180000];
-const SDR_MODES = ['am', 'fm', 'nfm', 'wfm', 'usb', 'lsb', 'cw'];
 
 function sdrTuneBy(dHz: number) {
   const center = sdrCenterHz.get();
@@ -922,14 +1132,21 @@ function sdrCycleIfbw(dir: number) {
 }
 
 function sdrCycleDemod() {
-  const ni = (SDR_MODES.indexOf(sdrDemod.get()) + 1) % SDR_MODES.length;
-  sdrDemod.set(SDR_MODES[ni]);
+  // The cycle is the registry's list (analog then digital), not a copy of it: a mode added to the
+  // DSP appears here without another edit.
+  const modes = sdrModeIds();
+  if (modes.length === 0) return;                 // manifest not loaded yet: keep the current mode
+  const current = sdrDemod.get();
+  const index = modes.indexOf(current);
+  sdrDemod.set(modes[(index + 1) % modes.length]);
   renderSdrState();
   applySdrDemod();
 }
 
 function sdrNudgeVolume(dv: number) {
-  const next = Math.max(0, Math.min(2, (sdrVolume.get() || 0.8) + dv));
+  // `|| 0.8` here had the same defect as the slider's: at 0 the nudge started from 0.8 again.
+  const from = Number.isFinite(sdrVolume.get()) ? sdrVolume.get() : 0.8;
+  const next = Math.max(0, Math.min(2, from + dv));
   sdrVolume.set(next);
   const inp = document.getElementById('input-sdr-volume') as HTMLInputElement | null;
   if (inp) inp.value = String(next);

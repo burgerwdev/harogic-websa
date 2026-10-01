@@ -32,6 +32,7 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 frequency axis |
 | POWR | POWR + ... | float32 power dBm |
+| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | channelized interleaved complex float32 baseband (the DDC's output); seq=0 flushes |
 
 ## WS Commands
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
@@ -59,6 +60,166 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **Known quirk**: `renderRta` wraps density+traces in an outer `save/clip(plotRect)` that must be
   `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
   away and disappears after switching to RTA (fixed)
+
+## SDR DSP Pipeline (branch `refactor/wasm-dsp`)
+
+The demodulator and the audio chain run in a Rust/WASM module inside a Web Worker. The
+channelizer does **not**: the coarse decimation and the tuning stay where the hardware already
+does them — the analyzer's own DDC plus a software NCO in the backend — because moving them to
+the browser did not fit the analyzer: the raw IQS stream is 2-31 MSps (measured: the transport
+topped out around 2.3 MSps and the browser's own 129-tap FIR could not run the 3.9 MSps the
+default settings ask for), so the AudioWorklet ring starved and the audio was a fixed periodic
+puff that no tuning could change. What the browser receives now is the channelized baseband
+(~48-63 kHz, about 0.4 MB/s), which is exactly the signal the Python demodulator reads.
+
+The Python DSP is **not deleted**: it is the no-WASM fallback and the numerical reference, and it
+only runs while a client subscribes to its audio (with the browser owning playback the backend
+skips that chain entirely).
+
+```
+SAN-90 ──IQ──▶ Python backend ──┬─ channelized baseband (IQBF) ──▶ Web Worker ──WASM──▶ AnalogDemod ─▶ Audio DSP ─▶ AudioWorklet ─▶ speaker
+  (IQS)        DDC + tuning NCO  └─ AUDF audio (fallback only) ──▶ (same worklet when the DSP cannot run)
+```
+
+### Stage map
+
+Every stage of the diagram is a named module. The table is the contract: a stage that has no
+path here does not exist yet.
+
+| Stage | Module |
+|---|---|
+| SAN-90 IQ source | `web_sa/measurements/sdr.py` (IQS stream), `web_sa/hardware/sdk_bindings.py` |
+| Python device / control | `web_sa/hardware/`, `web_sa/measurements/`, `web_sa/web/` |
+| Channelizer (DDC + tuning) | `web_sa/demod/ddc.py` (vendor `DSP_DDC`), `web_sa/measurements/sdr.py` (`_chain_coarse`, `_mix`) |
+| Baseband over WebSocket | `web_sa/measurements/framer.py` (`IQBF`), `web_sa/web/client_stream.py` |
+| Baseband ingress | `frontend/modern/src/sdr/iqWorker.ts` |
+| Worker DSP orchestration | `frontend/modern/src/sdr/iqStream.ts`, `frontend/modern/src/sdr/wasmPipeline.ts` |
+| WASM boundary (raw ABI) | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`, `wasm/src/abi.rs` |
+| Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
+| Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
+| Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
+| Noise reduction (DeepFilterNet3, streamed) | `frontend/modern/src/sdr/dfnWorker.ts`, `frontend/modern/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
+| DFN artifact and model | `wasm-dfn/build.sh` → `frontend/modern/public/dfn/df_bg.wasm` (committed), `frontend/modern/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
+| Path assembly and the separation rule | `wasm/src/pipeline.rs` |
+| DDC kernels (kept, and the reference chain) | `wasm/src/ddc/nco.rs`, `wasm/src/ddc/fir.rs`, `wasm/src/ddc/resampler.rs`, `wasm/src/ddc/agc.rs`, `wasm/src/ddc/mod.rs` |
+| Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/modern/src/sdr/registry.ts` |
+| Audio PCM output and the jitter buffer | `frontend/modern/src/audio/sdrAudioWorklet.js`, `frontend/modern/src/audio/sdrAudio.ts`, `frontend/modern/src/audio/sdrAudioWorker.ts` |
+| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/dsp_parity.py`, `tools/gen_dsp_fixtures.py` |
+| WASM artifact build | `wasm/build.sh` → `frontend/modern/public/dsp.wasm` (committed) |
+
+`tools/check_doc_paths.py` verifies every path in this table exists, so the map cannot describe a
+module that was renamed or never written.
+
+### DSP paths and the separation rule
+
+DDC is the shared base layer: every analog and digital mode receives the same mixed,
+filtered, resampled and levelled stream. Above it the two paths are deliberately separate:
+
+- **Analog path** — `AnalogDemod` → Audio DSP → PCM. The audio chain (DC block, LPF, AGC,
+squelch, STFT Wiener, adaptive notch, IF noise blanker) is tuned for the human ear.
+- **Digital path / RAW** — `DigitalDemod` → decoder and visualization, with **no audio
+enhancement at all**. A voice denoiser on an FT8 tone would destroy the information the
+decoder needs, so the separation is enforced by an automated test (RAW output must be
+bit-identical with the audio stage enabled and disabled), not by convention.
+
+Adding a mode is adding a plugin to a registry: an analog mode implements the demodulator
+interface (already: am, dsb, usb, lsb, cw, nfm, wfm, pm), a digital protocol implements the
+decoder interface (FT8 first). The UI mode list is read from the registry so a new mode
+cannot be forgotten in the panel.
+
+### WASM boundary and build
+
+- The crate has **no dependencies** (no wasm-bindgen, no wasm-pack); `cargo build --target
+wasm32-unknown-unknown` is the whole toolchain.
+- Arrays cross the boundary as pointers into the module's linear memory, block-wise; the hot
+path allocates nothing per block.
+- The built `.wasm` is committed so CI needs no Rust toolchain. `wasm/build.sh` rebuilds it
+and fails if the committed artifact differs from the fresh build.
+- `wasm/` also builds natively, which is what `cargo test` runs the kernels against.
+
+### DDC numerics (the port must not change the audio)
+
+The kernels are ports, not rewrites: `web_sa/demod/filters.py` (`design_lowpass`, `StreamFilter`,
+`LinearResampler`, `Agc`) and `sdr.py::_mix` are the reference, and `tests/fixtures/dsp/` holds
+their output for a committed IQ block, stage by stage (`mix`, `fir`, `dec`, `res`, `agc`).
+`wasm/tests/ddc_reference.rs` compares the Rust kernels against those bytes within the tolerance
+recorded in the fixture manifest (1e-5 absolute on an f32 full scale of 1.0, about -100 dBFS).
+Measured worst case: mixer, FIR and decimation exactly 0; resampler and AGC about 3e-8.
+
+`tools/gen_dsp_fixtures.py --check` is a CI gate (the reference cannot drift silently), and the
+Rust side runs with `make wasm-test`. `wasm/tests/ddc_bench.rs` records the per-block cost —
+native release: about 1.2 ms per 4096-sample block, 290 ns per complex sample, ~0.3 of real time
+at 1 MSps — and fails if the chain becomes quadratic or starts allocating per block.
+
+The vendor `DSP_DDC` is a hardware call that cannot be reproduced in software, so the Rust DDC
+*takes its place*; the numeric reference is the software chain Python ran around it. The
+channelizer now runs entirely on the backend, so the Rust DDC kernels are kept as the reference
+chain (`wasm/tests/ddc_reference.rs` compares them with the same Python fixtures) rather than as
+the browser's front end.
+
+### Reference projects and licences
+
+The DSP here is written against published technique, not copied from a project. The reference list
+the architecture was designed from, and what was (and was not) taken from each:
+
+| Project | What it informed | Code taken |
+|---|---|---|
+| [liquid-dsp](https://github.com/jgaeddert/liquid-dsp) (MIT) | Algorithm shapes: windowed-sinc design, NCO/phased-lock structure, RMS AGC, resampler | none — the kernels are written to match this repo's own Python reference (`demod/filters.py`), and are compared against it byte-for-byte |
+| [tpt-dsp](https://github.com/tpt-solutions/tpt-dsp) | The Rust DSP-core layout: no-allocation block processing, state carried in `struct`s, `f32`/`f64` split between kernels and PCM | none |
+| [sdr-web](https://github.com/kwakasa/sdr-web) | The browser dataflow: worker owns the socket, worklet owns playback | none |
+| [Radioband](https://github.com/hightemp/radioband) | Project structure: one module per stage, a registry per plugin family | none |
+| [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT performance expectations (why the FFT plans are cached per size) | none |
+| [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT) | The FT8 protocol: Costas pattern, Gray map, CRC-14 polynomial, LDPC(174,91) matrices | **The constant tables**, generated into `wasm/src/digital/ft8/tables.rs` by `tools/port_ft8_tables.py` (which records the source and licence); the decoder and the fixture encoder are written against the specification, and the encoder is verified tone-for-tone against it |
+| [BrowSDR](https://github.com/jLynx/BrowSDR) (AGPL-3.0) | Architecture reading only | **none** — AGPL, deliberately avoided as a source |
+
+Attribution rule: an algorithm may be re-derived from a permissive source, but nothing is copied
+from an incompatible licence, and the numeric reference for every kernel is this repository's own
+Python implementation. That is also why the parity tests compare against Python rather than against
+another SDR application's output.
+
+### Audio playback, NR and the fallback split
+
+The last stage before the speaker is `frontend/modern/src/audio/sdrAudioWorklet.js`, and it is not a
+plain ring buffer: PCM arrives in ~20 ms blocks paced by the analyzer's packets while the processor
+runs on the sound card's clock, and the two differ by a fraction of a percent that nobody controls.
+It therefore holds a steered jitter buffer (target 250 ms, ceiling 500 ms): the read pointer advances
+by a ratio driven by the fill, so a persistent mismatch is absorbed by resampling (which keeps the
+pitch right) instead of draining or filling the buffer, and past the ceiling the oldest samples are
+dropped so a producer that outruns the clock cannot become growing latency. A retune flushes it, so
+the previous station never plays on. `frontend/modern/src/__tests__/sdrAudioWorklet.test.ts` drives
+the ring directly (a matched producer, ±2% drift, a flood, a reset).
+
+Noise reduction is a panel control whose algorithm select picks between STFT Wiener (off/on,
+light/medium/strong, reaching the WASM audio chain over `websa_dsp_demod_set_nr`) and
+DeepFilterNet3 — an ML denoiser streamed through a dedicated worker (`dfnWorker.ts` → `dfnWasm.ts`
+→ the vendored `wasm-dfn` runtime, one 480-sample hop per frame, model fetched at runtime and
+handed to `df_create`) that has no strength knob, so the strength select hides while it is active.
+The algorithm is a client-owned preference (`sdr.nrAlgo`, persisted with the other SDR
+preferences) because the Python fallback path carries no NR of its own; the squelch slider reaches
+the audio chain over `websa_dsp_demod_set_squelch`. The
+default policy runs **no** enhancement stage, which is what the Python reference produces — the
+stages that used to run by default included an adaptive notch that removed the signal itself when the
+signal was a tone (measured: -33 dB on an AM test tone), and a `std`/browser A/B could not be
+compared while it did.
+
+The Python audio path is the fallback and the reference only: the frontend does not open `?audio=1`
+while the browser DSP owns playback, and `web_sa/measurements/sdr.py` skips its demodulator when no
+client subscribes to AUDF. The S-meter reading comes from the browser's own PCM in that case
+(`dspLevelDbfs`).
+
+### What is not wired yet
+
+- FT8 is implemented end to end: decode only (the device has no transmitter), standard message
+  types 1/2 only (no hashed callsigns, no free text, no contest/telemetry types), and the sync
+  search covers the slot edge (about +/- 0.128 s) because FT8 is slot-synchronised — a wideband
+  skimmer would need a full-slot search at roughly 15x the cost. FT4 and the other digital
+  protocols are registry seams, not implementations.
+- The Python DSP path is the audio source when the browser module is unavailable, and while any
+  client subscribes to its audio; it is kept as the fallback and as the numeric reference.
+- Four audio stages are installed but no policy enables them (`dc_block`, `lpf`, `agc`, `notch`):
+  the demodulator already blocks DC, low-passes and AGCs, and the notch is a tone *rejection* tool
+  rather than noise reduction — with a panel control missing, it is off. They are candidates for
+  deletion rather than for wiring.
 
 ## Reachability of registration points (import side effects)
 

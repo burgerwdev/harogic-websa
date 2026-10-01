@@ -1,16 +1,52 @@
 // SDR audio playback.
 //
+// Two producers can feed the worklet, and exactly one of them runs:
+//
+//   * the browser DSP (`sdr/iqStream.ts`): it is handed the worklet's port once its pipeline is
+//     producing PCM, and this module then starts no Python audio path at all - no `?audio=1`
+//     socket, no resampling worker (measured: running both meant the backend computed a second
+//     demodulator chain and shipped audio the browser discarded);
+//   * the Python reference (`?wasm=0`, a browser without WebAssembly, or a DSP failure): the
+//     worker below owns the audio-only socket and drives the port, or posts the resampled blocks
+//     back for the legacy ScriptProcessor output.
+//
 // The AudioContext and the AudioWorklet must live on the main thread (Web Audio is not
-// available in workers), but the *ingress* does not: a dedicated worker owns an audio-only
-// WebSocket, resamples, and drives the worklet's MessagePort directly (the port is
-// transferred to it). Neither reception nor delivery therefore depends on the main thread,
-// which is what used to make the ring underrun whenever rendering stalled.
+// available in workers), but the *ingress* does not: the worker owns the socket and drives the
+// worklet's MessagePort directly (the port is transferred to it). Neither reception nor delivery
+// therefore depends on the main thread, which is what used to make the ring underrun whenever
+// rendering stalled.
 //
 // Browsers without AudioWorklet keep the ScriptProcessor output, which is main-thread only;
 // there the worker posts the resampled buffers back and this module writes the legacy ring.
+import { wasmDspAllowed } from '../sdr/capability';
+
 let ctx: AudioContext | null = null;
 let workletNode: AudioWorkletNode | null = null;
+/// A tap on the final audio node, for answering "what is actually reaching the speaker?" live.
+let spectrumProbe: AnalyserNode | null = null;
+let spectrumProbeBin = 1;
 let worker: Worker | null = null;
+//: True once the worklet's port has been handed to the WASM DSP worker. Its port can only be
+//: transferred once (a second transfer throws "Port at index 0 is already neutered"), so both the
+//: handoff and the Python audio worker's own transfer have to respect this.
+let workletPortHandedOff = false;
+//: Ports that have already been transferred at least once. A MessagePort cannot be transferred
+//: twice, and the two consumers (the Python audio worker and the WASM DSP worker) can both reach
+//: the same port through different code paths; this makes the mistake impossible at the point of
+//: transfer instead of relying on every caller to check a flag.
+const transferredPorts = new WeakSet<MessagePort>();
+
+/** Transfer `port` to `send` at most once; returns false when the port was already moved. */
+function transferOnce(port: MessagePort, send: (port: MessagePort) => void): boolean {
+  if (transferredPorts.has(port)) return false;
+  try {
+    send(port);
+  } catch {
+    return false;
+  }
+  transferredPorts.add(port);
+  return true;
+}
 let legacyNode: ScriptProcessorNode | null = null;
 let legacyOscillator: OscillatorNode | null = null;
 let legacyPullGain: GainNode | null = null;
@@ -150,10 +186,17 @@ function startWorker(port: MessagePort | null): void {
     url: audioWorkerUrl(),
     targetRate: ctx?.sampleRate || 48000,
   };
-  if (port) {
+  // Who owns playback: when the browser DSP is available the IQ worker claims the worklet port
+  // (`routeWorkletPortTo`), and a MessagePort can only be transferred once - handing it to the
+  // Python audio worker here would leave the WASM PCM with nowhere to go, which is exactly the
+  // reported "one blip, then silence" after switching the audio on: the ring was fed by nobody.
+  const dspOwnsPlayback = wasmDspAllowed();
+  if (port && !workletPortHandedOff && !dspOwnsPlayback) {
     init.port = port;
-    worker.postMessage(init, [port]);
+    transferOnce(port, (moved) => worker!.postMessage(init, [moved]));
   } else {
+    // Without a port (legacy output), with the DSP owning it, or after it moved: the worker must
+    // not be handed a neutered port, and the Python path keeps its socket either way.
     worker.postMessage(init);
   }
   worker.postMessage({ type: 'enabled', value: enabled });
@@ -184,6 +227,20 @@ async function initializeOutput(context: AudioContext): Promise<void> {
           }
         };
         candidate!.connect(context.destination);
+        // A spectrum probe on the *final* node, which is what the speaker gets: the PCM the DSP hands
+        // over is not the whole story (the ring, its resampler and the fades come after it), so a
+        // "periodic sound" that no amount of PCM analysis explains can be looked for here - and by
+        // whoever is listening, from the console, while it is audible. `window.websaSpectrum()` returns
+        // the strongest components (Hz, dB relative to the loudest) around the current playback.
+        try {
+          spectrumProbe?.disconnect();
+          spectrumProbe = context.createAnalyser();
+          spectrumProbe.fftSize = 16384;
+          candidate!.connect(spectrumProbe);
+          spectrumProbeBin = context.sampleRate / spectrumProbe.fftSize;
+        } catch {
+          spectrumProbe = null;
+        }
       });
       workletNode = candidate;
       candidate.onprocessorerror = () => {
@@ -191,21 +248,42 @@ async function initializeOutput(context: AudioContext): Promise<void> {
         candidate?.disconnect();
         candidate?.port.close();
         if (workletNode === candidate) workletNode = null;
+        workletPortHandedOff = false;
         setupLegacyNode(context);
         worker?.postMessage({ type: 'detach' });
       };
-      // Hand the worklet port to the worker: from here on it owns delivery.
-      startWorker(candidate.port);
+      // The browser DSP owns playback when the policy allows it: then the Python audio path is not
+      // started (it is the fallback, `enablePythonAudioFallback` starts it if the DSP fails).
+      if (!wasmDspAllowed()) startWorker(candidate.port);
       return;
     } catch (error) {
       candidate?.disconnect();
       candidate?.port.close();
       workletNode = null;
+      workletPortHandedOff = false;
       console.warn('AudioWorklet unavailable; using compatibility audio output', error);
     }
   }
   setupLegacyNode(context);
-  startWorker(null);
+  if (!wasmDspAllowed()) startWorker(null);
+}
+
+/**
+ * Start the Python audio path as the fallback.
+ *
+ * Called when the browser DSP reports that it cannot run (a module that failed to load, an ABI it
+ * does not understand, a mode with no kernel). Returns false when there is nothing to fall back to
+ * or when the path is already running, so a caller can report the difference.
+ */
+export function enablePythonAudioFallback(): boolean {
+  if (worker || !enabled || !ctx) return false;
+  try {
+    // `startWorker` already sends the current enabled/mute state to the new worker.
+    startWorker(workletNode && !workletPortHandedOff ? workletNode.port : null);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function ensureContext(): void {
@@ -276,6 +354,102 @@ function publishAudioDebug(): void {
       // says On but nothing is heard" without any state-management involvement.
       ` ctx=${ctx ? ctx.state : 'none'} worklet=${!!workletNode} worker=${!!worker}`;
   }
+}
+
+/**
+ * Hand the worklet's MessagePort to another worker (the WASM DSP host).
+ *
+ * Returns false when there is no worklet to hand over (the legacy ScriptProcessor fallback): the
+ * caller must then keep the Python audio path, so this answers instead of throwing. The Python
+ * audio worker is detached first — two writers on one port would interleave two different sample
+ * streams into the ring.
+ */
+/**
+ * The output device's sample rate, i.e. what the DSP must produce.
+ *
+ * The worklet plays its input as-is, so a pipeline that always emitted 48 kHz would play at the
+ * wrong pitch and speed whenever the device runs at 44.1 kHz.
+ */
+/**
+ * The strongest components of what is actually being played right now (the final node, after every
+ * stage), as `{ hz, db }` with the levels relative to the loudest one.
+ *
+ * Attached to `window.websaSpectrum` so it can be called from the console the moment a sound is
+ * audible - a listener's report of "a periodic sound" that the PCM cannot explain (bit-identical to
+ * the reference, and clean under an FFT) is either in this node's output or outside the browser.
+ */
+export function sampleSpectrum(
+  top = 6,
+): Array<{ hz: number; db: number; relativeDb: number; loudestDb: number }> {
+  if (!spectrumProbe) return [];
+  const bins = new Float32Array(spectrumProbe.frequencyBinCount);
+  spectrumProbe.getFloatFrequencyData(bins);
+  // The absolute level of the loudest bin is the difference between "this sound is here" and
+  // "this node is silent" - a relative spectrum alone cannot tell them apart.
+  const loudest = Math.max(...bins);
+  const index: number[] = [];
+  for (let i = 1; i < bins.length; i++) index.push(i);
+  index.sort((a, b) => bins[b] - bins[a]);
+  const out: Array<{ hz: number; db: number; relativeDb: number; loudestDb: number }> = [];
+  const used: number[] = [];
+  for (const i of index) {
+    if (!Number.isFinite(bins[i])) continue;
+    // One entry per peak: neighbouring bins of the same component are not separate findings.
+    if (used.some((u) => Math.abs(u - i) < 4)) continue;
+    used.push(i);
+    out.push({
+      hz: i * spectrumProbeBin,
+      db: bins[i],
+      relativeDb: bins[i] - bins[index[0]],
+      loudestDb: loudest,
+    });
+    if (out.length >= top) break;
+  }
+  return out;
+}
+
+/**
+ * The level of what is being played, in 20 ms steps: the shape a "periodic sound" has in time.
+ *
+ * A spectrum cannot show it - the reported sound is a level that rises and falls, not a tone (the
+ * final node's spectrum is a flat noise floor, measured). `min`/`max` say how deep it is and the
+ * series says how fast, so a period can be read straight off it.
+ */
+export function sampleEnvelope(ms = 1000): Record<string, number | number[]> {
+  if (!spectrumProbe) return { stepMs: 20, count: 0, min: 0, mean: 0, max: 0, ratio: 1, levels: [] };
+  const step = Math.round(spectrumProbe.context.sampleRate * 0.02);
+  const buffer = new Float32Array(step);
+  const levels: number[] = [];
+  // The analyser holds the most recent `step` samples, so reading it repeatedly samples the live
+  // signal: enough to see a level that breathes, which is what this is for.
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    spectrumProbe.getFloatTimeDomainData(buffer);
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
+    levels.push(Math.sqrt(sum / buffer.length));
+  }
+  const min = Math.min(...levels);
+  const max = Math.max(...levels);
+  const mean = levels.reduce((a, b) => a + b, 0) / levels.length;
+  return { stepMs: 20, count: levels.length, min, mean, max, ratio: max / Math.max(min, 1e-9), levels };
+}
+
+export function audioSampleRate(): number {
+  try {
+    return ctx?.sampleRate || 48000;
+  } catch {
+    return 48000;
+  }
+}
+
+export function routeWorkletPortTo(target: Worker): boolean {
+  if (!workletNode || workletPortHandedOff) return false;
+  worker?.postMessage({ type: 'detach' });
+  const moved = transferOnce(workletNode.port, (port) =>
+    target.postMessage({ type: 'worklet-port', port }, [port]));
+  if (moved) workletPortHandedOff = true;
+  return moved;
 }
 
 export function setSdrAudioEnabled(on: boolean): void {

@@ -8,8 +8,14 @@ venv/
 # Node / 前端
 node_modules/
 frontend/modern/dist/
-frontend/modern/public/fonts/WebSASCJK-*.woff2
 npm-debug.log*
+
+# Rust/WASM 构建产物（入库的是发布后的 frontend/modern/public/dsp.wasm）
+wasm/target/
+
+# DFN 降噪运行时构建产物（入库的是发布后的 public/dfn 与 public/models）
+wasm-dfn/target/
+wasm-dfn/pkg/
 
 # 日志/运行时
 *.log
@@ -37,3 +43,9 @@ tools/sdr_probe/plots/
 
 # pi agent state (session goals/ledger; local only)
 .pi/
+tools/ft8_reference/decode_ref
+tools/ft8_reference/ft8_lib/
+
+# emscripten toolchain + ggmorse build scratch (the built artifact is committed)
+tools/.emsdk/
+tools/.ggmorse-build/

@@ -112,6 +112,29 @@ def sdr_panel_visible(page: Page) -> bool:
     return page.is_visible("#sdr-settings")
 
 
+#: The highlighted channel band and the listen marker, in canvas columns. Green excess (g - r) per
+#: column, summed over three rows: the marker is the opaque `#00ffa0` line (by far the largest
+#: excess), and the band is the 12%-alpha fill - the longest run that is tinted but not opaque.
+OVERLAY_SCAN = """() => {
+  const c = document.getElementById('spectrum');
+  const g = c.getContext('2d');
+  const ex = new Float64Array(c.width);
+  for (const frac of [0.3, 0.5, 0.7]) {
+    const d = g.getImageData(0, Math.round(c.height * frac), c.width, 1).data;
+    for (let x = 0; x < c.width; x++) ex[x] += d[x*4+1] - d[x*4];
+  }
+  let marker = 0;
+  for (let x = 1; x < c.width; x++) if (ex[x] > ex[marker]) marker = x;
+  let best = null, run = null, gap = 0;
+  for (let x = 0; x < c.width; x++) {
+    if (ex[x] >= 6) { run = run ? [run[0], x] : [x, x]; gap = 0; }
+    else if (run) { gap++; if (gap > 2) { if (!best || run[1]-run[0] > best[1]-best[0]) best = run; run = null; } }
+  }
+  if (run && (!best || run[1]-run[0] > best[1]-best[0])) best = run;
+  return { marker, band: best };
+}"""
+
+
 def enter_sdr(page: Page) -> None:
     """#btn-mode-sdr is a toggle: only click when the SDR panel is not already shown."""
     if not sdr_panel_visible(page):
@@ -212,9 +235,20 @@ def main() -> int:
         # entry, and the value it decided is the one the canvas renders (the reported
         # "Preset -> SDR spectrum overflows the canvas").
         print("1c) SDR automatic scale is applied")
-        dbg = page.evaluate(
-            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
-        )
+        # The entry fit is a bounded *closed loop*: the automatic attenuator re-picks with
+        # every Ref step, so the trace moves and the loop legitimately walks a few steps
+        # (each one a settle period) before its placement is good. When the level carried
+        # into SDR is far off, the settled answer - the one the client records - can take
+        # several seconds; poll for it instead of assuming it landed inside the two fixed
+        # waits above.
+        dbg = {}
+        for _ in range(32):                     # up to 8 s
+            dbg = page.evaluate(
+                "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
+            )
+            if dbg and "peak" in dbg:
+                break
+            page.wait_for_timeout(250)
         if dbg and "peak" in dbg:
             check(
                 "the auto-scale decision is what the canvas shows",
@@ -258,6 +292,72 @@ def main() -> int:
             )
             == ["nfm"],
         )
+
+        # 2b - the channel overlay must follow the band the *active demodulator* reads. A protocol
+        # decoder does not read an IF passband centred on the dial: FT8 reads 100..3000 Hz ABOVE it.
+        # The symmetric overlay highlighted 3 kHz the decoder cannot read and hid 1.6 kHz it can,
+        # which presents as "the signal is inside the marked band and still does not decode"
+        # (measured on the bench: with the dial parked on the tone, 0 decodes in 5 slots).
+        print("2b) the channel overlay follows the demodulator's own band")
+        page.select_option("#select-sdr-decimate", "2048")
+        page.click('[data-action="apply-sdr-bw"]')
+        # The analog reference is taken at the SAME IF bandwidth the FT8 frame uses, so the only
+        # difference between the two frames is the mode - which is exactly the rule under test.
+        page.click('[data-sdr-ifbw="3000"]')
+        page.click('[data-sdr-demod="usb"]')
+        page.wait_for_timeout(2500)
+        span = float((state(url)["sdr"].get("actual") or {}).get("bandwidth") or 0)
+        # Self-calibrating: the marker's own motion for a known 1 kHz tune gives Hz per pixel, so
+        # nothing here has to know the plot's margins (and the check follows any capture span).
+        marker_move = []
+        for listen_mhz in ("90.5", "90.501"):
+            page.fill("#input-sdr-listen", listen_mhz)
+            page.click('[data-action="apply-sdr-tune"]')
+            page.wait_for_timeout(2200)
+            marker_move.append(page.evaluate(OVERLAY_SCAN))
+        if any(frame["band"] is None for frame in marker_move):
+            skip("the channel overlay follows the demodulator's own band", "no overlay drawn")
+        else:
+            hz_per_px = 1000.0 / (marker_move[1]["marker"] - marker_move[0]["marker"])
+            if hz_per_px > 60:
+                # At the wide spans (3 MHz and up) the FT8 band is a handful of pixels, which is
+                # too coarse to assert in Hz; the geometry itself is pinned by `sdrDemodBand.test.ts`.
+                skip("the channel overlay follows the demodulator's own band",
+                     f"capture span {span / 1e3:.0f} kHz is {hz_per_px:.0f} Hz/px, too coarse")
+            else:
+                tol = 6 * hz_per_px
+                analog = marker_move[1]
+                page.click('[data-sdr-demod="ft8"]')
+                page.wait_for_timeout(2500)
+                ft8 = page.evaluate(OVERLAY_SCAN)
+                lo_a = (analog["band"][0] - analog["marker"]) * hz_per_px
+                hi_a = (analog["band"][1] - analog["marker"]) * hz_per_px
+                lo_f = (ft8["band"][0] - ft8["marker"]) * hz_per_px
+                hi_f = (ft8["band"][1] - ft8["marker"]) * hz_per_px
+                check(
+                    "an analog demodulator highlights its passband, centred on the dial",
+                    abs(lo_a + 1500) < tol and abs(hi_a - 1500) < tol,
+                    f"{lo_a:+.0f}..{hi_a:+.0f} Hz",
+                )
+                # The FT8 band's own edges cannot be measured in pixels: the lower edge is 1-2 px
+                # from the dashed marker, and the 12% tint composites to G-R ~ 4-9 over the
+                # waterfall's blue noise, so the scan's edges drift by ~1 kHz with the noise
+                # phase. The overlay publishes what it draws in `dataset.demodBand` (the
+                # `dataset.yLabels` pattern), which is resolution-independent and deterministic.
+                ft8_band = page.eval_on_selector("#spectrum", "e => e.dataset.demodBand || ''")
+                check(
+                    "FT8 highlights the band the decoder reads, above the dial",
+                    ft8_band == "100..3000",
+                    f"dataset={ft8_band!r}, pixels {lo_f:+.0f}..{hi_f:+.0f} Hz",
+                )
+                check(
+                    "the FT8 band is not the IF passband (the bandwidth must not move it)",
+                    ft8_band == "100..3000" and lo_a < -1000,
+                    f"analog starts {lo_a:+.0f} Hz, dataset={ft8_band!r}",
+                )
+        page.click('[data-sdr-demod="nfm"]')
+        page.click('[data-sdr-ifbw="12000"]')
+        page.wait_for_timeout(1500)
 
         # 3 - Preset inside SDR: the old hand-off came back with the pre-Preset frequency
         print("3) Preset inside SDR")

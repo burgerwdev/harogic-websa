@@ -56,11 +56,12 @@ curl http://localhost:8080/api/state
 | `window` | int | FFT 窗：0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
 | `detector` | str | 迹线检波器（auto/sample/pos_peak/neg_peak/rms/auto_peak），仅 SWP |
-| `mode` | str | 当前测量模式（std/harmonic/pnm/rta）|
+| `mode` | str | 当前测量模式（std/harmonic/pnm/rta/sdr）|
 | `caps` | obj | 型号能力：`model`/`name`/`fmin`/`fmax`，以及客户端不应硬编码的数值界限——`ref_min`/`ref_max`（dBm）、`rta_span_max`（Hz）、`rta_points` |
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
-| `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta` 分别保存两模式配置 |
+| `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta`、`req.sdr` 分别保存各模式配置 |
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
+| `sdr` | obj | SDR 接收链：请求值 `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`，以及 `actual`（IQS/DDC 几何：速率、带宽、捕获窗口、包形）、`level_dbfs`（Python 路径电平）、`squelch_open`、`adm`（厂商 AM/FM 指标）与 `health`（包计数，仅 SDR 中非空）|
 | `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；`points` 与显示迹线固定为 1001 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |
@@ -122,6 +123,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `AUTO_SCALE` | `range_db?`, `current_ref?` | 按最新迹线放置参考电平：噪声底落在 `range_db` 高窗口底部稍上。不会因为无信号而拒绝。`current_ref` 是用户当前看到的电平——它是**显示值**，因此按显示范围校验而非器件 Ref 范围（SDR 的显示刻度由客户端负责，其 target 也按显示范围夹取）。应用一个 target 只是**有界闭环**的一步：迹线并非与 Ref 无关（自动衰减器会随 Ref 重选），因此一次请求可能走两三步才放置合理——看 `auto_ref.adjusting`/`seq`/`pending`。放置已合理时不做任何事（不重配器件）。设置变更（span/中心/RBW/VBW/窗函数/抽取率）会预备同一个有界循环；它绝不会反转用户手输的电平。结果通过 `auto_ref.result`/`target`/`seq` 报告 |
 | `SET_RBW` | `mode?`（manual/auto）, `rbw?` | 设置分辨率带宽 |
 | `SET_VBW` | `mode?`（manual/equal/tenth/onethousandth/bypass）, `vbw?` | 设置视频带宽 |
+| `SET_SWEEP` | `mode?`（0~8）, `time?`（s，0~60）| 扫描时间模式（0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN）；`time` 在 Manual 为绝对秒，在 xN 为倍率。RTA 下写入 RTA Profile |
 | `SET_POINTS` | `points`（51~4000）| 设置扫频点数 |
 | `SET_SPUR` | `mode`（bypass/standard/enhanced）| 杂散抑制模式 |
 | `SET_WINDOW` | `window`（0~4）| FFT 窗口 |
@@ -129,11 +131,14 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_AMP` | `atten`（-1~33）, `preamp`（0/1）, `ifgain`（0~3）, `gain_strategy`（0/1）| 增益链配置 |
 | `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 参考时钟源；RTA 中重配 RTA Profile |
 | `SET_REFCKOUT` | `on`（bool）| 参考时钟输出；RTA 中重配 RTA Profile |
-| `SET_MODE` | `mode`（std/harmonic/pnm/rta）| 切换测量模式（会话）|
+| `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr）| 切换测量模式（会话）|
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
+| `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）| 设置 SDR 捕获窗口（IQS 中心与抽取率；完整重配）|
+| `SET_SDR_TUNE` | `listen`（Hz）| 捕获窗口内的廉价重调谐（软件 NCO，夹到窗口内）|
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（100~500000 Hz）, `squelch?`（-150~0 dBFS）, `volume?`（0~2）, `pitch?`（200~2000 Hz）, `agc?`（bool）| 解调器设置。`mode` 是 DSP 插件注册表的令牌（模拟：am/dsb/usb/lsb/cw/nfm/wfm/pm；数字：ft8）——解调器在浏览器中运行，Python 链只解调其实现的模拟子集。数字模式的解码在浏览器 worker 中进行，同时由一个 SSB 伴随解调器播放信道音频。浏览器拥有音频时，mode/pitch/去加重不重启流；`ifbw` 会重配信道化器 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
-| `SET_TRIGGER` | `source`（bus/level）, `edge`（rising/falling/double）, `level`（dBm）, `safetime`/`delay`/`pretime`/`acqtime`（s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
+| `SET_TRIGGER` | `source`（bus/freerun/level/external/timer）, `edge`（rising/falling/double）, `level`（dBm，以 `caps` 界限为准）, `safetime`/`delay`/`pretime`（0~10 s）, `acqtime`（0.0005~60 s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
 
 > 配置类命令（SET_*）执行后服务端自动回发最新 STATUS，并携带
 > `response_to=<命令名>`；周期 STATUS 不携带该字段。
@@ -141,8 +146,8 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 > 配置命令会进行有限数值、范围、枚举、设备连接和能力校验。非法命令返回 HTTP 400
 > `{"error":"..."}`；WS 返回 `{"cmd":"ERROR","msg":"..."}`。
 >
-> 周期 STATUS 的 `stream` 字段包含 `clients`、`dropped_frames`、`dropped_control`，
-> 用于观察慢客户端触发的 latest-wins 丢帧。
+> 周期 STATUS 的 `stream` 字段包含 `clients`、`dropped_frames`、`dropped_control`、
+> `dropped_audio`、`dropped_iq`，用于观察慢客户端触发的 latest-wins 丢帧与流式 FIFO 溢出。
 
 **命令示例：**
 
@@ -182,7 +187,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 
 #### 二进制迹线帧
 
-**16 字节头 + 数据：**
+**FREQ/POWR —— 16 字节头 + 数据：**
 
 ```
 偏移  大小  类型    内容
@@ -197,6 +202,24 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 |---|---|---|
 | `FREQ` | float64 × points | 频率轴（Hz），仅在版本变化时发送 |
 | `POWR` | float32 × points | 功率迹线（dBm），与同版本 FREQ 配对 |
+
+**RTAF —— 24 字节头（实时迹线 + 一行瀑布）：**
+
+```
+magic(4) + ver(u32) + points(u32) + wfLen(u16) + maxDensity(u16) + startHz(f64)
++ float64[points] + float32[points] + uint16[wfLen] + stopHz(f64)
+```
+
+RTA 会话与 SDR（潘adapter）发送：频谱 + 瀑布行 + 显示窗口（`startHz`/`stopHz`）；`points` 为显示迹线长度。
+
+**流式帧（AUDF / IQBF）：**
+
+| magic | 头部 | 数据 | 说明 |
+|---|---|---|---|
+| `AUDF` | magic(4) + seq(u32) + rate(u32) + samples(u32) | int16 × samples | 单声道 PCM16 音频（48 kHz，20 ms 块），来自 **Python 解调路径**（后备/参考）。仅在有客户端订阅（`/ws?audio=1`）时发送；`seq=0` 清空陈旧音频 |
+| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples（交错 I/Q）| 信道化基带（后端 DDC 输出，按实测速率），供浏览器解调器使用。仅在有客户端订阅（`/ws?iq=1`）时发送；`seq=0` 在重调谐/重配后清空陈旧基带 |
+
+两类流式帧均为 FIFO 有序（仅在溢出时丢最旧），每客户端队列有界；AUDF/IQBF 不会与显示帧混入同一连接（见上过滤规则）。
 
 > **注意**：POWR 强制 float32（防插值升精度错位）；points 为设备原生点数（前端自行保峰重采样）。
 
@@ -213,6 +236,12 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 
 1. `SET_MODE {mode:'pnm'}` → `SET_PNM {center, threshold, traceavg, start, stop}`
 2. 服务端增量采集（`PNM_GetPartialUpdatedFullTrace`），每帧推送 `PNM`（含 progress）
+
+### SDR（软件无线电接收）
+
+1. `SET_MODE {mode:'sdr'}` → 可选 `SET_SDR {center, decimate}`（捕获窗口）
+2. `SET_SDR_TUNE {listen}` 在窗口内廉价重调谐；`SET_SDR_DEMOD` 选择解调器与音频设置
+3. 服务端推送 `RTAF`（潘adapter 频谱 + 瀑布）、`IQBF`（浏览器解调器的信道化基带，发往 `?iq=1` 连接），以及——当有客户端订阅 Python 路径时——`AUDF`。电平/静噪/ADM 指标在 `STATUS.sdr`
 
 ### 退出测量
 

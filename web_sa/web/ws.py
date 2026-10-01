@@ -55,12 +55,14 @@ def make_ws_handler(app, dev):
         ws = web.WebSocketResponse(max_msg_size=32 * 1024 * 1024)
         await ws.prepare(request)
         channel = ClientStream(ws, audio_only=request.query.get('audio') == '1',
-                               no_audio=request.query.get('noaudio') == '1')
+                               no_audio=request.query.get('noaudio') == '1',
+                               iq_only=request.query.get('iq') == '1',
+                               no_iq=request.query.get('noiq') == '1')
         channel.start()
         app[WS_CLIENTS].add(channel)
         # New client connects: push the most recent frequency axis (FREQ frames are only
         # sent when the version changes, otherwise a new client would have no freq)
-        if dev.last_freq is not None and not channel.audio_only:
+        if dev.last_freq is not None and not channel.audio_only and not channel.iq_only:
             try:
                 from ..measurements.framer import encode_freq
                 channel.publish_bytes(encode_freq(dev.last_freq_ver, dev.last_freq, 0.0))

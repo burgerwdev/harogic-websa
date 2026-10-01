@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 
 from aiohttp import web
 
@@ -76,11 +77,24 @@ def create_app(dev, cfg: AppConfig) -> web.Application:
 
 
 async def _gnss_loop(app, dev):
+    """Poll the GNSS receiver once a second.
+
+    It holds the same command lock the acquisition loop takes, so a slow SDK call here *pauses* the
+    IQ fetch - the analyzer's FIFO then overruns and the listener hears a hole. A short pause stays
+    under the stream-stall watchdog (1.5 s), which is why such an interruption is invisible in the log
+    unless it is timed. It is timed here.
+    """
     from .config import GNSS_POLL_INTERVAL
+
+    log = logging.getLogger(__name__)
     while True:
         if dev.state.connected and not dev.state.calibrating:
+            started = time.monotonic()
             async with app[COMMAND_LOCK]:
                 dev.state.gnss = await asyncio.to_thread(dev.query_gnss)
+            elapsed = time.monotonic() - started
+            if elapsed > 0.05:
+                log.warning('GNSS poll took %.0f ms (the acquisition loop was held)', elapsed * 1e3)
         await asyncio.sleep(GNSS_POLL_INTERVAL)
 
 

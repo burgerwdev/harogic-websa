@@ -746,7 +746,7 @@ Every recommendation in this document was re-checked against the code at v1.5.6 
 | Phase 3: frontend decoupling | **Done** | cycles 14 -> 0, panel split, results module, frame-parser tests, canvas DPR |
 | G-1/G-2/G-3 | **Done** | performance baseline, dependency lock, `make hw-test` |
 | §7 extension seams E-1...E-5 | **Done** | as above; `check_registrations.py` now guards seam reachability |
-| Remaining open items | see §9.3 | Only two carry real value: "fake backend + e2e in CI" and "Firefox e2e"; the rest are blocked upstream or low-payoff |
+| Remaining open items | see §9.3 | Only one carries real value: "Firefox e2e" (the fake-backend e2e landed in CI as A1); the rest are blocked upstream or low-payoff |
 
 **Two real defects happened after this review, which it had not covered:**
 

@@ -97,5 +97,11 @@ function init() {
 
 import { getTheme as S_getTheme } from './core/theme';
 import { getLang } from './core/i18n';
+import { sampleEnvelope, sampleSpectrum } from './audio/sdrAudio';
 
 init();
+
+// A live look at the audio that is actually being played: `websaSpectrum()` in the console answers
+// "is the sound I hear coming out of this page, and at what frequency?" without a rebuild.
+(window as unknown as { websaSpectrum: typeof sampleSpectrum }).websaSpectrum = sampleSpectrum;
+(window as unknown as { websaEnvelope: typeof sampleEnvelope }).websaEnvelope = sampleEnvelope;

@@ -57,11 +57,12 @@ Field reference:
 | `window` | int | FFT window: 0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
 | `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
-| `mode` | str | measurement mode (std/harmonic/pnm/rta) |
+| `mode` | str | measurement mode (std/harmonic/pnm/rta/sdr) |
 | `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm), `rta_span_max` (Hz), `rta_points` |
 | `preset_defaults` | obj | device default config (used by Preset) |
-| `req` / `actual` | obj | active request/actual values; `req.swp` and `req.rta` retain mode-private settings |
+| `req` / `actual` | obj | active request/actual values; `req.swp`, `req.rta` and `req.sdr` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
+| `sdr` | obj | the SDR receive chain: the requested `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us` plus `actual` (the IQS/DDC geometry: rates, bandwidth, capture window, packet shape), `level_dbfs` (Python-path level), `squelch_open`, `adm` (vendor AM/FM metrics) and `health` (packet counters, only while in SDR) |
 | `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
 | `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling). The placement no longer produces `no_signal` (it is floor-anchored, so a missing signal is not a refusal) - the value stays in the vocabulary because the field's values are a contract |
@@ -122,6 +123,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `AUTO_SCALE` | `range_db?`, `current_ref?` | place the reference, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. Never refuses for lack of a signal. `current_ref` is the level the user is looking at - a DISPLAY value, so it is validated against the display bounds, not the device Ref range (in SDR the client owns the scale, and its target is clamped to that display range too). Applying a target is one step of a bounded closed loop: the trace is not independent of Ref (the automatic attenuator re-picks with it), so the level may step two or three times before the placement is good - watch `auto_ref.adjusting`/`seq`/`pending`. Does nothing when the placement is already good (no reconfiguration). A settings change (span/centre/RBW/VBW/window/decimation) arms the same bounded loop; a level the user typed is never reversed by it. The result is reported in `auto_ref.result`/`target`/`seq` |
 | `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
 | `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
+| `SET_SWEEP` | `mode?` (0~8), `time?` (s, 0~60) | sweep-time mode (0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN); `time` is absolute seconds in Manual, a multiplier in xN. In RTA the pair is applied to the RTA profile instead |
 | `SET_POINTS` | `points` (51~4000) | set sweep points |
 | `SET_SPUR` | `mode` (bypass/standard/enhanced) | spur rejection mode |
 | `SET_WINDOW` | `window` (0~4) | FFT window |
@@ -129,11 +131,14 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_AMP` | `atten` (-1~33), `preamp` (0/1), `ifgain` (0~3), `gain_strategy` (0/1) | gain chain config |
 | `SET_REFCK` | `mode` (internal/external/premium/external_forced) | reference clock source; reconfigures the active RTA profile |
 | `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active RTA profile |
-| `SET_MODE` | `mode` (std/harmonic/pnm/rta) | switch measurement mode (session) |
+| `SET_MODE` | `mode` (std/harmonic/pnm/rta/sdr) | switch measurement mode (session) |
 | `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
+| `SET_SDR` | `center?`, `decimate?` (power of two, 1~`caps.decimate_max`; rounded to the nearest power of two) | set the SDR capture window (IQS center and decimation; full reconfiguration) |
+| `SET_SDR_TUNE` | `listen` (Hz) | cheap retune of the demodulator within the capture window (software NCO; clamped to the window) |
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?` (-1=auto 0=off ..1000), `ifbw?` (100~500000 Hz), `squelch?` (-150~0 dBFS), `volume?` (0~2), `pitch?` (200~2000 Hz), `agc?` (bool) | the demodulator settings. `mode` is a token from the DSP plugin registry (analog: am/dsb/usb/lsb/cw/nfm/wfm/pm; digital: ft8) — the demodulator runs in the browser, the Python chain keeps demodulating the analog subset it implements. A digital mode decodes in the browser worker while an SSB companion plays the channel audio. Mode/pitch/de-emphasis are applied without touching the stream while the browser owns the audio; `ifbw` reconfigures the channelizer |
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
-| `SET_TRIGGER` | `source` (bus/level), `edge` (rising/falling/double), `level` (dBm), `safetime`/`delay`/`pretime`/`acqtime` (s), `retrigger` (0-65535), `retriggerperiod` (s), `out` (none/per_hop/per_sweep/per_profile), `outpolarity` (positive/negative) | RTA acquisition trigger (written into the RTA profile): reconfigured immediately while in RTA, otherwise applied on the next entry. The swept-mode level trigger runs in the frontend and does not use this command |
+| `SET_TRIGGER` | `source` (bus/freerun/level/external/timer), `edge` (rising/falling/double), `level` (dBm, `caps` bounds), `safetime`/`delay`/`pretime` (0~10 s), `acqtime` (0.0005~60 s), `retrigger` (0-65535), `retriggerperiod` (s), `out` (none/per_hop/per_sweep/per_profile), `outpolarity` (positive/negative) | RTA acquisition trigger (written into the RTA profile): reconfigured immediately while in RTA, otherwise applied on the next entry. The swept-mode level trigger runs in the frontend and does not use this command |
 
 > Config commands (`SET_*`) reply with the latest STATUS and `response_to=<command>`;
 > periodic STATUS messages omit `response_to`.
@@ -141,8 +146,9 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 > Commands validate finite numbers, ranges, enums, device connection, and capabilities. Invalid REST
 > commands return HTTP 400 `{"error":"..."}`; WS commands return `{"cmd":"ERROR","msg":"..."}`.
 >
-> Periodic STATUS `stream` metrics contain `clients`, `dropped_frames`, and `dropped_control` for
-> observing latest-wins drops caused by slow clients.
+> Periodic STATUS `stream` metrics contain `clients`, `dropped_frames`, `dropped_control`,
+> `dropped_audio` and `dropped_iq` for observing latest-wins drops and streaming-FIFO overruns
+> caused by slow clients.
 
 **Command examples:**
 
@@ -182,7 +188,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 
 #### Binary trace frames
 
-**16-byte header + data:**
+**FREQ/POWR — 16-byte header + data:**
 
 ```
 offset  size  type    content
@@ -197,6 +203,26 @@ offset  size  type    content
 |---|---|---|
 | `FREQ` | float64 × points | frequency axis (Hz), sent only on version change |
 | `POWR` | float32 × points | power trace (dBm), paired with same-version FREQ |
+
+**RTAF — 24-byte header (real-time trace + one waterfall row):**
+
+```
+magic(4) + ver(u32) + points(u32) + wfLen(u16) + maxDensity(u16) + startHz(f64)
++ float64[points] + float32[points] + uint16[wfLen] + stopHz(f64)
+```
+
+Sent by the RTA session and by SDR (the panadapter): spectrum + waterfall row + the display
+window (`startHz`/`stopHz`); `points` is the display trace length.
+
+**Streaming frames (AUDF / IQBF):**
+
+| magic | header | data | description |
+|---|---|---|---|
+| `AUDF` | magic(4) + seq(u32) + rate(u32) + samples(u32) | int16 × samples | mono PCM16 audio (48 kHz, 20 ms blocks) from the **Python demodulator path** (the fallback/reference). Only sent while a client subscribes (`/ws?audio=1`); `seq=0` flushes stale audio |
+| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples (interleaved I/Q) | the channelized baseband (backend DDC output, at its measured rate) for the browser demodulator. Only sent while a client subscribes (`/ws?iq=1`); `seq=0` flushes stale baseband after a retune/reconfiguration |
+
+Both streaming types are FIFO-ordered (drop-oldest only on overrun) on a bounded per-client
+queue; AUDF/IQBF never mix with display frames on the same connection (the filters above).
 
 > **Note**: POWR is forced to float32 (prevents interpolation precision misalignment); points is device-native (frontend does peak-preserving resampling).
 
@@ -213,6 +239,12 @@ offset  size  type    content
 
 1. `SET_MODE {mode:'pnm'}` → `SET_PNM {center, threshold, traceavg, start, stop}`
 2. Server does incremental acquisition (`PNM_GetPartialUpdatedFullTrace`), pushes `PNM` per frame (with progress)
+
+### SDR (software-defined receive)
+
+1. `SET_MODE {mode:'sdr'}` → optionally `SET_SDR {center, decimate}` (capture window)
+2. `SET_SDR_TUNE {listen}` retunes the demodulator cheaply inside the window; `SET_SDR_DEMOD` selects the demodulator and its audio settings
+3. The server pushes `RTAF` (panadapter spectrum + waterfall), `IQBF` (channelized baseband for the browser demodulator, to `?iq=1` connections) and — while something subscribes to the Python path — `AUDF`. Level/squelch/ADM metrics are in `STATUS.sdr`
 
 ### Exit measurement
 

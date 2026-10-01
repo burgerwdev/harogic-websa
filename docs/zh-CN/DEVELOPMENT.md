@@ -1,4 +1,4 @@
-# 开发指南（v1.7.3）
+# 开发指南（v1.8.0）
 
 > **这份指南不是基准规范，而是一份会持续改进的工作约定。** 它记录了本项目在
 > 2026-09 的架构评估与重构中真实踩过的坑，以及从那之后固定下来的做法。
@@ -16,7 +16,7 @@
 2. **写代码时**：§3 状态归属、§5 增加功能清单、§7 性能规则。
 3. **提交前**：§6 测试断言该怎么写、§9 提交与版本、§10 守卫清单跑一遍（`make ci`）。
 
-最短路径：`make ci`（无硬件全绿）→ 有硬件时 `make hw-test` → 动过数据面再 `make bench`。
+最短路径：`make ci`（无硬件全绿）+ `make e2e-fake`（无硬件的浏览器 e2e，CI 以独立 job 运行同一组脚本）→ 有硬件时 `make hw-test` → 动过数据面再 `make bench`。
 
 ---
 
@@ -311,13 +311,15 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 干净环境 `./test.sh` 失败 | 依赖声明不完整 | 运行时/开发/锁定三份依赖文件 | CI 在干净环境安装 |
 | 拔出频谱仪后画面定格，但 STATUS 仍报 `connected: true`，重新接入也不恢复 | 从未检测断开：采集路径把总线错误当成“没取到帧”，只有 native 崩溃/超时才惊动 supervisor | 传输故障是前端必须看到的状态：在没有原地恢复能力的路径（扫描）上，连续总线错误置 `connected=false`，调度器停止步进死句柄，worker 链路循环重开设备 | `test_link_recovery.py`（链路循环恢复会话；连续 -8 翻转 `connected`）、`test_publisher.py`（断开时不做采集）、`status.test.ts`（断开告警 + 重绘） |
 | 真机 RTA 在 `SET_FREQ` 后出现一连串 `-9`，链路看门狗误判为拔线并关闭设备 | 扫描模式命令在 RTA 会话持有设备时下发了 `SWP_Configuration`，把设备从 RTA 切走（与 Preset 在 SDR 下的同一类 bug）；可自恢复的错误串随后被当成了拔线 | 命令只能重配拥有设备的那个模式：RTA 下扫描参数只作为存储偏好（不下发 `SWP_Configuration`）；可自恢复的错误串不得升级为链路丢失——链路检测只放在没有原地恢复能力的路径 | `test_ws_commands.py`（RTA 下 SET_FREQ/SET_DETECTOR 绝不调 `configure_swp`）、真机 `state_regression` + `hw-test` |
+| **「信号就在高亮带里，FT8 却什么都解不出」**，且同一次会话记下「41 次尝试里 5 次解码」，从读数无法判断发生了什么 | 瀑布把 IF 通带画成以听频为中心，而解码器读的是拨盘**之上**的 100..3000 Hz。实测（Pluto 在 411.0015 MHz 发射，拨盘压在音调上）：5 个时隙 0 解码，而叠层仍盖着信号——音调落在 0..44 Hz，低于解码器 100 Hz 下限。该叠层还会与它所指向的解码器漂移，而且确实漂了：下沿写 200 Hz，解码器却是 100 | 显示层声称某个隐藏级读取的频带，必须由**该级**派生，而非由邻近级派生（`demodBandHz`：协议解码器用解码器自己的频带，只有模拟解调器才用 IF 通带），并且两者不能自由分叉（有测试反向读取 Rust 常量）。同一条规则适用于计数：reset 不是 search，必须分开报——`dsp_attempts` 把两者混在一起，掩盖了「41 次尝试」到底是 41 次搜索，还是 20 次搜索加 21 次被丢弃的窗口 | `sdrDemodBand.test.ts`（模拟为对称、FT8 为拨盘之上、常量必须与 `wasm/src/digital/ft8/mod.rs` 一致）、真机 HIL：拨盘正确时连续 5 个时隙解码，拨盘偏 49.7 kHz 时 0 解码 |
 
 ---
 
 ## 13. 日常命令
 
 ```bash
-make ci                      # 全部无硬件门禁（测试/静态检查/契约/守卫/构建）
+make ci                      # 无硬件的进程内门禁全部（测试/静态检查/契约/守卫/构建）
+make e2e-fake                # 假后端上的浏览器 e2e（CI 以独立 job 运行）
 make run | make stop         # 启停服务（supervisor + worker）
 make restart | make status   # 重启服务 / PID、运行时长、内存、CPU、日志路径与大小、实时链路
 make e2e-fake                # 无硬件：假后端上跑 ui_smoke（29 项）+ state_regression（72 项），CI 同款
@@ -327,6 +329,8 @@ python3 tools/bench.py --write-baseline tools/bench_baseline.json   # 重录基�
 python3 tools/command_sweep.py        # 单独跑命令层契约（真机）
 python3 tools/e2e/state_regression.py # 单独跑 UI 状态机回归（真机）
 python3 tools/check_registrations.py  # 注册点可达性
+make wasm | make wasm-check            # Rust/WASM DSP 内核：构建并入库产物 / 校验产物
+python3 tools/check_wasm_artifact.py  # 产物哈希 + 导出符号（仅标准库，CI 跑这条）
 python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指标
 ```
 
@@ -334,6 +338,72 @@ python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指
 
 ## 14. 已知未完成（指针）
 
-见 `ARCH_REVIEW.md` §9.3：假后端 + e2e 进 CI（当前最高价值）、e2e 覆盖 Firefox、`DeviceState` 按模式拆分、
-`controls.ts` 剩余无用导出、ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）、
-根目录临时 TODO 归档、按命令裁剪 STATUS。**本指南与那份清单一起演进**：完成一项就更新两处。
+见 `ARCH_REVIEW.md` §9.3：e2e 覆盖 Firefox、按命令裁剪 STATUS（P2-9）、该节记录的三个低优先级候选项，
+以及 ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）。此前列在此处的
+「假后端 + e2e 进 CI」「`DeviceState` 按模式拆分」「临时 TODO 归档」均已完成（§9.1 A1/B1/C2），
+`controls.ts` 的未引用导出已决定保留为公共 API。**本指南与那份清单一起演进**：完成一项就更新两处。
+
+---
+
+## 15. Rust/WASM DSP 内核（构建与产物策略）
+
+实时 SDR DSP（DDC、解调器、音频增强）是 `wasm/` 下的 Rust crate，运行在 Web Worker 中。它**没有任何
+ crate 依赖**，工具链要求只有一条：
+
+```bash
+rustup target add wasm32-unknown-unknown
+make wasm           # cargo test + release 构建 + 发布 frontend/modern/public/dsp.wasm
+make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
+```
+
+让其他地方都不需要 Rust 的规则：
+
+- `frontend/modern/public/dsp.wasm` **入库**，`wasm/dsp.artifact.json` 记录其 sha256、大小、工具链与
+  导出列表。`./build.sh` 绝不调用 cargo，因此没有 Rust 的机器（和 CI）照样能构建并服务应用。
+- `tools/check_wasm_artifact.py`（`make ci` 的一部分）只用标准库校验记录的哈希，**并解析模块的导出段**：
+  产物陈旧、被截断或导出被改名都会在没有 Rust 的情况下失败。
+- release profile 固定 `lto`、单一 codegen unit 与 `strip`，构建逐字节可复现；`make wasm-check`
+  比较的是字节，不只是行为。
+- ABI 是指向模块线性内存的“指针 + 长度”——没有 wasm-bindgen，也没有 wasm-pack。
+  `frontend/modern/src/sdr/wasm.ts` 负责包装，`__tests__/wasm.test.ts` 针对入库字节断言导出签名、
+  版本门禁与视图规则。
+- 该 crate 也能本机编译，`cargo test` 就是针对内核运行它。
+- 内存视图必须在**最后一次分配之后**创建：内存增长会让已有视图 detach，而 detach 的视图读出来是长度 0
+  而不是抛异常。
+
+---
+
+## 16. 真机验证结果
+
+以下数据来自本次重构验证所用的台位：**SAN-90**（9 kHz–9 GHz）配 **tinySA Ultra ZS407** 作为信号源。IQ 从分析仪
+自身的流中抓取（`tools/hil_audio_check.py`），再经**入库的** `dsp.wasm` 处理
+（`frontend/modern/src/__tests__/hil.test.ts`）；同一抓取也跑一遍 Python 参考
+（`tools/hil_reference_check.py`），以便把不佳的数值归因。
+
+| 检查 | 结果 |
+|---|---|
+| `make hw-test`（tinySA CW 冒烟 + 24 命令扫描 + UI 状态回归） | 66 PASS，1 FAIL |
+| `tools/e2e/state_regression.py` | 65 PASS，1 FAIL——**在 `master` 上完全一致**（同一检查、同一数值）：属既有问题，非本次回归 |
+| AM 音调（1 kHz，50% 深度）经浏览器 DSP | 音调 993.1 Hz，SINAD **28.6 dB**，THD **−36.2 dB**（同一抓取的 Python 参考：26.1 dB / −36.2 dB） |
+| NFM 音调（1 kHz，6 kHz 频偏，25 kHz 中频）经浏览器 DSP | 音调 996.8 Hz，SINAD **9.1 dB**，THD **−6.5 dB**（Python 参考：8.7 dB / −6.5 dB） |
+| CW 载波经浏览器 DSP | 侧音 764 Hz（pitch + 残余载波偏移），电平 −14.0 dBFS，THD −92 dB；SINAD 受相位噪声限制，而未调制载波正是最坏情况 |
+
+关于这些数字有两点。浏览器链路在真机上等于或略优于 Python 参考（AM +2.5 dB，NFM +0.4 dB，THD 完全相同），这正说明移植没有损失质量；SINAD 的绝对值由 tinySA 与分析仪本振的合成相位噪声决定，参考实现在同一抓取上显示出同样的底。另外，音质数字是在**关闭**增强链的情况下测得的：链中的自适应陷波会移除信道中最强的单音——这对语音信道是正确的，但会移除台位上的单音（链自身行为由 `cargo test` 与 RAW 路径分离测试覆盖）。
+
+状态回归中失败的那一项是 `Auto Scale puts the whole trace inside the window after the change`
+（ref −20.0 dBm，窗口 −120…−20，底噪 −132.8 dBm）：拟合把底噪留在了窗口下沿以下约 13 dB。该现象在 `master`
+上以完全相同的数值复现，因此这里如实记录，而不是由本次重构“修好”。
+
+接入 −25 dBm 音调时，另有一项检查（`a settings change does not undo a level the user set`）会失败，原因是设备
+文档化的 IF 过载保护会把参考电平抬到 0 dBm；关闭信号源输出后该项通过。
+
+复现（音质数字是在**关闭**增强链的情况下测得的，因为链中的自适应陷波按设计会移除单音；AM 需要表中列出的 6 kHz 中频）：
+
+```bash
+make hw-test
+python3 tools/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
+WEBSA_HIL_IQ=/tmp/hil_iq.json WEBSA_HIL_NO_CHAIN=1 npx vitest run src/__tests__/hil.test.ts
+python3 tools/hil_reference_check.py /tmp/hil_iq.json
+```
+
+NFM 用 `--modulation fm --ifbw 25000 --deviation 6000`，CW 用 `--modulation cw --ifbw 500`。

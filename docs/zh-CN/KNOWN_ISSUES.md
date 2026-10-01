@@ -47,7 +47,9 @@
 21. **SDR 音频链路**: 音频的接收与投递都由独立 worker 经单独的 `?audio=1` WebSocket 完成，并直接驱动
     AudioWorklet（显示连接用 `?noaudio=1`，不含音频）。因此残余的音频断续属于浏览器侧 worklet 环形缓冲
     underrun，而不是服务端丢帧；`document.getElementById('spectrum').dataset.sdrAudio` 暴露
-    `enabled/muted/frames/buffered_ms/underruns/rms/worklet/worker` 便于排查。
+    `enabled/muted/frames/buffered_ms/underruns/rms/worklet/worker` 便于排查。频谱叠层同样把当前
+    解调器读取的频带发布为 `dataset.demodBand`（相对拨盘的 Hz，如 FT8 的 `100..3000`）——e2e 契约读
+    这里，因为 12% 的着色在瀑布像素上无法可靠测量。
 22. **厂商 ADM（SINAD/SNR/THD）是单音指标**: 真实广播节目没有主导调制单音，厂商 `ADM_*` 数值会塌到 ~0，
     THD 无意义（同一段代码对 1 kHz 单音：SINAD ~7、SNR ~12）。SDR 面板已不再显示该行（`cur-sdr-adm` 已移除）；
     原始数值仍保留在 STATUS 的 `sdr.adm` 供 API 使用。

@@ -11,8 +11,8 @@ rm -rf .pytest_cache .ruff_cache
 rm -f /tmp/websa.log /tmp/websa.log.* /tmp/websa.err /tmp/websa.err.*
 rm -rf frontend/modern/dist
 if [ "$keep_deps" = 1 ]; then
-  echo "OK: cleaned (caches/logs/dist; node_modules kept; run ./build.sh to rebuild frontend)"
+  echo "OK: cleaned (caches/logs/dist; node_modules + wasm target dirs kept; run ./build.sh to rebuild frontend)"
 else
-  rm -rf frontend/modern/node_modules
-  echo "OK: cleaned (caches/logs/artifacts; run ./build.sh to rebuild frontend)"
+  rm -rf frontend/modern/node_modules wasm/target wasm-dfn/target
+  echo "OK: cleaned (caches/logs/artifacts + wasm build dirs; run make build to rebuild everything)"
 fi
