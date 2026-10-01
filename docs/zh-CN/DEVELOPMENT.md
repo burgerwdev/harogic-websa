@@ -324,6 +324,7 @@ make run | make stop         # 启停服务（supervisor + worker）
 make restart | make status   # 重启服务 / PID、运行时长、内存、CPU、日志路径与大小、实时链路
 make e2e-fake                # 无硬件：假后端上跑 ui_smoke（29 项）+ state_regression（72 项），CI 同款
 make hw-test                 # 真机：tinySA 冒烟 + 24 命令扫描 + UI 状态机回归（45 项）
+python3 tools/e2e/readme_shots.py      # 重拍 README 截图（真机 + tinySA/Pluto 信号源，见 --help）
 make bench                   # 与基线比较帧率/切换延迟/CPU
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # 重录基线（先确认干净状态）
 python3 tools/command_sweep.py        # 单独跑命令层契约（真机）

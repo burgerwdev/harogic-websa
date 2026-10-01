@@ -363,6 +363,7 @@ make run | make stop         # start/stop the service (supervisor + worker)
 make restart | make status   # restart the service / pid, uptime, memory, CPU, log path+size, live link
 make e2e-fake                # no hardware: ui_smoke (29 checks) + state_regression (72 checks) on the fake backend, same as CI
 make hw-test                 # hardware: tinySA smoke + 24-command sweep + UI state regression (45 checks)
+python3 tools/e2e/readme_shots.py      # re-capture the README screenshots (hardware + tinySA/Pluto sources; --help)
 make bench                   # compare frame rate/switch latency/CPU against the baseline
 python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record (verify a clean state first)
 python3 tools/command_sweep.py        # command-layer contract only (hardware)

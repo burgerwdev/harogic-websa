@@ -14,30 +14,19 @@
 
 ## 特性
 
-- **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 查看冻结，4 条迹线，前端平滑
-- **控制面板** — Center/Span 与 Start/Stop 原子联动、可自定义/自动联动的 Span Step 与 `▼/▲` 步进 + Full Span、SWP/RTA 模式私有参数、RBW/VBW/点数、FFT 窗口（FlatTop / B-Nuttall / LowSideLobe / Rectangle / Kaiser，与官方一致）、衰减/前置放大/中频增益、Manual/Auto Ref Level、参考时钟（内部/外部/外部强制 + 输出）
-- **Marker 与 DSP 引擎** — 4 个游标、表格行快速 On/Off、独立 Tracking toggle、多个游标按峰值排序分配并连续追踪、寻峰寻谷遍历
-
-  - Savitzky-Golay 平滑（2 阶 + 梯度自适应）
-  - 三级寻峰引擎：局部极值 → Escursion 双侧 ≥6dB → 抛物线亚频点拟合
-  - 谷凹陷合并（25bin，与 Valley 定位一致）、频率方向遍历
-  - Raw Anchor（未平滑时取原始迹线真实极值）
-- **实时频谱 (RTA)** — FPGA 引擎、多迹线(各 tab 独立模式)、概率密度背景(渐隐痕迹)、瀑布图
-- **GNSS 详情浮层** — 点击指示器查看完整信息(锁定/卫星/天线/经纬度/UTC 时间); 状态每秒自动刷新
-- **测量模式** — 幅度（n-dB 带宽）、谐波（H1~H5 服务器自动调谐）、相噪（6 档频偏 100Hz~10MHz）
-- **虚拟键盘** — 可选的屏幕数字键盘（顶栏开关）：带单位组的字段提供单位键；n dB 门限列表按纯文本输入
-  （数字/逗号/负号，可鼠标定位光标逐字符编辑）；可拖动、半透明、默认关闭
-- **归一化** — 直通校准、自适应吸收、显示层变换
-- **限制线** — 最多 4 点折线限制线、dB 容差、通过/失败判定与超限余量、超限频点 CSV
-- **信道测量** — 信道功率、占用带宽（OBW，90/95/99%）、邻道功率比（ACPR，上/下邻道 dBc）
-- **导出** — PNG 截图（带采集参数抬头与右下角时间戳）、峰值列表 CSV、迹线 CSV
-- **幅度单位与补偿** — dBm / dBmV / dBuV / dBV 切换，外部增益/线损补偿同时作用于图形与所有读数
-- **触发** — RTA 设备电平触发（门限/边沿/防抖/延迟/预触发/采集时长/重触发/触发输出，含 POI 与状态角标）；
-  普通模式的软件电平触发（相邻两次扫描间的穿越判定，启用触发后画面实时、命中定格）
-- **侧边跳转窄条** — 一键定位到任一分组，可收起（收起时不占布局宽度）
-- **设备链路监控** — 扫描路径上连续总线错误（拔线）会把 STATUS 置为 `connected: false`
-  （画布显示“设备已断开”，而不是定格假死），重新接入后 worker 自动重开设备，无需重启服务；
-  RTA/SDR 走各自的原地重配恢复
+- **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 查看冻结，4 条迹线，平滑与保峰重采样
+- **控制面板** — Center/Span 与 Start/Stop 原子联动、Span Step 与 Full Span、RBW/VBW/点数、
+  FFT 窗口、衰减/前置放大/中频增益、手动或一次性 Auto Ref Level、参考时钟与输出
+- **Marker** — 4 个游标、独立跟踪、按峰值排序分配、寻峰寻谷、Savitzky-Golay 平滑
+- **实时频谱 (RTA)** — FPGA 引擎、多迹线、概率密度背景、瀑布图
+- **测量模式** — 幅度（n-dB 带宽）、谐波（H1~H5）、相噪
+- **信道测量** — 信道功率、占用带宽（90/95/99%）、邻道功率比（ACPR）
+- **SDR 接收** — IQ 流式传输 + DSP 在浏览器中运行：AM/DSB/USB/LSB/CW/NFM/WFM/PM 解调、
+  降噪（Wiener，可选 DeepFilterNet3）、音频链、频谱与瀑布
+- **数字模式** — FT8 解码（多轮次消去 + OSD 回退）与 CW 解码
+- **触发与辅助** — RTA 设备电平触发 + 扫描模式软件触发；限制线与通过/失败余量；归一化；PNG/CSV 导出
+- **界面** — 侧边跳转窄条、可选虚拟键盘、幅度单位与外部增益/线损补偿、深/浅主题、中英文
+- **设备链路监控** — 拔线在画布上明确提示（而非定格假死），重新接入后自动恢复原模式，无需重启服务
 
 ## 界面截图
 
@@ -45,13 +34,13 @@
 |---|---|---|
 | ![主界面](screenshots/main_dark.png) | ![中文](screenshots/main_zh.png) | ![浅色](screenshots/main_light.png) |
 
-| 多点寻峰 (MAX_HOLD + 平滑) | 谐波测量 | 相噪测量 |
+| 多点寻峰 | 谐波测量 | 相噪测量 |
 |---|---|---|
 | ![寻峰](screenshots/marker_peaks.png) | ![谐波](screenshots/measure_harmonic.png) | ![相噪](screenshots/measure_phasenoise.png) |
-| 寻谷 (DUT 扫频, MAX_HOLD + smooth=5) | 幅度测量 (N dB) | — |
-| ![寻谷](screenshots/marker_valley.png) | ![幅度](screenshots/measure_amplitude.png) | |
-| 瀑布 + RTA 实时频谱 |
-| ![RTA瀑布](screenshots/waterfall_rta.png) |
+| 幅度测量 | RTA + 瀑布 | |
+| ![幅度](screenshots/measure_amplitude.png) | ![RTA瀑布](screenshots/waterfall_rta.png) | |
+| FT8 解码 (SDR) | CW 解码 (SDR) | |
+| ![FT8](screenshots/sdr_ft8.png) | ![CW](screenshots/sdr_cw.png) | |
 
 ## 快速开始
 
@@ -125,29 +114,36 @@ harogic-websa/
 
 ## 脚本
 
+日常命令，以及提交前应该跑的东西：
+
 | 脚本 | 说明 |
 |---|---|
-| `./run.sh` | 启动 supervisor + WebSA worker；SDK 崩溃/致命超时自动退避重启 |
-| `./stop.sh` | 停止服务 |
-| `make restart` | 重启服务（停止 + 启动） |
-| `make status` | 服务状态：运行状态、PID/运行时长、内存与 CPU、日志路径/大小、设备链路 |
-| `./clean.sh` | 清理缓存/日志/构建产物（`--keep-deps` 保留 `node_modules`） |
-| `./test.sh` | 后端 pytest + Ruff + 前端 Vitest；任一失败返回非零状态 |
-| `make run/stop/restart/status/clean/build/test` | 同 Makefile 入口 |
-| `make dev` | 停止、清理（保留依赖）、重建前端，并以 `WEBSA_TRACE=1` 启动 |
+| `./run.sh` / `./stop.sh` | 启动 / 停止服务（supervisor + worker）|
+| `make restart` / `make status` | 重启 / 查看运行状态、PID、内存、CPU、日志、设备链路 |
+| `./build.sh` | 同步前端依赖并构建产物 |
+| `./test.sh` | 后端 pytest + Ruff + 前端 Vitest |
+| `make ci` | CI 的全部进程内门禁（无需硬件）|
+| `make e2e-fake` | 假后端上的浏览器端到端测试（无需硬件）|
+| `make hw-test` | **需真机**：tinySA CW 冒烟 + 界面状态机回归 |
+| `make bench` | 与已记录的性能基线比较 |
+
+完整清单（fixture 重生成、各类守卫、文档/版本检查、台位探针）见
+[`docs/zh-CN/DEVELOPMENT.md`](docs/zh-CN/DEVELOPMENT.md) §13。
 
 ## 测试
 
-- **后端（147 项）**：帧协议 + golden 帧 fixture、配置/安全默认、命令校验（含能力表驱动的限值）、SWP/RTA 状态隔离、Auto Ref、RTA Ref Clock/连续失败恢复、状态 JSON 清洗、fatal 退出契约、HTTP/WS 鉴权与路径防护、有界客户端推送、采集策略（会话自有的 watchdog/节流）、supervisor/TinySA 安全规则
-- **前端（141 项）**：DSP 引擎合成迹线、频率单位确认、Span Step、SWP/RTA Marker Tracking、S-G 平滑、寻峰寻谷、保峰重采样、归一化、参数槽位、i18n 键一致性、二进制帧解码（对照 Python 生成的 fixture）、STATUS → 参数槽位映射
-- **默认无需硬件**：缺少 `/opt/htraapi/lib/x86_64/libhtraapi.so` 时，7 个依赖厂商库的后端测试模块会被跳过（`tests/conftest.py`），CI 与普通检出仍可跑其余全部测试；`make hw-test` 与 `tools/hardware_smoke.py` 需要频谱仪（CW 信号需 tinySA）。
+- **后端**（pytest）与**前端**（Vitest）覆盖协议、配置、命令校验、Marker/DSP 逻辑、参数槽位与
+  i18n 一致性；golden fixture 锁定二进制帧协议与 DSP 内核（与 Rust/WASM 实现互通）。
+- **默认无需硬件**：缺少 `libhtraapi.so` 时自动跳过依赖厂商库的测试，因此 `make ci` 在任何机器
+  上都能跑完其余门禁；`make e2e-fake` 追加假后端上的浏览器端到端测试；`make hw-test` 需要频谱仪
+  （CW 信号需 tinySA）。
 
 ## 开源说明
 
 - 项目代码（后端 + 前端）：**MIT** 协议
 - `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
-- 截图使用真实 SAN-90 + TinySA 扫频源拍摄
+- 截图使用真实 SAN-90 拍摄（SDR 数字模式截图使用 PlutoSDR 作为信号源）
 
 
 ---
