@@ -2,7 +2,7 @@
 
 > Branch: `analysis/arch-review` (created from `master@03b592c`; this branch adds documentation only, no product code changed)
 > Date: 2026-09-13
-> Scope: the whole repository (backend `web_sa/`, frontend `frontend/modern/src/`, `tests/`, `tools/`, build and docs)
+> Scope: the whole repository (backend `web_sa/`, frontend `frontend/src/`, `tests/`, `tools/`, build and docs)
 > Nature: **evaluation + recommendations**, no implementation. Every claim carries reproducible evidence.
 
 ---
@@ -71,11 +71,11 @@ Size (`git ls-files` based):
 | Area | Lines | Files | Notes |
 |---|---|---|---|
 | `web_sa/` (backend) | 5,296 | 26 | Largest: `sdr.py` 1000, `device.py` 921, `ws.py` 604 |
-| `frontend/modern/src/` (no tests) | 9,826 | 60 | Largest: `controls.ts` 1547, `spectrum.ts` 728, `i18n.ts` 676 |
-| `frontend/modern/src/__tests__/` | 1,386 | 12 | Pure-function tests only |
+| `frontend/src/` (no tests) | 9,826 | 60 | Largest: `controls.ts` 1547, `spectrum.ts` 728, `i18n.ts` 676 |
+| `frontend/src/__tests__/` | 1,386 | 12 | Pure-function tests only |
 | `tests/` (backend) | 1,299 | 11 | |
 | `tools/` (probes + e2e) | 2,700 | 20 | 14 `sdr_probe/` scripts + 1 Playwright e2e |
-| `frontend/modern/index.html` | 646 | 1 | 206 `id`s, 112 `data-action`s |
+| `frontend/index.html` | 646 | 1 | 206 `id`s, 112 `data-action`s |
 | `htra_api.py` (vendor) | 924 | 1 | Must not be modified |
 | Git history | 221 commits | — | Current version 1.5.5 |
 
@@ -126,7 +126,7 @@ continuously; **P2** = hygiene/optimisation.
   ```bash
   python3 - <<'PY'
   import json, re, subprocess
-  src = open('frontend/modern/src/core/i18n.ts', encoding='utf-8').read()
+  src = open('frontend/src/core/i18n.ts', encoding='utf-8').read()
 
   def block(s, i):                      # string-aware brace matching
       depth = 0; j = i; q = None; esc = False
@@ -215,7 +215,7 @@ continuously; **P2** = hygiene/optimisation.
 #### P0-5 No CI, and no single source for the version
 
 - **Symptom**: no `.github/` and no CI configuration at all; the version is hard-coded in four places
-  (`pyproject.toml:3`, `frontend/modern/package.json:3`, `frontend/modern/index.html:640`, release commit
+  (`pyproject.toml:3`, `frontend/package.json:3`, `frontend/index.html:640`, release commit
   messages), there is no `CHANGELOG.md`, and releases follow the manual `chore(release): 1.5.5` pattern.
 - **Impact**: version drift, forgotten test runs, forgotten `npm run build` (the project's own TODO already
   records "forgetting to build means testing the old bundle — happened in this session").
@@ -779,12 +779,12 @@ Both incidents are recorded in the lesson ledger of `DEVELOPMENT.md`, and every 
 ```bash
 # 1) All gates
 python3 -m pytest tests/ -q && python3 -m ruff check web_sa tests tools
-(cd frontend/modern && npx tsc --noEmit && npm test -- --reporter=dot)
+(cd frontend && npx tsc --noEmit && npm test -- --reporter=dot)
 
 # 2) Frontend circular dependencies + import edges
 python3 - <<'PY'
 import os, re, collections
-root='frontend/modern/src'
+root='frontend/src'
 files=[os.path.join(dp,fn) for dp,_,fns in os.walk(root) for fn in fns if fn.endswith(('.ts','.js'))]
 g=collections.defaultdict(set)
 def res(b,s):
@@ -826,7 +826,7 @@ PY
 # 5) Frontend unit-test coverage map (which of the 61 source modules a test imports)
 python3 - <<'PY'
 import os, re, collections
-root='frontend/modern/src'; tdir=os.path.join(root,'__tests__')
+root='frontend/src'; tdir=os.path.join(root,'__tests__')
 covered=set()
 for fn in os.listdir(tdir):
     if not fn.endswith('.ts'): continue

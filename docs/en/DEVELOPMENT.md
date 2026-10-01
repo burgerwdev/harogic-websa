@@ -46,7 +46,7 @@ hardware-free — CI runs it as its own job) -> `make hw-test` with the device a
 | `web/recovery.py` / `supervisor.py` | `fatal()`/`EXIT_FATAL` and process-level restart | Business decisions |
 | `web/jsonutil.py` | JSON boundary: NaN/Inf -> null, single serialisation | - |
 
-### 2.2 Frontend (`frontend/modern/src/`)
+### 2.2 Frontend (`frontend/src/`)
 
 | Directory | Responsibility | Note |
 |---|---|---|
@@ -393,13 +393,13 @@ in a Web Worker. It has **no crate dependencies** and exactly one toolchain requ
 
 ```bash
 rustup target add wasm32-unknown-unknown
-make wasm           # cargo test + release build + publish frontend/modern/public/dsp.wasm
+make wasm           # cargo test + release build + publish frontend/public/dsp.wasm
 make wasm-check     # rebuild and fail when the committed artifact differs (release gate)
 ```
 
 Rules that keep it buildable without Rust everywhere else:
 
-- `frontend/modern/public/dsp.wasm` is **committed**, and `wasm/dsp.artifact.json` records its
+- `frontend/public/dsp.wasm` is **committed**, and `wasm/dsp.artifact.json` records its
   sha256, size, toolchain and export list. `./build.sh` never calls cargo, so a machine (and CI)
   without Rust still builds and serves the app.
 - `tools/check_wasm_artifact.py` (part of `make ci`) verifies the recorded hash *and* parses the
@@ -408,7 +408,7 @@ Rules that keep it buildable without Rust everywhere else:
 - The release profile pins `lto`, one codegen unit and `strip`, so the build is byte-reproducible;
   `make wasm-check` compares bytes, not behaviour.
 - The ABI is a pointer plus a length into the module's linear memory — no wasm-bindgen, no
-  wasm-pack. `frontend/modern/src/sdr/wasm.ts` wraps it and `__tests__/wasm.test.ts` asserts the
+  wasm-pack. `frontend/src/sdr/wasm.ts` wraps it and `__tests__/wasm.test.ts` asserts the
   exported signatures, the version gate and the view rules against the committed bytes.
 - The crate also builds natively, which is what `cargo test` runs the kernels against.
 - A view over the module's memory must be created **after** the last allocation: growing the
@@ -421,7 +421,7 @@ Rules that keep it buildable without Rust everywhere else:
 Measured on the bench this refactor was verified against: **SAN-90** (9 kHz–9 GHz) with a **tinySA
 Ultra ZS407** as the signal source. IQ was captured from the analyzer's own stream
 (`tools/hil_audio_check.py`) and processed through the **committed** `dsp.wasm`
-(`frontend/modern/src/__tests__/hil.test.ts`), with the Python reference run over the same capture
+(`frontend/src/__tests__/hil.test.ts`), with the Python reference run over the same capture
 (`tools/hil_reference_check.py`) so a weak number can be attributed.
 
 | Check | Result |

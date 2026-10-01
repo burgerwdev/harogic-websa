@@ -63,14 +63,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: frontend/modern
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: frontend/modern/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
       - name: Type check
@@ -97,13 +97,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: frontend/modern/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: |
           pip install -r requirements-dev.txt -c requirements-lock.txt
           python -m playwright install --with-deps chromium
       - name: Build the frontend (the service serves dist/)
-        run: cd frontend/modern && npm ci && npm run build
+        run: cd frontend && npm ci && npm run build
       - name: Start the fake-backend service
         run: |
           setsid nohup python -m web_sa.supervisor > /tmp/websa-fake.log 2>&1 < /dev/null &

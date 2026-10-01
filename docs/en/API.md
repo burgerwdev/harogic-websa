@@ -3,7 +3,7 @@
 Backend (`web_sa/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames).
 
 - Service: `http://127.0.0.1:8080` (WebSocket at `/ws`)
-- Frontend: modern UI at `/`, static assets `/static/modern/dist/{file}`
+- Frontend: modern UI at `/`, static assets `/static/dist/{file}`
 - Loopback is the secure default. Remote listeners require `WEBSA_TOKEN`; REST accepts a
   Bearer token and browser/WS clients accept `?token=...`. WebSockets require same-origin
   access or an origin listed in `WEBSA_ALLOWED_ORIGINS`.
@@ -92,7 +92,7 @@ curl -X POST http://localhost:8080/api/config \
 
 Returns the frontend page (modern UI `dist/index.html`).
 
-### `GET /static/modern/dist/{file}`
+### `GET /static/dist/{file}`
 
 Frontend static assets (JS/CSS/fonts).
 

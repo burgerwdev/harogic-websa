@@ -112,9 +112,8 @@ harogic-websa/
 │  ├─ hardware/          sdk_bindings.py(唯一 dll 接触点) / device.py
 │  ├─ measurements/      Std/Harmonic/PhaseNoise 会话 + framer(帧协议)
 │  └─ web/               ws.py / http_api.py / publisher.py
-├─ frontend/
-│  └─ modern/            TS 前端 (Vite + TypeScript, i18n + 主题)
-│     └─ src/__tests__/  vitest 测试(DSP 引擎, 合成迹线)
+├─ frontend/             TS 前端 (Vite + TypeScript, i18n + 主题)
+│  └─ src/__tests__/     vitest 测试(DSP 引擎, 合成迹线)
 ├─ htra_api.py           官方 SDK Python 包装 (HAROGIC 版权)
 ├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕 /
 │                        架构评估 / 开发指南

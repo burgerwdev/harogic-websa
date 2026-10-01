@@ -181,7 +181,7 @@ async def run(args) -> int:
     iq_path.write_bytes(baseband.tobytes())
     meta = {
         'note': 'Captured by tools/hil_audio_check.py from the SAN-90 channelized baseband '
-                '(IQBF); measured by frontend/modern/src/__tests__/hil.test.ts through the '
+                '(IQBF); measured by frontend/src/__tests__/hil.test.ts through the '
                 'committed dsp.wasm.',
         'iq_file': iq_path.name,
         'samples': int(baseband.size // 2),

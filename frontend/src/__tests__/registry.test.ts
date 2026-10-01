@@ -22,7 +22,7 @@ import {
 } from '../sdr/registry';
 import { instantiateDsp } from '../sdr/wasm';
 
-const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
+const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
 
 const artifactBytes = (): ArrayBuffer => {
 	const buf = readFileSync(ARTIFACT);

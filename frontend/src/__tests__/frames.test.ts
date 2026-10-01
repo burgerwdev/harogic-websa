@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFrame, frameMagic, MAGIC_AUDIO, MAGIC_BASEBAND, MAGIC_FREQ, MAGIC_POWR, MAGIC_RTAF } from '../core/frames';
 
 // vitest runs with the frontend package as cwd; the fixtures live at the repository root.
-const DIR = resolve(process.cwd(), '..', '..', 'tests', 'fixtures', 'frames') + '/';
+const DIR = resolve(process.cwd(), '..', 'tests', 'fixtures', 'frames') + '/';
 
 const manifest = JSON.parse(readFileSync(`${DIR}manifest.json`, 'utf8')) as {
 	freq: { version: number; points: number; sweep_ms: number; freq: number[] };

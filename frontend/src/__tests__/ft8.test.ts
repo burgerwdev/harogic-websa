@@ -15,8 +15,8 @@ import { describe, expect, it } from 'vitest';
 import { WasmPipeline, type PipelineParams } from '../sdr/wasmPipeline';
 import { instantiateDsp } from '../sdr/wasm';
 
-const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
-const FIXTURE = resolve(process.cwd(), '..', '..', 'tests', 'fixtures', 'ft8');
+const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
+const FIXTURE = resolve(process.cwd(), '..', 'tests', 'fixtures', 'ft8');
 
 const artifactBytes = (): ArrayBuffer => {
 	const buf = readFileSync(ARTIFACT);

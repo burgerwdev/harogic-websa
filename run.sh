@@ -1,11 +1,11 @@
 #!/bin/bash
 # Run: supervisor + WebSA worker, with health check and native-crash recovery.
-# Usage: ./run.sh (modern TS frontend)
+# Usage: ./run.sh (TS frontend)
 set -e
 cd "$(dirname "$0")"
 
 # Frontend check: dist must exist
-if [ ! -f frontend/modern/dist/index.html ]; then
+if [ ! -f frontend/dist/index.html ]; then
   echo "Frontend not built, run ./build.sh first"
   exit 1
 fi

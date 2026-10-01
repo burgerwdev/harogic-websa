@@ -13,7 +13,7 @@ import { renderSdrDemodGroup } from '../ui/sdrDemodGroup';
 import { readPluginManifest, setPluginManifest } from '../sdr/registry';
 import { instantiateDsp } from '../sdr/wasm';
 
-const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
+const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
 const INDEX_HTML = resolve(process.cwd(), 'index.html');
 
 const artifactBytes = (): ArrayBuffer => {

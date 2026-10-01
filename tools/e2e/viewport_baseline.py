@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-STYLE_CSS = ROOT / 'frontend/modern/src/style.css'
+STYLE_CSS = ROOT / 'frontend/src/style.css'
 SHOT_DIR = ROOT / 'screenshots/resolution-baseline'
 
 # (label, CSS width, CSS height, device pixel ratio)
@@ -318,7 +318,7 @@ def style_inventory() -> list[str]:
     for lineno, line in enumerate(STYLE_CSS.read_text(encoding='utf-8').splitlines(), 1):
         for prop, value in decl_re.findall(line):
             if 'px' in value:
-                rows.append(f'  frontend/modern/src/style.css:{lineno}: {prop}: {value.strip()}')
+                rows.append(f'  frontend/src/style.css:{lineno}: {prop}: {value.strip()}')
     return rows
 
 
@@ -341,7 +341,7 @@ def lock_report() -> list[str]:
             out.append(f'  {label}: gone ({shown} is no longer in the file)')
             continue
         lineno = css[:m.start()].count('\n') + 1
-        out.append(f'  {label}: {shown}  (frontend/modern/src/style.css:{lineno})')
+        out.append(f'  {label}: {shown}  (frontend/src/style.css:{lineno})')
     return out
 
 

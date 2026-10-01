@@ -3,7 +3,7 @@
 ``tools/gen_frame_fixtures.py`` writes the fixtures from the production encoders; this
 test re-encodes the same values and asserts the committed bytes still match. A format
 change therefore fails here until the fixtures are regenerated, and the TypeScript test
-(``frontend/modern/src/__tests__/frames.test.ts``) then proves the decoder still agrees.
+(``frontend/src/__tests__/frames.test.ts``) then proves the decoder still agrees.
 """
 from __future__ import annotations
 

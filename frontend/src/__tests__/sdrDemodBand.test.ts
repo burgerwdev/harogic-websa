@@ -18,8 +18,8 @@ import { readPluginManifest, setPluginManifest } from '../sdr/registry';
 import { instantiateDsp } from '../sdr/wasm';
 import { demodBandHz } from '../ui/sdrState';
 
-const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
-const FT8_RS = resolve(process.cwd(), '..', '..', 'wasm', 'src', 'digital', 'ft8', 'mod.rs');
+const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
+const FT8_RS = resolve(process.cwd(), '..', 'wasm', 'src', 'digital', 'ft8', 'mod.rs');
 
 async function loadManifest(): Promise<void> {
 	const buf = readFileSync(ARTIFACT);

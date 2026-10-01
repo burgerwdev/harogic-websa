@@ -23,7 +23,7 @@ status:   ## Show service status (pid, uptime, memory, CPU, log path/size)
 clean:    ## Clean caches/logs/artifacts (also removes node_modules)
 	./clean.sh
 
-build: frontend/modern/public/dsp.wasm frontend/modern/public/dfn/df_bg.wasm  ## Full build: WASM cores (only if stale + Rust present) + frontend -> dist
+build: frontend/public/dsp.wasm frontend/public/dfn/df_bg.wasm  ## Full build: WASM cores (only if stale + Rust present) + frontend -> dist
 	./build.sh
 
 test:     ## Test (backend pytest + frontend vitest)
@@ -69,13 +69,13 @@ wasm-check: ## Rebuild both WASM cores and fail if a committed artifact differs 
 wasm-test: ## Run the Rust DSP kernel tests (numeric agreement with the Python reference)
 	cd wasm && cargo test
 
-frontend/modern/public/dsp.wasm: $(WASM_DSP_SRC)
+frontend/public/dsp.wasm: $(WASM_DSP_SRC)
 	@if ! command -v cargo >/dev/null 2>&1; then \
 		echo "NOTE: $@ is stale but cargo is missing - keeping the committed artifact" \
 			"(install rustup, then: cargo install wasm-pack && rustup target add wasm32-unknown-unknown)"; \
 	else rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true; ./wasm/build.sh; fi
 
-frontend/modern/public/dfn/df_bg.wasm: $(WASM_DFN_SRC)
+frontend/public/dfn/df_bg.wasm: $(WASM_DFN_SRC)
 	@if ! command -v cargo >/dev/null 2>&1; then \
 		echo "NOTE: $@ is stale but cargo is missing - keeping the committed artifact" \
 			"(install rustup, then: cargo install wasm-pack && rustup target add wasm32-unknown-unknown)"; \

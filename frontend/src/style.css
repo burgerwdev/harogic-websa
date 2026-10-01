@@ -3,17 +3,17 @@
    中英文统一使用该字体, 各平台渲染完全一致 */
 @font-face {
   font-family: 'LXGW WenKai';
-  src: url('/static/modern/dist/fonts/LXGWWenKai-Regular.woff2') format('woff2');
+  src: url('/static/dist/fonts/LXGWWenKai-Regular.woff2') format('woff2');
   font-weight: 400; font-style: normal; font-display: swap;
 }
 @font-face {
   font-family: 'LXGW WenKai';
-  src: url('/static/modern/dist/fonts/LXGWWenKai-Medium.woff2') format('woff2');
+  src: url('/static/dist/fonts/LXGWWenKai-Medium.woff2') format('woff2');
   font-weight: 500; font-style: normal; font-display: swap;
 }
 @font-face {
   font-family: 'LXGW WenKai';
-  src: url('/static/modern/dist/fonts/LXGWWenKai-Medium.woff2') format('woff2');
+  src: url('/static/dist/fonts/LXGWWenKai-Medium.woff2') format('woff2');
   font-weight: 700; font-style: normal; font-display: swap;
 }
 /* ============ 全局强制字体: 自托管优先, 未打包字符 fallback 系统 ============ */

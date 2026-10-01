@@ -7,10 +7,10 @@ venv/
 
 # Node / 前端
 node_modules/
-frontend/modern/dist/
+frontend/dist/
 npm-debug.log*
 
-# Rust/WASM 构建产物（入库的是发布后的 frontend/modern/public/dsp.wasm）
+# Rust/WASM 构建产物（入库的是发布后的 frontend/public/dsp.wasm）
 wasm/target/
 
 # DFN 降噪运行时构建产物（入库的是发布后的 public/dfn 与 public/models）

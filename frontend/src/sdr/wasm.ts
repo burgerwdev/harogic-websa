@@ -139,7 +139,7 @@ export async function loadDsp(url: string): Promise<DspModule> {
 /** Where the artifact sits, derived from the app's static base.
  *
  * The page can be served from `/` (the backend's index route) while the assets live under
- * `/static/modern/dist/`, so `document.baseURI` is *not* where `dsp.wasm` is: deriving the path
+ * `/static/dist/`, so `document.baseURI` is *not* where `dsp.wasm` is: deriving the path
  * from the document produced a 404 against the served page. Vite's base is the one source of
  * truth for both the dev server and the built bundle (`vite.config.ts`), so it is used here and
  * `base` remains overridable for tests.
@@ -148,5 +148,5 @@ export function dspWasmUrl(base?: string): string {
 	if (base) return new URL('dsp.wasm', base).href;
 	const viteBase = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL;
 	if (viteBase) return new URL('dsp.wasm', new URL(viteBase, location.origin)).href;
-	return new URL('/static/modern/dist/dsp.wasm', location.origin).href;
+	return new URL('/static/dist/dsp.wasm', location.origin).href;
 }

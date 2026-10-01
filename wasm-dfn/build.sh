@@ -2,7 +2,7 @@
 # Build the DeepFilterNet3 noise-reduction runtime (upstream `libDF`, tract ONNX runtime) to WASM
 # and publish it as the committed browser artifact.
 #
-#   wasm-dfn/build.sh             build + copy to frontend/modern/public/dfn/{df_bg.wasm,df.js}
+#   wasm-dfn/build.sh             build + copy to frontend/public/dfn/{df_bg.wasm,df.js}
 #   wasm-dfn/build.sh --check     rebuild and fail if the committed artifact differs (release gate)
 #
 # This is the author's own streaming runtime (tract's PulsedModel + SimpleState handle the conv
@@ -15,7 +15,7 @@ cd "$(dirname "$0")"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 
-DST=../frontend/modern/public/dfn
+DST=../frontend/public/dfn
 OUT=pkg/df_bg.wasm
 
 if ! command -v wasm-pack >/dev/null 2>&1; then

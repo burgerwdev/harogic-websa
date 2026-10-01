@@ -6,7 +6,7 @@ wire format without a test failing:
 
   - Python: ``tests/test_frame_fixtures.py`` re-encodes the same values and asserts the
     committed bytes are identical (a format change must be accompanied by new fixtures).
-  - TypeScript: ``frontend/modern/src/__tests__/frames.test.ts`` decodes the committed
+  - TypeScript: ``frontend/src/__tests__/frames.test.ts`` decodes the committed
     bytes and asserts every field against ``manifest.json``.
 
 Usage:  python3 tools/gen_frame_fixtures.py [--check]

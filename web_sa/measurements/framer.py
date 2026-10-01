@@ -25,7 +25,7 @@ Key points:
     wire traffic independent of the device's raw IQ rate.
   * IQBF stores the baseband rate as f64 (it is an IQS rate divided by a power of two, rarely an
     integer), and puts both f64 fields before the payload so the f32 block starts 4-byte aligned.
-  * The TypeScript counterpart is frontend/modern/src/core/frames.ts; the two are held
+  * The TypeScript counterpart is frontend/src/core/frames.ts; the two are held
     together by tools/gen_frame_fixtures.py + the tests on both sides.
 """
 from __future__ import annotations

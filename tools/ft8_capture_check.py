@@ -7,7 +7,7 @@ there to decode, or one was and the decoder missed it. This separates them.
   * the *spectrum* check looks for an FT8-shaped burst in each 15 s slot (a tone that stands well above
     the slot's own noise floor). A slot with no such tone cannot decode, whatever the decoder does;
   * the *decode* check runs the capture through the committed `dsp.wasm` with the same wrapper the
-    browser worker uses (via `frontend/modern/src/__tests__/ft8Capture.test.ts`), so what is measured is
+    browser worker uses (via `frontend/src/__tests__/ft8Capture.test.ts`), so what is measured is
     the artifact that ships.
 
 Usage:

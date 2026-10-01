@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the *Python reference* DSP over a hardware capture, for comparison with the browser kernels.
 
-`tools/hil_audio_check.py` captures real IQ; `frontend/modern/src/__tests__/hil.test.ts` measures it
+`tools/hil_audio_check.py` captures real IQ; `frontend/src/__tests__/hil.test.ts` measures it
 through the committed `dsp.wasm`. This tool measures the same capture with the Python chain the
 browser kernels were ported from (`web_sa/demod/filters.py` + `demod/demod.py`), so a disappointing
 number on the bench can be attributed: if the reference shows the same SINAD, the limit is the

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build ggmorse (MIT) into the single-file wasm module the browser CW decoder loads.
 #
-# The artifact is COMMITTED (frontend/modern/src/dsp/ggmorse/ggmorse.js) for the same reason the DSP
+# The artifact is COMMITTED (frontend/src/dsp/ggmorse/ggmorse.js) for the same reason the DSP
 # cores are: the service and CI gate on it, so a machine without the toolchain still builds - and
 # emscripten is a ~1.7 GB download. Run this script only when the vendored ggmorse sources or the
 # wrapper change.
@@ -18,7 +18,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 src="$here/ggmorse"
 emsdk="$here/.emsdk"
-out="$root/frontend/modern/src/dsp/ggmorse/ggmorse.js"
+out="$root/frontend/src/dsp/ggmorse/ggmorse.js"
 
 check=0
 [ "$1" = "--check" ] && check=1

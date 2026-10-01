@@ -1,7 +1,7 @@
 //! The plugin manifest over the ABI.
 //!
 //! The browser does not carry its own list of modes: it reads this one from the module (see
-//! `frontend/modern/src/sdr/registry.ts`). A mode therefore exists in exactly one place, and a UI
+//! `frontend/src/sdr/registry.ts`). A mode therefore exists in exactly one place, and a UI
 //! list that drifts from the DSP is not possible to express.
 //!
 //! Strings are copied into a caller-provided buffer: the id is ASCII and short, and returning a

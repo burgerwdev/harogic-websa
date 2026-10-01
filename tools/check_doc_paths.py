@@ -4,7 +4,7 @@
 The stage map is the architecture's contract — "every stage of the diagram is a named module" — and
 it is only useful if the names are real. The bilingual docs-parity gate compares section structure,
 not paths, so a renamed or aspirational module could sit there indefinitely (it did: the map named
-`frontend/modern/src/sdr/worker.ts`, `sdr/analog.ts` and `wasm/src/analog/{am,dsb,...}.rs`, none of
+`frontend/src/sdr/worker.ts`, `sdr/analog.ts` and `wasm/src/analog/{am,dsb,...}.rs`, none of
 which were ever written).
 
 This checks the backticked, repository-looking paths in both `ARCHITECTURE.md` files, expanding

@@ -40,7 +40,7 @@ def _resolve_ts(base: Path, spec: str) -> Path | None:
 
 
 def _ts_graph() -> dict[Path, set[Path]]:
-    root = ROOT / 'frontend' / 'modern' / 'src'
+    root = ROOT / 'frontend' / 'src'
     files = [p for p in root.rglob('*') if p.suffix in ('.ts', '.js')]
     graph: dict[Path, set[Path]] = {p: set() for p in files}
     pattern = re.compile(r"""(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]""")

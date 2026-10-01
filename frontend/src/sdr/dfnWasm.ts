@@ -21,7 +21,7 @@ export interface DfnUrls {
 /** Asset URLs under Vite's base. */
 export function dfnUrls(base?: string): DfnUrls {
 	const root = new URL(
-		base ?? (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/static/modern/dist/',
+		base ?? (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/static/dist/',
 		globalThis.location ? location.origin : 'http://localhost',
 	).href;
 	return {

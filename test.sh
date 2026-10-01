@@ -12,8 +12,8 @@ python3 -m ruff check web_sa tests tools
 
 echo
 echo "==== Frontend tests (vitest) ===="
-if [ -d frontend/modern/node_modules ]; then
-  (cd frontend/modern && npm test -- --reporter=dot)
+if [ -d frontend/node_modules ]; then
+  (cd frontend && npm test -- --reporter=dot)
 else
   echo "Frontend deps not installed, run ./build.sh first"
   exit 1

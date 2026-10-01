@@ -4,9 +4,9 @@
 `pyproject.toml` is the single source of truth (report finding P0-5); the two files that
 must display it are rewritten from it:
 
-  frontend/modern/package.json       "version"
-  frontend/modern/package-lock.json  "version" (root + the "" package entry)
-  frontend/modern/index.html         the top-bar `vX.Y.Z` tag
+  frontend/package.json       "version"
+  frontend/package-lock.json  "version" (root + the "" package entry)
+  frontend/index.html         the top-bar `vX.Y.Z` tag
 
 Usage:
     python3 tools/sync_version.py            # apply
@@ -22,9 +22,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / 'pyproject.toml'
-PACKAGE = ROOT / 'frontend' / 'modern' / 'package.json'
-LOCK = ROOT / 'frontend' / 'modern' / 'package-lock.json'
-INDEX = ROOT / 'frontend' / 'modern' / 'index.html'
+PACKAGE = ROOT / 'frontend' / 'package.json'
+LOCK = ROOT / 'frontend' / 'package-lock.json'
+INDEX = ROOT / 'frontend' / 'index.html'
 
 VERSION_TAG = re.compile(r'(<span class="version-tag"[^>]*>v)(\d+\.\d+\.\d+)')
 

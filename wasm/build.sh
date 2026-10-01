@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the DSP core for wasm32 and publish it as the committed browser artifact.
 #
-#   wasm/build.sh           build + copy to frontend/modern/public/dsp.wasm + record the manifest
+#   wasm/build.sh           build + copy to frontend/public/dsp.wasm + record the manifest
 #   wasm/build.sh --check    rebuild and fail if the committed artifact differs (release gate)
 #
 # The artifact is committed so that CI and a machine without Rust can still build the frontend
@@ -16,7 +16,7 @@ CHECK=0
 TARGET=wasm32-unknown-unknown
 LIB=websa_dsp
 OUT="target/$TARGET/release/$LIB.wasm"
-DST=../frontend/modern/public/dsp.wasm
+DST=../frontend/public/dsp.wasm
 MANIFEST=dsp.artifact.json
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -70,7 +70,7 @@ from check_wasm_artifact import wasm_exports  # noqa: E402
 document = {
     'note': 'Written by wasm/build.sh. The .wasm is committed so the frontend build needs no '
             'Rust; tools/check_wasm_artifact.py verifies this manifest in CI.',
-    'file': 'frontend/modern/public/dsp.wasm',
+    'file': 'frontend/public/dsp.wasm',
     'sha256': hashlib.sha256(data).hexdigest(),
     'bytes': len(data),
     'target': target,

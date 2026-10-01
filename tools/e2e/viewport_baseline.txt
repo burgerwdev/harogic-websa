@@ -9,59 +9,59 @@
   spectrum column floor: gone (min-width: 860px is no longer in the file)
   control panel width: gone (width: 360px is no longer in the file)
   container height: gone (calc(100vh - 96px) is no longer in the file)
---- all px width/height declarations (frontend/modern/src/style.css):
-  frontend/modern/src/style.css:189: min-height: 320px
-  frontend/modern/src/style.css:210: width: 9px
-  frontend/modern/src/style.css:210: height: 9px
-  frontend/modern/src/style.css:225: min-width: 62px
-  frontend/modern/src/style.css:241: min-width: 210px
-  frontend/modern/src/style.css:263: min-height: 120px
-  frontend/modern/src/style.css:298: height: 135px
-  frontend/modern/src/style.css:310: width: 26px
-  frontend/modern/src/style.css:318: width: 24px
-  frontend/modern/src/style.css:326: width: 12px
-  frontend/modern/src/style.css:326: height: 26px
-  frontend/modern/src/style.css:330: height: 22px
-  frontend/modern/src/style.css:361: width: 6px
-  frontend/modern/src/style.css:368: width: 190px
-  frontend/modern/src/style.css:406: min-width: 18px
-  frontend/modern/src/style.css:419: width: 88px
-  frontend/modern/src/style.css:419: min-width: 88px
-  frontend/modern/src/style.css:423: width: 34px
-  frontend/modern/src/style.css:423: min-width: 34px
-  frontend/modern/src/style.css:424: min-width: 48px
-  frontend/modern/src/style.css:425: width: 34px
-  frontend/modern/src/style.css:426: min-width: 28px
-  frontend/modern/src/style.css:442: width: 32px
-  frontend/modern/src/style.css:442: min-width: 32px
-  frontend/modern/src/style.css:443: width: 82px
-  frontend/modern/src/style.css:444: width: 62px
-  frontend/modern/src/style.css:446: min-width: 34px
-  frontend/modern/src/style.css:447: min-width: 58px
-  frontend/modern/src/style.css:453: min-width: 52px
-  frontend/modern/src/style.css:456: width: 108px
-  frontend/modern/src/style.css:456: height: 22px
-  frontend/modern/src/style.css:458: height: 22px
-  frontend/modern/src/style.css:463: height: 22px
-  frontend/modern/src/style.css:466: width: 24px
-  frontend/modern/src/style.css:468: width: 68px
-  frontend/modern/src/style.css:471: width: 68px
-  frontend/modern/src/style.css:492: width: 66px
-  frontend/modern/src/style.css:522: min-width: 48px
-  frontend/modern/src/style.css:522: height: 24px
-  frontend/modern/src/style.css:523: width: 18px
-  frontend/modern/src/style.css:523: height: 24px
-  frontend/modern/src/style.css:529: min-width: 12px
-  frontend/modern/src/style.css:531: width: 11px
-  frontend/modern/src/style.css:531: height: 11px
-  frontend/modern/src/style.css:535: min-width: 28px
-  frontend/modern/src/style.css:540: min-width: 28px
-  frontend/modern/src/style.css:588: max-width: 1000px) {
-  frontend/modern/src/style.css:592: min-height: 260px
-  frontend/modern/src/style.css:599: width: 34px
-  frontend/modern/src/style.css:599: height: 22px
-  frontend/modern/src/style.css:603: max-width: 700px) {
-  frontend/modern/src/style.css:608: max-height: 560px) {
+--- all px width/height declarations (frontend/src/style.css):
+  frontend/src/style.css:189: min-height: 320px
+  frontend/src/style.css:210: width: 9px
+  frontend/src/style.css:210: height: 9px
+  frontend/src/style.css:225: min-width: 62px
+  frontend/src/style.css:241: min-width: 210px
+  frontend/src/style.css:263: min-height: 120px
+  frontend/src/style.css:298: height: 135px
+  frontend/src/style.css:310: width: 26px
+  frontend/src/style.css:318: width: 24px
+  frontend/src/style.css:326: width: 12px
+  frontend/src/style.css:326: height: 26px
+  frontend/src/style.css:330: height: 22px
+  frontend/src/style.css:361: width: 6px
+  frontend/src/style.css:368: width: 190px
+  frontend/src/style.css:406: min-width: 18px
+  frontend/src/style.css:419: width: 88px
+  frontend/src/style.css:419: min-width: 88px
+  frontend/src/style.css:423: width: 34px
+  frontend/src/style.css:423: min-width: 34px
+  frontend/src/style.css:424: min-width: 48px
+  frontend/src/style.css:425: width: 34px
+  frontend/src/style.css:426: min-width: 28px
+  frontend/src/style.css:442: width: 32px
+  frontend/src/style.css:442: min-width: 32px
+  frontend/src/style.css:443: width: 82px
+  frontend/src/style.css:444: width: 62px
+  frontend/src/style.css:446: min-width: 34px
+  frontend/src/style.css:447: min-width: 58px
+  frontend/src/style.css:453: min-width: 52px
+  frontend/src/style.css:456: width: 108px
+  frontend/src/style.css:456: height: 22px
+  frontend/src/style.css:458: height: 22px
+  frontend/src/style.css:463: height: 22px
+  frontend/src/style.css:466: width: 24px
+  frontend/src/style.css:468: width: 68px
+  frontend/src/style.css:471: width: 68px
+  frontend/src/style.css:492: width: 66px
+  frontend/src/style.css:522: min-width: 48px
+  frontend/src/style.css:522: height: 24px
+  frontend/src/style.css:523: width: 18px
+  frontend/src/style.css:523: height: 24px
+  frontend/src/style.css:529: min-width: 12px
+  frontend/src/style.css:531: width: 11px
+  frontend/src/style.css:531: height: 11px
+  frontend/src/style.css:535: min-width: 28px
+  frontend/src/style.css:540: min-width: 28px
+  frontend/src/style.css:588: max-width: 1000px) {
+  frontend/src/style.css:592: min-height: 260px
+  frontend/src/style.css:599: width: 34px
+  frontend/src/style.css:599: height: 22px
+  frontend/src/style.css:603: max-width: 700px) {
+  frontend/src/style.css:608: max-height: 560px) {
 
 === laptop-1366x768 [swp] ===
 viewport 1366x768 css, dpr 1

@@ -5,7 +5,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['src/__tests__/setup.ts'],
   },
-  base: '/static/modern/dist/',
+  base: '/static/dist/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,

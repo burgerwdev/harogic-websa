@@ -2,7 +2,7 @@
 # Frontend build: npm install (if missing) -> Vite build -> dist
 # Self-hosted font: extract LXGW WenKai from the system if public/fonts lacks LXGWWenKai-*.woff2
 set -e
-cd "$(dirname "$0")/frontend/modern"
+cd "$(dirname "$0")/frontend"
 
 # Font extraction (if missing): subset LXGW WenKai from /usr/share/fonts/TTF
 if [ ! -f public/fonts/LXGWWenKai-Regular.woff2 ]; then
@@ -39,4 +39,4 @@ fi
 # npm deps + build (always reconcile node_modules with package-lock.json)
 npm install --prefer-offline --no-audit
 npm run build
-echo "OK: frontend build complete -> frontend/modern/dist"
+echo "OK: frontend build complete -> frontend/dist"

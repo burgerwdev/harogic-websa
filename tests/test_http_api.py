@@ -113,7 +113,7 @@ async def test_config_rejects_non_object_and_unknown_command():
 async def test_static_route_rejects_encoded_absolute_path():
     client = make_client()
     async with client:
-        resp = await client.get('/static/modern/dist/%2Fetc%2Fhostname')
+        resp = await client.get('/static/dist/%2Fetc%2Fhostname')
         assert resp.status == 403
 
 

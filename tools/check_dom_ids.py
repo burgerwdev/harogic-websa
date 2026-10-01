@@ -22,8 +22,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / 'frontend' / 'modern' / 'src'
-INDEX = ROOT / 'frontend' / 'modern' / 'index.html'
+SRC = ROOT / 'frontend' / 'src'
+INDEX = ROOT / 'frontend' / 'index.html'
 
 #: ids read on purpose even though they may be absent (popovers injected at runtime, ...).
 OPTIONAL: dict[str, str] = {}

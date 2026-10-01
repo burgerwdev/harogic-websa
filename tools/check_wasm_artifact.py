@@ -23,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / 'wasm' / 'dsp.artifact.json'
-ARTIFACT = ROOT / 'frontend' / 'modern' / 'public' / 'dsp.wasm'
+ARTIFACT = ROOT / 'frontend' / 'public' / 'dsp.wasm'
 #: ABI version this toolchain's loader understands; keep in step with wasm/src/abi.rs.
 EXPECTED_ABI_VERSION = 1
 WASM_MAGIC = b'\x00asm'

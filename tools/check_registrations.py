@@ -7,7 +7,7 @@ render/spectrum.ts any more, so its `setRenderer(renderAll)` never ran: the canv
 blank with no exception and no console error, and every test that asserted frames, datasets
 or counters still passed (report finding / lesson §9.3).
 
-This check walks the import graph from `frontend/modern/src/main.ts` and fails when a module
+This check walks the import graph from `frontend/src/main.ts` and fails when a module
 that registers something at module scope is not reachable. Reachability is computed from the
 actual import specifiers, so an entry-point import added for its side effect counts.
 
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / 'frontend' / 'modern' / 'src'
+SRC = ROOT / 'frontend' / 'src'
 ENTRY = SRC / 'main.ts'
 
 #: Calls that must run for the app to work at all (module scope only; a call inside a

@@ -41,7 +41,7 @@
 | `web/recovery.py` / `supervisor.py` | `fatal()`/`EXIT_FATAL` 与进程级重启 | 业务判断 |
 | `web/jsonutil.py` | JSON 边界：NaN/Inf → null、单次序列化 | — |
 
-### 2.2 前端（`frontend/modern/src/`）
+### 2.2 前端（`frontend/src/`）
 
 | 目录 | 职责 | 备注 |
 |---|---|---|
@@ -352,20 +352,20 @@ python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指
 
 ```bash
 rustup target add wasm32-unknown-unknown
-make wasm           # cargo test + release 构建 + 发布 frontend/modern/public/dsp.wasm
+make wasm           # cargo test + release 构建 + 发布 frontend/public/dsp.wasm
 make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 ```
 
 让其他地方都不需要 Rust 的规则：
 
-- `frontend/modern/public/dsp.wasm` **入库**，`wasm/dsp.artifact.json` 记录其 sha256、大小、工具链与
+- `frontend/public/dsp.wasm` **入库**，`wasm/dsp.artifact.json` 记录其 sha256、大小、工具链与
   导出列表。`./build.sh` 绝不调用 cargo，因此没有 Rust 的机器（和 CI）照样能构建并服务应用。
 - `tools/check_wasm_artifact.py`（`make ci` 的一部分）只用标准库校验记录的哈希，**并解析模块的导出段**：
   产物陈旧、被截断或导出被改名都会在没有 Rust 的情况下失败。
 - release profile 固定 `lto`、单一 codegen unit 与 `strip`，构建逐字节可复现；`make wasm-check`
   比较的是字节，不只是行为。
 - ABI 是指向模块线性内存的“指针 + 长度”——没有 wasm-bindgen，也没有 wasm-pack。
-  `frontend/modern/src/sdr/wasm.ts` 负责包装，`__tests__/wasm.test.ts` 针对入库字节断言导出签名、
+  `frontend/src/sdr/wasm.ts` 负责包装，`__tests__/wasm.test.ts` 针对入库字节断言导出签名、
   版本门禁与视图规则。
 - 该 crate 也能本机编译，`cargo test` 就是针对内核运行它。
 - 内存视图必须在**最后一次分配之后**创建：内存增长会让已有视图 detach，而 detach 的视图读出来是长度 0
@@ -377,7 +377,7 @@ make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 
 以下数据来自本次重构验证所用的台位：**SAN-90**（9 kHz–9 GHz）配 **tinySA Ultra ZS407** 作为信号源。IQ 从分析仪
 自身的流中抓取（`tools/hil_audio_check.py`），再经**入库的** `dsp.wasm` 处理
-（`frontend/modern/src/__tests__/hil.test.ts`）；同一抓取也跑一遍 Python 参考
+（`frontend/src/__tests__/hil.test.ts`）；同一抓取也跑一遍 Python 参考
 （`tools/hil_reference_check.py`），以便把不佳的数值归因。
 
 | 检查 | 结果 |

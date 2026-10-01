@@ -13,7 +13,7 @@ that survives a reload is the same viewport-pixel box.
 
 Usage:  python3 tools/e2e/ft8_window_drag.py
 Exit status is non-zero when any check fails. Requires the frontend built (./build.sh) - the
-backend serves frontend/modern/dist.
+backend serves frontend/dist.
 """
 from __future__ import annotations
 

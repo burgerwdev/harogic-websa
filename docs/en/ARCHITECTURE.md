@@ -2,7 +2,7 @@
 
 ## Overview
 ```
-Browser (frontend/modern: TS + Vite)
+Browser (frontend: TS + Vite)
    │  bounded latest-wins binary frames + WS JSON
    ▼
 Supervisor → web_sa worker (aiohttp + serialized SDK access; restart on native crash/timeout)
@@ -92,20 +92,20 @@ path here does not exist yet.
 | Python device / control | `web_sa/hardware/`, `web_sa/measurements/`, `web_sa/web/` |
 | Channelizer (DDC + tuning) | `web_sa/demod/ddc.py` (vendor `DSP_DDC`), `web_sa/measurements/sdr.py` (`_chain_coarse`, `_mix`) |
 | Baseband over WebSocket | `web_sa/measurements/framer.py` (`IQBF`), `web_sa/web/client_stream.py` |
-| Baseband ingress | `frontend/modern/src/sdr/iqWorker.ts` |
-| Worker DSP orchestration | `frontend/modern/src/sdr/iqStream.ts`, `frontend/modern/src/sdr/wasmPipeline.ts` |
-| WASM boundary (raw ABI) | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`, `wasm/src/abi.rs` |
+| Baseband ingress | `frontend/src/sdr/iqWorker.ts` |
+| Worker DSP orchestration | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/wasmPipeline.ts` |
+| WASM boundary (raw ABI) | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`, `wasm/src/abi.rs` |
 | Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
 | Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
 | Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
-| Noise reduction (DeepFilterNet3, streamed) | `frontend/modern/src/sdr/dfnWorker.ts`, `frontend/modern/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
-| DFN artifact and model | `wasm-dfn/build.sh` → `frontend/modern/public/dfn/df_bg.wasm` (committed), `frontend/modern/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
+| Noise reduction (DeepFilterNet3, streamed) | `frontend/src/sdr/dfnWorker.ts`, `frontend/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
+| DFN artifact and model | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm` (committed), `frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
 | Path assembly and the separation rule | `wasm/src/pipeline.rs` |
 | DDC kernels (kept, and the reference chain) | `wasm/src/ddc/nco.rs`, `wasm/src/ddc/fir.rs`, `wasm/src/ddc/resampler.rs`, `wasm/src/ddc/agc.rs`, `wasm/src/ddc/mod.rs` |
-| Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/modern/src/sdr/registry.ts` |
-| Audio PCM output and the jitter buffer | `frontend/modern/src/audio/sdrAudioWorklet.js`, `frontend/modern/src/audio/sdrAudio.ts`, `frontend/modern/src/audio/sdrAudioWorker.ts` |
+| Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/src/sdr/registry.ts` |
+| Audio PCM output and the jitter buffer | `frontend/src/audio/sdrAudioWorklet.js`, `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts` |
 | Python fallback and reference | `web_sa/demod/` (unchanged), `tools/dsp_parity.py`, `tools/gen_dsp_fixtures.py` |
-| WASM artifact build | `wasm/build.sh` → `frontend/modern/public/dsp.wasm` (committed) |
+| WASM artifact build | `wasm/build.sh` → `frontend/public/dsp.wasm` (committed) |
 
 `tools/check_doc_paths.py` verifies every path in this table exists, so the map cannot describe a
 module that was renamed or never written.
@@ -179,14 +179,14 @@ another SDR application's output.
 
 ### Audio playback, NR and the fallback split
 
-The last stage before the speaker is `frontend/modern/src/audio/sdrAudioWorklet.js`, and it is not a
+The last stage before the speaker is `frontend/src/audio/sdrAudioWorklet.js`, and it is not a
 plain ring buffer: PCM arrives in ~20 ms blocks paced by the analyzer's packets while the processor
 runs on the sound card's clock, and the two differ by a fraction of a percent that nobody controls.
 It therefore holds a steered jitter buffer (target 250 ms, ceiling 500 ms): the read pointer advances
 by a ratio driven by the fill, so a persistent mismatch is absorbed by resampling (which keeps the
 pitch right) instead of draining or filling the buffer, and past the ceiling the oldest samples are
 dropped so a producer that outruns the clock cannot become growing latency. A retune flushes it, so
-the previous station never plays on. `frontend/modern/src/__tests__/sdrAudioWorklet.test.ts` drives
+the previous station never plays on. `frontend/src/__tests__/sdrAudioWorklet.test.ts` drives
 the ring directly (a matched producer, ±2% drift, a flood, a reset).
 
 Noise reduction is a panel control whose algorithm select picks between STFT Wiener (off/on,

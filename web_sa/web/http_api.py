@@ -256,7 +256,7 @@ def make_routes(app, dev, static_dir):
         status['response_to'] = data.get('cmd')
         return web.json_response(status)
 
-    static_root = Path(static_dir, 'modern', 'dist').resolve()
+    static_root = Path(static_dir, 'dist').resolve()
 
     async def index(request):
         index_file = static_root / 'index.html'
@@ -268,7 +268,7 @@ def make_routes(app, dev, static_dir):
     app.router.add_get('/api/schema', schema)
     app.router.add_post('/api/config', config)
     app.router.add_get('/', index)
-    async def modern_static(request):
+    async def static_files(request):
         try:
             target = (static_root / request.match_info['file']).resolve()
             if os.path.commonpath((str(static_root), str(target))) != str(static_root):
@@ -278,4 +278,4 @@ def make_routes(app, dev, static_dir):
         if not target.is_file():
             raise web.HTTPNotFound()
         return web.FileResponse(target)
-    app.router.add_get('/static/modern/dist/{file:.*}', modern_static)
+    app.router.add_get('/static/dist/{file:.*}', static_files)

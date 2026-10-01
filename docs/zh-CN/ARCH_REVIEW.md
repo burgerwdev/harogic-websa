@@ -2,7 +2,7 @@
 
 > 分支：`analysis/arch-review`（自 `master@03b592c` 新建，本报告只新增文档，未改动产品代码）
 > 评估日期：2026-09-13
-> 范围：仓库全量（后端 `web_sa/`、前端 `frontend/modern/src/`、`tests/`、`tools/`、构建与文档）
+> 范围：仓库全量（后端 `web_sa/`、前端 `frontend/src/`、`tests/`、`tools/`、构建与文档）
 > 性质：**评估 + 优化建议**，不含实现。每条结论都附可复现证据。
 
 ---
@@ -66,11 +66,11 @@ npx tsc --noEmit                     -> 通过（strict: true）
 | 区域 | 行数 | 文件数 | 备注 |
 |---|---|---|---|
 | `web_sa/`（后端） | 5,296 | 26 | 最大：`sdr.py` 1000、`device.py` 921、`ws.py` 604 |
-| `frontend/modern/src/`（不含测试） | 9,826 | 60 | 最大：`controls.ts` 1547、`spectrum.ts` 728、`i18n.ts` 676 |
-| `frontend/modern/src/__tests__/` | 1,386 | 12 | 全部为纯函数测试 |
+| `frontend/src/`（不含测试） | 9,826 | 60 | 最大：`controls.ts` 1547、`spectrum.ts` 728、`i18n.ts` 676 |
+| `frontend/src/__tests__/` | 1,386 | 12 | 全部为纯函数测试 |
 | `tests/`（后端） | 1,299 | 11 | |
 | `tools/`（探针 + e2e） | 2,700 | 20 | `sdr_probe/` 14 个脚本 + 1 个 Playwright e2e |
-| `frontend/modern/index.html` | 646 | 1 | 206 个 `id`、112 个 `data-action` |
+| `frontend/index.html` | 646 | 1 | 206 个 `id`、112 个 `data-action` |
 | `htra_api.py`（厂商） | 924 | 1 | 不应改动 |
 | 提交历史 | 221 commits | — | 当前版本 1.5.5 |
 
@@ -122,7 +122,7 @@ npx tsc --noEmit                     -> 通过（strict: true）
   ```bash
   python3 - <<'PY'
   import json, re, subprocess
-  src = open('frontend/modern/src/core/i18n.ts', encoding='utf-8').read()
+  src = open('frontend/src/core/i18n.ts', encoding='utf-8').read()
 
   def block(s, i):                      # 字符串感知的括号配对
       depth = 0; j = i; q = None; esc = False
@@ -213,8 +213,8 @@ npx tsc --noEmit                     -> 通过（strict: true）
 #### P0-5 没有 CI，也没有版本单一来源
 
 - **现象**：仓库无 `.github/`、无任何 CI 配置；版本号硬编码 4 处
-  （`pyproject.toml:3`、`frontend/modern/package.json:3`、
-  `frontend/modern/index.html:640`、发布提交信息），无 `CHANGELOG.md`，
+  （`pyproject.toml:3`、`frontend/package.json:3`、
+  `frontend/index.html:640`、发布提交信息），无 `CHANGELOG.md`，
   发布靠人工按 git log 里 `chore(release): 1.5.5` 的模式操作。
 - **影响**：版本漂移、忘记跑测试、忘记 `npm run build`（历史 TODO 里已明确记录
   "忘了 build 等于测旧包 —— 本会话犯过"）。
@@ -759,12 +759,12 @@ HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 78 passed
 ```bash
 # 1) 全部门禁
 python3 -m pytest tests/ -q && python3 -m ruff check web_sa tests tools
-(cd frontend/modern && npx tsc --noEmit && npm test -- --reporter=dot)
+(cd frontend && npx tsc --noEmit && npm test -- --reporter=dot)
 
 # 2) 前端循环依赖 + 导入边
 python3 - <<'PY'
 import os, re, collections
-root='frontend/modern/src'
+root='frontend/src'
 files=[os.path.join(dp,fn) for dp,_,fns in os.walk(root) for fn in fns if fn.endswith(('.ts','.js'))]
 g=collections.defaultdict(set)
 def res(b,s):
@@ -806,7 +806,7 @@ PY
 # 5) 前端单测覆盖映射（61 个源码模块中哪些被测试直接引用）
 python3 - <<'PY'
 import os, re, collections
-root='frontend/modern/src'; tdir=os.path.join(root,'__tests__')
+root='frontend/src'; tdir=os.path.join(root,'__tests__')
 covered=set()
 for fn in os.listdir(tdir):
     if not fn.endswith('.ts'): continue

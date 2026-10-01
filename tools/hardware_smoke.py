@@ -250,7 +250,7 @@ async def run(args) -> dict:
 
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(
-                f'{args.http_url}/static/modern/dist/%2Fetc%2Fhostname') as response:
+                f'{args.http_url}/static/dist/%2Fetc%2Fhostname') as response:
                 result['static_escape_status'] = response.status
             async with session.get(f'{args.http_url}/api/state') as response:
                 original = await response.json()

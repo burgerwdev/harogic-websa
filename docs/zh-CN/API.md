@@ -3,7 +3,7 @@
 后端（`web_sa/`）对外接口：**HTTP REST** + **WebSocket**（JSON 命令/状态 + 二进制迹线帧）。
 
 - 服务地址：`http://127.0.0.1:8080`（`/ws` 为 WebSocket）
-- 前端：modern UI（`/`），静态资源 `/static/modern/dist/{file}`
+- 前端：modern UI（`/`），静态资源 `/static/dist/{file}`
 - 默认仅监听 loopback；远程监听需设置 `WEBSA_TOKEN`，REST 使用 Bearer token，
   浏览器/WS 可使用 `?token=...`。WebSocket 仅允许同源或 `WEBSA_ALLOWED_ORIGINS` 白名单。
 
@@ -92,7 +92,7 @@ curl -X POST http://localhost:8080/api/config \
 
 返回前端页面（modern UI 的 `dist/index.html`）。
 
-### `GET /static/modern/dist/{file}`
+### `GET /static/dist/{file}`
 
 前端静态资源（JS/CSS/字体）。
 

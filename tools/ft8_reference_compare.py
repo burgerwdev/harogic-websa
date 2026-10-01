@@ -73,7 +73,7 @@ def run_ours(json_path: str) -> list[str]:
     env = {"PATH": subprocess.os.environ.get("PATH", ""), "WEBSA_FT8_IQ": str(json_path),
            "WEBSA_FT8_OUT": str(out)}
     subprocess.run(["npx", "vitest", "run", "src/__tests__/ft8LiveReport.test.ts"],
-                   cwd=ROOT / "frontend" / "modern", env=env, capture_output=True, text=True,
+                   cwd=ROOT / "frontend", env=env, capture_output=True, text=True,
                    check=True)
     lines = out.read_text().splitlines()
     return [line.split(": ", 1)[1].split(" @ ")[0] for line in lines if line.startswith("slot ")]

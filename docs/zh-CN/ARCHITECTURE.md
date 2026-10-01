@@ -2,7 +2,7 @@
 
 ## 总览
 ```
-浏览器 (frontend/modern: TypeScript + Canvas)
+浏览器 (frontend: TypeScript + Canvas)
    │  WS 有界 latest-wins 二进制帧 + WS JSON
    ▼
 Supervisor → web_sa worker (aiohttp + 串行 SDK 调用；native 崩溃/超时退避重启)
@@ -85,20 +85,20 @@ SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）─
 | Python 设备 / 控制 | `web_sa/hardware/`、`web_sa/measurements/`、`web_sa/web/` |
 | 信道化器（DDC + 调谐） | `web_sa/demod/ddc.py`（厂商 `DSP_DDC`）、`web_sa/measurements/sdr.py`（`_chain_coarse`、`_mix`） |
 | WebSocket 传输基带 | `web_sa/measurements/framer.py`（`IQBF`）、`web_sa/web/client_stream.py` |
-| 基带入口 | `frontend/modern/src/sdr/iqWorker.ts` |
-| Worker DSP 编排 | `frontend/modern/src/sdr/iqStream.ts`、`frontend/modern/src/sdr/wasmPipeline.ts` |
-| WASM 边界（裸 ABI） | `frontend/modern/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`、`wasm/src/abi.rs` |
+| 基带入口 | `frontend/src/sdr/iqWorker.ts` |
+| Worker DSP 编排 | `frontend/src/sdr/iqStream.ts`、`frontend/src/sdr/wasmPipeline.ts` |
+| WASM 边界（裸 ABI） | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`、`wasm/src/abi.rs` |
 | 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
 | 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs` |
 | 音频 DSP（仅模拟 PCM） | `wasm/src/audio/stages.rs`、`wasm/src/audio/dc_block.rs`、`wasm/src/audio/wiener.rs`、`wasm/src/audio/notch.rs`、`wasm/src/audio/blanker.rs`、`wasm/src/fft.rs` |
-| 降噪（DeepFilterNet3，流式） | `frontend/modern/src/sdr/dfnWorker.ts`、`frontend/modern/src/sdr/dfnWasm.ts`、`wasm-dfn/src/wasm.rs` |
-| DFN 产物与模型 | `wasm-dfn/build.sh` → `frontend/modern/public/dfn/df_bg.wasm`（入库）、`frontend/modern/public/models/dfn/DeepFilterNet3_onnx.tar.gz`（运行时拉取，绝不内嵌） |
+| 降噪（DeepFilterNet3，流式） | `frontend/src/sdr/dfnWorker.ts`、`frontend/src/sdr/dfnWasm.ts`、`wasm-dfn/src/wasm.rs` |
+| DFN 产物与模型 | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm`（入库）、`frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz`（运行时拉取，绝不内嵌） |
 | 路径组装与分离规则 | `wasm/src/pipeline.rs` |
 | DDC 内核（保留，兼作参考链） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`、`wasm/src/ddc/mod.rs` |
-| 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/modern/src/sdr/registry.ts` |
-| 音频 PCM 输出与抖动缓冲 | `frontend/modern/src/audio/sdrAudioWorklet.js`、`frontend/modern/src/audio/sdrAudio.ts`、`frontend/modern/src/audio/sdrAudioWorker.ts` |
+| 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/src/sdr/registry.ts` |
+| 音频 PCM 输出与抖动缓冲 | `frontend/src/audio/sdrAudioWorklet.js`、`frontend/src/audio/sdrAudio.ts`、`frontend/src/audio/sdrAudioWorker.ts` |
 | Python 回退与参考 | `web_sa/demod/`（不变）、`tools/dsp_parity.py`、`tools/gen_dsp_fixtures.py` |
-| WASM 产物构建 | `wasm/build.sh` → `frontend/modern/public/dsp.wasm`（入库） |
+| WASM 产物构建 | `wasm/build.sh` → `frontend/public/dsp.wasm`（入库） |
 
 `tools/check_doc_paths.py` 会校验本表中的每个路径都存在，因此这份映射不会描述被改名或从未存在的模块。
 
@@ -159,12 +159,12 @@ wasm32-unknown-unknown` 就是全部工具链。
 
 ### 音频播放、降噪与回退分工
 
-扬声器前的最后一级是 `frontend/modern/src/audio/sdrAudioWorklet.js`，它不是普通环形缓冲：PCM 按
+扬声器前的最后一级是 `frontend/src/audio/sdrAudioWorklet.js`，它不是普通环形缓冲：PCM 按
 分析仪的数据包节奏以约 20 ms 块到达，而该处理器跑在声卡时钟上，两者相差一个谁也无法控制的千分
 之几。因此它维护一个受控抖动缓冲（目标 250 ms、上限 500 ms）：读指针按填充量驱动出的比例推进，
 于是持续性的速率差通过重采样吸收（音高保持正确），而不是把缓冲抽干或灌满；超过上限则丢弃最旧的
 样本，让“产出快于时钟”不会变成不断增长的延迟。换台会清空该缓冲，所以上一个电台的声音不会继续
-播。`frontend/modern/src/__tests__/sdrAudioWorklet.test.ts` 直接驱动这个环（速率一致、±2% 漂移、
+播。`frontend/src/__tests__/sdrAudioWorklet.test.ts` 直接驱动这个环（速率一致、±2% 漂移、
 灌爆、复位四种情形）。
 
 降噪是面板控件，算法选择在两者之间：STFT Wiener（开/关 + 轻/中/强，经 `websa_dsp_demod_set_nr` 到达

@@ -1,7 +1,7 @@
 /**
  * WASM ABI contract test.
  *
- * Instantiates the *committed* artifact (`frontend/modern/public/dsp.wasm`) with the real
+ * Instantiates the *committed* artifact (`frontend/public/dsp.wasm`) with the real
  * loader and exercises the boundary the DSP will use: version gate, aligned allocation, typed
  * views, and growth not detaching the caller's block. This is what keeps the Rust ABI and the
  * TypeScript loader from drifting, without needing Rust in CI — the pure-Python
@@ -12,7 +12,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DSP_ABI_VERSION, dspWasmUrl, instantiateDsp, loadDsp, wrapDsp } from '../sdr/wasm';
 
-const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
+const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
 
 const artifactBytes = (): ArrayBuffer => {
 	// A copy, so an instance never shares (and cannot grow) the fixture buffer.
@@ -75,7 +75,7 @@ describe('dsp.wasm ABI', () => {
 	});
 
 	it('resolves the artifact next to the served page', () => {
-		expect(dspWasmUrl('http://localhost:8080/static/modern/dist/index.html'))
-			.toBe('http://localhost:8080/static/modern/dist/dsp.wasm');
+		expect(dspWasmUrl('http://localhost:8080/static/dist/index.html'))
+			.toBe('http://localhost:8080/static/dist/dsp.wasm');
 	});
 });

@@ -145,7 +145,7 @@ Query token 可能进入浏览器历史和代理日志，远程访问应使用 H
 ```bash
 ./test.sh
 python3 -m ruff check web_sa tests tools
-cd frontend/modern && npm audit
+cd frontend && npm audit
 ```
 
 `./test.sh` 会运行后端 pytest、Ruff 和前端 Vitest，任一阶段失败都会返回非零状态。当前基线为后端 51 项、前端 23 项。

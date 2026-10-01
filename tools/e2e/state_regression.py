@@ -2,8 +2,8 @@
 """Front-end state-machine regression (Playwright, no RF signal required).
 
 Guards the single-owner parameter model introduced for the SDR group:
-  frontend/modern/src/core/params.ts   (confirmed / desired / epoch slots)
-  frontend/modern/src/ui/sdrState.ts   (the SDR group's owner + its only renderer)
+  frontend/src/core/params.ts   (confirmed / desired / epoch slots)
+  frontend/src/ui/sdrState.ts   (the SDR group's owner + its only renderer)
 
 It drives the real UI against a running service and checks the properties that used to
 break - not the implementation:

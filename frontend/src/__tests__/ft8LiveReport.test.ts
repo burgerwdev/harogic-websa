@@ -11,7 +11,7 @@ import { describe, it } from 'vitest';
 import { instantiateDsp } from '../sdr/wasm';
 import { WasmPipeline, type PipelineParams } from '../sdr/wasmPipeline';
 
-const ARTIFACT = resolve(process.cwd(), '..', '..', 'frontend', 'modern', 'public', 'dsp.wasm');
+const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
 // skipIf below guards the unset case; the assertion is what keeps tsc quiet past it.
 const capturePath = process.env.WEBSA_FT8_IQ!;
 
