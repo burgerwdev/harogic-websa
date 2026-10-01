@@ -83,7 +83,8 @@ frontend/modern/public/dfn/df_bg.wasm: $(WASM_DFN_SRC)
 		command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack; ./wasm-dfn/build.sh; fi
 
 hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regression (SAN-90 required)
-	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
+	@# [w]eb_sa: the bracket keeps pgrep from matching this recipe's own shell wrapper
+	@pgrep -f "[w]eb_sa.supervisor" >/dev/null || ./run.sh
 	@# The smoke test needs std mode; a previous e2e run may have left SDR/RTA active.
 	@curl -s -X POST http://127.0.0.1:$${WEBSA_PORT:-8080}/api/config \
 		-H 'Content-Type: application/json' -d '{"cmd":"SET_MODE","mode":"std"}' >/dev/null || true
@@ -94,7 +95,7 @@ hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regressi
 	@echo "OK: hardware smoke + command sweep + UI state regression"
 
 bench:    ## Performance baseline: compare against tools/bench_baseline.json (service running)
-	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
+	@pgrep -f "[w]eb_sa.supervisor" >/dev/null || ./run.sh
 	python3 tools/bench.py --check tools/bench_baseline.json
 
 e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
@@ -114,7 +115,7 @@ bench-record:  ## Re-record the performance baseline on this host
 	python3 tools/bench.py --duration 4 --write-baseline tools/bench_baseline.json
 
 viewport-baseline:  ## Layout/resolution baseline over every attached output (needs a running service)
-	@pgrep -f "web_sa.supervisor" >/dev/null || ./run.sh
+	@pgrep -f "[w]eb_sa.supervisor" >/dev/null || ./run.sh
 	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_PORT:-8080} \
 		--json tools/e2e/viewport_baseline.json
 
