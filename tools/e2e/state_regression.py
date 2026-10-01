@@ -235,9 +235,20 @@ def main() -> int:
         # entry, and the value it decided is the one the canvas renders (the reported
         # "Preset -> SDR spectrum overflows the canvas").
         print("1c) SDR automatic scale is applied")
-        dbg = page.evaluate(
-            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
-        )
+        # The entry fit is a bounded *closed loop*: the automatic attenuator re-picks with
+        # every Ref step, so the trace moves and the loop legitimately walks a few steps
+        # (each one a settle period) before its placement is good. When the level carried
+        # into SDR is far off, the settled answer - the one the client records - can take
+        # several seconds; poll for it instead of assuming it landed inside the two fixed
+        # waits above.
+        dbg = {}
+        for _ in range(32):                     # up to 8 s
+            dbg = page.evaluate(
+                "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
+            )
+            if dbg and "peak" in dbg:
+                break
+            page.wait_for_timeout(250)
         if dbg and "peak" in dbg:
             check(
                 "the auto-scale decision is what the canvas shows",

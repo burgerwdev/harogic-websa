@@ -170,6 +170,30 @@ def test_demod_reconfiguration_rolls_back_state_on_failure():
     assert (state.sdr_demod, state.sdr_if_bw, state.sdr_pitch) == ('am', 6000.0, 700.0)
 
 
+def test_deferred_deemph_is_published_while_the_browser_owns_audio():
+    """`sdr.actual.deemph_us` must describe the chain that is running, not the idle fallback.
+
+    With the browser DSP owning the audio a de-emphasis change is deferred (`_chain_stale`), and
+    `sdr_actual` used to keep the Python chain's last resolved figure - so the e2e contract
+    ("de-emphasis is applied") passed against the fake backend (which publishes the requested
+    value) and failed on real hardware.
+    """
+    state = SimpleNamespace(
+        sdr_demod='nfm', sdr_if_bw=6000.0, sdr_pitch=700.0, sdr_deemph_us=-1.0,
+        sdr_squelch=-110.0, sdr_volume=0.8, sdr_agc=True,
+        sdr_actual={'deemph_us': 0.0},
+    )
+    session = SdrSession.__new__(SdrSession)
+    session.dev = SimpleNamespace(state=state, audio_clients=0)
+    session._lock = threading.RLock()
+    session._chain_stale = False
+
+    session.set_demod(deemph_us=75)
+
+    assert session._chain_stale is True          # the Python chain rebuild waits for its turn
+    assert state.sdr_actual['deemph_us'] == 75.0  # STATUS reports the tau the listener hears
+
+
 def test_settle_window_still_drains_iqs(monkeypatch):
     state = SimpleNamespace(sdr_listen_hz=101.7e6)
     session = SdrSession.__new__(SdrSession)

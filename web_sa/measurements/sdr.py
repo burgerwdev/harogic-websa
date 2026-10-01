@@ -718,8 +718,18 @@ class SdrSession(MeasurementSession):
         return int(getattr(ddc, 'requested_decimate', 0) or 0) if ddc else 0
 
     def _mark_chain_stale(self) -> None:
-        """Record that the Python chain needs a rebuild before it demodulates again."""
+        """Record that the Python chain needs a rebuild before it demodulates again.
+
+        The browser chain applies the requested de-emphasis at once (an explicit tau resolves
+        identically in both chains), so while the rebuild is deferred STATUS must publish that
+        value instead of the idle Python chain's last resolved figure - `FakeSdrSession` models
+        the same view, which is why the e2e contract (`sdr.actual.deemph_us`) held against the
+        fake backend but failed on real hardware the moment the browser DSP owned the audio.
+        """
         self._chain_stale = True
+        s = self.dev.state
+        if s.sdr_deemph_us >= 0:
+            s.sdr_actual['deemph_us'] = float(s.sdr_deemph_us)
 
     def _audio_is_paused(self, dev) -> bool:
         """True when the Python audio path is idle (the browser is demodulating)."""
