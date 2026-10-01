@@ -22,7 +22,8 @@ The chain matches the architecture: NCO -> FIR -> decimate -> resample -> level.
 dumped separately so a Rust failure names the stage that drifted instead of "the DDC".
 
 Usage:  python3 tools/gen_dsp_fixtures.py [--check]
-        --check  fail when the files on disk differ from what this script would write
+        --check  fail when the files on disk differ from the reference by more than the
+                 manifest's tolerance (integer blocks and the manifest itself: exactly)
 """
 from __future__ import annotations
 
@@ -69,6 +70,58 @@ OFFSET_HZ = WANTED_HZ       # NCO offset: mixing by -offset_hz brings the wanted
 #: for the f64 kernels; 1e-5 leaves room for libm/numpy differences in cos/sin/sinc without
 #: making the test meaningless (1e-5 is about -100 dBFS).
 TOLERANCE = 1.0e-5
+
+
+def _float_tolerance(name: str, manifest: dict) -> float:
+    """The absolute tolerance the manifest grants this fixture (see `drifted`)."""
+    for entry in manifest['demod']:
+        if name == entry['audio_file']:
+            return float(entry['tolerance'])
+    return float(manifest['tolerance'])
+
+
+def _decode(name: str, data: bytes, manifest: dict) -> np.ndarray | None:
+    """One fixture as numbers, or None when it is an integer block (compared exactly)."""
+    complex_files = {e['file'] for e in manifest['stages'] if e['kind'] == 'complex'}
+    complex_files |= {e['iq_file'] for e in manifest['demod']}
+    real_files = {e['file'] for e in manifest['stages'] if e['kind'] == 'real'}
+    real_files |= {e['audio_file'] for e in manifest['demod']}
+    if name in complex_files:
+        raw = np.frombuffer(data, dtype='<f4')
+        return raw[0::2] + 1j * raw[1::2]
+    if name in real_files:
+        return np.frombuffer(data, dtype='<f4')
+    return None
+
+
+def drifted(name: str, committed: bytes, produced: bytes, manifest: dict) -> str | None:
+    """Describe how `committed` fails to match `produced`, or None when it matches.
+
+    The fixtures are f32 outputs of f64 kernels, and the manifest's whole point is to say they
+    are compared *within a tolerance* - that is what the Rust tests already do. Byte equality
+    here made CI fail on samples that differ by a few ULP: a runner whose CPU makes numpy pick
+    a different SIMD kernel for the demodulator's transcendentals (atan2/exp) produces different
+    last bits, while the DDC chain (add/multiply/FIR) stays bit-stable. Measured here: forcing
+    numpy off FMA3/AVX2 keeps every file identical, so the difference is per-kernel, not our DSP.
+
+    The integer input block and the manifest stay exact: they are synthetic integers and
+    parameters, not float results.
+    """
+    if len(committed) != len(produced):
+        return f'{name}: {len(committed)} bytes committed, {len(produced)} produced'
+    a = _decode(name, committed, manifest)
+    b = _decode(name, produced, manifest)
+    if a is None or b is None:
+        return None if committed == produced else f'{name}: bytes differ'
+    if not np.array_equal(np.isnan(a), np.isnan(b)):
+        return f'{name}: NaN pattern differs'
+    diff = np.abs(a - b)
+    finite = diff[np.isfinite(diff)]
+    worst = float(finite.max()) if finite.size else 0.0
+    tolerance = _float_tolerance(name, manifest)
+    if worst > tolerance:
+        return f'{name}: max|diff|={worst:g} > tolerance {tolerance:g}'
+    return None
 
 
 def build_iq() -> np.ndarray:
@@ -335,9 +388,14 @@ def main() -> int:
         problems = []
         for name, data in files.items():
             path = OUT / name
-            if not path.exists() or path.read_bytes() != data:
-                problems.append(name)
-        if not (OUT / 'manifest.json').exists() or (OUT / 'manifest.json').read_bytes() != manifest_bytes:
+            if not path.exists():
+                problems.append(f'{name}: missing')
+                continue
+            problem = drifted(name, path.read_bytes(), data, manifest)
+            if problem:
+                problems.append(problem)
+        manifest_path = OUT / 'manifest.json'
+        if not manifest_path.exists() or manifest_path.read_bytes() != manifest_bytes:
             problems.append('manifest.json')
         if problems:
             print('dsp fixture drift:', ', '.join(problems), file=sys.stderr)
