@@ -902,8 +902,16 @@ def main() -> int:
             check("a settings change does not undo a level the user set",
                   abs(float(kept["ref"]) - low) < 1.5, f'asked {low}, device {kept["ref"]}')
             page.click("#btn-ref-auto")
-            page.wait_for_timeout(4000)
-            fixed = state(url)
+            # The fit is a bounded closed loop: every Ref step re-picks the automatic
+            # attenuator and the trace moves with it, so the walk can legitimately take
+            # longer than any fixed wait (measured: ref -40 -> pending -50 while adjusting
+            # at the 4 s mark). Poll until the loop reports settled, then judge the window.
+            fixed = {}
+            for _ in range(24):                     # up to 12 s
+                fixed = state(url)
+                if not fixed.get("auto_ref", {}).get("adjusting"):
+                    break
+                page.wait_for_timeout(500)
             fixed_floor = fixed["auto_ref"].get("last_noise_floor")
             fixed_peak = fixed["auto_ref"].get("last_peak")
             bottom, top = float(fixed["ref"]) - window, float(fixed["ref"])
