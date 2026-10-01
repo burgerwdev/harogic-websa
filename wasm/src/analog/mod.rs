@@ -49,7 +49,7 @@ pub enum Detector {
     Phase,
     /// The real part of the sideband-selected signal: USB and LSB.
     Ssb,
-    /// Filter at zero IF, then shift to the sidetone pitch: CW.
+    /// The real part of the pitch-selected band: CW (the band already sits on the sidetone pitch).
     Cw,
 }
 
@@ -114,10 +114,20 @@ fn band_lsb(if_bw: f64, _pitch: f64) -> (f64, f64) {
     (-if_bw, -(if_bw * 0.1).clamp(100.0, 300.0))
 }
 
-/// CW: a narrow band around zero IF, shifted to the sidetone by the detector.
-fn band_cw(if_bw: f64, _pitch: f64) -> (f64, f64) {
+/// CW: a narrow band centred on the sidetone pitch, *above* zero IF.
+///
+/// This is the same convention the FT8 mode uses, and the one an operator's tuning implies: the
+/// dial (the listen frequency) sits `pitch` below the signal, so the signal arrives at +pitch in
+/// the baseband and the sidetone it produces *is* that pitch. The band used to be centred on zero
+/// IF with the detector shifting the result up by the pitch, which only demodulated a carrier the
+/// operator had tuned exactly onto (zero beat) - and that is precisely where the receiver's DC
+/// cancellation and the LO leakage live, so the band rejected the signal the operator would
+/// actually tune: measured on a bench, keying came out chopped into 15-30 ms fragments and no
+/// decoder could read it. A zero-beat carrier is now deliberately *not* amplified.
+fn band_cw(if_bw: f64, pitch: f64) -> (f64, f64) {
     let half = if_bw.max(50.0) / 2.0;
-    (-half, half)
+    let p = pitch.max(100.0);
+    (p - half, p + half)
 }
 
 /// The mode table. `None` means the kernel is not written yet, which is exactly what
@@ -185,7 +195,6 @@ pub struct AnalogDemod {
     prev_z: Option<(f64, f64)>,
     env_prev: f64,
     dc_y: f64,
-    cw_phase: f64,
     // Scratch buffers reused per block (no allocation in the hot path).
     z: Vec<f64>,
     det: Vec<f32>,
@@ -223,7 +232,6 @@ impl AnalogDemod {
             prev_z: None,
             env_prev: 0.0,
             dc_y: 0.0,
-            cw_phase: 0.0,
             z: Vec::new(),
             det: Vec::new(),
             lp: Vec::new(),
@@ -367,15 +375,12 @@ impl AnalogDemod {
                 }
             }
             Detector::Cw => {
-                // A narrow band around zero IF, shifted up to the sidetone pitch. The phase is kept
-                // across blocks so the sidetone does not restart at every block boundary.
-                let inc = TAU * self.pitch / self.fs;
+                // The band-pass has already selected the signal at the sidetone pitch, so the real
+                // part is the sidetone - the same reasoning as the sideband modes, and the reason a
+                // keyed carrier comes through with its keying intact at any offset the band covers.
                 for k in 0..n {
-                    let ph = self.cw_phase + inc * k as f64;
-                    let (i, q) = (z[2 * k], z[2 * k + 1]);
-                    out.push((i * ph.cos() - q * ph.sin()) as f32);
+                    out.push(z[2 * k] as f32);
                 }
-                self.cw_phase = (self.cw_phase + inc * n as f64) % TAU;
             }
         }
     }
@@ -441,7 +446,6 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
-        self.cw_phase = 0.0;
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
         }
@@ -459,7 +463,6 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
-        self.cw_phase = 0.0;
     }
 }
 
@@ -642,12 +645,13 @@ mod tests {
 
     #[test]
     fn cw_puts_the_carrier_on_the_sidetone_pitch() {
-        // A carrier exactly at zero IF (the CW signal the operator tuned onto) plus an off-channel
-        // interferer 3 kHz away that the narrow band must reject.
+        // The operator's tuning: the dial sits `pitch` below the signal, so the carrier arrives at
+        // +pitch in the baseband and the sidetone the demodulator hands over *is* that pitch. A
+        // 3 kHz interferer is there to prove the narrow band still rejects what is off it.
         let audio = run_with("cw", 20_000, 500.0, PITCH, |t| {
             (
-                1.0 + 0.5 * (TAU * 3_000.0 * t).cos(),
-                0.5 * (TAU * 3_000.0 * t).sin(),
+                (TAU * PITCH * t).cos() + 0.5 * (TAU * 3_000.0 * t).cos(),
+                (TAU * PITCH * t).sin() + 0.5 * (TAU * 3_000.0 * t).sin(),
             )
         });
         assert_eq!(recovered_hz(&audio, PITCH), PITCH, "CW sidetone");
@@ -656,6 +660,11 @@ mod tests {
         // The 3 kHz interferer is outside the band: it cannot add energy at its own offset.
         let interferer = amplitude_at(&audio, AUDIO_RATE, 3_000.0);
         assert!(interferer < sidetone, "CW band filter must reject the interferer");
+        // And a carrier at zero beat - the tuning this mode used to require, where the receiver's
+        // DC cancellation and the LO leakage sit - is not demodulated at all.
+        let zero_beat = run_with("cw", 20_000, 500.0, PITCH, |_t| (1.0, 0.0));
+        let dc = amplitude_at(&zero_beat, AUDIO_RATE, PITCH);
+        assert!(dc < sidetone, "a zero-beat carrier must be rejected, level {dc}");
     }
 
     /// The consumer's rate is what the PCM comes out at (44.1 kHz devices played 8.8% slow when

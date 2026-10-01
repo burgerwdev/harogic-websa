@@ -47,6 +47,7 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	python3 tools/check_docs_parity.py
 	python3 tools/check_doc_paths.py
 	python3 tools/check_wasm_artifact.py
+	tools/build_ggmorse_wasm.sh --check   # the committed CW decoder artifact (skips without emsdk)
 	python3 tools/quality/architecture_guard.py
 	./build.sh
 	@echo "OK: same gates as .github/workflows/ci.yml"
@@ -54,6 +55,12 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 wasm:     ## Build both WASM cores (DSP + DFN) and publish the committed artifacts (needs Rust)
 	./wasm/build.sh
 	./wasm-dfn/build.sh
+
+ggmorse:  ## Rebuild the CW decoder wasm module (needs emsdk; the artifact is committed)
+	tools/build_ggmorse_wasm.sh
+
+ggmorse-check: ## Check the committed CW decoder artifact against its expected API (no emsdk needed)
+	tools/build_ggmorse_wasm.sh --check
 
 wasm-check: ## Rebuild both WASM cores and fail if a committed artifact differs (needs Rust)
 	./wasm/build.sh --check

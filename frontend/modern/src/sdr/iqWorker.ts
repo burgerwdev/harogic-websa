@@ -18,6 +18,7 @@ import { decodeFrame, type BasebandFrame } from '../core/frames';
 import { dsp, type DspModule } from './wasm';
 import { WasmPipeline, type PipelineParams } from './wasmPipeline';
 import { audioCompanionFor, loadPluginManifest } from './registry';
+import { GgMorseEngine } from '../dsp/ggmorseEngine';
 
 let ws: WebSocket | null = null;
 let wsUrl = '';
@@ -29,11 +30,33 @@ let pipeline: WasmPipeline | null = null;
 let companion: WasmPipeline | null = null;
 /// The shape the companion was last built or reconfigured for (see `sameShape`).
 let companionShape: PipelineParams | null = null;
-/// The FT8 decoder's own worker: a slot decode blocks for seconds, and doing it here would starve the
-/// audio (measured: one underrun and a ~2.5 s gap per slot when both ran in this thread).
+/// The FT8 decoder's workers: a slot decode blocks for seconds, and doing it here would starve the
+/// audio (measured: one underrun and a ~2.5 s gap per slot when both ran in this thread). The
+/// decoder is two workers (sdr/ft8Worker.ts): `decoderStream` owns the socket so a decode can
+/// never stall it, `decoder` owns the WASM pipeline and receives the stream over a MessagePort.
+let decoderStream: Worker | null = null;
 let decoder: Worker | null = null;
 let decoderReady = false;
 let params: PipelineParams | null = null;
+/// The CW (Morse) decoder, alive only while CW is the demodulator: ggmorse in wasm, fed the same
+/// PCM the listener hears. Measured at 2 ms per 100 ms of audio (worst 13 ms), so it runs inline
+/// here - unlike the FT8 slot decode, which takes seconds and needed a worker of its own.
+let cwDecoder: GgMorseEngine | null = null;
+/// The CW decoder's state, the way the DFN stage reports its own: 'off' (not this mode), 'loading'
+/// (the wasm module is on its way) or 'ready'. Published always, because the interesting case is a
+/// decoder that produces *nothing* - a counter that only appears once characters arrive cannot show
+/// that (which is exactly how a first mode switch that never built the decoder stayed invisible).
+let cwState: 'off' | 'loading' | 'ready' = 'off';
+/// Bumped on every (re)build of the CW decoder: an async load installs its engine only while it is
+/// still the latest request.
+///
+/// Comparing the params *object* instead did not work, and the symptom was exactly "CW never comes
+/// back": a STATUS arrives every second with a fresh params object, so the first load's engine was
+/// always judged stale, freed, and the decoder stayed null after the operator switched away from CW
+/// and back (reported).
+let cwGeneration = 0;
+/// Characters the CW decoder has produced (diagnostics: a CW session has no other evidence).
+let cwChars = 0;
 let ft8Messages = 0;
 /// What the worklet reports about its own ring (relayed to the page's diagnostics).
 let workletAvailable = 0;
@@ -131,21 +154,27 @@ let lastSeq = -1;
 let reconnectTimer: number | null = null;
 let reconnectDelay = 500;
 
-/** Start the decoder worker (once) and relay its messages to the page. */
+/** Start the decoder workers (once) and relay their messages to the page. */
 function startDecoder(): void {
   if (decoder || typeof Worker === 'undefined') return;
   try {
-    decoder = new Worker(new URL('./ft8Worker.ts', import.meta.url), { type: 'module' });
+    decoderStream = new Worker(new URL('./ft8Worker.ts', import.meta.url), { type: 'module' });
+    decoder = new Worker(new URL('./ft8DecodeWorker.ts', import.meta.url), { type: 'module' });
   } catch {
     decoder = null;
+    decoderStream = null;
     return;
   }
   // A decoder worker that dies takes the decode list with it, silently: surface it like any other
   // DSP failure (the page shows it and can still fall back).
-  decoder.onerror = (event: ErrorEvent) => {
+  const fail = (event: ErrorEvent) => {
     post({ type: 'error', message: `FT8 decoder failed: ${event.message || 'error'}` });
   };
-  decoder.onmessage = (event: MessageEvent) => {
+  decoderStream.onerror = fail;
+  decoder.onerror = fail;
+  // The stream worker relays the decode worker's messages (ready/ft8/ft8-stats/error), so the
+  // message handling below is the same as when the halves were one worker.
+  decoderStream.onmessage = (event: MessageEvent) => {
     const d = (event.data || {}) as Record<string, any>;
     if (d.type === 'ready') {
       decoderReady = true;
@@ -166,8 +195,12 @@ function startDecoder(): void {
     // `ft8` (a decode) and `error` are the shapes the page already reads.
     post(d);
   };
-  // Its own socket, so a decode attempt cannot delay the audio (see `ft8Worker`).
-  decoder.postMessage({ type: 'init', wasmUrl, url: wsUrl });
+  // The two halves, wired with a MessageChannel: the stream worker reads the socket forever, the
+  // decode worker runs the WASM at its own pace, and neither can stall the other. Its own socket,
+  // so a decode attempt cannot delay the audio either (see `ft8Worker`).
+  const channel = new MessageChannel();
+  decoderStream?.postMessage({ type: 'init', url: wsUrl, port: channel.port1 }, [channel.port1]);
+  decoder.postMessage({ type: 'init', wasmUrl, port: channel.port2 }, [channel.port2]);
 }
 
 /** Tell the decoder worker what to decode (and whether to bother). */
@@ -196,6 +229,7 @@ function postStats(): void {
     // AudioWorklet port over on this flag, so a digital mode without it never gets heard.
     pipeline: Boolean(pipeline?.ok || companion?.ok),
     ft8Messages, digitalPushes, digitalBuffered, digitalResets, decoderResets, pipelineBuilds,
+    cwChars, cw: cwState,
     digitalAttempts, digitalDropped,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
@@ -207,6 +241,68 @@ function postStats(): void {
     dfnError,
     deemphUs: params?.deemphUs ?? -1, audioOn,
   });
+}
+
+/// The rate and pitch the CW decoder was built for (see `syncCwDecoder`).
+let cwShape: { rate: number; pitch: number } | null = null;
+/// How far the Pitch may move before the decoder is rebuilt: ggmorse takes the search range in its
+/// constructor, so a new Pitch means a new decoder - but the operator drags that control, and a
+/// rebuild per step of the drag would restart the decoder under the hand. Twenty Hz is well inside
+/// the tolerance the decoder searches anyway.
+const CW_PITCH_STEP_HZ = 20;
+
+/**
+ * Keep the CW decoder in step with the audio chain's rate and the operator's Pitch.
+ *
+ * Deliberately *not* part of `syncPipeline`: that function returns early when the pipeline already
+ * describes the requested mode, and the `configure` handler reconfigures the pipeline *before*
+ * calling it - so on the first switch to CW the pipeline was already CW, `syncPipeline` returned
+ * early, and the decoder was never built. The mode looked right everywhere (the panel, the
+ * backend, `dsp_mode=cw`) while nothing was ever decoded, and only a visit to another mode and back
+ * fixed it (reported, then measured: every later switch worked, the first one never did).
+ *
+ * Idempotent, like `syncDfn` and `syncCompanion`: it is called from every configuration path, and it
+ * only rebuilds when the shape it was built for actually changed.
+ */
+function syncCwDecoder(): void {
+  const wanted = !!params && !digitalIds.has(params.mode) && params.mode === 'cw';
+  if (!wanted) {
+    if (cwDecoder || cwState !== 'off') {
+      cwDecoder?.free();
+      cwDecoder = null;
+      cwShape = null;
+      cwState = 'off';
+      cwGeneration++;
+      postStats();
+    }
+    return;
+  }
+  const shape = { rate: params!.outRate, pitch: params!.pitch };
+  if (cwDecoder && cwShape
+      && cwShape.rate === shape.rate
+      && Math.abs(cwShape.pitch - shape.pitch) < CW_PITCH_STEP_HZ) {
+    return;
+  }
+  cwDecoder?.free();
+  cwDecoder = null;
+  cwShape = shape;
+  cwState = 'loading';
+  const request = ++cwGeneration;
+  void GgMorseEngine.load(shape.rate, shape.pitch)
+    .then((engine) => {
+      // A reconfigure happened while the wasm loaded: this request is stale, so drop it rather
+      // than feed it with the wrong geometry (see `cwGeneration`).
+      if (request !== cwGeneration) { engine.free(); return; }
+      cwDecoder = engine;
+      cwState = 'ready';
+      postStats();
+    })
+    .catch((error: unknown) => {
+      if (request !== cwGeneration) return;
+      cwState = 'off';
+      post({ type: 'error', message: `CW decoder failed: ${String((error as Error)?.message || error)}` });
+    });
+  postStats();
 }
 
 /** Create or rebuild the pipeline for the current parameters. */
@@ -238,6 +334,7 @@ function syncPipeline(): void {
     postStats();
     return;
   }
+  syncCwDecoder();
   syncCompanion(isDigital);
   pushDecoderParams();
   applyListenerControls();
@@ -490,24 +587,27 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
   blocks++;
   samples += frame.samples;
   if (digital) {
-    // Audio first, *then* hand the samples to the decoder: transferring a buffer detaches the view it
-    // came from, and reading a detached view yields length 0 (silence) rather than an error.
+    // Audio first (the decoder has its own socket and its own thread - see `ft8Worker`); nothing
+    // here touches the samples afterwards, but the ordering keeps the deliver-then-hand-off rule
+    // that a transferred buffer demands.
     if (companion) deliver(companion.process(frame.iq));
     decoderPushes += 1;
-    // The decoder gets the baseband in its own thread; the transfer costs nothing (this frame's
-    // buffer, and nothing here needs it afterwards). A slow decode therefore cannot starve the audio.
-    if (decoder && decoderReady) {
-      try {
-        // `at` is the frame's arrival: the decoder worker drops frames that queued up while it was
-        // busy (see there), because a decode attempt can take seconds and the backlog must not grow.
-        decoder.postMessage({ type: 'frame', iq: frame.iq, centerHz, at: Date.now() },
-                            [frame.iq.buffer]);
-      } catch {
-        decoder?.postMessage({ type: 'frame', iq: frame.iq.slice(), centerHz, at: Date.now() });
-      }
-    }
   } else if (pipeline) {
     const pcm = pipeline.process(frame.iq);
+    // The same PCM the listener gets (the pipeline's own NR included; the DFN stage further down
+    // is for the ear). Decoded characters go straight to the page's CW log.
+    if (cwDecoder && pcm.length) {
+      const chunk = cwDecoder.push(pcm);
+      if (chunk) {
+        cwChars += chunk.text.length;
+        // Always sent: the text may be empty while the meter, the lamp and the per-character
+        // confidence (the gate's share) still have something to say about the block.
+        post({
+          type: 'cw', text: chunk.text, endsLine: chunk.endsLine, share: chunk.share,
+          rms: chunk.rms, keyed: chunk.keyed,
+        });
+      }
+    }
     // DeepFilterNet3 owns the PCM only while the listener has it selected and it is ready; a
     // failed/slow model has already fallen back, so the block passes through the Wiener chain.
     if (nr && nrAlgo === 'dfn' && dfnReady) {
@@ -632,6 +732,7 @@ self.onmessage = (event: MessageEvent) => {
       syncCompanion(digitalIds.has(next.mode));
       applyListenerControls();
       syncDfn();
+      syncCwDecoder();
       syncPipeline();
     }
   } else if (msg.type === 'volume') {

@@ -10,6 +10,7 @@
 import { enablePythonAudioFallback, routeWorkletPortTo } from '../audio/sdrAudio';
 import { wasmDspAllowed, wasmDspReason } from './capability';
 import { addFt8Spot, clearFt8Spots } from './ft8Log';
+import { addCwText, setCwLevel } from './cwLog';
 import { dspWasmUrl } from './wasm';
 import type { Ft8Report, PipelineParams } from './types';
 import { t } from '../core/i18n';
@@ -37,6 +38,11 @@ let ft8Detail = '';
 //: Digital-path diagnostics (see the worker): is the decoder being fed, and is it getting through
 //: a transmission, or is its buffer restarting?
 let digitalDiagnostics = '';
+/// Characters the CW decoder has produced (diagnostics for a session that has no other evidence).
+let cwCharsSeen = 0;
+/// The CW decoder's state from the worker ('off' | 'loading' | 'ready'): published always, because a
+/// decoder that never built is the failure worth seeing.
+let dspCwState = 'off';
 //: True when the DSP worker owns the AudioWorklet port (i.e. the browser is what you hear).
 let dspOwnsWorklet = false;
 let dspWorkletAvailable = 0;
@@ -104,6 +110,7 @@ function publishIqDebug(): void {
       ` dsp_pcm_rms=${dspRmsMin.toFixed(4)}..${dspRmsMax.toFixed(4)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspDfnState ? ` dsp_nr_algo=${dspDfnState}` + (dspDfnReason ? `:${dspDfnReason}` : '') : '') +
+      ` dsp_cw=${dspCwState} dsp_cw_chars=${cwCharsSeen}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
 }
@@ -157,6 +164,14 @@ function startWorker(): void {
       renderFt8Message(d as unknown as Ft8Report);
       return;
     }
+    if (d.type === 'cw') {
+      // The CW decoder's characters: the log keeps them, the decode window renders them. The level
+      // and the gate state are separate state: they arrive with every block (tens per second) and
+      // drive the window's meter and keyed lamp without touching the text.
+      setCwLevel(Number(d.rms) || 0, Boolean(d.keyed));
+      addCwText(String(d.text || ''), Boolean(d.endsLine), Number(d.share) || 0);
+      return;
+    }
     if (d.type === 'dfn-status') {
       dspDfnState = String(d.state || '');
       dspDfnReason = String(d.reason || '');
@@ -175,6 +190,8 @@ function startWorker(): void {
     // evidence.) `dsp_attempts` counts searches only; a reset costs a whole `window >= hop + burst`
     // accumulation, so the two belong apart - reporting them together hid a session in which most
     // "attempts" were resets.
+    if (typeof d.cwChars === 'number') cwCharsSeen = d.cwChars;
+    if (typeof d.cw === 'string') dspCwState = d.cw;
     if (typeof d.digitalPushes === 'number') {
       digitalDiagnostics =
         `dsp_pushes=${d.digitalPushes} dsp_buffered=${d.digitalBuffered}` +

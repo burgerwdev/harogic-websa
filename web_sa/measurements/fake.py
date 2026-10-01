@@ -44,6 +44,43 @@ SDR_BASEBAND_SAMPLES = 4096
 #: channel) with an AM envelope, so the analog demodulators and the audio chain have something real
 #: to work on (a bare carrier has no envelope to detect).
 SDR_BASEBAND_MOD_HZ = 1.0e3
+#: The Morse the fake CW session keys (a fixed message so an e2e can assert the decoded text) and
+#: the speed it is sent at.
+CW_MESSAGE = 'TEST DE N0CALL'
+CW_WPM = 20
+#: The sidetone pitch the fake's carrier sits at, above the dial: the CW demodulator selects its
+#: band there (a zero-beat carrier is what the receiver's DC cancellation is for).
+CW_PITCH_HZ = 700.0
+_CW_MORSE = {
+    'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.', 'G': '--.',
+    'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..', 'M': '--', 'N': '-.',
+    'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.', 'S': '...', 'T': '-', 'U': '..-',
+    'V': '...-', 'W': '.--', 'X': '-..-', 'Y': '-.--', 'Z': '--..',
+    '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
+    '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
+}
+
+
+def cw_keying(text: str, wpm: float, rate: float) -> np.ndarray:
+    """A 0/1 keying envelope for `text` at `wpm`, with the ITU element ratios (1/3 dots, 1-dot
+    element gaps, 3-dot character gaps, 7-dot word gaps) and a 10-dot silence between repeats."""
+    dot = int(rate * 1.2 / max(1.0, wpm))
+    runs: list[tuple[int, int]] = []          # (key, samples)
+    words = text.split()
+    for wi, word in enumerate(words):
+        for ci, ch in enumerate(word):
+            code = _CW_MORSE.get(ch.upper(), '')
+            for si, sym in enumerate(code):
+                runs.append((1, dot * (3 if sym == '-' else 1)))
+                if si < len(code) - 1:
+                    runs.append((0, dot))
+            if ci < len(word) - 1:
+                runs.append((0, dot * 3))
+        if wi < len(words) - 1:
+            runs.append((0, dot * 7))
+    runs.append((0, dot * 10))
+    key = np.concatenate([np.full(n, k, dtype=np.float32) for k, n in runs])
+    return key
 
 
 class _FakeRtaBase(MeasurementSession):
@@ -97,6 +134,8 @@ class _FakeRtaBase(MeasurementSession):
         """
         if str(self.dev.state.sdr_demod) == 'ft8':
             return self._ft8_baseband()
+        if str(self.dev.state.sdr_demod) == 'cw':
+            return self._cw_baseband(rate, center_hz)
         n = SDR_BASEBAND_SAMPLES
         t = (np.arange(n) + self._tick * n) / max(1.0, rate)
         envelope = 0.25 * (1.0 + 0.5 * np.cos(2 * np.pi * SDR_BASEBAND_MOD_HZ * t))
@@ -281,6 +320,26 @@ class FakeSdrSession(_FakeRtaBase):
         FakeSdrSession._ft8_pos = (start + SDR_BASEBAND_SAMPLES) % slot
         self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
         return encode_baseband(BASEBAND_VERSION, self._iq_seq, FT8_IQ_RATE, 100.2e6, block)
+
+    #: The keying envelope (built once; the samples are the fixture, like the FT8 one).
+    _cw_key: np.ndarray | None = None
+    _cw_pos = 0
+
+    def _cw_baseband(self, rate: float, center_hz: float) -> bytes:
+        """A keyed carrier at the sidetone pitch: the CW demodulator passes it to the decoder."""
+        if FakeSdrSession._cw_key is None:
+            FakeSdrSession._cw_key = cw_keying(CW_MESSAGE, CW_WPM, rate)
+        key = FakeSdrSession._cw_key
+        start = FakeSdrSession._cw_pos
+        index = (np.arange(SDR_BASEBAND_SAMPLES) + start) % key.size
+        t = (np.arange(SDR_BASEBAND_SAMPLES) + start) / rate
+        carrier = np.exp(2j * np.pi * CW_PITCH_HZ * t)
+        block = np.empty(SDR_BASEBAND_SAMPLES * 2, dtype=np.float32)
+        block[0::2] = (key[index] * carrier).real
+        block[1::2] = (key[index] * carrier).imag
+        FakeSdrSession._cw_pos = (start + SDR_BASEBAND_SAMPLES) % key.size
+        self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+        return encode_baseband(BASEBAND_VERSION, self._iq_seq, rate, center_hz, block)
 
     def pacing(self, dt: float, produced: bool) -> float:
         """Pace the synthetic stream to the rate it declares.

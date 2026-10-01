@@ -168,6 +168,10 @@ harogic-websa/
 - `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Screenshots captured with a real SAN-90 + TinySA sweep source
+- `frontend/modern/src/dsp/ggmorse/` and `tools/ggmorse/`: the CW (Morse) decoder is
+  [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at
+  commit `7b4822a8` (see `tools/ggmorse/LICENSE`) and compiled to a single-file wasm module by
+  `tools/build_ggmorse_wasm.sh`. `tools/ggmorse/ggmorse_wasm.cpp` is ours.
 
 
 ---

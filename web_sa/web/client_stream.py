@@ -45,12 +45,14 @@ class ClientStream:
 
     CONTROL_LIMIT = 32
     AUDIO_LIMIT = 20          # 400 ms of 20 ms frames; seq=0 flushes stale audio
-    #: Baseband blocks are per acquisition step (~8 ms at the DDC output rate). The bound is set by
-    #: what the browser does between reads: a digital mode decodes a whole slot synchronously in the
-    #: worker (seconds), during which nobody drains this FIFO - at 8 blocks it overran and the
-    #: decoder's input came back with gaps, which no FT8 decode survives (measured: `dropped=1526`
-    #: and no decode in the browser, while the same artifact decoded the same baseband directly).
-    #: 48 blocks ~= 0.4 s, which covers the worst decode and still bounds the memory and the latency.
+    #: Baseband blocks are per acquisition step (~8 ms at the DDC output rate). The reader on the
+    #: browser side is a dedicated worker that never blocks (sdr/ft8Worker.ts owns only the
+    #: socket; the WASM decode runs in a second worker fed over a MessagePort), so the FIFO only
+    #: has to ride out scheduling jitter — 48 blocks ~= 0.4 s. History: when the decode ran on
+    #: the socket-owning thread, seconds-long decodes stalled the reader, this FIFO overran, and
+    #: every decode attempt came back as a sequence gap that reset the decoder's window
+    #: (measured live: 8 of ~18 slots decoded, `dropped=2142`). Raising the bound was the wrong
+    #: fix — splitting the workers was the right one (measured after: 14 of 14 slots, `dropped=0`).
     IQ_LIMIT = 48
     #: Minimum sane header length per streaming frame type (IQBF's header is 32 bytes).
     FIFO_MIN_BYTES = {AUDIO_MAGIC: 16, IQ_MAGIC: 32}

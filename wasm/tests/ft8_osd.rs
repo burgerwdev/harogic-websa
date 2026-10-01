@@ -25,11 +25,10 @@ const TRIALS_PER_LEVEL: usize = 8;
 const INSERT_S: f64 = 0.64;
 const OFFSETS_HZ: [f64; 4] = [0.0, -3.125, 4.5, -11.25];
 
-/// Decoded trials per level, in `LEVELS_DB` order, with the OSD fallback in place (measured
-/// 2026-09-29; the pre-fallback pure-LDPC numbers were 0/8 at both levels). -22 dB stays out of
-/// reach for OSD-2's weight-2 sweep. Floors minus one trial of slack for cross-platform float
-/// drift.
-const MEASURED_OSD: [usize; 2] = [2, 0];
+/// The assertion floors, one trial of slack under what the bench measured (2026-09-29) for
+/// cross-platform float drift: 2 and 0 decoded trials per level with the OSD fallback in place.
+/// (The pre-fallback pure-LDPC numbers were 0/8 at both levels, and -22 dB stays out of reach for
+/// OSD-2's weight-2 sweep.)
 const FLOOR_OSD: [usize; 2] = [1, 0];
 
 fn decode_texts(iq: &[f32]) -> Vec<String> {

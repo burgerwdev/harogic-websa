@@ -24,7 +24,7 @@
 use websa_dsp::digital::ft8::Ft8Decoder;
 
 mod common;
-use common::{load_iq, noise, noise_power_for, power_of, scenario, shift, BAND_HZ, RATE, SLOT_SAMPLES};
+use common::{noise, noise_power_for, scenario, BAND_HZ, RATE, SLOT_SAMPLES};
 
 const IQ_BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_cq_iq.bin");
 const MULTI_BYTES: &[u8] = include_bytes!("../../tests/fixtures/ft8/ft8_multi3_iq.bin");

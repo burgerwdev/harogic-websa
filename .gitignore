@@ -46,3 +46,7 @@ tools/sdr_probe/plots/
 .pi/
 tools/ft8_reference/decode_ref
 tools/ft8_reference/ft8_lib/
+
+# emscripten toolchain + ggmorse build scratch (the built artifact is committed)
+tools/.emsdk/
+tools/.ggmorse-build/

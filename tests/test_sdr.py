@@ -72,15 +72,29 @@ def test_panadapter_crops_iq_guard_band():
     assert freq[-1] <= 100.4e6
 
 
-def test_cw_zero_if_carrier_becomes_configured_sidetone():
+def test_cw_carrier_at_the_pitch_becomes_the_sidetone():
+    """The operator's tuning: the dial sits `pitch` below the carrier, so it arrives at +pitch.
+
+    The demodulator selects a narrow band there (the sidetone *is* that pitch). A zero-beat carrier
+    - the previous design's requirement, and where the receiver's DC cancellation lives - is not
+    demodulated at all.
+    """
     fs = 48000.0
+    t = np.arange(96000) / fs
+    carrier = 0.5 * np.exp(2j * np.pi * 700.0 * t)
     demod = AnalogDemod(fs)
     demod.configure(fs, 'cw', 500.0, pitch=700.0)
-    audio, _ = demod.process(np.ones(96000), np.zeros(96000), use_agc=False)
+    audio, _ = demod.process(carrier.real, carrier.imag, use_agc=False)
     audio = audio[4000:]
     peak = np.fft.rfftfreq(audio.size, 1.0 / fs)[np.argmax(np.abs(np.fft.rfft(audio)))]
     assert _rms(audio) > 0.1
     assert peak == pytest.approx(700.0, abs=2.0)
+
+    zero_beat = AnalogDemod(fs)
+    zero_beat.configure(fs, 'cw', 500.0, pitch=700.0)
+    dc_audio, _ = zero_beat.process(np.ones(96000), np.zeros(96000), use_agc=False)
+    assert _rms(dc_audio[4000:]) < 0.01 * _rms(audio), 'a zero-beat carrier must be rejected'
+
 
 
 def test_wfm_applies_50us_deemphasis():

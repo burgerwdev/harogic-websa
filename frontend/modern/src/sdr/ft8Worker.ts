@@ -1,53 +1,24 @@
-// The FT8 decoder host — a worker of its own, on purpose.
+// The FT8 stream worker — the socket reader half of the decoder.
 //
-// A slot decode is one synchronous WebAssembly call that runs for seconds (measured: about 2.5 s per
-// 15 s slot on the bench), and while it runs the thread is gone: any audio produced in the same
-// worker stops, the playback ring drains, and the listener hears a gap every slot. That is why the
-// decoder lives here, fed a *copy* of the same channelized baseband the audio worker demodulates:
-// the two consumers of one baseband in two threads, so a decode can never starve the audio.
+// A slot decode is one synchronous WebAssembly call that runs for seconds (measured: ~2.8 s per
+// 15 s slot on the bench), and this worker used to run that call itself — with its WebSocket on
+// the same thread. While the decode ran, nobody read the socket; the backend's per-client FIFO
+// (a bound of 0.4 s, `IQ_LIMIT`) overran and dropped frames, and every decode attempt therefore
+// came back to a torn stream: a sequence gap, a window reset, and the slot the decoder had just
+// searched was thrown away unreported. Measured live (PlutoSDR transmitting every slot, SAN-90
+// receiving): 8 of ~18 slots decoded, `resets=10` against `attempts=5` — the "it only decodes
+// occasionally" signature.
 //
-// The audio worker forwards the decodes it receives from here to the page, so the FT8 readout and the
-// decode table keep working without a second socket.
+// So the decoder is two workers now, and this is the cheap one: it owns the WebSocket, decodes
+// the frame headers, and hands the sample payload to the decode worker over a MessagePort —
+// transferred, not copied (a baseband block is ~36 kB at the DDC rate). The socket is drained
+// continuously no matter how long a decode takes; the backlog queues in the decode worker's
+// message loop and is consumed after the decode (decode duty is well under real time, so the
+// queue drains inside the next slot).
 import { decodeFrame } from '../core/frames';
-import { dsp, type DspModule } from './wasm';
-import { WasmPipeline, type PipelineParams } from './wasmPipeline';
-import { loadPluginManifest } from './registry';
 
-let module: DspModule | null = null;
-let pipeline: WasmPipeline | null = null;
-let params: PipelineParams | null = null;
-let enabled = false;
-/// The decoder's own IQ socket.
-///
-/// It used to be fed by the audio worker, and the audio paid for it: a slot decode blocks this thread
-/// for about a second, during which the audio worker's hand-off backed up and the audio it produced
-/// jumped (~one discontinuity per decode attempt, measured). Two consumers of one stream belong on two
-/// sockets - the backend fans out already - so the audio worker never touches this worker at all.
-let ws: WebSocket | null = null;
-let wsUrl = '';
-let lastSeq = -1;
-let dropped = 0;
-let pushes = 0;
-/// Windows the decoder searched (one per slot by design), and how often its buffer was thrown away.
-///
-/// Both were invisible before, and the two look identical from the buffer length alone: a search
-/// drops it by one hop, a reset drops it to zero. Counting a reset as a search is what made a live
-/// session unreadable -- 41 "attempts" that could be 41 searches or 20 searches and 21 resets, which
-/// is the difference between "the decoder missed 36 transmissions" and "it never had a clean window".
-let attempts = 0;
-let resets = 0;
-/// A reset zeroes the buffer, so the next frame's length looks like a search's drop. Latched here so
-/// the reset is not also counted as a search.
-let afterReset = false;
-/// Decoder buffered length at the previous frame, used to spot that slide.
-let lastBuffered = 0;
-
-/** Drop the decoder's window: a flush or a gap tore the stream, so the slot in it is unrecoverable. */
-function forgetWindow(): void {
-  pipeline?.reset();
-  resets += 1;
-  afterReset = true;
-}
+/// The decoder's port (messages: 'baseband' in, 'ready'/'ft8'/'ft8-stats'/'error' out).
+let port: MessagePort | null = null;
 
 function post(msg: Record<string, unknown>): void {
   (self as unknown as { postMessage: (m: unknown) => void }).postMessage(msg);
@@ -56,35 +27,25 @@ function post(msg: Record<string, unknown>): void {
 self.onmessage = (event: MessageEvent) => {
   const msg = (event.data || {}) as Record<string, any>;
   if (msg.type === 'init') {
-    const wasmUrl = String(msg.wasmUrl || '');
-    wsUrl = String(msg.url || '');
-    if (!wasmUrl) return;
-    // The registry's loader: it caches the manifest the mode helpers read.
-    void loadPluginManifest(wasmUrl)
-      .then(() => {
-        module = dsp();
-        post({ type: 'ready' });
-        if (wsUrl) connect();
-      })
-      .catch(() => post({ type: 'error', message: 'dsp.wasm unavailable (FT8)' }));
-  } else if (msg.type === 'configure') {
-    params = (msg.params as PipelineParams) ?? null;
-    enabled = Boolean(msg.enabled);
-    build();
+    port = (msg.port as MessagePort) ?? null;
+    if (port) port.onmessage = (fromDecoder: MessageEvent) => post(fromDecoder.data);
+    if (msg.url) connect(String(msg.url));
   } else if (msg.type === 'socket') {
     // A reconnect (the audio worker watches its own socket; this one does the same).
-    if (!ws) connect();
-  } else if (msg.type === 'stop') {
-    pipeline?.free();
-    pipeline = null;
+    if (!ws) connect(lastUrl);
   }
 };
 
+let ws: WebSocket | null = null;
+let lastUrl = '';
+
 /** Own IQ socket: the baseband frames reach this worker directly, never through the audio thread. */
-function connect(): void {
+function connect(url: string): void {
+  if (!url) return;
+  lastUrl = url;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   try {
-    ws = new WebSocket(wsUrl);
+    ws = new WebSocket(url);
   } catch {
     scheduleReconnect();
     return;
@@ -95,81 +56,25 @@ function connect(): void {
     if (!(data instanceof ArrayBuffer)) return;
     const frame = decodeFrame(data);
     if (frame === null || frame.kind !== 'baseband') return;
-    onBaseband(frame);
+    // The frame's buffer belongs to this message alone: transfer it (zero copy) rather than
+    // cloning ~36 kB per block. The header bytes ride along; the decoder reads the view only.
+    if (port) {
+      try {
+        port.postMessage(
+          { type: 'baseband', seq: frame.seq, iq: frame.iq, centerHz: frame.centerHz },
+          [frame.iq.buffer],
+        );
+      } catch {
+        port.postMessage({ type: 'baseband', seq: frame.seq, iq: frame.iq.slice(), centerHz: frame.centerHz });
+      }
+    }
   };
   ws.onclose = () => { ws = null; scheduleReconnect(); };
   ws.onerror = () => { ws?.close(); };
 }
 
 function scheduleReconnect(): void {
-  setTimeout(connect, 1000);
+  setTimeout(() => connect(lastUrl), 1000);
 }
-
-function onBaseband(frame: { seq: number; iq: Float32Array; centerHz: number }): void {
-  if (frame.seq === 0) {
-    lastSeq = -1;
-    forgetWindow();
-    if (frame.iq.length === 0) return;
-  } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
-    dropped += frame.seq - lastSeq - 1;
-    forgetWindow();                       // a gap tears a slot: start the next one clean
-  }
-  if (frame.seq !== 0) lastSeq = frame.seq;
-  if (!enabled || !pipeline || frame.iq.length === 0) return;
-  // The decoder owns the windowing: it accumulates a *sliding* window of `hop + burst`, searches all
-  // of it, then advances one hop and keeps the overlap. So the feeder just hands over the stream.
-  //
-  // Feeding a per-slot block and clearing in between (what this used to do) made decoding depend on
-  // the feeder's own alignment with the 15 s schedule: the window began at the feeder's boundary,
-  // which is anchored on frame *arrival* while the samples were captured earlier, so it started late
-  // in signal-time and cut the head of every burst. A burst at a seam was simply in no window.
-  const reports = pipeline.push(frame.iq);
-  for (const report of reports) {
-    post({ type: 'ft8', ...report, centerHz: frame.centerHz });
-  }
-  const buffered = pipeline.buffered();
-  if (buffered < lastBuffered) {
-    if (afterReset) afterReset = false;
-    else attempts += 1;                   // the window slid: the decoder searched it
-  }
-  lastBuffered = buffered;
-  pushes += 1;
-  // The stats are throttled, and that is not cosmetic: the audio worker relays them to the page, and
-  // one per frame is ~120 messages a second. That traffic - which exists only in a digital mode,
-  // because only then is this worker running - saturated the page's message plumbing enough that the
-  // PCM reaching the AudioWorklet arrived in bursts: measured in the live page, the playback ring swung
-  // between 0 and its 897 ms ceiling and dropped 30308 samples to the ceiling trim, which the listener
-  // hears as a periodic stutter. Four a second says the same thing.
-  if (pushes % 30 === 0) {
-    post({
-      type: 'ft8-stats',
-      pushes,
-      buffered: pipeline.buffered(),
-      decodes: pipeline.count(),
-      dropped,
-      resets,
-      attempts,
-    });
-  }
-}
-
-/** (Re)build the decoder for the current parameters. */
-function build(): void {
-  if (!module || !enabled || !params) {
-    pipeline?.free();
-    pipeline = null;
-    return;
-  }
-  if (pipeline && pipeline.mode === params.mode && pipeline.isDigital && pipeline.ok) {
-    return;
-  }
-  pipeline?.free();
-  pipeline = new WasmPipeline(module, params, true);
-  if (!pipeline.ok) {
-    pipeline.free();
-    pipeline = null;
-    post({ type: 'error', message: `no FT8 decoder for mode ${params.mode}` });
-  }
-}
-
-post({ type: 'ready' });
+// No 'ready' here: that message means "the decoder's WASM is loaded" and belongs to the decode
+// worker (relayed through this one); the socket starts draining on 'init' regardless.

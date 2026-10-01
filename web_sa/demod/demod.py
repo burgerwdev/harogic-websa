@@ -51,8 +51,12 @@ class AnalogDemod:
             band = (-if_bw, -max(100.0, min(300.0, if_bw * 0.1)))
             kind = 'ssb'
         elif mode == 'cw':
+            # CW selects a narrow band centred on the sidetone pitch, above zero IF - the same
+            # convention as the Rust demodulator (and FT8): the dial sits `pitch` below the signal,
+            # so the tone the operator hears *is* the pitch. A band at zero IF (the earlier design)
+            # only worked for a zero-beat carrier, which is where the DC cancellation lives.
             w = max(50.0, if_bw) / 2.0
-            band = (-w, w)
+            band = (max(100.0, self.pitch) - w, max(100.0, self.pitch) + w)
             kind = 'cw'
         else:
             band = (-if_bw / 2.0, if_bw / 2.0)
@@ -90,7 +94,6 @@ class AnalogDemod:
                 taps = (1.0 - alpha) * alpha ** np.arange(span + 1, dtype=np.float64)
                 taps /= taps.sum()
                 self._deemph = StreamFilter(taps.astype(np.float32))
-        self._cw_phase = 0.0
         self._configured = True
 
     def reset(self) -> None:
@@ -105,7 +108,6 @@ class AnalogDemod:
         self._dc_y = 0.0
         if self._deemph is not None:
             self._deemph.reset()
-        self._cw_phase = 0.0
 
     def retune(self) -> None:
         """Retune to a new offset: clear the filter tail and demodulator history so the
@@ -118,7 +120,6 @@ class AnalogDemod:
         self._dc_y = 0.0
         if self._deemph is not None:
             self._deemph.reset()
-        self._cw_phase = 0.0
 
     # ---- processing ----
     def process(self, i, q, use_agc: bool = True, agc_hold: bool = False):
@@ -156,12 +157,7 @@ class AnalogDemod:
             self._prev_z = zf[-1]
             d = np.angle(zf[1:] * np.conj(zf[:-1]))
             audio = d * (self.fs / (2.0 * np.pi))
-        elif self.kind == 'cw':
-            inc = 2.0 * np.pi * self.pitch / self.fs
-            phase = self._cw_phase + inc * np.arange(zf.size)
-            audio = (zf * np.exp(1j * phase)).real
-            self._cw_phase = (self._cw_phase + inc * zf.size) % (2.0 * np.pi)
-        else:  # SSB: real part of the sideband-selected complex signal
+        else:  # SSB and CW: the real part of the (sideband / pitch-) selected complex signal
             audio = zf.real
 
         a = self.audio_lp.process(audio.astype(np.float32))

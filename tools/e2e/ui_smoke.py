@@ -235,7 +235,81 @@ def main() -> int:
         check('the waterfall choice comes back afterwards', page.evaluate(
             "document.getElementById('btn-waterfall').classList.contains('active')"))
 
-        print('6) i18n, keypad and the status page')
+        print('6) the spectrum/waterfall divider drags')
+        def divider_y():
+            return page.evaluate(
+                "() => { const s = document.getElementById('wf-split').getBoundingClientRect();"
+                " return s.y + s.height / 2; }")
+        def sizes():
+            return page.evaluate(
+                "() => ({wf: document.getElementById('waterfall-container').clientHeight,"
+                " spec: document.getElementById('spectrum').clientHeight})")
+        box = page.evaluate(
+            "() => { const s = document.getElementById('wf-split').getBoundingClientRect();"
+            " return {x: s.x + s.width / 2, y: s.y + s.height / 2}; }")
+        heights = sizes()
+        # Drag DOWN: the divider follows the pointer, so the boundary moves down - the spectrum
+        # above it grows and the waterfall below it shrinks. (The first version had the delta
+        # inverted: the divider ran away from the cursor and the waterfall grew, reported as
+        # "the up/down direction is reversed".)
+        page.mouse.move(box['x'], box['y'])
+        page.mouse.down()
+        page.mouse.move(box['x'], box['y'] + 50, steps=8)
+        page.mouse.up()
+        page.wait_for_timeout(700)
+        moved_down = sizes()
+        check('dragging the divider down follows the pointer',
+              abs(divider_y() - (box['y'] + 50)) <= 4,
+              f"divider {box['y']:.1f} -> {divider_y():.1f}, cursor {box['y'] + 50:.1f}")
+        check('dragging down grows the spectrum and shrinks the waterfall',
+              abs(moved_down['wf'] - (heights['wf'] - 50)) <= 12
+              and moved_down['spec'] > heights['spec'] + 30,
+              f"wf {heights['wf']} -> {moved_down['wf']}, spectrum {heights['spec']} -> {moved_down['spec']}")
+        # ...and drag UP, back past the start: the waterfall grows again.
+        y_now = divider_y()
+        page.mouse.move(box['x'], y_now)
+        page.mouse.down()
+        page.mouse.move(box['x'], y_now - 100, steps=8)
+        page.mouse.up()
+        page.wait_for_timeout(700)
+        moved_up = sizes()
+        check('dragging up follows the pointer and grows the waterfall',
+              abs(divider_y() - (y_now - 100)) <= 4
+              and moved_up['wf'] > moved_down['wf'] + 60,
+              f"divider {y_now:.1f} -> {divider_y():.1f}; wf {moved_down['wf']} -> {moved_up['wf']}")
+        grown = moved_up
+        check('the split is stored for the next visit',
+              abs(float(page.evaluate("localStorage.getItem('web-sa-wf-split')") or 0) - grown['wf']) <= 12)
+        # Closing the waterfall gives its slot back to the marker table (the layout's normal
+        # state); reopening brings the remembered split back.
+        page.click('[data-action="toggle-waterfall"]')
+        page.wait_for_timeout(600)
+        closed = page.evaluate(
+            "() => ({wf: document.getElementById('waterfall-container').clientHeight,"
+            " table: getComputedStyle(document.getElementById('marker-table')).display,"
+            " split: getComputedStyle(document.getElementById('wf-split')).display})")
+        check('closing the waterfall restores the normal layout (table slot, no divider)',
+              closed['wf'] == 0 and closed['table'] != 'none' and closed['split'] == 'none',
+              f"wf {closed['wf']}, marker table {closed['table']}, split {closed['split']}")
+        page.click('[data-action="toggle-waterfall"]')
+        page.wait_for_timeout(600)
+        reopened = page.evaluate(
+            "() => ({wf: document.getElementById('waterfall-container').clientHeight,"
+            " split: getComputedStyle(document.getElementById('wf-split')).display})")
+        check('reopening restores the remembered split',
+              abs(reopened['wf'] - grown['wf']) <= 12 and reopened['split'] != 'none',
+              f"wf {grown['wf']} -> {reopened['wf']}, split {reopened['split']}")
+        # Preset puts the split back to the factory height (the inline style is exact; the client
+        # box is 2px smaller because of the container's borders).
+        page.click('#btn-preset')
+        page.wait_for_timeout(1200)
+        reset_wf = page.evaluate(
+            "() => document.getElementById('waterfall-container').style.height")
+        check('Preset resets the split to the default',
+              reset_wf == '135px' and page.evaluate("localStorage.getItem('web-sa-wf-split')") is None,
+              f'style height {reset_wf}')
+
+        print('7) i18n, keypad and the status page')
         label_en = page.inner_text('#btn-connect') if page.query_selector('#btn-connect') else ''
         page.click('#btn-lang')
         page.wait_for_timeout(800)
@@ -382,8 +456,6 @@ def main() -> int:
         # time, so the DSP correctly produces audio below 48 kHz and the ring drains - a real
         # analyzer feeds it at real time (verified on the bench: underruns stay 0 there).
         print(f'    (ring: received={received} underruns={underruns})')
-        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
-        page.wait_for_timeout(500)
 
         print('N) FT8 decodes in the browser (fake backend replays a real transmission)')
         # Back to the normal page: the fallback check above left the browser on ?wasm=0, which
@@ -408,14 +480,14 @@ def main() -> int:
         page.wait_for_timeout(45000)
         # The one-line readout this used to read was replaced by the decode window (see the note in
         # sdr/iqStream.ts): the table is where a decode is visible now, so that is what is asserted.
-        window_button = page.query_selector('#btn-ft8-window')
+        window_button = page.query_selector('#btn-decode-window')
         check('the FT8 window toggle is offered', window_button is not None)
         if window_button is not None:
-            js_click(page, '#btn-ft8-window')
+            js_click(page, '#btn-decode-window')
             page.wait_for_timeout(500)
-        rows_text = page.evaluate("document.getElementById('ft8-window-rows').textContent") or ''
+        rows_text = page.evaluate("document.getElementById('decode-window-rows').textContent") or ''
         row_title = page.evaluate(
-            "() => { const r = document.querySelector('#ft8-window-rows tr');"
+            "() => { const r = document.querySelector('#decode-window-rows tr');"
             " return r ? (r.getAttribute('title') || '') : ''; }") or ''
         iq_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrIq") or ''
         detail = f'rows={rows_text[:120]!r} title={row_title[:120]!r} iq=[{iq_dbg}]'
@@ -426,16 +498,135 @@ def main() -> int:
         # assert the window's own style changed *and* persisted.
         if window_button is not None:
             page.evaluate("""() => {
-                const slider = document.getElementById('ft8-window-opacity');
+                const slider = document.getElementById('decode-window-opacity');
                 slider.value = '60';
                 slider.dispatchEvent(new Event('input', { bubbles: true }));
             }""")
-            dimmed = page.evaluate("document.getElementById('ft8-window').style.opacity")
+            dimmed = page.evaluate("document.getElementById('decode-window').style.opacity")
             saved = page.evaluate(
-                "JSON.parse(localStorage.getItem('websa-ft8-window') || '{}').opacity")
+                "JSON.parse(localStorage.getItem('websa-decode-window') || '{}').opacity")
             check('the FT8 window opacity slider dims the window and stores the level',
                   dimmed == '0.6' and saved is not None and abs(saved - 0.6) < 1e-6,
                   f'opacity={dimmed!r} stored={saved!r}')
+
+        # The CW decoder end to end: the fake backend keys 'TEST DE N0CALL' on its carrier, the
+        # browser's CW demodulator turns it into a beat note, the decoder reads it back and the
+        # decode window shows it. The same window as FT8, on its CW pane.
+        print('4b) CW decodes into the same window')
+        post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'cw', 'ifbw': 3000, 'pitch': 700,
+                        'volume': 0.8, 'squelch': -140.0, 'agc': True})
+        # Wait for the STATUS that applies the mode before touching the toggle (it stays disabled
+        # until then, and a click on a disabled button is simply lost).
+        enabled = False
+        for _ in range(20):
+            page.wait_for_timeout(500)
+            if not page.eval_on_selector('#btn-decode-window', 'e => e.disabled'):
+                enabled = True
+                break
+        check('the CW decode window toggle is enabled', enabled)
+        if enabled:
+            # The FT8 section above already opened the window: clicking again would CLOSE it, and a
+            # closed window does not render (its pane freezes at the last frame).
+            if page.evaluate("getComputedStyle(document.getElementById('decode-window')).display === 'none'"):
+                js_click(page, '#btn-decode-window')
+            # The fake keys a 7.7 s loop and the decoder joins it mid-transmission, so the first
+            # line is a fragment; poll for a line with the whole message rather than sleeping once.
+            cw_text = ''
+            title = ''
+            for _ in range(30):
+                page.wait_for_timeout(1000)
+                cw_text = page.evaluate("document.getElementById('decode-window-cw').textContent") or ''
+                title = page.evaluate("document.getElementById('decode-window-title').textContent") or ''
+                if 'TEST DE N0CALL' in cw_text:
+                    break
+            check('the CW text is decoded into the decode window',
+                  'TEST DE N0CALL' in cw_text and title == 'CW',
+                  f'title={title!r} text={cw_text[:80]!r}')
+            # The decoded text carries the window's own reading aids: the sender's word pauses are
+            # drawn (a faint dot, so "thinking" cannot look like "the page is stuck"), and the keyed
+            # lamp/meter are live while the demodulator is CW.
+            # The pause dot marks the sender's word gap and nothing else, which is checkable exactly:
+            # ggmorse separates words with a space, so the dots must number one per space - a timing
+            # rule dotted the inside of words instead (reported).
+            stats = page.evaluate(
+                "() => {"
+                " const pane = document.getElementById('decode-window-cw');"
+                " const gaps = pane.querySelectorAll('.cw-gap').length;"
+                " let spaces = 0;"
+                " for (const row of pane.querySelectorAll('.cw-line')) {"
+                "   const text = row.querySelector('.cw-text');"
+                "   let chars = '';"
+                "   for (const node of text.childNodes) {"
+                "     if (node.nodeType === 3) chars += node.textContent;"
+                "     else if (node.classList.contains('cw-ch')) chars += node.textContent;"
+                "   }"
+                "   for (const ch of chars.slice(0, -1)) if (ch === ' ') spaces++;"
+                " }"
+                " return { gaps, spaces };"
+                " }")
+            check('a word pause is drawn at every word gap, and only there',
+                  f"gaps={stats['gaps']} spaces={stats['spaces']}")
+            meter = page.evaluate(
+                "() => { const m = document.getElementById('cw-meter');"
+                " return m ? getComputedStyle(m).display : 'missing'; }")
+            check('the CW keyed lamp and level meter are shown',
+                  meter not in ('none', 'missing'), f'display={meter}')
+
+            # ...and it still works after leaving CW and coming back: the wasm module loads
+            # asynchronously, and the first version judged that load stale against a params object
+            # that a STATUS had replaced, so the decoder stayed null for the rest of the session
+            # (reported). Clearing first makes "new text arrives" the thing being asserted.
+            page.evaluate("document.getElementById('btn-decode-clear').click()")
+            post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'usb', 'ifbw': 2400, 'pitch': 700,
+                            'volume': 0.8, 'squelch': -140.0, 'agc': True})
+            page.wait_for_timeout(2500)
+            post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'cw', 'ifbw': 3000, 'pitch': 700,
+                            'volume': 0.8, 'squelch': -140.0, 'agc': True})
+            page.wait_for_timeout(1500)
+            cw_again = ''
+            for _ in range(30):
+                page.wait_for_timeout(1000)
+                cw_again = page.evaluate("document.getElementById('decode-window-cw').textContent") or ''
+                if 'TEST DE N0CALL' in cw_again:
+                    break
+            check('CW decodes again after switching away and back',
+                  'TEST DE N0CALL' in cw_again, f'text={cw_again[:80]!r}')
+
+            # The operator's own filter choice survives a mode switch: the auto-pick is a courtesy
+            # for the first selection (or after a Preset) and must never undo a deliberate choice.
+            page.evaluate(
+                "() => document.querySelector('[data-sdr-ifbw=\"180000\"]').click()")
+            page.wait_for_timeout(600)
+            js_click(page, '[data-sdr-demod="cw"]')
+            page.wait_for_timeout(600)
+            kept = page.evaluate(
+                "() => document.querySelector('[data-sdr-ifbw].active')?.dataset.sdrIfbw")
+            check('a chosen filter survives re-selecting the demodulator', kept == '180000',
+                  f'ifbw={kept}')
+
+            # ...while a first selection still gets the courtesy pick. Deliberately a profile that
+            # *has* stored SDR preferences (a saved 180 kHz filter among them): the courtesy used to
+            # be skipped whenever any preference was stored, which is every returning operator - so
+            # the first CW selection of a session did nothing (reported).
+            fresh = browser.new_context()
+            fresh_page = fresh.new_page()
+            fresh_page.add_init_script(
+                "for (const [k, v] of Object.entries({'web-sa-sdr-ifbw': '180000',"
+                " 'web-sa-sdr-demod': 'usb', 'web-sa-sdr-audio': '0',"
+                " 'web-sa-sdr-decimate': '32', 'web-sa-sdr-center': '411000000',"
+                " 'web-sa-sdr-listen': '411000000'})) localStorage.setItem(k, v);")
+            fresh_page.goto(args.url, wait_until='domcontentloaded')
+            fresh_page.wait_for_selector('#btn-decode-window', state='attached', timeout=15000)
+            post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+            post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'am', 'ifbw': 180000, 'pitch': 700,
+                            'volume': 0.8, 'squelch': -140.0, 'agc': True})
+            fresh_page.wait_for_timeout(2000)
+            js_click(fresh_page, '[data-sdr-demod="cw"]')
+            fresh_page.wait_for_timeout(800)
+            picked = fresh_page.evaluate(
+                "() => document.querySelector('[data-sdr-ifbw].active')?.dataset.sdrIfbw")
+            check('a first CW selection picks a 3 kHz filter', picked == '3000', f'ifbw={picked}')
+            fresh.close()
 
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
         page.wait_for_timeout(500)

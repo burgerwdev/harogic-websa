@@ -182,8 +182,9 @@ def _demod_baseband(mode: str) -> np.ndarray:
     if mode == 'lsb':
         return 0.5 * np.exp(2j * np.pi * -1_200.0 * t)
     if mode == 'cw':
-        # The carrier the operator tuned onto, plus an interferer 3 kHz away.
-        return 1.0 + 0.5 * np.exp(2j * np.pi * 3_000.0 * t)
+        # The operator's tuning: the dial sits `pitch` below the carrier, so it arrives at +700 Hz
+        # in the baseband (the sidetone the operator hears), plus an interferer 3 kHz away.
+        return 0.5 * np.exp(2j * np.pi * 700.0 * t) + 0.25 * np.exp(2j * np.pi * 3_000.0 * t)
     if mode == 'nfm':
         return np.exp(1j * (1.0 * np.sin(2 * np.pi * 1_000.0 * t)))
     if mode == 'wfm':

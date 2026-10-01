@@ -10,9 +10,9 @@ import { requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv, syncFreezeBtn, syncAvgUI } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
-import { normalizeActiveTrace, resetActiveTraceNormalize } from '../dsp/normalize';
+import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
 import { togglePeakList, peakThrManual, peakThrAuto, resetPeakThr } from '../render/peaklist';
 import { measToggle, measTab, applyMeasUI, setMeasButtons } from './measure';
@@ -27,7 +27,7 @@ import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
-import { initFt8Window, setFt8WindowAvailable, toggleFt8Window } from './ft8Window';
+import { initDecodeWindow, setDecodeWindowAvailable, toggleDecodeWindow } from './decodeWindow';
 import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
@@ -43,7 +43,7 @@ import {
   adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
   syncSdrRefUI, toggleGapFill, toggleRefClkOut,
 } from './panels/refAmp';
-import { resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause } from './panels/waterfall';
+import { resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause, initWfSplit, resetWfSplit } from './panels/waterfall';
 import { closeGnssDetail, fillGnssDetail } from './panels/gnss';
 import { toggleAllGroups, toggleGroup } from './panels/groups';
 import { commitUnitField } from './panels/commit';
@@ -451,6 +451,24 @@ function syncSdrButtons() {
 let sdrActual: Record<string, unknown> = {};
 
 /**
+ * The demodulator's IF-bandwidth courtesy: the first time a decoding mode is selected (and again
+ * after a Preset) an out-of-range filter is narrowed to 3 kHz.
+ *
+ * It is a *courtesy*, so it must never override a choice: once the operator has clicked a bandwidth
+ * button in this page session, the auto-pick stays out of the way, and each mode only gets one
+ * auto-pick per session (reported: the auto-pick ran on every selection and undid a deliberate
+ * narrow filter).
+ *
+ * Deliberately *session* state, not the stored preference: the store holds a value after any SDR
+ * change, so reading it as "the operator chose this bandwidth" made the courtesy dead on arrival
+ * for anyone with saved settings (reported: the first CW selection in a fresh session no longer
+ * picked 3 kHz). A stored bandwidth is a starting point, and the courtesy is exactly what the first
+ * selection is for; a bandwidth clicked during the session is the choice that must survive.
+ */
+let ifbwChosenByUser = false;
+const ifbwAutoPicked = new Set<string>();
+
+/**
  * Push the current SDR settings to the browser DSP.
  *
  * Called from the STATUS handler *and* from every user action that changes one of them: the panel
@@ -570,7 +588,7 @@ export function syncSdrPanel(s: any) {
   sdrActual = (sdr.actual || {}) as Record<string, unknown>;
   pushSdrPipeline();
   // The FT8 table only means something while FT8 is the demodulator (the registry's id, not a label).
-  setFt8WindowAvailable(String(sdr.demod || '') === 'ft8');
+  setDecodeWindowAvailable(String(sdr.demod || ''));
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)
@@ -585,7 +603,28 @@ export function presetAll() {
   displayOffset.set(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
-  S.traces.forEach((t, i) => { t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false; t.avgSum = null; t.avgCount = 0; });
+  S.traces.forEach((t, i) => {
+    t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false;
+    t.avgSum = null; t.avgCount = 0; t.avgTarget = 16; t.avgTargetRta = 16; t.prevMode = undefined; t.done = false;
+  });
+  // The trace panel must follow the state back to the factory defaults (reported: after a
+  // Preset the panel still showed the last trace's Mode/Avg/Freeze and the Smooth/RefWin
+  // selects kept their old values, while the traces themselves were already reset - the
+  // display and the state disagreed until the next reload). switchTraceTab's display-side
+  // effects are deliberately NOT reused here: it would re-derive the display ref from the
+  // not-yet-reset ref level; the panel widgets are synced directly instead.
+  S.setActiveTraceIdx(0);
+  document.querySelectorAll('.trace-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
+  const modeSel = document.getElementById('select-trace-mode') as HTMLSelectElement | null;
+  if (modeSel) modeSel.value = 'CLEAR_WRITE';
+  syncFreezeBtn();
+  syncAvgUI();
+  updateNormalizeStatusUI();
+  const smoothSel = document.getElementById('select-smooth') as HTMLSelectElement | null;
+  if (smoothSel) smoothSel.value = '1';
+  const refwinSel = document.getElementById('select-refwin') as HTMLSelectElement | null;
+  if (refwinSel) refwinSel.value = '0';
+  setNormRefWinUser(0);
   S.markers.forEach(m => { m.enabled = false; m.mode = 'OFF'; m.tracking = false; });
   S.setM3dB(null); S.setAmpRes(null); S.setHarm(null); S.setPnmData(null);
   peakListVisible.set(false); S.setPeakMarks(null);
@@ -616,11 +655,16 @@ export function presetAll() {
   resetLimits();
   S.resetWaterfall();
   wfPaused.set(false);
+  resetWfSplit();                       // the dragged spectrum/waterfall split goes back to default
   smoothBins.set(1);
   spanStepAuto.set(true);
   // Preset resets the device, not the listener: the audio switch and the IQ ingress survive. The
   // backend's reconfigure re-anchors the stream with its own flush frame, so stopping the ingress
   // here only orphaned it (re-enabling audio afterwards still heard nothing until a reload).
+  // A Preset restores the factory defaults, so the auto-pick is offered again on the next
+  // demodulator selection (the same reasoning as the trace and window resets around it).
+  ifbwChosenByUser = false;
+  ifbwAutoPicked.clear();
   const audioWasOn = sdrAudioOn.get();
   resetSdrIq();
 
@@ -720,7 +764,7 @@ export function bindActions() {
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
     'toggle-sdr-nr': () => toggleSdrNr(),
-    'toggle-ft8-window': () => toggleFt8Window(),
+    'toggle-decode-window': () => toggleDecodeWindow(),
     'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
     'set-sdr-nr-algo': (el) => setSdrNrAlgo((el as HTMLSelectElement).value === 'dfn' ? 'dfn' : 'wiener'),
     'set-sdr-nr-atten': (el) => setSdrNrAtten(Number((el as HTMLInputElement).value)),
@@ -785,20 +829,40 @@ export function bindActions() {
   // The FT8 decode window: its toggle lives next to the readout, its rows come from the log, and a
   // row click tunes the receiver (the only action an FT8 operator takes on a decode).
   // A row tunes the *dial* so the signal lands inside the decoder's band (see `ft8DialFor`).
-  initFt8Window({ onTune: (hz) => listenAtFreq(ft8DialFor(hz)) });
+  initDecodeWindow({ onTune: (hz) => listenAtFreq(ft8DialFor(hz)) });
   const demodGroup = document.getElementById('sdr-demod-group');
   if (demodGroup) {
     void initSdrDemodGroup(demodGroup, {
       onSelect: (id) => {
         sdrDemod.set(id);
+        // FT8 occupies ~3 kHz (the decoder searches 100-3000 Hz) - the industry setting is a
+        // normal SSB filter, 2.4-3 kHz. A wider IF BW only adds broadband power through the
+        // chain: measured, a strong nearby transmitter with a 391 kHz capture clipped the
+        // baseband (+10 dBFS peaks) and nothing decoded, while the same signal through 3 kHz
+        // decoded every slot. So selecting FT8 narrows an out-of-range filter to 3 kHz; a
+        // deliberate pick inside 2.4-6 kHz is left alone.
+        //
+        // CW gets the same 3 kHz, which is not the classic narrow CW filter but is what the mode
+        // wants *here*: the demodulator's band sits at the Pitch and is exactly `ifbw` wide, so a
+        // wider band needs less precise tuning (measured on the bench: 3 kHz decodes with the
+        // signal anywhere within +/-1.5 kHz of the Pitch, and narrower filters lost it whenever
+        // the two radios' clocks put the tone a little off - 180 Hz at 411 MHz).
+        const ibw = sdrIfbw.get();
+        const decodingMode = id === 'ft8' || id === 'cw';
+        if (decodingMode && !ifbwChosenByUser && !ifbwAutoPicked.has(id)
+            && (ibw > 6000 || ibw < 2400)) {
+          sdrIfbw.set(3000);
+        }
+        if (decodingMode) ifbwAutoPicked.add(id);  // once per mode per session, or after a Preset
         renderSdrState();
-        setFt8WindowAvailable(id === 'ft8');
+        setDecodeWindowAvailable(id);
         applySdrDemod();
       },
     });
   }
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.addEventListener('click', () => {
+      ifbwChosenByUser = true;                   // the operator's own choice: never auto-override it
       sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
       renderSdrState();
       pushSdrPipeline();
@@ -845,6 +909,8 @@ export function bindActions() {
 
   const wfBtn = document.getElementById('btn-waterfall');
   if (wfBtn) wfBtn.addEventListener('click', () => toggleWaterfall());
+  // The spectrum/waterfall divider: it restores the remembered split and follows the toggle.
+  initWfSplit();
   document.querySelectorAll('[data-marker-select]').forEach(el => {
     el.addEventListener('click', () => selectMarker(parseInt((el as HTMLElement).dataset.markerSelect || '1')));
   });
