@@ -36,7 +36,7 @@ dev:      ## Stop, clean (deps kept), rebuild frontend, run with WEBSA_TRACE=1
 	WEBSA_TRACE=1 ./run.sh
 	@echo "trace log: /tmp/websa.log  (tail -f /tmp/websa.log)"
 
-ci:       ## Everything CI runs, locally (no hardware needed)
+ci:       ## The in-process gates CI runs, locally (no hardware; browser e2e: make e2e-fake)
 	./test.sh
 	python3 tools/sync_version.py --check
 	python3 tools/gen_frame_fixtures.py --check
@@ -50,7 +50,7 @@ ci:       ## Everything CI runs, locally (no hardware needed)
 	tools/build_ggmorse_wasm.sh --check   # the committed CW decoder artifact (skips without emsdk)
 	python3 tools/quality/architecture_guard.py
 	./build.sh
-	@echo "OK: same gates as .github/workflows/ci.yml"
+	@echo "OK: in-process gates green (same as the backend/frontend/architecture jobs of .github/workflows/ci.yml; browser e2e: make e2e-fake)"
 
 wasm:     ## Build both WASM cores (DSP + DFN) and publish the committed artifacts (needs Rust)
 	./wasm/build.sh

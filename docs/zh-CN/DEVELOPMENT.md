@@ -16,7 +16,7 @@
 2. **写代码时**：§3 状态归属、§5 增加功能清单、§7 性能规则。
 3. **提交前**：§6 测试断言该怎么写、§9 提交与版本、§10 守卫清单跑一遍（`make ci`）。
 
-最短路径：`make ci`（无硬件全绿）→ 有硬件时 `make hw-test` → 动过数据面再 `make bench`。
+最短路径：`make ci`（无硬件全绿）+ `make e2e-fake`（无硬件的浏览器 e2e，CI 以独立 job 运行同一组脚本）→ 有硬件时 `make hw-test` → 动过数据面再 `make bench`。
 
 ---
 
@@ -318,7 +318,8 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 ## 13. 日常命令
 
 ```bash
-make ci                      # 全部无硬件门禁（测试/静态检查/契约/守卫/构建）
+make ci                      # 无硬件的进程内门禁全部（测试/静态检查/契约/守卫/构建）
+make e2e-fake                # 假后端上的浏览器 e2e（CI 以独立 job 运行）
 make run | make stop         # 启停服务（supervisor + worker）
 make restart | make status   # 重启服务 / PID、运行时长、内存、CPU、日志路径与大小、实时链路
 make e2e-fake                # 无硬件：假后端上跑 ui_smoke（29 项）+ state_regression（72 项），CI 同款
@@ -337,9 +338,10 @@ python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指
 
 ## 14. 已知未完成（指针）
 
-见 `ARCH_REVIEW.md` §9.3：假后端 + e2e 进 CI（当前最高价值）、e2e 覆盖 Firefox、`DeviceState` 按模式拆分、
-`controls.ts` 剩余无用导出、ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）、
-根目录临时 TODO 归档、按命令裁剪 STATUS。**本指南与那份清单一起演进**：完成一项就更新两处。
+见 `ARCH_REVIEW.md` §9.3：e2e 覆盖 Firefox、按命令裁剪 STATUS（P2-9）、该节记录的三个低优先级候选项，
+以及 ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）。此前列在此处的
+「假后端 + e2e 进 CI」「`DeviceState` 按模式拆分」「临时 TODO 归档」均已完成（§9.1 A1/B1/C2），
+`controls.ts` 的未引用导出已决定保留为公共 API。**本指南与那份清单一起演进**：完成一项就更新两处。
 
 ---
 

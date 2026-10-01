@@ -19,7 +19,8 @@ Look at it at three moments:
 3. **Before committing**: how to assert in tests (§6), commits and versioning (§9), and the guard list
    in §10 (`make ci`).
 
-Shortest path: `make ci` (green without hardware) -> `make hw-test` with the device attached ->
+Shortest path: `make ci` (green without hardware) + `make e2e-fake` (the browser e2e, also
+hardware-free — CI runs it as its own job) -> `make hw-test` with the device attached ->
 `make bench` whenever the data path was touched.
 
 ---
@@ -356,7 +357,8 @@ nobody can tell "deliberate" from "silent regression".
 ## 13. Daily commands
 
 ```bash
-make ci                      # all hardware-free gates (tests/static/contracts/guards/build)
+make ci                      # all in-process hardware-free gates (tests/static/contracts/guards/build)
+make e2e-fake                # the browser e2e on the fake backend (CI runs it as its own job)
 make run | make stop         # start/stop the service (supervisor + worker)
 make restart | make status   # restart the service / pid, uptime, memory, CPU, log path+size, live link
 make e2e-fake                # no hardware: ui_smoke (29 checks) + state_regression (72 checks) on the fake backend, same as CI
@@ -375,10 +377,12 @@ python3 tools/quality/architecture_guard.py --baseline   # show the current arch
 
 ## 14. Known open work (pointer)
 
-See `ARCH_REVIEW.md` §9.3: fake backend + e2e in CI (highest value now), Firefox e2e coverage, split
-`DeviceState` per mode, the remaining unused exports in `controls.ts`, ESLint (blocked by the upstream
-`typescript-eslint` / TypeScript 7 incompatibility), archiving the root scratch TODO, and per-command
-STATUS trimming. **This guide evolves together with that list**: finishing an item updates both places.
+See `ARCH_REVIEW.md` §9.3: Firefox e2e coverage, per-command STATUS trimming (P2-9), the three
+low-priority candidates recorded there, and ESLint (blocked by the upstream
+`typescript-eslint` / TypeScript 7 incompatibility). The fake-backend e2e in CI, the
+`DeviceState` per-mode split and the scratch-TODO archive listed here earlier are done
+(§9.1 A1/B1/C2). **This guide evolves together with that list**: finishing an item updates
+both places.
 
 ---
 
