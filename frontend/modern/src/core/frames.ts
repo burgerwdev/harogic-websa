@@ -1,8 +1,8 @@
 /**
  * Binary frame decoder — the single TypeScript definition of the wire format.
  *
- * The header layout is produced by the Python side (`web_sa/measurements/framer.py`,
- * `rta.py:_encode_rta`, `sdr.py:encode_audio`). Keeping one decoder here means the format
+ * The header layout is produced by the Python side (`web_sa/measurements/framer.py`, the
+ * single frame codec for every magic below). Keeping one decoder here means the format
  * is described once per language and can be locked by golden fixtures generated from the
  * Python encoders (`tests/fixtures/frames/*.bin`, checked by `__tests__/frames.test.ts`).
  *
@@ -15,8 +15,9 @@
  *   RTAF  magic + ver(u32) pts(u32) wfLen(u16) maxD(u16) startHz(f64)   (8-byte aligned)
  *         + float64[pts] + float32[pts] + uint16[wfLen] + stopHz(f64)
  *   AUDF  magic + seq(u32) rate(u32) samples(u32) + int16[samples]      (mono PCM)
- *   IQDF  magic + ver(u32) seq(u32) samples(u32) rate(f64) centerHz(f64) + int16[2*samples]
- *                                                                    (interleaved IQ)
+ *   IQBF  magic + ver(u32) seq(u32) samples(u32) rate(f64) centerHz(f64) + float32[2*samples]
+ *                                                                    (interleaved complex IQ;
+ *                                                                    seq 0 = flush)
  *
  * Lengths are validated strictly: a frame whose declared size does not match the buffer is
  * rejected instead of being interpreted with a wrong stride. Returns null for anything that
