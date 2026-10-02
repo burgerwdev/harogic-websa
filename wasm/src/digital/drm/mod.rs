@@ -16,6 +16,7 @@ pub mod cellmap;
 pub mod chanest;
 pub mod fac;
 pub mod fec;
+pub mod interleave;
 pub mod ofdm;
 pub mod params;
 pub mod qam;
@@ -27,6 +28,7 @@ use cellmap::CellMap;
 use fac::Fac;
 use fec::mlc::{MlcDecoder, MlcParams, MscProtection};
 use fec::qam::{EqCell, Mapping};
+use interleave::CellDeinterleaver;
 use ofdm::{carrier_at, FullFft};
 use params::{RobustnessMode, SpectrumOccupancy};
 use tables::{NUM_FAC_CELLS, QAM16, QAM4, QAM64_SM};
@@ -147,6 +149,8 @@ pub struct DrmReceiver {
     pub sdc_errors: usize,
     /// MSC information bitrate (kbps), from FAC + SDC.
     pub msc_bitrate_kbps: Option<f64>,
+    /// Decoded MSC multiplex frames (information bits, one Vec per complete frame).
+    pub msc_frames: Vec<Vec<u8>>,
 }
 
 impl Default for DrmReceiver {
@@ -178,6 +182,7 @@ impl DrmReceiver {
             sdc_ok: 0,
             sdc_errors: 0,
             msc_bitrate_kbps: None,
+            msc_frames: Vec::new(),
         }
     }
 
@@ -256,6 +261,8 @@ impl DrmReceiver {
         let mut sdc_dec4 = MlcDecoder::new(MlcParams::sdc(Mapping::Qam4, map.sdc_cells_per_superframe), 1);
         let mut fac_cells: Vec<EqCell> = Vec::new();
         let mut sdc_cells: Vec<EqCell> = Vec::new();
+        let mut msc_super: Vec<EqCell> = Vec::new();
+        let mut msc_supers: Vec<Vec<EqCell>> = Vec::new();
 
         let mut sig = 0.0f64;
         let mut noise = 0.0f64;
@@ -338,6 +345,10 @@ impl DrmReceiver {
                 for llr in qam::soft_bits(v.re, v.im, &QAM64_SM) {
                     self.msc_soft_bits.push(llr);
                 }
+                msc_super.push(ec(c as usize));
+            }
+            if sym == spsf - 1 {
+                msc_supers.push(core::mem::take(&mut msc_super));
             }
         }
 
@@ -358,6 +369,26 @@ impl DrmReceiver {
             let part_a_bytes = mux.streams.iter().map(|s| s.len_a as usize).sum::<usize>();
             let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, part_a_bytes);
             self.msc_bitrate_kbps = Some(params.total_bits() as f64 / 400.0);
+
+            // MSC cell deinterleaving + MLCC decoding, one multiplex frame at a time.
+            let depth = match fac0.channel.interleaving {
+                fac::Interleaving::Long => 5,
+                fac::Interleaving::Short => 1,
+            };
+            let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, depth);
+            let mut msc_dec = MlcDecoder::new(params, 1);
+            for super_cells in &msc_supers {
+                for frame in super_cells.chunks(map.msc_cells_per_frame).take(3) {
+                    let Some(deint) = de.push(frame) else { continue };
+                    // Skip frames still containing erasures (the long interleaver's
+                    // fill-in delay and any trailing truncation).
+                    if deint.iter().all(|c| c.chan > 0.0) {
+                        let mut bits = Vec::new();
+                        msc_dec.decode(&deint, &mut bits);
+                        self.msc_frames.push(bits);
+                    }
+                }
+            }
         }
     }
 

@@ -94,3 +94,35 @@ fn fixture_decodes_fac_and_sdc_metadata() {
     let bitrate = rx.msc_bitrate_kbps.expect("bitrate computed from FAC + SDC");
     assert!((bitrate - 20.975).abs() < 0.01, "MSC bitrate {bitrate:.3} kbps");
 }
+
+/// The fixture's MSC payload is a deterministic xorshift bit stream (seed 1, one
+/// continuous stream across frames), so the MSC decode must recover it bit-exactly.
+fn xorshift_bits(n: usize) -> Vec<u8> {
+    let mut seed = 1u32;
+    (0..n)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed & 1) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn fixture_decodes_msc_bit_exact() {
+    let iq = load_iq();
+    let mut rx = DrmReceiver::new();
+    rx.push(&iq);
+    rx.run();
+
+    // 4 complete super frames → 12 multiplex frames; the depth-5 cell interleaver
+    // delays by 4 frames, so 8 frames are complete.
+    let n = 8390usize; // MSC information bits per multiplex frame
+    assert_eq!(rx.msc_frames.len(), 8, "8 complete MSC frames expected");
+    let stream = xorshift_bits(12 * n);
+    for (f, bits) in rx.msc_frames.iter().enumerate() {
+        assert_eq!(bits.len(), n, "MSC frame {f} length");
+        assert_eq!(&bits[..], &stream[f * n..(f + 1) * n], "MSC frame {f} bit-exact");
+    }
+}
