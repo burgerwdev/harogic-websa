@@ -97,6 +97,7 @@ path here does not exist yet.
 | WASM boundary (raw ABI) | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`, `wasm/src/abi.rs` |
 | Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
 | Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
+| Digital demodulator (DRM) | `wasm/src/digital/drm/` (OFDM demod, FAC/SDC/MSC MLCC, audio deframing), `wasm/fdk/` (FDK AAC decoder) |
 | Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
 | Noise reduction (DeepFilterNet3, streamed) | `frontend/src/sdr/dfnWorker.ts`, `frontend/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
 | DFN artifact and model | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm` (committed), `frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
@@ -124,7 +125,7 @@ bit-identical with the audio stage enabled and disabled), not by convention.
 
 Adding a mode is adding a plugin to a registry: an analog mode implements the demodulator
 interface (already: am, dsb, usb, lsb, cw, nfm, wfm, pm), a digital protocol implements the
-decoder interface (FT8 first). The UI mode list is read from the registry so a new mode
+decoder interface (FT8 first, DRM second). The UI mode list is read from the registry so a new mode
 cannot be forgotten in the panel.
 
 ### WASM boundary and build
@@ -214,6 +215,10 @@ client subscribes to AUDF. The S-meter reading comes from the browser's own PCM 
   search covers the slot edge (about +/- 0.128 s) because FT8 is slot-synchronised — a wideband
   skimmer would need a full-slot search at roughly 15x the cost. FT4 and the other digital
   protocols are registry seams, not implementations.
+- DRM30 is implemented through the receive chain (OFDM sync → FAC/SDC/MSC channel decoding →
+  audio super-frame deframing), verified bit-exact against a synthesised Mode B / 10 kHz fixture;
+  the FDK AAC decoder is linked and decodes PCM, but the DRM AAC CRC path is not yet verified
+  end to end against a live audio fixture and xHE-AAC (libxaac) is not yet integrated.
 - The Python DSP path is the audio source when the browser module is unavailable, and while any
   client subscribes to its audio; it is kept as the fallback and as the numeric reference.
 - Four audio stages are installed but no policy enables them (`dc_block`, `lpf`, `agc`, `notch`):

@@ -27,7 +27,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 - **SDR receiver** — IQ streaming with the DSP in the browser: AM/DSB/USB/LSB/CW/NFM/WFM/PM
   demodulators, noise reduction (Wiener, optional DeepFilterNet3), audio chain, panadapter and
   waterfall
-- **Digital modes** — FT8 decoding (multi-pass with OSD fallback) and CW decoding
+- **Digital modes** — FT8 decoding (multi-pass with OSD fallback), CW decoding, and DRM30 (SW broadcast) decoding
 - **Trigger** — device-side RTA level trigger plus a swept-mode software trigger; limit lines with
   pass/fail margins and normalization; PNG/CSV export
 - **UI** — jump rail, optional virtual keypad, amplitude units with external gain/loss

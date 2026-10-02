@@ -90,6 +90,7 @@ SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）─
 | WASM 边界（裸 ABI） | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`、`wasm/src/abi.rs` |
 | 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
 | 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs` |
+| 数字解调器（DRM） | `wasm/src/digital/drm/`（OFDM 解调、FAC/SDC/MSC MLCC、音频拆帧）、`wasm/fdk/`（FDK AAC 解码器） |
 | 音频 DSP（仅模拟 PCM） | `wasm/src/audio/stages.rs`、`wasm/src/audio/dc_block.rs`、`wasm/src/audio/wiener.rs`、`wasm/src/audio/notch.rs`、`wasm/src/audio/blanker.rs`、`wasm/src/fft.rs` |
 | 降噪（DeepFilterNet3，流式） | `frontend/src/sdr/dfnWorker.ts`、`frontend/src/sdr/dfnWasm.ts`、`wasm-dfn/src/wasm.rs` |
 | DFN 产物与模型 | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm`（入库）、`frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz`（运行时拉取，绝不内嵌） |
@@ -114,7 +115,7 @@ FT8 音调上会毁掉解码所需的信息，因此该分离由自动化测试�
 而不是靠约定。
 
 新增模式就是在注册表里加一个插件：模拟模式实现解调器接口（已有 am、dsb、usb、lsb、cw、nfm、wfm、pm），
-数字协议实现解码器接口（首先 FT8）。UI 的模式列表从注册表读取，新增模式不会在面板里被遗漏。
+数字协议实现解码器接口（首先 FT8，其次 DRM）。UI 的模式列表从注册表读取，新增模式不会在面板里被遗漏。
 
 ### WASM 边界与构建
 
@@ -182,6 +183,7 @@ PCM（`dspLevelDbfs`）。
 ### 尚未接线的部分
 
 - FT8 已端到端实现：仅接收（设备没有发射功能），仅支持标准报文类型 1/2（不支持哈希呼号、自由文本、比赛/遥测类型）；同步搜索覆盖时隙边缘（约 ±0.128 s），因为 FT8 是时隙同步的——宽带扫描器需要全时隙搜索，代价约 15 倍。FT4 与其他数字协议目前是注册表接缝，而非实现。
+- DRM30 已实现接收链（OFDM 同步 → FAC/SDC/MSC 信道译码 → 音频超帧拆帧），已对照合成的 Mode B / 10 kHz fixture 逐位验证；FDK AAC 解码器已链接并可输出 PCM，但 DRM AAC CRC 通路尚未对照真实音频 fixture 端到端验证，xHE-AAC（libxaac）尚未集成。
 - 浏览器模块不可用时，Python DSP 路径仍是实际的音频来源；它同时作为回退与数值参考被保留。
 
 ## 注册点的可达性（import 副作用）
