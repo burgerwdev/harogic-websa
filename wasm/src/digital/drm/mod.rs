@@ -154,6 +154,8 @@ pub struct DrmReceiver {
     pub msc_frames: Vec<Vec<u8>>,
     /// AAC access units deframed from the audio stream (ready for the codec).
     pub audio_access_units: Vec<Vec<u8>>,
+    /// Decoded 16-bit interleaved PCM (wasm32 only: filled by the FDK AAC decoder).
+    pub audio_pcm: Vec<i16>,
 }
 
 impl Default for DrmReceiver {
@@ -187,6 +189,7 @@ impl DrmReceiver {
             msc_bitrate_kbps: None,
             msc_frames: Vec::new(),
             audio_access_units: Vec::new(),
+            audio_pcm: Vec::new(),
         }
     }
 
@@ -395,7 +398,24 @@ impl DrmReceiver {
                 }
             }
         }
+
+        self.decode_audio();
     }
+
+    /// Decode the deframed AAC access units into PCM (wasm32 only; the FDK AAC
+    /// decoder is not linked natively).
+    #[cfg(target_arch = "wasm32")]
+    fn decode_audio(&mut self) {
+        if let Some(mut dec) = crate::fdk::AacDecoder::new() {
+            for au in &self.audio_access_units {
+                let pcm = dec.decode(au);
+                self.audio_pcm.extend_from_slice(&pcm);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decode_audio(&mut self) {}
 
     /// Demultiplex one decoded MSC frame and deframe the audio stream's AAC access
     /// units (the codec consumes these).
