@@ -19,6 +19,7 @@ use crate::plugin::DigitalDemodulator;
 pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
     match id {
         "ft8" => Some(Box::new(ft8::Ft8Plugin::new(rate))),
+        "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
         _ => None,
     }
 }

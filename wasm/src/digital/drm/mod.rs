@@ -25,6 +25,7 @@ pub mod sdc;
 pub mod tables;
 pub mod timesync;
 
+use crate::plugin::{DigitalDemodulator, DigitalReport};
 use cellmap::CellMap;
 use fac::Fac;
 use fec::mlc::{MlcDecoder, MlcParams, MscProtection};
@@ -202,6 +203,11 @@ impl DrmReceiver {
 
     pub fn locked(&self) -> bool {
         self.locked
+    }
+
+    /// Input samples buffered towards the next decode attempt.
+    pub fn buffered(&self) -> usize {
+        self.buf.len()
     }
 
     /// Run acquisition + demodulation once, if enough samples are buffered. Idempotent
@@ -470,6 +476,74 @@ impl DrmReceiver {
                 _ => {}
             }
         }
+    }
+}
+
+/// `DigitalDemodulator` wrapper that streams baseband into a `DrmReceiver` and reports
+/// the decoded station label, mode and SNR once the receiver has locked.
+pub struct DrPlugin {
+    rx: DrmReceiver,
+    reported: bool,
+    last_snr: Option<f64>,
+    last_label: Option<String>,
+}
+
+impl DrPlugin {
+    /// The receiver works at 48 kHz; the pipeline resamples the baseband to the
+    /// decoder's rate before it reaches here.
+    pub fn new(_rate: f64) -> Self {
+        Self { rx: DrmReceiver::new(), reported: false, last_snr: None, last_label: None }
+    }
+}
+
+impl DigitalDemodulator for DrPlugin {
+    fn id(&self) -> &'static str {
+        "drm"
+    }
+
+    fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
+        self.rx.push(iq);
+        self.rx.run();
+        if self.rx.locked() && !self.reported {
+            self.reported = true;
+            self.last_snr = self.rx.snr_db;
+            self.last_label = self.rx.station_label.clone();
+            let mut lines = Vec::new();
+            if let (Some(mode), Some(occ)) = (self.rx.mode, self.rx.occupancy) {
+                lines.push(format!("DRM {mode:?} {:.0} kHz", occ.bandwidth_khz()));
+            }
+            if let Some(label) = &self.last_label {
+                lines.push(format!("station: {label}"));
+            }
+            if let Some(snr) = self.last_snr {
+                lines.push(format!("FAC SNR {snr:.1} dB"));
+            }
+            return lines;
+        }
+        Vec::new()
+    }
+
+    fn reset(&mut self) {
+        self.rx = DrmReceiver::new();
+        self.reported = false;
+        self.last_snr = None;
+        self.last_label = None;
+    }
+
+    fn last_report(&self) -> Option<DigitalReport> {
+        self.last_snr.map(|snr| DigitalReport { frequency_hz: 0.0, time_offset_s: 0.0, snr_db: snr })
+    }
+
+    fn decoded(&self) -> Vec<(String, DigitalReport)> {
+        let Some(label) = &self.last_label else { return Vec::new() };
+        let report = self
+            .last_report()
+            .unwrap_or(DigitalReport { frequency_hz: 0.0, time_offset_s: 0.0, snr_db: 0.0 });
+        vec![(format!("DRM: {label}"), report)]
+    }
+
+    fn buffered_input(&self) -> usize {
+        self.rx.buffered()
     }
 }
 

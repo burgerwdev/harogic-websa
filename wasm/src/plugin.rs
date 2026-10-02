@@ -77,9 +77,10 @@ pub const ANALOG_PLUGINS: &[PluginDescriptor] = &[
     analog("pm", true),
 ];
 
-/// Digital demodulators. FT8 is the first; the seam is what the others will plug into.
+/// Digital demodulators. FT8 is the first; DRM joins it on the same seam.
 pub const DIGITAL_PLUGINS: &[PluginDescriptor] = &[
     digital("ft8", true),
+    digital("drm", true),
 ];
 
 /// Audio-enhancement stages, in the order the chain applies them. Every one of these is
