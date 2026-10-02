@@ -1,11 +1,12 @@
 //! DRM fixture regression test: the receiver must lock onto the committed Mode B /
-//! SO3 (10 kHz) synthesised DRM signal and produce a tight FAC constellation, an SNR
-//! estimate and soft bits for the FAC/SDC/MSC channels.
+//! SO3 (10 kHz) synthesised DRM signal, produce a tight FAC constellation, and decode
+//! the FAC/SDC metadata back to the ground truth recorded in
+//! `tests/fixtures/drm/manifest.json`.
 //!
 //! The fixture is generated externally by the DecDRM transmitter (see
-//! `tests/fixtures/drm/README.md`) and its ground truth lives in
-//! `tests/fixtures/drm/manifest.json`.
+//! `tests/fixtures/drm/README.md`).
 
+use websa_dsp::digital::drm::fac::{Interleaving, MscMode, SdcMode};
 use websa_dsp::digital::drm::params::{RobustnessMode, SpectrumOccupancy};
 use websa_dsp::digital::drm::DrmReceiver;
 
@@ -50,4 +51,46 @@ fn fixture_locks_frame_structure() {
     // Clean, noise-free fixture: the equalised FAC 4-QAM points must be tight.
     let snr = rx.snr_db.expect("FAC SNR must be computed");
     assert!(snr > 30.0, "FAC SNR {snr:.1} dB is too low for a clean fixture");
+}
+
+#[test]
+fn fixture_decodes_fac_and_sdc_metadata() {
+    let iq = load_iq();
+    let mut rx = DrmReceiver::new();
+    rx.push(&iq);
+    rx.run();
+
+    // FAC: one valid block per frame, no CRC errors.
+    assert_eq!(rx.fac_errors, 0, "every FAC frame must pass its CRC");
+    assert_eq!(rx.facs.len(), 15, "one FAC block per 400 ms frame");
+
+    let fac0 = &rx.facs[0];
+    assert_eq!(fac0.channel.occupancy, SpectrumOccupancy::SO_3);
+    assert_eq!(fac0.channel.msc_mode, MscMode::Qam64Sm);
+    assert_eq!(fac0.channel.sdc_mode, SdcMode::Qam16);
+    assert_eq!(fac0.channel.interleaving, Interleaving::Long);
+    assert_eq!(fac0.channel.num_audio, 1);
+    assert_eq!(fac0.channel.num_data, 0);
+    assert_eq!(fac0.service.service_id, 0x123456);
+    assert_eq!(fac0.channel.frame_index, 0);
+
+    // The frame index cycles 0,1,2 across the super frames.
+    let indices: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
+    assert_eq!(indices, vec![0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]);
+
+    // SDC: every super frame decodes with a valid CRC and the station label matches.
+    assert_eq!(rx.sdc_ok, 5);
+    assert_eq!(rx.sdc_errors, 0);
+    assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM TEST"));
+
+    // Audio service: AAC, SBR, mono, 24 kHz.
+    let audio = rx.audio.as_ref().expect("audio entity in SDC");
+    assert_eq!(audio.coding, 0, "AAC");
+    assert!(audio.sbr, "SBR enabled");
+    assert_eq!(audio.mode, 0, "mono");
+    assert_eq!(audio.sample_rate, 3, "24 kHz sample-rate code");
+
+    // MSC information bitrate: 20.975 kbps (Mode B / SO3 / 64-QAM SM / EEP level 1).
+    let bitrate = rx.msc_bitrate_kbps.expect("bitrate computed from FAC + SDC");
+    assert!((bitrate - 20.975).abs() < 0.01, "MSC bitrate {bitrate:.3} kbps");
 }

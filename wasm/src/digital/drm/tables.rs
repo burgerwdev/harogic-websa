@@ -320,6 +320,8 @@ pub const QAM64_HMMIX_IM: [f64; 8] = [
 
 /// Constraint length of the DRM convolutional mother code (rate 1/4).
 pub const CONSTRAINT_LENGTH: usize = 7;
+/// Number of trellis states.
+pub const NUM_STATES: usize = 1 << (CONSTRAINT_LENGTH - 1);
 /// Generator polynomials as tap masks (bit `i` holds the input delayed by `i`, bit 0
 /// the current input), bit-reversed forms of octal 133, 171, 145, 133.
 pub const GENERATORS: [u8; 4] = [0o155, 0o117, 0o123, 0o155];
@@ -340,6 +342,12 @@ pub struct CodeRate {
     pub rx: usize,
     pub ry: usize,
     pub pattern: &'static [PunctureMask],
+}
+
+impl CodeRate {
+    pub fn rate(&self) -> f64 {
+        self.rx as f64 / self.ry as f64
+    }
 }
 
 pub const CODE_RATES: [CodeRate; 13] = [
@@ -364,3 +372,42 @@ pub const FAC_RATE: usize = 6;
 pub const SDC4_RATE: usize = 4;
 /// SDC 16-QAM code-rate indices [R0, R1] (overall rate 0.5).
 pub const SDC16_RATES: [usize; 2] = [2, 7];
+
+/// Bit-interleaver constants t₀ for the two interleaver types (§7.3.3).
+pub const BIT_INTERLEAVER_T0: [usize; 2] = [13, 21];
+
+/// MSC 16-QAM SM code-rate indices per protection level: [R0, R1] and RYlcm (§7.5.1).
+pub const MSC16_SM: [([usize; 2], usize); 2] = [([2, 7], 3), ([4, 9], 4)];
+
+/// MSC 64-QAM SM code-rate indices per protection level: [R0, R1, R2] and RYlcm.
+pub const MSC64_SM: [([usize; 3], usize); 4] =
+    [([0, 4, 9], 4), ([2, 7, 10], 15), ([4, 9, 11], 8), ([7, 10, 12], 45)];
+
+/// MSC 64-QAM HMsym code-rate indices: [R0 (VSPP), R1, R2] and RYlcm.
+pub const MSC64_HMSYM: [([usize; 3], usize); 4] =
+    [([4, 1, 6], 10), ([5, 3, 8], 11), ([6, 5, 11], 56), ([7, 7, 12], 9)];
+
+/// MSC 64-QAM HMmix code-rate indices: [R0Re, R0Im, R1Re, R1Im, R2Re, R2Im] and RYlcm.
+pub const MSC64_HMMIX: [([usize; 6], usize); 4] = [
+    ([4, 0, 1, 4, 6, 9], 20),
+    ([5, 2, 3, 7, 8, 10], 165),
+    ([6, 4, 5, 9, 11, 11], 56),
+    ([7, 7, 7, 10, 12, 12], 45),
+];
+
+/// Puncturing patterns for the six tail bits, selected by
+/// `r_p = (2·N₂ − 12) − RY·⌊(2·N₂ − 12)/RY⌋` (§7.3.1, table 68).
+pub const TAIL_PATTERNS: [[PunctureMask; 6]; 12] = [
+    [P0011, P0011, P0011, P0011, P0011, P0011],
+    [P0111, P0011, P0011, P0011, P0011, P0011],
+    [P0111, P0011, P0011, P0111, P0011, P0011],
+    [P0111, P0111, P0011, P0111, P0011, P0011],
+    [P0111, P0111, P0011, P0111, P0111, P0011],
+    [P0111, P0111, P0111, P0111, P0111, P0011],
+    [P0111, P0111, P0111, P0111, P0111, P0111],
+    [P1111, P0111, P0111, P0111, P0111, P0111],
+    [P1111, P0111, P0111, P1111, P0111, P0111],
+    [P1111, P1111, P0111, P1111, P0111, P0111],
+    [P1111, P1111, P0111, P1111, P0111, P1111],
+    [P1111, P1111, P1111, P1111, P0111, P1111],
+];

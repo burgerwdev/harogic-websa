@@ -14,19 +14,25 @@
 
 pub mod cellmap;
 pub mod chanest;
+pub mod fac;
+pub mod fec;
 pub mod ofdm;
 pub mod params;
 pub mod qam;
+pub mod sdc;
 pub mod tables;
 pub mod timesync;
 
 use cellmap::CellMap;
+use fac::Fac;
+use fec::mlc::{MlcDecoder, MlcParams, MscProtection};
+use fec::qam::{EqCell, Mapping};
 use ofdm::{carrier_at, FullFft};
 use params::{RobustnessMode, SpectrumOccupancy};
-use tables::{QAM16, QAM4, QAM64_SM};
+use tables::{NUM_FAC_CELLS, QAM16, QAM4, QAM64_SM};
 
 /// A complex sample/value. Internal precision is f64.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Cplx {
     pub re: f64,
     pub im: f64,
@@ -130,6 +136,17 @@ pub struct DrmReceiver {
     pub sdc_soft_bits: Vec<f64>,
     pub msc_soft_bits: Vec<f64>,
     pub symbols_demodulated: usize,
+    /// Decoded FAC blocks, one per frame in capture order.
+    pub facs: Vec<Fac>,
+    pub fac_errors: usize,
+    /// SDC decode results.
+    pub station_label: Option<String>,
+    pub multiplex: Option<sdc::MultiplexDescription>,
+    pub audio: Option<sdc::AudioInfo>,
+    pub sdc_ok: usize,
+    pub sdc_errors: usize,
+    /// MSC information bitrate (kbps), from FAC + SDC.
+    pub msc_bitrate_kbps: Option<f64>,
 }
 
 impl Default for DrmReceiver {
@@ -153,6 +170,14 @@ impl DrmReceiver {
             sdc_soft_bits: Vec::new(),
             msc_soft_bits: Vec::new(),
             symbols_demodulated: 0,
+            facs: Vec::new(),
+            fac_errors: 0,
+            station_label: None,
+            multiplex: None,
+            audio: None,
+            sdc_ok: 0,
+            sdc_errors: 0,
+            msc_bitrate_kbps: None,
         }
     }
 
@@ -219,27 +244,40 @@ impl DrmReceiver {
         self.locked = true;
     }
 
-    /// Channel estimation + equalisation + QAM demapping for every symbol.
+    /// Channel estimation + equalisation + QAM demapping + FAC/SDC decoding.
     fn decode(&mut self, map: &CellMap, rows: &[Vec<Cplx>], r: usize) {
         let n = map.mode().fft_size();
+        let spf = map.symbols_per_frame;
         let spsf = map.symbols_per_superframe;
         let sdc_syms = map.mode().sdc_symbols();
+
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut sdc_dec16 = MlcDecoder::new(MlcParams::sdc(Mapping::Qam16, map.sdc_cells_per_superframe), 1);
+        let mut sdc_dec4 = MlcDecoder::new(MlcParams::sdc(Mapping::Qam4, map.sdc_cells_per_superframe), 1);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut sdc_cells: Vec<EqCell> = Vec::new();
 
         let mut sig = 0.0f64;
         let mut noise = 0.0f64;
         let mut fac_n = 0.0f64;
 
         for (i, row) in rows.iter().enumerate() {
-            // Super-frame symbol index. Assumes the first demodulated symbol is frame 0
-            // of a super frame (true for the synthesised fixture; real signals get the
-            // frame number from the FAC, which the FAC decoder supplies).
+            // Super-frame symbol index. The first demodulated symbol is frame 0 of a
+            // super frame (true for the synthesised fixture; real signals get the frame
+            // number from the FAC, which the FAC decoder supplies).
             let sym = (i + r) % spsf;
+            let s = sym % spf;
             let cells: Vec<Cplx> = (0..map.num_carriers)
                 .map(|c| carrier_at(row, n, map.kmin + c as i32))
                 .collect();
             let eq = chanest::equalize_symbol(map, sym, &cells);
+            let ec = |c: usize| EqCell { sig: eq.cells[c], chan: eq.chan[c].norm_sqr() };
 
-            // FAC (always 4-QAM).
+            // FAC (always 4-QAM): one frame's 65 cells, decoded when complete (the
+            // end of symbol 13, which survives the trailing-symbol truncation).
+            if s == 0 {
+                fac_cells.clear();
+            }
             for &c in &map.fac_carriers[sym] {
                 let v = eq.cells[c as usize];
                 self.fac_constellation.push((v.re, v.im));
@@ -252,15 +290,45 @@ impl DrmReceiver {
                 sig += dec.norm_sqr();
                 noise += (v - dec).norm_sqr();
                 fac_n += 1.0;
+                fac_cells.push(ec(c as usize));
+            }
+            if fac_cells.len() == NUM_FAC_CELLS {
+                let mut bits = Vec::new();
+                fac_dec.decode(&fac_cells, &mut bits);
+                if let Some(fac) = Fac::parse(&bits) {
+                    self.facs.push(fac);
+                } else {
+                    self.fac_errors += 1;
+                }
+                fac_cells.clear();
             }
 
-            // SDC (16-QAM in this fixture; 4-QAM also exists — resolved from the FAC).
+            // SDC (16-QAM or 4-QAM): the first symbols of each super frame.
             if sym < sdc_syms {
                 for &c in &map.sdc_carriers[sym] {
                     let v = eq.cells[c as usize];
                     for llr in qam::soft_bits(v.re, v.im, &QAM16) {
                         self.sdc_soft_bits.push(llr);
                     }
+                    sdc_cells.push(ec(c as usize));
+                }
+                if sym == sdc_syms - 1 {
+                    let mut bits = Vec::new();
+                    sdc_dec16.decode(&sdc_cells, &mut bits);
+                    let mut block = sdc::parse_sdc_block(&bits).filter(|b| b.crc_ok);
+                    if block.is_none() {
+                        let mut bits4 = Vec::new();
+                        sdc_dec4.decode(&sdc_cells, &mut bits4);
+                        block = sdc::parse_sdc_block(&bits4).filter(|b| b.crc_ok);
+                    }
+                    match block {
+                        Some(b) => {
+                            self.sdc_ok += 1;
+                            self.process_sdc(&b);
+                        }
+                        None => self.sdc_errors += 1,
+                    }
+                    sdc_cells.clear();
                 }
             }
 
@@ -278,6 +346,52 @@ impl DrmReceiver {
         } else {
             None
         };
+
+        // MSC information bitrate from FAC (MSC mode) + SDC (protection, part A).
+        if let (Some(mux), Some(fac0)) = (&self.multiplex, self.facs.first()) {
+            let mapping = msc_mapping(fac0.channel.msc_mode);
+            let prot = MscProtection {
+                part_a: mux.protection_a as usize,
+                part_b: mux.protection_b as usize,
+                hierarchical: 0,
+            };
+            let part_a_bytes = mux.streams.iter().map(|s| s.len_a as usize).sum::<usize>();
+            let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, part_a_bytes);
+            self.msc_bitrate_kbps = Some(params.total_bits() as f64 / 400.0);
+        }
+    }
+
+    fn process_sdc(&mut self, block: &sdc::SdcBlock) {
+        for e in sdc::parse_entities(&block.data) {
+            match e {
+                sdc::Entity::Label(l) => {
+                    if self.station_label.is_none() {
+                        self.station_label = Some(l.text());
+                    }
+                }
+                sdc::Entity::Multiplex(m) => {
+                    if self.multiplex.is_none() {
+                        self.multiplex = Some(m);
+                    }
+                }
+                sdc::Entity::Audio(a) => {
+                    if self.audio.is_none() {
+                        self.audio = Some(a);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Map a FAC MSC mode to the QAM mapping used by the MLCC.
+fn msc_mapping(m: fac::MscMode) -> Mapping {
+    match m {
+        fac::MscMode::Qam64Sm => Mapping::Qam64Sm,
+        fac::MscMode::Qam64HmMix => Mapping::Qam64HmMix,
+        fac::MscMode::Qam64HmSym => Mapping::Qam64HmSym,
+        fac::MscMode::Qam16Sm => Mapping::Qam16,
     }
 }
 
