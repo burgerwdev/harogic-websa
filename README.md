@@ -133,7 +133,10 @@ The day-to-day commands, plus what to run before committing:
 |---|---|
 | `./run.sh` / `./stop.sh` | Start / stop the service (supervisor + worker) |
 | `make restart` / `make status` | Restart / show state, PID, memory, CPU, log, device link |
-| `./build.sh` | Sync frontend dependencies and build the bundle |
+| `make build` | Full build: WASM cores (only when stale + Rust) + frontend |
+| `make frontend` | Frontend only: npm install + Vite build (no WASM) |
+| `make wasm` | Both WASM cores; `make wasm-dsp` / `make wasm-dfn` build one |
+| `make clean` / `make clean-all` | Clean caches/logs/dist (keep deps + WASM caches) / full clean incl. node_modules + WASM target |
 | `./test.sh` | Backend pytest + Ruff + frontend Vitest |
 | `make ci` | Every in-process gate CI runs (no hardware needed) |
 | `make e2e-fake` | Browser end-to-end on the fake backend (no hardware) |

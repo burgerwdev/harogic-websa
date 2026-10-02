@@ -18,10 +18,11 @@
 // drag/resize/clamp/persist math runs in viewport pixels - where pointer clientX/Y,
 // getBoundingClientRect and window.innerWidth all agree - and the style writes convert to the
 // window's local pixels by dividing by the scale.
-import { clearFt8Spots, ft8Spots, subscribeFt8Spots, utcClock, type Ft8Spot } from '../sdr/ft8Log';
+import { clearFt8Spots, clock, ft8Spots, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
 import { clearCwLog, cwLevel, cwLog, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
 	type CwLine, type CwMark } from '../sdr/cwLog';
-import { t } from '../core/i18n';
+import { formatLatLon, geoFor } from '../sdr/ft8Geo';
+import { getLang, onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 
 export interface DecodeWindowHooks {
@@ -40,6 +41,8 @@ const DEFAULT_SIZE = { w: 460, h: 240 };
 const MIN_OPACITY = 0.35;
 /// Live opacity, persisted alongside the geometry (one record, one writer).
 let opacity = 1;
+/// Whether the timestamps show UTC (off = the operator's local time). Persisted like the geometry.
+let utcTime = false;
 /** FT8 rows rendered; the log holds more, but a table nobody scrolls should not cost layout time. */
 const MAX_ROWS = 100;
 /** CW lines rendered (the log holds more; a text pane shows what fits and scrolls). */
@@ -67,10 +70,11 @@ interface Geometry {
 function readGeometry(): Geometry | null {
 	try {
 		const raw = localStorage.getItem(LS_KEY);
-		if (!raw) return null;
-		const parsed = JSON.parse(raw) as Partial<Geometry> & { opacity?: number; v?: number };
+		if (!raw) { utcTime = false; return null; }
+		const parsed = JSON.parse(raw) as Partial<Geometry> & { opacity?: number; utc?: boolean; v?: number };
 		const stored = Number(parsed.opacity);
 		opacity = Number.isFinite(stored) ? Math.min(1, Math.max(MIN_OPACITY, stored)) : 1;
+		utcTime = parsed.utc === true;
 		if (parsed.v !== 2 || typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null;
 		return {
 			x: parsed.x,
@@ -85,8 +89,8 @@ function readGeometry(): Geometry | null {
 
 function writeGeometry(geometry: Geometry): void {
 	try {
-		// The opacity rides along: one record, one writer, so the two can never drift apart.
-		localStorage.setItem(LS_KEY, JSON.stringify({ ...geometry, opacity, v: 2 }));
+		// The opacity and UTC choice ride along: one record, one writer, so they cannot drift apart.
+		localStorage.setItem(LS_KEY, JSON.stringify({ ...geometry, opacity, utc: utcTime, v: 2 }));
 	} catch {
 		/* storage disabled: the window still works for this session */
 	}
@@ -158,6 +162,9 @@ onUiScaleChange(() => {
 	applyGeometry(win, clampToViewport(currentGeometry(win)));
 });
 
+/** Country names are language-dependent: re-render when the operator switches language. */
+onLangChange(renderContent);
+
 /** The window's floor: below this it stops being grabbable. */
 const MIN_W = 260;
 const MIN_H = 120;
@@ -221,19 +228,26 @@ function wireResize(win: HTMLElement): void {
 function rowFor(spot: Ft8Spot): HTMLTableRowElement {
 	const row = document.createElement('tr');
 	row.className = 'ft8-row';
-	row.title = `${t('ft8_tune_tip')}\n${spot.text}\n${utcClock(spot.at)} UTC  ${(spot.hz / 1e6).toFixed(6)} MHz`;
+	row.title = `${t('ft8_tune_tip')}\n${spot.text}\n${clock(spot.at, utcTime)} ${utcTime ? 'UTC' : 'LT'}  ${(spot.hz / 1e6).toFixed(6)} MHz`;
 	// The absolute frequency in MHz with 4 decimals is 100 Hz of resolution: enough to place a
 	// signal on the waterfall and to tune to it, without the noise of a full-precision number.
-	const cells = [
-		utcClock(spot.at),
-		spot.snrDb.toFixed(0),
-		spot.offsetHz.toFixed(0),
-		(spot.hz / 1e6).toFixed(4),
-		spot.text,
+	const geo = geoFor(spot.text);
+	const isZh = getLang() === 'zh';
+	const country = geo.country ? (isZh ? geo.country.zh : geo.country.name) : '—';
+	const location = geo.location ? formatLatLon(geo.location) : '—';
+	const cells: Array<{ text: string; className?: string }> = [
+		{ text: clock(spot.at, utcTime) },
+		{ text: spot.snrDb.toFixed(0) },
+		{ text: spot.offsetHz.toFixed(0) },
+		{ text: (spot.hz / 1e6).toFixed(4) },
+		{ text: spot.text, className: 'ft8-message' },
+		{ text: country },
+		{ text: location },
 	];
-	for (const value of cells) {
+	for (const { text, className } of cells) {
 		const cell = document.createElement('td');
-		cell.textContent = value;
+		cell.textContent = text;
+		if (className) cell.className = className;
 		row.appendChild(cell);
 	}
 	row.addEventListener('click', () => hooks.onTune(spot.hz));
@@ -248,7 +262,7 @@ function renderFt8Rows(): void {
 	if (spots.length === 0) {
 		const row = document.createElement('tr');
 		const cell = document.createElement('td');
-		cell.colSpan = 5;
+		cell.colSpan = 7;
 		cell.className = 'ft8-empty';
 		cell.textContent = t('ft8_waiting');
 		row.appendChild(cell);
@@ -274,7 +288,7 @@ function cwLineFor(
 	row.className = current ? 'cw-line current' : 'cw-line';
 	const at = document.createElement('span');
 	at.className = 'cw-time';
-	at.textContent = utcClock(line.at);
+	at.textContent = clock(line.at, utcTime);
 	const text = document.createElement('span');
 	text.className = 'cw-text';
 	let run = '';
@@ -389,6 +403,8 @@ function renderContent(): void {
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
 	if (title) title.textContent = showCw ? 'CW' : 'FT8';
+	const timeTh = element('decode-window-time-th');
+	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
 	if (count) {
 		count.style.display = showFt8 ? '' : 'none';
 		count.textContent = String(ft8Spots().length);
@@ -513,6 +529,19 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 			const percent = Number(slider.value);
 			opacity = Number.isFinite(percent) ? Math.min(1, Math.max(MIN_OPACITY, percent / 100)) : 1;
 			win.style.opacity = String(opacity);
+			writeGeometry(currentGeometry(win));
+		});
+	}
+
+	// UTC toggle: off = the operator's local time, on = UTC. It re-renders both panes (the FT8 rows
+	// and the CW line timestamps read the same flag) and persists with the geometry.
+	const utcBtn = button('btn-decode-utc');
+	if (utcBtn) {
+		utcBtn.classList.toggle('active', utcTime);
+		utcBtn.addEventListener('click', () => {
+			utcTime = !utcTime;
+			utcBtn.classList.toggle('active', utcTime);
+			renderContent();
 			writeGeometry(currentGeometry(win));
 		});
 	}

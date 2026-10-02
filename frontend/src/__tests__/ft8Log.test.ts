@@ -15,7 +15,7 @@ import {
 	ft8DialFor,
 	ft8Spots,
 	subscribeFt8Spots,
-	utcClock,
+	clock,
 } from '../sdr/ft8Log';
 import type { Ft8Report } from '../sdr/types';
 
@@ -73,8 +73,15 @@ describe('the FT8 decode log', () => {
 		expect(ft8DialFor(21_075_500) + FT8_TUNE_HZ).toBe(21_075_500);
 	});
 
-	it('formats the table clock in UTC', () => {
-		// 2026-09-21T01:02:03Z, whatever the host's zone is.
-		expect(utcClock(Date.UTC(2026, 8, 21, 1, 2, 3))).toBe('01:02:03');
+	it('formats the clock in UTC or local time', () => {
+		const at = Date.UTC(2026, 8, 21, 1, 2, 3);
+		const prevTz = process.env.TZ;
+		try {
+			process.env.TZ = 'Etc/GMT+5';   // a fixed -5 zone, no DST
+			expect(clock(at, true)).toBe('01:02:03');
+			expect(clock(at, false)).toBe('20:02:03');
+		} finally {
+			process.env.TZ = prevTz;
+		}
 	});
 });

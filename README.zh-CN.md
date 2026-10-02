@@ -120,7 +120,10 @@ harogic-websa/
 |---|---|
 | `./run.sh` / `./stop.sh` | 启动 / 停止服务（supervisor + worker）|
 | `make restart` / `make status` | 重启 / 查看运行状态、PID、内存、CPU、日志、设备链路 |
-| `./build.sh` | 同步前端依赖并构建产物 |
+| `make build` | 完整构建：WASM 内核（仅在 stale 且有 Rust 时）+ 前端 |
+| `make frontend` | 仅前端：npm install + Vite 构建（不碰 WASM）|
+| `make wasm` | 两个 WASM 内核；`make wasm-dsp` / `make wasm-dfn` 单独构建其中一个 |
+| `make clean` / `make clean-all` | 清缓存/日志/dist（保留依赖与 WASM 缓存）/ 全清（含 node_modules 与 WASM target）|
 | `./test.sh` | 后端 pytest + Ruff + 前端 Vitest |
 | `make ci` | CI 的全部进程内门禁（无需硬件）|
 | `make e2e-fake` | 假后端上的浏览器端到端测试（无需硬件）|

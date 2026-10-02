@@ -3,9 +3,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { initDecodeWindow, decodeWindowOpen, decodeWindowMode, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
-import { addFt8Spot, clearFt8Spots } from '../sdr/ft8Log';
-import { addCwText, cwLog } from '../sdr/cwLog';
+import { addFt8Spot, clearFt8Spots, clock } from '../sdr/ft8Log';
+import { addCwText, clearCwLog, cwLog } from '../sdr/cwLog';
 import { setUiScale } from '../core/uiScale';
+import { setLang } from '../core/i18n';
 import type { Ft8Report } from '../sdr/types';
 
 /** The shell the panel ships (index.html); the window only fills `#decode-window-rows`. */
@@ -17,11 +18,12 @@ function shell(): void {
 				<span id="decode-window-title">FT8</span><span class="count" id="decode-window-count">0</span>
 				<span class="spacer"></span>
 				<input id="decode-window-opacity" type="range" min="35" max="100" step="5" value="100" />
+				<button class="btn" id="btn-decode-utc">UTC</button>
 				<button class="btn" id="btn-decode-clear">Clear</button>
 				<button class="btn" id="btn-decode-close">Close</button>
 			</div>
 			<div class="decode-window-body" id="decode-window-body">
-				<table id="decode-window-table"><tbody id="decode-window-rows"></tbody></table>
+				<table id="decode-window-table"><thead><tr><th id="decode-window-time-th">Time</th></tr></thead><tbody id="decode-window-rows"></tbody></table>
 				<div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
 			</div>
 			<div class="decode-resize-layer">
@@ -54,6 +56,7 @@ describe('the FT8 decode window', () => {
 	beforeEach(() => {
 		shell();
 		clearFt8Spots();
+		clearCwLog();
 		localStorage.clear();
 		initDecodeWindow({ onTune: () => {} });
 	});
@@ -78,18 +81,79 @@ describe('the FT8 decode window', () => {
 		setDecodeWindowAvailable('ft8');
 		toggleDecodeWindow();
 		expect(document.querySelector('.ft8-empty')).not.toBeNull();
+		expect((document.querySelector('.ft8-empty') as HTMLTableCellElement).colSpan).toBe(7);
 
-		addFt8Spot(report({ text: 'CQ JO1WKO PM95', frequencyHz: 1000 }), Date.UTC(2026, 8, 21, 1, 2, 3));
-		addFt8Spot(report({ text: 'K1ABC W9XYZ EN37', frequencyHz: 1800, snrDb: -5 }), Date.UTC(2026, 8, 21, 1, 2, 18));
-		const table = rows();
-		expect(table.length).toBe(2);
-		const first = Array.from(table[0].querySelectorAll('td')).map((cell) => cell.textContent);
-		expect(first[0]).toBe('01:02:18');
-		expect(first[1]).toBe('-5');
-		expect(first[2]).toBe('1800');
-		expect(first[3]).toBe('21.0758');
-		expect(first[4]).toBe('K1ABC W9XYZ EN37');
-		expect(document.getElementById('decode-window-count')?.textContent).toBe('2');
+		const prevTz = process.env.TZ;
+		try {
+			process.env.TZ = 'UTC';   // pin the zone so the default local clock equals UTC
+			addFt8Spot(report({ text: 'CQ JO1WKO PM95', frequencyHz: 1000 }), Date.UTC(2026, 8, 21, 1, 2, 3));
+			addFt8Spot(report({ text: 'K1ABC W9XYZ EN37', frequencyHz: 1800, snrDb: -5 }), Date.UTC(2026, 8, 21, 1, 2, 18));
+			const table = rows();
+			expect(table.length).toBe(2);
+			const first = Array.from(table[0].querySelectorAll('td')).map((cell) => cell.textContent);
+			expect(first[0]).toBe('01:02:18');
+			expect(first[1]).toBe('-5');
+			expect(first[2]).toBe('1800');
+			expect(first[3]).toBe('21.0758');
+			expect(first[4]).toBe('K1ABC W9XYZ EN37');
+			expect(document.getElementById('decode-window-count')?.textContent).toBe('2');
+		} finally {
+			process.env.TZ = prevTz;
+		}
+	});
+
+	it('derives a country and a grid position for each decode', () => {
+		setDecodeWindowAvailable('ft8');
+		toggleDecodeWindow();
+		setLang('zh');
+		try {
+			addFt8Spot(report({ text: 'DC5RE BG7BVP -22' }), 1_000);
+			addFt8Spot(report({ text: 'CQ BG7BVP OL68' }), 2_000);
+			const cells = (row: Element) => Array.from(row.querySelectorAll('td')).map((c) => c.textContent);
+			const [cqRow, callRow] = rows();
+			expect(cells(cqRow)[4]).toBe('CQ BG7BVP OL68');
+			expect(cells(cqRow)[5]).toBe('中国');
+			expect(cells(cqRow)[6]).toBe('28.5°N 113.0°E');
+			expect(cells(callRow)[5]).toBe('德国');
+			expect(cells(callRow)[6]).toBe('—');
+		} finally {
+			setLang('en');
+		}
+	});
+
+	it('shows local time by default and switches to UTC from the toggle', () => {
+		setDecodeWindowAvailable('ft8');
+		toggleDecodeWindow();
+		const prevTz = process.env.TZ;
+		try {
+			process.env.TZ = 'Etc/GMT+5';
+			addFt8Spot(report({ text: 'CQ BG7BVP OL68' }), Date.UTC(2026, 8, 21, 1, 2, 3));
+			const first = () => Array.from(rows()[0].querySelectorAll('td')).map((c) => c.textContent);
+			const button = document.getElementById('btn-decode-utc') as HTMLButtonElement;
+			const timeTh = document.getElementById('decode-window-time-th') as HTMLTableCellElement;
+			expect(button.classList.contains('active')).toBe(false);
+			expect(first()[0]).toBe('20:02:03');   // local (the default)
+			expect(timeTh.title).toBe('LT');       // header tooltip follows the same flag
+			button.click();
+			expect(button.classList.contains('active')).toBe(true);
+			expect(first()[0]).toBe('01:02:03');   // UTC after the toggle
+			expect(timeTh.title).toBe('UTC');
+			expect(JSON.parse(localStorage.getItem('websa-decode-window') || '{}').utc).toBe(true);
+		} finally {
+			process.env.TZ = prevTz;
+		}
+	});
+
+	it('applies the UTC toggle to CW line timestamps too', () => {
+		setDecodeWindowAvailable('cw');
+		toggleDecodeWindow();
+		addCwText('CQ DE', false);
+		addCwText(' N0CALL', true);
+		const at = cwLog().lines[0].at;
+		const stamp = () => document.querySelector('.cw-time')?.textContent;
+		expect(stamp()).toBe(clock(at, false));   // local by default
+		(document.getElementById('btn-decode-utc') as HTMLButtonElement).click();
+		expect(stamp()).toBe(clock(at, true));    // UTC after the toggle
 	});
 
 	it('tunes to the signal a row was clicked on', () => {

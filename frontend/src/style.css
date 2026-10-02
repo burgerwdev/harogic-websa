@@ -269,10 +269,10 @@ select:disabled { color: var(--label); }
 .decode-window table { width: 100%; border-collapse: collapse; font: 11px 'Courier New', monospace; }
 .decode-window th {
   position: sticky; top: 0; background: var(--panel); color: var(--label); font-weight: normal;
-  text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--inner-border);
+  text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--inner-border); white-space: nowrap;
 }
 .decode-window td { padding: 2px 6px; white-space: nowrap; }
-.decode-window td:last-child { width: 100%; }
+.decode-window td.ft8-message { width: 100%; }
 /* CW pane: the decoded text. Monospace and wrapped, one line per transmission, the in-progress
    line marked - readability is the point of the pane. */
 .decode-cw {

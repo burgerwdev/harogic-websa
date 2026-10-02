@@ -358,6 +358,9 @@ nobody can tell "deliberate" from "silent regression".
 
 ```bash
 make ci                      # all in-process hardware-free gates (tests/static/contracts/guards/build)
+make build | make frontend   # full build (WASM cores when stale) / frontend only
+make wasm | make wasm-dsp | make wasm-dfn   # both WASM cores / DSP only / DFN only
+make clean | make clean-all  # clean keeping deps + WASM caches / full clean
 make e2e-fake                # the browser e2e on the fake backend (CI runs it as its own job)
 make run | make stop         # start/stop the service (supervisor + worker)
 make restart | make status   # restart the service / pid, uptime, memory, CPU, log path+size, live link
@@ -394,7 +397,7 @@ in a Web Worker. It has **no crate dependencies** and exactly one toolchain requ
 
 ```bash
 rustup target add wasm32-unknown-unknown
-make wasm           # cargo test + release build + publish frontend/public/dsp.wasm
+make wasm-dsp       # cargo test + release build + publish frontend/public/dsp.wasm
 make wasm-check     # rebuild and fail when the committed artifact differs (release gate)
 ```
 

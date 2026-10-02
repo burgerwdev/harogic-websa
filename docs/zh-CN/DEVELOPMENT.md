@@ -319,6 +319,9 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 
 ```bash
 make ci                      # 无硬件的进程内门禁全部（测试/静态检查/契约/守卫/构建）
+make build | make frontend   # 完整构建（WASM 内核仅在 stale 时）/ 仅前端
+make wasm | make wasm-dsp | make wasm-dfn   # 两个 WASM 内核 / 仅 DSP / 仅 DFN
+make clean | make clean-all  # 清缓存但保留依赖与 WASM 缓存 / 全清
 make e2e-fake                # 假后端上的浏览器 e2e（CI 以独立 job 运行）
 make run | make stop         # 启停服务（supervisor + worker）
 make restart | make status   # 重启服务 / PID、运行时长、内存、CPU、日志路径与大小、实时链路
@@ -353,7 +356,7 @@ python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指
 
 ```bash
 rustup target add wasm32-unknown-unknown
-make wasm           # cargo test + release 构建 + 发布 frontend/public/dsp.wasm
+make wasm-dsp       # cargo test + release 构建 + 发布 frontend/public/dsp.wasm
 make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 ```
 

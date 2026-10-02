@@ -95,9 +95,12 @@ export function subscribeFt8Spots(listener: (spots: Ft8Spot[]) => void): () => v
 	};
 }
 
-/** UTC time of day for the table (`12:34:56`), which is what an FT8 operator schedules on. */
-export function utcClock(at: number): string {
+/** Clock for the table (`12:34:56`), in UTC or the operator's local time. */
+export function clock(at: number, utc: boolean): string {
 	const d = new Date(at);
 	const pad = (value: number) => String(value).padStart(2, '0');
-	return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+	const h = utc ? d.getUTCHours() : d.getHours();
+	const m = utc ? d.getUTCMinutes() : d.getMinutes();
+	const s = utc ? d.getUTCSeconds() : d.getSeconds();
+	return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
