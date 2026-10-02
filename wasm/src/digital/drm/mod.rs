@@ -435,7 +435,14 @@ impl DrmReceiver {
             if lf.stream_id == 0 {
                 if let Some(aus) = audio::parse_aac_super_frame(&lf.data, &fmt) {
                     for f in aus {
-                        self.audio_access_units.push(f.data);
+                        // FDK's TT_DRM transport expects the DRM AAC CRC byte in front
+                        // of each access unit.
+                        let mut au = Vec::with_capacity(f.data.len() + 1);
+                        if let Some(c) = f.crc_byte {
+                            au.push(c);
+                        }
+                        au.extend_from_slice(&f.data);
+                        self.audio_access_units.push(au);
                     }
                 }
             }
