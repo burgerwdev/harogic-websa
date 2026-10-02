@@ -185,3 +185,51 @@ pub extern "C" fn websa_dsp_fdk_decode_adts(ptr: *mut u8, len: u32) -> i32 {
         }
     }
 }
+
+/// Smoke-test export: decode raw DRM AAC access units (TT_DRM transport, configured
+/// from SDC type-9 bytes) and return the decoded frame size, or a negative code.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn websa_dsp_fdk_decode_drm(ptr: *mut u8, len: u32) -> i32 {
+    unsafe {
+        let h = aacDecoder_Open(12, 1); // TT_DRM
+        if h.is_null() {
+            return -1;
+        }
+        // AAC 24 kHz, SBR, mono: type-9 bytes 0x23 0x00.
+        let mut conf = [0x23u8, 0x00];
+        let mut cp = conf.as_mut_ptr();
+        let clen = 2u32;
+        if aacDecoder_ConfigRaw(h, &mut cp, &clen) != 0 {
+            aacDecoder_Close(h);
+            return -2;
+        }
+        let mut buf = ptr;
+        let size = len;
+        let mut valid = len;
+        aacDecoder_Fill(h, &mut buf, &size, &mut valid);
+        let mut frame_size = 0i32;
+        let mut energy = 0i64;
+        for _ in 0..16 {
+            let mut pcm = [0i16; 8192];
+            if aacDecoder_DecodeFrame(h, pcm.as_mut_ptr(), 8192, 0) != 0 {
+                break;
+            }
+            let info = aacDecoder_GetStreamInfo(h);
+            if info.is_null() {
+                break;
+            }
+            frame_size = *(info as *const i32).add(1);
+            let ch = *(info as *const i32).add(2);
+            for &s in &pcm[..(frame_size * ch).min(8192) as usize] {
+                energy += i64::from(s.abs());
+            }
+        }
+        aacDecoder_Close(h);
+        if energy > 0 {
+            frame_size
+        } else {
+            -3 // decoded but silent
+        }
+    }
+}
