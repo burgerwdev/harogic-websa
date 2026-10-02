@@ -106,6 +106,19 @@ pub struct AudioInfo {
     pub mode: u8,
     pub sample_rate: u8,
     pub text: bool,
+    pub enhancement: bool,
+    pub coder_field: u8,
+}
+
+impl AudioInfo {
+    /// The type-9 bytes FDK-AAC's `aacDecoder_ConfigRaw` expects for `TT_DRM` (Dream's
+    /// `CAudioParam::getType9Bytes()`): coding/sbr/mode/rate in the first byte, text /
+    /// enhancement / coder field in the second.
+    pub fn to_type9_bytes(&self) -> Vec<u8> {
+        let b0 = (self.coding << 6) | (u8::from(self.sbr) << 5) | (self.mode << 3) | (self.sample_rate & 7);
+        let b1 = (u8::from(self.text) << 7) | (u8::from(self.enhancement) << 6) | (self.coder_field << 1);
+        vec![b0, b1]
+    }
 }
 
 /// Language/country data entity — type 12 (§6.4.3.13).
@@ -207,9 +220,10 @@ fn parse_audio(r: &mut BitReader, _len: usize) -> Option<AudioInfo> {
         mode: r.read(2) as u8,
         sample_rate: r.read(3) as u8,
         text: r.read(1) == 1,
+        enhancement: r.read(1) == 1,
+        coder_field: r.read(5) as u8,
     };
-    // The remaining fields (enhancement, coder field, rfa, codec config) are not
-    // needed for the label/bitrate the receiver reports.
+    // The remaining fields (rfa bit and codec config) are not needed.
     Some(audio)
 }
 

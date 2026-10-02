@@ -407,6 +407,9 @@ impl DrmReceiver {
     #[cfg(target_arch = "wasm32")]
     fn decode_audio(&mut self) {
         if let Some(mut dec) = crate::fdk::AacDecoder::new() {
+            if let Some(audio) = &self.audio {
+                dec.configure(&audio.to_type9_bytes());
+            }
             for au in &self.audio_access_units {
                 let pcm = dec.decode(au);
                 self.audio_pcm.extend_from_slice(&pcm);

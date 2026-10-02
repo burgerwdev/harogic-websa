@@ -65,6 +65,11 @@ const TT_DRM: i32 = 12;
 
 extern "C" {
     fn aacDecoder_Open(transport: i32, layers: u32) -> *mut std::ffi::c_void;
+    fn aacDecoder_ConfigRaw(
+        h: *mut std::ffi::c_void,
+        conf: *mut *mut u8,
+        len: *const u32,
+    ) -> i32;
     fn aacDecoder_Fill(
         h: *mut std::ffi::c_void,
         buf: *mut *mut u8,
@@ -91,6 +96,14 @@ impl AacDecoder {
         } else {
             Some(Self { handle })
         }
+    }
+
+    /// Configure the decoder from the SDC type-9 audio information bytes (2 bytes for
+    /// AAC; the xHE-AAC config is appended by the caller for xHE-AAC).
+    pub fn configure(&mut self, type9: &[u8]) -> bool {
+        let mut conf = type9.as_ptr() as *mut u8;
+        let len = type9.len() as u32;
+        unsafe { aacDecoder_ConfigRaw(self.handle, &mut conf, &len) == 0 }
     }
 
     /// Decode one AAC access unit into 16-bit interleaved PCM (channels interleaved).
