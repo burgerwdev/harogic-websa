@@ -545,6 +545,10 @@ impl DigitalDemodulator for DrPlugin {
     fn buffered_input(&self) -> usize {
         self.rx.buffered()
     }
+
+    fn constellation(&self) -> Vec<(f64, f64)> {
+        self.rx.fac_constellation.clone()
+    }
 }
 
 /// Map a FAC MSC mode to the QAM mapping used by the MLCC.

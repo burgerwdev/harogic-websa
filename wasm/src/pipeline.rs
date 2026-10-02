@@ -300,6 +300,11 @@ impl Pipeline {
         self.digital.as_ref().map(|demod| demod.decoded()).unwrap_or_default()
     }
 
+    /// Equalised constellation points (I, Q) the digital demodulator wants to show.
+    pub fn digital_constellation(&self) -> Vec<(f64, f64)> {
+        self.digital.as_ref().map(|demod| demod.constellation()).unwrap_or_default()
+    }
+
     pub fn chain(&self) -> &AudioChain {
         &self.chain
     }

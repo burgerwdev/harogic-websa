@@ -195,6 +195,13 @@ pub trait DigitalDemodulator: Send {
     fn buffered_input(&self) -> usize {
         0
     }
+
+    /// Equalised constellation points (I, Q) for the most recent decode, when the
+    /// protocol has any to show (e.g. the DRM FAC 4-QAM constellation). Defaults to
+    /// empty: a protocol is not obliged to produce one.
+    fn constellation(&self) -> Vec<(f64, f64)> {
+        Vec::new()
+    }
 }
 
 /// One stage of the analog audio chain (LPF/AGC/squelch/Wiener/notch/blanker).

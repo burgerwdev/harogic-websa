@@ -212,6 +212,29 @@ pub extern "C" fn websa_dsp_demod_buffered(handle: u32) -> u32 {
     with_pipeline(handle, |state| state.pipeline.digital_buffered() as u32).unwrap_or(0)
 }
 
+/// Copy the digital demodulator's constellation points (interleaved I,Q `f64` pairs) into
+/// `ptr`. Returns the number of points, or 0 when there are none.
+///
+/// # Safety
+/// `ptr` must point to `capacity * 2` writable `f64`s.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_drm_constellation(handle: u32, ptr: *mut f64, capacity: u32) -> u32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    with_pipeline(handle, |state| {
+        let points = state.pipeline.digital_constellation();
+        let n = points.len().min(capacity as usize);
+        let out = core::slice::from_raw_parts_mut(ptr, 2 * n);
+        for (i, (re, im)) in points.into_iter().take(n).enumerate() {
+            out[2 * i] = re;
+            out[2 * i + 1] = im;
+        }
+        n as u32
+    })
+    .unwrap_or(0)
+}
+
 /// Messages decoded by this pipeline (status readout).
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_count(handle: u32) -> u32 {
