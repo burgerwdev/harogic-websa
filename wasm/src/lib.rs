@@ -16,6 +16,8 @@ pub mod analog;
 pub mod audio;
 pub mod ddc;
 pub mod digital;
+#[cfg(target_arch = "wasm32")]
+pub mod fdk;
 pub mod fft;
 pub mod pipeline;
 pub mod pipeline_abi;
