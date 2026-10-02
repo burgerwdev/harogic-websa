@@ -11,6 +11,7 @@ import { enablePythonAudioFallback, routeWorkletPortTo } from '../audio/sdrAudio
 import { wasmDspAllowed, wasmDspReason } from './capability';
 import { addFt8Spot, clearFt8Spots } from './ft8Log';
 import { addCwText, setCwLevel } from './cwLog';
+import { setDrmDecode, setDrmConstellation } from './drmLog';
 import { dspWasmUrl } from './wasm';
 import type { Ft8Report, PipelineParams } from './types';
 import { t } from '../core/i18n';
@@ -170,6 +171,14 @@ function startWorker(): void {
       // drive the window's meter and keyed lamp without touching the text.
       setCwLevel(Number(d.rms) || 0, Boolean(d.keyed));
       addCwText(String(d.text || ''), Boolean(d.endsLine), Number(d.share) || 0);
+      return;
+    }
+    if (d.type === 'drm') {
+      setDrmDecode(Array.isArray(d.lines) ? d.lines.map(String) : [String(d.lines || '')], Number(d.snrDb) || null);
+      return;
+    }
+    if (d.type === 'drm-constellation') {
+      setDrmConstellation(Array.isArray(d.points) ? (d.points as { re: number; im: number }[]) : []);
       return;
     }
     if (d.type === 'dfn-status') {

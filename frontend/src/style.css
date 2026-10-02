@@ -278,6 +278,9 @@ select:disabled { color: var(--label); }
 .decode-cw {
   padding: 3px 6px; font: 11px 'Courier New', monospace; line-height: 1.5;
 }
+.decode-drm { padding: 6px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.decode-drm-lines { align-self: stretch; font: 11px 'Courier New', monospace; line-height: 1.5; color: var(--table-cell); }
+.decode-drm-plot { background: var(--panel-2); border: 1px solid var(--inner-border); border-radius: 3px; }
 .cw-line { display: flex; gap: 8px; align-items: baseline; }
 .cw-time { color: var(--label); flex: 0 0 auto; }
 .cw-text { color: var(--table-cell); white-space: pre-wrap; word-break: break-word; min-width: 0; }

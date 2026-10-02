@@ -724,6 +724,11 @@
     </table>
     <!-- CW: the decoded Morse text, one line per transmission (live while keying). -->
     <div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
+    <!-- DRM: the decoded service metadata and the equalised FAC 4-QAM constellation. -->
+    <div class="decode-drm" id="decode-window-drm" style="display:none;">
+      <div class="decode-drm-lines" id="decode-window-drm-lines"></div>
+      <canvas class="decode-drm-plot" id="decode-window-drm-plot" width="240" height="200"></canvas>
+    </div>
   </div>
   <!-- Resize handles: four edges and four corners (a single corner grip was all the first
        version had, so the window could only grow one way). The corners sit above the edges, and

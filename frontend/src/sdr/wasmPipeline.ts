@@ -23,6 +23,7 @@ export class WasmPipeline {
 	private outPtr = 0;
 	private textPtr = 0;
 	private metricsPtr = 0;
+	private constPtr = 0;
 	private handle = 0;
 	private volume = 1;
 
@@ -31,7 +32,8 @@ export class WasmPipeline {
 		this.outPtr = module.alloc(MAX_COMPLEX_SAMPLES * 4);
 		this.textPtr = module.alloc(TEXT_CAPACITY);
 		this.metricsPtr = module.alloc(3 * 8);
-		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr) return;
+		this.constPtr = module.alloc(2048 * 2 * 8);
+		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr || !this.constPtr) return;
 		this.create();
 	}
 
@@ -132,6 +134,18 @@ export class WasmPipeline {
 	/** Complex samples a digital decoder has buffered towards its next attempt. */
 	buffered(): number {
 		return this.handle ? this.module.exports.websa_dsp_demod_buffered(this.handle) : 0;
+	}
+
+	/** Equalised constellation points (I,Q) the digital decoder wants to show. */
+	constellation(maxPoints: number): { re: number; im: number }[] {
+		if (!this.handle || !this.digital || !this.constPtr) return [];
+		const capacity = Math.min(maxPoints, 2048);
+		const count = this.module.exports.websa_dsp_drm_constellation(this.handle, this.constPtr, capacity);
+		if (count === 0) return [];
+		const view = this.module.f64View(this.constPtr, count * 2);
+		const out: { re: number; im: number }[] = new Array(count);
+		for (let i = 0; i < count; i++) out[i] = { re: view[2 * i], im: view[2 * i + 1] };
+		return out;
 	}
 
 	/** Rebuild for a new mode/geometry. The IO blocks stay: only the handle is replaced (freeing the
@@ -248,6 +262,10 @@ export class WasmPipeline {
 		if (this.metricsPtr) {
 			this.module.free(this.metricsPtr, 3 * 8);
 			this.metricsPtr = 0;
+		}
+		if (this.constPtr) {
+			this.module.free(this.constPtr, 2048 * 2 * 8);
+			this.constPtr = 0;
 		}
 	}
 }

@@ -21,6 +21,7 @@
 import { clearFt8Spots, clock, ft8Spots, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
 import { clearCwLog, cwLevel, cwLog, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
 	type CwLine, type CwMark } from '../sdr/cwLog';
+import { clearDrm, drmStatus, subscribeDrm } from '../sdr/drmLog';
 import { formatLatLon, geoFor } from '../sdr/ft8Geo';
 import { getLang, onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
@@ -31,7 +32,7 @@ export interface DecodeWindowHooks {
 }
 
 /// The demodulators whose output this window shows.
-const DECODING_MODES = ['ft8', 'cw'] as const;
+const DECODING_MODES = ['ft8', 'cw', 'drm'] as const;
 export type DecodeMode = (typeof DECODING_MODES)[number] | null;
 
 const LS_KEY = 'websa-decode-window';
@@ -397,15 +398,18 @@ function renderCwMeter(): void {
 function renderContent(): void {
 	const showFt8 = mode === 'ft8';
 	const showCw = mode === 'cw';
+	const showDrm = mode === 'drm';
 	const table = element('decode-window-table');
 	const cw = element('decode-window-cw');
+	const drm = element('decode-window-drm');
 	const title = element('decode-window-title');
 	const count = element('decode-window-count');
 	if (table) table.style.display = showFt8 ? '' : 'none';
 	if (cw) cw.style.display = showCw ? '' : 'none';
+	if (drm) drm.style.display = showDrm ? '' : 'none';
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
-	if (title) title.textContent = showCw ? 'CW' : 'FT8';
+	if (title) title.textContent = showCw ? 'CW' : showDrm ? 'DRM' : 'FT8';
 	const timeTh = element('decode-window-time-th');
 	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
 	if (count) {
@@ -414,6 +418,42 @@ function renderContent(): void {
 	}
 	if (showFt8) renderFt8Rows();
 	else if (showCw) renderCwLines();
+	else if (showDrm) renderDrm();
+}
+
+/** Render the DRM pane: the decoded metadata lines and the FAC constellation. */
+function renderDrm(): void {
+	const lines = element('decode-window-drm-lines');
+	if (lines) {
+		lines.textContent = drmStatus().lines.join('\n');
+	}
+	const plot = element('decode-window-drm-plot') as HTMLCanvasElement | null;
+	if (!plot) return;
+	const ctx = plot.getContext('2d');
+	if (!ctx) return;
+	const width = plot.width;
+	const height = plot.height;
+	ctx.clearRect(0, 0, width, height);
+	const points = drmStatus().constellation;
+	if (!points.length) return;
+	// 4-QAM points are at ±1/√2 on each axis; give the scatter a small margin.
+	const span = 1.8;
+	const cx = width / 2;
+	const cy = height / 2;
+	const scale = Math.min(width, height) / span;
+	ctx.fillStyle = '#7fb2f0';
+	for (const p of points) {
+		const x = cx + p.re * scale;
+		const y = cy - p.im * scale;
+		ctx.fillRect(x - 1, y - 1, 2, 2);
+	}
+	// The four decision points, faintly, for reference.
+	ctx.strokeStyle = 'rgba(127, 178, 240, 0.35)';
+	for (const [re, im] of [[0.7071, 0.7071], [-0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, -0.7071]]) {
+		ctx.beginPath();
+		ctx.arc(cx + re * scale, cy - im * scale, 5, 0, Math.PI * 2);
+		ctx.stroke();
+	}
 }
 
 /** The operator asked for the window (the toggle). */
@@ -449,7 +489,8 @@ function syncOpen(): void {
 function subscribeAll(fn: () => void): () => void {
 	const offFt8 = subscribeFt8Spots(fn);
 	const offCw = subscribeCwLog(fn);
-	return () => { offFt8(); offCw(); };
+	const offDrm = subscribeDrm(fn);
+	return () => { offFt8(); offCw(); offDrm(); };
 }
 
 export function toggleDecodeWindow(): void {
@@ -518,6 +559,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	}
 	element('btn-decode-clear')?.addEventListener('click', () => {
 		if (mode === 'cw') clearCwLog();
+		else if (mode === 'drm') clearDrm();
 		else clearFt8Spots();
 		renderContent();
 	});

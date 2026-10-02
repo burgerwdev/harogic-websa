@@ -316,17 +316,29 @@ function syncPipeline(): void {
     return;
   }
   if (isDigital) {
-    // A protocol decoder lives in its own worker (`decoder`): this thread keeps only the companion
-    // demodulator, so a multi-second slot decode cannot starve the audio (measured before the split:
-    // one underrun and a ~2.5 s gap per slot).
-    pipeline?.free();
-    pipeline = null;
+    if (params.mode === 'drm') {
+      // DRM's decoder lives in the wasm digital path itself (there is no separate worker), so
+      // this thread keeps a *digital* pipeline and feeds it baseband via `push`.
+      if (pipeline && pipeline.mode === params.mode && pipeline.isDigital) {
+        applyListenerControls();
+        syncCompanion(isDigital);
+        return;
+      }
+      pipeline?.free();
+      pipeline = new WasmPipeline(module, params, true);
+    } else {
+      // A protocol decoder lives in its own worker (`decoder`): this thread keeps only the companion
+      // demodulator, so a multi-second slot decode cannot starve the audio (measured before the
+      // split: one underrun and a ~2.5 s gap per slot).
+      pipeline?.free();
+      pipeline = null;
+    }
   } else if (pipeline) {
     pipeline.reconfigure(params, false);
   } else {
     pipeline = new WasmPipeline(module, params, false);
   }
-  if (!isDigital && !pipeline?.ok) {
+  if (!pipeline?.ok) {
     // Declared but not runnable: report it instead of pretending it works.
     pipeline?.free();
     pipeline = null;
@@ -591,6 +603,16 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     // here touches the samples afterwards, but the ordering keeps the deliver-then-hand-off rule
     // that a transferred buffer demands.
     if (companion) deliver(companion.process(frame.iq));
+    if (pipeline && params?.mode === 'drm') {
+      const reports = pipeline.push(frame.iq);
+      if (reports.length) {
+        post({ type: 'drm', lines: reports.map((report) => report.text), snrDb: reports[0].snrDb });
+        const points = pipeline.constellation(1024);
+        if (points.length) {
+          post({ type: 'drm-constellation', points });
+        }
+      }
+    }
     decoderPushes += 1;
   } else if (pipeline) {
     const pcm = pipeline.process(frame.iq);
