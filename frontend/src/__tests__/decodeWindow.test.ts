@@ -102,20 +102,20 @@ describe('the FT8 decode window', () => {
 		}
 	});
 
-	it('derives a country and a grid position for each decode', () => {
+	it('derives sender → receiver countries and the sender’s grid for each decode', () => {
 		setDecodeWindowAvailable('ft8');
 		toggleDecodeWindow();
 		setLang('zh');
 		try {
-			addFt8Spot(report({ text: 'DC5RE BG7BVP -22' }), 1_000);
+			addFt8Spot(report({ text: 'UT3SO BG7BVP OL68' }), 1_000);
 			addFt8Spot(report({ text: 'CQ BG7BVP OL68' }), 2_000);
 			const cells = (row: Element) => Array.from(row.querySelectorAll('td')).map((c) => c.textContent);
 			const [cqRow, callRow] = rows();
 			expect(cells(cqRow)[4]).toBe('CQ BG7BVP OL68');
-			expect(cells(cqRow)[5]).toBe('中国');
+			expect(cells(cqRow)[5]).toBe('中国');               // CQ: sender only
 			expect(cells(cqRow)[6]).toBe('28.5°N 113.0°E');
-			expect(cells(callRow)[5]).toBe('德国');
-			expect(cells(callRow)[6]).toBe('—');
+			expect(cells(callRow)[5]).toBe('中国 → 乌克兰');      // directed: sender → receiver
+			expect(cells(callRow)[6]).toBe('28.5°N 113.0°E');
 		} finally {
 			setLang('en');
 		}

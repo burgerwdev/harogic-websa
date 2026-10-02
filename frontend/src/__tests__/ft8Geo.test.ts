@@ -2,22 +2,32 @@ import { describe, expect, it } from 'vitest';
 import { formatLatLon, geoFor } from '../sdr/ft8Geo';
 
 describe('geoFor', () => {
-	it('gives country and position from a CQ call with a grid', () => {
+	it('gives the sender country and position from a CQ call with a grid', () => {
 		const geo = geoFor('CQ BG7BVP OL68');
-		expect(geo.country?.zh).toBe('中国');
+		expect(geo.sender?.zh).toBe('中国');
+		expect(geo.receiver).toBeNull();
 		expect(geo.location?.lat).toBeCloseTo(28.5, 9);
 		expect(geo.location?.lon).toBeCloseTo(113, 9);
 	});
 
-	it('gives country only from a callsign-only line', () => {
+	it('gives sender and receiver countries from a directed line', () => {
+		const geo = geoFor('UT3SO BG7BVP OL68');
+		expect(geo.sender?.zh).toBe('中国');
+		expect(geo.receiver?.zh).toBe('乌克兰');
+		expect(geo.location?.lat).toBeCloseTo(28.5, 9);
+	});
+
+	it('gives countries only from a callsign-only line', () => {
 		const geo = geoFor('DC5RE BG7BVP -22');
-		expect(geo.country?.zh).toBe('德国');
+		expect(geo.sender?.zh).toBe('中国');
+		expect(geo.receiver?.zh).toBe('德国');
 		expect(geo.location).toBeNull();
 	});
 
 	it('gives nothing for a line with no callsign or grid', () => {
 		const geo = geoFor('TNX FER QSO');
-		expect(geo.country).toBeNull();
+		expect(geo.sender).toBeNull();
+		expect(geo.receiver).toBeNull();
 		expect(geo.location).toBeNull();
 	});
 });

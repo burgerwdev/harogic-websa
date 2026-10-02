@@ -233,7 +233,10 @@ function rowFor(spot: Ft8Spot): HTMLTableRowElement {
 	// signal on the waterfall and to tune to it, without the noise of a full-precision number.
 	const geo = geoFor(spot.text);
 	const isZh = getLang() === 'zh';
-	const country = geo.country ? (isZh ? geo.country.zh : geo.country.name) : '—';
+	const sender = geo.sender ? (isZh ? geo.sender.zh : geo.sender.name) : '—';
+	const country = geo.receiver
+		? `${sender} → ${isZh ? geo.receiver.zh : geo.receiver.name}`
+		: sender;
 	const location = geo.location ? formatLatLon(geo.location) : '—';
 	const cells: Array<{ text: string; className?: string }> = [
 		{ text: clock(spot.at, utcTime) },

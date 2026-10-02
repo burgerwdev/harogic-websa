@@ -145,21 +145,36 @@ function receive(msg: Record<string, any>): void {
   }
 }
 
+/** The geometry the decoder was last built for: a baseband-rate change needs a rebuild (the
+ * resampler inside the WASM pipeline is sized by `fsIn → outRate` at creation). */
+let shape: { fsIn: number; outRate: number } | null = null;
+
 /** (Re)build the decoder for the current parameters. */
 function build(): void {
   if (!module || !enabled || !params) {
     pipeline?.free();
     pipeline = null;
+    shape = null;
     return;
   }
-  if (pipeline && pipeline.mode === params.mode && pipeline.isDigital && pipeline.ok) {
+  const next = { fsIn: params.fsIn, outRate: params.outRate };
+  // Idempotent only while the geometry is really unchanged: a baseband-rate change while FT8 stays
+  // selected used to keep the old resampler, feeding the decoder mis-scaled samples (no decode until
+  // a hard refresh or a change that forced a rebuild).
+  if (pipeline && shape && pipeline.ok && pipeline.mode === params.mode
+      && shape.outRate === next.outRate
+      && Math.abs(shape.fsIn - next.fsIn) <= Math.max(200, next.fsIn * 0.01)) {
     return;
   }
   pipeline?.free();
-  pipeline = new WasmPipeline(module, params, true);
-  if (!pipeline.ok) {
-    pipeline.free();
-    pipeline = null;
+  pipeline = null;
+  const built = new WasmPipeline(module, params, true);
+  if (!built.ok) {
+    built.free();
+    shape = null;
     post({ type: 'error', message: `no FT8 decoder for mode ${params.mode}` });
+    return;
   }
+  pipeline = built;
+  shape = next;
 }
