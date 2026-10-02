@@ -12,6 +12,7 @@
 //! The output is a constellation, an SNR estimate and soft bits for the FAC/SDC/MSC
 //! channels (the FAC/SDC decoders in later steps turn those bits into metadata).
 
+pub mod audio;
 pub mod cellmap;
 pub mod chanest;
 pub mod fac;
@@ -151,6 +152,8 @@ pub struct DrmReceiver {
     pub msc_bitrate_kbps: Option<f64>,
     /// Decoded MSC multiplex frames (information bits, one Vec per complete frame).
     pub msc_frames: Vec<Vec<u8>>,
+    /// AAC access units deframed from the audio stream (ready for the codec).
+    pub audio_access_units: Vec<Vec<u8>>,
 }
 
 impl Default for DrmReceiver {
@@ -183,6 +186,7 @@ impl DrmReceiver {
             sdc_errors: 0,
             msc_bitrate_kbps: None,
             msc_frames: Vec::new(),
+            audio_access_units: Vec::new(),
         }
     }
 
@@ -385,7 +389,30 @@ impl DrmReceiver {
                     if deint.iter().all(|c| c.chan > 0.0) {
                         let mut bits = Vec::new();
                         msc_dec.decode(&deint, &mut bits);
-                        self.msc_frames.push(bits);
+                        self.msc_frames.push(bits.clone());
+                        self.deframe_audio(&bits);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Demultiplex one decoded MSC frame and deframe the audio stream's AAC access
+    /// units (the codec consumes these).
+    fn deframe_audio(&mut self, msc_bits: &[u8]) {
+        let Some(mux) = self.multiplex.clone() else { return };
+        let frames = match self.audio.as_ref().map(|a| a.sample_rate) {
+            Some(1) => 5,  // 12 kHz
+            Some(3) => 10, // 24 kHz
+            _ => return,
+        };
+        let Some(stream) = mux.streams.first() else { return };
+        let fmt = audio::AacSuperFrameFormat::aac(frames, stream);
+        for lf in audio::demultiplex(msc_bits, &mux).into_iter().flatten() {
+            if lf.stream_id == 0 {
+                if let Some(aus) = audio::parse_aac_super_frame(&lf.data, &fmt) {
+                    for f in aus {
+                        self.audio_access_units.push(f.data);
                     }
                 }
             }
