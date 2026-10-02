@@ -126,3 +126,49 @@ impl Drop for AacDecoder {
         unsafe { aacDecoder_Close(self.handle) };
     }
 }
+
+/// Smoke-test export: decode an ADTS AAC buffer (ptr/len into linear memory) and
+/// return the decoded frame size in samples, or a negative code on failure. Used by
+/// the runtime harness to prove the linked codec actually decodes.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn websa_dsp_fdk_decode_adts(ptr: *mut u8, len: u32) -> i32 {
+    unsafe {
+        let h = aacDecoder_Open(2, 1); // TT_MP4_ADTS
+        if h.is_null() {
+            return -1;
+        }
+        let mut buf = ptr;
+        let size = len;
+        let mut valid = len;
+        aacDecoder_Fill(h, &mut buf, &size, &mut valid);
+
+        // The decoder has a short priming delay: keep decoding until the input is
+        // exhausted and total any energy across frames.
+        let mut frame_size = 0i32;
+        let mut channels = 0i32;
+        let mut energy = 0i64;
+        for _ in 0..16 {
+            let mut pcm = [0i16; 8192];
+            let err = aacDecoder_DecodeFrame(h, pcm.as_mut_ptr(), pcm.len() as i32, 0);
+            if err != 0 {
+                break;
+            }
+            let info = aacDecoder_GetStreamInfo(h);
+            if info.is_null() {
+                break;
+            }
+            frame_size = *(info as *const i32).add(1);
+            channels = *(info as *const i32).add(2);
+            for &s in &pcm[..(frame_size * channels).min(pcm.len() as i32) as usize] {
+                energy += i64::from(s.abs());
+            }
+        }
+        aacDecoder_Close(h);
+        if frame_size <= 0 {
+            -6 // no frame decoded
+        } else {
+            ((frame_size << 16) | ((channels & 0xFF) << 8) | if energy > 0 { 0 } else { 1 }) as i32
+        }
+    }
+}

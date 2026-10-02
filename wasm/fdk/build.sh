@@ -13,7 +13,7 @@ SRC="${1:?usage: wasm/fdk/build.sh /path/to/fdk-aac}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 CXX="clang++ --target=wasm32-unknown-unknown -ffreestanding -fno-exceptions -fno-rtti -fno-threadsafe-statics -O2 -std=c++11 -DNDEBUG"
-INCS="-I$SRC/libAACdec/include -I$SRC/libFDK/include -I$SRC/libMpegTPDec/include -I$SRC/libSBRdec/include -I$SRC/libSACdec/include -I$SRC/libSYS/include -I$SRC/libPCMutils/include -I$SRC/libDRCdec/include"
+INCS="-I$SRC/libAACdec/include -I$SRC/libFDK/include -I$SRC/libMpegTPDec/include -I$SRC/libSBRdec/include -I$SRC/libSACdec/include -I$SRC/libSYS/include -I$SRC/libPCMutils/include -I$SRC/libDRCdec/include -I$SRC/libArithCoding/include"
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
@@ -27,6 +27,9 @@ FILES=(
   libAACdec/src/channelinfo.cpp libAACdec/src/conceal.cpp libAACdec/src/FDK_delay.cpp
   libAACdec/src/ldfiltbank.cpp libAACdec/src/pulsedata.cpp libAACdec/src/rvlcbit.cpp
   libAACdec/src/rvlcconceal.cpp libAACdec/src/rvlc.cpp libAACdec/src/stereo.cpp
+  libAACdec/src/usacdec_ace_d4t64.cpp libAACdec/src/usacdec_acelp.cpp
+  libAACdec/src/usacdec_ace_ltp.cpp libAACdec/src/usacdec_fac.cpp
+  libAACdec/src/usacdec_lpc.cpp libAACdec/src/usacdec_lpd.cpp libAACdec/src/usacdec_rom.cpp
   libFDK/src/autocorr2nd.cpp libFDK/src/dct.cpp libFDK/src/FDK_bitbuffer.cpp
   libFDK/src/FDK_core.cpp libFDK/src/FDK_crc.cpp libFDK/src/FDK_decorrelate.cpp
   libFDK/src/FDK_hybrid.cpp libFDK/src/FDK_lpc.cpp libFDK/src/FDK_matrixCalloc.cpp
@@ -48,11 +51,12 @@ FILES=(
   libSACdec/src/sac_qmf.cpp libSACdec/src/sac_reshapeBBEnv.cpp libSACdec/src/sac_rom.cpp
   libSACdec/src/sac_smoothing.cpp libSACdec/src/sac_stp.cpp libSACdec/src/sac_tsd.cpp
   libPCMutils/src/limiter.cpp libPCMutils/src/pcmdmx_lib.cpp libPCMutils/src/pcm_utils.cpp
-  libSYS/src/genericStds.cpp libSYS/src/syslib_channelMapDescr.cpp
+  libSYS/src/syslib_channelMapDescr.cpp
   libDRCdec/src/drcDec_gainDecoder.cpp libDRCdec/src/drcDec_reader.cpp libDRCdec/src/drcDec_rom.cpp
   libDRCdec/src/drcDec_selectionProcess.cpp libDRCdec/src/drcDec_tools.cpp
   libDRCdec/src/drcGainDec_init.cpp libDRCdec/src/drcGainDec_preprocess.cpp
   libDRCdec/src/drcGainDec_process.cpp libDRCdec/src/FDK_drcDecLib.cpp
+  libArithCoding/src/ac_arith_coder.cpp
 )
 
 for f in "${FILES[@]}"; do
@@ -60,22 +64,9 @@ for f in "${FILES[@]}"; do
   $CXX $INCS -c "$SRC/$f" -o "$o"
 done
 
-# Runtime shim: operator new/delete (calling the Rust-provided malloc/free) and a few
-# string helpers. memcpy/memset/memmove/memcmp come from compiler-builtins.
-cat > "$OUT/fdk_shim.cpp" <<'SHIM'
-#include <stddef.h>
-extern "C" { void *malloc(size_t n); void free(void *p); void *calloc(size_t n, size_t sz); void *realloc(void *p, size_t n); }
-void *operator new(size_t n) { return malloc(n); }
-void *operator new[](size_t n) { return malloc(n); }
-void operator delete(void *p) noexcept { free(p); }
-void operator delete[](void *p) noexcept { free(p); }
-void operator delete(void *p, size_t) noexcept { free(p); }
-void operator delete[](void *p, size_t) noexcept { free(p); }
-extern "C" size_t strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
-extern "C" char *strcpy(char *d, const char *s) { char *r = d; while ((*d++ = *s++)) {} return r; }
-extern "C" int strcmp(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return (unsigned char)*a - (unsigned char)*b; }
-SHIM
-$CXX $INCS -c "$OUT/fdk_shim.cpp" -o "$OUT/fdk_shim.o"
+# Runtime shim: operator new/delete, string helpers and the FDK_* memory/string
+# wrappers (genericStds.cpp is skipped because it includes hosted libc headers).
+$CXX $INCS -c "$HERE/shim.cpp" -o "$OUT/fdk_shim.o"
 
 llvm-ar rcs "$HERE/libfdk.a" "$OUT"/*.o
 echo "wrote $HERE/libfdk.a ($(ls -la "$HERE/libfdk.a" | awk '{print $5}') bytes)"
