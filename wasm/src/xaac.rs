@@ -71,14 +71,17 @@ impl XaacDecoder {
             let mut wdsz: u32 = 16;
             ixheaacd_dec_api(obj, CMD_SET_CONFIG_PARAM, CFG_MP4FLAG, &mut mp4 as *mut u32 as *mut _);
             ixheaacd_dec_api(obj, CMD_SET_CONFIG_PARAM, CFG_PCM_WDSZ, &mut wdsz as *mut u32 as *mut _);
-            if ixheaacd_dec_api(obj, CMD_INIT, INIT_POST_CONFIG, core::ptr::null_mut()) != 0 {
-                return None;
-            }
 
+            // The memory-table descriptor must be set before POST_CONFIG: POST_CONFIG
+            // fills the descriptor via ixheaacd_fill_aac_mem_tables.
             let mut mt_size: u32 = 0;
             ixheaacd_dec_api(obj, CMD_GET_MEMTABS_SIZE, 0, &mut mt_size as *mut u32 as *mut _);
             let memtabs = alloc_aligned(mt_size as usize, 8);
             ixheaacd_dec_api(obj, CMD_SET_MEMTABS_PTR, 0, memtabs as *mut _);
+
+            if ixheaacd_dec_api(obj, CMD_INIT, INIT_POST_CONFIG, core::ptr::null_mut()) != 0 {
+                return None;
+            }
 
             let mut mem = Vec::new();
             let mut in_ptr = core::ptr::null_mut();
