@@ -1,0 +1,46 @@
+{
+  "note": "Live DRM30 baseband captured from the SAN-90 bench loop. This is the exact baseband the browser DSP worker receives (IQBF payload, decoded at the published rate). It is NOT a synthesised fixture: the file records what the failing receiver gets.",
+  "file": "drm_live_modeB_so3_48828.f32",
+  "format": {
+    "dtype": "float32",
+    "byte_order": "little-endian",
+    "layout": "interleaved I,Q",
+    "complex_samples": 292968,
+    "f32_values": 585936,
+    "duration_s": 6.0
+  },
+  "bench": {
+    "source": "DecDRM transmitter -> PlutoSDR (400.0 MHz, base +100 kHz) -> radiated 2 m -> SAN-90 external antenna",
+    "analyzer_center_hz": 400100000.0,
+    "ref_level_dbm": -40.0,
+    "capture_bandwidth_label": "195 kHz",
+    "decimate": 256,
+    "published_baseband_rate_hz": 48828.125,
+    "measured_baseband_rate_hz": 48833.85,
+    "measured_rate_method": "cyclic-prefix period, mode B guard correlation (1041.79 samples per 1024-sample useful part)"
+  },
+  "level": {
+    "rms_dbfs": 15.6,
+    "peak_dbfs": 29.18,
+    "crest_db": 13.58,
+    "note": "full scale is 1.0, so the baseband is far above full scale"
+  },
+  "signal": {
+    "standard": "ETSI ES 201 980 (DRM30)",
+    "robustness_mode": "B",
+    "spectrum_occupancy": 3,
+    "bandwidth_khz": 10,
+    "occupied_bandwidth_khz_measured": 9.82,
+    "transmitter_config": "tools/drm_bench/station_iq.toml",
+    "station_label": "SAN90 DRM BENCH",
+    "msc_bitrate_kbps": 20.96,
+    "audio": "HE-AAC mono, 12 kHz core"
+  },
+  "oracle": {
+    "decoder": "dream 2.2.4 console build (feature/drm-dream-decoder worktree)",
+    "verdict": "decodes this file: snr 20.9 dB, robustness 1 (mode B), bandwidth 10.0 kHz, fac/sdc/msc status 0, service label 'SAN90 DRM BENCH', 20.96 kbit/s, mono, EEP",
+    "note": "the same samples decode in Dream, so the bench signal is good and the receiver under test is the failing part"
+  },
+  "captured_at": "2026-10-03T11:35:39+00:00",
+  "tool": "tools/drm_capture.py --seconds 10 (drain 1 s first; the file keeps the first 6 s)"
+}
