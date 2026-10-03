@@ -48,6 +48,19 @@ which is the "rewrite" path.
   (CRC ranges), `libAACdec/src/aac_rom.cpp` (Huffman tables).
 - DecDRM `FdkDrmEncoder` (GPL, algorithm reference only — not copyable).
 
+## Exact HCR side-info (from fdK-AAC `CHcr_Read` / `HcrDecoder`)
+
+- `lengthOfReorderedSpectralData = read(14 bits)` (`SCE_TOP_LENGTH = 6144`).
+- `lengthOfLongestCodeword = read(6 bits)` (`LEN_OF_LONGEST_CW_TOP_LENGTH = 49`).
+- The VCB11 section data (5-bit codebooks) precedes these; per-section
+  `codebook` + `numLines` come from `CBlock_ReadSectionData` with `AC_ER_VCB11`.
+- The reordered spectral data follows, decoded by `HcrDecoder`:
+  `HcrCalcNumCodeword` → `HcrSortCodebookAndNumCodewordInSection` →
+  `HcrPrepareSegmentationGrid` → `HcrExtendedSectionInfo` → `DecodePCWs` +
+  `DecodeNonPCWs` → `HcrReorderQuantizedSpectralCoefficients`. The encoder must
+  invert this: sort codewords by codebook, build the segmentation grid, emit the
+  reordered bits, and write the two lengths.
+
 A simpler milestone is to first implement Steps 1+2+4 for a single-codebook AAC-LC
 frame (no SBR), then add HCR (Step 3) once the VCB11 framing round-trips through the
 fdK-AAC `TT_DRM` decoder.
