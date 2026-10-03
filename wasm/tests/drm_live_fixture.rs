@@ -13,10 +13,19 @@
 //! `tests/fixtures/drm/live_manifest.json`). The expectations below therefore describe the
 //! bench signal, not a synthetic one.
 //!
-//! STATUS: this test still fails. The rate conversion and the carrier offset are fixed (the
-//! receiver measures -19.6 Hz on this file and removes it), so the failure is now in the
-//! cell extraction of a real signal. See `docs/en/DRM_BENCH.md` for the measurements and
-//! for the factors that are ruled out.
+//! This test failed until three fixes landed, and each failure was the reproduction for
+//! the next one:
+//!
+//!   1. the rate: the capture does not lock at its delivered rate, because the DRM core is
+//!      fixed at 48 kHz;
+//!   2. the carrier offset: the capture sits at +121 Hz, which is 2.58 carrier spacings.
+//!      The guard correlation only sees the fraction of that (it wraps every 47.7 Hz), so
+//!      the whole carriers must come from the detected band edges;
+//!   3. the super-frame phase: the capture starts in the middle of a super frame, and the
+//!      SDC and MSC cells move with that phase. The receiver tries each phase and keeps the
+//!      one whose SDC block passes its CRC.
+//!
+//! See `docs/en/DRM_BENCH.md` for the measurements.
 
 use websa_dsp::ddc::resampler::ComplexResampler;
 use websa_dsp::digital::drm::fac::{MscMode, SdcMode};

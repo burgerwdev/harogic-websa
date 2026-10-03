@@ -164,6 +164,9 @@ pub struct DrmReceiver {
     /// Carrier offset in Hz measured at acquisition, before any correction. A live
     /// signal always has one: the transmitter and the analyzer use different clocks.
     pub carrier_offset_hz: f64,
+    /// True once the whole-carrier part of the offset has been applied. One block is spent
+    /// on the measurement, and the next block decodes with the corrected anchor.
+    anchor_fixed: bool,
     /// Total complex samples pushed, including the samples the buffer cap dropped. It
     /// gives every buffered sample its phase reference for the carrier-offset removal.
     pushed: u64,
@@ -206,6 +209,7 @@ impl DrmReceiver {
             audio_access_units: Vec::new(),
             audio_pcm: Vec::new(),
             carrier_offset_hz: 0.0,
+            anchor_fixed: false,
             pushed: 0,
             mix_w: 0.0,
             mix_phase: 0.0,
@@ -300,44 +304,100 @@ impl DrmReceiver {
         let n = mode.fft_size();
         let ts = mode.symbol_len();
 
-        // Demodulate every complete symbol, keeping the full FFT rows and a power
-        // spectrum for occupancy detection.
-        let mut fft = FullFft::new(n);
-        let mut power = vec![0.0f64; n];
-        let mut rows: Vec<Vec<Cplx>> = Vec::new();
-        let mut start = acq.guard_start + mode.guard_len();
-        while start + mode.fft_size() <= self.buf.len() {
-            let mut row = vec![Cplx::new(0.0, 0.0); n];
-            fft.forward(&self.buf[start..start + mode.fft_size()], &mut row);
-            for (bin, v) in row.iter().enumerate() {
-                power[bin] += v.norm_sqr();
+        // Two passes at most. The second pass runs when the whole-carrier anchor needed a
+        // correction: the FFT rows of the first pass describe the wrong carriers.
+        for _pass in 0..2 {
+            // Demodulate every complete symbol, keeping the full FFT rows and a power
+            // spectrum for occupancy detection.
+            let mut fft = FullFft::new(n);
+            let mut power = vec![0.0f64; n];
+            let mut rows: Vec<Vec<Cplx>> = Vec::new();
+            let mut start = acq.guard_start + mode.guard_len();
+            while start + mode.fft_size() <= self.buf.len() {
+                let mut row = vec![Cplx::new(0.0, 0.0); n];
+                fft.forward(&self.buf[start..start + mode.fft_size()], &mut row);
+                for (bin, v) in row.iter().enumerate() {
+                    power[bin] += v.norm_sqr();
+                }
+                rows.push(row);
+                start += ts;
             }
-            rows.push(row);
-            start += ts;
-        }
-        if rows.len() < mode.symbols_per_frame() {
+            if rows.len() < mode.symbols_per_frame() {
+                return;
+            }
+            let nrows = rows.len() as f64;
+            for p in power.iter_mut() {
+                *p /= nrows;
+            }
+
+            let Some((so, carrier_shift)) = detect_occupancy(mode, &power, n) else { return };
+            if carrier_shift != 0 && !self.anchor_fixed {
+                // A whole-carrier offset moves every cell to its neighbour, so the equaliser
+                // reads data where it expects pilots. Correct the anchor and demodulate
+                // again: the rows above describe the carriers of the uncorrected signal.
+                let spacing = params::SAMPLE_RATE as f64 / n as f64;
+                self.remove_carrier_offset(f64::from(carrier_shift) * spacing);
+                self.carrier_offset_hz += f64::from(carrier_shift) * spacing;
+                self.anchor_fixed = true;
+                continue;
+            }
+            let Some(map) = CellMap::new(mode, so) else { return };
+            let (r, score) = frame_sync(mode, &rows, n);
+
+            // The time pilots give the frame phase, not the super-frame phase. The SDC and
+            // the MSC cells move over the super frame, so try each phase and keep the one
+            // whose SDC block passes its CRC. A capture that starts in the middle of a
+            // super frame needs this; the bench capture does.
+            let spf = mode.symbols_per_frame();
+            let spsf = mode.symbols_per_superframe();
+            for (attempt, phase) in (0..spsf).step_by(spf).enumerate() {
+                if attempt > 0 {
+                    self.clear_decode_state();
+                }
+                self.decode(&map, &rows, r, phase);
+                if self.sdc_ok > 0 {
+                    break;
+                }
+            }
+
+            self.mode = Some(mode);
+            self.occupancy = Some(so);
+            self.frame_offset = r;
+            self.frame_sync_score = score;
+            self.symbols_demodulated = rows.len();
+            self.locked = true;
             return;
         }
-        let nrows = rows.len() as f64;
-        for p in power.iter_mut() {
-            *p /= nrows;
-        }
+    }
 
-        let Some(so) = detect_occupancy(mode, &power, n) else { return };
-        let Some(map) = CellMap::new(mode, so) else { return };
-        let (r, score) = frame_sync(mode, &rows, n);
-
-        self.mode = Some(mode);
-        self.occupancy = Some(so);
-        self.frame_offset = r;
-        self.frame_sync_score = score;
-        self.symbols_demodulated = rows.len();
-        self.decode(&map, &rows, r);
-        self.locked = true;
+    /// Drop everything the last decode produced, so a second attempt does not mix its
+    /// results with the first. The buffer and the carrier-offset state stay.
+    fn clear_decode_state(&mut self) {
+        self.mode = None;
+        self.occupancy = None;
+        self.frame_offset = 0;
+        self.frame_sync_score = 0.0;
+        self.snr_db = None;
+        self.fac_constellation.clear();
+        self.fac_soft_bits.clear();
+        self.sdc_soft_bits.clear();
+        self.msc_soft_bits.clear();
+        self.symbols_demodulated = 0;
+        self.facs.clear();
+        self.fac_errors = 0;
+        self.station_label = None;
+        self.multiplex = None;
+        self.audio = None;
+        self.sdc_ok = 0;
+        self.sdc_errors = 0;
+        self.msc_bitrate_kbps = None;
+        self.msc_frames.clear();
+        self.audio_access_units.clear();
+        self.audio_pcm.clear();
     }
 
     /// Channel estimation + equalisation + QAM demapping + FAC/SDC decoding.
-    fn decode(&mut self, map: &CellMap, rows: &[Vec<Cplx>], r: usize) {
+    fn decode(&mut self, map: &CellMap, rows: &[Vec<Cplx>], r: usize, super_phase: usize) {
         let n = map.mode().fft_size();
         let spf = map.symbols_per_frame;
         let spsf = map.symbols_per_superframe;
@@ -359,7 +419,10 @@ impl DrmReceiver {
             // Super-frame symbol index. The first demodulated symbol is frame 0 of a
             // super frame (true for the synthesised fixture; real signals get the frame
             // number from the FAC, which the FAC decoder supplies).
-            let sym = (i + r) % spsf;
+            // The frame phase comes from the time pilots. The super-frame phase does not:
+            // the SDC and the MSC cells change over the super frame, so the caller passes
+            // the candidate that gave a valid SDC.
+            let sym = (i + r + super_phase) % spsf;
             let s = sym % spf;
             let cells: Vec<Cplx> = (0..map.num_carriers)
                 .map(|c| carrier_at(row, n, map.kmin + c as i32))
@@ -388,11 +451,10 @@ impl DrmReceiver {
             }
             if fac_cells.len() == NUM_FAC_CELLS {
                 let mut bits = Vec::new();
-                fac_dec.decode(&fac_cells, &mut bits);
-                if let Some(fac) = Fac::parse(&bits) {
-                    self.facs.push(fac);
-                } else {
-                    self.fac_errors += 1;
+                let decoded = fac_dec.decode(&fac_cells, &mut bits);
+                match if decoded { Fac::parse(&bits) } else { None } {
+                    Some(fac) => self.facs.push(fac),
+                    None => self.fac_errors += 1,
                 }
                 fac_cells.clear();
             }
@@ -408,12 +470,18 @@ impl DrmReceiver {
                 }
                 if sym == sdc_syms - 1 {
                     let mut bits = Vec::new();
-                    sdc_dec16.decode(&sdc_cells, &mut bits);
-                    let mut block = sdc::parse_sdc_block(&bits).filter(|b| b.crc_ok);
+                    let mut block = if sdc_dec16.decode(&sdc_cells, &mut bits) {
+                        sdc::parse_sdc_block(&bits).filter(|b| b.crc_ok)
+                    } else {
+                        None
+                    };
                     if block.is_none() {
                         let mut bits4 = Vec::new();
-                        sdc_dec4.decode(&sdc_cells, &mut bits4);
-                        block = sdc::parse_sdc_block(&bits4).filter(|b| b.crc_ok);
+                        block = if sdc_dec4.decode(&sdc_cells, &mut bits4) {
+                            sdc::parse_sdc_block(&bits4).filter(|b| b.crc_ok)
+                        } else {
+                            None
+                        };
                     }
                     match block {
                         Some(b) => {
@@ -471,9 +539,10 @@ impl DrmReceiver {
                     // fill-in delay and any trailing truncation).
                     if deint.iter().all(|c| c.chan > 0.0) {
                         let mut bits = Vec::new();
-                        msc_dec.decode(&deint, &mut bits);
-                        self.msc_frames.push(bits.clone());
-                        self.deframe_audio(&bits);
+                        if msc_dec.decode(&deint, &mut bits) {
+                            self.msc_frames.push(bits.clone());
+                            self.deframe_audio(&bits);
+                        }
                     }
                 }
             }
@@ -662,7 +731,16 @@ fn msc_mapping(m: fac::MscMode) -> Mapping {
 
 /// Detect the spectrum occupancy from the per-carrier power: the occupied carriers
 /// are exactly [Kmin, Kmax] of one of the standard layouts.
-fn detect_occupancy(mode: RobustnessMode, power: &[f64], n: usize) -> Option<SpectrumOccupancy> {
+///
+/// The second value is the whole-carrier shift of the detected span against the chosen
+/// layout. It resolves what the guard correlation cannot: its phase wraps every `fs/nu`,
+/// about 47.7 Hz, which is just above one carrier spacing (46.875 Hz), so a signal two
+/// carriers away reads as a small fraction. The bench capture sat at +121 Hz.
+fn detect_occupancy(
+    mode: RobustnessMode,
+    power: &[f64],
+    n: usize,
+) -> Option<(SpectrumOccupancy, i32)> {
     let maxp = power.iter().cloned().fold(0.0f64, f64::max);
     if maxp <= 0.0 {
         return None;
@@ -680,21 +758,23 @@ fn detect_occupancy(mode: RobustnessMode, power: &[f64], n: usize) -> Option<Spe
     for so in SpectrumOccupancy::ALL {
         if let Some((a, b)) = params::carrier_range(mode, so) {
             if a == kmin && b == kmax {
-                return Some(so);
+                return Some((so, 0));
             }
         }
     }
     // Otherwise the closest layout within a small tolerance: a real signal's edge carriers
     // are attenuated by the channel filter, so the detected span can be a carrier or two
     // narrower than the nominal layout (the exact match would reject every real signal).
-    let mut best: Option<SpectrumOccupancy> = None;
+    let mut best: Option<(SpectrumOccupancy, i32)> = None;
     let mut best_dist = i32::MAX;
     for so in SpectrumOccupancy::ALL {
         if let Some((a, b)) = params::carrier_range(mode, so) {
             let d = (a - kmin).abs() + (b - kmax).abs();
             if d < best_dist {
                 best_dist = d;
-                best = Some(so);
+                // Both edges give the shift; the average tolerates one attenuated edge.
+                let shift = ((kmin - a) + (kmax - b)) as f64 / 2.0;
+                best = Some((so, shift.round() as i32));
             }
         }
     }

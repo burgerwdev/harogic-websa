@@ -329,10 +329,14 @@ impl MlcDecoder {
     }
 
     /// Decode `params.cells` equalised cells into `params.total_bits()` bits (energy
-    /// dispersal removed).
-    pub fn decode(&mut self, cells: &[EqCell], out: &mut Vec<u8>) {
+    /// dispersal removed). Returns false when the cell count does not match, which
+    /// happens while a capture holds only part of a multiplex frame and at the end of an
+    /// interleaver's fill-in delay. A panic here would trap the wasm module.
+    pub fn decode(&mut self, cells: &[EqCell], out: &mut Vec<u8>) -> bool {
         let p = &self.params;
-        assert_eq!(cells.len(), p.cells, "MLC cell count mismatch");
+        if cells.len() != p.cells {
+            return false;
+        }
         let nl = p.levels.len();
         let last_branch = if p.mapping == Mapping::Qam64HmMix { nl - 2 } else { nl - 1 };
         for d in &mut self.decided {
@@ -361,5 +365,6 @@ impl MlcDecoder {
 
         p.departition(&self.info, out);
         dispersal::apply(out, p.bits_vspp);
+        true
     }
 }
