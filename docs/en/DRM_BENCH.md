@@ -175,11 +175,20 @@ extraction of a real signal, and the ruled-out list below records what it is not
 1. **Rate**: the DRM core is fixed at 48 kHz (`wasm/src/digital/drm/params.rs`). The
    channelizer delivers 48828.125 Hz. Without a resample the receiver cannot acquire.
    The pipeline has a resampler, and the worker must give it the live rate.
-2. **FAC decode on a live signal**: partly fixed. The receiver removes the -19.7 Hz carrier
-   offset, and the synthesised fixture decodes with any offset up to half a carrier spacing.
-   The live capture still fails every FAC block, so one more defect remains. The cell
-   extraction of a real signal is the open item; every factor above is measured and ruled
-   out.
+2. **Carrier anchor and super-frame phase**: fixed. The receiver resolves the whole-carrier
+   part of the offset from the detected band edges and the fraction from the guard
+   correlation, and it tries each super-frame phase and keeps the one whose SDC passes its
+   CRC. The live capture now locks, decodes the FAC and the SDC, shows the station, its
+   robustness mode, its bandwidth, its bit rate, its codec and its FAC SNR, and passes the
+   MSC CRC. `wasm/tests/drm_live_fixture.rs` covers all of it.
+3. **Audio decode of a real stream**: blocked. The FDK wasm decoder traps on the access units
+   of the bench stream, and a trap kills the wasm module and the worker with it. The stream
+   is the standard DRM HE-AAC configuration: a 12 kHz core with SBR, 208-byte access units,
+   five per 400 ms frame. The numbers add up (5 x 208 bytes against the 1048-byte stream
+   frame), so the deframing matches the stream; the synthesised fixture, which uses a 24 kHz
+   core, decodes. Until the decoder build is fixed, the DRM path skips exactly that
+   configuration, so a real stream keeps its metadata and its session instead of losing both.
+   `frontend/src/__tests__/drmAudioEndToEnd.test.ts` still covers the case that works.
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.
@@ -206,6 +215,12 @@ Steps used (Chromium, a fresh page, service on port 8080):
 Observed: the DRM readout stayed empty (no lock at that sample rate), and AM produced audio
 again at once (`dsp_pcm_blocks` 0 to 241, `dsp_pcm_rms` 0.05..0.08, `dsp_ratio` 1.0005).
 The switch worked.
+
+The cause was found later: the wasm DRM audio decode traps on the bench stream, and a trap
+kills the worker instance. The page then held a reference to a dead worker, so every later
+mode change went nowhere and only a page refresh helped. `worker.onerror` now drops that
+worker, and the next mode change starts a fresh one
+(`frontend/src/__tests__/workerRecovery.test.ts`; it failed before the change).
 
 Two conditions still need a test, and both are likely to matter:
 
