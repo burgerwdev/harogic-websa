@@ -192,7 +192,7 @@ def reserialize_drm(source: bytes, out: dict) -> str:
     bracketed part covered by aac_crc_bits. The DRM order moves global_gain after
     the tns/ltp flags and omits the GA predictor bit."""
     br = BitReader(source)
-    id_tag = br.bits(0, 7)              # id_syn_ele + element_tag
+    id_tag = br.bits(0, 7)              # id_syn_ele + element_tag (NOT in the DRM access unit)
     ics_info = br.bits(15, 10)          # ics_reserved + window_sequence + shape + max_sfb
     tns_ltp = ("1" if out["tns_present"] else "0") + "0"  # tns_data_present + ltp_data_present
     global_gain = br.bits(7, 8)         # global_gain (moved after tns/ltp)
@@ -203,7 +203,7 @@ def reserialize_drm(source: bytes, out: dict) -> str:
     hcr_side = f"{lrsd:014b}{llc:06b}"
     side_info = ics_info + tns_ltp + global_gain + sections + sf + hcr_side
     crc = crc8(side_info)
-    return f"{crc:08b}" + id_tag + side_info + reordered
+    return f"{crc:08b}" + side_info + reordered  # no id_syn_ele/tag in the DRM access unit
 
 
 def hcr_encode(codewords: list) -> tuple:
