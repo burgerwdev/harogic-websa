@@ -30,6 +30,8 @@ export interface DspExports {
 	websa_dsp_demod_message_at(handle: number, index: number, textPtr: number, textCapacity: number, metricsPtr: number): number;
 	websa_dsp_demod_buffered(handle: number): number;
 	websa_dsp_drm_constellation(handle: number, ptr: number, capacity: number): number;
+	websa_dsp_drm_audio_pcm(handle: number, ptr: number, capacity: number): number;
+	websa_dsp_drm_audio_rate(handle: number): number;
 	websa_dsp_demod_count(handle: number): number;
 	websa_dsp_demod_set_audio(handle: number, enabled: number): number;
 	websa_dsp_demod_set_nr(handle: number, enabled: number, strength: number): number;
@@ -39,6 +41,10 @@ export interface DspExports {
 	websa_dsp_demod_retune(handle: number): number;
 	websa_dsp_demod_reset(handle: number): number;
 	websa_dsp_demod_free(handle: number): number;
+	// Codec smoke exports (FDK AAC / xHE-AAC), used by the DRM audio fixture test
+	websa_dsp_fdk_decode_adts(ptr: number, len: number): number;
+	websa_dsp_fdk_decode_drm(ptr: number, len: number): number;
+	websa_dsp_fdk_decode_drm_frames(ptr: number, len: number, frameLen: number): number;
 	// Plugin manifest: the UI's mode list is read from here, never hardcoded
 	websa_dsp_plugin_kind_count(): number;
 	websa_dsp_plugin_count(kind: number): number;

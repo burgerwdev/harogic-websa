@@ -24,6 +24,7 @@ export class WasmPipeline {
 	private textPtr = 0;
 	private metricsPtr = 0;
 	private constPtr = 0;
+	private audioPtr = 0;
 	private handle = 0;
 	private volume = 1;
 
@@ -33,7 +34,8 @@ export class WasmPipeline {
 		this.textPtr = module.alloc(TEXT_CAPACITY);
 		this.metricsPtr = module.alloc(3 * 8);
 		this.constPtr = module.alloc(2048 * 2 * 8);
-		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr || !this.constPtr) return;
+		this.audioPtr = module.alloc(32768 * 2);
+		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr || !this.constPtr || !this.audioPtr) return;
 		this.create();
 	}
 
@@ -146,6 +148,26 @@ export class WasmPipeline {
 		const out: { re: number; im: number }[] = new Array(count);
 		for (let i = 0; i < count; i++) out[i] = { re: view[2 * i], im: view[2 * i + 1] };
 		return out;
+	}
+
+	/** Decoded DRM audio PCM (float, −1..1) at the rate reported by `audioRate()`. */
+	audioPcm(maxSamples: number): Float32Array {
+		if (!this.handle || !this.digital || !this.audioPtr) return new Float32Array(0);
+		const count = this.module.exports.websa_dsp_drm_audio_pcm(
+			this.handle,
+			this.audioPtr,
+			Math.min(maxSamples, 32768),
+		);
+		if (count === 0) return new Float32Array(0);
+		const view = this.module.i16View(this.audioPtr, count);
+		const out = new Float32Array(count);
+		for (let i = 0; i < count; i++) out[i] = view[i] / 32768;
+		return out;
+	}
+
+	/** The decoded DRM audio PCM's sample rate in Hz (0 when there is no audio). */
+	audioRate(): number {
+		return this.handle && this.digital ? this.module.exports.websa_dsp_drm_audio_rate(this.handle) : 0;
 	}
 
 	/** Rebuild for a new mode/geometry. The IO blocks stay: only the handle is replaced (freeing the
@@ -266,6 +288,10 @@ export class WasmPipeline {
 		if (this.constPtr) {
 			this.module.free(this.constPtr, 2048 * 2 * 8);
 			this.constPtr = 0;
+		}
+		if (this.audioPtr) {
+			this.module.free(this.audioPtr, 32768 * 2);
+			this.audioPtr = 0;
 		}
 	}
 }

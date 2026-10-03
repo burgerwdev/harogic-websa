@@ -216,9 +216,11 @@ client subscribes to AUDF. The S-meter reading comes from the browser's own PCM 
   skimmer would need a full-slot search at roughly 15x the cost. FT4 and the other digital
   protocols are registry seams, not implementations.
 - DRM30 is implemented through the receive chain (OFDM sync → FAC/SDC/MSC channel decoding →
-  audio super-frame deframing), verified bit-exact against a synthesised Mode B / 10 kHz fixture;
-  the FDK AAC decoder is linked and decodes PCM, but the DRM AAC CRC path is not yet verified
-  end to end against a live audio fixture and xHE-AAC (libxaac) is not yet integrated.
+  audio super-frame deframing → AAC decode), verified bit-exact against a synthesised Mode B /
+  10 kHz fixture; the DRM AAC re-serialisation (VCB11 + HCR + CRC) is verified lossless against
+  `aac_sine_24k` and the decoded PCM is delivered to the frontend audio path (resampled
+  12/24 kHz → 48 kHz). xHE-AAC (libxaac) is still not integrated in the WASM pipeline: the
+  portable decode path is broken upstream, so only the AAC codec is live.
 - The Python DSP path is the audio source when the browser module is unavailable, and while any
   client subscribes to its audio; it is kept as the fallback and as the numeric reference.
 - Four audio stages are installed but no policy enables them (`dc_block`, `lpf`, `agc`, `notch`):

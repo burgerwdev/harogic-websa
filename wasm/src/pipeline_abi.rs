@@ -235,6 +235,32 @@ pub unsafe extern "C" fn websa_dsp_drm_constellation(handle: u32, ptr: *mut f64,
     .unwrap_or(0)
 }
 
+/// Copy the digital demodulator's decoded audio (16-bit interleaved PCM) into `ptr`.
+/// Returns the number of samples, or 0 when there is none. The sample rate is reported by
+/// [`websa_dsp_drm_audio_rate`].
+///
+/// # Safety
+/// `ptr` must point to `capacity` writable `i16`s.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_drm_audio_pcm(handle: u32, ptr: *mut i16, capacity: u32) -> u32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    with_pipeline(handle, |state| {
+        let pcm = state.pipeline.digital_audio_pcm();
+        let n = pcm.len().min(capacity as usize);
+        core::ptr::copy_nonoverlapping(pcm.as_ptr(), ptr, n);
+        n as u32
+    })
+    .unwrap_or(0)
+}
+
+/// The decoded audio PCM's sample rate in Hz (0 when there is no audio).
+#[no_mangle]
+pub extern "C" fn websa_dsp_drm_audio_rate(handle: u32) -> u32 {
+    with_pipeline(handle, |state| state.pipeline.digital_audio_rate_hz()).unwrap_or(0)
+}
+
 /// Messages decoded by this pipeline (status readout).
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_count(handle: u32) -> u32 {

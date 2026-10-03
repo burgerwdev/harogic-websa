@@ -210,6 +210,17 @@ impl DrmReceiver {
         self.buf.len()
     }
 
+    /// The decoded audio PCM's sample rate in Hz (0 when the SDC audio info is unknown).
+    pub fn audio_rate_hz(&self) -> u32 {
+        match self.audio.as_ref().map(|a| a.sample_rate) {
+            Some(0) => 8000,
+            Some(1) => 12000,
+            Some(2) => 16000,
+            Some(3) => 24000,
+            _ => 0,
+        }
+    }
+
     /// Run acquisition + demodulation once, if enough samples are buffered. Idempotent
     /// after the first successful lock.
     pub fn run(&mut self) {
@@ -548,6 +559,14 @@ impl DigitalDemodulator for DrPlugin {
 
     fn constellation(&self) -> Vec<(f64, f64)> {
         self.rx.fac_constellation.clone()
+    }
+
+    fn audio_pcm(&self) -> Vec<i16> {
+        self.rx.audio_pcm.clone()
+    }
+
+    fn audio_rate_hz(&self) -> u32 {
+        self.rx.audio_rate_hz()
     }
 }
 

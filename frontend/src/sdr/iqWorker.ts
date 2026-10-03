@@ -117,6 +117,9 @@ let digital = false;
 /// Ids the module declares as digital protocols; the registry is the single source of truth, so a
 /// new protocol becomes reachable here without a second list in the worker.
 let digitalIds = new Set<string>();
+/// Samples of the DRM audio stream already delivered (the WASM receiver accumulates PCM across
+/// blocks, so the worker only forwards the suffix it has not sent yet). Reset on retune.
+let drmAudioOffset = 0;
 let audioEnabled = true;
 /// The listener's audio switch (the worklet's playback gate), separate from the chain switch above.
 let audioOn = true;
@@ -569,10 +572,27 @@ function deliver(pcm: Float32Array): void {
   }
 }
 
+/** Linear-interpolation resampler for the DRM audio path (12/24 kHz core → 48 kHz audio). */
+function resampleLinear(pcm: Float32Array, srcRate: number, dstRate: number): Float32Array {
+  if (srcRate <= 0 || dstRate <= 0 || srcRate === dstRate) return pcm;
+  const ratio = srcRate / dstRate;
+  const outLen = Math.floor(pcm.length / ratio);
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const i0 = Math.floor(pos);
+    const frac = pos - i0;
+    const i1 = Math.min(i0 + 1, pcm.length - 1);
+    out[i] = pcm[i0] * (1 - frac) + pcm[i1] * frac;
+  }
+  return out;
+}
+
 function resetStream(): void {
   lastSeq = -1;
   flushes++;
   pipeline?.reset();
+  drmAudioOffset = 0;
   resetDelivery();
 }
 
@@ -584,6 +604,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     lastSeq = -1;
     flushes++;
     pipeline?.retune();
+    drmAudioOffset = 0;
     resetDelivery();
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
@@ -610,6 +631,19 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
         const points = pipeline.constellation(1024);
         if (points.length) {
           post({ type: 'drm-constellation', points });
+        }
+      }
+      // DRM audio: the receiver emits PCM in a burst once it has locked and deframed a super
+      // frame; the worker forwards only the suffix it has not delivered yet, resampled to the
+      // worklet's rate (the DRM core runs at 12/24 kHz, the audio chain at 48 kHz).
+      const pcm = pipeline.audioPcm(65536);
+      if (pcm.length > drmAudioOffset) {
+        const fresh = pcm.subarray(drmAudioOffset);
+        drmAudioOffset = pcm.length;
+        const srcRate = pipeline.audioRate();
+        if (srcRate > 0 && fresh.length) {
+          const dstRate = Number(params?.outRate) || 48000;
+          deliver(srcRate === dstRate ? fresh : resampleLinear(fresh, srcRate, dstRate));
         }
       }
     }

@@ -235,3 +235,54 @@ pub extern "C" fn websa_dsp_fdk_decode_drm(ptr: *mut u8, len: u32) -> i32 {
         }
     }
 }
+
+/// Fixture-test export: decode a run of equal-sized DRM AAC access units (the committed
+/// `aac_sine_24k` fixture) and return the frame size when the run decodes non-silently,
+/// or a negative code. Feeds one access unit per call (the DRM transport has no length
+/// prefix), which passes the decoder's two-frame priming delay.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_fdk_decode_drm_frames(ptr: *mut u8, len: u32, frame_len: u32) -> i32 {
+    if ptr.is_null() || frame_len == 0 || len % frame_len != 0 {
+        return -4;
+    }
+    let h = aacDecoder_Open(12, 1); // TT_DRM
+    if h.is_null() {
+        return -1;
+    }
+    let mut conf = [0x03u8, 0x00]; // AAC 24 kHz, no SBR, mono
+    let mut cp = conf.as_mut_ptr();
+    let clen = 2u32;
+    if aacDecoder_ConfigRaw(h, &mut cp, &clen) != 0 {
+        aacDecoder_Close(h);
+        return -2;
+    }
+    let frames = (len / frame_len) as usize;
+    let mut frame_size = 0i32;
+    let mut energy = 0i64;
+    for k in 0..frames {
+        let mut buf = ptr.add(k * frame_len as usize);
+        let size = frame_len;
+        let mut valid = frame_len;
+        aacDecoder_Fill(h, &mut buf, &size, &mut valid);
+        let mut pcm = [0i16; 8192];
+        if aacDecoder_DecodeFrame(h, pcm.as_mut_ptr(), 8192, 0) != 0 {
+            break;
+        }
+        let info = aacDecoder_GetStreamInfo(h);
+        if info.is_null() {
+            break;
+        }
+        frame_size = *(info as *const i32).add(1);
+        let ch = *(info as *const i32).add(2);
+        for &s in &pcm[..(frame_size * ch).min(8192) as usize] {
+            energy += i64::from(s.abs());
+        }
+    }
+    aacDecoder_Close(h);
+    if energy > 0 {
+        frame_size
+    } else {
+        -3 // decoded but silent
+    }
+}

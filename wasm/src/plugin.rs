@@ -202,6 +202,17 @@ pub trait DigitalDemodulator: Send {
     fn constellation(&self) -> Vec<(f64, f64)> {
         Vec::new()
     }
+
+    /// Decoded 16-bit interleaved PCM the demodulator produced (e.g. the DRM audio
+    /// stream). Empty for protocols that produce only text (FT8) or no audio.
+    fn audio_pcm(&self) -> Vec<i16> {
+        Vec::new()
+    }
+
+    /// The decoded PCM's sample rate in Hz (0 when there is no audio).
+    fn audio_rate_hz(&self) -> u32 {
+        0
+    }
 }
 
 /// One stage of the analog audio chain (LPF/AGC/squelch/Wiener/notch/blanker).

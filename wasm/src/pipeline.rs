@@ -305,6 +305,16 @@ impl Pipeline {
         self.digital.as_ref().map(|demod| demod.constellation()).unwrap_or_default()
     }
 
+    /// Decoded 16-bit interleaved PCM the digital demodulator produced (DRM audio).
+    pub fn digital_audio_pcm(&self) -> Vec<i16> {
+        self.digital.as_ref().map(|demod| demod.audio_pcm()).unwrap_or_default()
+    }
+
+    /// The decoded audio PCM's sample rate in Hz (0 when there is no audio).
+    pub fn digital_audio_rate_hz(&self) -> u32 {
+        self.digital.as_ref().map(|demod| demod.audio_rate_hz()).unwrap_or(0)
+    }
+
     pub fn chain(&self) -> &AudioChain {
         &self.chain
     }
