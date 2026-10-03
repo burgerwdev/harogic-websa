@@ -123,49 +123,104 @@ def parse_frame(data: bytes) -> dict:
     if out["pulse_present"] or out["gain_present"]:
         raise ValueError("pulse/gain control not supported by the re-serializer")
 
-    # Spectral data (per band, using the 24 kHz long-block offsets).
-    offsets = SFB_OFFSETS["sfb_24_1024"]
-    out["codewords"] = []  # (codebook, full_codeword_bits = huffman body + sign)
+    # Spectral data (per band, using the 960-sample long-block offsets — DRM uses
+    # the 960-sample transform, not the 1024-sample GA default).
+    offsets = SFB_OFFSETS["sfb_24_960"]
+    out["codewords"] = []  # (codebook after VCB11 mapping, full codeword bits)
+    out["band_cb"] = []    # per-band codebook after VCB11 mapping
     for band in range(out["max_sfb"]):
         cb = codebooks[band]
-        if cb == 0 or cb == 13:
-            continue
-        if cb in (14, 15):
+        if cb == 0 or cb == 13 or cb in (14, 15):
+            out["band_cb"].append(cb)
             continue
         table, dim, bits, offset = CODEBOOKS[str(cb)]
         mask = (1 << bits) - 1
         width = offsets[band + 1] - offsets[band]
+        band_cws = []
+        band_max_abs = 0
         for _ in range(width // dim):
             cw_start = br.pos
             idx = decode_huffman_word(br, table)
-            cw_len = br.pos - cw_start
-            cw_bits = br.bits(cw_start, cw_len)
-            sign_bits = ""
+            cw_bits = br.bits(cw_start, br.pos - cw_start)
+            coefs = []
             for _ in range(dim):
-                coef = (idx & mask) - offset
+                coefs.append((idx & mask) - offset)
                 idx >>= bits
+            sign_bits = ""
+            signed = []
+            for coef in coefs:
+                s = 0
                 if offset == 0 and coef != 0:
-                    sign_bits += "1" if br.read(1) else "0"
+                    s = -1 if br.read(1) else 1
+                    sign_bits += "1" if s < 0 else "0"
+                signed.append(coef * s if s else coef)
+            esc_bits = ""
             if cb == 11:
-                for _ in range(2):
-                    _read_escape(br)
-            out["codewords"].append((cb, cw_bits + sign_bits))
+                for j, coef in enumerate(coefs):
+                    if coef == 16:
+                        esc_start = br.pos
+                        v = _read_escape(br, signed[j] < 0)
+                        esc_bits += br.bits(esc_start, br.pos - esc_start)
+                        signed[j] = v
+            for v in signed:
+                band_max_abs = max(band_max_abs, abs(v))
+            band_cws.append(cw_bits + sign_bits + esc_bits)
+        mapped_cb = vcb11_for(band_max_abs) if cb == 11 else cb
+        out["band_cb"].append(mapped_cb)
+        for cw in band_cws:
+            out["codewords"].append((mapped_cb, cw))
     out["bit_pos_after_spectral"] = br.pos
     return out
 
 
-def _read_escape(br: BitReader) -> None:
-    # Escape value: while the first bit is set, keep reading 4-bit groups.
-    while br.read(1):
-        br.read(4)
+def _read_escape(br: BitReader, sign: int) -> int:
+    """Read one escape sequence (fdK-AAC CBlock_GetEscape) and return the full
+    signed coefficient value: (i-4) leading ones, a zero, then i value bits."""
+    i = 4
+    while i < 13 and br.read(1) == 1:
+        i += 1
+    if i == 13:
+        return 8192
+    val = br.read(i) + (1 << i)
+    return -val if sign else val
+
+
+def cb_lav(cb: int) -> int:
+    """Largest absolute value a spectral codebook can carry (ISO 14496-3 Table
+    4.A.1 + the VCB11 table; fdK-AAC aLargestAbsoluteValue)."""
+    return [0, 1, 1, 2, 2, 4, 4, 7, 7, 12, 12, 8191, 0, 0, 0, 0,
+            15, 31, 47, 63, 95, 127, 159, 191, 223, 255, 319, 383, 511,
+            767, 1023, 2047][cb & 31]
+
+
+def vcb11_for(max_abs: int) -> int:
+    """Smallest virtual codebook (16..31) able to carry max_abs, or 11 above 2047."""
+    for cb in range(16, 32):
+        if cb_lav(cb) >= max_abs:
+            return cb
+    return 11
+
+
+def build_sections_vcb11(band_cb: list) -> list:
+    """Run-length the (VCB11-mapped) per-band codebooks; codebook 11 and the
+    virtual codebooks 16..31 are one band each (implicit length)."""
+    sections = []
+    for cb in band_cb:
+        if sections and sections[-1][0] == cb and not (cb == 11 or cb >= 16):
+            sections[-1][1] += 1
+        else:
+            sections.append([cb, 1])
+    return sections
 
 
 def encode_sections_vcb11(sections: list) -> str:
-    """Re-encode the section data as VCB11: 5-bit codebooks (instead of 4) with
-    the same 5-bit section lengths (escape 31)."""
+    """Re-encode section data as VCB11: 5-bit codebooks, 5-bit lengths (escape
+    31); codebook 11 and virtual 16..31 carry no length (implicit one band)."""
     bits = ""
     for cb, length in sections:
         bits += f"{cb:05b}"
+        if cb == 11 or cb >= 16:
+            continue
         remaining = length
         while remaining >= 31:
             bits += f"{31:05b}"
@@ -196,7 +251,7 @@ def reserialize_drm(source: bytes, out: dict) -> str:
     ics_info = br.bits(15, 10)          # ics_reserved + window_sequence + shape + max_sfb
     tns_ltp = ("1" if out["tns_present"] else "0") + "0"  # tns_data_present + ltp_data_present
     global_gain = br.bits(7, 8)         # global_gain (moved after tns/ltp)
-    sections = encode_sections_vcb11(out["sections"])
+    sections = encode_sections_vcb11(build_sections_vcb11(out["band_cb"]))
     sf = br.bits(out["bit_pos_after_sections"],
                  out["bit_pos_after_scale_factors"] - out["bit_pos_after_sections"])
     reordered, lrsd, llc = hcr_encode(out["codewords"])
