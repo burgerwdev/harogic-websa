@@ -167,19 +167,32 @@ def encode_sections_vcb11(sections: list) -> str:
     return bits
 
 
+def crc8(bits: str) -> int:
+    """DRM CRC-8 (poly 0x1D, init 0xFF, MSB-first, ones' complement)."""
+    reg = 0xFF
+    for ch in bits:
+        top = (reg >> 7) & 1
+        reg = (reg << 1) & 0xFF
+        if top ^ (1 if ch == "1" else 0):
+            reg ^= 0x1D
+    return (~reg) & 0xFF
+
+
 def reserialize_drm(source: bytes, out: dict) -> str:
-    """Assemble the complete DRM AAC frame: header + VCB11 section data + the
-    verbatim scale factors + the HCR side-info + the reordered spectral data."""
+    """Assemble the complete DRM AAC frame: the aac_crc_bits byte (CRC-8 over the
+    side info), then header + VCB11 section data + the verbatim scale factors +
+    the HCR side-info + the reordered spectral data."""
     br = BitReader(source)
-    bits = br.bits(0, out["section_data_start"])          # header + ICS (verbatim)
-    bits += encode_sections_vcb11(out["sections"])        # VCB11 section data
-    bits += br.bits(out["bit_pos_after_sections"],        # scale factors (verbatim)
-                    out["bit_pos_after_scale_factors"] - out["bit_pos_after_sections"])
-    reordered, lrsd, llc = hcr_reorder(out["codewords"])  # HCR reordered spectral
-    bits += f"{lrsd:014b}"                                # lengthOfReorderedSpectralData
-    bits += f"{llc:06b}"                                  # lengthOfLongestCodeword
-    bits += reordered
-    return bits
+    header = br.bits(0, out["section_data_start"])          # header + ICS (verbatim)
+    sections = encode_sections_vcb11(out["sections"])       # VCB11 section data
+    sf = br.bits(out["bit_pos_after_sections"],             # scale factors (verbatim)
+                 out["bit_pos_after_scale_factors"] - out["bit_pos_after_sections"])
+    reordered, lrsd, llc = hcr_reorder(out["codewords"])    # HCR reordered spectral
+    hcr_side = f"{lrsd:014b}{llc:06b}"                       # HCR side-info
+    # aac_crc_bits: CRC-8 over the side info (section data + scale factors + HCR
+    # side-info) — the range the TT_DRM decoder checks before the spectral data.
+    crc = crc8(sections + sf + hcr_side)
+    return f"{crc:08b}" + header + sections + sf + hcr_side + reordered
 
 
 def hcr_reorder(codewords: list) -> tuple:
