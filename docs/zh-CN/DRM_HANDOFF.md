@@ -75,6 +75,25 @@ DecDRM 的接收机模块与我们接收链的薄弱环节一一对应，而且�
 
 目标明确不把 Dream 子进程引入本分支。读这些项目是为了算法，而不是再加一个解码器。
 
+## 音频编码覆盖
+
+接收机按 SDC 音频编码字段分发：0 是 AAC（描述符里还有 SBR 与声道模式标志），3 是 xHE-AAC。
+两条解码路径都已接线并提交。
+
+| 编码 | SDC | DecDRM 台站配置 | 接收机路径 | 状态 |
+| --- | --- | --- | --- | --- |
+| AAC-LC | coding 0，SBR 关 | `codec = "aac"` | FDK TT_DRM | 可解码（音频夹具） |
+| HE-AAC | coding 0，SBR 开，单声道 | `codec = "he-aac"` | FDK TT_DRM | 24 kHz 夹具可解码；真实台面码流被上面的 FDK 故障阻塞 |
+| HE-AAC v2 | coding 0，SBR 开，立体声 | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | 已接线，台面未测 |
+| xHE-AAC | coding 3 | `codec = "xhe-aac"` | libxaac，用 SDC 里的 AudioSpecificConfig | 已接线；USAC 冒烟测试把 45 个接入单元解成非静音 PCM；DRM 端到端路径尚未测 |
+
+给下一轮的两点提示：
+
+- 音频夹具的 SDC 声称 SBR，但负载里没有 SBR 数据，因此 FDK 被配置成等待一个并不存在的
+  尾段。合成夹具因此不是符合标准的 SBR 码流；台面码流是。
+- xHE-AAC 的端到端路径（coding 3 经 DRM 接收机进 libxaac）从未用真实 xHE 码流驱动过。
+  DecDRM 可以发射：把台站配置的 `codec` 设为 `xhe-aac`。
+
 ## 下一步（按顺序）
 
 1. 去掉 `decode_audio` 里的 SBR 保护，用 node 测试台把真实抓取喂进去（`instantiateDsp`、按 3248

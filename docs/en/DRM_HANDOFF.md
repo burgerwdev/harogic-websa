@@ -86,6 +86,27 @@ Read them for the algorithms; DecDRM is GPL-2.0-or-later, so no code is copied.
 The goal keeps the Dream subprocess out of this branch. Read those projects for the algorithms,
 not to add a second decoder.
 
+## Audio codec coverage
+
+The receiver dispatches on the SDC audio coding field: 0 is AAC (with the SBR and audio-mode
+flags in the descriptor), 3 is xHE-AAC. Both decoder paths are wired and committed.
+
+| Codec | SDC | DecDRM station config | Receiver path | Status |
+| --- | --- | --- | --- | --- |
+| AAC-LC | coding 0, SBR off | `codec = "aac"` | FDK TT_DRM | decodes (the audio fixture) |
+| HE-AAC | coding 0, SBR on, mono | `codec = "he-aac"` | FDK TT_DRM | the 24 kHz fixture decodes; the real bench stream is blocked by the FDK fault above |
+| HE-AAC v2 | coding 0, SBR on, stereo | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | wired, not yet tested on the bench |
+| xHE-AAC | coding 3 | `codec = "xhe-aac"` | libxaac with the AudioSpecificConfig from the SDC | wired; the USAC smoke test decodes 45 access units to non-silent PCM; the end-to-end DRM path is not yet tested |
+
+Two notes for the next session:
+
+- The audio fixture's SDC claims SBR while its payload carries none, so FDK is configured for a
+  tail that does not exist. The synthesised fixture is therefore not a conformant SBR stream;
+  the bench stream is.
+- The xHE-AAC end-to-end path (coding 3 through the DRM receiver into libxaac) has never been
+  driven with a real xHE stream. DecDRM can transmit one: set `codec = "xhe-aac"` in the bench
+  station config.
+
 ## Next steps, in order
 
 1. Remove the SBR guard in `decode_audio` and feed the live capture through the node harness
