@@ -196,17 +196,16 @@ def reserialize_drm(source: bytes, out: dict) -> str:
 
 
 def hcr_reorder(codewords: list) -> tuple:
-    """HCR reordering: sort codewords by codebook, pad each to
-    min(AMAX_CW_LEN[cb], longest) bits, then append the sign bits in the same
-    sorted order. Returns (bit_string, reordered_length, longest_codeword_length)."""
+    """HCR reordering: sort codewords by codebook; within each segment of width
+    min(AMAX_CW_LEN[cb], longest) emit the codeword left-aligned followed by its
+    sign bits (the decoder reads the sign from the segment's remaining bits)."""
     ordered = sorted(codewords, key=lambda cw: cw[0])
     longest = max((len(b) for _, b, _ in ordered), default=0)
     bits = ""
-    for cb, cw_bits, _sign in ordered:
+    for cb, cw_bits, sign in ordered:
         width = min(AMAX_CW_LEN[cb], longest)
-        bits += cw_bits + "0" * (width - len(cw_bits))  # left-aligned, padded
-    for cb, _cw, sign in ordered:
-        bits += sign
+        seg = cw_bits + sign
+        bits += seg + "0" * max(0, width - len(seg))  # left-aligned, padded
     return bits, len(bits), longest
 
 
