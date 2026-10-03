@@ -1198,7 +1198,16 @@ class SdrSession(MeasurementSession):
             self._drm_geo = fs_out
         i48 = self._drm_res_i.process(self._drm_lp_i.process(i))
         q48 = self._drm_res_q.process(self._drm_lp_q.process(q))
+        # The DDC output amplitude follows the device gain and can exceed 1.0 on a strong signal;
+        # the feed path clips at full scale, and a clipped OFDM signal never locks (a bench
+        # Pluto at ~20 dB SNR still failed to decode until this guard). Scale down only when the
+        # block would clip, so Dream's AGC still sees a clean waveform at any level.
         if i48.size:
+            peak = float(max(np.abs(i48).max(initial=0.0), np.abs(q48).max(initial=0.0)))
+            if peak > 0.5:
+                gain = 0.5 / peak
+                i48 = i48 * gain
+                q48 = q48 * gain
             self._drm.feed(i48, q48)
 
         # Dream keeps emitting a full-scale idle/noise signal while it is NOT decoding the
