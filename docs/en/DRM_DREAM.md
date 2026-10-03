@@ -33,8 +33,12 @@ starts `CStatusBroadcast`. Build it into the worktree (git-ignored):
 tools/drm_dream/build_dream.sh          # -> tools/drm_dream/build/dream
 ```
 
-`DRM_DREAM_BIN` overrides the path; otherwise `web_sa/measurements/sdr.py` uses the worktree
-build.
+`DRM_DREAM_BIN` overrides the path. Otherwise `web_sa/measurements/sdr.py::_default_dream_bin()`
+resolves the decoder by capability: it tries `DRM_DREAM_BIN`, `/usr/local/bin/dream`,
+`/usr/bin/dream` and finally the vendored build, and uses the first whose `--help` advertises
+`--status-socket`. An installed binary that gains the feature is therefore used automatically. The
+full rationale (and the user's decision to vendor the console build) is in
+`tools/drm_dream/DECISION.md`.
 
 ## Data path
 

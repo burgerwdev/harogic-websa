@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from ctypes import cast as c_cast
 
@@ -46,13 +47,48 @@ DRM_DEMOD = 'drm'
 #: Dream only accepts these signal sample rates; the DRM path resamples the DDC output to it.
 DRM_RATE = 48000
 
+#: Where to look for a Dream build that advertises ``--status-socket``. The installed binary is
+#: preferred (the objective asked for ``/usr/bin/dream``); the vendored console build is the
+#: fallback, because the packaged builds do not compile the status broadcaster in.
+_DRM_DREAM_CANDIDATES = ('/usr/local/bin/dream', '/usr/bin/dream')
+_dream_bin_cache: dict[str, str] = {}
+
+
+def _dream_supports_status_socket(path: str) -> bool:
+    """True when ``dream --help`` advertises ``--status-socket``.
+
+    The upstream GUI build does not handle ``--help`` quickly (it will happily start its event
+    loop), so the probe is bounded and runs offscreen: a wrong guess costs a few seconds, never a
+    window on the operator's desktop.
+    """
+    env = dict(os.environ, QT_QPA_PLATFORM=os.environ.get('QT_QPA_PLATFORM', 'offscreen'))
+    try:
+        out = subprocess.run([path, '--help'], capture_output=True, text=True,
+                             timeout=2.0, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return '--status-socket' in (out.stdout + out.stderr)
+
+
 def _default_dream_bin() -> str:
+    """Resolve the decoder binary: explicit override, then an installed capable build, then the
+    vendored console build (``tools/drm_dream/build_dream.sh``).
+    """
     env = os.getenv('DRM_DREAM_BIN')
     if env:
         return env
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(os.path.dirname(os.path.dirname(here)),
-                        'tools', 'drm_dream', 'build', 'dream')
+    vendored = os.path.join(os.path.dirname(os.path.dirname(here)),
+                            'tools', 'drm_dream', 'build', 'dream')
+    for candidate in (*_DRM_DREAM_CANDIDATES, vendored):
+        cached = _dream_bin_cache.get(candidate)
+        if cached is None:
+            cached = ('yes' if os.path.exists(candidate) and _dream_supports_status_socket(candidate)
+                      else 'no')
+            _dream_bin_cache[candidate] = cached
+        if cached == 'yes':
+            return candidate
+    return vendored
 
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
 

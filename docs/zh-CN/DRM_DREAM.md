@@ -30,7 +30,10 @@ worktree 内（已被 git 忽略）：
 tools/drm_dream/build_dream.sh          # -> tools/drm_dream/build/dream
 ```
 
-可用 `DRM_DREAM_BIN` 覆盖路径；否则 `web_sa/measurements/sdr.py` 使用 worktree 内的构建。
+可用 `DRM_DREAM_BIN` 覆盖路径。否则 `web_sa/measurements/sdr.py::_default_dream_bin()` 按能力解析解码器：
+依次尝试 `DRM_DREAM_BIN`、`/usr/local/bin/dream`、`/usr/bin/dream`、最后是 worktree 内的构建，
+选用第一个 `--help` 中带有 `--status-socket` 的二进制。因此已安装的二进制一旦具备该能力就会被自动使用。
+完整理由（以及用户选择内置 console 构建的决定）见 `tools/drm_dream/DECISION.md`。
 
 ## 数据路径
 
