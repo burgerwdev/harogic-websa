@@ -1421,6 +1421,10 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
             i, q = self._mix(i, q)                # software fine tuning
+            # Measure the real channelizer rate for every mode, including DRM: the DRM path
+            # resamples from it (the nominal rate drifts against the 48 kHz feed) and returns
+            # before the normal measurement point below otherwise.
+            self._measure_baseband_rate(i.size, now)
 
             # ---- DRM: the background Dream decoder owns the demodulation ----
             # Dream is an external process fed over a private sound-card loopback, so it replaces
@@ -1436,7 +1440,6 @@ class SdrSession(MeasurementSession):
             # decimation on the device, fine tuning here) stays on this side, so the browser's cost
             # and the wire traffic no longer scale with the analyzer's raw IQ rate. Only while a DSP
             # socket is subscribed: with no subscriber nobody should pay for the encode.
-            self._measure_baseband_rate(i.size, now)
             if getattr(dev, 'iq_clients', 0):
                 if self._iq_reset_pending:
                     # Logged: a flush drops the browser's playback buffer and re-primes it, which is
