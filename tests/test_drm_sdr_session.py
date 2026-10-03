@@ -165,3 +165,24 @@ def test_sync_drm_reports_a_missing_binary(monkeypatch):
     sess._sync_drm_locked()
     assert sess._drm is None
     assert 'not found' in state.sdr_drm['error']
+
+
+def test_default_dream_bin_honours_the_explicit_override(monkeypatch):
+    monkeypatch.setenv('DRM_DREAM_BIN', '/explicit/dream')
+    sdr_module._dream_bin_cache.clear()
+    assert sdr_module._default_dream_bin() == '/explicit/dream'
+
+
+def test_default_dream_bin_picks_the_first_capable_candidate(monkeypatch):
+    """The installed binary is preferred, but only when it advertises --status-socket."""
+    monkeypatch.delenv('DRM_DREAM_BIN', raising=False)
+    monkeypatch.setattr(sdr_module, '_DRM_DREAM_CANDIDATES', ('/first/dream', '/second/dream'))
+    monkeypatch.setattr(sdr_module.os.path, 'exists', lambda _path: True)
+    monkeypatch.setattr(sdr_module, '_dream_supports_status_socket',
+                        lambda path: path == '/second/dream')
+    sdr_module._dream_bin_cache.clear()
+    try:
+        # The first candidate lacks the status socket, so the second (installed) one is used.
+        assert sdr_module._default_dream_bin() == '/second/dream'
+    finally:
+        sdr_module._dream_bin_cache.clear()
