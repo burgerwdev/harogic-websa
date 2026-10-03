@@ -189,6 +189,29 @@ extraction of a real signal, and the ruled-out list below records what it is not
    core, decodes. Until the decoder build is fixed, the DRM path skips exactly that
    configuration, so a real stream keeps its metadata and its session instead of losing both.
    `frontend/src/__tests__/drmAudioEndToEnd.test.ts` still covers the case that works.
+
+   Three findings from the follow-up session narrow this down, and none is committed
+   yet:
+
+   - **The shim ignored an alignment contract.** `wasm/fdk/shim.cpp` answered
+     `FDKaalloc(size, alignment)` with a plain `malloc`, so FDK's aligned SBR buffers
+     were only 16-byte aligned. Repairing the allocator removed the first fault: the
+     bench access units then reached the decoder and it configured itself (`cfg=true`).
+     A second fault followed inside the decode (`RuntimeError: unreachable`), and the
+     same repair made the synthesised fixture restart its trap. The repair therefore
+     needs its own investigation, not a quick patch.
+   - **The audio needs a pass after the lock.** The long interleaver fills over five
+     frames, so the lock pass has no MSC frame and no access unit. A later pass over the
+     newest baseband produces them; measured natively, a 3 s window yields 2 to 3 MSC
+     frames and 5 access units.
+   - **A later pass must carry the absolute row index.** The SDC and MSC cells depend on
+     the position in the super frame. A window that starts later in the stream must add
+     its first row's offset to the symbol index, or the pass reads the wrong cells and
+     produces nothing.
+
+   A debug build of the decoder (with symbols and without `strip`) hides the fault, so
+   the trap depends on the heap layout. The next step is to symbolize the release build,
+   or to bound the fault so that only the audio decode can fail.
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.
