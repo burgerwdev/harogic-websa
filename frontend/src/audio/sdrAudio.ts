@@ -30,6 +30,10 @@ let worker: Worker | null = null;
 //: transferred once (a second transfer throws "Port at index 0 is already neutered"), so both the
 //: handoff and the Python audio worker's own transfer have to respect this.
 let workletPortHandedOff = false;
+//: True when the running Python audio worker drives the worklet directly (it owns the port). A
+//: worker started on the legacy path (no port) produces no audible output while the worklet node
+//: exists, so the fallback must rebuild the worklet rather than reuse that worker.
+let workerHasPort = false;
 //: Ports that have already been transferred at least once. A MessagePort cannot be transferred
 //: twice, and the two consumers (the Python audio worker and the WASM DSP worker) can both reach
 //: the same port through different code paths; this makes the mistake impossible at the point of
@@ -191,17 +195,17 @@ function startWorker(port: MessagePort | null): void {
     url: audioWorkerUrl(),
     targetRate: ctx?.sampleRate || 48000,
   };
-  // Who owns playback: when the browser DSP is available the IQ worker claims the worklet port
-  // (`routeWorkletPortTo`), and a MessagePort can only be transferred once - handing it to the
-  // Python audio worker here would leave the WASM PCM with nowhere to go, which is exactly the
-  // reported "one blip, then silence" after switching the audio on: the ring was fed by nobody.
-  const dspOwnsPlayback = wasmDspAllowed();
-  if (port && !workletPortHandedOff && !dspOwnsPlayback) {
+  // Who owns playback: normally the browser DSP claims the worklet port (`routeWorkletPortTo`),
+  // but when the DSP has no pipeline for the mode (DRM is decoded by the backend) the Python
+  // path must own it - and it may be handed to us here for exactly that case. A port can only be
+  // transferred once, so the callers pass one only when it is still free.
+  if (port && !workletPortHandedOff) {
     init.port = port;
-    transferOnce(port, (moved) => worker!.postMessage(init, [moved]));
+    workerHasPort = transferOnce(port, (moved) => worker!.postMessage(init, [moved]));
   } else {
-    // Without a port (legacy output), with the DSP owning it, or after it moved: the worker must
-    // not be handed a neutered port, and the Python path keeps its socket either way.
+    // Without a port (legacy ScriptProcessor output) or after it moved: the worker must not be
+    // handed a neutered port, and the Python path keeps its socket either way.
+    workerHasPort = false;
     worker.postMessage(init);
   }
   worker.postMessage({ type: 'enabled', value: enabled });
@@ -282,14 +286,59 @@ async function initializeOutput(context: AudioContext): Promise<void> {
  */
 export function enablePythonAudioFallback(): boolean {
   pythonFallbackNeeded = true;
-  if (worker || !enabled || !ctx) return false;
+  if (!enabled || !ctx) return false;
+  if (worker && workerHasPort) return true;
+  if (worker || workletPortHandedOff) {
+    // The worklet port is already gone (the DSP owns it) or the Python worker is on the legacy
+    // path: rebuild the output node so the Python worker gets a fresh port that actually plays.
+    void rebuildWorkletForPython();
+    return true;
+  }
   try {
-    // `startWorker` already sends the current enabled/mute state to the new worker.
-    startWorker(workletNode && !workletPortHandedOff ? workletNode.port : null);
+    startWorker(workletNode ? workletNode.port : null);
     pythonFallbackNeeded = false;
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Rebuild the output worklet so the Python audio path gets a fresh, playable MessagePort. */
+async function rebuildWorkletForPython(): Promise<void> {
+  if (!ctx || !ctx.audioWorklet) return;
+  if (worker) {
+    worker.terminate();
+    worker = null;
+    workerHasPort = false;
+  }
+  try {
+    workletNode?.disconnect();
+    workletNode?.port.close();
+  } catch {
+    /* already torn down */
+  }
+  workletNode = null;
+  workletPortHandedOff = false;
+  try {
+    const node = new AudioWorkletNode(ctx, 'sdr-audio-processor', {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    node.connect(ctx.destination);
+    await new Promise<void>((resolve) => {
+      const timeout = window.setTimeout(resolve, 500);
+      node.port.onmessage = (event: MessageEvent) => {
+        if (event.data?.type === 'ready') {
+          window.clearTimeout(timeout);
+          resolve();
+        }
+      };
+    });
+    workletNode = node;
+    startWorker(node.port);
+  } catch (error) {
+    console.warn('could not rebuild the AudioWorklet for the Python audio path', error);
   }
 }
 
