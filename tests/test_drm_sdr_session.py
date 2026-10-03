@@ -43,6 +43,12 @@ class StubDecoder:
     def metadata(self) -> dict:
         return dict(self.meta)
 
+    def status(self) -> dict:
+        # The decoded PCM is gated on the MSC being clean; the stub defaults to locked.
+        return {'status': {'msc': self.msc}}
+
+    msc = 0
+
 
 def _state(demod: str = 'drm') -> SimpleNamespace:
     return SimpleNamespace(sdr_demod=demod, sdr_volume=1.0, sdr_squelch=-110.0,
@@ -60,6 +66,7 @@ def _session(decoder, fs_out: float = 48000.0, state: SimpleNamespace | None = N
     sess._drm_res_i = sess._drm_res_q = None
     sess._drm_audio = np.zeros(0, dtype=np.float32)
     sess._last_drm_meta = 0.0
+    sess._drm_audio_ok_until = 0.0
     sess._ddc = SimpleNamespace(fs_out=fs_out)
     sess._audio_seq = 0
     sess._audio_reset_pending = False
@@ -110,6 +117,23 @@ def test_drm_frames_resample_an_off_rate_ddc_output_to_48k():
     fed = sum(x[0].size for x in dec.fed)
     # 0.1 s at 48 kHz, less the first low-pass block's transient.
     assert fed == pytest.approx(4800, rel=0.1), fed
+
+
+def test_drm_frames_drop_unlocked_noise(monkeypatch):
+    """Dream emits full-scale noise when it is not decoding; it must not reach the speaker."""
+    pcm = np.full(960, 20000, dtype=np.int16)          # the idle "noise" Dream emits
+    dec = StubDecoder(pcm=pcm)
+    dec.msc = 1                                        # CRC error / no programme
+    sess = _session(dec)
+    i = np.ones(4800, dtype=np.float32)
+    q = np.zeros(4800, dtype=np.float32)
+    frames: list[bytes] = []
+
+    sess._drm_frames_locked(frames, i, q)
+
+    assert _audio_frames(frames) == [], 'gated audio must not be published'
+    assert sess.dev.state.sdr_level_dbfs == -120.0
+    assert sess.dev.state.sdr_squelch_open is False
 
 
 def test_publish_reports_a_dead_decoder():

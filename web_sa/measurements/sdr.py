@@ -21,7 +21,7 @@ import numpy as np
 
 from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..demod.filters import LinearResampler, StreamFilter, design_lowpass
-from ..drm_dream import DreamDecoder
+from ..drm_dream import RX_OK, DreamDecoder
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
@@ -204,6 +204,9 @@ class SdrSession(MeasurementSession):
         self._drm_res_q = None
         self._drm_audio = np.zeros(0, dtype=np.float32)
         self._last_drm_meta = 0.0
+        #: Until this monotonic time the decoded PCM is trusted (MSC clean); Dream emits noise when
+        #: it is not decoding, so the audio is gated on the receiver actually being locked.
+        self._drm_audio_ok_until = 0.0
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._audio_seq = 0
         self._audio_reset_pending = False
@@ -1169,7 +1172,8 @@ class SdrSession(MeasurementSession):
         if force or now - self._last_drm_meta >= 1.0:
             self._last_drm_meta = now
             meta = self._drm.metadata()
-            meta.update(active=True, error='', dropped_blocks=self._drm.dropped_blocks)
+            meta.update(active=True, error='', dropped_blocks=self._drm.dropped_blocks,
+                        audio_ok=time.monotonic() < getattr(self, '_drm_audio_ok_until', 0.0))
             s.sdr_drm = meta
 
     def _drm_frames_locked(self, frames, i, q) -> None:
@@ -1197,7 +1201,24 @@ class SdrSession(MeasurementSession):
         if i48.size:
             self._drm.feed(i48, q48)
 
+        # Dream keeps emitting a full-scale idle/noise signal while it is NOT decoding the
+        # programme (measured: the audio sink carried ~0.3 FS noise for 20 s with msc = -1 and no
+        # station). Forwarding that is the loud white noise an operator hears on a weak signal, so
+        # the decoded PCM is gated on the MSC being clean, with a short hold across CRC blips.
+        status = (self._drm.status() or {}).get('status') or {}
+        now = time.monotonic()
+        if status.get('msc') == RX_OK:
+            self._drm_audio_ok_until = now + 0.5
+        audio_ok = now < getattr(self, '_drm_audio_ok_until', 0.0)
+
         pcm = self._drm.drain_audio()
+        if not audio_ok:
+            # Unlocked: drop the noise and stay silent instead of publishing it.
+            self._drm_audio = np.zeros(0, dtype=np.float32)
+            s.sdr_level_dbfs = -120.0
+            s.sdr_squelch_open = False
+            self._publish_drm(s)
+            return
         if pcm.size:
             self._drm_audio = np.concatenate(
                 [self._drm_audio, pcm.astype(np.float32) / 32768.0])
