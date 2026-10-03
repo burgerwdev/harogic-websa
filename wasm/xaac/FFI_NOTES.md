@@ -59,21 +59,28 @@ restricted to 64/96 kbps USAC) and decoded by `xaacdec -ifile:out.bin
 ## Status
 
 `wasm/src/xaac.rs` implements the flow above and links; the `websa_dsp_xaac_decode`
-smoke export builds but traps with "remainder by zero" at runtime. The decoder is
-**natively verified** (xaacenc/xaacdec produce non-silent PCM), so this is an FFI
-setup detail, not a decoder problem. Suspects: the ASC feeding or a missing config
-param (the native testbench inits a separate DRC decoder object too); debugging is
-best done natively (replicate the FFI flow in a small C program against the native
-libxaacdec.a) before the next wasm attempt.
+smoke export builds but traps (`unreachable`) on the second access unit. The
+generic path is now **fixed and natively verified** (see the blocker section), so the
+remaining trap is a Rust-side panic in the FFI layer, not the decoder.
 
-## Blocker: the generic (portable C) decode path is broken upstream
+## Blocker: the generic (portable C) decode path was broken upstream — now fixed
 
 `libxaac`'s SIMD paths (x86/x86_64/armv7/armv8) are maintained; the portable
-`decoder/generic/` path (the only one usable for wasm32) is stale. Six function
-pointer declarations in `ixheaacd_function_selector_generic.c` have wrong
-signatures vs the current headers (fixed locally in the clone; the build still
-needs `-Wno-incompatible-function-pointer-types`). Even with those fixed, the
-generic scalar decode returns `-2147483648` on `EXECUTE` (native repro), while
-the x86_64 build decodes the same bitstream to non-silent PCM. So the decoder is
-verified (native), but the wasm32 integration is blocked on upstream generic-path
-bugs, not on this crate.
+`decoder/generic/` path (the only one usable for wasm32) was stale. Three fixes to
+the libxaac source make the generic path decode correctly (verified with a native
+repro that decodes all 45 USAC frames to non-silent PCM, energy 232M):
+
+1. Six function-pointer signature mismatches in
+   `decoder/generic/ixheaacd_function_selector_generic.c` (wrong parameter types vs
+   the current headers; fixed in the clone).
+2. Null-pointer arithmetic UB in `decoder/ixheaacd_sbrdecoder.c:141`
+   (`&lpc_filt_states_real[1][old_lsb]` on a NULL pointer) — guarded with
+   `if (new_lsb > old_lsb)`.
+3. Left-shift-of-negative UB in `decoder/generic/ixheaacd_qmf_dec_generic.c`
+   (`<< RADIXSHIFT` on a negative value) — replaced with `* 2`.
+
+The fixes live in the external `~/git/libxaac` clone; this archive is rebuilt with
+`wasm/xaac/build.sh ~/git/libxaac`. After these, the native generic build decodes
+cleanly, but the wasm32 build still traps with `unreachable` inside the Rust FFI on
+the second access unit (a Rust panic in `websa_dsp_xaac_decode` / `XaacDecoder::feed`,
+not a C-decoder fault).
