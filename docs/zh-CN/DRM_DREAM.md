@@ -38,12 +38,15 @@ tools/drm_dream/build_dream.sh          # -> tools/drm_dream/build/dream
 ## 数据路径
 
 ```
-SDR DDC (i, q, ddc.fs_out ~= 48 kHz)
+SDR DDC (i, q, f_out ~= 48 kHz；f_out 用**实测值**，而非标称值)
   -> 低通 -> 线性重采样到 48 kHz -> DreamDecoder.feed()
   -> pacat --raw -> 私有 null sink -> dream -I <sink>.monitor -c 6 --sigsrate 48000
        |- --status-socket -> 按行 JSON -> state.sdr_drm
        `- -O <audio sink> -> parec -> 单声道 int16 -> AUDF 帧
 ```
+
+重采样使用信道化器的**实测**输出速率（`_measure_baseband_rate`）。用标称速率会在 48 kHz 声卡上
+留下缓慢漂移，接收机因此每秒左右重锁一次：改用实测速率后 `msc=0` 从约 50% 升到约 90%。
 
 音频通过第二个私有 null sink 用 `parec` 实时采集。Dream 自带的 `-w/--writewav` 不可用
 （接收机在解码时该文件仍为 0 字节）。
@@ -53,6 +56,20 @@ SDR DDC (i, q, ddc.fs_out ~= 48 kHz)
 在 SDR 面板的解调器组中选择 `DRM`（该模式属于后端/服务端模式，浏览器没有对应内核）。选中期间，
 `STATUS.sdr.drm` 携带解码出的元数据，DRM 读数显示台名、鲁棒模式、带宽、码率、编码与同步状态。
 音频通过常规的 SDR 音频开关播放。
+
+## 台架发射机（PlutoSDR）
+
+`tools/pluto_drm_tx.py` 用 PlutoSDR 循环发射一段 DRM 信号，方便不等短波传播就能测接收。
+
+- AD9363 的 TX 发不了 HF（最低约 325 MHz），但 DRM 只是 OFDM 波形，载波频率对 Dream 无意义：
+  在 UHF（默认 400 MHz）发射、SAN‑90 在 UHF 接收即可。用**同轴电缆 + 衰减器**从 Pluto TX 接到
+  SAN‑90 射频口比空口辐射更好（电平可控、无传播、无干扰）。
+- IQ 输入是 DecDRM 发射机输出的 int16 WAV（`decdrm tx station.toml --output drm_iq.wav
+  --duration 60`，`format = "iq"`，默认 `iq_swap` 即 I 在左）。Dream 只认得 int16 WAV，float32 不行。
+- DRM 基带放在 `--base-hz`（默认 +100 kHz），避开本振泄漏；应用调到 `LO + base_hz`。**不要**加
+  `--conj`（共轭）：默认方向才是 Dream `-c 6` 期望的。
+- 默认用循环 DMA 缓冲（`--stream` 才是分块单次推送）。循环回卷与 Pluto/SAN‑90 时钟偏差是台架环路上
+  MSC 间歇出错的主要来源；真实空口信号没有这两个问题。
 
 ## 验证
 
@@ -66,8 +83,15 @@ WEBSA_FAKE=1 WEBSA_PORT=8180 python3 -m web_sa.supervisor &   # 然后：
 python3 tools/e2e/drm_mode.py --url http://127.0.0.1:8180
 ```
 
+`WEBSA_DRM_DUMP=<path>`（环境变量）会把送进 Dream 的精确基带追加到 raw int16 文件，
+用于排查解码问题时把实时喂流与抓下来的 sink 做对比。
+
 ## 已知限制
 
 合成 fixture `tests/fixtures/drm/drm_modeB_so3_48k.f32`（来自 `feature/drm-demod`）能正确解出**元数据**，
 但 Dream 将其 MSC 帧报告为 `CRC_ERROR` 并拒绝其音频：这是 DecDRM 发射机与 Dream 之间的互操作差异，
-而非构建问题。因此音频采集用真实录音验证。真实 DRM 广播无需改动即可解出音频。
+而非构建问题。因此音频采集用真实录音验证。
+
+接真实天线时能收到真实 DRM 电台（元数据与音频），但信号弱时 MSC 只能短暂保持：xHE‑AAC 音频大约需要
+`MER >= 15 dB`。Pluto 台架环路上 `msc=0` 约占 90%；剩余掉锁来自循环缓冲回卷与 Pluto/SAN‑90 时钟偏差，
+并非应用本身。

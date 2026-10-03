@@ -43,12 +43,17 @@ full rationale (and the user's decision to vendor the console build) is in
 ## Data path
 
 ```
-SDR DDC (i, q, ddc.fs_out ~= 48 kHz)
+SDR DDC (i, q, f_out ~= 48 kHz, f_out is *measured*, not nominal)
   -> low-pass -> linear resample to 48 kHz -> DreamDecoder.feed()
   -> pacat --raw -> private null sink -> dream -I <sink>.monitor -c 6 --sigsrate 48000
        |- --status-socket -> newline-delimited JSON -> state.sdr_drm
        `- -O <audio sink> -> parec -> mono int16 -> AUDF frames
 ```
+
+The resample uses the channelizer's **measured** output rate (`_measure_baseband_rate`).
+Resampling from the nominal figure leaves a slow drift against the 48 kHz sound card, and the
+receiver then re-locks every second or so; the measured rate holds `msc=0` about 90% of the time
+where the nominal held ~50%.
 
 Audio is captured live from a second private null sink with `parec`. Dream's own
 `-w/--writewav` was not usable (the file stayed at 0 bytes while the receiver decoded).
@@ -59,6 +64,25 @@ Pick `DRM` in the SDR panel's demodulator group (the mode is a backend/server mo
 no browser kernel). While it is selected, `STATUS.sdr.drm` carries the decoded metadata and the
 DRM readout shows station, robustness mode, bandwidth, bitrate, codec and sync. Audio plays
 through the normal SDR audio switch.
+
+## Bench transmitter (PlutoSDR)
+
+`tools/pluto_drm_tx.py` streams a DRM signal from the PlutoSDR so the receiver can be tested
+without waiting for shortwave propagation.
+
+- The AD9363 TX cannot tune HF (>= ~325 MHz), but a DRM signal is just an OFDM waveform: the
+  carrier frequency is irrelevant to Dream. Transmit at UHF (400 MHz default) and tune the
+  analyzer there. A **coax cable + attenuator** from the Pluto TX to the SAN-90 RF input is
+  preferable to radiating (controlled level, no propagation, no interference).
+- The IQ input is an int16 WAV from the DecDRM transmitter (`decdrm tx station.toml --output
+  drm_iq.wav --duration 60`, `format = "iq"`, default `iq_swap` = I on the left). Dream only
+  decoded the int16 WAV, not the float32 one.
+- The DRM baseband sits at `--base-hz` (default +100 kHz), clear of the LO leakage; tune the app
+  to `LO + base_hz`. Do not conjugate the baseband (leave `--conj` off): the default orientation
+  is what Dream's `-c 6` expects.
+- The default is a cyclic DMA buffer (`--stream` uses chunked one-shot buffers). The cyclic wrap
+  and the Pluto/SAN-90 clock offset are the main sources of intermittent MSC errors on a bench
+  loop; a real off-air signal has neither.
 
 ## Verification
 
@@ -72,9 +96,17 @@ WEBSA_FAKE=1 WEBSA_PORT=8180 python3 -m web_sa.supervisor &   # then:
 python3 tools/e2e/drm_mode.py --url http://127.0.0.1:8180
 ```
 
+`WEBSA_DRM_DUMP=<path>` (env) appends the exact baseband handed to Dream to a raw int16 file, for
+comparing the live feed against a captured sink monitor when localising a decode problem.
+
 ## Known limitations
 
 The synthetic `tests/fixtures/drm/drm_modeB_so3_48k.f32` fixture (from `feature/drm-demod`)
 decodes **metadata** correctly, but Dream reports its MSC frames as `CRC_ERROR` and rejects the
 audio: a DecDRM-transmitter <-> Dream interop difference, not a build problem. Audio capture is
-therefore verified against a real recording. A real DRM broadcast decodes audio without changes.
+therefore verified against a real recording.
+
+On a real antenna, real DRM stations decode (metadata and audio), but a weak signal only holds
+the MSC for short stretches: DRM needs roughly `MER >= 15 dB` for xHE-AAC audio. On the Pluto
+bench loop the receiver holds `msc=0` about 90% of the time; the remaining drops come from the
+cyclic buffer wrap and the Pluto/SAN-90 clock offset, not from the app.
