@@ -23,6 +23,8 @@ pub mod pipeline;
 pub mod pipeline_abi;
 pub mod plugin;
 pub mod plugin_abi;
+#[cfg(target_arch = "wasm32")]
+pub mod xaac;
 
 /// The ABI version the loader checks before it trusts any exported signature.
 #[no_mangle]

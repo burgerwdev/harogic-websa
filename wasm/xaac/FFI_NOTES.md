@@ -55,3 +55,13 @@ metadata file. A USAC test vector is generated natively by `xaacenc
 -ifile:tone.wav -ofile:out.bin -br:96000 -usac:1 -adts:0` (the encoder is
 restricted to 64/96 kbps USAC) and decoded by `xaacdec -ifile:out.bin
 -imeta:out.txt -ofile:pcm -mp4:1`, which was verified to produce non-silent PCM.
+
+## Status
+
+`wasm/src/xaac.rs` implements the flow above and links; the `websa_dsp_xaac_decode`
+smoke export builds but traps with "remainder by zero" at runtime. The decoder is
+**natively verified** (xaacenc/xaacdec produce non-silent PCM), so this is an FFI
+setup detail, not a decoder problem. Suspects: the ASC feeding or a missing config
+param (the native testbench inits a separate DRC decoder object too); debugging is
+best done natively (replicate the FFI flow in a small C program against the native
+libxaacdec.a) before the next wasm attempt.

@@ -92,15 +92,17 @@ double round(double); float roundf(float); double trunc(double);
 #endif
 H
 
-CC="clang --target=wasm32-unknown-unknown -ffreestanding -fwrapv -O2 -std=c99 -DLOUDNESS_LEVELING_SUPPORT"
+CC="clang --target=wasm32-unknown-unknown -ffreestanding -fwrapv -O2 -std=c99 -DLOUDNESS_LEVELING_SUPPORT -Wno-incompatible-function-pointer-types -Wno-typedef-redefinition"
 INCS="-I$INC -I$SRC/decoder -I$SRC/common"
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-# Decoder + common sources (decoder/libxaacdec.cmake, common/common.cmake).
-FILES=$(cat "$SRC/decoder/libxaacdec.cmake" "$SRC/common/common.cmake" \
-  | grep -oE '(decoder|common)/[a-z0-9_]+\.c' | sort -u)
+# Decoder + common sources (decoder/libxaacdec.cmake, decoder/drc_src/…, common/common.cmake)
+# plus the portable generic function selector (no x86/arm asm for wasm32).
+FILES=$(cat "$SRC/decoder/libxaacdec.cmake" "$SRC/common/common.cmake" "$SRC/decoder/drc_src/libxaacdec_drc.cmake" \
+  | grep -oE '(decoder|common)/[a-zA-Z0-9_/]+\.c"' | tr -d '"' | grep -vE '/(armv7|armv8|x86|x86_64)/' | sort -u)
+FILES="$FILES decoder/generic/ixheaacd_function_selector_generic.c decoder/generic/ixheaacd_qmf_dec_generic.c"
 
 for f in $FILES; do
   o="$OUT/$(basename "$f" .c).o"
