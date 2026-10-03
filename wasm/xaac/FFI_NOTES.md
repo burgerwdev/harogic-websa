@@ -65,3 +65,15 @@ setup detail, not a decoder problem. Suspects: the ASC feeding or a missing conf
 param (the native testbench inits a separate DRC decoder object too); debugging is
 best done natively (replicate the FFI flow in a small C program against the native
 libxaacdec.a) before the next wasm attempt.
+
+## Blocker: the generic (portable C) decode path is broken upstream
+
+`libxaac`'s SIMD paths (x86/x86_64/armv7/armv8) are maintained; the portable
+`decoder/generic/` path (the only one usable for wasm32) is stale. Six function
+pointer declarations in `ixheaacd_function_selector_generic.c` have wrong
+signatures vs the current headers (fixed locally in the clone; the build still
+needs `-Wno-incompatible-function-pointer-types`). Even with those fixed, the
+generic scalar decode returns `-2147483648` on `EXECUTE` (native repro), while
+the x86_64 build decodes the same bitstream to non-silent PCM. So the decoder is
+verified (native), but the wasm32 integration is blocked on upstream generic-path
+bugs, not on this crate.
