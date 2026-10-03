@@ -99,7 +99,8 @@ failing part is the receiver in this branch.
 | Input | Result |
 | --- | --- |
 | Capture as delivered (48828.125 Hz samples into the 48 kHz core) | no lock, `timesync::acquire` returns `None` |
-| Capture resampled to 48 kHz | lock, mode B, occupancy SO3, FAC SNR -18.9 dB, 19 of 19 FAC blocks fail their CRC, no station label, no MSC frame |
+| Capture resampled to 48 kHz | lock, mode B, occupancy SO3, FAC SNR -18.9 dB, 14 of 14 FAC blocks fail their CRC, no station label, no MSC frame |
+| Capture resampled, carrier offset removed | FAC SNR -13.6 dB, and the FAC still fails |
 | `tests/fixtures/drm/drm_modeB_so3_48k.f32` (synthesised reference) | FAC SNR 36.6 dB, 0 FAC errors, 5 SDC blocks pass, label decoded |
 | Reference + white noise at 15 dB SNR | decodes, FAC SNR 26.2 dB |
 | Reference + one echo at 200 us and -6 dB | decodes, FAC SNR 21.7 dB |
@@ -115,9 +116,16 @@ failure.
 
 - **Level and scaling**: the reference fixture decodes at 400x its own level, and the live
   capture gives the same result at 1/256 of its level.
-- **Carrier offset**: not ruled out. It is the cause of the FAC failure. See the section
-  below for the measurement.
-- **Frame offset**: every candidate offset 0..14 was forced. No candidate decodes the FAC.
+- **Carrier offset**: the receiver now removes it. See the section below.
+- **Frame offset**: every candidate offset 0..14 was forced, with the offset removed. No
+  candidate decodes the FAC on the live capture.
+- **Whole-carrier anchor**: every shift from -6 to +6 carrier spacings, with the fractional
+  offset removed. No shift decodes the FAC.
+- **Resampler quality and rate accuracy**: a windowed-sinc resample at the published rate and
+  at the measured rate behave like the pipeline's linear resampler, and a double resample
+  changes nothing.
+- **Clipping**: the receiver decodes the fixture after hard clipping at 1.0 times its rms
+  level, so the loud capture is not the cause.
 - **Spectrum sense**: the conjugate of the capture behaves the same.
 - **DC offset**: the capture's mean is 0.002, and removing it changes nothing.
 - **Sample rate**: the measured rate is 48833.85 Hz, and a resample at that exact rate
@@ -148,22 +156,30 @@ Measured on the live capture:
 The live capture behaves like the fixture at about +20 Hz. The FAC failure is therefore a
 carrier-offset failure, and not a channel, level or noise problem.
 
-Two further facts from the session:
+The receiver now estimates the offset from the guard correlation and removes it before the
+FFT. `timesync::acquire` reports the value in `Acquired::freq_offset_hz`, and
+`DrmReceiver::remove_carrier_offset` applies it. The estimate is unambiguous up to
+`+/- fs/(2*nu)`, about +/-23 Hz at 48 kHz.
 
-- A static shift of the capture by +24 Hz leaves a residual of -4.3 Hz (cyclic-prefix
-  measurement). The FAC SNR improves from -18.9 dB to -1.4 dB, and the FAC still fails. The
-  receiver is less tolerant of a small negative offset than of a small positive one: the
-  fixture decodes at +5 Hz and fails at -2 Hz. A static shift is therefore not a fix.
-- The receiver needs a carrier-offset estimate and correction (an AFC). Every real DRM
-  receiver has one, because no transmitter and receiver share a clock.
+The fix is verified on the fixture: an injected offset of -19.7, -10, -5, +5, +10 and
++19.7 Hz now decodes with no FAC error and the correct station label
+(`wasm/tests/drm_phy_robustness.rs::removes_a_carrier_offset_before_the_fft`). Before the fix
+the same offsets failed from about +20 Hz.
+
+The live capture still fails the FAC after the correction (-13.6 dB). The carrier offset was
+therefore necessary, but it is not the only cause. The remaining defect is in the cell
+extraction of a real signal, and the ruled-out list below records what it is not.
 
 ## Open defects
 
 1. **Rate**: the DRM core is fixed at 48 kHz (`wasm/src/digital/drm/params.rs`). The
    channelizer delivers 48828.125 Hz. Without a resample the receiver cannot acquire.
    The pipeline has a resampler, and the worker must give it the live rate.
-2. **FAC decode on a live signal**: explained. The carrier offset is +19.7 Hz, and the
-   receiver has no AFC. See the section above. The fix is still open.
+2. **FAC decode on a live signal**: partly fixed. The receiver removes the -19.7 Hz carrier
+   offset, and the synthesised fixture decodes with any offset up to half a carrier spacing.
+   The live capture still fails every FAC block, so one more defect remains. The cell
+   extraction of a real signal is the open item; every factor above is measured and ruled
+   out.
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.

@@ -13,8 +13,10 @@
 //! `tests/fixtures/drm/live_manifest.json`). The expectations below therefore describe the
 //! bench signal, not a synthetic one.
 //!
-//! STATUS: this test fails before the fix. That failure is the reproduction; the fix makes
-//! it pass. See `docs/en/DRM_BENCH.md` for the measured evidence.
+//! STATUS: this test still fails. The rate conversion and the carrier offset are fixed (the
+//! receiver measures -19.6 Hz on this file and removes it), so the failure is now in the
+//! cell extraction of a real signal. See `docs/en/DRM_BENCH.md` for the measurements and
+//! for the factors that are ruled out.
 
 use websa_dsp::ddc::resampler::ComplexResampler;
 use websa_dsp::digital::drm::fac::{MscMode, SdcMode};

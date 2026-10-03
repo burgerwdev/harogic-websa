@@ -63,6 +63,22 @@ fn add_echo(iq: &[f32], delay_us: f64, echo_db: f64) -> Vec<f32> {
     out
 }
 
+/// Inject `hz` of carrier offset. A live signal always carries some: the transmitter and
+/// the analyzer use different clocks, and the bench capture measured -19.7 Hz.
+fn inject_offset(iq: &[f32], hz: f64) -> Vec<f32> {
+    let n = iq.len() / 2;
+    let mut out = Vec::with_capacity(iq.len());
+    for i in 0..n {
+        let ph = 2.0 * std::f64::consts::PI * hz * i as f64 / 48_000.0;
+        let (s, c) = ph.sin_cos();
+        let re = f64::from(iq[i * 2]);
+        let im = f64::from(iq[i * 2 + 1]);
+        out.push((re * c - im * s) as f32);
+        out.push((re * s + im * c) as f32);
+    }
+    out
+}
+
 /// The same assertions for every impairment: lock, no FAC error, label, MSC frames.
 fn expect_decode(name: &str, iq: &[f32], min_snr_db: f64) {
     let rx = decode(iq);
@@ -90,6 +106,29 @@ fn survives_a_long_echo() {
     // A radiated bench loop has reflections. Mode B tolerates a delay spread of a few
     // milliseconds, so a 200 us echo at -6 dB is a mild case.
     expect_decode("echo 200 us", &add_echo(&load_iq(), 200.0, -6.0), 15.0);
+}
+
+#[test]
+fn removes_a_carrier_offset_before_the_fft() {
+    // Before the AFC this failed from about +20 Hz: the constellation SNR fell to -1.7 dB
+    // at 20 Hz and -14.4 dB at half a carrier spacing (23.4 Hz), and every FAC block
+    // failed its CRC. The bench capture measured -19.7 Hz.
+    for hz in [-19.7, -10.0, -5.0, 5.0, 10.0, 19.7] {
+        let iq = inject_offset(&load_iq(), hz);
+        let rx = decode(&iq);
+        assert!(rx.locked(), "offset {hz:+.1} Hz: no lock");
+        assert_eq!(rx.fac_errors, 0, "offset {hz:+.1} Hz: FAC blocks with a CRC error");
+        assert_eq!(
+            rx.station_label.as_deref(),
+            Some(LABEL),
+            "offset {hz:+.1} Hz: station label"
+        );
+        let measured = rx.carrier_offset_hz;
+        assert!(
+            (measured - hz).abs() < 0.5,
+            "offset {hz:+.1} Hz: measured {measured:+.2} Hz"
+        );
+    }
 }
 
 #[test]

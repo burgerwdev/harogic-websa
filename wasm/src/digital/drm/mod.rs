@@ -35,6 +35,10 @@ use ofdm::{carrier_at, FullFft};
 use params::{RobustnessMode, SpectrumOccupancy};
 use tables::{NUM_FAC_CELLS, QAM16, QAM4, QAM64_SM};
 
+/// A carrier offset below this value is left alone: the measurement has that much noise,
+/// and removing it would only add a small phase jump to the stream.
+const CARRIER_OFFSET_DEADBAND_HZ: f64 = 0.5;
+
 /// A complex sample/value. Internal precision is f64.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Cplx {
@@ -157,6 +161,16 @@ pub struct DrmReceiver {
     pub audio_access_units: Vec<Vec<u8>>,
     /// Decoded 16-bit interleaved PCM (wasm32 only: filled by the FDK AAC decoder).
     pub audio_pcm: Vec<i16>,
+    /// Carrier offset in Hz measured at acquisition, before any correction. A live
+    /// signal always has one: the transmitter and the analyzer use different clocks.
+    pub carrier_offset_hz: f64,
+    /// Total complex samples pushed, including the samples the buffer cap dropped. It
+    /// gives every buffered sample its phase reference for the carrier-offset removal.
+    pushed: u64,
+    /// Radians per sample of the carrier-offset removal in force (0 = none).
+    mix_w: f64,
+    /// Phase for the next pushed sample, so the blocks join without a step.
+    mix_phase: f64,
 }
 
 impl Default for DrmReceiver {
@@ -191,6 +205,10 @@ impl DrmReceiver {
             msc_frames: Vec::new(),
             audio_access_units: Vec::new(),
             audio_pcm: Vec::new(),
+            carrier_offset_hz: 0.0,
+            pushed: 0,
+            mix_w: 0.0,
+            mix_phase: 0.0,
         }
     }
 
@@ -202,8 +220,17 @@ impl DrmReceiver {
         if self.locked {
             return;
         }
+        // Remove the carrier offset while the samples arrive. The offset is known only
+        // after the first acquisition attempt, so `mix_w` starts at zero.
         for c in iq.chunks_exact(2) {
-            self.buf.push(Cplx::new(f64::from(c[0]), f64::from(c[1])));
+            let mut z = Cplx::new(f64::from(c[0]), f64::from(c[1]));
+            if self.mix_w != 0.0 {
+                let (s, co) = self.mix_phase.sin_cos();
+                z = Cplx::new(z.re * co - z.im * s, z.re * s + z.im * co);
+                self.mix_phase += self.mix_w;
+            }
+            self.buf.push(z);
+            self.pushed += 1;
         }
         // Before lock, keep only a bounded window: acquisition + one super frame need a few
         // seconds, and a long listen to a band without a signal must not grow forever.
@@ -212,6 +239,21 @@ impl DrmReceiver {
             let drop = self.buf.len() - cap;
             self.buf.drain(0..drop);
         }
+    }
+
+    /// Remove `hz` of carrier offset from the buffered baseband and from every later
+    /// block. The phase runs from the first sample ever pushed, so a block that arrives
+    /// later continues the same rotation and the stream has no step in it.
+    fn remove_carrier_offset(&mut self, hz: f64) {
+        let w = -2.0 * core::f64::consts::PI * hz / params::SAMPLE_RATE as f64;
+        let first = self.pushed - self.buf.len() as u64;
+        for (i, c) in self.buf.iter_mut().enumerate() {
+            let ph = w * (first + i as u64) as f64;
+            let (s, co) = ph.sin_cos();
+            *c = Cplx::new(c.re * co - c.im * s, c.re * s + c.im * co);
+        }
+        self.mix_w = w;
+        self.mix_phase = w * self.pushed as f64;
     }
 
     pub fn locked(&self) -> bool {
@@ -246,6 +288,14 @@ impl DrmReceiver {
             return;
         }
         let Some(acq) = timesync::acquire(&self.buf) else { return };
+        self.carrier_offset_hz = acq.freq_offset_hz;
+        // OFDM needs the carriers on the FFT grid. A live capture carries an offset: the
+        // bench signal measured +19.7 Hz, and +20 Hz on the fixture already fails every
+        // FAC block (docs/en/DRM_BENCH.md). Remove it once, before the FFT rows. The
+        // guard interval does not move, so the timing from `acquire` stays valid.
+        if self.mix_w == 0.0 && acq.freq_offset_hz.abs() > CARRIER_OFFSET_DEADBAND_HZ {
+            self.remove_carrier_offset(acq.freq_offset_hz);
+        }
         let mode = acq.mode;
         let n = mode.fft_size();
         let ts = mode.symbol_len();

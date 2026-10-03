@@ -49,6 +49,7 @@
   "receiver_before_fix": {
     "delivered_rate": "no lock: timesync::acquire returns None",
     "resampled_to_48k": "lock, mode B, SO3, but FAC SNR -18.9 dB and 19 of 19 FAC blocks fail",
-    "carrier_offset_corrected": "FAC SNR -1.4 dB, FAC still fails: the receiver tolerates only a few Hz (see docs/en/DRM_BENCH.md)"
+    "carrier_offset_corrected": "AFC implemented: the receiver measures -19.62 Hz and removes it; FAC SNR -13.6 dB, FAC still fails",
+    "afc_verified_on_fixture": "an injected offset of +/-19.7, +/-10 and +/-5 Hz decodes with 0 FAC errors (wasm/tests/drm_phy_robustness.rs::removes_a_carrier_offset_before_the_fft)"
   }
 }

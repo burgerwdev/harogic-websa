@@ -1,5 +1,6 @@
 //! Time synchronisation: robustness-mode detection and OFDM symbol timing from the
-//! guard-interval (cyclic-prefix) autocorrelation.
+//! guard-interval (cyclic-prefix) autocorrelation. It also measures the carrier offset,
+//! because OFDM needs it: a few hertz already break the orthogonality between carriers.
 //!
 //! This is a deliberately simple first implementation: it evaluates the normalised
 //! guard correlation for every robustness mode at a fixed stride and averages each
@@ -8,7 +9,7 @@
 //! sample. It is exact for the clean synthesised fixture and is the hook where a
 //! full (decimated, sliding-DFT) synchroniser like Dream's would slot in.
 
-use crate::digital::drm::params::RobustnessMode;
+use crate::digital::drm::params::{RobustnessMode, SAMPLE_RATE};
 use crate::digital::drm::Cplx;
 
 /// Stride of the coarse correlation sweep, samples.
@@ -23,6 +24,14 @@ pub struct Acquired {
     pub mode: RobustnessMode,
     /// Index of the first sample of the guard interval (cyclic prefix) of a symbol.
     pub guard_start: usize,
+    /// Carrier offset of the signal in Hz, measured from the guard correlation phase.
+    ///
+    /// The correlation multiplies every sample by the conjugate of the sample one
+    /// useful part later, so the offset over that part shows as the phase of the sum:
+    /// `angle = -2*pi*f_offset*nu/fs`. The estimate is unambiguous up to
+    /// `+/- fs/(2*nu)`, about +/-23 Hz at 48 kHz. Remove the offset before the FFT:
+    /// half a carrier spacing (23.4 Hz) already destroys the constellation.
+    pub freq_offset_hz: f64,
 }
 
 /// Detect the robustness mode and symbol timing in `buf`. Needs at least a few symbol
@@ -75,6 +84,7 @@ pub fn acquire(buf: &[Cplx]) -> Option<Acquired> {
     let hi = (best_phase + STEP).min(ts - 1);
     let mut guard_start = best_phase;
     let mut best = 0.0f64;
+    let mut best_c = Cplx::new(0.0, 0.0);
     for phase in lo..=hi {
         // Average the correlation over every available symbol at this phase.
         let (mut acc_c, mut acc_p) = (Cplx::new(0.0, 0.0), 0.0f64);
@@ -92,9 +102,14 @@ pub fn acquire(buf: &[Cplx]) -> Option<Acquired> {
         if score > best {
             best = score;
             guard_start = phase;
+            best_c = acc_c;
         }
     }
-    Some(Acquired { mode, guard_start })
+    // Every symbol contributes the same phase, so the sum keeps that phase. A phase of
+    // `w * nu` radians means `w` radians per sample of carrier offset to remove.
+    let w = best_c.im.atan2(best_c.re) / nu as f64;
+    let freq_offset_hz = -w * SAMPLE_RATE as f64 / (2.0 * core::f64::consts::PI);
+    Some(Acquired { mode, guard_start, freq_offset_hz })
 }
 
 /// Guard correlation at `t`: Σ x[t+i]·conj(x[t+i+nu]) over the guard length, plus the
