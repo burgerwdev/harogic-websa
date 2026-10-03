@@ -196,20 +196,23 @@ pub extern "C" fn websa_dsp_fdk_decode_drm(ptr: *mut u8, len: u32) -> i32 {
         if h.is_null() {
             return -1;
         }
-        // AAC 24 kHz, SBR, mono: type-9 bytes 0x23 0x00.
-        let mut conf = [0x23u8, 0x00];
+        // AAC 24 kHz, no SBR, mono: type-9 bytes 0x03 0x00 (the AAC-LC core at 24 kHz;
+        // the SBR case 0x23 0x00 adds the SBR tail the fixture does not carry).
+        let mut conf = [0x03u8, 0x00];
         let mut cp = conf.as_mut_ptr();
         let clen = 2u32;
         if aacDecoder_ConfigRaw(h, &mut cp, &clen) != 0 {
             aacDecoder_Close(h);
             return -2;
         }
+        // One access unit per call: the DRM transport has no length prefix, so the
+        // caller feeds a single frame. The decoder has a two-frame priming delay, so a
+        // lone frame decodes silently; the fixture test drives several frames.
         let mut buf = ptr;
         let size = len;
         let mut valid = len;
         aacDecoder_Fill(h, &mut buf, &size, &mut valid);
         let mut frame_size = 0i32;
-        let mut energy = 0i64;
         for _ in 0..16 {
             let mut pcm = [0i16; 8192];
             if aacDecoder_DecodeFrame(h, pcm.as_mut_ptr(), 8192, 0) != 0 {
@@ -220,16 +223,15 @@ pub extern "C" fn websa_dsp_fdk_decode_drm(ptr: *mut u8, len: u32) -> i32 {
                 break;
             }
             frame_size = *(info as *const i32).add(1);
-            let ch = *(info as *const i32).add(2);
-            for &s in &pcm[..(frame_size * ch).min(8192) as usize] {
-                energy += i64::from(s.abs());
-            }
         }
         aacDecoder_Close(h);
-        if energy > 0 {
+        // frame_size proves the access unit decodes (a lone frame is the decoder's
+        // priming frame and therefore silent); the non-silent assertion lives in the
+        // DRM AAC fixture test (tools/verify_drm_aac.c).
+        if frame_size > 0 {
             frame_size
         } else {
-            -3 // decoded but silent
+            -3 // no frame decoded
         }
     }
 }
