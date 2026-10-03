@@ -62,7 +62,7 @@ def read_status(sock_path: str, duration: float) -> list[dict]:
         while time.time() < end:
             try:
                 chunk = s.recv(16384)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             if not chunk:
                 break

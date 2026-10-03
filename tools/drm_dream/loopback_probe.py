@@ -26,8 +26,9 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from probe_fixture import FIXTURE, MANIFEST, best, flatten_service  # noqa: E402
 import json  # noqa: E402
+
+from probe_fixture import FIXTURE, MANIFEST, best, flatten_service  # noqa: E402
 
 
 def main() -> int:

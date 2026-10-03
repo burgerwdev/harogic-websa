@@ -55,3 +55,28 @@ service id `123456`, mode B, SO3/10 kHz, 64-QAM SM, 20.96 kbps, EEP, Mono,
 `eng`/`gb`.
 
 Run: `python3 tools/drm_dream/probe_fixture.py` (exit 0 = match).
+
+## Decoded audio capture (task-3)
+
+`-w/--writewav` is unusable here: the file stays at 0 bytes even while Dream decodes
+audio. Instead Dream plays to a second private null sink (`-O <audio_sink>`) and
+`parec --device=<audio_sink>.monitor --rate=48000 --channels=2 --format=s16le`
+captures the decoded PCM, which is downmixed to mono int16 for AUDF frames.
+
+**Dream must not be muted for this path**: with `-m 1` the receiver mutes its
+audio output and the sink captures pure silence. `DreamDecoder` therefore passes
+`-m 0` when `capture_audio=True` and `-m 1` otherwise.
+
+### Fixture audio limitation (important)
+
+The synthetic `drm_modeB_so3_48k.f32` fixture decodes **metadata** correctly, but
+Dream reports `status.msc = 1` (CRC_ERROR) for it and its AAC frames are rejected
+(`zero output channels: 0`), so no audio comes out. This reproduced on the
+vendored wwek console build *and* upstream Dream 2.3, so it is a DecDRM-transmitter
+<-> Dream interop limitation, not a build/config problem. DecDRM's own receiver was
+used as the fixture's self-check oracle; Dream needs a real broadcast recording.
+Audio capture is therefore verified against Dream's bundled real recording
+(`test_data/drm-XHE-AAC-iq.rec`, non-silent RMS ~2.27k):
+
+    DRM_DREAM_AUDIO_FIXTURE=/path/to/drm-XHE-AAC-iq.rec \
+        python3 -m pytest tests/test_drm_dream_audio.py -q
