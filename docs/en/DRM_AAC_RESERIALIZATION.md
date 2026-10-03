@@ -54,12 +54,30 @@ which is the "rewrite" path.
 - `lengthOfLongestCodeword = read(6 bits)` (`LEN_OF_LONGEST_CW_TOP_LENGTH = 49`).
 - The VCB11 section data (5-bit codebooks) precedes these; per-section
   `codebook` + `numLines` come from `CBlock_ReadSectionData` with `AC_ER_VCB11`.
+  In VCB11, `sect_cb` is 5 bits: codebooks `< 11` and `12..15` carry an explicit
+  section length, while `sect_cb == 11` and `16..31` (the virtual codebooks) have
+  implicit length 1. The spectral decode maps virtual codebooks `16..31` back to
+  the ESCAPE codebook 11 (`block.cpp`).
 - The reordered spectral data follows, decoded by `HcrDecoder`:
   `HcrCalcNumCodeword` → `HcrSortCodebookAndNumCodewordInSection` →
   `HcrPrepareSegmentationGrid` → `HcrExtendedSectionInfo` → `DecodePCWs` +
-  `DecodeNonPCWs` → `HcrReorderQuantizedSpectralCoefficients`. The encoder must
-  invert this: sort codewords by codebook, build the segmentation grid, emit the
-  reordered bits, and write the two lengths.
+  `DecodeNonPCWs` → `HcrReorderQuantizedSpectralCoefficients`.
+
+## HCR reordering algorithm (encoder = inverse of `HcrPrepareSegmentationGrid`)
+
+1. Sort the spectral codewords by codebook (ascending), keeping the order within
+   each codebook.
+2. `lengthOfLongestCodeword` = the longest actual Huffman codeword length.
+3. Each codeword is emitted left-aligned, zero-padded to
+   `min(aMaxCwLen[codebook], lengthOfLongestCodeword)` bits (a fixed-width
+   "segment", one codeword per segment).
+4. `lengthOfReorderedSpectralData` = the total bit count of the concatenated,
+   padded codewords.
+
+The per-codebook maximum codeword length table (`aMaxCwLen`, from
+`aac_rom.cpp`):
+`{0, 11, 9, 20, 16, 13, 11, 14, 12, 17, 14, 49, 0, 0, 0, 0, 14, 17, 21, 21,
+25, 25, 29, 29, 29, 29, 33, 33, 33, 37, 37, 41}` (index = codebook).
 
 A simpler milestone is to first implement Steps 1+2+4 for a single-codebook AAC-LC
 frame (no SBR), then add HCR (Step 3) once the VCB11 framing round-trips through the
