@@ -1,89 +1,21 @@
 #!/usr/bin/env python3
-"""Parse a raw MPEG-4 AAC-LC access unit and dump its frame header and section
-data — the first step of re-serialising to DRM AAC syntax (VCB11 + HCR).
+"""Parse a raw MPEG-4 AAC-LC access unit (ONLY_LONG window) and dump its scale
+factors and spectral codewords — the input to the DRM AAC re-serialisation
+(VCB11 + HCR). See docs/en/DRM_AAC_RESERIALIZATION.md.
 
-Status: WORK IN PROGRESS. This parses the frame header (ICS info) and the section
-data correctly, but the scale factors, spectral Huffman data and the VCB11/HCR
-re-serialisation are not yet implemented. Only codebook 1 is transcribed; the
-remaining 11 codebooks must be extracted from fdK-AAC's aac_rom.cpp. Reference:
-ISO/IEC 14496-3 §4.5; see docs/en/DRM_AAC_RESERIALIZATION.md for the full plan.
+Status: parses the frame header, section data, scale factors and spectral data for
+the ONLY_LONG (window_sequence == 0) case, which is what a stationary signal (and
+the fdK-AAC encoder) produces. LONG_START/SHORT/LONG_STOP section-data handling
+and the VCB11/HCR re-serialisation are still TODO.
 """
 from __future__ import annotations
 
-import re
 import sys
 
+from aac_huff_tables import CODEBOOKS
+from aac_sfb_offsets import SFB_OFFSETS
 
-# ---------------------------------------------------------------------------
-# Huffman codebook tables, transcribed from fdK-AAC aac_rom.cpp. Each entry is a
-# quad-tree node: read 2 bits to index one of 4 children; a child value with bit0
-# set is a leaf (bit1 set = push back one bit, the decoded value is value >> 2),
-# otherwise it is an internal node index (value >> 2).
-# ---------------------------------------------------------------------------
-
-def _t(hexes: str) -> list:
-    return [[int(x, 16) for x in row.split()] for row in hexes.strip().splitlines()]
-
-
-CB1 = _t("""
-0157 0157 0004 0018
-0008 000c 0010 0014
-015b 015b 0153 0153
-0057 0057 0167 0167
-0257 0257 0117 0117
-0197 0197 0147 0147
-001c 0030 0044 0058
-0020 0024 0028 002c
-014b 014b 0163 0163
-0217 0217 0127 0127
-0187 0187 0097 0097
-016b 016b 0017 0017
-0034 0038 003c 0040
-0143 0143 0107 0107
-011b 011b 0067 0067
-0193 0193 0297 0297
-019b 019b 0247 0247
-0048 004c 0050 0054
-01a7 01a7 0267 0267
-0113 0113 025b 025b
-0053 0053 005b 005b
-0253 0253 0047 0047
-005c 0070 0084 0098
-0060 0064 0068 006c
-012b 012b 0123 0123
-018b 018b 00a7 00a7
-0227 0227 0287 0287
-0087 0087 010b 010b
-0074 0078 007c 0080
-021b 021b 0027 0027
-0157 0157 016b 016b
-0173 0173 015b 015b
-0257 0257 025b 025b
-0193 0193 0197 0197
-0113 0113 0117 0117
-008b 008b 0023 0023
-00a3 00a3 0013 0013
-00c7 00c7 0007 0007
-0088 008c 0090 0094
-0183 0183 0103 0103
-01a3 01a3 0063 0063
-0043 0043 0053 0053
-0123 0123 0093 0093
-0253 0253 0263 0263
-0167 0167 0107 0107
-009c 00b0 00c4 00d8
-00a0 00a4 00a8 00ac
-0213 0213 0177 0177
-0223 0223 0227 0227
-019b 019b 0187 0187
-0163 0163 0167 0167
-""")
-
-# Only codebook 1 is shown here for the prototype; the remaining 11 are appended
-# by tools/extract_aac_huff.py from fdK-AAC's aac_rom.cpp.
-CODEBOOKS = {
-    1: (CB1, 4, 2, 1),
-}
+SCL = CODEBOOKS["SCL"][0]
 
 
 class BitReader:
@@ -100,7 +32,7 @@ class BitReader:
 
 
 def decode_huffman_word(br: BitReader, codebook) -> int:
-    """Inverse of fdK-AAC's CBlock_DecodeHuffmanWordCB."""
+    """Inverse of fdK-AAC's CBlock_DecodeHuffmanWordCB (quad-tree, 2 bits/level)."""
     index = 0
     while True:
         index = codebook[index][br.read(2)]
@@ -110,45 +42,6 @@ def decode_huffman_word(br: BitReader, codebook) -> int:
     if index & 2:
         br.pos -= 1
     return index >> 2
-
-
-def parse_aac_frame(data: bytes) -> dict:
-    br = BitReader(data)
-    out = {"id_syn_ele": br.read(3), "element_tag": br.read(4)}
-    out["global_gain"] = br.read(8)
-    # ICS info (long window, SCE)
-    br.read(1)  # ics_reserved_bit
-    window_sequence = br.read(2)
-    window_shape = br.read(1)
-    out["window_sequence"] = window_sequence
-    out["window_shape"] = window_shape
-    if window_sequence == 2:  # eight short
-        max_sfb = br.read(4)
-        br.read(7)  # scale_factor_grouping
-    else:
-        max_sfb = br.read(6)
-        br.read(1)  # predictor_data_present
-    out["max_sfb"] = max_sfb
-    # Section data (ISO 14496-3 §4.5.3.3.3; the long-block case). The section length
-    # is `nbits` wide (5 for long blocks) with escape value `2^nbits − 1` meaning
-    # "add the escape value and read again".
-    nbits = 5
-    esc_val = (1 << nbits) - 1
-    sections = []
-    sfb = 0
-    while sfb < max_sfb:
-        sect_cb = br.read(4)
-        sect_len = 0
-        while True:
-            incr = br.read(nbits)
-            sect_len += incr
-            if incr != esc_val:
-                break
-        sections.append((sect_cb, sect_len))
-        sfb += sect_len
-    out["sections"] = sections
-    out["bit_pos_after_sections"] = br.pos
-    return out
 
 
 def skip_fil_elements(br: BitReader) -> None:
@@ -166,14 +59,96 @@ def skip_fil_elements(br: BitReader) -> None:
         break
 
 
+def parse_frame(data: bytes) -> dict:
+    """Parse an ONLY_LONG AAC-LC single-channel frame."""
+    br = BitReader(data)
+    out = {"id_syn_ele": br.read(3), "element_tag": br.read(4)}
+    out["global_gain"] = br.read(8)
+    br.read(1)  # ics_reserved_bit
+    window_sequence = br.read(2)
+    out["window_sequence"] = window_sequence
+    out["window_shape"] = br.read(1)
+    assert window_sequence == 0, "only ONLY_LONG is implemented"
+    out["max_sfb"] = br.read(6)
+    br.read(1)  # predictor_data_present
+
+    # Section data: codebook (4 bits) + length (5 bits, escape 31 = "add 31, more").
+    sections = []
+    sfb = 0
+    while sfb < out["max_sfb"]:
+        sect_cb = br.read(4)
+        sect_len = 0
+        while True:
+            incr = br.read(5)
+            sect_len += incr
+            if incr != 31:
+                break
+        sections.append((sect_cb, sect_len))
+        sfb += sect_len
+    out["sections"] = sections
+
+    # Scale factors (SCL Huffman, delta-coded; zero codebook -> sf 0).
+    codebooks = []
+    for cb, length in sections:
+        codebooks += [cb] * length
+    codebooks = codebooks[: out["max_sfb"]]
+    factor = out["global_gain"]
+    sf = []
+    for band in range(out["max_sfb"]):
+        cb = codebooks[band]
+        if cb == 0:
+            sf.append(0)
+        else:
+            factor += decode_huffman_word(br, SCL) - 60
+            sf.append(factor - 100)
+    out["scale_factors"] = sf
+
+    # Spectral data (per band, using the 24 kHz long-block offsets).
+    offsets = SFB_OFFSETS["sfb_24_1024"]
+    out["codewords"] = []  # (codebook, codeword_length, value) — the HCR input
+    for band in range(out["max_sfb"]):
+        cb = codebooks[band]
+        if cb == 0 or cb == 13:  # zero / PNS noise: no codewords (PNS ignored)
+            continue
+        if cb in (14, 15):  # intensity (stereo only)
+            continue
+        table, dim, bits, offset = CODEBOOKS[str(cb)]
+        mask = (1 << bits) - 1
+        width = offsets[band + 1] - offsets[band]
+        start = br.pos
+        for _ in range(width // dim):
+            idx = decode_huffman_word(br, table)
+            for _ in range(dim):
+                coef = (idx & mask) - offset
+                idx >>= bits
+                if offset == 0 and coef != 0 and br.read(1):
+                    coef = -coef
+            if cb == 11:  # escape: skip the escape values (2 per codeword)
+                for _ in range(2):
+                    _read_escape(br)
+        out["codewords"].append((cb, br.pos - start, br.pos - start))
+    out["bit_pos_after_spectral"] = br.pos
+    return out
+
+
+def _read_escape(br: BitReader) -> None:
+    # Escape value: while the first bit is set, keep reading 4-bit groups.
+    while br.read(1):
+        br.read(4)
+
+
 def main() -> int:
     path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/raw.aac"
     data = open(path, "rb").read()
     br = BitReader(data)
     skip_fil_elements(br)
     frame = data[br.pos >> 3 :]
-    print(f"SCE frame starts at byte {br.pos >> 3}, {len(frame)} bytes")
-    print(parse_aac_frame(frame))
+    print(f"frame starts at byte {br.pos >> 3}, {len(frame)} bytes")
+    out = parse_frame(frame)
+    print("window_sequence", out["window_sequence"], "max_sfb", out["max_sfb"])
+    print("sections", out["sections"])
+    print("scale_factors", out["scale_factors"][:12], "...")
+    print("codewords", len(out["codewords"]), "spectral_bits", out["bit_pos_after_spectral"])
     return 0
 
 
