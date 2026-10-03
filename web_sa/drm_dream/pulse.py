@@ -12,11 +12,34 @@ with another instance.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 
 
 class PulseError(RuntimeError):
     pass
+
+
+def unload_stale_sinks(pactl: str, prefixes: tuple[str, ...]) -> list[str]:
+    """Unload private null sinks left behind by a killed decoder process.
+
+    The worker exits with ``os._exit`` on SIGTERM, which skips the decoder's own cleanup; the
+    child processes are killed via PR_SET_PDEATHSIG, but the sink modules are created by
+    ``pactl`` and would otherwise accumulate. Names are namespaced (``drm_dream_*``), so only
+    our own leftover modules can match.
+    """
+    proc = subprocess.run([pactl, 'list', 'short', 'modules'], capture_output=True, text=True)
+    unloaded: list[str] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split('\t')
+        if len(parts) < 2 or parts[1] != 'module-null-sink':
+            continue
+        args = parts[2] if len(parts) > 2 else ''
+        match = re.search(r'sink_name=(\S+)', args)
+        if match and any(match.group(1).startswith(p) for p in prefixes):
+            subprocess.run([pactl, 'unload-module', parts[0]], capture_output=True)
+            unloaded.append(match.group(1))
+    return unloaded
 
 
 class PulseSink:

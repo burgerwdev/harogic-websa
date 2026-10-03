@@ -15,9 +15,11 @@ full pipe, so the queue drops the oldest block and counts the loss.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import queue
+import signal
 import socket
 import subprocess
 import threading
@@ -26,13 +28,26 @@ from collections import deque
 
 import numpy as np
 
-from .pulse import PulseSink
+from .pulse import PulseSink, unload_stale_sinks
 from .status import extract_metadata, parse_status_line
 
 log = logging.getLogger(__name__)
 
 #: Dream I/Q channel select: positive I/Q with the DRM signal at 0 Hz IF.
 IQ_CHANNEL_SELECT = '6'
+
+
+def _pdeathsig() -> None:
+    """Ask the kernel to SIGTERM this child when its parent (the worker) dies.
+
+    The worker exits with ``os._exit`` on SIGTERM, so the decoder's own cleanup never runs.
+    Without this, Dream/pacat/parec outlive the service and keep the private sinks open.
+    """
+    try:
+        libc = ctypes.CDLL('libc.so.6', use_errno=True)
+        libc.prctl(1, signal.SIGTERM)     # PR_SET_PDEATHSIG
+    except Exception:
+        pass
 
 
 class DecoderError(RuntimeError):
@@ -112,6 +127,8 @@ class DreamDecoder:
         self._stop.clear()
         try:
             if self._manage_pulse:
+                # Reclaim private sinks a hard-killed previous worker left behind (see _pdeathsig).
+                unload_stale_sinks(self.pactl, ('drm_dream_feed', 'drm_dream_audio'))
                 if self.input_file is None:
                     self._sink.create()
                 if self.capture_audio:
@@ -126,7 +143,8 @@ class DreamDecoder:
                 self._feeder = subprocess.Popen(
                     [self.pacat, '--raw', f'--rate={self.sample_rate}', '--channels=2',
                      '--format=s16le', f'--device={self._sink.name}'],
-                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    preexec_fn=_pdeathsig)
 
             if self.input_file is not None:
                 cmd = [self.dream_bin, '-f', self.input_file, '-c', IQ_CHANNEL_SELECT,
@@ -141,13 +159,13 @@ class DreamDecoder:
             if self.capture_audio and self._manage_pulse:
                 cmd += ['-O', self._audio_sink.name]
             self._dream = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                           stderr=subprocess.DEVNULL)
+                                           stderr=subprocess.DEVNULL, preexec_fn=_pdeathsig)
 
             if self.capture_audio and self._manage_pulse:
                 self._capture = subprocess.Popen(
                     [self.parec, f'--device={self._audio_sink.monitor}',
                      f'--rate={self.sample_rate}', '--channels=2', '--format=s16le'],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=_pdeathsig)
 
             if self._feeder is not None:
                 self._spawn(self._writer_loop, 'drm-dream-writer')

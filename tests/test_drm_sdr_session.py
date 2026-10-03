@@ -186,3 +186,22 @@ def test_default_dream_bin_picks_the_first_capable_candidate(monkeypatch):
         assert sdr_module._default_dream_bin() == '/second/dream'
     finally:
         sdr_module._dream_bin_cache.clear()
+
+
+def test_chain_params_force_a_48k_ddc_for_drm():
+    """DRM ignores the wide IF filter for the DDC rate: Dream needs ~48 kHz, not 488 kHz."""
+    sess = _session(None)
+    sess._fs_in = 488281.25
+    sess.dev.state.sdr_if_bw = 180000.0
+    if_bw, decimate = sess._chain_params()
+    assert if_bw == 180000.0
+    assert decimate == 10                                  # floor(488281.25 / 48000)
+    assert sess._fs_in / decimate == pytest.approx(48828.1, rel=0.01)
+
+
+def test_chain_params_keep_the_wide_ddc_for_analog_modes():
+    sess = _session(None, state=_state('am'))
+    sess._fs_in = 488281.25
+    sess.dev.state.sdr_if_bw = 180000.0
+    _if_bw, decimate = sess._chain_params()
+    assert decimate == 1                                   # 1.6 * 180 kHz > 48 kHz

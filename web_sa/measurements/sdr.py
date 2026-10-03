@@ -592,12 +592,20 @@ class SdrSession(MeasurementSession):
         channels do not need a (slow, stream-disrupting) full reconfiguration."""
         fs_in = self._fs_in or 1.0
         if_bw = float(max(200.0, min(self.dev.state.sdr_if_bw, fs_in * 0.4)))
-        # The DDC output rate is the browser demodulator's cost, one for one: the demodulator runs a
-        # 257-tap complex band filter at it (measured: 2.5x the IF bandwidth put WFM at 97.5% of real
-        # time, i.e. it could not keep up and the playback had to stretch). 1.6x still leaves
-        # +/-0.8x if_bw of instant software tuning, and the band itself is +/-0.5x if_bw, so the
-        # filter has margin; anything beyond the passband uses a (cheap) stream restart.
-        need = max(float(self.AUDIO_RATE), 1.6 * if_bw)
+        if str(getattr(self.dev.state, 'sdr_demod', '')) == DRM_DEMOD:
+            # Dream only accepts 24/48/96/192 kHz. Ask the vendor DDC for ~48 kHz so its own
+            # decimation filter does the anti-aliasing and the host resample (low-pass + linear
+            # interpolation) is a trivial ~1x instead of a 10x job; the DRM channel is only
+            # 10 kHz, so the user's wider IF choice shapes the capture but must not set fs_out.
+            need = float(self.AUDIO_RATE)
+        else:
+            # The DDC output rate is the browser demodulator's cost, one for one: the demodulator
+            # runs a 257-tap complex band filter at it (measured: 2.5x the IF bandwidth put WFM
+            # at 97.5% of real time, i.e. it could not keep up and the playback had to stretch).
+            # 1.6x still leaves +/-0.8x if_bw of instant software tuning, and the band itself is
+            # +/-0.5x if_bw, so the filter has margin; anything beyond the passband uses a (cheap)
+            # stream restart.
+            need = max(float(self.AUDIO_RATE), 1.6 * if_bw)
         return if_bw, max(1, min(65536, int(np.floor(fs_in / need))))
 
     def _chain_coarse(self, fs_out):
