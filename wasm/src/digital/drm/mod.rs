@@ -426,11 +426,13 @@ impl DrmReceiver {
     fn decode_audio(&mut self) {
         let Some(audio) = self.audio.clone() else { return };
         if audio.coding == 3 {
-            // xHE-AAC (MPEG-D USAC). The AudioSpecificConfig is signalled in the SDC
-            // audio descriptor (ES 201 980 §6.4.3.10 coder field) and is fed as the
-            // decoder's init payload before the access units; the USAC ASC is derived
-            // from `audio.coder_field` when the SDC carries one.
+            // xHE-AAC (MPEG-D USAC). The AudioSpecificConfig is carried in the SDC audio
+            // descriptor (ES 201 980 §6.4.3.10) and is fed as the decoder's init payload
+            // before the access units.
             if let Some(mut dec) = crate::xaac::XaacDecoder::new() {
+                if !audio.xhe_aac_config.is_empty() {
+                    dec.feed(&audio.xhe_aac_config, true);
+                }
                 for au in &self.audio_access_units {
                     if let Some(pcm) = dec.feed(au, false) {
                         self.audio_pcm.extend_from_slice(&pcm);

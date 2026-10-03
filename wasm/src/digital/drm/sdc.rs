@@ -108,6 +108,9 @@ pub struct AudioInfo {
     pub text: bool,
     pub enhancement: bool,
     pub coder_field: u8,
+    /// xHE-AAC static configuration bytes (the USAC AudioSpecificConfig), empty for
+    /// other codings.
+    pub xhe_aac_config: Vec<u8>,
 }
 
 impl AudioInfo {
@@ -117,7 +120,9 @@ impl AudioInfo {
     pub fn to_type9_bytes(&self) -> Vec<u8> {
         let b0 = (self.coding << 6) | (u8::from(self.sbr) << 5) | (self.mode << 3) | (self.sample_rate & 7);
         let b1 = (u8::from(self.text) << 7) | (u8::from(self.enhancement) << 6) | (self.coder_field << 1);
-        vec![b0, b1]
+        let mut out = vec![b0, b1];
+        out.extend_from_slice(&self.xhe_aac_config);
+        out
     }
 }
 
@@ -211,8 +216,8 @@ fn parse_label(r: &mut BitReader, len: usize) -> Option<Label> {
     Some(Label { short_id, bytes })
 }
 
-fn parse_audio(r: &mut BitReader, _len: usize) -> Option<AudioInfo> {
-    let audio = AudioInfo {
+fn parse_audio(r: &mut BitReader, len: usize) -> Option<AudioInfo> {
+    let mut audio = AudioInfo {
         short_id: r.read(2) as u8,
         stream_id: r.read(2) as u8,
         coding: r.read(2) as u8,
@@ -222,8 +227,13 @@ fn parse_audio(r: &mut BitReader, _len: usize) -> Option<AudioInfo> {
         text: r.read(1) == 1,
         enhancement: r.read(1) == 1,
         coder_field: r.read(5) as u8,
+        xhe_aac_config: Vec::new(),
     };
-    // The remaining fields (rfa bit and codec config) are not needed.
+    r.read(1); // rfa bit
+    // xHE-AAC (coding 3) carries the USAC AudioSpecificConfig after the fixed fields.
+    if audio.coding == 3 && len >= 2 {
+        audio.xhe_aac_config = r.read_bytes(len - 2);
+    }
     Some(audio)
 }
 
