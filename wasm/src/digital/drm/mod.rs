@@ -419,14 +419,29 @@ impl DrmReceiver {
         self.decode_audio();
     }
 
-    /// Decode the deframed AAC access units into PCM (wasm32 only; the FDK AAC
-    /// decoder is not linked natively).
+    /// Decode the deframed audio access units into PCM (wasm32 only; the FDK AAC
+    /// and libxaac decoders are not linked natively). AAC (coding 0) goes through the
+    /// FDK TT_DRM decoder; xHE-AAC (coding 3, MPEG-D USAC) goes through libxaac.
     #[cfg(target_arch = "wasm32")]
     fn decode_audio(&mut self) {
-        if let Some(mut dec) = crate::fdk::AacDecoder::new() {
-            if let Some(audio) = &self.audio {
-                dec.configure(&audio.to_type9_bytes());
+        let Some(audio) = self.audio.clone() else { return };
+        if audio.coding == 3 {
+            // xHE-AAC (MPEG-D USAC). The AudioSpecificConfig is signalled in the SDC
+            // audio descriptor (ES 201 980 §6.4.3.10 coder field) and is fed as the
+            // decoder's init payload before the access units; the USAC ASC is derived
+            // from `audio.coder_field` when the SDC carries one.
+            if let Some(mut dec) = crate::xaac::XaacDecoder::new() {
+                for au in &self.audio_access_units {
+                    if let Some(pcm) = dec.feed(au, false) {
+                        self.audio_pcm.extend_from_slice(&pcm);
+                    }
+                }
             }
+            return;
+        }
+        // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder.
+        if let Some(mut dec) = crate::fdk::AacDecoder::new() {
+            dec.configure(&audio.to_type9_bytes());
             for au in &self.audio_access_units {
                 let pcm = dec.decode(au);
                 self.audio_pcm.extend_from_slice(&pcm);

@@ -45,6 +45,7 @@ export interface DspExports {
 	websa_dsp_fdk_decode_adts(ptr: number, len: number): number;
 	websa_dsp_fdk_decode_drm(ptr: number, len: number): number;
 	websa_dsp_fdk_decode_drm_frames(ptr: number, len: number, frameLen: number): number;
+	websa_dsp_xaac_decode(ptr: number, len: number): number;
 	// Plugin manifest: the UI's mode list is read from here, never hardcoded
 	websa_dsp_plugin_kind_count(): number;
 	websa_dsp_plugin_count(kind: number): number;

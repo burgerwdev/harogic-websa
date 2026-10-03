@@ -58,10 +58,11 @@ restricted to 64/96 kbps USAC) and decoded by `xaacdec -ifile:out.bin
 
 ## Status
 
-`wasm/src/xaac.rs` implements the flow above and links; the `websa_dsp_xaac_decode`
-smoke export builds but traps (`unreachable`) on the second access unit. The
-generic path is now **fixed and natively verified** (see the blocker section), so the
-remaining trap is a Rust-side panic in the FFI layer, not the decoder.
+`wasm/src/xaac.rs` implements the flow above and links; `websa_dsp_xaac_decode`
+decodes the committed USAC fixture to non-silent PCM (92160 samples from 45 frames).
+The generic path is **fixed and verified** (native repro: energy 232M) and the wasm32
+build decodes too. The earlier wasm trap was a Rust-side heap-layout bug in the FFI
+(see the blocker section), now fixed.
 
 ## Blocker: the generic (portable C) decode path was broken upstream — now fixed
 

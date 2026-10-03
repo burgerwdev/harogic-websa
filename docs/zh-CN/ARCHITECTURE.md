@@ -183,7 +183,7 @@ PCM（`dspLevelDbfs`）。
 ### 尚未接线的部分
 
 - FT8 已端到端实现：仅接收（设备没有发射功能），仅支持标准报文类型 1/2（不支持哈希呼号、自由文本、比赛/遥测类型）；同步搜索覆盖时隙边缘（约 ±0.128 s），因为 FT8 是时隙同步的——宽带扫描器需要全时隙搜索，代价约 15 倍。FT4 与其他数字协议目前是注册表接缝，而非实现。
-- DRM30 已实现接收链（OFDM 同步 → FAC/SDC/MSC 信道译码 → 音频超帧拆帧 → AAC 解码），已对照合成的 Mode B / 10 kHz fixture 逐位验证；DRM AAC 重序列化（VCB11 + HCR + CRC）已对照 `aac_sine_24k` 验证无损，解码后的 PCM 已接入前端音频通路（12/24 kHz 重采样到 48 kHz）。xHE-AAC（libxaac）尚未在 WASM 管线中集成：上游可移植解码路径有缺陷，目前仅 AAC 编解码器在线。
+- DRM30 已实现接收链（OFDM 同步 → FAC/SDC/MSC 信道译码 → 音频超帧拆帧 → AAC/xHE-AAC 解码），已对照合成的 Mode B / 10 kHz fixture 逐位验证；DRM AAC 重序列化（VCB11 + HCR + CRC）已对照 `aac_sine_24k` 验证无损，解码后的 PCM 已接入前端音频通路（12/24 kHz 重采样到 48 kHz）。xHE-AAC（libxaac）已接入 USAC 音频业务（coding 3），其 wasm32 解码器可非静音解码已提交的 `usac_tone` fixture；USAC AudioSpecificConfig 由 SDC 音频描述符标识。
 - 浏览器模块不可用时，Python DSP 路径仍是实际的音频来源；它同时作为回退与数值参考被保留。
 
 ## 注册点的可达性（import 副作用）
