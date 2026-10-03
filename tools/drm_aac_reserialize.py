@@ -115,10 +115,17 @@ def parse_frame(data: bytes) -> dict:
             sf.append(factor - 100)
     out["scale_factors"] = sf
     out["bit_pos_after_scale_factors"] = br.pos
+    # The GA individual-channel-stream flags between the scale factors and the
+    # spectral data (the DRM syntax carries tns_present, drops pulse/gain control).
+    out["pulse_present"] = br.read(1)
+    out["tns_present"] = br.read(1)
+    out["gain_present"] = br.read(1)
+    if out["pulse_present"] or out["gain_present"]:
+        raise ValueError("pulse/gain control not supported by the re-serializer")
 
     # Spectral data (per band, using the 24 kHz long-block offsets).
     offsets = SFB_OFFSETS["sfb_24_1024"]
-    out["codewords"] = []  # (codebook, codeword_bits, sign_bits) for HCR
+    out["codewords"] = []  # (codebook, full_codeword_bits = huffman body + sign)
     for band in range(out["max_sfb"]):
         cb = codebooks[band]
         if cb == 0 or cb == 13:
@@ -142,7 +149,7 @@ def parse_frame(data: bytes) -> dict:
             if cb == 11:
                 for _ in range(2):
                     _read_escape(br)
-            out["codewords"].append((cb, cw_bits, sign_bits))
+            out["codewords"].append((cb, cw_bits + sign_bits))
     out["bit_pos_after_spectral"] = br.pos
     return out
 
@@ -187,30 +194,94 @@ def reserialize_drm(source: bytes, out: dict) -> str:
     br = BitReader(source)
     id_tag = br.bits(0, 7)              # id_syn_ele + element_tag
     ics_info = br.bits(15, 10)          # ics_reserved + window_sequence + shape + max_sfb
-    tns_ltp = "00"                       # tns_data_present + ltp_data_present
+    tns_ltp = ("1" if out["tns_present"] else "0") + "0"  # tns_data_present + ltp_data_present
     global_gain = br.bits(7, 8)         # global_gain (moved after tns/ltp)
     sections = encode_sections_vcb11(out["sections"])
     sf = br.bits(out["bit_pos_after_sections"],
                  out["bit_pos_after_scale_factors"] - out["bit_pos_after_sections"])
-    reordered, lrsd, llc = hcr_reorder(out["codewords"])
+    reordered, lrsd, llc = hcr_encode(out["codewords"])
     hcr_side = f"{lrsd:014b}{llc:06b}"
     side_info = ics_info + tns_ltp + global_gain + sections + sf + hcr_side
     crc = crc8(side_info)
     return f"{crc:08b}" + id_tag + side_info + reordered
 
 
-def hcr_reorder(codewords: list) -> tuple:
-    """HCR reordering: sort codewords by codebook; within each segment of width
-    min(AMAX_CW_LEN[cb], longest) emit the codeword left-aligned followed by its
-    sign bits (the decoder reads the sign from the segment's remaining bits)."""
-    ordered = sorted(codewords, key=lambda cw: cw[0])
-    longest = max((len(b) for _, b, _ in ordered), default=0)
-    bits = ""
-    for cb, cw_bits, sign in ordered:
-        width = min(AMAX_CW_LEN[cb], longest)
-        seg = cw_bits + sign
-        bits += seg + "0" * max(0, width - len(seg))  # left-aligned, padded
-    return bits, len(bits), longest
+def hcr_encode(codewords: list) -> tuple:
+    """Full HCR encoder (ISO 14496-3 error-resilient spectral data; the decoder
+    control flow of fdK-AAC aacdec_hcr.cpp inverted). Returns (bit_string,
+    reordered_length, longest_codeword_length)."""
+    # Codebook priority: 11 first, then virtual 31..16, then 9/10, 7/8, 5/6, 3/4, 1/2.
+    priority = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 22, 0, 0, 0, 0,
+                6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    # Sort by priority (descending), ties in natural order.
+    sorted_cws = []
+    for prio in range(22, 0, -1):
+        for cb, cw in codewords:
+            if priority[cb & 31] == prio:
+                sorted_cws.append((cb, cw))
+    total = sum(len(cw) for _, cw in sorted_cws)
+    if total == 0:
+        return "", 0, 0
+    longest = max(len(cw) for _, cw in sorted_cws)
+
+    # Segmentation grid: one segment per priority codeword, width min(aMaxCwLen, longest).
+    segs = []
+    start = 0
+    for cb, _cw in sorted_cws:
+        width = min(AMAX_CW_LEN[cb & 31], longest)
+        if start + width <= total:
+            segs.append([start, start + width - 1, width])
+            start += width
+        else:
+            last = segs[-1]
+            w = total - last[0]
+            last[1] = last[0] + w - 1
+            last[2] = w
+            break
+    n = len(segs)
+    num_sets = (len(sorted_cws) - 1) // n + 1
+
+    out = ["0"] * total
+    # Priority codewords: codeword i starts segment i, left to right.
+    for seg, (_cb, cw) in zip(segs, sorted_cws):
+        for i in range(len(cw)):
+            out[seg[0]] = cw[i]
+            seg[0] += 1
+        seg[2] -= len(cw)
+
+    # Non-priority codewords in sets, alternating direction per set.
+    seg_active = [s[2] != 0 for s in segs]
+    dir_ltr = False  # first set reads right-to-left
+    next_i = n
+    for _set in range(1, num_sets):
+        count = min(len(sorted_cws) - next_i, n)
+        set_cws = [cw for _cb, cw in sorted_cws[next_i:next_i + count]]
+        next_i += count
+        cursor = [0] * count
+        pending = [True] * count
+        for trial in range(n):
+            for s in range(n):
+                k = (s + n - trial % n) % n
+                if not seg_active[s] or k >= count or not pending[k]:
+                    continue
+                cw = set_cws[k]
+                seg = segs[s]
+                while seg[2] > 0 and cursor[k] < len(cw):
+                    if dir_ltr:
+                        pos = seg[0]
+                        seg[0] += 1
+                    else:
+                        pos = seg[1]
+                        seg[1] -= 1
+                    out[pos] = cw[cursor[k]]
+                    cursor[k] += 1
+                    seg[2] -= 1
+                if cursor[k] == len(cw):
+                    pending[k] = False
+                if seg[2] == 0:
+                    seg_active[s] = False
+        dir_ltr = not dir_ltr
+    return "".join(out), total, longest
 
 
 def main() -> int:
