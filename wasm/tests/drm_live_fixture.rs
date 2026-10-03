@@ -84,6 +84,77 @@ fn live_capture_locks_and_decodes_metadata() {
     assert!(rx.msc_bitrate_kbps.unwrap_or(0.0) > 20.0, "MSC bitrate from the FAC/SDC");
 }
 
+/// The decode window reads the receiver through the plugin, not through the receiver type:
+/// `websa_dsp_demod_message_at` calls `DigitalDemodulator::decoded`. A plugin that returns its
+/// lines from `process_iq` but does not keep them makes a locked receiver show nothing, which
+/// is exactly how the bench readout stayed empty while the offline tests passed.
+#[test]
+fn live_capture_reports_lines_through_the_plugin() {
+    use websa_dsp::digital::drm::DrPlugin;
+    use websa_dsp::plugin::DigitalDemodulator;
+
+    let iq = load_iq();
+    let mut resampler = ComplexResampler::new(PUBLISHED_RATE, CORE_RATE);
+    let mut converted = Vec::new();
+    resampler.process_f32_into(&iq, &mut converted);
+    let mut plugin = DrPlugin::new(CORE_RATE);
+    let mut lines = Vec::new();
+    for block in converted.chunks(3248 * 2) {
+        let reported = plugin.process_iq(block);
+        if !reported.is_empty() {
+            lines = reported;
+            break;
+        }
+    }
+    assert!(!lines.is_empty(), "the plugin reported no lines after the capture");
+    assert!(
+        lines.iter().any(|line| line.contains("DRM")),
+        "no DRM line in {lines:?}"
+    );
+    let decoded = plugin.decoded();
+    assert!(
+        decoded.iter().any(|(text, _)| text == &lines[0]),
+        "decoded() returned {decoded:?}, the readout got {lines:?}"
+    );
+}
+
+/// The worker feeds the receiver one baseband block at a time, so the lock has to arrive from
+/// a short buffer: the FAC and the SDC need about one super frame. The MSC and the audio need
+/// about three, which is why a caller that holds the whole capture must get them from the same
+/// pass, and a streaming caller sees the station first.
+#[test]
+fn live_capture_locks_from_a_short_buffer() {
+    let iq = load_iq();
+    let mut resampler = ComplexResampler::new(PUBLISHED_RATE, CORE_RATE);
+    let mut converted = Vec::new();
+    resampler.process_f32_into(&iq, &mut converted);
+
+    let mut rx = DrmReceiver::new();
+    let mut locked_at = None;
+    for (index, block) in converted.chunks(3248 * 2).enumerate() {
+        rx.push(block);
+        rx.run();
+        if rx.locked() {
+            locked_at = Some(index * 3248);
+            break;
+        }
+    }
+    let locked_at = locked_at.expect("the receiver did not lock on the block feed");
+    // The index counts input samples, which the resampler converts one for one within 0.02 %.
+    let lock_seconds = locked_at as f64 / CORE_RATE;
+    assert!(lock_seconds < 3.0, "locked after {lock_seconds:.1} s of baseband");
+    assert_eq!(rx.station_label.as_deref(), Some(LABEL), "station label at the lock");
+    assert!(!rx.facs.is_empty(), "no FAC block at the lock");
+
+    // A caller with the whole capture gets the MSC and the audio from one pass.
+    let mut full = DrmReceiver::new();
+    full.push(&converted);
+    full.run();
+    assert!(full.locked(), "no lock on the whole capture");
+    assert!(!full.msc_frames.is_empty(), "no MSC frame on the whole capture");
+    assert!(!full.audio_access_units.is_empty(), "no audio access unit on the whole capture");
+}
+
 #[test]
 fn live_capture_decodes_msc_and_audio() {
     let rx = decode_live();

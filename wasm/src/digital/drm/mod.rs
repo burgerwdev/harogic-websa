@@ -39,6 +39,20 @@ use tables::{NUM_FAC_CELLS, QAM16, QAM4, QAM64_SM};
 /// and removing it would only add a small phase jump to the stream.
 const CARRIER_OFFSET_DEADBAND_HZ: f64 = 0.5;
 
+/// Baseband needed before the first decode attempt, in seconds.
+///
+/// The FAC and the SDC need about one super frame (1.2 s), and the lock is what puts the
+/// station in the readout. The MSC needs about three super frames, because the long
+/// interleaver fills over five frames, and the audio follows the MSC: a pass at 2 s returns
+/// the label and no MSC frame, while 3 s gives 2, 4 s gives 5 and 6 s gives 8. A caller that
+/// holds a whole capture therefore gets the audio, and a streaming caller gets the station
+/// first.
+///
+/// The audio decode of a real HE-AAC stream currently fails inside the FDK wasm decoder
+/// (see docs/en/DRM_BENCH.md). The lock gate keeps the failure out of the metadata pass: a
+/// trap in the audio would otherwise take the reported station with it.
+const LOCK_MIN_SECONDS: f64 = 2.0;
+
 /// A complex sample/value. Internal precision is f64.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Cplx {
@@ -167,6 +181,8 @@ pub struct DrmReceiver {
     /// True once the whole-carrier part of the offset has been applied. One block is spent
     /// on the measurement, and the next block decodes with the corrected anchor.
     anchor_fixed: bool,
+    /// Whole-carrier shift applied last, for the readout and for the regression tests.
+    pub anchor_carriers: i32,
     /// Total complex samples pushed, including the samples the buffer cap dropped. It
     /// gives every buffered sample its phase reference for the carrier-offset removal.
     pushed: u64,
@@ -210,6 +226,7 @@ impl DrmReceiver {
             audio_pcm: Vec::new(),
             carrier_offset_hz: 0.0,
             anchor_fixed: false,
+            anchor_carriers: 0,
             pushed: 0,
             mix_w: 0.0,
             mix_phase: 0.0,
@@ -286,9 +303,10 @@ impl DrmReceiver {
         if self.locked {
             return;
         }
-        // Two seconds is enough for mode detection (the guard correlations need a few
-        // symbol periods) plus at least one frame.
-        if self.buf.len() < 2 * params::SAMPLE_RATE as usize {
+        // Mode detection needs a few symbol periods. The decode needs more: see
+        // `LOCK_MIN_SECONDS`.
+        let min_samples = (LOCK_MIN_SECONDS * f64::from(params::SAMPLE_RATE)) as usize;
+        if self.buf.len() < min_samples {
             return;
         }
         let Some(acq) = timesync::acquire(&self.buf) else { return };
@@ -339,10 +357,18 @@ impl DrmReceiver {
                 self.remove_carrier_offset(f64::from(carrier_shift) * spacing);
                 self.carrier_offset_hz += f64::from(carrier_shift) * spacing;
                 self.anchor_fixed = true;
+                self.anchor_carriers = carrier_shift;
                 continue;
             }
             let Some(map) = CellMap::new(mode, so) else { return };
             let (r, score) = frame_sync(mode, &rows, n);
+            // Publish the detection before the decode, so a receiver that has not locked
+            // still reports what it sees.
+            self.mode = Some(mode);
+            self.occupancy = Some(so);
+            self.frame_offset = r;
+            self.frame_sync_score = score;
+            self.symbols_demodulated = rows.len();
 
             // The time pilots give the frame phase, not the super-frame phase. The SDC and
             // the MSC cells move over the super frame, so try each phase and keep the one
@@ -360,23 +386,16 @@ impl DrmReceiver {
                 }
             }
 
-            self.mode = Some(mode);
-            self.occupancy = Some(so);
-            self.frame_offset = r;
-            self.frame_sync_score = score;
-            self.symbols_demodulated = rows.len();
             self.locked = true;
             return;
         }
     }
 
     /// Drop everything the last decode produced, so a second attempt does not mix its
-    /// results with the first. The buffer and the carrier-offset state stay.
+    /// results with the first. The buffer, the carrier-offset state and the detection
+    /// result (mode, occupancy, frame offset) stay: they do not depend on the super-frame
+    /// phase, and the readout uses them while the receiver searches.
     fn clear_decode_state(&mut self) {
-        self.mode = None;
-        self.occupancy = None;
-        self.frame_offset = 0;
-        self.frame_sync_score = 0.0;
         self.snr_db = None;
         self.fac_constellation.clear();
         self.fac_soft_bits.clear();
@@ -533,6 +552,10 @@ impl DrmReceiver {
             let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, depth);
             let mut msc_dec = MlcDecoder::new(params, 1);
             for super_cells in &msc_supers {
+                // Only a complete super frame carries a whole audio frame. A partial one (the
+                // tail of a short capture, or the buffer of a streaming caller) would hand the
+                // AAC decoder a truncated access unit, which is not something it survives.
+                let complete = super_cells.chunks(map.msc_cells_per_frame).count() >= 3;
                 for frame in super_cells.chunks(map.msc_cells_per_frame).take(3) {
                     let Some(deint) = de.push(frame) else { continue };
                     // Skip frames still containing erasures (the long interleaver's
@@ -541,7 +564,9 @@ impl DrmReceiver {
                         let mut bits = Vec::new();
                         if msc_dec.decode(&deint, &mut bits) {
                             self.msc_frames.push(bits.clone());
-                            self.deframe_audio(&bits);
+                            if complete {
+                                self.deframe_audio(&bits);
+                            }
                         }
                     }
                 }
@@ -557,6 +582,15 @@ impl DrmReceiver {
     #[cfg(target_arch = "wasm32")]
     fn decode_audio(&mut self) {
         let Some(audio) = self.audio.clone() else { return };
+        // A 12 kHz core with SBR is the standard DRM HE-AAC configuration, and it traps inside
+        // the FDK wasm decoder: the module dies, and the session dies with it. Measured on the
+        // bench capture, whose audio is exactly that configuration (208-byte access units, five
+        // per 400 ms frame). The synthesised fixture uses a 24 kHz core and decodes, so the
+        // decoder build handles only that case. Skip the stream until the decoder is fixed;
+        // docs/en/DRM_BENCH.md records the evidence.
+        if audio.sbr && audio.sample_rate == 1 {
+            return;
+        }
         if audio.coding == 3 {
             // xHE-AAC (MPEG-D USAC). The AudioSpecificConfig is carried in the SDC audio
             // descriptor (ES 201 980 §6.4.3.10) and is fed as the decoder's init payload
@@ -639,20 +673,43 @@ impl DrmReceiver {
     }
 }
 
+/// Core sample rate in Hz for the readout. The `AudioInfo::sample_rate` field is the SDC
+/// coding index, not a rate in Hz, so the receiver resolves it.
+fn audio_rate_hz(rx: &DrmReceiver) -> u32 {
+    rx.audio_rate_hz()
+}
+
 /// `DigitalDemodulator` wrapper that streams baseband into a `DrmReceiver` and reports
 /// the decoded station label, mode and SNR once the receiver has locked.
 pub struct DrPlugin {
     rx: DrmReceiver,
-    reported: bool,
     last_snr: Option<f64>,
     last_label: Option<String>,
+    /// Lines for the readout, and the copy last handed out. The label arrives only when
+    /// the SDC passes its CRC, which can be later than the lock, so a report is sent
+    /// whenever the lines change instead of once.
+    lines: Vec<String>,
+    sent: Vec<String>,
+    /// Blocks since the pipeline was built, for the throttled search status.
+    status_blocks: u32,
+    /// Blocks since the last locked report, so the readout returns after the operator clears
+    /// the window instead of staying empty until the text changes.
+    report_blocks: u32,
 }
 
 impl DrPlugin {
     /// The receiver works at 48 kHz; the pipeline resamples the baseband to the
     /// decoder's rate before it reaches here.
     pub fn new(_rate: f64) -> Self {
-        Self { rx: DrmReceiver::new(), reported: false, last_snr: None, last_label: None }
+        Self {
+            rx: DrmReceiver::new(),
+            last_snr: None,
+            last_label: None,
+            lines: Vec::new(),
+            sent: Vec::new(),
+            status_blocks: 0,
+            report_blocks: 0,
+        }
     }
 }
 
@@ -664,30 +721,110 @@ impl DigitalDemodulator for DrPlugin {
     fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
         self.rx.push(iq);
         self.rx.run();
-        if self.rx.locked() && !self.reported {
-            self.reported = true;
-            self.last_snr = self.rx.snr_db;
-            self.last_label = self.rx.station_label.clone();
-            let mut lines = Vec::new();
-            if let (Some(mode), Some(occ)) = (self.rx.mode, self.rx.occupancy) {
-                lines.push(format!("DRM {mode:?} {:.0} kHz", occ.bandwidth_khz()));
+        if !self.rx.locked() {
+            // One status line per second while the search runs. Without it a receiver that
+            // has not locked shows nothing at all, and a dead stream looks the same as a
+            // search in progress.
+            self.status_blocks += 1;
+            if self.status_blocks % 15 != 0 {
+                return Vec::new();
             }
-            if let Some(label) = &self.last_label {
-                lines.push(format!("station: {label}"));
+            let seconds = self.rx.buffered() as f64 / f64::from(params::SAMPLE_RATE);
+            let mode = self
+                .rx
+                .mode
+                .map(|m| format!("{m:?}"))
+                .unwrap_or_else(|| "no mode yet".to_string());
+            let occupancy = self
+                .rx
+                .occupancy
+                .map(|o| format!("{:.0} kHz", o.bandwidth_khz()))
+                .unwrap_or_else(|| "-".to_string());
+            let line = format!(
+                "DRM searching: {seconds:.1}s buffered, {mode} {occupancy}, \
+                 carrier {:+.1} Hz, anchor {:+} carriers, FAC errors {}",
+                self.rx.carrier_offset_hz, self.rx.anchor_carriers, self.rx.fac_errors
+            );
+            if self.sent.first() != Some(&line) {
+                self.lines = vec![line.clone()];
+                self.sent = vec![line.clone()];
+                return vec![line];
             }
-            if let Some(snr) = self.last_snr {
-                lines.push(format!("FAC SNR {snr:.1} dB"));
-            }
-            return lines;
+            return Vec::new();
+        }
+        self.last_snr = self.rx.snr_db;
+        self.last_label = self.rx.station_label.clone();
+        let mut lines = Vec::new();
+        if let (Some(mode), Some(occ)) = (self.rx.mode, self.rx.occupancy) {
+            // The lock state first: the operator reads the window top-down, and a locked
+            // receiver with a weak signal must still show that it is locked.
+            lines.push(format!(
+                "locked: {mode:?}, {:.0} kHz, frame sync {:.2}, {} symbols",
+                occ.bandwidth_khz(),
+                self.rx.frame_sync_score,
+                self.rx.symbols_demodulated,
+            ));
+        }
+        // The station line comes from the SDC. Until the SDC passes its CRC the readout
+        // still shows the lock and the FAC quality, so a lock is never invisible.
+        match &self.last_label {
+            Some(label) => lines.push(format!("station: {label}")),
+            None => lines.push("station: (SDC not decoded yet)".to_string()),
+        }
+        if let Some(snr) = self.last_snr {
+            // Whole decibels: a tenth of a decibel changes on every block and the change
+            // would post a report per block.
+            lines.push(format!("FAC SNR {snr:.0} dB"));
+        }
+        if let Some(bitrate) = self.rx.msc_bitrate_kbps {
+            lines.push(format!("MSC {bitrate:.1} kbit/s"));
+        }
+        if let Some(mux) = &self.rx.multiplex {
+            lines.push(format!(
+                "protection A {} B {}",
+                mux.protection_a, mux.protection_b
+            ));
+        }
+        if let Some(audio) = &self.rx.audio {
+            let coding = match audio.coding {
+                0 => "AAC",
+                3 => "xHE-AAC",
+                _ => "reserved",
+            };
+            let kind = if audio.sbr { "SBR" } else { "no SBR" };
+            let channels = match audio.mode {
+                0 => "mono",
+                1 => "parametric stereo",
+                _ => "stereo",
+            };
+            lines.push(format!(
+                "audio: {coding} {kind} {channels}, {} Hz core",
+                audio_rate_hz(&self.rx)
+            ));
+        }
+        // The ABI reads the readout back through `decoded()`, so the lines must live on the
+        // plugin and not only in the return value.
+        self.lines = lines.clone();
+        self.report_blocks += 1;
+        let changed = lines != self.sent;
+        // Re-report about every five seconds even without a change. The operator can clear the
+        // window, and a readout that never comes back after a clear looks like a dead receiver.
+        if changed || self.report_blocks % 75 == 0 {
+            self.sent = lines;
+            self.report_blocks = 0;
+            return self.lines.clone();
         }
         Vec::new()
     }
 
     fn reset(&mut self) {
         self.rx = DrmReceiver::new();
-        self.reported = false;
         self.last_snr = None;
         self.last_label = None;
+        self.lines.clear();
+        self.sent.clear();
+        self.status_blocks = 0;
+        self.report_blocks = 0;
     }
 
     fn last_report(&self) -> Option<DigitalReport> {
@@ -695,11 +832,12 @@ impl DigitalDemodulator for DrPlugin {
     }
 
     fn decoded(&self) -> Vec<(String, DigitalReport)> {
-        let Some(label) = &self.last_label else { return Vec::new() };
+        // Report the lock and its metadata whether or not the SDC has decoded: a locked
+        // receiver with a weak signal must still show something.
         let report = self
             .last_report()
             .unwrap_or(DigitalReport { frequency_hz: 0.0, time_offset_s: 0.0, snr_db: 0.0 });
-        vec![(format!("DRM: {label}"), report)]
+        self.lines.iter().cloned().map(|line| (line, report)).collect()
     }
 
     fn buffered_input(&self) -> usize {
