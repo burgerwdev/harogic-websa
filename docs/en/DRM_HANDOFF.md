@@ -88,6 +88,17 @@ Read them for the algorithms; DecDRM is GPL-2.0-or-later, so no code is copied.
 The goal keeps the Dream subprocess out of this branch. Read those projects for the algorithms,
 not to add a second decoder.
 
+**Next session plan**: port DecDRM/Dream's `freqacq.rs` (pilot-based coarse carrier
+acquisition), `rx/chanest/` (time-Wiener channel estimation with tracking), and
+`rx/timesync.rs` (low-pass + decimate guard correlation). These three address the
+remaining failures: the carrier anchor, the channel estimation quality, and the
+symbol timing on real signals. Then remove the SBR guard and test the audio decode
+(the AU padding from the previous session should prevent the FDK trap).
+
+**Bench ref level**: set to **-40 dBm** before every run. Presets and the backend's
+own reference adjustment overwrite it. The user confirms the signal is visible at
+this setting.
+
 ## Audio codec coverage
 
 The receiver dispatches on the SDC audio coding field: 0 is AAC (with the SBR and audio-mode
