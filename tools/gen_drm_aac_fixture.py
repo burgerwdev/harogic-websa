@@ -33,7 +33,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from drm_aac_reserialize import BitReader, parse_frame, reserialize_drm, skip_fil_elements  # noqa: E402
+from drm_aac_reserialize import (  # noqa: E402
+    BitReader,
+    parse_frame,
+    reserialize_drm,
+    skip_fil_elements,
+)
 
 
 def main() -> int:
@@ -51,7 +56,8 @@ def main() -> int:
 
     drm_parts, ga_parts, sizes, kept = [], [], [], 0
     for p in paths:
-        data = open(p, "rb").read()
+        with open(p, "rb") as f:
+            data = f.read()
         br = BitReader(data)
         skip_fil_elements(br)
         frame = data[br.pos >> 3:]

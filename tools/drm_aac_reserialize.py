@@ -247,7 +247,7 @@ def reserialize_drm(source: bytes, out: dict) -> str:
     bracketed part covered by aac_crc_bits. The DRM order moves global_gain after
     the tns/ltp flags and omits the GA predictor bit."""
     br = BitReader(source)
-    id_tag = br.bits(0, 7)              # id_syn_ele + element_tag (NOT in the DRM access unit)
+    # (the GA id_syn_ele + element_tag are not part of the DRM access unit)
     ics_info = br.bits(15, 10)          # ics_reserved + window_sequence + shape + max_sfb
     tns_ltp = ("1" if out["tns_present"] else "0") + "0"  # tns_data_present + ltp_data_present
     global_gain = br.bits(7, 8)         # global_gain (moved after tns/ltp)
@@ -298,7 +298,7 @@ def hcr_encode(codewords: list) -> tuple:
 
     out = ["0"] * total
     # Priority codewords: codeword i starts segment i, left to right.
-    for seg, (_cb, cw) in zip(segs, sorted_cws):
+    for seg, (_cb, cw) in zip(segs, sorted_cws, strict=False):
         for i in range(len(cw)):
             out[seg[0]] = cw[i]
             seg[0] += 1
@@ -341,7 +341,8 @@ def hcr_encode(codewords: list) -> tuple:
 
 def main() -> int:
     path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/raw.aac"
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     br = BitReader(data)
     skip_fil_elements(br)
     frame = data[br.pos >> 3 :]
