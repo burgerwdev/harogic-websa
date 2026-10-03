@@ -35,6 +35,15 @@ pub fn equalize_symbol(map: &CellMap, sym: usize, cells: &[Cplx]) -> EqSymbol {
         }
     }
 
+    // Smooth the raw pilot estimates before interpolation: real channels are smooth in
+    // frequency, so adjacent pilots should give similar H values.
+    for i in 1..pilot_h.len().saturating_sub(1) {
+        pilot_h[i] = Cplx::new(
+            (pilot_h[i - 1].re + pilot_h[i].re * 2.0 + pilot_h[i + 1].re) / 4.0,
+            (pilot_h[i - 1].im + pilot_h[i].im * 2.0 + pilot_h[i + 1].im) / 4.0,
+        );
+    }
+
     // Linearly interpolate H across the carrier axis.
     let mut chan = vec![Cplx::new(0.0, 0.0); n];
     for c in 0..n {
