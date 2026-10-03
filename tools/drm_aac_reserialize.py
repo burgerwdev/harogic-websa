@@ -81,6 +81,7 @@ def parse_frame(data: bytes) -> dict:
     assert window_sequence == 0, "only ONLY_LONG is implemented"
     out["max_sfb"] = br.read(6)
     br.read(1)  # predictor_data_present
+    out["section_data_start"] = br.pos
 
     # Section data: codebook (4 bits) + length (5 bits, escape 31 = "add 31, more").
     sections = []
@@ -96,6 +97,7 @@ def parse_frame(data: bytes) -> dict:
         sections.append((sect_cb, sect_len))
         sfb += sect_len
     out["sections"] = sections
+    out["bit_pos_after_sections"] = br.pos
 
     # Scale factors (SCL Huffman, delta-coded; zero codebook -> sf 0).
     codebooks = []
@@ -112,15 +114,16 @@ def parse_frame(data: bytes) -> dict:
             factor += decode_huffman_word(br, SCL) - 60
             sf.append(factor - 100)
     out["scale_factors"] = sf
+    out["bit_pos_after_scale_factors"] = br.pos
 
     # Spectral data (per band, using the 24 kHz long-block offsets).
     offsets = SFB_OFFSETS["sfb_24_1024"]
-    out["codewords"] = []  # (codebook, codeword_bits) for the HCR encoder
+    out["codewords"] = []  # (codebook, codeword_bits, sign_bits) for HCR
     for band in range(out["max_sfb"]):
         cb = codebooks[band]
-        if cb == 0 or cb == 13:  # zero / PNS noise: no codewords (PNS ignored)
+        if cb == 0 or cb == 13:
             continue
-        if cb in (14, 15):  # intensity (stereo only)
+        if cb in (14, 15):
             continue
         table, dim, bits, offset = CODEBOOKS[str(cb)]
         mask = (1 << bits) - 1
@@ -130,15 +133,16 @@ def parse_frame(data: bytes) -> dict:
             idx = decode_huffman_word(br, table)
             cw_len = br.pos - cw_start
             cw_bits = br.bits(cw_start, cw_len)
+            sign_bits = ""
             for _ in range(dim):
                 coef = (idx & mask) - offset
                 idx >>= bits
-                if offset == 0 and coef != 0 and br.read(1):
-                    coef = -coef
-            if cb == 11:  # escape: skip the escape values (2 per codeword)
+                if offset == 0 and coef != 0:
+                    sign_bits += "1" if br.read(1) else "0"
+            if cb == 11:
                 for _ in range(2):
                     _read_escape(br)
-            out["codewords"].append((cb, cw_bits))
+            out["codewords"].append((cb, cw_bits, sign_bits))
     out["bit_pos_after_spectral"] = br.pos
     return out
 
@@ -149,16 +153,47 @@ def _read_escape(br: BitReader) -> None:
         br.read(4)
 
 
+def encode_sections_vcb11(sections: list) -> str:
+    """Re-encode the section data as VCB11: 5-bit codebooks (instead of 4) with
+    the same 5-bit section lengths (escape 31)."""
+    bits = ""
+    for cb, length in sections:
+        bits += f"{cb:05b}"
+        remaining = length
+        while remaining >= 31:
+            bits += f"{31:05b}"
+            remaining -= 31
+        bits += f"{remaining:05b}"
+    return bits
+
+
+def reserialize_drm(source: bytes, out: dict) -> str:
+    """Assemble the complete DRM AAC frame: header + VCB11 section data + the
+    verbatim scale factors + the HCR side-info + the reordered spectral data."""
+    br = BitReader(source)
+    bits = br.bits(0, out["section_data_start"])          # header + ICS (verbatim)
+    bits += encode_sections_vcb11(out["sections"])        # VCB11 section data
+    bits += br.bits(out["bit_pos_after_sections"],        # scale factors (verbatim)
+                    out["bit_pos_after_scale_factors"] - out["bit_pos_after_sections"])
+    reordered, lrsd, llc = hcr_reorder(out["codewords"])  # HCR reordered spectral
+    bits += f"{lrsd:014b}"                                # lengthOfReorderedSpectralData
+    bits += f"{llc:06b}"                                  # lengthOfLongestCodeword
+    bits += reordered
+    return bits
+
+
 def hcr_reorder(codewords: list) -> tuple:
     """HCR reordering: sort codewords by codebook, pad each to
-    min(AMAX_CW_LEN[cb], longest) bits. Returns (bit_string, reordered_length,
-    longest_codeword_length)."""
+    min(AMAX_CW_LEN[cb], longest) bits, then append the sign bits in the same
+    sorted order. Returns (bit_string, reordered_length, longest_codeword_length)."""
     ordered = sorted(codewords, key=lambda cw: cw[0])
-    longest = max((len(b) for _, b in ordered), default=0)
+    longest = max((len(b) for _, b, _ in ordered), default=0)
     bits = ""
-    for cb, cw_bits in ordered:
+    for cb, cw_bits, _sign in ordered:
         width = min(AMAX_CW_LEN[cb], longest)
         bits += cw_bits + "0" * (width - len(cw_bits))  # left-aligned, padded
+    for cb, _cw, sign in ordered:
+        bits += sign
     return bits, len(bits), longest
 
 
