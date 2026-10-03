@@ -109,6 +109,50 @@ fn xorshift_bits(n: usize) -> Vec<u8> {
         .collect()
 }
 
+/// The real-audio fixture: the same Mode B / SO3 signal, but the MSC payload is a
+/// 24 kHz AAC audio super frame (10 re-serialised DRM AAC access units of a 1 kHz
+/// sine) instead of xorshift noise.
+const FIXTURE_AAC: &[u8] = include_bytes!("../../tests/fixtures/drm/drm_modeB_so3_48k_aac.f32");
+
+fn load_iq_aac() -> Vec<f32> {
+    let mut v = Vec::with_capacity(FIXTURE_AAC.len() / 4);
+    for c in FIXTURE_AAC.chunks_exact(4) {
+        v.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+    }
+    v
+}
+
+#[test]
+fn fixture_deframes_real_aac_audio() {
+    let iq = load_iq_aac();
+    assert_eq!(iq.len(), 576_000, "AAC fixture must be 6 s at 48 kHz");
+    let mut rx = DrmReceiver::new();
+    rx.push(&iq);
+    rx.run();
+
+    assert!(rx.locked(), "receiver did not lock onto the AAC fixture");
+    assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM TEST"));
+
+    // The MSC now carries a real AAC audio super frame (10 access units per 400 ms
+    // multiplex frame, each a re-serialised DRM AAC access unit with its CRC byte
+    // prepended). The receiver must deframe them into the codec-ready access units.
+    assert!(
+        !rx.audio_access_units.is_empty(),
+        "deframe_audio produced no AAC access units"
+    );
+    // 15 multiplex frames × 10 access units (the depth-5 interleaver delays the
+    // first frames, so >= 8 complete multiplex frames deframe).
+    assert!(
+        rx.audio_access_units.len() >= 80,
+        "expected >= 80 AAC access units, got {}",
+        rx.audio_access_units.len()
+    );
+    // Each access unit starts with the aac_crc_bits byte (the DRM AAC frame layout).
+    for au in &rx.audio_access_units {
+        assert!(!au.is_empty(), "empty access unit");
+    }
+}
+
 #[test]
 fn fixture_decodes_msc_bit_exact() {
     let iq = load_iq();
