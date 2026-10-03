@@ -52,6 +52,11 @@ let legacyOscillator: OscillatorNode | null = null;
 let legacyPullGain: GainNode | null = null;
 let initPromise: Promise<void> | null = null;
 let enabled = false;
+//: True once the browser DSP has reported that it cannot run the current mode (e.g. 'drm', which
+//: has no wasm kernel and is decoded by the backend Dream process). The Python `?audio=1` path is
+//: the fallback, but it can only start once audio is on; this remembers the request so turning
+//: Audio on afterwards still starts it (otherwise switching to DRM while muted left it silent).
+let pythonFallbackNeeded = false;
 let audioTransitionMuted = false;
 let audioFrames = 0;
 let bufferedSamples = 0;
@@ -254,7 +259,7 @@ async function initializeOutput(context: AudioContext): Promise<void> {
       };
       // The browser DSP owns playback when the policy allows it: then the Python audio path is not
       // started (it is the fallback, `enablePythonAudioFallback` starts it if the DSP fails).
-      if (!wasmDspAllowed()) startWorker(candidate.port);
+      if (!wasmDspAllowed() || pythonFallbackNeeded) startWorker(candidate.port);
       return;
     } catch (error) {
       candidate?.disconnect();
@@ -265,7 +270,7 @@ async function initializeOutput(context: AudioContext): Promise<void> {
     }
   }
   setupLegacyNode(context);
-  if (!wasmDspAllowed()) startWorker(null);
+  if (!wasmDspAllowed() || pythonFallbackNeeded) startWorker(null);
 }
 
 /**
@@ -276,10 +281,12 @@ async function initializeOutput(context: AudioContext): Promise<void> {
  * or when the path is already running, so a caller can report the difference.
  */
 export function enablePythonAudioFallback(): boolean {
+  pythonFallbackNeeded = true;
   if (worker || !enabled || !ctx) return false;
   try {
     // `startWorker` already sends the current enabled/mute state to the new worker.
     startWorker(workletNode && !workletPortHandedOff ? workletNode.port : null);
+    pythonFallbackNeeded = false;
     return true;
   } catch {
     return false;
@@ -465,6 +472,9 @@ export function setSdrAudioEnabled(on: boolean): void {
       worker?.postMessage({ type: 'enabled', value: true });
       worker?.postMessage({ type: 'mute', value: false });
       void ctx?.resume();
+      // The DSP may have already reported that it cannot run this mode (DRM has no wasm kernel)
+      // while the audio switch was off: start the Python path now that there is somewhere to play.
+      if (pythonFallbackNeeded) void initPromise?.then(() => enablePythonAudioFallback());
     } catch {
       // Headless browsers and hosts without an audio device keep the data path harmless.
     }
