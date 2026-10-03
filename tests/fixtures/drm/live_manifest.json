@@ -17,7 +17,9 @@
     "decimate": 256,
     "published_baseband_rate_hz": 48828.125,
     "measured_baseband_rate_hz": 48833.85,
-    "measured_rate_method": "cyclic-prefix period, mode B guard correlation (1041.79 samples per 1024-sample useful part)"
+    "measured_rate_method": "cyclic-prefix period, mode B guard correlation (1041.79 samples per 1024-sample useful part)",
+    "carrier_offset_hz": 19.71,
+    "carrier_offset_method": "cyclic-prefix phase over 224 symbols, standard deviation 0.81 Hz; the same method gives 0.00 Hz on the synthesised fixture"
   },
   "level": {
     "rms_dbfs": 15.6,
@@ -34,7 +36,8 @@
     "transmitter_config": "tools/drm_bench/station_iq.toml",
     "station_label": "SAN90 DRM BENCH",
     "msc_bitrate_kbps": 20.96,
-    "audio": "HE-AAC mono, 12 kHz core"
+    "audio": "HE-AAC mono, 12 kHz core",
+    "carrier_offset_fraction_of_spacing": 0.42
   },
   "oracle": {
     "decoder": "dream 2.2.4 console build (feature/drm-dream-decoder worktree)",
@@ -42,5 +45,10 @@
     "note": "the same samples decode in Dream, so the bench signal is good and the receiver under test is the failing part"
   },
   "captured_at": "2026-10-03T11:35:39+00:00",
-  "tool": "tools/drm_capture.py --seconds 10 (drain 1 s first; the file keeps the first 6 s)"
+  "tool": "tools/drm_capture.py --seconds 10 (drain 1 s first; the file keeps the first 6 s)",
+  "receiver_before_fix": {
+    "delivered_rate": "no lock: timesync::acquire returns None",
+    "resampled_to_48k": "lock, mode B, SO3, but FAC SNR -18.9 dB and 19 of 19 FAC blocks fail",
+    "carrier_offset_corrected": "FAC SNR -1.4 dB, FAC still fails: the receiver tolerates only a few Hz (see docs/en/DRM_BENCH.md)"
+  }
 }

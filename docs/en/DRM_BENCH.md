@@ -115,21 +115,55 @@ failure.
 
 - **Level and scaling**: the reference fixture decodes at 400x its own level, and the live
   capture gives the same result at 1/256 of its level.
-- **Carrier offset**: a scan from -400 Hz to +400 Hz in 20 Hz steps. No offset decodes the
-  FAC. The cyclic-prefix phase gives an offset of about 19 Hz after resampling.
+- **Carrier offset**: not ruled out. It is the cause of the FAC failure. See the section
+  below for the measurement.
 - **Frame offset**: every candidate offset 0..14 was forced. No candidate decodes the FAC.
 - **Spectrum sense**: the conjugate of the capture behaves the same.
 - **DC offset**: the capture's mean is 0.002, and removing it changes nothing.
 - **Sample rate**: the measured rate is 48833.85 Hz, and a resample at that exact rate
   changes nothing.
 
+## Carrier offset: the FAC failure explained
+
+The receiver corrects no carrier offset. It assumes that the signal sits exactly on the DRM
+carrier grid. A real signal does not.
+
+Measured on the live capture:
+
+- The carrier offset is +19.7 Hz. The cyclic-prefix phase gives this value, and it stays
+  within 0.8 Hz over the capture. The same method gives 0.0 Hz on the synthesised fixture.
+- +19.7 Hz is 42 % of the DRM carrier spacing (46.875 Hz). Every carrier then falls between
+  two FFT bins.
+- The DRM core tolerates only a few Hz. The table below applies an offset to the synthesised
+  fixture and runs the receiver.
+
+| Offset applied to the fixture | FAC SNR | FAC result |
+| --- | --- | --- |
+| 0 Hz | 36.6 dB | 0 of 15 blocks fail |
+| +5 Hz | 12.6 dB | 0 of 15 blocks fail |
+| +10 Hz | 6.3 dB | 0 of 15 blocks fail, the SDC fails |
+| +20 Hz | -1.7 dB | 15 of 15 blocks fail |
+| +23.4 Hz (half the carrier spacing) | -14.4 dB | 14 of 15 blocks fail |
+
+The live capture behaves like the fixture at about +20 Hz. The FAC failure is therefore a
+carrier-offset failure, and not a channel, level or noise problem.
+
+Two further facts from the session:
+
+- A static shift of the capture by +24 Hz leaves a residual of -4.3 Hz (cyclic-prefix
+  measurement). The FAC SNR improves from -18.9 dB to -1.4 dB, and the FAC still fails. The
+  receiver is less tolerant of a small negative offset than of a small positive one: the
+  fixture decodes at +5 Hz and fails at -2 Hz. A static shift is therefore not a fix.
+- The receiver needs a carrier-offset estimate and correction (an AFC). Every real DRM
+  receiver has one, because no transmitter and receiver share a clock.
+
 ## Open defects
 
 1. **Rate**: the DRM core is fixed at 48 kHz (`wasm/src/digital/drm/params.rs`). The
    channelizer delivers 48828.125 Hz. Without a resample the receiver cannot acquire.
    The pipeline has a resampler, and the worker must give it the live rate.
-2. **FAC decode on a live signal**: not explained yet. Every FAC block fails, and the
-   factors above do not explain it. This is the blocking defect.
+2. **FAC decode on a live signal**: explained. The carrier offset is +19.7 Hz, and the
+   receiver has no AFC. See the section above. The fix is still open.
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.
