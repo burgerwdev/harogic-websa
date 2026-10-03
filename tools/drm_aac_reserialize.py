@@ -17,6 +17,10 @@ from aac_sfb_offsets import SFB_OFFSETS
 
 SCL = CODEBOOKS["SCL"][0]
 
+# Per-codebook maximum Huffman codeword length (fdK-AAC aac_rom.cpp `aMaxCwLen`).
+AMAX_CW_LEN = [0, 11, 9, 20, 16, 13, 11, 14, 12, 17, 14, 49, 0, 0, 0, 0,
+               14, 17, 21, 21, 25, 25, 29, 29, 29, 29, 33, 33, 33, 37, 37, 41]
+
 
 class BitReader:
     def __init__(self, data: bytes):
@@ -29,6 +33,12 @@ class BitReader:
             v = (v << 1) | ((self.data[self.pos >> 3] >> (7 - (self.pos & 7))) & 1)
             self.pos += 1
         return v
+
+    def bit_at(self, i: int) -> int:
+        return (self.data[i >> 3] >> (7 - (i & 7))) & 1
+
+    def bits(self, start: int, n: int) -> str:
+        return "".join(str(self.bit_at(start + i)) for i in range(n))
 
 
 def decode_huffman_word(br: BitReader, codebook) -> int:
@@ -105,7 +115,7 @@ def parse_frame(data: bytes) -> dict:
 
     # Spectral data (per band, using the 24 kHz long-block offsets).
     offsets = SFB_OFFSETS["sfb_24_1024"]
-    out["codewords"] = []  # (codebook, codeword_length, value) — the HCR input
+    out["codewords"] = []  # (codebook, codeword_bits) for the HCR encoder
     for band in range(out["max_sfb"]):
         cb = codebooks[band]
         if cb == 0 or cb == 13:  # zero / PNS noise: no codewords (PNS ignored)
@@ -115,9 +125,11 @@ def parse_frame(data: bytes) -> dict:
         table, dim, bits, offset = CODEBOOKS[str(cb)]
         mask = (1 << bits) - 1
         width = offsets[band + 1] - offsets[band]
-        start = br.pos
         for _ in range(width // dim):
+            cw_start = br.pos
             idx = decode_huffman_word(br, table)
+            cw_len = br.pos - cw_start
+            cw_bits = br.bits(cw_start, cw_len)
             for _ in range(dim):
                 coef = (idx & mask) - offset
                 idx >>= bits
@@ -126,7 +138,7 @@ def parse_frame(data: bytes) -> dict:
             if cb == 11:  # escape: skip the escape values (2 per codeword)
                 for _ in range(2):
                     _read_escape(br)
-        out["codewords"].append((cb, br.pos - start, br.pos - start))
+            out["codewords"].append((cb, cw_bits))
     out["bit_pos_after_spectral"] = br.pos
     return out
 
@@ -135,6 +147,19 @@ def _read_escape(br: BitReader) -> None:
     # Escape value: while the first bit is set, keep reading 4-bit groups.
     while br.read(1):
         br.read(4)
+
+
+def hcr_reorder(codewords: list) -> tuple:
+    """HCR reordering: sort codewords by codebook, pad each to
+    min(AMAX_CW_LEN[cb], longest) bits. Returns (bit_string, reordered_length,
+    longest_codeword_length)."""
+    ordered = sorted(codewords, key=lambda cw: cw[0])
+    longest = max((len(b) for _, b in ordered), default=0)
+    bits = ""
+    for cb, cw_bits in ordered:
+        width = min(AMAX_CW_LEN[cb], longest)
+        bits += cw_bits + "0" * (width - len(cw_bits))  # left-aligned, padded
+    return bits, len(bits), longest
 
 
 def main() -> int:
