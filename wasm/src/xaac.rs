@@ -47,7 +47,9 @@ unsafe fn alloc_aligned(size: usize, align: usize) -> *mut u8 {
 /// A minimal xHE-AAC decoder over the prebuilt libxaac archive.
 pub struct XaacDecoder {
     obj: *mut core::ffi::c_void,
+    obj_size: usize,
     memtabs: *mut u8,
+    memtabs_size: usize,
     mem: Vec<(*mut u8, usize)>,
     in_ptr: *mut u8,
     out_ptr: *mut u8,
@@ -100,7 +102,7 @@ impl XaacDecoder {
                     out_ptr = p;
                 }
             }
-            Some(Self { obj, memtabs, mem, in_ptr, out_ptr })
+            Some(Self { obj, obj_size: size as usize, memtabs, memtabs_size: mt_size as usize, mem, in_ptr, out_ptr })
         }
     }
 
@@ -153,10 +155,10 @@ impl Drop for XaacDecoder {
                 }
             }
             if !self.memtabs.is_null() {
-                dealloc(self.memtabs, Layout::from_size_align_unchecked(128, 8));
+                dealloc(self.memtabs, Layout::from_size_align_unchecked(self.memtabs_size.max(1), 8));
             }
             if !self.obj.is_null() {
-                dealloc(self.obj as *mut u8, Layout::from_size_align_unchecked(1, 8));
+                dealloc(self.obj as *mut u8, Layout::from_size_align_unchecked(self.obj_size.max(1), 8));
             }
         }
     }

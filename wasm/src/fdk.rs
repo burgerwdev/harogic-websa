@@ -10,7 +10,12 @@ const HEADER: usize = 16;
 
 #[no_mangle]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
+    // Round the header-inclusive size up to HEADER so the Rust dlmalloc chunk size
+    // and the size stored for `free`/`realloc` agree exactly (a non-aligned size
+    // makes dlmalloc round up internally and its `psize <= size + max_overhead`
+    // sanity check fails on the next allocation).
     let total = size.saturating_add(HEADER).max(1);
+    let total = (total + HEADER - 1) & !(HEADER - 1);
     let layout = Layout::from_size_align_unchecked(total, HEADER);
     let p = alloc(layout);
     if p.is_null() {
