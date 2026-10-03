@@ -65,6 +65,9 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
 // FDK AAC decoder FFI (C linkage; see libAACdec/include/aacdecoder_lib.h).
 // ---------------------------------------------------------------------------
 
+/// Bytes of zero padding behind every access unit handed to the decoder.
+const AU_PAD: usize = 512;
+
 /// TT_DRM transport type.
 const TT_DRM: i32 = 12;
 
@@ -113,8 +116,14 @@ impl AacDecoder {
 
     /// Decode one AAC access unit into 16-bit interleaved PCM (channels interleaved).
     pub fn decode(&mut self, au: &[u8]) -> Vec<i16> {
-        // Feed the access unit.
-        let mut buf = au.as_ptr() as *mut u8;
+        // Feed the access unit with room past it. FDK's DRM reader looks for the SBR payload
+        // after the core frame, and a stream whose SDC claims SBR while its payload carries
+        // none makes it read past the unit. That fault traps the wasm module, and whether it
+        // does depends on the heap layout. The padding turns it into a plain decode error.
+        let mut padded = Vec::with_capacity(au.len() + AU_PAD);
+        padded.extend_from_slice(au);
+        padded.resize(au.len() + AU_PAD, 0);
+        let mut buf = padded.as_mut_ptr();
         let size = au.len() as u32;
         let mut valid = au.len() as u32;
         unsafe {
