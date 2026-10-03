@@ -1182,13 +1182,17 @@ class SdrSession(MeasurementSession):
         if self._drm is None or not self._drm.alive:
             self._publish_drm(s, force=True)
             return
-        fs_out = float(self._ddc.fs_out or 0.0)
+        # Use the *measured* channelizer rate when it is known: the nominal `fs_out` is not the
+        # rate the device delivers (measured ~0.1% high), and resampling from the nominal figure
+        # leaves a slow drift against the 48 kHz sound card. The null-sink feed then slips and the
+        # receiver re-locks every second or so (the live path decoded far worse than the same bytes
+        # replayed from a file). Rebuild only when the estimate really moves.
+        fs_out = float(self._baseband_rate() or self._ddc.fs_out or 0.0)
         if fs_out <= 0.0:
             return
-        if fs_out != self._drm_geo:
+        if abs(fs_out - self._drm_geo) > max(5.0, self._drm_geo * 1e-3):
             # Band-limit before the rate change (the DDC passband may reach up to fs_out/2) and
-            # rebuild the resampler for the new geometry. The ratio is small because the DDC is
-            # asked for ~48 kHz, so the linear resampler stays well inside its accuracy.
+            # rebuild the resampler for the new geometry.
             cutoff = min(20000.0, 0.45 * fs_out)
             h = design_lowpass(fs_out, cutoff, 129)
             self._drm_lp_i = StreamFilter(h)
@@ -1209,6 +1213,15 @@ class SdrSession(MeasurementSession):
                 i48 = i48 * gain
                 q48 = q48 * gain
             self._drm.feed(i48, q48)
+            # Diagnostic (WEBSA_DRM_DUMP=<path>): write the exact baseband handed to Dream, so a
+            # captured sink monitor can be compared against it to tell DDC/feed underruns apart.
+            _dump = os.environ.get('WEBSA_DRM_DUMP')
+            if _dump:
+                inter = np.empty(i48.size * 2, dtype=np.int16)
+                inter[0::2] = np.clip(i48, -1.0, 1.0) * 32767.0
+                inter[1::2] = np.clip(q48, -1.0, 1.0) * 32767.0
+                with open(_dump, 'ab') as _fh:
+                    _fh.write(inter.tobytes())
 
         # Dream keeps emitting a full-scale idle/noise signal while it is NOT decoding the
         # programme (measured: the audio sink carried ~0.3 FS noise for 20 s with msc = -1 and no
