@@ -15,6 +15,8 @@ export interface DrmStatus {
 	audio_codec?: string;
 	audio_mode?: string;
 	sync?: boolean;
+	snr_db?: number;
+	mer_db?: number;
 	error?: string;
 }
 
@@ -41,6 +43,8 @@ export function renderDrmStatus(sdr: { drm?: DrmStatus } | null | undefined): vo
 	if (drm.bandwidth_khz) parts.push(`${Number(drm.bandwidth_khz)} kHz`);
 	if (drm.bitrate_kbps) parts.push(`${Number(drm.bitrate_kbps).toFixed(1)} kbps`);
 	if (drm.audio_codec) parts.push(String(drm.audio_codec));
+	if (drm.snr_db) parts.push(`SNR ${Number(drm.snr_db).toFixed(1)} dB`);
+	if (drm.mer_db) parts.push(`MER ${Number(drm.mer_db).toFixed(1)} dB`);
 	parts.push(drm.sync ? 'SYNC' : 'no sync');
 	if (drm.error) parts.push(String(drm.error));
 	el.textContent = parts.join(' \u00b7 ');

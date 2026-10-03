@@ -63,6 +63,8 @@ def extract_metadata(status: dict | None) -> dict:
         'country': country.get('code'),
         'text': svc.get('text'),
         'snr_db': signal.get('snr_db'),
+        'mer_db': signal.get('mer_db'),
+        'wmer_db': signal.get('wmer_db'),
         'sync': (st.get('io') == RX_OK and st.get('time') == RX_OK
                  and st.get('frame') == RX_OK),
         'status': st,
