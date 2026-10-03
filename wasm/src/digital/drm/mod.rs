@@ -196,8 +196,21 @@ impl DrmReceiver {
 
     /// Feed interleaved complex baseband (f32 I,Q pairs) at 48 kHz.
     pub fn push(&mut self, iq: &[f32]) {
+        // Once locked the capture has been decoded; buffering more IQ would only grow the
+        // vector without bound (and eventually exhaust the wasm memory, which then breaks
+        // every later allocation, e.g. the next mode's pipeline).
+        if self.locked {
+            return;
+        }
         for c in iq.chunks_exact(2) {
             self.buf.push(Cplx::new(f64::from(c[0]), f64::from(c[1])));
+        }
+        // Before lock, keep only a bounded window: acquisition + one super frame need a few
+        // seconds, and a long listen to a band without a signal must not grow forever.
+        let cap = 8 * params::SAMPLE_RATE as usize;
+        if self.buf.len() > cap {
+            let drop = self.buf.len() - cap;
+            self.buf.drain(0..drop);
         }
     }
 
@@ -613,6 +626,7 @@ fn detect_occupancy(mode: RobustnessMode, power: &[f64], n: usize) -> Option<Spe
             kmax = kmax.max(k);
         }
     }
+    // Exact match first (the clean synthesised fixture lands on a layout exactly).
     for so in SpectrumOccupancy::ALL {
         if let Some((a, b)) = params::carrier_range(mode, so) {
             if a == kmin && b == kmax {
@@ -620,7 +634,25 @@ fn detect_occupancy(mode: RobustnessMode, power: &[f64], n: usize) -> Option<Spe
             }
         }
     }
-    None
+    // Otherwise the closest layout within a small tolerance: a real signal's edge carriers
+    // are attenuated by the channel filter, so the detected span can be a carrier or two
+    // narrower than the nominal layout (the exact match would reject every real signal).
+    let mut best: Option<SpectrumOccupancy> = None;
+    let mut best_dist = i32::MAX;
+    for so in SpectrumOccupancy::ALL {
+        if let Some((a, b)) = params::carrier_range(mode, so) {
+            let d = (a - kmin).abs() + (b - kmax).abs();
+            if d < best_dist {
+                best_dist = d;
+                best = Some(so);
+            }
+        }
+    }
+    if best_dist <= 8 {
+        best
+    } else {
+        None
+    }
 }
 
 /// Frame synchronisation on the time-reference pilots (present only in symbol 0 of
