@@ -179,20 +179,24 @@ def crc8(bits: str) -> int:
 
 
 def reserialize_drm(source: bytes, out: dict) -> str:
-    """Assemble the complete DRM AAC frame: the aac_crc_bits byte (CRC-8 over the
-    side info), then header + VCB11 section data + the verbatim scale factors +
-    the HCR side-info + the reordered spectral data."""
+    """Assemble the complete DRM AAC frame (ES 201 980 §5.3.1; DecDRM's
+    `el_drm_sce` layout): [id+tag][ics_info tns_present ltp_present global_gain
+    section_data scale_factor_data hcr_lengths] spectral_data(HCR), with the
+    bracketed part covered by aac_crc_bits. The DRM order moves global_gain after
+    the tns/ltp flags and omits the GA predictor bit."""
     br = BitReader(source)
-    header = br.bits(0, out["section_data_start"])          # header + ICS (verbatim)
-    sections = encode_sections_vcb11(out["sections"])       # VCB11 section data
-    sf = br.bits(out["bit_pos_after_sections"],             # scale factors (verbatim)
+    id_tag = br.bits(0, 7)              # id_syn_ele + element_tag
+    ics_info = br.bits(15, 10)          # ics_reserved + window_sequence + shape + max_sfb
+    tns_ltp = "00"                       # tns_data_present + ltp_data_present
+    global_gain = br.bits(7, 8)         # global_gain (moved after tns/ltp)
+    sections = encode_sections_vcb11(out["sections"])
+    sf = br.bits(out["bit_pos_after_sections"],
                  out["bit_pos_after_scale_factors"] - out["bit_pos_after_sections"])
-    reordered, lrsd, llc = hcr_reorder(out["codewords"])    # HCR reordered spectral
-    hcr_side = f"{lrsd:014b}{llc:06b}"                       # HCR side-info
-    # aac_crc_bits: CRC-8 over the side info (section data + scale factors + HCR
-    # side-info) — the range the TT_DRM decoder checks before the spectral data.
-    crc = crc8(sections + sf + hcr_side)
-    return f"{crc:08b}" + header + sections + sf + hcr_side + reordered
+    reordered, lrsd, llc = hcr_reorder(out["codewords"])
+    hcr_side = f"{lrsd:014b}{llc:06b}"
+    side_info = ics_info + tns_ltp + global_gain + sections + sf + hcr_side
+    crc = crc8(side_info)
+    return f"{crc:08b}" + id_tag + side_info + reordered
 
 
 def hcr_reorder(codewords: list) -> tuple:
