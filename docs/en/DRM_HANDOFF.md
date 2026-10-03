@@ -29,8 +29,10 @@ Open:
 
 ## Bench facts that took time to learn
 
-- Ref level **-45 dBm**: in-band contrast is then 25 to 27 dB. At -40 dBm it was 6 dB and
-  nothing locked.
+- Ref level **-35 to -45 dBm**: in-band contrast is then 25 to 27 dB. At -40 dBm it was 6 dB and
+  nothing locked. **Set it before every bench run**: presets and the backend's own reference
+  adjustment overwrite it, and the operators on both sides of this goal have seen the signal
+  disappear after a setting was restored.
 - Transmit with `tools/pluto_drm_tx.py` and the 15 s file. A 60 s file makes a 250 MB cyclic
   buffer and the Pluto rejects the push with `EFAULT`.
 - The bench stream carries the standard DRM HE-AAC configuration: a 12 kHz core with SBR, 208
