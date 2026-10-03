@@ -1,5 +1,5 @@
 {
- "bytes": 2577789,
+ "bytes": 2577795,
  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
  "exports": [
   "calloc",
@@ -44,6 +44,6 @@
  "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "d6eac1dbe8103c372b349f95d5c566480252c1f3ebf1311f216de406289f7039",
+ "sha256": "8362cd52e7666363217430198e9319e35a1c302e004eb601ecd2930c47f02230",
  "target": "wasm32-unknown-unknown"
 }

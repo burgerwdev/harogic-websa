@@ -26,7 +26,7 @@ pub fn equalize_symbol(map: &CellMap, sym: usize, cells: &[Cplx]) -> EqSymbol {
     let mut pilot_h: Vec<Cplx> = Vec::new();
     for c in 0..n {
         let ty = map.cell(sym, c);
-        if ty.is_scattered() && !ty.is_dc() {
+        if (ty.is_scattered() || ty.is_freq_pilot()) && !ty.is_dc() {
             let r = map.pilot(sym, c);
             if r.norm_sqr() > 0.0 {
                 pilot_c.push(c);
