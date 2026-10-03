@@ -212,6 +212,19 @@ extraction of a real signal, and the ruled-out list below records what it is not
    A debug build of the decoder (with symbols and without `strip`) hides the fault, so
    the trap depends on the heap layout. The next step is to symbolize the release build,
    or to bound the fault so that only the audio decode can fail.
+
+   The fault also makes the smoke test flaky. With the committed artifact and a clean
+   worktree, `frontend/src/__tests__/drmAudioEndToEnd.test.ts` passed in many runs and
+   then traps (`RuntimeError: memory access out of bounds`) in others, with the same
+   bytes. The same artifact is therefore not reliable, and the fault must be fixed before
+   any further change to the DRM decode can be trusted, because every such change moves
+   the heap.
+
+   One candidate explains both streams: the fixture's SDC claims SBR, but its payload
+   carries no SBR data (the repo notes this as the "no-SBR smoke" case, and the smoke
+   export hard-codes a config without the SBR flag). The receiver derives the decoder
+   config from the SDC, so FDK expects an SBR tail that is not there and reads past the
+   access unit. The bench stream does carry SBR data, so it follows a different path.
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.
