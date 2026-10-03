@@ -1,0 +1,59 @@
+{
+  "note": "Synthesised DRM30 ground-truth fixture. Generated externally by the DecDRM transmitter (https://github.com/CasualArclamp/DecDRM, v0.5.1, commit b1fbd87f3d3e4709ff838d5120724fb4506253f6, GPL-2.0-or-later) via its `gen_fixture.rs` example, then round-trip verified with the DecDRM receiver. The emitted signal is an ETSI ES 201 980 (DRM30) broadcast-format signal; the I/Q samples are data, not GPL source. Do not edit by hand. See README.md for provenance and how to regenerate.",
+  "file": "drm_modeB_so3_48k.f32",
+  "format": {
+    "dtype": "float32",
+    "byte_order": "little-endian",
+    "layout": "interleaved I,Q",
+    "sample_rate_hz": 48000,
+    "duration_s": 6.0,
+    "complex_samples": 288000,
+    "f32_values": 576000,
+    "bytes": 2304000
+  },
+  "signal": {
+    "standard": "ETSI ES 201 980 (DRM30)",
+    "robustness_mode": "B",
+    "spectrum_occupancy": 3,
+    "bandwidth_khz": 10,
+    "msc_mode": "64-QAM SM",
+    "sdc_mode": "16-QAM",
+    "interleaving": "long",
+    "protection": { "part_a": 0, "part_b": 1, "hierarchical": 0, "scheme": "EEP" }
+  },
+  "fac": {
+    "service_id": 1193046,
+    "short_id": 0,
+    "num_audio": 1,
+    "num_data": 0,
+    "language_code": 5,
+    "audio_descriptor": 1
+  },
+  "sdc": {
+    "station_label": "SAN90 DRM TEST",
+    "audio": {
+      "coding": "AAC",
+      "sbr": true,
+      "mode": "mono",
+      "sample_rate_hz": 24000,
+      "stream_id": 0,
+      "text_message": true
+    },
+    "language": "eng",
+    "country": "gb"
+  },
+  "msc": {
+    "vspp_bits_per_frame": 0,
+    "hpp_bits_per_frame": 0,
+    "lpp_bits_per_frame": 8390,
+    "bitrate_kbps": 20.975
+  },
+  "self_check": {
+    "decoder": "DecDRM 0.5.1 receiver",
+    "fac_crc_ok": 13,
+    "sdc_crc_ok": 4,
+    "snr_db": 50.9,
+    "mode_detected": "B",
+    "label_decoded": "SAN90 DRM TEST"
+  }
+}

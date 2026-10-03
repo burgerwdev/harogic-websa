@@ -43,6 +43,10 @@ tools/sdr_probe/plots/
 
 # pi agent state (session goals/ledger; local only)
 .pi/
+
+# DRM-via-dream: vendored console decoder build scratch (binary is rebuilt locally)
+tools/drm_dream/build/
+tools/drm_dream/.src/
 tools/ft8_reference/decode_ref
 tools/ft8_reference/ft8_lib/
 
