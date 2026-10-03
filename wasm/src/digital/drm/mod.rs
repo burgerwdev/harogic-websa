@@ -711,8 +711,14 @@ impl DrmReceiver {
             return;
         }
         // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder.
+        // The SDC type-9 descriptor's SBR flag makes FDK look for the SBR payload after the
+        // core frame. A stream that claims SBR without carrying it, or whose AU boundary does
+        // not match the SBR tail, makes FDK read past the unit. Strip the flag: FDK then
+        // processes the core frame only, and the audio plays at the core rate.
+        let mut type9 = audio.to_type9_bytes();
+        type9[0] &= !0x20;                   // clear the SBR flag (bit 5)
         if let Some(mut dec) = crate::fdk::AacDecoder::new() {
-            let configured = dec.configure(&audio.to_type9_bytes());
+            let configured = dec.configure(&type9);
             for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
                 let pcm = dec.decode(au);
                 self.audio_pcm.extend_from_slice(&pcm);

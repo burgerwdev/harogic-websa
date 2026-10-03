@@ -41,16 +41,30 @@ pub fn equalize_symbol(map: &CellMap, sym: usize, cells: &[Cplx]) -> EqSymbol {
         chan[c] = interpolate(&pilot_c, &pilot_h, c);
     }
 
+    // Smooth the channel estimate across carriers. A real channel is smooth in frequency,
+    // so this reduces the pilot noise without changing the channel shape. The end carriers
+    // keep their raw estimate because the filter needs neighbours on both sides.
+    let mut smooth = chan.clone();
+    for c in 1..n - 1 {
+        let lo = chan[c - 1];
+        let mid = chan[c];
+        let hi = chan[c + 1];
+        smooth[c] = Cplx::new(
+            (lo.re + mid.re * 2.0 + hi.re) / 4.0,
+            (lo.im + mid.im * 2.0 + hi.im) / 4.0,
+        );
+    }
+
     // Equalise.
     let mut eq = vec![Cplx::new(0.0, 0.0); n];
     for c in 0..n {
         if map.cell(sym, c).is_dc() {
             eq[c] = Cplx::new(0.0, 0.0);
-        } else if chan[c].norm_sqr() > 0.0 {
-            eq[c] = cells[c] / chan[c];
+        } else if smooth[c].norm_sqr() > 0.0 {
+            eq[c] = cells[c] / smooth[c];
         }
     }
-    EqSymbol { cells: eq, chan }
+    EqSymbol { cells: eq, chan: smooth }
 }
 
 /// Complex linear interpolation of H at carrier `c` from the sorted pilot positions.
