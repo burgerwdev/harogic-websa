@@ -27,7 +27,18 @@ FT8_IQ_RATE = 48_000.0
 FT8_SLOT_SECONDS = 15.0
 
 #: Demod ids the fake treats as digital protocols (they get the protocol fixture instead of a tone).
-DIGITAL_DEMODS = ('ft8',)
+DIGITAL_DEMODS = ('ft8', 'drm')
+
+#: Canned DRM metadata the fake publishes while sdr_demod == 'drm'. Mirrors the DecDRM fixture
+#: ground truth (tests/fixtures/drm/manifest.json) so the API/UI wiring can be exercised in CI
+#: without PulseAudio or the Dream binary.
+DRM_METADATA = {
+    'station': 'SAN90 DRM TEST', 'service_id': '123456',
+    'robustness': 'B', 'bandwidth_khz': 10.0, 'bitrate_kbps': 20.96,
+    'audio_codec': 'AAC', 'audio_mode': 'Mono', 'protection': 'EEP',
+    'language': 'eng', 'country': 'gb', 'snr_db': 30.0, 'sync': True,
+    'status': {'io': 0, 'time': 0, 'frame': 0, 'fac': 0, 'sdc': 0, 'msc': 0},
+}
 
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
@@ -358,6 +369,7 @@ class FakeSdrSession(_FakeRtaBase):
         self._tick += 1
         s = self.dev.state
         center = float(s.sdr_center_hz)
+        is_drm = str(s.sdr_demod) == 'drm'
         # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it
         bandwidth = 48_000.0 if str(s.sdr_demod) in DIGITAL_DEMODS else 50e6 / max(1, int(s.sdr_decimate or 16))
         freq, spec = self._spectrum(center, bandwidth, SDR_PAN_POINTS)
@@ -384,10 +396,14 @@ class FakeSdrSession(_FakeRtaBase):
         }
         s.sdr_level_dbfs = -60.0
         s.sdr_squelch_open = True
+        if is_drm:
+            s.sdr_drm = dict(DRM_METADATA, active=True, error='', dropped_blocks=0)
+        else:
+            s.sdr_drm = {}
         pan = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
                          center - bandwidth / 2, center + bandwidth / 2)
         frames = [pan]
-        if getattr(self.dev, 'iq_clients', 0):
+        if getattr(self.dev, 'iq_clients', 0) and not is_drm:
             frames.append(self._baseband(s.sdr_actual['ddc_rate'], center))
         # The audio that belongs to this block's worth of time (the stream is paced to the baseband,
         # so one 20 ms frame per step would be four times too slow).

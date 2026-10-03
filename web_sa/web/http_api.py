@@ -192,6 +192,7 @@ def build_status(dev) -> dict:
             'level_dbfs': s.sdr_level_dbfs,
             'squelch_open': s.sdr_squelch_open,
             'adm': s.sdr_adm,
+            'drm': s.sdr_drm,
             'health': session_health if s.mode == 'sdr' else {},
         },
         'auto_ref': {

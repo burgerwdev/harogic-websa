@@ -19,6 +19,8 @@ from ctypes import cast as c_cast
 import numpy as np
 
 from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
+from ..demod.filters import LinearResampler, StreamFilter, design_lowpass
+from ..drm_dream import DreamDecoder
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
@@ -38,6 +40,19 @@ _TRANSIENT_IQS = {-8, -9, -10, -12}
 _BUS_RETRY = (-10, -11)
 _BUS_RETRY_TRIES = 4
 _BUS_RETRY_DELAY = 0.05
+
+#: sdr_demod value that routes the channelized baseband to the background Dream decoder.
+DRM_DEMOD = 'drm'
+#: Dream only accepts these signal sample rates; the DRM path resamples the DDC output to it.
+DRM_RATE = 48000
+
+def _default_dream_bin() -> str:
+    env = os.getenv('DRM_DREAM_BIN')
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(os.path.dirname(os.path.dirname(here)),
+                        'tools', 'drm_dream', 'build', 'dream')
 
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
 
@@ -142,6 +157,17 @@ class SdrSession(MeasurementSession):
         self._demod = AnalogDemod(self.AUDIO_RATE)
         self._adm = sb.c_void_p()
         self._adm_ok = False
+        # DRM: the background Dream decoder plus the resampling from the DDC output rate to the
+        # 48 kHz Dream expects. Created/stopped by _sync_drm_locked() as the mode changes.
+        self._drm = None
+        self._drm_error = ''
+        self._drm_geo = 0.0
+        self._drm_lp_i = None
+        self._drm_lp_q = None
+        self._drm_res_i = None
+        self._drm_res_q = None
+        self._drm_audio = np.zeros(0, dtype=np.float32)
+        self._last_drm_meta = 0.0
         self._audio_buf = np.zeros(0, dtype=np.float32)
         self._audio_seq = 0
         self._audio_reset_pending = False
@@ -216,6 +242,12 @@ class SdrSession(MeasurementSession):
                 log.exception('SDR trigger stop failed during exit')
             _t('exit: trigger stopped, closing ADM')
             self._close_adm_locked()
+            if self._drm is not None:
+                try:
+                    self._drm.stop()
+                except Exception:
+                    log.exception('DRM decoder stop failed during exit')
+                self._drm = None
             # A single SWP_Configuration after IQS does not take effect: SWP_GetFullSweep
             # then returns BusDataError (-9). A mode reset first makes the restored SWP
             # configuration actually work (bench-verified).
@@ -618,6 +650,7 @@ class SdrSession(MeasurementSession):
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
         s.sdr_actual.update(sdr_spectrum_windows(
             s.sdr_center_hz, self._iqs_center_hz or s.sdr_center_hz, half * 2.0))
+        self._sync_drm_locked()
 
     def _reconfigure_full_locked(self):
         """Full Stop -> Configuration -> DDC config -> Start. A DDC-only reconfiguration
@@ -881,6 +914,10 @@ class SdrSession(MeasurementSession):
             reconfig = (not browser_demodulates) and mode in ANALOG_MODES
             if browser_demodulates and mode in ANALOG_MODES:
                 self._mark_chain_stale()
+            # Entering/leaving DRM starts/stops the background Dream decoder, so it always
+            # rebuilds the chain even though 'drm' is not an analog kernel.
+            if (mode == DRM_DEMOD) != (old_demod == DRM_DEMOD):
+                reconfig = True
         if if_bw is not None and abs(float(if_bw) - s.sdr_if_bw) > 0.5:
             # The IF bandwidth *does* move the channelizer: the DDC's output rate is derived from it,
             # and the browser's demodulator reads that stream.
@@ -1028,6 +1065,114 @@ class SdrSession(MeasurementSession):
                                      thd=float(p.THD))
         except Exception:
             self._adm_ok = False
+
+    # ---------------- DRM (background Dream decoder) ----------------
+    def _sync_drm_locked(self) -> None:
+        """Start/stop the background Dream decoder to match the selected demod mode.
+
+        Called from `_configure_chain_locked` (so full and runtime reconfigurations both pick it
+        up), never from `step()`. Expensive (spawns PulseAudio sinks and the decoder), so it is a
+        no-op when the decoder is already in the wanted state.
+        """
+        s = self.dev.state
+        want = str(s.sdr_demod) == DRM_DEMOD
+        if want and self._drm is None:
+            bin_path = _default_dream_bin()
+            if not os.path.exists(bin_path):
+                self._drm_error = f'dream binary not found: {bin_path}'
+                log.error('DRM: %s', self._drm_error)
+            else:
+                pid = os.getpid()
+                self._drm = DreamDecoder(
+                    dream_bin=bin_path,
+                    sample_rate=DRM_RATE,
+                    status_socket=os.getenv('DRM_DREAM_STATUS_SOCKET',
+                                            f'/tmp/drm-dream-{pid}-status.sock'),
+                    sink_name=os.getenv('DRM_DREAM_FEED_SINK', f'drm_dream_feed_{pid}'),
+                    audio_sink_name=os.getenv('DRM_DREAM_AUDIO_SINK', f'drm_dream_audio_{pid}'),
+                    capture_audio=os.getenv('WEBSA_DRM_AUDIO', '1').lower()
+                    not in ('0', 'false', 'no', 'off'),
+                )
+                try:
+                    self._drm.start()
+                    self._drm_error = ''
+                    self._drm_geo = 0.0
+                    self._drm_audio = np.zeros(0, dtype=np.float32)
+                    self._audio_reset_pending = True
+                    log.info('DRM: background Dream decoder started (pid=%s)', self._drm.pid)
+                except Exception as exc:
+                    self._drm_error = f'dream start failed: {exc!r}'
+                    log.exception('DRM decoder start failed')
+                    self._drm = None
+        elif not want and self._drm is not None:
+            try:
+                self._drm.stop()
+            except Exception:
+                log.exception('DRM decoder stop failed')
+            self._drm = None
+            log.info('DRM: background Dream decoder stopped')
+        self._publish_drm(s, force=True)
+
+    def _publish_drm(self, s, force: bool = False) -> None:
+        if self._drm is None:
+            s.sdr_drm = {'active': False, 'error': self._drm_error}
+            return
+        if not self._drm.alive:
+            s.sdr_drm = {'active': False,
+                         'error': self._drm.last_error or 'dream exited'}
+            return
+        now = time.monotonic()
+        if force or now - self._last_drm_meta >= 1.0:
+            self._last_drm_meta = now
+            meta = self._drm.metadata()
+            meta.update(active=True, error='', dropped_blocks=self._drm.dropped_blocks)
+            s.sdr_drm = meta
+
+    def _drm_frames_locked(self, frames, i, q) -> None:
+        """Feed one DDC block to Dream and emit its decoded audio as AUDF frames."""
+        s = self.dev.state
+        if self._drm is None or not self._drm.alive:
+            self._publish_drm(s, force=True)
+            return
+        fs_out = float(self._ddc.fs_out or 0.0)
+        if fs_out <= 0.0:
+            return
+        if fs_out != self._drm_geo:
+            # Band-limit before the rate change (the DDC passband may reach up to fs_out/2) and
+            # rebuild the resampler for the new geometry. The ratio is small because the DDC is
+            # asked for ~48 kHz, so the linear resampler stays well inside its accuracy.
+            cutoff = min(20000.0, 0.45 * fs_out)
+            h = design_lowpass(fs_out, cutoff, 129)
+            self._drm_lp_i = StreamFilter(h)
+            self._drm_lp_q = StreamFilter(h)
+            self._drm_res_i = LinearResampler(fs_out, DRM_RATE)
+            self._drm_res_q = LinearResampler(fs_out, DRM_RATE)
+            self._drm_geo = fs_out
+        i48 = self._drm_res_i.process(self._drm_lp_i.process(i))
+        q48 = self._drm_res_q.process(self._drm_lp_q.process(q))
+        if i48.size:
+            self._drm.feed(i48, q48)
+
+        pcm = self._drm.drain_audio()
+        if pcm.size:
+            self._drm_audio = np.concatenate(
+                [self._drm_audio, pcm.astype(np.float32) / 32768.0])
+            chunk = None
+            while self._drm_audio.size >= self.AUDIO_FRAME:
+                chunk = self._drm_audio[:self.AUDIO_FRAME]
+                self._drm_audio = self._drm_audio[self.AUDIO_FRAME:]
+                out = np.clip(chunk * float(s.sdr_volume), -1.0, 1.0)
+                frames.append(encode_audio(self._audio_seq, DRM_RATE,
+                                           (out * 32767.0).astype(np.int16)))
+                self._audio_seq = (self._audio_seq + 1) & 0xFFFFFFFF
+            if self._drm_audio.size > DRM_RATE:
+                self._drm_audio = self._drm_audio[-self.AUDIO_FRAME:]
+            if chunk is not None:
+                rms = float(np.sqrt(np.mean(np.square(chunk))))
+                level = 20.0 * float(np.log10(max(rms, 1e-6)))
+                s.sdr_level_dbfs = level
+                s.sdr_squelch_open = level >= float(s.sdr_squelch)
+        self._publish_drm(s)
 
     def step(self):
         if not self._ready:
@@ -1189,6 +1334,15 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
             i, q = self._mix(i, q)                # software fine tuning
+
+            # ---- DRM: the background Dream decoder owns the demodulation ----
+            # Dream is an external process fed over a private sound-card loopback, so it replaces
+            # the Python demodulator *and* the browser's IQBF path (the browser does not implement
+            # DRM on this branch). Its decoded audio is framed as ordinary AUDF here.
+            if str(s.sdr_demod) == DRM_DEMOD:
+                self._drm_frames_locked(frames, i, q)
+                self._record_step_timing(_t_phases)
+                return frames, []
 
             # ---- channelized baseband to the browser demodulator (IQBF) ----
             # The browser runs the demodulator and the audio chain; the channelization (coarse

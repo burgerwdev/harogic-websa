@@ -107,6 +107,9 @@ class SdrParams:
     sdr_deemph_us: float = -1.0
     sdr_level_dbfs: float = -120.0
     sdr_adm: dict = field(default_factory=dict)
+    # Decoded DRM metadata (station label, robustness mode, bitrate, sync) published by the
+    # background Dream decoder while sdr_demod == 'drm'.
+    sdr_drm: dict = field(default_factory=dict)
 
 
 @dataclass
