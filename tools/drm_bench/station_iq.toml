@@ -33,8 +33,7 @@ iso_country = "gb"
 programme_type = "Pop Music"
 
 [service.audio]
-codec = "he-aac"             # AAC core plus SBR: the coding the wasm receiver decodes
-core_rate = 12000            # 24 kHz output, 5 frames per 400 ms
+codec = "xhe-aac"             # xHE-AAC (MPEG-D USAC): the coding the libxaac wasm decoder handles.
 stereo = false
 text = ["DRM bench loop", "SAN-90 + PlutoSDR"]
 

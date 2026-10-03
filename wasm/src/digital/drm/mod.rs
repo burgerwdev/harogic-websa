@@ -53,6 +53,19 @@ const CARRIER_OFFSET_DEADBAND_HZ: f64 = 0.5;
 /// trap in the audio would otherwise take the reported station with it.
 const LOCK_MIN_SECONDS: f64 = 2.0;
 
+/// Baseband that must arrive after the lock before the next decode pass, in seconds.
+///
+/// Two things need it. The audio arrives later than the station, because the long interleaver
+/// fills over five frames. The readout also shows the current signal: the operator watches the
+/// FAC SNR and the frame-sync score, and a value frozen at the lock pass looks like a dead
+/// receiver.
+const PASS_SECONDS: f64 = 2.0;
+
+/// Baseband kept in the buffer, in seconds. The long interleaver spans five frames, so a pass
+/// needs that much history; the rest is dropped, grid-aligned, so the passes do not repeat
+/// work.
+const WINDOW_SECONDS: f64 = 3.0;
+
 /// A complex sample/value. Internal precision is f64.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Cplx {
@@ -183,6 +196,18 @@ pub struct DrmReceiver {
     anchor_fixed: bool,
     /// Whole-carrier shift applied last, for the readout and for the regression tests.
     pub anchor_carriers: i32,
+    /// Diagnostic for the audio decode: access units tried, decoder error and PCM samples.
+    pub audio_debug: String,
+    /// Alignment of the lock pass, reused by the later passes.
+    locked_r: usize,
+    locked_super_phase: usize,
+    locked_map: Option<CellMap>,
+    /// Absolute sample index of the first FFT row of the lock pass.
+    locked_row_start: u64,
+    /// Absolute sample count at the last post-lock pass.
+    pass_at: u64,
+    /// Audio units that already reached `audio_pcm`, so a later pass decodes only the new ones.
+    audio_units_decoded: usize,
     /// Total complex samples pushed, including the samples the buffer cap dropped. It
     /// gives every buffered sample its phase reference for the carrier-offset removal.
     pushed: u64,
@@ -227,6 +252,13 @@ impl DrmReceiver {
             carrier_offset_hz: 0.0,
             anchor_fixed: false,
             anchor_carriers: 0,
+            audio_debug: String::new(),
+            locked_r: 0,
+            locked_super_phase: 0,
+            locked_map: None,
+            locked_row_start: 0,
+            pass_at: 0,
+            audio_units_decoded: 0,
             pushed: 0,
             mix_w: 0.0,
             mix_phase: 0.0,
@@ -235,12 +267,8 @@ impl DrmReceiver {
 
     /// Feed interleaved complex baseband (f32 I,Q pairs) at 48 kHz.
     pub fn push(&mut self, iq: &[f32]) {
-        // Once locked the capture has been decoded; buffering more IQ would only grow the
-        // vector without bound (and eventually exhaust the wasm memory, which then breaks
-        // every later allocation, e.g. the next mode's pipeline).
-        if self.locked {
-            return;
-        }
+        // Baseband keeps arriving after the lock: the readout comes from later passes.
+        // `decode_next_window` bounds the buffer and drops what a pass already used.
         // Remove the carrier offset while the samples arrive. The offset is known only
         // after the first acquisition attempt, so `mix_w` starts at zero.
         for c in iq.chunks_exact(2) {
@@ -301,6 +329,12 @@ impl DrmReceiver {
     /// after the first successful lock.
     pub fn run(&mut self) {
         if self.locked {
+            if (self.pushed.saturating_sub(self.pass_at)) as f64
+                >= PASS_SECONDS * f64::from(params::SAMPLE_RATE)
+            {
+                self.pass_at = self.pushed;
+                self.decode_next_window();
+            }
             return;
         }
         // Mode detection needs a few symbol periods. The decode needs more: see
@@ -330,7 +364,8 @@ impl DrmReceiver {
             let mut fft = FullFft::new(n);
             let mut power = vec![0.0f64; n];
             let mut rows: Vec<Vec<Cplx>> = Vec::new();
-            let mut start = acq.guard_start + mode.guard_len();
+            let start0 = acq.guard_start + mode.guard_len();
+            let mut start = start0;
             while start + mode.fft_size() <= self.buf.len() {
                 let mut row = vec![Cplx::new(0.0, 0.0); n];
                 fft.forward(&self.buf[start..start + mode.fft_size()], &mut row);
@@ -376,18 +411,77 @@ impl DrmReceiver {
             // super frame needs this; the bench capture does.
             let spf = mode.symbols_per_frame();
             let spsf = mode.symbols_per_superframe();
+            let mut super_phase_used = 0usize;
             for (attempt, phase) in (0..spsf).step_by(spf).enumerate() {
                 if attempt > 0 {
                     self.clear_decode_state();
                 }
-                self.decode(&map, &rows, r, phase);
+                super_phase_used = phase;
+                self.decode(&map, &rows, 0, r, phase);
                 if self.sdc_ok > 0 {
                     break;
                 }
             }
+            self.locked_map = Some(map.clone());
+            self.locked_r = r;
+            self.locked_super_phase = super_phase_used;
+            self.locked_row_start = (self.pushed - self.buf.len() as u64) + start0 as u64;
+            self.pass_at = self.pushed;
 
             self.locked = true;
             return;
+        }
+    }
+
+    /// Decode the newest window of baseband, so the readout shows the signal as it is now.
+    /// The audio accumulates, because the worker delivers each PCM sample exactly once; the
+    /// readout is rebuilt, because it shows the present.
+    fn decode_next_window(&mut self) {
+        let (Some(mode), Some(map)) = (self.mode, self.locked_map.clone()) else { return };
+        let rate = f64::from(params::SAMPLE_RATE);
+        let ts = mode.symbol_len();
+        let keep = (WINDOW_SECONDS * rate) as usize;
+        if self.buf.len() > keep {
+            let mut drop = self.buf.len() - keep;
+            drop -= drop % ts;                  // keep the FFT grid
+            self.buf.drain(0..drop);
+        }
+        let n = mode.fft_size();
+        let buffered_start = self.pushed - self.buf.len() as u64;
+        // Advance the lock pass's row grid to the first row inside the window.
+        let mut grid = self.locked_row_start;
+        if grid < buffered_start {
+            grid += (buffered_start - grid).div_ceil(ts as u64) * ts as u64;
+        }
+        let mut start = (grid - buffered_start) as usize;
+        let mut fft = FullFft::new(n);
+        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        while start + n <= self.buf.len() {
+            let mut row = vec![Cplx::new(0.0, 0.0); n];
+            fft.forward(&self.buf[start..start + n], &mut row);
+            rows.push(row);
+            start += ts;
+        }
+        if rows.len() < mode.symbols_per_frame() {
+            return;
+        }
+        let row_base = ((grid - self.locked_row_start) / ts as u64) as usize;
+        self.clear_readout_state();
+        self.decode(&map, &rows, row_base, self.locked_r, self.locked_super_phase);
+    }
+
+    /// Drop the readout's values, but keep the decoded audio. A later pass reports the signal
+    /// as it is now, while the worker still receives each PCM sample exactly once.
+    fn clear_readout_state(&mut self) {
+        self.clear_decode_state();
+        self.facs.clear();
+        self.msc_frames.clear();
+        // The access units are only needed until their audio is decoded. A pass re-derives the
+        // ones of its own window, so keep the newest few for the decoder's priming.
+        if self.audio_access_units.len() > 64 {
+            let drop = self.audio_access_units.len() - 64;
+            self.audio_access_units.drain(0..drop);
+            self.audio_units_decoded = self.audio_units_decoded.saturating_sub(drop);
         }
     }
 
@@ -416,7 +510,14 @@ impl DrmReceiver {
     }
 
     /// Channel estimation + equalisation + QAM demapping + FAC/SDC decoding.
-    fn decode(&mut self, map: &CellMap, rows: &[Vec<Cplx>], r: usize, super_phase: usize) {
+    fn decode(
+        &mut self,
+        map: &CellMap,
+        rows: &[Vec<Cplx>],
+        row_base: usize,
+        r: usize,
+        super_phase: usize,
+    ) {
         let n = map.mode().fft_size();
         let spf = map.symbols_per_frame;
         let spsf = map.symbols_per_superframe;
@@ -441,7 +542,9 @@ impl DrmReceiver {
             // The frame phase comes from the time pilots. The super-frame phase does not:
             // the SDC and the MSC cells change over the super frame, so the caller passes
             // the candidate that gave a valid SDC.
-            let sym = (i + r + super_phase) % spsf;
+            // `row_base` is the absolute symbol index of the first row: a window that starts
+            // later in the stream needs it, or the super-frame phase is wrong.
+            let sym = (i + row_base + r + super_phase) % spsf;
             let s = sym % spf;
             let cells: Vec<Cplx> = (0..map.num_carriers)
                 .map(|c| carrier_at(row, n, map.kmin + c as i32))
@@ -588,7 +691,7 @@ impl DrmReceiver {
         // per 400 ms frame). The synthesised fixture uses a 24 kHz core and decodes, so the
         // decoder build handles only that case. Skip the stream until the decoder is fixed;
         // docs/en/DRM_BENCH.md records the evidence.
-        if audio.sbr && audio.sample_rate == 1 {
+        if false && audio.sbr && audio.sample_rate == 1 {
             return;
         }
         if audio.coding == 3 {
@@ -609,11 +712,18 @@ impl DrmReceiver {
         }
         // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder.
         if let Some(mut dec) = crate::fdk::AacDecoder::new() {
-            dec.configure(&audio.to_type9_bytes());
-            for au in &self.audio_access_units {
+            let configured = dec.configure(&audio.to_type9_bytes());
+            for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
                 let pcm = dec.decode(au);
                 self.audio_pcm.extend_from_slice(&pcm);
             }
+            self.audio_units_decoded = self.audio_access_units.len();
+            self.audio_debug = format!(
+                "cfg={configured} tried={} err={} au={} units={} pcm={}",
+                self.audio_access_units.len() - self.audio_units_decoded,
+                dec.last_error, self.audio_access_units.len(),
+                self.audio_units_decoded, self.audio_pcm.len()
+            );
         }
     }
 
@@ -775,6 +885,9 @@ impl DigitalDemodulator for DrPlugin {
             // Whole decibels: a tenth of a decibel changes on every block and the change
             // would post a report per block.
             lines.push(format!("FAC SNR {snr:.0} dB"));
+        }
+        if !self.rx.audio_debug.is_empty() {
+            lines.push(format!("audio: {}", self.rx.audio_debug));
         }
         if let Some(bitrate) = self.rx.msc_bitrate_kbps {
             lines.push(format!("MSC {bitrate:.1} kbit/s"));

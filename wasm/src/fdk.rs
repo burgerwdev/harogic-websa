@@ -92,6 +92,8 @@ extern "C" {
 /// A streaming AAC (DRM transport) decoder over the prebuilt FDK AAC library.
 pub struct AacDecoder {
     handle: *mut std::ffi::c_void,
+    /// Error code of the last decode call, for diagnostics.
+    pub last_error: i32,
 }
 
 impl AacDecoder {
@@ -102,7 +104,7 @@ impl AacDecoder {
         if handle.is_null() {
             None
         } else {
-            Some(Self { handle })
+            Some(Self { handle, last_error: 0 })
         }
     }
 
@@ -133,6 +135,7 @@ impl AacDecoder {
         // Decode one frame. 4096 samples per channel is more than any AAC frame.
         let mut pcm = vec![0i16; 4096 * 2];
         let err = unsafe { aacDecoder_DecodeFrame(self.handle, pcm.as_mut_ptr(), pcm.len() as i32, 0) };
+        self.last_error = err;
         if err != 0 {
             return Vec::new();
         }
