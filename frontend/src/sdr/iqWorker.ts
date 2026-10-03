@@ -81,6 +81,10 @@ let deliveredSamples = 0;
 /// Diagnostics: how full a digital decoder's buffer is (a buffer that keeps restarting looks exactly
 /// like a quiet band from the outside).
 let digitalPushes = 0;
+/// DRM's own path: how often the worker fed the DRM decoder, and how often it answered.
+/// Without these two the diagnostics cannot tell "no decoder" from "no lock".
+let drmPushes = 0;
+let drmReports = 0;
 let digitalBuffered = 0;
 let digitalResets = 0;
 /// Resets reported by the decoder worker itself (its own window thrown away). Kept apart from
@@ -227,6 +231,8 @@ function postStats(): void {
   post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
     pcmFrames, pcmSamples, rms, mode: params?.mode ?? '',
+    digital: digital ? 1 : 0, fsIn: Number(params?.fsIn) || 0, outRate: Number(params?.outRate) || 0,
+    drmPushes, drmReports, digitalIdCount: digitalIds.size,
     // "The browser DSP is the audio source": for an analog mode that is the demodulator itself, and
     // for a digital one it is the companion demodulator that plays the channel. The page hands the
     // AudioWorklet port over on this flag, so a digital mode without it never gets heard.
@@ -625,8 +631,10 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     // that a transferred buffer demands.
     if (companion) deliver(companion.process(frame.iq));
     if (pipeline && params?.mode === 'drm') {
+      drmPushes += 1;
       const reports = pipeline.push(frame.iq);
       if (reports.length) {
+        drmReports += 1;
         post({ type: 'drm', lines: reports.map((report) => report.text), snrDb: reports[0].snrDb });
         const points = pipeline.constellation(1024);
         if (points.length) {

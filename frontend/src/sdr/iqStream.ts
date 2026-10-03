@@ -28,6 +28,9 @@ let pcmFrames = 0;
 let pcmSamples = 0;
 let pipelineReady = false;
 let handedOff = false;
+/// The mode the running worker was configured for, so a dropped worker is replaced on the
+/// next mode change and not on every status round.
+let configuredMode = '';
 let lastError = '';
 //: Why the browser DSP is off (empty when it is on): 'requested', 'no-webassembly',
 //: 'stored-preference' or a fetch/instantiation failure. The Python path is playing in that case.
@@ -66,6 +69,14 @@ let dspDfnReason = '';
 let dspRms = 0;
 /// The de-emphasis the browser chain is running (microseconds; < 0 = the mode's default).
 let dspDeemph = -1;
+/// Input and output rates the DRM pipeline was built with, plus its feed counters. The DRM core
+/// works at exactly 48 kHz, so a wrong input rate is the first thing to check on a failed lock.
+let dspDigital = 0;
+let dspFsIn = 0;
+let dspOutRate = 0;
+let drmPushes = 0;
+let drmReports = 0;
+let digitalIdCount = 0;
 /// The playback fill's range in the last window (samples); a periodic dip shows an audible hitch.
 let dspFillMin = 0;
 let dspFillMax = 0;
@@ -112,6 +123,8 @@ function publishIqDebug(): void {
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
       (dspDfnState ? ` dsp_nr_algo=${dspDfnState}` + (dspDfnReason ? `:${dspDfnReason}` : '') : '') +
       ` dsp_cw=${dspCwState} dsp_cw_chars=${cwCharsSeen}` +
+      ` dsp_digital=${dspDigital} dsp_ids=${digitalIdCount} dsp_fs_in=${dspFsIn}` +
+      ` dsp_out_rate=${dspOutRate} dsp_drm_pushes=${drmPushes} dsp_drm_reports=${drmReports}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
 }
@@ -148,6 +161,13 @@ function startWorker(): void {
   }
   worker.onerror = (event: ErrorEvent) => {
     dspError = `worker: ${event.message || 'error'}`;
+    // A wasm trap kills the worker instance and leaves the reference pointing at a dead port, so
+    // every later mode change looked ignored and only a page refresh helped (reported from the
+    // bench). Drop the worker here; the next `configure` starts a fresh one.
+    worker = null;
+    handedOff = false;
+    pipelineReady = false;
+    lastError = dspError;
     publishIqDebug();
   };
   worker.onmessage = (event: MessageEvent) => {
@@ -223,6 +243,12 @@ function startWorker(): void {
     if (typeof d.squelchDbfs === 'number') dspSquelch = d.squelchDbfs;
     if (typeof d.rms === 'number') dspRms = d.rms;
     if (typeof d.mode === 'string' && d.mode) dspMode = d.mode;
+    if (typeof d.digital === 'number') dspDigital = d.digital;
+    if (typeof d.fsIn === 'number') dspFsIn = d.fsIn;
+    if (typeof d.outRate === 'number') dspOutRate = d.outRate;
+    if (typeof d.drmPushes === 'number') drmPushes = d.drmPushes;
+    if (typeof d.drmReports === 'number') drmReports = d.drmReports;
+    if (typeof d.digitalIdCount === 'number') digitalIdCount = d.digitalIdCount;
     if (typeof d.deemphUs === 'number') dspDeemph = d.deemphUs;
     if (typeof d.fillMin === 'number') dspFillMin = d.fillMin;
     if (typeof d.fillMax === 'number') dspFillMax = d.fillMax;
@@ -270,7 +296,14 @@ export function configureSdrPipeline(
     nrAtten?: number;
     squelch?: number;
   } = {},
-): void {
+) {
+  // A trapped worker is dropped by `onerror`. Start a fresh one only when the mode changes:
+  // the backend pushes a configure on every status round, and restarting on each of those
+  // would make a decoder that fails retry, and fail, once a second.
+  if (params.mode !== configuredMode) {
+    configuredMode = params.mode;
+    startWorker();
+  }
   worker?.postMessage({
     type: 'configure',
     params,
