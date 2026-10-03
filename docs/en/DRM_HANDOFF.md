@@ -109,6 +109,33 @@ Two notes for the next session:
   driven with a real xHE stream. DecDRM can transmit one: set `codec = "xhe-aac"` in the bench
   station config.
 
+## Latest diagnostic (the post-lock pass)
+
+The post-lock pass is implemented and produces readout lines in the streaming path. The
+receiver locks at ~2 s and the later passes refresh the readout. The station, mode,
+bandwidth, bit rate, codec and protection are all reported. The first pass shows a FAC
+SNR of 20 dB.
+
+However, no audio access units are produced (`au=0`). The second pass shows a FAC SNR of
+1 dB, suggesting the channel estimate degrades across passes. The root cause is that the
+per-symbol channel estimation does not track a real channel.
+
+## Reference modules for the fix
+
+DecDRM's receiver has modules that address exactly these weaknesses:
+
+- `rx/freqacq.rs`: coarse carrier acquisition from the three continuous frequency pilots
+  (750, 2250, 3000 Hz) in a 6 x 1024 FFT, searching the mirrored pattern too.
+- `rx/timesync.rs`: guard correlation on a signal low-passed to +/-4.5 kHz and decimated
+  by 4, like Dream's path.
+- `rx/chanest/` (`time_wiener.rs`, `track.rs`): time-Wiener channel estimation with
+  tracking, instead of our per-symbol linear interpolation.
+- `rx/framesync.rs`, `rx/ofdm.rs`, `rx/mscdec.rs`: the frame sync, OFDM demod and MSC
+  decoder as streaming stages.
+
+These are in the same language (Rust) and the same project family. DecDRM is
+GPL-2.0-or-later, so read them for the algorithms and implement independently.
+
 ## Next steps, in order
 
 1. Remove the SBR guard in `decode_audio` and feed the live capture through the node harness

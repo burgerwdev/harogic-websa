@@ -466,7 +466,7 @@ impl DrmReceiver {
             return;
         }
         let row_base = ((grid - self.locked_row_start) / ts as u64) as usize;
-        self.clear_readout_state();
+
         self.decode(&map, &rows, row_base, self.locked_r, self.locked_super_phase);
     }
 

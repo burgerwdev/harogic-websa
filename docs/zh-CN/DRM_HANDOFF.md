@@ -96,6 +96,28 @@ DecDRM 的接收机模块与我们接收链的薄弱环节一一对应，而且�
 - xHE-AAC 的端到端路径（coding 3 经 DRM 接收机进 libxaac）从未用真实 xHE 码流驱动过。
   DecDRM 可以发射：把台站配置的 `codec` 设为 `xhe-aac`。
 
+## 最新诊断（后锁定通路）
+
+后锁定通路已实现，能在流式路径中产出读数行。接收机在约 2 秒时锁定，后续通路刷新读数。
+台站、模式、带宽、码率、编码和保护均已上报。第一次通过显示 FAC SNR 为 20 dB。
+
+但没有产出音频接入单元（`au=0`）。第二次通过的 FAC SNR 降至 1 dB，说明信道估计在多次
+通过间退化。根因是逐符号信道估计无法跟踪真实信道。
+
+## 修复用的参考模块
+
+DecDRM 的接收机模块正好解决这些弱点：
+
+- `rx/freqacq.rs`：用三个连续频率导频（750、2250、3000 Hz）在 6 x 1024 点 FFT 里做粗
+  载波捕获，同时搜索镜像图案。
+- `rx/timesync.rs`：先低通到 ±4.5 kHz 再四倍抽取的保护间隔相关，与 Dream 的路径一致。
+- `rx/chanest/`（`time_wiener.rs`、`track.rs`）：时间维 Wiener 信道估计加跟踪，替代我们的
+  逐符号线性插值。
+- `rx/framesync.rs`、`rx/ofdm.rs`、`rx/mscdec.rs`：帧同步、OFDM 解调与 MSC 解码的流式阶段。
+
+它们与我们的 wasm 同为 Rust，且同属一个项目家族。DecDRM 是 GPL-2.0-or-later，读其算法
+后独立实现。
+
 ## 下一步（按顺序）
 
 1. 去掉 `decode_audio` 里的 SBR 保护，用 node 测试台把真实抓取喂进去（`instantiateDsp`、按 3248
