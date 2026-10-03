@@ -62,6 +62,17 @@
 - FDK 源码 `/home/hui/git/fdk-aac`：`libMpegTPDec/src/tpdec_drm.cpp` 说明 DRM 传输期待什么，
   `libAACdec/include/aacdecoder_lib.h` 列出可用的参数与流信息结构。
 
+DecDRM 的接收机模块与我们接收链的薄弱环节一一对应，而且同为 Rust：
+
+| DecDRM 模块 | 作用 | 我们的现状 |
+| --- | --- | --- |
+| `rx/freqacq.rs` | 用三个连续频率导频（750/2250/3000 Hz）在 6 x 1024 点 FFT 里做粗载波捕获，同时搜索镜像图案 | 保护间隔相位只能看到小数部分，带边只能看到整载波 |
+| `rx/timesync.rs` | 先低通到 ±4.5 kHz 再四倍抽取的保护间隔相关，与 Dream 的路径一致 | 全速率相关，只做一次静态对齐 |
+| `rx/chanest/`（`time_wiener.rs`、`track.rs`） | 时间维 Wiener 信道估计加跟踪 | 每符号在离散导频间做线性插值 |
+| `rx/framesync.rs`、`rx/ofdm.rs`、`rx/mscdec.rs` | 帧同步、OFDM 解调与 MSC 解码的流式阶段 | 对有界缓冲的一次性解码 |
+
+读它们是为了算法；DecDRM 是 GPL-2.0-or-later，因此不复制代码。
+
 目标明确不把 Dream 子进程引入本分支。读这些项目是为了算法，而不是再加一个解码器。
 
 ## 下一步（按顺序）

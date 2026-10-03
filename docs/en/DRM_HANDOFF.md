@@ -71,6 +71,18 @@ but their DRM and audio handling is worth reading before changing ours.
   transport expects, and `libAACdec/include/aacdecoder_lib.h` lists the parameters and the
   stream info layout.
 
+DecDRM's receiver modules map one to one onto the weak spots of our receiver, and they are in
+the same language:
+
+| DecDRM module | What it does | Ours |
+| --- | --- | --- |
+| `rx/freqacq.rs` | Coarse carrier acquisition from the three continuous frequency pilots (750, 2250, 3000 Hz) in a 6 x 1024 point FFT, searching the mirrored pattern too | The guard-correlation phase only sees the fraction, and the band edges only see whole carriers |
+| `rx/timesync.rs` | Guard correlation on a signal low-passed to +/-4.5 kHz and decimated by 4, like Dream's path | Full-rate correlation, one static alignment |
+| `rx/chanest/` (`time_wiener.rs`, `track.rs`) | Time-Wiener channel estimation with tracking | Per-symbol linear interpolation across scattered pilots |
+| `rx/framesync.rs`, `rx/ofdm.rs`, `rx/mscdec.rs` | Frame sync, OFDM demod and the MSC decoder as streaming stages | One decode pass over a bounded buffer |
+
+Read them for the algorithms; DecDRM is GPL-2.0-or-later, so no code is copied.
+
 The goal keeps the Dream subprocess out of this branch. Read those projects for the algorithms,
 not to add a second decoder.
 
