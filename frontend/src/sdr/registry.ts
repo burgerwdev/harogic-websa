@@ -87,6 +87,21 @@ export function digitalModeIds(): string[] {
 }
 
 /**
+ * Modes whose demodulator runs in the backend process, not in the DSP module.
+ *
+ * DRM is decoded by the external Dream receiver (`web_sa/measurements/sdr.py`): the browser has no
+ * DRM kernel, so it only selects the mode and plays the AUDF audio the backend sends. They are
+ * still listed in the panel and are always "available" - the backend, not the wasm registry, is
+ * what runs them.
+ */
+export const SERVER_MODE_IDS: readonly string[] = ['drm'];
+
+/** True when the mode is demodulated by the backend (no browser kernel, no busybox companion). */
+export function isServerMode(id: string): boolean {
+	return SERVER_MODE_IDS.includes(id);
+}
+
+/**
  * True when `id` is a protocol decoder rather than a demodulator.
  *
  * The difference reaches the display: a decoder reads a fixed band of its own (FT8: 100..3000 Hz
@@ -115,7 +130,7 @@ export function ddcStageIds(): string[] {
  * plugin id at all and made the DSP report "no pipeline for mode fm").
  */
 export function sdrModeIds(): string[] {
-	return [...analogModeIds(), ...digitalModeIds()];
+	return [...analogModeIds(), ...digitalModeIds(), ...SERVER_MODE_IDS];
 }
 
 /**
@@ -134,6 +149,7 @@ export function audioCompanionFor(id: string): string | null {
 
 /** True when the mode is declared and its kernel exists. */
 export function isModeAvailable(id: string): boolean {
+	if (isServerMode(id)) return true;
 	return (manifest ?? []).some((plugin) => plugin.id === id && plugin.implemented);
 }
 

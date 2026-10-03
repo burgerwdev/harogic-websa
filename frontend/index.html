@@ -244,6 +244,10 @@
               <div class="ft8-line" style="flex:1;">
                 <button class="btn" id="btn-decode-window" data-action="toggle-decode-window" data-i18n-title="decode_window_tip" data-i18n-attr="title" disabled data-i18n="off">Off</button>
               </div></div>
+            <div class="param-row" id="drm-status-row" style="display:none;"><label>DRM</label>
+              <!-- Decoded DRM metadata from the backend Dream decoder (renderDrmStatus in
+                   ui/controls.ts); shown only while sdr.drm.active. -->
+              <span class="cur-val" id="cur-drm-status" style="flex:1;"></span></div>
             <div class="param-row"><label data-i18n="if_filter">Filter</label>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
                 <button class="btn" data-sdr-ifbw="500">0.5k</button>

@@ -28,6 +28,7 @@ import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
 import { initDecodeWindow, setDecodeWindowAvailable, toggleDecodeWindow } from './decodeWindow';
+import { renderDrmStatus } from './drmStatus';
 import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
@@ -589,6 +590,7 @@ export function syncSdrPanel(s: any) {
   pushSdrPipeline();
   // The FT8 table only means something while FT8 is the demodulator (the registry's id, not a label).
   setDecodeWindowAvailable(String(sdr.demod || ''));
+  renderDrmStatus(sdr);
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
 // Turn all markers on/off at once (toggle)

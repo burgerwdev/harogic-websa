@@ -68,6 +68,9 @@ export const sdrIfbw = createParam<number>('sdr.ifbw', {
  * into a visible "the signal is not inside the band the decoder reads".
  */
 export function demodBandHz(demod: string, ifBw: number): [number, number] {
+	// DRM30 SO3 is a 10 kHz channel centred on the dial: symmetric like an analog passband, but
+	// fixed by the standard rather than by the IF filter the user picked.
+	if (demod === 'drm') return [-5000, 5000];
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	return [-ifBw / 2, ifBw / 2];
 }
