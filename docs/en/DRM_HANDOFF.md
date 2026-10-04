@@ -333,3 +333,12 @@ the new one reaches **20.2 dB**, the previous chain's per-symbol linear equalise
 gain is the three-symbol time interpolation averaging the pilot noise, and it is the first
 quantified "low level" improvement over the previous implementation. The test asserts the new
 estimator never trails the old one by more than a decibel, so a regression here fails the suite.
+
+### One-millisecond echo (the "fading" acceptance item)
+
+`chanest::fading_tests::is_not_worse_than_the_previous_equaliser_with_a_one_ms_echo` adds an echo
+one millisecond behind the direct path — the delay spread the reference measures on the bench
+capture — and reads the FAC MER through both estimators: the new one **14.9 dB**, the previous
+chain's **10.9 dB**. Four decibels of margin under the frequency-selective condition the real
+signal shows, again gated by a test. Both low-level and fading acceptance items of task 4 now have
+measured baselines; the tracking and the Wiener work must preserve or improve them.

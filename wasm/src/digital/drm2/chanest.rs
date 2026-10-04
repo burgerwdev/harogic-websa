@@ -666,3 +666,105 @@ mod low_snr_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod fading_tests {
+    use super::*;
+    use crate::digital::drm2::ofdm::OfdmDemod;
+    use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
+    use crate::digital::drm2::sync::timesync::TimeSync;
+
+    /// The task's "fading" acceptance item, in its simplest honest form: a single echo one
+    /// millisecond behind the direct path — the delay spread the reference measures on the bench
+    /// capture, whose coherence bandwidth (~160 Hz) is narrower than the scattered pilots' 281 Hz
+    /// lattice spacing. Measured today through both estimators, so the tracking and the Wiener work
+    /// has a baseline to beat.
+    #[test]
+    fn is_not_worse_than_the_previous_equaliser_with_a_one_ms_echo() {
+        use crate::digital::drm::chanest::equalize_symbol as old_equalize;
+        use crate::digital::drm::cellmap::CellMap as OldMap;
+        use crate::digital::drm::params::{
+            RobustnessMode as OldMode, SpectrumOccupancy as OldOccupancy,
+        };
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = OldMap::new(
+            OldMode::from_index(RobustnessMode::B.index()).unwrap(),
+            OldOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("layout");
+
+        let raw = std::fs::read("../tests/fixtures/drm/drm_modeB_so3_48k.f32").expect("fixture");
+        let direct: Vec<Cplx> = raw
+            .chunks_exact(8)
+            .map(|c| {
+                Cplx::new(
+                    f64::from(f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+                    f64::from(f32::from_le_bytes([c[4], c[5], c[6], c[7]])),
+                )
+            })
+            .collect();
+        // One millisecond at the core rate, half the direct path's amplitude.
+        let delay = 48usize;
+        let mut iq = direct.clone();
+        for n in delay..direct.len() {
+            iq[n] += direct[n - delay] * 0.5;
+        }
+
+        let mut ts = TimeSync::new(RobustnessMode::B);
+        let mut demod = OfdmDemod::new(&map);
+        let mut cells = Vec::new();
+        let mut rows = Vec::new();
+        for block in iq.chunks(3248) {
+            let _ = ts.push(block);
+            while let Some(w) = ts.next_window() {
+                if w.guard_corr.unwrap_or(0.0) < 0.5 {
+                    continue;
+                }
+                demod.demodulate(&w.samples, &mut cells);
+                rows.push(cells.clone());
+            }
+        }
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+        let qam4 = crate::digital::drm2::tables::QAM4[0];
+        let mer_of = |eq: &dyn Fn(usize, &[Cplx]) -> Vec<EqCell>| -> f64 {
+            let (mut err, mut pow) = (0.0, 0.0);
+            for (row, sym) in rows.iter().zip(&syms) {
+                let out = eq(*sym, row);
+                for c in 0..map.num_carriers {
+                    if !map.cell(*sym, c).is_fac() {
+                        continue;
+                    }
+                    let s = out[c].sig;
+                    let dr = if s.re >= 0.0 { qam4 } else { -qam4 };
+                    let di = if s.im >= 0.0 { qam4 } else { -qam4 };
+                    err += out[c].chan * ((s.re - dr).powi(2) + (s.im - di).powi(2));
+                    pow += out[c].chan;
+                }
+            }
+            -10.0 * (err / pow.max(1e-30)).max(1e-12).log10()
+        };
+        let mut est = ChanEst::new(&map);
+        for (row, sym) in rows.iter().zip(&syms) {
+            let _ = est.process(row, *sym, &map);
+        }
+        let mer_new = est.stats().fac_mer_db.expect("a frame through the new estimator");
+        let mer_old = mer_of(&|sym, row| {
+            let old_cells: Vec<crate::digital::drm::Cplx> =
+                row.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let out = old_equalize(&old_map, sym, &old_cells);
+            out.cells
+                .iter()
+                .zip(&out.chan)
+                .map(|(s, ch)| EqCell { sig: Cplx::new(s.re, s.im), chan: ch.norm_sqr() })
+                .collect()
+        });
+        eprintln!("[echo] FAC MER: new {mer_new:.1} dB, previous equaliser {mer_old:.1} dB");
+        assert!(
+            mer_new + 1.0 >= mer_old,
+            "with a 1 ms echo the new estimator ({mer_new:.1} dB) must not trail the previous one ({mer_old:.1} dB)"
+        );
+    }
+}
