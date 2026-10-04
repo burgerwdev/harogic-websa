@@ -21,6 +21,20 @@ pub fn iir1_c(y: &mut Cplx, x: Cplx, lambda: f64) {
     *y = (*y - x) * lambda + x;
 }
 
+/// Least-squares slope of `y` over `x` (DecDRM's `linear_regression_slope`).
+pub fn linear_regression_slope(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len() as f64;
+    let mx = x.iter().sum::<f64>() / n;
+    let my = y.iter().sum::<f64>() / n;
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for (a, b) in x.iter().zip(y) {
+        num += (a - mx) * (b - my);
+        den += (a - mx) * (a - mx);
+    }
+    if den == 0.0 { 0.0 } else { num / den }
+}
+
 /// Normalised sinc: sin(πx)/(πx).
 pub fn sinc(x: f64) -> f64 {
     if x == 0.0 {

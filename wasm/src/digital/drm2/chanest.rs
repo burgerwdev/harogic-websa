@@ -26,6 +26,12 @@ use crate::digital::drm2::dsp::{sinc, Cplx};
 use crate::digital::drm2::params::RobustnessMode;
 
 pub mod track;
+// The time-direction Wiener (Doppler-adapted) interpolation is ported in `time_wiener.rs` but
+// NOT yet wired into `ChanEst`: an integration attempt broke the clean-fixture MSC bit-exact
+// (3.4% hard-decision mismatches on the TimeSync rows vs the linear interpolation's 2.5%, which
+// the Viterbi still corrected). It is kept as the reference for the live-capture deficit, which
+// the fixed linear interpolation leaves at −8.6 dB FAC MER (reference 17.8).
+pub mod time_wiener;
 use track::{PdsTracker, TrackOutput};
 
 /// One equalised cell: the symbol estimate and the channel power it was divided by.
