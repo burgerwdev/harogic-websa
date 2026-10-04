@@ -44,6 +44,7 @@ pub mod sync;
 pub mod fec;
 pub mod fac;
 pub mod sdc;
+pub mod interleave;
 
 // The stages land here in the order above, each with its own task and tests; `params` is the
 // shared foundation.
