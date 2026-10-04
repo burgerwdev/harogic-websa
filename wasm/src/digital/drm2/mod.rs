@@ -87,6 +87,9 @@ pub struct DrmReceiver {
     tracking: bool,
     timing_tracking: bool,
     good_facs: usize,
+    /// Good-FAC countdown before the external timing tracking takes over (DecDRM's
+    /// DELAYED_TRACKING_FACS).
+    delayed_cnt: usize,
     // Results.
     pub facs: Vec<Fac>,
     pub fac_errors: usize,
@@ -113,6 +116,7 @@ impl DrmReceiver {
             tracking: false,
             timing_tracking: false,
             good_facs: 0,
+            delayed_cnt: 2,
             facs: Vec::new(),
             fac_errors: 0,
             fac_constellation: Vec::new(),
@@ -174,70 +178,99 @@ impl DrmReceiver {
                 best = Some((m, map, rows, shifts));
             }
         }
-        let Some((mode, map, rows, shifts)) = best else { return };
+        let Some((mode, map, rows, _)) = best else { return };
         if rows.len() < mode.symbols_per_frame() {
             return;
         }
         let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
         let spf = mode.symbols_per_frame();
-        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
 
-        // Channel estimation, then the FAC per frame.
+        // Channel estimation, then the FAC/SDC/MSC, interleaved with the demodulation so the
+        // tracker's timing/SRO corrections can feed back into the TimeSync.
         let est = self.chanest.get_or_insert_with(|| ChanEst::new(&map));
         let fac_dec = self
             .fac_dec
             .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
+        let iq: Vec<Cplx> = self
+            .buf
+            .chunks_exact(2)
+            .map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1])))
+            .collect();
+        let mut tsync = TimeSync::new(mode);
+        let mut demod = OfdmDemod::new(&map);
+        let mut cells = Vec::new();
+        let mut n = 0usize;
         let mut bits = Vec::new();
-        for (i, ((row, sym), shift)) in rows.iter().zip(&syms).zip(&shifts).enumerate() {
-            // Enter tracking after one frame of history, then timing tracking after the second
-            // good FAC (Dream's enter_tracking / enter_timing_tracking).
-            if i == 45 && !self.tracking {
-                self.tracking = true;
-                est.start_time_wiener_tracking();
-            }
-            let Some((out_sym, out)) = est.process(row, *sym, *shift, &map) else { continue };
-            self.symbols_demodulated += 1;
-            self.msc_emitted.push((out_sym, out.clone()));
-            if self.tracking && self.timing_tracking {
-                // The tracker's timing/SRO corrections reach the TimeSync here once the loop
-                // is wired; the diagnostic shows the timing controller needs tuning first.
-                let _ = est.last_track;
-            }
-            if out_sym == 0 {
-                self.fac_cells.clear();
-                self.frame_sdc.clear();
-            }
-            let sdc_syms = map.mode().sdc_symbols();
-            if out_sym < sdc_syms {
-                for &c in &map.sdc_carriers[out_sym] {
-                    self.frame_sdc.push(out[c as usize]);
+        for block in iq.chunks(3248) {
+            let _ = tsync.push(block);
+            while let Some(w) = tsync.next_window() {
+                if w.guard_corr.unwrap_or(0.0) < 0.5 {
+                    continue;
                 }
-            }
-            for &c in &map.fac_carriers[out_sym] {
-                self.fac_cells.push(out[c as usize]);
-                self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
-            }
-            if self.fac_cells.len() == 65 {
-                let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
-                let idx = if decoded {
-                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
-                } else {
-                    0xFF
-                };
-                match if decoded { Fac::parse(&bits) } else { None } {
-                    Some(f) => {
-                        self.good_facs += 1;
-                        if self.good_facs >= 2 && !self.timing_tracking {
-                            self.timing_tracking = true;
-                            est.start_timing_tracking();
-                        }
-                        self.facs.push(f);
+                demod.demodulate(&w.samples, &mut cells);
+                let sym = (n % spf + phase) % spf;
+                n += 1;
+                let Some((out_sym, out)) = est.process(&cells, sym, w.shift, &map) else { continue };
+                self.symbols_demodulated += 1;
+                self.msc_emitted.push((out_sym, out.clone()));
+                if out_sym == 0 {
+                    self.fac_cells.clear();
+                    self.frame_sdc.clear();
+                }
+                let sdc_syms = map.mode().sdc_symbols();
+                if out_sym < sdc_syms {
+                    for &c in &map.sdc_carriers[out_sym] {
+                        self.frame_sdc.push(out[c as usize]);
                     }
-                    None => self.fac_errors += 1,
                 }
-                self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
-                self.msc_frame_indices.push(idx);
-                self.fac_cells.clear();
+                for &c in &map.fac_carriers[out_sym] {
+                    self.fac_cells.push(out[c as usize]);
+                    self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
+                }
+                if self.fac_cells.len() == 65 {
+                    let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
+                    let idx = if decoded {
+                        Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                    } else {
+                        0xFF
+                    };
+                    match if decoded { Fac::parse(&bits) } else { None } {
+                        Some(f) => {
+                            self.good_facs += 1;
+                            // Enter time-Wiener tracking after the first good FAC, then the
+                            // external timing tracking after the second plus a two-good-FAC
+                            // countdown (Dream's enter_tracking / enter_timing_tracking).
+                            if self.good_facs == 1 && !self.tracking {
+                                self.tracking = true;
+                                est.start_time_wiener_tracking();
+                            }
+                            if self.good_facs >= 2 && !self.timing_tracking {
+                                if self.delayed_cnt > 0 {
+                                    self.delayed_cnt -= 1;
+                                } else {
+                                    self.timing_tracking = true;
+                                    est.start_timing_tracking();
+                                    tsync.stop_timing_acquisition();
+                                }
+                            }
+                            self.facs.push(f);
+                        }
+                        None => self.fac_errors += 1,
+                    }
+                    self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
+                    self.msc_frame_indices.push(idx);
+                    self.fac_cells.clear();
+                }
+                if self.timing_tracking {
+                    let ta = est.last_track.timing_adjust;
+                    let sro = est.last_track.sro_delta_hz;
+                    if ta != 0 {
+                        tsync.adjust_timing(ta as f64);
+                    }
+                    if sro != 0.0 {
+                        tsync.adjust_sro(sro);
+                    }
+                }
             }
         }
         self.mode = Some(mode);
@@ -375,5 +408,31 @@ mod tests {
         assert!(!rx.msc_frames.is_empty(), "the MSC must decode multiplex frames");
         let ids: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
+    }
+
+    /// The receiver on the live capture (resampled to the core rate): the closed timing/SRO
+    /// loop is what this exercises. FAC blocks decoded is the proxy for the MER.
+    #[test]
+    #[ignore = "live capture; run with --ignored --nocapture"]
+    fn receiver_on_live_capture() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let raw = std::fs::read(path).expect("capture file");
+        let iq: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let mut rs = crate::ddc::resampler::ComplexResampler::new(48_828.125, 48_000.0);
+        let mut out: Vec<f32> = Vec::new();
+        rs.process_f32_into(&iq, &mut out);
+        let mut rx = DrmReceiver::new();
+        rx.push(&out);
+        rx.run();
+        eprintln!(
+            "[rxlive] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?} msc={} timing_tracking={}",
+            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label, rx.msc_frames.len(), rx.timing_tracking
+        );
     }
 }
