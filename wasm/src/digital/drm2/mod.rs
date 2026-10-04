@@ -101,6 +101,22 @@ pub struct DrmReceiver {
     /// The station label from the SDC, once a super frame's SDC block passes its CRC.
     pub station_label: Option<String>,
     pub sdc_ok: usize,
+    /// The multiplex description and audio descriptor from the SDC (the audio path's inputs).
+    multiplex: Option<crate::digital::drm2::sdc::MultiplexDescription>,
+    audio: Option<crate::digital::drm2::sdc::AudioInfo>,
+    /// AAC access units deframed from the audio stream (ready for the codec).
+    pub audio_access_units: Vec<Vec<u8>>,
+    /// Decoded audio PCM (interleaved i16), wasm32 only.
+    pub audio_pcm: Vec<i16>,
+    /// Audio units already decoded, so a later pass decodes only the new ones.
+    audio_units_decoded: usize,
+    audio_debug: String,
+    #[cfg(target_arch = "wasm32")]
+    audio_decoder: Option<crate::fdk::AacDecoder>,
+    #[cfg(target_arch = "wasm32")]
+    xhe_decoder: Option<crate::xaac::XaacDecoder>,
+    #[cfg(target_arch = "wasm32")]
+    audio_configured_with: Option<Vec<u8>>,
 }
 
 impl DrmReceiver {
@@ -126,6 +142,18 @@ impl DrmReceiver {
             carrier_offset_hz: 0.0,
             station_label: None,
             sdc_ok: 0,
+            multiplex: None,
+            audio: None,
+            audio_access_units: Vec::new(),
+            audio_pcm: Vec::new(),
+            audio_units_decoded: 0,
+            audio_debug: String::new(),
+            #[cfg(target_arch = "wasm32")]
+            audio_decoder: None,
+            #[cfg(target_arch = "wasm32")]
+            xhe_decoder: None,
+            #[cfg(target_arch = "wasm32")]
+            audio_configured_with: None,
             frame_sdc: Vec::new(),
             sdc_blocks: Vec::new(),
             msc_emitted: Vec::new(),
@@ -187,7 +215,9 @@ impl DrmReceiver {
         let spf = mode.symbols_per_frame();
 
         // Channel estimation, then the FAC/SDC/MSC, interleaved with the demodulation so the
-        // tracker's timing/SRO corrections can feed back into the TimeSync.
+        // tracker's timing/SRO corrections can feed back into the TimeSync. The linear time
+        // interpolation is the default (the time-Wiener path is opt-in for the tracked live
+        // chain; switching paths mid-stream drops symbols, so the receiver stays on one path).
         let est = self.chanest.get_or_insert_with(|| ChanEst::new(&map));
         let fac_dec = self
             .fac_dec
@@ -238,13 +268,11 @@ impl DrmReceiver {
                     match if decoded { Fac::parse(&bits) } else { None } {
                         Some(f) => {
                             self.good_facs += 1;
-                            // Enter time-Wiener tracking after the first good FAC, then the
-                            // external timing tracking after the second plus a two-good-FAC
-                            // countdown (Dream's enter_tracking / enter_timing_tracking).
-                            if self.good_facs == 1 && !self.tracking {
-                                self.tracking = true;
-                                est.start_time_wiener_tracking();
-                            }
+                            // The receiver stays on the linear time interpolation (the
+                            // time-Wiener path is opt-in for the tracked live chain; switching
+                            // paths mid-stream would drop symbols). External timing tracking
+                            // still enters after the second good FAC plus a countdown.
+                            self.tracking = true;
                             if self.good_facs >= 2 && !self.timing_tracking {
                                 if self.delayed_cnt > 0 {
                                     self.delayed_cnt -= 1;
@@ -288,19 +316,33 @@ impl DrmReceiver {
         use crate::digital::drm2::fac::MscMode;
         use crate::digital::drm2::fec::mlc::MscProtection;
         use crate::digital::drm2::fec::qam::Mapping;
-        let mapping = match MscMode::Qam64Sm {
+        // The MSC configuration comes from the FAC (mode) and the SDC (protection and the
+        // higher-protected part-A bytes), not a hardcoded EEP 0/1.
+        let mode = self.facs.first().map(|f| f.channel.msc_mode).unwrap_or(MscMode::Qam64Sm);
+        let mapping = match mode {
             MscMode::Qam64Sm => Mapping::Qam64Sm,
             MscMode::Qam64HmMix => Mapping::Qam64HmMix,
             MscMode::Qam64HmSym => Mapping::Qam64HmSym,
             MscMode::Qam16Sm => Mapping::Qam16,
         };
-        let params = MlcParams::msc(mapping, map.msc_cells_per_frame, MscProtection { part_a: 0, part_b: 1, hierarchical: 0 }, 0);
+        let prot = MscProtection {
+            part_a: self.multiplex.as_ref().map(|m| m.protection_a as usize).unwrap_or(0),
+            part_b: self.multiplex.as_ref().map(|m| m.protection_b as usize).unwrap_or(1),
+            hierarchical: 0,
+        };
+        let part_a_bytes = self
+            .multiplex
+            .as_ref()
+            .map(|m| m.streams.iter().map(|s| s.len_a as usize).sum::<usize>())
+            .unwrap_or(0);
+        let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, part_a_bytes);
         let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
         let mut dec = MlcDecoder::new(params, 1);
         let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
         let mut in_partial = true;
         let mut complete_frame = 0usize;
         let mut bits = Vec::new();
+        let mut decoded: Vec<Vec<u8>> = Vec::new();
         for (out_sym, cells) in &self.msc_emitted {
             if *out_sym == 0 && in_partial {
                 in_partial = false;
@@ -328,7 +370,7 @@ impl DrmReceiver {
                     if let Some(d) = de.push(frame) {
                         if d.iter().all(|c| c.chan > 0.0) {
                             if dec.decode(&d, &mut bits) {
-                                self.msc_frames.push(bits.clone());
+                                decoded.push(bits.clone());
                             }
                         }
                     }
@@ -340,6 +382,10 @@ impl DrmReceiver {
             for &c in &map.msc_carriers[super_sym] {
                 super_msc[super_sym].push(cells[c as usize]);
             }
+        }
+        for b in decoded {
+            self.deframe_audio(&b);
+            self.msc_frames.push(b);
         }
     }
 
@@ -371,14 +417,124 @@ impl DrmReceiver {
             if let Some(b) = block {
                 self.sdc_ok += 1;
                 let entities = parse_entities(&b.data);
-                let label = entities.iter().find_map(|e| match e {
-                    crate::digital::drm2::sdc::Entity::Label(l) => Some(l.text()),
-                    _ => None,
-                });
-                self.station_label = label;
+                for e in &entities {
+                    match e {
+                        crate::digital::drm2::sdc::Entity::Label(l) => {
+                            if self.station_label.is_none() {
+                                self.station_label = Some(l.text());
+                            }
+                        }
+                        crate::digital::drm2::sdc::Entity::Multiplex(m) => {
+                            if self.multiplex.is_none() {
+                                self.multiplex = Some(m.clone());
+                            }
+                        }
+                        crate::digital::drm2::sdc::Entity::Audio(a) => {
+                            if self.audio.is_none() {
+                                self.audio = Some(a.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
+
+    /// Demultiplex one decoded MSC multiplex frame and deframe the audio stream's AAC access
+    /// units (the codec consumes these). The FDK TT_DRM transport expects the DRM AAC CRC byte
+    /// in front of each access unit.
+    fn deframe_audio(&mut self, msc_bits: &[u8]) {
+        use crate::digital::drm2::audio::{demultiplex, parse_aac_super_frame, split_text_message, AacSuperFrameFormat};
+        let Some(mux) = self.multiplex.clone() else { return };
+        let frames = match self.audio.as_ref().map(|a| a.sample_rate) {
+            Some(1) => 5,  // 12 kHz
+            Some(3) => 10, // 24 kHz
+            _ => return,
+        };
+        let Some(stream) = mux.streams.first() else { return };
+        let fmt = AacSuperFrameFormat::aac(frames, stream);
+        let text_flag = self.audio.as_ref().map(|a| a.text).unwrap_or(false);
+        for lf in demultiplex(msc_bits, &mux).into_iter().flatten() {
+            if lf.stream_id == 0 {
+                let super_frame = split_text_message(&lf.data, text_flag);
+                if let Some(aus) = parse_aac_super_frame(super_frame, &fmt) {
+                    for f in aus {
+                        let mut au = Vec::with_capacity(f.data.len() + 1);
+                        if let Some(c) = f.crc_byte {
+                            au.push(c);
+                        }
+                        au.extend_from_slice(&f.data);
+                        self.audio_access_units.push(au);
+                    }
+                }
+            }
+        }
+        self.decode_audio();
+    }
+
+    /// The decoded audio PCM's sample rate, Hz (0 when the SDC audio info is unknown).
+    pub fn audio_rate_hz(&self) -> u32 {
+        let Some(a) = self.audio.as_ref() else { return 0 };
+        let core = match a.sample_rate {
+            0 => 8_000,
+            1 => 12_000,
+            2 => 16_000,
+            3 => 24_000,
+            4 => 48_000,
+            _ => return 0,
+        };
+        if a.sbr { core * 2 } else { core }
+    }
+
+    /// Decode the deframed audio access units into PCM (wasm32 only; the FDK AAC and libxaac
+    /// decoders are not linked natively). AAC (coding 0) goes through the FDK TT_DRM decoder;
+    /// xHE-AAC (coding 3, MPEG-D USAC) goes through libxaac.
+    #[cfg(target_arch = "wasm32")]
+    fn decode_audio(&mut self) {
+        let Some(audio) = self.audio.clone() else { return };
+        if audio.coding == 3 {
+            if self.xhe_decoder.is_none() {
+                let mut dec = crate::xaac::XaacDecoder::new();
+                if let Some(d) = dec.as_mut() {
+                    if !audio.xhe_aac_config.is_empty() {
+                        d.feed(&audio.xhe_aac_config, true);
+                    }
+                }
+                self.xhe_decoder = dec;
+                self.audio_units_decoded = 0;
+            }
+            if let Some(dec) = self.xhe_decoder.as_mut() {
+                for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
+                    if let Some(pcm) = dec.feed(au, false) {
+                        self.audio_pcm.extend_from_slice(&pcm);
+                    }
+                }
+                self.audio_units_decoded = self.audio_access_units.len();
+            }
+            return;
+        }
+        let type9 = audio.to_type9_bytes();
+        if self.audio_decoder.is_none() || self.audio_configured_with.as_deref() != Some(type9.as_slice()) {
+            self.audio_decoder = crate::fdk::AacDecoder::new();
+            self.audio_configured_with = Some(type9.clone());
+            self.audio_units_decoded = 0;
+            if let Some(dec) = self.audio_decoder.as_mut() {
+                dec.configure(&type9);
+            }
+        }
+        if let Some(dec) = self.audio_decoder.as_mut() {
+            for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
+                let pcm = dec.decode(au);
+                self.audio_pcm.extend_from_slice(&pcm);
+            }
+            self.audio_units_decoded = self.audio_access_units.len();
+            self.audio_debug = format!("au={} units={} err={} pcm={}", self.audio_access_units.len(), self.audio_units_decoded, dec.last_error, self.audio_pcm.len());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decode_audio(&mut self) {}
 }
 
 #[cfg(test)]
