@@ -134,6 +134,15 @@ the channel gain, i.e. the *pilot* cell amplitude — suggesting `fac_constellat
 cell collection) reads pilot cells instead of FAC data cells in the wasm build. Both cellmaps
 use the same PILOT_POWER conventions, so the difference is wasm-specific; needs a fresh session.
 
+A native-vs-wasm FAC cell comparison (the same capture, the same receiver code) narrows it
+further: the **native** FAC constellation (which decodes, FAC 64/10) has **4820 cells, mean
+|cell| 1.54, first cells ~1.0 magnitude** — while the **wasm** constellation has mean |cell|
+2.37 and a first cell of magnitude 7.3. The wasm FAC cells are systematically larger, i.e. the
+wasm channel estimate is smaller than the native one for the same demodulated rows (the symbol
+count matches at 1115). The largest gap is at the first emitted symbol (the time-Wiener warm-up
+boundary), so the leading hypothesis is a wasm floating-point difference in the timing
+acquisition or the Wiener filter build that shifts the channel estimate early in the stream.
+
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
 frame-sync score (this port's `FrameSync::search` correlates time pilots directly, so it is
