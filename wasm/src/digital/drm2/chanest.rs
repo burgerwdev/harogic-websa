@@ -231,6 +231,7 @@ impl ChanEst {
         // carrier ramp without shrinking the magnitude — which corrupts 64-QAM. Removing the
         // ramp first keeps the channel flat for the frequency interpolation.
         let mut offset = 0.0f64;
+        let mut flat = false;
         {
             let pilots: Vec<(usize, Cplx)> = self.lattice[cycle]
                 .iter()
@@ -254,12 +255,22 @@ impl ChanEst {
             }
             if n > 0 {
                 offset = acc / n as f64;
+                // Only de-rotate when the channel is genuinely flat: on a frequency-selective
+                // channel the pilots' phase slope is the channel's own group delay, not a window
+                // offset, and removing it would shift the impulse response. A flat channel has
+                // constant pilot magnitude; an echo / delay spread makes the magnitude ripple.
+                let mags: Vec<f64> = pilots.iter().map(|(_, h)| h.norm()).collect();
+                let mag_mean = mags.iter().sum::<f64>() / mags.len() as f64;
+                let mag_var = mags.iter().map(|m| (m - mag_mean).powi(2)).sum::<f64>() / mags.len() as f64;
+                flat = mag_var < 1e-2 * mag_mean * mag_mean;
             }
         }
         let mut de = cells.to_vec();
-        for (c, v) in de.iter_mut().enumerate() {
-            let k = (self.kmin + c as i32) as f64;
-            *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * offset / fft_n);
+        if flat {
+            for (c, v) in de.iter_mut().enumerate() {
+                let k = (self.kmin + c as i32) as f64;
+                *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * offset / fft_n);
+            }
         }
         // 1. The pilot lattice of this symbol (de-rotated).
         let mut h = vec![Cplx::zero(); self.n_car];
