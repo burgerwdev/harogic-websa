@@ -167,6 +167,17 @@ impl ChanEst {
         self.time_int
     }
 
+    /// Enable impulse-response based timing tracking (Dream's `start_timing_tracking`): the
+    /// tracker then emits `timing_adjust` corrections for the receiver's FFT window.
+    pub fn start_timing_tracking(&mut self) {
+        self.track.tracking = true;
+    }
+
+    /// Whether the impulse-response timing tracker is active.
+    pub fn timing_tracking(&self) -> bool {
+        self.track.tracking
+    }
+
     /// Rebuild the frequency-Wiener interpolation filters for the current SNR and the delay
     /// spread (`len_ratio` = impulse-response length / useful symbol, `offs_ratio` = its start
     /// / useful symbol, both from the impulse-response tracker). This is the reference's
@@ -2247,6 +2258,67 @@ mod tests {
         let mer = mer.expect("the live capture must equalise at least one frame");
         // The reference receiver reports MER 17.8 dB on this capture.
         assert!(mer > 12.0, "live FAC MER {mer:.1} dB is below the reference's 17.8 dB band");
+    }
+
+    /// Diagnostic: close the timing loop — feed the tracker's `timing_adjust` back into the
+    /// TimeSync's window positions on a second pass — and see whether the live MER moves. Result:
+    /// −10.4 dB (the open loop reads −8.6), so the simple timing loop is not the deficit; the
+    /// remaining gap to the reference's 17.8 dB is the time-Wiener (Doppler-adapted) time
+    /// interpolation, which this port still replaces with a fixed linear interpolation.
+    #[test]
+    #[ignore = "live timing-loop diagnostic; run with --ignored --nocapture"]
+    fn live_capture_with_closed_timing_loop() {
+        use crate::digital::drm2::sync::timesync::TimeSync;
+        use crate::digital::drm2::ofdm::OfdmDemod;
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        // Coarse + fine exactly as `run` does.
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base { flat.push(v.re); flat.push(v.im); }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let (rows, syms, _) = rows_and_syms(&map, &corrected);
+        let mut fine = 0.0;
+        if let Some(f) = crate::digital::drm2::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
+            fine = f;
+            let mut nco2 = crate::digital::drm2::sync::nco::Nco::new(f);
+            nco2.process(&mut corrected);
+        }
+        let (rows, syms, _) = rows_and_syms(&map, &corrected);
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        eprintln!("[closeloop] coarse {coarse:.1} fine {fine:+.2} phase {phase}");
+
+        // Second pass, interleaved: demodulate, feed the estimator, feed timing_adjust back.
+        let mut ts = TimeSync::new(RobustnessMode::B);
+        let mut demod = OfdmDemod::new(&map);
+        let mut est = ChanEst::new(&map);
+        let mut cells = Vec::new();
+        let mut mer = None;
+        let mut n = 0usize;
+        for block in corrected.chunks(3248) {
+            let _ = ts.push(block);
+            while let Some(w) = ts.next_window() {
+                if w.guard_corr.unwrap_or(0.0) < 0.5 { continue; }
+                demod.demodulate(&w.samples, &mut cells);
+                let sym = (n % spf + phase) % spf;
+                if n == 45 { est.start_timing_tracking(); }
+                if est.process(&cells, sym, w.shift, &map).is_some() {
+                    let ta = est.last_track.timing_adjust;
+                    if ta != 0 { ts.adjust_timing(ta as f64); }
+                    if let Some(m) = est.stats().fac_mer_db { mer = Some(m); }
+                }
+                n += 1;
+            }
+        }
+        eprintln!("[closeloop] MER {mer:?} after {n} symbols");
     }
 }
 

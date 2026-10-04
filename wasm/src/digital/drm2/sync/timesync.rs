@@ -485,6 +485,14 @@ impl TimeSync {
         }
     }
 
+    /// Apply a timing correction (samples, positive = later) from the channel estimator's
+    /// impulse-response tracker to the next window positions.
+    pub fn adjust_timing(&mut self, samples: f64) {
+        if let Some(s) = &mut self.next_start {
+            *s += samples;
+        }
+    }
+
     /// The next symbol window, when timing is known and the samples are buffered.
     pub fn next_window(&mut self) -> Option<SymbolWindow> {
         let start = self.next_start?;
