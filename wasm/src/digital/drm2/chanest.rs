@@ -1128,6 +1128,40 @@ mod tests {
         eprintln!("[phase] n={n} mean ratio |·|={:.3} angle={phase:.2}° spread={spread:.3}", mean.norm());
     }
 
+    /// Measure the sub-sample timing offset: on the flat clean fixture the channel estimate at
+    /// a scattered pilot is `H·e^{j2πkδ/N}`, so the phase difference between two pilots yields
+    /// the window offset δ in samples. This is the diagnostic behind the MSC defect.
+    #[test]
+    fn measures_the_timing_offset() {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, _shifts) = rows_and_syms(&map, &iq);
+        let n = map.mode().fft_size() as f64;
+        let mut offsets = Vec::new();
+        for (row, sym) in rows.iter().zip(&syms).take(15) {
+            let pilots: Vec<(i32, Cplx)> = (0..map.num_carriers)
+                .filter(|&c| map.cell(*sym, c).is_scattered())
+                .map(|c| {
+                    let r = map.pilot(*sym, c);
+                    (map.kmin + c as i32, if r.norm_sqr() > 0.0 { row[c] / r } else { Cplx::zero() })
+                })
+                .collect();
+            for pair in pilots.windows(2) {
+                let (k1, h1) = pair[0];
+                let (k2, h2) = pair[1];
+                if h1.norm() < 1e-3 || h2.norm() < 1e-3 {
+                    continue;
+                }
+                let dphase = (h2 / h1).arg();
+                let dk = (k2 - k1) as f64;
+                offsets.push(dphase * n / (2.0 * core::f64::consts::PI * dk));
+            }
+        }
+        let mean = offsets.iter().sum::<f64>() / offsets.len() as f64;
+        let std = (offsets.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / offsets.len() as f64).sqrt();
+        eprintln!("[timing] window offset from pilots: {mean:+.3} ± {std:.3} samples (n={})", offsets.len());
+    }
+
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
     /// timing, demodulation, channel estimation, equalisation — as the 4-QAM the FAC is. With
     /// the lattice-indexed time interpolation and the linear frequency interpolation it reaches
