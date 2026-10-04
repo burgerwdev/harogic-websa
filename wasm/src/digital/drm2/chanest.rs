@@ -22,8 +22,11 @@ use std::collections::VecDeque;
 
 use crate::digital::drm2::cellmap::CellMap;
 use crate::digital::drm2::dsp::levinson::levinson;
-use crate::digital::drm2::dsp::Cplx;
+use crate::digital::drm2::dsp::{sinc, Cplx};
 use crate::digital::drm2::params::RobustnessMode;
+
+pub mod track;
+use track::{PdsTracker, TrackOutput};
 
 /// One equalised cell: the symbol estimate and the channel power it was divided by.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,9 +63,17 @@ pub struct ChanEst {
     /// cells, or the scattered pilots' symbol-dependent reference phase rotates the estimate
     /// against the data.
     history: VecDeque<(usize, Vec<Cplx>, Vec<Cplx>)>,
-    /// Carriers that carry a scattered pilot in at least one symbol of the cycle, ascending:
-    /// this is the frequency-interpolation grid.
-    lattice_carriers: Vec<usize>,
+    /// Pilot-grid carrier spacing (the per-symbol shift, `x` in the spec's phase formula).
+    x: usize,
+    /// Number of pilot-grid carriers (`(n_car − 1) / x + 1`).
+    num_pil: usize,
+    /// Impulse-response tracker (delay spread, timing drift, sample-rate offset).
+    track: PdsTracker,
+    /// Frequency-Wiener filter length and per-carrier tap tables.
+    fw_len: usize,
+    fw_offset: Vec<usize>,
+    fw_taps: Vec<Vec<Cplx>>,
+    pub last_track: TrackOutput,
     snr_linear: f64,
     /// FAC MER accumulator over the current super frame.
     fac_err: f64,
@@ -72,6 +83,16 @@ pub struct ChanEst {
     pub stats: ChanStats,
     /// The FAC-carried SNR the estimator was last built with (dB), for diagnostics.
     pub wiener_snr_db: f64,
+}
+
+/// Frequency-Wiener filter length per mode (Dream's `update_freq_wiener` tables).
+fn freq_wiener_len(mode: RobustnessMode) -> usize {
+    match mode {
+        RobustnessMode::A => 6,
+        RobustnessMode::B | RobustnessMode::C => 11,
+        RobustnessMode::D => 13,
+        RobustnessMode::E => 11,
+    }
 }
 
 impl ChanEst {
@@ -107,6 +128,9 @@ impl ChanEst {
                 break;
             }
         }
+        let x = map.scattered.freq_int;
+        let num_pil = (n_car - 1) / x + 1;
+        let fw_len = freq_wiener_len(mode);
         let mut est = Self {
             mode,
             n_car,
@@ -114,9 +138,13 @@ impl ChanEst {
             time_int: time_int.max(1),
             lattice,
             history: VecDeque::new(),
-            lattice_carriers: (0..n_car)
-                .filter(|&c| (0..spsf).any(|s| map.cell(s, c).is_scattered()))
-                .collect(),
+            x,
+            num_pil,
+            track: PdsTracker::new(map, num_pil, time_int.max(1) + 1),
+            fw_len,
+            fw_offset: vec![0; n_car],
+            fw_taps: vec![vec![Cplx::zero(); fw_len]; n_car],
+            last_track: TrackOutput::default(),
             snr_linear: 10f64.powf(3.0), // 30 dB, Dream's initial value
             fac_err: 0.0,
             fac_pow: 0.0,
@@ -125,6 +153,10 @@ impl ChanEst {
             stats: ChanStats::default(),
             wiener_snr_db: 30.0,
         };
+        // Initial frequency-Wiener taps from the guard ratio and the initial SNR, as the
+        // reference builds them before any symbol has arrived.
+        let (gn, gd) = mode.guard_ratio();
+        est.update_freq_wiener(est.snr_linear, gn as f64 / gd as f64, 0.0);
         est
     }
 
@@ -133,13 +165,58 @@ impl ChanEst {
         self.time_int
     }
 
+    /// Rebuild the frequency-Wiener interpolation filters for the current SNR and the delay
+    /// spread (`len_ratio` = impulse-response length / useful symbol, `offs_ratio` = its start
+    /// / useful symbol, both from the impulse-response tracker). This is the reference's
+    /// `update_freq_wiener`: the sinc correlation functions of a rectangular impulse response
+    /// are solved with Levinson for each of the `(l−1)·x + 1` carrier phases, and the taps are
+    /// phase-rotated by the response's position.
+    fn update_freq_wiener(&mut self, snr: f64, len_ratio: f64, offs_ratio: f64) {
+        let l = self.fw_len;
+        let x = self.x;
+        let n_filters = (l - 1) * x + 1;
+        let snr = snr.max(1.0);
+        let filters: Vec<Vec<Cplx>> = (0..n_filters)
+            .map(|diff| {
+                let rhp: Vec<f64> = (0..l)
+                    .map(|i| sinc(((i * x) as f64 - diff as f64) * len_ratio))
+                    .collect();
+                let mut rpp: Vec<f64> = (0..l).map(|i| sinc((i * x) as f64 * len_ratio)).collect();
+                rpp[0] += 1.0 / snr;
+                let h = levinson(&rpp, &rhp);
+                (0..l)
+                    .map(|i| {
+                        let pos = (i * x) as f64 - diff as f64;
+                        let arg = core::f64::consts::PI * pos * (len_ratio + 2.0 * offs_ratio);
+                        Cplx::from_polar(h[i], arg)
+                    })
+                    .collect()
+            })
+            .collect();
+        let offset = l / 2;
+        for j in 0..self.n_car {
+            let cur = j / x;
+            let off = if cur < offset {
+                0
+            } else if cur - offset > self.num_pil - l {
+                self.num_pil - l
+            } else {
+                cur - offset
+            };
+            self.fw_offset[j] = off;
+            let diff = j - off * x;
+            self.fw_taps[j].clone_from(&filters[diff.min(n_filters - 1)]);
+        }
+    }
+
     pub fn stats(&self) -> ChanStats {
         self.stats
     }
 
-    /// Feed one demodulated symbol (`cells` in map order) at super-frame symbol index `sym`.
-    /// Returns the equalised symbol `delay()` symbols earlier, once available.
-    pub fn process(&mut self, cells: &[Cplx], sym: usize, map: &CellMap) -> Option<Vec<EqCell>> {
+    /// Feed one demodulated symbol (`cells` in map order) at super-frame symbol index `sym`,
+    /// with the timing shift `shift` of this symbol's window. Returns the equalised symbol
+    /// `delay()` symbols earlier, once available.
+    pub fn process(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<Vec<EqCell>> {
         // 1. The pilot lattice of this symbol.
         let mut h = vec![Cplx::zero(); self.n_car];
         let cycle = sym % self.time_int;
@@ -192,34 +269,39 @@ impl ChanEst {
                 (None, None) => Cplx::zero(),
             };
         }
-        // 3. Frequency Wiener to every carrier, then equalise.
-        // Frequency interpolation across the lattice: for each carrier, the two bracketing
-        // lattice points (the carriers that carry a scattered pilot in some symbol) interpolate
-        // linearly. This is Dream's `TimeLinear` companion on the frequency axis and the
-        // baseline the reference chain also uses; the Wiener refinement (the Levinson-designed
-        // filters, whose solver is already in `dsp::levinson`) is the next step — applying it
-        // needs its tap-phase convention resolved, which the comparison against the previous
-        // chain's equaliser showed is still wrong (the equalised FAC constellation came out
-        // scattered where the linear path lands it on the 4-QAM points).
-        let lat = &self.lattice_carriers;
-        let mut chan = vec![Cplx::zero(); self.n_car];
-        if !lat.is_empty() {
-            for (j, ch) in chan.iter_mut().enumerate() {
-                let p = lat.partition_point(|&k| k < j);
-                *ch = if p == 0 {
-                    dense[lat[0]]
-                } else if p >= lat.len() {
-                    dense[*lat.last().expect("non-empty")]
-                } else {
-                    let (a, b) = (lat[p - 1], lat[p]);
-                    if a == j {
-                        dense[a]
-                    } else {
-                        let t = (j - a) as f64 / (b - a) as f64;
-                        dense[a] * (1.0 - t) + dense[b] * t
-                    }
-                };
+        // 3. Impulse-response tracking, then the frequency Wiener to every carrier.
+        // The grid is the time-interpolated channel at the pilot-grid carriers (`p · x`).
+        let mut grid = vec![Cplx::zero(); self.num_pil];
+        for (p, g) in grid.iter_mut().enumerate() {
+            let c = p * self.x;
+            if c < self.n_car {
+                *g = dense[c];
             }
+        }
+        // Mode D's DC carrier is not a pilot; hold the grid point at zero like the reference.
+        if self.mode == RobustnessMode::D {
+            if let Some(dc) = map.carrier_offset(0) {
+                let p = dc / self.x;
+                if p < self.num_pil {
+                    grid[p] = Cplx::zero();
+                }
+            }
+        }
+        self.last_track = self.track.process(&grid, shift);
+        let t = self.last_track;
+        self.update_freq_wiener(
+            self.snr_linear,
+            t.pds_len / self.n_car as f64,
+            t.pds_offset / self.n_car as f64,
+        );
+        let mut chan = vec![Cplx::zero(); self.n_car];
+        for (j, ch) in chan.iter_mut().enumerate() {
+            let off = self.fw_offset[j];
+            let mut acc = Cplx::zero();
+            for (i, tap) in self.fw_taps[j].iter().enumerate() {
+                acc += grid[off + i] * *tap;
+            }
+            *ch = acc;
         }
         let out_cells: Vec<EqCell> = (0..self.n_car)
             .map(|c| {
@@ -364,7 +446,7 @@ mod tests {
         let mut est = ChanEst::new(&map);
         let mut mer = None;
         for (row, sym) in rows.iter().zip(&syms) {
-            if est.process(row, *sym, &map).is_some() {
+            if est.process(row, *sym, 0, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
                     mer = Some(m);
                 }
@@ -403,7 +485,7 @@ mod tests {
             let (rows, syms) = rows_and_syms(&map, &iq);
             let mut mer = f64::NAN;
             for (row, sym) in rows.iter().zip(&syms) {
-                if est.process(row, *sym, &map).is_some() {
+                if est.process(row, *sym, 0, &map).is_some() {
                     if let Some(m) = est.stats().fac_mer_db {
                         mer = m;
                     }
@@ -464,7 +546,7 @@ mod tests {
             let mut mer = f64::NAN;
             for (i, row) in rows.iter().enumerate() {
                 let sym = (i % spf + phase) % spf;
-                if est.process(row, sym, &map).is_some() {
+                if est.process(row, sym, 0, &map).is_some() {
                     if let Some(m) = est.stats().fac_mer_db {
                         mer = m;
                     }
@@ -642,7 +724,7 @@ mod low_snr_tests {
         let mut est = ChanEst::new(&map);
         let mut mer_new = None;
         for (row, sym) in rows.iter().zip(&syms) {
-            if est.process(row, *sym, &map).is_some() {
+            if est.process(row, *sym, 0, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
                     mer_new = Some(m);
                 }
@@ -748,7 +830,7 @@ mod fading_tests {
         };
         let mut est = ChanEst::new(&map);
         for (row, sym) in rows.iter().zip(&syms) {
-            let _ = est.process(row, *sym, &map);
+            let _ = est.process(row, *sym, 0, &map);
         }
         let mer_new = est.stats().fac_mer_db.expect("a frame through the new estimator");
         let mer_old = mer_of(&|sym, row| {

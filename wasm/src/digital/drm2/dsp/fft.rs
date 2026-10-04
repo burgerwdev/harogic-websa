@@ -58,6 +58,20 @@ impl FullFft {
         self.backend.forward(re, im);
     }
 
+    /// Unscaled inverse DFT in place: `X[k] = Σ x[n]·e^{+j2πkn/N}` (the conjugate of the
+    /// forward transform of the conjugate). Used by the impulse-response tracker's IFFT.
+    pub fn inverse_re_im(&mut self, re: &mut [f64], im: &mut [f64]) {
+        assert_eq!(re.len(), self.n);
+        assert_eq!(im.len(), self.n);
+        for v in im.iter_mut() {
+            *v = -*v;
+        }
+        self.backend.forward(re, im);
+        for v in im.iter_mut() {
+            *v = -*v;
+        }
+    }
+
     /// Forward DFT of one window, scaled by `1/N`, in bin order 0..N.
     pub fn forward(&mut self, window: &[Cplx], out: &mut [Cplx]) {
         assert_eq!(window.len(), self.n);
@@ -97,6 +111,24 @@ mod tests {
                 } else {
                     assert!(mag < 1e-6 * n as f64, "n={n} bin {i} mag {mag}");
                 }
+            }
+        }
+    }
+
+    /// The unscaled inverse is the forward transform of the conjugate, conjugated: it
+    /// must round-trip with the forward transform scaled by N.
+    #[test]
+    fn inverse_re_im_round_trips() {
+        for n in [1024usize, 216, 1152, 104] {
+            let mut fft = FullFft::new(n);
+            let mut re: Vec<f64> = (0..n).map(|i| ((i * 37 + 11) % 101) as f64 - 50.0).collect();
+            let mut im: Vec<f64> = (0..n).map(|i| ((i * 53 + 7) % 89) as f64 - 44.0).collect();
+            let (orig_re, orig_im) = (re.clone(), im.clone());
+            fft.forward_re_im(&mut re, &mut im);
+            fft.inverse_re_im(&mut re, &mut im);
+            for i in 0..n {
+                assert!((re[i] - orig_re[i] * n as f64).abs() < 1e-8 * n as f64, "n={n} re {i}");
+                assert!((im[i] - orig_im[i] * n as f64).abs() < 1e-8 * n as f64, "n={n} im {i}");
             }
         }
     }

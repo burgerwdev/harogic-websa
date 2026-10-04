@@ -7,6 +7,8 @@ pub mod cplx;
 pub mod fir;
 pub mod levinson;
 pub mod fft;
+pub mod util;
 
 pub use cplx::Cplx;
 pub use fft::FullFft;
+pub use util::{hamming, iir1, iir1_c, iir1_lambda, sinc};
