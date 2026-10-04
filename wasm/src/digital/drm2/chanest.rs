@@ -1202,13 +1202,17 @@ mod tests {
         use crate::digital::drm2::fec::qam::Mapping;
         use crate::digital::drm2::interleave::CellDeinterleaver;
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
-        let iq = resample_to_core("../tests/fixtures/drm/drm_modeB_so3_48k.f32", 48_000.0 * (1.0 + 126e-6));
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
         let (mut rows, syms, shifts) = rows_and_syms(&map, &iq);
         let n = map.mode().fft_size() as f64;
-        for row in rows.iter_mut() {
+        // Per-symbol correction: measure each symbol's window offset from its own pilot phase
+        // ramp and remove it, exactly tracking the constant offset and its drift.
+        let offsets: Vec<f64> = (0..rows.len()).map(|i| sym_offset(&map, &rows, &syms, i)).collect();
+        for (i, row) in rows.iter_mut().enumerate() {
+            let off = offsets[i];
             for (c, v) in row.iter_mut().enumerate() {
                 let k = (map.kmin + c as i32) as f64;
-                *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * 11.0 / n);
+                *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * off / n);
             }
         }
         let first = sym_offset(&map, &rows, &syms, 0);
