@@ -277,4 +277,35 @@ Two conditions still need a test, and both are likely to matter:
 # 4. Capture the baseband, then decode it offline.
 python3 tools/drm_capture.py --seconds 10 --out /tmp/live.f32
 cd wasm && cargo test --release --test drm_live_fixture -- --nocapture
+
+# 5. Or decode it through the wasm path exactly as the worker does (non-silent PCM).
+cd frontend && node --experimental-strip-types scripts/drm_live_audio.mjs /tmp/live.f32
+
+# 6. Browser end-to-end: DRM from the panel, the readout, away to AM and back —
+#    no page refresh (Firefox on purpose; headless Chromium crashes here).
+python3 tools/e2e/drm_switch.py --url http://127.0.0.1:8080
 ```
+
+## Verified live (2026-10-04): audio from the bench loop
+
+The session that fixed the audio defects ended with the whole chain green on the bench,
+transmitting `drm_iq_15s.wav` at TX gain -5 dB, the app at ref -40 dBm:
+
+- A 12 s capture decoded natively to 35 access units and 22 FAC blocks (au=35, facs=22).
+- The same capture through the wasm block-fed path (`scripts/drm_live_audio.mjs`) produced
+  57 600 non-silent 24 kHz PCM samples.
+- `tools/e2e/drm_switch.py`: DRM locks in the browser (readout: `locked: B, 10 kHz ...`
+  `station: SAN90 DRM BENCH`, `FAC SNR 12 dB`), a switch to AM keeps the baseband running,
+  and DRM locks again — all without a page refresh.
+
+Two bench facts this session added to the list above:
+
+- **The DDC's digital gain differs per service instance.** One start delivered the capture
+  at rms +34 dBFS (clipped, locks in ~1.4 s everywhere); the next, at the same TX gain,
+  delivered -14 dBFS and nothing locked — native, wasm and browser alike. Restarting the
+  service restored the hot level. So: if FACs refuse to decode on the bench, re-capture and
+  check `rms_dbfs` in the capture JSON before blaming the receiver.
+- **With no lock, the worker can starve the browser stream.** A weak-signal page froze the
+  browser's baseband at ~30 blocks (the receiver re-runs acquisition over the whole buffer
+  on every block). With a locking signal the same page runs indefinitely. Keep this in mind
+  when reading a frozen `blocks=` counter in the IQ diagnostics.

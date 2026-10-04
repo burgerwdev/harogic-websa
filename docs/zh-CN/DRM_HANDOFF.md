@@ -23,8 +23,10 @@
 
 未完成：
 
-- 台面链路（Pluto → SAN-90）还没有在线确认音频；这是下一步，ref level 设 -40 dBm（见下文
-  台面事实）。
+- 2026-10-04 台面已验证：实时抓取 native 解出 35 个接入单元，wasm 分块路径产出 57 600 个
+  非静音 24 kHz 样本；`tools/e2e/drm_switch.py` 通过——DRM 在浏览器内锁定，往返 AM 后再次
+  锁定，全程无刷新。台面有个怪癖要记住：DDC 的数字增益因服务实例而异，只有热电平能锁定——
+  见 `docs/zh-CN/DRM_BENCH.md` 的台面实测一节。
 - xHE-AAC 端到端（coding 3 → libxaac）从未用真实 xHE 码流验证过；DecDRM 可以发一路
   （`codec = "xhe-aac"`）。HE-AAC v2 已接线但未验证。
 - 信道估计仍是简化的逐符号线性插值。物理层套件在台面抓取上已全部通过，所以下面的 Wiener

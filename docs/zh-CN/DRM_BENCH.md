@@ -238,4 +238,33 @@ Dream 解出了元数据和全部信道。因此台面信号是好的，出问�
 # 4. 抓取基带，然后离线解码。
 python3 tools/drm_capture.py --seconds 10 --out /tmp/live.f32
 cd wasm && cargo test --release --test drm_live_fixture -- --nocapture
+
+# 5. 或按 worker 的方式经 wasm 路径解码（非静音 PCM）。
+cd frontend && node --experimental-strip-types scripts/drm_live_audio.mjs /tmp/live.f32
+
+# 6. 浏览器端到端：面板选 DRM、看读数、切走再切回——全程不刷新页面
+#   （故意用 Firefox；本机的 headless Chromium 会崩）。
+python3 tools/e2e/drm_switch.py --url http://127.0.0.1:8080
 ```
+
+## 台面实测（2026-10-04）：台面环路出音频了
+
+修复音频缺陷的这次会话以全链路绿灯收尾：发射 `drm_iq_15s.wav`（TX gain -5 dB），
+应用设 ref -40 dBm：
+
+- 12 秒抓取 native 解出 35 个接入单元、22 个 FAC 块（au=35、facs=22）。
+- 同一抓取经 wasm 分块路径（`scripts/drm_live_audio.mjs`）产出 57 600 个非静音的
+  24 kHz PCM 样本。
+- `tools/e2e/drm_switch.py`：DRM 在浏览器内锁定（读数：`locked: B, 10 kHz ...`
+  `station: SAN90 DRM BENCH`、`FAC SNR 12 dB`），切 AM 后基带继续流动，切回 DRM 再次
+  锁定——全程无页面刷新。
+
+本次会话还给上面的清单新增了两条台面事实：
+
+- **DDC 的数字增益因服务实例而异。** 一次启动送来的抓取 rms +34 dBFS（削波，1.4 秒
+  到处都能锁定）；下一次同样的 TX 增益却只有 -14 dBFS，native、wasm、浏览器全都锁
+  不上。重启服务后热电平恢复。所以：台面上 FAC 解不出来时，先重抓一次、看抓取 JSON
+  里的 `rms_dbfs`，再去怀疑接收机。
+- **未锁定时 worker 可能饿死浏览器流。** 弱信号页面把浏览器基带冻在约 30 块（接收机
+  每块都对整个缓冲区重跑捕获）。信号能锁定的同一页面则无限期运行。读 IQ 诊断里冻结
+  的 `blocks=` 计数时记住这一点。

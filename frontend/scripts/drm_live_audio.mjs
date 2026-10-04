@@ -16,8 +16,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const ARTIFACT = resolve(root, 'public', 'dsp.wasm');
 const FIXTURE = resolve(root, '..', 'tests', 'fixtures', 'drm', 'drm_live_modeB_so3_48828.f32');
-/// Interleaved f32 I/Q of the committed live bench capture.
-const COMPLEX = Math.floor(readFileSync(FIXTURE).length / 8);
+const argFile = process.argv.find((a) => a.endsWith('.f32'));
+const FILE = argFile ? resolve(argFile) : FIXTURE;
+/// Interleaved f32 I/Q of the capture.
+const COMPLEX = Math.floor(readFileSync(FILE).length / 8);
 
 const artifactBytes = () => {
 	const buf = readFileSync(ARTIFACT);
@@ -30,14 +32,28 @@ const modePtr = dsp.alloc(mode.length);
 dsp.u8View(modePtr, mode.length).set(mode);
 // The live capture was taken at the DDC's measured rate; the pipeline resamples to
 // the DRM core rate itself.
-const handle = dsp.exports.websa_dsp_demod_new(48828, 48000, modePtr, mode.length, 10000, 0);
+const argRate = Number(process.argv.find((a) => /^\d{4,6}(\.\d+)?$/.test(a) && !a.includes('e')) ?? 0);
+const IN_RATE = argRate || 48828;
+const handle = dsp.exports.websa_dsp_demod_new(IN_RATE, 48000, modePtr, mode.length, 10000, 0);
 dsp.free(modePtr, mode.length);
 if (handle <= 0) throw new Error('demod_new failed');
 
-const iq = new Float32Array(readFileSync(FIXTURE).buffer.slice(0, COMPLEX * 8));
+const iq = new Float32Array(readFileSync(FILE).buffer.slice(0, COMPLEX * 8));
 const whole = process.argv.includes('--whole');
 const BLOCK = 3248;
 let pushed = 0;
+const textPtr = dsp.alloc(4096);
+const metricsPtr = dsp.alloc(3 * 8);
+let lastLines = [];
+const readMessages = () => {
+	const count = dsp.exports.websa_dsp_demod_messages
+		? dsp.exports.websa_dsp_demod_messages(handle)
+		: pushed;
+	for (let m = 0; m < count; m++) {
+		const len = dsp.exports.websa_dsp_demod_message_at(handle, m, textPtr, 4096, metricsPtr);
+		if (len > 0) lastLines.push(new TextDecoder().decode(dsp.u8View(textPtr, len)));
+	}
+};
 if (whole) {
 	const ptr = dsp.alloc(COMPLEX * 2 * 4);
 	dsp.f32View(ptr, COMPLEX * 2).set(iq);
@@ -66,6 +82,10 @@ for (let i = 0; i < samples; i++) {
 	energy += v;
 }
 console.log(
-	JSON.stringify({ pushedLines: pushed, rate, samples, peak, meanAbs: samples ? +(energy / samples).toFixed(1) : 0 }, null, 2),
+	JSON.stringify(
+		{ pushedLines: pushed, rate, samples, peak, meanAbs: samples ? +(energy / samples).toFixed(1) : 0, readout: lastLines.slice(-8) },
+		null,
+		2,
+	),
 );
 dsp.exports.websa_dsp_demod_free(handle);

@@ -27,8 +27,11 @@ Working, verified by tests and by the bench:
 
 Open:
 
-- The bench loop (Pluto → SAN-90) has not yet confirmed the audio live; that is the next
-  step, with the ref level at -40 dBm (see the bench facts below).
+- Bench-verified 2026-10-04: the live capture decodes natively (35 access units) and through
+  the wasm block-fed path (57 600 non-silent 24 kHz samples), and `tools/e2e/drm_switch.py`
+  passes — DRM locks in the browser, survives a round trip to AM, no page refresh. One bench
+  quirk to remember: the DDC's digital gain differs per service instance, and only the hot
+  level locks — see the verified-live section of `docs/en/DRM_BENCH.md`.
 - xHE-AAC end-to-end (coding 3 through libxaac) has never been driven with a real xHE stream;
   DecDRM can transmit one (`codec = "xhe-aac"`). HE-AAC v2 is wired but untested.
 - The channel estimation is still the simplified per-symbol linear interpolation. The
