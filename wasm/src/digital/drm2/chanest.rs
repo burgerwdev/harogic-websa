@@ -414,6 +414,67 @@ mod tests {
         eprintln!("[sweep] coarse {coarse:.1} Hz -> MER(dB) by extra offset: {out}");
     }
 
+    /// Is a sample-rate error what defeats the live capture? Resample it as if the source rate
+    /// were off by a few tens of ppm and read the FAC MER: a peak near the reference's 17.8 dB
+    /// would confirm the sample-rate offset (SRO) as the cause and size the tracking's range.
+    #[test]
+    #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
+    fn sweep_sample_rate_error_on_the_live_capture() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let mut out = String::new();
+        for ppm in [-200.0f64, -100.0, -50.0, -20.0, -5.0, 0.0, 5.0, 20.0, 50.0, 100.0, 200.0] {
+            let rate = 48_828.125 * (1.0 + ppm * 1e-6);
+            let iq = resample_to_core(path, rate);
+            let (mer, _, _) = run(&iq);
+            out.push_str(&format!("{ppm:+.0}ppm:{:.1} ", mer.unwrap_or(f64::NAN)));
+        }
+        eprintln!("[sro] MER(dB) by assumed source-rate error: {out}");
+    }
+
+    /// Is the FAC mask misaligned? Sweep every frame phase on the live capture and read the
+    /// FAC MER: if one phase stands out, the estimator is fine and the frame alignment (the
+    /// frame-sync stage's choice) is what fails on a real signal.
+    #[test]
+    #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
+    fn sweep_frame_phase_on_the_live_capture() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let (rows, _) = rows_and_syms(&map, &corrected);
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let mut out = String::new();
+        for phase in 0..spf {
+            let mut est = ChanEst::new(&map);
+            let mut mer = f64::NAN;
+            for (i, row) in rows.iter().enumerate() {
+                let sym = (i % spf + phase) % spf;
+                if est.process(row, sym, &map).is_some() {
+                    if let Some(m) = est.stats().fac_mer_db {
+                        mer = m;
+                    }
+                }
+            }
+            out.push_str(&format!("{phase}:{mer:.1} "));
+        }
+        eprintln!("[phase] FAC MER(dB) by frame phase: {out}");
+    }
+
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
     /// timing, demodulation, channel estimation, equalisation — as the 4-QAM the FAC is. With
     /// the lattice-indexed time interpolation and the linear frequency interpolation it reaches
