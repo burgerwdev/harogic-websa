@@ -1015,6 +1015,180 @@ mod tests {
         assert!(frames.iter().zip(stream.chunks(n)).all(|(b, s)| b == s), "linear equaliser must decode bit-exact");
     }
 
+    /// Compare the drm2 collection's decoded MSC bits against the old receiver's (which the
+    /// fixture test verifies bit-exact), to expose the defect's shape.
+    #[test]
+    fn msc_bits_vs_previous_receiver() {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        // The previous receiver's own decode.
+        let raw = std::fs::read("../tests/fixtures/drm/drm_modeB_so3_48k.f32").expect("fixture");
+        let iq_f32: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let mut rx = crate::digital::drm::DrmReceiver::new();
+        rx.push(&iq_f32);
+        rx.run();
+        let old_frames = rx.msc_frames.clone();
+        eprintln!("[msc/cmp] previous receiver: {} frames, frame_offset {}, soft_bits {}", old_frames.len(), rx.frame_offset, rx.msc_soft_bits.len());
+        // The drm2 collection's decoded frames (reuse the bit-exact test's logic inline).
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
+        let mut est = ChanEst::new(&map);
+        let mut fac_dec = crate::digital::drm2::fec::mlc::MlcDecoder::new(
+            crate::digital::drm2::fec::mlc::MlcParams::fac(),
+            0,
+        );
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            if out_sym == 0 {
+                fac_cells.clear();
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    crate::digital::drm2::fac::Fac::parse(&bits)
+                        .map(|f| f.channel.frame_index)
+                        .unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                frame_indices.push(idx);
+                fac_cells.clear();
+            }
+            emitted.push((out_sym, cells));
+        }
+        let params = crate::digital::drm2::fec::mlc::MlcParams::msc(
+            crate::digital::drm2::fec::qam::Mapping::Qam64Sm,
+            map.msc_cells_per_frame,
+            crate::digital::drm2::fec::mlc::MscProtection { part_a: 0, part_b: 1, hierarchical: 0 },
+            0,
+        );
+        let mut de = crate::digital::drm2::interleave::CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut msc_dec = crate::digital::drm2::fec::mlc::MlcDecoder::new(params, 1);
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let mut all_cells: Vec<EqCell> = Vec::new();
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut in_partial = true;
+        let mut complete_frame = 0usize;
+        for (out_sym, cells) in &emitted {
+            if *out_sym == 0 && in_partial {
+                in_partial = false;
+                complete_frame = 0;
+            } else if *out_sym == 0 {
+                complete_frame += 1;
+            }
+            if in_partial {
+                continue;
+            }
+            let Some(&fidx) = frame_indices.get(complete_frame) else { continue };
+            if fidx == 0xFF {
+                continue;
+            }
+            let super_sym = fidx as usize * 15 + *out_sym;
+            if *out_sym == 0 && fidx == 1 {
+                let mut all: Vec<EqCell> = Vec::new();
+                for c in super_msc.iter() {
+                    all.extend_from_slice(c);
+                }
+                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if msc_dec.decode(&d, &mut b) {
+                                frames.push(b);
+                            }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() {
+                    c.clear();
+                }
+            }
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+                all_cells.push(cells[c as usize]);
+            }
+        }
+        // Compare the first frames.
+        let n = old_frames[0].len();
+        eprintln!("[msc/cmp] drm2: {} frames, old: {} frames, n={n}", frames.len(), old_frames.len());
+        for f in 0..3.min(frames.len()).min(old_frames.len()) {
+            let eq = frames[f].iter().zip(&old_frames[f]).filter(|(a, b)| a == b).count();
+            eprintln!("[msc/cmp] frame {f}: equal {eq}/{n}");
+        }
+        // Check whether my frames are the old frames shifted by one (my collection skips the
+        // partial frame 0, so my frame f = old frame f+1).
+        for f in 0..3.min(frames.len()).min(old_frames.len() - 1) {
+            let eq = frames[f].iter().zip(&old_frames[f + 1]).filter(|(a, b)| a == b).count();
+            eprintln!("[msc/cmp] shift: my frame {f} vs old {f}+1: equal {eq}/{n}");
+        }
+        // The MSC MER (nearest 64-QAM decision error) over the collected MSC cells, split
+        // into band centre vs edges, to localise the corruption.
+        let qam = crate::digital::drm2::tables::QAM64_SM;
+        let mut centre = (0.0, 0.0);
+        let mut edges = (0.0, 0.0);
+        for (sym, bucket) in super_msc.iter().enumerate() {
+            for cell in bucket {
+                let k = (map.kmin + 0).abs(); // carrier offset not tracked per bucket; use sym
+                let _ = k;
+                let (err_sum, pow_sum) = if sym < 20 { &mut centre } else { &mut edges };
+                let re = qam.iter().map(|p| (cell.sig.re - p).abs()).fold(f64::INFINITY, f64::min).powi(2);
+                let im = qam.iter().map(|p| (cell.sig.im - p).abs()).fold(f64::INFINITY, f64::min).powi(2);
+                *err_sum += (re + im) * cell.chan;
+                *pow_sum += cell.chan * 2.0;
+            }
+        }
+        let mer = |(e, p): (f64, f64)| -10.0 * (e / p.max(1e-30)).max(1e-12).log10();
+        eprintln!("[msc/cmp] MSC MER (low syms vs high syms): {} dB vs {} dB", mer(centre), mer(edges));
+        // Cell-level agreement: hard-decode the previous receiver's msc_soft_bits (the LLR
+        // stream in its collection order) and my collected cells to 6 bits, and compare.
+        let qam = crate::digital::drm2::tables::QAM64_SM;
+        let mut match_cells = 0usize;
+        let mut total_cells = 0usize;
+        let mut first_mismatch: Option<(Vec<u8>, Vec<u8>)> = None;
+        for (i, cell) in all_cells.iter().enumerate() {
+            let base = i * 6;
+            if base + 6 > rx.msc_soft_bits.len() {
+                break;
+            }
+            let old_bits: Vec<u8> = (0..6)
+                .map(|b| u8::from(rx.msc_soft_bits[base + b] >= 0.0))
+                .collect();
+            let my_bits = cell_bits(cell.sig, &qam);
+            total_cells += 1;
+            if old_bits == my_bits {
+                match_cells += 1;
+            } else if first_mismatch.is_none() {
+                first_mismatch = Some((my_bits.clone(), old_bits));
+            }
+        }
+        eprintln!("[msc/cmp] cell-level agreement: {match_cells}/{total_cells} ({:.1}%)", 100.0 * match_cells as f64 / total_cells.max(1) as f64);
+        if let Some((mine, old)) = first_mismatch {
+            eprintln!("[msc/cmp] first mismatch: mine {mine:?} old {old:?}");
+        }
+    }
+
+    /// Hard-decode one equalised cell to its 6 bits (I-axis MSB first, then Q-axis).
+    fn cell_bits(sig: Cplx, qam: &[f64]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for v in [sig.re, sig.im] {
+            let idx = qam.iter().enumerate().min_by(|a, b| (v - a.1).abs().total_cmp(&(v - b.1).abs())).map(|(i, _)| i).unwrap_or(0);
+            for b in (0..3).rev() {
+                out.push(u8::from((idx >> b) & 1 == 1));
+            }
+        }
+        out
+    }
+
     /// Deterministic bit stream the fixture's MSC payload carries (the old chain's fixture
     /// test verifies against the same sequence).
     fn xorshift_bits(n: usize) -> Vec<u8> {
