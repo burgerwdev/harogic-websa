@@ -617,10 +617,12 @@ mod tests {
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
     }
 
-    /// The receiver on the live capture (resampled to the core rate): the closed timing/SRO
-    /// loop is what this exercises. FAC blocks decoded is the proxy for the MER.
+    /// The full live30 decode through the receiver: coarse acquisition, streaming frequency
+    /// tracking, channel estimation, FAC/SDC/MSC and the audio deframing. This is the task-7
+    /// acceptance: the reference decodes the same capture to FAC 64 ok / 9 bad, station
+    /// `SAN90 DRM BENCH` (HE-AAC mono 12 kHz) and 200 audio frames.
     #[test]
-    #[ignore = "live capture; run with --ignored --nocapture"]
+    #[ignore = "live capture /tmp/live30.f32 required; run with --ignored --nocapture"]
     fn receiver_on_live_capture() {
         let path = "/tmp/live30.f32";
         if !std::path::Path::new(path).exists() {
@@ -634,20 +636,22 @@ mod tests {
         let mut rs = crate::ddc::resampler::ComplexResampler::new(48_828.125, 48_000.0);
         let mut out: Vec<f32> = Vec::new();
         rs.process_f32_into(&iq, &mut out);
-        // Normalise the live signal to the clean fixture's RMS: the raw capture is ~254x
-        // hotter, which overdrives the receiver and is not a receiver defect.
-        let rms: f32 = (out.iter().map(|v| v * v).sum::<f32>() / out.len() as f32).sqrt();
-        let target = 0.178_f32;
-        let scale = target / rms.max(1e-9);
-        for v in out.iter_mut() {
-            *v *= scale;
-        }
         let mut rx = DrmReceiver::new();
         rx.push(&out);
         rx.run();
         eprintln!(
-            "[rxlive] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?} msc={} timing_tracking={}",
-            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label, rx.msc_frames.len(), rx.timing_tracking
+            "[rxlive] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?} msc={} aus={} rate={} timing_tracking={}",
+            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label, rx.msc_frames.len(), rx.audio_access_units.len(), rx.audio_rate_hz(), rx.timing_tracking
+        );
+        assert!(rx.locked(), "the receiver must lock on the live capture");
+        assert_eq!(rx.facs.len(), 64, "FAC ok blocks {} (reference 64)", rx.facs.len());
+        assert!(rx.fac_errors <= 11, "FAC errors {} (reference 9)", rx.fac_errors);
+        assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM BENCH"), "station label");
+        assert!(rx.audio_rate_hz() == 24_000 || rx.audio_rate_hz() == 48_000, "HE-AAC mono 12 kHz core");
+        assert!(
+            rx.audio_access_units.len() >= 200,
+            "live audio access units {} below the reference's 200",
+            rx.audio_access_units.len()
         );
     }
 }
