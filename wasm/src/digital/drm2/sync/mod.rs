@@ -7,4 +7,5 @@
 //! - `framesync` (next): the frame phase from the time pilots (Dream's `CFrameSync`).
 
 pub mod freqacq;
+pub mod nco;
 pub mod timesync;

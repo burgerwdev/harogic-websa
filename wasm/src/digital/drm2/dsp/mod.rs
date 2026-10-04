@@ -5,6 +5,7 @@
 
 pub mod cplx;
 pub mod fir;
+pub mod levinson;
 pub mod fft;
 
 pub use cplx::Cplx;
