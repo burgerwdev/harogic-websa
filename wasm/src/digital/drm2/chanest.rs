@@ -713,6 +713,8 @@ mod tests {
 
         // The frame whose FAC says 0 is the super-frame start and carries the SDC.
         let mut labels: Vec<String> = Vec::new();
+        let mut audios: Vec<crate::digital::drm2::sdc::AudioInfo> = Vec::new();
+        let mut muxes: Vec<crate::digital::drm2::sdc::MultiplexDescription> = Vec::new();
         let mut sdc_ok = 0usize;
         for (idx, cells) in &sdc_blocks {
             if *idx != 0 || cells.len() != map.sdc_cells_per_superframe {
@@ -742,8 +744,11 @@ mod tests {
             if let Some(b) = block {
                 sdc_ok += 1;
                 for e in parse_entities(&b.data) {
-                    if let Entity::Label(l) = e {
-                        labels.push(l.text());
+                    match e {
+                        Entity::Label(l) => labels.push(l.text()),
+                        Entity::Audio(a) => audios.push(a),
+                        Entity::Multiplex(m) => muxes.push(m),
+                        _ => {}
                     }
                 }
             }
@@ -752,6 +757,18 @@ mod tests {
         assert!(sdc_ok >= 3, "each super frame must decode its SDC, got {sdc_ok}");
         assert!(labels.iter().all(|l| l == "SAN90 DRM TEST"), "labels {labels:?}");
         assert!(!labels.is_empty());
+        // Audio descriptor: AAC (coding 0), SBR on, mono, 24 kHz sample-rate code.
+        let a = audios.first().expect("audio entity in SDC");
+        assert_eq!(a.coding, 0, "AAC");
+        assert!(a.sbr, "SBR enabled");
+        assert_eq!(a.mode, 0, "mono");
+        assert_eq!(a.sample_rate, 3, "24 kHz sample-rate code");
+        assert!(a.text, "text message present");
+        // Multiplex description: EEP, protection level 0/1.
+        let m = muxes.first().expect("multiplex entity in SDC");
+        assert_eq!(m.protection_a, 0);
+        assert_eq!(m.protection_b, 1);
+        assert_eq!(m.streams.len(), 1, "one audio stream");
     }
 
     /// Diagnostic: the previous chain's own equaliser + MLC decoder on the rows this harness
