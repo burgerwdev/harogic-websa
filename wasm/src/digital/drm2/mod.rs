@@ -118,6 +118,23 @@ pub struct DrmReceiver {
     xhe_decoder: Option<crate::xaac::XaacDecoder>,
     #[cfg(target_arch = "wasm32")]
     audio_configured_with: Option<Vec<u8>>,
+    // Incremental processing state: the mode detection runs once (when enough samples are
+    // buffered), then the demodulation and the decode consume only the NEW samples.
+    mode_detected: bool,
+    processed_complex: usize,
+    phase_computed: bool,
+    demod_rows: usize,
+    all_rows: Vec<Vec<Cplx>>,
+    all_shifts: Vec<i64>,
+    coarse: f64,
+    nco: Option<crate::digital::drm2::sync::nco::Nco>,
+    ft: Option<crate::digital::drm2::sync::freqtrack::FreqTrack>,
+    tsync: Option<TimeSync>,
+    demod: Option<OfdmDemod>,
+    spf: usize,
+    phase: usize,
+    sym_count: usize,
+    freq_track: f64,
 }
 
 impl DrmReceiver {
@@ -160,6 +177,21 @@ impl DrmReceiver {
             msc_emitted: Vec::new(),
             msc_frame_indices: Vec::new(),
             msc_frames: Vec::new(),
+            mode_detected: false,
+            processed_complex: 0,
+            phase_computed: false,
+            demod_rows: 0,
+            all_rows: Vec::new(),
+            all_shifts: Vec::new(),
+            coarse: 0.0,
+            nco: None,
+            ft: None,
+            tsync: None,
+            demod: None,
+            spf: 15,
+            phase: 0,
+            sym_count: 0,
+            freq_track: 0.0,
         }
     }
 
@@ -187,176 +219,203 @@ impl DrmReceiver {
         SpectrumOccupancy::SO_3
     }
 
-    /// One decode pass over the buffered baseband. Idempotent: returns once, and the caller
-    /// calls it again when more samples arrive. The first pass acquires; later passes reuse the
-    /// persistent state (the chanest, the FAC decoder, the timing/SRO tracking).
+    /// Incremental decode: each call demodulates the samples that arrived since the previous
+    /// call and feeds them through the channel estimation and the FAC/SDC/MSC decode. The
+    /// first call (when enough samples are buffered) also runs the mode detection and the
+    /// coarse carrier acquisition, so later calls only carry the new samples.
     pub fn run(&mut self) {
-        // Mode detection (crude): the DRM30 mode whose guard correlation yields the most
-        // windows wins; the full decimated mode detector replaces this in the finished chain.
-        let mut best: Option<(RobustnessMode, CellMap, Vec<Vec<Cplx>>, Vec<i64>)> = None;
-        let mut best_rows = 0usize;
-        for m in RobustnessMode::DRM30 {
-            let Some(map) = CellMap::new(m, SpectrumOccupancy::SO_3) else { continue };
+        // Mode detection: once, when enough samples are buffered (the guard correlation and
+        // the frame sync need a few frames).
+        if !self.mode_detected {
+            if self.buffered() < 40_000 {
+                return;
+            }
             let iq: Vec<Cplx> = self
                 .buf
                 .chunks_exact(2)
                 .map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1])))
                 .collect();
-            let mut tsync = TimeSync::new(m);
-            let mut demod = OfdmDemod::new(&map);
+            let mut best: Option<(RobustnessMode, CellMap)> = None;
+            let mut best_rows = 0usize;
+            for m in RobustnessMode::DRM30 {
+                let Some(cmap) = CellMap::new(m, SpectrumOccupancy::SO_3) else { continue };
+                let mut tsync = TimeSync::new(m);
+                let mut demod = OfdmDemod::new(&cmap);
+                let mut cells = Vec::new();
+                let mut rows = 0usize;
+                for block in iq.chunks(3248) {
+                    let _ = tsync.push(block);
+                    while let Some(w) = tsync.next_window() {
+                        if w.guard_corr.unwrap_or(0.0) < 0.5 {
+                            continue;
+                        }
+                        demod.demodulate(&w.samples, &mut cells);
+                        rows += 1;
+                    }
+                }
+                if rows > best_rows {
+                    best_rows = rows;
+                    best = Some((m, cmap));
+                }
+            }
+            let Some((mode, cmap)) = best else { return };
+
+            // Coarse carrier acquisition.
+            let flat: Vec<f64> = self
+                .buf
+                .chunks_exact(2)
+                .flat_map(|c| [f64::from(c[0]), f64::from(c[1])])
+                .collect();
+            let coarse = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true)
+                .push_iq(&flat)
+                .map(|a| a.dc_hz)
+                .unwrap_or(0.0);
+
+            self.carrier_offset_hz = coarse;
+            self.coarse = coarse;
+            self.freq_track = coarse;
+            self.mode = Some(mode);
+            self.map = Some(cmap.clone());
+            self.spf = mode.symbols_per_frame();
+            self.nco = Some(crate::digital::drm2::sync::nco::Nco::new(coarse));
+            let mut ft = crate::digital::drm2::sync::freqtrack::FreqTrack::new(&cmap);
+            ft.set_freq_time_constant(0.1);
+            self.ft = Some(ft);
+            self.tsync = Some(TimeSync::new(mode));
+            self.demod = Some(OfdmDemod::new(&cmap));
+            self.mode_detected = true;
+            // The tracked demodulation consumes the buffered capture from the start (the
+            // frame sync needs the whole capture for the phase).
+            self.processed_complex = 0;
+        }
+
+        let map_owned = self.map.clone().expect("mode detected");
+        let map = &map_owned;
+
+        // Demodulate the samples that arrived since the previous call, with the streaming NCO
+        // re-tuned every symbol by the frequency tracker.
+        let start_f32 = self.processed_complex * 2;
+        let new_iq: Vec<Cplx> = self.buf[start_f32..]
+            .chunks_exact(2)
+            .map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1])))
+            .collect();
+        {
+            let nco = self.nco.as_mut().expect("acquired");
+            let ft = self.ft.as_mut().expect("acquired");
+            let ts = self.tsync.as_mut().expect("acquired");
+            let demod = self.demod.as_mut().expect("acquired");
             let mut cells = Vec::new();
-            let mut rows: Vec<Vec<Cplx>> = Vec::new();
-            let mut shifts = Vec::new();
-            for block in iq.chunks(3248) {
-                let _ = tsync.push(block);
-                while let Some(w) = tsync.next_window() {
+            for block in new_iq.chunks(3248) {
+                let mut mixed = block.to_vec();
+                nco.process(&mut mixed);
+                let _ = ts.push(&mixed);
+                while let Some(w) = ts.next_window() {
                     if w.guard_corr.unwrap_or(0.0) < 0.5 {
                         continue;
                     }
                     demod.demodulate(&w.samples, &mut cells);
-                    rows.push(cells.clone());
-                    shifts.push(w.shift);
+                    self.all_rows.push(cells.clone());
+                    self.all_shifts.push(w.shift);
+                    let o = ft.process(&cells, w.shift);
+                    self.freq_track += o.freq_delta_hz;
+                    nco.set_offset(self.freq_track);
+                    self.sym_count += 1;
+                    if self.sym_count == 45 {
+                        ft.set_freq_time_constant(1.0);
+                    }
                 }
             }
-            if rows.len() > best_rows {
-                best_rows = rows.len();
-                best = Some((m, map, rows, shifts));
-            }
         }
-        let Some((mode, map, _, _)) = best else { return };
+        self.processed_complex = self.buf.len() / 2;
 
-        // Coarse carrier acquisition, then re-demodulate the selected mode with the streaming
-        // NCO re-tuned every symbol by the frequency tracker. The time-domain correction is
-        // what a live signal needs: a post-FFT rotation cannot undo the inter-carrier
-        // interference the drifting residual offset bakes into the cells.
-        let flat: Vec<f64> = self
-            .buf
-            .chunks_exact(2)
-            .flat_map(|c| [f64::from(c[0]), f64::from(c[1])])
-            .collect();
-        let coarse = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true)
-            .push_iq(&flat)
-            .map(|a| a.dc_hz)
-            .unwrap_or(0.0);
-        self.carrier_offset_hz = coarse;
-        let iq: Vec<Cplx> = self
-            .buf
-            .chunks_exact(2)
-            .map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1])))
-            .collect();
-        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
-        let mut ft = crate::digital::drm2::sync::freqtrack::FreqTrack::new(&map);
-        ft.set_freq_time_constant(0.1);
-        let mut tsync = TimeSync::new(mode);
-        let mut demod = OfdmDemod::new(&map);
-        let mut cells = Vec::new();
-        let mut rows: Vec<Vec<Cplx>> = Vec::new();
-        let mut shifts: Vec<i64> = Vec::new();
-        let mut track = coarse;
-        let mut n = 0usize;
-        for block in iq.chunks(3248) {
-            let mut mixed = block.to_vec();
-            nco.process(&mut mixed);
-            let _ = tsync.push(&mixed);
-            while let Some(w) = tsync.next_window() {
-                if w.guard_corr.unwrap_or(0.0) < 0.5 {
-                    continue;
-                }
-                demod.demodulate(&w.samples, &mut cells);
-                rows.push(cells.clone());
-                shifts.push(w.shift);
-                let o = ft.process(&cells, w.shift);
-                track += o.freq_delta_hz;
-                nco.set_offset(track);
-                n += 1;
-                if n == 45 {
-                    ft.set_freq_time_constant(1.0);
-                }
-            }
+        // The frame phase: once, after a few frames of rows (the time-pilot correlation needs
+        // more than one frame to separate the phases).
+        if !self.phase_computed && self.all_rows.len() >= 45 {
+            let phase = crate::digital::drm2::framesync::FrameSync::new(map).search(&self.all_rows).phase;
+            self.phase = phase;
+            self.frame_phase = phase;
+            self.phase_computed = true;
+            self.demod_rows = 0;
         }
-        if rows.len() < mode.symbols_per_frame() {
+        if !self.phase_computed {
             return;
         }
-        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
-        let spf = mode.symbols_per_frame();
 
-        // Channel estimation and FAC/SDC/MSC over the tracked rows. The time-Wiener is chosen
-        // up front (the reference's estimator always uses it) and its Doppler adaptation turns
-        // on after the first frame of history, as in the tracked chanest harness.
+        // Channel estimation and FAC/SDC/MSC over the rows that arrived since the previous
+        // call. The time-Wiener is chosen up front (the reference's estimator always uses it)
+        // and its Doppler adaptation turns on after the first frame of history.
         if self.chanest.is_none() {
-            let mut est = ChanEst::new(&map);
+            let mut est = ChanEst::new(map);
             est.use_time_wiener();
             self.chanest = Some(est);
         }
-        let est = self.chanest.as_mut().unwrap();
         let fac_dec = self
             .fac_dec
             .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
-        // Channel estimation and FAC/SDC/MSC over the demodulated rows the mode-detection
-        // pass just produced (the chanest harness's bit-exact path). Re-demodulating here
-        // re-runs the timing acquisition and can differ by a border-case window, which shifts
-        // the FAC frame alignment; the stored rows are already the windows we want.
-        let est = self.chanest.get_or_insert_with(|| ChanEst::new(&map));
-        let fac_dec = self
-            .fac_dec
-            .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
-        let mut bits = Vec::new();
-        for (i, row) in rows.iter().enumerate() {
-            if i == 45 {
-                est.start_time_wiener_tracking();
-            }
-            let sym = (i % spf + phase) % spf;
-            let shift = shifts[i];
-            let Some((out_sym, out)) = est.process(row, sym, shift, &map) else { continue };
-            self.symbols_demodulated += 1;
-            self.msc_emitted.push((out_sym, out.clone()));
-            if out_sym == 0 {
-                self.fac_cells.clear();
-                self.frame_sdc.clear();
-            }
-            let sdc_syms = map.mode().sdc_symbols();
-            if out_sym < sdc_syms {
-                for &c in &map.sdc_carriers[out_sym] {
-                    self.frame_sdc.push(out[c as usize]);
+
+        // Take the unprocessed rows out of the receiver so the decode can borrow the other
+        // fields freely; the phase-adjusted symbol index and the timing shift ride along.
+        let rows: Vec<(usize, Vec<Cplx>, i64)> = (self.demod_rows..self.all_rows.len())
+            .map(|i| (i, self.all_rows[i].clone(), self.all_shifts[i]))
+            .collect();
+        self.demod_rows = self.all_rows.len();
+
+        {
+            let est = self.chanest.as_mut().unwrap();
+            let mut bits = Vec::new();
+            for (i, row, shift) in rows {
+                if i == 45 {
+                    est.start_time_wiener_tracking();
                 }
-            }
-            for &c in &map.fac_carriers[out_sym] {
-                self.fac_cells.push(out[c as usize]);
-                self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
-            }
-            if self.fac_cells.len() == 65 {
-                let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
-                let idx = if decoded {
-                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
-                } else {
-                    0xFF
-                };
-                match if decoded { Fac::parse(&bits) } else { None } {
-                    Some(f) => {
-                        self.good_facs += 1;
-                        self.tracking = true;
-                        if self.good_facs >= 2 && !self.timing_tracking {
-                            if self.delayed_cnt > 0 {
-                                self.delayed_cnt -= 1;
-                            } else {
-                                self.timing_tracking = true;
-                                est.start_timing_tracking();
-                            }
-                        }
-                        self.facs.push(f);
+                let sym = (i % self.spf + self.phase) % self.spf;
+                let Some((out_sym, out)) = est.process(&row, sym, shift, map) else { continue };
+                self.symbols_demodulated += 1;
+                self.msc_emitted.push((out_sym, out.clone()));
+                if out_sym == 0 {
+                    self.fac_cells.clear();
+                    self.frame_sdc.clear();
+                }
+                let sdc_syms = map.mode().sdc_symbols();
+                if out_sym < sdc_syms {
+                    for &c in &map.sdc_carriers[out_sym] {
+                        self.frame_sdc.push(out[c as usize]);
                     }
-                    None => self.fac_errors += 1,
                 }
-                self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
-                self.msc_frame_indices.push(idx);
-                self.fac_cells.clear();
+                for &c in &map.fac_carriers[out_sym] {
+                    self.fac_cells.push(out[c as usize]);
+                    self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
+                }
+                if self.fac_cells.len() == 65 {
+                    let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
+                    let idx = if decoded {
+                        Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                    } else {
+                        0xFF
+                    };
+                    match if decoded { Fac::parse(&bits) } else { None } {
+                        Some(f) => {
+                            self.good_facs += 1;
+                            self.tracking = true;
+                            if self.good_facs >= 2 && !self.timing_tracking {
+                                if self.delayed_cnt > 0 {
+                                    self.delayed_cnt -= 1;
+                                } else {
+                                    self.timing_tracking = true;
+                                    est.start_timing_tracking();
+                                }
+                            }
+                            self.facs.push(f);
+                        }
+                        None => self.fac_errors += 1,
+                    }
+                    self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
+                    self.msc_frame_indices.push(idx);
+                    self.fac_cells.clear();
+                }
             }
         }
-        self.mode = Some(mode);
-        self.frame_phase = phase;
-        self.decode_sdc(&map);
-        self.decode_msc(&map);
-        self.map = Some(map);
+        self.decode_sdc(map);
+        self.decode_msc(map);
     }
 
     /// Assemble the MSC super frames from the emitted cells and decode them (cell deinterleave
@@ -751,7 +810,13 @@ impl DigitalDemodulator for DrPlugin {
             // would post a report per block.
             lines.push(format!("FAC SNR {snr:.0} dB"));
         }
-        lines.push(format!("{} MSC frames, {} audio AUs", self.rx.msc_frames.len(), self.rx.audio_access_units.len()));
+        lines.push(format!(
+            "{} MSC frames, {} audio AUs, FAC ok {} err {}",
+            self.rx.msc_frames.len(),
+            self.rx.audio_access_units.len(),
+            self.rx.facs.len(),
+            self.rx.fac_errors
+        ));
         self.lines = lines.clone();
         self.report_blocks += 1;
         let changed = lines != self.sent;

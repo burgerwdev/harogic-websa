@@ -577,6 +577,9 @@ mod tests {
             return (rows, Vec::new(), Vec::new());
         }
         let phase = crate::digital::drm2::framesync::FrameSync::new(map).search(&rows).phase;
+        if std::env::var("DRM_RX_DEBUG").is_ok() {
+            eprintln!("[tracked] rows={} phase={}", rows.len(), phase);
+        }
         let spf = RobustnessMode::B.symbols_per_frame();
         let syms = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
         (rows, syms, shifts)

@@ -82,6 +82,7 @@ if (whole) {
 	if (incremental) console.error(`  [inc] final pcm_total=${incTotal}`);
 	dsp.free(blockPtr, BLOCK * 2 * 4);
 }
+readMessages();
 
 const rate = dsp.exports.websa_dsp_drm_audio_rate(handle);
 const pcmCap = 48000 * 20;
