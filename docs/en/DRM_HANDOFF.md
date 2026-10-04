@@ -107,6 +107,16 @@ re-tuned every symbol by the tracker), the full capture through the receiver rea
 access units** — no amplitude normalisation needed. The live acceptance test
 (`receiver_on_live_capture`) pins all of it.
 
+**The wasm ABI now runs the drm2 receiver (2026-10-05)**: `digital/mod.rs` dispatches "drm"
+to `drm2::DrPlugin` (a `DigitalDemodulator` wrapper around `DrmReceiver`), the wasm artifact is
+rebuilt, and the receiver gained `buffered()`/`snr_db()`/`occupancy()` for the readout. Two
+integration items remain: the receiver's `run()` re-decodes the whole buffered capture on every
+block push (the mode detection re-runs 4 demodulation passes each time), so the wasm block-fed
+bench needs the incremental processing model (track the decoded position; only demodulate the
+new samples) — the `--whole` bench mode (one 288 000-sample push) decodes in one pass but the
+wasm FDK decode still needs checking; and the en/zh docs drifted (the new 2026-10-05 section is
+en-only).
+
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
 frame-sync score (this port's `FrameSync::search` correlates time pilots directly, so it is

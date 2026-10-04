@@ -60,6 +60,7 @@ use crate::digital::drm2::ofdm::OfdmDemod;
 use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
 use crate::digital::drm2::sync::timesync::TimeSync;
 use crate::digital::drm2::dsp::Cplx;
+use crate::plugin::{DigitalDemodulator, DigitalReport};
 
 /// The DRM receiver as a single streaming stage (the task-9 integration): baseband 48 kHz in,
 /// FAC/SDC/MSC/audio out. It owns the stages' persistent state and the acquisition/tracking
@@ -68,7 +69,7 @@ use crate::digital::drm2::dsp::Cplx;
 pub struct DrmReceiver {
     buf: Vec<f32>,
     pushed: u64,
-    mode: Option<RobustnessMode>,
+    pub mode: Option<RobustnessMode>,
     map: Option<CellMap>,
     chanest: Option<ChanEst>,
     fac_dec: Option<MlcDecoder>,
@@ -169,6 +170,21 @@ impl DrmReceiver {
 
     pub fn locked(&self) -> bool {
         self.map.is_some()
+    }
+
+    /// The complex baseband samples buffered for the next decode attempt.
+    pub fn buffered(&self) -> usize {
+        self.buf.len() / 2
+    }
+
+    /// The channel estimator's FAC SNR, dB (None before the first frame).
+    pub fn snr_db(&self) -> Option<f64> {
+        self.chanest.as_ref().and_then(|e| e.stats.snr_db)
+    }
+
+    /// The spectrum occupancy this receiver decodes.
+    pub fn occupancy(&self) -> SpectrumOccupancy {
+        SpectrumOccupancy::SO_3
     }
 
     /// One decode pass over the buffered baseband. Idempotent: returns once, and the caller
@@ -653,5 +669,136 @@ mod tests {
             "live audio access units {} below the reference's 200",
             rx.audio_access_units.len()
         );
+    }
+}
+
+/// `DigitalDemodulator` wrapper that streams baseband into the drm2 `DrmReceiver` and reports
+/// the decoded station label, mode and SNR once the receiver has locked. This replaces the
+/// previous receiver's plugin (task-9): the wasm ABI and the readout stay as they are.
+pub struct DrPlugin {
+    rx: DrmReceiver,
+    lines: Vec<String>,
+    sent: Vec<String>,
+    /// Blocks since the pipeline was built, for the throttled search status.
+    status_blocks: u32,
+    /// Blocks since the last locked report, so the readout returns after the operator clears
+    /// the window instead of staying empty until the text changes.
+    report_blocks: u32,
+}
+
+impl DrPlugin {
+    /// The receiver works at 48 kHz; the pipeline resamples the baseband to the
+    /// decoder's rate before it reaches here.
+    pub fn new(_rate: f64) -> Self {
+        Self {
+            rx: DrmReceiver::new(),
+            lines: Vec::new(),
+            sent: Vec::new(),
+            status_blocks: 0,
+            report_blocks: 0,
+        }
+    }
+}
+
+impl DigitalDemodulator for DrPlugin {
+    fn id(&self) -> &'static str {
+        "drm"
+    }
+
+    fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
+        self.rx.push(iq);
+        self.rx.run();
+        if !self.rx.locked() {
+            // One status line per second while the search runs. Without it a receiver that
+            // has not locked shows nothing at all, and a dead stream looks the same as a
+            // search in progress.
+            self.status_blocks += 1;
+            if self.status_blocks % 15 != 0 {
+                return Vec::new();
+            }
+            let seconds = self.rx.buffered() as f64 / f64::from(params::SAMPLE_RATE);
+            let mode = self
+                .rx
+                .mode
+                .map(|m| format!("{m:?}"))
+                .unwrap_or_else(|| "no mode yet".to_string());
+            let occupancy = format!("{:.0} kHz", self.rx.occupancy().bandwidth_khz());
+            let line = format!(
+                "DRM searching: {seconds:.1}s buffered, {mode} {occupancy}, carrier {:+.1} Hz, FAC errors {}",
+                self.rx.carrier_offset_hz, self.rx.fac_errors
+            );
+            if self.sent.first() != Some(&line) {
+                self.lines = vec![line.clone()];
+                self.sent = vec![line.clone()];
+                return vec![line];
+            }
+            return Vec::new();
+        }
+        let mut lines = Vec::new();
+        if let Some(m) = self.rx.mode {
+            lines.push(format!(
+                "locked: {m:?}, {:.0} kHz, {} symbols",
+                self.rx.occupancy().bandwidth_khz(),
+                self.rx.symbols_demodulated,
+            ));
+        }
+        match &self.rx.station_label {
+            Some(label) => lines.push(format!("station: {label}")),
+            None => lines.push("station: (SDC not decoded yet)".to_string()),
+        }
+        if let Some(snr) = self.rx.snr_db() {
+            // Whole decibels: a tenth of a decibel changes on every block and the change
+            // would post a report per block.
+            lines.push(format!("FAC SNR {snr:.0} dB"));
+        }
+        lines.push(format!("{} MSC frames, {} audio AUs", self.rx.msc_frames.len(), self.rx.audio_access_units.len()));
+        self.lines = lines.clone();
+        self.report_blocks += 1;
+        let changed = lines != self.sent;
+        if changed || self.report_blocks % 75 == 0 {
+            self.sent = lines;
+            self.report_blocks = 0;
+            return self.lines.clone();
+        }
+        Vec::new()
+    }
+
+    fn reset(&mut self) {
+        self.rx = DrmReceiver::new();
+        self.lines.clear();
+        self.sent.clear();
+        self.status_blocks = 0;
+        self.report_blocks = 0;
+    }
+
+    fn last_report(&self) -> Option<DigitalReport> {
+        self.rx.snr_db().map(|snr| DigitalReport {
+            frequency_hz: self.rx.carrier_offset_hz,
+            time_offset_s: 0.0,
+            snr_db: snr,
+        })
+    }
+
+    fn decoded(&self) -> Vec<(String, DigitalReport)> {
+        let report = self
+            .last_report()
+            .unwrap_or(DigitalReport { frequency_hz: 0.0, time_offset_s: 0.0, snr_db: 0.0 });
+        self.lines.iter().cloned().map(|line| (line, report)).collect()
+    }
+
+    fn buffered_input(&self) -> usize {
+        self.rx.buffered()
+    }
+
+    fn constellation(&self) -> Vec<(f64, f64)> {
+        self.rx.fac_constellation.clone()
+    }
+
+    fn take_audio_pcm(&mut self) -> Vec<i16> {
+        std::mem::take(&mut self.rx.audio_pcm)
+    }
+
+    fn audio_rate_hz(&self) -> u32 {
+        self.rx.audio_rate_hz()
     }
 }
