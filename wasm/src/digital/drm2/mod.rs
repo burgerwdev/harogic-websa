@@ -33,7 +33,9 @@
 //! PCM path and the backend's baseband AGC all stay as they are. The previous chain is deleted
 //! once this one decodes (see `docs/en/DRM_HANDOFF.md`).
 
+pub mod dsp;
 pub mod params;
+pub mod sync;
 
 // The stages land here in the order above, each with its own task and tests; `params` is the
 // shared foundation.
