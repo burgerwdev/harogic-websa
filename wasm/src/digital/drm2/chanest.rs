@@ -343,13 +343,13 @@ impl ChanEst {
                 *g = dense[c];
             }
         }
-        self.finish(grid, out_data, out_sym, shift, map)
+        self.finish(grid, out_data, out_sym, shift, map, self.snr_linear)
     }
 
     /// Shared tail: impulse-response tracking, frequency-Wiener interpolation, equalisation
     /// and the FAC MER, given the time-interpolated `grid`, the output symbol's `cells` and
     /// `sym`.
-    fn finish(&mut self, mut grid: Vec<Cplx>, out_data: Vec<Cplx>, out_sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
+    fn finish(&mut self, mut grid: Vec<Cplx>, out_data: Vec<Cplx>, out_sym: usize, shift: i64, map: &CellMap, snr: f64) -> Option<(usize, Vec<EqCell>)> {
         // Mode D's DC carrier is not a pilot; hold the grid point at zero like the reference.
         if self.mode == RobustnessMode::D {
             if let Some(dc) = map.carrier_offset(0) {
@@ -362,7 +362,7 @@ impl ChanEst {
         self.last_track = self.track.process(&grid, shift);
         let t = self.last_track;
         self.update_freq_wiener(
-            self.snr_linear,
+            snr,
             t.pds_len / self.n_car as f64,
             t.pds_offset / self.n_car as f64,
         );
@@ -439,12 +439,14 @@ impl ChanEst {
         }
         let out_cum = self.tw_hist.front().map(|h| h.2).unwrap_or(self.cum_shift);
         let mut grid = vec![Cplx::zero(); self.num_pil];
-        self.tw.estimate(map, cells, sym, self.cum_shift, out_cum, self.snr_linear, &mut grid);
+        // The time-Wiener's SNR improvement factor feeds the frequency Wiener, as in the
+        // reference (`snr_after_ti`), rather than the channel-limited FAC MER.
+        let snr_after_ti = self.tw.estimate(map, cells, sym, self.cum_shift, out_cum, self.snr_linear, &mut grid);
         if self.tw_hist.len() < self.tw.delay + 1 {
             return None;
         }
         let (out_data, out_sym, _) = self.tw_hist.front().unwrap().clone();
-        self.finish(grid, out_data, out_sym, shift, map)
+        self.finish(grid, out_data, out_sym, shift, map, snr_after_ti)
     }
 }
 
