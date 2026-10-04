@@ -1156,7 +1156,10 @@ mod tests {
         let mut total_cells = 0usize;
         let mut first_mismatch: Option<(Vec<u8>, Vec<u8>)> = None;
         for (i, cell) in all_cells.iter().enumerate() {
-            let base = i * 6;
+            // The previous receiver starts at frame 0 (its frame_offset is 0), while this
+            // collection skips the warm-up's partial frame 0; skip the previous receiver's
+            // first 2337 cells (frame 0) to align the frames.
+            let base = (2337 + i) * 6;
             if base + 6 > rx.msc_soft_bits.len() {
                 break;
             }
@@ -1187,6 +1190,82 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Confirm the timing-correction recipe: resample the fixture at its true clock error and
+    /// remove the residual window-offset phase ramp, then the MSC must decode bit-exact.
+    #[test]
+    #[ignore = "timing-correction confirmation; run with --ignored --nocapture"]
+    fn msc_decodes_with_timing_correction() {
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::interleave::CellDeinterleaver;
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = resample_to_core("../tests/fixtures/drm/drm_modeB_so3_48k.f32", 48_000.0 * (1.0 + 126e-6));
+        let (mut rows, syms, shifts) = rows_and_syms(&map, &iq);
+        let n = map.mode().fft_size() as f64;
+        for row in rows.iter_mut() {
+            for (c, v) in row.iter_mut().enumerate() {
+                let k = (map.kmin + c as i32) as f64;
+                *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * 11.0 / n);
+            }
+        }
+        let first = sym_offset(&map, &rows, &syms, 0);
+        let last = sym_offset(&map, &rows, &syms, rows.len() - 1);
+        eprintln!("[msc/fix] offset after correction: first {first:+.2} last {last:+.2}");
+        let mut est = ChanEst::new(&map);
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else { continue };
+            if out_sym == 0 { fac_cells.clear(); }
+            for &c in &map.fac_carriers[out_sym] { fac_cells.push(cells[c as usize]); }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    crate::digital::drm2::fac::Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else { 0xFF };
+                frame_indices.push(idx);
+                fac_cells.clear();
+            }
+            emitted.push((out_sym, cells));
+        }
+        let params = MlcParams::msc(Mapping::Qam64Sm, map.msc_cells_per_frame, MscProtection { part_a: 0, part_b: 1, hierarchical: 0 }, 0);
+        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut msc_dec = MlcDecoder::new(params, 1);
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut in_partial = true;
+        let mut complete_frame = 0usize;
+        for (out_sym, cells) in &emitted {
+            if *out_sym == 0 && in_partial { in_partial = false; complete_frame = 0; }
+            else if *out_sym == 0 { complete_frame += 1; }
+            if in_partial { continue; }
+            let Some(&fidx) = frame_indices.get(complete_frame) else { continue };
+            if fidx == 0xFF { continue; }
+            let super_sym = fidx as usize * 15 + *out_sym;
+            if *out_sym == 0 && fidx == 1 {
+                let mut all: Vec<EqCell> = Vec::new();
+                for c in super_msc.iter() { all.extend_from_slice(c); }
+                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if msc_dec.decode(&d, &mut b) { frames.push(b); }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() { c.clear(); }
+            }
+            for &c in &map.msc_carriers[super_sym] { super_msc[super_sym].push(cells[c as usize]); }
+        }
+        let nn = 8390usize;
+        let stream = xorshift_bits(12 * nn);
+        let matched: Vec<usize> = frames.iter().zip(stream.chunks(nn)).take(8).map(|(b, s)| b.iter().zip(s).filter(|(a, z)| a == z).count()).collect();
+        eprintln!("[msc/fix] decoded {} frames, bit match per frame (of {nn}): {matched:?}", frames.len());
+        assert!(frames.iter().zip(stream.chunks(nn)).all(|(b, s)| b == s), "timing correction must make the MSC bit-exact");
     }
 
     /// Deterministic bit stream the fixture's MSC payload carries (the old chain's fixture
