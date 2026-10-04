@@ -432,6 +432,44 @@ mod tests {
         assert!(mer > 20.0, "clean fixture FAC MER {mer:.1} dB must be high");
     }
 
+    /// Search the residual carrier offset and timing on the live capture: if a residual
+    /// explains the low MER, the fix is a finer acquisition or a residual tracking loop.
+    #[test]
+    #[ignore = "diagnostic search; run with --ignored --nocapture"]
+    fn search_residual_offset_and_timing_on_the_live_capture() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let base = resample_to_core(path, 48_828.125);
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        // Coarse acquisition on the whole capture, then remove its offset.
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        eprintln!("[search] coarse offset {coarse:.1} Hz");
+        let mut best = (0.0f64, 0i32, f64::NEG_INFINITY);
+        for residual in [-4.0f64, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0] {
+            for shift in [-3i32, -2, -1, 0, 1, 2, 3] {
+                let mut iq = base.clone();
+                let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse + residual);
+                nco.process(&mut iq);
+                let iq = if shift > 0 { &iq[shift as usize..] } else { &iq[..] };
+                let (mer, _, _) = run(iq);
+                if let Some(m) = mer {
+                    if m > best.2 {
+                        best = (residual, shift, m);
+                    }
+                }
+            }
+        }
+        eprintln!("[search] best residual {:.1} Hz shift {} -> MER {:.1} dB", best.0, best.1, best.2);
+    }
+
     /// OPEN: on the live capture the same chain reports MER -1.4 dB while the reference reports
     /// 17.8 dB, so a real signal still defeats the estimator. The clean fixture reaching 42 dB
     /// says the structure is right; the difference is what a real channel adds — a residual
