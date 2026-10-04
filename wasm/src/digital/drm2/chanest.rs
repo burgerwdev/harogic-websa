@@ -203,6 +203,14 @@ impl ChanEst {
         self.tw.tracking = true;
     }
 
+    /// Use the time-Wiener interpolator from the first symbol (the reference's channel
+    /// estimator always does), without enabling the Doppler-spread adaptation. Switching from
+    /// the linear path to the time-Wiener mid-stream drops the interpolation delay's worth of
+    /// symbols, so the receiver must choose the path up front.
+    pub fn use_time_wiener(&mut self) {
+        self.use_tw = true;
+    }
+
     /// Enable impulse-response based timing tracking (Dream's `start_timing_tracking`): the
     /// tracker then emits `timing_adjust` corrections for the receiver's FFT window.
     pub fn start_timing_tracking(&mut self) {
