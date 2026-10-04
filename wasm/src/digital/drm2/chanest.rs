@@ -1222,6 +1222,44 @@ mod tests {
             .collect();
         eprintln!("[timing] per-symbol offset (first 15): {:?}", &per_sym[..15.min(per_sym.len())]);
         eprintln!("[timing] per-symbol offset (last 15): {:?}", &per_sym[per_sym.len().saturating_sub(15)..]);
+        // Sweep a source-rate assumption: the drift vanishes at the fixture's true clock error.
+        let mut drift_line = String::new();
+        for ppm in [-80.0f64, -52.0, -20.0, 0.0, 20.0, 52.0, 80.0] {
+            let iq2 = resample_to_core("../tests/fixtures/drm/drm_modeB_so3_48k.f32", 48_000.0 * (1.0 + ppm * 1e-6));
+            let (rows2, syms2, _) = rows_and_syms(&map, &iq2);
+            let first = sym_offset(&map, &rows2, &syms2, 0);
+            let last = sym_offset(&map, &rows2, &syms2, rows2.len().saturating_sub(1));
+            drift_line.push_str(&format!("{ppm:+.0}ppm:{first:+.1}/{last:+.1} "));
+        }
+        eprintln!("[timing] offset first/last by assumed source-rate error: {drift_line}");
+    }
+
+    /// Mean window offset (samples) of one symbol's scattered-pilot phase ramp.
+    fn sym_offset(map: &CellMap, rows: &[Vec<Cplx>], syms: &[usize], i: usize) -> f64 {
+        let n = map.mode().fft_size() as f64;
+        let sym = syms[i];
+        let row = &rows[i];
+        let os: Vec<f64> = (0..map.num_carriers)
+            .filter(|&c| map.cell(sym, c).is_scattered())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter_map(|w| {
+                let (c1, c2) = (w[0], w[1]);
+                let (r1, r2) = (map.pilot(sym, c1), map.pilot(sym, c2));
+                if r1.norm_sqr() == 0.0 || r2.norm_sqr() == 0.0 {
+                    return None;
+                }
+                let h1 = row[c1] / r1;
+                let h2 = row[c2] / r2;
+                if h1.norm() < 1e-3 || h2.norm() < 1e-3 {
+                    return None;
+                }
+                let dphase = (h2 / h1).arg();
+                let dk = (c2 as i32 - c1 as i32) as f64;
+                Some(dphase * n / (2.0 * core::f64::consts::PI * dk))
+            })
+            .collect();
+        os.iter().sum::<f64>() / os.len().max(1) as f64
     }
 
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
