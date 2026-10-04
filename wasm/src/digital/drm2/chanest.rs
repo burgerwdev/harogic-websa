@@ -660,6 +660,100 @@ mod tests {
         assert!(indices.iter().copied().filter(|&i| i == 0).count() >= 3, "indices {indices:?}");
     }
 
+    /// The clean fixture's SDC must decode through the chain to the station label and audio
+    /// parameters the manifest records. The SDC sits in symbols 0..1 of frame 0 of each super
+    /// frame, so its cells are keyed by the FAC's frame index.
+    #[test]
+    fn sdc_decodes_to_the_fixture_manifest() {
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams};
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::sdc::{parse_entities, parse_sdc_block, Entity};
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
+
+        let mut est = ChanEst::new(&map);
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        // Each frame contributes its SDC cells (symbols 0..sdc_syms) and its FAC frame index;
+        // both are complete at the frame's last FAC symbol, so they are stored together.
+        let mut frame_sdc: Vec<EqCell> = Vec::new();
+        let mut sdc_blocks: Vec<(u8, Vec<EqCell>)> = Vec::new();
+        let sdc_syms = map.mode().sdc_symbols();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            if out_sym == 0 {
+                frame_sdc.clear();
+                fac_cells.clear();
+            }
+            if out_sym < sdc_syms {
+                for &c in &map.sdc_carriers[out_sym] {
+                    frame_sdc.push(cells[c as usize]);
+                }
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    crate::digital::drm2::fac::Fac::parse(&bits)
+                        .map(|f| f.channel.frame_index)
+                        .unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                sdc_blocks.push((idx, std::mem::take(&mut frame_sdc)));
+                fac_cells.clear();
+            }
+        }
+
+        // The frame whose FAC says 0 is the super-frame start and carries the SDC.
+        let mut labels: Vec<String> = Vec::new();
+        let mut sdc_ok = 0usize;
+        for (idx, cells) in &sdc_blocks {
+            if *idx != 0 || cells.len() != map.sdc_cells_per_superframe {
+                continue;
+            }
+            let mut sdc16 = MlcDecoder::new(
+                MlcParams::sdc(Mapping::Qam16, map.sdc_cells_per_superframe),
+                0,
+            );
+            let mut sdc4 = MlcDecoder::new(
+                MlcParams::sdc(Mapping::Qam4, map.sdc_cells_per_superframe),
+                0,
+            );
+            let mut block = if sdc16.decode(cells, &mut bits) {
+                parse_sdc_block(&bits).filter(|b| b.crc_ok)
+            } else {
+                None
+            };
+            if block.is_none() {
+                let mut b4 = Vec::new();
+                block = if sdc4.decode(cells, &mut b4) {
+                    parse_sdc_block(&b4).filter(|b| b.crc_ok)
+                } else {
+                    None
+                };
+            }
+            if let Some(b) = block {
+                sdc_ok += 1;
+                for e in parse_entities(&b.data) {
+                    if let Entity::Label(l) = e {
+                        labels.push(l.text());
+                    }
+                }
+            }
+        }
+        eprintln!("[sdc] decoded {sdc_ok} blocks, labels {labels:?}");
+        assert!(sdc_ok >= 3, "each super frame must decode its SDC, got {sdc_ok}");
+        assert!(labels.iter().all(|l| l == "SAN90 DRM TEST"), "labels {labels:?}");
+        assert!(!labels.is_empty());
+    }
+
     /// Diagnostic: the previous chain's own equaliser + MLC decoder on the rows this harness
     /// produces. If this decodes, the harness's rows/symbol indices are right and the defect is
     /// in the chanest cells; if it fails, the harness's frame alignment is wrong.
