@@ -157,6 +157,52 @@ impl Drop for AacDecoder {
     }
 }
 
+/// Diagnostic: decode the AU dump format of `examples/dump_drm_au.rs` inside this
+/// module ([type9_len u32][type9][crc u8][len u32][data]...). Returns the number of
+/// access units decoded, or a negative error. Temporary, for localising the trap.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_fdk_decode_dump(ptr: *mut u8, len: u32) -> i32 {
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    let mut pos = 0usize;
+    let tl = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    let mut dec = match AacDecoder::new() {
+        Some(d) => d,
+        None => return -1,
+    };
+    if !dec.configure(&data[pos..pos + tl]) {
+        return -2;
+    }
+    pos += tl;
+    let mut frames = 0i32;
+    let mut err = 0i32;
+    while pos + 5 <= len as usize {
+        let crc = data[pos];
+        let alen = u32::from_le_bytes(data[pos + 1..pos + 5].try_into().unwrap()) as usize;
+        pos += 5;
+        if pos + alen > len as usize {
+            break;
+        }
+        let mut au = Vec::with_capacity(alen + 1);
+        au.push(crc);
+        au.extend_from_slice(&data[pos..pos + alen]);
+        pos += alen;
+        let pcm = dec.decode(&au);
+        err = dec.last_error;
+        if err != 0 {
+            break;
+        }
+        if !pcm.is_empty() {
+            frames += 1;
+        }
+    }
+    if err != 0 {
+        return -1000 - err;
+    }
+    frames
+}
+
 /// Smoke-test export: decode an ADTS AAC buffer (ptr/len into linear memory) and
 /// return the decoded frame size in samples, or a negative code on failure. Used by
 /// the runtime harness to prove the linked codec actually decodes.

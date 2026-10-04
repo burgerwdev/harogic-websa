@@ -261,6 +261,7 @@ pub extern "C" fn websa_dsp_drm_audio_rate(handle: u32) -> u32 {
     with_pipeline(handle, |state| state.pipeline.digital_audio_rate_hz()).unwrap_or(0)
 }
 
+
 /// Messages decoded by this pipeline (status readout).
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_count(handle: u32) -> u32 {

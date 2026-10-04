@@ -1,5 +1,5 @@
 {
- "bytes": 2578087,
+ "bytes": 2579802,
  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
  "exports": [
   "calloc",
@@ -30,6 +30,7 @@
   "websa_dsp_fdk_decode_adts",
   "websa_dsp_fdk_decode_drm",
   "websa_dsp_fdk_decode_drm_frames",
+  "websa_dsp_fdk_decode_dump",
   "websa_dsp_free",
   "websa_dsp_plugin_audio_enhancement",
   "websa_dsp_plugin_count",
@@ -44,6 +45,6 @@
  "note": "Written by wasm/build.sh. The .wasm is committed so the frontend build needs no Rust; tools/check_wasm_artifact.py verifies this manifest in CI.",
  "profile": "release",
  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
- "sha256": "c23ba71f614b3cc8c99f3651bdfc4edf1aead722dcdd11d70ed1853d653e0ada",
+ "sha256": "46e2eca5f012e8f1dc9c2cb6efcb75584dd8ab6ed5dd2a5276abf80dc44c6642",
  "target": "wasm32-unknown-unknown"
 }

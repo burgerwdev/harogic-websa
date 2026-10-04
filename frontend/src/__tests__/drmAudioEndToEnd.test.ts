@@ -43,8 +43,11 @@ describe('DRM audio end-to-end (IQ → AAC PCM)', () => {
 		const count = dsp.exports.websa_dsp_demod_push(handle, iqPtr, COMPLEX);
 		expect(count).toBeGreaterThan(0);
 
-		// The decoded AAC core runs at 24 kHz; the receiver deframes + decodes it to PCM.
-		expect(dsp.exports.websa_dsp_drm_audio_rate(handle)).toBe(24000);
+		// The SDC signals SBR over a 24 kHz core, so the decoder plays at the SBR rate —
+		// as Dream reports it. The fixture's payload carries no SBR data (documented in
+		// tests/fixtures/drm/manifest.json), but the signalled rate is what the receiver
+		// reports, and FDK conceals the missing envelopes at the SBR output rate.
+		expect(dsp.exports.websa_dsp_drm_audio_rate(handle)).toBe(48000);
 
 		const pcmPtr = dsp.alloc(200000 * 2);
 		const samples = dsp.exports.websa_dsp_drm_audio_pcm(handle, pcmPtr, 200000);

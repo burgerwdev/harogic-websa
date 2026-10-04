@@ -3,6 +3,7 @@
 // memcmp by Rust's compiler-builtins. This file supplies the C++ runtime glue, a few
 // string helpers, and the FDK_* memory/string wrappers genericStds.cpp would provide.
 #include <stddef.h>
+#include <stdint.h>
 
 typedef unsigned int UINT;
 typedef int INT;
@@ -35,12 +36,29 @@ extern "C" int strcmp(const char *a, const char *b) { while (*a && *a == *b) { a
 extern "C" void *FDKcalloc(UINT n, UINT size) { return calloc(n, size); }
 extern "C" void *FDKmalloc(UINT size) { return malloc(size); }
 extern "C" void FDKfree(void *ptr) { free(ptr); }
-extern "C" void *FDKaalloc(UINT size, UINT /*alignment*/) { return malloc(size); }
-extern "C" void FDKafree(void *ptr) { free(ptr); }
+// FDK asks for aligned buffers (up to 16 bytes in the SBR decoder), and FDK's own
+// genericStds backs them with FDKcalloc — "malloc and clear": CAacDecoder_Init's
+// persistent channel info is read before it is written (HCR side info), so the memory
+// MUST come back zeroed. Mirror that: calloc, align up, stash the raw pointer in the
+// word before the returned address so FDKafree can find it.
+static void *aalloc(UINT size, UINT alignment) {
+    if (alignment < sizeof(void *)) alignment = sizeof(void *);
+    void *raw = calloc(1, (size_t)size + alignment - 1 + sizeof(void *));
+    if (!raw) return 0;
+    uintptr_t addr = reinterpret_cast<uintptr_t>(raw) + sizeof(void *);
+    addr = (addr + alignment - 1) & ~static_cast<uintptr_t>(alignment - 1);
+    *reinterpret_cast<void **>(addr - sizeof(void *)) = raw;
+    return reinterpret_cast<void *>(addr);
+}
+extern "C" void *FDKaalloc(UINT size, UINT alignment) { return aalloc(size, alignment); }
+extern "C" void FDKafree(void *ptr) {
+    if (!ptr) return;
+    free(*reinterpret_cast<void **>(reinterpret_cast<uintptr_t>(ptr) - sizeof(void *)));
+}
 extern "C" void *FDKcalloc_L(UINT n, UINT size, int /*s*/) { return calloc(n, size); }
-extern "C" void *FDKaalloc_L(UINT size, UINT /*alignment*/, int /*s*/) { return malloc(size); }
+extern "C" void *FDKaalloc_L(UINT size, UINT alignment, int /*s*/) { return aalloc(size, alignment); }
 extern "C" void FDKfree_L(void *ptr) { free(ptr); }
-extern "C" void FDKafree_L(void *ptr) { free(ptr); }
+extern "C" void FDKafree_L(void *ptr) { FDKafree(ptr); }
 extern "C" void FDKmemcpy(void *dst, const void *src, UINT size) { memcpy(dst, src, size); }
 extern "C" void FDKmemmove(void *dst, const void *src, UINT size) { memmove(dst, src, size); }
 extern "C" void FDKmemclear(void *memPtr, UINT size) { memset(memPtr, 0, size); }

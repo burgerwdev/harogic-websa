@@ -15,17 +15,25 @@ Working, verified by tests and by the bench:
   cleared window recovers.
 - Selecting another demodulator after DRM works without a page refresh: a trapped worker is
   dropped and the next mode change starts a fresh one.
-- Suites: `cargo test --test drm_fixture` 4/4, the live-capture tests 4/4, the physical-layer
-  robustness checks 5/5, and the frontend suite 322 tests (plus one FT8 speed test that fails
-  only when the machine is busy).
+- **The audio decodes.** The real HE-AAC stream (12 kHz core with SBR) decodes to non-silent
+  24 kHz PCM in wasm, from the worker's block feed and from a whole-buffer push. The FDK trap
+  is fixed at its root (the aligned allocator must zero, like FDK's `genericStds`); the SBR
+  flag is no longer stripped; the post-lock passes produce audio (persistent MSC
+  deinterleaver, accumulating carrier-offset corrections). Details and the evidence trail:
+  `docs/en/DRM_BENCH.md`, defect 3.
+- Suites: `cargo test --test drm_fixture` 4/4, the live-capture tests 5/5 (including the
+  streaming-audio regression), the physical-layer robustness checks 5/5, the DRM wasm tests
+  7/7 (`drmLiveAudio`, `drmAudioEndToEnd`, `drmAudio`, `drmXaac`, `workerRecovery`).
 
 Open:
 
-- The AAC audio of a real HE-AAC stream (a 12 kHz core with SBR) does not decode yet, and the
-  receiver skips that configuration so a fault cannot take the session down.
-- The readout does not follow the signal: the values come from the lock pass, because the
-  receiver stops taking baseband once it locks. The fix is written and verified offline; see
-  step 3 below.
+- The bench loop (Pluto → SAN-90) has not yet confirmed the audio live; that is the next
+  step, with the ref level at -40 dBm (see the bench facts below).
+- xHE-AAC end-to-end (coding 3 through libxaac) has never been driven with a real xHE stream;
+  DecDRM can transmit one (`codec = "xhe-aac"`). HE-AAC v2 is wired but untested.
+- The channel estimation is still the simplified per-symbol linear interpolation. The
+  physical-layer suites pass on the bench capture, so the Wiener port below is only worth
+  doing if the live bench shows a need.
 
 ## Bench facts that took time to learn
 
@@ -120,16 +128,21 @@ Two notes for the next session:
   driven with a real xHE stream. DecDRM can transmit one: set `codec = "xhe-aac"` in the bench
   station config.
 
-## Latest diagnostic (the post-lock pass)
+## The post-lock pass, resolved
 
-The post-lock pass is implemented and produces readout lines in the streaming path. The
-receiver locks at ~2 s and the later passes refresh the readout. The station, mode,
-bandwidth, bit rate, codec and protection are all reported. The first pass shows a FAC
-SNR of 20 dB.
+The earlier diagnosis blamed the per-symbol channel estimation, which was wrong. The pass
+SNR collapsed frame by frame (20 dB to 1.7 dB) for two concrete reasons, both fixed:
 
-However, no audio access units are produced (`au=0`). The second pass shows a FAC SNR of
-1 dB, suggesting the channel estimate degrades across passes. The root cause is that the
-per-symbol channel estimation does not track a real channel.
+- The MSC `CellDeinterleaver` was recreated per pass, so the long interleaver's five-frame
+  fill ate the whole 3 s window. It now persists across passes and frames carry their
+  absolute index, so overlapping windows feed each frame exactly once.
+- `remove_carrier_offset` overwrote `mix_w` instead of accumulating it. After the
+  whole-carrier anchor correction, every sample arriving after the lock was under-rotated
+  by the first (fractional, ~120 Hz) correction. The lock pass never sees this — it rotates
+  the whole buffer in place — which is why whole-buffer decoding masked it.
+
+With both fixed, a streaming pass produces 25 access units from the 6 s capture and the
+audio plays. The channel estimation itself was never the problem on this signal.
 
 ## Reference modules for the fix
 
@@ -149,20 +162,15 @@ GPL-2.0-or-later, so read them for the algorithms and implement independently.
 
 ## Next steps, in order
 
-1. Remove the SBR guard in `decode_audio` and feed the live capture through the node harness
-   (`instantiateDsp`, push 3248 sample blocks, read `websa_dsp_drm_audio_pcm`). The padding from
-   finding 3 may have removed the live trap as well. If the PCM is non-zero and non-silent, the
-   audio path works.
-2. If it still faults, finish finding 2 (land the aligned `FDKaalloc`, then build FDK with
-   symbols and without `strip` to name the faulting function) or bound the fault so only the
-   audio decode can fail.
-3. Land the readout pass. It is written and verified offline, then reverted because the FDK
-   fault made it unstable: the constants `PASS_SECONDS` and `WINDOW_SECONDS`, the fields
-   `locked_r`, `locked_super_phase`, `locked_map`, `locked_row_start`, `pass_at`,
-   `audio_units_decoded`, the removal of the early return in `push`, `decode_next_window`, a
-   `row_base` argument for `decode`, and `clear_readout_state`.
-4. Then finish task 4 (the preset path, on the bench) and task 5 (the fixture, the docs, and one
-   full `make ci`).
+1. Bench-verify the audio live: ref level -35..-45 dBm before the run, transmit with
+   `tools/pluto_drm_tx.py`, then a `tools/drm_capture.py` capture decoded through the wasm
+   path (`frontend/scripts/drm_live_audio.mjs`) must show non-silent PCM, and the preset
+   switch (DRM and back) must work without a page refresh.
+2. Drive xHE-AAC end-to-end on the bench: set `codec = "xhe-aac"` in the DecDRM station
+   config, capture, and check the libxaac path (`coding 3`) with a real xHE stream.
+3. Exercise HE-AAC v2 (SBR + PS, stereo) the same way.
+4. If the live bench shows channel-estimation or timing weaknesses, then port the DecDRM
+   modules below; the offline suites pass today, so this is evidence-driven, not automatic.
 
 ## Environment notes
 

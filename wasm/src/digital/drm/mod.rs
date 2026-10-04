@@ -208,6 +208,15 @@ pub struct DrmReceiver {
     pass_at: u64,
     /// Audio units that already reached `audio_pcm`, so a later pass decodes only the new ones.
     audio_units_decoded: usize,
+    /// MSC cell deinterleaver + MLCC decoder, persistent across decode passes. The long
+    /// interleaver spans five 400 ms frames, so a deinterleaver that restarts every pass
+    /// spends its whole window on fill and never produces audio. Dream/DecDRM run this
+    /// stage as a continuous stream; this is the same idea inside the pass architecture.
+    msc_de: Option<CellDeinterleaver>,
+    msc_mlc: Option<MlcDecoder>,
+    /// Absolute MSC frame count already fed to `msc_de`: pass windows overlap, so each
+    /// frame must be fed exactly once, in order.
+    msc_frames_fed: u64,
     /// Total complex samples pushed, including the samples the buffer cap dropped. It
     /// gives every buffered sample its phase reference for the carrier-offset removal.
     pushed: u64,
@@ -259,6 +268,9 @@ impl DrmReceiver {
             locked_row_start: 0,
             pass_at: 0,
             audio_units_decoded: 0,
+            msc_de: None,
+            msc_mlc: None,
+            msc_frames_fed: 0,
             pushed: 0,
             mix_w: 0.0,
             mix_phase: 0.0,
@@ -301,8 +313,13 @@ impl DrmReceiver {
             let (s, co) = ph.sin_cos();
             *c = Cplx::new(c.re * co - c.im * s, c.re * s + c.im * co);
         }
-        self.mix_w = w;
-        self.mix_phase = w * self.pushed as f64;
+        // The corrections accumulate: the anchor pass calls this a second time, so the
+        // buffer then carries the sum of both rotations in place — and the per-sample
+        // mixer must apply the same sum to the samples that arrive later, or everything
+        // after the lock is under-rotated by the first correction (the lock pass itself
+        // never sees it, which is why whole-buffer decoding masked this for a while).
+        self.mix_w += w;
+        self.mix_phase += w * self.pushed as f64;
     }
 
     pub fn locked(&self) -> bool {
@@ -315,13 +332,18 @@ impl DrmReceiver {
     }
 
     /// The decoded audio PCM's sample rate in Hz (0 when the SDC audio info is unknown).
+    /// SBR doubles the core rate (a 12 kHz core plays at 24 kHz), as Dream reports it.
     pub fn audio_rate_hz(&self) -> u32 {
-        match self.audio.as_ref().map(|a| a.sample_rate) {
+        let core = match self.audio.as_ref().map(|a| a.sample_rate) {
             Some(0) => 8000,
             Some(1) => 12000,
             Some(2) => 16000,
             Some(3) => 24000,
-            _ => 0,
+            _ => return 0,
+        };
+        match self.audio.as_ref().map(|a| a.sbr) {
+            Some(true) => core * 2,
+            _ => core,
         }
     }
 
@@ -507,6 +529,10 @@ impl DrmReceiver {
         self.msc_frames.clear();
         self.audio_access_units.clear();
         self.audio_pcm.clear();
+        self.msc_de = None;
+        self.msc_mlc = None;
+        self.msc_frames_fed = 0;
+        self.audio_units_decoded = 0;
     }
 
     /// Channel estimation + equalisation + QAM demapping + FAC/SDC decoding.
@@ -530,6 +556,7 @@ impl DrmReceiver {
         let mut sdc_cells: Vec<EqCell> = Vec::new();
         let mut msc_super: Vec<EqCell> = Vec::new();
         let mut msc_supers: Vec<Vec<EqCell>> = Vec::new();
+        let mut msc_super_rows: Vec<u64> = Vec::new();
 
         let mut sig = 0.0f64;
         let mut noise = 0.0f64;
@@ -626,6 +653,7 @@ impl DrmReceiver {
             }
             if sym == spsf - 1 {
                 msc_supers.push(core::mem::take(&mut msc_super));
+                msc_super_rows.push((row_base + i) as u64);
             }
         }
 
@@ -648,32 +676,51 @@ impl DrmReceiver {
             self.msc_bitrate_kbps = Some(params.total_bits() as f64 / 400.0);
 
             // MSC cell deinterleaving + MLCC decoding, one multiplex frame at a time.
+            // The state persists across passes (see the `msc_de` field): the long
+            // interleaver spans five 400 ms frames, so a deinterleaver that restarts
+            // every pass spends its whole window on fill and never produces audio.
+            // Pass windows overlap, so each frame carries its absolute index and frames
+            // an earlier pass already fed are skipped.
             let depth = match fac0.channel.interleaving {
                 fac::Interleaving::Long => 5,
                 fac::Interleaving::Short => 1,
             };
-            let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, depth);
-            let mut msc_dec = MlcDecoder::new(params, 1);
-            for super_cells in &msc_supers {
-                // Only a complete super frame carries a whole audio frame. A partial one (the
-                // tail of a short capture, or the buffer of a streaming caller) would hand the
-                // AAC decoder a truncated access unit, which is not something it survives.
-                let complete = super_cells.chunks(map.msc_cells_per_frame).count() >= 3;
-                for frame in super_cells.chunks(map.msc_cells_per_frame).take(3) {
-                    let Some(deint) = de.push(frame) else { continue };
+            let mut de = self
+                .msc_de
+                .take()
+                .unwrap_or_else(|| CellDeinterleaver::new(map.msc_cells_per_frame, depth));
+            let mut msc_dec = self.msc_mlc.take().unwrap_or_else(|| MlcDecoder::new(params, 1));
+            for (super_cells, end_row) in msc_supers.iter().zip(&msc_super_rows) {
+                // Absolute index of the super's third frame: the super ends at
+                // sym == spsf-1, so its rows satisfy (row + r + super_phase) ≡ spsf-1
+                // (mod spsf), which makes the division exact.
+                let last = ((*end_row + r as u64 + super_phase as u64) - (spsf as u64 - 1))
+                    / spsf as u64
+                    * 3
+                    + 2;
+                for (f, frame) in super_cells.chunks(map.msc_cells_per_frame).take(3).enumerate() {
+                    let index = last - 2 + f as u64;
+                    if index < self.msc_frames_fed {
+                        continue; // an earlier pass already fed this frame
+                    }
+                    // Frames consumed as fill return None; either way the frame is spent,
+                    // so the fed count advances with the offer.
+                    let deint = de.push(frame);
+                    self.msc_frames_fed = index + 1;
                     // Skip frames still containing erasures (the long interleaver's
                     // fill-in delay and any trailing truncation).
+                    let Some(deint) = deint else { continue };
                     if deint.iter().all(|c| c.chan > 0.0) {
                         let mut bits = Vec::new();
                         if msc_dec.decode(&deint, &mut bits) {
                             self.msc_frames.push(bits.clone());
-                            if complete {
-                                self.deframe_audio(&bits);
-                            }
+                            self.deframe_audio(&bits);
                         }
                     }
                 }
             }
+            self.msc_de = Some(de);
+            self.msc_mlc = Some(msc_dec);
         }
 
         self.decode_audio();
@@ -685,15 +732,6 @@ impl DrmReceiver {
     #[cfg(target_arch = "wasm32")]
     fn decode_audio(&mut self) {
         let Some(audio) = self.audio.clone() else { return };
-        // A 12 kHz core with SBR is the standard DRM HE-AAC configuration, and it traps inside
-        // the FDK wasm decoder: the module dies, and the session dies with it. Measured on the
-        // bench capture, whose audio is exactly that configuration (208-byte access units, five
-        // per 400 ms frame). The synthesised fixture uses a 24 kHz core and decodes, so the
-        // decoder build handles only that case. Skip the stream until the decoder is fixed;
-        // docs/en/DRM_BENCH.md records the evidence.
-        if false && audio.sbr && audio.sample_rate == 1 {
-            return;
-        }
         if audio.coding == 3 {
             // xHE-AAC (MPEG-D USAC). The AudioSpecificConfig is carried in the SDC audio
             // descriptor (ES 201 980 §6.4.3.10) and is fed as the decoder's init payload
@@ -710,13 +748,11 @@ impl DrmReceiver {
             }
             return;
         }
-        // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder.
-        // The SDC type-9 descriptor's SBR flag makes FDK look for the SBR payload after the
-        // core frame. A stream that claims SBR without carrying it, or whose AU boundary does
-        // not match the SBR tail, makes FDK read past the unit. Strip the flag: FDK then
-        // processes the core frame only, and the audio plays at the core rate.
-        let mut type9 = audio.to_type9_bytes();
-        type9[0] &= !0x20;                   // clear the SBR flag (bit 5)
+        // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder, with the SDC type-9
+        // descriptor as configured (the SBR flag makes FDK parse the SBR payload that
+        // the DRM AU carries bit-reversed at its end; Dream decodes the same stream
+        // with the flag set).
+        let type9 = audio.to_type9_bytes();
         if let Some(mut dec) = crate::fdk::AacDecoder::new() {
             let configured = dec.configure(&type9);
             for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
@@ -974,6 +1010,7 @@ impl DigitalDemodulator for DrPlugin {
     fn audio_rate_hz(&self) -> u32 {
         self.rx.audio_rate_hz()
     }
+
 }
 
 /// Map a FAC MSC mode to the QAM mapping used by the MLCC.

@@ -13,15 +13,22 @@
   上报一次，因此清空窗口后能自行恢复。
 - 用过 DRM 之后再切其他解调模式不需要刷新页面：trap 掉的 worker 会被丢弃，下一次切换模式
   会新建一个。
-- 测试：`cargo test --test drm_fixture` 4/4，真实抓取测试 4/4，物理层鲁棒性 5/5，前端 322 项
-  通过（另有一个 FT8 速度测试只在机器繁忙时失败）。
+- **音频已能解码。** 真实 HE-AAC 码流（12 kHz 核心 + SBR）在 wasm 内解码出非静音的 24 kHz
+  PCM：worker 的分块喂入和整段推送都可以。FDK trap 已在根因上修复（对齐分配器必须清零，
+  同 FDK 的 `genericStds`）；SBR 标志不再被剥离；后锁定通路能产出音频（MSC 去交织器跨
+  pass 持久化，载频频移校正累加）。细节与证据链见 `docs/zh-CN/DRM_BENCH.md` 缺陷 3。
+- 测试：`cargo test --test drm_fixture` 4/4，真实抓取测试 5/5（含流式音频回归），物理层
+  鲁棒性 5/5，DRM wasm 测试 7/7（`drmLiveAudio`、`drmAudioEndToEnd`、`drmAudio`、
+  `drmXaac`、`workerRecovery`）。
 
 未完成：
 
-- 真实 HE-AAC 码流（12 kHz 核心 + SBR）的 AAC 音频还不能解码；接收机跳过该配置，避免一次
-  故障拖垮整个会话。
-- 读数不跟随信号变化：数值来自锁定那一次，因为接收机锁定后就不再接收基带。修复已经写好并
-  在离线验证过，见下面第 3 步。
+- 台面链路（Pluto → SAN-90）还没有在线确认音频；这是下一步，ref level 设 -40 dBm（见下文
+  台面事实）。
+- xHE-AAC 端到端（coding 3 → libxaac）从未用真实 xHE 码流验证过；DecDRM 可以发一路
+  （`codec = "xhe-aac"`）。HE-AAC v2 已接线但未验证。
+- 信道估计仍是简化的逐符号线性插值。物理层套件在台面抓取上已全部通过，所以下面的 Wiener
+  移植只在台面实测需要时才值得做。
 
 ## 花了时间才确认的台面事实
 
@@ -104,13 +111,19 @@ SBR 保护并测试音频解码（上一轮的 AU 填充应已防止 FDK trap）
 - xHE-AAC 的端到端路径（coding 3 经 DRM 接收机进 libxaac）从未用真实 xHE 码流驱动过。
   DecDRM 可以发射：把台站配置的 `codec` 设为 `xhe-aac`。
 
-## 最新诊断（后锁定通路）
+## 后锁定通路的结论
 
-后锁定通路已实现，能在流式路径中产出读数行。接收机在约 2 秒时锁定，后续通路刷新读数。
-台站、模式、带宽、码率、编码和保护均已上报。第一次通过显示 FAC SNR 为 20 dB。
+早先把锅扣给逐符号信道估计是错的。pass 的 SNR 逐帧崩塌（20 dB 跌到 1.7 dB）有两个具体的
+原因，都已修复：
 
-但没有产出音频接入单元（`au=0`）。第二次通过的 FAC SNR 降至 1 dB，说明信道估计在多次
-通过间退化。根因是逐符号信道估计无法跟踪真实信道。
+- MSC 的 `CellDeinterleaver` 每次 pass 重建，长交织器的五帧填充耗光了整个 3 秒窗口。现在它
+  跨 pass 持久化，帧带绝对序号，重叠窗口不会重复喂数。
+- `remove_carrier_offset` 覆盖而不是累加 `mix_w`。整载波锚点校正之后，锁定后到达的每个
+  样本都少转了第一次（分数部分，约 120 Hz）校正。锁定通路永远看不到它——它把整个缓冲区
+  一次性原位旋转——这正是整段推送一直能掩盖它的原因。
+
+两处修好后，一次流式 pass 就能从 6 秒抓取里产出 25 个接入单元，音频正常播放。在这个信号
+上，信道估计本身从来不是问题。
 
 ## 修复用的参考模块
 
@@ -128,16 +141,14 @@ DecDRM 的接收机模块正好解决这些弱点：
 
 ## 下一步（按顺序）
 
-1. 去掉 `decode_audio` 里的 SBR 保护，用 node 测试台把真实抓取喂进去（`instantiateDsp`、按 3248
-   样本分块推送、读 `websa_dsp_drm_audio_pcm`）。第 3 条的填充可能已经顺带消除了实时链路的
-   trap。如果 PCM 非零且非静音，音频通路就通了。
-2. 如果仍然 trap，把第 2 条做完（落库对齐版 `FDKaalloc`，然后带符号、不做 strip 重建 FDK，定位
-   出错函数），或者把故障限制在音频解码之内。
-3. 落库读数刷新。该实现已写好并在离线验证过，只因为 FDK 故障导致不稳定而回退：常量
-   `PASS_SECONDS` 与 `WINDOW_SECONDS`，字段 `locked_r`、`locked_super_phase`、`locked_map`、
-   `locked_row_start`、`pass_at`、`audio_units_decoded`，去掉 `push` 的提前返回，
-   `decode_next_window`，给 `decode` 增加 `row_base` 参数，以及 `clear_readout_state`。
-4. 然后收口 task 4（preset 路径，台面确认）与 task 5（夹具、文档、一次完整 `make ci`）。
+1. 台面在线验证音频：运行前把 ref level 设到 -35..-45 dBm，用 `tools/pluto_drm_tx.py` 发射，
+   `tools/drm_capture.py` 抓取后经 wasm 路径解码（`frontend/scripts/drm_live_audio.mjs`）
+   应显示非静音 PCM，并且 preset 切换（进 DRM 再切回）不刷新页面。
+2. 在台面上端到端驱动 xHE-AAC：在 DecDRM 的台站配置里设 `codec = "xhe-aac"`，抓取后检查
+   libxaac 路径（`coding 3`）与真实 xHE 码流。
+3. 同样方式验证 HE-AAC v2（SBR + PS，立体声）。
+4. 如果台面实测暴露信道估计或定时问题，再移植下面的 DecDRM 模块；今天的离线套件已全部
+   通过，这一步由证据驱动，不是自动必做。
 
 ## 环境注意
 

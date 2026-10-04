@@ -155,6 +155,33 @@ fn live_capture_locks_from_a_short_buffer() {
     assert!(!full.audio_access_units.is_empty(), "no audio access unit on the whole capture");
 }
 
+/// The worker streams forever, so the post-lock passes must produce the audio: the
+/// long MSC interleaver spans five 400 ms frames, which is why the deinterleaver and
+/// the carrier-offset corrections have to persist across passes. This test failed
+/// twice on the way to DRM audio: a deinterleaver recreated per pass spent its whole
+/// 3 s window on fill (au stayed 0), and a carrier-offset correction that replaced
+/// instead of accumulated under-rotated every sample after the lock (the pass SNR
+/// fell from 20 dB to 1.7 dB frame by frame).
+#[test]
+fn live_capture_streams_audio_after_the_lock() {
+    let iq = load_iq();
+    let mut resampler = ComplexResampler::new(PUBLISHED_RATE, CORE_RATE);
+    let mut converted = Vec::new();
+    resampler.process_f32_into(&iq, &mut converted);
+
+    let mut rx = DrmReceiver::new();
+    for block in converted.chunks(3248 * 2) {
+        rx.push(block);
+        rx.run();
+    }
+    assert!(rx.locked(), "the receiver did not lock on the streamed capture");
+    assert!(rx.snr_db.unwrap_or(0.0) > 10.0, "FAC SNR collapsed across the passes");
+    assert!(
+        !rx.audio_access_units.is_empty(),
+        "the streaming passes produced no audio access units"
+    );
+}
+
 #[test]
 fn live_capture_decodes_msc_and_audio() {
     let rx = decode_live();

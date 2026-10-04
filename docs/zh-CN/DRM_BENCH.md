@@ -156,39 +156,37 @@ Dream 解出了元数据和全部信道。因此台面信号是好的，出问�
    推出小数部分；并逐个尝试超帧相位，取 SDC CRC 通过的哪一个。真实抓取现在能锁定，解出
    FAC 与 SDC，显示台名、鲁棒模式、带宽、码率、编码和 FAC SNR，并通过 MSC 校验。
    `wasm/tests/drm_live_fixture.rs` 覆盖了这些。
-3. **真实码流的音频解码**：受阻。FDK 的 wasm 解码器在台面码流的接入单元上会 trap，而 trap
-   会连同 worker 一起杀掉 wasm 模块。该码流是标准的 DRM HE-AAC 配置：12 kHz 核心 + SBR，
-   每帧 400 ms 五个 208 字节接入单元。数据是自洽的（5 x 208 字节对 1048 字节的流帧），说明
-   解帧与码流一致；合成夹具使用 24 kHz 核心，可以解码。在解码器构建修好之前，DRM 路径会
-   跳过这一配置，使真实码流保住元数据与会话，而不是两者都丢。
-   `frontend/src/__tests__/drmAudioEndToEnd.test.ts` 仍然覆盖可用的那种情况。
+3. **真实码流的音频解码**：已解决（2026-10-04）。台面码流——标准的 DRM HE-AAC 配置：
+   12 kHz 核心 + SBR，每帧 400 ms 五个 208 字节接入单元——在 wasm 模块内解码出非静音的
+   24 kHz PCM：整段推送得到 76 800 个样本，worker 的 3 248 样本分块喂入得到 48 000 个。
+   共三个根因，全部修复：
 
-   后续一轮的发现把范围缩小了，但都还没有提交：
+   - **对齐分配器没有清零内存。** FDK 自己的 `genericStds` 用 `FDKcalloc`（malloc 并
+     清零）支撑 `FDKaalloc`/`FDKaalloc_L`，因为它分配的持久通道信息在写满之前就会被读
+     （HCR 边信息排序先读后写）。我们的 shim 用的是普通 `malloc`，内存里是堆上的残渣。
+     在新鲜的 wasm 堆上残渣恰好是零，解码通过；在回收过的堆上是垃圾，HCR 解码器把垃圾
+     变成越界下标，而 wasm 的精确边界检查把它变成 trap。这就是「依赖堆布局」的全部
+     原因。证据来自同一批 FDK 源码的 native 构建加 MemorySanitizer：
+     `aacdec_hcr.cpp:782` 的 `HcrSortCodebookAndNumCodewordInSection` 读到
+     `use-of-uninitialized-value`，内存由 `CAacDecoder_Init` 里的 `FDKaalloc_L` 分配。
+     shim 现已照搬 FDK 语义：calloc、向上对齐、原始指针存在返回地址前一个字供
+     `FDKafree` 使用。
+   - **不再剥离 SBR 标志。** 分配器修好后，FDK 能解出真实的 SBR 负载（按 DRM 语法逐位
+     反序存在每个接入单元末尾）并以 SBR 速率输出。读数也报告 SBR 速率（核心 x 2），这
+     把合成夹具的期望速率从 24 000 改到 48 000 Hz——它的 SDC 在 24 kHz 核心上声称 SBR，
+     但负载里没有 SBR 数据。
+   - **两个流式缺陷让后锁定通路一直静默**（整段推送都看不见）：MSC 的
+     `CellDeinterleaver` 每次 pass 都重建，长交织器的五帧填充把整个 3 秒窗口耗光——现在
+     它跨 pass 持久化，帧带绝对序号，重叠窗口不会重复喂数；`remove_carrier_offset`
+     覆盖而不是累加 `mix_w`，整载波锚点校正之后，锁定后到达的每个样本都少转了第一次
+     校正的那一份（约 120 Hz 的分数部分），pass 的 SNR 逐帧从 20 dB 跌到 1.7 dB。整段
+     推送看不到它：锁定那一次把整个缓冲区一次性原位旋转，锁定后没有新样本到达。
 
-   - **shim 忽略了内存对齐约定。** `wasm/fdk/shim.cpp` 对 `FDKaalloc(size, alignment)`
-     只调用了普通的 `malloc`，因此 FDK 的 SBR 对齐缓冲区只保证到 16 字节。修好分配器后
-     第一个故障消失：台面接入单元能到达解码器，且它配置成功（`cfg=true`）。紧接着解码
-     内部出现第二个故障（`RuntimeError: unreachable`），而同一处修复又让合成夹具重新
-     开始 trap。因此该修复需要单独调查，不能顺手改。
-   - **音频需要一次锁定之后的解码过程。** 长交织器要跨五帧才填满，所以锁定那一次没有
-     MSC 帧、也没有接入单元。对最新基带再做一次解码就会产出它们；离线实测 3 秒窗口能
-     得到 2 到 3 个 MSC 帧和 5 个接入单元。
-   - **后续解码必须带上绝对行号。** SDC 与 MSC 信元取决于它在超帧中的位置。起点更靠后
-     的窗口必须把自己的首行偏移加到符号序号上，否则会读到错误的信元、什么都产不出。
-
-   带符号且不做 strip 的调试构建反而隐藏了该故障，说明 trap 依赖堆布局。下一步是给
-   release 构建做符号化，或把故障限制在音频解码之内。
-
-   该故障还让冒烟测试变得不稳定。使用已提交的产物与干净的工作区，
-   `frontend/src/__tests__/drmAudioEndToEnd.test.ts` 曾在多次运行中通过，之后又在另一些
-   运行中以 `RuntimeError: memory access out of bounds` 失败，字节完全相同。因此同一份
-   产物并不可靠；在修好该故障之前，任何对 DRM 解码的进一步改动都不可信，因为每次改动都会
-   移动堆。
-
-   有一个候选解释同时覆盖两种码流：夹具的 SDC 声称使用 SBR，但它的负载里没有 SBR 数据
-   （仓库里记为 “no-SBR smoke” 情况，冒烟导出函数硬编码了不带 SBR 标志的配置）。接收机
-   从 SDC 推导解码器配置，于是 FDK 期待一个并不存在的 SBR 尾段，从而读过接入单元之外。
-   台面码流确实带 SBR 数据，走的是另一条路径。
+   回归门：`live_capture_streams_audio_after_the_lock`（native，分块喂入）与
+   `frontend/src/__tests__/drmLiveAudio.test.ts`（wasm，非静音 24 kHz PCM）。
+   对照参考接收机的字节级交叉验证可复用：`wasm/examples/dump_drm_au.rs` 导出接入单元，
+   DecDRM 的 `crates/decdrm-codecs/examples/decode_au_dump.rs` 解码它们（40/40 干净，
+   PCM 正常输出）。
 3. **超帧相位**：`DrmReceiver::decode` 假设缓冲区从超帧符号 0 开始。真实抓取从任意
    位置开始。因此 SDC 与 MSC 取到了错误的信元。
 4. **超帧断言**：不完整的超帧会让 SDC 信元数触发断言

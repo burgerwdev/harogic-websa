@@ -181,50 +181,45 @@ extraction of a real signal, and the ruled-out list below records what it is not
    CRC. The live capture now locks, decodes the FAC and the SDC, shows the station, its
    robustness mode, its bandwidth, its bit rate, its codec and its FAC SNR, and passes the
    MSC CRC. `wasm/tests/drm_live_fixture.rs` covers all of it.
-3. **Audio decode of a real stream**: blocked. The FDK wasm decoder traps on the access units
-   of the bench stream, and a trap kills the wasm module and the worker with it. The stream
-   is the standard DRM HE-AAC configuration: a 12 kHz core with SBR, 208-byte access units,
-   five per 400 ms frame. The numbers add up (5 x 208 bytes against the 1048-byte stream
-   frame), so the deframing matches the stream; the synthesised fixture, which uses a 24 kHz
-   core, decodes. Until the decoder build is fixed, the DRM path skips exactly that
-   configuration, so a real stream keeps its metadata and its session instead of losing both.
-   `frontend/src/__tests__/drmAudioEndToEnd.test.ts` still covers the case that works.
+3. **Audio decode of a real stream**: RESOLVED (2026-10-04). The bench stream — the
+   standard DRM HE-AAC configuration, a 12 kHz core with SBR, 208-byte access units,
+   five per 400 ms frame — decodes to non-silent 24 kHz PCM in the wasm module, both
+   from a whole-buffer push (76 800 samples) and from the worker's 3 248-sample block
+   feed (48 000 samples). Three root causes, all fixed:
 
-   Three findings from the follow-up session narrow this down, and none is committed
-   yet:
+   - **The aligned allocator did not zero its memory.** FDK's own `genericStds` backs
+     `FDKaalloc`/`FDKaalloc_L` with `FDKcalloc` — "malloc and clear" — because the
+     persistent channel info it allocates is read before it is fully written (the HCR
+     side-info sort reads it first). Our shim used plain `malloc`, so the memory held
+     whatever the heap had there. On a fresh wasm heap that is zeros and the decode
+     passes; on a recycled heap it is garbage, and the HCR decoder turns it into an
+     out-of-bounds index that wasm's exact bounds check turns into the trap. That is
+     the whole "depends on the heap layout" story. The proof came from a native build
+     of the same FDK sources with MemorySanitizer: `use-of-uninitialized-value` at
+     `aacdec_hcr.cpp:782` in `HcrSortCodebookAndNumCodewordInSection`, memory created
+     by `FDKaalloc_L` in `CAacDecoder_Init`. The shim now mirrors FDK: `calloc`, align
+     up, stash the raw pointer for `FDKafree`.
+   - **The SBR flag is no longer stripped.** With the allocator fixed, FDK decodes the
+     real SBR payload (bit-reversed at the end of each access unit, per DRM syntax) and
+     outputs at the SBR rate. The readout reports the SBR rate too (core x 2), which
+     moved the synthesised fixture's expected rate from 24 000 to 48 000 Hz — its SDC
+     claims SBR over a 24 kHz core, though its payload carries none.
+   - **Two streaming defects kept the post-lock passes silent** (both invisible to a
+     whole-buffer push): the MSC `CellDeinterleaver` was recreated per pass, so the
+     long interleaver's five-frame fill consumed the whole 3 s window before any frame
+     came out — it now persists across passes with an absolute frame index that skips
+     the overlap between windows; and `remove_carrier_offset` replaced `mix_w` instead
+     of accumulating it, so after the whole-carrier anchor correction every new sample
+     was under-rotated by the first correction (the ~120 Hz fraction) and the pass SNR
+     fell from 20 dB to 1.7 dB frame by frame. A whole-buffer push never saw it,
+     because the lock pass rotates the entire buffer in place and nothing arrives after
+     the lock.
 
-   - **The shim ignored an alignment contract.** `wasm/fdk/shim.cpp` answered
-     `FDKaalloc(size, alignment)` with a plain `malloc`, so FDK's aligned SBR buffers
-     were only 16-byte aligned. Repairing the allocator removed the first fault: the
-     bench access units then reached the decoder and it configured itself (`cfg=true`).
-     A second fault followed inside the decode (`RuntimeError: unreachable`), and the
-     same repair made the synthesised fixture restart its trap. The repair therefore
-     needs its own investigation, not a quick patch.
-   - **The audio needs a pass after the lock.** The long interleaver fills over five
-     frames, so the lock pass has no MSC frame and no access unit. A later pass over the
-     newest baseband produces them; measured natively, a 3 s window yields 2 to 3 MSC
-     frames and 5 access units.
-   - **A later pass must carry the absolute row index.** The SDC and MSC cells depend on
-     the position in the super frame. A window that starts later in the stream must add
-     its first row's offset to the symbol index, or the pass reads the wrong cells and
-     produces nothing.
-
-   A debug build of the decoder (with symbols and without `strip`) hides the fault, so
-   the trap depends on the heap layout. The next step is to symbolize the release build,
-   or to bound the fault so that only the audio decode can fail.
-
-   The fault also makes the smoke test flaky. With the committed artifact and a clean
-   worktree, `frontend/src/__tests__/drmAudioEndToEnd.test.ts` passed in many runs and
-   then traps (`RuntimeError: memory access out of bounds`) in others, with the same
-   bytes. The same artifact is therefore not reliable, and the fault must be fixed before
-   any further change to the DRM decode can be trusted, because every such change moves
-   the heap.
-
-   One candidate explains both streams: the fixture's SDC claims SBR, but its payload
-   carries no SBR data (the repo notes this as the "no-SBR smoke" case, and the smoke
-   export hard-codes a config without the SBR flag). The receiver derives the decoder
-   config from the SDC, so FDK expects an SBR tail that is not there and reads past the
-   access unit. The bench stream does carry SBR data, so it follows a different path.
+   Regression gates: `live_capture_streams_audio_after_the_lock` (native, block feed)
+   and `frontend/src/__tests__/drmLiveAudio.test.ts` (wasm, non-silent 24 kHz PCM).
+   The byte-level cross-check against the reference receiver is reusable:
+   `wasm/examples/dump_drm_au.rs` writes the access units, and DecDRM's
+   `crates/decdrm-codecs/examples/decode_au_dump.rs` decodes them (40/40 clean, PCM out).
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.
