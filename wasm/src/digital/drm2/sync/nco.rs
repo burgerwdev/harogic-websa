@@ -36,6 +36,12 @@ impl Nco {
         self.position = 0;
     }
 
+    /// Change the offset being removed (the reference's `track_hz` update), keeping the phase
+    /// continuous so the next sample joins without a step.
+    pub fn set_offset(&mut self, offset_hz: f64) {
+        self.w = -2.0 * core::f64::consts::PI * offset_hz / f64::from(SAMPLE_RATE);
+    }
+
     /// Mix `input` in place, continuing the phase from the previous call.
     pub fn process(&mut self, input: &mut [Cplx]) {
         for v in input.iter_mut() {

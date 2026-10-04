@@ -43,6 +43,7 @@ pub struct FreqTrack {
     freq_vec: Cplx,
     lambda: f64,
     norm_const: f64,
+    sym_rate: f64,
     pil_ph_diff: [Cplx; 3],
     sro_lambda: f64,
     sro_count: usize,
@@ -72,6 +73,7 @@ impl FreqTrack {
             freq_vec: Cplx::zero(),
             lambda: iir1_lambda(TICONST_FREQ_OFF_EST, sym_rate),
             norm_const: 1.0 / (2.0 * core::f64::consts::PI * ts),
+            sym_rate,
             pil_ph_diff: [Cplx::zero(); 3],
             sro_lambda: iir1_lambda(TICONST_SRO_EST, sym_rate),
             sro_count: 0,
@@ -129,6 +131,12 @@ impl FreqTrack {
     pub fn reset_sro_estimate(&mut self) {
         self.pil_ph_diff = [Cplx::zero(); 3];
         self.sro_count = 0;
+    }
+
+    /// Faster frequency averaging during acquisition (the reference switches to 0.1 s on the
+    /// first symbol, then back to 1.0 s on entering tracking).
+    pub fn set_freq_time_constant(&mut self, tau: f64) {
+        self.lambda = iir1_lambda(tau, self.sym_rate);
     }
 }
 
