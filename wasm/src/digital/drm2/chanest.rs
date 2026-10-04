@@ -223,17 +223,54 @@ impl ChanEst {
     /// with the timing shift `shift` of this symbol's window. Returns the equalised symbol
     /// `delay()` symbols earlier — its frame symbol index and its cells — once available.
     pub fn process(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
-        // 1. The pilot lattice of this symbol.
-        let mut h = vec![Cplx::zero(); self.n_car];
+        let fft_n = self.mode.fft_size() as f64;
         let cycle = sym % self.time_int;
+        // Measure the per-symbol window offset from the scattered pilots' phase ramp and
+        // de-rotate the cells by it. The frequency-Wiener taps are real (the delay-spread phase
+        // term is held off until the timing tracker lands), and real taps cannot interpolate a
+        // carrier ramp without shrinking the magnitude — which corrupts 64-QAM. Removing the
+        // ramp first keeps the channel flat for the frequency interpolation.
+        let mut offset = 0.0f64;
+        {
+            let pilots: Vec<(usize, Cplx)> = self.lattice[cycle]
+                .iter()
+                .filter_map(|&c| {
+                    let r = map.pilot(sym, c);
+                    if r.norm_sqr() > 0.0 { Some((c, cells[c] / r)) } else { None }
+                })
+                .collect();
+            let mut acc = 0.0f64;
+            let mut n = 0usize;
+            for w in pilots.windows(2) {
+                let (c1, h1) = w[0];
+                let (c2, h2) = w[1];
+                if h1.norm() < 1e-3 || h2.norm() < 1e-3 {
+                    continue;
+                }
+                let dphase = (h2 / h1).arg();
+                let dk = (c2 as i32 - c1 as i32) as f64;
+                acc += dphase * fft_n / (2.0 * core::f64::consts::PI * dk);
+                n += 1;
+            }
+            if n > 0 {
+                offset = acc / n as f64;
+            }
+        }
+        let mut de = cells.to_vec();
+        for (c, v) in de.iter_mut().enumerate() {
+            let k = (self.kmin + c as i32) as f64;
+            *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * offset / fft_n);
+        }
+        // 1. The pilot lattice of this symbol (de-rotated).
+        let mut h = vec![Cplx::zero(); self.n_car];
         for &c in &self.lattice[cycle] {
             let r = map.pilot(sym, c);
             if r.norm_sqr() > 0.0 {
-                h[c] = cells[c] / r;
+                h[c] = de[c] / r;
             }
         }
         self.cum_shift += shift;
-        self.history.push_back((sym, h, cells.to_vec(), self.cum_shift));
+        self.history.push_back((sym, h, de, self.cum_shift));
         // The emitted symbol must have a lattice symbol on BOTH sides for the time
         // interpolation, so the history holds `2*time_int+1` symbols and the middle one is
         // emitted (a one-sided history would degrade the interpolation to a hold).
@@ -870,9 +907,13 @@ mod tests {
                 continue;
             }
             let super_sym = frame_index as usize * 15 + *out_sym;
-            // In emission order a super frame runs frame 1, then 2, then 0; its start is
-            // therefore frame 1's first symbol.
-            if *out_sym == 0 && frame_index == 1 {
+            // Flush at frame 0's start (before collecting), once the previous super frame is
+            // complete in sym order. The MSC multiplex-frame boundary is every N_MUX cells, not
+            // every 15 symbols, so the sym-order concatenation is chunked by cell count.
+            if *out_sym == 0
+                && frame_index == 0
+                && (0..45).all(|s| map.msc_carriers[s].is_empty() || !super_msc[s].is_empty())
+            {
                 decode_super(&mut super_msc, &mut msc_frames);
             }
             for &c in &map.msc_carriers[super_sym] {
@@ -888,14 +929,667 @@ mod tests {
         for (f, bits) in msc_frames.iter().enumerate().take(stream.len() / n) {
             assert_eq!(bits.len(), n, "MSC frame {f} length");
         }
-        // OPEN: the bit-exact comparison against the xorshift stream does not hold yet — the
-        // cells themselves match the previous equaliser (see the phase-ratio test), and the
-        // FAC/SDC decoders read the same cells correctly, so the defect is in this test's
-        // super-frame assembly, not in the ported FEC. Left as a recorded TODO.
-        let matched = msc_frames.iter().zip(stream.chunks(n)).take(3).map(|(bits, s)| {
-            bits.iter().zip(s).filter(|(a, b)| a == b).count()
+        // The chanest warm-up drops the first `delay` symbols, so the first complete super frame
+        // is the second one, and the depth-5 interleaver needs a few frames of fill; the decoded
+        // bits must match the stream bit-exact from the first complete frame onward.
+        let matched = msc_frames.iter().enumerate().take(6).map(|(f, bits)| {
+            let s = (f + 3) * n;
+            bits.iter().zip(&stream[s..s + n]).filter(|(a, b)| a == b).count()
         }).collect::<Vec<_>>();
-        eprintln!("[msc] bit match per frame (of {}): {matched:?}", n);
+        eprintln!("[msc] bit match per frame (of {}, shifted +3): {matched:?}", n);
+        for f in 0..3 {
+            let s = (f + 6) * n;
+            assert_eq!(&msc_frames[f + 3][..], &stream[s..s + n], "MSC frame {} bit-exact", f + 3);
+        }
+    }
+
+    /// Decisive diagnostic: replace the drm2 TimeSync windows with the previous receiver's
+    /// guard-start anchor (guard_start + guard_len) and run the drm2 chain downstream. If this
+    /// decodes bit-exact, the defect is the drm2 window positions; if it still fails, the defect
+    /// is in the chanest/FEC.
+    #[test]
+    fn msc_with_previous_window_anchor() {
+        use crate::digital::drm2::fac::MscMode;
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::interleave::CellDeinterleaver;
+        use crate::digital::drm2::ofdm::OfdmDemod;
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let acq = crate::digital::drm::timesync::acquire(&iq.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect::<Vec<_>>())
+            .expect("acquire");
+        let g = acq.mode.guard_len();
+        let n = acq.mode.fft_size();
+        let ts = acq.mode.symbol_len();
+        eprintln!("[prevwin] guard_start {} guard_len {} fft {} sym {}", acq.guard_start, g, n, ts);
+
+        let mut demod = OfdmDemod::new(&map);
+        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        let mut cells = Vec::new();
+        let start0 = acq.guard_start + g;
+        let mut start = start0;
+        while start + n <= iq.len() {
+            demod.demodulate(&iq[start..start + n], &mut cells);
+            rows.push(cells.clone());
+            start += ts;
+        }
+        eprintln!("[prevwin] {} rows", rows.len());
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+
+        let mut est = ChanEst::new(&map);
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], 0, &map) else {
+                continue;
+            };
+            if out_sym == 0 {
+                fac_cells.clear();
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    crate::digital::drm2::fac::Fac::parse(&bits)
+                        .map(|f| f.channel.frame_index)
+                        .unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                frame_indices.push(idx);
+                fac_cells.clear();
+            }
+            emitted.push((out_sym, cells));
+        }
+
+        let mapping = match MscMode::Qam64Sm {
+            MscMode::Qam64Sm => Mapping::Qam64Sm,
+            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
+            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
+            MscMode::Qam16Sm => Mapping::Qam16,
+        };
+        let prot = MscProtection { part_a: 0, part_b: 1, hierarchical: 0 };
+        let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, 0);
+        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut msc_dec = MlcDecoder::new(params, 1);
+        let mut msc_frames: Vec<Vec<u8>> = Vec::new();
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let mut complete_frame = 0usize;
+        let mut first_frame_done = false;
+        for (out_sym, cells) in &emitted {
+            if *out_sym == 0 {
+                complete_frame += 1;
+                if complete_frame <= 1 {
+                    continue;
+                }
+                first_frame_done = true;
+            }
+            if !first_frame_done {
+                continue;
+            }
+            let Some(&frame_index) = frame_indices.get(complete_frame - 1) else {
+                continue;
+            };
+            if frame_index == 0xFF {
+                continue;
+            }
+            let super_sym = frame_index as usize * 15 + *out_sym;
+            if *out_sym == 0 && frame_index == 0 {
+                let mut all: Vec<EqCell> = Vec::new();
+                for c in super_msc.iter() {
+                    all.extend_from_slice(c);
+                }
+                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if msc_dec.decode(&d, &mut b) {
+                                msc_frames.push(b);
+                            }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() {
+                    c.clear();
+                }
+            }
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+            }
+        }
+
+        let nn = 8390usize;
+        let stream = xorshift_bits(12 * nn);
+        let matched: Vec<usize> = msc_frames
+            .iter()
+            .zip(stream.chunks(nn))
+            .take(8)
+            .map(|(b, s)| b.iter().zip(s).filter(|(a, z)| a == z).count())
+            .collect();
+        eprintln!("[prevwin] decoded {} frames, bit match per frame (of {nn}): {matched:?}", msc_frames.len());
+    }
+
+    /// Probe: the old receiver's sync parameters for the fixture, to compare the drm2 chain's
+    /// front end against the oracle.
+    #[test]
+    fn probe_old_sync() {
+        let raw = std::fs::read("../tests/fixtures/drm/drm_modeB_so3_48k.f32").expect("capture file");
+        let interleaved: Vec<f32> = raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let old: Vec<crate::digital::drm::Cplx> = interleaved.chunks_exact(2).map(|c| crate::digital::drm::Cplx::new(f64::from(c[0]), f64::from(c[1]))).collect();
+        let acq = crate::digital::drm::timesync::acquire(&old).expect("acquire");
+        eprintln!("[probe] old acquire: guard_start={} freq_offset_hz={:+.3}", acq.guard_start, acq.freq_offset_hz);
+        let mut rx = crate::digital::drm::DrmReceiver::new();
+        rx.push(&interleaved);
+        rx.run();
+        eprintln!("[probe] old rx: frame_offset={} carrier_offset_hz={:+.3} mode={:?}", rx.frame_offset, rx.carrier_offset_hz, rx.mode);
+        let ids: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
+        eprintln!("[probe] old FAC frame_index sequence: {ids:?} ({} blocks)", rx.facs.len());
+    }
+
+    /// Diagnostic: hard-decision comparison of the drm2 chanest cells against the old
+    /// equaliser on the TimeSync rows (the real front-end path). Counts how often they land on
+    /// DIFFERENT 64-QAM points, which is what actually matters for the MSC decode.
+    #[test]
+    fn compare_chanest_hard_decision() {
+        use crate::digital::drm::qam::hard_axis;
+        use crate::digital::drm::tables::QAM64_SM;
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("old layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
+
+        let mut est = ChanEst::new(&map);
+        let mut mismatch = 0usize;
+        let mut total = 0usize;
+        let mut err_my = 0.0f64;
+        let mut err_old = 0.0f64;
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else { continue };
+            let src_i = i - est.delay();
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                rows[src_i].iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, out_sym, &old_row);
+            for &c in &map.msc_carriers[out_sym] {
+                let a = cells[c as usize].sig;
+                let b = eq.cells[c as usize];
+                if b.norm_sqr() <= 0.01 { continue; }
+                let (ar, ai) = (hard_axis(a.re, &QAM64_SM), hard_axis(a.im, &QAM64_SM));
+                let (br, bi) = (hard_axis(b.re, &QAM64_SM), hard_axis(b.im, &QAM64_SM));
+                if ar != br || ai != bi {
+                    mismatch += 1;
+                }
+                total += 1;
+                err_my += (a - crate::digital::drm2::dsp::Cplx::new(QAM64_SM[ar], QAM64_SM[ai])).norm();
+                err_old += (crate::digital::drm2::dsp::Cplx::new(b.re, b.im) - crate::digital::drm2::dsp::Cplx::new(QAM64_SM[br], QAM64_SM[bi])).norm();
+            }
+        }
+        eprintln!("[harddec] MSC cells: {} total, {} mismatches ({:.2}%), err my {:.3} old {:.3}", total, mismatch, 100.0 * mismatch as f64 / total as f64, err_my / total as f64, err_old / total as f64);
+    }
+
+    /// Direct row comparison: demodulate the previous receiver's window anchor and the drm2
+    /// TimeSync window for the SAME symbol, remove each one's timing ramp, and compare the cells
+    /// carrier by carrier. If they differ, the rows differ beyond a cyclic shift; if they agree,
+    /// the defect is downstream (equalisation/assembly).
+    #[test]
+    fn compare_rows_old_anchor_vs_timesync() {
+        use crate::digital::drm2::ofdm::OfdmDemod;
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let acq = crate::digital::drm::timesync::acquire(
+            &iq.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect::<Vec<_>>(),
+        )
+        .expect("acquire");
+        let n = acq.mode.fft_size();
+        let ts = acq.mode.symbol_len();
+        let start0 = acq.guard_start + acq.mode.guard_len();
+        let mut demod = OfdmDemod::new(&map);
+        let mut cells = Vec::new();
+
+        // TimeSync windows.
+        let mut tsync = crate::digital::drm2::sync::timesync::TimeSync::new(RobustnessMode::B);
+        let mut tsw: Vec<(i64, Vec<Cplx>)> = Vec::new();
+        for block in iq.chunks(3248) {
+            let _ = tsync.push(block);
+            while let Some(w) = tsync.next_window() {
+                if w.guard_corr.unwrap_or(0.0) < 0.5 { continue; }
+                demod.demodulate(&w.samples, &mut cells);
+                tsw.push((w.start, cells.clone()));
+            }
+        }
+        eprintln!("[rows] old-anchor start0={start0}, TimeSync windows {} first start {}", tsw.len(), tsw.first().map(|w| w.0).unwrap_or(0));
+        let n_fft = map.mode().fft_size() as f64;
+        let kmin = map.kmin;
+        let mut worst = 0.0f64;
+        let mut n_cmp = 0usize;
+        // For each TimeSync window, find the nearest old-anchor window and compare.
+        for (s, row) in &tsw {
+            let d = (*s - start0 as i64) as f64;
+            let k_sym = (d / ts as f64).round();
+            if k_sym < 0.0 { continue; }
+            let anchor = start0 as i64 + (k_sym as i64) * ts as i64;
+            if anchor < 0 || anchor + n as i64 > iq.len() as i64 { continue; }
+            demod.demodulate(&iq[anchor as usize..anchor as usize + n], &mut cells);
+            let old_row = cells.clone();
+            // Measure each row's ramp (sym 0 pilot positions) and de-ramp both.
+            let off_ts = sym_offset(&map, std::slice::from_ref(row), &[0], 0);
+            let off_old = sym_offset(&map, std::slice::from_ref(&old_row), &[0], 0);
+            let mut diff = 0.0f64;
+            let mut n_pt = 0usize;
+            for c in 0..map.num_carriers {
+                let k = (kmin + c as i32) as f64;
+                let a = row[c] * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * off_ts / n_fft);
+                let b = old_row[c] * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * off_old / n_fft);
+                diff += (a - b).norm_sqr();
+                n_pt += 1;
+            }
+            worst = worst.max(diff / n_pt as f64);
+            n_cmp += 1;
+        }
+        eprintln!("[rows] compared {n_cmp} symbols, worst mean-square diff {worst:.3e}");
+    }
+
+    /// Verify the drm2 MSC carrier table matches the previous chain's exactly (order matters for
+    /// the cell deinterleaver).
+    #[test]
+    fn equalize_is_frame_periodic() {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("old layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let row: Vec<crate::digital::drm::Cplx> = {
+            let mut demod = crate::digital::drm2::ofdm::OfdmDemod::new(&map);
+            let mut cells = Vec::new();
+            demod.demodulate(&iq[360..360 + 1024], &mut cells);
+            cells.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect()
+        };
+        let e0 = crate::digital::drm::chanest::equalize_symbol(&old_map, 0, &row);
+        let e15 = crate::digital::drm::chanest::equalize_symbol(&old_map, 15, &row);
+        let mut maxdiff = 0.0f64;
+        for c in 0..map.num_carriers {
+            maxdiff = maxdiff.max((e0.cells[c] - e15.cells[c]).norm());
+        }
+        eprintln!("[eqper] equalize(sym=0) vs (sym=15) max cell diff: {maxdiff:.3e}");
+    }
+
+    /// Verify the drm2 MSC carrier table matches the previous chain's exactly (order matters for
+    /// the cell deinterleaver).
+    #[test]
+    fn msc_carriers_match_the_previous_chain() {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("old layout");
+        for s in 0..45 {
+            assert_eq!(map.msc_carriers[s].len(), old_map.msc_carriers[s].len(), "msc carrier count sym {s}");
+            for (a, b) in map.msc_carriers[s].iter().zip(&old_map.msc_carriers[s]) {
+                assert_eq!(*a as usize, *b as usize, "msc carrier sym {s}");
+            }
+        }
+        assert_eq!(map.msc_cells_per_frame, old_map.msc_cells_per_frame);
+        eprintln!("[cells] msc_carriers identical across 45 symbols");
+    }
+
+    /// Compare the equalised cells (sig AND channel power) of the drm2 chanest against the old
+    /// equaliser on the old-anchor rows. A sig match with a chan mismatch points at the soft
+    /// metric weighting.
+    #[test]
+    fn compare_chan_field() {
+        use crate::digital::drm2::ofdm::OfdmDemod;
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("old layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let acq = crate::digital::drm::timesync::acquire(
+            &iq.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect::<Vec<_>>(),
+        )
+        .expect("acquire");
+        let n = acq.mode.fft_size();
+        let ts = acq.mode.symbol_len();
+        let start0 = acq.guard_start + acq.mode.guard_len();
+        let mut demod = OfdmDemod::new(&map);
+        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        let mut cells = Vec::new();
+        let mut start = start0;
+        while start + n <= iq.len() {
+            demod.demodulate(&iq[start..start + n], &mut cells);
+            rows.push(cells.clone());
+            start += ts;
+        }
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let syms: Vec<usize> = (0..rows.len()).map(|i| i % spf).collect();
+        let mut est = ChanEst::new(&map);
+        let mut sig_max = 0.0f64;
+        let mut sig_sum = 0.0f64;
+        let mut chan_max = 0.0f64;
+        let mut err_my = 0.0f64;
+        let mut err_old = 0.0f64;
+        let mut n = 0usize;
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], 0, &map) else { continue };
+            let src_i = i - est.delay();
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                rows[src_i].iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, out_sym, &old_row);
+            for &c in &map.msc_carriers[out_sym] {
+                let a = cells[c as usize];
+                let b = eq.cells[c as usize];
+                let old_chan = eq.chan[c as usize].norm_sqr();
+                let diff = (a.sig - crate::digital::drm2::dsp::Cplx::new(b.re, b.im)).norm();
+                sig_max = sig_max.max(diff);
+                sig_sum += diff;
+                chan_max = chan_max.max((a.chan - old_chan).abs() / old_chan.max(1e-9));
+                // Distance to the nearest 64-QAM point (my hard decision).
+                let (ar, ai) = (
+                    crate::digital::drm::qam::hard_axis(a.sig.re, &crate::digital::drm::tables::QAM64_SM),
+                    crate::digital::drm::qam::hard_axis(a.sig.im, &crate::digital::drm::tables::QAM64_SM),
+                );
+                err_my += (a.sig - crate::digital::drm2::dsp::Cplx::new(crate::digital::drm::tables::QAM64_SM[ar], crate::digital::drm::tables::QAM64_SM[ai])).norm();
+                err_old += (crate::digital::drm2::dsp::Cplx::new(b.re, b.im) - crate::digital::drm2::dsp::Cplx::new(crate::digital::drm::tables::QAM64_SM[ar], crate::digital::drm::tables::QAM64_SM[ai])).norm();
+                n += 1;
+            }
+        }
+        eprintln!("[chan] {n} cells: sig diff avg {:.3e} max {:.3e}, chan diff max {:.3e}", sig_sum / n as f64, sig_max, chan_max);
+        eprintln!("[chan] err vs QAM point: my {:.3e} old {:.3e}", err_my / n as f64, err_old / n as f64);
+    }
+
+    /// Decisive isolation: on the previous receiver's own window anchor, run the drm2 chanest and
+    /// then BOTH the OLD FEC and the NEW FEC on the same equalised cells. If the OLD FEC decodes
+    /// bit-exact and the NEW one does not, the defect is the drm2 MSC FEC; if both decode, the
+    /// defect is upstream (equalisation).
+    #[test]
+    fn msc_fec_isolation() {
+        use crate::digital::drm::fec::mlc::{MlcDecoder as OldMlc, MlcParams as OldParams, MscProtection as OldProt};
+        use crate::digital::drm::fec::qam::{EqCell as OldEq, Mapping as OldMapping};
+        use crate::digital::drm::interleave::CellDeinterleaver as OldDeint;
+        use crate::digital::drm2::fac::MscMode;
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
+        use crate::digital::drm2::fec::qam::{EqCell, Mapping};
+        use crate::digital::drm2::interleave::CellDeinterleaver;
+        use crate::digital::drm2::ofdm::OfdmDemod;
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("old layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let acq = crate::digital::drm::timesync::acquire(
+            &iq.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect::<Vec<_>>(),
+        )
+        .expect("acquire");
+        let n = acq.mode.fft_size();
+        let ts = acq.mode.symbol_len();
+        let start0 = acq.guard_start + acq.mode.guard_len();
+
+        let mut demod = OfdmDemod::new(&map);
+        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        let mut cells = Vec::new();
+        let mut start = start0;
+        while start + n <= iq.len() {
+            demod.demodulate(&iq[start..start + n], &mut cells);
+            rows.push(cells.clone());
+            start += ts;
+        }
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        eprintln!("[feciso] FrameSync phase for old-anchor rows: {phase}");
+        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+
+        let mut est = ChanEst::new(&map);
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut emitted: Vec<(usize, Vec<EqCell>, Vec<OldEq>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        let delay = est.delay();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], 0, &map) else { continue };
+            if out_sym == 0 { fac_cells.clear(); }
+            for &c in &map.fac_carriers[out_sym] { fac_cells.push(cells[c as usize]); }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    crate::digital::drm2::fac::Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else { 0xFF };
+                frame_indices.push(idx);
+                fac_cells.clear();
+            }
+            // Old equaliser at the SAME row/symbol (the chanest output is delayed by `delay`).
+            let src = i - delay;
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                rows[src].iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, out_sym, &old_row);
+            let old_cells: Vec<OldEq> = (0..map.num_carriers)
+                .map(|c| OldEq { sig: eq.cells[c], chan: eq.chan[c].norm_sqr() })
+                .collect();
+            emitted.push((out_sym, cells, old_cells));
+        }
+        eprintln!("[feciso] frame_indices: {frame_indices:?}");
+        eprintln!("[feciso] emitted first 20 out_sym: {:?}", emitted.iter().take(20).map(|(s, _, _)| *s).collect::<Vec<_>>());
+
+        let mut old_de = OldDeint::new(old_map.msc_cells_per_frame, 5);
+        let mut old_dec = OldMlc::new(
+            OldParams::msc(OldMapping::Qam64Sm, old_map.msc_cells_per_frame, OldProt { part_a: 0, part_b: 1, hierarchical: 0 }, 0),
+            1,
+        );
+        let mut my_de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut my_dec = MlcDecoder::new(
+            MlcParams::msc(Mapping::Qam64Sm, map.msc_cells_per_frame, MscProtection { part_a: 0, part_b: 1, hierarchical: 0 }, 0),
+            1,
+        );
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let mut super_msc_old: Vec<Vec<OldEq>> = vec![Vec::new(); 45];
+        let mut in_partial = true;
+        let mut complete_frame = 0usize;
+        let mut syms_collected = 0usize;
+        let mut old_all: Vec<u8> = Vec::new();
+        let mut my_all: Vec<u8> = Vec::new();
+        let mut old2_all: Vec<u8> = Vec::new();
+        let mut old2_de = OldDeint::new(old_map.msc_cells_per_frame, 5);
+        let mut old2_dec = OldMlc::new(
+            OldParams::msc(OldMapping::Qam64Sm, old_map.msc_cells_per_frame, OldProt { part_a: 0, part_b: 1, hierarchical: 0 }, 0),
+            1,
+        );
+        let mut uniform_all: Vec<u8> = Vec::new();
+        let mut uniform_dec = OldMlc::new(
+            OldParams::msc(OldMapping::Qam64Sm, old_map.msc_cells_per_frame, OldProt { part_a: 0, part_b: 1, hierarchical: 0 }, 0),
+            1,
+        );
+        let mut uniform_de = OldDeint::new(old_map.msc_cells_per_frame, 5);
+        let mut first_flush = true;
+        for (out_sym, cells, old_cells) in &emitted {
+            if *out_sym == 0 && in_partial {
+                in_partial = false;
+                complete_frame = 0;
+            } else if *out_sym == 0 {
+                complete_frame += 1;
+            }
+            if in_partial { continue; }
+            let Some(&frame_index) = frame_indices.get(complete_frame) else { continue };
+            if frame_index == 0xFF { continue; }
+            let super_sym = frame_index as usize * 15 + *out_sym;
+            // Flush at frame 0's start (before collecting), once the previous super frame is
+            // complete in sym order. The MSC multiplex frame boundary is every N_MUX cells,
+            // NOT every 15 symbols, so the sym-order concatenation is chunked by cell count —
+            // exactly what the previous receiver does.
+            if *out_sym == 0
+                && frame_index == 0
+                && (0..45).all(|s| map.msc_carriers[s].is_empty() || !super_msc[s].is_empty())
+            {
+                let mut all: Vec<EqCell> = Vec::new();
+                for c in super_msc.iter() { all.extend_from_slice(c); }
+                let mut all_old: Vec<OldEq> = Vec::new();
+                for c in super_msc_old.iter() { all_old.extend_from_slice(c); }
+                if first_flush {
+                    first_flush = false;
+                    eprintln!("[feciso] first super-frame first 20 sigs (my): {:?}", all.iter().take(20).map(|c| (c.sig.re, c.sig.im)).collect::<Vec<_>>());
+                }
+                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                    let old_frame: Vec<OldEq> = frame.iter().map(|c| OldEq { sig: crate::digital::drm::Cplx::new(c.sig.re, c.sig.im), chan: c.chan }).collect();
+                    let old_deint = old_de.push(&old_frame);
+                    let my_deint = my_de.push(frame);
+                    let uniform_frame: Vec<OldEq> = frame.iter().map(|c| OldEq { sig: crate::digital::drm::Cplx::new(c.sig.re, c.sig.im), chan: 1.0 }).collect();
+                    let uniform_deint = uniform_de.push(&uniform_frame);
+                    if let Some(d) = old_deint {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if old_dec.decode(&d, &mut b) { old_all.extend_from_slice(&b); }
+                        }
+                    }
+                    if let Some(d) = my_deint {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if my_dec.decode(&d, &mut b) { my_all.extend_from_slice(&b); }
+                        }
+                    }
+                    if let Some(d) = uniform_deint {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if uniform_dec.decode(&d, &mut b) { uniform_all.extend_from_slice(&b); }
+                        }
+                    }
+                }
+                for frame in all_old.chunks(old_map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = old2_de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if old2_dec.decode(&d, &mut b) { old2_all.extend_from_slice(&b); }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() { c.clear(); }
+                for c in super_msc_old.iter_mut() { c.clear(); }
+            }
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+                super_msc_old[super_sym].push(old_cells[c as usize]);
+            }
+        }
+        let nn = 8390usize;
+        let stream = xorshift_bits(12 * nn);
+        let om: Vec<usize> = old_all.chunks(nn).take(8).enumerate().map(|(f, b)| b.iter().zip(&stream[f * nn..(f + 1) * nn]).filter(|(a, z)| a == z).count()).collect();
+        let mm: Vec<usize> = my_all.chunks(nn).take(8).enumerate().map(|(f, b)| b.iter().zip(&stream[f * nn..(f + 1) * nn]).filter(|(a, z)| a == z).count()).collect();
+        // The chanest warm-up drops the first `delay` symbols, so the first complete frame is
+        // frame 1; print the match against every rotation to find the correct alignment.
+        let rot: Vec<Vec<usize>> = (0..6).map(|r| {
+            my_all.chunks(nn).take(8).enumerate().map(|(f, b)| {
+                let s = ((f + r) % 12) * nn;
+                b.iter().zip(&stream[s..s + nn]).filter(|(a, z)| a == z).count()
+            }).collect()
+        }).collect();
+        eprintln!("[feciso] OLD FEC on my cells: {} frames, match {om:?}", old_all.len() / nn);
+        eprintln!("[feciso] MY  FEC on my cells: {} frames, match {mm:?}", my_all.len() / nn);
+        let o2: Vec<usize> = old2_all.chunks(nn).take(8).enumerate().map(|(f, b)| b.iter().zip(&stream[f * nn..(f + 1) * nn]).filter(|(a, z)| a == z).count()).collect();
+        eprintln!("[feciso] OLD FEC on OLD cells via my assembly: {} frames, match {o2:?}", old2_all.len() / nn);
+        let o2rot: Vec<Vec<usize>> = (0..3).map(|r| {
+            old2_all.chunks(nn).take(8).enumerate().map(|(f, b)| {
+                let s = ((f + r) % 12) * nn;
+                b.iter().zip(&stream[s..s + nn]).filter(|(a, z)| a == z).count()
+            }).collect()
+        }).collect();
+        eprintln!("[feciso] OLD cells via my assembly rotated: {o2rot:?}");
+        eprintln!("[feciso] MY FEC rotated matches: {rot:?}");
+        let um: Vec<usize> = uniform_all.chunks(nn).take(8).enumerate().map(|(f, b)| b.iter().zip(&stream[f * nn..(f + 1) * nn]).filter(|(a, z)| a == z).count()).collect();
+        eprintln!("[feciso] UNIFORM chan=1.0 match: {um:?}");
+        eprintln!("[feciso] old==my byte-identical: {}", old_all == my_all);
+    }
+
+    /// Confirmation: the OLD equaliser + OLD FEC on the old-anchor rows must decode bit-exact
+    /// (it is the previous receiver's own pipeline, replicated with `sym = i % 45`).
+    #[test]
+    fn old_equaliser_fec_on_old_anchor() {
+        use crate::digital::drm::fec::mlc::{MlcDecoder as OldMlc, MlcParams as OldParams, MscProtection as OldProt};
+        use crate::digital::drm::fec::qam::{EqCell as OldEq, Mapping as OldMapping};
+        use crate::digital::drm::interleave::CellDeinterleaver as OldDeint;
+        use crate::digital::drm2::ofdm::OfdmDemod;
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("old layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let acq = crate::digital::drm::timesync::acquire(
+            &iq.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect::<Vec<_>>(),
+        )
+        .expect("acquire");
+        let n = acq.mode.fft_size();
+        let ts = acq.mode.symbol_len();
+        let start0 = acq.guard_start + acq.mode.guard_len();
+
+        let mut demod = OfdmDemod::new(&map);
+        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        let mut cells = Vec::new();
+        let mut start = start0;
+        while start + n <= iq.len() {
+            demod.demodulate(&iq[start..start + n], &mut cells);
+            rows.push(cells.clone());
+            start += ts;
+        }
+        let spsf = 45usize;
+
+        let mut old_de = OldDeint::new(old_map.msc_cells_per_frame, 5);
+        let mut old_dec = OldMlc::new(
+            OldParams::msc(OldMapping::Qam64Sm, old_map.msc_cells_per_frame, OldProt { part_a: 0, part_b: 1, hierarchical: 0 }, 0),
+            1,
+        );
+        let mut super_msc: Vec<Vec<OldEq>> = vec![Vec::new(); 45];
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        for i in 0..rows.len() {
+            let sym = i % spsf; // super-frame symbol, exactly as the old receiver computes it
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                rows[i].iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, sym, &old_row);
+            if sym == 0 {
+                let mut all: Vec<OldEq> = Vec::new();
+                for c in super_msc.iter() { all.extend_from_slice(c); }
+                let chunks: Vec<&[OldEq]> = all.chunks(old_map.msc_cells_per_frame).collect();
+                if chunks.len() >= 2 {
+                    static D2: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !D2.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!("[oldpipe] frame 1 (2nd chunk) first 20 sigs: {:?}", chunks[1].iter().take(20).map(|c| (c.sig.re, c.sig.im)).collect::<Vec<_>>());
+                    }
+                }
+                for frame in all.chunks(old_map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = old_de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if old_dec.decode(&d, &mut b) { frames.push(b); }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() { c.clear(); }
+            }
+            for &c in &old_map.msc_carriers[sym] {
+                super_msc[sym].push(OldEq { sig: eq.cells[c as usize], chan: eq.chan[c as usize].norm_sqr() });
+            }
+        }
+        let nn = 8390usize;
+        let stream = xorshift_bits(12 * nn);
+        let m: Vec<usize> = frames.iter().zip(stream.chunks(nn)).take(8).map(|(b, s)| b.iter().zip(s).filter(|(a, z)| a == z).count()).collect();
+        eprintln!("[oldpipe] old equaliser + old FEC: {} frames, match {m:?}", frames.len());
+        assert!(frames.iter().zip(stream.chunks(nn)).all(|(b, s)| b == s), "the old pipeline must decode bit-exact on the old-anchor rows");
     }
 
     /// Diagnostic (ignored): the MSC chain with the previous chain's per-symbol linear equaliser
