@@ -1135,6 +1135,37 @@ mod tests {
     fn measures_the_timing_offset() {
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
         let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        // The full-rate guard correlation peak: the prefix start of the first symbol.
+        let nu = 1024usize;
+        let g = 256usize;
+        let mut best = (0usize, 0.0f64);
+        for t in 0..g {
+            let mut c = 0.0;
+            for i in 0..g {
+                let a = iq[t + i];
+                let b = iq[t + i + nu];
+                c += a.re * b.re + a.im * b.im;
+            }
+            if c > best.1 {
+                best = (t, c);
+            }
+        }
+        eprintln!("[timing] full-rate guard-correlation peak at sample {}", best.0);
+        // The first window start from the TimeSync.
+        let mut ts = crate::digital::drm2::sync::timesync::TimeSync::new(RobustnessMode::B);
+        let mut first_start = None;
+        for block in iq.chunks(3248) {
+            let _ = ts.push(block);
+            while let Some(w) = ts.next_window() {
+                first_start = Some(w.start);
+                break;
+            }
+            if first_start.is_some() {
+                break;
+            }
+        }
+        let start = first_start.expect("a window");
+        eprintln!("[timing] first window start {start}; offset vs peak = {} samples", start - best.0 as i64);
         let (rows, syms, _shifts) = rows_and_syms(&map, &iq);
         let n = map.mode().fft_size() as f64;
         let mut offsets = Vec::new();
@@ -1160,6 +1191,37 @@ mod tests {
         let mean = offsets.iter().sum::<f64>() / offsets.len() as f64;
         let std = (offsets.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / offsets.len() as f64).sqrt();
         eprintln!("[timing] window offset from pilots: {mean:+.3} ± {std:.3} samples (n={})", offsets.len());
+        // Per-symbol offset, to see whether the offset is constant or drifts with the timing
+        // tracking.
+        let per_sym: Vec<f64> = rows
+            .iter()
+            .zip(&syms)
+            .map(|(row, sym)| {
+                let ps: Vec<f64> = (0..map.num_carriers)
+                    .filter(|&c| map.cell(*sym, c).is_scattered())
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .filter_map(|w| {
+                        let (c1, c2) = (w[0], w[1]);
+                        let (r1, r2) = (map.pilot(*sym, c1), map.pilot(*sym, c2));
+                        if r1.norm_sqr() == 0.0 || r2.norm_sqr() == 0.0 {
+                            return None;
+                        }
+                        let h1 = row[c1] / r1;
+                        let h2 = row[c2] / r2;
+                        if h1.norm() < 1e-3 || h2.norm() < 1e-3 {
+                            return None;
+                        }
+                        let dphase = (h2 / h1).arg();
+                        let dk = (map.kmin + c2 as i32 - (map.kmin + c1 as i32)) as f64;
+                        Some(dphase * n / (2.0 * core::f64::consts::PI * dk))
+                    })
+                    .collect();
+                ps.iter().sum::<f64>() / ps.len().max(1) as f64
+            })
+            .collect();
+        eprintln!("[timing] per-symbol offset (first 15): {:?}", &per_sym[..15.min(per_sym.len())]);
+        eprintln!("[timing] per-symbol offset (last 15): {:?}", &per_sym[per_sym.len().saturating_sub(15)..]);
     }
 
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
