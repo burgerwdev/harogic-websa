@@ -2326,6 +2326,58 @@ mod tests {
         }
         eprintln!("[closeloop] MER {mer:?} after {n} symbols");
     }
+
+    /// Diagnostic: compare the old per-symbol linear equaliser's FAC MER on the live capture
+    /// with the new estimator's. If the old equaliser also reads low, the deficit is the
+    /// channel/timing, not the Wiener; if the old equaliser reads high, the new estimator has a
+    /// regression.
+    #[test]
+    #[ignore = "live old-equaliser comparison; run with --ignored --nocapture"]
+    fn live_capture_old_equaliser_comparison() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let old_map = crate::digital::drm::cellmap::CellMap::new(
+            crate::digital::drm::params::RobustnessMode::from_index(RobustnessMode::B.index()).unwrap(),
+            crate::digital::drm::params::SpectrumOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base { flat.push(v.re); flat.push(v.im); }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let (rows, syms, _) = rows_and_syms(&map, &corrected);
+        let mut fine = 0.0;
+        if let Some(f) = crate::digital::drm2::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
+            fine = f;
+            let mut nco2 = crate::digital::drm2::sync::nco::Nco::new(f);
+            nco2.process(&mut corrected);
+        }
+        let (rows, syms, _) = rows_and_syms(&map, &corrected);
+        let qam4 = crate::digital::drm2::tables::QAM4[0];
+        let (mut err, mut pow) = (0.0, 0.0);
+        for (row, sym) in rows.iter().zip(&syms) {
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                row.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, *sym, &old_row);
+            for c in 0..map.num_carriers {
+                if !map.cell(*sym, c).is_fac() { continue; }
+                let s = eq.cells[c];
+                let dr = if s.re >= 0.0 { qam4 } else { -qam4 };
+                let di = if s.im >= 0.0 { qam4 } else { -qam4 };
+                err += eq.chan[c].norm_sqr() * ((s.re - dr).powi(2) + (s.im - di).powi(2));
+                pow += eq.chan[c].norm_sqr();
+            }
+        }
+        let old_mer = -10.0 * (err / pow.max(1e-30)).max(1e-12).log10();
+        eprintln!("[liveold] old per-symbol equaliser FAC MER {old_mer:.1} dB (new reads -8.6, reference 17.8)");
+    }
 }
 
 #[cfg(test)]
