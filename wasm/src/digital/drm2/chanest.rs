@@ -897,6 +897,124 @@ mod tests {
         eprintln!("[msc] bit match per frame (of {}): {matched:?}", n);
     }
 
+    /// Diagnostic (ignored): the MSC chain with the previous chain's per-symbol linear equaliser
+    /// (no Wiener, no delay) on these rows. This too fails bit-exact, so the defect is in the
+    /// drm2 rows' timing (a sub-sample window offset corrupts 64-QAM while 4-QAM FAC and 16-QAM
+    /// SDC survive), not in the FEC port.
+    #[test]
+    #[ignore = "records the timing-offset finding; the drm2 rows corrupt 64-QAM MSC"]
+    fn msc_decodes_with_the_previous_equaliser() {
+        use crate::digital::drm::cellmap::CellMap as OldMap;
+        use crate::digital::drm::params::{
+            RobustnessMode as OldMode, SpectrumOccupancy as OldOccupancy,
+        };
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = OldMap::new(
+            OldMode::from_index(RobustnessMode::B.index()).unwrap(),
+            OldOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, _shifts) = rows_and_syms(&map, &iq);
+        let mut fac_dec = crate::digital::drm::fec::mlc::MlcDecoder::new(
+            crate::digital::drm::fec::mlc::MlcParams::fac(),
+            0,
+        );
+        let mut fac_cells: Vec<crate::digital::drm::fec::qam::EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut super_msc: Vec<Vec<crate::digital::drm::fec::qam::EqCell>> = vec![Vec::new(); 45];
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut de = crate::digital::drm::interleave::CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let msc_params = crate::digital::drm::fec::mlc::MlcParams::msc(
+            crate::digital::drm::fec::qam::Mapping::Qam64Sm,
+            map.msc_cells_per_frame,
+            crate::digital::drm::fec::mlc::MscProtection { part_a: 0, part_b: 1, hierarchical: 0 },
+            0,
+        );
+        let mut msc_dec = crate::digital::drm::fec::mlc::MlcDecoder::new(msc_params, 1);
+        // Pass 1: decode the FAC per frame, caching the equalised cells.
+        let mut cached: Vec<(usize, Vec<crate::digital::drm::fec::qam::EqCell>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        for i in 0..rows.len() {
+            let sym = syms[i];
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                rows[i].iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, sym, &old_row);
+            let cells: Vec<crate::digital::drm::fec::qam::EqCell> = (0..map.num_carriers)
+                .map(|c| crate::digital::drm::fec::qam::EqCell {
+                    sig: eq.cells[c],
+                    chan: eq.chan[c].norm_sqr(),
+                })
+                .collect();
+            if sym == 0 {
+                fac_cells.clear();
+            }
+            for &c in &map.fac_carriers[sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    crate::digital::drm::fac::Fac::parse(&bits)
+                        .map(|f| f.channel.frame_index)
+                        .unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                frame_indices.push(idx);
+                fac_cells.clear();
+            }
+            cached.push((sym, cells));
+        }
+        // Pass 2: walk the cached rows, assigning the super-frame symbol from the FAC index.
+        let mut complete_frame = 0usize;
+        let mut in_partial = true;
+        for (sym, cells) in &cached {
+            if *sym == 0 && in_partial {
+                in_partial = false;
+                complete_frame = 0;
+            } else if *sym == 0 {
+                complete_frame += 1;
+            }
+            if in_partial {
+                continue;
+            }
+            let Some(&frame_index) = frame_indices.get(complete_frame) else { continue };
+            if frame_index == 0xFF {
+                continue;
+            }
+            let super_sym = frame_index as usize * 15 + *sym;
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+            }
+            if *sym == 0 && frame_index == 1 {
+                let mut all: Vec<crate::digital::drm::fec::qam::EqCell> = Vec::new();
+                for c in super_msc.iter() {
+                    all.extend_from_slice(c);
+                }
+                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            let mut b = Vec::new();
+                            if msc_dec.decode(&d, &mut b) {
+                                frames.push(b);
+                            }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() {
+                    c.clear();
+                }
+            }
+        }
+        let n = 8390usize;
+        let stream = xorshift_bits(12 * n);
+        let matched = frames.iter().zip(stream.chunks(n)).take(3).map(|(bits, s)| {
+            bits.iter().zip(s).filter(|(a, b)| a == b).count()
+        }).collect::<Vec<_>>();
+        eprintln!("[msc/linear] decoded {} frames, bit match per frame (of {n}): {matched:?}", frames.len());
+        assert!(frames.iter().zip(stream.chunks(n)).all(|(b, s)| b == s), "linear equaliser must decode bit-exact");
+    }
+
     /// Deterministic bit stream the fixture's MSC payload carries (the old chain's fixture
     /// test verifies against the same sequence).
     fn xorshift_bits(n: usize) -> Vec<u8> {
