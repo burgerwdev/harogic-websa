@@ -6,6 +6,7 @@
 //!   detection and symbol timing with its tracking (Dream's `CTimeSync`).
 //! - `framesync` (next): the frame phase from the time pilots (Dream's `CFrameSync`).
 
+pub mod finefreq;
 pub mod freqacq;
 pub mod nco;
 pub mod timesync;

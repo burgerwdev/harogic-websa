@@ -307,39 +307,12 @@ mod tests {
 
     /// Run the chain's front (timing, demodulation) and the estimator over a capture; return
     /// the last FAC MER and the estimator's geometry.
-    fn run(iq: &[Cplx]) -> (Option<f64>, usize, usize) {
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
-        // The front end: coarse acquisition, then remove the measured carrier offset — without
-        // it every symbol's cells rotate against the next and no channel estimate can follow.
-        let mut f64_iq: Vec<f64> = Vec::with_capacity(iq.len() * 2);
-        for v in iq {
-            f64_iq.push(v.re);
-            f64_iq.push(v.im);
-        }
-        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
-        let found = acq.push_iq(&f64_iq);
-        let mut corrected: Vec<Cplx> = iq.to_vec();
-        if let Some(a) = found {
-            let mut nco = crate::digital::drm2::sync::nco::Nco::new(a.dc_hz);
-            nco.process(&mut corrected);
-            eprintln!("[chanest] acquired DC offset {:.1} Hz", a.dc_hz);
-        }
-        let iq = &corrected[..];
+    /// Collect the demodulated rows and their super-frame symbol indices for a capture.
+    fn rows_and_syms(map: &CellMap, iq: &[Cplx]) -> (Vec<Vec<Cplx>>, Vec<usize>) {
         let mut ts = TimeSync::new(RobustnessMode::B);
-        let mut demod = OfdmDemod::new(&map);
-        let mut est = ChanEst::new(&map);
+        let mut demod = OfdmDemod::new(map);
         let mut cells = Vec::new();
-        let mut mer = None;
-        // The symbol index within the super frame: the fixture starts at a frame boundary, and
-        // with the resampler and the timing stage in between we cannot know the super-frame
-        // phase yet (that needs the FAC), so run the estimator on the frame cycle and let the
-        // FAC MER accumulate over whatever frame alignment the capture has.
-        let spsf = RobustnessMode::B.symbols_per_superframe();
-        let spf = RobustnessMode::B.symbols_per_frame();
-        // Collect every window first, then align with the frame-sync stage: the frame phase it
-        // reports says which symbol of the frame the first window is, and the estimator's FAC
-        // cells are only meaningful with that alignment.
-        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        let mut rows = Vec::new();
         for block in iq.chunks(3248) {
             let _ = ts.push(block);
             while let Some(w) = ts.next_window() {
@@ -351,71 +324,53 @@ mod tests {
             }
         }
         if rows.is_empty() {
-            return (None, est.freq_int, est.time_int);
+            return (rows, Vec::new());
         }
-        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
-        for (i, row) in rows.iter().enumerate() {
-            let sym = (i % spf + phase) % spf;
-            if est.process(row, sym, &map).is_some() {
+        let phase = crate::digital::drm2::framesync::FrameSync::new(map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let syms = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+        (rows, syms)
+    }
+
+    /// The front end as the receiver runs it: coarse acquisition, remove it, estimate what is
+    /// left with the continuous pilots, remove that too, and return the equaliser's FAC MER.
+    fn run(iq: &[Cplx]) -> (Option<f64>, usize, usize) {
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let mut flat: Vec<f64> = Vec::with_capacity(iq.len() * 2);
+        for v in iq {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = iq.to_vec();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        // What the coarse step left behind, measured on the continuous pilots and removed.
+        let (rows, syms) = rows_and_syms(&map, &corrected);
+        let mut fine = 0.0;
+        if let Some(f) = crate::digital::drm2::sync::finefreq::estimate_residual_hz(&map, &rows, &syms)
+        {
+            fine = f;
+            let mut nco2 = crate::digital::drm2::sync::nco::Nco::new(f);
+            nco2.process(&mut corrected);
+        }
+        let (rows, syms) = rows_and_syms(&map, &corrected);
+        eprintln!(
+            "[chanest] coarse {coarse:.1} Hz, fine {fine:+.2} Hz, rows {}",
+            rows.len()
+        );
+        // Feed the estimator and keep the last frame's FAC MER.
+        let mut est = ChanEst::new(&map);
+        let mut mer = None;
+        for (row, sym) in rows.iter().zip(&syms) {
+            if est.process(row, *sym, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
                     mer = Some(m);
                 }
             }
         }
         (mer, est.freq_int, est.time_int)
-    }
-
-    /// Diagnostic only: prints the lattice geometry, the FAC cells per symbol and the
-    /// equalised FAC constellation, which is how the open issue below was localised.
-    #[test]
-    #[ignore = "diagnostic output; run with --ignored --nocapture when debugging"]
-    fn diagnostic_dump() {
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
-        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
-        let mut ts = TimeSync::new(RobustnessMode::B);
-        let mut demod = OfdmDemod::new(&map);
-        let mut cells = Vec::new();
-        let mut rows: Vec<Vec<Cplx>> = Vec::new();
-        for block in iq.chunks(3248) {
-            let _ = ts.push(block);
-            while let Some(w) = ts.next_window() {
-                if w.guard_corr.unwrap_or(0.0) < 0.5 { continue; }
-                demod.demodulate(&w.samples, &mut cells);
-                rows.push(cells.clone());
-            }
-        }
-        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
-        let mut est = ChanEst::new(&map);
-        let spf = RobustnessMode::B.symbols_per_frame();
-        // Report what the map says about FAC/scattered cells and their reference values.
-        let mut fac_counts = [0usize; 15];
-        let mut scat_counts = [0usize; 15];
-        for sym in 0..15 {
-            for c in 0..map.num_carriers {
-                let t = map.cell(sym, c);
-                if t.is_fac() { fac_counts[sym] += 1; }
-                if t.is_scattered() { scat_counts[sym] += 1; }
-            }
-        }
-        eprintln!("[diag] rows={} fac_counts={fac_counts:?}", rows.len());
-        eprintln!("[diag] scattered per symbol={scat_counts:?}");
-        for (i, row) in rows.iter().enumerate() {
-            let sym = (i % spf + phase) % spf;
-            let out = est.process(row, sym, &map);
-            if let Some(out) = out.filter(|_| (6..12).contains(&i)) {
-                let facs: Vec<(f64, f64)> = (0..map.num_carriers)
-                    .filter(|&c| map.cell(sym, c).is_fac())
-                    .take(4)
-                    .map(|c| (out[c].sig.re, out[c].sig.im))
-                    .collect();
-                let chan: Vec<f64> = (0..map.num_carriers)
-                    .filter(|&c| map.cell(sym, c).is_fac())
-                    .take(4)
-                    .map(|c| out[c].chan.sqrt())
-                    .collect();
-                eprintln!("[diag] row {i} sym {sym} FAC eq={facs:?} |H|={chan:?}");
-            }
-        }
     }
 
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
