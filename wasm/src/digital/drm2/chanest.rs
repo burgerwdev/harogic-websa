@@ -22,6 +22,7 @@ use std::collections::VecDeque;
 
 use crate::digital::drm2::cellmap::CellMap;
 use crate::digital::drm2::dsp::levinson::levinson;
+use crate::digital::drm2::dsp::util::iir1;
 use crate::digital::drm2::dsp::{sinc, Cplx};
 use crate::digital::drm2::params::RobustnessMode;
 
@@ -192,6 +193,7 @@ impl ChanEst {
     /// noise, estimate) and otherwise drives the taps to their upper bound.
     pub fn start_time_wiener_tracking(&mut self) {
         self.use_tw = true;
+        self.tw.tracking = true;
     }
 
     /// Enable impulse-response based timing tracking (Dream's `start_timing_tracking`): the
@@ -411,8 +413,13 @@ impl ChanEst {
             let e = self.fac_err / self.fac_pow.max(1e-30);
             self.stats.fac_mer_db = Some(-10.0 * e.max(1e-12).log10());
             // Dream estimates the SNR from the same decisions and feeds it back to the Wiener
-            // filters, which is what adapts them to a weak or noisy signal.
-            self.snr_linear = (1.0 / e.max(1e-12)).max(1.0);
+            // filters, which is what adapts them to a weak or noisy signal. The raw FAC MER is a
+            // channel-limited quantity, so it is IIR-smoothed first (the reference's `bound_snr`
+            // over a ~5 s window); feeding the instantaneous value back drives a positive-
+            // feedback collapse of the Wiener regularisation on a delay-spread channel.
+            let snr_inst = (1.0 / e.max(1e-12)).max(1.0);
+            let sym_rate = f64::from(self.mode.sample_rate()) / self.mode.symbol_len() as f64;
+            iir1(&mut self.snr_linear, snr_inst, (-1.0 / (5.0 * sym_rate)).exp());
             self.fac_err = 0.0;
             self.fac_pow = 0.0;
             self.fac_cnt = 0;
