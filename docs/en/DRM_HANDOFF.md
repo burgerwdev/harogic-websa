@@ -240,7 +240,7 @@ Work lands stage by stage, each with tests that cross-check the reference's own 
 | `drm2::dsp` — complex type, DFT (radix-2 / Bluestein) | done | a pure tone lands in exactly one bin for 1024/1152/704/448/6144 |
 | `drm2::sync::freqacq` — coarse carrier acquisition | done | the committed bench capture acquires at +121 Hz (within one carrier of the value `DRM_BENCH.md` records), the fixture acquires, an inverted spectrum is reported inverted, noise does not acquire |
 | `drm2::sync::timesync` — guard correlation (low-passed, decimated), mode detection, timing and its tracking | next | |
-| `drm2::sync::framesync` — frame phase from the time pilots | next | |
+| `drm2::sync::framesync` — frame phase from the time pilots | with task 3 | the time pilots live in the demodulated cells, so this needs the OFDM demodulation and the cell map (task 3) before it can be written and tested; it is folded into that task rather than guessed at here |
 | `drm2::ofdm`, `cellmap`, `chanest`, `fac`, `sdc`, `mlc`, `msc`, `audio` | pending | see the task list |
 
 Two facts worth carrying forward:

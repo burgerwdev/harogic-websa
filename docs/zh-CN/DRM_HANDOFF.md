@@ -206,7 +206,7 @@ SNR/MER 应当取代我们现在的 `snr_db` 读数（现在来自 FAC 判决，
 | `drm2::dsp` —— 复数类型、DFT（radix-2 / Bluestein） | 完成 | 单频复指数在 1024/1152/704/448/6144 各长度下只落在一个 bin |
 | `drm2::sync::freqacq` —— 三导频粗载波捕获 | 完成 | 已提交台面夹具捕获到 **+121 Hz**（与 `DRM_BENCH.md` 记录值相差一个载波内）；合成夹具可捕获；反相信号报告为反相；噪声不误捕 |
 | `drm2::sync::timesync` —— 保护间隔相关（低通+抽取）、模式检测、定时与跟踪 | 下一步 | |
-| `drm2::sync::framesync` —— 由时间导频定帧相位 | 下一步 | |
+| `drm2::sync::framesync` —— 由时间导频定帧相位 | 随 task 3 | 时间导频位于解调后的信元里，因此需要先有 OFDM 解调与信元映射（task 3）才能编写与测试；并入该任务，而不是在此凭空猜 |
 | `drm2::ofdm`、`cellmap`、`chanest`、`fac`、`sdc`、`mlc`、`msc`、`audio` | 待做 | 见任务清单 |
 
 两条要记住的事实：
