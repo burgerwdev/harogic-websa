@@ -228,6 +228,31 @@ is the oracle), and the native suites (`drm_fixture`, `drm_live_fixture`, `drm_p
 stay green. The captures used for the measurements are in `/tmp` (`live30.f32`, `live60.f32`,
 `lvl.f32`); a fresh one can be made with `tools/drm_capture.py`.
 
+## Port progress (branch `feature/drm-dream-port`)
+
+The previous receiver is abandoned; this branch re-implements the chain along Dream's stage
+order in Rust, MIT-clean (Dream and DecDRM are read as references; no code is copied).
+Work lands stage by stage, each with tests that cross-check the reference's own measurements:
+
+| Stage | State | Evidence |
+| --- | --- | --- |
+| `drm2::params` — robustness-mode geometry (A–D) | done | field-by-field against Dream's `tables/TableDRMGlobal.h`, the 400 ms frame invariant pinned |
+| `drm2::dsp` — complex type, DFT (radix-2 / Bluestein) | done | a pure tone lands in exactly one bin for 1024/1152/704/448/6144 |
+| `drm2::sync::freqacq` — coarse carrier acquisition | done | the committed bench capture acquires at +121 Hz (within one carrier of the value `DRM_BENCH.md` records), the fixture acquires, an inverted spectrum is reported inverted, noise does not acquire |
+| `drm2::sync::timesync` — guard correlation (low-passed, decimated), mode detection, timing and its tracking | next | |
+| `drm2::sync::framesync` — frame phase from the time pilots | next | |
+| `drm2::ofdm`, `cellmap`, `chanest`, `fac`, `sdc`, `mlc`, `msc`, `audio` | pending | see the task list |
+
+Two facts worth carrying forward:
+
+- **Dream has no mode E geometry.** `tables/TableDRMGlobal.h` defines `NUM_ROBUSTNESS_MODES 4`
+  (A–D); its only mode E reference is the audio-super-frame frame count. Mode E/DRM+ (VHF)
+  therefore cannot be ported from Dream and needs the DRM+ specification or another reference;
+  it is its own task.
+- **Reading fixtures from a test**: the Rust tests run with `wasm/` as the working directory, so
+  committed fixtures are at `../tests/fixtures/...`. A `/tmp` capture is a bonus: gate its test
+  on the file's existence, never assert its absolute carrier offset (that varies per session).
+
 ## Environment notes
 
 - The backend stalls under load ("SDR stream stalled (watchdog)", 65 ms acquisition steps).

@@ -195,6 +195,29 @@ SNR/MER 应当取代我们现在的 `snr_db` 读数（现在来自 FAC 判决，
 （`drm_fixture`、`drm_live_fixture`、`drm_phy_robustness`）保持全绿。测量用的捕获在 `/tmp`
 （`live30.f32`、`live60.f32`、`lvl.f32`）；可用 `tools/drm_capture.py` 重新抓取。
 
+## 移植进度（分支 `feature/drm-dream-port`）
+
+旧接收机已放弃；本分支按 Dream 的阶段顺序用 Rust 重新实现，保持 MIT 干净（Dream 与 DecDRM 只作
+参考阅读，不复制代码）。每个阶段落地时都带测试，并用参考实现自己的测量值交叉核对：
+
+| 阶段 | 状态 | 证据 |
+| --- | --- | --- |
+| `drm2::params` —— 鲁棒模式几何（A–D） | 完成 | 逐项对照 Dream 的 `tables/TableDRMGlobal.h`；400 ms 帧不变量有测试固定 |
+| `drm2::dsp` —— 复数类型、DFT（radix-2 / Bluestein） | 完成 | 单频复指数在 1024/1152/704/448/6144 各长度下只落在一个 bin |
+| `drm2::sync::freqacq` —— 三导频粗载波捕获 | 完成 | 已提交台面夹具捕获到 **+121 Hz**（与 `DRM_BENCH.md` 记录值相差一个载波内）；合成夹具可捕获；反相信号报告为反相；噪声不误捕 |
+| `drm2::sync::timesync` —— 保护间隔相关（低通+抽取）、模式检测、定时与跟踪 | 下一步 | |
+| `drm2::sync::framesync` —— 由时间导频定帧相位 | 下一步 | |
+| `drm2::ofdm`、`cellmap`、`chanest`、`fac`、`sdc`、`mlc`、`msc`、`audio` | 待做 | 见任务清单 |
+
+两条要记住的事实：
+
+- **Dream 没有模式 E 几何。** `tables/TableDRMGlobal.h` 定义 `NUM_ROBUSTNESS_MODES 4`（A–D），
+  它对模式 E 的唯一提及是音频超帧的帧数。因此模式 E / DRM+（VHF）无法从 Dream 移植，需要 DRM+
+  规范或别的参考；它是独立的一项任务。
+- **测试读夹具的路径**：Rust 测试的工作目录是 `wasm/`，已提交夹具在 `../tests/fixtures/...`。
+  `/tmp` 里的捕获只是"有更好"：测试要以文件存在为前提，且**不要**断言它的绝对载波偏移（每次
+  会话都不同）。
+
 ## 环境注意
 
 - 负载高时后端会卡住（日志里的 “SDR stream stalled (watchdog)”、65 ms 的采集步进）。台面测试前
