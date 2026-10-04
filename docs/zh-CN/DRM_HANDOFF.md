@@ -152,6 +152,49 @@ DecDRM 的接收机模块正好解决这些弱点：
 4. 如果台面实测暴露信道估计或定时问题，再移植下面的 DecDRM 模块；今天的离线套件已全部
    通过，这一步由证据驱动，不是自动必做。
 
+## 剩余的差距：信道估计（下一轮的工作）
+
+音频链路已修好并验证（见 `docs/zh-CN/DRM_BENCH.md`）。剩下的是解调器的信道估计，而参考接收机
+在同一捕获上量出了差距有多大：
+
+| 接收机 | FAC | MSC 帧 | 音频 |
+| --- | --- | --- | --- |
+| DecDRM 的 `decdrm rx` 解 `live30.f32`（30 秒，MER 17.8 dB） | 好 64 / 坏 9 | 71（好 40） | 200 帧（115 掩盖）|
+| 我们，同一文件 | 好 40 / 坏 52 | 64 | 55 个接入单元（11 个 super frame）|
+
+同样信号下参考解出的音频约为我们的四倍。原因在 `wasm/src/digital/drm/chanest.rs`：跨散射导频的
+逐符号线性插值，时间维不插值、也不做自适应。参考实现（移植自 Dream）的做法是：
+
+1. 逐符号取出增益参考（散射）导频网格上的信道；
+2. **时间维 Wiener 插值**（依据多普勒/时延统计）——弱信号与衰落信道靠的就是这一步
+   （`rx/chanest/time_wiener.rs`，对应 Dream 的 `CChannelEstimation::UpdateTimeWiener`）；
+3. **频率维 Wiener 插值**，从导频网格插到每个载波
+   （`rx/chanest/mod.rs::update_freq_wiener`，Levinson-Durbin 求解）；
+4. **冲激响应跟踪**（`rx/chanest/track.rs`，Dream 的 `CTrack`）：从功率时延谱测时延扩展、多普勒
+   扩展与采样率偏差，喂给 (2)(3) 的统计量，并给定时环路提供校正量。
+
+移植源（同为 Rust）：`/home/hui/git/DecDRM/crates/decdrm-core/src/rx/chanest/{mod.rs,
+time_wiener.rs, track.rs}` 与 `rx/scatter.rs`（导频/DSP 辅助），以及
+`crates/decdrm-core/src/dsp/` 里的 `levinson`、`iir1`、`sinc`。Dream 原版在 `src/chanest/`。
+
+在本仓库里的改动形态：`chanest::equalize_symbol(map, sym, cells) -> EqSymbol` 是无状态、逐符号的；
+Wiener 估计器是有状态的（时间滤波跨多个符号，因此符号进入后要过几个符号才输出），还需要 SNR、
+时延扩展与多普勒扩展。因此它变成由 `DrmReceiver` 持有的 `ChannelEstimator`，逐符号喂入，输出延迟
+为 `time_wiener::delay()` 个符号；`decode()` 需要缓存输入符号、消费输出的均衡符号。它给出的
+SNR/MER 应当取代我们现在的 `snr_db` 读数（现在来自 FAC 判决，读数偏低：参考报 MER 17.8 dB 时
+我们报 -11 dB）。
+
+分步推进，每步都可单独验证：
+
+1. 导频网格 + 时间维 Wiener（取代只在频率维插值的做法）——先看到 FAC 错误数下降，再看到 MSC 帧数上升；
+2. 频率维 Wiener 与 SNR 自适应；
+3. 冲激响应跟踪（时延/多普勒/SRO），它同时给定时环路提供校正，取代我们固定的网格；
+4. 读数：像参考实现那样报告估计器的 SNR 与 MER。
+
+验收：在 `live30.f32` 上我们解出的音频帧数接近参考（以 `decdrm rx` 为准），并且 native 套件
+（`drm_fixture`、`drm_live_fixture`、`drm_phy_robustness`）保持全绿。测量用的捕获在 `/tmp`
+（`live30.f32`、`live60.f32`、`lvl.f32`）；可用 `tools/drm_capture.py` 重新抓取。
+
 ## 环境注意
 
 - 负载高时后端会卡住（日志里的 “SDR stream stalled (watchdog)”、65 ms 的采集步进）。台面测试前

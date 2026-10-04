@@ -175,6 +175,59 @@ GPL-2.0-or-later, so read them for the algorithms and implement independently.
 4. If the live bench shows channel-estimation or timing weaknesses, then port the DecDRM
    modules below; the offline suites pass today, so this is evidence-driven, not automatic.
 
+## The remaining gap: channel estimation (next round's work)
+
+The audio path is fixed and verified (see `docs/en/DRM_BENCH.md`). What is left is the
+demodulator's channel estimation, and the reference receiver measures the size of the gap on the
+same capture:
+
+| Receiver | FAC | MSC frames | Audio |
+| --- | --- | --- | --- |
+| DecDRM's `decdrm rx` on `live30.f32` (30 s, MER 17.8 dB) | ok 64 / bad 9 | 71 (ok 40) | 200 frames (115 concealed) |
+| Ours, same file | ok 40 / bad 52 | 64 | 55 access units (11 super frames) |
+
+So with the same signal the reference decodes about four times as much audio. The cause is our
+`wasm/src/digital/drm/chanest.rs`: per-symbol linear interpolation across the scattered pilots,
+with no interpolation in time and no adaptation. The reference (and Dream, which it ports) does:
+
+1. Gather the channel at the gain-reference (scattered) pilot grid, symbol by symbol.
+2. **Wiener interpolation in time** across those symbols, using the Doppler/delay statistics —
+   this is what carries a weak or fading signal (`rx/chanest/time_wiener.rs`, Dream's
+   `CChannelEstimation::UpdateTimeWiener`).
+3. **Wiener interpolation in frequency** from the pilot grid to every carrier
+   (`rx/chanest/mod.rs::update_freq_wiener`, the Levinson-Durbin solve).
+4. **Impulse-response tracking** (`rx/chanest/track.rs`, Dream's `CTrack`): delay spread, Doppler
+   spread and sample-rate offset from the power delay profile; feeds (2) and (3) their statistics
+   and the timing loop its correction.
+
+Port source, all in Rust: `/home/hui/git/DecDRM/crates/decdrm-core/src/rx/chanest/{mod.rs,
+time_wiener.rs, track.rs}` and `rx/scatter.rs` (the pilot/DSP helpers), with
+`crates/decdrm-core/src/dsp/` for `levinson`, `iir1`, `sinc`. Dream's originals are
+`src/chanest/` in the Dream sources.
+
+Shape of the change in our tree: `chanest::equalize_symbol(map, sym, cells) -> EqSymbol` is
+stateless and per-symbol; the Wiener estimator is stateful (the time filter spans several symbols,
+so a symbol leaves the estimator a few symbols after it enters) and needs the SNR, the delay spread
+and the Doppler spread. So it becomes a `ChannelEstimator` owned by `DrmReceiver`, fed one
+demodulated symbol at a time, with a delay of `time_wiener::delay()` symbols; `decode()` must then
+buffer the incoming symbols and consume the equalised symbols that come out. The SNR/MER numbers
+it produces should replace our `snr_db` readout (which currently comes from the FAC decisions and
+reads several dB low: -11 dB where the reference reports MER 17.8 dB).
+
+Order of work, each step verifiable on its own:
+
+1. The pilot grid + time-Wiener (replacing the frequency-only interpolation) — expect the FAC
+   error count to drop first, then the MSC frame count.
+2. The frequency Wiener and the SNR adaptation.
+3. The impulse-response tracker (delay/Doppler/SRO), which also gives the timing loop its
+   correction instead of our fixed grid.
+4. Readout: report the estimator's SNR and MER, as the reference does.
+
+Acceptance: on `live30.f32` our decoded-audio frame count approaches the reference's (`decdrm rx`
+is the oracle), and the native suites (`drm_fixture`, `drm_live_fixture`, `drm_phy_robustness`)
+stay green. The captures used for the measurements are in `/tmp` (`live30.f32`, `live60.f32`,
+`lvl.f32`); a fresh one can be made with `tools/drm_capture.py`.
+
 ## Environment notes
 
 - The backend stalls under load ("SDR stream stalled (watchdog)", 65 ms acquisition steps).
