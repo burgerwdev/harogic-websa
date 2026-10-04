@@ -912,6 +912,7 @@ mod tests {
         let mut fac_cells: Vec<EqCell> = Vec::new();
         let mut good = 0usize;
         let mut bad = 0usize;
+        let mut bad_at: Vec<usize> = Vec::new();
         let mut bits = Vec::new();
         for i in 0..rows.len() {
             if i == 45 {
@@ -931,11 +932,12 @@ mod tests {
                     good += 1;
                 } else {
                     bad += 1;
+                    bad_at.push(i);
                 }
                 fac_cells.clear();
             }
         }
-        eprintln!("[live-fac] good {good} bad {bad} (reference 64 ok / 9 bad)");
+        eprintln!("[live-fac] good {good} bad {bad} bad_at {bad_at:?} (reference 64 ok / 9 bad)");
         // The good count matches the reference exactly; the bad count is one higher, which is
         // the same marginal block the reference's 1.5 dB higher MER tips over. Keep it within
         // one of the reference rather than asserting the exact 9.
