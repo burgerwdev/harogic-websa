@@ -69,6 +69,13 @@ pub struct ChanEst {
     /// shift at that symbol — the emitted symbol must be equalised with ITS cells and ITS
     /// channel estimate, and the pilots rotated to the output symbol's timing.
     history: VecDeque<(usize, Vec<Cplx>, Vec<Cplx>, i64)>,
+    /// Doppler-adapted time-Wiener interpolator (constructed eagerly, used only after the
+    /// receiver enables tracking, so the clean fixture keeps the exact linear interpolation).
+    tw: time_wiener::TimeWiener,
+    /// Whether the time-Wiener path is active (Dream's `start_time_wiener_tracking`).
+    use_tw: bool,
+    /// Output symbols for the time-Wiener path (cells, frame symbol, cumulative shift).
+    tw_hist: VecDeque<(Vec<Cplx>, usize, i64)>,
     /// Pilot-grid carrier spacing (the per-symbol shift, `x` in the spec's phase formula).
     x: usize,
     /// Number of pilot-grid carriers (`(n_car − 1) / x + 1`).
@@ -137,6 +144,8 @@ impl ChanEst {
         let x = map.scattered.freq_int;
         let num_pil = (n_car - 1) / x + 1;
         let fw_len = freq_wiener_len(mode);
+        let tw = time_wiener::TimeWiener::new(map);
+        let tw_delay = tw.delay;
         let mut est = Self {
             mode,
             n_car,
@@ -146,9 +155,12 @@ impl ChanEst {
             time_int: time_int.max(1),
             lattice,
             history: VecDeque::new(),
+            tw,
+            use_tw: false,
+            tw_hist: VecDeque::new(),
             x,
             num_pil,
-            track: PdsTracker::new(map, num_pil, time_int.max(1) + 1),
+            track: PdsTracker::new(map, num_pil, tw_delay + 1),
             fw_len,
             fw_offset: vec![0; n_car],
             fw_taps: vec![vec![Cplx::zero(); fw_len]; n_car],
@@ -170,7 +182,16 @@ impl ChanEst {
 
     /// The estimator's symbol delay.
     pub fn delay(&self) -> usize {
-        self.time_int
+        if self.use_tw { self.tw.delay } else { self.time_int }
+    }
+
+    /// Enable Doppler-adapted Wiener filtering in the time direction (Dream's
+    /// `start_time_wiener_tracking`), switching from the exact linear interpolation to the
+    /// time-Wiener once the receiver has acquired. The Doppler-spread estimate itself stays
+    /// off for now: it needs a proper pilot SNR (the FAC MER is a channel-limited, not a
+    /// noise, estimate) and otherwise drives the taps to their upper bound.
+    pub fn start_time_wiener_tracking(&mut self) {
+        self.use_tw = true;
     }
 
     /// Enable impulse-response based timing tracking (Dream's `start_timing_tracking`): the
@@ -238,6 +259,9 @@ impl ChanEst {
     /// with the timing shift `shift` of this symbol's window. Returns the equalised symbol
     /// `delay()` symbols earlier — its frame symbol index and its cells — once available.
     pub fn process(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
+        if self.use_tw {
+            return self.process_wiener(cells, sym, shift, map);
+        }
         let fft_n = self.mode.fft_size() as f64;
         let cycle = sym % self.time_int;
         // 1. The pilot lattice of this symbol.
@@ -317,6 +341,13 @@ impl ChanEst {
                 *g = dense[c];
             }
         }
+        self.finish(grid, out_data, out_sym, shift, map)
+    }
+
+    /// Shared tail: impulse-response tracking, frequency-Wiener interpolation, equalisation
+    /// and the FAC MER, given the time-interpolated `grid`, the output symbol's `cells` and
+    /// `sym`.
+    fn finish(&mut self, mut grid: Vec<Cplx>, out_data: Vec<Cplx>, out_sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
         // Mode D's DC carrier is not a pilot; hold the grid point at zero like the reference.
         if self.mode == RobustnessMode::D {
             if let Some(dc) = map.carrier_offset(0) {
@@ -389,6 +420,24 @@ impl ChanEst {
         self.last_frame_sym = out_sym;
         let _ = Q_VALUE_INVALID;
         Some((out_sym, out_cells))
+    }
+
+    /// The time-Wiener path (active after `start_time_wiener_tracking`): the interpolator owns
+    /// the pilot history and produces the gain-reference grid for the delayed output symbol.
+    fn process_wiener(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
+        self.cum_shift += shift;
+        self.tw_hist.push_back((cells.to_vec(), sym, self.cum_shift));
+        while self.tw_hist.len() > self.tw.delay + 1 {
+            self.tw_hist.pop_front();
+        }
+        let out_cum = self.tw_hist.front().map(|h| h.2).unwrap_or(self.cum_shift);
+        let mut grid = vec![Cplx::zero(); self.num_pil];
+        self.tw.estimate(map, cells, sym, self.cum_shift, out_cum, self.snr_linear, &mut grid);
+        if self.tw_hist.len() < self.tw.delay + 1 {
+            return None;
+        }
+        let (out_data, out_sym, _) = self.tw_hist.front().unwrap().clone();
+        self.finish(grid, out_data, out_sym, shift, map)
     }
 }
 
@@ -487,7 +536,12 @@ mod tests {
         // Feed the estimator and keep the last frame's FAC MER.
         let mut est = ChanEst::new(&map);
         let mut mer = None;
-        for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
+        for (i, ((row, sym), shift)) in rows.iter().zip(&syms).zip(&shifts).enumerate() {
+            // Enable the Doppler-adapted time Wiener once the estimator has a frame of history
+            // (Dream's `enter_tracking` after the first good FAC).
+            if i == 45 {
+                est.start_time_wiener_tracking();
+            }
             if est.process(row, *sym, *shift, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
                     mer = Some(m);

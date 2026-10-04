@@ -83,7 +83,7 @@ impl TimeWiener {
             delay,
             ts,
             sigma_max,
-            sigma: LOW_BOUND_SIGMA,
+            sigma: sigma_max,
             hist: vec![VecDeque::from(vec![init; len]); grid_len],
             seeded: vec![false; grid_len],
             filters: vec![vec![0.0; len]; t],
@@ -97,10 +97,7 @@ impl TimeWiener {
             ns: mode.symbols_per_frame(),
             s0,
         };
-        // Start from the lowest Doppler spread: for a static channel the Wiener collapses to
-        // the linear interpolation (flat taps), which is exact on the clean fixture; tracking
-        // widens σ once a real channel shows time variation.
-        w.mmse = w.update_filters(10f64.powf(INIT_SNR_DB / 10.0), LOW_BOUND_SIGMA);
+        w.mmse = w.update_filters(10f64.powf(INIT_SNR_DB / 10.0), sigma_max);
         w
     }
 
