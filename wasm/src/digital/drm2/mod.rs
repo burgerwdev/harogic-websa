@@ -72,6 +72,10 @@ pub struct DrmReceiver {
     fac_dec: Option<MlcDecoder>,
     fac_cells: Vec<EqCell>,
     frame_phase: usize,
+    /// SDC cells of the current frame (symbols 0..sdc_syms), stored with the frame's FAC
+    /// index once the FAC decodes.
+    frame_sdc: Vec<EqCell>,
+    sdc_blocks: Vec<(u8, Vec<EqCell>)>,
     /// Acquisition/tracking state (Dream's RxState).
     tracking: bool,
     timing_tracking: bool,
@@ -83,6 +87,9 @@ pub struct DrmReceiver {
     pub fac_soft_bits: Vec<f64>,
     pub symbols_demodulated: usize,
     pub carrier_offset_hz: f64,
+    /// The station label from the SDC, once a super frame's SDC block passes its CRC.
+    pub station_label: Option<String>,
+    pub sdc_ok: usize,
 }
 
 impl DrmReceiver {
@@ -105,6 +112,10 @@ impl DrmReceiver {
             fac_soft_bits: Vec::new(),
             symbols_demodulated: 0,
             carrier_offset_hz: 0.0,
+            station_label: None,
+            sdc_ok: 0,
+            frame_sdc: Vec::new(),
+            sdc_blocks: Vec::new(),
         }
     }
 
@@ -183,6 +194,13 @@ impl DrmReceiver {
             }
             if out_sym == 0 {
                 self.fac_cells.clear();
+                self.frame_sdc.clear();
+            }
+            let sdc_syms = map.mode().sdc_symbols();
+            if out_sym < sdc_syms {
+                for &c in &map.sdc_carriers[out_sym] {
+                    self.frame_sdc.push(out[c as usize]);
+                }
             }
             for &c in &map.fac_carriers[out_sym] {
                 self.fac_cells.push(out[c as usize]);
@@ -190,6 +208,11 @@ impl DrmReceiver {
             }
             if self.fac_cells.len() == 65 {
                 let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
+                let idx = if decoded {
+                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
                 match if decoded { Fac::parse(&bits) } else { None } {
                     Some(f) => {
                         self.good_facs += 1;
@@ -201,12 +224,51 @@ impl DrmReceiver {
                     }
                     None => self.fac_errors += 1,
                 }
+                self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
                 self.fac_cells.clear();
             }
         }
         self.mode = Some(mode);
-        self.map = Some(map);
         self.frame_phase = phase;
+        self.decode_sdc(&map);
+        self.map = Some(map);
+    }
+
+    /// Decode the SDC blocks collected so far (the frame-0 block of each super frame) into the
+    /// station label.
+    fn decode_sdc(&mut self, map: &CellMap) {
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::sdc::{parse_entities, parse_sdc_block};
+        let mut bits = Vec::new();
+        for (idx, cells) in &self.sdc_blocks {
+            if *idx != 0 || cells.len() != map.sdc_cells_per_superframe {
+                continue;
+            }
+            let mut sdc16 = MlcDecoder::new(MlcParams::sdc(Mapping::Qam16, map.sdc_cells_per_superframe), 0);
+            let mut sdc4 = MlcDecoder::new(MlcParams::sdc(Mapping::Qam4, map.sdc_cells_per_superframe), 0);
+            let mut block = if sdc16.decode(cells, &mut bits) {
+                parse_sdc_block(&bits).filter(|b| b.crc_ok)
+            } else {
+                None
+            };
+            if block.is_none() {
+                let mut b4 = Vec::new();
+                block = if sdc4.decode(cells, &mut b4) {
+                    parse_sdc_block(&b4).filter(|b| b.crc_ok)
+                } else {
+                    None
+                };
+            }
+            if let Some(b) = block {
+                self.sdc_ok += 1;
+                let entities = parse_entities(&b.data);
+                let label = entities.iter().find_map(|e| match e {
+                    crate::digital::drm2::sdc::Entity::Label(l) => Some(l.text()),
+                    _ => None,
+                });
+                self.station_label = label;
+            }
+        }
     }
 }
 
@@ -228,12 +290,13 @@ mod tests {
         rx.push(&iq);
         rx.run();
         eprintln!(
-            "[rx] locked={} mode={:?} facs={} fac_errors={} symbols={}",
-            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated
+            "[rx] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?}",
+            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label
         );
         assert!(rx.locked(), "the receiver must lock on the clean fixture");
         assert!(rx.facs.len() >= 8, "at least 8 FAC blocks, got {}", rx.facs.len());
         assert_eq!(rx.fac_errors, 0, "the clean fixture FAC must decode without CRC errors");
+        assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM TEST"), "the SDC station label");
         let ids: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
     }
