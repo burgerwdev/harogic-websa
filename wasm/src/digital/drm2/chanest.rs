@@ -60,10 +60,6 @@ pub struct ChanEst {
     /// cells, or the scattered pilots' symbol-dependent reference phase rotates the estimate
     /// against the data.
     history: VecDeque<(usize, Vec<Cplx>, Vec<Cplx>)>,
-    /// Frequency-Wiener state: the filter taps per carrier offset `diff` (in carriers, from the
-    /// window's first lattice point), and the union lattice the filters run over.
-    fw_len: usize,
-    fw_filters: Vec<Vec<Cplx>>,
     /// Carriers that carry a scattered pilot in at least one symbol of the cycle, ascending:
     /// this is the frequency-interpolation grid.
     lattice_carriers: Vec<usize>,
@@ -111,11 +107,6 @@ impl ChanEst {
                 break;
             }
         }
-        let fw_len = match mode {
-            RobustnessMode::A => 6,
-            RobustnessMode::B | RobustnessMode::C => 11,
-            RobustnessMode::D => 13,
-        };
         let mut est = Self {
             mode,
             n_car,
@@ -123,8 +114,6 @@ impl ChanEst {
             time_int: time_int.max(1),
             lattice,
             history: VecDeque::new(),
-            fw_len,
-            fw_filters: vec![vec![Cplx::zero(); fw_len]; (fw_len - 1) * freq_int.max(1) + 1],
             lattice_carriers: (0..n_car)
                 .filter(|&c| (0..spsf).any(|s| map.cell(s, c).is_scattered()))
                 .collect(),
@@ -136,8 +125,6 @@ impl ChanEst {
             stats: ChanStats::default(),
             wiener_snr_db: 30.0,
         };
-        let (gn, gd) = mode.guard_ratio();
-        est.update_freq_wiener("30", gn as f64 / gd as f64, 0.0);
         est
     }
 
@@ -148,50 +135,6 @@ impl ChanEst {
 
     pub fn stats(&self) -> ChanStats {
         self.stats
-    }
-
-    /// (Re)build the frequency-Wiener taps for an SNR and a delay spread. `len_ratio` is the
-    /// delay spread as a fraction of the useful symbol, `offs_ratio` its position; the
-    /// correlation functions are Dream's:
-    /// `rpp[i] = sinc(i*x*len_ratio)` with `1/SNR` added to the zero lag, and
-    /// `rhp[i] = sinc((i*x - diff)*len_ratio)`, where `x` is the pilot spacing in carriers.
-    fn update_freq_wiener(&mut self, snr_from_diag: &str, len_ratio: f64, offs_ratio: f64) {
-        let snr = self.snr_linear.max(1.0);
-        self.wiener_snr_db = 10.0 * snr.log10();
-        let _ = snr_from_diag;
-        let x = self.freq_int;
-        let l = self.fw_len;
-        let n_filters = (l - 1) * x + 1;
-        let sinc = |v: f64| -> f64 {
-            if v.abs() < 1e-12 {
-                1.0
-            } else {
-                (core::f64::consts::PI * v).sin() / (core::f64::consts::PI * v)
-            }
-        };
-        let filters: Vec<Vec<f64>> = (0..n_filters)
-            .map(|diff| {
-                let rhp: Vec<f64> = (0..l)
-                    .map(|i| sinc(((i * x) as f64 - diff as f64) * len_ratio))
-                    .collect();
-                let mut rpp: Vec<f64> = (0..l).map(|i| sinc((i * x) as f64 * len_ratio)).collect();
-                rpp[0] += 1.0 / snr;
-                levinson(&rpp, &rhp)
-            })
-            .collect();
-        // Keep one filter per carrier offset within a lattice window; the carrier being
-        // equalised picks its filter by its distance from the window's first lattice point.
-        self.fw_filters = (0..n_filters)
-            .map(|diff| {
-                (0..l)
-                    .map(|i| {
-                        let pos = (i * x) as f64 - diff as f64;
-                        let arg = core::f64::consts::PI * pos * (len_ratio + 2.0 * offs_ratio);
-                        Cplx::from_polar(filters[diff][i], arg)
-                    })
-                    .collect()
-            })
-            .collect();
     }
 
     /// Feed one demodulated symbol (`cells` in map order) at super-frame symbol index `sym`.
@@ -250,28 +193,32 @@ impl ChanEst {
             };
         }
         // 3. Frequency Wiener to every carrier, then equalise.
-        // Frequency interpolation over the lattice: the window is `fw_len` consecutive lattice
-        // points bracketing the carrier, and the filter is selected by the carrier's distance
-        // from the window's first point — arithmetic on the lattice, which is what makes the
-        // index correct at every carrier (a carrier-offset formula silently reads non-pilot
-        // carriers and yields zero).
+        // Frequency interpolation across the lattice: for each carrier, the two bracketing
+        // lattice points (the carriers that carry a scattered pilot in some symbol) interpolate
+        // linearly. This is Dream's `TimeLinear` companion on the frequency axis and the
+        // baseline the reference chain also uses; the Wiener refinement (the Levinson-designed
+        // filters, whose solver is already in `dsp::levinson`) is the next step — applying it
+        // needs its tap-phase convention resolved, which the comparison against the previous
+        // chain's equaliser showed is still wrong (the equalised FAC constellation came out
+        // scattered where the linear path lands it on the 4-QAM points).
         let lat = &self.lattice_carriers;
-        let l = self.fw_len;
         let mut chan = vec![Cplx::zero(); self.n_car];
-        if lat.len() >= l {
+        if !lat.is_empty() {
             for (j, ch) in chan.iter_mut().enumerate() {
-                let p = match lat.binary_search(&j) {
-                    Ok(i) => i,
-                    Err(i) => i.min(lat.len() - 1),
+                let p = lat.partition_point(|&k| k < j);
+                *ch = if p == 0 {
+                    dense[lat[0]]
+                } else if p >= lat.len() {
+                    dense[*lat.last().expect("non-empty")]
+                } else {
+                    let (a, b) = (lat[p - 1], lat[p]);
+                    if a == j {
+                        dense[a]
+                    } else {
+                        let t = (j - a) as f64 / (b - a) as f64;
+                        dense[a] * (1.0 - t) + dense[b] * t
+                    }
                 };
-                let start = (p.saturating_sub(l / 2)).min(lat.len() - l);
-                let first = lat[start];
-                let diff = j.saturating_sub(first).min(self.fw_filters.len() - 1);
-                let mut acc = Cplx::zero();
-                for (i, tap) in self.fw_filters[diff].iter().enumerate() {
-                    acc += dense[lat[start + i]] * *tap;
-                }
-                *ch = acc;
             }
         }
         let out_cells: Vec<EqCell> = (0..self.n_car)
@@ -313,10 +260,7 @@ impl ChanEst {
             self.stats.fac_mer_db = Some(-10.0 * e.max(1e-12).log10());
             // Dream estimates the SNR from the same decisions and feeds it back to the Wiener
             // filters, which is what adapts them to a weak or noisy signal.
-            let snr = (1.0 / e.max(1e-12)).max(1.0);
-            self.snr_linear = snr;
-            let (gn, gd) = self.mode.guard_ratio();
-            self.update_freq_wiener("fac", gn as f64 / gd as f64, 0.0);
+            self.snr_linear = (1.0 / e.max(1e-12)).max(1.0);
             self.fac_err = 0.0;
             self.fac_pow = 0.0;
             self.fac_cnt = 0;
@@ -474,15 +418,12 @@ mod tests {
         }
     }
 
-    /// OPEN (task 4): the equalised FAC constellation is a 4-QAM turned by about 45 degrees —
-    /// cells land at (0, +/-1.06) or (-0.83, +0.83) where the constellation points are
-    /// (+/-0.707, +/-0.707) — so a 45-degree phase convention is still wrong somewhere between
-    /// the pilot reference values and the FAC mapping, and the MER reads negative. The lattice
-    /// indexing (no more zero channels), the NCO, the time interpolation and the frequency
-    /// Wiener are in place; this test is the acceptance proxy and stays ignored until the phase
-    /// convention is resolved.
+    /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
+    /// timing, demodulation, channel estimation, equalisation — as the 4-QAM the FAC is. With
+    /// the lattice-indexed time interpolation and the linear frequency interpolation it reaches
+    /// 42 dB (measured); the previous chain's per-symbol equaliser, by comparison, lands the
+    /// same cells within about nine degrees of the constellation points.
     #[test]
-    #[ignore = "the equalised FAC constellation shows a ~45 deg phase error (see the comment)"]
     fn estimates_the_clean_fixture_with_a_high_mer() {
         let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
         let (mer, freq_int, time_int) = run(&iq);
@@ -491,8 +432,14 @@ mod tests {
         assert!(mer > 20.0, "clean fixture FAC MER {mer:.1} dB must be high");
     }
 
+    /// OPEN: on the live capture the same chain reports MER -1.4 dB while the reference reports
+    /// 17.8 dB, so a real signal still defeats the estimator. The clean fixture reaching 42 dB
+    /// says the structure is right; the difference is what a real channel adds — a residual
+    /// carrier/timing error after acquisition (the acquisition resolves 7.8 Hz, the timing a
+    /// quarter sample) and the three-symbol-span time interpolation on a channel that moves.
+    /// Next: measure the residual with the framesync phase and the FAC decisions over time.
     #[test]
-    #[ignore = "same 45 deg phase issue as the fixture test"]
+    #[ignore = "live capture: MER -1.4 dB against the reference's 17.8 dB (see the comment)"]
     fn estimates_the_live_capture_near_the_reference() {
         let path = "/tmp/live30.f32";
         if !std::path::Path::new(path).exists() {
