@@ -373,6 +373,47 @@ mod tests {
         (mer, est.freq_int, est.time_int)
     }
 
+    /// One-dimensional search: with the timing the chain chose, how does the FAC MER depend on
+    /// the residual carrier offset alone? If no offset reaches a usable MER, the residual is not
+    /// a pure frequency error (a timing or sample-rate drift contributes the same per-symbol
+    /// rotation) and the next step is timing tracking rather than more frequency precision.
+    #[test]
+    #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
+    fn sweep_residual_offset_with_timing_fixed() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let base = resample_to_core(path, 48_828.125);
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut out = String::new();
+        for step in -12..=12 {
+            let extra = step as f64 * 0.5;
+            let mut iq = base.clone();
+            let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse + extra);
+            nco.process(&mut iq);
+            let mut est = ChanEst::new(&map);
+            let (rows, syms) = rows_and_syms(&map, &iq);
+            let mut mer = f64::NAN;
+            for (row, sym) in rows.iter().zip(&syms) {
+                if est.process(row, *sym, &map).is_some() {
+                    if let Some(m) = est.stats().fac_mer_db {
+                        mer = m;
+                    }
+                }
+            }
+            out.push_str(&format!("{extra:+.1}:{mer:.1} "));
+        }
+        eprintln!("[sweep] coarse {coarse:.1} Hz -> MER(dB) by extra offset: {out}");
+    }
+
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
     /// timing, demodulation, channel estimation, equalisation — as the 4-QAM the FAC is. With
     /// the lattice-indexed time interpolation and the linear frequency interpolation it reaches
