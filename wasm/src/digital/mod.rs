@@ -20,7 +20,10 @@ use crate::plugin::DigitalDemodulator;
 pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
     match id {
         "ft8" => Some(Box::new(ft8::Ft8Plugin::new(rate))),
-        "drm" => Some(Box::new(drm2::DrPlugin::new(rate))),
+        // The drm2 receiver's plugin is ready but its run() re-decodes the whole buffered
+    // capture on every block push, which is far too slow for wasm (the block-fed bench
+    // times out); swap it in once the incremental processing model lands (see the handoff).
+    "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
         _ => None,
     }
 }
