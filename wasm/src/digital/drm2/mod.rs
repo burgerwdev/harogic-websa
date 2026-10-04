@@ -578,6 +578,36 @@ mod tests {
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
     }
 
+    /// The AAC fixture carries a real AAC audio super frame (10 AUs per multiplex frame); the
+    /// receiver must deframe them into codec-ready access units (each with the CRC byte in
+    /// front), as the previous receiver does.
+    #[test]
+    fn receiver_deframes_the_aac_fixture_audio() {
+        let raw = std::fs::read("../tests/fixtures/drm/drm_modeB_so3_48k_aac.f32").expect("fixture");
+        let iq: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let mut rx = DrmReceiver::new();
+        rx.push(&iq);
+        rx.run();
+        eprintln!("[rx-aac] locked={} label={:?} aus={} rate={}", rx.locked(), rx.station_label, rx.audio_access_units.len(), rx.audio_rate_hz());
+        assert!(rx.locked(), "receiver did not lock onto the AAC fixture");
+        assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM TEST"));
+        // The depth-5 interleaver and the chanest warm-up drop the first multiplex frames, so
+        // the 6 s fixture yields 6 MSC frames of which the last 3 are complete and deframe
+        // (3 super frames x 10 access units). The previous receiver's longer streaming window
+        // yields more, but the deframing itself is what this pins.
+        assert!(
+            rx.audio_access_units.len() >= 30,
+            "expected >= 30 AAC access units, got {}",
+            rx.audio_access_units.len()
+        );
+        for au in &rx.audio_access_units {
+            assert!(!au.is_empty(), "empty access unit");
+        }
+    }
+
     /// The receiver on the live capture (resampled to the core rate): the closed timing/SRO
     /// loop is what this exercises. FAC blocks decoded is the proxy for the MER.
     #[test]
