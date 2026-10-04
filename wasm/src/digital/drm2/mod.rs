@@ -48,3 +48,193 @@ pub mod interleave;
 
 // The stages land here in the order above, each with its own task and tests; `params` is the
 // shared foundation.
+
+use crate::digital::drm2::cellmap::CellMap;
+use crate::digital::drm2::chanest::ChanEst;
+use crate::digital::drm2::fac::Fac;
+use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams};
+use crate::digital::drm2::fec::qam::EqCell;
+use crate::digital::drm2::ofdm::OfdmDemod;
+use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
+use crate::digital::drm2::sync::timesync::TimeSync;
+use crate::digital::drm2::dsp::Cplx;
+
+/// The DRM receiver as a single streaming stage (the task-9 integration): baseband 48 kHz in,
+/// FAC/SDC/MSC/audio out. It owns the stages' persistent state and the acquisition/tracking
+/// state machine, mirroring DecDRM's `chain.rs`. This is the skeleton the closed timing/SRO
+/// loop hangs off; the FAC decode is the first end-to-end milestone.
+pub struct DrmReceiver {
+    buf: Vec<f32>,
+    pushed: u64,
+    mode: Option<RobustnessMode>,
+    map: Option<CellMap>,
+    chanest: Option<ChanEst>,
+    fac_dec: Option<MlcDecoder>,
+    fac_cells: Vec<EqCell>,
+    frame_phase: usize,
+    /// Acquisition/tracking state (Dream's RxState).
+    tracking: bool,
+    timing_tracking: bool,
+    good_facs: usize,
+    // Results.
+    pub facs: Vec<Fac>,
+    pub fac_errors: usize,
+    pub fac_constellation: Vec<(f64, f64)>,
+    pub fac_soft_bits: Vec<f64>,
+    pub symbols_demodulated: usize,
+    pub carrier_offset_hz: f64,
+}
+
+impl DrmReceiver {
+    pub fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            pushed: 0,
+            mode: None,
+            map: None,
+            chanest: None,
+            fac_dec: None,
+            fac_cells: Vec::new(),
+            frame_phase: 0,
+            tracking: false,
+            timing_tracking: false,
+            good_facs: 0,
+            facs: Vec::new(),
+            fac_errors: 0,
+            fac_constellation: Vec::new(),
+            fac_soft_bits: Vec::new(),
+            symbols_demodulated: 0,
+            carrier_offset_hz: 0.0,
+        }
+    }
+
+    pub fn push(&mut self, iq: &[f32]) {
+        self.buf.extend_from_slice(iq);
+        self.pushed += iq.len() as u64 / 2;
+    }
+
+    pub fn locked(&self) -> bool {
+        self.map.is_some()
+    }
+
+    /// One decode pass over the buffered baseband. Idempotent: returns once, and the caller
+    /// calls it again when more samples arrive. The first pass acquires; later passes reuse the
+    /// persistent state (the chanest, the FAC decoder, the timing/SRO tracking).
+    pub fn run(&mut self) {
+        // Mode detection (crude): the DRM30 mode whose guard correlation yields the most
+        // windows wins; the full decimated mode detector replaces this in the finished chain.
+        let mut best: Option<(RobustnessMode, CellMap, Vec<Vec<Cplx>>, Vec<i64>)> = None;
+        let mut best_rows = 0usize;
+        for m in RobustnessMode::DRM30 {
+            let Some(map) = CellMap::new(m, SpectrumOccupancy::SO_3) else { continue };
+            let iq: Vec<Cplx> = self
+                .buf
+                .chunks_exact(2)
+                .map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1])))
+                .collect();
+            let mut tsync = TimeSync::new(m);
+            let mut demod = OfdmDemod::new(&map);
+            let mut cells = Vec::new();
+            let mut rows: Vec<Vec<Cplx>> = Vec::new();
+            let mut shifts = Vec::new();
+            for block in iq.chunks(3248) {
+                let _ = tsync.push(block);
+                while let Some(w) = tsync.next_window() {
+                    if w.guard_corr.unwrap_or(0.0) < 0.5 {
+                        continue;
+                    }
+                    demod.demodulate(&w.samples, &mut cells);
+                    rows.push(cells.clone());
+                    shifts.push(w.shift);
+                }
+            }
+            if rows.len() > best_rows {
+                best_rows = rows.len();
+                best = Some((m, map, rows, shifts));
+            }
+        }
+        let Some((mode, map, rows, shifts)) = best else { return };
+        if rows.len() < mode.symbols_per_frame() {
+            return;
+        }
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = mode.symbols_per_frame();
+        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+
+        // Channel estimation, then the FAC per frame.
+        let est = self.chanest.get_or_insert_with(|| ChanEst::new(&map));
+        let fac_dec = self
+            .fac_dec
+            .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
+        let mut bits = Vec::new();
+        for (i, ((row, sym), shift)) in rows.iter().zip(&syms).zip(&shifts).enumerate() {
+            // Enter tracking after one frame of history, then timing tracking after the second
+            // good FAC (Dream's enter_tracking / enter_timing_tracking).
+            if i == 45 && !self.tracking {
+                self.tracking = true;
+                est.start_time_wiener_tracking();
+            }
+            let Some((out_sym, out)) = est.process(row, *sym, *shift, &map) else { continue };
+            self.symbols_demodulated += 1;
+            if self.tracking && self.timing_tracking {
+                // The tracker's timing/SRO corrections reach the TimeSync here once the loop
+                // is wired; the diagnostic shows the timing controller needs tuning first.
+                let _ = est.last_track;
+            }
+            if out_sym == 0 {
+                self.fac_cells.clear();
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                self.fac_cells.push(out[c as usize]);
+                self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
+            }
+            if self.fac_cells.len() == 65 {
+                let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
+                match if decoded { Fac::parse(&bits) } else { None } {
+                    Some(f) => {
+                        self.good_facs += 1;
+                        if self.good_facs >= 2 && !self.timing_tracking {
+                            self.timing_tracking = true;
+                            est.start_timing_tracking();
+                        }
+                        self.facs.push(f);
+                    }
+                    None => self.fac_errors += 1,
+                }
+                self.fac_cells.clear();
+            }
+        }
+        self.mode = Some(mode);
+        self.map = Some(map);
+        self.frame_phase = phase;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load_iq(path: &str) -> Vec<f32> {
+        let raw = std::fs::read(path).expect("capture file");
+        raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+    }
+
+    /// The skeleton end-to-end: the clean fixture's FAC decodes through the receiver (the first
+    /// milestone of the task-9 integration; the MSC/audio stages land here next).
+    #[test]
+    fn receiver_decodes_the_clean_fixture_fac() {
+        let iq = load_iq("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let mut rx = DrmReceiver::new();
+        rx.push(&iq);
+        rx.run();
+        eprintln!(
+            "[rx] locked={} mode={:?} facs={} fac_errors={} symbols={}",
+            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated
+        );
+        assert!(rx.locked(), "the receiver must lock on the clean fixture");
+        assert!(rx.facs.len() >= 8, "at least 8 FAC blocks, got {}", rx.facs.len());
+        assert_eq!(rx.fac_errors, 0, "the clean fixture FAC must decode without CRC errors");
+        let ids: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
+        eprintln!("[rx] FAC frame_index sequence: {ids:?}");
+    }
+}
