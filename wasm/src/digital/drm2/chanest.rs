@@ -29,11 +29,8 @@ pub mod track;
 use track::{PdsTracker, TrackOutput};
 
 /// One equalised cell: the symbol estimate and the channel power it was divided by.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EqCell {
-    pub sig: Cplx,
-    pub chan: f64,
-}
+/// Shared with the FEC demappers (`fec::qam`), which consume these cells.
+pub use crate::digital::drm2::fec::qam::EqCell;
 
 /// Sentinel used by Dream when the signal estimate is unavailable.
 const Q_VALUE_INVALID: f64 = -1.0e9;
@@ -191,9 +188,13 @@ impl ChanEst {
                 let h = levinson(&rpp, &rhp);
                 (0..l)
                     .map(|i| {
-                        let pos = (i * x) as f64 - diff as f64;
-                        let arg = core::f64::consts::PI * pos * (len_ratio + 2.0 * offs_ratio);
-                        Cplx::from_polar(h[i], arg)
+                        // The reference's tap phase (`PI·pos·(len_ratio + 2·offs_ratio)`)
+                        // positions the delay spread, but with the tracker's delay-spread
+                        // estimate still inflated by the unresolved timing offset it rotates
+                        // the channel estimate on a flat signal and breaks the FAC phase.
+                        // Real taps keep the frequency-direction smoothing without the phase
+                        // error; the phase term returns once the timing tracking lands.
+                        Cplx::from_polar(h[i], 0.0)
                     })
                     .collect()
             })
@@ -220,8 +221,8 @@ impl ChanEst {
 
     /// Feed one demodulated symbol (`cells` in map order) at super-frame symbol index `sym`,
     /// with the timing shift `shift` of this symbol's window. Returns the equalised symbol
-    /// `delay()` symbols earlier, once available.
-    pub fn process(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<Vec<EqCell>> {
+    /// `delay()` symbols earlier — its frame symbol index and its cells — once available.
+    pub fn process(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
         // 1. The pilot lattice of this symbol.
         let mut h = vec![Cplx::zero(); self.n_car];
         let cycle = sym % self.time_int;
@@ -371,7 +372,7 @@ impl ChanEst {
         }
         self.last_frame_sym = out_sym;
         let _ = Q_VALUE_INVALID;
-        Some(out_cells)
+        Some((out_sym, out_cells))
     }
 }
 
@@ -593,6 +594,162 @@ mod tests {
             out.push_str(&format!("{phase}:{mer:.1} "));
         }
         eprintln!("[phase] FAC MER(dB) by frame phase: {out}");
+    }
+
+    /// The clean fixture's FAC must decode through the whole chain — acquisition, NCO,
+    /// timing, demodulation, channel estimation, equalisation, 4-QAM demap, Viterbi, CRC —
+    /// to the channel and service parameters the fixture's manifest records.
+    #[test]
+    fn fac_decodes_to_the_fixture_manifest() {
+        use crate::digital::drm2::fac::{Fac, Interleaving, MscMode, SdcMode};
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams};
+        use crate::digital::drm2::tables::fac_cell_count;
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
+
+        let mut est = ChanEst::new(&map);
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut facs: Vec<Fac> = Vec::new();
+        let mut errors = 0usize;
+        let mut bits = Vec::new();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            // Reset at the frame boundary so a warm-up that starts mid-frame cannot mix two
+            // frames' FAC cells (the FAC spans symbols 2..13 of one frame).
+            if out_sym == 0 {
+                fac_cells.clear();
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == fac_cell_count(RobustnessMode::B) {
+                if fac_dec.decode(&fac_cells, &mut bits) {
+                    match Fac::parse(&bits) {
+                        Some(f) => facs.push(f),
+                        None => errors += 1,
+                    }
+                } else {
+                    errors += 1;
+                }
+                fac_cells.clear();
+            }
+        }
+        eprintln!("[fac] decoded {} blocks, {} CRC failures", facs.len(), errors);
+        assert!(facs.len() >= 10, "the 6 s fixture must yield a block per frame, got {}", facs.len());
+        assert_eq!(errors, 0, "every FAC frame must pass its CRC");
+        let f0 = &facs[0];
+        assert_eq!(f0.channel.occupancy, SpectrumOccupancy::SO_3);
+        assert_eq!(f0.channel.msc_mode, MscMode::Qam64Sm);
+        assert_eq!(f0.channel.sdc_mode, SdcMode::Qam16);
+        assert_eq!(f0.channel.interleaving, Interleaving::Long);
+        assert_eq!(f0.channel.num_audio, 1);
+        assert_eq!(f0.channel.num_data, 0);
+        assert_eq!(f0.service.service_id, 0x123456);
+        // The frame index must cycle 0,1,2 over the super frame (the warm-up discards the
+        // first, incomplete frame, so the first decoded block need not be frame 0).
+        let indices: Vec<u8> = facs.iter().map(|f| f.channel.frame_index).collect();
+        assert!(
+            indices.windows(2).all(|w| (w[1] as usize) == ((w[0] as usize) + 1) % 3),
+            "indices {indices:?}"
+        );
+        assert!(indices.iter().copied().filter(|&i| i == 0).count() >= 3, "indices {indices:?}");
+    }
+
+    /// Diagnostic: the previous chain's own equaliser + MLC decoder on the rows this harness
+    /// produces. If this decodes, the harness's rows/symbol indices are right and the defect is
+    /// in the chanest cells; if it fails, the harness's frame alignment is wrong.
+    #[test]
+    fn previous_pipeline_decodes_on_this_harness_rows() {
+        use crate::digital::drm::cellmap::CellMap as OldMap;
+        use crate::digital::drm::params::{
+            RobustnessMode as OldMode, SpectrumOccupancy as OldOccupancy,
+        };
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = OldMap::new(
+            OldMode::from_index(RobustnessMode::B.index()).unwrap(),
+            OldOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, _shifts) = rows_and_syms(&map, &iq);
+        let mut old_dec = crate::digital::drm::fec::mlc::MlcDecoder::new(
+            crate::digital::drm::fec::mlc::MlcParams::fac(),
+            0,
+        );
+        let mut fac_cells: Vec<crate::digital::drm::fec::qam::EqCell> = Vec::new();
+        let mut ok_blocks = 0usize;
+        let mut bad = 0usize;
+        let mut bits = Vec::new();
+        for (i, row) in rows.iter().enumerate() {
+            let sym = syms[i];
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                row.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = crate::digital::drm::chanest::equalize_symbol(&old_map, sym, &old_row);
+            for &c in &map.fac_carriers[sym] {
+                fac_cells.push(crate::digital::drm::fec::qam::EqCell {
+                    sig: eq.cells[c as usize],
+                    chan: eq.chan[c as usize].norm_sqr(),
+                });
+            }
+            if fac_cells.len() == 65 {
+                if old_dec.decode(&fac_cells, &mut bits) && crate::digital::drm::fac::Fac::parse(&bits).is_some() {
+                    ok_blocks += 1;
+                } else {
+                    bad += 1;
+                }
+                fac_cells.clear();
+            }
+        }
+        eprintln!("[oldpipe] ok={ok_blocks} bad={bad}");
+        assert!(ok_blocks >= 10, "the previous pipeline must decode on these rows, got {ok_blocks}");
+        assert_eq!(bad, 0);
+    }
+
+    /// Diagnostic: the ratio of the chanest's equalised FAC cell to the previous chain's
+    /// equaliser, which must be a constant (the same channel phase). A per-carrier ramp here
+    /// would point at the timing rotation; a constant means a global phase convention.
+    #[test]
+    fn chanest_matches_the_previous_equaliser_phase() {
+        use crate::digital::drm::cellmap::CellMap as OldMap;
+        use crate::digital::drm::params::{
+            RobustnessMode as OldMode, SpectrumOccupancy as OldOccupancy,
+        };
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = OldMap::new(
+            OldMode::from_index(RobustnessMode::B.index()).unwrap(),
+            OldOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("layout");
+        let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
+        let (rows, syms, shifts) = rows_and_syms(&map, &iq);
+        let mut est = ChanEst::new(&map);
+        let mut ratios: Vec<Cplx> = Vec::new();
+        for i in 0..rows.len() {
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            let src_i = i - est.delay();
+            let old_row: Vec<crate::digital::drm::Cplx> =
+                rows[src_i].iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let old_eq = crate::digital::drm::chanest::equalize_symbol(&old_map, out_sym, &old_row);
+            for &c in &map.fac_carriers[out_sym] {
+                let a = cells[c as usize].sig;
+                let b = old_eq.cells[c as usize];
+                if b.norm_sqr() > 0.01 {
+                    ratios.push(a / crate::digital::drm2::dsp::Cplx::new(b.re, b.im));
+                }
+            }
+        }
+        let n = ratios.len();
+        let mean = ratios.iter().fold(Cplx::zero(), |a, &r| a + r) / n as f64;
+        let phase = mean.arg() * 180.0 / core::f64::consts::PI;
+        let spread = (ratios.iter().map(|&r| (r - mean).norm()).sum::<f64>() / n as f64) / mean.norm();
+        eprintln!("[phase] n={n} mean ratio |·|={:.3} angle={phase:.2}° spread={spread:.3}", mean.norm());
     }
 
     /// The clean fixture's FAC constellation must come out of the chain — acquisition, NCO,
