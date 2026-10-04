@@ -289,3 +289,11 @@ Levinson 解出的 tap 接近"对 11 个格点取平均"。平均正是**平坦*
 ——正是参考在台面捕获上测得的时延扩展——并用两种估计器读 FAC MER：新估计器 **14.9 dB**，旧链 **10.9 dB**。
 在真实信号呈现的频率选择性条件下领先 4 dB，同样由测试守着。task-4 的"低电平"与"衰落"两项验收现在都有量化基线；
 跟踪与 Wiener 的工作必须保持或改善它们。
+
+### 模式 E：两个项目里都没有参考
+
+两个 checkout 的检索都确认了这一点：Dream 的 `NUM_ROBUSTNESS_MODES` 是 4、`Parameter.h` 里没有模式 E 几何；
+DecDRM（含发射端）也没有定义 `RobustnessMode::E`（在 `decdrm-core` 与 `decdrm-station` 里检索
+`RobustnessMode::E` / `RM_ROBUSTNESS_MODE_E` / `DRM+` 均无结果）。因此模式 E / DRM+（VHF 变体）
+无法从手头的参考移植；它的 OFDM 几何、帧结构与信令需要 ETSI ES 201 980 V4（或其他接收机实现）。
+task-3/4 的其余部分都有参考支撑。

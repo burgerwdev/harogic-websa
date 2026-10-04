@@ -342,3 +342,12 @@ capture — and reads the FAC MER through both estimators: the new one **14.9 dB
 chain's **10.9 dB**. Four decibels of margin under the frequency-selective condition the real
 signal shows, again gated by a test. Both low-level and fading acceptance items of task 4 now have
 measured baselines; the tracking and the Wiener work must preserve or improve them.
+
+### Mode E: no reference exists in either project
+
+A search of both checkouts confirms it: Dream's `NUM_ROBUSTNESS_MODES` is 4 and its `Parameter.h`
+has no mode E geometry, and DecDRM — transmitter included — defines no `RobustnessMode::E` either
+(the grep for `RobustnessMode::E` / `RM_ROBUSTNESS_MODE_E` / `DRM+` in `decdrm-core` and
+`decdrm-station` returns nothing). So mode E/DRM+ (the VHF variant) cannot be ported from a
+reference at hand; it needs ETSI ES 201 980 V4 (or another receiver's implementation) for its
+OFDM geometry, frame layout and signalling. Everything else in tasks 3 and 4 is reference-backed.
