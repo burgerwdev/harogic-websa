@@ -89,6 +89,17 @@ HE-AAC (coding 0, SBR, mono, 12 kHz core, text) and the multiplex EEP 0/1 with o
 as the reference reports. The fixture FAC/SDC tests (`fac_decodes_to_the_fixture_manifest`,
 `sdc_decodes_to_the_fixture_manifest`) already pin the manifest values.
 
+**Task-6/7 measured 2026-10-05 (second session)**: the receiver's MSC assembly bug is fixed —
+two defects, both now regressed by tests: `run()` re-demodulated after mode detection and could
+differ by a border-case window (it now reuses the demodulated rows, the chanest harness's path),
+and `decode_msc` did not flush the final partial super frame. The clean-fixture receiver test
+now pins the 6 MSC frames bit-exact against the xorshift stream, and the AAC-fixture test pins
+30 deframed access units (3 complete super frames × 10). The MSC demux and AAC super-frame
+parsing live in `drm2::audio`, and the receiver's `deframe_audio`/`decode_audio` (FDK TT_DRM for
+AAC, libxaac for xHE) are wired; the wasm ABI that surfaces `websa_dsp_drm_audio_pcm` still
+runs the previous receiver, which is task-9's swap. The live30 audio path through the tracked
+chanest harness demuxes **48 valid super frames** (≥ the reference's 40 ok).
+
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
 frame-sync score (this port's `FrameSync::search` correlates time pilots directly, so it is
