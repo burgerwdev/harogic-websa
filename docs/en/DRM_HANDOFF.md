@@ -298,3 +298,29 @@ keeps the window aligned**, so its channel has no residual ramp; without the tra
 two-point interpolation is the better estimator. So the next step is the tracking (Dream's
 `TimeSyncTrack` and the reference's `track.rs`), and the frequency Wiener should be re-measured
 after it, not before.
+
+## The tracking stage, ready to implement
+
+The measurements above say the tracking has to land before the Wiener can be re-measured, and both
+references define it; the constants agree between them:
+
+- **Power delay spectrum (PDS)** from the channel estimate's impulse response, smoothed with
+  `TICONST_PDS` = 0.25 s, with the energy threshold `CONT_PROP_ENERGY` = 0.02, the minimum-statistics
+  gate `NUM_SAM_IR_FOR_MIN_STAT` = 10 frames and `OVER_EST_FACT_MIN_STAT` = 4.0. The PDS gives
+  `pds_len` and `pds_offset`, which are exactly the two numbers the frequency Wiener wants
+  (`len_ratio = pds_len / n_car`, `offs_ratio = pds_offset / n_car`), and its **phase slope across
+  time gives the sample-rate offset (SRO)**.
+- **SRO tracking**: acquisition over `SAM_OFF_ACQ_LEN_S` = 4 s with a 1 s settle, then a steady
+  state with `SRO_STEP_S` = 0.1 s steps, at most `SRO_MAX_STEP_BINS` = 3 bins per step,
+  `SRO_TRACK_RATE` = 0.1, after `SRO_TRACK_MIN_S` = 5 s, over a history of `HIST_LEN_SAM_OFF_S` = 30 s.
+- **Timing tracking** (Dream's `CTimeSyncTrack`): the guard-interval energy profile is searched for
+  the target position `TARGET_TI_POS_FRAC_GUARD_INT` = 9 (twelfths of the guard), with the
+  acceptance distances `TETA1_DIST_FROM_MAX_DB` = 20 dB and `TETA2_DIST_FROM_MIN_DB` = 23 dB and the
+  contiguity proportions `CONT_PROP_IN_GUARD_INT` = 0.06 / `CONT_PROP_BEFORE_GUARD_INT` = 0.08; its
+  correction is what our `TimeSync::timing_candidate` filter stands in for today (it has the outer
+  shape — `LAMBDA_LOW_PASS_START` 0.99, `TIMING_BOUND_ABS` 150, `NUM_SYM_BEFORE_RESET` 5 — but no
+  SRO input).
+- **Where it goes**: the SRO correction belongs between the NCO and the timing stage (resample or
+  re-phase), the PDS feeds `ChanEst`'s frequency filters, and the timing correction adjusts the
+  symbol-window grid our `TimeSync` already emits. The reference's `track.rs` implements all three
+  in one `PdsTracker`; Dream splits them into `CTimeSyncTrack` and `CTrack`.

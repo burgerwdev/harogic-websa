@@ -254,3 +254,24 @@ Levinson 解出的 tap 接近"对 11 个格点取平均"。平均正是**平坦*
 载波间的**线性相位斜坡**，跨 ±30 个载波平均会把它抹掉。参考之所以能用这种滤波，是因为它的
 **定时/采样率跟踪把窗口对齐了**，因此信道没有残余斜坡；没有跟踪时，局部的两点插值是更好的估计器。
 所以下一步是**跟踪**（Dream 的 `TimeSyncTrack` 与参考的 `track.rs`），频率维 Wiener 应在跟踪之后重测。
+
+## 跟踪级：可以开工的状态
+
+上面的测量说明必须先把跟踪落地、才能重测 Wiener；两个参考都定义了它，且常量一致：
+
+- **功率时延谱（PDS）**：由信道估计的冲激响应得到，时间常数 `TICONST_PDS` = 0.25 s，
+  能量门限 `CONT_PROP_ENERGY` = 0.02，最小统计门 `NUM_SAM_IR_FOR_MIN_STAT` = 10 帧、
+  `OVER_EST_FACT_MIN_STAT` = 4.0。PDS 给出 `pds_len` 与 `pds_offset`——正是频率维 Wiener 需要的两个量
+  （`len_ratio = pds_len / n_car`、`offs_ratio = pds_offset / n_car`）；它的**相位随时间的斜率给出采样率偏差（SRO）**。
+- **SRO 跟踪**：先用 `SAM_OFF_ACQ_LEN_S` = 4 s（含 1 s 建立）捕获，之后 `SRO_STEP_S` = 0.1 s 一步、
+  每步最多 `SRO_MAX_STEP_BINS` = 3 个 bin、速率 `SRO_TRACK_RATE` = 0.1、在 `SRO_TRACK_MIN_S` = 5 s 之后进入稳态，
+  历史长度 `HIST_LEN_SAM_OFF_S` = 30 s。
+- **定时跟踪**（Dream 的 `CTimeSyncTrack`）：在保护间隔能量剖面上搜索目标位置
+  `TARGET_TI_POS_FRAC_GUARD_INT` = 9（保护间隔的十二分之九），接受判据为
+  `TETA1_DIST_FROM_MAX_DB` = 20 dB、`TETA2_DIST_FROM_MIN_DB` = 23 dB 与连续性比例
+  `CONT_PROP_IN_GUARD_INT` = 0.06 / `CONT_PROP_BEFORE_GUARD_INT` = 0.08；它的校正正是我们
+  `TimeSync::timing_candidate` 当前代替的东西（外形已有：`LAMBDA_LOW_PASS_START` 0.99、
+  `TIMING_BOUND_ABS` 150、`NUM_SYM_BEFORE_RESET` 5，但没有 SRO 输入）。
+- **落位**：SRO 校正放在 NCO 与定时级之间（重采样或重相位）；PDS 供 `ChanEst` 的频率滤波用；
+  定时校正调整 `TimeSync` 已输出的符号窗栅格。参考的 `track.rs` 把三者放在一个 `PdsTracker` 里；
+  Dream 则分成 `CTimeSyncTrack` 与 `CTrack`。
