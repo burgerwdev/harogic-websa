@@ -90,6 +90,17 @@ impl Mul<f64> for Cplx {
     }
 }
 
+impl Div for Cplx {
+    type Output = Self;
+    fn div(self, o: Self) -> Self {
+        let d = o.norm_sqr();
+        Self::new(
+            (self.re * o.re + self.im * o.im) / d,
+            (self.im * o.re - self.re * o.im) / d,
+        )
+    }
+}
+
 impl Div<f64> for Cplx {
     type Output = Self;
     fn div(self, s: f64) -> Self {

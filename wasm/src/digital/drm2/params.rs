@@ -23,7 +23,7 @@ pub const NUM_FRAMES_IN_SUPERFRAME: usize = 3;
 pub const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE as usize) * 4 / 10;
 
 /// One DRM robustness mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RobustnessMode {
     A,
     B,
@@ -125,6 +125,91 @@ impl RobustnessMode {
             Self::A | Self::B => 10_000,
             Self::C | Self::D => 20_000,
         }
+    }
+}
+
+/// Spectrum occupancy 0..=5 (§8.1, table 83): nominal bandwidths 4.5/5/9/10/18/20 kHz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpectrumOccupancy(u8);
+
+impl SpectrumOccupancy {
+    pub const SO_0: Self = Self(0);
+    pub const SO_1: Self = Self(1);
+    pub const SO_2: Self = Self(2);
+    pub const SO_3: Self = Self(3);
+    pub const SO_4: Self = Self(4);
+    pub const SO_5: Self = Self(5);
+    pub const ALL: [SpectrumOccupancy; 6] =
+        [Self::SO_0, Self::SO_1, Self::SO_2, Self::SO_3, Self::SO_4, Self::SO_5];
+
+    pub const fn new(value: u8) -> Option<Self> {
+        if value <= 5 { Some(Self(value)) } else { None }
+    }
+
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    pub const fn bandwidth_khz(self) -> f64 {
+        match self.0 {
+            0 => 4.5,
+            1 => 5.0,
+            2 => 9.0,
+            3 => 10.0,
+            4 => 18.0,
+            _ => 20.0,
+        }
+    }
+}
+
+/// Lowest and highest carrier index (Kmin, Kmax) for a mode/occupancy pair (§8.1,
+/// table 84). `None` for combinations the standard does not define (modes C and D
+/// only exist with occupancies 3 and 5).
+pub const fn carrier_range(mode: RobustnessMode, so: SpectrumOccupancy) -> Option<(i32, i32)> {
+    const KMIN: [[i32; 4]; 6] = [
+        [2, 1, 0, 0],
+        [2, 1, 0, 0],
+        [-102, -91, 0, 0],
+        [-114, -103, -69, -44],
+        [-98, -87, 0, 0],
+        [-110, -99, -67, -43],
+    ];
+    const KMAX: [[i32; 4]; 6] = [
+        [102, 91, 0, 0],
+        [114, 103, 0, 0],
+        [102, 91, 0, 0],
+        [114, 103, 69, 44],
+        [314, 279, 0, 0],
+        [350, 311, 213, 135],
+    ];
+    let kmin = KMIN[so.index()][mode.index()];
+    let kmax = KMAX[so.index()][mode.index()];
+    if kmin == 0 && kmax == 0 { None } else { Some((kmin, kmax)) }
+}
+
+/// A valid (mode, occupancy) combination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChannelLayout {
+    pub mode: RobustnessMode,
+    pub occupancy: SpectrumOccupancy,
+}
+
+impl ChannelLayout {
+    pub fn new(mode: RobustnessMode, occupancy: SpectrumOccupancy) -> Option<Self> {
+        carrier_range(mode, occupancy).map(|_| Self { mode, occupancy })
+    }
+
+    pub fn carrier_range(self) -> (i32, i32) {
+        carrier_range(self.mode, self.occupancy).expect("validated in ChannelLayout::new")
+    }
+
+    pub fn num_carriers(self) -> usize {
+        let (kmin, kmax) = self.carrier_range();
+        (kmax - kmin + 1) as usize
     }
 }
 
