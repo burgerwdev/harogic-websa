@@ -214,9 +214,23 @@ pub struct DrmReceiver {
     /// stage as a continuous stream; this is the same idea inside the pass architecture.
     msc_de: Option<CellDeinterleaver>,
     msc_mlc: Option<MlcDecoder>,
-    /// Absolute MSC frame count already fed to `msc_de`: pass windows overlap, so each
-    /// frame must be fed exactly once, in order.
-    msc_frames_fed: u64,
+    /// Absolute row index of the end of the last MSC frame fed to `msc_de`: pass
+    /// windows overlap, so each frame must be fed exactly once, in order. A row-based
+    /// mark (rather than a frame index derived from the super-frame arithmetic) stays
+    /// correct across a stream discontinuity or a supervisor flush, where the row
+    /// numbering and the frame numbering can start over independently.
+    msc_last_row: u64,
+    /// The audio decoders persist across passes, like the deinterleaver: each pass
+    /// decodes only the access units that arrived since the previous one, and a decoder
+    /// recreated per pass would start cold (no AAC/SBR state) mid-stream and produce
+    /// nothing — measured as "one burst of audio, then silence".
+    #[cfg(target_arch = "wasm32")]
+    audio_decoder: Option<crate::fdk::AacDecoder>,
+    #[cfg(target_arch = "wasm32")]
+    xhe_decoder: Option<crate::xaac::XaacDecoder>,
+    /// The type-9 configuration the AAC decoder was created with; a change recreates it.
+    #[cfg(target_arch = "wasm32")]
+    audio_configured_with: Option<Vec<u8>>,
     /// Total complex samples pushed, including the samples the buffer cap dropped. It
     /// gives every buffered sample its phase reference for the carrier-offset removal.
     pushed: u64,
@@ -270,7 +284,13 @@ impl DrmReceiver {
             audio_units_decoded: 0,
             msc_de: None,
             msc_mlc: None,
-            msc_frames_fed: 0,
+            msc_last_row: 0,
+            #[cfg(target_arch = "wasm32")]
+            audio_decoder: None,
+            #[cfg(target_arch = "wasm32")]
+            xhe_decoder: None,
+            #[cfg(target_arch = "wasm32")]
+            audio_configured_with: None,
             pushed: 0,
             mix_w: 0.0,
             mix_phase: 0.0,
@@ -531,8 +551,14 @@ impl DrmReceiver {
         self.audio_pcm.clear();
         self.msc_de = None;
         self.msc_mlc = None;
-        self.msc_frames_fed = 0;
+        self.msc_last_row = 0;
         self.audio_units_decoded = 0;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.audio_decoder = None;
+            self.xhe_decoder = None;
+            self.audio_configured_with = None;
+        }
     }
 
     /// Channel estimation + equalisation + QAM demapping + FAC/SDC decoding.
@@ -690,23 +716,26 @@ impl DrmReceiver {
                 .take()
                 .unwrap_or_else(|| CellDeinterleaver::new(map.msc_cells_per_frame, depth));
             let mut msc_dec = self.msc_mlc.take().unwrap_or_else(|| MlcDecoder::new(params, 1));
+            let frame_rows = (spsf / 3) as u64; // rows per multiplex frame
             for (super_cells, end_row) in msc_supers.iter().zip(&msc_super_rows) {
-                // Absolute index of the super's third frame: the super ends at
-                // sym == spsf-1, so its rows satisfy (row + r + super_phase) ≡ spsf-1
-                // (mod spsf), which makes the division exact.
-                let last = ((*end_row + r as u64 + super_phase as u64) - (spsf as u64 - 1))
-                    / spsf as u64
-                    * 3
-                    + 2;
                 for (f, frame) in super_cells.chunks(map.msc_cells_per_frame).take(3).enumerate() {
-                    let index = last - 2 + f as u64;
-                    if index < self.msc_frames_fed {
+                    // A frame ends at its own row inside the super frame (the super's
+                    // last row is `end_row`).
+                    // A frame of the first super frame in a window can begin before the
+                    // window does (the frame-sync offset puts the super's last symbol a
+                    // few rows in); its cells are then incomplete, so skip it. The
+                    // subtraction must not wrap: an underflow here once marked every
+                    // later frame as already fed.
+                    let Some(frame_end) = end_row.checked_sub(((2 - f) as u64) * frame_rows) else {
+                        continue;
+                    };
+                    if frame_end <= self.msc_last_row {
                         continue; // an earlier pass already fed this frame
                     }
                     // Frames consumed as fill return None; either way the frame is spent,
-                    // so the fed count advances with the offer.
+                    // so the mark advances with the offer.
                     let deint = de.push(frame);
-                    self.msc_frames_fed = index + 1;
+                    self.msc_last_row = frame_end;
                     // Skip frames still containing erasures (the long interleaver's
                     // fill-in delay and any trailing truncation).
                     let Some(deint) = deint else { continue };
@@ -734,37 +763,58 @@ impl DrmReceiver {
         let Some(audio) = self.audio.clone() else { return };
         if audio.coding == 3 {
             // xHE-AAC (MPEG-D USAC). The AudioSpecificConfig is carried in the SDC audio
-            // descriptor (ES 201 980 §6.4.3.10) and is fed as the decoder's init payload
-            // before the access units.
-            if let Some(mut dec) = crate::xaac::XaacDecoder::new() {
-                if !audio.xhe_aac_config.is_empty() {
-                    dec.feed(&audio.xhe_aac_config, true);
+            // descriptor (ES 201 980 §6.4.3.10) and is fed as the decoder's init payload.
+            if self.xhe_decoder.is_none() {
+                let mut dec = crate::xaac::XaacDecoder::new();
+                if let Some(d) = dec.as_mut() {
+                    if !audio.xhe_aac_config.is_empty() {
+                        d.feed(&audio.xhe_aac_config, true);
+                    }
                 }
-                for au in &self.audio_access_units {
+                self.xhe_decoder = dec;
+                self.audio_units_decoded = 0;
+            }
+            if let Some(dec) = self.xhe_decoder.as_mut() {
+                for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
                     if let Some(pcm) = dec.feed(au, false) {
                         self.audio_pcm.extend_from_slice(&pcm);
                     }
                 }
+                self.audio_units_decoded = self.audio_access_units.len();
+                self.audio_debug = format!(
+                    "xHE au={} units={} pcm={}",
+                    self.audio_access_units.len(),
+                    self.audio_units_decoded,
+                    self.audio_pcm.len()
+                );
             }
             return;
         }
-        // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder, with the SDC type-9
-        // descriptor as configured (the SBR flag makes FDK parse the SBR payload that
-        // the DRM AU carries bit-reversed at its end; Dream decodes the same stream
-        // with the flag set).
+        // AAC (AAC-LC / HE-AAC) via the FDK TT_DRM decoder, configured from the SDC
+        // type-9 descriptor. The decoder is kept across passes so only the new access
+        // units are fed, in order, to a decoder that already carries the AAC/SBR state.
         let type9 = audio.to_type9_bytes();
-        if let Some(mut dec) = crate::fdk::AacDecoder::new() {
-            let configured = dec.configure(&type9);
+        if self.audio_decoder.is_none() || self.audio_configured_with.as_deref() != Some(type9.as_slice())
+        {
+            self.audio_decoder = crate::fdk::AacDecoder::new();
+            self.audio_configured_with = Some(type9.clone());
+            self.audio_units_decoded = 0;
+            if let Some(dec) = self.audio_decoder.as_mut() {
+                dec.configure(&type9);
+            }
+        }
+        if let Some(dec) = self.audio_decoder.as_mut() {
             for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
                 let pcm = dec.decode(au);
                 self.audio_pcm.extend_from_slice(&pcm);
             }
             self.audio_units_decoded = self.audio_access_units.len();
             self.audio_debug = format!(
-                "cfg={configured} tried={} err={} au={} units={} pcm={}",
-                self.audio_access_units.len() - self.audio_units_decoded,
-                dec.last_error, self.audio_access_units.len(),
-                self.audio_units_decoded, self.audio_pcm.len()
+                "au={} units={} err={} pcm={}",
+                self.audio_access_units.len(),
+                self.audio_units_decoded,
+                dec.last_error,
+                self.audio_pcm.len()
             );
         }
     }

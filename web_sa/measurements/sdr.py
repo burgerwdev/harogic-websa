@@ -26,6 +26,12 @@ from .framer import BASEBAND_VERSION, encode_audio, encode_baseband, encode_rta
 
 log = logging.getLogger(__name__)
 
+#: Baseband rms the DSP receivers want. Measured on the DRM bench: the FAC SNR is 23-28 dB at
+#: this level (about +36 dBFS) and collapses when the level drifts ~6 dB either way, while the
+#: delivered level depends on the operator's reference level, the device's own auto attenuation
+#: and the incoming signal. A slow digital AGC removes that dependency.
+BASEBAND_TARGET_RMS = 64.0
+
 # IQS return codes that are transient (bad packet / timeout) rather than fatal.
 # The official examples never check IQS_GetIQStream's return value; a bad packet is
 # simply skipped and the next one is used.
@@ -158,6 +164,9 @@ class SdrSession(MeasurementSession):
         self._bb_rate = 0.0
         self._bb_window_samples = 0
         self._bb_window_start = 0.0
+        # Slow baseband AGC (see BASEBAND_TARGET_RMS). The gain is carried across
+        # acquisitions and reset on a reconfiguration, whose settle window covers the step.
+        self._bb_gain = 1.0
         # True while the Python demodulator is skipped because nobody subscribes to audio.
         self._audio_paused = False
         # True when a demodulator setting changed while the browser had the audio: the Python chain
@@ -562,6 +571,10 @@ class SdrSession(MeasurementSession):
         self._audio_reset_pending = True
         self._iq_seq = 0
         self._iq_reset_pending = True
+        # The baseband AGC gain is deliberately NOT reset here: this settle runs on every
+        # reconfiguration (the auto reference reconfigures often), and resetting the gain
+        # each time left the AGC unable to converge. A retune's level change is a few dB,
+        # which the steps absorb.
 
     def _configure_chain_locked(self):
         """DDC + demod. The DDC is configured with the coarse offset for the current
@@ -1196,6 +1209,25 @@ class SdrSession(MeasurementSession):
             # and the wire traffic no longer scale with the analyzer's raw IQ rate. Only while a DSP
             # socket is subscribed: with no subscriber nobody should pay for the encode.
             self._measure_baseband_rate(i.size, now)
+            # Baseband level control: a slow digital AGC, so the demodulator sees the level it
+            # wants regardless of the reference level / device attenuation / signal strength.
+            # One small step per acquisition (a few per second), bounded to 10 % per step, so it
+            # cannot introduce a click; the f32 path has the headroom either way.
+            if i.size:
+                level = float(np.sqrt(np.mean(i.astype(np.float64) ** 2)
+                                      + np.mean(q.astype(np.float64) ** 2)))
+                if level > 0.0:
+                    # The level is measured BEFORE the gain, so the gain must be steered
+                    # towards the absolute value the level asks for — not multiplied by an
+                    # incremental step, which once drove it into the floor and kept it there.
+                    # A first-order move (40 % per acquisition) reaches the target in about
+                    # five acquisitions, i.e. a couple of seconds, and the small residual
+                    # variation is far too slow to click.
+                    desired = float(np.clip(BASEBAND_TARGET_RMS / level, 1e-4, 1e4))
+                    self._bb_gain += (desired - self._bb_gain) * 0.4
+                    self._bb_gain = float(np.clip(self._bb_gain, 1e-4, 1e4))
+                    i = (i * self._bb_gain).astype(np.float32)
+                    q = (q * self._bb_gain).astype(np.float32)
             if getattr(dev, 'iq_clients', 0):
                 if self._iq_reset_pending:
                     # Logged: a flush drops the browser's playback buffer and re-primes it, which is

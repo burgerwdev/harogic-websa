@@ -55,6 +55,10 @@ pub struct XaacDecoder {
     out_ptr: *mut u8,
 }
 
+// SAFETY: see `AacDecoder`: the instance is exclusively owned and libxaac keeps no
+// thread-affine global state; the wasm module is single-threaded.
+unsafe impl Send for XaacDecoder {}
+
 impl XaacDecoder {
     pub fn new() -> Option<Self> {
         unsafe {

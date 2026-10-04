@@ -61,11 +61,25 @@ if (whole) {
 	dsp.free(ptr, COMPLEX * 2 * 4);
 } else {
 	const blockPtr = dsp.alloc(BLOCK * 2 * 4);
+	const incPtr = dsp.alloc(65536 * 2);
+	let incTotal = 0;
+	let incBlocks = 0;
+	const incremental = Boolean(process.env.WEBSA_DRM_INCREMENTAL);
 	for (let off = 0; off < COMPLEX; off += BLOCK) {
 		const n = Math.min(BLOCK, COMPLEX - off);
 		dsp.f32View(blockPtr, n * 2).set(iq.subarray(off * 2, off * 2 + n * 2));
 		pushed = dsp.exports.websa_dsp_demod_push(handle, blockPtr, n);
+		if (incremental) {
+			// Drain like the DSP worker does, so a delivery stall shows up here too.
+			incTotal += dsp.exports.websa_dsp_drm_audio_pcm(handle, incPtr, 65536);
+			incBlocks++;
+			if (incBlocks % 20 === 0) {
+				console.error(`  [inc] blocks=${incBlocks} pcm_total=${incTotal}`);
+			}
+		}
 	}
+	dsp.free(incPtr, 65536 * 2);
+	if (incremental) console.error(`  [inc] final pcm_total=${incTotal}`);
 	dsp.free(blockPtr, BLOCK * 2 * 4);
 }
 

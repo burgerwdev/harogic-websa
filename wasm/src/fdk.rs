@@ -65,9 +65,6 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
 // FDK AAC decoder FFI (C linkage; see libAACdec/include/aacdecoder_lib.h).
 // ---------------------------------------------------------------------------
 
-/// Bytes of zero padding behind every access unit handed to the decoder.
-const AU_PAD: usize = 512;
-
 /// TT_DRM transport type.
 const TT_DRM: i32 = 12;
 
@@ -96,6 +93,11 @@ pub struct AacDecoder {
     pub last_error: i32,
 }
 
+// SAFETY: the handle is exclusively owned — the decoder is moved between owners, never
+// shared — and the wasm module is single-threaded. FDK keeps no thread-affine global
+// state (the same argument DecDRM's FdkDrmDecoder makes for its own `unsafe impl`).
+unsafe impl Send for AacDecoder {}
+
 impl AacDecoder {
     /// Open a decoder for the DRM transport (raw AAC access units with the ASC
     /// signalled in-band).
@@ -122,14 +124,21 @@ impl AacDecoder {
         // after the core frame, and a stream whose SDC claims SBR while its payload carries
         // none makes it read past the unit. That fault traps the wasm module, and whether it
         // does depends on the heap layout. The padding turns it into a plain decode error.
-        let mut padded = Vec::with_capacity(au.len() + AU_PAD);
-        padded.extend_from_slice(au);
-        padded.resize(au.len() + AU_PAD, 0);
-        let mut buf = padded.as_mut_ptr();
+        // Exact access unit, no padding: FDK locates the DRM SBR payload from the END
+        // of the filled data, so a grown buffer or a stale byte shifts it. The padding
+        // this used to add was a band-aid for the text message that stayed inside the
+        // super frame (see `audio::split_text_message`).
+        let mut input = au.to_vec();
+        let mut buf = input.as_mut_ptr();
         let size = au.len() as u32;
         let mut valid = au.len() as u32;
-        unsafe {
-            aacDecoder_Fill(self.handle, &mut buf, &size, &mut valid);
+        let err = unsafe { aacDecoder_Fill(self.handle, &mut buf, &size, &mut valid) };
+        if err != 0 || valid != 0 {
+            // The transport did not take the whole unit: the next Fill would append to a
+            // half-consumed frame and every later unit would be misaligned. Report it and
+            // drop this unit (the reference decoder does the same).
+            self.last_error = if err != 0 { err } else { 0x4005 };
+            return Vec::new();
         }
 
         // Decode one frame. 4096 samples per channel is more than any AAC frame.
