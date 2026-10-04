@@ -944,6 +944,126 @@ mod tests {
         assert!(bad <= 10, "live FAC errors {bad} far exceed the reference's 9");
     }
 
+    /// Decode the live capture's SDC through the tracked chain: the station label, audio
+    /// descriptor and multiplex description must match the reference's reading
+    /// (`SAN90 DRM BENCH`, HE-AAC mono 12 kHz, text · Pop Music) and the SDC CRC pass rate
+    /// must be the reference's order (21 ok / 3 bad).
+    #[test]
+    #[ignore = "live diagnostic; run with --ignored --nocapture"]
+    fn live_sdc_matches_the_reference() {
+        use crate::digital::drm2::fac::Fac;
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams};
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::sdc::{parse_entities, parse_sdc_block, Entity};
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
+
+        let mut est = ChanEst::new(&map);
+        est.use_tw = true;
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut frame_sdc: Vec<EqCell> = Vec::new();
+        let mut sdc_blocks: Vec<(u8, Vec<EqCell>)> = Vec::new();
+        let sdc_syms = map.mode().sdc_symbols();
+        for i in 0..rows.len() {
+            if i == 45 {
+                est.tw.tracking = true;
+            }
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            if out_sym == 0 {
+                frame_sdc.clear();
+                fac_cells.clear();
+            }
+            if out_sym < sdc_syms {
+                for &c in &map.sdc_carriers[out_sym] {
+                    frame_sdc.push(cells[c as usize]);
+                }
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                sdc_blocks.push((idx, std::mem::take(&mut frame_sdc)));
+                fac_cells.clear();
+            }
+        }
+
+        let mut labels: Vec<String> = Vec::new();
+        let mut audios = Vec::new();
+        let mut muxes = Vec::new();
+        let mut sdc_ok = 0usize;
+        let mut sdc_bad = 0usize;
+        for (idx, cells) in &sdc_blocks {
+            if *idx != 0 || cells.len() != map.sdc_cells_per_superframe {
+                continue;
+            }
+            let mut sdc16 = MlcDecoder::new(
+                MlcParams::sdc(Mapping::Qam16, map.sdc_cells_per_superframe),
+                0,
+            );
+            let mut sdc4 = MlcDecoder::new(
+                MlcParams::sdc(Mapping::Qam4, map.sdc_cells_per_superframe),
+                0,
+            );
+            let mut block = if sdc16.decode(cells, &mut bits) {
+                parse_sdc_block(&bits).filter(|b| b.crc_ok)
+            } else {
+                None
+            };
+            if block.is_none() {
+                let mut b4 = Vec::new();
+                block = if sdc4.decode(cells, &mut b4) {
+                    parse_sdc_block(&b4).filter(|b| b.crc_ok)
+                } else {
+                    None
+                };
+            }
+            if let Some(b) = block {
+                sdc_ok += 1;
+                for e in parse_entities(&b.data) {
+                    match e {
+                        Entity::Label(l) => labels.push(l.text()),
+                        Entity::Audio(a) => audios.push(a),
+                        Entity::Multiplex(m) => muxes.push(m),
+                        _ => {}
+                    }
+                }
+            } else {
+                sdc_bad += 1;
+            }
+        }
+        eprintln!("[live-sdc] ok {sdc_ok} bad {sdc_bad} (reference 21 ok / 3 bad)");
+        eprintln!("[live-sdc] labels {labels:?}");
+        if let Some(a) = audios.first() {
+            eprintln!("[live-sdc] audio coding={} sbr={} mode={} sr_code={} text={}", a.coding, a.sbr, a.mode, a.sample_rate, a.text);
+        }
+        if let Some(m) = muxes.first() {
+            eprintln!("[live-sdc] mux EEP prot={}/{} streams={}", m.protection_a, m.protection_b, m.streams.len());
+        }
+        assert!(sdc_ok >= 10, "the live SDC must decode, got {sdc_ok}");
+        assert!(labels.iter().any(|l| l == "SAN90 DRM BENCH"), "station label {labels:?}");
+    }
+
     /// timing, demodulation, channel estimation, equalisation, 4-QAM demap, Viterbi, CRC —
     /// to the channel and service parameters the fixture's manifest records.
     #[test]

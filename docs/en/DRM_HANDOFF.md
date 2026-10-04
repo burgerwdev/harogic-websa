@@ -77,12 +77,17 @@ reads 42.8 dB.
 What remains for the live loop: the SRO/timing closed loop (the tracker's `sro_delta_hz` and
 `timing_adjust` are computed but not yet applied in `run()`), which can only start once a FAC
 decodes; and the same streaming frequency tracking needs wiring into `DrmReceiver` (which still
-does one-shot acquisition and no mixer re-tuning). The FAC/SDC/MSC decode on live30 is the
-next task's measurement. The live FAC count through the tracked chain is **64 good / 10 bad**
-(the reference's 64 ok / 9 bad): the good count matches exactly and the one extra bad block is
-the same marginal block the reference's 1.5 dB higher MER tips over. Feeding the tracker's
-`timing_adjust`/`sro_delta_hz` back still destabilises the loop (−0.4 dB), so the window is left
-on the guard-correlation acquisition for now.
+does one-shot acquisition and no mixer re-tuning). The live FAC count through the tracked chain
+is **64 good / 10 bad** (the reference's 64 ok / 9 bad): the good count matches exactly and the
+one extra bad block is the same marginal block the reference's 1.5 dB higher MER tips over.
+Feeding the tracker's `timing_adjust`/`sro_delta_hz` back still destabilises the loop (−0.4 dB),
+so the window is left on the guard-correlation acquisition for now.
+
+**Task-5 measured 2026-10-05**: the live SDC decodes through the tracked chain to **21 ok blocks**
+(matching the reference's 21 ok exactly), every label `SAN90 DRM BENCH`, the audio descriptor
+HE-AAC (coding 0, SBR, mono, 12 kHz core, text) and the multiplex EEP 0/1 with one stream — all
+as the reference reports. The fixture FAC/SDC tests (`fac_decodes_to_the_fixture_manifest`,
+`sdc_decodes_to_the_fixture_manifest`) already pin the manifest values.
 
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
