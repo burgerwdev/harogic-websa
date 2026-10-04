@@ -2428,7 +2428,7 @@ mod tests {
                 if w.guard_corr.unwrap_or(0.0) < 0.5 { continue; }
                 demod.demodulate(&w.samples, &mut cells);
                 let sym = (n % spf + phase) % spf;
-                if n == 45 { est.start_timing_tracking(); }
+                if n == 45 { est.start_timing_tracking(); est.start_time_wiener_tracking(); }
                 if est.process(&cells, sym, w.shift, &map).is_some() {
                     let ta = est.last_track.timing_adjust;
                     if ta != 0 { ts.adjust_timing(ta as f64); }
