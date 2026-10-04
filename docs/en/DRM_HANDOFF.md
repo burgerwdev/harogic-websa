@@ -100,6 +100,13 @@ AAC, libxaac for xHE) are wired; the wasm ABI that surfaces `websa_dsp_drm_audio
 runs the previous receiver, which is task-9's swap. The live30 audio path through the tracked
 chanest harness demuxes **48 valid super frames** (≥ the reference's 40 ok).
 
+**The receiver decodes live30 end to end (2026-10-05)**: with the MSC assembly fixed and the
+streaming frequency tracking ported into `DrmReceiver::run()` (coarse `freqacq`, streaming NCO
+re-tuned every symbol by the tracker), the full capture through the receiver reads FAC
+**64 ok / 10 bad**, station `SAN90 DRM BENCH`, HE-AAC mono 12 kHz and **240 deframed audio
+access units** — no amplitude normalisation needed. The live acceptance test
+(`receiver_on_live_capture`) pins all of it.
+
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
 frame-sync score (this port's `FrameSync::search` correlates time pilots directly, so it is
