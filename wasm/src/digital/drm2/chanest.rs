@@ -1225,7 +1225,7 @@ mod tests {
         let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
         let mut frame_indices: Vec<u8> = Vec::new();
         for i in 0..rows.len() {
-            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else { continue };
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], 0, &map) else { continue };
             if out_sym == 0 { fac_cells.clear(); }
             for &c in &map.fac_carriers[out_sym] { fac_cells.push(cells[c as usize]); }
             if fac_cells.len() == 65 {
