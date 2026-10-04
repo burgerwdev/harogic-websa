@@ -107,6 +107,16 @@ re-tuned every symbol by the tracker), the full capture through the receiver rea
 access units** — no amplitude normalisation needed. The live acceptance test
 (`receiver_on_live_capture`) pins all of it.
 
+**The incremental processing model was attempted and reverted (2026-10-05)**: splitting `run()`
+into a mode-detection-once pass plus an incremental demodulation (the NCO/FreqTrack state carried
+over, only the new samples demodulated) broke the live30 decode — all 73 FAC blocks failed CRC
+while the batch model reads 64 ok / 10 bad. The debug showed the frame phase computed correctly
+(7) over 1125 tracked rows, so the defect is downstream of the phase (the incremental chanest
+feed or the symbol indexing), not the frequency tracking. The batch model (one `run()` decodes
+the whole buffered capture) is the committed state; the wasm block-fed bench needs this
+incremental model because `run()` re-decodes the whole buffer on every 3248-sample push (89
+full decodes for the 30 s capture), which is far too slow for wasm.
+
 **The wasm ABI now runs the drm2 receiver (2026-10-05)**: `digital/mod.rs` dispatches "drm"
 to `drm2::DrPlugin` (a `DigitalDemodulator` wrapper around `DrmReceiver`), the wasm artifact is
 rebuilt, and the receiver gained `buffered()`/`snr_db()`/`occupancy()` for the readout. Two
