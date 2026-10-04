@@ -97,6 +97,9 @@ pub struct ChanEst {
     pub stats: ChanStats,
     /// The FAC-carried SNR the estimator was last built with (dB), for diagnostics.
     pub wiener_snr_db: f64,
+    /// Scattered-pilot SNR correction (Dream's `snr_pil_corr`): the boosted pilots' power
+    /// relative to the per-carrier average, applied before the time-Wiener sees the SNR.
+    snr_pil_corr: f64,
 }
 
 /// Frequency-Wiener filter length per mode (Dream's `update_freq_wiener` tables).
@@ -173,6 +176,7 @@ impl ChanEst {
             last_frame_sym: 0,
             stats: ChanStats::default(),
             wiener_snr_db: 30.0,
+            snr_pil_corr: map.avg_scattered_pilot_power * n_car as f64 / map.avg_power_per_symbol.max(1e-9),
         };
         // Initial frequency-Wiener taps from the guard ratio and the initial SNR, as the
         // reference builds them before any symbol has arrived.
@@ -441,7 +445,7 @@ impl ChanEst {
         let mut grid = vec![Cplx::zero(); self.num_pil];
         // The time-Wiener's SNR improvement factor feeds the frequency Wiener, as in the
         // reference (`snr_after_ti`), rather than the channel-limited FAC MER.
-        let snr_after_ti = self.tw.estimate(map, cells, sym, self.cum_shift, out_cum, self.snr_linear, &mut grid);
+        let snr_after_ti = self.tw.estimate(map, cells, sym, self.cum_shift, out_cum, self.snr_linear * self.snr_pil_corr, &mut grid);
         if self.tw_hist.len() < self.tw.delay + 1 {
             return None;
         }
