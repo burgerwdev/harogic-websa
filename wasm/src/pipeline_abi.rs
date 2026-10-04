@@ -235,9 +235,11 @@ pub unsafe extern "C" fn websa_dsp_drm_constellation(handle: u32, ptr: *mut f64,
     .unwrap_or(0)
 }
 
-/// Copy the digital demodulator's decoded audio (16-bit interleaved PCM) into `ptr`.
-/// Returns the number of samples, or 0 when there is none. The sample rate is reported by
-/// [`websa_dsp_drm_audio_rate`].
+/// Copy the digital demodulator's decoded audio (16-bit interleaved PCM) into `ptr`
+/// and drain it: the call returns everything accumulated since the previous call and
+/// clears the buffer, so a streaming consumer can never fall behind a growing one.
+/// Returns the number of samples, or 0 when there is none. The sample rate is reported
+/// by [`websa_dsp_drm_audio_rate`].
 ///
 /// # Safety
 /// `ptr` must point to `capacity` writable `i16`s.

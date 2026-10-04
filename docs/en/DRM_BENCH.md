@@ -215,11 +215,32 @@ extraction of a real signal, and the ruled-out list below records what it is not
      because the lock pass rotates the entire buffer in place and nothing arrives after
      the lock.
 
-   Regression gates: `live_capture_streams_audio_after_the_lock` (native, block feed)
-   and `frontend/src/__tests__/drmLiveAudio.test.ts` (wasm, non-silent 24 kHz PCM).
-   The byte-level cross-check against the reference receiver is reusable:
-   `wasm/examples/dump_drm_au.rs` writes the access units, and DecDRM's
-   `crates/decdrm-codecs/examples/decode_au_dump.rs` decodes them (40/40 clean, PCM out).
+   The decisive cause was a fourth one, found by diffing the access units against the
+   reference receiver's byte for byte: **the DRM text message was left inside the audio
+   super frame.** When the SDC audio descriptor sets its text flag (ours does), the LAST
+   FOUR BYTES of each audio logical frame are the text message, not audio. Our last
+   access unit swallowed them, which shifted FDK's SBR payload — read BACKWARDS from the
+   frame end — by four bytes; FDK then filled the missing SBR with deterministic noise.
+   That noise is the hiss a listener heard, and it is why a core-only decode (SBR flag
+   cleared) played a clean tone while the full HE-AAC decode did not. Our access units
+   now match the reference byte for byte (34/35 aligned samples identical) and the
+   decoded audio is the bench transmitter's 1 kHz tone (top frequency 1000.0 Hz,
+   high-band energy fraction 0.002). Ported from the reference: Dream's
+   `AACSuperFrame`/`CDataDecoder` and DecDRM's `split_text_message` both strip those four
+   bytes before deframing; `wasm/src/digital/drm/audio.rs::split_text_message` does now.
+
+   One more delivery defect: the worker's audio read was a capped head window plus an
+   offset, so once the receiver's buffer outgrew the cap (about 1.4 s of audio) it
+   delivered nothing more. The ABI now DRAINS: `websa_dsp_drm_audio_pcm` returns what
+   accumulated since the previous call, the worker forwards all of it, and the receiver's
+   buffer stays bounded.
+
+   Regression gates: `live_capture_streams_audio_after_the_lock` (native, block feed),
+   `audio::tests::text_message_is_not_part_of_the_audio_super_frame` (the four bytes), and
+   `frontend/src/__tests__/drmLiveAudio.test.ts` (wasm: non-silent 24 kHz PCM whose peak
+   is at 1 kHz). The byte-level cross-check is reusable: `wasm/examples/dump_drm_au.rs`
+   writes the access units, and DecDRM's `crates/decdrm-codecs/examples/decode_au_dump.rs`
+   decodes them.
 3. **Super-frame phase**: `DrmReceiver::decode` assumes the buffer starts at symbol 0 of a
    super frame. A live capture starts anywhere. The SDC and the MSC therefore use the
    wrong cells.
@@ -291,9 +312,15 @@ python3 tools/e2e/drm_switch.py --url http://127.0.0.1:8080
 The session that fixed the audio defects ended with the whole chain green on the bench,
 transmitting `drm_iq_15s.wav` at TX gain -5 dB, the app at ref -40 dBm:
 
-- A 12 s capture decoded natively to 35 access units and 22 FAC blocks (au=35, facs=22).
+- A 12 s capture decoded natively to 35 access units and 22 FAC blocks (au=35, facs=22);
+  after the text-message fix the same path reaches au=70 with the FAC error count at zero.
 - The same capture through the wasm block-fed path (`scripts/drm_live_audio.mjs`) produced
-  57 600 non-silent 24 kHz PCM samples.
+  230 400 non-silent 24 kHz PCM samples whose dominant frequency is the bench tone:
+  1000.0 Hz, with 3 % of the energy above 5 kHz (before the fix: none of the samples were
+  a tone and the band was mostly noise).
+- The reference receiver (Dream's console build) decodes the same capture's audio from the
+  transmitted signal, and DecDRM's receiver writes a clean 1 kHz tone from it; the byte
+  comparison against both is the tool that found the text-message defect.
 - `tools/e2e/drm_switch.py`: DRM locks in the browser (readout: `locked: B, 10 kHz ...`
   `station: SAN90 DRM BENCH`, `FAC SNR 12 dB`), a switch to AM keeps the baseband running,
   and DRM locks again — all without a page refresh.

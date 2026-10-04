@@ -17,6 +17,7 @@ fn main() {
     let mut fed = 0usize;
     let mut resampler = ComplexResampler::new(in_rate, 48_000.0);
     let mut buf = vec![0u8; 3248 * 2 * 4];
+    let mut n = 0usize;
     'outer: loop {
         let mut got = 0usize;
         while got < buf.len() {
@@ -38,15 +39,18 @@ fn main() {
             rx.run();
             fed += block.len() / 2;
             let dt = t0.elapsed();
-            if dt.as_millis() > 500 || fed % (3248 * 40) == 0 {
+            n += 1;
+            if dt.as_millis() > 200 || n % 20 == 0 {
                 println!(
-                    "fed={:.2}s push+run took {:?} locked={} au={} facs={} snr={:?}",
+                    "fed={:.2}s dt={:?} locked={} snr={:?} facs={} fac_err={} msc={} au={}",
                     fed as f64 / 48000.0,
                     dt,
                     rx.locked(),
-                    rx.audio_access_units.len(),
+                    rx.snr_db,
                     rx.facs.len(),
-                    rx.snr_db
+                    rx.fac_errors,
+                    rx.msc_frames.len(),
+                    rx.audio_access_units.len()
                 );
                 let _ = std::io::stdout().flush();
             }

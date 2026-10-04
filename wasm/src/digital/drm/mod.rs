@@ -783,9 +783,11 @@ impl DrmReceiver {
         };
         let Some(stream) = mux.streams.first() else { return };
         let fmt = audio::AacSuperFrameFormat::aac(frames, stream);
+        let text_flag = self.audio.as_ref().map(|a| a.text).unwrap_or(false);
         for lf in audio::demultiplex(msc_bits, &mux).into_iter().flatten() {
             if lf.stream_id == 0 {
-                if let Some(aus) = audio::parse_aac_super_frame(&lf.data, &fmt) {
+                let super_frame = audio::split_text_message(&lf.data, text_flag);
+                if let Some(aus) = audio::parse_aac_super_frame(super_frame, &fmt) {
                     for f in aus {
                         // FDK's TT_DRM transport expects the DRM AAC CRC byte in front
                         // of each access unit.
@@ -1003,8 +1005,10 @@ impl DigitalDemodulator for DrPlugin {
         self.rx.fac_constellation.clone()
     }
 
-    fn audio_pcm(&self) -> Vec<i16> {
-        self.rx.audio_pcm.clone()
+    fn take_audio_pcm(&mut self) -> Vec<i16> {
+        // Drained: the worker forwards each sample exactly once, and the receiver's
+        // audio buffer stays bounded no matter how long the session runs.
+        std::mem::take(&mut self.rx.audio_pcm)
     }
 
     fn audio_rate_hz(&self) -> u32 {

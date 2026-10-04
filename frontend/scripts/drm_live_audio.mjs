@@ -7,7 +7,7 @@
  *
  *   node --experimental-strip-types scripts/drm_live_audio.mjs [--whole]
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { instantiateDsp } from '../src/sdr/wasm.ts';
@@ -81,6 +81,13 @@ for (let i = 0; i < samples; i++) {
 	peak = Math.max(peak, v);
 	energy += v;
 }
+// Dump the PCM too, so the decoded audio content (not just "non-silent") can be
+// checked with a spectrum analysis.
+const dumpPcm = process.env.WEBSA_DRM_PCM_DUMP;
+if (dumpPcm && samples > 0) {
+	writeFileSync(dumpPcm, Buffer.from(pcm.buffer, pcm.byteOffset, samples * 2));
+}
+
 console.log(
 	JSON.stringify(
 		{ pushedLines: pushed, rate, samples, peak, meanAbs: samples ? +(energy / samples).toFixed(1) : 0, readout: lastLines.slice(-8) },

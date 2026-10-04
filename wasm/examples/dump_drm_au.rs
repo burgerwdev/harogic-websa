@@ -9,15 +9,30 @@ use websa_dsp::ddc::resampler::ComplexResampler;
 use websa_dsp::digital::drm::DrmReceiver;
 
 const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/drm/drm_live_modeB_so3_48828.f32");
+
+/// Optional capture file (raw interleaved f32) given on the command line; the second
+/// argument is its rate. Defaults to the committed live fixture.
+fn load_capture() -> (Vec<f32>, f64) {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1) {
+        Some(path) => {
+            let raw = std::fs::read(path).expect("read capture");
+            let rate = args.get(2).and_then(|r| r.parse().ok()).unwrap_or(48_828.125);
+            let iq = raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            (iq, rate)
+        }
+        None => (
+            FIXTURE.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+            48_828.125,
+        ),
+    }
+}
 const PUBLISHED_RATE: f64 = 48_828.125;
 const CORE_RATE: f64 = 48_000.0;
 
 fn main() {
-    let iq: Vec<f32> = FIXTURE
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
-    let mut resampler = ComplexResampler::new(PUBLISHED_RATE, CORE_RATE);
+    let (iq, rate) = load_capture();
+    let mut resampler = ComplexResampler::new(rate, CORE_RATE);
     let mut converted = Vec::new();
     resampler.process_f32_into(&iq, &mut converted);
     let mut rx = DrmReceiver::new();

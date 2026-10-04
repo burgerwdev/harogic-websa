@@ -182,11 +182,26 @@ Dream 解出了元数据和全部信道。因此台面信号是好的，出问�
      校正的那一份（约 120 Hz 的分数部分），pass 的 SNR 逐帧从 20 dB 跌到 1.7 dB。整段
      推送看不到它：锁定那一次把整个缓冲区一次性原位旋转，锁定后没有新样本到达。
 
-   回归门：`live_capture_streams_audio_after_the_lock`（native，分块喂入）与
-   `frontend/src/__tests__/drmLiveAudio.test.ts`（wasm，非静音 24 kHz PCM）。
-   对照参考接收机的字节级交叉验证可复用：`wasm/examples/dump_drm_au.rs` 导出接入单元，
-   DecDRM 的 `crates/decdrm-codecs/examples/decode_au_dump.rs` 解码它们（40/40 干净，
-   PCM 正常输出）。
+   决定性的是第四个根因，通过把接入单元与参考接收机**逐字节对比**找到：**DRM 文本消息
+   被留在了音频 super frame 里。** 当 SDC 音频描述符置了 text 标志（我们的码流就是），每个
+   音频逻辑帧的**最后 4 字节是文本消息**，不是音频。我们的最后一个接入单元把它们吞了进去，
+   于是 FDK 从帧尾**反向**读取的 SBR 载荷整体偏移 4 字节，FDK 用确定性噪声填补缺失的 SBR——
+   听众听到的"沙沙"正是它；这也解释了为什么只解核心（清掉 SBR 标志）是干净单音、完整
+   HE-AAC 解码就不是。现在我们的接入单元与参考逐字节一致（对齐后 34/35 完全相同），解出的
+   音频就是台面发射机的 1 kHz 单音（主频 1000.0 Hz，5 kHz 以上能量占比 0.002）。参照实现
+   的做法：Dream 的 `AACSuperFrame`/`CDataDecoder` 与 DecDRM 的 `split_text_message` 都会
+   在解帧前剥掉这 4 字节；`wasm/src/digital/drm/audio.rs::split_text_message` 现在照做。
+
+   还有一个交付缺陷：worker 的音频读取是"带偏移量的头部窗口"，一旦接收器缓冲超过上限
+   （约 1.4 秒音频）就再也读不到新数据。现在 ABI 改为**排空语义**：
+   `websa_dsp_drm_audio_pcm` 返回上次调用以来新增的部分，worker 全部转发，接收器缓冲保持
+   有界。
+
+   回归门：`live_capture_streams_audio_after_the_lock`（native，分块喂入）、
+   `audio::tests::text_message_is_not_part_of_the_audio_super_frame`（那 4 字节）、以及
+   `frontend/src/__tests__/drmLiveAudio.test.ts`（wasm：24 kHz 非静音 PCM 且峰值在 1 kHz）。
+   字节级交叉验证可复用：`wasm/examples/dump_drm_au.rs` 导出接入单元，DecDRM 的
+   `crates/decdrm-codecs/examples/decode_au_dump.rs` 解码它们。
 3. **超帧相位**：`DrmReceiver::decode` 假设缓冲区从超帧符号 0 开始。真实抓取从任意
    位置开始。因此 SDC 与 MSC 取到了错误的信元。
 4. **超帧断言**：不完整的超帧会让 SDC 信元数触发断言
@@ -252,9 +267,13 @@ python3 tools/e2e/drm_switch.py --url http://127.0.0.1:8080
 修复音频缺陷的这次会话以全链路绿灯收尾：发射 `drm_iq_15s.wav`（TX gain -5 dB），
 应用设 ref -40 dBm：
 
-- 12 秒抓取 native 解出 35 个接入单元、22 个 FAC 块（au=35、facs=22）。
-- 同一抓取经 wasm 分块路径（`scripts/drm_live_audio.mjs`）产出 57 600 个非静音的
-  24 kHz PCM 样本。
+- 12 秒抓取 native 解出 35 个接入单元、22 个 FAC 块（au=35、facs=22）；文本消息修复后
+  同一路径达到 au=70，FAC 错误数为零。
+- 同一抓取经 wasm 分块路径（`scripts/drm_live_audio.mjs`）产出 230 400 个非静音的
+  24 kHz PCM 样本，主频就是台面单音：1000.0 Hz，5 kHz 以上仅占 3% 能量（修复前完全不是
+  单音，频段里几乎全是噪声）。
+- 参考接收机（Dream 的 console 构建）能从同一发射信号解出音频，DecDRM 接收机写出干净的
+  1 kHz 单音；与两者的字节对比正是找出文本消息缺陷的工具。
 - `tools/e2e/drm_switch.py`：DRM 在浏览器内锁定（读数：`locked: B, 10 kHz ...`
   `station: SAN90 DRM BENCH`、`FAC SNR 12 dB`），切 AM 后基带继续流动，切回 DRM 再次
   锁定——全程无页面刷新。

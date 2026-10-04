@@ -123,7 +123,6 @@ let digital = false;
 let digitalIds = new Set<string>();
 /// Samples of the DRM audio stream already delivered (the WASM receiver accumulates PCM across
 /// blocks, so the worker only forwards the suffix it has not sent yet). Reset on retune.
-let drmAudioOffset = 0;
 let audioEnabled = true;
 /// The listener's audio switch (the worklet's playback gate), separate from the chain switch above.
 let audioOn = true;
@@ -598,7 +597,6 @@ function resetStream(): void {
   lastSeq = -1;
   flushes++;
   pipeline?.reset();
-  drmAudioOffset = 0;
   resetDelivery();
 }
 
@@ -610,8 +608,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     lastSeq = -1;
     flushes++;
     pipeline?.retune();
-    drmAudioOffset = 0;
-    resetDelivery();
+      resetDelivery();
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
     dropped += frame.seq - lastSeq - 1;      // a gap the client never saw (overrun on the wire)
@@ -642,17 +639,15 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
         }
       }
       // DRM audio: the receiver emits PCM in a burst once it has locked and deframed a super
-      // frame; the worker forwards only the suffix it has not delivered yet, resampled to the
+      // frame. audioPcm drains — it returns exactly what accumulated since the previous call
+      // (an offset-tracked head-window read stopped delivering once the receiver's buffer
+      // outgrew the read cap, which silenced every session after ~1.4 s). Resampled to the
       // worklet's rate (the DRM core runs at 12/24 kHz, the audio chain at 48 kHz).
-      const pcm = pipeline.audioPcm(65536);
-      if (pcm.length > drmAudioOffset) {
-        const fresh = pcm.subarray(drmAudioOffset);
-        drmAudioOffset = pcm.length;
+      const fresh = pipeline.audioPcm(65536);
+      if (fresh.length) {
         const srcRate = pipeline.audioRate();
-        if (srcRate > 0 && fresh.length) {
-          const dstRate = Number(params?.outRate) || 48000;
-          deliver(srcRate === dstRate ? fresh : resampleLinear(fresh, srcRate, dstRate));
-        }
+        const dstRate = Number(params?.outRate) || 48000;
+        deliver(srcRate === dstRate ? fresh : resampleLinear(fresh, srcRate, dstRate));
       }
     }
     decoderPushes += 1;

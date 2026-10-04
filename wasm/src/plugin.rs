@@ -204,8 +204,11 @@ pub trait DigitalDemodulator: Send {
     }
 
     /// Decoded 16-bit interleaved PCM the demodulator produced (e.g. the DRM audio
-    /// stream). Empty for protocols that produce only text (FT8) or no audio.
-    fn audio_pcm(&self) -> Vec<i16> {
+    /// stream), DRAINED: the call returns and clears everything accumulated since the
+    /// last call, so a streaming consumer (the DSP worker) can never fall behind a
+    /// growing buffer and the receiver's memory stays bounded. Empty for protocols
+    /// that produce only text (FT8) or no audio.
+    fn take_audio_pcm(&mut self) -> Vec<i16> {
         Vec::new()
     }
 

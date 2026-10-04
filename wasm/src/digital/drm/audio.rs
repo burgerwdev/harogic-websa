@@ -5,6 +5,22 @@
 
 use crate::digital::drm::sdc::{MultiplexDescription, StreamDescription};
 
+/// Bytes of the DRM text message carried at the end of an audio logical frame when
+/// the SDC audio descriptor sets its text flag (ES 201 980 §5.2.1; Dream's
+/// `CDataDecoder` and DecDRM's `split_text_message` both take the last four bytes).
+pub const TEXT_MESSAGE_BYTES: usize = 4;
+
+/// The audio super frame part of a logical frame: the text message, when the stream
+/// carries one, is the LAST four bytes and is NOT part of the super frame. Leaving it
+/// in shifts the SBR payload (read backwards from the frame end) and the decoder then
+/// produces noise instead of the programme audio.
+pub fn split_text_message(frame: &[u8], text_flag: bool) -> &[u8] {
+    if !text_flag || frame.len() < TEXT_MESSAGE_BYTES {
+        return frame;
+    }
+    &frame[..frame.len() - TEXT_MESSAGE_BYTES]
+}
+
 /// One stream's data of one multiplex frame: part A bytes then part B bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicalFrame {
@@ -197,6 +213,18 @@ pub fn build_aac_super_frame(frames: &[AudioFrame], fmt: &AacSuperFrameFormat, l
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_message_is_not_part_of_the_audio_super_frame() {
+        // The last four bytes of a logical frame are the DRM text message when the SDC
+        // sets the text flag. Leaving them in shifts the SBR payload (read backwards
+        // from the frame end) and the decoder produces noise instead of the audio.
+        let frame: Vec<u8> = (0..40u8).collect();
+        assert_eq!(split_text_message(&frame, true).len(), 36);
+        assert_eq!(split_text_message(&frame, false).len(), 40);
+        assert_eq!(split_text_message(&frame[..3], true).len(), 3);
+        assert_eq!(&split_text_message(&frame, true)[..2], &[0, 1]);
+    }
 
     #[test]
     fn demux_splits_a_single_stream() {

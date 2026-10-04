@@ -49,7 +49,8 @@ describe('DRM live-capture audio (HE-AAC 12 kHz core + SBR)', () => {
 		dsp.free(blockPtr, BLOCK * 2 * 4);
 
 		// SBR doubles the 12 kHz core rate, as Dream reports it.
-		expect(dsp.exports.websa_dsp_drm_audio_rate(handle)).toBe(24000);
+		const rate = dsp.exports.websa_dsp_drm_audio_rate(handle);
+		expect(rate).toBe(24000);
 
 		const pcmPtr = dsp.alloc(48000 * 20 * 2);
 		const samples = dsp.exports.websa_dsp_drm_audio_pcm(handle, pcmPtr, 48000 * 20);
@@ -67,6 +68,44 @@ describe('DRM live-capture audio (HE-AAC 12 kHz core + SBR)', () => {
 		}
 		expect(peak).toBeGreaterThan(1000);
 		expect(energy / samples).toBeGreaterThan(100);
+
+		// The capture carries the bench transmitter's 1 kHz tone. A regression to noise —
+		// the DRM text message left inside the last access unit of every super frame once
+		// shifted FDK's backwards SBR read, which produced exactly that — shows up here as
+		// a missing tone instead of the peak below.
+		const n = Math.min(rate, samples);
+		const goertzel = (hz: number): number => {
+			const w = (2 * Math.PI * hz) / rate;
+			const c = 2 * Math.cos(w);
+			let s1 = 0;
+			let s2 = 0;
+			for (let i = 0; i < n; i++) {
+				const s0 = pcm[i] + c * s1 - s2;
+				s2 = s1;
+				s1 = s0;
+			}
+			return Math.sqrt(Math.abs(s1 * s1 + s2 * s2 - c * s1 * s2));
+		};
+		let bestHz = 0;
+		let bestMag = 0;
+		let sumMag = 0;
+		let count = 0;
+		for (let hz = 400; hz <= 2000; hz += 20) {
+			const mag = goertzel(hz);
+			if (mag > bestMag) {
+				bestMag = mag;
+				bestHz = hz;
+			}
+			sumMag += mag;
+			count++;
+		}
+		expect(Math.abs(bestHz - 1000)).toBeLessThanOrEqual(60);
+		expect(bestMag).toBeGreaterThan((16 * sumMag) / count);
+
+		// Draining read: the worker relies on it to forward each sample exactly once, and a
+		// head-window read instead of a drain was what silenced every session after ~1.4 s
+		// (the accumulated buffer outgrew the read cap and the worker's offset went stale).
+		expect(dsp.exports.websa_dsp_drm_audio_pcm(handle, pcmPtr, 48000 * 20)).toBe(0);
 
 		dsp.free(pcmPtr, 48000 * 20 * 2);
 		dsp.exports.websa_dsp_demod_free(handle);
