@@ -268,3 +268,19 @@ Two facts worth carrying forward:
   use Playwright's Firefox for the UI probes. `tools/e2e/demod_switch.py` still uses Chromium.
 - Start the Pluto transmitter in a subshell (`( nohup ... & )`); chaining it with `&` and `&&`
   in one command line has silently failed more than once.
+
+## The Wiener tap formula, read off the reference
+
+`chanest/mod.rs::update_freq_wiener` (lines 220-235 of the reference) settles the question the
+parameter search could not, and it names the two mistakes in the attempt recorded above:
+
+- `rhp[i] = sinc((i*x - diff) * len_ratio)` and `arg = PI * (i*x - diff) * (len_ratio + 2*offs_ratio)`
+  — `i*x` and `diff` are in **carriers**, not lattice steps (the attempt used lattice units, a
+  factor `x` = 6 off).
+- `len_ratio` is the impulse-response length over the useful symbol, which the reference takes
+  from its tracking (`pds_len / n_car`; about 1 ms on this capture, i.e. ~0.047). The attempt used
+  the guard ratio 0.25 — five times too large and not the physical quantity.
+
+So one function changes: carrier units in `rhp` and in `arg`, and a delay spread near 0.05 (from
+the tracking once it exists) instead of the guard ratio. Gate it on the clean fixture (>= 40 dB)
+before the live capture.

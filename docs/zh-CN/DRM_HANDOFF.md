@@ -233,3 +233,15 @@ SNR/MER 应当取代我们现在的 `snr_db` 读数（现在来自 FAC 判决，
   的 Firefox。`tools/e2e/demod_switch.py` 仍在用 Chromium。
 - 启动 Pluto 发射机请用子 shell（`( nohup ... & )`）；把 `&` 与 `&&` 串在同一行里已经多次静默
   失败。
+
+## Wiener tap 公式（逐行读参考得出）
+
+参考的 `chanest/mod.rs::update_freq_wiener`（第 220-235 行）回答了参数搜索无法回答的问题，并指出了上文中那次尝试的两处错误：
+
+- `rhp[i] = sinc((i*x - diff) * len_ratio)` 与 `arg = PI * (i*x - diff) * (len_ratio + 2*offs_ratio)`
+  —— 其中 `i*x` 与 `diff` 的单位是**载波**而不是格点步长（那次尝试用了格点单位，差了 `x` = 6 倍）。
+- `len_ratio` 是"冲激响应长度 / 有用符号长度"，参考由跟踪给出（`pds_len / n_car`；这段捕获约 1 ms，即 ≈0.047）。
+  那次尝试用的是 guard 比 0.25 —— 大了五倍，而且根本不是那个物理量。
+
+因此只需改一个函数：`rhp` 与 `arg` 用**载波**单位，时延扩展取约 0.05（有跟踪后取实测值）而不是 guard 比。
+改完先用干净夹具 ≥40 dB 这道门禁，再测实时捕获。
