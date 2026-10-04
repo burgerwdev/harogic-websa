@@ -7,6 +7,7 @@
 //! FT8 is the first; the seam is what the other protocols (FT4, PSK, RTTY, SSTV, FreeDV) plug into.
 
 pub mod drm;
+pub mod drm2;
 pub mod ft8;
 
 use crate::plugin::DigitalDemodulator;
