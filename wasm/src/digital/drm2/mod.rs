@@ -427,6 +427,14 @@ mod tests {
         let mut rs = crate::ddc::resampler::ComplexResampler::new(48_828.125, 48_000.0);
         let mut out: Vec<f32> = Vec::new();
         rs.process_f32_into(&iq, &mut out);
+        // Normalise the live signal to the clean fixture's RMS: the raw capture is ~254x
+        // hotter, which overdrives the receiver and is not a receiver defect.
+        let rms: f32 = (out.iter().map(|v| v * v).sum::<f32>() / out.len() as f32).sqrt();
+        let target = 0.178_f32;
+        let scale = target / rms.max(1e-9);
+        for v in out.iter_mut() {
+            *v *= scale;
+        }
         let mut rx = DrmReceiver::new();
         rx.push(&out);
         rx.run();
