@@ -60,12 +60,13 @@
 音频解帧）读得 FAC **64 ok / 10 bad**、台名 `SAN90 DRM BENCH`、HE-AAC 单声道 12 kHz、**240 个
 解帧音频接入单元**——无需幅度归一化。验收测试（`receiver_on_live_capture`）全部钉住。
 
-**wasm ABI 现在跑 drm2 接收机**：`digital/mod.rs` 把 "drm" 分派到 `drm2::DrPlugin`
-（`DrmReceiver` 的 `DigitalDemodulator` 包装），wasm 工件已重建，接收机加了
-`buffered()`/`snr_db()`/`occupancy()` 供读数。剩余两项：接收机的 `run()` 在每次块推送时重解码
-整个缓冲的抓取（模式检测每次重跑 4 趟解调），所以 wasm 块馈台面需要增量处理模型（记录已解码
-位置；只解调新样本）——`--whole` 台面模式（一次 288 000 样本推送）一遍就解码，但 wasm 的 FDK
-解码还要检查；en/zh 文档漂移（本节是 en-only，本轮补上）。
+**wasm ABI 交换已尝试并回退**：`drm2::DrPlugin`（drm2 `DrmReceiver` 的
+`DigitalDemodulator` 包装，加了 `buffered()`/`snr_db()`/`occupancy()` 供读数）已换入
+`digital/mod.rs`，接收机的 `run()` 也改成了增量（模式检测一次，之后只解调新样本），修好了
+块馈台面的超时。但 wasm 里 FAC 解码完全失败——**FAC ok 0 / err 约 74**，两条信道估计路径
+都一样——而同样的代码原生在同一段抓取上读得 64 ok / 10 bad。这个 wasm 与原生的差异（两条
+路径都失败，所以不是 time-Wiener）需要调试；分派已回退到前一个接收机让 `make ci` 保持
+绿色，drm2 接收机保留其原生端到端验证。
 
 ## 花了时间才确认的台面事实
 

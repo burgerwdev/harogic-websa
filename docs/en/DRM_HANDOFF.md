@@ -117,15 +117,15 @@ the whole buffered capture) is the committed state; the wasm block-fed bench nee
 incremental model because `run()` re-decodes the whole buffer on every 3248-sample push (89
 full decodes for the 30 s capture), which is far too slow for wasm.
 
-**The wasm ABI now runs the drm2 receiver (2026-10-05)**: `digital/mod.rs` dispatches "drm"
-to `drm2::DrPlugin` (a `DigitalDemodulator` wrapper around `DrmReceiver`), the wasm artifact is
-rebuilt, and the receiver gained `buffered()`/`snr_db()`/`occupancy()` for the readout. Two
-integration items remain: the receiver's `run()` re-decodes the whole buffered capture on every
-block push (the mode detection re-runs 4 demodulation passes each time), so the wasm block-fed
-bench needs the incremental processing model (track the decoded position; only demodulate the
-new samples) — the `--whole` bench mode (one 288 000-sample push) decodes in one pass but the
-wasm FDK decode still needs checking; and the en/zh docs drifted (the new 2026-10-05 section is
-en-only).
+**The wasm ABI swap was attempted and reverted (2026-10-05)**: `drm2::DrPlugin` (a
+`DigitalDemodulator` wrapper around the drm2 `DrmReceiver`, with `buffered()`/`snr_db()`/
+`occupancy()` added for the readout) was swapped into `digital/mod.rs`, and the receiver's
+`run()` was made incremental (the mode detection once, then only the new samples demodulated),
+which fixed the block-fed bench's timeout. But in wasm the FAC decode fails entirely —
+**FAC ok 0 / err ~74**, for BOTH channel-estimator paths — while the same code natively reads
+64 ok / 10 bad on the same capture. The wasm-vs-native difference (both paths fail, so it is
+not the time-Wiener) needs debugging; the dispatch was reverted to the previous receiver so
+`make ci` stays green, and the drm2 receiver keeps its native end-to-end verification.
 
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
