@@ -100,6 +100,8 @@ pub struct ChanEst {
     /// Scattered-pilot SNR correction (Dream's `snr_pil_corr`): the boosted pilots' power
     /// relative to the per-carrier average, applied before the time-Wiener sees the SNR.
     snr_pil_corr: f64,
+    /// IIR-smoothed delay-spread estimate (IR bins) for the frequency Wiener.
+    pds_len_smooth: f64,
 }
 
 /// Frequency-Wiener filter length per mode (Dream's `update_freq_wiener` tables).
@@ -177,6 +179,7 @@ impl ChanEst {
             stats: ChanStats::default(),
             wiener_snr_db: 30.0,
             snr_pil_corr: map.avg_scattered_pilot_power * n_car as f64 / map.avg_power_per_symbol.max(1e-9),
+            pds_len_smooth: mode.guard_len() as f64 * (num_pil * x) as f64 / mode.fft_size() as f64,
         };
         // Initial frequency-Wiener taps from the guard ratio and the initial SNR, as the
         // reference builds them before any symbol has arrived.
@@ -365,9 +368,14 @@ impl ChanEst {
         }
         self.last_track = self.track.process(&grid, shift);
         let t = self.last_track;
+        // IIR-smooth the delay-spread estimate before the frequency Wiener sees it: the raw
+        // estimate limit-cycles (103 <-> 4 IR bins) on a fast-fading channel, and a stable
+        // length keeps the Wiener's smoothing depth from oscillating too.
+        let lam = (-1.0 / (2.0 * (self.mode.sample_rate() as f64 / self.mode.symbol_len() as f64))).exp();
+        self.pds_len_smooth = self.pds_len_smooth * lam + t.pds_len * (1.0 - lam);
         self.update_freq_wiener(
             snr,
-            t.pds_len / self.n_car as f64,
+            self.pds_len_smooth / self.n_car as f64,
             t.pds_offset / self.n_car as f64,
         );
         let mut chan = vec![Cplx::zero(); self.n_car];
