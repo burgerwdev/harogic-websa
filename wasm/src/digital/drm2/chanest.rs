@@ -548,3 +548,121 @@ mod tests {
         assert!(mer > 12.0, "live FAC MER {mer:.1} dB is below the reference's 17.8 dB band");
     }
 }
+
+#[cfg(test)]
+mod low_snr_tests {
+    use super::*;
+    use crate::digital::drm2::ofdm::OfdmDemod;
+    use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
+    use crate::digital::drm2::sync::timesync::TimeSync;
+
+    /// Deterministic AWGN, so the measurement is reproducible without a seed file.
+    fn add_noise(iq: &mut [Cplx], amplitude: f64) {
+        let mut state = 0x2545_F491u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 8) as f64 / 8_388_608.0 - 1.0
+        };
+        for v in iq.iter_mut() {
+            v.re += next() * amplitude;
+            v.im += next() * amplitude;
+        }
+    }
+
+    /// The FAC MER a sequence of rows yields through a given per-symbol equaliser output.
+    fn fac_mer(map: &CellMap, rows: &[Vec<Cplx>], syms: &[usize], eq: impl Fn(usize, &[Cplx]) -> Vec<EqCell>) -> f64 {
+        let qam4 = crate::digital::drm2::tables::QAM4[0];
+        let (mut err, mut pow) = (0.0, 0.0);
+        for (row, sym) in rows.iter().zip(syms) {
+            let out = eq(*sym, row);
+            for c in 0..map.num_carriers {
+                if !map.cell(*sym, c).is_fac() {
+                    continue;
+                }
+                let s = out[c].sig;
+                let dr = if s.re >= 0.0 { qam4 } else { -qam4 };
+                let di = if s.im >= 0.0 { qam4 } else { -qam4 };
+                err += out[c].chan * ((s.re - dr).powi(2) + (s.im - di).powi(2));
+                pow += out[c].chan;
+            }
+        }
+        -10.0 * (err / pow.max(1e-30)).max(1e-12).log10()
+    }
+
+    /// At a low in-band SNR the new estimator must not be worse than the previous chain's
+    /// per-symbol linear equaliser — that comparison is the task's "low level" acceptance item, and
+    /// it is measurable today, before the FAC/SDC/MSC stages exist.
+    #[test]
+    fn is_not_worse_than_the_previous_equaliser_at_low_snr() {
+        use crate::digital::drm::chanest::equalize_symbol as old_equalize;
+        use crate::digital::drm::cellmap::CellMap as OldMap;
+        use crate::digital::drm::params::{RobustnessMode as OldMode, SpectrumOccupancy as OldOccupancy};
+
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
+        let old_map = OldMap::new(
+            OldMode::from_index(RobustnessMode::B.index()).unwrap(),
+            OldOccupancy::new(SpectrumOccupancy::SO_3.value()).unwrap(),
+        )
+        .expect("layout");
+
+        let raw = std::fs::read("../tests/fixtures/drm/drm_modeB_so3_48k.f32").expect("fixture");
+        let mut iq: Vec<Cplx> = raw
+            .chunks_exact(8)
+            .map(|c| {
+                Cplx::new(
+                    f64::from(f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+                    f64::from(f32::from_le_bytes([c[4], c[5], c[6], c[7]])),
+                )
+            })
+            .collect();
+        // The fixture's rms is about 0.25; 0.05 of noise puts the in-band SNR near 12 dB, which is
+        // where a real shortwave signal sits.
+        let rms = (iq.iter().map(|v| v.norm_sqr()).sum::<f64>() / iq.len() as f64).sqrt();
+        add_noise(&mut iq, rms * 0.2);
+
+        // Rows and symbol indices, as the chain produces them.
+        let mut ts = TimeSync::new(RobustnessMode::B);
+        let mut demod = OfdmDemod::new(&map);
+        let mut cells = Vec::new();
+        let mut rows = Vec::new();
+        for block in iq.chunks(3248) {
+            let _ = ts.push(block);
+            while let Some(w) = ts.next_window() {
+                if w.guard_corr.unwrap_or(0.0) < 0.5 {
+                    continue;
+                }
+                demod.demodulate(&w.samples, &mut cells);
+                rows.push(cells.clone());
+            }
+        }
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+
+        let mut est = ChanEst::new(&map);
+        let mut mer_new = None;
+        for (row, sym) in rows.iter().zip(&syms) {
+            if est.process(row, *sym, &map).is_some() {
+                if let Some(m) = est.stats().fac_mer_db {
+                    mer_new = Some(m);
+                }
+            }
+        }
+        let mer_old = fac_mer(&map, &rows, &syms, |sym, row| {
+            let old_cells: Vec<crate::digital::drm::Cplx> =
+                row.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+            let eq = old_equalize(&old_map, sym, &old_cells);
+            eq.cells
+                .iter()
+                .zip(&eq.chan)
+                .map(|(s, ch)| EqCell { sig: Cplx::new(s.re, s.im), chan: ch.norm_sqr() })
+                .collect()
+        });
+        let new = mer_new.expect("the new estimator must produce a frame");
+        eprintln!("[low-snr] FAC MER: new {new:.1} dB, previous equaliser {mer_old:.1} dB");
+        assert!(
+            new + 1.0 >= mer_old,
+            "the new estimator ({new:.1} dB) must not trail the previous equaliser ({mer_old:.1} dB)"
+        );
+    }
+}

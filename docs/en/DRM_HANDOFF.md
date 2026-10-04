@@ -324,3 +324,12 @@ references define it; the constants agree between them:
   re-phase), the PDS feeds `ChanEst`'s frequency filters, and the timing correction adjusts the
   symbol-window grid our `TimeSync` already emits. The reference's `track.rs` implements all three
   in one `PdsTracker`; Dream splits them into `CTimeSyncTrack` and `CTrack`.
+
+### Low-SNR comparison (a task-4 acceptance item, measurable today)
+
+`chanest::low_snr_tests::is_not_worse_than_the_previous_equaliser_at_low_snr` adds deterministic
+AWGN (about 12 dB in-band SNR) to the fixture and reads the FAC MER through both estimators:
+the new one reaches **20.2 dB**, the previous chain's per-symbol linear equaliser **18.8 dB**. The
+gain is the three-symbol time interpolation averaging the pilot noise, and it is the first
+quantified "low level" improvement over the previous implementation. The test asserts the new
+estimator never trails the old one by more than a decibel, so a regression here fails the suite.

@@ -275,3 +275,10 @@ Levinson 解出的 tap 接近"对 11 个格点取平均"。平均正是**平坦*
 - **落位**：SRO 校正放在 NCO 与定时级之间（重采样或重相位）；PDS 供 `ChanEst` 的频率滤波用；
   定时校正调整 `TimeSync` 已输出的符号窗栅格。参考的 `track.rs` 把三者放在一个 `PdsTracker` 里；
   Dream 则分成 `CTimeSyncTrack` 与 `CTrack`。
+
+### 低信噪比对比（task-4 的验收项之一，现在即可测）
+
+`chanest::low_snr_tests::is_not_worse_than_the_previous_equaliser_at_low_snr` 向夹具加入确定性 AWGN
+（带内 SNR 约 12 dB），并用两种估计器分别读 FAC MER：新估计器 **20.2 dB**，旧链的逐符号线性均衡器 **18.8 dB**。
+增益来自"跨 3 符号的时间插值对导频噪声的平均"，这是相对旧实现的第一项**量化**的低电平改善。
+测试断言新估计器不得落后旧实现超过 1 dB，因此此处的回归会让套件失败。
