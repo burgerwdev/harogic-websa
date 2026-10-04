@@ -2431,9 +2431,11 @@ mod tests {
                 if n == 45 { est.start_timing_tracking(); est.start_time_wiener_tracking(); }
                 if est.process(&cells, sym, w.shift, &map).is_some() {
                     let ta = est.last_track.timing_adjust;
+                    let sro = est.last_track.sro_delta_hz;
                     if ta != 0 { ts.adjust_timing(ta as f64); }
+                    if sro != 0.0 { ts.adjust_sro(sro); }
                     if n % 90 == 0 {
-                        eprintln!("[closeloop] n={n} ta={ta} pds_off={:.1} pds_len={:.1} mer={:?}", est.last_track.pds_offset, est.last_track.pds_len, est.stats().fac_mer_db);
+                        eprintln!("[closeloop] n={n} ta={ta} sro={sro:+.3} pds_off={:.1} pds_len={:.1} mer={:?}", est.last_track.pds_offset, est.last_track.pds_len, est.stats().fac_mer_db);
                     }
                     if let Some(m) = est.stats().fac_mer_db { mer = Some(m); }
                 }

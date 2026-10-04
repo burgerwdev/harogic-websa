@@ -338,6 +338,9 @@ pub struct TimeSync {
     /// The next window's start, full rate, once timing is known.
     next_start: Option<f64>,
     last_start: Option<i64>,
+    /// Accumulated sample-rate-offset correction (Hz) from the channel estimator's tracker;
+    /// the symbol spacing is scaled by `1 + sro/fs` so the window grid follows the clock error.
+    sro_hz: f64,
     /// Full-rate history, kept for the windows.
     buf: Vec<Cplx>,
     /// Absolute full-rate index of `buf[0]`.
@@ -360,6 +363,7 @@ impl TimeSync {
             mode,
             next_start: None,
             last_start: None,
+            sro_hz: 0.0,
             buf: Vec::new(),
             buf_base: 0,
         }
@@ -493,13 +497,23 @@ impl TimeSync {
         }
     }
 
+    /// Accumulate a sample-rate-offset correction (Hz) from the channel estimator's tracker.
+    pub fn adjust_sro(&mut self, delta_hz: f64) {
+        self.sro_hz += delta_hz;
+    }
+
+    /// The symbol spacing scaled by the accumulated sample-rate-offset correction.
+    fn symbol_step(&self) -> f64 {
+        self.mode.symbol_len() as f64 * (1.0 + self.sro_hz / f64::from(self.mode.sample_rate()))
+    }
+
     /// The next symbol window, when timing is known and the samples are buffered.
     pub fn next_window(&mut self) -> Option<SymbolWindow> {
         let start = self.next_start?;
         let start_i = start.round() as i64;
         let rel = start_i - self.buf_base;
         if rel < 0 {
-            self.next_start = Some(start + self.mode.symbol_len() as f64);
+            self.next_start = Some(start + self.symbol_step());
             return None;
         }
         let rel = rel as usize;
@@ -515,7 +529,7 @@ impl TimeSync {
             None => 0,
         };
         self.last_start = Some(start_i);
-        self.next_start = Some(start + self.mode.symbol_len() as f64);
+        self.next_start = Some(start + self.symbol_step());
         // Keep a symbol of margin before the next window.
         if rel > 2 * self.mode.symbol_len() {
             let drop = rel - self.mode.symbol_len();
