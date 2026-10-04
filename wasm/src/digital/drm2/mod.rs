@@ -207,99 +207,76 @@ impl DrmReceiver {
                 best = Some((m, map, rows, shifts));
             }
         }
-        let Some((mode, map, rows, _)) = best else { return };
+        let Some((mode, map, rows, shifts)) = best else { return };
         if rows.len() < mode.symbols_per_frame() {
             return;
         }
         let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
         let spf = mode.symbols_per_frame();
 
-        // Channel estimation, then the FAC/SDC/MSC, interleaved with the demodulation so the
-        // tracker's timing/SRO corrections can feed back into the TimeSync. The linear time
+        // Channel estimation and FAC/SDC/MSC over the demodulated rows the mode-detection
+        // pass just produced (the chanest harness's bit-exact path). The linear time
         // interpolation is the default (the time-Wiener path is opt-in for the tracked live
         // chain; switching paths mid-stream drops symbols, so the receiver stays on one path).
         let est = self.chanest.get_or_insert_with(|| ChanEst::new(&map));
         let fac_dec = self
             .fac_dec
             .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
-        let iq: Vec<Cplx> = self
-            .buf
-            .chunks_exact(2)
-            .map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1])))
-            .collect();
-        let mut tsync = TimeSync::new(mode);
-        let mut demod = OfdmDemod::new(&map);
-        let mut cells = Vec::new();
-        let mut n = 0usize;
+        // Channel estimation and FAC/SDC/MSC over the demodulated rows the mode-detection
+        // pass just produced (the chanest harness's bit-exact path). Re-demodulating here
+        // re-runs the timing acquisition and can differ by a border-case window, which shifts
+        // the FAC frame alignment; the stored rows are already the windows we want.
+        let est = self.chanest.get_or_insert_with(|| ChanEst::new(&map));
+        let fac_dec = self
+            .fac_dec
+            .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
         let mut bits = Vec::new();
-        for block in iq.chunks(3248) {
-            let _ = tsync.push(block);
-            while let Some(w) = tsync.next_window() {
-                if w.guard_corr.unwrap_or(0.0) < 0.5 {
-                    continue;
+        for (i, row) in rows.iter().enumerate() {
+            let sym = (i % spf + phase) % spf;
+            let shift = shifts[i];
+            let Some((out_sym, out)) = est.process(row, sym, shift, &map) else { continue };
+            self.symbols_demodulated += 1;
+            self.msc_emitted.push((out_sym, out.clone()));
+            if out_sym == 0 {
+                self.fac_cells.clear();
+                self.frame_sdc.clear();
+            }
+            let sdc_syms = map.mode().sdc_symbols();
+            if out_sym < sdc_syms {
+                for &c in &map.sdc_carriers[out_sym] {
+                    self.frame_sdc.push(out[c as usize]);
                 }
-                demod.demodulate(&w.samples, &mut cells);
-                let sym = (n % spf + phase) % spf;
-                n += 1;
-                let Some((out_sym, out)) = est.process(&cells, sym, w.shift, &map) else { continue };
-                self.symbols_demodulated += 1;
-                self.msc_emitted.push((out_sym, out.clone()));
-                if out_sym == 0 {
-                    self.fac_cells.clear();
-                    self.frame_sdc.clear();
-                }
-                let sdc_syms = map.mode().sdc_symbols();
-                if out_sym < sdc_syms {
-                    for &c in &map.sdc_carriers[out_sym] {
-                        self.frame_sdc.push(out[c as usize]);
-                    }
-                }
-                for &c in &map.fac_carriers[out_sym] {
-                    self.fac_cells.push(out[c as usize]);
-                    self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
-                }
-                if self.fac_cells.len() == 65 {
-                    let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
-                    let idx = if decoded {
-                        Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
-                    } else {
-                        0xFF
-                    };
-                    match if decoded { Fac::parse(&bits) } else { None } {
-                        Some(f) => {
-                            self.good_facs += 1;
-                            // The receiver stays on the linear time interpolation (the
-                            // time-Wiener path is opt-in for the tracked live chain; switching
-                            // paths mid-stream would drop symbols). External timing tracking
-                            // still enters after the second good FAC plus a countdown.
-                            self.tracking = true;
-                            if self.good_facs >= 2 && !self.timing_tracking {
-                                if self.delayed_cnt > 0 {
-                                    self.delayed_cnt -= 1;
-                                } else {
-                                    self.timing_tracking = true;
-                                    est.start_timing_tracking();
-                                    tsync.stop_timing_acquisition();
-                                }
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                self.fac_cells.push(out[c as usize]);
+                self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
+            }
+            if self.fac_cells.len() == 65 {
+                let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
+                let idx = if decoded {
+                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                match if decoded { Fac::parse(&bits) } else { None } {
+                    Some(f) => {
+                        self.good_facs += 1;
+                        self.tracking = true;
+                        if self.good_facs >= 2 && !self.timing_tracking {
+                            if self.delayed_cnt > 0 {
+                                self.delayed_cnt -= 1;
+                            } else {
+                                self.timing_tracking = true;
+                                est.start_timing_tracking();
                             }
-                            self.facs.push(f);
                         }
-                        None => self.fac_errors += 1,
+                        self.facs.push(f);
                     }
-                    self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
-                    self.msc_frame_indices.push(idx);
-                    self.fac_cells.clear();
+                    None => self.fac_errors += 1,
                 }
-                if self.timing_tracking {
-                    let ta = est.last_track.timing_adjust;
-                    let sro = est.last_track.sro_delta_hz;
-                    if ta != 0 {
-                        tsync.adjust_timing(ta as f64);
-                    }
-                    if sro != 0.0 {
-                        tsync.adjust_sro(sro);
-                    }
-                }
+                self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
+                self.msc_frame_indices.push(idx);
+                self.fac_cells.clear();
             }
         }
         self.mode = Some(mode);
@@ -381,6 +358,22 @@ impl DrmReceiver {
             }
             for &c in &map.msc_carriers[super_sym] {
                 super_msc[super_sym].push(cells[c as usize]);
+            }
+        }
+        // Flush the last (possibly partial) super frame, as the chanest harness does.
+        {
+            let mut all: Vec<EqCell> = Vec::new();
+            for c in super_msc.iter() {
+                all.extend_from_slice(c);
+            }
+            for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                if let Some(d) = de.push(frame) {
+                    if d.iter().all(|c| c.chan > 0.0) {
+                        if dec.decode(&d, &mut bits) {
+                            decoded.push(bits.clone());
+                        }
+                    }
+                }
             }
         }
         for b in decoded {
@@ -546,6 +539,11 @@ mod tests {
         raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
     }
 
+    fn xorshift_bits(n: usize) -> Vec<u8> {
+        let mut seed = 1u32;
+        (0..n).map(|_| { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; (seed & 1) as u8 }).collect()
+    }
+
     /// The skeleton end-to-end: the clean fixture's FAC decodes through the receiver (the first
     /// milestone of the task-9 integration; the MSC/audio stages land here next).
     #[test]
@@ -563,6 +561,19 @@ mod tests {
         assert_eq!(rx.fac_errors, 0, "the clean fixture FAC must decode without CRC errors");
         assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM TEST"), "the SDC station label");
         assert!(!rx.msc_frames.is_empty(), "the MSC must decode multiplex frames");
+        // The MSC must be bit-exact against the xorshift stream, as the chanest harness pins
+        // (the depth-5 interleaver fills over the first frames, so the stream matches with the
+        // same warm-up shift).
+        let n = 8390usize;
+        let stream = xorshift_bits(12 * n);
+        assert_eq!(rx.msc_frames.len(), 6, "6 complete MSC frames expected");
+        for (f, bits) in rx.msc_frames.iter().enumerate() {
+            assert_eq!(bits.len(), n, "MSC frame {f} length");
+        }
+        for f in 0..3 {
+            let s = (f + 6) * n;
+            assert_eq!(&rx.msc_frames[f + 3][..], &stream[s..s + n], "MSC frame {} bit-exact", f + 3);
+        }
         let ids: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
     }
