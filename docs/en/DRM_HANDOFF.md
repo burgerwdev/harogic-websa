@@ -284,3 +284,17 @@ parameter search could not, and it names the two mistakes in the attempt recorde
 So one function changes: carrier units in `rhp` and in `arg`, and a delay spread near 0.05 (from
 the tracking once it exists) instead of the guard ratio. Gate it on the clean fixture (>= 40 dB)
 before the live capture.
+
+### Measured: the reference formula alone does not close the gap
+
+Implementing the formula above faithfully — carrier units and `len_ratio` = 0.05, right after the
+lattice-index fix — still reads **17.1 dB** on the clean fixture, where the linear path reads 42.
+The reason is structural and worth knowing before the next attempt: with a small delay spread the
+correlation matrix is nearly singular, so the Levinson solve returns something close to an average
+over the eleven lattice points. Averaging is what a *flat* channel wants, but our fixture's timing
+offset makes the channel a linear phase ramp across carriers, and averaging across +/-30 carriers
+destroys it. The reference can afford that filter because its **timing and sample-rate tracking
+keeps the window aligned**, so its channel has no residual ramp; without the tracking, the local
+two-point interpolation is the better estimator. So the next step is the tracking (Dream's
+`TimeSyncTrack` and the reference's `track.rs`), and the frequency Wiener should be re-measured
+after it, not before.
