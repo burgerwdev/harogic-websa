@@ -332,3 +332,27 @@ DecDRM（含发射端）也没有定义 `RobustnessMode::E`（在 `decdrm-core` 
 `RobustnessMode::E` / `RM_ROBUSTNESS_MODE_E` / `DRM+` 均无结果）。因此模式 E / DRM+（VHF 变体）
 无法从手头的参考移植；它的 OFDM 几何、帧结构与信令需要 ETSI ES 201 980 V4（或其他接收机实现）。
 task-3/4 的其余部分都有参考支撑。
+
+## 模式 E / DRM+（VHF）：范围与状态
+
+**已实现并按规范钉住**：模式 E 几何从 ETSI ES 201 980 V4.2.1（§8.2 表 47、§8.3 表 49/50、
+§8.4 表 57/58/60/61、§8.5 表 62–66）转写，并与 gr-drm 的 `drm_config.cc` 交叉核对：96 kHz
+基带、FFT 216、保护 24、符号 240、每 100 ms 帧 40 符号、每超帧 4 帧、K −106..106（仅 SO 0）、
+244 个 FAC 单元、21 个时间参考导频、无频率参考导频、散布导频每 4 载波逐符号移 1、符号 4 与
+39 共 54 个 AFS 单元。测试钉住全部：`mode_e_geometry_matches_the_spec`（params）、
+`mode_e_layout_matches_the_spec` 与 `mode_e_afs_phases_match_table_61`（cellmap），以及
+`fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` 的模式 E 分支（tables）。
+
+**未实现**：96 kHz 数字前端。整个同步链（`freqacq`/`timesync`/`nco`/`finefreq`/`freqtrack`）
+硬编码 `params::SAMPLE_RATE`（48 000，约 20 处）；模式 E 需要 96 000，这会改变每个速率导出
+的常数（频率捕获的 FFT bin、定时低通截止、NCO 相位增量、符号率）。FAC 信道解码器也是
+DRM30 钉死的：`MlcParams::fac()` 硬编码 65 单元 FAC，而模式 E 的 FAC 是 244 单元。
+
+**验证限制**：DecDRM（参考发射机）没有定义 `RobustnessMode::E`——它的 `RobustnessMode::ALL`
+是 `[A, B, C, D]`——所以台面发射机无法产生模式 E 信号，“用 DecDRM 模式 E 信号解调并出音频”
+的验收无法满足。合成模式 E 夹具需要 OFDM *调制器*（接收机只解调），也未实现。
+
+**96 kHz 链落地后的适用范围**：DRM+（模式 E）仅 VHF——波段 I/II（47–108 MHz），96 kHz 基带，
+单业务，AAC/xHE-AAC 音频。它与 DRM30 共享 FAC/SDC/MSC 解码器（MLC/Viterbi/CRC/交织器在单元
+布局与 FAC 单元数模式感知后与模式无关），所以剩余工作是速率参数化的同步前端和模式感知的
+FAC 解码器——大致是上面的 `SAMPLE_RATE` 用途加 `MlcParams::fac_for(mode)`——不是第二台接收机。
