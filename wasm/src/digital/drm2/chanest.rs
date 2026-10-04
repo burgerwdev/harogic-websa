@@ -1064,6 +1064,298 @@ mod tests {
         assert!(labels.iter().any(|l| l == "SAN90 DRM BENCH"), "station label {labels:?}");
     }
 
+    /// Decode the live capture's MSC multiplex frames through the tracked chain and count the
+    /// frames that pass their CRC, against the reference's 40 (of 71 attempted). The MSC
+    /// configuration comes from the FAC (Qam64Sm) and the SDC (EEP 0/1), both verified above.
+    #[test]
+    #[ignore = "live diagnostic; run with --ignored --nocapture"]
+    fn live_msc_frame_count_matches_the_reference() {
+        use crate::digital::drm2::fac::{Fac, MscMode};
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::interleave::CellDeinterleaver;
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
+
+        let mut est = ChanEst::new(&map);
+        est.use_tw = true;
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        for i in 0..rows.len() {
+            if i == 45 {
+                est.tw.tracking = true;
+            }
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            if out_sym == 0 {
+                fac_cells.clear();
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                frame_indices.push(idx);
+                fac_cells.clear();
+            }
+            emitted.push((out_sym, cells));
+        }
+
+        // Assemble each super frame's MSC cells in super-frame symbol order and decode the
+        // three multiplex frames per super frame (depth-5 cell interleaver).
+        let mapping = match MscMode::Qam64Sm {
+            MscMode::Qam64Sm => Mapping::Qam64Sm,
+            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
+            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
+            MscMode::Qam16Sm => Mapping::Qam16,
+        };
+        let prot = MscProtection { part_a: 0, part_b: 1, hierarchical: 0 };
+        let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, 0);
+        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut msc_dec = MlcDecoder::new(params, 1);
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let (mut ok, mut bad) = (0usize, 0usize);
+        let mut in_partial = true;
+        let mut complete_frame = 0usize;
+        let mut decode_super = |super_msc: &mut Vec<Vec<EqCell>>, de: &mut CellDeinterleaver, msc_dec: &mut MlcDecoder, ok: &mut usize, bad: &mut usize| {
+            let mut all: Vec<EqCell> = Vec::new();
+            for c in super_msc.iter() {
+                all.extend_from_slice(c);
+            }
+            for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                let Some(deint) = de.push(frame) else { continue };
+                if deint.iter().any(|c| c.chan <= 0.0) {
+                    continue;
+                }
+                let mut b = Vec::new();
+                if msc_dec.decode(&deint, &mut b) {
+                    *ok += 1;
+                } else {
+                    *bad += 1;
+                }
+            }
+            for c in super_msc.iter_mut() {
+                c.clear();
+            }
+        };
+        for (out_sym, cells) in &emitted {
+            if *out_sym == 0 && in_partial {
+                in_partial = false;
+                complete_frame = 0;
+            } else if *out_sym == 0 {
+                complete_frame += 1;
+            }
+            if in_partial {
+                continue;
+            }
+            let Some(&frame_index) = frame_indices.get(complete_frame) else { continue };
+            if frame_index == 0xFF {
+                continue;
+            }
+            let super_sym = frame_index as usize * 15 + *out_sym;
+            if *out_sym == 0
+                && frame_index == 0
+                && (0..45).all(|s| map.msc_carriers[s].is_empty() || !super_msc[s].is_empty())
+            {
+                decode_super(&mut super_msc, &mut de, &mut msc_dec, &mut ok, &mut bad);
+            }
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+            }
+        }
+        decode_super(&mut super_msc, &mut de, &mut msc_dec, &mut ok, &mut bad);
+        eprintln!("[live-msc] ok {ok} bad {bad} (reference 40 ok)");
+        assert!(ok >= 40, "live MSC frames {ok} below the reference's 40");
+    }
+
+    /// Demultiplex the live MSC frames and parse each audio super frame, counting the valid
+    /// ones against the reference's 40. A valid super frame is the reference's precondition
+    /// for a frame to count "ok" (its FDK decode succeeds); the FDK decode itself is task-7.
+    #[test]
+    #[ignore = "live diagnostic; run with --ignored --nocapture"]
+    fn live_msc_demux_valid_frames() {
+        use crate::digital::drm2::audio::{demultiplex, parse_aac_super_frame, split_text_message, AacSuperFrameFormat};
+        use crate::digital::drm2::fac::{Fac, MscMode};
+        use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
+        use crate::digital::drm2::fec::qam::Mapping;
+        use crate::digital::drm2::interleave::CellDeinterleaver;
+        use crate::digital::drm2::sdc::{parse_entities, parse_sdc_block, Entity, MultiplexDescription};
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
+
+        // One pass: FAC frame indices, SDC cells keyed by frame index, and emitted cells.
+        let mut est = ChanEst::new(&map);
+        est.use_tw = true;
+        let mut fac_dec = MlcDecoder::new(MlcParams::fac(), 0);
+        let mut fac_cells: Vec<EqCell> = Vec::new();
+        let mut bits = Vec::new();
+        let mut emitted: Vec<(usize, Vec<EqCell>)> = Vec::new();
+        let mut frame_indices: Vec<u8> = Vec::new();
+        let mut frame_sdc: Vec<EqCell> = Vec::new();
+        let mut sdc_blocks: Vec<(u8, Vec<EqCell>)> = Vec::new();
+        let sdc_syms = map.mode().sdc_symbols();
+        for i in 0..rows.len() {
+            if i == 45 {
+                est.tw.tracking = true;
+            }
+            let Some((out_sym, cells)) = est.process(&rows[i], syms[i], shifts[i], &map) else {
+                continue;
+            };
+            if out_sym == 0 {
+                fac_cells.clear();
+                frame_sdc.clear();
+            }
+            if out_sym < sdc_syms {
+                for &c in &map.sdc_carriers[out_sym] {
+                    frame_sdc.push(cells[c as usize]);
+                }
+            }
+            for &c in &map.fac_carriers[out_sym] {
+                fac_cells.push(cells[c as usize]);
+            }
+            if fac_cells.len() == 65 {
+                let idx = if fac_dec.decode(&fac_cells, &mut bits) {
+                    Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
+                } else {
+                    0xFF
+                };
+                frame_indices.push(idx);
+                sdc_blocks.push((idx, std::mem::take(&mut frame_sdc)));
+                fac_cells.clear();
+            }
+            emitted.push((out_sym, cells));
+        }
+
+        // Decode the SDC once for the multiplex description and the audio stream's text flag.
+        let mut mux: Option<MultiplexDescription> = None;
+        let mut text_flag = false;
+        for (idx, cells) in &sdc_blocks {
+            if *idx != 0 || cells.len() != map.sdc_cells_per_superframe {
+                continue;
+            }
+            let mut sdc16 = MlcDecoder::new(MlcParams::sdc(Mapping::Qam16, map.sdc_cells_per_superframe), 0);
+            if sdc16.decode(cells, &mut bits) {
+                if let Some(b) = parse_sdc_block(&bits).filter(|b| b.crc_ok) {
+                    for e in parse_entities(&b.data) {
+                        match e {
+                            Entity::Multiplex(m) => mux = Some(m),
+                            Entity::Audio(a) => text_flag = a.text,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        let mux = mux.expect("the SDC must carry the multiplex description");
+        let stream = mux.streams.first().expect("one audio stream");
+        let fmt = AacSuperFrameFormat::aac(5, stream);
+
+        // MSC decode and demultiplex.
+        let mapping = match MscMode::Qam64Sm {
+            MscMode::Qam64Sm => Mapping::Qam64Sm,
+            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
+            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
+            MscMode::Qam16Sm => Mapping::Qam16,
+        };
+        let prot = MscProtection { part_a: 0, part_b: 1, hierarchical: 0 };
+        let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, 0);
+        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut msc_dec = MlcDecoder::new(params, 1);
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let (mut msc_ok, mut valid, mut invalid) = (0usize, 0usize, 0usize);
+        let mut in_partial = true;
+        let mut complete_frame = 0usize;
+        let mut decode_super = |super_msc: &mut Vec<Vec<EqCell>>, de: &mut CellDeinterleaver, msc_dec: &mut MlcDecoder, valid: &mut usize, invalid: &mut usize| {
+            let mut all: Vec<EqCell> = Vec::new();
+            for c in super_msc.iter() {
+                all.extend_from_slice(c);
+            }
+            for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                let Some(deint) = de.push(frame) else { continue };
+                if deint.iter().any(|c| c.chan <= 0.0) {
+                    continue;
+                }
+                let mut b = Vec::new();
+                if msc_dec.decode(&deint, &mut b) {
+                    for lf in demultiplex(&b, &mux) {
+                        if let Some(lf) = lf {
+                            let sf = split_text_message(&lf.data, text_flag);
+                            if parse_aac_super_frame(sf, &fmt).is_some() {
+                                *valid += 1;
+                            } else {
+                                *invalid += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            for c in super_msc.iter_mut() {
+                c.clear();
+            }
+        };
+        for (out_sym, cells) in &emitted {
+            if *out_sym == 0 && in_partial {
+                in_partial = false;
+                complete_frame = 0;
+            } else if *out_sym == 0 {
+                complete_frame += 1;
+            }
+            if in_partial {
+                continue;
+            }
+            let Some(&frame_index) = frame_indices.get(complete_frame) else { continue };
+            if frame_index == 0xFF {
+                continue;
+            }
+            let super_sym = frame_index as usize * 15 + *out_sym;
+            if *out_sym == 0
+                && frame_index == 0
+                && (0..45).all(|s| map.msc_carriers[s].is_empty() || !super_msc[s].is_empty())
+            {
+                decode_super(&mut super_msc, &mut de, &mut msc_dec, &mut valid, &mut invalid);
+            }
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+            }
+        }
+        decode_super(&mut super_msc, &mut de, &mut msc_dec, &mut valid, &mut invalid);
+        let _ = msc_ok;
+        eprintln!("[live-demux] valid super frames {valid}, invalid {invalid} (reference 40 ok)");
+        assert!(valid >= 40, "valid live super frames {valid} below the reference's 40");
+    }
+
     /// timing, demodulation, channel estimation, equalisation, 4-QAM demap, Viterbi, CRC —
     /// to the channel and service parameters the fixture's manifest records.
     #[test]
