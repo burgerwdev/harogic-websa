@@ -2266,6 +2266,58 @@ mod tests {
         assert!(mer > 12.0, "live FAC MER {mer:.1} dB is below the reference's 17.8 dB band");
     }
 
+    /// Diagnostic: run the drm2 chanest on the previous receiver's full-rate guard-correlation
+    /// window anchor (not the drm2 decimated TimeSync) on the live capture. If the MER jumps,
+    /// the deficit is the decimated timing acquisition; if it stays low, the deficit is the
+    /// channel-estimation stage.
+    #[test]
+    #[ignore = "live old-anchor diagnostic; run with --ignored --nocapture"]
+    fn live_capture_with_old_anchor() {
+        use crate::digital::drm2::ofdm::OfdmDemod;
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base { flat.push(v.re); flat.push(v.im); }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let old: Vec<crate::digital::drm::Cplx> =
+            corrected.iter().map(|c| crate::digital::drm::Cplx::new(c.re, c.im)).collect();
+        let Some(tacq) = crate::digital::drm::timesync::acquire(&old) else { return };
+        let g = tacq.mode.guard_len();
+        let n = tacq.mode.fft_size();
+        let ts = tacq.mode.symbol_len();
+        let start0 = tacq.guard_start + g;
+        eprintln!("[oldanchor] guard_start {} start0 {} freq_offset {:+.2}", tacq.guard_start, start0, tacq.freq_offset_hz);
+
+        let mut demod = OfdmDemod::new(&map);
+        let mut rows: Vec<Vec<Cplx>> = Vec::new();
+        let mut cells = Vec::new();
+        let mut start = start0;
+        while start + n <= corrected.len() {
+            demod.demodulate(&corrected[start..start + n], &mut cells);
+            rows.push(cells.clone());
+            start += ts;
+        }
+        let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
+        let spf = RobustnessMode::B.symbols_per_frame();
+        let syms: Vec<usize> = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
+        let mut est = ChanEst::new(&map);
+        let mut mer = None;
+        for i in 0..rows.len() {
+            if est.process(&rows[i], syms[i], 0, &map).is_some() {
+                if let Some(m) = est.stats().fac_mer_db { mer = Some(m); }
+            }
+        }
+        eprintln!("[oldanchor] phase {phase} rows {} FAC MER {mer:?}", rows.len());
+    }
+
     /// Diagnostic: close the timing loop — feed the tracker's `timing_adjust` back into the
     /// TimeSync's window positions on a second pass — and see whether the live MER moves. Result:
     /// −10.4 dB (the open loop reads −8.6), so the simple timing loop is not the deficit; the
