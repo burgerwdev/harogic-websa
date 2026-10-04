@@ -4,6 +4,7 @@
 //! deleted once this one decodes; nothing in this chain depends on it.
 
 pub mod cplx;
+pub mod fir;
 pub mod fft;
 
 pub use cplx::Cplx;
