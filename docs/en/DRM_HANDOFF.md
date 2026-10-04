@@ -244,7 +244,10 @@ Work lands stage by stage, each with tests that cross-check the reference's own 
 | `drm2::cellmap` + `drm2::tables` — the DRM cell layout (modes A–D × occupancies) | done | ported from this repository's own previous implementation (MIT, spec-derived, bench-verified); an equivalence test checks every legal mode/occupancy pair cell by cell, classification and pilot values included, plus spec anchors (65 FAC cells, mode B / 10 kHz at 2337 MSC cells per frame, three continuous pilots per symbol) |
 | `drm2::ofdm` — FFT demodulation into the map's cells | done | agrees with the previous chain's demodulator sample for sample on the fixture's real windows; scattered-pilot ratios consistent (1387 pilots, spread 0.27) |
 | `drm2::sync::framesync` — frame phase from the time pilots | done | the clean fixture syncs with a phase that survives shifting the search window by whole frames, and the bench capture syncs too |
-| `drm2::chanest`, `fac`, `sdc`, `mlc`, `msc`, `audio` | pending | see the task list |
+| `drm2::sync::nco` — carrier-offset removal between acquisition and demodulation | done | removes a tone at the measured offset exactly and joins consecutive blocks without a phase step |
+| `drm2::dsp::levinson` — the Haykin recursion Dream's Wiener filters use | done | diagonal and 2x2 systems (the first version was wrong; a diagonal-system test caught it) |
+| `drm2::chanest` — pilot lattice, time interpolation, frequency Wiener, FAC-decision MER | in progress | the structure is in and the lattice-indexed frequency window fixed channels that came out exactly zero (an offset-plus-spacing formula read non-pilot carriers). OPEN: the equalised FAC constellation is a 4-QAM turned by about 45 degrees, so the MER reads negative; the two acceptance tests are ignored with that evidence. Lead: the phase convention shared by the pilot reference values, the FAC mapping and the estimator — the previous chain's equaliser on the same windows is the fastest way to see it. |
+| `drm2::fac`, `sdc`, `mlc`, `msc`, `audio` | pending | see the task list |
 
 Two facts worth carrying forward:
 
