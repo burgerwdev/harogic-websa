@@ -51,6 +51,10 @@ pub struct ChanStats {
 pub struct ChanEst {
     mode: RobustnessMode,
     n_car: usize,
+    kmin: i32,
+    /// Running total of the symbol-window timing shifts (samples), for the per-carrier
+    /// phase rotation the time interpolation applies when the timing moves.
+    cum_shift: i64,
     /// Scattered-pilot carrier spacing within one symbol.
     freq_int: usize,
     /// Symbols between two occurrences of the same carrier's pilot.
@@ -58,11 +62,10 @@ pub struct ChanEst {
     /// Per-symbol prototype: for each position in the `time_int` cycle, the pilot carriers.
     lattice: Vec<Vec<usize>>,
     /// Recent symbols: the super-frame symbol index, the pilot estimates on the full carrier
-    /// grid (zero where absent) and the symbol's own demodulated cells — the emitted symbol
-    /// must be equalised with ITS cells and ITS channel estimate, not with the newest symbol's
-    /// cells, or the scattered pilots' symbol-dependent reference phase rotates the estimate
-    /// against the data.
-    history: VecDeque<(usize, Vec<Cplx>, Vec<Cplx>)>,
+    /// grid (zero where absent), the symbol's own demodulated cells and the cumulative timing
+    /// shift at that symbol — the emitted symbol must be equalised with ITS cells and ITS
+    /// channel estimate, and the pilots rotated to the output symbol's timing.
+    history: VecDeque<(usize, Vec<Cplx>, Vec<Cplx>, i64)>,
     /// Pilot-grid carrier spacing (the per-symbol shift, `x` in the spec's phase formula).
     x: usize,
     /// Number of pilot-grid carriers (`(n_car − 1) / x + 1`).
@@ -134,6 +137,8 @@ impl ChanEst {
         let mut est = Self {
             mode,
             n_car,
+            kmin: map.kmin,
+            cum_shift: 0,
             freq_int: freq_int.max(1),
             time_int: time_int.max(1),
             lattice,
@@ -226,7 +231,8 @@ impl ChanEst {
                 h[c] = cells[c] / r;
             }
         }
-        self.history.push_back((sym, h, cells.to_vec()));
+        self.cum_shift += shift;
+        self.history.push_back((sym, h, cells.to_vec(), self.cum_shift));
         // The emitted symbol must have a lattice symbol on BOTH sides for the time
         // interpolation, so the history holds `2*time_int+1` symbols and the middle one is
         // emitted (a one-sided history would degrade the interpolation to a hold).
@@ -237,25 +243,41 @@ impl ChanEst {
             return None;
         }
         // 2. Time interpolation: the symbol to emit is `time_int` back, so both of its
-        //    neighbouring lattice symbols are available for every carrier.
+        //    neighbouring lattice symbols are available for every carrier. Each pilot is
+        //    rotated to the emitted symbol's timing (a window shift of Δ samples is a
+        //    per-carrier phase ramp 2π·k·Δ/N).
         let mid = self.time_int;
-        let (out_sym, _, out_data) = self.history[mid].clone();
+        let (out_sym, _, out_data, out_cum) = self.history[mid].clone();
+        let kmin = self.kmin;
+        let fft_n = self.mode.fft_size();
+        let rot = |v: Cplx, c: usize, dshift: i64| -> Cplx {
+            if dshift == 0 {
+                v
+            } else {
+                let k = (kmin + c as i32) as f64;
+                v * Cplx::from_polar(
+                    1.0,
+                    2.0 * core::f64::consts::PI * k * dshift as f64 / fft_n as f64,
+                )
+            }
+        };
         let mut dense = vec![Cplx::zero(); self.n_car];
-        let hist: Vec<(usize, Vec<Cplx>, Vec<Cplx>)> = self.history.iter().cloned().collect();
+        let hist: Vec<(usize, Vec<Cplx>, Vec<Cplx>, i64)> = self.history.iter().cloned().collect();
         for c in 0..self.n_car {
             // Find the nearest earlier and later symbols with a pilot at c.
             let mut before: Option<(usize, Cplx)> = None;
             let mut after: Option<(usize, Cplx)> = None;
-            for (idx, (_s, row, _d)) in hist.iter().enumerate() {
+            for (idx, (_s, row, _d, cum)) in hist.iter().enumerate() {
                 if row[c].norm_sqr() == 0.0 {
                     continue;
                 }
+                let v = rot(row[c], c, out_cum - *cum);
                 let d = idx as isize - mid as isize;
                 if d <= 0 && before.is_none_or(|(bd, _)| (-d) < bd as isize) {
-                    before = Some(((-d) as usize, row[c]));
+                    before = Some(((-d) as usize, v));
                 }
                 if d >= 0 && after.is_none_or(|(ad, _)| d < ad as isize) {
-                    after = Some((d as usize, row[c]));
+                    after = Some((d as usize, v));
                 }
             }
             dense[c] = match (before, after) {
@@ -389,12 +411,14 @@ mod tests {
 
     /// Run the chain's front (timing, demodulation) and the estimator over a capture; return
     /// the last FAC MER and the estimator's geometry.
-    /// Collect the demodulated rows and their super-frame symbol indices for a capture.
-    fn rows_and_syms(map: &CellMap, iq: &[Cplx]) -> (Vec<Vec<Cplx>>, Vec<usize>) {
+    /// Collect the demodulated rows, their super-frame symbol indices and the timing shift
+    /// of each window for a capture.
+    fn rows_and_syms(map: &CellMap, iq: &[Cplx]) -> (Vec<Vec<Cplx>>, Vec<usize>, Vec<i64>) {
         let mut ts = TimeSync::new(RobustnessMode::B);
         let mut demod = OfdmDemod::new(map);
         let mut cells = Vec::new();
         let mut rows = Vec::new();
+        let mut shifts = Vec::new();
         for block in iq.chunks(3248) {
             let _ = ts.push(block);
             while let Some(w) = ts.next_window() {
@@ -403,15 +427,16 @@ mod tests {
                 }
                 demod.demodulate(&w.samples, &mut cells);
                 rows.push(cells.clone());
+                shifts.push(w.shift);
             }
         }
         if rows.is_empty() {
-            return (rows, Vec::new());
+            return (rows, Vec::new(), Vec::new());
         }
         let phase = crate::digital::drm2::framesync::FrameSync::new(map).search(&rows).phase;
         let spf = RobustnessMode::B.symbols_per_frame();
         let syms = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
-        (rows, syms)
+        (rows, syms, shifts)
     }
 
     /// The front end as the receiver runs it: coarse acquisition, remove it, estimate what is
@@ -429,7 +454,7 @@ mod tests {
         let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
         nco.process(&mut corrected);
         // What the coarse step left behind, measured on the continuous pilots and removed.
-        let (rows, syms) = rows_and_syms(&map, &corrected);
+        let (rows, syms, _) = rows_and_syms(&map, &corrected);
         let mut fine = 0.0;
         if let Some(f) = crate::digital::drm2::sync::finefreq::estimate_residual_hz(&map, &rows, &syms)
         {
@@ -437,7 +462,7 @@ mod tests {
             let mut nco2 = crate::digital::drm2::sync::nco::Nco::new(f);
             nco2.process(&mut corrected);
         }
-        let (rows, syms) = rows_and_syms(&map, &corrected);
+        let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
         eprintln!(
             "[chanest] coarse {coarse:.1} Hz, fine {fine:+.2} Hz, rows {}",
             rows.len()
@@ -445,13 +470,26 @@ mod tests {
         // Feed the estimator and keep the last frame's FAC MER.
         let mut est = ChanEst::new(&map);
         let mut mer = None;
-        for (row, sym) in rows.iter().zip(&syms) {
-            if est.process(row, *sym, 0, &map).is_some() {
+        for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
+            if est.process(row, *sym, *shift, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
                     mer = Some(m);
                 }
             }
         }
+        // One IR sample spans fft_len / (num_pil · x) input samples.
+        let ir_ms = map.mode().fft_size() as f64
+            / (est.num_pil * est.x) as f64
+            / 48_000.0
+            * 1000.0;
+        eprintln!(
+            "[chanest] pds_len_ir={:.1} ({:.2} ms) pds_off_ir={:.1} sro_applied_hz={:+.3} sro_acq={}",
+            est.last_track.pds_len,
+            est.last_track.pds_len * ir_ms,
+            est.last_track.pds_offset,
+            est.track.applied_sro_hz(),
+            est.track.sro_acquisition,
+        );
         (mer, est.freq_int, est.time_int)
     }
 
@@ -482,10 +520,10 @@ mod tests {
             let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse + extra);
             nco.process(&mut iq);
             let mut est = ChanEst::new(&map);
-            let (rows, syms) = rows_and_syms(&map, &iq);
+            let (rows, syms, shifts) = rows_and_syms(&map, &iq);
             let mut mer = f64::NAN;
-            for (row, sym) in rows.iter().zip(&syms) {
-                if est.process(row, *sym, 0, &map).is_some() {
+            for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
+                if est.process(row, *sym, *shift, &map).is_some() {
                     if let Some(m) = est.stats().fac_mer_db {
                         mer = m;
                     }
@@ -538,7 +576,7 @@ mod tests {
         let mut corrected = base.clone();
         let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
         nco.process(&mut corrected);
-        let (rows, _) = rows_and_syms(&map, &corrected);
+        let (rows, _, shifts) = rows_and_syms(&map, &corrected);
         let spf = RobustnessMode::B.symbols_per_frame();
         let mut out = String::new();
         for phase in 0..spf {
@@ -546,7 +584,7 @@ mod tests {
             let mut mer = f64::NAN;
             for (i, row) in rows.iter().enumerate() {
                 let sym = (i % spf + phase) % spf;
-                if est.process(row, sym, 0, &map).is_some() {
+                if est.process(row, sym, shifts[i], &map).is_some() {
                     if let Some(m) = est.stats().fac_mer_db {
                         mer = m;
                     }
@@ -707,6 +745,7 @@ mod low_snr_tests {
         let mut demod = OfdmDemod::new(&map);
         let mut cells = Vec::new();
         let mut rows = Vec::new();
+        let mut shifts = Vec::new();
         for block in iq.chunks(3248) {
             let _ = ts.push(block);
             while let Some(w) = ts.next_window() {
@@ -715,6 +754,7 @@ mod low_snr_tests {
                 }
                 demod.demodulate(&w.samples, &mut cells);
                 rows.push(cells.clone());
+                shifts.push(w.shift);
             }
         }
         let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
@@ -723,8 +763,8 @@ mod low_snr_tests {
 
         let mut est = ChanEst::new(&map);
         let mut mer_new = None;
-        for (row, sym) in rows.iter().zip(&syms) {
-            if est.process(row, *sym, 0, &map).is_some() {
+        for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
+            if est.process(row, *sym, *shift, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
                     mer_new = Some(m);
                 }
@@ -797,6 +837,7 @@ mod fading_tests {
         let mut demod = OfdmDemod::new(&map);
         let mut cells = Vec::new();
         let mut rows = Vec::new();
+        let mut shifts = Vec::new();
         for block in iq.chunks(3248) {
             let _ = ts.push(block);
             while let Some(w) = ts.next_window() {
@@ -805,6 +846,7 @@ mod fading_tests {
                 }
                 demod.demodulate(&w.samples, &mut cells);
                 rows.push(cells.clone());
+                shifts.push(w.shift);
             }
         }
         let phase = crate::digital::drm2::framesync::FrameSync::new(&map).search(&rows).phase;
@@ -829,8 +871,8 @@ mod fading_tests {
             -10.0 * (err / pow.max(1e-30)).max(1e-12).log10()
         };
         let mut est = ChanEst::new(&map);
-        for (row, sym) in rows.iter().zip(&syms) {
-            let _ = est.process(row, *sym, 0, &map);
+        for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
+            let _ = est.process(row, *sym, *shift, &map);
         }
         let mer_new = est.stats().fac_mer_db.expect("a frame through the new estimator");
         let mer_old = mer_of(&|sym, row| {

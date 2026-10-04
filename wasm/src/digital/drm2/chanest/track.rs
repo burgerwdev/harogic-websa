@@ -308,6 +308,11 @@ impl PdsTracker {
             .collect()
     }
 
+    /// The cumulative sample-rate-offset correction emitted so far (Hz), for diagnostics.
+    pub fn applied_sro_hz(&self) -> f64 {
+        self.applied_hz
+    }
+
     /// Restart the sample-rate-offset measurement (after an external correction, whose
     /// effect would otherwise pollute the drift history).
     pub fn reset_sro(&mut self) {
