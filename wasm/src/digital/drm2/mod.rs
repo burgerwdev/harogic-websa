@@ -36,6 +36,7 @@
 pub mod dsp;
 pub mod cellmap;
 pub mod ofdm;
+pub mod framesync;
 pub mod params;
 pub mod tables;
 pub mod sync;
