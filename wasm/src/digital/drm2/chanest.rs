@@ -188,13 +188,11 @@ impl ChanEst {
                 let h = levinson(&rpp, &rhp);
                 (0..l)
                     .map(|i| {
-                        // The reference's tap phase (`PI·pos·(len_ratio + 2·offs_ratio)`)
-                        // positions the delay spread, but with the tracker's delay-spread
-                        // estimate still inflated by the unresolved timing offset it rotates
-                        // the channel estimate on a flat signal and breaks the FAC phase.
-                        // Real taps keep the frequency-direction smoothing without the phase
-                        // error; the phase term returns once the timing tracking lands.
-                        Cplx::from_polar(h[i], 0.0)
+                        // The reference's tap phase positions the delay spread:
+                        // `π·pos·(len_ratio + 2·offs_ratio)` with `pos = i·x − diff`.
+                        let pos = (i * x) as f64 - diff as f64;
+                        let arg = core::f64::consts::PI * pos * (len_ratio + 2.0 * offs_ratio);
+                        Cplx::from_polar(h[i], arg)
                     })
                     .collect()
             })
@@ -225,63 +223,16 @@ impl ChanEst {
     pub fn process(&mut self, cells: &[Cplx], sym: usize, shift: i64, map: &CellMap) -> Option<(usize, Vec<EqCell>)> {
         let fft_n = self.mode.fft_size() as f64;
         let cycle = sym % self.time_int;
-        // Measure the per-symbol window offset from the scattered pilots' phase ramp and
-        // de-rotate the cells by it. The frequency-Wiener taps are real (the delay-spread phase
-        // term is held off until the timing tracker lands), and real taps cannot interpolate a
-        // carrier ramp without shrinking the magnitude — which corrupts 64-QAM. Removing the
-        // ramp first keeps the channel flat for the frequency interpolation.
-        let mut offset = 0.0f64;
-        let mut flat = false;
-        {
-            let pilots: Vec<(usize, Cplx)> = self.lattice[cycle]
-                .iter()
-                .filter_map(|&c| {
-                    let r = map.pilot(sym, c);
-                    if r.norm_sqr() > 0.0 { Some((c, cells[c] / r)) } else { None }
-                })
-                .collect();
-            let mut acc = 0.0f64;
-            let mut n = 0usize;
-            for w in pilots.windows(2) {
-                let (c1, h1) = w[0];
-                let (c2, h2) = w[1];
-                if h1.norm() < 1e-3 || h2.norm() < 1e-3 {
-                    continue;
-                }
-                let dphase = (h2 / h1).arg();
-                let dk = (c2 as i32 - c1 as i32) as f64;
-                acc += dphase * fft_n / (2.0 * core::f64::consts::PI * dk);
-                n += 1;
-            }
-            if n > 0 {
-                offset = acc / n as f64;
-                // Only de-rotate when the channel is genuinely flat: on a frequency-selective
-                // channel the pilots' phase slope is the channel's own group delay, not a window
-                // offset, and removing it would shift the impulse response. A flat channel has
-                // constant pilot magnitude; an echo / delay spread makes the magnitude ripple.
-                let mags: Vec<f64> = pilots.iter().map(|(_, h)| h.norm()).collect();
-                let mag_mean = mags.iter().sum::<f64>() / mags.len() as f64;
-                let mag_var = mags.iter().map(|m| (m - mag_mean).powi(2)).sum::<f64>() / mags.len() as f64;
-                flat = mag_var < 1e-2 * mag_mean * mag_mean;
-            }
-        }
-        let mut de = cells.to_vec();
-        if flat {
-            for (c, v) in de.iter_mut().enumerate() {
-                let k = (self.kmin + c as i32) as f64;
-                *v = *v * Cplx::from_polar(1.0, -2.0 * core::f64::consts::PI * k * offset / fft_n);
-            }
-        }
-        // 1. The pilot lattice of this symbol (de-rotated).
+        // 1. The pilot lattice of this symbol.
         let mut h = vec![Cplx::zero(); self.n_car];
         for &c in &self.lattice[cycle] {
             let r = map.pilot(sym, c);
             if r.norm_sqr() > 0.0 {
-                h[c] = de[c] / r;
+                h[c] = cells[c] / r;
             }
         }
         self.cum_shift += shift;
-        self.history.push_back((sym, h, de, self.cum_shift));
+        self.history.push_back((sym, h, cells.to_vec(), self.cum_shift));
         // The emitted symbol must have a lattice symbol on BOTH sides for the time
         // interpolation, so the history holds `2*time_int+1` symbols and the middle one is
         // emitted (a one-sided history would degrade the interpolation to a hold).
