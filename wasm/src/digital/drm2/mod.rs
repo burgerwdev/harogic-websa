@@ -54,6 +54,7 @@ use crate::digital::drm2::chanest::ChanEst;
 use crate::digital::drm2::fac::Fac;
 use crate::digital::drm2::fec::mlc::{MlcDecoder, MlcParams};
 use crate::digital::drm2::fec::qam::EqCell;
+use crate::digital::drm2::interleave::CellDeinterleaver;
 use crate::digital::drm2::ofdm::OfdmDemod;
 use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
 use crate::digital::drm2::sync::timesync::TimeSync;
@@ -76,6 +77,12 @@ pub struct DrmReceiver {
     /// index once the FAC decodes.
     frame_sdc: Vec<EqCell>,
     sdc_blocks: Vec<(u8, Vec<EqCell>)>,
+    /// MSC cells per emitted symbol (out_sym, cells) and the FAC frame indices, for the
+    /// super-frame assembly after the pass.
+    msc_emitted: Vec<(usize, Vec<EqCell>)>,
+    msc_frame_indices: Vec<u8>,
+    /// Decoded MSC multiplex frames (information bits).
+    pub msc_frames: Vec<Vec<u8>>,
     /// Acquisition/tracking state (Dream's RxState).
     tracking: bool,
     timing_tracking: bool,
@@ -116,6 +123,9 @@ impl DrmReceiver {
             sdc_ok: 0,
             frame_sdc: Vec::new(),
             sdc_blocks: Vec::new(),
+            msc_emitted: Vec::new(),
+            msc_frame_indices: Vec::new(),
+            msc_frames: Vec::new(),
         }
     }
 
@@ -187,6 +197,7 @@ impl DrmReceiver {
             }
             let Some((out_sym, out)) = est.process(row, *sym, *shift, &map) else { continue };
             self.symbols_demodulated += 1;
+            self.msc_emitted.push((out_sym, out.clone()));
             if self.tracking && self.timing_tracking {
                 // The tracker's timing/SRO corrections reach the TimeSync here once the loop
                 // is wired; the diagnostic shows the timing controller needs tuning first.
@@ -225,13 +236,77 @@ impl DrmReceiver {
                     None => self.fac_errors += 1,
                 }
                 self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
+                self.msc_frame_indices.push(idx);
                 self.fac_cells.clear();
             }
         }
         self.mode = Some(mode);
         self.frame_phase = phase;
         self.decode_sdc(&map);
+        self.decode_msc(&map);
         self.map = Some(map);
+    }
+
+    /// Assemble the MSC super frames from the emitted cells and decode them (cell deinterleave
+    /// + MLCC). The multiplex-frame boundary is every N_MUX cells, not 15 symbols, so the
+    /// sym-order concatenation is chunked by cell count exactly as the bit-exact test does.
+    fn decode_msc(&mut self, map: &CellMap) {
+        use crate::digital::drm2::fac::MscMode;
+        use crate::digital::drm2::fec::mlc::MscProtection;
+        use crate::digital::drm2::fec::qam::Mapping;
+        let mapping = match MscMode::Qam64Sm {
+            MscMode::Qam64Sm => Mapping::Qam64Sm,
+            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
+            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
+            MscMode::Qam16Sm => Mapping::Qam16,
+        };
+        let params = MlcParams::msc(mapping, map.msc_cells_per_frame, MscProtection { part_a: 0, part_b: 1, hierarchical: 0 }, 0);
+        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
+        let mut dec = MlcDecoder::new(params, 1);
+        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
+        let mut in_partial = true;
+        let mut complete_frame = 0usize;
+        let mut bits = Vec::new();
+        for (out_sym, cells) in &self.msc_emitted {
+            if *out_sym == 0 && in_partial {
+                in_partial = false;
+                complete_frame = 0;
+            } else if *out_sym == 0 {
+                complete_frame += 1;
+            }
+            if in_partial {
+                continue;
+            }
+            let Some(&frame_index) = self.msc_frame_indices.get(complete_frame) else { continue };
+            if frame_index == 0xFF {
+                continue;
+            }
+            let super_sym = frame_index as usize * 15 + *out_sym;
+            if *out_sym == 0
+                && frame_index == 0
+                && (0..45).all(|s| map.msc_carriers[s].is_empty() || !super_msc[s].is_empty())
+            {
+                let mut all: Vec<EqCell> = Vec::new();
+                for c in super_msc.iter() {
+                    all.extend_from_slice(c);
+                }
+                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                    if let Some(d) = de.push(frame) {
+                        if d.iter().all(|c| c.chan > 0.0) {
+                            if dec.decode(&d, &mut bits) {
+                                self.msc_frames.push(bits.clone());
+                            }
+                        }
+                    }
+                }
+                for c in super_msc.iter_mut() {
+                    c.clear();
+                }
+            }
+            for &c in &map.msc_carriers[super_sym] {
+                super_msc[super_sym].push(cells[c as usize]);
+            }
+        }
     }
 
     /// Decode the SDC blocks collected so far (the frame-0 block of each super frame) into the
@@ -290,13 +365,14 @@ mod tests {
         rx.push(&iq);
         rx.run();
         eprintln!(
-            "[rx] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?}",
-            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label
+            "[rx] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?} msc_frames={}",
+            rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label, rx.msc_frames.len()
         );
         assert!(rx.locked(), "the receiver must lock on the clean fixture");
         assert!(rx.facs.len() >= 8, "at least 8 FAC blocks, got {}", rx.facs.len());
         assert_eq!(rx.fac_errors, 0, "the clean fixture FAC must decode without CRC errors");
         assert_eq!(rx.station_label.as_deref(), Some("SAN90 DRM TEST"), "the SDC station label");
+        assert!(!rx.msc_frames.is_empty(), "the MSC must decode multiplex frames");
         let ids: Vec<u8> = rx.facs.iter().map(|f| f.channel.frame_index).collect();
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
     }
