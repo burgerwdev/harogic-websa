@@ -423,7 +423,7 @@ impl ChanEst {
             // feedback collapse of the Wiener regularisation on a delay-spread channel.
             let snr_inst = (1.0 / e.max(1e-12)).max(1.0);
             let sym_rate = f64::from(self.mode.sample_rate()) / self.mode.symbol_len() as f64;
-            iir1(&mut self.snr_linear, snr_inst, (-1.0 / (5.0 * sym_rate)).exp());
+            iir1(&mut self.snr_linear, snr_inst, (-1.0 / (30.0 * sym_rate)).exp());
             self.fac_err = 0.0;
             self.fac_pow = 0.0;
             self.fac_cnt = 0;
