@@ -769,6 +769,7 @@ mod tests {
         assert_eq!(m.protection_a, 0);
         assert_eq!(m.protection_b, 1);
         assert_eq!(m.streams.len(), 1, "one audio stream");
+        eprintln!("[sdc] stream len_a={} len_b={}", m.streams[0].len_a, m.streams[0].len_b);
     }
 
     /// The clean fixture's MSC must decode bit-exact: the MSC payload is a deterministic
