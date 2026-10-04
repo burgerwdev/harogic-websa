@@ -24,8 +24,12 @@ pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
         // AUs, station SAN90 DRM BENCH) — its DrPlugin (drm2::DrPlugin) implements the same
         // DigitalDemodulator and is one dispatch line away — but in wasm the FAC decode
         // fails entirely (0 ok / ~74 err, both channel-estimator paths), a wasm-vs-native
-        // difference that still needs debugging. The previous receiver keeps the browser
-        // path until that lands; see the handoff's wasm ABI swap note.
+        // difference that still needs debugging. The constellation probe adds a clue: the
+        // drm2 FAC cells read ~2.37x larger than the previous receiver's (2.37 =
+        // sqrt(PILOT_POWER) x channel gain, i.e. the PILOT cell amplitude), suggesting the
+        // fac_constellation collects pilot cells instead of FAC data cells in wasm.
+        // The previous receiver keeps the browser path until that lands; see the handoff's
+        // wasm ABI swap note.
         "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
         _ => None,
     }

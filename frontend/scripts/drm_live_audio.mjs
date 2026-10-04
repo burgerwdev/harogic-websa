@@ -84,6 +84,18 @@ if (whole) {
 }
 readMessages();
 
+const cap2 = 512;
+const cptr = dsp.alloc(cap2 * 2 * 8);
+const ccount = dsp.exports.websa_dsp_drm_constellation(handle, cptr, cap2);
+const cview = dsp.f64View(cptr, cap2 * 2);
+let csum = 0, cre = 0, cim = 0;
+for (let i = 0; i < ccount; i++) {
+	const re = cview[2 * i], im = cview[2 * i + 1];
+	csum += Math.sqrt(re * re + im * im);
+	cre += re;
+	cim += im;
+}
+console.error(`[constellation] n=${ccount} meanAbs=${ccount ? (csum / ccount).toFixed(4) : '-'} meanRe=${ccount ? (cre / ccount).toFixed(4) : '-'} meanIm=${ccount ? (cim / ccount).toFixed(4) : '-'} first=[${ccount ? cview[0].toFixed(4) + ',' + cview[1].toFixed(4) : '-'}]`);
 const rate = dsp.exports.websa_dsp_drm_audio_rate(handle);
 const pcmCap = 48000 * 20;
 const pcmPtr = dsp.alloc(pcmCap * 2);

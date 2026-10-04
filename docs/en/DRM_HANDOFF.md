@@ -127,6 +127,13 @@ which fixed the block-fed bench's timeout. But in wasm the FAC decode fails enti
 not the time-Wiener) needs debugging; the dispatch was reverted to the previous receiver so
 `make ci` stays green, and the drm2 receiver keeps its native end-to-end verification.
 
+A constellation probe narrows it further: dumping `fac_constellation` through the existing
+`websa_dsp_drm_constellation` export shows the drm2 FAC cells reading **~2.37x larger** than the
+previous receiver's (mean |cell| 2.37 vs 1.007; the first cell 7.3). 2.37 = sqrt(PILOT_POWER) x
+the channel gain, i.e. the *pilot* cell amplitude — suggesting `fac_constellation` (or the FAC
+cell collection) reads pilot cells instead of FAC data cells in the wasm build. Both cellmaps
+use the same PILOT_POWER conventions, so the difference is wasm-specific; needs a fresh session.
+
 Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
 `TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
 frame-sync score (this port's `FrameSync::search` correlates time pilots directly, so it is
