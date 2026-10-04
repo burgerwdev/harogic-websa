@@ -38,6 +38,55 @@ Open:
   physical-layer suites pass on the bench capture, so the Wiener port below is only worth
   doing if the live bench shows a need.
 
+## 2026-10-05: the live deficit is the missing continuous frequency tracking
+
+`/tmp/live30.f32` was independently verified this session: converting it to a stereo WAV
+(I left / Q right, 48 kHz) and running `decdrm rx --format iq --no-auto-flip` gives
+**FAC ok 64 bad 9 · MSC 71 (ok 40) · 200 audio frames (115 concealed) · MER 17.8 dB**,
+station `SAN90 DRM BENCH`, delay 0.8 ms, Doppler ~1.4 Hz, SRO −0.14 Hz. The sample is
+therefore trustworthy — the overdriven RMS (64, vs the clean fixture's 0.25) is the
+DDC digital-gain quirk `DRM_BENCH.md` already documents, not a defect: the reference
+locks at exactly this level. Normalising the amplitude does not help, because the
+channel/propagation is what defeats us, not the level.
+
+The root cause, measured directly on the demodulated pilots:
+
+- The residual carrier offset (after the one-shot coarse+fine correction) **drifts slowly
+  over seconds** between about −8 and +13 Hz (mean +2.4 Hz). A one-shot fine correction
+  removes only the mean; the drifting residual (from the sample-rate offset) keeps rotating
+  the channel, which the 3-symbol time interpolation cannot follow. The reference tracks the
+  offset continuously from the frequency pilots (`framesync.rs`'s `freq_delta_hz`), which this
+  port lacked.
+- The symptom is a smeared impulse response: the tracker's delay-spread estimate reads
+  **103 IR bins (10.6 ms)** against the reference's 0.8 ms, so the frequency Wiener gets a
+  ~5× too-wide length and destroys the equalisation (the old limit-cycle diagnosis was a
+  red herring; the spread is not real).
+- Simulating the reference's frequency tracking post-hoc — rotate each symbol's cells by
+  the IIR-smoothed pilot phase advance — is **necessary** but not yet sufficient: it drops the
+  delay-spread estimate to **4 IR bins (0.4 ms)** and reads **3 dB** when the estimate lands in
+  that state, but the delay-spread estimate still limit-cycles 103 ↔ 4 IR bins (the
+  grid→tracker→Wiener feedback the old diagnosis found), so the run lands at 0.85 dB half the
+  time. The time-interpolation choice (linear vs time-Wiener, fixed vs Doppler-adapted σ) makes
+  no difference until the frequency is tracked; neither does a ±40 ppm source-rate sweep.
+  A `sync::freqtrack` stage (port of DecDRM's `freq_delta_hz` + `sro_estimate`) is now in the
+  tree with a unit test and is wired into the `chanest` harness's `run()` in place of the
+  one-shot `finefreq`.
+
+So the continuous frequency tracking is now ported (`sync::freqtrack`, used by the chanest
+harness); what remains is to **break the delay-spread limit cycle** — the 103 ↔ 4 IR-bin
+oscillation of the grid→tracker→Wiener feedback — and then the SRO/timing closed loop, which
+can only start once a FAC decodes. The reference's delay-spread estimate is stable at ~8 IR
+bins because its channel estimate is clean; ours is not until the frequency is fully tracked
+and the window is held by the tracking loop.
+
+Also learned: the FFT-window half-guard offset is **not** the deficit. Removing the `+ g/2` in
+`TimeSync` (matching DecDRM's window) improves the clean-fixture MER to 47.9 dB but degrades the
+frame-sync score (this port's `FrameSync::search` correlates time pilots directly, so it is
+sensitive to the window phase ramp — DecDRM's correlates adjacent pairs and is not) and breaks
+six clean-fixture tests, so it was reverted. Both window positions read ~1 dB on the live
+capture. The frequency tracking is the real fix; the window position is a separate, later
+question tied to porting DecDRM's adjacent-pair frame sync.
+
 ## Bench facts that took time to learn
 
 - Ref level **-35 to -45 dBm**: in-band contrast is then 25 to 27 dB. At -40 dBm it was 6 dB and

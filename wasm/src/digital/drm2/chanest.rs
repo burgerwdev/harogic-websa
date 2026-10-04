@@ -540,28 +540,42 @@ mod tests {
         let mut corrected = iq.to_vec();
         let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
         nco.process(&mut corrected);
-        // What the coarse step left behind, measured on the continuous pilots and removed.
-        let (rows, syms, _) = rows_and_syms(&map, &corrected);
-        let mut fine = 0.0;
-        if let Some(f) = crate::digital::drm2::sync::finefreq::estimate_residual_hz(&map, &rows, &syms)
-        {
-            fine = f;
-            let mut nco2 = crate::digital::drm2::sync::nco::Nco::new(f);
-            nco2.process(&mut corrected);
-        }
+        // Continuous frequency tracking from the frequency pilots (the reference's
+        // `freq_delta_hz`): the residual carrier offset drifts on a real signal, so a one-shot
+        // fine correction removes only the mean and the drifting residual keeps rotating the
+        // channel, which the time interpolation cannot follow. Track it symbol by symbol and
+        // rotate each symbol's cells by the accumulated phase before the channel estimator sees
+        // them (the post-demodulation equivalent of the reference's per-symbol mixer update).
         let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
+        let mut ft = crate::digital::drm2::sync::freqtrack::FreqTrack::new(&map);
+        let tsym = map.mode().symbol_len() as f64 / 48_000.0;
+        let mut phase = 0.0f64;
+        let mut fine_acc = 0.0f64;
+        let rows: Vec<Vec<Cplx>> = rows
+            .iter()
+            .zip(&shifts)
+            .map(|(row, shift)| {
+                let o = ft.process(row, *shift);
+                phase += 2.0 * core::f64::consts::PI * o.freq_delta_hz * tsym;
+                fine_acc += o.freq_delta_hz;
+                row.iter()
+                    .map(|v| *v * Cplx::from_polar(1.0, -phase))
+                    .collect()
+            })
+            .collect();
         eprintln!(
-            "[chanest] coarse {coarse:.1} Hz, fine {fine:+.2} Hz, rows {}",
+            "[chanest] coarse {coarse:.1} Hz, tracked fine total {fine_acc:+.2} Hz, rows {}",
             rows.len()
         );
         // Feed the estimator and keep the last frame's FAC MER.
         let mut est = ChanEst::new(&map);
+        est.use_tw = true;
         let mut mer = None;
         for (i, ((row, sym), shift)) in rows.iter().zip(&syms).zip(&shifts).enumerate() {
             // Enable the Doppler-adapted time Wiener once the estimator has a frame of history
             // (Dream's `enter_tracking` after the first good FAC).
             if i == 45 {
-                est.start_time_wiener_tracking();
+                est.tw.tracking = true;
             }
             if est.process(row, *sym, *shift, &map).is_some() {
                 if let Some(m) = est.stats().fac_mer_db {
@@ -688,6 +702,264 @@ mod tests {
     }
 
     /// The clean fixture's FAC must decode through the whole chain — acquisition, NCO,
+    /// Measure the residual frequency offset and timing offset directly from the pilots on the
+    /// live capture, symbol by symbol, to see whether they drift (a drifting residual is what the
+    /// reference's continuous frequency/SRO tracking removes and a one-shot fine correction
+    /// cannot). The reference reports MER 17.8 dB / delay 0.8 ms on the same file.
+    #[test]
+    #[ignore = "live diagnostic; run with --ignored --nocapture"]
+    fn diagnose_live_residual_errors() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
+
+        // 1. Residual frequency offset from the three continuous pilots, per symbol
+        //    (the reference's `freq_delta_hz`): cur * old.conj() averaged over pilots.
+        let freq_pil: Vec<usize> = (0..map.num_carriers)
+            .filter(|&c| map.cell(syms[0], c).is_freq_pilot())
+            .collect();
+        let tsym = map.mode().symbol_len() as f64 / 48_000.0;
+        let mut prev: Option<Vec<Cplx>> = None;
+        let mut freq_line = String::new();
+        let mut phase_acc = 0.0f64;
+        for (i, row) in rows.iter().enumerate() {
+            if let Some(prev) = prev.take() {
+                let mut acc = Cplx::zero();
+                for &c in &freq_pil {
+                    acc += row[c] * prev[c].conj();
+                }
+                let e = acc.arg();
+                phase_acc += e;
+                let f = e / (2.0 * core::f64::consts::PI * tsym);
+                if i % 100 == 0 {
+                    freq_line.push_str(&format!("{}:{:+.2} ", i, f));
+                }
+            }
+            prev = Some(row.clone());
+        }
+        let mean_f = phase_acc / (rows.len().saturating_sub(1)) as f64 / (2.0 * core::f64::consts::PI * tsym);
+        eprintln!("[live-dx] coarse {coarse:.1} Hz; per-symbol residual freq (Hz) at every 100 syms: {freq_line}");
+        eprintln!("[live-dx] mean residual freq {mean_f:+.3} Hz over {} symbols", rows.len());
+
+        // 1b. Sample-rate offset from the pilot phase slope (the reference's `sro_estimate`):
+        // the per-symbol phase advance grows linearly with the carrier index. The common
+        // (frequency) part is removed, so only the slope between the pilots matters.
+        let sro_lambda = (-1.0 / (0.5 * map.mode().symbol_len() as f64 / 48_000.0)).exp();
+        let mut pil_ph_diff = [Cplx::zero(); 3];
+        let mut sro_count = 0usize;
+        let mut prev2: Option<Vec<Cplx>> = None;
+        for row in rows.iter() {
+            if let Some(prev) = prev2.take() {
+                for (i, &c) in freq_pil.iter().enumerate() {
+                    let prod = row[c] * prev[c].conj();
+                    pil_ph_diff[i] = pil_ph_diff[i] * sro_lambda + prod * (1.0 - sro_lambda);
+                }
+                sro_count += 1;
+                if sro_count == 40 || sro_count == 400 || sro_count == rows.len() - 1 {
+                    let k: Vec<f64> = freq_pil.iter().map(|&c| (map.kmin + c as i32) as f64).collect();
+                    let ph: Vec<f64> = pil_ph_diff.iter().map(|v| v.arg()).collect();
+                    let wrap = |d: f64| (d + core::f64::consts::PI).rem_euclid(2.0 * core::f64::consts::PI) - core::f64::consts::PI;
+                    let slope = (wrap(ph[1] - ph[0]) / (k[1] - k[0]) + wrap(ph[2] - ph[0]) / (k[2] - k[0])) / 2.0;
+                    // eps = slope · N / (2π · symbol_len_samples), the reference's `sro_estimate`.
+                    let eps = slope * map.mode().fft_size() as f64
+                        / (2.0 * core::f64::consts::PI * map.mode().symbol_len() as f64);
+                    eprintln!("[live-dx] sro_estimate @{} syms: slope {:.3e} eps {:.2} ppm ({:+.3} Hz)", sro_count, slope, eps * 1e6, eps * 48_000.0);
+                }
+            }
+            prev2 = Some(row.clone());
+        }
+
+        // 2. Timing offset per symbol from the scattered-pilot phase slope (reuse sym_offset).
+        let mut first: Vec<f64> = Vec::new();
+        let mut last: Vec<f64> = Vec::new();
+        for i in 0..rows.len().min(20) {
+            first.push(sym_offset(&map, &rows, &syms, i));
+        }
+        for i in rows.len().saturating_sub(20)..rows.len() {
+            last.push(sym_offset(&map, &rows, &syms, i));
+        }
+        eprintln!("[live-dx] timing offset (samples) first 20: {first:?}");
+        eprintln!("[live-dx] timing offset (samples) last 20: {last:?}");
+        eprintln!("[live-dx] window shifts (samples) first/last: {:?} / {:?}", &shifts[..20.min(shifts.len())], &shifts[shifts.len().saturating_sub(20)..]);
+    }
+
+    /// Compare the three time-interpolation paths on the live capture: linear (the default
+    /// until a FAC decodes), time-Wiener with fixed σ (the reference's initial state), and
+    /// time-Wiener with Doppler adaptation (the reference's tracking state). The reference
+    /// uses the time-Wiener from the very first symbol; this port starts linear, which is the
+    /// difference the measurements below isolate.
+    #[test]
+    #[ignore = "live diagnostic; run with --ignored --nocapture"]
+    fn compare_time_interpolation_paths_on_live() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let (rows, syms, _) = rows_and_syms(&map, &corrected);
+        let mut fine = 0.0;
+        if let Some(f) = crate::digital::drm2::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
+            fine = f;
+            let mut nco2 = crate::digital::drm2::sync::nco::Nco::new(f);
+            nco2.process(&mut corrected);
+        }
+        let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
+        eprintln!("[live-ti] coarse {coarse:.1} fine {fine:+.2} rows {}", rows.len());
+        let ir_ms = map.mode().fft_size() as f64 / 35.0 / 6.0 / 48_000.0 * 1000.0;
+
+        for (label, use_tw, tracking) in [("linear", false, false), ("wiener-fixed-sigma", true, false), ("wiener-doppler", true, true)] {
+            let mut est = ChanEst::new(&map);
+            est.use_tw = use_tw;
+            est.tw.tracking = tracking;
+            let mut mer = None;
+            for (i, ((row, sym), shift)) in rows.iter().zip(&syms).zip(&shifts).enumerate() {
+                if est.process(row, *sym, *shift, &map).is_some() {
+                    if let Some(m) = est.stats().fac_mer_db {
+                        mer = Some(m);
+                    }
+                }
+            }
+            eprintln!(
+                "[live-ti] {label}: FAC MER {:?} dB  pds_len={:.1} ir ({:.2} ms)  sigma={:.3} Hz",
+                mer,
+                est.last_track.pds_len,
+                est.last_track.pds_len * ir_ms,
+                est.tw.sigma()
+            );
+        }
+    }
+
+    /// Simulate the reference's continuous frequency tracking post-hoc: measure the residual
+    /// offset from the frequency pilots per symbol, IIR-smooth it (1 s time constant, the
+    /// reference's), and rotate each symbol's cells by the accumulated phase before channel
+    /// estimation. If the MER jumps, the missing piece is the continuous frequency tracking
+    /// (a one-shot fine correction leaves a drifting residual from the sample-rate offset).
+    #[test]
+    #[ignore = "live diagnostic; run with --ignored --nocapture"]
+    fn live_with_posthoc_frequency_tracking() {
+        let path = "/tmp/live30.f32";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
+        let base = resample_to_core(path, 48_828.125);
+        let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
+        for v in &base {
+            flat.push(v.re);
+            flat.push(v.im);
+        }
+        let mut acq = crate::digital::drm2::sync::freqacq::FreqAcquisition::new(true);
+        let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
+        let mut corrected = base.clone();
+        let mut nco = crate::digital::drm2::sync::nco::Nco::new(coarse);
+        nco.process(&mut corrected);
+        let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
+        let freq_pil: Vec<usize> = (0..map.num_carriers)
+            .filter(|&c| map.cell(syms[0], c).is_freq_pilot())
+            .collect();
+        let tsym = map.mode().symbol_len() as f64 / 48_000.0;
+        // Track the residual frequency like the reference: IIR on the pilot phase advance.
+        let lambda = (-1.0 / (1.0 * 48_000.0 / map.mode().symbol_len() as f64)).exp();
+        let mut freq_vec = Cplx::zero();
+        let mut phase_acc = 0.0f64;
+        let mut prev: Option<Vec<Cplx>> = None;
+        let mut corrected_rows: Vec<Vec<Cplx>> = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            let mut rot = 0.0f64;
+            if let Some(prev) = prev.take() {
+                let mut acc = Cplx::zero();
+                for &c in &freq_pil {
+                    acc += row[c] * prev[c].conj();
+                }
+                freq_vec = freq_vec * lambda + acc * (1.0 - lambda);
+                let e = freq_vec.arg();
+                let mag = freq_vec.norm();
+                freq_vec = Cplx::new(mag, 0.0);
+                let f = e / (2.0 * core::f64::consts::PI * tsym);
+                phase_acc += 2.0 * core::f64::consts::PI * f * tsym;
+                rot = phase_acc;
+            }
+            // Rotate this symbol's cells by -accumulated phase to stop the channel rotating.
+            let rotated: Vec<Cplx> = row.iter().map(|c| *c * Cplx::from_polar(1.0, -rot)).collect();
+            corrected_rows.push(rotated);
+            prev = Some(row.clone());
+        }
+        let mut est = ChanEst::new(&map);
+        est.use_tw = true;
+        est.tw.tracking = false;
+        let mut mer = None;
+        for (i, ((row, sym), shift)) in corrected_rows.iter().zip(&syms).zip(&shifts).enumerate() {
+            if est.process(row, *sym, *shift, &map).is_some() {
+                if let Some(m) = est.stats().fac_mer_db {
+                    mer = Some(m);
+                }
+            }
+        }
+        eprintln!("[live-fq] coarse {coarse:.1}; post-hoc freq tracking MER {:?} dB (pds_len {:.1} ir)", mer, est.last_track.pds_len);
+
+        // Add a sample-rate-offset correction on top: the SRO makes the per-symbol phase
+        // advance grow linearly with the carrier index, so rotating each carrier by the
+        // accumulated SRO phase removes it. Sweep the offset to find the true value.
+        let dfs = map.mode().carrier_spacing_hz();
+        let tsym = map.mode().symbol_len() as f64 / 48_000.0;
+        let mut best = (0.0f64, f64::NEG_INFINITY);
+        for ppm in [-40.0f64, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0] {
+            let eps = ppm * 1e-6;
+            let mut est = ChanEst::new(&map);
+            est.use_tw = true;
+            est.tw.tracking = false;
+            let mut mer = None;
+            for (i, ((row, sym), shift)) in corrected_rows.iter().zip(&syms).zip(&shifts).enumerate() {
+                let row2: Vec<Cplx> = row
+                    .iter()
+                    .enumerate()
+                    .map(|(c, v)| {
+                        let k = (map.kmin + c as i32) as f64;
+                        let ph = -2.0 * core::f64::consts::PI * eps * k * dfs * (i as f64) * tsym;
+                        *v * Cplx::from_polar(1.0, ph)
+                    })
+                    .collect();
+                if est.process(&row2, *sym, *shift, &map).is_some() {
+                    if let Some(m) = est.stats().fac_mer_db {
+                        mer = Some(m);
+                    }
+                }
+            }
+            if let Some(m) = mer {
+                eprintln!("[live-sro] ppm {ppm:+.0}: MER {m:.2} dB pds_len {:.1}", est.last_track.pds_len);
+                if m > best.1 {
+                    best = (ppm, m);
+                }
+            }
+        }
+        eprintln!("[live-sro] best {0:+.0} ppm -> {1:.2} dB", best.0, best.1);
+    }
+
     /// timing, demodulation, channel estimation, equalisation, 4-QAM demap, Viterbi, CRC —
     /// to the channel and service parameters the fixture's manifest records.
     #[test]

@@ -8,5 +8,6 @@
 
 pub mod finefreq;
 pub mod freqacq;
+pub mod freqtrack;
 pub mod nco;
 pub mod timesync;
