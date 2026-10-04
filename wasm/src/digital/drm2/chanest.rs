@@ -2319,6 +2319,9 @@ mod tests {
                 if est.process(&cells, sym, w.shift, &map).is_some() {
                     let ta = est.last_track.timing_adjust;
                     if ta != 0 { ts.adjust_timing(ta as f64); }
+                    if n % 90 == 0 {
+                        eprintln!("[closeloop] n={n} ta={ta} pds_off={:.1} pds_len={:.1} mer={:?}", est.last_track.pds_offset, est.last_track.pds_len, est.stats().fac_mer_db);
+                    }
                     if let Some(m) = est.stats().fac_mer_db { mer = Some(m); }
                 }
                 n += 1;
