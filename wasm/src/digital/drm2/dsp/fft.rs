@@ -79,7 +79,7 @@ mod tests {
     /// The DFT of a single bin's complex exponential is a delta at that bin.
     #[test]
     fn a_pure_tone_lands_in_one_bin() {
-        for n in [1024usize, 1152, 704, 448, 6144] {
+        for n in [1024usize, 1152, 704, 448, 6144, 216] {
             let k = 7usize;
             let mut re = vec![0.0; n];
             let mut im = vec![0.0; n];

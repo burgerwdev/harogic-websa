@@ -7,10 +7,12 @@
 //! equals `0.4 s * SAMPLE_RATE` — the receiver's per-mode timing derives from that, so the
 //! tests below pin it.
 //!
-//! Mode E (DRM+, the VHF variant) is deliberately absent: Dream's receiver chain defines
-//! `NUM_ROBUSTNESS_MODES 4` (A to D) and contains no mode E OFDM geometry, so mode E cannot
-//! be ported from Dream — it needs the DRM+ specification or another reference and is its
-//! own task. Adding it here without that reference would be a guess, not a port.
+//! Mode E (DRM+, the VHF variant) is defined by the DRM+ part of the same standard
+//! (ES 201 980 §8.2 table 47 and §8.3 tables 49/50): a 96 kHz baseband rate, an FFT of 216,
+//! a 100 ms frame and 100 kHz of spectrum, so it cannot share mode A–D's 48 kHz timing.
+//! Dream defines `NUM_ROBUSTNESS_MODES 4` (A to D) and has no mode E, so its geometry here is
+//! transcribed from the standard (cross-checked against gr-drm's `drm_config.cc`, a DRM+
+//! transmitter), not ported from Dream.
 
 /// The DRM core sample rate. The receiver works at this rate; the channelizer's rate is
 /// converted to it before the chain sees it.
@@ -19,7 +21,9 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// DRM frames per transmission super frame (ES 201 980 §5.1.1).
 pub const NUM_FRAMES_IN_SUPERFRAME: usize = 3;
 
-/// Duration of one DRM frame, samples at [`SAMPLE_RATE`].
+/// Duration of one DRM30 frame, samples at [`SAMPLE_RATE`] (400 ms). Mode E's frame is
+/// 100 ms at 96 kHz, so it does not share this constant (see
+/// [`RobustnessMode::samples_per_frame`]).
 pub const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE as usize) * 4 / 10;
 
 /// One DRM robustness mode.
@@ -29,19 +33,26 @@ pub enum RobustnessMode {
     B,
     C,
     D,
+    E,
 }
 
 impl RobustnessMode {
-    /// Every mode the ported chain supports, in FAC coding order.
-    pub const ALL: [Self; 4] = [Self::A, Self::B, Self::C, Self::D];
+    /// Every mode the ported chain supports, in FAC coding order (E is DRM+).
+    pub const ALL: [Self; 5] = [Self::A, Self::B, Self::C, Self::D, Self::E];
 
-    /// Index used by the FAC's robustness-mode field (2 bits: 00 = A ... 11 = D).
+    /// The DRM30 modes A–D (48 kHz, 400 ms frames). The sync stages detect these; mode E
+    /// needs its own 96 kHz front end and is not part of that detector.
+    pub const DRM30: [Self; 4] = [Self::A, Self::B, Self::C, Self::D];
+
+    /// Index used by the FAC's robustness-mode field (2 bits: 00 = A ... 11 = D; mode E
+    /// carries the 100 kHz spectrum-occupancy flag instead).
     pub const fn index(self) -> usize {
         match self {
             Self::A => 0,
             Self::B => 1,
             Self::C => 2,
             Self::D => 3,
+            Self::E => 4,
         }
     }
 
@@ -51,37 +62,43 @@ impl RobustnessMode {
             1 => Some(Self::B),
             2 => Some(Self::C),
             3 => Some(Self::D),
+            4 => Some(Self::E),
             _ => None,
         }
     }
 
-    /// FFT (useful symbol) length, samples: Dream `RMA_FFT_SIZE_N` … `RMD_FFT_SIZE_N`.
+    /// FFT (useful symbol) length, samples: Dream `RMA_FFT_SIZE_N` … `RMD_FFT_SIZE_N`;
+    /// mode E is ES 201 980 table 47 (Tu = 2,25 ms at 96 kHz ⇒ N = 216).
     pub const fn fft_size(self) -> usize {
         match self {
             Self::A => 1152,
             Self::B => 1024,
             Self::C => 704,
             Self::D => 448,
+            Self::E => 216,
         }
     }
 
-    /// OFDM symbols per frame: Dream `RMA_NUM_SYM_PER_FRAME` … `RMD_NUM_SYM_PER_FRAME`.
+    /// OFDM symbols per frame: Dream `RMA_NUM_SYM_PER_FRAME` … `RMD_NUM_SYM_PER_FRAME`;
+    /// mode E is ES 201 980 table 47 (100 ms frame / 2,5 ms symbol).
     pub const fn symbols_per_frame(self) -> usize {
         match self {
             Self::A | Self::B => 15,
             Self::C => 20,
             Self::D => 24,
+            Self::E => 40,
         }
     }
 
     /// Guard-interval ratio `Tg/Tu` as `(numerator, denominator)`: Dream `RMA_ENUM_TG_TU` /
-    /// `RMA_DENOM_TG_TU` and the same for B to D.
+    /// `RMA_DENOM_TG_TU` and the same for B to D; mode E is 1/9 (table 47).
     pub const fn guard_ratio(self) -> (usize, usize) {
         match self {
             Self::A => (1, 9),
             Self::B => (1, 4),
             Self::C => (4, 11),
             Self::D => (11, 14),
+            Self::E => (1, 9),
         }
     }
 
@@ -95,12 +112,29 @@ impl RobustnessMode {
         self.fft_size() + self.guard_len()
     }
 
-    /// Symbols per transmission super frame (three frames).
+    /// Symbols per transmission super frame.
     pub const fn symbols_per_superframe(self) -> usize {
-        self.symbols_per_frame() * NUM_FRAMES_IN_SUPERFRAME
+        self.symbols_per_frame() * self.frames_per_superframe()
     }
 
-    /// Samples per frame (400 ms in every mode).
+    /// Transmission frames per super frame (three for DRM30, four for mode E, table 47).
+    pub const fn frames_per_superframe(self) -> usize {
+        match self {
+            Self::A | Self::B | Self::C | Self::D => 3,
+            Self::E => 4,
+        }
+    }
+
+    /// The baseband sample rate this mode's OFDM geometry is defined at (Hz). Mode E's
+    /// 100 kHz spectrum does not fit in mode A–D's 48 kHz, so it runs at 96 kHz.
+    pub const fn sample_rate(self) -> u32 {
+        match self {
+            Self::A | Self::B | Self::C | Self::D => 48_000,
+            Self::E => 96_000,
+        }
+    }
+
+    /// Samples per frame (400 ms in modes A–D, 100 ms in mode E).
     pub const fn samples_per_frame(self) -> usize {
         self.symbol_len() * self.symbols_per_frame()
     }
@@ -110,20 +144,23 @@ impl RobustnessMode {
         match self {
             Self::A | Self::B => 2,
             Self::C | Self::D => 3,
+            Self::E => 5,
         }
     }
 
-    /// Carrier spacing in Hz (`SAMPLE_RATE / fft_size`).
+    /// Carrier spacing in Hz (`sample_rate / fft_size`).
     pub fn carrier_spacing_hz(self) -> f64 {
-        f64::from(SAMPLE_RATE) / self.fft_size() as f64
+        f64::from(self.sample_rate()) / self.fft_size() as f64
     }
 
     /// The DRM radio-frequency bandwidth the mode needs, Hz (10 kHz for A/B, 20 kHz for C/D
-    /// at their full spectrum occupancy; the actual occupancy is signalled in the FAC).
+    /// at their full spectrum occupancy, 100 kHz for mode E; the actual occupancy is
+    /// signalled in the FAC).
     pub const fn nominal_bandwidth_hz(self) -> u32 {
         match self {
             Self::A | Self::B => 10_000,
             Self::C | Self::D => 20_000,
+            Self::E => 100_000,
         }
     }
 }
@@ -168,23 +205,23 @@ impl SpectrumOccupancy {
 
 /// Lowest and highest carrier index (Kmin, Kmax) for a mode/occupancy pair (§8.1,
 /// table 84). `None` for combinations the standard does not define (modes C and D
-/// only exist with occupancies 3 and 5).
+/// only exist with occupancies 3 and 5; mode E exists only with occupancy 0).
 pub const fn carrier_range(mode: RobustnessMode, so: SpectrumOccupancy) -> Option<(i32, i32)> {
-    const KMIN: [[i32; 4]; 6] = [
-        [2, 1, 0, 0],
-        [2, 1, 0, 0],
-        [-102, -91, 0, 0],
-        [-114, -103, -69, -44],
-        [-98, -87, 0, 0],
-        [-110, -99, -67, -43],
+    const KMIN: [[i32; 5]; 6] = [
+        [2, 1, 0, 0, -106],
+        [2, 1, 0, 0, 0],
+        [-102, -91, 0, 0, 0],
+        [-114, -103, -69, -44, 0],
+        [-98, -87, 0, 0, 0],
+        [-110, -99, -67, -43, 0],
     ];
-    const KMAX: [[i32; 4]; 6] = [
-        [102, 91, 0, 0],
-        [114, 103, 0, 0],
-        [102, 91, 0, 0],
-        [114, 103, 69, 44],
-        [314, 279, 0, 0],
-        [350, 311, 213, 135],
+    const KMAX: [[i32; 5]; 6] = [
+        [102, 91, 0, 0, 106],
+        [114, 103, 0, 0, 0],
+        [102, 91, 0, 0, 0],
+        [114, 103, 69, 44, 0],
+        [314, 279, 0, 0, 0],
+        [350, 311, 213, 135, 0],
     ];
     let kmin = KMIN[so.index()][mode.index()];
     let kmax = KMAX[so.index()][mode.index()];
@@ -235,12 +272,38 @@ mod tests {
         }
     }
 
+    /// Mode E's geometry, read off ES 201 980 table 47 (Tu = 2,25 ms, Tg = 0,25 ms,
+    /// carrier spacing 444 4/9 Hz, 40 symbols/frame) and table 49 (Kmin = -106,
+    /// Kmax = 106). The 96 kHz rate and 216-point FFT follow from the integer-sample
+    /// guard: 216 / 9 = 24 samples, and 216 + 24 = 240 samples = 2,5 ms.
+    #[test]
+    fn mode_e_geometry_matches_the_spec() {
+        let e = RobustnessMode::E;
+        assert_eq!(e.fft_size(), 216);
+        assert_eq!(e.guard_ratio(), (1, 9));
+        assert_eq!(e.guard_len(), 24);
+        assert_eq!(e.symbol_len(), 240);
+        assert_eq!(e.symbols_per_frame(), 40);
+        assert_eq!(e.frames_per_superframe(), 4);
+        assert_eq!(e.symbols_per_superframe(), 160);
+        assert_eq!(e.sample_rate(), 96_000);
+        assert_eq!(e.samples_per_frame(), 9_600); // 100 ms at 96 kHz
+        assert_eq!(e.sdc_symbols(), 5);
+        assert_eq!(e.nominal_bandwidth_hz(), 100_000);
+        assert_eq!(carrier_range(e, SpectrumOccupancy::SO_0), Some((-106, 106)));
+        for so in [SpectrumOccupancy::SO_1, SpectrumOccupancy::SO_2, SpectrumOccupancy::SO_3, SpectrumOccupancy::SO_4, SpectrumOccupancy::SO_5] {
+            assert_eq!(carrier_range(e, so), None, "mode E is 100 kHz (SO 0) only");
+        }
+        assert!((e.carrier_spacing_hz() - 444.444_444_444_444_46).abs() < 1e-9);
+    }
+
     #[test]
     fn guard_lengths_are_whole_samples_and_match_the_spec() {
         assert_eq!(RobustnessMode::A.guard_len(), 128);
         assert_eq!(RobustnessMode::B.guard_len(), 256);
         assert_eq!(RobustnessMode::C.guard_len(), 256);
         assert_eq!(RobustnessMode::D.guard_len(), 352);
+        assert_eq!(RobustnessMode::E.guard_len(), 24);
         for mode in RobustnessMode::ALL {
             let (n, d) = mode.guard_ratio();
             assert_eq!(mode.guard_len() * d, mode.fft_size() * n, "mode {mode:?} exact guard");
@@ -248,11 +311,13 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_has_the_same_400_ms_frame() {
-        for mode in RobustnessMode::ALL {
+    fn every_mode_has_the_right_frame_duration() {
+        for mode in RobustnessMode::DRM30 {
             assert_eq!(mode.samples_per_frame(), SAMPLES_PER_FRAME, "mode {mode:?}");
             assert_eq!(mode.symbol_len() * mode.symbols_per_frame(), 19_200);
         }
+        // Mode E: 100 ms at 96 kHz.
+        assert_eq!(RobustnessMode::E.samples_per_frame(), 9_600);
     }
 
     #[test]
@@ -260,7 +325,7 @@ mod tests {
         for mode in RobustnessMode::ALL {
             assert_eq!(RobustnessMode::from_index(mode.index()), Some(mode));
         }
-        assert_eq!(RobustnessMode::from_index(4), None);
+        assert_eq!(RobustnessMode::from_index(5), None);
     }
 
     #[test]
@@ -269,5 +334,6 @@ mod tests {
         assert!((RobustnessMode::B.carrier_spacing_hz() - 46.875).abs() < 1e-9);
         assert!((RobustnessMode::C.carrier_spacing_hz() - 68.181_818_181_818_18).abs() < 1e-9);
         assert!((RobustnessMode::D.carrier_spacing_hz() - 107.142_857_142_857_14).abs() < 1e-9);
+        assert!((RobustnessMode::E.carrier_spacing_hz() - 444.444_444_444_444_46).abs() < 1e-9);
     }
 }

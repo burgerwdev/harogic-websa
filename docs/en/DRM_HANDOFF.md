@@ -236,13 +236,13 @@ Work lands stage by stage, each with tests that cross-check the reference's own 
 
 | Stage | State | Evidence |
 | --- | --- | --- |
-| `drm2::params` — robustness-mode geometry (A–D) | done | field-by-field against Dream's `tables/TableDRMGlobal.h`, the 400 ms frame invariant pinned |
+| `drm2::params` — robustness-mode geometry (A–E) | done | A–D field-by-field against Dream's `tables/TableDRMGlobal.h`, the 400 ms frame invariant pinned; mode E (DRM+, 96 kHz, FFT 216, 100 ms frame, 40 symbols/frame, K −106..106, SO 0 only) transcribed from ES 201 980 V4.2.1 §8.2/§8.3 and cross-checked against gr-drm's `drm_config.cc` |
 | `drm2::dsp` — complex type, DFT (radix-2 / Bluestein) | done | a pure tone lands in exactly one bin for 1024/1152/704/448/6144 |
 | `drm2::sync::freqacq` — coarse carrier acquisition | done | the committed bench capture acquires at +121 Hz (within one carrier of the value `DRM_BENCH.md` records), the fixture acquires, an inverted spectrum is reported inverted, noise does not acquire |
 | `drm2::sync::timesync` — guard correlation (low-passed, decimated), mode detection, timing and its tracking | next | |
 | `drm2::sync::framesync` — frame phase from the time pilots | with task 3 | the time pilots live in the demodulated cells, so this needs the OFDM demodulation and the cell map (task 3) before it can be written and tested; it is folded into that task rather than guessed at here |
-| `drm2::cellmap` + `drm2::tables` — the DRM cell layout (modes A–D × occupancies) | done | ported from this repository's own previous implementation (MIT, spec-derived, bench-verified); an equivalence test checks every legal mode/occupancy pair cell by cell, classification and pilot values included, plus spec anchors (65 FAC cells, mode B / 10 kHz at 2337 MSC cells per frame, three continuous pilots per symbol) |
-| `drm2::ofdm` — FFT demodulation into the map's cells | done | agrees with the previous chain's demodulator sample for sample on the fixture's real windows; scattered-pilot ratios consistent (1387 pilots, spread 0.27) |
+| `drm2::cellmap` + `drm2::tables` — the DRM cell layout (modes A–D × occupancies) | done | ported from this repository's own previous implementation (MIT, spec-derived, bench-verified); an equivalence test checks every legal mode/occupancy pair cell by cell, classification and pilot values included, plus spec anchors (65 FAC cells, mode B / 10 kHz at 2337 MSC cells per frame, three continuous pilots per symbol). Mode E added from the spec: 244 FAC cells (§8.5.2 table 66), 21 time pilots (table 57), no frequency pilots, 54 AFS cells in symbols 4 and 39 (table 61), five SDC symbols, no unused carriers — all pinned by tests |
+| `drm2::ofdm` — FFT demodulation into the map's cells | done | agrees with the previous chain's demodulator sample for sample on the fixture's real windows; scattered-pilot ratios consistent (1387 pilots, spread 0.27); a synthesised mode E symbol (216-point FFT) demodulates back onto its carriers |
 | `drm2::sync::framesync` — frame phase from the time pilots | done | the clean fixture syncs with a phase that survives shifting the search window by whole frames, and the bench capture syncs too |
 | `drm2::sync::nco` — carrier-offset removal between acquisition and demodulation | done | removes a tone at the measured offset exactly and joins consecutive blocks without a phase step |
 | `drm2::dsp::levinson` — the Haykin recursion Dream's Wiener filters use | done | diagonal and 2x2 systems (the first version was wrong; a diagonal-system test caught it) |
@@ -343,11 +343,15 @@ chain's **10.9 dB**. Four decibels of margin under the frequency-selective condi
 signal shows, again gated by a test. Both low-level and fading acceptance items of task 4 now have
 measured baselines; the tracking and the Wiener work must preserve or improve them.
 
-### Mode E: no reference exists in either project
+### Mode E: geometry now implemented from the standard
 
-A search of both checkouts confirms it: Dream's `NUM_ROBUSTNESS_MODES` is 4 and its `Parameter.h`
-has no mode E geometry, and DecDRM — transmitter included — defines no `RobustnessMode::E` either
-(the grep for `RobustnessMode::E` / `RM_ROBUSTNESS_MODE_E` / `DRM+` in `decdrm-core` and
-`decdrm-station` returns nothing). So mode E/DRM+ (the VHF variant) cannot be ported from a
-reference at hand; it needs ETSI ES 201 980 V4 (or another receiver's implementation) for its
-OFDM geometry, frame layout and signalling. Everything else in tasks 3 and 4 is reference-backed.
+The reference checkouts really have no mode E (Dream's `NUM_ROBUSTNESS_MODES` is 4 and its
+`Parameter.h` has no mode E geometry; DecDRM — transmitter included — defines no
+`RobustnessMode::E` either). The geometry is therefore transcribed directly from the
+standard — ETSI ES 201 980 V4.2.1 (fetched as a PDF during the port) §8.2 table 47, §8.3
+tables 49/50, §8.4 tables 57/58/60/61 and §8.5 tables 62–66 — with gr-drm's `drm_config.cc`
+(a GPL DRM+ transmitter) read only to cross-check the K range, symbol count, guard ratio and
+FAC/SDC/pilot counts. The numbers agree, and two independent spec tables (the scattered-pilot
+matrices of §8.4.4.3.6 and the AFS table of §8.4.5) cross-check each other in
+`mode_e_afs_phases_match_table_61`. What is NOT yet done for mode E is its 96 kHz sync front
+end and FAC/SDC/MSC signalling decode — that is task 8, after the DRM30 chain decodes.

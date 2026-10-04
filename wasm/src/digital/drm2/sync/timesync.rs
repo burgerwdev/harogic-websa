@@ -227,7 +227,7 @@ fn decide(scores: &[f64; 4], threshold: f64) -> Option<(RobustnessMode, f64)> {
         .map(|(_, &v)| v)
         .fold(0.0f64, f64::max);
     let reliability = if second > 0.0 { max / second } else { f64::INFINITY };
-    (reliability > threshold).then(|| (RobustnessMode::ALL[best], reliability))
+    (reliability > threshold).then(|| (RobustnessMode::DRM30[best], reliability))
 }
 
 /// Timing acquisition and tracking, in the decimated domain.
@@ -409,7 +409,7 @@ impl TimeSync {
     }
 
     fn evaluate(&mut self, events: &mut Vec<Event>) {
-        let geoms: [Geom; 4] = RobustnessMode::ALL.map(geom);
+        let geoms: [Geom; 4] = RobustnessMode::DRM30.map(geom);
         let span = geoms.iter().map(|g| g.g + g.nu).max().unwrap_or(0);
         let sel = self.mode.index();
         let dec_end = self.dec_index_base + self.dec.len() as i64;

@@ -10,15 +10,54 @@ use crate::digital::drm2::params::RobustnessMode;
 
 /// Number of FAC cells per transmission frame (§8.4.5.1).
 pub const NUM_FAC_CELLS: usize = 65;
+/// Number of FAC cells per frame in robustness mode E (DRM+) (§8.5.2, table 66).
+pub const NUM_FAC_CELLS_E: usize = 244;
 
-/// FAC cell positions (symbol within frame, carrier index) (§8.4.5.1, tables 99–102).
-pub const fn fac_positions(mode: RobustnessMode) -> &'static [(u8, i16); NUM_FAC_CELLS] {
+pub const fn fac_cell_count(mode: RobustnessMode) -> usize {
+    match mode {
+        RobustnessMode::E => NUM_FAC_CELLS_E,
+        _ => NUM_FAC_CELLS,
+    }
+}
+
+/// FAC cell positions (symbol within frame, carrier index) (§8.4.5.1, tables 99–102;
+/// mode E table 66).
+pub const fn fac_positions(mode: RobustnessMode) -> &'static [(u8, i16)] {
     match mode {
         RobustnessMode::A => &FAC_A,
         RobustnessMode::B => &FAC_B,
         RobustnessMode::C => &FAC_C,
         RobustnessMode::D => &FAC_D,
+        RobustnessMode::E => &FAC_E,
     }
+}
+
+/// Mode E's FAC cell positions (§8.5.2, table 66): the 244 4-QAM FAC cells span symbols
+/// 5–26 of each 40-symbol frame, a four-symbol pattern (11/12/12/11 cells on carriers
+/// stepped by 16) with the last symbol carrying only its first three cells.
+const FAC_E: [(u8, i16); NUM_FAC_CELLS_E] = build_fac_e();
+
+const fn build_fac_e() -> [(u8, i16); NUM_FAC_CELLS_E] {
+    let mut out = [(0u8, 0i16); NUM_FAC_CELLS_E];
+    let mut idx = 0usize;
+    let mut s = 5u8;
+    while s <= 26 {
+        let (start, count) = match s % 4 {
+            1 => (-78i16, 11usize),
+            2 => (-90i16, 12usize),
+            3 => (-86i16, 12usize),
+            _ => (-82i16, 11usize),
+        };
+        let count = if s == 26 { 3 } else { count };
+        let mut j = 0usize;
+        while j < count {
+            out[idx] = (s, start + j as i16 * 16);
+            idx += 1;
+            j += 1;
+        }
+        s += 1;
+    }
+    out
 }
 
 const FAC_A: [(u8, i16); NUM_FAC_CELLS] = [
@@ -94,12 +133,14 @@ const FAC_D: [(u8, i16); NUM_FAC_CELLS] = [
 ];
 
 /// Frequency reference pilots: (carrier, phase₁₀₂₄) (§8.4.2, table 86), every symbol.
-pub const fn freq_pilots(mode: RobustnessMode) -> &'static [(i16, u16); 3] {
+/// Mode E defines none (table 51).
+pub const fn freq_pilots(mode: RobustnessMode) -> &'static [(i16, u16)] {
     match mode {
         RobustnessMode::A => &[(18, 205), (54, 836), (72, 215)],
         RobustnessMode::B => &[(16, 331), (48, 651), (64, 555)],
         RobustnessMode::C => &[(11, 214), (33, 392), (44, 242)],
         RobustnessMode::D => &[(7, 788), (21, 1014), (28, 332)],
+        RobustnessMode::E => &[],
     }
 }
 
@@ -111,6 +152,7 @@ pub const fn time_pilots(mode: RobustnessMode) -> &'static [(i16, u16)] {
         RobustnessMode::B => &TIME_B,
         RobustnessMode::C => &TIME_C,
         RobustnessMode::D => &TIME_D,
+        RobustnessMode::E => &TIME_E,
     }
 }
 
@@ -134,8 +176,19 @@ const TIME_D: [(i16, u16); 21] = [
     (14, 920), (15, 920), (17, 644), (18, 388), (20, 652), (21, 1014), (23, 176),
     (24, 176), (26, 752), (27, 496), (28, 332), (29, 432), (30, 964), (32, 452),
 ];
+/// Mode E time reference cells (§8.4.3, table 57): 21 cells in symbol 0 of each frame.
+const TIME_E: [(i16, u16); 21] = [
+    (-80, 219), (-79, 475), (-77, 987), (-53, 652), (-52, 652), (-51, 140),
+    (-32, 819), (-31, 819), (12, 907), (13, 907), (14, 651), (21, 903),
+    (22, 391), (23, 903), (40, 203), (41, 203), (42, 203), (67, 797),
+    (68, 29), (79, 508), (80, 508),
+];
 
 /// Parameters of the gain reference (scattered) pilot grid (§8.4.4).
+///
+/// Modes A–D use the formula `(4·Z256 + p·W1024 + p²·(1+s)·Q1024) mod 1024`; mode E uses
+/// `(p²·R1024 + p·Z1024 + Q1024[n,m]) mod 1024` with a per-cell `Q1024` matrix instead of a
+/// scalar. The slices `w`/`q` are empty for mode E and `r`/`q_mat` are empty for modes A–D.
 #[derive(Debug, Clone, Copy)]
 pub struct ScatteredPilotParams {
     pub freq_int: usize,
@@ -146,7 +199,9 @@ pub struct ScatteredPilotParams {
     pub wz_cols: usize,
     pub w: &'static [i32],
     pub z: &'static [i32],
+    pub r: &'static [i32],
     pub q: i32,
+    pub q_mat: &'static [i32],
 }
 
 pub const fn scattered_pilots(mode: RobustnessMode) -> ScatteredPilotParams {
@@ -160,7 +215,9 @@ pub const fn scattered_pilots(mode: RobustnessMode) -> ScatteredPilotParams {
             wz_cols: 3,
             w: &[228, 341, 455, 455, 569, 683, 683, 796, 910, 910, 0, 114, 114, 228, 341],
             z: &[0, 81, 248, 18, 106, 106, 122, 116, 31, 129, 129, 39, 33, 32, 111],
+            r: &[],
             q: 36,
+            q_mat: &[],
         },
         RobustnessMode::B => ScatteredPilotParams {
             freq_int: 2,
@@ -171,7 +228,9 @@ pub const fn scattered_pilots(mode: RobustnessMode) -> ScatteredPilotParams {
             wz_cols: 5,
             w: &[512, 0, 512, 0, 512, 0, 512, 0, 512, 0, 512, 0, 512, 0, 512],
             z: &[0, 57, 164, 64, 12, 168, 255, 161, 106, 118, 25, 232, 132, 233, 38],
+            r: &[],
             q: 12,
+            q_mat: &[],
         },
         RobustnessMode::C => ScatteredPilotParams {
             freq_int: 2,
@@ -188,7 +247,9 @@ pub const fn scattered_pilots(mode: RobustnessMode) -> ScatteredPilotParams {
                 0, 76, 29, 76, 9, 190, 161, 248, 33, 108, //
                 179, 178, 83, 253, 127, 105, 101, 198, 250, 145,
             ],
+            r: &[],
             q: 12,
+            q_mat: &[],
         },
         RobustnessMode::D => ScatteredPilotParams {
             freq_int: 1,
@@ -207,7 +268,40 @@ pub const fn scattered_pilots(mode: RobustnessMode) -> ScatteredPilotParams {
                 110, 7, 78, 82, 175, 150, 106, 25, //
                 165, 7, 252, 124, 253, 177, 197, 142,
             ],
+            r: &[],
             q: 14,
+            q_mat: &[],
+        },
+        RobustnessMode::E => ScatteredPilotParams {
+            freq_int: 4,
+            time_int: 4,
+            x: 4,
+            y: 4,
+            k0: 2,
+            wz_cols: 10,
+            w: &[],
+            // Z1024 (§8.4.4.3.6), 4 rows × 10 columns.
+            z: &[
+                473, 394, 315, 236, 158, 79, 0, 0, 0, 0, //
+                183, 914, 402, 37, 475, 841, 768, 768, 987, 183, //
+                549, 622, 475, 110, 37, 622, 256, 768, 329, 549, //
+                79, 158, 236, 315, 394, 473, 158, 315, 473, 630,
+            ],
+            // R1024 (§8.4.4.3.6), 4 rows × 10 columns.
+            r: &[
+                39, 118, 197, 276, 354, 433, 39, 118, 197, 276, //
+                37, 183, 402, 37, 183, 402, 37, 183, 402, 37, //
+                110, 329, 475, 110, 329, 475, 110, 329, 475, 110, //
+                79, 158, 236, 315, 394, 473, 79, 158, 236, 315,
+            ],
+            q: 0,
+            // Q1024 (§8.4.4.3.6), 4 rows × 10 columns (a matrix, not a scalar).
+            q_mat: &[
+                329, 489, 894, 419, 607, 519, 1020, 942, 817, 939, //
+                824, 1023, 74, 319, 225, 207, 348, 422, 395, 92, //
+                959, 379, 7, 738, 500, 920, 440, 727, 263, 733, //
+                907, 946, 924, 91, 189, 133, 910, 804, 1022, 433,
+            ],
         },
     }
 }
@@ -247,11 +341,20 @@ pub const fn boosted_pilots(mode: RobustnessMode, so: usize) -> [i16; 4] {
         [0; 4],
         [-43, -42, 134, 135],
     ];
+    const E: [[i16; 4]; 6] = [
+        [-106, -102, 102, 106],
+        [0; 4],
+        [0; 4],
+        [0; 4],
+        [0; 4],
+        [0; 4],
+    ];
     match mode {
         RobustnessMode::A => A[so],
         RobustnessMode::B => B[so],
         RobustnessMode::C => C[so],
         RobustnessMode::D => D[so],
+        RobustnessMode::E => E[so],
     }
 }
 
@@ -259,6 +362,38 @@ pub const fn boosted_pilots(mode: RobustnessMode, so: usize) -> [i16; 4] {
 pub const DATA_CELL_POWER: f64 = 1.0;
 pub const PILOT_POWER: f64 = 2.0;
 pub const BOOSTED_PILOT_POWER: f64 = 4.0;
+
+// ---------------------------------------------------------------------------------
+// AFS references (mode E only, §8.4.5)
+// ---------------------------------------------------------------------------------
+
+/// Number of AFS reference cells per AFS-bearing symbol (robustness mode E only).
+pub const NUM_AFS_PILOTS: usize = 54;
+
+/// Phase of AFS reference cells in symbol 4 of the first transmission frame (§8.4.5.1,
+/// table 61). Entry `i` is carrier `-106 + 4·i`.
+pub const AFS_PHASE_S4: [u16; NUM_AFS_PILOTS] = [
+    134, 866, 588, 325, 77, 868, 649, 445, 256, 82, 946, 801, 671, 556, 455, 369, 298, 242,
+    200, 173, 161, 164, 181, 213, 260, 322, 398, 489, 595, 716, 851, 1001, 142, 322, 516, 725,
+    949, 164, 417, 685, 968, 242, 554, 881, 199, 556, 927, 289, 690, 82, 512, 957, 393, 868,
+];
+
+/// Phase of AFS reference cells in symbol 39 of the fourth transmission frame (§8.4.5.1,
+/// table 61). Entry `i` is carrier `-106 + 4·i`.
+pub const AFS_PHASE_S39: [u16; NUM_AFS_PILOTS] = [
+    115, 135, 194, 293, 431, 608, 825, 57, 353, 688, 38, 452, 905, 373, 905, 452, 39, 689,
+    354, 59, 827, 610, 433, 295, 197, 138, 118, 138, 197, 295, 433, 610, 827, 59, 354, 689,
+    39, 452, 905, 373, 905, 452, 38, 688, 353, 57, 825, 608, 431, 293, 194, 135, 115, 134,
+];
+
+/// Carrier index of AFS reference cell `i` (`-106 + 4·i`).
+pub const fn afs_carrier(i: usize) -> i16 {
+    -106 + 4 * i as i16
+}
+
+/// Power of an AFS-only reference cell (§8.4.5.2): amplitude 1.0, not boosted. AFS cells
+/// that coincide with a gain reference keep the gain reference's amplitude.
+pub const AFS_PILOT_POWER: f64 = 1.0;
 
 // ---------------------------------------------------------------------------------
 // QAM mapping (§7.4)

@@ -160,4 +160,36 @@ mod tests {
         assert!(mean > 0.001, "pilots must carry power, mean |H| = {mean:.5}");
         assert!(spread < 0.4, "pilot ratios must be consistent, spread {spread:.3}");
     }
+
+    /// Mode E's 216-point demodulator: a synthesised symbol with known values on a few
+    /// carriers spanning the negative side, DC and the positive side comes back on the
+    /// map's carriers, which is the "mode E trial signal demodulates" check of this task.
+    #[test]
+    fn mode_e_demodulates_a_synthesised_symbol() {
+        let map = CellMap::new(RobustnessMode::E, SpectrumOccupancy::SO_0).unwrap();
+        let mut demod = OfdmDemod::new(&map);
+        let n = map.mode().fft_size();
+        assert_eq!(n, 216);
+        let carriers = [-106i32, -54, 0, 1, 53, 106];
+        let mut window = vec![Cplx::zero(); n];
+        for &k in &carriers {
+            let x = Cplx::new(f64::from(k) + 200.0, f64::from(k) - 3.0);
+            for (t, s) in window.iter_mut().enumerate() {
+                let ph = 2.0 * core::f64::consts::PI * k as f64 * t as f64 / n as f64;
+                *s += x * Cplx::from_polar(1.0, ph);
+            }
+        }
+        let mut out = Vec::new();
+        demod.demodulate(&window, &mut out);
+        assert_eq!(out.len(), map.num_carriers);
+        for &k in &carriers {
+            let c = map.carrier_offset(k).unwrap();
+            let want = Cplx::new(f64::from(k) + 200.0, f64::from(k) - 3.0);
+            let got = out[c];
+            assert!(
+                (got.re - want.re).abs() < 1e-9 && (got.im - want.im).abs() < 1e-9,
+                "carrier {k}: {got:?} vs {want:?}"
+            );
+        }
+    }
 }
