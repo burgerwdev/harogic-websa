@@ -341,6 +341,10 @@ pub struct TimeSync {
     /// Accumulated sample-rate-offset correction (Hz) from the channel estimator's tracker;
     /// the symbol spacing is scaled by `1 + sro/fs` so the window grid follows the clock error.
     sro_hz: f64,
+    /// Whether the internal guard-correlation timing acquisition is active; the receiver stops
+    /// it once the external impulse-response timing tracking takes over (DecDRM's
+    /// `stop_timing_acquisition`), so the two do not fight over the window position.
+    timing_acq: bool,
     /// Full-rate history, kept for the windows.
     buf: Vec<Cplx>,
     /// Absolute full-rate index of `buf[0]`.
@@ -364,6 +368,7 @@ impl TimeSync {
             next_start: None,
             last_start: None,
             sro_hz: 0.0,
+            timing_acq: true,
             buf: Vec::new(),
             buf_base: 0,
         }
@@ -439,16 +444,20 @@ impl TimeSync {
             if let Some((mode, reliability)) = self.detector.push(&geoms, &rho) {
                 events.push(Event::ModeDetected { mode, reliability });
             }
-            // Timing follows the detected mode's metric.
-            if let Some(position) = self.timing.push(metric[sel], self.next_eval) {
-                // `position` is a decimated index of the correlation maximum, which sits at the
-                // guard's centre (the moving average spans one guard). The useful part follows
-                // the guard, so the FFT window starts half a guard after that maximum. The
-                // decimated-to-full-rate conversion is exact: `dec[i]` is `dec_input_base +
-                // i * DEC`.
-                let window_dec = position + (geoms[sel].g / 2) as i64;
-                let candidate = (self.dec_input_base + window_dec * DEC as i64) as f64;
-                self.timing_candidate(candidate);
+            // Timing follows the detected mode's metric, only while the internal acquisition is
+            // active (the receiver stops it when the external impulse-response tracking owns the
+            // window position).
+            if self.timing_acq {
+                if let Some(position) = self.timing.push(metric[sel], self.next_eval) {
+                    // `position` is a decimated index of the correlation maximum, which sits at
+                    // the guard's centre (the moving average spans one guard). The useful part
+                    // follows the guard, so the FFT window starts half a guard after that
+                    // maximum. The decimated-to-full-rate conversion is exact: `dec[i]` is
+                    // `dec_input_base + i * DEC`.
+                    let window_dec = position + (geoms[sel].g / 2) as i64;
+                    let candidate = (self.dec_input_base + window_dec * DEC as i64) as f64;
+                    self.timing_candidate(candidate);
+                }
             }
             self.next_eval += STEP as i64;
         }
@@ -500,6 +509,13 @@ impl TimeSync {
     /// Accumulate a sample-rate-offset correction (Hz) from the channel estimator's tracker.
     pub fn adjust_sro(&mut self, delta_hz: f64) {
         self.sro_hz += delta_hz;
+    }
+
+    /// Stop the internal guard-correlation timing acquisition (DecDRM's
+    /// `stop_timing_acquisition`), so the external impulse-response timing tracking owns the
+    /// window position from here on.
+    pub fn stop_timing_acquisition(&mut self) {
+        self.timing_acq = false;
     }
 
     /// The symbol spacing scaled by the accumulated sample-rate-offset correction.
