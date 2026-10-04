@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn permutations_are_bijective() {
-        for size in [64usize, 100, 1024, 2337] {
+        for size in [64usize, 100, 130, 1024, 2337, 4674] {
             for t0 in [13, 21] {
                 let mut p = permutation(size, t0);
                 p.sort_unstable();
