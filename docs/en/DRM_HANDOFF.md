@@ -241,7 +241,10 @@ Work lands stage by stage, each with tests that cross-check the reference's own 
 | `drm2::sync::freqacq` — coarse carrier acquisition | done | the committed bench capture acquires at +121 Hz (within one carrier of the value `DRM_BENCH.md` records), the fixture acquires, an inverted spectrum is reported inverted, noise does not acquire |
 | `drm2::sync::timesync` — guard correlation (low-passed, decimated), mode detection, timing and its tracking | next | |
 | `drm2::sync::framesync` — frame phase from the time pilots | with task 3 | the time pilots live in the demodulated cells, so this needs the OFDM demodulation and the cell map (task 3) before it can be written and tested; it is folded into that task rather than guessed at here |
-| `drm2::ofdm`, `cellmap`, `chanest`, `fac`, `sdc`, `mlc`, `msc`, `audio` | pending | see the task list |
+| `drm2::cellmap` + `drm2::tables` — the DRM cell layout (modes A–D × occupancies) | done | ported from this repository's own previous implementation (MIT, spec-derived, bench-verified); an equivalence test checks every legal mode/occupancy pair cell by cell, classification and pilot values included, plus spec anchors (65 FAC cells, mode B / 10 kHz at 2337 MSC cells per frame, three continuous pilots per symbol) |
+| `drm2::ofdm` — FFT demodulation into the map's cells | done | agrees with the previous chain's demodulator sample for sample on the fixture's real windows; scattered-pilot ratios consistent (1387 pilots, spread 0.27) |
+| `drm2::sync::framesync` — frame phase from the time pilots | done | the clean fixture syncs with a phase that survives shifting the search window by whole frames, and the bench capture syncs too |
+| `drm2::chanest`, `fac`, `sdc`, `mlc`, `msc`, `audio` | pending | see the task list |
 
 Two facts worth carrying forward:
 
