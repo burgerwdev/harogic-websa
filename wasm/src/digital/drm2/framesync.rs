@@ -23,6 +23,91 @@ pub struct FrameSync {
     num_carriers: usize,
 }
 
+/// The time pilots resolved to cell indices with their reference phases (radians), dropping
+/// the ones outside the occupied band (an occupancy narrower than the mode's full band can cut
+/// a time pilot off).
+fn pilot_table(mode: crate::digital::drm2::params::RobustnessMode, kmin: i32, num_carriers: usize) -> Vec<(usize, f64)> {
+    tables::time_pilots(mode)
+        .iter()
+        .filter_map(|&(k, phase)| {
+            let c = i32::from(k) - kmin;
+            (c >= 0 && (c as usize) < num_carriers).then(|| {
+                (c as usize, 2.0 * core::f64::consts::PI * f64::from(phase) / 1024.0)
+            })
+        })
+        .collect()
+}
+
+/// Streaming frame-phase acquisition: the time-pilot correlation is accumulated per candidate
+/// phase as rows arrive, so the phase can be read at any point without re-scanning the capture.
+///
+/// This is the block-fed counterpart of [`FrameSync::search`]: the whole-buffer search re-reads
+/// every row each time, while the accumulator adds one row per call. The two agree — the
+/// accumulator over rows `0..n` is exactly `search(&rows[0..n])` — but the accumulator lets the
+/// receiver keep the phase-0 reference while the capture streams in, and lets it *wait* until
+/// the correct phase separates from the noise instead of committing on the first few frames.
+pub struct FramePhaseAcquisition {
+    pilots: Vec<(usize, f64)>,
+    spf: usize,
+    /// Coherent pilot sum per candidate phase (indexed by the phase of row 0).
+    acc: Vec<Cplx>,
+    /// Frame starts counted per candidate phase.
+    starts: Vec<f64>,
+    rows: usize,
+}
+
+impl FramePhaseAcquisition {
+    pub fn new(map: &CellMap) -> Self {
+        Self::new_from_parts(pilot_table(map.mode(), map.kmin, map.num_carriers), map.mode().symbols_per_frame())
+    }
+
+    fn new_from_parts(pilots: Vec<(usize, f64)>, spf: usize) -> Self {
+        Self { pilots, spf, acc: vec![Cplx::zero(); spf], starts: vec![0.0; spf], rows: 0 }
+    }
+
+    /// Add one demodulated symbol (in capture order) to the accumulator.
+    pub fn push(&mut self, row: &[Cplx]) {
+        let r = (self.spf - self.rows % self.spf) % self.spf;
+        let mut a = Cplx::zero();
+        for &(c, angle) in &self.pilots {
+            if let Some(cell) = row.get(c) {
+                a += *cell * Cplx::from_polar(1.0, -angle);
+            }
+        }
+        self.acc[r] += a;
+        self.starts[r] += 1.0;
+        self.rows += 1;
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// The score of every candidate phase, as [`FrameSync::search`] computes it.
+    pub fn scores(&self) -> Vec<f64> {
+        let denom = self.pilots.len().max(1) as f64;
+        self.acc
+            .iter()
+            .zip(&self.starts)
+            .map(|(a, s)| a.norm() / s.max(1.0) / denom)
+            .collect()
+    }
+
+    /// `(phase, best_score, second_best_score)` over the rows accumulated so far.
+    pub fn best(&self) -> (usize, f64, f64) {
+        let scores = self.scores();
+        let mut best = (0usize, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for (r, &s) in scores.iter().enumerate() {
+            if s > best.1 {
+                best = (r, s, best.1);
+            } else if s > best.2 {
+                best.2 = s;
+            }
+        }
+        best
+    }
+}
+
 /// The result of a frame-sync search.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SyncResult {
@@ -40,41 +125,15 @@ impl FrameSync {
     /// Search the frame phase over `rows` (demodulated symbols in capture order). A row count of
     /// at least a few frames is needed for the score to separate the phases.
     pub fn search(&self, rows: &[Vec<Cplx>]) -> SyncResult {
-        let tp = tables::time_pilots(self.mode);
-        let spf = self.mode.symbols_per_frame();
-        // The pilot table is in absolute carrier indices; pre-resolve them to cell indices and
-        // drop the ones outside the occupied band (an occupancy narrower than the mode's full
-        // band can cut a time pilot off).
-        let pilots: Vec<(usize, f64)> = tp
-            .iter()
-            .filter_map(|&(k, phase)| {
-                let c = i32::from(k) - self.kmin;
-                (c >= 0 && (c as usize) < self.num_carriers).then(|| {
-                    (c as usize, 2.0 * core::f64::consts::PI * f64::from(phase) / 1024.0)
-                })
-            })
-            .collect();
-        let mut best = SyncResult { phase: 0, score: -1.0 };
-        for r in 0..spf {
-            let mut acc = Cplx::zero();
-            let mut starts = 0.0f64;
-            for (i, row) in rows.iter().enumerate() {
-                if (i + r) % spf != 0 {
-                    continue;
-                }
-                starts += 1.0;
-                for &(c, angle) in &pilots {
-                    if let Some(cell) = row.get(c) {
-                        acc += *cell * Cplx::from_polar(1.0, -angle);
-                    }
-                }
-            }
-            let score = acc.norm() / starts.max(1.0) / pilots.len().max(1) as f64;
-            if score > best.score {
-                best = SyncResult { phase: r, score };
-            }
+        let mut acq = FramePhaseAcquisition::new_from_parts(
+            pilot_table(self.mode, self.kmin, self.num_carriers),
+            self.mode.symbols_per_frame(),
+        );
+        for row in rows {
+            acq.push(row);
         }
-        best
+        let (phase, score, _) = acq.best();
+        SyncResult { phase, score }
     }
 }
 

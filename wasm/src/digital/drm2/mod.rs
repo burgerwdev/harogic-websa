@@ -78,11 +78,28 @@ pub struct DrmReceiver {
     /// SDC cells of the current frame (symbols 0..sdc_syms), stored with the frame's FAC
     /// index once the FAC decodes.
     frame_sdc: Vec<EqCell>,
-    sdc_blocks: Vec<(u8, Vec<EqCell>)>,
     /// MSC cells per emitted symbol (out_sym, cells) and the FAC frame indices, for the
-    /// super-frame assembly after the pass.
+    /// super-frame assembly after the pass. `msc_emitted` is drained by `decode_msc` each pass,
+    /// so it only ever holds the symbols not yet assembled.
     msc_emitted: Vec<(usize, Vec<EqCell>)>,
     msc_frame_indices: Vec<u8>,
+    /// Streaming super-frame assembly state (persists across `run` calls): the 45 symbol
+    /// buckets, the long cell deinterleaver, the MLC decoder and its configuration key.
+    msc_super: Vec<Vec<EqCell>>,
+    msc_deinterleaver: Option<CellDeinterleaver>,
+    msc_decoder: Option<MlcDecoder>,
+    msc_decoder_key: Option<(crate::digital::drm2::fec::qam::Mapping, usize, usize, usize)>,
+    msc_bits: Vec<u8>,
+    /// The first (incomplete) super frame is skipped; this flips once its frame 0 is seen.
+    msc_in_partial: bool,
+    /// Frames seen since the skipped partial super frame (indexes `msc_frame_indices`).
+    msc_complete_frame: usize,
+    /// The current frame's emitted symbols `(out_sym, cells)`, held until the frame ends. The
+    /// FAC that names the frame's position in the super frame only decodes at the frame's end,
+    /// so a frame is placed into the buckets one frame after its symbols arrive.
+    msc_frame_buf: Vec<(usize, Vec<EqCell>)>,
+    /// SDC blocks collected per FAC frame, drained by `decode_sdc` each pass.
+    sdc_pending: Vec<(u8, Vec<EqCell>)>,
     /// Decoded MSC multiplex frames (information bits).
     pub msc_frames: Vec<Vec<u8>>,
     /// Acquisition/tracking state (Dream's RxState).
@@ -130,6 +147,8 @@ pub struct DrmReceiver {
     nco: Option<crate::digital::drm2::sync::nco::Nco>,
     ft: Option<crate::digital::drm2::sync::freqtrack::FreqTrack>,
     tsync: Option<TimeSync>,
+    /// Streaming frame-phase accumulator (the block-fed counterpart of `FrameSync::search`).
+    fs_acq: Option<crate::digital::drm2::framesync::FramePhaseAcquisition>,
     demod: Option<OfdmDemod>,
     spf: usize,
     phase: usize,
@@ -173,9 +192,17 @@ impl DrmReceiver {
             #[cfg(target_arch = "wasm32")]
             audio_configured_with: None,
             frame_sdc: Vec::new(),
-            sdc_blocks: Vec::new(),
             msc_emitted: Vec::new(),
             msc_frame_indices: Vec::new(),
+            msc_super: vec![Vec::new(); 45],
+            msc_deinterleaver: None,
+            msc_decoder: None,
+            msc_decoder_key: None,
+            msc_bits: Vec::new(),
+            msc_in_partial: true,
+            msc_complete_frame: 0,
+            msc_frame_buf: Vec::new(),
+            sdc_pending: Vec::new(),
             msc_frames: Vec::new(),
             mode_detected: false,
             processed_complex: 0,
@@ -187,6 +214,7 @@ impl DrmReceiver {
             nco: None,
             ft: None,
             tsync: None,
+            fs_acq: None,
             demod: None,
             spf: 15,
             phase: 0,
@@ -282,6 +310,7 @@ impl DrmReceiver {
             ft.set_freq_time_constant(0.1);
             self.ft = Some(ft);
             self.tsync = Some(TimeSync::new(mode));
+            self.fs_acq = Some(crate::digital::drm2::framesync::FramePhaseAcquisition::new(&cmap));
             self.demod = Some(OfdmDemod::new(&cmap));
             self.mode_detected = true;
             // The tracked demodulation consumes the buffered capture from the start (the
@@ -316,6 +345,9 @@ impl DrmReceiver {
                     demod.demodulate(&w.samples, &mut cells);
                     self.all_rows.push(cells.clone());
                     self.all_shifts.push(w.shift);
+                    if !self.phase_computed {
+                        self.fs_acq.as_mut().expect("acquired").push(&cells);
+                    }
                     let o = ft.process(&cells, w.shift);
                     self.freq_track += o.freq_delta_hz;
                     nco.set_offset(self.freq_track);
@@ -328,17 +360,27 @@ impl DrmReceiver {
         }
         self.processed_complex = self.buf.len() / 2;
 
-        // The frame phase: once, after a few frames of rows (the time-pilot correlation needs
-        // more than one frame to separate the phases).
-        if !self.phase_computed && self.all_rows.len() >= 45 {
-            let phase = crate::digital::drm2::framesync::FrameSync::new(map).search(&self.all_rows).phase;
-            self.phase = phase;
-            self.frame_phase = phase;
-            self.phase_computed = true;
-            self.demod_rows = 0;
-        }
+        // The frame phase: accumulated across all rows so far, not just a short prefix. The
+        // first frames are still converging (the frequency tracker and the timing loop are
+        // settling), so a fixed row count can commit on a wrong phase; require the correct
+        // phase to clearly beat the runner-up instead. The row cap is a safety valve for a
+        // signal so weak the margin never opens (the coherent score still grows as sqrt(n), so
+        // at the cap the best candidate is the right one).
         if !self.phase_computed {
-            return;
+            let (phase, best, second, rows) = {
+                let acq = self.fs_acq.as_ref().expect("acquired");
+                let (p, b, s) = acq.best();
+                (p, b, s, acq.rows())
+            };
+            let enough = rows >= 3 * self.spf && best >= 1.5 * second;
+            if enough || rows >= 12 * self.spf {
+                self.phase = phase;
+                self.frame_phase = phase;
+                self.phase_computed = true;
+                self.demod_rows = 0;
+            } else {
+                return;
+            }
         }
 
         // Channel estimation and FAC/SDC/MSC over the rows that arrived since the previous
@@ -408,7 +450,7 @@ impl DrmReceiver {
                         }
                         None => self.fac_errors += 1,
                     }
-                    self.sdc_blocks.push((idx, std::mem::take(&mut self.frame_sdc)));
+                    self.sdc_pending.push((idx, std::mem::take(&mut self.frame_sdc)));
                     self.msc_frame_indices.push(idx);
                     self.fac_cells.clear();
                 }
@@ -425,6 +467,11 @@ impl DrmReceiver {
         use crate::digital::drm2::fac::MscMode;
         use crate::digital::drm2::fec::mlc::MscProtection;
         use crate::digital::drm2::fec::qam::Mapping;
+        // Nothing to assemble until the SDC has described the stream layout; the emitted cells
+        // stay pending in `msc_emitted` until then.
+        if self.multiplex.is_none() {
+            return;
+        }
         // The MSC configuration comes from the FAC (mode) and the SDC (protection and the
         // higher-protected part-A bytes), not a hardcoded EEP 0/1.
         let mode = self.facs.first().map(|f| f.channel.msc_mode).unwrap_or(MscMode::Qam64Sm);
@@ -445,72 +492,91 @@ impl DrmReceiver {
             .map(|m| m.streams.iter().map(|s| s.len_a as usize).sum::<usize>())
             .unwrap_or(0);
         let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, part_a_bytes);
-        let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
-        let mut dec = MlcDecoder::new(params, 1);
-        let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
-        let mut in_partial = true;
-        let mut complete_frame = 0usize;
-        let mut bits = Vec::new();
+        // Persistent stages: the deinterleaver holds the long-interleaving memory, so it must
+        // survive across calls; the MLC decoder is rebuilt only when the configuration changes.
+        if self.msc_deinterleaver.is_none() {
+            self.msc_deinterleaver = Some(CellDeinterleaver::new(map.msc_cells_per_frame, 5));
+        }
+        let key = (mapping, prot.part_a, prot.part_b, part_a_bytes);
+        if self.msc_decoder_key != Some(key) {
+            self.msc_decoder = Some(MlcDecoder::new(params, 1));
+            self.msc_decoder_key = Some(key);
+        }
+        // Consume only the symbols that arrived since the previous call (`msc_emitted` is
+        // drained, so the assembly state below carries over). Symbols are grouped into frames by
+        // their `out_sym == 0` boundary and a frame is placed into the super-frame buckets when
+        // the NEXT frame starts, because the current frame's FAC index (its position in the super
+        // frame) is only known once the FAC completes, at the end of the frame.
+        let emitted = std::mem::take(&mut self.msc_emitted);
         let mut decoded: Vec<Vec<u8>> = Vec::new();
-        for (out_sym, cells) in &self.msc_emitted {
-            if *out_sym == 0 && in_partial {
-                in_partial = false;
-                complete_frame = 0;
-            } else if *out_sym == 0 {
-                complete_frame += 1;
-            }
-            if in_partial {
-                continue;
-            }
-            let Some(&frame_index) = self.msc_frame_indices.get(complete_frame) else { continue };
-            if frame_index == 0xFF {
-                continue;
-            }
-            let super_sym = frame_index as usize * 15 + *out_sym;
-            if *out_sym == 0
-                && frame_index == 0
-                && (0..45).all(|s| map.msc_carriers[s].is_empty() || !super_msc[s].is_empty())
-            {
-                let mut all: Vec<EqCell> = Vec::new();
-                for c in super_msc.iter() {
-                    all.extend_from_slice(c);
+        for (out_sym, cells) in &emitted {
+            let out_sym = *out_sym;
+            if out_sym == 0 {
+                if self.msc_in_partial {
+                    self.msc_in_partial = false;
+                } else {
+                    let buf = std::mem::take(&mut self.msc_frame_buf);
+                    self.assemble_msc_frame(map, &buf, &mut decoded);
                 }
-                for frame in all.chunks(map.msc_cells_per_frame).take(3) {
-                    if let Some(d) = de.push(frame) {
-                        if d.iter().all(|c| c.chan > 0.0) {
-                            if dec.decode(&d, &mut bits) {
-                                decoded.push(bits.clone());
-                            }
-                        }
-                    }
-                }
-                for c in super_msc.iter_mut() {
-                    c.clear();
-                }
+                self.msc_frame_buf.clear();
             }
-            for &c in &map.msc_carriers[super_sym] {
-                super_msc[super_sym].push(cells[c as usize]);
+            if !self.msc_in_partial {
+                self.msc_frame_buf.push((out_sym, cells.clone()));
             }
         }
-        // Flush the last (possibly partial) super frame, as the chanest harness does.
-        {
-            let mut all: Vec<EqCell> = Vec::new();
-            for c in super_msc.iter() {
-                all.extend_from_slice(c);
-            }
-            for frame in all.chunks(map.msc_cells_per_frame).take(3) {
-                if let Some(d) = de.push(frame) {
-                    if d.iter().all(|c| c.chan > 0.0) {
-                        if dec.decode(&d, &mut bits) {
-                            decoded.push(bits.clone());
-                        }
-                    }
-                }
-            }
-        }
+        // No trailing partial-super-frame flush: in the streaming model the last super frame is
+        // decoded when its next frame 0 arrives (or, for a finite capture, it is simply the one
+        // incomplete frame at the end). Flushing it on every call decoded it repeatedly.
         for b in decoded {
             self.deframe_audio(&b);
             self.msc_frames.push(b);
+        }
+    }
+
+    /// Place one completed frame's cells into the super-frame buckets, decoding a super frame
+    /// when its next one begins. `buf` is the frame's `(out_sym, cells)` in emitted order; its
+    /// FAC index is looked up here because a full frame has passed since those symbols arrived.
+    fn assemble_msc_frame(
+        &mut self,
+        map: &CellMap,
+        buf: &[(usize, Vec<EqCell>)],
+        decoded: &mut Vec<Vec<u8>>,
+    ) {
+        let cf = self.msc_complete_frame;
+        let Some(&frame_index) = self.msc_frame_indices.get(cf) else {
+            return;
+        };
+        self.msc_complete_frame += 1;
+        if frame_index == 0xFF {
+            return;
+        }
+        if frame_index == 0
+            && (0..45).all(|s| map.msc_carriers[s].is_empty() || !self.msc_super[s].is_empty())
+        {
+            let mut all: Vec<EqCell> = Vec::new();
+            for c in self.msc_super.iter() {
+                all.extend_from_slice(c);
+            }
+            for frame in all.chunks(map.msc_cells_per_frame).take(3) {
+                if let Some(d) = self.msc_deinterleaver.as_mut().expect("created").push(frame) {
+                    if d.iter().all(|c| c.chan > 0.0)
+                        && self.msc_decoder.as_mut().expect("created").decode(&d, &mut self.msc_bits)
+                    {
+                        decoded.push(self.msc_bits.clone());
+                    }
+                }
+            }
+            for c in self.msc_super.iter_mut() {
+                c.clear();
+            }
+        }
+        for (out_sym, cells) in buf {
+            let super_sym = frame_index as usize * 15 + out_sym;
+            for &c in &map.msc_carriers[super_sym] {
+                if let Some(cell) = cells.get(c as usize) {
+                    self.msc_super[super_sym].push(*cell);
+                }
+            }
         }
     }
 
@@ -519,8 +585,9 @@ impl DrmReceiver {
     fn decode_sdc(&mut self, map: &CellMap) {
         use crate::digital::drm2::fec::qam::Mapping;
         use crate::digital::drm2::sdc::{parse_entities, parse_sdc_block};
+        let pending = std::mem::take(&mut self.sdc_pending);
         let mut bits = Vec::new();
-        for (idx, cells) in &self.sdc_blocks {
+        for (idx, cells) in &pending {
             if *idx != 0 || cells.len() != map.sdc_cells_per_superframe {
                 continue;
             }
@@ -692,10 +759,52 @@ mod tests {
         eprintln!("[rx] FAC frame_index sequence: {ids:?}");
     }
 
-    /// The full live30 decode through the receiver: coarse acquisition, streaming frequency
-    /// tracking, channel estimation, FAC/SDC/MSC and the audio deframing. This is the task-7
-    /// acceptance: the reference decodes the same capture to FAC 64 ok / 9 bad, station
-    /// `SAN90 DRM BENCH` (HE-AAC mono 12 kHz) and 200 audio frames.
+    /// Feeding the receiver in 3248-sample blocks (the DSP worker's push size) must produce the
+    /// same decode as one whole-buffer push. The committed bench capture pins it: the frame
+    /// phase, the FAC blocks, the station label and the audio access units all match. This is
+    /// the regression for the streaming model — the frame phase, the MSC super-frame assembly
+    /// and the SDC decode each had a batch-only assumption that only showed up once the capture
+    /// was fed in blocks (which is exactly what the wasm worker does), and they all read 0 FAC
+    /// blocks while the batch decode read 64.
+    #[test]
+    fn the_block_fed_receiver_matches_the_batch_decode() {
+        let raw = std::fs::read("../tests/fixtures/drm/drm_live_modeB_so3_48828.f32").expect("live");
+        let iq: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let mut rs = crate::ddc::resampler::ComplexResampler::new(48_828.125, 48_000.0);
+        let mut baseband: Vec<f32> = Vec::new();
+        rs.process_f32_into(&iq, &mut baseband);
+
+        let mut batch = DrmReceiver::new();
+        batch.push(&baseband);
+        batch.run();
+
+        let mut streamed = DrmReceiver::new();
+        for block in baseband.chunks(3248 * 2) {
+            streamed.push(block);
+            streamed.run();
+        }
+        eprintln!(
+            "[stream] batch facs={}/{} label={:?} aus={} | block-fed facs={}/{} label={:?} aus={}",
+            batch.facs.len(), batch.fac_errors, batch.station_label, batch.audio_access_units.len(),
+            streamed.facs.len(), streamed.fac_errors, streamed.station_label, streamed.audio_access_units.len()
+        );
+        assert!(batch.locked() && streamed.locked(), "both must lock");
+        assert_eq!(streamed.facs.len(), batch.facs.len(), "FAC ok blocks");
+        assert_eq!(streamed.fac_errors, batch.fac_errors, "FAC errors");
+        assert_eq!(streamed.phase, batch.phase, "frame phase");
+        assert_eq!(streamed.station_label, batch.station_label, "station label");
+        assert_eq!(streamed.msc_frames.len(), batch.msc_frames.len(), "MSC frames");
+        assert_eq!(streamed.audio_access_units.len(), batch.audio_access_units.len(), "audio AUs");
+    }
+
+    /// The full live30 decode through the receiver, fed in 3248-sample blocks exactly like the
+    /// DSP worker feeds the wasm build: coarse acquisition, streaming frequency tracking,
+    /// channel estimation, FAC/SDC/MSC and the audio deframing. This is the task-7 acceptance:
+    /// the reference decodes the same capture to FAC 64 ok / 9 bad, station `SAN90 DRM BENCH`
+    /// (HE-AAC mono 12 kHz) and 200 audio frames.
     #[test]
     #[ignore = "live capture /tmp/live30.f32 required; run with --ignored --nocapture"]
     fn receiver_on_live_capture() {
@@ -709,11 +818,13 @@ mod tests {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let mut rs = crate::ddc::resampler::ComplexResampler::new(48_828.125, 48_000.0);
-        let mut out: Vec<f32> = Vec::new();
-        rs.process_f32_into(&iq, &mut out);
+        let mut baseband: Vec<f32> = Vec::new();
+        rs.process_f32_into(&iq, &mut baseband);
         let mut rx = DrmReceiver::new();
-        rx.push(&out);
-        rx.run();
+        for block in baseband.chunks(3248 * 2) {
+            rx.push(block);
+            rx.run();
+        }
         eprintln!(
             "[rxlive] locked={} mode={:?} facs={} fac_errors={} symbols={} label={:?} msc={} aus={} rate={} timing_tracking={}",
             rx.locked(), rx.mode, rx.facs.len(), rx.fac_errors, rx.symbols_demodulated, rx.station_label, rx.msc_frames.len(), rx.audio_access_units.len(), rx.audio_rate_hz(), rx.timing_tracking
