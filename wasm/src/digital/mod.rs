@@ -20,17 +20,11 @@ use crate::plugin::DigitalDemodulator;
 pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
     match id {
         "ft8" => Some(Box::new(ft8::Ft8Plugin::new(rate))),
-        // The drm2 receiver decodes live30 end to end natively (FAC 64 ok/10 bad, 240 audio
-        // AUs, station SAN90 DRM BENCH) — its DrPlugin (drm2::DrPlugin) implements the same
-        // DigitalDemodulator and is one dispatch line away — but in wasm the FAC decode
-        // fails entirely (0 ok / ~74 err, both channel-estimator paths), a wasm-vs-native
-        // difference that still needs debugging. The constellation probe adds a clue: the
-        // drm2 FAC cells read ~2.37x larger than the previous receiver's (2.37 =
-        // sqrt(PILOT_POWER) x channel gain, i.e. the PILOT cell amplitude), suggesting the
-        // fac_constellation collects pilot cells instead of FAC data cells in wasm.
-        // The previous receiver keeps the browser path until that lands; see the handoff's
-        // wasm ABI swap note.
-        "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
+        // The drm2 receiver is the ported chain (sync -> OFDM -> chanest/tracking -> FAC/SDC/MSC
+        // -> audio framing). It decodes live30.f32 end to end (FAC 64 ok/10 bad, 240 audio AUs,
+        // station SAN90 DRM BENCH) and is now streaming-correct: the block-fed decode matches the
+        // batch decode on the committed bench capture, which is what the wasm worker drives.
+        "drm" => Some(Box::new(drm2::DrPlugin::new(rate))),
         _ => None,
     }
 }
