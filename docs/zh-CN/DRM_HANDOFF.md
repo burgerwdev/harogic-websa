@@ -163,16 +163,14 @@ SBR 保护并测试音频解码（上一轮的 AU 填充应已防止 FDK trap）
 | 编码 | SDC | DecDRM 台站配置 | 接收机路径 | 状态 |
 | --- | --- | --- | --- | --- |
 | AAC-LC | coding 0，SBR 关 | `codec = "aac"` | FDK TT_DRM | 可解码（音频夹具） |
-| HE-AAC | coding 0，SBR 开，单声道 | `codec = "he-aac"` | FDK TT_DRM | 24 kHz 夹具可解码；真实台面码流被上面的 FDK 故障阻塞 |
+| HE-AAC | coding 0，SBR 开，单声道 | `codec = "he-aac"` | FDK TT_DRM | 台面夹具和 wasm 夹具均可解出非静音 PCM，24 kHz 输出已验证 |
 | HE-AAC v2 | coding 0，SBR 开，立体声 | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | 已在台面验证：153 600 个 24 kHz 立体声样本，左右皆 1 kHz |
-| xHE-AAC | coding 3 | `codec = "xhe-aac"` | libxaac，用 SDC 里的 AudioSpecificConfig | 已接线；USAC 冒烟测试把 45 个接入单元解成非静音 PCM；DRM 端到端路径尚未测 |
+| xHE-AAC | coding 3 | `codec = "xhe-aac"` | FDK TT_DRM + SDC DRM Static Config | 已通过提交的 xHE 台面夹具走完整接收链，102 400 个非静音 24 kHz 样本 |
 
-给下一轮的两点提示：
+仍有两个夹具边界：
 
-- 音频夹具的 SDC 声称 SBR，但负载里没有 SBR 数据，因此 FDK 被配置成等待一个并不存在的
-  尾段。合成夹具因此不是符合标准的 SBR 码流；台面码流是。
-- xHE-AAC 的端到端路径（coding 3 经 DRM 接收机进 libxaac）从未用真实 xHE 码流驱动过。
-  DecDRM 可以发射：把台站配置的 `codec` 设为 `xhe-aac`。
+- 合成 AAC 夹具的 SDC 声称 SBR，但负载不含 SBR 数据，因此它是 FDK 安全性冒烟夹具，不是符合标准的 HE-AAC 广播；提交的台面码流是符合标准的，并已通过同一 FDK DRM transport。
+- xHE 接收路径使用 FDK `TT_DRM` 和 SDC Static Config；libxaac 仍用于独立 USAC 编码/冒烟测试，其 MP4 模式解码器不接受紧凑 DRM Static Config。
 
 ## 后锁定通路的结论
 

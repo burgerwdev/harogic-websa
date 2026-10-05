@@ -270,18 +270,18 @@ flags in the descriptor), 3 is xHE-AAC. Both decoder paths are wired and committ
 | Codec | SDC | DecDRM station config | Receiver path | Status |
 | --- | --- | --- | --- | --- |
 | AAC-LC | coding 0, SBR off | `codec = "aac"` | FDK TT_DRM | decodes (the audio fixture) |
-| HE-AAC | coding 0, SBR on, mono | `codec = "he-aac"` | FDK TT_DRM | the 24 kHz fixture decodes; the real bench stream is blocked by the FDK fault above |
-| HE-AAC v2 | coding 0, SBR on, stereo | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | verified on the live bench: 153 600 stereo 24 kHz samples, 1 kHz on both channels |
-| xHE-AAC | coding 3 | `codec = "xhe-aac"` | libxaac with the AudioSpecificConfig from the SDC | wired; the USAC smoke test decodes 45 access units to non-silent PCM; the end-to-end DRM path is not yet tested |
+| HE-AAC | coding 0, SBR on, mono | `codec = "he-aac"` | FDK TT_DRM | committed bench and wasm fixture decode to non-silent PCM; 24 kHz output verified |
+| HE-AAC v2 | coding 0, SBR on, stereo | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | live bench verified: 153 600 stereo 24 kHz samples, 1 kHz on both channels |
+| xHE-AAC | coding 3 | `codec = "xhe-aac"` | FDK TT_DRM with SDC DRM Static Config | committed xHE bench capture decodes through the receiver; 102 400 non-silent 24 kHz samples verified |
 
-Two notes for the next session:
+Two fixture caveats remain:
 
-- The audio fixture's SDC claims SBR while its payload carries none, so FDK is configured for a
-  tail that does not exist. The synthesised fixture is therefore not a conformant SBR stream;
-  the bench stream is.
-- The xHE-AAC end-to-end path (coding 3 through the DRM receiver into libxaac) has never been
-  driven with a real xHE stream. DecDRM can transmit one: set `codec = "xhe-aac"` in the bench
-  station config.
+- The synthesised AAC fixture's SDC claims SBR while its payload carries none, so it is a decoder
+  safety smoke case rather than a conformant HE-AAC broadcast. The committed bench stream is
+  conformant and has been decoded through the same FDK DRM transport.
+- The xHE receiver path uses FDK's `TT_DRM` transport and the SDC Static Config. libxaac remains
+  the standalone USAC encoder/smoke dependency; its MP4-mode decoder does not accept the compact
+  DRM Static Config.
 
 ## The post-lock pass, resolved
 
