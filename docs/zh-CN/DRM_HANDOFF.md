@@ -373,16 +373,21 @@ task-3/4 的其余部分都有参考支撑。
 244 个 FAC 单元、21 个时间参考导频、无频率参考导频、散布导频每 4 载波逐符号移 1、符号 4 与
 39 共 54 个 AFS 单元。测试钉住全部：`mode_e_geometry_matches_the_spec`（params）、
 `mode_e_layout_matches_the_spec` 与 `mode_e_afs_phases_match_table_61`（cellmap），以及
-`fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` 的模式 E 分支（tables）。
+`fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` 的模式 E 分支（tables）。96 kHz
+同步端与按模式区分的 FAC 解码器现已实现（见下方模式 E 一节）；FAC/SDC/MSC 信令与音频解码仍
+需要一个模式 E 信号源。
 
-**未实现**：96 kHz 数字前端。整个同步链（`freqacq`/`timesync`/`nco`/`finefreq`/`freqtrack`）
-硬编码 `params::SAMPLE_RATE`（48 000，约 20 处）；模式 E 需要 96 000，这会改变每个速率导出
-的常数（频率捕获的 FFT bin、定时低通截止、NCO 相位增量、符号率）。FAC 信道解码器也是
-DRM30 钉死的：`MlcParams::fac()` 硬编码 65 单元 FAC，而模式 E 的 FAC 是 244 单元。
+**已实现**：96 kHz 数字前端。`freqacq`/`timesync`/`nco`/`finefreq`/`freqtrack` 改用模式的
+采样率而非硬编码 48 000；定时低通保留模式 E 的 100 kHz 带宽；以 96 kHz 馈入时模式检测选中 E
+（占用 SO0）；FAC 解码器使用 `MlcParams::fac_for(mode)`（模式 E 为 244 单元）；模式 E 没有连续
+频率导频，跟踪器不输出增量。`mode_e_acquires_and_demodulates_a_synthetic_signal` 可捕获合成模式
+E 信号：模式检测选中 E，帧相位提交，410 个符号解调成功，保护相关 1.0。
 
-**验证限制**：DecDRM（参考发射机）没有定义 `RobustnessMode::E`——它的 `RobustnessMode::ALL`
-是 `[A, B, C, D]`——所以台面发射机无法产生模式 E 信号，“用 DecDRM 模式 E 信号解调并出音频”
-的验收无法满足。合成模式 E 夹具需要 OFDM *调制器*（接收机只解调），也未实现。
+**仍待完成**：模式 E 的 FAC/SDC/MSC 信令与音频解码尚未驱动，因为本环境产生不了模式 E 信号。
+DecDRM（参考发射机）没有定义 `RobustnessMode::E`——它的 `RobustnessMode::ALL` 是
+`[A, B, C, D]`——gr-drm 未安装，也没有模式 E 录音，所以“用 DecDRM 模式 E 信号解调并出音频”的
+验收无法满足。要驱动它需要一台模式 E 发射机（FAC/SDC/MSC 的 FEC 编码加 OFDM 调制器），这既
+不在目标范围内，也没有可比对的参考。
 
 **96 kHz 链落地后的适用范围**：DRM+（模式 E）仅 VHF——波段 I/II（47–108 MHz），96 kHz 基带，
 单业务，AAC/xHE-AAC 音频。它与 DRM30 共享 FAC/SDC/MSC 解码器（MLC/Viterbi/CRC/交织器在单元

@@ -509,8 +509,9 @@ tables 49/50, §8.4 tables 57/58/60/61 and §8.5 tables 62–66 — with gr-drm'
 (a GPL DRM+ transmitter) read only to cross-check the K range, symbol count, guard ratio and
 FAC/SDC/pilot counts. The numbers agree, and two independent spec tables (the scattered-pilot
 matrices of §8.4.4.3.6 and the AFS table of §8.4.5) cross-check each other in
-`mode_e_afs_phases_match_table_61`. What is NOT yet done for mode E is its 96 kHz sync front
-end and FAC/SDC/MSC signalling decode — that is task 8, after the DRM30 chain decodes.
+`mode_e_afs_phases_match_table_61`. The 96 kHz sync front end and the mode-aware FAC decoder
+are now implemented (see the mode E section below); the FAC/SDC/MSC signalling and audio
+decode still need a mode E signal source.
 
 ## Mode E / DRM+ (VHF): scope and state
 
@@ -524,18 +525,21 @@ shifting 1 per symbol, 54 AFS cells in symbols 4 and 39. The tests pin all of it
 `mode_e_afs_phases_match_table_61` (cellmap), and the mode E arms of
 `fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` (tables).
 
-**Not implemented**: the 96 kHz digital front end. The whole sync chain
-(`freqacq`/`timesync`/`nco`/`finefreq`/`freqtrack`) hardcodes `params::SAMPLE_RATE` (48 000,
-about 20 uses); mode E needs 96 000, which changes every rate-derived constant (the frequency
-acquisition's FFT bin, the timing low-pass cutoff, the NCO phase increment, the symbol rates).
-The FAC channel decoder is also DRM30-pinned: `MlcParams::fac()` hardcodes the 65-cell FAC,
-while mode E's FAC is 244 cells.
+**Implemented**: the 96 kHz digital front end. `freqacq`/`timesync`/`nco`/`finefreq`/
+`freqtrack` take the mode's sample rate instead of a hardcoded 48 000; the timing low-pass keeps
+mode E's 100 kHz band; mode detection selects E when fed 96 kHz (occupancy SO0); the FAC decoder
+uses `MlcParams::fac_for(mode)` (244 cells for E); the frequency tracker reports no delta for
+mode E's missing continuous pilots. `mode_e_acquires_and_demodulates_a_synthetic_signal`
+acquires a synthesised mode E signal: mode detection selects E, the frame phase commits and 410
+symbols demodulate with a guard correlation of 1.0.
 
-**Verification limit**: DecDRM (the reference transmitter) defines no `RobustnessMode::E` — its
-`RobustnessMode::ALL` is `[A, B, C, D]` — so a mode E signal cannot be generated with the bench
-transmitter, and the "demodulates and produces audio with a DecDRM mode E signal" acceptance
-cannot be met. A synthetic mode E fixture would need an OFDM *modulator* (the receiver only
-demodulates), which is not implemented either.
+**Still open**: the FAC/SDC/MSC signalling and audio decode for mode E are not exercised, because
+no mode E signal can be produced here. DecDRM (the reference transmitter) defines no
+`RobustnessMode::E` — its `RobustnessMode::ALL` is `[A, B, C, D]` — gr-drm is not installed, and
+there is no mode E recording, so the "demodulates and produces audio with a DecDRM mode E
+signal" acceptance cannot be met. Driving it would need a mode E transmitter (FAC/SDC/MSC FEC
+encoding plus an OFDM modulator), which the objective does not ask for and which has no
+reference to verify against.
 
 **Applicable scope when the 96 kHz chain lands**: DRM+ (mode E) is VHF only — band I/II
 (47–108 MHz), 96 kHz baseband, one service, AAC/xHE-AAC audio. It shares the FAC/SDC/MSC
