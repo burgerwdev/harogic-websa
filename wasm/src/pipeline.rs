@@ -311,6 +311,12 @@ impl Pipeline {
         self.digital.as_mut().map(|demod| demod.take_audio_pcm()).unwrap_or_default()
     }
 
+    /// Drain at most `limit` samples of the DRM audio, keeping the rest buffered. The wasm ABI's
+    /// output block is fixed-size, so a burst must be read out across several calls.
+    pub fn digital_audio_pcm_limited(&mut self, limit: usize) -> Vec<i16> {
+        self.digital.as_mut().map(|demod| demod.drain_audio_pcm(limit)).unwrap_or_default()
+    }
+
     /// The decoded audio PCM's sample rate in Hz (0 when there is no audio).
     pub fn digital_audio_rate_hz(&self) -> u32 {
         self.digital.as_ref().map(|demod| demod.audio_rate_hz()).unwrap_or(0)

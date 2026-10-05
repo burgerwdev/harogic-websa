@@ -643,7 +643,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
       // (an offset-tracked head-window read stopped delivering once the receiver's buffer
       // outgrew the read cap, which silenced every session after ~1.4 s). Resampled to the
       // worklet's rate (the DRM core runs at 12/24 kHz, the audio chain at 48 kHz).
-      const fresh = pipeline.audioPcm(65536);
+      const fresh = pipeline.audioPcm(262144);
       if (fresh.length) {
         const srcRate = pipeline.audioRate();
         const dstRate = Number(params?.outRate) || 48000;

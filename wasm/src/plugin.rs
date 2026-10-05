@@ -212,6 +212,15 @@ pub trait DigitalDemodulator: Send {
         Vec::new()
     }
 
+    /// Like [`DigitalDemodulator::take_audio_pcm`], but drains at most `limit` samples and keeps
+    /// the rest buffered for the next call. The wasm ABI's output block is fixed-size, so a
+    /// plain drain would drop everything past the block; this lets a burst (the DRM audio arrives
+    /// once per super frame) be handed over across several reads without losing a sample.
+    fn drain_audio_pcm(&mut self, limit: usize) -> Vec<i16> {
+        let _ = limit;
+        self.take_audio_pcm()
+    }
+
     /// The decoded PCM's sample rate in Hz (0 when there is no audio).
     fn audio_rate_hz(&self) -> u32 {
         0

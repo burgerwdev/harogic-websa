@@ -249,7 +249,7 @@ pub unsafe extern "C" fn websa_dsp_drm_audio_pcm(handle: u32, ptr: *mut i16, cap
         return 0;
     }
     with_pipeline(handle, |state| {
-        let pcm = state.pipeline.digital_audio_pcm();
+        let pcm = state.pipeline.digital_audio_pcm_limited(capacity as usize);
         let n = pcm.len().min(capacity as usize);
         core::ptr::copy_nonoverlapping(pcm.as_ptr(), ptr, n);
         n as u32

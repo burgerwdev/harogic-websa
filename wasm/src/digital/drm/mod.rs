@@ -892,6 +892,21 @@ mod tests {
     /// prefix + the mode's carriers with the map's reference pilots) and must select mode E and
     /// demodulate it. DecDRM defines no mode E transmitter, so a synthetic signal is the only
     /// way to exercise the 96 kHz front end (see the handoff).
+    /// A PCM burst larger than the ABI's fixed output block must be handed over across several
+    /// drains, not truncated: the DRM audio arrives once per super frame (~1.2 s at 38.4 kHz,
+    /// ~46k samples) while the wasm block holds 32768, so a plain drain dropped ~30 % of every
+    /// burst and the worklet's ring underran every second.
+    #[test]
+    fn drain_audio_pcm_keeps_the_tail() {
+        let mut plugin = DrPlugin::new(48_000.0);
+        plugin.rx.audio_pcm = (0..10).collect();
+        assert_eq!(plugin.drain_audio_pcm(4), vec![0, 1, 2, 3]);
+        assert_eq!(plugin.rx.audio_pcm, vec![4, 5, 6, 7, 8, 9], "the tail must stay buffered");
+        assert_eq!(plugin.drain_audio_pcm(4), vec![4, 5, 6, 7]);
+        assert_eq!(plugin.drain_audio_pcm(4), vec![8, 9], "the last call takes the remainder");
+        assert!(plugin.rx.audio_pcm.is_empty());
+    }
+
     #[test]
     fn mode_e_acquires_and_demodulates_a_synthetic_signal() {
         let map = CellMap::new(RobustnessMode::E, SpectrumOccupancy::SO_0).expect("mode E layout");
@@ -1116,6 +1131,9 @@ impl DigitalDemodulator for DrPlugin {
             self.rx.facs.len(),
             self.rx.fac_errors
         ));
+        if !self.rx.audio_debug.is_empty() {
+            lines.push(format!("dbg {}", self.rx.audio_debug));
+        }
         self.lines = lines.clone();
         self.report_blocks += 1;
         let changed = lines != self.sent;
@@ -1160,6 +1178,16 @@ impl DigitalDemodulator for DrPlugin {
 
     fn take_audio_pcm(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.rx.audio_pcm)
+    }
+
+    fn drain_audio_pcm(&mut self, limit: usize) -> Vec<i16> {
+        if self.rx.audio_pcm.len() <= limit {
+            return std::mem::take(&mut self.rx.audio_pcm);
+        }
+        // Keep the tail: `split_off` leaves the first `limit` samples in the buffer, so hand those
+        // back and put the remainder where the next call finds it.
+        let tail = self.rx.audio_pcm.split_off(limit);
+        std::mem::replace(&mut self.rx.audio_pcm, tail)
     }
 
     fn audio_rate_hz(&self) -> u32 {
