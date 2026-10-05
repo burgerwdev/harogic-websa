@@ -507,8 +507,8 @@ tables 49/50, §8.4 tables 57/58/60/61 and §8.5 tables 62–66 — with gr-drm'
 FAC/SDC/pilot counts. The numbers agree, and two independent spec tables (the scattered-pilot
 matrices of §8.4.4.3.6 and the AFS table of §8.4.5) cross-check each other in
 `mode_e_afs_phases_match_table_61`. The 96 kHz sync front end and the mode-aware FAC decoder
-are now implemented (see the mode E section below); the FAC/SDC/MSC signalling and audio
-decode still need a mode E signal source.
+are now implemented and verified with the repository's deterministic mode E fixture (see below).
+External Mode E signal-source testing is intentionally out of scope.
 
 ## Mode E / DRM+ (VHF): scope and state
 
@@ -540,18 +540,19 @@ DRM+ channel and uses the same decoded-audio worklet path. Selecting `drm` keeps
 path. The Filter control now labels both digital channel widths as automatic rather than offering
 analog IF choices that do not change the broadcast occupancy.
 
-A public DRM+ implementation was checked as a possible signal source: `Opendigitalradio/qt-drmplus`
-contains a receiver but no committed recordings (its referenced `samples/02_drm_testeE.iq192` is
-absent from the full git history), while `kit-cel/gr-drm` contains an untested DRM+ GNU Radio
-transmitter flowgraph. The latter cannot be built in this environment because Boost filesystem/
-system development libraries are missing. Neither project is copied into this repository.
+**External signal-source gap (deferred by user decision):** no real VHF Mode E IQ/WAV recording
+is available here. `Opendigitalradio/qt-drmplus` references
+`samples/02_drm_testeE.iq192`, but neither its current tree nor full git history contains the
+file. `kit-cel/gr-drm` has a DRM+ GNU Radio transmitter flowgraph, but building it and testing
+an external synthetic signal are paused; the local dependency probe did not produce an
+independent transmitter recording. No external Mode E source or radiated VHF test is an
+acceptance gate for this goal. Continue to use the committed ETSI-based fixture and native/wasm
+checks above, without treating them as independent over-the-air validation. Neither external
+project's code is copied into this repository.
 
-**Applicable scope when the 96 kHz chain lands**: DRM+ (mode E) is VHF only — band I/II
-(47–108 MHz), 96 kHz baseband, one service, AAC/xHE-AAC audio. It shares the FAC/SDC/MSC
-decoders with DRM30 (the MLC/Viterbi/CRC/interleaver are mode-agnostic once the cell layout and
-the FAC cell count are mode-aware), so the remaining work is the rate-parameterised sync front
-end and the mode-aware FAC decoder — roughly the `SAMPLE_RATE` uses above plus
-`MlcParams::fac_for(mode)` — not a second receiver.
+**Current scope**: DRM+ (mode E) is VHF band I/II (47–108 MHz), with a 96 kHz
+baseband and AAC/xHE-AAC audio. Its FAC/SDC/MSC and audio chain are tested with the
+committed synthetic fixture; external transmitter and off-air verification are deferred.
 
 ## Audio-path debugging and reliable offline data (2026-10-05)
 

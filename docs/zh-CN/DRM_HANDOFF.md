@@ -365,20 +365,15 @@ task-3/4 的其余部分都有参考支撑。
 244 个 FAC 单元、21 个时间参考导频、无频率参考导频、散布导频每 4 载波逐符号移 1、符号 4 与
 39 共 54 个 AFS 单元。测试钉住全部：`mode_e_geometry_matches_the_spec`（params）、
 `mode_e_layout_matches_the_spec` 与 `mode_e_afs_phases_match_table_61`（cellmap），以及
-`fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` 的模式 E 分支（tables）。96 kHz
-同步端与按模式区分的 FAC 解码器现已实现（见下方模式 E 一节）；FAC/SDC/MSC 信令与音频解码仍
-需要一个模式 E 信号源。
+`fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` 的模式 E 分支（tables）。FAC/SDC/MSC 与音频解码已由仓库内确定性模式 E 夹具验证（见下文）；外部模式 E 信号源测试不在本目标范围。
 
 **已实现并在合成模式 E 信号上独立验证**：模式感知 FAC 使用 116 个信息位、4-QAM 1/4 码率、两组业务描述，以及 RM flag 与四帧 identity/toggle 序列。SDC 使用模式 E 的 4-QAM 1/2 或 1/4 码率；MSC 使用模式 E 的 4/16-QAM 码率表、深度 6 的信元交织、每超帧 29 842 个有效 MSC 信元、每复用帧 7 460 个信元。信元映射中的 AFS-only 信元已从 SDC/MSC 数据中排除。native 测试生成零噪声 96 kHz 模式 E 信号，包含 FAC、SDC、四帧 MSC 和成对的 200 ms AAC 音频；接收机解出 FAC 17/0、SDC 4、7 个逐位一致的 MSC 帧和 15 个 AAC AU。提交的 `drm_modeE_so0_96k_aac.f32` 还通过 `drmplus` wasm ABI，在 48 kHz 和 44.1 kHz 输出设置下产出非静音 PCM。注入 ±100 Hz 载波偏移后，基于保护相关相位的跟踪仍能恢复 FAC/SDC/MSC/AU。
 
 **入口已实现**：插件清单把 `drmplus` 与 DRM30 分开暴露。选择它会把信道化余量设为 100 kHz、以 96 kHz 构建接收机、高亮 ±50 kHz DRM+ 信道，并使用相同的解码音频通路；选择 `drm` 仍是 DRM30 SO3/10 kHz 路径。Filter 控件现在把两种数字信道标为自动，而不是提供不能改变广播占用的模拟 IF 选择。
 
-公开 DRM+ 实现也已作为信号源候选检查：`Opendigitalradio/qt-drmplus` 是接收机，但当前 tree 和完整 git 历史都没有它引用的 `samples/02_drm_testeE.iq192` 录音；`kit-cel/gr-drm` 包含未充分测试的 DRM+ GNU Radio 发射 flowgraph，但本环境缺少 Boost filesystem/system 开发库，无法编译。两者代码均未复制进本仓库。
+**外部信号源缺口（按用户决定暂缓）**：当前没有可用的真实 VHF Mode E IQ/WAV 录音。`Opendigitalradio/qt-drmplus` 引用的 `samples/02_drm_testeE.iq192` 在当前源码树及完整 git 历史均不存在。`kit-cel/gr-drm` 虽包含 DRM+ GNU Radio 发射 flowgraph，但已暂停编译及外部合成信号测试；本地依赖探查未生成独立发射器录音。真实 VHF 空口和外部 Mode E 源均不是本目标的验收门禁。继续使用仓库提交的 ETSI 规范驱动夹具及 native/wasm 检查，但不将其表述为独立的空口验证。两个外部项目的源码均未复制进本仓库。
 
-**96 kHz 链落地后的适用范围**：DRM+（模式 E）仅 VHF——波段 I/II（47–108 MHz），96 kHz 基带，
-单业务，AAC/xHE-AAC 音频。它与 DRM30 共享 FAC/SDC/MSC 解码器（MLC/Viterbi/CRC/交织器在单元
-布局与 FAC 单元数模式感知后与模式无关），所以剩余工作是速率参数化的同步前端和模式感知的
-FAC 解码器——大致是上面的 `SAMPLE_RATE` 用途加 `MlcParams::fac_for(mode)`——不是第二台接收机。
+**当前适用范围**：DRM+（模式 E）属于 VHF 波段 I/II（47–108 MHz），使用 96 kHz 基带及 AAC/xHE-AAC 音频。FAC/SDC/MSC 与音频链由仓库内确定性夹具测试；外部发射器与空口验证按本目标暂缓。
 
 ## 音频通路调试与可复用的离线数据（2026-10-05）
 
