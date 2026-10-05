@@ -373,7 +373,7 @@ task-3/4 的其余部分都有参考支撑。
 
 **入口已实现**：插件清单把 `drmplus` 与 DRM30 分开暴露。选择它会把信道化余量设为 100 kHz、以 96 kHz 构建接收机、高亮 ±50 kHz DRM+ 信道，并使用相同的解码音频通路；选择 `drm` 仍是 DRM30 SO3/10 kHz 路径。Filter 控件现在把两种数字信道标为自动，而不是提供不能改变广播占用的模拟 IF 选择。
 
-**仍待完成**：本环境没有真实 DRM+ VHF 发射机或空口模式 E 录音，因此合成结果不能替代 VHF 实机验收；超出保护相位无歧义范围的整数载波偏移、真实 VHF 传播以及模式 E 重配置/多业务组合仍需真实信号源。
+公开 DRM+ 实现也已作为信号源候选检查：`Opendigitalradio/qt-drmplus` 是接收机，但当前 tree 和完整 git 历史都没有它引用的 `samples/02_drm_testeE.iq192` 录音；`kit-cel/gr-drm` 包含未充分测试的 DRM+ GNU Radio 发射 flowgraph，但本环境缺少 Boost filesystem/system 开发库，无法编译。两者代码均未复制进本仓库。
 
 **96 kHz 链落地后的适用范围**：DRM+（模式 E）仅 VHF——波段 I/II（47–108 MHz），96 kHz 基带，
 单业务，AAC/xHE-AAC 音频。它与 DRM30 共享 FAC/SDC/MSC 解码器（MLC/Viterbi/CRC/交织器在单元

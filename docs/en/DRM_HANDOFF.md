@@ -540,10 +540,11 @@ DRM+ channel and uses the same decoded-audio worklet path. Selecting `drm` keeps
 path. The Filter control now labels both digital channel widths as automatic rather than offering
 analog IF choices that do not change the broadcast occupancy.
 
-**Still open**: no real DRM+ VHF transmitter or off-air Mode E recording is available in this
-environment, so the synthetic result is not a substitute for a radiated VHF acceptance. Integer
-carrier-offset acquisition beyond the cyclic-prefix unambiguous range, real VHF propagation and
-mode E reconfiguration/service combinations still need a real signal source.
+A public DRM+ implementation was checked as a possible signal source: `Opendigitalradio/qt-drmplus`
+contains a receiver but no committed recordings (its referenced `samples/02_drm_testeE.iq192` is
+absent from the full git history), while `kit-cel/gr-drm` contains an untested DRM+ GNU Radio
+transmitter flowgraph. The latter cannot be built in this environment because Boost filesystem/
+system development libraries are missing. Neither project is copied into this repository.
 
 **Applicable scope when the 96 kHz chain lands**: DRM+ (mode E) is VHF only — band I/II
 (47–108 MHz), 96 kHz baseband, one service, AAC/xHE-AAC audio. It shares the FAC/SDC/MSC
