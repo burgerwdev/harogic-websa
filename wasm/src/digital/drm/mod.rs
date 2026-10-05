@@ -1019,11 +1019,18 @@ pub struct DrPlugin {
 }
 
 impl DrPlugin {
-    /// The receiver works at 48 kHz; the pipeline resamples the baseband to the
-    /// decoder's rate before it reaches here.
-    pub fn new(_rate: f64) -> Self {
+    /// Build the receiver at the rate the pipeline resamples the baseband to before it arrives:
+    /// 48 kHz selects DRM30 modes A-D, 96 kHz selects mode E (DRM+). The pipeline's
+    /// `set_digital_demod(demod, fs_in, rate)` converts the input to this rate, so an operator
+    /// selecting a 96 kHz DRM+ preset reaches the mode E path.
+    pub fn new(rate: f64) -> Self {
+        let sample_rate = if rate.is_finite() && rate >= 48_000.0 {
+            rate.round() as u32
+        } else {
+            48_000
+        };
         Self {
-            rx: DrmReceiver::new(),
+            rx: DrmReceiver::new_at(sample_rate),
             lines: Vec::new(),
             sent: Vec::new(),
             status_blocks: 0,
