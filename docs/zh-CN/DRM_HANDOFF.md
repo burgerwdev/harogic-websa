@@ -42,7 +42,9 @@
   接入单元，参考接收机为 51 个，所有超帧头 CRC 通过，读数报 24 kHz。libxaac 解码仍未打通：
   SDC 携带的是 libxaac 的紧凑 *xHE-AAC Static Config*（§5.3.2 表 4），mp4 模式的解码器会拒绝
   它（它要完整的 USAC `AudioSpecificConfig`），所以剩下的一步是 Static Config → ASC 展开。
-  HE-AAC v2 已接线但未验证。
+- HE-AAC v2（AAC + SBR + 参数立体声）已在台面验证：Pluto 发射 DecDRM 生成的 `heaacv2` 码流
+  （12 kHz 核心），实拍抓取解出 153 600 个 24 kHz 立体声 PCM 样本，左右声道都是 1 kHz 音
+  （900–1100 Hz 占 99.7% 能量，L/R 相关 1.0），40 个音频接入单元。
 - 模式 E / DRM+ 仍需 96 kHz 同步前端（见模式 E 一节）。
 - 让时域 Wiener 可启用的闭环定时/SRO 环，是信道估计剩余的工作。
 
@@ -153,7 +155,7 @@ SBR 保护并测试音频解码（上一轮的 AU 填充应已防止 FDK trap）
 | --- | --- | --- | --- | --- |
 | AAC-LC | coding 0，SBR 关 | `codec = "aac"` | FDK TT_DRM | 可解码（音频夹具） |
 | HE-AAC | coding 0，SBR 开，单声道 | `codec = "he-aac"` | FDK TT_DRM | 24 kHz 夹具可解码；真实台面码流被上面的 FDK 故障阻塞 |
-| HE-AAC v2 | coding 0，SBR 开，立体声 | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | 已接线，台面未测 |
+| HE-AAC v2 | coding 0，SBR 开，立体声 | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | 已在台面验证：153 600 个 24 kHz 立体声样本，左右皆 1 kHz |
 | xHE-AAC | coding 3 | `codec = "xhe-aac"` | libxaac，用 SDC 里的 AudioSpecificConfig | 已接线；USAC 冒烟测试把 45 个接入单元解成非静音 PCM；DRM 端到端路径尚未测 |
 
 给下一轮的两点提示：

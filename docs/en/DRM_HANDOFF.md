@@ -51,7 +51,11 @@ Open:
   receiver's 51, all headers CRC-ok, and the readout reports 24 kHz. The libxaac decode is
   still open: the SDC carries libxaac's compact *xHE-AAC Static Config* (§5.3.2 table 4),
   which the mp4-mode decoder rejects (it wants the full USAC `AudioSpecificConfig`), so the
-  Static Config -> ASC expansion is the remaining step. HE-AAC v2 is wired but untested.
+  Static Config -> ASC expansion is the remaining step.
+- HE-AAC v2 (AAC + SBR + parametric stereo) is verified on the live bench: the Pluto
+  transmitted a DecDRM-generated `heaacv2` stream (12 kHz core) and the fresh capture
+  decodes to 153 600 stereo 24 kHz PCM samples, both channels a 1 kHz tone (99.7 % of the
+  energy in 900-1100 Hz, L/R correlation 1.0), 40 audio AUs.
 - Mode E / DRM+ needs the 96 kHz sync front end (see the mode E section).
 - The closed timing/SRO loop, which would let the time-Wiener be enabled, is the remaining
   channel-estimation work.
@@ -250,7 +254,7 @@ flags in the descriptor), 3 is xHE-AAC. Both decoder paths are wired and committ
 | --- | --- | --- | --- | --- |
 | AAC-LC | coding 0, SBR off | `codec = "aac"` | FDK TT_DRM | decodes (the audio fixture) |
 | HE-AAC | coding 0, SBR on, mono | `codec = "he-aac"` | FDK TT_DRM | the 24 kHz fixture decodes; the real bench stream is blocked by the FDK fault above |
-| HE-AAC v2 | coding 0, SBR on, stereo | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | wired, not yet tested on the bench |
+| HE-AAC v2 | coding 0, SBR on, stereo | `codec = "he-aac-v2"` + `stereo` | FDK TT_DRM | verified on the live bench: 153 600 stereo 24 kHz samples, 1 kHz on both channels |
 | xHE-AAC | coding 3 | `codec = "xhe-aac"` | libxaac with the AudioSpecificConfig from the SDC | wired; the USAC smoke test decodes 45 access units to non-silent PCM; the end-to-end DRM path is not yet tested |
 
 Two notes for the next session:
