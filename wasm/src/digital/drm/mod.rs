@@ -97,6 +97,10 @@ pub struct DrmReceiver {
     /// for it: the first frame boundary after the warm-up is often frame 1 or 2 of a super
     /// frame, and starting there puts the earlier super frame's cells into the wrong buckets.
     msc_started: bool,
+    /// The last successfully placed frame's super-frame index, for the continuity check. A
+    /// skipped frame boundary (a dropped timing window) shifts the FAC index sequence; the
+    /// buckets then hold a broken super frame, and the next super frame would append to them.
+    msc_prev_index: Option<u8>,
     /// Frames seen since the first emitted frame boundary (indexes `msc_frame_indices`).
     msc_complete_frame: usize,
     /// The current frame's emitted symbols `(out_sym, cells)`, held until the frame ends. The
@@ -206,6 +210,7 @@ impl DrmReceiver {
             msc_bits: Vec::new(),
             msc_boundary_seen: false,
             msc_started: false,
+            msc_prev_index: None,
             msc_complete_frame: 0,
             msc_frame_buf: Vec::new(),
             sdc_pending: Vec::new(),
@@ -552,6 +557,12 @@ impl DrmReceiver {
         };
         self.msc_complete_frame += 1;
         if frame_index == 0xFF {
+            // A frame with no FAC: its cells are missing from the super frame, so the buckets are
+            // broken. Drop them rather than let the next super frame append to them.
+            for c in self.msc_super.iter_mut() {
+                c.clear();
+            }
+            self.msc_prev_index = None;
             return;
         }
         // Wait for the first real super-frame start (frame 0): the frames before it belong to a
@@ -562,7 +573,16 @@ impl DrmReceiver {
                 return;
             }
             self.msc_started = true;
+        } else if let Some(prev) = self.msc_prev_index {
+            if frame_index != (prev + 1) % 3 {
+                // A frame boundary was skipped (a dropped timing window), so the buckets hold an
+                // incomplete super frame. Drop it and restart at this frame.
+                for c in self.msc_super.iter_mut() {
+                    c.clear();
+                }
+            }
         }
+        self.msc_prev_index = Some(frame_index);
         if frame_index == 0
             && (0..45).all(|s| map.msc_carriers[s].is_empty() || !self.msc_super[s].is_empty())
         {

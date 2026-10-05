@@ -4,39 +4,52 @@ This page is for whoever continues the work, including a later session with a di
 `docs/en/DRM_BENCH.md` holds the measurements; this page holds the state and the plan.
 
 ## Where the work stands
+The receiver is the ported chain in `wasm/src/digital/drm/` (following Dream's stage order);
+the previous receiver is deleted, so `digital::drm` is the only DRM demodulator.
 
 Working, verified by tests and by the bench:
 
-- The live bench capture locks. The receiver resolves the whole-carrier part of the carrier
-  offset from the detected band edges and the fraction from the guard correlation, and it tries
-  each super-frame phase and keeps the one whose SDC passes its CRC.
-- The readout shows the station, its robustness mode, its bandwidth, its bit rate, its codec and
-  its FAC SNR, and the MSC passes its CRC. It also reports again about every five seconds, so a
-  cleared window recovers.
-- Selecting another demodulator after DRM works without a page refresh: a trapped worker is
-  dropped and the next mode change starts a fresh one.
-- **The audio decodes.** The real HE-AAC stream (12 kHz core with SBR) decodes to non-silent
-  24 kHz PCM in wasm, from the worker's block feed and from a whole-buffer push. The FDK trap
-  is fixed at its root (the aligned allocator must zero, like FDK's `genericStds`); the SBR
-  flag is no longer stripped; the post-lock passes produce audio (persistent MSC
-  deinterleaver, accumulating carrier-offset corrections). Details and the evidence trail:
-  `docs/en/DRM_BENCH.md`, defect 3.
-- Suites: `cargo test --test drm_fixture` 4/4, the live-capture tests 5/5 (including the
-  streaming-audio regression), the physical-layer robustness checks 5/5, the DRM wasm tests
-  7/7 (`drmLiveAudio`, `drmAudioEndToEnd`, `drmAudio`, `drmXaac`, `workerRecovery`).
+- **The receiver decodes the committed bench capture end to end.** Fed in the worker's
+  3248-sample blocks it locks, reads `SAN90 DRM BENCH`, decodes FAC 13 blocks / 0 CRC errors,
+  8 MSC multiplex frames and deframes 40 HE-AAC access units; the wasm path produces 76 800
+  non-silent 24 kHz samples carrying the bench 1 kHz tone (the `drmLiveAudio` gate). The same
+  decode runs natively in `wasm/tests/drm_receiver.rs`.
+- **Streaming-correct.** The block-fed decode matches the one-shot whole-buffer decode on the
+  committed capture — frame phase, FAC blocks, station label, MSC frames and audio access
+  units all agree. The earlier wasm-vs-native gap (0 FAC blocks in wasm) was the streaming path
+  committing the frame phase too early and assembling the MSC super frames with the batch-only
+  frame-index lookup; both are fixed.
+- **Channel estimation is the exact linear time interpolation**, the reference's default until
+  its timing/SRO loop is closed. The Doppler-adapted time-Wiener is ported and switchable but
+  is not used by default: on the clean bench capture its (correct) channel still lets the
+  frequency Wiener over-smooth the residual timing ramp, which corrupts the 64-QAM MSC.
+- **The readout** shows the station, mode, bandwidth, the FAC/MSC/audio counts and the
+  estimated SNR; a retune resets the digital demodulator, so the previous channel's label and
+  metadata do not leak into the next.
+- **Suites green:** `cargo test` (lib + `tests/drm_receiver.rs`), the frontend DRM wasm tests
+  (`drmLiveAudio`, `drmAudio`, `drmXaac`, `drmAudioEndToEnd`) and `make ci`.
 
 Open:
 
-- Bench-verified 2026-10-04: the live capture decodes natively (35 access units) and through
-  the wasm block-fed path (57 600 non-silent 24 kHz samples), and `tools/e2e/drm_switch.py`
-  passes — DRM locks in the browser, survives a round trip to AM, no page refresh. One bench
-  quirk to remember: the DDC's digital gain differs per service instance, and only the hot
-  level locks — see the verified-live section of `docs/en/DRM_BENCH.md`.
-- xHE-AAC end-to-end (coding 3 through libxaac) has never been driven with a real xHE stream;
-  DecDRM can transmit one (`codec = "xhe-aac"`). HE-AAC v2 is wired but untested.
-- The channel estimation is still the simplified per-symbol linear interpolation. The
-  physical-layer suites pass on the bench capture, so the Wiener port below is only worth
-  doing if the live bench shows a need.
+- **Bench loop, this session.** The Pluto transmitted `drm_iq_15s.wav` at 400.1 MHz and the
+  SAN-90 fed the browser's baseband. A fresh 8 s capture at ref -50 dBm locks and reads
+  `SAN90 DRM BENCH` with FAC 19 blocks / 0 errors, but its FAC frame-index sequence shows a
+  timing slip (`2,0,1,0,1,2,...`) and the 64-QAM MSC then fails to parse (0 audio AUs). The
+  committed bench capture decodes 40 audio AUs through the same receiver, so the fresh-capture
+  deficit is a signal/timing matter (the open timing loop), not the decode path.
+- The browser e2e (`tools/e2e/drm_switch.py`) is blocked in this session by the backend's
+  acquisition loop: `acquisition step took 65 ms` and the browser's DSP worker only gets about
+  one baseband block per second, so the DRM readout never fills. The same wasm receiver decodes
+  the live capture in 0.5 s offline, so the deficit is the environment, not the receiver. The
+  audio acceptance runs through the `drmLiveAudio` wasm gate (76 800 non-silent samples).
+- **Real shortwave.** Four HF frequencies were captured (9755, 11620, 5875, 3955 kHz, 6 s each,
+  ref -40 dBm); none carried a DRM signal (no lock). Reception depends on propagation and a
+  broadcast being on air.
+- xHE-AAC end to end (coding 3 through libxaac) still needs a real xHE stream (DecDRM can
+  transmit one, `codec = "xhe-aac"`); HE-AAC v2 is wired but untested.
+- Mode E / DRM+ needs the 96 kHz sync front end (see the mode E section).
+- The closed timing/SRO loop, which would let the time-Wiener be enabled, is the remaining
+  channel-estimation work.
 
 ## 2026-10-05: the live deficit was the missing time-domain frequency tracking
 

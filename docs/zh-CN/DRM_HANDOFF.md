@@ -4,33 +4,43 @@
 状态与计划。
 
 ## 目前进展
+接收机已换成 `wasm/src/digital/drm/` 里按 Dream 阶段结构移植的链路；旧接收机已删除，
+`digital::drm` 现在是唯一的 DRM 解调器。
 
 已可用并有测试或台面证据：
 
-- 台面真实抓取能够锁定。接收机从检测到的带边求出频偏的整载波部分，从保护间隔相关求出小数
-  部分；并逐个尝试超帧相位，取 SDC CRC 通过的那一个。
-- 读数显示台名、鲁棒模式、带宽、码率、编码和 FAC SNR，MSC 通过校验。读数还会每五秒重新
-  上报一次，因此清空窗口后能自行恢复。
-- 用过 DRM 之后再切其他解调模式不需要刷新页面：trap 掉的 worker 会被丢弃，下一次切换模式
-  会新建一个。
-- **音频已能解码。** 真实 HE-AAC 码流（12 kHz 核心 + SBR）在 wasm 内解码出非静音的 24 kHz
-  PCM：worker 的分块喂入和整段推送都可以。FDK trap 已在根因上修复（对齐分配器必须清零，
-  同 FDK 的 `genericStds`）；SBR 标志不再被剥离；后锁定通路能产出音频（MSC 去交织器跨
-  pass 持久化，载频频移校正累加）。细节与证据链见 `docs/zh-CN/DRM_BENCH.md` 缺陷 3。
-- 测试：`cargo test --test drm_fixture` 4/4，真实抓取测试 5/5（含流式音频回归），物理层
-  鲁棒性 5/5，DRM wasm 测试 7/7（`drmLiveAudio`、`drmAudioEndToEnd`、`drmAudio`、
-  `drmXaac`、`workerRecovery`）。
+- **接收机能端到端解出提交的台面抓取。** 按 worker 的 3248 样本分块喂入即可锁定，读出
+  `SAN90 DRM BENCH`，FAC 13 块 / 0 CRC 错误，8 个 MSC 复用帧，解帧出 40 个 HE-AAC 接入
+  单元；wasm 路径产出 76 800 个非静音 24 kHz 样本，带台面 1 kHz 音（`drmLiveAudio` 门禁）。
+  同一条链路在 native 下由 `wasm/tests/drm_receiver.rs` 验证。
+- **流式正确。** 分块解码与整段一次性解码在提交抓取上完全一致——帧相位、FAC 块、台名、
+  MSC 帧和音频接入单元都相同。此前的 wasm 与 native 差异（wasm 下 0 个 FAC 块）是流式路径
+  过早提交帧相位、并用只适用于批处理的帧索引方式拼装 MSC 超帧；两者都已修复。
+- **信道估计用的是精确的线性时间插值**，即参考实现在其定时/SRO 环闭合之前的默认路径。
+  多普勒自适应的时域 Wiener 已移植且可切换，但默认不启用：在干净台面抓取上它（正确的）
+  信道估计仍会让频域 Wiener 过度平滑掉残余定时斜坡，从而破坏 64-QAM 的 MSC。
+- **读数**显示台名、模式、带宽、FAC/MSC/音频计数和估计 SNR；重新调谐会复位数字解调器，
+  上一个频道的台名与元数据不会残留。
+- **测试全绿：** `cargo test`（lib + `tests/drm_receiver.rs`）、前端 DRM wasm 测试
+  （`drmLiveAudio`、`drmAudio`、`drmXaac`、`drmAudioEndToEnd`）以及 `make ci`。
 
 未完成：
 
-- 2026-10-04 台面已验证：实时抓取 native 解出 35 个接入单元，wasm 分块路径产出 57 600 个
-  非静音 24 kHz 样本；`tools/e2e/drm_switch.py` 通过——DRM 在浏览器内锁定，往返 AM 后再次
-  锁定，全程无刷新。台面有个怪癖要记住：DDC 的数字增益因服务实例而异，只有热电平能锁定——
-  见 `docs/zh-CN/DRM_BENCH.md` 的台面实测一节。
-- xHE-AAC 端到端（coding 3 → libxaac）从未用真实 xHE 码流验证过；DecDRM 可以发一路
-  （`codec = "xhe-aac"`）。HE-AAC v2 已接线但未验证。
-- 信道估计仍是简化的逐符号线性插值。物理层套件在台面抓取上已全部通过，所以下面的 Wiener
-  移植只在台面实测需要时才值得做。
+- **本轮台面环路。** Pluto 在 400.1 MHz 发射 `drm_iq_15s.wav`，SAN-90 把浏览器用的基带送出。
+  新抓的 8 秒、ref -50 dBm 抓取能锁定并读出 `SAN90 DRM BENCH`，FAC 19 块 / 0 错误；但其 FAC
+  帧序号出现定时滑移（`2,0,1,0,1,2,...`），64-QAM 的 MSC 因此解析失败（0 个音频接入单元）。
+  同一个接收机在已提交的台面抓取上解出 40 个音频接入单元，所以新抓取的缺口是信号/定时问题
+  （未闭合的定时环），不是解码通路。
+- 浏览器 e2e（`tools/e2e/drm_switch.py`）本轮被后端的采集环卡住：`acquisition step took 65 ms`，
+  浏览器的 DSP worker 每秒只拿到约一个基带块，DRM 读数一直填不上。同一个 wasm 接收机离线
+  0.5 秒就能解出这段实时抓取，所以缺口在环境而非接收机。音频验收走 `drmLiveAudio` wasm
+  门禁（76 800 个非静音样本）。
+- **真实短波。** 抓了四个 HF 频点（9755、11620、5875、3955 kHz，各 6 秒，ref -40 dBm），
+  都没有 DRM 信号（未锁定）。能否收到取决于传播和是否有电台在播。
+- xHE-AAC 端到端（coding 3 → libxaac）仍需真实 xHE 码流（DecDRM 可以发一路，
+  `codec = "xhe-aac"`）；HE-AAC v2 已接线但未验证。
+- 模式 E / DRM+ 仍需 96 kHz 同步前端（见模式 E 一节）。
+- 让时域 Wiener 可启用的闭环定时/SRO 环，是信道估计剩余的工作。
 
 ## 2026-10-05：缺口是缺少时域载波跟踪
 
