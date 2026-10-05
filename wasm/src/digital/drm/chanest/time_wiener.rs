@@ -8,10 +8,10 @@
 
 use std::collections::VecDeque;
 
-use crate::digital::drm2::cellmap::CellMap;
-use crate::digital::drm2::dsp::util::{iir1_c, iir1_lambda, linear_regression_slope};
-use crate::digital::drm2::dsp::{levinson::levinson, Cplx};
-use crate::digital::drm2::params::RobustnessMode;
+use crate::digital::drm::cellmap::CellMap;
+use crate::digital::drm::dsp::util::{iir1_c, iir1_lambda, linear_regression_slope};
+use crate::digital::drm::dsp::{levinson::levinson, Cplx};
+use crate::digital::drm::params::RobustnessMode;
 
 const SIGMA_TAPS: usize = 3;
 const TICONST_TI_CORREL_EST: f64 = 60.0;

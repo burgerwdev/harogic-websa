@@ -8,7 +8,7 @@
 
 use super::BitMetric;
 use crate::digital::drm::tables;
-use crate::digital::drm::Cplx;
+use crate::digital::drm::dsp::Cplx;
 
 /// Constellation / mapping scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

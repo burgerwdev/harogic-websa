@@ -1,7 +1,7 @@
 //! Small DSP helpers shared by the channel-estimation and tracking stages, ported from
 //! Dream/DecDRM's `dsp` helpers (MIT-clean: these are textbook formulas).
 
-use crate::digital::drm2::dsp::Cplx;
+use crate::digital::drm::dsp::Cplx;
 
 /// Pole of a one-pole IIR smoother with time constant `tau` seconds updated at
 /// `rate` Hz (Dream's `IIR1Lam`).

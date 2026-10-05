@@ -10,10 +10,10 @@
 //! symbol. It also estimates the sample-rate offset from the slope of that phase advance
 //! across the three pilots (the reference's coarse `sro_estimate`, used during acquisition).
 
-use crate::digital::drm2::cellmap::CellMap;
-use crate::digital::drm2::dsp::util::{iir1_c, iir1_lambda};
-use crate::digital::drm2::dsp::Cplx;
-use crate::digital::drm2::params::{RobustnessMode, SAMPLE_RATE};
+use crate::digital::drm::cellmap::CellMap;
+use crate::digital::drm::dsp::util::{iir1_c, iir1_lambda};
+use crate::digital::drm::dsp::Cplx;
+use crate::digital::drm::params::{RobustnessMode, SAMPLE_RATE};
 
 /// Time constant of the frequency-offset averaging, s (Dream's `TICONST_FREQ_OFF_EST`).
 const TICONST_FREQ_OFF_EST: f64 = 1.0;
@@ -148,10 +148,10 @@ fn wrap_phase(d: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digital::drm2::ofdm::OfdmDemod;
-    use crate::digital::drm2::params::SpectrumOccupancy;
-    use crate::digital::drm2::sync::nco::Nco;
-    use crate::digital::drm2::sync::timesync::TimeSync;
+    use crate::digital::drm::ofdm::OfdmDemod;
+    use crate::digital::drm::params::SpectrumOccupancy;
+    use crate::digital::drm::sync::nco::Nco;
+    use crate::digital::drm::sync::timesync::TimeSync;
 
     fn load_iq(path: &str) -> Vec<Cplx> {
         let raw = std::fs::read(path).expect("capture file");

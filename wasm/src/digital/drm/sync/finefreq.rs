@@ -8,9 +8,9 @@
 //! next, and averaging that rotation over the pilots and over many symbol pairs gives `f` with
 //! sign. Dream tracks the same quantity with its frequency tracker.
 
-use crate::digital::drm2::cellmap::CellMap;
-use crate::digital::drm2::dsp::Cplx;
-use crate::digital::drm2::params::SAMPLE_RATE;
+use crate::digital::drm::cellmap::CellMap;
+use crate::digital::drm::dsp::Cplx;
+use crate::digital::drm::params::SAMPLE_RATE;
 
 /// Estimates the residual carrier offset, Hz, from demodulated cell rows in symbol order.
 /// `syms` gives each row's symbol index within the super frame (the map needs it for the
@@ -59,10 +59,10 @@ pub fn estimate_residual_hz(map: &CellMap, rows: &[Vec<Cplx>], syms: &[usize]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digital::drm2::ofdm::OfdmDemod;
-    use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
-    use crate::digital::drm2::sync::nco::Nco;
-    use crate::digital::drm2::sync::timesync::TimeSync;
+    use crate::digital::drm::ofdm::OfdmDemod;
+    use crate::digital::drm::params::{RobustnessMode, SpectrumOccupancy};
+    use crate::digital::drm::sync::nco::Nco;
+    use crate::digital::drm::sync::timesync::TimeSync;
 
     fn load_iq(path: &str) -> Vec<Cplx> {
         let raw = std::fs::read(path).expect("capture file");
@@ -92,7 +92,7 @@ mod tests {
                 rows.push(cells.clone());
             }
         }
-        let phase = crate::digital::drm2::framesync::FrameSync::new(map).search(&rows).phase;
+        let phase = crate::digital::drm::framesync::FrameSync::new(map).search(&rows).phase;
         let spf = RobustnessMode::B.symbols_per_frame();
         let syms = (0..rows.len()).map(|i| (i % spf + phase) % spf).collect();
         (rows, syms)

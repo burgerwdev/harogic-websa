@@ -7,7 +7,7 @@
 //! [`FullFft::forward`] transforms DRM cells with the `1/N` scaling the OFDM demodulation
 //! expects.
 
-use crate::digital::drm2::dsp::Cplx;
+use crate::digital::drm::dsp::Cplx;
 use crate::fft::{Bluestein, Fft};
 
 enum Backend {

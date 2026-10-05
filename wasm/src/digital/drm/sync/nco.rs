@@ -7,8 +7,8 @@
 //! which no channel estimate can follow. This stage removes the measured offset from the stream,
 //! with the phase taken from the absolute sample index so consecutive blocks join without a step.
 
-use crate::digital::drm2::dsp::Cplx;
-use crate::digital::drm2::params::SAMPLE_RATE;
+use crate::digital::drm::dsp::Cplx;
+use crate::digital::drm::params::SAMPLE_RATE;
 
 /// A streaming mixer that removes a fixed frequency offset.
 pub struct Nco {

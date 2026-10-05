@@ -5,7 +5,7 @@
 //! That both cuts the correlation's cost and removes the carriers outside the guard's
 //! coherence band, which is what makes the correlation peak usable.
 
-use crate::digital::drm2::dsp::Cplx;
+use crate::digital::drm::dsp::Cplx;
 
 /// A windowed-sinc low-pass. `cutoff` is normalised to the sample rate (0.5 = Nyquist) and
 /// `attenuation_db` sizes the Kaiser window: 60 dB gives a stop-band that is flat enough for

@@ -7,7 +7,6 @@
 //! FT8 is the first; the seam is what the other protocols (FT4, PSK, RTTY, SSTV, FreeDV) plug into.
 
 pub mod drm;
-pub mod drm2;
 pub mod ft8;
 
 use crate::plugin::DigitalDemodulator;
@@ -20,11 +19,11 @@ use crate::plugin::DigitalDemodulator;
 pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
     match id {
         "ft8" => Some(Box::new(ft8::Ft8Plugin::new(rate))),
-        // The drm2 receiver is the ported chain (sync -> OFDM -> chanest/tracking -> FAC/SDC/MSC
-        // -> audio framing). It decodes live30.f32 end to end (FAC 64 ok/10 bad, 240 audio AUs,
-        // station SAN90 DRM BENCH) and is now streaming-correct: the block-fed decode matches the
-        // batch decode on the committed bench capture, which is what the wasm worker drives.
-        "drm" => Some(Box::new(drm2::DrPlugin::new(rate))),
+        // The drm receiver is the ported chain (sync -> OFDM -> chanest/tracking -> FAC/SDC/MSC
+        // -> audio framing). It decodes the committed bench capture end to end (FAC 13/0,
+        // station SAN90 DRM BENCH, 40 audio AUs) and is streaming-correct: the block-fed decode
+        // matches the batch decode, which is what the wasm worker drives.
+        "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
         _ => None,
     }
 }

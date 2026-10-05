@@ -10,9 +10,9 @@
 
 use std::collections::VecDeque;
 
-use crate::digital::drm2::cellmap::CellMap;
-use crate::digital::drm2::dsp::util::{hamming, iir1_lambda};
-use crate::digital::drm2::dsp::{Cplx, FullFft};
+use crate::digital::drm::cellmap::CellMap;
+use crate::digital::drm::dsp::util::{hamming, iir1_lambda};
+use crate::digital::drm::dsp::{Cplx, FullFft};
 
 const TICONST_PDS: f64 = 0.25;
 const CONT_PROP_ENERGY: f64 = 0.02;
@@ -488,7 +488,7 @@ fn profile_shift(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
+    use crate::digital::drm::params::{RobustnessMode, SpectrumOccupancy};
 
     /// Power delay profile of paths (delay in bins, amplitude) as the tracker computes it:
     /// |IFFT(Hamming · H)|² over `n` pilot-grid carriers.

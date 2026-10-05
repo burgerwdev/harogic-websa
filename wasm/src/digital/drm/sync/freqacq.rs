@@ -20,8 +20,8 @@
 
 use std::collections::VecDeque;
 
-use crate::digital::drm2::params::SAMPLE_RATE;
-use crate::digital::drm2::dsp::FullFft;
+use crate::digital::drm::params::SAMPLE_RATE;
+use crate::digital::drm::dsp::FullFft;
 
 /// FFT length: 6 mode-B FFTs, so the resolution is 48000/6144 = 7.8125 Hz.
 const FFT_LEN: usize = 6 * 1024;

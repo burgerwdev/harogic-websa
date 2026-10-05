@@ -58,7 +58,7 @@ impl CellDeinterleaver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digital::drm::Cplx;
+    use crate::digital::drm::dsp::Cplx;
 
     #[test]
     fn long_interleaving_roundtrip() {

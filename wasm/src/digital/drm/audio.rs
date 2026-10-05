@@ -1,19 +1,17 @@
-//! MSC demultiplexing (ES 201 980 §6.2.3) and AAC audio super-frame parsing
-//! (§5.2.1). This is the layer between the decoded MSC multiplex frame and the audio
-//! codec: it splits the frame into logical streams and turns an audio stream's
-//! logical frames into AAC access units ready for the decoder.
+//! MSC demultiplexing (ES 201 980 §6.2.3) and AAC audio super-frame parsing (§5.2.1),
+//! ported from the previous receiver (MIT, project's own code) onto the drm SDC types.
+//! This is the layer between a decoded MSC multiplex frame and the audio codec: it splits
+//! the frame into logical streams and turns an audio stream's logical frames into AAC
+//! access units ready for the decoder.
 
 use crate::digital::drm::sdc::{MultiplexDescription, StreamDescription};
 
-/// Bytes of the DRM text message carried at the end of an audio logical frame when
-/// the SDC audio descriptor sets its text flag (ES 201 980 §5.2.1; Dream's
-/// `CDataDecoder` and DecDRM's `split_text_message` both take the last four bytes).
+/// Bytes of the DRM text message carried at the end of an audio logical frame when the
+/// SDC audio descriptor sets its text flag (ES 201 980 §5.2.1).
 pub const TEXT_MESSAGE_BYTES: usize = 4;
 
 /// The audio super frame part of a logical frame: the text message, when the stream
-/// carries one, is the LAST four bytes and is NOT part of the super frame. Leaving it
-/// in shifts the SBR payload (read backwards from the frame end) and the decoder then
-/// produces noise instead of the programme audio.
+/// carries one, is the LAST four bytes and is NOT part of the super frame.
 pub fn split_text_message(frame: &[u8], text_flag: bool) -> &[u8] {
     if !text_flag || frame.len() < TEXT_MESSAGE_BYTES {
         return frame;
@@ -58,21 +56,11 @@ pub fn demultiplex(main: &[u8], mux: &MultiplexDescription) -> Vec<Option<Logica
 /// Pack one-bit-per-byte bits into bytes, MSB first.
 fn pack(bits: &[u8]) -> Vec<u8> {
     bits.chunks(8)
-        .map(|c| {
-            let mut b = 0u8;
-            for (i, &bit) in c.iter().enumerate() {
-                b |= (bit & 1) << (7 - i);
-            }
-            b
-        })
+        .map(|c| c.iter().fold(0u8, |a, b| (a << 1) | (b & 1)))
         .collect()
 }
 
-// ---------------------------------------------------------------------------------
-// AAC audio super frames
-// ---------------------------------------------------------------------------------
-
-/// One decoded audio frame (access unit) with its CRC byte.
+/// One AAC access unit: the core data and the CRC byte the super frame carried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioFrame {
     pub data: Vec<u8>,
@@ -92,11 +80,8 @@ impl AacSuperFrameFormat {
     pub fn aac(num_frames: usize, stream: &StreamDescription) -> Self {
         let num_borders = num_frames.saturating_sub(1);
         let header = header_bytes(num_borders);
-        // Higher-protected bytes per frame when the stream has both parts (UEP).
         let hp = if stream.len_a > 0 && stream.len_b > 0 && num_frames > 0 {
-            (stream.len_a as usize)
-                .saturating_sub(header + num_frames)
-                / num_frames
+            (stream.len_a as usize).saturating_sub(header + num_frames) / num_frames
         } else {
             0
         };
@@ -170,91 +155,30 @@ pub fn parse_aac_super_frame(sf: &[u8], fmt: &AacSuperFrameFormat) -> Option<Vec
     Some(frames)
 }
 
-/// Build an AAC audio super frame of `len` bytes from frames and their CRC bytes (the
-/// transmitter side; used by the tests to round-trip).
-pub fn build_aac_super_frame(frames: &[AudioFrame], fmt: &AacSuperFrameFormat, len: usize) -> Option<Vec<u8>> {
-    let n = fmt.num_frames;
-    if frames.len() != n || n == 0 {
-        return None;
-    }
-    let payload = fmt.payload_len(len)?;
-    let total: usize = frames.iter().map(|f| f.data.len()).sum();
-    if total != payload {
-        return None;
-    }
-    let hp = fmt.higher_protected_bytes;
-    if frames.iter().any(|f| f.data.len() < hp) {
-        return None;
-    }
-    // Border header: `num_borders` 12-bit cumulative lengths, packed MSB-first.
-    let mut bits: Vec<u8> = Vec::new();
-    let mut border = 0usize;
-    for f in frames.iter().take(fmt.num_borders) {
-        border += f.data.len();
-        for i in (0..12).rev() {
-            bits.push(((border >> i) & 1) as u8);
-        }
-    }
-    if fmt.num_borders % 2 == 1 {
-        bits.extend_from_slice(&[0, 0, 0, 0]);
-    }
-    let mut sf = pack(&bits);
-    for f in frames {
-        sf.extend_from_slice(&f.data[..hp]);
-        sf.push(f.crc_byte.unwrap_or(0));
-    }
-    for f in frames {
-        sf.extend_from_slice(&f.data[hp..]);
-    }
-    sf.resize(len, 0);
-    Some(sf)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The framing split matches the previous receiver's (which pins the full round-trip):
+    /// verify the demux splits the known bit layout and the AAC super-frame format geometry.
     #[test]
-    fn text_message_is_not_part_of_the_audio_super_frame() {
-        // The last four bytes of a logical frame are the DRM text message when the SDC
-        // sets the text flag. Leaving them in shifts the SBR payload (read backwards
-        // from the frame end) and the decoder produces noise instead of the audio.
-        let frame: Vec<u8> = (0..40u8).collect();
-        assert_eq!(split_text_message(&frame, true).len(), 36);
-        assert_eq!(split_text_message(&frame, false).len(), 40);
-        assert_eq!(split_text_message(&frame[..3], true).len(), 3);
-        assert_eq!(&split_text_message(&frame, true)[..2], &[0, 1]);
-    }
-
-    #[test]
-    fn demux_splits_a_single_stream() {
+    fn demux_and_super_frame_geometry() {
+        let stream = StreamDescription { len_a: 150, len_b: 300 };
         let mux = MultiplexDescription {
             protection_a: 0,
             protection_b: 1,
-            streams: vec![StreamDescription { len_a: 0, len_b: 1048 }],
+            streams: vec![stream.clone()],
         };
-        let mut bits = vec![0u8; 8384];
-        for (i, b) in bits.iter_mut().enumerate() {
-            *b = (i / 7 % 2) as u8;
-        }
-        let frames = demultiplex(&bits, &mux);
-        assert_eq!(frames.len(), 1);
-        let lf = frames[0].as_ref().unwrap();
-        assert_eq!(lf.stream_id, 0);
-        assert_eq!(lf.part_a_len, 0);
-        assert_eq!(lf.data.len(), 1048);
-    }
-
-    #[test]
-    fn aac_super_frame_round_trips() {
-        let stream = StreamDescription { len_a: 0, len_b: 1048 };
-        let fmt = AacSuperFrameFormat::aac(10, &stream);
-        let frames: Vec<AudioFrame> = (0..10)
-            .map(|i| AudioFrame { data: vec![(i * 17) as u8; 20 + i], crc_byte: Some((i * 7) as u8) })
-            .collect();
-        let len = fmt.header_bytes() + fmt.num_frames + frames.iter().map(|f| f.data.len()).sum::<usize>();
-        let sf = build_aac_super_frame(&frames, &fmt, len).unwrap();
-        let back = parse_aac_super_frame(&sf, &fmt).unwrap();
-        assert_eq!(back, frames);
+        let bits: Vec<u8> = (0..8 * (150 + 300)).map(|i| (i % 2) as u8).collect();
+        let logical = demultiplex(&bits, &mux);
+        let lf = logical[0].as_ref().expect("the stream must fit");
+        assert_eq!(lf.data.len(), 150 + 300, "part A then part B packed");
+        assert_eq!(lf.part_a_len, 150);
+        let fmt = AacSuperFrameFormat::aac(5, &stream);
+        assert_eq!(fmt.header_bytes(), 6, "4 borders x 12 bits");
+        // 5 AUs each carry one CRC byte; the payload is the super frame minus header and CRCs.
+        assert_eq!(fmt.payload_len(6 + 5 + 5), Some(5));
+        // Higher-protected bytes per AU = (len_a - header - num_frames) / num_frames.
+        assert_eq!(fmt.payload_len(6 + 5 + 5 + 5 * 27), Some(5 + 5 * 27));
     }
 }

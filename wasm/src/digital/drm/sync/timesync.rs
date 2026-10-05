@@ -21,9 +21,9 @@
 
 use std::collections::VecDeque;
 
-use crate::digital::drm2::dsp::fir::{lowpass, FirDecimator};
-use crate::digital::drm2::dsp::Cplx;
-use crate::digital::drm2::params::{RobustnessMode, SAMPLE_RATE};
+use crate::digital::drm::dsp::fir::{lowpass, FirDecimator};
+use crate::digital::drm::dsp::Cplx;
+use crate::digital::drm::params::{RobustnessMode, SAMPLE_RATE};
 
 /// Decimation factor of the correlation path (`GRDCRR_DEC_FACT`).
 const DEC: usize = 4;

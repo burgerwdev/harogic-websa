@@ -5,13 +5,13 @@
 //! used as a cross-check reference. The map covers one whole super frame (3 frames)
 //! because SDC cells and the MSC dummy cells only occur once per super frame.
 
-use crate::digital::drm::params::{ChannelLayout, RobustnessMode, SpectrumOccupancy, FRAMES_PER_SUPERFRAME};
-use crate::digital::drm::tables::{self, BOOSTED_PILOT_POWER, DATA_CELL_POWER, PILOT_POWER};
-use crate::digital::drm::Cplx;
+use crate::digital::drm::params::{ChannelLayout, RobustnessMode, SpectrumOccupancy};
+use crate::digital::drm::tables::{self, AFS_PILOT_POWER, BOOSTED_PILOT_POWER, DATA_CELL_POWER, PILOT_POWER};
+use crate::digital::drm::dsp::Cplx;
 
 /// Classification of one OFDM cell (a small bit set: several pilot flags may be set).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CellType(u8);
+pub struct CellType(u16);
 
 impl CellType {
     pub const DC: Self = Self(1);
@@ -22,6 +22,7 @@ impl CellType {
     pub const FREQ_PILOT: Self = Self(32);
     pub const SCAT_PILOT: Self = Self(64);
     pub const BOOSTED: Self = Self(128);
+    pub const AFS_PILOT: Self = Self(256);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 != 0
@@ -42,7 +43,7 @@ impl CellType {
         self.0 & (Self::MSC.0 | Self::SDC.0 | Self::FAC.0) != 0
     }
     pub const fn is_pilot(self) -> bool {
-        self.0 & (Self::TIME_PILOT.0 | Self::FREQ_PILOT.0 | Self::SCAT_PILOT.0) != 0
+        self.0 & (Self::TIME_PILOT.0 | Self::FREQ_PILOT.0 | Self::SCAT_PILOT.0 | Self::AFS_PILOT.0) != 0
     }
     pub const fn is_scattered(self) -> bool {
         self.contains(Self::SCAT_PILOT)
@@ -52,6 +53,9 @@ impl CellType {
     }
     pub const fn is_freq_pilot(self) -> bool {
         self.contains(Self::FREQ_PILOT)
+    }
+    pub const fn is_afs(self) -> bool {
+        self.contains(Self::AFS_PILOT)
     }
     pub const fn is_boosted(self) -> bool {
         self.contains(Self::BOOSTED)
@@ -130,9 +134,15 @@ impl CellMap {
                     let nn = (s % y) as usize;
                     let m = (s / y) as usize;
                     let p = (k - sp.k0 - x * (s % y)) / (x * y);
-                    let w = sp.w[nn * sp.wz_cols + m];
                     let z = sp.z[nn * sp.wz_cols + m];
-                    let phase = (4 * z + p * w + p * p * (1 + s) * sp.q).rem_euclid(1024);
+                    let phase = if mode == RobustnessMode::E {
+                        let r = sp.r[nn * sp.wz_cols + m];
+                        let q = sp.q_mat[nn * sp.wz_cols + m];
+                        (p * p * r + p * z + q).rem_euclid(1024)
+                    } else {
+                        let w = sp.w[nn * sp.wz_cols + m];
+                        (4 * z + p * w + p * p * (1 + s) * sp.q).rem_euclid(1024)
+                    };
                     let is_boosted = boosted.iter().any(|&b| i32::from(b) == k);
                     let power = if is_boosted {
                         ty |= CellType::BOOSTED;
@@ -161,8 +171,24 @@ impl CellMap {
                     pilots[idx] = polar_1024(PILOT_POWER.sqrt(), phase);
                 }
 
-                // Unused carriers.
-                if k == 0 || (mode == RobustnessMode::A && (k == -1 || k == 1)) {
+                // AFS references (mode E only): the fifth OFDM symbol (s = 4) of the first
+                // frame and the fortieth (s = 39) of the fourth frame, on every fourth
+                // carrier (§8.4.5). Cells that are also gain references keep the gain
+                // reference's phase and amplitude set above; the rest carry amplitude 1.0.
+                if mode == RobustnessMode::E && (sym == 4 || sym == symbols_per_superframe - 1) {
+                    let rel = k + 106;
+                    if rel >= 0 && rel <= 212 && rel % 4 == 0 {
+                        let i = (rel / 4) as usize;
+                        let phase = if sym == 4 { tables::AFS_PHASE_S4[i] } else { tables::AFS_PHASE_S39[i] };
+                        ty |= CellType::AFS_PILOT;
+                        if !ty.is_scattered() {
+                            pilots[idx] = polar_1024(AFS_PILOT_POWER.sqrt(), i32::from(phase));
+                        }
+                    }
+                }
+
+                // Unused carriers (table 50): mode E uses every carrier, including DC.
+                if mode != RobustnessMode::E && (k == 0 || (mode == RobustnessMode::A && (k == -1 || k == 1))) {
                     ty = CellType::DC;
                     pilots[idx] = Cplx::new(0.0, 0.0);
                 }
@@ -204,6 +230,9 @@ impl CellMap {
                         scat_power_sum += BOOSTED_PILOT_POWER;
                         scat_count += 1;
                     }
+                } else if ty.is_afs() && !ty.is_scattered() {
+                    // AFS-only reference cell: amplitude 1.0 (§8.4.5.2).
+                    power_sum += AFS_PILOT_POWER;
                 } else {
                     power_sum += PILOT_POWER;
                     if ty.is_scattered() {
@@ -213,8 +242,9 @@ impl CellMap {
                 }
             }
         }
-        let msc_cells_per_frame = total_msc / FRAMES_PER_SUPERFRAME;
-        let msc_dummy_cells = total_msc - msc_cells_per_frame * FRAMES_PER_SUPERFRAME;
+        let frames = mode.frames_per_superframe();
+        let msc_cells_per_frame = total_msc / frames;
+        let msc_dummy_cells = total_msc - msc_cells_per_frame * frames;
 
         Some(Self {
             layout,
@@ -279,7 +309,7 @@ fn polar_1024(amp: f64, phase: i32) -> Cplx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digital::drm::tables::NUM_FAC_CELLS;
+    use crate::digital::drm::tables::fac_cell_count;
 
     #[test]
     fn mode_b_so3_cell_counts_match_spec() {
@@ -291,15 +321,15 @@ mod tests {
     }
 
     #[test]
-    fn every_frame_has_65_fac_cells() {
+    fn every_frame_has_the_specs_fac_cell_count() {
         for m in RobustnessMode::ALL {
             for so in SpectrumOccupancy::ALL {
                 let Some(map) = CellMap::new(m, so) else { continue };
-                for f in 0..FRAMES_PER_SUPERFRAME {
+                for f in 0..m.frames_per_superframe() {
                     let n: usize = (0..map.symbols_per_frame)
                         .map(|s| map.fac_carriers[f * map.symbols_per_frame + s].len())
                         .sum();
-                    assert_eq!(n, NUM_FAC_CELLS, "{m:?} {so:?}");
+                    assert_eq!(n, fac_cell_count(m), "{m:?} {so:?}");
                 }
             }
         }
@@ -315,7 +345,9 @@ mod tests {
                         let ty = map.cell(sym, c);
                         let p = map.pilot(sym, c).norm_sqr();
                         if ty.is_pilot() && !ty.is_dc() {
-                            let want = if ty.is_boosted() && !ty.is_freq_pilot() && !ty.is_time_pilot() {
+                            let want = if ty.is_afs() && !ty.is_scattered() {
+                                1.0
+                            } else if ty.is_boosted() && !ty.is_freq_pilot() && !ty.is_time_pilot() {
                                 4.0
                             } else {
                                 2.0
@@ -328,5 +360,128 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Mode E's cell layout, pinned to the spec's own numbers (§8.4.3 table 57, §8.4.5
+    /// table 61, §8.5.2 table 66, §8.5.3.1): 244 FAC cells per frame, five SDC symbols, 21
+    /// time pilots, no frequency pilots, the DC carrier used, and AFS cells only in
+    /// symbols 4 and 39.
+    #[test]
+    fn mode_e_layout_matches_the_spec() {
+        let map = CellMap::new(RobustnessMode::E, SpectrumOccupancy::SO_0).unwrap();
+        assert_eq!(map.num_carriers, 213);
+        assert_eq!(map.kmin, -106);
+        assert_eq!(map.kmax, 106);
+        assert_eq!(map.symbols_per_frame, 40);
+        assert_eq!(map.symbols_per_superframe, 160);
+
+        // 244 FAC cells in every frame (§8.5.2, table 66).
+        for f in 0..4 {
+            let n: usize = (0..40).map(|s| map.fac_carriers[f * 40 + s].len()).sum();
+            assert_eq!(n, 244, "FAC cells frame {f}");
+        }
+        // FAC cells span symbols 5..=26 of each frame.
+        for sym in 0..160 {
+            let s = sym % 40;
+            assert_eq!(
+                !map.fac_carriers[sym].is_empty(),
+                (5..=26).contains(&s),
+                "FAC presence at sym {sym}"
+            );
+        }
+
+        // The DC carrier is used (table 50: mode E has no unused carriers).
+        for sym in 0..160 {
+            assert!(!map.cell(sym, map.carrier_offset(0).unwrap()).is_dc(), "DC at sym {sym}");
+        }
+
+        // No frequency reference cells (table 51).
+        for sym in 0..160 {
+            for c in 0..map.num_carriers {
+                assert!(!map.cell(sym, c).is_freq_pilot(), "freq pilot at sym {sym} c {c}");
+            }
+        }
+
+        // 21 time pilots in symbol 0 of every frame, nowhere else (table 57).
+        for f in 0..4 {
+            let n = (0..map.num_carriers).filter(|&c| map.cell(f * 40, c).is_time_pilot()).count();
+            assert_eq!(n, 21, "time pilots frame {f}");
+        }
+        for sym in 0..160 {
+            if sym % 40 != 0 {
+                for c in 0..map.num_carriers {
+                    assert!(!map.cell(sym, c).is_time_pilot(), "time pilot at sym {sym}");
+                }
+            }
+        }
+
+        // SDC occupies the first five symbols of the super frame (§8.5.3.1).
+        for sym in 0..160 {
+            let is_sdc_sym = sym < 5;
+            let any_sdc = map.sdc_carriers[sym]
+                .iter()
+                .any(|&c| map.cell(sym, c as usize).is_sdc());
+            assert_eq!(any_sdc, is_sdc_sym, "SDC presence at sym {sym}");
+        }
+
+        // AFS cells: 54 in symbol 4 and 54 in symbol 39, nowhere else (table 61).
+        let afs4 = (0..map.num_carriers).filter(|&c| map.cell(4, c).is_afs()).count();
+        let afs39 = (0..map.num_carriers).filter(|&c| map.cell(159, c).is_afs()).count();
+        assert_eq!(afs4, 54);
+        assert_eq!(afs39, 54);
+        for sym in 0..160 {
+            if sym != 4 && sym != 159 {
+                for c in 0..map.num_carriers {
+                    assert!(!map.cell(sym, c).is_afs(), "AFS at sym {sym}");
+                }
+            }
+        }
+    }
+
+    /// AFS cells that coincide with a gain reference carry the gain reference's phase and
+    /// amplitude; the AFS-only cells carry amplitude 1.0. Table 61's phases must match
+    /// `map.pilot` at every AFS carrier — this cross-checks the scattered-pilot
+    /// transcription too.
+    #[test]
+    fn mode_e_afs_phases_match_table_61() {
+        use crate::digital::drm::tables::{afs_carrier, AFS_PHASE_S39, AFS_PHASE_S4};
+        let map = CellMap::new(RobustnessMode::E, SpectrumOccupancy::SO_0).unwrap();
+        for (sym, table) in [(4usize, &AFS_PHASE_S4[..]), (159usize, &AFS_PHASE_S39[..])] {
+            for i in 0..54 {
+                let k = afs_carrier(i);
+                let c = map.carrier_offset(i32::from(k)).unwrap();
+                let ty = map.cell(sym, c);
+                assert!(ty.is_afs(), "carrier {k} sym {sym}");
+                let amp = if ty.is_scattered() { PILOT_POWER.sqrt() } else { AFS_PILOT_POWER.sqrt() };
+                let want = polar_1024(amp, table[i] as i32);
+                let got = map.pilot(sym, c);
+                assert!(
+                    (got.re - want.re).abs() < 1e-12 && (got.im - want.im).abs() < 1e-12,
+                    "carrier {k} sym {sym}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    /// Anchors that do not depend on the previous chain: the spec's FAC cells per frame, the
+    /// three continuous frequency pilots, and the bench signal's MSC cell count (mode B, 10 kHz,
+    /// the value the reference MSC decoder is fed with).
+    #[test]
+    fn spec_anchors_hold() {
+        assert_eq!(crate::digital::drm::tables::NUM_FAC_CELLS, 65);
+        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("bench layout");
+        assert_eq!(map.msc_cells_per_frame, 2337, "mode B / 10 kHz MSC cells per frame");
+        let symbols = RobustnessMode::B.symbols_per_superframe();
+        let freq_pilots = (0..symbols)
+            .flat_map(|sym| (0..map.num_carriers).map(move |c| (sym, c)))
+            .filter(|&(sym, c)| map.cell(sym, c).is_freq_pilot())
+            .count();
+        // Three continuous pilots in every symbol of the super frame.
+        assert_eq!(freq_pilots, 3 * symbols, "three continuous pilots per symbol");
     }
 }

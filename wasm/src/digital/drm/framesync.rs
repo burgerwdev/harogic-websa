@@ -10,14 +10,14 @@
 //! This runs on the demodulated cells (`cells[c]` with `c = k - Kmin`), which is why it belongs
 //! with the OFDM demodulation rather than with the sample-level sync stages.
 
-use crate::digital::drm2::cellmap::CellMap;
-use crate::digital::drm2::dsp::Cplx;
-use crate::digital::drm2::tables;
+use crate::digital::drm::cellmap::CellMap;
+use crate::digital::drm::dsp::Cplx;
+use crate::digital::drm::tables;
 
 /// One super frame's worth of demodulated cells, in symbol order from the start of a super
 /// frame.
 pub struct FrameSync {
-    mode: crate::digital::drm2::params::RobustnessMode,
+    mode: crate::digital::drm::params::RobustnessMode,
     /// Absolute carrier index -> cell index, resolved once for the pilot table.
     kmin: i32,
     num_carriers: usize,
@@ -26,7 +26,7 @@ pub struct FrameSync {
 /// The time pilots resolved to cell indices with their reference phases (radians), dropping
 /// the ones outside the occupied band (an occupancy narrower than the mode's full band can cut
 /// a time pilot off).
-fn pilot_table(mode: crate::digital::drm2::params::RobustnessMode, kmin: i32, num_carriers: usize) -> Vec<(usize, f64)> {
+fn pilot_table(mode: crate::digital::drm::params::RobustnessMode, kmin: i32, num_carriers: usize) -> Vec<(usize, f64)> {
     tables::time_pilots(mode)
         .iter()
         .filter_map(|&(k, phase)| {
@@ -140,9 +140,9 @@ impl FrameSync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digital::drm2::ofdm::OfdmDemod;
-    use crate::digital::drm2::params::{RobustnessMode, SpectrumOccupancy};
-    use crate::digital::drm2::sync::timesync::TimeSync;
+    use crate::digital::drm::ofdm::OfdmDemod;
+    use crate::digital::drm::params::{RobustnessMode, SpectrumOccupancy};
+    use crate::digital::drm::sync::timesync::TimeSync;
 
     fn load_iq(path: &str) -> Vec<Cplx> {
         let raw = std::fs::read(path).expect("capture file");
