@@ -73,8 +73,12 @@ Open:
   the front end is what is verified (see the mode E section). `DrPlugin::new(rate)` builds the
   receiver at the pipeline's baseband rate, so a 96 kHz DRM+ feed reaches this path instead of
   always building a 48 kHz receiver.
-- The closed timing/SRO loop, which would let the time-Wiener be enabled, is the remaining
-  channel-estimation work.
+- The timing/SRO loop is now closed: the impulse-response tracker's `timing_adjust` and
+  `sro_delta_hz` are fed back into the `TimeSync` window (`adjust_timing`/`adjust_sro`) once
+  tracking is enabled, so the FFT window stays aligned and the channel no longer carries a
+  residual timing ramp. The Doppler-adapted time-Wiener is ported and switchable but stays
+  off by default; with the loop closed it should now be re-measured on the bench capture and
+  enabled if it improves the MSC decode.
 
 ## 2026-10-05: the live deficit was the missing time-domain frequency tracking
 

@@ -451,6 +451,21 @@ impl DrmReceiver {
             for (i, row, shift) in rows {
                 let sym = (i % self.spf + self.phase) % self.spf;
                 let Some((out_sym, out)) = est.process(&row, sym, shift, map) else { continue };
+                // Close the timing/SRO loop: the impulse-response tracker's window correction and
+                // sample-rate offset go back into the TimeSync, as the reference's chain does.
+                // This is what keeps the FFT window aligned (and the channel free of a residual
+                // timing ramp) once the tracking has been enabled.
+                if est.timing_tracking() {
+                    let t = est.last_track;
+                    if let Some(ts) = self.tsync.as_mut() {
+                        if t.timing_adjust != 0 {
+                            ts.adjust_timing(t.timing_adjust as f64);
+                        }
+                        if t.sro_delta_hz != 0.0 {
+                            ts.adjust_sro(t.sro_delta_hz);
+                        }
+                    }
+                }
                 self.symbols_demodulated += 1;
                 self.msc_emitted.push((out_sym, out.clone()));
                 if out_sym == 0 {
