@@ -38,6 +38,8 @@ pub struct FreqTrack {
     kmin: i32,
     mode: RobustnessMode,
     freq_pil: [usize; 3],
+    /// Whether the mode carries the three continuous frequency pilots (mode E/DRM+ does not).
+    has_pilots: bool,
     old_pil: [Cplx; 3],
     have_old: bool,
     freq_vec: Cplx,
@@ -62,12 +64,15 @@ impl FreqTrack {
                 cnt += 1;
             }
         }
-        assert!(cnt == 3, "mode {:?} must carry three frequency pilots", map.mode());
+        // Mode E (DRM+) carries no continuous frequency pilots; only the coarse acquisition
+        // then applies and the tracker reports no delta.
+        let has_pilots = cnt == 3;
         Self {
             n,
             kmin: map.kmin,
             mode: map.mode(),
             freq_pil,
+            has_pilots,
             old_pil: [Cplx::zero(); 3],
             have_old: false,
             freq_vec: Cplx::zero(),
@@ -84,6 +89,9 @@ impl FreqTrack {
     /// correction is the residual offset the mixer must remove from the NEXT symbols.
     pub fn process(&mut self, cells: &[Cplx], shift: i64) -> FreqTrackOutput {
         let mut out = FreqTrackOutput::default();
+        if !self.has_pilots {
+            return out;
+        }
         let mut est = Cplx::zero();
         let mut prods = [Cplx::zero(); 3];
         for i in 0..3 {

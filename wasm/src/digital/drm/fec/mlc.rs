@@ -65,11 +65,21 @@ fn floor_bits(idx: usize, coded: i64) -> usize {
 impl MlcParams {
     /// FAC: 4-QAM, R = 0.6, 72 bits in 65 cells.
     pub fn fac() -> Self {
+        Self::fac_cells(NUM_FAC_CELLS)
+    }
+
+    /// FAC for a robustness mode: the same 4-QAM/coding, over the mode's cell count (mode E,
+    /// DRM+, carries 244 cells, ES 201 980 §8.5.2 table 66).
+    pub fn fac_for(mode: crate::digital::drm::params::RobustnessMode) -> Self {
+        Self::fac_cells(crate::digital::drm::tables::fac_cell_count(mode))
+    }
+
+    fn fac_cells(cells: usize) -> Self {
         Self {
             mapping: Mapping::Qam4,
-            cells: NUM_FAC_CELLS,
+            cells,
             n1: 0,
-            n2: NUM_FAC_CELLS,
+            n2: cells,
             levels: vec![LevelParams {
                 bits_a: 0,
                 bits_b: FAC_BITS,

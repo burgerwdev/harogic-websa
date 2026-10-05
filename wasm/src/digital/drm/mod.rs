@@ -160,6 +160,10 @@ pub struct DrmReceiver {
     fs_acq: Option<crate::digital::drm::framesync::FramePhaseAcquisition>,
     demod: Option<OfdmDemod>,
     spf: usize,
+    /// The baseband sample rate this receiver is fed (48 kHz for modes A-D, 96 kHz for mode E).
+    sample_rate: u32,
+    /// The occupancy selected with the mode.
+    occupancy: SpectrumOccupancy,
     phase: usize,
     sym_count: usize,
     freq_track: f64,
@@ -227,10 +231,20 @@ impl DrmReceiver {
             fs_acq: None,
             demod: None,
             spf: 15,
+            sample_rate: 48_000,
+            occupancy: SpectrumOccupancy::SO_3,
             phase: 0,
             sym_count: 0,
             freq_track: 0.0,
         }
+    }
+
+    /// A receiver fed at `sample_rate` Hz: 48 kHz selects DRM30 modes A-D, 96 kHz selects mode E
+    /// (DRM+). The pipeline resamples the baseband to the demodulator's rate before it arrives.
+    pub fn new_at(sample_rate: u32) -> Self {
+        let mut r = Self::new();
+        r.sample_rate = sample_rate;
+        r
     }
 
     pub fn push(&mut self, iq: &[f32]) {
@@ -254,9 +268,10 @@ impl DrmReceiver {
         self.chanest.as_ref().and_then(|e| e.stats.snr_db)
     }
 
-    /// The spectrum occupancy this receiver decodes.
+    /// The spectrum occupancy this receiver decodes (SO3 for the bench DRM30 signal, SO0 for
+    /// mode E).
     pub fn occupancy(&self) -> SpectrumOccupancy {
-        SpectrumOccupancy::SO_3
+        self.occupancy
     }
 
     /// Incremental decode: each call demodulates the samples that arrived since the previous
@@ -277,8 +292,19 @@ impl DrmReceiver {
                 .collect();
             let mut best: Option<(RobustnessMode, CellMap)> = None;
             let mut best_rows = 0usize;
-            for m in RobustnessMode::DRM30 {
-                let Some(cmap) = CellMap::new(m, SpectrumOccupancy::SO_3) else { continue };
+            for m in RobustnessMode::ALL
+                .iter()
+                .copied()
+                .filter(|m| m.sample_rate() == self.sample_rate)
+            {
+                // Mode E (DRM+) is defined for SO 0 only; DRM30 modes here use the 10 kHz
+                // occupancy the bench signal carries.
+                let so = if m == RobustnessMode::E {
+                    SpectrumOccupancy::SO_0
+                } else {
+                    SpectrumOccupancy::SO_3
+                };
+                let Some(cmap) = CellMap::new(m, so) else { continue };
                 let mut tsync = TimeSync::new(m);
                 let mut demod = OfdmDemod::new(&cmap);
                 let mut cells = Vec::new();
@@ -296,6 +322,7 @@ impl DrmReceiver {
                 if rows > best_rows {
                     best_rows = rows;
                     best = Some((m, cmap));
+                    self.occupancy = so;
                 }
             }
             let Some((mode, cmap)) = best else { return };
@@ -409,7 +436,7 @@ impl DrmReceiver {
         }
         let fac_dec = self
             .fac_dec
-            .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac(), 0));
+            .get_or_insert_with(|| MlcDecoder::new(MlcParams::fac_for(self.mode.unwrap_or(RobustnessMode::B)), 0));
 
         // Take the unprocessed rows out of the receiver so the decode can borrow the other
         // fields freely; the phase-adjusted symbol index and the timing shift ride along.
@@ -440,7 +467,7 @@ impl DrmReceiver {
                     self.fac_cells.push(out[c as usize]);
                     self.fac_constellation.push((out[c as usize].sig.re, out[c as usize].sig.im));
                 }
-                if self.fac_cells.len() == 65 {
+                if self.fac_cells.len() == crate::digital::drm::tables::fac_cell_count(map.mode()) {
                     let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
                     let idx = if decoded {
                         Fac::parse(&bits).map(|f| f.channel.frame_index).unwrap_or(0xFF)
@@ -844,6 +871,69 @@ mod tests {
         assert_eq!(streamed.station_label, batch.station_label, "station label");
         assert_eq!(streamed.msc_frames.len(), batch.msc_frames.len(), "MSC frames");
         assert_eq!(streamed.audio_access_units.len(), batch.audio_access_units.len(), "audio AUs");
+    }
+
+    /// Mode E (DRM+, VHF) at 96 kHz: the receiver is fed a synthesised mode E signal (cyclic
+    /// prefix + the mode's carriers with the map's reference pilots) and must select mode E and
+    /// demodulate it. DecDRM defines no mode E transmitter, so a synthetic signal is the only
+    /// way to exercise the 96 kHz front end (see the handoff).
+    #[test]
+    fn mode_e_acquires_and_demodulates_a_synthetic_signal() {
+        let map = CellMap::new(RobustnessMode::E, SpectrumOccupancy::SO_0).expect("mode E layout");
+        let n = map.mode().fft_size();
+        let g = map.mode().guard_len();
+        let spf = map.mode().symbols_per_frame();
+        let mut iq: Vec<f32> = Vec::new();
+        for sym in 0..420usize {
+            let s = sym % spf;
+            let mut window = vec![Cplx::zero(); n];
+            for (t, w) in window.iter_mut().enumerate() {
+                let mut acc = Cplx::zero();
+                for c in 0..map.num_carriers {
+                    let k = f64::from(map.kmin + c as i32);
+                    let pilot = map.pilot(s, c);
+                    let v = if pilot.norm_sqr() > 0.0 {
+                        pilot
+                    } else {
+                        Cplx::from_polar(1.0, 0.3 * c as f64)
+                    };
+                    acc += v * Cplx::from_polar(1.0, 2.0 * core::f64::consts::PI * k * t as f64 / n as f64);
+                }
+                *w = acc;
+            }
+            for t in 0..g {
+                iq.push(window[n - g + t].re as f32);
+                iq.push(window[n - g + t].im as f32);
+            }
+            for w in &window {
+                iq.push(w.re as f32);
+                iq.push(w.im as f32);
+            }
+        }
+        let mut rx = DrmReceiver::new_at(96_000);
+        // Diagnostic: how many timing windows does the mode E TimeSync see, and at what score?
+        {
+            let cx: Vec<Cplx> = iq.chunks_exact(2).map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1]))).collect();
+            let mut ts = TimeSync::new(RobustnessMode::E);
+            let mut windows = 0usize;
+            let mut best: f64 = 0.0;
+            for block in cx.chunks(3248) {
+                let _ = ts.push(block);
+                while let Some(w) = ts.next_window() {
+                    windows += 1;
+                    best = best.max(w.guard_corr.unwrap_or(0.0));
+                }
+            }
+            eprintln!("[modeE] timesync windows={windows} best_guard_corr={best:.3} samples={}", iq.len() / 2);
+        }
+        rx.push(&iq);
+        rx.run();
+        eprintln!(
+            "[modeE] locked={} mode={:?} symbols={} facs={} phase_computed={} rows={} demod_rows={}",
+            rx.locked(), rx.mode, rx.symbols_demodulated, rx.facs.len(), rx.phase_computed, rx.all_rows.len(), rx.demod_rows
+        );
+        assert_eq!(rx.mode, Some(RobustnessMode::E), "mode detection must pick mode E at 96 kHz");
+        assert!(rx.symbols_demodulated > 0, "the mode E demodulator must emit symbols");
     }
 
     /// The full bench-capture decode through the receiver, fed in 3248-sample blocks exactly like

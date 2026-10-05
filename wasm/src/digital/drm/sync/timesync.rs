@@ -92,9 +92,9 @@ pub enum Event {
 /// The mode detector's per-mode state: a ring of correlation values and two sliding DFTs,
 /// because the guard correlation is symbol-periodic and the period identifies the mode.
 struct ModeDetector {
-    values: [VecDeque<f64>; 4],
-    acc_short: [Cplx; 4],
-    acc_long: [Cplx; 4],
+    values: [VecDeque<f64>; 5],
+    acc_short: [Cplx; 5],
+    acc_long: [Cplx; 5],
     len_short: usize,
     len_long: usize,
     count: usize,
@@ -102,7 +102,7 @@ struct ModeDetector {
     candidate: Option<RobustnessMode>,
     streak: usize,
     /// Scores of the most recent decision (diagnostics/tests).
-    pub last_scores: [f64; 4],
+    pub last_scores: [f64; 5],
 }
 
 impl ModeDetector {
@@ -110,14 +110,14 @@ impl ModeDetector {
         let g = geom(mode);
         let mut d = Self {
             values: Default::default(),
-            acc_short: [Cplx::zero(); 4],
-            acc_long: [Cplx::zero(); 4],
+            acc_short: [Cplx::zero(); 5],
+            acc_long: [Cplx::zero(); 5],
             len_short: RM_BLOCKS * g.ts / STEP,
             len_long: RM_BLOCKS_LONG * g.ts / STEP,
             count: 0,
             candidate: None,
             streak: 0,
-            last_scores: [0.0; 4],
+            last_scores: [0.0; 5],
         };
         d.reset();
         d
@@ -127,8 +127,8 @@ impl ModeDetector {
         for v in &mut self.values {
             v.clear();
         }
-        self.acc_short = [Cplx::zero(); 4];
-        self.acc_long = [Cplx::zero(); 4];
+        self.acc_short = [Cplx::zero(); 5];
+        self.acc_long = [Cplx::zero(); 5];
         self.count = 0;
         self.candidate = None;
         self.streak = 0;
@@ -146,7 +146,7 @@ impl ModeDetector {
     }
 
     /// Add one evaluation's normalised correlations and decide whether a mode is reliable.
-    fn push(&mut self, geoms: &[Geom; 4], rho: &[f64; 4]) -> Option<(RobustnessMode, f64)> {
+    fn push(&mut self, geoms: &[Geom; 5], rho: &[f64; 5]) -> Option<(RobustnessMode, f64)> {
         let n = self.count;
         for (m, g) in geoms.iter().enumerate() {
             let k = (n * STEP) % g.ts;
@@ -181,7 +181,7 @@ impl ModeDetector {
         if len < self.len_short {
             return None;
         }
-        let short: [f64; 4] =
+        let short: [f64; 5] =
             self.acc_short.map(|a| a.norm() / self.len_short.max(1) as f64);
         self.last_scores = short;
         if let Some(found) = decide(&short, RM_RELIABILITY) {
@@ -190,7 +190,7 @@ impl ModeDetector {
         // The long window takes over once it holds 1.5x the short length, for weak or narrow
         // signals (the reference port's documented fallback).
         if 2 * len >= 3 * self.len_short {
-            let long: [f64; 4] = self.acc_long.map(|a| a.norm() / len.max(1) as f64);
+            let long: [f64; 5] = self.acc_long.map(|a| a.norm() / len.max(1) as f64);
             if let Some(found) = decide(&long, RM_RELIABILITY_LONG) {
                 return self.accept(found, geoms);
             }
@@ -203,7 +203,7 @@ impl ModeDetector {
     fn accept(
         &mut self,
         (mode, reliability): (RobustnessMode, f64),
-        geoms: &[Geom; 4],
+        geoms: &[Geom; 5],
     ) -> Option<(RobustnessMode, f64)> {
         if self.candidate == Some(mode) {
             self.streak += 1;
@@ -219,7 +219,7 @@ impl ModeDetector {
 }
 
 /// Best mode and its ratio to the second best, if the ratio exceeds `threshold`.
-fn decide(scores: &[f64; 4], threshold: f64) -> Option<(RobustnessMode, f64)> {
+fn decide(scores: &[f64; 5], threshold: f64) -> Option<(RobustnessMode, f64)> {
     let (best, &max) = scores.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?;
     let second = scores
         .iter()
@@ -228,7 +228,7 @@ fn decide(scores: &[f64; 4], threshold: f64) -> Option<(RobustnessMode, f64)> {
         .map(|(_, &v)| v)
         .fold(0.0f64, f64::max);
     let reliability = if second > 0.0 { max / second } else { f64::INFINITY };
-    (reliability > threshold).then(|| (RobustnessMode::DRM30[best], reliability))
+    (reliability > threshold).then(|| (RobustnessMode::ALL[best], reliability))
 }
 
 /// Timing acquisition and tracking, in the decimated domain.
@@ -354,7 +354,15 @@ pub struct TimeSync {
 
 impl TimeSync {
     pub fn new(mode: RobustnessMode) -> Self {
-        let lpf = FirDecimator::new(lowpass(LPF_TAPS, LPF_CUTOFF_HZ / f64::from(mode.sample_rate()), 60.0), DEC);
+        // The timing low-pass. DRM30's 10 kHz signal uses the reference's 6 kHz cutoff; mode E's
+        // 100 kHz signal does not fit under it, so it keeps almost the whole band (the cyclic
+        // prefix survives decimation either way).
+        let cutoff = if mode == RobustnessMode::E {
+            0.45
+        } else {
+            LPF_CUTOFF_HZ / f64::from(mode.sample_rate())
+        };
+        let lpf = FirDecimator::new(lowpass(LPF_TAPS, cutoff, 60.0), DEC);
         let dec_input_base = DEC as i64 - 1 - (LPF_TAPS as i64 - 1) / 2;
         Self {
             dec: Vec::new(),
@@ -419,7 +427,7 @@ impl TimeSync {
     }
 
     fn evaluate(&mut self, events: &mut Vec<Event>) {
-        let geoms: [Geom; 4] = RobustnessMode::DRM30.map(geom);
+        let geoms: [Geom; 5] = RobustnessMode::ALL.map(geom);
         let span = geoms.iter().map(|g| g.g + g.nu).max().unwrap_or(0);
         let sel = self.mode.index();
         let dec_end = self.dec_index_base + self.dec.len() as i64;
@@ -428,8 +436,8 @@ impl TimeSync {
         }
         while self.next_eval + span as i64 <= dec_end {
             let t = (self.next_eval - self.dec_index_base) as usize;
-            let mut metric = [0.0f64; 4];
-            let mut rho = [0.0f64; 4];
+            let mut metric = [0.0f64; 5];
+            let mut rho = [0.0f64; 5];
             for (m, g) in geoms.iter().enumerate() {
                 let mut c = Cplx::zero();
                 let mut p = 0.0f64;

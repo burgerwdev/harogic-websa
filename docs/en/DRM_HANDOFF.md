@@ -46,17 +46,29 @@ Open:
 - **Real shortwave.** Four HF frequencies were captured (9755, 11620, 5875, 3955 kHz, 6 s each,
   ref -40 dBm); none carried a DRM signal (no lock). Reception depends on propagation and a
   broadcast being on air.
-- xHE-AAC: the audio super-frame deframer is now ported (stateful, frames span super
-  frames). On a live bench capture it deframes 50 USAC access units against the reference
-  receiver's 51, all headers CRC-ok, and the readout reports 24 kHz. The libxaac decode is
-  still open: the SDC carries libxaac's compact *xHE-AAC Static Config* (§5.3.2 table 4),
-  which the mp4-mode decoder rejects (it wants the full USAC `AudioSpecificConfig`), so the
-  Static Config -> ASC expansion is the remaining step.
+- xHE-AAC (coding 3) decodes end to end. The stateful super-frame deframer recovers the USAC
+  access units (50 on a live bench capture, against the reference's 51) and they go through
+  FDK's `TT_DRM` decoder — the reference receiver's own path (`open_decoder(DrmAudioCoding::
+  XheAac)`); libxaac is the encoder only, and its mp4-mode decoder rejects the compact DRM
+  Static Config, which is why that path was dropped. The live capture produces 102 400
+  non-silent 24 kHz PCM samples with the 1 kHz tone (99.6 % of the energy in 900-1100 Hz).
 - HE-AAC v2 (AAC + SBR + parametric stereo) is verified on the live bench: the Pluto
   transmitted a DecDRM-generated `heaacv2` stream (12 kHz core) and the fresh capture
   decodes to 153 600 stereo 24 kHz PCM samples, both channels a 1 kHz tone (99.7 % of the
   energy in 900-1100 Hz, L/R correlation 1.0), 40 audio AUs.
-- Mode E / DRM+ needs the 96 kHz sync front end (see the mode E section).
+- **All four DRM30 modes decode end to end.** Committed fixtures from real DecDRM
+  transmissions (HE-AAC mono, 12 kHz core, mode A/C/D, SO3) join mode B; the MSC assembly is
+  now mode-generic (it used mode B's 15 symbols/frame and 45 buckets, which broke modes C and
+  D) and each mode locks, decodes the FAC with no CRC error and deframes 55 audio AUs.
+- Mode E / DRM+: the 96 kHz front end is in. The sync stages (`freqacq`/`timesync`/`nco`/
+  `finefreq`/`freqtrack`) take the mode's sample rate instead of a fixed 48 kHz, mode
+  detection tries mode E when the receiver is fed 96 kHz (selecting SO0), and the FAC decoder
+  uses mode E's 244 cells. Mode E carries no continuous frequency pilots, so the tracker
+  reports no delta. A synthesised mode E signal (cyclic prefix + the mode's carriers with the
+  map's reference pilots) is acquired: mode detection selects E, the frame phase commits and
+  410 symbols demodulate with a guard correlation of 1.0. DecDRM defines no mode E
+  transmitter, so the FAC/SDC/MSC/audio decode cannot be driven with a real mode E signal;
+  the front end is what is verified (see the mode E section).
 - The closed timing/SRO loop, which would let the time-Wiener be enabled, is the remaining
   channel-estimation work.
 
