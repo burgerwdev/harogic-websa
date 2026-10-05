@@ -536,8 +536,9 @@ FAC/SDC/MSC/AU recovery using cyclic-prefix phase tracking.
 
 **Implemented entry path**: the plugin manifest exposes `drmplus` separately from DRM30. Selecting
 it fixes the channelizer headroom to 100 kHz, builds the receiver at 96 kHz, highlights the ±50 kHz
-DRM+ channel and uses the same decoded-audio worklet path. Selecting `drm` keeps the DRM30 SO3/10 kHz
-path. The Filter control now labels both digital channel widths as automatic rather than offering
+DRM+ channel and uses the same decoded-audio worklet path. Selecting `drm` keeps the DRM30 48 kS/s
+path and selects the broadcast occupancy from the first valid FAC (rather than keeping the initial
+SO3 map). The Filter control labels the digital channel widths as automatic rather than offering
 analog IF choices that do not change the broadcast occupancy.
 
 **External signal-source gap (deferred by user decision):** no real VHF Mode E IQ/WAV recording
@@ -601,13 +602,17 @@ have offline coverage; real-time playback still needs verification:
   HE-AAC fixture reports MER 19.9 dB / SNR 21 dB through the wasm ABI. A retune/stream
   reset clears the prior station and constellation immediately, including on an empty
   frequency. Dark/light and narrow-window component screenshots were checked.
-- DRM30 currently fixes its decoded occupancy to SO3 (10 kHz); the old Filter buttons
-  misleadingly offered 0.5–180 kHz although the digital decoder ignored them and the
-  backend DDC remained ~48.8 kS/s for all narrow choices. Selecting DRM now applies
-  12 kHz DDC headroom, labels the 10 kHz channel as automatic (manual choices hidden),
-  and highlights ±5 kHz rather than FT8's +100..3000 Hz. This does **not** implement
-  other DRM30 occupancies or mode E. The DRM core baseband rate is pinned to 48 kS/s
-  independently of a 44.1/48 kHz sound card; PCM playback still follows the card rate.
+- DRM30 now starts with SO3 for mode/FAC acquisition, then uses the first CRC-valid FAC to select
+  the signalled occupancy before SDC and MSC assembly. The SO0 (4.5 kHz) and SO5 (20 kHz) mode-B
+  transmitter fixtures each decode in both whole-buffer and 3248-sample worker blocks: FAC 13/0,
+  SDC 4, MSC 5, and xHE-AAC access units. The original SO3 and A/C/D fixtures remain green.
+  The earlier analog Filter buttons did not select DRM occupancy: narrow settings all left the
+  DDC around 48.8 kS/s. DRM sets 12 kHz DDC geometry (at least 48 kS/s output, enough for a
+  20 kHz channel), hides the analog choices and labels occupancy as FAC-auto. The overlay shows
+  the full 20 kHz search band until lock, then the FAC-selected channel width, not FT8's
+  +100..3000 Hz. The DRM core rate is 48 kS/s independently of the sound card; PCM playback
+  still follows its 44.1/48 kHz rate. Other occupancy/mode combinations are defined by the
+  cell map but do not yet have their own committed transmitter fixtures.
 - Rechecking `/tmp/cnr_rec.f32` through the current block-fed wasm ABI: the normal 32 kHz
   xHE interval outputs 1.203 s PCM per ~1.2 s burst on average, but after block 564 there
   is a ~14 s gap until block 775. The FAC count then restarts (93 -> 8), consistent with

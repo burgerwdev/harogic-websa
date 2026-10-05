@@ -17,6 +17,7 @@
 import { createParam, resetAll } from '../core/params';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
+import { drmStatus } from '../sdr/drmLog';
 
 /** Frequency-like equality: sub-Hz differences are the same value. */
 const hz = {
@@ -70,7 +71,13 @@ export const sdrIfbw = createParam<number>('sdr.ifbw', {
  */
 export function demodBandHz(demod: string, ifBw: number): [number, number] {
 	if (demod === 'drmplus') return [-50_000, 50_000];
-	if (demod === 'drm') return [-5000, 5000];
+	if (demod === 'drm') {
+		const locked = drmStatus().lines.find((line) => line.startsWith('locked: '));
+		const bandwidth = locked?.match(/, ([\d.]+) kHz/);
+		// Until the FAC selects the occupancy, show the full DRM30 search band.
+		const halfWidth = bandwidth ? Number(bandwidth[1]) * 500 : 10_000;
+		return [-halfWidth, halfWidth];
+	}
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	return [-ifBw / 2, ifBw / 2];
 }

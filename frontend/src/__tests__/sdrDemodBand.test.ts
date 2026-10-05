@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
+import { clearDrm, setDrmDecode } from '../sdr/drmLog';
 import { readPluginManifest, setPluginManifest } from '../sdr/registry';
 import { instantiateDsp } from '../sdr/wasm';
 import { demodBandHz } from '../ui/sdrState';
@@ -40,11 +41,16 @@ describe('the band the SDR view highlights', () => {
 		expect(demodBandHz('ft8', 6000)).toEqual([100, 3000]);
 	});
 
-	it('highlights the currently decoded DRM30 10 kHz channel, not FT8 or the analog filter', async () => {
+	it('highlights the FAC-selected DRM30 occupancy, not FT8 or the analog filter', async () => {
 		await loadManifest();
-		expect(demodBandHz('drm', 6000)).toEqual([-5000, 5000]);
-		expect(demodBandHz('drm', 12000)).toEqual([-5000, 5000]);
+		clearDrm();
+		expect(demodBandHz('drm', 6000)).toEqual([-10000, 10000]);
+		setDrmDecode(['locked: B, 4.5 kHz'], 18);
+		expect(demodBandHz('drm', 12000)).toEqual([-2250, 2250]);
+		setDrmDecode(['locked: B, 20 kHz'], 18);
+		expect(demodBandHz('drm', 12000)).toEqual([-10000, 10000]);
 		expect(demodBandHz('drmplus', 100000)).toEqual([-50000, 50000]);
+		clearDrm();
 	});
 
 	it('cannot drift from the decoder that defines it', () => {

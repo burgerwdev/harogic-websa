@@ -313,6 +313,10 @@ impl DrmReceiver {
     /// first call (when enough samples are buffered) also runs the mode detection and the
     /// coarse carrier acquisition, so later calls only carry the new samples.
     pub fn run(&mut self) {
+        self.run_with_layout_retry(true);
+    }
+
+    fn run_with_layout_retry(&mut self, may_retry: bool) {
         // Mode detection: once, when enough samples are buffered (the guard correlation and
         // the frame sync need a few frames).
         if !self.mode_detected {
@@ -459,11 +463,12 @@ impl DrmReceiver {
             }
         }
         self.processed_complex = self.buf.len() / 2;
-        // The synchronizer and NCO own the streaming state; raw samples are only needed for a
-        // possible re-acquisition. Keep four seconds and discard the rest after processing, not
-        // on push (a whole-capture push must still process the entire capture).
-        if self.buf.len() > 200_000 * 2 {
-            let drop = self.buf.len() - 200_000 * 2;
+        // Before the first valid FAC, keep enough capture for a possible occupancy
+        // switch: re-decoding only the final four seconds made whole-buffer and
+        // worker-block feeds disagree. Once the layout is known, four seconds suffice.
+        let keep = if self.facs.is_empty() { 400_000 * 2 } else { 200_000 * 2 };
+        if self.buf.len() > keep {
+            let drop = self.buf.len() - keep;
             self.buf.drain(..drop);
             self.processed_complex -= drop / 2;
         }
@@ -511,6 +516,9 @@ impl DrmReceiver {
             .collect();
         self.demod_rows += rows.len();
 
+        let live_rows = rows.len() <= self.spf;
+        let mut occupancy_change: Option<CellMap> = None;
+        let mut enable_timing_tracking = false;
         {
             let est = self.chanest.as_mut().unwrap();
             let mut bits = Vec::new();
@@ -550,7 +558,18 @@ impl DrmReceiver {
                 }
                 if self.fac_cells.len() == crate::digital::drm::tables::fac_cell_count(map.mode()) {
                     let decoded = fac_dec.decode(&self.fac_cells, &mut bits);
-                    let fac = if decoded { Fac::parse_for(map.mode(), &bits) } else { None };
+                    let parsed = if decoded { Fac::parse_for(map.mode(), &bits) } else { None };
+                    if may_retry {
+                        if let Some(f) = parsed {
+                            if f.channel.occupancy != map.occupancy() {
+                                occupancy_change = CellMap::new(map.mode(), f.channel.occupancy);
+                                if occupancy_change.is_some() { break; }
+                            }
+                        }
+                    }
+                    // Even a CRC-valid FAC is unusable with the wrong cell map. On the
+                    // replay pass wait for the new occupancy instead of switching again.
+                    let fac = parsed.filter(|f| f.channel.occupancy == map.occupancy());
                     let idx = fac.as_ref().map(|f| f.channel.frame_index).unwrap_or(0xFF);
                     match fac {
                         Some(f) => {
@@ -563,7 +582,13 @@ impl DrmReceiver {
                                     self.delayed_cnt -= 1;
                                 } else {
                                     self.timing_tracking = true;
-                                    est.start_timing_tracking();
+                                    if live_rows {
+                                        // Keep guard timing active: turning it off here lost
+                                        // live xHE frames on the committed bench capture.
+                                        est.start_timing_tracking();
+                                    } else {
+                                        enable_timing_tracking = true;
+                                    }
                                 }
                             }
                             self.facs.push(f);
@@ -584,6 +609,21 @@ impl DrmReceiver {
         }
         self.all_rows.clear();
         self.all_shifts.clear();
+        if let Some(selected) = occupancy_change {
+            self.occupancy = selected.occupancy();
+            self.map = Some(selected.clone());
+            // A valid FAC names this signal's layout, not a lost channel. Replay the
+            // buffered capture so SDC and the long MSC interleaver get their warm-up.
+            self.recover_with_keep(&selected, self.buf.len());
+            self.run_with_layout_retry(false);
+            return;
+        }
+        if enable_timing_tracking {
+            // A large backlog was demodulated before channel estimation. Activating
+            // tracking mid-replay would add every historical timing correction to one
+            // future FFT window; start only after the backlog has been consumed.
+            self.chanest.as_mut().unwrap().start_timing_tracking();
+        }
         if self.locked()
             && self.pushed.saturating_sub(self.last_good_fac_sample) >= u64::from(self.sample_rate) * 3
         {
@@ -623,13 +663,15 @@ impl DrmReceiver {
     /// the coarse acquisition again on the recent baseband, so a fade or a bench-loop wrap does
     /// not wedge the receiver until the operator resets it.
     fn recover(&mut self, map: &CellMap) {
+        self.recover_with_keep(map, self.sample_rate as usize * 3); // 1.5 s of interleaved I/Q
+    }
+
+    fn recover_with_keep(&mut self, map: &CellMap, keep: usize) {
         use crate::digital::drm::sync::freqacq::FreqAcquisition;
         use crate::digital::drm::sync::freqtrack::FreqTrack;
         use crate::digital::drm::sync::nco::Nco;
-        // The lock may have been lost for several seconds. Replaying four seconds would include
-        // the old station and immediately relock it on a now-dead channel. The last 1.5 seconds
-        // suffice for acquisition while excluding data older than the no-FAC timeout.
-        let keep = self.sample_rate as usize * 3; // 1.5 seconds of interleaved I/Q
+        // A lost channel must not replay the old station. A newly identified occupancy
+        // can replay the entire buffered capture: it belongs to the same transmission.
         if self.buf.len() > keep {
             let start = self.buf.len() - keep;
             self.buf.drain(..start);

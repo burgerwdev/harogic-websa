@@ -51,10 +51,10 @@ export const en = {
 	"drm_fac_snr": "FAC SNR",
 	"drm_constellation": "FAC constellation",
 	"drm_details": "Decoder details",
-	"drm_filter_fixed": "DRM 10 kHz (auto)",
+	"drm_filter_fixed": "DRM auto (4.5–20 kHz)",
 	"drmplus_filter_fixed": "DRM+ 100 kHz (auto)",
 	"drmplus_filter_tip": "DRM+ mode E uses the 100 kHz VHF channel and a 96 kS/s complex baseband.",
-	"drm_filter_tip": "DRM30 currently decodes the 10 kHz channel (SO3). Filter buttons do not set its broadcast occupancy; the DDC is given at least 12 kHz of headroom.",
+	"drm_filter_tip": "DRM30 detects the 4.5/5/9/10/18/20 kHz broadcast occupancy from FAC. The DDC preserves the full band; analog Filter buttons do not select DRM occupancy.",
 } as const;
 
 export const zh = {
@@ -108,9 +108,9 @@ export const zh = {
 	"drm_fac_snr": "FAC 信噪比",
 	"drm_constellation": "FAC 星座图",
 	"drm_details": "解码详情",
-	"drm_filter_fixed": "DRM 10 kHz（自动）",
+	"drm_filter_fixed": "DRM 自动（4.5–20 kHz）",
 	"drmplus_filter_fixed": "DRM+ 100 kHz（自动）",
 	"drmplus_filter_tip": "DRM+ 模式 E 使用 VHF 100 kHz 信道和 96 kS/s 复基带。",
-	"drm_filter_tip": "DRM30 当前解码 10 kHz 信道（SO3）。滤波按钮不能修改电台声明的占用带宽；DDC 配置至少留出 12 kHz 余量。",
+	"drm_filter_tip": "DRM30 根据 FAC 识别 4.5/5/9/10/18/20 kHz 广播占用。DDC 保留完整带宽；模拟 Filter 按钮不选择 DRM 占用。",
 } as const;
 

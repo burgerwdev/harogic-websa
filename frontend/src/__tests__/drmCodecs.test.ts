@@ -22,13 +22,13 @@ interface Decoded {
 	toneFraction: number;
 }
 
-async function decode(file: string): Promise<Decoded> {
+async function decode(file: string, inputRate = 48_828): Promise<Decoded> {
 	const buf = readFileSync(ARTIFACT);
 	const dsp = await instantiateDsp(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 	const mode = new TextEncoder().encode('drm');
 	const modePtr = dsp.alloc(mode.length);
 	dsp.u8View(modePtr, mode.length).set(mode);
-	const handle = dsp.exports.websa_dsp_demod_new(48_828, 48_000, modePtr, mode.length, 10_000, 0);
+	const handle = dsp.exports.websa_dsp_demod_new(inputRate, 48_000, modePtr, mode.length, 10_000, 0);
 	dsp.free(modePtr, mode.length);
 	expect(handle).toBeGreaterThan(0);
 
@@ -79,6 +79,17 @@ async function decode(file: string): Promise<Decoded> {
 }
 
 describe('DRM codec coverage (xHE-AAC, HE-AAC v2) through the receiver', () => {
+	for (const [occupancy, rate] of [[0, 24_000], [5, 32_000]]) {
+		it(`decodes mode B SO${occupancy} xHE-AAC after FAC selects the occupancy`, async () => {
+			const d = await decode(`drm_modeB_so${occupancy}_48k_xhe.f32`, 48_000);
+			expect(d.rate).toBe(rate);
+			expect(d.samples).toBeGreaterThan(rate);
+			expect(d.peak).toBeGreaterThan(1000);
+			expect(d.meanAbs).toBeGreaterThan(100);
+			expect(d.toneFraction).toBeGreaterThan(5);
+		});
+	}
+
 	it('decodes a live xHE-AAC (coding 3) capture to non-silent PCM', async () => {
 		const d = await decode('drm_live_xhe_modeB_so3_48828.f32');
 		expect(d.rate).toBe(24_000);
