@@ -13,7 +13,7 @@
 use crate::digital::drm::cellmap::CellMap;
 use crate::digital::drm::dsp::util::{iir1_c, iir1_lambda};
 use crate::digital::drm::dsp::Cplx;
-use crate::digital::drm::params::{RobustnessMode, SAMPLE_RATE};
+use crate::digital::drm::params::RobustnessMode;
 
 /// Time constant of the frequency-offset averaging, s (Dream's `TICONST_FREQ_OFF_EST`).
 const TICONST_FREQ_OFF_EST: f64 = 1.0;
@@ -53,7 +53,7 @@ impl FreqTrack {
     pub fn new(map: &CellMap) -> Self {
         let n = map.mode().fft_size();
         let ts = map.mode().symbol_len() as f64;
-        let sym_rate = f64::from(SAMPLE_RATE) / ts;
+        let sym_rate = f64::from(map.mode().sample_rate()) / ts;
         let mut freq_pil = [0usize; 3];
         let mut cnt = 0;
         for c in 0..map.num_carriers {
@@ -105,7 +105,7 @@ impl FreqTrack {
             let e = self.freq_vec.arg();
             let mag = self.freq_vec.norm();
             self.freq_vec = Cplx::new(mag, 0.0);
-            out.freq_delta_hz = e * self.norm_const * f64::from(SAMPLE_RATE);
+            out.freq_delta_hz = e * self.norm_const * f64::from(self.mode.sample_rate());
 
             // Coarse SRO: the per-symbol phase advance grows linearly with the carrier index
             // (slope 2π·ε·ts/N). The common frequency part is removed by the differencing.
@@ -196,7 +196,7 @@ mod tests {
         for injected in [-4.0f64, -2.0, 2.0, 4.0] {
             let iq = load_iq("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
             let mut mixed = iq.clone();
-            let mut nco = Nco::new(-injected);
+            let mut nco = Nco::new(-injected, 48_000.0);
             nco.process(&mut mixed);
             let (rows, shifts) = rows_of(&map, &mixed);
             let mut tr = FreqTrack::new(&map);

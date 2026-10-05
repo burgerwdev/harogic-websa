@@ -143,8 +143,6 @@ pub struct DrmReceiver {
     #[cfg(target_arch = "wasm32")]
     audio_decoder: Option<crate::fdk::AacDecoder>,
     #[cfg(target_arch = "wasm32")]
-    xhe_decoder: Option<crate::xaac::XaacDecoder>,
-    #[cfg(target_arch = "wasm32")]
     audio_configured_with: Option<Vec<u8>>,
     // Incremental processing state: the mode detection runs once (when enough samples are
     // buffered), then the demodulation and the decode consume only the NEW samples.
@@ -199,8 +197,6 @@ impl DrmReceiver {
             audio_debug: String::new(),
             #[cfg(target_arch = "wasm32")]
             audio_decoder: None,
-            #[cfg(target_arch = "wasm32")]
-            xhe_decoder: None,
             #[cfg(target_arch = "wasm32")]
             audio_configured_with: None,
             frame_sdc: Vec::new(),
@@ -310,7 +306,7 @@ impl DrmReceiver {
                 .chunks_exact(2)
                 .flat_map(|c| [f64::from(c[0]), f64::from(c[1])])
                 .collect();
-            let coarse = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true)
+            let coarse = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, f64::from(mode.sample_rate()))
                 .push_iq(&flat)
                 .map(|a| a.dc_hz)
                 .unwrap_or(0.0);
@@ -324,7 +320,7 @@ impl DrmReceiver {
             // The MSC super-frame assembly holds one bucket per super-frame symbol, which
             // depends on the mode (mode A/B: 45, mode C: 60, mode D: 72).
             self.msc_super = vec![Vec::new(); cmap.msc_carriers.len()];
-            self.nco = Some(crate::digital::drm::sync::nco::Nco::new(coarse));
+            self.nco = Some(crate::digital::drm::sync::nco::Nco::new(coarse, f64::from(mode.sample_rate())));
             let mut ft = crate::digital::drm::sync::freqtrack::FreqTrack::new(&cmap);
             ft.set_freq_time_constant(0.1);
             self.ft = Some(ft);
@@ -747,33 +743,13 @@ impl DrmReceiver {
         if a.sbr { core * 2 } else { core }
     }
 
-    /// Decode the deframed audio access units into PCM (wasm32 only; the FDK AAC and libxaac
-    /// decoders are not linked natively). AAC (coding 0) goes through the FDK TT_DRM decoder;
-    /// xHE-AAC (coding 3, MPEG-D USAC) goes through libxaac.
+    /// Decode the deframed audio access units into PCM (wasm32 only; the FDK decoder is not
+    /// linked natively). Both AAC (coding 0) and xHE-AAC (coding 3, MPEG-D USAC) go through the
+    /// FDK `TT_DRM` decoder: the SDC type-9 bytes carry the xHE-AAC config after the two header
+    /// bytes, and FDK's DRM transport handles USAC (DecDRM's `open_decoder` does the same).
     #[cfg(target_arch = "wasm32")]
     fn decode_audio(&mut self) {
         let Some(audio) = self.audio.clone() else { return };
-        if audio.coding == 3 {
-            if self.xhe_decoder.is_none() {
-                let mut dec = crate::xaac::XaacDecoder::new();
-                if let Some(d) = dec.as_mut() {
-                    if !audio.xhe_aac_config.is_empty() {
-                        d.feed(&audio.xhe_aac_config, true);
-                    }
-                }
-                self.xhe_decoder = dec;
-                self.audio_units_decoded = 0;
-            }
-            if let Some(dec) = self.xhe_decoder.as_mut() {
-                for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
-                    if let Some(pcm) = dec.feed(au, false) {
-                        self.audio_pcm.extend_from_slice(&pcm);
-                    }
-                }
-                self.audio_units_decoded = self.audio_access_units.len();
-            }
-            return;
-        }
         let type9 = audio.to_type9_bytes();
         if self.audio_decoder.is_none() || self.audio_configured_with.as_deref() != Some(type9.as_slice()) {
             self.audio_decoder = crate::fdk::AacDecoder::new();

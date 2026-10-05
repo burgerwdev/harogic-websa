@@ -8,7 +8,6 @@
 //! with the phase taken from the absolute sample index so consecutive blocks join without a step.
 
 use crate::digital::drm::dsp::Cplx;
-use crate::digital::drm::params::SAMPLE_RATE;
 
 /// A streaming mixer that removes a fixed frequency offset.
 pub struct Nco {
@@ -18,17 +17,25 @@ pub struct Nco {
     phase: f64,
     /// Samples mixed so far.
     position: u64,
+    /// The baseband sample rate, Hz (48 kHz for modes A-D, 96 kHz for mode E).
+    rate: f64,
 }
 
 impl Nco {
-    /// `offset_hz` is the measured carrier offset (the DC carrier's position).
-    pub fn new(offset_hz: f64) -> Self {
-        Self { w: -2.0 * core::f64::consts::PI * offset_hz / f64::from(SAMPLE_RATE), phase: 0.0, position: 0 }
+    /// `offset_hz` is the measured carrier offset (the DC carrier's position); `rate` the
+    /// baseband sample rate.
+    pub fn new(offset_hz: f64, rate: f64) -> Self {
+        Self {
+            w: -2.0 * core::f64::consts::PI * offset_hz / rate,
+            phase: 0.0,
+            position: 0,
+            rate,
+        }
     }
 
     /// The offset being removed, Hz.
     pub fn offset_hz(&self) -> f64 {
-        -self.w * f64::from(SAMPLE_RATE) / (2.0 * core::f64::consts::PI)
+        -self.w * self.rate / (2.0 * core::f64::consts::PI)
     }
 
     pub fn reset(&mut self) {
@@ -39,7 +46,7 @@ impl Nco {
     /// Change the offset being removed (the reference's `track_hz` update), keeping the phase
     /// continuous so the next sample joins without a step.
     pub fn set_offset(&mut self, offset_hz: f64) {
-        self.w = -2.0 * core::f64::consts::PI * offset_hz / f64::from(SAMPLE_RATE);
+        self.w = -2.0 * core::f64::consts::PI * offset_hz / self.rate;
     }
 
     /// Mix `input` in place, continuing the phase from the previous call.
@@ -72,9 +79,9 @@ mod tests {
     /// Mixing a tone by its own offset brings it to DC.
     #[test]
     fn removes_a_tone_at_the_measured_offset() {
-        let fs = f64::from(SAMPLE_RATE);
+        let fs = 48_000.0;
         let offset = 121.0;
-        let mut nco = Nco::new(offset);
+        let mut nco = Nco::new(offset, 48_000.0);
         let input: Vec<Cplx> = (0..4096)
             .map(|n| {
                 let ph = 2.0 * core::f64::consts::PI * offset * n as f64 / fs;
@@ -91,13 +98,13 @@ mod tests {
     /// Consecutive blocks keep the phase: no step at the boundary.
     #[test]
     fn blocks_join_without_a_step() {
-        let fs = f64::from(SAMPLE_RATE);
+        let fs = 48_000.0;
         let offset = 100.0;
         let tone = |n: u64| {
             let ph = 2.0 * core::f64::consts::PI * offset * n as f64 / fs;
             Cplx::new(ph.cos(), ph.sin())
         };
-        let mut nco = Nco::new(offset);
+        let mut nco = Nco::new(offset, 48_000.0);
         let a: Vec<Cplx> = (0..64).map(tone).collect();
         let b: Vec<Cplx> = (64..128).map(tone).collect();
         let mut out_a = Vec::new();

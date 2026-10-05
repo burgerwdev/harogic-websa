@@ -268,6 +268,18 @@ fn probe_capture_env() {
     for (k, au) in rx.audio_access_units.iter().enumerate().take(3) {
         eprintln!("[probe] au{k} len={} head={:?}", au.len(), &au[..8.min(au.len())]);
     }
+    if !rx.audio_access_units.is_empty() {
+        let lens: Vec<usize> = rx.audio_access_units.iter().map(|a| a.len()).collect();
+        let total: usize = lens.iter().sum();
+        eprintln!(
+            "[probe] au lens min={} max={} mean={} total={} (stream bytes/s {:.0})",
+            lens.iter().min().unwrap(),
+            lens.iter().max().unwrap(),
+            total / lens.len(),
+            total,
+            total as f64 / 8.0
+        );
+    }
     if let (Some(mux), Some(audio)) = (rx.multiplex.clone(), rx.audio.clone()) {
         use websa_dsp::digital::drm::audio::{demultiplex, split_text_message, XheAacDeframer};
         for flag in [true, false] {

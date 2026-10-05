@@ -543,7 +543,7 @@ mod tests {
         iq: &[Cplx],
         coarse: f64,
     ) -> (Vec<Vec<Cplx>>, Vec<usize>, Vec<i64>) {
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse);
+        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
         let mut ft = crate::digital::drm::sync::freqtrack::FreqTrack::new(map);
         ft.set_freq_time_constant(0.1);
         let mut ts = TimeSync::new(RobustnessMode::B);
@@ -594,7 +594,7 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         // Continuous frequency tracking in the time domain: the coarse offset is removed by a
         // streaming NCO re-tuned every symbol from the frequency pilots (`freq_delta_hz`), the
@@ -656,13 +656,13 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let mut out = String::new();
         for step in -12..=12 {
             let extra = step as f64 * 0.5;
             let mut iq = base.clone();
-            let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse + extra);
+            let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse + extra, 48_000.0);
             nco.process(&mut iq);
             let mut est = ChanEst::new(&map);
             let (rows, syms, shifts) = rows_and_syms(&map, &iq);
@@ -716,10 +716,10 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse);
+        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
         nco.process(&mut corrected);
         let (rows, _, shifts) = rows_and_syms(&map, &corrected);
         let spf = RobustnessMode::B.symbols_per_frame();
@@ -759,10 +759,10 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse);
+        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
         nco.process(&mut corrected);
         let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
 
@@ -855,16 +855,16 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse);
+        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
         nco.process(&mut corrected);
         let (rows, syms, _) = rows_and_syms(&map, &corrected);
         let mut fine = 0.0;
         if let Some(f) = crate::digital::drm::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
             fine = f;
-            let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f);
+            let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f, 48_000.0);
             nco2.process(&mut corrected);
         }
         let (rows, syms, shifts) = rows_and_syms(&map, &corrected);
@@ -913,7 +913,7 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
 
@@ -977,7 +977,7 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
 
@@ -1096,7 +1096,7 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
 
@@ -1222,7 +1222,7 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let (rows, syms, shifts) = rows_and_syms_tracked(&map, &base, coarse);
 
@@ -1960,14 +1960,14 @@ mod tests {
             flat.push(v.re);
             flat.push(v.im);
         }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         eprintln!("[search] coarse offset {coarse:.1} Hz");
         let mut best = (0.0f64, 0i32, f64::NEG_INFINITY);
         for residual in [-4.0f64, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 4.0] {
             for shift in [-3i32, -2, -1, 0, 1, 2, 3] {
                 let mut iq = base.clone();
-                let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse + residual);
+                let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse + residual, 48_000.0);
                 nco.process(&mut iq);
                 let iq = if shift > 0 { &iq[shift as usize..] } else { &iq[..] };
                 let (mer, _, _) = run(iq);
@@ -2022,16 +2022,16 @@ mod tests {
         // Coarse + fine exactly as `run` does.
         let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
         for v in &base { flat.push(v.re); flat.push(v.im); }
-        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true);
+        let mut acq = crate::digital::drm::sync::freqacq::FreqAcquisition::new(true, 48_000.0);
         let coarse = acq.push_iq(&flat).map(|a| a.dc_hz).unwrap_or(0.0);
         let mut corrected = base.clone();
-        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse);
+        let mut nco = crate::digital::drm::sync::nco::Nco::new(coarse, 48_000.0);
         nco.process(&mut corrected);
         let (rows, syms, _) = rows_and_syms(&map, &corrected);
         let mut fine = 0.0;
         if let Some(f) = crate::digital::drm::sync::finefreq::estimate_residual_hz(&map, &rows, &syms) {
             fine = f;
-            let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f);
+            let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f, 48_000.0);
             nco2.process(&mut corrected);
         }
         let (rows, syms, _) = rows_and_syms(&map, &corrected);

@@ -53,6 +53,8 @@ pub struct XaacDecoder {
     mem: Vec<(*mut u8, usize)>,
     in_ptr: *mut u8,
     out_ptr: *mut u8,
+    /// The last libxaac error code (0 = none), for the readout.
+    pub last_error: i32,
 }
 
 // SAFETY: see `AacDecoder`: the instance is exclusively owned and libxaac keeps no
@@ -106,7 +108,7 @@ impl XaacDecoder {
                     out_ptr = p;
                 }
             }
-            Some(Self { obj, obj_size: size as usize, memtabs, memtabs_size: mt_size as usize, mem, in_ptr, out_ptr })
+            Some(Self { obj, obj_size: size as usize, memtabs, memtabs_size: mt_size as usize, mem, in_ptr, out_ptr, last_error: 0 })
         }
     }
 
@@ -114,16 +116,22 @@ impl XaacDecoder {
     /// output buffer (16-bit interleaved samples) or `None` on error.
     pub fn feed(&mut self, data: &[u8], init: bool) -> Option<Vec<i16>> {
         unsafe {
+            self.last_error = 0;
             if self.in_ptr.is_null() {
+                self.last_error = -1;
                 return None;
             }
             core::ptr::copy_nonoverlapping(data.as_ptr(), self.in_ptr, data.len());
             let mut n = data.len() as u32;
-            if ixheaacd_dec_api(self.obj, CMD_SET_INPUT_BYTES, 0, &mut n as *mut u32 as *mut _) != 0 {
+            let r = ixheaacd_dec_api(self.obj, CMD_SET_INPUT_BYTES, 0, &mut n as *mut u32 as *mut _);
+            if r != 0 {
+                self.last_error = 0x1000 + r;
                 return None;
             }
             if init {
-                if ixheaacd_dec_api(self.obj, CMD_INIT, INIT_PROCESS, core::ptr::null_mut()) != 0 {
+                let r = ixheaacd_dec_api(self.obj, CMD_INIT, INIT_PROCESS, core::ptr::null_mut());
+                if r != 0 {
+                    self.last_error = 0x2000 + r;
                     return None;
                 }
                 let mut done: u32 = 0;
@@ -131,7 +139,9 @@ impl XaacDecoder {
                 let _ = done;
                 return Some(Vec::new());
             }
-            if ixheaacd_dec_api(self.obj, CMD_EXECUTE, DO_EXECUTE, core::ptr::null_mut()) != 0 {
+            let r = ixheaacd_dec_api(self.obj, CMD_EXECUTE, DO_EXECUTE, core::ptr::null_mut());
+            if r != 0 {
+                self.last_error = r;
                 return None;
             }
             let mut out_bytes: u32 = 0;

@@ -10,7 +10,6 @@
 
 use crate::digital::drm::cellmap::CellMap;
 use crate::digital::drm::dsp::Cplx;
-use crate::digital::drm::params::SAMPLE_RATE;
 
 /// Estimates the residual carrier offset, Hz, from demodulated cell rows in symbol order.
 /// `syms` gives each row's symbol index within the super frame (the map needs it for the
@@ -50,7 +49,7 @@ pub fn estimate_residual_hz(map: &CellMap, rows: &[Vec<Cplx>], syms: &[usize]) -
         return None;
     }
     let mean = acc / pairs as f64;
-    let tsym = map.mode().symbol_len() as f64 / f64::from(SAMPLE_RATE);
+    let tsym = map.mode().symbol_len() as f64 / f64::from(map.mode().sample_rate());
     // A positive offset advances the phase; solve for f from the wrapped mean rotation.
     let phase = mean.arg();
     Some(phase / (2.0 * core::f64::consts::PI * tsym))
@@ -105,7 +104,7 @@ mod tests {
         for injected in [-2.0f64, -0.5, 0.5, 2.0] {
             let iq = load_iq("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
             let mut mixed = iq.clone();
-            let mut nco = Nco::new(-injected); // mixing by -injected leaves +injected in the signal
+            let mut nco = Nco::new(-injected, 48_000.0); // mixing by -injected leaves +injected in the signal
             nco.process(&mut mixed);
             let (rows, syms) = rows_of(&map, &mixed);
             let est = estimate_residual_hz(&map, &rows, &syms).expect("an estimate");

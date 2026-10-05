@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 
 use crate::digital::drm::dsp::fir::{lowpass, FirDecimator};
 use crate::digital::drm::dsp::Cplx;
-use crate::digital::drm::params::{RobustnessMode, SAMPLE_RATE};
+use crate::digital::drm::params::RobustnessMode;
 
 /// Decimation factor of the correlation path (`GRDCRR_DEC_FACT`).
 const DEC: usize = 4;
@@ -46,7 +46,8 @@ const TIMING_BOUND: f64 = 150.0;
 /// (`NUM_SYM_BEFORE_RESET`).
 const OUTLIERS_BEFORE_RESET: usize = 5;
 /// Low-pass of the correlation path: +/-6 kHz passband, 60 dB stopband.
-const LPF_CUTOFF: f64 = 6000.0 / SAMPLE_RATE as f64;
+/// Low-pass cutoff of the timing correlation path (Hz), normalized by the mode's rate.
+const LPF_CUTOFF_HZ: f64 = 6000.0;
 const LPF_TAPS: usize = 97;
 
 /// Geometry of one mode in the decimated domain.
@@ -353,7 +354,7 @@ pub struct TimeSync {
 
 impl TimeSync {
     pub fn new(mode: RobustnessMode) -> Self {
-        let lpf = FirDecimator::new(lowpass(LPF_TAPS, LPF_CUTOFF, 60.0), DEC);
+        let lpf = FirDecimator::new(lowpass(LPF_TAPS, LPF_CUTOFF_HZ / f64::from(mode.sample_rate()), 60.0), DEC);
         let dec_input_base = DEC as i64 - 1 - (LPF_TAPS as i64 - 1) / 2;
         Self {
             dec: Vec::new(),
@@ -615,7 +616,7 @@ mod tests {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let mut resampler = ComplexResampler::new(rate, f64::from(SAMPLE_RATE));
+        let mut resampler = ComplexResampler::new(rate, 48_000.0);
         let mut converted: Vec<f32> = Vec::new();
         resampler.process_f32_into(&iq, &mut converted);
         converted

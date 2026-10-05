@@ -20,7 +20,6 @@
 
 use std::collections::VecDeque;
 
-use crate::digital::drm::params::SAMPLE_RATE;
 use crate::digital::drm::dsp::FullFft;
 
 /// FFT length: 6 mode-B FFTs, so the resolution is 48000/6144 = 7.8125 Hz.
@@ -69,6 +68,8 @@ pub struct FreqAcquisition {
     psd_sum: Vec<f64>,
     /// Also search the mirrored pilot pattern.
     allow_inverted: bool,
+    /// The baseband sample rate, Hz (48 kHz for modes A-D, 96 kHz for mode E).
+    rate: f64,
     work_re: Vec<f64>,
     work_im: Vec<f64>,
     /// Samples pushed so far (diagnostics).
@@ -76,7 +77,7 @@ pub struct FreqAcquisition {
 }
 
 impl FreqAcquisition {
-    pub fn new(allow_inverted: bool) -> Self {
+    pub fn new(allow_inverted: bool, rate: f64) -> Self {
         let window: Vec<f64> = (0..FFT_LEN)
             .map(|i| {
                 let x = 2.0 * core::f64::consts::PI * i as f64 / (FFT_LEN - 1) as f64;
@@ -93,6 +94,7 @@ impl FreqAcquisition {
             psds: VecDeque::with_capacity(NUM_AVERAGE),
             psd_sum: vec![0.0; FFT_LEN],
             allow_inverted,
+            rate,
             work_re: vec![0.0; FFT_LEN],
             work_im: vec![0.0; FFT_LEN],
             pushed: 0,
@@ -187,7 +189,7 @@ impl FreqAcquisition {
             })
             .collect();
 
-        let fs = f64::from(SAMPLE_RATE);
+        let fs = self.rate;
         let bin_hz = fs / n as f64;
         // The scan runs over array indices (index `half` is 0 Hz), and the pilots must fit
         // inside the spectrum: 3000 Hz above DC plus a bin of slack.
@@ -260,7 +262,7 @@ mod tests {
     /// Resample a capture at `rate` to the core rate, as the pipeline does before the chain.
     fn to_core_rate(path: &str, rate: f64) -> Vec<f64> {
         let iq = load(path);
-        let mut resampler = ComplexResampler::new(rate, f64::from(SAMPLE_RATE));
+        let mut resampler = ComplexResampler::new(rate, 48_000.0);
         let mut converted: Vec<f32> = Vec::new();
         resampler.process_into(&iq, &mut converted);
         converted.into_iter().map(f64::from).collect()
@@ -269,7 +271,7 @@ mod tests {
     #[test]
     fn acquires_the_committed_fixture() {
         let iq = load("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
-        let mut acq = FreqAcquisition::new(true);
+        let mut acq = FreqAcquisition::new(true, 48_000.0);
         let found = acq.push_iq(&iq).expect("the fixture's pilots are found");
         assert!(!found.inverted, "the fixture is not inverted");
         assert!(found.score > PEAK_BOUND, "score {:.1} must beat the bound", found.score);
@@ -285,7 +287,7 @@ mod tests {
         // receiver's own comments record its carrier at +121 Hz (2.58 carrier spacings of
         // 46.875 Hz). Acquisition measures the DC carrier, so allow one carrier.
         let iq = to_core_rate("../tests/fixtures/drm/drm_live_modeB_so3_48828.f32", 48_828.125);
-        let mut acq = FreqAcquisition::new(true);
+        let mut acq = FreqAcquisition::new(true, 48_000.0);
         let found = acq.push_iq(&iq).expect("the live fixture's pilots are found");
         assert!(!found.inverted, "the bench loop is not spectrally inverted");
         assert!(found.score > PEAK_BOUND);
@@ -306,7 +308,7 @@ mod tests {
             return;
         }
         let iq = to_core_rate(path, 48_828.125);
-        let mut acq = FreqAcquisition::new(true);
+        let mut acq = FreqAcquisition::new(true, 48_000.0);
         let found = acq.push_iq(&iq).expect("the live capture's pilots are found");
         assert!(!found.inverted);
         assert!(
@@ -329,7 +331,7 @@ mod tests {
             iq.push(re * 0.05);
             iq.push(im * 0.05);
         }
-        let mut acq = FreqAcquisition::new(true);
+        let mut acq = FreqAcquisition::new(true, 48_000.0);
         assert!(acq.push_iq(&iq).is_none(), "noise must not be acquired");
     }
 
@@ -341,7 +343,7 @@ mod tests {
             .chunks_exact(2)
             .flat_map(|p| [p[0], -p[1]])
             .collect();
-        let mut acq = FreqAcquisition::new(true);
+        let mut acq = FreqAcquisition::new(true, 48_000.0);
         let found = acq.push_iq(&flipped).expect("the mirrored pattern is found");
         assert!(found.inverted, "conjugated input reports an inverted spectrum");
     }
