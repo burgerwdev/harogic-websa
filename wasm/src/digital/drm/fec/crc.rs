@@ -56,6 +56,13 @@ pub fn crc16(bytes: &[u8]) -> u16 {
     c.value() as u16
 }
 
+/// CRC-8 over whole bytes (the audio super frame header check).
+pub fn crc8(bytes: &[u8]) -> u8 {
+    let mut c = Crc::crc8();
+    c.add_bytes(bytes);
+    c.value() as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

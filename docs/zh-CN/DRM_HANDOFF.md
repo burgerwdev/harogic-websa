@@ -38,8 +38,11 @@
   （76 800 个非静音样本）。
 - **真实短波。** 抓了四个 HF 频点（9755、11620、5875、3955 kHz，各 6 秒，ref -40 dBm），
   都没有 DRM 信号（未锁定）。能否收到取决于传播和是否有电台在播。
-- xHE-AAC 端到端（coding 3 → libxaac）仍需真实 xHE 码流（DecDRM 可以发一路，
-  `codec = "xhe-aac"`）；HE-AAC v2 已接线但未验证。
+- xHE-AAC：音频超帧解帧器已移植（有状态，帧可跨超帧）。在实拍台面抓取上解出 50 个 USAC
+  接入单元，参考接收机为 51 个，所有超帧头 CRC 通过，读数报 24 kHz。libxaac 解码仍未打通：
+  SDC 携带的是 libxaac 的紧凑 *xHE-AAC Static Config*（§5.3.2 表 4），mp4 模式的解码器会拒绝
+  它（它要完整的 USAC `AudioSpecificConfig`），所以剩下的一步是 Static Config → ASC 展开。
+  HE-AAC v2 已接线但未验证。
 - 模式 E / DRM+ 仍需 96 kHz 同步前端（见模式 E 一节）。
 - 让时域 Wiener 可启用的闭环定时/SRO 环，是信道估计剩余的工作。
 

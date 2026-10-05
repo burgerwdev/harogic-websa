@@ -131,6 +131,8 @@ pub struct DrmReceiver {
     /// The multiplex description and audio descriptor from the SDC (the audio path's inputs).
     pub multiplex: Option<crate::digital::drm::sdc::MultiplexDescription>,
     pub audio: Option<crate::digital::drm::sdc::AudioInfo>,
+    /// Stateful xHE-AAC audio super frame parser (its frames span super frames).
+    xhe_deframer: crate::digital::drm::audio::XheAacDeframer,
     /// AAC access units deframed from the audio stream (ready for the codec).
     pub audio_access_units: Vec<Vec<u8>>,
     /// Decoded audio PCM (interleaved i16), wasm32 only.
@@ -190,6 +192,7 @@ impl DrmReceiver {
             sdc_ok: 0,
             multiplex: None,
             audio: None,
+            xhe_deframer: crate::digital::drm::audio::XheAacDeframer::new(),
             audio_access_units: Vec::new(),
             audio_pcm: Vec::new(),
             audio_units_decoded: 0,
@@ -666,32 +669,45 @@ impl DrmReceiver {
         }
     }
 
-    /// Demultiplex one decoded MSC multiplex frame and deframe the audio stream's AAC access
-    /// units (the codec consumes these). The FDK TT_DRM transport expects the DRM AAC CRC byte
-    /// in front of each access unit.
+    /// Demultiplex one decoded MSC multiplex frame and deframe the audio stream's access
+    /// units (the codec consumes these). AAC: the FDK TT_DRM transport expects the DRM AAC CRC
+    /// byte in front of each access unit. xHE-AAC: the USAC access unit, deframed by the
+    /// stateful parser (its frames span super frames).
     fn deframe_audio(&mut self, msc_bits: &[u8]) {
         use crate::digital::drm::audio::{demultiplex, parse_aac_super_frame, split_text_message, AacSuperFrameFormat};
         let Some(mux) = self.multiplex.clone() else { return };
-        let frames = match self.audio.as_ref().map(|a| a.sample_rate) {
-            Some(1) => 5,  // 12 kHz
-            Some(3) => 10, // 24 kHz
-            _ => return,
-        };
+        let Some(audio) = self.audio.clone() else { return };
+        let text_flag = audio.text;
         let Some(stream) = mux.streams.first() else { return };
-        let fmt = AacSuperFrameFormat::aac(frames, stream);
-        let text_flag = self.audio.as_ref().map(|a| a.text).unwrap_or(false);
         for lf in demultiplex(msc_bits, &mux).into_iter().flatten() {
-            if lf.stream_id == 0 {
-                let super_frame = split_text_message(&lf.data, text_flag);
-                if let Some(aus) = parse_aac_super_frame(super_frame, &fmt) {
-                    for f in aus {
-                        let mut au = Vec::with_capacity(f.data.len() + 1);
-                        if let Some(c) = f.crc_byte {
-                            au.push(c);
-                        }
-                        au.extend_from_slice(&f.data);
-                        self.audio_access_units.push(au);
+            if lf.stream_id != 0 {
+                continue;
+            }
+            let super_frame = split_text_message(&lf.data, text_flag);
+            if audio.coding == 3 {
+                // xHE-AAC (MPEG-D USAC): the super frame's directory lists a variable number of
+                // frame borders, and a frame may span super frames, so the parser is stateful.
+                if let Some((_header, frames)) = self.xhe_deframer.push(super_frame) {
+                    for f in frames {
+                        self.audio_access_units.push(f.access_unit().to_vec());
                     }
+                }
+                continue;
+            }
+            let frames = match audio.sample_rate {
+                1 => 5,  // 12 kHz
+                3 => 10, // 24 kHz
+                _ => continue,
+            };
+            let fmt = AacSuperFrameFormat::aac(frames, stream);
+            if let Some(aus) = parse_aac_super_frame(super_frame, &fmt) {
+                for f in aus {
+                    let mut au = Vec::with_capacity(f.data.len() + 1);
+                    if let Some(c) = f.crc_byte {
+                        au.push(c);
+                    }
+                    au.extend_from_slice(&f.data);
+                    self.audio_access_units.push(au);
                 }
             }
         }
@@ -701,6 +717,21 @@ impl DrmReceiver {
     /// The decoded audio PCM's sample rate, Hz (0 when the SDC audio info is unknown).
     pub fn audio_rate_hz(&self) -> u32 {
         let Some(a) = self.audio.as_ref() else { return 0 };
+        if a.coding == 3 {
+            // xHE-AAC uses its own sampling-rate table (ES 201 980 table 26): code 4 is
+            // 24 kHz, not the AAC 48 kHz.
+            return match a.sample_rate {
+                0 => 9_600,
+                1 => 12_000,
+                2 => 16_000,
+                3 => 19_200,
+                4 => 24_000,
+                5 => 32_000,
+                6 => 38_400,
+                7 => 48_000,
+                _ => 0,
+            };
+        }
         let core = match a.sample_rate {
             0 => 8_000,
             1 => 12_000,

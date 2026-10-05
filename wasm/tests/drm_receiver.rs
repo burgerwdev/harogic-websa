@@ -247,6 +247,61 @@ fn live_baseband() -> Vec<f32> {
 }
 
 #[test]
+#[ignore = "probe: set WEBSA_DRM_CAPTURE to a 48828 Hz f32 iq capture"]
+fn probe_capture_env() {
+    let Ok(path) = std::env::var("WEBSA_DRM_CAPTURE") else { return };
+    let raw = std::fs::read(&path).expect("capture");
+    let iq: Vec<f32> = raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let mut rs = ComplexResampler::new(48_828.125, 48_000.0);
+    let mut baseband: Vec<f32> = Vec::new();
+    rs.process_f32_into(&iq, &mut baseband);
+    let mut rx = DrmReceiver::new();
+    for block in baseband.chunks(3248 * 2) {
+        rx.push(block);
+        rx.run();
+    }
+    eprintln!(
+        "[probe] facs={}/{} label={:?} msc={} aus={} rate={} audio={:?} mux={:?}",
+        rx.facs.len(), rx.fac_errors, rx.station_label, rx.msc_frames.len(), rx.audio_access_units.len(), rx.audio_rate_hz(), rx.audio,
+        rx.multiplex.as_ref().map(|m| (m.protection_a, m.protection_b, m.streams.iter().map(|s| (s.len_a, s.len_b)).collect::<Vec<_>>()))
+    );
+    for (k, au) in rx.audio_access_units.iter().enumerate().take(3) {
+        eprintln!("[probe] au{k} len={} head={:?}", au.len(), &au[..8.min(au.len())]);
+    }
+    if let (Some(mux), Some(audio)) = (rx.multiplex.clone(), rx.audio.clone()) {
+        use websa_dsp::digital::drm::audio::{demultiplex, split_text_message, XheAacDeframer};
+        for flag in [true, false] {
+            let mut def = XheAacDeframer::new();
+            let mut made = 0usize;
+            let mut bad = 0usize;
+            let mut crc_ok = 0usize;
+            for bits in &rx.msc_frames {
+                for lf in demultiplex(bits, &mux).into_iter().flatten() {
+                    if lf.stream_id == 0 {
+                        let sf = split_text_message(&lf.data, flag && audio.text);
+                        if sf.len() >= 2 {
+                            use websa_dsp::digital::drm::fec::crc::crc8;
+                            if crc8(&sf[..1]) == sf[1] {
+                                crc_ok += 1;
+                            }
+                        }
+                        match def.push(sf) {
+                            Some((_h, frames)) => made += frames.len(),
+                            None => bad += 1,
+                        }
+                    }
+                }
+            }
+            eprintln!("[probe] text={flag} frames={made} bad_supers={bad} header_crc_ok={crc_ok}");
+        }
+        if let Some(lf) = demultiplex(&rx.msc_frames[0], &mux).into_iter().flatten().next() {
+            let sf = split_text_message(&lf.data, false);
+            eprintln!("[probe] sf0 len={} head={:?} tail={:?}", sf.len(), &sf[..8.min(sf.len())], &sf[sf.len().saturating_sub(8)..]);
+        }
+    }
+}
+
+#[test]
 fn live_capture_locks_and_decodes_metadata() {
     let rx = decode_live();
     assert!(rx.locked(), "the receiver did not lock on the live capture");

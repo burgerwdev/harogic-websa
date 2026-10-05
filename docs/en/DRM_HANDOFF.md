@@ -46,8 +46,12 @@ Open:
 - **Real shortwave.** Four HF frequencies were captured (9755, 11620, 5875, 3955 kHz, 6 s each,
   ref -40 dBm); none carried a DRM signal (no lock). Reception depends on propagation and a
   broadcast being on air.
-- xHE-AAC end to end (coding 3 through libxaac) still needs a real xHE stream (DecDRM can
-  transmit one, `codec = "xhe-aac"`); HE-AAC v2 is wired but untested.
+- xHE-AAC: the audio super-frame deframer is now ported (stateful, frames span super
+  frames). On a live bench capture it deframes 50 USAC access units against the reference
+  receiver's 51, all headers CRC-ok, and the readout reports 24 kHz. The libxaac decode is
+  still open: the SDC carries libxaac's compact *xHE-AAC Static Config* (§5.3.2 table 4),
+  which the mp4-mode decoder rejects (it wants the full USAC `AudioSpecificConfig`), so the
+  Static Config -> ASC expansion is the remaining step. HE-AAC v2 is wired but untested.
 - Mode E / DRM+ needs the 96 kHz sync front end (see the mode E section).
 - The closed timing/SRO loop, which would let the time-Wiener be enabled, is the remaining
   channel-estimation work.
