@@ -139,6 +139,8 @@ pub struct DrmReceiver {
     pub audio_pcm: Vec<i16>,
     /// Audio units already decoded, so a later pass decodes only the new ones.
     audio_units_decoded: usize,
+    /// Cumulative PCM samples the codec has produced (diagnostics: the audio production rate).
+    pcm_total: u64,
     audio_debug: String,
     #[cfg(target_arch = "wasm32")]
     audio_decoder: Option<crate::fdk::AacDecoder>,
@@ -198,6 +200,7 @@ impl DrmReceiver {
             audio_access_units: Vec::new(),
             audio_pcm: Vec::new(),
             audio_units_decoded: 0,
+            pcm_total: 0,
             audio_debug: String::new(),
             #[cfg(target_arch = "wasm32")]
             audio_decoder: None,
@@ -802,12 +805,23 @@ impl DrmReceiver {
             }
         }
         if let Some(dec) = self.audio_decoder.as_mut() {
+            let mut fed = 0usize;
+            let mut produced = 0usize;
             for au in self.audio_access_units.iter().skip(self.audio_units_decoded) {
                 let pcm = dec.decode(au);
+                fed += 1;
+                produced += pcm.len();
                 self.audio_pcm.extend_from_slice(&pcm);
             }
+            self.pcm_total += produced as u64;
             self.audio_units_decoded = self.audio_access_units.len();
-            self.audio_debug = format!("au={} units={} err={} pcm={}", self.audio_access_units.len(), self.audio_units_decoded, dec.last_error, self.audio_pcm.len());
+            if fed > 0 {
+                self.audio_debug = format!(
+                    "au={} units={} err={} pcm={} total={} fed={} new={}",
+                    self.audio_access_units.len(), self.audio_units_decoded, dec.last_error,
+                    self.audio_pcm.len(), self.pcm_total, fed, produced
+                );
+            }
         }
     }
 
