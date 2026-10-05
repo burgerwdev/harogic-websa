@@ -1024,6 +1024,9 @@ mod tests {
 /// previous receiver's plugin (task-9): the wasm ABI and the readout stay as they are.
 pub struct DrPlugin {
     rx: DrmReceiver,
+    /// The baseband rate the receiver was built at, preserved across resets (a retune must not
+    /// drop a DRM+ receiver back to 48 kHz).
+    sample_rate: u32,
     lines: Vec<String>,
     sent: Vec<String>,
     /// Blocks since the pipeline was built, for the throttled search status.
@@ -1046,6 +1049,7 @@ impl DrPlugin {
         };
         Self {
             rx: DrmReceiver::new_at(sample_rate),
+            sample_rate,
             lines: Vec::new(),
             sent: Vec::new(),
             status_blocks: 0,
@@ -1124,7 +1128,7 @@ impl DigitalDemodulator for DrPlugin {
     }
 
     fn reset(&mut self) {
-        self.rx = DrmReceiver::new();
+        self.rx = DrmReceiver::new_at(self.sample_rate);
         self.lines.clear();
         self.sent.clear();
         self.status_blocks = 0;
