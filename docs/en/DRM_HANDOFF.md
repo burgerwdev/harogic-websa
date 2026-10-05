@@ -547,3 +547,31 @@ decoders with DRM30 (the MLC/Viterbi/CRC/interleaver are mode-agnostic once the 
 the FAC cell count are mode-aware), so the remaining work is the rate-parameterised sync front
 end and the mode-aware FAC decoder — roughly the `SAMPLE_RATE` uses above plus
 `MlcParams::fac_for(mode)` — not a second receiver.
+
+## Audio-path debugging and reliable offline data (2026-10-05)
+
+The browser/live DRM audio cut out about once a second and then stopped. Two causes were
+found; one is fixed and the other implemented pending live verification:
+
+- `websa_dsp_drm_audio_pcm` drained the whole receiver buffer but copied only the fixed output
+  block (32768 samples), dropping the tail of every audio burst (~30% at 38.4 kHz). Fixed:
+  `DigitalDemodulator::drain_audio_pcm(limit)` keeps the undrained tail
+  (`drain_audio_pcm_keeps_the_tail`), and the worker's own cap is raised so a burst is never
+  truncated.
+- The receiver wedged after a run of FAC errors (a fade, or the bench cyclic buffer's wrap) and
+  only revived when a setting was re-applied (a pipeline reset). It now re-acquires after 12
+  consecutive FAC failures (`DrmReceiver::recover`): the stale phase/estimator/MSC state is
+  dropped, the recent 200k samples kept, and the coarse carrier re-acquired. Implemented; live
+  verification pending.
+
+**Reliable offline data for the next session.** A known-audio bench loop: `cowtts` synthesises
+speech to `/tmp/cowtts_test.wav`, `decdrm tx` builds `/home/hui/drm-bench/drm_iq_tts.wav`
+(xHE-AAC mono 24 kHz), `tools/pluto_drm_tx.py` transmits it and `tools/drm_capture.py` captures
+the baseband. On that loop our receiver and the reference both produce clean, continuous audio
+(`/tmp/tts_rec.f32`, `/tmp/ours_tts_24k.wav`, `/tmp/decdrm_tts.wav`), so the **decoder is
+exonerated**. On the real 13.825 MHz station (CNR-1, xHE-AAC 32 kHz, `/tmp/cnr_rec.f32`)
+**both** decoders show the same splice artifacts, so that artifact is in the real signal or the
+capture chain (HF fading and/or the capture path), not the decoder; the reference decodes more
+frames there (725 vs our 536), which is the next robustness target. The committed fixtures
+(`drm_live_modeB_so3_48828.f32`, the mode A/C/D, xHE and HE-AACv2 captures) remain the
+deterministic regression set.

@@ -91,6 +91,8 @@ pub struct AacDecoder {
     handle: *mut std::ffi::c_void,
     /// Error code of the last decode call, for diagnostics.
     pub last_error: i32,
+    /// `(sampleRate, frameSize, numChannels)` of the last decoded frame, for diagnostics.
+    pub last_stream_info: (u32, u32, u32),
 }
 
 // SAFETY: the handle is exclusively owned — the decoder is moved between owners, never
@@ -106,7 +108,7 @@ impl AacDecoder {
         if handle.is_null() {
             None
         } else {
-            Some(Self { handle, last_error: 0 })
+            Some(Self { handle, last_error: 0, last_stream_info: (0, 0, 0) })
         }
     }
 
@@ -153,8 +155,10 @@ impl AacDecoder {
         if info.is_null() {
             return Vec::new();
         }
+        let sample_rate = unsafe { *(info as *const i32) } as usize; // sampleRate
         let frame_size = unsafe { *(info as *const i32).add(1) } as usize; // frameSize
         let channels = unsafe { *(info as *const i32).add(2) } as usize; // numChannels
+        self.last_stream_info = (sample_rate as u32, frame_size as u32, channels as u32);
         pcm.truncate(frame_size * channels);
         pcm
     }

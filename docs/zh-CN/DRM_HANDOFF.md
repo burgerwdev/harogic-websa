@@ -393,3 +393,12 @@ DecDRM（参考发射机）没有定义 `RobustnessMode::E`——它的 `Robustn
 单业务，AAC/xHE-AAC 音频。它与 DRM30 共享 FAC/SDC/MSC 解码器（MLC/Viterbi/CRC/交织器在单元
 布局与 FAC 单元数模式感知后与模式无关），所以剩余工作是速率参数化的同步前端和模式感知的
 FAC 解码器——大致是上面的 `SAMPLE_RATE` 用途加 `MlcParams::fac_for(mode)`——不是第二台接收机。
+
+## 音频通路调试与可复用的离线数据（2026-10-05）
+
+浏览器/实时的 DRM 音频会“一秒一断”并最终停止。已定位两个原因：一个已修，另一个已实现、待实时验证：
+
+- `websa_dsp_drm_audio_pcm` 把接收机整个缓冲区取走，却只拷贝固定大小的输出块（32768 样本），每个音频突发的尾部（38.4 kHz 下约 30%）被丢掉。已修：新增 `DigitalDemodulator::drain_audio_pcm(limit)`，未取完的尾部保留（`drain_audio_pcm_keeps_the_tail`），worker 自身上限也提高，突发不再被截断。
+- 接收机在一串 FAC 错误后（一次衰落，或台面循环缓冲回绕）会卡死，只有改设置（触发管线复位）才恢复。现在连续 12 次 FAC 失败后会自动重捕（`DrmReceiver::recover`）：丢弃过期的相位/信道估计/MSC 状态，保留最近 20 万样本，重新做粗载波捕获。已实现，待实时验证。
+
+**下一轮可复用的可靠离线数据**：一条已知音频的台面环路——`cowtts` 合成语音到 `/tmp/cowtts_test.wav`，`decdrm tx` 生成 `/home/hui/drm-bench/drm_iq_tts.wav`（xHE-AAC 单声道 24 kHz），`tools/pluto_drm_tx.py` 发射，`tools/drm_capture.py` 抓基带。在这条环路上，我们的接收机和参考都产出干净连续的音频（`/tmp/tts_rec.f32`、`/tmp/ours_tts_24k.wav`、`/tmp/decdrm_tts.wav`），因此**解码器是清白的**。而在真实 13.825 MHz 电台（CNR-1，xHE-AAC 32 kHz，`/tmp/cnr_rec.f32`）上，**两个解码器都有相同的拼接伪影**，说明伪影在真实信号或采集链路（HF 衰落和/或采集路径），不在解码器；参考在该抓取上解出更多帧（725 对 536），是下一个鲁棒性目标。已提交的夹具（`drm_live_modeB_so3_48828.f32`、模式 A/C/D、xHE、HE-AACv2 抓取）仍是确定性回归集。

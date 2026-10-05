@@ -115,6 +115,12 @@ pub struct DrmReceiver {
     tracking: bool,
     timing_tracking: bool,
     good_facs: usize,
+    /// Consecutive FAC blocks that failed their CRC. When this grows the receiver has lost the
+    /// channel (a fade, or the bench transmitter's cyclic wrap): the phase/estimator state is
+    /// re-acquired instead of wedging, which is what the operator otherwise fixes by re-applying
+    /// a setting (a pipeline reset).
+    consecutive_fac_failures: usize,
+    recover_pending: bool,
     /// Good-FAC countdown before the external timing tracking takes over (DecDRM's
     /// DELAYED_TRACKING_FACS).
     delayed_cnt: usize,
@@ -185,6 +191,8 @@ impl DrmReceiver {
             tracking: false,
             timing_tracking: false,
             good_facs: 0,
+            consecutive_fac_failures: 0,
+            recover_pending: false,
             delayed_cnt: 2,
             facs: Vec::new(),
             fac_errors: 0,
@@ -495,6 +503,7 @@ impl DrmReceiver {
                     match if decoded { Fac::parse(&bits) } else { None } {
                         Some(f) => {
                             self.good_facs += 1;
+                            self.consecutive_fac_failures = 0;
                             self.tracking = true;
                             if self.good_facs >= 2 && !self.timing_tracking {
                                 if self.delayed_cnt > 0 {
@@ -506,7 +515,13 @@ impl DrmReceiver {
                             }
                             self.facs.push(f);
                         }
-                        None => self.fac_errors += 1,
+                        None => {
+                            self.fac_errors += 1;
+                            self.consecutive_fac_failures += 1;
+                            if self.consecutive_fac_failures >= 12 {
+                                self.recover_pending = true;
+                            }
+                        }
                     }
                     self.sdc_pending.push((idx, std::mem::take(&mut self.frame_sdc)));
                     self.msc_frame_indices.push(idx);
@@ -514,8 +529,80 @@ impl DrmReceiver {
                 }
             }
         }
+        if self.recover_pending {
+            self.recover(map);
+            return;
+        }
         self.decode_sdc(map);
         self.decode_msc(map);
+    }
+
+    /// Re-acquire after a run of FAC failures: drop the stale phase/estimator/MSC state and run
+    /// the coarse acquisition again on the recent baseband, so a fade or a bench-loop wrap does
+    /// not wedge the receiver until the operator resets it.
+    fn recover(&mut self, map: &CellMap) {
+        use crate::digital::drm::sync::freqacq::FreqAcquisition;
+        use crate::digital::drm::sync::freqtrack::FreqTrack;
+        use crate::digital::drm::sync::nco::Nco;
+        // Keep the recent baseband only: the stale rows and the whole growing buffer describe
+        // the channel we just lost.
+        let keep = 200_000 * 2;
+        if self.buf.len() > keep {
+            let start = self.buf.len() - keep;
+            self.buf.drain(..start);
+        }
+        self.processed_complex = 0;
+        self.phase_computed = false;
+        self.phase = 0;
+        self.frame_phase = 0;
+        self.fs_acq = Some(crate::digital::drm::framesync::FramePhaseAcquisition::new(map));
+        self.all_rows.clear();
+        self.all_shifts.clear();
+        self.demod_rows = 0;
+        self.chanest = None;
+        self.fac_dec = None;
+        self.fac_cells.clear();
+        self.frame_sdc.clear();
+        self.sdc_pending.clear();
+        self.msc_super = vec![Vec::new(); map.msc_carriers.len()];
+        self.msc_deinterleaver = None;
+        self.msc_decoder = None;
+        self.msc_decoder_key = None;
+        self.msc_bits.clear();
+        self.msc_boundary_seen = false;
+        self.msc_started = false;
+        self.msc_complete_frame = 0;
+        self.msc_frame_buf.clear();
+        self.msc_emitted.clear();
+        self.msc_frame_indices.clear();
+        self.tracking = false;
+        self.timing_tracking = false;
+        self.good_facs = 0;
+        self.delayed_cnt = 2;
+        self.sym_count = 0;
+        self.consecutive_fac_failures = 0;
+        self.recover_pending = false;
+        // Re-run the coarse carrier acquisition on the kept samples.
+        let flat: Vec<f64> = self
+            .buf
+            .chunks_exact(2)
+            .flat_map(|c| [f64::from(c[0]), f64::from(c[1])])
+            .collect();
+        let coarse = FreqAcquisition::new(true, f64::from(self.sample_rate))
+            .push_iq(&flat)
+            .map(|a| a.dc_hz)
+            .unwrap_or(self.carrier_offset_hz);
+        self.carrier_offset_hz = coarse;
+        self.coarse = coarse;
+        self.freq_track = coarse;
+        self.nco = Some(Nco::new(coarse, f64::from(self.sample_rate)));
+        let mut ft = FreqTrack::new(map);
+        ft.set_freq_time_constant(0.1);
+        self.ft = Some(ft);
+        if let Some(mode) = self.mode {
+            self.tsync = Some(TimeSync::new(mode));
+        }
+        self.demod = Some(OfdmDemod::new(map));
     }
 
     /// Assemble the MSC super frames from the emitted cells and decode them (cell deinterleave
@@ -817,9 +904,10 @@ impl DrmReceiver {
             self.audio_units_decoded = self.audio_access_units.len();
             if fed > 0 {
                 self.audio_debug = format!(
-                    "au={} units={} err={} pcm={} total={} fed={} new={}",
+                    "au={} units={} err={} pcm={} total={} fed={} new={} sr={} fs={} ch={}",
                     self.audio_access_units.len(), self.audio_units_decoded, dec.last_error,
-                    self.audio_pcm.len(), self.pcm_total, fed, produced
+                    self.audio_pcm.len(), self.pcm_total, fed, produced,
+                    dec.last_stream_info.0, dec.last_stream_info.1, dec.last_stream_info.2
                 );
             }
         }

@@ -97,7 +97,7 @@ for (let i = 0; i < ccount; i++) {
 }
 console.error(`[constellation] n=${ccount} meanAbs=${ccount ? (csum / ccount).toFixed(4) : '-'} meanRe=${ccount ? (cre / ccount).toFixed(4) : '-'} meanIm=${ccount ? (cim / ccount).toFixed(4) : '-'} first=[${ccount ? cview[0].toFixed(4) + ',' + cview[1].toFixed(4) : '-'}]`);
 const rate = dsp.exports.websa_dsp_drm_audio_rate(handle);
-const pcmCap = 48000 * 20;
+const pcmCap = 48000 * 120;
 const pcmPtr = dsp.alloc(pcmCap * 2);
 const samples = dsp.exports.websa_dsp_drm_audio_pcm(handle, pcmPtr, pcmCap);
 const pcm = dsp.i16View(pcmPtr, samples);
