@@ -426,6 +426,12 @@ impl Pipeline {
         if let Some(demod) = self.analog.as_mut() {
             demod.retune();
         }
+        // A retune invalidates the digital demodulator's state too: the buffered capture and
+        // the decoded metadata belong to the previous channel, and mixing them into the new
+        // channel's decode produces stale readouts (the previous frequency's station label).
+        if let Some(demod) = self.digital.as_mut() {
+            demod.reset();
+        }
     }
 
     pub fn reset(&mut self) {
