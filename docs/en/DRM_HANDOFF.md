@@ -32,16 +32,17 @@ Working, verified by tests and by the bench:
 Open:
 
 - **Bench loop, this session.** The Pluto transmitted `drm_iq_15s.wav` at 400.1 MHz and the
-  SAN-90 fed the browser's baseband. A fresh 8 s capture at ref -50 dBm locks and reads
-  `SAN90 DRM BENCH` with FAC 19 blocks / 0 errors, but its FAC frame-index sequence shows a
-  timing slip (`2,0,1,0,1,2,...`) and the 64-QAM MSC then fails to parse (0 audio AUs). The
-  committed bench capture decodes 40 audio AUs through the same receiver, so the fresh-capture
-  deficit is a signal/timing matter (the open timing loop), not the decode path.
-- The browser e2e (`tools/e2e/drm_switch.py`) is blocked in this session by the backend's
-  acquisition loop: `acquisition step took 65 ms` and the browser's DSP worker only gets about
-  one baseband block per second, so the DRM readout never fills. The same wasm receiver decodes
-  the live capture in 0.5 s offline, so the deficit is the environment, not the receiver. The
-  audio acceptance runs through the `drmLiveAudio` wasm gate (76 800 non-silent samples).
+  SAN-90 fed the browser's baseband. Fresh 6 s captures at ref -42 / -46 / -48 dBm decode end to
+  end through the wasm receiver: `SAN90 DRM BENCH`, FAC 13-14 blocks / 0 errors, 8 MSC frames,
+  40 audio access units, and 76 800 non-silent 24 kHz PCM samples whose spectral peak is exactly
+  the bench 1 kHz tone (99.7 % of the energy in 900-1100 Hz). The level window is narrow: ref -40
+  and ref -50 dBm do not decode (the handoff's "hot level" quirk), which is why the committed
+  capture — taken at the same bench — is the reproducible acceptance.
+- The browser e2e (`tools/e2e/drm_switch.py`) is blocked in this session by the baseband
+  delivery to the browser: the DSP worker only receives about one 3248-sample block per second
+  (the backend logs `acquisition step took 65 ms`), so the DRM readout never fills even though
+  the same wasm receiver decodes the identical capture offline in 0.5 s. The audio acceptance
+  therefore runs through the `drmLiveAudio` wasm gate (76 800 non-silent samples).
 - **Real shortwave.** Four HF frequencies were captured (9755, 11620, 5875, 3955 kHz, 6 s each,
   ref -40 dBm); none carried a DRM signal (no lock). Reception depends on propagation and a
   broadcast being on air.
