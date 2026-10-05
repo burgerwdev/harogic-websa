@@ -199,6 +199,7 @@ function startDecoder(): void {
       return;
     }
     // `ft8` (a decode) and `error` are the shapes the page already reads.
+    if (d.type === 'ft8' && params?.mode !== 'ft8') return;
     post(d);
   };
   // The two halves, wired with a MessageChannel: the stream worker reads the socket forever, the
@@ -212,7 +213,8 @@ function startDecoder(): void {
 /** Tell the decoder worker what to decode (and whether to bother). */
 function pushDecoderParams(): void {
   if (!decoder || !decoderReady) return;
-  const wanted = params && digitalIds.has(params.mode);
+  const wanted = enabled && params?.mode === 'ft8';
+  decoderStream?.postMessage({ type: 'active', enabled: Boolean(wanted) });
   decoder.postMessage({
     type: 'configure',
     enabled: Boolean(wanted),
@@ -324,7 +326,7 @@ function syncPipeline(): void {
     return;
   }
   if (isDigital) {
-    if (params.mode === 'drm') {
+    if (params.mode === 'drm' || params.mode === 'drmplus') {
       // DRM's decoder lives in the wasm digital path itself (there is no separate worker), so
       // this thread keeps a *digital* pipeline and feeds it baseband via `push`.
       if (pipeline && pipeline.mode === params.mode && pipeline.isDigital) {
@@ -597,6 +599,7 @@ function resetStream(): void {
   lastSeq = -1;
   flushes++;
   pipeline?.reset();
+  if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
   resetDelivery();
 }
 
@@ -608,13 +611,16 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     lastSeq = -1;
     flushes++;
     pipeline?.retune();
-      resetDelivery();
+    if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
+    resetDelivery();
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
     dropped += frame.seq - lastSeq - 1;      // a gap the client never saw (overrun on the wire)
     // A gap tears the buffered slot: decoding it can only fail, and a failed decode costs a whole
     // search. Start the next slot clean instead (the counter above is what makes this visible).
     pipeline?.reset();
+    if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
+    resetDelivery();
     digitalResets += 1;
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
@@ -627,16 +633,14 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     // here touches the samples afterwards, but the ordering keeps the deliver-then-hand-off rule
     // that a transferred buffer demands.
     if (companion) deliver(companion.process(frame.iq));
-    if (pipeline && params?.mode === 'drm') {
+    if (pipeline && (params?.mode === 'drm' || params?.mode === 'drmplus')) {
       drmPushes += 1;
       const reports = pipeline.push(frame.iq);
       if (reports.length) {
         drmReports += 1;
         post({ type: 'drm', lines: reports.map((report) => report.text), snrDb: reports[0].snrDb });
         const points = pipeline.constellation(1024);
-        if (points.length) {
-          post({ type: 'drm-constellation', points });
-        }
+        post({ type: 'drm-constellation', points });
       }
       // DRM audio: the receiver emits PCM in a burst once it has locked and deframed a super
       // frame. audioPcm drains — it returns exactly what accumulated since the previous call
@@ -748,6 +752,7 @@ self.onmessage = (event: MessageEvent) => {
       companion = null;
       resetDelivery();
     }
+    if (!enabled) pushDecoderParams();
     syncPipeline();
     postStats();
   } else if (msg.type === 'configure') {
@@ -757,6 +762,7 @@ self.onmessage = (event: MessageEvent) => {
       pcmBlockSamples = Math.max(128, Math.round(Number(next.outRate) * 0.02));
       const previous = params;
       params = next;
+      workletPort?.postMessage({ type: 'buffer-mode', mode: next.mode });
       if (typeof msg.volume === 'number') volume = msg.volume;
       if (typeof msg.audioEnabled === 'boolean') audioEnabled = msg.audioEnabled;
       if (typeof msg.nr === 'boolean') nr = msg.nr;
@@ -781,6 +787,20 @@ self.onmessage = (event: MessageEvent) => {
       if (pipeline && geometryChanged && !digitalIds.has(next.mode)) {
         // The baseband geometry changed: the demodulator's filters describe another channel.
         pipeline.reconfigure(next, false);
+        if (!pipeline.ok) {
+          pipeline.free();
+          pipeline = null;
+          post({ type: 'error', message: `no DSP pipeline for mode ${next.mode}` });
+        }
+      } else if (pipeline && pipeline.isDigital && pipeline.mode === next.mode
+                 && (next.mode === 'drm' || next.mode === 'drmplus')
+                 && (rateChanged || previous?.ifBw !== next.ifBw || previous?.outRate !== next.outRate)) {
+        // Selecting DRM+ first uses the *old* backend DDC rate. Rebuild once the 100 kHz
+        // channelizer reports its actual rate; otherwise the decoder resamples it as if it
+        // were the previous narrow channel for the rest of the session.
+        pipeline.reconfigure(next, true);
+        post({ type: 'drm-clear' });
+        resetDelivery();
         if (!pipeline.ok) {
           pipeline.free();
           pipeline = null;
@@ -847,6 +867,7 @@ self.onmessage = (event: MessageEvent) => {
         fillMax = Math.max(fillMax, fill);
       };
       workletPort.start();
+      workletPort.postMessage({ type: 'buffer-mode', mode: params?.mode });
       workletPort.postMessage({ type: 'enabled', value: enabled });
     }
   } else if (msg.type === 'reset') {

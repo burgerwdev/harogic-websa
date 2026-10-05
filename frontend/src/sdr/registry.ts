@@ -129,8 +129,8 @@ export function sdrModeIds(): string[] {
 export function audioCompanionFor(id: string): string | null {
 	const plugin = (manifest ?? []).find((entry) => entry.id === id);
 	if (!plugin || plugin.kind !== 'digital') return null;
-	// DRM's audio is the decoded output, not a raw sideband to listen to.
-	if (id === 'drm') return null;
+	// DRM audio is decoded, not an analog sideband.
+	if (id === 'drm' || id === 'drmplus') return null;
 	return 'usb';
 }
 

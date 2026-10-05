@@ -13,16 +13,15 @@ pub struct ViterbiDecoder {
     decisions: Vec<u64>,
 }
 
-/// For new state `s` and predecessor choice `c` (0 ⇒ `s>>1`, 1 ⇒ `(s>>1)|32`), the
-/// four mother-code output bits packed as `b0 | b1<<1 | b2<<2 | b3<<3`.
-fn output_table() -> [[u8; 2]; NUM_STATES] {
+/// Mother-code output bits packed into one byte (4 for DRM30, 6 for DRM+ 1/6).
+fn output_table<const N: usize>() -> [[u8; 2]; NUM_STATES] {
     let mut t = [[0u8; 2]; NUM_STATES];
     for (s, entry) in t.iter_mut().enumerate() {
         for c in 0..2 {
             let pred = (s >> 1) | (c << 5);
             let reg = (((pred << 1) | (s & 1)) & 0x7F) as u8;
             let mut w = 0u8;
-            for j in 0..4 {
+            for j in 0..N {
                 w |= mother_output(reg, j) << j;
             }
             entry[c] = w;
@@ -41,9 +40,19 @@ impl ViterbiDecoder {
     /// the decoded information bits (tail removed) and the final path metric
     /// normalised by the number of coded bits (lower is better).
     pub fn decode(&mut self, metrics: &[BitMetric], masks: &[PunctureMask], out: &mut Vec<u8>) -> f64 {
+        if masks.iter().any(|&m| m & 0b11_0000 != 0) {
+            self.decode_outputs::<6, 64>(metrics, masks, out)
+        } else {
+            self.decode_outputs::<4, 16>(metrics, masks, out)
+        }
+    }
+
+    fn decode_outputs<const N: usize, const WORDS: usize>(
+        &mut self, metrics: &[BitMetric], masks: &[PunctureMask], out: &mut Vec<u8>,
+    ) -> f64 {
         let steps = masks.len();
         let num_bits = steps.saturating_sub(CONSTRAINT_LENGTH - 1);
-        let outputs = output_table();
+        let outputs = output_table::<N>();
 
         self.decisions.clear();
         self.decisions.resize(steps, 0);
@@ -53,10 +62,10 @@ impl ViterbiDecoder {
         old[0] = 0.0;
         let mut new = [0.0f64; NUM_STATES];
         let mut pos = 0usize;
-        let mut word_metric = [0.0f64; 16];
+        let mut word_metric = [0.0f64; WORDS];
 
         for (step, &mask) in masks.iter().enumerate() {
-            let mut m = [BitMetric::ERASURE; 4];
+            let mut m = [BitMetric::ERASURE; N];
             for (j, mj) in m.iter_mut().enumerate() {
                 if mask & (1 << j) != 0 {
                     *mj = metrics.get(pos).copied().unwrap_or(BitMetric::ERASURE);

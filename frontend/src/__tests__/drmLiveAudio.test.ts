@@ -26,14 +26,14 @@ const artifactBytes = (): ArrayBuffer => {
 };
 
 describe('DRM live-capture audio (HE-AAC 12 kHz core + SBR)', () => {
-	it('decodes non-silent 24 kHz PCM through the receive chain', async () => {
+	for (const outputRate of [48_000, 44_100]) it(`decodes at a ${outputRate} Hz sound-card rate`, async () => {
 		const dsp = await instantiateDsp(artifactBytes());
 
 		const mode = new TextEncoder().encode('drm');
 		const modePtr = dsp.alloc(mode.length);
 		dsp.u8View(modePtr, mode.length).set(mode);
 		// The capture is at the channelizer's measured rate; the pipeline resamples.
-		const handle = dsp.exports.websa_dsp_demod_new(48828, 48000, modePtr, mode.length, 10000, 0);
+		const handle = dsp.exports.websa_dsp_demod_new(48828, outputRate, modePtr, mode.length, 10000, 0);
 		dsp.free(modePtr, mode.length);
 		expect(handle).toBeGreaterThan(0);
 

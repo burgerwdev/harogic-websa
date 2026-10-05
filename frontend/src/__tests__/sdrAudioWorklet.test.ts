@@ -19,6 +19,7 @@ type Processor = {
 		prime: number;
 		target: number;
 		maxFill: number;
+		port: { onmessage: (event: { data: unknown }) => void };
 		push(samples: Float32Array): void;
 		process(inputs: unknown, outputs: Float32Array[][]): boolean;
 		reset(): void;
@@ -232,6 +233,30 @@ describe('the SDR playback buffer', () => {
 		expect(proc.slipped).toBe(RATE * 3 - proc.maxFill);
 		for (let i = 0; i < 400; i++) proc.process(null, [[out]]);
 		expect(proc.available).toBeLessThanOrEqual(proc.maxFill);
+	});
+
+	it('keeps complete DRM super-frame bursts without periodic dropouts', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'drm' } });
+		const out = new Float32Array(128);
+		const outputs = [[out]];
+		// Measured from the block-fed HE-AAC fixture: first 0.8 s, then 1.2 s
+		// every 1.2 s. A 0.9 s ring drops 0.3 s at every later burst.
+		for (let t = 0; t < 12 * RATE; t += 128) {
+			if (t === 0) proc.push(new Float32Array(Math.round(0.8 * RATE)).fill(0.5));
+			if (t > 0 && t % Math.round(1.2 * RATE) < 128) {
+				proc.push(new Float32Array(Math.round(1.2 * RATE)).fill(0.5));
+			}
+			proc.process(null, outputs);
+		}
+		expect(proc.slipped).toBe(0);
+		expect(proc.underruns).toBe(0);
+		expect(out.some((v) => v > 0)).toBe(true);
+		// A repeated STATUS/configure must not empty the ring.
+		const fill = proc.available;
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'drm' } });
+		expect(proc.available).toBe(fill);
 	});
 
 	it('drops everything on reset, so a retune does not replay the old station', () => {

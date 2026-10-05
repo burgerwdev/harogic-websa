@@ -40,6 +40,13 @@ describe('the band the SDR view highlights', () => {
 		expect(demodBandHz('ft8', 6000)).toEqual([100, 3000]);
 	});
 
+	it('highlights the currently decoded DRM30 10 kHz channel, not FT8 or the analog filter', async () => {
+		await loadManifest();
+		expect(demodBandHz('drm', 6000)).toEqual([-5000, 5000]);
+		expect(demodBandHz('drm', 12000)).toEqual([-5000, 5000]);
+		expect(demodBandHz('drmplus', 100000)).toEqual([-50000, 50000]);
+	});
+
 	it('cannot drift from the decoder that defines it', () => {
 		const rust = readFileSync(FT8_RS, 'utf8');
 		const declared = (name: string): number => {

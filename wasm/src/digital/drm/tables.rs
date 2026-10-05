@@ -457,9 +457,9 @@ pub const QAM64_HMMIX_IM: [f64; 8] = [
 pub const CONSTRAINT_LENGTH: usize = 7;
 /// Number of trellis states.
 pub const NUM_STATES: usize = 1 << (CONSTRAINT_LENGTH - 1);
-/// Generator polynomials as tap masks (bit `i` holds the input delayed by `i`, bit 0
-/// the current input), bit-reversed forms of octal 133, 171, 145, 133.
-pub const GENERATORS: [u8; 4] = [0o155, 0o117, 0o123, 0o155];
+/// Generator tap masks of the 1/6 mother code (table 27): octal 133, 171, 145 repeated.
+/// The first four also form the DRM30 1/4 mother code.
+pub const GENERATORS: [u8; 6] = [0o155, 0o117, 0o123, 0o155, 0o117, 0o123];
 
 /// Puncture mask: bit `i` set ⇒ mother-code output `b_i` is transmitted.
 pub type PunctureMask = u8;
@@ -485,7 +485,7 @@ impl CodeRate {
     }
 }
 
-pub const CODE_RATES: [CodeRate; 13] = [
+pub const CODE_RATES: [CodeRate; 15] = [
     CodeRate { rx: 1, ry: 4, pattern: &[P1111] },
     CodeRate { rx: 3, ry: 10, pattern: &[P1111, P0111, P0111] },
     CodeRate { rx: 1, ry: 3, pattern: &[P0111] },
@@ -499,6 +499,17 @@ pub const CODE_RATES: [CodeRate; 13] = [
     CodeRate { rx: 4, ry: 5, pattern: &[P0011, P0001, P0001, P0001] },
     CodeRate { rx: 7, ry: 8, pattern: &[P0011, P0001, P0001, P0001, P0001, P0001, P0001] },
     CodeRate { rx: 8, ry: 9, pattern: &[P0011, P0001, P0001, P0001, P0001, P0001, P0001, P0001] },
+    // Mode E MSC 4-QAM protection level 2 (table 29/27): 2/5.
+    CodeRate { rx: 2, ry: 5, pattern: &[P0111, P0011] },
+    // Mode E MSC 16-QAM protection level 0 (tables 27/31): 1/6.
+    CodeRate { rx: 1, ry: 6, pattern: &[0b11_1111] },
+];
+
+/// Mode E MSC 4-QAM code-rate indices for protection levels 0..3.
+pub const MSC4_E: [usize; 4] = [0, 2, 13, 4];
+/// Mode E MSC 16-QAM code-rate combinations [R0, R1] and RYlcm (table 31).
+pub const MSC16_E: [([usize; 2], usize); 4] = [
+    ([14, 4], 6), ([0, 5], 28), ([2, 7], 3), ([4, 9], 4),
 ];
 
 /// FAC 4-QAM code-rate index (rate 0.6).

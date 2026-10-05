@@ -239,7 +239,7 @@ select:disabled { color: var(--label); }
 /* The hint row carries the level readout on the right (it is status, not a control). */
 .sdr-hint-row { display: flex; align-items: center; gap: 8px; }
 .sdr-hint-row #cur-sdr-level { font-family: 'Courier New', monospace; white-space: nowrap; }
-/* FT8 decode window: a floating table (draggable by its head, resizable by its corner). Lives in
+/* Shared FT8/CW/DRM decode window: draggable and resizable. Lives in
    <body> outside the zoomed frame and carries the UI scale itself (like the keypad) - a fixed
    element inside the zoomed card renders its left/top in zoomed coordinates while pointer events
    stay viewport coordinates, which broke dragging on scaled UIs. border-box keeps a stored
@@ -278,9 +278,36 @@ select:disabled { color: var(--label); }
 .decode-cw {
   padding: 3px 6px; font: 11px 'Courier New', monospace; line-height: 1.5;
 }
-.decode-drm { padding: 6px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
-.decode-drm-lines { align-self: stretch; font: 11px 'Courier New', monospace; line-height: 1.5; color: var(--table-cell); }
-.decode-drm-plot { background: var(--panel-2); border: 1px solid var(--inner-border); border-radius: 3px; }
+.decode-drm { display: flex; flex-direction: column; min-width: 0; min-height: 100%; box-sizing: border-box; color: var(--table-cell); font-size: 11px; container-type: inline-size; }
+.decode-drm-service { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--inner-border); }
+.decode-drm-station { flex: 1 1 105px; min-width: 0; color: var(--text); font-size: 15px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decode-drm-badge { flex: 0 0 auto; padding: 2px 6px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 2px; color: var(--label); font-size: 10px; line-height: 1.2; white-space: nowrap; }
+.decode-drm-lock.on { color: var(--text); background: var(--btn-active); border-color: var(--text); }
+.decode-drm-main { display: grid; grid-template-columns: minmax(0, 1fr) 116px; flex: 1; min-width: 0; border-bottom: 1px solid var(--inner-border); }
+.decode-drm-readouts { display: flex; flex-direction: column; min-width: 0; }
+.decode-drm-quality { display: flex; align-items: baseline; gap: 4px; padding: 7px 10px; min-width: 0; font-variant-numeric: tabular-nums; }
+.decode-drm-quality > span:first-child { margin-right: 5px; color: var(--label); white-space: nowrap; }
+.decode-drm-quality strong { color: var(--t2); font-size: 22px; line-height: 1; }
+.decode-drm-unit { color: var(--label); }
+.decode-drm-snr { display: flex; gap: 5px; margin-left: auto; color: var(--label); white-space: nowrap; }
+.decode-drm-snr span:last-child { color: var(--table-cell); }
+.decode-drm-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1; margin: 0; border-top: 1px solid var(--inner-border); }
+.decode-drm-metrics > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 3px; padding: 5px 7px; border-right: 1px solid var(--inner-border); }
+.decode-drm-metrics > div:last-child { border-right: 0; }
+.decode-drm-metrics dt { min-width: 0; color: var(--label); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decode-drm-metrics dd { display: flex; align-items: baseline; gap: 2px; flex: 0 0 auto; margin: 0; color: var(--text); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.decode-drm-divider { color: var(--label); font-size: 11px; font-weight: 400; }
+.decode-drm-metrics .error { color: var(--dot-off); }
+.decode-drm-constellation { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; margin: 0; padding: 5px; min-width: 0; border-left: 1px solid var(--inner-border); }
+.decode-drm-plot { display: block; width: 90px; height: 90px; background: var(--sa-bg); border: 1px solid var(--inner-border); border-radius: 2px; }
+.decode-drm-constellation figcaption { color: var(--label); font-size: 10px; white-space: nowrap; }
+.decode-drm-details { padding: 7px 12px; border-top: 1px solid var(--inner-border); color: var(--label); }
+.decode-drm-details summary { cursor: pointer; }
+.decode-drm-details code { display: block; margin-top: 7px; color: var(--table-cell-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+@container (max-width: 340px) {
+  .decode-drm-main { grid-template-columns: 1fr; }
+  .decode-drm-constellation { border-left: 0; border-top: 1px solid var(--inner-border); }
+}
 .cw-line { display: flex; gap: 8px; align-items: baseline; }
 .cw-time { color: var(--label); flex: 0 0 auto; }
 .cw-text { color: var(--table-cell); white-space: pre-wrap; word-break: break-word; min-width: 0; }

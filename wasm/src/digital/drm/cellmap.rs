@@ -180,8 +180,10 @@ impl CellMap {
                     if rel >= 0 && rel <= 212 && rel % 4 == 0 {
                         let i = (rel / 4) as usize;
                         let phase = if sym == 4 { tables::AFS_PHASE_S4[i] } else { tables::AFS_PHASE_S39[i] };
-                        ty |= CellType::AFS_PILOT;
-                        if !ty.is_scattered() {
+                        if ty.is_scattered() {
+                            ty |= CellType::AFS_PILOT;
+                        } else {
+                            ty = CellType::AFS_PILOT;
                             pilots[idx] = polar_1024(AFS_PILOT_POWER.sqrt(), i32::from(phase));
                         }
                     }
@@ -374,6 +376,10 @@ mod tests {
         assert_eq!(map.kmax, 106);
         assert_eq!(map.symbols_per_frame, 40);
         assert_eq!(map.symbols_per_superframe, 160);
+        assert_eq!(map.msc_cells_per_frame, 7460);
+        assert_eq!(map.msc_dummy_cells, 2);
+        assert_eq!(map.sdc_cells_per_superframe, 936);
+        assert_eq!(map.msc_carriers.iter().map(Vec::len).sum::<usize>(), 29_842);
 
         // 244 FAC cells in every frame (§8.5.2, table 66).
         for f in 0..4 {

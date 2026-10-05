@@ -432,6 +432,15 @@ impl ChanEst {
         if out_sym == self.mode.symbols_per_frame() - 1 && self.fac_err > 0.0 {
             let e = self.fac_err / self.fac_pow.max(1e-30);
             self.stats.fac_mer_db = Some(-10.0 * e.max(1e-12).log10());
+            // Decision-directed SNR in the nominal occupied bandwidth: FAC 4-QAM errors
+            // estimate the noise, while average cell power and the actual carrier span
+            // account for boosted pilots and the useful bandwidth (as in Dream's readout).
+            let signal_bw = self.n_car as f64 * self.mode.carrier_spacing_hz();
+            let nominal_bw = map.occupancy().bandwidth_khz() * 1000.0;
+            let correction = map.avg_power_per_symbol / self.n_car as f64
+                * signal_bw / nominal_bw;
+            let snr = correction / e.max(1e-12);
+            self.stats.snr_db = Some(10.0 * snr.max(1.0).log10());
             // Dream estimates the SNR from the same decisions and feeds it back to the Wiener
             // filters, which is what adapts them to a weak or noisy signal. The raw FAC MER is a
             // channel-limited quantity, so it is IIR-smoothed first (the reference's `bound_snr`
@@ -1134,12 +1143,7 @@ mod tests {
 
         // Assemble each super frame's MSC cells in super-frame symbol order and decode the
         // three multiplex frames per super frame (depth-5 cell interleaver).
-        let mapping = match MscMode::Qam64Sm {
-            MscMode::Qam64Sm => Mapping::Qam64Sm,
-            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
-            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
-            MscMode::Qam16Sm => Mapping::Qam16,
-        };
+        let mapping = Mapping::Qam64Sm;
         let prot = MscProtection { part_a: 0, part_b: 1, hierarchical: 0 };
         let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, 0);
         let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
@@ -1294,12 +1298,7 @@ mod tests {
         let fmt = AacSuperFrameFormat::aac(5, stream);
 
         // MSC decode and demultiplex.
-        let mapping = match MscMode::Qam64Sm {
-            MscMode::Qam64Sm => Mapping::Qam64Sm,
-            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
-            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
-            MscMode::Qam16Sm => Mapping::Qam16,
-        };
+        let mapping = Mapping::Qam64Sm;
         let prot = MscProtection { part_a: 0, part_b: 1, hierarchical: 0 };
         let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, 0);
         let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
@@ -1592,12 +1591,7 @@ mod tests {
         let mut in_partial = true;
         let mut complete_frame = 0usize;
         // Configure the MSC decoder from the FAC's mode and the SDC's protection (EEP 0/1).
-        let mapping = match MscMode::Qam64Sm {
-            MscMode::Qam64Sm => Mapping::Qam64Sm,
-            MscMode::Qam64HmMix => Mapping::Qam64HmMix,
-            MscMode::Qam64HmSym => Mapping::Qam64HmSym,
-            MscMode::Qam16Sm => Mapping::Qam16,
-        };
+        let mapping = Mapping::Qam64Sm;
         let prot = MscProtection { part_a: 0, part_b: 1, hierarchical: 0 };
         let params = MlcParams::msc(mapping, map.msc_cells_per_frame, prot, 0);
         let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);

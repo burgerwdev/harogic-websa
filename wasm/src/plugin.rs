@@ -81,6 +81,7 @@ pub const ANALOG_PLUGINS: &[PluginDescriptor] = &[
 pub const DIGITAL_PLUGINS: &[PluginDescriptor] = &[
     digital("ft8", true),
     digital("drm", true),
+    digital("drmplus", true),
 ];
 
 /// Audio-enhancement stages, in the order the chain applies them. Every one of these is

@@ -10,7 +10,7 @@
  * the writer lapped the reader).
  *
  * So this stage does three things:
- *   * a jitter buffer with a target fill (~250 ms) that tolerates burst arrival;
+ *   * a mode-aware jitter buffer (short for analog, two super-frame bursts for DRM);
  *   * a drift-correcting resampler: the read pointer advances by a ratio steered by the fill, so a
  *     persistent producer/consumer mismatch is absorbed by resampling (which also keeps the pitch
  *     right) instead of by draining the buffer;
@@ -18,23 +18,24 @@
  *     latency: past `MAX_FILL` the oldest samples are dropped (the audio stays live, which is what
  *     a listener wants after a retune).
  */
-// The fill sizes: the *prime* is both the start threshold and (with a well-behaved producer) the
-// steady state, because a matched producer leaves the fill wherever it started playing. The ceiling
-// is the headroom a mismatch gets before it is corrected OR trimmed - measured jitter is a few
-// milliseconds and the analyzer's stalls reach a few hundred, so priming at 250 ms rides them out.
-const PRIME_S = 0.25;           // start playing once this much is buffered
-const TARGET_S = 0.3;           // the fill the corrector aims at (and the trend's reference)
-// Past this the oldest samples are dropped: a producer that outruns the clock must not become
-// growing latency, and one window of an uncorrected mismatch (~3%) still fits.
+// Analog jitter is a few milliseconds; its 0.9 s ceiling bounds latency. DRM uses a
+// separate 2.4 s ceiling so one whole super-frame burst is never thrown away.
+// Analog playback needs only short jitter headroom; DRM's 1.2 s super-frame bursts need
+// two bursts before starting, otherwise the 0.9 s ceiling clips every burst.
+// ponytail: the 2.4 s DRM ceiling covers the measured 1.2 s cadence; raise it only if a
+// measured service produces larger bursts.
+const PRIME_S = 0.25;
+const TARGET_S = 0.3;
 const MAX_FILL_S = 0.9;
+const DRM_PRIME_S = 1.6;
+const DRM_TARGET_S = 1.4;
+const DRM_MAX_FILL_S = 2.4;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
 /// How often the fill's window mean is compared against its band.
 const FILL_WINDOW_S = 10;
-/// Target fill (the ring's occupancy the listener is meant to hear through).
-const FILL_TARGET_S = 0.3;
 /// The proportional gain, expressed as "a fill error this large asks for a full step" (seconds): a
 /// proportional loop parks the fill `offset / gain` from the target, and this keeps that within the
 /// band for the residual this stage is sized for.
@@ -57,7 +58,7 @@ const DRIFT_STEP = 0.0005;
 class SdrAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.capacity = Math.ceil(sampleRate * (MAX_FILL_S + 0.1));
+    this.capacity = Math.ceil(sampleRate * (DRM_MAX_FILL_S + 0.1));
     this.ring = new Float32Array(this.capacity);
     this.writePos = 0;
     this.readPos = 0;
@@ -65,6 +66,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.target = Math.floor(sampleRate * TARGET_S);
     this.prime = Math.floor(sampleRate * PRIME_S);
     this.maxFill = Math.floor(sampleRate * MAX_FILL_S);
+    this.mode = 'default';
     this.enabled = false;
     this.playing = false;
     this.primed = false;
@@ -90,6 +92,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.push(message.samples);
       } else if (message.type === 'reset') {
         this.reset();
+      } else if (message.type === 'buffer-mode') {
+        this.setBufferMode(message.mode);
       } else if (message.type === 'enabled') {
         this.enabled = Boolean(message.value);
         if (!this.enabled) {
@@ -120,6 +124,17 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.primed = false;
     this.fade = 0;
     this.underruns = 0;
+  }
+
+  setBufferMode(mode) {
+    const next = mode === 'drm' || mode === 'drmplus' ? 'drm' : 'default';
+    if (next === this.mode) return;
+    this.mode = next;
+    this.prime = Math.floor(sampleRate * (next === 'drm' ? DRM_PRIME_S : PRIME_S));
+    this.target = Math.floor(sampleRate * (next === 'drm' ? DRM_TARGET_S : TARGET_S));
+    this.maxFill = Math.floor(sampleRate * (next === 'drm' ? DRM_MAX_FILL_S : MAX_FILL_S));
+    this.ratio = 1;
+    this.reset();
   }
 
   push(samples) {
@@ -224,7 +239,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     const mean = this.fillSum / Math.max(1, this.fillCount);
     this.fillSum = 0;
     this.fillCount = 0;
-    const errorSeconds = mean / sampleRate - FILL_TARGET_S;
+    const errorSeconds = mean / sampleRate - this.target / sampleRate;
     const step = Math.max(-DRIFT_STEP, Math.min(DRIFT_STEP,
       (errorSeconds / FILL_ERROR_FOR_FULL_STEP) * DRIFT_STEP));
     if (step !== 0) {

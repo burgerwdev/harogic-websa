@@ -29,15 +29,19 @@ self.onmessage = (event: MessageEvent) => {
   if (msg.type === 'init') {
     port = (msg.port as MessagePort) ?? null;
     if (port) port.onmessage = (fromDecoder: MessageEvent) => post(fromDecoder.data);
-    if (msg.url) connect(String(msg.url));
+    lastUrl = String(msg.url || '');
+  } else if (msg.type === 'active') {
+    active = Boolean(msg.enabled);
+    if (active) connect(lastUrl);
+    else { ws?.close(); ws = null; }
   } else if (msg.type === 'socket') {
-    // A reconnect (the audio worker watches its own socket; this one does the same).
-    if (!ws) connect(lastUrl);
+    if (active && !ws) connect(lastUrl);
   }
 };
 
 let ws: WebSocket | null = null;
 let lastUrl = '';
+let active = false;
 
 /** Own IQ socket: the baseband frames reach this worker directly, never through the audio thread. */
 function connect(url: string): void {
@@ -50,6 +54,7 @@ function connect(url: string): void {
     scheduleReconnect();
     return;
   }
+  const socket = ws;
   ws.binaryType = 'arraybuffer';
   ws.onmessage = (event: MessageEvent) => {
     const data = event.data;
@@ -69,12 +74,12 @@ function connect(url: string): void {
       }
     }
   };
-  ws.onclose = () => { ws = null; scheduleReconnect(); };
-  ws.onerror = () => { ws?.close(); };
+  ws.onclose = () => { if (ws === socket) ws = null; if (active) scheduleReconnect(); };
+  socket.onerror = () => { socket.close(); };
 }
 
 function scheduleReconnect(): void {
-  setTimeout(() => connect(lastUrl), 1000);
+  if (active) setTimeout(() => { if (active) connect(lastUrl); }, 1000);
 }
 // No 'ready' here: that message means "the decoder's WASM is loaded" and belongs to the decode
 // worker (relayed through this one); the socket starts draining on 'init' regardless.

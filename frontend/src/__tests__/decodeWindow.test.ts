@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { initDecodeWindow, decodeWindowOpen, decodeWindowMode, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
 import { addFt8Spot, clearFt8Spots, clock } from '../sdr/ft8Log';
 import { addCwText, clearCwLog, cwLog } from '../sdr/cwLog';
+import { clearDrm, drmStatus, setDrmConstellation, setDrmDecode } from '../sdr/drmLog';
 import { setUiScale } from '../core/uiScale';
 import { setLang } from '../core/i18n';
 import type { Ft8Report } from '../sdr/types';
@@ -25,6 +26,14 @@ function shell(): void {
 			<div class="decode-window-body" id="decode-window-body">
 				<table id="decode-window-table"><thead><tr><th id="decode-window-time-th">Time</th></tr></thead><tbody id="decode-window-rows"></tbody></table>
 				<div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
+				<div class="decode-drm" id="decode-window-drm" style="display:none;">
+					<div class="decode-drm-service"><span id="decode-drm-lock"></span><strong id="decode-drm-station"></strong><span id="decode-drm-status"></span><div id="decode-drm-mode"></div></div>
+					<div id="decode-drm-main"><div id="decode-drm-mer"></div><span id="decode-drm-snr"></span>
+						<dl id="decode-drm-metrics"><div><span id="decode-drm-fac-ok"></span><span id="decode-drm-fac-err"></span></div><dd id="decode-drm-msc"></dd><dd id="decode-drm-aus"></dd></dl>
+						<figure><canvas id="decode-window-drm-plot" width="144" height="144"></canvas></figure>
+					</div>
+					<details id="decode-drm-details"><code id="decode-drm-debug"></code></details>
+				</div>
 			</div>
 			<div class="decode-resize-layer">
 				<div class="decode-rz n" data-decode-rz="n"></div>
@@ -57,6 +66,8 @@ describe('the FT8 decode window', () => {
 		shell();
 		clearFt8Spots();
 		clearCwLog();
+		clearDrm();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
 		localStorage.clear();
 		initDecodeWindow({ onTune: () => {} });
 	});
@@ -323,6 +334,68 @@ describe('the FT8 decode window', () => {
 		expect(decodeWindowOpen()).toBe(true);
 		expect(decodeWindowMode()).toBe('cw');
 		expect((document.getElementById('decode-window-title') as HTMLElement).textContent).toBe('CW');
+	});
+
+	it('keeps DRM service health separate from the FT8 table across mode switches', () => {
+		setDecodeWindowAvailable('drm');
+		toggleDecodeWindow();
+		setDrmDecode([
+			'locked: B, 10 kHz', 'station: CNR-1', 'FAC MER 18.7 dB',
+			'14 MSC frames, 86 audio AUs, FAC ok 21 err 0', 'dbg au=86 fed=3',
+		], null);
+		setDrmConstellation([{ re: 0.7, im: -0.7 }]);
+		expect(decodeWindowMode()).toBe('drm');
+		expect((document.getElementById('decode-window-table') as HTMLElement).style.display).toBe('none');
+		expect(document.getElementById('decode-drm-station')?.textContent).toBe('CNR-1');
+		expect(document.getElementById('decode-drm-mode')?.textContent).toContain('B · 10 kHz');
+		expect(document.getElementById('decode-drm-fac-ok')?.textContent).toBe('21');
+		expect(document.getElementById('decode-drm-fac-err')?.textContent).toBe('0');
+		expect(document.getElementById('decode-drm-msc')?.textContent).toBe('14');
+		expect(document.getElementById('decode-drm-aus')?.textContent).toBe('86');
+		expect(document.getElementById('decode-drm-mer')?.textContent).toBe('18.7');
+		expect(document.getElementById('decode-drm-snr')?.textContent).toBe('—');
+		expect(document.getElementById('decode-drm-snr')?.title).toContain('FAC frame');
+		expect((document.getElementById('decode-drm-details') as HTMLElement).style.display).toBe('');
+		addFt8Spot(report({ text: 'CQ JO1WKO PM95' }));
+		expect(rows().length).toBe(0);
+		setDecodeWindowAvailable('ft8');
+		expect(rows().length).toBe(1);
+		expect(rows()[0].textContent).not.toContain('CNR-1');
+		expect(drmStatus().lines).toEqual([]);
+		setDecodeWindowAvailable('drm');
+		expect(document.getElementById('decode-drm-station')?.textContent).not.toBe('CNR-1');
+		expect((document.getElementById('decode-drm-metrics') as HTMLElement).style.display).toBe('none');
+	});
+
+	it('shows the independent SNR estimate as well as FAC MER when available', () => {
+		setDecodeWindowAvailable('drm');
+		toggleDecodeWindow();
+		setDrmDecode(['locked: B, 10 kHz', 'station: CNR-1', 'FAC MER 18.7 dB', 'FAC SNR 16 dB'], 16);
+		expect(document.getElementById('decode-drm-mer')?.textContent).toBe('18.7');
+		expect(document.getElementById('decode-drm-snr')?.textContent).toBe('16 dB');
+		expect(document.getElementById('decode-drm-snr')?.title).toBe('');
+	});
+
+	it('shows DRM searching without old station or stale constellation', () => {
+		setDecodeWindowAvailable('drm');
+		toggleDecodeWindow();
+		setDrmDecode(['DRM searching: 2.0s buffered, B 10 kHz, carrier +0.0 Hz, FAC errors 0'], null);
+		expect(document.getElementById('decode-drm-status')?.textContent).toBe('Searching');
+		expect(document.getElementById('decode-drm-mode')?.textContent).toContain('B · 10 kHz');
+		expect(document.getElementById('decode-drm-lock')?.title).toContain('2.0s buffered');
+		expect((document.getElementById('decode-drm-main') as HTMLElement).style.display).toBe('none');
+	});
+
+	it('shows the same structured pane when switching from DRM30 to DRM+', () => {
+		setDecodeWindowAvailable('drm');
+		toggleDecodeWindow();
+		setDrmDecode(['station: CNR-1', 'locked: B, 10 kHz'], 15);
+		setDecodeWindowAvailable('drmplus');
+		expect(decodeWindowOpen()).toBe(true);
+		expect(document.getElementById('decode-window-title')?.textContent).toBe('DRM+');
+		expect(drmStatus().lines).toEqual([]);
+		setDrmDecode(['station: VHF TEST', 'locked: E, 100 kHz'], 12);
+		expect(document.getElementById('decode-drm-station')?.textContent).toBe('VHF TEST');
 	});
 
 	it('is closed and disabled for a mode that does not decode', () => {

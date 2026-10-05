@@ -24,6 +24,7 @@ pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
         // station SAN90 DRM BENCH, 40 audio AUs) and is streaming-correct: the block-fed decode
         // matches the batch decode, which is what the wasm worker drives.
         "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
+        "drmplus" => Some(Box::new(drm::DrPlugin::new_plus())),
         _ => None,
     }
 }

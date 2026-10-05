@@ -55,16 +55,15 @@ async function decode(file: string): Promise<Decoded> {
 		peak = Math.max(peak, v);
 		energy += v;
 	}
-	// The bench transmitter's 1 kHz tone: the fraction of the spectrum's energy in 900-1100 Hz,
-	// via a Goertzel-style DFT over one second of the left channel (mono fixtures: every sample).
-	const stride = rate === 24_000 && file.includes('heaacv2') ? 2 : 1;
-	const n = Math.min(rate, Math.floor(samples / stride));
+	// The PCM ABI feeds a mono worklet. HE-AAC v2 is decoded in stereo and downmixed before
+	// leaving wasm; the 1 kHz tone must still occupy one second of 24 kHz PCM here.
+	const n = Math.min(rate, samples);
 	const energyIn = (hz: number): number => {
 		const w = (2 * Math.PI * hz) / rate;
 		let re = 0;
 		let im = 0;
 		for (let i = 0; i < n; i++) {
-			const v = pcm[i * stride];
+			const v = pcm[i];
 			re += v * Math.cos(w * i);
 			im += v * Math.sin(w * i);
 		}
@@ -90,11 +89,12 @@ describe('DRM codec coverage (xHE-AAC, HE-AAC v2) through the receiver', () => {
 		expect(d.toneFraction).toBeGreaterThan(5);
 	});
 
-	it('decodes a live HE-AAC v2 (SBR + parametric stereo) capture to non-silent stereo PCM', async () => {
+	it('decodes a live HE-AAC v2 (SBR + parametric stereo) capture to mono playback PCM', async () => {
 		const d = await decode('drm_live_heaacv2_modeB_so3_48828.f32');
 		expect(d.rate).toBe(24_000);
-		// Stereo: about twice the mono sample count for the same capture.
-		expect(d.samples).toBeGreaterThan(100_000);
+		// At 24 kHz the one-channel worklet receives frames, not interleaved stereo samples.
+		expect(d.samples).toBeGreaterThan(50_000);
+		expect(d.samples).toBeLessThan(100_000);
 		expect(d.peak).toBeGreaterThan(1000);
 		expect(d.meanAbs).toBeGreaterThan(100);
 		expect(d.toneFraction).toBeGreaterThan(5);

@@ -62,17 +62,14 @@ Open:
   transmissions (HE-AAC mono, 12 kHz core, mode A/C/D, SO3) join mode B; the MSC assembly is
   now mode-generic (it used mode B's 15 symbols/frame and 45 buckets, which broke modes C and
   D) and each mode locks, decodes the FAC with no CRC error and deframes 55 audio AUs.
-- Mode E / DRM+: the 96 kHz front end is in. The sync stages (`freqacq`/`timesync`/`nco`/
-  `finefreq`/`freqtrack`) take the mode's sample rate instead of a fixed 48 kHz, mode
-  detection tries mode E when the receiver is fed 96 kHz (selecting SO0), and the FAC decoder
-  uses mode E's 244 cells. Mode E carries no continuous frequency pilots, so the tracker
-  reports no delta. A synthesised mode E signal (cyclic prefix + the mode's carriers with the
-  map's reference pilots) is acquired: mode detection selects E, the frame phase commits and
-  410 symbols demodulate with a guard correlation of 1.0. DecDRM defines no mode E
-  transmitter, so the FAC/SDC/MSC/audio decode cannot be driven with a real mode E signal;
-  the front end is what is verified (see the mode E section). `DrPlugin::new(rate)` builds the
-  receiver at the pipeline's baseband rate, so a 96 kHz DRM+ feed reaches this path instead of
-  always building a 48 kHz receiver.
+- **Mode E / DRM+ is now implemented through the same chain.** The current branch has a separate
+  `drmplus` plugin entry: 96 kHz/100 kHz channelizer input, mode-E FAC (116-bit, 1/4 code, two
+  service sets and four identity/toggle positions), mode-E SDC/MSC coding and depth-6 interleaving,
+  AFS-aware cell mapping, paired 200 ms audio logical frames, and AAC/xHE audio handoff. The
+  deterministic `drm_modeE_so0_96k_aac.f32` fixture decodes through native FAC/SDC/MSC/AU checks
+  and the shipped wasm ABI at both 48 kHz and 44.1 kHz output. ±100 Hz injected carrier offsets
+  also pass. This is synthetic-signal evidence; no real VHF DRM+ recording or transmitter is
+  available here, so real propagation and reconfiguration coverage remain open.
 - The timing/SRO loop is now closed: the impulse-response tracker's `timing_adjust` and
   `sro_delta_hz` are fed back into the `TimeSync` window (`adjust_timing`/`adjust_sro`) once
   tracking is enabled, so the FFT window stays aligned and the channel no longer carries a
@@ -525,21 +522,28 @@ shifting 1 per symbol, 54 AFS cells in symbols 4 and 39. The tests pin all of it
 `mode_e_afs_phases_match_table_61` (cellmap), and the mode E arms of
 `fac_cell_count`/`fac_positions`/`time_pilots`/`scattered_pilots` (tables).
 
-**Implemented**: the 96 kHz digital front end. `freqacq`/`timesync`/`nco`/`finefreq`/
-`freqtrack` take the mode's sample rate instead of a hardcoded 48 000; the timing low-pass keeps
-mode E's 100 kHz band; mode detection selects E when fed 96 kHz (occupancy SO0); the FAC decoder
-uses `MlcParams::fac_for(mode)` (244 cells for E); the frequency tracker reports no delta for
-mode E's missing continuous pilots. `mode_e_acquires_and_demodulates_a_synthetic_signal`
-acquires a synthesised mode E signal: mode detection selects E, the frame phase commits and 410
-symbols demodulate with a guard correlation of 1.0.
+**Implemented and independently verified on a synthetic mode E signal**: the mode-aware FAC uses
+116 information bits, 4-QAM rate 1/4, two service descriptors, the RM flag and the four-frame
+identity/toggle sequence. SDC uses mode E's 4-QAM rate 1/2 or 1/4. MSC uses the mode E 4/16-QAM
+rate tables, six-frame cell interleaving, 29 842 useful MSC cells per super frame and 7 460 cells
+per multiplex frame. The cell map's AFS-only cells are excluded from SDC/MSC data (the earlier map
+counted 41 AFS cells as data). Native tests now generate a zero-noise 96 kHz Mode E signal with
+FAC, SDC, four-frame MSC, and paired 200 ms AAC audio; the receiver decodes FAC 17/0, SDC 4,
+seven MSC frames bit-exact and deframes 15 AAC access units. The same committed fixture
+`drm_modeE_so0_96k_aac.f32` goes through the shipped `drmplus` wasm ABI and produces non-silent
+PCM at both 48 kHz and 44.1 kHz output settings. Injected ±100 Hz carrier offsets also pass
+FAC/SDC/MSC/AU recovery using cyclic-prefix phase tracking.
 
-**Still open**: the FAC/SDC/MSC signalling and audio decode for mode E are not exercised, because
-no mode E signal can be produced here. DecDRM (the reference transmitter) defines no
-`RobustnessMode::E` — its `RobustnessMode::ALL` is `[A, B, C, D]` — gr-drm is not installed, and
-there is no mode E recording, so the "demodulates and produces audio with a DecDRM mode E
-signal" acceptance cannot be met. Driving it would need a mode E transmitter (FAC/SDC/MSC FEC
-encoding plus an OFDM modulator), which the objective does not ask for and which has no
-reference to verify against.
+**Implemented entry path**: the plugin manifest exposes `drmplus` separately from DRM30. Selecting
+it fixes the channelizer headroom to 100 kHz, builds the receiver at 96 kHz, highlights the ±50 kHz
+DRM+ channel and uses the same decoded-audio worklet path. Selecting `drm` keeps the DRM30 SO3/10 kHz
+path. The Filter control now labels both digital channel widths as automatic rather than offering
+analog IF choices that do not change the broadcast occupancy.
+
+**Still open**: no real DRM+ VHF transmitter or off-air Mode E recording is available in this
+environment, so the synthetic result is not a substitute for a radiated VHF acceptance. Integer
+carrier-offset acquisition beyond the cyclic-prefix unambiguous range, real VHF propagation and
+mode E reconfiguration/service combinations still need a real signal source.
 
 **Applicable scope when the 96 kHz chain lands**: DRM+ (mode E) is VHF only — band I/II
 (47–108 MHz), 96 kHz baseband, one service, AAC/xHE-AAC audio. It shares the FAC/SDC/MSC
@@ -550,8 +554,8 @@ end and the mode-aware FAC decoder — roughly the `SAMPLE_RATE` uses above plus
 
 ## Audio-path debugging and reliable offline data (2026-10-05)
 
-The browser/live DRM audio cut out about once a second and then stopped. Two causes were
-found; one is fixed and the other implemented pending live verification:
+The browser/live DRM audio cut out about once a second and then stopped. The following fixes
+have offline coverage; real-time playback still needs verification:
 
 - `websa_dsp_drm_audio_pcm` drained the whole receiver buffer but copied only the fixed output
   block (32768 samples), dropping the tail of every audio burst (~30% at 38.4 kHz). Fixed:
@@ -560,9 +564,54 @@ found; one is fixed and the other implemented pending live verification:
   truncated.
 - The receiver wedged after a run of FAC errors (a fade, or the bench cyclic buffer's wrap) and
   only revived when a setting was re-applied (a pipeline reset). It now re-acquires after 12
-  consecutive FAC failures (`DrmReceiver::recover`): the stale phase/estimator/MSC state is
-  dropped, the recent 200k samples kept, and the coarse carrier re-acquired. Implemented; live
-  verification pending.
+  consecutive FAC failures **or three seconds without a good FAC** (silence produces no timing
+  windows and therefore no CRC failures). Recovery clears the old station, SDC/audio/MSC and
+  codec state, and keeps only the last 1.5 seconds of baseband. Replaying the previous four-second
+  window immediately relocked the *old* station on a dead channel. A fixture + silence + fixture
+  regression confirms loss of lock and subsequent reacquisition; live verification is pending.
+- Long-running wasm sessions now bound raw IQ, processed OFDM rows and retained FAC/MSC/AU
+  history, without resetting cumulative readouts or the AAC decode cursor. FDK's interleaved
+  HE-AAC v2 stereo output is downmixed before the mono worklet resamples it; otherwise the
+  playback ran at the wrong duration/pitch. Native block-vs-batch checks and xHE/HE-AAC v2
+  wasm fixture checks pass. No browser playback or real-station e2e was run for these changes.
+
+- A remaining periodic cutout was found after the earlier fixes: the block-fed wasm fixture
+  produces PCM bursts of 0.8 s, then 1.2 s every 1.2 s (`WEBSA_DRM_INCREMENTAL=1` in
+  `frontend/scripts/drm_live_audio.mjs`). The mono worklet's 0.9 s ceiling discarded 0.3 s
+  from every steady burst; its initial 0.25 s prime could also underrun before the next one.
+  DRM now uses a 2.4 s ceiling and waits for two bursts (1.6 s prime), leaving analog modes
+  at their 0.9/0.25 s settings. The burst-cadence worklet test pins zero slips and underruns;
+  the change has not yet been checked by ear on the live bench.
+
+- The DRM readout and FAC constellation now stay in their own structured floating pane instead
+  of being interpreted as FT8 rows. The dedicated FT8 decoder and its extra IQ socket run only
+  in FT8 mode; late cross-mode reports are ignored. The DRM readout no longer changes on every
+  symbol just to repeat the symbol count. Targeted mode-switch/UI tests pass. The operator hears
+  continuous audio after the worklet fix; occasional FAC errors at the Pluto file-loop boundary
+  were reported, but the same operator sees no errors on a strong real station. The loop boundary
+  is not yet independently measured, so do not tune the real-signal decoder against it.
+
+- The DRM floating readout now fits service, mode, measured FAC MER and estimated FAC SNR,
+  FAC good/bad, MSC/audio counts and a compact FAC constellation within its default
+  460 × 240 window. SNR is decision-directed from weighted FAC errors, corrected for
+  carrier power and nominal occupied bandwidth; it is not a calibrated RF noise-floor
+  measurement and is shown as unavailable until a complete FAC frame. The committed
+  HE-AAC fixture reports MER 19.9 dB / SNR 21 dB through the wasm ABI. A retune/stream
+  reset clears the prior station and constellation immediately, including on an empty
+  frequency. Dark/light and narrow-window component screenshots were checked.
+- DRM30 currently fixes its decoded occupancy to SO3 (10 kHz); the old Filter buttons
+  misleadingly offered 0.5–180 kHz although the digital decoder ignored them and the
+  backend DDC remained ~48.8 kS/s for all narrow choices. Selecting DRM now applies
+  12 kHz DDC headroom, labels the 10 kHz channel as automatic (manual choices hidden),
+  and highlights ±5 kHz rather than FT8's +100..3000 Hz. This does **not** implement
+  other DRM30 occupancies or mode E. The DRM core baseband rate is pinned to 48 kS/s
+  independently of a 44.1/48 kHz sound card; PCM playback still follows the card rate.
+- Rechecking `/tmp/cnr_rec.f32` through the current block-fed wasm ABI: the normal 32 kHz
+  xHE interval outputs 1.203 s PCM per ~1.2 s burst on average, but after block 564 there
+  is a ~14 s gap until block 775. The FAC count then restarts (93 -> 8), consistent with
+  re-acquisition. This capture does not prove the smaller audible joins are codec bugs,
+  and FAC good/bad counters reset at re-acquisition; a current `err 0` alone cannot prove
+  continuous MSC or PCM. No live-device e2e was run for this diagnosis.
 
 **Reliable offline data for the next session.** A known-audio bench loop: `cowtts` synthesises
 speech to `/tmp/cowtts_test.wav`, `decdrm tx` builds `/home/hui/drm-bench/drm_iq_tts.wav`

@@ -324,6 +324,10 @@ export function applySdrTune() {
 
 export function applySdrDemod() {
   const mode = sdrDemod.get();
+  // The current DRM30 receiver decodes SO3 (10 kHz). Narrow IF buttons are not a DRM
+  // occupancy selector; give the DDC a stable margin regardless of an analog-mode preset.
+  if (mode === 'drmplus' && sdrIfbw.get() !== 100000) sdrIfbw.set(100000);
+  if (mode === 'drm' && sdrIfbw.get() !== 12000) sdrIfbw.set(12000);
   // The browser DSP is told now, not at the next STATUS: the demodulator is what the listener is
   // changing, and waiting up to a second for it felt like the button had not worked.
   pushSdrPipeline();
@@ -435,8 +439,18 @@ function syncSdrButtons() {
     el.classList.toggle('active', (el as HTMLElement).dataset.sdrDemod === mode);
   });
   const ibw = Math.round(sdrIfbw.get());
-  document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
-    el.classList.toggle('active', Number((el as HTMLElement).dataset.sdrIfbw) === ibw);
+  const drm = mode === 'drm' || mode === 'drmplus';
+  const filterGroup = document.getElementById('sdr-ifbw-group');
+  if (filterGroup) filterGroup.style.display = drm ? 'none' : '';
+  const drmNote = document.getElementById('sdr-drm-filter-note');
+  if (drmNote) {
+    drmNote.style.display = drm ? '' : 'none';
+    drmNote.textContent = mode === 'drmplus' ? t('drmplus_filter_fixed') : t('drm_filter_fixed');
+    drmNote.title = mode === 'drmplus' ? t('drmplus_filter_tip') : t('drm_filter_tip');
+  }
+  document.querySelectorAll<HTMLButtonElement>('[data-sdr-ifbw]').forEach((el) => {
+    el.disabled = drm;
+    el.classList.toggle('active', !drm && Number(el.dataset.sdrIfbw) === ibw);
   });
   const dv = sdrDeemph.get();
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
@@ -835,6 +849,8 @@ export function bindActions() {
     void initSdrDemodGroup(demodGroup, {
       onSelect: (id) => {
         sdrDemod.set(id);
+        if (id === 'drmplus') sdrIfbw.set(100000);
+        if (id === 'drm') sdrIfbw.set(12000);
         // FT8 occupies ~3 kHz (the decoder searches 100-3000 Hz) - the industry setting is a
         // normal SSB filter, 2.4-3 kHz. A wider IF BW only adds broadband power through the
         // chain: measured, a strong nearby transmitter with a 391 kHz capture clipped the
@@ -862,6 +878,7 @@ export function bindActions() {
   }
   document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
     el.addEventListener('click', () => {
+      if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
       ifbwChosenByUser = true;                   // the operator's own choice: never auto-override it
       sdrIfbw.set(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
       renderSdrState();
@@ -1121,6 +1138,7 @@ function sdrTuneBy(dHz: number) {
 }
 
 function sdrCycleIfbw(dir: number) {
+  if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
   const cur = sdrIfbw.get();
   let idx = SDR_IFBW.findIndex(v => v >= cur);
   if (idx < 0) idx = SDR_IFBW.length - 1;

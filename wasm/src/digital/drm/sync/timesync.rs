@@ -78,6 +78,9 @@ pub struct SymbolWindow {
     /// Normalised cyclic-prefix correlation (0..=1); `None` when the guard is no longer
     /// buffered.
     pub guard_corr: Option<f64>,
+    /// Residual frequency offset from the cyclic-prefix phase (unambiguous to half a
+    /// carrier spacing). Mode E has no continuous frequency pilots to track it.
+    pub guard_offset_hz: Option<f64>,
     /// Mean power of the window's samples.
     pub power: f64,
 }
@@ -548,7 +551,8 @@ impl TimeSync {
         }
         let samples = self.buf[rel..rel + n].to_vec();
         let power = samples.iter().map(|s| s.norm_sqr()).sum::<f64>() / n as f64;
-        let guard_corr = self.guard_correlation(rel);
+        let (guard_corr, guard_offset_hz) = self.guard_correlation(rel)
+            .map_or((None, None), |(rho, phase)| (Some(rho), Some(phase)));
         let shift = match self.last_start {
             Some(l) => start_i - (l + self.mode.symbol_len() as i64),
             None => 0,
@@ -561,16 +565,16 @@ impl TimeSync {
             self.buf.drain(..drop);
             self.buf_base += drop as i64;
         }
-        Some(SymbolWindow { samples, start: start_i, shift, guard_corr, power })
+        Some(SymbolWindow { samples, start: start_i, shift, guard_corr, guard_offset_hz, power })
     }
 
     /// Normalised cyclic-prefix correlation for a window at buffer index `rel`, over guard
     /// placements within +/-G/2 of the window start (the timing loop may park the window
     /// anywhere in the guard, so its exact position is not a reference).
-    fn guard_correlation(&self, rel: usize) -> Option<f64> {
+    fn guard_correlation(&self, rel: usize) -> Option<(f64, f64)> {
         let g = self.mode.guard_len();
         let n = self.mode.fft_size();
-        let mut best: Option<f64> = None;
+        let mut best: Option<(f64, f64)> = None;
         for step in -4isize..=4 {
             let d = step * g as isize / 8;
             let first = rel as isize - g as isize + d;
@@ -586,7 +590,9 @@ impl TimeSync {
                 p += a.norm_sqr() + b.norm_sqr();
             }
             let rho = if p > 0.0 { 2.0 * c.norm() / p } else { 0.0 };
-            best = Some(best.map_or(rho, |b: f64| b.max(rho)));
+            let hz = -c.arg() * f64::from(self.mode.sample_rate())
+                / (2.0 * core::f64::consts::PI * n as f64);
+            if best.is_none_or(|(score, _)| rho > score) { best = Some((rho, hz)); }
         }
         best
     }

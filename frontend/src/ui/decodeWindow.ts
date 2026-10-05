@@ -1,13 +1,14 @@
 // The decode window: one floating panel for what the demodulator decoded.
 //
-// Two modes share it, because they are the same thing to an operator ("show me the text"):
+// FT8, CW and DRM share one window because an operator asks for the current decoded output:
 //
-//   * FT8 - a table of decodes, newest first, with the UTC time, SNR, audio offset and frequency.
-//     Clicking a row tunes to that signal, the only action an FT8 operator takes on a decode;
-//   * CW - the text the Morse decoder heard, line by line, live while the sender is keying.
+//   * FT8 - a table of decodes, newest first, with UTC time, SNR, audio offset and frequency.
+//     Clicking a row tunes to that signal;
+//   * CW - the text the Morse decoder heard, line by line, live while keying;
+//   * DRM - the current station and channel health, with an FAC constellation below.
 //
-// One toggle opens it: it is enabled while the demodulator is one that decodes (FT8 or CW) and the
-// window then shows that mode's pane. The interaction is the same in both:
+// One toggle opens it in FT8, CW or DRM and the window shows that mode's pane. The interaction
+// is the same in all three:
 //
 //   * draggable by its head and resizable from all four edges and corners (position, size and
 //     opacity persist, like the keypad);
@@ -32,7 +33,7 @@ export interface DecodeWindowHooks {
 }
 
 /// The demodulators whose output this window shows.
-const DECODING_MODES = ['ft8', 'cw', 'drm'] as const;
+const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus'] as const;
 export type DecodeMode = (typeof DECODING_MODES)[number] | null;
 
 const LS_KEY = 'websa-decode-window';
@@ -398,7 +399,7 @@ function renderCwMeter(): void {
 function renderContent(): void {
 	const showFt8 = mode === 'ft8';
 	const showCw = mode === 'cw';
-	const showDrm = mode === 'drm';
+	const showDrm = mode === 'drm' || mode === 'drmplus';
 	const table = element('decode-window-table');
 	const cw = element('decode-window-cw');
 	const drm = element('decode-window-drm');
@@ -409,7 +410,11 @@ function renderContent(): void {
 	if (drm) drm.style.display = showDrm ? '' : 'none';
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
-	if (title) title.textContent = showCw ? 'CW' : showDrm ? 'DRM' : 'FT8';
+	const utc = element('btn-decode-utc');
+	if (utc) utc.style.display = showDrm ? 'none' : '';
+	const clear = element('btn-decode-clear');
+	if (clear) clear.style.display = showDrm ? 'none' : '';
+	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM') : 'FT8';
 	const timeTh = element('decode-window-time-th');
 	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
 	if (count) {
@@ -421,34 +426,66 @@ function renderContent(): void {
 	else if (showDrm) renderDrm();
 }
 
-/** Render the DRM pane: the decoded metadata lines and the FAC constellation. */
+/** Render one service snapshot, not a growing history of per-symbol diagnostics. */
 function renderDrm(): void {
-	const lines = element('decode-window-drm-lines');
-	if (lines) {
-		lines.textContent = drmStatus().lines.join('\n');
+	const { lines, snrDb, constellation } = drmStatus();
+	const locked = lines.find((line) => line.startsWith('locked: '));
+	const station = lines.find((line) => line.startsWith('station: '))?.slice(9);
+	const counts = lines.find((line) => line.includes(' MSC frames,'))
+		?.match(/^(\d+) MSC frames, (\d+) audio AUs, FAC ok (\d+) err (\d+)/);
+	const search = lines.find((line) => line.startsWith('DRM searching: '));
+	const debug = lines.filter((line) => line.startsWith('dbg ')).map((line) => line.slice(4)).join('\n');
+	const put = (id: string, value: string): void => { const el = element(id); if (el) el.textContent = value; };
+	const stationName = station && !station.startsWith('(') ? station : t('drm_station_waiting');
+	put('decode-drm-station', stationName);
+	const stationEl = element('decode-drm-station');
+	if (stationEl) stationEl.title = stationName;
+	const searchMode = search?.match(/,\s*([A-E])\s+([\d.]+\s*kHz)/);
+	const modeText = locked ? `${t('drm_mode')} ${locked.slice(8).replace(', ', ' · ')}`
+		: searchMode ? `${t('drm_mode')} ${searchMode[1]} · ${searchMode[2]}` : '';
+	put('decode-drm-mode', modeText);
+	const modeBadge = element('decode-drm-mode');
+	if (modeBadge) modeBadge.style.display = modeText ? '' : 'none';
+	put('decode-drm-status', locked ? t('drm_locked') : search ? t('drm_searching') : t('drm_waiting'));
+	const lockBadge = element('decode-drm-lock');
+	lockBadge?.classList.toggle('on', !!locked);
+	if (lockBadge) lockBadge.title = search ?? '';
+	const main = element('decode-drm-main');
+	if (main) main.style.display = locked ? 'grid' : 'none';
+	const measuredMer = lines.find((line) => line.startsWith('FAC MER '))?.match(/^FAC MER (-?\d+(?:\.\d+)?) dB/);
+	put('decode-drm-mer', measuredMer?.[1] ?? '—');
+	const metrics = element('decode-drm-metrics');
+	if (metrics) metrics.style.display = locked ? 'grid' : 'none';
+	put('decode-drm-msc', counts?.[1] ?? '—');
+	put('decode-drm-aus', counts?.[2] ?? '—');
+	put('decode-drm-fac-ok', counts?.[3] ?? '—');
+	put('decode-drm-fac-err', counts?.[4] ?? '—');
+	element('decode-drm-fac-err')?.classList.toggle('error', Number(counts?.[4] ?? 0) > 0);
+	const snr = element('decode-drm-snr');
+	if (snr) {
+		const measured = lines.find((line) => line.startsWith('FAC SNR '))?.slice(8);
+		snr.textContent = measured ?? (Number.isFinite(snrDb) ? `${snrDb?.toFixed(0)} dB` : '—');
+		snr.title = snr.textContent === '—' ? t('drm_snr_unavailable') : '';
 	}
+	const details = element('decode-drm-details');
+	if (details) details.style.display = debug ? '' : 'none';
+	put('decode-drm-debug', debug);
 	const plot = element('decode-window-drm-plot') as HTMLCanvasElement | null;
-	if (!plot) return;
+	if (!plot || !locked) return;
 	const ctx = plot.getContext('2d');
 	if (!ctx) return;
-	const width = plot.width;
-	const height = plot.height;
+	const { width, height } = plot;
 	ctx.clearRect(0, 0, width, height);
-	const points = drmStatus().constellation;
-	if (!points.length) return;
-	// 4-QAM points are at ±1/√2 on each axis; give the scatter a small margin.
 	const span = 1.8;
 	const cx = width / 2;
 	const cy = height / 2;
 	const scale = Math.min(width, height) / span;
-	ctx.fillStyle = '#7fb2f0';
-	for (const p of points) {
-		const x = cx + p.re * scale;
-		const y = cy - p.im * scale;
-		ctx.fillRect(x - 1, y - 1, 2, 2);
+	const style = getComputedStyle(plot);
+	ctx.fillStyle = style.getPropertyValue('--text').trim() || '#00cc00';
+	for (const p of constellation) {
+		ctx.fillRect(cx + p.re * scale - 1, cy - p.im * scale - 1, 2, 2);
 	}
-	// The four decision points, faintly, for reference.
-	ctx.strokeStyle = 'rgba(127, 178, 240, 0.35)';
+	ctx.strokeStyle = style.getPropertyValue('--label').trim() || '#008800';
 	for (const [re, im] of [[0.7071, 0.7071], [-0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, -0.7071]]) {
 		ctx.beginPath();
 		ctx.arc(cx + re * scale, cy - im * scale, 5, 0, Math.PI * 2);
@@ -516,7 +553,9 @@ export function decodeWindowMode(): DecodeMode {
 export function setDecodeWindowAvailable(demod: string): void {
 	const next = (DECODING_MODES as readonly string[]).includes(demod) ? (demod as DecodeMode) : null;
 	const changed = next !== mode;
+	const leavingDrm = (mode === 'drm' || mode === 'drmplus') && next !== mode;
 	mode = next;
+	if (leavingDrm) clearDrm();
 	const toggle = button('btn-decode-window');
 	if (toggle) {
 		toggle.disabled = next === null;
@@ -559,7 +598,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	}
 	element('btn-decode-clear')?.addEventListener('click', () => {
 		if (mode === 'cw') clearCwLog();
-		else if (mode === 'drm') clearDrm();
+		else if (mode === 'drm' || mode === 'drmplus') clearDrm();
 		else clearFt8Spots();
 		renderContent();
 	});

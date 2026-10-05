@@ -64,14 +64,20 @@ if (whole) {
 	const incPtr = dsp.alloc(65536 * 2);
 	let incTotal = 0;
 	let incBlocks = 0;
+	const bursts = [];
 	const incremental = Boolean(process.env.WEBSA_DRM_INCREMENTAL);
 	for (let off = 0; off < COMPLEX; off += BLOCK) {
 		const n = Math.min(BLOCK, COMPLEX - off);
 		dsp.f32View(blockPtr, n * 2).set(iq.subarray(off * 2, off * 2 + n * 2));
 		pushed = dsp.exports.websa_dsp_demod_push(handle, blockPtr, n);
+		if (pushed) readMessages();
 		if (incremental) {
-			// Drain like the DSP worker does, so a delivery stall shows up here too.
-			incTotal += dsp.exports.websa_dsp_drm_audio_pcm(handle, incPtr, 65536);
+			// Record the production cadence, not just the total: the worklet may discard an
+			// entire tail if one decode produces more audio than its jitter buffer holds.
+			const made = dsp.exports.websa_dsp_drm_audio_pcm(handle, incPtr, 65536);
+			incTotal += made;
+			if (made) bursts.push({ block: incBlocks, samples: made,
+				fac: lastLines.findLast((line) => line.includes('FAC ok')) ?? '' });
 			incBlocks++;
 			if (incBlocks % 20 === 0) {
 				console.error(`  [inc] blocks=${incBlocks} pcm_total=${incTotal}`);
@@ -79,7 +85,7 @@ if (whole) {
 		}
 	}
 	dsp.free(incPtr, 65536 * 2);
-	if (incremental) console.error(`  [inc] final pcm_total=${incTotal}`);
+	if (incremental) console.error(`  [inc] final pcm_total=${incTotal} bursts=${JSON.stringify(bursts)}`);
 	dsp.free(blockPtr, BLOCK * 2 * 4);
 }
 readMessages();

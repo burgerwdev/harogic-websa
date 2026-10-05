@@ -103,10 +103,17 @@ pub unsafe extern "C" fn websa_dsp_demod_new(
         pipeline.set_analog_demod(Box::new(demod));
         return register(PipelineState { pipeline, out: PipelineOutput::default() });
     }
-    if let Some(demod) = digital::build(&mode, out_rate) {
+    let digital_rate = match mode.as_str() {
+        "drm" => 48_000.0,
+        "drmplus" => 96_000.0,
+        _ => out_rate,
+    };
+    if let Some(demod) = digital::build(&mode, digital_rate) {
         let blank = audio::chain_for_mode(&mode, out_rate, AudioPolicy::default());
         let mut pipeline = Pipeline::new(PathKind::Digital, blank, AudioPolicy::default());
-        pipeline.set_digital_demod(demod, fs_in, out_rate);
+        // DRM30 OFDM geometry is 48 kS/s even when the sound card is 44.1 kHz. The decoded
+        // PCM has its own reported rate and the worker resamples it for the AudioWorklet.
+        pipeline.set_digital_demod(demod, fs_in, digital_rate);
         return register(PipelineState { pipeline, out: PipelineOutput::default() });
     }
     0

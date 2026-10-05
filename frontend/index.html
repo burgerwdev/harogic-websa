@@ -245,6 +245,7 @@
                 <button class="btn" id="btn-decode-window" data-action="toggle-decode-window" data-i18n-title="decode_window_tip" data-i18n-attr="title" disabled data-i18n="off">Off</button>
               </div></div>
             <div class="param-row"><label data-i18n="if_filter">Filter</label>
+              <span class="cur-val" id="sdr-drm-filter-note" data-i18n="drm_filter_fixed" data-i18n-title="drm_filter_tip" data-i18n-attr="title" style="display:none;">DRM 10 kHz (auto)</span>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
                 <button class="btn" data-sdr-ifbw="500">0.5k</button>
                 <button class="btn" data-sdr-ifbw="2400">2.4k</button>
@@ -724,10 +725,35 @@
     </table>
     <!-- CW: the decoded Morse text, one line per transmission (live while keying). -->
     <div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
-    <!-- DRM: the decoded service metadata and the equalised FAC 4-QAM constellation. -->
+    <!-- DRM: live service and decode health above the equalised FAC constellation. -->
     <div class="decode-drm" id="decode-window-drm" style="display:none;">
-      <div class="decode-drm-lines" id="decode-window-drm-lines"></div>
-      <canvas class="decode-drm-plot" id="decode-window-drm-plot" width="240" height="200"></canvas>
+      <div class="decode-drm-service">
+        <strong class="decode-drm-station" id="decode-drm-station"></strong>
+        <span class="decode-drm-badge decode-drm-mode" id="decode-drm-mode"></span>
+        <span class="decode-drm-badge decode-drm-lock" id="decode-drm-lock"><span id="decode-drm-status"></span></span>
+      </div>
+      <div class="decode-drm-main" id="decode-drm-main">
+        <div class="decode-drm-readouts">
+          <div class="decode-drm-quality">
+            <span data-i18n="drm_fac_mer">FAC MER</span>
+            <strong id="decode-drm-mer">—</strong><span class="decode-drm-unit">dB</span>
+            <div class="decode-drm-snr"><span>SNR</span><span id="decode-drm-snr">—</span></div>
+          </div>
+          <dl class="decode-drm-metrics" id="decode-drm-metrics">
+            <div><dt>FAC</dt><dd title="OK / errors" data-i18n-title="drm_fac_counts" data-i18n-attr="title"><span id="decode-drm-fac-ok">—</span><span class="decode-drm-divider">/</span><span id="decode-drm-fac-err">—</span></dd></div>
+            <div><dt title="MSC frames" data-i18n-title="drm_msc_frames" data-i18n-attr="title">MSC</dt><dd id="decode-drm-msc">—</dd></div>
+            <div><dt title="Audio AUs" data-i18n="drm_audio_short" data-i18n-title="drm_audio_aus" data-i18n-attr="title">Audio</dt><dd id="decode-drm-aus">—</dd></div>
+          </dl>
+        </div>
+        <figure class="decode-drm-constellation" id="decode-drm-constellation">
+          <canvas class="decode-drm-plot" id="decode-window-drm-plot" width="144" height="144"></canvas>
+          <figcaption data-i18n="drm_constellation">FAC constellation</figcaption>
+        </figure>
+      </div>
+      <details class="decode-drm-details" id="decode-drm-details">
+        <summary data-i18n="drm_details">Decoder details</summary>
+        <code id="decode-drm-debug"></code>
+      </details>
     </div>
   </div>
   <!-- Resize handles: four edges and four corners (a single corner grip was all the first

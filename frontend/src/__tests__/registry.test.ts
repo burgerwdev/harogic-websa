@@ -88,7 +88,7 @@ describe('the plugin manifest read from dsp.wasm', () => {
 		const plugins = await manifest();
 		setPluginManifest(plugins);
 		expect(analogModeIds()).toEqual(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm']);
-		expect(digitalModeIds()).toEqual(['ft8', 'drm']);
+		expect(digitalModeIds()).toEqual(['ft8', 'drm', 'drmplus']);
 		expect(ddcStageIds()).toContain('nco');
 		expect(audioStageIds()).toContain('dc_block');
 		// Availability is read from the manifest, not frozen here: every id the module reports as

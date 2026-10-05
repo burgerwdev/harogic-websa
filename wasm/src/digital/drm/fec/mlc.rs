@@ -10,12 +10,14 @@ use super::qam::{EqCell, Mapping};
 use super::viterbi::ViterbiDecoder;
 use super::BitMetric;
 use crate::digital::drm::tables::{
-    BIT_INTERLEAVER_T0, CODE_RATES, FAC_RATE, MSC16_SM, MSC64_HMMIX, MSC64_HMSYM, MSC64_SM,
+    BIT_INTERLEAVER_T0, CODE_RATES, FAC_RATE, MSC16_E, MSC16_SM, MSC64_HMMIX, MSC64_HMSYM, MSC64_SM,
     NUM_FAC_CELLS, SDC4_RATE, SDC16_RATES, PunctureMask,
 };
 
 /// Number of FAC information bits per frame (incl. CRC).
 pub const FAC_BITS: usize = 72;
+/// Mode E FAC has two service descriptors, per ES 201 980 §6.3.5.
+pub const FAC_BITS_E: usize = 116;
 
 /// Protection levels of the MSC (from the SDC multiplex description).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,16 +67,20 @@ fn floor_bits(idx: usize, coded: i64) -> usize {
 impl MlcParams {
     /// FAC: 4-QAM, R = 0.6, 72 bits in 65 cells.
     pub fn fac() -> Self {
-        Self::fac_cells(NUM_FAC_CELLS)
+        Self::fac_cells(NUM_FAC_CELLS, FAC_BITS, FAC_RATE)
     }
 
-    /// FAC for a robustness mode: the same 4-QAM/coding, over the mode's cell count (mode E,
-    /// DRM+, carries 244 cells, ES 201 980 §8.5.2 table 66).
+    /// Mode E uses 244 cells, 116 input bits and a 1/4 code (table 40).
     pub fn fac_for(mode: crate::digital::drm::params::RobustnessMode) -> Self {
-        Self::fac_cells(crate::digital::drm::tables::fac_cell_count(mode))
+        let cells = crate::digital::drm::tables::fac_cell_count(mode);
+        if mode == crate::digital::drm::params::RobustnessMode::E {
+            Self::fac_cells(cells, FAC_BITS_E, 0)
+        } else {
+            Self::fac_cells(cells, FAC_BITS, FAC_RATE)
+        }
     }
 
-    fn fac_cells(cells: usize) -> Self {
+    fn fac_cells(cells: usize, bits: usize, rate: usize) -> Self {
         Self {
             mapping: Mapping::Qam4,
             cells,
@@ -82,13 +88,13 @@ impl MlcParams {
             n2: cells,
             levels: vec![LevelParams {
                 bits_a: 0,
-                bits_b: FAC_BITS,
+                bits_b: bits,
                 rate_a: 0,
-                rate_b: FAC_RATE,
+                rate_b: rate,
                 interleaver: Some(1),
             }],
             bits_hpp: 0,
-            bits_lpp: FAC_BITS,
+            bits_lpp: bits,
             bits_vspp: 0,
             tail_rule: TailRule::Standard,
             is_fac: true,
@@ -97,13 +103,22 @@ impl MlcParams {
 
     /// SDC with 4-QAM (R = 0.5) or 16-QAM (R = 0.5) over `n_sdc` cells.
     pub fn sdc(mapping: Mapping, n_sdc: usize) -> Self {
+        Self::sdc_with_rate(mapping, n_sdc, SDC4_RATE)
+    }
+
+    /// Mode E 4-QAM SDC: protection flag 0 = rate 1/2, 1 = rate 1/4 (table 38).
+    pub fn sdc_e(n_sdc: usize, protection: u8) -> Self {
+        Self::sdc_with_rate(Mapping::Qam4, n_sdc, if protection == 0 { SDC4_RATE } else { 0 })
+    }
+
+    fn sdc_with_rate(mapping: Mapping, n_sdc: usize, sdc4_rate: usize) -> Self {
         let coded = 2 * n_sdc as i64 - 12;
         let levels = match mapping {
             Mapping::Qam4 => vec![LevelParams {
                 bits_a: 0,
-                bits_b: floor_bits(SDC4_RATE, coded),
+                bits_b: floor_bits(sdc4_rate, coded),
                 rate_a: 0,
-                rate_b: SDC4_RATE,
+                rate_b: sdc4_rate,
                 interleaver: Some(1),
             }],
             Mapping::Qam16 => SDC16_RATES
@@ -137,6 +152,15 @@ impl MlcParams {
     /// MSC over `n_mux` cells. `part_a_bytes` is the total length of the higher
     /// protected parts of all streams (bytes per multiplex frame).
     pub fn msc(mapping: Mapping, n_mux: usize, prot: MscProtection, part_a_bytes: usize) -> Self {
+        Self::msc_with_rates(mapping, n_mux, prot, part_a_bytes, false)
+    }
+
+    /// Mode E uses different 16-QAM rates (table 31) and admits 4-QAM (table 29).
+    pub fn msc_e(mapping: Mapping, n_mux: usize, prot: MscProtection, part_a_bytes: usize) -> Self {
+        Self::msc_with_rates(mapping, n_mux, prot, part_a_bytes, true)
+    }
+
+    fn msc_with_rates(mapping: Mapping, n_mux: usize, prot: MscProtection, part_a_bytes: usize, drm_plus: bool) -> Self {
         let x = 8.0 * part_a_bytes as f64;
         let n1_for = |rates: &[usize], rylcm: usize, k: f64| -> usize {
             let sum: f64 = rates.iter().map(|&r| rate_of(r)).sum();
@@ -155,8 +179,9 @@ impl MlcParams {
         let (n1, levels, tail_rule, vspp) = match mapping {
             Mapping::Qam16 | Mapping::Qam64Sm => {
                 let (ra, rb, rylcm): (Vec<usize>, Vec<usize>, usize) = if mapping == Mapping::Qam16 {
-                    let a = MSC16_SM[prot.part_a.min(1)];
-                    let b = MSC16_SM[prot.part_b.min(1)];
+                    let rates = if drm_plus { &MSC16_E[..] } else { &MSC16_SM[..] };
+                    let a = rates[prot.part_a.min(rates.len() - 1)];
+                    let b = rates[prot.part_b.min(rates.len() - 1)];
                     (a.0.to_vec(), b.0.to_vec(), a.1)
                 } else {
                     let a = MSC64_SM[prot.part_a.min(3)];
@@ -226,7 +251,19 @@ impl MlcParams {
                 let vspp = levels[0].bits_b;
                 (n1, levels, TailRule::HmMix, vspp)
             }
-            Mapping::Qam4 => panic!("DRM30 MSC does not use 4-QAM"),
+            Mapping::Qam4 => {
+                let ra = crate::digital::drm::tables::MSC4_E[prot.part_a.min(3)];
+                let rb = crate::digital::drm::tables::MSC4_E[prot.part_b.min(3)];
+                let n1 = n1_for(&[ra], CODE_RATES[ra].ry, 2.0);
+                let n2 = n_mux - n1;
+                (n1, vec![LevelParams {
+                    bits_a: (2.0 * n1 as f64 * rate_of(ra)) as usize,
+                    bits_b: floor_bits(rb, 2 * n2 as i64 - 12),
+                    rate_a: ra,
+                    rate_b: rb,
+                    interleaver: Some(1),
+                }], TailRule::Standard, 0)
+            },
         };
 
         let first = if vspp > 0 { 1 } else { 0 };
@@ -247,6 +284,19 @@ impl MlcParams {
     }
 
     /// Total information bits per block.
+    #[cfg(test)]
+    pub(crate) fn encode_test_single_level(&self, bits: &[u8]) -> Vec<crate::digital::drm::dsp::Cplx> {
+        assert!(self.levels.len() == 1 && bits.len() == self.bits_lpp);
+        let mut dispersed = bits.to_vec();
+        dispersal::apply(&mut dispersed, 0);
+        let mut coded = Vec::new();
+        conv::encode(&dispersed, &self.masks()[0], &mut coded);
+        self.interleavers()[1].interleave(&mut coded);
+        let mut symbols = vec![crate::digital::drm::dsp::Cplx::zero(); self.cells];
+        Mapping::Qam4.map(&[coded], &mut symbols);
+        symbols
+    }
+
     pub fn total_bits(&self) -> usize {
         self.bits_hpp + self.bits_lpp + self.bits_vspp
     }
@@ -376,5 +426,85 @@ impl MlcDecoder {
         p.departition(&self.info, out);
         dispersal::apply(out, p.bits_vspp);
         true
+    }
+}
+
+#[cfg(test)]
+mod mode_e_tests {
+    use super::*;
+    use crate::digital::drm::dsp::Cplx;
+    use crate::digital::drm::params::RobustnessMode;
+    use crate::digital::drm::fec::puncture::coded_len;
+
+    #[test]
+    fn mode_e_fac_codes_116_bits_into_244_cells_and_decodes_them() {
+        let p = MlcParams::fac_for(RobustnessMode::E);
+        assert_eq!(p.total_bits(), 116);
+        assert_eq!(p.cells, 244);
+        assert_eq!(p.levels[0].rate_b, 0); // 1/4
+        let bits: Vec<u8> = (0..116).map(|i| ((i * 37 + i / 7) % 2) as u8).collect();
+        let mut dispersed = bits.clone();
+        dispersal::apply(&mut dispersed, 0);
+        let masks = p.masks();
+        let mut coded = Vec::new();
+        conv::encode(&dispersed, &masks[0], &mut coded);
+        assert_eq!(coded.len(), 488);
+        p.interleavers()[1].interleave(&mut coded);
+        let mut symbols = vec![Cplx::zero(); p.cells];
+        Mapping::Qam4.map(&[coded], &mut symbols);
+        let cells: Vec<EqCell> = symbols.into_iter().map(|sig| EqCell { sig, chan: 1.0 }).collect();
+        let mut receiver = MlcDecoder::new(p, 0);
+        let mut recovered = Vec::new();
+        assert!(receiver.decode(&cells, &mut recovered));
+        assert_eq!(recovered, bits);
+    }
+
+    #[test]
+    fn mode_e_16qam_uses_six_mother_bits_and_roundtrips_soft_decoding() {
+        let p = MlcParams::msc_e(Mapping::Qam16, 7460,
+            MscProtection { part_a: 0, part_b: 0, hierarchical: 0 }, 0);
+        assert_eq!(p.total_bits(), 9938);
+        let masks = p.masks();
+        assert!(masks[0].iter().any(|&m| m & 0b11_0000 != 0));
+        let mut source = Vec::new();
+        let mut coded_levels = Vec::new();
+        let interleavers = p.interleavers();
+        for (j, level) in p.levels.iter().enumerate() {
+            let bits: Vec<u8> = (0..level.bits_b)
+                .map(|i| ((i * 31 + i / 3 + j * 7) % 2) as u8).collect();
+            source.extend_from_slice(&bits);
+            let mut coded = Vec::new();
+            conv::encode(&bits, &masks[j], &mut coded);
+            assert_eq!(coded.len(), 2 * p.cells);
+            if let Some(t) = level.interleaver { interleavers[t].interleave(&mut coded); }
+            coded_levels.push(coded);
+        }
+        let mut symbols = vec![Cplx::zero(); p.cells];
+        Mapping::Qam16.map(&coded_levels, &mut symbols);
+        let cells: Vec<EqCell> = symbols.into_iter().map(|sig| EqCell { sig, chan: 1.0 }).collect();
+        let mut decoded = Vec::new();
+        assert!(MlcDecoder::new(p, 1).decode(&cells, &mut decoded));
+        dispersal::apply(&mut source, 0);
+        assert_eq!(decoded, source);
+    }
+
+    #[test]
+    fn mode_e_sdc_and_msc_code_sizes_match_standard_tables() {
+        for (protection, bits) in [(0, 930), (1, 465)] {
+            let sdc = MlcParams::sdc_e(936, protection);
+            assert_eq!(sdc.total_bits(), bits);
+            assert_eq!(coded_len(&sdc.masks()[0]), 1872);
+        }
+        for (mapping, totals) in [
+            (Mapping::Qam4, [3727, 4969, 5962, 7454]),
+            (Mapping::Qam16, [9938, 12243, 14907, 18635]),
+        ] {
+            for (level, expected) in totals.into_iter().enumerate() {
+                let p = MlcParams::msc_e(mapping, 7460,
+                    MscProtection { part_a: 0, part_b: level, hierarchical: 0 }, 0);
+                assert_eq!(p.total_bits(), expected, "{mapping:?} protection {level}");
+                assert!(p.masks().iter().all(|m| coded_len(m) == 14920), "{mapping:?} protection {level}");
+            }
+        }
     }
 }

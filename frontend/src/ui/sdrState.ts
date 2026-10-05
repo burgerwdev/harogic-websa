@@ -58,8 +58,9 @@ export const sdrIfbw = createParam<number>('sdr.ifbw', {
  * The band the active demodulator actually reads, in Hz relative to the listen frequency.
  *
  * An analog demodulator reads its IF passband, symmetric about the listen frequency. A protocol
- * decoder does not: FT8 reads 100..3000 Hz *above* the dial, so highlighting a symmetric passband
- * claims half a band the decoder cannot read and hides half of the one it can.
+ * decoder does not: FT8 reads 100..3000 Hz above the dial, while the current DRM30 receiver
+ * decodes a 10 kHz channel centered on the carrier (SO3), independent of the analog IF button.
+ * Showing FT8's band over DRM hid most of the waveform from the operator.
  *
  * That is not cosmetic. Measured on the bench with a Pluto transmitting at 411.0015 MHz and the dial
  * parked on the tone (offset 0), the decoder returned nothing in 5 of 5 slots while the overlay still
@@ -68,6 +69,8 @@ export const sdrIfbw = createParam<number>('sdr.ifbw', {
  * into a visible "the signal is not inside the band the decoder reads".
  */
 export function demodBandHz(demod: string, ifBw: number): [number, number] {
+	if (demod === 'drmplus') return [-50_000, 50_000];
+	if (demod === 'drm') return [-5000, 5000];
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	return [-ifBw / 2, ifBw / 2];
 }
