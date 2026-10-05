@@ -321,6 +321,9 @@ impl DrmReceiver {
             self.mode = Some(mode);
             self.map = Some(cmap.clone());
             self.spf = mode.symbols_per_frame();
+            // The MSC super-frame assembly holds one bucket per super-frame symbol, which
+            // depends on the mode (mode A/B: 45, mode C: 60, mode D: 72).
+            self.msc_super = vec![Vec::new(); cmap.msc_carriers.len()];
             self.nco = Some(crate::digital::drm::sync::nco::Nco::new(coarse));
             let mut ft = crate::digital::drm::sync::freqtrack::FreqTrack::new(&cmap);
             ft.set_freq_time_constant(0.1);
@@ -368,7 +371,7 @@ impl DrmReceiver {
                     self.freq_track += o.freq_delta_hz;
                     nco.set_offset(self.freq_track);
                     self.sym_count += 1;
-                    if self.sym_count == 45 {
+                    if self.sym_count == 3 * self.spf {
                         ft.set_freq_time_constant(1.0);
                     }
                 }
@@ -587,7 +590,8 @@ impl DrmReceiver {
         }
         self.msc_prev_index = Some(frame_index);
         if frame_index == 0
-            && (0..45).all(|s| map.msc_carriers[s].is_empty() || !self.msc_super[s].is_empty())
+            && (0..self.msc_super.len())
+                .all(|s| map.msc_carriers[s].is_empty() || !self.msc_super[s].is_empty())
         {
             let mut all: Vec<EqCell> = Vec::new();
             for c in self.msc_super.iter() {
@@ -607,7 +611,7 @@ impl DrmReceiver {
             }
         }
         for (out_sym, cells) in buf {
-            let super_sym = frame_index as usize * 15 + out_sym;
+            let super_sym = frame_index as usize * self.spf + out_sym;
             for &c in &map.msc_carriers[super_sym] {
                 if let Some(cell) = cells.get(c as usize) {
                     self.msc_super[super_sym].push(*cell);

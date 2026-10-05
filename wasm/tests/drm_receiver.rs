@@ -302,6 +302,34 @@ fn probe_capture_env() {
 }
 
 #[test]
+fn decodes_modes_a_c_and_d_end_to_end() {
+    // The chain is mode-generic, but only mode B had an end-to-end fixture. These are real
+    // DecDRM transmissions (HE-AAC mono, 12 kHz core) for the three other DRM30 modes.
+    for (mode, file) in [
+        (RobustnessMode::A, "drm_modeA_so3_48k.f32"),
+        (RobustnessMode::C, "drm_modeC_so3_48k.f32"),
+        (RobustnessMode::D, "drm_modeD_so3_48k.f32"),
+    ] {
+        let bytes = std::fs::read(format!("../tests/fixtures/drm/{file}")).expect("fixture");
+        let rx = decode(&load(&bytes));
+        assert!(rx.locked(), "{mode:?}: did not lock");
+        assert_eq!(rx.mode, Some(mode), "{mode:?}: detected mode");
+        assert_eq!(rx.fac_errors, 0, "{mode:?}: FAC errors");
+        assert_eq!(rx.station_label.as_deref(), Some(LIVE_LABEL), "{mode:?}: station label");
+        eprintln!(
+            "[mode {mode:?}] facs={} err={} msc={} aus={} symbols={}",
+            rx.facs.len(),
+            rx.fac_errors,
+            rx.msc_frames.len(),
+            rx.audio_access_units.len(),
+            rx.symbols_demodulated
+        );
+        assert!(!rx.msc_frames.is_empty(), "{mode:?}: no MSC frames");
+        assert!(!rx.audio_access_units.is_empty(), "{mode:?}: no audio access units");
+    }
+}
+
+#[test]
 fn live_capture_locks_and_decodes_metadata() {
     let rx = decode_live();
     assert!(rx.locked(), "the receiver did not lock on the live capture");
