@@ -20,7 +20,6 @@ interface Decoded {
 	peak: number;
 	meanAbs: number;
 	toneFraction: number;
-	lines: string[];
 }
 
 async function decode(file: string): Promise<Decoded> {
@@ -77,19 +76,7 @@ async function decode(file: string): Promise<Decoded> {
 		if (Math.abs(hz - 1000) < 60) continue;
 		other = Math.max(other, energyIn(hz));
 	}
-	const msgs = dsp.exports.websa_dsp_demod_messages ?? 0;
-	const lines: string[] = [];
-	const textPtr = dsp.alloc(4096);
-	const metricsPtr = dsp.alloc(3 * 8);
-	const count = dsp.exports.websa_dsp_demod_messages ? dsp.exports.websa_dsp_demod_messages(handle) : 0;
-	for (let m = 0; m < count; m++) {
-		const len = dsp.exports.websa_dsp_demod_message_at(handle, m, textPtr, 4096, metricsPtr);
-		if (len > 0) lines.push(new TextDecoder().decode(dsp.u8View(textPtr, len)));
-	}
-	void msgs;
-	dsp.free(textPtr, 4096);
-	dsp.free(metricsPtr, 3 * 8);
-	return { rate, samples, peak, meanAbs: samples ? energy / samples : 0, toneFraction: tone / Math.max(other, 1), lines };
+	return { rate, samples, peak, meanAbs: samples ? energy / samples : 0, toneFraction: tone / Math.max(other, 1) };
 }
 
 describe('DRM codec coverage (xHE-AAC, HE-AAC v2) through the receiver', () => {

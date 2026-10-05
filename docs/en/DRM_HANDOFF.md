@@ -46,12 +46,14 @@ Open:
 - **Real shortwave.** Four HF frequencies were captured (9755, 11620, 5875, 3955 kHz, 6 s each,
   ref -40 dBm); none carried a DRM signal (no lock). Reception depends on propagation and a
   broadcast being on air.
-- xHE-AAC (coding 3) decodes end to end. The stateful super-frame deframer recovers the USAC
-  access units (50 on a live bench capture, against the reference's 51) and they go through
-  FDK's `TT_DRM` decoder — the reference receiver's own path (`open_decoder(DrmAudioCoding::
-  XheAac)`); libxaac is the encoder only, and its mp4-mode decoder rejects the compact DRM
-  Static Config, which is why that path was dropped. The live capture produces 102 400
-  non-silent 24 kHz PCM samples with the 1 kHz tone (99.6 % of the energy in 900-1100 Hz).
+- xHE-AAC (coding 3) decodes end to end on the committed bench fixture
+  `drm_live_xhe_modeB_so3_48828.f32`. The stateful super-frame deframer recovers the USAC
+  access units (50, against the reference's 51) and they go through FDK's `TT_DRM` decoder —
+  the reference receiver's own path (`open_decoder(DrmAudioCoding::XheAac)`); libxaac is the
+  encoder only, and its mp4-mode decoder rejects the compact DRM Static Config, which is why
+  that path was dropped. The `drmCodecs` wasm test drives the receiver through the shipped ABI
+  and produces 102 400 non-silent 24 kHz PCM samples with the 1 kHz tone (99.6 % of the energy
+  in 900-1100 Hz).
 - HE-AAC v2 (AAC + SBR + parametric stereo) is verified on the live bench: the Pluto
   transmitted a DecDRM-generated `heaacv2` stream (12 kHz core) and the fresh capture
   decodes to 153 600 stereo 24 kHz PCM samples, both channels a 1 kHz tone (99.7 % of the
@@ -68,7 +70,9 @@ Open:
   map's reference pilots) is acquired: mode detection selects E, the frame phase commits and
   410 symbols demodulate with a guard correlation of 1.0. DecDRM defines no mode E
   transmitter, so the FAC/SDC/MSC/audio decode cannot be driven with a real mode E signal;
-  the front end is what is verified (see the mode E section).
+  the front end is what is verified (see the mode E section). `DrPlugin::new(rate)` builds the
+  receiver at the pipeline's baseband rate, so a 96 kHz DRM+ feed reaches this path instead of
+  always building a 48 kHz receiver.
 - The closed timing/SRO loop, which would let the time-Wiener be enabled, is the remaining
   channel-estimation work.
 
