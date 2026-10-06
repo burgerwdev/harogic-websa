@@ -153,6 +153,8 @@ pub struct DrmReceiver {
     /// Audio units already decoded, so a later pass decodes only the new ones.
     audio_units_decoded: usize,
     /// Cumulative PCM samples the codec has produced (diagnostics: the audio production rate).
+    /// `decode_audio` reads this field on wasm32 only.
+    #[allow(dead_code)]
     pcm_total: u64,
     audio_debug: String,
     #[cfg(target_arch = "wasm32")]

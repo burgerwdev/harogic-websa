@@ -89,7 +89,6 @@ impl FirDecimator {
 
     /// Filter and decimate: one output every `decim` inputs, starting with the `decim`-th.
     pub fn process(&mut self, input: &[Cplx], out: &mut Vec<Cplx>) {
-        let n = self.taps.len();
         for &x in input {
             self.history.rotate_right(1);
             self.history[0] = x;

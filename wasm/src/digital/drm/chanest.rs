@@ -60,6 +60,8 @@ pub struct ChanEst {
     /// phase rotation the time interpolation applies when the timing moves.
     cum_shift: i64,
     /// Scattered-pilot carrier spacing within one symbol.
+    /// Test diagnostics read this field; the receiver itself does not.
+    #[allow(dead_code)]
     freq_int: usize,
     /// Symbols between two occurrences of the same carrier's pilot.
     time_int: usize,
@@ -279,7 +281,6 @@ impl ChanEst {
         if self.use_tw {
             return self.process_wiener(cells, sym, shift, map);
         }
-        let fft_n = self.mode.fft_size() as f64;
         let cycle = sym % self.time_int;
         // 1. The pilot lattice of this symbol.
         let mut h = vec![Cplx::zero(); self.n_car];
@@ -484,7 +485,7 @@ mod tests {
     use super::*;
     use crate::digital::drm::ofdm::OfdmDemod;
     use crate::digital::drm::params::SpectrumOccupancy;
-    use crate::digital::drm::sync::timesync::{SymbolWindow, TimeSync};
+    use crate::digital::drm::sync::timesync::TimeSync;
     use crate::ddc::resampler::ComplexResampler;
 
     fn load_iq_f64(path: &str) -> Vec<Cplx> {
@@ -885,7 +886,7 @@ mod tests {
             est.use_tw = use_tw;
             est.tw.tracking = tracking;
             let mut mer = None;
-            for (i, ((row, sym), shift)) in rows.iter().zip(&syms).zip(&shifts).enumerate() {
+            for ((row, sym), shift) in rows.iter().zip(&syms).zip(&shifts) {
                 if est.process(row, *sym, *shift, &map).is_some() {
                     if let Some(m) = est.stats().fac_mer_db {
                         mer = Some(m);
@@ -1090,7 +1091,7 @@ mod tests {
     #[test]
     #[ignore = "live diagnostic; run with --ignored --nocapture"]
     fn live_msc_frame_count_matches_the_reference() {
-        use crate::digital::drm::fac::{Fac, MscMode};
+        use crate::digital::drm::fac::Fac;
         use crate::digital::drm::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
         use crate::digital::drm::fec::qam::Mapping;
         use crate::digital::drm::interleave::CellDeinterleaver;
@@ -1152,7 +1153,7 @@ mod tests {
         let (mut ok, mut bad) = (0usize, 0usize);
         let mut in_partial = true;
         let mut complete_frame = 0usize;
-        let mut decode_super = |super_msc: &mut Vec<Vec<EqCell>>, de: &mut CellDeinterleaver, msc_dec: &mut MlcDecoder, ok: &mut usize, bad: &mut usize| {
+        let decode_super = |super_msc: &mut Vec<Vec<EqCell>>, de: &mut CellDeinterleaver, msc_dec: &mut MlcDecoder, ok: &mut usize, bad: &mut usize| {
             let mut all: Vec<EqCell> = Vec::new();
             for c in super_msc.iter() {
                 all.extend_from_slice(c);
@@ -1210,7 +1211,7 @@ mod tests {
     #[ignore = "live diagnostic; run with --ignored --nocapture"]
     fn live_msc_demux_valid_frames() {
         use crate::digital::drm::audio::{demultiplex, parse_aac_super_frame, split_text_message, AacSuperFrameFormat};
-        use crate::digital::drm::fac::{Fac, MscMode};
+        use crate::digital::drm::fac::Fac;
         use crate::digital::drm::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
         use crate::digital::drm::fec::qam::Mapping;
         use crate::digital::drm::interleave::CellDeinterleaver;
@@ -1304,10 +1305,10 @@ mod tests {
         let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, 5);
         let mut msc_dec = MlcDecoder::new(params, 1);
         let mut super_msc: Vec<Vec<EqCell>> = vec![Vec::new(); 45];
-        let (mut msc_ok, mut valid, mut invalid) = (0usize, 0usize, 0usize);
+        let (msc_ok, mut valid, mut invalid) = (0usize, 0usize, 0usize);
         let mut in_partial = true;
         let mut complete_frame = 0usize;
-        let mut decode_super = |super_msc: &mut Vec<Vec<EqCell>>, de: &mut CellDeinterleaver, msc_dec: &mut MlcDecoder, valid: &mut usize, invalid: &mut usize| {
+        let decode_super = |super_msc: &mut Vec<Vec<EqCell>>, de: &mut CellDeinterleaver, msc_dec: &mut MlcDecoder, valid: &mut usize, invalid: &mut usize| {
             let mut all: Vec<EqCell> = Vec::new();
             for c in super_msc.iter() {
                 all.extend_from_slice(c);
@@ -1546,7 +1547,6 @@ mod tests {
     /// long (depth-5) cell interleaver delays by four frames.
     #[test]
     fn msc_decodes_bit_exact() {
-        use crate::digital::drm::fac::MscMode;
         use crate::digital::drm::fec::mlc::{MlcDecoder, MlcParams, MscProtection};
         use crate::digital::drm::fec::qam::Mapping;
         use crate::digital::drm::interleave::CellDeinterleaver;
@@ -1681,18 +1681,6 @@ mod tests {
 
 
 
-    /// Hard-decode one equalised cell to its 6 bits (I-axis MSB first, then Q-axis).
-    fn cell_bits(sig: Cplx, qam: &[f64]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for v in [sig.re, sig.im] {
-            let idx = qam.iter().enumerate().min_by(|a, b| (v - a.1).abs().total_cmp(&(v - b.1).abs())).map(|(i, _)| i).unwrap_or(0);
-            for b in (0..3).rev() {
-                out.push(u8::from((idx >> b) & 1 == 1));
-            }
-        }
-        out
-    }
-
     /// Confirm the timing-correction recipe: resample the fixture at its true clock error and
     /// remove the residual window-offset phase ramp, then the MSC must decode bit-exact.
     #[test]
@@ -1703,7 +1691,7 @@ mod tests {
         use crate::digital::drm::interleave::CellDeinterleaver;
         let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).expect("layout");
         let iq = load_iq_f64("../tests/fixtures/drm/drm_modeB_so3_48k.f32");
-        let (mut rows, syms, shifts) = rows_and_syms(&map, &iq);
+        let (mut rows, syms, _shifts) = rows_and_syms(&map, &iq);
         let n = map.mode().fft_size() as f64;
         // Per-symbol correction: measure each symbol's window offset from its own pilot phase
         // ramp and remove it, exactly tracking the constant offset and its drift.
@@ -1947,7 +1935,6 @@ mod tests {
             return;
         }
         let base = resample_to_core(path, 48_828.125);
-        let map = CellMap::new(RobustnessMode::B, SpectrumOccupancy::SO_3).unwrap();
         // Coarse acquisition on the whole capture, then remove its offset.
         let mut flat: Vec<f64> = Vec::with_capacity(base.len() * 2);
         for v in &base {
@@ -2028,7 +2015,7 @@ mod tests {
             let mut nco2 = crate::digital::drm::sync::nco::Nco::new(f, 48_000.0);
             nco2.process(&mut corrected);
         }
-        let (rows, syms, _) = rows_and_syms(&map, &corrected);
+        let (rows, _syms, _) = rows_and_syms(&map, &corrected);
         let phase = crate::digital::drm::framesync::FrameSync::new(&map).search(&rows).phase;
         let spf = RobustnessMode::B.symbols_per_frame();
         eprintln!("[closeloop] coarse {coarse:.1} fine {fine:+.2} phase {phase}");
