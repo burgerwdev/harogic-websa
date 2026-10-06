@@ -2890,5 +2890,5 @@
   6,
   6
  ],
- "note": "FT8 protocol constants ported from ft8_lib (MIT, Copyright (c) 2018 K\u0101rlis Goba) by tools/port_ft8_tables.py. Do not edit by hand."
+ "note": "FT8 protocol constants ported from ft8_lib (MIT, Copyright (c) 2018 K\u0101rlis Goba) by tools/fixtures/port_ft8_tables.py. Do not edit by hand."
 }

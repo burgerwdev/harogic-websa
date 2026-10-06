@@ -103,7 +103,7 @@ delta looked "already applied"; (3) an incomplete global reset (Preset did not i
   `registerViewRenderer` / `registerMeasurementTab`) only happens if the module is imported. After
   breaking the cycles, "nothing imports it any more" is itself a failure (it produced a blank canvas
   with no error at all). The entry point `main.ts` pulls those modules in with a **side-effect import**,
-  and `python3 tools/check_registrations.py` enforces it in CI.
+  and `python3 tools/checks/check_registrations.py` enforces it in CI.
 - **One owner per display slot**: the waterfall panel and the measurement result table compete for the
   same slot, so a measurement turns the waterfall off and disables it, restoring the user's choice when
   it ends.
@@ -124,7 +124,7 @@ delta looked "already applied"; (3) an incomplete global reset (Preset did not i
    (type/bounds/unit/default/conditional required); cross-field rules go to `EXTRA_VALIDATORS`;
 2. Bounds: use the capability table when it applies (never literals - the guard counts `maximum=<number>`);
 3. Mode/session restrictions are table flags (`SWP_OWNED` / `SWP_ONLY` / `NOT_IN_SDR`), not `if mode == ...`;
-4. Tests: the table-consistency test plus `tools/command_sweep.py` (hardware) covers the new command;
+4. Tests: the table-consistency test plus `tools/bench/command_sweep.py` (hardware) covers the new command;
 5. Frontend: parameters use slots (§3), commands use `send({cmd: ...})`, and `/api/schema` exposes the
    new field automatically.
 
@@ -149,7 +149,7 @@ numbers in command validation. Special cases such as `pnm_supported` should beco
 
 Add the encoder to `measurements/framer.py` -> add a retention policy row to `FRAME_POLICY` in
 `web/client_stream.py` (unknown types default to latest-wins) -> add the decoder to `core/frames.ts` ->
-extend `tools/gen_frame_fixtures.py` to emit a golden fixture -> assert on both sides (Python asserts the
+extend `tools/fixtures/gen_frame_fixtures.py` to emit a golden fixture -> assert on both sides (Python asserts the
 fixture matches its encoders, TS asserts the decode matches the manifest).
 
 ### 5.5 A new panel / piece of UI text
@@ -157,7 +157,7 @@ fixture matches its encoders, TS asserts the decode matches the manifest).
 1. `ui/panels/<name>.ts` (panel actions) + a `data-action` binding; do not pile actions into `controls.ts`;
 2. i18n: add the key to the right namespace in `core/i18n/dict.<domain>.ts` (**both en and zh** - the
    parity test enforces it);
-3. New element ids: `tools/check_dom_ids.py` checks "read by TS but absent from index.html";
+3. New element ids: `tools/checks/check_dom_ids.py` checks "read by TS but absent from index.html";
 4. User-visible behaviour needs an e2e assertion (§6).
 
 ### 5.6 A new DSP/SDR block
@@ -216,8 +216,8 @@ action with visible feedback, not a tracking toggle:
 | Protocol | Golden fixtures on both sides | Byte layout | Testing only one side |
 | **End to end (no hardware)** | `make e2e-fake`: `ui_smoke.py` (rendering and wiring, 29 checks) + `state_regression.py` (parameter state-machine contract, 72 checks) on one fake service; runs in CI | Canvas pixels, controls reaching the backend, mode switches/tabs/waterfall/i18n/keypad, the peak list off its threshold slot; slots/in-flight/hand-off/Preset/reload/rapid switching; a one-shot Auto Scale (glow -> one step -> `ok` with no reconfiguration); a settings change re-fits once and never undoes a manual level | Asserting only datasets/counters; **relaxing an assertion to make the fake pass** (it weakens the bench run too - use `require_device=True` for device-only checks instead) |
 | **End to end (hardware)** | Playwright + the bench | **User-visible results**: canvas pixels, DOM text, device state after a real click | `dataset.rtaFrames` (it only says a frame was handed to the renderer, not that anything was drawn) |
-| Performance | `tools/bench.py` + baseline | **Comparable** frame-rate/latency/CPU numbers | Comparing while the device warns or leftover load runs |
-| Hardware smoke | `tools/hardware_smoke.py` + tinySA | Levels/frame integrity with a real signal | - |
+| Performance | `tools/bench/bench.py` + baseline | **Comparable** frame-rate/latency/CPU numbers | Comparing while the device warns or leftover load runs |
+| Hardware smoke | `tools/bench/hardware_smoke.py` + tinySA | Levels/frame integrity with a real signal | - |
 
 Two hard rules:
 
@@ -231,7 +231,7 @@ Two hard rules:
 ## 7. Performance and concurrency rules
 
 - **Measure before optimising**: `make bench` (fixed configuration, clean device state, one client) against
-  `tools/bench_baseline.json`. A single sample can produce a false alarm, so the bench re-measures once
+  `tools/bench/bench_baseline.json`. A single sample can produce a false alarm, so the bench re-measures once
   before declaring a regression.
 - **Backend**: every DLL call is serialised under the device re-entrant lock; slow calls go through
   `asyncio.to_thread` + a watchdog; timeouts/fatal errors go through `fatal()` (process-level recovery is
@@ -265,7 +265,7 @@ Two hard rules:
   committing; for multi-commit work verify with
   `git worktree add /tmp/wt <commit> && (cd /tmp/wt && python3 -m pytest tests/ -q)`
   (this once found a "test committed before its implementation"; the history was rebuilt).
-- **Single-source version**: edit `pyproject.toml` -> `python3 tools/sync_version.py` (syncs
+- **Single-source version**: edit `pyproject.toml` -> `python3 tools/checks/sync_version.py` (syncs
   `package.json` and `index.html`); `--check` runs in CI.
 - **Release**: bump the version -> build the frontend (**the service serves `dist/`, so forgetting the
   build means testing the old bundle**) -> `make hw-test` -> `git merge --no-ff` into master -> tag -> push.
@@ -280,13 +280,13 @@ Two hard rules:
 | Backend tests | `python3 -m pytest tests/ -q` | - |
 | Static checks | `python3 -m ruff check web_sa tests tools` | - |
 | Frontend types/tests | `npx tsc --noEmit` / `npm test` | - |
-| Version in sync | `python3 tools/sync_version.py --check` | - |
-| Frame fixtures match the encoders | `python3 tools/gen_frame_fixtures.py --check` | `tests/fixtures/frames/` |
-| DOM id contract | `python3 tools/check_dom_ids.py` | - |
-| Bilingual docs share the structure | `python3 tools/check_docs_parity.py` | - |
-| Registration reachability | `python3 tools/check_registrations.py` | - |
-| Architecture metrics do not regress | `python3 tools/quality/architecture_guard.py` | `tools/quality/baseline.json` |
-| Performance does not regress | `python3 tools/bench.py --check tools/bench_baseline.json` | `tools/bench_baseline.json` |
+| Version in sync | `python3 tools/checks/sync_version.py --check` | - |
+| Frame fixtures match the encoders | `python3 tools/fixtures/gen_frame_fixtures.py --check` | `tests/fixtures/frames/` |
+| DOM id contract | `python3 tools/checks/check_dom_ids.py` | - |
+| Bilingual docs share the structure | `python3 tools/checks/check_docs_parity.py` | - |
+| Registration reachability | `python3 tools/checks/check_registrations.py` | - |
+| Architecture metrics do not regress | `python3 tools/checks/architecture_guard.py` | `tools/checks/baseline.json` |
+| Performance does not regress | `python3 tools/bench/bench.py --check tools/bench/bench_baseline.json` | `tools/bench/bench_baseline.json` |
 
 **Baselines only go down**: after an improvement run `--update` to tighten them. If a baseline really has
 to be relaxed, the commit message must say why (an upstream dependency change, for instance); otherwise
@@ -368,13 +368,13 @@ make e2e-fake                # no hardware: ui_smoke (29 checks) + state_regress
 make hw-test                 # hardware: tinySA smoke + 24-command sweep + UI state regression (45 checks)
 python3 tools/e2e/readme_shots.py      # re-capture the README screenshots (hardware + tinySA/Pluto sources; --help)
 make bench                   # compare frame rate/switch latency/CPU against the baseline
-python3 tools/bench.py --write-baseline tools/bench_baseline.json   # re-record (verify a clean state first)
-python3 tools/command_sweep.py        # command-layer contract only (hardware)
+python3 tools/bench/bench.py --write-baseline tools/bench/bench_baseline.json   # re-record (verify a clean state first)
+python3 tools/bench/command_sweep.py        # command-layer contract only (hardware)
 python3 tools/e2e/state_regression.py # UI state regression only (hardware)
-python3 tools/check_registrations.py  # registration reachability
+python3 tools/checks/check_registrations.py  # registration reachability
 make wasm | make wasm-check            # Rust/WASM DSP core: build+commit the artifact / verify it
-python3 tools/check_wasm_artifact.py  # artifact hash + exports (stdlib only, CI runs this)
-python3 tools/quality/architecture_guard.py --baseline   # show the current architecture metrics
+python3 tools/checks/check_wasm_artifact.py  # artifact hash + exports (stdlib only, CI runs this)
+python3 tools/checks/architecture_guard.py --baseline   # show the current architecture metrics
 ```
 
 ---
@@ -406,7 +406,7 @@ Rules that keep it buildable without Rust everywhere else:
 - `frontend/public/dsp.wasm` is **committed**, and `wasm/dsp.artifact.json` records its
   sha256, size, toolchain and export list. `./build.sh` never calls cargo, so a machine (and CI)
   without Rust still builds and serves the app.
-- `tools/check_wasm_artifact.py` (part of `make ci`) verifies the recorded hash *and* parses the
+- `tools/checks/check_wasm_artifact.py` (part of `make ci`) verifies the recorded hash *and* parses the
   module's export section with the stdlib alone: a stale, truncated or renamed artifact fails
   without a Rust toolchain.
 - The release profile pins `lto`, one codegen unit and `strip`, so the build is byte-reproducible;
@@ -424,9 +424,9 @@ Rules that keep it buildable without Rust everywhere else:
 
 Measured on the bench this refactor was verified against: **SAN-90** (9 kHz–9 GHz) with a **tinySA
 Ultra ZS407** as the signal source. IQ was captured from the analyzer's own stream
-(`tools/hil_audio_check.py`) and processed through the **committed** `dsp.wasm`
+(`tools/bench/hil_audio_check.py`) and processed through the **committed** `dsp.wasm`
 (`frontend/src/__tests__/hil.test.ts`), with the Python reference run over the same capture
-(`tools/hil_reference_check.py`) so a weak number can be attributed.
+(`tools/bench/hil_reference_check.py`) so a weak number can be attributed.
 
 | Check | Result |
 |---|---|
@@ -458,9 +458,9 @@ adaptive notch removes a lone tone by design, and the AM case needs the 6 kHz IF
 
 ```bash
 make hw-test
-python3 tools/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
+python3 tools/bench/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
 WEBSA_HIL_IQ=/tmp/hil_iq.json WEBSA_HIL_NO_CHAIN=1 npx vitest run src/__tests__/hil.test.ts
-python3 tools/hil_reference_check.py /tmp/hil_iq.json
+python3 tools/bench/hil_reference_check.py /tmp/hil_iq.json
 ```
 
 For NFM add `--modulation fm --ifbw 25000 --deviation 6000`, and for CW `--modulation cw --ifbw 500`.

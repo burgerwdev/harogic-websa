@@ -1,7 +1,7 @@
 /**
  * Hardware-in-the-loop audio measurement (SAN-90 + TinySA).
  *
- * Skipped unless `WEBSA_HIL_IQ` points at a capture made by `tools/hil_audio_check.py`. The capture
+ * Skipped unless `WEBSA_HIL_IQ` points at a capture made by `tools/bench/hil_audio_check.py`. The capture
  * is real IQ from the analyzer while the TinySA drives a known tone; this test runs it through the
  * *committed* `dsp.wasm` with the same wrapper the worker uses and measures the demodulated audio:
  * SINAD and THD at the mode's expected tone, plus the level.
@@ -9,7 +9,7 @@
  * The bound is deliberately modest: it is a bench measurement of a real radio, not a simulation, so
  * it asserts "the signal is there, cleanly", and the printed numbers are what gets recorded.
  *
- *   python3 tools/hil_audio_check.py --mode cw
+ *   python3 tools/bench/hil_audio_check.py --mode cw
  *   WEBSA_HIL_IQ=/tmp/hil_iq.json npx vitest run src/__tests__/hil.test.ts
  */
 import { readFileSync } from 'node:fs';

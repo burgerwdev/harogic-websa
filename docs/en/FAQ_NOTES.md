@@ -177,7 +177,7 @@ cd frontend && npm audit
 With the service running:
 
 ```bash
-./tools/hardware_smoke.py --tinysa-port /dev/ttyACM0
+./tools/bench/hardware_smoke.py --tinysa-port /dev/ttyACM0
 ```
 
 This command reads TinySA identity without changing TinySA output, but exercises SAN SWP/RTA and restores the SAN SWP Center/Span that existed before the test.
@@ -185,7 +185,7 @@ This command reads TinySA identity without changing TinySA output, but exercises
 To explicitly transmit a 1 GHz TinySA signal:
 
 ```bash
-./tools/hardware_smoke.py \
+./tools/bench/hardware_smoke.py \
   --tinysa-port /dev/ttyACM0 \
   --configure-tinysa \
   --tinysa-output-mode normal \

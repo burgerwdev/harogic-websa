@@ -1,6 +1,6 @@
 //! Numeric agreement with the Python reference DSP, stage by stage.
 //!
-//! The fixtures are produced by `tools/gen_dsp_fixtures.py`, which runs the *Python*
+//! The fixtures are produced by `tools/fixtures/gen_dsp_fixtures.py`, which runs the *Python*
 //! implementation (`web_sa/demod/filters.py` + `web_sa/measurements/sdr.py::_mix`) over a
 //! committed IQ block. Each stage is compared separately so a failure names the stage that
 //! drifted instead of "the DDC".

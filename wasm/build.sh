@@ -6,7 +6,7 @@
 #
 # The artifact is committed so that CI and a machine without Rust can still build the frontend
 # (`./build.sh` never calls cargo). The manifest records the hash plus the toolchain that
-# produced it, and tools/check_wasm_artifact.py verifies both without Rust.
+# produced it, and tools/checks/check_wasm_artifact.py verifies both without Rust.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -69,7 +69,7 @@ sys.path.insert(0, str(pathlib.Path('..') / 'tools'))
 from check_wasm_artifact import wasm_exports  # noqa: E402
 document = {
     'note': 'Written by wasm/build.sh. The .wasm is committed so the frontend build needs no '
-            'Rust; tools/check_wasm_artifact.py verifies this manifest in CI.',
+            'Rust; tools/checks/check_wasm_artifact.py verifies this manifest in CI.',
     'file': 'frontend/public/dsp.wasm',
     'sha256': hashlib.sha256(data).hexdigest(),
     'bytes': len(data),

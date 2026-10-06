@@ -6,8 +6,8 @@
 // a search over frames, auto-detecting pitch (0.2-1.2 kHz) and speed (5-55 WPM); measured on this
 // machine it costs 2 ms per 100 ms of audio (worst 13 ms), so it runs inline in the audio worker.
 //
-// The module is built by tools/build_ggmorse_wasm.sh into `ggmorse/ggmorse.js` (a single ~70 KB file
-// with the wasm embedded) and committed, like the DSP cores. See tools/ggmorse/ for the vendored
+// The module is built by tools/vendor/build_ggmorse_wasm.sh into `ggmorse/ggmorse.js` (a single ~70 KB file
+// with the wasm embedded) and committed, like the DSP cores. See tools/vendor/ggmorse/ for the vendored
 // sources and its MIT LICENSE.
 //
 // What this wrapper adds to the C API: float samples in (the pipeline's format), text chunks out,

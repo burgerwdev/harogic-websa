@@ -3,7 +3,7 @@
 These checks are structural on purpose: they fail when a command is added to one place and
 forgotten in another, when a guard references a command that does not exist, or when a
 handler is not awaitable. The behavioural side is covered by tests/test_ws_commands.py, the
-HTTP/WS tests and (on the bench) tools/command_sweep.py.
+HTTP/WS tests and (on the bench) tools/bench/command_sweep.py.
 """
 from __future__ import annotations
 

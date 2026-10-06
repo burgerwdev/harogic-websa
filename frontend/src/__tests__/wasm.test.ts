@@ -5,7 +5,7 @@
  * loader and exercises the boundary the DSP will use: version gate, aligned allocation, typed
  * views, and growth not detaching the caller's block. This is what keeps the Rust ABI and the
  * TypeScript loader from drifting, without needing Rust in CI — the pure-Python
- * `tools/check_wasm_artifact.py` covers the export names and the recorded hash.
+ * `tools/checks/check_wasm_artifact.py` covers the export names and the recorded hash.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';

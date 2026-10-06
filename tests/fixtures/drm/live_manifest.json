@@ -33,7 +33,7 @@
     "spectrum_occupancy": 3,
     "bandwidth_khz": 10,
     "occupied_bandwidth_khz_measured": 9.82,
-    "transmitter_config": "tools/drm_bench/station_iq.toml",
+    "transmitter_config": "tools/bench/drm_bench/station_iq.toml",
     "station_label": "SAN90 DRM BENCH",
     "msc_bitrate_kbps": 20.96,
     "audio": "HE-AAC mono, 12 kHz core",
@@ -45,7 +45,7 @@
     "note": "the same samples decode in Dream, so the bench signal is good and the receiver under test is the failing part"
   },
   "captured_at": "2026-10-03T11:35:39+00:00",
-  "tool": "tools/drm_capture.py --seconds 10 (drain 1 s first; the file keeps the first 6 s)",
+  "tool": "tools/bench/drm_capture.py --seconds 10 (drain 1 s first; the file keeps the first 6 s)",
   "receiver_before_fix": {
     "delivered_rate": "no lock: timesync::acquire returns None",
     "resampled_to_48k": "lock, mode B, SO3, but FAC SNR -18.9 dB and 19 of 19 FAC blocks fail",

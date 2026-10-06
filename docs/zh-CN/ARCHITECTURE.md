@@ -98,10 +98,10 @@ SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）─
 | DDC 内核（保留，兼作参考链） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`、`wasm/src/ddc/mod.rs` |
 | 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/src/sdr/registry.ts` |
 | 音频 PCM 输出与抖动缓冲 | `frontend/src/audio/sdrAudioWorklet.js`、`frontend/src/audio/sdrAudio.ts`、`frontend/src/audio/sdrAudioWorker.ts` |
-| Python 回退与参考 | `web_sa/demod/`（不变）、`tools/dsp_parity.py`、`tools/gen_dsp_fixtures.py` |
+| Python 回退与参考 | `web_sa/demod/`（不变）、`tools/analysis/dsp_parity.py`、`tools/fixtures/gen_dsp_fixtures.py` |
 | WASM 产物构建 | `wasm/build.sh` → `frontend/public/dsp.wasm`（入库） |
 
-`tools/check_doc_paths.py` 会校验本表中的每个路径都存在，因此这份映射不会描述被改名或从未存在的模块。
+`tools/checks/check_doc_paths.py` 会校验本表中的每个路径都存在，因此这份映射不会描述被改名或从未存在的模块。
 
 ### DSP 路径与分离规则
 
@@ -134,7 +134,7 @@ wasm32-unknown-unknown` 就是全部工具链。
 （f32 满量程 1.0 上绝对 1e-5，约 -100 dBFS）内把 Rust 内核与这些字节做比对。实测最差：混频、FIR、抽取
 为精确 0；重采样与 AGC 约 3e-8。
 
-`tools/gen_dsp_fixtures.py --check` 是 CI 门禁（参考实现不能静默漂移），Rust 侧用 `make wasm-test`。
+`tools/fixtures/gen_dsp_fixtures.py --check` 是 CI 门禁（参考实现不能静默漂移），Rust 侧用 `make wasm-test`。
 `wasm/tests/ddc_bench.rs` 记录每块开销——本机 release：4096 点块约 1.2 ms，每复数点 290 ns，1 MSps 下约
 0.3 倍实时——并在链路退化为平方级或开始逐块分配时失败。
 
@@ -153,7 +153,7 @@ wasm32-unknown-unknown` 就是全部工具链。
 | [sdr-web](https://github.com/kwakasa/sdr-web) | 浏览器数据流：worker 持有 socket、worklet 负责播放 | 无 |
 | [Radioband](https://github.com/hightemp/radioband) | 工程结构：每个阶段一个模块、每类插件一个注册表 | 无 |
 | [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT 性能预期（FFT plan 按尺寸缓存的原因） | 无 |
-| [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT） | FT8 协议：Costas 图案、Gray 映射、CRC-14 多项式、LDPC(174,91) 矩阵 | **常量表**，由 `tools/port_ft8_tables.py` 生成到 `wasm/src/digital/ft8/tables.rs`（该脚本记录了来源与许可证）；解码器与 fixture 编码器依据规范实现，编码器逐音与参考比对验证 |
+| [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT） | FT8 协议：Costas 图案、Gray 映射、CRC-14 多项式、LDPC(174,91) 矩阵 | **常量表**，由 `tools/fixtures/port_ft8_tables.py` 生成到 `wasm/src/digital/ft8/tables.rs`（该脚本记录了来源与许可证）；解码器与 fixture 编码器依据规范实现，编码器逐音与参考比对验证 |
 | [BrowSDR](https://github.com/jLynx/BrowSDR)（AGPL-3.0） | 仅阅读架构 | **无**——AGPL，刻意不作为来源 |
 
 归属规则：算法可以从宽松许可的来源重新推导，但绝不从不兼容的许可证复制代码；每个内核的数值参考都是本仓库自己的 Python 实现。这也是对等测试与 Python 而非其他 SDR 应用输出比对的原因。
@@ -195,7 +195,7 @@ PCM（`dspLevelDbfs`）。
 因此：
 
 - 入口 `main.ts` 必须用**副作用 import** 拉入这些模块（例如 `import './render/spectrum';`）；
-- `tools/check_registrations.py` 从 `main.ts` 计算 import 可达性，任何"注册了但不可达"的模块都会让 `make ci` 失败；
+- `tools/checks/check_registrations.py` 从 `main.ts` 计算 import 可达性，任何"注册了但不可达"的模块都会让 `make ci` 失败；
 - 测试必须断言**用户可见结果**（画布像素、DOM 文本），而不是上游计数器/数据集：`dataset.rtaFrames` 只说明帧交给了渲染器，
   不代表真的画出来了。e2e 现在会统计画布非透明像素（加载后、切到 RTA 后各一次）。
 

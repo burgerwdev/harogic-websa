@@ -1,12 +1,12 @@
 /**
  * Decode a captured baseband through the shipped artifact, slot by slot.
  *
- * `tools/ft8_capture_check.py` writes the capture (the channelized baseband the browser decoder
+ * `tools/bench/ft8_capture_check.py` writes the capture (the channelized baseband the browser decoder
  * receives) and reports which slots contain an FT8-shaped burst. This runs the decode, so a report of
  * "no decode" can be attributed: no burst in the capture (nothing to decode), a burst but no decode
  * (the decoder missed it), or a decode (it works).
  *
- *   python3 tools/ft8_capture_check.py --frequency 7.080e6 --seconds 60
+ *   python3 tools/bench/ft8_capture_check.py --frequency 7.080e6 --seconds 60
  *   WEBSA_FT8_IQ=/tmp/ft8_capture.json npx vitest run src/__tests__/ft8Capture.test.ts
  */
 import { readFileSync } from 'node:fs';
@@ -57,7 +57,7 @@ describe.skipIf(!capturePath)('FT8 on a captured baseband', () => {
 		console.log(`FT8 capture: ${blocks} blocks (${(iq.length / 2 / meta.fs_in).toFixed(1)} s), ` +
 			`${decodes.length} decodes`);
 		// The assertion is deliberately about the *mechanism*: a capture with a transmission must
-		// produce at least one decode. `tools/ft8_capture_check.py` says which slots had a burst.
+		// produce at least one decode. `tools/bench/ft8_capture_check.py` says which slots had a burst.
 		expect(iq.length).toBeGreaterThan(0);
 	}, 300_000);
 });

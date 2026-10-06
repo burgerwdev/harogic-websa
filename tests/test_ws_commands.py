@@ -145,7 +145,7 @@ def test_model_limits_come_from_capabilities():
 
     Tightening the capability fields below must immediately change what the command layer
     accepts; if a hard-coded bound is ever reintroduced, one of these asserts fails
-    (report finding E-2, guard rail in tools/quality/architecture_guard.py).
+    (report finding E-2, guard rail in tools/checks/architecture_guard.py).
     """
     caps = DeviceCapabilities.from_model(67)
     caps.rbw_max_hz = 1e6

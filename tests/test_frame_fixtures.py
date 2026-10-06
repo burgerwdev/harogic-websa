@@ -1,6 +1,6 @@
 """Golden binary-frame fixtures: the wire format cannot change silently.
 
-``tools/gen_frame_fixtures.py`` writes the fixtures from the production encoders; this
+``tools/fixtures/gen_frame_fixtures.py`` writes the fixtures from the production encoders; this
 test re-encodes the same values and asserts the committed bytes still match. A format
 change therefore fails here until the fixtures are regenerated, and the TypeScript test
 (``frontend/src/__tests__/frames.test.ts``) then proves the decoder still agrees.
@@ -17,7 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from tools.gen_frame_fixtures import build  # noqa: E402
+from tools.fixtures.gen_frame_fixtures import build  # noqa: E402
 
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'frames'
 
@@ -26,10 +26,10 @@ FIXTURES = ROOT / 'tests' / 'fixtures' / 'frames'
 def test_committed_fixture_matches_the_encoder(name):
     files, _manifest = build()
     path = FIXTURES / name
-    assert path.exists(), f'{name} is missing; run tools/gen_frame_fixtures.py'
+    assert path.exists(), f'{name} is missing; run tools/fixtures/gen_frame_fixtures.py'
     assert path.read_bytes() == files[name], (
         f'{name} no longer matches the production encoder; '
-        'run python3 tools/gen_frame_fixtures.py and update the TypeScript test if the format changed')
+        'run python3 tools/fixtures/gen_frame_fixtures.py and update the TypeScript test if the format changed')
 
 
 def test_manifest_is_in_sync():

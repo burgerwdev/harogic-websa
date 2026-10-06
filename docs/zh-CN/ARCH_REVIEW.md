@@ -602,12 +602,12 @@ e2e（真机）仍全绿。
 ### 8.3 原评估遗漏、本次补齐
 
 **G-1 没有性能/资源基线。** 原报告只做静态分析，却写下“主要瓶颈已处理”这类结论，没有测量支撑。
-→ 补：`tools/bench.py`（可重复的延迟/帧率/CPU 基线）+ 基线表；让“优化”类建议可验证。
+→ 补：`tools/bench/bench.py`（可重复的延迟/帧率/CPU 基线）+ 基线表；让“优化”类建议可验证。
 
 **G-2 依赖未锁定。** `aiohttp>=3.9`、`numpy>=1.24` 无上界，前端 `package.json` 用 `^`（但有
 `package-lock.json`），Python 侧没有约束文件。可复现构建要求锁定或至少记录“已验证版本矩阵”。
 
-**G-3 没有硬件在环（HIL）测试入口。** 仓库有 `tools/hardware_smoke.py` 与 Playwright e2e，
+**G-3 没有硬件在环（HIL）测试入口。** 仓库有 `tools/bench/hardware_smoke.py` 与 Playwright e2e，
 但没有统一命令、没有基线、也没有“发版前必须跑”的约定。仪器类软件的通行做法是 `make hw-test`
 （真机冒烟 + 状态机回归）并列入发版清单。→ 本次实现（见 §9）。
 
@@ -632,7 +632,7 @@ e2e（真机）仍全绿。
 | P0-4 / G-2 | 依赖拆成 runtime/dev/lock 三份并加双边界 | 干净环境 `./test.sh` |
 | P0-5 | 版本单一来源 + `--check` | 改坏即失败 |
 | G-3 | 缺厂商库时跳过 7 个硬件模块；`make ci` / `hw-test` / `bench` | 离线 **78** 项通过 |
-| G-1 | `tools/bench.py`（固定配置后测量，修掉一次 2.5× 假回归）+ 基线 | 连续多次通过 |
+| G-1 | `tools/bench/bench.py`（固定配置后测量，修掉一次 2.5× 假回归）+ 基线 | 连续多次通过 |
 | P1-1/P1-2 | **命令层声明式表**（`CommandSpec` + 守卫标志，ws.py 仅传输） | 14 项表测试 + `command_sweep.py` 真机 30/30 |
 | P1-3 | `rta.py` 不再直连 `htra_api`；`sdk_bindings` 补齐符号 | 守卫 3 → 0 |
 | P1-4 | **前端循环依赖 14 → 0**（redraw seam + plot 几何 + 4 叶子模块） | 守卫 + 真机 UI 回归 |
@@ -654,7 +654,7 @@ e2e（真机）仍全绿。
 | P2-5 | 双语结构一致性检查（8 对文件） | `make ci` |
 | P2-7 | **测量结果组装测试**：谐波序列用 stub 设备驱动（阶次列表/dBc 参考/幅度跟随/频率上限停止/参数裁剪），PNM 载荷抽成纯函数 `pnm_payload()` | 6 项（硬件无关） |
 | P2-8 | 更正 `fit_span` 并非遗留 helper | — |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline | `make ci` |
+| §7.5 | `tools/checks/architecture_guard.py` + baseline | `make ci` |
 | **A1** | 假后端 + UI 冒烟进 CI（见 §9.3 说明）：`hardware/fake_device.py` 不 import 厂商库，`measurements/fake.py` 合成 RTAF/AUDF，`tools/e2e/ui_smoke.py` 20 项用户可见检查，CI `ui-smoke` job | 156→按需后端测试 + `make e2e-fake` 全绿 |
 | **A1 延伸** | 完整 `state_regression.py`（45 项参数状态机契约）也跑在假后端上；`make e2e-fake` 串跑两个脚本，CI 同款 | 实测 45/45 通过，脚本零修改 |
 | **B1** | `DeviceState` 按所有者拆分：`SwpParams`(17)/`RtaParams`(11)/`SdrParams`(14)/`TriggerParams`(12) + 扁平别名过渡；`device.py` 921→566 行 | `tests/test_device_state_grouping.py`（4 项）+ 真机 |
@@ -705,7 +705,7 @@ e2e（真机）仍全绿。
 make ci        -> pytest 147 passed / ruff clean / i18n+frames parity / DOM id 契约 /
                   双语文档结构一致 / 架构守卫（cycles 0、mode branches 0）/ 构建成功
 make hw-test   -> tinySA CW 100.2 MHz 实测 -25.7 dBm(SWP) / -25.3 dBm(RTA)
-                  tools/command_sweep.py：24 条命令 + 6 条守卫拒绝全部符合预期
+                  tools/bench/command_sweep.py：24 条命令 + 6 条守卫拒绝全部符合预期
                   UI 状态机 39 项检查全过，无页面错误
 make bench     -> 对基线通过（固定配置 points 1001/auto RBW/ref -30/atten auto/spur bypass）：
                   SWP 174 fps、RTA 214 fps、SDR 19 fps + 音频 50 fps、切换 465/310 ms
@@ -730,7 +730,7 @@ HTRA_API_LIB=/nonexistent python3 -m pytest tests/ -q  -> 78 passed
 
 **本轮之后发生的两次真实故障**（评估/重构本身没有覆盖到的）：
 
-1. **画布全空（用户报告"系统无法使用"）**：破环后 `render/spectrum.ts` 不再被任何模块 import，其模块级 `setRenderer(renderAll)` 未执行，`requestRender()` 空转。没有异常、没有 console 报错；所有既有测试都过，因为它们断言的是**代理量**（帧计数、dataset、控件值）。→ 规则：注册副作用必须由入口显式 import，并用 `tools/check_registrations.py` 守护；测试必须断言用户可见结果（e2e 现在数画布非透明像素）。
+1. **画布全空（用户报告"系统无法使用"）**：破环后 `render/spectrum.ts` 不再被任何模块 import，其模块级 `setRenderer(renderAll)` 未执行，`requestRender()` 空转。没有异常、没有 console 报错；所有既有测试都过，因为它们断言的是**代理量**（帧计数、dataset、控件值）。→ 规则：注册副作用必须由入口显式 import，并用 `tools/checks/check_registrations.py` 守护；测试必须断言用户可见结果（e2e 现在数画布非透明像素）。
 2. **三个 UI 缺陷**（RTA 中心单位/键盘失效、测量时未禁用瀑布、溢出告警不可见）：分别源于"字段键 `rta_center` 与输入框 id `input-rta-center` 不一致"、"测量面板与瀑布图抢同一个显示位"、"溢出时设备不发帧而告警只在帧循环里绘制"。→ 规则：跨模块的字符串标识必须成对解析（`inputForField/fieldForInput`）；一个显示位只能有一个所有者；状态变化要主动重绘，不能只依赖数据流。
 
 这两次故障的教训已写入 `DEVELOPMENT.md`（开发指南）的"教训台账"，并按"每条规则都要有守卫或测试"的要求落到了代码/CI 中。

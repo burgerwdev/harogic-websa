@@ -1,4 +1,4 @@
-// Types for the generated ggmorse module (tools/build_ggmorse_wasm.sh writes ggmorse.js next to
+// Types for the generated ggmorse module (tools/vendor/build_ggmorse_wasm.sh writes ggmorse.js next to
 // this file; it is an emscripten EXPORT_ES6 module with the wasm embedded, so TS needs the shape
 // declared here). Only what the engine uses.
 export interface GgMorseModule {

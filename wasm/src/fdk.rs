@@ -303,7 +303,7 @@ pub extern "C" fn websa_dsp_fdk_decode_drm(ptr: *mut u8, len: u32) -> i32 {
         aacDecoder_Close(h);
         // frame_size proves the access unit decodes (a lone frame is the decoder's
         // priming frame and therefore silent); the non-silent assertion lives in the
-        // DRM AAC fixture test (tools/verify_drm_aac.c).
+        // DRM AAC fixture test (tools/fixtures/verify_drm_aac.c).
         if frame_size > 0 {
             frame_size
         } else {

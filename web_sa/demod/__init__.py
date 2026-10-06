@@ -8,7 +8,7 @@ Public pieces:
 
 The names are imported lazily (PEP 562), mirroring ``measurements/__init__.py``: only
 ``DdcChannel`` pulls in ``hardware.sdk_bindings`` and therefore ``libhtraapi``. Keeping it
-lazy means ``import web_sa.demod.demod`` - and ``tools/gen_dsp_fixtures.py``, which checks
+lazy means ``import web_sa.demod.demod`` - and ``tools/fixtures/gen_dsp_fixtures.py``, which checks
 the pure-numpy reference kernels against their committed fixtures - works on a machine
 without the vendor library, so that contract stays gated in CI instead of erroring at
 import time (the same finding G-3 the measurement sessions already solved).

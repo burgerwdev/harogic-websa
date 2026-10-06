@@ -1,6 +1,6 @@
 """DSP golden fixtures: the Rust/WASM kernels' reference output cannot change silently.
 
-``tools/gen_dsp_fixtures.py`` runs the Python reference DSP over a committed IQ block and writes
+``tools/fixtures/gen_dsp_fixtures.py`` runs the Python reference DSP over a committed IQ block and writes
 the per-stage results the Rust tests in ``wasm/tests/ddc_reference.rs`` are compared against
 (within the tolerance recorded in the manifest). This test re-runs the reference and asserts the
 committed fixtures still match within that same tolerance, so changing the Python DSP forces a
@@ -18,7 +18,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from tools.gen_dsp_fixtures import build, drifted  # noqa: E402
+from tools.fixtures.gen_dsp_fixtures import build, drifted  # noqa: E402
 
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'dsp'
 
@@ -34,7 +34,7 @@ def test_committed_dsp_fixtures_match_the_reference():
             problems.append(problem)
     assert not problems, (
         f'{problems} no longer match the Python reference DSP; run '
-        'python3 tools/gen_dsp_fixtures.py (and keep the Rust tests in step)')
+        'python3 tools/fixtures/gen_dsp_fixtures.py (and keep the Rust tests in step)')
 
 
 def test_the_drift_check_absorbs_ulp_noise_and_catches_real_changes():

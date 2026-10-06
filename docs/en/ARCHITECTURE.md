@@ -105,10 +105,10 @@ path here does not exist yet.
 | DDC kernels (kept, and the reference chain) | `wasm/src/ddc/nco.rs`, `wasm/src/ddc/fir.rs`, `wasm/src/ddc/resampler.rs`, `wasm/src/ddc/agc.rs`, `wasm/src/ddc/mod.rs` |
 | Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/src/sdr/registry.ts` |
 | Audio PCM output and the jitter buffer | `frontend/src/audio/sdrAudioWorklet.js`, `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts` |
-| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/dsp_parity.py`, `tools/gen_dsp_fixtures.py` |
+| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/analysis/dsp_parity.py`, `tools/fixtures/gen_dsp_fixtures.py` |
 | WASM artifact build | `wasm/build.sh` → `frontend/public/dsp.wasm` (committed) |
 
-`tools/check_doc_paths.py` verifies every path in this table exists, so the map cannot describe a
+`tools/checks/check_doc_paths.py` verifies every path in this table exists, so the map cannot describe a
 module that was renamed or never written.
 
 ### DSP paths and the separation rule
@@ -147,7 +147,7 @@ their output for a committed IQ block, stage by stage (`mix`, `fir`, `dec`, `res
 recorded in the fixture manifest (1e-5 absolute on an f32 full scale of 1.0, about -100 dBFS).
 Measured worst case: mixer, FIR and decimation exactly 0; resampler and AGC about 3e-8.
 
-`tools/gen_dsp_fixtures.py --check` is a CI gate (the reference cannot drift silently), and the
+`tools/fixtures/gen_dsp_fixtures.py --check` is a CI gate (the reference cannot drift silently), and the
 Rust side runs with `make wasm-test`. `wasm/tests/ddc_bench.rs` records the per-block cost —
 native release: about 1.2 ms per 4096-sample block, 290 ns per complex sample, ~0.3 of real time
 at 1 MSps — and fails if the chain becomes quadratic or starts allocating per block.
@@ -170,7 +170,7 @@ the architecture was designed from, and what was (and was not) taken from each:
 | [sdr-web](https://github.com/kwakasa/sdr-web) | The browser dataflow: worker owns the socket, worklet owns playback | none |
 | [Radioband](https://github.com/hightemp/radioband) | Project structure: one module per stage, a registry per plugin family | none |
 | [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT performance expectations (why the FFT plans are cached per size) | none |
-| [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT) | The FT8 protocol: Costas pattern, Gray map, CRC-14 polynomial, LDPC(174,91) matrices | **The constant tables**, generated into `wasm/src/digital/ft8/tables.rs` by `tools/port_ft8_tables.py` (which records the source and licence); the decoder and the fixture encoder are written against the specification, and the encoder is verified tone-for-tone against it |
+| [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT) | The FT8 protocol: Costas pattern, Gray map, CRC-14 polynomial, LDPC(174,91) matrices | **The constant tables**, generated into `wasm/src/digital/ft8/tables.rs` by `tools/fixtures/port_ft8_tables.py` (which records the source and licence); the decoder and the fixture encoder are written against the specification, and the encoder is verified tone-for-tone against it |
 | [BrowSDR](https://github.com/jLynx/BrowSDR) (AGPL-3.0) | Architecture reading only | **none** — AGPL, deliberately avoided as a source |
 
 Attribution rule: an algorithm may be re-derived from a permissive source, but nothing is copied
@@ -241,7 +241,7 @@ Therefore:
 
 - the entry point `main.ts` must pull those modules in with a **side-effect import**
   (`import './render/spectrum';`);
-- `tools/check_registrations.py` computes import reachability from `main.ts`; a module that
+- `tools/checks/check_registrations.py` computes import reachability from `main.ts`; a module that
   registers but is unreachable fails `make ci`;
 - tests must assert the **user-visible result** (canvas pixels, DOM text), not an upstream
   counter or dataset: `dataset.rtaFrames` only says a frame was handed to the renderer, not

@@ -43,9 +43,12 @@ tools/sdr_probe/plots/
 
 # pi agent state (session goals/ledger; local only)
 .pi/
-tools/ft8_reference/decode_ref
-tools/ft8_reference/ft8_lib/
+tools/bench/ft8_reference/decode_ref
+tools/bench/ft8_reference/ft8_lib/
 
 # emscripten toolchain + ggmorse build scratch (the built artifact is committed)
 tools/.emsdk/
 tools/.ggmorse-build/
+
+# Generated bench audio (cowtts 语音、--wav 测试文件)
+*.wav

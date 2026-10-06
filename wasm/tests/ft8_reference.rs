@@ -1,6 +1,6 @@
 //! FT8 end-to-end: decode the committed fixture to the exact transmitted message.
 //!
-//! The fixture is produced by `tools/gen_ft8_fixtures.py`, which encodes a standard FT8 message
+//! The fixture is produced by `tools/fixtures/gen_ft8_fixtures.py`, which encodes a standard FT8 message
 //! with the protocol's own rules (CRC-14, LDPC(174,91), Gray-coded 8-FSK with Costas sync — tables
 //! ported from ft8_lib, MIT). This test is the contract: the decoder has to recover the text, not
 //! "something plausible", and it has to reject a slot that carries no signal.

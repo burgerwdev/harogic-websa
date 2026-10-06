@@ -8,7 +8,7 @@ re-made when the UI changes instead of being one-off captures.
     and a CW source on the tinySA (`--tinysa-port`; the level comes from the smoke test's
     table).
   * SDR shots (FT8 / CW decoding) need a PlutoSDR transmitting: start
-    `tools/pluto_ft8_tx.py --lo 411e6` or `tools/pluto_cw_tx.py --lo 411e6` first and pass
+    `tools/pluto/pluto_ft8_tx.py --lo 411e6` or `tools/pluto/pluto_cw_tx.py --lo 411e6` first and pass
     `--only sdr_ft8` / `--only sdr_cw`. The decode window fills over a few FT8 slots, so
     those two wait longer than the rest.
 
@@ -35,7 +35,7 @@ SPAN_HZ = 2e6
 PNM_HZ = 1e9                         # phase noise / harmonic source (a clean 1 GHz carrier)
 PNM_LEVEL_DBM = -30.0
 HARM_SPAN_HZ = 100e6                 # the widest per-harmonic sweep the panel offers
-SDR_HZ = 411e6                       # Pluto FT8/CW (tools/pluto_*_tx.py --lo 411e6)
+SDR_HZ = 411e6                       # Pluto FT8/CW (tools/pluto/pluto_*_tx.py --lo 411e6)
 RTA_CENTER_HZ = 2.425e9               # RTA + waterfall: ambient WiFi / base stations (2.4G antenna)
 RTA_SPAN_HZ = 50.78125e6             # the widest RTA span the device offers (~50 MHz)
 VIEWPORT = {'width': 1380, 'height': 900}    # the size the committed shots use
@@ -248,7 +248,7 @@ def wait_decodes(page, mode: str, timeout_s: float, want: int) -> int:
     if count == 0:
         raise RuntimeError(
             f'the {mode} decode window stayed empty after {timeout_s:.0f}s; '
-            'is the signal source transmitting (tools/pluto_*_tx.py)?')
+            'is the signal source transmitting (tools/pluto/pluto_*_tx.py)?')
     return count
 
 
@@ -309,7 +309,7 @@ def main() -> int:
 
     source = None
     if args.tinysa_port and set(names) & set(ANALYZER_SHOTS):
-        from tools.hardware_smoke import TinySaSource
+        from tools.bench.hardware_smoke import TinySaSource
 
         source = TinySaSource(args.tinysa_port)
         print('tinySA:', source.identify().splitlines()[1] if source.identify() else '?')

@@ -197,7 +197,7 @@ fn the_audio_chain_only_contains_implemented_stages() {
 
 #[test]
 fn every_registered_plugin_can_be_resolved_by_its_own_family() {
-    // Mirror of tools/check_registrations.py for the DSP side: a plugin that is registered but
+    // Mirror of tools/checks/check_registrations.py for the DSP side: a plugin that is registered but
     // unreachable (a typo in its id, a family that forgets it) fails here.
     for kind in PluginKind::all() {
         for descriptor in websa_dsp::plugin::plugins(kind) {

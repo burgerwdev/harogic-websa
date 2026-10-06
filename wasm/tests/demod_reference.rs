@@ -1,6 +1,6 @@
 //! Python-vs-WASM cross-check for the analog demodulators, every mode in the registry.
 //!
-//! `tools/gen_dsp_fixtures.py` runs the Python reference (`web_sa/demod/demod.py::AnalogDemod`, the
+//! `tools/fixtures/gen_dsp_fixtures.py` runs the Python reference (`web_sa/demod/demod.py::AnalogDemod`, the
 //! DSP the browser is replacing) over a committed complex baseband for each mode and writes the
 //! audio it produced. These tests run the Rust kernels over the same bytes and require agreement
 //! within the manifest's tolerance, plus the signal-level property the mode exists for (the tone

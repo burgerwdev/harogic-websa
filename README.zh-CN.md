@@ -89,7 +89,7 @@ WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='请替换为长随机令牌' ./run.sh
 ```bash
 pip install -r requirements-dev.txt      # 运行时 + pytest/ruff/playwright/fonttools
 make ci                                  # CI 的全部门禁（无需硬件）
-python3 tools/bench.py --check tools/bench_baseline.json   # 性能基线（需服务在跑）
+python3 tools/bench/bench.py --check tools/bench/bench_baseline.json   # 性能基线（需服务在跑）
 make hw-test                             # 需真机：tinySA CW + 界面状态机回归
 ```
 

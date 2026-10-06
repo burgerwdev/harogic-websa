@@ -30,10 +30,11 @@ Run these commands in order.
 
 ```
 # 1. Build the DRM IQ file (in the DecDRM checkout).
-decdrm tx tools/drm_bench/station_iq.toml --output ~/drm-bench/drm_iq_15s.wav --duration 15
+decdrm tx tools/bench/drm_bench/station_iq.toml --output drm_iq_15s.wav --duration 15
 
-# 2. Transmit it from the PlutoSDR.
-python3 tools/pluto_drm_tx.py --iq ~/drm-bench/drm_iq_15s.wav --lo 400e6 --gain -20 --seconds 600
+# 2. Transmit it from the PlutoSDR. The unified entry also works:
+#    python3 tools/pluto_tx.py drm --iq drm_iq_15s.wav --seconds 600
+python3 tools/pluto/pluto_drm_tx.py --iq drm_iq_15s.wav --lo 400e6 --gain -20 --seconds 600
 ```
 
 Two notes from the bench session:
@@ -52,7 +53,7 @@ WebSocket. The capture tool subscribes to the same stream, so the file is the de
 exact input.
 
 ```
-python3 tools/drm_capture.py --seconds 10 \
+python3 tools/bench/drm_capture.py --seconds 10 \
     --out tests/fixtures/drm/drm_live_modeB_so3_48828.f32 --json /tmp/drm_live.json
 ```
 
@@ -78,7 +79,7 @@ The other worktree (`feature/drm-dream-decoder`) runs the Dream decoder. Dream i
 oracle for this bench: it answers one question. Is the bench signal decodable at all?
 
 ```
-python3 tools/drm_oracle_check.py tests/fixtures/drm/drm_live_modeB_so3_48828.f32 48828.125
+python3 tools/analysis/drm_oracle_check.py tests/fixtures/drm/drm_live_modeB_so3_48828.f32 48828.125
 ```
 
 The result:
@@ -296,7 +297,7 @@ Two conditions still need a test, and both are likely to matter:
 #    SDR mode, center 400.1 MHz, decimate 256, listen 400.1 MHz, demod DRM, ref -40 dBm.
 
 # 4. Capture the baseband, then decode it offline.
-python3 tools/drm_capture.py --seconds 10 --out /tmp/live.f32
+python3 tools/bench/drm_capture.py --seconds 10 --out /tmp/live.f32
 cd wasm && cargo test --release --test drm_live_fixture -- --nocapture
 
 # 5. Or decode it through the wasm path exactly as the worker does (non-silent PCM).

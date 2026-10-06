@@ -3,6 +3,50 @@
 本页面向接手的人，包括换模型之后的下一轮。实测数据在 `docs/zh-CN/DRM_BENCH.md`，本页记录
 状态与计划。
 
+## 2026-10-06：状态核对（当前）
+
+本节是当前状态，对应分支 `feature/drm-dream-port` 的提交 `7dcf27c4`。下方旧章节若与本节的
+结论冲突，以本节为准。
+
+**工作区。** 本会话开始时，相对 HEAD 只有两个文件不同：`frontend/public/dsp.wasm` 与
+`wasm/dsp.artifact.json`。没有 Rust 源码改动。该重建自洽，但哈希与已提交的一对不同
+（已提交 `f9d5007e…`，工作区 `f16ec2e4…`）。是否提交仍未决定。
+
+**本会话的改动。** 状态核对已写入本页。按用户要求，`wasm/src/digital/drm/` 的编译 warning 已消除，
+wasm 产物已重建（`97317de6…`）。台面发射工具已整合：`tools/pluto_tx.py` 是统一入口，
+`tools/pluto/pluto_radio.py` 是共享射频层，`tools/pluto/pluto_analog_tx.py` 新增模拟模式。运行
+`python3 tools/pluto_tx.py --list` 查看模式，`--dry-run-all` 做无电台检查。
+
+**`/tmp` 证据已丢失。** 机器已重启，以下文件不存在：`live30.f32`、`live60.f32`、`lvl.f32`、
+`cnr_rec.f32`、`cowtts_test.wav`、`tts_rec.f32`、`ours_tts_24k.wav`、`decdrm_tts.wav`。下方多处
+测量依赖这些文件。每个实时测试都会先检查文件，文件不存在就跳过，所以套件仍然是绿的。需要新证据
+时用 `tools/bench/drm_capture.py` 重新抓取，再重测。
+
+**门禁全绿。** `make ci` 退出 0；`make wasm-test`（cargo test）退出 0：211 个测试通过，
+14 个忽略。
+
+**未完成项。**
+1. 提交或丢弃当前工作区改动（文档、工具、warning 清理、wasm 产物），并记录理由。
+2. 重新生成 `/tmp` 抓取，重测所有实时结论。
+3. 用耳朵检查实时音频；确认 preset 切换不需要刷新页面。
+4. 在新的实时抓取上重测信道估计。多普勒自适应时域 Wiener 默认仍关闭；定时/SRO 环已有实时
+路径，但需要实测。
+5. 用新抓取复测 xHE-AAC 台面。
+6. 寻找真实短波 DRM 电台与真实 VHF DRM+ 信号。本轮没有可用的离空信号源。
+7. 浏览器 e2e（`tools/e2e/drm_switch.py`）受基带喂入速率限制（约每秒一个 3248 样本块）而阻塞，
+现以 `drmLiveAudio` wasm 门替代。
+
+**已过时的章节。** 下方章节属历史记录，未经核对不要采信：
+- “wasm ABI 交换已尝试并回退”“增量处理模型已尝试并回退”：流式路径现已正确。提交
+`8d4e3ab4` 与 `eea54e98` 落地了交换并删除旧接收机。
+- “剩余的差距：信道估计”“修复用的参考模块”“跟踪级：可以开工的状态”：移植已完成，`freqtrack`
+（提交 `f7eab285`）消除偏移漂移。
+- “后锁定通路的结论”：它描述的是已删除的旧接收机。
+- “下一步（按顺序）”的第 2、3 条：模式 A/C/D、xHE-AAC 与 HE-AAC v2 现已可解。
+- 移植进度表中 `timesync`、`finefreq`、`chanest` 三行落后于代码。`chanest` 行把
+`/tmp/live30.f32` 说成过驱，该说法不成立：参考接收机在同一文件上以 MER 17.8 dB 锁定。高 RMS
+是 `docs/zh-CN/DRM_BENCH.md` 记录的 DDC 增益怪癖。
+
 ## 目前进展
 接收机已换成 `wasm/src/digital/drm/` 里按 Dream 阶段结构移植的链路；旧接收机已删除，
 `digital::drm` 现在是唯一的 DRM 解调器。
@@ -98,7 +142,7 @@
 - **参考电平 −35 到 −45 dBm**：此时带内对比度 25 到 27 dB。−40 dBm 时只有 6 dB，无法锁定。
   **每次台面运行前都要重新设置**：preset 与后端自身的参考电平调整都会覆盖它；本目标的两次
   会话都遇到过设置被恢复后信号消失的情况。
-- 用 `tools/pluto_drm_tx.py` 配合 15 秒文件发射。60 秒文件会产生 250 MB 循环缓冲，Pluto 会以
+- 用 `tools/pluto/pluto_drm_tx.py` 配合 15 秒文件发射。60 秒文件会产生 250 MB 循环缓冲，Pluto 会以
   `EFAULT` 拒绝推送。
 - 台面码流是标准 DRM HE-AAC 配置：12 kHz 核心 + SBR，每个接入单元 208 字节，每 400 ms 帧五
   个。与 1048 字节的流帧对得上，说明解帧与码流一致。
@@ -202,14 +246,13 @@ DecDRM 的接收机模块正好解决这些弱点：
 
 ## 下一步（按顺序）
 
-1. 台面在线验证音频：运行前把 ref level 设到 -35..-45 dBm，用 `tools/pluto_drm_tx.py` 发射，
-   `tools/drm_capture.py` 抓取后经 wasm 路径解码（`frontend/scripts/drm_live_audio.mjs`）
-   应显示非静音 PCM，并且 preset 切换（进 DRM 再切回）不刷新页面。
-2. 在台面上端到端驱动 xHE-AAC：在 DecDRM 的台站配置里设 `codec = "xhe-aac"`，抓取后检查
-   libxaac 路径（`coding 3`）与真实 xHE 码流。
-3. 同样方式验证 HE-AAC v2（SBR + PS，立体声）。
-4. 如果台面实测暴露信道估计或定时问题，再移植下面的 DecDRM 模块；今天的离线套件已全部
-   通过，这一步由证据驱动，不是自动必做。
+**2026-10-06 状态：** 第 2、3 条已完成；第 1 条部分完成；第 4 条已完成，需实时复核。现行清单：
+
+1. 在 ref level -35..-45 dBm 下重新抓取。用 `tools/pluto/pluto_drm_tx.py` 发射。经 wasm 路径
+   （`frontend/scripts/drm_live_audio.mjs`）解码，PCM 必须非静音。在浏览器上检查 preset 切换
+   （进 DRM 再切回）。
+2. 用新抓取复核 xHE-AAC 台面。
+3. 在实时抓取上重测信道估计与定时/SRO 环。
 
 ## 剩余的差距：信道估计（下一轮的工作）
 
@@ -252,7 +295,8 @@ SNR/MER 应当取代我们现在的 `snr_db` 读数（现在来自 FAC 判决，
 
 验收：在 `live30.f32` 上我们解出的音频帧数接近参考（以 `decdrm rx` 为准），并且 native 套件
 （`drm_fixture`、`drm_live_fixture`、`drm_phy_robustness`）保持全绿。测量用的捕获在 `/tmp`
-（`live30.f32`、`live60.f32`、`lvl.f32`）；可用 `tools/drm_capture.py` 重新抓取。
+（`live30.f32`、`live60.f32`、`lvl.f32`）；可用 `tools/bench/drm_capture.py` 重新抓取。（这些文件在
+2026-10-06 重启后已丢失，见顶部状态核对。）
 
 ## 移植进度（分支 `feature/drm-dream-port`）
 
@@ -391,4 +435,4 @@ task-3/4 的其余部分都有参考支撑。
 - DRM30 先以 SO3 完成模式/FAC 捕获，再按首个 CRC 正确的 FAC 切换到电台声明的占用带宽，然后组装 SDC/MSC。提交的模式 B SO0（4.5 kHz）和 SO5（20 kHz）发射夹具在整段及 3248 样本分块两种输入下分别解出 FAC 13/0、SDC 4、MSC 5 和 xHE-AAC AU；原 SO3 与 A/C/D 夹具仍通过。原 Filter 的 0.5–180 kHz 模拟按钮不选择 DRM 占用：窄带档的后端 DDC 仍约 48.8 kS/s。选择 DRM 时设定 12 kHz DDC 几何（输出至少 48 kS/s，足以容纳 20 kHz 信道），隐藏模拟手选并标示 FAC 自动识别；频谱高亮在锁定前显示 20 kHz 搜索范围，锁定后随 FAC 带宽更新，不再误用 FT8 的 +100..3000 Hz。DRM30 核心固定 48 kS/s，音频 PCM 仍按声卡 44.1/48 kHz 输出。其余模式/占用组合有信元表，但尚无各自提交的发射夹具。
 - 用当前 wasm ABI 对 `/tmp/cnr_rec.f32` 逐块复查：正常区间 32 kHz xHE 平均每约 1.2 秒输出 1.203 秒 PCM，但第 564 块到 775 块之间约 14 秒没有 PCM，随后 FAC 计数由 93 重新从低值开始，符合重新捕获。该抓取不足以证明更短的听感拼接只由编解码器引起；FAC 正确/错误数会在重捕时归零，当前 `err 0` 也不代表此前 MSC/PCM 连续。本次没有进行设备实时 e2e。
 
-**下一轮可复用的可靠离线数据**：一条已知音频的台面环路——`cowtts` 合成语音到 `/tmp/cowtts_test.wav`，`decdrm tx` 生成 `/home/hui/drm-bench/drm_iq_tts.wav`（xHE-AAC 单声道 24 kHz），`tools/pluto_drm_tx.py` 发射，`tools/drm_capture.py` 抓基带。在这条环路上，我们的接收机和参考都产出干净连续的音频（`/tmp/tts_rec.f32`、`/tmp/ours_tts_24k.wav`、`/tmp/decdrm_tts.wav`），因此**解码器是清白的**。而在真实 13.825 MHz 电台（CNR-1，xHE-AAC 32 kHz，`/tmp/cnr_rec.f32`）上，**两个解码器都有相同的拼接伪影**，说明伪影在真实信号或采集链路（HF 衰落和/或采集路径），不在解码器；参考在该抓取上解出更多帧（725 对 536），是下一个鲁棒性目标。已提交的夹具（`drm_live_modeB_so3_48828.f32`、模式 A/C/D、xHE、HE-AACv2 抓取）仍是确定性回归集。
+**下一轮可复用的可靠离线数据**（下文提到的 `/tmp` 文件在 2026-10-06 重启后已丢失，见顶部状态核对）：一条已知音频的台面环路——`cowtts` 合成语音到 `/tmp/cowtts_test.wav`，`decdrm tx` 生成 `drm_iq_tts.wav`（xHE-AAC 单声道 24 kHz），`tools/pluto/pluto_drm_tx.py` 发射，`tools/bench/drm_capture.py` 抓基带。在这条环路上，我们的接收机和参考都产出干净连续的音频（`/tmp/tts_rec.f32`、`/tmp/ours_tts_24k.wav`、`/tmp/decdrm_tts.wav`），因此**解码器是清白的**。而在真实 13.825 MHz 电台（CNR-1，xHE-AAC 32 kHz，`/tmp/cnr_rec.f32`）上，**两个解码器都有相同的拼接伪影**，说明伪影在真实信号或采集链路（HF 衰落和/或采集路径），不在解码器；参考在该抓取上解出更多帧（725 对 536），是下一个鲁棒性目标。已提交的夹具（`drm_live_modeB_so3_48828.f32`、模式 A/C/D、xHE、HE-AACv2 抓取）仍是确定性回归集。

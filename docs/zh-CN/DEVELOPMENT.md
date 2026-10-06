@@ -94,7 +94,7 @@
 - **注册必须可达**：模块级注册（`setRenderer` / `registerViewRenderer` / `registerMeasurementTab`）
   只有在模块被 import 时才生效。破坏循环依赖后"没人 import 它"本身就是故障
   （曾导致画布全空且无任何报错）。入口 `main.ts` 用**副作用 import** 拉入这些模块，
-  `python3 tools/check_registrations.py` 由 CI 强制。
+  `python3 tools/checks/check_registrations.py` 由 CI 强制。
 - **一个显示位只能有一个所有者**：瀑布图与测量结果表抢同一个位置，测量激活时必须关闭并禁用瀑布，
   结束后恢复用户原选择。
 - **跨模块字符串标识必须成对解析**：单位组的键是 `rta_center`、输入框 id 是 `input-rta-center`，
@@ -112,7 +112,7 @@
    （类型/边界/单位/默认/条件必填），交叉字段规则放 `EXTRA_VALIDATORS`；
 2. 边界：能用能力表就用 `caps`（不要写字面量，守卫会数 `maximum=<数字>`）；
 3. 模式/会话限制用表标志（`SWP_OWNED` / `SWP_ONLY` / `NOT_IN_SDR`），不要写 `if mode == ...`；
-4. 测试：表一致性测试 + `tools/command_sweep.py`（真机）会覆盖新命令；
+4. 测试：表一致性测试 + `tools/bench/command_sweep.py`（真机）会覆盖新命令；
 5. 前端：参数用槽位（§3），命令用 `send({cmd: ...})`，`/api/schema` 会带上新字段。
 
 ### 5.2 新增设备型号/能力
@@ -133,14 +133,14 @@
 ### 5.4 新增帧类型
 
 `measurements/framer.py` 加编码器 → `web/client_stream.py` 的 `FRAME_POLICY` 加保留策略
-（未知类型默认 latest-wins）→ `core/frames.ts` 加解码 → `tools/gen_frame_fixtures.py` 生成 golden
+（未知类型默认 latest-wins）→ `core/frames.ts` 加解码 → `tools/fixtures/gen_frame_fixtures.py` 生成 golden
 fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一致，TS 断言解码结果与 manifest 一致）。
 
 ### 5.5 新增面板/界面文案
 
 1. `ui/panels/<name>.ts`（面板动作）+ `data-action` 绑定；不要往 `controls.ts` 里堆动作；
 2. i18n：按命名空间加到 `core/i18n/dict.<域>.ts`（**en 与 zh 都要加**，parity 测试会强制）；
-3. 新元素 id：`tools/check_dom_ids.py` 会检查"TS 读取但 index.html 不存在"；
+3. 新元素 id：`tools/checks/check_dom_ids.py` 会检查"TS 读取但 index.html 不存在"；
 4. 用户可见行为要加 e2e 断言（§6）。
 
 ### 5.6 新增 DSP/SDR 处理块
@@ -187,8 +187,8 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 协议 | 两端 golden fixture | 字节布局 | 只在一边测 |
 | **端到端（无硬件）** | `make e2e-fake`：`ui_smoke.py`（渲染与接线，29 项）+ `state_regression.py`（参数状态机契约，72 项），同一假服务，CI 运行 | 画布像素、控件到达后端、模式切换/页签/瀑布/i18n/键盘、峰值表使用槽位门限；槽位/在途/交接/Preset/刷新/快速连切；一次性 Auto Scale（发光 → 一步落定 → `ok` 且不重配）；设置变更只重拟合一次且绝不撤销手动电平 | 只断言 dataset/计数器；**为让假后端通过而放宽断言**（会同时削弱真机轮次；器件相关检查用 `require_device=True` 显式跳过） |
 | **端到端（真机）** | Playwright + 真机 | **用户可见结果**：画布像素、DOM 文本、真实点击后的设备状态 | `dataset.rtaFrames`（只说明帧交给了渲染器，不代表画出来了） |
-| 性能 | `tools/bench.py` + 基线 | 帧率/切换延迟/CPU 的**可比**数值 | 在设备告警或残留负载下比较 |
-| 硬件冒烟 | `tools/hardware_smoke.py` + tinySA | 真实信号下的电平/帧完整性 | — |
+| 性能 | `tools/bench/bench.py` + 基线 | 帧率/切换延迟/CPU 的**可比**数值 | 在设备告警或残留负载下比较 |
+| 硬件冒烟 | `tools/bench/hardware_smoke.py` + tinySA | 真实信号下的电平/帧完整性 | — |
 
 两条硬规则：
 
@@ -200,7 +200,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 
 ## 7. 性能与并发规则
 
-- **先测量再优化**：`make bench`（固定配置、干净设备状态、单客户端）与 `tools/bench_baseline.json`；
+- **先测量再优化**：`make bench`（固定配置、干净设备状态、单客户端）与 `tools/bench/bench_baseline.json`；
   单次采样可能因机器噪声误报，bench 会在判定回归前复测一次。
 - **后端**：所有 DLL 调用在设备可重入锁下串行；慢调用走 `asyncio.to_thread` + 看门狗；
   超时/致命错误走 `fatal()`（进程级恢复由 supervisor 负责），不要吞异常。
@@ -229,7 +229,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
   改动跨多个提交时，可用
   `git worktree add /tmp/wt <commit> && (cd /tmp/wt && python3 -m pytest tests/ -q)` 逐个验证
   （曾发现"测试先于实现"的提交，历史已重建修正）。
-- **版本单一来源**：改 `pyproject.toml` → `python3 tools/sync_version.py`（同步 `package.json` 与
+- **版本单一来源**：改 `pyproject.toml` → `python3 tools/checks/sync_version.py`（同步 `package.json` 与
   `index.html`）；`--check` 在 CI 中。
 - **发布**：bump 版本 → 构建前端（**服务提供的是 `dist/`，忘记 build 等于测旧包**）→ `make hw-test` →
   `git merge --no-ff` 到 master → tag → push。
@@ -244,13 +244,13 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 后端测试 | `python3 -m pytest tests/ -q` | — |
 | 静态检查 | `python3 -m ruff check web_sa tests tools` | — |
 | 前端类型/测试 | `npx tsc --noEmit` / `npm test` | — |
-| 版本一致 | `python3 tools/sync_version.py --check` | — |
-| 帧 fixture 与编码器一致 | `python3 tools/gen_frame_fixtures.py --check` | `tests/fixtures/frames/` |
-| DOM id 契约 | `python3 tools/check_dom_ids.py` | — |
-| 双语文档结构一致 | `python3 tools/check_docs_parity.py` | — |
-| 注册点可达 | `python3 tools/check_registrations.py` | — |
-| 架构指标不退化 | `python3 tools/quality/architecture_guard.py` | `tools/quality/baseline.json` |
-| 性能不退化 | `python3 tools/bench.py --check tools/bench_baseline.json` | `tools/bench_baseline.json` |
+| 版本一致 | `python3 tools/checks/sync_version.py --check` | — |
+| 帧 fixture 与编码器一致 | `python3 tools/fixtures/gen_frame_fixtures.py --check` | `tests/fixtures/frames/` |
+| DOM id 契约 | `python3 tools/checks/check_dom_ids.py` | — |
+| 双语文档结构一致 | `python3 tools/checks/check_docs_parity.py` | — |
+| 注册点可达 | `python3 tools/checks/check_registrations.py` | — |
+| 架构指标不退化 | `python3 tools/checks/architecture_guard.py` | `tools/checks/baseline.json` |
+| 性能不退化 | `python3 tools/bench/bench.py --check tools/bench/bench_baseline.json` | `tools/bench/bench_baseline.json` |
 
 **基线只降不升**：改进后执行 `--update` 收紧基线；确需放宽时，必须在该提交的说明里写清原因
 （例如上游依赖变更），否则后来者无法判断是"有意放宽"还是"悄悄退化"。
@@ -329,13 +329,13 @@ make e2e-fake                # 无硬件：假后端上跑 ui_smoke（29 项）+
 make hw-test                 # 真机：tinySA 冒烟 + 24 命令扫描 + UI 状态机回归（45 项）
 python3 tools/e2e/readme_shots.py      # 重拍 README 截图（真机 + tinySA/Pluto 信号源，见 --help）
 make bench                   # 与基线比较帧率/切换延迟/CPU
-python3 tools/bench.py --write-baseline tools/bench_baseline.json   # 重录基线（先确认干净状态）
-python3 tools/command_sweep.py        # 单独跑命令层契约（真机）
+python3 tools/bench/bench.py --write-baseline tools/bench/bench_baseline.json   # 重录基线（先确认干净状态）
+python3 tools/bench/command_sweep.py        # 单独跑命令层契约（真机）
 python3 tools/e2e/state_regression.py # 单独跑 UI 状态机回归（真机）
-python3 tools/check_registrations.py  # 注册点可达性
+python3 tools/checks/check_registrations.py  # 注册点可达性
 make wasm | make wasm-check            # Rust/WASM DSP 内核：构建并入库产物 / 校验产物
-python3 tools/check_wasm_artifact.py  # 产物哈希 + 导出符号（仅标准库，CI 跑这条）
-python3 tools/quality/architecture_guard.py --baseline   # 查看当前架构指标
+python3 tools/checks/check_wasm_artifact.py  # 产物哈希 + 导出符号（仅标准库，CI 跑这条）
+python3 tools/checks/architecture_guard.py --baseline   # 查看当前架构指标
 ```
 
 ---
@@ -364,7 +364,7 @@ make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 
 - `frontend/public/dsp.wasm` **入库**，`wasm/dsp.artifact.json` 记录其 sha256、大小、工具链与
   导出列表。`./build.sh` 绝不调用 cargo，因此没有 Rust 的机器（和 CI）照样能构建并服务应用。
-- `tools/check_wasm_artifact.py`（`make ci` 的一部分）只用标准库校验记录的哈希，**并解析模块的导出段**：
+- `tools/checks/check_wasm_artifact.py`（`make ci` 的一部分）只用标准库校验记录的哈希，**并解析模块的导出段**：
   产物陈旧、被截断或导出被改名都会在没有 Rust 的情况下失败。
 - release profile 固定 `lto`、单一 codegen unit 与 `strip`，构建逐字节可复现；`make wasm-check`
   比较的是字节，不只是行为。
@@ -380,9 +380,9 @@ make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 ## 16. 真机验证结果
 
 以下数据来自本次重构验证所用的台位：**SAN-90**（9 kHz–9 GHz）配 **tinySA Ultra ZS407** 作为信号源。IQ 从分析仪
-自身的流中抓取（`tools/hil_audio_check.py`），再经**入库的** `dsp.wasm` 处理
+自身的流中抓取（`tools/bench/hil_audio_check.py`），再经**入库的** `dsp.wasm` 处理
 （`frontend/src/__tests__/hil.test.ts`）；同一抓取也跑一遍 Python 参考
-（`tools/hil_reference_check.py`），以便把不佳的数值归因。
+（`tools/bench/hil_reference_check.py`），以便把不佳的数值归因。
 
 | 检查 | 结果 |
 |---|---|
@@ -405,9 +405,9 @@ make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 
 ```bash
 make hw-test
-python3 tools/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
+python3 tools/bench/hil_audio_check.py --modulation am --mode auto --ifbw 6000 --seconds 3
 WEBSA_HIL_IQ=/tmp/hil_iq.json WEBSA_HIL_NO_CHAIN=1 npx vitest run src/__tests__/hil.test.ts
-python3 tools/hil_reference_check.py /tmp/hil_iq.json
+python3 tools/bench/hil_reference_check.py /tmp/hil_iq.json
 ```
 
 NFM 用 `--modulation fm --ifbw 25000 --deviation 6000`，CW 用 `--modulation cw --ifbw 500`。

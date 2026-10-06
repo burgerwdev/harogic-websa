@@ -4,8 +4,8 @@
  * The DRM receiver's audio stage decodes AAC access units through the FDK AAC decoder in
  * `TT_DRM` transport. This test feeds the committed `aac_sine_24k` fixture (9 re-serialised
  * DRM access units, 36 bytes each) to the `websa_dsp_fdk_decode_drm_frames` export and asserts
- * the run decodes to non-silent PCM. The fixture was produced by `tools/gen_drm_aac_fixture.py`
- * and its native lossless check is `tools/verify_drm_aac.c`; this test is the in-repo WASM
+ * the run decodes to non-silent PCM. The fixture was produced by `tools/fixtures/gen_drm_aac_fixture.py`
+ * and its native lossless check is `tools/fixtures/verify_drm_aac.c`; this test is the in-repo WASM
  * counterpart (the native `cargo test` cannot link the wasm32-only codec).
  */
 import { readFileSync } from 'node:fs';

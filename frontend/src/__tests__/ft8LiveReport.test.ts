@@ -3,7 +3,7 @@
 // machine-readable, so an acceptance run's decode count can be compared against another
 // receiver's (the FT8CN phone app hears the same audio) without scraping test output.
 //
-//   python3 tools/ft8_capture_check.py --frequency 7.074e6 --seconds 150
+//   python3 tools/bench/ft8_capture_check.py --frequency 7.074e6 --seconds 150
 //   WEBSA_FT8_IQ=/tmp/ft8_capture.json npx vitest run src/__tests__/ft8LiveReport.test.ts
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';

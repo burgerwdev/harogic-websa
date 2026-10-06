@@ -1,7 +1,7 @@
 """Hardware smoke-test safety rules."""
 import pytest
 
-from tools.hardware_smoke import TinySaSource, safe_tinysa_level
+from tools.bench.hardware_smoke import TinySaSource, safe_tinysa_level
 from web_sa.supervisor import should_restart
 
 

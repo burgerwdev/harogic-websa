@@ -8,13 +8,13 @@ documented recipe.
 
 | Directory | Generator | Check (CI-enforced) | Size |
 |---|---|---|---|
-| `dsp/` (22 files) | `python3 tools/gen_dsp_fixtures.py` | `--check` in CI | 948 KB |
-| `frames/` | `python3 tools/gen_frame_fixtures.py` | `--check` in CI | 24 KB |
-| `ft8/*.bin`, `ft8/tables.json` | `python3 tools/gen_ft8_fixtures.py` | `--check` in CI | ~15 MB |
+| `dsp/` (22 files) | `python3 tools/fixtures/gen_dsp_fixtures.py` | `--check` in CI | 948 KB |
+| `frames/` | `python3 tools/fixtures/gen_frame_fixtures.py` | `--check` in CI | 24 KB |
+| `ft8/*.bin`, `ft8/tables.json` | `python3 tools/fixtures/gen_ft8_fixtures.py` | `--check` in CI | ~15 MB |
 
 All three are deterministic (seeded synthesis from the Python reference DSP): the same
 command reproduces the same bytes, which is what lets the Rust tests (`wasm/tests/*.rs`,
-`include_bytes!`), the Python tests and `tools/dsp_parity.py` agree numerically on both
+`include_bytes!`), the Python tests and `tools/analysis/dsp_parity.py` agree numerically on both
 sides of the WASM boundary.
 
 ## The one real capture (kept on purpose)

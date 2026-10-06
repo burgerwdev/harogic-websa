@@ -155,7 +155,7 @@ cd frontend && npm audit
 服务启动后执行：
 
 ```bash
-./tools/hardware_smoke.py --tinysa-port /dev/ttyACM0
+./tools/bench/hardware_smoke.py --tinysa-port /dev/ttyACM0
 ```
 
 该命令只读取 TinySA 身份，不修改 TinySA 输出；但会测试 SAN 的 SWP/RTA 并恢复 SAN 测试前的 SWP Center/Span。
@@ -163,7 +163,7 @@ cd frontend && npm audit
 显式控制 TinySA 发射 1 GHz：
 
 ```bash
-./tools/hardware_smoke.py \
+./tools/bench/hardware_smoke.py \
   --tinysa-port /dev/ttyACM0 \
   --configure-tinysa \
   --tinysa-output-mode normal \

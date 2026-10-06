@@ -72,17 +72,17 @@ wasm-test: ## Run the Rust DSP kernel tests (numeric agreement with the Python r
 
 ci:       ## The in-process gates CI runs, locally (no hardware; browser e2e: make e2e-fake)
 	./test.sh
-	python3 tools/sync_version.py --check
-	python3 tools/gen_frame_fixtures.py --check
-	python3 tools/gen_dsp_fixtures.py --check
-	python3 tools/gen_ft8_fixtures.py --check
-	python3 tools/check_dom_ids.py
-	python3 tools/check_registrations.py
-	python3 tools/check_docs_parity.py
-	python3 tools/check_doc_paths.py
-	python3 tools/check_wasm_artifact.py
-	tools/build_ggmorse_wasm.sh --check   # the committed CW decoder artifact (skips without emsdk)
-	python3 tools/quality/architecture_guard.py
+	python3 tools/checks/sync_version.py --check
+	python3 tools/fixtures/gen_frame_fixtures.py --check
+	python3 tools/fixtures/gen_dsp_fixtures.py --check
+	python3 tools/fixtures/gen_ft8_fixtures.py --check
+	python3 tools/checks/check_dom_ids.py
+	python3 tools/checks/check_registrations.py
+	python3 tools/checks/check_docs_parity.py
+	python3 tools/checks/check_doc_paths.py
+	python3 tools/checks/check_wasm_artifact.py
+	tools/vendor/build_ggmorse_wasm.sh --check   # the committed CW decoder artifact (skips without emsdk)
+	python3 tools/checks/architecture_guard.py
 	./build.sh
 	@echo "OK: in-process gates green (same as the backend/frontend/architecture jobs of .github/workflows/ci.yml; browser e2e: make e2e-fake)"
 
@@ -93,10 +93,10 @@ wasm-check: ## Rebuild both WASM cores and fail if a committed artifact differs 
 	./wasm-dfn/build.sh --check
 
 ggmorse:  ## Rebuild the CW decoder wasm module (needs emsdk; the artifact is committed)
-	tools/build_ggmorse_wasm.sh
+	tools/vendor/build_ggmorse_wasm.sh
 
 ggmorse-check: ## Check the committed CW decoder artifact against its expected API (no emsdk needed)
-	tools/build_ggmorse_wasm.sh --check
+	tools/vendor/build_ggmorse_wasm.sh --check
 
 ##@ Hardware
 
@@ -106,18 +106,18 @@ hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regressi
 	@# The smoke test needs std mode; a previous e2e run may have left SDR/RTA active.
 	@curl -s -X POST http://127.0.0.1:$${WEBSA_PORT:-8080}/api/config \
 		-H 'Content-Type: application/json' -d '{"cmd":"SET_MODE","mode":"std"}' >/dev/null || true
-	python3 tools/hardware_smoke.py --tinysa-port $${TINYSA_PORT:-/dev/ttyACM0} \
+	python3 tools/bench/hardware_smoke.py --tinysa-port $${TINYSA_PORT:-/dev/ttyACM0} \
 		--configure-tinysa --frequency 100.2e6 --span 10e6 --duration 3
-	python3 tools/command_sweep.py
+	python3 tools/bench/command_sweep.py
 	python3 tools/e2e/state_regression.py
 	@echo "OK: hardware smoke + command sweep + UI state regression"
 
-bench:    ## Performance baseline: compare against tools/bench_baseline.json (service running)
+bench:    ## Performance baseline: compare against tools/bench/bench_baseline.json (service running)
 	@pgrep -f "[w]eb_sa.supervisor" >/dev/null || ./run.sh
-	python3 tools/bench.py --check tools/bench_baseline.json
+	python3 tools/bench/bench.py --check tools/bench/bench_baseline.json
 
 bench-record:  ## Re-record the performance baseline on this host
-	python3 tools/bench.py --duration 4 --write-baseline tools/bench_baseline.json
+	python3 tools/bench/bench.py --duration 4 --write-baseline tools/bench/bench_baseline.json
 
 ##@ E2E
 

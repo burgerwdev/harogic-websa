@@ -3,6 +3,60 @@
 This page is for whoever continues the work, including a later session with a different model.
 `docs/en/DRM_BENCH.md` holds the measurements; this page holds the state and the plan.
 
+## 2026-10-06: state check (current)
+
+This section is the current state. It applies to commit `7dcf27c4` on branch
+`feature/drm-dream-port`. When an older section below disagrees with this section, this section
+wins.
+
+**Working tree.** At the start of this session, two files differed from HEAD:
+`frontend/public/dsp.wasm` and `wasm/dsp.artifact.json`. No Rust source differed. The rebuild
+was self-consistent, but its hash differed from the committed pair (`f9d5007e…` committed,
+`f16ec2e4…` in the tree). The commit decision is open.
+
+**This session's changes.** The state check landed in this page. The user asked to remove the
+build warnings. The warnings in `wasm/src/digital/drm/` are gone, and the wasm pair was rebuilt
+(`97317de6…`). The bench
+transmitters are consolidated: `tools/pluto_tx.py` is the single entry point,
+`tools/pluto/pluto_radio.py` is the shared radio layer, and `tools/pluto/pluto_analog_tx.py` adds the analog
+modes. Run `python3 tools/pluto_tx.py --list` for the modes and `--dry-run-all` for a no-radio
+check.
+
+**Lost `/tmp` evidence.** The machine restarted. These files no longer exist: `live30.f32`,
+`live60.f32`, `lvl.f32`, `cnr_rec.f32`, `cowtts_test.wav`, `tts_rec.f32`, `ours_tts_24k.wav` and
+`decdrm_tts.wav`. Several measurements below use them. Each live test checks for the file and
+skips when the file is absent, so the suite stays green without them. Run
+`tools/bench/drm_capture.py` again to make new evidence, then re-measure the live claims.
+
+**Green gates.** `make ci` exits 0. `make wasm-test` (cargo test) exits 0: 211 tests pass and
+14 are ignored.
+
+**Open items.**
+1. Commit or discard the current tree changes (docs, tools, warning cleanup, wasm pair). Record the reason.
+2. Make new `/tmp` captures. Re-measure the live claims.
+3. Check the live audio by ear. Confirm that a preset switch needs no page refresh.
+4. Re-measure the channel estimation on a live capture. The Doppler-adapted time-Wiener stays
+off by default. The timing/SRO loop now has a live path, but it needs a live check.
+5. Repeat the xHE-AAC bench run with a fresh capture.
+6. Find a real shortwave DRM station and a real VHF DRM+ signal. No off-air source was available
+in this session.
+7. The browser e2e (`tools/e2e/drm_switch.py`) is blocked by the baseband feed rate, about one
+3248-sample block per second. The `drmLiveAudio` wasm gate stands in for it.
+
+**Superseded sections.** The sections below are historical. Do not trust them without a check:
+- "The wasm ABI swap was attempted and reverted" and "The incremental processing model was
+attempted and reverted": the streaming path is correct now. Commits `8d4e3ab4` and `eea54e98`
+landed the swap and deleted the previous receiver.
+- "The remaining gap: channel estimation (next round's work)", "Reference modules for the fix" and
+"The tracking stage, ready to implement": the port is done. The `freqtrack` stage (commit
+`f7eab285`) closes the offset drift.
+- "The post-lock pass, resolved": it describes the deleted receiver.
+- "Next steps, in order" items 2 and 3: mode A/C/D, xHE-AAC and HE-AAC v2 now decode.
+- The port progress rows for `timesync`, `finefreq` and `chanest` are older than the code. The
+`chanest` row calls `/tmp/live30.f32` over-driven. That warning is not supported: the reference
+receiver locks on the same file at MER 17.8 dB. The high RMS is the DDC gain quirk that
+`docs/en/DRM_BENCH.md` records.
+
 ## Where the work stands
 The receiver is the ported chain in `wasm/src/digital/drm/` (following Dream's stage order);
 the previous receiver is deleted, so `digital::drm` is the only DRM demodulator.
@@ -196,7 +250,7 @@ question tied to porting DecDRM's adjacent-pair frame sync.
   nothing locked. **Set it before every bench run**: presets and the backend's own reference
   adjustment overwrite it, and the operators on both sides of this goal have seen the signal
   disappear after a setting was restored.
-- Transmit with `tools/pluto_drm_tx.py` and the 15 s file. A 60 s file makes a 250 MB cyclic
+- Transmit with `tools/pluto/pluto_drm_tx.py` and the 15 s file. A 60 s file makes a 250 MB cyclic
   buffer and the Pluto rejects the push with `EFAULT`.
 - The bench stream carries the standard DRM HE-AAC configuration: a 12 kHz core with SBR, 208
   byte access units, five per 400 ms frame. The numbers add up against the 1048 byte stream
@@ -317,15 +371,14 @@ GPL-2.0-or-later, so read them for the algorithms and implement independently.
 
 ## Next steps, in order
 
-1. Bench-verify the audio live: ref level -35..-45 dBm before the run, transmit with
-   `tools/pluto_drm_tx.py`, then a `tools/drm_capture.py` capture decoded through the wasm
-   path (`frontend/scripts/drm_live_audio.mjs`) must show non-silent PCM, and the preset
-   switch (DRM and back) must work without a page refresh.
-2. Drive xHE-AAC end-to-end on the bench: set `codec = "xhe-aac"` in the DecDRM station
-   config, capture, and check the libxaac path (`coding 3`) with a real xHE stream.
-3. Exercise HE-AAC v2 (SBR + PS, stereo) the same way.
-4. If the live bench shows channel-estimation or timing weaknesses, then port the DecDRM
-   modules below; the offline suites pass today, so this is evidence-driven, not automatic.
+**Status 2026-10-06:** items 2 and 3 are done. Item 1 is partly done. Item 4 is done and
+needs a live re-check. Use this list:
+
+1. Make a fresh capture at ref level -35..-45 dBm. Transmit with `tools/pluto/pluto_drm_tx.py`.
+   Decode the capture through the wasm path (`frontend/scripts/drm_live_audio.mjs`). The PCM
+   must be non-silent. Check the preset switch (DRM and back) on the browser.
+2. Confirm the xHE-AAC bench run with a new capture.
+3. Re-measure the channel estimation and the timing/SRO loop on a live capture.
 
 ## The remaining gap: channel estimation (next round's work)
 
@@ -378,7 +431,7 @@ Order of work, each step verifiable on its own:
 Acceptance: on `live30.f32` our decoded-audio frame count approaches the reference's (`decdrm rx`
 is the oracle), and the native suites (`drm_fixture`, `drm_live_fixture`, `drm_phy_robustness`)
 stay green. The captures used for the measurements are in `/tmp` (`live30.f32`, `live60.f32`,
-`lvl.f32`); a fresh one can be made with `tools/drm_capture.py`.
+`lvl.f32`); a fresh one can be made with `tools/bench/drm_capture.py`.
 
 ## Port progress (branch `feature/drm-dream-port`)
 
@@ -399,7 +452,7 @@ Work lands stage by stage, each with tests that cross-check the reference's own 
 | `drm2::sync::nco` — carrier-offset removal between acquisition and demodulation | done | removes a tone at the measured offset exactly and joins consecutive blocks without a phase step |
 | `drm2::dsp::levinson` — the Haykin recursion Dream's Wiener filters use | done | diagonal and 2x2 systems (the first version was wrong; a diagonal-system test caught it) |
 | `drm2::sync::finefreq` — residual carrier offset from the continuous pilots | done | injecting -2/-0.5/+0.5/+2 Hz into the fixture comes back within 0.1 Hz. OPEN: on the live capture it measures +2.62 Hz after the coarse correction while the search over residual offset and timing favours -1.0 Hz (3.7 dB) — the two disagree, so either the pilots' rotation carries more than the offset (a timing/sample-rate drift adds to it) or the search's optimum is not the offset's |
-| `drm2::chanest` — pilot lattice, time interpolation, frequency Wiener, impulse-response tracking, FAC-decision MER | in progress | The frequency Wiener and the impulse-response tracker (`chanest/track.rs`, a port of DecDRM's `track.rs`) are in, and the time-interpolation step rotates each pilot to the emitted symbol's timing (DecDRM's `TimeWiener::rot`, sign verified against its timesync). Measured through the chain: clean fixture **41.6 dB** FAC MER (and its FAC now **decodes** — 13 blocks, 0 CRC failures), 1 ms echo **17.9 dB** (previous equaliser 10.9), low SNR **20.9 dB** (previous 18.8). The Wiener tap phase is now the reference's `π·pos·(len_ratio + 2·offs_ratio)` with `pos = i·x − diff` (the earlier `arg = 0` real taps and the per-symbol ramp de-rotation workaround are gone — the complex phase positions the delay spread and the timing ramp together). The live capture still reads **−8.6 dB** (reference 17.8). Diagnostics: the previous chain's per-symbol equaliser reads **−1.6 dB** on the same rows (so the front-end timing/carrier residual limits it), the old full-rate guard-correlation anchor reads **−9.2 dB** (so the decimated TimeSync is not the deficit), and clamping the delay-spread estimate to the echo's value makes it **worse** (−13.4 dB, confirming the ~10.6 ms spread is real and the 1-tap frequency-Wiener hold is correct). The remaining deficit is the **optimal window position** (Dream's timing tracking shifts the window to minimise the delay-spread ISI) plus the **time-Wiener (Doppler-adapted) time interpolation** — this port still uses a fixed linear interpolation where DecDRM's `TimeWiener` adapts to the Doppler spread. A closed-loop diagnostic (feed the tracker's `timing_adjust` back into the TimeSync) reads −10.4 dB and the tracker's energy method finds no clear first path on the spread profile, so the simple timing loop is not enough. The TimeWiener is **ported** in `chanest/time_wiener.rs` and now **wired in as an opt-in tracking path** (`start_time_wiener_tracking` switches from the exact linear interpolation, which stays the default so the clean-fixture MSC is bit-exact). On the live capture the time-Wiener path reads **−6.3 dB** FAC MER (the linear reads −8.6). The Doppler-spread estimate is now **enabled**: the instantaneous FAC MER fed back as the pilot SNR drove a positive-feedback collapse (σ pegged at 1.35 Hz, MER −19.6 dB); IIR-smoothing the SNR (5 s, the reference's `bound_snr` window) breaks the loop, and the Doppler-adapted time-Wiener now reads **+2.0 dB** FAC MER on the live capture (fixed σ reads −6.3, the linear −8.6). The `snr_pil_corr` correction and the `snr_after_ti` pass-through are in, completing the reference's SNR chain. The remaining gap to 17.8 dB is a **limit cycle in the estimation loop**: the delay-spread estimate alternates 103 ↔ 4 IR bins (period ~270 symbols ≈ 7 s, MER oscillating 1.7 → 0.1 → 2.2 → −8.2 dB) even *without* the timing loop — the grid→tracker→Wiener→grid feedback is unstable, which is what Dream's closed-loop timing stabilises. The tracker already computes `timing_adjust` and `sro_delta_hz` (live ~0.16 Hz ≈ 3 ppm); `ChanEst::start_timing_tracking`, `TimeSync::adjust_timing`, `TimeSync::adjust_sro` and `TimeSync::stop_timing_acquisition` now exist for the receiver loop, and `DrmReceiver` wires them with DecDRM's gating (time-Wiener after the first good FAC, timing tracking after the second plus a two-good-FAC countdown). On the live capture the loop **cannot start**: the FAC never decodes (0 blocks / 74 errors) because +2.1 dB MER is below the ~5 dB FAC threshold — the chicken-and-egg the reference breaks with a higher initial equalisation, so the next step is the initial equalisation quality, not the loop. **⚠ 2026-xx update: `/tmp/live30.f32` was NEVER verified before use.** A signal-level comparison against the clean fixture shows the live file's RMS is **45.3** (peak 213) vs the clean fixture's **0.18** (peak 0.80) — i.e. the live signal is ~254× (48 dB) hotter, meaning the capture was almost certainly taken at the wrong SDR reference level (the bench spec requires −35 to −45 dBm) and is severely overdriven. This invalidates the whole live30-vs-17.8 dB comparison: the deficit is a **capture-level problem, not a receiver defect**. Next step: re-capture the live DRM signal at the correct ref level (signal RMS comparable to the clean fixture) and re-run both receivers before drawing any further receiver conclusions. **Follow-up:** normalising the live signal's amplitude to the clean fixture's RMS (×1/254) does **not** help — the receiver still fails identically (0 FAC blocks / 74 errors), so the deficit is the live signal's **channel/propagation** (real multi-path), not the amplitude level or a receiver defect.
+| `drm2::chanest` — pilot lattice, time interpolation, frequency Wiener, impulse-response tracking, FAC-decision MER | in progress | The frequency Wiener and the impulse-response tracker (`chanest/track.rs`, a port of DecDRM's `track.rs`) are in, and the time-interpolation step rotates each pilot to the emitted symbol's timing (DecDRM's `TimeWiener::rot`, sign verified against its timesync). Measured through the chain: clean fixture **41.6 dB** FAC MER (and its FAC now **decodes** — 13 blocks, 0 CRC failures), 1 ms echo **17.9 dB** (previous equaliser 10.9), low SNR **20.9 dB** (previous 18.8). The Wiener tap phase is now the reference's `π·pos·(len_ratio + 2·offs_ratio)` with `pos = i·x − diff` (the earlier `arg = 0` real taps and the per-symbol ramp de-rotation workaround are gone — the complex phase positions the delay spread and the timing ramp together). The live capture still reads **−8.6 dB** (reference 17.8). Diagnostics: the previous chain's per-symbol equaliser reads **−1.6 dB** on the same rows (so the front-end timing/carrier residual limits it), the old full-rate guard-correlation anchor reads **−9.2 dB** (so the decimated TimeSync is not the deficit), and clamping the delay-spread estimate to the echo's value makes it **worse** (−13.4 dB, confirming the ~10.6 ms spread is real and the 1-tap frequency-Wiener hold is correct). The remaining deficit is the **optimal window position** (Dream's timing tracking shifts the window to minimise the delay-spread ISI) plus the **time-Wiener (Doppler-adapted) time interpolation** — this port still uses a fixed linear interpolation where DecDRM's `TimeWiener` adapts to the Doppler spread. A closed-loop diagnostic (feed the tracker's `timing_adjust` back into the TimeSync) reads −10.4 dB and the tracker's energy method finds no clear first path on the spread profile, so the simple timing loop is not enough. The TimeWiener is **ported** in `chanest/time_wiener.rs` and now **wired in as an opt-in tracking path** (`start_time_wiener_tracking` switches from the exact linear interpolation, which stays the default so the clean-fixture MSC is bit-exact). On the live capture the time-Wiener path reads **−6.3 dB** FAC MER (the linear reads −8.6). The Doppler-spread estimate is now **enabled**: the instantaneous FAC MER fed back as the pilot SNR drove a positive-feedback collapse (σ pegged at 1.35 Hz, MER −19.6 dB); IIR-smoothing the SNR (5 s, the reference's `bound_snr` window) breaks the loop, and the Doppler-adapted time-Wiener now reads **+2.0 dB** FAC MER on the live capture (fixed σ reads −6.3, the linear −8.6). The `snr_pil_corr` correction and the `snr_after_ti` pass-through are in, completing the reference's SNR chain. The remaining gap to 17.8 dB is a **limit cycle in the estimation loop**: the delay-spread estimate alternates 103 ↔ 4 IR bins (period ~270 symbols ≈ 7 s, MER oscillating 1.7 → 0.1 → 2.2 → −8.2 dB) even *without* the timing loop — the grid→tracker→Wiener→grid feedback is unstable, which is what Dream's closed-loop timing stabilises. The tracker already computes `timing_adjust` and `sro_delta_hz` (live ~0.16 Hz ≈ 3 ppm); `ChanEst::start_timing_tracking`, `TimeSync::adjust_timing`, `TimeSync::adjust_sro` and `TimeSync::stop_timing_acquisition` now exist for the receiver loop, and `DrmReceiver` wires them with DecDRM's gating (time-Wiener after the first good FAC, timing tracking after the second plus a two-good-FAC countdown). On the live capture the loop **cannot start**: the FAC never decodes (0 blocks / 74 errors) because +2.1 dB MER is below the ~5 dB FAC threshold — the chicken-and-egg the reference breaks with a higher initial equalisation, so the next step is the initial equalisation quality, not the loop. **Superseded (2026-10-06).** This warning conflicts with the 2026-10-05 finding above. That finding shows `/tmp/live30.f32` is usable: the reference receiver locks on it at MER 17.8 dB. The high RMS is the DDC gain quirk. The file is lost now. See the state check at the top.
 | `drm2::fec` + `drm2::fac` + `drm2::sdc` + `drm2::interleave` — MLC/Viterbi/CRC/interleavers and the FAC/SDC parsers | done | the MIT-clean FEC chain, the FAC/SDC parsers and the MSC cell deinterleaver are ported from the previous module (byte-identical apart from the Cplx path). FAC and SDC are both verified end to end on the clean fixture: 13 FAC blocks / 0 CRC failures with the manifest's occupancy/QAM/interleaving/service id, and 4 SDC super frames decoding to the station label `SAN90 DRM TEST` plus the audio descriptor (AAC/SBR/mono/24 kHz) and the multiplex description (EEP 0/1, one stream). |
 | `drm2::mlc` (MSC) — cell/time deinterleave + MLC + multiplex demux | **done (bit-exact)** | the MSC decodes **bit-exact** against the xorshift stream (`msc_decodes_bit_exact`: frames match 8390/8390, shifted by one warm-up super frame). Three distinct defects were found and fixed this session. **(1) Super-frame assembly**: the MSC multiplex-frame boundary is every *N_MUX* (2337) **cells**, *not* every 15 symbols — mode B's frame 0 carries only 2123 MSC cells (the SDC symbols) while frames 1/2 carry 2445, so the sym-order cells must be concatenated and chunked by cell count exactly as the previous receiver does; a per-symbol flush produced 2445-cell frames. **(2) Flush point**: the buckets are keyed by super-frame symbol and flushed at frame 0's start (before collecting), skipping the first incomplete super frame that the chanest warm-up truncates. **(3) Timing ramp in the frequency Wiener**: the complex tap phase (`π·pos·(len_ratio + 2·offs_ratio)`, `pos = i·x − diff`) positions the delay spread and the timing ramp together, which real taps could not. The old `drm::DrmReceiver` stays the bit-exact oracle. |
 
@@ -620,9 +673,10 @@ have offline coverage; real-time playback still needs verification:
   and FAC good/bad counters reset at re-acquisition; a current `err 0` alone cannot prove
   continuous MSC or PCM. No live-device e2e was run for this diagnosis.
 
-**Reliable offline data for the next session.** A known-audio bench loop: `cowtts` synthesises
-speech to `/tmp/cowtts_test.wav`, `decdrm tx` builds `/home/hui/drm-bench/drm_iq_tts.wav`
-(xHE-AAC mono 24 kHz), `tools/pluto_drm_tx.py` transmits it and `tools/drm_capture.py` captures
+**Reliable offline data for the next session.** (The `/tmp` files named here were lost on
+2026-10-06. See the state check at the top.) A known-audio bench loop: `cowtts` synthesises
+speech to `/tmp/cowtts_test.wav`, `decdrm tx` builds `drm_iq_tts.wav`
+(xHE-AAC mono 24 kHz), `tools/pluto/pluto_drm_tx.py` transmits it and `tools/bench/drm_capture.py` captures
 the baseband. On that loop our receiver and the reference both produce clean, continuous audio
 (`/tmp/tts_rec.f32`, `/tmp/ours_tts_24k.wav`, `/tmp/decdrm_tts.wav`), so the **decoder is
 exonerated**. On the real 13.825 MHz station (CNR-1, xHE-AAC 32 kHz, `/tmp/cnr_rec.f32`)

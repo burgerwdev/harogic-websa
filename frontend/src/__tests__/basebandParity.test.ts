@@ -3,10 +3,10 @@
  *
  * The committed parity fixtures are short synthetic blocks, so they cannot see a gain that walks, an
  * AGC that pumps, or a state that accumulates. This feeds a *real* capture - 46 s of analyzer noise,
- * written by `tools/ft8_capture_check.py` - and asserts the one property such a defect breaks: the
+ * written by `tools/bench/ft8_capture_check.py` - and asserts the one property such a defect breaks: the
  * output level of a stationary input stays put, second by second.
  *
- *   python3 tools/ft8_capture_check.py --frequency 21.074e6 --seconds 45 --out /tmp/nb.iq.json
+ *   python3 tools/bench/ft8_capture_check.py --frequency 21.074e6 --seconds 45 --out /tmp/nb.iq.json
  *   WEBSA_NB_IQ=/tmp/nb.iq.json npx vitest run src/__tests__/basebandParity.test.ts
  *
  * (A per-second bound, not a per-block one: the short-time RMS of any noise band fluctuates by several

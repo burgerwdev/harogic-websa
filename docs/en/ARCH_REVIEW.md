@@ -615,14 +615,14 @@ Phase 0 must precede Phase 2/3.
 ### 8.3 Gaps the original review missed (added here)
 
 **G-1 No performance/resource baseline.** The original review was static-only yet still wrote conclusions such
-as "the main bottlenecks are handled" without measurements. → Added: `tools/bench.py` (repeatable
+as "the main bottlenecks are handled" without measurements. → Added: `tools/bench/bench.py` (repeatable
 latency/frame-rate/CPU baseline) plus a baseline table, so optimisation claims become verifiable.
 
 **G-2 Dependencies are not pinned.** `aiohttp>=3.9`, `numpy>=1.24` have no upper bound and the frontend
 `package.json` uses `^` (though `package-lock.json` exists); the Python side has no constraints file.
 Reproducible builds require pinning or at least a documented, tested version matrix.
 
-**G-3 No hardware-in-the-loop (HIL) entry point.** The repo has `tools/hardware_smoke.py` and the Playwright
+**G-3 No hardware-in-the-loop (HIL) entry point.** The repo has `tools/bench/hardware_smoke.py` and the Playwright
 e2e, but no single command, no baseline and no "must run before release" rule. Instrument software
 conventionally has `make hw-test` (real-hardware smoke + state-machine regression) in the release checklist.
 → Implemented here (see §9).
@@ -649,7 +649,7 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | P0-4 / G-2 | Dependencies split runtime/dev/lock with two-sided bounds | clean-checkout `./test.sh` |
 | P0-5 | Version single-sourced, `--check` in CI | breaking package.json fails |
 | G-3 | Seven vendor modules skipped when the library is absent; `make ci`/`hw-test`/`bench` | **78** tests pass offline |
-| G-1 | `tools/bench.py` (fixed device configuration before measuring; it caught a false 2.5x regression) + baseline | passes repeatedly |
+| G-1 | `tools/bench/bench.py` (fixed device configuration before measuring; it caught a false 2.5x regression) + baseline | passes repeatedly |
 | P1-1/P1-2 | **Command layer as a declarative table** (`CommandSpec` + guard flags; ws.py transport-only) | 14 table tests + `command_sweep.py` 30/30 on the bench |
 | P1-3 | `rta.py` no longer imports `htra_api`; `sdk_bindings` re-exports the missing types | guard 3 -> 0 |
 | P1-4 | **Frontend cycles 14 -> 0** (redraw seam, plot geometry, four leaf modules) | guard + hardware UI regression |
@@ -671,7 +671,7 @@ Roadmap phases 0-3 are implemented (21 commits since the review commit; 24 from 
 | P2-5 | Bilingual doc structure check (7 file pairs) | `make ci` |
 | P2-7 | **Measurement result assembly tests**: the harmonic sequence is driven through a stub device (order list, dBc reference, amplitude tracking, frequency-limit stop, parameter clamping) and the PNM payload became a pure `pnm_payload()` helper | 6 hardware-free tests |
 | P2-8 | Correction: `fit_span` is used by the harmonic session, not a legacy leftover | - |
-| §7.5 | `tools/quality/architecture_guard.py` + baseline | `make ci` |
+| §7.5 | `tools/checks/architecture_guard.py` + baseline | `make ci` |
 | **A1** | Fake backend + UI smoke in CI (see §9.3): `hardware/fake_device.py` imports no vendor module, `measurements/fake.py` synthesises RTAF/AUDF frames, `tools/e2e/ui_smoke.py` runs 20 user-visible checks, CI gained the `ui-smoke` job | backend tests + `make e2e-fake` green |
 | **A1 extension** | The full `state_regression.py` (45 parameter state-machine checks) also runs against the fake backend; `make e2e-fake` runs both scripts, as does CI | measured 45/45 with no script change |
 | **B1** | `DeviceState` split by owner: `SwpParams` (17) / `RtaParams` (11) / `SdrParams` (14) / `TriggerParams` (12) plus flat aliases for the transition; `device.py` 921 -> 566 lines | `tests/test_device_state_grouping.py` (4 tests) + bench |
@@ -723,7 +723,7 @@ make ci        -> pytest 147 passed / ruff clean / i18n+frames parity / DOM id c
                   bilingual doc structure / architecture guard (cycles 0, mode branches 0) /
                   build OK
 make hw-test   -> tinySA CW at 100.2 MHz measured -25.7 dBm (SWP) / -25.3 dBm (RTA)
-                  tools/command_sweep.py: all 24 commands and all 6 guard rejections as expected
+                  tools/bench/command_sweep.py: all 24 commands and all 6 guard rejections as expected
                   39 UI state-machine checks pass, no page errors
 make bench     -> matches the baseline (fixed configuration: points 1001, auto RBW, ref -30,
                   atten auto, spur bypass): SWP 174 fps, RTA 214 fps, SDR 19 + 50 audio fps,
@@ -750,7 +750,7 @@ Every recommendation in this document was re-checked against the code at v1.5.6 
 
 **Two real defects happened after this review, which it had not covered:**
 
-1. **Blank canvas (the user reported "the system is unusable")**: after the cycles were broken, nothing imported `render/spectrum.ts`, so its module-scope `setRenderer(renderAll)` never ran and `requestRender()` was a no-op. No exception, no console error; every existing test passed because they assert **proxies** (frame counters, datasets, control values). Lesson: a registration side effect requires an explicit entry-point import, guarded by `tools/check_registrations.py`, and tests must assert user-visible results (the e2e now counts non-transparent canvas pixels).
+1. **Blank canvas (the user reported "the system is unusable")**: after the cycles were broken, nothing imported `render/spectrum.ts`, so its module-scope `setRenderer(renderAll)` never ran and `requestRender()` was a no-op. No exception, no console error; every existing test passed because they assert **proxies** (frame counters, datasets, control values). Lesson: a registration side effect requires an explicit entry-point import, guarded by `tools/checks/check_registrations.py`, and tests must assert user-visible results (the e2e now counts non-transparent canvas pixels).
 2. **Three UI defects** (RTA centre unit/keypad dead, waterfall not disabled while measuring, IF-overflow warning invisible until Ref was raised): root causes were a field-key/input-id mismatch (`rta_center` vs `input-rta-center`), two features competing for one display slot, and a warning that is only drawn in the frame loop while an overflowing IF sends no frames. Lesson: resolve cross-module string identifiers through one helper (`inputForField`/`fieldForInput`), give each display slot a single owner, and repaint on state transitions instead of relying on the data flow.
 
 Both incidents are recorded in the lesson ledger of `DEVELOPMENT.md`, and every derived rule landed as a guard or a test.

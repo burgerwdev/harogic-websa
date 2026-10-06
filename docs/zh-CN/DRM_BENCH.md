@@ -25,10 +25,11 @@
 
 ```
 # 1. 生成 DRM IQ 文件（在 DecDRM 仓库中执行）。
-decdrm tx tools/drm_bench/station_iq.toml --output ~/drm-bench/drm_iq_15s.wav --duration 15
+decdrm tx tools/bench/drm_bench/station_iq.toml --output drm_iq_15s.wav --duration 15
 
-# 2. 由 PlutoSDR 发射。
-python3 tools/pluto_drm_tx.py --iq ~/drm-bench/drm_iq_15s.wav --lo 400e6 --gain -20 --seconds 600
+# 2. 由 PlutoSDR 发射。也可用统一入口：
+#    python3 tools/pluto_tx.py drm --iq drm_iq_15s.wav --seconds 600
+python3 tools/pluto/pluto_drm_tx.py --iq drm_iq_15s.wav --lo 400e6 --gain -20 --seconds 600
 ```
 
 本次台面有两条经验：
@@ -44,7 +45,7 @@ DRM 接收机在浏览器中运行。它从 `?iq=1` WebSocket 读取信道化基
 同一条流，所以文件就是解码器的确切输入。
 
 ```
-python3 tools/drm_capture.py --seconds 10 \
+python3 tools/bench/drm_capture.py --seconds 10 \
     --out tests/fixtures/drm/drm_live_modeB_so3_48828.f32 --json /tmp/drm_live.json
 ```
 
@@ -69,7 +70,7 @@ python3 tools/drm_capture.py --seconds 10 \
 对照基准：它只回答一个问题——这段台面信号本身能否解码？
 
 ```
-python3 tools/drm_oracle_check.py tests/fixtures/drm/drm_live_modeB_so3_48828.f32 48828.125
+python3 tools/analysis/drm_oracle_check.py tests/fixtures/drm/drm_live_modeB_so3_48828.f32 48828.125
 ```
 
 结果：
@@ -251,7 +252,7 @@ Dream 解出了元数据和全部信道。因此台面信号是好的，出问�
 #    SDR 模式、中心 400.1 MHz、decimate 256、listen 400.1 MHz、demod DRM、ref -40 dBm。
 
 # 4. 抓取基带，然后离线解码。
-python3 tools/drm_capture.py --seconds 10 --out /tmp/live.f32
+python3 tools/bench/drm_capture.py --seconds 10 --out /tmp/live.f32
 cd wasm && cargo test --release --test drm_live_fixture -- --nocapture
 
 # 5. 或按 worker 的方式经 wasm 路径解码（非静音 PCM）。

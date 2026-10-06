@@ -2,7 +2,7 @@
  * Frame decoder contract test.
  *
  * Reads the golden fixtures produced by the Python encoders
- * (`tools/gen_frame_fixtures.py` → `tests/fixtures/frames/*.bin`) and asserts that
+ * (`tools/fixtures/gen_frame_fixtures.py` → `tests/fixtures/frames/*.bin`) and asserts that
  * `core/frames.ts` decodes every field exactly. The Python side
  * (`tests/test_frame_fixtures.py`) asserts the fixtures still match its encoders, so the
  * two languages cannot drift apart without one of the two tests failing.

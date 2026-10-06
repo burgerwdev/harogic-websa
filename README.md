@@ -97,7 +97,7 @@ ledger) is [`docs/en/DEVELOPMENT.md`](docs/en/DEVELOPMENT.md).
 ```bash
 pip install -r requirements-dev.txt      # runtime + pytest/ruff/playwright/fonttools
 make ci                                  # everything CI runs (no hardware needed)
-python3 tools/bench.py --check tools/bench_baseline.json   # performance, service running
+python3 tools/bench/bench.py --check tools/bench/bench_baseline.json   # performance, service running
 make hw-test                             # bench only: tinySA CW + UI state regression
 ```
 
@@ -161,10 +161,10 @@ The full list (fixture regeneration, guards, doc/version checks, the bench probe
 - `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Screenshots taken on a real SAN-90 (the SDR digital-mode shots use a PlutoSDR as the signal source)
-- `frontend/src/dsp/ggmorse/` and `tools/ggmorse/`: the CW (Morse) decoder is
+- `frontend/src/dsp/ggmorse/` and `tools/vendor/ggmorse/`: the CW (Morse) decoder is
   [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at
-  commit `7b4822a8` (see `tools/ggmorse/LICENSE`) and compiled to a single-file wasm module by
-  `tools/build_ggmorse_wasm.sh`. `tools/ggmorse/ggmorse_wasm.cpp` is ours.
+  commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`) and compiled to a single-file wasm module by
+  `tools/vendor/build_ggmorse_wasm.sh`. `tools/vendor/ggmorse/ggmorse_wasm.cpp` is ours.
 
 
 ---
