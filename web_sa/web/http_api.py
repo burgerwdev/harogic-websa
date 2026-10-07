@@ -109,6 +109,9 @@ def build_status(dev) -> dict:
     }
     is_rta = s.mode == 'rta'
     sdr_req = {
+        # `ref_set` tells the client whether this mode already has a level of its own: until it does,
+        # entering SDR places the trace once (device + display); afterwards the level is the user's.
+        'ref_set': s.sdr_ref_set, 'ref': s.sdr_ref_level,
         'center': s.sdr_center_hz, 'decimate': s.sdr_decimate, 'listen': s.sdr_listen_hz,
         'demod': s.sdr_demod, 'if_bw': s.sdr_if_bw, 'squelch': s.sdr_squelch,
         'volume': s.sdr_volume, 'agc': s.sdr_agc, 'pitch': s.sdr_pitch,
@@ -127,7 +130,7 @@ def build_status(dev) -> dict:
             'span': bandwidth,
             'points': points,
             'ref_mode': s.ref_mode,
-            'ref': s.ref_level,
+            'ref': s.sdr_ref_level,      # the IQS level, not the swept profile's
             'rbw_mode': 'auto',
             'rbw': bin_width,
             'vbw_mode': 'equal',

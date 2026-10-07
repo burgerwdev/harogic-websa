@@ -60,6 +60,37 @@ def painted_pixels(page) -> int:
         }""")
 
 
+def axis_band_points(page) -> dict:
+    """A grab point inside each axis-label band (the margins outside the graticule).
+
+    MARGIN is 10/50/14/26 logical px, so the bottom ~6 px and the right ~6 px of the canvas are
+    inside the frequency row and the level labels whatever the window size or UI scale.
+    """
+    box = page.evaluate(
+        """() => { const c = document.getElementById('spectrum');
+                   const r = c.getBoundingClientRect();
+                   return {x: r.x, y: r.y, w: r.width, h: r.height}; }""")
+    return {
+        'x': (box['x'] + box['w'] * 0.35, box['y'] + box['h'] - 6),
+        'y': (box['x'] + box['w'] - 6, box['y'] + box['h'] * 0.5),
+        'box': box,
+    }
+
+
+def drag(page, start: tuple, dx: float = 0.0, dy: float = 0.0, steps: int = 10,
+         on_hold=None) -> None:
+    """Press on a point, move in small steps, and release (on_hold runs before the release)."""
+    x, y = start
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for step in range(1, steps + 1):
+        page.mouse.move(x + dx * step / steps, y + dy * step / steps)
+        page.wait_for_timeout(16)
+    if on_hold is not None:
+        on_hold()
+    page.mouse.up()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', default='http://127.0.0.1:8099')
@@ -81,6 +112,8 @@ def main() -> int:
         # the hardware regression so the layout matches what a user sees on a desktop.
         page = browser.new_page(viewport={'width': 1600, 'height': 1000})
         errors: list[str] = []
+        dialogs: list[str] = []
+        page.on('dialog', lambda d: (dialogs.append(d.message), d.dismiss()))
         page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
         page.on('console', lambda m: errors.append(f'console: {m.text[:160]}') if m.type == 'error' else None)
 
@@ -122,15 +155,64 @@ def main() -> int:
                    " return [Math.round(s.left - r.left), Math.round(s.top - r.top),"
                    "         Math.round(u.right - r.left), Math.round(u.top - r.top)]; }")
         before = page.evaluate(row_box)
-        page.click('#btn-ref-auto')                  # a real decision posts a notice
-        page.wait_for_timeout(1200)
-        notice = page.evaluate("document.getElementById('spectrum').dataset.notice")
+        # A press posts the decision it produces. That used to be helped along by the device-clamp
+        # notice ("Device limited Ref to X dBm"), which was removed on request, so the check now
+        # relies on the Auto Scale answer alone - and a press sent while the device is still
+        # reconfiguring can be dropped, which is what a second press by the user is for.
+        notice = ''
+        for _ in range(2):
+            page.click('#btn-ref-auto')
+            page.wait_for_timeout(1500)
+            notice = page.evaluate("document.getElementById('spectrum').dataset.notice")
+            if (notice or '').strip():
+                break
         after = page.evaluate(row_box)
         check('a decision posts a canvas notice', bool((notice or '').strip()), repr(notice))
         check('the notice is drawn on the canvas, not in the control row',
               page.evaluate("!document.getElementById('ref-hint')"))
         check('the Ref row does not move when the notice appears', before == after,
               f'{before} -> {after}')
+
+        print('2a3) a reference level the user set is left alone')
+        # The ranger used to raise Ref once the peak stood 10 dB or more above the top edge, and a
+        # request the device clamped was announced ("Device limited Ref to X dBm"). Both were
+        # removed on request: the level someone sets is the level they get, the step arrows stay
+        # usable at the ends of the range, and Auto is what re-fits a trace that no longer fits.
+        caps = state(args.url)['caps']
+        page.fill('#input-ref', str(int(caps['ref_max'])))
+        page.click('#btn-ref-set')
+        page.wait_for_timeout(2500)
+        # A decision from the Auto press above can still be on screen (its hold is a few seconds),
+        # so wait for a clean stack: "nothing was posted" then means nothing NEW was posted.
+        for _ in range(25):
+            if not (page.evaluate("document.getElementById('spectrum').dataset.notice")
+                    or '').strip():
+                break
+            page.wait_for_timeout(300)
+        top = state(args.url)
+        page.click('#btn-ref-up')            # past the top of the range: a silent no-op
+        page.wait_for_timeout(1500)
+        check('the step arrows stay usable at the top of the range',
+              not page.evaluate("() => document.getElementById('btn-ref-up').disabled"),
+              f"ref={top['ref']} max={caps['ref_max']}")
+        notice_now = page.evaluate("document.getElementById('spectrum').dataset.notice")
+        check('nothing announces the end of the range',
+              not (notice_now or '').strip(), repr(notice_now))
+        # The fake backend's carrier sits near -25 dBm, so a Ref at the bottom of the range leaves
+        # the peak far above the top edge - exactly the case that used to be corrected behind the
+        # user's back. It must hold, however many frames are observed.
+        post(args.url, {'cmd': 'SET_REF', 'mode': 'manual', 'ref': caps['ref_min'],
+                        'range_db': 100})
+        page.wait_for_timeout(3500)
+        clipped = state(args.url)
+        page.wait_for_timeout(4000)
+        held = state(args.url)
+        check('a grossly clipped trace is not raised automatically',
+              held['ref'] <= clipped['ref'] + 0.5,
+              f"peak {clipped['auto_ref'].get('last_peak')} at ref {clipped['ref']:.0f} -> "
+              f"{held['ref']:.0f}, result={held['auto_ref'].get('result')}")
+        post(args.url, {'cmd': 'SET_REF', 'mode': 'manual', 'ref': -20, 'range_db': 100})
+        page.wait_for_timeout(1500)
 
         print('2a2) the Level offset moves the plot amplitude numbers')
         # Reported: the offset shifted the trace but not the amplitude numbers on the plot. The
@@ -234,6 +316,41 @@ def main() -> int:
         page.wait_for_timeout(1200)
         check('the waterfall choice comes back afterwards', page.evaluate(
             "document.getElementById('btn-waterfall').classList.contains('active')"))
+
+        # A measurement OWNS the device: the control rail is greyed out for it and the command layer
+        # refuses the SWP-owned commands. The canvas gesture has to obey the same rule - it used to
+        # send them anyway and answer each refusal with an alert popup (measured: four dialogs from a
+        # single drag after the harmonic mode was entered through the API, where the client's own
+        # measurement flag knows nothing).
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'harmonic'})
+        for _ in range(12):                    # wait until the client has SEEN the reported mode
+            if state(args.url)['mode'] == 'harmonic':
+                break
+            page.wait_for_timeout(400)
+        page.wait_for_timeout(1800)
+        band = axis_band_points(page)
+        # The panel's centre box is the stable observable here: a harmonic measurement retunes the
+        # device internally (so the reported centre moves by itself), while the box only follows a
+        # frequency command the user made.
+        # The observable is the gesture's own commit counter: a harmonic measurement retunes the
+        # device internally (so the reported centre and even the centre box move by themselves), but
+        # only a gesture that got through would bump this.
+        def axis_commits() -> int:
+            return int(page.evaluate(
+                "() => document.getElementById('spectrum').dataset.axisCommits || 0"))
+
+        held = axis_commits()
+        dialogs_before = len(dialogs)          # scoped to this drag: earlier sections have their own
+        drag(page, band['x'], dx=band['box']['w'] * 0.1)
+        page.wait_for_timeout(1500)
+        check('the axis bands are dead while a measurement owns the device',
+              axis_commits() == held
+              and page.evaluate("() => document.getElementById('spectrum').style.cursor") == '',
+              f"axis commits {held} -> {axis_commits()}")
+        check('...and a drag there raises no error popup',
+              len(dialogs) == dialogs_before, f'{dialogs[dialogs_before:]}')
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(2500)
 
         print('6) the spectrum/waterfall divider drags')
         def divider_y():
@@ -630,6 +747,233 @@ def main() -> int:
 
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
         page.wait_for_timeout(500)
+
+        # ── The axis-label gestures, the density persistence switch and the SDR trace default ──
+        # The gesture exists to make the device round trip invisible: following the pointer with
+        # real requests is impossible (0.3-1 s per frequency change, ~1.9 s per Ref change), so
+        # the preview is local and one request goes out when the gesture settles. The checks below
+        # are the two halves of that contract - nothing during, exactly one after - plus the
+        # direction (the content follows the finger), which is what makes it feel like the axis
+        # is being pushed rather than the view jumping.
+        print('P) dragging the axis labels pans and zooms the window')
+        # Floating decode windows can sit over the right margin (an earlier section opens one, and a
+        # window keeping its own pointer events is correct behaviour). Close it the way a user would,
+        # then assert the band is actually reachable - a covered band would otherwise fail as a
+        # mysterious "the drag did nothing".
+        overlay = page.evaluate(
+            """() => { const w = document.getElementById('decode-window');
+                       return !!w && getComputedStyle(w).display !== 'none'; }""")
+        if overlay:
+            js_click(page, '#btn-decode-window')
+            page.wait_for_timeout(800)
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(1500)
+        post(args.url, {'cmd': 'SET_FREQ', 'center': 1_000_000_000, 'span': 100_000_000})
+        post(args.url, {'cmd': 'SET_REF', 'mode': 'manual', 'ref': -20, 'range_db': 100})
+        page.wait_for_timeout(2500)
+        bands = axis_band_points(page)
+
+        def element_at_band(which: str) -> str:
+            return page.evaluate(
+                """(which) => { const c = document.getElementById('spectrum');
+                                const r = c.getBoundingClientRect();
+                                const x = which === 'x' ? r.left + r.width * 0.35 : r.right - 6;
+                                const y = which === 'x' ? r.bottom - 6 : r.top + r.height / 2;
+                                return document.elementFromPoint(x, y)?.id || ''; }""", which)
+
+        check('the axis bands are reachable (no overlay on top of them)',
+              element_at_band('x') == 'spectrum' and element_at_band('y') == 'spectrum',
+              f"top elements: x={element_at_band('x')!r}, y={element_at_band('y')!r}")
+        held: list[dict] = []
+        before = state(args.url)
+        drag(page, bands['x'], dx=bands['box']['w'] * 0.1,
+             on_hold=lambda: held.append(state(args.url)))
+        page.wait_for_timeout(2500)
+        after = state(args.url)
+        check('dragging the frequency row sends nothing while the pointer is down',
+              abs(held[0]['center'] - before['center']) < 1,
+              f"center {before['center']:.0f} -> {held[0]['center']:.0f} during the drag")
+        check('...and pans to the lower frequencies when the row is pushed right',
+              after['center'] < before['center'] - 1000,
+              f"center {before['center']:.0f} -> {after['center']:.0f}")
+
+        span_before = state(args.url)['span']
+        page.mouse.move(*bands['x'])
+        for _ in range(4):
+            page.mouse.wheel(0, -120)
+            page.wait_for_timeout(120)
+        page.wait_for_timeout(2500)
+        span_after = state(args.url)['span']
+        check('the wheel on the frequency row zooms the span around the pointer',
+              span_after < span_before,
+              f'span {span_before:.0f} -> {span_after:.0f}')
+
+        # A wheel has no release, so it must not leave the canvas in a "pointer held" state: a leak
+        # here kept panning (and committing) as the mouse merely hovered, and swallowed the release
+        # of the next in-plot gesture - found in review.
+        mid = (bands['box']['x'] + bands['box']['w'] * 0.5, bands['box']['y'] + bands['box']['h'] * 0.5)
+        page.mouse.move(*mid)
+        page.wait_for_timeout(600)
+        hovered = state(args.url)
+        for step in range(1, 6):
+            page.mouse.move(mid[0] + step * 12, mid[1])
+            page.wait_for_timeout(50)
+        page.wait_for_timeout(1200)
+        hover_later = state(args.url)
+        check('a wheel zoom does not leave the plot panning while the pointer only hovers',
+              abs(hover_later['center'] - hovered['center']) < 1,
+              f"center {hovered['center']:.0f} -> {hover_later['center']:.0f}")
+        cursor = page.evaluate("() => document.getElementById('spectrum').style.cursor")
+        check('...and the axis cursor is released with it', cursor == '', f'cursor={cursor!r}')
+
+        # The level axis means what the display shows, and earlier sections may have left the active
+        # trace normalized, which puts the display in the relative (dB) unit - where that gesture pans
+        # the level OFFSET instead of the device reference. The unit is exposed as a diagnostic
+        # (`dataset.levelUnit`); drive the UI until it is the absolute display, then check.
+        def level_unit() -> str:
+            return page.evaluate("() => document.getElementById('spectrum').dataset.levelUnit")
+
+        def display_unit(want: str) -> str:
+            for _ in range(10):
+                if level_unit() == want:
+                    return want
+                js_click(page, '[data-action="reset-norm"]' if want == 'dBm'
+                         else '[data-action="normalize"]')
+                js_click(page, '[data-trace-tab="0"]')     # the unit follows the tab selection
+                page.wait_for_timeout(600)
+            return level_unit()
+
+        check('the level axis gesture is checked in the absolute display',
+              display_unit('dBm') == 'dBm', f'level unit={level_unit()}')
+        post(args.url, {'cmd': 'SET_REF', 'mode': 'manual', 'ref': -20, 'range_db': 100})
+        page.wait_for_timeout(2500)
+        ref_before = state(args.url)['ref']
+        held.clear()
+        # A quarter of the window height: a few dB on a 10 dB/div scale, so the change is not
+        # swallowed by the device's own Ref quantisation however the canvas is laid out.
+        drag(page, bands['y'], dy=bands['box']['h'] * 0.25,
+             on_hold=lambda: held.append(state(args.url)))
+        page.wait_for_timeout(2500)
+        ref_after = state(args.url)['ref']
+        check('dragging the level labels sends nothing while the pointer is down',
+              abs(held[0]['ref'] - ref_before) < 0.5,
+              f"ref {ref_before:.0f} -> {held[0]['ref']:.0f} during the drag")
+        check('...and raises the reference when the labels are pushed down',
+              ref_after > ref_before,
+              f'ref {ref_before:.0f} -> {ref_after:.0f} (band top: {element_at_band("y")!r})')
+
+        # The relative (dB) display pins the top of the graticule to 0, so there is no device
+        # reference on that axis: the same gesture pans the level OFFSET, which is a client-side
+        # display value - applied live and never sent to the device.
+        check('the level axis gesture is checked in the relative display',
+              display_unit('dB') == 'dB', f'level unit={level_unit()}')
+        offset_before = float(page.input_value('#input-offset') or 0)
+        held.clear()
+        drag(page, bands['y'], dy=bands['box']['h'] * 0.25,
+             on_hold=lambda: held.append(state(args.url)['ref']))
+        page.wait_for_timeout(1000)
+        offset_after = float(page.input_value('#input-offset') or 0)
+        check('in the relative display the same drag pans the level offset',
+              abs(offset_after - offset_before) > 1 and abs(held[0] - state(args.url)['ref']) < 1,
+              f'offset {offset_before} -> {offset_after}, ref held at {held[0]:.0f}')
+        page.fill('#input-offset', '0')
+        page.dispatch_event('#input-offset', 'change')
+        display_unit('dBm')
+        page.wait_for_timeout(500)
+
+        print('Q) the density persistence switch lives in the Trace panel and Off means off')
+        rows = page.evaluate(
+            """() => { const sel = document.getElementById('select-rta-fade');
+                       const bins = document.getElementById('select-rta-bins');
+                       return {trace: !!sel.closest('#trace-panel') && !!bins.closest('#trace-panel'),
+                               options: [...sel.options].map(o => o.value)}; }""")
+        check('Persist and Grain are in the Trace panel (visible in every mode)',
+              rows['trace'], f"{rows}")
+        check('Persist offers Off as well as the four gears',
+              '0' in rows['options'], f"options={rows['options']}")
+
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'rta'})
+        page.wait_for_timeout(3000)
+        usable = page.evaluate(
+            """() => { const sel = document.getElementById('select-rta-fade');
+                       return {disabled: sel.disabled,
+                               pe: getComputedStyle(sel.closest('.param-row')).pointerEvents}; }""")
+        density_on = page.evaluate("() => document.getElementById('spectrum').dataset.density")
+        check('the persistence control stays usable in RTA',
+              not usable['disabled'] and usable['pe'] != 'none', f"{usable}")
+        check('the density layer is drawn in RTA while persistence is on',
+              density_on == 'on', f'density={density_on}')
+
+        page.select_option('#select-rta-fade', '0')
+        page.wait_for_timeout(1500)
+        off = page.evaluate(
+            """() => ({density: document.getElementById('spectrum').dataset.density,
+                        stored: localStorage.getItem('rta-fade')})""")
+        check('Persist=Off removes the whole density layer and is stored',
+              off['density'] == 'off' and off['stored'] == '0', f"{off}")
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(1500)
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'rta'})
+        page.wait_for_timeout(2500)
+        restored = page.evaluate("() => document.getElementById('select-rta-fade').value")
+        check('...and comes back when the mode is entered again', restored == '0', f'value={restored}')
+        page.select_option('#select-rta-fade', '0.975')
+        page.wait_for_timeout(800)
+
+        print('R) SDR opens on an average while the swept views keep Clear Write')
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        page.wait_for_timeout(4000)
+        sdr_trace = page.evaluate(
+            """() => ({mode: document.getElementById('select-trace-mode').value,
+                        avg: document.getElementById('select-trace-avg').value,
+                        row: document.getElementById('trace-avg-row').style.display})""")
+        check('SDR opens on Average at the default depth',
+              sdr_trace['mode'] == 'AVERAGE' and sdr_trace['avg'] == '16', f"{sdr_trace}")
+        check('the Avg row is visible with it', sdr_trace['row'] == '', f"row={sdr_trace['row']!r}")
+        page.select_option('#select-trace-mode', 'MAX_HOLD')
+        page.wait_for_timeout(1500)
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'rta'})
+        page.wait_for_timeout(2500)
+        swept_mode = page.evaluate("() => document.getElementById('select-trace-mode').value")
+        check('the swept side is back on its own trace mode',
+              swept_mode == 'CLEAR_WRITE', f'trace mode={swept_mode}')
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        page.wait_for_timeout(3500)
+        back_mode = page.evaluate("() => document.getElementById('select-trace-mode').value")
+        check("...and SDR remembers the trace mode the user chose there",
+              back_mode == 'MAX_HOLD', f'trace mode={back_mode}')
+
+        # The SDR capture window is a second commit path (SET_SDR with a decimate step, not a span in
+        # Hz), so the gesture is checked here as well: a pan moves the wideband centre and leaves the
+        # capture bandwidth alone, and a zoom lands on a decimate step the hardware actually offers.
+        post(args.url, {'cmd': 'SET_SDR', 'center': 100_000_000, 'decimate': 32})
+        page.wait_for_timeout(3000)
+        bands = axis_band_points(page)
+        sdr_before = state(args.url)['sdr']
+        held.clear()
+        drag(page, bands['x'], dx=bands['box']['w'] * 0.1,
+             on_hold=lambda: held.append(state(args.url)['sdr']))
+        page.wait_for_timeout(3000)
+        sdr_after = state(args.url)['sdr']
+        check('dragging the frequency row pans the SDR capture centre',
+              abs(held[0]['center'] - sdr_before['center']) < 1
+              and sdr_after['center'] < sdr_before['center'] - 1000,
+              f"centre {sdr_before['center']:.0f} -> {held[0]['center']:.0f} -> {sdr_after['center']:.0f}")
+        check('...without touching the capture bandwidth',
+              sdr_after['decimate'] == sdr_before['decimate'],
+              f"decimate {sdr_before['decimate']} -> {sdr_after['decimate']}")
+        page.mouse.move(*bands['x'])
+        for _ in range(4):
+            page.mouse.wheel(0, -120)
+            page.wait_for_timeout(120)
+        page.wait_for_timeout(3000)
+        sdr_zoom = state(args.url)['sdr']
+        check('the wheel on the frequency row narrows the capture to a real decimate step',
+              sdr_zoom['decimate'] > sdr_after['decimate'],
+              f"decimate {sdr_after['decimate']} -> {sdr_zoom['decimate']}")
+
+        post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
+        page.wait_for_timeout(2500)
 
         check('no page errors', not errors, '; '.join(errors[:3]))
         browser.close()

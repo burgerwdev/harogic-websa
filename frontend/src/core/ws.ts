@@ -28,12 +28,13 @@ import { noteFrameArrived } from '../ui/triggerEvents';
 import { evaluateSwpTrigger } from '../ui/swpTrigger';
 import { onHarmResult } from '../meas/harmonic';
 import { onPnmResult } from '../meas/phaseNoise';
-import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
+import { plausibleSpectrum } from '../dsp/stats';
+import { advanceDensity } from '../dsp/rtaDensity';
 import { alignToDisplayWindow } from '../dsp/grid';
 import { getDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { refLevel } from '../ui/refState';
-import { maybeRequestSdrFit, noteTraceObservation, postRefNotice, syncAutoScaleStatus }
+import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, syncAutoScaleStatus }
   from '../ui/refAutoScale';
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
@@ -41,28 +42,6 @@ import {
 } from '../ui/swpState';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
-
-/** The last (requested, reported) Ref pair announced, so the notice fires on a change only. */
-let lastRefLimit: string | null = null;
-
-/**
- * Report a reference level the device did not accept verbatim.
- *
- * `req` is what we asked the profile for, `actual` what the hardware programmed and echoed; the
- * difference is the device's own limit for its current front end, which the UI otherwise follows
- * silently (reported: "Ref 30 dBm jumps back to 27 after a few seconds - why?").
- */
-function syncRefLimitNotice(s: any): void {
-  const mode = String(s?.mode ?? '');
-  if (mode === 'sdr') return;                       // the SDR display scale is client-side
-  const reqRef = Number((mode === 'rta' ? s?.req?.rta : s?.req?.swp)?.ref);
-  const actualRef = Number(s?.actual?.ref ?? s?.ref);
-  const clamped = isFinite(reqRef) && isFinite(actualRef) && Math.abs(reqRef - actualRef) >= 1;
-  const key = clamped ? `${reqRef}->${actualRef}` : null;
-  if (key === lastRefLimit) return;
-  lastRefLimit = key;
-  if (clamped) postRefNotice(t('ref_limited', { ref: actualRef.toFixed(0) }), 5000);
-}
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -274,52 +253,11 @@ export function connectWS() {
         if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
         lastDensRef = refTop; lastDensRange = dispRange;
       }
-      const len2 = spec.length * bins;
-      const floorN = percentileApprox(spec, 0.3);
-      // Amplitude-graded weight: how far a point sits above the noise floor decides how
-      // strongly it accumulates. Weak signals (>3 dB) still leave a light density cloud
-      // so the density map covers the whole trace; the floor ripple itself stays out.
-      const accW = (relDb: number): number => {
-        if (relDb < 3) return 0;
-        if (relDb >= 25) return 1;
-        return 0.25 + 0.75 * ((relDb - 3) / 22);
-      };
-      const pushDensity = (nd: Float32Array, i: number, _relDb: number, w: number) => {
-        const b = Math.max(0, Math.min(bins - 1, Math.round((refTop - spec[i]) / dB_PER_BIN)));
-        const o = i * bins;
-        const bump = (bin: number, v: number) => {
-          if (bin < 0 || bin >= bins) return;
-          const k = o + bin;
-          nd[k] += v;
-          if (nd[k] > 40) nd[k] = 40;
-        };
-        const c = 3.5 * w;            // peak bin weight scales with signal strength
-        bump(b, c);
-        bump(b - 1, 2 * w);
-        bump(b + 1, 2 * w);
-        bump(b - 2, 1 * w);
-        bump(b + 2, 1 * w);
-      };
-      if (!S.rtaDensity2d || S.rtaDensity2d!.length !== len2) {
-        const nd = new Float32Array(len2);
-        for (let i = 0; i < spec.length; i++) {
-          const w = accW(spec[i] - floorN);
-          if (w <= 0) continue;
-          pushDensity(nd, i, spec[i] - floorN, w);
-        }
-        S.setRtaDensity2d(nd);
-      } else {
-        const nd = S.rtaDensity2d!;
-        for (let i = 0; i < spec.length; i++) {
-          for (let b = 0; b < bins; b++) {
-            const v = nd![i * bins + b] * fade;
-            nd![i * bins + b] = v > 0.05 ? v : 0;
-          }
-          const w = accW(spec[i] - floorN);
-          if (w <= 0) continue;
-          pushDensity(nd, i, spec[i] - floorN, w);
-        }
-      }
+      // The grid itself lives in dsp/rtaDensity.ts (it is the one place the persistence choice is
+      // honoured): with Persistence OFF this returns null, so the layer is released and the
+      // bins x points loop it would otherwise cost per frame is skipped entirely.
+      const density = advanceDensity(S.rtaDensity2d, spec, bins, fade, refTop, dB_PER_BIN);
+      if (density !== S.rtaDensity2d) S.setRtaDensity2d(density);
 
       // Per-trace accumulation (multi-trace like the official SW): each enabled trace
       // accumulates its own RTA display according to its mode.
@@ -379,7 +317,6 @@ export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
   if (s.caps) {
     S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
-    S.setRefLimits(Number(s.caps.ref_min), Number(s.caps.ref_max));
   }
   // STATUS top-level fields are the effective values for the active hardware mode.
   const isRtaStatus = s.mode === 'rta';
@@ -444,6 +381,9 @@ export function updateStatus(s: any) {
     }
   }
   noteDisplayRefReport(Number(s.ref));
+  // SDR owns two refs (its IQS level and the client's display scale): this brings the display onto
+  // the level the SDR itself stores, once per entry, and tells the entry fit whether to run at all.
+  noteSdrRefState(s.sdr);
   if (displayUnit.get() !== 'dB') setDisplayRef('mode', refLevel.get());
   syncScaleButtons();
 
@@ -462,26 +402,19 @@ export function updateStatus(s: any) {
   // Set button and the step arrows stay usable and only their pending state is shown.
   if (refInput) refInput.disabled = false;
   if (refSet) refSet.disabled = false;
+  // The step arrows are never greyed at a range end any more: the range end is not a state the
+  // user has to be locked out of, and the value that results from a press is clamped to the
+  // device's own range silently (see panels/refAmp.ts adjustRefLevel).
   const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
-  if (refDown) {
-    refDown.disabled = currentGraphMode() !== 'sdr' && cur <= -50;
-    refDown.title = t('ref_down');
-  }
-  if (refUp) {
-    refUp.disabled = currentGraphMode() !== 'sdr' && cur >= 30;
-    refUp.title = t('ref_up');
-  }
+  if (refDown) refDown.title = t('ref_down');
+  if (refUp) refUp.title = t('ref_up');
   // Auto Scale feedback: the button glows while a fit is in flight (the backend reports it via
   // auto_ref.adjusting, and the client keeps its own fallback timer), then reports the result.
   syncAutoScaleStatus(s);
   // A refusal notice describes the trace in front of the user: withdraw it the moment the trace
   // no longer matches (first frame arrived, or the peak moved away from the decision's basis).
   noteTraceObservation(s.auto_ref);
-  // The device may clamp the reference (its own maximum depends on the attenuation/IF-gain it
-  // picks: requesting +30 dBm on the SAN-90 comes back as +27). Say so instead of letting the
-  // number change on its own.
-  syncRefLimitNotice(s);
   setInput('input-points', String(currentPoints.get()));
   setSelect('select-rbw-mode', rbwMode.get());
   setSelect('select-vbw-mode', vbwMode.get());

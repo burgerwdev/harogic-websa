@@ -13,7 +13,7 @@
  * scale is the device reference, which the backend has already applied.
  */
 import { t } from '../core/i18n';
-import { getDisplayRef, setDisplayRef } from './displayRef';
+import { displayRefDiverges, getDisplayRef, setDisplayRef } from './displayRef';
 import { send } from '../core/wsSend';
 import * as S from '../core/store';
 import { currentGraphMode } from './graphMode';
@@ -26,12 +26,24 @@ const PLACED_RESULTS = new Set(['applied', 'clipped', 'below_window', 'overflow'
 const BUSY_FALLBACK_MS = 4000;
 /** SDR: the display fit is asked for on the first frame after entering the mode. */
 const ENTRY_FIT_MAX_ATTEMPTS = 12;
-/** ...and repeated at most this often while the backend has no trace yet. */
-const ENTRY_FIT_RETRY_MS = 500;
+/** ...and repeated at most this often while the backend has no trace yet.
+ *
+ * Comfortably longer than a decision takes (the fit reconfigures and answers in about a second):
+ * a shorter retry put several requests in flight, so a first entry produced two decisions - the
+ * first wrote the device level and the second only the display, leaving the two 15 dB apart. */
+const ENTRY_FIT_RETRY_MS = 1600;
 
 let busyUntil = 0;
 let entryFitPending = false;
 let entryFitAttempts = 0;
+/**
+ * One entry-fit request may be outstanding at a time.
+ *
+ * The retry exists for the case where the backend has no trace yet (`no_data`); sending a second
+ * request before the first is answered made a first entry produce TWO decisions - the first wrote
+ * the SDR's device level, the second only the display scale, which left them 15 dB apart (measured).
+ */
+let entryFitInFlight = false;
 let nextEntryAttempt = 0;
 /** The last decision the UI has seen (`auto_ref.seq`), so a sticky result is not mistaken for
  * the answer to a press that is still in flight. */
@@ -141,10 +153,64 @@ export function autoScaleBusy(): boolean {
 	return performance.now() < busyUntil;
 }
 
+/**
+ * Entering SDR: does this mode already have a level of its own?
+ *
+ * The backend reports it (`sdr.ref_set`). Until it does, entering SDR places the trace ONCE - that
+ * placement IS the SDR level, written to the device so the display and the device agree. Once it
+ * exists the level is the user's: a fit is display-only and nothing may move it (reported: "the Ref
+ * I set in SDR was changed when I came back from RTA", and a first entry left the trace below the
+ * bottom edge because the fit judged the placement against the previous mode's display level).
+ */
+let sdrHasOwnLevel = false;
+
+/** One-shot: on entry the display scale follows the level the SDR itself stores. */
+let entrySyncPending = false;
+/** The SDR level the last STATUS reported. */
+let reportedSdrRef: number | null = null;
+
+/**
+ * STATUS arrived with the SDR block: remember whether a level exists, and (once per entry) bring the
+ * display scale onto it.
+ *
+ * The display ref is a single client value shared by the modes, so without this a visit to RTA left
+ * its level on the SDR axis - and the entry fit then judged the placement against that number.
+ */
+export function noteSdrRefState(sdr: any): void {
+	const ref = Number(sdr?.ref);
+	if (isFinite(ref)) reportedSdrRef = ref;
+	sdrHasOwnLevel = sdr?.ref_set === true;
+	// Diagnostic/e2e hook (same pattern as `dataset.notice`): what this hand-off decided, and why.
+	const note = (what: string) => {
+		const cv = document.getElementById('spectrum');
+		const value = JSON.stringify({ what, ref: reportedSdrRef, refSet: sdrHasOwnLevel,
+		                                display: getDisplayRef() });
+		if (cv && cv.dataset.sdrEntry !== value) cv.dataset.sdrEntry = value;
+	};
+	if (currentGraphMode() !== 'sdr' || reportedSdrRef === null) { note('not-sdr'); return; }
+	if (!entrySyncPending) { note(sdrHasOwnLevel ? 'own-level' : 'fit-armed'); return; }
+	entrySyncPending = false;
+	// NOW we know whether this SDR has a level of its own, which decides the whole entry: a
+	// level-less one gets a bounded placement (a few rounds, each one IQS write), and one that has a
+	// level is only mirrored - never fitted, never written (that is the reported bug this round
+	// exists for).
+	if (displayRefDiverges()) { note('user-request-in-flight'); return; }   // it owns the display
+	if (Math.abs(reportedSdrRef - getDisplayRef()) < 0.5) { note('already-on-it'); return; }
+	setDisplayRef('sdr', reportedSdrRef);
+	note('synced');
+}
+
+/** Leaving SDR (or a preset): the entry hand-off starts over on the next visit. */
+export function clearSdrEntryState(): void {
+	entrySyncPending = false;
+	reportedSdrRef = null;
+}
+
 /** The user pressed Auto Scale. */
 export function autoScaleRequest(): void {
 	// A press supersedes an entry fit that is still looking for a trace.
 	entryFitPending = false;
+	entryFitInFlight = false;
 	appliedTarget = null;
 	// range_db = the visible window height. The fit anchors the noise floor just above the bottom
 	// of that window, and the backend cannot see the client's dB/div setting.
@@ -158,12 +224,14 @@ export function autoScaleRequest(): void {
 	setBusy(true);
 }
 
-/** Entering SDR asks for one fit as soon as a frame has been observed. */
+/** Entering SDR arms the entry hand-off (see `noteSdrRefState`) and a fit for a level-less SDR. */
 export function requestSdrEntryFit(): void {
 	entryFitPending = true;
+	entrySyncPending = true;
 	entryFitAttempts = 0;
 	nextEntryAttempt = 0;
 	appliedTarget = null;
+	entryFitInFlight = false;
 	busyUntil = performance.now() + 3000;
 	setBusy(true);
 }
@@ -176,13 +244,22 @@ export function requestSdrEntryFit(): void {
  */
 export function maybeRequestSdrFit(): void {
 	if (!entryFitPending || currentGraphMode() !== 'sdr') return;
+	// A level-less SDR (a preset, or the first SDR visit of this process) gets ONE placement, which
+	// the client applies to its display scale - instant. An SDR that already has a level is left
+	// alone: `noteSdrRefState` has just brought the display back onto that level, and a fit would
+	// only move a scale the operator chose while looking at the trace.
+	if (sdrHasOwnLevel) {
+		entryFitPending = false;
+		return;
+	}
 	const now = performance.now();
-	if (now < nextEntryAttempt) return;          // one request per settle period, not per frame
+	if (now < nextEntryAttempt || entryFitInFlight) return;   // one request outstanding at a time
 	if (entryFitAttempts++ >= ENTRY_FIT_MAX_ATTEMPTS) {
 		entryFitPending = false;
 		return;
 	}
 	nextEntryAttempt = now + ENTRY_FIT_RETRY_MS;
+	entryFitInFlight = true;
 	send({
 		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
 		current_ref: getDisplayRef(),
@@ -209,12 +286,24 @@ export function syncAutoScaleStatus(s: any): void {
 		setBusy(autoScaleBusy());
 		return;
 	}
-	if (result === 'idle' || seq === lastSeq) {
-		// No new decision: a press that is still in flight keeps its glow.
+	// The SEQUENCE is the authority on "is this a new answer", not the result string: a manual Ref
+	// write resets the backend's sticky `result` to `idle`, and when that arrives in the same STATUS
+	// as a fit's answer the pair reads as "idle with a new seq". Treating `idle` as "nothing new"
+	// dropped that answer AND left the sequence unconsumed, which also kept the entry fit's
+	// in-flight flag set - so an SDR entry stopped placing after its first step (measured).
+	if (seq === lastSeq) {
 		setBusy(autoScaleBusy());
 		return;
 	}
 	lastSeq = seq;
+	if (result === 'idle') {
+		// A new sequence with nothing placed: consume it (so the next answer is not mistaken for a
+		// repeat) and clear the in-flight flag, but move nothing.
+		entryFitInFlight = false;
+		setBusy(autoScaleBusy());
+		return;
+	}
+	entryFitInFlight = false;              // this decision is the answer to whatever was in flight
 
 	if (currentGraphMode() === 'sdr' && result !== 'no_data') {
 		// The backend answered, so the entry fit has done its job: without this the request was
@@ -241,6 +330,12 @@ export function syncAutoScaleStatus(s: any): void {
 		const move = placed && target != null && Number(target) !== appliedTarget;
 		if (move) {
 			appliedTarget = Number(target);
+			// DISPLAY only, always: the SDR scale belongs to the client, and the fit's target is
+			// computed from the measured ABSOLUTE levels, so setting it places the trace in ONE
+			// decision - instant, no device write, no audio interruption, no rounds. Writing the IQS
+			// level from the fit is what made an entry reconfigure the stream several times (measured:
+			// a write moved the trace the fit was reading, so it wrote again), and the level the user
+			// set stays exactly where they put it.
 			setDisplayRef('auto', appliedTarget);
 		}
 		const cv = document.getElementById('spectrum');
@@ -270,6 +365,7 @@ export function resetAutoScaleState(): void {
 	lastSeq = -1;
 	appliedTarget = null;
 	entryFitPending = false;
+	entryFitInFlight = false;
 	busyUntil = 0;
 	setBusy(false);
 }
@@ -283,6 +379,7 @@ export function resetAutoScaleState(): void {
  */
 export function clearAutoScaleHint(): void {
 	entryFitPending = false;
+	entryFitInFlight = false;
 	busyUntil = 0;
 	appliedTarget = null;                  // a new press may land on the same level again
 	setBusy(false);

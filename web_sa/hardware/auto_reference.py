@@ -1,4 +1,4 @@
-"""Reference-level placement: one-shot fit plus an always-armed safety ranger.
+"""Reference-level placement: the user's one-shot fit plus the IF-overflow protection.
 
 `HarogicDevice` used to own this: ~200 lines of decision logic spread over seven methods,
 sharing the device's mutable state and reaching into `configure_swp()` / the active session
@@ -24,15 +24,15 @@ continuously is the overload protection):
       frame therefore re-measures and applies the next step until the placement is good, the
       budget (`REFIT_ATTEMPTS`) is used up, or a level the user set by hand appears - so it can
       never become a tracking mode, and nothing moves while the settings stand still.
-   b) the safety ranger - armed always, never user-controlled, and only in the PROTECTIVE
-      direction:
-      * IF overflow (-12) raises Ref one 5 dB step per second (that path has no frames at all, so
-        the floor-based rule cannot act; it deadlocked before),
-      * a peak that is grossly clipped above the top edge (>= AUTO_CLIP_MARGIN_DB) is raised once,
-        rate-limited. Lowering is never automatic: a level that pushes the noise floor under the
-        bottom edge is a display choice, and correcting it would undo the button the user just
-        pressed (press Auto to re-fit).
-      Both used to require `ref_mode == 'auto'` AND auto attenuation, so selecting a manual
+   b) the IF-overflow protection - armed always, never user-controlled, and only in the
+      PROTECTIVE direction: IF overflow (-12) raises Ref one 5 dB step per second (that path has
+      no frames at all, so the floor-based rule cannot act; it deadlocked before).
+      A peak that is grossly clipped above the top edge used to be raised here as well; that was
+      removed on request. A level the user asked for is the user's:
+      seeing a clipped trace is feedback, not a fault to be corrected behind their back, and the
+      Auto Scale button is the deliberate way to re-fit. Lowering was never automatic either: a
+      level that pushes the noise floor under the bottom edge is a display choice.
+      The escape used to require `ref_mode == 'auto'` AND auto attenuation, so selecting a manual
       attenuator silently disabled overload protection altogether (measured: with `atten != -1`
       the device kept reporting -12 and nothing raised the level).
 
@@ -67,7 +67,6 @@ from ..config import (
     DISPLAY_REF_MAX_DBM,
     DISPLAY_REF_MIN_DBM,
     FALLBACK_REF_MAX_DBM,
-    FALLBACK_REF_MIN_DBM,
     ref_bounds,
 )
 
@@ -78,23 +77,14 @@ log = logging.getLogger(__name__)
 DEFAULT_WINDOW_DB = 100.0
 #: Fallback bounds when the device does not report a capability row; the real range comes from
 #: `config.ref_bounds(dev.state.caps)` so the loop, the validator and the profile agree.
-FLOOR_MIN_DBM = FALLBACK_REF_MIN_DBM
+FLOOR_MIN_DBM = DISPLAY_REF_MIN_DBM     # the display domain, NOT the -50..+30 capability guess
 CEILING_DBM = FALLBACK_REF_MAX_DBM
 #: Ref step used for the IF-overflow escape, and its rate limit.
 OVERFLOW_STEP_DB = 5.0
 OVERFLOW_INTERVAL_S = 1.0
 #: A trace is "outside the window" once it misses an edge by this much.
 OUT_OF_WINDOW_MARGIN_DB = 3.0
-#: How far ABOVE the top edge the peak has to be before the ranger raises Ref on its own.
-#:
-#: A peak over the top edge loses information (the trace is cut off), so raising the level is the
-#: protective direction - but the user may have moved Ref there deliberately, so only a gross
-#: clipping is corrected. The opposite direction (a noise floor pushed below the bottom edge by
-#: RAISING Ref) is never corrected: it is a display choice, not a fault, and undoing it means
-#: undoing the button the user just pressed (reported: "raising Ref with the up arrow triggers
-#: Auto to pull the trace back down").
-AUTO_CLIP_MARGIN_DB = 10.0
-#: At most one safety fit per this many seconds (a fit that did not help must not hunt).
+#: At most one automatic fit per this many seconds (a fit that did not help must not hunt).
 SAFETY_INTERVAL_S = 2.0
 #: Ref changes smaller than this are not worth a reconfiguration.
 MIN_CHANGE_DB = 5.0
@@ -105,10 +95,12 @@ MIN_CHANGE_DB = 5.0
 FLOOR_ANCHOR_DB = 8.0
 #: A floor between these offsets above the bottom edge counts as comfortably inside the window;
 #: within that band a settled display is left alone (a 5 dB step would be a visible glitch for
-#: nothing). The lower bound is what makes a trace that is *only just* inside get re-fitted: a
-#: floor below it is not reliably on the canvas, and "partially off the bottom" is the reported
-#: failure mode of the small-span / no-signal case.
-FLOOR_INSIDE_MIN_DB = 2.0
+#: nothing). The LOWER bound is half a division at the default 10 dB/div: closer to the edge than
+#: that the trace reads as a flat line lying ON the axis - technically on the canvas, but reported
+#: as "the trace is not displayed properly" (measured after a Preset: the SDR entry accepted a
+#: placement with the floor 2.5 dB above the bottom and stopped there). The UPPER bound keeps the
+#: noise floor near the bottom, which is the industry Auto Scale convention.
+FLOOR_INSIDE_MIN_DB = 5.0
 FLOOR_INSIDE_MAX_DB = 12.0
 #: How many placements one arming may apply before it gives up (see `_observe_locked`).
 #:
@@ -122,19 +114,17 @@ FLOOR_INSIDE_MAX_DB = 12.0
 #: So each attempt re-measures; this bounds the loop, and it stops at the first good placement
 #: (`ok`), so it can never become a tracking mode.
 REFIT_ATTEMPTS = 4
-#: SDR: how far the fitted level must be from the device level before it is worth reconfiguring
-#: IQS (that write interrupts the audio, so a display-only fit stays free).
-SDR_DEVICE_DEADBAND_DB = 3.0
 
 
 def _floor_default(mode: str) -> float:
     """The lower bound a tracker starts from before any IF overflow has been learned.
 
-    SWP/RTA want the device's own minimum (a lower Ref is a device error); SDR's fitted level is
-    a display scale, and the client window goes lower than the device Ref range, so its floor is
-    the display minimum (`FLOOR_MIN_DBM` is kept as the SWP/RTA value and the public name).
+    The display minimum, in every mode: a lower Ref is not a device error (the SDK documents no Ref
+    range), and until the device actually reports IF saturation there is nothing to learn a floor
+    from. `FLOOR_MIN_DBM` is kept as the historical name for it.
     """
-    return DISPLAY_REF_MIN_DBM if mode == 'sdr' else FLOOR_MIN_DBM
+    del mode                     # every mode starts from the same place now
+    return FLOOR_MIN_DBM
 
 
 def new_tracker(floor: float = FLOOR_MIN_DBM) -> dict:
@@ -145,6 +135,12 @@ def new_tracker(floor: float = FLOOR_MIN_DBM) -> dict:
         'ignore_until': 0.0,          # observations are stale until then (settle window)
         'floor': floor,               # learned lower bound (IF saturation)
         'result': 'idle',             # last fit outcome, for the UI ('ok', 'applied', ...)
+        #: WHY the pending was queued ('applied' from a fit, 'overflow' from the escape). `result` is
+        #: sticky (STATUS reports it), so deciding how to APPLY a pending from it is wrong: one past
+        #: IF overflow made every later fit's pending look like an overflow, so the display-only fit
+        #: wrote the IQS level after all - an SDR entry reconfigured the stream four times over seven
+        #: seconds while the client sent ONE AUTO_SCALE and no SET_REF.
+        'pending_reason': None,
         'seq': 0,                     # increments per DECISION, so the UI can tell a new answer
                                       # from the sticky remainder of the previous one
         'user_level': False,           # the level was set BY HAND for this geometry: the
@@ -152,6 +148,12 @@ def new_tracker(floor: float = FLOOR_MIN_DBM) -> dict:
         'refit_due': False,            # a settings change (or a press) asked for a placement
         'refit_left': 0,               # placements still allowed for that request
     }
+
+
+#: Which piece of device state each mode's level lives in. One profile per mode in the vendor SDK,
+#: so one field per mode here: SWP/RTA/IQS levels are independent (they used to share `ref_level`,
+#: which made a level set in SDR show up in the swept view).
+REF_FIELD = {'std': 'ref_level', 'rta': 'rta_ref_level', 'sdr': 'sdr_ref_level'}
 
 
 class AutoReferenceController:
@@ -194,35 +196,34 @@ class AutoReferenceController:
         self._pending = value
 
     def ref_level(self, mode: str) -> float:
-        state = self.dev.state
-        return state.rta_ref_level if mode == 'rta' else state.ref_level
+        return getattr(self.dev.state, REF_FIELD[mode])
 
     def set_ref_level(self, mode: str, value: float) -> None:
-        state = self.dev.state
-        if mode == 'rta':
-            state.rta_ref_level = value
-        else:
-            # 'std' and 'sdr' both keep the level the IQS/SWP profile uses (the SDR session
-            # saves and restores it with its snapshot).
-            state.ref_level = value
+        setattr(self.dev.state, REF_FIELD[mode], value)
 
     def device_ref_bounds(self) -> tuple[float, float]:
         """The range this DEVICE accepts, from its capability row (see config.ref_bounds)."""
         return ref_bounds(getattr(self.dev.state, 'caps', None))
 
     def placement_bounds(self, mode: str) -> tuple[float, float]:
-        """The range the OWNER of this mode's level accepts.
+        """The range a PLACEMENT may use for this mode's level.
 
-        SWP/RTA: the fitted value IS the device Ref, so the capability row limits it.
-        SDR: it is a DISPLAY level - the client owns that scale, the window can go to -160 dBm,
-        and the IQS level is only written when the two are more than `SDR_DEVICE_DEADBAND_DB`
-        apart. Clamping an SDR fit to the device row (-50..+30 dBm) left a low noise floor
-        under the bottom edge of a window that could have shown it - the same mistake the
-        command layer already fixed for `AUTO_SCALE.current_ref`.
+        The FLOOR is the display domain in every mode: the capability row's -50 dBm is this
+        project's own guess, not a device limit (the SDK documents no Ref range at all - measured
+        on this bench, -140 dBm is programmed exactly). Clamping the fit's floor to that guess left
+        a trace that needs a lower window unmovable; what protects the front end instead is the
+        learned IF-overflow floor in `_decide`.
+
+        The CEILING stays the device's own row for SWP/RTA: its maximum is real and measured (+35
+        dBm asked, +27 programmed, depending on the attenuation the device picks). Asking for more
+        would leave the closed loop comparing its target against an echo it can never reach, and
+        re-stepping on every observation for nothing. In SDR the fitted value is a DISPLAY level
+        the client owns, so its ceiling is the display maximum.
         """
         if mode == 'sdr':
             return DISPLAY_REF_MIN_DBM, DISPLAY_REF_MAX_DBM
-        return self.device_ref_bounds()
+        _, hi = self.device_ref_bounds()
+        return DISPLAY_REF_MIN_DBM, hi
 
     def window_db(self) -> float:
         return max(20.0, float(getattr(self.dev.state, 'ref_range_db', DEFAULT_WINDOW_DB)))
@@ -244,46 +245,42 @@ class AutoReferenceController:
         if mode not in self.MODES or not math.isfinite(peak_dbm):
             return
         tracker = self._trackers[mode]
-        # Recording is unconditional: the safety ranger and a user's Auto Scale both need the
-        # newest trace, and gating this on a mode was how "click Auto after the warning" ended
-        # up with no data to work from.
+        # Recording is unconditional: a user's Auto Scale acts on the newest observation, and
+        # gating this on a mode was how "click Auto after the warning" ended up with no data to
+        # work from. Recording is also *all* an observation does by itself now.
         tracker['last_peak'] = peak_dbm
         tracker['last_noise_floor'] = noise_floor_dbm
         now = time.monotonic()
         if now < tracker['ignore_until'] or self._pending is not None:
             return
+        if not tracker['refit_due']:
+            # No automatic placement is armed, and nothing here moves the reference behind the
+            # user's back: the gross-clip correction was removed on request (a clipped trace is
+            # feedback, not a fault to be corrected), and the only protective path left is the
+            # IF-overflow escape, which acts on a device warning and no trace at all.
+            return
         floor = noise_floor_dbm if (noise_floor_dbm is not None
                                     and math.isfinite(noise_floor_dbm)) else None
         current = self.ref_level(mode)
         kind, target = self._decide(mode, peak_dbm, floor, current, self.window_db(), tracker)
-        if tracker['refit_due']:
-            # A settings change (or an Auto press) asked for a placement. It is the only way an
-            # observation may move the reference by itself, and it is a CLOSED loop: the trace
-            # follows Ref by ~half and in jumps (the automatic attenuator re-picks with Ref), so
-            # the first target usually lands short - each attempt re-measures, and the loop ends
-            # at the first good placement (`ok`), when a manual level appears, or when the budget
-            # is used up. That is what keeps it a bounded placement and not a tracking mode.
-            if tracker['user_level'] or kind == 'ok':
-                tracker['refit_due'] = False
-                tracker['refit_left'] = 0
-            elif (tracker['refit_left'] > 0
-                  and now - tracker['last_change'] >= SAFETY_INTERVAL_S):
-                tracker['refit_left'] -= 1
-                self._queue(mode, target, tracker, now, result='applied')
-                return
-            elif tracker['refit_left'] <= 0:
-                tracker['refit_due'] = False    # gave up: stop, never hunt
-        # Only the protective direction, and only when the loss is gross:
-        #   * 'clipped'      - the peak is above the top edge: raising Ref brings it back.
-        #   * 'below_window' - RAISING Ref pushed the noise floor under the bottom edge. That is a
-        #     display choice the user just made; it is fixed by pressing Auto, not behind their back.
-        if kind != 'clipped' or peak_dbm <= current + AUTO_CLIP_MARGIN_DB:
-            return
-        if target <= current:
-            return                     # never move against the protective direction on our own
-        if now - tracker['last_change'] < SAFETY_INTERVAL_S:
-            return
-        self._queue(mode, target, tracker, now, result='clipped')
+        # A settings change (or an Auto press) asked for a placement. It is the only way an
+        # observation may move the reference by itself, and it is a CLOSED loop: the trace
+        # follows Ref by ~half and in jumps (the automatic attenuator re-picks with Ref), so
+        # the first target usually lands short - each attempt re-measures, and the loop ends
+        # at the first good placement (`ok`), when a manual level appears, or when the budget
+        # is used up. That is what keeps it a bounded placement and not a tracking mode.
+        if tracker['user_level'] or kind == 'ok':
+            tracker['refit_due'] = False
+            tracker['refit_left'] = 0
+        elif tracker['refit_left'] <= 0:
+            tracker['refit_due'] = False        # budget spent: give up, never hunt
+        elif now - tracker['last_change'] >= SAFETY_INTERVAL_S:
+            tracker['refit_left'] -= 1
+            self._queue(mode, target, tracker, now, result='applied')
+        # else: a frame arrived inside the settle interval - the loop stays ARMED and steps on the
+        # next settled one. Treating "too soon" as "gave up" is what stopped a fit after a single
+        # step (reported on the bench: Auto left the trace below the bottom edge at 13.825 MHz /
+        # 1 MHz, where three steps were needed).
 
     # ---------------- the user's Auto Scale ----------------
 
@@ -369,6 +366,7 @@ class AutoReferenceController:
         tracker['last_change'] = now
         tracker['last_target'] = target
         tracker['result'] = result
+        tracker['pending_reason'] = result
         tracker['seq'] += 1
         # The loop just placed the level, so it owns it: a later settings change may move it
         # again without being told to (see `reset(manual=True)` for the opposite).
@@ -379,14 +377,21 @@ class AutoReferenceController:
     # ---------------- retune safety ----------------
 
     def prepare_retune(self, mode: str) -> bool:
-        """Use a safe Ref before changing frequency after a fit had lowered it.
+        """Use a safe Ref before changing frequency after a FIT had lowered it.
 
         A low Ref fitted for one band can saturate the IF on the next one; lifting it back to
         0 dBm before the retune is what the old continuous loop did for the same reason.
+
+        A level the USER set is never lifted. It is theirs, and the lift is invisible by design (no
+        message, no busy state), so getting it wrong looks exactly like "the Ref resets itself":
+        reported on the bench - after any fit had once placed a level in a mode, every later
+        frequency change reset a manually set Ref to 0 dBm (`last_target` is kept as the loop's
+        memory of a placement and a manual takeover did not clear it). What still protects a manual
+        level is the IF-overflow escape, which acts on the device's own -12 warning.
         """
         with self.dev._hw:
             tracker = self._trackers.get(mode)
-            if tracker is None or tracker['last_target'] is None:
+            if tracker is None or tracker['last_target'] is None or tracker['user_level']:
                 return False
             current = self.ref_level(mode)
             if current >= 0.0:
@@ -511,8 +516,11 @@ class AutoReferenceController:
             self._pending = None
             mode, target = pending
             session = self.dev.session
+            tracker = self._trackers[mode]
+            pending_reason = tracker.get('pending_reason')
+            tracker['pending_reason'] = None
             if mode == 'rta' and session is not None and session.name == 'rta':
-                self.dev.state.rta_ref_level = target
+                self.set_ref_level('rta', target)
                 session._configure()
             elif mode == 'sdr':
                 # SDR applies a *display* fit only: the client owns its display scale, and writing the
@@ -521,24 +529,33 @@ class AutoReferenceController:
                 # write moved the trace the fit was reading, so it wrote again (0 -> -15 -> -20 -> -25
                 # -> -20 dBm in three seconds, one full reconfiguration and one audio flush each). That
                 # is an audible puff on every level step, and a digital mode cannot integrate a slot
-                # across the holes it leaves. The ADC is still protected: the safety ranger raises the
-                # level on an IF overflow independently of this (`nudge_reference_out_of_overflow`).
+                # across the holes it leaves.
                 if session is None or session.name != 'sdr':
                     return False
-                # Consume the pending and settle the tracker exactly as an applied fit does (the fit
-                # target is the client's input; without this the next observation re-fits, because
-                # nothing about the trace changed) - but write nothing to the device.
+                if pending_reason == 'overflow':
+                    # ...with ONE exception, and it is the whole reason the escape exists: an IF
+                    # overflow is the DEVICE in trouble (and that path delivers no frames at all), so
+                    # the raise must reach the front end. It used to be swallowed by the display-only
+                    # path below - the escape queued a step and then dropped it, so the level stayed
+                    # where the saturation started until the user moved it.
+                    self.set_ref_level('sdr', target)
+                    self.dev.state.sdr_ref_set = True
+                    self._rearm(mode, 0.75)
+                    session.reconfigure()
+                    return True
+                # Otherwise: consume the pending and settle the tracker exactly as an applied fit does
+                # (the fit target is the client's input; without this the next observation re-fits,
+                # because nothing about the trace changed) - but write nothing to the device.
                 log.info('SDR auto-reference: the fit target %.1f dBm goes to the client display; '
                          'the device level is left alone', target)
                 # Not `_rearm`: that also clears the observations, and nothing moved (no device
                 # write happened), so the diagnostics keep the trace the fit was made from.
-                tracker = self._trackers[mode]
                 tracker['ignore_until'] = time.monotonic() + 0.75
                 tracker['refit_due'] = False
                 tracker['refit_left'] = 0
                 return False
             elif mode == 'std':
-                self.dev.state.ref_level = target
+                self.set_ref_level('std', target)
                 ok, _ = self.dev.configure_swp()
                 if not ok:
                     return False

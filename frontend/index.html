@@ -174,20 +174,6 @@
               <button class="btn" id="btn-rta-span-down" data-action="rta-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
               <button class="btn" id="btn-rta-span-full" data-action="rta-span-full" data-i18n="span_full_short" data-i18n-title="span_full">Full</button>
               <button class="btn" id="btn-rta-span-up" data-action="rta-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
-            <div class="param-row"><label data-i18n="persist">Persist</label>
-              <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Persistence (density fade)">
-                <option value="0.95" data-i18n="rta_fast">Fast</option>
-                <option value="0.975" selected data-i18n="rta_medium">Medium</option>
-                <option value="0.99" data-i18n="rta_slow">Slow</option>
-                <option value="0.995" data-i18n="rta_vslow">Very Slow</option>
-              </select>
-              <label style="min-width:auto;" data-i18n="grain">Grain</label>
-              <select id="select-rta-bins" data-action="set-rta-bins" data-i18n="tip_select-rta-bins" data-i18n-attr="title">
-                <option value="64">64</option>
-                <option value="96">96</option>
-                <option value="128" selected>128</option>
-                <option value="192">192</option>
-              </select></div>
           </div>
           <div id="swp-freq-settings">
           <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any" data-i18n="tip_input-center" data-i18n-attr="title">
@@ -337,6 +323,21 @@
             <select id="select-refwin" data-action="set-norm-refwin" data-i18n="tip_refwin" data-i18n-attr="title" title="Normalize reference smoothing window">
               <option value="0" data-i18n="auto_rbw">Auto (RBW)</option><option value="3">3 pts</option>
               <option value="5">5 pts</option><option value="7">7 pts</option><option value="9">9 pts</option>
+            </select></div>
+          <div class="param-row trace-keep"><label data-i18n="persist">Persist</label>
+            <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Persistence (density fade)">
+              <option value="0" data-i18n="off">Off</option>
+              <option value="0.95" data-i18n="rta_fast">Fast</option>
+              <option value="0.975" selected data-i18n="rta_medium">Medium</option>
+              <option value="0.99" data-i18n="rta_slow">Slow</option>
+              <option value="0.995" data-i18n="rta_vslow">Very Slow</option>
+            </select>
+            <label style="min-width:auto;" data-i18n="grain">Grain</label>
+            <select id="select-rta-bins" data-action="set-rta-bins" data-i18n="tip_select-rta-bins" data-i18n-attr="title">
+              <option value="64">64</option>
+              <option value="96">96</option>
+              <option value="128" selected>128</option>
+              <option value="192">192</option>
             </select></div>
           <div class="btn-group trace-norm-ops" style="margin-top:4px;">
             <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>

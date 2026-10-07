@@ -4,6 +4,7 @@ import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
 import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect } from './plot';
+import { previewFreqWindow, previewLevelWindow, xAxisTransform, yAxisTransform } from '../ui/axisDrag';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
@@ -22,14 +23,20 @@ import { peakListVisible } from '../ui/measurePrefs';
 import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
-import { rtaAmpBins, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { MAX_DENSITY } from '../dsp/rtaDensity';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
+  // The axis labels follow a level gesture exactly like the trace does (ui/axisDrag.ts): both read
+  // the same window, so the numbers and the pixels cannot disagree while the pointer is down.
+  const lv = previewLevelWindow();
   return {
-    centerHz: centerHz.get(), spanHz: spanHz.get(), dbPerDiv: S.dbPerDiv, displayRef: getDisplayRef(),
+    centerHz: centerHz.get(), spanHz: spanHz.get(),
+    dbPerDiv: lv ? lv.range / S.totalDivs : S.dbPerDiv,
+    displayRef: lv ? lv.ref : getDisplayRef(),
     displayOffset: displayOffset.get(), displayUnit: displayUnit.get(), viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
@@ -83,6 +90,10 @@ export function renderGrid() {
 
   let loHz = c.centerHz - c.spanHz / 2, hiHz = c.centerHz + c.spanHz / 2;
   if (S.freqArray && S.freqArray!.length > 1) { loHz = S.freqArray![0]; hiHz = S.freqArray![S.freqArray!.length - 1]; }
+  // The frequency row states the window the gesture is asking for, not the one the frame on
+  // screen was measured in, so the numbers track the drag exactly.
+  const pw = previewFreqWindow();
+  if (pw) { loHz = pw.lo; hiHz = pw.hi; }
   drawFreqRow(loHz, hiHz, col, p);
 
   if (c.displayUnit === 'dB') {
@@ -486,6 +497,11 @@ function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
   // Written only on change (this runs on every pass; they change with ref/dB-per-div/offset/unit).
   const text = labels.join(',');
   if (ctx.canvas.dataset.yLabels !== text) ctx.canvas.dataset.yLabels = text;
+  // Diagnostic/e2e hook: which display domain the axis is in. It decides what the level-axis
+  // gesture means (the device reference in dBm, the level offset in the relative display), and
+  // canvas text cannot tell the two apart from outside.
+  const unit = displayUnit.get();
+  if (ctx.canvas.dataset.levelUnit !== unit) ctx.canvas.dataset.levelUnit = unit;
 }
 
 // Persistent trigger status chip (top-right) plus the warning lines under it. It is drawn
@@ -554,19 +570,29 @@ function renderRta() {
   const d = S.rtaData;
   if (!d || !d.freq || d.freq.length < 2) return;
   const n = d.freq.length;
-  const lo = d.startHz, hi = d.stopHz;
+  // A frequency gesture draws the frame in the window being dragged to (see ui/axisDrag.ts); the
+  // trace, the demod overlay and the frequency row below all read this one pair.
+  const pf = previewFreqWindow();
+  const lo = pf ? pf.lo : d.startHz;
+  const hi = pf ? pf.hi : d.stopHz;
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   // 2D probability density rendered as an offscreen layer (freq x amplitude matrix ->
   // ImageData with gamma-adjusted color), then drawImage-scaled onto the plot so the
   // hot region is continuous and smooth instead of sparse 1px dots. Row 0 = top of the
   // density matrix = displayRef (highest power), matching the plot Y direction.
-  if (S.rtaDensity2d && S.rtaDensity2d!.length >= n * rtaAmpBins.get()) {
+  if (persistenceOn() && S.rtaDensity2d && S.rtaDensity2d!.length >= n * rtaAmpBins.get()) {
     drawRtaDensityLayer(n, p);
-  } else {
-    ctx.fillStyle = col.bg;
-    ctx.fillRect(p.x, p.y, p.w, p.h);
   }
+  // No density layer means the graticule and background drawn above simply stay visible. It used to
+  // be repainted with the background here, which wiped the grid: harmless while that only happened
+  // for a frame or two with no data, but Persist=Off made it permanent (reported: "turning
+  // persistence off removes the RTA/SDR grid"). The frame starts with clearRect, so nothing has to
+  // be cleared here.
+  // Diagnostic/e2e hook (same pattern as `dataset.yLabels`): the pixel scan cannot tell a dark
+  // density layer from the plain background, so the contract is read from here.
+  const densityState = persistenceOn() ? 'on' : 'off';
+  if (ctx.canvas.dataset.density !== densityState) ctx.canvas.dataset.density = densityState;
   // Fluorescent traces with glow (previous style; density dots provide the lingering trail)
   S.traces.forEach((tr, ti) => {
     if (tr.mode === 'OFF') return;
@@ -699,6 +725,15 @@ function renderWaterfallIfOn() {
 let rtaDensLayer: HTMLCanvasElement | null = null;
 let rtaDensCtx: CanvasRenderingContext2D | null = null;
 let lastDensRebuild = 0;
+
+/**
+ * Persistence Off switches the whole density layer off, not just its decay: the grid is not
+ * accumulated either (dsp/rtaDensity.ts returns null), so the canvas goes back to the plain
+ * background with the fluorescent traces on it.
+ */
+function persistenceOn(): boolean {
+  return rtaFade.get() > 0;
+}
 // Build the density layer (throttled; cheap drawImage reuse between rebuilds)
 function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number; h: number }) {
   if (!rtaDensLayer) { rtaDensLayer = document.createElement('canvas'); rtaDensCtx = rtaDensLayer.getContext('2d'); }
@@ -712,7 +747,7 @@ function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number;
     const lut = densityLutForRta();
     const img = lc.createImageData(cols, rows);
     const px = img.data;
-    const MAXD = 40;   // density that saturates (matches the ws.ts +3/decay accumulation)
+    const MAXD = MAX_DENSITY;   // the same saturation dsp/rtaDensity.ts accumulates to
     for (let i = 0; i < cols; i++) {
       const base = i * rows;
       for (let b = 0; b < rows; b++) {
@@ -728,8 +763,18 @@ function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number;
     }
     lc.putImageData(img, 0, 0);
   }
-  // smooth-bilinear scale onto the plot area (row 0 = top = displayRef)
-  ctx.drawImage(rtaDensLayer, p.x, p.y, p.w, p.h);
+  // smooth-bilinear scale onto the plot area (row 0 = top = displayRef). A level or frequency
+  // gesture scales this matrix through the same affine the trace uses - drawImage of the
+  // transformed rect IS that transform - so the density never drifts away from the trace.
+  const xt = xAxisTransform();
+  const yt = yAxisTransform();
+  ctx.drawImage(
+    rtaDensLayer,
+    p.x + (xt ? xt.dxFrac * p.w : 0),
+    p.y + (yt ? yt.dyFrac * p.h : 0),
+    p.w * (xt ? xt.sx : 1),
+    p.h * (yt ? yt.sy : 1),
+  );
 }
 
 // RTA density heat LUT (theme-aware, deep-blue -> cyan -> yellow -> red)

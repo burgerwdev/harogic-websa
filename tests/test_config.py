@@ -78,28 +78,47 @@ def _caps(ref_min: float, ref_max: float):
     return caps
 
 
-def test_ref_range_comes_from_the_capability_row():
-    """One source for a device limit: validation, the SDK profile and the Auto Ref loop.
+def test_ref_bounds_is_the_placement_row():
+    """The capability row is what the AUTO-PLACEMENT rules clamp to, and nothing else.
 
     Found while auditing hard-coded device values: the range was written as literals in
     `device.py` (profile clamp) and `auto_reference.py` (target clamp) while the capability row
-    already declared it. A model with a different range would have been silently clamped by the
-    wrong numbers.
+    already declared it. The profile clamp has since moved off this row: the vendor SDK documents
+    no Ref range, so a level the USER asks for is not limited by a placement decision (see
+    `test_a_user_ref_is_not_limited_to_the_device_row`).
     """
     from web_sa.config import (
         FALLBACK_REF_MAX_DBM,
         FALLBACK_REF_MIN_DBM,
-        clamp_ref_dbm,
         ref_bounds,
         )
     caps = _caps(-40.0, 10.0)
     assert ref_bounds(caps) == (-40.0, 10.0)
-    assert clamp_ref_dbm(caps, 30.0) == 10.0
-    assert clamp_ref_dbm(caps, -60.0) == -40.0
-    assert clamp_ref_dbm(caps, -5.0) == -5.0
     # No device attached yet: the documented fallback, never a silent 0.
     assert ref_bounds(None) == (FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM)
-    assert clamp_ref_dbm(None, 100.0) == FALLBACK_REF_MAX_DBM
     # A nonsense row must not produce an inverted range.
     broken = _caps(10.0, -10.0)
     assert ref_bounds(broken) == (FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM)
+
+
+def test_a_user_ref_is_not_limited_to_the_device_row():
+    """The SDK documents no Ref range, so the clamp before the profile is the DISPLAY domain.
+
+    Reported on the bench: the official PC software only hints when the IF saturates
+    (APIRETVAL_WARNING_IFOverflow, -12) and lets the level keep moving, while this application
+    refused anything outside the -50..+30 placement row. The device's own maximum is decided by the
+    attenuation/IF-gain it picks, and it echoes what it programmed (measured: +30 dBm comes back as
+    +27), so the write is clamped to what a client could ever produce and the echo is the truth.
+    """
+    from web_sa.config import (
+        DISPLAY_REF_MAX_DBM,
+        DISPLAY_REF_MIN_DBM,
+        clamp_ref_dbm,
+        )
+    # A device row that would clamp hard must not clamp the write any more.
+    caps = _caps(-40.0, 10.0)
+    assert clamp_ref_dbm(caps, -90.0) == -90.0
+    assert clamp_ref_dbm(caps, 35.0) == 35.0
+    # ...and the display domain is still a sanity bound.
+    assert clamp_ref_dbm(caps, -1e6) == DISPLAY_REF_MIN_DBM
+    assert clamp_ref_dbm(None, 1e6) == DISPLAY_REF_MAX_DBM

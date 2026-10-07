@@ -25,7 +25,7 @@ export const wfLoDbm = createParam<number>('wf.lo', { fallback: -110, scope: 'wf
 export const wfHiDbm = createParam<number>('wf.hi', { fallback: -30, scope: 'wf', authoritative: true, ...num(1, 6) });
 /** Freeze the waterfall rows (they stop scrolling). */
 export const wfPaused = createParam<boolean>('wf.paused', { fallback: false, scope: 'wf', authoritative: true });
-/** Per-frame density decay (persistence). */
-export const rtaFade = createParam<number>('rta.fade', { fallback: 0.98, scope: 'wf', authoritative: true, ...num(1, 6) });
+/** Per-frame density decay (persistence); 0 = Off, the density layer is not drawn at all. */
+export const rtaFade = createParam<number>('rta.fade', { fallback: 0.975, scope: 'wf', authoritative: true, ...num(1, 6) });
 /** Probability-density amplitude bins (persisted). */
 export const rtaAmpBins = createParam<number>('rta.ampBins', { fallback: 128, scope: 'wf', authoritative: true });

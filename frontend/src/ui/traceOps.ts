@@ -72,6 +72,57 @@ export function setTraceMode(mode: string) {
 }
 
 /**
+ * The trace mode each display family remembers.
+ *
+ * The trace mode is not persisted anywhere (it is per-trace, per-session state), so it is
+ * remembered here in memory, one entry per family: the SDR receive view and the swept/RTA views
+ * are different instruments - the first is a panadapter whose noise floor is what an average
+ * smooths, the second is a sweeper that wants Clear Write.
+ *
+ * SDR therefore OPENS on an Average at the default depth (16, the panel's own default), while a
+ * gesture inside SDR is the user's and stays until they change it - leaving the mode and coming
+ * back is not allowed to reset it (the same rule the audio preference and the tuning already
+ * follow). Leaving SDR restores the swept/RTA mode, which keeps its factory Clear Write.
+ */
+export type TraceFamily = 'sdr' | 'swept';
+
+/** The depth an SDR entry starts from: the panel's own default option, not a second number. */
+export const SDR_DEFAULT_AVG = 16;
+
+const FAMILY_DEFAULT: Record<TraceFamily, string> = { sdr: 'AVERAGE', swept: 'CLEAR_WRITE' };
+const remembered: Record<TraceFamily, string> = { ...FAMILY_DEFAULT };
+
+function traceFamily(sdr: boolean): TraceFamily {
+  return sdr ? 'sdr' : 'swept';
+}
+
+/** The mode on screen, with a frozen (VIEW) trace reported as the mode it froze from. */
+function currentTraceMode(): string {
+  const trace = S.traces[S.activeTraceIdx];
+  return trace.mode === 'VIEW' ? (trace.prevMode ?? 'CLEAR_WRITE') : trace.mode;
+}
+
+/** Remember what the family being left was showing, so returning to it can restore that. */
+export function rememberTraceMode(sdr: boolean): void {
+  remembered[traceFamily(sdr)] = currentTraceMode();
+}
+
+/**
+ * Apply the family's own trace mode to the ACTIVE trace (the others are left alone), plus the
+ * default average depth when that lands on an average.
+ *
+ * The dropdown is written here because `setTraceMode` only syncs the Freeze button and the Avg
+ * row - a mode applied behind the panel's back would leave the select showing the old mode.
+ */
+export function applyTraceFamilyMode(sdr: boolean): void {
+  const want = remembered[traceFamily(sdr)];
+  setTraceMode(want);
+  const sel = document.getElementById('select-trace-mode') as HTMLSelectElement | null;
+  if (sel) sel.value = want;
+  if (want === 'AVERAGE' && sdr) setTraceAverage(SDR_DEFAULT_AVG);
+}
+
+/**
  * RTA stores its own accumulator arrays, so SWP-side resets are not enough: a stale
  * avgSum/avgCount would make a fresh average start near full scale and decay slowly
  * (reported as "the trace descends from the top").

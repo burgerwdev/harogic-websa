@@ -344,7 +344,7 @@ class SdrSession(MeasurementSession):
             capture_center = max(s.caps.freq_min_hz + half,
                                  min(s.caps.freq_max_hz - half, capture_center))
         p.CenterFreq_Hz = capture_center
-        p.RefLevel_dBm = float(s.ref_level)
+        p.RefLevel_dBm = float(s.sdr_ref_level)   # the IQS profile's own level (SWP has ref_level)
         p.DecimateFactor = int(s.sdr_decimate)
         p.DataFormat = T.DataFormat_TypeDef.Complex16bit
         p.TriggerSource = T.IQS_TriggerSource_TypeDef.Bus

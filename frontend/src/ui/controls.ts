@@ -2,7 +2,7 @@
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
-import { postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
+import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, type NrAlgo } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
@@ -10,7 +10,7 @@ import { requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 
 import { normRefWindow, setNormRefWinUser, smoothRefWindow, buildReferenceTablePub } from './normPub';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv, syncFreezeBtn, syncAvgUI } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv, syncFreezeBtn, syncAvgUI, rememberTraceMode, applyTraceFamilyMode } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
@@ -23,6 +23,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
+import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, resetAxisPreview, type Axis } from './axisDrag';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
@@ -37,10 +38,9 @@ import { resetLimits } from './limits';
 // re-exports below keep the previous public surface for the rest of the app.
 import { applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetSpanStepAuto, stepSwpSpan, syncSwpSpanStep, updateCustomSpanStep } from './panels/frequency';
 import { applyPoints, applyRBW, applyVBW, setSpurMode, setWindow } from './panels/resolution';
-import { applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins } from './panels/rta';
+import { applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade } from './panels/rta';
 import { activeMarkerNextPeakLeft, activeMarkerNextPeakRight, activeMarkerNextValleyLeft, activeMarkerNextValleyRight, activeMarkerPeak, activeMarkerValley, markerToCenter, placeMarkerFromX, selectMarker, syncMarkerTrackingToggle, toggleActiveMarkerTracking, toggleMarkersAll } from './panels/markers';
-import {
-  adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
+import {  adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
   syncSdrRefUI, toggleGapFill, toggleRefClkOut,
 } from './panels/refAmp';
 import { resetWf, setSweepSpeed, syncSweepInput, toggleWaterfall, toggleWfPause, initWfSplit, resetWfSplit } from './panels/waterfall';
@@ -56,7 +56,7 @@ export function connectDevice() { send({ cmd: 'CONNECT' }); }
 // Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
-import { currentGraphMode, graphModeDiverges, isGraphMode, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
+import { currentGraphMode, deviceMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
 import { setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
 
 let sdrAudioHandoffTimer: number | null = null;
@@ -168,7 +168,12 @@ export function releaseGraphModePending() {
 }
 
 export function syncGraphModeStatus(mode: string) {
+  // The raw reported mode is recorded FIRST: the measurement sessions are not view modes, but they
+  // own the device, and everything mode-gated has to see that (see `deviceMode`).
+  deviceMode.confirm(mode);
   if (!isGraphMode(mode)) return;
+  // The family being left, read before the confirm: that is the trace mode to remember.
+  const previousMode = currentGraphMode();
   // Discipline 1: an older reply (a STATUS still on another mode) is not our answer.
   const changed = confirmGraphMode(mode);
   syncModeButtons();
@@ -178,6 +183,15 @@ export function syncGraphModeStatus(mode: string) {
   S.setRtaMode(isRtaLike);
   S.setViewMode(isRtaLike ? 'rta' : 'std');
   S.setSdrMode(isSdr);
+  // An axis gesture previews the window of the mode it started in; a mode change invalidates it.
+  resetAxisPreview();
+  // Each display family keeps its own trace mode: SDR opens on an Average (the depth defaults to
+  // the panel's 16), the swept/RTA views keep Clear Write, and whatever the user picked inside a
+  // family is what that family shows when it is entered again. Applied here - once, on a CONFIRMED
+  // mode change - and never from the per-frame STATUS loop, which would overwrite a gesture the
+  // user just made (see ui/traceOps.ts).
+  rememberTraceMode(previousMode === 'sdr');
+  applyTraceFamilyMode(isSdr);
   if (isSdr) {
     // The IQ ingress runs while SDR mode is active, independent of the audio switch: the
     // backend only produces IQ during an SDR session, and the DSP input must not depend on
@@ -196,6 +210,7 @@ export function syncGraphModeStatus(mode: string) {
     setSdrAudioEnabled(false);
     setSdrIqEnabled(false);
     syncSdrAudioButton();
+    clearSdrEntryState();       // the entry hand-off (display scale + one fit) starts over next time
   }
   const modeButton = document.getElementById('btn-mode-rta');
   if (modeButton) modeButton.classList.toggle('active', mode === 'rta');
@@ -235,6 +250,12 @@ export function syncGraphModeStatus(mode: string) {
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
   if (resetButton) resetButton.disabled = isRtaLike;
+  // The density map (Persist/Grain) is drawn from the non-real-time frames only: RTA and SDR own it,
+  // and in the swept mode there is nothing to accumulate, so the row is disabled there instead of
+  // sitting there doing nothing (reported: "does trace persist not work in SWP?").
+  for (const id of ['select-rta-fade', 'select-rta-bins']) {
+    setDisabled(id, mode === 'std');
+  }
   const rtaFrequency = document.getElementById('rta-freq-settings');
   const swpFrequency = document.getElementById('swp-freq-settings');
   const sdrSettings = document.getElementById('sdr-settings');
@@ -786,7 +807,7 @@ export function bindActions() {
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
-    'set-rta-fade': (el) => { rtaFade.set(parseFloat((el as HTMLSelectElement).value) || 0.98); try { localStorage.setItem('rta-fade', (el as HTMLSelectElement).value); } catch {} },
+    'set-rta-fade': (el) => setRtaFade(parseFloat((el as HTMLSelectElement).value)),
     'set-rta-bins': (el) => { setRtaBins(parseInt((el as HTMLSelectElement).value) || 128); },
     'wf-pause': () => toggleWfPause(),
     'wf-reset': () => resetWf(),
@@ -1009,6 +1030,35 @@ function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
   return (e.clientX - rect.left - border) * (S.W / box);
 }
 
+function canvasY(e: MouseEvent, canvas: HTMLCanvasElement): number {
+  // Same conversion as canvasX, on the other axis.
+  const rect = canvas.getBoundingClientRect();
+  const scale = getUiScale();
+  const border = (parseFloat(getComputedStyle(canvas).borderTopWidth) || 0) * scale;
+  const box = Math.max(1, rect.height - 2 * border);
+  return (e.clientY - rect.top - border) * (S.H / box);
+}
+
+/**
+ * The axis band under a canvas point, or null while a measurement OWNS the device.
+ *
+ * While a harmonic / PNM measurement is running the control rail is greyed out (`body.meas-mode`)
+ * and the command layer refuses the SWP-owned commands behind it, so a canvas gesture has to obey
+ * the same rule: without this a drag sent a command that could only be refused, and the refusal
+ * arrives as an alert popup.
+ */
+function axisBandFor(x: number, y: number,
+                     pr: { x: number; y: number; w: number; h: number }): Axis | null {
+  // Two checks, because the client's own measurement flag only knows about a measurement IT started:
+  // the device's reported mode covers the ones started elsewhere.
+  if (measurementOwnsDevice()) return null;
+  if (S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm')) return null;
+  return axisBandAt(x, y, pr);
+}
+
+function axisBandCursor(band: Axis | null): string {
+  return band === 'x' ? 'ew-resize' : band === 'y' ? 'ns-resize' : '';
+}
 function xToFreqHz(x: number): number | null {
   const f = S.freqArray;
   if (!f || f.length < 2) return null;
@@ -1028,6 +1078,15 @@ export function bindCanvas() {
   canvas.addEventListener('mousedown', (e) => {
     const pr = plotRectPub();
     const x = canvasX(e, canvas);
+    const y = canvasY(e, canvas);
+    // The axis label bands are drag handles (ui/axisDrag.ts). Handled first so a gesture that
+    // starts on an axis can never also place a marker or start an SDR tune.
+    const band = axisBandFor(x, y, pr);
+    if (band && axisDragStart(band, x, y, pr)) {
+      canvas.style.cursor = 'grabbing';
+      e.preventDefault();
+      return;
+    }
     if (currentGraphMode() === 'sdr') {
       if (x < pr.x || x > pr.x + pr.w) return;
       sdrDown = true; sdrMoved = false; sdrX0 = x;
@@ -1048,6 +1107,10 @@ export function bindCanvas() {
   });
 
   window.addEventListener('mousemove', (e) => {
+    if (axisDragging()) {
+      axisDragMove(canvasX(e, canvas), canvasY(e, canvas));
+      return;
+    }
     if (!S.dragging) return;
     const x = canvasX(e, canvas);
     if (sdrDown) {
@@ -1084,6 +1147,12 @@ export function bindCanvas() {
   });
 
   window.addEventListener('mouseup', (e) => {
+    if (axisDragging()) {
+      axisDragEnd();
+      canvas.style.cursor = axisBandCursor(axisBandFor(canvasX(e, canvas), canvasY(e, canvas),
+        plotRectPub()));
+      return;
+    }
     if (sdrDown) {
       // Commit the tune once, on release (click or drag).
       const raw = xToFreqHz(canvasX(e, canvas));
@@ -1100,6 +1169,27 @@ export function bindCanvas() {
     }
     S.setDragging(false);
   });
+
+  // Hover feedback for the axis bands: without a cursor change the handles are invisible, and
+  // the bands sit in the margins where nothing else ever happened before.
+  canvas.addEventListener('mousemove', (e) => {
+    if (axisDragging()) return;
+    const cursor = axisBandCursor(
+      axisBandFor(canvasX(e, canvas), canvasY(e, canvas), plotRectPub()));
+    if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
+  });
+
+  // Wheel on an axis band zooms that axis (span on the frequency row, dB/div on the level
+  // labels); inside the plot the wheel keeps whatever it did before (page scrolling).
+  canvas.addEventListener('wheel', (e) => {
+    const pr = plotRectPub();
+    const x = canvasX(e, canvas);
+    const y = canvasY(e, canvas);
+    const band = axisBandFor(x, y, pr);
+    if (!band) return;
+    e.preventDefault();
+    axisWheel(band, e.deltaY, x, y, pr);
+  }, { passive: false });
 
   // Keyboard / trackpad-only operation (no mouse required).
   document.addEventListener('keydown', (e) => {
@@ -1172,7 +1262,7 @@ function sdrNudgeVolume(dv: number) {
 }
 import { plotRect as plotRectPub } from '../render/plot';
 import { exitMeasMode as exitMeasModePub } from './measure';
-import { rtaFade, wfPaused } from './waterfallState';
+import { wfPaused } from './waterfallState';
 import { displayOffset, smoothBins } from './displayState';
 import { peakListVisible } from './measurePrefs';
 import { spanStepAuto } from './swpState';
@@ -1186,7 +1276,7 @@ export {
 } from './panels/frequency';
 export { applyPoints, applyRBW, applyVBW, setSpurMode, setWindow } from './panels/resolution';
 export {
-  applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins,
+  applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade,
 } from './panels/rta';
 export {
   activeMarkerPeak, activeMarkerValley, autoTrackMarker, markerToCenter, placeMarkerFromX,

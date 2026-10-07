@@ -8,7 +8,11 @@
  *
  *   owners:
  *     auto   - the SDR client-side auto-scale
- *     user   - the Ref Set button / arrows (an explicit takeover)
+ *     user   - the Ref Set button / arrows (an explicit takeover, acknowledged by the device)
+ *     sdr    - the SDR display scale as set by the user: that scale belongs to the client, and the
+ *              level the DEVICE is handed is a different value (clamped to the device row, since
+ *              the front end cannot be at any level), so there is no echo to wait for - arming an
+ *              ack here is what made a display-only level look unconfirmed and post a timeout
  *     mode   - display defaults (normalise sets 0, un-normalise restores the level)
  *     preset - global reset
  *
@@ -26,7 +30,7 @@
 import { createParam } from '../core/params';
 import { currentGraphMode } from './graphMode';
 
-export type DisplayRefSource = 'auto' | 'user' | 'mode' | 'preset';
+export type DisplayRefSource = 'auto' | 'user' | 'sdr' | 'mode' | 'preset';
 
 /** How long a user Ref request may stay unacknowledged before we say so. */
 export const DISPLAY_REF_TTL_MS = 5000;
