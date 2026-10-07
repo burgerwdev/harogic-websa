@@ -30,7 +30,7 @@ keeps the signal from pumping a receiver's AGC. Use it for USB/LSB voice tests.
 
     python3 tools/pluto_tx.py am  --dry-run
     python3 tools/pluto_tx.py nfm --lo 411e6 --gain -10
-    python3 tools/pluto_tx.py usb --wav speech.wav --seconds 60
+    python3 tools/pluto_tx.py usb --wav tools/bench/audio/speech.wav --seconds 60
     python3 tools/pluto_tx.py wfm --wav music.wav --channel left
 
 On the analyzer: SDR mode, tune to `--lo`, set Demod to the mode, and check the

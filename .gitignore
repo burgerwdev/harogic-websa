@@ -52,3 +52,5 @@ tools/.ggmorse-build/
 
 # Generated bench audio (cowtts 语音、--wav 测试文件)
 *.wav
+# The one committed bench sample: the voice audio for `tools/pluto_tx.py --wav`.
+!tools/bench/audio/*.wav
