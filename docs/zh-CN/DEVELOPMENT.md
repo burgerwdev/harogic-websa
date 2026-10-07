@@ -356,10 +356,11 @@ python3 tools/checks/architecture_guard.py --baseline   # 查看当前架构指�
 
 ## 14. 已知未完成（指针）
 
-- **进入 SDR 期间 STATUS 流会卡住**：真机实测后端约 4 s 已进 SDR，而客户端第一条 `mode=sdr` 的 STATUS 要
-  到约 9–12 s 才到，之前还有 2.8 s 的帧空洞（SDR 会话的 `enter()` 在配整条 IQS/DDC 链路，发布循环在等它）。
-  于是切换后的几秒里屏幕仍是上一个模式（旧刻度），入口投放也要等客户端「知道」了才开始。修法：让入口路径
-  发 STATUS（或先发一条「正在切换模式」的提示）而不是阻塞发布循环。
+- **长命令会让 STATUS 流「瞎掉」**：WS 命令处理器在整个命令执行期间持有 `COMMAND_LOCK`，而发布循环推送
+  STATUS 也要同一把锁来构建快照 —— 于是命令运行期间一条 STATUS 都发不出去。用**界面按钮**实测（不是 API）：
+  普通切入 SDR 客户端 0.3 s 就确认；而同一次切换若紧跟在**完整 Preset** 之后，则要 **13.8 s**（Preset 的重配
+  加上 IQS/DDC 建链一直占着锁），这段时间屏幕仍是上一个模式与旧刻度 —— 这也是最初把「Preset 后进 SDR 看不到
+  迹线」误判成放置问题的原因。修法：快照在锁内构建、发送放在锁外（或入口路径先推一条「正在切换」的轻量 STATUS）。
 - **假后端无法进入相噪测量**：`session_class('pnm')` 返回真实的 `PhaseNoiseSession`，其 `_configure` 通过 `self.dev.dev` 调厂商 SDK，而 `FakeDevice` 没有该属性 → AttributeError 以「Device: command failed」弹给客户端（本轮 e2e 加上 dialog 监听后才暴露；RTA/SDR 有假会话，谐波恰好只走设备方法所以正常）。修法：像 `FakeRtaSession`/`FakeSdrSession` 一样补一个 `FakePnmSession`，或在会话工厂里做能力判断。
 - 见 `ARCH_REVIEW.md` §9.3：e2e 覆盖 Firefox、按命令裁剪 STATUS（P2-9）、该节记录的三个低优先级候选项，
 以及 ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）。此前列在此处的

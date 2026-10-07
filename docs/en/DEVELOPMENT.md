@@ -396,12 +396,14 @@ python3 tools/checks/architecture_guard.py --baseline   # show the current archi
 
 ## 14. Known open work (pointer)
 
-- **The STATUS stream stalls while SDR is being entered**: measured on the bench, the backend reports
-  `mode=sdr` after ~4 s but the client's first `mode=sdr` STATUS arrives at ~9-12 s, with a 2.8 s hole
-  in the frames before it (the SDR session's `enter()` configures the whole IQS/DDC chain while the
-  publisher waits). The screen therefore keeps showing the previous mode (and its scale) for several
-  seconds after the switch, and the entry placement only starts once the client knows. Fix: publish
-  STATUS (or a "mode is switching" notice) from the entry path instead of blocking the loop.
+- **A long command blinds the STATUS stream**: the WS command handler holds `COMMAND_LOCK` for the
+  whole command, and the publisher's STATUS push takes the same lock to build its snapshot - so no
+  STATUS is sent while a command runs. Measured with the button (not the API): a plain switch into SDR
+  is confirmed by the client in 0.3 s, but the SAME switch right after a full Preset takes 13.8 s
+  (the preset's reconfiguration plus the IQS/DDC bring-up hold the lock), and during that window the
+  screen keeps showing the previous mode and its old scale - which is what made "the trace is not
+  displayed after a preset" look like a placement bug at first. Fix: build the snapshot under the
+  lock but send outside it (or have the entry path push a lightweight "switching" STATUS).
 - **Phase noise cannot be entered on the fake backend**: `session_class('pnm')` returns the real
   `PhaseNoiseSession`, whose `_configure` talks to the vendor SDK through `self.dev.dev` - which
   `FakeDevice` does not have. An AttributeError reaches the client as "Device: command failed"

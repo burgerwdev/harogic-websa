@@ -231,8 +231,9 @@ def create_device() -> FakeDevice:
 
 
 def install_fake_sessions() -> None:
-    """Point the session factory at the fake RTA/SDR sessions (std works as it is)."""
+    """Point the session factory at the fake RTA/SDR/PNM sessions (std works as it is)."""
     from ..measurements import _SESSIONS
 
     _SESSIONS['rta'] = ('fake', 'FakeRtaSession')
     _SESSIONS['sdr'] = ('fake', 'FakeSdrSession')
+    _SESSIONS['pnm'] = ('fake', 'FakePnmSession')
