@@ -396,14 +396,19 @@ python3 tools/checks/architecture_guard.py --baseline   # show the current archi
 
 ## 14. Known open work (pointer)
 
-- **A long command blinds the STATUS stream**: the WS command handler holds `COMMAND_LOCK` for the
-  whole command, and the publisher's STATUS push takes the same lock to build its snapshot - so no
-  STATUS is sent while a command runs. Measured with the button (not the API): a plain switch into SDR
-  is confirmed by the client in 0.3 s, but the SAME switch right after a full Preset takes 13.8 s
-  (the preset's reconfiguration plus the IQS/DDC bring-up hold the lock), and during that window the
-  screen keeps showing the previous mode and its old scale - which is what made "the trace is not
-  displayed after a preset" look like a placement bug at first. Fix: build the snapshot under the
-  lock but send outside it (or have the entry path push a lightweight "switching" STATUS).
+- **A switch can *look* slow because the CLIENT falls behind the frame stream** (NOT a backend
+  stall - an earlier note here blamed `COMMAND_LOCK`, and that was wrong). Instrumented: `SET_MODE
+  sdr` completes in 0.23 s, the publisher pushes `mode=sdr` every second from the next tick with
+  `lock_wait=0.00s`, and the server reports no dropped control or frame messages. What reproduces in
+  some sessions (a preset first, a busy page) is that the STATUS the page *acts on* is several
+  seconds old - it kept seeing `mode=std` for ~10 s after the backend had switched - because the
+  control message sits behind a burst of ~23 KB pan frames on the SAME socket and the page's message
+  pump is busy with the entry work (browser DSP chain, rendering). With a fresh page the lag is 0.0 s,
+  and in steady SDR it stayed 0.0 s over 24 s at 20 frames/s. Impact is cosmetic (the previous mode
+  and its old scale stay on screen until it catches up) and it is what made "the trace is not
+  displayed after a preset" look like a placement bug. Fix ideas: give control messages their own
+  socket (or drop frames when a client is behind, as `dropped_frames` already does for data), and
+  keep the immediate STATUS on a mode change (`response_to`) that already exists.
 - **Phase noise cannot be entered on the fake backend**: `session_class('pnm')` returns the real
   `PhaseNoiseSession`, whose `_configure` talks to the vendor SDK through `self.dev.dev` - which
   `FakeDevice` does not have. An AttributeError reaches the client as "Device: command failed"

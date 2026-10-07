@@ -356,11 +356,14 @@ python3 tools/checks/architecture_guard.py --baseline   # 查看当前架构指�
 
 ## 14. 已知未完成（指针）
 
-- **长命令会让 STATUS 流「瞎掉」**：WS 命令处理器在整个命令执行期间持有 `COMMAND_LOCK`，而发布循环推送
-  STATUS 也要同一把锁来构建快照 —— 于是命令运行期间一条 STATUS 都发不出去。用**界面按钮**实测（不是 API）：
-  普通切入 SDR 客户端 0.3 s 就确认；而同一次切换若紧跟在**完整 Preset** 之后，则要 **13.8 s**（Preset 的重配
-  加上 IQS/DDC 建链一直占着锁），这段时间屏幕仍是上一个模式与旧刻度 —— 这也是最初把「Preset 后进 SDR 看不到
-  迹线」误判成放置问题的原因。修法：快照在锁内构建、发送放在锁外（或入口路径先推一条「正在切换」的轻量 STATUS）。
+- **切换「看起来慢」其实是客户端落后于帧流**（**不是**后端卡住——此处先前写过的 `COMMAND_LOCK` 归因是错的）。
+  仪表实测：`SET_MODE sdr` 0.23 s 完成，发布循环从下一拍起每秒推 `mode=sdr` 且 `lock_wait=0.00s`，服务端也没有
+  任何 control/frame 丢弃。在部分会话里（先做了 Preset、页面很忙）能复现的是：页面**实际处理**的 STATUS 落后数秒
+  —— 后端早已切到 sdr，页面却连续约 10 s 读到 `mode=std` —— 原因是控制消息排在同一个 socket 上约 23 KB 的全景帧
+  之后（队头阻塞），而页面此刻正忙于入口工作（浏览器 DSP 链、渲染）。新开页面时延迟为 0.0 s；稳定 SDR 下 24 s
+  内也一直是 0.0 s（20 帧/秒）。影响是观感（旧模式与旧刻度停留在屏上直到追上），也正是最初把「Preset 后进 SDR
+  看不到迹线」误判成放置问题的原因。修法建议：给控制消息独立 socket（或像 `dropped_frames` 那样在客户端落后时
+  丢帧），并保留模式变更时的即时 STATUS（`response_to`，已有）。
 - **假后端无法进入相噪测量**：`session_class('pnm')` 返回真实的 `PhaseNoiseSession`，其 `_configure` 通过 `self.dev.dev` 调厂商 SDK，而 `FakeDevice` 没有该属性 → AttributeError 以「Device: command failed」弹给客户端（本轮 e2e 加上 dialog 监听后才暴露；RTA/SDR 有假会话，谐波恰好只走设备方法所以正常）。修法：像 `FakeRtaSession`/`FakeSdrSession` 一样补一个 `FakePnmSession`，或在会话工厂里做能力判断。
 - 见 `ARCH_REVIEW.md` §9.3：e2e 覆盖 Firefox、按命令裁剪 STATUS（P2-9）、该节记录的三个低优先级候选项，
 以及 ESLint（受上游 `typescript-eslint` 与 TypeScript 7 的兼容性阻塞）。此前列在此处的
