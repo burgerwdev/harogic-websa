@@ -296,24 +296,59 @@ Implemented after modern analyzer architecture (Keysight/R&S style), all in the 
   below a learned IF-saturation floor) and applies it; applying is one step of a bounded closed loop,
   because the trace is not independent of Ref (the automatic attenuator re-picks with it, so the trace
   follows by ~half) - each settled frame re-measures and steps until the placement is good or the
-  budget is spent; an already-good placement costs nothing.
-  A **safety ranger runs always**, independently of any user setting, but only in the protective
-  direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak grossly clipped above the
-  top edge (>= 10 dB over) is raised once, rate-limited. Lowering is never automatic: a level that pushes
-  the noise floor below the bottom edge is a display choice and is left alone (press Auto to re-fit),
-  because undoing it would undo the button the user just pressed (`clipped` vs `below_window`). There is
+  budget is spent; an already-good placement costs nothing. It cannot hunt: the acceptance band is
+  10 dB wide (2-12 dB above the bottom edge, plus 8 dB of peak headroom), a change smaller than 5 dB
+  is not worth a reconfiguration, the loop is armed ONLY by a geometry change (a settings change or a
+  press - never by its own Ref write, because the geometry signature deliberately excludes the
+  level), and the first good placement disarms it. Measured on the bench, a settled tracker takes no
+  decision at all while the noise floor wobbles 8-12.6 dB above the bottom edge for 20 s, and a
+  40-step frequency drag leaves the level untouched.
+  One **protective action runs always**, independently of any user setting: IF overflow (-12) raises Ref
+  one 5 dB step per second, because that path stops delivering frames altogether. Nothing else moves the
+  level on its own - a peak grossly clipped above the top edge used to be raised once (rate-limited) and
+  that was removed on request, for the same reason lowering was never automatic: both are levels the user
+  chose, a clipped trace is feedback rather than a fault, and "the placement no longer fits" is what the
+  Auto button is for. A device that clamps a requested level to its own range is followed silently - the
+  box always shows the level the device reports, and the step arrows stay usable at the ends of the range
+  instead of being greyed out. `caps.ref_min/max` is the AUTO-PLACEMENT row, not a user limit: the
+  vendor SDK documents no Ref range (its only Ref feedback is the -12 IF-overflow warning), so a user
+  level is bounded by the display domain (-160..+40 dBm) and the profile is only sanity-clamped to it -
+  measured on this bench, -140 dBm is programmed exactly while +35 dBm comes back as +27. In SDR the
+  display scale stays client-owned (the `sdr` display-ref source arms no ack) and the IQS level is the
+  level itself - the same plain `double` the swept profile takes, and the bench accepts and echoes
+  -140 dBm there too (IQS frames keep arriving, no error status). There is
   no signal-level gate: the anchor is the noise floor, so a noise-only trace is placed like any other
   (a weak signal used to be reported as `no_signal` instead of being placed). A settings change
   (span/centre/RBW/VBW/window/decimation) additionally arms the same bounded placement for the new
-  geometry, stopped by its first good decision; a level the user typed is never reversed by it. Before Center/cross-mode retuning a Ref that a fit had lowered is raised to 0 dBm. Each
+  geometry, stopped by its first good decision; a level the user typed is never reversed by it. Before Center/cross-mode retuning a Ref that a FIT had lowered is raised to 0 dBm - a level the
+  USER set is never lifted (it is theirs, and getting that wrong is invisible: reported on the bench as
+  "the Ref resets to 0 when I change frequency", because `last_target` survives a manual takeover). Each
   reconfiguration waits 0.75 s before observations are trusted again.
   **SDR runs the same rule** (own tracker, fed by the panadapter frames): the backend fits, the client
-  applies the reported target to its display scale, and the IQS level is only written when it is more
-  than 3 dB off (that write interrupts the audio). The command carries the level on screen
+  applies the reported target to its display scale; the fit never writes the IQS level (a write
+  reconfigures the stream and interrupts the audio, and it moves the very trace the fit is reading -
+  measured: four writes in three seconds, one audio dropout each), so the SDR's own `sdr_ref_level`
+  only changes when the user sets it. The command carries the level on screen
   (`current_ref`), because in SDR the device level is not what the user sees. A manual Ref therefore
-  holds: raising it is never undone, and only a grossly clipped peak or an IF overflow is corrected on the
-  device's own initiative. When a correction does happen, the display follows it (the SDR client applies
+  holds: raising it is never undone, and only an IF overflow is corrected on the device's own
+  initiative. When a correction does happen, the display follows it (the SDR client applies
   the reported target to its scale).
+- **Axis-label gestures** (`ui/axisDrag.ts`): the margins outside the graticule are grab areas - the
+  frequency row pans the centre (horizontal drag) and zooms the span (wheel, around the pointer), the
+  level labels pan Ref (vertical drag) and zoom dB/div (wheel). The content follows the finger. Because a
+  window change costs a device reconfiguration (0.3-1 s for frequency, ~1.9 s for Ref), nothing is sent
+  while the pointer moves: the plot is redrawn locally through the very mapping the renderers use
+  (`getX`/`getY` in `render/plot.ts`), and ONE request goes out when the gesture settles (release, or
+  250 ms of stillness, never closer than 400 ms). The preview is expressed against the window the data on
+  screen was measured in, so the confirming STATUS makes it the identity by itself, and it is dropped once
+  the drawn window and the display ref match the request - the trace never snaps back to the old window
+  while the device is still reconfiguring. The level axis changes what it shows: in the absolute (dBm)
+  display that is the device reference (preview + one `SET_REF`), in the relative (dB) display the top of
+  the graticule is a rendering offset pinned to 0, so the same drag pans the level OFFSET - a client-side
+  value applied as the pointer moves, with nothing to commit. Persistence Off for the RTA/SDR density map is a value (0) handled in
+  `dsp/rtaDensity.ts`: it stops both the accumulation and the drawing, which is also what takes the
+  bins x points work out of the frame path. The Persist/Grain controls live in the Trace panel so that the
+  layer they control is reachable in every mode it is drawn in.
 - **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
   keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
 - **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)

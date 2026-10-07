@@ -58,7 +58,7 @@ Field reference:
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
 | `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
 | `mode` | str | measurement mode (std/harmonic/pnm/rta/sdr) |
-| `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm), `rta_span_max` (Hz), `rta_points` |
+| `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm, the **auto-placement** row, not a limit on what a user may ask for - see FAQ_NOTES), `rta_span_max` (Hz), `rta_points` |
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp`, `req.rta` and `req.sdr` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |

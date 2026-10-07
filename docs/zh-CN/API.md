@@ -57,7 +57,7 @@ curl http://localhost:8080/api/state
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
 | `detector` | str | 迹线检波器（auto/sample/pos_peak/neg_peak/rms/auto_peak），仅 SWP |
 | `mode` | str | 当前测量模式（std/harmonic/pnm/rta/sdr）|
-| `caps` | obj | 型号能力：`model`/`name`/`fmin`/`fmax`，以及客户端不应硬编码的数值界限——`ref_min`/`ref_max`（dBm）、`rta_span_max`（Hz）、`rta_points` |
+| `caps` | obj | 型号能力：`model`/`name`/`fmin`/`fmax`，以及客户端不应硬编码的数值界限——`ref_min`/`ref_max`（dBm，**自动放置**规则用的那一行，不是用户可拨范围的界限，见 FAQ_NOTES）、`rta_span_max`（Hz）、`rta_points` |
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
 | `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta`、`req.sdr` 分别保存各模式配置 |
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |

@@ -68,7 +68,8 @@
   back.
 - **SDR uses the same fit** as SWP/RTA (`AUTO_SCALE`, one implementation): the backend computes the target
   from the panadapter trace, the client applies it to its display scale, and the IQS level is only
-  rewritten when it is more than 3 dB off, so a display-only fit never interrupts the audio. Entering SDR
+  never written by the fit (a write reconfigures the stream and interrupts the audio, and it moves the
+  trace the fit is reading), so it changes only when the user sets it. Entering SDR
   asks for one fit as soon as a frame arrives (this replaces the old persisted "auto" toggle).
 - The placement keeps the noise floor just above the bottom of the display window with at least 10 dB of
   headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB and never below a
@@ -82,14 +83,18 @@
   the canvas, the peak list and the channel results (`fmtReadoutLevel`). Differences (dB/div, dBc,
   deltas) are never converted, and device parameters (Ref, attenuation, trigger level) stay in dBm:
   they describe the instrument, not the signal after your cable or amplifier.
-- **The Ref range is [Ref min, Ref max] = -50 .. +30 dBm** for the SAN-90: the frontend clamps the
-  step arrows, the command validator rejects anything outside it, and the profile is clamped before it
-  reaches the SDK (`device.py`). The **device then decides its own maximum**, which depends on the
-  attenuation/IF-gain setting it picks: asking for +30 dBm on this bench is accepted and comes back as
-  **+27 dBm** (`actual.ref`), because the profile echoes the value the hardware actually programmed.
-  The UI follows that reported value, and says so: the canvas status stack shows
-  **"Device limited Ref to 27 dBm"** when `req` and `actual` disagree (once per distinct pair, so it
-  does not re-post every second). Nothing in the Auto Scale path moved the level.
+- **There is no enforced Ref range: the level is bounded only by the display domain (-160 .. +40 dBm).**
+  The vendor SDK documents no Ref range at all (the profile's `RefLevel_dBm` is a plain `double`), and
+  its only Ref-related feedback is `APIRETVAL_WARNING_IFOverflow` (-12) - "the IF is saturated, raise
+  the reference level" - which this client shows as the `!IF overflow` hint. The `caps.ref_min` /
+  `caps.ref_max` row (-50 .. +30 on the SAN-90) is what the **auto-placement rules** clamp their target
+  to; it is not a limit on what an operator may dial in, and using it as one refused levels the
+  instrument handles (reported from the bench, and measured here afterwards: Ref -60, -90 and
+  **-140 dBm** are accepted and echoed **exactly**, while +35/+40 come back as **+27** - the device's own
+  maximum, which depends on the attenuation/IF-gain it picks, and the profile echoes what the hardware
+  actually programmed). The UI follows that reported value silently; the box and the step arrows stay
+  usable at both ends of the display domain, and nothing posts a message when the device's own limit
+  clamps the request.
 
 ## Reference Clock
 
