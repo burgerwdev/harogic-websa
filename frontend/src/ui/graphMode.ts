@@ -30,6 +30,25 @@ export function isGraphMode(v: string): v is GraphMode {
 /** How long a mode request may stay unconfirmed before the UI stops waiting for it. */
 export const GRAPH_MODE_TTL_MS = 8000;
 
+/**
+ * The mode the DEVICE reports, verbatim (`STATUS.mode`), including the measurement sessions.
+ *
+ * `graphMode` deliberately only knows the three view modes, so 'harmonic' / 'pnm' - which own the
+ * device while they run - were dropped on the floor: the client could not tell that a measurement
+ * was active unless IT had started one, and a measurement started elsewhere (a script, another
+ * client, a restored session) left every mode-gated behaviour believing the swept/RTA view owned the
+ * device. Measured: entering the harmonic mode through the API and dragging the frequency axis then
+ * produced one alert per command, because the gesture sent SWP-owned commands that the command layer
+ * refuses while a measurement owns the device.
+ */
+export const deviceMode = createParam<string>('device.mode', { fallback: 'std', scope: 'mode' });
+
+/** True while a measurement session owns the device (SWP-owned commands are refused then). */
+export function measurementOwnsDevice(): boolean {
+	const mode = deviceMode.get();
+	return mode === 'harmonic' || mode === 'pnm';
+}
+
 export const graphMode = createParam<GraphMode>('graph.mode', {
 	fallback: 'std',
 	scope: 'mode',

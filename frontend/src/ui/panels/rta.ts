@@ -17,9 +17,38 @@ export function clearRtaAccum() {
   S.resetWaterfall();
 }
 
+// The four persistence gears, plus Off (0), which switches the density layer off entirely
+// (see dsp/rtaDensity.ts).
+export const RTA_FADE_OFF = 0;
+/** The panel's own default gear, used when a value cannot be read at all. */
+const RTA_FADE_DEFAULT = 0.975;
+
+/**
+ * Density persistence, as a user setting: applied to the slot, the form and the browser storage.
+ *
+ * Off (0) has to survive the round trip. The handler this replaces wrote `parseFloat(v) || 0.98`,
+ * which quietly turned Off back into "about Medium" on the way in - the option would have looked
+ * selectable and done nothing.
+ */
+export function setRtaFade(value: number) {
+  const fade = isFinite(value) ? value : RTA_FADE_DEFAULT;
+  rtaFade.set(fade);
+  const sel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
+  if (sel) sel.value = String(fade);
+  try { localStorage.setItem('rta-fade', String(fade)); } catch { /* ignore */ }
+  requestRender();
+}
+
 export function restoreRtaDensityCfg() {
-  const f = localStorage.getItem('rta-fade');
-  if (f) { const s = document.getElementById('select-rta-fade') as HTMLSelectElement | null; if (s) s.value = f; rtaFade.set(parseFloat(f)); }
+  // The select is the truth when nothing was ever stored (its own default is the middle gear), so
+  // the value the density actually fades at and the value the panel shows cannot disagree.
+  const fadeSel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
+  const storedFade = localStorage.getItem('rta-fade');
+  const fade = Number(storedFade !== null ? storedFade : fadeSel?.value);
+  if (isFinite(fade)) {
+    if (fadeSel && storedFade !== null) fadeSel.value = String(fade);
+    rtaFade.set(fade);
+  }
   const bn = localStorage.getItem('rta-bins');
   if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; rtaAmpBins.set(parseInt(bn) || 128); }
 }

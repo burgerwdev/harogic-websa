@@ -581,9 +581,10 @@ def main() -> int:
         page.wait_for_timeout(2000)
         before = state(url)["ref"]
         # Step DOWN from a level that already shows the whole trace: raising Ref pushes the noise
-        # floor below the bottom edge, where the safety ranger would (correctly) pull it back, and
-        # lowering it below about -15 dBm would clip the fake backend's -25 dBm carrier. This check
-        # is about the step arriving at the device, not about the placement rules (9c/9d).
+        # floor below the bottom edge, where nothing corrects it any more (the ranger's automatic
+        # raise is gone), and lowering it below about -15 dBm would clip the fake backend's -25 dBm
+        # carrier. This check is about the step arriving at the device, not about the placement rules
+        # (9c/9d).
         page.click("#btn-ref-down")
         page.wait_for_timeout(2000)
         after = state(url)["ref"]
@@ -664,8 +665,10 @@ def main() -> int:
         page.wait_for_timeout(1200)
         # A level the trace in front of us actually fits in: mid-window and clear of the peak. It
         # has to be derived from the measurement, because the fake backend's carrier is ~45 dB
-        # stronger than what the bench shows without a source, and a level that leaves the trace
-        # clipped or below the window is (correctly) corrected by the safety ranger.
+        # stronger than what the bench shows without a source - and a level that leaves the trace
+        # clipped or below the window is no longer corrected for us (the ranger's automatic raise
+        # was removed on request), so the level asked for here has to be a sensible one to begin
+        # with.
         sdr_now = state(url)["auto_ref"]
         window = 100.0
         floor_now = sdr_now.get("last_noise_floor")
@@ -802,26 +805,31 @@ def main() -> int:
               kept["ref"] == raised_ref,
               f'asked {raised_ref}, device {kept["ref"]} result {kept["auto_ref"].get("result")}')
 
-        # (b) The protective direction still works: a grossly clipped peak (far above the top
-        # edge) loses information, so the ranger raises Ref. -15 dB below the peak clips by 15 dB,
-        # which is past the gross-clipping margin on both backends.
+        # (b) A grossly clipped trace (far above the top edge) used to be raised by the ranger.
+        # That was removed on request: the level the user set is the level they get, and the Auto
+        # button is what re-fits it. -15 dB below the peak clips by 15 dB, past the old margin.
         clip = state(url)
         peak = clip["auto_ref"].get("last_peak")
         if peak is not None and peak - 15.0 >= -50.0:
             clip_ref = math.ceil((peak - 15.0) / 5.0) * 5.0
             post(url, {"cmd": "SET_REF", "mode": "manual", "ref": clip_ref, "range_db": 100})
-            page.wait_for_timeout(4500)
+            page.wait_for_timeout(2500)
+            held = state(url)["ref"]          # what the device accepted for that request
+            page.wait_for_timeout(4000)       # far past the old ranger's 2 s interval
             fixed = state(url)
-            check("a grossly clipped trace is raised automatically",
-                  fixed["ref"] > clip_ref and fixed["auto_ref"].get("result") == "clipped",
-                  f'peak {peak:.0f}, asked {clip_ref}, device {fixed["ref"]} '
+            check("a grossly clipped trace is not raised automatically",
+                  fixed["ref"] == held,
+                  f'peak {peak:.0f}, asked {clip_ref}, device {held} -> {fixed["ref"]} '
                   f'result {fixed["auto_ref"].get("result")}')
-            floor_now = fixed["auto_ref"].get("last_noise_floor")
-            check("the raised level keeps the trace inside the window",
-                  floor_now is None or fixed["ref"] - 100.0 <= floor_now,
-                  f'floor {floor_now} ref {fixed["ref"]}')
+            page.click("#btn-ref-auto")
+            page.wait_for_timeout(6000)
+            fitted = state(url)
+            check("Auto Scale still re-fits the clipped trace",
+                  fitted["ref"] > held,
+                  f'peak {peak:.0f}, clipped at {held}, after Auto {fitted["ref"]} '
+                  f'result {fitted["auto_ref"].get("result")}')
         else:
-            skip("a grossly clipped trace is raised automatically",
+            skip("a grossly clipped trace is not raised automatically",
                  f"peak {peak} cannot be clipped within the device Ref range on this bench")
 
         # 9d - Auto Scale itself: one decision per press, no pointless reconfiguration.

@@ -95,55 +95,41 @@ beforeEach(() => {
 	localStorage.clear();
 });
 
-describe('a reference level the device did not accept', () => {
-	// (what the UI asked the profile for, what the hardware programmed and echoed back). The pair
-	// is only test data: at runtime the value comes from `actual.ref` in the STATUS, which is why
-	// several pairs are checked - a hard-coded level would pass a single case.
+describe('a reference level the device clamped to its own range', () => {
+	// Asked for explicitly: requesting a level the current front end cannot program used to make
+	// the canvas announce "Device limited Ref to X dBm" and to grey the step arrows at the ends
+	// of the range. Both are gone - the echoed level is simply the level on screen, and a press
+	// past the end is a silent no-op. The pairs are only test data: at runtime the value comes
+	// from `actual.ref` in the STATUS, which is why several pairs are checked.
 	const limited = [[30, 27], [30, 25], [25, 22], [-5, -8]] as const;
 
-	it.each(limited)('names the level the device actually programmed (%i -> %i)', (asked, reported) => {
+	it.each(limited)('stays silent when the device programmed %i as %i', (asked, reported) => {
 		const status = structuredClone(SWP_STATUS) as any;
 		status.req.swp.ref = asked;
 		status.actual.ref = reported;
 		status.ref = reported;
+		S.setNoticeText('');
 		updateStatus(status);
-		expect(noticeText).toBe(`Device limited Ref to ${reported} dBm`);
+		expect(noticeText).toBe('');                  // nothing posted, not even once
+		expect(refLevel.get()).toBe(reported);        // ...but the echoed level is followed
 	});
 
-	it('follows the device when the limit moves', () => {
-		const post = (asked: number, reported: number) => {
+	it('never greys the step arrows at the ends of the range', () => {
+		document.body.innerHTML =
+			'<input id="input-ref"><button id="btn-ref-set"></button>' +
+			'<button id="btn-ref-down"></button><button id="btn-ref-up"></button>';
+		const at = (level: number) => {
 			const status = structuredClone(SWP_STATUS) as any;
-			status.req.swp.ref = asked;
-			status.actual.ref = reported;
-			status.ref = reported;
+			status.ref = level;
+			status.req.swp.ref = level;
+			status.actual.ref = level;
 			updateStatus(status);
+			expect((document.getElementById('btn-ref-down') as HTMLButtonElement).disabled).toBe(false);
+			expect((document.getElementById('btn-ref-up') as HTMLButtonElement).disabled).toBe(false);
 		};
-		post(30, 26);
-		expect(noticeText).toBe('Device limited Ref to 26 dBm');
-		post(30, 24);                                  // the device picked another attenuation
-		expect(noticeText).toBe('Device limited Ref to 24 dBm');
-	});
-
-	it('is not repeated while the same limit stands', () => {
-		const status = structuredClone(SWP_STATUS) as any;
-		status.req.swp.ref = 30;
-		status.actual.ref = 23;
-		status.ref = 23;
-		updateStatus(status);
-		expect(noticeText).toBe('Device limited Ref to 23 dBm');
-		S.setNoticeText('something else');            // the user's own message is not overwritten
-		updateStatus(status);
-		expect(noticeText).toBe('something else');
-	});
-
-	it('says nothing when the device accepted the request', () => {
-		const status = structuredClone(SWP_STATUS) as any;
-		status.req.swp.ref = -20;
-		status.actual.ref = -20;
-		status.ref = -20;
-		S.setNoticeText('');                          // nothing posted means this is left alone
-		updateStatus(status);
-		expect(noticeText).toBe('');
+		at(-50);                                       // the swept low end
+		at(30);                                        // the swept high end
+		document.body.innerHTML = '';
 	});
 });
 

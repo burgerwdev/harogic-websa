@@ -51,6 +51,10 @@ class SwpParams:
 
     center_hz: float = 1e9
     span_hz: float = 100e6
+    #: Ref of the SWEPT profile (SWP_Configuration). Each mode keeps its own: the RTA profile has
+    #: `rta_ref_level` and the IQS stream has `sdr_ref_level`, because the vendor has one profile
+    #: per mode and sharing a Python field between them made a level set in one mode appear in
+    #: another (reported: "the Ref settings are not independent per mode").
     ref_level: float = 0.0
     ref_mode: str = 'manual'
     rbw_mode: str = 'manual'
@@ -93,6 +97,13 @@ class SdrParams:
 
     sdr_center_hz: float = 1e9
     sdr_decimate: int = 16
+    #: Ref of the IQS profile. Its own field, like the RTA profile's `rta_ref_level`: them all
+    #: sharing `SwpParams.ref_level` is what made a level set in one mode turn up in another.
+    sdr_ref_level: float = 0.0
+    #: True once an SDR level exists (set by the user, or by the one automatic placement of a first
+    #: entry). Until then entering SDR places the trace once; afterwards the level is the user's and
+    #: nothing may move it (reported: "the Ref I set in SDR was changed when I came back from RTA").
+    sdr_ref_set: bool = False
     sdr_actual: dict = field(default_factory=dict)
     sdr_listen_hz: float = 1e9
     sdr_demod: str = 'am'

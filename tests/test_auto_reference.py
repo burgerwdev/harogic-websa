@@ -1,4 +1,4 @@
-"""Reference placement: the one-shot fit plus the always-armed safety ranger.
+"""Reference placement: the user's one-shot fit plus the IF-overflow protection.
 
 These tests drive the controller directly with a stub device and a fake clock, so the
 decisions are deterministic and need no hardware. The behaviour-level tests in
@@ -25,7 +25,9 @@ class StubDevice:
 
     def __init__(self, **state):
         base = dict(
+            # One Ref per mode, like the device state: SWP profile, RTA profile, IQS stream.
             ref_mode='manual', ref_level=0.0, rta_ref_mode='manual', rta_ref_level=0.0,
+            sdr_ref_level=0.0, sdr_ref_set=False,
             atten=-1, ref_range_db=100.0, status_warning=0, mode='std',
             center_hz=1e9, span_hz=10e6, rbw_hz=1e5, vbw_hz=1e5, window=1,
             rta_center_hz=1e9, rta_span_hz=10e6, rta_rbw_hz=0.0, rta_vbw_hz=0.0,
@@ -116,14 +118,28 @@ def test_fit_places_a_noise_only_trace_that_is_not_fully_inside(clock):
 
 
 def test_a_noise_only_trace_already_inside_reports_ok_not_a_refusal(clock):
-    """No signal is not a reason to refuse: the noise floor is what gets anchored. A floor inside
-    the band (2-12 dB above the bottom edge) means there is nothing worth reconfiguring."""
+    """No signal is not a reason to refuse: the noise floor is what gets anchored.
+
+    "Inside" means the band [5, 12] dB above the bottom edge - half a division at the default
+    10 dB/div is where a trace stops reading as a flat line lying on the axis (see
+    `FLOOR_INSIDE_MIN_DB`). A floor comfortably in that band is left alone.
+    """
     dev = StubDevice(ref_level=0.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-97.5, floor=-98.0)     # noise floor 2 dB above the bottom edge (-100)
+    observe(dev, ctl, peak=-94.5, floor=-95.0)     # noise floor 5 dB above the bottom edge (-100)
     assert ctl.fit('std') == ('ok', None)
     assert ctl.pending is None
     assert ctl.view('std')['result'] == 'ok'
+
+
+def test_a_trace_hugging_the_bottom_edge_is_re_fitted(clock):
+    """Reported (after a Preset, entering SDR): the trace stopped 2.5 dB above the bottom edge and
+    read as "not displayed". Two dB above the edge is on the canvas but not a usable placement, so
+    the band's lower bound is half a division."""
+    dev = StubDevice(ref_level=0.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-97.5, floor=-98.0)     # only 2 dB above the bottom edge
+    assert ctl.fit('std') == ('applied', -5.0)     # the floor anchor (-8) on the 5 dB grid
 
 
 def test_a_floor_only_just_inside_is_still_fitted(clock):
@@ -135,15 +151,26 @@ def test_a_floor_only_just_inside_is_still_fitted(clock):
     assert ctl.fit('std') == ('applied', -5.0)
 
 
-def test_fit_keeps_the_dead_zone_target_inside_the_device_range(clock):
-    """The floor anchor must not propose a level the device rejects."""
+def test_fit_may_go_below_the_capability_floor_but_not_above_the_ceiling(clock):
+    """The capability row's -50 dBm floor is our guess; its maximum is the device's own.
+
+    Measured on the bench: the SDK documents no Ref range and -140 dBm is programmed exactly, while
+    +35 dBm comes back as +27 (the attenuation the device picks decides it). So a fit's FLOOR is the
+    display domain - clamping it to the row left a low trace unmovable - and its CEILING is still
+    the row, or the closed loop would chase an echo it can never reach.
+    """
     dev = StubDevice(ref_level=-20.0)
     dev.state.caps = _caps(-30.0, 10.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-139.0, floor=-140.0)   # would want -48 -> clamped to the row
+    observe(dev, ctl, peak=-139.0, floor=-140.0)   # floor anchor wants -48
     result, target = ctl.fit('std')
     assert result == 'applied'
-    assert target == -30.0
+    assert target == -45.0                         # NOT clamped to the row's -30
+    dev2 = StubDevice(ref_level=0.0)
+    dev2.state.caps = _caps(-30.0, 10.0)
+    ctl2 = AutoReferenceController(dev2)
+    observe(dev2, ctl2, peak=-10.0, floor=-40.0)   # wants +55
+    assert ctl2.fit('std') == ('applied', 10.0)    # clamped to the device maximum
 
 
 def test_fit_reports_missing_data_before_the_first_trace(clock):
@@ -175,13 +202,13 @@ def test_fit_is_mode_private(clock):
     assert dev.state.rta_ref_level == 0.0
 
 
-# ---------------- the safety ranger (always armed) ----------------
+# ---------------- observations never move the level on their own ----------------
 
 def test_raising_ref_is_respected_and_not_undone(clock):
     """Reported: pressing the up arrow to raise Ref made Auto pull the trace back down.
 
     Raising Ref pushes the noise floor below the bottom edge. That is a display choice the user
-    just made, not a fault, so the ranger leaves it alone - pressing Auto re-fits it.
+    just made, not a fault, so nothing corrects it - pressing Auto re-fits it.
     """
     dev = StubDevice(ref_level=0.0, ref_range_db=80.0)
     ctl = AutoReferenceController(dev)
@@ -195,25 +222,37 @@ def test_raising_ref_is_respected_and_not_undone(clock):
     assert ctl.view('std')['result'] == 'applied'
 
 
-def test_safety_fit_raises_a_clipped_trace(clock):
+def test_a_grossly_clipped_trace_is_left_to_the_user(clock):
+    """A clipped trace is feedback, not a fault to be corrected behind the user's back.
+
+    The ranger used to raise Ref when the peak stood 10 dB or more above the top edge. Removed on
+    request: the level someone typed or dragged is the level they get, and the warning on the
+    canvas plus the Auto button are the deliberate ways to act on it.
+    """
     dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
     observe(dev, ctl, peak=0.0, floor=-95.0)     # peak 40 dB above the top edge: gross clipping
-    assert ctl.pending == ('std', 10.0)          # peak + 10 dB of headroom
-    assert ctl.view('std')['result'] == 'clipped'
+    clock[0] += 10.0
+    observe(dev, ctl, peak=0.0, floor=-95.0)     # however long it stands, and however often seen
+    assert ctl.pending is None
+    assert ctl.tracker('std')['result'] == 'idle'
+    # ...while the explicit press still fixes it (peak + 10 dB of headroom, on the 5 dB grid).
+    assert ctl.fit('std') == ('applied', 10.0)
+    assert ctl.view('std')['result'] == 'applied'
 
 
-def test_safety_fit_leaves_a_slight_clip_alone(clock):
-    """The ranger only intervenes when the loss is gross: a level the user chose is respected."""
+def test_a_slightly_clipped_trace_is_left_alone_too(clock):
+    """The direction of the old margin (only gross clipping was corrected) no longer matters:
+    neither a slight nor a gross clip is touched by an observation."""
     dev = StubDevice(ref_level=-5.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=-4.0, floor=-95.0)    # 1 dB over the top edge: not gross
+    observe(dev, ctl, peak=-4.0, floor=-95.0)    # 1 dB over the top edge
     assert ctl.pending is None
     # The explicit press still tidies it up (the fit uses the tight margin).
     assert ctl.fit('std')[0] == 'applied'
 
 
-def test_safety_ranger_leaves_a_good_placement_alone(clock):
+def test_an_observation_alone_never_moves_an_unarmed_tracker(clock):
     dev = StubDevice(ref_level=-20.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
     observe(dev, ctl, peak=-40.0, floor=-112.0)
@@ -221,24 +260,20 @@ def test_safety_ranger_leaves_a_good_placement_alone(clock):
     assert ctl.pending is None
 
 
-def test_safety_fit_is_rate_limited(clock):
+def test_a_clipped_observation_never_queues_anything(clock):
+    """The old rate limit existed because the ranger could act on its own. It cannot any more, so
+    no number of clipped observations may produce a pending placement."""
     dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
-    observe(dev, ctl, peak=0.0, floor=-95.0)     # grossly clipped
-    assert ctl.pending is not None
-    ctl.apply_pending()
-    dev.state.ref_level = -40.0                 # pretend the device ignored it
-    observe(dev, ctl, peak=0.0, floor=-95.0)
-    assert ctl.pending is None                  # inside the settle window
-    clock[0] += 1.0
-    observe(dev, ctl, peak=0.0, floor=-95.0)
-    assert ctl.pending is None                  # still inside SAFETY_INTERVAL_S
-    clock[0] += SAFETY_INTERVAL_S
-    observe(dev, ctl, peak=0.0, floor=-95.0)
-    assert ctl.pending == ('std', 10.0)
+    for _ in range(5):
+        observe(dev, ctl, peak=0.0, floor=-95.0)
+        clock[0] += SAFETY_INTERVAL_S
+        assert ctl.pending is None
+    # The tracked observation is still recorded, so the next Auto press has data to work from.
+    assert ctl.tracker('std')['last_peak'] == 0.0
 
 
-def test_safety_fit_needs_a_supported_mode(clock):
+def test_an_observation_needs_a_supported_mode(clock):
     """Harmonic/PNM sweeps own the device, so their observations are ignored."""
     dev = StubDevice(ref_level=-40.0, ref_range_db=100.0)
     ctl = AutoReferenceController(dev)
@@ -258,23 +293,76 @@ def test_the_sdr_fit_follows_the_display_range_not_the_device_range(clock):
     integrate a slot across them, so SDR's fit is display-only and the device level is left alone (the
     overflow ranger still protects the ADC).
     """
-    dev = StubDevice(ref_level=0.0, ref_range_db=100.0, mode='sdr')
+    dev = StubDevice(sdr_ref_level=0.0, ref_range_db=100.0, mode='sdr')
+    dev.state.sdr_ref_set = True               # the SDR already has a level of its own
     dev.session = Session('sdr')
     ctl = AutoReferenceController(dev)
     observe(dev, ctl, peak=-179.5, floor=-180.0, mode='sdr')   # display target -88 -> -85 dBm
     assert ctl.fit('sdr') == ('applied', -85.0)
     # The fit is reported to the client (its display scale owns the placement) ...
     assert ctl.view('sdr')['target'] == -85.0
-    # ... and no device traffic is generated, in either direction.
+    # ... and no device traffic is generated, in either direction: writing the IQS level would
+    # reconfigure the stream and move the trace the fit read (see the first-placement test).
     assert ctl.apply_pending() is False
-    assert dev.state.ref_level == 0.0
+    assert dev.state.sdr_ref_level == 0.0      # the IQS level, which is the SDR's own
     assert dev.session.reconfigured == 0
     assert ctl.tracker('sdr')['last_noise_floor'] >= -85.0 - ctl.window_db()
 
 
+def test_an_sdr_if_overflow_still_reaches_the_device(clock):
+    """The display-only rule has one exception: the IF-overflow escape is DEVICE protection.
+
+    `nudge_out_of_overflow` queues a raise, and the SDR branch of `apply_pending` consumed every
+    queue entry without writing - so in SDR the escape asked for a step and then dropped it, leaving
+    the level where the saturation started, while the docs and the code comment both claimed the ADC
+    was still protected.
+    """
+    dev = StubDevice(ref_range_db=100.0, mode='sdr', sdr_ref_level=-30.0)
+    dev.state.status_warning = -12
+    dev.session = Session()
+    dev.session.name = 'sdr'
+    ctl = AutoReferenceController(dev)
+    assert ctl.nudge_out_of_overflow() is True
+    assert ctl.pending == ('sdr', -25.0)
+    assert ctl.apply_pending() is True                  # this one DOES reach the front end
+    assert dev.state.sdr_ref_level == -25.0
+    assert dev.session.reconfigured == 1
+    assert dev.state.sdr_ref_set is True                # a real placement, not a display fit
+    assert dev.state.status_warning == 0                # the device re-reports if still saturated
+
+
+def test_the_sdr_fit_never_writes_the_device_not_even_for_a_first_placement(clock):
+    """One writer for the SDR level: the client's manual path, and the fit only reports a target.
+
+    Reported twice: a first switch into SDR showed the trace near/below the bottom edge, and coming
+    back from RTA changed a Ref the user had set in SDR. The first placement therefore happens - but
+    through the SAME path a manual Set takes (the client commits the reported target once, display and
+    IQS level together), because the fit writing it and a later decision moving only the display left
+    the two 15 dB apart (measured). The backend keeps reporting `sdr_ref_set` so the client knows
+    whether a level exists at all.
+    """
+    dev = StubDevice(ref_range_db=100.0, mode='sdr', sdr_ref_level=0.0)
+    dev.session = Session()
+    dev.session.name = 'sdr'
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-95.0, floor=-108.0, mode='sdr')
+    assert ctl.fit('sdr')[0] == 'applied'
+    assert ctl.view('sdr')['target'] is not None       # the client commits this
+    assert ctl.apply_pending() is False                # ...the fit writes nothing
+    assert dev.state.sdr_ref_level == 0.0
+    assert dev.state.sdr_ref_set is False              # only the manual path sets this
+    assert dev.session.reconfigured == 0
+    # A settings change later re-fits, and that stays display-only too.
+    observe(dev, ctl, peak=-95.0, floor=-150.0, mode='sdr')
+    assert ctl.fit('sdr') [0] == 'applied'
+    assert ctl.apply_pending() is False
+    assert dev.state.sdr_ref_level == 0.0
+
+
 def test_sdr_is_fitted_with_the_same_rule(clock):
     """SDR has its own tracker, driving the IQS level (the client applies the display scale)."""
-    dev = StubDevice(ref_level=-20.0, ref_range_db=100.0, mode='sdr')
+    dev = StubDevice(sdr_ref_level=-20.0, ref_range_db=100.0, mode='sdr')
+    dev.state.sdr_ref_set = True
     dev.session = Session()
     dev.session.name = 'sdr'
     dev.session.reconfigure = dev.session._configure
@@ -286,7 +374,7 @@ def test_sdr_is_fitted_with_the_same_rule(clock):
     # The fit target is published for the client's display scale; the device level stays.
     assert ctl.apply_pending() is False
     assert ctl.view('sdr')['target'] == 0.0
-    assert dev.state.ref_level == -20.0
+    assert dev.state.sdr_ref_level == -20.0     # the SDR's own level, untouched by the fit
 
 
 # ---------------- IF overflow escape ----------------
@@ -360,6 +448,30 @@ def test_a_settings_change_arms_one_automatic_refit(clock):
     assert ctl.pending is None
 
 
+def test_a_frame_inside_the_step_interval_does_not_disarm_the_fit(clock):
+    """The loop waits for the settle interval; "too soon" is not "gave up".
+
+    Reported on the bench: at 13.825 MHz / 1 MHz Auto moved a visible trace to one 13.7 dB BELOW the
+    bottom edge and stopped. The step itself was fine (the measured floor followed Ref: -116 dBm at
+    Ref 0 -> -134 dBm at Ref -20); what stopped the loop is that the next frame arrived inside
+    SAFETY_INTERVAL_S, and that branch disarmed the fit instead of waiting for a settled one. Three
+    steps were needed to reach the first level where the trace is on the canvas.
+    """
+    dev = StubDevice(ref_level=0.0, ref_range_db=100.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-104.0, floor=-116.0)
+    assert ctl.fit('std') == ('applied', -20.0)          # the floor anchor, one step
+    ctl.apply_pending()
+    dev.state.ref_level = -20.0
+    # The measured response: the noise floor followed Ref down, so the placement got worse.
+    observe(dev, ctl, peak=-121.0, floor=-134.0)
+    assert ctl.pending is None                           # too soon to step...
+    assert ctl.tracker('std')['refit_due'] is True       # ...but the loop is still armed
+    clock[0] += SAFETY_INTERVAL_S
+    observe(dev, ctl, peak=-121.0, floor=-134.0)
+    assert ctl.pending == ('std', -40.0)                 # so it steps again
+
+
 def test_the_refit_keeps_going_when_a_step_undershoots(clock):
     """Measured on the SAN-90: the trace follows Ref by roughly half, so one step lands short.
 
@@ -424,6 +536,33 @@ def test_the_refit_keeps_going_when_a_step_undershoots(clock):
     peak, floor = trace_at(ref)
     observe(dev, ctl, peak=peak, floor=floor)
     assert ctl.pending is None                 # and it stopped there: no hunting
+
+
+def test_a_settled_placement_is_not_disturbed_by_a_wobbling_trace(clock):
+    """The anti-hunt rule: once the loop is satisfied, only a NEW geometry change re-arms it.
+
+    Measured on the bench (13.825 MHz / 1 MHz, 100 dB window): after Auto settled at Ref -10 dBm the
+    noise floor wobbled between 8.0 and 12.6 dB above the bottom edge for 20 s and the level never
+    moved again (`auto_ref.seq` stayed put, `adjusting` false). A fit that re-decided on every frame
+    would instead hunt around the acceptance band - "the spectrum keeps breathing" - so a settled
+    tracker must not act on an observation at all, and only the geometry signature may wake it.
+    """
+    dev = StubDevice(ref_level=0.0, ref_range_db=100.0)
+    ctl = AutoReferenceController(dev)
+    ctl.begin_settle('std')                          # records the geometry the fit is judged against
+    clock[0] += 1.0
+    observe(dev, ctl, peak=-30.0, floor=-95.0)       # floor 5 dB above the bottom: already good
+    assert ctl.fit('std') == ('ok', None)
+    settled = ctl.tracker('std')['seq']
+    for wobble in (-2.0, 2.0, -1.0, 3.0, -3.0, 2.5):
+        observe(dev, ctl, peak=-30.0 - wobble, floor=-95.0 + wobble)
+    assert ctl.pending is None
+    assert ctl.tracker('std')['seq'] == settled      # not one new decision
+    # A real settings change is what may move the level again - and exactly one placement per change.
+    dev.state.span_hz = 2e6
+    ctl.begin_settle('std')
+    assert ctl.tracker('std')['refit_due'] is True
+    assert ctl.tracker('std')['refit_left'] == 4
 
 
 def test_the_refit_gives_up_after_its_budget(clock):
@@ -508,6 +647,7 @@ def test_the_reported_no_signal_scenario_ends_inside_the_window(clock, mode, geo
     that the whole of it is inside the window, and nothing moves again while the setting stands.
     """
     dev = StubDevice(ref_level=0.0, mode=mode)
+    dev.state.sdr_ref_set = True                  # this scenario re-fits an existing level
     dev.session = Session(mode)
     ctl = AutoReferenceController(dev)
     ctl.begin_settle(mode)                        # the geometry before the user's change
@@ -518,8 +658,10 @@ def test_the_reported_no_signal_scenario_ends_inside_the_window(clock, mode, geo
     clock[0] += 1.0
     observe(dev, ctl, peak=-100.5, floor=-101.0, mode=mode)
     assert ctl.view(mode)['result'] == 'applied'
-    # SDR's fit is display-only (writing the IQS level reconfigures the stream and moves the very
-    # trace the fit reads, which oscillates); the other modes own the device level.
+    # Once a level exists, SDR's fit is display-only (writing the IQS level reconfigures the stream
+    # and moves the very trace the fit reads, which oscillates); the other modes own the device
+    # level. This scenario is a RE-fit - the first SDR placement is the one that writes, and it has
+    # its own test.
     if mode != 'sdr':
         assert ctl.apply_pending()
     else:
@@ -574,6 +716,8 @@ def test_the_reported_scenarios_through_the_fake_backend(clock, monkeypatch):
         dev = hardware_fake.FakeDevice()
         dev.open()
         dev.state.ref_level = 0.0
+        if mode == 'sdr':
+            dev.state.sdr_ref_set = True          # this scenario re-fits an existing SDR level
         dev.state.ref_range_db = 100.0
         session = None
         if mode == 'std':
@@ -595,6 +739,8 @@ def test_the_reported_scenarios_through_the_fake_backend(clock, monkeypatch):
         # SDR's fit is display-only: writing the IQS level reconfigures the stream (and moves the trace
         # the fit reads), so nothing is applied for it - the client's display scale owns the placement.
         if mode == 'sdr':
+            # A re-fit of a level that already exists stays display-only (the FIRST placement is the
+            # one exception, and it is covered by its own test).
             assert dev.apply_pending_auto_reference() is False, mode
         else:
             assert dev.apply_pending_auto_reference(), mode
@@ -679,8 +825,31 @@ def test_prepare_retune_clamps_a_ref_the_fit_had_lowered(clock):
     assert ctl.prepare_retune('std') is True
     assert dev.state.ref_level == 0.0
     assert ctl.prepare_retune('std') is False    # already safe
-    dev2 = StubDevice(ref_level=-25.0)           # a level the user set: leave it alone
+    dev2 = StubDevice(ref_level=-25.0)           # a fresh tracker: nothing was ever placed
     assert AutoReferenceController(dev2).prepare_retune('std') is False
+
+
+def test_prepare_retune_leaves_a_level_the_user_set(clock):
+    """Reported on the bench: a frequency change reset a manually set Ref to 0 dBm.
+
+    The lift exists for a level the FIT lowered, and `last_target` is the loop's memory of a
+    placement - it survives the user taking the level over, so without this guard every retune after
+    any fit in that mode silently undid the operator's own setting (measured: Ref -40 -> 0 on a
+    centre change, with no message at all).
+    """
+    dev = StubDevice(ref_level=-40.0)
+    ctl = AutoReferenceController(dev)
+    observe(dev, ctl, peak=-30.0, floor=-95.0)
+    ctl.fit('std')                               # a placement happened in this mode
+    assert ctl.tracker('std')['last_target'] is not None
+    ctl.reset('std', manual=True)                # ...and then the user took the level over
+    assert ctl.tracker('std')['user_level'] is True
+    assert ctl.prepare_retune('std') is False
+    assert dev.state.ref_level == -40.0          # the user's level is untouched
+    # A fit that places a level again owns it, so the safety lift comes back for THAT level.
+    ctl.tracker('std')['user_level'] = False
+    assert ctl.prepare_retune('std') is True
+    assert dev.state.ref_level == 0.0
 
 
 # ---------------- diagnostics for STATUS ----------------

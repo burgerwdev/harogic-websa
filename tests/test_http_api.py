@@ -75,6 +75,26 @@ def test_sdr_state_uses_sdr_values_at_top_level():
     assert data['actual'] == dev.state.sdr_actual
 
 
+def test_each_mode_reports_its_own_ref_level():
+    """Reported: "the Ref settings of SWP/RTA/SDR are not independent, they affect each other".
+
+    The vendor has one profile per mode (SWP_Configuration / RTA_Profile / IQS_Profile), and each
+    carries its own RefLevel_dBm - but the backend kept the SWP and SDR levels in one field, so
+    entering SDR started from the swept level and the swept view showed the IQS level. Three fields,
+    three values, and STATUS reports the one the ACTIVE mode owns.
+    """
+    dev = StubDevice()
+    dev.state.ref_level = -30.0          # swept profile
+    dev.state.rta_ref_level = -10.0      # RTA profile
+    dev.state.sdr_ref_level = -80.0      # IQS stream
+
+    for mode, expected in (('std', -30.0), ('rta', -10.0), ('sdr', -80.0)):
+        dev.state.mode = mode
+        assert http_api.build_status(dev)['ref'] == expected, mode
+        # Changing one mode's level never touches another's.
+        dev.state.ref_level, dev.state.rta_ref_level, dev.state.sdr_ref_level = -30.0, -10.0, -80.0
+
+
 @pytest.mark.asyncio
 async def test_config_endpoint_echoes_status():
     client = make_client()

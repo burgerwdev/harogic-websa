@@ -12,6 +12,7 @@ import numpy as np
 
 from .base import MeasurementSession
 from .framer import BASEBAND_VERSION, encode_audio, encode_baseband, encode_rta
+from .results import pnm_payload
 
 #: The committed FT8 fixture, replayed when the demod is a digital protocol. The fake backend is the
 #: only place a protocol waveform can come from in CI, and using the real fixture keeps the browser
@@ -227,6 +228,99 @@ class FakeRtaSession(_FakeRtaBase):
         frame = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
                            center - span / 2, center + span / 2)
         return [frame], []
+
+
+class FakePnmSession(MeasurementSession):
+    """Phase noise without the vendor DLL: a synthetic 1/f curve, published in a few partials.
+
+    The fake backend exists so the UI can be exercised with no hardware, and PNM was the one session
+    it could not enter: `PhaseNoiseSession._configure` talks to the DLL through `dev.dev`, which
+    `FakeDevice` does not have, so every UI path that started phase noise raised an AttributeError
+    that the client showed as "Device: command failed" (found by the e2e once it listened for
+    dialogs; RTA and SDR already had fake sessions, harmonic happens to only use device methods).
+    """
+
+    name = 'pnm'
+
+    def __init__(self, dev):
+        super().__init__(dev)
+        self.center = 1e9
+        self.threshold = -50.0
+        self.traceavg = 4
+        self.start_offset = 100.0
+        self.stop_offset = 10e6
+        self._ready = True
+        self._partials = 4
+        self._i = 0
+
+    # lifecycle protocol the command layer relies on
+    def request_stop(self) -> None:
+        self._ready = False
+
+    def is_ready(self) -> bool:
+        return bool(self._ready)
+
+    def acquisition_timeout(self) -> float:
+        return 5.0
+
+    def health(self) -> dict:
+        return {'error_streak': 0, 'recovery_attempts': 0}
+
+    def enter(self) -> None:
+        super().enter()
+        self._configure()
+
+    def reconfigure(self) -> None:
+        self._configure()
+
+    def exit(self) -> None:
+        self._i = 0
+        super().exit()
+
+    def set_params(self, center=None, threshold=None, traceavg=None,
+                   start=None, stop=None) -> None:
+        """Same knobs as the real session, so SET_PNM validates and the curve follows them."""
+        caps = self.dev.state.caps
+        if center is not None:
+            self.center = float(max(caps.freq_min_hz, min(caps.freq_max_hz, center)))
+        if threshold is not None:
+            self.threshold = float(threshold)
+        if traceavg is not None:
+            self.traceavg = int(max(1, min(1000, traceavg)))
+        if start is not None:
+            self.start_offset = float(max(1.0, min(9e6, start)))
+        if stop is not None:
+            self.stop_offset = float(max(10.0, min(1e7, stop)))
+
+    def _configure(self) -> None:
+        # The real session reconfigures a vendor profile here; the fake has nothing to do but
+        # restart the sweep, which is what a reconfiguration means for the display.
+        self._i = 0
+
+    def _curve(self, n: int) -> tuple[list[float], list[float]]:
+        """A plausible phase-noise trace: the carrier at 0 dBc and about -30 dBc/Hz at 100 kHz."""
+        offset = np.geomspace(max(1.0, self.start_offset), max(10.0, self.stop_offset), n)
+        pn = (-95.0 - 10.0 * np.log10(offset / 1000.0)
+              + 0.4 * np.random.default_rng(11).normal(0.0, 1.0, n))
+        return [float(x) for x in offset], [float(x) for x in pn]
+
+    def step(self):
+        if not self._ready:
+            return [], []
+        self._i += 1
+        done = self._i >= self._partials
+        offset, pn = self._curve(64)
+        res = pnm_payload(
+            carrier_freq=self.center,
+            carrier_power=float(self.dev.state.ref_level) - 6.0,
+            offset=offset, pn=pn, ref=float(self.threshold),
+            traceavg=float(self.traceavg), done=done,
+            progress=round(self._i / self._partials * 100),
+        )
+        if done:
+            self.dev.state.pnm_last = res
+            self._i = 0
+        return [], [res]
 
 
 class FakeSdrSession(_FakeRtaBase):

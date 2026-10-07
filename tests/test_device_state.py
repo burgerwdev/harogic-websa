@@ -286,14 +286,19 @@ def test_raising_ref_is_respected_and_only_fitted_on_request():
     assert dev.auto_scale('std') == ('applied', -35.0)       # floor + window - 8 = -36 -> -35
 
 
-def test_a_grossly_clipped_trace_is_raised_automatically():
-    """Raising is the protective direction: a peak far above the top edge is information loss."""
+def test_a_grossly_clipped_trace_is_left_to_the_user():
+    """Removed on request: a level the user set is respected, clipped trace or not.
+
+    The device-level echo follows the request, the canvas already says the trace is cut off, and
+    the Auto button is what re-fits it - so nothing moves here on its own.
+    """
     dev = HarogicDevice()
     dev.state.ref_level = -40.0
     dev.state.ref_range_db = 100.0
     dev.observe_reference_peak('std', 0.0, -95.0)
-    assert dev.auto_ref.pending == ('std', 10.0)
-    assert dev.auto_ref.view('std')['result'] == 'clipped'
+    assert dev.auto_ref.pending is None
+    assert dev.auto_ref.view('std')['result'] == 'idle'
+    assert dev.auto_scale('std') == ('applied', 10.0)        # the explicit press still fixes it
 
 
 def test_manual_attenuation_does_not_disable_the_overflow_escape():

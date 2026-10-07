@@ -230,8 +230,13 @@ ATTEN_MAX = lambda caps: caps.atten_max       # noqa: E731
 IFGAIN_MAX = lambda caps: caps.ifgain_max     # noqa: E731
 DECIMATE_MAX = lambda caps: caps.decimate_max  # noqa: E731
 RTA_SPAN_MAX = lambda caps: caps.rta_span_max_hz  # noqa: E731
-REF_MIN = lambda caps: caps.ref_min_dbm       # noqa: E731
-REF_MAX = lambda caps: caps.ref_max_dbm       # noqa: E731
+# The Ref a USER may ask for. Deliberately NOT the capability row: the vendor SDK documents no Ref
+# range (`RefLevel_dBm` is a plain double) and its only Ref-related feedback is
+# APIRETVAL_WARNING_IFOverflow (-12), which the canvas already shows as a hint. Our -50..+30 row is
+# what the auto-placement rules use, so validating user input against it refused levels the
+# instrument can program (reported on the bench: the official software lets the level move further).
+REF_MIN = DISPLAY_REF_MIN_DBM
+REF_MAX = DISPLAY_REF_MAX_DBM
 TRIG_MIN = lambda caps: caps.trigger_level_min_dbm  # noqa: E731
 TRIG_MAX = lambda caps: caps.trigger_level_max_dbm  # noqa: E731
 
@@ -581,7 +586,8 @@ async def _h_set_ref(ctx: CommandContext, data: dict) -> bool:
         return await _run_auto_scale(ctx)
     if session is not None and session.name == 'sdr':
         if 'ref' in data:
-            s.ref_level = data['ref']
+            s.sdr_ref_level = data['ref']
+            s.sdr_ref_set = True        # the level is the user's from now on
         s.ref_mode = 'manual'
         dev.reset_auto_reference('sdr', manual=True)   # a manual level ends any fit's authorship
         await ctx.hw_call(session.reconfigure)

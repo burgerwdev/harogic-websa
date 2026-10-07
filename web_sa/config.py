@@ -67,10 +67,17 @@ WINDOW_MAP = {0: 'FlatTop', 1: 'BlackmanNuttall', 2: 'Blackman', 3: 'Hamming', 4
 # ---- Protocol / UI bounds (not model dependent, so they live here once instead of as
 # literals inside the command validation chain) ----
 REF_RANGE_DB_MIN, REF_RANGE_DB_MAX = 10.0, 200.0     # visible window height, dB
-#: Fallback Ref range when no device is attached (the per-model row in DeviceCapabilities owns it).
+#: Fallback Ref row for the AUTO-PLACEMENT rules when no device row is available (the per-model
+#: row in DeviceCapabilities owns it). It is a placement bound, NOT a limit on what the operator may
+#: ask for: the vendor SDK documents no Ref range at all, so a user level is only bounded by the
+#: display domain below (`DISPLAY_REF_*`), and the device programs what its front end can, reporting
+#: APIRETVAL_WARNING_IFOverflow (-12) when the IF saturates on the way there.
 FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM = -50.0, 30.0
-# The level the CLIENT displays (SDR owns its display scale, so it may sit outside the device's
-# Ref range; the placement rules clamp the target to the device bounds themselves).
+# The level a USER may ask for: the client's own display domain, the bound for `SET_REF.ref` and for
+# `AUTO_SCALE.current_ref`. In SDR the client owns its scale and the window goes lower than any
+# device Ref; in SWP/RTA it is simply the widest level worth asking the instrument for, because the
+# device clamps to what the selected attenuation/IF-gain combination can program and echoes that
+# back. The placement rules clamp to the device row instead (see `ref_bounds`).
 DISPLAY_REF_MIN_DBM, DISPLAY_REF_MAX_DBM = -160.0, 40.0
 PNM_CARRIER_MIN_HZ, PNM_CARRIER_MAX_HZ = 1.0, 9e6    # offset sweep for phase noise
 PNM_OFFSET_MAX_HZ = 10e6
@@ -126,12 +133,11 @@ class DeviceCapabilities:
 
 
 def ref_bounds(caps) -> tuple[float, float]:
-    """The Ref range this device accepts, from the capability row that owns it.
+    """The Ref row the PLACEMENT rules use for this device (`AUTO_SCALE`, the learned floor).
 
-    Every place that limits a reference level reads it from here - the command validator (through
-    the ParamSpec bounds), the profile written to the SDK and the auto-reference loop's target
-    clamp - so a model with a different range needs one edit in `from_model`, not four literals
-    (found while auditing hard-coded device values).
+    This is what the auto-reference loop clamps its TARGET to, so a model with a different range
+    needs one edit in `from_model` rather than four literals (found while auditing hard-coded device
+    values). It is not what a user may ask for - see `DISPLAY_REF_MIN_DBM` and `clamp_ref_dbm`.
     """
     if caps is None:
         return FALLBACK_REF_MIN_DBM, FALLBACK_REF_MAX_DBM
@@ -141,9 +147,15 @@ def ref_bounds(caps) -> tuple[float, float]:
 
 
 def clamp_ref_dbm(caps, value: float) -> float:
-    """Clamp a reference level to the range this device accepts (see `ref_bounds`)."""
-    lo, hi = ref_bounds(caps)
-    return min(hi, max(lo, float(value)))
+    """Sanity-clamp a Ref before it reaches the SDK profile.
+
+    Not the placement row and not a user-facing limit: the vendor documents no Ref range, and the
+    device programs what the attenuation/IF-gain combination it picks can do (measured: asking for
+    +30 dBm on this bench comes back as +27). What is refused here is only a level no instrument
+    could be at - the display domain is the widest value the client itself can produce.
+    """
+    del caps                     # kept in the signature for callers that already hold the row
+    return min(DISPLAY_REF_MAX_DBM, max(DISPLAY_REF_MIN_DBM, float(value)))
 
 
 @dataclass

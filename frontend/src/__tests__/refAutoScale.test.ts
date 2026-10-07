@@ -6,13 +6,14 @@
  * is happening while the device reconfigures.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getDisplayRef, setDisplayRef } from '../ui/displayRef';
+import { getDisplayRef, noteDisplayRefReport, setDisplayRef } from '../ui/displayRef';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { noticeText } from '../core/store';
 import { setWS } from '../core/wsSend';
 import {
+	noteSdrRefState,
 	autoScaleBusy,
 	autoScaleRequest,
 	clearAutoScaleHint,
@@ -128,8 +129,10 @@ describe('SWP/RTA Auto Scale', () => {
 describe('SDR Auto Scale', () => {
 	it('uses the same command as the other modes, and follows the reported target', () => {
 		graphMode.confirm('sdr');
-		// Entering SDR asks the backend as soon as frames arrive.
+		// Entering SDR asks the backend as soon as frames arrive - but only once the STATUS has said
+		// whether this SDR already has a level of its own (see the entry-hand-off tests below).
 		requestSdrEntryFit();
+		noteSdrRefState({ ref: 0, ref_set: false });
 		maybeRequestSdrFit();
 		expect(sent.filter(m => m.cmd === 'AUTO_SCALE').length).toBe(1);
 
@@ -145,6 +148,55 @@ describe('SDR Auto Scale', () => {
 			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
 		});
 		expect(getDisplayRef()).toBe(-40);
+	});
+
+	it('places a first entry once, then leaves the level the user set alone', () => {
+		// Reported: a first switch into SDR left the trace under the bottom edge, and coming back from
+		// RTA changed the Ref the user had set there. The backend reports `sdr.ref_set`, and only a
+		// level-less SDR gets the entry fit.
+		graphMode.confirm('sdr');
+		requestSdrEntryFit();
+		noteSdrRefState({ ref: 0, ref_set: true });     // this SDR has a level of its own
+		maybeRequestSdrFit();
+		expect(sent.filter(m => m.cmd === 'AUTO_SCALE')).toEqual([]);
+		// ...and the display scale was brought onto that level instead (the client's display ref is
+		// shared by the modes, so a visit to RTA used to leave its level on the SDR axis).
+		expect(getDisplayRef()).toBe(0);
+	});
+
+	it('places the SDR display in ONE decision, and never writes the IQS level', () => {
+		// The fix for "switching to SDR takes several adjustments over several seconds": the fit's
+		// target is computed from the measured ABSOLUTE levels and applied to the client's display
+		// scale, so one decision places the trace - no device write, no audio interruption, no rounds.
+		// Writing the IQS level from the fit is what made an entry reconfigure the stream repeatedly
+		// (each write moved the trace the fit was reading, so it wrote again).
+		const sent: string[] = [];
+		setWS({ readyState: WebSocket.OPEN,
+			send: (m: string) => sent.push(String(JSON.parse(m).cmd)) } as any);
+		graphMode.confirm('sdr');
+		requestSdrEntryFit();
+		noteSdrRefState({ ref: 0, ref_set: false });     // a level-less SDR after a preset
+		syncAutoScaleStatus({ auto_ref: { adjusting: false, result: 'applied', target: -35, seq: 1 } });
+		expect(getDisplayRef()).toBe(-35);               // placed immediately
+		expect(sent.filter(c => c === 'SET_REF')).toEqual([]);    // ...and nothing was written
+		// A second decision (an automatic re-fit) also only moves the display.
+		syncAutoScaleStatus({ auto_ref: { adjusting: false, result: 'applied', target: -40, seq: 2 } });
+		expect(getDisplayRef()).toBe(-40);
+		expect(sent.filter(c => c === 'SET_REF')).toEqual([]);
+	});
+
+	it('brings the display scale onto the SDR level once per entry', () => {
+		graphMode.confirm('rta');
+		setDisplayRef('user', -11);                      // the level RTA left on the shared display ref
+		noteDisplayRefReport(-11);                       // ...acknowledged, so no request is in flight
+		graphMode.confirm('sdr');
+		requestSdrEntryFit();
+		noteSdrRefState({ ref: -77, ref_set: true });
+		expect(getDisplayRef()).toBe(-77);
+		// A later STATUS does not fight a user request that is still in flight.
+		setDisplayRef('user', -60);
+		noteSdrRefState({ ref: -77, ref_set: true });
+		expect(getDisplayRef()).toBe(-60);
 	});
 
 	it('follows an automatic re-fit that no press asked for', () => {

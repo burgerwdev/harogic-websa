@@ -173,14 +173,14 @@ Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Str
 5. **设置变更会预备一次有界闭环放置**（span、中心/起止、RBW、VBW、窗函数、SDR 抽取率——即 `geometry()` 里的任何量），按下 Auto 同理。之所以必须闭环，是因为迹线**并非**与 Ref 无关：自动衰减器会随 Ref 重选衰减，于是迹线只按 Ref 变化量的约一半、且以离散跳变跟随（实测曲线见下）。所以一次开环计算只是**预测**，经常落不到位——实测：由 -115 dBm 噪底算出 -20 dBm 的拟合，最终迹线仍在画布下沿以下 14 dB。因此每个稳定帧都重新测量并应用下一步，直到放置合理（`ok`）、预算 `REFIT_ATTEMPTS`（4 次）用完、或出现用户手输的电平；步间由 `SAFETY_INTERVAL_S`（2 秒）限速。某个模式的**首次** settle 不预备任何东西（连接或进入模式不会自行移动电平），且循环在首个良好放置处停止——它不是跟踪模式。
 6. **用户手输的电平永不被反转**——无论逐帧逻辑还是设置变更的闭环（`user_level` 由手动 `SET_REF` 路径置位，被一次已应用的拟合清除）。要重新放置它就按 Auto。dB/div 是纯显示设置：窗口高度随 Auto Scale 请求一起上报后端，因此改刻度后在下一次按下时才拟合（行为不变）。
 7. **安全量程始终运行**，与 Atten 设置、是否按过 Auto 无关，但只做**保护方向**：IF 溢出（-12）每秒抬 5 dB；峰值高出上沿 10 dB 以上的严重削顶时抬一次，限速 2 秒。**绝不自动降低**——把噪声底推到下沿之外只是显示选择（`below_window`），量程不动它（要重新拟合请点 Auto）。
-8. 拟合调低过 Ref 后，改变 Center 或跨模式返回会先抬回 0 dBm 再调谐（`prepare_retune`）；新几何随后按规则 5 获得自己的有界放置。
+8. **拟合**调低过 Ref 后，改变 Center 或跨模式返回会先抬回 0 dBm 再调谐（`prepare_retune`）——但**用户自己设的电平绝不抬**（判据是 `user_level`；只看 `last_target` 正是「手动设的 Ref 每次改频率都被重置」的原因）；新几何随后按规则 5 获得自己的有界放置。
 9. 任何 SWP/RTA/SDR 重配置都会清除旧观测并暂停 0.75 秒。
 10. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` 用于诊断；`adjusting` 同时驱动按钮的
    忙碌指示，`result` 给出结果名（`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`），`seq` 每次
    决策自增，使 UI 能把"新答复"与"上次决策的残留"区分开。重拟合发现放置已经合理时不报告新决策：
    没有任何电平移动，也就没有可宣布的事情。
 11. SDR 走同一套拟合，但它拟合的是**显示**电平：该刻度由客户端负责并应用上报的 target，窗口可到 -160 dBm，
-   且只有 IQS 电平差超过 3 dB 时才写器件。因此 SDR 的 target 按**显示范围**夹取（而不是器件的 -50..+30 dBm），
+   且拟合从不写 IQS 电平（写会重配数据流、打断音频并移动拟合正在读的迹线）。因此 SDR 的 target 按**显示范围**夹取（而不是器件的放置行），
    写入器件的 IQS 电平则按器件范围夹取——与命令层对 `AUTO_SCALE.current_ref` 用的是同一条
    「按值的所有者校验」规则。
 

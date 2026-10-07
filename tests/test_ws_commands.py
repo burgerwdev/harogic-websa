@@ -180,9 +180,10 @@ def test_model_limits_come_from_capabilities():
     with pytest.raises(CommandError):
         bad = {'cmd': 'SET_RTA', 'span': 11e6}
         _validate_command(dev, bad['cmd'], bad)
-    with pytest.raises(CommandError):
-        bad = {'cmd': 'SET_REF', 'mode': 'manual', 'ref': 1.0}
-        _validate_command(dev, bad['cmd'], bad)
+    # Ref is deliberately NOT a capability-bounded parameter any more: the SDK documents no Ref
+    # range, so `ref: 1.0` with a 0 dBm device row must be accepted (the profile clamp and the
+    # device's own echo decide what it becomes) - see the test below.
+    _validate_command(dev, 'SET_REF', {'cmd': 'SET_REF', 'mode': 'manual', 'ref': 1.0})
 
 
 class ScaleDevice(StubDevice):
@@ -194,7 +195,8 @@ class ScaleDevice(StubDevice):
 
         from web_sa.hardware.auto_reference import AutoReferenceController
 
-        self.state.ref_level = -20.0
+        self.state.ref_level = -20.0          # the swept profile's own level
+        self.state.sdr_ref_level = -20.0      # ...and the IQS stream's (one field per mode)
         self.state.ref_range_db = 100.0
         self._hw = threading.RLock()
         self.session = None
@@ -246,6 +248,27 @@ async def test_legacy_set_ref_auto_runs_one_fit_and_latches_no_mode():
     assert dev.state.ref_mode == 'manual'      # there is no tracking mode to latch any more
 
 
+def test_a_user_ref_may_sit_outside_the_device_placement_row():
+    """Reported on the bench: the official PC software only hints when the IF saturates and lets the
+    level keep moving, while this application answered "ref must be <= 30" / "must be >= -50" (and
+    put that in a popup). The vendor SDK documents no Ref range at all: the profile field is a plain
+    double, the device programs what its attenuation/IF-gain combination can do and echoes it back
+    (measured: +30 dBm comes back as +27), and APIRETVAL_WARNING_IFOverflow (-12) - shown on the
+    canvas as a hint - is the only feedback there is.
+
+    So a user level is bounded by the display domain (the widest level a client could ever show),
+    not by the -50..+30 row the auto-placement rules use.
+    """
+    dev = StubDevice()
+    ref_min, ref_max = dev.state.caps.ref_min_dbm, dev.state.caps.ref_max_dbm
+    assert ref_min == -50.0 and ref_max == 30.0          # this stub's placement row
+    for level in (-90.0, -50.0, 30.0, 35.0):
+        _validate_command(dev, 'SET_REF', {'cmd': 'SET_REF', 'mode': 'manual', 'ref': level})
+    with pytest.raises(CommandError):                    # the display domain is still a bound
+        bad = {'cmd': 'SET_REF', 'mode': 'manual', 'ref': -500.0}
+        _validate_command(dev, bad['cmd'], bad)
+
+
 @pytest.mark.asyncio
 async def test_auto_scale_is_rejected_while_a_measurement_owns_the_device():
     dev = ScaleDevice()
@@ -294,6 +317,7 @@ async def test_auto_scale_works_in_sdr_through_the_same_command():
     """
     dev = ScaleDevice()
     dev.state.mode = 'sdr'
+    dev.state.sdr_ref_set = True               # a level already exists: the fit is display-only
 
     class SdrSession:
         name = 'sdr'
@@ -310,7 +334,8 @@ async def test_auto_scale_works_in_sdr_through_the_same_command():
     dev.observe_reference_peak('sdr', -30.0, -95.0)
     assert await _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0})
     assert dev.auto_ref.pending == ('sdr', 0.0)
-    assert dev.state.ref_level == -20.0                    # not applied yet
+    assert dev.state.sdr_ref_level == -20.0                # not applied yet
+    assert dev.state.ref_level == -20.0                    # and the swept profile is untouched
     # SDR's fit is display-only: any device write reconfigures IQS, and the reconfiguration moves the
     # trace the fit read, so the fit wrote again (measured: four writes in three seconds, each an audio
     # dropout). The target is still reported for the client's display scale.
