@@ -483,7 +483,7 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .zoom-overview-head { display: flex; align-items: center; gap: 4px; padding: 1px 3px; }
 .zoom-overview-title { flex: 1 1 auto; min-width: 0; color: var(--label); font: 10px monospace;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.zoom-reset-btn { flex: 0 0 auto; width: 22px; min-width: 0; padding: 0; text-align: center;
+.zoom-reset-btn { flex: 0 0 auto; width: 26px; min-width: 0; padding: 0; text-align: center;
   font-size: 9px; line-height: 1.4; box-sizing: border-box; }
 .zoom-reset-btn:disabled { opacity: 0.4; cursor: default; }
 .zoom-overview-box > canvas {
