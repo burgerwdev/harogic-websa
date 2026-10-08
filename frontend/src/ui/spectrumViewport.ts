@@ -209,7 +209,10 @@ export function setView(w: FreqWindow | null, minSpan?: number): boolean {
 	const next = { lo: w.lo, hi: w.hi };
 	if (sameWindow(next, view ?? capture)) return false;
 	// Keep the invariant here too: a raw setter cannot escape the capture.
-	view = clampView(next, capture, minSpan ?? (capture.hi - capture.lo) / 1000);
+	const clamped = clampView(next, capture, minSpan ?? (capture.hi - capture.lo) / 1000);
+	// A view clamped back to the full window IS the full window (zoom-out must clear the
+	// zoomed flag, not park a capture-sized view).
+	view = sameWindow(clamped, capture) ? null : clamped;
 	version++;
 	return true;
 }
