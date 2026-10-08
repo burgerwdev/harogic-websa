@@ -31,6 +31,7 @@ function buildDom(): void {
 				<div class="zoom-overview-head">
 					<span id="zoom-overview-title"></span>
 					<button class="btn zoom-reset-btn" id="btn-zoom-reset" disabled></button>
+					<button class="btn zoom-reset-btn" id="btn-zoom-close"></button>
 				</div>
 				<canvas id="zoom-overview" width="300" height="48"></canvas>
 				<div id="zoom-overview-hint" style="display:none;"></div>
@@ -78,6 +79,15 @@ describe('the toggle state machine', () => {
 		toggleSpectrumZoom();              // On
 		toggleSpectrumZoom();              // Off again
 		expect(isSpectrumZoomOn()).toBe(false);
+		expect(box().style.display).toBe('none');
+	});
+
+	it('the overview close button exits the whole mode', () => {
+		toggleSpectrumZoom();
+		expect(isSpectrumZoomOn()).toBe(true);
+		document.getElementById('btn-zoom-close')!.click();
+		expect(isSpectrumZoomOn()).toBe(false);
+		expect(btn().classList.contains('active')).toBe(false);
 		expect(box().style.display).toBe('none');
 	});
 

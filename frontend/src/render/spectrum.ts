@@ -27,7 +27,8 @@ import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState
 import { MAX_DENSITY } from '../dsp/rtaDensity';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
-import { getView, isZoomed } from '../ui/spectrumViewport';
+import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
+import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 
@@ -70,6 +71,36 @@ function drawFreqRow(lo: number, hi: number, col: any, p: any) {
     ctx.fillText(v, fx, fy);
     fx += ctx.measureText(v).width + 16;
   }
+}
+
+/**
+ * The in-progress marquee drawn on the MAIN plot as a rectangle: the same visual language
+ * as the overview's highlight, so what the user drags and what gets committed visibly
+ * match. Maps the previewed Hz through the same window the plot is drawn in (the view
+ * when zoomed, else the capture); a no-op without a live marquee.
+ */
+function drawMarqueeOverlay() {
+  const m = getMarqueePreview();
+  if (!m) return;
+  const view = isZoomed() ? getView() : getCapture();
+  if (!view || !(view.hi > view.lo)) return;
+  const p = plotRect();
+  const x1 = p.x + (m.lo - view.lo) / (view.hi - view.lo) * p.w;
+  const x2 = p.x + (m.hi - view.lo) / (view.hi - view.lo) * p.w;
+  const col = canvasColors();
+  ctx.save();
+  ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+  ctx.fillStyle = 'rgba(0,229,255,0.08)';
+  ctx.fillRect(x1, p.y, Math.max(1, x2 - x1), p.h);
+  ctx.strokeStyle = col.text;
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(x1, p.y, Math.max(1, x2 - x1), p.h);
+  ctx.setLineDash([]);
+  ctx.fillStyle = col.text;
+  ctx.fillRect(x1 - 1, p.y, 2, p.h);
+  ctx.fillRect(x2 - 1, p.y, 2, p.h);
+  ctx.restore();
 }
 
 export function renderGrid() {
@@ -415,6 +446,7 @@ function renderRtaView() {
       if (pt) pt.style.display = 'none';   // pk list off -> no leftover peak table
       updateMarkerTable(rp);
     }
+    drawMarqueeOverlay();
     renderSpectrumZoomOverview();
     syncSpectrumZoomUi();
     return;
@@ -430,7 +462,7 @@ export function renderAll() {
   // Measurement views register themselves (report finding E-5); the swept path below is
   // the default when nothing is registered for the active mode.
   const view = getViewRenderer(c.viewMode);
-  if (view) { view.render(viewContext()); renderSpectrumZoomOverview(); syncSpectrumZoomUi(); return; }
+  if (view) { view.render(viewContext()); drawMarqueeOverlay(); renderSpectrumZoomOverview(); syncSpectrumZoomUi(); return; }
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
@@ -449,6 +481,7 @@ export function renderAll() {
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
     if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
+  drawMarqueeOverlay();
   if (waterfallOn.get()) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
       const el = document.getElementById(id);

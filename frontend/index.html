@@ -61,7 +61,7 @@
               style="display:block;margin:0 auto;">
           <circle cx="6.6" cy="6.6" r="4.4"/>
           <path d="M9.9 9.9 14 14"/>
-          <path d="M4.3 6.9h4.6"/>
+          <path d="M6.6 4.4v4.4M4.4 6.6h4.4"/>
         </svg></button>
       <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false"
               data-i18n-title="tip_keypad" data-i18n-attr="title" title="Virtual keypad"><!--
@@ -100,21 +100,24 @@
       <!-- The box owns the plot geometry: a canvas' intrinsic size comes from its own
            width/height attributes, which syncCanvasSize() rewrites, so sizing the element
            from that ratio would feed every new bitmap size straight back into the layout. -->
-      <div class="spectrum-box">
-        <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
-      </div>
       <!-- Display-only zoom overview (ui/spectrumZoomUi.ts): the full captured window with
-           the current view highlighted. Hidden while the top-bar zoom toggle is off; the
-           canvas is drawn like the plot (CSS px, DPR-scaled backing store). -->
+           the current view highlighted. Sits ABOVE the plot, same width; hidden while the
+           top-bar zoom toggle is off; the canvas is drawn like the plot (CSS px,
+           DPR-scaled backing store). -->
       <div id="zoom-overview-box" class="zoom-overview-box" style="display:none;">
         <div class="zoom-overview-head">
           <span id="zoom-overview-title" class="zoom-overview-title"></span>
           <button class="btn zoom-reset-btn" id="btn-zoom-reset" data-i18n-title="zoom_reset"
                   data-i18n-attr="title" title="Restore the full captured spectrum" disabled>⤢</button>
+          <button class="btn zoom-reset-btn" id="btn-zoom-close" data-i18n-title="zoom_close"
+                  data-i18n-attr="title" title="Exit local zoom">✕</button>
         </div>
         <canvas id="zoom-overview" width="300" height="48" tabindex="0" role="slider"
                 data-i18n-attr="aria-label" aria-label="Global overview"></canvas>
         <div id="zoom-overview-hint" class="zoom-overview-hint" style="display:none;"></div>
+      </div>
+      <div class="spectrum-box">
+        <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
       </div>
       <!-- The split: drag it to trade height between the spectrum and the waterfall. Hidden while
            the waterfall is off, so closing it returns the area to the spectrum untouched. -->

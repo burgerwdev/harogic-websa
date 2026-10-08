@@ -205,6 +205,7 @@ export function syncGraphModeStatus(mode: string) {
   // on any confirmed mode change; the toggle itself stays as the user set it.
   if (hadConfirmedMode) {
     resetViewport();
+    cancelZoomGesture();
     syncSpectrumZoomUi();
   }
   // Each display family keeps its own trace mode: SDR opens on an Average (the depth defaults to
@@ -715,6 +716,7 @@ export function presetAll() {
   resetWfSplit();                       // the dragged spectrum/waterfall split goes back to default
   // Preset restores acquisition defaults: the zoom view dies with the old window (§4.3).
   resetViewport();
+  cancelZoomGesture();
   syncSpectrumZoomUi(true);
   smoothBins.set(1);
   spanStepAuto.set(true);
@@ -1229,6 +1231,11 @@ export function bindCanvas() {
       axisDragEnd();
       canvas.style.cursor = axisBandCursor(axisBandFor(canvasX(e, canvas), canvasY(e, canvas),
         plotRectPub()));
+      return;
+    }
+    // The toggle went Off (or Preset) while a zoom gesture was in flight: drop it.
+    if ((zoomMarquee || zoomPending) && !isSpectrumZoomOn()) {
+      cancelZoomGesture();
       return;
     }
     if (zoomMarquee) {

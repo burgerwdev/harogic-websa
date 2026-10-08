@@ -477,8 +477,8 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 }
 #btn-spectrum-zoom:disabled { opacity: 0.4; cursor: default; }
 .zoom-overview-box {
-  position: relative; flex: 0 0 auto; width: min(320px, 100%); margin-left: auto;
-  border: 1px solid var(--card-border); background: var(--sa-bg); box-sizing: border-box;
+  position: relative; flex: 0 0 auto; width: 100%; box-sizing: border-box;
+  border: 1px solid var(--card-border); background: var(--sa-bg);
 }
 .zoom-overview-head { display: flex; align-items: center; gap: 4px; padding: 1px 3px; }
 .zoom-overview-title { flex: 1 1 auto; min-width: 0; color: var(--label); font: 10px monospace;
