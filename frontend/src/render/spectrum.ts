@@ -73,12 +73,6 @@ function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   }
 }
 
-/**
- * The in-progress marquee drawn on the MAIN plot as a rectangle: the same visual language
- * as the overview's highlight, so what the user drags and what gets committed visibly
- * match. Maps the previewed Hz through the same window the plot is drawn in (the view
- * when zoomed, else the capture); a no-op without a live marquee.
- */
 function drawMarqueeOverlay() {
   const m = getMarqueePreview();
   if (!m) return;

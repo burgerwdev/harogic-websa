@@ -140,8 +140,7 @@ export function initSpectrumZoomUi(): void {
 		?.addEventListener('click', (e) => { e.stopPropagation(); toggleSpectrumZoom(); });
 	document.getElementById('btn-zoom-reset')
 		?.addEventListener('click', (e) => { e.stopPropagation(); resetSpectrumZoom(); });
-	// The overview's ✕ exits the whole mode (same as the top-bar toggle going Off).
-	document.getElementById('btn-zoom-close')
+		document.getElementById('btn-zoom-close')
 		?.addEventListener('click', (e) => { e.stopPropagation(); if (isSpectrumZoomOn()) toggleSpectrumZoom(); });
 	initOverviewInteractions();
 	syncSpectrumZoomUi(true);

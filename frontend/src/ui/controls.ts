@@ -1233,7 +1233,6 @@ export function bindCanvas() {
         plotRectPub()));
       return;
     }
-    // The toggle went Off (or Preset) while a zoom gesture was in flight: drop it.
     if ((zoomMarquee || zoomPending) && !isSpectrumZoomOn()) {
       cancelZoomGesture();
       return;
