@@ -30,10 +30,12 @@ import {
 	commitMarquee,
 	isMarqueeDrag,
 	resetViewForDeviceGesture,
+	spectrumFreqAtX,
 	spectrumWheelZoom,
 	updateMarqueePreview,
 } from './spectrumZoomGestures';
 import { minSpanHz } from './spectrumViewport';
+import { isZoomed, resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
@@ -195,6 +197,10 @@ export function syncGraphModeStatus(mode: string) {
   S.setSdrMode(isSdr);
   // An axis gesture previews the window of the mode it started in; a mode change invalidates it.
   resetAxisPreview();
+  // A display view belongs to the data of the mode it was drawn in (design §4.3): drop it
+  // on any confirmed mode change; the toggle itself stays as the user set it.
+  resetViewport();
+  syncSpectrumZoomUi();
   // Each display family keeps its own trace mode: SDR opens on an Average (the depth defaults to
   // the panel's 16), the swept/RTA views keep Clear Write, and whatever the user picked inside a
   // family is what that family shows when it is entered again. Applied here - once, on a CONFIRMED
@@ -701,6 +707,9 @@ export function presetAll() {
   S.resetWaterfall();
   wfPaused.set(false);
   resetWfSplit();                       // the dragged spectrum/waterfall split goes back to default
+  // Preset restores acquisition defaults: the zoom view dies with the old window (§4.3).
+  resetViewport();
+  syncSpectrumZoomUi(true);
   smoothBins.set(1);
   spanStepAuto.set(true);
   // Preset resets the device, not the listener: the audio switch and the IQ ingress survive. The
@@ -1070,6 +1079,12 @@ function axisBandCursor(band: Axis | null): string {
   return band === 'x' ? 'ew-resize' : band === 'y' ? 'ns-resize' : '';
 }
 function xToFreqHz(x: number): number | null {
+  // Display zoom: the plot shows the view window, so clicks map through the view (design
+  // §4.4) — a tune/marker click lands on the frequency the pointer is actually over.
+  if (isZoomed()) {
+    const f = spectrumFreqAtX(x);
+    if (f != null) return f;
+  }
   const f = S.freqArray;
   if (!f || f.length < 2) return null;
   const pr = plotRectPub();

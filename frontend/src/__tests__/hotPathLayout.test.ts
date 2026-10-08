@@ -81,8 +81,9 @@ describe('render hot path', () => {
 				if (READ.test(line) && EXEMPT.test(raw.split('\n')[i] ?? '')) exempted.push(`${name}:${i + 1}`);
 			});
 		}
-		// Two: the waterfall canvas' own width and height, read once per resize.
-		expect(exempted.length).toBeLessThanOrEqual(2);
+		// Three: the waterfall canvas' own width and height, and the zoom overview's own box
+		// (render/zoomOverview.ts), each read once per resize behind a sized/version gate.
+		expect(exempted.length).toBeLessThanOrEqual(3);
 	});
 
 	it('covers the directories it claims to (a moved file must not silently escape)', () => {

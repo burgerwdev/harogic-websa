@@ -9,6 +9,8 @@ import { assignMarkerToBestPeak, toggleMarkerTracking } from '../../dsp/markerTr
 import { findExtremesOrdered, getDisplayPowers, nextExtreme, parabolaFit, setMarkerIdx } from '../../dsp/peaks';
 import { plotRect } from '../../render/plot';
 import { requestRender } from '../../render/redraw';
+import { isZoomed, nearestIdxForFreq } from '../spectrumViewport';
+import { spectrumFreqAtX } from '../spectrumZoomGestures';
 import { valleySeqPos } from '../measurePrefs';
 import { updateFreqUIInputs } from '../freqInputs';
 import { centerHz, rtaCenterHz, spanHz } from '../freqState';
@@ -117,6 +119,16 @@ export function toggleMarkersAll() {
 }
 
 export function placeMarkerFromX(x: number, p: Float32Array) {
+  // Under a display zoom the pixel→frequency mapping is the view window: place the marker
+  // on the nearest REAL sample of the zoomed x (design §4.4). Identity path otherwise.
+  if (isZoomed()) {
+    const f = spectrumFreqAtX(x);
+    const fa = S.freqArray;   // local: narrowing a live re-export binding does not stick
+    if (f != null && fa && fa.length > 1) {
+      setMarkerIdx(nearestIdxForFreq(fa, f));
+      return;
+    }
+  }
   const pr = plotRect();
   const frac = (x - pr.x) / pr.w;
   setMarkerIdx(Math.round(frac * (p.length - 1)));

@@ -4,6 +4,7 @@ import * as S from '../core/store';
 import { getDisplayRef } from '../ui/displayRef';
 import { displayOffset } from '../ui/displayState';
 import { xAxisTransform, yAxisTransform } from '../ui/axisDrag';
+import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
 export { W, H, MARGIN };
 export function plotRect() {
   return { x: MARGIN.left, y: MARGIN.top, w: W - MARGIN.left - MARGIN.right, h: H - MARGIN.top - MARGIN.bottom };
@@ -24,7 +25,22 @@ export function getY(val: number): number {
 }
 export function getX(idx: number, points: number): number {
   const rect = plotRect();
-  const x = rect.x + (idx / (points - 1)) * rect.w;
+  // Display-only zoom: the WHOLE swept path goes through one mapping — data position ->
+  // view window — so the trace, markers, peak marks, limit/channel/harmonic overlays and
+  // the frequency row can never disagree (design §4.4). The identity path below is
+  // bit-for-bit what it always was when no view is active.
+  const view = isZoomed() ? getView() : null;
+  const cap = getCapture();
+  let x: number;
+  if (view && cap && points > 1) {
+    const fa = S.freqArray;
+    const f = fa && fa.length > 1
+      ? fa[Math.max(0, Math.min(points - 1, idx))]
+      : cap.lo + (idx / (points - 1)) * (cap.hi - cap.lo);
+    x = rect.x + (f - view.lo) / (view.hi - view.lo) * rect.w;
+  } else {
+    x = rect.x + (idx / (points - 1)) * rect.w;
+  }
   const t = xAxisTransform();
   if (!t) return x;
   return rect.x + (x - rect.x) * t.sx + t.dxFrac * rect.w;

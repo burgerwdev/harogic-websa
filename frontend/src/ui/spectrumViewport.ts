@@ -145,6 +145,22 @@ export function samplesInView(freq: ArrayLike<number> | null | undefined, view: 
 	return n;
 }
 
+/**
+ * Nearest data index of an absolute frequency on the (increasing) capture axis — the
+ * inverse of the display mapping for hit-tests (marker placement under a zoomed view).
+ * Binary search: the axis can be 100k points and this runs per mousemove.
+ */
+export function nearestIdxForFreq(freq: ArrayLike<number>, fHz: number): number {
+	const n = freq.length;
+	if (n < 2) return 0;
+	let lo = 0, hi = n - 1;
+	while (hi - lo > 1) {
+		const mid = (lo + hi) >> 1;
+		if (freq[mid] < fHz) lo = mid; else hi = mid;
+	}
+	return Math.abs(freq[lo] - fHz) <= Math.abs(freq[hi] - fHz) ? lo : hi;
+}
+
 // ---------------- module state (capture + view) ----------------
 
 /** The window of the frame on screen; null until a renderer has drawn a real axis. */
