@@ -99,13 +99,6 @@ export function syncSpectrumZoomUi(force = false): void {
 		ov.setAttribute('aria-valuenow', String((view.lo + view.hi) / 2));
 		ov.setAttribute('aria-valuetext', title?.textContent ?? '');
 	}
-	// The waterfall keeps the FULL captured window by design (§2): while the main plot is
-	// zoomed, say so on the waterfall itself so the two x axes are never confused.
-	const wfGlobal = t('zoom_wf_global');
-	for (const id of ['waterfall', 'waterfall-container']) {
-		const el = document.getElementById(id);
-		if (el) el.title = zoomed ? wfGlobal : '';
-	}
 	if (hint) {
 		if (zoomed && samples !== null && samples < DETAIL_HINT_SAMPLES) {
 			hint.textContent = t('zoom_sample_hint', { n: String(samples) });

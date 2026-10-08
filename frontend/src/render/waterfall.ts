@@ -3,6 +3,7 @@ import * as S from '../core/store';
 import { canvasColors, getTheme } from '../core/theme';
 import { percentileApprox } from '../dsp/stats';
 import { wfHiDbm, wfLoDbm, wfRangeMode } from '../ui/waterfallState';
+import { getCapture, getView, isZoomed, viewportVersion } from '../ui/spectrumViewport';
 
 // 密度 → 颜色 LUT(256 级), 按主题区分: dark=荧光系(深底亮色), light=深色系(浅底高对比)
 let lutCache: { theme: string; lut: Uint32Array } | null = null;
@@ -30,24 +31,6 @@ function densityLUT(): Uint32Array {
 }
 
 // 从原始行(任意宽度)降采样到瀑布显示宽度(复用 scratch 缓冲区，避免每行分配)
-function downsampleRow(src: Uint16Array, w: number, reuse = false): Uint16Array {
-  if (src.length === w) return src;
-  let out: Uint16Array;
-  if (reuse) {
-    if (!wfRowScratch || wfRowScratch.length !== w) wfRowScratch = new Uint16Array(w);
-    out = wfRowScratch;
-  } else {
-    out = new Uint16Array(w);
-  }
-  for (let i = 0; i < w; i++) {
-    const j0 = Math.floor(i * src.length / w);
-    const j1 = Math.min(src.length - 1, Math.ceil((i + 1) * src.length / w));
-    let m = 0;
-    for (let j = j0; j < j1; j++) if (src[j] > m) m = src[j];   // 保峰
-    out[i] = m;
-  }
-  return out;
-}
 
 // Reused scratch state: the waterfall redraws on every render tick while rows arrive much
 // more slowly, so buffers are kept instead of allocating an ImageData per frame.
@@ -56,7 +39,34 @@ let wfImgKey = '';
 let wfLastPushes = -1;
 let wfLastMax = -1;
 let wfLastTheme = '';
-let wfRowScratch: Uint16Array | null = null;
+let sliceScratch: Uint16Array | null = null;
+
+/**
+ * Map one row's stored columns onto the canvas width through the visible capture
+ * fraction [f0,f1]. Downscale (source range wider than a pixel) aggregates with MAX —
+ * the same peak-hold semantics the rows were built with; upscale picks the nearest
+ * column (a step, never an interpolation: the waterfall must not invent detail).
+ * Fraction-based, so rows stored at different widths (a resize mid-session) mix safely.
+ */
+export function sliceDensityRow(row: Uint16Array, w: number, f0: number, f1: number,
+	out?: Uint16Array): Uint16Array {
+	const dst = out && out.length === w ? out : new Uint16Array(w);
+	const len = row.length;
+	const span = Math.max(0, f1 - f0);
+	for (let x = 0; x < w; x++) {
+		const a = f0 + (x / w) * span;
+		const b = f0 + ((x + 1) / w) * span;
+		let i0 = Math.floor(a * len);
+		let i1 = Math.ceil(b * len);
+		if (i1 <= i0) i1 = i0 + 1;
+		i0 = Math.max(0, Math.min(len - 1, i0));
+		i1 = Math.max(i0 + 1, Math.min(len, i1));
+		let m = 0;
+		for (let j = i0; j < i1; j++) if (row[j] > m) m = row[j];
+		dst[x] = m;
+	}
+	return dst;
+}
 
 // 渲染瀑布到指定 canvas(覆盖 marker 表区域)
 export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
@@ -72,18 +82,29 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     wfLastPushes = S.waterfallPushes;
     return;
   }
+  // Viewport slice: the waterfall follows the main plot's display window (design §2,
+  // phase 2); fractions are stable across rows stored at different widths.
+  const cap = getCapture();
+  const zv = isZoomed() ? getView() : null;
+  let f0 = 0, f1 = 1;
+  if (zv && cap && cap.hi > cap.lo
+      && zv.lo >= cap.lo - 0.5 && zv.hi <= cap.hi + 0.5) {
+    f0 = Math.max(0, (zv.lo - cap.lo) / (cap.hi - cap.lo));
+    f1 = Math.min(1, (zv.hi - cap.lo) / (cap.hi - cap.lo));
+  }
+  const viewKey = `${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
   // Nothing new since the previous frame (renders are faster than row pushes) -> keep
   // the existing canvas content instead of rebuilding ~100k pixels.
   if (
     wfLastPushes === S.waterfallPushes && wfLastMax === dmax && wfLastTheme === theme
-    && wfImgKey === `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}`
+    && wfImgKey === `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`
   ) {
     return;
   }
   wfLastPushes = S.waterfallPushes;
   wfLastMax = dmax;
   wfLastTheme = theme;
-  wfImgKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}`;
+  wfImgKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`;
   if (!wfImg || wfImg.width !== W || wfImg.height !== H) wfImg = ctx.createImageData(W, H);
   const img = wfImg;
   const px = img.data;
@@ -105,7 +126,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
       }
       continue;
     }
-    const ds = downsampleRow(row, W, true);
+    if (!sliceScratch || sliceScratch.length !== W) sliceScratch = new Uint16Array(W);
+    const ds = sliceDensityRow(row, W, f0, f1, sliceScratch);
     for (let x = 0; x < W; x++) {
       const lvl = Math.min(255, Math.round(ds[x] / dmax * 255));
       const c = lut[lvl];
@@ -172,9 +194,11 @@ export function pushSwpRow(powers: Float32Array, w: number, maxDensity: number) 
 
 // The row width is owned by the renderer (the canvas is DPR/CSS dependent): building rows at
 // this width removes the extra peak-hold rescale the RTA path used to need.
-let rowWidth = 800;
+// 行宽: 画布备份像素与 2048 下限取大、16384 封顶 —— 小屏保证放大切片有足够真实列，
+// 4K/8K 保持 1:1 细节；与显示尺寸解耦后 resize 不再改写历史行的存储宽度语义。
+let rowWidth = 2048;
 export function setWaterfallRowWidth(w: number): void {
-  if (Number.isFinite(w) && w > 0) rowWidth = Math.round(w);
+  if (Number.isFinite(w) && w > 0) rowWidth = Math.min(16384, Math.max(2048, Math.round(w)));
 }
 export function waterfallRowWidth(): number {
   return rowWidth;
