@@ -87,6 +87,32 @@ const SHARE_PEAK_HOLD_S = 2.0;
 /// folding back onto the probes: 28 oscillators per sample at 48 kHz made the engine's own test time
 /// out under load (measured), and the decision is identical at a sixth of the work.
 const TONE_DECIM = 6;
+/// The distance, in Hz, that ggmorse can search on each side of the operator's Pitch.
+///
+/// This value gives the full frequency tolerance of the CW mode. The first value was 250 Hz. That
+/// value caused a sharp limit, and not a gradual loss. A test on the bench showed this result: a
+/// sidetone 250 Hz from the Pitch decoded correctly, and a sidetone 300 Hz from the Pitch decoded no
+/// character at all. The clocks of the two radios and the ear of the operator put the sidetone a few
+/// hundred Hz from the Pitch. A person heard correct CW audio. An external phone application
+/// decoded the audio. This engine decoded nothing. The sweep in `cwOffsetSweep.test.ts` measures
+/// this limit.
+///
+/// 900 Hz puts the search band across the CW audio range that the tone gate examines (250 Hz to
+/// 1600 Hz). Thus the operator's Pitch must be approximately correct, and not exact. The operator
+/// sets the Pitch by ear in any case.
+///
+/// A larger value is not useful. A test shows that the decoder does not decode a sidetone at
+/// 1800 Hz, for any range. GGMorse decimates the audio to 4 kHz, and its internal band ends at
+/// approximately 1.5 kHz to 1.7 kHz.
+///
+/// The band-pass at the Pitch is not the cause of this limit. A test with `DECODE_BANDWIDTH_HZ`
+/// increased to 1200 showed that the far offsets still failed, and that the near offsets became
+/// worse (0 to 5 character errors). Therefore this band-pass stays narrow.
+const CW_SEARCH_HZ = 900;
+/// The lowest frequency, in Hz, that the decoder examines. The wrapper applies the same limit.
+/// Below this frequency, the audio contains hum and low-frequency noise. A CW operator does not
+/// tune to such a signal.
+const CW_FLOOR_HZ = 100;
 
 export interface CwChunk {
 	text: string;
@@ -171,14 +197,21 @@ export class GgMorseEngine {
 			return false;
 		}
 		let best = 0;
+		let bestK = -1;
 		for (let k = 0; k < n; k++) {
 			// A sinusoid of amplitude A reads |LP| ~ A/2 against an rms of A/sqrt(2): 0.71, while the
 			// widest noise the chain can produce stays at 0.24-0.39 (measured, per filter width).
 			const share = this.bandEnv[k] / rms;
-			if (share > best) best = share;
+			if (share > best) { best = share; bestK = k; }
 		}
 		this.lastShare = Math.max(best, blockPeak);
-		return best >= TONE_MIN_SHARE;
+		const keyed = best >= TONE_MIN_SHARE;
+		// AFC: follow the sidetone that the gate found. Then the decode band-pass is on the signal,
+		// and not at the operator's Pitch. Only a tone that the gate accepts can move the centre.
+		// Band-limited noise does not reach the threshold. The probe step is 50 Hz, and the band-pass
+		// is 200 Hz wide. Therefore the quantisation has no effect.
+		if (keyed && bestK >= 0) this.recenter(TONE_PROBE_HZ[bestK]);
+		return keyed;
 	}
 
 	private textPtr = 0;
@@ -196,8 +229,11 @@ export class GgMorseEngine {
 	private levelEma = 0;
 	/// The decoder's input band-pass state (see `DECODE_BANDWIDTH_HZ`).
 	private readonly bpAlpha: number;
-	private readonly bpDR: number;
-	private readonly bpDI: number;
+	/// The mixer rotation of the input band-pass. `recenter` sets these values. They are not
+	/// readonly, because AFC moves them. The initial values are at DC, thus the constructor can use
+	/// them before `recenter` runs.
+	private bpDR = 1;
+	private bpDI = 0;
 	private bpRe = 1;
 	private bpIm = 0;
 	private bpI = 0;
@@ -212,11 +248,19 @@ export class GgMorseEngine {
 	private sinceConfidentS = 0;
 	private toneHold = 0;
 	private linePending = false;
+	/// The frequency of the input band-pass, in Hz. The value is the operator's Pitch until AFC locks
+	/// (see `recenter`).
+	private bandCenterHz = 700;
+	/// The band that the decoder searches. AFC must stay inside this band (see `recenter`).
+	private searchLowHz = CW_FLOOR_HZ;
+	private searchHighHz = 1600;
 
 	private constructor(
 		private module: GgMorseModule,
 		private handle: number,
 		private sampleRate: number,
+		pitchHz: number,
+		toleranceHz: number,
 	) {
 		// f64 arrays: the gate runs per sample over the whole audio stream, and f32 accumulators drift
 		// visibly in a one-pole that never stops running.
@@ -236,25 +280,58 @@ export class GgMorseEngine {
 			this.ncoDR[k] = Math.cos(wk);
 			this.ncoDI[k] = Math.sin(wk);
 		}
-		// The input band-pass runs at the full rate, around the operator's Pitch.
+		// The band-pass of the input operates at the full sample rate, around the operator's Pitch. It
+		// does NOT use `this.pitchHz`. That getter gives the ggmorse *estimate*, and the value is 0
+		// until audio is decoded. The old code used this getter for the centre. Thus the mixer did not
+		// rotate, and the "band-pass at the Pitch" was a one-pole low-pass at DC. Measured gain:
+		// +5.1 dB at 100 Hz, -5.2 dB at 700 Hz, -9.7 dB at 1200 Hz, and -11.5 dB at 1500 Hz. Each
+		// real sidetone had this loss. It is a direct loss of signal-to-noise ratio on the signal
+		// that the decoder must copy.
 		this.bpAlpha = 1 - Math.exp(-2 * Math.PI * DECODE_BANDWIDTH_HZ / sampleRate);
-		const pw = 2 * Math.PI * this.pitchHz / sampleRate;
-		this.bpDR = Math.cos(pw);
-		this.bpDI = Math.sin(pw);
+		// The same band that the wrapper gives to ggmorse. Thus AFC cannot put the filter on a tone
+		// that the decoder does not examine. The wrapper applies `CW_FLOOR_HZ` only when the span
+		// becomes 0 or less.
+		this.searchLowHz = pitchHz - toleranceHz > 0 ? pitchHz - toleranceHz : CW_FLOOR_HZ;
+		this.searchHighHz = pitchHz + toleranceHz;
+		this.recenter(pitchHz);
+	}
+
+	/** The frequency of the input band-pass, in Hz. */
+	get centerHz(): number {
+		return this.bandCenterHz;
 	}
 
 	/**
-	 * Instantiate the wasm module and create one decoder.
+	 * Set the input band-pass to `hz`, and keep the filter state. Thus there is no transient.
 	 *
-	 * `pitchHz` is the operator's Pitch control: ggmorse searches around it (+/- `toleranceHz`)
-	 * rather than over the whole band, so a stronger carrier nearby cannot steal the lock.
+	 * This function is the automatic frequency control of the mode. The operator tunes
+	 * approximately, and listens to the tone. A band-pass of 200 Hz width that is 600 Hz from the
+	 * sidetone removes approximately 10 dB of the signal that the decoder must copy. The centre
+	 * stays inside the band that ggmorse searches. A band-pass on a tone that the decoder does not
+	 * examine gives the wrong signal to the decoder.
 	 */
-	static async load(sampleRate = 48000, pitchHz = 700, toleranceHz = 250): Promise<GgMorseEngine> {
+	private recenter(hz: number): void {
+		const want = Math.min(this.searchHighHz, Math.max(this.searchLowHz, hz));
+		const pw = 2 * Math.PI * want / this.sampleRate;
+		this.bpDR = Math.cos(pw);
+		this.bpDI = Math.sin(pw);
+		this.bandCenterHz = want;
+	}
+
+	/**
+	 * Create the wasm module and one decoder.
+	 *
+	 * `pitchHz` is the operator's Pitch control. It centres the input band-pass (see
+	 * `DECODE_BANDWIDTH_HZ`), and the search starts at this value. `toleranceHz` is the distance on
+	 * each side of the Pitch that ggmorse can examine. The accuracy of the operator's tuning must be
+	 * sufficient for this distance (see `CW_SEARCH_HZ`).
+	 */
+	static async load(sampleRate = 48000, pitchHz = 700, toleranceHz = CW_SEARCH_HZ): Promise<GgMorseEngine> {
 		const module = await createGgMorse();
 		const create = module.cwrap('ggmorse_wasm_new', 'number', ['number', 'number', 'number']);
 		const handle = create(sampleRate, pitchHz, toleranceHz);
 		if (!handle) throw new Error('ggmorse: decoder allocation failed');
-		const engine = new GgMorseEngine(module, handle, sampleRate);
+		const engine = new GgMorseEngine(module, handle, sampleRate, pitchHz, toleranceHz);
 		engine.textPtr = module._malloc(TEXT_CAPACITY);
 		engine.inCapacity = CHUNK_SAMPLES;
 		engine.inPtr = module._malloc(engine.inCapacity * 2);

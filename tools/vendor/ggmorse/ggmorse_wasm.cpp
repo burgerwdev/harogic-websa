@@ -33,11 +33,19 @@ struct Handle {
         : gm(parametersFor(sampleRateInp)) {
         auto decode = GGMorse::getDefaultParametersDecode();
         if (pitchHz > 0.0f) {
-            // Only the *range* is ours to set: `frequencyRangeMin/Max` become the decoder's
-            // band-pass around the operator's Pitch, while `frequency_hz` left at 0 keeps the tone
-            // search automatic inside it. Setting `frequency_hz` to the Pitch instead pinned the
-            // Goertzel filter to exactly that frequency and a signal even 150 Hz off decoded
-            // nothing (measured) - and a real link is always off, by the two clocks' difference.
+            // This code sets the range only. `frequencyRangeMin/Max` give the band of the decoder
+            // around the operator's Pitch. `frequency_hz` stays at 0. Thus the tone search inside
+            // the band is automatic. The old code set `frequency_hz` to the Pitch. That value
+            // pinned the Goertzel filter to this frequency. A test showed that a signal 150 Hz from
+            // the Pitch decoded nothing. A real signal is always off the Pitch, because the two
+            // clocks are different.
+            //
+            // `toleranceHz` gives the full frequency tolerance of the mode. The caller now uses the
+            // CW audio band as the default, and not `pitch +/- 250`. The floor keeps the high-pass
+            // filter out of the low-frequency noise. The ceiling is the frequency where ggmorse
+            // stops all resolution. GGMorse decimates the audio to 4 kHz, thus its band ends at
+            // approximately 1.5 kHz to 1.7 kHz. A test showed that a sidetone at 1800 Hz does not
+            // decode, for any range.
             const float tol = toleranceHz > 0.0f ? toleranceHz : 250.0f;
             decode.frequency_hz = 0.0f;
             decode.frequencyRangeMin_hz = pitchHz - tol > 0.0f ? pitchHz - tol : 100.0f;

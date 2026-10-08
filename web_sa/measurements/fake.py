@@ -6,6 +6,7 @@ fake device implements.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -49,9 +50,16 @@ SDR_BASEBAND_MOD_HZ = 1.0e3
 #: the speed it is sent at.
 CW_MESSAGE = 'TEST DE N0CALL'
 CW_WPM = 20
-#: The sidetone pitch the fake's carrier sits at, above the dial: the CW demodulator selects its
-#: band there (a zero-beat carrier is what the receiver's DC cancellation is for).
+#: The sidetone pitch of the fake carrier, above the dial. The CW demodulator selects its band at
+#: this frequency. A carrier at the dial (zero beat) is not demodulated, because the DC cancellation
+#: of the receiver operates there.
+#:
+#: `WEBSA_FAKE_CW_OFFSET_HZ` moves the carrier from this pitch. An e2e test uses this variable to
+#: examine the frequency tolerance of the decoder. The operator's Pitch stays at CW_PITCH_HZ, and the
+#: signal arrives a few hundred Hz away. The old decoder decoded nothing in this condition. A phone
+#: application decoded the same audio correctly.
 CW_PITCH_HZ = 700.0
+CW_OFFSET_HZ = float(os.environ.get('WEBSA_FAKE_CW_OFFSET_HZ') or 0.0)
 _CW_MORSE = {
     'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.', 'G': '--.',
     'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..', 'M': '--', 'N': '-.',
@@ -420,14 +428,15 @@ class FakeSdrSession(_FakeRtaBase):
     _cw_pos = 0
 
     def _cw_baseband(self, rate: float, center_hz: float) -> bytes:
-        """A keyed carrier at the sidetone pitch: the CW demodulator passes it to the decoder."""
+        """A keyed carrier at the sidetone pitch, or at this pitch plus `WEBSA_FAKE_CW_OFFSET_HZ`.
+        The CW demodulator sends this signal to the decoder."""
         if FakeSdrSession._cw_key is None:
             FakeSdrSession._cw_key = cw_keying(CW_MESSAGE, CW_WPM, rate)
         key = FakeSdrSession._cw_key
         start = FakeSdrSession._cw_pos
         index = (np.arange(SDR_BASEBAND_SAMPLES) + start) % key.size
         t = (np.arange(SDR_BASEBAND_SAMPLES) + start) / rate
-        carrier = np.exp(2j * np.pi * CW_PITCH_HZ * t)
+        carrier = np.exp(2j * np.pi * (CW_PITCH_HZ + CW_OFFSET_HZ) * t)
         block = np.empty(SDR_BASEBAND_SAMPLES * 2, dtype=np.float32)
         block[0::2] = (key[index] * carrier).real
         block[1::2] = (key[index] * carrier).imag

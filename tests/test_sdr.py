@@ -96,6 +96,47 @@ def test_cw_carrier_at_the_pitch_becomes_the_sidetone():
     assert _rms(dc_audio[4000:]) < 0.01 * _rms(audio), 'a zero-beat carrier must be rejected'
 
 
+def test_cw_demod_band_covers_the_decoder_pitch_search():
+    """The demodulator must not limit the frequency tolerance of the decoder.
+
+    The CW engine searches the CW audio band (250 Hz to 1500 Hz). See `CW_SEARCH_HZ` in
+    frontend/src/dsp/ggmorseEngine.ts. The demodulator selects the band `pitch +/- if_bw/2` above
+    zero IF. At the CW default of 3 kHz, this band is -800 Hz to +2200 Hz. Thus it contains each
+    sidetone that the decoder can read, and the demodulator is not the limit. This result shows that
+    the decoder caused the reported fault, and not the filter. In the report, the audio was
+    satisfactory and the decode failed.
+
+    A narrow filter is a limit. The second part of the test shows this condition. The operator
+    selects the filter width. The panel selects 3 kHz for CW automatically.
+    """
+    fs = 48000.0
+    t = np.arange(96000) / fs
+    decoder_band = (250.0, 1500.0)
+
+    def demodulated(tone_hz: float, if_bw: float) -> float:
+        with_agc = AnalogDemod(fs)
+        with_agc.configure(fs, 'cw', if_bw, pitch=700.0)
+        carrier = 0.5 * np.exp(2j * np.pi * tone_hz * t)
+        audio, _ = with_agc.process(carrier.real, carrier.imag, use_agc=False)
+        return _rms(audio[4000:])
+
+    # Each sidetone that the engine can decode is present after the demodulator, at the CW default
+    # filter.
+    for tone in (300.0, 700.0, 1100.0, 1450.0):
+        level = demodulated(tone, 3000.0)
+        assert level > 0.1, f'{tone} Hz sidetone lost at the 3 kHz CW filter (rms {level})'
+
+    # The band contains the full search range of the decoder. Therefore the sidetone is present.
+    pitch, if_bw = 700.0, 3000.0
+    assert pitch - if_bw / 2.0 <= decoder_band[0]
+    assert pitch + if_bw / 2.0 >= decoder_band[1]
+
+    # A narrow filter removes this tolerance. The operator selects the filter width. This result is
+    # not a fault.
+    assert demodulated(1200.0, 500.0) < 0.1 * demodulated(700.0, 500.0), (
+        'a 500 Hz CW filter should reject a sidetone 500 Hz outside it')
+
+
 
 def test_wfm_applies_50us_deemphasis():
     fs = 48000.0
