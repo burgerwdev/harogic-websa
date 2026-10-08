@@ -390,6 +390,13 @@ export const en = {
 	"tip_btn-chan-meas": "Measure channel power, OBW and ACPR from the displayed trace",
 	"tip_btn-chan-clear": "Clear the channel measurement result",
 	"limits": "Limits",
+	"tip_spectrum_zoom": "Local zoom: magnify the captured spectrum (display only, acquisition unchanged)",
+	"zoom_reset": "Restore the full captured spectrum",
+	"zoom_overview": "Global overview",
+	"zoom_waiting": "Waiting for spectrum data",
+	"zoom_sample_hint": "Only {n} samples in this view - zooming does not add detail",
+	"zoom_view_label": "View",
+	"zoom_full_label": "Full",
 } as const;
 
 export const zh = {
@@ -782,5 +789,12 @@ export const zh = {
 	"tip_btn-chan-meas": "基于当前显示迹线测量信道功率、OBW 与 ACPR",
 	"tip_btn-chan-clear": "清除信道测量结果",
 	"limits": "限制线",
+	"tip_spectrum_zoom": "局部放大：放大已采集频谱（仅显示，不改变采集）",
+	"zoom_reset": "还原全局频谱",
+	"zoom_overview": "全局概览",
+	"zoom_waiting": "等待频谱数据",
+	"zoom_sample_hint": "该视窗仅 {n} 个采样点，放大不会新增细节",
+	"zoom_view_label": "显示",
+	"zoom_full_label": "全局",
 } as const;
 

@@ -21,6 +21,7 @@ import { initUiScale } from './core/uiScale';
 // the canvas stays blank.
 import './render/spectrum';
 import { bindActions, bindCanvas, syncToggleIcons } from './ui/controls';
+import { initSpectrumZoomUi } from './ui/spectrumZoomUi';
 import { applyI18n, setLang, t } from './core/i18n';
 import { initTheme, onThemeChange, toggleTheme } from './core/theme';
 import { updateInfoBar } from './render/infobar';
@@ -49,6 +50,7 @@ function init() {
   syncToggleIcons();
   bindActions();
   bindCanvas();
+  initSpectrumZoomUi();
 
   // Restore saved mode (non-first load keeps RTA; first load defaults to std)
   const savedMode = localStorage.getItem('web-sa-mode');

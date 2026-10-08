@@ -468,6 +468,29 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   display: flex; flex-direction: column; gap: 3px;
 }
 .wf-btn { min-width: 0; width: 100%; padding: 0; text-align: center; font-size: 9px; line-height: 1.4; box-sizing: border-box; }
+/* Display-only local zoom (ui/spectrumZoomUi.ts): the top-bar toggle shares .btn.bar-btn
+   and .btn.active with the keypad button; the overview is its own element between the plot
+   and the waterfall split, right-aligned on wide screens, full width on narrow ones. */
+#btn-spectrum-zoom { margin-right: 2px; }
+#btn-spectrum-zoom:focus-visible, #btn-zoom-reset:focus-visible, #zoom-overview:focus-visible {
+  outline: 2px solid var(--dot-on); outline-offset: 1px;
+}
+#btn-spectrum-zoom:disabled { opacity: 0.4; cursor: default; }
+.zoom-overview-box {
+  position: relative; flex: 0 0 auto; width: min(320px, 100%); margin-left: auto;
+  border: 1px solid var(--card-border); background: var(--sa-bg); box-sizing: border-box;
+}
+.zoom-overview-head { display: flex; align-items: center; gap: 4px; padding: 1px 3px; }
+.zoom-overview-title { flex: 1 1 auto; min-width: 0; color: var(--label); font: 10px monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zoom-reset-btn { flex: 0 0 auto; min-width: 0; padding: 0 4px; font-size: 10px; line-height: 1.4; }
+.zoom-reset-btn:disabled { opacity: 0.4; cursor: default; }
+.zoom-overview-box > canvas {
+  position: relative; display: block; width: 100%; height: 48px; border: none;
+  cursor: grab; touch-action: none;
+}
+.zoom-overview-hint { color: #888800; font: 10px monospace; padding: 0 3px 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Left jump rail: one click per group, always visible next to the scrolling panel */
 .control-rail {
   position: relative;
