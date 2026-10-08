@@ -7,6 +7,7 @@ import { centerHz, spanHz } from './freqState';
 import { refLevel } from './refState';
 import { currentRBW, currentVBW, currentPoints } from './swpState';
 import { formatFreqHz } from '../core/fmt';
+import { getView, isZoomed } from './spectrumViewport';
 
 function headerParts(): string[] {
   const ver = (document.querySelector('.version-tag')?.textContent || '').trim().split(/\s+/)[0] || 'HAROGIC WebSA';
@@ -24,6 +25,12 @@ function headerParts(): string[] {
     `${n} pts`,
   ];
   if (det) parts.push(`det ${det}`);
+  // Display-only zoom: the header states BOTH windows, so a zoomed screenshot can never
+  // be mistaken for a narrower acquisition (design §4.7).
+  if (isZoomed()) {
+    const v = getView();
+    if (v) parts.push(`View ${formatFreqHz(v.lo)} - ${formatFreqHz(v.hi)} (display zoom)`);
+  }
   return parts;
 }
 

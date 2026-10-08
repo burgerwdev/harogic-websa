@@ -42,6 +42,7 @@ import {
 } from '../ui/swpState';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
+import { resetViewport, setCapture } from '../ui/spectrumViewport';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -220,6 +221,9 @@ export function connectWS() {
       }
       lastRtaStartHz = startHz;
       lastRtaStopHz = stopHz;
+      // The frame's display window is the capture the zoom feature navigates in (design
+      // §4.2); a changed window drops the view inside setCapture.
+      setCapture({ lo: startHz, hi: stopHz });
       S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
       {
         // Debug/verification aid: proves a frame was actually decoded and handed to the
@@ -296,6 +300,9 @@ export function connectWS() {
     if (frame.kind === 'freq') {
       S.setFreqArray(frame.freq);
       S.setFreqVersion(frame.version);
+      if (frame.freq.length > 1) {
+        setCapture({ lo: frame.freq[0], hi: frame.freq[frame.freq.length - 1] });
+      }
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(points);
       retrackMarkers();
@@ -348,6 +355,9 @@ export function updateStatus(s: any) {
   if (over !== lastOverflowWarning || disconnected !== lastDisconnected) {
     lastOverflowWarning = over;
     lastDisconnected = disconnected;
+    // A disconnect invalidates the "currently drawn frame" assumption: drop the zoom view
+    // (design §4.3). The toggle stays as the user set it.
+    if (disconnected) resetViewport();
     requestRender();
   }
   }

@@ -11,6 +11,7 @@ import { t } from '../core/i18n';
 import { syncChanTableVisibility } from '../meas/channel';
 import { setWaterfall } from './panels/waterfall';
 import { waterfallOn } from './waterfallState';
+import { syncSpectrumZoomUi } from './spectrumZoomUi';
 
 //: Waterfall state before the measurement took it over (null = not measuring).
 let waterfallBeforeMeasure: boolean | null = null;
@@ -55,6 +56,9 @@ export function setMeasButtons(en: boolean) {
 
 export function applyMeasUI() {
   syncWaterfallAvailability();
+  // PNM has no linear spectrum axis: the zoom button must disable the moment a
+  // measurement (and specifically PNM) takes over (design §3).
+  syncSpectrumZoomUi(true);
   const inMeas = S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm');
   document.body.classList.toggle('meas-mode', inMeas);
   const chanTab = S.measOn && S.measTabSel === 'chan';

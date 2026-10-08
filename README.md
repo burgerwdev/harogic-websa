@@ -16,6 +16,8 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 - **Spectrum** — Clear Write / Max Hold / Min Hold / Average / View, four traces, smoothing,
   peak-preserving resampling
+- **Display zoom** — enlarge the captured spectrum on screen. No retune, no new sweep. An
+  overview shows the full window. The waterfall follows the same view.
 - **Controls** — atomic Center/Span and Start/Stop, span stepping and Full Span, RBW / VBW /
   points, FFT windows, attenuation / preamp / IF gain, manual or one-shot Auto Ref Level,
   reference clock and output

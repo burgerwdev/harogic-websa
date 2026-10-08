@@ -24,6 +24,18 @@ import { measPnmApply } from '../meas/phaseNoise';
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, resetAxisPreview, type Axis } from './axisDrag';
+import { isSpectrumZoomOn, syncSpectrumZoomUi } from './spectrumZoomUi';
+import {
+	cancelMarqueePreview,
+	commitMarquee,
+	isMarqueeDrag,
+	resetViewForDeviceGesture,
+	spectrumFreqAtX,
+	spectrumWheelZoom,
+	updateMarqueePreview,
+} from './spectrumZoomGestures';
+import { minSpanHz } from './spectrumViewport';
+import { isZoomed, resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
@@ -56,7 +68,7 @@ export function connectDevice() { send({ cmd: 'CONNECT' }); }
 // Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
-import { currentGraphMode, deviceMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
+import { currentGraphMode, deviceMode, graphMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
 import { setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
 
 let sdrAudioHandoffTimer: number | null = null;
@@ -174,6 +186,10 @@ export function syncGraphModeStatus(mode: string) {
   if (!isGraphMode(mode)) return;
   // The family being left, read before the confirm: that is the trace mode to remember.
   const previousMode = currentGraphMode();
+  // The very first STATUS after a page load "confirms" std without any mode change having
+  // happened — and the SWP FREQ frame that seeded the zoom capture will not repeat until
+  // the next reconfiguration. Only a real confirmed-mode SWITCH may drop the view (§4.3).
+  const hadConfirmedMode = graphMode.confirmedValue() !== null;
   // Discipline 1: an older reply (a STATUS still on another mode) is not our answer.
   const changed = confirmGraphMode(mode);
   syncModeButtons();
@@ -185,6 +201,13 @@ export function syncGraphModeStatus(mode: string) {
   S.setSdrMode(isSdr);
   // An axis gesture previews the window of the mode it started in; a mode change invalidates it.
   resetAxisPreview();
+  // A display view belongs to the data of the mode it was drawn in (design §4.3): drop it
+  // on any confirmed mode change; the toggle itself stays as the user set it.
+  if (hadConfirmedMode) {
+    resetViewport();
+    cancelZoomGesture();
+    syncSpectrumZoomUi();
+  }
   // Each display family keeps its own trace mode: SDR opens on an Average (the depth defaults to
   // the panel's 16), the swept/RTA views keep Clear Write, and whatever the user picked inside a
   // family is what that family shows when it is entered again. Applied here - once, on a CONFIRMED
@@ -691,6 +714,10 @@ export function presetAll() {
   S.resetWaterfall();
   wfPaused.set(false);
   resetWfSplit();                       // the dragged spectrum/waterfall split goes back to default
+  // Preset restores acquisition defaults: the zoom view dies with the old window (§4.3).
+  resetViewport();
+  cancelZoomGesture();
+  syncSpectrumZoomUi(true);
   smoothBins.set(1);
   spanStepAuto.set(true);
   // Preset resets the device, not the listener: the audio switch and the IQ ingress survive. The
@@ -1060,6 +1087,12 @@ function axisBandCursor(band: Axis | null): string {
   return band === 'x' ? 'ew-resize' : band === 'y' ? 'ns-resize' : '';
 }
 function xToFreqHz(x: number): number | null {
+  // Display zoom: the plot shows the view window, so clicks map through the view (design
+  // §4.4) — a tune/marker click lands on the frequency the pointer is actually over.
+  if (isZoomed()) {
+    const f = spectrumFreqAtX(x);
+    if (f != null) return f;
+  }
   const f = S.freqArray;
   if (!f || f.length < 2) return null;
   const pr = plotRectPub();
@@ -1069,6 +1102,20 @@ function xToFreqHz(x: number): number | null {
   const i0 = Math.max(0, Math.min(f.length - 2, Math.floor(idx)));
   const fr = idx - i0;
   return f[i0] * (1 - fr) + f[i0 + 1] * fr;
+}
+
+// ── display-only zoom gesture state (ui/spectrumZoomGestures.ts): a press inside the
+// plot is a CLICK (original semantics) until it moves MARQUEE_MIN_PX sideways, then it
+// is a marquee that owns the gesture and suppresses marker/tune side effects. ──
+let zoomPending: { x0: number; y0: number; sdr: boolean; shift: boolean } | null = null;
+let zoomMarquee = false;
+
+function cancelZoomGesture(): boolean {
+	const had = zoomMarquee || zoomPending !== null;
+	zoomMarquee = false;
+	zoomPending = null;
+	if (cancelMarqueePreview()) requestRender();
+	return had;
 }
 
 export function bindCanvas() {
@@ -1082,13 +1129,26 @@ export function bindCanvas() {
     // The axis label bands are drag handles (ui/axisDrag.ts). Handled first so a gesture that
     // starts on an axis can never also place a marker or start an SDR tune.
     const band = axisBandFor(x, y, pr);
-    if (band && axisDragStart(band, x, y, pr)) {
-      canvas.style.cursor = 'grabbing';
-      e.preventDefault();
-      return;
+    if (band) {
+      // The axis bands are DEVICE gestures (span/ref); a local display view must go back
+      // to the full window first so the capture preview and a display zoom never stack.
+      if (isSpectrumZoomOn()) {
+        resetViewForDeviceGesture();
+        syncSpectrumZoomUi();
+      }
+      if (axisDragStart(band, x, y, pr)) {
+        canvas.style.cursor = 'grabbing';
+        e.preventDefault();
+        return;
+      }
     }
     if (currentGraphMode() === 'sdr') {
       if (x < pr.x || x > pr.x + pr.w) return;
+      if (isSpectrumZoomOn()) {
+        // Deferred click: a drag may still become a marquee, so no tune state yet.
+        zoomPending = { x0: x, y0: y, sdr: true, shift: false };
+        return;
+      }
       sdrDown = true; sdrMoved = false; sdrX0 = x;
       S.setDragging(true);
       return;
@@ -1096,6 +1156,11 @@ export function bindCanvas() {
     const p = getDisplayPowers();
     if (!p) return;
     if (x < pr.x || x > pr.x + pr.w) return;
+    if (isSpectrumZoomOn()) {
+      // Deferred click (marker or Shift+jump): decided on release, never applied first.
+      zoomPending = { x0: x, y0: y, sdr: false, shift: e.shiftKey };
+      return;
+    }
     if (e.shiftKey) {
       // Shift+click: jump straight to SDR demodulation at this frequency.
       const f = xToFreqHz(x);
@@ -1109,6 +1174,21 @@ export function bindCanvas() {
   window.addEventListener('mousemove', (e) => {
     if (axisDragging()) {
       axisDragMove(canvasX(e, canvas), canvasY(e, canvas));
+      return;
+    }
+    if (zoomMarquee) {
+      if (updateMarqueePreview(zoomPending!.x0, canvasX(e, canvas))) requestRender();
+      return;
+    }
+    if (zoomPending) {
+      const x = canvasX(e, canvas);
+      const y = canvasY(e, canvas);
+      if (isMarqueeDrag(x - zoomPending.x0, y - zoomPending.y0)) {
+        zoomMarquee = true;
+        updateMarqueePreview(zoomPending.x0, x);
+        requestRender();
+      }
+      // Still possibly a click: no marker preview, no SDR edge push while pending.
       return;
     }
     if (!S.dragging) return;
@@ -1153,6 +1233,43 @@ export function bindCanvas() {
         plotRectPub()));
       return;
     }
+    if ((zoomMarquee || zoomPending) && !isSpectrumZoomOn()) {
+      cancelZoomGesture();
+      return;
+    }
+    if (zoomMarquee) {
+      zoomMarquee = false;
+      const pend = zoomPending;
+      zoomPending = null;
+      cancelMarqueePreview();
+      if (pend) {
+        commitMarquee(pend.x0, canvasX(e, canvas), minSpanHz(S.freqArray));
+        syncSpectrumZoomUi(true);
+      }
+      requestRender();
+      return;
+    }
+    if (zoomPending) {
+      // A clean click: replay the ORIGINAL semantics exactly (design §3).
+      const pend = zoomPending;
+      zoomPending = null;
+      const x = canvasX(e, canvas);
+      if (pend.sdr) {
+        const raw = xToFreqHz(x);
+        if (raw != null) {
+          sdrListenHz.set(raw);
+          send({ cmd: 'SET_SDR_TUNE', listen: raw });
+          requestRender();
+        }
+      } else if (pend.shift) {
+        const f = xToFreqHz(x);
+        if (f != null) listenAtFreq(f);
+      } else {
+        const p = getDisplayPowers();
+        if (p) placeMarkerFromX(x, p);
+      }
+      return;
+    }
     if (sdrDown) {
       // Commit the tune once, on release (click or drag).
       const raw = xToFreqHz(canvasX(e, canvas));
@@ -1180,16 +1297,40 @@ export function bindCanvas() {
   });
 
   // Wheel on an axis band zooms that axis (span on the frequency row, dB/div on the level
-  // labels); inside the plot the wheel keeps whatever it did before (page scrolling).
+  // labels); inside the plot the wheel zooms the DISPLAY view while the toggle is On
+  // (Ctrl/Cmd stays browser zoom), and stays page scrolling otherwise.
   canvas.addEventListener('wheel', (e) => {
     const pr = plotRectPub();
     const x = canvasX(e, canvas);
     const y = canvasY(e, canvas);
     const band = axisBandFor(x, y, pr);
-    if (!band) return;
-    e.preventDefault();
-    axisWheel(band, e.deltaY, x, y, pr);
+    if (band) {
+      if (isSpectrumZoomOn()) {
+        resetViewForDeviceGesture();
+        syncSpectrumZoomUi();
+      }
+      e.preventDefault();
+      axisWheel(band, e.deltaY, x, y, pr);
+      return;
+    }
+    if (isSpectrumZoomOn() && !e.ctrlKey && !e.metaKey
+        && y >= pr.y && y <= pr.y + pr.h
+        && spectrumWheelZoom(e.deltaY, x, minSpanHz(S.freqArray))) {
+      e.preventDefault();
+      syncSpectrumZoomUi();
+      requestRender();
+    }
   }, { passive: false });
+
+  // Esc / pointercancel / blur abandon an in-flight marquee without changing the view.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && zoomMarquee) {
+      cancelZoomGesture();
+      requestRender();
+    }
+  });
+  canvas.addEventListener('pointercancel', () => { cancelZoomGesture(); });
+  window.addEventListener('blur', () => { cancelZoomGesture(); });
 
   // Keyboard / trackpad-only operation (no mouse required).
   document.addEventListener('keydown', (e) => {

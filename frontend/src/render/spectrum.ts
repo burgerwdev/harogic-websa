@@ -27,6 +27,10 @@ import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState
 import { MAX_DENSITY } from '../dsp/rtaDensity';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
+import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
+import { getMarqueePreview } from '../ui/spectrumZoomGestures';
+import { renderSpectrumZoomOverview } from './zoomOverview';
+import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -69,6 +73,30 @@ function drawFreqRow(lo: number, hi: number, col: any, p: any) {
   }
 }
 
+function drawMarqueeOverlay() {
+  const m = getMarqueePreview();
+  if (!m) return;
+  const view = isZoomed() ? getView() : getCapture();
+  if (!view || !(view.hi > view.lo)) return;
+  const p = plotRect();
+  const x1 = p.x + (m.lo - view.lo) / (view.hi - view.lo) * p.w;
+  const x2 = p.x + (m.hi - view.lo) / (view.hi - view.lo) * p.w;
+  const col = canvasColors();
+  ctx.save();
+  ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+  ctx.fillStyle = 'rgba(0,229,255,0.08)';
+  ctx.fillRect(x1, p.y, Math.max(1, x2 - x1), p.h);
+  ctx.strokeStyle = col.text;
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(x1, p.y, Math.max(1, x2 - x1), p.h);
+  ctx.setLineDash([]);
+  ctx.fillStyle = col.text;
+  ctx.fillRect(x1 - 1, p.y, 2, p.h);
+  ctx.fillRect(x2 - 1, p.y, 2, p.h);
+  ctx.restore();
+}
+
 export function renderGrid() {
   const c = cur();
   const col = canvasColors();
@@ -94,6 +122,12 @@ export function renderGrid() {
   // screen was measured in, so the numbers track the drag exactly.
   const pw = previewFreqWindow();
   if (pw) { loHz = pw.lo; hiHz = pw.hi; }
+  else if (isZoomed()) {
+    // Display-only zoom: the row states the VIEW window (what the pixels show), while the
+    // acquisition values above stay untouched (design §3).
+    const v = getView();
+    if (v) { loHz = v.lo; hiHz = v.hi; }
+  }
   drawFreqRow(loHz, hiHz, col, p);
 
   if (c.displayUnit === 'dB') {
@@ -406,6 +440,9 @@ function renderRtaView() {
       if (pt) pt.style.display = 'none';   // pk list off -> no leftover peak table
       updateMarkerTable(rp);
     }
+    drawMarqueeOverlay();
+    renderSpectrumZoomOverview();
+    syncSpectrumZoomUi();
     return;
   }
 
@@ -419,7 +456,7 @@ export function renderAll() {
   // Measurement views register themselves (report finding E-5); the swept path below is
   // the default when nothing is registered for the active mode.
   const view = getViewRenderer(c.viewMode);
-  if (view) { view.render(viewContext()); return; }
+  if (view) { view.render(viewContext()); drawMarqueeOverlay(); renderSpectrumZoomOverview(); syncSpectrumZoomUi(); return; }
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
@@ -438,6 +475,7 @@ export function renderAll() {
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
     if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
+  drawMarqueeOverlay();
   if (waterfallOn.get()) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
       const el = document.getElementById(id);
@@ -466,6 +504,8 @@ export function renderAll() {
   }
   renderStatusBlocks();
   renderWaterfallIfOn();
+  renderSpectrumZoomOverview();
+  syncSpectrumZoomUi();
 }
 
 // The redraw seam: everyone else asks for a repaint instead of importing this hub
@@ -573,8 +613,13 @@ function renderRta() {
   // A frequency gesture draws the frame in the window being dragged to (see ui/axisDrag.ts); the
   // trace, the demod overlay and the frequency row below all read this one pair.
   const pf = previewFreqWindow();
-  const lo = pf ? pf.lo : d.startHz;
-  const hi = pf ? pf.hi : d.stopHz;
+  // A display zoom narrows the drawn window to the view — but only while the view still
+  // lies inside the frame on screen (a fresh frame with a new window resets the view, and
+  // a device gesture preview overrides everything anyway).
+  const zv = isZoomed() ? getView() : null;
+  const inFrame = !!zv && zv.lo >= d.startHz - 0.5 && zv.hi <= d.stopHz + 0.5;
+  const lo = pf ? pf.lo : (inFrame ? zv!.lo : d.startHz);
+  const hi = pf ? pf.hi : (inFrame ? zv!.hi : d.stopHz);
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   // 2D probability density rendered as an offscreen layer (freq x amplitude matrix ->
@@ -768,8 +813,21 @@ function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number;
   // transformed rect IS that transform - so the density never drifts away from the trace.
   const xt = xAxisTransform();
   const yt = yAxisTransform();
+  // Display zoom: sample the SOURCE rectangle of the density bitmap that matches the view
+  // (the matrix is anchored to the frame window), never stretch the whole layer across a
+  // magnified view (design §4.5). A device-gesture transform and a zoom never coexist.
+  const d = S.rtaData;
+  const zv = isZoomed() ? getView() : null;
+  let sx = 0, sw = rtaDensLayer.width;
+  if (zv && d && d.stopHz > d.startHz && zv.lo >= d.startHz - 0.5 && zv.hi <= d.stopHz + 0.5) {
+    const f0 = (zv.lo - d.startHz) / (d.stopHz - d.startHz);
+    const f1 = (zv.hi - d.startHz) / (d.stopHz - d.startHz);
+    sx = Math.max(0, f0) * rtaDensLayer.width;
+    sw = Math.max(1, (Math.min(1, f1) - Math.max(0, f0)) * rtaDensLayer.width);
+  }
   ctx.drawImage(
     rtaDensLayer,
+    sx, 0, sw, rtaDensLayer.height,
     p.x + (xt ? xt.dxFrac * p.w : 0),
     p.y + (yt ? yt.dyFrac * p.h : 0),
     p.w * (xt ? xt.sx : 1),
