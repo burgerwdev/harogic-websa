@@ -710,10 +710,13 @@ def main() -> int:
         check("Ref down arrow works without pressing up first", float(down) < float(held),
               f"{held} -> {down}")
 
-        # 9a2 - When the ranger does act (the protective direction), the correction must be
-        # visible on screen. Reported: the hint named a new level while the canvas and the Ref box
-        # kept the manual value, because the correction only reached the device.
-        print("9a2) SDR: an automatic correction is visible, not just announced")
+        # 9a2 - A clipped manual level is feedback, and not a fault. No code changes this level
+        # without a user action. The automatic gross-clip raise was removed on request. Test 9c(b)
+        # examines the SWP mode. The operator uses the Auto button to correct the level. The result
+        # of this correction must be visible on the canvas and in the Ref box. A report showed that
+        # the hint gave a new level, but the canvas and the Ref box kept the manual value. The
+        # correction reached the device only.
+        print("9a2) SDR: a clipped level is left alone until asked, and the correction is visible")
         if sdr_panel_visible(page) is False:
             page.click("#btn-mode-sdr")
             page.wait_for_timeout(2500)
@@ -725,18 +728,25 @@ def main() -> int:
             # the protective action the ranger takes on its own.
             clip_ref = math.ceil((sdr_peak - 15.0) / 5.0) * 5.0
         if clip_ref is None:
-            skip("an automatic correction is visible",
+            skip("a clipped level is left alone and Auto corrects it",
                  f"SDR peak {sdr_peak} cannot be clipped within the device Ref range on this bench")
         else:
             page.fill("#input-ref", str(clip_ref))
             page.click("#btn-ref-set")
             page.wait_for_timeout(3500)
+            held_sdr = state(url)
+            box_held = float(page.input_value("#input-ref"))
+            check("a clipped manual level is left alone (it is feedback, not a fault)",
+                  abs(held_sdr["ref"] - clip_ref) < 1.5 and abs(box_held - clip_ref) < 1.5,
+                  f'asked {clip_ref}, device {held_sdr["ref"]} box {box_held} '
+                  f'result {held_sdr["auto_ref"].get("result")}')
+            # The Auto button corrects the level. The correction must reach the canvas and the Ref
+            # box, and not the device only.
+            page.click("#btn-ref-auto")
+            page.wait_for_timeout(3500)
             sdr_after = state(url)
             dbg_after = page.evaluate(
                 "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')")
-            check("the clipped manual level is corrected",
-                  sdr_after["auto_ref"].get("result") in ("applied", "clipped", "overflow"),
-                  f'asked {clip_ref}: {sdr_after["auto_ref"]}')
             check("the display follows the correction (the trace moves)",
                   dbg_after.get("applied") is True
                   and dbg_after.get("shown") != dbg_after.get("before"),
