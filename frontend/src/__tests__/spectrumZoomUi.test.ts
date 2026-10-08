@@ -9,7 +9,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resetAll } from '../core/params';
 import { deviceMode } from '../ui/graphMode';
-import { setCapture, zoomEnabled, __testSeedCapture } from '../ui/spectrumViewport';
+import { syncGraphModeStatus } from '../ui/controls';
+import { getCapture, sameWindow, setCapture, zoomEnabled, __testSeedCapture } from '../ui/spectrumViewport';
 import {
 	initSpectrumZoomUi,
 	isSpectrumZoomOn,
@@ -111,5 +112,22 @@ describe('the toggle state machine', () => {
 		const titleText = document.getElementById('zoom-overview-title')!.textContent!;
 		expect(titleText).toContain('900');
 		expect(titleText).toContain('GHz');
+	});
+
+	describe('mode-STATUS lifecycle (the first STATUS is not a mode switch)', () => {
+		const CAP2 = { lo: 900e6, hi: 1000e6 };
+
+		it('keeps the capture when the first STATUS confirms the initial mode', () => {
+			__testSeedCapture(CAP2);
+			syncGraphModeStatus('std');     // first confirmation: nothing switched
+			expect(sameWindow(getCapture(), CAP2)).toBe(true);
+		});
+
+		it('drops the capture on a real confirmed mode change', () => {
+			syncGraphModeStatus('std');     // initial confirm
+			__testSeedCapture(CAP2);
+			syncGraphModeStatus('rta');     // a real switch: the view dies with the old axis
+			expect(getCapture()).toBeNull();
+		});
 	});
 });

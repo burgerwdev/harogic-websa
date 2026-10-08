@@ -68,7 +68,7 @@ export function connectDevice() { send({ cmd: 'CONNECT' }); }
 // Graph-mode + display-reference requests are owned by ui/graphMode.ts and ui/displayRef.ts.
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
-import { currentGraphMode, deviceMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
+import { currentGraphMode, deviceMode, graphMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
 import { setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
 
 let sdrAudioHandoffTimer: number | null = null;
@@ -186,6 +186,10 @@ export function syncGraphModeStatus(mode: string) {
   if (!isGraphMode(mode)) return;
   // The family being left, read before the confirm: that is the trace mode to remember.
   const previousMode = currentGraphMode();
+  // The very first STATUS after a page load "confirms" std without any mode change having
+  // happened — and the SWP FREQ frame that seeded the zoom capture will not repeat until
+  // the next reconfiguration. Only a real confirmed-mode SWITCH may drop the view (§4.3).
+  const hadConfirmedMode = graphMode.confirmedValue() !== null;
   // Discipline 1: an older reply (a STATUS still on another mode) is not our answer.
   const changed = confirmGraphMode(mode);
   syncModeButtons();
@@ -199,8 +203,10 @@ export function syncGraphModeStatus(mode: string) {
   resetAxisPreview();
   // A display view belongs to the data of the mode it was drawn in (design §4.3): drop it
   // on any confirmed mode change; the toggle itself stays as the user set it.
-  resetViewport();
-  syncSpectrumZoomUi();
+  if (hadConfirmedMode) {
+    resetViewport();
+    syncSpectrumZoomUi();
+  }
   // Each display family keeps its own trace mode: SDR opens on an Average (the depth defaults to
   // the panel's 16), the swept/RTA views keep Clear Write, and whatever the user picked inside a
   // family is what that family shows when it is entered again. Applied here - once, on a CONFIRMED

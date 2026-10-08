@@ -397,6 +397,7 @@ export const en = {
 	"zoom_sample_hint": "Only {n} samples in this view - zooming does not add detail",
 	"zoom_view_label": "View",
 	"zoom_full_label": "Full",
+	"zoom_wf_global": "Waterfall always shows the full captured window - the display zoom applies to the spectrum plot only",
 } as const;
 
 export const zh = {
@@ -796,5 +797,6 @@ export const zh = {
 	"zoom_sample_hint": "该视窗仅 {n} 个采样点，放大不会新增细节",
 	"zoom_view_label": "显示",
 	"zoom_full_label": "全局",
+	"zoom_wf_global": "瀑布图始终显示完整采集窗口；局部显示放大仅作用于频谱图",
 } as const;
 
