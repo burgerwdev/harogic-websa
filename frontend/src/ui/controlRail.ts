@@ -62,6 +62,9 @@ function markActive(group: HTMLElement | null): void {
 }
 
 function jumpTo(group: HTMLElement): void {
+  // A jump target inside a hidden panel cannot be scrolled to: bring the panel back first.
+  // The rAF below measures after the expansion, so the scroll lands on the real position.
+  if (isPanelHidden()) setPanelHidden(false);
   if (isCollapsed(group)) {
     // reuse the app's own toggle so collapse state has one owner
     const toggle = group.querySelector('.group-head .panel-toggle') as HTMLElement | null;
