@@ -152,6 +152,7 @@
     </div>
 
     <div class="control-rail" id="control-rail" aria-label="Control groups">
+      <button type="button" class="rail-toggle" id="panel-vis-toggle" aria-expanded="true" title="Hide control panel">-</button>
       <button type="button" class="rail-toggle" id="rail-toggle" aria-expanded="true">«</button>
       <div class="rail-items" id="rail-items"></div>
     </div>
@@ -245,7 +246,18 @@
             <div class="param-row"><label data-i18n="listen">Listen</label>
               <input type="number" id="input-sdr-listen" value="1000" step="any" style="flex:1;" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
               <span class="cur-val">MHz</span>
-              <button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></div>
+              <button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button>
+              <!-- Spacer = the decimation select's fixed width, so the Set column lines up
+                   with the Center row above. -->
+              <span style="flex:0 0 108px;"></span></div>
+            <div class="param-row"><label data-i18n="step">Step</label>
+              <input type="number" id="input-sdr-step" min="0" step="any" style="flex:1;min-width:64px;" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
+              <div class="unit-btn-group" id="unit-sdr_step-group"></div></div>
+            <div class="param-row span-action-row"><span id="sdr-step-quick" style="display:inline-flex;gap:2px;"></span></div>
+            <div class="param-row span-action-row">
+              <button class="btn span-step-button" data-action="sdr-tune-down" data-i18n="glyph_left" data-i18n-attr="title" data-i18n-title="sdr_tune_down_tip" title="Tune down one step">◀</button>
+              <button class="btn span-step-button" data-action="sdr-tune-up" data-i18n="glyph_right" data-i18n-attr="title" data-i18n-title="sdr_tune_up_tip" title="Tune up one step">▶</button>
+              <button class="btn span-full-button" data-action="sdr-to-center" data-i18n="to_center" data-i18n-title="sdr_to_center_tip" title="Set the wideband centre to the listen frequency">To Center</button></div>
             <div class="param-row"><label data-i18n="demod">Demod</label>
               <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
                    mode list lives in wasm/src/plugin.rs, not here. -->
@@ -299,7 +311,7 @@
               <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
               <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
             <div class="param-row sdr-hint-row">
-              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span>
+              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M=demod &middot; Space=audio</span>
               <!-- The level readout sits with the hint: the volume row is cramped and the level is a
                    status, not a control. -->
               <span class="cur-val" id="cur-sdr-level"></span>
@@ -709,7 +721,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.8.8 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.8.9 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

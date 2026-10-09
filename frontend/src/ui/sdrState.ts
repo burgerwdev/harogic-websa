@@ -15,6 +15,7 @@
  *   - nothing else keeps a copy of these values; read them with `get()`
  */
 import { createParam, resetAll } from '../core/params';
+import { toUnit } from '../core/units';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { drmStatus } from '../sdr/drmLog';
@@ -154,12 +155,53 @@ export const sdrNrAtten = createParam<number>('sdr.nrAtten', {
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.5,
 });
 
+/**
+ * Tuning step, one entry per capture bandwidth.
+ *
+ * The user tunes with fixed steps, and a step that suits a 50 MHz span is useless inside a
+ * 25 kHz one. So the step is remembered per bandwidth (key = decimation, the select's own
+ * value) and the client owns it: the backend never reports a step, so the slot is
+ * authoritative and persists with the other SDR preferences. The display unit lives
+ * separately, in the shared unit map (core/units.ts) under the key `sdr_step`, the same
+ * toggle buttons as every other frequency box.
+ */
+
+/**
+ * Parse a stored step map. Keys are decimations, values are steps in Hz. Any entry that is
+ * not a positive finite number is dropped, and unreadable storage degrades to an empty map,
+ * so a hand-edited or damaged value cannot put a broken step on the arrow keys.
+ */
+export function parseSdrStepMap(raw: string): Record<string, number> {
+	try {
+		const map = JSON.parse(raw) as Record<string, unknown>;
+		const clean: Record<string, number> = {};
+		for (const [key, value] of Object.entries(map)) {
+			if (typeof value === 'number' && isFinite(value) && value > 0) clean[key] = value;
+		}
+		return clean;
+	} catch {
+		return {};
+	}
+}
+
+export const sdrStepByBw = createParam<Record<string, number>>('sdr.stepByBw', {
+	fallback: {}, scope: 'sdr', persistKey: 'web-sa-sdr-step-bw', persist: 'desired',
+	authoritative: true,
+	parse: parseSdrStepMap,
+	serialize: (v) => JSON.stringify(v),
+	equals: (a, b) => {
+		const ka = Object.keys(a), kb = Object.keys(b);
+		return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
+	},
+});
+
 /** Every persisted SDR preference (Preset removes them, so defaults really are defaults). */
 export const SDR_PREF_KEYS = [
 	'web-sa-sdr-audio', 'web-sa-sdr-center', 'web-sa-sdr-listen', 'web-sa-sdr-decimate',
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
 	'web-sa-sdr-squelch', 'web-sa-sdr-agc', 'web-sa-sdr-nr', 'web-sa-sdr-nr-strength',
 	'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
+	'web-sa-sdr-step-bw',
 ];
 
 /**
@@ -201,6 +243,52 @@ export function estimatedCaptureSpanHz(decimate: number): number {
 	return (IQS_NATIVE_RATE_HZ * 0.8) / Math.max(1, decimate);
 }
 
+/** Quick-select steps offered next to the step box, in Hz: 1 Hz up to 100 MHz. */
+export const SDR_STEP_QUICK_HZ = [
+	1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000,
+] as const;
+
+/**
+ * Default step for a capture bandwidth: a 1-2-5 value at about span / 100, rounded down.
+ *
+ * A 195 kHz span then keeps the 1 kHz step the keyboard always used, a 25 kHz span drops to
+ * 100 Hz for SSB and CW work, and a 50 MHz span gives 500 kHz so a wideband sweep stays
+ * quick to walk through. Round down, not to the nearest: a finer step never hides a signal.
+ */
+export function defaultSdrStepHz(bandwidthHz: number): number {
+	if (!(bandwidthHz > 0) || !isFinite(bandwidthHz)) return 1000;
+	const target = bandwidthHz / 100;
+	const decade = Math.floor(Math.log10(target));
+	if (decade < 0) return 1;
+	for (const m of [5, 2, 1]) {
+		if (m * 10 ** decade <= target) return m * 10 ** decade;
+	}
+	return 1;
+}
+
+/** The step the user stored for one bandwidth, or null when none was set (an auto value). */
+export function storedSdrStepHz(decimate: number): number | null {
+	const stored = sdrStepByBw.get()[String(Math.round(decimate))];
+	return stored && stored > 0 ? stored : null;
+}
+
+/** The step the arrow keys use now: the user's choice for this bandwidth, else the default. */
+export function currentSdrStepHz(): number {
+	const stored = storedSdrStepHz(sdrDecimate.get());
+	if (stored !== null) return stored;
+	const span = sdrSpanHz.get() > 0
+		? sdrSpanHz.get()
+		: estimatedCaptureSpanHz(Math.max(1, Math.round(sdrDecimate.get())));
+	return defaultSdrStepHz(span);
+}
+
+/** Record the user's step for the current bandwidth (a user action; never an auto choice). */
+export function setSdrStepForCurrentBw(stepHz: number): void {
+	if (!(stepHz > 0) || !isFinite(stepHz)) return;
+	const key = String(Math.round(sdrDecimate.get()));
+	sdrStepByBw.set({ ...sdrStepByBw.get(), [key]: stepHz });
+}
+
 const input = (id: string) => document.getElementById(id) as HTMLInputElement | null;
 const select = (id: string) => document.getElementById(id) as HTMLSelectElement | null;
 
@@ -219,6 +307,18 @@ export function renderSdrState(): void {
 	}
 	const dec = select('select-sdr-decimate');
 	if (dec) dec.value = String(sdrDecimate.get());
+	// The tuning step: the box shows the value in the chosen unit, a quick button marks the
+	// step in use. Read from the slots on every render, so a bandwidth switch shows that
+	// bandwidth's stored step (or its default) with no separate copy to keep in step.
+	const stepInput = input('input-sdr-step');
+	if (stepInput && document.activeElement !== stepInput) {
+		// The box shows the step in the shared unit map's unit for `sdr_step`.
+		stepInput.value = String(Number(toUnit(currentSdrStepHz(), 'sdr_step').toPrecision(6)));
+	}
+	const stepHz = currentSdrStepHz();
+	document.querySelectorAll<HTMLButtonElement>('#sdr-step-quick [data-step-hz]').forEach((btn) => {
+		btn.classList.toggle('active', Number(btn.dataset.stepHz) === stepHz);
+	});
 	const nrButton = document.getElementById('btn-sdr-nr');
 	if (nrButton) {
 		nrButton.classList.toggle('active', sdrNr.get());

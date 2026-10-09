@@ -238,7 +238,14 @@ select:disabled { color: var(--label); }
 .ft8-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* The hint row carries the level readout on the right (it is status, not a control). */
 .sdr-hint-row { display: flex; align-items: center; gap: 8px; }
-.sdr-hint-row #cur-sdr-level { font-family: 'Courier New', monospace; white-space: nowrap; }
+/* Level readout in the badge style of the other read-only indicators; invisible while the
+   backend has not reported a level yet. */
+.sdr-hint-row #cur-sdr-level {
+  font-family: 'Courier New', monospace; white-space: nowrap;
+  border: 1px solid var(--inner-border); background: var(--input-bg);
+  padding: 2px 6px; border-radius: 2px; color: var(--text);
+}
+.sdr-hint-row #cur-sdr-level:empty { border: none; background: none; padding: 0; }
 /* Shared FT8/CW/DRM decode window: draggable and resizable. Lives in
    <body> outside the zoomed frame and carries the UI scale itself (like the keypad) - a fixed
    element inside the zoomed card renders its left/top in zoomed coordinates while pointer events
@@ -507,6 +514,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   position: absolute; left: 0; top: 1px; width: 12px; height: 26px;
   padding: 0; font-size: 10px;
 }
+/* Stacked order under collapse: the panel toggle sits on top (first in the row), the rail
+   toggle below it - the same order as in the expanded rail. */
+.control-rail.collapsed #rail-toggle { top: 28px; }
 .rail-toggle {
   flex: 0 0 auto; box-sizing: border-box; width: 100%; height: 22px; padding: 0;
   border: 1px solid var(--card-border); background: var(--panel-2); color: var(--label);
@@ -635,6 +645,28 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* main control column: input == select */
 #rta-freq-settings input[type="number"],
 #rta-freq-settings select { width: 108px; height: 22px; box-sizing: border-box; }
+/* Fixed width: the Listen row carries a spacer of the same size, so the Set buttons of the
+   Center and Listen rows line up in a column. */
+#select-sdr-decimate { width: 108px; }
+/* Equal-width frequency boxes: the Listen tail is pinned to 34 + 4 + 40 + 4 + 108 = 190px
+   (MHz label, Set, spacer), and the step row's unit group takes exactly the same space, so
+   the step input is as wide as the Listen input at any panel width. */
+#sdr-settings .param-row > .cur-val { flex: 0 0 34px; }
+#sdr-settings .param-row > [data-action="apply-sdr"],
+#sdr-settings .param-row > [data-action="apply-sdr-tune"] { flex: 0 0 40px; }
+#unit-sdr_step-group { flex: 0 0 190px; justify-content: flex-start; }
+/* The tune buttons: twice the standard height, easy to hit while listening. The quick-step
+   row and the tune row keep a 10px gap above and below. */
+#sdr-settings .span-step-button, #sdr-settings .span-full-button { height: 40px; }
+#sdr-settings .span-action-row { margin: 10px 0; }
+/* Control-panel visibility toggle: a second stacked button under the rail toggle; the glyph
+   points where the panel goes (» hides it to the right, « pulls it back). When the rail is
+   collapsed both toggles stay reachable as a narrow 12px column. */
+.control-panel.panel-hidden { flex-basis: 0; overflow: hidden; padding-right: 0; margin-left: -12px; }
+/* Panel gone: the plot ends at the viewport edge, so anchor the floating toggles inward
+   (left:0 would park them one button-width past the edge, gone and unclickable). */
+.control-rail.panel-hidden.collapsed .rail-toggle,
+.control-rail.panel-hidden.collapsed #panel-vis-toggle { left: auto; right: 0; }
 #rta-freq-settings .btn {
   height: 22px; font-size: 11px; box-sizing: border-box; line-height: 1;
   padding: 0 8px; display: inline-flex; align-items: center; justify-content: center;

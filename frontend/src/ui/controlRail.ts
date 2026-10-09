@@ -62,6 +62,9 @@ function markActive(group: HTMLElement | null): void {
 }
 
 function jumpTo(group: HTMLElement): void {
+  // A jump target inside a hidden panel cannot be scrolled to: bring the panel back first.
+  // The rAF below measures after the expansion, so the scroll lands on the real position.
+  if (isPanelHidden()) setPanelHidden(false);
   if (isCollapsed(group)) {
     // reuse the app's own toggle so collapse state has one owner
     const toggle = group.querySelector('.group-head .panel-toggle') as HTMLElement | null;
@@ -94,6 +97,8 @@ function syncLabels(): void {
   });
   const toggle = document.getElementById('rail-toggle');
   if (toggle) toggle.title = t(isCollapsedRail() ? 'rail_expand' : 'rail_collapse');
+  const visToggle = document.getElementById('panel-vis-toggle');
+  if (visToggle) visToggle.title = t(isPanelHidden() ? 'panel_show' : 'panel_hide');
 }
 
 function isCollapsedRail(): boolean {
@@ -112,6 +117,28 @@ function setRailCollapsed(collapsed: boolean): void {
     toggle.title = t(collapsed ? 'rail_expand' : 'rail_collapse');
   }
   try { localStorage.setItem(RAIL_LS_KEY, collapsed ? 'collapsed' : 'expanded'); } catch { /* ignore */ }
+}
+
+const PANEL_LS_KEY = 'web-sa-panel';
+
+function isPanelHidden(): boolean {
+  return panel()?.classList.contains('panel-hidden') ?? false;
+}
+
+/** Hide/show the whole control panel and remember it (glyph points where the panel goes). */
+function setPanelHidden(hidden: boolean): void {
+  const p = panel();
+  const btn = document.getElementById('panel-vis-toggle');
+  if (!p || !btn) return;
+  p.classList.toggle('panel-hidden', hidden);
+  // Mirror the state on the rail: with the panel gone the plot takes its width and would
+  // push a collapsed rail's floating toggles past the viewport edge (unreachable).
+  document.getElementById('control-rail')?.classList.toggle('panel-hidden', hidden);
+  // +/- like the group collapse buttons: - hides the panel, + shows it.
+  btn.textContent = hidden ? '+' : '-';
+  btn.setAttribute('aria-expanded', String(!hidden));
+  btn.title = t(hidden ? 'panel_show' : 'panel_hide');
+  try { localStorage.setItem(PANEL_LS_KEY, hidden ? 'hidden' : 'shown'); } catch { /* ignore */ }
 }
 
 /** Highlight the group the user is currently looking at. */
@@ -145,9 +172,22 @@ export function initControlRail(): void {
     items.forEach((it) => itemsHost.appendChild(it.el));
   }
   const toggle = document.getElementById('rail-toggle');
-  toggle?.addEventListener('click', () => setRailCollapsed(!isCollapsedRail()));
+  toggle?.addEventListener('click', () => {
+    const collapsed = !isCollapsedRail();
+    setRailCollapsed(collapsed);
+    // Expanding the rail brings the control panel back: the two "open" actions are one
+    // gesture for the operator, while collapsing stays independent. The link lives here,
+    // not in setRailCollapsed, so the init-time state restore keeps its independence.
+    if (!collapsed) setPanelHidden(false);
+  });
   try { setRailCollapsed(localStorage.getItem(RAIL_LS_KEY) === 'collapsed'); }
   catch { setRailCollapsed(false); }
+  // The control-panel visibility toggle sits under the rail toggle and follows the same
+  // pattern: glyph + aria-expanded + title switch, and the choice is remembered.
+  const visToggle = document.getElementById('panel-vis-toggle');
+  visToggle?.addEventListener('click', () => setPanelHidden(!isPanelHidden()));
+  try { setPanelHidden(localStorage.getItem(PANEL_LS_KEY) === 'hidden'); }
+  catch { setPanelHidden(false); }
   syncLabels();
   p.addEventListener('scroll', () => {
     if (scrollRaf) return;

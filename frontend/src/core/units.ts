@@ -10,14 +10,14 @@ export const UNIT_OPTIONS: Record<string, string[]> = {
   center: ['Hz', 'kHz', 'MHz', 'GHz'], span: ['Hz', 'kHz', 'MHz', 'GHz'],
   start: ['Hz', 'kHz', 'MHz', 'GHz'], stop: ['Hz', 'kHz', 'MHz', 'GHz'],
   rbw: ['Hz', 'kHz', 'MHz'], vbw: ['Hz', 'kHz', 'MHz'], pnm: ['Hz', 'kHz', 'MHz', 'GHz'],
-  rta_center: ['MHz', 'GHz'],
+  rta_center: ['MHz', 'GHz'], sdr_step: ['Hz', 'kHz', 'MHz'],
 };
 
 /** Currently selected unit per field key (`center`, `span`, `rta_center`, ...). */
 export const unitMap = createParam<Record<string, string>>('units.map', {
   fallback: {
     center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz',
-    rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz',
+    rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz', sdr_step: 'kHz',
   },
   scope: 'units',
   // Client-owned: nothing reports it back, so a pending value must not expire.
