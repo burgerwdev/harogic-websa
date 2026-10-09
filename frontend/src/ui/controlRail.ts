@@ -131,8 +131,8 @@ function setPanelHidden(hidden: boolean): void {
   // Mirror the state on the rail: with the panel gone the plot takes its width and would
   // push a collapsed rail's floating toggles past the viewport edge (unreachable).
   document.getElementById('control-rail')?.classList.toggle('panel-hidden', hidden);
-  // Door icon = the action the click does: [-] closes (hides), [\] opens (shows).
-  btn.textContent = hidden ? '[\\]' : '[-]';
+  // +/- like the group collapse buttons: - hides the panel, + shows it.
+  btn.textContent = hidden ? '+' : '-';
   btn.setAttribute('aria-expanded', String(!hidden));
   btn.title = t(hidden ? 'panel_show' : 'panel_hide');
   try { localStorage.setItem(PANEL_LS_KEY, hidden ? 'hidden' : 'shown'); } catch { /* ignore */ }
