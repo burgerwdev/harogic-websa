@@ -128,6 +128,9 @@ function setPanelHidden(hidden: boolean): void {
   const btn = document.getElementById('panel-vis-toggle');
   if (!p || !btn) return;
   p.classList.toggle('panel-hidden', hidden);
+  // Mirror the state on the rail: with the panel gone the plot takes its width and would
+  // push a collapsed rail's floating toggles past the viewport edge (unreachable).
+  document.getElementById('control-rail')?.classList.toggle('panel-hidden', hidden);
   btn.textContent = hidden ? '\u00ab' : '\u00bb';   // « pulls it back, » pushes it away
   btn.setAttribute('aria-expanded', String(!hidden));
   btn.title = t(hidden ? 'panel_show' : 'panel_hide');
