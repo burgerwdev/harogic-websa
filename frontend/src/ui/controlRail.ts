@@ -169,7 +169,14 @@ export function initControlRail(): void {
     items.forEach((it) => itemsHost.appendChild(it.el));
   }
   const toggle = document.getElementById('rail-toggle');
-  toggle?.addEventListener('click', () => setRailCollapsed(!isCollapsedRail()));
+  toggle?.addEventListener('click', () => {
+    const collapsed = !isCollapsedRail();
+    setRailCollapsed(collapsed);
+    // Expanding the rail brings the control panel back: the two "open" actions are one
+    // gesture for the operator, while collapsing stays independent. The link lives here,
+    // not in setRailCollapsed, so the init-time state restore keeps its independence.
+    if (!collapsed) setPanelHidden(false);
+  });
   try { setRailCollapsed(localStorage.getItem(RAIL_LS_KEY) === 'collapsed'); }
   catch { setRailCollapsed(false); }
   // The control-panel visibility toggle sits under the rail toggle and follows the same
