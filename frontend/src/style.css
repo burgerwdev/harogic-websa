@@ -514,6 +514,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
   position: absolute; left: 0; top: 1px; width: 12px; height: 26px;
   padding: 0; font-size: 10px;
 }
+/* Stacked order under collapse: the panel toggle sits on top (first in the row), the rail
+   toggle below it - the same order as in the expanded rail. */
+.control-rail.collapsed #rail-toggle { top: 28px; }
 .rail-toggle {
   flex: 0 0 auto; box-sizing: border-box; width: 100%; height: 22px; padding: 0;
   border: 1px solid var(--card-border); background: var(--panel-2); color: var(--label);
@@ -664,9 +667,6 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
    (left:0 would park them one button-width past the edge, gone and unclickable). */
 .control-rail.panel-hidden.collapsed .rail-toggle,
 .control-rail.panel-hidden.collapsed #panel-vis-toggle { left: auto; right: 0; }
-.control-rail.collapsed #panel-vis-toggle {
-  position: absolute; left: 0; top: 28px; width: 12px; padding: 0; font-size: 10px;
-}
 #rta-freq-settings .btn {
   height: 22px; font-size: 11px; box-sizing: border-box; line-height: 1;
   padding: 0 8px; display: inline-flex; align-items: center; justify-content: center;

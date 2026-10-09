@@ -152,8 +152,8 @@
     </div>
 
     <div class="control-rail" id="control-rail" aria-label="Control groups">
+      <button type="button" class="rail-toggle" id="panel-vis-toggle" aria-expanded="true" title="Hide control panel">[-]</button>
       <button type="button" class="rail-toggle" id="rail-toggle" aria-expanded="true">«</button>
-      <button type="button" class="rail-toggle" id="panel-vis-toggle" aria-expanded="true" title="Hide control panel">»</button>
       <div class="rail-items" id="rail-items"></div>
     </div>
 
@@ -311,7 +311,7 @@
               <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
               <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
             <div class="param-row sdr-hint-row">
-              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M mode &middot; Space audio</span>
+              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M=demod &middot; Space=audio</span>
               <!-- The level readout sits with the hint: the volume row is cramped and the level is a
                    status, not a control. -->
               <span class="cur-val" id="cur-sdr-level"></span>
