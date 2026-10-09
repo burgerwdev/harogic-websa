@@ -431,7 +431,7 @@ export const zh = {
 	"start": "起始",
 	"listen": "收听",
 	"step": "步进",
-	"to_center": "回中心",
+	"to_center": "设为中心",
 	"demod": "解调",
 	"if_filter": "滤波",
 	"decode": "解码",
