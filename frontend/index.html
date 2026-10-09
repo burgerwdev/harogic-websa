@@ -246,6 +246,15 @@
               <input type="number" id="input-sdr-listen" value="1000" step="any" style="flex:1;" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
               <span class="cur-val">MHz</span>
               <button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="step">Step</label>
+              <input type="number" id="input-sdr-step" min="0" step="any" style="flex:1;min-width:64px;" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
+              <select id="select-sdr-step-unit" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Step unit">
+                <option value="Hz">Hz</option>
+                <option value="kHz" selected>kHz</option>
+                <option value="MHz">MHz</option>
+              </select>
+              <span id="sdr-step-quick" style="display:inline-flex;gap:2px;"></span>
+              <button class="btn" data-action="sdr-to-center" data-i18n="to_center" data-i18n-title="sdr_to_center_tip" data-i18n-attr="title" title="Set the wideband centre to the listen frequency">To Center</button></div>
             <div class="param-row"><label data-i18n="demod">Demod</label>
               <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
                    mode list lives in wasm/src/plugin.rs, not here. -->

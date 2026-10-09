@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, type NrAlgo } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrStepUnit, sdrVolume, SDR_STEP_QUICK_HZ, SDR_STEP_UNIT_FACTOR, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo } from './sdrState';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
@@ -347,7 +347,9 @@ export function applySdr() {
   if (l) l.value = centerMhz.toFixed(6);
 }
 
-// Changing only the capture bandwidth keeps the listen frequency unchanged.
+// Changing only the capture bandwidth keeps the listen frequency unchanged. The tuning step
+// follows the bandwidth on its own: renderSdrState shows the stored step for it, or the
+// span-derived default, and the slots keep no second copy that could disagree.
 export function applySdrBw() {
   const decimate = Math.round(sdrNumber('select-sdr-decimate', 32));
   sdrDecimate.set(decimate);
@@ -364,6 +366,34 @@ export function applySdrTune() {
   renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
+}
+
+/**
+ * Apply the step the user typed, in the unit shown next to the box. The value is stored for
+ * the current capture bandwidth, so each bandwidth keeps the step its user chose for it.
+ * An empty or invalid box leaves the current step alone.
+ */
+export function applySdrStep() {
+  const raw = sdrNumber('input-sdr-step', NaN);
+  const hz = raw * SDR_STEP_UNIT_FACTOR[sdrStepUnit.get()];
+  if (!(hz > 0)) return;
+  setSdrStepForCurrentBw(hz);
+  renderSdrState();
+}
+
+/**
+ * To Center: make the listen frequency the wideband centre. The demodulator is already on
+ * the signal, so only the capture window moves around it. SET_SDR retunes the demod to the
+ * new centre, so the follow-up SET_SDR_TUNE puts the listen frequency back where it was.
+ */
+export function sdrToCenter() {
+  const listen = sdrListenHz.get();
+  if (!(listen > 0)) return;
+  sdrCenterHz.set(listen);
+  renderSdrState();
+  prepareSdrAudioTransition();
+  send({ cmd: 'SET_SDR', center: listen, decimate: Math.round(sdrDecimate.get()) });
+  send({ cmd: 'SET_SDR_TUNE', listen });
 }
 
 export function applySdrDemod() {
@@ -823,6 +853,7 @@ export function bindActions() {
     'apply-sdr': () => applySdr(),
     'apply-sdr-bw': () => applySdrBw(),
     'apply-sdr-tune': () => applySdrTune(),
+    'sdr-to-center': () => sdrToCenter(),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
     'toggle-sdr-nr': () => toggleSdrNr(),
@@ -963,6 +994,30 @@ export function bindActions() {
   if (sdrListen) sdrListen.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Enter') applySdrTune();
   });
+  // The step box and its quick buttons: one writer (setSdrStepForCurrentBw) and one render
+  // path (renderSdrState), like every other SDR control. A unit change only re-renders: the
+  // state stays in Hz, the box then shows the same step in the new unit.
+  const sdrStepEl = document.getElementById('input-sdr-step') as HTMLInputElement | null;
+  if (sdrStepEl) sdrStepEl.addEventListener('change', () => applySdrStep());
+  const sdrStepUnitEl = document.getElementById('select-sdr-step-unit') as HTMLSelectElement | null;
+  if (sdrStepUnitEl) sdrStepUnitEl.addEventListener('change', () => {
+    sdrStepUnit.set((sdrStepUnitEl.value === 'MHz' || sdrStepUnitEl.value === 'Hz')
+      ? sdrStepUnitEl.value : 'kHz');
+    renderSdrState();
+  });
+  const sdrStepQuick = document.getElementById('sdr-step-quick');
+  if (sdrStepQuick) {
+    for (const hz of SDR_STEP_QUICK_HZ) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.type = 'button';
+      btn.dataset.stepHz = String(hz);
+      btn.textContent = hz >= 1000 ? `${hz / 1000}k` : String(hz);
+      btn.title = `${hz.toLocaleString('en-US')} Hz`;
+      btn.addEventListener('click', () => { setSdrStepForCurrentBw(hz); renderSdrState(); });
+      sdrStepQuick.appendChild(btn);
+    }
+  }
 
   // Special bindings: trace tab / meas tab / marker select / scale / peakthr input
   document.querySelectorAll('[data-trace-tab]').forEach(el => {
@@ -1338,10 +1393,12 @@ export function bindCanvas() {
     const el = document.activeElement as HTMLElement | null;
     const tag = el?.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    const mult = e.shiftKey ? 100 : (e.altKey ? 10 : 1);
+    // The arrow keys tune by the step shown in the step box - the stored step for this
+    // bandwidth, or its default. No modifier multipliers: one fixed step stays predictable
+    // while listening.
     let handled = true;
-    if (e.key === 'ArrowLeft') sdrTuneBy(-1000 * mult);
-    else if (e.key === 'ArrowRight') sdrTuneBy(1000 * mult);
+    if (e.key === 'ArrowLeft') sdrTuneBy(-currentSdrStepHz());
+    else if (e.key === 'ArrowRight') sdrTuneBy(currentSdrStepHz());
     else if (e.key === 'ArrowUp') sdrNudgeVolume(0.05);
     else if (e.key === 'ArrowDown') sdrNudgeVolume(-0.05);
     else if (e.key === 'PageUp') sdrCycleIfbw(1);
