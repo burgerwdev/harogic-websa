@@ -77,6 +77,33 @@ def test_the_application_can_drive_it_through_the_session_factory(device, fake_s
     assert device.state.sdr_actual['pan_points'] > 0
 
 
+def test_a_narrow_sdr_capture_is_floored_while_the_select_is_confirmed(device, fake_sessions):
+    """Reported: below ~100 kHz capture the SDR spectrum and audio went choppy.
+
+    The fake mirrors the real session's capture geometry (it is what the CI UI smoke drives), so
+    this is the contract the front end sees: the operator's requested decimate is confirmed back
+    (the select must not jump to the device's own figure), the device capture is floored so the
+    packet period stays inside the panadapter's cadence, and the display window stays the request.
+    """
+    sdr = make_session(device, 'sdr')
+    for requested in (512, 1024, 2048):
+        device.state.sdr_decimate = requested
+        sdr.step()
+        actual = device.state.sdr_actual
+        assert actual['decimate'] == requested
+        assert actual['capture_decimate'] <= 128
+        assert actual['packet_samples'] / actual['iq_rate'] <= 1.0 / 20.0
+        assert actual['bandwidth'] == pytest.approx(50e6 / requested)
+        assert actual['capture_bandwidth'] == pytest.approx(
+            50e6 / actual['capture_decimate'])
+        assert actual['stop'] - actual['start'] == pytest.approx(actual['bandwidth'])
+        assert actual['capture_stop'] - actual['capture_start'] == pytest.approx(
+            actual['capture_bandwidth'])
+        # The capture contains the display window (that is what lets the bins be clipped to it).
+        assert actual['capture_start'] <= actual['start']
+        assert actual['capture_stop'] >= actual['stop']
+
+
 def test_preset_and_resets_write_through_the_flat_aliases(device):
     device.state.center_hz = 2e9
     device.state.points_req = 4000

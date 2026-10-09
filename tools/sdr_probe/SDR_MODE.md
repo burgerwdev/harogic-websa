@@ -99,11 +99,14 @@ above ~3.13 MHz) while still allowing real demodulation and listening.
 - **Audio transient**: after any tune or chain reconfiguration the backend discards
   120 ms and fades in over 100 ms; AUDF reset markers flush old-channel audio first.
 - **Capture bandwidth vs CPU**: the channelizer (vendor `DSP_DDC`) cost scales with
-  the IQ rate. High-rate input paths batch two IQS packets for one DDC/FIR/demod pass,
-  preserving the wider capture bandwidth while absorbing scheduler jitter; this adds
-  about 8 ms of buffering but does not change the IF bandwidth or 48 kHz audio rate.
-  Decimate 32 and slower paths remain single-packet. The wide options are marked
-  `(audio ⚠)` in the UI — use them for viewing, not for listening.
+  the IQ rate. The IQS Adaptive packet is a fixed ~16240 complex-int16 samples (64960 bytes)
+  at any decimate and the publisher loop is packet-paced, so the *requested* capture is floored
+  at decimate 128 (488 kSPS, 33 ms per packet) and a narrower request becomes the display window
+  plus the DDC passband clamp (`SDR_MAX_CAPTURE_DECIMATE` in `measurements/sdr.py`). Below the
+  floor the packet period outgrew the panadapter's 20 fps and the browser's 0.3 s audio target
+  (133 ms at 97.7 kHz, 532 ms at 24.4 kHz), which is what made narrow captures look and sound
+  choppy. One packet per step: batching two intermittently corrupted the vendor heap.
+  The wide options are marked `(audio ⚠)` in the UI — use them for viewing, not for listening.
 - **Auto-scale**: in SDR mode the amplitude reference is computed from each frame's
   peak (with hysteresis), because the SWP reference level (often 0 dBm) would push a
   −100 dBm noise floor off the bottom of the display. `#spectrum[data-sdr-ref]` carries

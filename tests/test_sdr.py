@@ -15,8 +15,11 @@ from web_sa.hardware import sdk_bindings as sb
 from web_sa.measurements import sdr as sdr_module
 from web_sa.measurements.framer import encode_audio
 from web_sa.measurements.sdr import (
+    SDR_MAX_CAPTURE_DECIMATE,
     SdrSession,
     _round_decimate,
+    display_pan_points,
+    sdr_capture_geometry,
     sdr_spectrum_windows,
 )
 
@@ -51,6 +54,76 @@ def test_spectrum_windows_match_when_there_is_no_offset():
     w = sdr_spectrum_windows(101.7e6, 101.7e6, 3.125e6)
     assert w['start'] == w['capture_start']
     assert w['stop'] == w['capture_stop']
+
+
+def test_a_widened_capture_keeps_the_display_window_on_the_request():
+    """Reported: the SDR spectrum and the audio turned choppy below ~100 kHz capture.
+
+    The publisher loop is packet-paced and the IQS Adaptive packet is a *fixed* ~16240 samples, so
+    a narrow capture stretches the packet period (133 ms at 97.7 kHz, 532 ms at 24.4 kHz) past the
+    panadapter's cadence and the browser's audio target. The device capture is therefore floored
+    and the operator's narrower request becomes the DISPLAY window; the two windows must stay
+    separate in the payload, because the front end draws the display one and clips to it.
+    """
+    w = sdr_spectrum_windows(101.7e6, 101.7e6, 97.66e3, 390.625e3)
+    assert w['stop'] - w['start'] == pytest.approx(97.66e3)          # what was asked to be seen
+    assert w['capture_stop'] - w['capture_start'] == pytest.approx(390.625e3)
+    assert w['capture_start'] == pytest.approx(101.7e6 - 390.625e3 / 2.0)
+    assert w['capture_stop'] == pytest.approx(101.7e6 + 390.625e3 / 2.0)
+    # The capture reaches past the display on both sides (they share a centre here).
+    assert w['capture_start'] < w['start'] and w['capture_stop'] > w['stop']
+
+
+def test_capture_geometry_floors_the_device_and_shows_the_request():
+    native = 62.5e6
+    for requested in (512, 1024, 2048):
+        capture, display, capture_bw = sdr_capture_geometry(requested, native)
+        assert capture == SDR_MAX_CAPTURE_DECIMATE == 128
+        assert display == pytest.approx(native * 0.8 / requested)     # the operator's own span
+        assert capture_bw == pytest.approx(native * 0.8 / capture)
+        assert capture_bw > display
+    # A request the device can honour is passed through untouched (display == capture).
+    for requested in (1, 16, 32, 128):
+        capture, display, capture_bw = sdr_capture_geometry(requested, native)
+        assert capture == requested and display == capture_bw
+    # A device that reports no native rate gets no invented floor or window.
+    assert sdr_capture_geometry(512, 0.0) == (SDR_MAX_CAPTURE_DECIMATE, 0.0, 0.0)
+
+
+def test_the_capture_floor_keeps_the_packet_period_inside_the_panadapter_cadence():
+    """The floor exists for one reason: the step rate must not fall below the consumers' cadence.
+
+    The packet byte size stays ~64960 at any decimate (measured on the SAN-90), i.e. 16240
+    complex-int16 samples per packet, so the period is `packet_samples / IQSampleRate` and the
+    panadapter (20 fps cap) and the channelized baseband are emitted once per period. Every
+    decimate the UI offers must survive that, not only the three that were reported.
+    """
+    native = 62.5e6
+    packet_samples = 16240
+    for requested in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048):
+        capture, _display, _capture_bw = sdr_capture_geometry(requested, native)
+        period = packet_samples / (native / capture)
+        assert period <= 1.0 / 20.0, (requested, period)
+    # The symptom, in numbers: using the request itself as the device geometry gives 133 ms
+    # (7.5 fps) at 97.7 kHz and 532 ms (1.9 fps) at 24.4 kHz - the panadapter's 20 fps and the
+    # browser ring's 0.3 s target cannot be fed from that.
+    for requested, naive_ms in ((512, 133.0), (1024, 266.1), (2048, 532.2)):
+        naive = packet_samples / (native / requested)
+        assert naive == pytest.approx(naive_ms / 1e3, rel=0.01)
+        assert naive > 1.0 / 20.0
+
+
+def test_display_pan_points_follow_the_display_window_not_the_capture():
+    """The FFT grid spans the whole capture, so only the display's share of it is real data."""
+    # 16240 bins over a 488 kSPS capture; a 24.4 kHz display holds 5 % of them.
+    assert display_pan_points(16240, 24.41e3, 488.28e3, 2048) == 812
+    # The NumPy fallback has only PAN_FFT bins over the same capture.
+    assert display_pan_points(2048, 24.41e3, 488.28e3, 2048) == 102
+    # Wider than the point budget: the panadapter's own cap still applies.
+    assert display_pan_points(16240, 97.66e3, 488.28e3, 2048) == 2048
+    # Degenerate inputs still leave a drawable frame (never > cap, never < 2).
+    assert display_pan_points(0, 0.0, 0.0, 2048) == 2048
+    assert display_pan_points(16240, 1.0, 62.5e6, 2048) == 2
 
 
 def test_audio_frame_keeps_compatible_header():
@@ -287,6 +360,22 @@ def test_ddc_rate_stays_close_to_the_if_bandwidth():
     # A narrow mode still gets the 48 kHz floor (the demodulator's own rate).
     session.dev = SimpleNamespace(state=SimpleNamespace(sdr_if_bw=6_000.0))
     _, decimate = session._chain_params()
+    assert session._fs_in / decimate == pytest.approx(48_000.0, rel=0.05)
+
+
+def test_demod_channel_is_clamped_to_the_display_window_not_the_capture():
+    """A capture widened to keep the stream pacing must not widen the demodulator's channel.
+
+    The browser runs a 257-tap complex band filter at the DDC output rate, so the clamp has to
+    follow the *display* window (what the operator asked to receive), not the wider capture the
+    device was asked for to keep the IQS packet period short.
+    """
+    session = SdrSession.__new__(SdrSession)
+    session._fs_in = 62.5e6 / 128                      # 488 kSPS: the floored capture
+    session._display_bw = 24_000.0                     # a 24 kHz request inside it
+    session.dev = SimpleNamespace(state=SimpleNamespace(sdr_if_bw=180_000.0))
+    if_bw, decimate = session._chain_params()
+    assert if_bw == pytest.approx(24_000.0 * 0.4)     # clamped by the window, not by the capture
     assert session._fs_in / decimate == pytest.approx(48_000.0, rel=0.05)
 
 

@@ -33,6 +33,21 @@ describe('alignToDisplayWindow', () => {
     expect((out.freq[0] + out.freq[8]) / 2).toBeCloseTo(6, 9);
   });
 
+  it('rebins a wider capture grid that happens to start on the display window', () => {
+    // SDR: the device captured four times wider than the requested window (its capture is
+    // floored so the IQS packet period stays short), so the grid starts on the window edge but
+    // spans far more. An equal start is not proof that the window *is* the capture.
+    const capFreq = grid(100, 108, 9);                                    // 8 MHz capture
+    const capSpec = Float32Array.from({ length: 9 }, (_, i) => i);
+    const out = alignToDisplayWindow(capFreq, capSpec, 100, 102);          // 2 MHz window
+    expect(out.shifted).toBe(true);
+    expect(out.freq[0]).toBeCloseTo(100, 9);
+    expect(out.freq[8]).toBeCloseTo(102, 9);        // the axis is the window, not the capture
+    // Every display bin is inside the capture, so nothing is invented and nothing is a gap.
+    expect(Array.from(out.spec).some(Number.isNaN)).toBe(false);
+    expect(Array.from(out.spec)).toEqual([0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]);
+  });
+
   it('interpolates fractionally offset grids instead of snapping', () => {
     const capFreq = grid(0, 8, 9);           // step 1
     const capSpec = Float32Array.from({ length: 9 }, (_, i) => i * 10);

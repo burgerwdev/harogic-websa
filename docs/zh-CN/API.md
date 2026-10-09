@@ -61,7 +61,7 @@ curl http://localhost:8080/api/state
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
 | `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta`、`req.sdr` 分别保存各模式配置 |
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
-| `sdr` | obj | SDR 接收链：请求值 `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`，以及 `actual`（IQS/DDC 几何：速率、带宽、捕获窗口、包形）、`level_dbfs`（Python 路径电平）、`squelch_open`、`adm`（厂商 AM/FM 指标）与 `health`（包计数，仅 SDR 中非空）|
+| `sdr` | obj | SDR 接收链：请求值 `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`，以及 `actual`（IQS/DDC 几何：速率、`bandwidth` = 请求的**显示窗口**与 `capture_bandwidth`/`capture_decimate` = 器件实际推流的几何——当请求会让 IQS 包周期过长时它会更宽，见 `SDR_MAX_CAPTURE_DECIMATE`——再加捕获窗口与包形）、`level_dbfs`（Python 路径电平）、`squelch_open`、`adm`（厂商 AM/FM 指标）与 `health`（包计数，仅 SDR 中非空）|
 | `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；`points` 与显示迹线固定为 1001 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |

@@ -270,6 +270,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 单位按钮/虚拟键盘不生效 | `fieldForInput(input)` 是否返回字段名 | 字段键与输入框 id 拼写不一致 |
 | 告警/提示只在某瞬间可见 | 是否有独立的重绘触发 | 只依赖帧循环绘制，而该状态恰好没有帧 |
 | 前端改了没生效 | `npm run build` 是否执行、浏览器是否刷新 | 服务提供 `dist/`，不重新构建就还是旧包 |
+| **SDR 频谱与声音在约 100 kHz 以下变卡** | STATUS 的 `sdr.actual.decimate` 与 `capture_decimate`/`iq_rate`/`packet_samples`，以及日志行 `SDR: ... requested -> device capture ...` | IQS Adaptive 每包固定约 16240 点，窄带宽会把包周期拉长到超过显示/音频节奏；设备抽取被限在 128 以上，而用户请求的宽度成为显示窗口 |
 
 - 前端**诊断键**（排查 auto-ref/缩放类问题直接读它们，不必加日志）：
   `#spectrum.dataset.sdrRef`（已应用值）与 `dataset.sdrRefDbg`（auto-ref 全部内部量：
@@ -326,6 +327,7 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
 | 密度图无法关闭，且它的余辉控件被放在 RTA 频率块里——在同样绘制该层的 SDR 下看不见 | 余辉只有无「关」状态的档位列表；那行按「密度画在哪里」归档，而不是按「设置归谁所有」 | 显示设置要跟显示走（Trace 面板，用 `trace-keep` 保持可用，三模式都可见），并且必须有显式 Off：Off 同时停止**累积**与**绘制**（`dsp/rtaDensity.ts` 返回 null），顺带省掉每帧的 bins × points 开销。Off 是一个**值**，所以必须能穿过 `parseFloat(v) || default` 这种写法——它曾把 Off 悄悄变回「近似 Medium」 | `rtaDensity.test.ts`（Off 不累积，并可经存储往返）、e2e `ui_smoke` Q |
 | SDR 打开时是 Clear Write，而 IQ 全景图的底噪恰恰是需要平均来平滑的；而且迹线模式是全局一份，去趟 RTA 就把选择丢了 | 迹线模式是每条迹线的内存态，且所有视图共用一个出厂默认 | 每个显示**族**各自记住自己的迹线模式：SDR 进入即 Average 且深度取面板自己的默认档 16，swept/RTA 侧保持 Clear Write，用户在某一族里改过的模式就是该族再次进入时的模式。只在**已确认**的模式变更时应用一次——放进每帧 STATUS 循环就会覆盖用户刚做的改动 | `traceFamily.test.ts`（进入即默认、往返保持、STATUS 接线只应用一次）、e2e `ui_smoke` R |
 | 电平轴在两种显示下含义不同：绝对（dBm）显示的顶端是器件参考，相对（dB）显示的顶端被钉在 0，因此「拖动电平轴」在两种显示下不可能指同一个值 | 最初的做法是在相对显示下拒绝该手势，于是用户要的功能只实现了一半（连 dB/div 滚轮也一起没了） | 轴上的手势改变的是**该轴显示的那个量**：绝对显示下平移电平轴动的是器件参考，相对显示下动的是**电平 offset**——而 offset 是客户端显示值，所以随指针即时生效（无需等待、无需提交） | `axisDrag.test.ts`（dB 显示下平移 offset、不发任何命令、也不需要预览层） |
+| **SDR 在约 100 kHz 以下捕获时频谱与声音都卡**（decimate 512 及更窄） | 发布循环由数据包节拍驱动（`pacing()` 在有包时返回 0，`step()` 每次只取一包），而 IQS Adaptive 的包大小是器件常量（任何抽取下仍约 64960 字节 = 16240 个 complex-int16 点；1.953125 MS/s ÷ 16240 = 120.3 步/秒，与实测 decimate 32 时的 120 步/秒吻合）。于是步进率——同时也就是全景帧、瀑布行与通道化基带块的速率——等于 `IQSampleRate / 16240`：97.7 kHz 下是 7.5 帧/秒与 133 ms 块，24.4 kHz 下是 1.9 帧/秒与 532 ms，而浏览器环形缓冲区只需 0.25 s 预充 / 0.3 s 目标 | 采集速率必须选得能喂饱它所服务的最慢消费者，而它不能由一个含义不同的量推导出来：用户选的「捕获带宽」是关于**看什么、解调什么**的请求，不是关于器件必须多快推流。把器件捕获几何设下限（`SDR_MAX_CAPTURE_DECIMATE`），把更窄的请求发布为**显示窗口**——显示/捕获分离本已存在（`sdr_spectrum_windows`、`alignToDisplayWindow`） | `test_sdr.py`（几何下限、显示窗口、pan points、解调带宽钳制）、`test_fake_device.py`（请求的 decimate 被确认回传，而捕获被放下限）、`grid.test.ts`（更宽的捕获网格会重采样到显示窗口） |
 
 ---
 
