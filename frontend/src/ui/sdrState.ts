@@ -243,8 +243,10 @@ export function estimatedCaptureSpanHz(decimate: number): number {
 	return (IQS_NATIVE_RATE_HZ * 0.8) / Math.max(1, decimate);
 }
 
-/** Quick-select steps offered next to the step box, in Hz. */
-export const SDR_STEP_QUICK_HZ = [10, 100, 1000, 10_000, 100_000] as const;
+/** Quick-select steps offered next to the step box, in Hz: 1 Hz up to 100 MHz. */
+export const SDR_STEP_QUICK_HZ = [
+	1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000,
+] as const;
 
 /**
  * Default step for a capture bandwidth: a 1-2-5 value at about span / 100, rounded down.

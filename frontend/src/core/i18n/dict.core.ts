@@ -2,7 +2,7 @@
 // merged in core/i18n.ts; the parity test checks the merged result).
 export const en = {
 	"tip_wf_meas": "Waterfall is unavailable while a measurement is active",
-	"ref_level": "Ref Level:",
+	"ref_level": "Ref:",
 	"scale": "Scale:",
 	"rbw": "RBW:",
 	"vbw": "VBW:",
@@ -10,7 +10,7 @@ export const en = {
 	"swt": "SWT:",
 	"bw_label": "BW:",
 	"gnss": "GNSS:",
-	"clock_ref": "Clock Ref:",
+	"clock_ref": "Clk:",
 	"int": "Int",
 	"ext": "Ext",
 	"ext_force": "ExtForce",
@@ -370,6 +370,8 @@ export const en = {
 	"rail_limits": "LIM",
 	"rail_collapse": "Collapse the jump rail",
 	"rail_expand": "Expand the jump rail",
+	"panel_hide": "Hide control panel",
+	"panel_show": "Show control panel",
 	"tip_export_csv": "Export the active trace (frequency, power) as CSV",
 	"amp_unit": "Unit",
 	"tip_level_unit": "Amplitude unit for trace readouts (marker, peaks, channel power, limits); differences stay in dB",
@@ -406,7 +408,7 @@ export const en = {
 
 export const zh = {
 	"tip_wf_meas": "测量模式下不可用瀑布图",
-	"ref_level": "参考电平:",
+	"ref_level": "电平:",
 	"scale": "刻度:",
 	"rbw": "分辨率带宽:",
 	"vbw": "视频带宽:",
@@ -414,7 +416,7 @@ export const zh = {
 	"swt": "扫描时间:",
 	"bw_label": "带宽:",
 	"gnss": "GNSS:",
-	"clock_ref": "参考时钟:",
+	"clock_ref": "时钟:",
 	"int": "内部",
 	"ext": "外部",
 	"ext_force": "外部强制",
@@ -774,6 +776,8 @@ export const zh = {
 	"rail_limits": "限值",
 	"rail_collapse": "收起跳转窄条",
 	"rail_expand": "展开跳转窄条",
+	"panel_hide": "隐藏控制面板",
+	"panel_show": "显示控制面板",
 	"tip_export_csv": "把当前迹线导出为 CSV（频率、功率）",
 	"amp_unit": "单位",
 	"tip_level_unit": "迹线读数（游标、峰值、信道功率、限制线）的幅度单位；差值仍以 dB 表示",

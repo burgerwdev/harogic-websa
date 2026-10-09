@@ -649,6 +649,13 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
    row and the tune row keep a 10px gap above and below. */
 #sdr-settings .span-step-button, #sdr-settings .span-full-button { height: 40px; }
 #sdr-settings .span-action-row { margin: 10px 0; }
+/* Control-panel visibility toggle: a second stacked button under the rail toggle; the glyph
+   points where the panel goes (» hides it to the right, « pulls it back). When the rail is
+   collapsed both toggles stay reachable as a narrow 12px column. */
+.control-panel.panel-hidden { flex-basis: 0; overflow: hidden; padding-right: 0; margin-left: -12px; }
+.control-rail.collapsed #panel-vis-toggle {
+  position: absolute; left: 0; top: 28px; width: 12px; padding: 0; font-size: 10px;
+}
 #rta-freq-settings .btn {
   height: 22px; font-size: 11px; box-sizing: border-box; line-height: 1;
   padding: 0 8px; display: inline-flex; align-items: center; justify-content: center;

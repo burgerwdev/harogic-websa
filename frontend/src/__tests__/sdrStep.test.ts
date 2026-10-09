@@ -118,7 +118,9 @@ describe('the stored step slot', () => {
 
 describe('step unit and quick steps', () => {
 	it('offers the quick steps in Hz and the shared unit buttons reach 1 Hz', () => {
-		expect(SDR_STEP_QUICK_HZ).toEqual([10, 100, 1000, 10_000, 100_000]);
+		expect(SDR_STEP_QUICK_HZ).toEqual([
+			1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000,
+		]);
 		// The unit toggles are the shared ones (core/units.ts), and Hz is one of them, so a
 		// 1 Hz step is reachable end to end: box value, state and the tune command are Hz.
 		expect(UNIT_OPTIONS.sdr_step).toEqual(['Hz', 'kHz', 'MHz']);

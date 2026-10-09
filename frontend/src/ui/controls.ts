@@ -1017,7 +1017,7 @@ export function bindActions() {
       btn.className = 'btn';
       btn.type = 'button';
       btn.dataset.stepHz = String(hz);
-      btn.textContent = hz >= 1000 ? `${hz / 1000}k` : String(hz);
+      btn.textContent = hz >= 1e6 ? `${hz / 1e6}M` : hz >= 1e3 ? `${hz / 1e3}k` : String(hz);
       btn.title = `${hz.toLocaleString('en-US')} Hz`;
       btn.addEventListener('click', () => { setSdrStepForCurrentBw(hz); renderSdrState(); });
       sdrStepQuick.appendChild(btn);
