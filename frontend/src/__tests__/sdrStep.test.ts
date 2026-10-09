@@ -8,9 +8,10 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resetAll } from '../core/params';
+import { UNIT_OPTIONS, toUnit, units } from '../core/units';
 import {
-	SDR_STEP_QUICK_HZ, SDR_STEP_UNIT_FACTOR, currentSdrStepHz, defaultSdrStepHz,
-	parseSdrStepMap, setSdrStepForCurrentBw, sdrDecimate, sdrSpanHz, sdrStepUnit,
+	SDR_STEP_QUICK_HZ, currentSdrStepHz, defaultSdrStepHz,
+	parseSdrStepMap, setSdrStepForCurrentBw, sdrDecimate, sdrSpanHz,
 	storedSdrStepHz,
 } from '../ui/sdrState';
 
@@ -116,19 +117,13 @@ describe('the stored step slot', () => {
 });
 
 describe('step unit and quick steps', () => {
-	it('converts the box value to Hz', () => {
-		expect(SDR_STEP_UNIT_FACTOR.Hz).toBe(1);
-		expect(SDR_STEP_UNIT_FACTOR.kHz).toBe(1000);
-		expect(SDR_STEP_UNIT_FACTOR.MHz).toBe(1e6);
-	});
-
-	it('offers the quick steps in Hz and persists the chosen unit', () => {
+	it('offers the quick steps in Hz and the shared unit buttons reach 1 Hz', () => {
 		expect(SDR_STEP_QUICK_HZ).toEqual([10, 100, 1000, 10_000, 100_000]);
-		sdrStepUnit.set('MHz');
-		expect(sdrStepUnit.get()).toBe('MHz');
-		expect(localStorage.getItem('web-sa-sdr-step-unit')).toBe('MHz'); // serialize: String
-		// Preset drops the intent too (authoritative only means no TTL expiry, not reset-proof).
-		resetAll('sdr');
-		expect(sdrStepUnit.get()).toBe('kHz');
+		// The unit toggles are the shared ones (core/units.ts), and Hz is one of them, so a
+		// 1 Hz step is reachable end to end: box value, state and the tune command are Hz.
+		expect(UNIT_OPTIONS.sdr_step).toEqual(['Hz', 'kHz', 'MHz']);
+		expect(units().sdr_step).toBe('kHz');
+		expect(toUnit(1000, 'sdr_step')).toBe(1);
+		expect(toUnit(1, 'sdr_step')).toBe(0.001);
 	});
 });

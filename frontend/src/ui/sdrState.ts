@@ -15,6 +15,7 @@
  *   - nothing else keeps a copy of these values; read them with `get()`
  */
 import { createParam, resetAll } from '../core/params';
+import { toUnit } from '../core/units';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { drmStatus } from '../sdr/drmLog';
@@ -154,19 +155,15 @@ export const sdrNrAtten = createParam<number>('sdr.nrAtten', {
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.5,
 });
 
-/** Display unit for the tuning step: the number box shows Hz, kHz or MHz. */
-export type SdrStepUnit = 'Hz' | 'kHz' | 'MHz';
-
-/** Valid unit strings, so a stale or hand-edited stored value cannot select a wrong factor. */
-const SDR_STEP_UNITS: readonly SdrStepUnit[] = ['Hz', 'kHz', 'MHz'];
-
 /**
  * Tuning step, one entry per capture bandwidth.
  *
  * The user tunes with fixed steps, and a step that suits a 50 MHz span is useless inside a
  * 25 kHz one. So the step is remembered per bandwidth (key = decimation, the select's own
  * value) and the client owns it: the backend never reports a step, so the slot is
- * authoritative and persists with the other SDR preferences.
+ * authoritative and persists with the other SDR preferences. The display unit lives
+ * separately, in the shared unit map (core/units.ts) under the key `sdr_step`, the same
+ * toggle buttons as every other frequency box.
  */
 
 /**
@@ -198,22 +195,13 @@ export const sdrStepByBw = createParam<Record<string, number>>('sdr.stepByBw', {
 	},
 });
 
-/** The unit last shown next to the step number box (display only; the state stays in Hz). */
-export const sdrStepUnit = createParam<SdrStepUnit>('sdr.stepUnit', {
-	fallback: 'kHz', scope: 'sdr', persistKey: 'web-sa-sdr-step-unit', persist: 'desired',
-	authoritative: true,
-	parse: (raw: string) => (SDR_STEP_UNITS.includes(raw as SdrStepUnit) ? (raw as SdrStepUnit) : null),
-	serialize: String,
-	equals: (a, b) => a === b,
-});
-
 /** Every persisted SDR preference (Preset removes them, so defaults really are defaults). */
 export const SDR_PREF_KEYS = [
 	'web-sa-sdr-audio', 'web-sa-sdr-center', 'web-sa-sdr-listen', 'web-sa-sdr-decimate',
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
 	'web-sa-sdr-squelch', 'web-sa-sdr-agc', 'web-sa-sdr-nr', 'web-sa-sdr-nr-strength',
 	'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
-	'web-sa-sdr-step-bw', 'web-sa-sdr-step-unit',
+	'web-sa-sdr-step-bw',
 ];
 
 /**
@@ -257,9 +245,6 @@ export function estimatedCaptureSpanHz(decimate: number): number {
 
 /** Quick-select steps offered next to the step box, in Hz. */
 export const SDR_STEP_QUICK_HZ = [10, 100, 1000, 10_000, 100_000] as const;
-
-/** Multiply the number in the step box by this to get the step in Hz. */
-export const SDR_STEP_UNIT_FACTOR: Record<SdrStepUnit, number> = { Hz: 1, kHz: 1e3, MHz: 1e6 };
 
 /**
  * Default step for a capture bandwidth: a 1-2-5 value at about span / 100, rounded down.
@@ -323,12 +308,10 @@ export function renderSdrState(): void {
 	// The tuning step: the box shows the value in the chosen unit, a quick button marks the
 	// step in use. Read from the slots on every render, so a bandwidth switch shows that
 	// bandwidth's stored step (or its default) with no separate copy to keep in step.
-	const stepUnitSel = select('select-sdr-step-unit');
-	if (stepUnitSel) stepUnitSel.value = sdrStepUnit.get();
 	const stepInput = input('input-sdr-step');
 	if (stepInput && document.activeElement !== stepInput) {
-		const value = currentSdrStepHz() / SDR_STEP_UNIT_FACTOR[sdrStepUnit.get()];
-		stepInput.value = String(Number(value.toPrecision(6)));
+		// The box shows the step in the shared unit map's unit for `sdr_step`.
+		stepInput.value = String(Number(toUnit(currentSdrStepHz(), 'sdr_step').toPrecision(6)));
 	}
 	const stepHz = currentSdrStepHz();
 	document.querySelectorAll<HTMLButtonElement>('#sdr-step-quick [data-step-hz]').forEach((btn) => {

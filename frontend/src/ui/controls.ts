@@ -3,7 +3,8 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrStepUnit, sdrVolume, SDR_STEP_QUICK_HZ, SDR_STEP_UNIT_FACTOR, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo } from './sdrState';
+import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
 import { requestRender } from '../render/redraw';
@@ -369,13 +370,12 @@ export function applySdrTune() {
 }
 
 /**
- * Apply the step the user typed, in the unit shown next to the box. The value is stored for
- * the current capture bandwidth, so each bandwidth keeps the step its user chose for it.
- * An empty or invalid box leaves the current step alone.
+ * Apply the step the user typed, read in the unit shown by the shared unit buttons. The
+ * value is stored for the current capture bandwidth, so each bandwidth keeps the step its
+ * user chose for it. An empty or invalid box leaves the current step alone.
  */
 export function applySdrStep() {
-  const raw = sdrNumber('input-sdr-step', NaN);
-  const hz = raw * SDR_STEP_UNIT_FACTOR[sdrStepUnit.get()];
+  const hz = parseFreqUnit('sdr_step');
   if (!(hz > 0)) return;
   setSdrStepForCurrentBw(hz);
   renderSdrState();
@@ -853,6 +853,8 @@ export function bindActions() {
     'apply-sdr': () => applySdr(),
     'apply-sdr-bw': () => applySdrBw(),
     'apply-sdr-tune': () => applySdrTune(),
+    'sdr-tune-down': () => sdrTuneBy(-currentSdrStepHz()),
+    'sdr-tune-up': () => sdrTuneBy(currentSdrStepHz()),
     'sdr-to-center': () => sdrToCenter(),
     'set-sdr-demod': () => applySdrDemod(),
     'toggle-sdr-agc': (el) => toggleSdrAgc(el),
@@ -886,6 +888,8 @@ export function bindActions() {
   });
   document.addEventListener('websa:unit-commit', (event) => {
     const detail = (event as CustomEvent<{ field: string; commit: boolean }>).detail;
+    // The step box is not a panel field; apply it here instead of in commitUnitField.
+    if (detail.field === 'sdr_step' && detail.commit) applySdrStep();
     commitUnitField(detail.field, detail.commit);
   });
 
@@ -994,17 +998,18 @@ export function bindActions() {
   if (sdrListen) sdrListen.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Enter') applySdrTune();
   });
-  // The step box and its quick buttons: one writer (setSdrStepForCurrentBw) and one render
-  // path (renderSdrState), like every other SDR control. A unit change only re-renders: the
-  // state stays in Hz, the box then shows the same step in the new unit.
+  // The step box: the shared unit buttons (unit-sdr_step-group, built by buildUnitGroups)
+  // convert the value and report websa:unit-commit; Enter and change apply it. One writer
+  // (setSdrStepForCurrentBw) and one render path (renderSdrState), like every other SDR
+  // control.
   const sdrStepEl = document.getElementById('input-sdr-step') as HTMLInputElement | null;
-  if (sdrStepEl) sdrStepEl.addEventListener('change', () => applySdrStep());
-  const sdrStepUnitEl = document.getElementById('select-sdr-step-unit') as HTMLSelectElement | null;
-  if (sdrStepUnitEl) sdrStepUnitEl.addEventListener('change', () => {
-    sdrStepUnit.set((sdrStepUnitEl.value === 'MHz' || sdrStepUnitEl.value === 'Hz')
-      ? sdrStepUnitEl.value : 'kHz');
-    renderSdrState();
-  });
+  if (sdrStepEl) {
+    sdrStepEl.addEventListener('input', () => { sdrStepEl.dataset.edited = '1'; });
+    sdrStepEl.addEventListener('change', () => applySdrStep());
+    sdrStepEl.addEventListener('keydown', (ev) => {
+      if ((ev as KeyboardEvent).key === 'Enter') { ev.preventDefault(); applySdrStep(); }
+    });
+  }
   const sdrStepQuick = document.getElementById('sdr-step-quick');
   if (sdrStepQuick) {
     for (const hz of SDR_STEP_QUICK_HZ) {

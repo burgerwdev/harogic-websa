@@ -635,6 +635,9 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* main control column: input == select */
 #rta-freq-settings input[type="number"],
 #rta-freq-settings select { width: 108px; height: 22px; box-sizing: border-box; }
+/* Fixed width: the Listen row carries a spacer of the same size, so the Set buttons of the
+   Center and Listen rows line up in a column. */
+#select-sdr-decimate { width: 108px; }
 #rta-freq-settings .btn {
   height: 22px; font-size: 11px; box-sizing: border-box; line-height: 1;
   padding: 0 8px; display: inline-flex; align-items: center; justify-content: center;
