@@ -65,7 +65,10 @@ out, manifest, target = sys.argv[1], sys.argv[2], sys.argv[3]
 data = pathlib.Path(out).read_bytes()
 # The export list is read from the binary, not hardcoded: a new ABI function that the manifest
 # never mentions would otherwise pass the CI check (which verifies the manifest is a subset).
-sys.path.insert(0, str(pathlib.Path('..') / 'tools'))
+# The import path is relative to the directory of this script, because the step above changed to
+# that directory (wasm/). Keep it in step with tools/: the previous path lost the checks/ part in
+# the tools reorg (9a484643) and made every artifact publish fail at this step.
+sys.path.insert(0, str(pathlib.Path('..') / 'tools' / 'checks'))
 from check_wasm_artifact import wasm_exports  # noqa: E402
 document = {
     'note': 'Written by wasm/build.sh. The .wasm is committed so the frontend build needs no '

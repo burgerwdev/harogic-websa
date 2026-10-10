@@ -34,6 +34,10 @@ DIGITAL_DEMODS = ('ft8',)
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
 SDR_PAN_POINTS = 512
+#: Mirror of `sdr.SDR_MAX_CAPTURE_DECIMATE`. The fake cannot import the real session, because that
+#: import needs libhtraapi. A narrower *requested* capture is floored here too. Thus the fake
+#: publishes the same request and capture geometry as the hardware session.
+FAKE_MAX_CAPTURE_DECIMATE = 128
 SDR_AUDIO_RATE = 48000
 SDR_AUDIO_SAMPLES = 960          # 20 ms at 48 kHz, what the real SDR emits
 AUDIO_TONE_HZ = 1000.0
@@ -461,7 +465,9 @@ class FakeSdrSession(_FakeRtaBase):
         self._tick += 1
         s = self.dev.state
         center = float(s.sdr_center_hz)
-        # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it
+        # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it. This value is the requested
+        # capture, that is the DISPLAY window, also when the device capture is floored
+        # (FAKE_MAX_CAPTURE_DECIMATE).
         bandwidth = 48_000.0 if str(s.sdr_demod) in DIGITAL_DEMODS else 50e6 / max(1, int(s.sdr_decimate or 16))
         freq, spec = self._spectrum(center, bandwidth, SDR_PAN_POINTS)
         finite = np.sort(spec[np.isfinite(spec)])
@@ -469,15 +475,20 @@ class FakeSdrSession(_FakeRtaBase):
             self.dev.observe_reference_peak(
                 'sdr', float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
         digital = str(s.sdr_demod) in DIGITAL_DEMODS
+        requested = max(1, int(s.sdr_decimate or 16))
+        capture_decimate = min(requested, FAKE_MAX_CAPTURE_DECIMATE)
+        capture_bandwidth = 48_000.0 if digital else 50e6 / capture_decimate
         s.sdr_actual = {
-            'iq_rate': FT8_IQ_RATE if digital else 62.5e6 / max(1, int(s.sdr_decimate or 16)),
+            'iq_rate': FT8_IQ_RATE if digital else 62.5e6 / capture_decimate,
             # The rate of the channelized baseband this session actually publishes.
             'ddc_rate': FT8_IQ_RATE if digital else SDR_BASEBAND_RATE,
-            'bandwidth': bandwidth, 'iq_center': center,
-            'decimate': int(s.sdr_decimate or 16), 'packet_samples': 16240,
+            'bandwidth': bandwidth, 'capture_bandwidth': capture_bandwidth,
+            'iq_center': center,
+            'decimate': requested, 'capture_decimate': capture_decimate,
+            'packet_samples': 16240,
             'packet_bytes': 64960, 'pan_points': SDR_PAN_POINTS, 'center': center,
-            'capture_center': center, 'capture_start': center - bandwidth / 2,
-            'capture_stop': center + bandwidth / 2, 'start': center - bandwidth / 2,
+            'capture_center': center, 'capture_start': center - capture_bandwidth / 2,
+            'capture_stop': center + capture_bandwidth / 2, 'start': center - bandwidth / 2,
             'stop': center + bandwidth / 2, 'atten': s.atten, 'preamp': s.preamplifier,
             'ifgain': s.ifgain, 'ref_clock_source': 0, 'refclk_out': s.refclk_out,
             'listen': float(s.sdr_listen_hz), 'demod': s.sdr_demod,

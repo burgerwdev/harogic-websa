@@ -45,6 +45,27 @@ _BUS_RETRY = (-10, -11)
 _BUS_RETRY_TRIES = 4
 _BUS_RETRY_DELAY = 0.05
 
+#: Largest IQS DecimateFactor that the acquisition loop may use.
+#:
+#: The IQS Adaptive stream has a fixed packet size. PacketDataSize stays at about 64960 bytes.
+#: That value is 16240 complex-int16 samples. Measurement on the SAN-90 shows the same value at
+#: every decimate. The publisher loop is paced by the packet: ``pacing()`` returns 0 while packets
+#: arrive, and ``step()`` fetches one packet. Therefore the packet period controls the rate of the
+#: panadapter frame, the waterfall row, and the channelized baseband block. The nominal period is
+#: ``packet_samples / IQSampleRate``. In Adaptive mode the device can return fewer samples for one
+#: fetch. That condition only makes the period shorter.
+#:
+#: Bench measurement (SAN-90, NFM tone from a PlutoSDR, the real UI in a headless browser): a
+#: request of 512 (97.7 kHz) gave a 129 ms baseband block every 95 ms and 10.3 panadapter
+#: frames/s. A request of 2048 gave a 483 ms block and 3.0 frames/s. The audio ring of the browser
+#: needs 0.25 s to prime and keeps a 0.3 s target. It underran 9 times in 8 s at 2048.
+#:
+#: Thus the device capture stays at decimate 128 or lower (488 kSPS, 33 ms blocks, 40 blocks/s
+#: measured). A narrower request becomes the DISPLAY window. The session clips the published bins
+#: to this window, and the demodulator passband follows it. Then the demodulated channel and the
+#: shown span stay as the operator requested.
+SDR_MAX_CAPTURE_DECIMATE = 128
+
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
 
 # Display-spectrum FFT. Set WEBSA_SDR_FFT=0 to fall back to the NumPy panadapter: the vendor
@@ -106,8 +127,44 @@ def _round_decimate(value) -> int:
     return 1 << (v.bit_length() - 1) if v & (v - 1) else v
 
 
+def sdr_capture_geometry(requested_decimate, native_rate: float,
+                         max_capture_decimate: int = SDR_MAX_CAPTURE_DECIMATE):
+    """Split a requested capture bandwidth into three values.
+
+    Return (device decimate, display bandwidth, capture bandwidth).
+    ``requested_decimate`` is the value that the operator selected. STATUS keeps this value.
+    ``SDR_MAX_CAPTURE_DECIMATE`` can make the device capture wider than the request. A narrow
+    capture makes the IQS packet period too long for the display and for the audio ring. Thus the
+    narrower value becomes the display window.
+    ``native_rate * 0.8`` is the bandwidth formula of the vendor. If the request is not floored,
+    the display bandwidth is equal to the capture bandwidth, and the session operates as before.
+    """
+    requested = max(1, int(requested_decimate))
+    capture = max(1, min(requested, int(max_capture_decimate)))
+    native = float(native_rate or 0.0)
+
+    def bandwidth(decimate: int) -> float:
+        return native * 0.8 / decimate if native > 0 else 0.0
+
+    return capture, bandwidth(requested), bandwidth(capture)
+
+
+def display_pan_points(frame_points: int, display_bandwidth: float, iq_rate: float,
+                       cap: int) -> int:
+    """Return the number of panadapter points that the display window can carry.
+
+    The FFT grid (``frame_points`` bins) covers the whole capture (``iq_rate``). Only the bins
+    inside the requested display window are drawn. This fraction of the grid is the real
+    resolution. The result is limited to the point budget of the panadapter.
+    """
+    if frame_points < 2 or iq_rate <= 0 or display_bandwidth <= 0:
+        return max(2, int(cap))
+    inside = int(round(frame_points * float(display_bandwidth) / float(iq_rate)))
+    return max(2, min(int(cap), inside))
+
+
 def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
-                         bandwidth: float) -> dict:
+                         bandwidth: float, capture_bandwidth: float | None = None) -> dict:
     """Display window (what the user asked for) and capture window (where the hardware is).
 
     The IQS capture is centred on ``capture_center_hz``, which normally equals the requested
@@ -116,13 +173,18 @@ def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
     display window, so the user's centre lands at the canvas centre and any uncovered edge is
     a real gap (never invented data). ``center`` is the display centre because every
     frequency the UI shows (freq axis, markers, limit window) must come from one source.
+
+    ``capture_bandwidth`` is the width that the device streams when it is wider than the display
+    window (refer to ``SDR_MAX_CAPTURE_DECIMATE``). The default is ``bandwidth``. Thus the two
+    windows have the same width when the capture agrees with the request.
     """
     half = float(bandwidth) / 2.0
+    cap_half = float(capture_bandwidth if capture_bandwidth else bandwidth) / 2.0
     return {
         'center': float(center_hz),
         'capture_center': float(capture_center_hz),
-        'capture_start': float(capture_center_hz) - half,
-        'capture_stop': float(capture_center_hz) + half,
+        'capture_start': float(capture_center_hz) - cap_half,
+        'capture_stop': float(capture_center_hz) + cap_half,
         'start': float(center_hz) - half,
         'stop': float(center_hz) + half,
     }
@@ -167,6 +229,11 @@ class SdrSession(MeasurementSession):
         # Slow baseband AGC (see BASEBAND_TARGET_RMS). The gain is carried across
         # acquisitions and reset on a reconfiguration, whose settle window covers the step.
         self._bb_gain = 1.0
+        #: Width of the display window (the capture bandwidth that the operator requested).
+        #: The device capture can be wider than this value when the request is floored at
+        #: SDR_MAX_CAPTURE_DECIMATE. The demodulator passband is clamped to this value and not to
+        #: the capture. Thus a wider capture does not increase the demodulator cost in the browser.
+        self._display_bw = 0.0
         # True while the Python demodulator is skipped because nobody subscribes to audio.
         self._audio_paused = False
         # True when a demodulator setting changed while the browser had the audio: the Python chain
@@ -321,7 +388,11 @@ class SdrSession(MeasurementSession):
         s = dev.state
         T = sb
         self._stop_trigger_locked(required=False)
-        s.sdr_decimate = _round_decimate(s.sdr_decimate)
+        # The request of the operator stays in the state. STATUS confirms this value and stores
+        # it. The device can capture wider than the request so that the packet period keeps the
+        # display and the audio ring supplied (refer to SDR_MAX_CAPTURE_DECIMATE).
+        requested_decimate = _round_decimate(s.sdr_decimate)
+        s.sdr_decimate = requested_decimate
         p = T.IQS_Profile_TypeDef()
         out = T.IQS_Profile_TypeDef()
         info = T.IQS_StreamInfo_TypeDef()
@@ -332,7 +403,8 @@ class SdrSession(MeasurementSession):
             'IQS_ProfileDeInit')
         _t('iqs: mode reset + ProfileDeInit ok')
         native_rate = float(p.NativeIQSampleRate_SPS)
-        expected_bw = native_rate * 0.8 / s.sdr_decimate if native_rate > 0 else 0.0
+        capture_decimate, display_bw, expected_bw = sdr_capture_geometry(
+            requested_decimate, native_rate)
         # Capture on the requested centre. The stream used to be tuned 200 kHz away from it
         # ("avoid the zero-IF DC centre"), which pushed the lowest 200 kHz of the requested
         # window out of the capture range and left a visible blank strip at the left edge of
@@ -345,7 +417,7 @@ class SdrSession(MeasurementSession):
                                  min(s.caps.freq_max_hz - half, capture_center))
         p.CenterFreq_Hz = capture_center
         p.RefLevel_dBm = float(s.sdr_ref_level)   # the IQS profile's own level (SWP has ref_level)
-        p.DecimateFactor = int(s.sdr_decimate)
+        p.DecimateFactor = int(capture_decimate)
         p.DataFormat = T.DataFormat_TypeDef.Complex16bit
         p.TriggerSource = T.IQS_TriggerSource_TypeDef.Bus
         p.TriggerMode = T.TriggerMode_TypeDef.Adaptive
@@ -366,18 +438,34 @@ class SdrSession(MeasurementSession):
            float(info.IQSampleRate), float(info.Bandwidth), int(info.PacketSamples),
            int(out.DecimateFactor), float(out.CenterFreq_Hz))
         fs = float(info.IQSampleRate)
-        bandwidth = float(info.Bandwidth) or fs
-        if fs <= 0 or bandwidth <= 0 or int(info.PacketSamples) <= 0:
+        captured_bw = float(info.Bandwidth) or fs
+        if fs <= 0 or captured_bw <= 0 or int(info.PacketSamples) <= 0:
             raise RuntimeError(
                 f'IQS_Configuration returned invalid stream info '
-                f'rate={fs} bandwidth={bandwidth} samples={int(info.PacketSamples)}')
+                f'rate={fs} bandwidth={captured_bw} samples={int(info.PacketSamples)}')
+        # The display window is the request of the operator. The capture can be wider.
+        bandwidth = display_bw if display_bw > 0 else captured_bw
+        self._display_bw = bandwidth
+        self._packet_samples = int(info.PacketSamples)
+        if capture_decimate != requested_decimate:
+            # Write one log entry. It gives the setting of the operator and the geometry of the
+            # device.
+            period = self._packet_samples / fs if fs > 0 else 0.0
+            log.info(
+                'SDR: %.1f kHz capture requested (decimate %d) -> device capture %.1f kHz '
+                '(decimate %d), display window %.1f kHz. The IQS Adaptive packet has a fixed %d '
+                'samples. The narrow capture would set the session rate to %.1f steps/s '
+                '(packet period %.0f ms). That rate is too low for the panadapter and the audio '
+                'ring.',
+                (display_bw / 1e3), requested_decimate, captured_bw / 1e3, capture_decimate,
+                bandwidth / 1e3, self._packet_samples,
+                (1.0 / period if period > 0 else 0.0), period * 1e3)
         half = bandwidth / 2.0
         configured_center = float(out.CenterFreq_Hz)
         if configured_center > 0:
             self._iqs_center_hz = configured_center
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
-        self._packet_samples = int(info.PacketSamples)
         # One IQS packet per step. Fetching a second packet in the same step (an earlier
         # "high-rate" optimisation) overwrote the vendor's internal packet buffer: the
         # heap damage surfaced later as SIGSEGV / glibc "double free or corruption (out)"
@@ -388,15 +476,15 @@ class SdrSession(MeasurementSession):
         self._ddc_batch = 1
         self._fs_in = fs
         s.sdr_actual = dict(
-            iq_rate=fs, bandwidth=bandwidth,
+            iq_rate=fs, bandwidth=bandwidth, capture_bandwidth=captured_bw,
             iq_center=self._iqs_center_hz,
-            decimate=int(out.DecimateFactor), packet_samples=self._packet_samples,
+            decimate=requested_decimate, capture_decimate=int(out.DecimateFactor),
+            packet_samples=self._packet_samples,
             packet_bytes=int(info.PacketDataSize),
-            pan_points=min(
-                self.PAN_FFT,
-                max(2, 2 * int(np.floor(self.PAN_FFT * bandwidth / (2.0 * fs))) + 1),
-            ),
-            **sdr_spectrum_windows(s.sdr_center_hz, self._iqs_center_hz, bandwidth),
+            # The value is written below, when the bin count of the vendor FFT is known.
+            pan_points=self.PAN_FFT,
+            **sdr_spectrum_windows(s.sdr_center_hz, self._iqs_center_hz, bandwidth,
+                                   captured_bw),
             atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
             ifgain=int(out.IFGainGrade),
             ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
@@ -405,6 +493,11 @@ class SdrSession(MeasurementSession):
         # Re-assert the vendor FFT only when the IQS packet geometry changed (it is the
         # only thing the FFT size depends on).
         self._configure_vendor_fft_locked()
+        # Only the FFT bins inside the display window can be drawn. That fraction of the grid is
+        # the real resolution (the NumPy fallback carries PAN_FFT bins over the same capture).
+        frame_bins = self._vfft_points if self._vfft_ready else self.PAN_FFT
+        s.sdr_actual['pan_points'] = display_pan_points(
+            frame_bins, bandwidth, fs, self.PAN_FFT)
         dev._read_amp_atten()
         dev.state.config_version += 1
         dev.state.freq_version += 1
@@ -489,7 +582,8 @@ class SdrSession(MeasurementSession):
             vstream.IQS_StreamInfo.PacketDataSize = self._vfft_frame_samples * 4
             vstream.IQS_StreamInfo.IQSampleRate = self._fs_in
             vstream.IQS_StreamInfo.Bandwidth = float(
-                s.sdr_actual.get('bandwidth', self._fs_in))
+                s.sdr_actual.get('capture_bandwidth')
+                or s.sdr_actual.get('bandwidth', self._fs_in))
             vstream.AlternIQStream = c_cast(
                 sb.c_void_p(self._vfft_buffer.ctypes.data), sb.POINTER(sb.c_void_p))
             _tn('fft_iqstospec', 'vfft: IQSToSpectrum in frame=%s',
@@ -506,6 +600,17 @@ class SdrSession(MeasurementSession):
             if not np.all(np.isfinite(power)):
                 return None
             freq = self._vfft_freq
+            # The grid covers the whole capture. The device can capture wider than the requested
+            # bandwidth (refer to SDR_MAX_CAPTURE_DECIMATE). Clip the grid to the display window
+            # before the pooling step. The session never draws the bins outside this window. If
+            # they stay in the grid, they also move the noise floor and waste the point budget.
+            lo = float(s.sdr_actual.get('start') or 0.0)
+            hi = float(s.sdr_actual.get('stop') or 0.0)
+            if hi > lo:
+                inside = (freq >= lo) & (freq <= hi)
+                if inside.any():
+                    freq = freq[inside]
+                    power = power[inside]
             target = max(2, int(s.sdr_actual.get('pan_points', self.PAN_FFT)))
             if freq.size > target:
                 # Max-pool into display buckets so narrow carriers survive the decimation.
@@ -532,7 +637,12 @@ class SdrSession(MeasurementSession):
         bandwidth) gives a larger instant-tuning range for the software NCO, so adjacent
         channels do not need a (slow, stream-disrupting) full reconfiguration."""
         fs_in = self._fs_in or 1.0
-        if_bw = float(max(200.0, min(self.dev.state.sdr_if_bw, fs_in * 0.4)))
+        # Clamp the value against the DISPLAY window and not against the capture. A wider capture
+        # (refer to SDR_MAX_CAPTURE_DECIMATE) must not widen the channel of the demodulator. The
+        # browser pays for this channel: it runs a 257-tap complex band filter at the DDC output
+        # rate. For a test stub without a configured window, use the capture rate.
+        window = float(getattr(self, '_display_bw', 0.0) or fs_in)
+        if_bw = float(max(200.0, min(self.dev.state.sdr_if_bw, window * 0.4)))
         # The DDC output rate is the browser demodulator's cost, one for one: the demodulator runs a
         # 257-tap complex band filter at it (measured: 2.5x the IF bandwidth put WFM at 97.5% of real
         # time, i.e. it could not keep up and the playback had to stretch). 1.6x still leaves
@@ -629,8 +739,10 @@ class SdrSession(MeasurementSession):
             deemph_us=self._demod.deemph_us,
         )
         half = float(s.sdr_actual.get('bandwidth', fs_in)) / 2.0
+        capture_bw = float(s.sdr_actual.get('capture_bandwidth', half * 2.0) or half * 2.0)
         s.sdr_actual.update(sdr_spectrum_windows(
-            s.sdr_center_hz, self._iqs_center_hz or s.sdr_center_hz, half * 2.0))
+            s.sdr_center_hz, self._iqs_center_hz or s.sdr_center_hz, half * 2.0,
+            capture_bw))
 
     def _reconfigure_full_locked(self):
         """Full Stop -> Configuration -> DDC config -> Start. A DDC-only reconfiguration
