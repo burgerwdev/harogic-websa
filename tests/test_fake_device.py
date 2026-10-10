@@ -78,12 +78,12 @@ def test_the_application_can_drive_it_through_the_session_factory(device, fake_s
 
 
 def test_a_narrow_sdr_capture_is_floored_while_the_select_is_confirmed(device, fake_sessions):
-    """Reported: below ~100 kHz capture the SDR spectrum and audio went choppy.
+    """The operator reported: the SDR spectrum and the audio became choppy below ~100 kHz capture.
 
-    The fake mirrors the real session's capture geometry (it is what the CI UI smoke drives), so
-    this is the contract the front end sees: the operator's requested decimate is confirmed back
-    (the select must not jump to the device's own figure), the device capture is floored so the
-    packet period stays inside the panadapter's cadence, and the display window stays the request.
+    The fake mirrors the capture geometry of the real session, because the CI UI smoke drives it.
+    This test keeps the contract that the front end sees. STATUS confirms the requested decimate
+    (the select must not jump to the value of the device). The device capture is floored, so the
+    packet period stays inside the panadapter rate. The display window stays as requested.
     """
     sdr = make_session(device, 'sdr')
     for requested in (512, 1024, 2048):

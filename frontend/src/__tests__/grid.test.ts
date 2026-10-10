@@ -34,9 +34,9 @@ describe('alignToDisplayWindow', () => {
   });
 
   it('rebins a wider capture grid that happens to start on the display window', () => {
-    // SDR: the device captured four times wider than the requested window (its capture is
-    // floored so the IQS packet period stays short), so the grid starts on the window edge but
-    // spans far more. An equal start is not proof that the window *is* the capture.
+    // SDR: the device captured four times wider than the requested window. The capture is floored
+    // to keep the IQS packet period short, so the grid starts on the window edge and covers much
+    // more. An equal start is not proof that the window IS the capture.
     const capFreq = grid(100, 108, 9);                                    // 8 MHz capture
     const capSpec = Float32Array.from({ length: 9 }, (_, i) => i);
     const out = alignToDisplayWindow(capFreq, capSpec, 100, 102);          // 2 MHz window

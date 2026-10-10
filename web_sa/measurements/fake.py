@@ -34,9 +34,9 @@ DIGITAL_DEMODS = ('ft8',)
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
 SDR_PAN_POINTS = 512
-#: Mirror of `sdr.SDR_MAX_CAPTURE_DECIMATE` (the fake cannot import the real session without
-#: libhtraapi): a narrower *requested* capture is floored here, so the fake publishes the same
-#: request-vs-capture geometry the hardware session does.
+#: Mirror of `sdr.SDR_MAX_CAPTURE_DECIMATE`. The fake cannot import the real session, because that
+#: import needs libhtraapi. A narrower *requested* capture is floored here too. Thus the fake
+#: publishes the same request and capture geometry as the hardware session.
 FAKE_MAX_CAPTURE_DECIMATE = 128
 SDR_AUDIO_RATE = 48000
 SDR_AUDIO_SAMPLES = 960          # 20 ms at 48 kHz, what the real SDR emits
@@ -465,8 +465,9 @@ class FakeSdrSession(_FakeRtaBase):
         self._tick += 1
         s = self.dev.state
         center = float(s.sdr_center_hz)
-        # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it: the requested capture, which
-        # is the DISPLAY window even when the device capture is floored (FAKE_MAX_CAPTURE_DECIMATE).
+        # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it. This value is the requested
+        # capture, that is the DISPLAY window, also when the device capture is floored
+        # (FAKE_MAX_CAPTURE_DECIMATE).
         bandwidth = 48_000.0 if str(s.sdr_demod) in DIGITAL_DEMODS else 50e6 / max(1, int(s.sdr_decimate or 16))
         freq, spec = self._spectrum(center, bandwidth, SDR_PAN_POINTS)
         finite = np.sort(spec[np.isfinite(spec)])

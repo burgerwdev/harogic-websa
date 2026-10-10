@@ -230,8 +230,9 @@ fixture → 两侧测试各断言一次（Python 断言 fixture 与编码器一�
   改动跨多个提交时，可用
   `git worktree add /tmp/wt <commit> && (cd /tmp/wt && python3 -m pytest tests/ -q)` 逐个验证
   （曾发现"测试先于实现"的提交，历史已重建修正）。
-- **版本单一来源**：改 `pyproject.toml` → `python3 tools/checks/sync_version.py`（同步 `package.json` 与
-  `index.html`）；`--check` 在 CI 中。
+- **版本单一来源**：改 `pyproject.toml` → `python3 tools/checks/sync_version.py`（同步 `package.json`、
+  `package-lock.json` 与 `index.html`）；`--check` 在 CI 中。发布时漏跑这个工具会留下 lock 文件的旧版本，
+  `make ci` 就会在 `sync_version --check` 停下。
 - **发布**：bump 版本 → 构建前端（**服务提供的是 `dist/`，忘记 build 等于测旧包**）→ `make hw-test` →
   `git merge --no-ff` 到 master → tag → push。
 - **分支**：`feature/*`、`refactor/*`、`analysis/*`；文档与代码分开提交，便于审阅。

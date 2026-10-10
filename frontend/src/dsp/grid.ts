@@ -33,13 +33,13 @@ export function alignToDisplayWindow(
 	const capLo = Number(freq[0]);
 	const capHi = Number(freq[n - 1]);
 	const capStep = (capHi - capLo) / (n - 1);
-	// The display grid already *is* the capture grid (SWP/RTA, or an SDR capture the device
-	// centred as asked): touching it could only add interpolation error. A real offset moves
-	// the start by far more than one bin, so this test separates the two cases cleanly - but the
-	// START alone is not enough: an SDR capture may be WIDER than the display window (the device
-	// capture is floored so the IQS packet period stays short, see SDR_MAX_CAPTURE_DECIMATE),
-	// and such a grid can still start on the window edge. Comparing the widths too keeps that
-	// frame from being drawn as if the whole capture were the window.
+	// The display grid is already the capture grid (SWP/RTA, or an SDR capture that the device
+	// centred as requested). A rebin would only add interpolation error. A real offset moves the
+	// start by much more than one bin, so this test separates the two cases.
+	// The START alone is not sufficient. An SDR capture can be WIDER than the display window:
+	// the device capture is floored to keep the IQS packet period short (refer to
+	// SDR_MAX_CAPTURE_DECIMATE). Such a grid can still start on the window edge. Compare the
+	// widths too. Then this frame is not drawn as if the whole capture were the window.
 	const sameWindow = Math.abs(capLo - lo) < capStep
 		&& Math.abs((capHi - capLo) - (hi - lo)) < capStep;
 	if (!(capStep > 0) || sameWindow) {

@@ -98,15 +98,16 @@ above ~3.13 MHz) while still allowing real demodulation and listening.
   - the panel shows a shortcut hint line.
 - **Audio transient**: after any tune or chain reconfiguration the backend discards
   120 ms and fades in over 100 ms; AUDF reset markers flush old-channel audio first.
-- **Capture bandwidth vs CPU**: the channelizer (vendor `DSP_DDC`) cost scales with
-  the IQ rate. The IQS Adaptive packet is a fixed ~16240 complex-int16 samples (64960 bytes)
-  at any decimate and the publisher loop is packet-paced, so the *requested* capture is floored
-  at decimate 128 (488 kSPS, 33 ms per packet) and a narrower request becomes the display window
-  plus the DDC passband clamp (`SDR_MAX_CAPTURE_DECIMATE` in `measurements/sdr.py`). Below the
-  floor the packet period outgrew the panadapter's 20 fps and the browser's 0.3 s audio target
-  (133 ms at 97.7 kHz, 532 ms at 24.4 kHz), which is what made narrow captures look and sound
-  choppy. One packet per step: batching two intermittently corrupted the vendor heap.
-  The wide options are marked `(audio ⚠)` in the UI — use them for viewing, not for listening.
+- **Capture bandwidth vs CPU**: the cost of the channelizer (vendor `DSP_DDC`) follows the IQ rate.
+  The IQS Adaptive packet has a fixed size of about 16240 complex-int16 samples (64960 bytes) at
+  every decimate. The publisher loop is paced by the packet. Thus the session floors the
+  *requested* capture at decimate 128 (488 kSPS, one packet each 33 ms). A narrower request becomes
+  the display window and the passband clamp of the DDC (`SDR_MAX_CAPTURE_DECIMATE` in
+  `measurements/sdr.py`). Below the floor, the packet period went past the 20 fps of the panadapter
+  and the 0.3 s audio target of the browser (133 ms at 97.7 kHz, 532 ms at 24.4 kHz). That
+  condition made narrow captures look and sound choppy. One packet for each step: two packets
+  corrupted the vendor heap intermittently. The wide options have the mark `(audio ⚠)` in the UI.
+  Use them for viewing, not for listening.
 - **Auto-scale**: in SDR mode the amplitude reference is computed from each frame's
   peak (with hysteresis), because the SWP reference level (often 0 dBm) would push a
   −100 dBm noise floor off the bottom of the display. `#spectrum[data-sdr-ref]` carries
