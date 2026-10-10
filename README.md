@@ -14,6 +14,9 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 ## Features
 
+- **Narrow SDR captures stay smooth** — an IQ capture bandwidth below about 100 kHz keeps the
+  panadapter at its full frame rate and the audio free of gaps: the analyzer captures wider and
+  shows the requested span.
 - **Spectrum** — Clear Write / Max Hold / Min Hold / Average / View, four traces, smoothing,
   peak-preserving resampling
 - **Display zoom** — enlarge the captured spectrum on screen. No retune, no new sweep. An
