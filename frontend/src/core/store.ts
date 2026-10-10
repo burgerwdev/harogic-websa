@@ -167,6 +167,11 @@ export let deviceConnected = false;
 // instead of silently dropping them forever.
 export let badData = false;
 export function setBadData(v: boolean) { badData = v; }
+// Nearest drawn bin under the pointer while the pointer is inside the plot. The value is null
+// when the pointer is outside. The canvas draws the readout; the pointer code publishes only the
+// index (see render/spectrum.ts). A hover repaints only when the pointer moves to another bin.
+export let plotCursorIdx: number | null = null;
+export function setPlotCursorIdx(v: number | null) { plotCursorIdx = v; }
 export function setDeviceConnected(v: boolean) { deviceConnected = v; }
 export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }

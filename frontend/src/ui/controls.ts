@@ -382,6 +382,22 @@ export function applySdrStep() {
 }
 
 /**
+ * Move the wideband centre by a part of the capture span. This is the SDR edge push: a drag that
+ * touches either side of the plot. One writer for that move keeps the wire payload equal to the
+ * slot values. The edge push put the slots themselves on the wire. JSON made objects of them, and
+ * the backend answered "center must be a number" for each push. The operator then had to dismiss
+ * a stack of dialogs after a drag to a side.
+ */
+export function sdrPanCentreBy(fraction: number) {
+  const span = sdrSpanHz.get();
+  const center = sdrCenterHz.get() + span * fraction;
+  // An unknown span cannot move the centre, and 0/NaN must never reach the device as a centre.
+  if (!(span > 0) || !(center > 0)) return;
+  sdrCenterHz.set(center);
+  send({ cmd: 'SET_SDR', center, decimate: Math.round(sdrDecimate.get()) });
+}
+
+/**
  * To Center: make the listen frequency the wideband centre. The demodulator is already on
  * the signal, so only the capture window moves around it. SET_SDR retunes the demod to the
  * new centre, so the follow-up SET_SDR_TUNE puts the listen frequency back where it was.
@@ -1268,14 +1284,12 @@ export function bindCanvas() {
         if (now - sdrEdgeAt > 350) {
           if (frac > 0.9) {
             sdrEdgeAt = now;
-            sdrCenterHz.set(sdrCenterHz.get() + sdrSpanHz.get() * 0.2);
+            sdrPanCentreBy(0.2);
             sdrX0 += pr.w * 0.2;
-            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
           } else if (frac < 0.1) {
             sdrEdgeAt = now;
-            sdrCenterHz.set(sdrCenterHz.get() - sdrSpanHz.get() * 0.2);
+            sdrPanCentreBy(-0.2);
             sdrX0 -= pr.w * 0.2;
-            send({ cmd: 'SET_SDR', center: sdrCenterHz, decimate: sdrDecimate });
           }
         }
       }
@@ -1355,6 +1369,25 @@ export function bindCanvas() {
       axisBandFor(canvasX(e, canvas), canvasY(e, canvas), plotRectPub()));
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   });
+
+  // Cursor readout: publish the drawn bin under the pointer while the pointer is inside the plot.
+  // The canvas then labels that point (see render/spectrum.ts). Only a change of bin repaints. The
+  // readout cannot change faster than that, and one repaint redraws the whole trace and the tables.
+  let cursorIdx: number | null = null;
+  const publishCursor = (x: number, y: number) => {
+    const pr = plotRectPub();
+    const powers = getDisplayPowers();
+    const inside = x >= pr.x && x <= pr.x + pr.w && y >= pr.y && y <= pr.y + pr.h;
+    const idx = inside && powers && powers.length > 1 ? nearestIdxAtX(x, powers.length) : null;
+    if (idx === cursorIdx) return;
+    cursorIdx = idx;
+    S.setPlotCursorIdx(idx);
+    requestRender();
+  };
+  canvas.addEventListener('mousemove', (e) => {
+    publishCursor(canvasX(e, canvas), canvasY(e, canvas));
+  });
+  canvas.addEventListener('mouseleave', () => publishCursor(-1e9, -1e9));
 
   // Wheel on an axis band zooms that axis (span on the frequency row, dB/div on the level
   // labels); inside the plot the wheel zooms the DISPLAY view while the toggle is On
@@ -1463,7 +1496,7 @@ function sdrNudgeVolume(dv: number) {
   if (inp) inp.value = String(next);
   applySdrDemod();
 }
-import { plotRect as plotRectPub } from '../render/plot';
+import { plotRect as plotRectPub, nearestIdxAtX } from '../render/plot';
 import { exitMeasMode as exitMeasModePub } from './measure';
 import { wfPaused } from './waterfallState';
 import { displayOffset, smoothBins } from './displayState';

@@ -288,6 +288,50 @@ def test_demod_reconfiguration_rolls_back_state_on_failure():
     assert (state.sdr_demod, state.sdr_if_bw, state.sdr_pitch) == ('am', 6000.0, 700.0)
 
 
+def test_bandwidth_switch_rolls_back_and_reconfigures_when_it_fails():
+    """A failed SET_SDR must not report a capture that the device did not take.
+
+    Before, one failed bandwidth switch left two problems. The panel kept the new bandwidth,
+    because STATUS reads `state.sdr_decimate` and `set_params` wrote it before the configuration.
+    The stream was down as well: `_configure` clears `_ready` first, and `step()` returns
+    immediately while `_ready` is false. Nothing else would configure the session again.
+    """
+    state = SimpleNamespace(sdr_center_hz=100e6, sdr_decimate=32, sdr_listen_hz=100e6)
+    session = SdrSession.__new__(SdrSession)
+    session.dev = SimpleNamespace(state=state)
+    attempts: list[int] = []
+
+    def configure():
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise RuntimeError('IQS_Configuration status=-11')
+
+    session._configure = configure
+    with pytest.raises(RuntimeError, match='status=-11'):
+        session.set_params(decimate=1024)
+
+    # The failed attempt, then the restore attempt that puts the old geometry back.
+    assert len(attempts) == 2
+    assert state.sdr_decimate == 32
+    assert state.sdr_center_hz == 100e6
+
+
+def test_bandwidth_switch_reports_the_original_error_when_the_restore_also_fails():
+    state = SimpleNamespace(sdr_center_hz=100e6, sdr_decimate=32, sdr_listen_hz=100e6)
+    session = SdrSession.__new__(SdrSession)
+    session.dev = SimpleNamespace(state=state)
+
+    def fail():
+        raise RuntimeError('device bus is down')
+
+    session._configure = fail
+    with pytest.raises(RuntimeError, match='device bus is down'):
+        session.set_params(center=101e6)
+
+    # The state still describes the last capture that worked, not the one that failed.
+    assert (state.sdr_center_hz, state.sdr_decimate) == (100e6, 32)
+
+
 def test_deferred_deemph_is_published_while_the_browser_owns_audio():
     """`sdr.actual.deemph_us` must describe the chain that is running, not the idle fallback.
 

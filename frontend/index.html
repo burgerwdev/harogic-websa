@@ -226,9 +226,12 @@
           </div>
           <div id="sdr-settings" style="display:none;">
             <div class="param-row"><label data-i18n="center">Center</label>
-              <input type="number" id="input-sdr-center" value="1000" step="any" style="flex:1;" data-i18n-title="sdr_center_tip" data-i18n-attr="title" title="Wideband center (MHz)">
-              <span class="cur-val">MHz</span>
-              <button class="btn" data-action="apply-sdr" data-i18n="set">Set</button>
+              <input type="number" id="input-sdr-center" value="1000" step="any" data-i18n-title="sdr_center_tip" data-i18n-attr="title" title="Wideband center (MHz)">
+              <span class="sdr-tail"><span class="cur-val">MHz</span><button class="btn" data-action="apply-sdr" data-i18n="set">Set</button></span></div>
+            <!-- IQ capture bandwidth on its own row. It was the last item of the Center row. On a
+                 narrow panel the 108px select wrapped to the start of the next line, below the
+                 label column. One row per control keeps every value in the value column. -->
+            <div class="param-row"><label data-i18n="iq_bw">IQ BW</label>
               <select id="select-sdr-decimate" data-action="apply-sdr-bw" data-i18n-title="capture_bw" data-i18n-attr="title" title="IQ capture bandwidth">
                 <option value="1">50 MHz (audio ⚠)</option>
                 <option value="2">25 MHz (audio ⚠)</option>
@@ -244,16 +247,12 @@
                 <option value="2048">24.4 kHz</option>
               </select></div>
             <div class="param-row"><label data-i18n="listen">Listen</label>
-              <input type="number" id="input-sdr-listen" value="1000" step="any" style="flex:1;" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
-              <span class="cur-val">MHz</span>
-              <button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button>
-              <!-- Spacer = the decimation select's fixed width, so the Set column lines up
-                   with the Center row above. -->
-              <span style="flex:0 0 108px;"></span></div>
+              <input type="number" id="input-sdr-listen" value="1000" step="any" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
+              <span class="sdr-tail"><span class="cur-val">MHz</span><button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></span></div>
             <div class="param-row"><label data-i18n="step">Step</label>
-              <input type="number" id="input-sdr-step" min="0" step="any" style="flex:1;min-width:64px;" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
-              <div class="unit-btn-group" id="unit-sdr_step-group"></div></div>
-            <div class="param-row span-action-row"><span id="sdr-step-quick" style="display:inline-flex;gap:2px;"></span></div>
+              <input type="number" id="input-sdr-step" min="0" step="any" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
+              <div class="unit-btn-group sdr-tail" id="unit-sdr_step-group"></div></div>
+            <div class="param-row span-action-row"><span id="sdr-step-quick"></span></div>
             <div class="param-row span-action-row">
               <button class="btn span-step-button" data-action="sdr-tune-down" data-i18n="glyph_left" data-i18n-attr="title" data-i18n-title="sdr_tune_down_tip" title="Tune down one step">◀</button>
               <button class="btn span-step-button" data-action="sdr-tune-up" data-i18n="glyph_right" data-i18n-attr="title" data-i18n-title="sdr_tune_up_tip" title="Tune up one step">▶</button>
@@ -295,13 +294,13 @@
             <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
-            <div class="param-row"><label data-i18n="nr">NR</label>
+            <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
-              <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" style="flex:1;" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
+              <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
                 <option value="wiener" data-i18n="nr_algo_wiener">Wiener</option>
                 <option value="dfn" data-i18n="nr_algo_dfn">DeepFilterNet3</option>
               </select>
-              <select id="select-sdr-nr-strength" data-action="set-sdr-nr-strength" style="flex:1;" data-i18n-title="nr_strength_tip" data-i18n-attr="title">
+              <select id="select-sdr-nr-strength" data-action="set-sdr-nr-strength" data-i18n-title="nr_strength_tip" data-i18n-attr="title">
                 <option value="0.25" data-i18n="nr_light">Light</option>
                 <option value="0.6" selected data-i18n="nr_medium">Medium</option>
                 <option value="1" data-i18n="nr_strong">Strong</option>
@@ -721,7 +720,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.8.10 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.8.11 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

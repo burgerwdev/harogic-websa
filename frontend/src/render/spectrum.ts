@@ -298,6 +298,103 @@ function drawDimLine(x1: number, x2: number, p: { x: number; y: number; w: numbe
   ctx.restore();
 }
 
+// ---- Top-left plot text stack -------------------------------------------------------------
+//
+// One owner for that corner. Line 0 belongs to the corner slot: the RTA or SDR mode badge in the
+// real-time view, the 3 dB BW label in the swept view, and the H labels of the harmonic view.
+// The cursor readout shares that line when the mode badge has it, so the operator reads the mode
+// and the hovered point as one row. The readout takes the next line when a wide label owns line 0.
+// The marker readouts follow it. One place computes the line numbers. Thus a hover cannot cover
+// the mode badge, and a hover never moves the badge.
+const TL_LINE = 14;
+
+/** The text of the mode badge in the real-time view. renderRta draws the badge on line 0. */
+function modeBadgeText(): string {
+  return S.sdrMode ? 'SDR' : 'RTA';
+}
+
+/** The right edge of the RTA/SDR badge. The cursor readout starts after it. */
+function modeBadgeRight(): number {
+  ctx.font = '11px monospace';
+  return plotRect().x + 4 + ctx.measureText(modeBadgeText()).width + 4;
+}
+
+/**
+ * Draw the RTA/SDR corner badge. The badge holds the mode name and a plate. The border colour is
+ * the text colour (col.axis), so the badge and the readout on the same line read as one row.
+ */
+function drawModeBadge() {
+  const p = plotRect();
+  const col = canvasColors();
+  const x = p.x + 4;
+  const y = tlY(0);
+  const w = modeBadgeRight() - x;
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = col.labelBg;
+  ctx.fillRect(x, y, w, 12);
+  ctx.strokeStyle = col.axis;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x, y, w, 12);
+  ctx.fillStyle = col.axis;
+  ctx.fillText(modeBadgeText(), x + 2, y + 12);
+}
+
+/**
+ * The line of the top-left stack for each block in this frame, and whether the readout shares the
+ * line of the mode badge.
+ */
+export function topLeftLines(): { readout: number; osd: number; shareMode: boolean } {
+  const c = cur();
+  const modeBadge = c.viewMode === 'rta';
+  // A view that owns line 0 with its own labels (harmonic, phase noise), or the 3 dB BW label.
+  // The 3 dB label is on the swept path only: a stale reading must not move the readout in the
+  // RTA view.
+  const lineZeroLabel = (!modeBadge && !!getViewRenderer(c.viewMode))
+    || (!getViewRenderer(c.viewMode) && !!c.m3dB);
+  const readout = modeBadge ? 0 : (lineZeroLabel ? 1 : 0);
+  return { readout, osd: readout + 1, shareMode: modeBadge };
+}
+
+/** The y position of a top-left stack line. The text baseline is 'top'. */
+function tlY(line: number): number {
+  return plotRect().y + 4 + line * TL_LINE;
+}
+
+/**
+ * Cursor readout: the frequency and the level of the bin under the pointer. In the real-time view
+ * the readout shares the line of the mode badge and its colour (col.axis). The readout keeps the
+ * plate behind the text and no border, so a row of readouts does not compete with the badge. The
+ * number format is the format of the marker readouts: fmtReadoutLevel applies the display unit
+ * and the external offset. The function draws nothing while the pointer is outside the plot.
+ */
+function renderCursorReadout() {
+  const idx = S.plotCursorIdx;
+  const powers = getDisplayPowers();
+  const usable = idx !== null && !!powers && powers.length > 1;
+  const i = usable ? Math.max(0, Math.min(powers!.length - 1, idx!)) : 0;
+  const text = usable
+    ? `${formatFreqHz(markerFreqHz(i))}  ${fmtReadoutLevel(powers![i])}`
+    : '';
+  // Diagnostic/e2e hook (same pattern as dataset.notice). The readout is canvas text, so the value
+  // must be readable from outside the canvas. Written only on change.
+  if (ctx.canvas.dataset.cursor !== text) ctx.canvas.dataset.cursor = text;
+  if (!usable) return;
+  const lines = topLeftLines();
+  const col = canvasColors();
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  const w = ctx.measureText(text).width + 4;
+  const x = lines.shareMode ? modeBadgeRight() + 6 : plotRect().x + 4;
+  const y = tlY(lines.readout);
+  ctx.fillStyle = col.labelBg;
+  ctx.fillRect(x, y, w, 12);
+  ctx.fillStyle = col.axis;
+  ctx.fillText(text, x + 2, y + 12);
+}
+
 function renderOSD(powers: Float32Array) {
   const c = cur();
   const col = canvasColors();
@@ -307,9 +404,10 @@ function renderOSD(powers: Float32Array) {
   ctx.font = '11px monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
+  const top = tlY(topLeftLines().osd);
   let line = 0;
   active.forEach(m => {
-    const cy = p.y + 28 + line * 14;
+    const cy = top + line * TL_LINE;
     const idx = Math.min(m.idx, powers.length - 1);
     const f = markerFreqHz(idx), a = powers[idx];
     let txt: string;
@@ -456,7 +554,14 @@ export function renderAll() {
   // Measurement views register themselves (report finding E-5); the swept path below is
   // the default when nothing is registered for the active mode.
   const view = getViewRenderer(c.viewMode);
-  if (view) { view.render(viewContext()); drawMarqueeOverlay(); renderSpectrumZoomOverview(); syncSpectrumZoomUi(); return; }
+  if (view) {
+    view.render(viewContext());
+    renderCursorReadout();          // top-left, drawn over every view's own labels
+    drawMarqueeOverlay();
+    renderSpectrumZoomOverview();
+    syncSpectrumZoomUi();
+    return;
+  }
   renderGrid();
   c.traces.forEach(t => renderTraceLine(t));
   const powers = getDisplayPowers();
@@ -475,6 +580,7 @@ export function renderAll() {
     if (c.measOn && c.measTabSel === 'amp') renderAmp(powers);
     if (c.measOn && c.measTabSel === 'chan') renderChannel(powers);
   }
+  renderCursorReadout();
   drawMarqueeOverlay();
   if (waterfallOn.get()) {
     ['marker-table', 'peak-table', 'harmonic-table', 'pnm-table'].forEach((id) => {
@@ -604,9 +710,8 @@ function renderRta() {
   ctx.strokeStyle = col.axis;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
   drawYAxisLabels(p, col, cur().displayRef, cur().dbPerDiv);
-  // Corner label "RTA" (kept; FFT size removed)
-  ctx.fillStyle = col.axis; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillText(S.sdrMode ? 'SDR' : 'RTA', p.x + 4, p.y + 4);
+  // Corner badge "RTA"/"SDR". The cursor readout continues on this line (topLeftLines()).
+  drawModeBadge();
   const d = S.rtaData;
   if (!d || !d.freq || d.freq.length < 2) return;
   const n = d.freq.length;

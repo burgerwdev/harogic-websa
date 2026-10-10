@@ -970,11 +970,29 @@ class SdrSession(MeasurementSession):
     # ---------------- parameter setters ----------------
     def set_params(self, center=None, decimate=None):
         s = self.dev.state
+        prev_center, prev_decimate = s.sdr_center_hz, s.sdr_decimate
         if center is not None:
             s.sdr_center_hz = float(center)
         if decimate is not None:
             s.sdr_decimate = _round_decimate(decimate)
-        self._configure()
+        try:
+            self._configure()
+        except Exception:
+            # The device did not take the new geometry. First put the state back. STATUS reports
+            # `sdr_decimate` and `sdr_center_hz`. If they keep the new values, the UI and the
+            # browser DSP believe in a capture that does not run. The operator cannot correct
+            # this: the native select sends no `change` event when the value is the same.
+            # Then configure the old geometry again. `_configure` clears `_ready` in its first
+            # line and sets it only at the end. `step()` returns immediately while `_ready` is
+            # false, so a half-configured stream stays silent and the stall watchdog cannot
+            # recover it. The original error still reaches the client.
+            s.sdr_center_hz, s.sdr_decimate = prev_center, prev_decimate
+            try:
+                self._configure()
+            except Exception:
+                log.exception('SDR restore configuration failed after a failed set_params;'
+                              ' the stream stays down until the next successful configure')
+            raise
 
     def set_tune(self, listen_hz):
         """Cheap, state-only: the new offset is applied in the next step() with a software

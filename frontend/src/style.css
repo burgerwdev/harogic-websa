@@ -645,16 +645,50 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* main control column: input == select */
 #rta-freq-settings input[type="number"],
 #rta-freq-settings select { width: 108px; height: 22px; box-sizing: border-box; }
-/* Fixed width: the Listen row carries a spacer of the same size, so the Set buttons of the
-   Center and Listen rows line up in a column. */
-#select-sdr-decimate { width: 108px; }
-/* Equal-width frequency boxes: the Listen tail is pinned to 34 + 4 + 40 + 4 + 108 = 190px
-   (MHz label, Set, spacer), and the step row's unit group takes exactly the same space, so
-   the step input is as wide as the Listen input at any panel width. */
+/* One value column for the Center, IQ BW, Listen and Step rows. The column is 140px wide. This
+   width holds the longest frequency ("1000.000000", 11 monospace digits) with spare room. The
+   old box stretched to the panel and stayed mostly empty. All four rows keep the same width, so
+   the rows line up as a grid. The box-sizing is border-box because a number input is content-box
+   by default and a select is border-box. Without it, the two rows differ by the padding and the
+   border. */
+#sdr-settings .param-row > input[type="number"],
+#select-sdr-decimate { box-sizing: border-box; flex: 0 1 140px; min-width: 0; }
+/* The tail holds the MHz label and the Set button, or the Hz/kHz/MHz unit buttons. The tail keeps
+   its content width and stays next to its value. The Set column then ends on the right edge of
+   the To Center button below. That is the alignment of the tune row. */
+#sdr-settings .sdr-tail { flex: 0 1 auto; display: flex; align-items: center; gap: 4px; min-width: 0; }
+#sdr-settings .sdr-tail > .cur-val { flex: 0 0 34px; }
+#sdr-settings .sdr-tail > .btn { flex: 0 0 52px; }
+/* Keep the items of each SDR row on one line. A wrapped item starts at the row start, below the
+   label column. This is the misalignment that the panel showed on a narrow screen. A row with a
+   wrapping button group (demod, filter, de-emph) wraps inside that group. Only the free-text hint
+   row wraps as a row. */
+#sdr-settings .param-row:not(.sdr-hint-row) { flex-wrap: nowrap; }
 #sdr-settings .param-row > .cur-val { flex: 0 0 34px; }
-#sdr-settings .param-row > [data-action="apply-sdr"],
-#sdr-settings .param-row > [data-action="apply-sdr-tune"] { flex: 0 0 40px; }
-#unit-sdr_step-group { flex: 0 0 190px; justify-content: flex-start; }
+/* The unit buttons of the step row keep their content width. The old 190px reservation made the
+   step box wide and moved Hz, kHz and MHz to a second line on a narrow panel. */
+#unit-sdr_step-group { justify-content: flex-start; white-space: nowrap; }
+/* Step quick presets: one flex line. The line wraps inside its own box on a narrow panel. The old
+   inline-flex span could not shrink and could not wrap. */
+#sdr-step-quick { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
+#sdr-step-quick .btn { padding: 2px 5px; }
+/* The DRM occupancy note is a status string, not a control. Keep it on one line. The Filter button
+   group wraps below it. */
+#sdr-drm-filter-note { flex: 0 0 auto; white-space: nowrap; }
+/* In DeepFilterNet3 mode the strength selector is hidden. The algorithm selector then stretched
+   across the whole row. Now the algorithm selector keeps the width of its options. The strength
+   selector takes the free space in Wiener mode. The DFN status string gets a line of its own. */
+#sdr-settings .param-row.sdr-nr-row { flex-wrap: wrap; }
+/* Both selectors keep one width, the width of the longer label "DeepFilterNet3". The Wiener row is
+   then an even pair. The DeepFilterNet3 row does not stretch its single selector. Both shrink
+   together on a narrow panel, so the pair stays even. */
+#sdr-settings .sdr-nr-row > #select-sdr-nr-algo,
+#sdr-settings .sdr-nr-row > #select-sdr-nr-strength { flex: 0 1 100px; min-width: 0; }
+#sdr-settings .sdr-nr-row > #nr-dfn-status {
+  /* One line for this string, indented to the value column. */
+  flex: 1 0 calc(100% - 62px); min-width: 0; margin-left: 62px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* The tune buttons: twice the standard height, easy to hit while listening. The quick-step
    row and the tune row keep a 10px gap above and below. */
 #sdr-settings .span-step-button, #sdr-settings .span-full-button { height: 40px; }

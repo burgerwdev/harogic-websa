@@ -46,4 +46,24 @@ export function getX(idx: number, points: number): number {
   return rect.x + (x - rect.x) * t.sx + t.dxFrac * rect.w;
 }
 
+/**
+ * The drawn point that is nearest to canvas x. This is the hit test of the cursor readout.
+ *
+ * The function searches getX() and does not compute the window again. A display zoom, a gesture
+ * preview and a sweep all reach x through getX(). Thus the readout, the markers and the trace
+ * agree on the bin under the pointer (design §4.4, one mapping).
+ */
+export function nearestIdxAtX(x: number, points: number): number {
+  if (points < 2) return 0;
+  if (x <= getX(0, points)) return 0;
+  if (x >= getX(points - 1, points)) return points - 1;
+  let lo = 0;
+  let hi = points - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (getX(mid, points) <= x) lo = mid; else hi = mid;
+  }
+  return (x - getX(lo, points)) <= (getX(hi, points) - x) ? lo : hi;
+}
+
 
