@@ -104,9 +104,11 @@ def test_the_capture_floor_keeps_the_packet_period_inside_the_panadapter_cadence
         capture, _display, _capture_bw = sdr_capture_geometry(requested, native)
         period = packet_samples / (native / capture)
         assert period <= 1.0 / 20.0, (requested, period)
-    # The symptom, in numbers: using the request itself as the device geometry gives 133 ms
-    # (7.5 fps) at 97.7 kHz and 532 ms (1.9 fps) at 24.4 kHz - the panadapter's 20 fps and the
-    # browser ring's 0.3 s target cannot be fed from that.
+    # The symptom, in numbers (nominal, from the configured packet): using the request itself as
+    # the device geometry gives 133/266/532 ms periods at 512/1024/2048 - against the panadapter's
+    # 20 fps and the browser ring's 0.3 s target. Measured on the bench, the baseband blocks really
+    # were 129/253/483 ms and the panadapter 10.3/5.4/3.0 frames/s, with 9 ring underruns in 8 s
+    # at 2048.
     for requested, naive_ms in ((512, 133.0), (1024, 266.1), (2048, 532.2)):
         naive = packet_samples / (native / requested)
         assert naive == pytest.approx(naive_ms / 1e3, rel=0.01)

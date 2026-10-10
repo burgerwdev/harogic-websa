@@ -47,19 +47,22 @@ _BUS_RETRY_DELAY = 0.05
 
 #: Largest IQS DecimateFactor the acquisition loop may run at.
 #:
-#: The IQS Adaptive stream hands out a *fixed* number of samples per packet (PacketDataSize
-#: stays at ~64960 bytes, i.e. 16240 complex-int16 samples, whatever the decimate), and the
-#: publisher loop is paced by the packet (``pacing()`` returns 0 while packets arrive, and
-#: ``step()`` fetches exactly one packet). The packet period is therefore
-#: ``packet_samples / IQSampleRate`` and *every* frame the session publishes - the panadapter,
-#: the waterfall row and the channelized baseband - is emitted once per period.
+#: The IQS Adaptive stream reports a *fixed* packet size (PacketDataSize stays at ~64960 bytes,
+#: i.e. 16240 complex-int16 samples, at every decimate - measured on the SAN-90), and the publisher
+#: loop is paced by the packet (``pacing()`` returns 0 while packets arrive, and ``step()`` fetches
+#: exactly one packet). The packet period - and with it the panadapter frame, the waterfall row and
+#: the channelized baseband block - therefore follows the capture rate, nominally
+#: ``packet_samples / IQSampleRate`` (Adaptive may hand out fewer samples per fetch, which only
+#: shortens the period).
 #:
-#: At decimate 512 (97.7 kHz capture) that period is already 133 ms: the panadapter drops to
-#: 7.5 fps and the browser's audio ring (0.25 s prime / 0.3 s target) starts running dry. At
-#: 2048 it is 532 ms and the ring underruns on every packet. So the device capture is kept at
-#: decimate <= 128 (488 kSPS, 33 ms packets, >= 30 steps/s) and a narrower *requested* capture
-#: becomes the DISPLAY window (the bins published are clipped to it) plus the demodulator's
-#: passband clamp - the demodulated channel and the shown span stay exactly what was asked for.
+#: Measured on the bench (SAN-90 fed by a PlutoSDR NFM tone, headless browser on the real UI):
+#: requesting 512 (97.7 kHz) published a 129 ms baseband block every ~95 ms and 10.3 panadapter
+#: frames/s, and requesting 2048 published a 483 ms block and 3.0 frames/s - which starved the
+#: browser's audio ring (0.25 s prime / 0.3 s target: 9 underruns in 8 s at 2048). The device
+#: capture is therefore kept at decimate <= 128 (488 kSPS, 33 ms blocks, 40 blocks/s measured) and
+#: a narrower *requested* capture becomes the DISPLAY window (the bins published are clipped to
+#: it) plus the demodulator's passband clamp - the demodulated channel and the shown span stay
+#: exactly what was asked for.
 SDR_MAX_CAPTURE_DECIMATE = 128
 
 ADM_ENABLED = os.getenv('WEBSA_SDR_ADM', '1').lower() not in ('0', 'false', 'no', 'off')
