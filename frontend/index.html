@@ -720,7 +720,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.8.11 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.8.12 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
@@ -734,6 +734,10 @@
 <div class="decode-window" id="decode-window" style="display:none;">
   <div class="decode-window-head" id="decode-window-head">
     <span id="decode-window-title">FT8</span>
+    <!-- SSTV only, and only before a picture arrives: the waiting message belongs in the title row
+         (where the operator looks for the pane's state), not as placeholder text over the canvas.
+         The decoder's own state (audio buffered, attempts) sits in the readout row below. -->
+    <span class="decode-sstv-hint" id="sstv-head-hint" style="display:none;" data-i18n="sstv_waiting">waiting for a picture…</span>
     <!-- CW only: a keyed lamp and a narrow level bar, fed by the decoder's own blocks (the tone
          gate's state and the audio level), so they show exactly what the decoder is hearing. They sit
          beside the title, where the operator looks first. -->
@@ -749,16 +753,23 @@
     <button class="btn" id="btn-decode-clear" data-i18n="clear">Clear</button>
     <button class="btn" id="btn-decode-close" data-i18n="gnss_close">Close</button>
   </div>
+  <!-- FT8 only: a regex filter over the decoded messages. A pattern the engine refuses
+       marks the box invalid and keeps every row visible (filter off, never a blank table). -->
+  <div class="decode-search-row" id="decode-ft8-search-row" style="display:none;">
+    <input class="decode-search" id="decode-ft8-search" type="text" spellcheck="false" autocomplete="off"
+           data-i18n="ft8_search_ph" data-i18n-attr="placeholder" placeholder="Filter messages (regex)"
+           title="Regular expression over the message text" />
+  </div>
   <div class="decode-window-body" id="decode-window-body">
     <table id="decode-window-table">
       <thead><tr>
-        <th id="decode-window-time-th" data-i18n="ft8_time">Time</th>
-        <th data-i18n="ft8_snr">SNR</th>
-        <th data-i18n="ft8_df">DF</th>
-        <th data-i18n="ft8_freq">MHz</th>
-        <th data-i18n="ft8_message">Message</th>
-        <th data-i18n="ft8_country">Country</th>
-        <th data-i18n="ft8_location">Location</th>
+        <th id="decode-window-time-th" data-sortable data-col="0" data-i18n="ft8_time">Time</th>
+        <th data-sortable data-col="1" data-i18n="ft8_snr" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">SNR</th>
+        <th data-sortable data-col="2" data-i18n="ft8_df" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">DF</th>
+        <th data-sortable data-col="3" data-i18n="ft8_freq" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">MHz</th>
+        <th data-sortable data-col="4" data-i18n="ft8_message" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">Message</th>
+        <th data-sortable data-col="5" data-i18n="ft8_country" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">Country</th>
+        <th data-sortable data-col="6" data-i18n="ft8_location" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">Location</th>
       </tr></thead>
       <tbody id="decode-window-rows"></tbody>
     </table>
@@ -793,6 +804,44 @@
         <summary data-i18n="drm_details">Decoder details</summary>
         <code id="decode-drm-debug"></code>
       </details>
+    </div>
+    <!-- SSTV: the picture the station sent and what the calibration header said about it. The mode
+         buttons are built from the Rust mode table (ui/decodeWindow.ts) - never a list kept here -
+         and the one the signal declared is marked, so "which mode is this?" is answered by looking.
+         The canvas is scaled by CSS to whatever room the window has. -->
+    <div class="decode-sstv" id="decode-window-sstv" style="display:none;">
+      <div class="decode-sstv-bar">
+        <button class="btn sstv-auto" id="sstv-auto" data-i18n="sstv_auto" data-i18n-title="sstv_auto_tip" data-i18n-attr="title" title="Take the mode from the signal's VIS header">Auto</button>
+        <div class="btn-group decode-sstv-modes" id="sstv-mode-group"></div>
+        <span class="spacer"></span>
+      </div>
+      <div class="decode-sstv-main">
+        <div class="decode-sstv-thumbs" id="sstv-thumbs">
+          <div class="decode-sstv-thumb-tools">
+            <button class="btn" id="sstv-select-all" data-i18n="sstv_select_all" data-i18n-title="sstv_select_all_tip" data-i18n-attr="title" title="Select every stored picture">All</button>
+            <button class="btn" id="btn-sstv-delete" data-i18n="sstv_delete" data-i18n-title="sstv_delete_tip" data-i18n-attr="title" title="Delete the ticked pictures" disabled>Delete</button>
+            <button class="btn" id="btn-sstv-save" data-i18n="sstv_save" data-i18n-title="sstv_save_tip" data-i18n-attr="title" title="Save the ticked pictures as PNG files" disabled>Save</button>
+          </div>
+          <div class="decode-sstv-thumb-list" id="sstv-thumb-list"></div>
+        </div>
+        <div class="decode-sstv-side">
+          <div class="decode-sstv-readout">
+            <span class="decode-sstv-mode" id="sstv-mode-name">—</span>
+            <span class="decode-sstv-chip" id="sstv-vis">VIS —</span>
+            <span class="decode-sstv-chip" id="sstv-size">—</span>
+            <span class="decode-sstv-chip" id="sstv-time">—</span>
+            <span class="decode-sstv-chip" id="sstv-freq">—</span>
+            <span class="decode-sstv-chip" id="sstv-count" data-i18n-title="sstv_count_tip" data-i18n-attr="title" title="Pictures received this session">—</span>
+            <span class="decode-sstv-state" id="sstv-state" style="display:none;" data-i18n-title="sstv_state_tip" data-i18n-attr="title" title="Decoder state"></span>
+          </div>
+          <div class="decode-sstv-progress" id="sstv-progress" data-i18n-title="sstv_progress_tip" data-i18n-attr="title" title="Scanlines decoded">
+            <i id="sstv-progress-fill"></i><span id="sstv-progress-text">0%</span>
+          </div>
+          <div class="decode-sstv-view">
+            <canvas class="decode-sstv-canvas" id="decode-sstv-canvas" width="320" height="256"></canvas>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   <!-- Resize handles: four edges and four corners (a single corner grip was all the first
