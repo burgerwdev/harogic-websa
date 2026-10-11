@@ -15,7 +15,7 @@ use crate::analog;
 use crate::audio::{self, AudioPolicy};
 use crate::digital;
 use crate::pipeline::{PathKind, Pipeline, PipelineOutput};
-use crate::plugin::DemodConfig;
+use crate::plugin::{DemodConfig, ImageStatus};
 
 struct PipelineState {
     pipeline: Pipeline,
@@ -268,6 +268,117 @@ pub unsafe extern "C" fn websa_dsp_drm_audio_pcm(handle: u32, ptr: *mut i16, cap
 #[no_mangle]
 pub extern "C" fn websa_dsp_drm_audio_rate(handle: u32) -> u32 {
     with_pipeline(handle, |state| state.pipeline.digital_audio_rate_hz()).unwrap_or(0)
+}
+
+/// Write the decoded picture's state into `meta` as nine `u32` words and return the word count (0
+/// when the protocol has no picture). The words are:
+///
+/// ```text
+///   [width, height, lines, progress, vis, serial_lo, serial_hi, complete, mode_index]
+/// ```
+///
+/// The serial is a `u64` split in two because the ABI's word is 32 bits: a pane that keeps history
+/// compares it to tell "the same picture, further along" from "a new transmission".
+///
+/// # Safety
+/// `meta` must point to 9 writable `u32` inside this module's linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_demod_image_info(handle: u32, meta: *mut u32) -> u32 {
+    if meta.is_null() {
+        return 0;
+    }
+    let Some(Some(status)) = with_pipeline(handle, |state| state.pipeline.digital_image_status()) else {
+        return 0;
+    };
+    let words = image_words(&status);
+    core::ptr::copy_nonoverlapping(words.as_ptr(), meta, words.len());
+    words.len() as u32
+}
+
+/// The nine `u32` words `websa_dsp_demod_image_info` writes.
+fn image_words(status: &ImageStatus) -> [u32; 9] {
+    [
+        status.width,
+        status.height,
+        status.lines,
+        status.progress,
+        status.vis,
+        status.serial as u32,
+        (status.serial >> 32) as u32,
+        u32::from(status.complete),
+        status.mode_index,
+    ]
+}
+
+/// Copy the decoded picture's RGB888 pixels into `ptr` and return the bytes written (0 when there is
+/// no picture or the buffer is too small, so a partial copy is never reported as a whole one).
+///
+/// Not drained: the demodulator keeps the picture until a newer one replaces it, and the caller copies
+/// it out on every update.
+///
+/// # Safety
+/// `ptr` must point to `capacity` writable bytes inside this module's linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_demod_image_data(handle: u32, ptr: *mut u8, capacity: u32) -> u32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    // The copy happens inside the closure: `ImageRef` borrows the pipeline, and a borrow cannot
+    // outlive the `with_pipeline` call that produced it.
+    with_pipeline(handle, |state| {
+        let Some(image) = state.pipeline.digital_image() else {
+            return 0;
+        };
+        let bytes = image.width as usize * image.height as usize * 3;
+        if bytes == 0 || bytes > capacity as usize || image.rgb.len() < bytes {
+            return 0;
+        }
+        core::ptr::copy_nonoverlapping(image.rgb.as_ptr(), ptr, bytes);
+        bytes as u32
+    })
+    .unwrap_or(0)
+}
+
+/// Pin the digital demodulator to one of its own modes: `index >= 0` selects it, `-1` clears the pin
+/// (the signal decides). Returns 1 when the protocol took it, 0 when it has no such knob.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_set_mode_pin(handle: u32, index: i32) -> u32 {
+    let pin = if index < 0 { None } else { Some(index as usize) };
+    with_pipeline(handle, |state| u32::from(state.pipeline.set_digital_mode_pin(pin))).unwrap_or(0)
+}
+
+/// Write the digital decoder's own state into `meta` as five `u32` words and return the word count:
+///
+/// ```text
+///   [attempts_lo, attempts_hi, buffered_samples, has_picture, audio_rms_permille]
+/// ```
+///
+/// Read *while nothing has decoded*: "no picture" has two very different causes — the decoder is not
+/// being fed (a stream or mode problem) or it is fed and never finds a signal (a band, level or tuning
+/// problem) — and without these numbers a bench failure looks the same either way. `has_picture` is
+/// what `websa_dsp_demod_image_info` already reports, repeated here so one call answers the whole
+/// question.
+///
+/// # Safety
+/// `meta` must point to 5 writable `u32` inside this module's linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_demod_decode_state(handle: u32, meta: *mut u32) -> u32 {
+    if meta.is_null() {
+        return 0;
+    }
+    let Some(Some(state_words)) = with_pipeline(handle, |state| {
+        Some([
+            state.pipeline.digital_attempts() as u32,
+            (state.pipeline.digital_attempts() >> 32) as u32,
+            state.pipeline.digital_buffered() as u32,
+            u32::from(state.pipeline.digital_image().is_some()),
+            (state.pipeline.digital_audio_level() * 1000.0) as u32,
+        ])
+    }) else {
+        return 0;
+    };
+    core::ptr::copy_nonoverlapping(state_words.as_ptr(), meta, state_words.len());
+    state_words.len() as u32
 }
 
 

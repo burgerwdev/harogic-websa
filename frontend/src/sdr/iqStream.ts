@@ -12,6 +12,7 @@ import { wasmDspAllowed, wasmDspReason } from './capability';
 import { addFt8Spot, clearFt8Spots } from './ft8Log';
 import { addCwText, setCwLevel } from './cwLog';
 import { clearDrm, setDrmDecode, setDrmConstellation } from './drmLog';
+import { clearSstv, setSstvDecoderState, updateSstvPicture } from './sstvLog';
 import { dspWasmUrl } from './wasm';
 import type { Ft8Report, PipelineParams } from './types';
 import { t } from '../core/i18n';
@@ -37,6 +38,9 @@ let lastError = '';
 let fallbackReason = '';
 //: The digital path's output: the last decoded message and the timing it came with.
 let ft8Text = '';
+/// SSTV's own readout and the pin the worker confirmed (diagnostics; the pane uses the log).
+let sstvNotes: string[] = [];
+let sstvPinApplied = -1;
 let ft8Count = 0;
 let ft8Detail = '';
 //: Digital-path diagnostics (see the worker): is the decoder being fed, and is it getting through
@@ -197,6 +201,63 @@ function startWorker(): void {
       if (configuredMode === 'drm' || configuredMode === 'drmplus') clearDrm();
       return;
     }
+    if (d.type === 'sstv-clear') {
+      if (configuredMode === 'sstv') clearSstv();
+      return;
+    }
+    if (d.type === 'sstv') {
+      // The decoder's own readout (a new transmission, and its completion). The pane shows the
+      // structured metadata; this is kept for the diagnostics, where "the decoder ran but said
+      // nothing" must be visible.
+      sstvNotes = (Array.isArray(d.lines) ? d.lines.map(String) : [String(d.lines || '')])
+        .filter((line) => line.length > 0)
+        .concat(sstvNotes)
+        .slice(0, 4);
+      return;
+    }
+    if (d.type === 'sstv-image') {
+      const rgb = d.rgb;
+      const meta = (d.meta || {}) as Record<string, unknown>;
+      if (configuredMode === 'sstv' && rgb instanceof ArrayBuffer) {
+        updateSstvPicture(
+          { rgb: new Uint8Array(rgb), width: Number(d.width) || 0, height: Number(d.height) || 0 },
+          {
+            name: String(meta.name || ''),
+            modeIndex: Number(meta.modeIndex) || 0,
+            vis: Number(meta.vis) || 0,
+            width: Number(d.width) || 0,
+            height: Number(d.height) || 0,
+            lines: Number(meta.lines) || 0,
+            progress: Number(meta.progress) || 0,
+            complete: meta.complete === true,
+            serial: Number(meta.serial) || 0,
+            hz: Number(meta.hz) || 0,
+          },
+        );
+      }
+      return;
+    }
+    if (d.type === 'sstv-state') {
+      // The decoder's own counters while nothing has decoded: the pane shows them, so "waiting" can be
+      // told apart from "not being fed".
+      if (configuredMode === 'sstv') {
+        setSstvDecoderState({
+          running: d.running === true,
+          pushes: Number(d.pushes) || 0,
+          attempts: Number(d.attempts) || 0,
+          bufferedSamples: Number(d.bufferedSamples) || 0,
+          bufferedSeconds: Number(d.bufferedSeconds) || 0,
+          hasPicture: d.hasPicture === true,
+          level: Number(d.level) || 0,
+          srcLevel: Number(d.srcLevel) || 0,
+        });
+      }
+      return;
+    }
+    if (d.type === 'sstv-mode') {
+      sstvPinApplied = Number(d.index);
+      return;
+    }
     if (d.type === 'drm') {
       if (configuredMode === 'drm' || configuredMode === 'drmplus') {
         setDrmDecode(Array.isArray(d.lines) ? d.lines.map(String) : [String(d.lines || '')], Number(d.snrDb) || null);
@@ -234,7 +295,9 @@ function startWorker(): void {
         `dsp_pushes=${d.digitalPushes} dsp_buffered=${d.digitalBuffered}` +
         ` dsp_decodes=${d.ft8Messages ?? 0}` +
         ` dsp_attempts=${d.digitalAttempts ?? 0} dsp_resets=${d.decoderResets ?? 0}` +
-        ` dsp_audio_resets=${d.digitalResets ?? 0} dsp_dropped=${d.digitalDropped ?? 0}`;
+        ` dsp_audio_resets=${d.digitalResets ?? 0} dsp_dropped=${d.digitalDropped ?? 0}` +
+        ` dsp_sstv_pushes=${d.sstvPushes ?? 0} dsp_sstv_images=${d.sstvImages ?? 0}` +
+        ` dsp_sstv_pin=${sstvPinApplied}`;
     }
     if (typeof d.worklet === 'number') dspOwnsWorklet = d.worklet === 1;
     if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;
@@ -309,6 +372,9 @@ export function configureSdrPipeline(
   // the backend pushes a configure on every status round, and restarting on each of those
   // would make a decoder that fails retry, and fail, once a second.
   if (params.mode !== configuredMode) {
+    // A different demodulator: the other protocol's picture belongs to the other mode.
+    clearSstv();
+    sstvNotes = [];
     configuredMode = params.mode;
     startWorker();
   }
@@ -328,6 +394,17 @@ export function configureSdrPipeline(
 /** Noise reduction on/off, its strength, algorithm and the DFN attenuation limit: applied live. */
 export function setSdrPipelineNr(on: boolean, strength: number, algo: 'wiener' | 'dfn', atten: number): void {
   worker?.postMessage({ type: 'nr', enabled: on, strength, algo, atten });
+}
+
+/**
+ * Pin the SSTV decoder to a mode (`index >= 0`) or let the VIS header decide (`null`).
+ *
+ * The worker is the one that knows whether the running protocol has the knob, so it confirms the
+ * applied pin back; the pane highlights what the decoder actually did, not what was asked.
+ */
+export function setSstvModePin(index: number | null): void {
+  sstvPinApplied = index ?? -1;
+  worker?.postMessage({ type: 'sstv-mode', index: index ?? -1 });
 }
 
 /**

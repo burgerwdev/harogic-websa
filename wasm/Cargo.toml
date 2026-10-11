@@ -9,6 +9,14 @@ publish = false
 # No dependencies on purpose: the module must build with `cargo build --target
 # wasm32-unknown-unknown` and nothing else (no wasm-bindgen, no wasm-pack), so the artifact can
 # be committed and CI needs no Rust toolchain. See docs/*/ARCHITECTURE.md.
+#
+# The vendored sstv tree keeps its upstream `#[cfg(feature = "alloc")]` gates. `alloc` is declared
+# here so those gates keep their meaning without editing the vendored source; nothing is added to
+# `[dependencies]`, which stays empty on purpose (see the `lib` note below).
+[features]
+default = ["alloc"]
+alloc = []
+
 [dependencies]
 
 [lib]

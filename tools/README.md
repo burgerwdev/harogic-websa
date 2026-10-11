@@ -22,6 +22,14 @@ Bench, fixture and gate scripts. Each directory has one purpose.
     python3 tools/pluto_tx.py nfm --lo 411e6 --gain -10
     python3 tools/pluto_tx.py usb --wav tools/bench/audio/speech.wav --seconds 60
     python3 tools/pluto_tx.py drm --iq drm_iq.wav --seconds 600
+    python3 tools/pluto_tx.py sstv --mode 'Robot 36' --callsign 'CQ WE0BSA'
+    python3 tools/pluto_tx.py sstv --image poster.png --repeat 3
+
+SSTV sends a picture as single-sideband tones: `--mode` picks one of the 18 modes the receiver can
+decode (`--list-modes` prints them with their lengths), `--image FILE` sends a PNG or PPM file
+(resized to the mode's resolution) instead of the generated test pattern, and `--callsign` is drawn
+into that pattern. A transmission is 36 s (Robot 36) to 406 s (Pasokon P7), so the baseband is
+synthesized in chunks and pushed as it is built rather than being handed to the driver whole.
 
 FM is `nfm` (3 kHz deviation) and `wfm` (75 kHz). `--wav FILE` sends a real audio
 file instead of a tone, which is the easy way to judge the decoded audio. It works

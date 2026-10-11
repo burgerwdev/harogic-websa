@@ -41,6 +41,7 @@ TOOLS: dict[str, tuple[str | None, str]] = {
     'ft8': ('pluto_ft8_tx.py', 'FT8: 8-FSK burst in a 15 s slot'),
     'drm': ('pluto_drm_tx.py', 'DRM30: OFDM from a DecDRM int16 IQ WAV'),
     'drmplus': (None, 'DRM+ mode E: no external transmitter in this repository'),
+    'sstv': ('pluto_sstv_tx.py', 'SSTV: slow-scan television picture as SSB tones'),
 }
 #: The analog tool takes the mode as a positional argument.
 ANALOG_TOOL = 'pluto_analog_tx.py'

@@ -18,6 +18,7 @@ import { createParam, resetAll } from '../core/params';
 import { toUnit } from '../core/units';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
+import { sstvBandHz } from '../sdr/sstvLog';
 import { drmStatus } from '../sdr/drmLog';
 
 /** Frequency-like equality: sub-Hz differences are the same value. */
@@ -79,6 +80,7 @@ export function demodBandHz(demod: string, ifBw: number): [number, number] {
 		const halfWidth = bandwidth ? Number(bandwidth[1]) * 500 : 10_000;
 		return [-halfWidth, halfWidth];
 	}
+	if (demod === 'sstv') return sstvBandHz();
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	return [-ifBw / 2, ifBw / 2];
 }

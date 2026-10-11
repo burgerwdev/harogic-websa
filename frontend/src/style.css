@@ -315,6 +315,46 @@ select:disabled { color: var(--label); }
   .decode-drm-main { grid-template-columns: 1fr; }
   .decode-drm-constellation { border-left: 0; border-top: 1px solid var(--inner-border); }
 }
+/* SSTV: a mode-button bar, the metadata the calibration header declared, the line progress and the
+   picture. The bar wraps instead of scrolling, so the button the operator is looking for is never
+   scrolled out of reach, and the canvas is letterboxed into whatever room the window has: a 320-wide
+   Robot 36 and an 800-wide PD-290 both fit without the window resizing itself. */
+.decode-sstv { display: flex; flex-direction: column; min-width: 0; min-height: 100%; box-sizing: border-box; color: var(--table-cell); font-size: 11px; }
+.decode-sstv-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--inner-border); }
+.decode-sstv-modes { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; gap: 3px; }
+.decode-sstv-modes .btn { padding: 2px 6px; font-size: 10px; }
+/* The mode the signal declared, when a manual pin points somewhere else: the pin is what decodes, but
+   the operator can see what the VIS header actually said. */
+.decode-sstv-modes .btn.detected:not(.active) { border-color: var(--text); }
+/* Stored-picture count on the mode button. */
+.decode-sstv-modes .btn { position: relative; }
+.decode-sstv-modes .btn .sstv-badge { position: absolute; top: -5px; right: -4px; min-width: 13px; padding: 0 3px; background: var(--btn-active); border: 1px solid var(--text); border-radius: 7px; color: var(--text); font-size: 9px; line-height: 11px; text-align: center; }
+.decode-sstv-main { display: flex; flex: 1 1 auto; min-height: 0; }
+/* Thumbnails: the stored pictures of the active mode, newest first. */
+.decode-sstv-thumbs { flex: 0 0 auto; width: 86px; overflow-y: auto; overflow-x: hidden; padding: 4px; border-right: 1px solid var(--inner-border); scrollbar-width: thin; }
+.decode-sstv-thumb-tools { display: flex; flex-direction: column; gap: 3px; padding-bottom: 4px; border-bottom: 1px solid var(--inner-border); margin-bottom: 4px; }
+.decode-sstv-thumb-tools .btn { width: 100%; }
+.decode-sstv-thumb { position: relative; margin-bottom: 4px; cursor: pointer; border: 1px solid var(--input-border); }
+.decode-sstv-thumb.viewed { border-color: var(--text); }
+.decode-sstv-thumb canvas { display: block; width: 100%; }
+.decode-sstv-thumb .sstv-tick { position: absolute; left: 2px; bottom: 2px; width: 12px; height: 12px; border: 1px solid var(--input-border); background: var(--panel-2); font-size: 10px; line-height: 11px; text-align: center; color: transparent; }
+.decode-sstv-thumb.selected .sstv-tick { color: var(--text); background: var(--btn-active); border-color: var(--text); }
+.decode-sstv-side { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.decode-sstv-actions { display: flex; gap: 4px; padding: 4px 8px 6px; }
+/* The waiting line, in the title row: dim, after the pane's title, so the canvas stays a canvas. */
+.decode-sstv-hint { color: var(--label); font-size: 11px; font-weight: 400; white-space: nowrap; }
+.decode-sstv-state { color: var(--label); white-space: nowrap; }
+.decode-sstv-readout { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--inner-border); font-variant-numeric: tabular-nums; }
+.decode-sstv-mode { color: var(--text); font-size: 13px; font-weight: 700; white-space: nowrap; }
+.decode-sstv-chip { color: var(--label); white-space: nowrap; }
+.decode-sstv-chip:last-child { margin-left: auto; }
+.decode-sstv-progress { display: flex; align-items: center; gap: 6px; padding: 5px 8px 0; }
+/* One element, two layers: the track is `background-color`, the fill is a background image sized by
+   the `--pct` the renderer sets, so a partial line does not need a second element to clip. */
+.decode-sstv-progress i { flex: 1 1 auto; height: 6px; background-color: var(--panel-2); background-image: linear-gradient(var(--text), var(--text)); background-repeat: no-repeat; background-size: var(--pct, 0%) 100%; border: 1px solid var(--input-border); border-radius: 2px; }
+.decode-sstv-progress span { flex: 0 0 auto; min-width: 30px; color: var(--label); font-size: 10px; text-align: right; }
+.decode-sstv-view { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 6px; }
+.decode-sstv-canvas { display: block; max-width: 100%; max-height: 100%; background: var(--sa-bg); border: 1px solid var(--inner-border); image-rendering: pixelated; }
 .cw-line { display: flex; gap: 8px; align-items: baseline; }
 .cw-time { color: var(--label); flex: 0 0 auto; }
 .cw-text { color: var(--table-cell); white-space: pre-wrap; word-break: break-word; min-width: 0; }
@@ -372,6 +412,18 @@ select:disabled { color: var(--label); }
 .cw-empty, .ft8-empty { color: var(--label); padding: 6px; }
 .decode-window tr.ft8-row { cursor: pointer; }
 .decode-window tr.ft8-row:hover { background: var(--btn-active); }
+/* QSO session marking: the hovered decode plus every decode of the same callsign pair. */
+.decode-window tr.ft8-row.qso-peer { background: var(--btn-active); opacity: 0.85; }
+.decode-window tr.ft8-row.qso-focus { background: var(--btn-active); box-shadow: inset 2px 0 0 var(--text); }
+/* FT8 regex filter row and the sortable headers (WSJT-X style: click sorts, click again restores). */
+.decode-search-row { display: flex; padding: 3px 6px; border-bottom: 1px solid var(--inner-border); background: var(--panel); }
+.decode-search { flex: 1 1 auto; width: 100%; background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--input-border); padding: 2px 6px; font-size: 12px; font-family: inherit; }
+.decode-search:focus { outline: none; border-color: var(--text); }
+.decode-search.invalid { border-color: #e5534b; }
+.decode-window th[data-sortable] { cursor: pointer; user-select: none; }
+.decode-window th.sorted { color: var(--text); }
+.decode-window th.sorted::after { content: '\25BE'; margin-left: 3px; }
 .decode-window .ft8-empty { color: var(--label); padding: 8px 6px; }
 /* Resize handles: four edges (thin, inset from the corners) and four corners on top of them.
    The layer itself is transparent to the pointer, so the head/body keep their own events. */

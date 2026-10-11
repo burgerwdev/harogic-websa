@@ -42,7 +42,7 @@ import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
 import { initDecodeWindow, setDecodeWindowAvailable, toggleDecodeWindow } from './decodeWindow';
-import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch } from '../sdr/iqStream';
+import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch, setSstvModePin } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
@@ -942,7 +942,7 @@ export function bindActions() {
   // The FT8 decode window: its toggle lives next to the readout, its rows come from the log, and a
   // row click tunes the receiver (the only action an FT8 operator takes on a decode).
   // A row tunes the *dial* so the signal lands inside the decoder's band (see `ft8DialFor`).
-  initDecodeWindow({ onTune: (hz) => listenAtFreq(ft8DialFor(hz)) });
+  initDecodeWindow({ onTune: (hz) => listenAtFreq(ft8DialFor(hz)), onSstvMode: setSstvModePin });
   const demodGroup = document.getElementById('sdr-demod-group');
   if (demodGroup) {
     void initSdrDemodGroup(demodGroup, {

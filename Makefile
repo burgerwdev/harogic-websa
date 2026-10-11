@@ -76,6 +76,8 @@ ci:       ## The in-process gates CI runs, locally (no hardware; browser e2e: ma
 	python3 tools/fixtures/gen_frame_fixtures.py --check
 	python3 tools/fixtures/gen_dsp_fixtures.py --check
 	python3 tools/fixtures/gen_ft8_fixtures.py --check
+	python3 tools/fixtures/port_sstv_modes.py --check
+	python3 tools/fixtures/gen_sstv_fixtures.py --check
 	python3 tools/checks/check_dom_ids.py
 	python3 tools/checks/check_registrations.py
 	python3 tools/checks/check_docs_parity.py

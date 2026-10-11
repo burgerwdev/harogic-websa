@@ -98,6 +98,9 @@ path here does not exist yet.
 | Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
 | Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
 | Digital demodulator (DRM) | `wasm/src/digital/drm/` (OFDM demod, FAC/SDC/MSC MLCC, audio deframing), `wasm/fdk/` (FDK AAC decoder) |
+| Digital demodulator (SSTV) | `wasm/src/digital/sstv/mod.rs` (the plugin: voice-band SSB front end, streaming decode), `wasm/src/digital/sstv/vendor/` (unexcellent/sstv 0.3.1, MIT: 18 modes, VIS header, per-mode timing), `wasm/src/digital/sstv_abi.rs` (the mode table over the ABI) |
+| SSTV picture and its pane | `frontend/src/sdr/sstvLog.ts` (picture, metadata, history), `frontend/src/ui/decodeWindow.ts` (the pane: canvas, mode buttons from the Rust table, progress, Save PNG) |
+| SSTV bench transmitter | `tools/pluto/pluto_sstv_tx.py`, `tools/fixtures/sstv_encode.py` (the repository's own encoder), `tools/fixtures/port_sstv_modes.py` (the mode tables, ported from the vendored tree) |
 | Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
 | Noise reduction (DeepFilterNet3, streamed) | `frontend/src/sdr/dfnWorker.ts`, `frontend/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
 | DFN artifact and model | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm` (committed), `frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
@@ -121,12 +124,17 @@ squelch, STFT Wiener, adaptive notch, IF noise blanker) is tuned for the human e
 - **Digital path / RAW** — `DigitalDemod` → decoder and visualization, with **no audio
 enhancement at all**. A voice denoiser on an FT8 tone would destroy the information the
 decoder needs, so the separation is enforced by an automated test (RAW output must be
-bit-identical with the audio stage enabled and disabled), not by convention.
+bit-identical with the audio stage enabled and disabled), not by convention. SSTV runs the same
+way: its front end (a voice-band complex band pass and the real part, as the `usb` mode does) is
+inside the plugin, so the picture is decoded from the untouched baseband and
+`wasm/tests/sstv_decode.rs` asserts the picture is bit-identical with the chain on and off.
 
 Adding a mode is adding a plugin to a registry: an analog mode implements the demodulator
 interface (already: am, dsb, usb, lsb, cw, nfm, wfm, pm), a digital protocol implements the
-decoder interface (FT8 first, DRM second). The UI mode list is read from the registry so a new mode
-cannot be forgotten in the panel.
+decoder interface (FT8, DRM and SSTV). The UI mode list is read from the registry so a new mode
+cannot be forgotten in the panel, and a protocol's *own* sub-modes follow the same rule: the SSTV
+pane's mode buttons are read out of the Rust mode table over the ABI (`websa_dsp_sstv_mode_*`), so
+a button cannot offer a mode the decoder does not know.
 
 ### WASM boundary and build
 
@@ -215,6 +223,15 @@ client subscribes to AUDF. The S-meter reading comes from the browser's own PCM 
   search covers the slot edge (about +/- 0.128 s) because FT8 is slot-synchronised — a wideband
   skimmer would need a full-slot search at roughly 15x the cost. FT4 and the other digital
   protocols are registry seams, not implementations.
+- SSTV is implemented on the receive side: the station sends a picture as single-sideband audio, the
+  plugin takes the 300..2700 Hz voice band out of the baseband and hands it to the vendored decoder,
+  which identifies the mode from the VIS header (or from a manual pin). All 18 modes the vendored
+  table carries decode (Martin M1/M2, Scottie S1/S2/DX, Robot 36/72, PD-50..PD-290, Pasokon
+  P3/P5/P7, Wrasse SC2-180), and the decode window's pane shows the picture line by line while the
+  transmission is still running, with the mode, VIS code, resolution, line progress, time and
+  frequency. Not wired: the FSK callsign identification some stations send after the picture (the
+  upstream crate has no decoder for it), and encoding/transmitting from the browser (only the bench
+  Python encoder and the PlutoSDR have a transmitter).
 - DRM30 is implemented through the receive chain (OFDM sync → FAC/SDC/MSC channel decoding →
   audio super-frame deframing → AAC/xHE-AAC decode), verified bit-exact against a synthesised
   Mode B / 10 kHz fixture; the DRM AAC re-serialisation (VCB11 + HCR + CRC) is verified lossless

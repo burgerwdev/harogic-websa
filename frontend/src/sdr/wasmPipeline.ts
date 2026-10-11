@@ -10,13 +10,21 @@
 // Views are created after every allocation (growing the memory detaches existing views, which
 // reads as length 0 rather than throwing).
 import type { DspModule } from './wasm';
-import type { Ft8Report, PipelineParams } from './types';
+import type { Ft8Report, PipelineParams, SstvDecoderCounters, SstvImageStatus, SstvPicture } from './types';
 
 /** Blocks larger than this are truncated rather than reallocating in the audio path. */
 const MAX_COMPLEX_SAMPLES = 32_768;
 const TEXT_CAPACITY = 64;
+/** Room for the largest SSTV picture: 800x616 (Wrasse SC2-180) is about 1.5 MB of RGB888. */
+const IMAGE_CAPACITY = 2 * 1024 * 1024;
+/** The picture state the ABI writes: width, height, lines, progress, vis, serial lo/hi, complete, mode. */
+const IMAGE_WORDS = 9;
+/** The decoder state the ABI writes: attempts lo/hi, buffered samples, has picture. */
+const DECODE_STATE_WORDS = 5;
+/** The rate the SSTV decoder runs its own buffer at (`DECODE_RATE_HZ` in the Rust plugin). */
+const SSTV_DECODE_RATE_HZ = 8_000;
 
-export type { Ft8Report, PipelineParams };
+export type { Ft8Report, PipelineParams, SstvDecoderCounters, SstvImageStatus, SstvPicture };
 
 export class WasmPipeline {
 	private inPtr = 0;
@@ -24,18 +32,30 @@ export class WasmPipeline {
 	private textPtr = 0;
 	private metricsPtr = 0;
 	private constPtr = 0;
+	/** The picture's state words (`IMAGE_WORDS` u32) and its RGB888 pixels. */
+	private imgMetaPtr = 0;
+	private imgPtr = 0;
 	private audioPtr = 0;
 	private handle = 0;
 	private volume = 1;
 
-	constructor(private module: DspModule, private params: PipelineParams, private digital: boolean) {
+	params: PipelineParams;
+
+	digital: boolean;
+
+	constructor(private module: DspModule, params: PipelineParams, digital: boolean) {
+		this.params = params;
+		this.digital = digital;
 		this.inPtr = module.alloc(MAX_COMPLEX_SAMPLES * 2 * 4);
 		this.outPtr = module.alloc(MAX_COMPLEX_SAMPLES * 4);
 		this.textPtr = module.alloc(TEXT_CAPACITY);
 		this.metricsPtr = module.alloc(3 * 8);
 		this.constPtr = module.alloc(2048 * 2 * 8);
+		this.imgMetaPtr = module.alloc(IMAGE_WORDS * 4);
+		this.imgPtr = module.alloc(IMAGE_CAPACITY);
 		this.audioPtr = module.alloc(32768 * 2);
-		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr || !this.constPtr || !this.audioPtr) return;
+		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr || !this.constPtr
+			|| !this.imgMetaPtr || !this.imgPtr || !this.audioPtr) return;
 		this.create();
 	}
 
@@ -193,6 +213,7 @@ export class WasmPipeline {
 		}
 		this.params = params;
 		this.digital = digital;
+
 		this.create();
 	}
 
@@ -264,6 +285,74 @@ export class WasmPipeline {
 		return reports;
 	}
 
+	/**
+	 * The decoded picture's state, when the protocol produces one (SSTV). `null` before anything
+	 * decoded. Read before {@link image}: the pane sizes its canvas from the geometry and shows the
+	 * readout even while the picture is still arriving.
+	 */
+	imageStatus(): SstvImageStatus | null {
+		if (!this.handle || !this.imgMetaPtr) return null;
+		const words = this.module.exports.websa_dsp_demod_image_info(this.handle, this.imgMetaPtr);
+		if (words !== IMAGE_WORDS) return null;
+		const meta = new Uint32Array(this.module.exports.memory.buffer, this.imgMetaPtr, IMAGE_WORDS);
+		return {
+			width: meta[0],
+			height: meta[1],
+			lines: meta[2],
+			progress: meta[3],
+			vis: meta[4],
+			serial: meta[5] + meta[6] * 0x1_0000_0000,
+			complete: meta[7] === 1,
+			modeIndex: meta[8],
+		};
+	}
+
+	/**
+	 * The decoded picture's pixels, copied out of the module's memory.
+	 *
+	 * A copy on every update rather than a view: the demodulator keeps the picture until a newer one
+	 * replaces it, and this buffer is what the worker transfers to the page.
+	 */
+	image(): SstvPicture | null {
+		if (!this.handle || !this.imgPtr) return null;
+		const status = this.imageStatus();
+		if (!status) return null;
+		const bytes = status.width * status.height * 3;
+		if (bytes === 0 || bytes > IMAGE_CAPACITY) return null;
+		const written = this.module.exports.websa_dsp_demod_image_data(this.handle, this.imgPtr, IMAGE_CAPACITY);
+		if (written !== bytes) return null;
+		return {
+			rgb: new Uint8Array(this.module.u8View(this.imgPtr, bytes)),
+			width: status.width,
+			height: status.height,
+		};
+	}
+
+	/** Pin the decoder to one of its own modes (`null` = the signal decides). True when it took it. */
+	setModePin(index: number | null): boolean {
+		if (!this.handle) return false;
+		return this.module.exports.websa_dsp_demod_set_mode_pin(this.handle, index === null ? -1 : index) === 1;
+	}
+
+	/**
+	 * What the decoder is doing while nothing has decoded: attempts made, audio buffered, and whether a
+	 * picture exists at all. `null` for a protocol that reports no state.
+	 */
+	decodeState(): SstvDecoderCounters | null {
+		if (!this.handle || !this.imgMetaPtr) return null;
+		const words = this.module.exports.websa_dsp_demod_decode_state(this.handle, this.imgMetaPtr);
+		if (words !== DECODE_STATE_WORDS) return null;
+		const meta = new Uint32Array(this.module.exports.memory.buffer, this.imgMetaPtr, DECODE_STATE_WORDS);
+		const bufferedSamples = meta[2];
+		return {
+			attempts: meta[0] + meta[1] * 0x1_0000_0000,
+			bufferedSamples,
+			bufferedSeconds: bufferedSamples / SSTV_DECODE_RATE_HZ,
+			hasPicture: meta[3] === 1,
+			level: meta[4] / 1000,
+		};
+	}
+
 	free(): void {
 		if (this.handle) {
 			this.module.exports.websa_dsp_demod_free(this.handle);
@@ -292,6 +381,14 @@ export class WasmPipeline {
 		if (this.audioPtr) {
 			this.module.free(this.audioPtr, 32768 * 2);
 			this.audioPtr = 0;
+		}
+		if (this.imgMetaPtr) {
+			this.module.free(this.imgMetaPtr, IMAGE_WORDS * 4);
+			this.imgMetaPtr = 0;
+		}
+		if (this.imgPtr) {
+			this.module.free(this.imgPtr, IMAGE_CAPACITY);
+			this.imgPtr = 0;
 		}
 	}
 }

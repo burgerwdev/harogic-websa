@@ -17,7 +17,7 @@
 import { decodeFrame, type BasebandFrame } from '../core/frames';
 import { dsp, type DspModule } from './wasm';
 import { WasmPipeline, type PipelineParams } from './wasmPipeline';
-import { audioCompanionFor, loadPluginManifest } from './registry';
+import { audioCompanionFor, loadPluginManifest, sstvModeTable } from './registry';
 import { GgMorseEngine } from '../dsp/ggmorseEngine';
 
 let ws: WebSocket | null = null;
@@ -85,6 +85,21 @@ let digitalPushes = 0;
 /// Without these two the diagnostics cannot tell "no decoder" from "no lock".
 let drmPushes = 0;
 let drmReports = 0;
+/// SSTV's own path: blocks pushed into the decoder and pictures posted to the page. The two
+/// remembered status fields are what keep a block that decoded nothing new from re-sending a
+/// quarter-megabyte picture.
+let sstvPushes = 0;
+let sstvImages = 0;
+let sstvSerial = -1;
+let sstvLines = -1;
+/// The decoder state last posted, so the page is told only when it changes (an attempt is the event
+/// worth reporting; the buffered seconds ride along with it).
+let sstvAttempts = -1;
+let sstvHasPicture = false;
+/// The frequency the current SSTV picture belongs to (a flush on the same one keeps it).
+let sstvHz = 0;
+/// Raw-baseband RMS, EMA over blocks (-1 = nothing measured yet).
+let sstvSrcRms = -1;
 let digitalBuffered = 0;
 let digitalResets = 0;
 /// Resets reported by the decoder worker itself (its own window thrown away). Kept apart from
@@ -228,8 +243,7 @@ function post(msg: Record<string, unknown>, transfer?: Transferable[]): void {
     .postMessage(msg, transfer || []);
 }
 
-function postStats(): void {
-  post({
+function postStats(): void {  post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
     pcmFrames, pcmSamples, rms, mode: params?.mode ?? '',
     digital: digital ? 1 : 0, fsIn: Number(params?.fsIn) || 0, outRate: Number(params?.outRate) || 0,
@@ -240,6 +254,7 @@ function postStats(): void {
     pipeline: Boolean(pipeline?.ok || companion?.ok),
     ft8Messages, digitalPushes, digitalBuffered, digitalResets, decoderResets, pipelineBuilds,
     cwChars, cw: cwState,
+    sstvPushes, sstvImages, sstvAttempts, sstvHasPicture,
     digitalAttempts, digitalDropped,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
     workletError, workletRingResets, workletSlipped, workletRatio,
@@ -250,6 +265,30 @@ function postStats(): void {
     dfn: dfnReady ? 'ready' : dfnLoading ? 'loading' : dfnError ? 'fallback' : 'off',
     dfnError,
     deemphUs: params?.deemphUs ?? -1, audioOn,
+  });
+  if (params?.mode === 'sstv') postSstvState();
+}
+
+/**
+ * The SSTV decoder's state, posted with the stats.
+ *
+ * The pane's empty state reads this, and the two numbers that matter are `running` and `pushes`: a
+ * decoder whose pipeline was rejected (a stale artifact, an unknown mode) never pushes at all, which
+ * is a different fault from a decoder that pushes and finds no signal — and to the operator the two
+ * looked identical before this line existed.
+ */
+function postSstvState(): void {
+  const decoder = pipeline?.decodeState() ?? null;
+  post({
+    type: 'sstv-state',
+    running: Boolean(pipeline?.ok),
+    pushes: sstvPushes,
+    attempts: decoder?.attempts ?? 0,
+    bufferedSamples: decoder?.bufferedSamples ?? 0,
+    bufferedSeconds: decoder?.bufferedSeconds ?? 0,
+    hasPicture: decoder?.hasPicture ?? false,
+    level: decoder?.level ?? 0,
+    srcLevel: sstvSrcRms < 0 ? 0 : sstvSrcRms,
   });
 }
 
@@ -326,10 +365,13 @@ function syncPipeline(): void {
     return;
   }
   if (isDigital) {
-    if (params.mode === 'drm' || params.mode === 'drmplus') {
-      // DRM's decoder lives in the wasm digital path itself (there is no separate worker), so
-      // this thread keeps a *digital* pipeline and feeds it baseband via `push`.
-      if (pipeline && pipeline.mode === params.mode && pipeline.isDigital) {
+    if (params.mode === 'drm' || params.mode === 'drmplus' || params.mode === 'sstv') {
+      // These decoders live in the wasm digital path itself (there is no separate worker), so this
+      // thread keeps a *digital* pipeline and feeds it baseband via `push`. A rebuild is required
+      // whenever any constructor parameter moves: an IQ-bandwidth change alters the DDC rate, and
+      // reusing a plugin built for the old rate feeds it samples at a rate it never sees (the bench
+      // failure: after an IQ BW change the SSTV decode stayed dead until a page reload).
+      if (pipeline && pipeline.isDigital && sameShape(pipeline.params, params)) {
         applyListenerControls();
         syncCompanion(isDigital);
         return;
@@ -600,6 +642,13 @@ function resetStream(): void {
   flushes++;
   pipeline?.reset();
   if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
+  if (params?.mode === 'sstv') {
+    sstvSerial = -1;
+    sstvLines = -1;
+    sstvAttempts = -1;
+    sstvHasPicture = false;
+    post({ type: 'sstv-clear' });
+  }
   resetDelivery();
 }
 
@@ -612,6 +661,14 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     flushes++;
     pipeline?.retune();
     if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
+    if (params?.mode === 'sstv' && frame.centerHz !== sstvHz) {
+      // Only a *moved* channel invalidates the picture. The backend also flushes on a
+      // reconfiguration of the same frequency (a filter change, a level step), and clearing the pane
+      // on those threw away a picture that was still arriving.
+      sstvSerial = -1;
+      sstvLines = -1;
+      post({ type: 'sstv-clear' });
+    }
     resetDelivery();
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
@@ -620,12 +677,18 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     // search. Start the next slot clean instead (the counter above is what makes this visible).
     pipeline?.reset();
     if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
+    if (params?.mode === 'sstv') {
+      sstvSerial = -1;
+      sstvLines = -1;
+      post({ type: 'sstv-clear' });
+    }
     resetDelivery();
     digitalResets += 1;
   }
   if (frame.seq !== 0) lastSeq = frame.seq;
   rate = frame.rate;
   centerHz = frame.centerHz;
+  if (params?.mode === 'sstv') sstvHz = centerHz;
   blocks++;
   samples += frame.samples;
   if (digital) {
@@ -653,6 +716,57 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
         const dstRate = Number(params?.outRate) || 48000;
         deliver(srcRate === dstRate ? fresh : resampleLinear(fresh, srcRate, dstRate));
       }
+    }
+    if (pipeline && params?.mode === 'sstv') {
+      // SSTV decodes a picture, not audio: `push` drives the decoder and returns its readout lines
+      // (a new transmission, and its completion). The picture and its state are read back only when
+      // the decoder produced something new — the state is stable between attempts, and the pixels
+      // are a quarter of a megabyte.
+      sstvPushes += 1;
+      // Raw-baseband level of this block (EMA). Posted beside the decoder's own audio level: if the
+      // frames carry a signal but the decoder's buffer reads zero, the fault is in the decoder's front
+      // end; if the frames are silence, it is upstream.
+      {
+        let sum = 0;
+        for (let i = 0; i < frame.iq.length; i++) sum += frame.iq[i] * frame.iq[i];
+        // The backend sends the baseband in the i16 domain (RMS ~45..64), the fake backend in
+        // normalized floats: scale the i16 domain down so the readout is a 0..1 level either way.
+        const raw = Math.sqrt(sum / frame.iq.length);
+        const rms = raw > 1.5 ? raw / 32768 : raw;
+        sstvSrcRms = sstvSrcRms < 0 ? rms : sstvSrcRms * 0.9 + rms * 0.1;
+      }
+      const lines = pipeline.push(frame.iq);
+      if (lines.length) post({ type: 'sstv', lines: lines.map((report) => report.text) });
+      const status = pipeline.imageStatus();
+      if (status && (status.serial !== sstvSerial || status.lines !== sstvLines)) {
+        const picture = pipeline.image();
+        if (picture) {
+          sstvSerial = status.serial;
+          sstvLines = status.lines;
+          sstvImages += 1;
+          post(
+            {
+              type: 'sstv-image',
+              width: picture.width,
+              height: picture.height,
+              rgb: picture.rgb.buffer,
+              meta: {
+                name: sstvModeTable()?.[status.modeIndex]?.name ?? '',
+                modeIndex: status.modeIndex,
+                vis: status.vis,
+                lines: status.lines,
+                progress: status.progress,
+                complete: status.complete,
+                serial: status.serial,
+                hz: centerHz,
+              },
+            },
+            [picture.rgb.buffer],
+          );
+        }
+      }
+      // The decoder's own counters are posted with the stats (see `postSstvState`): a *dead* pipeline
+      // has no state to read, and that is exactly the case the pane must be able to report.
     }
     decoderPushes += 1;
   } else if (pipeline) {
@@ -743,6 +857,13 @@ self.onmessage = (event: MessageEvent) => {
         });
     }
     if (wsUrl) connect();
+  } else if (msg.type === 'sstv-mode') {
+    // The decode window's mode pin: `index >= 0` selects a mode, anything else clears it (the VIS
+    // header decides). A protocol without the knob refuses it, which the reply reports.
+    const index = Number(msg.index);
+    const wanted = Number.isFinite(index) && index >= 0 ? index : null;
+    const applied = pipeline?.setModePin(wanted) ?? false;
+    post({ type: 'sstv-mode', index: applied ? (wanted ?? -1) : -1 });
   } else if (msg.type === 'enabled') {
     enabled = Boolean(msg.value);
     if (!enabled) {

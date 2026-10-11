@@ -23,17 +23,37 @@ import { clearFt8Spots, clock, ft8Spots, subscribeFt8Spots, type Ft8Spot } from 
 import { clearCwLog, cwLevel, cwLog, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
 	type CwLine, type CwMark } from '../sdr/cwLog';
 import { clearDrm, drmStatus, subscribeDrm } from '../sdr/drmLog';
+import {
+	deleteSstvAll,
+	deleteSstvSelected,
+	setSstvModeFilter,
+	setSstvSelected,
+	setSstvView,
+	sstvActiveSet,
+	sstvCount,
+	sstvModeCounts,
+	sstvStatus,
+	sstvVisible,
+	subscribeSstv,
+} from '../sdr/sstvLog';
+import { sstvModeTable } from '../sdr/registry';
 import { formatLatLon, geoFor } from '../sdr/ft8Geo';
+import { parseFt8Message } from '../sdr/ft8Message';
 import { getLang, onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 
 export interface DecodeWindowHooks {
 	/** Tune the receiver to an absolute frequency (an FT8 row was clicked). */
 	onTune(hz: number): void;
+	/** Pin the SSTV decoder to a mode (index into the Rust table), or null for the VIS header. */
+	onSstvMode(index: number | null): void;
 }
 
 /// The demodulators whose output this window shows.
-const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus'] as const;
+///
+/// `sstv` is here for its picture: the station sends a still image, and the pane fills in while the
+/// transmission is still running.
+const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv'] as const;
 export type DecodeMode = (typeof DECODING_MODES)[number] | null;
 
 const LS_KEY = 'websa-decode-window';
@@ -50,7 +70,7 @@ const MAX_ROWS = 100;
 /** CW lines rendered (the log holds more; a text pane shows what fits and scrolls). */
 const MAX_CW_ROWS = 120;
 
-let hooks: DecodeWindowHooks = { onTune: () => {} };
+let hooks: DecodeWindowHooks = { onTune: () => {}, onSstvMode: () => {} };
 let open = false;
 /// The operator's choice, which survives a mode switch: leaving CW hides the window (there is
 /// nothing to show) but does not forget that they wanted it, so coming back shows it again - the
@@ -59,6 +79,26 @@ let open = false;
 let wanted = false;
 /** Which pane the window shows: the demodulator decides (null = nothing decodes right now). */
 let mode: DecodeMode = null;
+/// The SSTV mode the operator pinned, or null while the VIS header decides.
+let sstvPin: number | null = null;
+/// The mode table the buttons were built from, so a manifest that has not loaded yet can still build
+/// them later without the buttons flickering on every render.
+let sstvButtons: string[] = [];
+/// The history shape the select was filled from, so re-rendering does not rebuild (and reset) the
+/// operator's selection while the picture is still arriving.
+let sstvThumbsShape = '';
+/// The Auto toggle: true = the VIS header picks the decode mode.
+let sstvAuto = true;
+/// The mode whose picture set the pane shows (null = the live picture).
+let sstvViewMode: number | null = null;
+/// FT8 pane view state: the message filter (null = invalid pattern, filter off) and the sorted
+/// column (null = arrival order, newest first). In-memory on purpose: a view preference, not data.
+let ft8FilterRe: RegExp | null = null;
+let ft8FilterBad = false;
+let ft8SortCol: number | null = null;
+/// Storage keys for the pane's persisted view state.
+const SSTV_AUTO_KEY = 'web-sa-sstv-auto';
+const SSTV_MODE_KEY = 'web-sa-sstv-mode';
 let unsubscribe: (() => void) | null = null;
 let unsubscribeLevel: (() => void) | null = null;
 
@@ -227,19 +267,14 @@ function wireResize(win: HTMLElement): void {
 // ── content ──────────────────────────────────────────────────────────────────────────────────
 
 /** The FT8 table: one row per decode, newest first. */
-function rowFor(spot: Ft8Spot): HTMLTableRowElement {
+function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowElement {
 	const row = document.createElement('tr');
 	row.className = 'ft8-row';
 	row.title = `${t('ft8_tune_tip')}\n${spot.text}\n${clock(spot.at, utcTime)} ${utcTime ? 'UTC' : 'LT'}  ${(spot.hz / 1e6).toFixed(6)} MHz`;
 	// The absolute frequency in MHz with 4 decimals is 100 Hz of resolution: enough to place a
 	// signal on the waterfall and to tune to it, without the noise of a full-precision number.
-	const geo = geoFor(spot.text);
-	const isZh = getLang() === 'zh';
-	const sender = geo.sender ? (isZh ? geo.sender.zh : geo.sender.name) : '—';
-	const country = geo.receiver
-		? `${sender} → ${isZh ? geo.receiver.zh : geo.receiver.name}`
-		: sender;
-	const location = geo.location ? formatLatLon(geo.location) : '—';
+	const key = ft8SessionKey(spot.text);
+	if (key) row.dataset.qso = key;
 	const cells: Array<{ text: string; className?: string }> = [
 		{ text: clock(spot.at, utcTime) },
 		{ text: spot.snrDb.toFixed(0) },
@@ -259,12 +294,98 @@ function rowFor(spot: Ft8Spot): HTMLTableRowElement {
 	return row;
 }
 
+/** Country pair and grid position as the row displays them (shared by the sort keys). */
+function ft8GeoTexts(spot: Ft8Spot): { country: string; location: string } {
+	const geo = geoFor(spot.text);
+	const isZh = getLang() === 'zh';
+	const sender = geo.sender ? (isZh ? geo.sender.zh : geo.sender.name) : '—';
+	const country = geo.receiver
+		? `${sender} → ${isZh ? geo.receiver.zh : geo.receiver.name}`
+		: sender;
+	return { country, location: geo.location ? formatLatLon(geo.location) : '—' };
+}
+
+/** The callsign pair a decode belongs to (unordered; a CQ groups by the caller alone). */
+function ft8SessionKey(text: string): string {
+	const { sender, receiver } = parseFt8Message(text);
+	if (!sender) return '';
+	return receiver ? [sender, receiver].sort().join('↔') : sender;
+}
+
+/** Highlight the hovered decode and every decode of the same callsign pair (null clears). */
+function markQsoRows(body: HTMLElement, row: Element | null): void {
+	const key = row instanceof HTMLElement ? row.dataset.qso || '' : '';
+	for (const peer of Array.from(body.querySelectorAll('tr.ft8-row'))) {
+		const el = peer as HTMLElement;
+		const pk = el.dataset.qso || '';
+		// A CQ row groups by the caller alone, so it marks every decode that call took part in.
+		const match = key !== '' && pk !== '' && (pk === key || (!key.includes('↔') && pk.split('↔').includes(key)));
+		peer.classList.toggle('qso-focus', match && peer === row);
+		peer.classList.toggle('qso-peer', match && peer !== row);
+	}
+}
+
+/** The header marker for the active sort column (the ▸ glyph comes from the CSS). */
+function syncFt8SortUi(): void {
+	for (const th of document.querySelectorAll('#decode-window-table th[data-sortable]')) {
+		const active = ft8SortCol !== null && Number((th as HTMLElement).dataset.col) === ft8SortCol;
+		th.classList.toggle('sorted', active);
+		if (active) th.setAttribute('aria-sort', 'ascending');
+		else th.removeAttribute('aria-sort');
+	}
+}
+
+/** Read the filter input: compile the regex, flag a pattern the engine refuses. */
+function compileFt8Filter(): void {
+	const input = element('decode-ft8-search') as HTMLInputElement | null;
+	const text = input?.value.trim() ?? '';
+	ft8FilterRe = null;
+	ft8FilterBad = false;
+	if (text) {
+		try {
+			ft8FilterRe = new RegExp(text, 'i');
+		} catch {
+			ft8FilterBad = true;	// filter stays off; the rows stay visible
+		}
+	}
+	if (input) {
+		input.classList.toggle('invalid', ft8FilterBad);
+		input.title = t(ft8FilterBad ? 'ft8_search_bad' : 'ft8_search_tip');
+	}
+}
+
 function renderFt8Rows(): void {
+	syncFt8SortUi();
 	const body = element('decode-window-rows');
 	if (!body) return;
 	const spots = ft8Spots();
 	body.textContent = '';
-	if (spots.length === 0) {
+	const shown = ft8FilterRe
+		? spots.filter((spot) => ft8FilterRe!.test(spot.text))
+		: spots;
+	if (ft8SortCol !== null) {
+		const col = ft8SortCol;
+		const key = (spot: Ft8Spot, geo: { country: string; location: string }): string | number => {
+			switch (col) {
+				case 0: return spot.at;
+				case 1: return spot.snrDb;
+				case 2: return spot.offsetHz;
+				case 3: return spot.hz;
+				case 4: return spot.text;
+				case 5: return geo.country;
+				default: return geo.location;
+			}
+		};
+		shown.sort((a, b) => {
+			const ga = ft8GeoTexts(a);
+			const gb = ft8GeoTexts(b);
+			const ka = key(a, ga), kb = key(b, gb);
+			return (ka < kb ? -1 : ka > kb ? 1 : 0);
+		});
+	}
+	const count = element('decode-window-count');
+	if (count) count.textContent = ft8FilterRe ? `${shown.length}/${spots.length}` : String(spots.length);
+	if (shown.length === 0) {
 		const row = document.createElement('tr');
 		const cell = document.createElement('td');
 		cell.colSpan = 7;
@@ -274,8 +395,8 @@ function renderFt8Rows(): void {
 		body.appendChild(row);
 		return;
 	}
-	for (const spot of spots.slice(0, MAX_ROWS)) {
-		body.appendChild(rowFor(spot));
+	for (const spot of shown.slice(0, MAX_ROWS)) {
+		body.appendChild(rowFor(spot, ft8GeoTexts(spot).country, ft8GeoTexts(spot).location));
 	}
 }
 
@@ -400,30 +521,265 @@ function renderContent(): void {
 	const showFt8 = mode === 'ft8';
 	const showCw = mode === 'cw';
 	const showDrm = mode === 'drm' || mode === 'drmplus';
+	const showSstv = mode === 'sstv';
 	const table = element('decode-window-table');
 	const cw = element('decode-window-cw');
 	const drm = element('decode-window-drm');
+	const sstv = element('decode-window-sstv');
 	const title = element('decode-window-title');
 	const count = element('decode-window-count');
 	if (table) table.style.display = showFt8 ? '' : 'none';
 	if (cw) cw.style.display = showCw ? '' : 'none';
 	if (drm) drm.style.display = showDrm ? '' : 'none';
+	if (sstv) sstv.style.display = showSstv ? '' : 'none';
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
+	// The SSTV waiting line lives in this head. Every other pane hides it.
+	const hint = element('sstv-head-hint');
+	if (hint) hint.style.display = 'none';
 	const utc = element('btn-decode-utc');
 	if (utc) utc.style.display = showDrm ? 'none' : '';
 	const clear = element('btn-decode-clear');
 	if (clear) clear.style.display = showDrm ? 'none' : '';
-	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM') : 'FT8';
+	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM') : showSstv ? 'SSTV' : 'FT8';
 	const timeTh = element('decode-window-time-th');
 	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
+	const searchRow = element('decode-ft8-search-row');
+	if (searchRow) searchRow.style.display = showFt8 ? '' : 'none';
+	const search = element('decode-ft8-search') as HTMLInputElement | null;
+	if (search) search.title = t(ft8FilterBad ? 'ft8_search_bad' : 'ft8_search_tip');
 	if (count) {
 		count.style.display = showFt8 ? '' : 'none';
-		count.textContent = String(ft8Spots().length);
+		if (!showFt8) count.textContent = String(ft8Spots().length);
 	}
-	if (showFt8) renderFt8Rows();
+	if (showFt8) renderFt8Rows();	// the count text (n/total while filtering) rides with the rows
 	else if (showCw) renderCwLines();
 	else if (showDrm) renderDrm();
+	else if (showSstv) renderSstv();
+}
+
+/**
+ * The SSTV pane: the picture, its metadata and the mode buttons. The buttons come from the Rust mode
+ * table, so the pane cannot offer a mode the decoder does not know. The detected mode stays marked
+ * while a manual pin overrides it. The progress bar shows the decoder's own line count.
+ */
+function renderSstv(): void {
+	buildSstvModeButtons();
+	const entry = sstvVisible();
+	const detected = sstvStatus().current?.meta.modeIndex ?? null;
+	// Auto drives the decode mode; a manual pin (auto off) overrides it. The detected mode stays
+	// marked either way, and the viewed mode's button carries the pane's own active state.
+	const active = sstvAuto ? detected : sstvPin;
+	const counts = sstvModeCounts();
+	for (const buttonEl of document.querySelectorAll<HTMLElement>('#sstv-mode-group [data-sstv-mode]')) {
+		const value = buttonEl.dataset.sstvMode === 'auto' ? null : Number(buttonEl.dataset.sstvMode);
+		buttonEl.classList.toggle('active', value === active);
+		buttonEl.classList.toggle('detected', value !== null && value === detected);
+		const badge = buttonEl.querySelector('.sstv-badge') as HTMLElement | null;
+		const count = value === null ? null : counts.get(value) ?? 0;
+		if (badge) {
+			badge.textContent = count ? String(count) : '';
+			badge.style.display = count ? '' : 'none';
+		}
+	}
+	// The Auto toggle's own state: on = the VIS header decides.
+	const autoButton = element('sstv-auto');
+	if (autoButton) autoButton.classList.toggle('active', sstvAuto);
+	const put = (id: string, value: string): void => {
+		const el = element(id);
+		if (el) el.textContent = value;
+	};
+	put('sstv-mode-name', entry ? entry.meta.name : '—');
+	put('sstv-vis', entry ? `${t('sstv_vis')} ${entry.meta.vis}` : `${t('sstv_vis')} —`);
+	put('sstv-size', entry ? `${entry.meta.width}×${entry.meta.height}` : '—');
+	put('sstv-time', entry ? `${clock(entry.meta.at, utcTime)} ${utcTime ? 'UTC' : 'LT'}` : '—');
+	put('sstv-freq', entry && entry.meta.hz > 0 ? `${(entry.meta.hz / 1e6).toFixed(6)} MHz` : '—');
+	put('sstv-count', `${sstvCount()}`);
+	const progress = element('sstv-progress');
+	const fill = element('sstv-progress-fill');
+	const percent = entry ? entry.meta.progress : 0;
+	if (fill) fill.style.setProperty('--pct', `${percent}%`);
+	if (progress) progress.style.display = entry ? '' : 'none';
+	put('sstv-progress-text', entry ? `${percent}%` : '');
+
+	renderSstvThumbs();
+	const canvas = element('decode-sstv-canvas') as HTMLCanvasElement | null;
+	// The empty state is the title row's waiting line plus the decoder's own counters in the readout
+	// row; the canvas itself stays out of the way until there is something to draw.
+	const head = element('sstv-head-hint');
+	if (head) head.style.display = entry ? 'none' : '';
+	const decoder = sstvStatus().decoder;
+	const stateChip = element('sstv-state');
+	if (stateChip) {
+		stateChip.style.display = entry ? 'none' : '';
+		// Three empty states, because they have three different causes: no word from the worker yet, a
+		// decoder that is not running at all, and one that is running but has not found a transmission.
+		stateChip.textContent = decoder
+			? !decoder.running
+				? t('sstv_decoder_off')
+				: decoder.pushes === 0
+					? t('sstv_no_frames')
+					: decoder.bufferedSeconds < 1
+						? t('sstv_no_audio', { n: String(decoder.pushes) })
+						: `${t('sstv_state', { s: decoder.bufferedSeconds.toFixed(0), n: String(decoder.attempts) })} · dec ${Math.round(decoder.level * 100)}% · src ${Math.round((decoder.srcLevel ?? 0) * 100)}%`
+			: t('sstv_no_state');
+		stateChip.title = decoder
+			? `${t('sstv_state_tip')}\n${decoder.pushes} blocks pushed`
+			: t('sstv_state_tip');
+	}
+	if (canvas) {
+		canvas.style.display = entry ? '' : 'none';
+		if (entry) drawSstvPicture(canvas, entry.picture.rgb, entry.picture.width, entry.picture.height);
+	}
+	const anySelected = sstvStatus().history.some((e) => e.selected) || !!sstvStatus().current?.selected;
+	const save = button('btn-sstv-save');
+	if (save) save.disabled = !anySelected;
+	const selectAll = button('sstv-select-all');
+	if (selectAll) {
+		const total = sstvStatus().history.length + (sstvStatus().current ? 1 : 0);
+		const selected = sstvStatus().history.filter((e) => e.selected).length +
+			(sstvStatus().current?.selected ? 1 : 0);
+		// Highlight only when every stored picture is ticked; one unticked clears it.
+		selectAll.classList.toggle('active', total > 0 && selected === total);
+		selectAll.disabled = total === 0;
+	}
+	const del = button('btn-sstv-delete');
+	if (del) {
+		const anySelected = sstvStatus().history.some((entry) => entry.selected) ||
+			!!sstvStatus().current?.selected;
+		del.disabled = !anySelected;
+	}
+}
+
+/** The Auto toggle: on = the VIS header picks the mode; off = the operator's pin. */
+function setSstvAuto(on: boolean): void {
+	sstvAuto = on;
+	try {
+		localStorage.setItem(SSTV_AUTO_KEY, on ? '1' : '0');
+	} catch { /* storage off: session-only auto */ }
+	if (on) {
+		sstvPin = null;
+	} else if (sstvStatus().current) {
+		// Leaving auto pins the mode the signal last declared, so the decode does not drift.
+		sstvPin = sstvStatus().current?.meta.modeIndex ?? null;
+	}
+	setSstvModeFilter(sstvAuto ? null : sstvPin);
+	// The worker's pin follows the toggle: auto = the header decides.
+	if (on) {
+		workerSetSstvPin(null);
+	} else if (sstvPin !== null) {
+		workerSetSstvPin(sstvPin);
+	}
+	renderContent();
+}
+
+function workerSetSstvPin(index: number | null): void {
+	hooks.onSstvMode(index);
+}
+
+/** The thumbnail column: the active mode's stored pictures, newest first, live one first. */
+/** Build the mode buttons once, from the Rust table (empty until the manifest has loaded). */
+function buildSstvModeButtons(): void {
+	const group = element('sstv-mode-group');
+	if (!group) return;
+	const table = sstvModeTable();
+	if (!table || table.length === 0) return;
+	const shape = table.map((mode) => `${mode.index}:${mode.name}`).join('|');
+	// The shape alone is not enough: a re-init builds into a fresh DOM, where the same table has to be
+	// drawn again (the cached shape made the buttons disappear after a window re-init).
+	if (shape === sstvButtons.join('|') && group.childElementCount > 0) return;
+	sstvButtons = table.map((mode) => `${mode.index}:${mode.name}`);
+	group.textContent = '';
+	for (const mode of table) {
+		const buttonEl = document.createElement('button');
+		buttonEl.className = 'btn';
+		buttonEl.dataset.sstvMode = String(mode.index);
+		buttonEl.dataset.sstvName = mode.name;
+		buttonEl.textContent = mode.name;
+		buttonEl.title = `${t('sstv_mode_tip')}\n${mode.name} · VIS ${mode.vis} · ${mode.width}×${mode.height}`;
+		const badge = document.createElement('span');
+		badge.className = 'sstv-badge';
+		badge.style.display = 'none';
+		buttonEl.appendChild(badge);
+		group.appendChild(buttonEl);
+	}
+}
+
+function renderSstvThumbs(): void {
+	const host = element('sstv-thumb-list');
+	if (!host) return;
+	const set = sstvActiveSet();
+	// Rebuild only when the set's shape changes; the live picture repaints its own thumb on a timer.
+	const shape = set.map((entry) => `${entry.id}:${entry.selected ? 1 : 0}:${Math.round(entry.meta.progress / 10)}`).join('|');
+	if (shape === sstvThumbsShape && host.childElementCount > 0) return;
+	sstvThumbsShape = shape;
+	host.textContent = '';
+	for (const entry of set) {
+		const thumb = document.createElement('div');
+		thumb.className = 'decode-sstv-thumb' + (entry.selected ? ' selected' : '') +
+			(sstvStatus().viewId === entry.id ? ' viewed' : '');
+		thumb.dataset.id = entry.id;
+		const tick = document.createElement('span');
+		tick.className = 'sstv-tick';
+		tick.textContent = '✓';
+		thumb.appendChild(tick);
+		const canvas = document.createElement('canvas');
+		canvas.width = 64;
+		canvas.height = Math.max(24, Math.round((64 * entry.picture.height) / Math.max(1, entry.picture.width)));
+		thumb.appendChild(canvas);
+		thumb.title = `${entry.meta.name} ${clock(entry.meta.at, utcTime)}`;
+		host.appendChild(thumb);
+		drawSstvPicture(canvas, entry.picture.rgb, entry.picture.width, entry.picture.height);
+	}
+}
+
+/** Blit an RGB888 buffer into a canvas, sizing the canvas to the picture's true resolution. */
+function drawSstvPicture(canvas: HTMLCanvasElement, rgb: Uint8Array, width: number, height: number): void {
+	if (width <= 0 || height <= 0 || rgb.length < width * height * 3) return;
+	if (canvas.width !== width || canvas.height !== height) {
+		canvas.width = width;
+		canvas.height = height;
+	}
+	const ctx = canvas.getContext('2d');
+	if (!ctx) return;
+	const image = ctx.createImageData(width, height);
+	// RGB888 in, RGBA out: the decoder never produces an alpha channel, so it is set here.
+	for (let source = 0, target = 0; source < width * height * 3; source += 3, target += 4) {
+		image.data[target] = rgb[source];
+		image.data[target + 1] = rgb[source + 1];
+		image.data[target + 2] = rgb[source + 2];
+		image.data[target + 3] = 255;
+	}
+	ctx.putImageData(image, 0, 0);
+}
+
+/** Save the picture on screen at its true resolution, not at the size the window scaled it to. */
+function saveSstvPng(): void {
+	// The ticked pictures, one PNG each; with nothing ticked, the picture being viewed.
+	const ticked = [sstvStatus().current, ...sstvStatus().history].filter(
+		(entry): entry is NonNullable<typeof entry> => !!entry && entry.selected,
+	);
+	const targets = ticked.length ? ticked : sstvVisible() ? [sstvVisible()!] : [];
+	for (const entry of targets) {
+		const canvas = document.createElement('canvas');
+		canvas.width = entry.picture.width;
+		canvas.height = entry.picture.height;
+		drawSstvPicture(canvas, entry.picture.rgb, entry.picture.width, entry.picture.height);
+		const stamp = new Date(entry.meta.at).toISOString().replace(/[:.]/g, '-').slice(0, 19);
+		// Serial in the name keeps multi-select downloads from colliding on one timestamp.
+		canvas.toBlob((blob) => {
+			if (!blob) return;
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = `sstv-${entry.meta.name.replace(/\s+/g, '')}-${entry.meta.serial}-${stamp}.png`;
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			// Revoked on the next tick: revoking immediately can cancel the download in some browsers.
+			setTimeout(() => URL.revokeObjectURL(url), 0);
+		}, 'image/png');
+	}
 }
 
 /** Render one service snapshot, not a growing history of per-symbol diagnostics. */
@@ -527,7 +883,8 @@ function subscribeAll(fn: () => void): () => void {
 	const offFt8 = subscribeFt8Spots(fn);
 	const offCw = subscribeCwLog(fn);
 	const offDrm = subscribeDrm(fn);
-	return () => { offFt8(); offCw(); offDrm(); };
+	const offSstv = subscribeSstv(fn);
+	return () => { offFt8(); offCw(); offDrm(); offSstv(); };
 }
 
 export function toggleDecodeWindow(): void {
@@ -597,12 +954,101 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		}));
 	}
 	element('btn-decode-clear')?.addEventListener('click', () => {
+		if (mode === 'sstv') {
+			// The head Clear empties the whole SSTV store (all modes) — the thumbnails' Delete
+			// handles single/multi entries, so the big red switch here is the bulk action.
+			if (!window.confirm(t('sstv_confirm_clear_all'))) return;
+			deleteSstvAll();
+			sstvThumbsShape = '';
+			renderContent();
+			return;
+		}
 		if (mode === 'cw') clearCwLog();
 		else if (mode === 'drm' || mode === 'drmplus') clearDrm();
 		else clearFt8Spots();
 		renderContent();
 	});
 	element('btn-decode-close')?.addEventListener('click', () => setOpen(false));
+
+	// FT8 pane: the regex filter, the sortable headers (click sorts, click again restores the
+	// arrival order) and the QSO session marking on row hover. The rows body is rebuilt by
+	// renderFt8Rows, so the hover marks are delegated from the table body itself.
+	element('decode-ft8-search')?.addEventListener('input', () => {
+		compileFt8Filter();
+		renderContent();
+	});
+	element('decode-window-table')?.querySelector('thead')?.addEventListener('click', (event) => {
+		const th = (event.target as HTMLElement).closest('th[data-sortable]');
+		if (!th) return;
+		const col = Number((th as HTMLElement).dataset.col);
+		ft8SortCol = ft8SortCol === col ? null : col;
+		syncFt8SortUi();
+		renderContent();
+	});
+	{
+		const body = element('decode-window-rows');
+		body?.addEventListener('pointerover', (event) => {
+			const row = (event.target as HTMLElement).closest('tr.ft8-row');
+			markQsoRows(body, row);
+		});
+		body?.addEventListener('pointerout', () => markQsoRows(body, null));
+	}
+
+	// SSTV's own controls. The mode buttons are delegated from their group: they are built from the
+	// Rust table, and a listener per button would have to be re-attached whenever that changes.
+	element('sstv-mode-group')?.addEventListener('click', (event) => {
+		const target = (event.target as HTMLElement).closest('[data-sstv-mode]') as HTMLElement | null;
+		if (!target) return;
+		const mode = Number(target.dataset.sstvMode);
+		if (!Number.isFinite(mode)) return;
+		// A mode click shows that mode's picture set, and (with Auto off) pins the decode mode to it.
+		setSstvModeFilter(mode);
+		sstvViewMode = mode;
+		if (!sstvAuto) {
+			sstvPin = mode;
+			hooks.onSstvMode(sstvPin);
+			try {
+				localStorage.setItem(SSTV_MODE_KEY, String(mode));
+			} catch { /* storage off: session-only pin */ }
+		}
+		renderContent();
+	});
+	element('sstv-auto')?.addEventListener('click', () => setSstvAuto(!sstvAuto));
+	element('sstv-select-all')?.addEventListener('click', () => {
+		const status = sstvStatus();
+		const all = [status.current, ...status.history].filter(Boolean);
+		const every = all.every((e) => e!.selected);
+		for (const e of all) setSstvSelected(e!.id, !every);
+		renderContent();
+	});
+	element('btn-sstv-delete')?.addEventListener('click', () => deleteSstvSelected());
+
+	// The Auto toggle and the viewed mode survive a reload.
+	try {
+		sstvAuto = localStorage.getItem(SSTV_AUTO_KEY) !== '0';
+		const storedMode = Number(localStorage.getItem(SSTV_MODE_KEY));
+		sstvViewMode = Number.isFinite(storedMode) && storedMode >= 0 ? storedMode : null;
+		if (!sstvAuto && sstvViewMode !== null) {
+			sstvPin = sstvViewMode;
+			hooks.onSstvMode(sstvPin);
+		}
+	} catch { /* storage off: session-only defaults */ }
+	setSstvModeFilter(sstvAuto ? null : sstvViewMode);
+	element('btn-sstv-save')?.addEventListener('click', saveSstvPng);
+	element('sstv-thumbs')?.addEventListener('click', (event) => {
+		const thumb = (event.target as HTMLElement).closest('.decode-sstv-thumb') as HTMLElement | null;
+		if (!thumb) return;
+		const id = thumb.dataset.id ?? null;
+		// The tick toggles the deletion selection; the picture itself views.
+		if ((event.target as HTMLElement).classList.contains('sstv-tick') && id) {
+			const status = sstvStatus();
+			const hit = [status.current, ...status.history].find((e) => e && e.id === id);
+			if (hit) setSstvSelected(id, !hit.selected);
+		} else {
+			setSstvView(id);
+		}
+		renderContent();
+	});
 
 	// Opacity slider. `input` (not `change`) so the window dims while the handle moves.
 	win.style.opacity = String(opacity);
@@ -673,10 +1119,11 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 
 	wireResize(win);
 
-	// A fresh init knows nothing about the demodulator yet (the STATUS handler calls
-	// `setDecodeWindowAvailable` right after): start with no pane rather than rendering whatever
-	// mode a previous init left behind (which put an FT8 "waiting" table in the CW session's DOM).
 	mode = null;
+	// The DOM this init writes into is new, so the SSTV buttons and the thumbnails must be built again
+	// there; the cached shapes would otherwise skip both.
+	sstvButtons = [];
+	sstvThumbsShape = '';
 	renderContent();
 	setOpen(false);
 }

@@ -17,6 +17,7 @@ import {
 	digitalModeIds,
 	isModeAvailable,
 	readPluginManifest,
+	readSstvModeTable,
 	PLUGIN_KINDS,
 	setPluginManifest,
 } from '../sdr/registry';
@@ -61,6 +62,43 @@ describe('the plugin manifest read from dsp.wasm', () => {
 		expect(digital).toContain('ft8');
 	});
 
+	it('declares SSTV as an implemented digital protocol', async () => {
+		const plugins = await manifest();
+		const sstv = plugins.find((p) => p.id === 'sstv');
+		expect(sstv?.kind).toBe('digital');
+		// The registry's flag and the build agree (the Rust test asserts the same thing); a listed
+		// mode whose kernel is missing must show up as not implemented rather than as a crash.
+		expect(sstv?.implemented).toBe(true);
+	});
+
+	describe('the SSTV mode table read from dsp.wasm', () => {
+		it('lists every mode the decoder can build, with its VIS code and resolution', async () => {
+			const modes = readSstvModeTable(await instantiateDsp(artifactBytes()));
+			expect(modes).toHaveLength(18);
+			// Dense indices in the table's own order: the mode pin and the highlight are indices.
+			modes.forEach((mode, position) => {
+				expect(mode.index).toBe(position);
+				expect(mode.name.length).toBeGreaterThan(0);
+				expect(mode.vis).toBeGreaterThan(0);
+				expect(mode.vis).toBeLessThan(128);
+				expect(mode.width).toBeGreaterThan(0);
+				expect(mode.height).toBeGreaterThan(0);
+			});
+			expect(new Set(modes.map((mode) => mode.name)).size).toBe(modes.length);
+			expect(new Set(modes.map((mode) => mode.vis)).size).toBe(modes.length);
+		});
+
+		it('matches the vendored timing table for known modes', async () => {
+			const modes = readSstvModeTable(await instantiateDsp(artifactBytes()));
+			const robot36 = modes.find((mode) => mode.name === 'Robot 36');
+			expect(robot36).toMatchObject({ vis: 8, width: 320, height: 240 });
+			const martinM1 = modes.find((mode) => mode.name === 'Martin M1');
+			expect(martinM1).toMatchObject({ vis: 44, width: 320, height: 256 });
+			const pd290 = modes.find((mode) => mode.name === 'PD-290');
+			expect(pd290).toMatchObject({ width: 800, height: 616 });
+		});
+	});
+
 	it('marks the DDC stages as shared base-layer plugins, not audio enhancement', async () => {
 		const plugins = await manifest();
 		const ddc = plugins.filter((p) => p.kind === 'ddc');
@@ -88,7 +126,7 @@ describe('the plugin manifest read from dsp.wasm', () => {
 		const plugins = await manifest();
 		setPluginManifest(plugins);
 		expect(analogModeIds()).toEqual(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm']);
-		expect(digitalModeIds()).toEqual(['ft8', 'drm', 'drmplus']);
+		expect(digitalModeIds()).toEqual(['ft8', 'drm', 'drmplus', 'sstv']);
 		expect(ddcStageIds()).toContain('nco');
 		expect(audioStageIds()).toContain('dc_block');
 		// Availability is read from the manifest, not frozen here: every id the module reports as

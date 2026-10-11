@@ -1,0 +1,16 @@
+{
+ "mode": "Robot 36",
+ "key": "robot_36",
+ "vis": 8,
+ "rate": 8000,
+ "samples": 381680,
+ "tail_silence_s": 10.0,
+ "width": 320,
+ "height": 240,
+ "lines_per_sequence": 2,
+ "iq_file": "robot36_iq.bin",
+ "rgb_file": "robot36_rgb.bin",
+ "tolerance_mean_abs_error": 24.0,
+ "callsign": "CQ WE0BSA",
+ "generator": "tools/fixtures/gen_sstv_fixtures.py (Python encoder; the decoder is the vendored Rust tree)"
+}

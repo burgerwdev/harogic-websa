@@ -16,6 +16,9 @@ pub mod analog;
 pub mod audio;
 pub mod ddc;
 pub mod digital;
+
+// The vendored sstv tree is written for `no_std` plus `alloc` and uses `alloc::` paths directly.
+extern crate alloc;
 #[cfg(target_arch = "wasm32")]
 pub mod fdk;
 pub mod fft;

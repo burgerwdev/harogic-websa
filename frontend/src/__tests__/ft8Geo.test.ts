@@ -17,6 +17,13 @@ describe('geoFor', () => {
 		expect(geo.location?.lat).toBeCloseTo(28.5, 9);
 	});
 
+	it('reads the real 40m slot from tests/fixtures/ft8 (sender second)', () => {
+		const geo = geoFor('JA0TXU BG7BVP -73');
+		expect(geo.sender?.zh).toBe('中国');
+		expect(geo.receiver?.zh).toBe('日本');
+		expect(geo.location).toBeNull();
+	});
+
 	it('gives countries only from a callsign-only line', () => {
 		const geo = geoFor('DC5RE BG7BVP -22');
 		expect(geo.sender?.zh).toBe('中国');

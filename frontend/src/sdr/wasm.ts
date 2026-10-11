@@ -14,7 +14,9 @@
 // by `f32View`/`i16View`, never cached.
 
 /** ABI version this loader understands; must equal `wasm/src/abi.rs::ABI_VERSION`. */
-export const DSP_ABI_VERSION = 1;
+// Version 2 added the SSTV picture pair (`websa_dsp_demod_image_info` / `_image_data`), the mode
+// pin and the SSTV mode table.
+export const DSP_ABI_VERSION = 2;
 
 export interface DspExports {
 	memory: WebAssembly.Memory;
@@ -32,6 +34,14 @@ export interface DspExports {
 	websa_dsp_drm_constellation(handle: number, ptr: number, capacity: number): number;
 	websa_dsp_drm_audio_pcm(handle: number, ptr: number, capacity: number): number;
 	websa_dsp_drm_audio_rate(handle: number): number;
+	/** Decoded picture state: nine `u32` words written into `metaPtr`; returns the word count (0 = none). */
+	websa_dsp_demod_image_info(handle: number, metaPtr: number): number;
+	/** Copy the decoded picture's RGB888 pixels into `ptr`; returns the bytes written (0 = none/too small). */
+	websa_dsp_demod_image_data(handle: number, ptr: number, capacity: number): number;
+	/** Pin the decoder to one of its own modes (`index < 0` = auto); 1 when the protocol took it. */
+	websa_dsp_demod_set_mode_pin(handle: number, index: number): number;
+	/** Decoder state while nothing has decoded: four `u32` words (attempts lo/hi, buffered, has picture). */
+	websa_dsp_demod_decode_state(handle: number, metaPtr: number): number;
 	websa_dsp_demod_count(handle: number): number;
 	websa_dsp_demod_set_audio(handle: number, enabled: number): number;
 	websa_dsp_demod_set_nr(handle: number, enabled: number, strength: number): number;
@@ -53,6 +63,11 @@ export interface DspExports {
 	websa_dsp_plugin_id(kind: number, index: number, buf: number, capacity: number): number;
 	websa_dsp_plugin_implemented(kind: number, index: number): number;
 	websa_dsp_plugin_audio_enhancement(kind: number, index: number): number;
+	// SSTV mode table: the decode window's mode buttons are read from here, like the mode list above
+	websa_dsp_sstv_mode_count(): number;
+	websa_dsp_sstv_mode_name_len(index: number): number;
+	websa_dsp_sstv_mode_name(index: number, buf: number, capacity: number): number;
+	websa_dsp_sstv_mode_meta(index: number, metaPtr: number): number;
 }
 
 export interface DspModule {
@@ -153,8 +168,12 @@ export async function loadDsp(url: string): Promise<DspModule> {
  * `base` remains overridable for tests.
  */
 export function dspWasmUrl(base?: string): string {
-	if (base) return new URL('dsp.wasm', base).href;
+	// The ABI version is in the URL so a browser (or a Worker, whose fetch has its own cache entry)
+	// cannot pair a loader with an artifact it does not understand: the modules are large and served
+	// with a long lifetime, and a stale one fails as "the decoder is running but does nothing".
+	const query = `?abi=${DSP_ABI_VERSION}`;
+	if (base) return new URL(`dsp.wasm${query}`, base).href;
 	const viteBase = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL;
-	if (viteBase) return new URL('dsp.wasm', new URL(viteBase, location.origin)).href;
-	return new URL('/static/dist/dsp.wasm', location.origin).href;
+	if (viteBase) return new URL(`dsp.wasm${query}`, new URL(viteBase, location.origin)).href;
+	return new URL(`/static/dist/dsp.wasm${query}`, location.origin).href;
 }

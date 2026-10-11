@@ -29,7 +29,18 @@ FT8_IQ_RATE = 48_000.0
 FT8_SLOT_SECONDS = 15.0
 
 #: Demod ids the fake treats as digital protocols (they get the protocol fixture instead of a tone).
+#: SSB voice/protocol demods that take the 48 kHz channelized baseband.
 DIGITAL_DEMODS = ('ft8',)
+#: The committed SSTV transmission (Python-encoded Robot 36: 8 kHz complex baseband, audio in I),
+#: replayed like the FT8 fixture below, so the browser's worker, decoder and pane run against a real
+#: transmission instead of a carrier.
+SSTV_FIXTURE = Path(os.environ.get('WEBSA_FAKE_SSTV_FIXTURE')
+                     or Path(__file__).resolve().parents[2] / 'tests' / 'fixtures' / 'sstv' / 'robot36_iq.bin')
+SSTV_RATE = float(os.environ.get('WEBSA_FAKE_SSTV_RATE', '8000') or 8000)
+#: Fault injection for receive testing: frequency offset (Hz) and amplitude scale of the replayed
+#: transmission. WEBSA_FAKE_SSTV_OFFSET_HZ / WEBSA_FAKE_SSTV_SCALE.
+_sstv_offset = float(os.environ.get('WEBSA_FAKE_SSTV_OFFSET_HZ', '0') or 0)
+_sstv_scale = float(os.environ.get('WEBSA_FAKE_SSTV_SCALE', '1') or 1)
 
 RTA_POINTS = 1024
 RTA_WATERFALL_WIDTH = 128
@@ -147,6 +158,8 @@ class _FakeRtaBase(MeasurementSession):
         """
         if str(self.dev.state.sdr_demod) == 'ft8':
             return self._ft8_baseband()
+        if str(self.dev.state.sdr_demod) == 'sstv':
+            return self._sstv_baseband(center_hz)
         if str(self.dev.state.sdr_demod) == 'cw':
             return self._cw_baseband(rate, center_hz)
         n = SDR_BASEBAND_SAMPLES
@@ -431,6 +444,37 @@ class FakeSdrSession(_FakeRtaBase):
     _cw_key: np.ndarray | None = None
     _cw_pos = 0
 
+    #: The SSTV fixture, looped: one picture, its trailing silence, then the next.
+    _sstv: np.ndarray | None = None
+    _sstv_pos = 0
+
+    def _sstv_baseband(self, center_hz: float) -> bytes:
+        """One block of the committed SSTV transmission.
+
+        The fixture already *is* 8 kHz channelized baseband with the audio in I, which is the scale and
+        shape the DDC output arrives in, so it is replayed in place. The rate the session advertises
+        (`ddc_rate`) is the fixture's own, and the frontend hands that to the DSP as `fsIn`.
+        """
+        if FakeSdrSession._sstv is None:
+            FakeSdrSession._sstv = np.frombuffer(SSTV_FIXTURE.read_bytes(), dtype='<f4')
+        data = FakeSdrSession._sstv
+        samples = data.size // 2
+        start = FakeSdrSession._sstv_pos
+        index = (np.arange(SDR_BASEBAND_SAMPLES) + start) % samples
+        real = data[index * 2].astype(np.float64)
+        imag = data[index * 2 + 1].astype(np.float64)
+        if _sstv_offset:
+            step = 2.0 * np.pi * _sstv_offset / SSTV_RATE
+            angle = step * (np.arange(SDR_BASEBAND_SAMPLES) + start)
+            rot_r, rot_i = np.cos(angle), np.sin(angle)
+            real, imag = real * rot_r - imag * rot_i, real * rot_i + imag * rot_r
+        block = np.empty(SDR_BASEBAND_SAMPLES * 2, dtype=np.float32)
+        block[0::2] = (real * _sstv_scale).astype(np.float32)
+        block[1::2] = (imag * _sstv_scale).astype(np.float32)
+        FakeSdrSession._sstv_pos = (start + SDR_BASEBAND_SAMPLES) % samples
+        self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+        return encode_baseband(BASEBAND_VERSION, self._iq_seq, SSTV_RATE, center_hz, block)
+
     def _cw_baseband(self, rate: float, center_hz: float) -> bytes:
         """A keyed carrier at the sidetone pitch, or at this pitch plus `WEBSA_FAKE_CW_OFFSET_HZ`.
         The CW demodulator sends this signal to the decoder."""
@@ -465,10 +509,11 @@ class FakeSdrSession(_FakeRtaBase):
         self._tick += 1
         s = self.dev.state
         center = float(s.sdr_center_hz)
+        sstv = str(s.sdr_demod) == 'sstv'
         # 0.8 * 62.5 MHz / decimate, as the vendor IQS reports it. This value is the requested
         # capture, that is the DISPLAY window, also when the device capture is floored
         # (FAKE_MAX_CAPTURE_DECIMATE).
-        bandwidth = 48_000.0 if str(s.sdr_demod) in DIGITAL_DEMODS else 50e6 / max(1, int(s.sdr_decimate or 16))
+        bandwidth = 48_000.0 if (str(s.sdr_demod) in DIGITAL_DEMODS or sstv) else 50e6 / max(1, int(s.sdr_decimate or 16))
         freq, spec = self._spectrum(center, bandwidth, SDR_PAN_POINTS)
         finite = np.sort(spec[np.isfinite(spec)])
         if finite.size:
@@ -477,11 +522,11 @@ class FakeSdrSession(_FakeRtaBase):
         digital = str(s.sdr_demod) in DIGITAL_DEMODS
         requested = max(1, int(s.sdr_decimate or 16))
         capture_decimate = min(requested, FAKE_MAX_CAPTURE_DECIMATE)
-        capture_bandwidth = 48_000.0 if digital else 50e6 / capture_decimate
+        capture_bandwidth = 48_000.0 if (digital or sstv) else 50e6 / capture_decimate
         s.sdr_actual = {
-            'iq_rate': FT8_IQ_RATE if digital else 62.5e6 / capture_decimate,
+            'iq_rate': FT8_IQ_RATE if digital else (SSTV_RATE if sstv else 62.5e6 / capture_decimate),
             # The rate of the channelized baseband this session actually publishes.
-            'ddc_rate': FT8_IQ_RATE if digital else SDR_BASEBAND_RATE,
+            'ddc_rate': SSTV_RATE if sstv else (FT8_IQ_RATE if digital else SDR_BASEBAND_RATE),
             'bandwidth': bandwidth, 'capture_bandwidth': capture_bandwidth,
             'iq_center': center,
             'decimate': requested, 'capture_decimate': capture_decimate,

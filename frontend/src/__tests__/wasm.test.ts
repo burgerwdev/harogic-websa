@@ -74,8 +74,11 @@ describe('dsp.wasm ABI', () => {
 		await expect(loadDsp('file:///nonexistent/dsp.wasm')).rejects.toThrow();
 	});
 
-	it('resolves the artifact next to the served page', () => {
+	it('resolves the artifact next to the served page, keyed by the ABI version', () => {
+		// The version is in the URL so a cached artifact cannot be paired with a newer loader: a
+		// Worker's fetch has its own cache entry, and a stale module fails silently as "the decoder
+		// runs and does nothing".
 		expect(dspWasmUrl('http://localhost:8080/static/dist/index.html'))
-			.toBe('http://localhost:8080/static/dist/dsp.wasm');
+			.toBe(`http://localhost:8080/static/dist/dsp.wasm?abi=${DSP_ABI_VERSION}`);
 	});
 });

@@ -21,7 +21,7 @@
 
 use crate::audio::AudioPolicy;
 use crate::ddc::resampler::ComplexResampler;
-use crate::plugin::{AnalogDemodulator, AudioStage, DigitalDemodulator, DigitalReport, PluginKind, AUDIO_PLUGINS};
+use crate::plugin::{AnalogDemodulator, AudioStage, DigitalDemodulator, DigitalReport, ImageRef, ImageStatus, PluginKind, AUDIO_PLUGINS};
 
 /// Real PCM destined for the speaker. Only the analog path produces one of these, and only the
 /// audio chain accepts one.
@@ -288,6 +288,16 @@ impl Pipeline {
         self.digital.as_ref().map(|demod| demod.buffered_input()).unwrap_or(0)
     }
 
+    /// Decode attempts the digital demodulator has made (0 for the protocols that decode per block).
+    pub fn digital_attempts(&self) -> u64 {
+        self.digital.as_ref().map(|demod| demod.attempts()).unwrap_or(0)
+    }
+
+    /// RMS of the audio the digital demodulator has buffered, 0..1.
+    pub fn digital_audio_level(&self) -> f32 {
+        self.digital.as_ref().map(|demod| demod.audio_level()).unwrap_or(0.0)
+    }
+
     /// What the digital demodulator reports about its most recent decode (frequency, slot offset,
     /// SNR). The UI shows the timing with the text: a decoded message without it is of little use
     /// to an operator watching a band.
@@ -303,6 +313,23 @@ impl Pipeline {
     /// Equalised constellation points (I, Q) the digital demodulator wants to show.
     pub fn digital_constellation(&self) -> Vec<(f64, f64)> {
         self.digital.as_ref().map(|demod| demod.constellation()).unwrap_or_default()
+    }
+
+    /// The picture the digital demodulator has decoded, when the protocol produces one (SSTV).
+    pub fn digital_image(&self) -> Option<ImageRef<'_>> {
+        self.digital.as_ref().and_then(|demod| demod.image())
+    }
+
+    /// The state of that picture (geometry, progress, mode). Read before the pixels: the pane sizes
+    /// its canvas from the geometry and shows the readout even before anything decoded.
+    pub fn digital_image_status(&self) -> Option<ImageStatus> {
+        self.digital.as_ref().and_then(|demod| demod.image_status())
+    }
+
+    /// Pin a protocol decoder to one of its own modes (`None` = decide from the signal). False for a
+    /// protocol with no such knob, which is every one but SSTV so far.
+    pub fn set_digital_mode_pin(&mut self, index: Option<usize>) -> bool {
+        self.digital.as_mut().is_some_and(|demod| demod.set_mode_pin(index))
     }
 
     /// Decoded 16-bit interleaved PCM the digital demodulator produced (DRM audio),
@@ -432,11 +459,10 @@ impl Pipeline {
         if let Some(demod) = self.analog.as_mut() {
             demod.retune();
         }
-        // A retune invalidates the digital demodulator's state too: the buffered capture and
-        // the decoded metadata belong to the previous channel, and mixing them into the new
-        // channel's decode produces stale readouts (the previous frequency's station label).
+        // A retune invalidates the digital demodulator's state. The protocol decides what that means:
+        // FT8 drops its window, SSTV keeps its audio (see `DigitalDemodulator::retune`).
         if let Some(demod) = self.digital.as_mut() {
-            demod.reset();
+            demod.retune();
         }
     }
 

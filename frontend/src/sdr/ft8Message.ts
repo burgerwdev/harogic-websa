@@ -1,5 +1,7 @@
-// Parse an FT8 line into its callsigns and grid. The message is `[被叫方|CQ] [发送方] [内容]`,
-// so the sender is the second callsign (or the one after `CQ`); the grid is always the sender's.
+// Parse an FT8 line into its callsigns and grid. The message is `[被叫方|CQ] [发送方] [内容]`:
+// the transmitting station is always the SECOND callsign (WSJT-X model QSO + 15 s slot
+// alternation: `CQ K1ABC FN42` / `K1ABC W9XYZ EN37` — W9XYZ answering — / `W9XYZ K1ABC +02`),
+// so the sender is the second callsign (or the one after `CQ`); the grid is the sender's.
 
 export interface Ft8Message {
 	/** The station that transmitted the message. */

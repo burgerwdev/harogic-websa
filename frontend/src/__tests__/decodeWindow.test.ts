@@ -1,13 +1,15 @@
 /**
  * The decode window: gated on the demodulator, fed by the FT8 and CW logs, and its rows tune.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initDecodeWindow, decodeWindowOpen, decodeWindowMode, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
 import { addFt8Spot, clearFt8Spots, clock } from '../sdr/ft8Log';
 import { addCwText, clearCwLog, cwLog } from '../sdr/cwLog';
 import { clearDrm, drmStatus, setDrmConstellation, setDrmDecode } from '../sdr/drmLog';
+import { clearSstv, setSstvDecoderState, setSstvModeFilter, setSstvSelected, sstvCount, sstvStatus, updateSstvPicture } from '../sdr/sstvLog';
+import { setSstvModeTable } from '../sdr/registry';
 import { setUiScale } from '../core/uiScale';
-import { setLang } from '../core/i18n';
+import { setLang, t } from '../core/i18n';
 import type { Ft8Report } from '../sdr/types';
 
 /** The shell the panel ships (index.html); the window only fills `#decode-window-rows`. */
@@ -16,15 +18,26 @@ function shell(): void {
 		<button class="btn" id="btn-decode-window" disabled>Off</button>
 		<div class="decode-window" id="decode-window" style="display:none;">
 			<div class="decode-window-head" id="decode-window-head">
-				<span id="decode-window-title">FT8</span><span class="count" id="decode-window-count">0</span>
+				<span id="decode-window-title">FT8</span><span id="sstv-head-hint" style="display:none;"></span><span class="count" id="decode-window-count">0</span>
 				<span class="spacer"></span>
 				<input id="decode-window-opacity" type="range" min="35" max="100" step="5" value="100" />
 				<button class="btn" id="btn-decode-utc">UTC</button>
 				<button class="btn" id="btn-decode-clear">Clear</button>
 				<button class="btn" id="btn-decode-close">Close</button>
 			</div>
+			<div class="decode-search-row" id="decode-ft8-search-row" style="display:none;">
+				<input class="decode-search" id="decode-ft8-search" type="text" placeholder="Filter messages (regex)" />
+			</div>
 			<div class="decode-window-body" id="decode-window-body">
-				<table id="decode-window-table"><thead><tr><th id="decode-window-time-th">Time</th></tr></thead><tbody id="decode-window-rows"></tbody></table>
+				<table id="decode-window-table"><thead><tr>
+					<th id="decode-window-time-th" data-sortable data-col="0">Time</th>
+					<th data-sortable data-col="1">SNR</th>
+					<th data-sortable data-col="2">DF</th>
+					<th data-sortable data-col="3">MHz</th>
+					<th data-sortable data-col="4">Message</th>
+					<th data-sortable data-col="5">Country</th>
+					<th data-sortable data-col="6">Location</th>
+				</tr></thead><tbody id="decode-window-rows"></tbody></table>
 				<div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
 				<div class="decode-drm" id="decode-window-drm" style="display:none;">
 					<div class="decode-drm-service"><span id="decode-drm-lock"></span><strong id="decode-drm-station"></strong><span id="decode-drm-status"></span><div id="decode-drm-mode"></div></div>
@@ -33,6 +46,27 @@ function shell(): void {
 						<figure><canvas id="decode-window-drm-plot" width="144" height="144"></canvas></figure>
 					</div>
 					<details id="decode-drm-details"><code id="decode-drm-debug"></code></details>
+				</div>
+				<div class="decode-sstv" id="decode-window-sstv" style="display:none;">
+					<div class="decode-sstv-bar"><button class="btn" id="sstv-auto">Auto</button><div class="btn-group" id="sstv-mode-group"></div></div>
+					<div class="decode-sstv-main">
+						<div class="decode-sstv-thumbs" id="sstv-thumbs">
+									<div class="decode-sstv-thumb-tools">
+										<button class="btn" id="sstv-select-all">All</button>
+										<button class="btn" id="btn-sstv-delete">Delete</button>
+										<button class="btn" id="btn-sstv-save">Save</button>
+									</div>
+									<div class="decode-sstv-thumb-list" id="sstv-thumb-list"></div>
+								</div>
+						<div class="decode-sstv-side">
+							<div class="decode-sstv-readout">
+								<span id="sstv-mode-name">—</span><span id="sstv-vis">—</span><span id="sstv-size">—</span>
+								<span id="sstv-time">—</span><span id="sstv-freq">—</span><span id="sstv-count">—</span><span id="sstv-state" style="display:none;"></span>
+							</div>
+							<div id="sstv-progress"><i id="sstv-progress-fill"></i><span id="sstv-progress-text">0%</span></div>
+							<div class="decode-sstv-view"><canvas id="decode-sstv-canvas" width="320" height="256"></canvas></div>
+						</div>
+					</div>
 				</div>
 			</div>
 			<div class="decode-resize-layer">
@@ -69,7 +103,7 @@ describe('the FT8 decode window', () => {
 		clearDrm();
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
 		localStorage.clear();
-		initDecodeWindow({ onTune: () => {} });
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
 	});
 
 	it('is disabled until FT8 is the demodulator, and hides when it stops being', () => {
@@ -118,19 +152,80 @@ describe('the FT8 decode window', () => {
 		toggleDecodeWindow();
 		setLang('zh');
 		try {
-			addFt8Spot(report({ text: 'UT3SO BG7BVP OL68' }), 1_000);
+			addFt8Spot(report({ text: 'JA0TXU BG7BVP -73' }), 1_000);   // the real 40m slot fixture
 			addFt8Spot(report({ text: 'CQ BG7BVP OL68' }), 2_000);
 			const cells = (row: Element) => Array.from(row.querySelectorAll('td')).map((c) => c.textContent);
-			const [cqRow, callRow] = rows();
+			const [cqRow, realRow] = rows();
 			expect(cells(cqRow)[4]).toBe('CQ BG7BVP OL68');
 			expect(cells(cqRow)[5]).toBe('中国');               // CQ: sender only
 			expect(cells(cqRow)[6]).toBe('28.5°N 113.0°E');
-			expect(cells(callRow)[5]).toBe('中国 → 乌克兰');      // directed: sender → receiver
-			expect(cells(callRow)[6]).toBe('28.5°N 113.0°E');
+			expect(cells(realRow)[5]).toBe('中国 → 日本');      // directed: sender (transmitting) → receiver
+			expect(cells(realRow)[6]).toBe('—');
 		} finally {
 			setLang('en');
 		}
 	});
+	it('filters rows by a regex over the message text; an invalid pattern keeps every row', () => {
+		setDecodeWindowAvailable('ft8');
+		toggleDecodeWindow();
+		addFt8Spot(report({ text: 'JA0TXU BG7BVP -73' }), 1_000);
+		addFt8Spot(report({ text: 'CQ JO1WKO PM95' }), 2_000);
+		addFt8Spot(report({ text: 'K1ABC W9XYZ EN37' }), 3_000);
+		const input = document.getElementById('decode-ft8-search') as HTMLInputElement;
+		const searchRow = document.getElementById('decode-ft8-search-row') as HTMLElement;
+		expect(searchRow.style.display).toBe('');   // the search row belongs to the FT8 pane
+		input.value = 'BG7BVP';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(rows().length).toBe(1);
+		expect(document.getElementById('decode-window-count')?.textContent).toBe('1/3');
+		input.value = '(';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(input.classList.contains('invalid')).toBe(true);   // filter off, rows stay
+		expect(rows().length).toBe(3);
+		expect(document.getElementById('decode-window-count')?.textContent).toBe('3');
+		input.value = '';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(rows().length).toBe(3);
+	});
+
+	it('sorts by a clicked column and restores the newest-first order on the second click', () => {
+		setDecodeWindowAvailable('ft8');
+		toggleDecodeWindow();
+		addFt8Spot(report({ text: 'K1ABC W9XYZ EN37', snrDb: -5, frequencyHz: 1800 }), 1_000);
+		addFt8Spot(report({ text: 'CQ JO1WKO PM95', snrDb: 2, frequencyHz: 1000 }), 2_000);
+		const firstText = () => (rows()[0].querySelectorAll('td')[4] as HTMLElement).textContent;
+		const th = (col: number) =>
+			document.querySelector(`#decode-window-table th[data-col="${col}"]`) as HTMLElement;
+		th(1).click();                                    // SNR: -5 first
+		expect(th(1).classList.contains('sorted')).toBe(true);
+		expect((rows()[0].querySelectorAll('td')[1] as HTMLElement).textContent).toBe('-5');
+		th(4).click();                                    // message text: CQ… first alphabetically
+		expect(th(1).classList.contains('sorted')).toBe(false);
+		expect(th(4).classList.contains('sorted')).toBe(true);
+		expect(firstText()).toBe('CQ JO1WKO PM95');
+		th(4).click();                                    // again: back to arrival order
+		expect(th(4).classList.contains('sorted')).toBe(false);
+		expect(firstText()).toBe('CQ JO1WKO PM95');       // newest first = the 2_000 decode
+	});
+
+	it('marks the hovered decode and its QSO pair; a CQ marks every decode of that caller', () => {
+		setDecodeWindowAvailable('ft8');
+		toggleDecodeWindow();
+		addFt8Spot(report({ text: 'JA0TXU BG7BVP -73' }), 1_000);
+		addFt8Spot(report({ text: 'CQ JO1WKO PM95' }), 2_000);
+		addFt8Spot(report({ text: 'BG7BVP JA0TXU RR73' }), 3_000);
+		const body = document.getElementById('decode-window-rows') as HTMLElement;
+		const hovered = body.querySelectorAll('tr.ft8-row')[0];      // BG7BVP↔JA0TXU pair
+		hovered.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+		const marked = Array.from(body.querySelectorAll('tr.ft8-row'));
+		expect(hovered.classList.contains('qso-focus')).toBe(true);
+		expect(marked[2].classList.contains('qso-peer')).toBe(true);  // same pair
+		expect(marked[1].classList.contains('qso-peer')).toBe(false); // unrelated CQ
+		marked[1].dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+		expect(marked[1].classList.contains('qso-focus')).toBe(true);
+		expect(marked[0].classList.contains('qso-peer')).toBe(false); // pair ≠ CQ key
+	});
+
 
 	it('shows local time by default and switches to UTC from the toggle', () => {
 		setDecodeWindowAvailable('ft8');
@@ -169,7 +264,7 @@ describe('the FT8 decode window', () => {
 
 	it('tunes to the signal a row was clicked on', () => {
 		const onTune = vi.fn();
-		initDecodeWindow({ onTune });
+		initDecodeWindow({ onTune, onSstvMode: () => {} });
 		setDecodeWindowAvailable('ft8');
 		toggleDecodeWindow();
 		addFt8Spot(report({ frequencyHz: 1450 }), 1_000);
@@ -247,7 +342,7 @@ describe('the FT8 decode window', () => {
 
 			// A later init at the same scale restores the same spot: the stored viewport px go back
 			// through the same division, not in as raw style values.
-			initDecodeWindow({ onTune: () => {} });
+			initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
 			expect(win.style.left).toBe('100px');
 			expect(win.style.top).toBe('50px');
 		} finally {
@@ -421,3 +516,293 @@ describe('the FT8 decode window', () => {
 		expect((document.getElementById('decode-window') as HTMLElement).style.display).toBe('flex');
 	});
 });
+
+describe('the SSTV pane', () => {
+	// The Rust mode table as the ABI reports it; the pane's buttons are built from this and nothing
+	// else, so a fake table is what proves the buttons follow the decoder's list.
+	const table = [
+		{ index: 0, name: 'Scottie S1', vis: 60, width: 320, height: 256 },
+		{ index: 5, name: 'Robot 36', vis: 8, width: 320, height: 240 },
+		{ index: 17, name: 'PD-290', vis: 94, width: 800, height: 616 },
+	];
+
+	const picture = (marker: number) => ({ rgb: new Uint8Array([marker, marker, marker]), width: 2, height: 2 });
+	const meta = (serial: number, over: Partial<Parameters<typeof updateSstvPicture>[1]> = {}) => ({
+		name: 'Robot 36', modeIndex: 5, vis: 8, width: 320, height: 240,
+		lines: 120, progress: 50, complete: false, serial, hz: 7_171_000, ...over,
+	});
+	const autoButton = () => document.getElementById('sstv-auto') as HTMLButtonElement;
+	const modeButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#sstv-mode-group .btn'));
+	const buttonText = (button: HTMLButtonElement) => button.dataset.sstvName ?? '';
+	const activeMode = () => modeButtons().find((button) => button.classList.contains('active'))?.dataset.sstvName
+		?? (autoButton().classList.contains('active') ? 'Auto' : undefined);
+
+	beforeEach(() => {
+		shell();
+		clearSstv();
+		setSstvModeTable(table);
+		setSstvModeFilter(null);
+		localStorage.clear();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+	});
+
+	afterEach(() => {
+		setSstvModeTable(null);
+		vi.restoreAllMocks();
+	});
+
+	it('shows its pane for the SSTV demodulator and keeps the FT8 table out of the way', () => {
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		expect(decodeWindowOpen()).toBe(true);
+		expect(decodeWindowMode()).toBe('sstv');
+		expect(document.getElementById('decode-window-title')?.textContent).toBe('SSTV');
+		expect((document.getElementById('decode-window-sstv') as HTMLElement).style.display).toBe('');
+		expect((document.getElementById('decode-window-table') as HTMLElement).style.display).toBe('none');
+	});
+
+	it('builds its mode buttons from the decoder table and highlights the detected mode', () => {
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		expect(modeButtons().map(buttonText)).toEqual(['Scottie S1', 'Robot 36', 'PD-290']);
+		expect(autoButton().classList.contains('active')).toBe(true);
+		expect(activeMode()).toBe('Auto');
+		updateSstvPicture(picture(1), meta(1));
+		expect(activeMode()).toBe('Robot 36');
+		expect(document.getElementById('sstv-mode-name')?.textContent).toBe('Robot 36');
+		expect(document.getElementById('sstv-vis')?.textContent).toBe('VIS 8');
+		expect(document.getElementById('sstv-size')?.textContent).toBe('320×240');
+		expect((document.getElementById('sstv-progress-fill') as HTMLElement).style.getPropertyValue('--pct')).toBe('50%');
+	});
+
+	it('shows the stored-picture count as a badge on the mode button', () => {
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		const robotBadge = () => modeButtons().find((button) => buttonText(button) === 'Robot 36')?.querySelector('.sstv-badge') as HTMLElement;
+		expect(robotBadge().style.display).toBe('none');
+		updateSstvPicture(picture(1), meta(1));
+		expect(robotBadge().style.display).toBe('');
+		expect(robotBadge().textContent).toBe('1');
+		updateSstvPicture(picture(2), meta(2));
+		expect(robotBadge().textContent).toBe('2');
+	});
+
+
+
+
+
+
+
+	it('waits in the title row and shows the decoder state while nothing has decoded', () => {
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		const hint = document.getElementById('sstv-head-hint') as HTMLElement;
+		const state = document.getElementById('sstv-state') as HTMLElement;
+		const canvas = document.getElementById('decode-sstv-canvas') as HTMLCanvasElement;
+		expect(hint.style.display).toBe('');
+		expect(canvas.style.display).toBe('none');
+		expect(state.style.display).toBe('');
+		expect(state.textContent).toBe(t('sstv_no_state'));
+		setSstvDecoderState({ running: false, pushes: 0, attempts: 0, bufferedSamples: 0, bufferedSeconds: 0, hasPicture: false, level: 0, srcLevel: 0 });
+		expect(state.textContent).toBe(t('sstv_decoder_off'));
+		setSstvDecoderState({ running: true, pushes: 5, attempts: 3, bufferedSamples: 96_000, bufferedSeconds: 12, hasPicture: false, level: 0.3, srcLevel: 0.2 });
+		expect(state.textContent).toBe(`${t('sstv_state', { s: '12', n: '3' })} · dec 30% · src 20%`);
+		// A picture replaces the waiting line and the counters.
+		updateSstvPicture(picture(1), meta(1));
+		expect(hint.style.display).toBe('none');
+		expect(state.style.display).toBe('none');
+		expect(canvas.style.display).toBe('');
+	});
+
+	it('hides the waiting line for every other pane', () => {
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		const hint = document.getElementById('sstv-head-hint') as HTMLElement;
+		expect(hint.style.display).toBe('');
+		setDecodeWindowAvailable('ft8');
+		expect(hint.style.display).toBe('none');
+	});
+
+	it('saves the picture at its true resolution as a PNG', () => {
+		const sizes: Array<[number, number]> = [];
+		const types: Array<string | undefined> = [];
+		const downloads: string[] = [];
+		Object.defineProperty(HTMLCanvasElement.prototype, 'toBlob', {
+			configurable: true,
+			value: function (this: HTMLCanvasElement, callback: BlobCallback, type?: string) {
+				sizes.push([this.width, this.height]);
+				types.push(type);
+				callback(new Blob([new Uint8Array([0])], { type }));
+			},
+		});
+		Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: () => 'blob:test' });
+		Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: () => {} });
+		const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push(this.download);
+		});
+
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		updateSstvPicture(
+			{ rgb: new Uint8Array(320 * 240 * 3), width: 320, height: 240 },
+			meta(1, { width: 320, height: 240 }),
+		);
+		document.getElementById('btn-sstv-save')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sizes).toEqual([[320, 240]]);
+		expect(types).toEqual(['image/png']);
+		expect(downloads).toHaveLength(1);
+expect(downloads[0]).toMatch(/^sstv-Robot36-\d-\d{4}-\d{2}-\d{2}T/);
+		click.mockRestore();
+		delete (HTMLCanvasElement.prototype as { toBlob?: unknown }).toBlob;
+	});
+})
+
+describe('SSTV pane interactions', () => {
+	const table = [
+		{ index: 0, name: 'Scottie S1', vis: 60, width: 320, height: 256 },
+		{ index: 5, name: 'Robot 36', vis: 8, width: 320, height: 240 },
+		{ index: 17, name: 'PD-290', vis: 94, width: 800, height: 616 },
+	];
+	const picture = (marker: number) => ({ rgb: new Uint8Array([marker, marker, marker]), width: 2, height: 2 });
+	const meta = (serial: number, over: Partial<Parameters<typeof updateSstvPicture>[1]> = {}) => ({
+		name: 'Robot 36', modeIndex: 5, vis: 8, width: 320, height: 240,
+		lines: 120, progress: 50, complete: false, serial, hz: 7_171_000, ...over,
+	});
+
+	beforeEach(() => {
+		shell();
+		clearSstv();
+		setSstvModeTable(table);
+		setSstvModeFilter(null);
+		localStorage.clear();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+	});
+
+	afterEach(() => {
+		setSstvModeTable(null);
+		vi.restoreAllMocks();
+	});
+
+	it('tick a thumbnail and delete it', () => {
+		updateSstvPicture(picture(1), meta(1, { complete: true, progress: 100 }));
+		updateSstvPicture(picture(2), meta(2));
+		const thumbs = () => document.querySelectorAll('.decode-sstv-thumb');
+		expect(thumbs()).toHaveLength(2);
+		// View the older thumb, then tick it for deletion.
+		(thumbs()[1] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		const tick = thumbs()[1].querySelector('.sstv-tick') as HTMLElement;
+		tick.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sstvStatus().history[0].selected).toBe(true);
+		const del = document.getElementById('btn-sstv-delete') as HTMLButtonElement;
+		expect(del.disabled).toBe(false);
+		del.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sstvStatus().history).toHaveLength(0);
+		// The live picture is untouched.
+		expect(sstvStatus().current).not.toBeNull();
+	});
+
+	it('clear all removes everything without breaking the live picture', () => {
+		vi.spyOn(window, 'confirm').mockReturnValue(true);
+		updateSstvPicture(picture(1), meta(1));
+		updateSstvPicture(picture(2), meta(2));
+		expect(sstvCount()).toBe(2);
+		const clearAll = document.getElementById('btn-decode-clear') as HTMLButtonElement;
+		clearAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sstvCount()).toBe(0);
+		// Reception recovers: the next picture starts fresh.
+		updateSstvPicture(picture(3), meta(3));
+		expect(sstvCount()).toBe(1);
+	});
+
+	
+
+
+})
+
+describe('SSTV auto toggle + multi-select delete + confirm', () => {
+	const table = [
+		{ index: 0, name: 'Scottie S1', vis: 60, width: 320, height: 256 },
+		{ index: 5, name: 'Robot 36', vis: 8, width: 320, height: 240 },
+		{ index: 17, name: 'PD-290', vis: 94, width: 800, height: 616 },
+	];
+	const picture = (marker: number) => ({ rgb: new Uint8Array([marker, marker, marker]), width: 2, height: 2 });
+	const meta = (serial: number, over: Partial<Parameters<typeof updateSstvPicture>[1]> = {}) => ({
+		name: 'Robot 36', modeIndex: 5, vis: 8, width: 320, height: 240,
+		lines: 120, progress: 50, complete: false, serial, hz: 7_171_000, ...over,
+	});
+	const autoButton = () => document.getElementById('sstv-auto') as HTMLButtonElement;
+	const modeButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('#sstv-mode-group .btn'));
+	const findMode = (name: string) => modeButtons().find((button) => button.dataset.sstvName === name)!;
+
+	beforeEach(() => {
+		shell();
+		clearSstv();
+		setSstvModeTable(table);
+		setSstvModeFilter(null);
+		localStorage.clear();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+	});
+
+	it('auto on: mode click views only (hooks not called); auto off: mode click pins', () => {
+		const onSstvMode = vi.fn();
+		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		updateSstvPicture(picture(1), meta(1));
+		// Auto on (default): clicking Robot 36 views only.
+		findMode('Robot 36').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onSstvMode).not.toHaveBeenCalled();
+		// Toggle auto off.
+		autoButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onSstvMode).toHaveBeenCalledWith(5); // pins to detected mode
+		// Now clicking PD-290 pins to 17.
+		findMode('PD-290').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onSstvMode).toHaveBeenLastCalledWith(17);
+		// Toggle auto back on: unpins.
+		autoButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onSstvMode).toHaveBeenLastCalledWith(null);
+	});
+
+	it('tick 2 thumbnails and delete both', () => {
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		updateSstvPicture(picture(1), meta(1, { complete: true, progress: 100 }));
+		updateSstvPicture(picture(2), meta(2, { complete: true, progress: 100 }));
+		updateSstvPicture(picture(3), meta(3));
+		// Tick the 2 history entries.
+		setSstvSelected(sstvStatus().history[0].id, true);
+		setSstvSelected(sstvStatus().history[1].id, true);
+		const del = document.getElementById('btn-sstv-delete') as HTMLButtonElement;
+		expect(del.disabled).toBe(false);
+		del.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sstvStatus().history).toHaveLength(0);
+		expect(sstvCount()).toBe(1); // only the live picture remains
+	});
+
+	it('confirm gate: cancel keeps pictures, confirm deletes them', () => {
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		updateSstvPicture(picture(1), meta(1));
+		updateSstvPicture(picture(2), meta(2));
+		const confirmSpy = vi.spyOn(window, 'confirm');
+		// Cancel: pictures survive.
+		confirmSpy.mockReturnValue(false);
+		const clearAll = document.getElementById('btn-decode-clear') as HTMLButtonElement;
+		clearAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('SSTV'));
+		expect(sstvCount()).toBe(2);
+		// Confirm: pictures deleted.
+		confirmSpy.mockReturnValue(true);
+		clearAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sstvCount()).toBe(0);
+	});
+})

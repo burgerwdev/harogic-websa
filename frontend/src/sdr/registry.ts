@@ -60,16 +60,83 @@ export function readPluginManifest(module: DspModule): PluginInfo[] {
 
 let manifest: PluginInfo[] | null = null;
 
-/** Load (once) and cache the manifest from the artifact at `url`. */
+/** One SSTV mode, as the Rust table declares it. The decode window's mode buttons come from here. */
+export interface SstvModeInfo {
+	/** Index in the table: what the pin setter takes. */
+	index: number;
+	name: string;
+	/** The VIS code the calibration header carries. */
+	vis: number;
+	width: number;
+	height: number;
+}
+
+let sstvModes: SstvModeInfo[] | null = null;
+
+function readSstvModeName(module: DspModule, index: number): string {
+	const length = module.exports.websa_dsp_sstv_mode_name_len(index);
+	if (length <= 0) return '';
+	const ptr = module.alloc(length);
+	if (!ptr) return '';
+	try {
+		const written = module.exports.websa_dsp_sstv_mode_name(index, ptr, length);
+		// A fresh view: allocating may have grown (and detached) the memory.
+		return new TextDecoder().decode(new Uint8Array(module.exports.memory.buffer, ptr, written));
+	} finally {
+		module.free(ptr, length);
+	}
+}
+
+/** Read the SSTV mode table out of an instantiated module. */
+export function readSstvModeTable(module: DspModule): SstvModeInfo[] {
+	const modes: SstvModeInfo[] = [];
+	const count = module.exports.websa_dsp_sstv_mode_count();
+	for (let index = 0; index < count; index++) {
+		const name = readSstvModeName(module, index);
+		if (!name) continue;
+		const ptr = module.alloc(3 * 4);
+		if (!ptr) continue;
+		let vis = 0;
+		let width = 0;
+		let height = 0;
+		let words = 0;
+		try {
+			words = module.exports.websa_dsp_sstv_mode_meta(index, ptr);
+			if (words === 3) {
+				const meta = new Uint32Array(module.exports.memory.buffer, ptr, 3);
+				[vis, width, height] = [meta[0], meta[1], meta[2]];
+			}
+		} finally {
+			module.free(ptr, 3 * 4);
+		}
+		if (words !== 3) continue;
+		modes.push({ index, name, vis, width, height });
+	}
+	return modes;
+}
+
+/** Load (once) and cache the manifest and the SSTV mode table from the artifact at `url`. */
 export async function loadPluginManifest(url: string): Promise<PluginInfo[]> {
 	if (manifest) return manifest;
-	manifest = readPluginManifest(await loadDsp(url));
+	const module = await loadDsp(url);
+	manifest = readPluginManifest(module);
+	sstvModes = readSstvModeTable(module);
 	return manifest;
 }
 
 /** The cached manifest, or null before it has been loaded. */
 export function pluginManifest(): PluginInfo[] | null {
 	return manifest;
+}
+
+/**
+ * The SSTV mode table (names, VIS codes, resolutions), or null before the module has been loaded.
+ *
+ * The decode window builds its mode buttons from this list, so a button cannot offer a mode the
+ * decoder does not know — the same rule the mode dropdown follows for the demodulator list.
+ */
+export function sstvModeTable(): SstvModeInfo[] | null {
+	return sstvModes;
 }
 
 function idsOf(kind: PluginKind): string[] {
@@ -142,4 +209,9 @@ export function isModeAvailable(id: string): boolean {
 /** Test seam: replace the cached manifest (unit tests) or clear it (null). */
 export function setPluginManifest(next: PluginInfo[] | null): void {
 	manifest = next;
+}
+
+/** Test seam: replace the cached SSTV mode table (unit tests) or clear it (null). */
+export function setSstvModeTable(next: SstvModeInfo[] | null): void {
+	sstvModes = next;
 }

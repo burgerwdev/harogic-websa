@@ -82,6 +82,7 @@ pub const DIGITAL_PLUGINS: &[PluginDescriptor] = &[
     digital("ft8", true),
     digital("drm", true),
     digital("drmplus", true),
+    digital("sstv", true),
 ];
 
 /// Audio-enhancement stages, in the order the chain applies them. Every one of these is
@@ -167,6 +168,39 @@ pub struct DigitalReport {
     pub snr_db: f64,
 }
 
+/// An RGB888 picture a digital protocol decoded, borrowed from the demodulator.
+///
+/// Row-major, `width * height * 3` bytes. A protocol that produces a picture (SSTV) returns it from
+/// [`DigitalDemodulator::image`]; the copy out of the module and into the page belongs to the ABI.
+pub struct ImageRef<'a> {
+    pub rgb: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What the protocol knows about the picture it is showing.
+///
+/// Separate from [`ImageRef`] because the metadata must be readable *before* the pixels (the pane
+/// lays out its readout and decides whether the picture grew) and because reading it is cheap where
+/// copying the picture is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ImageStatus {
+    pub width: u32,
+    pub height: u32,
+    /// Scanlines decoded in this picture so far.
+    pub lines: u32,
+    /// `lines / height` as a whole percentage.
+    pub progress: u32,
+    /// The protocol's own mode identifier (SSTV: the VIS code).
+    pub vis: u32,
+    /// Bumped once per transmission: two reads with the same serial are the same picture, growing.
+    pub serial: u64,
+    /// True once the last scanline arrived.
+    pub complete: bool,
+    /// Index into the protocol's own mode table (SSTV: `digital::sstv::SSTV_MODES`).
+    pub mode_index: u32,
+}
+
 /// A digital demodulator: complex baseband in, whatever the protocol produces out.
 ///
 /// The output is deliberately opaque: FT8 produces a decoded message, not audio. A protocol that
@@ -190,10 +224,29 @@ pub trait DigitalDemodulator: Send {
         Vec::new()
     }
 
+    /// A retune on the backend: the channel moved. The default drops the decoder state (FT8's window,
+    /// DRM's lock). SSTV keeps its buffer, because the backend also flushes on a reconfiguration of the
+    /// same channel.
+    fn retune(&mut self) {
+        self.reset();
+    }
+
     /// Input samples buffered towards the next decode attempt (0 when the protocol decodes per
     /// block). Used by the status readout, so "running but never finishing a transmission" is
     /// visible instead of looking like a quiet band.
     fn buffered_input(&self) -> usize {
+        0
+    }
+
+    /// RMS of what the decoder has buffered, 0..1. Zero while samples are arriving means the decoder's
+    /// own band passes nothing: a tuning or band problem, not a decoding one.
+    fn audio_level(&self) -> f32 {
+        0.0
+    }
+
+    /// Decode attempts since creation or reset. A decoder that is fed and never tries is a different
+    /// fault from one that tries and finds nothing.
+    fn attempts(&self) -> u64 {
         0
     }
 
@@ -202,6 +255,24 @@ pub trait DigitalDemodulator: Send {
     /// empty: a protocol is not obliged to produce one.
     fn constellation(&self) -> Vec<(f64, f64)> {
         Vec::new()
+    }
+
+    /// The picture the protocol has decoded, when it produces one (SSTV). Defaults to nothing: a
+    /// protocol that decodes text, audio or nothing at all is unaffected by this method existing.
+    fn image(&self) -> Option<ImageRef<'_>> {
+        None
+    }
+
+    /// The state of that picture (geometry, progress, mode). Read before the pixels: the pane needs
+    /// the readout even when nothing decoded yet, and the geometry is what sizes the canvas.
+    fn image_status(&self) -> Option<ImageStatus> {
+        None
+    }
+
+    /// Pin the decoder to one of the protocol's own modes (`None` = decide from the signal). Returns
+    /// false when the protocol has no such knob, which is every protocol but SSTV so far.
+    fn set_mode_pin(&mut self, _index: Option<usize>) -> bool {
+        false
     }
 
     /// Decoded 16-bit interleaved PCM the demodulator produced (e.g. the DRM audio

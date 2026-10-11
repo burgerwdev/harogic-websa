@@ -14,13 +14,17 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
+import {
+	SSTV_AUDIO_HIGH_HZ, SSTV_AUDIO_LOW_HZ, SSTV_BLACK_HZ, SSTV_SYNC_HZ, SSTV_WHITE_HZ, sstvBandHz,
+} from '../sdr/sstvLog';
 import { clearDrm, setDrmDecode } from '../sdr/drmLog';
-import { readPluginManifest, setPluginManifest } from '../sdr/registry';
+import { audioCompanionFor, readPluginManifest, setPluginManifest } from '../sdr/registry';
 import { instantiateDsp } from '../sdr/wasm';
 import { demodBandHz } from '../ui/sdrState';
 
 const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
 const FT8_RS = resolve(process.cwd(), '..', 'wasm', 'src', 'digital', 'ft8', 'mod.rs');
+const SSTV_RS = resolve(process.cwd(), '..', 'wasm', 'src', 'digital', 'sstv', 'mod.rs');
 
 async function loadManifest(): Promise<void> {
 	const buf = readFileSync(ARTIFACT);
@@ -62,5 +66,37 @@ describe('the band the SDR view highlights', () => {
 		};
 		expect(declared('F_MIN_HZ')).toBe(FT8_SEARCH_LOW_HZ);
 		expect(declared('F_MAX_HZ')).toBe(FT8_SEARCH_HIGH_HZ);
+	});
+
+	it('is the voice band the SSTV decoder filters, not the FT8 search band', async () => {
+		await loadManifest();
+		// SSTV is single-sideband audio: the plugin band-passes 300..2700 Hz and the picture's tones
+		// (1200 sync, 1500 black, 2300 white) sit inside it. It is a digital plugin, so without its own
+		// case it would inherit FT8's 100..3000 band and mark a band the decoder does not read.
+		expect(demodBandHz('sstv', 2400)).toEqual([SSTV_AUDIO_LOW_HZ, SSTV_AUDIO_HIGH_HZ]);
+		expect(demodBandHz('sstv', 50000)).toEqual(sstvBandHz());
+		// The picture's own tones are inside that band, and it is the audio band that is highlighted.
+		for (const hz of [SSTV_SYNC_HZ, SSTV_BLACK_HZ, SSTV_WHITE_HZ]) {
+			expect(hz).toBeGreaterThan(SSTV_AUDIO_LOW_HZ);
+			expect(hz).toBeLessThan(SSTV_AUDIO_HIGH_HZ);
+		}
+	});
+
+	it('cannot drift from the SSTV plugin that defines it', () => {
+		const rust = readFileSync(SSTV_RS, 'utf8');
+		const declared = (name: string): number => {
+			const found = new RegExp(`const ${name}: f64 = ([0-9_]+)`).exec(rust);
+			expect(found, `${name} in ${SSTV_RS}`).not.toBeNull();
+			return Number(found![1].replace(/_/g, ''));
+		};
+		expect(declared('AUDIO_LO_HZ')).toBe(SSTV_AUDIO_LOW_HZ);
+		expect(declared('AUDIO_HI_HZ')).toBe(SSTV_AUDIO_HIGH_HZ);
+	});
+
+	it('keeps the USB companion that plays the channel while the picture decodes', async () => {
+		await loadManifest();
+		// A protocol decoder produces a picture and no audio, so the operator still hears the channel
+		// through the companion demodulator (USB, as SSTV is sent).
+		expect(audioCompanionFor('sstv')).toBe('usb');
 	});
 });

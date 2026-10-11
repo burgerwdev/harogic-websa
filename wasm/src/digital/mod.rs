@@ -8,6 +8,8 @@
 
 pub mod drm;
 pub mod ft8;
+pub mod sstv;
+pub(crate) mod sstv_abi;
 
 use crate::plugin::DigitalDemodulator;
 
@@ -25,6 +27,10 @@ pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
         // matches the batch decode, which is what the wasm worker drives.
         "drm" => Some(Box::new(drm::DrPlugin::new(rate))),
         "drmplus" => Some(Box::new(drm::DrPlugin::new_plus())),
+        // Slow-scan television: a picture sent as SSB audio. It reads the RAW complex baseband (its
+        // own voice-band filter and detector turn it into the audio the vendored decoder wants),
+        // so the audio-enhancement chain stays unreachable from it like any other protocol decoder.
+        "sstv" => Some(Box::new(sstv::SstvPlugin::new(rate))),
         _ => None,
     }
 }
