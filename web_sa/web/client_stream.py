@@ -124,7 +124,12 @@ class ClientStream:
             return
         if self.iq_only and magic != IQ_MAGIC:
             return
-        if magic == AUX_MAGIC and not self.aux_iq:
+        if self.aux_iq:
+            # An aux socket is an AUX-only socket: the browser demodulator's IQBF must never
+            # appear here, and an aux consumer has no use for it either.
+            if magic != AUX_MAGIC:
+                return
+        elif magic == AUX_MAGIC:
             return                      # aux streams are strictly opt-in (?iqaux=1)
         if self.no_audio and magic == AUDIO_MAGIC:
             return

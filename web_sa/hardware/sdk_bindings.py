@@ -375,7 +375,35 @@ GNSSInfo_TypeDef = htra_api.GNSSInfo_TypeDef
 MeasAuxInfo_TypeDef = htra_api.MeasAuxInfo_TypeDef
 DeviceInfo_TypeDef = htra_api.DeviceInfo_TypeDef
 BootProfile_TypeDef = htra_api.BootProfile_TypeDef
-BootInfo_TypeDef = htra_api.BootInfo_TypeDef
+class DeviceInfo_TypeDef(Structure):
+    """htra_api.py stops DeviceInfo after FFWVersion; the C header (htra_api.h:1040-1041)
+    also carries PMUVersion/AGUVersion there. They land in the struct's own trailing
+    padding (size stays 24), so the DLL never overflows - the values were just unreachable
+    (the About-panel fix in version_info.py consumed them from device.py, which crashed on
+    the real device until this restore)."""
+    _fields_ = list(htra_api.DeviceInfo_TypeDef._fields_) + [
+        ('PMUVersion', c_uint16), ('AGUVersion', c_uint16)]
+
+
+assert sizeof(DeviceInfo_TypeDef) == sizeof(htra_api.DeviceInfo_TypeDef) == 24, (
+    'DeviceInfo layout moved; restoring PMU/AGU must not change what the DLL writes')
+assert DeviceInfo_TypeDef.PMUVersion.offset == 20 and DeviceInfo_TypeDef.AGUVersion.offset == 22
+
+
+class BootInfo_TypeDef(Structure):
+    # BootInfo with the restored DeviceInfo (the vendor wrapper's own class keeps the old
+    # shape, and Device_Open writes the whole boot block through the first field).
+    _fields_ = [(name, DeviceInfo_TypeDef if type_ is htra_api.DeviceInfo_TypeDef else type_)
+                for name, type_ in htra_api.BootInfo_TypeDef._fields_]
+
+
+assert sizeof(BootInfo_TypeDef) == sizeof(htra_api.BootInfo_TypeDef), (
+    'BootInfo layout moved; only the DeviceInfo field may gain the padding fields')
+
+# Rebind: the vendor wrapper bound Device_Open to its own (stale) BootInfo class; our
+# callers pass the restored one, and ctypes argtypes match by exact ctypes type.
+dll.Device_Open.argtypes = [POINTER(c_void_p), c_int,
+                            POINTER(htra_api.BootProfile_TypeDef), POINTER(BootInfo_TypeDef)]
 
 # SDR aliases (IQS / DDC / FFT / demod)
 IQS_Profile_TypeDef = htra_api.IQS_Profile_TypeDef

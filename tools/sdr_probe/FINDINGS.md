@@ -141,3 +141,21 @@ Consequences applied in code: manual RBW floor 100 -> 1 Hz, points request clamp
 follows caps.points_max (16000), the display-side "actual points" stays whatever
 SWP_TraceInfo reports. I3 (NativeIQSampleRate) stays dead on this unit:
 ADC_VariableRateEn = 0 (section 1).
+
+## 13. Aux DDC live verification (`probe_aux_live.py`, 2026-10-12)
+
+Real service + real SAN-90 (SDR mode, center 100 MHz, decimate 32):
+
+| Check | Result |
+|---|---|
+| SET_SDR_DDC ch2 @ 100.5 MHz | accepted, echoed in STATUS `req.sdr.aux` |
+| IQAX frames on ?iqaux=1 (5 s) | 600 frames, centerHz == 100.5 MHz exactly |
+| IQBF leaking to the aux socket | 0 |
+| Aux freq outside the capture half-window (decimate 32 -> 976.56 kHz) | rejected with a clear error |
+
+Gotchas found live:
+* `htra_api.DeviceInfo_TypeDef` stops after FFWVersion - PMU/AGU ride in the struct's own
+  trailing padding (size stays 24, no overflow, values unreachable). sdk_bindings restores
+  the fields (offsets 20/22) and rebinds Device_Open to the restored BootInfo.
+* Aux enable before the first SDR packet has no capture geometry: the step loop configures
+  aux lazily once `fs_in` exists.

@@ -1041,7 +1041,7 @@ class SdrSession(MeasurementSession):
             channel = int(channel)
             if channel not in self.AUX_CHANNELS:
                 raise ValueError(f'aux channel must be one of {self.AUX_CHANNELS}')
-            s = self.state
+            s = self.dev.state
             aux = s.sdr_aux.setdefault(channel, {'enabled': False, 'freq': 0.0})
             if not enabled:
                 self._teardown_aux_locked(channel)
@@ -1049,9 +1049,12 @@ class SdrSession(MeasurementSession):
                 aux['freq'] = 0.0
                 return
             freq = float(freq_hz)
-            half = self._fs_in / 2.0 if self._fs_in else 0.0
-            if not (s.sdr_center_hz - half <= freq <= s.sdr_center_hz + half):
-                raise ValueError('aux freq outside the capture window')
+            if self._fs_in:
+                half = self._fs_in / 2.0
+                if not (s.sdr_center_hz - half <= freq <= s.sdr_center_hz + half):
+                    raise ValueError('aux freq outside the capture window')
+            # else: the capture geometry does not exist yet (the first packet configures it);
+            # the step loop configures the aux channel lazily once it does.
             aux['enabled'] = True
             aux['freq'] = freq
             self._reconfigure_aux_locked(channel)
@@ -1069,7 +1072,7 @@ class SdrSession(MeasurementSession):
             self._aux.pop(channel, None)
             raise RuntimeError(f'DSP_Open(aux {channel}) status={st}')
         entry = {'dsp': dsp, 'ddc': DdcChannel(dsp), 'seq': 0}
-        offset = float(self.state.sdr_center_hz) - float(self.state.sdr_aux[channel]['freq'])
+        offset = float(self.dev.state.sdr_center_hz) - float(self.dev.state.sdr_aux[channel]['freq'])
         entry['ddc'].configure(self._fs_in, offset, self._ddc.decimate,
                                self._packet_samples * self._ddc_batch)
         self._aux[channel] = entry
@@ -1486,6 +1489,14 @@ class SdrSession(MeasurementSession):
             # Aux channels (G1'): one IQS packet feeds every channel, so the marginal cost is
             # the DSP_DDC work in the vendor library. Publish each enabled aux baseband only
             # while an opt-in (?iqaux=1) socket is subscribed, as IQAX.
+            if s.sdr_aux and self._fs_in:
+                # Lazy configure: an aux enabled before the first packet had no geometry.
+                for channel, cfg in sorted(s.sdr_aux.items()):
+                    if cfg.get('enabled') and channel not in self._aux:
+                        try:
+                            self._reconfigure_aux_locked(channel)
+                        except (RuntimeError, ValueError) as exc:
+                            log.warning('SDR: aux %s configure failed: %s', channel, exc)
             if self._aux and getattr(dev, 'aux_clients', 0):
                 for channel in sorted(self._aux):
                     entry = self._aux[channel]
