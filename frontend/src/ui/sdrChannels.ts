@@ -5,7 +5,7 @@
 // (authoritative), user actions only send commands and let STATUS confirm. The DOM is
 // updated exclusively here.
 
-import { sReport } from '../core/sReport';
+import { sReport, sScalePct, S_SCALE_TICKS } from '../core/sReport';
 import { setFt8Source } from '../sdr/iqStream';
 import { send } from '../core/wsSend';
 
@@ -13,6 +13,11 @@ let listenChannel = 1;
 let chans: Record<string, any> = {};
 let peakDbm: number | null = null;
 let statusWarning = 0;
+// LED 三态 (design §4.2): on = active now; burst = activity ended within 2 s; off = quiet.
+const lastActiveAt: Record<number, number> = {};
+// FT8 background source (ux-4): 'listen' or a channel number with its centre frequency.
+let ft8Source: 'listen' | 2 | 3 = 'listen';
+let ft8FreqHz = 0;
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
@@ -48,8 +53,14 @@ function render(): void {
     const isListen = ch === listenChannel;
     rowAny.classList.toggle('listen', isListen);
     rowAny.classList.toggle('dis', !enabled);
+    if (cfg.active) lastActiveAt[ch] = Date.now();
     const led = el(`chan-led-${ch}`);
-    if (led) led.className = `chan-led${cfg.active ? ' on' : ''}`;
+    if (led) {
+      // 三态: on (持续活动) / burst (活动结束后 2 s 内) / off (静默)
+      const since = Date.now() - (lastActiveAt[ch] || 0);
+      const cls = cfg.active ? ' on' : (since < 2000 ? ' burst' : '');
+      led.className = `chan-led${cls}`;
+    }
     const input = el(`chan-freq-${ch}`) as HTMLInputElement | null;
     if (input && document.activeElement !== input) input.value = fmtMhz(cfg.freq);
     const badge = el(`chan-s-${ch}`);
@@ -59,6 +70,9 @@ function render(): void {
       const rep = has ? sReport(lvl) : '-';
       badge.textContent = rep;
       badge.className = `s-badge${/S9/.test(rep) ? ' hi' : (/S[5-8]/.test(rep) ? ' mid' : '')}`;
+      // Ham RST readout on the listen row: readability is 5 by convention, strength is
+      // the S value (S9+X dB over stays "59+X").
+      if (ch === listenChannel && has) badge.title = rep.replace('S', '5');
     }
     const thr = el(`chan-thr-${ch}`) as HTMLInputElement | null;
     if (thr && document.activeElement !== thr) {
@@ -74,12 +88,42 @@ function render(): void {
     ps.textContent = rep;
     ps.className = `s-badge${/S9/.test(rep) ? ' hi' : (/S[5-8]/.test(rep) ? ' mid' : '')}`;
   }
+  const bar = el('pep-bar');
+  if (bar && !bar.dataset.ticks) {
+    // S-scale ticks (ux-3): S1..S9 unit boundaries + the +dB range ends, mounted once.
+    bar.dataset.ticks = '1';
+    for (const t of S_SCALE_TICKS) {
+      const line = document.createElement('span');
+      line.className = 'pep-tick';
+      line.style.left = `${t.pct}%`;
+      const label = document.createElement('span');
+      label.className = 'pep-tick-label';
+      label.textContent = t.label;
+      label.style.left = `${t.pct}%`;
+      line.appendChild(label);
+      bar.appendChild(line);
+    }
+  }
   const fill = el('pep-fill');
   if (fill) {
-    const over = statusWarning === -12;
+    const over = statusWarning === -12 || (peakDbm != null && peakDbm >= -13);
     fill.classList.toggle('over', over);
-    const pct = peakDbm != null ? Math.max(2, Math.min(100, (peakDbm + 140) / 130 * 100)) : 2;
-    fill.style.width = `${pct}%`;
+    fill.style.width = `${peakDbm != null ? sScalePct(peakDbm) : 2}%`;
+  }
+  // FT8 background hint + centre auto-follow when the FT8 channel is retuned.
+  const hint = el('ft8-hint');
+  if (ft8Source !== 'listen') {
+    const freq = Number(chans[String(ft8Source)]?.freq);
+    if (freq && freq !== ft8FreqHz) {
+      ft8FreqHz = freq;
+      setFt8Source(ft8Source, freq);
+    }
+    if (hint) {
+      hint.textContent = `FT8 decoding CH${ft8Source} ${fmtMhz(freq)} MHz (background)`;
+      hint.style.display = '';
+    }
+  } else if (hint) {
+    hint.style.display = 'none';
   }
 }
 
@@ -150,9 +194,21 @@ export function initSdrChannels(): void {
   if (ft8sel) {
     ft8sel.addEventListener('change', () => {
       const v = ft8sel.value;
-      setFt8Source(v === 'listen' ? 'listen' : 'aux');
+      if (v === 'listen') {
+        ft8Source = 'listen';
+        ft8FreqHz = 0;
+        setFt8Source('listen');
+        return;
+      }
+      const freq = Number(chans[v]?.freq);
+      if (!freq) { ft8sel.value = 'listen'; return; }   // an unfrequency'd channel cannot feed FT8
+      ft8Source = Number(v) as 2 | 3;
+      ft8FreqHz = freq;
+      setFt8Source(ft8Source, freq);
     });
   }
+  // Drives the LED burst->off decay between STATUS frames (1 Hz).
+  setInterval(render, 500);
   // Keyboard 1/2/3: switch listen, but never while the user is typing somewhere.
   document.addEventListener('keydown', (e: KeyboardEvent) => {
     if (inTextEntry(e.target) || e.ctrlKey || e.altKey || e.metaKey) return;

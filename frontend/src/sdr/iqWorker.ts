@@ -942,7 +942,8 @@ self.onmessage = (event: MessageEvent) => {
     // ux-4: the FT8 source moved to an aux channel — forward the target URL to the decoder
     // stream worker (it owns its own socket). Never touches this worker's main socket.
     ft8AuxUrl = String(msg.auxUrl || '');
-    decoderStream?.postMessage({ type: 'url', url: ft8AuxUrl || wsUrl });
+    decoderStream?.postMessage({ type: 'url', url: ft8AuxUrl || wsUrl,
+                                 centerHz: Number(msg.centerHz) || 0 });
   } else if (msg.type === 'volume') {
     volume = Number(msg.value) || 0;
     pipeline?.setVolume(volume);

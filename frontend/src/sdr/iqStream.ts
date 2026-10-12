@@ -99,9 +99,10 @@ let dspAudio = true;
 /** IQ-only WebSocket URL for the worker (the display connection carries no IQ). */
 /** FT8 background source (ux-4): 'listen' decodes the listened channel; 'aux' points the
  *  FT8 decoder's own socket at the aux-DDC stream (?iqaux=1). */
-export function setFt8Source(source: 'listen' | 'aux'): void {
-  const auxUrl = source === 'aux' ? iqWorkerUrl().replace('iq=1', 'iqaux=1') : '';
-  worker?.postMessage({ type: 'ft8-url', auxUrl });
+export function setFt8Source(source: 'listen' | number, freqHz = 0): void {
+  const aux = source !== 'listen';
+  const auxUrl = aux ? iqWorkerUrl().replace('iq=1', 'iqaux=1') : '';
+  worker?.postMessage({ type: 'ft8-url', auxUrl, centerHz: aux ? freqHz : 0 });
 }
 
 function iqWorkerUrl(): string {

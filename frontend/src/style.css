@@ -934,3 +934,12 @@ input.ref-pending { border: 1px dashed #ffb300; }
 .pep-bar { flex: 1; height: 10px; border: 1px solid var(--card-border); border-radius: 2px; position: relative; background: var(--panel-2); overflow: hidden; }
 .pep-fill { position: absolute; inset: 1px auto 1px 1px; width: 2%; background: linear-gradient(90deg, #1e5c34, #39ff6a); }
 .pep-fill.over { background: linear-gradient(90deg, #8f1e1e, #ff4d4d); }
+
+/* ux-3 three-state LED + hover-revealed threshold + PEP S-scale ticks */
+.chan-led.burst { background: #aaffc3; box-shadow: 0 0 10px #aaffc3; animation: chanBurst 1s infinite; }
+@keyframes chanBurst { 50% { opacity: 0.45; } }
+.chan-thr { opacity: 0; transition: opacity 0.15s; }
+.chan-row:hover .chan-thr, .chan-thr:focus { opacity: 1; }
+.pep-tick { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--inner-border); }
+.pep-tick-label { position: absolute; top: -12px; font-size: 8px; color: var(--sub); transform: translateX(-50%); }
+#ft8-hint { color: var(--sub); font-size: 11px; border: 1px dashed var(--card-border); border-radius: 3px; padding: 3px 8px; margin-top: 4px; }
