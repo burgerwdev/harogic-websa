@@ -1162,12 +1162,11 @@ class SdrSession(MeasurementSession):
                 os.makedirs(d, exist_ok=True)
                 path = os.path.join(
                     d, 'cap_%s_f%.0f.wav' % (time.strftime('%Y%m%d_%H%M%S'), s.sdr_center_hz))
-                w = wave.open(path, 'wb')
-                w.setnchannels(2)
-                w.setsampwidth(2)
-                w.setframerate(max(1, int(round(rate))))
-                w.writeframes(data.tobytes())
-                w.close()
+                with wave.open(path, 'wb') as w:
+                    w.setnchannels(2)
+                    w.setsampwidth(2)
+                    w.setframerate(max(1, int(round(rate))))
+                    w.writeframes(data.tobytes())
             out = {'path': path, 'samples': int(data.size // 2), 'rate': int(round(rate)),
                    'level_dbm': float(level_dbm), 'seconds': float(seconds),
                    'pretime_s': float(pretime_s), 'errors': errors, 'ts': time.time()}

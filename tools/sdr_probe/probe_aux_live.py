@@ -89,48 +89,47 @@ async def main():
             except OSError:
                 if proc.poll() is not None:
                     raise RuntimeError(f'server exited early: {proc.returncode}; '
-                                       'see /tmp/websa_aux_probe.log')
+                                       'see /tmp/websa_aux_probe.log') from None
                 await asyncio.sleep(0.5)
         else:
             raise TimeoutError('server never bound the port')
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(WS) as ws:
-                await send(ws, {'cmd': 'CONNECT'})
-                await wait_connected(ws)
-                await send(ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-                await send(ws, {'cmd': 'SET_SDR', 'center': args.center, 'decimate': 32})
-                await send(ws, {'cmd': 'SET_SDR_TUNE', 'listen': args.center})
-                await drain_status(ws, 3.0)           # let the SDR chain settle
-                await send(ws, {'cmd': 'SET_SDR_DDC', 'channel': 2, 'enabled': True,
-                                'freq': args.aux_freq})
-                st, others = await drain_status(ws, 3.0)
-                for m in others:
-                    print('non-STATUS:', json.dumps(m)[:300])
-                aux_echo = (st or {}).get('req', {}).get('sdr', {}).get('aux', {})
-                print('aux echo:', aux_echo)
+        async with aiohttp.ClientSession() as http, http.ws_connect(WS) as ws:
+            await send(ws, {'cmd': 'CONNECT'})
+            await wait_connected(ws)
+            await send(ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+            await send(ws, {'cmd': 'SET_SDR', 'center': args.center, 'decimate': 32})
+            await send(ws, {'cmd': 'SET_SDR_TUNE', 'listen': args.center})
+            await drain_status(ws, 3.0)           # let the SDR chain settle
+            await send(ws, {'cmd': 'SET_SDR_DDC', 'channel': 2, 'enabled': True,
+                            'freq': args.aux_freq})
+            st, others = await drain_status(ws, 3.0)
+            for m in others:
+                print('non-STATUS:', json.dumps(m)[:300])
+            aux_echo = (st or {}).get('req', {}).get('sdr', {}).get('aux', {})
+            print('aux echo:', aux_echo)
 
-                async with http.ws_connect(WS + '?iqaux=1') as aux_ws:
-                    end = time.monotonic() + 5.0
-                    iqax = 0
-                    iqbf_on_aux = 0
-                    centers = set()
-                    while time.monotonic() < end:
-                        try:
-                            raw = await asyncio.wait_for(aux_ws.receive(),
-                                                         timeout=end - time.monotonic())
-                        except (asyncio.TimeoutError, TimeoutError):
-                            break
-                        if raw.type != aiohttp.WSMsgType.BINARY:
-                            continue
-                        magic = raw.data[:4]
-                        if magic == b'IQAX':
-                            iqax += 1
-                            centers.add(struct.unpack_from('<d', raw.data, 24)[0])
-                        elif magic == b'IQBF':
-                            iqbf_on_aux += 1
-                print(f'IQAX frames: {iqax}, centers: {centers}, IQBF on aux socket: {iqbf_on_aux}')
-                ok = iqax > 0 and centers == {args.aux_freq} and iqbf_on_aux == 0
-                print('RESULT:', 'PASS' if ok else 'FAIL')
+            async with http.ws_connect(WS + '?iqaux=1') as aux_ws:
+                end = time.monotonic() + 5.0
+                iqax = 0
+                iqbf_on_aux = 0
+                centers = set()
+                while time.monotonic() < end:
+                    try:
+                        raw = await asyncio.wait_for(aux_ws.receive(),
+                                                     timeout=end - time.monotonic())
+                    except (asyncio.TimeoutError, TimeoutError):
+                        break
+                    if raw.type != aiohttp.WSMsgType.BINARY:
+                        continue
+                    magic = raw.data[:4]
+                    if magic == b'IQAX':
+                        iqax += 1
+                        centers.add(struct.unpack_from('<d', raw.data, 24)[0])
+                    elif magic == b'IQBF':
+                        iqbf_on_aux += 1
+            print(f'IQAX frames: {iqax}, centers: {centers}, IQBF on aux socket: {iqbf_on_aux}')
+            ok = iqax > 0 and centers == {args.aux_freq} and iqbf_on_aux == 0
+            print('RESULT:', 'PASS' if ok else 'FAIL')
     finally:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

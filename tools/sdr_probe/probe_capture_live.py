@@ -59,63 +59,62 @@ async def main():
                     break
             except OSError:
                 if proc.poll() is not None:
-                    raise RuntimeError('server exited early; see the probe log')
+                    raise RuntimeError('server exited early; see the probe log') from None
                 await asyncio.sleep(0.5)
         else:
             raise TimeoutError('server never bound the port')
 
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(WS) as ws:
-                await send(ws, {'cmd': 'CONNECT'})
-                await wait_connected(ws)
-                await send(ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-                await send(ws, {'cmd': 'SET_SDR', 'center': 100e6, 'decimate': 64})
-                await send(ws, {'cmd': 'SET_SDR_TUNE', 'listen': 100e6})
-                await asyncio.sleep(2.0)
-                # Known RF source (tinysa-ultra skill): CW at 100.2 MHz, -25 dBm.
-                tiny = None
-                try:
-                    import serial
-                    tiny = serial.Serial('/dev/ttyACM1', 115200, timeout=5)
-                except Exception as exc:
-                    print('tinySA unavailable:', exc)
-                if tiny is not None:
-                    def cmd(c, to=8.0):
-                        tiny.write((c + '\r').encode()); tiny.flush()
-                        end = time.monotonic() + to; buf = b''
-                        while time.monotonic() < end:
-                            buf += tiny.read(256)
-                            if b'ch> ' in buf[-8:]:
-                                break
-                        return buf
-                    for c in ('pause', 'mode generator', 'sweeptime 0.003',
-                              'sweep abort', 'sweep cw 100200000', 'wait',
-                              'level -25', 'output on', 'resume'):
-                        cmd(c)
-                    print('tinySA CW on 100.2 MHz @ -25 dBm')
-                await send(ws, {'cmd': 'SET_SDR_CAPTURE', 'level': args.level, 'seconds': 0.5})
-                last = None
-                end = time.monotonic() + 130.0
-                while time.monotonic() < end:
-                    raw = await asyncio.wait_for(ws.receive(), timeout=end - time.monotonic())
-                    if raw.type != aiohttp.WSMsgType.TEXT:
-                        break
-                    msg = json.loads(raw.data)
-                    if msg.get('cmd') == 'ERROR':
-                        print('ERROR frame:', json.dumps(msg)[:300])
-                    if msg.get('cmd') == 'STATUS':
-                        cap = msg.get('req', {}).get('sdr', {}).get('capture_last') or {}
-                        if cap:
-                            last = cap
-                            if cap.get('path'):
-                                break
-                print('capture_last:', last)
-                if last and last.get('path') and os.path.isfile(last['path']):
-                    size = os.path.getsize(last['path'])
-                    expect = 4 * last['samples']       # stereo int16
-                    print(f"WAV: {last['path']} bytes={size} expect~{expect}")
-                    ok = last['samples'] > 0 and abs(size - expect) <= 44 + 4
-                print('RESULT:', 'PASS' if ok else 'FAIL')
+        async with aiohttp.ClientSession() as http, http.ws_connect(WS) as ws:
+            await send(ws, {'cmd': 'CONNECT'})
+            await wait_connected(ws)
+            await send(ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+            await send(ws, {'cmd': 'SET_SDR', 'center': 100e6, 'decimate': 64})
+            await send(ws, {'cmd': 'SET_SDR_TUNE', 'listen': 100e6})
+            await asyncio.sleep(2.0)
+            # Known RF source (tinysa-ultra skill): CW at 100.2 MHz, -25 dBm.
+            tiny = None
+            try:
+                import serial
+                tiny = serial.Serial('/dev/ttyACM1', 115200, timeout=5)
+            except Exception as exc:
+                print('tinySA unavailable:', exc)
+            if tiny is not None:
+                def cmd(c, to=8.0):
+                    tiny.write((c + '\r').encode()); tiny.flush()
+                    end = time.monotonic() + to; buf = b''
+                    while time.monotonic() < end:
+                        buf += tiny.read(256)
+                        if b'ch> ' in buf[-8:]:
+                            break
+                    return buf
+                for c in ('pause', 'mode generator', 'sweeptime 0.003',
+                          'sweep abort', 'sweep cw 100200000', 'wait',
+                          'level -25', 'output on', 'resume'):
+                    cmd(c)
+                print('tinySA CW on 100.2 MHz @ -25 dBm')
+            await send(ws, {'cmd': 'SET_SDR_CAPTURE', 'level': args.level, 'seconds': 0.5})
+            last = None
+            end = time.monotonic() + 130.0
+            while time.monotonic() < end:
+                raw = await asyncio.wait_for(ws.receive(), timeout=end - time.monotonic())
+                if raw.type != aiohttp.WSMsgType.TEXT:
+                    break
+                msg = json.loads(raw.data)
+                if msg.get('cmd') == 'ERROR':
+                    print('ERROR frame:', json.dumps(msg)[:300])
+                if msg.get('cmd') == 'STATUS':
+                    cap = msg.get('req', {}).get('sdr', {}).get('capture_last') or {}
+                    if cap:
+                        last = cap
+                        if cap.get('path'):
+                            break
+            print('capture_last:', last)
+            if last and last.get('path') and os.path.isfile(last['path']):
+                size = os.path.getsize(last['path'])
+                expect = 4 * last['samples']       # stereo int16
+                print(f"WAV: {last['path']} bytes={size} expect~{expect}")
+                ok = last['samples'] > 0 and abs(size - expect) <= 44 + 4
+            print('RESULT:', 'PASS' if ok else 'FAIL')
     finally:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

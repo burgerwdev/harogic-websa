@@ -7,7 +7,8 @@ fake-backend e2e exercises the STATUS surface.
 """
 from __future__ import annotations
 
-from web_sa.hardware import fake_device, sdk_bindings as sb
+from web_sa.hardware import fake_device
+from web_sa.hardware import sdk_bindings as sb
 from web_sa.hardware.fake_device import FakeDevice
 
 

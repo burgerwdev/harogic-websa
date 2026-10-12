@@ -373,7 +373,6 @@ GainStrategy_TypeDef = htra_api.GainStrategy_TypeDef
 ReferenceClockSource_TypeDef = htra_api.ReferenceClockSource_TypeDef
 GNSSInfo_TypeDef = htra_api.GNSSInfo_TypeDef
 MeasAuxInfo_TypeDef = htra_api.MeasAuxInfo_TypeDef
-DeviceInfo_TypeDef = htra_api.DeviceInfo_TypeDef
 BootProfile_TypeDef = htra_api.BootProfile_TypeDef
 class DeviceInfo_TypeDef(Structure):
     """htra_api.py stops DeviceInfo after FFWVersion; the C header (htra_api.h:1040-1041)
