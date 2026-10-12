@@ -42,7 +42,9 @@ RT_SEGMENTS = 16
 RT_CHARS = RT_SEGMENTS * 4
 #: Group 0A carries the 8-character PS name, two characters per group.
 PS_CHARS = 8
-#: A pass is the RadioText burst, then this many PS groups.
+#: A pass is the RadioText burst, then up to this many PS groups. The full name needs
+#: four groups, so four keeps the name current in one pass. Fewer groups make the pass
+#: shorter and the name completes over more passes.
 PS_GROUPS_PER_PASS = 4
 GROUP_PS = 0
 GROUP_RT = 2
@@ -178,7 +180,8 @@ def ps_codes(name: str) -> list[int]:
 
 def station_group(pi: int, pty: int, ps: str, texts: list[str], hold_passes: int,
                   group_index: int, tp: bool = True, ab_toggle: bool = False,
-                  clock: Clock | None = None) -> np.ndarray:
+                  clock: Clock | None = None,
+                  ps_groups: int = PS_GROUPS_PER_PASS) -> np.ndarray:
     """One 104-bit group of the station sequence, by global group index.
 
     A pass is the 16 RadioText segments back to back, then the four PS groups. The
@@ -190,7 +193,7 @@ def station_group(pi: int, pty: int, ps: str, texts: list[str], hold_passes: int
     flag with each message, as the standard asks. The deployed PiFmRds keeps the flag
     at 0; some receivers expect that instead.
     """
-    pattern = group_pattern(ps)
+    pattern = group_pattern(ps, ps_groups)
     names = ps_names(ps)
     position = group_index % len(pattern)
     pass_index = group_index // len(pattern)
@@ -202,7 +205,9 @@ def station_group(pi: int, pty: int, ps: str, texts: list[str], hold_passes: int
     slot = position - RT_SEGMENTS
     if slot == 0 and clock is not None and clock.is_new_minute(pass_index):
         return group_4a(pi, pty, clock.at(pass_index), tp, clock.offset_half_hours)
-    ps_segment = slot
+    # With fewer than four PS groups per pass the segment address must run on across
+    # passes, or the same characters would repeat and the name would never complete.
+    ps_segment = (pass_index * ps_groups + slot) % (PS_CHARS // 2)
     name = names[(pass_index // hold_passes) % len(names)]
     return group_0a(pi, pty, ps_segment, ps_codes(name)[2 * ps_segment:2 * ps_segment + 2], tp)
 
@@ -229,28 +234,29 @@ class Clock:
         return self.at(pass_index).minute != self.at(pass_index - 1).minute
 
 
-def group_pattern(ps: str) -> tuple[int, ...]:
+def group_pattern(ps: str, ps_groups: int = PS_GROUPS_PER_PASS) -> tuple[int, ...]:
     """The group sequence: the RadioText burst, then the PS groups.
 
-    A transmission without a PS name has nothing for Group 0A, so it is the burst
-    alone.
+    A transmission without a PS name, or with `ps_groups` at zero, has nothing for
+    Group 0A, so it is the burst alone.
     """
     burst = (GROUP_RT,) * RT_SEGMENTS
     named = any(name.strip() for name in ps_names(ps))
-    return burst + (GROUP_PS,) * PS_GROUPS_PER_PASS if named else burst
+    return burst + (GROUP_PS,) * ps_groups if named and ps_groups else burst
 
 
-def pass_groups(ps: str) -> int:
+def pass_groups(ps: str, ps_groups: int = PS_GROUPS_PER_PASS) -> int:
     """The groups in one complete RadioText pass: the burst, plus the PS groups."""
-    return len(group_pattern(ps))
+    return len(group_pattern(ps, ps_groups))
 
 
-def pass_seconds(ps: str) -> float:
+def pass_seconds(ps: str, ps_groups: int = PS_GROUPS_PER_PASS) -> float:
     """One RadioText pass in seconds: 1.75 s in the station cadence."""
-    return pass_groups(ps) * GROUP_S
+    return pass_groups(ps, ps_groups) * GROUP_S
 
 
-def hold_seconds(cycle_s: float | None, ps: str) -> float:
+def hold_seconds(cycle_s: float | None, ps: str, ps_groups: int = PS_GROUPS_PER_PASS
+                 ) -> float:
     """How long each message stays up: whole passes, at least two.
 
     A receiver wants each segment a second time before it accepts it, so a message
@@ -258,8 +264,8 @@ def hold_seconds(cycle_s: float | None, ps: str) -> float:
     rotates faster, for a demonstration.
     """
     wanted = cycle_s if cycle_s else DEFAULT_HOLD_S
-    passes = max(DEFAULT_HOLD_PASSES, int(round(wanted / pass_seconds(ps))))
-    return passes * pass_seconds(ps)
+    passes = max(DEFAULT_HOLD_PASSES, int(round(wanted / pass_seconds(ps, ps_groups))))
+    return passes * pass_seconds(ps, ps_groups)
 
 
 def _pulse(tau: np.ndarray) -> np.ndarray:
@@ -328,11 +334,12 @@ class StationStream:
 
     def __init__(self, pi: int, pty: int, ps: str, texts: list[str],
                  cycle_s: float | None = None, tp: bool = True, ab_toggle: bool = False,
-                 clock: Clock | None = None):
+                 clock: Clock | None = None, ps_groups: int = PS_GROUPS_PER_PASS):
         self.pi, self.pty, self.ps = pi, pty, ps
         self.texts = list(texts)
-        self.tp, self.ab_toggle, self.clock = tp, ab_toggle, clock
-        self.hold_passes = int(round(hold_seconds(cycle_s, ps) / pass_seconds(ps)))
+        self.tp, self.ab_toggle, self.clock, self.ps_groups = tp, ab_toggle, clock, ps_groups
+        self.hold_passes = int(round(hold_seconds(cycle_s, ps, ps_groups)
+                                     / pass_seconds(ps, ps_groups)))
         self._first = 0                 # the global index of self._bits[0]
         self._bits = np.zeros(0, dtype=np.uint8)
         self._group = 0                 # the next group to emit
@@ -347,7 +354,8 @@ class StationStream:
         first = max(first, self._first)
         while self._first + self._bits.size <= last:
             data = station_group(self.pi, self.pty, self.ps, self.texts, self.hold_passes,
-                                 self._group, self.tp, self.ab_toggle, self.clock)
+                                 self._group, self.tp, self.ab_toggle, self.clock,
+                                 self.ps_groups)
             sent = np.bitwise_xor.accumulate(data) ^ self._carry   # d_n = b_n XOR d_n-1
             self._carry = int(sent[-1])
             self._bits = np.concatenate((self._bits, sent))

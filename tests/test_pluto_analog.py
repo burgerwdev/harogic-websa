@@ -41,7 +41,8 @@ def _args(mode: str, **over) -> argparse.Namespace:
                 pm_index=1.0, base_hz=0.0, scale=1.0, rds_rt=None, rds_pi=0x1234,
                 rds_pty=0, rds_ps='RDS TEST', rds_rt_cycle_seconds=None,
                 rds_deviation_hz=2000.0, pilot_deviation_hz=0.0, rds_buffer=False,
-                rds_tp=False, rds_ct=False, rds_ab_fixed=False)
+                rds_tp=False, rds_ct=False, rds_ab_fixed=False,
+                rds_ps_groups=rds.PS_GROUPS_PER_PASS)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -744,3 +745,43 @@ def test_rds_ps_names_rotate_on_the_same_hold_as_the_texts():
                 for pair in passes if len(pair) == 4]
     assert complete[:hold] == [names[0]] * hold
     assert complete[hold:2 * hold] == [names[1]] * hold
+
+
+def test_rds_without_a_ps_name_sends_no_group_0a():
+    """An empty `--rds-ps` is a request for RadioText only, not a mistake."""
+    assert rds.group_pattern('') == (2,) * rds.RT_SEGMENTS
+    assert rds.group_pattern('', 0) == (2,) * rds.RT_SEGMENTS
+    assert rds.pass_seconds('', 0) < 1.5
+
+
+def test_rds_fewer_ps_groups_per_pass_still_complete_the_name():
+    """The PS segment address runs on across passes, so the name still arrives.
+
+    Four groups fill the name in one pass. Two groups per pass take two passes, which
+    is the shorter pass a transmitter can send when a receiver mishandles one of the
+    four PS slots.
+    """
+    names = ['BENCH 1']
+    stream = rds.StationStream(0x1234, 10, names, ['HELLO WORLD'], ps_groups=2)
+    assert rds.pass_groups(names, 2) == rds.RT_SEGMENTS + 2
+    groups = 4 * rds.pass_groups(names, 2)
+    bits = stream.transmitted(0, groups * rds.GROUP_BITS - 1)[0]
+    data = np.concatenate((bits[:1], bits[1:] ^ bits[:-1]))
+
+    seen: dict[int, str] = {}
+    position, order = 0, []
+    while position + 4 * rds.GROUP_BITS <= data.size:
+        words = [_bits_to_int(data[position + 26 * i:position + 26 * (i + 1)]) for i in range(4)]
+        if [_remainder(word) for word in words] != list(RDS_OFFSETS):
+            position += 1
+            continue
+        block_b, block_d = words[1] >> 10, words[3] >> 10
+        if (block_b >> 12) == 0:
+            segment = block_b & 0x03
+            seen[segment] = chr(block_d >> 8) + chr(block_d & 0xFF)
+            order.append(segment)
+        position += rds.GROUP_BITS
+
+    assert set(seen) == {0, 1, 2, 3}                  # every segment goes out
+    assert ''.join(seen[index] for index in sorted(seen)).strip() == 'BENCH 1'
+    assert order[:4] == [0, 1, 2, 3]                  # in order, two per pass

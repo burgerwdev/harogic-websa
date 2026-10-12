@@ -254,11 +254,13 @@ def station_stream(args: argparse.Namespace) -> rds.StationStream:
     clock = None
     if args.rds_ct:
         offset = datetime.now().astimezone().utcoffset() or timedelta()
-        clock = rds.Clock(datetime.now(timezone.utc), rds.pass_seconds(args.rds_ps),
+        clock = rds.Clock(datetime.now(timezone.utc),
+                          rds.pass_seconds(args.rds_ps, args.rds_ps_groups),
                           int(round(offset.total_seconds() / 1800)))
     return rds.StationStream(args.rds_pi, args.rds_pty, args.rds_ps, args.rds_rt,
                              args.rds_rt_cycle_seconds, tp=args.rds_tp,
-                             ab_toggle=not args.rds_ab_fixed, clock=clock)
+                             ab_toggle=not args.rds_ab_fixed, clock=clock,
+                             ps_groups=args.rds_ps_groups)
 
 
 def broadcast_composite(audio: np.ndarray, t: np.ndarray, args: argparse.Namespace,
@@ -305,7 +307,8 @@ def build_baseband(args: argparse.Namespace, rate: float) -> np.ndarray:
         # buffer can air the first messages only.
         args.duration = max(args.duration or DEFAULT_DURATION_S,
                             len(args.rds_rt) * rds.hold_seconds(args.rds_rt_cycle_seconds,
-                                                               args.rds_ps))
+                                                                args.rds_ps,
+                                                                args.rds_ps_groups))
     if args.wav:
         audio = load_audio(args.wav, rate, args.channel)
         audio = fit_length(audio, rate, args.duration, not args.no_loop)
@@ -375,13 +378,15 @@ def describe(args: argparse.Namespace, sig: np.ndarray) -> None:
               + ('' if args.pilot_deviation_hz else ' - none: a RDS radio that derives its '
                                                    'clock from the pilot may not lock'))
     if args.rds_rt:
-        hold = rds.hold_seconds(args.rds_rt_cycle_seconds, args.rds_ps)
+        hold = rds.hold_seconds(args.rds_rt_cycle_seconds, args.rds_ps, args.rds_ps_groups)
         more = f' + {len(args.rds_rt) - 1} more' if len(args.rds_rt) > 1 else ''
         names = rds.ps_names(args.rds_ps)
         named = any(name.strip() for name in names)
+        shown_groups = (f'{args.rds_ps_groups} Group 0A group(s) per pass'
+                        if args.rds_ps_groups != rds.PS_GROUPS_PER_PASS else '4 x Group 0A')
         print('ps             : ' + (', '.join(f'"{name}"' for name in names)
-                                     + ' in 4 x Group 0A, no AF, the station-name cadence a '
-                                       'receiver expects'
+                                     + f' in {shown_groups}, no AF, the station-name '
+                                       'cadence a receiver expects'
                                      + (f', rotating every {hold:.1f} s' if len(names) > 1 else '')
                                      if named else 'none: RadioText groups only'))
         print(f'rds            : PI {args.rds_pi:04X}, PTY {args.rds_pty}, RadioText '
@@ -391,11 +396,11 @@ def describe(args: argparse.Namespace, sig: np.ndarray) -> None:
               + (', Group 4A clock time once a minute' if args.rds_ct else ', no clock group')
               + (', A/B flag fixed at 0' if args.rds_ab_fixed
                  else ', A/B flag moves with each message (the standard)'))
-        pattern = rds.group_pattern(args.rds_ps)
+        pattern = rds.group_pattern(args.rds_ps, args.rds_ps_groups)
         sequence = ' + '.join(f'{pattern.count(kind)} x {"0A" if kind == 0 else "2A"}'
                              for kind in dict.fromkeys(pattern))
         print(f'rds groups     : {sequence}, one RadioText pass (16 segments) '
-              f'{rds.pass_seconds(args.rds_ps):.1f} s, '
+              f'{rds.pass_seconds(args.rds_ps, args.rds_ps_groups):.1f} s, '
               + (f'one cyclic buffer of {len(args.rds_rt) * hold:.1f} s, '
                  f'{int(len(args.rds_rt) * hold * args.rate) * 4 / 1e6:.0f} MB, '
                  f'repeated by the device' if args.rds_buffer
@@ -579,6 +584,10 @@ def main(argv: list[str] | None = None) -> int:
                              'the option, or separate names with commas, to rotate them on the '
                              'RadioText hold; a real station keeps its name fixed'
                              % DEFAULT_RDS_PS)
+    parser.add_argument('--rds-ps-groups', type=int, default=rds.PS_GROUPS_PER_PASS,
+                        help='PS groups per pass, 0 to 4 (default %d). Four keeps the name '
+                             'current in one pass; fewer make the pass shorter and the name '
+                             'completes over more passes' % rds.PS_GROUPS_PER_PASS)
     parser.add_argument('--rds-pty', type=int, default=DEFAULT_RDS_PTY,
                         help='RDS program type, 0..31 (default 0, undefined)')
     parser.add_argument('--rds-rt-cycle-seconds', type=float, default=None,
@@ -622,9 +631,8 @@ def main(argv: list[str] | None = None) -> int:
                          dry_run_help='synthesise and print the plan without touching the radio')
     args = parser.parse_args(argv)
     if args.rds_ps is not None:
+        # An empty name is a request for no Group 0A at all, not a mistake.
         args.rds_ps = [part.strip() for value in args.rds_ps for part in value.split(',')]
-        if all(not name for name in args.rds_ps):
-            parser.error('--rds-ps needs a name, or several to rotate')
     else:
         args.rds_ps = [DEFAULT_RDS_PS]
     if args.rds_rt is not None:
@@ -638,6 +646,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error('--rds-rt-cycle-seconds must be positive')
         if not 0 <= args.rds_pi <= 0xFFFF:
             parser.error('--rds-pi must be a 16-bit code')
+    if not 0 <= args.rds_ps_groups <= rds.PS_CHARS // 2:
+        parser.error('--rds-ps-groups must be 0..%d' % (rds.PS_CHARS // 2))
     if args.deviation_hz is None:
         args.deviation_hz = (DEFAULT_WFM_DEVIATION_HZ if args.mode == 'wfm'
                              else DEFAULT_NFM_DEVIATION_HZ)
