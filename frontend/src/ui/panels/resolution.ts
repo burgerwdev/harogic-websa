@@ -33,8 +33,6 @@ export function applyPoints() {
 
 export function setSpurMode(mode: string) { send({ cmd: 'SET_SPUR', mode }); }
 
-export function setTraceType(v: string) { send({ cmd: 'SET_TRACETYPE', mode: v }); }
-
 export function setFrameDetector(v: string) { send({ cmd: 'SET_FRAMEDET', mode: v }); }
 
 export function setTraceAlign(v: string) { send({ cmd: 'SET_TRACEGRID', trace_align: v }); }

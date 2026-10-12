@@ -39,7 +39,7 @@ import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, syncAutoScal
 import { centerHz, spanHz, swpCenterHz, rtaCenterHz } from '../ui/freqState';
 import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
-  traceType, frameDetector, traceAlign, pointsStrategy,
+  frameDetector, traceAlign, pointsStrategy,
 } from '../ui/swpState';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
@@ -371,7 +371,6 @@ export function updateStatus(s: any) {
   vbwMode.confirm(s.vbw_mode);
   currentPoints.confirm(Number(s.points) || Number(s.req.swp?.points) || 1001);
   currentSpur.confirm(s.req.swp?.spur || s.spur || 'bypass');
-  traceType.confirm(s.req.swp?.trace_type || s.trace_type || 'clear_write');
   frameDetector.confirm(s.req.swp?.frame_detector || s.frame_detector || 'device_default');
   traceAlign.confirm(s.req.swp?.trace_align || s.trace_align || 'start');
   pointsStrategy.confirm(s.req.swp?.points_strategy || s.points_strategy || 'speed');

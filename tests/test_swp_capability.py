@@ -35,14 +35,6 @@ def test_rbw_still_rejects_unknown_modes():
         _validate_command(StubDevice(), 'SET_RBW', {'cmd': 'SET_RBW', 'mode': 'warp'})
 
 
-def test_tracetype_choices_are_the_header_enum_subset():
-    dev = StubDevice()
-    for mode in ('clear_write', 'max_hold', 'min_hold'):
-        _validate_command(dev, 'SET_TRACETYPE', {'cmd': 'SET_TRACETYPE', 'mode': mode})
-    with pytest.raises(CommandError):
-        _validate_command(dev, 'SET_TRACETYPE', {'cmd': 'SET_TRACETYPE', 'mode': 'average'})
-
-
 def test_framedet_accepts_device_default_and_header_values():
     dev = StubDevice()
     for mode in ('device_default', 'sample', 'pos_peak', 'average', 'neg_peak',
@@ -66,7 +58,6 @@ def test_swept_defaults_preserve_the_previous_device_behavior():
     # 'device_default' must be the default so an upgrade never silently changes the
     # frame detector a running setup already relies on.
     assert s.frame_detector == 'device_default'
-    assert s.trace_type == 'clear_write'
     assert s.trace_align == 'start'
     assert s.points_strategy == 'speed'
 
@@ -89,7 +80,5 @@ def test_profile_maps_cover_every_wire_choice():
             'max_power', 'raw_frames', 'rms', 'auto_peak'}
     assert wire - {'device_default'} == set(frame_detectors)
     # The enums are c_int subclasses (no .name); pin the header values instead.
-    assert int(sb.SWP_TraceType_TypeDef.MaxHold) == 0x01
-    assert int(sb.SWP_TraceType_TypeDef.MinHold) == 0x02
     assert int(sb.RBWMode_TypeDef.RBW_OneThousandthSpan) == 0x02
     assert int(sb.RBWMode_TypeDef.RBW_OnePercentSpan) == 0x03

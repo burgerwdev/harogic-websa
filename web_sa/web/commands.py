@@ -64,16 +64,16 @@ HW_CALL_TIMEOUT_S = 20.0
 #: device configuration, so re-applying these behind its back would break its acquisition.
 SWP_OWNED = frozenset({
     'SET_REF', 'AUTO_SCALE', 'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS',
-    'SET_SPUR', 'SET_WINDOW', 'SET_DETECTOR', 'SET_TRACETYPE', 'SET_FRAMEDET',
+    'SET_SPUR', 'SET_WINDOW', 'SET_DETECTOR', 'SET_FRAMEDET',
     'SET_TRACEGRID', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
 })
 #: SWP-only parameters that make no sense inside an RTA profile.
-SWP_ONLY = frozenset({'SET_WINDOW', 'SET_POINTS', 'SET_SPUR', 'SET_TRACETYPE',
+SWP_ONLY = frozenset({'SET_WINDOW', 'SET_POINTS', 'SET_SPUR',
                       'SET_FRAMEDET', 'SET_TRACEGRID'})
 #: In SDR mode the demod chain owns the configuration; these would fight with it.
 NOT_IN_SDR = frozenset({
     'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR',
-    'SET_WINDOW', 'SET_DETECTOR', 'SET_TRACETYPE', 'SET_FRAMEDET', 'SET_TRACEGRID',
+    'SET_WINDOW', 'SET_DETECTOR', 'SET_FRAMEDET', 'SET_TRACEGRID',
     'SET_TRIGGER', 'SET_RTA',
 })
 
@@ -294,9 +294,6 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     'SET_DETECTOR': (ParamSpec('mode', 'choice',
                                choices=('auto', 'sample', 'pos_peak', 'neg_peak', 'rms',
                                         'auto_peak'), required=True),),
-    'SET_TRACETYPE': (ParamSpec('mode', 'choice',
-                                choices=('clear_write', 'max_hold', 'min_hold'),
-                                required=True),),
     'SET_FRAMEDET': (ParamSpec('mode', 'choice',
                                choices=('device_default', 'sample', 'pos_peak', 'average',
                                         'neg_peak', 'max_power', 'raw_frames', 'rms',
@@ -330,12 +327,6 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('channel', 'integer', 2, 3, required=True),
         ParamSpec('enabled', 'boolean'),
         ParamSpec('freq', 'number', unit='Hz'),
-    ),
-    'SET_SDR_CAPTURE': (
-        # I1/L3: one level-triggered FixedPoints IQ capture written to a WAV file.
-        ParamSpec('level', 'number', -160.0, 20.0, unit='dBm', required=True),
-        ParamSpec('seconds', 'number', 0.05, 5.0, default=1.0),
-        ParamSpec('pretime', 'number', 0.0, 1.0, default=0.0),
     ),
     'SET_SDR_DEMOD': (
         # A token, not a fixed list: the mode ids are the DSP plugin registry's (analog and
@@ -729,15 +720,6 @@ async def _h_set_detector(ctx: CommandContext, data: dict) -> bool:
     return True
 
 
-async def _h_set_tracetype(ctx: CommandContext, data: dict) -> bool:
-    ctx.state.trace_type = data['mode']
-    session = ctx.dev.session
-    if session is not None and session.name == 'rta':
-        return True                     # SWP-only field; kept as the swept-mode preference
-    await ctx.configure_swp()
-    return True
-
-
 async def _h_set_framedet(ctx: CommandContext, data: dict) -> bool:
     ctx.state.frame_detector = data['mode']
     session = ctx.dev.session
@@ -840,18 +822,6 @@ async def _h_set_sdr_ddc(ctx: CommandContext, data: dict) -> bool:
                       freq_hz=float(data.get('freq', 0.0) or 0.0))
     return True
 
-
-async def _h_set_sdr_capture(ctx: CommandContext, data: dict) -> bool:
-    session = ctx.dev.session
-    if session is None or session.name != 'sdr':
-        raise CommandError('SET_SDR_CAPTURE requires SDR mode', 'sdr_mode_required')
-    seconds = float(data.get('seconds', 1.0))
-    # The capture reconfigures the IQS profile twice at worst and collects seconds of
-    # samples; give it far more than the default hw-call budget.
-    await ctx.hw_call(session.capture, float(data['level']), seconds=seconds,
-                      pretime_s=float(data.get('pretime', 0.0)),
-                      timeout=seconds * 4.0 + 60.0)
-    return True
 
 
 async def _h_set_sdr_demod(ctx: CommandContext, data: dict) -> bool:
@@ -956,7 +926,6 @@ _REGISTRY = (
     ('SET_SPUR', _h_set_spur, (), None, True),
     ('SET_WINDOW', _h_set_window, (), None, True),
     ('SET_DETECTOR', _h_set_detector, (), None, True),
-    ('SET_TRACETYPE', _h_set_tracetype, (), None, True),
     ('SET_FRAMEDET', _h_set_framedet, (), None, True),
     ('SET_TRACEGRID', _h_set_tracegrid, (), None, True),
     ('SET_AMP', _h_set_amp, (), None, True),
@@ -966,7 +935,6 @@ _REGISTRY = (
     ('SET_SDR', _h_set_sdr, (), None, True),
     ('SET_SDR_TUNE', _h_set_sdr_tune, (), None, True),
     ('SET_SDR_DDC', _h_set_sdr_ddc, (), None, True),
-    ('SET_SDR_CAPTURE', _h_set_sdr_capture, (), None, True),
     ('SET_SDR_DEMOD', _h_set_sdr_demod, (), None, True),
     ('SET_RTA', _h_set_rta, (), None, True),
     ('SET_TRIGGER', _h_set_trigger, (), None, True),

@@ -81,7 +81,6 @@ def build_status(dev) -> dict:
         'spur': s.spur_mode,
         'detector': s.detector,
         'frame_detector': s.frame_detector,
-        'trace_type': s.trace_type,
         'trace_align': s.trace_align,
         'points_strategy': s.points_strategy,
         'window': s.window,
@@ -126,7 +125,6 @@ def build_status(dev) -> dict:
         'deemph_us': s.sdr_deemph_us,
         # Aux DDC channels (G1'): echoed so a client (or the future panel) sees what is on.
         'aux': {str(ch): dict(cfg) for ch, cfg in sorted(s.sdr_aux.items())},
-        'capture_last': dict(s.sdr_capture_last) if s.sdr_capture_last else {},
     }
     if s.mode == 'sdr':
         bandwidth = float(s.sdr_actual.get('bandwidth', 0.0) or s.span_hz)
@@ -174,7 +172,7 @@ def build_status(dev) -> dict:
         'vbw_mode': active_req['vbw_mode'], 'vbw': effective('vbw'),
         'points': effective('points'), 'window': s.window, 'spur': s.spur_mode,
         'detector': s.detector,
-        'frame_detector': s.frame_detector, 'trace_type': s.trace_type,
+        'frame_detector': s.frame_detector,
         'trace_align': s.trace_align, 'points_strategy': s.points_strategy,
         'sweep_time_mode': active_req['sweep_time_mode'],
         'sweep_time': active_req['sweep_time'],

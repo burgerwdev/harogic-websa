@@ -445,8 +445,10 @@ class HarogicDevice:
             p.TraceDetector = detector_map[s.detector]
         else:
             p.TraceDetectMode = T.TraceDetectMode_TypeDef.TraceDetectMode_Auto
-        # 频点内帧间检波 (Detector_TypeDef) and the output trace type (SWP_TraceType):
-        # 'device_default' keeps whatever ProfileDeInit seeded, preserving the old behavior.
+        # 频点内帧间检波 (Detector_TypeDef): 'device_default' keeps whatever ProfileDeInit
+        # seeded, preserving the old behavior. TraceType (device-side MaxHold/MinHold) is
+        # deliberately NOT set: the client's per-trace manager (dsp/traces.ts) already owns
+        # holding, and a device-side duplicate would need its own reset/config cycle.
         frame_detector_map = {
             'sample': T.Detector_TypeDef.Detector_Sample,
             'pos_peak': T.Detector_TypeDef.Detector_PosPeak,
@@ -459,11 +461,6 @@ class HarogicDevice:
         }
         if s.frame_detector in frame_detector_map:
             p.Detector = frame_detector_map[s.frame_detector]
-        p.TraceType = {
-            'clear_write': T.SWP_TraceType_TypeDef.ClearWrite,
-            'max_hold': T.SWP_TraceType_TypeDef.MaxHold,
-            'min_hold': T.SWP_TraceType_TypeDef.MinHold,
-        }.get(s.trace_type, T.SWP_TraceType_TypeDef.ClearWrite)
         return p
 
     def configure_swp(self):

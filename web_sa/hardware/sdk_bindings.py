@@ -354,11 +354,9 @@ LINK_LOST_STATUS = frozenset({-8, -9})
 # Convenient aliases (used by the business layer)
 SWP_TraceInfo_TypeDef = htra_api.SWP_TraceInfo_TypeDef
 SWP_FreqAssignment_TypeDef = htra_api.SWP_FreqAssignment_TypeDef
-# 帧间检波 (Detector_TypeDef) and the output trace type (SWP_TraceType_TypeDef) power the
-# swept-capability exposure (SET_FRAMEDET / SET_TRACETYPE); the vendor wrapper defines
-# both (htra_api.py:82/197) but never exported them under its old surface.
+# 帧间检波 (Detector_TypeDef) powers the swept-capability exposure (SET_FRAMEDET); the
+# vendor wrapper defines it (htra_api.py:82) but never exported it under its old surface.
 Detector_TypeDef = htra_api.Detector_TypeDef
-SWP_TraceType_TypeDef = htra_api.SWP_TraceType_TypeDef
 SweepTimeMode_TypeDef = htra_api.SweepTimeMode_TypeDef
 TracePointsStrategy_TypeDef = htra_api.TracePointsStrategy_TypeDef
 TraceAlign_TypeDef = htra_api.TraceAlign_TypeDef

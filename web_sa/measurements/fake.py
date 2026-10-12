@@ -405,17 +405,6 @@ class FakeSdrSession(_FakeRtaBase):
         else:
             s.sdr_aux[ch] = {'enabled': False, 'freq': 0.0}
 
-    def capture(self, level_dbm: float, seconds: float = 1.0, pretime_s: float = 0.0,
-                safe_time_s: float = 0.01) -> dict:
-        """Synthetic capture: no device behind the fake, just the STATUS surface."""
-        import time as _time
-        s = self.dev.state
-        out = {'path': None, 'samples': int(48000 * float(seconds)), 'rate': 48000,
-               'level_dbm': float(level_dbm), 'seconds': float(seconds),
-               'pretime_s': float(pretime_s), 'errors': 0, 'synthetic': True,
-               'ts': _time.time()}
-        s.sdr_capture_last = out
-        return out
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None, agc=None,
                   pitch=None, deemph_us=None) -> None:
