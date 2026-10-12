@@ -434,6 +434,9 @@ export function updateStatus(s: any) {
   setSelect('select-vbw-mode', vbwMode.get());
   setSelect('select-spur', currentSpur.get());
   setSelect('select-detector', s.detector || 'auto');
+  setSelect('select-framedet', frameDetector.get());
+  setSelect('select-tracealign', traceAlign.get());
+  setSelect('select-points-strategy', pointsStrategy.get());
   const wsel = document.getElementById('select-window') as HTMLSelectElement;
   if (wsel && document.activeElement !== wsel && s.window != null) wsel.value = String(s.window);
   const sweepSelect = document.getElementById('select-sweep-mode') as HTMLSelectElement | null;
