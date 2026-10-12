@@ -357,7 +357,7 @@ def test_deferred_deemph_is_published_while_the_browser_owns_audio():
 
 
 def test_settle_window_still_drains_iqs(monkeypatch):
-    state = SimpleNamespace(sdr_listen_hz=101.7e6)
+    state = SimpleNamespace(sdr_listen_hz=101.7e6, sdr_peak_dbm=-200.0)
     session = SdrSession.__new__(SdrSession)
     session.dev = SimpleNamespace(state=state, dev=sb.c_void_p())
     session._lock = threading.RLock()
@@ -374,6 +374,8 @@ def test_settle_window_still_drains_iqs(monkeypatch):
     session._recovery_attempts = 0
     session._packets_ok = 0
     session._packets_err = 0
+    session._if_over_packets = 0
+    session._last_peak_t = 0.0
     called = []
 
     def fake_get(_dev, _stream):
