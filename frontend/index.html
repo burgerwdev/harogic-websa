@@ -357,6 +357,17 @@
               <option value="1" data-i18n="off_short">Off</option><option value="3">3 pts</option>
               <option value="5">5 pts</option><option value="9">9 pts</option>
             </select></div>
+          <div class="param-row"><label data-i18n="trace_align">Align</label>
+            <select id="select-tracealign" data-action="set-trace-align" data-i18n="tip_tracealign" data-i18n-attr="title" title="Trace alignment on the frequency axis">
+              <option value="start" selected data-i18n="ta_start">To Start</option>
+              <option value="center" data-i18n="ta_center">To Center</option>
+              <option value="native" data-i18n="ta_native">Native</option>
+            </select>
+            <select id="select-points-strategy" data-action="set-points-strategy" data-i18n="tip_points_strategy" data-i18n-attr="title" title="How trace points map onto the span">
+              <option value="speed" selected data-i18n="ps_speed">Speed First</option>
+              <option value="accuracy" data-i18n="ps_accuracy">Points Accurate</option>
+              <option value="bin_size" data-i18n="ps_bin">Fixed Bin Size</option>
+            </select></div>
           <div class="param-row"><label data-i18n="cal_wnd">Cal Wnd</label>
             <select id="select-refwin" data-action="set-norm-refwin" data-i18n="tip_refwin" data-i18n-attr="title" title="Normalize reference smoothing window">
               <option value="0" data-i18n="auto_rbw">Auto (RBW)</option><option value="3">3 pts</option>
@@ -655,17 +666,6 @@
               <option value="average" data-i18n="fd_average">Average</option>
               <option value="max_power" data-i18n="fd_maxpower">Max Power (pulse)</option>
               <option value="raw_frames" data-i18n="fd_rawframes">Raw Frames</option>
-            </select></div>
-          <div class="param-row"><label data-i18n="trace_align">Align</label>
-            <select id="select-tracealign" data-action="set-trace-align" data-i18n="tip_tracealign" data-i18n-attr="title" title="Trace alignment on the frequency axis">
-              <option value="start" selected data-i18n="ta_start">To Start</option>
-              <option value="center" data-i18n="ta_center">To Center</option>
-              <option value="native" data-i18n="ta_native">Native</option>
-            </select>
-            <select id="select-points-strategy" data-action="set-points-strategy" data-i18n="tip_points_strategy" data-i18n-attr="title" title="How trace points map onto the span">
-              <option value="speed" selected data-i18n="ps_speed">Speed First</option>
-              <option value="accuracy" data-i18n="ps_accuracy">Points Accurate</option>
-              <option value="bin_size" data-i18n="ps_bin">Fixed Bin Size</option>
             </select></div>
           <div class="param-row"><label data-i18n="vbw">VBW</label><input type="number" id="input-vbw" value="100" step="any" data-i18n="tip_input-vbw" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-vbw-group"></div></div>
