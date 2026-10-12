@@ -456,16 +456,20 @@ export function updateStatus(s: any) {
   if (dd) {
     const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     // Decoded strings come from the backend (version_info.py, mirrors the official About panel);
-    // fall back to the raw numbers when an older backend omits them.
-    set('dev-model', t('model') + ' ' + (dd.model_name || dd.model));
-    set('dev-uid', dd.uid);
-    set('dev-hw', dd.hw);
-    set('dev-mfw', dd.mfw_str || dd.mfw);
-    set('dev-ffw', dd.ffw_str || dd.ffw);
-    set('dev-bus', dd.bus_speed + ' / ' + (dd.bus_str || ('v' + dd.bus_ver))
+    // fall back to the raw numbers when an older backend omits them. The top bar carries the
+    // model name only; the full row set lives in the Device popover (dev-d-*).
+    set('info-device', dd.model_name || dd.model);
+    set('dev-d-model', dd.model_name || dd.model);
+    set('dev-d-uid', dd.uid);
+    set('dev-d-hw', dd.hw);
+    set('dev-d-mfw', dd.mfw_str || dd.mfw);
+    set('dev-d-ffw', dd.ffw_str || dd.ffw);
+    set('dev-d-bus', dd.bus_speed + ' / ' + (dd.bus_str || ('v' + dd.bus_ver))
         + (dd.bus_bandwidth ? ' / ' + Math.round(dd.bus_bandwidth / 1e6) + ' MB/s' : ''));
-    set('dev-api', 'v' + (dd.api_str || dd.api_ver));
-    set('dev-warn', dd.warnings);
+    set('dev-d-api', 'v' + (dd.api_str || dd.api_ver));
+    set('dev-d-pmu', dd.pmu_str || dd.pmu || '-');
+    set('dev-d-agu', dd.agu_str || dd.agu || '-');
+    set('dev-d-warn', dd.warnings);
   }
   S.setLastGnss(s.gnss);
   const g = document.getElementById('info-gnss');

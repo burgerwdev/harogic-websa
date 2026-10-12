@@ -733,14 +733,23 @@
     </div>
   </div>
   <div class="dev-bar" id="dev-bar">
-    <div class="info-item"><span class="info-label" data-i18n="device">Device</span><span class="info-value" id="dev-model">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="uid">UID:</span><span class="info-value" id="dev-uid">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="hw">HW:</span><span class="info-value" id="dev-hw">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="mfw">MFW:</span><span class="info-value" id="dev-mfw">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="ffw">FFW:</span><span class="info-value" id="dev-ffw">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="bus">BUS:</span><span class="info-value" id="dev-bus">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="api">API:</span><span class="info-value" id="dev-api">-</span></div><span class="separator">|</span>
-    <div class="info-item"><span class="info-label" data-i18n="warn">Warn:</span><span class="info-value" id="dev-warn">-</span></div>
+    <div class="info-item"><span class="info-label" data-i18n="device">Device</span><span class="info-value gnss-indicator" id="info-device" data-action="device-detail" data-i18n-attr="title" title="Device detail">-</span>
+      <div class="gnss-popover" id="device-popover" style="display:none;">
+        <div class="gnss-popover-head"><span data-i18n="device_detail">Device Detail</span>
+          <button class="btn" data-action="device-close" data-i18n="device_close">Close</button></div>
+        <div class="gnss-popover-body">
+          <div class="param-row"><label data-i18n="model">Model</label><span class="info-value" id="dev-d-model">-</span></div>
+          <div class="param-row"><label data-i18n="uid">UID:</label><span class="info-value" id="dev-d-uid">-</span></div>
+          <div class="param-row"><label data-i18n="hw">HW:</label><span class="info-value" id="dev-d-hw">-</span></div>
+          <div class="param-row"><label data-i18n="mfw">MFW:</label><span class="info-value" id="dev-d-mfw">-</span></div>
+          <div class="param-row"><label data-i18n="ffw">FFW:</label><span class="info-value" id="dev-d-ffw">-</span></div>
+          <div class="param-row"><label data-i18n="bus">BUS:</label><span class="info-value" id="dev-d-bus">-</span></div>
+          <div class="param-row"><label data-i18n="api">API:</label><span class="info-value" id="dev-d-api">-</span></div>
+          <div class="param-row"><label data-i18n="pmu">PMU:</label><span class="info-value" id="dev-d-pmu">-</span></div>
+          <div class="param-row"><label data-i18n="agu">AGU:</label><span class="info-value" id="dev-d-agu">-</span></div>
+          <div class="param-row"><label data-i18n="warn">Warn:</label><span class="info-value" id="dev-d-warn">-</span></div>
+        </div>
+      </div></div>
     <div class="info-right">
       <button class="btn" id="btn-preset" data-action="preset" data-i18n-title="tip_preset" data-i18n="preset">Preset</button>
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>

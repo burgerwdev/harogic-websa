@@ -50,6 +50,7 @@ import { resetLimits } from './limits';
 // interaction, mode/preset orchestration) and imports the actions it dispatches; the
 // re-exports below keep the previous public surface for the rest of the app.
 import { applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetSpanStepAuto, stepSwpSpan, syncSwpSpanStep, updateCustomSpanStep } from './panels/frequency';
+import { closeDeviceDetail, fillDeviceDetail } from './panels/deviceInfo';
 import { applyPoints, applyRBW, applyVBW, setFrameDetector, setPointsStrategy, setSpurMode, setTraceAlign, setTraceType, setWindow } from './panels/resolution';
 import { applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade } from './panels/rta';
 import { activeMarkerNextPeakLeft, activeMarkerNextPeakRight, activeMarkerNextValleyLeft, activeMarkerNextValleyRight, activeMarkerPeak, activeMarkerValley, markerToCenter, placeMarkerFromX, selectMarker, syncMarkerTrackingToggle, toggleActiveMarkerTracking, toggleMarkersAll } from './panels/markers';
@@ -862,6 +863,8 @@ export function bindActions() {
     'connect': () => connectDevice(),
     'gnss-detail': () => fillGnssDetail(),
     'gnss-close': () => closeGnssDetail(),
+    'device-detail': () => fillDeviceDetail(),
+    'device-close': () => closeDeviceDetail(),
     'refclk-detail': () => openRefClockDetail(),
     'refclk-close': () => closeRefClockDetail(),
     'markers-all': () => toggleMarkersAll(),
