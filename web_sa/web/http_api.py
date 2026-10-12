@@ -119,6 +119,7 @@ def build_status(dev) -> dict:
         'center': s.sdr_center_hz, 'decimate': s.sdr_decimate, 'listen': s.sdr_listen_hz,
         'demod': s.sdr_demod, 'if_bw': s.sdr_if_bw, 'squelch': s.sdr_squelch,
         'volume': s.sdr_volume, 'agc': s.sdr_agc, 'pitch': s.sdr_pitch,
+        'peak_dbm': s.sdr_peak_dbm,
         # The requested de-emphasis (-1 = per-mode default). It has to be reported like the
         # other SDR requests, otherwise the UI slot never confirms the user's choice and it
         # expires back to Auto after the TTL.

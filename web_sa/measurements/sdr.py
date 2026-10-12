@@ -190,6 +190,15 @@ def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
     }
 
 
+def _peak_hold(prev_dbm: float, packet_dbm: float, dt_s: float,
+               floor: float = -200.0, decay_db_s: float = 20.0) -> float:
+    """PEP-style peak hold: take the packet peak, decay the hold at a fixed dB/s."""
+    if packet_dbm > floor:
+        decayed = prev_dbm - decay_db_s * max(0.0, float(dt_s))
+        return max(float(packet_dbm), decayed, floor)
+    return max(float(prev_dbm), floor)
+
+
 def _packet_overflows(stream) -> bool:
     """True when the packet's DeviceState flags an IF overflow (htra_api.h:1118).
 
@@ -286,6 +295,7 @@ class SdrSession(MeasurementSession):
         self._packets_err = 0
         #: Packets whose DeviceState flagged an IF overflow (see _packet_overflows).
         self._if_over_packets = 0
+        self._last_peak_t = 0.0
         self._transient_streak = 0
         self._timeout_streak = 0
         self._last_ok = 0.0
@@ -1250,6 +1260,10 @@ class SdrSession(MeasurementSession):
                 self._if_over_packets += 1
             else:
                 s.status_warning = 0
+            # Capture-wide peak meter straight from the packet (MaxPower_dBm is computed
+            # by the device; measuring it ourselves would cost a pass over every sample).
+            s.sdr_peak_dbm = _peak_hold(s.sdr_peak_dbm, float(stream.MaxPower_dBm),
+                                        now - self._last_peak_t)
             self._transient_streak = 0
             self._timeout_streak = 0
             self._last_ok = now

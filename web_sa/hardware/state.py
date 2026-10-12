@@ -126,6 +126,10 @@ class SdrParams:
     # 50/75/300 = explicit (regional pre-emphasis complement).
     sdr_deemph_us: float = -1.0
     sdr_level_dbfs: float = -120.0
+    #: Capture-wide peak (IQStream_TypeDef.MaxPower_dBm, computed by the device per packet),
+    #: peak-hold with decay — a free PEP-style meter over the whole capture, not just the
+    #: demod channel.
+    sdr_peak_dbm: float = -200.0
     sdr_adm: dict = field(default_factory=dict)
 
 
