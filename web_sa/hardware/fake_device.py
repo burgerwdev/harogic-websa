@@ -65,7 +65,11 @@ class FakeDevice:
             api_ver=1, api_str=fmt_fw3(1),
             pmu=0x010F, pmu_str=fmt_pmu_agu(0x010F),
             agu=0x0105, agu_str=fmt_pmu_agu(0x0105),
-            warnings=0, errors=0)
+            warnings=0, errors=0,
+            # Capability rows (the real device reports its own list via
+            # Device_GetDecimateFactorList in 0.55.100; the fake mirrors a SAN-90 class answer).
+            decimate_factors=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048],
+            bus_bandwidth=400_000_000)
         self.state.has_docxo = True
         self.state.pnm_supported = True
         self.state.last_error = ''

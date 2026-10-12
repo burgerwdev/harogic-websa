@@ -117,7 +117,7 @@ class HarogicDevice:
                 name, di.DeviceUID, di.HardwareVersion,
                 fmt_fw3(di.MFWVersion), fmt_fw3(di.FFWVersion))
             self.state.caps = DeviceCapabilities.from_model(di.Model, sb.PNM_SUPPORTED)
-            self.state.device_detail = dict(
+            detail = dict(
                 uid='%016X' % di.DeviceUID, model=di.Model, model_name=name,
                 hw=di.HardwareVersion,
                 mfw=di.MFWVersion, mfw_str=fmt_fw3(di.MFWVersion),
@@ -127,6 +127,31 @@ class HarogicDevice:
                 pmu=di.PMUVersion, pmu_str=fmt_pmu_agu(di.PMUVersion),
                 agu=di.AGUVersion, agu_str=fmt_pmu_agu(di.AGUVersion),
                 warnings=bi.Warnings, errors=bi.Errors)
+            # Capability query (0.55.100, read-only): the device's own decimate list and
+            # bus bandwidth. Optional - an older library just leaves the keys out.
+            try:
+                lst = (sb.c_uint32 * sb.DECIMATE_FACTOR_LIST_MAX)()
+                cnt = sb.c_uint32(0)
+                if (sb.dll.Device_GetDecimateFactorList(sb.pointer(self.dev), lst,
+                                                        sb.DECIMATE_FACTOR_LIST_MAX,
+                                                        sb.pointer(cnt)) == 0 and cnt.value):
+                    factors = sorted({int(lst[i]) for i in range(cnt.value) if lst[i]})
+                    if factors:
+                        detail['decimate_factors'] = factors
+                        pow2 = [f for f in factors if f & (f - 1) == 0]
+                        if pow2:
+                            # IQS DecimateFactor is power-of-two only (measured); bound the
+                            # hardcoded table default with the device's own largest power of two.
+                            self.state.caps.decimate_max = max(pow2)
+            except Exception:
+                pass
+            try:
+                bw = sb.c_uint64(0)
+                if sb.dll.Device_GetBusBandwidth(sb.pointer(self.dev), sb.pointer(bw)) == 0 and bw.value:
+                    detail['bus_bandwidth'] = int(bw.value)
+            except Exception:
+                pass
+            self.state.device_detail = detail
             self.state.connected = True
             self.state.last_error = ''
             self.configure_swp()

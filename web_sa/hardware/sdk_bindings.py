@@ -272,6 +272,19 @@ dll.Device_InitIFAGC.restype = c_int
 dll.Device_SetIFAGCTarget.argtypes = [POINTER(c_void_p), POINTER(c_double)]
 dll.Device_SetIFAGCTarget.restype = c_int
 
+# Device capability query (new in SDK 0.55.100, htra_api.h:2778/2784). Both read-only.
+# GetDecimateFactorList returns the device's own supported IQS decimate factors:
+# Hopper (rea-raw/Device_GetDecimateFactorList.md) shows it walks an internal ADC-rate
+# table and returns quotients filtered by a model-specific divisor, so the list is
+# device-specific and must not be replaced by a constant.
+dll.Device_GetDecimateFactorList.argtypes = [
+    POINTER(c_void_p), POINTER(c_uint32), c_uint32, POINTER(c_uint32)]
+dll.Device_GetDecimateFactorList.restype = c_int
+dll.Device_GetBusBandwidth.argtypes = [POINTER(c_void_p), POINTER(c_uint64)]
+dll.Device_GetBusBandwidth.restype = c_int
+#: Buffer length used for the decimate list; the header's MaxCount is caller-chosen.
+DECIMATE_FACTOR_LIST_MAX = 256
+
 PNM_SUPPORTED = _bind_pnm()
 
 

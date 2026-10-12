@@ -457,7 +457,8 @@ export function updateStatus(s: any) {
     set('dev-hw', dd.hw);
     set('dev-mfw', dd.mfw_str || dd.mfw);
     set('dev-ffw', dd.ffw_str || dd.ffw);
-    set('dev-bus', dd.bus_speed + ' / ' + (dd.bus_str || ('v' + dd.bus_ver)));
+    set('dev-bus', dd.bus_speed + ' / ' + (dd.bus_str || ('v' + dd.bus_ver))
+        + (dd.bus_bandwidth ? ' / ' + Math.round(dd.bus_bandwidth / 1e6) + ' MB/s' : ''));
     set('dev-api', 'v' + (dd.api_str || dd.api_ver));
     set('dev-warn', dd.warnings);
   }
