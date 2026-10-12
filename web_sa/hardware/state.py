@@ -133,6 +133,8 @@ class SdrParams:
     #: Aux DDC channels (G1'): {int channel: {'enabled': bool, 'freq': Hz}}. Channels 2/3, each
     #: with its own DSP handle; blocks stream as IQAX to ?iqaux=1 sockets only.
     sdr_aux: dict = field(default_factory=dict)
+    #: Last level-triggered capture (I1/L3): {path, samples, rate, level_dbm, ts, ...}.
+    sdr_capture_last: dict = field(default_factory=dict)
     sdr_adm: dict = field(default_factory=dict)
 
 

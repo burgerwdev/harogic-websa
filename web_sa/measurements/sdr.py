@@ -1089,6 +1089,121 @@ class SdrSession(MeasurementSession):
         for channel in list(self._aux):
             self._teardown_aux_locked(channel)
 
+    # ---------------- level-triggered capture (I1/L3, official TriggerLevel path) ----------------
+
+    def capture(self, level_dbm: float, seconds: float = 1.0, pretime_s: float = 0.0,
+                safe_time_s: float = 0.01) -> dict:
+        """One level-triggered FixedPoints IQ capture, written to a stereo int16 WAV.
+
+        The official profile fields this exercises: TriggerSource=Level, TriggerLevel_dBm,
+        TriggerLevel_SafeTime, TriggerDelay, PreTriggerTime, TriggerMode=FixedPoints and
+        TriggerLength (iq.md I1/L3). BENCH CAVEAT (2026-10-12, N90 R0 @ 0.55.100): with a
+        known CW on the input the level trigger never fired across -90..0 dBm (every
+        IQS_GetIQStream returned -10 BusTimeout) and an SWP readback at the same time
+        failed to show the tone, so signal presence was not independently confirmed. The
+        wall-clock bound below returns a short capture instead of hanging. Re-verify with
+        vendor guidance on TriggerLevel semantics before relying on it. A capture
+        (re)configures the IQS profile, so the
+        adaptive streaming session is restored around it (mode reset -> adaptive config,
+        the only sequence the device accepts) and the client gets a flush. Runs under the
+        hw lock: the publisher's step waits for it, which is fine for a one-shot capture.
+        """
+        import wave
+        s = self.dev.state
+        with self._lock:
+            decimate = _round_decimate(int(s.sdr_decimate))
+            nominal_rate = 62.5e6 / decimate            # bench table, FINDINGS section 2
+            want = max(1024, int(nominal_rate * float(seconds)))
+            info = self._capture_configure_locked(level_dbm, want, pretime_s, safe_time_s,
+                                                  decimate)
+            rate = float(info.IQSampleRate)
+            if rate > 0 and abs(rate - nominal_rate) / nominal_rate > 0.05:
+                # Re-ask with the device-echoed rate so TriggerLength is a true sample count.
+                info = self._capture_configure_locked(level_dbm, int(rate * float(seconds)),
+                                                      pretime_s, safe_time_s, decimate)
+                rate = float(info.IQSampleRate)
+            total = int(info.StreamSamples)
+            chunks: list = []
+            got = 0
+            errors = 0
+            stream = sb.IQStream_TypeDef()
+            # Wall-clock bound: PM1 blocks until the level event, and on the bench the
+            # N90 never delivered one across -90..0 dBm levels (probe: every call returns
+            # -10 BusTimeout at BusTimeout_ms=1000, or blocks when the timeout is larger).
+            # Without this bound a silent never-trigger would hold the hw lock forever and
+            # the 62 s hw-call watchdog would then take the whole worker down (fatal()).
+            deadline = time.monotonic() + float(seconds) * 4.0 + 30.0
+            while got < total and time.monotonic() < deadline:
+                st = sb.dll.IQS_GetIQStream_PM1(sb.pointer(self.dev.dev), sb.pointer(stream))
+                if st != 0:
+                    errors += 1
+                    if errors > 8:
+                        break
+                    time.sleep(0.001)
+                    continue
+                n = int(stream.IQS_StreamInfo.PacketSamples)
+                if n <= 0:
+                    break
+                src = c_cast(stream.AlternIQStream,
+                             sb.POINTER(sb.c_int16 * (n * 2))).contents
+                chunks.append(np.ctypeslib.as_array(src).copy())
+                got += n
+            data = (chunks[0] if len(chunks) == 1
+                    else np.concatenate(chunks) if chunks else np.zeros(0, np.int16))
+            # Restore the adaptive streaming session (mode reset makes IQS configurable
+            # again) and flush the client: the queued blocks belong to another profile.
+            self._configure_iqs_locked()
+            self._iq_reset_pending = True
+            self._ready_at = time.monotonic() + 0.15
+            path = None
+            if data.size:
+                from ..config import AppConfig
+                d = AppConfig().capture_dir
+                os.makedirs(d, exist_ok=True)
+                path = os.path.join(
+                    d, 'cap_%s_f%.0f.wav' % (time.strftime('%Y%m%d_%H%M%S'), s.sdr_center_hz))
+                w = wave.open(path, 'wb')
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(max(1, int(round(rate))))
+                w.writeframes(data.tobytes())
+                w.close()
+            out = {'path': path, 'samples': int(data.size // 2), 'rate': int(round(rate)),
+                   'level_dbm': float(level_dbm), 'seconds': float(seconds),
+                   'pretime_s': float(pretime_s), 'errors': errors, 'ts': time.time()}
+            s.sdr_capture_last = out
+            return out
+
+    def _capture_configure_locked(self, level_dbm, trigger_length, pretime_s, safe_time_s,
+                                  decimate):
+        """Issue one level-triggered FixedPoints IQS configuration; returns StreamInfo."""
+        s = self.dev.state
+        self._reset_iqs_mode_locked()
+        p = sb.IQS_Profile_TypeDef()
+        out = sb.IQS_Profile_TypeDef()
+        info = sb.IQS_StreamInfo_TypeDef()
+        self._sdk_call(
+            lambda: sb.dll.IQS_ProfileDeInit(sb.pointer(self.dev.dev), sb.pointer(p)),
+            'IQS_ProfileDeInit')
+        p.CenterFreq_Hz = float(s.sdr_center_hz)
+        p.RefLevel_dBm = float(s.sdr_ref_level)
+        p.DecimateFactor = int(decimate)
+        p.DataFormat = sb.DataFormat_TypeDef.Complex16bit
+        p.TriggerSource = sb.IQS_TriggerSource_TypeDef.Level
+        p.TriggerMode = sb.TriggerMode_TypeDef.FixedPoints
+        p.TriggerLevel_dBm = float(level_dbm)
+        p.TriggerLevel_SafeTime = float(safe_time_s)
+        p.TriggerDelay = 0.0
+        p.PreTriggerTime = float(pretime_s)
+        p.TriggerLength = int(trigger_length)
+        p.EnableIFAGC = 1 if s.ifagc else 0
+        p.BusTimeout_ms = 1000   # a below-floor level still bounds every wait to ~1 s
+        self._sdk_call(
+            lambda: sb.dll.IQS_Configuration(sb.pointer(self.dev.dev), sb.pointer(p),
+                                             sb.pointer(out), sb.pointer(info)),
+            'IQS_Configuration (capture)')
+        return info
+
     def set_tune(self, listen_hz):
         """Cheap, state-only: the new offset is applied in the next step() with a software
         NCO, so tuning does not block the acquisition loop or reconfigure the DDC."""

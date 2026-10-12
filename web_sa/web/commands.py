@@ -331,6 +331,12 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('enabled', 'boolean'),
         ParamSpec('freq', 'number', unit='Hz'),
     ),
+    'SET_SDR_CAPTURE': (
+        # I1/L3: one level-triggered FixedPoints IQ capture written to a WAV file.
+        ParamSpec('level', 'number', -160.0, 20.0, unit='dBm', required=True),
+        ParamSpec('seconds', 'number', 0.05, 5.0, default=1.0),
+        ParamSpec('pretime', 'number', 0.0, 1.0, default=0.0),
+    ),
     'SET_SDR_DEMOD': (
         # A token, not a fixed list: the mode ids are the DSP plugin registry's (analog and
         # digital alike), and the Python fallback runs the subset it implements.
@@ -835,6 +841,19 @@ async def _h_set_sdr_ddc(ctx: CommandContext, data: dict) -> bool:
     return True
 
 
+async def _h_set_sdr_capture(ctx: CommandContext, data: dict) -> bool:
+    session = ctx.dev.session
+    if session is None or session.name != 'sdr':
+        raise CommandError('SET_SDR_CAPTURE requires SDR mode', 'sdr_mode_required')
+    seconds = float(data.get('seconds', 1.0))
+    # The capture reconfigures the IQS profile twice at worst and collects seconds of
+    # samples; give it far more than the default hw-call budget.
+    await ctx.hw_call(session.capture, float(data['level']), seconds=seconds,
+                      pretime_s=float(data.get('pretime', 0.0)),
+                      timeout=seconds * 4.0 + 60.0)
+    return True
+
+
 async def _h_set_sdr_demod(ctx: CommandContext, data: dict) -> bool:
     session = ctx.dev.session
     if session is None or session.name != 'sdr':
@@ -947,6 +966,7 @@ _REGISTRY = (
     ('SET_SDR', _h_set_sdr, (), None, True),
     ('SET_SDR_TUNE', _h_set_sdr_tune, (), None, True),
     ('SET_SDR_DDC', _h_set_sdr_ddc, (), None, True),
+    ('SET_SDR_CAPTURE', _h_set_sdr_capture, (), None, True),
     ('SET_SDR_DEMOD', _h_set_sdr_demod, (), None, True),
     ('SET_RTA', _h_set_rta, (), None, True),
     ('SET_TRIGGER', _h_set_trigger, (), None, True),

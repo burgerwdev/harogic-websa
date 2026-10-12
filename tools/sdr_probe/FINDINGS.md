@@ -159,3 +159,22 @@ Gotchas found live:
   the fields (offsets 20/22) and rebinds Device_Open to the restored BootInfo.
 * Aux enable before the first SDR packet has no capture geometry: the step loop configures
   aux lazily once `fs_in` exists.
+
+## 14. Level-triggered capture (I1/L3) — implemented, live verification OPEN
+
+`SET_SDR_CAPTURE` / `SdrSession.capture` exercise TriggerSource=Level +
+TriggerLevel_dBm/SafeTime/PreTriggerTime + FixedPoints/TriggerLength, write a stereo
+int16 WAV, and restore the adaptive session. CI proof: unit tests + fake-backend WS
+end-to-end (`capture_last` echoed with `response_to`).
+
+Live status (N90 R0 @ 0.55.100, tinySA CW 100.2 MHz -25 dBm on the input): the level
+trigger never fired. Standalone harness (no server): IQS_Configuration accepts the
+profile (7 packets / 97656 samples echoed), but every IQS_GetIQStream_PM1 returns
+-10 BusTimeout at levels -90..0 dBm (BusTimeout_ms=2000 honored per call). An SWP
+readback taken the same minute failed to show the tone, so signal presence was NOT
+independently confirmed during that window — rerun both together before blaming the API.
+Inside the live service the capture path hangs past its deadline and the 62 s hw-call
+watchdog (fatal, recovery.py) then takes the worker down; a wall-clock bound
+(seconds*4+30) now returns a short capture instead, but the worker stall until that
+deadline is real. OPEN: needs vendor clarification on TriggerLevel semantics/units for
+N90 (maybe dBFS-relative, maybe unsupported on this model) before the feature is usable.

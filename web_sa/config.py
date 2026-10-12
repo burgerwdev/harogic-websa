@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import tempfile
 from dataclasses import dataclass
 
 # ---- Global constants (for SWP configuration) ----
@@ -165,6 +166,9 @@ class AppConfig:
     port: int = int(os.getenv('WEBSA_PORT', '8080'))
     log_level: str = os.getenv('WEBSA_LOG', 'INFO')
     log_file: str = os.getenv('WEBSA_LOGFILE', '')
+    #: Level-triggered IQ captures (SDR mode, I1/L3) land here as stereo int16 WAV.
+    capture_dir: str = os.getenv('WEBSA_CAPTURE_DIR',
+                                 os.path.join(tempfile.gettempdir(), 'websa-captures'))
     static_dir: str = os.getenv('WEBSA_STATIC', '')
     auth_token: str = os.getenv('WEBSA_TOKEN', '')
     allowed_origins: str = os.getenv('WEBSA_ALLOWED_ORIGINS', '')

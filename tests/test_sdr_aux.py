@@ -100,3 +100,30 @@ async def test_fake_session_aux_bookkeeping_round_trips_status():
     assert dev.state.sdr_aux[2] == {'enabled': True, 'freq': 98.0e6}
     assert dev.state.sdr_aux[3] == {'enabled': False, 'freq': 0.0}
     session.exit()
+
+
+def test_set_sdr_capture_validates_level_and_range():
+    stub = SimpleNamespace(state=SimpleNamespace(connected=True, mode='sdr', caps=None),
+                           session=None)
+    _validate_command(stub, 'SET_SDR_CAPTURE', {'cmd': 'SET_SDR_CAPTURE', 'level': -30.0})
+    with pytest.raises(CommandError):
+        _validate_command(stub, 'SET_SDR_CAPTURE', {'cmd': 'SET_SDR_CAPTURE', 'level': 99.0})
+    with pytest.raises(CommandError):
+        _validate_command(stub, 'SET_SDR_CAPTURE',
+                          {'cmd': 'SET_SDR_CAPTURE', 'level': -30.0, 'seconds': 99.0})
+
+
+@pytest.mark.asyncio
+async def test_fake_capture_records_the_status_surface():
+    from web_sa.hardware.fake_device import install_fake_sessions
+    from web_sa.measurements import make_session
+
+    install_fake_sessions()
+    dev = FakeDevice()
+    ok, _err = dev.open()
+    assert ok
+    session = make_session(dev, 'sdr')
+    out = session.capture(-40.0, seconds=0.5)
+    assert out['synthetic'] is True and out['samples'] > 0
+    assert dev.state.sdr_capture_last is out
+    session.exit()
