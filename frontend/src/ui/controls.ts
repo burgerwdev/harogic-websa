@@ -50,7 +50,7 @@ import { resetLimits } from './limits';
 // interaction, mode/preset orchestration) and imports the actions it dispatches; the
 // re-exports below keep the previous public surface for the rest of the app.
 import { applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetSpanStepAuto, stepSwpSpan, syncSwpSpanStep, updateCustomSpanStep } from './panels/frequency';
-import { applyPoints, applyRBW, applyVBW, setSpurMode, setWindow } from './panels/resolution';
+import { applyPoints, applyRBW, applyVBW, setFrameDetector, setPointsStrategy, setSpurMode, setTraceAlign, setTraceType, setWindow } from './panels/resolution';
 import { applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade } from './panels/rta';
 import { activeMarkerNextPeakLeft, activeMarkerNextPeakRight, activeMarkerNextValleyLeft, activeMarkerNextValleyRight, activeMarkerPeak, activeMarkerValley, markerToCenter, placeMarkerFromX, selectMarker, syncMarkerTrackingToggle, toggleActiveMarkerTracking, toggleMarkersAll } from './panels/markers';
 import {  adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
@@ -813,6 +813,10 @@ export function bindActions() {
     'set-window': (el) => setWindow((el as HTMLSelectElement).value),
     'set-spur': (el) => setSpurMode((el as HTMLSelectElement).value),
     'set-detector': (el) => send({ cmd: 'SET_DETECTOR', mode: (el as HTMLSelectElement).value }),
+    'set-tracetype': (el) => setTraceType((el as HTMLSelectElement).value),
+    'set-framedet': (el) => setFrameDetector((el as HTMLSelectElement).value),
+    'set-trace-align': (el) => setTraceAlign((el as HTMLSelectElement).value),
+    'set-points-strategy': (el) => setPointsStrategy((el as HTMLSelectElement).value),
     'set-refclock': (el) => setRefClock((el as HTMLSelectElement).value),
     'toggle-refclkout': () => toggleRefClkOut(),
     'set-amp': () => setAmp(),
@@ -1510,7 +1514,7 @@ export {
   applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetSpanStepAuto,
   stepSwpSpan, syncFrequencyEditorStatus, syncSwpSpanStep, updateCustomSpanStep,
 } from './panels/frequency';
-export { applyPoints, applyRBW, applyVBW, setSpurMode, setWindow } from './panels/resolution';
+export { applyPoints, applyRBW, applyVBW, setFrameDetector, setPointsStrategy, setSpurMode, setTraceAlign, setTraceType, setWindow } from './panels/resolution';
 export {
   applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade,
 } from './panels/rta';

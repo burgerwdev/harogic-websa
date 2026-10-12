@@ -376,6 +376,10 @@ class HarogicDevice:
         p.RefLevel_dBm = clamp_ref_dbm(s.caps, s.ref_level)
         if s.rbw_mode == 'auto':
             p.RBWMode = T.RBWMode_TypeDef.RBW_Auto
+        elif s.rbw_mode == 'one_thousandth_span':
+            p.RBWMode = T.RBWMode_TypeDef.RBW_OneThousandthSpan
+        elif s.rbw_mode == 'one_percent_span':
+            p.RBWMode = T.RBWMode_TypeDef.RBW_OnePercentSpan
         else:
             p.RBWMode = T.RBWMode_TypeDef.RBW_Manual
             p.RBW_Hz = max(100.0, min(10e6, s.rbw_hz))
@@ -407,8 +411,17 @@ class HarogicDevice:
         p.SweepTimeMode = T.SweepTimeMode_TypeDef(s.sweep_time_mode)
         p.SweepTime = float(s.sweep_time)   # Manual 时绝对秒; xN 时倍率; 其他模式忽略
         p.TracePoints = int(max(51, min(4000, s.points_req)))
-        p.TracePointsStrategy = T.TracePointsStrategy_TypeDef.SweepSpeedPreferred
-        p.TraceAlign = T.TraceAlign_TypeDef.AlignToStart
+        p.TracePointsStrategy = {
+            'speed': T.TracePointsStrategy_TypeDef.SweepSpeedPreferred,
+            'accuracy': T.TracePointsStrategy_TypeDef.PointsAccuracyPreferred,
+            # Vendor typo kept verbatim (htra_api.py: BinSizeAssined, no 'g').
+            'bin_size': T.TracePointsStrategy_TypeDef.BinSizeAssined,
+        }.get(s.points_strategy, T.TracePointsStrategy_TypeDef.SweepSpeedPreferred)
+        p.TraceAlign = {
+            'native': T.TraceAlign_TypeDef.NativeAlign,
+            'start': T.TraceAlign_TypeDef.AlignToStart,
+            'center': T.TraceAlign_TypeDef.AlignToCenter,
+        }.get(s.trace_align, T.TraceAlign_TypeDef.AlignToStart)
         p.SpurRejection = T.SpurRejection_TypeDef.Standard if s.spur_mode == 'standard' else (
             T.SpurRejection_TypeDef.Enhanced if s.spur_mode == 'enhanced'
             else T.SpurRejection_TypeDef.Bypass)
@@ -424,6 +437,25 @@ class HarogicDevice:
             p.TraceDetector = detector_map[s.detector]
         else:
             p.TraceDetectMode = T.TraceDetectMode_TypeDef.TraceDetectMode_Auto
+        # 频点内帧间检波 (Detector_TypeDef) and the output trace type (SWP_TraceType):
+        # 'device_default' keeps whatever ProfileDeInit seeded, preserving the old behavior.
+        frame_detector_map = {
+            'sample': T.Detector_TypeDef.Detector_Sample,
+            'pos_peak': T.Detector_TypeDef.Detector_PosPeak,
+            'average': T.Detector_TypeDef.Detector_Average,
+            'neg_peak': T.Detector_TypeDef.Detector_NegPeak,
+            'max_power': T.Detector_TypeDef.Detector_MaxPower,
+            'raw_frames': T.Detector_TypeDef.Detector_RawFrames,
+            'rms': T.Detector_TypeDef.Detector_RMS,
+            'auto_peak': T.Detector_TypeDef.Detector_AutoPeak,
+        }
+        if s.frame_detector in frame_detector_map:
+            p.Detector = frame_detector_map[s.frame_detector]
+        p.TraceType = {
+            'clear_write': T.SWP_TraceType_TypeDef.ClearWrite,
+            'max_hold': T.SWP_TraceType_TypeDef.MaxHold,
+            'min_hold': T.SWP_TraceType_TypeDef.MinHold,
+        }.get(s.trace_type, T.SWP_TraceType_TypeDef.ClearWrite)
         return p
 
     def configure_swp(self):

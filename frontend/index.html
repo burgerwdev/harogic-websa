@@ -630,6 +630,8 @@
           <div class="param-row"><label></label>
             <select id="select-rbw-mode" data-action="apply-rbw" data-i18n="tip_select-rbw-mode" data-i18n-attr="title">
               <option value="manual" data-i18n="manual">Manual</option><option value="auto" data-i18n="auto_span2000">Auto (Span/2000)</option>
+              <option value="one_thousandth_span" data-i18n="rbw_01pc_span">0.1% Span</option>
+              <option value="one_percent_span" data-i18n="rbw_1pc_span">1% Span</option>
             </select><button class="btn" data-action="apply-rbw" data-i18n="set">Set</button></div>
           <div class="param-row"><label data-i18n="window">Window</label>
             <select id="select-window" data-action="set-window" data-i18n="tip_fft_window" data-i18n-attr="title" title="FFT window: FlatTop/B-Nuttall/LowSideLobe/Rectangle/Kaiser">
@@ -646,6 +648,30 @@
               <option value="pos_peak">Pos Peak</option>
               <option value="neg_peak">Neg Peak</option>
               <option value="rms">RMS</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="trace_hold">Trace Hold</label>
+            <select id="select-tracetype" data-action="set-tracetype" data-i18n="tip_tracetype" data-i18n-attr="title" title="Device-side trace holding across sweeps (MaxHold/MinHold, like the official TraceType)">
+              <option value="clear_write" selected data-i18n="th_clear">Clear Write</option>
+              <option value="max_hold" data-i18n="th_max">Max Hold</option>
+              <option value="min_hold" data-i18n="th_min">Min Hold</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="frame_det">Frame Avg</label>
+            <select id="select-framedet" data-action="set-framedet" data-i18n="tip_framedet" data-i18n-attr="title" title="Per-bin inter-frame detector (official Detector field): average/max-power/pulse capture">
+              <option value="device_default" selected data-i18n="fd_default">Device Default</option>
+              <option value="average" data-i18n="fd_average">Average</option>
+              <option value="max_power" data-i18n="fd_maxpower">Max Power (pulse)</option>
+              <option value="raw_frames" data-i18n="fd_rawframes">Raw Frames</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="trace_align">Align</label>
+            <select id="select-tracealign" data-action="set-trace-align" data-i18n="tip_tracealign" data-i18n-attr="title" title="Trace alignment on the frequency axis">
+              <option value="start" selected data-i18n="ta_start">To Start</option>
+              <option value="center" data-i18n="ta_center">To Center</option>
+              <option value="native" data-i18n="ta_native">Native</option>
+            </select>
+            <select id="select-points-strategy" data-action="set-points-strategy" data-i18n="tip_points_strategy" data-i18n-attr="title" title="How trace points map onto the span">
+              <option value="speed" selected data-i18n="ps_speed">Speed First</option>
+              <option value="accuracy" data-i18n="ps_accuracy">Points Accurate</option>
+              <option value="bin_size" data-i18n="ps_bin">Fixed Bin Size</option>
             </select></div>
           <div class="param-row"><label data-i18n="vbw">VBW</label><input type="number" id="input-vbw" value="100" step="any" data-i18n="tip_input-vbw" data-i18n-attr="title">
             <div class="unit-btn-group" id="unit-vbw-group"></div></div>

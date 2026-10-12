@@ -64,14 +64,17 @@ HW_CALL_TIMEOUT_S = 20.0
 #: device configuration, so re-applying these behind its back would break its acquisition.
 SWP_OWNED = frozenset({
     'SET_REF', 'AUTO_SCALE', 'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS',
-    'SET_SPUR', 'SET_WINDOW', 'SET_DETECTOR', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
+    'SET_SPUR', 'SET_WINDOW', 'SET_DETECTOR', 'SET_TRACETYPE', 'SET_FRAMEDET',
+    'SET_TRACEGRID', 'SET_AMP', 'SET_REFCK', 'SET_REFCKOUT',
 })
 #: SWP-only parameters that make no sense inside an RTA profile.
-SWP_ONLY = frozenset({'SET_WINDOW', 'SET_POINTS', 'SET_SPUR'})
+SWP_ONLY = frozenset({'SET_WINDOW', 'SET_POINTS', 'SET_SPUR', 'SET_TRACETYPE',
+                      'SET_FRAMEDET', 'SET_TRACEGRID'})
 #: In SDR mode the demod chain owns the configuration; these would fight with it.
 NOT_IN_SDR = frozenset({
     'SET_FREQ', 'SET_RBW', 'SET_VBW', 'SET_SWEEP', 'SET_POINTS', 'SET_SPUR',
-    'SET_WINDOW', 'SET_DETECTOR', 'SET_TRIGGER', 'SET_RTA',
+    'SET_WINDOW', 'SET_DETECTOR', 'SET_TRACETYPE', 'SET_FRAMEDET', 'SET_TRACEGRID',
+    'SET_TRIGGER', 'SET_RTA',
 })
 
 
@@ -267,7 +270,9 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('current_ref', 'number', DISPLAY_REF_MIN_DBM, DISPLAY_REF_MAX_DBM, unit='dBm'),
     ),
     'SET_RBW': (
-        ParamSpec('mode', 'choice', choices=('manual', 'auto'), default='auto'),
+        ParamSpec('mode', 'choice',
+                  choices=('manual', 'auto', 'one_thousandth_span', 'one_percent_span'),
+                  default='auto'),
         ParamSpec('rbw', 'number', 100.0, RBW_MAX, unit='Hz',
                   required_if=_yes('mode', 'manual')),
     ),
@@ -289,6 +294,19 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     'SET_DETECTOR': (ParamSpec('mode', 'choice',
                                choices=('auto', 'sample', 'pos_peak', 'neg_peak', 'rms',
                                         'auto_peak'), required=True),),
+    'SET_TRACETYPE': (ParamSpec('mode', 'choice',
+                                choices=('clear_write', 'max_hold', 'min_hold'),
+                                required=True),),
+    'SET_FRAMEDET': (ParamSpec('mode', 'choice',
+                               choices=('device_default', 'sample', 'pos_peak', 'average',
+                                        'neg_peak', 'max_power', 'raw_frames', 'rms',
+                                        'auto_peak'), required=True),),
+    'SET_TRACEGRID': (
+        ParamSpec('trace_align', 'choice', choices=('native', 'start', 'center'),
+                  default='start'),
+        ParamSpec('points_strategy', 'choice', choices=('speed', 'accuracy', 'bin_size'),
+                  default='speed'),
+    ),
     'SET_AMP': (
         ParamSpec('atten', 'integer', -1, ATTEN_MAX, unit='dB', default=-1),
         ParamSpec('preamp', 'integer', 0, 1, default=0),
@@ -699,6 +717,37 @@ async def _h_set_detector(ctx: CommandContext, data: dict) -> bool:
     return True
 
 
+async def _h_set_tracetype(ctx: CommandContext, data: dict) -> bool:
+    ctx.state.trace_type = data['mode']
+    session = ctx.dev.session
+    if session is not None and session.name == 'rta':
+        return True                     # SWP-only field; kept as the swept-mode preference
+    await ctx.configure_swp()
+    return True
+
+
+async def _h_set_framedet(ctx: CommandContext, data: dict) -> bool:
+    ctx.state.frame_detector = data['mode']
+    session = ctx.dev.session
+    if session is not None and session.name == 'rta':
+        return True
+    await ctx.configure_swp()
+    return True
+
+
+async def _h_set_tracegrid(ctx: CommandContext, data: dict) -> bool:
+    s = ctx.state
+    if 'trace_align' in data:
+        s.trace_align = data['trace_align']
+    if 'points_strategy' in data:
+        s.points_strategy = data['points_strategy']
+    session = ctx.dev.session
+    if session is not None and session.name == 'rta':
+        return True
+    await ctx.configure_swp()
+    return True
+
+
 async def _h_set_amp(ctx: CommandContext, data: dict) -> bool:
     s = ctx.state
     caps = s.caps
@@ -871,6 +920,9 @@ _REGISTRY = (
     ('SET_SPUR', _h_set_spur, (), None, True),
     ('SET_WINDOW', _h_set_window, (), None, True),
     ('SET_DETECTOR', _h_set_detector, (), None, True),
+    ('SET_TRACETYPE', _h_set_tracetype, (), None, True),
+    ('SET_FRAMEDET', _h_set_framedet, (), None, True),
+    ('SET_TRACEGRID', _h_set_tracegrid, (), None, True),
     ('SET_AMP', _h_set_amp, (), None, True),
     ('SET_REFCK', _h_set_refck, (), None, True),
     ('SET_REFCKOUT', _h_set_refckout, (), None, True),

@@ -27,6 +27,14 @@ export const currentVBW = createParam<number>('swp.vbw', { fallback: 300e3, scop
 export const currentPoints = createParam<number>('swp.points', { fallback: 1001, scope: 'swp', ...hz });
 /** Spur suppression mode. */
 export const currentSpur = createParam<string>('swp.spur', { fallback: 'standard', scope: 'swp' });
+/** Output trace type (SWP_TraceType): device-side holding. */
+export const traceType = createParam<string>('swp.traceType', { fallback: 'clear_write', scope: 'swp' });
+/** Per-bin inter-frame detector (Detector_TypeDef); 'device_default' leaves the profile field. */
+export const frameDetector = createParam<string>('swp.frameDetector', { fallback: 'device_default', scope: 'swp' });
+/** Trace alignment on the frequency axis (TraceAlign_TypeDef). */
+export const traceAlign = createParam<string>('swp.traceAlign', { fallback: 'start', scope: 'swp' });
+/** Trace-points mapping strategy (TracePointsStrategy_TypeDef). */
+export const pointsStrategy = createParam<string>('swp.pointsStrategy', { fallback: 'speed', scope: 'swp' });
 
 /** Span step used by the ▼/▲ buttons (Hz); Auto makes it follow the current span. */
 export const spanStepHz = createParam<number>('swp.spanStepHz', {
