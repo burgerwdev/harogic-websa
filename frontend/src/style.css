@@ -860,6 +860,9 @@ select:focus { border-color: var(--text); }
   background: var(--panel-2); border: 1px solid var(--card-border); padding: 6px 12px;
   font-size: 11px; margin-top: 8px;
 }
+/* The device strip sits at the page bottom: its popover must open upward (the GNSS
+   popover's top:26px would push it past the viewport edge). */
+.dev-bar .gnss-popover { top: auto; bottom: calc(100% - 2px); }
 .mk-main { line-height: 1.3; }
 .mk-sub { font-size: 10px; color: var(--sub); line-height: 1.3; }
 
