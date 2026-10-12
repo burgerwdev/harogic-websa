@@ -50,31 +50,30 @@ async def main():
                     break
             except OSError:
                 if proc.poll() is not None:
-                    raise RuntimeError('server exited early; see /tmp/websa_version_probe.log')
+                    raise RuntimeError('server exited early; see /tmp/websa_version_probe.log') from None
                 await asyncio.sleep(0.5)
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(WS) as ws:
-                await ws.send_str(json.dumps({'cmd': 'CONNECT'}))
-                end = time.monotonic() + 30.0
-                status = None
-                while time.monotonic() < end:
-                    raw = await asyncio.wait_for(ws.receive(), timeout=end - time.monotonic())
-                    if raw.type != aiohttp.WSMsgType.TEXT:
-                        continue
-                    msg = json.loads(raw.data)
-                    if msg.get('cmd') == 'STATUS' and msg.get('connected'):
-                        status = msg
-                        break
-                dd = (status or {}).get('device_detail', {})
-                label = (status or {}).get('device', '')
-                print('label:', label)
-                rows = {k: dd.get(k) for k in
-                        ('model_name', 'mfw_str', 'ffw_str', 'pmu_str', 'agu_str', 'api_str')}
-                print('rows:', json.dumps(rows, ensure_ascii=False))
-                ok = all(rows[k] == v for k, v in EXPECTED.items() if k != 'uid_prefix')
-                ok = ok and str(dd.get('uid', '')).upper().startswith(EXPECTED['uid_prefix'])
-                ok = ok and EXPECTED['model_name'] in label
-                print('RESULT:', 'PASS' if ok else 'FAIL')
+        async with aiohttp.ClientSession() as http, http.ws_connect(WS) as ws:
+            await ws.send_str(json.dumps({'cmd': 'CONNECT'}))
+            end = time.monotonic() + 30.0
+            status = None
+            while time.monotonic() < end:
+                raw = await asyncio.wait_for(ws.receive(), timeout=end - time.monotonic())
+                if raw.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                msg = json.loads(raw.data)
+                if msg.get('cmd') == 'STATUS' and msg.get('connected'):
+                    status = msg
+                    break
+            dd = (status or {}).get('device_detail', {})
+            label = (status or {}).get('device', '')
+            print('label:', label)
+            rows = {k: dd.get(k) for k in
+                    ('model_name', 'mfw_str', 'ffw_str', 'pmu_str', 'agu_str', 'api_str')}
+            print('rows:', json.dumps(rows, ensure_ascii=False))
+            ok = all(rows[k] == v for k, v in EXPECTED.items() if k != 'uid_prefix')
+            ok = ok and str(dd.get('uid', '')).upper().startswith(EXPECTED['uid_prefix'])
+            ok = ok and EXPECTED['model_name'] in label
+            print('RESULT:', 'PASS' if ok else 'FAIL')
     finally:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
