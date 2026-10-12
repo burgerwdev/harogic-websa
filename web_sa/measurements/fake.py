@@ -396,6 +396,15 @@ class FakeSdrSession(_FakeRtaBase):
     def set_tune(self, listen_hz) -> None:
         self.dev.state.sdr_listen_hz = float(listen_hz)
 
+    def set_aux(self, channel: int, enabled: bool = True, freq_hz: float = 0.0) -> None:
+        """Mirror the real session's aux bookkeeping (no DSP behind the fake)."""
+        s = self.dev.state
+        ch = int(channel)
+        if enabled:
+            s.sdr_aux[ch] = {'enabled': True, 'freq': float(freq_hz)}
+        else:
+            s.sdr_aux[ch] = {'enabled': False, 'freq': 0.0}
+
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None, agc=None,
                   pitch=None, deemph_us=None) -> None:
         s = self.dev.state

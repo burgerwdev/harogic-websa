@@ -39,6 +39,9 @@ MAGIC_POWR = b'POWR'
 MAGIC_RTA = b'RTAF'
 MAGIC_AUDIO = b'AUDF'
 MAGIC_BASEBAND = b'IQBF'
+#: Aux-DDC baseband: identical layout to IQBF, different magic so the publisher can route
+#: it only to sockets that subscribed (?iqaux=1) and the browser demodulator never sees it.
+MAGIC_AUX = b'IQAX'
 
 #: Wire version of the IQBF payload (the demodulator-input format the browser worker parses).
 BASEBAND_VERSION = 1
@@ -84,6 +87,15 @@ def encode_audio(seq: int, rate: int, pcm) -> bytes:
 
 
 def encode_baseband(version: int, seq: int, rate: float, center_hz: float, iq) -> bytes:
+    return _encode_baseband(MAGIC_BASEBAND, version, seq, rate, center_hz, iq)
+
+
+def encode_aux(version: int, seq: int, rate: float, center_hz: float, iq) -> bytes:
+    """Aux-DDC channel baseband (IQAX): same wire layout as IQBF, opt-in routing."""
+    return _encode_baseband(MAGIC_AUX, version, seq, rate, center_hz, iq)
+
+
+def _encode_baseband(magic: bytes, version: int, seq: int, rate: float, center_hz: float, iq) -> bytes:
     """Interleaved complex-float32 baseband at the DDC output rate (the browser demodulator's input).
 
     ``iq`` is the interleaved I,Q stream, so the payload holds 2 samples per complex sample. It is
@@ -97,7 +109,7 @@ def encode_baseband(version: int, seq: int, rate: float, center_hz: float, iq) -
     iq = np.ascontiguousarray(iq, dtype=np.float32).reshape(-1)
     if iq.size & 1:
         iq = iq[:-1]                        # a torn block would desync I/Q for the client
-    return (MAGIC_BASEBAND
+    return (magic
             + BASEBAND_HEADER.pack(int(version), int(seq), iq.size // 2,
                                    float(rate), float(center_hz))
             + iq.tobytes())

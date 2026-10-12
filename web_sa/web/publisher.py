@@ -60,6 +60,8 @@ async def publisher(app, dev):
         # clients, not of the session: only the browser DSP worker opens `?iq=1`, and with no
         # subscriber the ~MB/s encode and fan-out would be pure waste.
         dev.iq_clients = sum(1 for client in clients if client.accepts_iq)
+        # Aux-DDC streams (IQAX) cost real DSP work per packet; same subscriber gate as IQ.
+        dev.aux_clients = sum(1 for client in clients if client.accepts_aux)
         # Same idea for audio: the Python demodulator chain is the fallback/reference, so it only
         # runs while something actually listens to it.
         dev.audio_clients = sum(1 for client in clients if client.accepts_audio)

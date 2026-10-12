@@ -19,6 +19,7 @@ FRAME_POLICY = {
     b'FREQ': RETAIN,
     b'AUDF': FIFO,
     b'IQBF': FIFO,
+    b'IQAX': FIFO,
     b'POWR': LATEST,
     b'RTAF': LATEST,
 }
@@ -26,11 +27,14 @@ DEFAULT_POLICY = LATEST
 #: Markers the connection filters use (audio and baseband have their own sockets in the frontend).
 AUDIO_MAGIC = b'AUDF'
 IQ_MAGIC = b'IQBF'
+#: Aux-DDC baseband (IQAX) shares the IQBF layout but only reaches sockets that asked for
+#: it (?iqaux=1) — the browser demodulator must never see another channel as a retune.
+AUX_MAGIC = b'IQAX'
 #: Byte offset of the u32 sequence number in each streaming (FIFO) frame. AUDF puts it first
-#: (seq, rate, samples); IQBF keeps the version first (ver, seq, samples, rate, centre).
-FIFO_SEQ_OFFSET = {AUDIO_MAGIC: 4, IQ_MAGIC: 8}
+#: (seq, rate, samples); IQBF/IQAX keep the version first (ver, seq, samples, rate, centre).
+FIFO_SEQ_OFFSET = {AUDIO_MAGIC: 4, IQ_MAGIC: 8, AUX_MAGIC: 8}
 #: Dropped-frame counter per streaming frame type, for STATUS.stream.
-FIFO_DROPPED_FIELD = {AUDIO_MAGIC: 'dropped_audio', IQ_MAGIC: 'dropped_iq'}
+FIFO_DROPPED_FIELD = {AUDIO_MAGIC: 'dropped_audio', IQ_MAGIC: 'dropped_iq', AUX_MAGIC: 'dropped_iq'}
 
 
 class ClientStream:
@@ -55,10 +59,10 @@ class ClientStream:
     #: fix — splitting the workers was the right one (measured after: 14 of 14 slots, `dropped=0`).
     IQ_LIMIT = 48
     #: Minimum sane header length per streaming frame type (IQBF's header is 32 bytes).
-    FIFO_MIN_BYTES = {AUDIO_MAGIC: 16, IQ_MAGIC: 32}
+    FIFO_MIN_BYTES = {AUDIO_MAGIC: 16, IQ_MAGIC: 32, AUX_MAGIC: 32}
 
     def __init__(self, ws, audio_only: bool = False, no_audio: bool = False,
-                 iq_only: bool = False, no_iq: bool = False):
+                 iq_only: bool = False, no_iq: bool = False, aux_iq: bool = False):
         self.ws = ws
         # Per-connection stream filter. The main UI connection uses no_audio/no_iq (it
         # handles neither AUDF nor IQBF); the SDR audio worker uses audio_only and the SDR
@@ -68,6 +72,9 @@ class ClientStream:
         self.no_audio = no_audio
         self.iq_only = iq_only
         self.no_iq = no_iq
+        #: Subscribed to the aux-DDC streams (IQAX). Off by default: the browser demodulator
+        #: must never see another channel as a retune, so aux is strictly opt-in.
+        self.aux_iq = aux_iq
         self._control: deque[str] = deque()
         self._freq: bytes | None = None
         self._data: bytes | None = None
@@ -101,6 +108,11 @@ class ClientStream:
         """
         return not self.closed and not self.no_iq and not self.audio_only
 
+    @property
+    def accepts_aux(self) -> bool:
+        """True when this connection subscribed to the aux-DDC baseband (IQAX)."""
+        return not self.closed and self.aux_iq
+
     def start(self) -> None:
         self._task = asyncio.create_task(self._sender())
 
@@ -112,6 +124,8 @@ class ClientStream:
             return
         if self.iq_only and magic != IQ_MAGIC:
             return
+        if magic == AUX_MAGIC and not self.aux_iq:
+            return                      # aux streams are strictly opt-in (?iqaux=1)
         if self.no_audio and magic == AUDIO_MAGIC:
             return
         if self.no_iq and magic == IQ_MAGIC:
@@ -123,8 +137,8 @@ class ClientStream:
             if len(frame) < self.FIFO_MIN_BYTES[magic]:
                 self._drop_fifo(magic, 1)
                 return
-            queue = self._iq if magic == IQ_MAGIC else self._audio
-            limit = self.IQ_LIMIT if magic == IQ_MAGIC else self.AUDIO_LIMIT
+            queue = self._iq if magic in (IQ_MAGIC, AUX_MAGIC) else self._audio
+            limit = self.IQ_LIMIT if magic in (IQ_MAGIC, AUX_MAGIC) else self.AUDIO_LIMIT
             offset = FIFO_SEQ_OFFSET[magic]
             if int.from_bytes(frame[offset:offset + 4], 'little') == 0:
                 self._drop_fifo(magic, len(queue))

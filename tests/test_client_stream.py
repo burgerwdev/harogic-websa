@@ -230,7 +230,7 @@ def test_every_frame_type_has_a_retention_policy():
     """
     encoded = {
         framer.MAGIC_FREQ, framer.MAGIC_POWR, framer.MAGIC_RTA, framer.MAGIC_AUDIO,
-        framer.MAGIC_BASEBAND,
+        framer.MAGIC_BASEBAND, framer.MAGIC_AUX,
     }
     assert encoded == set(FRAME_POLICY), (
         f'frame types without a policy: {sorted(encoded - set(FRAME_POLICY))}; '

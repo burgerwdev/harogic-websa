@@ -57,7 +57,8 @@ def make_ws_handler(app, dev):
         channel = ClientStream(ws, audio_only=request.query.get('audio') == '1',
                                no_audio=request.query.get('noaudio') == '1',
                                iq_only=request.query.get('iq') == '1',
-                               no_iq=request.query.get('noiq') == '1')
+                               no_iq=request.query.get('noiq') == '1',
+                               aux_iq=request.query.get('iqaux') == '1')
         channel.start()
         app[WS_CLIENTS].add(channel)
         # New client connects: push the most recent frequency axis (FREQ frames are only

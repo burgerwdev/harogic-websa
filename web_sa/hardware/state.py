@@ -130,6 +130,9 @@ class SdrParams:
     #: peak-hold with decay — a free PEP-style meter over the whole capture, not just the
     #: demod channel.
     sdr_peak_dbm: float = -200.0
+    #: Aux DDC channels (G1'): {int channel: {'enabled': bool, 'freq': Hz}}. Channels 2/3, each
+    #: with its own DSP handle; blocks stream as IQAX to ?iqaux=1 sockets only.
+    sdr_aux: dict = field(default_factory=dict)
     sdr_adm: dict = field(default_factory=dict)
 
 

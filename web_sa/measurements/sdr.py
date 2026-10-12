@@ -22,7 +22,7 @@ from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
-from .framer import BASEBAND_VERSION, encode_audio, encode_baseband, encode_rta
+from .framer import BASEBAND_VERSION, encode_audio, encode_aux, encode_baseband, encode_rta
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +233,9 @@ class SdrSession(MeasurementSession):
         self._adm = sb.c_void_p()
         self._adm_ok = False
         self._audio_buf = np.zeros(0, dtype=np.float32)
+        # Aux DDC channels (G1', official 3-channel parity): ch 2/3 each own a DSP handle so
+        # one channel's retune never redesigns another channel's filter (~180 ms each).
+        self._aux: dict = {}
         self._audio_seq = 0
         self._audio_reset_pending = False
         # Channelized baseband to the browser demodulator (IQBF). The sequence restarts after a
@@ -317,6 +320,7 @@ class SdrSession(MeasurementSession):
                 log.exception('SDR trigger stop failed during exit')
             _t('exit: trigger stopped, closing ADM')
             self._close_adm_locked()
+            self._close_aux_locked()
             # A single SWP_Configuration after IQS does not take effect: SWP_GetFullSweep
             # then returns BusDataError (-9). A mode reset first makes the restored SWP
             # configuration actually work (bench-verified).
@@ -1019,6 +1023,69 @@ class SdrSession(MeasurementSession):
                               ' the stream stays down until the next successful configure')
             raise
 
+    # ---------------- aux DDC channels (G1', official 3-channel parity) ----------------
+
+    AUX_CHANNELS = (2, 3)
+
+    def set_aux(self, channel: int, enabled: bool = True, freq_hz: float = 0.0) -> None:
+        """Enable/tune/disable one aux DDC channel.
+
+        Each channel owns its DSP handle: a shared handle would redesign every channel's
+        filter on any retune (~180 ms each, measured). The channel shifts the capture by
+        center - freq (the primary path's offset = center - listen sign, bench-verified) and
+        inherits the primary capture's decimate and packet geometry, so one IQS packet feeds
+        every channel with no extra bus traffic. Blocks are published as IQAX, which only
+        reaches sockets that subscribed with ?iqaux=1.
+        """
+        with self._lock:
+            channel = int(channel)
+            if channel not in self.AUX_CHANNELS:
+                raise ValueError(f'aux channel must be one of {self.AUX_CHANNELS}')
+            s = self.state
+            aux = s.sdr_aux.setdefault(channel, {'enabled': False, 'freq': 0.0})
+            if not enabled:
+                self._teardown_aux_locked(channel)
+                aux['enabled'] = False
+                aux['freq'] = 0.0
+                return
+            freq = float(freq_hz)
+            half = self._fs_in / 2.0 if self._fs_in else 0.0
+            if not (s.sdr_center_hz - half <= freq <= s.sdr_center_hz + half):
+                raise ValueError('aux freq outside the capture window')
+            aux['enabled'] = True
+            aux['freq'] = freq
+            self._reconfigure_aux_locked(channel)
+
+    def _reconfigure_aux_locked(self, channel: int) -> None:
+        old = self._aux.get(channel)
+        if old is not None:
+            try:
+                sb.dll.DSP_Close(sb.pointer(old['dsp']))
+            except Exception:
+                log.exception('DSP_Close(aux %s) failed', channel)
+        dsp = sb.c_void_p()
+        st = sb.dll.DSP_Open(sb.pointer(dsp))
+        if st != 0:
+            self._aux.pop(channel, None)
+            raise RuntimeError(f'DSP_Open(aux {channel}) status={st}')
+        entry = {'dsp': dsp, 'ddc': DdcChannel(dsp), 'seq': 0}
+        offset = float(self.state.sdr_center_hz) - float(self.state.sdr_aux[channel]['freq'])
+        entry['ddc'].configure(self._fs_in, offset, self._ddc.decimate,
+                               self._packet_samples * self._ddc_batch)
+        self._aux[channel] = entry
+
+    def _teardown_aux_locked(self, channel: int) -> None:
+        aux = self._aux.pop(channel, None)
+        if aux is not None and aux['dsp'].value:
+            try:
+                sb.dll.DSP_Close(sb.pointer(aux['dsp']))
+            except Exception:
+                log.exception('DSP_Close(aux %s) failed', channel)
+
+    def _close_aux_locked(self) -> None:
+        for channel in list(self._aux):
+            self._teardown_aux_locked(channel)
+
     def set_tune(self, listen_hz):
         """Cheap, state-only: the new offset is applied in the next step() with a software
         NCO, so tuning does not block the acquisition loop or reconfigure the DDC."""
@@ -1416,6 +1483,31 @@ class SdrSession(MeasurementSession):
                     if _TIME_ENABLED:
                         _t_phases['publish_encode'] = _t_phases.get('publish_encode', 0.0) + (time.perf_counter() - _t_phase) * 1e3
                         _t_phase = time.perf_counter()
+            # Aux channels (G1'): one IQS packet feeds every channel, so the marginal cost is
+            # the DSP_DDC work in the vendor library. Publish each enabled aux baseband only
+            # while an opt-in (?iqaux=1) socket is subscribed, as IQAX.
+            if self._aux and getattr(dev, 'aux_clients', 0):
+                for channel in sorted(self._aux):
+                    entry = self._aux[channel]
+                    ddc = entry['ddc']
+                    if not ddc._ready:
+                        continue
+                    try:
+                        ai, aq = ddc.process(src, n)
+                    except (RuntimeError, ValueError) as exc:
+                        log.warning('SDR: aux %s DDC failed: %s', channel, exc)
+                        self._teardown_aux_locked(channel)
+                        s.sdr_aux[channel]['enabled'] = False
+                        continue
+                    if not ai.size:
+                        continue
+                    entry['seq'] = (entry['seq'] % 0xFFFFFFFF) + 1
+                    aux_bb = np.empty(ai.size * 2, dtype=np.float32)
+                    aux_bb[0::2] = ai
+                    aux_bb[1::2] = aq
+                    frames.append(encode_aux(BASEBAND_VERSION, entry['seq'],
+                                             ddc.fs_out, float(s.sdr_aux[channel]['freq']),
+                                             aux_bb))
             # Arm the settle window BEFORE the demod so the AGC is held while the chain
             # transient is discarded; otherwise it winds up on audio that is never
             # published and the first real block comes out far too loud.

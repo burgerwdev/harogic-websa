@@ -325,6 +325,12 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('decimate', 'integer', 1, DECIMATE_MAX),
     ),
     'SET_SDR_TUNE': (ParamSpec('listen', 'number', unit='Hz', required=True),),
+    'SET_SDR_DDC': (
+        # G1' aux channels: 2/3, each its own DSP handle, IQAX to ?iqaux=1 sockets only.
+        ParamSpec('channel', 'integer', 2, 3, required=True),
+        ParamSpec('enabled', 'boolean'),
+        ParamSpec('freq', 'number', unit='Hz'),
+    ),
     'SET_SDR_DEMOD': (
         # A token, not a fixed list: the mode ids are the DSP plugin registry's (analog and
         # digital alike), and the Python fallback runs the subset it implements.
@@ -818,6 +824,17 @@ async def _h_set_sdr_tune(ctx: CommandContext, data: dict) -> bool:
     return True
 
 
+async def _h_set_sdr_ddc(ctx: CommandContext, data: dict) -> bool:
+    session = ctx.dev.session
+    if session is None or session.name != 'sdr':
+        raise CommandError('SET_SDR_DDC requires SDR mode', 'sdr_mode_required')
+    # A real DDC (re)configuration (~180 ms filter design) runs behind the hw lock.
+    await ctx.hw_call(session.set_aux, int(data['channel']),
+                      enabled=bool(data.get('enabled', True)),
+                      freq_hz=float(data.get('freq', 0.0) or 0.0))
+    return True
+
+
 async def _h_set_sdr_demod(ctx: CommandContext, data: dict) -> bool:
     session = ctx.dev.session
     if session is None or session.name != 'sdr':
@@ -929,6 +946,7 @@ _REGISTRY = (
     ('SET_MODE', _h_set_mode, (), None, True),
     ('SET_SDR', _h_set_sdr, (), None, True),
     ('SET_SDR_TUNE', _h_set_sdr_tune, (), None, True),
+    ('SET_SDR_DDC', _h_set_sdr_ddc, (), None, True),
     ('SET_SDR_DEMOD', _h_set_sdr_demod, (), None, True),
     ('SET_RTA', _h_set_rta, (), None, True),
     ('SET_TRIGGER', _h_set_trigger, (), None, True),

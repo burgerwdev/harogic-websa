@@ -71,6 +71,7 @@ class Client:
     #: The publisher asks whether a client wants raw IQ before the session encodes it.
     accepts_iq = False
     accepts_audio = True
+    accepts_aux = False
 
     def __init__(self):
         self.texts: list[str] = []
