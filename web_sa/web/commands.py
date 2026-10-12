@@ -323,11 +323,14 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     'SET_SDR_TUNE': (ParamSpec('listen', 'number', unit='Hz', required=True),),
     'SET_SDR_DDC': (
-        # G1' aux channels: 2/3, each its own DSP handle, IQAX to ?iqaux=1 sockets only.
-        ParamSpec('channel', 'integer', 2, 3, required=True),
+        # ux-2 DDC channels 1..3; ch1 cannot be disabled (listen fallback). IQAX streams
+        # for non-listen channels go to ?iqaux=1 sockets only.
+        ParamSpec('channel', 'integer', 1, 3, required=True),
         ParamSpec('enabled', 'boolean'),
         ParamSpec('freq', 'number', unit='Hz'),
+        ParamSpec('threshold', 'number', 3.0, 20.0, unit='dB'),
     ),
+    'SET_SDR_LISTEN': (ParamSpec('channel', 'integer', 1, 3, required=True),),
     'SET_SDR_DEMOD': (
         # A token, not a fixed list: the mode ids are the DSP plugin registry's (analog and
         # digital alike), and the Python fallback runs the subset it implements.
@@ -817,9 +820,20 @@ async def _h_set_sdr_ddc(ctx: CommandContext, data: dict) -> bool:
     if session is None or session.name != 'sdr':
         raise CommandError('SET_SDR_DDC requires SDR mode', 'sdr_mode_required')
     # A real DDC (re)configuration (~180 ms filter design) runs behind the hw lock.
-    await ctx.hw_call(session.set_aux, int(data['channel']),
+    await ctx.hw_call(session.set_channel, int(data['channel']),
                       enabled=bool(data.get('enabled', True)),
-                      freq_hz=float(data.get('freq', 0.0) or 0.0))
+                      freq_hz=(None if data.get('freq') is None else float(data['freq'])),
+                      threshold_offset_db=(None if data.get('threshold') is None
+                                           else float(data['threshold'])))
+    return True
+
+
+async def _h_set_sdr_listen(ctx: CommandContext, data: dict) -> bool:
+    session = ctx.dev.session
+    if session is None or session.name != 'sdr':
+        raise CommandError('SET_SDR_LISTEN requires SDR mode', 'sdr_mode_required')
+    # Zero device calls: only the stream labels move (ux-2).
+    await ctx.hw_call(session.set_listen, int(data['channel']))
     return True
 
 
@@ -935,6 +949,7 @@ _REGISTRY = (
     ('SET_SDR', _h_set_sdr, (), None, True),
     ('SET_SDR_TUNE', _h_set_sdr_tune, (), None, True),
     ('SET_SDR_DDC', _h_set_sdr_ddc, (), None, True),
+    ('SET_SDR_LISTEN', _h_set_sdr_listen, (), None, True),
     ('SET_SDR_DEMOD', _h_set_sdr_demod, (), None, True),
     ('SET_RTA', _h_set_rta, (), None, True),
     ('SET_TRIGGER', _h_set_trigger, (), None, True),

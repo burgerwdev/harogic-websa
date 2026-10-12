@@ -123,8 +123,9 @@ def build_status(dev) -> dict:
         # other SDR requests, otherwise the UI slot never confirms the user's choice and it
         # expires back to Auto after the TTL.
         'deemph_us': s.sdr_deemph_us,
-        # Aux DDC channels (G1'): echoed so a client (or the future panel) sees what is on.
-        'aux': {str(ch): dict(cfg) for ch, cfg in sorted(s.sdr_aux.items())},
+        # DDC channels (ux-2): echoed so a client sees tuning/activity/thresholds.
+        'listen_channel': int(s.sdr_listen_channel),
+        'chans': {str(ch): dict(cfg) for ch, cfg in sorted(s.sdr_chans.items())},
     }
     if s.mode == 'sdr':
         bandwidth = float(s.sdr_actual.get('bandwidth', 0.0) or s.span_hz)
