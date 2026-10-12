@@ -190,6 +190,19 @@ def sdr_spectrum_windows(center_hz: float, capture_center_hz: float,
     }
 
 
+def _packet_overflows(stream) -> bool:
+    """True when the packet's DeviceState flags an IF overflow (htra_api.h:1118).
+
+    IQS_GetIQStream_PM1 fills IQStream_TypeDef.DeviceState on every packet; the flag was
+    always there, just never read on the SDR path (the SWP path saw the same condition as
+    the -12 status)."""
+    ds = getattr(stream, 'DeviceState', None)
+    try:
+        return bool(int(getattr(ds, 'IFOverflow', 0) or 0))
+    except (TypeError, ValueError):
+        return False
+
+
 class SdrSession(MeasurementSession):
     name = 'sdr'
     #: SDR drives its own reference tracker (its level is the IQS level, not a swept profile).
@@ -271,6 +284,8 @@ class SdrSession(MeasurementSession):
         self._last_status = 0
         self._packets_ok = 0
         self._packets_err = 0
+        #: Packets whose DeviceState flagged an IF overflow (see _packet_overflows).
+        self._if_over_packets = 0
         self._transient_streak = 0
         self._timeout_streak = 0
         self._last_ok = 0.0
@@ -1225,7 +1240,16 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('get', st)
                 return [], []
             self._last_status = 0
-            s.status_warning = 0
+            # Per-packet IF-overflow bit (DeviceState_TypeDef.IFOverflow, htra_api.h:1118,
+            # "考虑并BBState或RFState"). PM1 already fills it with every packet; surfacing it
+            # as the same -12 the SWP path reports reuses the whole escape chain unchanged:
+            # the auto-ref protective Ref raise (auto_reference._decide keys on -12) and the
+            # client's '!IF overflow' warning + Ref pulse (ws.ts status_warning).
+            if _packet_overflows(stream):
+                s.status_warning = -12
+                self._if_over_packets += 1
+            else:
+                s.status_warning = 0
             self._transient_streak = 0
             self._timeout_streak = 0
             self._last_ok = now
