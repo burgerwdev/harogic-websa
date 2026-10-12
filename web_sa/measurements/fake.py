@@ -554,6 +554,9 @@ class FakeSdrSession(_FakeRtaBase):
         if finite.size:
             self.dev.observe_reference_peak(
                 'sdr', float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
+            # PEP meter (ux-3): the pan spectrum's own peak, so the SDR panel has a real
+            # number to show instead of the -200 default.
+            s.sdr_peak_dbm = round(float(finite[-1]), 1)
         digital = str(s.sdr_demod) in DIGITAL_DEMODS
         requested = max(1, int(s.sdr_decimate or 16))
         capture_decimate = min(requested, FAKE_MAX_CAPTURE_DECIMATE)

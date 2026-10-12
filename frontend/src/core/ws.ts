@@ -41,6 +41,7 @@ import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
   frameDetector, traceAlign, pointsStrategy,
 } from '../ui/swpState';
+import { confirmSdrChans } from '../ui/sdrChannels';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { resetViewport, setCapture } from '../ui/spectrumViewport';
@@ -434,6 +435,7 @@ export function updateStatus(s: any) {
   setSelect('select-vbw-mode', vbwMode.get());
   setSelect('select-spur', currentSpur.get());
   setSelect('select-detector', s.detector || 'auto');
+  confirmSdrChans(s);
   setSelect('select-framedet', frameDetector.get());
   setSelect('select-tracealign', traceAlign.get());
   setSelect('select-points-strategy', pointsStrategy.get());

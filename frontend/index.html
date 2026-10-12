@@ -290,6 +290,37 @@
                 <button class="btn" data-sdr-deemph="75">75µs</button>
                 <button class="btn" data-sdr-deemph="300">300µs</button>
               </div></div>
+            <div class="param-row"><label data-i18n="listen">Listen</label>
+              <div class="seg" id="listen-seg">
+                <span class="seg-btn on" data-chan="1">CH1</span>
+                <span class="seg-btn" data-chan="2">CH2</span>
+                <span class="seg-btn" data-chan="3">CH3</span>
+              </div></div>
+            <div class="chan-row listen" id="chan-row-1" data-chan="1">
+              <span class="chan-led" id="chan-led-1"></span><span class="chan-tag">CH1</span>
+              <input type="number" id="chan-freq-1" step="any" placeholder="MHz">
+              <span class="s-badge" id="chan-s-1">-</span></div>
+            <div class="chan-row" id="chan-row-2" data-chan="2">
+              <span class="chan-led" id="chan-led-2"></span><span class="chan-tag">CH2</span>
+              <input type="number" id="chan-freq-2" step="any" placeholder="MHz">
+              <span class="s-badge" id="chan-s-2">-</span>
+              <input type="range" class="chan-thr" id="chan-thr-2" min="3" max="20" step="1" value="6" data-i18n-title="ch_threshold" data-i18n-attr="title">
+              <span class="chan-x" id="chan-x-2" title="off">×</span></div>
+            <div class="chan-row" id="chan-row-3" data-chan="3">
+              <span class="chan-led" id="chan-led-3"></span><span class="chan-tag">CH3</span>
+              <input type="number" id="chan-freq-3" step="any" placeholder="MHz">
+              <span class="s-badge" id="chan-s-3">-</span>
+              <input type="range" class="chan-thr" id="chan-thr-3" min="3" max="20" step="1" value="6" data-i18n-title="ch_threshold" data-i18n-attr="title">
+              <span class="chan-x" id="chan-x-3" title="off">×</span></div>
+            <div class="param-row"><label data-i18n="ft8_source">FT8</label>
+              <select id="ft8-source" data-i18n-title="ft8_source_tip" data-i18n-attr="title">
+                <option value="listen" data-i18n="ft8_src_listen">Listen</option>
+                <option value="2">CH2</option>
+                <option value="3">CH3</option>
+              </select></div>
+            <div class="param-row pep-row"><label data-i18n="pep_peak">PEP</label>
+              <span class="cur-val" id="pep-val">-</span><span class="s-badge" id="pep-s">-</span>
+              <div class="pep-bar"><div class="pep-fill" id="pep-fill"></div></div></div>
             <div class="param-row"><label data-i18n="volume">Volume</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
               <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>

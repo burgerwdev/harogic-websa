@@ -36,6 +36,14 @@ self.onmessage = (event: MessageEvent) => {
     else { ws?.close(); ws = null; }
   } else if (msg.type === 'socket') {
     if (active && !ws) connect(lastUrl);
+  } else if (msg.type === 'url') {
+    // ux-4: FT8 source moved (listen <-> aux channel). Swap the socket, keep decoding.
+    const next = String(msg.url || '');
+    if (next && next !== lastUrl) {
+      lastUrl = next;
+      if (ws) { ws.close(); ws = null; }
+      if (active) connect(next);
+    }
   }
 };
 

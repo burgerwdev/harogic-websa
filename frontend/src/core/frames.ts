@@ -29,6 +29,8 @@ export const MAGIC_POWR = 'POWR';
 export const MAGIC_RTAF = 'RTAF';
 export const MAGIC_AUDIO = 'AUDF';
 export const MAGIC_BASEBAND = 'IQBF';
+/** Aux-DDC baseband (ux-2): identical layout to IQBF, only reaches ?iqaux=1 sockets. */
+export const MAGIC_AUX = 'IQAX';
 
 export const COMMON_HEADER_BYTES = 16;      // magic + version + points + sweep_ms
 export const RTA_HEADER_BYTES = 24;         // magic + ver + pts + wfLen + maxD + startHz
@@ -99,7 +101,7 @@ export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
 	if (data.byteLength < 4) return null;
 	const magic = frameMagic(data);
 	if (magic === MAGIC_AUDIO) return decodeAudio(data);
-	if (magic === MAGIC_BASEBAND) return decodeBaseband(data);
+	if (magic === MAGIC_BASEBAND || magic === MAGIC_AUX) return decodeBaseband(data);
 	if (data.byteLength < COMMON_HEADER_BYTES) return null;
 	const head = new DataView(data, 4, 12);
 	const version = head.getUint32(0, true);

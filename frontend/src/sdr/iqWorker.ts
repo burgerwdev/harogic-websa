@@ -22,6 +22,9 @@ import { GgMorseEngine } from '../dsp/ggmorseEngine';
 
 let ws: WebSocket | null = null;
 let wsUrl = '';
+// FT8 background decode (ux-4): when non-empty, the FT8 decoder owns an ?iqaux=1 socket and
+// decodes that channel while the listen path demodulates something else (1+1 parallel).
+let ft8AuxUrl = '';
 let wasmUrl = '';
 let module: DspModule | null = null;
 /// The demodulator: one handle for both paths (analog PCM, digital text).
@@ -221,14 +224,14 @@ function startDecoder(): void {
   // decode worker runs the WASM at its own pace, and neither can stall the other. Its own socket,
   // so a decode attempt cannot delay the audio either (see `ft8Worker`).
   const channel = new MessageChannel();
-  decoderStream?.postMessage({ type: 'init', url: wsUrl, port: channel.port1 }, [channel.port1]);
+  decoderStream?.postMessage({ type: 'init', url: ft8AuxUrl || wsUrl, port: channel.port1 }, [channel.port1]);
   decoder.postMessage({ type: 'init', wasmUrl, port: channel.port2 }, [channel.port2]);
 }
 
 /** Tell the decoder worker what to decode (and whether to bother). */
 function pushDecoderParams(): void {
   if (!decoder || !decoderReady) return;
-  const wanted = enabled && params?.mode === 'ft8';
+  const wanted = enabled && (params?.mode === 'ft8' || Boolean(ft8AuxUrl));
   decoderStream?.postMessage({ type: 'active', enabled: Boolean(wanted) });
   decoder.postMessage({
     type: 'configure',
@@ -935,6 +938,11 @@ self.onmessage = (event: MessageEvent) => {
       syncCwDecoder();
       syncPipeline();
     }
+  } else if (msg.type === 'ft8-url') {
+    // ux-4: the FT8 source moved to an aux channel — forward the target URL to the decoder
+    // stream worker (it owns its own socket). Never touches this worker's main socket.
+    ft8AuxUrl = String(msg.auxUrl || '');
+    decoderStream?.postMessage({ type: 'url', url: ft8AuxUrl || wsUrl });
   } else if (msg.type === 'volume') {
     volume = Number(msg.value) || 0;
     pipeline?.setVolume(volume);
