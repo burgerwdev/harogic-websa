@@ -20,6 +20,7 @@ Bench, fixture and gate scripts. Each directory has one purpose.
     python3 tools/pluto_tx.py --list          # the modes and their tool
     python3 tools/pluto_tx.py --dry-run-all   # build every mode, no radio
     python3 tools/pluto_tx.py nfm --lo 411e6 --gain -10
+    python3 tools/pluto_tx.py wfm --rds-rt 'CQ DE N0CALL, bench RDS test' --rds-pi 0x1234
     python3 tools/pluto_tx.py usb --wav tools/bench/audio/speech.wav --seconds 60
     python3 tools/pluto_tx.py drm --iq drm_iq.wav --seconds 600
     python3 tools/pluto_tx.py sstv --mode 'Robot 36' --callsign 'CQ WE0BSA'
@@ -38,6 +39,29 @@ and is peak-normalised. `--voice` adds the real-transmitter SSB chain (300-2700 
 band-pass + peak compression) for USB/LSB voice tests.
 `tools/bench/audio/speech.wav` is the committed voice sample (22050 Hz mono, 11.8 s):
 it is the default audio for the USB/LSB voice tests.
+
+`wfm --rds-rt TEXT` makes the transmission a broadcast station: RDS Group 2A
+RadioText, a Group 0A PS name and an optional Group 4A clock group, in biphase BPSK
+on the 57 kHz subcarrier of the composite. `--rds-ps`, `--rds-pi`, `--rds-pty` and
+`--rds-deviation-hz` set the name, the code, the type and the injection (2 kHz by
+default). Repeat `--rds-rt`, or separate the texts with commas, to rotate messages;
+each stays up for whole passes, at least two, because a receiver wants the repetition
+of a segment. Repeat `--rds-ps` to rotate the station name as well, which a real
+station does not do. `tools/pluto/rds_encode.py` is the encoder; Open Data, EON and
+the alternative frequencies are not implemented. RDS is wfm-only, because 57 kHz does
+not fit a narrowband FM channel.
+
+A pass is the 16 RadioText segments as one burst of 1.4 s, then four PS groups, so a
+pass takes 1.75 s. The burst lets a receiver collect the whole text before a marginal
+signal drops a segment. The 19 kHz pilot belongs to the transmission
+(`--pilot-deviation-hz`, 0 to leave it out): EN 50067 locks the subcarrier to its
+third harmonic, so a radio that recovers its RDS clock from the pilot needs one. The
+pilot, the data and the audio share the deviation budget, so the composite is scaled
+back to `--deviation-hz` peak. `--no-audio` sends the pilot and RDS alone, the best
+RDS test signal, because a tone at full deviation spends the modulation that the
+radio has to carry on an empty 1 kHz. The tool encodes the transmission as it goes;
+`--rds-buffer` builds one rotation and lets the device repeat it instead, which cannot
+gap, for a host that is slow to feed the link.
 
 The per-mode generators live in `tools/pluto/`. Run one directly only when the
 wrapper cannot do what you need.

@@ -103,7 +103,10 @@ def add_radio_args(parser: argparse.ArgumentParser, *, default_lo: float,
                    default_gain: float, default_rate: float = MIN_TX_RATE_HZ,
                    default_scale: float = DAC_FULL_SCALE, dry_run_help: str) -> None:
     """Add the radio arguments every bench tool shares."""
-    parser.add_argument('--lo', type=float, default=default_lo, help='TX LO in Hz')
+    parser.add_argument('--lo', type=float, default=default_lo,
+                        help='TX LO in Hz. An unextended AD9363 tunes 325-3800 MHz; a '
+                             'frequency-extended Pluto (firmware compatible=ad9364) reaches '
+                             '70 MHz-6 GHz')
     parser.add_argument('--rate', type=float, default=default_rate,
                         help=f'TX sample rate in Hz (driver floor {MIN_TX_RATE_HZ:.0f})')
     parser.add_argument('--gain', type=float, default=default_gain, help='TX hardware gain in dB (max 0)')
@@ -136,8 +139,27 @@ class Radio:
 
         install_signal_handlers()
         self.sdr = adi.Pluto(self.args.uri)
+        try:
+            self.configure()
+        except BaseException:
+            # A refused LO used to abort with the crystal still trimmed, and the unit
+            # stayed 1.98 ppm off until a reboot: the trim must come back out here.
+            self.restore_xo()
+            raise
+        return self
+
+    def configure(self) -> None:
+        """Point the radio at the requested LO, rate and gain.
+
+        The crystal trim comes first: the driver derives the LO and the sample rate
+        from it.
+        """
         self.xo_restore = trim_reference_clock(self.sdr, self.args.xo_ppm, not self.args.no_xo_trim)
-        self.sdr.tx_lo = int(self.args.lo)
+        lo = int(self.args.lo)
+        try:
+            self.sdr.tx_lo = lo
+        except (OSError, ValueError) as exc:
+            raise SystemExit(self.lo_refused_message(lo, exc)) from None
         try:
             self.sdr.sample_rate = int(self.args.rate)
         except ValueError as exc:
@@ -145,7 +167,27 @@ class Radio:
                   f'keeping {int(self.sdr.sample_rate)} Hz', file=sys.stderr)
         self.rate = int(self.sdr.sample_rate)
         self.sdr.tx_hardwaregain_chan0 = float(self.args.gain)
-        return self
+
+    def lo_refused_message(self, lo: int, exc: Exception) -> str:
+        """The message for an LO the driver refuses, with the range the unit reports."""
+        model = 'unknown'
+        try:
+            model = self.sdr._ctrl.ctx.attrs.get('ad9361-phy,model', 'unknown')
+        except Exception:  # pragma: no cover - a driver without context attributes
+            pass
+        return (f'--lo {lo / 1e6:.6f} MHz was refused by the Pluto driver ({exc}).\n'
+                f'This unit reports ad9361-phy,model={model}: an unextended AD9363 tunes '
+                f'325-3800 MHz.\n'
+                f'A frequency-extended Pluto (firmware compatible=ad9364) tunes 70 MHz-6 GHz: '
+                f'check `fw_printenv compatible` on it and power-cycle after changing it.')
+
+    def restore_xo(self) -> None:
+        """Put the reference crystal back, once."""
+        if self.sdr is None or self.xo_restore is None:
+            return
+        value, self.xo_restore = self.xo_restore, None
+        write_xo_correction(self.sdr, value)
+        print(f'xo_correction restored to {value} Hz')
 
     def __exit__(self, *_exc) -> bool:
         if self.sdr is not None:
@@ -153,16 +195,41 @@ class Radio:
                 self.sdr.tx_destroy_buffer()
             except Exception:  # pragma: no cover - driver teardown is best effort
                 pass
-            if self.xo_restore is not None:
-                write_xo_correction(self.sdr, self.xo_restore)
-                print(f'xo_correction restored to {self.xo_restore} Hz')
+            self.restore_xo()
         print('TX stopped.')
         return False
 
     def push_cyclic(self, samples) -> None:
-        """Push one buffer and let the Pluto repeat it, with no host-side gaps."""
+        """Push one buffer and let the Pluto repeat it, with no host-side gap.
+
+        A stale buffer makes the allocation fail with 'Device or resource busy', so the
+        call drops one first, best effort, and then retries once. A buffer that is too
+        large gets a message of its own instead of a bare driver error.
+        """
         self.sdr.tx_cyclic_buffer = True
-        self.sdr.tx(samples)
+        for attempt in (1, 2):
+            try:
+                self.sdr.tx_destroy_buffer()
+            except Exception:  # pragma: no cover - nothing to destroy
+                pass
+            try:
+                self.sdr.tx(samples)
+                return
+            except OSError as exc:
+                # 'Device or resource busy' means another transmitter holds the Pluto: a
+                # second pluto_tx, the app, or a killed process with a buffer still in
+                # place. The destroy above clears the last case, so one retry separates
+                # stale state from a live second user.
+                if attempt == 2:
+                    raise SystemExit(
+                        f'the Pluto refused a cyclic buffer of {samples.size * 4 / 1e6:.0f} MB\n'
+                        f'({samples.size / 1e6:.0f} MSamples, {exc}).\n'
+                        f'Check for another transmitter first (`ps aux | grep pluto_tx`): a '
+                        f'second run holds the device. If the buffer is too large, this unit '
+                        f'takes 28 s of baseband (58 MB as the radio counts it, 2 bytes per '
+                        f'sample) and refuses 40 s (83 MB): use fewer RadioTexts, a shorter '
+                        f'--rds-rt-cycle-seconds, or --rds-buffer off.'
+                    ) from None
 
     def open_stream(self) -> None:
         """Switch to chunked one-shot pushes."""
