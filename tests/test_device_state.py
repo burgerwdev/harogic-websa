@@ -309,3 +309,37 @@ def test_manual_attenuation_does_not_disable_the_overflow_escape():
     dev.state.status_warning = -12
     assert dev.nudge_reference_out_of_overflow()
     assert dev.auto_ref.pending == ('std', -35.0)
+
+
+def test_preset_restores_the_swept_capability_defaults():
+    """frame_detector/trace_align/points_strategy follow the same preset flow as
+    rbw_mode/detector (they are plain SwpParams fields echoed by STATUS)."""
+    dev = HarogicDevice()
+    dev.state.caps = DeviceCapabilities.from_model(67)
+    dev.preset_defaults = {
+        'center': 1e9, 'span': 100e6, 'ref': 0.0, 'rbw': 250e3, 'vbw': 300e3,
+        'points': 1001, 'atten': -1, 'window': 1, 'rbw_mode': 'auto',
+        'vbw_mode': 'bypass', 'spur': 'bypass', 'preamp': 0, 'ifgain': 2,
+        'gain_strategy': 0, 'sweep_time_mode': 0, 'sweep_time': 0.0,
+        'frame_detector': 'average', 'trace_align': 'center',
+        'points_strategy': 'bin_size',
+    }
+    dev.preset_state()
+    s = dev.state
+    assert s.frame_detector == 'average'
+    assert s.trace_align == 'center'
+    assert s.points_strategy == 'bin_size'
+
+
+def test_preset_without_the_new_keys_keeps_the_previous_behavior():
+    dev = HarogicDevice()
+    dev.state.caps = DeviceCapabilities.from_model(67)
+    dev.preset_defaults = {'center': 1e9, 'span': 100e6, 'ref': 0.0, 'rbw': 250e3,
+                           'vbw': 300e3, 'points': 1001, 'atten': -1, 'window': 1,
+                           'rbw_mode': 'auto', 'vbw_mode': 'bypass', 'spur': 'bypass',
+                           'preamp': 0, 'ifgain': 2, 'gain_strategy': 0,
+                           'sweep_time_mode': 0, 'sweep_time': 0.0}
+    dev.preset_state()
+    assert dev.state.frame_detector == 'device_default'
+    assert dev.state.trace_align == 'start'
+    assert dev.state.points_strategy == 'speed'

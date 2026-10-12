@@ -24,7 +24,7 @@
 export const UI_SCALE_KEY = 'web-sa-ui-scale';
 
 /** The offered steps: below 1 to fit more on a small panel, above 1 for large/high-res ones. */
-export const UI_SCALES = [0.8, 1, 1.25, 1.5, 2] as const;
+export const UI_SCALES = [0.5, 0.65, 0.8, 1, 1.25, 1.5, 2] as const;
 
 /** Sentinel for the scale selector: follow the screen again instead of a stored value. */
 export const UI_SCALE_AUTO = 'auto';

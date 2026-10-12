@@ -36,6 +36,32 @@ T = sb  # type aliases
 # vendor FFT is ~26k) and costs ~1.5 MB.
 _SWP_TRACE_MAX = 65536
 
+
+# Header enum value -> wire name, for reading the device's own defaults back on preset
+# (load_preset_defaults) and for the tests. Forward maps live inside _profile().
+FRAME_DETECTOR_NAMES = {
+    int(v): name for name, v in (
+        ('sample', sb.Detector_TypeDef.Detector_Sample),
+        ('pos_peak', sb.Detector_TypeDef.Detector_PosPeak),
+        ('average', sb.Detector_TypeDef.Detector_Average),
+        ('neg_peak', sb.Detector_TypeDef.Detector_NegPeak),
+        ('max_power', sb.Detector_TypeDef.Detector_MaxPower),
+        ('raw_frames', sb.Detector_TypeDef.Detector_RawFrames),
+        ('rms', sb.Detector_TypeDef.Detector_RMS),
+        ('auto_peak', sb.Detector_TypeDef.Detector_AutoPeak),
+    )
+}
+TRACE_ALIGN_NAMES = {
+    int(sb.TraceAlign_TypeDef.NativeAlign): 'native',
+    int(sb.TraceAlign_TypeDef.AlignToStart): 'start',
+    int(sb.TraceAlign_TypeDef.AlignToCenter): 'center',
+}
+POINTS_STRATEGY_NAMES = {
+    int(sb.TracePointsStrategy_TypeDef.SweepSpeedPreferred): 'speed',
+    int(sb.TracePointsStrategy_TypeDef.PointsAccuracyPreferred): 'accuracy',
+    int(sb.TracePointsStrategy_TypeDef.BinSizeAssined): 'bin_size',   # vendor typo, kept verbatim
+}
+
 #: Consecutive transport errors (sdk_bindings.LINK_LOST_STATUS) with no successful SDK call in
 #: between before the USB link is declared lost. A single bus error is tolerated because the
 #: vendor remedies it by re-issuing the configuration; a physical unplug produces a run of them
@@ -266,6 +292,12 @@ class HarogicDevice:
                     vbw_mode=vbw_modes.get(int(getattr(p.VBWMode, 'value', p.VBWMode)), 'bypass'),
                     spur=spur_modes.get(int(getattr(p.SpurRejection, 'value', p.SpurRejection)), 'bypass'),
                     detector='auto',
+                    frame_detector=FRAME_DETECTOR_NAMES.get(
+                        int(getattr(p.Detector, 'value', p.Detector)), 'device_default'),
+                    trace_align=TRACE_ALIGN_NAMES.get(
+                        int(getattr(p.TraceAlign, 'value', p.TraceAlign)), 'start'),
+                    points_strategy=POINTS_STRATEGY_NAMES.get(
+                        int(getattr(p.TracePointsStrategy, 'value', p.TracePointsStrategy)), 'speed'),
                     preamp=int(getattr(p.Preamplifier, 'value', p.Preamplifier)),
                     ifgain=int(p.IFGainGrade),
                     gain_strategy=int(getattr(p.GainStrategy, 'value', p.GainStrategy)),
@@ -340,6 +372,9 @@ class HarogicDevice:
             s.vbw_mode = d['vbw_mode']
             s.spur_mode = d['spur']
             s.detector = d.get('detector', 'auto')
+            s.frame_detector = d.get('frame_detector', 'device_default')
+            s.trace_align = d.get('trace_align', 'start')
+            s.points_strategy = d.get('points_strategy', 'speed')
             s.preamplifier = d['preamp']
             s.ifgain = d['ifgain']
             s.gain_strategy = d['gain_strategy']
