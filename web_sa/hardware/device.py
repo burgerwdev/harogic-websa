@@ -382,7 +382,10 @@ class HarogicDevice:
             p.RBWMode = T.RBWMode_TypeDef.RBW_OnePercentSpan
         else:
             p.RBWMode = T.RBWMode_TypeDef.RBW_Manual
-            p.RBW_Hz = max(100.0, min(10e6, s.rbw_hz))
+            # Bench probe (probe_caps_rbw.py, findings/rea-deep-2.md addendum): the SAN-90
+            # accepts and echoes manual RBW down to 1 Hz (actual == requested at 1/3/10 Hz);
+            # the old 100 Hz floor was our own clamp, not the device's.
+            p.RBW_Hz = max(1.0, min(10e6, s.rbw_hz))
         p.VBWMode = {'equal': T.VBWMode_TypeDef.VBW_EqualToRBW,
                      'tenth': T.VBWMode_TypeDef.VBW_TenPercentRBW,
                      'bypass': T.VBWMode_TypeDef.VBW_TenTimesRBW,
@@ -410,7 +413,12 @@ class HarogicDevice:
         p.EnableReferenceClockOut = 1 if s.refclk_out else 0
         p.SweepTimeMode = T.SweepTimeMode_TypeDef(s.sweep_time_mode)
         p.SweepTime = float(s.sweep_time)   # Manual 时绝对秒; xN 时倍率; 其他模式忽略
-        p.TracePoints = int(max(51, min(4000, s.points_req)))
+        # TracePoints is a *request*: with SweepSpeedPreferred the device derives the actual
+        # count (bench probe: 12160-14488 points regardless of a 4001..100001 request), so
+        # only bound the wire value by the capability row and let SWP_TraceInfo report what
+        # the device really produced (fetch_sweep already sizes for _SWP_TRACE_MAX).
+        points_cap = int(getattr(s.caps, 'points_max', 4000) or 4000)
+        p.TracePoints = int(max(51, min(points_cap, s.points_req)))
         p.TracePointsStrategy = {
             'speed': T.TracePointsStrategy_TypeDef.SweepSpeedPreferred,
             'accuracy': T.TracePointsStrategy_TypeDef.PointsAccuracyPreferred,

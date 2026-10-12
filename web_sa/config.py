@@ -108,7 +108,7 @@ class DeviceCapabilities:
     #: a new SAN model must not require editing the validation chain (report finding E-2).
     rbw_max_hz: float = 10e6
     vbw_max_hz: float = 10e6
-    points_max: int = 4000
+    points_max: int = 16000
     atten_max: int = 33
     ifgain_max: int = 3
     decimate_max: int = 2048

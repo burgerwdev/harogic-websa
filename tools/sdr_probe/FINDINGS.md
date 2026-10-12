@@ -114,3 +114,30 @@ The whole chain is feasible and cheap:
 in NumPy] → audio + panadapter/waterfall from a NumPy FFT of the wideband IQ`.
 A decimate of 16–64 (3.9–1 MSPS) is plenty for a live panadapter plus narrowband
 demod, and DDC+RTTY/FT8 DSP cost is a few percent of realtime.
+
+## 12. Capability + SWP limits on API 0.55.100 (`probe_caps_rbw.py`, 2026-10-12)
+
+Device GetDecimateFactorList / GetBusBandwidth (new in 0.55.100):
+
+| Field | Value |
+|---|---|
+| `decimate_factors` | 1, 2, 4 ... 2048 (pow2 only, matches the old table) |
+| `bus_bandwidth` | 625,000,000 (625 MB/s, USB3) |
+| MFW raw | 14189 = 0.55.109 (three-part decode verified on the real unit) |
+
+SWP profile probe (Start/Stop 999.9-1000.1 MHz):
+
+| Probe | Result |
+|---|---|
+| Manual RBW 1/3/10 Hz | **accepted, echoed exactly** (device clamps VBW to 10xRBW); the old 100 Hz floor was ours |
+| TracePoints 4001/10001/100001 request | device derives its own count: 12160 (RBW 100) .. **14488** (RBW 1-10) |
+| Frame Detector Sample/Average/MaxPower/RawFrames | all status 0 (accepted) |
+| TraceType Clear/MaxHold/MinHold | all accepted |
+| FFTExecutionStrategy Auto/FPGAOnly/CPUOnly-HighResOcc | all accepted; FPGAOnly lowers derived points to 2280 |
+| RBW OnePercentSpan / OneThousandthSpan | RBW = 2000 / 200 on a 200 kHz span (exactly 1% / 0.1%) |
+| EstimateMinSweepTime | reported 0.0 in every probe configuration (do not rely on it) |
+
+Consequences applied in code: manual RBW floor 100 -> 1 Hz, points request clamp now
+follows caps.points_max (16000), the display-side "actual points" stays whatever
+SWP_TraceInfo reports. I3 (NativeIQSampleRate) stays dead on this unit:
+ADC_VariableRateEn = 0 (section 1).

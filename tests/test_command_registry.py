@@ -168,7 +168,7 @@ def test_schema_resolves_capability_bounds():
     assert set(schema) == EXPECTED
 
     rbw = next(p for p in schema['SET_RBW']['params'] if p['name'] == 'rbw')
-    assert rbw['max'] == 2e6 and rbw['min'] == 100.0 and rbw['unit'] == 'Hz'
+    assert rbw['max'] == 2e6 and rbw['min'] == 1.0 and rbw['unit'] == 'Hz'
     rta_span = next(p for p in schema['SET_RTA']['params'] if p['name'] == 'span')
     assert rta_span['max'] == 20e6
 
@@ -184,7 +184,7 @@ def test_schema_without_a_device_still_lists_the_commands():
     assert set(schema) == EXPECTED
     rbw = next(p for p in schema['SET_RBW']['params'] if p['name'] == 'rbw')
     assert rbw['max'] is None      # capability-backed: unknown without a device
-    assert rbw['min'] == 100.0
+    assert rbw['min'] == 1.0
 
 
 def test_validation_follows_the_schema_not_a_second_copy():

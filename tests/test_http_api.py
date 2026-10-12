@@ -179,7 +179,7 @@ async def test_schema_endpoint_describes_the_commands():
     commands = body['commands']
     assert 'SET_RBW' in commands and 'STATUS' in commands
     rbw = next(p for p in commands['SET_RBW']['params'] if p['name'] == 'rbw')
-    assert rbw['unit'] == 'Hz' and rbw['min'] == 100.0
+    assert rbw["unit"] == "Hz" and rbw["min"] == 1.0
     assert rbw['max'] == DeviceCapabilities.from_model(67).rbw_max_hz
     assert commands['SET_WINDOW']['swp_only'] is True
     assert commands['STATUS']['needs_device'] is False

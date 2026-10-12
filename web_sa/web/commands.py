@@ -273,7 +273,7 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('mode', 'choice',
                   choices=('manual', 'auto', 'one_thousandth_span', 'one_percent_span'),
                   default='auto'),
-        ParamSpec('rbw', 'number', 100.0, RBW_MAX, unit='Hz',
+        ParamSpec('rbw', 'number', 1.0, RBW_MAX, unit='Hz',
                   required_if=_yes('mode', 'manual')),
     ),
     'SET_VBW': (
