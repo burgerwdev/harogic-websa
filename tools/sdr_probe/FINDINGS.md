@@ -178,3 +178,11 @@ watchdog (fatal, recovery.py) then takes the worker down; a wall-clock bound
 (seconds*4+30) now returns a short capture instead, but the worker stall until that
 deadline is real. OPEN: needs vendor clarification on TriggerLevel semantics/units for
 N90 (maybe dBFS-relative, maybe unsupported on this model) before the feature is usable.
+
+## 15. Version display vs the official About panel (`probe_version_check.py`)
+
+Real service + real unit, STATUS vs sa_ver.png: **every decoded field matches** -
+N90 R0 / UID 5230500C00380025 / MCU 0.55.109 / FPGA 0.55.104 / PMU 0.1.15(271) /
+AGU 0.1.5(261) / API 0.55.100. Bonus: the screenshot's `HCD 8` row is the
+DeviceInfo.HardwareVersion field (u16, value 8 on this unit) - the last open
+version-display question from findings/version-display.md is now closed.
