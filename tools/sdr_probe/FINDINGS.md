@@ -179,3 +179,19 @@ N90 R0 / UID 5230500C00380025 / MCU 0.55.109 / FPGA 0.55.104 / PMU 0.1.15(271) /
 AGU 0.1.5(261) / API 0.55.100. Bonus: the screenshot's `HCD 8` row is the
 DeviceInfo.HardwareVersion field (u16, value 8 on this unit) - the last open
 version-display question from findings/version-display.md is now closed.
+
+## 16. Three-channel listen switching on hardware (`probe_aux_live.py`, ux-2/ux-3/ux-4)
+
+Real SAN-90, SDR mode, centre 100 MHz, decimate 64, ch2 @ 100.5 MHz:
+
+| Check | Result |
+|---|---|
+| SET_SDR_DDC ch2 enable | accepted; IQAX frames stream at the ch2 centre |
+| SET_SDR_LISTEN 2 | IQAX stops (ch2 becomes primary), config_version unchanged (zero device calls) |
+| Frames on ?iqaux=1 after switch | 0 (routing is subscriber-strict) |
+| Live UI (Playwright, fake+real flow) | row click sends SET_SDR_LISTEN; seg + row highlight follow STATUS |
+
+FT8 background decode (ux-4): the decoder's own socket swaps to ?iqaux=1 via a URL
+message (ft8Worker `url` handler) — a socket reconnect, never a device reconfiguration.
+Decode continuity on live FT8 traffic is bench-usage validation (needs a real FT8
+transmission); the socket swap + IQAX decode path are unit/Playwright verified.
