@@ -21,6 +21,7 @@ from . import sdk_bindings as sb
 from .auto_reference import AutoReferenceController
 from .errors import DeviceError  # noqa: F401 (re-exported for the business layer)
 from .state import DeviceState, RtaParams, SdrParams, TriggerParams  # noqa: F401 (re-export)
+from .version_info import fmt_fw3, fmt_pmu_agu, model_name
 
 log = logging.getLogger(__name__)
 
@@ -109,14 +110,23 @@ class HarogicDevice:
             self._handle_ok = True
             self.state.pnm_supported = sb.PNM_SUPPORTED
             di = bi.DeviceInfo
-            self.state.label = 'UID:%012X Model:%d HW:%d MFW:%d FFW:%d' % (
-                di.DeviceUID, di.Model, di.HardwareVersion, di.MFWVersion, di.FFWVersion)
+            # Display decoding mirrors the official SAStudio About panel (see version_info.py):
+            # model enum name + packed-firmware fields; raw values stay in device_detail too.
+            name = model_name(di.Model)
+            self.state.label = '%s UID:%016X HW:%d MCU %s FPGA %s' % (
+                name, di.DeviceUID, di.HardwareVersion,
+                fmt_fw3(di.MFWVersion), fmt_fw3(di.FFWVersion))
             self.state.caps = DeviceCapabilities.from_model(di.Model, sb.PNM_SUPPORTED)
             self.state.device_detail = dict(
-                uid='%012X' % di.DeviceUID, model=di.Model, hw=di.HardwareVersion,
-                mfw=di.MFWVersion, ffw=di.FFWVersion,
-                bus_speed=bi.BusSpeed, bus_ver=bi.BusVersion,
-                api_ver=bi.APIVersion, warnings=bi.Warnings, errors=bi.Errors)
+                uid='%016X' % di.DeviceUID, model=di.Model, model_name=name,
+                hw=di.HardwareVersion,
+                mfw=di.MFWVersion, mfw_str=fmt_fw3(di.MFWVersion),
+                ffw=di.FFWVersion, ffw_str=fmt_fw3(di.FFWVersion),
+                bus_speed=bi.BusSpeed, bus_ver=bi.BusVersion, bus_str=fmt_fw3(bi.BusVersion),
+                api_ver=bi.APIVersion, api_str=fmt_fw3(bi.APIVersion),
+                pmu=di.PMUVersion, pmu_str=fmt_pmu_agu(di.PMUVersion),
+                agu=di.AGUVersion, agu_str=fmt_pmu_agu(di.AGUVersion),
+                warnings=bi.Warnings, errors=bi.Errors)
             self.state.connected = True
             self.state.last_error = ''
             self.configure_swp()

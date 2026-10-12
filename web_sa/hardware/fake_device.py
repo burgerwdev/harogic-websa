@@ -17,6 +17,7 @@ import numpy as np
 from ..config import DEFAULT_SPAN_HZ, DeviceCapabilities
 from .auto_reference import AutoReferenceController
 from .state import DeviceState, RtaParams, SdrParams, TriggerParams
+from .version_info import fmt_fw3, fmt_pmu_agu, model_name
 
 #: Model the fake reports; SAN-90 so the frontend enables every control.
 FAKE_MODEL = 67
@@ -49,10 +50,22 @@ class FakeDevice:
         caps = DeviceCapabilities.from_model(FAKE_MODEL)
         self.state.connected = True
         self.state.caps = caps
-        self.state.label = f'FAKE Model:{FAKE_MODEL}'
-        self.state.device_detail = dict(uid='FAKE0000000000', model=FAKE_MODEL, hw=1,
-                                        mfw=1, ffw=1, bus_speed=3, bus_ver=1, api_ver=1,
-                                        warnings=0, errors=0)
+        # Same decoded shape as the real device (device.py open()), so the fake-backend e2e
+        # exercises the official-style About rendering (N90 R0 / packed firmware strings).
+        name = model_name(FAKE_MODEL)
+        fake_mfw = (55 << 8) | 109          # decodes to 0.55.109, the bench unit's MCU
+        fake_ffw = (55 << 8) | 104          # 0.55.104, the bench unit's FPGA
+        self.state.label = '%s (FAKE) UID:FAKE00000000000000 HW:1 MCU %s FPGA %s' % (
+            name, fmt_fw3(fake_mfw), fmt_fw3(fake_ffw))
+        self.state.device_detail = dict(
+            uid='FAKE00000000000000', model=FAKE_MODEL, model_name=name, hw=1,
+            mfw=fake_mfw, mfw_str=fmt_fw3(fake_mfw),
+            ffw=fake_ffw, ffw_str=fmt_fw3(fake_ffw),
+            bus_speed=3, bus_ver=1, bus_str=fmt_fw3(1),
+            api_ver=1, api_str=fmt_fw3(1),
+            pmu=0x010F, pmu_str=fmt_pmu_agu(0x010F),
+            agu=0x0105, agu_str=fmt_pmu_agu(0x0105),
+            warnings=0, errors=0)
         self.state.has_docxo = True
         self.state.pnm_supported = True
         self.state.last_error = ''

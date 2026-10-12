@@ -450,13 +450,15 @@ export function updateStatus(s: any) {
   const dd = s.device_detail;
   if (dd) {
     const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    set('dev-model', t('model') + ' ' + dd.model);
+    // Decoded strings come from the backend (version_info.py, mirrors the official About panel);
+    // fall back to the raw numbers when an older backend omits them.
+    set('dev-model', t('model') + ' ' + (dd.model_name || dd.model));
     set('dev-uid', dd.uid);
     set('dev-hw', dd.hw);
-    set('dev-mfw', dd.mfw);
-    set('dev-ffw', dd.ffw);
-    set('dev-bus', dd.bus_speed + ' / v' + dd.bus_ver);
-    set('dev-api', 'v' + dd.api_ver);
+    set('dev-mfw', dd.mfw_str || dd.mfw);
+    set('dev-ffw', dd.ffw_str || dd.ffw);
+    set('dev-bus', dd.bus_speed + ' / ' + (dd.bus_str || ('v' + dd.bus_ver)));
+    set('dev-api', 'v' + (dd.api_str || dd.api_ver));
     set('dev-warn', dd.warnings);
   }
   S.setLastGnss(s.gnss);
