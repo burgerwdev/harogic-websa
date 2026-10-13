@@ -704,7 +704,11 @@ export function presetAll() {
   const b = document.getElementById('btn-meas-onoff');
   if (b) b.textContent = t('off');
   setMeasButtons(false);
-  setDisplayRef('preset', 0);
+  // SWP/RTA: the display follows the device reference that the preset restores. In SDR the client
+  // owns the display scale. A write of the factory 0 dBm put the whole panadapter under the bottom
+  // edge, and nothing placed it again (reported). The SDR path keeps the scale and arms the
+  // one-shot fit below.
+  if (currentGraphMode() !== 'sdr') setDisplayRef('preset', 0);
   displayOffset.set(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
@@ -784,6 +788,9 @@ export function presetAll() {
   sdrAudioOn.set(audioWasOn);
   renderSdrState();
   resetAutoScaleState();               // the reference is about to be reset: forget the last fit
+  // A preset makes the SDR level-less again (`sdr.ref_set` false). That is the state the entry
+  // fit exists for, so arm it. The display keeps its scale until the placement answers.
+  if (currentGraphMode() === 'sdr') requestSdrEntryFit(false);
   send({ cmd: 'SET_PRESET' });
   setSdrDspAudioEnabled(audioWasOn);
   setSdrAudioEnabled(audioWasOn);

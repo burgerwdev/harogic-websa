@@ -60,6 +60,12 @@ On the tested SAN-90, default RTA span returns effective RBW/VBW near 30.153 kHz
 
 Preset restores SWP Center/Span, Ref, RBW/VBW and modes, Points, Window, Spur, Sweep, Atten, Preamp, IF Gain, and Gain Strategy. Ref Mode returns to Manual.
 
+Preset also resets the SDR parameters. These are the centre, the decimate, the demodulator, and
+the IQS `sdr_ref_level` with `sdr_ref_set=false`. The client owns the SDR *display* scale. The
+client therefore keeps that scale across a preset, and it arms the same one-shot fit that a
+level-less SDR gets on entry. A write of the SWP reference (0 dBm) to that scale put the whole
+panadapter under the bottom edge, and nothing placed it again (reported).
+
 ## 4. Three STATUS Layers
 
 - Top-level `center/span/ref/rbw/vbw/sweep_*`: effective values for the active mode, used directly by the UI.

@@ -224,10 +224,20 @@ export function autoScaleRequest(): void {
 	setBusy(true);
 }
 
-/** Entering SDR arms the entry hand-off (see `noteSdrRefState`) and a fit for a level-less SDR. */
-export function requestSdrEntryFit(): void {
+/**
+ * Arm the entry hand-off for SDR (see `noteSdrRefState`) and one fit for a level-less SDR.
+ *
+ * The parameter `syncToReportedLevel` serves a *preset*. A preset makes the SDR level-less again,
+ * so the display needs a new placement. But the display scale must not first move to the factory
+ * level that the device reports. The factory level is 0 dBm. It puts a -113 dBm panadapter under
+ * the bottom edge while the fit is in flight.
+ *
+ * Set the parameter to false for a preset. The placement of the fit is absolute, so the client
+ * keeps its scale until the answer arrives.
+ */
+export function requestSdrEntryFit(syncToReportedLevel = true): void {
 	entryFitPending = true;
-	entrySyncPending = true;
+	entrySyncPending = syncToReportedLevel;
 	entryFitAttempts = 0;
 	nextEntryAttempt = 0;
 	appliedTarget = null;

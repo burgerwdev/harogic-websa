@@ -25,6 +25,7 @@ import {
 	syncAutoScaleStatus,
 } from '../ui/refAutoScale';
 import { refLevel } from '../ui/refState';
+import { presetAll } from '../ui/controls';
 
 const sent: any[] = [];
 /** Monotonic sequence for the synthetic statuses below (a status is "new" when seq moves). */
@@ -312,5 +313,26 @@ describe('SDR Auto Scale', () => {
 			auto_ref: { adjusting: false, result: 'no_signal', target: null, seq: 1 },
 		});
 		expect(getDisplayRef()).toBe(-40);
+	});
+
+	it('re-places the display after a Preset instead of writing the factory 0 dBm', () => {
+		// Reported: in SDR the operator set Ref to -30 and then pressed Preset. Most of the trace
+		// moved below the bottom edge and stayed there. `presetAll()` wrote the SWP preset
+		// reference (0 dBm) to the client-owned SDR display scale, and it cleared the entry fit.
+		// Nothing placed the display again. The window was 0 to -100 dBm against a -113 dBm
+		// panadapter.
+		graphMode.confirm('sdr');
+		setDisplayRef('user', -30);
+		presetAll();
+		expect(getDisplayRef()).toBe(-30);               // the client's scale survives the preset
+		// A preset leaves the SDR level-less. That is the state the entry fit exists for. The next
+		// STATUS arms one fit. The display must NOT first move to the reported factory level:
+		// 0 dBm hides the trace again while the fit is in flight.
+		noteSdrRefState({ ref: 0, ref_set: false });
+		expect(getDisplayRef()).toBe(-30);
+		maybeRequestSdrFit();
+		expect(sent.filter(m => m.cmd === 'AUTO_SCALE').length).toBe(1);
+		syncAutoScaleStatus({ auto_ref: { adjusting: false, result: 'applied', target: -95, seq: 7 } });
+		expect(getDisplayRef()).toBe(-95);               // placed from the measured levels
 	});
 });

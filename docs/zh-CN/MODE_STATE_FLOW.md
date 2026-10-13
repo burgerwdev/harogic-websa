@@ -64,6 +64,11 @@ SAN-90 真机在默认 RTA span 下返回 RBW/VBW 约 30.153 kHz；不能用 `sp
 Preset 会恢复 SWP Center/Span、Ref、RBW/VBW 及模式、Points、Window、Spur、Sweep、
 Atten、Preamp、IF Gain、Gain Strategy；Ref Mode 恢复 Manual。
 
+Preset 同时重置 SDR 参数：中心、抽取、解调，以及 IQS 的 `sdr_ref_level` 与 `sdr_ref_set=false`。
+SDR 的**显示**刻度归客户端所有。客户端在 Preset 时保留该刻度，并触发一次 fit —— 与"进入一个无电平的
+SDR"完全相同。若把 SWP 的参考电平（0 dBm）写进该刻度，整条迹线会掉到下边框之下，而且没有机制再把它
+放回来（已报告）。
+
 ## 4. STATUS 三层语义
 
 - 顶层 `center/span/ref/rbw/vbw/sweep_*`：当前模式的设备有效值，供 UI 直接显示。
