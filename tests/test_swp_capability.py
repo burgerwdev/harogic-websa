@@ -4,13 +4,16 @@ The frame detector (Detector_TypeDef), trace type (SWP_TraceType), RBW span-rati
 (RBW_OneThousandthSpan/OnePercentSpan), trace align and points strategy were all present
 in the 0.55.100 header but unreachable; these tests pin the wire surface and the
 profile mapping defaults.
+
+The wire checks and the defaults run without the vendor library. The three profile tests need it.
+They carry the `vendor_required` fixture, so they skip in CI and run on the bench.
 """
 from __future__ import annotations
 
 import pytest
 
 from web_sa.config import DeviceCapabilities
-from web_sa.hardware.device import DeviceState, HarogicDevice
+from web_sa.hardware.state import DeviceState
 from web_sa.web.ws import CommandError, _validate_command
 
 
@@ -63,9 +66,10 @@ def test_bin_size_strategy_is_refused():
     assert exc.value.code == 'invalid_choice'
 
 
-def test_profile_never_programs_the_bin_size_strategy(monkeypatch):
+def test_profile_never_programs_the_bin_size_strategy(vendor_required, monkeypatch):
     """A stale state value (or an older client) must stay on the fast path."""
     from web_sa.hardware import sdk_bindings as sb
+    from web_sa.hardware.device import HarogicDevice
 
     monkeypatch.setattr(sb.dll, 'SWP_ProfileDeInit', lambda *a, **k: 0)
     dev = HarogicDevice()
@@ -78,10 +82,11 @@ def test_profile_never_programs_the_bin_size_strategy(monkeypatch):
         sb.TracePointsStrategy_TypeDef.BinSizeAssined)
 
 
-def test_a_device_reporting_bin_size_as_its_default_reads_back_as_speed(monkeypatch):
+def test_a_device_reporting_bin_size_as_its_default_reads_back_as_speed(vendor_required, monkeypatch):
     """Preset caches the ProfileDeInit strategy of the device. BinSizeAssined reads as the
     conservative default, so a restored preset cannot select it again."""
     from web_sa.hardware import sdk_bindings as sb
+    from web_sa.hardware.device import HarogicDevice
 
     def deinit(_dev, prof):
         prof.contents.TracePointsStrategy = sb.TracePointsStrategy_TypeDef.BinSizeAssined
@@ -102,7 +107,7 @@ def test_swept_defaults_preserve_the_previous_device_behavior():
     assert s.points_strategy == 'speed'
 
 
-def test_profile_maps_cover_every_wire_choice():
+def test_profile_maps_cover_every_wire_choice(vendor_required):
     from web_sa.hardware import sdk_bindings as sb
 
     frame_detectors = {

@@ -15,6 +15,7 @@ import pytest
 # Test modules that import the vendor binding layer directly or transitively (a device
 # session, a profile struct, a DLL symbol).
 NEEDS_VENDOR = (
+    'test_capability_query.py',
     'test_device_state.py',
     'test_device_state_grouping.py',
     'test_http_api.py',
@@ -22,6 +23,7 @@ NEEDS_VENDOR = (
     'test_rta_state.py',
     'test_sdk_bindings.py',
     'test_sdr.py',
+    'test_sdr_packet_meta.py',
     'test_ws_commands.py',
 )
 
