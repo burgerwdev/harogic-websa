@@ -22,12 +22,13 @@ sys.path.insert(0, REPO)
 from ctypes import pointer  # noqa: E402
 
 import htra_api as T  # noqa: E402
+from web_sa.hardware import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
 
 
 def open_device():
     dev = T.c_void_p()
     bp = T.BootProfile_TypeDef()
-    bi = T.BootInfo_TypeDef()
+    bi = sb.BootInfo_TypeDef()
     bp.DevicePowerSupply = T.DevicePowerSupply_TypeDef.USBPortAndPowerPort
     bp.PhysicalInterface = T.PhysicalInterface_TypeDef.USB
     st = T.dll.Device_Open(pointer(dev), T.c_int(0), pointer(bp), pointer(bi))

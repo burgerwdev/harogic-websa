@@ -18,14 +18,14 @@ import ctypes as C
 from ctypes import byref, c_float, c_int, c_void_p
 
 import htra_api as T
-from web_sa.hardware.sdk_bindings import Full_MeasAuxInfo
+from web_sa.hardware.sdk_bindings import BootInfo_TypeDef, Full_MeasAuxInfo
 
 T.dll.RTA_SetDataFormat.argtypes=[T.POINTER(c_void_p),T.POINTER(c_int)]
 T.dll.RTA_SetLookBackCmd.argtypes=[T.POINTER(c_void_p),T.POINTER(c_int)]
 T.dll.RTA_GetIQStream.argtypes=[T.POINTER(c_void_p),c_void_p,T.POINTER(c_float),T.POINTER(T.TriggerInfo_TypeDef),T.POINTER(Full_MeasAuxInfo)]
 T.dll.RTA_GetRealTimeSpectrum.argtypes=[T.POINTER(c_void_p),T.POINTER(T.c_uint8),T.POINTER(T.c_uint16),T.POINTER(T.RTA_PlotInfo_TypeDef),T.POINTER(T.TriggerInfo_TypeDef),T.POINTER(Full_MeasAuxInfo)]
 T.dll.RTA_TriggerStart.argtypes=[T.POINTER(c_void_p)]
-dev=c_void_p(); bp=T.BootProfile_TypeDef(); bi=T.BootInfo_TypeDef()
+dev=c_void_p(); bp=T.BootProfile_TypeDef(); bi=BootInfo_TypeDef()
 bp.DevicePowerSupply=T.DevicePowerSupply_TypeDef.USBPortAndPowerPort; bp.PhysicalInterface=T.PhysicalInterface_TypeDef.USB
 print('open', T.dll.Device_Open(byref(dev),c_int(0),byref(bp),byref(bi)))
 def try_cfg(dec, fmt):

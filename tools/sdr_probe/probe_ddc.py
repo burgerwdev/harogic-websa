@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tinysa import TinySA  # noqa: E402
 
 import htra_api as T  # noqa: E402
+from web_sa.hardware import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
 
 PLOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plots')
 os.makedirs(PLOTS, exist_ok=True)
@@ -32,7 +33,7 @@ os.makedirs(PLOTS, exist_ok=True)
 def open_device():
     dev = c_void_p()
     bp = T.BootProfile_TypeDef()
-    bi = T.BootInfo_TypeDef()
+    bi = sb.BootInfo_TypeDef()
     bp.DevicePowerSupply = T.DevicePowerSupply_TypeDef.USBPortAndPowerPort
     bp.PhysicalInterface = T.PhysicalInterface_TypeDef.USB
     st = T.dll.Device_Open(byref(dev), T.c_int(0), byref(bp), byref(bi))

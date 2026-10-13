@@ -25,7 +25,7 @@ T = htra_api
 def open_device():
     dev = T.c_void_p()
     bp = T.BootProfile_TypeDef()
-    bi = T.BootInfo_TypeDef()
+    bi = sb.BootInfo_TypeDef()
     bp.DevicePowerSupply = T.DevicePowerSupply_TypeDef.USBPortAndPowerPort
     bp.PhysicalInterface = T.PhysicalInterface_TypeDef.USB
     st = T.dll.Device_Open(pointer(dev), T.c_int(0), pointer(bp), pointer(bi))

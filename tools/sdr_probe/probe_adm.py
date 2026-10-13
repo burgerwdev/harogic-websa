@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tinysa import TinySA  # noqa: E402
 
 import htra_api as T  # noqa: E402
+from web_sa.hardware import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
 
 
 class AMDemodParam(Structure):
@@ -79,7 +80,7 @@ def bind_adm():
 
 
 def open_device():
-    dev = c_void_p(); bp = T.BootProfile_TypeDef(); bi = T.BootInfo_TypeDef()
+    dev = c_void_p(); bp = T.BootProfile_TypeDef(); bi = sb.BootInfo_TypeDef()
     bp.DevicePowerSupply = T.DevicePowerSupply_TypeDef.USBPortAndPowerPort
     bp.PhysicalInterface = T.PhysicalInterface_TypeDef.USB
     T.dll.Device_Open(byref(dev), c_int(0), byref(bp), byref(bi))

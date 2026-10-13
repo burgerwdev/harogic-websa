@@ -23,6 +23,7 @@ from tinysa import TinySA  # noqa: E402
 
 import htra_api as T  # noqa: E402
 from web_sa.demod import AnalogDemod, DdcChannel, Panadapter  # noqa: E402
+from web_sa.hardware import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
 
 CENTER = 100e6
 SIGNAL = 100.2e6
@@ -30,7 +31,7 @@ FS_AUDIO = 48000
 
 
 def open_device():
-    dev = c_void_p(); bp = T.BootProfile_TypeDef(); bi = T.BootInfo_TypeDef()
+    dev = c_void_p(); bp = T.BootProfile_TypeDef(); bi = sb.BootInfo_TypeDef()
     bp.DevicePowerSupply = T.DevicePowerSupply_TypeDef.USBPortAndPowerPort
     bp.PhysicalInterface = T.PhysicalInterface_TypeDef.USB
     st = T.dll.Device_Open(byref(dev), T.c_int(0), byref(bp), byref(bi))
