@@ -457,10 +457,14 @@ export function updateStatus(s: any) {
   const dd = s.device_detail;
   if (dd) {
     const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    // Decoded strings come from the backend (version_info.py, mirrors the official About panel);
-    // fall back to the raw numbers when an older backend omits them. The top bar carries the
-    // model name only; the full row set lives in the Device popover (dev-d-*).
+    // Decoded strings come from the backend (version_info.py, the same source as the official
+    // About panel). The code falls back to the raw numbers when an older backend omits them.
+    // The device bar shows the model and the three versions that an operator reads first
+    // (MFW/FFW/API). The other rows (UID/HW/BUS/PMU/AGU/Warn) stay in the Device popover.
     set('info-device', dd.model_name || dd.model);
+    set('dev-mfw', dd.mfw_str || dd.mfw);
+    set('dev-ffw', dd.ffw_str || dd.ffw);
+    set('dev-api', 'v' + (dd.api_str || dd.api_ver));
     set('dev-d-model', dd.model_name || dd.model);
     set('dev-d-uid', dd.uid);
     set('dev-d-hw', dd.hw);
