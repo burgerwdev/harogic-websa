@@ -59,7 +59,10 @@ TRACE_ALIGN_NAMES = {
 POINTS_STRATEGY_NAMES = {
     int(sb.TracePointsStrategy_TypeDef.SweepSpeedPreferred): 'speed',
     int(sb.TracePointsStrategy_TypeDef.PointsAccuracyPreferred): 'accuracy',
-    int(sb.TracePointsStrategy_TypeDef.BinSizeAssined): 'bin_size',   # vendor typo, kept verbatim
+    # BinSizeAssined (0x02) is absent on purpose. The firmware ignores the profile's
+    # TraceBinSize_Hz, so the strategy cannot do what its name promises. Its sweep is also orders
+    # of magnitude slower (see SET_TRACEGRID in web/commands.py, and FINDINGS.md §16). A device
+    # that reports it reads back as the conservative 'speed' default.
 }
 
 #: Consecutive transport errors (sdk_bindings.LINK_LOST_STATUS) with no successful SDK call in
@@ -457,8 +460,10 @@ class HarogicDevice:
         p.TracePointsStrategy = {
             'speed': T.TracePointsStrategy_TypeDef.SweepSpeedPreferred,
             'accuracy': T.TracePointsStrategy_TypeDef.PointsAccuracyPreferred,
-            # Vendor typo kept verbatim (htra_api.py: BinSizeAssined, no 'g').
-            'bin_size': T.TracePointsStrategy_TypeDef.BinSizeAssined,
+            # No 'bin_size' entry. BinSizeAssined needs TraceBinSize_Hz, and this firmware ignores
+            # that field. Its exact-window sweep costs about 1 s for each 10 MHz of span
+            # (SET_TRACEGRID, FINDINGS.md §16). The default below keeps a stale state value, or an
+            # older client, on the fast path.
         }.get(s.points_strategy, T.TracePointsStrategy_TypeDef.SweepSpeedPreferred)
         p.TraceAlign = {
             'native': T.TraceAlign_TypeDef.NativeAlign,

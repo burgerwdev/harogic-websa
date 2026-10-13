@@ -70,3 +70,14 @@
 27. **仍未解释（低优先）：FM 广播段的"atten 反向"现象。** 101.7 MHz、span 1 MHz、`preamp=AutoOn` 时，
     实际衰减 3→18 dB 增加，读数反而上升约 15 dB（−71.4 → −56.4 dBm）。CW 已知源复测不复现，
     推测为多载波复合功率导致前端过载；要查清需在强信号环境下用已知源做对照。
+28. **"固定频率间隔"（迹线点数策略）已移除。** 本固件忽略 `SWP_Profile_TypeDef.TraceBinSize_Hz`。
+    请求 10 kHz、100 kHz 或 1 MHz，返回的迹线网格完全相同。因此
+    `TracePointsStrategy=BinSizeAssined` 无法实现其名称承诺的固定频率间隔。它只是把扫描切换为
+    "精确扫描请求窗口、每个迹线点一帧 FFT"。实测单次扫描耗时：10 MHz 为 1.1 s，1 GHz 为 3.4 s，
+    full span 为 28 s。另两种策略只需 5~12 ms。full span 已超过 10 s 采集看门狗，于是工作进程重启、
+    界面卡死。`SET_TRACEGRID.points_strategy` 现在只接受 `speed` 与 `accuracy`。详见
+    tools/sdr_probe/FINDINGS.md §16。`Align`（自然/对齐起始/对齐中心）不受影响。
+29. **SDR 帧最外侧显示 bin 没有数据。** 发布的捕获网格在显示窗口上边缘之前就结束。实测：
+    23 MHz、decimate 128 时约差 1.3 个 bin。`dsp/grid.ts` 把该 bin 标为缺口（NaN），不编造数值。
+    迹线到此为止，不会沿着画布边框向下。过去的"非有限值不断笔"才会画出那条假迹线（见
+    FINDINGS.md §17）。扫频模式下 GapFill 会插值填补此类缺口；RTA/SDR 路径保留原始帧。

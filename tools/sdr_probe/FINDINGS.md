@@ -174,8 +174,77 @@ semantics/units (dBm vs internal scale) or model support on the N90.
 
 ## 15. Version display vs the official About panel (`probe_version_check.py`)
 
+
 Real service + real unit, STATUS vs sa_ver.png: **every decoded field matches** -
 N90 R0 / UID 5230500C00380025 / MCU 0.55.109 / FPGA 0.55.104 / PMU 0.1.15(271) /
 AGU 0.1.5(261) / API 0.55.100. Bonus: the screenshot's `HCD 8` row is the
 DeviceInfo.HardwareVersion field (u16, value 8 on this unit) - the last open
 version-display question from findings/version-display.md is now closed.
+
+## 16. SWP trace-point strategy: BinSizeAssined cannot mean "fixed bin size" (removed)
+
+Probe: `probe_tracebin.py`, 2026-10-13. The service was stopped, RBWMode was Auto, and
+TracePoints was 1000. The probe measured one full `SWP_GetFullSweep` for each row.
+`EstimateMinSweepTime` is 0.0 in every row.
+
+| Span | speed (SweepSpeedPreferred) | accuracy (PointsAccuracyPreferred) | bin_size (BinSizeAssined) |
+|---|---|---|---|
+| 10 MHz | 5.5 ms (2 hops) | 2.0 ms (8 hops) | **1.14 s** (7 hops) |
+| 100 MHz | 5.2 ms (3) | - | **3.16 s** (18) |
+| 1 GHz | 1.3 ms (23) | 1.7 ms (23) | **3.41 s** (22) |
+| 9.02 GHz (full span) | 12.1 ms (196) | 50.9 ms (787) | **28.28 s** (250) |
+
+`ProfileDeInit` seed: `TraceBinSize_Hz = -1.0` (sentinel), `TracePoints = 4000`,
+`TracePointsStrategy = 0` (SweepSpeedPreferred), `TraceAlign = 0` (NativeAlign), RBW 250 kHz.
+
+**The firmware ignores `TraceBinSize_Hz`.** A request of 10 kHz, 100 kHz, or 1 MHz on a 10 MHz
+span returns an identical `SWP_TraceInfo` (`TraceBinBW_Hz` = 10010, `DecimateFactor` 32,
+`FrameTime` 0.66 ms). The grid is always span/TracePoints. The field that names the strategy
+never reaches the sweep.
+
+The strategy changes the sweep pattern instead. It sweeps the requested Start/Stop exactly
+(`StartFreq_Hz` = the request, `UserStartIndex` 0). Each point gets its own FFT (`AnalysisBW_Hz`
+1.4 MHz at a 10 MHz span, against 23 MHz for speed). The device uses many hops. It does not use
+the wide-band hop pattern that `DSP_InterceptSpectrum` crops back to the window. One sweep costs
+about 1 s for each 10 MHz of span.
+
+Consequence on the live service (real device, POWR frames/s):
+
+  - 13.5 at 10 MHz
+  - 1.5 at 100 MHz
+  - 0.5 at 400 MHz
+  - 0 at 1 GHz
+
+`speed` gives 212 frames/s. At the full span one sweep takes 28 s. The acquisition watchdog stops
+at 10 s, and it kills the worker. The worker holds `COMMAND_LOCK` at that moment, so STATUS stops
+too. The whole page freezes until the supervisor restarts the worker. The log shows the same
+event as `Acquisition timed out`.
+
+Action. The strategy is withdrawn:
+
+  - `SET_TRACEGRID.points_strategy` accepts speed and accuracy only,
+  - the profile map no longer contains BinSizeAssined,
+  - a device that reports it as its own default reads back as `speed`,
+  - the UI select offers two options.
+
+`TraceAlign` is unaffected. It is a real grid-alignment choice, and it stays.
+
+## 17. SDR panadapter: the last display bin legitimately has no data
+
+Measured on the live service (centre 23 MHz, decimate 128 -> span 390.625 kHz, 2048 points):
+
+| Field | Value |
+|---|---|
+| display window | 22804687.5 .. 23195312.5 Hz |
+| frame capture grid | 22804717.57 .. 23195102.02 Hz (delta 240.5 Hz > one 190.7 Hz bin) |
+| after the `dsp/grid.ts` rebin | exactly one NaN, bin 2047 (the frame's own last bin is a real -117.1 dBm) |
+
+The published grid stops before the upper edge of the window. The rebin then marks the outermost
+display bin as a gap. The trace renderer inked that sample anyway, and `getY()` puts a non-finite
+level below the graticule. The trace ran down the right plot edge for most of the plot height. In
+the screenshot of the operator this line is one contiguous green column of 231 px at x=887 (the
+plot border), from the trace down to the foot of the graticule. The line reads as a signal.
+
+Both trace renderers now lift the pen at a sample that is not plottable (`render/plot.ts:
+plottableLevel`), so a gap breaks the line. The same build measures a longest contiguous green
+column of 23 px in the middle of the plot (a real burst) at the same settings.

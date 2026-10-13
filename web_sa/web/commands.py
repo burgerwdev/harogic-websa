@@ -301,7 +301,12 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     'SET_TRACEGRID': (
         ParamSpec('trace_align', 'choice', choices=('native', 'start', 'center'),
                   default='start'),
-        ParamSpec('points_strategy', 'choice', choices=('speed', 'accuracy', 'bin_size'),
+        # 'bin_size' (vendor TracePointsStrategy BinSizeAssined) is NOT offered. The firmware
+        # ignores SWP_Profile_TypeDef.TraceBinSize_Hz, so the mode cannot honour its name. It also
+        # sweeps the requested window point by point. Measured cost of one sweep: 1.1 s at 10 MHz
+        # and 28 s at the full span, against 5-12 ms for the other two strategies. The full-span
+        # sweep is longer than the acquisition watchdog, so it stopped the worker.
+        ParamSpec('points_strategy', 'choice', choices=('speed', 'accuracy'),
                   default='speed'),
     ),
     'SET_AMP': (

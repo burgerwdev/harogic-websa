@@ -92,3 +92,19 @@
     *rise* by ~15 dB (-71.4 -> -56.4 dBm). A CW source retest does not reproduce it, so the
     working hypothesis is front-end overload from multi-carrier composite power; confirming it
     needs a known source in a strong-signal environment.
+28. **"Fixed Bin Size" (points strategy) was withdrawn.** This firmware ignores
+    `SWP_Profile_TypeDef.TraceBinSize_Hz`. A request of 10 kHz, 100 kHz, or 1 MHz returns an
+    identical trace grid. So `TracePointsStrategy=BinSizeAssined` cannot deliver the fixed
+    frequency interval that its name promises. It only switches the sweep to "exact requested
+    window, one FFT frame for each trace point". Measured cost of one sweep: 1.1 s at 10 MHz,
+    3.4 s at 1 GHz, and 28 s at the full span. The other two strategies need 5-12 ms. The full
+    span is longer than the 10 s acquisition watchdog, so the worker restarted and the UI froze.
+    `SET_TRACEGRID.points_strategy` now accepts `speed` and `accuracy` only. Details:
+    tools/sdr_probe/FINDINGS.md §16. `Align` (native / to start / to centre) is unaffected.
+29. **An SDR frame has no data in its outermost display bin.** The published capture grid stops
+    before the upper edge of the display window. Bench measurement: about 1.3 bins at 23 MHz with
+    decimate 128. `dsp/grid.ts` marks that bin as a gap (NaN). It does not invent a value. The
+    trace stops there. It does not run down the plot edge. An inked pen across a non-finite sample
+    used to draw that line (FINDINGS.md §17). With GapFill on, the swept path interpolates such a
+    gap. The RTA/SDR path keeps the raw frame.
+

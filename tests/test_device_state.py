@@ -322,13 +322,13 @@ def test_preset_restores_the_swept_capability_defaults():
         'vbw_mode': 'bypass', 'spur': 'bypass', 'preamp': 0, 'ifgain': 2,
         'gain_strategy': 0, 'sweep_time_mode': 0, 'sweep_time': 0.0,
         'frame_detector': 'average', 'trace_align': 'center',
-        'points_strategy': 'bin_size',
+        'points_strategy': 'accuracy',
     }
     dev.preset_state()
     s = dev.state
     assert s.frame_detector == 'average'
     assert s.trace_align == 'center'
-    assert s.points_strategy == 'bin_size'
+    assert s.points_strategy == 'accuracy'
 
 
 def test_preset_without_the_new_keys_keeps_the_previous_behavior():
