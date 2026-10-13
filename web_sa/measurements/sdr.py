@@ -260,6 +260,8 @@ class SdrSession(MeasurementSession):
         # the legacy attrs (self._ddc/_mix_freq/_mix_phase), so a listen switch never touches
         # the device and the whole downstream pipeline keeps working unchanged.
         self._chans: dict = {}
+        # Rolling level history for the LISTENED channel's own activity LED/badge.
+        self._listen_floor: deque = deque(maxlen=50)
         self._audio_seq = 0
         self._audio_reset_pending = False
         # Channelized baseband to the browser demodulator (IQBF). The sequence restarts after a
@@ -1080,6 +1082,10 @@ class SdrSession(MeasurementSession):
                 if ch == int(s.sdr_listen_channel):
                     raise ValueError('cannot disable the listen channel: switch first')
                 row['enabled'] = False
+                # A disabled channel is not "active" and has no level: leaving the last
+                # values behind kept its LED green and an S badge on a row it no longer runs.
+                row['active'] = False
+                row['level_db'] = -200.0
                 if ch != 1:
                     self._teardown_chan_locked(ch)
                 return
@@ -1570,21 +1576,28 @@ class SdrSession(MeasurementSession):
                     desired = float(np.clip(BASEBAND_TARGET_RMS / level, 1e-4, 1e4))
                     self._bb_gain += (desired - self._bb_gain) * 0.4
                     self._bb_gain = float(np.clip(self._bb_gain, 1e-4, 1e4))
-                # SDR meter frame (ux-3 live-use fix): the listened channel's pre-AGC level
-                # at step rate, calibrated to dBm through the device's own int16->volt scale
-                # (IQS_ScaleToV, 50 ohm). The 1 Hz STATUS channel is far too slow for a meter.
-                sv = float(getattr(stream.IQS_ScaleToV, 'value', stream.IQS_ScaleToV) or 0)
-                if level > 0 and sv > 0:
-                    v_rms = level * sv
-                    listen_dbm = round(10.0 * float(np.log10(
-                        max(v_rms * v_rms / 50.0 * 1000.0, 1e-30))), 1)
-                else:
-                    listen_dbm = -200.0
-                self._sdrm_dbg = getattr(self, '_sdrm_dbg', 0) + 1
-                if self._sdrm_dbg % 200 == 1:
-                    log.warning('SDRM debug: emitted #%d level=%s peak=%s i.size=%s',
-                                self._sdrm_dbg, listen_dbm, s.sdr_peak_dbm, i.size)
+                # Device-calibrated level (ux-3 live-use fix): the packet's own
+                # MaxPower_dBm is the device's calibrated power of this packet's strongest
+                # sample; measuring that same sample in DBFS-ish full-scale-relative units
+                # gives a constant offset, which converts ANY channel's level to dBm
+                # (IQS_ScaleToV alone gives nonsense - bench: noise floor read 0 dBm
+                # against a -67 dBm capture peak).
+                raw = (np.asarray(src, dtype=np.float32) if not isinstance(src, np.ndarray)
+                       else src.astype(np.float32))
+                peak_sq = float(np.max(raw * raw)) / (32768.0 ** 2) if raw.size else 0.0
+                dev_offset_dbm = (float(s.sdr_peak_dbm) - 10.0 * float(np.log10(peak_sq))
+                                  if peak_sq > 0 else 0.0)
+                listen_dbm = round(10.0 * float(np.log10(
+                    (level * level) / (32768.0 ** 2) + 1e-30)) + dev_offset_dbm, 1)
                 frames.append(encode_sdrm(listen_dbm, float(s.sdr_peak_dbm)))
+                # The LISTENED channel is the one the user hears: its own row must show the
+                # level and activity too (the channels loop only covers the others).
+                lrow = s.sdr_chans.get(int(s.sdr_listen_channel))
+                if lrow is not None:
+                    lrow['level_db'] = listen_dbm
+                    lrow['active'], _lf = _chan_activity(
+                        listen_dbm, self._listen_floor,
+                        float(lrow.get('threshold_offset_db', 6.0)), bool(lrow.get('active')))
                 i = (i * self._bb_gain).astype(np.float32)
                 q = (q * self._bb_gain).astype(np.float32)
             if getattr(dev, 'iq_clients', 0):
@@ -1643,8 +1656,9 @@ class SdrSession(MeasurementSession):
                 if not ai.size:
                     continue
                 level_db = round(10.0 * float(np.log10(
-                    float(np.mean(ai.astype(np.float64) ** 2))
-                    + float(np.mean(aq.astype(np.float64) ** 2)) + 1e-30)), 1)
+                    (float(np.mean(ai.astype(np.float64) ** 2))
+                     + float(np.mean(aq.astype(np.float64) ** 2))) / (32768.0 ** 2) + 1e-30))
+                    + dev_offset_dbm, 1)
                 row['level_db'] = level_db
                 row['active'], _base = _chan_activity(
                     level_db, e['floor'], float(row.get('threshold_offset_db', 6.0)),

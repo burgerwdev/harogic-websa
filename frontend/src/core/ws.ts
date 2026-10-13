@@ -3,7 +3,7 @@ import { requestRender } from '../render/redraw';
 import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
-import { confirmSdrM } from '../ui/sdrChannels';
+import { cancelPending, confirmSdrM } from '../ui/sdrChannels';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
@@ -149,6 +149,7 @@ export function connectWS() {
         else if (msg.cmd === 'PNM') onPnmResult(msg);
         else if (msg.cmd === 'ERROR') {
           releaseGraphModePending();
+          cancelPending();
           alert(localizedError(msg));
         }
       } catch (error) {
@@ -162,8 +163,8 @@ export function connectWS() {
     if (event.data.byteLength === 16) {
       const m = new Uint8Array(event.data, 0, 4);
       if (m[0] === 0x53 && m[1] === 0x44 && m[2] === 0x52 && m[3] === 0x4d) {   // 'SDRM'
-        const mv = new DataView(event.data, 4, 8);
-        confirmSdrM(mv.getFloat32(0, true), mv.getFloat32(4, true));
+        const mv = new DataView(event.data, 4, 12);
+        confirmSdrM(mv.getFloat32(4, true), mv.getFloat32(8, true));
         return;
       }
     }

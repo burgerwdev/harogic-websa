@@ -21,6 +21,10 @@ const lastActiveAt: Record<number, number> = {};
 // FT8 background source (ux-4): 'listen' or a channel number with its centre frequency.
 let ft8Source: 'listen' | 2 | 3 = 'listen';
 let ft8FreqHz = 0;
+// Optimistic listen-switch feedback: the switch is nearly instant server-side but the
+// command path can wait seconds behind the acquisition lock, so the clicked row shows
+// pending until STATUS confirms (or an ERROR cancels it).
+let pendingListen: number | null = null;
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
@@ -41,18 +45,13 @@ export function confirmSdrM(levelDbm: number, _peakDbm: number): void {
 
 export function confirmSdrChans(s: any): void {
   listenChannel = Number(s.req?.sdr?.listen_channel ?? s.sdr_listen_channel ?? 1);
+  if (pendingListen !== null && pendingListen === listenChannel) pendingListen = null;
   chans = s.req?.sdr?.chans ?? s.sdr_chans ?? {};
   statusWarning = Number(s.status_warning) || 0;
   render();
 }
 
 function render(): void {
-  const seg = el('listen-seg');
-  if (seg) {
-    for (const btn of Array.from(seg.querySelectorAll('.seg-btn'))) {
-      btn.classList.toggle('on', Number((btn as HTMLElement).dataset.chan) === listenChannel);
-    }
-  }
   for (const ch of [1, 2, 3]) {
     const row = el(`chan-row-${ch}`);
     if (!row) continue;
@@ -60,8 +59,10 @@ function render(): void {
     const cfg = chans[String(ch)] || {};
     const enabled = !!cfg.enabled;
     const isListen = ch === listenChannel;
+    const pending = pendingListen === ch;
     rowAny.classList.toggle('listen', isListen);
-    rowAny.classList.toggle('dis', !enabled);
+    rowAny.classList.toggle('dis', !enabled && !pending);
+    rowAny.classList.toggle('pending', pending && !isListen);
     if (cfg.active) lastActiveAt[ch] = Date.now();
     const led = el(`chan-led-${ch}`);
     if (led) {
@@ -82,10 +83,6 @@ function render(): void {
       // Ham RST readout on the listen row: readability is 5 by convention, strength is
       // the S value (S9+X dB over stays "59+X").
       if (ch === listenChannel && has) badge.title = rep.replace('S', '5');
-    }
-    const thr = el(`chan-thr-${ch}`) as HTMLInputElement | null;
-    if (thr && document.activeElement !== thr) {
-      thr.value = String(Number(cfg.threshold_offset_db ?? 6));
     }
   }
   // PEP row: a real radio-style meter — the LISTENED channel's level (dBm, calibrated,
@@ -148,16 +145,22 @@ export function chanFreqCommit(ch: number, mhz: number): void {
 
 export function setListen(ch: number): void {
   if (ch === listenChannel) return;
+  pendingListen = ch;
+  render();
   send({ cmd: 'SET_SDR_LISTEN', channel: ch });
+}
+
+/** An ERROR frame cancels any optimistic state (the backend refused the command). */
+export function cancelPending(): void {
+  if (pendingListen !== null) {
+    pendingListen = null;
+    render();
+  }
 }
 
 export function chanDisable(ch: number): void {
   if (ch === listenChannel) return;               // refused server-side too; keep UX honest
   send({ cmd: 'SET_SDR_DDC', channel: ch, enabled: false });
-}
-
-export function chanThreshold(ch: number, offsetDb: number): void {
-  send({ cmd: 'SET_SDR_DDC', channel: ch, threshold: offsetDb });
 }
 
 function inTextEntry(target: EventTarget | null): boolean {
@@ -186,22 +189,8 @@ export function initSdrChannels(): void {
         if ((e as KeyboardEvent).key === 'Enter') commit();
       });
     }
-    const thr = el(`chan-thr-${ch}`) as HTMLInputElement | null;
-    if (thr) {
-      thr.addEventListener('change', () => {
-        if (freq && !fmtMhz(chans[String(ch)]?.freq)) return;   // no freq -> nothing to guard
-        chanThreshold(ch, parseFloat(thr.value));
-      });
-    }
     const x = el(`chan-x-${ch}`);
     if (x) x.addEventListener('click', () => chanDisable(ch));
-  }
-  const seg = el('listen-seg');
-  if (seg) {
-    seg.addEventListener('click', (ev) => {
-      const btn = (ev.target as HTMLElement).closest('[data-chan]') as HTMLElement | null;
-      if (btn) setListen(Number(btn.dataset.chan));
-    });
   }
   const ft8sel = el('ft8-source') as HTMLSelectElement | null;
   if (ft8sel) {

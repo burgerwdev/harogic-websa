@@ -43,17 +43,15 @@ def main() -> int:
         # Row click (on the tag, not the input) switches the listen channel.
         page.click('#chan-row-2 .chan-tag')
         page.wait_for_timeout(1500)
-        seg2 = page.evaluate("() => document.querySelector('#listen-seg [data-chan=\"2\"]').className")
         row2 = page.evaluate("() => document.getElementById('chan-row-2').className")
-        check('row click switches listen (seg CH2 on)', 'on' in (seg2 or ''), seg2 or '')
-        check('listen row highlighted', 'listen' in (row2 or ''), row2 or '')
+        check('row click switches listen (row highlighted)', 'listen' in (row2 or ''), row2 or '')
 
         # Keyboard 1 returns to CH1.
         page.click('body')
         page.keyboard.press('1')
         page.wait_for_timeout(1200)
-        seg1 = page.evaluate("() => document.querySelector('#listen-seg [data-chan=\"1\"]').className")
-        check('keyboard 1 returns to CH1', 'on' in (seg1 or ''), seg1 or '')
+        row1 = page.evaluate("() => document.getElementById('chan-row-1').className")
+        check('keyboard 1 returns to CH1', 'listen' in (row1 or ''), row1 or '')
 
         # PEP meter renders a real readout + S badge (fake backend publishes peak_dbm).
         page.wait_for_timeout(1500)
