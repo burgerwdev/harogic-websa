@@ -23,7 +23,14 @@ from ..demod import ANALOG_MODES, AnalogDemod, DdcChannel, Panadapter
 from ..hardware import sdk_bindings as sb
 from ..hardware.device import DeviceError
 from .base import MeasurementSession
-from .framer import BASEBAND_VERSION, encode_audio, encode_aux, encode_baseband, encode_rta
+from .framer import (
+    BASEBAND_VERSION,
+    encode_audio,
+    encode_aux,
+    encode_baseband,
+    encode_rta,
+    encode_sdrm,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1141,14 +1148,17 @@ class SdrSession(MeasurementSession):
                 raise ValueError(f'channel must be one of {self.CHANNELS}')
             if ch == int(s.sdr_listen_channel):
                 return
-            row = s.sdr_chans.get(ch) or {}
-            if not row.get('enabled'):
-                raise ValueError('channel not enabled: set a frequency first')
-            # ch1 rides the current listen frequency until it is explicitly tuned.
-            freq = float(row.get('freq') or s.sdr_listen_hz)
+            row = s.sdr_chans.setdefault(ch, {'enabled': False, 'freq': 0.0,
+                                              'threshold_offset_db': 6.0})
+            # Any channel is switchable at any time (the natural flow is click-then-tune):
+            # an untouched channel inherits the current tune until the user types a
+            # frequency, and the switch auto-enables it.
+            if not row.get('freq'):
+                row['freq'] = float(s.sdr_listen_hz)
+            row['enabled'] = True
             self._sync_listen_entry_locked()
             s.sdr_listen_channel = ch
-            s.sdr_listen_hz = freq
+            s.sdr_listen_hz = float(row['freq'])
             self._bind_listen_locked()
             # Cheap client-side switch: flush + demod retune. No device touch.
             self._iq_reset_pending = True
@@ -1560,8 +1570,19 @@ class SdrSession(MeasurementSession):
                     desired = float(np.clip(BASEBAND_TARGET_RMS / level, 1e-4, 1e4))
                     self._bb_gain += (desired - self._bb_gain) * 0.4
                     self._bb_gain = float(np.clip(self._bb_gain, 1e-4, 1e4))
-                    i = (i * self._bb_gain).astype(np.float32)
-                    q = (q * self._bb_gain).astype(np.float32)
+                # SDR meter frame (ux-3 live-use fix): the listened channel's pre-AGC level
+                # at step rate, calibrated to dBm through the device's own int16->volt scale
+                # (IQS_ScaleToV, 50 ohm). The 1 Hz STATUS channel is far too slow for a meter.
+                sv = float(getattr(stream.IQS_ScaleToV, 'value', stream.IQS_ScaleToV) or 0)
+                if level > 0 and sv > 0:
+                    v_rms = level * sv
+                    listen_dbm = round(10.0 * float(np.log10(
+                        max(v_rms * v_rms / 50.0 * 1000.0, 1e-30))), 1)
+                else:
+                    listen_dbm = -200.0
+                frames.append(encode_sdrm(listen_dbm, float(s.sdr_peak_dbm)))
+                i = (i * self._bb_gain).astype(np.float32)
+                q = (q * self._bb_gain).astype(np.float32)
             if getattr(dev, 'iq_clients', 0):
                 if self._iq_reset_pending:
                     # Logged: a flush drops the browser's playback buffer and re-primes it, which is

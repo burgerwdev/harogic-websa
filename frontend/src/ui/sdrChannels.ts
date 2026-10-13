@@ -11,8 +11,11 @@ import { send } from '../core/wsSend';
 
 let listenChannel = 1;
 let chans: Record<string, any> = {};
-let peakDbm: number | null = null;
 let statusWarning = 0;
+// Step-rate meter values from the SDRM frame: the listened channel's level, calibrated
+// to dBm through the device's own int16->volt scale (IQS_ScaleToV, 50 ohm).
+let meterDbm = -200.0;
+let meterFresh = false;
 // LED 三态 (design §4.2): on = active now; burst = activity ended within 2 s; off = quiet.
 const lastActiveAt: Record<number, number> = {};
 // FT8 background source (ux-4): 'listen' or a channel number with its centre frequency.
@@ -29,10 +32,16 @@ function fmtMhz(freqHz: unknown): string {
   return Number.isFinite(f) && f > 0 ? (f / 1e6).toFixed(4) : '';
 }
 
+/** Step-rate meter update from the SDRM frame (listen level dBm + capture peak dBm). */
+export function confirmSdrM(levelDbm: number, _peakDbm: number): void {
+  meterDbm = levelDbm;
+  meterFresh = true;
+  render();
+}
+
 export function confirmSdrChans(s: any): void {
   listenChannel = Number(s.req?.sdr?.listen_channel ?? s.sdr_listen_channel ?? 1);
   chans = s.req?.sdr?.chans ?? s.sdr_chans ?? {};
-  peakDbm = s.req?.sdr?.peak_dbm ?? null;
   statusWarning = Number(s.status_warning) || 0;
   render();
 }
@@ -79,12 +88,15 @@ function render(): void {
       thr.value = String(Number(cfg.threshold_offset_db ?? 6));
     }
   }
-  // PEP row
+  // PEP row: a real radio-style meter — the LISTENED channel's level (dBm, calibrated,
+  // step rate), with the Ham S badge from the same number. The capture-wide peak_dbm
+  // stays on STATUS (1 Hz) and is not what this meter shows.
   const val = el('pep-val');
-  if (val) val.textContent = peakDbm != null ? `${peakDbm.toFixed(1)} dBm` : '-';
+  const showDbm = meterFresh && meterDbm > -199;
+  if (val) val.textContent = showDbm ? `${meterDbm.toFixed(1)} dBm` : '-';
   const ps = el('pep-s');
   if (ps) {
-    const rep = peakDbm != null ? sReport(peakDbm) : '-';
+    const rep = showDbm ? sReport(meterDbm) : '-';
     ps.textContent = rep;
     ps.className = `s-badge${/S9/.test(rep) ? ' hi' : (/S[5-8]/.test(rep) ? ' mid' : '')}`;
   }
@@ -106,9 +118,10 @@ function render(): void {
   }
   const fill = el('pep-fill');
   if (fill) {
-    const over = statusWarning === -12 || (peakDbm != null && peakDbm >= -13);
+    const over = statusWarning === -12;
     fill.classList.toggle('over', over);
-    fill.style.width = `${peakDbm != null ? sScalePct(peakDbm) : 2}%`;
+    // Position on the S scale (S1..S9..+60) — the same mapping the badge reads.
+    fill.style.width = `${showDbm ? sScalePct(meterDbm) : 2}%`;
   }
   // FT8 background hint + centre auto-follow when the FT8 channel is retuned.
   const hint = el('ft8-hint');

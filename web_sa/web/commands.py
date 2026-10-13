@@ -820,12 +820,15 @@ async def _h_set_sdr_ddc(ctx: CommandContext, data: dict) -> bool:
     if session is None or session.name != 'sdr':
         raise CommandError('SET_SDR_DDC requires SDR mode', 'sdr_mode_required')
     # A real DDC (re)configuration (~180 ms filter design) runs behind the hw lock.
-    await ctx.hw_call(session.set_channel, int(data['channel']),
-                      enabled=bool(data.get('enabled', True)),
-                      freq_hz=(None if data.get('freq') is None else float(data['freq'])),
-                      threshold_offset_db=(None if data.get('threshold') is None
-                                           else float(data['threshold'])))
-    return True
+    try:
+        await ctx.hw_call(session.set_channel, int(data['channel']),
+                          enabled=bool(data.get('enabled', True)),
+                          freq_hz=(None if data.get('freq') is None else float(data['freq'])),
+                          threshold_offset_db=(None if data.get('threshold') is None
+                                               else float(data['threshold'])))
+        return True
+    except ValueError as exc:
+        raise CommandError(str(exc), 'sdr_channel') from exc
 
 
 async def _h_set_sdr_listen(ctx: CommandContext, data: dict) -> bool:
@@ -833,8 +836,11 @@ async def _h_set_sdr_listen(ctx: CommandContext, data: dict) -> bool:
     if session is None or session.name != 'sdr':
         raise CommandError('SET_SDR_LISTEN requires SDR mode', 'sdr_mode_required')
     # Zero device calls: only the stream labels move (ux-2).
-    await ctx.hw_call(session.set_listen, int(data['channel']))
-    return True
+    try:
+        await ctx.hw_call(session.set_listen, int(data['channel']))
+        return True
+    except ValueError as exc:
+        raise CommandError(str(exc), 'sdr_channel') from exc
 
 
 
