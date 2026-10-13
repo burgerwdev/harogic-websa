@@ -1,10 +1,11 @@
 // vitest setup: mock canvas/DOM so the store module (which accesses the spectrum canvas at the top level) can load
 // The tests do not do real rendering, only pure logic (smoothing/peak-finding/resampling/normalization)
-const fakeCtx = new Proxy({}, {
-  // measureText must return a TextMetrics-like object: the renderer accumulates its width.
-  get: (_target, prop) => (prop === 'measureText' ? () => ({ width: 0 }) : () => {}),
-  set: () => true,
-}) as unknown as CanvasRenderingContext2D;
+// - plus every `moveTo`/`lineTo` call that the renderer makes. A test can then assert what a full
+// render pass draws. The RTA/SDR trace-polyline regression reads this list.
+
+/** Path calls in order. Call `resetCtxCalls()` before a render pass. */
+export const ctxCalls: { op: 'moveTo' | 'lineTo'; x: number; y: number }[] = [];
+export function resetCtxCalls() { ctxCalls.length = 0; }
 
 const fakeCanvas = {
   width: 860,
@@ -17,6 +18,20 @@ const fakeCanvas = {
   style: {} as Record<string, string>,
   classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
 } as unknown as HTMLCanvasElement;
+
+const fakeCtx = new Proxy({ canvas: fakeCanvas }, {
+  get: (_target, prop) => {
+    // measureText must return a TextMetrics object. The renderer adds its width to a total.
+    if (prop === 'measureText') return () => ({ width: 0 });
+    // `ctx.canvas` is the back-reference from the spec. The renderers write dataset.* through it.
+    if (prop === 'canvas') return fakeCanvas;
+    if (prop === 'moveTo' || prop === 'lineTo') {
+      return (x: number, y: number) => { ctxCalls.push({ op: prop, x, y }); };
+    }
+    return () => {};
+  },
+  set: () => true,
+}) as unknown as CanvasRenderingContext2D;
 
 // Keep the original getElementById, only return the fake canvas for 'spectrum'
 const origGetElementById = document.getElementById.bind(document);

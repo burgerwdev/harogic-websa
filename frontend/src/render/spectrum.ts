@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
 import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
-import { getX, getY, plotRect } from './plot';
+import { getX, getY, plotRect, plottableLevel } from './plot';
 import { previewFreqWindow, previewLevelWindow, xAxisTransform, yAxisTransform } from '../ui/axisDrag';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
@@ -155,7 +155,7 @@ export function renderTraceLine(t: S.TraceState) {
   let pen = false;
   for (let i = 0; i < n; i++) {
     const v = data[i];
-    if (!isFinite(v) || v < -300) { pen = false; continue; }
+    if (!plottableLevel(v)) { pen = false; continue; }
     const x = getX(i, n), y = getY(v);
     if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
   }
@@ -690,6 +690,28 @@ function renderTriggerLevel() {
 }
 
 // ---- RTA 实时频谱渲染 ----
+/**
+ * Draw one RTA/SDR trace polyline. The caller sets the context style. The glow pass draws the
+ * same path with a wider, translucent stroke.
+ *
+ * The pen lifts at each sample that `plottableLevel()` rejects. An RTA/SDR frame contains a real
+ * gap at an SDR capture edge (NaN from dsp/grid.ts). An inked pen across that gap draws a line
+ * down to the foot of the graticule, along the plot edge. That line reads as a signal.
+ */
+function strokeRtaTrace(freq: ArrayLike<number>, disp: ArrayLike<number>, dn: number,
+                        lo: number, hi: number, p: { x: number; y: number; w: number; h: number }) {
+  ctx.beginPath();
+  let pen = false;
+  for (let i = 0; i < dn; i++) {
+    const v = disp[i];
+    if (!plottableLevel(v)) { pen = false; continue; }
+    const x = p.x + (freq[i] - lo) / (hi - lo) * p.w;
+    const y = getY(v);
+    if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
 function renderRta() {
   const col = canvasColors();
   ctx.clearRect(0, 0, W, H);
@@ -754,22 +776,10 @@ function renderRta() {
     ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
     // glow
     ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
-    ctx.beginPath();
-    for (let i = 0; i < dn; i++) {
-      const x = p.x + (d.freq[i] - lo) / (hi - lo) * p.w;
-      const y = getY(disp[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+    strokeRtaTrace(d.freq, disp, dn, lo, hi, p);
     // main line
     ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = tcol;
-    ctx.beginPath();
-    for (let i = 0; i < dn; i++) {
-      const x = p.x + (d.freq[i] - lo) / (hi - lo) * p.w;
-      const y = getY(disp[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+    strokeRtaTrace(d.freq, disp, dn, lo, hi, p);
     ctx.restore();
   });
   // SDR: listen-frequency marker + the band the active demodulator actually reads. A protocol

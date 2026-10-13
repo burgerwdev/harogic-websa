@@ -23,6 +23,22 @@ export function getY(val: number): number {
   if (!t) return y;
   return rect.y + (y - rect.y) * t.sy + t.dyFrac * rect.h;
 }
+
+/**
+ * True when a sample is a level that a trace can draw.
+ *
+ * A non-finite sample is not a level. `getY()` puts a non-finite sample below the graticule.
+ * A caller that ignores this rule draws a vertical line down the plot edge. The SDR panadapter
+ * publishes NaN at an edge of its capture grid.
+ *
+ * A level below -300 dBm is not physical either. It is the same "no data" marker: the swept path
+ * writes NaN, but another driver can write a low sentinel. Both trace renderers lift the pen at
+ * such a sample.
+ */
+export function plottableLevel(v: number): boolean {
+  return isFinite(v) && v > -300;
+}
+
 export function getX(idx: number, points: number): number {
   const rect = plotRect();
   // Display-only zoom: the WHOLE swept path goes through one mapping — data position ->

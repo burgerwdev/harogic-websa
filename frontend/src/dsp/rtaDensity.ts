@@ -53,6 +53,9 @@ export function advanceDensity(
 				grid[i * bins + b] = v > DENSITY_FLOOR ? v : 0;
 			}
 		}
+		// A bin with no data has no weight. An SDR capture edge carries NaN here. Without this
+		// guard the weight rule runs with NaN, and the grid index becomes NaN too.
+		if (!isFinite(spec[i])) continue;
 		// Amplitude-graded weight: how far a point sits above the noise floor decides how strongly
 		// it accumulates. Weak signals (>3 dB) still leave a light density cloud so the map covers
 		// the whole trace; the floor ripple itself stays out.
