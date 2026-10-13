@@ -1580,6 +1580,10 @@ class SdrSession(MeasurementSession):
                         max(v_rms * v_rms / 50.0 * 1000.0, 1e-30))), 1)
                 else:
                     listen_dbm = -200.0
+                self._sdrm_dbg = getattr(self, '_sdrm_dbg', 0) + 1
+                if self._sdrm_dbg % 200 == 1:
+                    log.warning('SDRM debug: emitted #%d level=%s peak=%s i.size=%s',
+                                self._sdrm_dbg, listen_dbm, s.sdr_peak_dbm, i.size)
                 frames.append(encode_sdrm(listen_dbm, float(s.sdr_peak_dbm)))
                 i = (i * self._bb_gain).astype(np.float32)
                 q = (q * self._bb_gain).astype(np.float32)

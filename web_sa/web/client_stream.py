@@ -130,6 +130,8 @@ class ClientStream:
             if magic != AUX_MAGIC:
                 return
         elif magic == AUX_MAGIC:
+            # The 16-byte SDRM meter frame is NOT gated: the page's meter reads it on the
+            # main socket (ws.ts intercepts before decodeFrame), so it broadcasts like POWR.
             return                      # aux streams are strictly opt-in (?iqaux=1)
         if self.no_audio and magic == AUDIO_MAGIC:
             return
