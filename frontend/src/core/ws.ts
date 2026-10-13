@@ -3,7 +3,6 @@ import { requestRender } from '../render/redraw';
 import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
-import { cancelPending, confirmSdrM } from '../ui/sdrChannels';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
@@ -42,7 +41,6 @@ import {
   rbwMode, vbwMode, currentRBW, currentVBW, currentPoints, currentSpur,
   frameDetector, traceAlign, pointsStrategy,
 } from '../ui/swpState';
-import { confirmSdrChans } from '../ui/sdrChannels';
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { resetViewport, setCapture } from '../ui/spectrumViewport';
@@ -149,7 +147,6 @@ export function connectWS() {
         else if (msg.cmd === 'PNM') onPnmResult(msg);
         else if (msg.cmd === 'ERROR') {
           releaseGraphModePending();
-          cancelPending();
           alert(localizedError(msg));
         }
       } catch (error) {
@@ -158,16 +155,6 @@ export function connectWS() {
       return;
     }
     if (!(event.data instanceof ArrayBuffer)) return;
-    // SDR meter frame (raw 16-byte SDRM, ux-3 feedback): step-rate listened-channel level
-    // + capture peak for the panel meter. decodeFrame does not know this magic.
-    if (event.data.byteLength === 16) {
-      const m = new Uint8Array(event.data, 0, 4);
-      if (m[0] === 0x53 && m[1] === 0x44 && m[2] === 0x52 && m[3] === 0x4d) {   // 'SDRM'
-        const mv = new DataView(event.data, 4, 12);
-        confirmSdrM(mv.getFloat32(4, true), mv.getFloat32(8, true));
-        return;
-      }
-    }
     const frame = decodeFrame(event.data);
     // Audio and IQ each have their own connection (this socket sends noaudio=1&noiq=1), so a
     // frame of either kind here is stale or mis-routed; treating it as display data would
@@ -447,7 +434,6 @@ export function updateStatus(s: any) {
   setSelect('select-vbw-mode', vbwMode.get());
   setSelect('select-spur', currentSpur.get());
   setSelect('select-detector', s.detector || 'auto');
-  confirmSdrChans(s);
   setSelect('select-framedet', frameDetector.get());
   setSelect('select-tracealign', traceAlign.get());
   setSelect('select-points-strategy', pointsStrategy.get());

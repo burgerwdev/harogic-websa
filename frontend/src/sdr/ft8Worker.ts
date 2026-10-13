@@ -36,25 +36,12 @@ self.onmessage = (event: MessageEvent) => {
     else { ws?.close(); ws = null; }
   } else if (msg.type === 'socket') {
     if (active && !ws) connect(lastUrl);
-  } else if (msg.type === 'url') {
-    ft8CenterHz = Number(msg.centerHz) || 0;
-    // ux-4: FT8 source moved (listen <-> aux channel). Swap the socket, keep decoding.
-    const next = String(msg.url || '');
-    if (next && next !== lastUrl) {
-      lastUrl = next;
-      if (ws) { ws.close(); ws = null; }
-      if (active) connect(next);
-    }
   }
 };
 
 let ws: WebSocket | null = null;
 let lastUrl = '';
 let active = false;
-// ux-4 guard: when decoding an aux channel, ignore any baseband whose centre is not the
-// selected channel's (both aux channels share the ?iqaux=1 socket — without this filter
-// the decode window would interleave two different basebands).
-let ft8CenterHz = 0;
 
 /** Own IQ socket: the baseband frames reach this worker directly, never through the audio thread. */
 function connect(url: string): void {
@@ -74,7 +61,6 @@ function connect(url: string): void {
     if (!(data instanceof ArrayBuffer)) return;
     const frame = decodeFrame(data);
     if (frame === null || frame.kind !== 'baseband') return;
-    if (ft8CenterHz > 0 && Math.abs(frame.centerHz - ft8CenterHz) > 1) return;
     // The frame's buffer belongs to this message alone: transfer it (zero copy) rather than
     // cloning ~36 kB per block. The header bytes ride along; the decoder reads the view only.
     if (port) {

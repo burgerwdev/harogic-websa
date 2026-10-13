@@ -10,7 +10,6 @@ import { initTrigger } from './ui/trigger';
 import { initWfRange } from './ui/wfRange';
 import { initKeypad } from './ui/keypad';
 import { initPopoverDrag } from './ui/popoverDrag';
-import { initSdrChannels } from './ui/sdrChannels';
 import { initLevelUnit } from './core/level';
 import { updateChanTable } from './meas/channel';
 import { requestRender } from './render/redraw';
@@ -54,7 +53,6 @@ function init() {
   bindCanvas();
   initSpectrumZoomUi();
   initPopoverDrag();
-  initSdrChannels();
 
   // Restore saved mode (non-first load keeps RTA; first load defaults to std)
   const savedMode = localStorage.getItem('web-sa-mode');

@@ -133,7 +133,6 @@ e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
 	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
 	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099} \
 		--check --no-inventory
-	python3 tools/e2e/sdr_channels.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
 	@kill $$(cat /tmp/websa-fake.pid) 2>/dev/null || true; rm -f /tmp/websa-fake.pid
 	@echo "OK: fake-backend UI smoke + state-machine contract + resolution sweep (no hardware)"
 

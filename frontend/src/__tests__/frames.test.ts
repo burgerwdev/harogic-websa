@@ -130,26 +130,3 @@ describe('decodeFrame', () => {
 		expect(decodeFrame(unknown.buffer)).toBeNull();
 	});
 });
-
-
-describe('IQAX aux baseband frames (ux-4)', () => {
-	it('decodeFrame parses IQAX exactly like IQBF', () => {
-		const iq = [1, -1, 0.5, -0.5];
-		const buf = new ArrayBuffer(32 + iq.length * 4);
-		const v = new DataView(buf);
-		new Uint8Array(buf, 0, 4).set(new TextEncoder().encode('IQAX'));
-		v.setUint32(4, 1, true);            // version
-		v.setUint32(8, 9, true);            // seq
-		v.setUint32(12, 2, true);           // complex samples
-		v.setFloat64(16, 12000, true);      // rate
-		v.setFloat64(24, 88e6, true);       // centre
-		new Float32Array(buf, 32).set(iq);
-		const decoded = decodeFrame(buf);
-		expect(decoded).not.toBeNull();
-		expect(decoded!.kind).toBe('baseband');
-		const bb = decoded as { seq: number; centerHz: number; samples: number };
-		expect(bb.seq).toBe(9);
-		expect(bb.centerHz).toBe(88e6);
-		expect(bb.samples).toBe(2);
-	});
-});

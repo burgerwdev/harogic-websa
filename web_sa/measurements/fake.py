@@ -394,41 +394,16 @@ class FakeSdrSession(_FakeRtaBase):
         self.dev.begin_auto_reference_settle(self.name)
 
     def set_tune(self, listen_hz) -> None:
-        s = self.dev.state
-        s.sdr_listen_hz = float(listen_hz)
-        row = s.sdr_chans.setdefault(int(s.sdr_listen_channel),
-                                     {'enabled': True, 'freq': 0.0,
-                                      'threshold_offset_db': 6.0})
-        row['freq'] = s.sdr_listen_hz
-        row['enabled'] = True
+        self.dev.state.sdr_listen_hz = float(listen_hz)
 
-    def set_channel(self, channel: int, enabled: bool = True, freq_hz: float | None = None,
-                    threshold_offset_db: float | None = None) -> None:
-        """Mirror the real session's channel bookkeeping (no DSP behind the fake)."""
+    def set_aux(self, channel: int, enabled: bool = True, freq_hz: float = 0.0) -> None:
+        """Mirror the real session's aux bookkeeping (no DSP behind the fake)."""
         s = self.dev.state
         ch = int(channel)
-        row = s.sdr_chans.setdefault(ch, {'enabled': False, 'freq': 0.0,
-                                          'threshold_offset_db': 6.0})
-        if not enabled:
-            if ch == int(s.sdr_listen_channel):
-                raise ValueError('cannot disable the listen channel: switch first')
-            row['enabled'] = False
-            return
-        row['enabled'] = True
-        if freq_hz is not None:
-            row['freq'] = float(freq_hz)
-        if threshold_offset_db is not None:
-            row['threshold_offset_db'] = float(threshold_offset_db)
-
-    def set_listen(self, channel: int) -> None:
-        s = self.dev.state
-        ch = int(channel)
-        row = s.sdr_chans.get(ch) or {}
-        if not row.get('enabled'):
-            raise ValueError('channel not enabled: set a frequency first')
-        freq = float(row.get('freq') or s.sdr_listen_hz)
-        s.sdr_listen_channel = ch
-        s.sdr_listen_hz = freq
+        if enabled:
+            s.sdr_aux[ch] = {'enabled': True, 'freq': float(freq_hz)}
+        else:
+            s.sdr_aux[ch] = {'enabled': False, 'freq': 0.0}
 
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None, agc=None,
@@ -554,9 +529,6 @@ class FakeSdrSession(_FakeRtaBase):
         if finite.size:
             self.dev.observe_reference_peak(
                 'sdr', float(finite[-1]), float(finite[int((finite.size - 1) * 0.3)]))
-            # PEP meter (ux-3): the pan spectrum's own peak, so the SDR panel has a real
-            # number to show instead of the -200 default.
-            s.sdr_peak_dbm = round(float(finite[-1]), 1)
         digital = str(s.sdr_demod) in DIGITAL_DEMODS
         requested = max(1, int(s.sdr_decimate or 16))
         capture_decimate = min(requested, FAKE_MAX_CAPTURE_DECIMATE)
@@ -581,33 +553,11 @@ class FakeSdrSession(_FakeRtaBase):
         }
         s.sdr_level_dbfs = -60.0
         s.sdr_squelch_open = True
-        # Per-channel activity mirrors (ux-2): a synthetic level that sweeps the threshold
-        # every ~10 ticks, so the STATUS active flag demonstrably toggles in the e2e. The
-        # hysteresis logic mirrors the real step (no vendor import on the fake path).
-        tick = int(self._tick)
-        chan_floor = getattr(self, '_chan_floor', None)
-        if chan_floor is None:
-            chan_floor = self._chan_floor = {}
-        for ch, row in s.sdr_chans.items():
-            if not row.get('enabled'):
-                row['level_db'] = -200.0
-                row['active'] = False
-                continue
-            level = -60.0 if tick % 20 < 10 else -85.0   # 25 dB swing: clean hysteresis demo
-            row['level_db'] = level
-            floor = chan_floor.setdefault(ch, [])
-            floor.append(level)
-            base = sorted(floor)[len(floor) // 2]
-            thr = base + float(row.get('threshold_offset_db', 6.0))
-            was = bool(row.get('active'))
-            row['active'] = (level >= thr) if not was else (level >= thr - 3.0)
         pan = encode_rta(s.freq_version, freq, spec, self._wf_row(), 4095,
                          center - bandwidth / 2, center + bandwidth / 2)
         frames = [pan]
         if getattr(self.dev, 'iq_clients', 0):
-            # IQBF centre = the LISTENED channel's frequency (ux-2: it follows
-            # SET_SDR_LISTEN), not the capture centre.
-            frames.append(self._baseband(s.sdr_actual['ddc_rate'], float(s.sdr_listen_hz)))
+            frames.append(self._baseband(s.sdr_actual['ddc_rate'], center))
         # The audio that belongs to this block's worth of time (the stream is paced to the baseband,
         # so one 20 ms frame per step would be four times too slow).
         block_seconds = SDR_BASEBAND_SAMPLES / max(1.0, SDR_BASEBAND_RATE)

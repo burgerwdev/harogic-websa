@@ -36,11 +36,6 @@ import numpy as np
 
 MAGIC_FREQ = b'FREQ'
 MAGIC_POWR = b'POWR'
-# SDR meter (ux-3 feedback): the listened channel's pre-AGC level plus the capture-wide
-# peak, emitted every acquisition step so the panel meter responds at step rate (the 1 Hz
-# STATUS channel is too slow for a meter). LATEST-wins routing by the default policy.
-MAGIC_SDRM = b'SDRM'
-SDRM_HEADER = struct.Struct('<Iff')   # version, level_dbfs, peak_dbm (12 bytes after magic)
 MAGIC_RTA = b'RTAF'
 MAGIC_AUDIO = b'AUDF'
 MAGIC_BASEBAND = b'IQBF'
@@ -89,10 +84,6 @@ def encode_audio(seq: int, rate: int, pcm) -> bytes:
     """Mono PCM16 audio frame; seq == 0 tells the client to flush stale audio."""
     pcm = np.ascontiguousarray(pcm, dtype=np.int16)
     return MAGIC_AUDIO + AUDIO_HEADER.pack(int(seq), int(rate), pcm.size) + pcm.tobytes()
-
-
-def encode_sdrm(level_dbfs: float, peak_dbm: float) -> bytes:
-    return MAGIC_SDRM + SDRM_HEADER.pack(1, float(level_dbfs), float(peak_dbm))
 
 
 def encode_baseband(version: int, seq: int, rate: float, center_hz: float, iq) -> bytes:

@@ -128,14 +128,9 @@ class SdrParams:
     #: peak-hold with decay — a free PEP-style meter over the whole capture, not just the
     #: demod channel.
     sdr_peak_dbm: float = -200.0
-    #: DDC channels 1..3 (ux-2): enabled/freq/threshold per channel; level_db/active are
-    #: per-packet mirrors written by the SDR step for STATUS. The listen channel's baseband
-    #: streams as IQBF, the others as IQAX to ?iqaux=1 sockets.
-    sdr_listen_channel: int = 1
-    sdr_chans: dict = field(default_factory=lambda: {
-        ch: {'enabled': ch == 1, 'freq': 0.0, 'threshold_offset_db': 6.0,
-             'level_db': -200.0, 'active': False}
-        for ch in (1, 2, 3)})
+    #: Aux DDC channels (G1'): {int channel: {'enabled': bool, 'freq': Hz}}. Channels 2/3, each
+    #: with its own DSP handle; blocks stream as IQAX to ?iqaux=1 sockets only.
+    sdr_aux: dict = field(default_factory=dict)
     sdr_adm: dict = field(default_factory=dict)
 
 
