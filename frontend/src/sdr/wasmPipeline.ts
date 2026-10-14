@@ -36,6 +36,8 @@ export class WasmPipeline {
 	private imgMetaPtr = 0;
 	private imgPtr = 0;
 	private audioPtr = 0;
+	/** The stereo difference signal's drain block. */
+	private sidePtr = 0;
 	private handle = 0;
 	private volume = 1;
 
@@ -54,8 +56,9 @@ export class WasmPipeline {
 		this.imgMetaPtr = module.alloc(IMAGE_WORDS * 4);
 		this.imgPtr = module.alloc(IMAGE_CAPACITY);
 		this.audioPtr = module.alloc(32768 * 2);
+		this.sidePtr = module.alloc(MAX_COMPLEX_SAMPLES * 4);
 		if (!this.inPtr || !this.outPtr || !this.textPtr || !this.metricsPtr || !this.constPtr
-			|| !this.imgMetaPtr || !this.imgPtr || !this.audioPtr) return;
+			|| !this.imgMetaPtr || !this.imgPtr || !this.audioPtr || !this.sidePtr) return;
 		this.create();
 	}
 
@@ -188,6 +191,78 @@ export class WasmPipeline {
 	/** The decoded DRM audio PCM's sample rate in Hz (0 when there is no audio). */
 	audioRate(): number {
 		return this.handle && this.digital ? this.module.exports.websa_dsp_drm_audio_rate(this.handle) : 0;
+	}
+
+	/**
+	 * Drain the stereo difference signal (L−R) of the last processed block, at the consumer's
+	 * rate, aligned one-to-one with the mono PCM of `process()`. Empty for the digital path and
+	 * for the modes without a side chain (a baseband too narrow for the subcarriers).
+	 */
+	side(): Float32Array {
+		if (!this.handle || this.digital) return new Float32Array(0);
+		const written = this.module.exports.websa_dsp_demod_side(this.handle, this.sidePtr, MAX_COMPLEX_SAMPLES);
+		if (written <= 0) return new Float32Array(0);
+		const view = this.module.f32View(this.sidePtr, written);
+		return new Float32Array(view);          // a copy: the next block overwrites the block
+	}
+
+	/** Whether the stereo pilot is currently detected (the badge's state). */
+	stereo(): boolean {
+		return this.handle !== 0
+			&& this.module.exports.websa_dsp_demod_stereo(this.handle) === 1;
+	}
+
+	/** FM stereo and RDS state, or null when no side chain: `[stereo, peak_dev_hz, pilot_ratio,
+	 * rds_locked, rds_pi, rds_groups, pilot_dev_hz, pilot_snr_db]`. */
+	stereoInfo(): {
+		stereo: boolean; peakDevHz: number; pilotRatio: number;
+		rdsLocked: boolean; rdsPi: number; rdsGroups: number; pilotDevHz: number; pilotSnrDb: number;
+		/** Bench diagnostics, past the product's own eight words (zero when absent). */
+		pilotI: number; pilotQ: number; auxRateHz: number; lastAux: number;
+	} | null {
+		if (!this.handle || this.digital) return null;
+		// 12 f64 words (8 product + 4 bench diagnostics); the ABI writes all twelve, so the
+		// block must cover them — a short block corrupts the wasm heap.
+		const ptr = this.module.alloc(12 * 8);
+		if (!ptr) return null;
+		try {
+			const words = this.module.exports.websa_dsp_demod_stereo_info(this.handle, ptr);
+			if (words < 8) return null;
+			// A fresh view: the call may have grown (and detached) the memory.
+			const v = new Float64Array(this.module.exports.memory.buffer, ptr, words);
+			return {
+				stereo: v[0] !== 0, peakDevHz: v[1], pilotRatio: v[2],
+				rdsLocked: v[3] !== 0, rdsPi: v[4], rdsGroups: v[5], pilotDevHz: v[6],
+				pilotSnrDb: v[7],
+				pilotI: words >= 12 ? v[8] : 0, pilotQ: words >= 12 ? v[9] : 0,
+				auxRateHz: words >= 12 ? v[10] : 0, lastAux: words >= 12 ? v[11] : 0,
+			};
+		} finally {
+			this.module.free(ptr, 12 * 8);
+		}
+	}
+
+	/** The decoded RDS text: the eight-character programme service name and the radio text, or
+	 * null when the side chain has decoded nothing yet. */
+	rdsText(): { ps: string; rt: string } | null {
+		if (!this.handle || this.digital) return null;
+		const ptr = this.module.alloc(18 * 4);
+		if (!ptr) return null;
+		try {
+			const words = this.module.exports.websa_dsp_demod_rds_text(this.handle, ptr);
+			if (words !== 18) return null;
+			const v = new Uint32Array(this.module.exports.memory.buffer, ptr, 18);
+			const chars = (word: number): string[] => [0, 8, 16, 24].map((shift) =>
+				String.fromCharCode((word >>> shift) & 0xFF));
+			let rt = '';
+			for (let k = 2; k < 18; k++) rt += chars(v[k]).join('');
+			return {
+				ps: [...chars(v[0]), ...chars(v[1])].join(''),
+				rt,
+			};
+		} finally {
+			this.module.free(ptr, 18 * 4);
+		}
 	}
 
 	/** Rebuild for a new mode/geometry. The IO blocks stay: only the handle is replaced (freeing the
