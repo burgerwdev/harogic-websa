@@ -55,12 +55,22 @@ let dspCwState = 'off';
 let dspOwnsWorklet = false;
 let dspWorkletAvailable = 0;
 let dspWorkletUnderruns = 0;
+/// DIAG: the worklet's playback gate (1 = audio actually leaving the ring).
+let dspWorkletPlaying = 0;
+let dspWorkletPrimed = 0;
 let dspWorkletReceived = 0;
 let dspError = '';
 let dspRingResets = 0;
 let dspPending = 0;
 let dspDelivered = 0;
 let dspMode = '';
+/// The geometry the UI last pushed, so the worker can ask for it to be re-applied at the rate its
+/// frames actually arrive at.
+let lastPipelineParams: PipelineParams | null = null;
+/// DIAG: the geometry the worker last applied, and the rate its frames carry (set from the stats).
+let cfgFsIn = 0;
+let cfgMode = '';
+let frameRate = 0;
 let dspSlipped = 0;
 let dspRatio = 1;
 let dspNr = false;
@@ -73,7 +83,8 @@ let dspDfnReason = '';
 let dspRms = 0;
 /// The de-emphasis the browser chain is running (microseconds; < 0 = the mode's default).
 let dspDeemph = -1;
-/// Input and output rates the DRM pipeline was built with, plus its feed counters. The DRM core
+
+let dspProcMs = 0;/// Input and output rates the DRM pipeline was built with, plus its feed counters. The DRM core
 /// works at exactly 48 kHz, so a wrong input rate is the first thing to check on a failed lock.
 let dspDigital = 0;
 let dspFsIn = 0;
@@ -115,7 +126,7 @@ function publishIqDebug(): void {
       ` flushes=${flushes} pcm_frames=${pcmFrames} pcm_samples=${pcmSamples}` +
       ` pipeline=${pipelineReady}` + (lastError ? ` error=${lastError}` : '') +
       ` fallback=${fallbackReason} ft8=${ft8Count} dsp_worklet=${dspOwnsWorklet ? 1 : 0}` +
-      ` dsp_avail=${dspWorkletAvailable} dsp_underruns=${dspWorkletUnderruns}` +
+      ` dsp_avail=${dspWorkletAvailable} dsp_underruns=${dspWorkletUnderruns} dsp_playing=${dspWorkletPlaying} dsp_primed=${dspWorkletPrimed}` +
       ` dsp_delivered=${dspDelivered} dsp_received=${dspWorkletReceived}` +
       ` dsp_pending=${dspPending} dsp_ring_resets=${dspRingResets}` +
       ` dsp_mode=${dspMode} dsp_slip=${dspSlipped} dsp_ratio=${dspRatio.toFixed(4)}` +
@@ -125,9 +136,11 @@ function publishIqDebug(): void {
       ` dsp_silent_blocks=${dspSilent} dsp_discontinuities=${dspDisc}` +
       ` dsp_pcm_rms=${dspRmsMin.toFixed(4)}..${dspRmsMax.toFixed(4)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
+      ` dsp_proc_ms=${dspProcMs.toFixed(1)}` +
       (dspDfnState ? ` dsp_nr_algo=${dspDfnState}` + (dspDfnReason ? `:${dspDfnReason}` : '') : '') +
       ` dsp_cw=${dspCwState} dsp_cw_chars=${cwCharsSeen}` +
       ` dsp_digital=${dspDigital} dsp_ids=${digitalIdCount} dsp_fs_in=${dspFsIn}` +
+      ` cfg_fs_in=${cfgFsIn} cfg_mode=${cfgMode} cfg_frame_rate=${frameRate}` +
       ` dsp_out_rate=${dspOutRate} dsp_drm_pushes=${drmPushes} dsp_drm_reports=${drmReports}` +
       (dspError ? ` dsp_error=${dspError}` : '') + (digitalDiagnostics ? ` ${digitalDiagnostics}` : '');
   }
@@ -176,7 +189,16 @@ function startWorker(): void {
   };
   worker.onmessage = (event: MessageEvent) => {
     const d = (event.data || {}) as Record<string, any>;
-    if (d.type === 'error') {
+    if (d.type === 'geometry') {
+      // The frames carry a rate the pipeline was not built for: the backend re-planned its
+      // channelizer (a listen change does that) without a STATUS round trip. Re-apply the same
+      // geometry at the rate the samples actually arrive at, through the ordinary configure path.
+      const fsIn = Number(d.fsIn) || 0;
+      cfgFsIn = fsIn;
+      if (fsIn > 0 && lastPipelineParams && Math.abs(lastPipelineParams.fsIn - fsIn) > 1) {
+        configureSdrPipeline({ ...lastPipelineParams, fsIn });
+      }
+    } else if (d.type === 'error') {
       lastError = String(d.message || 'error');
       // The browser DSP cannot run (no module, no kernel for the mode, a delivery failure): the
       // Python path is the documented fallback and only now is it started.
@@ -270,6 +292,65 @@ function startWorker(): void {
       }
       return;
     }
+    if (d.type === 'wfm-info') {
+      if (configuredMode === 'wfm') {
+        import('../ui/decodeWindow').then(({ setWfmInfo }) => {
+          // DIAG (bench trace of the badge's decision): publish the detector's raw numbers so a
+          // headless run can sample them step by step, and so the operator can read the same state
+          // while reproducing. Remove with the instrumentation that consumes it.
+          // Strings, not numbers: `Number(x) || 0` turns a NaN into a clean 0, which is exactly
+          // how a numerical blow-up in the detector hides as "no pilot".
+          const raw = (v: unknown): string => {
+            const n = Number(v);
+            return Number.isFinite(n) ? String(n) : String(v);
+          };
+          const diag = {
+            at: Date.now(),
+            stereo: d.stereo === true,
+            pilotPct: raw(d.pilotPct),
+            pilotDevHz: raw(d.pilotDevHz),
+            pilotSnrDb: raw(d.pilotSnrDb),
+            peakDevHz: raw(d.peakDevHz),
+            rdsLocked: d.rdsLocked === true,
+            rdsGroups: raw(d.rdsGroups),
+            rdsPi: raw(d.rdsPi),
+            rt: String(d.rt || ''),
+            ps: String(d.ps || ''),
+            carrierHz: raw(d.carrierHz),
+            pilotI: raw(d.pilotI),
+            pilotQ: raw(d.pilotQ),
+            auxRateHz: raw(d.auxRateHz),
+            lastAux: raw(d.lastAux),
+            fsIn: raw(d.fsIn),
+            ifBw: raw(d.ifBw),
+            sideLen: raw(d.sideLen),
+            sideRms: raw(d.sideRms),
+            pcmRms: raw(d.pcmRms),
+          };
+          const w = window as unknown as { __wfmState?: unknown; __wfmTrail?: unknown[] };
+          w.__wfmState = diag;
+          w.__wfmTrail = ((w.__wfmTrail as unknown[]) || []).concat([diag]).slice(-20000);
+          setWfmInfo({
+            stereo: d.stereo === true,
+            peakDevHz: Number(d.peakDevHz) || 0,
+            pilotPct: Number(d.pilotPct) || 0,
+            peakDbFs: String(d.peakDbFs || ''),
+            peakHoldDb: String(d.peakHoldDb || ''),
+            rdsLocked: d.rdsLocked === true,
+            rdsPi: Number(d.rdsPi) || 0,
+            rdsGroups: Number(d.rdsGroups) || 0,
+            ps: String(d.ps || ''),
+            rt: String(d.rt || ''),
+            carrierHz: Number(d.carrierHz) || 0,
+            pilotDevHz: Number(d.pilotDevHz) || 0,
+            pilotSnrDb: Number(d.pilotSnrDb) || 0,
+            scopeL: d.scopeL instanceof Float32Array ? d.scopeL : null,
+            scopeR: d.scopeR instanceof Float32Array ? d.scopeR : null,
+          });
+        });
+      }
+      return;
+    }
     if (d.type === 'dfn-status') {
       dspDfnState = String(d.state || '');
       dspDfnReason = String(d.reason || '');
@@ -302,6 +383,8 @@ function startWorker(): void {
     if (typeof d.worklet === 'number') dspOwnsWorklet = d.worklet === 1;
     if (typeof d.workletAvailable === 'number') dspWorkletAvailable = d.workletAvailable;
     if (typeof d.workletUnderruns === 'number') dspWorkletUnderruns = d.workletUnderruns;
+    if (typeof d.workletPlaying === 'number') dspWorkletPlaying = d.workletPlaying;
+    if (typeof d.workletPrimed === 'number') dspWorkletPrimed = d.workletPrimed;
     if (typeof d.workletReceived === 'number') dspWorkletReceived = d.workletReceived;
     if (typeof d.workletError === 'string') dspError = d.workletError;
     if (typeof d.workletRingResets === 'number') dspRingResets = d.workletRingResets;
@@ -316,6 +399,9 @@ function startWorker(): void {
     if (typeof d.mode === 'string' && d.mode) dspMode = d.mode;
     if (typeof d.digital === 'number') dspDigital = d.digital;
     if (typeof d.fsIn === 'number') dspFsIn = d.fsIn;
+    if (typeof d.cfgFsIn === 'number') cfgFsIn = d.cfgFsIn;
+    if (typeof d.cfgMode === 'string') cfgMode = d.cfgMode;
+    if (typeof d.frameRate === 'number') frameRate = d.frameRate;
     if (typeof d.outRate === 'number') dspOutRate = d.outRate;
     if (typeof d.drmPushes === 'number') drmPushes = d.drmPushes;
     if (typeof d.drmReports === 'number') drmReports = d.drmReports;
@@ -376,8 +462,12 @@ export function configureSdrPipeline(
     clearSstv();
     sstvNotes = [];
     configuredMode = params.mode;
-    startWorker();
   }
+  // Always make sure a worker exists: `startWorker` is a no-op while one is alive, and a trapped
+  // worker (a wasm trap drops the port) used to come back only on a mode change, which is why a
+  // decoder that broke stayed broken until the operator switched modes and back.
+  lastPipelineParams = params;
+  startWorker();
   worker?.postMessage({
     type: 'configure',
     params,
@@ -455,6 +545,28 @@ export function setSdrIqEnabled(on: boolean): void {
 }
 
 /** Drop the worker's stream state (preset/reset): counters restart with the new capture geometry. */
+/**
+ * Tell the DSP worker that the listened channel moved inside the current capture, so the kernel
+ * drops the previous station's detector state. A listen change does not restart the stream, so
+ * without this the stereo badge keeps the old station's numbers.
+ */
+/**
+ * The baseband rate the stream is actually delivering, or 0 before the first frame arrives.
+ *
+ * This is the authority for the demodulator's geometry: the kernel sizes its filters from `fsIn`,
+ * so a value that disagrees with the samples their own rate breaks the chain. The backend's STATUS
+ * reports the channelizer's *planned* rate, and after a listen change the plan and the frames
+ * disagree; a WFM side chain built for the planned rate then falls below the subcarrier budget and
+ * switches itself off, which reads as a stereo badge stuck on MONO until the next re-tune.
+ */
+export function sdrStreamRate(): number {
+  return rate;
+}
+
+export function retuneSdrPipeline(): void {
+  worker?.postMessage({ type: 'retune' });
+}
+
 export function resetSdrIq(): void {
   ft8Text = '';
   ft8Count = 0;

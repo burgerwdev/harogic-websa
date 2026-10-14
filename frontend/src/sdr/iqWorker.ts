@@ -61,6 +61,9 @@ let ft8Messages = 0;
 /// What the worklet reports about its own ring (relayed to the page's diagnostics).
 let workletAvailable = 0;
 let workletUnderruns = 0;
+/// DIAG: the worklet's playback gate, so a retune's audio gap is measurable from the page.
+let workletPlaying = 0;
+let workletPrimed = 0;
 let workletReceived = 0;
 /// The last failure seen while handing PCM to the worklet ('' when it is fine).
 let workletError = '';
@@ -166,6 +169,29 @@ let blocks = 0;
 let samples = 0;
 let rate = 0;
 let centerHz = 0;
+/// DIAG: the last `configure` the worker applied, and the rate the frames arrive at, so a repro
+/// that loses the side chain can be read back even after `wfm-info` stops.
+let lastConfig = { fsIn: 0, mode: '', ifBw: 0, at: 0 };
+/// DIAG/guard: the frame rate already reported to the main thread, so a persistent mismatch sends
+/// one message, not one per frame.
+let reportedRate = 0;
+/// Samples in the WFM scope snapshot the decode pane draws (about 10 ms at 48 kHz).
+const SCOPE_SAMPLES = 512;
+/// The scope snapshot buffer: filled per block and copied into the message, so a posting that
+/// the main thread reads late cannot see a half-written block.
+const scopeL = new Float32Array(SCOPE_SAMPLES);
+const scopeR = new Float32Array(SCOPE_SAMPLES);
+/// Audio level readout: a peak-hold that decays like a broadcast peak meter (about 20 dB/s), so
+/// the number holds the peak the listener hears instead of following every block. A bare
+/// per-block peak jumps by many dB between blocks and makes the readout unreadable.
+let audioPeakHoldDb = -200;
+const AUDIO_HOLD_DECAY_DB = 0.4;
+/// Audio level readout, VU style: a 300 ms mean-square average (the integration a VU meter uses),
+/// smoothed per block. A per-block peak follows every syllable and is unreadable; the peak hold
+/// above is kept for the scope's vertical scale, which wants the loudest recent excursion.
+let audioVuMs = 0;
+const VU_TAU_S = 0.3;
+const BLOCK_S = 0.02;
 let dropped = 0;
 let flushes = 0;
 let pcmFrames = 0;
@@ -245,6 +271,8 @@ function post(msg: Record<string, unknown>, transfer?: Transferable[]): void {
 
 function postStats(): void {  post({
     type: 'stats', enabled, blocks, samples, rate, centerHz, dropped, flushes,
+    cfgFsIn: Math.round(lastConfig.fsIn), cfgMode: lastConfig.mode, cfgIfBw: lastConfig.ifBw,
+    cfgAt: lastConfig.at, frameRate: Math.round(rate),
     pcmFrames, pcmSamples, rms, mode: params?.mode ?? '',
     digital: digital ? 1 : 0, fsIn: Number(params?.fsIn) || 0, outRate: Number(params?.outRate) || 0,
     drmPushes, drmReports, digitalIdCount: digitalIds.size,
@@ -257,6 +285,7 @@ function postStats(): void {  post({
     sstvPushes, sstvImages, sstvAttempts, sstvHasPicture,
     digitalAttempts, digitalDropped,
     worklet: workletPort ? 1 : 0, workletAvailable, workletUnderruns, workletReceived,
+    workletPlaying, workletPrimed,
     workletError, workletRingResets, workletSlipped, workletRatio,
     fillMin: Number.isFinite(fillMin) ? fillMin : 0, fillMax,
     silentBlocks, discontinuities, pcmBlocks,
@@ -265,7 +294,10 @@ function postStats(): void {  post({
     dfn: dfnReady ? 'ready' : dfnLoading ? 'loading' : dfnError ? 'fallback' : 'off',
     dfnError,
     deemphUs: params?.deemphUs ?? -1, audioOn,
+    stereo: workletStereo ? 1 : 0,
+    procMs: Math.round(procMsAccum * 10) / 10,
   });
+  procMsAccum = 0;
   if (params?.mode === 'sstv') postSstvState();
 }
 
@@ -537,7 +569,8 @@ function syncDfn(): void {
         applyListenerControls();
         post({ type: 'dfn-status', state: 'fallback', reason: dfnError });
       } else if (d.type === 'pcm') {
-        deliver(d.out as Float32Array);
+        const block = d.out as Float32Array;
+        deliver(workletStereo ? duplicateStereo(block) : block);
       }
     };
   }
@@ -562,10 +595,45 @@ function deliverViaDfn(pcm: Float32Array): void {
 function resetDelivery(): void {
   pendingPcm = [];
   pendingSamples = 0;
+  // The layout is per-mode state and survives the flush; the worklet keeps its layout across a
+  // ring reset, so the pair stays consistent without another message.
   // The dfn stream's lookahead buffer holds the previous channel: flush it too, so a retune does
   // not play a burst of the old station through the fresh channel.
   dfnWorker?.postMessage({ type: 'reset' });
   workletPort?.postMessage({ type: 'reset' });
+}
+
+/// Whether the delivered blocks are interleaved L/R pairs (the worklet's ring layout follows).
+let workletStereo = false;
+/// DSP wall time (ms) accumulated since the last stats window: the live side-chain cost the
+/// operator (and the bench) can read next to the 1 Hz budget.
+let procMsAccum = 0;
+
+/**
+ * Interleave the mono (L+R) and the side (L−R) samples into L/R pairs: L = M + S, R = M − S.
+ * The two inputs are aligned one-to-one by the demodulator (same rate, same block cadence); a
+ * short side trims the output to what is safely paired.
+ */
+function interleaveStereo(mono: Float32Array, side: Float32Array): Float32Array<ArrayBuffer> {
+  const pairs = Math.min(mono.length, side.length);
+  const out = new Float32Array(pairs * 2);
+  for (let i = 0; i < pairs; i++) {
+    const m = mono[i];
+    const s = side[i];
+    out[2 * i] = m + s;
+    out[2 * i + 1] = m - s;
+  }
+  return out;
+}
+
+/** Duplicate the mono block as both channels (the mono station's stereo layout). */
+function duplicateStereo(mono: Float32Array): Float32Array<ArrayBuffer> {
+  const out = new Float32Array(mono.length * 2);
+  for (let i = 0; i < mono.length; i++) {
+    out[2 * i] = mono[i];
+    out[2 * i + 1] = mono[i];
+  }
+  return out;
 }
 
 /**
@@ -585,7 +653,9 @@ function deliver(pcm: Float32Array): void {
   const blockRms = Math.sqrt(blockSum / pcm.length);
   if (pcmBlocks > 0) {
     if (blockRms < 1e-5) silentBlocks += 1;
-    if (Math.abs(pcm[0] - lastPcmTail) > 0.25) discontinuities += 1;
+    // The step detector reads consecutive ring values; an interleaved L/R pair alternates by
+    // design, so the check only means something in the mono layout.
+    if (!workletStereo && Math.abs(pcm[0] - lastPcmTail) > 0.25) discontinuities += 1;
   }
   lastPcmTail = pcm[pcm.length - 1];
   pcmBlocks += 1;
@@ -599,7 +669,9 @@ function deliver(pcm: Float32Array): void {
   if (!workletPort) return;                          // produced, but nobody to hand it to
   pendingPcm.push(pcm);
   pendingSamples += pcm.length;
-  if (pendingSamples < pcmBlockSamples) return;
+  // The 20 ms target counts ring values: a stereo pair is two values per frame.
+  const blockTarget = workletStereo ? pcmBlockSamples * 2 : pcmBlockSamples;
+  if (pendingSamples < blockTarget) return;
   const block = new Float32Array(pendingSamples);
   let offset = 0;
   for (const part of pendingPcm) {
@@ -653,6 +725,20 @@ function resetStream(): void {
 }
 
 async function onBaseband(frame: BasebandFrame): Promise<void> {
+  // The FRAMES are the authority for the demodulator's geometry. `fsIn` arrives from the backend's
+  // STATUS window, and a listen change makes the backend re-plan its channelizer — measured: 300.4
+  // to 260.3 kSps — without waiting for that window. A demodulator built for the old rate scales
+  // every filter with it, so the pilot's 19 kHz lands 13% low and the decode window reads MONO;
+  // only a full re-tune (which restarts the stream) recovered it. Re-running the configure path
+  // with the rate the samples actually arrive at keeps that invariant in one place.
+  if (params && frame.rate > 0
+      && Math.abs(frame.rate - params.fsIn) > Math.max(200, params.fsIn * 0.01)
+      && frame.rate !== reportedRate) {
+    reportedRate = frame.rate;
+    // The rebuild itself belongs to the main thread's configure path: running it here re-entered the
+    // pipeline's own lifecycle from inside a frame and trapped the wasm (measured: `unreachable`).
+    post({ type: 'geometry', fsIn: frame.rate });
+  }
   if (frame.seq === 0) {
     // The backend retuned or reconfigured: the queued blocks and the demodulator's history belong to
     // another channel. A retune only clears the channel history (the level control is kept), while a
@@ -661,7 +747,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     flushes++;
     pipeline?.retune();
     if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
-    if (params?.mode === 'sstv' && frame.centerHz !== sstvHz) {
+      if (params?.mode === 'sstv' && frame.centerHz !== sstvHz) {
       // Only a *moved* channel invalidates the picture. The backend also flushes on a
       // reconfiguration of the same frequency (a filter change, a level step), and clearing the pane
       // on those threw away a picture that was still arriving.
@@ -677,7 +763,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     // search. Start the next slot clean instead (the counter above is what makes this visible).
     pipeline?.reset();
     if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
-    if (params?.mode === 'sstv') {
+      if (params?.mode === 'sstv') {
       sstvSerial = -1;
       sstvLines = -1;
       post({ type: 'sstv-clear' });
@@ -770,7 +856,25 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     }
     decoderPushes += 1;
   } else if (pipeline) {
+    const procStart = performance.now();
     const pcm = pipeline.process(frame.iq);
+    // WFM stereo: the side chain's L−R rides with the mono as one interleaved block. The layout
+    // is a per-mode constant (never per block — a flip would make the worklet re-read its ring
+    // in the wrong layout, which is audible as loud garbage), so a block without side samples
+    // duplicates the mono and keeps the layout.
+    // One drain per block: side() empties the side buffer, so a second call would return
+    // nothing and silently drop the L−R channel.
+    const side = pipeline.side();
+    let out = pcm;
+    if (workletStereo) {
+      // The side only reaches the mix while the pilot is detected: the drained samples exist for
+      // every WFM block, but without a pilot they are the product detector's noise floor, and a
+      // real receiver blends to mono in exactly that state. The LAYOUT stays stereo either way —
+      // duplicateStereo keeps the pair, so the worklet never re-reads its ring in the other
+      // layout.
+      const live = side.length > 0 && pipeline.stereo();
+      out = live ? interleaveStereo(pcm, side) : duplicateStereo(pcm);
+    }
     // The same PCM the listener gets (the pipeline's own NR included; the DFN stage further down
     // is for the ear). Decoded characters go straight to the page's CW log.
     if (cwDecoder && pcm.length) {
@@ -785,13 +889,96 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
         });
       }
     }
+    // WFM decode window: post the stereo state and audio level (the pane reads them live).
+    if (params?.mode === 'wfm' && pcm.length > 0) {
+      // The meter and the scope's vertical scale follow what the LISTENER hears: the interleaved
+      // L/R pair when the stereo layout is on, the mono otherwise. Measuring the mono while the
+      // worklet gets L = M + S understates the level (a fully separated programme peaks at nearly
+      // twice the sum) and the scope would clip its lane on exactly the broadcasts it is there for.
+      const metered = workletStereo ? out : pcm;
+      let peak = 0.0;
+      for (let i = 0; i < metered.length; i++) peak = Math.max(peak, Math.abs(metered[i]));
+      const info = pipeline.stereoInfo();
+      if (info) {
+        // The text rides along only once RDS has locked: before that every call returns the
+        // blank state, and the pane shows its placeholder either way.
+        const text = info.rdsLocked ? pipeline.rdsText() : null;
+        // A short scope snapshot of the audio the listener hears: the pane draws it directly.
+        // 512 frames is ~10 ms at 48 kHz, enough to see the waveform rather than a blur. Both
+        // channels are snapshotted (they are identical for a mono station), so a stereo
+        // broadcast can be shown as two traces. The window starts at a rising zero crossing of
+        // the left channel (the scope trigger every instrument uses): without it the trace slides
+        // sideways every block and the waveform only blurs.
+        const frames = workletStereo ? Math.floor(out.length / 2) : out.length;
+        const at = (f: number): number => (workletStereo ? out[2 * f] : out[f]);
+        const want = Math.max(0, frames - SCOPE_SAMPLES);
+        let start = want;
+        for (let i = want; i > Math.max(1, want - 600); i--) {
+          if (at(i - 1) <= 0 && at(i) > 0) { start = i; break; }
+        }
+        for (let i = 0; i < SCOPE_SAMPLES; i++) {
+          const f = Math.min(frames - 1, start + i);
+          scopeL[i] = at(f);
+          scopeR[i] = workletStereo ? out[2 * f + 1] : at(f);
+        }
+        let pcmRms = 0;
+        for (let i = 0; i < pcm.length; i++) pcmRms += pcm[i] * pcm[i];
+        pcmRms = Math.sqrt(pcmRms / Math.max(1, pcm.length));
+        let sideRms = 0;
+        for (let i = 0; i < side.length; i++) sideRms += side[i] * side[i];
+        sideRms = Math.sqrt(sideRms / Math.max(1, side.length));
+        const blockDb = 20 * Math.log10(Math.max(peak, 1e-6));
+        audioPeakHoldDb = Math.max(blockDb, audioPeakHoldDb - AUDIO_HOLD_DECAY_DB);
+        let ms = 0;
+        for (let i = 0; i < metered.length; i++) ms += metered[i] * metered[i];
+        ms /= Math.max(1, metered.length);
+        const aVu = 1 - Math.exp(-BLOCK_S / VU_TAU_S);
+        audioVuMs = audioVuMs === 0 ? ms : audioVuMs + aVu * (ms - audioVuMs);
+        const vuDb = 10 * Math.log10(Math.max(audioVuMs, 1e-12));
+        post({
+          type: 'wfm-info', stereo: info.stereo,
+          peakDevHz: Math.round(info.peakDevHz),
+          pilotPct: Math.round(info.pilotRatio * 1000) / 10,
+          peakDbFs: vuDb.toFixed(1),
+          peakHoldDb: audioPeakHoldDb.toFixed(1),
+          rdsLocked: info.rdsLocked,
+          rdsPi: info.rdsPi,
+          rdsGroups: info.rdsGroups,
+          ps: text?.ps ?? '',
+          rt: text?.rt ?? '',
+          carrierHz: centerHz,
+          pilotDevHz: info.pilotDevHz,
+          pilotSnrDb: info.pilotSnrDb,
+          // DIAG: what the pipeline actually produced this block.
+          // DIAG: the side chain's own internals (pilot phasor, its working rate, the block's
+          // decimated length). The pane's eight words can say MONO without saying why.
+          pilotI: info.pilotI,
+          pilotQ: info.pilotQ,
+          auxRateHz: info.auxRateHz,
+          lastAux: info.lastAux,
+          // DIAG: the geometry the pipeline was built with, against the stream's own rate.
+          fsIn: params?.fsIn ?? 0,
+          ifBw: params?.ifBw ?? 0,
+          sideLen: side.length,
+          sideRms: Number(sideRms.toFixed(6)),
+          pcmRms: Number(pcmRms.toFixed(6)),
+          scopeL: scopeL.slice(),
+          scopeR: scopeR.slice(),
+        });
+      }
+    }
     // DeepFilterNet3 owns the PCM only while the listener has it selected and it is ready; a
     // failed/slow model has already fallen back, so the block passes through the Wiener chain.
+    // NR stays mono by design (a speech reducer has no stereo contract); in that case the block
+    // delivers as mono and the worklet splits it, so the two paths never disagree about layout.
     if (nr && nrAlgo === 'dfn' && dfnReady) {
+      // NR is mono by design (a speech reducer has no stereo contract); the dfn response is
+      // duplicated on delivery so the block keeps the worklet's layout.
       deliverViaDfn(pcm); // async: the dfn worker's 'pcm' response is delivered on its message
     } else {
-      deliver(pcm);
+      deliver(out);
     }
+    procMsAccum += performance.now() - procStart;
   }
   if (blocks % 25 === 0) postStats();
 }
@@ -883,7 +1070,9 @@ self.onmessage = (event: MessageEvent) => {
       pcmBlockSamples = Math.max(128, Math.round(Number(next.outRate) * 0.02));
       const previous = params;
       params = next;
-      workletPort?.postMessage({ type: 'buffer-mode', mode: next.mode });
+      lastConfig = { fsIn: Number(next.fsIn), mode: String(next.mode), ifBw: Number(next.ifBw), at: Date.now() };
+      workletStereo = next.mode === 'wfm';
+      workletPort?.postMessage({ type: 'buffer-mode', mode: next.mode, stereo: workletStereo });
       if (typeof msg.volume === 'number') volume = msg.volume;
       if (typeof msg.audioEnabled === 'boolean') audioEnabled = msg.audioEnabled;
       if (typeof msg.nr === 'boolean') nr = msg.nr;
@@ -979,6 +1168,8 @@ self.onmessage = (event: MessageEvent) => {
         if (status.type !== 'status') return;
         workletAvailable = Number(status.available) || 0;
         workletUnderruns = Number(status.underruns) || 0;
+        workletPlaying = status.playing ? 1 : 0;
+        workletPrimed = status.primed ? 1 : 0;
         workletReceived = Number(status.received) || 0;
         workletRingResets = Number(status.resets) || 0;
         workletSlipped = Number(status.slipped) || 0;
@@ -988,9 +1179,17 @@ self.onmessage = (event: MessageEvent) => {
         fillMax = Math.max(fillMax, fill);
       };
       workletPort.start();
-      workletPort.postMessage({ type: 'buffer-mode', mode: params?.mode });
+      workletPort.postMessage({ type: 'buffer-mode', mode: params?.mode, stereo: workletStereo });
       workletPort.postMessage({ type: 'enabled', value: enabled });
     }
+  } else if (msg.type === 'retune') {
+    // The listened channel moved inside the SAME capture (the backend keeps streaming, so no
+    // frame carries `seq === 0` and nothing else would tell the kernel). Its stereo state — the
+    // pilot phasor, the pilot SNR, the smoothed peak deviation — belongs to the station that was
+    // tuned; carried over, a switch away and back reads MONO until a full re-tune, which is what
+    // a bench report showed. The level control survives, as on the stream's own retune.
+    pipeline?.retune();
+    resetDelivery();
   } else if (msg.type === 'reset') {
     resetStream();
   } else if (msg.type === 'detach') {

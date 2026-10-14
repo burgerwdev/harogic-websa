@@ -67,11 +67,16 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.prime = Math.floor(sampleRate * PRIME_S);
     this.maxFill = Math.floor(sampleRate * MAX_FILL_S);
     this.mode = 'default';
+    /// Sample layout of the ring: 'mono' (one value per sample) or 'stereo' (an L/R pair per
+    /// sample, interleaved). The producer announces it with `buffer-mode`; a layout switch resets
+    /// the ring, because mixing the two reads garbage.
+    this.layout = 'mono';
     this.enabled = false;
     this.playing = false;
     this.primed = false;
     this.fade = 0;
     this.lastSample = 0;
+    this.lastSampleR = 0;
     this.tailGain = 0;
     this.fadeStep = 1 / Math.max(1, sampleRate * FADE_S);
     // Drift correction: input samples consumed per output sample, steered by the fill.
@@ -94,6 +99,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.reset();
       } else if (message.type === 'buffer-mode') {
         this.setBufferMode(message.mode);
+        this.setLayout(message.stereo ? 'stereo' : 'mono');
       } else if (message.type === 'enabled') {
         this.enabled = Boolean(message.value);
         if (!this.enabled) {
@@ -130,11 +136,30 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     const next = mode === 'drm' || mode === 'drmplus' ? 'drm' : 'default';
     if (next === this.mode) return;
     this.mode = next;
-    this.prime = Math.floor(sampleRate * (next === 'drm' ? DRM_PRIME_S : PRIME_S));
-    this.target = Math.floor(sampleRate * (next === 'drm' ? DRM_TARGET_S : TARGET_S));
-    this.maxFill = Math.floor(sampleRate * (next === 'drm' ? DRM_MAX_FILL_S : MAX_FILL_S));
+    // Frame counts in *samples per channel*; the layout multiplies them.
+    this.primeFrames = Math.floor(sampleRate * (next === 'drm' ? DRM_PRIME_S : PRIME_S));
+    this.targetFrames = Math.floor(sampleRate * (next === 'drm' ? DRM_TARGET_S : TARGET_S));
+    this.maxFillFrames = Math.floor(sampleRate * (next === 'drm' ? DRM_MAX_FILL_S : MAX_FILL_S));
+    this.applyBufferParams();
     this.ratio = 1;
     this.reset();
+  }
+
+  /** Switch the ring's sample layout; the buffered audio of the old layout is dropped. */
+  setLayout(layout) {
+    const next = layout === 'stereo' ? 'stereo' : 'mono';
+    if (next === this.layout) return;
+    this.layout = next;
+    this.applyBufferParams();
+    this.reset();
+  }
+
+  /** The thresholds count values in the ring: a stereo pair is two values per frame. */
+  applyBufferParams() {
+    const mul = this.layout === 'stereo' ? 2 : 1;
+    this.prime = (this.primeFrames || Math.floor(sampleRate * PRIME_S)) * mul;
+    this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
+    this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
   }
 
   push(samples) {
@@ -164,38 +189,58 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0] && outputs[0][0];
     if (!out) return true;
+    // The second channel is written whenever the node has one, in BOTH layouts: the ring carries
+    // an L/R pair per sample in the stereo layout, and in the mono layout the same sample goes to
+    // both. Writing the right channel only for the stereo layout left every mono mode — and a
+    // mono FM station, which uses the stereo layout with an empty sideband — silent on the right
+    // speaker ("only one speaker plays").
+    const outR = outputs[0][1] || null;
     out.fill(0);
+    if (outR) outR.fill(0);
+    const stereo = this.layout === 'stereo';
+    const step = stereo ? 2 : 1;                     // ring values consumed per output sample
+    const frames = stereo ? Math.floor((this.available) / 2) : this.available;
     for (let i = 0; i < out.length; i++) {
       if (this.tailGain > 0) {
         out[i] = this.lastSample * this.tailGain;
+        if (outR) outR[i] = this.lastSampleR * this.tailGain;
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
         continue;
       }
       if (!this.enabled) continue;
       if (!this.playing) {
-        if (this.available < this.prime) continue;    // still priming: output silence
+        if (frames < this.prime) continue;           // still priming: output silence
         this.playing = true;
         this.primed = true;
         this.fade = 0;
       }
-      if (this.available < 2) {                        // nothing to interpolate between
+      if (frames < 2) {                              // nothing to interpolate between
         this.playing = false;
         this.tailGain = this.fade;
         this.underruns++;
         out[i] = this.lastSample * this.tailGain;
+        if (outR) outR[i] = this.lastSampleR * this.tailGain;
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
         continue;
       }
-      const next = (this.readPos + 1) % this.capacity;
+      const next = (this.readPos + step) % this.capacity;
       const value = this.ring[this.readPos] * (1 - this.frac) + this.ring[next] * this.frac;
+      // In the mono layout the same sample feeds both channels.
+      let valueR = value;
+      if (stereo) {
+        valueR = this.ring[this.readPos + 1] * (1 - this.frac)
+          + this.ring[(next + 1) % this.capacity] * this.frac;
+      }
       this.fade = Math.min(1, this.fade + this.fadeStep);
       this.lastSample = value;
+      this.lastSampleR = valueR;
       out[i] = value * this.fade;
+      if (outR) outR[i] = valueR * this.fade;
       this.frac += this.ratio;
       while (this.frac >= 1) {
         this.frac -= 1;
-        this.readPos = (this.readPos + 1) % this.capacity;
-        this.available--;
+        this.readPos = (this.readPos + step) % this.capacity;
+        this.available -= step;
       }
     }
     this.fillSum += this.available;
@@ -216,6 +261,10 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         resets: this.resets,
         slipped: this.slipped,
         ratio: this.ratio,
+        // DIAG: the playback gate the bench times a retune against (playing falls on a reset,
+        // rises again once the ring re-primes; published so the gap is measurable from the page).
+        playing: this.playing,
+        primed: this.primed,
       });
     }
     return true;
