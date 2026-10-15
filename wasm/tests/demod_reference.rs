@@ -83,6 +83,16 @@ fn tolerance() -> f64 {
     rest[..end].trim().parse().expect("tolerance is a number")
 }
 
+/// Read a number the stereo fixture's `expect` block records (its own key, so a search inside the
+/// whole manifest stays unambiguous).
+fn stereo_expect(key: &str) -> f64 {
+    let marker = format!("\"{key}\": ");
+    let start = MANIFEST.find(&marker).expect("the manifest records this expectation") + marker.len();
+    let rest = &MANIFEST[start..];
+    let end = rest.find(|c: char| c == ',' || c == '\n').unwrap_or(rest.len());
+    rest[..end].trim().parse().expect("expectation is a number")
+}
+
 fn as_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
@@ -203,4 +213,79 @@ fn every_mode_in_the_registry_has_a_reference_fixture() {
         assert_eq!(case.tolerance, DC_BLOCKED, "{}", case.mode);
     }
     assert_eq!(AUDIO_RATE, 48_000.0);
+}
+
+/// The committed stereo+RDS baseband: the full pipeline must detect the pilot, declare stereo,
+/// recover the L−R tone and lock the RDS group the fixture carries.
+#[test]
+fn stereo_rds_fixture_locks_pilot_difference_and_rds() {
+    let iq = as_f32(&include_bytes!("../../tests/fixtures/dsp/demod_wfm_stereo_iq.bin").to_vec());
+    let fs = 288_000.0;
+    let mut demod = build_at("wfm", DemodConfig::new(fs, 180_000.0)).expect("wfm builds");
+    let block = 4_800_usize;
+    let mut stereo = false;
+    let mut rds_locked = false;
+    let mut pi = 0_u16;
+    // Level accumulators: the drained side's RMS against the audio's own. Presence is not
+    // enough — see the assertion after the loop.
+    let mut sum_sq = 0.0_f64;
+    let mut sum_n = 0_usize;
+    let mut side_sq = 0.0_f64;
+    let mut side_n = 0_usize;
+    for chunk in iq.chunks(block * 2) {
+        let mut out = Vec::new();
+        demod.process_into(chunk, &mut out);
+        for v in out.iter() {
+            sum_sq += (*v as f64) * (*v as f64);
+        }
+        sum_n += out.len();
+        let side = demod.take_side();
+        for v in side.iter() {
+            side_sq += (*v as f64) * (*v as f64);
+        }
+        side_n += side.len();
+        stereo = demod.stereo_detected();
+        if let Some(rds) = demod.rds_state() {
+            rds_locked = rds.locked;
+            pi = rds.pi;
+        }
+    }
+    assert!(stereo, "the pilot must be detected on the committed baseband");
+    assert!(rds_locked, "the RDS group must decode on the committed baseband");
+    assert_eq!(pi, 0x1234, "the fixture's PI code");
+    // The side's LEVEL, not just its presence. The consumer mixes L = M + S and R = M − S, so the
+    // drained side must carry the composite's own difference-to-sum ratio. A coherent detector
+    // without its factor of two still "finds the L−R tone" while halving every programme's
+    // separation — the two traces in the decode window stay nearly alike and no scope test fails.
+    // The band is wide on purpose: the fixture's RDS rides 1.9 kHz of deviation on the 57 kHz
+    // subcarrier, and part of that lands in the difference signal's own band, so this fixture
+    // reads a little high (0.377 against 0.300). A clean synthetic composite without RDS reads
+    // 0.956 against 1.000. The broken detector read 0.168, so the two are far apart.
+    let want_side_ratio = stereo_expect("side_dev_hz") / stereo_expect("sum_dev_hz");
+    let measured_side_ratio = (side_sq / side_n.max(1) as f64).sqrt()
+        / (sum_sq / sum_n.max(1) as f64).sqrt();
+    assert!(
+        (measured_side_ratio - want_side_ratio).abs() / want_side_ratio < 0.3,
+        "side level: measured {measured_side_ratio:.3} of the audio against the composite's \
+         {want_side_ratio:.3}"
+    );
+    // The pane's two numbers, against the deviation trace the fixture was built from. Without
+    // this the decode window could report any plausible figure; with it, the discriminator's
+    // scale (fs/2π) and the pilot detector's gain are pinned to a signal whose deviation is
+    // known by construction. The tolerance covers the band filter's ripple and the aux
+    // decimation, which the analytic trace does not model.
+    let want_dev = stereo_expect("peak_dev_hz");
+    let want_ratio = stereo_expect("pilot_ratio");
+    assert!(
+        (demod.peak_deviation_hz() - want_dev).abs() / want_dev < 0.15,
+        "peak deviation: measured {:.0} Hz against the composite's {:.0} Hz",
+        demod.peak_deviation_hz(),
+        want_dev
+    );
+    assert!(
+        (demod.pilot_ratio() - want_ratio).abs() / want_ratio < 0.25,
+        "pilot ratio: measured {:.4} against the composite's {:.4}",
+        demod.pilot_ratio(),
+        want_ratio
+    );
 }

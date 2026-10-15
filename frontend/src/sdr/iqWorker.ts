@@ -736,12 +736,9 @@ function resetStream(): void {
 let dumpIq: { on: boolean, frames: number[][] } = { on: false, frames: [] };
 
 async function onBaseband(frame: BasebandFrame): Promise<void> {
-  // The FRAMES are the authority for the demodulator's geometry. `fsIn` arrives from the backend's
-  // STATUS window, and a listen change makes the backend re-plan its channelizer — measured: 300.4
-  // to 260.3 kSps — without waiting for that window. A demodulator built for the old rate scales
-  // every filter with it, so the pilot's 19 kHz lands 13% low and the decode window reads MONO;
-  // only a full re-tune (which restarts the stream) recovered it. Re-running the configure path
-  // with the rate the samples actually arrive at keeps that invariant in one place.
+  // Frame rate is the DDC's configured sample clock. STATUS may still describe the previous
+  // geometry after a channelizer re-plan. Reconfigure through the main thread when they differ;
+  // host delivery throughput is a separate measurement and cannot set the 19 kHz pilot filter.
   if (params && frame.rate > 0
       && Math.abs(frame.rate - params.fsIn) > Math.max(200, params.fsIn * 0.01)
       && frame.rate !== reportedRate) {
@@ -753,17 +750,28 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
   if (dumpIq.on && dumpIq.frames.length < 160) {
     dumpIq.frames.push(Array.from(frame.iq));
     if (dumpIq.frames.length === 160) {
-      dumpIq.on = false;
-      post({ type: 'iq-dump', rate: frame.rate, centerHz: frame.centerHz, frames: dumpIq.frames });
+      const frames = dumpIq.frames;
+      dumpIq = { on: false, frames: [] };
+      post({ type: 'iq-dump', rate: frame.rate, centerHz: frame.centerHz, frames });
     }
   }
   if (frame.seq === 0) {
-    // The backend retuned or reconfigured: the queued blocks and the demodulator's history belong to
-    // another channel. A retune only clears the channel history (the level control is kept), while a
-    // geometry change rebuilds the whole pipeline through `configure`.
+    // A flush can restart the DDC on one station or move to another station. Keep WFM
+    // metadata only for the same carrier and sample clock; configure handles geometry changes.
     lastSeq = -1;
     flushes++;
-    pipeline?.retune();
+    const sameWfmStation = params?.mode === 'wfm' && centerHz > 0
+      && frame.centerHz === centerHz && rate > 0
+      && Math.abs(frame.rate - rate) <= Math.max(200, rate * 0.01);
+    const before = pipeline?.stereoInfo();
+    if (sameWfmStation) pipeline?.retuneStationary();
+    else pipeline?.retune();
+    const after = pipeline?.stereoInfo();
+    post({ type: 'flush-info', at: Date.now(), blocks, source: 'seq0', sameWfmStation,
+           frameCenterHz: frame.centerHz, prevCenterHz: centerHz,
+           frameRate: frame.rate, prevRate: rate, mode: params?.mode ?? '',
+           beforeStereo: before?.stereo, afterStereo: after?.stereo,
+           beforeGroups: before?.rdsGroups, afterGroups: after?.rdsGroups });
     if (params?.mode === 'drm' || params?.mode === 'drmplus') post({ type: 'drm-clear' });
       if (params?.mode === 'sstv' && frame.centerHz !== sstvHz) {
       // Only a *moved* channel invalidates the picture. The backend also flushes on a
@@ -876,20 +884,11 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
   } else if (pipeline) {
     const procStart = performance.now();
     const pcm = pipeline.process(frame.iq);
-    // WFM stereo: the side chain's L−R rides with the mono as one interleaved block. The layout
-    // is a per-mode constant (never per block — a flip would make the worklet re-read its ring
-    // in the wrong layout, which is audible as loud garbage), so a block without side samples
-    // duplicates the mono and keeps the layout.
-    // One drain per block: side() empties the side buffer, so a second call would return
-    // nothing and silently drop the L−R channel.
+    // Drain L−R once per block. WFM keeps the interleaved L/R ring layout in both states.
     const side = pipeline.side();
     let out = pcm;
     if (workletStereo) {
-      // The side only reaches the mix while the pilot is detected: the drained samples exist for
-      // every WFM block, but without a pilot they are the product detector's noise floor, and a
-      // real receiver blends to mono in exactly that state. The LAYOUT stays stereo either way —
-      // duplicateStereo keeps the pair, so the worklet never re-reads its ring in the other
-      // layout.
+      // Without a pilot, play mono in both channels; the drained side is detector noise.
       const live = side.length > 0 && pipeline.stereo();
       out = live ? interleaveStereo(pcm, side) : duplicateStereo(pcm);
     }
@@ -909,24 +908,15 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     }
     // WFM decode window: post the stereo state and audio level (the pane reads them live).
     if (params?.mode === 'wfm' && pcm.length > 0) {
-      // The meter and the scope's vertical scale follow what the LISTENER hears: the interleaved
-      // L/R pair when the stereo layout is on, the mono otherwise. Measuring the mono while the
-      // worklet gets L = M + S understates the level (a fully separated programme peaks at nearly
-      // twice the sum) and the scope would clip its lane on exactly the broadcasts it is there for.
+      // Meter and scope follow PCM sent to the worklet, including L/R pairs.
       const metered = workletStereo ? out : pcm;
       let peak = 0.0;
       for (let i = 0; i < metered.length; i++) peak = Math.max(peak, Math.abs(metered[i]));
       const info = pipeline.stereoInfo();
       if (info) {
-        // The text rides along only once RDS has locked: before that every call returns the
-        // blank state, and the pane shows its placeholder either way.
+        // Before RDS lock the text is blank; the pane shows its pending mark.
         const text = info.rdsLocked ? pipeline.rdsText() : null;
-        // A short scope snapshot of the audio the listener hears: the pane draws it directly.
-        // 512 frames is ~10 ms at 48 kHz, enough to see the waveform rather than a blur. Both
-        // channels are snapshotted (they are identical for a mono station), so a stereo
-        // broadcast can be shown as two traces. The window starts at a rising zero crossing of
-        // the left channel (the scope trigger every instrument uses): without it the trace slides
-        // sideways every block and the waveform only blurs.
+        // Trigger a 512-frame scope snapshot at a rising left-channel zero crossing.
         const frames = workletStereo ? Math.floor(out.length / 2) : out.length;
         const at = (f: number): number => (workletStereo ? out[2 * f] : out[f]);
         const want = Math.max(0, frames - SCOPE_SAMPLES);
@@ -945,6 +935,18 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
         let sideRms = 0;
         for (let i = 0; i < side.length; i++) sideRms += side[i] * side[i];
         sideRms = Math.sqrt(sideRms / Math.max(1, side.length));
+        // Whole-block L/R RMS measures separation; the scope is only 10 ms.
+        let lSq = 0;
+        let rSq = 0;
+        const pairs = workletStereo ? Math.floor(out.length / 2) : out.length;
+        for (let i = 0; i < pairs; i++) {
+          const l = workletStereo ? out[2 * i] : out[i];
+          const r = workletStereo ? out[2 * i + 1] : out[i];
+          lSq += l * l;
+          rSq += r * r;
+        }
+        const lRms = Math.sqrt(lSq / Math.max(1, pairs));
+        const rRms = Math.sqrt(rSq / Math.max(1, pairs));
         const blockDb = 20 * Math.log10(Math.max(peak, 1e-6));
         audioPeakHoldDb = Math.max(blockDb, audioPeakHoldDb - AUDIO_HOLD_DECAY_DB);
         let ms = 0;
@@ -956,7 +958,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
         post({
           type: 'wfm-info', stereo: info.stereo,
           peakDevHz: Math.round(info.peakDevHz),
-          pilotPct: Math.round(info.pilotRatio * 1000) / 10,
+          pilotPct: Math.round(info.pilotDevHz / 75_000 * 1000) / 10,
           peakDbFs: vuDb.toFixed(1),
           peakHoldDb: audioPeakHoldDb.toFixed(1),
           rdsLocked: info.rdsLocked,
@@ -971,19 +973,18 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
           carrierHz: centerHz,
           pilotDevHz: info.pilotDevHz,
           pilotSnrDb: info.pilotSnrDb,
-          // DIAG: what the pipeline actually produced this block.
-          // DIAG: the side chain's own internals (pilot phasor, its working rate, the block's
-          // decimated length). The pane's eight words can say MONO without saying why.
+          // Bench diagnostics: pilot phasor, aux rate, side energy and DSP geometry.
           pilotI: info.pilotI,
           pilotQ: info.pilotQ,
           auxRateHz: info.auxRateHz,
           lastAux: info.lastAux,
-          // DIAG: the geometry the pipeline was built with, against the stream's own rate.
           fsIn: params?.fsIn ?? 0,
           ifBw: params?.ifBw ?? 0,
           sideLen: side.length,
           sideRms: Number(sideRms.toFixed(6)),
           pcmRms: Number(pcmRms.toFixed(6)),
+          lRms: Number(lRms.toFixed(6)),
+          rRms: Number(rRms.toFixed(6)),
           scopeL: scopeL.slice(),
           scopeR: scopeR.slice(),
         });
@@ -991,11 +992,8 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     }
     // DeepFilterNet3 owns the PCM only while the listener has it selected and it is ready; a
     // failed/slow model has already fallen back, so the block passes through the Wiener chain.
-    // NR stays mono by design (a speech reducer has no stereo contract); in that case the block
-    // delivers as mono and the worklet splits it, so the two paths never disagree about layout.
     if (nr && nrAlgo === 'dfn' && dfnReady) {
-      // NR is mono by design (a speech reducer has no stereo contract); the dfn response is
-      // duplicated on delivery so the block keeps the worklet's layout.
+      // DFN accepts mono only. Duplicate its output into the stable WFM L/R layout.
       deliverViaDfn(pcm); // async: the dfn worker's 'pcm' response is delivered on its message
     } else {
       deliver(out);
@@ -1117,6 +1115,9 @@ self.onmessage = (event: MessageEvent) => {
         previous.outRate !== next.outRate ||
         previous.pitch !== next.pitch;
       if (pipeline && geometryChanged && !digitalIds.has(next.mode)) {
+        post({ type: 'flush-info', at: Date.now(), blocks, source: 'configure',
+               oldFs: previous?.fsIn, newFs: next.fsIn, oldIf: previous?.ifBw, newIf: next.ifBw,
+               oldMode: previous?.mode, newMode: next.mode });
         // The baseband geometry changed: the demodulator's filters describe another channel.
         pipeline.reconfigure(next, false);
         if (!pipeline.ok) {
@@ -1187,29 +1188,32 @@ self.onmessage = (event: MessageEvent) => {
       workletPort = port;
       workletPort.onmessage = (event: MessageEvent) => {
         const status = (event.data || {}) as Record<string, any>;
-        if (status.type !== 'status') return;
+        if (status.type !== 'status' && status.type !== 'gate-transition') return;
         workletAvailable = Number(status.available) || 0;
         workletUnderruns = Number(status.underruns) || 0;
         workletPlaying = status.playing ? 1 : 0;
         workletPrimed = status.primed ? 1 : 0;
-        // DIAG: forward gate transitions immediately - the stats cadence (25 blocks) quantizes
-        // the bench's retune-gap measurement to ~800 ms otherwise.
+        workletRingResets = Number(status.resets) || 0;
+        if (status.type === 'gate-transition') {
+          lastGatePlaying = workletPlaying;
+          lastGateUnderruns = workletUnderruns;
+          post({ type: 'gate', playing: workletPlaying, underruns: workletUnderruns,
+                 resets: workletRingResets, flushes, delivered: workletReceived,
+                 blocks, at: Date.now(), wFrames: status.available });
+          return;
+        }
+        workletReceived = Number(status.received) || 0;
+        workletSlipped = Number(status.slipped) || 0;
+        workletRatio = Number(status.ratio) || 1;
         if (workletPlaying !== lastGatePlaying || workletUnderruns !== lastGateUnderruns) {
           lastGatePlaying = workletPlaying;
           lastGateUnderruns = workletUnderruns;
           post({ type: 'gate', playing: workletPlaying, underruns: workletUnderruns,
                  resets: workletRingResets, flushes, delivered: workletReceived,
-                 blocks, at: Date.now(),
-                 wEnabled: status.enabled, wPrime: status.prime,
-                 wFast: status.fastPrime, wFrames: status.framesNow });
+                 blocks, at: Date.now() });
         }
-        workletReceived = Number(status.received) || 0;
-        workletRingResets = Number(status.resets) || 0;
-        workletSlipped = Number(status.slipped) || 0;
-        workletRatio = Number(status.ratio) || 1;
-        const fill = Number(status.available) || 0;
-        fillMin = Math.min(fillMin, fill);
-        fillMax = Math.max(fillMax, fill);
+        fillMin = Math.min(fillMin, workletAvailable);
+        fillMax = Math.max(fillMax, workletAvailable);
       };
       workletPort.start();
       workletPort.postMessage({ type: 'buffer-mode', mode: params?.mode, stereo: workletStereo });
@@ -1218,12 +1222,22 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'dump-iq') {
     dumpIq = { on: Boolean(msg.value), frames: [] };
   } else if (msg.type === 'retune') {
+    const targetHz = Number(msg.targetHz);
+    if (centerHz > 0 && targetHz === centerHz) {
+      // The backend's flush has already moved this stream to the requested channel. A queued
+      // retune from the UI must not erase the pilot/RDS state that the fresh frames just found.
+      post({ type: 'flush-info', at: Date.now(), blocks, source: 'stale-retune-skipped',
+             centerHz, groups: pipeline?.stereoInfo()?.rdsGroups });
+      return;
+    }
     // The listened channel moved inside the SAME capture (the backend keeps streaming, so no
     // frame carries `seq === 0` and nothing else would tell the kernel). Its stereo state — the
     // pilot phasor, the pilot SNR, the smoothed peak deviation — belongs to the station that was
     // tuned; carried over, a switch away and back reads MONO until a full re-tune, which is what
     // a bench report showed. The level control survives, as on the stream's own retune.
     pipeline?.retune();
+    post({ type: 'flush-info', at: Date.now(), blocks, source: 'explicit-retune',
+           centerHz, stereo: pipeline?.stereo(), groups: pipeline?.stereoInfo()?.rdsGroups });
     // No ring drop here: the backend's flush carries the one reset. Dropping the ring here as
     // well made the retune re-prime twice (measured ~1 s of silence).
     resetDelivery(false, true);

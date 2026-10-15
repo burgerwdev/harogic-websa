@@ -269,11 +269,15 @@ def make_routes(app, dev, static_dir):
 
     static_root = Path(static_dir, 'dist').resolve()
 
+    # Revalidate rebuilt assets on reload. The browser otherwise reused old bundles after a
+    # bench build; an unchanged file still gets a cheap 304 response.
+    revalidate = {'Cache-Control': 'no-cache'}
+
     async def index(request):
         index_file = static_root / 'index.html'
         if not index_file.is_file():
             raise web.HTTPServiceUnavailable(text='frontend is not built')
-        return web.FileResponse(index_file)
+        return web.FileResponse(index_file, headers=revalidate)
 
     app.router.add_get('/api/state', state)
     app.router.add_get('/api/schema', schema)
@@ -288,5 +292,5 @@ def make_routes(app, dev, static_dir):
             raise web.HTTPForbidden(text='invalid static path') from exc
         if not target.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(target)
+        return web.FileResponse(target, headers=revalidate)
     app.router.add_get('/static/dist/{file:.*}', static_files)

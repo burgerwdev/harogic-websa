@@ -30,6 +30,8 @@ const AXIS_ALPHA: f64 = 0.05;
 /// (about 2 s), and the step (one eighth of a bit: eight positions cover a full bit).
 const HUNT_BITS: u32 = 2_400;
 const HUNT_STEP: f64 = 0.125;
+/// Remove station metadata after eight seconds with no valid RDS group.
+const RDS_STALE_BITS: u32 = 9_500;
 /// Bits in one block: 16 information + 10 check.
 const BLOCK_BITS: usize = 26;
 /// Bits in one group: four blocks.
@@ -108,8 +110,7 @@ pub struct RdsDecoder {
     /// Smoothed energy per axis (bench diagnostics; the decision no longer picks an axis).
     axis_i: f64,
     axis_q: f64,
-    /// The previous bit's complex symbol difference, for the differentially-coherent decision.
-    /// The previous bit's complex symbol difference, for the differentially-coherent decision.
+    /// The previous bit's complex symbol difference, for differential detection.
     prev_symbol_i: f64,
     prev_symbol_q: f64,
     /// The bit-boundary phase offset the hunt steers (cycles of a bit, -0.5..0.5). The chain's
@@ -118,6 +119,7 @@ pub struct RdsDecoder {
     /// their neighbours' mix — measured, a 25% BER with every other part of the chain healthy.
     bit_shift: f64,
     bits_since_group: u32,
+    no_group_bits: u32,
     last_groups: u32,
     /// The group under assembly and its fill level.
     group: [u32; GROUP_BITS],
@@ -155,6 +157,7 @@ impl RdsDecoder {
             prev_symbol_q: 0.0,
             bit_shift: 0.0,
             bits_since_group: 0,
+            no_group_bits: 0,
             last_groups: 0,
             group: [0; GROUP_BITS],
             group_len: 0,
@@ -197,21 +200,8 @@ impl RdsDecoder {
         if self.bit_phase >= 1.0 {
             self.bit_phase -= 1.0;
             self.bits += 1;
-            // The decision is differentially coherent: the carrier phase may sit at ANY angle
-            // and drift across the axes (the recovered-pilot reference rotates slowly against
-            // the subcarrier on a real chain — measured on the bench, the axis energy crossed
-            // over every few minutes and the decode died until it crossed back). The phase is
-            // constant across two ADJACENT bits, so the product of one half-pair difference
-            // with the previous one carries the data alone, whatever the angle.
-            // The decision is differentially coherent: the carrier phase may sit at ANY angle
-            // and drift across the axes (the recovered-pilot reference rotates slowly against
-            // the subcarrier on a real chain — measured on the bench, the axis energy crossed
-            // over every few minutes and the decode died until it crossed back). The phase is
-            // constant across two ADJACENT bits, so the product of one half-pair difference
-            // with the previous one carries the data alone, whatever the angle.
-            // Differentially coherent: the carrier phase may sit at any angle and rotate (a
-            // real chain's reference drifts against the subcarrier; the axis-picking decision
-            // inverted its stream each time the rotation crossed a quadrant).
+            // Compare complex symbols across bits. Carrier phase can rotate without
+            // inverting the data, unlike a fixed I/Q-axis decision.
             let di = self.acc_i_first - self.acc_i_second;
             let dq = self.acc_q_first - self.acc_q_second;
             let product = di * self.prev_symbol_i + dq * self.prev_symbol_q;
@@ -222,13 +212,13 @@ impl RdsDecoder {
             let b = if product < 0.0 { 1 } else { 0 };
             self.push_bit(b);
             self.bits_since_group += 1;
-            if self.state.groups != self.last_groups {
+            let decoded = self.state.groups != self.last_groups;
+            if decoded {
                 self.last_groups = self.state.groups;
                 self.bits_since_group = 0;
             } else if self.bits_since_group > HUNT_BITS {
-                // No group for ~2 s: try the next half-bit alignment. The wrong alignment is a
-                // constant of the session (the chain's geometry), so a slow sweep finds it and
-                // a decoding stream freezes it.
+                // No group for ~2 s: try the next half-bit alignment. A decoding stream
+                // freezes the selected phase until the station changes.
                 self.bit_shift = if self.bit_shift + HUNT_STEP > 0.5 {
                     self.bit_shift + HUNT_STEP - 1.0
                 } else {
@@ -236,6 +226,7 @@ impl RdsDecoder {
                 };
                 self.bits_since_group = 0;
             }
+            self.age_station(decoded);
             self.acc_i_first = 0.0;
             self.acc_i_second = 0.0;
             self.acc_q_first = 0.0;
@@ -255,6 +246,19 @@ impl RdsDecoder {
         } else {
             self.acc_i_second += self.lp_i;
             self.acc_q_second += self.lp_q;
+        }
+    }
+
+    fn age_station(&mut self, decoded: bool) {
+        if decoded {
+            self.no_group_bits = 0;
+        } else if self.state.locked {
+            self.no_group_bits = self.no_group_bits.saturating_add(1);
+            if self.no_group_bits >= RDS_STALE_BITS {
+                self.state = RdsState::default();
+                self.last_groups = 0;
+                self.no_group_bits = 0;
+            }
         }
     }
 
@@ -360,6 +364,15 @@ impl RdsDecoder {
         [mag, self.axis_i, self.axis_q, self.bits as f64]
     }
 
+    /// Restart the carrier and bit clocks, but keep decoded station data across a same-frequency
+    /// DDC reconfiguration. A full retune uses `reset` and drops the old station instead.
+    pub fn retune_same_station(&mut self) {
+        let station = self.state.clone();
+        self.reset();
+        self.last_groups = station.groups;
+        self.state = station;
+    }
+
     pub fn reset(&mut self) {
         self.lp_i = 0.0;
         self.lp_q = 0.0;
@@ -379,6 +392,7 @@ impl RdsDecoder {
         self.prev_symbol_q = 0.0;
         self.bit_shift = 0.0;
         self.bits_since_group = 0;
+        self.no_group_bits = 0;
         self.last_groups = 0;
         self.group_len = 0;
         self.bits = 0;
@@ -599,6 +613,25 @@ mod tests {
         let bits_b = block(0x0001, OFFSET_B);
         decoder.group[..BLOCK_BITS].copy_from_slice(&bits_b);
         assert_eq!(decoder.check_block(0), OFFSET_B);
+    }
+
+    #[test]
+    fn stale_rds_station_expires_without_valid_groups() {
+        let mut decoder = RdsDecoder::new(144_000.0);
+        for &bit in &group_0a(0x1234, 0, *b"HA") {
+            decoder.push_bit(bit);
+        }
+        assert!(decoder.state.locked);
+        for _ in 0..RDS_STALE_BITS / 2 {
+            decoder.age_station(false);
+        }
+        decoder.age_station(true);
+        for _ in 0..RDS_STALE_BITS - 1 {
+            decoder.age_station(false);
+        }
+        assert!(decoder.state.locked);
+        decoder.age_station(false);
+        assert_eq!(decoder.state, RdsState::default());
     }
 
     #[test]

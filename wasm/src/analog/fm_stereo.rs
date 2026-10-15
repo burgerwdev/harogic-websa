@@ -9,11 +9,10 @@
 //!   RDS           57 kHz ± 2.4 kHz  (the pilot's third harmonic, 90° shifted)
 //! ```
 //!
-//! The mono path must not change (the reference fixture pins it), so this chain is a *side*
-//! consumer of the same discriminator output. It uses the structure every small FM stereo
-//! implementation uses (`rtl_fm`, gr-rds): one cheap NCO mix and one narrow one-pole IIR per
-//! carrier, no long FIRs. The whole chain costs a few percent of real time; a 129-tap FIR bank
-//! measured 54%, which starved the WebSocket loop.
+//! The mono path stays unchanged. This side chain reads the same discriminator output. NCO
+//! mixers and narrow IIRs recover the pilot and subcarriers. A 57-tap FIR removes the 38 kHz
+//! product images before the L−R audio is resampled. A 129-tap FIR on every carrier measured
+//! 54% of real time and starved the WebSocket loop.
 //!
 //! The NCOs start retarded by the band filter's group delay, because the side chain reads the
 //! detector output and the detector output trails the baseband. With that offset, the 19 kHz
@@ -65,11 +64,9 @@ const STEREO_RELEASE: f64 = 0.018;
 const STEREO_COUNT: u32 = 10;
 /// Batches skipped for detection: the band filter's startup transient wraps the detector.
 const WARMUP_BATCHES: u32 = 1;
-/// The pilot detector's one-pole bandwidth. Narrow on purpose: the stereo badge compares the
-/// pilot's amplitude against the composite's RMS, and a wide window collects the discriminator's
-/// noise around 19 kHz, which lifts a MONO signal's ratio toward a stereo one. On real captures a
-/// 300 Hz window measured 0.022 for mono against 0.051 for a piloted one; 50 Hz separates them by
-/// roughly five to one, so the hysteresis has room.
+/// A 50 Hz window rejects noise beside the pilot. A 300 Hz window measured a mono ratio
+/// of 0.022 and a piloted ratio of 0.051 on real IQ. The narrow window gives the
+/// pilot/peak-deviation badge room for hysteresis.
 const PILOT_BW_HZ: f64 = 50.0;
 /// The pilot PLL: a type-II loop that steers the NCO's frequency to the pilot the phasor
 /// measures, so the bit clock and every derived reference follow the transmitter's own clock
@@ -79,9 +76,54 @@ const PILOT_BW_HZ: f64 = 50.0;
 const PLL_BW_HZ: f64 = 8.0;
 const PLL_ZETA: f64 = 0.7;
 const PLL_PULL_HZ: f64 = 2_000.0;
-const SIDE_BW_HZ: f64 = 15_000.0;
+const SIDE_BW_HZ: f64 = 40_000.0;
+const RDS_MIN_NYQUIST_HZ: f64 = 64_400.0; // 57 kHz ±2.4 kHz, plus 5 kHz guard
+const SIDE_AA_TAPS: usize = 57;
+const SIDE_AA_CUT_HZ: f64 = 16_000.0;
+const SIDE_AUDIO_CUT_HZ: f64 = 15_000.0;
+/// The output-rate 6th-order low-pass adds about 1.3 samples of group delay at voice frequencies.
+const SIDE_AUDIO_DELAY: f64 = 1.3;
 /// Decimation to the side chain's working rate.
 const AUX_DECIMATE: f64 = 2.0;
+
+/// One output-rate low-pass section; three Butterworth sections suppress the 19 kHz pilot
+/// product without the 64-sample delay a steep audio FIR would add to the L−R path.
+struct SideBiquad {
+    b0: f64, b1: f64, b2: f64, a1: f64, a2: f64,
+    x1: f64, x2: f64, y1: f64, y2: f64,
+}
+
+impl SideBiquad {
+    fn new(rate: f64, cutoff: f64, q: f64) -> Self {
+        let w = core::f64::consts::TAU * cutoff.min(0.45 * rate) / rate;
+        let c = w.cos();
+        let a = w.sin() / (2.0 * q);
+        let a0 = 1.0 + a;
+        Self {
+            b0: (1.0 - c) / (2.0 * a0),
+            b1: (1.0 - c) / a0,
+            b2: (1.0 - c) / (2.0 * a0),
+            a1: -2.0 * c / a0,
+            a2: (1.0 - a) / a0,
+            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+        }
+    }
+
+    fn step(&mut self, x: f64) -> f64 {
+        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
+            - self.a1 * self.y1 - self.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+
+    fn reset(&mut self) {
+        self.x1 = 0.0; self.x2 = 0.0;
+        self.y1 = 0.0; self.y2 = 0.0;
+    }
+}
 
 /// The WFM stereo side chain: recovers the pilot and the L−R difference signal from the
 /// discriminator's composite, without touching the mono path.
@@ -102,7 +144,6 @@ pub struct FmStereo {
     pilot_i: f64,
     pilot_q: f64,
     side_i: f64,
-    side_q: f64,
     a_pilot: f64,
     a_side: f64,
     pilot_level: f64,
@@ -131,10 +172,10 @@ pub struct FmStereo {
     dev_smooth: f64,
     /// A slow average of the held peak deviation: the ratio's denominator.
     peak_slow: f64,
-    /// True once the statistics have been seeded (the first non-warmup block).
-    seeded: bool,
     side_deemph: Option<FirState>,
-    output_gain: f32,
+    side_anti_alias: FirState,
+    side_lp: [SideBiquad; 3],
+    gain_trace: Vec<f32>,
     resample_step: f64,
     resample_t: f64,
     /// Output delay, in OUTPUT samples, that lines the drained side up with the mono PCM. The
@@ -154,8 +195,8 @@ pub struct FmStereo {
     resample_buf: Vec<f64>,
     side_aux: Vec<f64>,
     side_out: Vec<f32>,
-    /// Per-block scratch: the decimated aux samples and the de-emphasised side. Fields, not
-    /// locals, so a 20 ms block never allocates.
+    /// Per-block scratch: decimated aux samples and the resampled side as f64 for the
+    /// consumer-rate de-emphasis FIR. Fields, not locals, so a 20 ms block never allocates.
     aux: Vec<f64>,
     shaped: Vec<f64>,
 }
@@ -171,7 +212,12 @@ impl FmStereo {
         }
         // The mono path's audio low-pass sits after the detector and delays the PCM by its group
         // delay; the side chain takes the detector output, so it runs ahead by exactly that much.
-        let align_out = (align_baseband_samples * out_rate / fs).max(0.0);
+        // The 57-tap anti-alias FIR at `aux_fs` delays by 28 aux samples (56 baseband samples).
+        // The mono audio FIR delays by 64 baseband samples. The output low-pass adds about 1.3
+        // consumer samples; the remaining positive difference is the side's alignment delay.
+        let aa_delay_baseband = (SIDE_AA_TAPS - 1) as f64 * AUX_DECIMATE / 2.0;
+        let align_out = ((align_baseband_samples - aa_delay_baseband) * out_rate / fs
+            - SIDE_AUDIO_DELAY).max(0.0);
         let align_ring = align_out.floor() as usize + 2;
         let iir = |bw: f64| 1.0 - (-core::f64::consts::TAU * bw / aux_fs).exp();
         // The side chain reads the detector's output, which trails the baseband by the band
@@ -199,7 +245,6 @@ impl FmStereo {
             pilot_i: 0.0,
             pilot_q: 0.0,
             side_i: 0.0,
-            side_q: 0.0,
             a_pilot: iir(PILOT_BW_HZ),
             a_side: iir(SIDE_BW_HZ),
             pilot_level: 0.0,
@@ -207,7 +252,11 @@ impl FmStereo {
             pilot_ratio_cache: 0.0,
             stereo: false,
             stereo_count: 0,
-            rds: Some(crate::analog::rds::RdsDecoder::new(fs / AUX_DECIMATE)),
+            rds: if aux_fs / 2.0 >= RDS_MIN_NYQUIST_HZ {
+                Some(crate::analog::rds::RdsDecoder::new(aux_fs))
+            } else {
+                None
+            },
             warmup: WARMUP_BATCHES,
             a_pilot_block: 0.0,
             dev_hist: [0; DEV_BINS],
@@ -215,9 +264,11 @@ impl FmStereo {
             dev_scale: DEV_BINS as f64 / (aux_fs * 0.5),
             dev_smooth: 0.0,
             peak_slow: 0.0,
-            seeded: false,
-            side_deemph: Some(FirState::new(design_lowpass(aux_fs, 15_000.0, 64))),
-            output_gain: 1.0,
+            side_deemph: None,
+            side_anti_alias: FirState::new(design_lowpass(aux_fs, SIDE_AA_CUT_HZ, SIDE_AA_TAPS)),
+            side_lp: [0.517_638, 0.707_107, 1.931_852]
+                .map(|q| SideBiquad::new(out_rate, SIDE_AUDIO_CUT_HZ, q)),
+            gain_trace: Vec::new(),
             resample_step: aux_fs / out_rate,
             resample_t: 0.0,
             align_out,
@@ -305,42 +356,51 @@ impl FmStereo {
 
 
     pub fn retune(&mut self) {
+        self.retune_channel(false);
+    }
+
+    /// Same station, new DDC chain: clear phase/filter tails but keep its confirmed metadata.
+    pub fn retune_stationary(&mut self) {
+        self.retune_channel(true);
+    }
+
+    fn retune_channel(&mut self, same_station: bool) {
         self.pilot_i = 0.0;
         self.pilot_q = 0.0;
         self.nco_pll_f = 0.0;
         self.nbr_i = 0.0;
         self.nbr_q = 0.0;
-        self.pilot_snr_db = -120.0;
         self.side_i = 0.0;
-        self.side_q = 0.0;
-        self.pilot_level = 0.0;
-        self.peak_dev_hz = 0.0;
-        self.stereo = false;
-        self.stereo_count = 0;
+        if !same_station {
+            self.pilot_snr_db = -120.0;
+            self.pilot_level = 0.0;
+            self.peak_dev_hz = 0.0;
+            self.stereo = false;
+            self.stereo_count = 0;
+        }
         if let Some(rds) = self.rds.as_mut() {
-            rds.reset();
+            if same_station { rds.retune_same_station(); } else { rds.reset(); }
         }
         if let Some(d) = self.side_deemph.as_mut() { d.reset(); }
+        self.side_anti_alias.reset();
+        for section in self.side_lp.iter_mut() { section.reset(); }
         self.resample_t = 0.0;
         for v in self.side_ring.iter_mut() { *v = 0.0; }
         self.side_ring_pos = 0;
         self.resample_prev = None;
         self.side_aux.clear();
         self.side_out.clear();
-        // The detection state belongs to the station that was tuned. The deviation histogram, its
-        // smoothed peak and the warmup counter are all measured from that signal, and they feed the
-        // pilot ratio the badge thresholds on. Left behind, they carry the old station's peak
-        // deviation into the new one: a tune from a quiet station to a loud one reads a pilot ratio
-        // far above the acquire threshold (a false STEREO), and the reverse reads below it (a stereo
-        // station stuck on MONO, which is what a bench report showed after switching frequencies).
+        self.gain_trace.clear();
         self.warmup = WARMUP_BATCHES;
         self.dev_hist = [0; DEV_BINS];
         self.dev_count = 0;
-        self.dev_smooth = 0.0;
-        self.peak_slow = 0.0;
-        self.seeded = false;
-        self.pilot_ratio_cache = 0.0;
         self.a_pilot_block = 0.0;
+        if !same_station {
+            // The peak and pilot ratio belong to the previous station on a true retune.
+            self.dev_smooth = 0.0;
+            self.peak_slow = 0.0;
+            self.pilot_ratio_cache = 0.0;
+        }
     }
 
     /// Feed one block of discriminator output.
@@ -351,6 +411,9 @@ impl FmStereo {
     /// and the message loop within seconds on a real device.
     pub fn process(&mut self, det: &[f32]) {
         if !self.capable() || det.is_empty() { return; }
+        // One output block only: a caller that does not drain the side must not make this path
+        // filter its whole history on the next call.
+        self.side_out.clear();
         let n = det.len();
         let mut aux = core::mem::take(&mut self.aux);
         aux.clear();
@@ -556,15 +619,33 @@ impl FmStereo {
             self.dev_count = 0;
         }
 
-        // L−R: de-emphasis (also the audio LPF), then resample to the consumer's rate.
-        let mut shaped = core::mem::take(&mut self.shaped);
-        shaped.clear();
-        if let Some(d) = self.side_deemph.as_mut() {
-            d.process_into(&self.side_aux, &mut shaped);
+        // L−R: resample first, then de-emphasise at the consumer's rate. The main path uses
+        // taps designed for that rate; applying them here at `aux_fs` moved the de-emphasis
+        // corner up by about three times and left the difference channel too bright.
+        // The 38 kHz product also mixes the mono audio up to 38 ± audio Hz. A one-pole side
+        // low-pass does not reject those images before 150 kHz -> 48 kHz resampling: 43 kHz
+        // folds onto a 5 kHz difference tone, with an amplitude set by the station's start
+        // phase. The FIR removes the images at the aux rate, before they can alias.
+        self.side_anti_alias.process_into(&self.side_aux, &mut aux);
+        self.resample_into(&aux);
+        for sample in self.side_out.iter_mut() {
+            let mut v = f64::from(*sample);
+            for section in self.side_lp.iter_mut() { v = section.step(v); }
+            *sample = v as f32;
         }
-        self.resample_into(&shaped);
+        if let Some(deemph) = self.side_deemph.as_mut() {
+            let mut shaped = core::mem::take(&mut self.shaped);
+            shaped.clear();
+            shaped.extend(self.side_out.iter().map(|&v| f64::from(v)));
+            let mut filtered = core::mem::take(&mut self.resample_buf);
+            deemph.process_into(&shaped, &mut filtered);
+            for (&v, out) in filtered.iter().zip(self.side_out.iter_mut()) {
+                *out = v as f32;
+            }
+            self.resample_buf = filtered;
+            self.shaped = shaped;
+        }
         self.align_side();
-        self.shaped = shaped;
         self.aux = aux;
     }
 
@@ -628,15 +709,31 @@ impl FmStereo {
     }
 
     pub fn take_side(&mut self) -> Vec<f32> {
-        let g = self.output_gain;
-        for v in self.side_out.iter_mut() {
-            *v *= g;
+        let last_gain = self.gain_trace.last().copied().unwrap_or(1.0);
+        for (k, v) in self.side_out.iter_mut().enumerate() {
+            *v *= self.gain_trace.get(k).copied().unwrap_or(last_gain);
         }
+        self.gain_trace.clear();
         core::mem::take(&mut self.side_out)
     }
 
-    pub fn set_output_gain(&mut self, gain: f32) {
-        if gain.is_finite() && gain > 0.0 { self.output_gain = gain; }
+    /// Give L−R the mono path's exact AGC gain and limiter envelope, sample by sample. A
+    /// block-RMS gain misses the ramps on speech peaks and leaves a persistent channel imbalance.
+    pub fn set_output_gain_trace(&mut self, raw: &[f32], levelled: &[f32]) {
+        self.gain_trace.clear();
+        self.gain_trace.reserve(raw.len());
+        let mut previous = 1.0_f32;
+        for (&input, &output) in raw.iter().zip(levelled) {
+            if input.abs() > 1.0e-8 {
+                previous = output / input;
+            }
+            self.gain_trace.push(previous);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn deemph_enabled(&self) -> bool {
+        self.side_deemph.is_some()
     }
 
     pub fn set_deemph_taps(&mut self, taps: Vec<f64>) {
@@ -645,3 +742,64 @@ impl FmStereo {
 }
 
 fn i1_safe(i0: usize, n: usize) -> usize { (i0 + 1).min(n - 1) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn side_amplitude(shift: usize) -> f64 {
+        let fs = 300_480.769_230_769_25;
+        let out_rate = 48_000.0;
+        let mut side = FmStereo::new(fs, out_rate, 64.0).unwrap();
+        let deemph = crate::analog::AnalogDemod::deemph_taps(50.0, out_rate).unwrap();
+        side.set_deemph_taps(deemph.taps().to_vec());
+        let n = (fs * 0.8) as usize;
+        let mut det = vec![0.0_f32; n];
+        for (k, sample) in det.iter_mut().enumerate().skip(shift) {
+            let t = (k - shift) as f64 / fs;
+            let tone = (core::f64::consts::TAU * 5_000.0 * t).cos();
+            let comp = 8_000.0 * tone
+                + 8_000.0 * tone * (core::f64::consts::TAU * 38_000.0 * t).cos()
+                + 6_750.0 * (core::f64::consts::TAU * 19_000.0 * t).sin();
+            *sample = comp as f32;
+        }
+        let mut pcm = Vec::new();
+        for chunk in det.chunks(4_800) {
+            side.process(chunk);
+            pcm.extend(side.take_side());
+        }
+        let steady = &pcm[pcm.len() / 3..];
+        let (mut re, mut im, mut wsum) = (0.0, 0.0, 0.0);
+        for (k, &v) in steady.iter().enumerate() {
+            let w = 0.5 - 0.5 * (core::f64::consts::TAU * k as f64 / steady.len() as f64).cos();
+            let phase = core::f64::consts::TAU * 5_000.0 * k as f64 / out_rate;
+            re += f64::from(v) * w * phase.cos();
+            im -= f64::from(v) * w * phase.sin();
+            wsum += w;
+        }
+        2.0 * (re * re + im * im).sqrt() / wsum / 8_000.0
+    }
+
+    #[test]
+    fn narrow_wfm_keeps_stereo_without_claiming_rds() {
+        let narrow = FmStereo::new(230_000.0, 48_000.0, 64.0).unwrap();
+        assert!(narrow.capable());
+        assert!(narrow.rds_state().is_none());
+        assert!(FmStereo::new(190_000.0, 48_000.0, 64.0).is_none());
+        assert!(FmStereo::new(300_000.0, 48_000.0, 64.0).unwrap().rds_state().is_some());
+    }
+
+    #[test]
+    fn stereo_audio_rejects_images_before_resampling() {
+        // The 38 kHz product moves 5 kHz mono audio to 43 kHz. Without an anti-alias filter
+        // before resampling to 48 kHz, that image folds onto 5 kHz: shifting the composite by
+        // 127 input samples changed the recovered difference level by 37% on this bench.
+        let aligned = side_amplitude(0);
+        let shifted = side_amplitude(127);
+        assert!(aligned > 0.3, "the 5 kHz difference signal must survive: {aligned:.3}");
+        assert!(
+            (aligned - shifted).abs() / aligned < 0.03,
+            "an aliased 38 kHz image changed 5 kHz L−R: {aligned:.3} vs {shifted:.3}"
+        );
+    }
+}

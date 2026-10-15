@@ -14,9 +14,9 @@
 // by `f32View`/`i16View`, never cached.
 
 /** ABI version this loader understands; must equal `wasm/src/abi.rs::ABI_VERSION`. */
-// Version 2 added the SSTV picture pair (`websa_dsp_demod_image_info` / `_image_data`), the mode
-// pin and the SSTV mode table.
-export const DSP_ABI_VERSION = 2;
+// Version 2 added SSTV picture data. Version 3 adds WFM stereo PCM and RDS metadata.
+// `retune_stationary` is an optional additive v3 export.
+export const DSP_ABI_VERSION = 3;
 
 export interface DspExports {
 	memory: WebAssembly.Memory;
@@ -48,7 +48,17 @@ export interface DspExports {
 	websa_dsp_demod_set_deemph(handle: number, tauUs: number): number;
 	websa_dsp_demod_deemph(handle: number): number;
 	websa_dsp_demod_set_squelch(handle: number, dbfs: number): number;
+	/** Drain the stereo difference signal (L−R) of the last processed block (WFM stereo only). */
+	websa_dsp_demod_side(handle: number, ptr: number, capacity: number): number;
+	/** 1 while the stereo pilot is detected (the badge's state). */
+	websa_dsp_demod_stereo(handle: number): number;
+	/** FM stereo and RDS state: eight f64 values [stereo, peak_dev_hz, pilot_ratio, rds_locked,
+	 * rds_pi, rds_groups, pilot_dev_hz, pilot_snr_db]; 0 = no side chain. */
+	websa_dsp_demod_stereo_info(handle: number, metaPtr: number): number;
+	websa_dsp_demod_rds_text(handle: number, metaPtr: number): number;
 	websa_dsp_demod_retune(handle: number): number;
+	/** Same-frequency DDC restart; keep WFM station metadata. Absent on older ABI v3 builds. */
+	websa_dsp_demod_retune_stationary?(handle: number): number;
 	websa_dsp_demod_reset(handle: number): number;
 	websa_dsp_demod_free(handle: number): number;
 	// Codec smoke exports (FDK AAC / xHE-AAC), used by the DRM audio fixture test
@@ -148,7 +158,12 @@ export async function loadDsp(url: string): Promise<DspModule> {
 	if (module_) return module_;
 	if (!loading) {
 		loading = (async () => {
-			const response = await fetch(url);
+			// `no-cache` revalidates against the server's validator instead of trusting the
+			// heuristic freshness a browser applies to an asset without `Cache-Control`. The ABI
+			// version in the URL only changes when the INTERFACE does, so a rebuilt kernel
+			// otherwise sits behind a cached copy for hours: the page keeps running the previous
+			// DSP while the file on disk is new, and the bench measures the wrong build.
+			const response = await fetch(url, { cache: 'no-cache' });
 			if (!response.ok) throw new Error(`cannot fetch ${url}: HTTP ${response.status}`);
 			const module = await instantiateDsp(await response.arrayBuffer());
 			module_ = module;

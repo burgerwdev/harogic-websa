@@ -545,6 +545,16 @@ pub extern "C" fn websa_dsp_demod_retune(handle: u32) -> u32 {
     .unwrap_or(0)
 }
 
+/// The backend restarted its DDC without moving the listened station.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_retune_stationary(handle: u32) -> u32 {
+    with_pipeline(handle, |state| {
+        state.pipeline.retune_stationary();
+        1
+    })
+    .unwrap_or(0)
+}
+
 /// Clear all streaming state (a baseband stream restart / discontinuity).
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_reset(handle: u32) -> u32 {

@@ -141,3 +141,138 @@ describe('the WASM demodulator behind the SDR worker', () => {
 		pipeline.free();
 	});
 });
+
+describe('WFM stereo and RDS side chain (committed artifact)', () => {
+	const STEREO_FS = 288_000;
+
+	/** A broadcast WFM composite, FM-modulated onto the carrier the DDC hands over: L+R tone,
+	 * 9% pilot (sin), L−R DSB on 38k. */
+	function stereoComposite(samples: number, fs: number, pilot = 0.09, side = 0.3): Float32Array {
+		const iq = new Float32Array(samples * 2);
+		const dev = 25_000; // peak deviation in Hz (a real broadcast swings 75 kHz)
+		let phase = 0;
+		for (let k = 0; k < samples; k++) {
+			const lPlusR = 0.5 * Math.cos((2 * Math.PI * 1000 * k) / fs);
+			const m = side * 0.5 * Math.cos((2 * Math.PI * 1000 * k) / fs);
+			const pl = pilot * Math.sin((2 * Math.PI * 19_000 * k) / fs);
+			const dsb = m * Math.cos((2 * Math.PI * 38_000 * k) / fs);
+			// FM modulation: integrate the composite to get the carrier phase.
+			phase += (2 * Math.PI * (lPlusR + pl + dsb) * dev) / fs;
+			iq[2 * k] = Math.cos(phase);
+			iq[2 * k + 1] = Math.sin(phase);
+		}
+		return iq;
+	}
+
+	it('declares stereo and drains an L−R tone at the composite\'s own level', async () => {
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new WasmPipeline(module, { ...PARAMS, mode: 'wfm', ifBw: 180_000, fsIn: STEREO_FS }, false);
+		expect(pipeline.ok).toBe(true);
+
+		let side: Float32Array<ArrayBufferLike> = new Float32Array(0);
+		let audio: Float32Array<ArrayBufferLike> = new Float32Array(0);
+		for (let block = 0; block < 30; block++) {
+			audio = pipeline.process(stereoComposite(4_800, STEREO_FS));
+			side = pipeline.side();
+		}
+		expect(side.length).toBeGreaterThan(0);
+		expect(pipeline.stereo()).toBe(true);
+		// The recovered L−R tone must sit at 1 kHz with real energy (the pilot is 9% of the L+R
+		// level here; leakage through the band filters is asserted small).
+		const toneAmp = (x: Float32Array<ArrayBufferLike>): number => {
+			let peak = 0;
+			for (let hz = 900; hz <= 1100; hz += 10) {
+				let sum = 0;
+				for (let k = 0; k < x.length; k++) {
+					const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * k) / x.length);
+					sum += x[k] * w * Math.cos((2 * Math.PI * hz * k) / 48_000);
+				}
+				peak = Math.max(peak, Math.abs(sum));
+			}
+			// 4/N undoes the Hann window's coherent gain and the ±pair of the cosine.
+			return (4 * peak) / Math.max(1, x.length);
+		};
+		expect(toneAmp(side)).toBeGreaterThan(0.01);
+		// The LEVEL, not just the presence. The consumer mixes L = M + S and R = M − S, so the
+		// drained side has to carry the composite's own difference-to-sum ratio — 0.15 against 0.5
+		// here, which the audio's 50 us de-emphasis lifts by about 5%. A coherent detector without
+		// its factor of two passes the energy check above while halving every programme's
+		// separation, and no scope trace ever looks broken.
+		const ratio = toneAmp(side) / toneAmp(audio);
+		expect(ratio).toBeGreaterThan(0.24);
+		expect(ratio).toBeLessThan(0.38);
+		pipeline.free();
+	});
+
+	it('applies the same listener volume to mono and stereo difference PCM', async () => {
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new WasmPipeline(module, { ...PARAMS, mode: 'wfm', ifBw: 180_000, fsIn: STEREO_FS }, false);
+		expect(pipeline.ok).toBe(true);
+		const iq = stereoComposite(4_800, STEREO_FS);
+		for (let block = 0; block < 30; block++) {
+			pipeline.process(iq);
+			pipeline.side();
+		}
+		const fullMono = pipeline.process(iq);
+		const fullSide = pipeline.side();
+		pipeline.setVolume(0.5);
+		const halfMono = pipeline.process(iq);
+		const halfSide = pipeline.side();
+		const rms = (x: Float32Array): number => Math.sqrt(
+			x.reduce((sum, value) => sum + value * value, 0) / x.length,
+		);
+		expect(rms(halfMono) / rms(fullMono)).toBeGreaterThan(0.45);
+		expect(rms(halfMono) / rms(fullMono)).toBeLessThan(0.55);
+		expect(rms(halfSide) / rms(fullSide)).toBeGreaterThan(0.45);
+		expect(rms(halfSide) / rms(fullSide)).toBeLessThan(0.55);
+		pipeline.free();
+	});
+
+	it('keeps a wide mono WFM channel mono without a pilot', async () => {
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new WasmPipeline(module, { ...PARAMS, mode: 'wfm', ifBw: 180_000, fsIn: STEREO_FS }, false);
+		expect(pipeline.ok).toBe(true);
+		const iq = stereoComposite(4_800, STEREO_FS, 0, 0);
+		for (let block = 0; block < 30; block++) {
+			pipeline.process(iq);
+			pipeline.side();
+		}
+		expect(pipeline.stereo()).toBe(false);
+		expect(pipeline.stereoInfo()?.rdsLocked).toBe(false);
+		pipeline.free();
+	});
+
+	it('decodes the RDS group of the committed stereo+RDS baseband', async () => {
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new WasmPipeline(module, { ...PARAMS, mode: 'wfm', ifBw: 180_000, fsIn: STEREO_FS }, false);
+		expect(pipeline.ok).toBe(true);
+		// The fixture: one 0A group with PI 0x1234 and "HA" in the name's first segment, at the
+		// backend's FM-preset geometry.
+		const buf = readFileSync(resolve(process.cwd(), '..', 'tests', 'fixtures', 'dsp', 'demod_wfm_stereo_iq.bin'));
+		const iq = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+		const block = 4_800;
+		for (let offset = 0; offset + block <= iq.length / 2; offset += block) {
+			pipeline.process(iq.subarray(offset * 2, (offset + block) * 2));
+			pipeline.side();
+		}
+		const info = pipeline.stereoInfo();
+		expect(info?.stereo).toBe(true);
+		expect(info?.rdsLocked).toBe(true);
+		expect(info?.rdsPi).toBe(0x1234);
+		const text = pipeline.rdsText();
+		expect(text?.ps.startsWith('HA')).toBe(true);
+		pipeline.free();
+	});
+
+	it('reports mono for a baseband that cannot carry the aux bands', async () => {
+		const module = await instantiateDsp(artifactBytes());
+		const pipeline = new WasmPipeline(module, { ...PARAMS, mode: 'wfm', fsIn: 48_000 }, false);
+		expect(pipeline.ok).toBe(true);
+		for (let block = 0; block < 3; block++) {
+			pipeline.process(amBaseband(4_800));
+		}
+		expect(pipeline.stereo()).toBe(false);
+		expect(pipeline.side()).toHaveLength(0);
+		pipeline.free();
+	});
+});

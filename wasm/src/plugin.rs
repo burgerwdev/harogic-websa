@@ -147,6 +147,11 @@ pub trait AnalogDemodulator: Send {
     fn process_into(&mut self, iq: &[f32], out: &mut Vec<f32>);
     /// New centre within the same capture: drop the channel history, keep the level.
     fn retune(&mut self);
+    /// Same channel after a backend reconfiguration. WFM keeps confirmed station metadata;
+    /// other modes use the ordinary retune behavior.
+    fn retune_stationary(&mut self) {
+        self.retune();
+    }
     fn reset(&mut self);
 
     /// Change the de-emphasis time constant (microseconds, `<= 0` = none). A mode with no such

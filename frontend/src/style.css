@@ -311,6 +311,24 @@ select:disabled { color: var(--label); }
 .decode-drm-details { padding: 7px 12px; border-top: 1px solid var(--inner-border); color: var(--label); }
 .decode-drm-details summary { cursor: pointer; }
 .decode-drm-details code { display: block; margin-top: 7px; color: var(--table-cell-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* WFM pane (stereo info): reuses the DRM pane's readout layout. */
+.decode-rds { display: flex; flex-direction: column; min-width: 0; min-height: 100%; box-sizing: border-box; color: var(--table-cell); font-size: 11px; }
+.decode-rds-service { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--inner-border); }
+.decode-rds-badge { flex: 0 0 auto; }
+.decode-rds-badge.on { color: var(--text); background: var(--btn-active); border-color: var(--text); }
+.decode-rds-ps { flex: 1 1 105px; min-width: 0; color: var(--text); font-size: 15px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decode-rds-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border-bottom: 1px solid var(--inner-border); }
+.decode-rds-metrics > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 3px; padding: 5px 7px; border-right: 1px solid var(--inner-border); }
+.decode-rds-metrics > div:last-child { border-right: 0; }
+.decode-rds-metrics dt { min-width: 0; color: var(--label); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decode-rds-metrics dd { margin: 0; color: var(--text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The FM values carry a unit ("99.00270 MHz"), so three fixed columns do not fit a narrow window:
+   this grid reflows to two (or one) and the values stay on their line. */
+.decode-wfm-metrics { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.decode-rds-clock-row { display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; }
+.decode-rds-clock-row > span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
+.decode-rds-label { display: block; margin-bottom: 3px; color: var(--label); font-size: 10px; }
+.decode-rds-empty { padding: 7px 10px; color: var(--label); }
 @container (max-width: 340px) {
   .decode-drm-main { grid-template-columns: 1fr; }
   .decode-drm-constellation { border-left: 0; border-top: 1px solid var(--inner-border); }
@@ -427,7 +445,16 @@ select:disabled { color: var(--label); }
 .decode-window .ft8-empty { color: var(--label); padding: 8px 6px; }
 /* Resize handles: four edges (thin, inset from the corners) and four corners on top of them.
    The layer itself is transparent to the pointer, so the head/body keep their own events. */
+/* The WFM title-bar badge: the same look as the pane badge, sized to the head row. */
+.decode-title-badge { margin-left: 6px; font-size: 9px; padding: 1px 4px; }
 .decode-resize-layer { position: absolute; inset: 0; pointer-events: none; }
+/* The WFM audio scope: a fixed-height trace the worker feeds one window per block. */
+/* The audio level sits under the scope, against the right edge (the eye reads the trace first). */
+.decode-wfm-audio { justify-content: flex-end; gap: 6px; }
+.decode-wfm-scope {
+  display: block; width: 100%; height: 64px; margin: 4px 0 2px;
+  background: var(--panel-2); border: 1px solid var(--card-border); border-radius: 3px;
+}
 .decode-rz { position: absolute; pointer-events: auto; touch-action: none; }
 .decode-rz.n, .decode-rz.s { left: 9px; right: 9px; height: 5px; }
 .decode-rz.w, .decode-rz.e { top: 9px; bottom: 9px; width: 5px; }

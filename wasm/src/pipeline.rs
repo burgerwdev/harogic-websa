@@ -513,6 +513,13 @@ impl Pipeline {
         }
     }
 
+    /// The DDC restarted on the same station. Keep WFM's confirmed pilot and RDS metadata.
+    pub fn retune_stationary(&mut self) {
+        if let Some(demod) = self.analog.as_mut() {
+            demod.retune_stationary();
+        }
+    }
+
     pub fn reset(&mut self) {
         if let Some(demod) = self.analog.as_mut() {
             demod.reset();

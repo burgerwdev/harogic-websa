@@ -324,16 +324,13 @@ def _tone_amp(values: np.ndarray, rate: float, hz: float) -> float:
 
 
 def _stereo_rds_baseband() -> tuple[np.ndarray, float, np.ndarray]:
-    """A broadcast WFM composite at a rate wide enough for the aux bands.
+    """Make a 1.2 s WFM baseband at 288 kSps.
 
-    The baseband is PHASE-modulated with the composite as deviation (the transmitter's own
-    structure): L+R tone, 19 kHz pilot, L−R DSB on 38 kHz and an RDS biphase carrier on 57 kHz
-    carrying one 0A group ("HA" in the name segment the group addresses). Returns (iq, fs,
-    deviation): the deviation trace is what the fixture's peak and pilot ratio are measured from,
-    so the pane's numbers can be checked against a signal whose deviation is known by construction.
-    288 kSps / 0.5 s, the real backend's FM-preset geometry.
+    The composite carries L+R, a 19 kHz pilot, L−R on 38 kHz, and RDS on 57 kHz.
+    Return IQ, the sample rate, and the deviation trace used for fixture checks.
     """
-    from tools.pluto.rds_encode import OFFSET_WORDS, block as rds_block
+    from tools.pluto.rds_encode import OFFSET_WORDS
+    from tools.pluto.rds_encode import block as rds_block
 
     fs = 288_000.0
     samples = 345_600
@@ -353,17 +350,9 @@ def _stereo_rds_baseband() -> tuple[np.ndarray, float, np.ndarray]:
         rds_block(0xCDCD, OFFSET_WORDS['C']),
         rds_block((ord('H') << 8) | ord('A'), OFFSET_WORDS['D']),
     ])
-    # The biphase baseband, in its ideal rectangular form. The fixture runs 1.2 s: the
-    # decoder's carrier reference needs a few hundred bits to converge, and the differential
-    # decision costs one startup group — a shorter clip left exactly one decodable group, so a
-    # single early bit error decided the whole test. The shaped waveform stays covered by a real
-    # transmission in `wasm/tests/live_rds_capture.rs`, where the sensitivity limit belongs;
-    # this fixture pins the decoder's logic.
+    # Rectangular biphase pins the decoder's bit logic. A live Pluto test covers the standard's
+    # shaped symbol. Keep the XOR carry across group repeats: resetting it corrupts each boundary.
     bit_rate = 1187.5
-    # A continuous differential stream, the way a station sends: the carry runs across group
-    # repeats. Repeating one differentially-encoded group modulo its length resets the carry
-    # every 104 bits, which forces a bit error at every repeat (the group's parity is odd) and
-    # left the fixture exactly one decodable group window.
     reps = int(samples * bit_rate / group.size) + 2
     sent = np.bitwise_xor.accumulate(np.tile(group, reps))
     bit = np.floor(t * bit_rate).astype(np.int64)

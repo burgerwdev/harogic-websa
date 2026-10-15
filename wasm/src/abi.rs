@@ -19,9 +19,9 @@ use core::mem::size_of;
 /// ABI/format version. Bumped whenever an exported signature changes meaning, so a stale
 /// committed `.wasm` cannot be paired with a newer loader unnoticed.
 ///
-/// Version 2 added the SSTV picture pair (`websa_dsp_demod_image_info` / `_image_data`), the mode
-/// pin and the SSTV mode table.
-pub const ABI_VERSION: u32 = 2;
+/// Version 2 added SSTV picture data and mode pinning. Version 3 adds WFM stereo PCM,
+/// pilot and RDS metadata. `retune_stationary` is an optional additive v3 export.
+pub const ABI_VERSION: u32 = 3;
 
 /// Alignment of every block handed to the caller. Wide enough for `f64`, and it keeps
 /// `f32`/`i16` views aligned too, so any typed-array view on a returned pointer is legal.
@@ -108,6 +108,6 @@ mod tests {
     #[test]
     fn the_abi_version_is_pinned() {
         // The loader rejects a module whose version it does not know; bump both sides together.
-        assert_eq!(ABI_VERSION, 2);
+        assert_eq!(ABI_VERSION, 3);
     }
 }

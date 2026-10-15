@@ -53,11 +53,13 @@ export interface DecodeWindowHooks {
 ///
 /// `sstv` is here for its picture: the station sends a still image, and the pane fills in while the
 /// transmission is still running.
-const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv'] as const;
+const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv', 'wfm'] as const;
 export type DecodeMode = (typeof DECODING_MODES)[number] | null;
 
 const LS_KEY = 'websa-decode-window';
-const DEFAULT_SIZE = { w: 460, h: 240 };
+// The FM pane is the tallest: a service row, RadioText, the metrics (which reflow to two rows in
+// this width), the audio scope and the level row. The default has to show all of it on first open.
+const DEFAULT_SIZE = { w: 460, h: 290 };
 /// The floor keeps the window grabbable. An invisible one would be worse than a moved one: the same
 /// reason the position is clamped into the viewport rather than restored blindly.
 const MIN_OPACITY = 0.35;
@@ -522,26 +524,37 @@ function renderContent(): void {
 	const showCw = mode === 'cw';
 	const showDrm = mode === 'drm' || mode === 'drmplus';
 	const showSstv = mode === 'sstv';
+	const showWfm = mode === 'wfm';
 	const table = element('decode-window-table');
 	const cw = element('decode-window-cw');
 	const drm = element('decode-window-drm');
 	const sstv = element('decode-window-sstv');
+	const wfm = element('decode-window-wfm');
 	const title = element('decode-window-title');
 	const count = element('decode-window-count');
 	if (table) table.style.display = showFt8 ? '' : 'none';
 	if (cw) cw.style.display = showCw ? '' : 'none';
 	if (drm) drm.style.display = showDrm ? '' : 'none';
 	if (sstv) sstv.style.display = showSstv ? '' : 'none';
+	if (wfm) wfm.style.display = showWfm ? '' : 'none';
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
+	// The stereo badge belongs to WFM alone; every other mode hides it.
+	const titleBadge = element('wfm-title-badge');
+	if (titleBadge) titleBadge.style.display = showWfm ? '' : 'none';
 	// The SSTV waiting line lives in this head. Every other pane hides it.
 	const hint = element('sstv-head-hint');
 	if (hint) hint.style.display = 'none';
+	// UTC and Clear only act on something a pane accumulates (FT8's time column and spot list).
+	// Neither has an effect in FM, DRM or SSTV, so they are hidden there rather than sitting dead.
 	const utc = element('btn-decode-utc');
-	if (utc) utc.style.display = showDrm ? 'none' : '';
+	if (utc) utc.style.display = showDrm || showWfm || showSstv ? 'none' : '';
 	const clear = element('btn-decode-clear');
-	if (clear) clear.style.display = showDrm ? 'none' : '';
-	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM') : showSstv ? 'SSTV' : 'FT8';
+	// Clear belongs to the panes that accumulate something (FT8 spots, CW log, SSTV pictures).
+	// FM keeps no history — pressing it used to empty the FT8 list from inside the FM pane.
+	if (clear) clear.style.display = showDrm || showWfm ? 'none' : '';
+	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM')
+		: showSstv ? 'SSTV' : showWfm ? 'FM' : 'FT8';
 	const timeTh = element('decode-window-time-th');
 	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
 	const searchRow = element('decode-ft8-search-row');
@@ -556,6 +569,7 @@ function renderContent(): void {
 	else if (showCw) renderCwLines();
 	else if (showDrm) renderDrm();
 	else if (showSstv) renderSstv();
+	else if (showWfm) renderWfm();
 }
 
 /**
@@ -849,6 +863,137 @@ function renderDrm(): void {
 	}
 }
 
+/**
+ * The WFM pane: the stereo badge, carrier parameters and audio level. The values come from
+ * the worker's side chain through the `wfm-info` message, stored on the last-seen object.
+ */
+let lastWfm: {
+	stereo: boolean; peakDevHz: number; pilotPct: number; peakDbFs: string; peakHoldDb: string;
+	rdsLocked: boolean; rdsPi: number; rdsGroups: number; ps: string; rt: string;
+	carrierHz: number; pilotDevHz: number; pilotSnrDb: number;
+	scopeL: Float32Array | null; scopeR: Float32Array | null;
+} | null = null;
+
+/** Record the worker's latest WFM info (called from the message handler in `iqStream`). */
+export function setWfmInfo(info: {
+	stereo: boolean; peakDevHz: number; pilotPct: number; peakDbFs: string; peakHoldDb: string;
+	rdsLocked: boolean; rdsPi: number; rdsGroups: number; ps: string; rt: string;
+	carrierHz: number; pilotDevHz: number; pilotSnrDb: number;
+	scopeL: Float32Array | null; scopeR: Float32Array | null;
+}): void {
+	lastWfm = info;
+	// Repaint here, not only from the store subscriptions: in WFM the stereo/RDS pane is the only
+	// thing that changes every block, and with nothing else notifying, the window froze on its
+	// first paint — the station name and the RadioText only appeared after the operator forced a
+	// repaint (the reported "press clear to see the text rotate").
+	if (open && mode === 'wfm') renderWfm();
+}
+
+/**
+ * Draw the demodulated audio. The window is the last block's samples, so the trace is a moving
+ * scope, not a level meter: the amplitude and the shape are what the listener hears.
+ */
+function drawScope(
+	canvas: HTMLCanvasElement,
+	traces: Float32Array[],
+	scalePeak: number,
+): void {
+	const ctx = canvas.getContext('2d');
+	if (!ctx) return;
+	const w = canvas.width;
+	const h = canvas.height;
+	const styles = getComputedStyle(canvas);
+	const line = styles.getPropertyValue('--text').trim() || '#ccc';
+	const grid = styles.getPropertyValue('--card-border').trim() || '#444';
+	ctx.clearRect(0, 0, w, h);
+	// The vertical scale comes from the slow peak hold, not from these windows: scaling to each
+	// window's own peak makes the trace change height on every syllable (measured on speech, the
+	// block peak swings by more than 20 dB), which reads as the waveform "jumping". One scale
+	// for both lanes also makes the L/R balance visible instead of normalising it away.
+	let peak = scalePeak;
+	if (peak <= 1e-6) {
+		for (const t of traces) for (const v of t) peak = Math.max(peak, Math.abs(v));
+	}
+	const laneH = h / traces.length;
+	const scale = peak > 1e-6 ? (laneH / 2 - 2) / peak : 0;
+	ctx.strokeStyle = grid;
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	for (let lane = 0; lane < traces.length; lane++) {
+		const mid = laneH * lane + laneH / 2;
+		ctx.moveTo(0, mid + 0.5);
+		ctx.lineTo(w, mid + 0.5);
+		if (lane > 0) {
+			ctx.moveTo(0, laneH * lane + 0.5);
+			ctx.lineTo(w, laneH * lane + 0.5);
+		}
+	}
+	ctx.stroke();
+	ctx.strokeStyle = line;
+	ctx.lineWidth = 1.25;
+	for (let lane = 0; lane < traces.length; lane++) {
+		const t = traces[lane];
+		const mid = laneH * lane + laneH / 2;
+		ctx.beginPath();
+		for (let i = 0; i < t.length; i++) {
+			const x = (i / (t.length - 1)) * (w - 1);
+			const y = mid - t[i] * scale;
+			if (i === 0) ctx.moveTo(x, y);
+			else ctx.lineTo(x, y);
+		}
+		ctx.stroke();
+	}
+}
+
+function renderWfm(): void {
+	const w = lastWfm;
+	const put = (id: string, value: string): void => {
+		const el = element(id);
+		if (el) el.textContent = value;
+	};
+	const badge = element('wfm-title-badge');
+	if (badge) {
+		badge.textContent = w?.stereo ? 'STEREO' : 'MONO';
+		badge.classList.toggle('on', !!w?.stereo);
+	}
+	// The station line carries the RDS state, not just a name: a station without RDS must be
+	// distinguishable from one whose name has not been decoded yet. A name that is all spaces
+	// means "still collecting", so it shows the pending mark rather than an empty field.
+	const ps = w?.ps.replace(/ +$/g, '') ?? '';
+	const rt = w?.rt.replace(/ +/g, ' ').replace(/ +$/g, '') ?? '';
+	put('wfm-station', !w ? '—' : w.rdsLocked ? (ps || '…') : t('wfm_no_rds'));
+	put('wfm-rt', w?.rdsLocked ? (rt || '…') : '—');
+	put('wfm-rds-pi', w?.rdsLocked ? `PI ${w.rdsPi.toString(16).toUpperCase().padStart(4, '0')}` : '—');
+	// The carrier is the demodulator's centre frequency, which the worker reads from the IQ
+	// frames: reading it from the tune box here would freeze it at whatever the box last held.
+	put('wfm-carrier', w && w.carrierHz > 0 ? `${(w.carrierHz / 1e6).toFixed(5)} MHz` : '—');
+	put('wfm-dev', w ? `${w.peakDevHz >= 1000 ? (w.peakDevHz / 1000).toFixed(1) + ' kHz' : w.peakDevHz + ' Hz'}` : '—');
+	// Pilot deviation is a station constant. The tooltip compares it to the 75 kHz
+	// broadcast-FM reference; it does not use the current programme peak.
+	const pilotHz = w?.pilotDevHz ?? 0;
+	put('wfm-pilot', w ? `${pilotHz >= 1000 ? (pilotHz / 1000).toFixed(1) + ' kHz' : Math.round(pilotHz) + ' Hz'}` : '—');
+	const pilotEl = element('wfm-pilot');
+	if (pilotEl && w) {
+		pilotEl.title = `${w.pilotPct.toFixed(1)}% of 75 kHz broadcast FM deviation, ${w.pilotSnrDb.toFixed(0)} dB above the band beside it`;
+	}
+	put('wfm-audio', w ? `${w.peakDbFs} dBFS` : '—');
+	const scope = element('wfm-scope') as HTMLCanvasElement | null;
+	if (scope) {
+		// A stereo broadcast gets two lanes (L over R); a mono station's channels are identical,
+		// so one lane is the honest picture and less clutter.
+		const lanes: Float32Array[] = [];
+		if (w?.scopeL && w.scopeL.length > 1) lanes.push(w.scopeL);
+		if (w?.stereo && w.scopeR && w.scopeR.length > 1) lanes.push(w.scopeR);
+		if (lanes.length) {
+			const holdLin = Math.pow(10, (Number(w?.peakHoldDb) || -200) / 20);
+			drawScope(scope, lanes, holdLin);
+		}
+		else scope.getContext('2d')?.clearRect(0, 0, scope.width, scope.height);
+	}
+	const empty = element('wfm-empty');
+	if (empty) empty.style.display = w ? 'none' : '';
+}
+
 /** The operator asked for the window (the toggle). */
 function setOpen(next: boolean): void {
 	wanted = next;
@@ -911,8 +1056,8 @@ export function setDecodeWindowAvailable(demod: string): void {
 	const next = (DECODING_MODES as readonly string[]).includes(demod) ? (demod as DecodeMode) : null;
 	const changed = next !== mode;
 	const leavingDrm = (mode === 'drm' || mode === 'drmplus') && next !== mode;
-	mode = next;
 	if (leavingDrm) clearDrm();
+	mode = next;
 	const toggle = button('btn-decode-window');
 	if (toggle) {
 		toggle.disabled = next === null;

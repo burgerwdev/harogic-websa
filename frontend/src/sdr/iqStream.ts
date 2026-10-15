@@ -8,6 +8,7 @@
 // A separate module from the audio path because the IQ ingress is a different stream with a
 // different lifetime: it runs while SDR mode is active, independent of whether the speaker is on.
 import { enablePythonAudioFallback, routeWorkletPortTo } from '../audio/sdrAudio';
+import { setWfmInfo } from '../ui/decodeWindow';
 import { wasmDspAllowed, wasmDspReason } from './capability';
 import { addFt8Spot, clearFt8Spots } from './ft8Log';
 import { addCwText, setCwLevel } from './cwLog';
@@ -84,8 +85,8 @@ let dspRms = 0;
 /// The de-emphasis the browser chain is running (microseconds; < 0 = the mode's default).
 let dspDeemph = -1;
 
-let dspProcMs = 0;/// Input and output rates the DRM pipeline was built with, plus its feed counters. The DRM core
-/// works at exactly 48 kHz, so a wrong input rate is the first thing to check on a failed lock.
+let dspProcMs = 0;
+// DRM input/output geometry and feed counters (DRM core runs at 48 kHz).
 let dspDigital = 0;
 let dspFsIn = 0;
 let dspOutRate = 0;
@@ -294,65 +295,73 @@ function startWorker(): void {
     }
     if (d.type === 'wfm-info') {
       if (configuredMode === 'wfm') {
-        import('../ui/decodeWindow').then(({ setWfmInfo }) => {
-          // DIAG (bench trace of the badge's decision): publish the detector's raw numbers so a
-          // headless run can sample them step by step, and so the operator can read the same state
-          // while reproducing. Remove with the instrumentation that consumes it.
-          // Strings, not numbers: `Number(x) || 0` turns a NaN into a clean 0, which is exactly
-          // how a numerical blow-up in the detector hides as "no pilot".
-          const raw = (v: unknown): string => {
-            const n = Number(v);
-            return Number.isFinite(n) ? String(n) : String(v);
-          };
-          const diag = {
-            at: Date.now(),
-            stereo: d.stereo === true,
-            pilotPct: raw(d.pilotPct),
-            pilotDevHz: raw(d.pilotDevHz),
-            pilotSnrDb: raw(d.pilotSnrDb),
-            peakDevHz: raw(d.peakDevHz),
-            rdsLocked: d.rdsLocked === true,
-            rdsGroups: raw(d.rdsGroups),
-            rdsPi: raw(d.rdsPi),
-            rt: String(d.rt || ''),
-            ps: String(d.ps || ''),
-            carrierHz: raw(d.carrierHz),
-            pilotI: raw(d.pilotI),
-            pilotQ: raw(d.pilotQ),
-            auxRateHz: raw(d.auxRateHz),
-            lastAux: raw(d.lastAux),
-            rdsRefMag: raw(d.rdsRefMag),
-            rdsAxisI: raw(d.rdsAxisI),
-            rdsAxisQ: raw(d.rdsAxisQ),
-            rdsBits: raw(d.rdsBits),
-            fsIn: raw(d.fsIn),
-            ifBw: raw(d.ifBw),
-            sideLen: raw(d.sideLen),
-            sideRms: raw(d.sideRms),
-            pcmRms: raw(d.pcmRms),
-          };
-          const w = window as unknown as { __wfmState?: unknown; __wfmTrail?: unknown[] };
-          w.__wfmState = diag;
-          w.__wfmTrail = ((w.__wfmTrail as unknown[]) || []).concat([diag]).slice(-20000);
-          setWfmInfo({
-            stereo: d.stereo === true,
-            peakDevHz: Number(d.peakDevHz) || 0,
-            pilotPct: Number(d.pilotPct) || 0,
-            peakDbFs: String(d.peakDbFs || ''),
-            peakHoldDb: String(d.peakHoldDb || ''),
-            rdsLocked: d.rdsLocked === true,
-            rdsPi: Number(d.rdsPi) || 0,
-            rdsGroups: Number(d.rdsGroups) || 0,
-            ps: String(d.ps || ''),
-            rt: String(d.rt || ''),
-            carrierHz: Number(d.carrierHz) || 0,
-            pilotDevHz: Number(d.pilotDevHz) || 0,
-            pilotSnrDb: Number(d.pilotSnrDb) || 0,
-            scopeL: d.scopeL instanceof Float32Array ? d.scopeL : null,
-            scopeR: d.scopeR instanceof Float32Array ? d.scopeR : null,
-          });
+        // Keep non-finite values as text: `Number(x) || 0` hides a broken detector as no pilot.
+        const raw = (v: unknown): string => {
+          const n = Number(v);
+          return Number.isFinite(n) ? String(n) : String(v);
+        };
+        const diag = {
+          at: Date.now(),
+          stereo: d.stereo === true,
+          pilotPct: raw(d.pilotPct),
+          pilotDevHz: raw(d.pilotDevHz),
+          pilotSnrDb: raw(d.pilotSnrDb),
+          peakDevHz: raw(d.peakDevHz),
+          rdsLocked: d.rdsLocked === true,
+          rdsGroups: raw(d.rdsGroups),
+          rdsPi: raw(d.rdsPi),
+          rt: String(d.rt || ''),
+          ps: String(d.ps || ''),
+          carrierHz: raw(d.carrierHz),
+          pilotI: raw(d.pilotI),
+          pilotQ: raw(d.pilotQ),
+          auxRateHz: raw(d.auxRateHz),
+          lastAux: raw(d.lastAux),
+          rdsRefMag: raw(d.rdsRefMag),
+          rdsAxisI: raw(d.rdsAxisI),
+          rdsAxisQ: raw(d.rdsAxisQ),
+          rdsBits: raw(d.rdsBits),
+          fsIn: raw(d.fsIn),
+          ifBw: raw(d.ifBw),
+          sideLen: raw(d.sideLen),
+          sideRms: raw(d.sideRms),
+          pcmRms: raw(d.pcmRms),
+          lRms: raw(d.lRms),
+          rRms: raw(d.rRms),
+        };
+        const w = window as unknown as {
+          __wfmState?: typeof diag; __wfmTrail?: typeof diag[]; __wfmTrailEnabled?: boolean;
+        };
+        w.__wfmState = diag;
+        if (w.__wfmTrailEnabled) {
+          const trail = w.__wfmTrail ?? [];
+          trail.push(diag);
+          if (trail.length > 20_000) trail.shift();
+          w.__wfmTrail = trail;
+        }
+        setWfmInfo({
+          stereo: d.stereo === true,
+          peakDevHz: Number(d.peakDevHz) || 0,
+          pilotPct: Number(d.pilotPct) || 0,
+          peakDbFs: String(d.peakDbFs || ''),
+          peakHoldDb: String(d.peakHoldDb || ''),
+          rdsLocked: d.rdsLocked === true,
+          rdsPi: Number(d.rdsPi) || 0,
+          rdsGroups: Number(d.rdsGroups) || 0,
+          ps: String(d.ps || ''),
+          rt: String(d.rt || ''),
+          carrierHz: Number(d.carrierHz) || 0,
+          pilotDevHz: Number(d.pilotDevHz) || 0,
+          pilotSnrDb: Number(d.pilotSnrDb) || 0,
+          scopeL: d.scopeL instanceof Float32Array ? d.scopeL : null,
+          scopeR: d.scopeR instanceof Float32Array ? d.scopeR : null,
         });
       }
+      return;
+    }
+    if (d.type === 'flush-info') {
+      const w = window as unknown as { __wfmFlush?: unknown[] };
+      w.__wfmFlush = ((w.__wfmFlush as unknown[]) || []).concat([d]).slice(-200);
       return;
     }
     if (d.type === 'iq-dump') {
@@ -565,27 +574,14 @@ export function setSdrIqEnabled(on: boolean): void {
   publishIqDebug();
 }
 
-/** Drop the worker's stream state (preset/reset): counters restart with the new capture geometry. */
-/**
- * Tell the DSP worker that the listened channel moved inside the current capture, so the kernel
- * drops the previous station's detector state. A listen change does not restart the stream, so
- * without this the stereo badge keeps the old station's numbers.
- */
-/**
- * The baseband rate the stream is actually delivering, or 0 before the first frame arrives.
- *
- * This is the authority for the demodulator's geometry: the kernel sizes its filters from `fsIn`,
- * so a value that disagrees with the samples their own rate breaks the chain. The backend's STATUS
- * reports the channelizer's *planned* rate, and after a listen change the plan and the frames
- * disagree; a WFM side chain built for the planned rate then falls below the subcarrier budget and
- * switches itself off, which reads as a stereo badge stuck on MONO until the next re-tune.
- */
+/** Latest DDC sample clock from a baseband frame, or 0 before the first frame. */
 export function sdrStreamRate(): number {
   return rate;
 }
 
-export function retuneSdrPipeline(): void {
-  worker?.postMessage({ type: 'retune' });
+/** Notify the DSP that the listened station moved. The target also rejects stale tune requests. */
+export function retuneSdrPipeline(targetHz: number): void {
+  worker?.postMessage({ type: 'retune', targetHz });
 }
 
 if (typeof window !== 'undefined') {
@@ -595,6 +591,7 @@ if (typeof window !== 'undefined') {
   });
 }
 
+/** Drop the worker stream state after a preset or full reset. */
 export function resetSdrIq(): void {
   ft8Text = '';
   ft8Count = 0;

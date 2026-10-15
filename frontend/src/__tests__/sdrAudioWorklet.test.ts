@@ -19,7 +19,8 @@ type Processor = {
 		prime: number;
 		target: number;
 		maxFill: number;
-		port: { onmessage: (event: { data: unknown }) => void };
+		port: { onmessage: (event: { data: unknown }) => void; messages: Array<{ type: string; playing?: boolean }> };
+		playing: boolean;
 		push(samples: Float32Array): void;
 		process(inputs: unknown, outputs: Float32Array[][]): boolean;
 		reset(): void;
@@ -33,7 +34,8 @@ beforeAll(async () => {
 	(globalThis as unknown as { sampleRate: number }).sampleRate = RATE;
 	class FakePort {
 		onmessage: ((event: { data: unknown }) => void) | null = null;
-		postMessage(): void {}
+		messages: Array<{ type: string; playing?: boolean }> = [];
+		postMessage(message: { type: string; playing?: boolean }): void { this.messages.push(message); }
 		start(): void {}
 	}
 	(globalThis as unknown as { AudioWorkletProcessor: unknown }).AudioWorkletProcessor = class {
@@ -275,5 +277,83 @@ describe('the SDR playback buffer', () => {
 		for (let i = 0; i < 20; i++) proc.process(null, outputs);
 		expect(proc.underruns).toBe(0);
 		expect(out.some((v) => v !== 0)).toBe(true);
+	});
+
+	it('plays interleaved L/R pairs into two channels in the stereo layout', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		// The producer announces the stereo layout before any samples: the ring pairs them.
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'wfm', stereo: true } });
+		const out = new Float32Array(128);
+		const outR = new Float32Array(128);
+		// One second of L/R pairs: L = 0.25, R = 0.75 (a constant pair is enough to read back).
+		const pairs = new Float32Array(RATE * 2);
+		for (let i = 0; i < RATE; i++) {
+			pairs[2 * i] = 0.25;
+			pairs[2 * i + 1] = 0.75;
+		}
+		proc.push(pairs);
+		const outputs = [[out, outR]];
+		for (let i = 0; i < 40; i++) proc.process(null, outputs);
+		// After priming, both channels carry their own constant: L on ch0, R on ch1.
+		const tailL = out.slice(-64).reduce((a, v) => a + v, 0) / 64;
+		const tailR = outR.slice(-64).reduce((a, v) => a + v, 0) / 64;
+		expect(tailL).toBeCloseTo(0.25, 5);
+		expect(tailR).toBeCloseTo(0.75, 5);
+	});
+
+	it('reports stereo playback transitions without waiting for the status window', () => {
+		const proc = new ProcessorClass!();
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'wfm', stereo: true } });
+		proc.port.onmessage({ data: { type: 'enabled', value: true } });
+		proc.port.onmessage({ data: { type: 'reset' } });
+		proc.port.onmessage({ data: { type: 'fast-prime' } });
+		expect(proc.prime).toBe(Math.floor(RATE * 0.06) * 2);
+		proc.push(new Float32Array(proc.prime + 256).fill(0.5));
+		const start = proc.port.messages.length;
+		proc.process(null, [[new Float32Array(128), new Float32Array(128)]]);
+		const started = proc.port.messages.slice(start).find((m) => m.type === 'gate-transition');
+		expect(started?.playing).toBe(true);
+		expect(proc.playing).toBe(true);
+		// Early tune jitter still uses the short prime. The normal fill target restores the
+		// cold-start threshold after playback has enough margin.
+		expect(proc.prime).toBe(Math.floor(RATE * 0.06) * 2);
+		proc.push(new Float32Array(proc.target).fill(0.5));
+		proc.process(null, [[new Float32Array(128), new Float32Array(128)]]);
+		expect(proc.prime).toBe(Math.floor(RATE * 0.25) * 2);
+		const beforeReset = proc.port.messages.length;
+		proc.port.onmessage({ data: { type: 'reset' } });
+		const stopped = proc.port.messages.slice(beforeReset).find((m) => m.type === 'gate-transition');
+		expect(stopped?.playing).toBe(false);
+		expect(proc.playing).toBe(false);
+	});
+
+	it('feeds both output channels in the mono layout', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'nfm', stereo: false } });
+		const out = new Float32Array(128);
+		const outR = new Float32Array(128);
+		proc.push(new Float32Array(proc.prime + 128).fill(0.5));
+		const outputs = [[out, outR]];
+		for (let i = 0; i < 40; i++) proc.process(null, outputs);
+		expect(out.some((v) => v > 0)).toBe(true);
+		// The mono layout carries one sample per frame, and it belongs in BOTH channels: writing
+		// only the left one silenced the right speaker for every mono mode (and for a mono FM
+		// station, which uses the stereo layout with an empty sideband).
+		expect(outR.every((v, i) => v === out[i])).toBe(true);
+		expect(outR.some((v) => v > 0)).toBe(true);
+	});
+
+	it('drops the buffered pairs when the layout switches, instead of misreading them', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'wfm', stereo: true } });
+		proc.push(new Float32Array(9600).fill(0.5));   // interleaved pairs offered
+		const fillBefore = proc.available;
+		expect(fillBefore).toBeGreaterThan(0);
+		// A switch to mono invalidates the paired samples: the ring must empty, not reinterpret.
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'wfm', stereo: false } });
+		expect(proc.available).toBe(0);
 	});
 });

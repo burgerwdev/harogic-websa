@@ -1,34 +1,21 @@
 #!/usr/bin/env python3
-"""The FM stereo/RDS bench rig: a real PlutoSDR transmission, the SAN-90 receiver and the
-browser's own demodulator, sampled through the page's diagnostics.
+"""Playwright hardware rig for WFM mono/stereo/RDS on PlutoSDR -> SAN-90.
 
-What this rig measures is the page itself: the Playwright session opens the app against the
-real backend, drives the same UI paths an operator uses (the demodulator buttons, the listen
-field, the audio switch), and samples the bench diagnostics the page already publishes —
-`window.__wfmTrail` (one entry per demodulated block, with the stereo/RDS state) and
-`spectrum.dataset.sdrIq` / `.sdrAudio` (the stream and the worklet's playback gate). The
-numbers that matter are therefore the ones the listener hears, not a re-implementation.
+Drive the real app UI. Read the per-block `__wfmTrail` and AudioWorklet gate events.
+The page enables the trail only for this bench run. `--out` saves raw evidence.
 
-The transmitter runs in a subprocess of `tools/pluto_tx.py`, so the scenarios stay one
-command each:
+    python3 tools/e2e/wfm_rig.py --scenario hold --tx stereo --seconds 30 --check-ui
+    python3 tools/e2e/wfm_rig.py --scenario retune --tx stereo
+    python3 tools/e2e/wfm_rig.py --scenario signal-loss --tx rds --seconds 12
 
-    python3 tools/e2e/wfm_rig.py --scenario retune --freq 411e6
-    python3 tools/e2e/wfm_rig.py --scenario hold   --freq 411e6 --seconds 30 --tx stereo
-    python3 tools/e2e/wfm_rig.py --scenario retune --freq 411e6 --tx rds --away-hz 400e3
-
-Scenarios:
-  * hold    — hold the frequency and record the trail (stereo badge stability, RDS decode).
-  * retune  — step away and back through the listen field while recording the audio gate;
-              the report holds the resume latency after each step (the <= 0.5 s contract).
-
-The JSON dump (stdout and --out) carries the sampled timeline, so a failure can be read
-after the fact without a re-run.
+`hold` measures badge, audio and RDS. `retune` measures click to new RF/PCM playback
+against the 500 ms contract. `signal-loss` checks stale metadata expiry. `--dump-iq`
+saves the exact browser input for offline WASM replay.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 import time
@@ -42,15 +29,15 @@ SPEECH = ROOT / 'tools' / 'bench' / 'audio' / 'speech.wav'
 failures: list[str] = []
 
 TX_ARGS = {
-    # A stereo speech station: left-only speech, so the recovered L/R separation is the
-    # whole programme and a matrix error cannot hide in a symmetric signal.
-    'stereo': ['wfm', '--stereo', '__STEREO_WAV__', '--stereo-pilot', '--rds-rt',
-               'RIG STEREO RT', '--rds-ps', 'RIG ST', '--rds-pi', '0x4147'],
-    # A mono station with no pilot at all: the badge must read MONO and the RDS must lock
-    # (RDS needs the pilot, so the tool adds it; --no-audio keeps the deviation for RDS).
+    # Left-only speech exposes channel leakage; a shared tone cannot prove separation.
+    'stereo': ['wfm', '--stereo', '__STEREO_WAV__', '--rds-rt', 'RIG STEREO RT',
+               '--rds-ps', 'RIG ST', '--rds-pi', '0x4147'],
+    'stereo-no-rds': ['wfm', '--stereo', '__STEREO_WAV__',
+                      '--rds-rt', 'DUMMY', '--rds-deviation-hz', '0'],
+    # RDS-only programme with the pilot needed for bit timing.
     'rds': ['wfm', '--no-audio', '--rds-rt', 'RIG RDS OK 0123456789', '--rds-ps',
             'RIG RDS', '--rds-pi', '0x1234'],
-    # A pure mono station: speech on both channels, no pilot, no RDS.
+    # Mono WAV: no pilot and no RDS.
     'mono': ['wfm', '--wav', str(SPEECH)],
     'none': None,
 }
@@ -66,18 +53,18 @@ def check(label: str, ok: bool, detail: str = '') -> None:
 def make_stereo_wav(out: Path) -> None:
     """Left-only speech as a stereo WAV (the separation test's source)."""
     with wave.open(str(SPEECH)) as src:
+        if src.getnchannels() != 1 or src.getsampwidth() != 2:
+            raise ValueError(f'{SPEECH}: need mono 16-bit PCM')
         rate, frames = src.getframerate(), src.readframes(src.getnframes())
-    audio = wave.open(str(out), 'wb')
-    audio.setnchannels(2)
-    audio.setsampwidth(2)
-    audio.setframerate(rate)
-    left = frames
-    right = b'\x00\x00' * (len(frames) // 2)
     stereo = bytearray()
-    for k in range(len(frames) // 2):
-        stereo += left[2 * k:2 * k + 2] + right[2 * k:2 * k + 2]
-    audio.writeframes(bytes(stereo))
-    audio.close()
+    for k in range(0, len(frames), 2):
+        stereo.extend(frames[k:k + 2])
+        stereo.extend(b'\x00\x00')
+    with wave.open(str(out), 'wb') as audio:
+        audio.setnchannels(2)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(bytes(stereo))
 
 
 def start_tx(scenario: str, freq_hz: float, gain_db: float) -> subprocess.Popen | None:
@@ -91,7 +78,8 @@ def start_tx(scenario: str, freq_hz: float, gain_db: float) -> subprocess.Popen 
     cmd = [sys.executable, str(ROOT / 'tools' / 'pluto_tx.py'), *spec,
            '--lo', str(freq_hz), '--gain', str(gain_db)]
     print(f'TX: {" ".join(cmd)}', flush=True)
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    with open('/tmp/wfm_rig_tx.log', 'w') as log:
+        return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
 
 
 def post(url: str, payload: dict) -> dict:
@@ -132,6 +120,21 @@ def wait_gate(page, seconds: float) -> bool:
         diag = iq_diag(page)
         if diag.get('dsp_playing') == '1' and int(diag.get('blocks', '0')) > 20:
             return True
+        time.sleep(0.2)
+    return False
+
+
+def wait_rf(page, scenario: str, freq_hz: float, seconds: float = 12.0) -> bool:
+    """Confirm RF source on the tuned channel; a noise stream also opens the audio gate."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        info = page.evaluate('window.__wfmState || null')
+        if info and abs(float(info.get('carrierHz', 0)) - freq_hz) < 1:
+            if scenario == 'mono':
+                if float(info.get('peakDevHz', 0)) > 3_000 and float(info.get('pcmRms', 0)) > 0.01:
+                    return True
+            elif float(info.get('pilotDevHz', 0)) > 3_000 and float(info.get('pilotSnrDb', -120)) > 9:
+                return True
         time.sleep(0.2)
     return False
 
@@ -187,30 +190,39 @@ def main() -> int:
     parser.add_argument('--away-hz', type=float, default=500e3, help='the retune scenario step')
     parser.add_argument('--gain', type=float, default=-10.0)
     parser.add_argument('--tx', choices=TX_ARGS, default='stereo')
-    parser.add_argument('--scenario', choices=('hold', 'retune'), default='hold')
+    parser.add_argument('--scenario', choices=('hold', 'retune', 'signal-loss'), default='hold')
     parser.add_argument('--seconds', type=float, default=20.0)
     parser.add_argument('--out', default='')
     parser.add_argument('--dump-iq', default='', help='stash the decoder input frames to this file')
+    parser.add_argument('--dump-after-retune', default='', help='stash frames after last return to TX frequency')
+    parser.add_argument('--check-ui', action='store_true', help='open FM pane and assert rendered fields')
+    parser.add_argument('--viewport', default='1280x720', help='browser viewport WIDTHxHEIGHT')
     args = parser.parse_args()
 
     tx = start_tx(args.tx, args.freq, args.gain)
     report: dict = {'scenario': args.scenario, 'tx': args.tx, 'freq': args.freq}
     try:
         time.sleep(2.0)  # the transmitter's buffer fills before the RF starts
+        if tx and tx.poll() is not None:
+            raise RuntimeError(f'Pluto TX exited {tx.returncode}: '
+                               + Path('/tmp/wfm_rig_tx.log').read_text()[-1200:])
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
-            page = browser.new_page()
+            width, height = (int(part) for part in args.viewport.lower().split('x'))
+            page = browser.new_page(viewport={'width': width, 'height': height})
+            page.add_init_script('window.__wfmTrailEnabled = true')
+            page_errors: list[str] = []
+            dialogs: list[str] = []
+            page.on('pageerror', lambda error: page_errors.append(str(error)))
+            page.on('dialog', lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
             page.goto(args.url, wait_until='networkidle')
             page.evaluate("document.getElementById('btn-mode-sdr').click()")
             page.wait_for_timeout(1500)
             page.evaluate("document.querySelector('[data-sdr-demod=\"wfm\"]').click()")
             page.wait_for_timeout(300)
-            # Off the broadcast band the panel does not auto-widen the IF filter (the band-aware
-            # pick at 87.5-108 MHz is what normally sets 180 kHz with WFM), and a narrow filter
-            # starves the side chain: the demodulator runs at 48 kSps and has no 57 kHz room.
-            page.evaluate("document.querySelector('[data-sdr-ifbw=\"180000\"]').click()")
-            page.wait_for_timeout(300)
+            check('WFM gets a wide IF', page.evaluate(
+                "document.querySelector('[data-sdr-ifbw=\"180000\"]').classList.contains('active')"))
             if (page.query_selector('#btn-sdr-audio')):
                 # Idempotent: the button is also the OFF switch, and a persisted On preference
                 # made the blind click mute the session (the ring then filled to its ceiling).
@@ -232,6 +244,21 @@ def main() -> int:
                   json.dumps(iq_diag(page)))
             check('the worklet plays', wait_gate(page, 15),
                   'audio gate: ' + json.dumps(iq_diag(page)))
+            if tx:
+                on_air = wait_rf(page, args.tx, args.freq)
+                check('RF signal reaches SAN-90', on_air,
+                      json.dumps(page.evaluate('window.__wfmState || null')))
+                if not on_air:
+                    raise RuntimeError('no known RF signal; retune timing would test noise only')
+            if args.check_ui:
+                page.evaluate("document.getElementById('btn-decode-window').click()")
+                page.wait_for_timeout(300)
+                check('FM pane opens', page.evaluate(
+                    "getComputedStyle(document.getElementById('decode-window')).display !== 'none'"))
+                check('FM pane fits viewport', page.evaluate("""() => {
+                  const r = document.getElementById('decode-window').getBoundingClientRect();
+                  return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+                }"""))
             # DIAG: capture the decoder's exact input frames for offline replay.
             if args.dump_iq:
                 page.evaluate("window.dispatchEvent(new CustomEvent('wfm-dump-iq', {detail: true}))")
@@ -239,7 +266,8 @@ def main() -> int:
                 dump = None
                 while time.monotonic() < deadline:
                     dump = page.evaluate('window.__wfmIqDump || null')
-                    if dump: break
+                    if dump:
+                        break
                     time.sleep(0.5)
                 if dump:
                     Path(args.dump_iq).write_text(json.dumps(dump))
@@ -269,25 +297,142 @@ def main() -> int:
                     'gaps': audio_gaps(timeline),
                 }
                 print(json.dumps(report['summary'], indent=2))
-            else:  # retune
+                if args.check_ui:
+                    ui = page.evaluate("""() => {
+                      const text = (id) => document.getElementById(id)?.textContent?.trim() || '';
+                      return { badge: text('wfm-title-badge'), pilot: text('wfm-pilot'),
+                        station: text('wfm-station'), rt: text('wfm-rt'),
+                        pi: text('wfm-rds-pi'), carrier: text('wfm-carrier') };
+                    }""")
+                    report['ui'] = ui
+                    expected = 'MONO' if args.tx == 'mono' else 'STEREO'
+                    check('FM badge matches RF pilot', ui['badge'] == expected, str(ui))
+                    if args.tx in ('stereo', 'rds'):
+                        check('RDS PI/PS/RT rendered', bool(ui['station'].startswith('RIG')
+                             and ui['rt'].startswith('RIG') and ui['pi'].startswith('PI ')), str(ui))
+                    if args.tx == 'mono':
+                        check('mono pane has no RDS data', ui['pi'] == '—' and ui['rt'] == '—', str(ui))
+                    page.screenshot(path=f'/tmp/wfm_ui_{args.tx}_{args.viewport}.png')
+                check('browser has no page errors or dialogs', not page_errors and not dialogs,
+                      f'errors={page_errors} dialogs={dialogs}')
+            else:  # retune or signal-loss
+                if args.scenario == 'signal-loss':
+                    timeline = sample(page, 8.0)
+                    live = page.evaluate('window.__wfmState || null')
+                    check('RDS locked before RF loss', bool(live and live.get('rdsLocked')),
+                          json.dumps(live))
+                    stopped_at = int(time.time() * 1000)
+                    if tx:
+                        tx.terminate()
+                        tx.wait(timeout=10)
+                        tx = None
+                    timeline += sample(page, args.seconds, event='transmitter-off')
+                    trail = page.evaluate('window.__wfmTrail || []')
+                    report['trail'] = trail
+                    report['signalStoppedAt'] = stopped_at
+                    report['timeline'] = timeline
+                    report['summary'] = {
+                        'stereo_at_end': trail[-1]['stereo'] if trail else None,
+                        'rds_locked_at_end': trail[-1]['rdsLocked'] if trail else None,
+                        'pilot_dev_at_end': trail[-1]['pilotDevHz'] if trail else None,
+                        'groups_at_end': trail[-1]['rdsGroups'] if trail else None,
+                    }
+                    print(json.dumps(report['summary'], indent=2))
+                    check('pilot lock drops after RF loss',
+                          bool(trail) and not trail[-1]['stereo']
+                          and float(trail[-1]['pilotSnrDb']) < 6)
+                    check('RDS station metadata clears after RF loss',
+                          bool(trail) and not trail[-1]['rdsLocked'])
+                    report['flush'] = page.evaluate('window.__wfmFlush || []')
+                    browser.close()
+                    if args.out:
+                        Path(args.out).write_text(json.dumps(report))
+                        print(f'wrote {args.out}')
+                    return 1 if failures else 0
                 away = args.freq + args.away_hz
                 for step, target in enumerate((away, args.freq, away, args.freq)):
                     tune_ui(page, target)
+                    if step == 3 and args.dump_after_retune:
+                        page.evaluate("window.__wfmIqDump = null; window.dispatchEvent(new CustomEvent('wfm-dump-iq', {detail: true}))")
                     timeline += sample(page, 6.0, event=f'retune->{target / 1e6:.4f}MHz')
+                    if tx and target == args.freq:
+                        check('RF pilot returns after retune', wait_rf(page, args.tx, args.freq, 2),
+                              json.dumps(page.evaluate('window.__wfmState || null')))
+                if args.dump_after_retune:
+                    deadline = time.monotonic() + 30
+                    dump = page.evaluate('window.__wfmIqDump || null')
+                    while dump is None and time.monotonic() < deadline:
+                        time.sleep(0.5)
+                        dump = page.evaluate('window.__wfmIqDump || null')
+                    if dump:
+                        Path(args.dump_after_retune).write_text(json.dumps(dump))
+                        print(f'IQ after retune: {len(dump["frames"])} frames, rate {dump["rate"]}', flush=True)
+                    else:
+                        check('IQ after retune captured', False)
                 report['timeline'] = timeline
+                report['trail'] = page.evaluate('window.__wfmTrail || []')
                 report['gaps'] = audio_gaps(timeline)
                 report['gate'] = page.evaluate('window.__wfmGate || []')
                 report['marks'] = page.evaluate('window.__retuneMarks || []')
                 worst = max((g['ms'] for g in report['gaps']), default=0)
-                report['summary'] = {'gap_count': len(report['gaps']), 'worst_gap_ms': worst}
-                print(json.dumps(report['gaps'], indent=2))
-                check('every retune resumes within 500 ms', worst <= 500,
-                      f'worst gap {worst} ms')
+                resume_ms = []
+                first_frame_ms = []
+                first_pilot_ms = []
+                for step, mark in enumerate(report['marks'][1:]):
+                    target = away if step % 2 == 0 else args.freq
+                    down = next((g['at'] for g in report['gate']
+                                 if g['at'] >= mark and g['playing'] == 0), None)
+                    up = next((g['at'] for g in report['gate']
+                               if down is not None and g['at'] >= down and g['playing'] == 1), None)
+                    resume_ms.append(up - mark if up is not None else None)
+                    new = [e for e in report['trail'] if e['at'] >= mark
+                           and abs(float(e['carrierHz']) - target) < 1]
+                    first_frame_ms.append(new[0]['at'] - mark if new else None)
+                    pilot = next((e for e in new if float(e['pilotDevHz']) > 3000
+                                  and float(e['pilotSnrDb']) > 9), None)
+                    first_pilot_ms.append(pilot['at'] - mark if pilot else None)
+                report['resumeMs'] = resume_ms
+                report['firstFrameMs'] = first_frame_ms
+                report['firstPilotMs'] = first_pilot_ms
+                worst_resume = max((ms for ms in resume_ms if ms is not None), default=0)
+                report['summary'] = {
+                    'gap_count': len(report['gaps']), 'worst_gap_ms': worst,
+                    'resume_ms': resume_ms, 'first_frame_ms': first_frame_ms,
+                    'first_pilot_ms': first_pilot_ms, 'worst_resume_ms': worst_resume,
+                }
+                print(json.dumps(report['summary'], indent=2))
+                check('the worklet still plays after retunes', iq_diag(page).get('dsp_playing') == '1')
+                check('retune command to new-channel playback within 500 ms',
+                      len(resume_ms) == 4 and all(
+                          resume is not None and frame is not None
+                          and frame <= resume <= 500
+                          for resume, frame in zip(resume_ms, first_frame_ms, strict=True))
+                      and all(first_pilot_ms[i] is not None and first_pilot_ms[i] <= 500
+                              for i in (1, 3)),
+                      f'frames {first_frame_ms}, pilot {first_pilot_ms}, playback {resume_ms} ms')
+                if args.check_ui:
+                    ui = page.evaluate("""() => {
+                      const text = (id) => document.getElementById(id)?.textContent?.trim() || '';
+                      return { badge: text('wfm-title-badge'), station: text('wfm-station'),
+                        rt: text('wfm-rt'), pi: text('wfm-rds-pi') };
+                    }""")
+                    report['ui'] = ui
+                    check('FM pane recovers after retunes', ui['badge'] == 'STEREO'
+                          and ui['station'].startswith('RIG') and ui['rt'].startswith('RIG'), str(ui))
+                    page.screenshot(path='/tmp/wfm_ui_retune.png')
+                check('browser has no page errors or dialogs', not page_errors and not dialogs,
+                      f'errors={page_errors} dialogs={dialogs}')
+            report['flush'] = page.evaluate('window.__wfmFlush || []')
             browser.close()
     finally:
         if tx:
-            tx.terminate()
-            tx.wait(timeout=10)
+            exited = tx.poll()
+            if exited is not None:
+                check('Pluto TX stayed on air', False,
+                      f'exit={exited} ' + Path('/tmp/wfm_rig_tx.log').read_text()[-600:])
+            else:
+                tx.terminate()
+                tx.wait(timeout=10)
     if args.out:
         Path(args.out).write_text(json.dumps(report))
         print(f'wrote {args.out}')

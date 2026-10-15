@@ -146,6 +146,14 @@ export class WasmPipeline {
 		if (this.handle) this.module.exports.websa_dsp_demod_retune(this.handle);
 	}
 
+	/** The backend restarted its DDC on the same station. Keep WFM's pilot/RDS metadata. */
+	retuneStationary(): void {
+		if (!this.handle) return;
+		const soft = this.module.exports.websa_dsp_demod_retune_stationary;
+		if (soft) soft(this.handle);
+		else this.retune();
+	}
+
 	/** Clear the streaming state (a baseband stream restart). */
 	reset(): void {
 		if (this.handle) this.module.exports.websa_dsp_demod_reset(this.handle);
@@ -203,7 +211,11 @@ export class WasmPipeline {
 		const written = this.module.exports.websa_dsp_demod_side(this.handle, this.sidePtr, MAX_COMPLEX_SAMPLES);
 		if (written <= 0) return new Float32Array(0);
 		const view = this.module.f32View(this.sidePtr, written);
-		return new Float32Array(view);          // a copy: the next block overwrites the block
+		const side = new Float32Array(view); // the next block overwrites the block
+		if (this.volume !== 1) {
+			for (let index = 0; index < written; index++) side[index] *= this.volume;
+		}
+		return side;
 	}
 
 	/** Whether the stereo pilot is currently detected (the badge's state). */

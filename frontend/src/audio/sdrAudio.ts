@@ -158,13 +158,25 @@ function audioWorkerUrl(): string {
  * Start the audio ingress worker. With `port` it drives the worklet directly; without it
  * (legacy ScriptProcessor fallback) it posts the resampled buffers back to this thread.
  */
+/** Average an interleaved L/R block into one mono channel (the legacy ring's layout). */
+function mixdown(stereo: Float32Array): Float32Array {
+  const out = new Float32Array(stereo.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = (stereo[2 * i] + stereo[2 * i + 1]) / 2;
+  }
+  return out;
+}
+
 function startWorker(port: MessagePort | null): void {
   if (worker) return;
   worker = new Worker(new URL('./sdrAudioWorker.ts', import.meta.url), { type: 'module' });
   worker.onmessage = (event: MessageEvent) => {
     const d = (event.data || {}) as Record<string, any>;
     if (d.type === 'samples' && d.samples) {
-      writeLegacy(d.samples as Float32Array);
+      // The legacy ring is mono by construction (ScriptProcessor, one channel): a stereo block
+      // is mixed down, so the fallback path keeps working whatever the producer sends.
+      const block = d.samples as Float32Array;
+      writeLegacy(block.length % 2 === 0 && d.stereo ? mixdown(block) : block);
     } else if (d.type === 'reset') {
       legacyAvailable = 0;
       legacyTailGain = legacyFade;
@@ -211,7 +223,10 @@ async function initializeOutput(context: AudioContext): Promise<void> {
       candidate = new AudioWorkletNode(context, 'sdr-audio-processor', {
         numberOfInputs: 0,
         numberOfOutputs: 1,
-        outputChannelCount: [1],
+        // Two channels always: the WFM stereo layout plays L/R pairs, every other layout writes
+        // silence into the second channel. A one-channel node would have nowhere to put the
+        // right channel when stereo starts.
+        outputChannelCount: [2],
       });
       await new Promise<void>((resolve, reject) => {
         const timeout = window.setTimeout(

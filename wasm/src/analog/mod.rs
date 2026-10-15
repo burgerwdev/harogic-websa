@@ -303,8 +303,9 @@ impl AnalogDemod {
         }
         self.deemph_us = tau;
         self.deemph = Self::deemph_taps(tau, self.out_rate);
-        if let (Some(stereo), Some(deemph)) = (self.stereo.as_mut(), self.deemph.as_ref()) {
-            stereo.set_deemph_taps(deemph.taps().to_vec());
+        if let Some(stereo) = self.stereo.as_mut() {
+            let taps = self.deemph.as_ref().map(|d| d.taps().to_vec()).unwrap_or_default();
+            stereo.set_deemph_taps(taps);
         }
     }
 
@@ -460,20 +461,10 @@ impl AnalogDemodulator for AnalogDemod {
 
         // The side chain reads the DISCRIMINATOR output, not the baseband: the pilot, the L−R DSB
         // and the RDS subcarrier are components of the FM *modulation*, and only the detector
-        // turns them back into amplitude components. They sit above the mono path's 15 kHz cut.
-        // The chain's interface takes complex pairs, so the real discriminator samples go in with
-        // a zero Q. The drain gain carries the AGC's applied level over to the side, so the
-        // L/R matrix (L = M + S, R = M − S) lands at the mono signal's own scale.
+        // turns them back into amplitude components. The side takes the same per-sample AGC gain
+        // and limiter envelope as mono, so the L/R matrix sees both at one scale on speech peaks.
         if let Some(stereo) = self.stereo.as_mut() {
-            let raw_rms = (rs.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>()
-                / rs.len().max(1) as f64)
-                .sqrt();
-            let levelled_rms = (levelled.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>()
-                / levelled.len().max(1) as f64)
-                .sqrt();
-            if raw_rms > 1.0e-9 {
-                stereo.set_output_gain((levelled_rms / raw_rms) as f32);
-            }
+            stereo.set_output_gain_trace(&rs, &levelled);
             stereo.process(&det);
         }
 
@@ -552,6 +543,19 @@ impl AnalogDemodulator for AnalogDemod {
         }
         if let Some(stereo) = self.stereo.as_mut() {
             stereo.retune();
+        }
+    }
+
+    fn retune_stationary(&mut self) {
+        self.band.clear_tail();
+        self.prev_z = None;
+        self.env_prev = 0.0;
+        self.dc_y = 0.0;
+        if let Some(deemph) = self.deemph.as_mut() {
+            deemph.reset();
+        }
+        if let Some(stereo) = self.stereo.as_mut() {
+            stereo.retune_stationary();
         }
     }
 
@@ -814,6 +818,39 @@ mod tests {
     }
 
     #[test]
+    fn same_station_flush_keeps_pilot_and_rds_metadata() {
+        let bytes = include_bytes!("../../../tests/fixtures/dsp/demod_wfm_stereo_iq.bin");
+        let iq: Vec<f32> = bytes.chunks_exact(4)
+            .map(|quad| f32::from_le_bytes([quad[0], quad[1], quad[2], quad[3]]))
+            .collect();
+        let mut demod = build("wfm", DemodConfig::new(288_000.0, 180_000.0), AUDIO_RATE)
+            .expect("wfm builds");
+        let mut out = Vec::new();
+        for chunk in iq.chunks(4_800 * 2) {
+            demod.process_into(chunk, &mut out);
+            demod.take_side();
+        }
+        let station = demod.rds_state().expect("RDS side chain");
+        assert!(demod.stereo_detected() && station.locked);
+        assert_eq!(station.pi, 0x1234);
+        let peak = demod.peak_deviation_hz();
+        demod.retune_stationary();
+        assert!(demod.stereo_detected(), "same-station flush must not flash MONO");
+        assert_eq!(demod.peak_deviation_hz(), peak);
+        assert_eq!(demod.rds_state(), Some(station.clone()));
+        for chunk in iq.chunks(4_800 * 2).take(10) {
+            demod.process_into(chunk, &mut out);
+            demod.take_side();
+            assert!(demod.stereo_detected(), "pilot reacquisition must keep the badge stable");
+            assert!(demod.rds_state().unwrap().locked);
+        }
+        demod.retune();
+        assert!(!demod.stereo_detected(), "a new station must clear the badge");
+        assert_eq!(demod.peak_deviation_hz(), 0.0);
+        assert!(!demod.rds_state().unwrap().locked);
+    }
+
+    #[test]
     fn pm_recovers_the_modulation_tone() {
         let audio = run("pm", 20_000, |t| {
             let ph = 0.6 * (TAU * TONE_HZ * t).cos();
@@ -977,6 +1014,17 @@ mod tests {
 
     /// The pipeline holds the demodulator behind `Box<dyn AnalogDemodulator>`; a setting that is
     /// only an inherent method would silently no-op there (the de-emphasis regression).
+    #[test]
+    fn stereo_deemphasis_follows_off_and_auto() {
+        let mut demod = build("wfm", DemodConfig::new(288_000.0, 180_000.0), AUDIO_RATE)
+            .expect("WFM side chain builds at broadcast rate");
+        assert!(demod.stereo.as_ref().unwrap().deemph_enabled());
+        demod.set_deemph_us(0.0);
+        assert!(!demod.stereo.as_ref().unwrap().deemph_enabled());
+        demod.set_deemph_us(-1.0);
+        assert!(demod.stereo.as_ref().unwrap().deemph_enabled());
+    }
+
     #[test]
     fn de_emphasis_reaches_the_demodulator_through_the_trait_object() {
         let tone = 3_000.0;

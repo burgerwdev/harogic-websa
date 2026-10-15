@@ -770,6 +770,11 @@
 <div class="decode-window" id="decode-window" style="display:none;">
   <div class="decode-window-head" id="decode-window-head">
     <span id="decode-window-title">FT8</span>
+    <!-- WFM only: the stereo badge sits in the title bar, beside the mode name, so the operator
+         reads the state where they look for the pane's state (as the CW lamp and the SSTV hint
+         do). It is one element shown for one mode; every other mode hides it. -->
+    <span class="decode-drm-badge decode-rds-badge decode-title-badge" id="wfm-title-badge"
+          style="display:none;">MONO</span>
     <!-- SSTV only, and only before a picture arrives: the waiting message belongs in the title row
          (where the operator looks for the pane's state), not as placeholder text over the canvas.
          The decoder's own state (audio buffered, attempts) sits in the readout row below. -->
@@ -841,7 +846,36 @@
         <code id="decode-drm-debug"></code>
       </details>
     </div>
-    <!-- SSTV: the picture the station sent and what the calibration header said about it. The mode
+    <!-- WFM: the stereo badge (in the title bar), the carrier, the deviation, the pilot ratio,
+         the audio level and an audio scope. The values come from the worker's side chain
+         through the `wfm-info` message. -->
+    <div class="decode-rds" id="decode-window-wfm" style="display:none;">
+      <div class="decode-rds-service">
+        <strong class="decode-rds-ps" id="wfm-station">—</strong>
+        <span class="decode-rds-label" id="wfm-rds-pi">—</span>
+      </div>
+      <div class="decode-rds-clock-row">
+        <span class="decode-rds-label">RadioText</span>
+        <span id="wfm-rt">—</span>
+      </div>
+      <dl class="decode-rds-metrics decode-wfm-metrics">
+        <div><dt>Carrier</dt><dd id="wfm-carrier">—</dd></div>
+        <div><dt>Deviation</dt><dd id="wfm-dev">—</dd></div>
+        <div><dt>Pilot</dt><dd id="wfm-pilot">—</dd></div>
+      </dl>
+      <!-- The demodulated audio the listener hears: a ~10 ms window per block, triggered on a
+           rising zero crossing so the trace stands still instead of sliding. Its amplitude
+           answers "is the demodulator working" at a glance, which a level number cannot. -->
+      <canvas class="decode-wfm-scope" id="wfm-scope" width="360" height="64"
+              data-i18n-title="wfm_scope_tip" data-i18n-attr="title"
+              title="Demodulated audio, about 10 ms per frame (left on top, right below when the station is stereo)"></canvas>
+      <div class="decode-rds-clock-row decode-wfm-audio">
+        <span class="decode-rds-label">Audio level</span>
+        <span id="wfm-audio">—</span>
+      </div>
+      <div class="decode-rds-empty" id="wfm-empty" style="display:none;">Tune to an FM broadcast station.</div>
+    </div>
+        <!-- SSTV: the picture the station sent and what the calibration header said about it. The mode
          buttons are built from the Rust mode table (ui/decodeWindow.ts) - never a list kept here -
          and the one the signal declared is marked, so "which mode is this?" is answered by looking.
          The canvas is scaled by CSS to whatever room the window has. -->

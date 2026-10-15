@@ -31,7 +31,7 @@ const DRM_PRIME_S = 1.6;
 const DRM_TARGET_S = 1.4;
 const DRM_MAX_FILL_S = 2.4;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
-const FAST_PRIME_S = 0.08;      // a retune's re-prime: short, restored once playback holds
+const FAST_PRIME_S = 0.06;      // a retune's short re-prime; normal target still refills the ring
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
@@ -103,12 +103,10 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.setBufferMode(message.mode);
         this.setLayout(message.stereo ? 'stereo' : 'mono');
       } else if (message.type === 'fast-prime') {
-        // A retune's re-prime runs on a shorter buffer: the PCM the fresh channel produces
-        // is already rate-matched, and waiting the full cold-start prime doubled the retune's
-        // silent gap (measured ~1 s). Restored to the normal thresholds once playback holds.
         this.fastPrime = true;
         this.applyBufferParams();
       } else if (message.type === 'enabled') {
+        const wasPlaying = this.playing;
         this.enabled = Boolean(message.value);
         if (!this.enabled) {
           this.tailGain = Math.max(this.tailGain, this.fade);
@@ -120,6 +118,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
           this.primed = false;
           this.fade = 0;
           this.underruns = 0;
+          if (wasPlaying) this.postGate();
         }
       }
     };
@@ -128,6 +127,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
 
   /** Drop everything buffered: the stream was retuned, and the old audio must not be played. */
   reset() {
+    const wasPlaying = this.playing;
     this.resets++;
     this.tailGain = this.fade;
     this.writePos = 0;
@@ -138,6 +138,15 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.primed = false;
     this.fade = 0;
     this.underruns = 0;
+    if (wasPlaying) this.postGate();
+  }
+
+  /** Playback transitions are time-critical bench data; the 250 ms status window is not. */
+  postGate() {
+    this.port.postMessage({
+      type: 'gate-transition', playing: this.playing, primed: this.primed,
+      available: this.available, resets: this.resets, underruns: this.underruns,
+    });
   }
 
   setBufferMode(mode) {
@@ -167,8 +176,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     const mul = this.layout === 'stereo' ? 2 : 1;
     if (this.fastPrime) {
       this.prime = Math.floor(sampleRate * FAST_PRIME_S) * mul;
-      this.target = Math.floor(sampleRate * FAST_PRIME_S * 2) * mul;
-      this.maxFill = Math.floor(sampleRate * Math.max(MAX_FILL_S, FAST_PRIME_S * 4)) * mul;
+      this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
+      this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
     } else {
       this.prime = (this.primeFrames || Math.floor(sampleRate * PRIME_S)) * mul;
       this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
@@ -203,6 +212,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0] && outputs[0][0];
     if (!out) return true;
+    const wasPlaying = this.playing;
     // The second channel is written whenever the node has one, in BOTH layouts: the ring carries
     // an L/R pair per sample in the stereo layout, and in the mono layout the same sample goes to
     // both. Writing the right channel only for the stereo layout left every mono mode — and a
@@ -213,7 +223,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     if (outR) outR.fill(0);
     const stereo = this.layout === 'stereo';
     const step = stereo ? 2 : 1;                     // ring values consumed per output sample
-    const frames = stereo ? Math.floor((this.available) / 2) : this.available;
     for (let i = 0; i < out.length; i++) {
       if (this.tailGain > 0) {
         out[i] = this.lastSample * this.tailGain;
@@ -223,12 +232,12 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       }
       if (!this.enabled) continue;
       if (!this.playing) {
-        if (frames < this.prime) continue;           // still priming: output silence
+        if (this.available < this.prime) continue;   // ring values, including both channels
         this.playing = true;
         this.primed = true;
         this.fade = 0;
       }
-      if (frames < 2) {                              // nothing to interpolate between
+      if (this.available < 2 * step) {               // two frames for interpolation
         this.playing = false;
         this.tailGain = this.fade;
         this.underruns++;
@@ -237,8 +246,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
         continue;
       }
-      if (this.fastPrime && this.playing) {
-        // Playback is holding on the short buffer: back to the ordinary thresholds.
+      if (this.fastPrime && this.available >= this.target) {
+        // Keep fast re-prime through early tune jitter. Restore cold-start behavior once the
+        // normal buffer target is full.
         this.fastPrime = false;
         this.applyBufferParams();
       }
@@ -263,6 +273,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       }
     }
     this.fillSum += this.available;
+    if (this.playing !== wasPlaying) this.postGate();
     this.fillCount += 1;
     this.steerCountdown -= out.length;
     if (this.steerCountdown <= 0) {
@@ -280,13 +291,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         resets: this.resets,
         slipped: this.slipped,
         ratio: this.ratio,
-        // DIAG: the gate's own view, for the bench (a stuck silent ring is otherwise unreadable).
-        enabled: this.enabled,
-        prime: this.prime,
-        fastPrime: this.fastPrime,
-        framesNow: this.layout === 'stereo' ? Math.floor(this.available / 2) : this.available,
-        // DIAG: the playback gate the bench times a retune against (playing falls on a reset,
-        // rises again once the ring re-primes; published so the gap is measurable from the page).
         playing: this.playing,
         primed: this.primed,
       });
