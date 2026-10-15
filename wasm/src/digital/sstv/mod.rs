@@ -13,6 +13,9 @@
 //! it for the next transmission. The front end keeps the voice band, which the DDC's own AGC can leave
 //! quiet inside a wide channel, levelled by an AGC of its own.
 
+/// A vendored copy of the reference decoder. Its own warnings (an unread field, an unused binding)
+/// are upstream's, and editing the copy would make the next re-vendor a merge: silence them here.
+#[allow(dead_code, unused_variables)]
 pub mod vendor;
 
 use alloc::string::{String, ToString};
@@ -20,7 +23,7 @@ use alloc::vec::Vec;
 use core::mem;
 
 use crate::ddc::agc::RmsAgc;
-use crate::ddc::fir::{design_complex_bandpass, ComplexBandFilter};
+use crate::ddc::fir::ComplexBandFilter;
 use crate::ddc::resampler::LinearResampler;
 use crate::plugin::{DigitalDemodulator, ImageRef, ImageStatus};
 use vendor::decode::streaming::{StreamingDecoder, StreamEvents};
@@ -356,7 +359,7 @@ impl DigitalDemodulator for SstvPlugin {
         }
         self.samples_seen += samples.len() as u64;
 
-        let (mut rows, mut events) = self.decoder.push(&samples);
+        let (rows, mut events) = self.decoder.push(&samples);
         // A transmission ends quietly: the tones stop, and the last sequence is only cut when its end
         // is known. The band's own level against the loudest block seen tells the two apart; two
         // seconds of quiet end the picture.
@@ -627,7 +630,6 @@ pub(crate) mod tests {
         let mut iq = baseband(ROBOT_36, gradient(width, height));
         iq.extend(core::iter::repeat(0.0f32).take(DECODE_RATE_HZ as usize * 8 * 2));
         feed(&mut plugin, &mut iq);
-        let status = plugin.status().expect("second picture after a long gap");
         let status = plugin.status().expect("second picture after a long gap");
         assert!(status.complete, "stopped at {} of {} lines", status.lines, status.height);
     }
