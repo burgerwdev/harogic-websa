@@ -32,7 +32,13 @@ htra_api.py → libhtraapi.so → USB → SAN series analyzer
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 frequency axis |
 | POWR | POWR + ... | float32 power dBm |
-| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | channelized interleaved complex float32 baseband (the DDC's output); seq=0 flushes |
+| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | channelized complex float32 IQ; `rate` is the DDC sample clock; seq=0 flushes |
+
+`IQBF.rate` and `sdr.actual.ddc_rate` come from the DDC configuration. They describe the
+sample clock, not host delivery speed. `sdr.actual.ddc_delivery_rate` measures delivered
+samples per wall second. After a tune pause the delivery rate fell to 283–291 kSps while the
+DDC clock stayed at 300.48 kSps. Using delivery speed as the DSP rate moved the 19 kHz pilot
+to about 18 kHz in the decoder and silenced stereo/RDS on the return tune.
 
 ## WS Commands
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
@@ -61,7 +67,7 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
   `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
   away and disappears after switching to RTA (fixed)
 
-## SDR DSP Pipeline (branch `refactor/wasm-dsp`)
+## SDR DSP Pipeline
 
 The demodulator and the audio chain run in a Rust/WASM module inside a Web Worker. The
 channelizer does **not**: the coarse decimation and the tuning stay where the hardware already
@@ -69,8 +75,9 @@ does them — the analyzer's own DDC plus a software NCO in the backend — beca
 the browser did not fit the analyzer: the raw IQS stream is 2-31 MSps (measured: the transport
 topped out around 2.3 MSps and the browser's own 129-tap FIR could not run the 3.9 MSps the
 default settings ask for), so the AudioWorklet ring starved and the audio was a fixed periodic
-puff that no tuning could change. What the browser receives now is the channelized baseband
-(~48-63 kHz, about 0.4 MB/s), which is exactly the signal the Python demodulator reads.
+puff that no tuning could change. The browser now receives the channelized baseband. Narrow
+modes use about 48–63 kSps; WFM at 180 kHz IF uses about 300 kSps (2.4 MB/s of complex f32 IQ).
+The Python demodulator reads the same baseband.
 
 The Python DSP is **not deleted**: it is the no-WASM fallback and the numerical reference, and it
 only runs while a client subscribes to its audio (with the browser owning playback the backend
@@ -96,6 +103,7 @@ path here does not exist yet.
 | Worker DSP orchestration | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/wasmPipeline.ts` |
 | WASM boundary (raw ABI) | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`, `wasm/src/abi.rs` |
 | Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
+| FM stereo and RDS (WFM) | `wasm/src/analog/fm_stereo.rs` (pilot PLL, L−R, anti-alias filter), `wasm/src/analog/rds.rs` (57 kHz bit timing, groups), `frontend/src/ui/decodeWindow.ts` (FM pane) |
 | Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
 | Digital demodulator (DRM) | `wasm/src/digital/drm/` (OFDM demod, FAC/SDC/MSC MLCC, audio deframing), `wasm/fdk/` (FDK AAC decoder) |
 | Digital demodulator (SSTV) | `wasm/src/digital/sstv/mod.rs` (the plugin: voice-band SSB front end, streaming decode), `wasm/src/digital/sstv/vendor/` (unexcellent/sstv 0.3.1, MIT: 18 modes, VIS header, per-mode timing), `wasm/src/digital/sstv_abi.rs` (the mode table over the ABI) |
@@ -120,7 +128,19 @@ DDC is the shared base layer: every analog and digital mode receives the same mi
 filtered, resampled and levelled stream. Above it the two paths are deliberately separate:
 
 - **Analog path** — `AnalogDemod` → Audio DSP → PCM. The audio chain (DC block, LPF, AGC,
-squelch, STFT Wiener, adaptive notch, IF noise blanker) is tuned for the human ear.
+squelch, STFT Wiener, adaptive notch, IF noise blanker) serves the listener. WFM keeps its mono
+path and adds a side chain. A pilot PLL tracks 19 kHz. A coherent 38 kHz detector extracts L−R.
+A 57-tap FIR removes product images before resampling. Low-pass and de-emphasis run at the
+output rate. The side matches the mono delay and uses the same AGC envelope and volume.
+The worker builds `L = M + S` and `R = M − S`. A left-only speech station measured 30 dB median
+L/R separation on the SAN-90; `stereo_audio_rejects_images_before_resampling` pins the image
+filter, and `stereo_side_aligns_with_the_mono_pcm` pins phase alignment. Other analog modes do
+not build this side chain.
+  RDS uses the pilot to form the 57 kHz reference and bit clock. It hunts bit alignment after
+  two seconds without a valid group and decides bits across adjacent complex symbols. A
+  same-frequency DDC flush keeps the station's pilot and RDS data; a true tune clears them.
+  Without a valid group for eight seconds, RDS clears the old PI/PS/RadioText. The STEREO badge
+  means a pilot is present; a station can send identical L/R programme audio with that pilot.
 - **Digital path / RAW** — `DigitalDemod` → decoder and visualization, with **no audio
 enhancement at all**. A voice denoiser on an FT8 tone would destroy the information the
 decoder needs, so the separation is enforced by an automated test (RAW output must be

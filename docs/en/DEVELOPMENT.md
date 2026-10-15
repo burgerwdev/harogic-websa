@@ -434,7 +434,8 @@ in a Web Worker. It has **no crate dependencies** and exactly one toolchain requ
 
 ```bash
 rustup target add wasm32-unknown-unknown
-make wasm-dsp       # cargo test + release build + publish frontend/public/dsp.wasm
+make wasm-dsp       # release build + publish frontend/public/dsp.wasm (no tests: see wasm-test)
+make wasm-test      # the Rust kernels' suite (native); `make all` and `make ci` include it
 make wasm-check     # rebuild and fail when the committed artifact differs (release gate)
 ```
 

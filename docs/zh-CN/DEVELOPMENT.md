@@ -382,7 +382,8 @@ python3 tools/checks/architecture_guard.py --baseline   # 查看当前架构指�
 
 ```bash
 rustup target add wasm32-unknown-unknown
-make wasm-dsp       # cargo test + release 构建 + 发布 frontend/public/dsp.wasm
+make wasm-dsp       # release 构建 + 发布 frontend/public/dsp.wasm（不跑测试，见 wasm-test）
+make wasm-test      # Rust 内核测试（本机运行）；`make all` 与 `make ci` 都会包含它
 make wasm-check     # 重新构建，产物不一致就失败（发布门禁）
 ```
 

@@ -33,7 +33,12 @@ htra_api.py → libhtraapi.so → USB → SAN 系列设备
 |---|---|---|
 | FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 频率轴 |
 | POWR | POWR + ... | float32 功率 dBm |
-| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | 信道化后的交错复 float32 基带（DDC 输出）；seq=0 表示清流 |
+| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | 信道化复 float32 IQ；`rate` 是 DDC 样本时钟；seq=0 表示清流 |
+
+`IQBF.rate` 与 `sdr.actual.ddc_rate` 来自 DDC 配置，表示样本时钟，不是主机交付速度。
+`sdr.actual.ddc_delivery_rate` 才是按墙钟测得的交付率。实测切频后交付率降到 283–291 kSps，
+DDC 时钟仍是 300.48 kSps。误把交付率当作 DSP 样本率会把 19 kHz 导频算到约 18 kHz，
+使返频后的立体声与 RDS 失锁。
 
 ## WS 命令
 CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
@@ -59,13 +64,14 @@ SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/S
 - **已知坑**: `renderRta` 用外层 `save/clip(plotRect)` 包裹密度+迹线, 画底部频率行前必须
   `restore` —— 否则绘图区外的频率行被 clip 裁掉, 切到 RTA 后消失(已修复)
 
-## SDR DSP 流水线（分支 `refactor/wasm-dsp`）
+## SDR DSP 流水线
 
 解调器与音频链运行在 Web Worker 里的 Rust/WASM 模块中；**信道化不在浏览器里**。粗抽取与调谐留在
 硬件本来就做的地方——设备自带的 DDC 加后端软件 NCO：把它们搬到浏览器与设备能力不匹配（原始 IQS
 流是 2–31 MSps；实测传输上限约 2.3 MSps，浏览器自己的 129 抽头 FIR 也跑不动默认档位要求的
-3.9 MSps），于是 AudioWorklet 环形缓冲被抽干，声音变成与调谐无关的固定周期性噗噗声。浏览器现在
-收到的是**信道化基带**（约 48–63 kHz，约 0.4 MB/s），也正是 Python 解调器原本读的那路信号。
+3.9 MSps），于是 AudioWorklet 环形缓冲被抽干，声音变成与调谐无关的固定周期性噗噗声。浏览器接收
+信道化基带。窄带模式约 48–63 kSps；180 kHz IF 的 WFM 约 300 kSps（复 float32 IQ 约 2.4 MB/s）。
+Python 回退解调器也读取同一路基带。
 
 Python DSP **不删除**：它是无 WASM 时的回退路径与数值参考，并且只在有客户端订阅其音频时才运行
 （浏览器接管播放时后端直接跳过这条链）。
@@ -89,6 +95,7 @@ SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）─
 | Worker DSP 编排 | `frontend/src/sdr/iqStream.ts`、`frontend/src/sdr/wasmPipeline.ts` |
 | WASM 边界（裸 ABI） | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`、`wasm/src/abi.rs` |
 | 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
+| FM 立体声与 RDS（WFM） | `wasm/src/analog/fm_stereo.rs`（导频 PLL、L−R、抗混叠滤波）、`wasm/src/analog/rds.rs`（57 kHz 位时序与组解码）、`frontend/src/ui/decodeWindow.ts`（FM 面板） |
 | 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs` |
 | 数字解调器（DRM） | `wasm/src/digital/drm/`（OFDM 解调、FAC/SDC/MSC MLCC、音频拆帧）、`wasm/fdk/`（FDK AAC 解码器） |
 | 数字解调器（SSTV） | `wasm/src/digital/sstv/mod.rs`（插件：话音带 SSB 前端、流式解码）、`wasm/src/digital/sstv/vendor/`（unexcellent/sstv 0.3.1，MIT：18 种模式、VIS 头、各模式时序）、`wasm/src/digital/sstv_abi.rs`（模式表跨 ABI 暴露） |
@@ -111,8 +118,15 @@ SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）─
 DDC 是公共基础层：所有模拟与数字模式拿到的都是同一路混频、滤波、重采样、电平归一后的数据流。
 在它之上，两条路径刻意分开：
 
-- **模拟路径** — `AnalogDemod` → 音频 DSP → PCM。音频链（隔直、LPF、AGC、静噪、STFT Wiener、
-自适应陷波、IF 噪声消除）面向人耳调优。
+- **模拟路径** — `AnalogDemod` → 音频 DSP → PCM。隔直、LPF、AGC、静噪、Wiener、陷波和 IF
+噪声消除服务于听音。WFM 保留单声道路径，另开一条侧链。导频 PLL 跟踪 19 kHz；相干检波器从 38 kHz
+恢复 L−R。57 抽头 FIR 在重采样前去掉乘积镜像。低通和去加重在输出采样率下运行。侧链与单声道对齐，
+两者使用相同的 AGC 包络与音量。Worker 做 `L = M + S`、`R = M − S` 矩阵。SAN-90 接收左声道语音时，
+左右分离度中位数实测约 30 dB。`stereo_audio_rejects_images_before_resampling` 固定抗混叠行为，
+`stereo_side_aligns_with_the_mono_pcm` 固定相位对齐。其他模拟模式不建此侧链。
+  RDS 使用导频恢复 57 kHz 参考和位时钟。连续 2 秒没有有效组时，它扫描位相位；相邻复符号用于差分判决。
+  同频 DDC 清流保留已确认的导频与电台数据；真正切频清空。8 秒没有有效组后，PI/PS/RadioText 清空。
+  STEREO badge 表示有导频，不保证此刻节目左右声道内容不同。
 - **数字路径 / RAW** — `DigitalDemod` → 解码器与可视化，**完全不经过音频增强**。语音降噪作用在
 FT8 音调上会毁掉解码所需的信息，因此该分离由自动化测试保证（开关音频级时 RAW 输出必须逐位相同），
 而不是靠约定。SSTV 同理：它的前端（话音带复带通与取实部，与 `usb` 模式相同）在插件内部，因此图像是从

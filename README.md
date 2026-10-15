@@ -35,6 +35,10 @@ A browser-based control and measurement application for **Harogic SAN series spe
   demodulators, noise reduction (Wiener, optional DeepFilterNet3), audio chain, panadapter and
   waterfall
 - **Digital modes** — FT8 decoding (multi-pass with OSD fallback), CW decoding, DRM30 (SW broadcast) decoding, and SSTV picture decoding (18 modes, in the decode window). The FT8 decode window marks the QSO pair on hover, filters messages with a regex, and sorts by column.
+- **FM stereo and RDS** — WFM recovers L/R from the 19 kHz pilot and 38 kHz difference signal.
+  It decodes RDS PI, station name and RadioText from 57 kHz. The FM pane shows a pilot-based
+  STEREO/MONO badge, deviation, audio level and L/R scope. The badge reports the pilot, not
+  whether the current programme has different L/R content.
 - **Trigger** — device-side RTA level trigger plus a swept-mode software trigger; limit lines with
   pass/fail margins and normalization; PNG/CSV export
 - **UI** — jump rail, optional virtual keypad, amplitude units with external gain/loss
