@@ -361,6 +361,17 @@ function startWorker(): void {
       w.__wfmIqDump = { rate: d.rate, centerHz: d.centerHz, frames: d.frames };
       return;
     }
+    if (d.type === 'gate') {
+      // DIAG: the worklet's playback-gate transitions, timestamped in the worker (the bench's
+      // retune-gap measurement; a stale dataset quantized these to the 1 Hz stats cadence).
+      dspWorkletPlaying = d.playing ? 1 : 0;
+      dspWorkletUnderruns = Number(d.underruns) || 0;
+      if (typeof d.resets === 'number') dspRingResets = d.resets;
+      const g = window as unknown as { __wfmGate?: unknown[] };
+      g.__wfmGate = ((g.__wfmGate as unknown[]) || []).concat([d]).slice(-400);
+      publishIqDebug();
+      return;
+    }
     if (d.type === 'dfn-status') {
       dspDfnState = String(d.state || '');
       dspDfnReason = String(d.reason || '');

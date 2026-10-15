@@ -42,7 +42,7 @@ import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
 import { initDecodeWindow, setDecodeWindowAvailable, toggleDecodeWindow } from './decodeWindow';
-import { dspLevelDbfs, resetSdrIq, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch, setSstvModePin } from '../sdr/iqStream';
+import { dspLevelDbfs, resetSdrIq, retuneSdrPipeline, sdrStreamRate, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch, setSstvModePin } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
@@ -368,6 +368,9 @@ export function applySdrTune() {
   renderSdrState();
   prepareSdrAudioTransition();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
+  // The backend retunes its own channel without restarting the stream, so the DSP kernel has to
+  // be told: its stereo detector state belongs to the previous station.
+  retuneSdrPipeline();
 }
 
 /**
@@ -512,6 +515,9 @@ export function listenAtFreq(hz: number) {
     renderSdrState();
     prepareSdrAudioTransition();
     send({ cmd: 'SET_SDR_TUNE', listen: hz });
+    // The kernel's detector state belongs to the station that was tuned (same as the typed
+    // path): a click-tune used to leave the old station's stereo state on the new one.
+    retuneSdrPipeline();
     requestRender();
     return;
   }
@@ -583,7 +589,12 @@ const ifbwAutoPicked = new Set<string>();
  * device owns it.
  */
 function pushSdrPipeline(): void {
-  const basebandRate = Number(sdrActual.ddc_rate) || 0;
+  // The rate the frames arrive at is the authority for the demodulator's geometry; STATUS reports
+  // the channelizer's *plan* and has a one-second window, so on a listen change the plan and the
+  // delivered samples disagree. A demod built for the wrong rate mis-sizes its filters, and the WFM
+  // side chain — which turns itself off below the subcarrier budget — makes the stereo badge stick
+  // on MONO until a full re-tune. STATUS remains the fallback for the first frames.
+  const basebandRate = sdrStreamRate() || Number(sdrActual.ddc_rate) || 0;
   if (basebandRate <= 0) return;
   configureSdrPipeline(
     {
@@ -1473,6 +1484,9 @@ function sdrTuneBy(dHz: number) {
   sdrListenHz.set(f);
   renderSdrState();
   send({ cmd: 'SET_SDR_TUNE', listen: f });
+  // Same notification as the typed path: the kernel's stereo detector state belongs to the
+  // channel that was tuned, and the backend retunes without restarting the stream.
+  retuneSdrPipeline();
   requestRender();
 }
 

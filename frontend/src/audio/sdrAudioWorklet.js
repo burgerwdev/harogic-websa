@@ -31,6 +31,7 @@ const DRM_PRIME_S = 1.6;
 const DRM_TARGET_S = 1.4;
 const DRM_MAX_FILL_S = 2.4;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
+const FAST_PRIME_S = 0.08;      // a retune's re-prime: short, restored once playback holds
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
@@ -67,6 +68,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.prime = Math.floor(sampleRate * PRIME_S);
     this.maxFill = Math.floor(sampleRate * MAX_FILL_S);
     this.mode = 'default';
+    this.fastPrime = false;
     /// Sample layout of the ring: 'mono' (one value per sample) or 'stereo' (an L/R pair per
     /// sample, interleaved). The producer announces it with `buffer-mode`; a layout switch resets
     /// the ring, because mixing the two reads garbage.
@@ -100,6 +102,12 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       } else if (message.type === 'buffer-mode') {
         this.setBufferMode(message.mode);
         this.setLayout(message.stereo ? 'stereo' : 'mono');
+      } else if (message.type === 'fast-prime') {
+        // A retune's re-prime runs on a shorter buffer: the PCM the fresh channel produces
+        // is already rate-matched, and waiting the full cold-start prime doubled the retune's
+        // silent gap (measured ~1 s). Restored to the normal thresholds once playback holds.
+        this.fastPrime = true;
+        this.applyBufferParams();
       } else if (message.type === 'enabled') {
         this.enabled = Boolean(message.value);
         if (!this.enabled) {
@@ -157,9 +165,15 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   /** The thresholds count values in the ring: a stereo pair is two values per frame. */
   applyBufferParams() {
     const mul = this.layout === 'stereo' ? 2 : 1;
-    this.prime = (this.primeFrames || Math.floor(sampleRate * PRIME_S)) * mul;
-    this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
-    this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
+    if (this.fastPrime) {
+      this.prime = Math.floor(sampleRate * FAST_PRIME_S) * mul;
+      this.target = Math.floor(sampleRate * FAST_PRIME_S * 2) * mul;
+      this.maxFill = Math.floor(sampleRate * Math.max(MAX_FILL_S, FAST_PRIME_S * 4)) * mul;
+    } else {
+      this.prime = (this.primeFrames || Math.floor(sampleRate * PRIME_S)) * mul;
+      this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
+      this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
+    }
   }
 
   push(samples) {
@@ -223,6 +237,11 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
         continue;
       }
+      if (this.fastPrime && this.playing) {
+        // Playback is holding on the short buffer: back to the ordinary thresholds.
+        this.fastPrime = false;
+        this.applyBufferParams();
+      }
       const next = (this.readPos + step) % this.capacity;
       const value = this.ring[this.readPos] * (1 - this.frac) + this.ring[next] * this.frac;
       // In the mono layout the same sample feeds both channels.
@@ -261,6 +280,11 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         resets: this.resets,
         slipped: this.slipped,
         ratio: this.ratio,
+        // DIAG: the gate's own view, for the bench (a stuck silent ring is otherwise unreadable).
+        enabled: this.enabled,
+        prime: this.prime,
+        fastPrime: this.fastPrime,
+        framesNow: this.layout === 'stereo' ? Math.floor(this.available / 2) : this.available,
         // DIAG: the playback gate the bench times a retune against (playing falls on a reset,
         // rises again once the ring re-primes; published so the gap is measurable from the page).
         playing: this.playing,

@@ -117,6 +117,8 @@ def tune_ui(page, freq_hz: float) -> None:
     mhz = freq_hz / 1e6
     page.evaluate(
         """(mhz) => {
+          const w = window;
+          w.__retuneMarks = (w.__retuneMarks || []).concat([Date.now()]);
           const el = document.getElementById('input-sdr-listen');
           el.value = mhz.toFixed(4);
           el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -210,7 +212,11 @@ def main() -> int:
             page.evaluate("document.querySelector('[data-sdr-ifbw=\"180000\"]').click()")
             page.wait_for_timeout(300)
             if (page.query_selector('#btn-sdr-audio')):
-                page.evaluate("document.querySelector('#btn-sdr-audio').click()")
+                # Idempotent: the button is also the OFF switch, and a persisted On preference
+                # made the blind click mute the session (the ring then filled to its ceiling).
+                state = page.evaluate("document.querySelector('#btn-sdr-audio').textContent.trim()")
+                if state.lower() != 'on':
+                    page.evaluate("document.querySelector('#btn-sdr-audio').click()")
             # The capture centre and the listen frequency both go through the operator's fields:
             # the centre change re-plans the channelizer, the listen change tunes inside it.
             page.evaluate(
@@ -270,6 +276,8 @@ def main() -> int:
                     timeline += sample(page, 6.0, event=f'retune->{target / 1e6:.4f}MHz')
                 report['timeline'] = timeline
                 report['gaps'] = audio_gaps(timeline)
+                report['gate'] = page.evaluate('window.__wfmGate || []')
+                report['marks'] = page.evaluate('window.__retuneMarks || []')
                 worst = max((g['ms'] for g in report['gaps']), default=0)
                 report['summary'] = {'gap_count': len(report['gaps']), 'worst_gap_ms': worst}
                 print(json.dumps(report['gaps'], indent=2))

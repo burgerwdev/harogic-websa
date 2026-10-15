@@ -592,7 +592,11 @@ function deliverViaDfn(pcm: Float32Array): void {
 }
 
 /** Drop the worker's queued PCM and tell the worklet to drop the ring it already holds. */
-function resetDelivery(): void {
+/// DIAG: the last gate state forwarded (transition detection).
+let lastGatePlaying = 0;
+let lastGateUnderruns = 0;
+
+function resetDelivery(dropRing = true, fast = false): void {
   pendingPcm = [];
   pendingSamples = 0;
   // The layout is per-mode state and survives the flush; the worklet keeps its layout across a
@@ -600,7 +604,10 @@ function resetDelivery(): void {
   // The dfn stream's lookahead buffer holds the previous channel: flush it too, so a retune does
   // not play a burst of the old station through the fresh channel.
   dfnWorker?.postMessage({ type: 'reset' });
-  workletPort?.postMessage({ type: 'reset' });
+  if (dropRing) workletPort?.postMessage({ type: 'reset' });
+  // A retune re-primes on a short buffer: the double reset plus the cold-start prime held the
+  // audio silent for ~1 s (measured; the target is <= 0.5 s).
+  if (fast) workletPort?.postMessage({ type: 'fast-prime' });
 }
 
 /// Whether the delivered blocks are interleaved L/R pairs (the worklet's ring layout follows).
@@ -766,7 +773,7 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
       sstvLines = -1;
       post({ type: 'sstv-clear' });
     }
-    resetDelivery();
+    resetDelivery(true, true);
     if (frame.samples === 0) return;
   } else if (lastSeq >= 0 && frame.seq > lastSeq + 1) {
     dropped += frame.seq - lastSeq - 1;      // a gap the client never saw (overrun on the wire)
@@ -1185,6 +1192,17 @@ self.onmessage = (event: MessageEvent) => {
         workletUnderruns = Number(status.underruns) || 0;
         workletPlaying = status.playing ? 1 : 0;
         workletPrimed = status.primed ? 1 : 0;
+        // DIAG: forward gate transitions immediately - the stats cadence (25 blocks) quantizes
+        // the bench's retune-gap measurement to ~800 ms otherwise.
+        if (workletPlaying !== lastGatePlaying || workletUnderruns !== lastGateUnderruns) {
+          lastGatePlaying = workletPlaying;
+          lastGateUnderruns = workletUnderruns;
+          post({ type: 'gate', playing: workletPlaying, underruns: workletUnderruns,
+                 resets: workletRingResets, flushes, delivered: workletReceived,
+                 blocks, at: Date.now(),
+                 wEnabled: status.enabled, wPrime: status.prime,
+                 wFast: status.fastPrime, wFrames: status.framesNow });
+        }
         workletReceived = Number(status.received) || 0;
         workletRingResets = Number(status.resets) || 0;
         workletSlipped = Number(status.slipped) || 0;
@@ -1206,7 +1224,9 @@ self.onmessage = (event: MessageEvent) => {
     // tuned; carried over, a switch away and back reads MONO until a full re-tune, which is what
     // a bench report showed. The level control survives, as on the stream's own retune.
     pipeline?.retune();
-    resetDelivery();
+    // No ring drop here: the backend's flush carries the one reset. Dropping the ring here as
+    // well made the retune re-prime twice (measured ~1 s of silence).
+    resetDelivery(false, true);
   } else if (msg.type === 'reset') {
     resetStream();
   } else if (msg.type === 'detach') {
