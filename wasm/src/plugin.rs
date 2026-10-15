@@ -158,6 +158,53 @@ pub trait AnalogDemodulator: Send {
     fn deemph_us(&self) -> f64 {
         0.0
     }
+
+    /// Drain the stereo difference signal (L−R) the demodulator recovered, at the consumer's rate,
+    /// aligned with the `process_into` PCM. Empty when the mode has no stereo side chain (every
+    /// mode but WFM, or a baseband too narrow to carry the subcarriers).
+    fn take_side(&mut self) -> Vec<f32> {
+        Vec::new()
+    }
+
+    /// Whether the stereo pilot is currently detected (the badge's state).
+    fn stereo_detected(&self) -> bool {
+        false
+    }
+
+    /// The smoothed peak deviation in Hz (0 when the mode has no measurement).
+    fn peak_deviation_hz(&self) -> f64 {
+        0.0
+    }
+
+    /// The smoothed pilot-to-carrier ratio, 0..1 (the stereo badge's confidence).
+    fn pilot_ratio(&self) -> f64 {
+        0.0
+    }
+
+    /// The pilot's own deviation in Hz (a station constant; 0 when there is no pilot).
+    fn pilot_deviation_hz(&self) -> f64 {
+        0.0
+    }
+
+    /// The pilot's narrow-band SNR in dB (the pilot's band over the band beside it).
+    /// Bench diagnostics for the WFM side chain (see `FmStereo::diag`); zeros elsewhere.
+    fn stereo_diag(&self) -> [f64; 4] {
+        [0.0; 4]
+    }
+
+    fn pilot_snr_db(&self) -> f64 {
+        0.0
+    }
+
+    /// The decoded RDS state, when the mode carries the 57 kHz subcarrier.
+    fn rds_state(&self) -> Option<crate::analog::rds::RdsState> {
+        None
+    }
+
+    /// RDS bench diagnostics (see `fm_stereo::FmStereo::rds_diag`); zeros without a decoder.
+    fn rds_diag(&self) -> [f64; 4] {
+        [0.0; 4]
+    }
 }
 
 /// What a protocol knows about its most recent decode (shown in the UI).

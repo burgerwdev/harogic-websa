@@ -219,11 +219,12 @@ export class WasmPipeline {
 		rdsLocked: boolean; rdsPi: number; rdsGroups: number; pilotDevHz: number; pilotSnrDb: number;
 		/** Bench diagnostics, past the product's own eight words (zero when absent). */
 		pilotI: number; pilotQ: number; auxRateHz: number; lastAux: number;
+		rdsRefMag: number; rdsAxisI: number; rdsAxisQ: number; rdsBits: number;
 	} | null {
 		if (!this.handle || this.digital) return null;
-		// 12 f64 words (8 product + 4 bench diagnostics); the ABI writes all twelve, so the
+		// 16 f64 words (8 product + 8 bench diagnostics); the ABI writes all sixteen, so the
 		// block must cover them — a short block corrupts the wasm heap.
-		const ptr = this.module.alloc(12 * 8);
+		const ptr = this.module.alloc(16 * 8);
 		if (!ptr) return null;
 		try {
 			const words = this.module.exports.websa_dsp_demod_stereo_info(this.handle, ptr);
@@ -236,9 +237,11 @@ export class WasmPipeline {
 				pilotSnrDb: v[7],
 				pilotI: words >= 12 ? v[8] : 0, pilotQ: words >= 12 ? v[9] : 0,
 				auxRateHz: words >= 12 ? v[10] : 0, lastAux: words >= 12 ? v[11] : 0,
+				rdsRefMag: words >= 16 ? v[12] : 0, rdsAxisI: words >= 16 ? v[13] : 0,
+				rdsAxisQ: words >= 16 ? v[14] : 0, rdsBits: words >= 16 ? v[15] : 0,
 			};
 		} finally {
-			this.module.free(ptr, 12 * 8);
+			this.module.free(ptr, 16 * 8);
 		}
 	}
 

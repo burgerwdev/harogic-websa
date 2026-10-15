@@ -724,6 +724,10 @@ function resetStream(): void {
   resetDelivery();
 }
 
+/// DIAG: set window.__wfmDumpIQ=1 from the bench to stash the next baseband frames (the
+/// exact samples the decoder consumed) for offline replay; read them back via __wfmIqDump.
+let dumpIq: { on: boolean, frames: number[][] } = { on: false, frames: [] };
+
 async function onBaseband(frame: BasebandFrame): Promise<void> {
   // The FRAMES are the authority for the demodulator's geometry. `fsIn` arrives from the backend's
   // STATUS window, and a listen change makes the backend re-plan its channelizer — measured: 300.4
@@ -738,6 +742,13 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     // The rebuild itself belongs to the main thread's configure path: running it here re-entered the
     // pipeline's own lifecycle from inside a frame and trapped the wasm (measured: `unreachable`).
     post({ type: 'geometry', fsIn: frame.rate });
+  }
+  if (dumpIq.on && dumpIq.frames.length < 160) {
+    dumpIq.frames.push(Array.from(frame.iq));
+    if (dumpIq.frames.length === 160) {
+      dumpIq.on = false;
+      post({ type: 'iq-dump', rate: frame.rate, centerHz: frame.centerHz, frames: dumpIq.frames });
+    }
   }
   if (frame.seq === 0) {
     // The backend retuned or reconfigured: the queued blocks and the demodulator's history belong to
@@ -944,6 +955,10 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
           rdsLocked: info.rdsLocked,
           rdsPi: info.rdsPi,
           rdsGroups: info.rdsGroups,
+          rdsBits: info.rdsBits,
+          rdsRefMag: info.rdsRefMag,
+          rdsAxisI: info.rdsAxisI,
+          rdsAxisQ: info.rdsAxisQ,
           ps: text?.ps ?? '',
           rt: text?.rt ?? '',
           carrierHz: centerHz,
@@ -1182,6 +1197,8 @@ self.onmessage = (event: MessageEvent) => {
       workletPort.postMessage({ type: 'buffer-mode', mode: params?.mode, stereo: workletStereo });
       workletPort.postMessage({ type: 'enabled', value: enabled });
     }
+  } else if (msg.type === 'dump-iq') {
+    dumpIq = { on: Boolean(msg.value), frames: [] };
   } else if (msg.type === 'retune') {
     // The listened channel moved inside the SAME capture (the backend keeps streaming, so no
     // frame carries `seq === 0` and nothing else would tell the kernel). Its stereo state — the

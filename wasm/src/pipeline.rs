@@ -266,6 +266,53 @@ impl Pipeline {
         self.analog.as_ref().map(|demod| demod.deemph_us()).unwrap_or(0.0)
     }
 
+    /// Drain the stereo difference signal (L−R) recovered for this block, aligned with `audio`.
+    /// Empty when the mode has no stereo side chain.
+    pub fn take_side(&mut self) -> Vec<f32> {
+        self.analog.as_mut().map(|demod| demod.take_side()).unwrap_or_default()
+    }
+
+    /// Whether the stereo pilot is currently detected (the decode window's badge).
+    pub fn stereo_detected(&self) -> bool {
+        self.analog.as_ref().is_some_and(|demod| demod.stereo_detected())
+    }
+
+    /// The smoothed peak deviation in Hz, and the pilot ratio (0..1).
+    pub fn stereo_info(&self) -> (bool, f64, f64) {
+        match self.analog.as_ref() {
+            Some(demod) => (demod.stereo_detected(), demod.peak_deviation_hz(), demod.pilot_ratio()),
+            None => (false, 0.0, 0.0),
+        }
+    }
+
+    /// The pilot's narrow-band SNR in dB (0 outside WFM).
+    /// Bench diagnostics for the side chain: the pilot phasor, the working rate and the last
+    /// block's decimated length. Zero outside WFM or without a side chain.
+    pub fn stereo_diag(&self) -> [f64; 4] {
+        self.analog.as_ref().map(|demod| demod.stereo_diag()).unwrap_or([0.0; 4])
+    }
+
+    pub fn pilot_snr_db(&self) -> f64 {
+        self.analog.as_ref().map(|demod| demod.pilot_snr_db()).unwrap_or(0.0)
+    }
+
+    /// The pilot's own deviation in Hz (0 outside WFM, or with no pilot).
+    pub fn pilot_deviation_hz(&self) -> f64 {
+        self.analog.as_ref().map(|demod| demod.pilot_deviation_hz()).unwrap_or(0.0)
+    }
+
+    /// The decoded RDS state (the PI code, the PS name, the radio text), when a WFM side chain
+    /// with a wide-enough baseband is running.
+    pub fn rds_info(&self) -> Option<crate::analog::rds::RdsState> {
+        self.analog.as_ref().and_then(|demod| demod.rds_state())
+    }
+
+    /// RDS bench diagnostics (zeros without a decoder).
+    pub fn rds_diag(&self) -> [f64; 4] {
+        self.analog.as_ref().map(|demod| demod.rds_diag()).unwrap_or([0.0; 4])
+    }
+
+
     /// Set the squelch threshold in dBFS (`<= -100` leaves the gate wide open and inert).
     pub fn set_squelch_dbfs(&mut self, dbfs: f64) -> bool {
         if dbfs.is_finite() {

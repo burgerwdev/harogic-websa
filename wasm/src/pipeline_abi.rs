@@ -409,6 +409,116 @@ pub extern "C" fn websa_dsp_demod_deemph(handle: u32) -> f64 {
     with_pipeline(handle, |state| state.pipeline.deemph_us()).unwrap_or(-1.0)
 }
 
+/// Copy the stereo difference signal (L−R) recovered by the last `websa_dsp_demod_process` block
+/// into `ptr` and drain it. The samples run at the consumer's rate and interleave with the mono
+/// PCM one-to-one (the consumer builds L = (M+S)/2, R = (M−S)/2). Returns the sample count, or 0
+/// when the mode has no stereo side chain (or the buffer is too small).
+///
+/// # Safety
+/// `ptr` must point to `capacity` writable `f32`s.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_demod_side(handle: u32, ptr: *mut f32, capacity: u32) -> u32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    with_pipeline(handle, |state| {
+        let side = state.pipeline.take_side();
+        let n = side.len().min(capacity as usize);
+        core::ptr::copy_nonoverlapping(side.as_ptr(), ptr, n);
+        n as u32
+    })
+    .unwrap_or(0)
+}
+
+/// 1 while the stereo pilot is detected (the badge's state), 0 otherwise.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_stereo(handle: u32) -> u32 {
+    with_pipeline(handle, |state| u32::from(state.pipeline.stereo_detected())).unwrap_or(0)
+}
+
+/// Write the FM stereo state into `meta` as sixteen f64 values and return the word count (16
+/// for a pipeline with a side chain, 0 otherwise): `[stereo, peak_dev_hz, pilot_ratio, rds_locked,
+/// rds_pi, rds_groups, pilot_dev_hz, pilot_snr_db, pilot_i, pilot_q, aux_rate_hz, last_aux,
+/// rds_ref_mag, rds_axis_i, rds_axis_q, rds_bits]`. The first eight are the product's own
+/// state, the last eight are bench diagnostics.
+///
+/// # Safety
+/// `meta` must point to 16 writable `f64` values inside this module's linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_demod_stereo_info(handle: u32, meta: *mut f64) -> u32 {
+    if meta.is_null() {
+        return 0;
+    }
+    let Some((stereo, dev, ratio, rds, pilot_hz, pilot_snr)) = with_pipeline(handle, |state| {
+        let (stereo, dev, ratio) = state.pipeline.stereo_info();
+        (
+            stereo,
+            dev,
+            ratio,
+            state.pipeline.rds_info(),
+            state.pipeline.pilot_deviation_hz(),
+            state.pipeline.pilot_snr_db(),
+        )
+    }) else {
+        return 0;
+    };
+    let diag = with_pipeline(handle, |state| state.pipeline.stereo_diag()).unwrap_or([0.0; 4]);
+    let rds_diag = with_pipeline(handle, |state| state.pipeline.rds_diag()).unwrap_or([0.0; 4]);
+    let values = [
+        f64::from(stereo),
+        dev,
+        ratio,
+        f64::from(rds.as_ref().is_some_and(|r| r.locked)),
+        rds.as_ref().map(|r| f64::from(r.pi)).unwrap_or(0.0),
+        rds.as_ref().map(|r| f64::from(r.groups)).unwrap_or(0.0),
+        pilot_hz,
+        pilot_snr,
+        diag[0],
+        diag[1],
+        diag[2],
+        diag[3],
+        rds_diag[0],
+        rds_diag[1],
+        rds_diag[2],
+        rds_diag[3],
+    ];
+    core::ptr::copy_nonoverlapping(values.as_ptr(), meta, values.len());
+    values.len() as u32
+}
+
+/// Write the decoded RDS text into `meta` as eighteen `u32` words and return the word count (18
+/// for a pipeline with a side chain, 0 otherwise): the eight programme-service characters as two
+/// words, then the 64 radio-text characters as sixteen.
+///
+/// # Safety
+/// `meta` must point to 18 writable `u32` values inside this module's linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn websa_dsp_demod_rds_text(handle: u32, meta: *mut u32) -> u32 {
+    if meta.is_null() {
+        return 0;
+    }
+    let Some(rds) = with_pipeline(handle, |state| state.pipeline.rds_info()) else {
+        return 0;
+    };
+    let Some(rds) = rds else {
+        return 0;
+    };
+    let mut words = [0_u32; 18];
+    for (k, chunk) in rds.ps.chunks(4).enumerate() {
+        for (j, &byte) in chunk.iter().enumerate() {
+            words[k] |= u32::from(byte) << (8 * j);
+        }
+    }
+    for (k, chunk) in rds.rt.chunks(4).enumerate() {
+        for (j, &byte) in chunk.iter().enumerate() {
+            words[2 + k] |= u32::from(byte) << (8 * j);
+        }
+    }
+    core::ptr::copy_nonoverlapping(words.as_ptr(), meta, words.len());
+    words.len() as u32
+}
+
+
 /// The squelch gate's threshold in dBFS — the panel's squelch control.
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_set_squelch(handle: u32, dbfs: f64) -> u32 {
@@ -557,6 +667,114 @@ mod tests {
             crate::abi::websa_dsp_free(in_ptr as *mut u8, iq.len() * 4);
             crate::abi::websa_dsp_free(out_ptr as *mut u8, capacity as usize * 4);
         }
+    }
+
+    /// A broadcast WFM composite at a baseband wide enough for the aux bands, as the transmitter
+    /// builds it: the composite (L+R, pilot, L−R DSB) drives the carrier's PHASE, and the
+    /// discriminator recovers the composite as deviation.
+    fn wfm_stereo_baseband(n: usize, fs: f64, pilot: f64, side: f64, time_offset: f64) -> Vec<f32> {
+        // The deviation budget: 25 kHz keeps the FM signal's sidebands (the DSB's ±39 kHz
+        // components) inside the main band filter's ±64.8 kHz passband. A full 75 kHz budget
+        // clips them and the discriminator output then distorts — a property of the band
+        // planning, not of the side chain.
+        const DEVIATION_HZ: f64 = 25_000.0;
+        let mut iq = Vec::with_capacity(n * 2);
+        let mut phase = 0.0_f64;
+        for k in 0..n {
+            let t = time_offset + k as f64 / fs;
+            let m_plus_r = 0.5 * (2.0 * PI * 1_000.0 * t).cos();
+            let m_minus_r = side * 0.5 * (2.0 * PI * 1_000.0 * t).cos();
+            let pl = pilot * (2.0 * PI * crate::analog::fm_stereo::PILOT_HZ * t).sin();
+            let dsb = m_minus_r * (2.0 * PI * 2.0 * crate::analog::fm_stereo::PILOT_HZ * t).cos();
+            let deviation = (m_plus_r + pl + dsb) * DEVIATION_HZ;
+            // Rectangular integration of the deviation into the carrier's phase, wrapped into
+            // [0, 2π): an unwrapped phase grows to tens of thousands of radians, and the f32
+            // cosine of it quantizes at ~0.004 rad — broadband noise the side chain cannot
+            // separate from the pilot.
+            phase = (phase + 2.0 * PI * deviation / fs) % (2.0 * PI);
+            iq.push(phase.cos() as f32);
+            iq.push(phase.sin() as f32);
+        }
+        iq
+    }
+
+    /// Hann amplitude at one frequency (the analog tests' measure).
+    fn amplitude_at(audio: &[f32], rate: f64, hz: f64) -> f64 {
+        let n = audio.len() as f64;
+        let (mut re, mut im, mut wsum) = (0.0, 0.0, 0.0);
+        for (k, value) in audio.iter().enumerate() {
+            let w = 0.5 - 0.5 * (2.0 * PI * k as f64 / n).cos();
+            let ph = 2.0 * PI * hz * k as f64 / rate;
+            re += *value as f64 * w * ph.cos();
+            im -= *value as f64 * w * ph.sin();
+            wsum += w;
+        }
+        (re * re + im * im).sqrt() / wsum
+    }
+
+    /// Hann amplitude helper over f64 (the drained side is judged relative to the mono path,
+    /// because the AGC sets the mono level and the side follows it).
+    fn amplitude_at_f64(audio: &[f64], rate: f64, hz: f64) -> f64 {
+        let n = audio.len() as f64;
+        let (mut re, mut im, mut wsum) = (0.0, 0.0, 0.0);
+        for (k, value) in audio.iter().enumerate() {
+            let w = 0.5 - 0.5 * (2.0 * PI * k as f64 / n).cos();
+            let ph = 2.0 * PI * hz * k as f64 / rate;
+            re += *value * w * ph.cos();
+            im -= *value * w * ph.sin();
+            wsum += w;
+        }
+        (re * re + im * im).sqrt() / wsum
+    }
+
+    /// The stereo side chain over the ABI: a pilot-bearing composite declares stereo and the
+    /// drained side signal carries the L−R tone at the mono path's own scale (the AGC gain is
+    /// applied to both), so the assertion is a ratio, not an absolute level.
+    #[test]
+    fn the_stereo_side_chain_recovers_the_difference_signal_over_the_abi() {
+        const FS: f64 = 288_000.0;
+        // A mode change would rebuild the handle; build it directly at the wide rate.
+        let handle = unsafe {
+            websa_dsp_demod_new(FS, OUT_RATE, b"wfm".as_ptr(), 3, 180_000.0, 700.0)
+        };
+        assert_ne!(handle, 0);
+        let capacity = 32_768_u32;
+        let out_ptr = crate::abi::websa_dsp_alloc(capacity as usize * 4) as *mut f32;
+        let side_ptr = crate::abi::websa_dsp_alloc(capacity as usize * 4) as *mut f32;
+        let total = 144_000_usize; // 0.5 s
+        let mut side_all: Vec<f32> = Vec::new();
+        let mut mono_all: Vec<f64> = Vec::new();
+        // SAFETY: both blocks were allocated above with these sizes.
+        unsafe {
+            let mut fed = 0usize;
+            let mut time_offset = 0.0_f64; // seconds of stream already built (blocks must not repeat)
+            while fed < total {
+                let take = 4_800usize.min(total - fed);
+                let iq = wfm_stereo_baseband(take, FS, 0.09, 0.3, time_offset);
+                time_offset += take as f64 / FS;
+                let in_ptr = crate::abi::websa_dsp_alloc(iq.len() * 4) as *mut f32;
+                core::ptr::copy_nonoverlapping(iq.as_ptr(), in_ptr, iq.len());
+                let written = websa_dsp_demod_process(handle, in_ptr, take as u32, out_ptr, capacity, 0);
+                assert!(written > 0, "the demodulator must produce PCM");
+                let drained = websa_dsp_demod_side(handle, side_ptr, capacity);
+                let side = core::slice::from_raw_parts(side_ptr, drained as usize);
+                side_all.extend_from_slice(side);
+                let mono = core::slice::from_raw_parts(out_ptr, written as usize);
+                mono_all.extend(mono.iter().map(|v| *v as f64));
+                crate::abi::websa_dsp_free(in_ptr as *mut u8, iq.len() * 4);
+                fed += take;
+            }
+            websa_dsp_demod_free(handle);
+            crate::abi::websa_dsp_free(out_ptr as *mut u8, capacity as usize * 4);
+            crate::abi::websa_dsp_free(side_ptr as *mut u8, capacity as usize * 4);
+        }
+        let level = amplitude_at(&side_all, OUT_RATE, 1_000.0);
+        let mono_level = amplitude_at_f64(&mono_all, OUT_RATE, 1_000.0);
+        assert!(mono_level > 0.001, "the mono path must carry the L+R tone, level {mono_level}");
+        // The S/M injection ratio is 0.15/0.5 = 0.3, times the side band's response (~0.43) and
+        // the analytic-half factor — the side sits below the mono, at a bounded fraction of it.
+        assert!(level > 0.0005, "L−R tone must be recovered at the AGC scale, level {level}");
+        assert!(level < mono_level, "the side must sit below the mono, {level} vs {mono_level}");
     }
 
     #[test]

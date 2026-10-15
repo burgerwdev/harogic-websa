@@ -188,6 +188,7 @@ def main() -> int:
     parser.add_argument('--scenario', choices=('hold', 'retune'), default='hold')
     parser.add_argument('--seconds', type=float, default=20.0)
     parser.add_argument('--out', default='')
+    parser.add_argument('--dump-iq', default='', help='stash the decoder input frames to this file')
     args = parser.parse_args()
 
     tx = start_tx(args.tx, args.freq, args.gain)
@@ -225,6 +226,23 @@ def main() -> int:
                   json.dumps(iq_diag(page)))
             check('the worklet plays', wait_gate(page, 15),
                   'audio gate: ' + json.dumps(iq_diag(page)))
+            # DIAG: capture the decoder's exact input frames for offline replay.
+            if args.dump_iq:
+                page.evaluate("window.dispatchEvent(new CustomEvent('wfm-dump-iq', {detail: true}))")
+                deadline = time.monotonic() + 45
+                dump = None
+                while time.monotonic() < deadline:
+                    dump = page.evaluate('window.__wfmIqDump || null')
+                    if dump: break
+                    time.sleep(0.5)
+                if dump:
+                    Path(args.dump_iq).write_text(json.dumps(dump))
+                    frames = dump.get('frames', [])
+                    total = sum(len(f) for f in frames)
+                    print(f'IQ dump: {len(frames)} frames, {total} f32, rate {dump.get("rate")}',
+                          flush=True)
+                else:
+                    print('IQ dump: FAILED', flush=True)
 
             timeline: list[dict] = []
             if args.scenario == 'hold':

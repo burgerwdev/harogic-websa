@@ -323,6 +323,95 @@ def _tone_amp(values: np.ndarray, rate: float, hz: float) -> float:
                  / float(window.sum()))
 
 
+def _stereo_rds_baseband() -> tuple[np.ndarray, float, np.ndarray]:
+    """A broadcast WFM composite at a rate wide enough for the aux bands.
+
+    The baseband is PHASE-modulated with the composite as deviation (the transmitter's own
+    structure): L+R tone, 19 kHz pilot, L−R DSB on 38 kHz and an RDS biphase carrier on 57 kHz
+    carrying one 0A group ("HA" in the name segment the group addresses). Returns (iq, fs,
+    deviation): the deviation trace is what the fixture's peak and pilot ratio are measured from,
+    so the pane's numbers can be checked against a signal whose deviation is known by construction.
+    288 kSps / 0.5 s, the real backend's FM-preset geometry.
+    """
+    from tools.pluto.rds_encode import OFFSET_WORDS, block as rds_block
+
+    fs = 288_000.0
+    samples = 345_600
+    t = np.arange(samples) / fs
+    deviation = (
+        0.5 * np.cos(2 * np.pi * 1_000.0 * t)
+        + 0.09 * np.sin(2 * np.pi * 19_000.0 * t)
+        + 0.15 * np.cos(2 * np.pi * 1_000.0 * t) * np.cos(2 * np.pi * 38_000.0 * t)
+    ) * 25_000.0
+
+    # One 0A group, differentially encoded the way a station sends it (d = running xor).
+    pi, pty, segment = 0x1234, 1, 0
+    block_b = (0 << 12) | (0 << 11) | (1 << 10) | ((pty & 0x1F) << 5) | (segment & 0x03)
+    group = np.concatenate([
+        rds_block(pi, OFFSET_WORDS['A']),
+        rds_block(block_b, OFFSET_WORDS['B']),
+        rds_block(0xCDCD, OFFSET_WORDS['C']),
+        rds_block((ord('H') << 8) | ord('A'), OFFSET_WORDS['D']),
+    ])
+    # The biphase baseband, in its ideal rectangular form. The fixture runs 1.2 s: the
+    # decoder's carrier reference needs a few hundred bits to converge, and the differential
+    # decision costs one startup group — a shorter clip left exactly one decodable group, so a
+    # single early bit error decided the whole test. The shaped waveform stays covered by a real
+    # transmission in `wasm/tests/live_rds_capture.rs`, where the sensitivity limit belongs;
+    # this fixture pins the decoder's logic.
+    bit_rate = 1187.5
+    # A continuous differential stream, the way a station sends: the carry runs across group
+    # repeats. Repeating one differentially-encoded group modulo its length resets the carry
+    # every 104 bits, which forces a bit error at every repeat (the group's parity is odd) and
+    # left the fixture exactly one decodable group window.
+    reps = int(samples * bit_rate / group.size) + 2
+    sent = np.bitwise_xor.accumulate(np.tile(group, reps))
+    bit = np.floor(t * bit_rate).astype(np.int64)
+    half = (t * bit_rate) % 1.0 < 0.5
+    baseband = np.where(sent[np.clip(bit, 0, sent.size - 1)] == 1, 1.0, -1.0) * np.where(half, 1.0, -1.0)
+    # The station's injection: 2 kHz of deviation, in the same Hz units as the composite.
+    rds_level = 2000.0
+    deviation = deviation + rds_level * baseband * np.cos(2 * np.pi * 57_000.0 * t)
+
+    ph = 2 * np.pi * np.cumsum(deviation) / fs
+    return np.cos(ph) + 1j * np.sin(ph), fs, deviation
+
+
+def build_stereo_rds_fixture() -> tuple[dict[str, bytes], dict]:
+    """Committed stereo+RDS baseband pinning the Rust side chain (no Python stereo reference)."""
+    baseband, fs, deviation = _stereo_rds_baseband()
+    iq_name = 'demod_wfm_stereo_iq.bin'
+    # The two numbers the decode pane shows, measured from the trace the fixture was built from:
+    # the peak deviation the discrimination must reproduce, and the pilot-to-composite ratio the
+    # badge thresholds against. Recorded so the Rust test can assert them, not just that "some
+    # pilot" was found.
+    peak_dev_hz = float(np.abs(deviation).max())
+    pilot_ratio = float(0.09 * 25_000.0 / 2.0 / np.sqrt(np.mean(deviation ** 2)))
+    # The composite's two programme components, as built: the (L+R) tone at 0.5 and the (L−R)
+    # tone at 0.15 of the 25 kHz carrier deviation. Their RATIO (0.3) is what a receiver's
+    # L = M + S / R = M − S matrix needs the drained side to match — a side at the wrong gain
+    # widens or narrows the stereo image without ever looking broken in a scope trace.
+    sum_dev_hz = 0.5 * 25_000.0
+    side_dev_hz = 0.15 * 25_000.0
+    files = {iq_name: baseband.astype(np.complex64).tobytes()}
+    entry = {
+        'mode': 'wfm', 'if_bw': 180_000.0, 'pitch': 700.0,
+        'reference': 'no Python stereo kernel; committed bytes pin the Rust kernels',
+        'fs': fs, 'audio_rate': DEMOD_AUDIO_RATE, 'samples': int(baseband.shape[0]),
+        'iq_file': iq_name,
+        'expect': {
+            'pilot_hz': 19_000.0, 'dsb_hz': 38_000.0, 'rds_hz': 57_000.0,
+            'peak_dev_hz': round(peak_dev_hz, 1),
+            'pilot_ratio': round(pilot_ratio, 4),
+            'sum_dev_hz': sum_dev_hz, 'side_dev_hz': side_dev_hz,
+            'note': 'Rust must detect the pilot, recover the L−R tone at 1 kHz at the level the '
+                    'sum/side ratio implies, lock RDS, and report the peak deviation and pilot '
+                    'ratio the composite was built with.',
+        },
+    }
+    return files, {'stereo_rds': entry}
+
+
 def build() -> tuple[dict[str, bytes], dict]:
     iq = build_iq()
     mixed, filtered, decimated, resampled, levelled = reference_chain(iq)
@@ -337,6 +426,9 @@ def build() -> tuple[dict[str, bytes], dict]:
     # ---- analog demodulator cross-check ----
     demod_files, demod_entries = build_demod_reference()
     files.update(demod_files)
+    # ---- stereo+RDS side-chain fixture (no Python stereo kernel; pins the Rust kernels) ----
+    stereo_files, stereo_entry = build_stereo_rds_fixture()
+    files.update(stereo_files)
     manifest = {
         'note': 'Generated by tools/fixtures/gen_dsp_fixtures.py from the Python reference DSP '
                 '(web_sa/demod/filters.py). Do not edit by hand. The Rust kernels in wasm/ '
@@ -361,6 +453,7 @@ def build() -> tuple[dict[str, bytes], dict]:
             {'name': 'agc', 'file': 'agc.bin', 'kind': 'real', 'length': int(levelled.size)},
         ],
         'demod': demod_entries,
+        'stereo_rds': stereo_entry['stereo_rds'],
         # Readable expectations: the wanted tone sits at DC after the mix, and the FIR rejects the
         # interferer (so the decimated block is dominated by the wanted signal).
         'checks': {

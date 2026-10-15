@@ -28,11 +28,14 @@ use crate::ddc::resampler::LinearResampler;
 use crate::ddc::RmsAgc;
 use crate::plugin::{AnalogDemodulator, DemodConfig};
 
+pub mod fm_stereo;
+pub mod rds;
+
 /// The rate every analog mode produced before the consumer's rate became configurable (the
 /// AudioWorklet's rate is passed in as `out_rate` now; this stays the default and the tests'
 /// reference).
 pub const DEFAULT_AUDIO_RATE: f64 = 48_000.0;
-const BAND_TAPS: usize = 257;
+pub(crate) const BAND_TAPS: usize = 257;
 const AUDIO_TAPS: usize = 129;
 /// DC-block pole from the reference's AM branch (~3.3 Hz corner at 48 kHz).
 const DC_A: f64 = 0.9995;
@@ -191,6 +194,9 @@ pub struct AnalogDemod {
     resampler: LinearResampler,
     deemph: Option<FirState>,
     agc: RmsAgc,
+    /// The stereo/RDS side chain (WFM only, and only on a baseband wide enough for the
+    /// subcarriers). `None` elsewhere: the side chain is strictly additive.
+    stereo: Option<fm_stereo::FmStereo>,
     // Detector state
     prev_z: Option<(f64, f64)>,
     env_prev: f64,
@@ -218,7 +224,7 @@ impl AnalogDemod {
             .max(100.0)
             .min(0.45 * out_rate)
             .min(0.45 * fs);
-        Self {
+        let mut this = Self {
             spec,
             fs,
             deemph_us: spec.deemph_us,
@@ -229,6 +235,17 @@ impl AnalogDemod {
             resampler: LinearResampler::new(fs, out_rate),
             deemph: Self::deemph_taps(spec.deemph_us, out_rate),
             agc: RmsAgc::reference(),
+            // WFM's broadcast composite carries the 19/38/57 kHz components the side chain
+            // demodulates; a baseband too narrow for them builds no side chain at all.
+            // The side chain reads the detector's output, so it runs ahead of the mono by the
+            // audio low-pass's group delay. Its resampler is offset by that much: without it the
+            // two paths reach the consumer's L = M + S matrix with a frequency-dependent phase
+            // error, and a 2.5 kHz difference signal arrives there nearly inverted.
+            stereo: if spec.id == "wfm" {
+                fm_stereo::FmStereo::new(fs, out_rate, (AUDIO_TAPS - 1) as f64 / 2.0)
+            } else {
+                None
+            },
             prev_z: None,
             env_prev: 0.0,
             dc_y: 0.0,
@@ -237,7 +254,13 @@ impl AnalogDemod {
             lp: Vec::new(),
             rs: Vec::new(),
             levelled: Vec::new(),
+        };
+        // The side chain mirrors the main path's de-emphasis (the transmitter pre-emphasises
+        // both channels); it follows the listener's setting from here.
+        if let (Some(stereo), Some(deemph)) = (this.stereo.as_mut(), this.deemph.as_ref()) {
+            stereo.set_deemph_taps(deemph.taps().to_vec());
         }
+        this
     }
 
     pub fn spec(&self) -> ModeSpec {
@@ -280,12 +303,22 @@ impl AnalogDemod {
         }
         self.deemph_us = tau;
         self.deemph = Self::deemph_taps(tau, self.out_rate);
+        if let (Some(stereo), Some(deemph)) = (self.stereo.as_mut(), self.deemph.as_ref()) {
+            stereo.set_deemph_taps(deemph.taps().to_vec());
+        }
     }
 
     /// Number of audio-filter taps (the design constant the tests pin).
     pub fn audio_taps(&self) -> usize {
         self.audio_lp.taps().len()
     }
+
+
+    /// The pilot PLL's frequency error in Hz (0 without a side chain).
+    pub fn pll_freq_error_hz(&self) -> f64 {
+        self.stereo.as_ref().map(|s| s.pll_freq_error_hz()).unwrap_or(0.0)
+    }
+
 
     fn deemph_taps(tau_us: f64, out_rate: f64) -> Option<FirState> {
         if tau_us <= 0.0 {
@@ -425,6 +458,25 @@ impl AnalogDemodulator for AnalogDemod {
         self.agc.process_into(&rs, false, &mut levelled);
         out.extend_from_slice(&levelled);
 
+        // The side chain reads the DISCRIMINATOR output, not the baseband: the pilot, the L−R DSB
+        // and the RDS subcarrier are components of the FM *modulation*, and only the detector
+        // turns them back into amplitude components. They sit above the mono path's 15 kHz cut.
+        // The chain's interface takes complex pairs, so the real discriminator samples go in with
+        // a zero Q. The drain gain carries the AGC's applied level over to the side, so the
+        // L/R matrix (L = M + S, R = M − S) lands at the mono signal's own scale.
+        if let Some(stereo) = self.stereo.as_mut() {
+            let raw_rms = (rs.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>()
+                / rs.len().max(1) as f64)
+                .sqrt();
+            let levelled_rms = (levelled.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>()
+                / levelled.len().max(1) as f64)
+                .sqrt();
+            if raw_rms > 1.0e-9 {
+                stereo.set_output_gain((levelled_rms / raw_rms) as f32);
+            }
+            stereo.process(&det);
+        }
+
         self.z = filtered;
         self.det = det;
         self.lp = lp;
@@ -440,6 +492,55 @@ impl AnalogDemodulator for AnalogDemod {
         AnalogDemod::set_deemph_us(self, tau_us);
     }
 
+    fn take_side(&mut self) -> Vec<f32> {
+        match self.stereo.as_mut() {
+            Some(stereo) => stereo.take_side(),
+            None => Vec::new(),
+        }
+    }
+
+    fn stereo_detected(&self) -> bool {
+        self.stereo.as_ref().is_some_and(|stereo| stereo.stereo())
+    }
+
+    fn peak_deviation_hz(&self) -> f64 {
+        self.stereo.as_ref().map(|s| s.peak_deviation_hz()).unwrap_or(0.0)
+    }
+
+    fn rds_state(&self) -> Option<crate::analog::rds::RdsState> {
+        self.stereo.as_ref().and_then(|s| s.rds_state())
+    }
+
+    fn rds_diag(&self) -> [f64; 4] {
+        self.stereo.as_ref().map(|s| s.rds_diag()).unwrap_or([0.0; 4])
+    }
+
+
+    fn pilot_ratio(&self) -> f64 {
+        self.stereo.as_ref().map(|s| s.pilot_ratio()).unwrap_or(0.0)
+    }
+
+    fn pilot_deviation_hz(&self) -> f64 {
+        self.stereo.as_ref().map(|s| s.pilot_deviation_hz()).unwrap_or(0.0)
+    }
+
+    fn stereo_diag(&self) -> [f64; 4] {
+
+        match self.stereo.as_ref() {
+
+            Some(stereo) => stereo.diag(),
+
+            None => [0.0; 4],
+
+        }
+
+    }
+
+
+    fn pilot_snr_db(&self) -> f64 {
+        self.stereo.as_ref().map(|s| s.pilot_snr_db()).unwrap_or(0.0)
+    }
+
     fn retune(&mut self) {
         // Keep the AGC gain: resetting it made every tune start with a loud burst.
         self.band.clear_tail();
@@ -448,6 +549,9 @@ impl AnalogDemodulator for AnalogDemod {
         self.dc_y = 0.0;
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
+        }
+        if let Some(stereo) = self.stereo.as_mut() {
+            stereo.retune();
         }
     }
 
@@ -463,6 +567,9 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        if let Some(stereo) = self.stereo.as_mut() {
+            stereo.retune();
+        }
     }
 }
 
@@ -570,6 +677,140 @@ mod tests {
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "WFM audio tone");
         // The 50 us de-emphasis is nearly flat at 1 kHz: the tone must not be gutted.
         assert!(amplitude_at(&audio, AUDIO_RATE, TONE_HZ) > 0.05, "de-emphasis killed the tone");
+    }
+
+    #[test]
+    fn stereo_side_aligns_with_the_mono_pcm() {
+        // The mono PCM and the drained side must reach the consumer at the SAME instant and with
+        // the SAME phase: the L/R matrix (L = M + S, R = M − S) cancels a channel only when the
+        // two paths agree. The mono passes an audio low-pass that the side chain never sees (it
+        // takes the discriminator output, ahead of that filter), so the side runs ahead unless
+        // the offset is compensated. Measured without the offset at 400 Hz: 34 deg of rotation —
+        // and at 2.5 kHz, 203 deg, near enough an inversion that a left-only tone arrived in both
+        // channels and a difference signal came back rotated.
+        use core::cell::RefCell;
+        const TONE: f64 = 400.0;
+        // A broadcast baseband: the side chain needs room for a 57 kHz subcarrier, which the
+        // test module's narrow FS does not have.
+        const STEREO_FS: f64 = 300_000.0;
+        let mut config = DemodConfig::new(STEREO_FS, 180_000.0);
+        config.pitch = PITCH;
+        let mut demod = build("wfm", config, AUDIO_RATE).expect("wfm builds");
+        let phase = RefCell::new(0.0_f64);
+        let n = (STEREO_FS * 1.5) as usize;
+        let mut iq = Vec::with_capacity(n * 2);
+        for k in 0..n {
+            let t = k as f64 / STEREO_FS;
+            let tone = (TAU * TONE * t).cos();
+            // L = the tone, R = silence: the sum and the difference carry the SAME tone, so the
+            // mono and the side must come out in phase and with the same amplitude.
+            let deviation = 6_000.0 * tone
+                + 6_000.0 * tone * (TAU * 38_000.0 * t).cos()
+                + 6_750.0 * (TAU * 19_000.0 * t).sin();
+            let mut ph = phase.borrow_mut();
+            *ph += TAU * deviation / STEREO_FS;
+            iq.push(ph.cos() as f32);
+            iq.push(ph.sin() as f32);
+        }
+        let mut pcm = Vec::new();
+        let mut side = Vec::new();
+        for chunk in iq.chunks(4_800 * 2) {
+            let mut out = Vec::new();
+            demod.process_into(chunk, &mut out);
+            pcm.extend_from_slice(&out);
+            side.extend_from_slice(&demod.take_side());
+        }
+        let n = pcm.len().min(side.len());
+        assert!(n > 20_000, "the chain must produce audio and a side (pcm {n})");
+        // Both paths carry a single tone, so a one-bin DFT of the steady part gives the phase the
+        // matrix will add them with: 0 deg means the two agree, 180 deg means L and R are swapped.
+        let goertzel = |x: &[f32]| -> (f64, f64) {
+            let start = n / 3;
+            let len = n - start;
+            let (mut re, mut im) = (0.0_f64, 0.0_f64);
+            for (i, v) in x[start..].iter().enumerate() {
+                let w = TAU * TONE * i as f64 / AUDIO_RATE;
+                re += (*v as f64) * w.cos();
+                im -= (*v as f64) * w.sin();
+            }
+            (re / len as f64, im / len as f64)
+        };
+        let (pr, pi) = goertzel(&pcm);
+        let (sr_, si_) = goertzel(&side);
+        let phase_deg = (si_.atan2(sr_) - pi.atan2(pr)).to_degrees();
+        let wrap = |d: f64| if d > 180.0 { d - 360.0 } else if d < -180.0 { d + 360.0 } else { d };
+        let phase_deg = wrap(phase_deg);
+        let level = (sr_ * sr_ + si_ * si_).sqrt() / (pr * pr + pi * pi).sqrt();
+        assert!((level - 1.0).abs() < 0.25, "side level {level:.3} of the mono");
+        assert!(
+            phase_deg.abs() < 15.0,
+            "the side must be in phase with the mono PCM, but it is {phase_deg:+.1} deg off \
+             (the residual is the two de-emphasis filters, about 2 deg at this frequency)"
+        );
+    }
+
+    #[test]
+    fn retune_drops_the_previous_stations_detection_state() {
+        // A tune must not read the new station through the old one's numbers. The pilot ratio is
+        // pilot level over the smoothed peak deviation, and that peak comes from a histogram the
+        // detector fills per block: left behind on a retune, a loud station's peak follows the
+        // listener to a quieter one and drags its ratio under the acquire threshold. On the air
+        // that reads as "switching between two frequencies, the stereo badge never comes back".
+        use core::cell::RefCell;
+        const STEREO_FS: f64 = 300_000.0;
+        let play = |deviation_hz: f64, pilot_hz: f64| {
+            let mut config = DemodConfig::new(STEREO_FS, 180_000.0);
+            config.pitch = PITCH;
+            let mut demod = build("wfm", config, AUDIO_RATE).expect("wfm builds");
+            let phase = RefCell::new(0.0_f64);
+            let n = (STEREO_FS * 1.2) as usize;
+            let mut iq = Vec::with_capacity(n * 2);
+            for k in 0..n {
+                let t = k as f64 / STEREO_FS;
+                let deviation = deviation_hz * (TAU * 1_000.0 * t).cos()
+                    + pilot_hz * (TAU * 19_000.0 * t).sin();
+                let mut ph = phase.borrow_mut();
+                *ph += TAU * deviation / STEREO_FS;
+                iq.push(ph.cos() as f32);
+                iq.push(ph.sin() as f32);
+            }
+            let mut out = Vec::new();
+            for chunk in iq.chunks(4_800 * 2) {
+                demod.process_into(chunk, &mut out);
+                demod.take_side();
+            }
+            demod
+        };
+        // A loud stereo station: 60 kHz of programme, the standard's pilot share on top.
+        let mut demod = play(60_000.0, 60_000.0 * 0.09);
+        assert!(demod.stereo_detected(), "the loud station must acquire stereo");
+        demod.retune();
+        // A quieter stereo station with the SAME pilot share. Its own ratio is identical; only the
+        // stale 60 kHz peak from the first station would make it look like mono.
+        // The same instance keeps going, so the retune state is what is under test.
+        let mut demod2 = demod;
+        let phase = RefCell::new(0.0_f64);
+        let n = (STEREO_FS * 1.2) as usize;
+        let mut iq = Vec::with_capacity(n * 2);
+        for k in 0..n {
+            let t = k as f64 / STEREO_FS;
+            let deviation = 10_000.0 * (TAU * 1_000.0 * t).cos()
+                + 900.0 * (TAU * 19_000.0 * t).sin();
+            let mut ph = phase.borrow_mut();
+            *ph += TAU * deviation / STEREO_FS;
+            iq.push(ph.cos() as f32);
+            iq.push(ph.sin() as f32);
+        }
+        let mut out = Vec::new();
+        for chunk in iq.chunks(4_800 * 2) {
+            demod2.process_into(chunk, &mut out);
+            demod2.take_side();
+        }
+        assert!(
+            demod2.stereo_detected(),
+            "after a retune the quieter stereo station must still acquire: ratio {:.4}",
+            demod2.pilot_ratio()
+        );
     }
 
     #[test]
@@ -798,5 +1039,154 @@ mod tests {
                 assert_eq!(demod.audio_taps(), AUDIO_TAPS);
             }
         }
+    }
+
+    #[test]
+    fn pipeline_stereo_survives_band_filter_startup() {
+        let fs = 288_000.0_f64;
+        let mut demod = build("wfm", DemodConfig::new(fs, 180_000.0), 48_000.0).unwrap();
+        let dev = 25_000.0_f64;
+        let mut phase = 0.0_f64;
+        let mut stereo = false;
+        for block in 0..30 {
+            let n = 4800_usize;
+            let mut z = vec![0.0_f32; n * 2];
+            for k in 0..n {
+                let t = ((block * n + k) as f64) / fs;
+                let l_plus_r = 0.5 * (TAU * 1000.0 * t).cos();
+                let m = 0.15 * (TAU * 1000.0 * t).cos();
+                let pl = 0.09 * (TAU * 19_000.0 * t).sin();
+                let dsb = m * (TAU * 38_000.0 * t).cos();
+                phase += TAU * (l_plus_r + pl + dsb) * dev / fs;
+                z[2 * k] = (phase.cos()) as f32;
+                z[2 * k + 1] = (phase.sin()) as f32;
+            }
+            let mut out = Vec::new();
+            demod.process_into(&z, &mut out);
+            stereo = demod.stereo_detected();
+            let _ = out;
+            if block == 0 {
+                assert!(!stereo, "the startup transient must not declare stereo");
+            }
+        }
+        assert!(stereo, "stereo must be detected");
+    }
+
+    /// The side chain holds ONE block at a time. A leak here is invisible in a short test but
+    /// starves a real radio within seconds: every block would re-run the de-emphasis FIR and the
+    /// resampler over all history, so the audio drops out and the command loop stops answering.
+    #[test]
+    fn side_chain_does_not_accumulate_across_blocks() {
+        let fs = 288_000.0_f64;
+        let mut demod = build("wfm", DemodConfig::new(fs, 180_000.0), 48_000.0).unwrap();
+        let block = 4_800_usize;
+        let mut phase = 0.0_f64;
+        let mut first = 0_usize;
+        let mut last = 0_usize;
+        let mut peak_last = 0.0_f32;
+        for n in 0..400 {
+            let mut z = vec![0.0_f32; block * 2];
+            for k in 0..block {
+                let t = ((n * block + k) as f64) / fs;
+                let comp = 0.5 * (TAU * 1000.0 * t).cos()
+                    + 0.09 * (TAU * 19_000.0 * t).sin()
+                    + 0.15 * (TAU * 1000.0 * t).cos() * (TAU * 38_000.0 * t).cos();
+                phase += TAU * comp * 25_000.0 / fs;
+                z[2 * k] = phase.cos() as f32;
+                z[2 * k + 1] = phase.sin() as f32;
+            }
+            let mut out = Vec::new();
+            demod.process_into(&z, &mut out);
+            let side = demod.take_side();
+            if n == 10 {
+                first = side.len();
+            }
+            if n == 399 {
+                last = side.len();
+                peak_last = side.iter().fold(0.0_f32, |a, v| a.max(v.abs()));
+            }
+        }
+        // 4800 baseband samples at 288 kHz = 20 ms; 2400 aux samples resampled to 48 kHz = 800.
+        assert!((700..=900).contains(&first), "one block must yield one block of L-R, got {first}");
+        assert_eq!(
+            last, first,
+            "the drained side length must not grow with the block index (it did: {last} vs {first})"
+        );
+        assert!(peak_last > 0.0, "the L-R signal must still carry energy after 400 blocks");
+    }
+
+}
+
+
+#[cfg(test)]
+mod pilot_pll_tests {
+    use super::*;
+    use crate::analog::fm_stereo::PILOT_HZ;
+
+    fn block_bits(info: u16, offset: u16) -> Vec<u32> {
+        let mut code = (info as u32) << 10;
+        for bit in (10..=25).rev() {
+            if code & (1 << bit) != 0 {
+                code ^= 0x5B9 << (bit - 10);
+            }
+        }
+        let v = ((info as u32) << 10) | ((code as u16 ^ offset) as u32);
+        (0..26).map(|k| (v >> (25 - k)) & 1).collect()
+    }
+
+    /// A station whose pilot sits `offset_hz` off the nominal 19 kHz (the two radios' clocks,
+    /// or a small tuning error): the side chain's NCO must follow it, and with it the RDS bit
+    /// clock, or the decode slips a bit every few hundred milliseconds and no group survives.
+    #[test]
+    fn pilot_offset_tracks_and_rds_decodes() {
+        const FS: f64 = 288_000.0;
+        const OFFSET_HZ: f64 = 25.0;
+        const PILOT: f64 = PILOT_HZ + OFFSET_HZ;
+        let block_b = (1u16 << 10) | (1u16 << 5);
+        let group: Vec<u32> = [
+            block_bits(0x1234, 0x0FC),
+            block_bits(block_b, 0x198),
+            block_bits(0xCDCD, 0x168),
+            block_bits((b'H' as u16) << 8 | b'A' as u16, 0x1B4),
+        ]
+        .concat();
+        let mut sent = Vec::new();
+        let mut carry = 0u32;
+        for k in 0..group.len() * 60 {
+            carry ^= group[k % group.len()];
+            sent.push(carry);
+        }
+        let mut config = DemodConfig::new(FS, 180_000.0);
+        config.pitch = 700.0;
+        let mut demod = build("wfm", config, 48_000.0).expect("wfm builds");
+        let bit_rate = PILOT / 16.0;
+        let mut out = Vec::new();
+        let mut phase = 0.0_f64;
+        let mut iq: Vec<f32> = Vec::with_capacity(4800 * 2);
+        for k in 0..(FS * 5.0) as usize {
+            let t = k as f64 / FS;
+            let idx = (t * bit_rate) as usize;
+            let half = (t * bit_rate) % 1.0 < 0.5;
+            let base = if sent[idx.min(sent.len() - 1)] == 1 { 1.0 } else { -1.0 }
+                * if half { 1.0 } else { -1.0 };
+            let deviation = 6_750.0 * (core::f64::consts::TAU * PILOT * t).sin()
+                + 2_000.0 * base * (core::f64::consts::TAU * 3.0 * PILOT * t).cos();
+            phase = (phase + core::f64::consts::TAU * deviation / FS) % core::f64::consts::TAU;
+            iq.push(phase.cos() as f32);
+            iq.push(phase.sin() as f32);
+            if iq.len() == 4800 * 2 {
+                demod.process_into(&iq, &mut out);
+                demod.take_side();
+                iq.clear();
+            }
+        }
+        let state = demod.rds_state().expect("side chain");
+        assert!(
+            state.groups >= 5,
+            "the NCO must track the {} Hz pilot offset and keep RDS decoding, groups={}",
+            OFFSET_HZ,
+            state.groups
+        );
+        assert_eq!(state.pi, 0x1234);
     }
 }

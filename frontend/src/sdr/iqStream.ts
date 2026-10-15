@@ -321,6 +321,10 @@ function startWorker(): void {
             pilotQ: raw(d.pilotQ),
             auxRateHz: raw(d.auxRateHz),
             lastAux: raw(d.lastAux),
+            rdsRefMag: raw(d.rdsRefMag),
+            rdsAxisI: raw(d.rdsAxisI),
+            rdsAxisQ: raw(d.rdsAxisQ),
+            rdsBits: raw(d.rdsBits),
             fsIn: raw(d.fsIn),
             ifBw: raw(d.ifBw),
             sideLen: raw(d.sideLen),
@@ -349,6 +353,12 @@ function startWorker(): void {
           });
         });
       }
+      return;
+    }
+    if (d.type === 'iq-dump') {
+      // DIAG: the bench's offline replay input — the frames the decoder actually consumed.
+      const w = window as unknown as { __wfmIqDump?: unknown };
+      w.__wfmIqDump = { rate: d.rate, centerHz: d.centerHz, frames: d.frames };
       return;
     }
     if (d.type === 'dfn-status') {
@@ -565,6 +575,13 @@ export function sdrStreamRate(): number {
 
 export function retuneSdrPipeline(): void {
   worker?.postMessage({ type: 'retune' });
+}
+
+if (typeof window !== 'undefined') {
+  // DIAG: the bench's replay capture switch (wfm_rig dispatches this event).
+  window.addEventListener('wfm-dump-iq', (event) => {
+    worker?.postMessage({ type: 'dump-iq', value: Boolean((event as CustomEvent).detail) });
+  });
 }
 
 export function resetSdrIq(): void {

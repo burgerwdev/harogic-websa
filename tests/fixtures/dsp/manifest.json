@@ -161,6 +161,26 @@
    "name": "agc"
   }
  ],
+ "stereo_rds": {
+  "audio_rate": 48000.0,
+  "expect": {
+   "dsb_hz": 38000.0,
+   "note": "Rust must detect the pilot, recover the L\u2212R tone at 1 kHz at the level the sum/side ratio implies, lock RDS, and report the peak deviation and pilot ratio the composite was built with.",
+   "peak_dev_hz": 18250.0,
+   "pilot_hz": 19000.0,
+   "pilot_ratio": 0.1212,
+   "rds_hz": 57000.0,
+   "side_dev_hz": 3750.0,
+   "sum_dev_hz": 12500.0
+  },
+  "fs": 288000.0,
+  "if_bw": 180000.0,
+  "iq_file": "demod_wfm_stereo_iq.bin",
+  "mode": "wfm",
+  "pitch": 700.0,
+  "reference": "no Python stereo kernel; committed bytes pin the Rust kernels",
+  "samples": 345600
+ },
  "tolerance": 1e-05,
  "tolerance_note": "Absolute difference allowed on each f32 stage output (full scale 1.0).",
  "wanted_hz": 80078.125
