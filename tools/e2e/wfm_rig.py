@@ -380,16 +380,17 @@ def main() -> int:
                 first_pilot_ms = []
                 for step, mark in enumerate(report['marks'][1:]):
                     target = away if step % 2 == 0 else args.freq
+                    end = report['marks'][step + 2] if step + 2 < len(report['marks']) else float('inf')
                     down = next((g['at'] for g in report['gate']
-                                 if g['at'] >= mark and g['playing'] == 0), None)
+                                 if mark <= g['at'] < end and g['playing'] == 0), None)
                     up = next((g['at'] for g in report['gate']
-                               if down is not None and g['at'] >= down and g['playing'] == 1), None)
+                               if down is not None and down <= g['at'] < end and g['playing'] == 1), None)
                     resume_ms.append(up - mark if up is not None else None)
-                    new = [e for e in report['trail'] if e['at'] >= mark
+                    new = [e for e in report['trail'] if mark <= e['at'] < end
                            and abs(float(e['carrierHz']) - target) < 1]
                     first_frame_ms.append(new[0]['at'] - mark if new else None)
                     pilot = next((e for e in new if float(e['pilotDevHz']) > 3000
-                                  and float(e['pilotSnrDb']) > 9), None)
+                                  and float(e['pilotSnrDb']) > 9), None) if target == args.freq else None
                     first_pilot_ms.append(pilot['at'] - mark if pilot else None)
                 report['resumeMs'] = resume_ms
                 report['firstFrameMs'] = first_frame_ms
