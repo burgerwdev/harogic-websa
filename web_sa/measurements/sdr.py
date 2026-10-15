@@ -222,6 +222,10 @@ class SdrSession(MeasurementSession):
     AUDIO_RATE = 48000
     AUDIO_FRAME = 960                  # 20 ms
     ADM_MIN_INTERVAL = 1.0             # metrics update (matches the 1 s STATUS cadence)
+    #: Coalesce DDC packets (~1249 samples each) into ~30 browser messages per second.
+    #: At ~240 messages/s the browser consumed only ~80/s and dropped baseband samples.
+    #: `WEBSA_SDR_BB_FRAME_SAMPLES=1000` keeps the A/B path for bench measurements.
+    BASEBAND_FRAME_SAMPLES = 8_000
 
     def __init__(self, dev):
         super().__init__(dev)
@@ -266,6 +270,12 @@ class SdrSession(MeasurementSession):
         self._chain_stale = False
         self._packet_samples = 0
         self._ddc_batch = 1
+        #: Baseband blocks waiting for one published frame (see BASEBAND_FRAME_SAMPLES).
+        self._bb_accum: list = []
+        try:
+            self._bb_frame_samples = max(1, int(os.getenv('WEBSA_SDR_BB_FRAME_SAMPLES', '8000')))
+        except ValueError:
+            self._bb_frame_samples = 8000
         self._iqs_center_hz = 0.0
         self._vfft_ready = False
         self._vfft_points = 0
@@ -495,14 +505,14 @@ class SdrSession(MeasurementSession):
             self._iqs_center_hz = configured_center
         s.sdr_listen_hz = max(s.sdr_center_hz - half,
                               min(s.sdr_center_hz + half, float(s.sdr_listen_hz)))
-        # One IQS packet per step. Fetching a second packet in the same step (an earlier
-        # "high-rate" optimisation) overwrote the vendor's internal packet buffer: the
-        # heap damage surfaced later as SIGSEGV / glibc "double free or corruption (out)"
-        # during an unrelated numpy free, i.e. a random crash a few seconds after entering
-        # SDR and on the next mode switch. Measured A/B: two packets per step crashes on
-        # every run, one packet per step is stable over many mode switches. The official
-        # examples also call IQS_GetIQStream once per iteration.
-        self._ddc_batch = 1
+        # One IQS fetch per step delivers the full nominal DDC rate. Two fetches are safe with
+        # the corrected SDK struct size, but delivered only 266 kSps against 300 kSps nominal
+        # on the SAN-90 and starved audio. Coalesce published frames instead of extra fetches.
+        # Keep `WEBSA_SDR_DDC_BATCH=2` for a repeatable A/B bench test.
+        try:
+            self._ddc_batch = max(1, int(os.getenv('WEBSA_SDR_DDC_BATCH', '1')))
+        except ValueError:
+            self._ddc_batch = 1
         self._fs_in = fs
         s.sdr_actual = dict(
             iq_rate=fs, bandwidth=bandwidth, capture_bandwidth=captured_bw,
@@ -710,6 +720,9 @@ class SdrSession(MeasurementSession):
         self._audio_reset_pending = True
         self._iq_seq = 0
         self._iq_reset_pending = True
+        # Accumulated pre-retune blocks must not ride out with the next frame: the client would
+        # play a block that belongs to the frequency it just left.
+        self._bb_accum.clear()
         # The baseband AGC gain is deliberately NOT reset here: this settle runs on every
         # reconfiguration (the auto reference reconfigures often), and resetting the gain
         # each time left the AGC unable to converge. A retune's level change is a few dB,
@@ -762,6 +775,7 @@ class SdrSession(MeasurementSession):
             listen=s.sdr_listen_hz, demod=s.sdr_demod, if_bw=if_bw,
             ddc_offset=self._ddc.offset_hz, mix_offset=self._mix_freq,
             ddc_decimate=self._ddc.decimate, ddc_rate=self._baseband_rate(),
+            ddc_delivery_rate=self._measured_bb_rate(),
             ddc_delay=self._ddc.delay,
             ddc_batch=self._ddc_batch,
             audio_rate=self._audio_rate(),
@@ -816,7 +830,9 @@ class SdrSession(MeasurementSession):
                 self._mix_phase = 0.0
                 self._start_trigger_locked()
                 self._last_ok = time.monotonic()
-                self._ready_at = time.monotonic() + 0.15
+                # Tune-only settle: 50 ms survived eight live retunes with no BusDataError.
+                # Initial IQS configuration still uses its longer settle window.
+                self._ready_at = time.monotonic() + 0.05
             except Exception as exc:
                 log.warning('SDR tuning reconfiguration failed; doing full recovery: %r', exc)
                 try:
@@ -835,6 +851,7 @@ class SdrSession(MeasurementSession):
         self._applied_listen = float(s.sdr_listen_hz)
         s.sdr_actual.update(listen=s.sdr_listen_hz, ddc_offset=self._ddc.offset_hz,
                             mix_offset=self._mix_freq, ddc_rate=self._baseband_rate(),
+                            ddc_delivery_rate=self._measured_bb_rate(),
                             ddc_delay=self._ddc.delay)
 
     def _audio_subscribed(self, dev) -> bool:
@@ -915,12 +932,11 @@ class SdrSession(MeasurementSession):
             return 0.0
 
     def _measure_baseband_rate(self, samples: int, now: float) -> None:
-        """Track the rate the channelized baseband *actually* arrives at.
+        """Measure sample delivery over wall time, not the DDC sample clock.
 
-        A window (1 s) rather than a per-packet estimate: the packet timing jitters by a few
-        milliseconds, and a per-packet rate would wobble the pitch the browser produces. The window
-        estimate is smoothed across windows, and the nominal rate is used until the first one
-        completes.
+        A host stall or a reconfiguration pause lowers this number without changing the time
+        between RF samples. The measurement can steer fallback audio playback and report
+        throughput, but it must not size a demodulator's filters or pilot clock.
         """
         if samples <= 0:
             return
@@ -937,6 +953,9 @@ class SdrSession(MeasurementSession):
             return
         measured = self._bb_window_samples / elapsed
         self._bb_rate = measured if self._bb_rate <= 0.0 else 0.7 * self._bb_rate + 0.3 * measured
+        actual = getattr(getattr(self, 'dev', None), 'state', None)
+        if actual is not None and isinstance(getattr(actual, 'sdr_actual', None), dict):
+            actual.sdr_actual['ddc_delivery_rate'] = self._bb_rate
         self._bb_window_samples = 0
         self._bb_window_start = now
 
@@ -949,10 +968,7 @@ class SdrSession(MeasurementSession):
             return 0.0
 
     def _baseband_rate(self) -> float:
-        """The rate to publish for the baseband: measured when known, nominal before that."""
-        measured = self._measured_bb_rate()
-        if measured > 0.0:
-            return measured
+        """The DDC sample clock published with IQ, independent of host delivery pauses."""
         nominal = self._ddc_fs_out()
         return nominal if nominal > 0.0 else float(self.AUDIO_RATE)
 
@@ -1471,18 +1487,26 @@ class SdrSession(MeasurementSession):
                     # Logged: a flush drops the browser's playback buffer and re-primes it, which is
                     # audible. A periodic one has to be attributable, not guessed at.
                     log.info('SDR: baseband flush -> the client drops and re-primes its audio')
+                    self._bb_accum.clear()
                     frames.append(encode_baseband(
                         BASEBAND_VERSION, 0, self._baseband_rate(), s.sdr_listen_hz,
                         np.zeros(0, dtype=np.float32)))
                     self._iq_reset_pending = False
                 if i.size:
-                    # seq never repeats 0: that value means "flush" to the client.
-                    self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
                     baseband = np.empty(i.size * 2, dtype=np.float32)
                     baseband[0::2] = i
                     baseband[1::2] = q
-                    frames.append(encode_baseband(BASEBAND_VERSION, self._iq_seq,
-                                                  self._baseband_rate(), s.sdr_listen_hz, baseband))
+                    self._bb_accum.append(baseband)
+                    # Coalesce device packets into one published frame. The 240/s packet rate
+                    # overloaded the browser's socket-to-worker path; ~30/s kept every sample.
+                    pending = sum(block.size for block in self._bb_accum) // 2
+                    if pending >= self._bb_frame_samples:
+                        merged = np.concatenate(self._bb_accum)
+                        self._bb_accum.clear()
+                        # seq never repeats 0: that value means "flush" to the client.
+                        self._iq_seq = (self._iq_seq % 0xFFFFFFFF) + 1
+                        frames.append(encode_baseband(BASEBAND_VERSION, self._iq_seq,
+                                                      self._baseband_rate(), s.sdr_listen_hz, merged))
                     if _TIME_ENABLED:
                         _t_phases['publish_encode'] = _t_phases.get('publish_encode', 0.0) + (time.perf_counter() - _t_phase) * 1e3
                         _t_phase = time.perf_counter()

@@ -429,43 +429,35 @@ def test_demod_channel_is_clamped_to_the_display_window_not_the_capture():
     assert session._fs_in / decimate == pytest.approx(48_000.0, rel=0.05)
 
 
-def test_baseband_rate_is_measured_not_assumed():
-    """The browser maps baseband samples onto the sound card's clock.
-
-    A vendor's nominal DDC rate is not the rate the device delivers, so a session that declared the
-    nominal figure made the browser produce slightly the wrong number of samples per second - the
-    ring drained and the audio puffed about once a second. The rate is measured over a window
-    instead, and the nominal value is only used until the first window closes.
-    """
+def test_baseband_sample_clock_is_not_delivery_throughput():
+    """A host pause changes delivery throughput, not the RF sample clock in an IQ frame."""
     session = SdrSession.__new__(SdrSession)
     session._ddc = SimpleNamespace(fs_out=48_828.125)
     session._bb_rate = 0.0
     session._bb_window_samples = 0
     session._bb_window_start = 0.0
-    # Before any measurement the nominal rate is reported (the first second or so of a stream).
     assert session._baseband_rate() == pytest.approx(48_828.125)
     assert session._audio_rate() == pytest.approx(session.AUDIO_RATE)
 
-    # 406 samples every 8.3 ms: a stream that really runs at 48.9 kHz.
     now = 100.0
-    session._measure_baseband_rate(0, now)                 # a step that produced nothing
-    for _ in range(250):                                    # >2 s of packets
-        session._measure_baseband_rate(406, now)
-        now += 406 / 48_900.0
-    measured = session._measured_bb_rate()
-    assert measured == pytest.approx(48_900.0, rel=0.002), measured
-    assert session._baseband_rate() == pytest.approx(measured)
-    # The Python demodulator's audio carries the same correction (it resamples from the nominal
-    # rate, so its true output rate is scaled by the same factor).
-    assert session._audio_rate() == pytest.approx(48_000.0 * measured / 48_828.125, rel=1e-6)
-    # And a later window moves the estimate only slowly (the pitch must not wobble).
-    # A later window moves the estimate only slowly: the declared rate is what the browser turns
-    # into a resampling ratio, so a wobble would be a pitch wobble.
-    before = session._baseband_rate()
+    session._measure_baseband_rate(0, now)
     for _ in range(250):
         session._measure_baseband_rate(406, now)
         now += 406 / 48_900.0
-    assert abs(session._baseband_rate() - before) < 150.0
+    measured = session._measured_bb_rate()
+    assert measured == pytest.approx(48_900.0, rel=0.002)
+    assert session._baseband_rate() == pytest.approx(48_828.125)
+    # The Python audio fallback still uses delivery throughput to keep its ring full.
+    assert session._audio_rate() == pytest.approx(48_000.0 * measured / 48_828.125, rel=1e-6)
+
+    # A reconfiguration pause lowers measured packets per wall second. It cannot change the
+    # channelizer's sample clock or the pilot's 19 kHz position inside those samples.
+    now += 1.0
+    for _ in range(250):
+        session._measure_baseband_rate(406, now)
+        now += 406 / 48_900.0
+    assert session._measured_bb_rate() < measured
+    assert session._baseband_rate() == pytest.approx(48_828.125)
 
 
 def test_python_audio_path_only_runs_while_someone_listens():
