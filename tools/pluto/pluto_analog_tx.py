@@ -142,6 +142,42 @@ def load_audio(path: str, rate: float, channel: str = 'sum') -> np.ndarray:
     return (data[i0] * (1.0 - fr) + data[i0 + 1] * fr).astype(np.float32)
 
 
+def load_audio_two(path: str, rate: float) -> tuple[np.ndarray, np.ndarray]:
+    """Read a stereo PCM WAV as two resampled channels (left, right).
+
+    Mono input is duplicated to both channels. Same formats as `load_audio`.
+    """
+    with wave.open(path, 'rb') as w:
+        channels = w.getnchannels()
+        in_rate = w.getframerate()
+        width = w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    if channels < 2:
+        mono = load_audio(path, rate, 'sum')
+        return mono, mono
+    if width == 3:
+        b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        packed = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+        data = ((packed ^ 0x800000) - 0x800000).astype(np.float64) / float(1 << 23)
+    else:
+        dtype = {1: np.uint8, 2: '<i2', 4: '<i4'}.get(width)
+        if dtype is None:
+            raise SystemExit(f'{path}: unsupported PCM width {width * 8} bits '
+                             f'(need 8/16/24/32-bit)')
+        data = np.frombuffer(raw, dtype=dtype).astype(np.float64)
+        if width == 1:
+            data = data - 128.0
+        data = data / float(1 << (8 * width - 1))
+    data = data.reshape(-1, channels)
+    n_out = int(round(data.shape[0] * rate / in_rate))
+    pos = np.arange(n_out, dtype=np.float64) * (in_rate / rate)
+    i0 = np.clip(pos.astype(np.int64), 0, max(0, data.shape[0] - 2))
+    fr = (pos - i0).astype(np.float64)
+    left = data[i0, 0] * (1.0 - fr) + data[i0 + 1, 0] * fr
+    right = data[i0, min(1, channels - 1)] * (1.0 - fr) + data[i0 + 1, min(1, channels - 1)] * fr
+    return left.astype(np.float32), right.astype(np.float32)
+
+
 def fit_length(audio: np.ndarray, rate: float, duration_s: float | None,
                loop: bool) -> np.ndarray:
     """Match the audio to the cyclic-buffer length.
@@ -264,8 +300,8 @@ def station_stream(args: argparse.Namespace) -> rds.StationStream:
 
 
 def broadcast_composite(audio: np.ndarray, t: np.ndarray, args: argparse.Namespace,
-                        deviation_hz: float, stream=None, peak: float | None = None
-                        ) -> np.ndarray:
+                        deviation_hz: float, stream=None, peak: float | None = None,
+                        side: np.ndarray | None = None) -> np.ndarray:
     """The WFM composite: audio, the 19 kHz pilot and the RDS subcarrier.
 
     The pilot and RDS do not modulate the carrier on their own. They are components
@@ -276,29 +312,63 @@ def broadcast_composite(audio: np.ndarray, t: np.ndarray, args: argparse.Namespa
     `peak` is the budget of the whole transmission: a value per chunk would step the
     deviation at every chunk boundary.
     """
-    if not args.rds_rt and not args.pilot_deviation_hz:
+    # `side` is the L−R signal for the SAME window as `audio` and `t` (a live transmission
+    # builds one chunk at a time); `args.stereo_side` holds the whole buffer for a one-shot build.
+    stereo_side = side if side is not None else getattr(args, 'stereo_side', None)
+    if not args.rds_rt and not args.pilot_deviation_hz and stereo_side is None \
+            and not getattr(args, 'stereo_pilot', False):
         return audio
     if args.mode != 'wfm':
-        raise SystemExit(f'--rds-rt needs wfm: RDS rides the 57 kHz subcarrier of the FM '
-                         f'composite, and {args.mode} has no room for it')
+        raise SystemExit(f'--rds-rt/--stereo need wfm: the pilot, the 38 kHz L\u2212R '
+                         f'subcarrier and the 57 kHz RDS subcarrier ride the FM composite, '
+                         f'and {args.mode} has no room for them')
     if getattr(args, 'no_audio', False):
         mpx = np.zeros(audio.shape, dtype=np.float64)
     else:
+        # shortcut: WAV programme audio is caller-band-limited to 15 kHz; add a TX LPF if arbitrary
+        # music files must meet the broadcast mask.
         mpx = audio.astype(np.float64)
-    if args.pilot_deviation_hz:
-        mpx = mpx + rds.pilot_wave(t, args.pilot_deviation_hz / deviation_hz)
+    wants_pilot = args.pilot_deviation_hz or stereo_side is not None \
+        or getattr(args, 'stereo_pilot', False)
+    pilot_term = None
+    if wants_pilot:
+        # EN 50067: the pilot rides at 9% of the deviation unless set otherwise.
+        pd = args.pilot_deviation_hz if args.pilot_deviation_hz else deviation_hz * 0.09
+        pilot_term = rds.pilot_wave(t, pd / deviation_hz)
+    if stereo_side is not None:
+        # L−R on the 38 kHz subcarrier, DSB-SC, at the SAME scale as the audio: a receiver
+        # recovers L = M + S and R = M − S, so the side must carry the same peak as the sum.
+        # The 8-10% figure in EN 50067 is the PILOT's share of the deviation; the sum and the
+        # difference share the rest. Injecting 8% of the side instead left a receiver with 8%
+        # separation — measured on this bench, the drained L−R came out 7.6% of the audio, the
+        # two scope traces looked alike, and no stereo test could pass through the chain.
+        mpx = mpx + np.asarray(stereo_side) * np.cos(2.0 * np.pi * 2.0 * 19000.0 * t)
+    rds_term = None
     if args.rds_rt:
         if stream is None:
             stream = station_stream(args)
-        mpx = mpx + rds.station_wave(t, stream, args.rds_deviation_hz / deviation_hz)
+        rds_term = rds.station_wave(t, stream, args.rds_deviation_hz / deviation_hz)
+    # The pilot's and the RDS's own share of the budget, in the composite's units.
+    head = (0.0 if pilot_term is None else float(np.max(np.abs(pilot_term)))) \
+        + (0.0 if rds_term is None else float(np.max(np.abs(rds_term))))
     if peak is None:
-        peak = float(np.max(np.abs(mpx)))       # what fills the budget before scaling
+        peak = float(np.max(np.abs(mpx)))       # the programme's own peak, before scaling
         args.composite_peak = peak
-    # The budget is a ceiling. A quieter composite (RDS alone, or a quiet wav) stays
-    # as it is, and describe reports what really goes out.
-    scale = 1.0 / peak if peak > 1.0 else 1.0
+    # The budget is a ceiling, and the programme is what gives way to it. The pilot and the RDS
+    # keep their nominal deviations (EN 50067: the pilot at 9% of the full deviation, the RDS
+    # near 2 kHz), because they are a receiver's phase reference and its data channel: scaling
+    # them down with the audio left the RDS at 1.1 kHz on a fully separated transmission, too
+    # little to lock, while the pane showed a perfect stereo badge.
+    scale = 1.0
+    if peak + head > 1.0:
+        scale = (1.0 - head) / peak
     args.composite_scale = scale
-    return mpx * scale
+    mpx = mpx * scale
+    if pilot_term is not None:
+        mpx = mpx + pilot_term
+    if rds_term is not None:
+        mpx = mpx + rds_term
+    return mpx
 
 
 def build_baseband(args: argparse.Namespace, rate: float) -> np.ndarray:
@@ -309,14 +379,47 @@ def build_baseband(args: argparse.Namespace, rate: float) -> np.ndarray:
                             len(args.rds_rt) * rds.hold_seconds(args.rds_rt_cycle_seconds,
                                                                 args.rds_ps,
                                                                 args.rds_ps_groups))
+        # The repeat must also fall on a GROUP boundary. The device restarts the buffer at its
+        # first sample, so a duration that is not a whole number of RDS groups slips the symbol
+        # grid at every loop. A hardware radio recovers its bit clock with a slow PLL, not with the
+        # per-block resync our decoder uses, so it loses the data at each slip and never holds
+        # lock: a bench radio could not read a 10.51 s buffer (12480.6 symbols) that our own
+        # decoder read fine. Round up to whole groups, which keeps the group sequence and the
+        # symbol grid continuous across the loop.
+        groups = max(1, int(np.ceil(args.duration / rds.GROUP_S)))
+        args.duration = groups * rds.GROUP_S
+    if args.channel != 'sum' and not args.wav:
+        # --channel selects a channel OF A WAV. Without --wav there is no file to read and the
+        # audio is the built-in tone, so the request would be silently dropped: a command that
+        # looks like "the right channel only" would air a tone instead.
+        raise SystemExit('--channel needs --wav FILE: without a file the audio is the built-in '
+                         'tone and there is no channel to take')
     if args.wav:
-        audio = load_audio(args.wav, rate, args.channel)
+        if args.stereo:
+            left, right = load_audio_two(args.stereo, rate)
+            left = fit_length(left, rate, args.duration, not args.no_loop)
+            right = fit_length(right, rate, args.duration, not args.no_loop)
+            audio = (left.astype(np.float64) + right) / 2.0
+            args.stereo_side = (left.astype(np.float64) - right) / 2.0
+        else:
+            args.stereo_side = None
+            audio = load_audio(args.wav, rate, args.channel)
         audio = fit_length(audio, rate, args.duration, not args.no_loop)
         if args.voice:
             audio = voice_band_pass(audio, rate, args.voice_hp, args.voice_lp)
             audio = voice_compress(audio)
+        # The audio's own levelling must reach the difference signal too. (L+R)/2 and (L-R)/2
+        # share one scale, so normalising the sum alone hands the receiver a programme whose
+        # channels never reach silence: a left-only file came out with the right channel at 0.45
+        # of full scale, and no scope trace showed the separation the file asked for.
+        raw_peak = 0.0
+        if args.stereo_side is not None and audio.size:
+            raw_peak = float(np.max(np.abs(audio)))
         audio = apply_level(audio, args.normalize_peak, args.audio_gain_db,
                             not args.no_normalize)
+        if args.stereo_side is not None and raw_peak > 1e-9:
+            levelled = float(np.max(np.abs(audio))) if audio.size else 0.0
+            args.stereo_side = args.stereo_side * (levelled / raw_peak)
     else:
         duration = args.duration if args.duration else DEFAULT_DURATION_S
         audio, _n = tone_audio(rate, args.tone_hz, duration)
@@ -372,8 +475,8 @@ def describe(args: argparse.Namespace, sig: np.ndarray) -> None:
     scale = getattr(args, 'composite_scale', 1.0)
     if args.rds_rt or args.pilot_deviation_hz:
         print(f'pilot          : {rds.PILOT_HZ / 1e3:.3f} kHz, deviation '
-              f'{args.pilot_deviation_hz * scale:.0f} Hz '
-              f'({args.pilot_deviation_hz * scale / args.deviation_hz * 100.0:.1f}% of '
+              f'{args.pilot_deviation_hz:.0f} Hz '
+              f'({args.pilot_deviation_hz / args.deviation_hz * 100.0:.1f}% of '
               f'{args.deviation_hz:.0f} Hz)'
               + ('' if args.pilot_deviation_hz else ' - none: a RDS radio that derives its '
                                                    'clock from the pilot may not lock'))
@@ -411,8 +514,8 @@ def describe(args: argparse.Namespace, sig: np.ndarray) -> None:
               f'{args.deviation_hz / 1e3:.0f} kHz budget), 90 deg to the pilot third harmonic')
         audio_dev = 0.0 if getattr(args, 'no_audio', False) else args.deviation_hz * scale
         print(f'deviation      : audio {audio_dev / 1e3:.2f} kHz + pilot '
-              f'{args.pilot_deviation_hz * scale / 1e3:.2f} kHz + rds '
-              f'{args.rds_deviation_hz * scale / 1e3:.2f} kHz of a '
+              f'{args.pilot_deviation_hz / 1e3:.2f} kHz + rds '
+              f'{args.rds_deviation_hz / 1e3:.2f} kHz of a '
               f'{args.deviation_hz / 1e3:.0f} kHz budget')
     print(f'baseband       : {sig.size} samples ({sig.size / args.rate:.2f} s), '
           f'scale {args.scale:.0f}, peak {np.abs(sig).max():.0f}/32767')
@@ -441,7 +544,9 @@ def broadcast_chunk(args: argparse.Namespace, rate: float, start: int, samples: 
             chunk_audio = apply_level(chunk_audio, 1.0, args.audio_gain_db, False)
     else:
         chunk_audio = audio[index % audio.size]      # a --wav, looped
-    mpx = broadcast_composite(chunk_audio, t, args, args.deviation_hz, stream, peak)
+    side_all = getattr(args, 'stereo_side', None)
+    chunk_side = None if side_all is None else side_all[index % side_all.size]
+    mpx = broadcast_composite(chunk_audio, t, args, args.deviation_hz, stream, peak, chunk_side)
     carrier = phase + 2.0 * np.pi * args.deviation_hz * np.cumsum(mpx) / rate
     base = (np.exp(1j * carrier) * args.scale).astype(np.complex64)
     if args.base_hz:
@@ -544,7 +649,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--wav', default=None,
                         help='send a PCM WAV instead of a tone (8/16/24/32-bit)')
     parser.add_argument('--channel', choices=('sum', 'left', 'right'), default='sum',
-                        help='channel to take from a stereo WAV (default: sum)')
+                        help='mono transmission from a stereo WAV: sum mixes the two channels '
+                             '((L+R)/2, the default), left or right takes one. None of these '
+                             'keeps the pair: use --stereo FILE for a true stereo transmission')
     parser.add_argument('--duration', type=float, default=None,
                         help='cyclic buffer seconds (default: the whole --wav, else 2 s)')
     parser.add_argument('--no-loop', action='store_true',
@@ -618,6 +725,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--rds-ct', action='store_true',
                         help='send the Group 4A clock time once a minute, UTC plus the local '
                              'offset, so a radio can set its clock (default off)')
+    parser.add_argument('--stereo', metavar='FILE', default=None,
+                        help='wfm only: send true stereo from a stereo WAV. The tool builds '
+                             'M=(L+R)/2 and S=(L-R)/2, adds the 19 kHz pilot and sends S on '
+                             'the 38 kHz subcarrier. --wav is not required')
+    parser.add_argument('--stereo-pilot', action='store_true',
+                        help='add the 19 kHz pilot alone (also for mono audio): a receiver '
+                             'detects stereo from the pilot, so a stereo WAV without --stereo '
+                             'stays mono when this is off (default off)')
     parser.add_argument('--no-audio', action='store_true',
                         help='transmit the pilot and RDS only, no tone. This is the best RDS '
                              'test signal: a tone at full deviation spends the modulation the '
@@ -630,6 +745,8 @@ def main(argv: list[str] | None = None) -> int:
     radio.add_radio_args(parser, default_lo=DEFAULT_LO_HZ, default_gain=-10.0,
                          dry_run_help='synthesise and print the plan without touching the radio')
     args = parser.parse_args(argv)
+    if args.stereo and not args.wav:
+        args.wav = args.stereo
     if args.rds_ps is not None:
         # An empty name is a request for no Group 0A at all, not a mistake.
         args.rds_ps = [part.strip() for value in args.rds_ps for part in value.split(',')]

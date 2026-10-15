@@ -73,6 +73,32 @@ def test_load_audio_reads_24_bit_and_picks_the_channel(tmp_path):
     assert 0.49 < float(np.max(np.abs(audio))) < 0.52
 
 
+def test_stereo_file_alone_supplies_programme_difference_and_pilot(tmp_path, monkeypatch):
+    rate = 8000
+    t = np.arange(rate // 10) / rate
+    left = np.round(0.7 * np.cos(2 * np.pi * 1000 * t) * 32767).astype('<i2')
+    stereo = np.column_stack((left, np.zeros_like(left)))
+    path = tmp_path / 'left-only.wav'
+    with wave.open(str(path), 'wb') as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(stereo.tobytes())
+
+    def check_signal(args):
+        assert args.wav == str(path)
+        sig = analog.build_baseband(args, args.rate)
+        assert args.stereo_side is not None and np.max(np.abs(args.stereo_side)) > 0.1
+        deviation = np.angle(sig[1:] * sig[:-1].conj()) * args.rate / (2 * np.pi)
+        phase = 2 * np.pi * 19000 * np.arange(1, sig.size) / args.rate
+        pilot = 2 * np.abs(np.dot(deviation, np.exp(-1j * phase))) / deviation.size
+        assert 5000 < pilot < 8500, pilot
+        return 0
+
+    monkeypatch.setattr(analog, 'transmit', check_signal)
+    assert analog.main(['wfm', '--stereo', str(path), '--duration', '0.1', '--dry-run']) == 0
+
+
 def test_nfm_deviation_matches_the_setting():
     rate = 100000.0
     sig = analog.build_baseband(_args('nfm', deviation_hz=3000.0, duration=0.05), rate)
@@ -512,9 +538,9 @@ def test_rds_streaming_chunks_join_without_a_seam():
 
 
 def test_rds_is_refused_outside_wfm():
-    with pytest.raises(SystemExit, match='needs wfm'):
+    with pytest.raises(SystemExit, match='need wfm'):
         analog.build_baseband(_args('nfm', rds_rt=['CQ'], deviation_hz=3000.0), 100000.0)
-    with pytest.raises(SystemExit, match='needs wfm'):
+    with pytest.raises(SystemExit, match='need wfm'):
         analog.build_baseband(_args('nfm', pilot_deviation_hz=1000.0), 100000.0)
 
 
@@ -590,12 +616,8 @@ def test_rds_without_a_ps_name_sends_radiotext_groups_only():
     assert set(kinds) == {2}
 
 
-def test_rds_composite_uses_the_given_deviation_budget():
-    """The budget belongs to the transmission, not to one chunk.
-
-    The live path passes the plan peak into every chunk. A peak per chunk would step
-    the deviation, so the same composite with a doubled budget must come out at half.
-    """
+def test_rds_composite_keeps_pilot_and_data_when_programme_budget_changes():
+    """A changed programme peak scales audio only; pilot and RDS keep their injection."""
     rate = 521000.0
     samples = int(rate)
     t = np.arange(samples) / rate
@@ -603,8 +625,13 @@ def test_rds_composite_uses_the_given_deviation_budget():
                  pilot_deviation_hz=6750.0)
     audio = np.cos(2.0 * np.pi * 1000.0 * t).astype(np.float32)
     plain = analog.broadcast_composite(audio, t, args, RDS_WFM_DEVIATION_HZ, None, 1.0)
+    plain_scale = args.composite_scale
     halved = analog.broadcast_composite(audio, t, args, RDS_WFM_DEVIATION_HZ, None, 2.0)
-    assert np.allclose(plain / 2.0, halved)
+    half_scale = args.composite_scale
+    assert half_scale == pytest.approx(plain_scale / 2.0)
+    assert np.allclose(plain - audio * plain_scale, halved - audio * half_scale,
+                       rtol=1e-6, atol=3e-8)
+    assert np.std(plain - audio * plain_scale) > 0.05  # the pilot and RDS are present
 
 
 def test_rds_radiotext_is_space_padded_to_64_characters():
