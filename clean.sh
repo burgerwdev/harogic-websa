@@ -14,5 +14,8 @@ if [ "$keep_deps" = 1 ]; then
   echo "OK: cleaned (caches/logs/dist; node_modules + wasm target dirs kept; run ./build.sh to rebuild frontend)"
 else
   rm -rf frontend/node_modules wasm/target wasm-dfn/target
-  echo "OK: cleaned (caches/logs/artifacts + wasm build dirs; run make build to rebuild everything)"
+  # A full wipe also removes published WASM cores. Otherwise timestamp checks may skip
+  # rebuilding them after `wasm/target` was deleted.
+  rm -f frontend/public/dsp.wasm frontend/public/dfn/df_bg.wasm
+  echo "OK: cleaned (caches/logs/artifacts + wasm build dirs + published wasm cores; run make build to rebuild everything - the WASM cores need Rust)"
 fi

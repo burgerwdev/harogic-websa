@@ -1,10 +1,9 @@
 # Unified entry, organised by functional area (Service / Build / Test / WASM artifacts /
 # Hardware / E2E / Misc). Run `make help` for the grouped list.
 #
-# Build strategy: the WASM cores are COMMITTED (frontend/public/dsp.wasm, dfn/df_bg.wasm), so a
-# machine without Rust still builds. `make build` re-runs a WASM core only when a source is newer
-# than the published artifact AND a toolchain exists. `make clean` keeps node_modules and the cargo
-# target dirs, so `make clean && make build` is incremental; `make clean-all` is the full wipe.
+# WASM cores are committed. A Rust-free machine can still build the frontend.
+# `make build` rebuilds stale cores when Rust is present; a full clean removes both targets
+# and published cores. `make wasm-test` / `make ci` run native kernel tests separately.
 
 .PHONY: run stop restart status \
 	build frontend wasm wasm-dsp wasm-dfn dev clean clean-all \
@@ -70,7 +69,7 @@ test:     ## Test (backend pytest + frontend vitest)
 wasm-test: ## Run the Rust DSP kernel tests (numeric agreement with the Python reference)
 	cd wasm && cargo test
 
-ci:       ## The in-process gates CI runs, locally (no hardware; browser e2e: make e2e-fake)
+ci: wasm-test  ## The in-process gates CI runs, locally (no hardware; browser e2e: make e2e-fake)
 	./test.sh
 	python3 tools/checks/sync_version.py --check
 	python3 tools/fixtures/gen_frame_fixtures.py --check
@@ -149,6 +148,7 @@ viewport-check:  ## Resolution/geometry gate: every viewport must come back clea
 
 all:      ## Build + test + run
 	$(MAKE) build
+	$(MAKE) wasm-test
 	./test.sh
 	./run.sh
 
