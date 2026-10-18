@@ -95,6 +95,11 @@ function clearWatchdog(): void {
 export function requestGraphMode(target: GraphMode): void {
 	if (pendingGraphMode() === null && target === currentGraphMode()) return;
 	graphMode.set(target);
+	// A re-click on the same pending target no-ops in `set` (same desired value) but DOES
+	// restart the watchdog below: refresh the intent clock with it, or the param TTL from
+	// the FIRST click expires while the second watchdog is still waiting — it then finds
+	// `pending()` false and returns without ever telling the user the switch failed.
+	graphMode.touch(target);
 	clearWatchdog();
 	const id = graphMode.epoch;
 	watchdog = window.setTimeout(() => {

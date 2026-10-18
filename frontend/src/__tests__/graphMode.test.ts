@@ -77,3 +77,22 @@ describe('graph mode handshake', () => {
     expect(graphModeDiverges()).toBe(false);
   });
 });
+
+describe('re-issued mode requests', () => {
+	it('a re-click on the same target refreshes the TTL with the new watchdog', () => {
+		// The old order: the re-click restarted the 8 s watchdog, but `set` kept the FIRST
+		// intent's timestamp — the param TTL expired mid-window and the second watchdog
+		// found `pending()` false, so the user waited silently and was never told.
+		const seen: string[] = [];
+		setGraphModeTimeoutHandler((want) => seen.push(want));
+
+		requestGraphMode('sdr');
+		vi.advanceTimersByTime(GRAPH_MODE_TTL_MS - 10);
+		expect(pendingGraphMode()).toBe('sdr');
+		requestGraphMode('sdr');                    // re-click 10 ms before the old deadline
+		vi.advanceTimersByTime(GRAPH_MODE_TTL_MS - 20);
+		expect(pendingGraphMode()).toBe('sdr');     // first TTL must not have expired the intent
+		vi.advanceTimersByTime(20);
+		expect(seen).toEqual(['sdr']);              // the new watchdog still notifies
+	});
+});

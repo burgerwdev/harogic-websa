@@ -147,6 +147,21 @@ export class Param<T> {
 	}
 
 	/**
+	 * Refresh an already-identical intent's clock (a re-issued request restarts its TTL).
+	 *
+	 * `set` deliberately keeps the original timestamp so callers can dedupe; the mode
+	 * handshake needs the opposite when the user re-clicks the same target — its own
+	 * watchdog restarts, and a param TTL that outlives intent would leave the second
+	 * watchdog watching an expired request that can never notify.
+	 */
+	touch(v: T): void {
+		if (this.#desired !== null && this.eq(v, this.#desired)) {
+			this.#desiredAt = Date.now();
+			this.#epoch++;
+		}
+	}
+
+	/**
 	 * Apply a backend report. Returns true when the confirmed value changed.
 	 *
 	 * A contradicting report does not cancel a still-valid intent (the command may simply
