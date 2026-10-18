@@ -117,6 +117,11 @@ export class WasmPipeline {
 		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbfs);
 	}
 
+	/** The panel's AGC switch: on = the level stage adapts (default), off = unity gain. */
+	setAgc(on: boolean): void {
+		if (this.handle) this.module.exports.websa_dsp_demod_set_agc?.(this.handle, on ? 1 : 0);
+	}
+
 	/**
 	 * De-emphasis in microseconds. `< 0` is the panel's Auto: the DSP resolves it against its own
 	 * mode table (50 us for broadcast WFM, none elsewhere), `0` switches it off, a positive value
@@ -471,6 +476,10 @@ export class WasmPipeline {
 		if (this.audioPtr) {
 			this.module.free(this.audioPtr, 32768 * 2);
 			this.audioPtr = 0;
+		}
+		if (this.sidePtr) {
+			this.module.free(this.sidePtr, MAX_COMPLEX_SAMPLES * 4);
+			this.sidePtr = 0;
 		}
 		if (this.imgMetaPtr) {
 			this.module.free(this.imgMetaPtr, IMAGE_WORDS * 4);

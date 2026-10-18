@@ -1,4 +1,5 @@
 """Command validation for atomic frequency and reference controls."""
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -343,3 +344,37 @@ async def test_auto_scale_works_in_sdr_through_the_same_command():
     assert dev.auto_ref.view('sdr')['target'] == 0.0
     assert dev.state.ref_level == -20.0
     assert dev.session.reconfigures == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_scale_runs_off_the_event_loop():
+    """The SDK fit must not run on the event loop.
+
+    `dev.auto_scale` takes the device-wide lock; with a worker holding it, the old direct
+    call blocked the whole loop — every WebSocket, STATUS push and /api/state froze until
+    the step finished. The dispatch must keep the loop responsive while the call runs in
+    the hardware-call thread.
+    """
+    import threading
+
+    dev = ScaleDevice()
+    blocker = threading.Lock()
+    blocker.acquire()
+    timeline: list[str] = []
+
+    def slow_auto_scale(mode, current=None):
+        blocker.acquire()           # simulates a worker holding the hardware lock
+        blocker.release()
+        timeline.append('auto_scale')
+        return 'ok', None
+
+    dev.auto_scale = slow_auto_scale
+    threading.Timer(0.2, blocker.release).start()
+    task = asyncio.create_task(
+        _dispatch(dev, 'AUTO_SCALE', {'cmd': 'AUTO_SCALE', 'range_db': 100.0}))
+    # On the loop, this completes while the "SDK call" is still blocked; with the old direct
+    # call the loop was frozen inside auto_scale and this only ran AFTER it returned.
+    await asyncio.sleep(0.05)
+    timeline.append('loop_alive')
+    assert await asyncio.wait_for(task, 5) is True
+    assert timeline == ['loop_alive', 'auto_scale']

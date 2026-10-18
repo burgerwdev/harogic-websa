@@ -76,6 +76,18 @@ export function df_create(model_bytes, atten_lim) {
 }
 
 /**
+* Free a state created by `df_create`.
+*
+* `DfnProcessor::reset` builds a fresh stream per retune; without an explicit free every
+* abandoned state (tract runtime + GRU history) stayed on the WASM heap for the page's
+* lifetime, and repeated retunes grew it without bound.
+* @param {number} st
+*/
+export function df_free(st) {
+    wasm.df_free(st);
+}
+
+/**
 * Get DeepFilterNet frame size in samples.
 * @param {number} st
 * @returns {number}

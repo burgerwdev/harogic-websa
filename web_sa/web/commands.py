@@ -285,7 +285,11 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     'SET_SWEEP': (
         ParamSpec('mode', 'integer', 0, 8),
-        ParamSpec('time', 'number', 0.0, 60.0, unit='s'),
+        # The schema bound is the widest legal value (a x1000 multiplier); the per-mode
+        # ranges (Manual 0.001..60 s, multiplier 1..1000) are enforced by _x_set_sweep.
+        # The old 60 s schema bound rejected every multiplier above x60 with a generic
+        # range error even though the mode allows it.
+        ParamSpec('time', 'number', 0.0, 1000.0, unit='s'),
     ),
     'SET_POINTS': (ParamSpec('points', 'integer', 51, POINTS_MAX, required=True),),
     'SET_SPUR': (ParamSpec('mode', 'choice', choices=('bypass', 'standard', 'enhanced'),
@@ -525,7 +529,15 @@ async def _h_set_preset(ctx: CommandContext, data: dict) -> bool:
         session.snapshot_current()
         await ctx.hw_call(session.reset_defaults)
     elif name == 'sdr':
-        # Re-apply the IQS/DDC chain so the SDR session picks up the reset parameters.
+        # Refresh the SWP restore point with the post-reset state too: leaving SDR used to
+        # restore the parameters captured on ENTRY, silently undoing the preset the user
+        # had just applied. Then re-apply the IQS/DDC chain so the SDR session picks up
+        # the reset parameters.
+        session.snapshot_current()
+        await ctx.hw_call(session.reconfigure)
+    elif name in ('harmonic', 'pnm'):
+        # A measurement session owns the device profile: re-apply its own configuration
+        # (post-reset) instead of stomping a bare SWP profile over a running measurement.
         await ctx.hw_call(session.reconfigure)
     else:
         await ctx.configure_swp()
@@ -575,6 +587,26 @@ async def _h_connect(ctx: CommandContext, data: dict) -> bool:
     ok, err = await ctx.hw_call(ctx.dev.reopen)
     if not ok:
         raise CommandError(f'device connection failed: {err}', 'connect_failed', detail=err)
+    # reopen() only re-issues the SWP profile. The session that owned the device before the
+    # link dropped still exists but its profile (RTA/SDR/harmonic...) is gone from the
+    # hardware; re-enter it in place — the same transaction the automatic link loop runs —
+    # so CONNECT actually restores the mode instead of a bare SWP config behind it.
+    from ..measurements import SessionManager
+
+    dev = ctx.dev
+    name = getattr(getattr(dev, 'session', None), 'name', 'std') or 'std'
+
+    def _reenter():
+        try:
+            SessionManager(dev).switch(name)
+        except Exception:
+            SessionManager(dev).switch('std')
+
+    try:
+        await ctx.hw_call(_reenter)
+    except Exception as exc:
+        raise CommandError(f'connected, but re-entering {name} mode failed: {exc}',
+                           'connect_mode_failed') from exc
     return True
 
 
@@ -636,7 +668,10 @@ async def _run_auto_scale(ctx: CommandContext, current: float | None = None) -> 
     dev = ctx.dev
     if dev.state.mode not in ('std', 'rta', 'sdr'):
         return False
-    result, _target = dev.auto_scale(dev.auto_reference_scope(), current)
+    # Behind the hardware lock's thread like every other SDK call: auto_scale takes the
+    # device-wide lock, and a worker mid-step would otherwise block THIS event loop —
+    # freezing every WebSocket, STATUS push and /api/state until the step finished.
+    result, _target = await ctx.hw_call(dev.auto_scale, dev.auto_reference_scope(), current)
     # The client must re-read `auto_ref.target` (SDR applies it to the display scale), so a STATUS
     # push is needed even when the device itself was not reconfigured.
     return result != 'no_data'

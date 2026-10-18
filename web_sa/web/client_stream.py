@@ -94,9 +94,11 @@ class ClientStream:
 
         The SDR session asks before running its Python demodulator: with the browser doing the
         demodulation (its own socket carries the channelized baseband) nobody subscribes to audio,
-        and an audio chain computed for a socket that discards it would be pure CPU.
+        and an audio chain computed for a socket that discards it would be pure CPU. An aux-DDC
+        socket keeps neither AUDF nor IQBF (it is aux-only by routing), so it counts for neither.
         """
-        return not self.closed and not self.no_audio and not self.iq_only
+        return (not self.closed and not self.no_audio and not self.iq_only
+                and not self.aux_iq)
 
     @property
     def accepts_iq(self) -> bool:
@@ -105,8 +107,10 @@ class ClientStream:
         The publisher asks this before the session encodes an IQ block, so the raw-IQ
         encode+fan-out only happens while a browser DSP socket is really subscribed: an
         audio-only socket discards IQ, and counting it would encode megabytes for nobody.
+        An aux-only socket receives IQAX frames, never IQBF.
         """
-        return not self.closed and not self.no_iq and not self.audio_only
+        return (not self.closed and not self.no_iq and not self.audio_only
+                and not self.aux_iq)
 
     @property
     def accepts_aux(self) -> bool:

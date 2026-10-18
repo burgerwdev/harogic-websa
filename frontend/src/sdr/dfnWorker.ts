@@ -29,8 +29,15 @@ self.onmessage = (event: MessageEvent) => {
 		);
 	} else if (msg.type === 'process') {
 		// Synchronous on purpose: this worker's own loop may block; the iqWorker must not.
+		// `gen` is echoed so the caller can drop answers from a stream it already switched
+		// away from (the response arrives asynchronously).
 		const out = processor ? processor.process(msg.pcm as Float32Array) : new Float32Array(0);
-		(self as any).postMessage({ type: 'pcm', seq: msg.seq as number, out }, [out.buffer]);
+		// Worker scope: `self.postMessage` needs the DedicatedWorkerGlobalScope signature
+		// (the DOM lib types Window.postMessage instead), so narrow it once, explicitly.
+		const post = self as unknown as {
+			postMessage(message: unknown, transfer?: Transferable[]): void;
+		};
+		post.postMessage({ type: 'pcm', seq: msg.seq as number, gen: msg.gen, out }, [out.buffer]);
 	} else if (msg.type === 'atten') {
 		atten = Number(msg.value) || 0;
 		processor?.setAttenLim(atten);

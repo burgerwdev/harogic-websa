@@ -91,3 +91,27 @@ def test_rta_repeated_errors_reconfigure_then_escalate():
     session._last_recovery -= 2
     with pytest.raises(DeviceError):
         session._step_failed_locked('get', -1)
+
+
+def test_only_an_armed_timeout_may_hold_the_stall_watchdog_off():
+    """Only a genuine trigger wait (-10 while armed) suppresses the stall watchdog.
+
+    Every armed warning used to set `trigger_actual.waiting` — so a persistent -11 ("re-issue
+    the configuration", which the stall watchdog exists to recover) silenced that watchdog —
+    and a persistent -10 in free run (where nothing can legitimately wait) kept a dead stream
+    behind a green connection.
+    """
+    dev = SimpleNamespace(state=SimpleNamespace(status_warning=0, trigger_actual={}))
+
+    RtaSession._note_warning(None, dev, -10, True)
+    assert dev.state.trigger_actual.get('waiting') is True
+
+    dev.state.trigger_actual = {}
+    RtaSession._note_warning(None, dev, -10, False)      # free run: a timeout is a dead stream
+    assert 'waiting' not in dev.state.trigger_actual
+
+    RtaSession._note_warning(None, dev, -11, True)       # BusDownLoad: re-issue the configuration
+    assert 'waiting' not in dev.state.trigger_actual
+
+    RtaSession._note_warning(None, dev, -12, True)       # IF overflow: frames keep coming
+    assert 'waiting' not in dev.state.trigger_actual

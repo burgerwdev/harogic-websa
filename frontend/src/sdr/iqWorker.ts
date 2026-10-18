@@ -162,8 +162,19 @@ let dfnError = '';
 let dfnFellBack = false;
 /// Monotonic sequence for ordering the async dfn worker responses.
 let dfnSeq = 0;
+/// Bumped whenever DFN must stop producing (NR off / algo switch / non-48k rate). The dfn
+/// worker's answers arrive asynchronously; a response from an older generation is audio from
+/// another stream and must be dropped, not delivered after the switch.
+let dfnGeneration = 0;
 let squelchDbfs = -110;
+/// The panel's AGC switch for the analog path (the WASM level stage). The backend's own
+/// `sdr_agc` state is a different consumer (the Python fallback chain); this one must be
+/// told explicitly or the browser chain keeps levelling with the switch off.
+let agcOn = true;
 let workletPort: MessagePort | null = null;
+/// The decode window's SSTV mode pin (null = AUTO / VIS-decided). Re-applied after every
+/// pipeline (re)build — the pin lives in the decoder instance, not in this thread.
+let sstvModePin: number | null = null;
 let enabled = false;
 let blocks = 0;
 let samples = 0;
@@ -386,6 +397,12 @@ function syncCwDecoder(): void {
   postStats();
 }
 
+/** Re-apply the decode window's SSTV pin to a freshly built/reconfigured decoder. */
+function applySstvModePin(): void {
+  if (params?.mode !== 'sstv' || !pipeline?.ok) return;
+  pipeline.setModePin(sstvModePin);
+}
+
 /** Create or rebuild the pipeline for the current parameters. */
 function syncPipeline(): void {
   if (!enabled || !params || !module) return;
@@ -410,6 +427,7 @@ function syncPipeline(): void {
       }
       pipeline?.free();
       pipeline = new WasmPipeline(module, params, true);
+      applySstvModePin();
     } else {
       // A protocol decoder lives in its own worker (`decoder`): this thread keeps only the companion
       // demodulator, so a multi-second slot decode cannot starve the audio (measured before the
@@ -421,6 +439,19 @@ function syncPipeline(): void {
     pipeline.reconfigure(params, false);
   } else {
     pipeline = new WasmPipeline(module, params, false);
+  }
+  if (isDigital && !pipeline) {
+    // Companion-only protocol (FT8 and the other external-decoder protocols): the decoder
+    // lives in its own worker and this thread runs only the analog companion, so `pipeline`
+    // being null is the CORRECT state here — it used to be reported as `no DSP pipeline for
+    // mode ...` and skipped the rest of the readiness work on every switch to FT8.
+    syncCwDecoder();
+    syncCompanion(isDigital);
+    pushDecoderParams();
+    applyListenerControls();
+    post({ type: 'ready', mode: params.mode });
+    postStats();
+    return;
   }
   if (!pipeline?.ok) {
     // Declared but not runnable: report it instead of pretending it works.
@@ -509,6 +540,7 @@ function applyListenerControls(): void {
     target.setAudioEnabled(audioEnabled);
     target.setNr(wasmNr, nrStrength);
     target.setSquelch(squelchDbfs);
+    target.setAgc(agcOn);
     target.setDeemph(params?.deemphUs ?? -1);
   }
 }
@@ -518,13 +550,20 @@ function syncDfn(): void {
   const wanted = nr && nrAlgo === 'dfn';
   if (!wanted) {
     // Stop forwarding; keep the worker for reuse. A later on→cycle re-inits it (fresh stream).
+    // The generation bump invalidates responses still in flight from the switched-off stream.
     dfnReady = false;
+    dfnGeneration++;
     dfnLoading = false;
     dfnFellBack = false;
     dfnError = '';
     return;
   }
   if ((params?.outRate ?? 0) !== 48000) {
+    // The model runs at 48 kHz only. A rate change must clear `dfnReady` too: leaving it set
+    // kept feeding the (now differently-rated) stream through DFN while the Wiener chain
+    // ALSO processed it (dfnFellBack forces Wiener on) — double NR at the wrong rate.
+    dfnReady = false;
+    dfnGeneration++;
     dfnFellBack = true;
     dfnError = `rate ${params?.outRate}`;
     applyListenerControls();
@@ -569,6 +608,10 @@ function syncDfn(): void {
         applyListenerControls();
         post({ type: 'dfn-status', state: 'fallback', reason: dfnError });
       } else if (d.type === 'pcm') {
+        // A response from a generation that has since been invalidated (NR off, algo switch,
+        // rate change) is audio of another stream — drop it instead of delivering the stale
+        // tail after the switch.
+        if (Number(d.gen) !== dfnGeneration) return;
         const block = d.out as Float32Array;
         deliver(workletStereo ? duplicateStereo(block) : block);
       }
@@ -588,7 +631,8 @@ function syncDfn(): void {
 /** Forward one PCM block to the dfn worker (async: the response arrives on its 'pcm' message). */
 function deliverViaDfn(pcm: Float32Array): void {
   if (!dfnWorker || !dfnReady) return;
-  dfnWorker.postMessage({ type: 'process', seq: dfnSeq++, pcm }, [pcm.buffer]);
+  const gen = dfnGeneration;
+  dfnWorker.postMessage({ type: 'process', seq: dfnSeq++, gen, pcm }, [pcm.buffer]);
 }
 
 /** Drop the worker's queued PCM and tell the worklet to drop the ring it already holds. */
@@ -1069,6 +1113,10 @@ self.onmessage = (event: MessageEvent) => {
     // header decides). A protocol without the knob refuses it, which the reply reports.
     const index = Number(msg.index);
     const wanted = Number.isFinite(index) && index >= 0 ? index : null;
+    // Remembered so a pipeline (re)build can re-apply it: the pin lives in the decoder
+    // instance, and a geometry rebuild used to silently fall back to VIS auto-detect while
+    // the window still showed the pinned mode.
+    sstvModePin = wanted;
     const applied = pipeline?.setModePin(wanted) ?? false;
     post({ type: 'sstv-mode', index: applied ? (wanted ?? -1) : -1 });
   } else if (msg.type === 'enabled') {
@@ -1100,6 +1148,7 @@ self.onmessage = (event: MessageEvent) => {
       if (typeof msg.nrAlgo === 'string') nrAlgo = msg.nrAlgo === 'dfn' ? 'dfn' : 'wiener';
       if (typeof msg.nrAtten === 'number') nrAtten = msg.nrAtten;
       if (typeof msg.squelch === 'number') squelchDbfs = msg.squelch;
+      if (typeof msg.agc === 'boolean') agcOn = msg.agc;
       // A rate or bandwidth change rebuilds the demodulator (its filters describe the rate they were
       // designed for), but only a *real* change: the baseband rate the backend reports is measured, so
       // it wobbles by a fraction of a percent every window - and a strict comparison rebuilt the whole
@@ -1120,6 +1169,7 @@ self.onmessage = (event: MessageEvent) => {
                oldMode: previous?.mode, newMode: next.mode });
         // The baseband geometry changed: the demodulator's filters describe another channel.
         pipeline.reconfigure(next, false);
+        applySstvModePin();
         if (!pipeline.ok) {
           pipeline.free();
           pipeline = null;
@@ -1134,6 +1184,7 @@ self.onmessage = (event: MessageEvent) => {
         pipeline.reconfigure(next, true);
         post({ type: 'drm-clear' });
         resetDelivery();
+        applySstvModePin();
         if (!pipeline.ok) {
           pipeline.free();
           pipeline = null;
@@ -1176,6 +1227,10 @@ self.onmessage = (event: MessageEvent) => {
   } else if (msg.type === 'squelch') {
     squelchDbfs = Number(msg.value) || -110;
     pipeline?.setSquelch(squelchDbfs);
+    postStats();
+  } else if (msg.type === 'agc') {
+    agcOn = Boolean(msg.value);
+    pipeline?.setAgc(agcOn);
     postStats();
   } else if (msg.type === 'deemph') {
     params = params ? { ...params, deemphUs: Number(msg.value) } : params;

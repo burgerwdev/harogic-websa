@@ -67,6 +67,10 @@ class PhaseNoiseSession(MeasurementSession):
         with self.dev._hw:
             self._configure_locked()
 
+    def reconfigure(self):
+        """Re-apply the current profile (preset / shared-setting changes mid-measurement)."""
+        self._configure()
+
     def _configure_locked(self):
         d = self.dev.dev
         prof = sb.PNM_Profile_TypeDef()
@@ -100,8 +104,10 @@ class PhaseNoiseSession(MeasurementSession):
             if not self._started and self.dirty:
                 try:
                     self._configure()
-                except Exception:
-                    self.dirty = False
+                except Exception as exc:
+                    # Keep the flag: the next cycle retries instead of silently running on
+                    # with the profile the request was supposed to replace.
+                    self.dev.state.last_error = f'PNM reconfiguration failed: {exc}'
             d = self.dev.dev
             info = self._info
             if not self._started:
@@ -134,6 +140,8 @@ class PhaseNoiseSession(MeasurementSession):
                 traceavg=float(self.traceavg), done=done, progress=progress)
             if done:
                 self._started = False
-                self.dirty = False
+                # A parameter change that arrived mid-cycle is applied BEFORE the next
+                # cycle starts; clearing the flag here answered the request with a result
+                # produced by the old profile.
                 self.dev.state.pnm_last = res
             return [], [res]

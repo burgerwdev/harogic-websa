@@ -283,7 +283,12 @@ class RtaSession(MeasurementSession):
         if status == -12:
             dev.state.last_error = ('IF overflow (-12): raise the reference level until '
                                     'this warning clears')
-        if armed or status == -10:
+        # Only a genuine trigger wait (-10 while armed) may suppress the stall watchdog.
+        # Every armed warning used to set it — a persistent -11 ("re-issue the
+        # configuration") then silenced the very watchdog that is supposed to recover it,
+        # and a persistent -10 in free run (where nothing can legitimately wait) kept the
+        # stream dead with a green connection.
+        if armed and status == -10:
             dev.state.trigger_actual['waiting'] = True
 
     def _step_failed_locked(self, stage: str, status) -> None:
@@ -440,9 +445,9 @@ class RtaSession(MeasurementSession):
                 if st in _WARN_STATUS:
                     self._note_warning(dev, st, armed)
                     return [], []
-                if armed:
-                    dev.state.trigger_actual['waiting'] = True
-                    return [], []
+                # A non-warning status is a transport failure even while a trigger is
+                # armed: treating it as "waiting" silenced the stall watchdog for a dead
+                # stream (the trigger wait is -10, a WARNING, handled above).
                 self._step_failed_locked('trigger', st)
                 return [], []
             try:
@@ -459,9 +464,6 @@ class RtaSession(MeasurementSession):
             if status != 0:
                 if status in _WARN_STATUS:
                     self._note_warning(dev, status, armed)
-                    return [], []
-                if armed:
-                    dev.state.trigger_actual['waiting'] = True
                     return [], []
                 self._step_failed_locked('get', status)
                 return [], []

@@ -403,6 +403,14 @@ pub extern "C" fn websa_dsp_demod_set_deemph(handle: u32, tau_us: f64) -> u32 {
     with_pipeline(handle, |state| u32::from(state.pipeline.set_deemph_us(tau_us))).unwrap_or(0)
 }
 
+/// The panel's AGC switch for the analog path: `on != 0` adapts the level (default),
+/// `on == 0` passes the PCM at unity gain.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_set_agc(handle: u32, on: u32) -> u32 {
+    with_pipeline(handle, |state| u32::from(state.pipeline.set_agc_enabled(on != 0)))
+        .unwrap_or(0)
+}
+
 /// The de-emphasis in force, in microseconds (0 = none): what the panel's setting resolved to.
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_deemph(handle: u32) -> f64 {

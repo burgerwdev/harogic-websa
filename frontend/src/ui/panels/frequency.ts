@@ -15,7 +15,11 @@ export function frequencyEditor(id: 'swp-freq-settings' | 'rta-freq-settings'): 
 
 export function markFrequencyDirty(id: 'swp-freq-settings' | 'rta-freq-settings') {
   const editor = frequencyEditor(id);
-  if (editor) editor.dataset.dirty = '1';
+  if (!editor) return;
+  editor.dataset.dirty = '1';
+  // Every keystroke bumps the generation: an ack may then tell edits made BEFORE a commit
+  // apart from edits typed while that commit was in flight (see syncFrequencyEditorStatus).
+  editor.dataset.dirtyGen = String(Number(editor.dataset.dirtyGen || '0') + 1);
 }
 
 export function beginFrequencyCommit(id: 'swp-freq-settings' | 'rta-freq-settings') {
@@ -24,6 +28,9 @@ export function beginFrequencyCommit(id: 'swp-freq-settings' | 'rta-freq-setting
     editor.dataset.pending = '1';
     editor.dataset.pendingVersion = String(S.configVersion + 1);
     editor.dataset.pendingAt = String(Date.now());
+    // The commit belongs to the edits made up to now. Clearing on its ack must not also
+    // clear edits typed after it (submit A, then type B: A's ack used to wipe B).
+    editor.dataset.commitGen = editor.dataset.dirtyGen || '0';
   }
 }
 
@@ -31,8 +38,24 @@ function clearFrequencyEditor(editor: HTMLElement) {
   delete editor.dataset.pending;
   delete editor.dataset.pendingVersion;
   delete editor.dataset.pendingAt;
+  delete editor.dataset.commitGen;
   delete editor.dataset.dirty;
   editor.querySelectorAll('input').forEach(input => delete (input as HTMLElement).dataset.edited);
+}
+
+/** Clear the commit markers; keep edits typed after the commit (they are still in flight). */
+function clearCommittedFrequencyEditor(editor: HTMLElement) {
+  const dirtyGen = editor.dataset.dirtyGen || '0';
+  const commitGen = editor.dataset.commitGen || '0';
+  delete editor.dataset.pending;
+  delete editor.dataset.pendingVersion;
+  delete editor.dataset.pendingAt;
+  delete editor.dataset.commitGen;
+  if (dirtyGen === commitGen) {
+    // Nothing was typed after this commit: the dirty/edited marks belonged to it.
+    delete editor.dataset.dirty;
+    editor.querySelectorAll('input').forEach(input => delete (input as HTMLElement).dataset.edited);
+  }
 }
 
 export function syncFrequencyEditorStatus(responseTo?: string, configVersion = 0) {
@@ -48,7 +71,7 @@ export function syncFrequencyEditorStatus(responseTo?: string, configVersion = 0
     : responseTo === 'SET_RTA' ? 'rta-freq-settings' : null;
   if (id) {
     const editor = frequencyEditor(id);
-    if (editor) clearFrequencyEditor(editor);
+    if (editor) clearCommittedFrequencyEditor(editor);
     return;
   }
   for (const editorId of ['swp-freq-settings', 'rta-freq-settings'] as const) {

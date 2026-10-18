@@ -186,6 +186,11 @@ pub struct AnalogDemod {
     /// The de-emphasis in force, in microseconds (0 = none). Starts at the mode's default and can be
     /// overridden by the listener (the panel's De-emph control).
     deemph_us: f64,
+    /// The listener's AGC switch. On = the automatic level stage adapts (the historical behaviour);
+    /// off = the PCM passes at unity gain, so the meter and the ear see the same amplitude the
+    /// detector produced. The switch used to exist only on the backend's Python path, so the
+    /// browser chain levelled everything no matter what the panel said.
+    agc_enabled: bool,
     /// Rate the PCM is produced at (the consumer's rate).
     out_rate: f64,
     pitch: f64,
@@ -228,6 +233,7 @@ impl AnalogDemod {
             spec,
             fs,
             deemph_us: spec.deemph_us,
+            agc_enabled: true,
             out_rate,
             pitch,
             band: ComplexBandFilter::new(re, im),
@@ -306,6 +312,16 @@ impl AnalogDemod {
         if let Some(stereo) = self.stereo.as_mut() {
             let taps = self.deemph.as_ref().map(|d| d.taps().to_vec()).unwrap_or_default();
             stereo.set_deemph_taps(taps);
+        }
+    }
+
+    /// The listener's AGC switch: `true` adapts the level (default), `false` passes unity.
+    pub fn set_agc_enabled(&mut self, on: bool) {
+        self.agc_enabled = on;
+        if !on {
+            // A later re-enable must not slam the old gain onto a signal that changed level
+            // in between: start the adaptation from scratch.
+            self.agc.reset();
         }
     }
 
@@ -456,7 +472,14 @@ impl AnalogDemodulator for AnalogDemod {
         }
 
         let mut levelled = core::mem::take(&mut self.levelled);
-        self.agc.process_into(&rs, false, &mut levelled);
+        if self.agc_enabled {
+            self.agc.process_into(&rs, false, &mut levelled);
+        } else {
+            // AGC off: unity gain. The block still lands in `levelled` so the stereo side
+            // chain's gain trace (which reads these two buffers) keeps one consistent scale.
+            levelled.clear();
+            levelled.extend_from_slice(&rs);
+        }
         out.extend_from_slice(&levelled);
 
         // The side chain reads the DISCRIMINATOR output, not the baseband: the pilot, the L−R DSB
@@ -651,6 +674,43 @@ mod tests {
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "AM audio tone");
         let level = rms(&audio);
         assert!((0.05..0.2).contains(&level), "AM audio level {level} (AGC target 0.1)");
+    }
+
+    #[test]
+    fn agc_switch_off_passes_unity_gain() {
+        // A quiet AM carrier: with the AGC the level stage drives the RMS to its 0.1 target;
+        // with the switch off the detector's own (quieter) amplitude passes unchanged. The
+        // switch used to exist only on the Python path, so the WASM chain levelled everything.
+        let mk = || {
+            let mut config = DemodConfig::new(FS, IF_BW);
+            config.pitch = PITCH;
+            build("am", config, AUDIO_RATE).expect("mode must exist")
+        };
+        let n = 20_000;
+        let mut iq = Vec::with_capacity(n * 2);
+        for k in 0..n {
+            let t = k as f64 / FS;
+            let (i, q) = (0.5 + 0.1 * (TAU * TONE_HZ * t).cos(), 0.0);
+            iq.push(i as f32);
+            iq.push(q as f32);
+        }
+
+        let mut with_agc = mk();
+        let mut adapted = Vec::new();
+        with_agc.process_into(&iq, &mut adapted);
+
+        let mut without = mk();
+        without.set_agc_enabled(false);
+        let mut unity = Vec::new();
+        without.process_into(&iq, &mut unity);
+
+        let rms_on = rms(&adapted);
+        let rms_off = rms(&unity);
+        assert!((rms_on - 0.1).abs() < 0.05, "AGC on sits near its target: {rms_on}");
+        assert!(
+            rms_off < rms_on * 0.7,
+            "AGC off must pass unity, not adapt: {rms_off} vs {rms_on}"
+        );
     }
 
     #[test]

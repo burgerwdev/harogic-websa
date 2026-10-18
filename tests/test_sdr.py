@@ -599,3 +599,52 @@ def test_analog_demod_reconfigure_does_not_burst():
     audio2, _ = demod.process(z.real, z.imag, use_agc=True)
     assert audio2.size
     assert np.max(np.abs(audio2)) <= 0.9500001, 'reconfigure must not produce a burst'
+
+
+def test_demod_combined_change_keeps_the_ddc_reconfiguration(monkeypatch):
+    """mode+IFBW+pitch in ONE command: the IFBW change must still reach the DDC.
+
+    The UI sends the whole demod panel in one SET_SDR_DEMOD. The pitch/de-emph branches used
+    to ASSIGN `reconfig` (not OR it): with the browser demodulating, they reset the flag the
+    IFBW branch had just set, so STATUS reported the new bandwidth while the DDC kept the old
+    one — the mismatch the reporter saw between the panel and the actual audio bandwidth.
+    """
+    state = SimpleNamespace(
+        sdr_demod='am', sdr_if_bw=6000.0, sdr_pitch=700.0,
+        sdr_squelch=-110.0, sdr_volume=0.8, sdr_agc=True,
+    )
+    session = SdrSession.__new__(SdrSession)
+    session.dev = SimpleNamespace(state=state)
+    session._lock = threading.RLock()
+    session._audio_is_paused = lambda dev: True
+    stale: list[int] = []
+    session._mark_chain_stale = lambda: stale.append(1)
+    reconfigured: list[int] = []
+    session._reconfigure_chain_runtime_locked = lambda: reconfigured.append(1)
+    monkeypatch.setattr(sdr_module.time, 'monotonic', lambda: 20.0)
+
+    session.set_demod(mode='wfm', if_bw=180000.0, pitch=900.0)
+
+    assert reconfigured == [1]          # the DDC reconfigured despite the pitch change
+    assert stale == [1, 1]              # browser demod: chain marked stale for mode + pitch
+    assert (state.sdr_demod, state.sdr_if_bw, state.sdr_pitch) == ('wfm', 180000.0, 900.0)
+
+
+def test_peak_hold_decays_over_the_packet_interval():
+    """The peak meter holds over packets, not over the process uptime.
+
+    `_last_peak_t` was written once (0.0) and never updated, so every decay step used
+    dt = the whole uptime and `max(packet, decayed, floor)` always degraded to the packet's
+    own peak: the meter never held anything. With the true inter-packet dt the hold decays
+    20 dB/s and survives packets well below the held value.
+    """
+    held = -30.0
+    # The old behaviour: dt spans the whole uptime, so the hold is gone immediately.
+    assert sdr_module._peak_hold(held, -40.0, 1000.0) == pytest.approx(-40.0)
+    # The fixed behaviour: one packet interval (~163 ms) decays ~3.3 dB.
+    held = sdr_module._peak_hold(-30.0, -30.0, 0.16)
+    assert held == pytest.approx(-30.0)
+    held = sdr_module._peak_hold(held, -90.0, 0.16)
+    assert held == pytest.approx(-30.0 - 20.0 * 0.16)
+    held = sdr_module._peak_hold(held, -90.0, 0.0)
+    assert held == pytest.approx(-30.0 - 20.0 * 0.16)   # no time passed: full hold

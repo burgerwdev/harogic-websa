@@ -469,6 +469,17 @@ class SdrSession(MeasurementSession):
                           else T.GainStrategy_TypeDef.HighLinearityPreferred)
         p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCAutoOffsetMode
         p.QDCMode = T.QDCMode_TypeDef.QDCOff
+        # Same fields the SWP profile programs (device.configure_swp): without them a
+        # ref-clock / clock-out change in SDR mode only rewrote the state and never
+        # reached the device, so the UI showed a source the hardware was not using.
+        p.ReferenceClockSource = {
+            'internal': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal,
+            'external': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External,
+            'premium': T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal_Premium,
+            'external_forced': T.ReferenceClockSource_TypeDef.ReferenceClockSource_External_Forced,
+        }.get(s.ref_clock, T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
+        p.ExternalSystemClockFrequency = 10e6
+        p.EnableReferenceClockOut = 1 if s.refclk_out else 0
         self._sdk_call(
             lambda: T.dll.IQS_Configuration(
                 T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info)),
@@ -526,7 +537,7 @@ class SdrSession(MeasurementSession):
                                    captured_bw),
             atten=int(out.Atten), preamp=int(getattr(out.Preamplifier, 'value', 0)),
             ifgain=int(out.IFGainGrade),
-            ref_clock_source=int(getattr(out.ReferenceClockSource, 'value', -1)),
+            refclk_src=int(getattr(out.ReferenceClockSource, 'value', -1)),
             refclk_out=bool(out.EnableReferenceClockOut),
         )
         # Re-assert the vendor FFT only when the IQS packet geometry changed (it is the
@@ -1069,6 +1080,12 @@ class SdrSession(MeasurementSession):
                 half = self._fs_in / 2.0
                 if not (s.sdr_center_hz - half <= freq <= s.sdr_center_hz + half):
                     raise ValueError('aux freq outside the capture window')
+            # IQAX frames address a channel by its tuned frequency (the header's centre
+            # field): two channels on one frequency would interleave indistinguishably.
+            for other, cfg in s.sdr_aux.items():
+                if other != channel and cfg.get('enabled') and \
+                        abs(float(cfg.get('freq', 0.0)) - freq) < 1.0:
+                    raise ValueError('another aux channel is already tuned to this frequency')
             # else: the capture geometry does not exist yet (the first packet configures it);
             # the step loop configures the aux channel lazily once it does.
             aux['enabled'] = True
@@ -1076,22 +1093,34 @@ class SdrSession(MeasurementSession):
             self._reconfigure_aux_locked(channel)
 
     def _reconfigure_aux_locked(self, channel: int) -> None:
+        # Build and configure the NEW handle first; only a fully configured channel is
+        # swapped in. Closing the old handle first (the old order) left the bookkeeping
+        # pointing at a closed handle when the new configure raised — the stream then fed
+        # a dead DSP — and leaked the new handle on the same failure.
         old = self._aux.get(channel)
+        dsp = sb.c_void_p()
+        st = sb.dll.DSP_Open(sb.pointer(dsp))
+        if st != 0:
+            # The old channel stays open and in service; the caller reports the failure.
+            raise RuntimeError(f'DSP_Open(aux {channel}) status={st}')
+        try:
+            entry = {'dsp': dsp, 'ddc': DdcChannel(dsp), 'seq': 0}
+            offset = (float(self.dev.state.sdr_center_hz)
+                      - float(self.dev.state.sdr_aux[channel]['freq']))
+            entry['ddc'].configure(self._fs_in, offset, self._ddc.decimate,
+                                   self._packet_samples * self._ddc_batch)
+        except Exception:
+            try:
+                sb.dll.DSP_Close(sb.pointer(dsp))
+            except Exception:
+                log.exception('DSP_Close(aux %s) failed after a failed configure', channel)
+            raise
+        self._aux[channel] = entry
         if old is not None:
             try:
                 sb.dll.DSP_Close(sb.pointer(old['dsp']))
             except Exception:
                 log.exception('DSP_Close(aux %s) failed', channel)
-        dsp = sb.c_void_p()
-        st = sb.dll.DSP_Open(sb.pointer(dsp))
-        if st != 0:
-            self._aux.pop(channel, None)
-            raise RuntimeError(f'DSP_Open(aux {channel}) status={st}')
-        entry = {'dsp': dsp, 'ddc': DdcChannel(dsp), 'seq': 0}
-        offset = float(self.dev.state.sdr_center_hz) - float(self.dev.state.sdr_aux[channel]['freq'])
-        entry['ddc'].configure(self._fs_in, offset, self._ddc.decimate,
-                               self._packet_samples * self._ddc_batch)
-        self._aux[channel] = entry
 
     def _teardown_aux_locked(self, channel: int) -> None:
         aux = self._aux.pop(channel, None)
@@ -1126,15 +1155,21 @@ class SdrSession(MeasurementSession):
         # unresponsive (reported). The settings are recorded, and the chain is rebuilt when the
         # Python path takes over again (`_chain_stale`).
         browser_demodulates = self._audio_is_paused(self.dev)
+        # OR-accumulate: the UI sends mode+IFBW+pitch+de-emphasis in ONE command, and a
+        # later assignment used to overwrite the flag an earlier change had set — an IFBW
+        # change lost its DDC reconfiguration when pitch/de-emph moved too, so STATUS
+        # reported the new bandwidth while the DDC still ran the old one.
         reconfig = False
         if mode is not None and mode != s.sdr_demod:
             # The requested demod is recorded even when this Python chain has no kernel for it (a
             # digital protocol runs in the browser): STATUS then reports what the user chose, and
             # the Python DSP keeps demodulating the analog subset it implements.
             s.sdr_demod = mode
-            reconfig = (not browser_demodulates) and mode in ANALOG_MODES
-            if browser_demodulates and mode in ANALOG_MODES:
-                self._mark_chain_stale()
+            if mode in ANALOG_MODES:
+                if browser_demodulates:
+                    self._mark_chain_stale()
+                else:
+                    reconfig = True
         if if_bw is not None and abs(float(if_bw) - s.sdr_if_bw) > 0.5:
             # The IF bandwidth *does* move the channelizer: the DDC's output rate is derived from it,
             # and the browser's demodulator reads that stream.
@@ -1142,14 +1177,16 @@ class SdrSession(MeasurementSession):
             reconfig = True
         if pitch is not None and abs(float(pitch) - s.sdr_pitch) > 0.5:
             s.sdr_pitch = float(pitch)
-            reconfig = not browser_demodulates
             if browser_demodulates:
                 self._mark_chain_stale()
+            else:
+                reconfig = True
         if deemph_us is not None and abs(float(deemph_us) - old_deemph) > 1e-6:
             s.sdr_deemph_us = float(deemph_us)
-            reconfig = not browser_demodulates
             if browser_demodulates:
                 self._mark_chain_stale()
+            else:
+                reconfig = True
         # Volume / squelch / AGC are applied live in step(); they must NOT reconfigure the
         # demod (that reset the filters and produced a pop/gap on every slider move).
         if squelch is not None:
@@ -1350,6 +1387,9 @@ class SdrSession(MeasurementSession):
             # by the device; measuring it ourselves would cost a pass over every sample).
             s.sdr_peak_dbm = _peak_hold(s.sdr_peak_dbm, float(stream.MaxPower_dBm),
                                         now - self._last_peak_t)
+            # The decay runs on the INTER-PACKET interval; leaving the timestamp at the
+            # process start made dt the whole uptime, so the hold never held anything.
+            self._last_peak_t = now
             self._transient_streak = 0
             self._timeout_streak = 0
             self._last_ok = now
@@ -1426,9 +1466,19 @@ class SdrSession(MeasurementSession):
                     row = self._pan.waterfall_row(spec)
                     res = (freq, spec, row)
                 else:
+                    # Same absolute window the vendor path crops to: the display window
+                    # intersected with the real capture window. Clipping symmetrically
+                    # around the capture centre dropped display bins whenever a band edge
+                    # clamped the capture away from the requested centre.
+                    win = s.sdr_actual
+                    lo = max(float(win.get('start', -np.inf)),
+                             float(win.get('capture_start', -np.inf)))
+                    hi = min(float(win.get('stop', np.inf)),
+                             float(win.get('capture_stop', np.inf)))
                     res = self._pan.process(
                         arr[0::2], arr[1::2], self._fs_in, self._iqs_center_hz,
-                        self._scale_to_v, bandwidth=s.sdr_actual.get('bandwidth'))
+                        self._scale_to_v,
+                        lo_hz=lo if hi > lo else None, hi_hz=hi if hi > lo else None)
                 if res is not None:
                     freq, spec, row = res
                     finite = spec[np.isfinite(spec)]

@@ -482,6 +482,7 @@ export function configureSdrPipeline(
     nrAlgo?: 'wiener' | 'dfn';
     nrAtten?: number;
     squelch?: number;
+    agc?: boolean;
   } = {},
 ) {
   // A trapped worker is dropped by `onerror`. Start a fresh one only when the mode changes:
@@ -508,6 +509,7 @@ export function configureSdrPipeline(
     nrAlgo: options.nrAlgo,
     nrAtten: options.nrAtten,
     squelch: options.squelch,
+    agc: options.agc,
   });
 }
 
@@ -546,6 +548,11 @@ export function setSdrPipelineDeemph(tauUs: number): void {
 /** The squelch threshold in dBFS: applied live. */
 export function setSdrPipelineSquelch(dbfs: number): void {
   worker?.postMessage({ type: 'squelch', value: dbfs });
+}
+
+/** The panel's AGC switch for the browser chain: applied live. */
+export function setSdrPipelineAgc(on: boolean): void {
+  worker?.postMessage({ type: 'agc', value: on });
 }
 
 /** Volume is a listener preference: applied in the worker, where the PCM is produced. */

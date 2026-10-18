@@ -191,7 +191,15 @@ class HarogicDevice:
             # parameters (e.g. TracePoints), so the standard config must be re-issued and
             # the buffers refreshed, otherwise GetFullSweep writes out of bounds
             self._link_errors = 0
-            self.configure_swp()
+            ok, err = self.configure_swp()
+            if not ok:
+                # "connected" without a working sweep profile used to pass as success: the
+                # page went green and then produced no spectrum at all. Report the failure
+                # so the link loop (or a manual CONNECT) retries the whole open instead of
+                # parking the UI on a dead link.
+                self.state.connected = False
+                self.state.last_error = err
+                return False, err
             return True, 'ok'
 
     def close(self) -> None:

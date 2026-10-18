@@ -48,6 +48,8 @@ export interface DspExports {
 	websa_dsp_demod_set_deemph(handle: number, tauUs: number): number;
 	websa_dsp_demod_deemph(handle: number): number;
 	websa_dsp_demod_set_squelch(handle: number, dbfs: number): number;
+	/** The panel's AGC switch (1 = adapt, 0 = unity). Absent on builds older than the AGC switch. */
+	websa_dsp_demod_set_agc?(handle: number, on: number): number;
 	/** Drain the stereo difference signal (L−R) of the last processed block (WFM stereo only). */
 	websa_dsp_demod_side(handle: number, ptr: number, capacity: number): number;
 	/** 1 while the stereo pilot is detected (the badge's state). */

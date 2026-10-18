@@ -24,6 +24,7 @@ import { measPnmApply } from '../meas/phaseNoise';
 
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
+import { disarmSwpTrigger } from './swpTrigger';
 import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, resetAxisPreview, type Axis } from './axisDrag';
 import { isSpectrumZoomOn, syncSpectrumZoomUi } from './spectrumZoomUi';
 import {
@@ -42,7 +43,7 @@ import { audioSampleRate, prepareSdrAudioTransition, setSdrAudioEnabled } from '
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
 import { initDecodeWindow, setDecodeWindowAvailable, toggleDecodeWindow } from './decodeWindow';
-import { dspLevelDbfs, resetSdrIq, retuneSdrPipeline, sdrStreamRate, setSdrDspAudioEnabled, setSdrIqEnabled, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch, setSstvModePin } from '../sdr/iqStream';
+import { dspLevelDbfs, resetSdrIq, retuneSdrPipeline, sdrStreamRate, setSdrDspAudioEnabled, setSdrIqEnabled, setSdrPipelineAgc, configureSdrPipeline, setSdrPipelineDeemph, setSdrPipelineNr, setSdrPipelineSquelch, setSstvModePin } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
@@ -196,6 +197,10 @@ export function syncGraphModeStatus(mode: string) {
   const changed = confirmGraphMode(mode);
   syncModeButtons();
   if (!changed) return;
+  // The SWP software capture (armed/hold + its trigger overlay) belongs to the swept mode:
+  // a hold carried into RTA/SDR would keep its state machine and overlay running in a mode
+  // that never evaluates it. Release it on every confirmed mode switch.
+  disarmSwpTrigger();
   const isRtaLike = mode === 'rta' || mode === 'sdr';
   const isSdr = mode === 'sdr';
   S.setRtaMode(isRtaLike);
@@ -480,8 +485,10 @@ function toggleSdrAgc(el: HTMLElement) {
   sdrAgc.set(on);
   el.classList.toggle('active', on);
   el.textContent = on ? t('on') : t('off');
-  // AGC is applied live on the backend; no chain rebuild, so no mute/reset.
+  // The backend applies its copy live (the Python fallback chain); the browser DSP — the chain
+  // the listener actually hears — has to be told too, or the panel's Off never reached it.
   send({ cmd: 'SET_SDR_DEMOD', agc: on });
+  setSdrPipelineAgc(on);
 }
 
 // Band presets (centre, capture bandwidth, demod, IF bandwidth)
@@ -607,6 +614,7 @@ function pushSdrPipeline(): void {
       nrAlgo: sdrNrAlgo.get(),
       nrAtten: sdrNrAtten.get(),
       squelch: sdrSquelch.get(),
+      agc: sdrAgc.get(),
     },
   );
 }

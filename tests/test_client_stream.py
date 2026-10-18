@@ -244,3 +244,24 @@ def test_fifo_policy_is_what_the_audio_path_expects():
     assert FRAME_POLICY[framer.MAGIC_BASEBAND] == 'fifo'
     assert FRAME_POLICY[framer.MAGIC_FREQ] == 'retain'
     assert FRAME_POLICY[framer.MAGIC_POWR] == 'latest'
+
+
+def test_aux_only_socket_counts_for_neither_audio_nor_iq():
+    """An ?iqaux=1 socket keeps IQAX only.
+
+    The accepts_* answers used to ignore the aux flag, so a pure aux client was counted as a
+    main IQ/audio subscriber: the session kept the Python demodulator alive and encoded an
+    IQBF block per step for a socket whose routing drops exactly that frame.
+    """
+    ch = ClientStream(None, aux_iq=True)
+    assert ch.accepts_aux is True
+    assert ch.accepts_iq is False
+    assert ch.accepts_audio is False
+
+
+def test_plain_subscribers_still_count():
+    assert ClientStream(None).accepts_iq is True
+    assert ClientStream(None).accepts_audio is True
+    assert ClientStream(None, no_iq=True).accepts_iq is False
+    assert ClientStream(None, audio_only=True).accepts_iq is False
+    assert ClientStream(None, iq_only=True).accepts_audio is False

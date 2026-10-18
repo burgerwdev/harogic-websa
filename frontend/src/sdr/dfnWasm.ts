@@ -34,6 +34,8 @@ export function dfnUrls(base?: string): DfnUrls {
 export interface DfnRuntime {
 	/** Create a stream state from the model tar.gz bytes; returns an opaque pointer. */
 	create(model: Uint8Array, attenLimDb: number): number;
+	/** Free a stream state previously returned by `create` (a no-op on a null pointer). */
+	free(ptr: number): void;
 	/** Process one hop (480 samples) in place of the whole pipeline; returns 480 samples. */
 	processFrame(ptr: number, input: Float32Array): Float32Array;
 	/** Hop size in samples (480). */
@@ -41,12 +43,23 @@ export interface DfnRuntime {
 	setAttenLim(ptr: number, db: number): void;
 }
 
-/** Load the glue, instantiate the WASM, and return the runtime API. */
+/** The wasm-bindgen glue's surface (external asset, so typed once at this boundary). */
+interface DfModule {
+	default(url: string): Promise<void>;
+	df_create(model: Uint8Array, attenLimDb: number): number;
+	df_free(ptr: number): void;
+	df_process_frame(ptr: number, input: Float32Array): Float32Array;
+	df_set_atten_lim(ptr: number, db: number): void;
+}
+
 export async function loadDfn(urls: DfnUrls): Promise<DfnRuntime> {
-	const mod: any = await import(/* @vite-ignore */ urls.js);
+	// Runtime-selected URL: the glue ships as a public asset next to df_bg.wasm, so the
+	// specifier only exists at run time (static import cannot express that).
+	const mod = await import(/* @vite-ignore */ urls.js) as DfModule;
 	await mod.default(urls.wasm);
 	return {
-		create: (model, attenLimDb) => mod.df_create(model, attenLimDb) as number,
+		create: (model, attenLimDb) => mod.df_create(model, attenLimDb),
+		free: (ptr) => mod.df_free(ptr),
 		processFrame: (ptr, input) => mod.df_process_frame(ptr, input) as Float32Array,
 		frameLength: () => 480,
 		setAttenLim: (ptr, db) => mod.df_set_atten_lim(ptr, db),
@@ -75,7 +88,9 @@ export class DfnProcessor {
 	reset(): void {
 		// The tract stream has no separate reset; recreating the state drops the lookahead history
 		// and the GRU state (what a retune needs). The model bytes are already in memory, so this
-		// re-parses them rather than re-fetching.
+		// re-parses them rather than re-fetching. The old state MUST be freed first: a pointer
+		// overwrite used to leak the whole tract runtime on every retune (df_free ABI).
+		this.runtime.free(this.ptr);
 		this.ptr = this.runtime.create(this.model, this.attenLimDb);
 		this.inBuf = new Float32Array(0);
 		this.outQueue = [];

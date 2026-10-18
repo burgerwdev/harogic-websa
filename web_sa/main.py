@@ -158,8 +158,18 @@ async def _link_loop(app, dev):
                     await asyncio.to_thread(SessionManager(dev).switch, 'std')
                 except Exception:
                     log.exception('fallback to std failed after link restore')
-            except Exception:
-                log.exception('link restored but re-entering %s failed', name)
+            except Exception as exc:
+                # Any other re-entry failure must not park the page on "connected" with a
+                # half-switched session: try std, and if even that fails declare the link
+                # lost so this loop reopens instead of reporting a dead session as healthy.
+                log.warning('link restored but re-entering %s failed (%r); falling back to std',
+                            name, exc)
+                try:
+                    await asyncio.to_thread(SessionManager(dev).switch, 'std')
+                    log.info('std mode resumed after %s re-entry failure', name)
+                except Exception:
+                    log.exception('fallback to std failed after link restore')
+                    dev.mark_link_lost(f'session re-entry failed: {exc}')
 
 
 def main() -> None:

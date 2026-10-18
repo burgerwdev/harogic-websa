@@ -545,7 +545,7 @@ class FakeSdrSession(_FakeRtaBase):
             'capture_center': center, 'capture_start': center - capture_bandwidth / 2,
             'capture_stop': center + capture_bandwidth / 2, 'start': center - bandwidth / 2,
             'stop': center + bandwidth / 2, 'atten': s.atten, 'preamp': s.preamplifier,
-            'ifgain': s.ifgain, 'ref_clock_source': 0, 'refclk_out': s.refclk_out,
+            'ifgain': s.ifgain, 'refclk_src': 0, 'refclk_out': s.refclk_out,
             'listen': float(s.sdr_listen_hz), 'demod': s.sdr_demod,
             'if_bw': float(s.sdr_if_bw), 'ddc_offset': 0.0, 'mix_offset': 0.0,
             'ddc_decimate': 81, 'ddc_delay': 102, 'ddc_batch': 1,

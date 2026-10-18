@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..config import fit_span
+from ..hardware.errors import DeviceError
 from .base import MeasurementSession
 
 
@@ -26,6 +27,7 @@ class HarmonicSession(MeasurementSession):
         self._scan_phase = True   # full-band scan / per-harmonic peak measure
         self._scan_cnt = 0
         self._scan_configured = False
+        self._cfg_failures = 0    # consecutive configure_swp failures in _measure_step
 
     # ---- Parameters (SET_HARM entry point) ----
     def set_params(self, f0=None, count=None, span=None):
@@ -73,6 +75,7 @@ class HarmonicSession(MeasurementSession):
     def _measure_step(self):
         if self._seq is None:
             self._seq, self._seq_n, self._base = [], 1, None
+            self._cfg_failures = 0
         n = self._seq_n
         f = self.f0 * n
         if n > self.count or f > self.dev.state.caps.freq_max_hz:
@@ -85,9 +88,15 @@ class HarmonicSession(MeasurementSession):
         s = self.dev.state
         center = max(s.caps.freq_min_hz, min(f, s.caps.freq_max_hz))
         s.center_hz, s.span_hz = center, min(self.span, fit_span(center, self.span, s.caps))
-        ok, _ = self.dev.configure_swp()
+        ok, err = self.dev.configure_swp()
         if not ok:
+            # Retrying forever with no progress and no error used to look like a hung
+            # measurement; escalate like the RTA stall watchdog does.
+            self._cfg_failures += 1
+            if self._cfg_failures >= 3:
+                raise DeviceError(f'harmonic configure failed repeatedly: {err}')
             return [], []
+        self._cfg_failures = 0
         r = None
         for _try in range(6):       # sweeping right after configure may fail; retry
             r = self.dev.fetch_sweep()
@@ -95,15 +104,20 @@ class HarmonicSession(MeasurementSession):
                 break
             import time
             time.sleep(0.03)
-        if r is not None:
+        if r is None:
+            # The fundamental must never lend its reference from another harmonic: without
+            # a base there is no dBc, and the row says so instead of inventing one.
+            self._seq.append(dict(n=n, f=round(f, 1), amp=None, dbc=None))
+        else:
             fr, pows = r
             if len(pows):
                 mi = int(np.argmax(pows))
                 amp = float(pows[mi]); ff = float(fr[mi])
-                if self._base is None:
+                if n == 1:
                     self._base = amp
-                self._seq.append(dict(n=n, f=round(ff, 1), amp=round(amp, 2),
-                                      dbc=round(amp - self._base, 2)))
+                self._seq.append(dict(
+                    n=n, f=round(ff, 1), amp=round(amp, 2),
+                    dbc=round(amp - self._base, 2) if self._base is not None else None))
         self._seq_n += 1
         return [], []
 

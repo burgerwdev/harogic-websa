@@ -40,6 +40,19 @@ pub unsafe fn df_create(
     Box::into_raw(df.boxed())
 }
 
+/// Free a state created by `df_create`.
+///
+/// `DfnProcessor::reset` builds a fresh stream per retune; without an explicit free every
+/// abandoned state (tract runtime + GRU history) stayed on the WASM heap for the page's
+/// lifetime, and repeated retunes grew it without bound.
+#[wasm_bindgen]
+pub unsafe fn df_free(st: *mut DFState) {
+    if st.is_null() {
+        return;
+    }
+    drop(Box::from_raw(st));
+}
+
 /// Get DeepFilterNet frame size in samples.
 #[wasm_bindgen]
 pub unsafe fn df_get_frame_length(st: *mut DFState) -> usize {

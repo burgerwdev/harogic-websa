@@ -266,6 +266,17 @@ impl Pipeline {
         self.analog.as_ref().map(|demod| demod.deemph_us()).unwrap_or(0.0)
     }
 
+    /// The listener's AGC switch for the analog path (`true` = adapt, the default).
+    pub fn set_agc_enabled(&mut self, on: bool) -> bool {
+        match self.analog.as_mut() {
+            Some(demod) => {
+                demod.set_agc_enabled(on);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Drain the stereo difference signal (L−R) recovered for this block, aligned with `audio`.
     /// Empty when the mode has no stereo side chain.
     pub fn take_side(&mut self) -> Vec<f32> {

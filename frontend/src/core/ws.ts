@@ -166,7 +166,9 @@ export function connectWS() {
       updateInfoBar();
     }
     if (points < 2) return;
-    if (S.swpHold) return;               // SWP software capture: hold the swept display
+    // SWP software capture holds the SWEPT display only: RTA and SDR arrive as RTAF frames
+    // with their own grids, and a hold left over from the swept mode must not freeze them.
+    if (S.swpHold && frame.kind !== 'rta') return;
     if (frame.kind === 'rta') {
       const processAt = performance.now();
       if (processAt - lastRtaProcess < 30) return;

@@ -159,6 +159,10 @@ pub trait AnalogDemodulator: Send {
     /// undone), so the default is a no-op for stand-ins only.
     fn set_deemph_us(&mut self, _tau_us: f64) {}
 
+    /// The panel's AGC switch: `true` (the default) lets the level stage adapt, `false` passes
+    /// the PCM at unity gain. No-op for demodulators without a level stage.
+    fn set_agc_enabled(&mut self, _on: bool) {}
+
     /// The de-emphasis in force, in microseconds (0 = none). Diagnostics and the status readout.
     fn deemph_us(&self) -> f64 {
         0.0

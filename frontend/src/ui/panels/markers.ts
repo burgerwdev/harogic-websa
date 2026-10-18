@@ -9,10 +9,12 @@ import { assignMarkerToBestPeak, toggleMarkerTracking } from '../../dsp/markerTr
 import { findExtremesOrdered, getDisplayPowers, nextExtreme, parabolaFit, setMarkerIdx } from '../../dsp/peaks';
 import { plotRect } from '../../render/plot';
 import { requestRender } from '../../render/redraw';
+import { currentGraphMode } from '../graphMode';
 import { isZoomed, nearestIdxForFreq } from '../spectrumViewport';
 import { spectrumFreqAtX } from '../spectrumZoomGestures';
 import { valleySeqPos } from '../measurePrefs';
 import { updateFreqUIInputs } from '../freqInputs';
+import { sdrCenterHz, sdrDecimate } from '../sdrState';
 import { centerHz, rtaCenterHz, spanHz } from '../freqState';
 
 export function activeMarkerPeak() {
@@ -46,7 +48,14 @@ export function markerToCenter() {
   const m = S.markers.find(x => x.id === S.activeMkrId);
   if (!m || !m.enabled) return;
   const center = markerFreqHz(m.idx);
-  if (S.rtaMode) {
+  // `S.rtaMode` is true for BOTH rta and sdr; it used to send SET_RTA in SDR mode, which
+  // the backend refuses (SET_RTA requires RTA mode) — the press then did nothing.
+  if (currentGraphMode() === 'sdr') {
+    // SET_SDR retunes the demod to the new centre, so the listen frequency follows the
+    // marked signal — the same "put this signal at the centre" semantics as in SWP.
+    sdrCenterHz.set(center);
+    send({ cmd: 'SET_SDR', center, decimate: Math.round(sdrDecimate.get()) });
+  } else if (currentGraphMode() === 'rta') {
     rtaCenterHz.set(center);
     send({ cmd: 'SET_RTA', center });
   } else {
