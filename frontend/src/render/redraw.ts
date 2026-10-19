@@ -21,6 +21,12 @@ export function setRenderer(fn: Renderer | null): void {
 	renderer = fn;
 }
 
+// Measured on the live bench (2026-10-18, SAN-90, SDR mode): ~18 requests/s steady state,
+// rAF gap p95 = 16.8 ms, no frame above 50 ms (`window.websaRenderRequests()` + a rAF
+// timeline sampler in the console reproduce it). A rAF coalesce here was considered and
+// REJECTED on those numbers: it would add one frame of latency to every marker/trigger
+// interaction and break the synchronous render assertions, for no measured gain. Revisit
+// only with a profile showing request bursts above the frame budget.
 /** Ask for a repaint. Safe before the renderer is registered (no-op). */
 export function requestRender(): void {
 	requests++;

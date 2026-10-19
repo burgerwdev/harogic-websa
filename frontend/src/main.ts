@@ -102,10 +102,19 @@ function init() {
 import { getTheme as S_getTheme } from './core/theme';
 import { getLang } from './core/i18n';
 import { sampleEnvelope, sampleSpectrum } from './audio/sdrAudio';
+import { renderRequestCount } from './render/redraw';
 
 init();
 
-// A live look at the audio that is actually being played: `websaSpectrum()` in the console answers
-// "is the sound I hear coming out of this page, and at what frequency?" without a rebuild.
-(window as unknown as { websaSpectrum: typeof sampleSpectrum }).websaSpectrum = sampleSpectrum;
-(window as unknown as { websaEnvelope: typeof sampleEnvelope }).websaEnvelope = sampleEnvelope;
+// Console diagnostics boundary: window globals are the one channel a bug reporter can reach
+// without a rebuild, so they are declared once here instead of cast at every assignment.
+const diagnostics = window as unknown as {
+	websaSpectrum: typeof sampleSpectrum;
+	websaEnvelope: typeof sampleEnvelope;
+	websaRenderRequests: () => number;
+};
+diagnostics.websaSpectrum = sampleSpectrum;
+diagnostics.websaEnvelope = sampleEnvelope;
+// Repaint accounting (sampling it over time answers "how much do we redraw, and what
+// triggered it") without touching the hot path.
+diagnostics.websaRenderRequests = renderRequestCount;

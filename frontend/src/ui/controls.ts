@@ -65,6 +65,50 @@ import { commitUnitField } from './panels/commit';
 
 // ── Frequency linking ──
 
+// Mode-driven control policy from the backend's own command table (/api/schema). The hand
+// lists in syncGraphModeStatus cover the obvious panels; this adds the schema truth for
+// controls whose command is refused in the active mode — CSS dimming alone let the click
+// through to a rejection dialog in RTA (FrameDet / TraceAlign / PointsStrategy / Spur).
+type CommandPolicy = { session_exclusive: boolean; swp_only: boolean; denied_in_sdr: boolean };
+let commandPolicy: Record<string, CommandPolicy> | null = null;
+const CONTROL_COMMANDS: Readonly<Record<string, string>> = {
+  'select-framedet': 'SET_FRAMEDET',
+  'select-tracealign': 'SET_TRACEGRID',
+  'select-points-strategy': 'SET_TRACEGRID',
+  'select-spur': 'SET_SPUR',
+};
+
+function loadCommandPolicy(): void {
+  fetch('/api/schema')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`status ${r.status}`))))
+    .then((schema: { commands?: Record<string, CommandPolicy> }) => {
+      commandPolicy = schema?.commands ?? null;
+      applyCommandPolicy(currentGraphMode());
+    })
+    .catch(() => {
+      // No schema (offline / older backend): the hand lists in syncGraphModeStatus stay
+      // the only gate, exactly as before.
+    });
+}
+
+/** Disable the mapped controls whose command the active mode refuses. */
+export function applyCommandPolicy(mode: string): void {
+  if (!commandPolicy) return;
+  const isRtaLike = mode === 'rta' || mode === 'sdr';
+  const isSdr = mode === 'sdr';
+  const owns = measurementOwnsDevice();
+  for (const [id, cmd] of Object.entries(CONTROL_COMMANDS)) {
+    const flags = commandPolicy[cmd];
+    if (!flags) continue;
+    const off = (flags.swp_only && isRtaLike)
+      || (flags.denied_in_sdr && isSdr)
+      || (flags.session_exclusive && owns);
+    const el = document.getElementById(id);
+    if (el instanceof HTMLSelectElement || el instanceof HTMLInputElement
+        || el instanceof HTMLButtonElement) el.disabled = off;
+  }
+}
+
 export function connectDevice() { send({ cmd: 'CONNECT' }); }
 
 // ── Marker operations ──
@@ -277,6 +321,9 @@ export function syncGraphModeStatus(mode: string) {
     'select-sweep-mode', 'sweep-panel',
     'select-spur', 'btn-gapfill', 'trigger-panel',
   ].forEach((id) => setDisabled(id, isSdr));
+  // The schema's own verdict for the mapped controls, applied after the hand lists: in RTA
+  // this is what actually disables FrameDet / TraceAlign / PointsStrategy / Spur.
+  applyCommandPolicy(mode);
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
   if (resetButton) resetButton.disabled = isRtaLike;
@@ -812,6 +859,7 @@ export function presetAll() {
 // ── Panel collapse ──
 // ── data-action binding ──
 export function bindActions() {
+  loadCommandPolicy();
   const act: Record<string, (el: HTMLElement) => void> = {
     'apply-center-span': () => applyCenterSpan(),
     'apply-start-stop': () => applyStartStop(),
@@ -1420,6 +1468,11 @@ export function bindCanvas() {
   // labels); inside the plot the wheel zooms the DISPLAY view while the toggle is On
   // (Ctrl/Cmd stays browser zoom), and stays page scrolling otherwise.
   canvas.addEventListener('wheel', (e) => {
+    // Touchpad pinch arrives as Ctrl+wheel. Inside the plot the modifier already means
+    // browser zoom; an axis band must obey the same rule — without this the pinch over the
+    // frequency row accumulated a device window change and committed it (a retune the user
+    // never asked for).
+    if (e.ctrlKey || e.metaKey) return;
     const pr = plotRectPub();
     const x = canvasX(e, canvas);
     const y = canvasY(e, canvas);
@@ -1457,7 +1510,10 @@ export function bindCanvas() {
     if (currentGraphMode() !== 'sdr') return;
     const el = document.activeElement as HTMLElement | null;
     const tag = el?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // A focused button owns Space/Enter (its own activation); stealing them made Space on a
+    // focused button both flip the audio AND suppress the button. Arrow keys stay app-wide:
+    // a button does nothing with them, so tuning keeps working from any focus.
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
     // The arrow keys tune by the step shown in the step box - the stored step for this
     // bandwidth, or its default. No modifier multipliers: one fixed step stays predictable
     // while listening.
