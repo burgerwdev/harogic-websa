@@ -6,6 +6,14 @@ cd "$(dirname "$0")/frontend"
 
 # Font extraction (if missing): subset LXGW WenKai from /usr/share/fonts/TTF
 if [ ! -f public/fonts/LXGWWenKai-Regular.woff2 ]; then
+  if ! python3 -c 'import fontTools' 2>/dev/null; then
+    # The woff2 files are normally COMMITTED (public/fonts); this branch only runs on a
+    # checkout where they are missing. Say what is missing instead of a bare stack trace.
+    echo "NOTE: public/fonts lacks LXGWWenKai-*.woff2 and fonttools is not installed;"
+    echo "      continuing WITHOUT self-hosted CJK fonts (the page falls back to system"
+    echo "      fonts; install fonttools + LXGW WenKai TTFs in /usr/share/fonts/TTF to"
+    echo "      rebuild them, or restore the committed files)."
+  else
   echo "Extracting self-hosted font (LXGW WenKai subset)..."
   python3 - <<'PY'
 import subprocess, os, sys
@@ -34,6 +42,7 @@ for w in ('Regular', 'Medium'):
                    check=True, capture_output=True)
     print(f'  font: LXGWWenKai-{w}.woff2')
 PY
+  fi
 fi
 
 # npm deps + build (always reconcile node_modules with package-lock.json)

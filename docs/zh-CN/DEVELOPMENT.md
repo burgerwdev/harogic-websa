@@ -16,7 +16,8 @@
 2. **写代码时**：§3 状态归属、§5 增加功能清单、§7 性能规则。
 3. **提交前**：§6 测试断言该怎么写、§9 提交与版本、§10 守卫清单跑一遍（`make ci`）。
 
-最短路径：`make ci`（无硬件全绿）+ `make e2e-fake`（无硬件的浏览器 e2e，CI 以独立 job 运行同一组脚本）→ 有硬件时 `make hw-test` → 动过数据面再 `make bench`。
+最短路径：`make ci`（无硬件全绿，其原生 Rust job 在 CI 同样运行）+ `make e2e-fake`（完整浏览器 e2e，无硬件；
+CI 仅以独立 job 运行其中的 ui_smoke.py，不含另两个脚本）→ 有硬件时 `make hw-test` → 动过数据面再 `make bench`。
 
 ---
 

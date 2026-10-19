@@ -19,8 +19,9 @@ Look at it at three moments:
 3. **Before committing**: how to assert in tests (§6), commits and versioning (§9), and the guard list
    in §10 (`make ci`).
 
-Shortest path: `make ci` (green without hardware) + `make e2e-fake` (the browser e2e, also
-hardware-free — CI runs it as its own job) -> `make hw-test` with the device attached ->
+Shortest path: `make ci` (green without hardware — its native Rust job runs in CI too) + `make e2e-fake`
+(the full browser e2e, also hardware-free; CI runs `ui_smoke.py` as its own job, not the other two
+scripts) -> `make hw-test` with the device attached ->
 `make bench` whenever the data path was touched.
 
 ---

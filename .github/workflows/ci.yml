@@ -13,6 +13,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  native:
+    # The Rust DSP kernels are tested natively (`make wasm-test`): numeric agreement with
+    # the Python reference, SSTV modes, demod paths. CI could not run them before, which
+    # made `make ci` and this workflow differ (report 2026-10-18 §4.2).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wasm
+      - name: Rust DSP kernel tests
+        run: cargo test --manifest-path wasm/Cargo.toml
+
   backend:
     runs-on: ubuntu-latest
     strategy:
