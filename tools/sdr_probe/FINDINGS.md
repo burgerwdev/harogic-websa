@@ -350,12 +350,12 @@ Procedure artifacts that produced earlier false readings (each was chased and re
 - `WEBSA_GNSS_POLL` (default 1 s) A/B: identical 12 startup-settle transient errors at
   1 Hz and 30 s polling — the realtime poll has no measurable steady-state stream cost.
 
-An implementation of this (gate on `channel_dbm`, `websa_dsp_demod_set_squelch_level`
-ABI, frontend RTAF feed) was built and live-verified against these measurements, then
-ROLLED BACK on 2026-10-19 pending a decision on the dual-AGC architecture (the
-measurements above remain valid). The shipped squelch still references the post-AGC
-audio level: with the audio AGC on it has no strength discrimination (the on/off
-behavior in the report).
+The earlier implementation (gate on `channel_dbm`,
+`websa_dsp_demod_set_squelch_level` ABI, frontend RTAF feed) was built and
+live-verified, then ROLLED BACK on 2026-10-19 pending the dual-AGC decision.
+At that point the shipped gate referenced post-AGC audio and could not discriminate
+signal strength. This branch reintroduced the pre-AGC tuned-bin peak with a simpler
+single power threshold; its AM/FM and Python-fallback observations are in §20.
 
 
 IFBW vs audio level (tinySA AM 60% depth, 1 kHz tone, −40 dBm, AGC off):
@@ -369,5 +369,66 @@ verification the log shows repeated `SDR stream stalled (-12)` / `(watchdog);
 restarting the stream (1/3)` cycles — each restart is an audible gap. Two distinct
 triggers observed: (a) −12 IF overflow while a STRONG direct injection (−20 dBm,
 AGC off, atten 0) sat in the passband; (b) watchdog stalls around mode/level
-transitions and during 1 Hz realtime GNSS polls. Task A (IFBW ladder + network
-throttle) quantifies both.
+transitions and during 1 Hz realtime GNSS polls. The sustained high-bandwidth
+shortfall and LAN throttling have separate causes, measured below.
+
+## 20. SDR audio: publisher pacing and constrained-link budget (2026-10-19)
+
+Reproduction: one controlled headless Chromium (`tools/bench/sdr_network_diagnostics.py`),
+SAN-90 at 100 MHz/AM, 3.125/1.5625/6.25 MHz IQ bandwidth; CDP throughput 700 kB/s,
+80 ms latency vs unrestricted localhost. This simulates a limited link, **not** a real
+second machine. `tools/bench/sdr_squelch_diagnostics.py` uses the coax-connected tinySA
+AM/FM source and turns RF off at exit.
+
+- Raw device IQS, with WebSA stopped (`tools/bench/sdr_raw_iqs_check.py`, 5 s each):
+  decimate 16 = 3.906/3.906 MSps, decimate 8 = 7.812/7.812 MSps; zero SDK errors.
+  The USB/raw acquisition itself was not the 6.25 MHz audio limit.
+- Before the fix, the WebSA 6.25 MHz IQBF stream delivered ~29.4k of the nominal
+  48.225k complex samples/s (zero sequence gaps). The vendor DDC took ~0.45 ms of a
+  ~1.0 ms session step; the configured IQS packet period at this rate is ~2.08 ms.
+  `publisher` passed `bool(frames)` to `SdrSession.pacing()`: most good IQ packets produce
+  **no outgoing frame** while 8000 samples are coalesced, so it inserted a needless
+  2 ms sleep on almost every successful fetch. Pacing now keys on a successful IQ fetch.
+  Afterward: 48.1k/48.225k IQBF samples/s, zero SDK errors and zero sequence gaps.
+  Replacing the vendor DDC is not indicated by these measurements.
+- At 20 fps, uncompressed display RTAF sent 3.07 MB/6 s and IQBF sent
+  2.18 MB/6 s (~876 kB/s payload). WebSocket negotiates permessage-deflate:
+  these counts are **not** a measured on-wire bitrate. At a 700 kB/s browser
+  throttle the display decoded only ~98 frames/8 s and audio had 2 underruns;
+  an experimental 10 fps display cap removed underruns but degraded the
+  spectrum UI and was **withdrawn**. The panadapter keeps its 20 fps cap;
+  the 700 kB/s throttle remains a stress case with observed playback gaps,
+  not a measured real-LAN limit. The analog worklet has 450 ms initial prime /
+  500 ms target, plus a bounded 300 ms fast-prime phase after retune; the old
+  60 ms fast-prime could persist indefinitely and repeatedly underrun on a
+  jittery link.
+- With original 20 fps restored and full-rate single-packet DDC, 6.25 MHz was
+  continuous locally (0 underruns, 162 spectrum frames / 8 s); at 12.5 MHz,
+  15.625 MSps raw IQS was full-rate with zero SDK errors but WebSA delivered only
+  ~43.2k/48.1k baseband samples/s and had 2 underruns / 8 s. Batching TWO
+  complete session steps in one publisher thread call (the SDK DDC still runs on
+  each packet separately) restored ~48.1k/48.1k, 0 underruns / 10 s and ~210
+  spectrum frames / 10 s. `WEBSA_SDR_DDC_BATCH=2`, which feeds two device packets
+  to one vendor DDC call, is unsafe: it crashed the worker (SIGSEGV in ctypes
+  garbage collection) and was NOT shipped as a solution.
+- At 25 MHz, raw IQS sustained 31.255/31.25 MSps for 3 s with 0 SDK errors;
+  WebSA delivered only ~25k/48k baseband samples/s, 3 SDK timeouts and a stream
+  recovery in a short browser run. The device packet period is ~0.52 ms, while
+  one complete WebSA session step costs ~0.82 ms (fetch ~0.28, vendor DDC ~0.40,
+  baseband/encoding ~0.12). This needs a faster/parallel channelizer architecture;
+  neither the 12.5 MHz fix nor larger playback buffers makes 25 MHz continuous.
+  Real second-machine LAN testing was not performed.
+- The default squelch is now AGC-independent, using the pre-AGC tuned-bin spectral
+  peak rather than decoded PCM. tinySA -40 dBm AM yielded about -40.3 dBm at the
+  tuned bin and FM (25 kHz deviation) about -47.7 dBm; -60 dBm opens, -20 dBm
+  closes, and turning RF off (about -104 dBm tuned bin) closes. FM spreads power
+  across bins, so this peak is **not** integrated RF power. The Python fallback
+  independently passed the on/off/default-open checks; the browser WASM gate and
+  STATUS.sdr.squelch_open agreed on the same AM sequence.
+
+For sweep timing, SDK `EstimateMinSweepTime` is in **seconds** (converted to ms for
+FREQ/POWR and SWT), while `STATUS.sweep_ms_meas` is the publisher's measured step
+elapsed-time EMA. On this firmware/profile the SDK estimate returned 0 even in
+manual-sweep mode: SWT shows the publisher's EMA explicitly marked `measured`
+instead of silently presenting it as a device estimate. The two quantities never
+overwrite each other.

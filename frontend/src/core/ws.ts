@@ -44,6 +44,7 @@ import {
 import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { resetViewport, setCapture } from '../ui/spectrumViewport';
+import { feedSquelchLevel } from '../sdr/squelchLevel';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -209,7 +210,10 @@ export function connectWS() {
       // SDR: the swept reference level is meaningless here (often 0 dBm against a -100 dBm
       // noise floor), so entering the mode asks the backend for one fit; the client applies the
       // reported target to the display scale (see ui/refAutoScale.ts). Nothing runs unattended.
-      if (currentGraphMode() === 'sdr') maybeRequestSdrFit();
+      if (currentGraphMode() === 'sdr') {
+        maybeRequestSdrFit();
+        feedSquelchLevel(capFreq, capSpec);
+      }
       // The RTA frequency window (center/span) changed -> every accumulation (probability
       // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
       // must be reset, otherwise stale dots/traces linger at wrong frequencies.
@@ -376,7 +380,8 @@ export function updateStatus(s: any) {
   frameDetector.confirm(s.req.swp?.frame_detector || s.frame_detector || 'device_default');
   traceAlign.confirm(s.req.swp?.trace_align || s.trace_align || 'start');
   pointsStrategy.confirm(s.req.swp?.points_strategy || s.points_strategy || 'speed');
-  S.setSweepMs(s.sweep_ms || 0);
+  if (typeof s.sweep_ms === 'number') S.setSweepMs(s.sweep_ms);
+  if (typeof s.sweep_ms_meas === 'number') S.setSweepMsMeas(s.sweep_ms_meas);
   S.setDeviceConnected(!!s.connected);
   syncGraphModeStatus(s.mode);
   syncFrequencyEditorStatus(s.response_to, S.configVersion);

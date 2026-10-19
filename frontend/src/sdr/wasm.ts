@@ -14,9 +14,9 @@
 // by `f32View`/`i16View`, never cached.
 
 /** ABI version this loader understands; must equal `wasm/src/abi.rs::ABI_VERSION`. */
-// Version 2 added SSTV picture data. Version 3 adds WFM stereo PCM and RDS metadata.
-// `retune_stationary` is an optional additive v3 export.
-export const DSP_ABI_VERSION = 3;
+// Version 2 added SSTV picture data; version 3 added WFM stereo PCM/RDS metadata;
+// version 4 adds pre-AGC dBm squelch input and changes the threshold's units.
+export const DSP_ABI_VERSION = 4;
 
 export interface DspExports {
 	memory: WebAssembly.Memory;
@@ -47,7 +47,8 @@ export interface DspExports {
 	websa_dsp_demod_set_nr(handle: number, enabled: number, strength: number): number;
 	websa_dsp_demod_set_deemph(handle: number, tauUs: number): number;
 	websa_dsp_demod_deemph(handle: number): number;
-	websa_dsp_demod_set_squelch(handle: number, dbfs: number): number;
+	websa_dsp_demod_set_squelch(handle: number, dbm: number): number;
+	websa_dsp_demod_set_squelch_level(handle: number, dbm: number): number;
 	/** The panel's AGC switch (1 = adapt, 0 = unity). Absent on builds older than the AGC switch. */
 	websa_dsp_demod_set_agc?(handle: number, on: number): number;
 	/** Drain the stereo difference signal (L−R) of the last processed block (WFM stereo only). */

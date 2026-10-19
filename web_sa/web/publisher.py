@@ -33,13 +33,31 @@ def _acquisition_timeout(dev) -> float:
 
 
 def _acquisition_step(dev):
-    nudge = getattr(dev, 'nudge_reference_out_of_overflow', None)
-    if nudge is not None:
-        # Must run every tick, not from the frame path: IF overflow (-12) means no frames.
-        nudge()
-    if dev.apply_pending_auto_reference():
-        return [], []
-    return dev.step()
+    def once():
+        nudge = getattr(dev, 'nudge_reference_out_of_overflow', None)
+        if nudge is not None:
+            # Must run every tick, not from the frame path: IF overflow (-12) means no frames.
+            nudge()
+        if dev.apply_pending_auto_reference():
+            return [], []
+        return dev.step()
+
+    result = once()
+    if result is None:
+        return None
+    frames, msgs = result
+    session = getattr(dev, 'session', None)
+    # At 15.625 MSps each IQ packet arrives every ~1 ms. Save one executor/event-loop
+    # round trip per pair; keep vendor DDC and all session processing strictly per packet.
+    if (getattr(session, 'name', None) == 'sdr'
+            and dev.state.sdr_actual.get('iq_rate', 0) >= 15e6
+            and getattr(session, '_last_step_ok', False)):
+        more = once()
+        if more is not None:
+            more_frames, more_msgs = more
+            frames.extend(more_frames)
+            msgs.extend(more_msgs)
+    return frames, msgs
 
 
 async def publisher(app, dev):

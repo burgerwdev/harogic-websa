@@ -77,6 +77,7 @@ let dspRatio = 1;
 let dspNr = false;
 let dspNrStrength = 0.6;
 let dspSquelch = -110;
+let dspSquelchLevel: number | null = null;
 /// DeepFilterNet3 stage status reported by the worker ('', 'loading', 'ready', 'fallback').
 let dspDfnState = '';
 let dspDfnReason = '';
@@ -137,6 +138,7 @@ function publishIqDebug(): void {
       ` dsp_silent_blocks=${dspSilent} dsp_discontinuities=${dspDisc}` +
       ` dsp_pcm_rms=${dspRmsMin.toFixed(4)}..${dspRmsMax.toFixed(4)}` +
       ` dsp_nr=${dspNr ? 1 : 0}/${dspNrStrength.toFixed(2)} dsp_squelch=${dspSquelch}` +
+      ` dsp_squelch_level=${dspSquelchLevel ?? '-'}` +
       ` dsp_proc_ms=${dspProcMs.toFixed(1)}` +
       (dspDfnState ? ` dsp_nr_algo=${dspDfnState}` + (dspDfnReason ? `:${dspDfnReason}` : '') : '') +
       ` dsp_cw=${dspCwState} dsp_cw_chars=${cwCharsSeen}` +
@@ -425,6 +427,7 @@ function startWorker(): void {
     if (typeof d.nr === 'boolean') dspNr = d.nr;
     if (typeof d.nrStrength === 'number') dspNrStrength = d.nrStrength;
     if (typeof d.squelchDbfs === 'number') dspSquelch = d.squelchDbfs;
+    dspSquelchLevel = typeof d.squelchLevelDbm === 'number' ? d.squelchLevelDbm : null;
     if (typeof d.rms === 'number') dspRms = d.rms;
     if (typeof d.mode === 'string' && d.mode) dspMode = d.mode;
     if (typeof d.digital === 'number') dspDigital = d.digital;
@@ -545,7 +548,12 @@ export function setSdrPipelineDeemph(tauUs: number): void {
   worker?.postMessage({ type: 'deemph', value: tauUs });
 }
 
-/** The squelch threshold in dBFS: applied live. */
+/** Calibrated channel power at the listen frequency, before both AGCs. */
+export function setSdrSquelchLevel(dbm: number): void {
+  worker?.postMessage({ type: 'squelch-level', value: dbm });
+}
+
+/** The squelch threshold in dBm: applied live. */
 export function setSdrPipelineSquelch(dbfs: number): void {
   worker?.postMessage({ type: 'squelch', value: dbfs });
 }

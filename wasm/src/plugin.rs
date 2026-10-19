@@ -371,8 +371,13 @@ pub trait AudioStage: Send {
         false
     }
 
-    /// A level threshold in dBFS (the squelch gate). `false` when the stage has no such knob.
-    fn set_threshold(&mut self, _dbfs: f64) -> bool {
+    /// The squelch gate's threshold in dBm.
+    fn set_threshold(&mut self, _dbm: f64) -> bool {
+        false
+    }
+
+    /// A calibrated pre-AGC channel power in dBm (NaN clears an expired measurement).
+    fn set_level_dbm(&mut self, _dbm: f64) -> bool {
         false
     }
 }

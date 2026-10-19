@@ -527,10 +527,18 @@ pub unsafe extern "C" fn websa_dsp_demod_rds_text(handle: u32, meta: *mut u32) -
 }
 
 
-/// The squelch gate's threshold in dBFS — the panel's squelch control.
+/// Channel-power squelch threshold in dBm, measured before the baseband and audio AGCs.
 #[no_mangle]
-pub extern "C" fn websa_dsp_demod_set_squelch(handle: u32, dbfs: f64) -> u32 {
-    with_pipeline(handle, |state| u32::from(state.pipeline.set_squelch_dbfs(dbfs))).unwrap_or(0)
+pub extern "C" fn websa_dsp_demod_set_squelch(handle: u32, dbm: f64) -> u32 {
+    with_pipeline(handle, |state| u32::from(state.pipeline.set_squelch_dbm(dbm))).unwrap_or(0)
+}
+
+/// The panadapter's calibrated power at the tuned frequency; NaN clears a stale reading.
+#[no_mangle]
+pub extern "C" fn websa_dsp_demod_set_squelch_level(handle: u32, dbm: f32) -> u32 {
+    with_pipeline(handle, |state| {
+        u32::from(state.pipeline.set_squelch_level_dbm(dbm as f64))
+    }).unwrap_or(0)
 }
 
 /// Turn the audio-enhancement chain on/off (the RAW-path separation test uses this).

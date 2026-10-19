@@ -28,6 +28,19 @@ def _rms(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.asarray(values, dtype=np.float64) ** 2)))
 
 
+def test_squelch_channel_power_ignores_off_channel_carriers_and_invalid_bins():
+    f = np.linspace(99.99e6, 100.01e6, 21)
+    power = np.full(f.size, -98.0, dtype=np.float32)
+    power[10] = -39.5
+    power[19] = -12.0
+    assert sdr_module._channel_power_dbm(f, power, 100e6) == -39.5
+    assert sdr_module._channel_power_dbm(f, power, 100.009e6) == -12.0
+    power[10] = np.nan
+    assert sdr_module._channel_power_dbm(f, power, 100e6) == -98.0
+    assert sdr_module._channel_power_dbm(f, power, 101e6) is None
+    assert sdr_module._channel_power_dbm(f[:1], power[:1], 100e6) is None
+
+
 def test_round_decimate_uses_supported_power_of_two():
     assert _round_decimate(1) == 1
     assert _round_decimate(31) == 16
@@ -108,9 +121,7 @@ def test_the_capture_floor_keeps_the_packet_period_inside_the_panadapter_cadence
         assert period <= 1.0 / 20.0, (requested, period)
     # The symptom, in numbers (nominal, from the configured packet). If the request itself is the
     # device geometry, the periods are 133/266/532 ms at 512/1024/2048. The panadapter accepts
-    # 20 fps, and the browser ring keeps a 0.3 s target. On the bench the baseband blocks were
-    # 129/253/483 ms, and the panadapter ran at 10.3/5.4/3.0 frames/s, with 9 ring underruns in
-    # 8 s at 2048.
+    # 20 fps; even the wider browser jitter buffer cannot absorb a persistent 532 ms packet cadence.
     for requested, naive_ms in ((512, 133.0), (1024, 266.1), (2048, 532.2)):
         naive = packet_samples / (native / requested)
         assert naive == pytest.approx(naive_ms / 1e3, rel=0.01)

@@ -112,9 +112,14 @@ export class WasmPipeline {
 		}
 	}
 
-	/** The squelch gate's threshold in dBFS (<= -100 leaves it wide open). */
-	setSquelch(dbfs: number): void {
-		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbfs);
+	/** Calibrated channel-power threshold (dBm), applied without rebuilding. */
+	setSquelch(dbm: number): void {
+		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbm);
+	}
+
+	/** Pre-AGC power at the tuned frequency; NaN clears an expired measurement. */
+	setSquelchLevel(dbm: number): void {
+		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch_level(this.handle, dbm);
 	}
 
 	/** The panel's AGC switch: on = the level stage adapts (default), off = unity gain. */

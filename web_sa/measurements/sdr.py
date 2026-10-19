@@ -199,6 +199,17 @@ def _peak_hold(prev_dbm: float, packet_dbm: float, dt_s: float,
     return max(float(prev_dbm), floor)
 
 
+def _channel_power_dbm(freq: np.ndarray, spec: np.ndarray, listen_hz: float) -> float | None:
+    if freq.size < 2 or freq.size != spec.size or not np.isfinite(listen_hz):
+        return None
+    bin_hz = abs(float(freq[1] - freq[0]))
+    if not (bin_hz > 0):
+        return None
+    channel = spec[np.abs(freq - listen_hz) <= bin_hz]
+    finite = channel[np.isfinite(channel)]
+    return float(np.max(finite)) if finite.size else None
+
+
 def _packet_overflows(stream) -> bool:
     """True when the packet's DeviceState flags an IF overflow (htra_api.h:1118).
 
@@ -304,6 +315,7 @@ class SdrSession(MeasurementSession):
         self._recovery_attempts = 0
         self._last_recovery = 0.0
         self._last_status = 0
+        self._last_step_ok = False
         self._packets_ok = 0
         self._packets_err = 0
         #: Packets whose DeviceState flagged an IF overflow (see _packet_overflows).
@@ -365,6 +377,7 @@ class SdrSession(MeasurementSession):
             self._start_trigger_locked()
             _t('_configure: done (ready)')
             self._last_pan = 0.0
+            self.dev.state.sdr_channel_dbm = None
             self._last_adm = 0.0
             self._transient_streak = 0
             self._recovery_attempts = 0
@@ -859,6 +872,7 @@ class SdrSession(MeasurementSession):
         changed = abs((rel + self._ddc.offset_hz) - self._mix_freq) > 0.5
         self._mix_freq = rel + self._ddc.offset_hz
         if changed:
+            s.sdr_channel_dbm = None
             # A new mix frequency means the FM discriminator's previous sample belongs to
             # another channel; clear it and flush queued audio from the old channel.
             self._demod.retune()
@@ -1224,13 +1238,12 @@ class SdrSession(MeasurementSession):
         return 5.0
 
     def pacing(self, dt: float, produced: bool) -> float:
-        """The IQS Adaptive stream paces itself.
+        """IQS paces successful packets; only an unsuccessful fetch needs backoff.
 
-        IQS_GetIQStream_PM1 blocks until a packet is ready, so any extra sleep accumulates a
-        backlog and the device then returns BusDataError on every fetch. Only back off when
-        a step produced nothing (transient error), to avoid a busy spin.
+        `produced` means a frame was *published*, not that an IQ packet was received:
+        the baseband is coalesced across many packets and the panadapter is rate-limited.
         """
-        return 0.0 if produced else 0.002
+        return 0.0 if self._last_step_ok else 0.002
 
     def health(self) -> dict:
         return {'ok': self._packets_ok, 'err': self._packets_err,
@@ -1325,10 +1338,11 @@ class SdrSession(MeasurementSession):
             self._adm_ok = False
 
     def step(self):
+        self._last_step_ok = False
         if not self._ready:
             return [], []
         now = time.monotonic()
-        _t_phase = time.perf_counter()
+        _t_phase = _t_phase_start = time.perf_counter()
         _t_phases = {}
         frames = []
         import ctypes as C
@@ -1377,6 +1391,7 @@ class SdrSession(MeasurementSession):
                 self._step_failed_locked('get', st)
                 return [], []
             self._last_status = 0
+            self._last_step_ok = True
             # Per-packet IF-overflow bit (DeviceState_TypeDef.IFOverflow, htra_api.h:1118,
             # "考虑并BBState或RFState"). PM1 already fills it with every packet; surfacing it
             # as the same -12 the SWP path reports reuses the whole escape chain unchanged:
@@ -1410,6 +1425,7 @@ class SdrSession(MeasurementSession):
             self._recovery_attempts = 0
             n = int(stream.IQS_StreamInfo.PacketSamples)
             if n < 2:
+                self._last_step_ok = False
                 return [], []
             self._scale_to_v = float(stream.IQS_ScaleToV)
             src = C.cast(stream.AlternIQStream, C.POINTER(C.c_int16 * (n * 2))).contents
@@ -1424,9 +1440,11 @@ class SdrSession(MeasurementSession):
                     next_st = T.dll.IQS_GetIQStream_PM1(
                         T.pointer(dev.dev), T.pointer(next_stream))
                 except Exception as exc:
+                    self._last_step_ok = False
                     self._step_failed_locked('get exception', repr(exc))
                     return frames, []
                 if next_st != 0:
+                    self._last_step_ok = False
                     self._last_status = int(next_st)
                     self._packets_err += 1
                     if next_st in _TRANSIENT_IQS:
@@ -1446,6 +1464,7 @@ class SdrSession(MeasurementSession):
                 self._packets_ok += 1
                 next_n = int(next_stream.IQS_StreamInfo.PacketSamples)
                 if next_n < 2:
+                    self._last_step_ok = False
                     return frames, []
                 next_src = C.cast(
                     next_stream.AlternIQStream,
@@ -1483,6 +1502,8 @@ class SdrSession(MeasurementSession):
                         arr[0::2], arr[1::2], self._fs_in, self._iqs_center_hz,
                         self._scale_to_v,
                         lo_hz=lo if hi > lo else None, hi_hz=hi if hi > lo else None)
+                s.sdr_channel_dbm = (_channel_power_dbm(res[0], res[1], s.sdr_listen_hz)
+                                     if res is not None else None)
                 if res is not None:
                     freq, spec, row = res
                     finite = spec[np.isfinite(spec)]
@@ -1507,6 +1528,7 @@ class SdrSession(MeasurementSession):
                     _t_phases['ddc'] = _t_phases.get('ddc', 0.0) + (time.perf_counter() - _t_phase) * 1e3
                     _t_phase = time.perf_counter()
             except (RuntimeError, ValueError) as exc:
+                self._last_step_ok = False
                 self._step_failed_locked('ddc', repr(exc))
                 return frames, []
             i, q = self._mix(i, q)                # software fine tuning
@@ -1606,6 +1628,14 @@ class SdrSession(MeasurementSession):
                 self._fade_start = self._discard_until
                 self._fade_until = self._discard_until + self.SETTLE_FADE
             settling = now < self._discard_until
+            thr = float(s.sdr_squelch)
+            channel_dbm = s.sdr_channel_dbm
+            if thr <= -100 or channel_dbm is None or channel_dbm >= thr:
+                self._squelch_hold_until = now + self.SQUELCH_HOLD_S
+                s.sdr_squelch_open = True
+            elif (channel_dbm < thr - self.SQUELCH_HYST_DB
+                    and now >= self._squelch_hold_until):
+                s.sdr_squelch_open = False
             # The Python demodulator is the fallback and the numeric reference: it only runs while a
             # client subscribes to audio. With the browser DSP owning playback nobody does, and this
             # is the most expensive stage of the step (measured: it dominated the SDR loop).
@@ -1615,6 +1645,7 @@ class SdrSession(MeasurementSession):
                 # budget matters. Record it before returning.
                 if _TIME_ENABLED:
                     _t_phases['pre_demod'] = _t_phases.get('pre_demod', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+                    _t_phases['step_total'] = (time.perf_counter() - _t_phase_start) * 1e3
                 self._record_step_timing(_t_phases)
                 return frames, []
             if getattr(self, '_chain_stale', False):
@@ -1637,13 +1668,6 @@ class SdrSession(MeasurementSession):
                 audio = audio * gain
             level_dbfs = float(power_dbfs) - 90.31     # int16 full-scale reference
             s.sdr_level_dbfs = float(level_dbfs)
-            thr = float(s.sdr_squelch)
-            if level_dbfs >= thr:
-                self._squelch_hold_until = now + self.SQUELCH_HOLD_S
-                s.sdr_squelch_open = True
-            elif (level_dbfs < thr - self.SQUELCH_HYST_DB
-                    and now >= self._squelch_hold_until):
-                s.sdr_squelch_open = False
             if audio.size:
                 # Smooth the gate instead of hard-zeroing one block: a step from full level
                 # to zero audibly clicks, and a bare comparator chatters at the threshold.
@@ -1674,5 +1698,6 @@ class SdrSession(MeasurementSession):
 
         if _TIME_ENABLED:
             _t_phases['rest'] = _t_phases.get('rest', 0.0) + (time.perf_counter() - _t_phase) * 1e3
+            _t_phases['step_total'] = (time.perf_counter() - _t_phase_start) * 1e3
         self._record_step_timing(_t_phases)
         return frames, []

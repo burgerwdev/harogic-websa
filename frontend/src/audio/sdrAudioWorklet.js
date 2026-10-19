@@ -18,20 +18,21 @@
  *     latency: past `MAX_FILL` the oldest samples are dropped (the audio stays live, which is what
  *     a listener wants after a retune).
  */
-// Analog jitter is a few milliseconds; its 0.9 s ceiling bounds latency. DRM uses a
-// separate 2.4 s ceiling so one whole super-frame burst is never thrown away.
-// Analog playback needs only short jitter headroom; DRM's 1.2 s super-frame bursts need
-// two bursts before starting, otherwise the 0.9 s ceiling clips every burst.
+// Analog burst headroom; DRM's 1.2 s super-frame bursts need a separate, larger ceiling.
 // ponytail: the 2.4 s DRM ceiling covers the measured 1.2 s cadence; raise it only if a
 // measured service produces larger bursts.
-const PRIME_S = 0.25;
-const TARGET_S = 0.3;
-const MAX_FILL_S = 0.9;
+// The IQBF publisher batches roughly 160 ms of PCM per frame; browser/network jitter can
+// delay another frame by 100+ ms without losing any samples. Keep enough analog headroom
+// to absorb that delay, while the separate fast-prime path preserves retune response.
+const PRIME_S = 0.45;
+const TARGET_S = 0.50;
+const MAX_FILL_S = 1.1;
 const DRM_PRIME_S = 1.6;
 const DRM_TARGET_S = 1.4;
 const DRM_MAX_FILL_S = 2.4;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
-const FAST_PRIME_S = 0.06;      // a retune's short re-prime; normal target still refills the ring
+const FAST_PRIME_S = 0.06;      // a retune's short re-prime
+const FAST_PRIME_MAX_S = 0.3;  // return to normal threshold even if the target never fills
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
@@ -69,6 +70,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.maxFill = Math.floor(sampleRate * MAX_FILL_S);
     this.mode = 'default';
     this.fastPrime = false;
+    this.fastPrimeRemaining = 0;
     /// Sample layout of the ring: 'mono' (one value per sample) or 'stereo' (an L/R pair per
     /// sample, interleaved). The producer announces it with `buffer-mode`; a layout switch resets
     /// the ring, because mixing the two reads garbage.
@@ -104,6 +106,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.setLayout(message.stereo ? 'stereo' : 'mono');
       } else if (message.type === 'fast-prime') {
         this.fastPrime = true;
+        this.fastPrimeRemaining = Math.floor(sampleRate * FAST_PRIME_MAX_S);
         this.applyBufferParams();
       } else if (message.type === 'enabled') {
         const wasPlaying = this.playing;
@@ -116,6 +119,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
           this.frac = 0;
           this.playing = false;
           this.primed = false;
+          this.fastPrime = false;
+          this.fastPrimeRemaining = 0;
+          this.applyBufferParams();
           this.fade = 0;
           this.underruns = 0;
           if (wasPlaying) this.postGate();
@@ -136,6 +142,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.frac = 0;
     this.playing = false;
     this.primed = false;
+    this.fastPrime = false;
+    this.fastPrimeRemaining = 0;
+    this.applyBufferParams();
     this.fade = 0;
     this.underruns = 0;
     if (wasPlaying) this.postGate();
@@ -223,6 +232,14 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     if (outR) outR.fill(0);
     const stereo = this.layout === 'stereo';
     const step = stereo ? 2 : 1;                     // ring values consumed per output sample
+    if (this.fastPrime) {
+      this.fastPrimeRemaining -= out.length;
+      if (this.fastPrimeRemaining <= 0 || this.available >= this.target) {
+        this.fastPrime = false;
+        this.fastPrimeRemaining = 0;
+        this.applyBufferParams();
+      }
+    }
     for (let i = 0; i < out.length; i++) {
       if (this.tailGain > 0) {
         out[i] = this.lastSample * this.tailGain;
@@ -245,12 +262,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         if (outR) outR[i] = this.lastSampleR * this.tailGain;
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
         continue;
-      }
-      if (this.fastPrime && this.available >= this.target) {
-        // Keep fast re-prime through early tune jitter. Restore cold-start behavior once the
-        // normal buffer target is full.
-        this.fastPrime = false;
-        this.applyBufferParams();
       }
       const next = (this.readPos + step) % this.capacity;
       const value = this.ring[this.readPos] * (1 - this.frac) + this.ring[next] * this.frac;

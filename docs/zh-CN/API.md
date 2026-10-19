@@ -61,7 +61,8 @@ curl http://localhost:8080/api/state
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
 | `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta`、`req.sdr` 分别保存各模式配置 |
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
-| `sdr` | obj | SDR 接收链：请求值 `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`，以及 `actual`（IQS/DDC 几何：速率、`bandwidth` = 请求的**显示窗口**与 `capture_bandwidth`/`capture_decimate` = 器件实际推流的几何——当请求会让 IQS 包周期过长时它会更宽，见 `SDR_MAX_CAPTURE_DECIMATE`——再加捕获窗口与包形）、`level_dbfs`（Python 路径电平）、`squelch_open`、`adm`（厂商 AM/FM 指标）与 `health`（包计数，仅 SDR 中非空）|
+| `sweep_ms` / `sweep_ms_meas` | number | SDK 估算的 SWP 最短扫频时间（ms，用于 FREQ/POWR 帧头；无估算时为 0）/ 发布器实测单步采集/发布耗时 EMA（ms，仅 STATUS）。SWT 优先显示设备估算；为 0 时固定显示带“实测”标记的 EMA，不留空也不混写两个数据源。|
+| `sdr` | obj | SDR 接收链：请求值 `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`，以及 `actual`（IQS/DDC 几何：速率、`bandwidth` = 请求的**显示窗口**与 `capture_bandwidth`/`capture_decimate` = 器件实际推流的几何——当请求会让 IQS 包周期过长时它会更宽，见 `SDR_MAX_CAPTURE_DECIMATE`——再加捕获窗口与包形）、`level_dbfs`（Python 路径音频电平）、`channel_dbm`（AGC 前调谐频点的频谱峰值，尚无测量时为 null）、`squelch_open`、`adm`（厂商 AM/FM 指标）与 `health`（包计数，仅 SDR 中非空）|
 | `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；`points` 与显示迹线固定为 1001 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` | str? | 仅命令响应 STATUS 携带，周期 STATUS 不携带 |
@@ -135,7 +136,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）| 设置 SDR 捕获窗口（IQS 中心与抽取率；完整重配）|
 | `SET_SDR_TUNE` | `listen`（Hz）| 捕获窗口内的廉价重调谐（软件 NCO，夹到窗口内）|
-| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（100~500000 Hz）, `squelch?`（-150~0 dBFS）, `volume?`（0~2）, `pitch?`（200~2000 Hz）, `agc?`（bool）| 解调器设置。`mode` 是 DSP 插件注册表的令牌（模拟：am/dsb/usb/lsb/cw/nfm/wfm/pm；数字：ft8）——解调器在浏览器中运行，Python 链只解调其实现的模拟子集。数字模式的解码在浏览器 worker 中进行，同时由一个 SSB 伴随解调器播放信道音频。浏览器拥有音频时，mode/pitch/去加重不重启流；`ifbw` 会重配信道化器 |
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（100~500000 Hz）, `squelch?`（-150~0 dBm，调谐点频谱峰值，AGC 前）, `volume?`（0~2）, `pitch?`（200~2000 Hz）, `agc?`（bool）| 解调器设置。`mode` 是 DSP 插件注册表的令牌（模拟：am/dsb/usb/lsb/cw/nfm/wfm/pm；数字：ft8）——解调器在浏览器中运行，Python 链只解调其实现的模拟子集。数字模式的解码在浏览器 worker 中进行，同时由一个 SSB 伴随解调器播放信道音频。浏览器拥有音频时，mode/pitch/去加重不重启流；`ifbw` 会重配信道化器 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
 | `SET_TRIGGER` | `source`（bus/freerun/level/external/timer）, `edge`（rising/falling/double）, `level`（dBm，以 `caps` 界限为准）, `safetime`/`delay`/`pretime`（0~10 s）, `acqtime`（0.0005~60 s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
@@ -194,7 +195,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 0     4    bytes   magic: 'FREQ' | 'POWR'
 4     4    u32     version（FREQ/POWR 配对序号）
 8     4    u32     points（点数）
-12    4    f32     sweep_ms（实测扫频时间）
+12    4    f32     sweep_ms（SDK 估算的 SWP 最短扫频时间，ms；无估算时为 0）
 16    ...         数据
 ```
 
@@ -217,7 +218,7 @@ RTA 会话与 SDR（潘adapter）发送：频谱 + 瀑布行 + 显示窗口（`s
 | magic | 头部 | 数据 | 说明 |
 |---|---|---|---|
 | `AUDF` | magic(4) + seq(u32) + rate(u32) + samples(u32) | int16 × samples | 单声道 PCM16 音频（48 kHz，20 ms 块），来自 **Python 解调路径**（后备/参考）。仅在有客户端订阅（`/ws?audio=1`）时发送；`seq=0` 清空陈旧音频 |
-| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples（交错 I/Q）| 信道化基带（后端 DDC 输出，按实测速率），供浏览器解调器使用。仅在有客户端订阅（`/ws?iq=1`）时发送；`seq=0` 在重调谐/重配后清空陈旧基带 |
+| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples（交错 I/Q）| 信道化基带（后端 DDC 输出，帧头速率为 DDC 标称采样时钟），供浏览器解调器使用。仅在有客户端订阅（`/ws?iq=1`）时发送；`seq=0` 在重调谐/重配后清空陈旧基带 |
 
 两类流式帧均为 FIFO 有序（仅在溢出时丢最旧），每客户端队列有界；AUDF/IQBF 不会与显示帧混入同一连接（见上过滤规则）。
 

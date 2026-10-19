@@ -1013,7 +1013,8 @@ export function bindActions() {
   });
   const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
   squelchEl?.addEventListener('change', () => {
-    sdrSquelch.set(parseFloat(squelchEl.value) || -110);
+    const wanted = Number.parseFloat(squelchEl.value);
+    sdrSquelch.set(Number.isFinite(wanted) ? wanted : -110);
     setSdrPipelineSquelch(sdrSquelch.get());
     applySdrDemod();
   });

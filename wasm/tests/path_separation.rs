@@ -79,7 +79,7 @@ fn the_raw_stream_is_bit_identical_with_the_audio_chain_enabled_or_not() {
     // The chain must actually process for this comparison to say anything: the *default* policy is a
     // pass-through (the Python reference runs no enhancement), so the noise reducer is switched on
     // for the "with chain" run.
-    let nr = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbfs: -110.0 };
+    let nr = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbm: -110.0 };
     let mut with_chain = Pipeline::new(PathKind::Analog, chain(), nr);
     with_chain.set_analog_demod(Box::new(RealPartDemod));
     with_chain.set_audio_enabled(true);

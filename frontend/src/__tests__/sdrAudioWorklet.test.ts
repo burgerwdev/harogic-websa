@@ -99,8 +99,26 @@ describe('the SDR playback buffer', () => {
 		// loop corrects the 0.05 s between the priming level and the target, then stops. (The pitch is
 		// the thing being protected here: nothing keeps moving it.)
 		expect(Math.abs(r.ratio - 1)).toBeLessThanOrEqual(0.002);
-		expect(r.fill).toBeGreaterThan(RATE * 0.15);
-		expect(r.fill).toBeLessThan(RATE * 0.45);
+		expect(r.fill).toBeGreaterThan(RATE * 0.3);
+		expect(r.fill).toBeLessThan(RATE * 0.75);
+	});
+
+	it('absorbs one delayed 160 ms IQBF batch without dropping audio', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		const batch = Math.round(RATE * 0.16);
+		const out = new Float32Array(128);
+		let next = 0;
+		for (let t = 0; t < RATE * 12; t += 128) {
+			while (next * batch + (next % 12 === 3 ? batch : 0) <= t) {
+				proc.push(new Float32Array(batch).fill(0.5));
+				next++;
+			}
+			proc.process(null, [[out]]);
+		}
+		expect(proc.playing).toBe(true);
+		expect(proc.underruns).toBe(0);
+		expect(proc.slipped).toBe(0);
 	});
 
 	it('absorbs a small rate mismatch by resampling, without dropping a sample', () => {
@@ -265,10 +283,10 @@ describe('the SDR playback buffer', () => {
 		const proc = new ProcessorClass!();
 		proc.enabled = true;
 		const out = new Float32Array(128);
-		proc.push(new Float32Array(RATE));              // one second offered
-		// It holds one second only up to the ceiling; the rest was dropped as stale.
+		proc.push(new Float32Array(RATE * 2));          // two seconds offered
+		// Everything beyond the ceiling is dropped, and accounted as such.
 		expect(proc.available).toBe(proc.maxFill);
-		expect(proc.slipped).toBe(RATE - proc.maxFill);
+		expect(proc.slipped).toBe(RATE * 2 - proc.maxFill);
 		proc.reset();
 		expect(proc.available).toBe(0);
 		// ...and it primes again from the new stream.
@@ -320,11 +338,44 @@ describe('the SDR playback buffer', () => {
 		expect(proc.prime).toBe(Math.floor(RATE * 0.06) * 2);
 		proc.push(new Float32Array(proc.target).fill(0.5));
 		proc.process(null, [[new Float32Array(128), new Float32Array(128)]]);
-		expect(proc.prime).toBe(Math.floor(RATE * 0.25) * 2);
+		expect(proc.prime).toBe(Math.floor(RATE * 0.45) * 2);
 		const beforeReset = proc.port.messages.length;
 		proc.port.onmessage({ data: { type: 'reset' } });
 		const stopped = proc.port.messages.slice(beforeReset).find((m) => m.type === 'gate-transition');
 		expect(stopped?.playing).toBe(false);
+		expect(proc.playing).toBe(false);
+	});
+
+	it('ends fast-prime after early retune playback even when the target never fills', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.port.onmessage({ data: { type: 'reset' } });
+		proc.port.onmessage({ data: { type: 'fast-prime' } });
+		const out = new Float32Array(128);
+		proc.push(new Float32Array(Math.round(RATE * 0.08)));
+		let supplied = 0;
+		for (let t = 0; t < Math.round(RATE * 0.5); t += 128) {
+			while (t - supplied >= 960) {
+				proc.push(new Float32Array(960));
+				supplied += 960;
+			}
+			proc.process(null, [[out]]);
+		}
+		expect(proc.playing).toBe(true);
+		expect(proc.available).toBeLessThan(proc.target);
+		expect(proc.prime).toBe(Math.floor(RATE * 0.45));
+	});
+
+	it('expires fast-prime even while no PCM arrives', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.port.onmessage({ data: { type: 'reset' } });
+		proc.port.onmessage({ data: { type: 'fast-prime' } });
+		const out = new Float32Array(128);
+		for (let t = 0; t < RATE * 0.31; t += 128) proc.process(null, [[out]]);
+		expect(proc.prime).toBe(Math.floor(RATE * 0.45));
+		proc.push(new Float32Array(Math.floor(RATE * 0.1)));
+		proc.process(null, [[out]]);
 		expect(proc.playing).toBe(false);
 	});
 

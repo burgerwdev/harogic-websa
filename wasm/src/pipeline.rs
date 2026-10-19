@@ -152,6 +152,15 @@ impl AudioChain {
         taken
     }
 
+    /// Hand calibrated channel power to the squelch stage (NaN clears a stale reading).
+    pub fn set_squelch_level_dbm(&mut self, dbm: f64) -> bool {
+        let mut taken = false;
+        for entry in self.stages.iter_mut() {
+            taken |= entry.stage.set_level_dbm(dbm);
+        }
+        taken
+    }
+
     pub fn is_empty(&self) -> bool {
         self.stages.is_empty()
     }
@@ -324,12 +333,16 @@ impl Pipeline {
     }
 
 
-    /// Set the squelch threshold in dBFS (`<= -100` leaves the gate wide open and inert).
-    pub fn set_squelch_dbfs(&mut self, dbfs: f64) -> bool {
-        if dbfs.is_finite() {
-            self.policy.squelch_dbfs = dbfs.clamp(-160.0, 0.0);
+    /// Set the squelch threshold in channel dBm (`<= -100` leaves the gate wide open).
+    pub fn set_squelch_dbm(&mut self, dbm: f64) -> bool {
+        if dbm.is_finite() {
+            self.policy.squelch_dbm = dbm.clamp(-160.0, 0.0);
         }
         crate::audio::apply_policy(&mut self.chain, self.policy)
+    }
+
+    pub fn set_squelch_level_dbm(&mut self, dbm: f64) -> bool {
+        self.chain.set_squelch_level_dbm(dbm)
     }
 
     pub fn kind(&self) -> PathKind {

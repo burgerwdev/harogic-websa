@@ -64,10 +64,12 @@
     dominant modulation tone, so the vendor `ADM_*` values collapse to ~0 and THD is meaningless
     (same code, 1 kHz test tone: SINAD ~7, SNR ~12). The SDR panel no longer displays it
     (`cur-sdr-adm` removed); the raw values stay in STATUS `sdr.adm` for API use.
-23. **SDR squelch threshold is channel-power dBFS**: it depends on the demod mode / IF bandwidth
-    (a wider IF raises the noise floor), so the same number squelches differently per mode. The
-    gate has 3 dB hysteresis, a 0.3 s hold and a 5/80 ms ramp, so it does not chatter at the
-    threshold.
+23. **SDR squelch reads the pre-AGC tuned-bin peak (dBm), not decoded PCM dBFS.** It is a
+    spectrum-bin peak, not integrated channel power: with a -40 dBm tinySA carrier, AM read
+    about -40 dBm but 25 kHz-deviation FM read about -48 dBm as power spread across bins.
+    Set the threshold for the signal/mode being received. The gate fails open until a usable
+    spectrum measurement arrives, uses 3 dB hysteresis and 0.3 s hold, and ramps over
+    5/80 ms (open/close). `<= -100 dBm` is the wide-open default.
 24. **IF AGC stays off (`EnableIFAGC=0`)**: it matches the official `Profile.xml` and the
     hardware available here cannot saturate the IF, so AGC has no observable effect. The wiring
     and the `ifagc_gain` readback remain for diagnostics (`WEBSA_IFAGC=1` flips the default for

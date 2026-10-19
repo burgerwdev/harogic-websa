@@ -175,7 +175,7 @@ fn the_audio_chain_cannot_reach_the_sstv_decoder() {
     // The chain is switched on for one run and off for the other. Both must produce the same picture:
     // the digital path never sees the chain, and this is the assertion that keeps that true.
     let run = |audio_enabled: bool| {
-        let policy = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbfs: -110.0 };
+        let policy = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbm: -110.0 };
         let mut pipeline = Pipeline::new(PathKind::Digital, websa_dsp::audio::default_chain(rate), policy);
         pipeline.set_digital_demod(Box::new(SstvPlugin::new(rate)), rate, rate);
         pipeline.set_audio_enabled(audio_enabled);

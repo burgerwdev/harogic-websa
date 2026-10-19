@@ -167,6 +167,8 @@ let dfnSeq = 0;
 /// another stream and must be dropped, not delivered after the switch.
 let dfnGeneration = 0;
 let squelchDbfs = -110;
+let squelchLevelDbm = NaN;
+let squelchLevelAt = 0;
 /// The panel's AGC switch for the analog path (the WASM level stage). The backend's own
 /// `sdr_agc` state is a different consumer (the Python fallback chain); this one must be
 /// told explicitly or the browser chain keeps levelling with the switch off.
@@ -302,6 +304,7 @@ function postStats(): void {  post({
     silentBlocks, discontinuities, pcmBlocks,
     pcmRmsMin: Number.isFinite(pcmRmsMin) ? pcmRmsMin : 0, pcmRmsMax,
     pcmPending: pendingSamples, deliveredSamples, nr, nrStrength, nrAlgo, squelchDbfs,
+    squelchLevelDbm: Number.isFinite(squelchLevelDbm) ? squelchLevelDbm : null,
     dfn: dfnReady ? 'ready' : dfnLoading ? 'loading' : dfnError ? 'fallback' : 'off',
     dfnError,
     deemphUs: params?.deemphUs ?? -1, audioOn,
@@ -540,6 +543,7 @@ function applyListenerControls(): void {
     target.setAudioEnabled(audioEnabled);
     target.setNr(wasmNr, nrStrength);
     target.setSquelch(squelchDbfs);
+    target.setSquelchLevel(performance.now() - squelchLevelAt < 1500 ? squelchLevelDbm : NaN);
     target.setAgc(agcOn);
     target.setDeemph(params?.deemphUs ?? -1);
   }
@@ -780,6 +784,11 @@ function resetStream(): void {
 let dumpIq: { on: boolean, frames: number[][] } = { on: false, frames: [] };
 
 async function onBaseband(frame: BasebandFrame): Promise<void> {
+  if (squelchLevelAt && performance.now() - squelchLevelAt > 1500) {
+    squelchLevelAt = 0;
+    squelchLevelDbm = NaN;
+    pipeline?.setSquelchLevel(NaN);
+  }
   // Frame rate is the DDC's configured sample clock. STATUS may still describe the previous
   // geometry after a channelizer re-plan. Reconfigure through the main thread when they differ;
   // host delivery throughput is a separate measurement and cannot set the 19 kHz pilot filter.
@@ -800,6 +809,9 @@ async function onBaseband(frame: BasebandFrame): Promise<void> {
     }
   }
   if (frame.seq === 0) {
+    squelchLevelAt = 0;
+    squelchLevelDbm = NaN;
+    pipeline?.setSquelchLevel(NaN);
     // A flush can restart the DDC on one station or move to another station. Keep WFM
     // metadata only for the same carrier and sample clock; configure handles geometry changes.
     lastSeq = -1;
@@ -1224,8 +1236,13 @@ self.onmessage = (event: MessageEvent) => {
     // Live-update the attenuation limit on an already-running stream (syncDfn only rebuilds).
     dfnWorker?.postMessage({ type: 'atten', value: nrAtten });
     postStats();
+  } else if (msg.type === 'squelch-level') {
+    squelchLevelDbm = Number(msg.value);
+    squelchLevelAt = performance.now();
+    pipeline?.setSquelchLevel(squelchLevelDbm);
   } else if (msg.type === 'squelch') {
-    squelchDbfs = Number(msg.value) || -110;
+    const wanted = Number(msg.value);
+    squelchDbfs = Number.isFinite(wanted) ? wanted : -110;
     pipeline?.setSquelch(squelchDbfs);
     postStats();
   } else if (msg.type === 'agc') {

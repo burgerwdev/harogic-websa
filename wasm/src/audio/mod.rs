@@ -39,24 +39,24 @@ pub struct AudioPolicy {
     pub nr: bool,
     /// How hard the noise reducer pushes (0..1).
     pub nr_strength: f64,
-    /// Squelch threshold in dBFS (`<= -100` means wide open).
-    pub squelch_dbfs: f64,
+    /// Squelch threshold in channel dBm (`<= -100` means wide open).
+    pub squelch_dbm: f64,
 }
 
 impl Default for AudioPolicy {
     fn default() -> Self {
-        Self { nr: false, nr_strength: 0.6, squelch_dbfs: -110.0 }
+        Self { nr: false, nr_strength: 0.6, squelch_dbm: -110.0 }
     }
 }
 
 /// The squelch threshold at or below which the gate is a pass-through (the reference's default).
-pub const SQUELCH_OPEN_DBFS: f64 = -100.0;
+pub const SQUELCH_OPEN_DBM: f64 = -100.0;
 
 impl AudioPolicy {
     /// The stages that must run for this policy, in registry order.
     pub fn active_stages(&self) -> Vec<&'static str> {
         let mut stages = Vec::new();
-        if self.squelch_dbfs > SQUELCH_OPEN_DBFS {
+        if self.squelch_dbm > SQUELCH_OPEN_DBM {
             stages.push("squelch");
         }
         if self.nr {
@@ -77,7 +77,7 @@ pub fn apply_policy(chain: &mut crate::pipeline::AudioChain, policy: AudioPolicy
         known &= chain.set_stage_enabled(id, wanted.contains(&id));
     }
     chain.set_strength(policy.nr_strength);
-    chain.set_threshold(policy.squelch_dbfs);
+    chain.set_threshold(policy.squelch_dbm);
     known
 }
 
@@ -187,7 +187,7 @@ mod tests {
         let level = tone_after(&mut default_chain(DEFAULT_AUDIO_RATE));
         assert!(level > 0.15, "the default chain must keep the tone: {level}");
         for mode in ["am", "cw", "nfm", "wfm"] {
-            let policy = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbfs: -60.0 };
+            let policy = AudioPolicy { nr: true, nr_strength: 1.0, squelch_dbm: -60.0 };
             let mut chain = chain_for_mode(mode, DEFAULT_AUDIO_RATE, policy);
             assert!(!chain.is_stage_enabled("notch"), "{mode}: a carrier is never notched");
             let level = tone_after(&mut chain);

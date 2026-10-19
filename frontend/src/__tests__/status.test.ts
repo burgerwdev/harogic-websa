@@ -10,7 +10,7 @@
  * The payload below is a real STATUS captured from a SAN-90, trimmed to the fields the
  * slots consume (kept structurally complete so a shape change fails here).
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { updateStatus } from '../core/ws';
 import * as S from '../core/store';
 import { resetAll } from '../core/params';
@@ -18,7 +18,7 @@ import { centerHz, spanHz, rtaCenterHz, swpCenterHz } from '../ui/freqState';
 import { refLevel } from '../ui/refState';
 import { currentPoints, currentRBW, currentSpur, currentVBW, rbwMode, vbwMode } from '../ui/swpState';
 import { currentGraphMode } from '../ui/graphMode';
-import { sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz, sdrSquelch } from '../ui/sdrState';
 import { noticeText } from '../core/store';
 
 const SWP_STATUS = {
@@ -93,6 +93,56 @@ const SDR_STATUS = {
 beforeEach(() => {
 	resetAll();
 	localStorage.clear();
+});
+
+describe('independent sweep-time fields', () => {
+	it('STATUS refreshes SWT from the device estimate, never the measured EMA', () => {
+		const status = structuredClone(SWP_STATUS) as Record<string, any>;
+		status.sweep_ms = 12.5;
+		status.sweep_ms_meas = 250;
+		updateStatus(status);
+		expect(S.sweepMs).toBe(12.5);
+		status.sweep_ms_meas = 300;
+		updateStatus(status);
+		expect(S.sweepMs).toBe(12.5);
+		expect(S.sweepMsMeas).toBe(300);
+		delete status.sweep_ms;  // older backends reported the time only in the frame header
+		updateStatus(status);
+		expect(S.sweepMs).toBe(12.5);
+	});
+	it('shows explicitly measured time when SDK estimate is unavailable', async () => {
+		const { updateInfoBar } = await import('../render/infobar');
+		document.body.innerHTML = '<span id="info-swt"></span>';
+		const status = structuredClone(SWP_STATUS) as Record<string, any>;
+		status.sweep_ms = 0;
+		status.sweep_ms_meas = 14.2;
+		updateStatus(status);
+		// The info bar throttles display writes; force the next repaint without waiting.
+		const clock = vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 2000);
+		updateInfoBar();
+		expect(document.getElementById('info-swt')?.textContent).toContain('14.2 ms');
+		status.sweep_ms = 12.5;
+		status.sweep_ms_meas = 999;
+		updateStatus(status);
+		clock.mockReturnValue(performance.now() + 4000);
+		updateInfoBar();
+		expect(document.getElementById('info-swt')?.textContent).toBe('12.5 ms');
+		clock.mockRestore();
+		document.body.innerHTML = '';
+	});
+});
+
+describe('SDR squelch zero threshold', () => {
+	it('keeps zero as a real slider setting', async () => {
+		const { bindActions } = await import('../ui/controls');
+		document.body.innerHTML = '<input type="range" id="input-sdr-squelch" min="-120" max="0" value="-110">';
+		bindActions();
+		const input = document.getElementById('input-sdr-squelch') as HTMLInputElement;
+		input.value = '0';
+		input.dispatchEvent(new Event('change'));
+		expect(sdrSquelch.get()).toBe(0);
+		document.body.innerHTML = '';
+	});
 });
 
 describe('a reference level the device clamped to its own range', () => {

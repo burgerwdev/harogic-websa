@@ -62,7 +62,8 @@ Field reference:
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp`, `req.rta` and `req.sdr` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
-| `sdr` | obj | the SDR receive chain: the requested `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`, plus `actual` (the IQS/DDC geometry). In `actual`, `bandwidth` is the requested display window, and `capture_bandwidth` with `capture_decimate` gives the stream geometry of the device. The capture is wider when the request would make the IQS packet period too long (refer to `SDR_MAX_CAPTURE_DECIMATE`). `actual` also holds the capture window and the packet shape. The object also gives `level_dbfs` (Python-path level), `squelch_open`, `adm` (vendor AM/FM metrics), and `health` (packet counters, non-empty in SDR only) |
+| `sweep_ms` / `sweep_ms_meas` | number | SDK-estimated minimum SWP time (ms, in FREQ/POWR headers; 0 if SDK has no estimate) / publisher's measured acquisition/publish step duration EMA (ms, STATUS only). SWT prefers the estimate; when it is 0, SWT displays the EMA marked `measured` rather than leaving the field blank or mixing sources. |
+| `sdr` | obj | the SDR receive chain: the requested `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`, plus `actual` (the IQS/DDC geometry). In `actual`, `bandwidth` is the requested display window, and `capture_bandwidth` with `capture_decimate` gives the stream geometry of the device. The capture is wider when the request would make the IQS packet period too long (refer to `SDR_MAX_CAPTURE_DECIMATE`). `actual` also holds the capture window and the packet shape. The object also gives `level_dbfs` (Python-path audio level), `channel_dbm` (pre-AGC tuned-bin peak; null until measured), `squelch_open`, `adm` (vendor AM/FM metrics), and `health` (packet counters, non-empty in SDR only) |
 | `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
 | `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
 | `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling). The placement no longer produces `no_signal` (it is floor-anchored, so a missing signal is not a refusal) - the value stays in the vocabulary because the field's values are a contract |
@@ -135,7 +136,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
 | `SET_SDR` | `center?`, `decimate?` (power of two, 1~`caps.decimate_max`; rounded to the nearest power of two) | set the SDR capture window (IQS center and decimation; full reconfiguration) |
 | `SET_SDR_TUNE` | `listen` (Hz) | cheap retune of the demodulator within the capture window (software NCO; clamped to the window) |
-| `SET_SDR_DEMOD` | `mode?`, `deemph_us?` (-1=auto 0=off ..1000), `ifbw?` (100~500000 Hz), `squelch?` (-150~0 dBFS), `volume?` (0~2), `pitch?` (200~2000 Hz), `agc?` (bool) | the demodulator settings. `mode` is a token from the DSP plugin registry (analog: am/dsb/usb/lsb/cw/nfm/wfm/pm; digital: ft8) — the demodulator runs in the browser, the Python chain keeps demodulating the analog subset it implements. A digital mode decodes in the browser worker while an SSB companion plays the channel audio. Mode/pitch/de-emphasis are applied without touching the stream while the browser owns the audio; `ifbw` reconfigures the channelizer |
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?` (-1=auto 0=off ..1000), `ifbw?` (100~500000 Hz), `squelch?` (-150..0 dBm tuned-bin peak, before audio AGC), `volume?` (0~2), `pitch?` (200~2000 Hz), `agc?` (bool) | the demodulator settings. `mode` is a token from the DSP plugin registry (analog: am/dsb/usb/lsb/cw/nfm/wfm/pm; digital: ft8) — the demodulator runs in the browser, the Python chain keeps demodulating the analog subset it implements. A digital mode decodes in the browser worker while an SSB companion plays the channel audio. Mode/pitch/de-emphasis are applied without touching the stream while the browser owns the audio; `ifbw` reconfigures the channelizer |
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
 | `SET_TRIGGER` | `source` (bus/freerun/level/external/timer), `edge` (rising/falling/double), `level` (dBm, `caps` bounds), `safetime`/`delay`/`pretime` (0~10 s), `acqtime` (0.0005~60 s), `retrigger` (0-65535), `retriggerperiod` (s), `out` (none/per_hop/per_sweep/per_profile), `outpolarity` (positive/negative) | RTA acquisition trigger (written into the RTA profile): reconfigured immediately while in RTA, otherwise applied on the next entry. The swept-mode level trigger runs in the frontend and does not use this command |
@@ -195,7 +196,7 @@ offset  size  type    content
 0       4     bytes   magic: 'FREQ' | 'POWR'
 4       4     u32     version (FREQ/POWR pairing sequence)
 8       4     u32     points
-12      4     f32     sweep_ms (measured sweep time)
+12      4     f32     sweep_ms (SDK-estimated minimum SWP time, ms; 0 if unavailable)
 16      ...           data
 ```
 
@@ -219,7 +220,7 @@ window (`startHz`/`stopHz`); `points` is the display trace length.
 | magic | header | data | description |
 |---|---|---|---|
 | `AUDF` | magic(4) + seq(u32) + rate(u32) + samples(u32) | int16 × samples | mono PCM16 audio (48 kHz, 20 ms blocks) from the **Python demodulator path** (the fallback/reference). Only sent while a client subscribes (`/ws?audio=1`); `seq=0` flushes stale audio |
-| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples (interleaved I/Q) | the channelized baseband (backend DDC output, at its measured rate) for the browser demodulator. Only sent while a client subscribes (`/ws?iq=1`); `seq=0` flushes stale baseband after a retune/reconfiguration |
+| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples (interleaved I/Q) | the channelized baseband (backend DDC output, at its nominal DDC sample clock) for the browser demodulator. Only sent while a client subscribes (`/ws?iq=1`); `seq=0` flushes stale baseband after a retune/reconfiguration |
 
 Both streaming types are FIFO-ordered (drop-oldest only on overrun) on a bounded per-client
 queue; AUDF/IQBF never mix with display frames on the same connection (the filters above).

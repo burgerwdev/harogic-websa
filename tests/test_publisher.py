@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 
-from web_sa.hardware.device import DeviceState
+from web_sa.hardware.device import DeviceState, HarogicDevice, _estimated_sweep_ms
 from web_sa.measurements.base import StdSession
 from web_sa.measurements.rta import RtaSession
 from web_sa.measurements.sdr import SdrSession
 from web_sa.web.app_keys import COMMAND_LOCK, WS_CLIENTS
-from web_sa.web.publisher import _acquisition_timeout
+from web_sa.web.publisher import _acquisition_step, _acquisition_timeout
 
 
 class StubDevice:
@@ -54,14 +55,58 @@ def test_pacing_is_owned_by_the_session():
     assert std.pacing(0.001, True) == 0.003                  # 250 fps cap
     assert std.pacing(0.010, True) == 0.002                  # never a busy loop
     sdr = SdrSession(StubDevice(DeviceState(mode='sdr')))
-    assert sdr.pacing(0.001, True) == 0.0                    # IQS paces itself
-    assert sdr.pacing(0.001, False) == 0.002                 # transient error: back off
+    assert sdr.pacing(0.001, False) == 0.002  # no good packet: back off
+    sdr._last_step_ok = True
+    assert sdr.pacing(0.001, False) == 0.0   # coalesced IQ, no frame yet: keep draining
+    sdr._last_step_ok = False
+    assert sdr.pacing(0.001, True) == 0.002  # a reset marker is not a good IQ packet
 
 
 def test_only_the_swept_session_dedupes_the_frequency_axis():
     assert StdSession(StubDevice(DeviceState())).dedupe_freq is True
     assert RtaSession(StubDevice(DeviceState(mode='rta'))).dedupe_freq is False
     assert SdrSession(StubDevice(DeviceState(mode='sdr'))).dedupe_freq is False
+
+
+def test_high_rate_publisher_batches_complete_iq_steps_not_sdk_ddc_blocks():
+    class Device:
+        state = DeviceState(mode='sdr', sdr_actual={'iq_rate': 15_625_000})
+        session = SimpleNamespace(name='sdr', _last_step_ok=True)
+        def __init__(self):
+            self.steps = self.nudges = 0
+        def nudge_reference_out_of_overflow(self):
+            self.nudges += 1
+        def apply_pending_auto_reference(self):
+            return False
+        def step(self):
+            self.steps += 1
+            return [f'iq-{self.steps}'.encode()], [{'step': self.steps}]
+
+    dev = Device()
+    assert _acquisition_step(dev) == ([b'iq-1', b'iq-2'], [{'step': 1}, {'step': 2}])
+    assert (dev.steps, dev.nudges) == (2, 2)
+    dev.state.sdr_actual['iq_rate'] = 7_812_500
+    assert _acquisition_step(dev) == ([b'iq-3'], [{'step': 3}])
+    dev.state.sdr_actual['iq_rate'] = 15_625_000
+    dev.session._last_step_ok = False
+    assert _acquisition_step(dev) == ([b'iq-4'], [{'step': 4}])
+    dev.step = lambda: None
+    assert _acquisition_step(dev) is None  # older session contracts allow no result
+
+
+def test_sweep_estimate_converts_sdk_seconds_to_frame_milliseconds():
+    assert _estimated_sweep_ms(SimpleNamespace(EstimateMinSweepTime=0.0125)) == 12.5
+    assert _estimated_sweep_ms(SimpleNamespace(EstimateMinSweepTime=0.0)) == 0.0
+
+
+def test_publisher_sweep_ema_does_not_overwrite_device_estimate():
+    dev = HarogicDevice.__new__(HarogicDevice)
+    dev.state = DeviceState(sweep_ms=12.5)
+    dev._sweep_ema = None
+    dev.measure_sweep(0.020)
+    dev.measure_sweep(0.030)
+    assert dev.state.sweep_ms == 12.5
+    assert dev.state.sweep_ms_meas == 22.0
 
 
 class Client:

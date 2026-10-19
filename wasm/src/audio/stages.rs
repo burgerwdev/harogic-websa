@@ -95,15 +95,11 @@ impl AudioStage for AgcStage {
     }
 }
 
-/// Level squelch: mutes the channel while it is only noise, with hysteresis, a hold time and a
-/// smoothed gate (a bare comparator chatters at the threshold, and a hard step is audible).
-///
-/// The measurement is the block's level in dBFS, which is what the Python path used
-/// (`sdr.py`: `sdr_level_dbfs` against `sdr_squelch`). An SNR-referenced decision needs a noise
-/// estimate band; the guard-band estimator belongs with the demodulator that knows its bandwidth,
-/// not with a stage that only sees PCM.
+/// Power squelch: compare the panadapter's channel dBm before either AGC, then apply a
+/// hysteretic, held and smoothed gate to the decoded PCM. Missing RF measurements fail open.
 pub struct Squelch {
-    threshold_dbfs: f64,
+    threshold_dbm: f64,
+    level_dbm: Option<f64>,
     /// The rate the gate's time constants are expressed at.
     rate: f64,
     hysteresis_db: f64,
@@ -117,13 +113,14 @@ pub struct Squelch {
 }
 
 impl Squelch {
-    pub fn new(threshold_dbfs: f64, rate: f64) -> Self {
+    pub fn new(threshold_dbm: f64, rate: f64) -> Self {
         Self {
-            threshold_dbfs,
+            threshold_dbm,
+            level_dbm: None,
             rate: if rate > 0.0 { rate } else { DEFAULT_AUDIO_RATE },
             hysteresis_db: 3.0,
-            hold_s: 0.15,
-            attack_s: 0.01,
+            hold_s: 0.30,
+            attack_s: 0.005,
             release_s: 0.08,
             gain: 0.0,
             open: false,
@@ -143,17 +140,12 @@ impl Squelch {
     /// Feed a block and advance the internal clock by its duration.
     pub fn process_block(&mut self, input: &[f32], out: &mut Vec<f32>) {
         let n = input.len();
-        let level = if n == 0 {
-            -200.0
-        } else {
-            let mean_sq = input.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64;
-            10.0 * (mean_sq + 1e-20).log10()
-        };
+        let level = self.level_dbm.unwrap_or(self.threshold_dbm);
         let dt = n as f64 / self.rate;
-        if level >= self.threshold_dbfs {
+        if level >= self.threshold_dbm {
             self.open = true;
             self.hold_until_s = self.now_s + self.hold_s;
-        } else if level < self.threshold_dbfs - self.hysteresis_db && self.now_s >= self.hold_until_s {
+        } else if level < self.threshold_dbm - self.hysteresis_db && self.now_s >= self.hold_until_s {
             self.open = false;
         }
         let target = if self.open { 1.0 } else { 0.0 };
@@ -177,14 +169,19 @@ impl Squelch {
 
     /// Diagnostics for the UI: level, gate and state in one call.
     pub fn status(&self) -> (f64, f64, bool) {
-        (self.threshold_dbfs, self.gain, self.open)
+        (self.threshold_dbm, self.gain, self.open)
     }
 
-    /// The gate's threshold in dBFS (the panel's squelch control).
-    pub fn set_threshold_dbfs(&mut self, dbfs: f64) {
-        if dbfs.is_finite() {
-            self.threshold_dbfs = dbfs.clamp(-160.0, 0.0);
+    /// Channel-power threshold in dBm.
+    pub fn set_threshold_dbm(&mut self, dbm: f64) {
+        if dbm.is_finite() {
+            self.threshold_dbm = dbm.clamp(-160.0, 0.0);
         }
+    }
+
+    /// None (non-finite input) means no current calibrated measurement: fail open.
+    pub fn set_level_dbm(&mut self, dbm: f64) {
+        self.level_dbm = dbm.is_finite().then(|| dbm.clamp(-200.0, 0.0));
     }
 }
 
@@ -193,8 +190,13 @@ impl AudioStage for Squelch {
         "squelch"
     }
 
-    fn set_threshold(&mut self, dbfs: f64) -> bool {
-        self.set_threshold_dbfs(dbfs);
+    fn set_threshold(&mut self, dbm: f64) -> bool {
+        self.set_threshold_dbm(dbm);
+        true
+    }
+
+    fn set_level_dbm(&mut self, dbm: f64) -> bool {
+        Squelch::set_level_dbm(self, dbm);
         true
     }
 
@@ -207,6 +209,7 @@ impl AudioStage for Squelch {
         self.open = false;
         self.hold_until_s = 0.0;
         self.now_s = 0.0;
+        self.level_dbm = None;
     }
 }
 
@@ -269,10 +272,12 @@ mod tests {
         let mut squelch = Squelch::new(-40.0, AUDIO_RATE);
         let mut out = Vec::new();
         // -60 dBFS noise: closed.
+        squelch.set_level_dbm(-60.0);
         squelch.process_block(&tone(960, 1_000.0, 0.001), &mut out);
         let muted = rms(&out);
         assert!(muted < 0.001, "the gate must stay closed: {muted}");
-        // A strong tone: open, and the gate ramps rather than stepping.
+        // A strong signal opens even with quiet decoded PCM.
+        squelch.set_level_dbm(-30.0);
         for _ in 0..6 {
             squelch.process_block(&tone(960, 1_000.0, 0.3), &mut out);
         }
@@ -284,13 +289,38 @@ mod tests {
     fn the_squelch_hysteresis_holds_the_gate_through_a_fade() {
         let mut squelch = Squelch::new(-40.0, AUDIO_RATE);
         let mut out = Vec::new();
+        squelch.set_level_dbm(-30.0);
         for _ in 0..6 {
             squelch.process_block(&tone(960, 1_000.0, 0.3), &mut out);
         }
         assert!(squelch.is_open());
         // A short dip below the threshold must not close the gate (hold + hysteresis).
+        squelch.set_level_dbm(-60.0);
         squelch.process_block(&tone(200, 1_000.0, 0.001), &mut out);
         assert!(squelch.is_open(), "the hold window must absorb a short fade");
+    }
+
+    #[test]
+    fn squelch_uses_pre_agc_power_and_fails_open_without_it() {
+        let mut squelch = Squelch::new(-60.0, AUDIO_RATE);
+        let mut out = Vec::new();
+        squelch.set_level_dbm(-90.0);
+        for _ in 0..12 {
+            squelch.process_block(&tone(960, 1_000.0, 0.3), &mut out);
+        }
+        assert!(!squelch.is_open());
+        assert!(rms(&out) < 0.01, "strong AGC PCM must not open weak RF");
+        squelch.set_level_dbm(-40.0);
+        for _ in 0..8 {
+            squelch.process_block(&tone(960, 1_000.0, 0.001), &mut out);
+        }
+        assert!(squelch.is_open(), "quiet PCM must pass when RF is strong");
+        squelch.set_level_dbm(f64::NAN);
+        squelch.process_block(&tone(960, 1_000.0, 0.3), &mut out);
+        assert!(squelch.is_open(), "missing spectrum must not mute the listener");
+        squelch.reset();
+        squelch.process_block(&tone(960, 1_000.0, 0.3), &mut out);
+        assert!(squelch.is_open(), "a retune cannot reuse the old RF level");
     }
 
     #[test]

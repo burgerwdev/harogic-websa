@@ -97,7 +97,7 @@ export const sdrVolume = createParam<number>('sdr.volume', {
 	serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
 });
-/** Squelch threshold: dBm channel power in 'power' mode, dB SNR in 'snr' mode. */
+/** Squelch threshold in calibrated tuned-channel dBm, before either audio AGC. */
 export const sdrSquelch = createParam<number>('sdr.squelch', {
 	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch', ...hz,
 });

@@ -37,6 +37,10 @@ T = sb  # type aliases
 _SWP_TRACE_MAX = 65536
 
 
+def _estimated_sweep_ms(trace_info) -> float:
+    return float(getattr(trace_info, 'EstimateMinSweepTime', 0.0) or 0.0) * 1000.0
+
+
 # Header enum value -> wire name, for reading the device's own defaults back on preset
 # (load_preset_defaults) and for the tests. Forward maps live inside _profile().
 FRAME_DETECTOR_NAMES = {
@@ -542,8 +546,8 @@ class HarogicDevice:
                                      points=ti.FullsweepTracePoints, est_min=ti.EstimateMinSweepTime,
                                      refclk=pout.ReferenceClockFrequency,
                                      refclk_src=int(pout.ReferenceClockSource.value))
-            # fill sweep_ms with the device-estimated sweep time (carried in the frame header -> SWT display on the frontend)
-            self.state.sweep_ms = float(getattr(ti, 'EstimateMinSweepTime', 0.0) or 0.0)
+            # SDK estimate is seconds; frame header and SWT use milliseconds.
+            self.state.sweep_ms = _estimated_sweep_ms(ti)
             self._trace_points = int(ti.FullsweepTracePoints)
             self._user_start = float(pout.StartFreq_Hz)
             self._user_stop = float(pout.StopFreq_Hz)
@@ -657,14 +661,15 @@ class HarogicDevice:
                 return None
 
     def measure_sweep(self, dt):
-        """Update the measured sweep time EMA (interval between two fetches -> sweep_ms)."""
+        """Update the publisher's measured interval EMA, separate from the device estimate."""
+
         if dt <= 0:
             return
         if self._sweep_ema is None:
             self._sweep_ema = dt
         else:
             self._sweep_ema = 0.8 * self._sweep_ema + 0.2 * dt
-        self.state.sweep_ms = round(self._sweep_ema * 1000.0, 1)
+        self.state.sweep_ms_meas = round(self._sweep_ema * 1000.0, 1)
 
     # ---------------- Queries ----------------
     def _detect_docxo(self) -> None:

@@ -6,8 +6,9 @@ import { rbwMode, vbwMode, currentRBW, currentVBW } from '../ui/swpState';
 import { getDisplayRef } from '../ui/displayRef';
 import { displayUnit } from '../ui/displayState';
 
-// SWT field throttling: the frame-header sweep_ms may vary slightly per frame (EMA convergence jitter),
-// and high-frequency refresh would make the top bar flicker → update at most every 500ms
+// SWT prefers the device's estimated minimum sweep time. Some SDK profiles report zero;
+// in that case show the publisher's measured step duration, explicitly marked as measured.
+// The quantities remain separate and the display source changes only with SDK availability.
 let lastSwtStr = '', lastSwtAt = 0, lastSwtMode = '';
 const SWT_THROTTLE_MS = 500;
 function setSwt() {
@@ -22,7 +23,9 @@ function setSwt() {
   if (S.rtaMode && S.rtaData && S.rtaData.stopHz) {
     v = formatBWHz(S.rtaData.stopHz - S.rtaData.startHz);
   } else {
-    v = S.sweepMs > 0 ? S.sweepMs.toFixed(1) + ' ms' : '-';
+    const measured = S.sweepMs <= 0 && S.sweepMsMeas > 0;
+    const ms = measured ? S.sweepMsMeas : S.sweepMs;
+    v = ms > 0 ? ms.toFixed(1) + (measured ? ' ms (' + t('swt_measured') + ')' : ' ms') : '-';
   }
   if (v === lastSwtStr) return;                     // also skip if the value didn't change (avoid pointless writes)
   lastSwtStr = v;

@@ -55,6 +55,17 @@ async def test_state_endpoint():
         assert data['cmd'] == 'STATUS'
         assert data['connected'] is True
         assert data['center'] == 1e9
+        assert data['sweep_ms'] == 0.0
+        assert data['sweep_ms_meas'] == 0.0
+
+
+def test_sweep_status_keeps_estimate_and_measured_interval_separate():
+    dev = StubDevice()
+    dev.state.sweep_ms = 12.5
+    dev.state.sweep_ms_meas = 22.0
+    status = http_api.build_status(dev)
+    assert status['sweep_ms'] == 12.5
+    assert status['sweep_ms_meas'] == 22.0
 
 
 def test_sdr_state_uses_sdr_values_at_top_level():
