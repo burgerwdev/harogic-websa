@@ -312,3 +312,39 @@ Facts established:
 Fix: `ReferenceClockFrequency = 10e6` when `ref_clock` is external/external_forced in all
 three profile builders. Regression: tests/test_device_state.py
 `test_external_profile_carries_the_reference_frequency`.
+
+## 19. Tier-2 amplitude calibration: panadapter dimension adjudicated, +2.6 dB NumPy offset
+
+Setup: tinySA Ultra generator → DC block → coax → N90 RF In (direct, no antenna);
+GNSS-locked 10 MHz GPSDO on REF IN; SDR session at 100.3 MHz, decimate 32;
+carrier level settled ~2.5 s per point before sampling 7-10 RTAF frames (median).
+
+| input (tinySA cmd) | vendor FFT path | NumPy path (`WEBSA_SDR_FFT=0`) |
+|---|---|---|
+| −20 dBm | −19.79 dBm (+0.21 dB) | −17.17 dBm (+2.83 dB) |
+| −40 dBm | not sampled (session) | −37.10 dBm (+2.90 dB) |
+| −60 dBm | not sampled (session) | −57.42 dBm (+2.58 dB) |
+
+NumPy linearity: −19.93 dB and −20.32 dB per commanded 20 dB step (linear within
+±0.4 dB). Vendor-vs-NumPy disagreement on the same input: +2.62 dB.
+
+Conclusions:
+- The suspected +6.02 dB complex-FFT factor is NOT present: the NumPy path is +2.6 dB
+  vs the vendor path, not +6 dB. Removing the `2·|X|/Σwindow` term (spectrum.py:50)
+  would move NumPy to −3.4 dB vs vendor — worse. The term stays; the residual 2.6 dB
+  is window/detector/ScaleToV detail, not the complex-amplitude factor.
+- The vendor FFT path reads the absolute level correctly (+0.21 dB vs tinySA command,
+  tinySA absolute accuracy ±2-3 dB — consistent with factory calibration).
+- tinySA generator quirks: commands −20 and −30 dBm both produced ≈−21.1 dBm actual
+  (level clamp / coarse attenuator state); commands ≤ −40 dB track commanded+~9.5 dB
+  with ±0.4 dB step accuracy. Absolute accuracy ±2-3 dB; relative steps ±0.4 dB.
+- Procedure note: a service-mode SDR reading taken 0.5 s after a level change read
+  −60.38 dBm where the settled value was −19.79 dBm — the device auto-gain (and the
+  RTAF stream) needs seconds to settle after mode/level changes. Calibration runs
+  must settle ≥2.5 s per point and average several frames (the standalone-session
+  probe above; the earlier WS-run number was a settle transient, not a path error).
+
+`RefClkFreqOffset` cross-check with GNSS locked: internal −0.636 ppm; GPSDO external
+−0.006 ppm; vendor app display −0.615800 ppm (internal). `Device_CalibrateRefClock`
+returns 2× the reference in all states on fw 0.55.109 (see #18) and stays refused by
+the 50-150 MHz bound.
