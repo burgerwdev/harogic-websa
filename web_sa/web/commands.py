@@ -343,7 +343,7 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('mode', 'token'),
         ParamSpec('deemph_us', 'number', SDR_DEEMPH_MIN_US, SDR_DEEMPH_MAX_US, unit='us'),
         ParamSpec('ifbw', 'number', SDR_IFBW_MIN_HZ, SDR_IFBW_MAX_HZ, unit='Hz'),
-        ParamSpec('squelch', 'number', SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS, unit='dBFS'),
+        ParamSpec('squelch', 'number', SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS, unit='dBm'),
         ParamSpec('volume', 'number', SDR_VOLUME_MIN, SDR_VOLUME_MAX),
         ParamSpec('pitch', 'number', SDR_PITCH_MIN_HZ, SDR_PITCH_MAX_HZ, unit='Hz'),
         ParamSpec('agc', 'boolean'),

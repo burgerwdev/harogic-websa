@@ -114,6 +114,10 @@ class TinySA:
         self._prepare_cw(freq_hz, level_dbm)
         return self._transmit()
 
+    def set_level(self, level_dbm):
+        """Level step only (same CW frequency): no sweep re-plan, near-instant."""
+        return self.cmd(f'level {level_dbm}')
+
     def am(self, freq_hz, level_dbm=-20.0, mod_hz=1000, depth=50):
         self._prepare_cw(freq_hz, level_dbm)
         self.cmd('modulation am')

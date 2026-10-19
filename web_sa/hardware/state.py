@@ -124,6 +124,9 @@ class SdrParams:
     # 50/75/300 = explicit (regional pre-emphasis complement).
     sdr_deemph_us: float = -1.0
     sdr_level_dbfs: float = -120.0
+    #: Channel power at the listen frequency (dBm, panadapter, pre-AGC): the squelch
+    #: gate's reference level and the S-meter quantity that responds to signal strength.
+    sdr_channel_dbm: float | None = None
     #: Capture-wide peak (IQStream_TypeDef.MaxPower_dBm, computed by the device per packet),
     #: peak-hold with decay — a free PEP-style meter over the whole capture, not just the
     #: demod channel.

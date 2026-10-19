@@ -313,41 +313,48 @@ Fix: `ReferenceClockFrequency = 10e6` when `ref_clock` is external/external_forc
 three profile builders. Regression: tests/test_device_state.py
 `test_external_profile_carries_the_reference_frequency`.
 
-## 19. Tier-2 amplitude calibration: panadapter dimension adjudicated, +2.6 dB NumPy offset
+## 19. Tier-2 amplitude calibration: SDR panadapter vs SWP reference, ±0.42 dB
 
-Setup: tinySA Ultra generator → DC block → coax → N90 RF In (direct, no antenna);
-GNSS-locked 10 MHz GPSDO on REF IN; SDR session at 100.3 MHz, decimate 32;
-carrier level settled ~2.5 s per point before sampling 7-10 RTAF frames (median).
+Setup: tinySA Ultra generator → DC block → coax → N90 RF In; GNSS-locked 10 MHz GPSDO
+on REF IN; SWP mode (vendor-calibrated path) and SDR mode (panadapter) measured against
+the same carrier at 100.3 MHz, decimate 32, 2.5 s settle per point, median of frames.
 
-| input (tinySA cmd) | vendor FFT path | NumPy path (`WEBSA_SDR_FFT=0`) |
-|---|---|---|
-| −20 dBm | −19.79 dBm (+0.21 dB) | −17.17 dBm (+2.83 dB) |
-| −40 dBm | not sampled (session) | −37.10 dBm (+2.90 dB) |
-| −60 dBm | not sampled (session) | −57.42 dBm (+2.58 dB) |
-
-NumPy linearity: −19.93 dB and −20.32 dB per commanded 20 dB step (linear within
-±0.4 dB). Vendor-vs-NumPy disagreement on the same input: +2.62 dB.
+| tinySA cmd | SWP read (reference) | SDR vendor RTAF | vdr − SWP | `channel_dbm` (gate level) |
+|---|---|---|---|---|
+| −40 dBm | −39.24 | −39.58 | −0.34 | −39.66 |
+| −30 dBm | −29.94 | −29.63 | +0.31 | −29.65 |
+| −20 dBm | −20.18 | −19.76 | +0.42 | −19.78 |
 
 Conclusions:
-- The suspected +6.02 dB complex-FFT factor is NOT present: the NumPy path is +2.6 dB
-  vs the vendor path, not +6 dB. Removing the `2·|X|/Σwindow` term (spectrum.py:50)
-  would move NumPy to −3.4 dB vs vendor — worse. The term stays; the residual 2.6 dB
-  is window/detector/ScaleToV detail, not the complex-amplitude factor.
-- The vendor FFT path reads the absolute level correctly (+0.21 dB vs tinySA command,
-  tinySA absolute accuracy ±2-3 dB — consistent with factory calibration).
-- tinySA generator quirks: commands −20 and −30 dBm both produced ≈−21.1 dBm actual
-  (level clamp / coarse attenuator state); commands ≤ −40 dB track commanded+~9.5 dB
-  with ±0.4 dB step accuracy. Absolute accuracy ±2-3 dB; relative steps ±0.4 dB.
-- Procedure note: a service-mode SDR reading taken 0.5 s after a level change read
-  −60.38 dBm where the settled value was −19.79 dBm — the device auto-gain (and the
-  RTAF stream) needs seconds to settle after mode/level changes. Calibration runs
-  must settle ≥2.5 s per point and average several frames (the standalone-session
-  probe above; the earlier WS-run number was a settle transient, not a path error).
+- The SDR panadapter agrees with the vendor-calibrated SWP path within ±0.42 dB across
+  the measured range. No 6.02 dB complex-FFT dimension error and no gross scale error.
+- The `2·|X|/Σwindow` term (spectrum.py:50) stays: the NumPy path measured +2.1/+3.0 dB
+  vs SWP (window/detector semantics, linear, not the ×2 factor — removing it would move
+  NumPy to −3.4 dB vs vendor, worse).
+- `channel_dbm` (the squelch gate level) tracks the same reference within ±0.42 dB.
 
-`RefClkFreqOffset` cross-check with GNSS locked: internal −0.636 ppm; GPSDO external
-−0.006 ppm; vendor app display −0.615800 ppm (internal). `Device_CalibrateRefClock`
-returns 2× the reference in all states on fw 0.55.109 (see #18) and stays refused by
-the 50-150 MHz bound.
+Procedure artifacts that produced earlier false readings (each was chased and refuted):
+- The device auto-gain and the RTAF stream need seconds to settle after mode/level
+  changes: a reading 0.5 s after a change showed −60.38 dBm where the settled value was
+  −19.79 dBm.
+- The tinySA `cw()` replans the sweep engine (driver timeout 40 s): the level takes
+  ~28 s to apply. Level-only steps use `TinySA.set_level` (near-instant).
+- The generator output is non-monotonic at some commands (cmd −50/−40 both produced
+  ≈−39.2 dBm; cmd −60 produced ≈−57.5) — it is NOT a usable absolute reference below
+  its tracking range. Absolute adjudication uses the SWP readback as the reference.
+- GNSS: `Device_GetGNSSInfo` (cached) stays empty on fw 0.55.109; the `_Realtime`
+  variants return live data (22-25 sats). `Device_CalibrateRefClock(CalibrateByGNSS1PPS)`
+  returns 2× the reference in every measured state — refused by the 50-150 MHz bound.
+  The usable ppm metric is `MeasAuxInfo.RefClkFreqOffset`: internal −0.636 ppm, GPSDO
+  external −0.006 ppm, vendor app −0.615800 ppm (internal) — all consistent.
+- `WEBSA_GNSS_POLL` (default 1 s) A/B: identical 12 startup-settle transient errors at
+  1 Hz and 30 s polling — the realtime poll has no measurable steady-state stream cost.
+
+Implementation delivered with these measurements: squelch gate + S-meter now reference
+the pre-AGC panadapter channel power (`sdr_channel_dbm` in STATUS, `channel_dbm` gate,
+`websa_dsp_demod_set_squelch_level` ABI, frontend feed from RTAF). Regression:
+tests/test_device_state.py, frontend/src/__tests__/squelchLevel.test.ts, Rust gate test.
+
 
 IFBW vs audio level (tinySA AM 60% depth, 1 kHz tone, −40 dBm, AGC off):
 IFBW 1200 → −74.55 dBFS, 2500 → −72.43, 6000 → −68.70, 12000 → −67.51,

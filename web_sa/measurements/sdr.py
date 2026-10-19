@@ -1485,6 +1485,14 @@ class SdrSession(MeasurementSession):
                         lo_hz=lo if hi > lo else None, hi_hz=hi if hi > lo else None)
                 if res is not None:
                     freq, spec, row = res
+                    # Channel power at the listen frequency (dBm): the squelch gate's
+                    # reference level, taken before any AGC. The gate cannot use the
+                    # audio level for this while the AGC normalizes it.
+                    if freq.size > 1 and np.isfinite(spec).any():
+                        m = np.abs(freq - float(s.sdr_listen_hz)) <= max(
+                            abs(float(freq[1] - freq[0])), 1.0)
+                        if m.any() and np.isfinite(spec[m]).any():
+                            s.sdr_channel_dbm = float(np.max(spec[m]))
                     finite = spec[np.isfinite(spec)]
                     if finite.size:
                         # Same observation the swept paths hand the reference loop, so an SDR
@@ -1637,11 +1645,17 @@ class SdrSession(MeasurementSession):
                 audio = audio * gain
             level_dbfs = float(power_dbfs) - 90.31     # int16 full-scale reference
             s.sdr_level_dbfs = float(level_dbfs)
+            # The gate compares CHANNEL POWER at the listen frequency (panadapter, pre-AGC)
+            # against the threshold — the same quantity the browser gate uses. The audio
+            # level is AGC-normalized and cannot discriminate signal strength, which is
+            # what reduced the squelch to an on/off switch. Missing channel data holds
+            # the gate open rather than muting on absent measurements.
             thr = float(s.sdr_squelch)
-            if level_dbfs >= thr:
+            channel_dbm = s.sdr_channel_dbm
+            if channel_dbm is None or channel_dbm >= thr:
                 self._squelch_hold_until = now + self.SQUELCH_HOLD_S
                 s.sdr_squelch_open = True
-            elif (level_dbfs < thr - self.SQUELCH_HYST_DB
+            elif (channel_dbm < thr - self.SQUELCH_HYST_DB
                     and now >= self._squelch_hold_until):
                 s.sdr_squelch_open = False
             if audio.size:

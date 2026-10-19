@@ -734,11 +734,17 @@ export function syncSdrPanel(s: any) {
   }
   const lvl = document.getElementById('cur-sdr-level');
   if (lvl) {
-    // The browser DSP measures the PCM it produces; when it owns playback the backend's Python
-    // demodulator is not running, so its level is not the one on screen.
-    const level = dspLevelDbfs();
-    const value = Number.isFinite(level) ? level : Number(sdr.level_dbfs);
-    lvl.textContent = Number.isFinite(value) ? value.toFixed(1) + ' dBFS' : '';
+    // The S-meter quantity is the panadapter channel power at the listen frequency
+    // (dBm, pre-AGC): it responds to signal strength. The audio dBFS level is
+    // AGC-normalized (constant while the AGC is on) and stays a separate VU readout.
+    const ch = Number(sdr.channel_dbm);
+    if (Number.isFinite(ch)) {
+      lvl.textContent = ch.toFixed(1) + ' dBm';
+    } else {
+      const level = dspLevelDbfs();
+      const value = Number.isFinite(level) ? level : Number(sdr.level_dbfs);
+      lvl.textContent = Number.isFinite(value) ? value.toFixed(1) + ' dBFS' : '';
+    }
   }
   syncSdrButtons();
   syncSdrAudioButton();

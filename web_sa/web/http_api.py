@@ -201,6 +201,7 @@ def build_status(dev) -> dict:
             **sdr_req,
             'actual': s.sdr_actual,
             'level_dbfs': s.sdr_level_dbfs,
+            'channel_dbm': s.sdr_channel_dbm,
             'squelch_open': s.sdr_squelch_open,
             'adm': s.sdr_adm,
             'health': session_health if s.mode == 'sdr' else {},

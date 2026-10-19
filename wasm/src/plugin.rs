@@ -375,6 +375,12 @@ pub trait AudioStage: Send {
     fn set_threshold(&mut self, _dbfs: f64) -> bool {
         false
     }
+
+    /// A measured gate level in dB (the panadapter's channel power at the listen
+    /// frequency). `false` when the stage measures its own input instead.
+    fn set_level_db(&mut self, _db: f64) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

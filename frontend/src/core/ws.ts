@@ -3,6 +3,7 @@ import { requestRender } from '../render/redraw';
 import { updateFreqUIInputs } from '../ui/freqInputs';
 import * as S from './store';
 import { decodeFrame } from './frames';
+import { feedSquelchLevel } from '../sdr/squelchLevel';
 import { t, hasKey } from './i18n';
 import { updateInfoBar } from '../render/infobar';
 import {
@@ -185,6 +186,11 @@ export function connectWS() {
       // two differ when a hardware offset moved the capture centre; rebin to the display
       // window so the user's centre is at the canvas centre and the offset edge is a gap.
       const { freq, spec, shifted } = alignToDisplayWindow(capFreq, capSpec, startHz, stopHz);
+      if (S.sdrMode && plausibleSpectrum(spec)) {
+        // The squelch gate's level: channel power at the listen frequency (dBm,
+        // pre-AGC) from the panadapter — see sdr/squelchLevel.ts.
+        feedSquelchLevel(freq, spec);
+      }
       {
         // Debug/verification aid: the windows the renderer actually uses (e2e reads it).
         const cvW = document.getElementById('spectrum');
