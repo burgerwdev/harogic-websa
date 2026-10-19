@@ -114,9 +114,6 @@ pub struct Squelch {
     open: bool,
     hold_until_s: f64,
     now_s: f64,
-    /// Channel power at the listen frequency (dBm) from the panadapter, set per block by
-    /// the pipeline. `None` falls back to measuring this block's own PCM.
-    external_level: Option<f64>,
 }
 
 impl Squelch {
@@ -132,7 +129,6 @@ impl Squelch {
             open: false,
             hold_until_s: 0.0,
             now_s: 0.0,
-            external_level: None,
         }
     }
 
@@ -147,14 +143,11 @@ impl Squelch {
     /// Feed a block and advance the internal clock by its duration.
     pub fn process_block(&mut self, input: &[f32], out: &mut Vec<f32>) {
         let n = input.len();
-        let level = match self.external_level {
-            Some(db) => db,
-            None => if n == 0 {
-                -200.0
-            } else {
-                let mean_sq = input.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64;
-                10.0 * (mean_sq + 1e-20).log10()
-            },
+        let level = if n == 0 {
+            -200.0
+        } else {
+            let mean_sq = input.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64;
+            10.0 * (mean_sq + 1e-20).log10()
         };
         let dt = n as f64 / self.rate;
         if level >= self.threshold_dbfs {
@@ -190,17 +183,7 @@ impl Squelch {
     /// The gate's threshold in dBFS (the panel's squelch control).
     pub fn set_threshold_dbfs(&mut self, dbfs: f64) {
         if dbfs.is_finite() {
-            // power mode: <= 0 dBm; SNR mode: positive dB above the noise floor
-            self.threshold_dbfs = dbfs.clamp(-160.0, 60.0);
-        }
-    }
-
-    /// The gate's reference level: the channel power at the listen frequency (dBm), measured
-    /// on the panadapter before any AGC. When set it replaces the stage's own PCM measurement,
-    /// which is AGC-normalized and cannot discriminate signal strength.
-    pub fn set_level_db(&mut self, db: f64) {
-        if db.is_finite() {
-            self.external_level = Some(db.clamp(-200.0, 0.0));
+            self.threshold_dbfs = dbfs.clamp(-160.0, 0.0);
         }
     }
 }
@@ -212,11 +195,6 @@ impl AudioStage for Squelch {
 
     fn set_threshold(&mut self, dbfs: f64) -> bool {
         self.set_threshold_dbfs(dbfs);
-        true
-    }
-
-    fn set_level_db(&mut self, db: f64) -> bool {
-        Squelch::set_level_db(self, db);
         true
     }
 
@@ -326,28 +304,3 @@ mod tests {
         assert_eq!(ids, registered, "the chain must follow the registry's order and set");
     }
 }
-
-    #[test]
-    fn squelch_gate_follows_the_injected_channel_level() {
-        // The gate's level comes from the panadapter (channel power at the listen
-        // frequency, pre-AGC), not from its own PCM: with the AGC normalizing the audio
-        // to a constant RMS, a self-measured gate cannot discriminate signal strength.
-        let mut gate = Squelch::new(-80.0, DEFAULT_AUDIO_RATE);
-        let mut out = Vec::new();
-        let block = vec![0.5_f32; 480];
-
-        gate.set_level_db(-70.0); // above threshold: opens
-        gate.process_block(&block, &mut out);
-        assert!(gate.is_open());
-
-        gate.set_level_db(-110.0); // below threshold - hysteresis: still open
-        gate.process_block(&block, &mut out);
-        assert!(gate.is_open());
-
-        for _ in 0..20 {
-            // hold time (0.15 s) elapses across these blocks (10 ms each)
-            gate.set_level_db(-110.0);
-            gate.process_block(&block, &mut out);
-        }
-        assert!(!gate.is_open());
-    }

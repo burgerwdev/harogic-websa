@@ -350,10 +350,12 @@ Procedure artifacts that produced earlier false readings (each was chased and re
 - `WEBSA_GNSS_POLL` (default 1 s) A/B: identical 12 startup-settle transient errors at
   1 Hz and 30 s polling — the realtime poll has no measurable steady-state stream cost.
 
-Implementation delivered with these measurements: squelch gate + S-meter now reference
-the pre-AGC panadapter channel power (`sdr_channel_dbm` in STATUS, `channel_dbm` gate,
-`websa_dsp_demod_set_squelch_level` ABI, frontend feed from RTAF). Regression:
-tests/test_device_state.py, frontend/src/__tests__/squelchLevel.test.ts, Rust gate test.
+An implementation of this (gate on `channel_dbm`, `websa_dsp_demod_set_squelch_level`
+ABI, frontend RTAF feed) was built and live-verified against these measurements, then
+ROLLED BACK on 2026-10-19 pending a decision on the dual-AGC architecture (the
+measurements above remain valid). The shipped squelch still references the post-AGC
+audio level: with the audio AGC on it has no strength discrimination (the on/off
+behavior in the report).
 
 
 IFBW vs audio level (tinySA AM 60% depth, 1 kHz tone, −40 dBm, AGC off):

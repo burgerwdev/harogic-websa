@@ -411,16 +411,6 @@ pub extern "C" fn websa_dsp_demod_set_agc(handle: u32, on: u32) -> u32 {
         .unwrap_or(0)
 }
 
-/// The panadapter's channel power (dBm) at the listen frequency: the squelch gate's
-/// measured level. Taken before any AGC.
-#[no_mangle]
-pub extern "C" fn websa_dsp_demod_set_squelch_level(handle: u32, db: f32) -> u32 {
-    with_pipeline(handle, |state| {
-        u32::from(state.pipeline.set_squelch_level_db(db as f64))
-    })
-    .unwrap_or(0)
-}
-
 /// The de-emphasis in force, in microseconds (0 = none): what the panel's setting resolved to.
 #[no_mangle]
 pub extern "C" fn websa_dsp_demod_deemph(handle: u32) -> f64 {

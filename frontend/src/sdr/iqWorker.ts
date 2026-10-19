@@ -1228,13 +1228,6 @@ self.onmessage = (event: MessageEvent) => {
     squelchDbfs = Number(msg.value) || -110;
     pipeline?.setSquelch(squelchDbfs);
     postStats();
-  } else if (msg.type === 'squelch-level') {
-    // The panadapter's channel power (dBm) at the listen frequency, pre-AGC: the
-    // gate's reference level. The audio's own level is AGC-normalized and cannot
-    // discriminate signal strength.
-    const db = Number(msg.value);
-    if (Number.isFinite(db)) pipeline?.setSquelchLevel(db);
-    postStats();
   } else if (msg.type === 'agc') {
     agcOn = Boolean(msg.value);
     pipeline?.setAgc(agcOn);

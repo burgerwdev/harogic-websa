@@ -74,13 +74,7 @@ class SwpParams:
     points_strategy: str = 'speed'
     sweep_time_mode: int = 0     # 0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN
     sweep_time: float = 0.0      # Manual=absolute seconds; xN=multiplier; ignored otherwise
-    #: Device-estimated sweep time (SWP_TraceInfo.EstimateMinSweepTime): carried in the
-    #: FREQ frame header and shown as the SWT display. The publisher's measured loop
-    #: interval is a SEPARATE field (sweep_ms_meas) — overwriting this one made the
-    #: display flip between two unrelated quantities.
     sweep_ms: float = 0.0
-    #: Publisher-measured acquisition interval (EMA of the step period, ms).
-    sweep_ms_meas: float = 0.0
     # Height of the visible display window in dB (grid divisions x dB/div), pushed by the
     # frontend. Auto Ref anchors the noise floor just above the bottom of this window.
     ref_range_db: float = 100.0
@@ -123,12 +117,6 @@ class SdrParams:
     sdr_if_bw: float = 6000.0
     sdr_squelch: float = -110.0
     sdr_squelch_open: bool = False
-    #: Squelch reference: 'power' gates on channel power (dBm); 'snr' gates on
-    #: channel minus the off-channel noise floor (dB).
-    sdr_squelch_mode: str = 'power'
-    #: Off-channel noise floor (dBm, panadapter 25th percentile outside the signal
-    #: window) — the SNR squelch's second input.
-    sdr_noise_dbm: float | None = None
     sdr_volume: float = 0.8
     sdr_agc: bool = True
     sdr_pitch: float = 700.0
@@ -136,9 +124,6 @@ class SdrParams:
     # 50/75/300 = explicit (regional pre-emphasis complement).
     sdr_deemph_us: float = -1.0
     sdr_level_dbfs: float = -120.0
-    #: Channel power at the listen frequency (dBm, panadapter, pre-AGC): the squelch
-    #: gate's reference level and the S-meter quantity that responds to signal strength.
-    sdr_channel_dbm: float | None = None
     #: Capture-wide peak (IQStream_TypeDef.MaxPower_dBm, computed by the device per packet),
     #: peak-hold with decay — a free PEP-style meter over the whole capture, not just the
     #: demod channel.

@@ -550,11 +550,6 @@ export function setSdrPipelineSquelch(dbfs: number): void {
   worker?.postMessage({ type: 'squelch', value: dbfs });
 }
 
-/** The squelch gate's measured level (panadapter channel power, dBm): applied live. */
-export function setSdrSquelchLevel(db: number): void {
-  worker?.postMessage({ type: 'squelch-level', value: db });
-}
-
 /** The panel's AGC switch for the browser chain: applied live. */
 export function setSdrPipelineAgc(on: boolean): void {
   worker?.postMessage({ type: 'agc', value: on });

@@ -117,11 +117,6 @@ export class WasmPipeline {
 		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch(this.handle, dbfs);
 	}
 
-	/** The gate's measured level: panadapter channel power (dBm) at the listen frequency. */
-	setSquelchLevel(db: number): void {
-		if (this.handle) this.module.exports.websa_dsp_demod_set_squelch_level?.(this.handle, db);
-	}
-
 	/** The panel's AGC switch: on = the level stage adapts (default), off = unity gain. */
 	setAgc(on: boolean): void {
 		if (this.handle) this.module.exports.websa_dsp_demod_set_agc?.(this.handle, on ? 1 : 0);

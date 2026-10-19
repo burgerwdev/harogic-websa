@@ -3,10 +3,6 @@
 export const en = {
 	"sdr_hint": "click=tune · drag=tune/pan · ←→ tune · PgUp/PgDn BW · M=demod · Space=audio",
 	"sdr_audio_tip": "Enable/disable audio (Space)",
-	"squelch_tip": "Threshold: channel power at the listen frequency (dBm), pre-AGC",
-	"squelch_mode_tip": "Squelch reference: channel power (dBm) or SNR (dB above the noise floor)",
-	"squelch_mode_power": "Pwr",
-	"squelch_mode_snr": "SNR",
 	"sdr_listen_tip": "Demod frequency (MHz)",
 	"sdr_center_tip": "Wideband center (MHz)",
 	"iq_bw": "IQ BW",
@@ -104,10 +100,6 @@ export const en = {
 export const zh = {
 	"sdr_hint": "单击=调谐 · 拖动=调谐/平移 · ←→ 调谐 · PgUp/PgDn 带宽 · M=解调 · Space=声音",
 	"sdr_audio_tip": "启用/关闭声音（Space）",
-	"squelch_tip": "门限：侦听频点信道功率 (dBm)，AGC 之前",
-	"squelch_mode_tip": "静噪参考：信道功率 (dBm) 或信噪比 (高于噪底的 dB)",
-	"squelch_mode_power": "功率",
-	"squelch_mode_snr": "信噪比",
 	"sdr_listen_tip": "解调频率（MHz）",
 	"sdr_center_tip": "宽带中心（MHz）",
 	"iq_bw": "IQ 带宽",

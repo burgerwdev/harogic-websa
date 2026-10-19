@@ -6,9 +6,7 @@ import { rbwMode, vbwMode, currentRBW, currentVBW } from '../ui/swpState';
 import { getDisplayRef } from '../ui/displayRef';
 import { displayUnit } from '../ui/displayState';
 
-// SWT field throttling: the frame-header sweep_ms is the device's own estimate and can
-// change when the device re-estimates (configure, temperature), so the display only
-// rewrites on a value change.
+// SWT field throttling: the frame-header sweep_ms may vary slightly per frame (EMA convergence jitter),
 // and high-frequency refresh would make the top bar flicker → update at most every 500ms
 let lastSwtStr = '', lastSwtAt = 0, lastSwtMode = '';
 const SWT_THROTTLE_MS = 500;

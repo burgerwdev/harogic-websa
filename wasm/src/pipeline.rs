@@ -152,15 +152,6 @@ impl AudioChain {
         taken
     }
 
-    /// Hand a measured gate level (dB) to every stage that takes one; `false` when none does.
-    pub fn set_squelch_level_db(&mut self, db: f64) -> bool {
-        let mut taken = false;
-        for entry in self.stages.iter_mut() {
-            taken |= entry.stage.set_level_db(db);
-        }
-        taken
-    }
-
     pub fn is_empty(&self) -> bool {
         self.stages.is_empty()
     }
@@ -336,15 +327,9 @@ impl Pipeline {
     /// Set the squelch threshold in dBFS (`<= -100` leaves the gate wide open and inert).
     pub fn set_squelch_dbfs(&mut self, dbfs: f64) -> bool {
         if dbfs.is_finite() {
-            self.policy.squelch_dbfs = dbfs.clamp(-160.0, 60.0);
+            self.policy.squelch_dbfs = dbfs.clamp(-160.0, 0.0);
         }
         crate::audio::apply_policy(&mut self.chain, self.policy)
-    }
-
-    /// Feed the gate's measured level: the panadapter channel power (dBm) at the listen
-    /// frequency, taken before any AGC.
-    pub fn set_squelch_level_db(&mut self, db: f64) -> bool {
-        self.chain.set_squelch_level_db(db)
     }
 
     pub fn kind(&self) -> PathKind {

@@ -294,11 +294,7 @@
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
               <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
             <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
-              <select id="select-sdr-squelch-mode" data-action="set-sdr-squelch-mode" data-i18n-title="squelch_mode_tip" data-i18n-attr="title" title="Squelch reference" style="max-width:74px;">
-                <option value="power" data-i18n="squelch_mode_power">Pwr</option>
-                <option value="snr" data-i18n="squelch_mode_snr">SNR</option>
-              </select>
-              <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" data-i18n-title="squelch_tip" data-i18n-attr="title" title="Threshold: channel power at the listen frequency (dBm), pre-AGC" style="flex:1;">
+              <input type="range" id="input-sdr-squelch" min="-120" max="0" step="1" value="-110" style="flex:1;">
               <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
             <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>

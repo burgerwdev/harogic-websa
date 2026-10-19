@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrSquelchMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo, type SquelchMode } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo } from './sdrState';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
@@ -489,7 +489,7 @@ export function applySdrDemod() {
     prepareSdrAudioTransition();
   }
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgc.get(),
-         squelch_mode: sdrSquelchMode.get(), deemph_us: deemph });
+         deemph_us: deemph });
 }
 
 /**
@@ -525,22 +525,6 @@ export function setSdrNrAtten(atten: number) {
   sdrNrAtten.set(atten);
   if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), sdrNrAlgo.get(), atten);
   renderSdrState();
-}
-
-/** Squelch reference mode: 'power' (dBm channel power) or 'snr' (dB above the
- *  off-channel noise floor). Persisted and pushed to the backend gate. The slider's
- *  range and default follow the mode: power is <= 0 dBm, SNR is 0..40 dB. */
-export function setSdrSquelchMode(m: SquelchMode) {
-  sdrSquelchMode.set(m);
-  const slider = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
-  if (slider) {
-    slider.min = m === 'snr' ? '0' : '-120';
-    slider.max = m === 'snr' ? '40' : '0';
-    slider.value = String(m === 'snr' ? 10 : -90);
-  }
-  sdrSquelch.set(m === 'snr' ? 10 : -90);
-  renderSdrState();
-  applySdrDemod();
 }
 
 function toggleSdrAgc(el: HTMLElement) {
@@ -750,17 +734,11 @@ export function syncSdrPanel(s: any) {
   }
   const lvl = document.getElementById('cur-sdr-level');
   if (lvl) {
-    // The S-meter quantity is the panadapter channel power at the listen frequency
-    // (dBm, pre-AGC): it responds to signal strength. The audio dBFS level is
-    // AGC-normalized (constant while the AGC is on) and stays a separate VU readout.
-    const ch = Number(sdr.channel_dbm);
-    if (Number.isFinite(ch)) {
-      lvl.textContent = ch.toFixed(1) + ' dBm';
-    } else {
-      const level = dspLevelDbfs();
-      const value = Number.isFinite(level) ? level : Number(sdr.level_dbfs);
-      lvl.textContent = Number.isFinite(value) ? value.toFixed(1) + ' dBFS' : '';
-    }
+    // The browser DSP measures the PCM it produces; when it owns playback the backend's Python
+    // demodulator is not running, so its level is not the one on screen.
+    const level = dspLevelDbfs();
+    const value = Number.isFinite(level) ? level : Number(sdr.level_dbfs);
+    lvl.textContent = Number.isFinite(value) ? value.toFixed(1) + ' dBFS' : '';
   }
   syncSdrButtons();
   syncSdrAudioButton();
@@ -971,7 +949,6 @@ export function bindActions() {
     'set-sdr-nr-algo': (el) => setSdrNrAlgo((el as HTMLSelectElement).value === 'dfn' ? 'dfn' : 'wiener'),
     'set-sdr-nr-atten': (el) => setSdrNrAtten(Number((el as HTMLInputElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
-    'set-sdr-squelch-mode': (el) => setSdrSquelchMode((el as HTMLSelectElement).value as SquelchMode),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
