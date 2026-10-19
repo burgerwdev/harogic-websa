@@ -690,13 +690,12 @@ class HarogicDevice:
             needs a background thread + timeout protection). If GNSS 1PPS is unavailable
             (no antenna / not locked) the DLL may hang while waiting, so an external timeout
             is required."""
-            gnss = self.state.gnss or {}
-            if not (gnss.get('lock') and gnss.get('sats')):
-                # Without receiver lock the 1PPS period is not 1 s: measured on this bench
-                # (sats=0) the call returned 2x the reference, which the caller would have
-                # stored as +1000 ppm.
-                self.state.last_error = 'GNSS 1PPS unavailable (no lock/satellites); reference calibration refused'
-                return False, 0.0
+            # GNSS SatsNum/time/SNR read as 0 via libhtraapi 0.55.100 against firmware
+            # 0.55.109 even when the receiver is locked (the vendor app reports 23 sats),
+            # so they cannot gate the attempt. The validity check is the result itself:
+            # with no 1PPS the call returned 2x the reference (200,000,138 Hz), which the
+            # 100 MHz-class bound below rejects. The caller holds a timeout (the DLL can
+            # block while waiting for 1PPS).
             self.state.calibrating = True
             try:
                 out = sb.c_double(0.0)

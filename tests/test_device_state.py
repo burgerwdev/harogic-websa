@@ -380,9 +380,10 @@ def test_external_profile_carries_the_reference_frequency(monkeypatch):
 
 
 def test_calibrate_ref_clock_refuses_garbage(monkeypatch):
-    """Without GNSS lock the 1PPS period is not 1 s: measured on this bench (sats=0) the
-    calibration returned 2x the reference (200,000,138 Hz) and the handler stored it as
-    +1000 ppm. No lock / implausible result must be refused."""
+    """GNSS sats/time read as 0 through libhtraapi 0.55.100 even when the receiver is
+    locked (vendor app sees 23 sats), so the attempt cannot be gated on them. The
+    validity check is the result: with no 1PPS the call returned 2x the reference
+    (200,000,138 Hz) — outside the 50-150 MHz bound, refused with last_error."""
     from web_sa.hardware import sdk_bindings as sb
 
     dev = HarogicDevice()
@@ -396,12 +397,7 @@ def test_calibrate_ref_clock_refuses_garbage(monkeypatch):
     monkeypatch.setattr(sb.dll, 'Device_CalibrateRefClock', fake_calibrate)
 
     dev.state.gnss = {'lock': 1, 'sats': 0}
-    assert dev.calibrate_ref_clock(3) == (False, 0.0)
-    assert calls == []                      # refused before touching the DLL
-    assert 'GNSS 1PPS unavailable' in dev.state.last_error
-
-    dev.state.gnss = {'lock': 1, 'sats': 9}
-    assert dev.calibrate_ref_clock(3) == (False, 0.0)   # 2x result rejected
+    assert dev.calibrate_ref_clock(3) == (False, 0.0)   # 2x result rejected by the bound
     assert len(calls) == 1
     assert 'implausible frequency' in dev.state.last_error
 
