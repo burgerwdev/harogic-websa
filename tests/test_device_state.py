@@ -408,3 +408,55 @@ def test_calibrate_ref_clock_refuses_garbage(monkeypatch):
     monkeypatch.setattr(sb.dll, 'Device_CalibrateRefClock', good_calibrate)
     ok, freq = dev.calibrate_ref_clock(3)
     assert ok is True and freq == 100000066.18
+
+
+def test_query_gnss_prefers_realtime_and_falls_back(monkeypatch):
+    """The cached Device_GetGNSSInfo stays empty on this firmware/lib combination; the
+    _Realtime call returns the live receiver data. query_gnss must prefer the realtime
+    call and fall back to the cached one when it errors (older libs)."""
+    import htra_api
+    from web_sa.hardware import sdk_bindings as sb
+
+    dev = HarogicDevice()
+    seen = []
+
+    class Info:
+        SatsNum = 22
+        GNSS_LockState = 1
+        DOCXO_LockState = 0
+
+        class DOCXO_WorkMode:
+            value = 0
+
+        class GNSSAntennaState:
+            value = 0
+
+        latitude = 28.1392
+        longitude = 113.0105
+        altitude = 97
+        hour = 3
+        minute = 2
+        second = 1
+        Year = 2026
+        month = 10
+        day = 19
+
+    def realtime(handle, out):
+        seen.append('realtime')
+        out[0].SatsNum = 22
+        out[0].GNSS_LockState = 1
+        return 0
+
+    monkeypatch.setattr(sb.dll, 'Device_GetGNSSInfo_Realtime', realtime, raising=False)
+    monkeypatch.setattr(sb.dll, 'Device_GetGNSSInfo',
+                        lambda handle, out: seen.append('cached') or 0, raising=False)
+
+    g = dev.query_gnss()
+    assert seen == ['realtime']
+    assert g['sats'] == 22 and g['lock'] == 1
+
+    seen.clear()
+    monkeypatch.setattr(sb.dll, 'Device_GetGNSSInfo_Realtime',
+                        lambda handle, out: seen.append('realtime') or 1, raising=False)
+    dev.query_gnss()
+    assert seen == ['realtime', 'cached']      # realtime error -> cached fallback

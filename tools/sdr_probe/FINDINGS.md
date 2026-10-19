@@ -291,10 +291,20 @@ Facts established:
   documented in the SDK materials available (htra_api.h, htra_api.py, guide V0.55.89).
 - Internal vs external after the fix: the 100 MHz carrier lands in the same bin under
   both; `RefClkFreqOffset` −0.636 ppm (internal VCXO) vs −0.006 ppm (GPSDO).
-- `Device_CalibrateRefClock` with GNSS 1PPS is INVALID while the receiver has no satellites
-  (this bench: sats=0, antenna=0): count=3 returned 200,000,138 Hz internal /
-  200,000,135.56 Hz external — exactly 2× the profile readback, i.e. the PPS period was
-  not the declared 1 s. Do not trust the calibration without GNSS lock.
+- GNSS readout: the cached `Device_GetGNSSInfo` stays empty (sats=0, time=00:00:00,
+  altitude=0) in every tested state — both `GNSSDataSource` settings (Internal/External,
+  full matrix measured), streaming and idle. The `_Realtime` variants return live data
+  (19-25 sats visible, 19-22 used, UTC time, altitude): `query_gnss` uses them with a
+  cached fallback. `GNSSAntennaState=0` decodes to `GNSS_AntennaExternal` (correct with
+  the external antenna connected). `GNSSDataSource` supports exactly Internal/External
+  (header); both measured.
+- `Device_CalibrateRefClock(CalibrateByGNSS1PPS, 1.0 s)` returns 2× the reference in
+  EVERY measured state — GNSS locked (22 sats) or not, internal or external reference,
+  either data source: 200,000,138 / 200,000,135.56 / 200,000,163 Hz vs profile-measured
+  100,000,066.18 Hz. The 50-150 MHz bound in `calibrate_ref_clock` refuses these. The
+  vendor app's own earlier calibration result persists as 参考频率偏差 −0.615800 ppm,
+  matching our independent `RefClkFreqOffset` −0.636 ppm and the profile readback
+  +0.66 ppm.
 - The documented External auto-fallback to internal did NOT trigger at a −90,909 ppm
   mis-lock: `ReferenceClockSource` readback stayed External (1) throughout.
 - `external_forced` returns status −15 (clock-unlock family) and stops the stream.

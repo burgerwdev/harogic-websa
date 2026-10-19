@@ -690,12 +690,13 @@ class HarogicDevice:
             needs a background thread + timeout protection). If GNSS 1PPS is unavailable
             (no antenna / not locked) the DLL may hang while waiting, so an external timeout
             is required."""
-            # GNSS SatsNum/time/SNR read as 0 via libhtraapi 0.55.100 against firmware
-            # 0.55.109 even when the receiver is locked (the vendor app reports 23 sats),
-            # so they cannot gate the attempt. The validity check is the result itself:
-            # with no 1PPS the call returned 2x the reference (200,000,138 Hz), which the
-            # 100 MHz-class bound below rejects. The caller holds a timeout (the DLL can
-            # block while waiting for 1PPS).
+            # The cached Device_GetGNSSInfo stays empty even when the receiver is locked
+            # (see query_gnss); the realtime lock state does not make the calibration
+            # usable either — on fw 0.55.109 Device_CalibrateRefClock(CalibrateByGNSS1PPS,
+            # 1.0 s) returned 2x the reference in every measured state (locked/unlocked,
+            # internal/external). The bound refuses those results; the internal offset is
+            # available from RefClkFreqOffset instead (measured -0.636 ppm, matching the
+            # vendor app's -0.615800 ppm).
             self.state.calibrating = True
             try:
                 out = sb.c_double(0.0)
@@ -721,7 +722,12 @@ class HarogicDevice:
         with self._hw:
             try:
                 g = T.GNSSInfo_TypeDef()
-                st = sb.dll.Device_GetGNSSInfo(sb.pointer(self.dev), sb.pointer(g))
+                # The cached Device_GetGNSSInfo only reflects the DLL's packet-time update
+                # and stays empty (sats=0, time=0) even with the receiver locked; the
+                # _Realtime call reads the receiver directly and matches the vendor app.
+                st = sb.dll.Device_GetGNSSInfo_Realtime(sb.pointer(self.dev), sb.pointer(g))
+                if st != 0:
+                    st = sb.dll.Device_GetGNSSInfo(sb.pointer(self.dev), sb.pointer(g))
                 if st != 0:
                     self.state.last_error = f'Device_GetGNSSInfo status={st}'
                     return {}
