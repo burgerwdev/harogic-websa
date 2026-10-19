@@ -456,6 +456,15 @@ class HarogicDevice:
         # Note: switching SystemClockSource to external is dangerous (only under vendor
         # guidance); left unset to avoid hanging the device
         p.ExternalSystemClockFrequency = 10e6
+        # ReferenceClockFrequency declares the input reference to the clock PLL and applies
+        # to internal and external alike (htra_api.h:688; guide: "仅可设置10 MHz").
+        # SWP_ProfileDeInit pre-fills it with the last measured internal reference, so an
+        # external switch without this field declared ~100 MHz against a 10 MHz input:
+        # timebase x1.098..1.101 (unlocked, drifting), RefClkFreqOffset -90909 ppm, profile
+        # readback 11,000,000.0. Declared 10e6: x1.0000082, RefClkFreqOffset -0.006 ppm
+        # (10 MHz GPSDO in, 100 MHz carrier, measured 2026-10-19).
+        if s.ref_clock in ('external', 'external_forced'):
+            p.ReferenceClockFrequency = 10e6
         p.EnableReferenceClockOut = 1 if s.refclk_out else 0
         p.SweepTimeMode = T.SweepTimeMode_TypeDef(s.sweep_time_mode)
         p.SweepTime = float(s.sweep_time)   # Manual 时绝对秒; xN 时倍率; 其他模式忽略

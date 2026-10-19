@@ -145,6 +145,10 @@ class RtaSession(MeasurementSession):
         prof.ReferenceClockSource = ref_clock_map.get(
             s.ref_clock, _sb.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
         prof.ExternalSystemClockFrequency = 10e6
+        # Declared-input field, same as the SWP profile (device._profile); omitting it
+        # leaves the external PLL unlocked (~10% timebase error).
+        if s.ref_clock in ('external', 'external_forced'):
+            prof.ReferenceClockFrequency = 10e6
         prof.EnableReferenceClockOut = 1 if s.refclk_out else 0
         if s.rta_rbw_mode == 'manual' and s.rta_rbw_hz > 0:
             prof.RBWMode = _sb.RBWMode_TypeDef.RBW_Manual

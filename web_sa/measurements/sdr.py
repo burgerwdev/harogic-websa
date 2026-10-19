@@ -480,6 +480,10 @@ class SdrSession(MeasurementSession):
         }.get(s.ref_clock, T.ReferenceClockSource_TypeDef.ReferenceClockSource_Internal)
         p.ExternalSystemClockFrequency = 10e6
         p.EnableReferenceClockOut = 1 if s.refclk_out else 0
+        # Declared-input field, same as the SWP profile (device._profile); omitting it
+        # leaves the external PLL unlocked (~10% timebase error).
+        if s.ref_clock in ('external', 'external_forced'):
+            p.ReferenceClockFrequency = 10e6
         self._sdk_call(
             lambda: T.dll.IQS_Configuration(
                 T.pointer(dev.dev), T.pointer(p), T.pointer(out), T.pointer(info)),

@@ -248,3 +248,57 @@ plot border), from the trace down to the foot of the graticule. The line reads a
 Both trace renderers now lift the pen at a sample that is not plottable (`render/plot.ts:
 plottableLevel`), so a gap breaks the line. The same build measures a longest contiguous green
 column of 23 px in the middle of the plot (a real burst) at the same settings.
+## 18. External reference: `ReferenceClockFrequency` declares the input frequency to the clock PLL
+
+Symptom (2026-10-19, SAN-90, 10 MHz GPSDO on REF IN): `SET_REFCK external` left the
+15.125 MHz band empty and the spectrum unstable; internal clock was normal.
+
+Official sources:
+- htra_api.h:380-384: `ReferenceClockSource_Internal/External` "(默认10MHz)"; External
+  "当系统检测到外部时钟无法锁定时，将自动切换至内部参考"; `External_Forced` never falls
+  back; `External_SysClock` (0x04) bypasses the PLL.
+- htra_api.h:688 / htra_api.py (ASG_Profile_TypeDef): `ReferenceClockFrequency` —
+  "指定参考频率：对内参考和外参考均生效".
+- Guide V0.55.89 p.155: `ReferenceClockFrequency` — "设置参考时钟频率 Hz（仅可设置
+  10 MHz），可手动对系统时钟准确度进行修正".
+- Guide §8.3 `Device_CalibrateRefClock`: GNSS 1PPS calibration, TriggerCount > 30
+  recommended; `MeasAuxInfo.RefClkFreqOffset` = reference offset vs GNSS, ppm.
+
+Driver gap: none of the three profile builders (SWP `device._profile`, RTA
+`rta._configure_locked`, IQS `sdr._configure_iqs_locked`) wrote
+`ReferenceClockFrequency`. `SWP_ProfileDeInit` pre-fills it with the last measured
+INTERNAL reference (measured 100,000,066.18 Hz on this unit), so switching to external
+declared ~100 MHz against the 10 MHz input.
+
+Measurements (100.0 MHz carrier from a PlutoSDR, TRUE = 99,999,998 Hz as programmed;
+displayed peak on the analyzer):
+
+| state | carrier displayed | timebase ratio | `RefClkFreqOffset` | profile readback `ReferenceClockFrequency` |
+|---|---|---|---|---|
+| internal | 99,999,182 Hz | 1.0000082 | −0.636 ppm | 100,000,066.18 (firmware-measured) |
+| external, field unset (DeInit leak) | 90.93–91.07 MHz across runs | 1.0981 / 1.0998 / 1.1012 (unlocked, wandering) | **−90,909 ppm** | 11,000,000.0 |
+| external, field = 20e6 (declared 2× of real input) | 50,247,916 Hz | 1.99013 ≈ 2.0 | −90,909 ppm | 11,000,000.0 |
+| external, field = 10e6 (fix) | 99,999,182 Hz — same bin as internal | 1.0000082, identical across 3 runs | **−0.006 ppm** | 10,000,000.0 |
+
+Facts established:
+- The field is the DECLARED input frequency: declaring 20 MHz against a 10 MHz input
+  scaled the timebase ×1.99 (EXP-D1); declaring 10 MHz locks it to the GPSDO
+  (EXP-E, three identical runs).
+- An undeclared external switch mis-locks: timebase ×1.098..1.101 wandering,
+  `RefClkFreqOffset` −90,909 ppm, and the readback pins at 11,000,000.0. The readback is
+  a firmware-side value of the unlocked state: it stayed 11,000,000.0 whether the leaked
+  DeInit value (100.000066e6) or an explicit 20e6 was declared. Its origin is not
+  documented in the SDK materials available (htra_api.h, htra_api.py, guide V0.55.89).
+- Internal vs external after the fix: the 100 MHz carrier lands in the same bin under
+  both; `RefClkFreqOffset` −0.636 ppm (internal VCXO) vs −0.006 ppm (GPSDO).
+- `Device_CalibrateRefClock` with GNSS 1PPS is INVALID while the receiver has no satellites
+  (this bench: sats=0, antenna=0): count=3 returned 200,000,138 Hz internal /
+  200,000,135.56 Hz external — exactly 2× the profile readback, i.e. the PPS period was
+  not the declared 1 s. Do not trust the calibration without GNSS lock.
+- The documented External auto-fallback to internal did NOT trigger at a −90,909 ppm
+  mis-lock: `ReferenceClockSource` readback stayed External (1) throughout.
+- `external_forced` returns status −15 (clock-unlock family) and stops the stream.
+
+Fix: `ReferenceClockFrequency = 10e6` when `ref_clock` is external/external_forced in all
+three profile builders. Regression: tests/test_device_state.py
+`test_external_profile_carries_the_reference_frequency`.

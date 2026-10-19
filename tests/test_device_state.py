@@ -343,3 +343,37 @@ def test_preset_without_the_new_keys_keeps_the_previous_behavior():
     assert dev.state.frame_detector == 'device_default'
     assert dev.state.trace_align == 'start'
     assert dev.state.points_strategy == 'speed'
+
+
+def test_external_profile_carries_the_reference_frequency(monkeypatch):
+    """ReferenceClockFrequency declares the input reference to the external PLL.
+
+    SWP_ProfileDeInit pre-fills the field with the last measured internal reference;
+    switching to external without declaring 10 MHz left the timebase at x1.098..1.101
+    (100 MHz carrier) with RefClkFreqOffset at -90909 ppm. Declared 10e6: x1.0000082.
+    """
+    from web_sa.hardware import sdk_bindings as sb
+    from web_sa.config import DeviceCapabilities
+
+    dev = HarogicDevice()
+    dev.state.caps = DeviceCapabilities.from_model(67)
+    monkeypatch.setattr(sb.dll, 'SWP_ProfileDeInit', lambda handle, profile: 0)
+
+    dev.state.ref_clock = 'external'
+    profile = dev._profile()
+    assert profile.ReferenceClockFrequency == 10e6
+    # The input struct carries the enum as a raw 4-byte field in this binding.
+    raw_source = profile.ReferenceClockSource
+    source = raw_source if isinstance(raw_source, int) \
+        else int.from_bytes(bytes(raw_source), 'little')
+    assert source == int(sb.ReferenceClockSource_TypeDef.ReferenceClockSource_External)
+
+    dev.state.ref_clock = 'external_forced'
+    profile = dev._profile()
+    assert profile.ReferenceClockFrequency == 10e6
+
+    # Internal references are measured by the firmware itself (100 MHz class); the field
+    # must stay untouched there — writing 10 MHz on the internal path would be a lie.
+    dev.state.ref_clock = 'internal'
+    profile = dev._profile()
+    assert profile.ReferenceClockFrequency != 10e6
