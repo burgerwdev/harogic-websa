@@ -301,6 +301,10 @@ class SdrSession(MeasurementSession):
         self._applied_listen = None
         self._ready_at = 0.0
         self._error_streak = 0
+        #: Adaptive fallback: when the capture rate exceeds what the USB link sustains,
+        #: the stall recovery halves the capture rate (raises the decimate) until the
+        #: stream holds. SET_SDR from the operator clears it.
+        self._decimate_cap = 0
         self._recovery_attempts = 0
         self._last_recovery = 0.0
         self._last_status = 0
@@ -431,6 +435,8 @@ class SdrSession(MeasurementSession):
         # it. The device can capture wider than the request so that the packet period keeps the
         # display and the audio ring supplied (refer to SDR_MAX_CAPTURE_DECIMATE).
         requested_decimate = _round_decimate(s.sdr_decimate)
+        if self._decimate_cap and requested_decimate < self._decimate_cap:
+            requested_decimate = self._decimate_cap
         s.sdr_decimate = requested_decimate
         p = T.IQS_Profile_TypeDef()
         out = T.IQS_Profile_TypeDef()
@@ -1030,6 +1036,7 @@ class SdrSession(MeasurementSession):
     # ---------------- parameter setters ----------------
     def set_params(self, center=None, decimate=None):
         s = self.dev.state
+        self._decimate_cap = 0
         prev_center, prev_decimate = s.sdr_center_hz, s.sdr_decimate
         if center is not None:
             s.sdr_center_hz = float(center)
@@ -1239,6 +1246,21 @@ class SdrSession(MeasurementSession):
                 'last_status': self._last_status, 'transient_streak': self._transient_streak}
 
     # ---------------- acquisition ----------------
+    def _protect_against_overflow(self, s, now_mono) -> bool:
+        """Rate-limited protective attenuation for persistent IF overflow (−12).
+        Mirrors the SWP protective ranger: overload protection stays on even with
+        manual settings, and the operator can always dial it back (SET_ATTEN)."""
+        limit = s.caps.atten_max if s.caps else 33
+        if s.atten >= limit:
+            return False
+        if now_mono - getattr(self, '_last_atten_protect', 0.0) < 1.0:
+            return False
+        self._last_atten_protect = now_mono
+        s.atten = int(min(limit, s.atten + 5))
+        log.warning('SDR: persistent IF overflow (-12) — protective attenuation -> %d dB',
+                    s.atten)
+        return True
+
     def _recover_locked(self, reason) -> None:
         self._last_recovery = time.monotonic()
         self._transient_streak = 0
@@ -1249,6 +1271,20 @@ class SdrSession(MeasurementSession):
         self._recovery_attempts += 1
         if self._recovery_attempts > 3:
             raise DeviceError('SDR stream unrecoverable; restarting worker')
+        s = self.dev.state
+        if s.status_warning == -12 and self._protect_against_overflow(s, time.monotonic()):
+            # Overload, not transport: attenuation is the right medicine — retry without
+            # counting the attempt or halving the capture rate.
+            self._recovery_attempts -= 1
+        elif (self._recovery_attempts >= 2 and self._decimate_cap < 16
+                and self._fs_in and self._fs_in / max(1, _round_decimate(self.dev.state.sdr_decimate)) > 3.5e6):
+            # The capture rate exceeds what this USB link sustains: halve it once per
+            # escalation until the stream holds (adaptive fallback). SET_SDR clears it.
+            self._decimate_cap = min(16, max(16, _round_decimate(self.dev.state.sdr_decimate) * 2))
+            self.dev.state.sdr_decimate = self._decimate_cap
+            log.warning('SDR: capture rate fallback -> decimate %d '
+                        '(bandwidth %s) after repeated stalls',
+                        self._decimate_cap, 'reduced')
         # The first attempt restarts the stream *without* reconfiguring the device: measured on the
         # bench, a full reconfiguration costs a ~400 ms hole in the baseband (and the same in the
         # audio), while a trigger restart with the geometry kept is a fraction of that. Escalate to
@@ -1370,6 +1406,17 @@ class SdrSession(MeasurementSession):
                         s.status_warning = int(st)
                     self._transient_streak += 1
                     self._timeout_streak = self._timeout_streak + 1 if st == -10 else 0
+                    # At a capture rate the USB link cannot sustain, the FIRST transport
+                    # error is the edge signal (measured: 7.8 MSps throws BusDataError
+                    # transients that land as audio gaps; 3.9 MSps holds with zero).
+                    # Halve the capture rate once — SET_SDR from the operator clears the
+                    # fallback.
+                    if self._fs_in > 3.5e6 and self._decimate_cap < 16:
+                        self._decimate_cap = 16
+                        s.sdr_decimate = 16
+                        self._configure()
+                        log.warning('SDR: transport error at this capture rate — '
+                                    'fallback -> decimate 16 (bandwidth reduced)')
                     # A timeout blocks for BusTimeout each call, so recover fast on those;
                     # BusDataError returns immediately, so a longer streak is fine.
                     if ((self._transient_streak >= 60 or self._timeout_streak >= 3)
@@ -1387,6 +1434,13 @@ class SdrSession(MeasurementSession):
             if _packet_overflows(stream):
                 s.status_warning = -12
                 self._if_over_packets += 1
+                # Persistent overflow while the operator's settings cannot handle the
+                # input: raise attenuation (rate-limited, mirrors the SWP protective
+                # ranger — overload protection stays on even with manual settings).
+                now_mono = time.monotonic()
+                if (self._if_over_packets >= 50
+                        and self._protect_against_overflow(s, now_mono)):
+                    self._configure()
             else:
                 s.status_warning = 0
             # Capture-wide peak meter straight from the packet (MaxPower_dBm is computed
