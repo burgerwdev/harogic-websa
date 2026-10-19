@@ -348,3 +348,9 @@ Conclusions:
 −0.006 ppm; vendor app display −0.615800 ppm (internal). `Device_CalibrateRefClock`
 returns 2× the reference in all states on fw 0.55.109 (see #18) and stays refused by
 the 50-150 MHz bound.
+
+IFBW vs audio level (tinySA AM 60% depth, 1 kHz tone, −40 dBm, AGC off):
+IFBW 1200 → −74.55 dBFS, 2500 → −72.43, 6000 → −68.70, 12000 → −67.51,
+25000 → −65.48. The rise with IFBW is AM sideband physics (a 1 kHz tone
+needs ±1 kHz of passband; IFBW 1200 Hz cuts it), not a path error. The
+IFBW-independent channel level is the panadapter quantity (plan B squelch).
