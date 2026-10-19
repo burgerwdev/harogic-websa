@@ -53,7 +53,8 @@
 ### 前置条件
 
 - Python ≥ 3.10（aiohttp、NumPy；硬件冒烟工具可选 pyserial）
-- Node.js ≥ 18（仅重建前端时需要）
+- Node.js — 仅重建前端与跑其测试时需要：22.22+ / 24.15+ / ≥26（测试栈的下限；仅 Vite 构建
+  只需 22.12+）。Node 18/20/23 未覆盖。
 - Harogic SAN 系列频谱仪 + 官方 SDK：
   - `htra_api.py` — 已包含在仓库根目录（官方 Python 包装，HAROGIC 版权）
   - `libhtraapi.so` — **专有二进制，请从 HAROGIC 官方获取**；放入 `ctypes` 可搜索路径
@@ -61,7 +62,7 @@
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
+pip install -r requirements.txt          # 仅运行时：aiohttp、NumPy
 ./build.sh                               # 安装/同步前端依赖并执行 Vite 构建
 ```
 
@@ -113,6 +114,8 @@ harogic-websa/
 ├─ docs/                 文档 (en/ + zh-CN/): 架构 / API / 模式流转 / 已知问题 / FAQ / 重构留痕 /
 │                        架构评估 / 开发指南
 ├─ tests/                后端 pytest(协议/配置/设备状态/HTTP API)
+├─ tools/                硬件冒烟 + e2e + 性能基线 + 质量门禁
+│  └─ checks/            architecture_guard.py + baseline.json（适应度函数）
 ├─ screenshots/          README 截图
 ├─ run.sh / stop.sh / status.sh / clean.sh / build.sh / test.sh / Makefile
 ├─ pyproject.toml / requirements.txt / LICENSE / .gitignore
@@ -153,6 +156,10 @@ harogic-websa/
 - `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
 - 截图使用真实 SAN-90 拍摄（SDR 数字模式截图使用 PlutoSDR 作为信号源）
+- `frontend/src/dsp/ggmorse/` 与 `tools/vendor/ggmorse/`：CW（莫尔斯）解码器来自
+  Georgi Gerganov 的 [ggmorse](https://github.com/ggerganov/ggmorse)，**MIT** 协议，供应商提交
+  `7b4822a8`（见 `tools/vendor/ggmorse/LICENSE`），由 `tools/vendor/build_ggmorse_wasm.sh`
+  编译为单文件 wasm 模块。`tools/vendor/ggmorse/ggmorse_wasm.cpp` 为本项目自有代码。
 
 
 ---

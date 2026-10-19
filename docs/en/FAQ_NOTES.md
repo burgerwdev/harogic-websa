@@ -67,8 +67,8 @@
   placement re-fitted. Only information loss (clipping) and device overload are corrected behind your
   back.
 - **SDR uses the same fit** as SWP/RTA (`AUTO_SCALE`, one implementation): the backend computes the target
-  from the panadapter trace, the client applies it to its display scale, and the IQS level is only
-  never written by the fit (a write reconfigures the stream and interrupts the audio, and it moves the
+  from the panadapter trace, the client applies it to its display scale, and the fit never writes the
+  IQS level (a write reconfigures the stream and interrupts the audio, and it moves the
   trace the fit is reading), so it changes only when the user sets it. Entering SDR
   asks for one fit as soon as a frame arrives (this replaces the old persisted "auto" toggle).
 - The placement keeps the noise floor just above the bottom of the display window with at least 10 dB of

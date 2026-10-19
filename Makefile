@@ -51,7 +51,7 @@ build: frontend/public/dsp.wasm frontend/public/dfn/df_bg.wasm  ## Full build: W
 clean:    ## Clean caches/logs/dist, keeping deps + WASM caches (fast rebuild)
 	./clean.sh --keep-deps
 
-clean-all: ## Clean everything, including node_modules and the WASM target dirs (full rebuild)
+clean-all: ## Clean everything incl. node_modules + WASM target dirs (keeps the committed WASM cores; ./clean.sh --with-wasm removes them)
 	./clean.sh
 
 dev:      ## Stop, clean (deps kept), rebuild frontend, run with WEBSA_TRACE=1
@@ -122,18 +122,23 @@ bench-record:  ## Re-record the performance baseline on this host
 
 ##@ E2E
 
-e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library)
-	@./stop.sh >/dev/null 2>&1 || true
-	@WEBSA_FAKE=1 WEBSA_PORT=$${WEBSA_FAKE_PORT:-8099} setsid nohup python3 -m web_sa.supervisor \
-		> /tmp/websa-fake.log 2>&1 < /dev/null & echo $$! > /tmp/websa-fake.pid
-	@for i in $$(seq 1 25); do sleep 1; \
-		curl -sf -o /dev/null http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}/api/state && break; done
-	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
-	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099}
-	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_FAKE_PORT:-8099} \
-		--check --no-inventory
-	@kill $$(cat /tmp/websa-fake.pid) 2>/dev/null || true; rm -f /tmp/websa-fake.pid
-	@echo "OK: fake-backend UI smoke + state-machine contract + resolution sweep (no hardware)"
+e2e-fake:  ## UI smoke against the fake backend (no hardware, no vendor library; a real service on 8080 is left alone)
+	@bash -eu -o pipefail -c '\
+	WEBSA_FAKE_PORT=$${WEBSA_FAKE_PORT:-8099}; \
+	export WEBSA_PORT=$$WEBSA_FAKE_PORT WEBSA_FAKE=1; \
+	setsid nohup python3 -m web_sa.supervisor > /tmp/websa-fake.log 2>&1 < /dev/null & \
+	fake_pid=$$!; echo $$fake_pid > /tmp/websa-fake.pid; \
+	cleanup() { kill -TERM -- -$$fake_pid 2>/dev/null || kill "$$fake_pid" 2>/dev/null || true; rm -f /tmp/websa-fake.pid; }; \
+	trap cleanup EXIT; \
+	ok=0; \
+	for i in $$(seq 1 25); do sleep 1; \
+		curl -sf -o /dev/null http://127.0.0.1:$$WEBSA_FAKE_PORT/api/state && { ok=1; break; }; done; \
+	if [ $$ok -ne 1 ]; then echo "FAIL: fake backend did not become ready" >&2; tail -5 /tmp/websa-fake.log >&2; exit 1; fi; \
+	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT; \
+	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT; \
+	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT \
+		--check --no-inventory; \
+	echo "OK: fake-backend UI smoke + state-machine contract + resolution sweep (no hardware)"'
 
 viewport-baseline:  ## Layout/resolution baseline over every attached output (needs a running service)
 	@pgrep -f "[w]eb_sa.supervisor" >/dev/null || ./run.sh

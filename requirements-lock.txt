@@ -2,6 +2,11 @@
 # Docker/CI use this to reproduce a known-good environment:
 #   pip install -r requirements-dev.txt -c requirements-lock.txt
 # Regenerate after a deliberate upgrade: python3 -m pip freeze | grep -Ei '^(aiohttp|numpy|pytest|pytest-asyncio|ruff|pyserial|fonttools|playwright)=='
+#
+# Python-version note: numpy 2.5.x needs Python >= 3.11, so this lock file is only
+# installable on 3.11+ (CI runs 3.12/3.13). On Python 3.10 install from requirements.txt
+# instead (its bounds allow NumPy 2.x below the lock); the runtime contract is the
+# requirements.txt range, the lock is a tested point inside it.
 aiohttp==3.14.3
 numpy==2.5.2
 pytest==9.1.1

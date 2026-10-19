@@ -65,7 +65,8 @@ A browser-based control and measurement application for **Harogic SAN series spe
 ### Prerequisites
 
 - Python ≥ 3.10 (aiohttp, NumPy; pyserial is optional for hardware smoke tests)
-- Node.js ≥ 18 (only needed to rebuild the frontend)
+- Node.js — only for rebuilding the frontend and running its tests: a 22.22+, 24.15+ or ≥26
+  release (the test stack's floor; a plain Vite build accepts 22.12+). Node 18/20/23 are not covered.
 - Harogic SAN series analyzer + official SDK:
   - `htra_api.py` — included in the repo root (official Python wrapper, HAROGIC copyright)
   - `libhtraapi.so` — **proprietary binary, obtain it from HAROGIC**; place it somewhere `ctypes` can find it
@@ -73,7 +74,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt          # aiohttp, NumPy, pytest, pyserial
+pip install -r requirements.txt          # runtime only: aiohttp, NumPy
 ./build.sh                               # sync frontend dependencies and run the Vite build
 ```
 
@@ -130,7 +131,7 @@ harogic-websa/
 ├─ tests/                backend pytest (protocol, config, device state, HTTP API)
 │  └─ fixtures/frames/   golden binary frames shared with the TS decoder test
 ├─ tools/                hardware smoke + e2e + bench + quality guards
-│  └─ quality/           architecture_guard.py + baseline.json (fitness functions)
+│  └─ checks/            architecture_guard.py + baseline.json (fitness functions)
 ├─ screenshots/          README screenshots
 ├─ run.sh / stop.sh / status.sh / clean.sh / build.sh / test.sh / Makefile
 ├─ pyproject.toml / requirements.txt / LICENSE / .gitignore

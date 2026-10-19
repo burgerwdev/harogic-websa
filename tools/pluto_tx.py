@@ -81,11 +81,19 @@ def list_modes() -> int:
 
 def dry_run_all() -> int:
     """Dry-run every mode in-process and report the result. No radio is needed."""
+    # A PASS must mean "the generator can build a signal". DRM30 builds its OFDM signal
+    # only from an external DecDRM int16 IQ WAV: without --iq the tool prints a transmit
+    # plan and exits 0 — a plan is not a signal, so it used to be reported as PASS.
+    needs_external_iq = {'drm'}
     ok = True
     width = max(len(mode) for mode in TOOLS)
     for mode, (tool, desc) in TOOLS.items():
         if tool is None:
             print(f'SKIP  {mode:<{width}}  {desc}')
+            continue
+        if mode in needs_external_iq:
+            print(f'SKIP  {mode:<{width}}  {desc} '
+                  '(needs an external DecDRM IQ WAV: tools/pluto_tx.py drm --iq <file> --dry-run)')
             continue
         buf = io.StringIO()
         code = 1

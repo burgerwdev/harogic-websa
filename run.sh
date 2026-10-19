@@ -26,13 +26,22 @@ fi
 # sees and which is how a native crash gets diagnosed.
 export WEBSA_LOGFILE="${WEBSA_LOGFILE:-/tmp/websa.log}"
 WEBSA_ERR="${WEBSA_ERR:-/tmp/websa.err}"
+# The pid file is what makes ./stop.sh stop only THIS instance (the group leader; the
+# worker shares the group), instead of whatever matches the module name machine-wide.
+PIDFILE="${WEBSA_PIDFILE:-/tmp/websa.pid}"
+export WEBSA_PIDFILE="$PIDFILE"
 setsid nohup python3 -m web_sa.supervisor > /dev/null 2>> "$WEBSA_ERR" < /dev/null &
+echo $! > "$PIDFILE"
 health_port="${WEBSA_PORT:-8080}"
 health_host="${WEBSA_HOST:-127.0.0.1}"
 case "$health_host" in 0.0.0.0|::) health_host="127.0.0.1" ;; esac
-for i in $(seq 1 25); do
+# Deadline-based: each probe can cost up to --max-time (a port held by a non-HTTP service
+# accepts and never answers), so an iteration count alone used to stretch the wait well
+# past the announced budget.
+deadline=$(( $(date +%s) + 30 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 1
-  curl_args=(-s -o /dev/null -w "%{http_code}")
+  curl_args=(-s -o /dev/null -w "%{http_code}" --max-time 2)
   if [ -n "${WEBSA_TOKEN:-}" ]; then
     curl_args+=(-H "Authorization: Bearer ${WEBSA_TOKEN}")
   fi
@@ -40,9 +49,13 @@ for i in $(seq 1 25); do
     echo "OK: service ready (http://localhost:${health_port})"
     echo "    log:    $WEBSA_LOGFILE (5 MiB + 3 backups)"
     echo "    stderr: $WEBSA_ERR (crash output only)"
+    echo "    pid:    $(cat "$PIDFILE") ($PIDFILE)"
     exit 0
   fi
 done
+# Not ready in time: the instance we just started is not serving and must not linger as a
+# mystery background process — roll it back, then show why it failed.
+./stop.sh || true
 echo "FAIL: service not ready (single-shot, no retry)"
 tail -5 "$WEBSA_LOGFILE" 2>/dev/null || true
 tail -5 "$WEBSA_ERR" 2>/dev/null || true
