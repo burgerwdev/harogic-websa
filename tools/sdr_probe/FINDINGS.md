@@ -361,3 +361,11 @@ IFBW 1200 → −74.55 dBFS, 2500 → −72.43, 6000 → −68.70, 12000 → −
 25000 → −65.48. The rise with IFBW is AM sideband physics (a 1 kHz tone
 needs ±1 kHz of passband; IFBW 1200 Hz cuts it), not a path error. The
 IFBW-independent channel level is the panadapter quantity (plan B squelch).
+
+Stream-stall correlation (the audio-dropout report, 2026-10-19): during the gate
+verification the log shows repeated `SDR stream stalled (-12)` / `(watchdog);
+restarting the stream (1/3)` cycles — each restart is an audible gap. Two distinct
+triggers observed: (a) −12 IF overflow while a STRONG direct injection (−20 dBm,
+AGC off, atten 0) sat in the passband; (b) watchdog stalls around mode/level
+transitions and during 1 Hz realtime GNSS polls. Task A (IFBW ladder + network
+throttle) quantifies both.

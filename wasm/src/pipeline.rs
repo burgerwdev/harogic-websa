@@ -336,7 +336,7 @@ impl Pipeline {
     /// Set the squelch threshold in dBFS (`<= -100` leaves the gate wide open and inert).
     pub fn set_squelch_dbfs(&mut self, dbfs: f64) -> bool {
         if dbfs.is_finite() {
-            self.policy.squelch_dbfs = dbfs.clamp(-160.0, 0.0);
+            self.policy.squelch_dbfs = dbfs.clamp(-160.0, 60.0);
         }
         crate::audio::apply_policy(&mut self.chain, self.policy)
     }

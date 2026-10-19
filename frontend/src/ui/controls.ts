@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { send } from '../core/wsSend';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
-import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo } from './sdrState';
+import { sdrAgc, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrSpanHz, sdrSquelch, sdrSquelchMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo, type SquelchMode } from './sdrState';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
@@ -489,7 +489,7 @@ export function applySdrDemod() {
     prepareSdrAudioTransition();
   }
   send({ cmd: 'SET_SDR_DEMOD', mode, ifbw, volume, squelch, agc: sdrAgc.get(),
-         deemph_us: deemph });
+         squelch_mode: sdrSquelchMode.get(), deemph_us: deemph });
 }
 
 /**
@@ -525,6 +525,22 @@ export function setSdrNrAtten(atten: number) {
   sdrNrAtten.set(atten);
   if (sdrNr.get()) setSdrPipelineNr(true, sdrNrStrength.get(), sdrNrAlgo.get(), atten);
   renderSdrState();
+}
+
+/** Squelch reference mode: 'power' (dBm channel power) or 'snr' (dB above the
+ *  off-channel noise floor). Persisted and pushed to the backend gate. The slider's
+ *  range and default follow the mode: power is <= 0 dBm, SNR is 0..40 dB. */
+export function setSdrSquelchMode(m: SquelchMode) {
+  sdrSquelchMode.set(m);
+  const slider = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
+  if (slider) {
+    slider.min = m === 'snr' ? '0' : '-120';
+    slider.max = m === 'snr' ? '40' : '0';
+    slider.value = String(m === 'snr' ? 10 : -90);
+  }
+  sdrSquelch.set(m === 'snr' ? 10 : -90);
+  renderSdrState();
+  applySdrDemod();
 }
 
 function toggleSdrAgc(el: HTMLElement) {
@@ -955,6 +971,7 @@ export function bindActions() {
     'set-sdr-nr-algo': (el) => setSdrNrAlgo((el as HTMLSelectElement).value === 'dfn' ? 'dfn' : 'wiener'),
     'set-sdr-nr-atten': (el) => setSdrNrAtten(Number((el as HTMLInputElement).value)),
     'toggle-sdr-audio': () => toggleSdrAudio(),
+    'set-sdr-squelch-mode': (el) => setSdrSquelchMode((el as HTMLSelectElement).value as SquelchMode),
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
@@ -975,6 +992,17 @@ export function bindActions() {
       (el as HTMLSelectElement).addEventListener('change', () => handler(el as HTMLElement));
     } else {
       el.addEventListener('click', () => handler(el as HTMLElement));
+    }
+    // Non-native activatable elements (panel headers, info readouts) get button
+    // semantics: keyboard focus + Enter/Space activation, matching the click handler.
+    if (!['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A', 'LABEL'].includes(el.tagName)) {
+      (el as HTMLElement).tabIndex = 0;
+      el.setAttribute('role', 'button');
+      (el as HTMLElement).addEventListener('keydown', (ev: KeyboardEvent) => {
+        if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        ev.preventDefault();
+        handler(el as HTMLElement);
+      });
     }
   });
   document.addEventListener('websa:unit-commit', (event) => {
@@ -1203,7 +1231,7 @@ let sdrMoved = false;
 let sdrX0 = 0;
 let sdrEdgeAt = 0;
 
-function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
+function canvasX(e: MouseEvent | PointerEvent, canvas: HTMLCanvasElement): number {
   // The drawing space is the canvas content box (core/store.ts W). Under a UI scale the
   // element is CSS-zoomed, so clientWidth is in *local* px while the pointer and the rect are
   // in screen px: convert with the zoomed width (rect includes the 1px border on each side).
@@ -1214,7 +1242,7 @@ function canvasX(e: MouseEvent, canvas: HTMLCanvasElement): number {
   return (e.clientX - rect.left - border) * (S.W / box);
 }
 
-function canvasY(e: MouseEvent, canvas: HTMLCanvasElement): number {
+function canvasY(e: MouseEvent | PointerEvent, canvas: HTMLCanvasElement): number {
   // Same conversion as canvasX, on the other axis.
   const rect = canvas.getBoundingClientRect();
   const scale = getUiScale();
@@ -1279,7 +1307,7 @@ export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;
 
-  canvas.addEventListener('mousedown', (e) => {
+  canvas.addEventListener('pointerdown', (e) => {
     const pr = plotRectPub();
     const x = canvasX(e, canvas);
     const y = canvasY(e, canvas);
@@ -1328,7 +1356,7 @@ export function bindCanvas() {
     placeMarkerFromX(x, p);
   });
 
-  window.addEventListener('mousemove', (e) => {
+  window.addEventListener('pointermove', (e) => {
     if (axisDragging()) {
       axisDragMove(canvasX(e, canvas), canvasY(e, canvas));
       return;
@@ -1381,7 +1409,7 @@ export function bindCanvas() {
     placeMarkerFromX(x, p);
   });
 
-  window.addEventListener('mouseup', (e) => {
+  window.addEventListener('pointerup', (e) => {
     if (axisDragging()) {
       axisDragEnd();
       canvas.style.cursor = axisBandCursor(axisBandFor(canvasX(e, canvas), canvasY(e, canvas),

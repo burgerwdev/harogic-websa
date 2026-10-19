@@ -97,9 +97,18 @@ export const sdrVolume = createParam<number>('sdr.volume', {
 	serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
 });
-/** Squelch threshold in dBFS. */
+/** Squelch threshold: dBm channel power in 'power' mode, dB SNR in 'snr' mode. */
 export const sdrSquelch = createParam<number>('sdr.squelch', {
 	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch', ...hz,
+});
+/** Squelch reference mode: 'power' gates on channel power (dBm); 'snr' gates on
+ * channel power minus the off-channel noise floor (dB), which tracks a noisy band
+ * better but needs the panadapter noise estimate. */
+export type SquelchMode = 'power' | 'snr';
+export const sdrSquelchMode = createParam<SquelchMode>('sdr.squelch_mode', {
+	fallback: 'power', scope: 'sdr', persistKey: 'web-sa-sdr-squelch-mode',
+	parse: (raw: string) => (raw === 'snr' ? 'snr' : 'power'),
+	serialize: (v: SquelchMode) => v,
 });
 /** Audio AGC. */
 export const sdrAgc = createParam<boolean>('sdr.agc', {
@@ -201,8 +210,8 @@ export const sdrStepByBw = createParam<Record<string, number>>('sdr.stepByBw', {
 export const SDR_PREF_KEYS = [
 	'web-sa-sdr-audio', 'web-sa-sdr-center', 'web-sa-sdr-listen', 'web-sa-sdr-decimate',
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
-	'web-sa-sdr-squelch', 'web-sa-sdr-agc', 'web-sa-sdr-nr', 'web-sa-sdr-nr-strength',
-	'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
+	'web-sa-sdr-squelch', 'web-sa-sdr-squelch-mode', 'web-sa-sdr-agc', 'web-sa-sdr-nr',
+	'web-sa-sdr-nr-strength', 'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
 	'web-sa-sdr-step-bw',
 ];
 

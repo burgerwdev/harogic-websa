@@ -344,6 +344,7 @@ PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         ParamSpec('deemph_us', 'number', SDR_DEEMPH_MIN_US, SDR_DEEMPH_MAX_US, unit='us'),
         ParamSpec('ifbw', 'number', SDR_IFBW_MIN_HZ, SDR_IFBW_MAX_HZ, unit='Hz'),
         ParamSpec('squelch', 'number', SQUELCH_MIN_DBFS, SQUELCH_MAX_DBFS, unit='dBm'),
+        ParamSpec('squelch_mode', 'choice', choices=('power', 'snr'), default='power'),
         ParamSpec('volume', 'number', SDR_VOLUME_MIN, SDR_VOLUME_MAX),
         ParamSpec('pitch', 'number', SDR_PITCH_MIN_HZ, SDR_PITCH_MAX_HZ, unit='Hz'),
         ParamSpec('agc', 'boolean'),
@@ -871,6 +872,7 @@ async def _h_set_sdr_demod(ctx: CommandContext, data: dict) -> bool:
     await ctx.hw_call(session.set_demod, mode=data.get('mode'), if_bw=data.get('ifbw'),
                       squelch=data.get('squelch'), volume=data.get('volume'),
                       agc=data.get('agc'), pitch=data.get('pitch'),
+                      squelch_mode=data.get('squelch_mode'),
                       deemph_us=data.get('deemph_us'))
     return True
 

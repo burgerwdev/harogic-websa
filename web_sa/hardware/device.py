@@ -664,7 +664,7 @@ class HarogicDevice:
             self._sweep_ema = dt
         else:
             self._sweep_ema = 0.8 * self._sweep_ema + 0.2 * dt
-        self.state.sweep_ms = round(self._sweep_ema * 1000.0, 1)
+        self.state.sweep_ms_meas = round(self._sweep_ema * 1000.0, 1)
 
     # ---------------- Queries ----------------
     def _detect_docxo(self) -> None:

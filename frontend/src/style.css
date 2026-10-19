@@ -500,6 +500,9 @@ select:disabled { color: var(--label); }
   position: absolute; inset: 0; width: 100%; height: 100%;
   border: 1px solid var(--card-border); box-sizing: border-box;
   background-color: var(--sa-bg); display: block; cursor: crosshair;
+  /* Pointer-event gestures (drag/tune/marker) are handled in JS; without this the
+     browser converts touch drags into scrolling and cancels the pointer stream. */
+  touch-action: none;
 }
 canvas {
   background-color: var(--sa-bg); border: 1px solid var(--card-border); display: block; cursor: crosshair;
@@ -559,6 +562,11 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
    and the waterfall split, right-aligned on wide screens, full width on narrow ones. */
 #btn-spectrum-zoom { margin-right: 2px; }
 #btn-spectrum-zoom:focus-visible, #btn-zoom-reset:focus-visible, #zoom-overview:focus-visible {
+  outline: 2px solid var(--dot-on); outline-offset: 1px;
+}
+/* Keyboard-operable [data-action] elements (panel headers, info readouts) made
+   button-like in controls.ts: visible focus ring. */
+[role='button']:focus-visible {
   outline: 2px solid var(--dot-on); outline-offset: 1px;
 }
 #btn-spectrum-zoom:disabled { opacity: 0.4; cursor: default; }

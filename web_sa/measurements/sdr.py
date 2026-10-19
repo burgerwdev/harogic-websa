@@ -1147,8 +1147,10 @@ class SdrSession(MeasurementSession):
                               min(s.sdr_center_hz + bandwidth / 2.0, float(listen_hz)))
 
     def set_demod(self, mode=None, if_bw=None, squelch=None, volume=None,
-                  agc=None, pitch=None, deemph_us=None):
+                  agc=None, pitch=None, squelch_mode=None, deemph_us=None):
         s = self.dev.state
+        if squelch_mode in ('power', 'snr'):
+            s.sdr_squelch_mode = squelch_mode
         old_demod = s.sdr_demod
         old_if_bw = s.sdr_if_bw
         old_pitch = s.sdr_pitch
@@ -1491,8 +1493,13 @@ class SdrSession(MeasurementSession):
                     if freq.size > 1 and np.isfinite(spec).any():
                         m = np.abs(freq - float(s.sdr_listen_hz)) <= max(
                             abs(float(freq[1] - freq[0])), 1.0)
-                        if m.any() and np.isfinite(spec[m]).any():
-                            s.sdr_channel_dbm = float(np.max(spec[m]))
+                    if m.any() and np.isfinite(spec[m]).any():
+                        s.sdr_channel_dbm = float(np.max(spec[m]))
+                        # Off-channel noise floor: robust percentile outside the signal
+                        # window — the SNR squelch's second input.
+                        out_mask = ~m
+                        if out_mask.any():
+                            s.sdr_noise_dbm = float(np.percentile(spec[out_mask], 25))
                     finite = spec[np.isfinite(spec)]
                     if finite.size:
                         # Same observation the swept paths hand the reference loop, so an SDR
@@ -1652,10 +1659,17 @@ class SdrSession(MeasurementSession):
             # the gate open rather than muting on absent measurements.
             thr = float(s.sdr_squelch)
             channel_dbm = s.sdr_channel_dbm
-            if channel_dbm is None or channel_dbm >= thr:
+            if s.sdr_squelch_mode == 'snr' and channel_dbm is not None \
+                    and s.sdr_noise_dbm is not None:
+                # SNR reference: channel minus the off-channel floor (dB). Tracks a
+                # noisy band; the threshold is an SNR, not an absolute power.
+                gate_db = channel_dbm - s.sdr_noise_dbm
+            else:
+                gate_db = channel_dbm
+            if gate_db is None or gate_db >= thr:
                 self._squelch_hold_until = now + self.SQUELCH_HOLD_S
                 s.sdr_squelch_open = True
-            elif (channel_dbm < thr - self.SQUELCH_HYST_DB
+            elif (gate_db is not None and gate_db < thr - self.SQUELCH_HYST_DB
                     and now >= self._squelch_hold_until):
                 s.sdr_squelch_open = False
             if audio.size:

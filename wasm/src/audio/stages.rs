@@ -190,7 +190,8 @@ impl Squelch {
     /// The gate's threshold in dBFS (the panel's squelch control).
     pub fn set_threshold_dbfs(&mut self, dbfs: f64) {
         if dbfs.is_finite() {
-            self.threshold_dbfs = dbfs.clamp(-160.0, 0.0);
+            // power mode: <= 0 dBm; SNR mode: positive dB above the noise floor
+            self.threshold_dbfs = dbfs.clamp(-160.0, 60.0);
         }
     }
 
