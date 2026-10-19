@@ -377,3 +377,38 @@ def test_external_profile_carries_the_reference_frequency(monkeypatch):
     dev.state.ref_clock = 'internal'
     profile = dev._profile()
     assert profile.ReferenceClockFrequency != 10e6
+
+
+def test_calibrate_ref_clock_refuses_garbage(monkeypatch):
+    """Without GNSS lock the 1PPS period is not 1 s: measured on this bench (sats=0) the
+    calibration returned 2x the reference (200,000,138 Hz) and the handler stored it as
+    +1000 ppm. No lock / implausible result must be refused."""
+    from web_sa.hardware import sdk_bindings as sb
+
+    dev = HarogicDevice()
+    calls = []
+
+    def fake_calibrate(handle, source, period, count, rewrite, out):
+        calls.append(1)
+        out[0] = 200000138.76
+        return 0
+
+    monkeypatch.setattr(sb.dll, 'Device_CalibrateRefClock', fake_calibrate)
+
+    dev.state.gnss = {'lock': 1, 'sats': 0}
+    assert dev.calibrate_ref_clock(3) == (False, 0.0)
+    assert calls == []                      # refused before touching the DLL
+    assert 'GNSS 1PPS unavailable' in dev.state.last_error
+
+    dev.state.gnss = {'lock': 1, 'sats': 9}
+    assert dev.calibrate_ref_clock(3) == (False, 0.0)   # 2x result rejected
+    assert len(calls) == 1
+    assert 'implausible frequency' in dev.state.last_error
+
+    def good_calibrate(handle, source, period, count, rewrite, out):
+        out[0] = 100000066.18
+        return 0
+
+    monkeypatch.setattr(sb.dll, 'Device_CalibrateRefClock', good_calibrate)
+    ok, freq = dev.calibrate_ref_clock(3)
+    assert ok is True and freq == 100000066.18
