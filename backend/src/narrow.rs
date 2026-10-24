@@ -529,49 +529,71 @@ fn process_multistage<T: Copy + Into<f64>>(c: &mut Channel, iq: &[T], out: &mut 
 mod tests {
     use super::*;
 
-    #[test]
-    fn planned_cascade_preserves_occupied_edge_and_rejects_alias_with_packet_phase() {
+    /// Shared RF frequency-response probe through the real planned cascade with
+    /// packetized input; also asserts exact per-packet sample conservation.
+    fn planned_cascade_gain(mode: &str, occupied_hz: f64, probe_hz: f64) -> f64 {
         let fs = 976_562.5;
-        for (mode, bandwidth) in [("cw", 500.0), ("am", 6_000.0), ("wfm", 180_000.0)] {
-            let plan = crate::rate_plan::RatePlan::new(fs, mode, bandwidth).unwrap();
-            let level = |frequency: f64| {
-                let channel = channel_open_planned(fs, 0.0, &plan);
-                assert!(!channel.is_null());
-                let delay = unsafe { channel_delay(channel) };
-                let mut power = 0.0f64;
-                let mut count = 0;
-                let mut input_index = 0;
-                let mut output_index = 0;
-                for block in 0..160 {
-                    let n = if block % 2 == 0 { 255 } else { 4093 };
-                    let iq: Vec<f32> = (0..n).flat_map(|sample| {
-                        let phase = 2.0 * PI * frequency * (input_index + sample) as f64 / fs;
-                        [phase.cos() as f32, phase.sin() as f32]
-                    }).collect();
-                    let mut output = vec![0.0; 2 * (n / plan.decimate as usize + 2)];
-                    let produced = unsafe { channel_process_float(channel, iq.as_ptr(), n as i32,
-                        output.as_mut_ptr(), (output.len() / 2) as i32) };
-                    assert!(produced >= 0);
-                    for (at, sample) in output[..2 * produced as usize].chunks_exact(2).enumerate() {
-                        if (output_index + at) as f64 > 2.0 * delay + 16.0 {
-                            power += sample[0] as f64 * sample[0] as f64 + sample[1] as f64 * sample[1] as f64;
-                            count += 1;
-                        }
-                    }
-                    input_index += n;
-                    output_index += produced as usize;
-                    assert_eq!(output_index, input_index / plan.decimate as usize);
+        let plan = crate::rate_plan::RatePlan::new(fs, mode, occupied_hz).unwrap();
+        assert!(plan.valid_for(fs));
+        let channel = channel_open_planned(fs, 0.0, &plan);
+        assert!(!channel.is_null());
+        let delay = unsafe { channel_delay(channel) };
+        let (mut power, mut count) = (0.0f64, 0usize);
+        let (mut input_index, mut output_index) = (0usize, 0usize);
+        for block in 0..160 {
+            let n = if block % 2 == 0 { 255 } else { 4093 };
+            let iq: Vec<f32> = (0..n).flat_map(|sample| {
+                let phase = 2.0 * PI * probe_hz * (input_index + sample) as f64 / fs;
+                [phase.cos() as f32, phase.sin() as f32]
+            }).collect();
+            let mut output = vec![0.0; 2 * (n / plan.decimate as usize + 2)];
+            let produced = unsafe { channel_process_float(channel, iq.as_ptr(), n as i32,
+                output.as_mut_ptr(), (output.len() / 2) as i32) };
+            assert!(produced >= 0);
+            for (at, sample) in output[..2 * produced as usize].chunks_exact(2).enumerate() {
+                if (output_index + at) as f64 > 2.0 * delay + 16.0 {
+                    power += sample[0] as f64 * sample[0] as f64 + sample[1] as f64 * sample[1] as f64;
+                    count += 1;
                 }
-                let (mut consumed, mut produced) = (0, 0);
-                unsafe { channel_clock(channel, &mut consumed, &mut produced); channel_close(channel); }
-                assert_eq!((consumed, produced), (input_index as u64, output_index as u64));
-                assert!(count > 0);
-                (power / count as f64).sqrt()
-            };
-            let edge = level(bandwidth / 2.0);
-            let alias = level(plan.output_rate - bandwidth / 4.0);
-            assert!(edge > 0.97, "{mode} occupied edge gain {edge}");
-            assert!(alias < 0.001, "{mode} decimation alias gain {alias}");
+            }
+            input_index += n;
+            output_index += produced as usize;
+            assert_eq!(output_index, input_index / plan.decimate as usize);
+        }
+        let (mut consumed, mut produced) = (0, 0);
+        unsafe { channel_clock(channel, &mut consumed, &mut produced); channel_close(channel); }
+        assert_eq!((consumed, produced), (input_index as u64, output_index as u64));
+        assert!(count > 0);
+        (power / count as f64).sqrt()
+    }
+
+    #[test]
+    fn planned_cascade_frequency_response_matches_requested_rf_filter() {
+        let wfm5 = crate::rate_plan::RatePlan::new(976_562.5, "wfm", 5_000.0).unwrap();
+        // The same RF probe must pass the wide plan and be rejected by the narrow one;
+        // rejection rows include decimation-alias probes beyond the output Nyquist.
+        for (mode, occupied_hz, probe_hz, pass) in [
+            ("wfm", 5_000.0, 2_500.0, true),
+            ("wfm", 5_000.0, 20_000.0, false),
+            ("wfm", 5_000.0, 50_000.0, false),
+            ("wfm", 5_000.0, wfm5.output_rate - 1_250.0, false),
+            ("wfm", 300_000.0, 20_000.0, true),
+            ("wfm", 300_000.0, 50_000.0, true),
+            ("am", 6_000.0, 2_500.0, true),
+            ("am", 6_000.0, 6_000.0, false),
+            ("usb", 6_000.0, 2_500.0, true),
+            ("lsb", 6_000.0, 6_000.0, false),
+            ("cw", 1_900.0, 600.0, true),
+            ("cw", 1_900.0, 1_900.0, false),
+            ("nfm", 12_000.0, 4_000.0, true),
+            ("nfm", 12_000.0, 12_000.0, false),
+        ] {
+            let gain = planned_cascade_gain(mode, occupied_hz, probe_hz);
+            if pass {
+                assert!(gain > 0.97, "{mode} {occupied_hz} Hz passband probe {probe_hz} Hz gain {gain}");
+            } else {
+                assert!(gain < 0.001, "{mode} {occupied_hz} Hz rejection probe {probe_hz} Hz gain {gain}");
+            }
         }
     }
     #[test]

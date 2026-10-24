@@ -623,8 +623,8 @@
                 {
                     "choices": [],
                     "default": null,
-                    "max": 500000.0,
-                    "min": 100.0,
+                    "max": null,
+                    "min": 50.0,
                     "name": "ifbw",
                     "required": false,
                     "type": "number",

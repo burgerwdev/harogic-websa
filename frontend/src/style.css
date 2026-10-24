@@ -767,9 +767,22 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* Allow quick presets to shrink and wrap within their container. */
 #sdr-step-quick { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
 #sdr-step-quick .btn { padding: 2px 5px; }
-/* The DRM occupancy note is a status string, not a control. Keep it on one line. The Filter button
-   group wraps below it. */
-#sdr-drm-filter-note { flex: 0 0 auto; white-space: nowrap; }
+/* Filter presets wrap within the parameter column. */
+#sdr-ifbw-group { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
+#sdr-ifbw-group .btn { padding: 2px 5px; }
+/* Filter row: narrow input, unit group, then View at fixed 8px spacing after the units. */
+#sdr-settings .sdr-filter-row > #input-sdr-ifbw { flex: 0 1 96px; }
+#sdr-settings .sdr-filter-row > .sdr-tail > #unit-sdr_ifbw-group { flex: 0 0 auto; white-space: nowrap; }
+#sdr-settings .sdr-filter-row > .sdr-tail > #btn-sdr-filter-view {
+  flex: 0 0 auto; width: auto; min-width: 40px; margin-left: 8px; white-space: nowrap;
+}
+/* Filter presets wrap on their own row along the value column. */
+#sdr-settings .sdr-filter-actions { flex-wrap: wrap; align-items: flex-start; padding-left: 62px; }
+#sdr-settings .sdr-filter-actions > #sdr-ifbw-group { flex: 1 1 120px; }
+#input-sdr-ifbw.pending { border-style: dashed; }
+#input-sdr-ifbw.preview { border-color: var(--dot-on); }
+#input-sdr-ifbw.invalid { border-color: #e5534b; }
+#input-sdr-ifbw.locked { color: var(--label); }
 /* The algorithm selector keeps its options' width when DeepFilterNet3 hides the strength
    selector. In Wiener mode the strength selector takes free space. DFN status has its own line. */
 #sdr-settings .param-row.sdr-nr-row { flex-wrap: wrap; }

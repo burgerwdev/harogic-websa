@@ -33,6 +33,14 @@ fn text(data: &Value, names: &[&str], current: &str) -> Result<String, String> {
             .ok_or_else(|| format!("{} must be a string", names[0])),
     }
 }
+fn analog_filter_min_hz(mode: &str) -> Option<f64> {
+    match mode {
+        "usb" | "lsb" => Some(101.0),
+        "am" | "dsb" | "cw" | "nfm" | "wfm" | "pm" => Some(50.0),
+        _ => None,
+    }
+}
+
 impl DevState {
     pub(super) fn channel_configs(&self) -> Vec<ChannelConfig> {
         let mut configs: Vec<_> = (1..=3).map(|slot| self.sdr_channels.iter()
@@ -49,6 +57,49 @@ impl DevState {
         primary.deemph_us = self.sdr_deemph;
         configs
     }
+    pub(super) fn filter_limits(&self) -> Value {
+        let mut primary = self.channel_configs().into_iter().next()
+            .unwrap_or_else(ChannelConfig::default);
+        let mode = primary.mode.clone();
+        let Some(minimum) = analog_filter_min_hz(&mode) else {
+            return json!({"mode": mode, "min_hz": 0, "max_hz": Value::Null});
+        };
+        if self.swp.mode != "sdr" || !primary.enabled {
+            return json!({"mode": mode, "min_hz": minimum, "max_hz": Value::Null});
+        }
+        let center = self.capture_center();
+        let bandwidth = self.capture_bandwidth();
+        let (fs, taps) = if let Some(pipeline) = self.pipeline.as_ref() {
+            (IQ_FS / pipeline.snapshot.device_decimate.max(1) as f64, pipeline.snapshot.taps)
+        } else if let Some(ddc) = self.ddc.as_ref() {
+            (ddc.0.stream.input_sample_rate(), ddc.0.stream.taps_per_phase())
+        } else {
+            (bandwidth / 0.8, self.sdr_pfb_taps_per_phase)
+        };
+        let feasible = |width: f64, primary: &mut ChannelConfig| {
+            primary.if_bw = width;
+            service_ddc::channel_plan(COARSE_RATE, primary).and_then(|plan| {
+                Ddc::validate_service_frequency(center, bandwidth, fs, taps, primary.freq, &plan)
+            }).is_ok()
+        };
+        if !feasible(minimum, &mut primary) {
+            return json!({"mode": mode, "min_hz": minimum, "max_hz": Value::Null});
+        }
+        let mut feasible_hz = minimum as i64;
+        let mut infeasible_hz = COARSE_RATE.ceil() as i64 + 1;
+        // Feasibility narrows monotonically with bandwidth; twenty halvings resolve the
+        // ~1 MHz hard channel-plan ceiling to an integer Hz without caching a stale range.
+        for _ in 0..20 {
+            let candidate = feasible_hz + (infeasible_hz - feasible_hz) / 2;
+            if feasible(candidate as f64, &mut primary) {
+                feasible_hz = candidate;
+            } else {
+                infeasible_hz = candidate;
+            }
+        }
+        json!({"mode": mode, "min_hz": minimum, "max_hz": feasible_hz})
+    }
+
     pub(super) fn channel_status(&self) -> Value {
         let registry = self.stream_registry();
         let power = self.fresh_channel_power();
@@ -94,6 +145,12 @@ impl DevState {
         config.agc = boolean(data, "agc", config.agc)?;
         config.pitch = number(data, &["pitch"], config.pitch)?;
         config.deemph_us = number(data, &["deemph_us", "deemph"], config.deemph_us)?;
+        if let Some(minimum) = analog_filter_min_hz(&config.mode) {
+            if config.if_bw < minimum {
+                return Err(format!("filter bandwidth must be at least {minimum:.0} Hz for {}", config.mode));
+            }
+        }
+
         config.nr = boolean(data, "nr", config.nr)?;
         config.nr_strength = number(data, &["nr_strength"], config.nr_strength)?;
         config.nr_algorithm = text(data, &["nr_algorithm"], &config.nr_algorithm)?;
@@ -245,6 +302,60 @@ mod tests {
             assert!(state.parse_channel_config(&json!({"channel":2,"enabled":true,"freq":freq})).is_err());
         }
         assert!(state.parse_channel_config(&json!({"channel":2,"enabled":false,"volume":3})).is_err());
+    }
+
+    #[test]
+    fn primary_filter_limits_publish_real_bounds_and_reject_below_minimum() {
+        let mut state = DevState::new(json!({"preset_defaults": {}}), json!({}));
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        for (mode, width) in [("am", 100_000.0), ("usb", 50_000.0), ("cw", 10_000.0)] {
+            let parsed = state.parse_channel_config(&json!({
+                "channel": 1, "mode": mode, "ifbw": width,
+            })).unwrap();
+            assert_eq!(parsed.if_bw, width);
+        }
+        for (mode, minimum) in [("am", 50.0), ("usb", 101.0), ("lsb", 101.0), ("cw", 50.0)] {
+            assert!(state.parse_channel_config(&json!({
+                "channel": 1, "mode": mode, "ifbw": minimum,
+            })).is_ok());
+            assert!(state.parse_channel_config(&json!({
+                "channel": 1, "mode": mode, "ifbw": minimum - 1.0,
+            })).is_err());
+        }
+        let before = state.channel_configs();
+        let revision = state.config_version;
+        assert!(state.apply_channel_config(&json!({
+            "channel": 1, "mode": "usb", "ifbw": 100.0,
+        })).is_err());
+        assert_eq!(state.channel_configs(), before);
+        assert_eq!(state.config_version, revision);
+
+        state.sdr_demod = "am".into();
+        state.sdr_if_bw = 6_000.0;
+        let limits = state.filter_limits();
+        assert_eq!(limits["mode"], "am");
+        assert_eq!(limits["min_hz"], 50.0);
+        let maximum = limits["max_hz"].as_f64().unwrap();
+        assert!(maximum >= 100_000.0 && maximum < COARSE_RATE);
+        for width in [maximum, maximum + 1.0] {
+            let mut config = state.channel_configs()[0].clone();
+            config.if_bw = width;
+            let result = service_ddc::channel_plan(COARSE_RATE, &config).and_then(|plan| {
+                Ddc::validate_service_frequency(state.capture_center(), state.capture_bandwidth(),
+                    state.capture_bandwidth() / 0.8, state.sdr_pfb_taps_per_phase, config.freq, &plan)
+            });
+            assert_eq!(result.is_ok(), width == maximum, "width={width}");
+        }
+        let status = state.status_snapshot().build();
+        assert_eq!(status["sdr"]["filter_limits"], limits);
+
+        state.sdr_demod = "ft8".into();
+        assert_eq!(state.filter_limits(), json!({"mode":"ft8","min_hz":0,"max_hz":null}));
+        state.sdr_demod = "am".into();
+        state.swp.mode = "std".into();
+        assert_eq!(state.filter_limits(), json!({"mode":"am","min_hz":50.0,"max_hz":null}));
     }
 
     #[test]

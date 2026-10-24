@@ -371,10 +371,14 @@ function commit(chosenUnit: string): void {
   if (raw === '' && !replaced) { close(); return; }
   let value = parseFloat((negative ? '-' : '') + (raw === '' ? '0' : raw));
   if (!Number.isFinite(value)) value = 0;
-  const min = target.min !== '' ? parseFloat(target.min) : NaN;
-  const max = target.max !== '' ? parseFloat(target.max) : NaN;
-  if (Number.isFinite(min) && value < min) value = min;
-  if (Number.isFinite(max) && value > max) value = max;
+  // Filter bounds are expressed in the newly chosen unit and validated by its commit handler.
+  // Clamping here would apply the previous unit's bounds before that handler sees the value.
+  if (field !== 'sdr_ifbw') {
+    const min = input.min !== '' ? parseFloat(input.min) : NaN;
+    const max = input.max !== '' ? parseFloat(input.max) : NaN;
+    if (Number.isFinite(min) && value < min) value = min;
+    if (Number.isFinite(max) && value > max) value = max;
+  }
   input.value = String(value);
   if (field) {
     // Mark the field as manually edited so setUnit() interprets the number in the new unit

@@ -111,25 +111,179 @@ describe('SDR control intent and STATUS', () => {
 		controls.bindCanvas();
 		if (via === 'keyboard') key('M');
 		else controls.selectSdrDemod(mode);
-		const expected = mode === 'wfm' ? 180000 : 3000;
+		const expected = mode === 'wfm' ? 180000 : mode === 'cw' ? 500 : 3000;
 		expect(state.sdrDemod.get()).toBe(mode);
 		expect(state.sdrIfbw.get()).toBe(expected);
-		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', mode, ifbw: expected }));
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', mode, ifbw: expected,
+			request_id: expect.stringMatching(/^sdr-filter-/) }));
 	});
 
-	it.each(['PageUp', 'PageDown'])('preserves the manual %s bandwidth across subsequent mode selections', async (page) => {
+	it('restores each mode’s last confirmed filter instead of a global manual value', async () => {
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		const ack = (mode: string, ifbw: number) => {
+			const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+			controls.syncSdrPanel({ ...status('sdr', mode, { if_bw: ifbw }),
+				response_to: 'SET_SDR_CHANNEL', request_id: request.request_id });
+		};
+		controls.selectSdrDemod('cw');
+		expect(state.sdrIfbw.get()).toBe(500);
+		ack('cw', 500);
+		controls.selectSdrIfbw(900);
+		ack('cw', 900);
+		controls.selectSdrDemod('am');
+		expect(state.sdrDemod.get()).toBe('am');
+		expect(state.sdrIfbw.get()).toBe(6000);
+		ack('am', 6000);
+		controls.selectSdrDemod('cw');
+		expect(state.sdrDemod.get()).toBe('cw');
+		expect(state.sdrIfbw.get()).toBe(900);
+	});
+
+	it('keeps only the newest quick filter queued and settles requests by their own ACK id', async () => {
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		controls.selectSdrIfbw(3000);
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.selectSdrIfbw(4500);
+		controls.selectSdrIfbw(12000);
+		expect(send).toHaveBeenCalledTimes(1);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+		expect(send).toHaveBeenCalledTimes(2);
+		const second = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; mode: string; ifbw: number };
+		expect(second).toEqual(expect.objectContaining({ mode: 'am', ifbw: 12000 }));
+		expect(second.request_id).not.toBe(first.request_id);
+		expect(state.sdrIfbw.get()).toBe(12000);
+
+		// A non-ACK report updates the confirmed baseline, but cannot replace the newest intent.
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 4500 }));
+		expect(state.sdrIfbw.confirmedValue()).toBe(4500);
+		expect(state.sdrIfbw.get()).toBe(12000);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+		controls.rejectSdrFilterRequest('SET_SDR_CHANNEL', first.request_id);
+		controls.rejectSdrFilterRequest('SET_PRESET', second.request_id);
+		expect(state.sdrIfbw.confirmedValue()).toBe(4500);
+		expect(state.sdrIfbw.pending()).toBe(true);
+		expect(send).toHaveBeenCalledTimes(2);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 12000 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: second.request_id });
+		expect(state.sdrIfbw.confirmedValue()).toBe(12000);
+		expect(state.sdrIfbw.pending()).toBe(false);
+	});
+
+	it('refreshes queued full receiver edits with the newest AM detector confirmation', async () => {
+		const { controls, state, send } = await load();
+		const { initDecodeWindow } = await import('../ui/decodeWindow');
+		controls.syncGraphModeStatus('sdr');
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000, volume: 0.8, am_sync: false }));
+		controls.bindActions();
+		const hooks = vi.mocked(initDecodeWindow).mock.calls.at(-1)![0];
+		vi.mocked(send).mockClear();
+		controls.selectSdrIfbw(3000);
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		state.sdrVolume.set(1.2);
+		controls.applySdrDemod();
+		expect(send).toHaveBeenCalledTimes(1);
+		hooks.onAmSync!(true);
+		expect(send).toHaveBeenCalledTimes(2);
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000, volume: 0.8, am_sync: true }));
+		expect(state.sdrAmSync.confirmedValue()).toBe(true);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000, volume: 0.8, am_sync: true }),
+			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+		expect(send).toHaveBeenCalledTimes(3);
+		const queued = vi.mocked(send).mock.calls.at(-1)![0] as {
+			request_id: string; ifbw: number; volume: number; am_sync: boolean;
+		};
+		expect(queued.request_id).toMatch(/^sdr-filter-/);
+		expect(queued.request_id).not.toBe(first.request_id);
+		expect(queued).toEqual(expect.objectContaining({ ifbw: 3000, volume: 1.2, am_sync: true }));
+		expect(state.sdrAmSync.get()).toBe(true);
+		expect(state.sdrVolume.get()).toBe(1.2);
+	});
+
+	it('does not remember an unconfirmed target or let its late ACK change a newer mode request', async () => {
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		controls.selectSdrDemod('cw');
+		const initialCw = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel({ ...status('sdr', 'cw', { if_bw: 500 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: initialCw.request_id });
+		controls.selectSdrIfbw(900);
+		const unconfirmedCw = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.selectSdrDemod('am');
+		controls.rejectSdrFilterRequest('SET_SDR_CHANNEL', unconfirmedCw.request_id);
+		const amRequest = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; mode: string; ifbw: number };
+		expect(amRequest).toEqual(expect.objectContaining({ mode: 'am', ifbw: 6000 }));
+		controls.syncSdrPanel({ ...status('sdr', 'cw', { if_bw: 900 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: unconfirmedCw.request_id });
+		expect(state.sdrDemod.get()).toBe('am');
+		expect(state.sdrIfbw.get()).toBe(6000);
+		expect(state.sdrDemod.pending()).toBe(true);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 6000 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: amRequest.request_id });
+		controls.selectSdrDemod('cw');
+		expect(state.sdrIfbw.get()).toBe(500);
+	});
+
+	it('restores the confirmed filter after timeout and ignores the timed-out ACK', async () => {
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		controls.selectSdrIfbw(3000);
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		vi.advanceTimersByTime(3000);
+		expect(state.sdrIfbw.get()).toBe(6000);
+		expect(state.sdrIfbw.desiredValue()).toBeNull();
+		expect(send).toHaveBeenCalledTimes(1);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: request.request_id });
+		expect(state.sdrIfbw.confirmedValue()).toBe(6000);
+		expect(state.sdrIfbw.get()).toBe(6000);
+	});
+
+	it('learns mode memory from external STATUS rather than only local edits', async () => {
 		const { controls, state } = await load();
-		const { graphMode } = await import('../ui/graphMode');
-		graphMode.confirm('sdr');
-		state.sdrIfbw.confirm(6000);
-		controls.bindCanvas();
-		key(page);
-		const manual = page === 'PageUp' ? 12000 : 3000;
-		expect(state.sdrIfbw.get()).toBe(manual);
-		for (const mode of ['wfm', 'cw', 'ft8']) {
-			controls.selectSdrDemod(mode);
-			expect(state.sdrIfbw.get()).toBe(manual);
-		}
+		controls.syncSdrPanel(status('sdr', 'cw', { if_bw: 900 }));
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 4500 }));
+		controls.selectSdrDemod('cw');
+		expect(state.sdrIfbw.get()).toBe(900);
+	});
+
+	it('retries rejected saved mode memory at its recommendation, then restores the confirmed mode', async () => {
+		localStorage.setItem('web-sa-sdr-filter-by-mode', '{"cw":900000000}');
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		controls.selectSdrDemod('cw');
+		const restored = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; ifbw: number };
+		expect(restored.ifbw).toBe(900000000);
+		controls.rejectSdrFilterRequest('SET_SDR_CHANNEL', restored.request_id);
+		const fallback = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string; mode: string; ifbw: number };
+		expect(fallback).toEqual(expect.objectContaining({ mode: 'cw', ifbw: 500 }));
+		expect(fallback.request_id).not.toBe(restored.request_id);
+		controls.rejectSdrFilterRequest('SET_SDR_CHANNEL', fallback.request_id);
+		expect(state.sdrDemod.get()).toBe('am');
+		expect(state.sdrDemod.desiredValue()).toBeNull();
+		expect(state.sdrIfbw.get()).toBe(6000);
+		expect(state.sdrIfbw.desiredValue()).toBeNull();
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
+	it('Preset clears filter preferences and invalidates an outstanding filter ACK', async () => {
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000 }));
+		controls.selectSdrIfbw(3000);
+		const filter = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.presetAll();
+		const preset = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncPresetStatus('SET_PRESET', preset.request_id);
+		expect(localStorage.getItem('web-sa-sdr-ifbw')).toBeNull();
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: filter.request_id });
+		expect(state.sdrIfbw.confirmedValue()).toBe(6000);
+		expect(state.sdrIfbw.desiredValue()).toBeNull();
+		controls.selectSdrDemod('cw');
+		expect(state.sdrIfbw.get()).toBe(500);
 	});
 	it('tunes immediately after quick-step selection while preserving button activation and field editing', async () => {
 		document.body.insertAdjacentHTML('beforeend', '<div id="sdr-step-quick"></div><input id="input-sdr-listen">');

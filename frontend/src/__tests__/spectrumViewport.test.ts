@@ -10,10 +10,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resetAll } from '../core/params';
 import {
 	DETAIL_HINT_SAMPLES,
-	MARQUEE_MIN_PX,
 	sameWindow,
 	type FreqWindow,
 	clampView,
+	clearPassbandView,
 	freqToPlotX,
 	getCapture,
 	getView,
@@ -22,12 +22,14 @@ import {
 	minSpanHz,
 	panByFraction,
 	panToCenter,
+	passbandViewActive,
 	plotXToFreq,
 	resetViewport,
 	sampleStepHz,
 	samplesInView,
 	setCapture,
 	setView,
+	togglePassbandView,
 	viewFromMarquee,
 	viewportVersion,
 	zoomAround,
@@ -173,9 +175,51 @@ describe('module state', () => {
 	});
 });
 
-describe('gesture constants', () => {
-	it('matches the design thresholds', () => {
-		expect(MARQUEE_MIN_PX).toBe(8);
-		expect(DETAIL_HINT_SAMPLES).toBe(8);
+describe('passband focus lifecycle', () => {
+	const TARGET: FreqWindow = { lo: 948e6, hi: 952e6 };
+
+	it('restores full capture and the previous Off preference on a second toggle', () => {
+		expect(zoomEnabled.get()).toBe(false);
+		expect(togglePassbandView(TARGET, 2e6)).toBe(true);
+		expect(passbandViewActive()).toBe(true);
+		expect(zoomEnabled.get()).toBe(true);
+		expect(togglePassbandView(TARGET, 2e6)).toBe(false);
+		expect(passbandViewActive()).toBe(false);
+		expect(getView()).toEqual(CAP);
+		expect(zoomEnabled.get()).toBe(false);
+	});
+
+	it('restores the exact pre-existing local window and On preference', () => {
+		const previous = { lo: 930.25e6, hi: 970.75e6 };
+		setView(previous, 2e6);
+		zoomEnabled.set(true);
+		togglePassbandView(TARGET, 2e6);
+		togglePassbandView(TARGET, 80e6); // A new grid minimum must not resize the snapshot.
+		expect(getView()).toEqual(previous);
+		expect(zoomEnabled.get()).toBe(true);
+	});
+
+	it('invalidates the snapshot after a capture change, reset, or manual view', () => {
+		togglePassbandView(TARGET, 2e6);
+		setCapture({ lo: 800e6, hi: 900e6 });
+		expect(passbandViewActive()).toBe(false);
+
+		togglePassbandView({ lo: 848e6, hi: 852e6 }, 2e6);
+		resetViewport();
+		expect(passbandViewActive()).toBe(false);
+
+		__testSeedCapture(CAP);
+		togglePassbandView(TARGET, 2e6);
+		setView(getView(), 2e6); // Even a no-op manual action abandons the saved view.
+		expect(passbandViewActive()).toBe(false);
+	});
+
+	it('can forget only the snapshot without moving the focused view', () => {
+		togglePassbandView(TARGET, 2e6);
+		const focused = getView();
+		clearPassbandView();
+		expect(passbandViewActive()).toBe(false);
+		expect(getView()).toEqual(focused);
 	});
 });
+

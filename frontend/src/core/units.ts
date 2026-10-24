@@ -11,6 +11,7 @@ export const UNIT_OPTIONS: Record<string, string[]> = {
   start: ['Hz', 'kHz', 'MHz', 'GHz'], stop: ['Hz', 'kHz', 'MHz', 'GHz'],
   rbw: ['Hz', 'kHz', 'MHz'], vbw: ['Hz', 'kHz', 'MHz'], pnm: ['Hz', 'kHz', 'MHz', 'GHz'],
   rta_center: ['MHz', 'GHz'], sdr_step: ['Hz', 'kHz', 'MHz'],
+  sdr_ifbw: ['Hz', 'kHz', 'MHz'],
 };
 
 /** Currently selected unit per field key (`center`, `span`, `rta_center`, ...). */
@@ -18,6 +19,7 @@ export const unitMap = createParam<Record<string, string>>('units.map', {
   fallback: {
     center: 'MHz', span: 'MHz', start: 'MHz', stop: 'MHz',
     rbw: 'kHz', vbw: 'kHz', pnm: 'MHz', rta_center: 'MHz', sdr_step: 'kHz',
+    sdr_ifbw: 'kHz',
   },
   scope: 'units',
   // Client-owned: nothing reports it back, so a pending value must not expire.
@@ -91,8 +93,10 @@ export function setUnit(field: string, unit: string) {
   const edited = input?.dataset.edited === '1';
   if (input && !edited) {
     const value = Number(input.value);
-    if (isFinite(value)) input.value = formatUnitValue(
-      convertUnitValue(value, previous, unit), unit);
+    if (isFinite(value)) {
+      const converted = convertUnitValue(value, previous, unit);
+      input.value = field === 'sdr_ifbw' ? String(Number(converted.toPrecision(15))) : formatUnitValue(converted, unit);
+    }
   }
   unitMap.set({ ...unitMap.get(), [field]: unit });
   const grp = document.getElementById(`unit-${field}-group`);

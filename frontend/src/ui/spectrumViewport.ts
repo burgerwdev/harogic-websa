@@ -167,6 +167,21 @@ export function nearestIdxForFreq(freq: ArrayLike<number>, fHz: number): number 
 let capture: FreqWindow | null = null;
 /** What the main plot shows; null = full capture. */
 let view: FreqWindow | null = null;
+/** Raw view and master-toggle state saved only while the passband focus is active. */
+let passbandSnapshot: { view: FreqWindow | null; zoomEnabled: boolean } | null = null;
+
+/** True while a second passband-view action will restore the saved display state. */
+export function passbandViewActive(): boolean {
+	return passbandSnapshot !== null;
+}
+
+/** Forget the saved display state without moving the current view (mode/disconnect). */
+export function clearPassbandView(): void {
+	if (passbandSnapshot) {
+		passbandSnapshot = null;
+		version++;
+	}
+}
 /** Monotonic bump whenever either changes (cheap per-frame change check for the overview). */
 let version = 0;
 
@@ -199,6 +214,7 @@ export function viewportVersion(): number {
  */
 export function setCapture(w: FreqWindow | null | undefined): boolean {
 	if (!isValidWindow(w)) {
+		clearPassbandView();
 		if (capture === null && view === null) return false;
 		capture = null;
 		view = null;
@@ -207,6 +223,7 @@ export function setCapture(w: FreqWindow | null | undefined): boolean {
 	}
 	const next = { lo: w.lo, hi: w.hi };
 	if (sameWindow(next, capture)) return false;
+	clearPassbandView();
 	capture = next;
 	view = null;
 	version++;
@@ -215,6 +232,14 @@ export function setCapture(w: FreqWindow | null | undefined): boolean {
 
 /** Apply a computed view (already clamped by the helpers). Null = back to full capture. */
 export function setView(w: FreqWindow | null, minSpan?: number): boolean {
+	// Every external view action makes an earlier passband snapshot stale, even when the
+	// requested window happens to equal the current one.
+	clearPassbandView();
+	return applyView(w, minSpan);
+}
+
+/** Internal view write which can preserve the snapshot being entered or restored. */
+function applyView(w: FreqWindow | null, minSpan?: number): boolean {
 	if (w === null) {
 		if (view === null) return false;
 		view = null;
@@ -233,8 +258,34 @@ export function setView(w: FreqWindow | null, minSpan?: number): boolean {
 	return true;
 }
 
+/**
+ * Focus the passband, or restore the exact raw view and master zoom preference saved on entry.
+ * Returns the resulting focus state. No acquisition or receiver parameter is touched.
+ */
+export function togglePassbandView(target: FreqWindow, minSpan: number): boolean {
+	if (passbandSnapshot) {
+		const saved = passbandSnapshot;
+		passbandSnapshot = null;
+		// The snapshot was already clamped on entry. Restore it verbatim rather than
+		// re-clamping against a potentially newer frequency-grid minimum span.
+		view = saved.view ? { lo: saved.view.lo, hi: saved.view.hi } : null;
+		version++;
+		zoomEnabled.set(saved.zoomEnabled);
+		return false;
+	}
+	if (!capture || !isValidWindow(target)) return false;
+	passbandSnapshot = {
+		view: view ? { lo: view.lo, hi: view.hi } : null,
+		zoomEnabled: zoomEnabled.get(),
+	};
+	applyView(target, minSpan);
+	zoomEnabled.set(true);
+	return true;
+}
+
 /** Reset everything (mode change, Preset, disconnect). The toggle stays as the user set it. */
 export function resetViewport(): void {
+	clearPassbandView();
 	if (capture === null && view === null) return;
 	capture = null;
 	view = null;
@@ -243,6 +294,7 @@ export function resetViewport(): void {
 
 /** For tests: seed a capture directly (production goes through the renderer/frame path). */
 export function __testSeedCapture(w: FreqWindow | null): void {
+	clearPassbandView();
 	capture = w && isValidWindow(w) ? { lo: w.lo, hi: w.hi } : null;
 	view = null;
 	version++;

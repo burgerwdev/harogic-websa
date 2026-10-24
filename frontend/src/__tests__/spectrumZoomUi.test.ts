@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { resetAll } from '../core/params';
 import { deviceMode } from '../ui/graphMode';
 import { syncGraphModeStatus } from '../ui/controls';
-import { getCapture, sameWindow, setCapture, zoomEnabled, __testSeedCapture } from '../ui/spectrumViewport';
+import { getCapture, sameWindow, setCapture, togglePassbandView, zoomEnabled, __testSeedCapture } from '../ui/spectrumViewport';
 import {
 	initSpectrumZoomUi,
 	isSpectrumZoomOn,
@@ -26,6 +26,7 @@ function buildDom(): void {
 		<div class="info-right">
 			<button class="btn bar-btn" id="btn-spectrum-zoom" aria-pressed="false"></button>
 		</div>
+		<button class="btn" id="btn-sdr-filter-view" aria-pressed="false"></button>
 		<div class="spectrum-area">
 			<div id="zoom-overview-box" style="display:none;">
 				<div class="zoom-overview-head">
@@ -55,6 +56,28 @@ beforeEach(() => {
 	initSpectrumZoomUi();
 });
 
+describe('the passband view action', () => {
+	it('keeps the passband label stable while exposing pressed and restore semantics', () => {
+		__testSeedCapture(CAP);
+		const filterButton = document.getElementById('btn-sdr-filter-view') as HTMLButtonElement;
+		syncSpectrumZoomUi(true);
+		const label = filterButton.textContent;
+		const viewDescription = filterButton.getAttribute('aria-label');
+		togglePassbandView({ lo: 940e6, hi: 960e6 }, 2e6);
+		syncSpectrumZoomUi(true);
+		expect(filterButton.textContent).toBe(label);
+		expect(filterButton.classList.contains('active')).toBe(true);
+		expect(filterButton.getAttribute('aria-pressed')).toBe('true');
+		expect(filterButton.getAttribute('aria-label')).not.toBe(viewDescription);
+		expect(filterButton.disabled).toBe(false);
+		togglePassbandView({ lo: 940e6, hi: 960e6 }, 2e6);
+		syncSpectrumZoomUi(true);
+		expect(filterButton.textContent).toBe(label);
+		expect(filterButton.classList.contains('active')).toBe(false);
+		expect(filterButton.getAttribute('aria-pressed')).toBe('false');
+		expect(filterButton.getAttribute('aria-label')).toBe(viewDescription);
+	});
+});
 describe('the toggle state machine', () => {
 	it('starts Off with the overview hidden', () => {
 		expect(zoomEnabled.get()).toBe(false);
@@ -70,7 +93,6 @@ describe('the toggle state machine', () => {
 		expect(btn().classList.contains('active')).toBe(true);
 		expect(btn().getAttribute('aria-pressed')).toBe('true');
 		expect(box().style.display).toBe('');
-		expect(document.getElementById('zoom-overview-title')!.textContent).toContain('');
 	});
 
 	it('Off returns to the full window (the view is dropped)', () => {

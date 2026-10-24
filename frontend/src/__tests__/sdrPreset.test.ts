@@ -10,7 +10,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { allParams, resetAll } from '../core/params';
-import { resetSdrState, sdrAmSync } from '../ui/sdrState';
+import { resetSdrState, sdrAmSync, sdrFilterByMode } from '../ui/sdrState';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
@@ -39,6 +39,14 @@ describe('Preset clears the persisted SDR preferences', () => {
 		localStorage.setItem('web-sa-sdr-step-bw', '{"256":2500}');
 		resetSdrState();
 		expect(localStorage.getItem('web-sa-sdr-step-bw')).toBeNull();
+	});
+
+	it('clears confirmed per-mode Filter preferences and their in-memory values', () => {
+		sdrFilterByMode.set({ cw: 900, am: 4500 });
+		expect(localStorage.getItem('web-sa-sdr-filter-by-mode')).toBe('{"cw":900,"am":4500}');
+		resetSdrState();
+		expect(sdrFilterByMode.get()).toEqual({});
+		expect(localStorage.getItem('web-sa-sdr-filter-by-mode')).toBeNull();
 	});
 
 	it('resets the accepted AM detector to the factory choice and removes its saved preference', () => {

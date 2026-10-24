@@ -548,6 +548,10 @@ impl ChannelState {
                 event["carrierHz"] = serde_json::json!(event.get("carrierOffsetHz")
                     .and_then(serde_json::Value::as_f64).map(|offset| self.frequency + offset));
             }
+            Some("wfm-info") => {
+                // The stream's channel centre; not an independent carrier estimate.
+                event["carrierHz"] = serde_json::json!(self.frequency);
+            }
             Some("sstv-image") => {
                 if let Some(meta) = event.get_mut("meta").and_then(serde_json::Value::as_object_mut) {
                     meta.insert("hz".into(), serde_json::json!(self.frequency));
@@ -910,6 +914,28 @@ mod tests {
         assert!(workers.squelch_status(&registry[0], Instant::now() + Duration::from_millis(1501)).is_none());
         registry[0].epoch += 1;
         assert!(workers.squelch_status(&registry[0], Instant::now()).is_none());
+    }
+
+    #[test]
+    fn wfm_info_reports_the_stream_channel_frequency() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        workers.configure(&[ChannelConfig { mode: "wfm".into(), freq: 95.5e6,
+            ..ChannelConfig::default() }]).unwrap();
+        let registry = [ChannelRegistryEntry { channel: 1, channel_id: 1, epoch: 7,
+            frequency_hz: 95.5e6, output_rate: 48_000.0, input_rate: 48_000.0,
+            group_delay_samples: 0.0, state: "active" }];
+        let frame = |seq: u32, index: u64| encode_baseband(BasebandMagic::Primary,
+            seq, 48_000.0, 95.5e6, 1, 7, index, 0.0,
+            &if seq == 0 { Vec::new() } else { vec![0.0f32, 0.0].repeat(4096) }).unwrap();
+        workers.submit(&frame(0, 0), &registry).unwrap();
+        workers.submit(&frame(1, 0), &registry).unwrap();
+        let frames = workers.finish().unwrap();
+        let info = frames.decode.iter().find_map(|frame| {
+            if frame.len() < 8 || &frame[..4] != b"SDE2" { return None; }
+            let event: serde_json::Value = serde_json::from_slice(&frame[8..]).ok()?;
+            (event["event"]["type"] == "wfm-info").then_some(event["event"].clone())
+        }).expect("wfm-info event");
+        assert_eq!(info["carrierHz"].as_f64(), Some(95.5e6));
     }
 
     #[test]

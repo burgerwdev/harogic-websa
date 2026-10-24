@@ -16,7 +16,7 @@
  * asks for a repaint. Gesture handling lives with the canvas (ui/controls.ts).
  */
 import * as S from '../core/store';
-import { t } from '../core/i18n';
+import { getLang, t } from '../core/i18n';
 import { formatFreqHz } from '../core/fmt';
 import { requestRender } from '../render/redraw';
 import { deviceMode } from './graphMode';
@@ -33,10 +33,32 @@ import {
 	viewportVersion,
 	zoomAround,
 	zoomEnabled,
+	passbandViewActive,
 	type FreqWindow,
 } from './spectrumViewport';
 
 let lastSyncKey = '';
+let lastPassbandButton: HTMLButtonElement | null = null;
+let lastPassbandButtonKey = '';
+
+/** Keep the filter action's fixed-width label while exposing toggle state accessibly. */
+function syncPassbandViewButton(active: boolean): void {
+	const button = document.getElementById('btn-sdr-filter-view') as HTMLButtonElement | null;
+	if (!button) return;
+	const key = `${active ? 1 : 0}|${button.disabled ? 1 : 0}|${getLang()}`;
+	if (button === lastPassbandButton && key === lastPassbandButtonKey) return;
+	lastPassbandButton = button;
+	lastPassbandButtonKey = key;
+	if (active) button.disabled = false; // Restore must remain available for an invalid new band.
+	button.classList.toggle('active', active);
+	button.setAttribute('aria-pressed', String(active));
+	button.setAttribute('aria-label', t(active ? 'sdr_filter_restore' : 'sdr_filter_view_label'));
+	button.dataset.i18n = 'sdr_filter_view';
+	button.dataset.i18nTitle = active ? 'sdr_filter_restore_tip'
+		: button.disabled ? 'sdr_filter_view_unavailable' : 'sdr_filter_view_tip';
+	button.textContent = t('sdr_filter_view');
+	button.title = t(button.dataset.i18nTitle);
+}
 
 /** PNM owns the canvas with a log-offset curve; zoom is meaningless there (design §2). */
 export function spectrumZoomAvailable(): boolean {
@@ -51,6 +73,7 @@ export function isSpectrumZoomOn(): boolean {
 
 /** The overview box + title/hint follow the toggle, the view and the mode. */
 export function syncSpectrumZoomUi(force = false): void {
+	syncPassbandViewButton(passbandViewActive());
 	const btn = document.getElementById('btn-spectrum-zoom') as HTMLButtonElement | null;
 	const box = document.getElementById('zoom-overview-box');
 	const reset = document.getElementById('btn-zoom-reset') as HTMLButtonElement | null;

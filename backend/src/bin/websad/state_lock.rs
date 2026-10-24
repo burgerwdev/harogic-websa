@@ -55,6 +55,7 @@ pub(super) struct StatusSnapshot {
     sdr_pitch: f64,
     sdr_deemph: f64,
     sdr_aux: Value,
+    sdr_filter_limits: Value,
     sdr_ref_set: bool,
     sdr_pfb_taps_per_phase: usize,
     hardware: bool,
@@ -161,6 +162,7 @@ impl DevState {
             sdr_aux: self.sdr_aux.clone(),
             sdr_ref_set: self.sdr_ref_set.clone(),
             sdr_pfb_taps_per_phase: self.sdr_pfb_taps_per_phase.clone(),
+            sdr_filter_limits: self.filter_limits(),
             hardware:self.hardware_shim.is_some(), freq_limits:self.freq_limits(),
             actual_taps:self.pipeline.as_ref().map(|p| p.snapshot.taps)
                 .or_else(|| self.ddc.as_ref().map(|d| d.0.stream.taps_per_phase()))
@@ -403,6 +405,7 @@ impl StatusSnapshot {
         s["has_premium_ref_clock"] = json!(self.has_premium_ref_clock);
         s["channel_registry"] = registry.clone();
         s["sdr"]["channels"] = self.channels.clone();
+        s["sdr"]["filter_limits"] = self.sdr_filter_limits.clone();
         for name in ["am_sync", "am_sync_generation"] {
             s["sdr"][name] = self.channels[0][name].clone();
             s["req"]["sdr"][name] = self.channels[0][name].clone();

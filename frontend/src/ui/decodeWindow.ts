@@ -1194,10 +1194,14 @@ function renderWfm(): void {
 	put('wfm-station', !w ? '—' : w.rdsLocked ? (ps || '…') : t('wfm_no_rds'));
 	put('wfm-rt', w?.rdsLocked ? (rt || '…') : '—');
 	put('wfm-rds-pi', w?.rdsLocked ? `PI ${w.rdsPi.toString(16).toUpperCase().padStart(4, '0')}` : '—');
-	// The carrier is the demodulator's centre frequency, which the worker reads from the IQ
-	// frames: reading it from the tune box here would freeze it at whatever the box last held.
+	// The stream's own channel centre (the event's carrierHz), not the tune box's draft.
+	const carrierLabel = element('wfm-carrier-label');
+	if (carrierLabel) carrierLabel.textContent = t('wfm_carrier_label');
+	const carrierEl = element('wfm-carrier');
+	if (carrierEl) carrierEl.title = t('wfm_carrier_tip');
 	put('wfm-carrier', w && w.carrierHz > 0 ? `${(w.carrierHz / 1e6).toFixed(5)} MHz` : '—');
-	put('wfm-dev', w ? `${w.peakDevHz >= 1000 ? (w.peakDevHz / 1000).toFixed(1) + ' kHz' : w.peakDevHz + ' Hz'}` : '—');
+	const devHz = w?.peakDevHz ?? 0;
+	put('wfm-dev', w ? `${devHz >= 1000 ? (devHz / 1000).toFixed(1) + ' kHz' : Math.round(devHz) + ' Hz'}` : '—');
 	// Pilot deviation is a station constant. The tooltip compares it to the 75 kHz
 	// broadcast-FM reference; it does not use the current programme peak.
 	const pilotHz = w?.pilotDevHz ?? 0;

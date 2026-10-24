@@ -40,10 +40,25 @@ describe('unit field resolution', () => {
 
 	it('maps an input id back to the canonical key', () => {
 		expect(fieldForInput({ id: 'input-rta-center' })).toBe('rta_center');
+		expect(fieldForInput({ id: 'input-sdr-ifbw' })).toBe('sdr_ifbw');
 		expect(fieldForInput({ id: 'input-center' })).toBe('center');
 		expect(fieldForInput({ id: 'input-not-a-unit' })).toBe('');
 		expect(fieldForInput({ id: 'spectrum' })).toBe('');
 		expect(UNIT_OPTIONS.rta_center).toBeDefined();
+		expect(UNIT_OPTIONS.sdr_ifbw).toEqual(['Hz', 'kHz', 'MHz']);
+		expect(units().sdr_ifbw).toBe('kHz');
+	});
+
+	it('resolves the Filter input without rounding fractional Hz during unit conversion', () => {
+		const input = mount('input-sdr-ifbw', '12.3456');
+		unitMap.set({ ...units(), sdr_ifbw: 'kHz' });
+		expect(inputForField('sdr_ifbw')).toBe(input);
+
+		setUnit('sdr_ifbw', 'Hz');
+		expect(input.value).toBe('12345.6');
+		setUnit('sdr_ifbw', 'kHz');
+		expect(input.value).toBe('12.3456');
+
 	});
 
 	it('converts and commits when the unit button is used on an untouched field', () => {

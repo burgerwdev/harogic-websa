@@ -4,6 +4,10 @@ import { send } from '../core/wsSend';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentBw, type NrAlgo } from './sdrState';
+import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
+import { sdrFilterLimits } from './sdrState';
+import { clearPassbandView } from './spectrumViewport';
+import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, moveFilterDrag, setFilterHover, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
 import { updateInfoBar } from '../render/infobar';
@@ -166,6 +170,13 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 export function disconnectSdrSession(): void {
   clearAmSyncRequest();
   sdrAmSync.reset();
+  clearReceiverEdit();
+  sdrDemod.reset();
+  sdrIfbw.reset();
+  clearPassbandView();
+  sdrFilterLimits.confirm(null);
+  cancelSdrCanvasGesture();
+  cancelSdrFilterEdit();
   confirmAmSyncGeneration(null);
   setSdrIqEnabled(false);
   resetSdrIq();
@@ -247,6 +258,13 @@ export function setGraphMode(mode: string) {
   }
   // A newer request replaces the previous one and restarts its timeout (discipline 2).
   requestGraphMode(target);
+  cancelSdrCanvasGesture();
+  cancelSdrFilterEdit();
+  if (target !== 'sdr') {
+    clearReceiverEdit();
+    sdrDemod.reset();
+    sdrIfbw.reset();
+  }
   syncModeButtons();
   syncResolutionAvailability();
   // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
@@ -317,6 +335,7 @@ export function syncGraphModeStatus(mode: string) {
   applyMeasUI();
   // An axis gesture previews the window of the mode it started in; a mode change invalidates it.
   resetAxisPreview();
+  cancelSdrCanvasGesture();
   // A display view belongs to the data of the mode it was drawn in (design §4.3): drop it
   // on any confirmed mode change; the toggle itself stays as the user set it.
   if (hadConfirmedMode) {
@@ -550,13 +569,12 @@ export function sdrToCenter() {
   send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: listen });
 }
 
-export function applySdrDemod() {
+export function applySdrDemod(restoringMode = false, filterOnly = false) {
   const mode = sdrDemod.get();
   setSdrAudioMode(1, mode);
-  // The current DRM30 receiver decodes SO3 (10 kHz). Narrow IF buttons are not a DRM
-  // occupancy selector; give the DDC a stable margin regardless of an analog-mode preset.
-  if (mode === 'drmplus' && sdrIfbw.get() !== 100000) sdrIfbw.set(100000);
-  if (mode === 'drm' && sdrIfbw.get() !== 12000) sdrIfbw.set(12000);
+  if (!filterSpec(mode).editable && sdrIfbw.get() !== filterSpec(mode).defaultHz) {
+    sdrIfbw.set(filterSpec(mode).defaultHz);
+  }
   const ifbw = sdrIfbw.get();
   const deemph = sdrDeemph.get();
   const volume = sdrVolume.get();
@@ -568,10 +586,15 @@ export function applySdrDemod() {
   if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, enabled: true, mode, ifbw, volume, squelch,
-         agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
-         nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
-         sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get() });
+  const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: 1, mode, ifbw } : { cmd: 'SET_SDR_CHANNEL', channel: 1, enabled: true, mode, ifbw, volume, squelch,
+    agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
+    nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
+    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get() };
+  if (receiverInFlight) {
+    receiverQueued = { payload, mode, ifbw, restoringMode };
+  } else if (sdrDemod.pending() || sdrIfbw.pending()) {
+    sendReceiverEdit({ payload, mode, ifbw, restoringMode });
+  } else send(payload);
 }
 
 /** Noise reduction is applied by the backend receiver. */
@@ -671,25 +694,13 @@ function syncSdrButtons() {
   document.querySelectorAll('[data-sdr-demod]').forEach((el) => {
     el.classList.toggle('active', (el as HTMLElement).dataset.sdrDemod === mode);
   });
-  const ibw = Math.round(sdrIfbw.get());
   const drm = mode === 'drm' || mode === 'drmplus';
   for (const id of ['btn-sdr-agc', 'input-sdr-squelch', 'btn-sdr-nr',
     'select-sdr-nr-algo', 'select-sdr-nr-strength', 'input-sdr-nr-atten']) {
     const control = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLButtonElement | null;
     if (control) control.disabled = drm || (id === 'select-sdr-nr-strength' && sdrNrAlgo.get() === 'dfn');
   }
-  const filterGroup = document.getElementById('sdr-ifbw-group');
-  if (filterGroup) filterGroup.style.display = drm ? 'none' : '';
-  const drmNote = document.getElementById('sdr-drm-filter-note');
-  if (drmNote) {
-    drmNote.style.display = drm ? '' : 'none';
-    drmNote.textContent = mode === 'drmplus' ? t('drmplus_filter_fixed') : t('drm_filter_fixed');
-    drmNote.title = mode === 'drmplus' ? t('drmplus_filter_tip') : t('drm_filter_tip');
-  }
-  document.querySelectorAll<HTMLButtonElement>('[data-sdr-ifbw]').forEach((el) => {
-    el.disabled = drm;
-    el.classList.toggle('active', !drm && Number(el.dataset.sdrIfbw) === ibw);
-  });
+  renderSdrFilter();
   const dv = sdrDeemph.get();
   document.querySelectorAll<HTMLButtonElement>('[data-sdr-deemph]').forEach((el) => {
     el.disabled = drm;
@@ -699,55 +710,90 @@ function syncSdrButtons() {
 
 // ── SDR audio enable + amplitude reference ──
 
-/**
- * The demodulator's IF-bandwidth courtesy: the first time a decoding mode is selected (and again
- * after a Preset) an out-of-range filter is narrowed to 3 kHz.
- *
- * It is a *courtesy*, so it must never override a choice: once the operator has clicked a bandwidth
- * button in this page session, the auto-pick stays out of the way, and each mode only gets one
- * auto-pick per session (reported: the auto-pick ran on every selection and undid a deliberate
- * narrow filter).
- *
- * Deliberately *session* state, not the stored preference: the store holds a value after any SDR
- * change, so reading it as "the operator chose this bandwidth" made the courtesy dead on arrival
- * for anyone with saved settings (reported: the first CW selection in a fresh session no longer
- * picked 3 kHz). A stored bandwidth is a starting point, and the courtesy is exactly what the first
- * selection is for; a bandwidth clicked during the session is the choice that must survive.
- */
-let ifbwChosenByUser = false;
-const ifbwAutoPicked = new Set<string>();
+let filterSerial = 0;
+type ReceiverEdit = { payload: Record<string, unknown>; mode: string; ifbw: number; restoringMode: boolean };
+let receiverInFlight: (ReceiverEdit & { requestId: string; timer: number }) | null = null;
+let receiverQueued: ReceiverEdit | null = null;
+let receiverConfigVersion = -1;
+
+function clearReceiverEdit(): void {
+  if (receiverInFlight) window.clearTimeout(receiverInFlight.timer);
+  receiverInFlight = null;
+  receiverConfigVersion = -1;
+  receiverQueued = null;
+}
+
+function sendReceiverEdit(edit: ReceiverEdit): void {
+  const requestId = `sdr-filter-${++filterSerial}`;
+  receiverInFlight = { ...edit, requestId, timer: window.setTimeout(() => {
+    if (receiverInFlight?.requestId !== requestId) return;
+    finishReceiverEdit(false);
+    S.setStatusError(t('sdr_filter_timeout'));
+  }, 3000) };
+  const liveAudio = 'volume' in edit.payload ? {
+    volume: sdrVolume.get(), squelch: sdrSquelch.get(), agc: sdrAgc.get(), am_sync: sdrAmSync.get(),
+    deemph_us: sdrDeemph.get(), nr: sdrNr.get(), nr_strength: sdrNrStrength.get(),
+    nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
+    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(),
+  } : {};
+  send({ ...edit.payload, ...liveAudio, request_id: requestId });
+}
+
+function finishReceiverEdit(accepted: boolean): void {
+  if (receiverInFlight) window.clearTimeout(receiverInFlight.timer);
+  receiverInFlight = null;
+  const next = receiverQueued;
+  receiverQueued = null;
+  if (next) {
+    sdrDemod.set(next.mode);
+    sdrDemod.touch(next.mode);
+    sdrIfbw.set(next.ifbw);
+    sdrIfbw.touch(next.ifbw);
+    sendReceiverEdit(next);
+  } else {
+    sdrDemod.reset();
+    sdrIfbw.reset();
+    if (!accepted) cancelSdrCanvasGesture();
+  }
+  setSdrAudioMode(1, sdrDemod.get());
+  renderSdrState();
+  syncSdrButtons();
+  requestRender();
+}
+
+export function rejectSdrFilterRequest(responseTo?: string, requestId?: string | number): void {
+  const rejected = receiverInFlight;
+  if (responseTo !== 'SET_SDR_CHANNEL' || !rejected || rejected.requestId !== requestId) return;
+  if (!receiverQueued && rejected.restoringMode && rejected.ifbw !== filterSpec(rejected.mode).defaultHz) {
+    sdrDemod.set(rejected.mode);
+    sdrIfbw.set(filterSpec(rejected.mode).defaultHz);
+    receiverQueued = { mode: rejected.mode, ifbw: filterSpec(rejected.mode).defaultHz, restoringMode: false,
+      payload: { ...rejected.payload, ifbw: filterSpec(rejected.mode).defaultHz } };
+  }
+  finishReceiverEdit(false);
+}
 
 /** The same user selection action serves the registry buttons and the M shortcut. */
 export function selectSdrDemod(id: string): void {
+  cancelSdrCanvasGesture();
+  clearPassbandView();
+  cancelSdrFilterEdit();
   sdrDemod.set(id);
-  if (id === 'drmplus') sdrIfbw.set(100000);
-  if (id === 'drm') sdrIfbw.set(12000);
-  const ibw = sdrIfbw.get();
-  const decodingMode = id === 'ft8' || id === 'cw';
-  // WFM needs room for the stereo/RDS subcarriers. FT8/CW receive through a 3 kHz
-  // filter unless the user deliberately chose another bandwidth in this session.
-  if (id === 'wfm' && !ifbwChosenByUser && !ifbwAutoPicked.has(id) && ibw < 150000) {
-    sdrIfbw.set(180000);
-    ifbwAutoPicked.add(id);
-  }
-  if (decodingMode && !ifbwChosenByUser && !ifbwAutoPicked.has(id)
-      && (ibw > 6000 || ibw < 2400)) {
-    sdrIfbw.set(3000);
-  }
-  if (decodingMode) ifbwAutoPicked.add(id);
+  sdrIfbw.set(filterValueForMode(id));
   renderSdrState();
   syncSdrButtons();
-  applySdrDemod();
+  applySdrDemod(true, true);
 }
 
 /** Both click and keyboard bandwidth choices are explicit manual choices. */
 export function selectSdrIfbw(ifbw: number): void {
-  if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
-  ifbwChosenByUser = true;
+  const spec = filterSpec(sdrDemod.get());
+  if (!spec.editable || !Number.isFinite(ifbw) || ifbw < spec.minimumHz) return;
   sdrIfbw.set(ifbw);
   renderSdrState();
   syncSdrButtons();
-  applySdrDemod();
+  applySdrDemod(false, true);
+  requestRender();
 }
 
 function syncSdrAudioButton() {
@@ -790,6 +836,13 @@ export function syncSdrPanel(s: any) {
   }
   setDecodeActive(active);
   if (!active) {
+    clearPassbandView();
+    sdrFilterLimits.confirm(null);
+    clearReceiverEdit();
+    cancelSdrCanvasGesture();
+    cancelSdrFilterEdit();
+    sdrDemod.reset();
+    sdrIfbw.reset();
     confirmAmSyncGeneration(null);
     setSdrIqEnabled(false);
     return;
@@ -803,6 +856,10 @@ export function syncSdrPanel(s: any) {
   const channels = Array.isArray(sdr.channels) ? sdr.channels : [];
   const primary = channels.find((channel: { channel: number }) => channel.channel === 1);
   const receiver = primary || sdr;
+  const ownReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-filter-');
+  const version = Number(s.config_version);
+  if ((ownReply && s.request_id !== receiverInFlight?.requestId)
+      || (Number.isFinite(version) && version < receiverConfigVersion)) return;
   const generation = primary?.am_sync_generation;
   confirmAmSyncGeneration(typeof generation === 'number' && Number.isInteger(generation)
     && generation >= 0 && generation <= 0xffffffff ? generation : null);
@@ -822,9 +879,32 @@ export function syncSdrPanel(s: any) {
     ? Number(a.stop) - Number(a.start) : estimatedCaptureSpanHz(Number(sdr.decimate) || 32);
   confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version));
   sdrListenHz.confirm(Number(primary ? primary.freq : sdr.listen) || 0);
-  sdrDemod.confirm(String((primary ? primary.mode : sdr.demod) || 'am'));
+  const actualMode = String((primary ? primary.mode : sdr.demod) || 'am');
+  const actualFilter = Number(receiver.if_bw) || 6000;
+  if (Number.isFinite(version)) receiverConfigVersion = version;
+  if (actualMode !== sdrDemod.confirmedValue()) {
+    clearPassbandView();
+    cancelSdrCanvasGesture();
+    cancelSdrFilterEdit();
+  } else if (receiver.pitch != null && receiver.pitch !== sdrPitchHz.get()) cancelSdrCanvasGesture();
+  sdrDemod.confirm(actualMode);
+  sdrIfbw.confirm(actualFilter);
+  const limits = sdr.filter_limits;
+  sdrFilterLimits.confirm(limits && limits.mode === actualMode && Number.isFinite(limits.min_hz)
+    && (limits.max_hz === null || Number.isFinite(limits.max_hz)) ? limits : null);
+  rememberConfirmedFilter(actualMode, actualFilter);
+  if (receiverInFlight) {
+    const ack = s.response_to === 'SET_SDR_CHANNEL' && s.request_id === receiverInFlight.requestId;
+    if (ack) finishReceiverEdit(true);
+    else {
+      const target = receiverQueued ?? receiverInFlight;
+      sdrDemod.set(target.mode);
+      sdrIfbw.set(target.ifbw);
+      sdrDemod.touch(target.mode);
+      sdrIfbw.touch(target.ifbw);
+    }
+  }
   setSdrAudioMode(1, sdrDemod.get());
-  sdrIfbw.confirm(Number(receiver.if_bw) || 6000);
   if (receiver.pitch != null) sdrPitchHz.confirm(Number(receiver.pitch));
   if ('sstv_mode' in receiver) sdrSstvMode.confirm(receiver.sstv_mode == null ? -1 : Number(receiver.sstv_mode));
   if (typeof primary?.am_sync === 'boolean') {
@@ -875,6 +955,13 @@ let pendingPreset: { requestId: string; timer: number } | null = null;
 
 export function presetAll() {
   if (pendingPreset) window.clearTimeout(pendingPreset.timer);
+  clearPassbandView();
+  sdrFilterLimits.confirm(null);
+  clearReceiverEdit();
+  cancelSdrCanvasGesture();
+  cancelSdrFilterEdit();
+  sdrDemod.reset();
+  sdrIfbw.reset();
   const requestId = `acq-preset-${++presetSerial}`;
   pendingPreset = { requestId, timer: window.setTimeout(() => { pendingPreset = null; }, 3000) };
   send({ cmd: 'SET_PRESET', request_id: requestId });
@@ -983,10 +1070,8 @@ function applyPresetSuccess() {
   // Preset resets the device, not the listener: the audio switch and the IQ ingress survive. The
   // backend's reconfigure re-anchors the stream with its own flush frame, so stopping the ingress
   // here only orphaned it (re-enabling audio afterwards still heard nothing until a reload).
-  // A Preset restores the factory defaults, so the auto-pick is offered again on the next
-  // demodulator selection (the same reasoning as the trace and window resets around it).
-  ifbwChosenByUser = false;
-  ifbwAutoPicked.clear();
+  clearReceiverEdit();
+  cancelSdrCanvasGesture();
   const audioWasOn = sdrAudioOn.get();
   resetSdrIq();
 
@@ -1199,11 +1284,7 @@ export function bindActions() {
       onSelect: selectSdrDemod,
     });
   }
-  document.querySelectorAll('[data-sdr-ifbw]').forEach((el) => {
-    el.addEventListener('click', () => {
-      selectSdrIfbw(Number((el as HTMLElement).dataset.sdrIfbw) || 6000);
-    });
-  });
+  bindSdrFilter({ onCommit: selectSdrIfbw, onView: viewSdrPassband });
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.addEventListener('click', () => {
       if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
@@ -1399,11 +1480,33 @@ function cancelZoomGesture(): boolean {
 	return had;
 }
 
+let canvasPointerId: number | null = null;
+function cancelSdrCanvasGesture(): void {
+  const pointerId = canvasPointerId;
+  canvasPointerId = null;
+  const canvas = document.getElementById('spectrum') as HTMLCanvasElement | null;
+  if (pointerId !== null && canvas?.hasPointerCapture?.(pointerId)) canvas.releasePointerCapture(pointerId);
+  if (canvas) canvas.style.cursor = '';
+  cancelFilterDrag();
+  setFilterHover(null);
+  if (axisDragging()) resetAxisPreview();
+  cancelZoomGesture();
+  if (sdrDown) sdrListenHz.reset();
+  sdrDown = false;
+  sdrMoved = false;
+  S.setDragging(false);
+  requestRender();
+}
+
 export function bindCanvas() {
   const canvas = document.getElementById('spectrum') as HTMLCanvasElement;
   if (!canvas) return;
 
   canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || canvasPointerId !== null) return;
+    canvasPointerId = e.pointerId;
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement && active.id === 'input-sdr-ifbw') active.blur();
     const pr = plotRectPub();
     const x = canvasX(e, canvas);
     const y = canvasY(e, canvas);
@@ -1424,8 +1527,15 @@ export function bindCanvas() {
       }
     }
     if (currentGraphMode() === 'sdr') {
-      if (x < pr.x || x > pr.x + pr.w) return;
-      if (isSpectrumZoomOn()) {
+      if (x < pr.x || x > pr.x + pr.w || y < pr.y || y > pr.y + pr.h) { canvasPointerId = null; return; }
+      const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
+      const edge = filterEdgeAt(x, y, tolerance);
+      if (edge && startFilterDrag(edge, e.pointerId)) {
+        canvas.setPointerCapture?.(e.pointerId);
+        e.preventDefault();
+        return;
+      }
+      if (isSpectrumZoomOn() && !filterCenterAt(x, y, tolerance)) {
         // Deferred click: a drag may still become a marquee, so no tune state yet.
         zoomPending = { x0: x, y0: y, sdr: true, shift: false };
         return;
@@ -1453,6 +1563,11 @@ export function bindCanvas() {
   });
 
   window.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== canvasPointerId) return;
+    if (filterDragging()) {
+      moveFilterDrag(canvasX(e, canvas), e.pointerId);
+      return;
+    }
     if (axisDragging()) {
       axisDragMove(canvasX(e, canvas), canvasY(e, canvas));
       return;
@@ -1486,7 +1601,7 @@ export function bindCanvas() {
         const pr = plotRectPub();
         const frac = (x - pr.x) / pr.w;
         const now = performance.now();
-        if (now - sdrEdgeAt > 350) {
+        if (!isSpectrumZoomOn() && now - sdrEdgeAt > 350) {
           if (frac > 0.9) {
             sdrEdgeAt = now;
             sdrPanCentreBy(0.2);
@@ -1506,6 +1621,14 @@ export function bindCanvas() {
   });
 
   window.addEventListener('pointerup', (e) => {
+    if (e.pointerId !== canvasPointerId) return;
+    canvasPointerId = null;
+    if (filterDragging()) {
+      const value = endFilterDrag(e.pointerId);
+      if (canvas.hasPointerCapture?.(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      if (value !== null) selectSdrIfbw(value);
+      return;
+    }
     if (axisDragging()) {
       axisDragEnd();
       canvas.style.cursor = axisBandCursor(axisBandFor(canvasX(e, canvas), canvasY(e, canvas),
@@ -1569,9 +1692,13 @@ export function bindCanvas() {
   // Hover feedback for the axis bands: without a cursor change the handles are invisible, and
   // the bands sit in the margins where nothing else ever happened before.
   canvas.addEventListener('mousemove', (e) => {
-    if (axisDragging()) return;
-    const cursor = axisBandCursor(
-      axisBandFor(canvasX(e, canvas), canvasY(e, canvas), plotRectPub()));
+    if (axisDragging() || filterDragging()) return;
+    const x = canvasX(e, canvas), y = canvasY(e, canvas);
+    const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
+    const edge = currentGraphMode() === 'sdr' ? filterEdgeAt(x, y, tolerance) : null;
+    setFilterHover(edge);
+    const center = currentGraphMode() === 'sdr' && filterCenterAt(x, y, tolerance);
+    const cursor = edge ? 'ew-resize' : center ? 'grab' : axisBandCursor(axisBandFor(x, y, plotRectPub()));
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   });
 
@@ -1593,6 +1720,7 @@ export function bindCanvas() {
     publishCursor(canvasX(e, canvas), canvasY(e, canvas));
   });
   canvas.addEventListener('mouseleave', () => publishCursor(-1e9, -1e9));
+  canvas.addEventListener('mouseleave', () => { if (!filterDragging()) setFilterHover(null); });
 
   // Wheel on an axis band zooms that axis (span on the frequency row, dB/div on the level
   // labels); inside the plot the wheel zooms the DISPLAY view while the toggle is On
@@ -1625,15 +1753,20 @@ export function bindCanvas() {
     }
   }, { passive: false });
 
-  // Esc / pointercancel / blur abandon an in-flight marquee without changing the view.
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && zoomMarquee) {
-      cancelZoomGesture();
-      requestRender();
+    if (e.key === 'Escape' && canvasPointerId !== null) {
+      cancelSdrCanvasGesture();
+      canvas.style.cursor = '';
+      e.preventDefault();
     }
   });
-  canvas.addEventListener('pointercancel', () => { cancelZoomGesture(); });
-  window.addEventListener('blur', () => { cancelZoomGesture(); });
+  window.addEventListener('pointercancel', (e) => {
+    if (e.pointerId === canvasPointerId) cancelSdrCanvasGesture();
+  });
+  canvas.addEventListener('lostpointercapture', (e) => {
+    if (e.pointerId === canvasPointerId) cancelSdrCanvasGesture();
+  });
+  window.addEventListener('blur', () => { cancelSdrCanvasGesture(); canvas.style.cursor = ''; });
 
   // Keyboard / trackpad-only operation (no mouse required).
   document.addEventListener('keydown', (e) => {
@@ -1662,7 +1795,7 @@ export function bindCanvas() {
 }
 
 // ── SDR keyboard helpers ──
-const SDR_IFBW = [500, 2400, 3000, 6000, 12000, 25000, 50000, 100000, 180000];
+// Filter keyboard choices use the current mode's presets.
 
 function sdrTuneBy(dHz: number) {
   const center = sdrCenterHz.get();
@@ -1677,13 +1810,12 @@ function sdrTuneBy(dHz: number) {
 }
 
 function sdrCycleIfbw(dir: number) {
-  if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
+  const spec = filterSpec(sdrDemod.get());
+  if (!spec.editable) return;
   const cur = sdrIfbw.get();
-  let idx = SDR_IFBW.findIndex(v => v >= cur);
-  if (idx < 0) idx = SDR_IFBW.length - 1;
-  else if (SDR_IFBW[idx] > cur) idx = Math.max(0, idx - 1);
-  const ni = Math.max(0, Math.min(SDR_IFBW.length - 1, idx + dir));
-  selectSdrIfbw(SDR_IFBW[ni]);
+  const choices = spec.presets;
+  const next = dir > 0 ? choices.find(v => v > cur) : [...choices].reverse().find(v => v < cur);
+  if (next != null) selectSdrIfbw(next);
 }
 
 function sdrCycleDemod() {

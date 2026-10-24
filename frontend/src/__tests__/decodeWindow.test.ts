@@ -12,7 +12,9 @@ import { setUiScale } from '../core/uiScale';
 import { setLang, t } from '../core/i18n';
 import type { Ft8Report } from '../sdr/types';
 import { resetSdrState, sdrSstvMode } from '../ui/sdrState';
-import { confirmAmSyncGeneration, setAmInfo, type AmInfo } from '../ui/decodeWindow';
+import { confirmAmSyncGeneration, setAmInfo, setWfmInfo } from '../ui/decodeWindow';
+import type { AmInfo, WfmInfo } from '../ui/decodeWindow';
+import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import { sdrAmSync } from '../ui/sdrState';
 
 /** The shell the panel ships (index.html); the window only fills `#decode-window-rows`. */
@@ -23,6 +25,7 @@ function shell(): void {
 			<div class="decode-window-head" id="decode-window-head">
 				<span id="decode-window-title">FT8</span><span id="sstv-head-hint" style="display:none;"></span><span class="count" id="decode-window-count">0</span>
 				<span id="am-title-badge" role="status" style="display:none;"></span>
+				<span id="wfm-title-badge" style="display:none;">MONO</span>
 				<span id="cw-meter"><span id="cw-led"></span><i id="cw-vu-fill"></i></span>
 				<span class="spacer"></span>
 				<input id="decode-window-opacity" type="range" min="35" max="100" step="5" value="100" />
@@ -55,6 +58,15 @@ function shell(): void {
 					<span id="am-carrier-offset"></span><span id="am-modulation"></span>
 					<span id="am-input"></span><span id="am-rms"></span><span id="am-peak"></span>
 					<canvas id="am-scope" width="320" height="100"></canvas><span id="am-empty"></span>
+				</div>
+				<div class="decode-rds" id="decode-window-wfm" style="display:none;">
+					<div class="decode-rds-service"><strong id="wfm-station">—</strong><span id="wfm-rds-pi">—</span></div>
+					<span id="wfm-rt">—</span>
+					<dl class="decode-rds-metrics"><div><dt id="wfm-carrier-label">Carrier</dt><dd id="wfm-carrier">—</dd></div>
+						<div><dt>Deviation</dt><dd id="wfm-dev">—</dd></div><div><dt>Pilot</dt><dd id="wfm-pilot">—</dd></div></dl>
+					<canvas id="wfm-scope" width="360" height="64"></canvas>
+					<span id="wfm-audio">—</span>
+					<div id="wfm-empty" style="display:none;">Tune to an FM broadcast station.</div>
 				</div>
 				<div class="decode-drm" id="decode-window-drm" style="display:none;">
 					<div class="decode-drm-service"><span id="decode-drm-lock"></span><strong id="decode-drm-station"></strong><span id="decode-drm-status"></span><div id="decode-drm-mode"></div></div>
@@ -1480,5 +1492,145 @@ describe('the AM pane', () => {
 		expect(metricText()).toEqual(['—', '—', '—', '—', '—']);
 		setAmInfo(info({ syncGeneration: 3 }));
 		expect(badge().classList.contains('on')).toBe(true);
+	});
+});
+
+describe('the WFM pane', () => {
+	const info = (over: Partial<WfmInfo> = {}): WfmInfo => ({
+		stereo: false, peakDevHz: 0, pilotPct: 0, peakDbFs: '', peakHoldDb: '',
+		rdsLocked: false, rdsPi: 0, rdsGroups: 0, ps: '', rt: '',
+		carrierHz: 98_100_000, pilotDevHz: 19_000, pilotSnrDb: 30,
+		scopeL: new Float32Array([0, 0.5, -0.5, 0]), scopeR: null, ...over,
+	});
+	const carrier = () => document.getElementById('wfm-carrier')!.textContent;
+	const label = () => document.getElementById('wfm-carrier-label')!.textContent;
+
+	beforeEach(() => {
+		localStorage.clear();
+		setLang('en');
+		for (const channel of [1, 2, 3] as const) {
+			setDecodeError(channel, null);
+			setWfmInfo(null, channel);
+		}
+		shell();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('wfm');
+		if (!decodeWindowOpen()) toggleDecodeWindow();
+	});
+
+	afterEach(() => {
+		setLang('en');
+		vi.restoreAllMocks();
+	});
+
+	it('shows the receive stream channel centre in MHz under its translated label', () => {
+		expect(decodeWindowMode()).toBe('wfm');
+		expect(label()).toBe(t('wfm_carrier_label'));
+		setLang('zh');
+		setWfmInfo(info());
+		expect(label()).toBe('频率');
+		expect(carrier()).toBe('98.10000 MHz');
+		setLang('en');
+		setWfmInfo(info({ carrierHz: 101_100_000 }));
+		expect(label()).toBe('Freq');
+		expect(carrier()).toBe('101.10000 MHz');
+	});
+
+	it('keeps the placeholder while no positive channel centre arrives', () => {
+		expect(carrier()).toBe('—');
+		for (const carrierHz of [0, -1, NaN]) {
+			setWfmInfo(info({ carrierHz }));
+			expect(carrier()).toBe('—');
+		}
+	});
+
+	it("ignores another receiver's channel centre", () => {
+		setWfmInfo(info({ carrierHz: 98_100_000 }), 2);
+		expect(carrier()).toBe('—');
+		setWfmInfo(info({ carrierHz: 98_100_000 }));
+		expect(carrier()).toBe('98.10000 MHz');
+	});
+
+	it("shows the selected receiver's channel centre", () => {
+		setWfmInfo(info({ carrierHz: 98_100_000 }), 1);
+		setDecodeChannelMode(2, 'wfm');
+		setDecodeChannel(2);
+		expect(carrier()).toBe('—');
+		setWfmInfo(info({ carrierHz: 87_500_000 }), 2);
+		expect(carrier()).toBe('87.50000 MHz');
+	});
+
+	it('clears the shown centre when the stream resets', () => {
+		setWfmInfo(info());
+		expect(carrier()).toBe('98.10000 MHz');
+		setWfmInfo(null);
+		expect(carrier()).toBe('—');
+		expect(document.getElementById('wfm-station')!.textContent).toBe('—');
+	});
+
+	it('drops the shown centre across real stream mode switches', async () => {
+		// The honest mode switch is the wire's own stream boundary: a start envelope for
+		// another demodulator resets the pane, exactly as the worker delivers it. The fresh
+		// modules come from vi.resetModules(): a static import would re-share the old state.
+		class Receiver {
+			static current: Receiver;
+			onmessage: ((event: { data: unknown }) => void) | null = null;
+			constructor() { Receiver.current = this; }
+			postMessage(): void {}
+			terminate(): void {}
+		}
+		const frame = (over: Record<string, unknown> = {}): ArrayBuffer => {
+			const value = { version: 1, channel: 1, channel_id: 17, epoch: 9, seq: 0,
+				input_index: '9007199254740993', input_rate: 62500000, input_fraction_num: '0', input_fraction_den: '1',
+				delay_seconds: 0.001, delay_known: true, causal_presentation: false, mode: 'wfm', event: { type: 'start' }, ...over };
+			const text = new TextEncoder().encode(JSON.stringify(value));
+			const data = new ArrayBuffer(text.length + 8);
+			new Uint8Array(data).set([83, 68, 69, 50]);
+			new DataView(data).setUint32(4, text.length, true);
+			new Uint8Array(data, 8).set(text);
+			return data;
+		};
+		const wfmEvent = { type: 'wfm-info', stereo: false, peakDevHz: 0, pilotPct: 0, peakDbFs: '-20', peakHoldDb: '-20',
+			rdsLocked: false, rdsPi: 0, rdsGroups: 0, ps: '', rt: '', carrierHz: 98_100_000, pilotDevHz: 19_000, pilotSnrDb: 30 };
+		vi.resetModules();
+		vi.stubGlobal('Worker', Receiver);
+		try {
+			const ui = await import('../ui/decodeWindow');
+			const { setLang } = await import('../core/i18n');
+			const stream = await import('../sdr/iqStream');
+			const { DecodeSequence } = await import('../sdr/decodeProtocol');
+			shell();
+			setLang('en');
+			ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+			ui.setDecodeActive(true);
+			ui.setDecodeWindowAvailable('wfm');
+			if (!ui.decodeWindowOpen()) ui.toggleDecodeWindow();
+			const sequence = new DecodeSequence();
+			const deliver = (...envelopes: DecodeEnvelope[]) => {
+				Receiver.current.onmessage!({ data: { type: 'frames', envelopes } });
+				ui.refreshDecodeWindow();
+			};
+		const start = (mode: string, channel_id: number) => sequence.accept(frame({ mode, channel_id }));
+		const wfmInfo = (seq: number, event: Record<string, unknown> = {}, channel_id = 17): DecodeEnvelope =>
+			sequence.accept(frame({ channel_id, mode: 'wfm', seq, event: { ...wfmEvent, ...event } }));
+		stream.setSdrIqEnabled(true);
+		deliver(start('wfm', 17), wfmInfo(1));
+		expect(carrier()).toBe('98.10000 MHz');
+		deliver(wfmInfo(2, { carrierHz: null }));
+		expect(carrier()).toBe('—');
+		deliver(start('am', 18));
+		expect(document.getElementById('decode-window-title')!.textContent).toBe('AM');
+		deliver(start('wfm', 19));
+		expect(document.getElementById('decode-window-title')!.textContent).toBe('FM');
+		expect(carrier()).toBe('—');
+		expect(document.getElementById('wfm-station')!.textContent).toBe('—');
+		deliver(wfmInfo(1, { carrierHz: 87_500_000 }, 19));
+			expect(carrier()).toBe('87.50000 MHz');
+			stream.setSdrIqEnabled(false);
+		} finally {
+			vi.unstubAllGlobals();
+			document.body.innerHTML = '';
+		}
 	});
 });

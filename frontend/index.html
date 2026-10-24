@@ -272,18 +272,11 @@
               <div class="ft8-line" style="flex:1;">
                 <button class="btn" id="btn-decode-window" data-action="toggle-decode-window" data-i18n-title="decode_window_tip" data-i18n-attr="title" disabled data-i18n="off">Off</button>
               </div></div>
-            <div class="param-row"><label data-i18n="if_filter">Filter</label>
-              <span class="cur-val" id="sdr-drm-filter-note" data-i18n="drm_filter_fixed" data-i18n-title="drm_filter_tip" data-i18n-attr="title" style="display:none;">DRM auto (4.5–20 kHz)</span>
-              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
-                <button class="btn" data-sdr-ifbw="500">0.5k</button>
-                <button class="btn" data-sdr-ifbw="2400">2.4k</button>
-                <button class="btn" data-sdr-ifbw="3000">3k</button>
-                <button class="btn" data-sdr-ifbw="6000">6k</button>
-                <button class="btn" data-sdr-ifbw="12000">12k</button>
-                <button class="btn" data-sdr-ifbw="25000">25k</button>
-                <button class="btn" data-sdr-ifbw="50000">50k</button>
-                <button class="btn" data-sdr-ifbw="180000">180k</button>
-              </div></div>
+            <div class="param-row sdr-filter-row"><label for="input-sdr-ifbw" data-i18n="if_filter">Filter</label>
+              <input type="number" id="input-sdr-ifbw" min="0.05" step="0.001" value="6" data-unit="kHz">
+              <div class="sdr-tail"><div class="unit-btn-group" id="unit-sdr_ifbw-group"></div>
+                <button class="btn" id="btn-sdr-filter-view" type="button" aria-pressed="false" data-i18n="sdr_filter_view" data-i18n-title="sdr_filter_view_tip">View</button></div></div>
+            <div class="param-row sdr-filter-actions"><div class="btn-group" id="sdr-ifbw-group"></div></div>
             <div class="param-row"><label data-i18n="deemph">De-emph</label>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-deemph-group">
                 <button class="btn active" data-sdr-deemph="-1">Auto</button>
@@ -875,7 +868,7 @@
         <span id="wfm-rt">—</span>
       </div>
       <dl class="decode-rds-metrics decode-wfm-metrics">
-        <div><dt>Carrier</dt><dd id="wfm-carrier">—</dd></div>
+        <div><dt id="wfm-carrier-label">Carrier</dt><dd id="wfm-carrier" title="Channel centre the demodulated audio belongs to">—</dd></div>
         <div><dt>Deviation</dt><dd id="wfm-dev">—</dd></div>
         <div><dt>Pilot</dt><dd id="wfm-pilot">—</dd></div>
       </dl>

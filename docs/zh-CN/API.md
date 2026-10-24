@@ -64,6 +64,7 @@ curl http://localhost:8080/api/state
 | `swp_actual` / `rta_actual` | obj | SWP/RTA 最近一次 SDK 实际配置，互不覆盖 |
 | `sweep_ms` / `sweep_ms_meas` | number | SDK 估算的 SWP 最短扫频时间（ms，用于 FREQ/POWR 帧头；无估算时为 0）/ 发布器实测单步采集/发布耗时 EMA（ms，仅 STATUS）。SWT 优先显示设备估算；为 0 时固定显示带“实测”标记的 EMA，不留空也不混写两个数据源。|
 | `sdr` | obj | 请求的调谐/解调/音频设置、`actual` 捕获/显示/DDC 几何、`level_dbfs`、静噪、厂商 ADM 指标与原生流健康状态。`sdr.level_dbfs` 为频道 1 电平；每个 `sdr.channels[].level_dbfs` 测量本频道 AGC/音频增益前归一化复数 IQ，公式为 `10*log10(mean(I²+Q²))`，wire 满量程为 1。无有限测量（包括零功率）、频道停用、流身份/调谐改变、退出 SDR 模式或输入超过 1500 ms 时为 null。每个频道的 `channel_dbm` 为新鲜的 SDK 调谐点频谱峰值；`squelch_open` 为实际处理后的模拟音频门状态，在尚未处理、流已过期/停用或绕过该门的 DRM 编码音频模式下为 null。顶层 `sdr.channel_dbm` 和 `sdr.squelch_open` 回显频道 1。请求显示带宽可能窄于设备捕获带宽。|
+| `sdr.filter_limits` | obj | 当前模式的动态 `ifbw` 几何范围：`mode`、`min_hz`、`max_hz`。`min_hz` 为真实 DSP 下限——AM/DSB/CW/NFM/WFM/PM 为 50，USB/LSB 为 101；协议锁定或未知模式返回 `min_hz:0, max_hz:null`。`max_hz` 是按当前采集中心/带宽、输入采样率、PFB tap、收听频率与 CW pitch 求得的整数采样上限；非 SDR、频道 1 停用或无可行范围时为 null。它不是模式推荐值，也不包含其他已启用频道的成本准入，范围内的值仍可能被拒绝。 |
 | `rta_actual.frame_points` | int | RTA 设备 FFT 帧宽；RTA2 传送返回频点，不受 SWP 请求点数限制 |
 | `config_version` | int | 每次成功硬件重配置递增 |
 | `response_to` / `request_id` | str / scalar | 命令 STATUS/ERROR 的命令名及可选标量请求标识；周期发布不携带请求身份 |
@@ -137,7 +138,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档 |
 | `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
-| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（100~500000 Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（200~2000 Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 12 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 重配信道化器 |
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（200~2000 Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 12 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
 | `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。`am_sync` 仅接受 JSON 布尔值，默认 false。静噪范围 -200..0，pitch 为 (0,20000] Hz，NR 强度 0..1，算法 wiener/dfn，衰减 0..100 dB，音频率为整数 8000..192000；SSTV 模式为 null（自动）或支持的模式索引。音量/去加重范围同上。 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
@@ -156,6 +157,10 @@ AM 默认使用包络检波，`am_sync:true` 切换到载波恢复同步检波�
 `sdr.channels[].am_sync_generation` 是服务端维护的只读 u32，默认 0；主路同时映射到 `sdr.am_sync_generation` 和 `req.sdr.am_sync_generation`。仅在 `am_sync` 改变时递增，重复设置相同值不改变代次，请求不能指定该字段。Preset 随新流身份将其复位。
 
 原生 WFM 默认通过 AUD2 输出左右声道交错立体声，显式 `stereo:false` 输出单声道。DRM/DRM+ 的编解码音频不使用模拟 AGC、NR、静噪和去加重，界面禁用这些控件，保留音量和播放。停用频道可在未设置有效频率时局部更新，启用时再校验调谐。SSTV 的 `sstv_mode:null` 为自动识别，支持的整数值为固定模式；浏览器确认进入 SDR 后才重放保存选择。显示抽取、`sdr.actual.iq_rate` 捕获采样率与频道 `actual_iq_rate` 分别表示不同量。
+
+`ifbw` 的含义随模式变化。AM/DSB/NFM/WFM/PM 中，它表示以拨盘频率为中心的总带宽。USB/LSB 中，它表示外侧高截止，内侧载波保护带为 `clamp(0.1 × ifbw, 100, 300)` Hz，LSB 取镜像负频率。CW 以 `max(100, pitch)` Hz 为中心，两侧各延伸 `max(50, ifbw) / 2`。浏览器数值编辑器与后端均对其他可编辑模式执行 50 Hz 下限，对 USB/LSB 执行 101 Hz 下限，避免保护带退化。浏览器还检查当前 `sdr.filter_limits`；后端另按所选模式的包络、采集和输出采样率、粗箱通带及频道容量执行准入。非法或不能准入的请求会被拒绝，不会静默截断。预设是推荐值而非上限：AM 100 kHz、SSB 50 kHz、CW 10 kHz 等高于常用预设的自定义值在通过准入时允许使用。输入支持 Hz/kHz/MHz，单位切换不改变底层 Hz 值，虚拟键盘与手动输入共用校验和提交路径。
+
+浏览器将 FT8 固定为 `ifbw=3000`，解码范围为 100~3000 Hz；SSTV 固定为 `ifbw=3000`，解码范围为 300~2700 Hz；为 DRM 选择并锁定 `ifbw=12000`；DRM+ 固定为 `ifbw=100000`。这些是界面的模式语义，不是通信协议限制：直接 API 请求仍可使用其他值，但受后端几何与准入约束。DRM 显示 `±confirmed_ifbw/2`，不随 FAC 声明的占用带宽改变，因此不会自动接收全部 4.5~20 kHz 占用带宽。DRM+ 的 100 kHz 界面值是频道宽度，不表示最外侧 OFDM 载波恰好位于 ±50 kHz。
 
 频道准入使用调谐点两侧的对称占用带宽包络。USB/LSB 覆盖单边 IF 上限；CW 包含 pitch 和 IF；FT8 至少保留正频率 3.2 kHz，SSTV 保留正频率 3 kHz。整数 IQ 采样率由该包络决定，精确协议采样率在内部适配。WFM IQ 还需支持导频、立体声和 RDS，与 PCM 播放采样率相互独立。主路重新采集前会验证全部已启用频道；请求被拒绝时，旧计划继续生效。
 
@@ -333,6 +338,8 @@ AM 按源样本时钟的 20 Hz 网格发送 `event.type:'am-info'`，不随浏�
 无法确定载波频率、频偏或调制度时使用 null，不以零代替；深度载波衰落会使这些值失效。AM 不提供 SNR。关闭同步检波时，即使载波指标有效，`syncLocked` 也为 false。恢复链路先粗略捕获频率，再通过带积分的相位环跟踪；捕获与失锁分别要求持续 150 ms，深衰落立即使结果失效。输入功率采用 100 ms 窗口与 500 ms 指数平滑。包络方差先在每个 100 ms 窗口内归一化，再以 1 s 时间常数平滑调制功率，避免较慢的 RF 衰落被误算为调制度。捕获后频偏采用 250 ms 平滑。音频波形仍为实际 PCM 样本。
 
 浏览器仅接受 `amSyncGeneration` 与权威 STATUS 代次一致的 AM 指标和锁定状态；代次未知时不接受。即使关闭后再次开启、布尔值恢复相同，也不会误用先前切换前排队的事件。设备或控制连接断开会使指标与代次失效，只有 STATUS 确认连接后才恢复解码。
+
+WFM 事件 `wfm-info` 中的 `carrierHz` 是该接收流的频道中心频率（来自信道化器流身份），不是独立测得的载波估计；其余字段（频偏、导频、RDS、波形）为实际解调测量。
 
 SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实时增量行。图像事件含 `type:'sstv-image'`、`width`、`height`、`row`、`rows`、紧密排列 RGB 字节数组 `rgb` 和 `meta`；快照每块最多 64 行。服务只保留当前图像，历史由浏览器保存。
 

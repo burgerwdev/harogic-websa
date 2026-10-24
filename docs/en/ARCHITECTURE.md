@@ -51,7 +51,9 @@ At full capture bandwidth the input is 62.5 MSps with 50 MHz usable bandwidth. T
 
 The prototype supports 4, 8 or 16 taps per phase, with 16 as the service default. Passband and alias rejection depend on this selection and frequency offset. Fine plans must fit the selected coarse bin's usable passband. A wide signal cannot be cut at a bin edge and treated as equivalent reception. Wideband modes beyond the supported channel envelope are rejected.
 
-Each receiver has its own frequency, mode, occupied bandwidth, `RatePlan`, oscillator phase, filter history and output rate. Fine DDC mixes and performs multistage anti-alias decimation; an exact protocol rate is adapted at the receiver input when needed. Audio playback rate is not a universal lower bound on IQ rate. USB/LSB envelopes include the sideband edge, CW includes pitch, FT8 retains at least the positive 3.2 kHz band, and SSTV the positive 3 kHz band. DRM and DRM+ use their protocol bandwidths.
+Each receiver has its own frequency, mode, occupied bandwidth, `RatePlan`, oscillator phase, filter history and output rate. Fine DDC mixes and performs multistage anti-alias decimation; an exact protocol rate is adapted at the receiver input when needed. Audio playback rate is not a universal lower bound on IQ rate. USB/LSB envelopes include the sideband edge, CW includes pitch, FT8 retains at least the positive 3.2 kHz band, and SSTV the positive 3 kHz band. The UI selects a 12 kHz DRM receive window, while a direct API request can use another admitted value; the shown window follows `±confirmed_ifbw/2`, not FAC occupancy, so it does not imply automatic reception across 4.5–20 kHz. The DRM+ UI uses a fixed 100 kHz channel; this is not a claim that its outermost OFDM carriers lie exactly at ±50 kHz.
+
+The final fine-channel FIR uses the requested RF transition width, independently of the selected output sample rate. A decoder rate floor or integer decimation step does not widen this filter. WFM retains the processing cadence needed by stereo/RDS, but a narrow RF filter can remove those components. RF bandwidth is distinct from the fixed 15 kHz WFM programme-audio low-pass.
 
 A main-channel retune outside the capture range validates every enabled channel before moving the shared capture center. Aux channels cannot move that center independently. A rejected configuration retains all active channels. A change inside the current plan updates only the affected fine receiver where possible.
 
@@ -90,6 +92,30 @@ The browser receives AUD2 and SDE2 rather than running a duplicate production IQ
 ## Frontend state and rendering
 
 User-set, backend-confirmed parameters use `core/params.ts` slots: user actions set desired values and STATUS confirms them. Client-only preferences are authoritative locally. Measurement results use `core/results.ts` with explicit setters, without desired/confirmed semantics. Shared types and registries remain leaf modules; upper layers may depend on leaves. Registration modules must be reachable from `main.ts`.
+
+### SDR filter controls
+
+The panel, numeric field and spectrum overlay share `sdrDemod` and `sdrIfbw`; those parameter slots remain the only desired/confirmed values. A custom value remains visible without forcing a preset highlight. A STATUS confirmation also records the last confirmed value for that mode. Selecting a mode restores its stored confirmed value, or the mode default when none is valid; ordinary tuning retains the active filter, and Preset clears these mode preferences with the existing SDR preferences.
+
+| Modes | Default (Hz) | Presets (Hz) | Editable |
+|---|---:|---|---|
+| AM/DSB | 6000 | 3000, 4500, 6000, 9000, 12000 | yes |
+| USB/LSB | 2400 | 1800, 2400, 2700, 3000, 6000 | yes |
+| CW | 500 | 100, 200, 500, 1000, 2000 | yes |
+| NFM | 12000 | 9000, 12000, 12500, 15000, 25000 | yes |
+| WFM | 180000 | 100000, 150000, 180000, 200000, 250000 | yes |
+| PM | 12000 | 6000, 9000, 12000, 15000, 25000 | yes |
+| FT8/SSTV | 3000 | UI fixed | no |
+| DRM | 12000 | UI selected/locked | no |
+| DRM+ | 100000 | UI fixed | no |
+
+Preset buttons use compact k/M suffixes and expose the full Hz value on hover. The numeric input offers the full Hz/kHz/MHz choice through the shared units control; unit selection changes only the representation, not the underlying Hz value. Typed input and the virtual keypad use the same validation and commit path. Custom values are not capped by common presets: AM 100 kHz, SSB 50 kHz, CW 10 kHz and other candidates remain allowed when admitted. The numeric editor and backend enforce a finite minimum of 50 Hz, or 101 Hz for USB/LSB to prevent guard collapse. STATUS publishes `sdr.filter_limits:{mode,min_hz,max_hz}` for the current mode: `min_hz` is the real DSP floor (protocol-locked or unknown modes report 0 with a null max) and `max_hz` is the integer-sampling ceiling from the current capture center/bandwidth, input rate, PFB taps, listen frequency and CW pitch, null outside SDR, with channel 1 disabled, or with no feasible range. The UI checks these dynamic bounds, which are neither fixed hardware limits nor recommended preset ranges; remaining sample-rate, channel and cost admission checks can still reject a value inside them.
+
+The Filter input tooltip contains its mode meaning, actual passband, confirmed/pending/error state and current system range. The compact View toggle sits after the unit buttons on the same row; presets occupy the next row.
+
+Preset clicks, Enter and field blur commit once; Escape cancels the draft. Edge drags preview locally and submit once on release; pointer cancellation, window blur and mode changes end without another request. The UI serializes edits with one request in flight and one newest queued value. A matching request-ID acknowledgement completes it and sends the queued value; ERROR or three seconds without acknowledgement restores the confirmed values, while stale reports are ignored. Frontend limits never replace backend admission.
+
+Axis gestures claim the axes first. In the SDR plot, valid passband edges claim a pointer before a deferred marquee; edge and tuning-marker targets never overlap when either is too narrow. Other clicks keep plain tuning. Filter gestures change only the filter, not tuning or capture geometry. View Passband is a compact toggle with the full action in its hover tooltip. It is highlighted while active: entry saves the previous display window and zoom-enabled state, and a second press restores both. A manual view change, capture change, mode change or reset discards the saved restore. The view reuses the display viewport and original bins; zoom adds no spectrum resolution.
 
 The backend sends native frequency grids. The frontend preserves Hz for markers and export, uses peak-preserving resampling for display, and treats unsupported edge bins as gaps. Bin spacing is not RBW. Local zoom changes the visible window without retuning or changing receiver clocks. Density and waterfall histories are bounded. Read parameter slots once outside hot loops.
 

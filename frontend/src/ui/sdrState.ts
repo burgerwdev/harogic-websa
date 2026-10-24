@@ -13,7 +13,6 @@ import { t } from '../core/i18n';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { sstvBandHz } from '../sdr/sstvLog';
-import { drmStatus } from '../sdr/drmLog';
 
 /** Frequency-like equality: sub-Hz differences are the same value. */
 const hz = {
@@ -72,6 +71,42 @@ export const sdrIfbw = createParam<number>('sdr.ifbw', {
 /** Native CW pitch from STATUS; the panel has no pitch setting. */
 export const sdrPitchHz = createParam<number>('sdr.pitch', { fallback: 700, scope: 'sdr', ...hz });
 
+export interface SdrFilterLimits { mode: string; min_hz: number; max_hz: number | null }
+/** Physical sampling/capture limits reported by the native channel planner. */
+export const sdrFilterLimits = createParam<SdrFilterLimits | null>('sdr.filterLimits', {
+	fallback: null, scope: 'sdr',
+});
+
+
+/**
+ * Parse the per-mode confirmed Filter preferences. Positive finite values are retained here;
+ * mode/DSP/rate-plan validity is checked when a mode asks for its value, because CW validity
+ * depends on the backend-confirmed pitch and native admission remains dynamic.
+ */
+export function parseSdrFilterMap(raw: string): Record<string, number> {
+	try {
+		const map = JSON.parse(raw) as Record<string, unknown>;
+		const clean: Record<string, number> = {};
+		for (const [mode, value] of Object.entries(map)) {
+			if (mode && typeof value === 'number' && Number.isFinite(value) && value > 0) clean[mode] = value;
+		}
+		return clean;
+	} catch {
+		return {};
+	}
+}
+
+/** Last backend-confirmed Filter value for each mode; a client-owned preference map. */
+export const sdrFilterByMode = createParam<Record<string, number>>('sdr.filterByMode', {
+	fallback: {}, scope: 'sdr', persistKey: 'web-sa-sdr-filter-by-mode', persist: 'desired',
+	authoritative: true,
+	parse: parseSdrFilterMap,
+	serialize: (v) => JSON.stringify(v),
+	equals: (a, b) => {
+		const ka = Object.keys(a), kb = Object.keys(b);
+		return ka.length === kb.length && ka.every((mode) => a[mode] === b[mode]);
+	},
+});
 /**
  * The band the active demodulator actually reads, in Hz relative to the listen frequency.
  *
@@ -79,13 +114,10 @@ export const sdrPitchHz = createParam<number>('sdr.pitch', { fallback: 700, scop
  * STATUS-reported CW pitch. Protocol overlays show the decoder's actual receive band.
  */
 export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get()): [number, number] {
-	if (demod === 'drmplus') return [-50_000, 50_000];
-	if (demod === 'drm') {
-		const locked = drmStatus().lines.find((line) => line.startsWith('locked: '));
-		const bandwidth = locked?.match(/, ([\d.]+) kHz/);
-		// Until the FAC selects the occupancy, show the full DRM30 search band.
-		const halfWidth = bandwidth ? Number(bandwidth[1]) * 500 : 10_000;
-		return [-halfWidth, halfWidth];
+	if (demod === 'drmplus' || demod === 'drm') {
+		// The native DRM chains keep the configured channel symmetric around the dial. FAC
+		// identifies occupancy; it neither widens this window nor supplies display carrier edges.
+		return [-ifBw / 2, ifBw / 2];
 	}
 	if (demod === 'sstv') return sstvBandHz();
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
@@ -238,6 +270,7 @@ export const SDR_PREF_KEYS = [
 	'web-sa-sdr-squelch', 'web-sa-sdr-squelch-mode', 'web-sa-sdr-agc', 'web-sa-sdr-nr',
 	'web-sa-sdr-nr-strength', 'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
 	'web-sa-sdr-step-bw', 'web-sa-sdr-sstv-mode', 'web-sa-sdr-am-sync',
+	'web-sa-sdr-filter-by-mode',
 ];
 
 /**
@@ -258,6 +291,8 @@ export function hasStoredSdrPrefs(): boolean {
 /** Drop every pending SDR intent AND the stored preferences (Preset). */
 export function resetSdrState(): void {
 	resetAll('sdr');
+	sdrFilterLimits.confirm(null);
+	sdrFilterByMode.set({});
 	sdrSstvMode.set(-1);
 	sdrAmSync.set(false);
 	if (typeof localStorage === 'undefined') return;

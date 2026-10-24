@@ -760,16 +760,18 @@ def main() -> int:
             check('CW decodes again after switching away and back',
                   'CQ DE W1ABC' in cw_again, f'text={cw_again[:80]!r}')
 
-            # The operator's own filter choice survives a mode switch: the auto-pick is a courtesy
-            # for the first selection (or after a Preset) and must never undo a deliberate choice.
-            page.evaluate(
-                "() => document.querySelector('[data-sdr-ifbw=\"180000\"]').click()")
+            # Confirmed bandwidth is remembered per demodulator, not shared as one global choice.
+            js_click(page, '[data-sdr-ifbw="500"]')
+            page.wait_for_timeout(600)
+            js_click(page, '[data-sdr-demod="am"]')
+            page.wait_for_timeout(600)
+            js_click(page, '[data-sdr-ifbw="6000"]')
             page.wait_for_timeout(600)
             js_click(page, '[data-sdr-demod="cw"]')
             page.wait_for_timeout(600)
             kept = page.evaluate(
                 "() => document.querySelector('[data-sdr-ifbw].active')?.dataset.sdrIfbw")
-            check('a chosen filter survives re-selecting the demodulator', kept == '180000',
+            check('CW restores its own confirmed filter after an AM switch', kept == '500',
                   f'ifbw={kept}')
 
             # A first CW selection also picks its default filter with stored SDR preferences.
@@ -794,7 +796,7 @@ def main() -> int:
             fresh_page.wait_for_timeout(800)
             picked = fresh_page.evaluate(
                 "() => document.querySelector('[data-sdr-ifbw].active')?.dataset.sdrIfbw")
-            check('a first CW selection picks a 3 kHz filter', picked == '3000', f'ifbw={picked}')
+            check('a first CW selection picks a 500 Hz filter', picked == '500', f'ifbw={picked}')
             fresh.close()
 
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})

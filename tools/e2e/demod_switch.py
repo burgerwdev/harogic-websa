@@ -170,16 +170,28 @@ def main() -> int:
         page.wait_for_timeout(3000)
         cw_decodes_again(page, 'CW decodes after a burst of switches', seconds=60)
 
-        print('F) the operator\'s filter is not re-picked on every switch', flush=True)
-        js_click(page, '[data-sdr-ifbw="180000"]')
+        print('F) confirmed filters are restored separately for each demodulator', flush=True)
+        js_click(page, '[data-sdr-ifbw="500"]')
         page.wait_for_timeout(800)
-        for mode in ('cw', 'am', 'cw', 'ft8', 'cw'):
+        demod(page, 'am')
+        page.wait_for_timeout(800)
+        js_click(page, '[data-sdr-ifbw="9000"]')
+        page.wait_for_timeout(800)
+        for mode in ('cw', 'ft8', 'cw'):
             demod(page, mode)
             page.wait_for_timeout(600)
         picked = page.evaluate(
             "() => document.querySelector('[data-sdr-ifbw].active')?.dataset.sdrIfbw")
-        check('a chosen filter survives a round of mode switches', picked == '180000',
+        check('CW restores its own filter after AM and FT8 switches', picked == '500',
               f'ifbw={picked}')
+        demod(page, 'am')
+        page.wait_for_timeout(800)
+        picked = page.evaluate(
+            "() => document.querySelector('[data-sdr-ifbw].active')?.dataset.sdrIfbw")
+        check('AM restores its own independently confirmed filter', picked == '9000',
+              f'ifbw={picked}')
+        demod(page, 'cw')
+        page.wait_for_timeout(800)
 
         print('G) the window can be closed and reopened across switches', flush=True)
         js_click(page, '#btn-decode-window')          # close

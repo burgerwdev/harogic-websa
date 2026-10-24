@@ -53,13 +53,15 @@ describe('the band the SDR view highlights', () => {
 		expect(demodBandHz('ft8', 6000)).toEqual([100, 3000]);
 	});
 
-	it('follows the FAC-selected DRM occupancy independently of the analog filter', () => {
-		expect(demodBandHz('drm', 6000)).toEqual([-10000, 10000]);
+	it('shows the configured DRM receive window, not nominal FAC occupancy', () => {
+		expect(demodBandHz('drm', 12000)).toEqual([-6000, 6000]);
+		expect(demodBandHz('drm', 24000)).toEqual([-12000, 12000]);
 		setDrmDecode(['locked: B, 4.5 kHz'], 18);
-		expect(demodBandHz('drm', 12000)).toEqual([-2250, 2250]);
+		expect(demodBandHz('drm', 12000)).toEqual([-6000, 6000]);
 		setDrmDecode(['locked: B, 20 kHz'], 18);
-		expect(demodBandHz('drm', 12000)).toEqual([-10000, 10000]);
+		expect(demodBandHz('drm', 12000)).toEqual([-6000, 6000]);
 		expect(demodBandHz('drmplus', 100000)).toEqual([-50000, 50000]);
+		expect(demodBandHz('drmplus', 50000)).toEqual([-25000, 25000]);
 	});
 
 	it('keeps the SSTV voice band and picture tones above the dial', () => {

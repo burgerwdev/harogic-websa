@@ -11,6 +11,7 @@ import {
   releaseGraphModePending,
   syncPresetStatus, rejectPresetRequest,
   rejectSdrAmSyncRequest,
+  rejectSdrFilterRequest,
   disconnectSdrSession,
   syncScaleButtons,
   syncSwpSpanStep,
@@ -222,6 +223,7 @@ export function connectWS() {
           rejectRefClockRequest(msg.response_to, msg.request_id);
           rejectPresetRequest(msg.response_to, msg.request_id);
           rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
+          rejectSdrFilterRequest(msg.response_to, msg.request_id);
           S.setStatusError(localizedError(msg));
         }
       } catch (error) {

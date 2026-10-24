@@ -42,8 +42,8 @@ impl RatePlan {
             decimate,
             output_rate,
             occupied_bandwidth_hz,
-            transition_hz: output_rate / 2.0 - occupied_bandwidth_hz / 2.0,
-            stopband_hz: output_rate / 2.0,
+            transition_hz: transition,
+            stopband_hz: occupied_bandwidth_hz / 2.0 + transition,
             decoder_rate,
         })
     }
@@ -53,7 +53,7 @@ impl RatePlan {
             && self.output_rate.is_finite() && self.output_rate > 0.0
             && (self.output_rate - fs / self.decimate as f64).abs() <= fs * 1e-12
             && self.occupied_bandwidth_hz.is_finite() && self.occupied_bandwidth_hz > 0.0
-            && self.transition_hz.is_finite() && self.transition_hz >= self.output_rate / 1_024.0
+            && self.transition_hz.is_finite() && self.transition_hz > 0.0
             && self.stopband_hz.is_finite() && self.stopband_hz <= self.output_rate / 2.0
             && (self.stopband_hz - self.occupied_bandwidth_hz / 2.0 - self.transition_hz).abs() <= fs * 1e-12
     }
@@ -103,5 +103,10 @@ mod tests {
         assert!(RatePlan::new(976_562.5, "ft8", 6_000.0).unwrap().output_rate < 10_000.0);
         assert!(RatePlan::new(976_562.5, "drm", 10_000.0).unwrap().output_rate < 20_000.0);
         assert!(RatePlan::new(976_562.5, "am", 800_000.0).is_err());
+
+        let narrow = RatePlan::new(976_562.5, "wfm", 5_000.0).unwrap();
+        assert!(narrow.output_rate >= 300_000.0);
+        assert!(narrow.stopband_hz < 5_000.0,
+            "WFM processing cadence must not widen the requested RF filter");
     }
 }

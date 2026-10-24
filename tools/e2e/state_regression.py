@@ -329,7 +329,7 @@ def main() -> int:
         print("2b) the channel overlay follows the demodulator's own band")
         page.select_option("#select-sdr-decimate", "2048")
         page.click('[data-action="apply-sdr-bw"]')
-        # Hold IF bandwidth constant while changing demodulators.
+        # Each mode restores its own filter; derive every expected overlay from actual STATUS.
         page.click('[data-sdr-ifbw="3000"]')
         page.click('[data-sdr-demod="usb"]')
         page.wait_for_timeout(2500)
