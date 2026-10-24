@@ -29,17 +29,15 @@ pub fn default_chain(rate: f64) -> crate::pipeline::AudioChain {
 
 /// What the listener asked the audio chain to do.
 ///
-/// The Python reference has no enhancement chain at all, so the default is "nothing on" — the
-/// browser path then produces the same audio the reference does, and the two can be compared. The
-/// noise reducer is the switch the panel owns; the squelch is the level gate, always meaningful,
-/// and only engaged once it is set above "wide open".
+/// Listener stages run only when requested. The squelch compares calibrated RF dBm;
+/// its minimum threshold explicitly selects wide-open audio.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioPolicy {
     /// Noise reduction on/off.
     pub nr: bool,
     /// How hard the noise reducer pushes (0..1).
     pub nr_strength: f64,
-    /// Squelch threshold in channel dBm (`<= -100` means wide open).
+    /// Squelch threshold in channel dBm (`<= -160` means wide open).
     pub squelch_dbm: f64,
 }
 
@@ -49,8 +47,8 @@ impl Default for AudioPolicy {
     }
 }
 
-/// The squelch threshold at or below which the gate is a pass-through (the reference's default).
-pub const SQUELCH_OPEN_DBM: f64 = -100.0;
+/// The UI's minimum threshold selects pass-through; every threshold above it gates RF power.
+pub const SQUELCH_OPEN_DBM: f64 = -160.0;
 
 impl AudioPolicy {
     /// The stages that must run for this policy, in registry order.
@@ -130,10 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn noise_reduction_turns_the_chain_on_and_the_default_leaves_the_audio_alone() {
-        // The Python reference has no enhancement chain, so the default policy must not change a
-        // single sample (that is what makes the two paths comparable); the NR switch is what
-        // enables the reducer, and its strength reaches the stage.
+    fn noise_reduction_processes_audio_without_enabling_notch_or_duplicate_agc() {
         let mut seed = 21_u32;
         let input: Vec<f32> = (0..9_600)
             .map(|k| {
@@ -147,10 +142,10 @@ mod tests {
         pcm.samples_mut().extend_from_slice(&input);
         chain.process(&mut pcm, false);
         assert_eq!(pcm.samples(), &input[..], "the default policy is a bit-exact pass-through");
-        assert!(chain.active_ids().is_empty(), "no stage runs before the listener asks");
+        assert!(chain.active_ids().is_empty(), "a bare chain starts with no stages enabled");
 
         apply_policy(&mut chain, AudioPolicy { nr: true, ..AudioPolicy::default() });
-        assert_eq!(chain.active_ids(), vec!["wiener", "blanker"]);
+        assert_eq!(chain.active_ids(), vec!["squelch", "wiener", "blanker"]);
         assert!(!chain.is_stage_enabled("notch"), "the notch is not part of any policy");
         assert!(!chain.is_stage_enabled("agc"), "the demodulator already runs the reference AGC");
         let mut pcm = crate::pipeline::AnalogPcm::default();
@@ -159,6 +154,37 @@ mod tests {
         assert_eq!(pcm.samples().len(), input.len());
         assert_ne!(pcm.samples(), &input[..], "the reducer must actually process the block");
         assert!(AudioChain::new(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn weak_signal_thresholds_gate_below_minus_100_and_only_the_floor_disables_squelch() {
+        let input = vec![0.25_f32; 960];
+        let mut chain = chain_for_mode("am", DEFAULT_AUDIO_RATE,
+            AudioPolicy { squelch_dbm: -110.0, ..AudioPolicy::default() });
+        let mut pcm = crate::pipeline::AnalogPcm::default();
+        for _ in 0..30 {
+            chain.set_squelch_level_dbm(-120.0);
+            pcm.samples_mut().clear();
+            pcm.samples_mut().extend_from_slice(&input);
+            chain.process(&mut pcm, false);
+        }
+        assert!(pcm.samples().iter().all(|sample| sample.abs() < 1e-4),
+            "-120 dBm RF must be muted by a -110 dBm threshold");
+        apply_policy(&mut chain, AudioPolicy { squelch_dbm: -120.0, ..AudioPolicy::default() });
+        for _ in 0..10 {
+            chain.set_squelch_level_dbm(-120.0);
+            pcm.samples_mut().clear();
+            pcm.samples_mut().extend_from_slice(&input);
+            chain.process(&mut pcm, false);
+        }
+        assert!(pcm.samples().iter().all(|sample| *sample > 0.24),
+            "RF at the threshold must open the gate, regardless of PCM amplitude");
+        apply_policy(&mut chain, AudioPolicy { squelch_dbm: SQUELCH_OPEN_DBM, ..AudioPolicy::default() });
+        chain.set_squelch_level_dbm(-180.0);
+        pcm.samples_mut().clear();
+        pcm.samples_mut().extend_from_slice(&input);
+        chain.process(&mut pcm, false);
+        assert_eq!(pcm.samples(), input.as_slice(), "the minimum position must pass audio unchanged");
     }
 
     #[test]

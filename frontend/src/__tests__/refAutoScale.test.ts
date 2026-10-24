@@ -1,338 +1,242 @@
-/**
- * Auto Scale: the one-shot reference placement and its feedback.
- *
- * Two things are asserted here that the old continuous implementation got wrong: pressing Auto
- * must produce exactly one fit (not a tracking mode), and the button must show that something
- * is happening while the device reconfigures.
- */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getDisplayRef, noteDisplayRefReport, setDisplayRef } from '../ui/displayRef';
-import { graphMode, resetGraphMode } from '../ui/graphMode';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { prepareSdrAudioTransition } from '../audio/sdrAudio';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
-import { noticeText } from '../core/store';
-import { setWS } from '../core/wsSend';
+import { send, setWS } from '../core/wsSend';
+import { getDisplayRef, noteDisplayRefReport, pendingDisplayRef, setDisplayRef } from '../ui/displayRef';
+import { graphMode, resetGraphMode } from '../ui/graphMode';
 import {
-	noteSdrRefState,
-	autoScaleBusy,
-	autoScaleRequest,
-	clearAutoScaleHint,
-	maybeRequestSdrFit,
-	noteTraceObservation,
-	postRefNotice,
-	requestSdrEntryFit,
-	resetAutoScaleState,
+	autoScaleBusy, autoScaleRequest, clearAutoScaleHint, maybeRequestSdrFit,
+	noteSdrRefState, noteTraceObservation, requestSdrEntryFit, resetAutoScaleState,
 	syncAutoScaleStatus,
 } from '../ui/refAutoScale';
 import { refLevel } from '../ui/refState';
-import { presetAll } from '../ui/controls';
 
-const sent: any[] = [];
-/** Monotonic sequence for the synthetic statuses below (a status is "new" when seq moves). */
-let lastSeqSeed = 100;
+vi.mock('../audio/sdrAudio', () => ({ prepareSdrAudioTransition: vi.fn() }));
 
-function openSocket() {
-	sent.length = 0;
-	setWS({ readyState: WebSocket.OPEN, send: (m: string) => sent.push(JSON.parse(m)) } as any);
-}
+const sent: Record<string, unknown>[] = [];
 
-function status(auto_ref: Record<string, unknown>) {
+function status(auto_ref: Parameters<typeof syncAutoScaleStatus>[0]['auto_ref']) {
 	syncAutoScaleStatus({ auto_ref });
 }
 
+function acknowledge(seq: number, hardwareAdjusting = false) {
+	const request = sent.filter(command => command.cmd === 'AUTO_SCALE').at(-1);
+	syncAutoScaleStatus({ response_to: 'AUTO_SCALE', request_id: request?.request_id,
+		auto_ref: { result: 'adjusting', adjusting: true, seq, hardware_adjusting: hardwareAdjusting } });
+}
+
 beforeEach(() => {
+	vi.useFakeTimers();
+	vi.clearAllMocks();
 	document.body.replaceChildren();
+	const button = document.createElement('button');
+	button.id = 'btn-ref-auto';
+	document.body.appendChild(button);
 	resetAll();
 	resetAutoScaleState();
 	resetGraphMode();
 	setDisplayRef('preset', 0);
-	openSocket();
-	refLevel.set(0);
+	S.setNoticeText(null);
 	S.setDbPerDiv(10);
+	sent.length = 0;
+	// The socket double only implements the surface used by wsSend.
+	setWS({ readyState: WebSocket.OPEN, send: (message: string) => sent.push(JSON.parse(message)) } as unknown as WebSocket);
 });
 
-describe('SWP/RTA Auto Scale', () => {
-	it('asks the backend for one fit and carries the window height', () => {
-		autoScaleRequest();
-		expect(sent).toEqual([{
-			cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
-			current_ref: getDisplayRef(),          // the level the user is looking at
-		}]);
-		expect(autoScaleBusy()).toBe(true);
-	});
-
-	it('stops glowing when the backend reports that the fit landed, and names the result', () => {
-		autoScaleRequest();
-		// A decision is "new" when its sequence number moves: a sticky old result must not clear
-		// the glow while the press is still in flight.
-		status({ adjusting: false, result: 'applied', target: -10, seq: 1 });   // the old decision
-		autoScaleRequest();
-		status({ adjusting: false, result: 'applied', target: -10, seq: 1 });   // still sticky
-		expect(autoScaleBusy()).toBe(true);
-		status({ adjusting: false, result: 'applied', target: -10, seq: 2 });   // the new answer
-		expect(autoScaleBusy()).toBe(false);
-		expect(noticeText).toBe('Ref \u2192 -10 dBm');
-	});
-
-	it('announces a level whenever one was applied, including a safety correction', () => {
-		status({ adjusting: false, result: 'clipped', target: -35, seq: 3 });
-		expect(noticeText).toBe('Ref \u2192 -35 dBm');
-	});
-
-	it('explains a refusal instead of doing nothing', () => {
-		status({ adjusting: false, result: 'no_signal', seq: 1 });
-		expect(noticeText).toBe('No signal to fit');
-	});
-
-	it('keeps a repeated message visible for its own hold time', () => {
-		vi.useFakeTimers();
-		status({ adjusting: false, result: 'no_signal', seq: 1 });
-		vi.advanceTimersByTime(4000);
-		status({ adjusting: false, result: 'no_signal', seq: 2 });   // the same message again
-		vi.advanceTimersByTime(3000);                               // past the FIRST hold
-		expect(noticeText).toBe('No signal to fit');                // the newest hold owns it
-		vi.advanceTimersByTime(3100);
-		expect(noticeText).toBeNull();
-		vi.useRealTimers();
-	});
-
-	it('posts the notice to the canvas stack and clears it on demand', () => {
-		postRefNotice('Ref \u2192 0 dBm', 1000);
-		expect(noticeText).toBe('Ref \u2192 0 dBm');
-		clearAutoScaleHint();
-		expect(noticeText).toBeNull();
-	});
-
-	it('keeps glowing while the backend is still adjusting', () => {
-		const btn = document.createElement('button');
-		btn.id = 'btn-ref-auto';
-		document.body.appendChild(btn);
-		autoScaleRequest();
-		syncAutoScaleStatus({ auto_ref: { adjusting: true, result: 'applied', seq: 1 } });
-		expect(btn.classList.contains('busy')).toBe(true);
-		expect(autoScaleBusy()).toBe(true);
-		// A status that does not belong to a press must not start a glow of its own.
-		clearAutoScaleHint();
-		syncAutoScaleStatus({ auto_ref: { adjusting: true, result: 'applied', seq: 2 } });
-		expect(btn.classList.contains('busy')).toBe(false);
-	});
-
-	it('drops the glow after its fallback timeout even if no status arrives', () => {
-		vi.useFakeTimers();
-		autoScaleRequest();
-		expect(autoScaleBusy()).toBe(true);
-		vi.advanceTimersByTime(4100);
-		expect(autoScaleBusy()).toBe(false);
-		vi.useRealTimers();
-	});
+afterEach(() => {
+	setWS(null);
+	vi.restoreAllMocks();
+	vi.clearAllTimers();
+	vi.useRealTimers();
 });
+describe('Auto request scope and takeover', () => {
+	it('authorizes normal user Auto in every mode and sends the visible half-dB scale', () => {
+		S.setDbPerDiv(0.5);
+		for (const mode of ['std', 'rta', 'sdr'] as const) {
+			graphMode.confirm(mode);
+			autoScaleRequest();
+			const command = sent.at(-1);
+			expect(command).toMatchObject({ cmd: 'AUTO_SCALE', range_db: S.totalDivs * 0.5, current_ref: 0 });
+			expect(command?.display_only).toBeUndefined();
+		}
+	});
 
-describe('SDR Auto Scale', () => {
-	it('uses the same command as the other modes, and follows the reported target', () => {
+	it('makes SDR entry display-only and never prepares an IQS audio transition', () => {
 		graphMode.confirm('sdr');
-		// Entering SDR asks the backend as soon as frames arrive - but only once the STATUS has said
-		// whether this SDR already has a level of its own (see the entry-hand-off tests below).
+		syncAutoScaleStatus({ status_warning: -12 });
 		requestSdrEntryFit();
 		noteSdrRefState({ ref: 0, ref_set: false });
 		maybeRequestSdrFit();
-		expect(sent.filter(m => m.cmd === 'AUTO_SCALE').length).toBe(1);
-
-		// The backend fits and reports the target: the display scale follows it once.
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
-		});
-		expect(getDisplayRef()).toBe(-15);
-		// A sticky result must not overwrite a later manual Ref.
-		clearAutoScaleHint();
-		setDisplayRef('user', -40);
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
-		});
-		expect(getDisplayRef()).toBe(-40);
-	});
-
-	it('places a first entry once, then leaves the level the user set alone', () => {
-		// Reported: a first switch into SDR left the trace under the bottom edge, and coming back from
-		// RTA changed the Ref the user had set there. The backend reports `sdr.ref_set`, and only a
-		// level-less SDR gets the entry fit.
-		graphMode.confirm('sdr');
-		requestSdrEntryFit();
-		noteSdrRefState({ ref: 0, ref_set: true });     // this SDR has a level of its own
 		maybeRequestSdrFit();
-		expect(sent.filter(m => m.cmd === 'AUTO_SCALE')).toEqual([]);
-		// ...and the display scale was brought onto that level instead (the client's display ref is
-		// shared by the modes, so a visit to RTA used to leave its level on the SDR axis).
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({ cmd: 'AUTO_SCALE', display_only: true });
+		acknowledge(1);
+		status({ result: 'overflow', target: null, adjusting: false, seq: 2 });
+		expect(prepareSdrAudioTransition).not.toHaveBeenCalled();
 		expect(getDisplayRef()).toBe(0);
 	});
 
-	it('places the SDR display in ONE decision, and never writes the IQS level', () => {
-		// The fix for "switching to SDR takes several adjustments over several seconds": the fit's
-		// target is computed from the measured ABSOLUTE levels and applied to the client's display
-		// scale, so one decision places the trace - no device write, no audio interruption, no rounds.
-		// Writing the IQS level from the fit is what made an entry reconfigure the stream repeatedly
-		// (each write moved the trace the fit was reading, so it wrote again).
-		const sent: string[] = [];
-		setWS({ readyState: WebSocket.OPEN,
-			send: (m: string) => sent.push(String(JSON.parse(m).cmd)) } as any);
+	it('preserves an SDR hardware level on entry without starting a fit', () => {
 		graphMode.confirm('sdr');
 		requestSdrEntryFit();
-		noteSdrRefState({ ref: 0, ref_set: false });     // a level-less SDR after a preset
-		syncAutoScaleStatus({ auto_ref: { adjusting: false, result: 'applied', target: -35, seq: 1 } });
-		expect(getDisplayRef()).toBe(-35);               // placed immediately
-		expect(sent.filter(c => c === 'SET_REF')).toEqual([]);    // ...and nothing was written
-		// A second decision (an automatic re-fit) also only moves the display.
-		syncAutoScaleStatus({ auto_ref: { adjusting: false, result: 'applied', target: -40, seq: 2 } });
-		expect(getDisplayRef()).toBe(-40);
-		expect(sent.filter(c => c === 'SET_REF')).toEqual([]);
+		noteSdrRefState({ ref: -55, ref_set: true });
+		maybeRequestSdrFit();
+		expect(sent).toEqual([]);
+		expect(getDisplayRef()).toBe(-55);
+		expect(autoScaleBusy()).toBe(false);
 	});
 
-	it('brings the display scale onto the SDR level once per entry', () => {
-		graphMode.confirm('rta');
-		setDisplayRef('user', -11);                      // the level RTA left on the shared display ref
-		noteDisplayRefReport(-11);                       // ...acknowledged, so no request is in flight
-		graphMode.confirm('sdr');
-		requestSdrEntryFit();
-		noteSdrRefState({ ref: -77, ref_set: true });
-		expect(getDisplayRef()).toBe(-77);
-		// A later STATUS does not fight a user request that is still in flight.
-		setDisplayRef('user', -60);
-		noteSdrRefState({ ref: -77, ref_set: true });
-		expect(getDisplayRef()).toBe(-60);
-	});
-
-	it('follows an automatic re-fit that no press asked for', () => {
-		// A settings change (capture centre / bandwidth) arms ONE fit in the backend. The display
-		// must follow that decision even though no press and no entry fit requested it, and it
-		// must accept a level below the DEVICE Ref range: the SDR window is client-owned and
-		// reaches -160 dBm, which is what lets a low noise floor be shown inside it.
-		graphMode.confirm('sdr');
-		const cv = document.getElementById('spectrum') as unknown as {
-			dataset: Record<string, string>;
-		};
-		delete cv.dataset.sdrRef;                          // setup.ts shares one fake canvas
-		delete cv.dataset.sdrRefDbg;
-		expect(sent.length).toBe(0);                       // nothing asked for this fit
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'applied', target: -85, seq: 42 },
-		});
-		expect(getDisplayRef()).toBe(-85);
-		expect(cv.dataset.sdrRef).toBe('-85');
-		const dbg = JSON.parse(cv.dataset.sdrRefDbg || '{}');
-		expect(dbg.applied).toBe(true);
-		expect(dbg.ref).toBe(-85);
-	});
-
-	it('follows an automatic correction even after a manual Ref edit', () => {
-		// Reported: Ref set to -50 dBm, overflow warning, the hint announced an adjustment, but
-		// the canvas and the Ref box kept the manual value - the correction only reached the
-		// device level. The trace must follow, or the announcement is a lie.
-		graphMode.confirm('sdr');
-		setDisplayRef('user', -50);
-		clearAutoScaleHint();                    // a manual Ref edit
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'overflow', target: -25, seq: 5 },
-		});
-		expect(getDisplayRef()).toBe(-25);
-	});
-
-	it('does not re-apply a decision it has already followed', () => {
-		graphMode.confirm('sdr');
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
-		});
-		expect(getDisplayRef()).toBe(-15);
-		clearAutoScaleHint();                    // a manual Ref edit
-		setDisplayRef('user', -40);
-		// The same (sticky) decision must not overwrite the manual level again.
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'applied', target: -15, seq: 1 },
-		});
-		expect(getDisplayRef()).toBe(-40);
-	});
-
-	it('follows every result that placed a level, and only those', () => {
-		// Mirrors auto_reference.py's vocabulary. A drift here once stopped a correction from
-		// reaching the screen (the backend renamed its result), which the e2e then caught.
-		graphMode.confirm('sdr');
-		const placed = [['applied', -10], ['clipped', -15], ['below_window', -20],
-			['overflow', -25]] as const;
-		for (const [result, target] of placed) {
-			clearAutoScaleHint();
-			setDisplayRef('preset', 0);
-			lastSeqSeed += 1;
-			syncAutoScaleStatus({ auto_ref: { adjusting: false, result, target, seq: lastSeqSeed } });
-			expect(getDisplayRef(), result).toBe(target);
-		}
-		for (const result of ['ok', 'no_signal', 'no_data']) {
-			clearAutoScaleHint();
-			setDisplayRef('preset', 0);
-			lastSeqSeed += 1;
-			// A refusal reports the sticky previous target: it must not move the display.
-			syncAutoScaleStatus({ auto_ref: { adjusting: false, result, target: -10, seq: lastSeqSeed } });
-			expect(getDisplayRef(), result).toBe(0);
-		}
-	});
-
-	it('withdraws a refusal as soon as the trace no longer matches it', () => {
-		// "No signal to fit" describes the measurement: it must go when the signal shows up, not
-		// after its 6 s. Reported: the trace was already on screen while the message stayed.
-		status({ adjusting: false, result: 'no_signal', seq: 1,
-			last_peak: -110, last_noise_floor: -120 });
-		expect(noticeText).toBe('No signal to fit');
-		noteTraceObservation({ last_peak: -110, last_noise_floor: -120 });   // unchanged: keep it
-		expect(noticeText).toBe('No signal to fit');
-		noteTraceObservation({ last_peak: -60, last_noise_floor: -110 });    // a signal appeared
-		expect(noticeText).toBeNull();
-	});
-
-	it('withdraws "waiting for a trace" with the first trace', () => {
-		status({ adjusting: false, result: 'no_data', seq: 1, last_peak: null });
-		expect(noticeText).toBe('Waiting for a trace');
-		noteTraceObservation({ last_peak: -80, last_noise_floor: -100 });
-		expect(noticeText).toBeNull();
-	});
-
-	it('keeps an outcome notice until its own timer, not tied to the trace', () => {
-		status({ adjusting: false, result: 'applied', target: -20, seq: 1, last_peak: -40 });
-		expect(noticeText).toBe('Ref \u2192 -20 dBm');
-		noteTraceObservation({ last_peak: -80, last_noise_floor: -100 });
-		expect(noticeText).toBe('Ref \u2192 -20 dBm');   // it reports what happened, not a state
-	});
-
-	it('drops a leftover notice when the user edits Ref', () => {
-		status({ adjusting: false, result: 'applied', target: -30, seq: 1 });
-		expect(noticeText).toBe('Ref \u2192 -30 dBm');
-		clearAutoScaleHint();
-		expect(noticeText).toBeNull();
-	});
-
-	it('does not write the display for a refusal', () => {
-		graphMode.confirm('sdr');
-		setDisplayRef('preset', -40);
-		syncAutoScaleStatus({
-			auto_ref: { adjusting: false, result: 'no_signal', target: null, seq: 1 },
-		});
-		expect(getDisplayRef()).toBe(-40);
-	});
-
-	it('re-places the display after a Preset instead of writing the factory 0 dBm', () => {
-		// Reported: in SDR the operator set Ref to -30 and then pressed Preset. Most of the trace
-		// moved below the bottom edge and stayed there. `presetAll()` wrote the SWP preset
-		// reference (0 dBm) to the client-owned SDR display scale, and it cleared the entry fit.
-		// Nothing placed the display again. The window was 0 to -100 dBm against a -113 dBm
-		// panadapter.
+	it('supersedes pending manual Ref without its old timeout rolling back Auto', () => {
 		graphMode.confirm('sdr');
 		setDisplayRef('user', -30);
-		presetAll();
-		expect(getDisplayRef()).toBe(-30);               // the client's scale survives the preset
-		// A preset leaves the SDR level-less. That is the state the entry fit exists for. The next
-		// STATUS arms one fit. The display must NOT first move to the reported factory level:
-		// 0 dBm hides the trace again while the fit is in flight.
+		refLevel.set(-30);
+		autoScaleRequest();
+		expect(sent.at(-1)?.current_ref).toBe(-30);
+		expect(pendingDisplayRef()).toBeNull();
+		expect(refLevel.pending()).toBe(false);
+		acknowledge(1);
+		status({ result: 'applied', target: -85, seq: 2 });
+		vi.advanceTimersByTime(6000);
+		expect(getDisplayRef()).toBe(-85);
+	});
+
+	it('prepares explicit SDR recovery audio once for known or newly reported overflow', () => {
+		graphMode.confirm('sdr');
+		syncAutoScaleStatus({ status_warning: -12 });
+		autoScaleRequest();
+		acknowledge(1, true);
+		status({ result: 'adjusting', adjusting: true, hardware_adjusting: true, seq: 1 });
+		expect(prepareSdrAudioTransition).toHaveBeenCalledTimes(1);
+		status({ result: 'applied', target: -20, seq: 2 });
+		syncAutoScaleStatus({ status_warning: 0 });
+		autoScaleRequest();
+		acknowledge(3);
+		expect(prepareSdrAudioTransition).toHaveBeenCalledTimes(1);
+		status({ result: 'adjusting', adjusting: true, hardware_adjusting: true, seq: 3 });
+		expect(prepareSdrAudioTransition).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('Auto session progress and cancellation', () => {
+	it('stays busy beyond four seconds after backend acknowledgement, until the final sequence', () => {
+		autoScaleRequest();
+		acknowledge(1);
+		vi.advanceTimersByTime(12000);
+		expect(autoScaleBusy()).toBe(true);
+		expect(document.getElementById('btn-ref-auto')?.classList.contains('busy')).toBe(true);
+		status({ result: 'applied', target: -10, seq: 2, adjusting: false });
+		expect(autoScaleBusy()).toBe(false);
+		expect(document.getElementById('btn-ref-auto')?.classList.contains('busy')).toBe(false);
+		expect(S.noticeText).toBe('Ref → -10 dBm');
+	});
+
+	it('lets unanswered requests expire locally', () => {
+		autoScaleRequest();
+		vi.advanceTimersByTime(4100);
+		expect(autoScaleBusy()).toBe(false);
+	});
+
+	it('ignores an old session ACK and final while waiting for the latest request ACK', () => {
+		graphMode.confirm('sdr');
+		autoScaleRequest();
+		const oldId = sent.at(-1)?.request_id;
+		clearAutoScaleHint();
+		setDisplayRef('user', -40);
+		autoScaleRequest();
+		syncAutoScaleStatus({ response_to: 'AUTO_SCALE', request_id: oldId,
+			auto_ref: { result: 'adjusting', adjusting: true, seq: 1 } });
+		status({ result: 'applied', target: -15, seq: 2 });
+		expect(getDisplayRef()).toBe(-40);
+		expect(autoScaleBusy()).toBe(true);
+		acknowledge(4);
+		status({ result: 'applied', target: -70, seq: 5 });
+		expect(getDisplayRef()).toBe(-70);
+	});
+
+	it.each(['SET_REF', 'SET_AMP', 'SET_FREQ', 'SET_TRIGGER', 'SET_MODE', 'SET_SDR']) (
+		'cancels immediately on %s and ignores every queued old target', cmd => {
+			graphMode.confirm('sdr');
+			autoScaleRequest();
+			acknowledge(1);
+			send({ cmd, ref: -40 });
+			setDisplayRef('user', -40);
+			status({ result: 'adjusting', adjusting: true, seq: 1 });
+			status({ result: 'applied', target: -15, seq: 2 });
+			status({ result: 'cancelled', target: null, seq: 3 });
+			expect(getDisplayRef()).toBe(-40);
+			expect(autoScaleBusy()).toBe(false);
+			expect(S.noticeText).toBeNull();
+		},
+	);
+
+	it('ignores sticky and out-of-order final results after a later placement', () => {
+		graphMode.confirm('sdr');
+		autoScaleRequest();
+		acknowledge(5);
+		status({ result: 'applied', target: -70, seq: 6 });
+		setDisplayRef('user', -40);
+		noteDisplayRefReport(-40);
+		status({ result: 'applied', target: -70, seq: 6 });
+		status({ result: 'applied', target: -20, seq: 4 });
+		expect(getDisplayRef()).toBe(-40);
+	});
+});
+describe('Auto terminal outcomes', () => {
+	it.each([
+		['ok', 'Reference already fits'],
+		['no_data', 'Waiting for a trace'],
+		['limit', 'Auto stopped at the reference limit'],
+		['stalled', 'Auto stopped: the device reference did not advance'],
+		['failed', 'Auto could not adjust the reference'],
+		['cancelled', 'Auto cancelled'],
+		['overflow', 'Display fit stopped: raise the hardware reference or press Auto'],
+		['timeout', 'Auto timed out before the reference was verified'],
+	])('ends busy on %s without applying or announcing a stale target', (result, notice) => {
+		graphMode.confirm('sdr');
+		setDisplayRef('preset', -40);
+		autoScaleRequest();
+		acknowledge(1);
+		status({ result, target: -10, adjusting: false, seq: 2 });
+		expect(getDisplayRef()).toBe(-40);
+		expect(autoScaleBusy()).toBe(false);
+		expect(S.noticeText).toBe(notice);
+	});
+
+	it('forgets a previous target on no_data so the same later placement can apply again', () => {
+		graphMode.confirm('sdr');
+		status({ result: 'applied', target: -70, seq: 1 });
+		status({ result: 'no_data', target: null, seq: 2 });
+		setDisplayRef('preset', -20);
+		status({ result: 'applied', target: -70, seq: 3 });
+		expect(getDisplayRef()).toBe(-70);
+	});
+
+	it('retries a display-only entry after no_data only after the retry interval', () => {
+		graphMode.confirm('sdr');
+		requestSdrEntryFit(false);
 		noteSdrRefState({ ref: 0, ref_set: false });
-		expect(getDisplayRef()).toBe(-30);
 		maybeRequestSdrFit();
-		expect(sent.filter(m => m.cmd === 'AUTO_SCALE').length).toBe(1);
-		syncAutoScaleStatus({ auto_ref: { adjusting: false, result: 'applied', target: -95, seq: 7 } });
-		expect(getDisplayRef()).toBe(-95);               // placed from the measured levels
+		acknowledge(1);
+		status({ result: 'no_data', target: null, seq: 2 });
+		maybeRequestSdrFit();
+		expect(sent).toHaveLength(1);
+		vi.advanceTimersByTime(1600);
+		maybeRequestSdrFit();
+		expect(sent).toHaveLength(2);
+		expect(sent[1].display_only).toBe(true);
+		acknowledge(3);
+		status({ result: 'applied', target: -95, seq: 4 });
+		vi.advanceTimersByTime(1600);
+		maybeRequestSdrFit();
+		expect(sent).toHaveLength(2);
+		expect(getDisplayRef()).toBe(-95);
+	});
+
+	it('withdraws a no-data notice once a trace is available', () => {
+		status({ result: 'no_data', target: null, seq: 1 });
+		expect(S.noticeText).toBe('Waiting for a trace');
+		noteTraceObservation({ last_peak: -80, last_noise_floor: -110 });
+		expect(S.noticeText).toBeNull();
 	});
 });

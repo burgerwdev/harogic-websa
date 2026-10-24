@@ -717,15 +717,15 @@ impl FmStereo {
         core::mem::take(&mut self.side_out)
     }
 
-    /// Give L−R the mono path's exact AGC gain and limiter envelope, sample by sample. A
-    /// block-RMS gain misses the ramps on speech peaks and leaves a persistent channel imbalance.
-    pub fn set_output_gain_trace(&mut self, raw: &[f32], levelled: &[f32]) {
+    /// Give L−R the mono path's fixed Hz-to-PCM conversion and exact AGC envelope.
+    /// A block-RMS gain misses ramps and leaves a persistent channel imbalance.
+    pub fn set_output_gain_trace(&mut self, raw: &[f32], levelled: &[f32], pcm_scale: f32) {
         self.gain_trace.clear();
         self.gain_trace.reserve(raw.len());
-        let mut previous = 1.0_f32;
+        let mut previous = pcm_scale;
         for (&input, &output) in raw.iter().zip(levelled) {
-            if input.abs() > 1.0e-8 {
-                previous = output / input;
+            if input.abs() > 1.0e-8 * pcm_scale.abs() {
+                previous = output / input * pcm_scale;
             }
             self.gain_trace.push(previous);
         }
@@ -746,6 +746,23 @@ fn i1_safe(i0: usize, n: usize) -> usize { (i0 + 1).min(n - 1) }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearly_cancelling_mono_keeps_difference_channel_gain() {
+        let mut stereo = FmStereo::new(300_000.0, 48_000.0, 64.0).unwrap();
+        let pcm_scale = 1.0_f32 / 75_000.0;
+        // Opposite-channel programme can leave almost no L+R while L−R remains
+        // audible. The mono's zero guard is in physical Hz, not normalized PCM.
+        let mono = [1.0e-4 * pcm_scale, 0.0, -1.0e-4 * pcm_scale];
+        let levelled = mono.map(|sample| sample * 10_000.0);
+        stereo.side_out.extend_from_slice(&[1.5, -1.5, 0.75]);
+        stereo.set_output_gain_trace(&mono, &levelled, pcm_scale);
+        let side = stereo.take_side();
+        for (actual, expected) in side.iter().zip([0.2, -0.2, 0.1]) {
+            assert!((*actual - expected).abs() < 1.0e-6,
+                "near-cancelling mono lost difference gain: {actual} vs {expected}");
+        }
+    }
 
     fn side_amplitude(shift: usize) -> f64 {
         let fs = 300_480.769_230_769_25;

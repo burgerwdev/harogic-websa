@@ -1,67 +1,50 @@
-# DRM AAC 重序列化（MPEG-4 → DRM 语法）——设计笔记
+# DRM AAC 重序列化（MPEG-4 → DRM 语法）
 
-DRM30 使用的 AAC 语法与 MPEG-4 不同：频谱数据用 **HCR**（Huffman 码字重排）承载，
-段数据用 **VCB11**（码本索引）承载，SBR 负载被移到帧尾，一个 CRC-8 覆盖特定的
-边信息比特范围。fdK-AAC 有这套语法的*解码器*（`tpdec_drm.cpp` + `aacdec_hcr*.cpp`），
-但**没有编码器**，所以无法直接复用 fdK-AAC 生成 DRM 音频 fixture。本笔记是独立
-重实现（ISO/IEC 14496-3 §4.5.4.2.4 / ES 201 980 §5.3.1.2）的方案，即「重写」路径。
+[夹具重序列化器](../../tools/fixtures/drm_aac_reserialize.py) 将原始 MPEG-4 GA AAC-LC 单声道、`ONLY_LONG` 接入单元转换为 DRM 语法。它实现 VCB11 段数据、HCR 频谱重排与 CRC-8，不是通用的 DRM 音频编码器。生成器跳过其他窗序列，这条夹具生成路径不生成 SBR。FDK-AAC 提供 DRM 解码器（`TT_DRM`），但不提供 DRM 编码器。
 
-## 编码器每帧必须产出的内容
+## 帧语法
 
-1. **段数据用 VCB11**：每段的码本以 11 位值发送；段*长度*是隐含的（由频谱数据
-   推导，不同于 MPEG-4 显式发送段长度）。转义/扩展码本以不同方式标识。
-2. **频谱数据用 HCR**：量化频谱系数按 MPEG-4 方式做 Huffman 编码，但码字被
-   *重排*——按码本分组——其前有两个边信息字段：`reordered_spectral_data_length`
-   与 `longest_codeword_length`，随后是让解码器定位每个码字的分段网格。
-   （即 `aacdec_hcr.cpp::HcrDecoder` 的逆过程。）
-3. **SBR 负载移到帧尾**（其自身的 8 位 CRC 由 SBR 编码器给出；对无 SBR 的 AAC-LC
-   信号此步骤省略）。
-4. **`aac_crc_bits`**：对 DRM 解码器校验的边信息比特范围（`tpdec_drm.cpp` 的
-   `drmRead_CrcStartReg`/`CrcEndReg`）做 CRC-8（poly 0x1D，init 0xFFFF），在
-   `TT_DRM` 下置于帧前传输。
-
-## 实现方案（独立、基于规范）
-
-- **第 1 步——解析 MPEG-4 AAC**：按位读取原始访问单元（来自 fdK-AAC 的 MPEG-4
-  编码器或 ffmpeg）：ICS 信息、段数据（每段码本）、比例因子、频谱 Huffman 码字。
-  Huffman 码本是标准 AAC 表（ISO 14496-3 §4.6.2）；参考 fdK-AAC 的 `aacdec_hufftab.h`
-  / `aac_rom.cpp`。
-- **第 2 步——VCB11**：把段码本列表重编码为 11 位条目。
-- **第 3 步——HCR**：按码本排序码字，计算 `longest_codeword_length` 与分段网格，
-  输出重排后的频谱比特（`HcrInit`/`HcrDecoder` 排序的逆过程）。
-- **第 4 步——SBR + CRC**：把 SBR 负载追加到帧尾，并对 `tpdec_drm.cpp` 覆盖的精确
-  范围计算边信息 CRC-8。
-
-## 参考资料
-
-- ISO/IEC 14496-3 §4.5.4.2.4（HCR）、§4.6.2（Huffman 表）。
-- ES 201 980 §5.3.1.2（DRM AAC 帧 + `aac_crc_bits`）。
-- fdK-AAC：`libAACdec/src/aacdec_hcr.cpp`（HCR 解码）、`libMpegTPDec/src/tpdec_drm.cpp`
-  （CRC 范围）、`libAACdec/src/aac_rom.cpp`（Huffman 表）。
-- DecDRM `FdkDrmEncoder`（GPL，仅作算法参考——不可复制）。
-
-## 精确的 DRM AAC SCE 帧布局（DecDRM `aac/drm.rs`、`el_drm_sce`）
+对于支持的无 TNS、无 SBR 夹具，输出接入单元为：
 
 ```text
-[id_syn_ele element_tag]  [ics_info tns_data_present ltp_data_present global_gain
- section_data scale_factor_data hcr_lengths tns_data]  spectral_data(HCR)
+aac_crc_bits(8)
+ics_info tns_data_present ltp_data_present global_gain
+section_data scale_factor_data reordered_spectral_data_length(14)
+longest_codeword_length(6) spectral_data(HCR)
 ```
 
-- `ics_info` = ics_reserved(1) window_sequence(2) window_shape(1) max_sfb(6 或 4+7)
-  ——**没有** GA 的 `predictor_data_present` 位。
-- `global_gain` 移到 tns/ltp 标志**之后**（DRM 的字段序与 GA 不同）。
-- 方括号内的部分（ics_info … tns_data）由 `aac_crc_bits`（CRC-8）覆盖。
-- `aac_crc_bits` 字节在 `TT_DRM` 下前置到帧首。
+- 省略 GA 的 `id_syn_ele` 与 element tag。长窗 `ics_info` 包含 reserved(1)、window sequence(2)、window shape(1)、`max_sfb`(6)，不含 GA 的 `predictor_data_present` 位。
+- `global_gain` 位于 TNS/LTP 标志之后。一般 DRM 语法可以承载 TNS 数据；夹具重序列化器未实现该负载。
+- **VCB11 指虚拟码本 11，不是 11 位索引。** 此长窗路径写入 5 位码本索引。码本 11 与虚拟码本 16–31 隐含一个频带；其他码本使用 5 位段长度，转义值为 31。虚拟码本限定系数的最大绝对值。
+- CRC 覆盖输出中从 `ics_info` 到 HCR 长度字段的边信息，不含频谱数据。实现使用多项式 `0x1D`、初始寄存器 `0xFF`、高位优先处理与最终按位取反；`TT_DRM` 的 CRC 字节置于负载之前。一般 CRC 边界遵循解码器的 `drmRead_CrcStartReg`/`CrcEndReg` 区域，包括适用的 TNS 数据。
+- 真实 HE-AAC DRM 帧将 SBR 放在帧尾，以反向比特顺序读取，并带有独立 CRC。无 SBR 夹具省略此部分。音频解帧前必须移除文本字节；参见[台架音频说明](DRM_BENCH.md)。
 
-## HCR 重排是状态机，不是普通排序（DecDRM `aac/hcr.rs`）
+## HCR 排序
 
-- 码字按**码本优先级**排序，而非码本编号：`11, 31..16（降序）, 9/10, 7/8, 5/6,
-  3/4, 1/2`（`aCbPriority`）。
-- `aMaxCwLen[cb]` 是**含符号位与转义位**的最大码字长度；分段宽度为
-  `min(aMaxCwLen[cb], length_of_longest_codeword)`。
-- 最高优先级的码字（PCW）起始各分段；其余码字按*集合*分布在剩余空间中，每个集合
-  交替读取方向。编码器即解码器控制流程中把每个「读一位」替换为「在此写入该码字
-  的下一位」。
+HCR 是分段状态机，不是普通的码本排序：
 
-一个更简单的里程碑是：先对单码本的 AAC-LC 帧（无 SBR）实现第 1+2+4 步，待 VCB11
-组帧能通过 fdK-AAC `TT_DRM` 解码器往返后再加入 HCR（第 3 步）。
+- 优先级为 `11, 31..16`（降序），然后是 `9/10, 7/8, 5/6, 3/4, 1/2`。
+- 最大码字长度包含符号位与转义位。段宽为 `min(aMaxCwLen[cb], longest_codeword_length)`。
+- 优先码字从各段起点开始写入。剩余码字按集合填入剩余空间，各集合交替写入方向。长度字段描述重排后的频谱负载长度与最长码字长度。
+
+## 夹具生成与编解码器构建
+
+[夹具 README](../../tests/fixtures/drm/README.md) 维护夹具元数据、校验器构建命令与既有对比记录。直接夹具包含九个 36 字节 DRM 单元及配对的九个 320 字节 GA 单元：1 kHz 正弦波、AAC-LC、24 kHz 单声道、64 kbit/s、每帧 960 样本。解码器预热导致最初两帧静音。
+
+生成需要外部 FDK 的 GA 输出，编码器须应用 DecDRM `crates/decdrm-fdk-sys/build.rs` 所述 960 样本补丁（`aacenc_lib.cpp`、`aacenc.cpp`、`psy_configuration.cpp`）。原始接入单元存为 `*.bin` 文件后：
+
+```sh
+python3 tools/fixtures/gen_drm_aac_fixture.py /path/to/ga_units /tmp/aac_sine_24k
+```
+
+命令输出 `.drm`、`.ga` 与 `.json` 文件，跳过非 `ONLY_LONG` 帧。源编码器及其补丁须另行准备，此命令不提供它们。
+
+接收机的[构建脚本](../../wasm/build.rs) 要求 `pkg-config` 与支持 DRM/USAC 的原生 FDK-AAC >= 2.0.3。Wasm 构建链接已提交的 FDK 与 libxaac 静态库；独立 libxaac 诊断仅支持 wasm。原生 FDK 处理 AAC、HE-AAC 和 xHE-AAC/USAC。PCM 使用方必须采用解码器返回的采样率与声道数：直接无 SBR 夹具输出 24 kHz，合成 IQ 夹具声明 SBR，输出 48 kHz。
+
+## 参考资料与许可
+
+- ISO/IEC 14496-3 §4.5.4.2.4（HCR）、§4.6.2（Huffman 表）；ETSI ES 201 980 §5.3.1.2（DRM AAC 组帧）。
+- 外部 FDK-AAC 源码：`libAACdec/src/aacdec_hcr.cpp`、`aacdec_hufftab.h`、`aac_rom.cpp`；`libMpegTPDec/src/tpdec_drm.cpp` 定义传输 CRC 区域。FDK-AAC 使用自身许可证。
+- [DecDRM](https://github.com/CasualArclamp/DecDRM) 使用 GPL-2.0-or-later。其 `FdkDrmEncoder`、`aac/drm.rs`、`aac/hcr.rs` 是外部算法参考，不应复制源码到独立接收机中。生成夹具数据与生成器源码有不同来源；该记录由[夹具 README](../../tests/fixtures/drm/README.md#provenance-and-licence) 维护。
+
+本文不附带标准、外部编码器补丁或参考解码器源码。上述说明基于实现与已有夹具记录，本次未重新运行编解码器或硬件验证。

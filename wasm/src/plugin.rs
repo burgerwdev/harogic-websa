@@ -257,6 +257,41 @@ pub struct ImageStatus {
     pub mode_index: u32,
 }
 
+/// Structured native receiver signalling, independent of presentation text.
+#[derive(Debug, Clone, Default)]
+pub struct DigitalStatus {
+    pub locked: bool,
+    pub mode: Option<String>,
+    pub station_label: Option<String>,
+    pub carrier_offset_hz: f64,
+    pub fac_ok: u64,
+    pub fac_errors: u64,
+    pub sdc_ok: u64,
+    pub services: Vec<DigitalService>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DigitalService {
+    pub service_id: u32,
+    pub label: Option<String>,
+    pub audio_coding: Option<u8>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+}
+
+/// One ordered codec output segment, retaining its own actual format and IQ provenance.
+#[derive(Debug)]
+pub struct DecodedAudioChunk {
+    pub pcm: Vec<i16>,
+    pub sample_rate: u32,
+    pub channels: u32,
+    /// Earliest contributing decoder IQ sample; a provenance bound, not PCM presentation time.
+    pub source_position: Option<(u64,u64,u64)>,
+    pub codec_delay_samples: Option<u32>,
+    /// Known causal buffering in decoder IQ samples, including FDK delay when available.
+    pub total_delay_samples: Option<f64>,
+}
+
 /// A digital demodulator: complex baseband in, whatever the protocol produces out.
 ///
 /// The output is deliberately opaque: FT8 produces a decoded message, not audio. A protocol that
@@ -331,11 +366,9 @@ pub trait DigitalDemodulator: Send {
         false
     }
 
-    /// Decoded 16-bit interleaved PCM the demodulator produced (e.g. the DRM audio
-    /// stream), DRAINED: the call returns and clears everything accumulated since the
-    /// last call, so a streaming consumer (the DSP worker) can never fall behind a
-    /// growing buffer and the receiver's memory stays bounded. Empty for protocols
-    /// that produce only text (FT8) or no audio.
+    /// Drain the next decoded PCM format segment. Query audio_rate_hz/audio_channels after
+    /// draining for its format; use take_audio_chunks to drain every segment with provenance.
+    /// Empty for protocols that produce only text (FT8) or no audio.
     fn take_audio_pcm(&mut self) -> Vec<i16> {
         Vec::new()
     }
@@ -352,6 +385,35 @@ pub trait DigitalDemodulator: Send {
     /// The decoded PCM's sample rate in Hz (0 when there is no audio).
     fn audio_rate_hz(&self) -> u32 {
         0
+    }
+
+    /// Actual interleaved PCM channel count; codecs override this after decoding.
+    fn audio_channels(&self) -> u32 {
+        1
+    }
+
+    /// Additional decoded PCM delay reported by the codec, at audio_rate_hz().
+    fn audio_codec_delay_samples(&self) -> Option<u32> {
+        None
+    }
+
+    /// Earliest contributing decoder-input IQ position for the first buffered PCM block.
+    fn audio_source_position(&self) -> Option<(u64,u64,u64)> {
+        None
+    }
+
+    /// Observed decoder buffering plus codec delay, in decoder-input IQ samples.
+    fn audio_total_delay_samples(&self) -> Option<f64> {
+        None
+    }
+
+    /// Drain all ordered segments, preserving actual codec format and delay boundaries.
+    fn take_audio_chunks(&mut self) -> Vec<DecodedAudioChunk> {
+        Vec::new()
+    }
+
+    fn status(&self) -> Option<DigitalStatus> {
+        None
     }
 }
 
@@ -379,6 +441,11 @@ pub trait AudioStage: Send {
     /// A calibrated pre-AGC channel power in dBm (NaN clears an expired measurement).
     fn set_level_dbm(&mut self, _dbm: f64) -> bool {
         false
+    }
+
+    /// Actual squelch gate state and linear gain, when this stage is a squelch.
+    fn squelch_status(&self) -> Option<(bool, f64)> {
+        None
     }
 }
 

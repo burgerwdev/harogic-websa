@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tinysa import TinySA  # noqa: E402
 
 import htra_api as T  # noqa: E402
-from web_sa.hardware import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
+from tools.reference import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
 
 CENTER, TONE = 100e6, 100.2e6
 
@@ -29,14 +29,15 @@ def open_device():
     return dev, dsp
 
 
-def config(dev, center, decimate, mode, trigger_len=65536):
+def config(dev, center, decimate, mode, trigger_len=65536,
+           data_format=T.DataFormat_TypeDef.Complex16bit, bus_timeout_ms=2000):
     p = T.IQS_Profile_TypeDef(); T.dll.IQS_ProfileDeInit(byref(dev), byref(p))
     p.CenterFreq_Hz = center; p.RefLevel_dBm = 0.0; p.DecimateFactor = int(decimate)
-    p.DataFormat = T.DataFormat_TypeDef.Complex16bit
+    p.DataFormat = data_format
     p.TriggerSource = T.IQS_TriggerSource_TypeDef.Bus
     p.TriggerMode = mode
     p.TriggerLength = int(trigger_len)
-    p.BusTimeout_ms = 2000
+    p.BusTimeout_ms = int(bus_timeout_ms)
     p.DCCancelerMode = T.DCCancelerMode_TypeDef.DCCOff
     p.QDCMode = T.QDCMode_TypeDef.QDCOff
     out = T.IQS_Profile_TypeDef(); info = T.IQS_StreamInfo_TypeDef()

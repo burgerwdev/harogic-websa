@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Demodulator switching: every mode change must work on its own.
 
-Why this exists: switching demodulators used to need a page refresh or a Preset to take effect
-(the decoder was judged stale against a params object a STATUS had replaced, so it stayed null for
-the rest of the session; reported from the bench). The unit tests cover the worker's generation
-counter, but only a real click sequence covers the whole path: the panel's selection, the window's
-pane, the baseband pipeline, the decoder's wasm load, and the return to the mode that decodes.
+Why this exists: switching demodulators used to need a page refresh or a Preset to take effect.
+This probe covers panel selection, native receiver events, the decode pane, and return to
+the mode that decodes without reloading the page.
 
 The checks deliberately *clear the log* before each round trip and then wait for a **new** decode:
 text left over from an earlier step would otherwise make a dead decoder look alive.
@@ -88,7 +86,8 @@ def main() -> int:
     args = parser.parse_args()
 
     post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-    post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'am', 'ifbw': 6000, 'pitch': 700,
+    post(args.url, {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
+                    'mode': 'am', 'ifbw': 6000, 'pitch': 700,
                     'volume': 0.8, 'squelch': -140.0, 'agc': True})
 
     with sync_playwright() as playwright:
@@ -119,14 +118,14 @@ def main() -> int:
             "() => { const b = document.getElementById('btn-decode-window'); return b && !b.disabled; }",
             timeout=20000)
         check('CW offers the decode window again', True)
-        # The audio chain owns the decode (ggmorse runs at its output rate), so the test enables it
-        # exactly like an operator does - and every state the window shows is then real.
-        if page.query_selector('#btn-sdr-audio'):
+        # Enable native PCM playback through the same control an operator uses.
+        if page.query_selector('#btn-sdr-audio:not(.active)'):
             js_click(page, '#btn-sdr-audio')
         js_click(page, '#btn-decode-window')
         page.wait_for_timeout(2000)
-        check('the baseband is streaming before the first decode',
-              counter(page, 'blocks') > 0, iq_diag(page)[:90])
+        check('native receiver events arrive before the first decode',
+              'backend=1' in iq_diag(page) and 'pipeline=true' in iq_diag(page)
+              and counter(page, 'blocks') > 0, iq_diag(page))
         cw_decodes_again(page, 'CW decodes straight after being selected')
 
         print('C) a digital mode with a companion demodulator, and back', flush=True)
@@ -146,15 +145,26 @@ def main() -> int:
             demod(page, mode)
             page.wait_for_timeout(4000)
             moving = counter(page, 'blocks') > before
-            check(f'{mode}: the baseband pipeline keeps running', moving,
-                  f'blocks {before} -> {counter(page, "blocks")} | {iq_diag(page)[:90]}')
+            check(f'{mode}: native receiver events keep arriving', moving
+                  and 'backend=1' in iq_diag(page) and 'pipeline=true' in iq_diag(page),
+                  f'events {before} -> {counter(page, "blocks")} | {iq_diag(page)}')
+            if mode in ('drm', 'drmplus'):
+                controls = page.evaluate('''() => ({
+                  bypass: [...document.querySelectorAll('#btn-sdr-agc, [data-action="toggle-sdr-nr"], #input-sdr-squelch, [data-sdr-deemph]')]
+                    .map(el => ({id: el.id || el.dataset.sdrDeemph, disabled: el.disabled})),
+                  volume: document.getElementById('input-sdr-volume')?.disabled,
+                  audio: document.getElementById('btn-sdr-audio')?.disabled
+                })''')
+                check(f'{mode}: AGC, NR, squelch and de-emphasis are unavailable',
+                      len(controls['bypass']) >= 4 and all(c['disabled'] for c in controls['bypass']), str(controls))
+                check(f'{mode}: volume and audio remain available',
+                      controls['volume'] is False and controls['audio'] is False, str(controls))
             demod(page, 'cw')
             page.wait_for_timeout(2500)
             cw_decodes_again(page, f'CW decodes after {mode}', seconds=45)
 
         print('E) fast switching: clicks with no wait between them', flush=True)
-        # The wasm decoder loads asynchronously; a switch during that load must not leave the mode
-        # dead. This is the race the generation counter exists for, driven the way an operator does.
+        # A burst of receiver reconfigurations must still produce fresh CW text.
         for mode in ('cw', 'am', 'cw', 'ft8', 'cw'):
             demod(page, mode)
         page.wait_for_timeout(3000)

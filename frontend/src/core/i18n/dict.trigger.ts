@@ -1,5 +1,4 @@
-// i18n namespace 'trigger' (report finding E-5: dictionaries are split by domain and
-// merged in core/i18n.ts; the parity test checks the merged result).
+// Trigger translations, merged in core/i18n.ts.
 export const en = {
 	"trg_swp_cross": "needs a level crossing between sweeps",
 	"trg_hit_level": "{f} {v} dBm crossed",
@@ -9,11 +8,14 @@ export const en = {
 	"trg_chip_free": "FREE",
 	"trg_chip_wait": "WAIT",
 	"trg_chip_hit": "TRIG",
+	"trg_chip_missed": "CAPTURED / MISSED",
 	"trg_never": "NO TRIG: +{db} dB > pk",
 	"trg_cross": "needs a new crossing",
+	"trg_missed": "Device reported one or more missed triggers",
+	"trg_unsupported": "Trigger is not simulated; capture completion is unavailable",
 	"trg_peak": "pk {v} dBm",
 	"trg_hit_hint": "captured",
-	"tip_trg_capture": "Arm a one-shot level trigger: the next threshold crossing is captured and the panel returns to free run by itself",
+	"tip_trg_capture": "Capture a level crossing and hold the completed capture until Free Run or Esc. Standard mode uses consecutive sweeps; RTA completion requires device metadata.",
 	"trg_source": "Source",
 	"trg_bus": "Bus",
 	"trg_level": "Level",
@@ -37,7 +39,7 @@ export const en = {
 	"trg_from_mkr": "Mkr",
 	"trg_from_peak": "Pk-10",
 	"trg_poi": "Intercept ≥ {t}",
-	"tip_trg_source": "Trigger source: Level uses the input level threshold, External the trigger input, Timer is periodic, Bus is the default free-running mode",
+	"tip_trg_source": "Level arms capture; Bus releases it. SWP detects native dBm crossings between complete sweeps in software; RTA uses the device trigger. Timing and trigger output settings require RTA.",
 	"tip_trg_level": "Level trigger threshold in dBm: the capture starts on the selected edge crossing it",
 	"tip_trg_edge": "Which threshold edge starts a capture; a signal that stays above the threshold only triggers once",
 	"tip_trg_safetime": "Debounce: the level must stay above the threshold this long to count as a trigger",
@@ -48,9 +50,9 @@ export const en = {
 	"tip_trg_retriggerperiod": "Interval between automatic re-triggers",
 	"tip_trg_out": "Trigger output: emit a pulse per hop, per sweep or per profile",
 	"tip_trg_outpolarity": "Polarity of the trigger output pulse",
-	"tip_trg_free": "Return to free-running acquisition (source = bus)",
-	"tip_trg_from_mkr": "Take the threshold from the active marker level",
-	"tip_trg_from_peak": "Take the threshold from the strongest level minus 10 dB",
+	"tip_trg_free": "Release the capture and resume live acquisition; RTA also selects Bus",
+	"tip_trg_from_mkr": "Use the active marker's native dBm level as the threshold, before display offset or normalization",
+	"tip_trg_from_peak": "Use the current spectrum's native peak minus 10 dB, before display offset or normalization",
 } as const;
 
 export const zh = {
@@ -62,11 +64,14 @@ export const zh = {
 	"trg_chip_free": "自由",
 	"trg_chip_wait": "等待",
 	"trg_chip_hit": "已触发",
+	"trg_chip_missed": "已捕获 / 有遗漏",
 	"trg_never": "不会触发：门限>峰值 {db} dB",
 	"trg_cross": "需一次新穿越",
+	"trg_missed": "设备报告一次或多次触发遗漏",
+	"trg_unsupported": "模拟设备不模拟触发，无法确认捕获完成",
 	"trg_peak": "峰值 {v} dBm",
 	"trg_hit_hint": "已捕获",
-	"tip_trg_capture": "单次捕获：启用电平触发，下一次穿越门限时捕获一次，随后自动回到自由运行",
+	"tip_trg_capture": "捕获电平穿越并保持完整采集结果，直到自由运行或 Esc。标准模式比较相邻扫描；RTA 完成状态由设备元数据确认。",
 	"trg_source": "触发源",
 	"trg_bus": "总线",
 	"trg_level": "电平",
@@ -90,7 +95,7 @@ export const zh = {
 	"trg_from_mkr": "取游标",
 	"trg_from_peak": "峰值-10",
 	"trg_poi": "可截获 ≥ {t}",
-	"tip_trg_source": "触发源：电平按输入电平门限，外部用触发输入，定时为周期触发，总线是默认的自由取帧方式",
+	"tip_trg_source": "电平启动捕获；总线释放捕获。SWP 在相邻完整扫描之间以原始 dBm 电平检测软件触发；RTA 使用设备触发。时序和触发输出设置仅适用于 RTA。",
 	"tip_trg_level": "电平触发门限（dBm）：选择边沿穿越它时开始捕获",
 	"tip_trg_edge": "以哪个边沿启动捕获；持续高于门限的信号只会触发一次",
 	"tip_trg_safetime": "防抖：电平需持续超过门限这么久才算一次触发",
@@ -101,8 +106,8 @@ export const zh = {
 	"tip_trg_retriggerperiod": "自动重触发的时间间隔",
 	"tip_trg_out": "触发输出：按跳频 / 每次扫描 / 每次配置输出脉冲",
 	"tip_trg_outpolarity": "触发输出脉冲的极性",
-	"tip_trg_free": "回到自由取帧（触发源 = 总线）",
-	"tip_trg_from_mkr": "用当前游标的电平作为门限",
-	"tip_trg_from_peak": "用最强电平减 10 dB 作为门限",
+	"tip_trg_free": "释放捕获并恢复实时显示；RTA 同时选择总线触发源",
+	"tip_trg_from_mkr": "用当前游标位置的原始 dBm 电平作为门限，不含显示偏移或归一化",
+	"tip_trg_from_peak": "用当前频谱原始峰值减 10 dB 作为门限，不含显示偏移或归一化",
 } as const;
 

@@ -28,8 +28,13 @@ use crate::ddc::resampler::LinearResampler;
 use crate::ddc::RmsAgc;
 use crate::plugin::{AnalogDemodulator, DemodConfig};
 
+mod am_sync;
+pub use am_sync::AmStatus;
 pub mod fm_stereo;
 pub mod rds;
+
+#[cfg(test)]
+mod am_sync_tests;
 
 /// The rate every analog mode produced before the consumer's rate became configurable (the
 /// AudioWorklet's rate is passed in as `out_rate` now; this stays the default and the tests'
@@ -186,15 +191,14 @@ pub struct AnalogDemod {
     /// The de-emphasis in force, in microseconds (0 = none). Starts at the mode's default and can be
     /// overridden by the listener (the panel's De-emph control).
     deemph_us: f64,
-    /// The listener's AGC switch. On = the automatic level stage adapts (the historical behaviour);
-    /// off = the PCM passes at unity gain, so the meter and the ear see the same amplitude the
-    /// detector produced. The switch used to exist only on the backend's Python path, so the
-    /// browser chain levelled everything no matter what the panel said.
+    /// The listener's AGC switch. Off preserves fixed detector-to-PCM scaling:
+    /// AM/SSB retain normalized IQ amplitude; FM converts deviation Hz to full-scale audio.
     agc_enabled: bool,
     /// Rate the PCM is produced at (the consumer's rate).
     out_rate: f64,
     pitch: f64,
     band: ComplexBandFilter,
+    prechannelized: bool,
     audio_lp: FirState,
     resampler: LinearResampler,
     deemph: Option<FirState>,
@@ -202,6 +206,7 @@ pub struct AnalogDemod {
     /// The stereo/RDS side chain (WFM only, and only on a baseband wide enough for the
     /// subcarriers). `None` elsewhere: the side chain is strictly additive.
     stereo: Option<fm_stereo::FmStereo>,
+    am: Option<am_sync::AmSync>,
     // Detector state
     prev_z: Option<(f64, f64)>,
     env_prev: f64,
@@ -216,9 +221,20 @@ pub struct AnalogDemod {
 
 impl AnalogDemod {
     pub fn new(spec: ModeSpec, config: DemodConfig, out_rate: f64) -> Self {
+        Self::new_input(spec, config, out_rate, false)
+    }
+
+    /// A native channelizer has already isolated the occupied symmetric IF band. SSB and CW
+    /// retain their asymmetric frequency selection; symmetric modes skip the redundant IF FIR.
+    pub fn new_prechannelized(spec: ModeSpec, config: DemodConfig, out_rate: f64) -> Self {
+        Self::new_input(spec, config, out_rate, true)
+    }
+
+    fn new_input(spec: ModeSpec, config: DemodConfig, out_rate: f64, prechannelized: bool) -> Self {
         let fs = config.fs.max(1.0);
         let out_rate = if out_rate > 0.0 { out_rate } else { DEFAULT_AUDIO_RATE };
-        let if_bw = config.if_bw.max(50.0).min(fs * 0.45);
+        let if_bw = if prechannelized { config.if_bw.max(50.0) }
+            else { config.if_bw.max(50.0).min(fs * 0.45) };
         let pitch = if config.pitch > 0.0 { config.pitch } else { 700.0 };
         let (lo, hi) = spec.band_hz(if_bw, pitch);
         let (re, im) = design_complex_bandpass(fs, lo, hi, BAND_TAPS);
@@ -237,6 +253,7 @@ impl AnalogDemod {
             out_rate,
             pitch,
             band: ComplexBandFilter::new(re, im),
+            prechannelized: prechannelized && !matches!(spec.id, "usb"|"lsb"|"cw"),
             audio_lp: FirState::new(design_lowpass(fs, audio_cut, AUDIO_TAPS)),
             resampler: LinearResampler::new(fs, out_rate),
             deemph: Self::deemph_taps(spec.deemph_us, out_rate),
@@ -252,6 +269,7 @@ impl AnalogDemod {
             } else {
                 None
             },
+            am: if spec.id == "am" { Some(am_sync::AmSync::new(fs, if_bw)) } else { None },
             prev_z: None,
             env_prev: 0.0,
             dc_y: 0.0,
@@ -315,14 +333,23 @@ impl AnalogDemod {
         }
     }
 
-    /// The listener's AGC switch: `true` adapts the level (default), `false` passes unity.
+    /// The listener's AGC switch: `true` adapts, `false` uses fixed PCM scaling.
     pub fn set_agc_enabled(&mut self, on: bool) {
-        self.agc_enabled = on;
-        if !on {
-            // A later re-enable must not slam the old gain onto a signal that changed level
-            // in between: start the adaptation from scratch.
-            self.agc.reset();
+        if self.agc_enabled == on {
+            return;
         }
+        self.agc_enabled = on;
+        // Re-enable from the current signal rather than a stale station's gain.
+        self.agc.reset();
+    }
+
+    /// Live AM detector selection; both detectors retain their sample history.
+    pub fn set_am_sync(&mut self, enabled: bool) {
+        if let Some(am) = self.am.as_mut() { am.set_enabled(enabled); }
+    }
+
+    pub fn am_status(&self) -> Option<AmStatus> {
+        self.am.as_ref().map(|am| am.status())
     }
 
     /// Number of audio-filter taps (the design constant the tests pin).
@@ -386,6 +413,21 @@ impl AnalogDemod {
         out.reserve(n);
         match self.spec.detector {
             Detector::Envelope => {
+                if let Some(am) = self.am.as_mut() {
+                    for pair in z.chunks_exact(2) {
+                        let envelope_power = pair[0] * pair[0] + pair[1] * pair[1];
+                        // Keep the envelope operation order identical to the reference path.
+                        let envelope = if envelope_power.is_finite() {
+                            envelope_power.sqrt()
+                        } else { 0.0 };
+                        self.dc_y = DC_A * self.dc_y + (envelope - self.env_prev) * DC_A;
+                        self.env_prev = envelope;
+                        let (product, blend) = am.process(pair[0], pair[1]);
+                        out.push(if blend == 0.0 { self.dc_y as f32 }
+                            else { (self.dc_y + blend * (product - self.dc_y)) as f32 });
+                    }
+                    return;
+                }
                 let mut env = Vec::with_capacity(n);
                 for k in 0..n {
                     let (i, q) = (z[2 * k], z[2 * k + 1]);
@@ -447,10 +489,20 @@ impl AnalogDemodulator for AnalogDemod {
         if n == 0 {
             return;
         }
+        if let Some(am) = self.am.as_mut() {
+            for pair in iq[..n].chunks_exact(2) {
+                am.observe_input(pair[0] as f64, pair[1] as f64);
+            }
+        }
         let mut z: Vec<f64> = Vec::with_capacity(n);
         z.extend(iq[..n].iter().map(|v| *v as f64));
         let mut filtered = core::mem::take(&mut self.z);
-        self.band.process_complex_into(&z, &mut filtered);
+        if self.prechannelized {
+            filtered.clear();
+            filtered.extend_from_slice(&z);
+        } else {
+            self.band.process_complex_into(&z, &mut filtered);
+        }
 
         let mut det = core::mem::take(&mut self.det);
         self.detect(&filtered, &mut det);
@@ -471,6 +523,17 @@ impl AnalogDemodulator for AnalogDemod {
             rs.extend(shaped.iter().map(|v| *v as f32));
         }
 
+        // The discriminator is in Hz, including the stereo/RDS analysis input. Audio PCM
+        // instead uses nominal peak deviation as full scale, independently of the AGC switch.
+        // This is a fixed unit conversion, not a limiter: overdeviation remains observable.
+        let pcm_scale = match self.spec.id {
+            "nfm" => 1.0 / 5_000.0,
+            "wfm" => 1.0 / 75_000.0,
+            _ => 1.0,
+        };
+        for sample in &mut rs {
+            *sample *= pcm_scale;
+        }
         let mut levelled = core::mem::take(&mut self.levelled);
         if self.agc_enabled {
             self.agc.process_into(&rs, false, &mut levelled);
@@ -487,7 +550,7 @@ impl AnalogDemodulator for AnalogDemod {
         // turns them back into amplitude components. The side takes the same per-sample AGC gain
         // and limiter envelope as mono, so the L/R matrix sees both at one scale on speech peaks.
         if let Some(stereo) = self.stereo.as_mut() {
-            stereo.set_output_gain_trace(&rs, &levelled);
+            stereo.set_output_gain_trace(&rs, &levelled, pcm_scale);
             stereo.process(&det);
         }
 
@@ -561,6 +624,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        if let Some(am) = self.am.as_mut() { am.reset(); }
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
         }
@@ -574,6 +638,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        if let Some(am) = self.am.as_mut() { am.reset(); }
         if let Some(deemph) = self.deemph.as_mut() {
             deemph.reset();
         }
@@ -594,6 +659,7 @@ impl AnalogDemodulator for AnalogDemod {
         self.prev_z = None;
         self.env_prev = 0.0;
         self.dc_y = 0.0;
+        if let Some(am) = self.am.as_mut() { am.reset(); }
         if let Some(stereo) = self.stereo.as_mut() {
             stereo.retune();
         }
@@ -669,11 +735,125 @@ mod tests {
     }
 
     #[test]
+    fn fm_without_agc_uses_fixed_pcm_units_at_weak_and_strong_rf_levels() {
+        for (mode, fs, bandwidth, nominal) in [
+            ("nfm", 48_000.0, 16_000.0, 5_000.0),
+            ("wfm", 300_000.0, 180_000.0, 75_000.0),
+        ] {
+            for carrier in [0.001, 0.8] {
+                let mut demod = AnalogDemod::new_prechannelized(
+                    spec_for(mode).unwrap(), DemodConfig::new(fs, bandwidth), AUDIO_RATE);
+                demod.set_deemph_us(0.0);
+                demod.set_agc_enabled(false);
+                let mut phase = 0.0;
+                let mut audio = Vec::new();
+                let mut output = Vec::new();
+                let block_len = (fs / 50.0) as usize;
+                for block in 0..30 {
+                    let mut iq = Vec::with_capacity(block_len * 2);
+                    for k in 0..block_len {
+                        let t = (block * block_len + k) as f64 / fs;
+                        phase += TAU * nominal * 0.2 * (TAU * TONE_HZ * t).cos() / fs;
+                        iq.push((carrier * phase.cos()) as f32);
+                        iq.push((carrier * phase.sin()) as f32);
+                    }
+                    // Repeated controls must preserve streaming detector/filter state.
+                    demod.set_agc_enabled(false);
+                    demod.process_into(&iq, &mut output);
+                    if block >= 10 { audio.extend_from_slice(&output); }
+                }
+                assert!(audio.iter().all(|sample| sample.is_finite()));
+                // amplitude_at returns the positive-frequency coefficient of a real
+                // sinusoid: half its peak amplitude (the other half is at -f).
+                let amplitude = 2.0 * amplitude_at(&audio, AUDIO_RATE, TONE_HZ);
+                assert!((amplitude - 0.2).abs() < 0.01,
+                    "{mode} carrier {carrier}: PCM amplitude {amplitude}");
+                let peak = audio.iter().fold(0.0_f32, |peak, v| peak.max(v.abs()));
+                assert!(peak < 0.22, "{mode}: PCM peak {peak}");
+                let step = audio.windows(2).fold(0.0_f32, |step, pair|
+                    step.max((pair[1] - pair[0]).abs()));
+                assert!(step < 0.04, "{mode}: streaming discontinuity {step}");
+            }
+        }
+    }
+
+    #[test]
     fn am_recovers_the_modulation_tone() {
         let audio = run("am", 20_000, |t| (1.0 + 0.5 * (TAU * TONE_HZ * t).cos(), 0.0));
         assert_eq!(recovered_hz(&audio, TONE_HZ), TONE_HZ, "AM audio tone");
         let level = rms(&audio);
         assert!((0.05..0.2).contains(&level), "AM audio level {level} (AGC target 0.1)");
+    }
+
+    #[test]
+    fn normalized_weak_am_is_audible_without_changing_modulation() {
+        // Linear IQ preserves ADC scale: a carrier only a few counts high produces audio
+        // below the old 1e-4 AGC gate. Exercise streaming at the captured hardware rate,
+        // on both sides of that gate, and check the PCM the listener actually receives.
+        const CAPTURE_RATE: f64 = 48_828.125;
+        let mut unity_levels = Vec::new();
+        for carrier in [6.0 / 32_768.0, 60.0 / 32_768.0] {
+            let config = DemodConfig::new(CAPTURE_RATE, IF_BW);
+            let mut enabled = build("am", config, AUDIO_RATE).unwrap();
+            let mut bypass = build("am", DemodConfig::new(CAPTURE_RATE, IF_BW), AUDIO_RATE).unwrap();
+            bypass.set_agc_enabled(false);
+            let mut adapted = Vec::new();
+            let mut unity = Vec::new();
+            let mut out = Vec::new();
+            let mut iq = Vec::with_capacity(960 * 2);
+            for block in 0..120 {
+                iq.clear();
+                for k in 0..960 {
+                    let t = (block * 960 + k) as f64 / CAPTURE_RATE;
+                    let envelope = carrier * (1.0 + 0.5 * (TAU * TONE_HZ * t).cos()
+                        + 0.125 * (TAU * 2.0 * TONE_HZ * t).cos());
+                    iq.push(envelope as f32);
+                    iq.push(0.0);
+                }
+                enabled.process_into(&iq, &mut out);
+                if block >= 60 {
+                    adapted.extend_from_slice(&out);
+                }
+                bypass.process_into(&iq, &mut out);
+                if block >= 60 {
+                    unity.extend_from_slice(&out);
+                }
+            }
+            let level = rms(&adapted);
+            assert!((0.08..0.12).contains(&level), "carrier {carrier}: audio RMS {level}");
+            assert!(adapted.iter().all(|v| v.is_finite() && v.abs() <= 0.95 + 1e-6));
+            let tone = amplitude_at(&adapted, AUDIO_RATE, TONE_HZ);
+            assert!(tone > 0.05, "carrier {carrier}: recovered tone {tone}");
+            let ratio = amplitude_at(&adapted, AUDIO_RATE, 2.0 * TONE_HZ) / tone;
+            assert!((0.22..0.28).contains(&ratio), "AGC must preserve modulation ratio: {ratio}");
+            unity_levels.push(rms(&unity));
+        }
+        assert!(unity_levels[0] < 1e-4, "weak input must cover the former silence gate");
+        assert!((unity_levels[1] / unity_levels[0] - 10.0).abs() < 0.01,
+            "AGC off must preserve the normalized input's amplitude ratio: {unity_levels:?}");
+    }
+
+    #[test]
+    fn repeated_agc_settings_preserve_streaming_gain_and_samples() {
+        let mut control = AnalogDemod::new_prechannelized(
+            spec_for("am").unwrap(), DemodConfig::new(AUDIO_RATE, IF_BW), AUDIO_RATE);
+        let mut repeated = AnalogDemod::new_prechannelized(
+            spec_for("am").unwrap(), DemodConfig::new(AUDIO_RATE, IF_BW), AUDIO_RATE);
+        let mut expected = Vec::new();
+        let mut actual = Vec::new();
+        for block in 0..60 {
+            let on = !(20..40).contains(&block);
+            if block == 20 || block == 40 { control.set_agc_enabled(on); }
+            repeated.set_agc_enabled(on);
+            let carrier = if block < 10 { 0.01 } else { 0.1 };
+            let iq: Vec<f32> = (0..960).flat_map(|k| {
+                let t = (block * 960 + k) as f64 / AUDIO_RATE;
+                [(carrier * (1.0 + 0.5 * (TAU * TONE_HZ * t).cos())) as f32, 0.0]
+            }).collect();
+            control.process_into(&iq, &mut expected);
+            repeated.process_into(&iq, &mut actual);
+            assert_eq!(actual, expected, "repeated AGC setting changed block {block}");
+        }
     }
 
     #[test]

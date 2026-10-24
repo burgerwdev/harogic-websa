@@ -1,5 +1,4 @@
 // Unit-field commit: maps an edited numeric field to the panel action that applies it.
-// Its own module because it calls into three panels (report finding P1-5).
 import * as S from '../../core/store';
 import { measPnmApply } from '../../meas/phaseNoise';
 import { applyCenterSpan, applyStartStop, syncSwpSpanStep } from './frequency';

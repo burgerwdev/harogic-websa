@@ -6,6 +6,7 @@ import { markerFreqHz } from '../core/markerCommon';
 import { requestRender } from './redraw';
 import { t } from '../core/i18n';
 import { assignMarkerToBestPeak } from '../dsp/markerTracking';
+import { updateMarkersAllBtn } from '../ui/panels/markers';
 
 export function initMarkerTable() {
   const tbody = document.getElementById('marker-tbody');
@@ -74,6 +75,7 @@ export function initMarkerTable() {
 
 export function updateMarkerTable(powers: Float32Array | null) {
   initMarkerTable();
+  updateMarkersAllBtn();
   const tbody = document.getElementById('marker-tbody');
   if (!tbody) return;
   S.markers.forEach((m, i) => {
@@ -134,6 +136,7 @@ function toggleMarkerEnabled(id: number) {
   marker.enabled = !marker.enabled;
   if (marker.enabled && marker.mode === 'OFF') marker.mode = 'NORMAL';
   if (marker.enabled) assignMarkerToBestPeak(marker);
+  updateMarkersAllBtn();
   requestRender();
 }
 
@@ -146,5 +149,6 @@ function updateMarkerMode(id: number, mode: string) {
     m.tracking = false;
   }
   else { m.enabled = true; m.mode = mode; }
+  updateMarkersAllBtn();
   requestRender();
 }

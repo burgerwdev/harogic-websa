@@ -7,6 +7,8 @@ import { registerViewRenderer } from '../render/registry';
 import { harmValMode } from '../ui/measurePrefs';
 import { requestRender } from '../render/redraw';
 import { registerMeasurementTab } from '../ui/measureRegistry';
+import { measurementsAvailable } from '../ui/measurementAvailability';
+import { acceptsMeasurementResult, beginMeasurementSession } from './session';
 
 export function autoHarmSpan() {
   const sel = document.getElementById('select-harm-span') as HTMLSelectElement;
@@ -23,7 +25,7 @@ export function autoHarmSpan() {
 }
 
 export function measHarmApply() {
-  if (!S.measOn || S.measTabSel !== 'harm') return;
+  if (!S.measOn || S.measTabSel !== 'harm' || !measurementsAvailable()) return;
   const f0 = parseFloat((document.getElementById('input-harm-f0') as HTMLInputElement).value) * 1e6 || 1e9;
   const count = parseInt((document.getElementById('input-harm-count') as HTMLInputElement).value) || 5;
   const span = parseFloat((document.getElementById('select-harm-span') as HTMLSelectElement).value) || 10e6;
@@ -31,14 +33,18 @@ export function measHarmApply() {
     S.setViewMode('harm');
     send({ cmd: 'SET_MODE', mode: 'harmonic' });
   }
-  send({ cmd: 'SET_HARM', f0, count, span });
+  const session_id = beginMeasurementSession('harm');
+  send({ cmd: 'SET_HARM', session_id, f0, count, span });
+  S.setHarm(null);
   S.setHarmAccum(null);
   S.setLastHarmList(null);
   applyMeasUI();
+  updateHarmonicTable();
+  requestRender();
 }
 
-export function onHarmResult(list: any[]) {
-  if (!list || !list.length) return;
+export function onHarmResult(list: any[], sessionId?: string) {
+  if (!S.measOn || S.viewMode !== 'harm' || !acceptsMeasurementResult('harm', sessionId) || !list?.length) return;
   S.setLastHarmList(list);
   if (!S.harmAccum) S.setHarmAccum({ peak: [], sum: [], cnt: 0, frozen: null });
   const a = S.harmAccum;
@@ -115,8 +121,7 @@ export function updateHarmonicTable() {
 import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measureUi';
 
-// Register this view with the renderer hub (report finding E-5). The hub passes the swept
-// drawing primitives in, so this module never imports render/spectrum.ts back.
+// The renderer hub supplies drawing primitives, avoiding a dependency on spectrum.ts.
 registerViewRenderer({
   mode: 'harm',
   render: (ctx) => {
@@ -128,5 +133,4 @@ registerViewRenderer({
   },
 });
 
-// Register this measurement tab with the registry (report finding E-5).
 registerMeasurementTab({ id: 'harm', domId: 'tab-harm', apply: measHarmApply, updateTable: updateHarmonicTable });

@@ -1,14 +1,23 @@
 #!/bin/bash
-# Test backend, static checks, and frontend. Any failed stage fails the script.
+# Test native service contracts, Python tools, and frontend.
 set -euo pipefail
+case "${1:-}" in
+  --help|-h) echo 'Usage: ./test.sh (Rust service contracts, retained Python tool tests, Ruff, frontend Vitest)'; exit 0 ;;
+  '') ;;
+  *) echo "Unknown argument: $1" >&2; exit 2 ;;
+esac
 cd "$(dirname "$0")"
 
-echo "==== Backend tests (pytest) ===="
+echo "==== Rust service contracts ===="
+cargo test --release -j 1 --manifest-path native-ddc/Cargo.toml --lib -- --test-threads=1
+cargo test --release -j 1 --manifest-path native-ddc/Cargo.toml --bin websad -- --test-threads=1
+
+echo "==== Python tool tests (pytest) ===="
 python3 -m pytest tests/ -q
 
 echo
 echo "==== Python static checks (ruff) ===="
-python3 -m ruff check web_sa tests tools
+python3 -m ruff check tests tools
 
 echo
 echo "==== Frontend tests (vitest) ===="

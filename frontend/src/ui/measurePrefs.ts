@@ -1,10 +1,6 @@
 /**
- * Measurement/UI preferences as slots (report finding P1-6, B4).
- *
- * These are client-owned: the backend never reports them, so they must be `authoritative`
- * (otherwise the intent TTL would revert them after a few seconds - a real defect when the
- * display unit was migrated). They used to be plain store globals, some written by direct
- * assignment from several places; every writer now goes through `set()`.
+ * Client-owned measurement/UI preferences. The backend never reports them, so they are
+ * authoritative and do not expire with the intent TTL. Writers use set().
  */
 import { createParam } from '../core/params';
 

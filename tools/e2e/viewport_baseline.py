@@ -1,27 +1,10 @@
 #!/usr/bin/env python3
-"""Resolution baseline: what the 1366x768-only layout actually does on other screens.
-
-Why this exists: the front-end was laid out against one laptop panel (1366x768), so the
-version under test has a fixed 1280px card, an 860px minimum for the spectrum column, a
-360px control panel, `height: calc(100vh - 96px)` and a canvas whose backing store is
-pinned at 860x480 x DPR. Nothing here asserts what "adaptive" should look like - that is
-the goal. This script only *measures* the current state so the change can be argued with
-numbers, and so the same metrics can become the gate later.
-
-Reported per viewport:
-  css/backing   canvas CSS box vs backing store, and the stretch factor (backing < CSS*DPR
-                means the browser scales the bitmap up = blur)
-  overflow      document scrollWidth/clientWidth and the outermost elements hanging past
-                the right edge
-  boxes/overlap bounding boxes of the layout landmarks plus pairwise overlaps
-  text          computed font sizes as a share of viewport height (px per 1000 logical px),
-                i.e. "how big does 11px look on a 1440-tall screen"
-  fixed sizes   every px width/height left in src/style.css, with file:line so it greps
+"""Measure layout overflow, overlap, text scale and canvas geometry across viewports.
 
 Usage:
   python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:8080
-  python3 tools/e2e/viewport_baseline.py --check          # non-zero exit on any finding
-  python3 tools/e2e/viewport_baseline.py --screens        # real monitors: grim screenshots
+  python3 tools/e2e/viewport_baseline.py --check    # fail on any finding
+  python3 tools/e2e/viewport_baseline.py --screens  # compositor screenshots
 """
 from __future__ import annotations
 
@@ -39,10 +22,6 @@ STYLE_CSS = ROOT / 'frontend/src/style.css'
 SHOT_DIR = ROOT / 'screenshots/resolution-baseline'
 
 # (label, CSS width, CSS height, device pixel ratio)
-#
-# The last two are not synthetic: 1280x960@1.6 is exactly the attached 2048x1536 panel at
-# the compositor's 1.6 scale (what the browser reports), and 1280x720@2 is what a 2560x1440
-# screen looks like to the page at 200% browser zoom.
 VIEWPORTS = [
     ('laptop-1366x768', 1366, 768, 1.0),
     ('desktop-1600x1000', 1600, 1000, 1.0),
@@ -51,15 +30,10 @@ VIEWPORTS = [
     ('uhd-3840x2160', 3840, 2160, 1.0),
     ('external-1280x960-dpr1.6', 1280, 960, 1.6),
     ('zoom200-1280x720-dpr2', 1280, 720, 2.0),
-    # The two viewports the real browser actually reports on the two attached outputs. Wayland
-    # hands the page the compositor scale multiplied by GNOME's text-scaling-factor (0.9091 on
-    # this machine), so the real DPR is 0.906 on the laptop panel and 1.450 on the 2K one - the
-    # page gets MORE css pixels than the panel's nominal logical size, and dpr can be below 1.
+    # Fractional DPR observed on the attached Wayland outputs.
     ('real-laptop-1481x708-dpr0.906', 1481, 708, 0.906),
     ('real-2k-1386x920-dpr1.45', 1386, 920, 1.45),
-    # Below the 1280 design width the flex row has to wrap, and the container is a fixed
-    # 100vh-96 box with overflow hidden - these are the widths where the current layout
-    # actually breaks rather than merely wasting space.
+    # Narrow viewports exercise wrapping and overflow.
     ('narrow-1200x800', 1200, 800, 1.0),
     ('narrow-1024x768', 1024, 768, 1.0),
     ('narrow-800x600', 800, 600, 1.0),
@@ -322,7 +296,7 @@ def style_inventory() -> list[str]:
     return rows
 
 
-# The four structural locks the goal names explicitly; each is greppable by its pattern.
+# Report fixed dimensions that constrain responsive layout.
 LOCKS = [
     ('fixed card width', r'\.analyzer-card\s*\{[^}]*width:\s*(\d+)px', 'width: 1280px'),
     ('spectrum column floor', r'\.spectrum-area\s*\{[^}]*min-width:\s*(\d+)px', 'min-width: 860px'),
@@ -436,10 +410,7 @@ def fmt(metrics: dict) -> list[str]:
     return lines, findings
 
 
-# The plot rectangle in logical (drawing) units - render/plot.ts MARGIN, which does not depend
-# on the window size. The graticule is drawn on its edges, so the drawn plot must land there in
-# *device* pixels at any resolution; a stale transform or an off-by-a-factor scale shows up as a
-# shifted or clipped plot, which "some pixels were painted" would never catch.
+# Match render/plot.ts margins in logical units; measure graticule edges in device pixels.
 MARGIN = {'left': 10, 'right': 50, 'top': 14, 'bottom': 26}
 
 
@@ -461,9 +432,7 @@ def plot_geometry(c: dict) -> list[str]:
     if off:
         out.append(f"canvas {c['id']} plot rectangle off by {off} device px (got {got}, "
                    f"expected { {s: round(v, 1) for s, v in want.items()} })")
-    # Pixel-level sharpness: a 1-logical-pixel graticule must be as thick as the device ratio.
-    # 1 px on a 2x screen means the drawing happened at logical scale (the old fixed-bitmap
-    # failure mode); a very thick line means a smear.
+    # A one-logical-pixel graticule must scale with the device ratio.
     thick = plot.get('gridThickness') or 0
     if thick:
         # ceil(ratio) + 2 leaves room for antialiasing a fractional width across a row boundary:
@@ -478,6 +447,30 @@ def plot_geometry(c: dict) -> list[str]:
     return out
 
 
+def wait_ui_ready(page, mode: str | None = None) -> None:
+    """Await confirmed STATUS, mode controls and a painted, drawable spectrum."""
+    page.wait_for_function("""(mode) => {
+      if (!document.querySelector('#connDot.on')) return false;
+      const rta = document.querySelector('#btn-mode-rta');
+      const sdr = document.querySelector('#btn-mode-sdr');
+      if (!rta || !sdr || rta.classList.contains('pending') || sdr.classList.contains('pending')) return false;
+      const current = sdr.classList.contains('active') ? 'sdr' : rta.classList.contains('active') ? 'rta' : 'std';
+      if (mode && current !== mode) return false;
+      if (document.body.dataset.deviceMode !== current) return false;
+      const panel = document.querySelector(current === 'sdr' ? '#sdr-settings' : current === 'rta' ? '#rta-freq-settings' : '#swp-freq-settings');
+      if (!panel || panel.style.display === 'none') return false;
+      const c = document.querySelector('#spectrum');
+      if (!c || !c.width || !c.height || !c.clientWidth || !c.clientHeight) return false;
+      if (current !== 'std' && c.dataset.rtaFrames === undefined) return false;
+      const g = c.getContext('2d');
+      if (!g) return false;
+      const pixels = g.getImageData(0, 0, c.width, c.height).data;
+      let painted = 0;
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i] && ++painted > 5000) return true;
+      return false;
+    }""", arg=mode, timeout=30000)
+
+
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
             mode: str = 'swp', mode_clicks: list[str] | None = None,
             shot_path: Path | None = None, ui_scale: float | None = None) -> dict:
@@ -490,11 +483,16 @@ def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
     page = ctx.new_page()
     errors: list[str] = []
     page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
-    page.goto(f'{url}/', wait_until='networkidle')
-    page.wait_for_timeout(2500)
+    page.goto(f'{url}/', wait_until='domcontentloaded')
+    wait_ui_ready(page, 'std')
     for selector in (mode_clicks or []):
+        before = page.get_attribute('#spectrum', 'data-rta-frames')
         page.click(selector)
-        page.wait_for_timeout(3000)
+        wait_ui_ready(page, 'sdr' if mode == 'sdr' else 'rta')
+        page.wait_for_function("""(before) => {
+            const frames = document.getElementById('spectrum').dataset.rtaFrames;
+            return frames !== undefined && frames !== before;
+        }""", arg=before, timeout=30000)
     metrics = page.evaluate(PROBE, LANDMARKS)
     # A backing store derived from the box must settle: if the size keeps changing, the layout
     # is feeding the bitmap back into itself (the trap the canvas CSS now avoids).
@@ -526,11 +524,7 @@ def environment() -> list[str]:
         factor = ts.stdout.strip() or '(unknown)'
     except Exception:                                                      # noqa: BLE001
         factor = '(gsettings unavailable)'
-    rows.append(f"  GNOME text-scaling-factor = {factor}: Chromium multiplies its device scale "
-                'factor by it, so the real browser reports dpr = compositor scale x this value')
-    rows.append('  measured in the real browser (screenshots/resolution-baseline/*.json): '
-                'eDP-1 dpr 0.906 over a 1481x708 css viewport; '
-                'HDMI-A-2 dpr 1.450 over a 1386x920 css viewport')
+    rows.append(f'  GNOME text-scaling-factor = {factor}; per-page DPR is measured below')
     return rows
 
 
@@ -551,19 +545,7 @@ def hyprctl(args: list[str]) -> str:
 
 
 def screens(url: str, port: int = 9411, scales: list[float | None] | None = None) -> int:
-    """Real-session capture: the actual browser on the actual output, grabbed by the compositor.
-
-    Wayland does not let a client place its own window, so the sequence is: focus the target
-    output, start the system Chromium (it picks up the user's Wayland flags from
-    ~/.config/chromium-flags.conf, so this is the real rendering path), maximise that window
-    through the compositor, measure the page as it really is (real DPR, real viewport, real UI
-    scale), then grim the window's own region. Only the window this script started is ever
-    touched - the window is located by the browser process id, never by focus, so a
-    mis-targeted dispatch cannot move or fullscreen anything of the user's.
-
-    `scales` takes one or more UI scales (None = whatever the page picks for the screen), so
-    each output gets a set of screenshots at different zoom levels.
-    """
+    """Capture the system Chromium window on each output at the requested UI scales."""
     from playwright.sync_api import sync_playwright
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
     mons = monitors()
@@ -599,11 +581,13 @@ def screens_for_monitors(p, mons: list[dict], url: str, port: int,
                     print('    WARN: the browser never exposed the page')
                     rc = 1
                     continue
+                page.wait_for_load_state('domcontentloaded')
+                wait_ui_ready(page)
                 if ui_scale:
                     page.evaluate(f"try {{ localStorage.setItem('web-sa-ui-scale', "
                                  f"'{ui_scale}') }} catch (e) {{}}")
-                    page.reload(wait_until='networkidle')
-                    page.wait_for_timeout(2000)
+                    page.reload(wait_until='domcontentloaded')
+                    wait_ui_ready(page)
                 # Maximise this window (located by browser pid) and let the layout settle.
                 addr = next((c['address'] for c in clients()
                              if c.get('pid') == proc.pid or c.get('class') == 'chromium'), '')
@@ -717,7 +701,7 @@ def main() -> int:
         print(f'  WARN: could not read the compositor environment: {exc}')
 
     print('=== fixed sizes still in src/style.css (grep-able) ===')
-    print('--- structural locks the goal names:')
+    print('--- fixed layout dimensions:')
     for line in lock_report():
         print(line)
     if not args.no_inventory:

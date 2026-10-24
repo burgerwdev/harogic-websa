@@ -1,0 +1,976 @@
+{
+    "commands": {
+        "AUTO_SCALE": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 200.0,
+                    "min": 5.0,
+                    "name": "range_db",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dB"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 40.0,
+                    "min": -160.0,
+                    "name": "current_ref",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dBm"
+                },
+                {
+                    "choices": [],
+                    "default": false,
+                    "max": null,
+                    "min": null,
+                    "name": "display_only",
+                    "required": false,
+                    "type": "boolean",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "CAL_REFCLK": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": 10,
+                    "max": 120,
+                    "min": 3,
+                    "name": "count",
+                    "required": false,
+                    "type": "integer",
+                    "unit": "samples"
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "CONNECT": {
+            "denied_in_sdr": false,
+            "needs_device": false,
+            "params": [],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_AMP": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": -1,
+                    "max": 33,
+                    "min": -1,
+                    "name": "atten",
+                    "required": false,
+                    "type": "integer",
+                    "unit": "dB"
+                },
+                {
+                    "choices": [],
+                    "default": 0,
+                    "max": 1,
+                    "min": 0,
+                    "name": "preamp",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": 2,
+                    "max": 3,
+                    "min": 0,
+                    "name": "ifgain",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": 0,
+                    "max": 1,
+                    "min": 0,
+                    "name": "gain_strategy",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_DETECTOR": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "auto",
+                        "sample",
+                        "pos_peak",
+                        "neg_peak",
+                        "rms",
+                        "auto_peak"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": true,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_FRAMEDET": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "device_default",
+                        "sample",
+                        "pos_peak",
+                        "average",
+                        "neg_peak",
+                        "max_power",
+                        "raw_frames",
+                        "rms",
+                        "auto_peak"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": true,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": true
+        },
+        "SET_FREQ": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "center",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": 100.0,
+                    "name": "span",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "start",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "stop",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_HARM": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "min_length": 1,
+                    "max_length": 128,
+                    "name": "session_id",
+                    "required": false,
+                    "type": "token",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "f0",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10,
+                    "min": 1,
+                    "name": "count",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 100000000.0,
+                    "min": 1.0,
+                    "name": "span",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_MODE": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "std",
+                        "harmonic",
+                        "pnm",
+                        "rta",
+                        "sdr"
+                    ],
+                    "default": "std",
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": true,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_PNM": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "min_length": 1,
+                    "max_length": 128,
+                    "name": "session_id",
+                    "required": false,
+                    "type": "token",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "center",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 30.0,
+                    "min": -150.0,
+                    "name": "threshold",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dBm"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 1000,
+                    "min": 1,
+                    "name": "traceavg",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 9000000.0,
+                    "min": 1.0,
+                    "name": "start",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10000000.0,
+                    "min": 1.0,
+                    "name": "stop",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_POINTS": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 16000,
+                    "min": 51,
+                    "name": "points",
+                    "required": true,
+                    "type": "integer",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": true
+        },
+        "SET_PRESET": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_RBW": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "manual",
+                        "auto",
+                        "one_thousandth_span",
+                        "one_percent_span"
+                    ],
+                    "default": "auto",
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10000000.0,
+                    "min": 1.0,
+                    "name": "rbw",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_REF": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "manual",
+                        "auto"
+                    ],
+                    "default": "manual",
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 200.0,
+                    "min": 5.0,
+                    "name": "range_db",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dB"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 40.0,
+                    "min": -160.0,
+                    "name": "ref",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dBm"
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_REFCK": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "internal",
+                        "external",
+                        "premium",
+                        "external_forced"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": true,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_REFCKOUT": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "on",
+                    "required": true,
+                    "type": "boolean",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_RTA": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "center",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 50781250.0,
+                    "min": 1000.0,
+                    "name": "span",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_SDR": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "center",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 2048,
+                    "min": 1,
+                    "name": "decimate",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_SDR_DDC": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 3,
+                    "min": 2,
+                    "name": "channel",
+                    "required": true,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "enabled",
+                    "required": false,
+                    "type": "boolean",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "freq",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_SDR_DEMOD": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": false,
+                    "type": "token",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": false,
+                    "max": null,
+                    "min": null,
+                    "name": "am_sync",
+                    "required": false,
+                    "type": "boolean",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 1000.0,
+                    "min": -1.0,
+                    "name": "deemph_us",
+                    "required": false,
+                    "type": "number",
+                    "unit": "us"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 500000.0,
+                    "min": 100.0,
+                    "name": "ifbw",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 0.0,
+                    "min": -150.0,
+                    "name": "squelch",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dBm"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 2.0,
+                    "min": 0.0,
+                    "name": "volume",
+                    "required": false,
+                    "type": "number",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 2000.0,
+                    "min": 200.0,
+                    "name": "pitch",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "agc",
+                    "required": false,
+                    "type": "boolean",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_SDR_TUNE": {
+            "denied_in_sdr": false,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "listen",
+                    "required": true,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_SPUR": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "bypass",
+                        "standard",
+                        "enhanced"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": true,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": true
+        },
+        "SET_SWEEP": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 8,
+                    "min": 0,
+                    "name": "mode",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 1000.0,
+                    "min": 0.0,
+                    "name": "time",
+                    "required": false,
+                    "type": "number",
+                    "unit": "s"
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_TRACEGRID": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "native",
+                        "start",
+                        "center"
+                    ],
+                    "default": "start",
+                    "max": null,
+                    "min": null,
+                    "name": "trace_align",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [
+                        "speed",
+                        "accuracy"
+                    ],
+                    "default": "speed",
+                    "max": null,
+                    "min": null,
+                    "name": "points_strategy",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": true
+        },
+        "SET_TRIGGER": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "bus",
+                        "freerun",
+                        "level",
+                        "external",
+                        "timer"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "source",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [
+                        "rising",
+                        "falling",
+                        "double"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "edge",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 30.0,
+                    "min": -150.0,
+                    "name": "level",
+                    "required": false,
+                    "type": "number",
+                    "unit": "dBm"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "safetime",
+                    "required": false,
+                    "type": "number",
+                    "unit": "s"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "delay",
+                    "required": false,
+                    "type": "number",
+                    "unit": "s"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "pretime",
+                    "required": false,
+                    "type": "number",
+                    "unit": "s"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 60.0,
+                    "min": 0.0005,
+                    "name": "acqtime",
+                    "required": false,
+                    "type": "number",
+                    "unit": "s"
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 65535,
+                    "min": 0,
+                    "name": "retrigger",
+                    "required": false,
+                    "type": "integer",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 3600.0,
+                    "min": 0.0,
+                    "name": "retriggerperiod",
+                    "required": false,
+                    "type": "number",
+                    "unit": "s"
+                },
+                {
+                    "choices": [
+                        "none",
+                        "per_hop",
+                        "per_sweep",
+                        "per_profile"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "out",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [
+                        "positive",
+                        "negative"
+                    ],
+                    "default": null,
+                    "max": null,
+                    "min": null,
+                    "name": "outpolarity",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": false,
+            "swp_only": false
+        },
+        "SET_VBW": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [
+                        "manual",
+                        "equal",
+                        "tenth",
+                        "bypass",
+                        "onethousandth"
+                    ],
+                    "default": "bypass",
+                    "max": null,
+                    "min": null,
+                    "name": "mode",
+                    "required": false,
+                    "type": "choice",
+                    "unit": ""
+                },
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 10000000.0,
+                    "min": 10.0,
+                    "name": "vbw",
+                    "required": false,
+                    "type": "number",
+                    "unit": "Hz"
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": false
+        },
+        "SET_WINDOW": {
+            "denied_in_sdr": true,
+            "needs_device": true,
+            "params": [
+                {
+                    "choices": [],
+                    "default": null,
+                    "max": 4,
+                    "min": 0,
+                    "name": "window",
+                    "required": true,
+                    "type": "integer",
+                    "unit": ""
+                }
+            ],
+            "session_exclusive": true,
+            "swp_only": true
+        },
+        "STATUS": {
+            "denied_in_sdr": false,
+            "needs_device": false,
+            "params": [],
+            "session_exclusive": false,
+            "swp_only": false
+        }
+    }
+}

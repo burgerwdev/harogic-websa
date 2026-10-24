@@ -1,9 +1,5 @@
 /**
- * Measurement tab registry (report finding E-5).
- *
- * `ui/measure.ts` used to hard-code the four tabs (amp/harm/pnm/chan) in two if/elif chains:
- * one to apply the measurement and one to toggle the tab DOM. The tabs register themselves
- * here instead, so a new measurement is one registration plus its own module.
+ * Measurement tabs register their actions and DOM identifiers here.
  *
  * Leaf module: the measurement modules must be able to register without importing the
  * measurement state machine back (which would create a cycle).

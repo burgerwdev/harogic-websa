@@ -5,7 +5,7 @@ import { parabolaFit, hasExcursion, findExtremesOrdered } from '../dsp/peaks';
 import { resampleTrace } from '../dsp/traces';
 import { applyTraceMode, processTraces } from '../dsp/traces';
 import { AVG_COUNTS, accumulateTrace, applyMode, setAverageCount } from '../dsp/accumulator';
-import { buildReferenceTablePub } from '../ui/normPub';
+import { buildReferenceTable } from '../dsp/normalize';
 import { percentileApprox, plausibleSpectrum } from '../dsp/stats';
 import {
   niceSpanStep,
@@ -23,6 +23,27 @@ import { synthBandpass, synthTwoPeaks } from './synth';
 
 beforeEach(() => {
   smoothBins.set(1);
+});
+
+describe('native swept detail', () => {
+  it('keeps close carriers separated by a deep real valley and a missing bin', () => {
+    const trace = S.traces[0];
+    const saved = { ...trace };
+    const gapFill = S.currentGapFill;
+    S.setCurrentGapFill(false);
+    try {
+      trace.mode = 'CLEAR_WRITE';
+      trace.raw = null;
+      trace.powers = null;
+      const levels = Float32Array.from([-100, -25, -95, -30, NaN, -100]);
+      processTraces(levels);
+      expect([...trace.powers!.slice(0, 4)]).toEqual([-100, -25, -95, -30]);
+      expect(Number.isNaN(trace.powers![4])).toBe(true);
+    } finally {
+      Object.assign(trace, saved);
+      S.setCurrentGapFill(gapFill);
+    }
+  });
 });
 
 describe('sgSmooth (Savitzky-Golay 2阶 + 梯度自适应)', () => {
@@ -395,7 +416,7 @@ describe('归一化参考构建(噪声源)', () => {
     // flat noise source: full band -80dB + ±1dB Gaussian fluctuation, no significant sources
     const p = new Float32Array(500);
     for (let i = 0; i < 500; i++) p[i] = -80 + (Math.random() - 0.5) * 2;
-    const ref = buildReferenceTablePub(p);
+    const ref = buildReferenceTable(p);
     // reference is close to the noise level (around -80, small fluctuation after smoothing)
     const refs = Array.from(ref);
     const avg = refs.reduce((a, b) => a + b, 0) / refs.length;
@@ -412,7 +433,7 @@ describe('归一化参考构建(合成直通响应)', () => {
     // direct pass: flat -30dB across the full band + noise
     const p = new Float32Array(500);
     for (let i = 0; i < 500; i++) p[i] = -30 + (Math.random() - 0.5) * 0.5;
-    const ref = buildReferenceTablePub(p);
+    const ref = buildReferenceTable(p);
     for (let i = 10; i < 490; i++) {
       expect(Math.abs(ref[i] - (-30))).toBeLessThan(2);
     }

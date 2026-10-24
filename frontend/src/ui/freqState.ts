@@ -4,7 +4,7 @@
  * One owner per parameter, the same rule as the SDR group: only the STATUS handler calls
  * confirm(), only user actions call set(), every reader goes through get().
  *
- * Three windows exist and must not be confused (this is what `swpCenterHz` was added for):
+ * Frequency windows have distinct owners:
  *   centerHz    - the active hardware window's centre; the STATUS `center` field is
  *                 mode-dependent, so in SDR it is the SDR centre
  *   swpCenterHz - the last centre confirmed by a SWP-family STATUS, i.e. the swept view's

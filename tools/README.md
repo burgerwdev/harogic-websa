@@ -1,100 +1,201 @@
-# tools
+# Tools
 
-Bench, fixture and gate scripts. Each directory has one purpose.
+Helpers for the native Rust service, committed fixtures, browser gates, and RF benches.
+Start with [Architecture](../docs/en/ARCHITECTURE.md), [API](../docs/en/API.md), and
+[Development](../docs/en/DEVELOPMENT.md) for runtime and protocol contracts.
+Python dependencies belong to these tools; the service runs through `./run.sh`,
+`./stop.sh`, and `./status.sh`.
 
-| Directory | What it holds |
+## Tool groups and dependencies
+
+| Group | Maintained purpose |
 | --- | --- |
-| `checks/` | Static gates that CI runs. No hardware. |
-| `fixtures/` | Generators for the committed fixtures and tables. CI runs `--check`. |
-| `pluto/` | Per-mode transmit generators for the PlutoSDR. Use `tools/pluto_tx.py`, not these files. |
-| `bench/` | Tools that need the SAN-90, the PlutoSDR or a running service. |
-| `analysis/` | Offline numeric and reference checks. No hardware. |
-| `e2e/` | Browser end-to-end probes (Playwright). |
-| `sdr_probe/` | Low-level SAN-90 probing notes and scripts. |
-| `vendor/` | Third-party sources (ggmorse) and their build script. |
+| `checks/` | Version, documentation, DOM/registration, architecture, and artifact gates. |
+| `fixtures/` | Generate/check committed wire, DSP, FT8, SSTV, and DRM fixtures and tables. |
+| `reference/`, `analysis/` | Offline SDK/DDC/demodulation references, DSP parity, and DRM oracle checks. |
+| `e2e/` | Playwright UI, receiver, state-transition, viewport, and screenshot tools. |
+| `bench/` | Native pipeline, numerical, service performance, capture/replay, and hardware diagnostics. |
+| `pluto/`, `pluto_tx.py` | RF signal generators behind one transmit entry point. |
+| `sdr_probe/` | SDK constraints, device helpers, and native IQ/audio/decode probes. |
+| `vendor/` | ggmorse sources, licensing, and artifact rebuild script. |
 
-## Transmit a test signal
+Run commands from the repository root. Install Python tools with
+`python3 -m pip install -r requirements-dev.txt`; use `requirements-lock.txt` for
+the pinned environment. Browser probes also need `python3 -m playwright install chromium`.
+Native DSP builds require Rust, `pkg-config`, FDK AAC 2.0.3 or newer, and a C++17
+compiler. Frontend builds require Node/npm. Browser reception uses native DSP;
+WASM builds remain explicit offline diagnostics.
 
-`tools/pluto_tx.py` is the one entry point. It lists and dispatches every mode.
+SAN-90 tools require the vendor SDK and exclusive device access. `make sdk-shim`
+builds the retained-session shim against SDK 0.55.100; override `SDK_ROOT` and
+`SDK_SHIM` for the local installation. Native hardware helpers take an explicit
+shim or `WEBSA_RUST_IQS_SHIM`. Pluto transmission requires a reachable ADALM-PLUTO,
+libiio, and pyadi-iio; tinySA helpers require pyserial and the selected serial port.
 
-    python3 tools/pluto_tx.py --list          # the modes and their tool
-    python3 tools/pluto_tx.py --dry-run-all   # build every mode, no radio
-    python3 tools/pluto_tx.py nfm --lo 411e6 --gain -10
-    python3 tools/pluto_tx.py wfm --rds-rt 'CQ DE N0CALL, bench RDS test' --rds-pi 0x1234
-    python3 tools/pluto_tx.py usb --wav tools/bench/audio/speech.wav --seconds 60
-    python3 tools/pluto_tx.py drm --iq drm_iq.wav --seconds 600
-    python3 tools/pluto_tx.py sstv --mode 'Robot 36' --callsign 'CQ WE0BSA'
-    python3 tools/pluto_tx.py sstv --image poster.png --repeat 3
+## Checks, fixtures, and references
 
-SSTV sends a picture as single-sideband tones: `--mode` picks one of the 18 modes the receiver can
-decode (`--list-modes` prints them with their lengths), `--image FILE` sends a PNG or PPM file
-(resized to the mode's resolution) instead of the generated test pattern, and `--callsign` is drawn
-into that pattern. A transmission is 36 s (Robot 36) to 406 s (Pasokon P7), so the baseband is
-synthesized in chunks and pushed as it is built rather than being handed to the driver whole.
+```sh
+make ci
+python3 tools/checks/check_docs_parity.py
+python3 tools/checks/check_doc_paths.py
+python3 tools/fixtures/gen_frame_fixtures.py --check
+python3 tools/fixtures/gen_dsp_fixtures.py --check
+python3 tools/fixtures/gen_ft8_fixtures.py --check
+python3 tools/fixtures/gen_sstv_fixtures.py --check
+```
 
-FM is `nfm` (3 kHz deviation) and `wfm` (75 kHz). `--wav FILE` sends a real audio
-file instead of a tone, which is the easy way to judge the decoded audio. It works
-for am/dsb/usb/lsb/nfm/wfm/pm, reads 8/16/24/32-bit PCM, defaults to the whole file,
-and is peak-normalised. `--voice` adds the real-transmitter SSB chain (300-2700 Hz
-band-pass + peak compression) for USB/LSB voice tests.
-`tools/bench/audio/speech.wav` is the committed voice sample (22050 Hz mono, 11.8 s):
-it is the default audio for the USB/LSB voice tests.
+`make ci` runs the in-process Rust/Python/frontend and fixture/static gates without
+hardware. See [fixture ownership](../tests/fixtures/README.md) before regenerating
+data. `tools/reference/` and `tools/analysis/` provide independent numerical
+comparisons; they do not run the HTTP service. DRM generation, capture, codec
+oracle, and AAC reserialization procedures are documented in
+[DRM bench](../docs/en/DRM_BENCH.md) ([中文](../docs/zh-CN/DRM_BENCH.md)) and
+[DRM AAC reserialization](../docs/en/DRM_AAC_RESERIALIZATION.md)
+([中文](../docs/zh-CN/DRM_AAC_RESERIALIZATION.md)).
 
-`--stereo FILE` alone sends true `wfm` stereo from a two-channel WAV. The tool sends
-M = (L+R)/2 at baseband and S = (L-R)/2 on 38 kHz. It adds the 19 kHz pilot without
-`--stereo-pilot`. The receiver builds L = M + S and R = M - S. Use programme audio
-band-limited to 15 kHz for a broadcast-standard signal. For a true MONO station,
-omit `--stereo`, `--stereo-pilot` and `--rds-rt`. `--stereo-pilot` on mono programme audio
-makes the receiver show STEREO, because the badge follows the pilot, not programme
-channel differences.
+Offline IQ replay uses the production receiver:
 
-`wfm --rds-rt TEXT` makes the transmission a broadcast station: RDS Group 2A
-RadioText, a Group 0A PS name and an optional Group 4A clock group, in biphase BPSK
-on the 57 kHz subcarrier of the composite. `--rds-ps`, `--rds-pi`, `--rds-pty` and
-`--rds-deviation-hz` set the name, the code, the type and the injection (2 kHz by
-default). Repeat `--rds-rt`, or separate the texts with commas, to rotate messages;
-each stays up for whole passes, at least two, because a receiver wants the repetition
-of a segment. Repeat `--rds-ps` to rotate the station name as well, which a real
-station does not do. `tools/pluto/rds_encode.py` is the encoder; Open Data, EON and
-the alternative frequencies are not implemented. RDS is wfm-only, because 57 kHz does
-not fit a narrowband FM channel.
+```sh
+cargo build -j 1 --release --manifest-path native-ddc/Cargo.toml --bin sdr_decode
+native-ddc/target/release/sdr_decode --input IQ.f32 --mode ft8 \
+  --input-rate 48000 --bandwidth 3000 --report-json /tmp/decode.json
+```
 
-A pass is the 16 RadioText segments as one burst of 1.4 s, then four PS groups, so a
-pass takes 1.75 s. The burst lets a receiver collect the whole text before a marginal
-signal drops a segment. The 19 kHz pilot belongs to the transmission
-(`--pilot-deviation-hz`, 0 to leave it out): EN 50067 locks the subcarrier to its
-third harmonic, so a radio that recovers its RDS clock from the pilot needs one.
-The pilot, data and audio share the deviation limit. The tool lowers only the
-programme level when needed; it keeps the pilot near 6.75 kHz and RDS near 2 kHz
-of deviation. `--no-audio` sends only pilot and RDS, a clean decoder test source.
-The tool encodes a continuous stream. `--rds-buffer` builds one rotation and lets
-the device repeat it without host-feed gaps.
+Input is interleaved f32le IQ. Add `--output-pcm /tmp/audio.f32` for interleaved
+f32le PCM; the report supplies its actual rate and channel count. A single PCM
+file rejects format changes, while report-only runs retain each format span.
+The decoder adds no input padding and flushes the remaining FT8 window at EOF.
 
-The per-mode generators live in `tools/pluto/`. Run one directly only when the
-wrapper cannot do what you need.
+## Browser and service benches
 
-## Receive a real transmission
+```sh
+make e2e-fake
+python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:8080
+python3 tools/e2e/state_regression.py --url http://127.0.0.1:8080
+make viewport-check
+make viewport-baseline VIEWPORT_JSON=/tmp/websa-viewport.json
+make bench
+```
 
-`tools/bench/hil_audio_check.py` captures the same channelized IQ the browser sees.
-Start WebSA on the SAN-90. Couple the PlutoSDR to its antenna, then run these in
-separate terminals:
+`make e2e-fake` builds and launches an isolated native fixture service. Direct
+probes, viewport targets, and `make bench` use a running service. Viewport output
+records current geometry; it is not an input for screenshot comparison.
+`bench/bench.py` consumes `bench/bench_baseline.json`; that historical baseline
+does not certify current native performance. `make bench-record` replaces it
+with measurements from the current host. Keep the configuration and report
+with any comparison.
 
-    python3 tools/pluto_tx.py wfm --no-audio --rds-rt 'RIG RDS OK 0123456789' \
-        --rds-ps 'RIG RDS' --lo 411e6 --gain -10
+Specialized `e2e/` probes cover trace reset, mode switches, WFM/RDS, FT8 window
+dragging, SSTV reception, and README screenshots. Check each tool's `--help` for
+its service and signal requirements. Browser acceptance must observe actual
+audio, decoded content, and images. Include independent tune/rate/mode changes,
+fractional IQ rates, and transitions between analog and codec modes. Capture
+cadence and combined trace/density/waterfall rendering have separate limits;
+a native 20-fps gate does not certify browser rendering or seamless playback.
 
-    python3 tools/bench/hil_audio_check.py --mode wfm --frequency 411e6 \
-        --seconds 8 --tinysa-port '' --decimate 16 --ifbw 180000 --out /tmp/hil_wfm.json
-    WEBSA_RDS_IQ=/tmp/hil_wfm.json cargo test --release --manifest-path wasm/Cargo.toml \
-        --test live_rds_capture -- --nocapture
+## RF transmit and capture
 
-The bench run captured 300.48 kSps with no gaps; the native replay decoded PI
-`0x1234`, RadioText and valid groups. Eight seconds can leave a partial PS name.
-For a mono test, transmit `wfm --wav tools/bench/audio/speech.wav` without a pilot.
-Set `WEBSA_RDS_EXPECT=mono` for its replay. A synthetic fixture cannot measure
-SAN-90 DDC filters or the noise near 57 kHz; keep the real-IQ replay for RDS changes.
+`pluto_tx.py` lists and dispatches the per-mode generators:
 
-## Common gates
+```sh
+python3 tools/pluto_tx.py --list
+python3 tools/pluto_tx.py --dry-run-all
+python3 tools/pluto_tx.py nfm --lo 411e6 --gain -10
+python3 tools/pluto_tx.py usb --wav tools/bench/audio/speech.wav --seconds 60
+python3 tools/pluto_tx.py wfm --no-audio --rds-rt 'RIG RDS OK 0123456789' \
+  --rds-ps 'RIG RDS' --lo 411e6 --gain -10
+python3 tools/pluto_tx.py sstv --mode 'Robot 36' --callsign 'CQ WE0BSA'
+python3 tools/pluto_tx.py drm --iq drm_iq.wav --seconds 600
+```
 
-    python3 tools/checks/check_docs_parity.py
-    python3 tools/fixtures/gen_dsp_fixtures.py --check
-    make ci
+Use `--wav` for analog programme audio, `--voice` for the USB/LSB voice chain,
+and `wfm --stereo FILE` for two-channel programme audio with a pilot. For a mono
+station omit stereo, pilot, and RDS options. RDS uses the WFM 57-kHz subcarrier;
+`--rds-buffer` enables cyclic playback. SSTV accepts `--image FILE` and
+`--list-modes`. Generator clock trim is device-specific; inspect the selected
+radio's options before relying on RF frequency accuracy.
+
+With the native service running and the transmitter coupled to the SAN-90,
+capture the channelized IQ for native analysis and repeatable replay:
+
+```sh
+python3 tools/bench/hil_audio_check.py --mode wfm --frequency 411e6 \
+  --seconds 8 --tinysa-port '' --ifbw 180000 --out /tmp/hil_wfm.json
+WEBSA_RDS_IQ=/tmp/hil_wfm.json cargo test -j 1 --release --manifest-path wasm/Cargo.toml \
+  --test live_rds_capture -- --nocapture
+```
+
+`hil_reference_check.py`, `ft8_capture_check.py`, and `ft8_reference_compare.py`
+retain native/oracle comparisons. Synthetic fixtures cannot establish RF filter,
+noise, or acquisition quality. For DRM, include acquisition after silence,
+signal-loss recovery, actual codec PCM, and browser playback; fixture loop seams
+and finite bursts can cause underruns.
+
+## SDR pipeline acceptance
+
+IQBF/IQAX v2 uses a 56-byte little-endian header. `channel_id`, `epoch`,
+`input_index`, and `group_delay_samples` begin at bytes 32, 36, 40, and 48;
+complex f32 IQ begins at byte 56. Stream identity is `(epoch, channel_id)`.
+Frequency is metadata. Registry, native channel clocks, and wire metadata must
+agree, including fractional rates and source-time positions. See the
+[architecture](../docs/en/ARCHITECTURE.md) and [API](../docs/en/API.md) contracts.
+
+Against a running hardware service, use explicit URLs and retain JSON reports:
+
+```sh
+python3 tools/bench/sdr_pipeline_controls.py --url http://127.0.0.1:8080 \
+  --center 411e6 --output /tmp/sdr-controls.json
+python3 tools/bench/sdr_pipeline_check.py --url http://127.0.0.1:8080 \
+  --seconds 60 --aux 410980000 --aux 411040000 --output /tmp/sdr-live.json
+```
+
+The control probe exercises identity, aux removal/recreation, retune/replan,
+rejected requests, and old-tail ordering before a new `seq=0`. Command replies
+must have matching registry/clock keys; `SET_MODE std` empties both arrays.
+The live probe checks continuity, error counters, and 20-fps spectrum delivery.
+Its positive wire/native clock skew allowance is 1.5 seconds for cached status
+and framing/scheduling. This sampling allowance does not prove drained sample
+conservation or alter recovery thresholds.
+
+Stop the service before the internal hardware fixture. Build first, then keep
+the device window free of builds, tests, browsers, and other session work:
+
+```sh
+./stop.sh
+native-ddc/target/release/websad --sdr-pipeline-bench \
+  --product-channels true --seconds 60 --warmup 5 \
+  --shim "$WEBSA_RUST_IQS_SHIM" --center 411000000 --output /tmp/sdr-product-60.json
+```
+
+Set `WEBSA_RUST_IQS_SHIM` to the matching built shim. This fixture runs three
+native receivers: WFM 180 kHz, AM 6 kHz, and CW 500 Hz, with independent rates,
+full-band display D=1, and 16 taps. After the 60-second zero-queue-full screen,
+run the same command with `--seconds 600` and a separate output path. Require
+zero queue-full events, recovery, failed fetches, skips, and stamp gaps. After
+shutdown, compare every delivered sample count with its stopped native clock;
+sequence checks alone cannot prove conservation. Keep failed reports.
+
+For a channelizer-only workload, replace `--product-channels true` with
+`--channels 4 --taps 16 --display-decimate 1 --fine-decimate 3`. Requested load
+does not bypass admission. Fine/framer admission and receiver runtime cost have
+different scopes; neither certifies unmeasured RF, network, or recording work.
+The backend has one primary receiver and two auxiliary slots; the current product UI exposes only the primary receiver and disables auxiliaries on entering SDR.
+
+## Native hardware diagnostics
+
+`make hw-test` runs tinySA/SAN-90 smoke, command sweep, and UI state regression.
+The retained `bench/rust_*` tools cover SWP calibration/drift, mode changes,
+PNM/harmonics, unplug recovery, and RF measurements. They use the native service
+and restore it through the root scripts. `sdr_raw_iqs_check.py` and
+`sdr_pfb_hil.py` inspect raw SDK timing and bounded PFB scheduling;
+`sdr_pfb_bench.py` and `sdr_channelizer_ab.py` provide numerical/throughput
+comparisons. Their scope is narrower than integrated product acceptance.
+
+[SDK findings](sdr_probe/FINDINGS.md) records current device constraints. Keep
+one retained SDK session and stable handle slot on its owning thread, configure
+before arming capture, and fetch IQ/FFT/warning/timing atomically through
+`san90_next_v3`. Valid IQ returned with warning `-12` retains its original
+stamps; saturation is separate from failed fetches. Hardware diagnostics must
+observe clock continuity and PCM/decode progress during saturation, Ref changes,
+Preset, and mode transitions. These commands describe acceptance procedures;
+this guide does not assert a fresh hardware validation result.

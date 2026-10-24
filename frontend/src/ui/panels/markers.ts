@@ -1,5 +1,4 @@
 // Marker panel: selection, peak/valley navigation, centring and tracking.
-// Extracted from ui/controls.ts (report finding P1-5).
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 import { markerFreqHz } from '../../core/markerCommon';
@@ -7,15 +6,15 @@ import { getTheme } from '../../core/theme';
 import { send } from '../../core/wsSend';
 import { assignMarkerToBestPeak, toggleMarkerTracking } from '../../dsp/markerTracking';
 import { findExtremesOrdered, getDisplayPowers, nextExtreme, parabolaFit, setMarkerIdx } from '../../dsp/peaks';
-import { plotRect } from '../../render/plot';
+import { nearestIdxAtX } from '../../render/plot';
 import { requestRender } from '../../render/redraw';
 import { currentGraphMode } from '../graphMode';
-import { isZoomed, nearestIdxForFreq } from '../spectrumViewport';
-import { spectrumFreqAtX } from '../spectrumZoomGestures';
 import { valleySeqPos } from '../measurePrefs';
 import { updateFreqUIInputs } from '../freqInputs';
 import { sdrCenterHz, sdrDecimate } from '../sdrState';
-import { centerHz, rtaCenterHz, spanHz } from '../freqState';
+import { spanHz } from '../freqState';
+import { beginFrequencyCommit } from './frequency';
+import { beginRtaAxisTransition } from './rta';
 
 export function activeMarkerPeak() {
   const p = getDisplayPowers(); if (!p) return;
@@ -48,20 +47,21 @@ export function markerToCenter() {
   const m = S.markers.find(x => x.id === S.activeMkrId);
   if (!m || !m.enabled) return;
   const center = markerFreqHz(m.idx);
-  // `S.rtaMode` is true for BOTH rta and sdr; it used to send SET_RTA in SDR mode, which
-  // the backend refuses (SET_RTA requires RTA mode) — the press then did nothing.
+  // S.rtaMode includes SDR; use the graph mode to select the backend command.
   if (currentGraphMode() === 'sdr') {
     // SET_SDR retunes the demod to the new centre, so the listen frequency follows the
     // marked signal — the same "put this signal at the centre" semantics as in SWP.
     sdrCenterHz.set(center);
     send({ cmd: 'SET_SDR', center, decimate: Math.round(sdrDecimate.get()) });
   } else if (currentGraphMode() === 'rta') {
-    rtaCenterHz.set(center);
-    send({ cmd: 'SET_RTA', center });
+    const request_id = beginFrequencyCommit('rta-freq-settings', { center, span: spanHz.get() });
+    beginRtaAxisTransition(request_id);
+    send({ cmd: 'SET_RTA', center, request_id });
   } else {
-    centerHz.set(center);
+    const window = { center, span: spanHz.get() };
+    const request_id = beginFrequencyCommit('swp-freq-settings', window);
     updateFreqUIInputs();
-    send({ cmd: 'SET_FREQ', center: centerHz.get(), span: spanHz.get() });
+    send({ cmd: 'SET_FREQ', ...window, request_id });
   }
 }
 
@@ -75,6 +75,7 @@ export function selectMarker(id: number) {
   m.enabled = true;
   if (m.mode === 'OFF') m.mode = 'NORMAL';
   autoTrackMarker(m);
+  updateMarkersAllBtn();
   syncMarkerTrackingToggle();
   requestRender();
 }
@@ -128,17 +129,6 @@ export function toggleMarkersAll() {
 }
 
 export function placeMarkerFromX(x: number, p: Float32Array) {
-  // Under a display zoom the pixel→frequency mapping is the view window: place the marker
-  // on the nearest REAL sample of the zoomed x (design §4.4). Identity path otherwise.
-  if (isZoomed()) {
-    const f = spectrumFreqAtX(x);
-    const fa = S.freqArray;   // local: narrowing a live re-export binding does not stick
-    if (f != null && fa && fa.length > 1) {
-      setMarkerIdx(nearestIdxForFreq(fa, f));
-      return;
-    }
-  }
-  const pr = plotRect();
-  const frac = (x - pr.x) / pr.w;
-  setMarkerIdx(Math.round(frac * (p.length - 1)));
+  // Search the drawn native-Hz positions in both full capture and local zoom.
+  setMarkerIdx(nearestIdxAtX(x, p.length));
 }

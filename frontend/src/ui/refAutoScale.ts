@@ -1,48 +1,54 @@
 /**
  * Auto Scale - one-shot reference placement (the Ref panel's Auto button).
  *
- * The reference used to be a tracking mode: the backend re-decided every frame and paid a full
- * device reconfiguration whenever the value changed. Measured on the bench, one correction takes
- * 1.86 s while the loop sat idle afterwards, and nothing in the UI showed that anything was
- * happening. So "Auto" is an action, not a mode (as on a bench analyser: Keysight Auto Scale,
- * R&S Auto Level, Anritsu Auto Scale), and pressing it must show what it is doing.
+ * Auto Scale is an explicit one-shot action with visible progress.
  *
- * One implementation, three modes: the backend runs the placement rule (`AUTO_SCALE`) - SDR
- * included, where the target is still its IQS level. SDR's *display* scale is client-side, so this
- * module applies the reported target to the display reference there; in SWP/RTA the displayed
- * scale is the device reference, which the backend has already applied.
+ * The backend runs a bounded recovery and placement session for explicit Auto requests.
+ * SDR entry instead requests display_only placement. SDR's display scale is client-owned;
+ * only a successful final placement may move it.
  */
 import { t } from '../core/i18n';
-import { displayRefDiverges, getDisplayRef, setDisplayRef } from './displayRef';
-import { send } from '../core/wsSend';
+import { cancelDisplayRefRequest, displayRefDiverges, getDisplayRef, setDisplayRef } from './displayRef';
+import { onCommandSent, send } from '../core/wsSend';
 import * as S from '../core/store';
 import { currentGraphMode } from './graphMode';
 import { requestRender } from '../render/redraw';
+import { prepareSdrAudioTransition } from '../audio/sdrAudio';
+import { refLevel } from './refState';
 
-/** Results that mean "a level was placed": the only ones the display may follow. */
-const PLACED_RESULTS = new Set(['applied', 'clipped', 'below_window', 'overflow']);
+interface AutoRefStatus {
+	result?: unknown;
+	target?: unknown;
+	seq?: unknown;
+	adjusting?: boolean;
+	hardware_adjusting?: boolean;
+	last_peak?: number | null;
+	last_noise_floor?: number | null;
+}
+
+/** Only successful placement is allowed to change the SDR display reference. */
+const PLACED_RESULTS: Record<string, true> = { applied: true };
 
 /** How long the button keeps glowing when the backend gives no answer at all. */
 const BUSY_FALLBACK_MS = 4000;
 /** SDR: the display fit is asked for on the first frame after entering the mode. */
 const ENTRY_FIT_MAX_ATTEMPTS = 12;
-/** ...and repeated at most this often while the backend has no trace yet.
- *
- * Comfortably longer than a decision takes (the fit reconfigures and answers in about a second):
- * a shorter retry put several requests in flight, so a first entry produced two decisions - the
- * first wrote the device level and the second only the display, leaving the two 15 dB apart. */
+/** Minimum retry interval while the backend has no trace to fit. */
 const ENTRY_FIT_RETRY_MS = 1600;
 
 let busyUntil = 0;
+let backendAdjusting = false;
+let ignoreAutoStatus = false;
+let awaitingAutoAck = false;
+let autoRequestSerial = 0;
+let pendingAutoRequestId: string | null = null;
+let highestSeq = -1;
+let explicitSdrAuto = false;
+let audioTransitionPrepared = false;
+let lastStatusWarning = 0;
 let entryFitPending = false;
 let entryFitAttempts = 0;
-/**
- * One entry-fit request may be outstanding at a time.
- *
- * The retry exists for the case where the backend has no trace yet (`no_data`); sending a second
- * request before the first is answered made a first entry produce TWO decisions - the first wrote
- * the SDR's device level, the second only the display scale, which left them 15 dB apart (measured).
- */
+/** At most one entry-fit request may be outstanding; retry no_data only after its answer. */
 let entryFitInFlight = false;
 let nextEntryAttempt = 0;
 /** The last decision the UI has seen (`auto_ref.seq`), so a sticky result is not mistaken for
@@ -55,37 +61,16 @@ function button(): HTMLButtonElement | null {
 	return document.getElementById('btn-ref-auto') as HTMLButtonElement | null;
 }
 
-/** Generation of the last notice, so an older timer cannot clear a newer message.
- *
- * Comparing the text instead looked fine until the same message was shown twice in a row (an
- * entry fit and a press both reporting "no signal"): the first timer then wiped the second one
- * early, and the user saw nothing. */
+/** Notice generation prevents older timers from clearing newer notices. */
 let noticeSeq = 0;
 
-/**
- * What the current notice is about.
- *
- * A *refusal* ("no signal to fit", "waiting for a trace") is a statement about the measurement in
- * front of the user, so it must be withdrawn as soon as that statement stops being true - it used
- * to sit there for its full 6 s while the signal was already on the display (reported). Timing
- * alone cannot know that, so the observation the decision was made from is kept here.
- */
+/** Source observation used to withdraw refusal notices once they become stale. */
 let noticeAbout: { result: string; peak: number | null; floor: number | null } | null = null;
 
 /** The observation has to move this much before a refusal is considered stale. */
 const NOTICE_STALE_DB = 3.0;
 
-/**
- * Post a transient message to the canvas status stack (under the warnings).
- *
- * It used to sit in the Ref parameter row, where every message moved the input, the buttons and
- * the arrows sideways; the group head only moved the problem. The canvas is also where the
- * condition this answers is drawn (`!IF overflow`), so cause and result are seen together.
- *
- * Canvas text is painted during a render pass, so both posting and clearing must ask for a
- * repaint: an overflowing IF sends no frames, and a message posted from that state would simply
- * never appear (DEVELOPMENT §8).
- */
+/** Post a canvas status notice and repaint independently of incoming frames. */
 export function postRefNotice(text: string, holdMs = 4000,
                               about: typeof noticeAbout = null): void {
 	const id = ++noticeSeq;
@@ -133,35 +118,24 @@ function setBusy(on: boolean): void {
 	if (b) b.classList.toggle('busy', on);
 }
 
-/** Say what the fit decided. The level is always named when one was applied. */
-function announce(result: string, target: unknown, a?: any): void {
-	// The observation the decision came from, so a refusal can be withdrawn when it goes stale.
+/** Say what the session decided; failures never announce an old target as a placement. */
+function announce(result: string, target: unknown, a?: AutoRefStatus): void {
 	const about = { result, peak: a?.last_peak ?? null, floor: a?.last_noise_floor ?? null };
-	if (result === 'no_signal') postRefNotice(t('auto_scale_no_signal'), 6000, about);
-	else if (result === 'no_data') postRefNotice(t('auto_scale_no_data'), 6000, about);
+	if (result === 'no_data') postRefNotice(t('auto_scale_no_data'), 6000, about);
 	else if (result === 'ok') postRefNotice(t('auto_scale_ok'), 2500, about);
-	else if (target != null) {
-		// 'applied', but also the automatic safety corrections ('clipped'/'below_window'/
-		// 'overflow'): when the display moves on its own, the reason and the new level must be
-		// visible.
+	else if (result === 'applied' && target != null && Number.isFinite(Number(target))) {
 		postRefNotice(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000, about);
+	} else if (['limit', 'stalled', 'failed', 'cancelled', 'overflow', 'timeout'].includes(result)) {
+		postRefNotice(t(`auto_scale_${result}`), 6000, about);
 	}
 }
 
 /** True while a fit is in flight: drives the glow (cleared by the STATUS handler). */
 export function autoScaleBusy(): boolean {
-	return performance.now() < busyUntil;
+	return backendAdjusting || performance.now() < busyUntil;
 }
 
-/**
- * Entering SDR: does this mode already have a level of its own?
- *
- * The backend reports it (`sdr.ref_set`). Until it does, entering SDR places the trace ONCE - that
- * placement IS the SDR level, written to the device so the display and the device agree. Once it
- * exists the level is the user's: a fit is display-only and nothing may move it (reported: "the Ref
- * I set in SDR was changed when I came back from RTA", and a first entry left the trace below the
- * bottom edge because the fit judged the placement against the previous mode's display level).
- */
+/** Whether SDR already has a user-owned hardware level; fitting affects the client display. */
 let sdrHasOwnLevel = false;
 
 /** One-shot: on entry the display scale follows the level the SDR itself stores. */
@@ -169,13 +143,7 @@ let entrySyncPending = false;
 /** The SDR level the last STATUS reported. */
 let reportedSdrRef: number | null = null;
 
-/**
- * STATUS arrived with the SDR block: remember whether a level exists, and (once per entry) bring the
- * display scale onto it.
- *
- * The display ref is a single client value shared by the modes, so without this a visit to RTA left
- * its level on the SDR axis - and the entry fit then judged the placement against that number.
- */
+/** Remember the reported SDR reference and synchronize the display once per entry. */
 export function noteSdrRefState(sdr: any): void {
 	const ref = Number(sdr?.ref);
 	if (isFinite(ref)) reportedSdrRef = ref;
@@ -190,10 +158,7 @@ export function noteSdrRefState(sdr: any): void {
 	if (currentGraphMode() !== 'sdr' || reportedSdrRef === null) { note('not-sdr'); return; }
 	if (!entrySyncPending) { note(sdrHasOwnLevel ? 'own-level' : 'fit-armed'); return; }
 	entrySyncPending = false;
-	// NOW we know whether this SDR has a level of its own, which decides the whole entry: a
-	// level-less one gets a bounded placement (a few rounds, each one IQS write), and one that has a
-	// level is only mirrored - never fitted, never written (that is the reported bug this round
-	// exists for).
+	// Synchronize once after a finite SDR reference arrives, unless user intent owns the display.
 	if (displayRefDiverges()) { note('user-request-in-flight'); return; }   // it owns the display
 	if (Math.abs(reportedSdrRef - getDisplayRef()) < 0.5) { note('already-on-it'); return; }
 	setDisplayRef('sdr', reportedSdrRef);
@@ -208,6 +173,16 @@ export function clearSdrEntryState(): void {
 
 /** The user pressed Auto Scale. */
 export function autoScaleRequest(): void {
+	cancelDisplayRefRequest();
+	refLevel.reset();
+	document.getElementById('input-ref')?.classList.remove('ref-pending');
+	ignoreAutoStatus = false;
+	awaitingAutoAck = true;
+	pendingAutoRequestId = `ref-auto-${++autoRequestSerial}`;
+	backendAdjusting = false;
+	explicitSdrAuto = currentGraphMode() === 'sdr';
+	audioTransitionPrepared = false;
+	if (explicitSdrAuto && lastStatusWarning === -12) prepareAutoAudioTransition();
 	// A press supersedes an entry fit that is still looking for a trace.
 	entryFitPending = false;
 	entryFitInFlight = false;
@@ -216,8 +191,8 @@ export function autoScaleRequest(): void {
 	// of that window, and the backend cannot see the client's dB/div setting.
 	send({
 		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
-		// The level the user sees: in SDR the display scale is client-side, and judging the fit
-		// against the device level instead left a clipped display unchanged (measured).
+		request_id: pendingAutoRequestId,
+		// Fit against the visible client display level.
 		current_ref: getDisplayRef(),
 	});
 	busyUntil = performance.now() + BUSY_FALLBACK_MS;
@@ -227,15 +202,13 @@ export function autoScaleRequest(): void {
 /**
  * Arm the entry hand-off for SDR (see `noteSdrRefState`) and one fit for a level-less SDR.
  *
- * The parameter `syncToReportedLevel` serves a *preset*. A preset makes the SDR level-less again,
- * so the display needs a new placement. But the display scale must not first move to the factory
- * level that the device reports. The factory level is 0 dBm. It puts a -113 dBm panadapter under
- * the bottom edge while the fit is in flight.
- *
- * Set the parameter to false for a preset. The placement of the fit is absolute, so the client
- * keeps its scale until the answer arrives.
+ * For Preset, pass false to retain the display scale until the fit's absolute target arrives.
  */
 export function requestSdrEntryFit(syncToReportedLevel = true): void {
+	ignoreAutoStatus = false;
+	backendAdjusting = false;
+	explicitSdrAuto = false;
+	awaitingAutoAck = false;
 	entryFitPending = true;
 	entrySyncPending = syncToReportedLevel;
 	entryFitAttempts = 0;
@@ -260,92 +233,82 @@ export function maybeRequestSdrFit(): void {
 	// only move a scale the operator chose while looking at the trace.
 	if (sdrHasOwnLevel) {
 		entryFitPending = false;
+		busyUntil = 0;
+		setBusy(false);
 		return;
 	}
 	const now = performance.now();
 	if (now < nextEntryAttempt || entryFitInFlight) return;   // one request outstanding at a time
 	if (entryFitAttempts++ >= ENTRY_FIT_MAX_ATTEMPTS) {
 		entryFitPending = false;
+		busyUntil = 0;
+		setBusy(false);
 		return;
 	}
 	nextEntryAttempt = now + ENTRY_FIT_RETRY_MS;
 	entryFitInFlight = true;
+	awaitingAutoAck = true;
+	pendingAutoRequestId = `ref-auto-${++autoRequestSerial}`;
 	send({
 		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
 		current_ref: getDisplayRef(),
+		display_only: true,
+		request_id: pendingAutoRequestId,
 	});
 	busyUntil = now + BUSY_FALLBACK_MS;
 }
 
 /**
- * STATUS arrived: clear the glow, follow the decision in SDR and report the outcome.
- *
- * `auto_ref.result` is sticky, so only a change is announced - otherwise the message would
- * reappear after every unrelated status.
+ * STATUS arrived: keep the glow for the whole backend session, then follow its final placement.
+ * The backend acknowledges each request with adjusting before producing a terminal result.
  */
-export function syncAutoScaleStatus(s: any): void {
+export function syncAutoScaleStatus(s: { status_warning?: unknown; response_to?: unknown; request_id?: unknown; auto_ref?: AutoRefStatus }): void {
+	if (s?.status_warning != null) lastStatusWarning = Number(s.status_warning);
 	const a = s?.auto_ref;
 	if (!a) return;
 	const result = String(a.result ?? 'idle');
 	const target = a.target;
 	const seq = Number(a.seq ?? -1);
-
-	// While the device is still settling, a decision is not yet the final word: keep glowing and
-	// do not consume the sequence number, so the settled report is still treated as the answer.
+	if (!Number.isFinite(seq) || seq < highestSeq) return;
+	if (ignoreAutoStatus) {
+		highestSeq = Math.max(highestSeq, seq);
+		return;
+	}
+	const acknowledged = pendingAutoRequestId !== null && s.response_to === 'AUTO_SCALE'
+		&& s.request_id === pendingAutoRequestId;
+	if (awaitingAutoAck && !acknowledged) return;
+	if (acknowledged) {
+		awaitingAutoAck = false;
+		pendingAutoRequestId = null;
+	}
 	if (a.adjusting) {
+		highestSeq = seq;
+		awaitingAutoAck = false;
+		backendAdjusting = true;
+		if (explicitSdrAuto && a.hardware_adjusting) prepareAutoAudioTransition();
+		setBusy(true);
+		return;
+	}
+	if (awaitingAutoAck || seq === lastSeq) {
 		setBusy(autoScaleBusy());
 		return;
 	}
-	// The SEQUENCE is the authority on "is this a new answer", not the result string: a manual Ref
-	// write resets the backend's sticky `result` to `idle`, and when that arrives in the same STATUS
-	// as a fit's answer the pair reads as "idle with a new seq". Treating `idle` as "nothing new"
-	// dropped that answer AND left the sequence unconsumed, which also kept the entry fit's
-	// in-flight flag set - so an SDR entry stopped placing after its first step (measured).
-	if (seq === lastSeq) {
-		setBusy(autoScaleBusy());
-		return;
-	}
+	highestSeq = seq;
 	lastSeq = seq;
-	if (result === 'idle') {
-		// A new sequence with nothing placed: consume it (so the next answer is not mistaken for a
-		// repeat) and clear the in-flight flag, but move nothing.
-		entryFitInFlight = false;
-		setBusy(autoScaleBusy());
-		return;
-	}
-	entryFitInFlight = false;              // this decision is the answer to whatever was in flight
+	backendAdjusting = false;
+	entryFitInFlight = false;
+	if (!PLACED_RESULTS[result]) appliedTarget = null;
 
 	if (currentGraphMode() === 'sdr' && result !== 'no_data') {
-		// The backend answered, so the entry fit has done its job: without this the request was
-		// repeated on every frame, and each of those decisions cleared the button's glow.
+		// Any answer other than no_data completes the entry fit.
 		entryFitPending = false;
 		const before = Math.round(getDisplayRef());
-		// The display scale belongs to the client: apply the level the backend placed. Only the
-		// results that come back from an application do that - a refusal carries a stale target
-		// (`auto_ref.target` is the last APPLIED level) and must never move the display - and the
-		// target check skips a repeat.
-		//
-		// The names mirror auto_reference.py's vocabulary: 'applied' from a fit, 'clipped' and
-		// 'below_window' when the fit itself classified the placement, 'overflow' from the IF
-		// escape. Renaming one there without updating this list is what the e2e caught once (the
-		// SDR correction stopped reaching the screen).
-		//
-		// An automatic correction moves the display even when the user set the level by hand: it
-		// fires precisely because that level left the trace clipped or off-screen, and the hint
-		// names the new level, so leaving the canvas alone announced a change that never happened
-		// (reported: "Ref decreased to -50 dBm, warning, hint says it adjusted, but the trace and
-		// the Ref box did not move"). A queued update from before the manual edit is dropped by the
-		// backend epoch instead.
-		const placed = PLACED_RESULTS.has(result);
-		const move = placed && target != null && Number(target) !== appliedTarget;
+		// Refusals and cancellation never move the scale, even if a stale target is present.
+		const placed = PLACED_RESULTS[result] === true;
+		const move = placed && target != null && Number.isFinite(Number(target)) && Number(target) !== appliedTarget;
 		if (move) {
 			appliedTarget = Number(target);
-			// DISPLAY only, always: the SDR scale belongs to the client, and the fit's target is
-			// computed from the measured ABSOLUTE levels, so setting it places the trace in ONE
-			// decision - instant, no device write, no audio interruption, no rounds. Writing the IQS
-			// level from the fit is what made an entry reconfigure the stream several times (measured:
-			// a write moved the trace the fit was reading, so it wrote again), and the level the user
-			// set stays exactly where they put it.
+			// Apply the absolute fit target to the client display, preserving the IQS reference.
 			setDisplayRef('auto', appliedTarget);
 		}
 		const cv = document.getElementById('spectrum');
@@ -356,6 +319,7 @@ export function syncAutoScaleStatus(s: any): void {
 			const shown = Math.round(getDisplayRef());
 			if (move) cv.dataset.sdrRef = String(shown);
 			cv.dataset.sdrRefDbg = JSON.stringify({
+				seq, result,
 				noise: a.last_noise_floor == null ? null : Math.round(a.last_noise_floor),
 				peak: a.last_peak == null ? null : Math.round(a.last_peak),
 				range: S.totalDivs * S.dbPerDiv,
@@ -368,11 +332,20 @@ export function syncAutoScaleStatus(s: any): void {
 	busyUntil = 0;                         // the device answered: drop the local fallback
 	setBusy(false);
 	announce(result, target, a);
+	explicitSdrAuto = false;
 }
 
 /** Preset (or a fresh start): forget what Auto last did, so nothing stale blocks a new fit. */
 export function resetAutoScaleState(): void {
 	lastSeq = -1;
+	highestSeq = -1;
+	backendAdjusting = false;
+	ignoreAutoStatus = false;
+	awaitingAutoAck = false;
+	pendingAutoRequestId = null;
+	explicitSdrAuto = false;
+	audioTransitionPrepared = false;
+	lastStatusWarning = 0;
 	appliedTarget = null;
 	entryFitPending = false;
 	entryFitInFlight = false;
@@ -381,13 +354,16 @@ export function resetAutoScaleState(): void {
 }
 
 /**
- * A manual Ref edit happened: forget the pending bookkeeping and any leftover message.
- *
- * A sticky STATUS is already harmless - it carries the sequence number of a decision the UI has
- * seen, so it is never mistaken for a new answer (`syncAutoScaleStatus`) - and clearing
- * `appliedTarget` here means a later press may land on the same level again.
+ * Manual intent cancels the pending fit immediately. Ignore its queued ACK/final target until
+ * another local Auto request (or SDR entry fit) establishes a new session.
  */
 export function clearAutoScaleHint(): void {
+	ignoreAutoStatus = true;
+	backendAdjusting = false;
+	awaitingAutoAck = false;
+	pendingAutoRequestId = null;
+	explicitSdrAuto = false;
+	entrySyncPending = false;
 	entryFitPending = false;
 	entryFitInFlight = false;
 	busyUntil = 0;
@@ -397,3 +373,16 @@ export function clearAutoScaleHint(): void {
 	// one being asked for, and reads as "the app adjusted something just now".
 	withdrawNotice();
 }
+
+function prepareAutoAudioTransition(): void {
+	if (audioTransitionPrepared) return;
+	audioTransitionPrepared = true;
+	prepareSdrAudioTransition();
+}
+
+onCommandSent(command => {
+	const cmd = String(command.cmd ?? '');
+	if (cmd.startsWith('SET_') && !(cmd === 'SET_REF' && command.mode === 'auto')) {
+		clearAutoScaleHint();
+	}
+});

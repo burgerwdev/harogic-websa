@@ -115,6 +115,5 @@ const diagnostics = window as unknown as {
 };
 diagnostics.websaSpectrum = sampleSpectrum;
 diagnostics.websaEnvelope = sampleEnvelope;
-// Repaint accounting (sampling it over time answers "how much do we redraw, and what
-// triggered it") without touching the hot path.
+// Repaint diagnostics expose request frequency and triggers without adding work to the render path.
 diagnostics.websaRenderRequests = renderRequestCount;

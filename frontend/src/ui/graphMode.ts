@@ -1,10 +1,8 @@
 /**
  * Acquisition-mode handshake.
  *
- * The backend owns the mode; the front end may *ask* for another one and must wait for a
- * STATUS that reports it. The previous attempt at this slice was reverted because a pending
- * request blocked new ones (the "switching is slow / needs a second click" symptom). It is
- * rebuilt here against four disciplines:
+ * Backend confirmation owns the displayed mode. Newer requests supersede pending ones
+ * according to four disciplines:
  *
  *   1. id-matched ack   - only a STATUS that reports the newest requested mode is accepted;
  *                         an older reply (or a STATUS still on the old mode) is ignored.
@@ -31,15 +29,8 @@ export function isGraphMode(v: string): v is GraphMode {
 export const GRAPH_MODE_TTL_MS = 8000;
 
 /**
- * The mode the DEVICE reports, verbatim (`STATUS.mode`), including the measurement sessions.
- *
- * `graphMode` deliberately only knows the three view modes, so 'harmonic' / 'pnm' - which own the
- * device while they run - were dropped on the floor: the client could not tell that a measurement
- * was active unless IT had started one, and a measurement started elsewhere (a script, another
- * client, a restored session) left every mode-gated behaviour believing the swept/RTA view owned the
- * device. Measured: entering the harmonic mode through the API and dragging the frequency axis then
- * produced one alert per command, because the gesture sent SWP-owned commands that the command layer
- * refuses while a measurement owns the device.
+ * The device-reported mode (`STATUS.mode`), including measurement sessions.
+ * This gates device-owned actions independently of the three graph view modes.
  */
 export const deviceMode = createParam<string>('device.mode', { fallback: 'std', scope: 'mode' });
 
@@ -90,15 +81,13 @@ function clearWatchdog(): void {
 
 /**
  * Record a request. A newer request replaces the previous one (discipline 2) and restarts
- * the timeout; asking for the mode we are already in is a no-op.
+ * the timeout; asking for the current mode is a no-op.
  */
 export function requestGraphMode(target: GraphMode): void {
 	if (pendingGraphMode() === null && target === currentGraphMode()) return;
 	graphMode.set(target);
-	// A re-click on the same pending target no-ops in `set` (same desired value) but DOES
-	// restart the watchdog below: refresh the intent clock with it, or the param TTL from
-	// the FIRST click expires while the second watchdog is still waiting — it then finds
-	// `pending()` false and returns without ever telling the user the switch failed.
+	// Re-clicking a pending target restarts both the intent expiry and watchdog so their
+	// deadlines stay aligned and an unconfirmed request still reports its timeout.
 	graphMode.touch(target);
 	clearWatchdog();
 	const id = graphMode.epoch;
@@ -116,7 +105,7 @@ export function requestGraphMode(target: GraphMode): void {
  */
 export function confirmGraphMode(mode: GraphMode): boolean {
 	const want = pendingGraphMode();
-	if (want !== null && mode !== want) return false;   // an older reply: not our answer yet
+	if (want !== null && mode !== want) return false;   // Ignore reports that do not match the pending request.
 	const changed = graphMode.confirm(mode);
 	if (want !== null && mode === want) clearWatchdog();
 	return changed;

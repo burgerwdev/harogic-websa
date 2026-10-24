@@ -1,10 +1,7 @@
 /**
  * Measurement-panel visibility (leaf).
  *
- * `ui/measure.ts` owns the measurement state machine, but the harmonic and phase-noise
- * modules need to refresh the panel after a measurement completes. Importing that back
- * from measure.ts created a cycle; the DOM-only helpers live here instead
- * (docs/.../ARCH_REVIEW.md finding P1-4).
+ * Shared visibility helpers for the measurement state machine and completed measurements.
  */
 import * as S from '../core/store';
 import { t } from '../core/i18n';
@@ -12,6 +9,7 @@ import { syncChanTableVisibility } from '../meas/channel';
 import { setWaterfall } from './panels/waterfall';
 import { waterfallOn } from './waterfallState';
 import { syncSpectrumZoomUi } from './spectrumZoomUi';
+import { measurementsAvailable } from './measurementAvailability';
 
 //: Waterfall state before the measurement took it over (null = not measuring).
 let waterfallBeforeMeasure: boolean | null = null;
@@ -24,7 +22,7 @@ let waterfallBeforeMeasure: boolean | null = null;
 function syncWaterfallAvailability(): void {
   const button = document.getElementById('btn-waterfall') as HTMLButtonElement | null;
   const pause = document.getElementById('btn-wf-pause') as HTMLButtonElement | null;
-  if (S.measOn) {
+  if (S.measOn && measurementsAvailable()) {
     if (waterfallBeforeMeasure === null) waterfallBeforeMeasure = waterfallOn.get();
     if (waterfallOn.get()) setWaterfall(false);
     if (button) {
@@ -41,20 +39,20 @@ function syncWaterfallAvailability(): void {
 }
 
 export function setMeasButtons(en: boolean) {
-  ['btn-amp-meas', 'btn-amp-clear', 'btn-harm-set', 'btn-harm-mode',
-    'btn-pnm-set', 'btn-pnm-apply', 'btn-chan-meas', 'btn-chan-clear'].forEach(id => {
-    const b = document.getElementById(id) as HTMLButtonElement;
-    if (b) b.disabled = !en;
-  });
-  // modern buttons may have different ids; also support the data-action approach
-  const acts = ['meas-amp', 'clear-amp', 'meas-harm', 'meas-pnm', 'meas-chan', 'clear-chan'];
-  acts.forEach(a => {
-    const el = document.querySelector(`[data-action="${a}"]`) as HTMLButtonElement;
-    if (el) el.disabled = !en;
+  const available = measurementsAvailable();
+  document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
+    '#meas-panel button, #meas-panel input, #meas-panel select',
+  ).forEach(control => { control.disabled = !available; });
+  const acts = ['meas-amp', 'clear-amp', 'meas-harm', 'meas-pnm', 'meas-chan', 'clear-chan', 'harm-mode'];
+  acts.forEach(action => {
+    document.querySelectorAll<HTMLButtonElement>(`[data-action="${action}"]`).forEach(button => {
+      button.disabled = !available || !en;
+    });
   });
 }
 
 export function applyMeasUI() {
+  setMeasButtons(S.measOn);
   syncWaterfallAvailability();
   // PNM has no linear spectrum axis: the zoom button must disable the moment a
   // measurement (and specifically PNM) takes over (design §3).
@@ -63,7 +61,9 @@ export function applyMeasUI() {
   document.body.classList.toggle('meas-mode', inMeas);
   const chanTab = S.measOn && S.measTabSel === 'chan';
   const mt = document.getElementById('marker-table');
-  if (mt) mt.style.display = ((S.measOn && (S.viewMode === 'harm' || S.viewMode === 'pnm')) || chanTab) ? 'none' : '';
+  // STATUS refreshes this UI between render frames; it must keep the waterfall's table
+  // replacement in effect or the spectrum resizes twice for every report.
+  if (mt) mt.style.display = (waterfallOn.get() || inMeas || chanTab) ? 'none' : '';
   syncChanTableVisibility();
   const ht = document.getElementById('harmonic-table');
   if (ht) ht.style.display = (S.measOn && S.viewMode === 'harm') ? '' : 'none';

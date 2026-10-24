@@ -1,62 +1,78 @@
 #!/bin/bash
-# Run: supervisor + WebSA worker, with health check and native-crash recovery.
-# Usage: ./run.sh (TS frontend)
-set -e
+# Start the Rust service in a systemd user unit.
+set -euo pipefail
 cd "$(dirname "$0")"
-
-# Frontend check: dist must exist
-if [ ! -f frontend/dist/index.html ]; then
-  echo "Frontend not built, run ./build.sh first"
+PORT="${WEBSA_PORT:-8080}"
+HOST="${WEBSA_HOST:-127.0.0.1}"
+UNIT="${WEBSA_UNIT:-websad}"
+LOCAL_SHIM="$HOME/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so"
+[[ -f "$LOCAL_SHIM" ]] || LOCAL_SHIM="$(pwd)/runtime/linux-x86_64/libwebsa_san90_sdk_session.so"
+SHIM="${WEBSA_RUST_IQS_SHIM:-$LOCAL_SHIM}"
+BIN="${WEBSA_BIN:-}"
+if [[ -z "$BIN" ]]; then
+  if [[ -x native-ddc/target/release/websad ]]; then
+    BIN="$(pwd)/native-ddc/target/release/websad"
+  else
+    BIN="$(pwd)/runtime/linux-x86_64/websad"
+  fi
+fi
+STATIC="${WEBSA_STATIC:-}"
+if [[ -z "$STATIC" ]]; then
+  if [[ -f frontend/dist/index.html ]]; then STATIC="$(pwd)/frontend";
+  else STATIC="$(pwd)/runtime/frontend"; fi
+fi
+FAKE="${WEBSA_FAKE:-0}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) echo 'Usage: ./run.sh [--port PORT] [--host HOST] [--shim PATH] [--static PATH] [--unit NAME] [--fake]'; echo 'Defaults: hardware service on 127.0.0.1:8080, systemd user unit websad. Prefers local builds, falls back to runtime/; WEBSA_BIN overrides the executable. WEBSA_FAKE=1 selects fixtures.'; exit 0 ;;
+    --port|--host|--shim|--static|--unit) [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }; case "$1" in --port) PORT="$2";; --host) HOST="$2";; --shim) SHIM="$2";; --static) STATIC="$2";; --unit) UNIT="$2";; esac; shift 2 ;;
+    --fake) FAKE=1; shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ -x "$BIN" ]] || { echo "Rust service missing at $BIN: run make native or restore runtime/linux-x86_64/websad" >&2; exit 1; }
+BIN="$(realpath "$BIN")"
+[[ -f "$STATIC/dist/index.html" ]] || { echo "Frontend missing at $STATIC/dist/index.html: run make frontend or restore runtime/frontend/dist" >&2; exit 1; }
+STATIC="$(realpath "$STATIC")"
+if [[ "$FAKE" != 1 && ! -f "$SHIM" ]]; then
+  echo "SDK shim missing: $SHIM. Run make sdk-shim or set WEBSA_RUST_IQS_SHIM; use WEBSA_FAKE=1 for explicit fixture mode." >&2
   exit 1
 fi
-
-# Already running? stop gracefully first (device handle released by worker exit)
-if pgrep -f "python3 -m web_sa.supervisor" > /dev/null 2>&1 || \
-   pgrep -f "python3 -m web_sa.main" > /dev/null 2>&1; then
-  echo "Service already running - stopping first..."
-  ./stop.sh
-  sleep 2
+if [[ "$FAKE" != 1 ]]; then
+  SHIM="$(realpath "$SHIM")"
 fi
-
-# Logging (web_sa/logging_setup.py): the worker owns the rotating file (5 MiB + 3 backups,
-# a 20 MiB ceiling) and appends across restarts; the supervisor appends through a
-# WatchedFileHandler that reopens the file after the worker rotated it. stdout is dropped
-# because every record already reaches that file, while stderr keeps interpreter-level
-# output - uncaught tracebacks and faulthandler dumps - which the logging module never
-# sees and which is how a native crash gets diagnosed.
-export WEBSA_LOGFILE="${WEBSA_LOGFILE:-/tmp/websa.log}"
-WEBSA_ERR="${WEBSA_ERR:-/tmp/websa.err}"
-# The pid file is what makes ./stop.sh stop only THIS instance (the group leader; the
-# worker shares the group), instead of whatever matches the module name machine-wide.
-PIDFILE="${WEBSA_PIDFILE:-/tmp/websa.pid}"
-export WEBSA_PIDFILE="$PIDFILE"
-setsid nohup python3 -m web_sa.supervisor > /dev/null 2>> "$WEBSA_ERR" < /dev/null &
-echo $! > "$PIDFILE"
-health_port="${WEBSA_PORT:-8080}"
-health_host="${WEBSA_HOST:-127.0.0.1}"
-case "$health_host" in 0.0.0.0|::) health_host="127.0.0.1" ;; esac
-# Deadline-based: each probe can cost up to --max-time (a port held by a non-HTTP service
-# accepts and never answers), so an iteration count alone used to stretch the wait well
-# past the announced budget.
-deadline=$(( $(date +%s) + 30 ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  sleep 1
-  curl_args=(-s -o /dev/null -w "%{http_code}" --max-time 2)
-  if [ -n "${WEBSA_TOKEN:-}" ]; then
-    curl_args+=(-H "Authorization: Bearer ${WEBSA_TOKEN}")
+[[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT > 0 && PORT <= 65535 )) || { echo "Invalid port: $PORT" >&2; exit 2; }
+command -v ss >/dev/null || { echo 'ss is required to check TCP port ownership (install iproute2)' >&2; exit 1; }
+LISTENERS="$(ss -H -ltn "sport = :$PORT")"
+if [[ -n "$LISTENERS" ]]; then
+  echo "TCP port $PORT is already listening; leaving existing services unchanged" >&2; exit 1
+fi
+UNIT="${UNIT%.service}.service"
+if systemctl --user is-active --quiet "$UNIT"; then
+  echo "$UNIT already active; use WEBSA_UNIT=${UNIT%.service} ./stop.sh first" >&2; exit 1
+fi
+systemctl --user reset-failed "$UNIT" 2>/dev/null || true
+# env -u prevents an inherited hardware shim from turning a fixture run into a device owner.
+ENV_ARGS=(env -u WEBSA_RUST_IQS_SHIM "WEBSA_HOST=$HOST" "WEBSA_PORT=$PORT" "WEBSA_STATIC=$STATIC")
+[[ "$FAKE" == 1 ]] || ENV_ARGS+=("WEBSA_RUST_IQS_SHIM=$SHIM")
+systemd-run --user --unit="$UNIT" --property=KillMode=process \
+  --property=Restart=on-failure --property=RestartSec=2 --property="WorkingDirectory=$(pwd)" \
+  "${ENV_ARGS[@]}" "$BIN"
+STARTED=1
+cleanup_failed_start() {
+  if [[ "$STARTED" == 1 ]]; then systemctl --user stop "$UNIT"; fi
+}
+trap cleanup_failed_start EXIT
+HEALTH_HOST="$HOST"
+case "$HEALTH_HOST" in 0.0.0.0) HEALTH_HOST=127.0.0.1;; ::) HEALTH_HOST='[::1]';; *:*) HEALTH_HOST="[$HEALTH_HOST]";; esac
+for _ in {1..50}; do
+  MAIN_PID="$(systemctl --user show "$UNIT" --property=MainPID --value)"
+  if systemctl --user is-active --quiet "$UNIT" && [[ "$MAIN_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$MAIN_PID" 2>/dev/null && curl -sf -m 1 "http://$HEALTH_HOST:$PORT/api/state" >/dev/null; then
+    STARTED=0
+    echo "Rust websad healthy at http://$HEALTH_HOST:$PORT ($UNIT, Restart=on-failure)"; exit 0
   fi
-  if curl "${curl_args[@]}" "http://${health_host}:${health_port}/api/state" 2>/dev/null | grep -q 200; then
-    echo "OK: service ready (http://localhost:${health_port})"
-    echo "    log:    $WEBSA_LOGFILE (5 MiB + 3 backups)"
-    echo "    stderr: $WEBSA_ERR (crash output only)"
-    echo "    pid:    $(cat "$PIDFILE") ($PIDFILE)"
-    exit 0
-  fi
+  sleep 0.2
 done
-# Not ready in time: the instance we just started is not serving and must not linger as a
-# mystery background process — roll it back, then show why it failed.
-./stop.sh || true
-echo "FAIL: service not ready (single-shot, no retry)"
-tail -5 "$WEBSA_LOGFILE" 2>/dev/null || true
-tail -5 "$WEBSA_ERR" 2>/dev/null || true
+journalctl --user -u "$UNIT" -n 20 --no-pager >&2 || true
+echo "Rust websad did not become healthy on port $PORT" >&2
 exit 1

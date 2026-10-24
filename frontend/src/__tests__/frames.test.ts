@@ -10,11 +10,16 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { decodeFrame, frameMagic, MAGIC_AUDIO, MAGIC_BASEBAND, MAGIC_FREQ, MAGIC_POWR, MAGIC_RTAF } from '../core/frames';
+import { BASEBAND_HEADER_BYTES, decodeFrame, frameMagic, MAGIC_AUXILIARY, MAGIC_BASEBAND, MAGIC_FREQ, MAGIC_POWR, MAGIC_RTAF } from '../core/frames';
+import type { TriggerMetadata } from '../ui/triggerEvents';
 
 // vitest runs with the frontend package as cwd; the fixtures live at the repository root.
 const DIR = resolve(process.cwd(), '..', 'tests', 'fixtures', 'frames') + '/';
 
+interface BasebandFixture {
+	version: number; seq: number; samples: number; rate: number; center_hz: number; iq: number[];
+	channel_id: number; epoch: number; input_index: string | number; delay_samples: number;
+}
 const manifest = JSON.parse(readFileSync(`${DIR}manifest.json`, 'utf8')) as {
 	freq: { version: number; points: number; sweep_ms: number; freq: number[] };
 	powr: { version: number; points: number; sweep_ms: number; power: number[] };
@@ -22,16 +27,21 @@ const manifest = JSON.parse(readFileSync(`${DIR}manifest.json`, 'utf8')) as {
 		version: number; points: number; wf_len: number; max_density: number;
 		start_hz: number; stop_hz: number; freq: number[]; spec: number[]; wf_row: number[];
 	};
-	audio: { seq: number; rate: number; pcm: number[] };
-	baseband: {
-		version: number; seq: number; samples: number; rate: number; center_hz: number; iq: number[];
-	};
+	rta2: { metadata: TriggerMetadata };
+	baseband: BasebandFixture;
+	auxiliary: BasebandFixture;
 };
 
 /** Copy the bytes so the fixture buffer is never mutated by a view. */
 const bytes = (name: string): ArrayBuffer => {
 	const buf = readFileSync(`${DIR}${name}`);
 	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+};
+const boundary = (name: 'baseband' | 'auxiliary'): ArrayBuffer => {
+	const head = bytes(`${name}.bin`).slice(0, BASEBAND_HEADER_BYTES);
+	new DataView(head).setUint32(8, 0, true);                 // seq 0
+	new DataView(head).setUint32(12, 0, true);                // samples 0
+	return head;
 };
 
 describe('decodeFrame', () => {
@@ -71,38 +81,60 @@ describe('decodeFrame', () => {
 		expect(Array.from(f.wfRow)).toEqual(manifest.rta.wf_row);
 	});
 
-	it('decodes AUDF (mono int16 PCM)', () => {
-		const f = decodeFrame(bytes('audio.bin'));
-		expect(f?.kind).toBe('audio');
-		if (f?.kind !== 'audio') return;
-		expect(f.seq).toBe(manifest.audio.seq);
-		expect(f.rate).toBe(manifest.audio.rate);
-		expect(f.samples).toBe(manifest.audio.pcm.length);
-		expect(Array.from(f.pcm)).toEqual(manifest.audio.pcm);
+	it('decodes RTA2 capture metadata correlated with its spectrum', () => {
+		const frame = decodeFrame(bytes('rta2.bin'));
+		expect(frame?.kind).toBe('rta');
+		if (frame?.kind !== 'rta') return;
+		expect(frame.trigger).toEqual(manifest.rta2.metadata);
+		expect(Array.from(frame.freq)).toEqual(manifest.rta.freq);
+		expect(Array.from(frame.spec)).toEqual(manifest.rta.spec.map(Math.fround));
+		expect(frame.stopHz).toBe(manifest.rta.stop_hz);
 	});
 
-	it('decodes IQBF (interleaved complex float32 baseband)', () => {
-		const f = decodeFrame(bytes('baseband.bin'));
+	it('rejects truncated, malformed and overlong RTA2 capture trailers', () => {
+		const data = bytes('rta2.bin');
+		const base = bytes('rta.bin').byteLength;
+		for (const length of [base - 1, base, base + 3, base + 7, data.byteLength - 1]) {
+			expect(decodeFrame(data.slice(0, length))).toBeNull();
+		}
+		const malformed = data.slice(0);
+		new DataView(malformed).setUint32(base, 0, true);
+		expect(decodeFrame(malformed)).toBeNull();
+		const extra = new Uint8Array(data.byteLength + 1);
+		extra.set(new Uint8Array(data));
+		expect(decodeFrame(extra.buffer)).toBeNull();
+		const invalidJson = data.slice(0);
+		new Uint8Array(invalidJson)[base + 8] = 0;
+		expect(decodeFrame(invalidJson)).toBeNull();
+	});
+
+	it.each(['baseband', 'auxiliary'] as const)('decodes %s v2 with an aligned zero-copy payload', (name) => {
+		const data = bytes(`${name}.bin`);
+		const expected = manifest[name];
+		const f = decodeFrame(data);
 		expect(f?.kind).toBe('baseband');
 		if (f?.kind !== 'baseband') return;
-		expect(f.version).toBe(manifest.baseband.version);
-		expect(f.seq).toBe(manifest.baseband.seq);
-		expect(f.samples).toBe(manifest.baseband.samples);
-		expect(f.rate).toBeCloseTo(manifest.baseband.rate, 6);
-		expect(f.centerHz).toBeCloseTo(manifest.baseband.center_hz, 6);
-		// `iq` holds 2 float32 per complex sample, so the view is twice the declared count.
-		expect(f.iq.length).toBe(manifest.baseband.samples * 2);
-		for (let i = 0; i < f.iq.length; i++) {
-			expect(f.iq[i]).toBeCloseTo(manifest.baseband.iq[i], 7);
-		}
+		expect(f.version).toBe(2);
+		expect(f.magic).toBe(name === 'baseband' ? MAGIC_BASEBAND : MAGIC_AUXILIARY);
+		expect(f.seq).toBe(expected.seq);
+		expect(f.samples).toBe(expected.samples);
+		expect(f.rate).toBeCloseTo(expected.rate, 6);
+		expect(f.centerHz).toBeCloseTo(expected.center_hz, 6);
+		expect(f.channelId).toBe(expected.channel_id);
+		expect(f.epoch).toBe(expected.epoch);
+		expect(f.inputIndex).toBe(BigInt(expected.input_index));
+		expect(f.groupDelay).toBe(expected.delay_samples);
+		expect(f.iq.buffer).toBe(data);
+		expect(f.iq.byteOffset).toBe(BASEBAND_HEADER_BYTES);
+		expect(Array.from(f.iq)).toEqual(expected.iq.map(Math.fround));
 	});
 
 	it('reports the magic of each frame', () => {
 		expect(frameMagic(bytes('freq.bin'))).toBe(MAGIC_FREQ);
 		expect(frameMagic(bytes('powr.bin'))).toBe(MAGIC_POWR);
 		expect(frameMagic(bytes('rta.bin'))).toBe(MAGIC_RTAF);
-		expect(frameMagic(bytes('audio.bin'))).toBe(MAGIC_AUDIO);
 		expect(frameMagic(bytes('baseband.bin'))).toBe(MAGIC_BASEBAND);
+		expect(frameMagic(bytes('auxiliary.bin'))).toBe(MAGIC_AUXILIARY);
 	});
 
 	it('rejects truncated and mis-sized frames instead of guessing', () => {
@@ -114,12 +146,44 @@ describe('decodeFrame', () => {
 		expect(decodeFrame(rta.slice(0, 20).buffer)).toBeNull();                 // < RTA header
 		expect(decodeFrame(rta.slice(0, rta.length - 4).buffer)).toBeNull();     // missing stopHz
 
-		const audio = new Uint8Array(bytes('audio.bin'));
-		expect(decodeFrame(audio.slice(0, audio.length - 2).buffer)).toBeNull(); // odd sample tail
-
 		const baseband = new Uint8Array(bytes('baseband.bin'));
 		expect(decodeFrame(baseband.slice(0, 16).buffer)).toBeNull();            // < baseband header
 		expect(decodeFrame(baseband.slice(0, baseband.length - 4).buffer)).toBeNull();  // one I/Q short
+	});
+
+	it.each(['baseband', 'auxiliary'] as const)('rejects malformed %s v2 headers and nonempty boundaries', (name) => {
+		for (const version of [0, 1, 3]) {
+			const data = bytes(`${name}.bin`);
+			new DataView(data).setUint32(4, version, true);
+			expect(decodeFrame(data)).toBeNull();
+		}
+		const data = bytes(`${name}.bin`);
+		expect(decodeFrame(data.slice(0, 55))).toBeNull();
+		const extra = new Uint8Array(data.byteLength + 8);
+		extra.set(new Uint8Array(data));
+		expect(decodeFrame(extra.buffer)).toBeNull();            // trailing bytes
+		new DataView(data).setUint32(8, 0, true);
+		expect(decodeFrame(data)).toBeNull();                    // seq0 cannot carry IQ
+		const emptyPayload = data.slice(0, BASEBAND_HEADER_BYTES);
+		expect(decodeFrame(emptyPayload)).toBeNull();            // declared samples lack payload
+		expect(decodeFrame(boundary(name))).toMatchObject({
+			kind: 'baseband', seq: 0, samples: 0,
+			channelId: manifest[name].channel_id, epoch: manifest[name].epoch,
+		});
+		const nonBoundary = boundary(name);
+		new DataView(nonBoundary).setUint32(8, 1, true);
+		expect(decodeFrame(nonBoundary)).toBeNull();              // only boundaries may be empty
+	});
+
+	it('preserves all u64 input clock bits including the unavailable sentinel', () => {
+		for (const name of ['baseband', 'auxiliary'] as const) {
+			for (const index of [9007199254740993n, 18446744073709551615n]) {
+				const data = bytes(`${name}.bin`);
+				new DataView(data).setBigUint64(40, index, true);
+				const f = decodeFrame(data);
+				expect(f?.kind === 'baseband' && f.inputIndex).toBe(index);
+			}
+		}
 	});
 
 	it('ignores unknown magics and empty buffers', () => {

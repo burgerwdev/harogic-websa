@@ -200,6 +200,10 @@ impl AudioStage for Squelch {
         true
     }
 
+    fn squelch_status(&self) -> Option<(bool, f64)> {
+        Some((self.open, self.gain))
+    }
+
     fn process_into(&mut self, input: &[f32], _hold: bool, out: &mut Vec<f32>) {
         self.process_block(input, out);
     }

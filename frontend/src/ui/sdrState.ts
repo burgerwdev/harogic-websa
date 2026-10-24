@@ -1,13 +1,6 @@
 /**
  * SDR tuning state - the single owner of every SDR parameter.
  *
- * Before this module the same facts lived in three places at once: module variables in
- * controls.ts (`sdrCenterHz`/`sdrSpanHz`/`sdrDecimate`), exported variables in core/store.ts
- * (`sdrListenHz`/`sdrPassbandHz`), and the form controls themselves - each written by a
- * different code path, so they could disagree (a stale hand-off survived a Preset and
- * reapplied the pre-reset frequency; the listen value in the store and in the input could
- * differ after a reload).
- *
  * Rules for this module:
  *   - only the STATUS handler calls `confirm()`
  *   - only user actions call `set()`
@@ -16,6 +9,7 @@
  */
 import { createParam, resetAll } from '../core/params';
 import { toUnit } from '../core/units';
+import { t } from '../core/i18n';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { sstvBandHz } from '../sdr/sstvLog';
@@ -28,13 +22,9 @@ const hz = {
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.5,
 };
 
-// Every SDR setting the backend confirms is also the user's preference: it is persisted
-// (`persist: 'confirmed'` stores what the device accepted) and re-applied when SDR is entered, so
-// leaving the mode and coming back - or reloading the page - does not silently discard the tuning
-// and the listening setup (reported: SDR settings were re-derived from the swept centre on every
-// entry). `resetAll('sdr')` (Preset) drops the stored values too, so factory defaults really are
-// defaults.
-/** Requested wideband centre. `set()` here is what the old `pendingSdrFreq` hand-off did. */
+// Persist confirmed SDR preferences across mode re-entry and reload. Preset clears them
+// through resetAll('sdr').
+/** Requested wideband centre. */
 export const sdrCenterHz = createParam<number>('sdr.center', {
 	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-center', ...hz,
 });
@@ -48,30 +38,47 @@ export const sdrSpanHz = createParam<number>('sdr.span', { fallback: 0, scope: '
 export const sdrListenHz = createParam<number>('sdr.listen', {
 	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-listen', ...hz,
 });
-/** Demodulation mode (am/fm/nfm/wfm/usb/lsb/cw). */
+/** Demodulation mode id from the backend plugin registry. */
 export const sdrDemod = createParam<string>('sdr.demod', {
 	fallback: 'am', scope: 'sdr', persistKey: 'web-sa-sdr-demod',
+});
+
+// The legacy pane stored Auto and the viewed mode separately. Only Auto off made that
+// viewed mode a decoder pin; an Auto-on history filter must never become receiver config.
+if (typeof localStorage !== 'undefined') {
+	try {
+		const auto = localStorage.getItem('web-sa-sstv-auto');
+		if (auto !== null && localStorage.getItem('web-sa-sdr-sstv-mode') === null) {
+			const raw = localStorage.getItem('web-sa-sstv-mode');
+			const pin = raw !== null && raw.trim() !== '' ? Number(raw) : NaN;
+			localStorage.setItem('web-sa-sdr-sstv-mode', String(auto === '0' && Number.isInteger(pin) && pin >= 0 ? pin : -1));
+		}
+		localStorage.removeItem('web-sa-sstv-auto');
+	} catch { /* storage disabled */ }
+}
+
+/** Primary SSTV decoder mode: -1 lets the VIS header choose, >=0 pins a mode index. */
+export const sdrSstvMode = createParam<number>('sdr.sstvMode', {
+	fallback: -1, scope: 'sdr', persistKey: 'web-sa-sdr-sstv-mode',
+	parse: (raw) => {
+		const mode = raw.trim() !== '' ? Number(raw) : NaN;
+		return Number.isInteger(mode) && mode >= -1 ? mode : null;
+	},
 });
 /** IF passband in Hz (also what the listen-band overlay draws). */
 export const sdrIfbw = createParam<number>('sdr.ifbw', {
 	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz,
 });
+/** Native CW pitch from STATUS; the panel has no pitch setting. */
+export const sdrPitchHz = createParam<number>('sdr.pitch', { fallback: 700, scope: 'sdr', ...hz });
 
 /**
  * The band the active demodulator actually reads, in Hz relative to the listen frequency.
  *
- * An analog demodulator reads its IF passband, symmetric about the listen frequency. A protocol
- * decoder does not: FT8 reads 100..3000 Hz above the dial, while the current DRM30 receiver
- * decodes a 10 kHz channel centered on the carrier (SO3), independent of the analog IF button.
- * Showing FT8's band over DRM hid most of the waveform from the operator.
- *
- * That is not cosmetic. Measured on the bench with a Pluto transmitting at 411.0015 MHz and the dial
- * parked on the tone (offset 0), the decoder returned nothing in 5 of 5 slots while the overlay still
- * covered the signal - the tones sit at 0..44 Hz, under the decoder's 100 Hz floor. Highlighting the
- * decoder's real band is what turns "the signal is inside the marked band and still does not decode"
- * into a visible "the signal is not inside the band the decoder reads".
+ * SSB and CW follow the native analog filter specification, including the carrier guard and
+ * STATUS-reported CW pitch. Protocol overlays show the decoder's actual receive band.
  */
-export function demodBandHz(demod: string, ifBw: number): [number, number] {
+export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get()): [number, number] {
 	if (demod === 'drmplus') return [-50_000, 50_000];
 	if (demod === 'drm') {
 		const locked = drmStatus().lines.find((line) => line.startsWith('locked: '));
@@ -82,6 +89,14 @@ export function demodBandHz(demod: string, ifBw: number): [number, number] {
 	}
 	if (demod === 'sstv') return sstvBandHz();
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
+	const guard = Math.max(100, Math.min(300, ifBw * 0.1));
+	if (demod === 'usb') return [guard, ifBw];
+	if (demod === 'lsb') return [-ifBw, -guard];
+	if (demod === 'cw') {
+		const half = Math.max(50, ifBw) / 2;
+		const center = Math.max(100, pitch);
+		return [center - half, center + half];
+	}
 	return [-ifBw / 2, ifBw / 2];
 }
 /** FM de-emphasis time constant in microseconds (-1 = per-mode default). */
@@ -91,24 +106,16 @@ export const sdrDeemph = createParam<number>('sdr.deemph', {
 /** Audio volume (0..2). */
 export const sdrVolume = createParam<number>('sdr.volume', {
 	fallback: 0.8, scope: 'sdr', persistKey: 'web-sa-sdr-volume',
-	// Not `hz`: its 0.5 comparison exists for frequencies and treats 0.8 and 0.5 as the same volume,
-	// so a slider move inside half a step was never sent. 0 has to be a value here, not "unset".
+	// Volume uses a 0.01 equality tolerance; zero is a valid value.
 	parse: Number,
 	serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
 });
-/** Squelch threshold in calibrated tuned-channel dBm, before either audio AGC. */
+/** Squelch threshold in the SDK's tuned-bin dBm, before either audio AGC. */
 export const sdrSquelch = createParam<number>('sdr.squelch', {
-	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch', ...hz,
-});
-/** Squelch reference mode: 'power' gates on channel power (dBm); 'snr' gates on
- * channel power minus the off-channel noise floor (dB), which tracks a noisy band
- * better but needs the panadapter noise estimate. */
-export type SquelchMode = 'power' | 'snr';
-export const sdrSquelchMode = createParam<SquelchMode>('sdr.squelch_mode', {
-	fallback: 'power', scope: 'sdr', persistKey: 'web-sa-sdr-squelch-mode',
-	parse: (raw: string) => (raw === 'snr' ? 'snr' : 'power'),
-	serialize: (v: SquelchMode) => v,
+	fallback: -110, scope: 'sdr', persistKey: 'web-sa-sdr-squelch',
+	parse: Number, serialize: String,
+	equals: (a: number, b: number) => Math.abs(a - b) < 0.05,
 });
 /** Audio AGC. */
 export const sdrAgc = createParam<boolean>('sdr.agc', {
@@ -129,30 +136,26 @@ export const sdrAudioOn = createParam<boolean>('sdr.audioOn', {
 	authoritative: true, ...flag,
 });
 
-/**
- * Noise reduction. The browser runs the reducer, so the backend never reports it: the slot is the
- * single owner (authoritative, so the STATUS confirm loop cannot revert it) and it is persisted
- * with the other SDR preferences.
- *
- * Off by default: the default policy is a pass-through, which is what the Python reference
- * produces, so the two paths can be compared sample for sample.
- */
+/** AM synchronous detector; only STATUS confirmation persists the receiver preference. */
+export const sdrAmSync = createParam<boolean>('sdr.amSync', {
+	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-am-sync', ...flag,
+});
+
+/** Receiver noise reduction; confirmed by STATUS alongside the other audio settings. */
 export const sdrNr = createParam<boolean>('sdr.nr', {
-	fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-nr', persist: 'desired',
-	authoritative: true, ...flag,
+    fallback: false, scope: 'sdr', persistKey: 'web-sa-sdr-nr', ...flag,
 });
 /** How hard the reducer pushes, 0.05..1 (the panel's strength control). */
 export const sdrNrStrength = createParam<number>('sdr.nrStrength', {
-	fallback: 0.6, scope: 'sdr', persistKey: 'web-sa-sdr-nr-strength', persist: 'desired',
-	authoritative: true, parse: Number, serialize: String,
+    fallback: 0.6, scope: 'sdr', persistKey: 'web-sa-sdr-nr-strength',
+    parse: Number, serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.005,
 });
 
-/** The noise-reduction algorithm: the WASM Wiener or the browser DeepFilterNet3 stage. */
+/** Native receiver noise reduction algorithm. */
 export type NrAlgo = 'wiener' | 'dfn';
 export const sdrNrAlgo = createParam<NrAlgo>('sdr.nrAlgo', {
-	fallback: 'wiener', scope: 'sdr', persistKey: 'web-sa-sdr-nr-algo', persist: 'desired',
-	authoritative: true,
+    fallback: 'wiener', scope: 'sdr', persistKey: 'web-sa-sdr-nr-algo',
 	parse: (raw: string) => (raw === 'dfn' || raw === 'dfn2' ? 'dfn' : 'wiener'), // 'dfn2' = old persisted key
 	serialize: String,
 	equals: (a: NrAlgo, b: NrAlgo) => a === b,
@@ -161,10 +164,32 @@ export const sdrNrAlgo = createParam<NrAlgo>('sdr.nrAlgo', {
 /** DeepFilterNet3's attenuation limit in dB (0 = full passthrough, higher = stronger denoising
  * but clean signals are attenuated more). */
 export const sdrNrAtten = createParam<number>('sdr.nrAtten', {
-	fallback: 6, scope: 'sdr', persistKey: 'web-sa-sdr-nr-atten', persist: 'desired',
-	authoritative: true, parse: Number, serialize: String,
+    fallback: 6, scope: 'sdr', persistKey: 'web-sa-sdr-nr-atten',
+    parse: Number, serialize: String,
 	equals: (a: number, b: number) => Math.abs(a - b) < 0.5,
 });
+
+export interface SdrChannelStatus {
+    channel: number;
+    enabled: boolean;
+    freq: number;
+    mode: string;
+    if_bw: number;
+    sstv_mode?: number | null;
+    am_sync?: boolean;
+    am_sync_generation?: number;
+    volume: number;
+    agc?: boolean;
+    squelch?: number;
+    pitch?: number;
+    deemph_us?: number;
+    nr?: boolean;
+    nr_strength?: number;
+    nr_algorithm?: string;
+    nr_atten_db?: number;
+    stereo?: boolean;
+    audio_rate?: number;
+}
 
 /**
  * Tuning step, one entry per capture bandwidth.
@@ -212,7 +237,7 @@ export const SDR_PREF_KEYS = [
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
 	'web-sa-sdr-squelch', 'web-sa-sdr-squelch-mode', 'web-sa-sdr-agc', 'web-sa-sdr-nr',
 	'web-sa-sdr-nr-strength', 'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
-	'web-sa-sdr-step-bw',
+	'web-sa-sdr-step-bw', 'web-sa-sdr-sstv-mode', 'web-sa-sdr-am-sync',
 ];
 
 /**
@@ -233,6 +258,8 @@ export function hasStoredSdrPrefs(): boolean {
 /** Drop every pending SDR intent AND the stored preferences (Preset). */
 export function resetSdrState(): void {
 	resetAll('sdr');
+	sdrSstvMode.set(-1);
+	sdrAmSync.set(false);
 	if (typeof localStorage === 'undefined') return;
 	try {
 		SDR_PREF_KEYS.forEach((key) => localStorage.removeItem(key));
@@ -318,6 +345,13 @@ export function renderSdrState(): void {
 	}
 	const dec = select('select-sdr-decimate');
 	if (dec) dec.value = String(sdrDecimate.get());
+	const squelch = input('input-sdr-squelch');
+	if (squelch && document.activeElement !== squelch) squelch.value = String(sdrSquelch.get());
+	const squelchLabel = document.getElementById('cur-sdr-squelch');
+	if (squelchLabel) {
+		const threshold = Number(squelch?.value ?? sdrSquelch.get());
+		squelchLabel.textContent = threshold <= -160 ? t('off') : `${threshold.toFixed(1)} dBm`;
+	}
 	// The tuning step: the box shows the value in the chosen unit, a quick button marks the
 	// step in use. Read from the slots on every render, so a bandwidth switch shows that
 	// bandwidth's stored step (or its default) with no separate copy to keep in step.
@@ -337,13 +371,7 @@ export function renderSdrState(): void {
 	}
 	const nrAlgo = select('select-sdr-nr-algo');
 	if (nrAlgo) nrAlgo.value = sdrNrAlgo.get();
-	// The dfn loading/fallback hint only makes sense while dfn is the selected algorithm.
-	const dfnSelected = sdrNrAlgo.get() === 'dfn';
-	const dfnStatus = document.getElementById('nr-dfn-status');
-	if (dfnStatus && !dfnSelected) {
-		dfnStatus.style.display = 'none';
-		dfnStatus.textContent = '';
-	}
+    const dfnSelected = sdrNrAlgo.get() === 'dfn';
 	// The DeepFilterNet3 attenuation slider is only meaningful for dfn (Wiener has its own strength).
 	const attenRow = document.getElementById('nr-atten-row');
 	const attenInput = input('input-sdr-nr-atten');
@@ -355,10 +383,10 @@ export function renderSdrState(): void {
 	}
 	const nrStrength = select('select-sdr-nr-strength');
 	if (nrStrength) {
-		// DeepFilterNet3 has no strength knob; the selector takes the space instead.
+        // DeepFilterNet3 uses the attenuation control in place of strength.
 		const dfn = sdrNrAlgo.get() === 'dfn';
 		nrStrength.hidden = dfn;
-		nrStrength.disabled = dfn;
+		nrStrength.disabled = dfn || sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus';
 		// The nearest preset: the slot holds a number (a custom answer is possible via storage).
 		const value = sdrNrStrength.get();
 		let nearest = '0.6';

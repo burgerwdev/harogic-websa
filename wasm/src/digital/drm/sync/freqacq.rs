@@ -113,13 +113,22 @@ impl FreqAcquisition {
     /// Feed interleaved complex baseband samples (I, Q, I, Q, ...). Returns an acquisition as
     /// soon as an averaged spectrum holds the three pilots.
     pub fn push_iq(&mut self, iq: &[f64]) -> Option<Acquisition> {
-        for pair in iq.chunks_exact(2) {
+        self.push_samples(iq.chunks_exact(2).map(|pair| (pair[0], pair[1])))
+    }
+
+    /// The same streaming acquisition for the receiver's interleaved f32 capture.
+    pub fn push_iq_f32(&mut self, iq: &[f32]) -> Option<Acquisition> {
+        self.push_samples(iq.chunks_exact(2).map(|pair| (f64::from(pair[0]), f64::from(pair[1]))))
+    }
+
+    fn push_samples(&mut self, samples: impl Iterator<Item = (f64, f64)>) -> Option<Acquisition> {
+        for (re, im) in samples {
             if self.history_re.len() == FFT_LEN {
                 self.history_re.pop_front();
                 self.history_im.pop_front();
             }
-            self.history_re.push_back(pair[0]);
-            self.history_im.push_back(pair[1]);
+            self.history_re.push_back(re);
+            self.history_im.push_back(im);
             self.pushed += 1;
             self.since_last += 1;
             if self.history_re.len() == FFT_LEN && self.since_last >= HOP {
@@ -296,6 +305,31 @@ mod tests {
             "fixture DC offset {:.1} Hz, expected about +121 Hz",
             found.dc_hz
         );
+    }
+
+    #[test]
+    fn noise_then_pilots_have_the_same_first_hit_across_blocks() {
+        let mut state = 0x1234_5678u32;
+        let mut iq: Vec<f64> = (0..50_000 * 2).map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state as i32 as f64 / i32::MAX as f64) * 1e-5
+        }).collect();
+        iq.extend(load("../tests/fixtures/drm/drm_modeB_so3_48k.f32"));
+        let mut batch = FreqAcquisition::new(true, 48_000.0);
+        let expected = batch.push_iq(&iq).expect("pilots after noise");
+        let mut streaming = FreqAcquisition::new(true, 48_000.0);
+        let mut actual = None;
+        for block in iq.chunks(512 * 2) {
+            let block: Vec<f32> = block.iter().map(|&v| v as f32).collect();
+            if let Some(found) = streaming.push_iq_f32(&block) {
+                actual = Some(found);
+                break;
+            }
+        }
+        let actual = actual.expect("streamed pilots after noise");
+        assert_eq!(actual.dc_hz, expected.dc_hz);
+        assert_eq!(actual.inverted, expected.inverted);
+        assert_eq!(streaming.pushed, batch.pushed, "first accepted pilot window");
     }
 
     #[test]

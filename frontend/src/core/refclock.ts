@@ -3,6 +3,15 @@ import { t } from './i18n';
 
 export type RefClockStatus = 'applied' | 'fallback' | 'forced' | 'unverified';
 
+interface RefClockSnapshot {
+  mode?: string;
+  ref_clock?: string;
+  refclk_out?: boolean;
+  has_docxo?: boolean;
+  actual?: { refclk_src?: number | null };
+  rta_actual?: { refclk_src?: number | null };
+}
+
 const SOURCE_KEYS: Record<number, string> = {
   0: 'internal',
   1: 'external',
@@ -28,34 +37,30 @@ export function refClockStatus(
   return 'unverified';
 }
 
-function currentSelectionLabel(): string {
-  const sel = document.getElementById('select-refclk') as HTMLSelectElement | null;
-  if (!sel) return '—';
-  const option = sel.selectedOptions && sel.selectedOptions[0];
-  return (option?.textContent || sel.value || '—').trim();
+export function premiumRefClockLabel(status: Pick<RefClockSnapshot, 'has_docxo'> | null): string {
+  return t(status?.has_docxo ? 'docxo_premium' : 'ocxo_premium');
 }
 
-function sourceLabel(src: number | null | undefined): string {
-  const name = refClockSourceName(src);
+function sourceNameLabel(name: string | null): string {
   if (name === 'external_forced') return t('ext_force');
-  if (name === 'premium') return t('docxo_premium');
+  if (name === 'premium') return premiumRefClockLabel(lastStatus);
   if (name === 'external') return t('ext');
   if (name === 'internal') return t('int');
   return '—';
 }
 
-let lastStatus: any = null;
+let lastStatus: RefClockSnapshot | null = null;
 
 export function fillRefClockDetail(): void {
   const requested = document.getElementById('refclk-d-current');
-  if (requested) requested.textContent = currentSelectionLabel();
+  if (requested) requested.textContent = sourceNameLabel(lastStatus?.ref_clock ?? null);
   const actualEl = document.getElementById('refclk-d-actual');
   if (!actualEl) return;
   const st = lastStatus;
   const actual = st?.mode === 'rta' ? st?.rta_actual : st?.actual;
   const src = actual?.refclk_src as number | null | undefined;
   const state = refClockStatus(String(st?.ref_clock ?? 'internal'), src);
-  actualEl.textContent = `${sourceLabel(src)}${state === 'fallback'
+  actualEl.textContent = `${sourceNameLabel(refClockSourceName(src))}${state === 'fallback'
     ? ` (${t('refclk_fell_back')})` : ''}`;
 }
 
@@ -68,7 +73,7 @@ function refClockSelect(): HTMLSelectElement | null {
  * reference fell back or is forced). The label is highlighted when the clock output is on,
  * so "ExtForce + output" is no longer ambiguous.
  */
-export function applyRefClockSteadyState(status: any): void {
+export function applyRefClockSteadyState(status: RefClockSnapshot): void {
   const actual = status?.mode === 'rta' ? status?.rta_actual : status?.actual;
   const state = refClockStatus(String(status?.ref_clock ?? 'internal'),
     actual?.refclk_src as number | null | undefined);
@@ -100,7 +105,7 @@ export function flashRefClockBox(status?: RefClockStatus): void {
 }
 
 /** Called from STATUS handling: flash on the command response, refresh the popover if open. */
-export function refreshRefClockHint(status: any, responseTo?: string): void {
+export function refreshRefClockHint(status: RefClockSnapshot, responseTo?: string): void {
   lastStatus = status;
   applyRefClockSteadyState(status);
   if (responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT') {

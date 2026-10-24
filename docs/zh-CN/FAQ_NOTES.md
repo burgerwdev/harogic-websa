@@ -1,219 +1,82 @@
-# HAROGIC FAQ 与运行说明
+# 常见问题与操作
 
-## SDK 调用约束
+## 启动与访问服务
 
-1. 同一设备同一时刻只允许一条 SDK 调用；WebSA 通过命令锁和设备锁串行执行。
-2. 单台设备不支持 API 与 SAStudio4 同时运行；被占用时 `Device_Open` 会失败。
-3. 配置函数可重复调用，未显式设置的字段来自 SDK Profile 默认值。
-4. 连续采集需要循环调用 Get；浏览器断开时 WebSA 不持续读取频谱。
-
-## SWP 与 RTA
-
-- `SWP_GetFullSweep` 返回范围可能宽于请求范围，WebSA 使用 `DSP_InterceptSpectrum` 裁剪。
-- 请求点数与设备实际点数可能不同，STATUS 分别提供 request 和 actual。
-- RBW 由采样率、窗函数、抽取倍数和 FFT 点数共同决定；RTA Auto RBW 必须使用 SDK actual，不能简单使用 `span/2000`。
-- SWP/RTA 分别保存 Center、Span、Ref、RBW、VBW、Sweep 和 actual。完整流转见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)。
-- RTA 连续 8 次 Trigger/Get 失败后原地重配置，最多两次；仍失败时 supervisor 重启 worker。
-- `rta_health.error_streak/recovery_attempts` 可用于排查 RTA 停更。
-- harmonic/PNM 测量进行中，SWP 专用命令（频率/Ref/RBW/VBW/Sweep/Points/Spur/Window/增益/参考时钟）会被拒绝并返回明确错误，避免打断测量会话；RTA 下 FFT 窗口/点数/杂散抑制同样只能用于 SWP。
-
-## SDR 设置
-
-- **你的 SDR 设置会被保留**：调谐（捕获中心 + 解调频率）、捕获带宽（decimate）、解调模式、IF 带宽、
-  去加重、音量、静噪、AGC——离开模式、刷新页面、重启服务后都保持。切换模式不是复位；此前每次进入都会
-  从扫频视图重新推导，把你留在 SDR 里的设置丢掉。
-- **频率靠显式手势交接**：在频谱上 Shift+点击（或峰值/marker 的「听这里」）会**以该频率**进入 SDR；
-  频段预置（FM / AIR / VHF / UHF）一次性设好该频段的整套收听设置。普通返回 SDR 则恢复你自己的调谐。
-- **首次使用会有合理默认**：还没有任何已存设置时，进入 SDR 跟随扫频中心，并按频段推导解调/IF 带宽
-  （FM 广播 → WFM/180 kHz，航空段 → AM/25 kHz）。你一旦自己选过，之后恢复的就是你的选择。
-- **Preset** 恢复出厂默认并清除已存的 SDR 偏好——「默认」就是真的默认。
-
-## SDR 音频
-
-- **「音频开」是用户的偏好，切换模式后依然保持**：离开 SDR 只停止音频通路，不改这个设置，因此带着「开」
-  回到 SDR 会重新启用（过去在离开时被写成「关」，于是「开」永久变成了「关」）。该状态会被持久化，刷新
-  页面也保留；**Preset** 是唯一恢复出厂默认（关）的操作。
-- 按钮文字、通路状态与环形缓冲诊断都可直接查看：
-  `#spectrum.dataset.sdrAudio` 内容为 `enabled=... muted=... buffered_ms=... underruns=... rms=...`。
-
-## Reference Level
-
-- Manual Ref 会实际配置当前 SWP/RTA Profile，不只是改变显示范围。
-- **Auto 是一次性动作**（`AUTO_SCALE`），与台式仪器的 `Auto Scale` 一致：按最新迹线放置一次参考电平；
-  已经放好时什么都不做（不重配器件）。SAN-90 实测：从点击到电平落定 0.11-0.12 秒，而旧的跟踪环需要
-  1.86 秒（它要等一帧稳定，再等 0.75 秒稳定窗）。
-- 拟合结果通过 `auto_ref.result` 说明：`applied`（含 `target`）、`ok`（已经放好）、`no_data`（上次重配后
-  还没有迹线）。它不会因为无信号而拒绝：锚点是噪声底，仅噪声的迹线也只是一次普通放置。（`no_signal`
-  仍保留在取值表中以兼容，但放置逻辑不再产生它。）有变更排队或正在稳定时按钮会发光，提示栏说明结果。
-- **设置变更会把迹线重新放置**，且是有界闭环：span、中心/起止、RBW、VBW、窗函数或 SDR 捕获带宽会预备它，
-  每个稳定帧重新测量并再走一步，直到放置合理（通常两三步、约 6 秒——自动衰减器让迹线只按 Ref 变化量的约
-  一半移动，因此一步落不到位）。它在首个良好放置处停止，也绝不反转你手输的电平——那种情况请按 Auto。
-- **安全量程始终运行**，与 Atten 设置、是否按过 Auto 都无关，但**只做保护方向**：IF 溢出（-12）每秒抬
-  5 dB；峰值高出上沿 10 dB 以上的严重削顶时抬一次并限速。这正是过去手动 Atten 会关掉的东西——过载保护
-  不会再被误关。
-  **抬升 Ref 永不会被撤销。**把噪声底推到下沿之外只是显示选择、不是故障（`below_window`），所以按上箭头
-  抬上去就保持在那里；想让放置重新拟合时点 Auto。只有「信息丢失（削顶）」和「器件过载」才会在背后自动纠正。
-- **SDR 与 SWP/RTA 用同一套拟合**（`AUTO_SCALE`，单一实现）：后端按泛解析度迹线算目标，客户端把它应用到
-  显示刻度；拟合从不改写 IQS 电平（写会重配数据流、打断音频，还会移动拟合正在读的迹线），因此纯显示拟合从不打断音频，且 IQS 电平只在用户设置时改变。进入 SDR 后一旦有帧就
-  请求一次拟合（取代过去持久化的 auto 开关）。
-- 放置规则：噪声底落在显示窗口底部稍上、峰值留至少 10 dB 余量（噪底高时约 30 dB）、5 dB 量化，且不
-  低于学到的 IF 饱和下界与 -50 dBm。
-- 当**拟合**调低过 Ref 时，改变 Center 或跨 SWP/RTA 返回会先抬回 0 dBm，避免以过低 Ref 调谐到未知强信号；**用户自己设的 Ref 不会被抬**。
-- 任何 SWP/RTA 重配置后都会清除旧观测，并等待 0.75 秒后才重新信任它们。
-- 降低 Ref 和 RBW 通常可以降低显示噪底，但需留意输入过载。
-- **幅值 offset 是显示域位移**：迹线按它平移，因此所有**绝对**读数都会跟随——y 轴刻度（`fmtAxisLevel`）、
-  marker 表格、画布上的 marker 读数、峰值表、信道类结果（`fmtReadoutLevel`）。差值（dB/div、dBc、Δ）永不
-  换算；器件参数（Ref、衰减、触发电平）保持 dBm——它们描述仪器，而不是经过你的线缆/放大器之后的信号。
-- **不存在强制的 Ref 范围：电平只受显示域（-160 .. +40 dBm）约束。**
-  厂商 SDK 根本没有定义 Ref 范围（profile 的 `RefLevel_dBm` 就是个 `double`），唯一的 Ref 相关反馈是
-  `APIRETVAL_WARNING_IFOverflow`（-12）——「中频饱和，建议上调参考电平」，本客户端把它显示为
-  `!IF overflow` 提示。`caps.ref_min`/`caps.ref_max`（SAN-90 上为 -50 .. +30）是**自动放置规则**夹取
-  自己 target 用的那一行，不是操作员可以拨到哪里的界限；拿它当用户界限就会拒绝仪器本来能编程的电平
-  （现场报告如此，随后实测确认：Ref -60、-90、**-140 dBm** 均被原样接受并回显，而 +35/+40 回显 **+27**
-  ——那是器件自身的上限，取决于它选的衰减/IF 增益，profile 回显的是硬件真正编程的值）。UI 静默跟随该
-  回显值；输入框与步进箭头在显示域两端始终可用，设备按自身上限夹取时不再弹任何提示。
-
-## 参考时钟
-
-- `ReferenceClockSource`: 0=Int，1=Ext（失锁自动回退），2=Int+ DOCXO，3=ExtForce。
-- SAN-90 外部参考输入为 10 MHz；WebSA 设置 `ExternalSystemClockFrequency=10 MHz`。
-- `EnableReferenceClockOut` 控制参考时钟输出，硬件支持能力取决于型号。
-- RTA 中切换 Ref Clock/Clock Output 会重配 RTA Profile，不会调用 SWP 配置或退出 RTA。
-- `SystemClockSource=External` 是危险配置，只能在厂商指导下使用；本项目不开放该设置。
-- GNSS 1PPS 校准需要真实锁定的 1PPS 输入；无信号时厂商 DLL 可能阻塞。
-- 没有有效外部参考时不要使用 `external_forced`。
-
-## 相位噪声
-
-- 100 Hz 和 10 MHz 边界频偏可能不准确；可用 SWP `span=2×最大频偏` 辅助检查。
-- 典型最小输入功率为 -50 dBm。
-- PNM 使用增量采集，每次 Get 返回部分更新结果。
-
-## 配置环境变量
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `WEBSA_HOST` | `127.0.0.1` | HTTP/WS 监听地址 |
-| `WEBSA_PORT` | `8080` | 服务端口 |
-| `WEBSA_TOKEN` | 空 | REST Bearer token 与浏览器/WS query token |
-| `WEBSA_ALLOWED_ORIGINS` | 空 | 额外允许的 Origin，多个值用逗号分隔 |
-| `WEBSA_ALLOW_UNAUTHENTICATED_REMOTE` | 空 | 显式允许无 Token 远程监听，仅限可信隔离网络 |
-| `WEBSA_LOG` | `INFO` | Python 日志级别 |
-| `WEBSA_LOGFILE` | 空（`run.sh` 设为 `/tmp/websa.log`） | 日志文件，由 worker 负责旋转：5 MiB + 3 个备份，跨重启上限 20 MiB；supervisor 用 `WatchedFileHandler` 追加，旋转后会自动重开文件。`WEBSA_ERR`（`run.sh`：`/tmp/websa.err`）保存日志模块看不到的解释器级崩溃输出 |
-| `WEBSA_STATIC` | 自动 | 前端目录覆盖路径 |
-| `HTRA_API_LIB` | 按架构从 `/opt/htraapi` 推导 | `libhtraapi.so` 完整路径覆盖 |
-
-远程监听必须配置 Token：
+在仓库根目录运行项目脚本：
 
 ```bash
-WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
-```
-
-浏览器访问：
-
-```text
-http://设备地址:8080/?token=同一令牌
-```
-
-反向代理改变 Origin 时：
-
-```bash
-WEBSA_ALLOWED_ORIGINS='https://sa.example.com' \
-WEBSA_HOST=127.0.0.1 WEBSA_TOKEN='...' ./run.sh
-```
-
-Query token 可能进入浏览器历史和代理日志，远程访问应使用 HTTPS。只有在可信隔离网络中，才可显式设置 `WEBSA_ALLOW_UNAUTHENTICATED_REMOTE=1`。
-
-## 启动与故障恢复
-
-始终从项目根目录使用脚本启动：
-
-```bash
+make native sdk-shim
 ./build.sh
 ./run.sh
-./stop.sh
 ```
 
-`run.sh` 启动 supervisor 和 WebSA worker。native 崩溃、致命采集错误或 DLL 调用超时后，supervisor 会退避重启 worker；配置错误不会循环重启。SAN-90 上模拟 worker `SIGKILL` 后约 3 秒恢复 API。默认运行日志为 `/tmp/websa.log`（5 MiB + 3 个备份）；日志模块看不到的崩溃输出在 `/tmp/websa.err`。
+仓库根目录的 `./run.sh` 启动 `websad` systemd 用户服务，默认使用硬件并监听 `127.0.0.1:8080`。硬件运行所需条件不满足时会报错；`WEBSA_FAKE=1 ./run.sh` 显式选择 fixture 输入。直接运行 `websad` 二进制时，默认端口为 8099，未指定 SDK shim 时使用 fixture 输入；这与根目录启动脚本的默认行为不同。
 
-如果设备仍无法恢复：
+| 启动变量 | 默认值 | 用途 |
+|---|---|---|
+| `WEBSA_HOST` | `127.0.0.1` | 监听地址 |
+| `WEBSA_PORT` | `8080` | 根启动脚本端口 |
+| `WEBSA_UNIT` | `websad` | 用户服务单元 |
+| `WEBSA_FAKE` | `0` | 显式选择 fixture（`1`） |
+| `WEBSA_RUST_IQS_SHIM` | `~/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so` | 硬件 shim |
+| `WEBSA_STATIC` | 仓库 `frontend` | 包含 `dist/index.html` 的目录 |
 
-1. 确认 SAStudio4 和其他 API 进程已退出。
-2. 等待数秒后执行 `./stop.sh && ./run.sh`。
-3. 仍失败时重新插拔 USB；固件完全挂死时可能需要重启系统。
+`WEBSA_HOST=0.0.0.0 ./run.sh` 开启局域网访问，地址为 `http://device-address:8080/`。产品端点无需认证。使用 `./status.sh` 和 `journalctl --user -u websad.service -n 100` 查看服务；修改单元名后需替换日志命令中的名称。`./stop.sh` 停止同一单元。
 
-## 软件测试
+## SDK 所有权与恢复
 
-完整门禁：
+同一时间只能有一个 SDK 调用访问设备。原生服务保留设备会话，并在管理该会话的线程中串行执行 SDK 调用。启动 WebSA 前须关闭 SAStudio4 和其他 API 客户端，设备不能共享。未显式设置的配置字段继承 SDK Profile 默认值；连续采集需要反复调用 Get。
 
-```bash
-./test.sh
-python3 -m ruff check web_sa tests tools
-cd frontend && npm audit
-```
+恢复前先查看 STATUS 错误和 journal 日志。关闭竞争应用，用 `./stop.sh && ./run.sh` 重启；链路仍不可用时重新插拔 USB。固件卡死可能需要重启系统。systemd 管理进程重启，原生模式所有者负责设备恢复。此处不保证恢复时间。
 
-`./test.sh` 会运行后端 pytest、Ruff 和前端 Vitest，任一阶段失败都会返回非零状态。当前基线为后端 51 项、前端 23 项。
+谐波 / PNM 会话运行期间，服务拒绝由 SWP 管理的配置命令，包括频率、参考电平、带宽、扫描、射频前端与参考时钟变更。修改前须先停止测量。
 
-## SAN-90 / TinySA 硬件冒烟测试
+## 频谱与 SDR 操作
 
-服务启动后执行：
+SWP 与 RTA 分别保存采集设置。SDK 实际点数和带宽可能与请求值不同。原生 SWP shim 将返回的扫描数据裁剪到请求频率范围，跳过负频率，并将未填充的零功率点标记为 NaN。RTA Auto RBW 使用 SDK 实际值，而非 `span/2000`。参数归属与切换规则见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)。
 
-```bash
-./tools/bench/hardware_smoke.py --tinysa-port /dev/ttyACM0
-```
+频率、分辨率、扫描与时钟控件保留最新待确认请求，直到收到匹配的接受或错误；延迟 STATUS 不能覆盖更新的编辑。频率确认采用硬件实际边界，连续跨度步进基于最新请求窗口累积。Preset 仅在匹配的成功确认后清除待处理草稿，失败时保留原界面。RTA 禁用仅适用于 SWP 的点数、FFT 窗口、检波器、网格、杂散与带宽比控件；RTA 带宽仍使用自动或手动方式。
 
-该命令只读取 TinySA 身份，不修改 TinySA 输出；但会测试 SAN 的 SWP/RTA 并恢复 SAN 测试前的 SWP Center/Span。
+SDR 恢复已保存的调谐、采集带宽、解调器、IF 带宽、去加重、音量、静噪和 AGC。Shift+click 或“在此收听”显式选择新的收听频率。离开 SDR 停止播放但保留音频启用偏好；Preset 仅在成功确认后重置偏好。非 SDR 的 STATUS 不覆盖 SDR 偏好。WFM 默认启用立体声，原生音频为双声道；显式设置 stereo 为 false 时使用单声道。DRM/DRM+ 编解码音频禁用 AGC、降噪、静噪和去加重控件，音频启用与音量仍可使用。SSTV 的自动/指定模式统一保存，进入 SDR 时重放。`#spectrum.dataset.sdrAudio` 提供音频诊断，包括启用/静音状态、缓冲时间、欠载次数与 RMS。
 
-显式控制 TinySA 发射 1 GHz：
+AM 窗口显示恢复的载波频率（MHz）、载波频偏（Hz）、调制度（%）、原始输入电平和最终音频 RMS/峰值（dBFS），以及固定 ±1 满幅刻度的实际最终 PCM 波形。未知值显示“—”。标题只读 badge 显示同步关闭、搜索或锁定；悬停时显示源时序、对齐、延迟和解码错误，AM 不再单独显示时序标签。同步检波开关位于载波频率行右侧。请求待确认时显示“正在开启…”或“正在关闭…”与虚线边框，不提前改变已确认的检波状态，也不显示载波已锁定；请求被拒绝或超时后恢复已确认状态。同步检波开启表示已选择该检波方式，载波锁定还要求 DSP 检测到有效载波。频偏、调制度和输入功率按源时钟平滑。Reload 后进入 SDR 时恢复保存的已确认 `am_sync` 偏好，Preset 成功后将其恢复为 false。流起始、断开连接、离开 AM 或流警告会清除旧指标。
 
-```bash
-./tools/bench/hardware_smoke.py \
-  --tinysa-port /dev/ttyACM0 \
-  --configure-tinysa \
-  --tinysa-output-mode normal \
-  --frequency 1e9 --span 10e6 --duration 3
-```
+AM 同步检波使用恢复的载波对 IQ 混频，包络检波取 IQ 幅值。载波干净且包络不反转时，两者恢复的节目音频几乎相同，切换未必有明显听感差异。受控过调制或正交干扰能区分这两条路径；同步检波不是通用降噪开关。恢复载波在捕获期间确定相干路径的极性，锁定后保持该极性，避免两种检波交叉渐变时因极性相反而抵消。
 
-安全规则：
+音频 RMS 显示按线性功率进行 300 ms 平滑；音频峰值立即上升，以 20 dB/s 速度回落。这些显示响应不改变 PCM、波形样本或原始遥测；流重置或遥测不可用时立即清空仪表。
 
-- `<=6 GHz`: `-25 dBm`
-- `(6,7] GHz`: `-35 dBm`
-- `(7,9] GHz`: `-42 dBm`
-- `>9 GHz`: 拒绝执行
+静噪滑块以 0.1 dB 为步长，并显示请求的 RF 门限。最左端（−160 dBm）关闭静噪；向右提高门限，仅放行更强信号。接收器使用音频 AGC 前的 SDK 频谱调谐点峰值，配合迟滞、保持时间和音频渐变。这是 SDK 标称 dBm 读数，不是积分信道功率。点击 SDR 步长快选按钮后可立即按左右键调频；数值输入框仍保留自身的编辑按键。
 
-工具先关闭输出并设置 -42 dBm，再选择模式、用 `sweep cw` 设置并回读频率，最后设置对应安全功率并执行 `output on + resume`。无论成功失败都会执行 `output off`。工具不会恢复 TinySA 原频率/模式；共享台架使用前应记录原设置，结束后按需要恢复。
+迹线检波器选择只适用于 SWP，在 RTA 或谐波 / PNM 测量中会被拒绝。Auto Sample 随信号类型选择；Sample、Pos Peak、Neg Peak 和 RMS 使用固定检波器。Auto Peak 面向脉冲信号，通过 API 提供，不在 UI 中提供。比较检波结果时保持跨度、RBW 和点数不变。
 
-## 其他已知行为
+## 参考电平与溢出
 
-- IF Gain 1/4 档在部分频点可能存在约 1 dB 幅度差。
-- SAN-45/60/90 的标称范围分别为 9 kHz-4.5/6/9 GHz，功能相同但指标不同。
-- `RefClkFreqOffset` 在部分固件上可能恒为 0，可使用校准后的计算值。
-- RTA 当前使用 PacketFrame 中第一条频谱；硬件 bitmap/PacketFrame 的概率密度语义仍需与厂商软件对照验证。
+手动 `SET_REF` 请求范围为 -160 至 +40 dBm。编辑值在匹配的确认到达前保持待确认状态，关联错误或超时后恢复已接受的显示。SDR 的 `sdr.ref` 确认保存的硬件请求，`ref` 则报告 SDK 实际参考电平，钳位后两者可能不同。SDR 显示参考与 IQS 参考相互独立。谐波/PNM 测量期间禁用 Level 控件。
 
-## 迹线检波器
+显式 `AUTO_SCALE` 启动有界会话（20 秒，最多 24 步），仅由同一模式、同一配置下的新采集证据推进。SDK IF 溢出告警 `APIRETVAL_WARNING_IFOverflow`（-12）允许从当前 SDK 实际参考电平增加 10 dB，最高不超过上报的参考上限；实际值已高于上限时绝不向下调整。衰减、前置放大、中频增益及策略保留用户选择。与告警一起返回的有效 IQ 会被保留。普通无数据或等待触发不会抬高参考，手动操作也没有后台参考调整。
 
-- `Auto Sample`（默认）：自动跟随信号类型，适合一般观察与 CW。
-- `Sample` / `Pos Peak` / `Neg Peak` / `RMS`：固定检波方式；`Pos Peak` 峰值最贴顶、`RMS` 噪底更低。
-- `Auto Peak`：面向脉冲/突发信号捕获（逐频点挑选峰值帧）。SAN-90 实测对稳定 CW 会丢失载波（峰值 −21.7 → −85 dBm、抖动 0.85 dB），因此**不在界面提供**，仅在脉冲场景下通过 API 使用。
-- 检波器仅影响 SWP；RTA 与 harmonic/PNM 测量期间该命令会被拒绝。
-- 比较检波器时需固定 span / RBW / 点数：窄 span + 大 RBW 时每频点合帧样本极多，各检波器会收敛到同一电平（SAN-90 实测 10 MHz span、1 MHz RBW 下五档均为 −21.6 dBm）；宽 span 下差异才显现（100 MHz span、RBW auto：PosPeak −21.6 / RMS −27.6 / Sample −36.6 / NegPeak −84.7 dBm）。因此读数差异属检波器语义与驻留条件，不是故障。
+Auto 仅根据无溢出的频谱拟合，配置变化后还须取得新的无溢出频谱才能确认完成。SDR 显式 Auto 可重配 IQS 以恢复溢出；进入 SDR 使用 `display_only:true`，不修改硬件。手动配置、频率、模式或 Preset 变更会取消旧会话并清除旧目标。`auto_ref` 提供进度与结束原因，包括 limit、stalled、failed、no_data 和 timeout；未成功完成时目标为空。完整结果结构见 [API](API.md)。
 
+幅度偏移仅应用一次，作用于显示绝对电平（坐标轴、标记、峰值和信道读数）。dBc 等差值仍为差值；设备参考、衰减与触发阈值保持仪器单位。实际增益按当前 SDK 模式回读，缺失字段保留为 null。前置放大器 Auto/Off 表示所选策略，不代表物理开关状态。瀑布电平范围必须有限且有效；映射变化会清空历史，即使已暂停。
 
-## 为什么普通模式的触发没有防抖/延迟/预触发？
+## 参考时钟与固件
 
-这些是设备侧（RTA）的硬件时序功能：RTA 连续采集，可以按时间定义抖动窗口与预触发区间；
-普通扫频每个频点只驻留微秒级，一条迹线自身没有时间轴，只剩"相邻两次扫描之间是否发生门限穿越"
-这一个可判定的量。因此面板上这些项在普通模式下置灰，仅 RTA 可用。
+- `ReferenceClockSource`：0=内部，1=外部且失锁时回退，2=内部 + DOCXO，3=强制外部。Premium 时钟是否可用取决于设备。
+- SAN-90 外部参考输入为 10 MHz；原生 shim 将 `ExternalSystemClockFrequency` 与外部参考频率设为 10 MHz。
+- 参考输出支持取决于型号。时钟变更配置当前 Profile；RTA 保持 RTA。
+- 没有有效外部参考时不要选择 `external_forced`。`SystemClockSource=External` 是另一项厂商设置，WebSA 不提供该选项。
+- GNSS 1PPS 校准需要真实且锁定的 1PPS 输入；没有信号时厂商调用可能阻塞。
+- 部分固件将 `RefClkFreqOffset` 报告为零；零值不能证明时钟准确。可用时应使用计算得到的校准结果。
+- SAN-45/60/90 标称频率上限分别为 4.5/6/9 GHz，下限为 9 kHz；规格与支持能力因型号而异。
 
-## 按 Auto Ref 会解除已启用的 RTA 触发吗？
+## 触发与测量问题
 
-以前会：启用电平触发后点 Auto Ref，按钮会回到 `Capture`、门限线消失。现在已不再复现（实测：Auto Ref
-前后按钮保持 `Stop`、触发源保持 `level`）。**手动**调整 Ref 一直不受影响——即使门限被推到可视区之外，
-门限线也会钉在边缘显示（带 ▲/▼）。
+RTA 使用设备触发；SWP 软件触发在相邻扫描发生阈值交叉前保持实时显示。防抖、延迟和预触发时间仅适用于 RTA。RTA 请求设置与 SDK 实际回读分别保存，完整帧绘制完成后才保持捕获。厂商超时本身不能证明正在等待触发；不支持或未知的捕获状态会明确显示。Fixture 输入不模拟硬件命中。确认命中后保持冻结，直到 Free Run 或 Escape；Auto Scale 不解除已就绪触发。
 
+PNM 结果随连续 Get 调用增量更新。100 Hz 与 10 MHz 偏移边界附近可能不准确，可用最大偏移两倍的扫频跨度交叉检查。PNM 典型最小输入功率为 -50 dBm。
 
-## 为什么 n dB 字段在虚拟键盘里表现不一样？
+每次谐波/PNM Set 都会清空旧曲线、表格与累积结果。结果须匹配最新已确认命令的会话，旧采集周期不能填入新测量。PNM 平均有独立控制行，关闭 PNM 后其全部 Set/Apply 操作均禁用。限制线与信道测量使用所选的已处理绝对电平迹线；归一化迹线不提供这些绝对读数或绝对电平 CSV 导出。RTA/SDR 禁用这些测量控件，返回标准模式后恢复。dBc 读数不叠加幅度偏移。
 
-它不是单个数值，而是逗号分隔的整数门限列表，所以键盘按**文本**方式编辑而不是替换单值：鼠标可定位
-光标、退格只删光标处一个字符、`C` 清空整串（`OK` 时会去掉首尾与重复的逗号）。该字段只接受整数，因此
-它的 `.` 键兼作 `,` 分隔符。
+n-dB 键盘用于编辑以逗号分隔的整数阈值列表。退格键删除光标处字符，C 清空输入，小数点键输入逗号；OK 整理首尾及连续重复的逗号。
+
+开发检查与硬件验证流程见 [DEVELOPMENT.md](DEVELOPMENT.md)；当前限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。

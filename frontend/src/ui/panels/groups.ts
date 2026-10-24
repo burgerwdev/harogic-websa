@@ -1,5 +1,4 @@
 // Collapsible control groups.
-// Extracted from ui/controls.ts (report finding P1-5).
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 import { peakListVisible } from '../measurePrefs';

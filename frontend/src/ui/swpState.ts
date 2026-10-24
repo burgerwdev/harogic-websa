@@ -1,11 +1,7 @@
 /**
  * Swept (SWP) resolution/points state - one owner per parameter.
  *
- * The same rule as the SDR and frequency groups: only the STATUS handler calls confirm(),
- * only user actions call set(), and every reader goes through get(). These values used to be
- * exported mutable `let`s in core/store.ts written by the STATUS handler and by two UI
- * functions; that made it impossible to tell an in-flight user choice from a confirmed
- * value, which is how "the value jumps back for a frame after I change it" happens.
+ * Only STATUS confirms settings, only user actions set intent, and readers call get().
  */
 import { createParam } from '../core/params';
 

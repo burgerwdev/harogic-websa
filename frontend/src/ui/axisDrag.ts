@@ -50,6 +50,7 @@ import { getDisplayRef } from './displayRef';
 import { displayOffset, displayUnit } from './displayState';
 import { estimatedCaptureSpanHz } from './sdrState';
 import { beginFrequencyCommit } from './panels/frequency';
+import { beginRtaAxisTransition } from './panels/rta';
 import { commitLevelOffset, commitRefLevel, setScale } from './panels/refAmp';
 
 export type Axis = 'x' | 'y';
@@ -75,7 +76,7 @@ const MAX_DB_PER_DIV = 20;
 const MIN_SPAN_HZ = 100;
 
 type GestureBase = { freq: FreqWindow | null; level: LevelWindow };
-type Settle = { freq?: FreqWindow; level?: LevelWindow };
+type Settle = { freq?: FreqWindow; level?: LevelWindow; revision?: number };
 /** What the level axis changes: the device reference, or the relative display's own offset. */
 type LevelTarget = 'ref' | 'offset';
 
@@ -153,6 +154,13 @@ function levelAt(frac: number, w: LevelWindow = committedLevelWindow()): number 
 }
 
 function clampFreq(w: FreqWindow): FreqWindow {
+	if (currentGraphMode() === 'sdr') {
+		// IQ widths are fixed steps: slide the entire window inside the RF limits.
+		const span = Math.min(w.hi - w.lo, S.FREQ_MAX - S.FREQ_MIN);
+		const half = span / 2;
+		const center = Math.max(S.FREQ_MIN + half, Math.min(S.FREQ_MAX - half, (w.lo + w.hi) / 2));
+		return { lo: center - half, hi: center + half };
+	}
 	const n = normalizeCenterSpan(
 		(w.lo + w.hi) / 2, w.hi - w.lo, S.FREQ_MIN, S.FREQ_MAX, MIN_SPAN_HZ);
 	if (!n) return w;
@@ -214,6 +222,26 @@ export function previewFreqWindow(): FreqWindow | null {
 export function previewLevelWindow(): LevelWindow | null {
 	refresh();
 	return session ? session.targetLevel : null;
+}
+
+/** Rebase a pending SDR gesture onto the window accepted by the device. */
+export function confirmSdrAxisWindow(center: number, span: number, revision: number): void {
+	const s = session;
+	const pending = s?.settle;
+	if (currentGraphMode() !== 'sdr' || !s || s.axis !== 'x' || !pending?.freq
+		|| pending.revision === undefined || revision <= pending.revision
+		|| !Number.isFinite(revision) || !Number.isFinite(center) || !(span > 0)) return;
+	const requested = pending.freq;
+	if (!near(span, requested.hi - requested.lo, Math.max(1, span * FREQ_MATCH_FRAC))) return;
+	const accepted = { lo: center - span / 2, hi: center + span / 2 };
+	const delta = accepted.lo - requested.lo;
+	const shift = (window: FreqWindow): FreqWindow => ({ lo: window.lo + delta, hi: window.hi + delta });
+	if (s.base.freq) s.base.freq = shift(s.base.freq);
+	if (s.targetFreq) s.targetFreq = shift(s.targetFreq);
+	pending.freq = accepted;
+	pending.revision = revision;
+	if (chain?.axis === 'x' && chain.freq) chain.freq = shift(chain.freq);
+	refresh();
 }
 
 /**
@@ -460,7 +488,10 @@ function commit(reason: 'end' | 'idle'): void {
 	const settle: Settle = {};
 	if (s.axis === 'x' && s.targetFreq) {
 		const sent = commitFreqWindow(s.targetFreq);
-		if (sent) settle.freq = sent;
+		if (sent) {
+			settle.freq = sent;
+			if (currentGraphMode() === 'sdr') settle.revision = S.configVersion;
+		}
 	} else if (s.axis === 'y' && s.level === 'ref') {
 		const sent = commitRefLevel(s.targetLevel.ref);
 		if (sent !== null) settle.level = { ref: sent, range: s.targetLevel.range };
@@ -520,8 +551,8 @@ function commitFreqWindow(w: FreqWindow): FreqWindow | null {
 	if (mode === 'std') {
 		const n = normalizeCenterSpan(center, w.hi - w.lo, S.FREQ_MIN, S.FREQ_MAX);
 		if (!n) return null;
-		beginFrequencyCommit('swp-freq-settings');
-		send({ cmd: 'SET_FREQ', center: n.center, span: n.span });
+    const request_id = beginFrequencyCommit('swp-freq-settings', n);
+    send({ cmd: 'SET_FREQ', center: n.center, span: n.span, request_id });
 		return { lo: n.start, hi: n.stop };
 	}
 	if (mode === 'rta') {
@@ -529,17 +560,18 @@ function commitFreqWindow(w: FreqWindow): FreqWindow | null {
 		const n = normalizeCenterSpan(center, span, S.FREQ_MIN, S.FREQ_MAX, 1000);
 		if (!n) return null;
 		selectOption('select-rta-span', span);
-		beginFrequencyCommit('rta-freq-settings');
-		send({ cmd: 'SET_RTA', center: n.center, span: n.span });
+    const request_id = beginFrequencyCommit('rta-freq-settings', n);
+    beginRtaAxisTransition(request_id);
+    send({ cmd: 'SET_RTA', center: n.center, span: n.span, request_id });
 		return { lo: n.start, hi: n.stop };
 	}
-	// SDR: the capture window is 0.8 * the native IQ rate / decimate, so a zoom is a decimate step.
-	// A pan keeps the current step (the wideband centre is what moves) and never touches the listen
-	// frequency, which belongs to the demodulator and to the user (same rule as the edge push).
+	// SDR widths are fixed IQ steps. The backend confirms the actual center and listen
+	// after fitting the capture and its occupied channel to the hardware passband.
 	const decimate = nearestDecimate(w.hi - w.lo);
 	if (decimate === null) return null;
-	selectOption('select-sdr-decimate', decimate);
-	send({ cmd: 'SET_SDR', center, decimate });
 	const span = estimatedCaptureSpanHz(decimate);
-	return { lo: center - span / 2, hi: center + span / 2 };
+	const fitted = clampFreq({ lo: center - span / 2, hi: center + span / 2 });
+	selectOption('select-sdr-decimate', decimate);
+	send({ cmd: 'SET_SDR', center: (fitted.lo + fitted.hi) / 2, decimate });
+	return fitted;
 }

@@ -4,6 +4,48 @@ import { canvasColors, getTheme } from '../core/theme';
 import { percentileApprox } from '../dsp/stats';
 import { wfHiDbm, wfLoDbm, wfRangeMode } from '../ui/waterfallState';
 import { getCapture, getView, isZoomed, viewportVersion } from '../ui/spectrumViewport';
+import { lowerBound, projectSpectrum, sameFrequencyGrid } from '../dsp/grid';
+
+const MAX_HISTORY_COLUMNS = 16384;
+const rowGeometry = new WeakMap<Uint16Array, { freq: Float64Array | null; lo: number; hi: number }>();
+let historyFreq: Float64Array | null = null;
+let historyScratch = new Float32Array(0);
+// One current display mapping per retained axis, never a cache of zoom histories.
+const rowMappings = new WeakMap<Float64Array, { w: number; lo: number; hi: number; first: Int32Array; end: Int32Array }>();
+
+/** Stored native rows use their true Hz; only over-budget rows use uniform columns. */
+export function sliceWaterfallRow(row: Uint16Array, w: number, lo: number, hi: number,
+	out?: Uint16Array): Uint16Array {
+	const geometry = rowGeometry.get(row);
+	if (!geometry) return sliceDensityRow(row, w, 0, 1, out);
+	const { freq, lo: capLo, hi: capHi } = geometry;
+	if (!freq) return sliceDensityRow(row, w, (lo - capLo) / (capHi - capLo), (hi - capLo) / (capHi - capLo), out);
+	const dst = out && out.length === w ? out : new Uint16Array(w);
+	let mapping = rowMappings.get(freq);
+	if (!mapping || mapping.w !== w || mapping.lo !== lo || mapping.hi !== hi) {
+		const first = new Int32Array(w), end = new Int32Array(w);
+		for (let x = 0; x < w; x++) {
+			const a = lo + x / w * (hi - lo), b = lo + (x + 1) / w * (hi - lo);
+			first[x] = lowerBound(freq, a);
+			end[x] = b >= freq[freq.length - 1] ? freq.length : lowerBound(freq, b);
+			if (first[x] !== end[x]) continue;
+			const mid = (a + b) / 2;
+			const left = Math.max(0, first[x] - 1), right = Math.min(freq.length - 1, first[x]);
+			const nearest = mid - freq[left] <= freq[right] - mid ? left : right;
+			const cellLo = nearest ? (freq[nearest - 1] + freq[nearest]) / 2 : freq[0];
+			const cellHi = nearest + 1 < freq.length ? (freq[nearest] + freq[nearest + 1]) / 2 : freq[nearest];
+			if (mid >= cellLo && mid <= cellHi) { first[x] = nearest; end[x] = nearest + 1; }
+		}
+		mapping = { w, lo, hi, first, end };
+		rowMappings.set(freq, mapping);
+	}
+	for (let x = 0; x < w; x++) {
+		let peak = 0;
+		for (let i = mapping.first[x]; i < mapping.end[x]; i++) if (row[i] > peak) peak = row[i];
+		dst[x] = peak;
+	}
+	return dst;
+}
 
 // 密度 → 颜色 LUT(256 级), 按主题区分: dark=荧光系(深底亮色), light=深色系(浅底高对比)
 let lutCache: { theme: string; lut: Uint32Array } | null = null;
@@ -40,6 +82,7 @@ let wfLastPushes = -1;
 let wfLastMax = -1;
 let wfLastTheme = '';
 let sliceScratch: Uint16Array | null = null;
+let wfNewestRow: Uint16Array | null = null;
 
 /**
  * Map one row's stored columns onto the canvas width through the visible capture
@@ -93,25 +136,27 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     f1 = Math.min(1, (zv.hi - cap.lo) / (cap.hi - cap.lo));
   }
   const viewKey = `${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
-  // Nothing new since the previous frame (renders are faster than row pushes) -> keep
-  // the existing canvas content instead of rebuilding ~100k pixels.
-  if (
-    wfLastPushes === S.waterfallPushes && wfLastMax === dmax && wfLastTheme === theme
-    && wfImgKey === `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`
-  ) {
-    return;
-  }
+  const imageKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`;
+  const sameImage = wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
+  const pushed = S.waterfallPushes - wfLastPushes;
+  if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) return;
+  // Existing pixels already represent immutable historical rows. Scroll those pixels
+  // once and rasterize only arrivals; zoom/resize/palette/reset rebuilds all rows.
+  const scroll = sameImage && pushed > 0 && pushed < Math.min(n, H)
+    && rows[n - 1 - pushed] === wfNewestRow ? pushed : 0;
   wfLastPushes = S.waterfallPushes;
   wfLastMax = dmax;
   wfLastTheme = theme;
-  wfImgKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`;
+  wfImgKey = imageKey;
+  wfNewestRow = rows[n - 1];
   if (!wfImg || wfImg.width !== W || wfImg.height !== H) wfImg = ctx.createImageData(W, H);
   const img = wfImg;
   const px = img.data;
+  if (scroll) px.copyWithin(scroll * W * 4, 0, (H - scroll) * W * 4);
   const lut = densityLUT();
   const bg = canvasColors().bg;
   const bgPx = [parseInt(bg.slice(1, 3), 16), parseInt(bg.slice(3, 5), 16), parseInt(bg.slice(5, 7), 16)];
-  for (let y = 0; y < H; y++) {
+  for (let y = 0; y < (scroll || H); y++) {
     // Newest row at TOP, older rows scroll down (top-down growth)
     let row: Uint16Array | null = null;
     if (n <= H) {
@@ -127,7 +172,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
       continue;
     }
     if (!sliceScratch || sliceScratch.length !== W) sliceScratch = new Uint16Array(W);
-    const ds = sliceDensityRow(row, W, f0, f1, sliceScratch);
+    const ds = cap ? sliceWaterfallRow(row, W, zv?.lo ?? cap.lo, zv?.hi ?? cap.hi, sliceScratch)
+      : sliceDensityRow(row, W, f0, f1, sliceScratch);
     for (let x = 0; x < W; x++) {
       const lvl = Math.min(255, Math.round(ds[x] / dmax * 255));
       const c = lut[lvl];
@@ -141,26 +187,19 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   ctx.putImageData(img, 0, 0);
 }
 
-// One mapping for both modes (see ui/wfRange.ts): the row is a peak-held downsample of the
-// level array through a dB window.
+// Native rows retain one level per bin; oversized sources are peak-projected before this mapping.
+// Both modes use the same dB window.
 //   auto  : window = [frame floor (30th pct), frame max]; the floor is placed at 26% of the
 //           palette so the noise texture stays visible even at very low noise floors
 //   fixed : window = the user's dBm range, plain linear (colour = level)
-function buildRow(levels: ArrayLike<number>, w: number, maxDensity: number, lo: number, hi: number, offset: boolean): Uint16Array {
-  const span = Math.max(1e-6, hi - lo);
-  const row = new Uint16Array(w);
-  for (let i = 0; i < w; i++) {
-    const j0 = Math.floor(i * levels.length / w);
-    const j1 = Math.min(levels.length - 1, Math.ceil((i + 1) * levels.length / w));
-    let m = -Infinity;
-    for (let j = j0; j < j1; j++) {
-      const v = levels[j];
-      if (Number.isFinite(v) && v > m) m = v;
-    }
-    let frac = Number.isFinite(m) ? (m - lo) / span : 0;
+function buildRow(levels: ArrayLike<number>, maxDensity: number, lo: number, hi: number, offset: boolean): Uint16Array {
+  const span = hi - lo;
+  const row = new Uint16Array(levels.length);
+  for (let i = 0; i < levels.length; i++) {
+    if (!Number.isFinite(levels[i])) continue;
+    let frac = (levels[i] - lo) / span;
     if (offset) frac = 0.26 + frac * 0.74;
-    const lvl = Math.max(0, Math.min(maxDensity, Math.round(Math.max(0, Math.min(1.26, frac)) * maxDensity)));
-    row[i] = lvl;
+    row[i] = Math.max(0, Math.min(maxDensity, Math.round(Math.max(0, Math.min(1.26, frac)) * maxDensity)));
   }
   return row;
 }
@@ -168,8 +207,10 @@ function buildRow(levels: ArrayLike<number>, w: number, maxDensity: number, lo: 
 /** Resolve the dB window for the current range mode. */
 function windowFor(levels: ArrayLike<number>): { lo: number; hi: number; offset: boolean } {
   if (wfRangeMode.get() === 'fixed') {
-    const lo = Math.min(wfLoDbm.get(), wfHiDbm.get() - 1);
-    return { lo, hi: wfHiDbm.get(), offset: false };
+    const lo = wfLoDbm.get(), hi = wfHiDbm.get();
+    if (Number.isFinite(lo) && Number.isFinite(hi) && lo < hi) {
+      return { lo, hi, offset: false };
+    }
   }
   const floor = percentileApprox(levels, 0.3);
   let peak = -Infinity;
@@ -182,24 +223,20 @@ function windowFor(levels: ArrayLike<number>): { lo: number; hi: number; offset:
   return { lo: floor, hi, offset: true };
 }
 
-export function pushRtaRow(spec: Float32Array, w: number, maxDensity: number) {
-  const win = windowFor(spec);
-  S.pushWaterfallRow(buildRow(spec, w, maxDensity, win.lo, win.hi, win.offset));
-}
-
-export function pushSwpRow(powers: Float32Array, w: number, maxDensity: number) {
-  const win = windowFor(powers);
-  S.pushWaterfallRow(buildRow(powers, w, maxDensity, win.lo, win.hi, win.offset));
-}
-
-// The row width is owned by the renderer (the canvas is DPR/CSS dependent): building rows at
-// this width removes the extra peak-hold rescale the RTA path used to need.
-// 行宽: 画布备份像素与 2048 下限取大、16384 封顶 —— 小屏保证放大切片有足够真实列，
-// 4K/8K 保持 1:1 细节；与显示尺寸解耦后 resize 不再改写历史行的存储宽度语义。
-let rowWidth = 2048;
-export function setWaterfallRowWidth(w: number): void {
-  if (Number.isFinite(w) && w > 0) rowWidth = Math.min(16384, Math.max(2048, Math.round(w)));
-}
-export function waterfallRowWidth(): number {
-  return rowWidth;
+/** Native bins survive local zoom, independent of canvas size; oversized SWP grids
+ * are peak-projected into the existing 16384-column / 512-row history budget. */
+export function pushSpectrumRow(levels: Float32Array, freq: Float64Array, lo: number, hi: number, maxDensity: number) {
+  const win = windowFor(levels);
+  let source = levels;
+  let axis: Float64Array | null = null;
+  if (levels.length <= MAX_HISTORY_COLUMNS) {
+    if (!sameFrequencyGrid(historyFreq, freq)) historyFreq = freq;
+    axis = historyFreq;
+  } else {
+    if (historyScratch.length !== MAX_HISTORY_COLUMNS) historyScratch = new Float32Array(MAX_HISTORY_COLUMNS);
+    source = projectSpectrum(freq, levels, lo, hi, historyScratch);
+  }
+  const row = buildRow(source, maxDensity, win.lo, win.hi, win.offset);
+  rowGeometry.set(row, { freq: axis, lo, hi });
+  S.pushWaterfallRow(row);
 }

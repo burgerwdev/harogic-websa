@@ -1,112 +1,38 @@
-# Known Limitations & Notes
+# Known Limitations
 
-1. **Occasional libhtraapi segfault/block**: RTA first attempts two in-place reconfigurations after repeated Trigger/Get failures. The supervisor restarts the worker after persistent failure, native crash, or call timeout. A USB unplug is detected on the swept path (a run of bus errors) and reported as `connected: false`; plugging the analyzer back in makes the worker reopen it and resume. RTA/SDR recover through their own reconfiguration and, if that fails, a worker restart, after which the link loop reopens the device. Rather than losing the worker to a native crash, a handle whose link is already known dead is never handed back to the vendor library: `Device_Close` on a stale handle segfaulted inside `libhtraapi` (`Device_Close+0x7799c`, 8 core dumps), which turned the link loop into a restart loop while the analyzer was unplugged — and made an orderly stop during a lost link crash as well. `HarogicDevice.close()` now closes only a handle that came from a successful `Device_Open` (`_handle_ok`), and the supervisor gives up with a critical message after 5 consecutive crashes that each lasted under 10 s instead of spinning and writing a core dump per attempt. Bench-verified: no new core dump, a quiet "device still unreachable" retry, automatic resume when the device is released, and a clean stop in both link states. Persistent Web/SDK process separation is still deferred.
-2. **SAStudio4 exclusivity**: device is single-handle; Device_Open returns -1 while the official software is running
-3. **External reference locking**: requires ExternalSystemClockFrequency=10 MHz correctly set with external signal present;
-   Ext mode falls back to internal on unlock (normal device behavior); use ExtForce to force
-4. **SystemClockSource=External is dangerous**: hangs the device (do not use)
-5. **Normalization**: external sweep source must cover the measurement bandwidth; source dwell time ≥ analyzer hop time;
-   under CW stimulus only the source point normalizes effectively (baseline clamped to 0)
-6. **Phase noise**: 100 Hz / 10 MHz boundary offsets are inaccurate; min input -50 dBm
-7. **Points**: frontend peak-preserving resampling; displayed points = device-native (requested value only affects device config)
-8. **GNSS ppm**: RefClkFreqOffset is not filled by some firmware (always 0); use computed value after calibration
-9. **Valley traversal (frequency direction)**: left/right valley navigation follows frequency direction (like peaks) — Valley locates the global minimum of display data,
-   left/right jumps to adjacent depressions (independent valleys); multiple local minima within a depression are merged (25 bins), valley list items match Valley positioning
-   (rebuilt as depression-wide display minimum), jumping back to the deepest valley has no offset
-10. **smooth & peak/valley detection**: when smooth is on, extrema detection is fully based on the smoothed curve (matches display), amplitude uses smoothed value;
-    when off, raw data is used (Raw Anchor real extremum in raw neighborhood); valley sort/dedup: peaks 3 bins, valleys 25 bins (depression merge)
-11. **Pk threshold**: the value lives in a slot and is fitted **once per measurement geometry**
-    (span/RBW/Ref/dB-per-div/points/centre); a signal swing alone cannot move it, so the peak table and
-    marker peak search no longer reshuffle with the amplitude. A user edit locks it until the Auto button
-    is pressed; nothing is updated while all markers are off
-12. **Peak/valley navigation matches the nearest list item (±3 bins)**: a right jump cannot loop back to the same bin (matching an adjacent bin used to make right-shift appear stuck)
-13. **Auto with manual attenuation**: no longer suspended. Auto Scale is a one-shot action and the
-    protective safety ranger (IF overflow, gross clipping) runs whatever the Atten setting is (before, selecting a manual
-    attenuator silently disabled overload protection, so an IF overflow (-12) could freeze the display)
-14. **Remote access**: query tokens can enter browser history/proxy logs; use an HTTPS reverse proxy for remote control
-15. **Fast worker exit**: the worker uses `os._exit` to avoid unstable vendor-SDK destruction, so it does not send a WS close frame; browsers reconnect automatically
-16. **Remaining hardware qualification**: GNSS/1PPS calibration and 6/7/9 GHz soak are
-    still to be covered (USB hotplug detection/recovery is now implemented and covered by the
-    link-recovery tests). Frequent SWP/RTA switching, slow clients and 60 s SDR audio continuity are now
-    exercised by the Playwright state regression (0 worklet underruns with the audio worker).
-17. **Resolution floor of the channel measurements**: channel power / OBW / ACPR are computed
-    from the *displayed* trace, so they are limited by the point count. When the RBW is far below
-    the displayed bin spacing a CW carrier only lights 1-2 bins and the OBW bottoms out there
-    (measured at span 100 MHz / 998 points: RBW 100 kHz -> OBW 401.6 kHz, RBW 10 kHz -> 200.8 kHz).
-    For a finer OBW reduce the span or raise the point count instead of only narrowing the RBW.
-18. **RTA level trigger behaviour (measured)**: a level trigger fires on a threshold **crossing**
-    (rising edge by default), so a steady signal that is already above the threshold when armed never
-    triggers and simply waits (no new data). While waiting the device sends **no packets at all**, so the
-    canvas stays on the last frame - which is why arming clears the canvas and shows a waiting chip.
-    `Intercept >= ...` (POI) is the shortest burst the current configuration is *guaranteed* to catch.
-    Of the RTA trigger sources only `bus` works here (host bus-triggered, ~100 fps, the default);
-    `freerun` delivered no data in testing and is not offered. Triggering is an RTA-domain feature:
-    the SWP profile only has internal free run and external triggers, with no level trigger field; the swept-mode level trigger shown in the UI is implemented in the frontend (see the next item).
-19. **The swept-mode trigger is a software implementation**: SWP has no level trigger field, so the
-    level trigger lives in the frontend and is judged on the crossing **between two consecutive sweeps**
-    (one sweep is the smallest time unit). While armed the display stays live and it freezes on a hit.
-    The RTA device timing features (debounce, delay, pre-trigger, acquisition, re-trigger, trigger
-    output) and POI are therefore greyed out in the swept mode.
-20. **SDR capture centre and the zero-IF artefact**: the IQS stream is tuned exactly on the
-    requested centre now (the old "+200 kHz to avoid the DC centre" shift was removed - it left the
-    lowest 200 kHz of the displayed window uncovered, a blank strip at the left edge). The IQ DC /
-    LO-leakage artefact therefore sits at the centre of the panadapter; a signal exactly on the
-    requested centre overlaps it.
-21. **SDR audio path**: playback is received *and* delivered by a dedicated worker over a second
-    `?audio=1` WebSocket and drives the AudioWorklet directly (the display connection uses
-    `?noaudio=1` and carries no audio). A remaining audio gap is therefore a browser-side worklet
-    ring underrun, not a dropped frame; `document.getElementById('spectrum').dataset.sdrAudio`
-    exposes `enabled/muted/frames/buffered_ms/underruns/rms/worklet/worker` for diagnosis.
-    The panadapter overlay likewise publishes the band the active demodulator reads as
-    `dataset.demodBand` (Hz relative to the dial, e.g. `100..3000` for FT8) — the e2e contract
-    reads it because the 12% tint cannot be measured off the waterfall pixels reliably.
-22. **Vendor ADM (SINAD/SNR/THD) is a single-tone metric**: with real broadcast audio there is no
-    dominant modulation tone, so the vendor `ADM_*` values collapse to ~0 and THD is meaningless
-    (same code, 1 kHz test tone: SINAD ~7, SNR ~12). The SDR panel no longer displays it
-    (`cur-sdr-adm` removed); the raw values stay in STATUS `sdr.adm` for API use.
-23. **SDR squelch reads the pre-AGC tuned-bin peak (dBm), not decoded PCM dBFS.** It is a
-    spectrum-bin peak, not integrated channel power: with a -40 dBm tinySA carrier, AM read
-    about -40 dBm but 25 kHz-deviation FM read about -48 dBm as power spread across bins.
-    Set the threshold for the signal/mode being received. The gate fails open until a usable
-    spectrum measurement arrives, uses 3 dB hysteresis and 0.3 s hold, and ramps over
-    5/80 ms (open/close). `<= -100 dBm` is the wide-open default.
-24. **IF AGC stays off (`EnableIFAGC=0`)**: it matches the official `Profile.xml` and the
-    hardware available here cannot saturate the IF, so AGC has no observable effect. The wiring
-    and the `ifagc_gain` readback remain for diagnostics (`WEBSA_IFAGC=1` flips the default for
-    A/B tests). Measurement caveat worth remembering: the **tinySA Ultra+ output tops out around
-    -18.5 dBm**; an earlier "receiver compression" reading at 0 dBm was the source limiting
-    itself, not the analyzer. With the source at -18.5 dBm the SAN-90 error is about -0.68 dB,
-    and with `preamp=AutoOn` the device keeps `preamp_actual=1` (it refuses to bypass).
-25. **No frequency-response compensation is needed**: the factory calibration is burned into the
-    firmware, so `Devcie_SetFreqResponseCompensation` (external file) must not be called.
-    Measured baseline with a known tinySA source (-18.5 dBm, atten 0, preamp off): 100 MHz error
-    -0.68 dB; the -30..-18.5 dBm range stays within 0.4-0.7 dB and the attenuator tracking is
-    correct. When checking wideband flatness remember the tinySA's own flatness (typically
-    +-2 dB) is part of the result.
-26. **Integer-family spurs at 1.000/2.000 GHz are device-internal**: the same spur appears in all
-    three modes (SWP/RTA/SDR) at exactly integer GHz, and it is **after** the input attenuator -
-    adding 10 dB of attenuation raises its apparent level by ~10-13 dB (an external CW source
-    stays flat), so it is an internal IF/ADC/clock spur, not a received signal. SWP hides it only
-    because of the RBW (it emerges at 1.9 kHz and below). Software cannot remove it; report the
-    1/2 GHz and rotation-harmonic family to the vendor if needed.
-27. **Unexplained (low priority): "inverted attenuation" in the FM broadcast band.** At 101.7 MHz,
-    span 1 MHz, `preamp=AutoOn`, raising the actual attenuation from 3 to 18 dB made the reading
-    *rise* by ~15 dB (-71.4 -> -56.4 dBm). A CW source retest does not reproduce it, so the
-    working hypothesis is front-end overload from multi-carrier composite power; confirming it
-    needs a known source in a strong-signal environment.
-28. **"Fixed Bin Size" (points strategy) was withdrawn.** This firmware ignores
-    `SWP_Profile_TypeDef.TraceBinSize_Hz`. A request of 10 kHz, 100 kHz, or 1 MHz returns an
-    identical trace grid. So `TracePointsStrategy=BinSizeAssined` cannot deliver the fixed
-    frequency interval that its name promises. It only switches the sweep to "exact requested
-    window, one FFT frame for each trace point". Measured cost of one sweep: 1.1 s at 10 MHz,
-    3.4 s at 1 GHz, and 28 s at the full span. The other two strategies need 5-12 ms. The full
-    span is longer than the 10 s acquisition watchdog, so the worker restarted and the UI froze.
-    `SET_TRACEGRID.points_strategy` now accepts `speed` and `accuracy` only. Details:
-    tools/sdr_probe/FINDINGS.md §16. `Align` (native / to start / to centre) is unaffected.
-29. **An SDR frame has no data in its outermost display bin.** The published capture grid stops
-    before the upper edge of the display window. Bench measurement: about 1.3 bins at 23 MHz with
-    decimate 128. `dsp/grid.ts` marks that bin as a gap (NaN). It does not invent a value. The
-    trace stops there. It does not run down the plot edge. An inked pen across a non-finite sample
-    used to draw that line (FINDINGS.md §17). With GapFill on, the swept path interpolates such a
-    gap. The RTA/SDR path keeps the raw frame.
+## Device and SDK
 
+- **Exclusive ownership:** `libhtraapi` requires exclusive access to the device. `Device_Open` returns `-1` while SAStudio4 holds it. The proprietary SDK can block or crash; unplug/replug recovery and shutdown must be qualified on the deployed hardware build.
+- **External reference:** supply a 10 MHz reference and set `ExternalSystemClockFrequency` accordingly. `Ext` falls back to the internal reference on unlock; `ExtForce` forces external reference use. Do not set `SystemClockSource=External`: it can hang the device.
+- **GNSS calibration:** some firmware leaves `RefClkFreqOffset` at zero; use the computed offset after calibration. GNSS/1PPS calibration and 6/7/9 GHz soak qualification remain outstanding.
+- **IF AGC:** `EnableIFAGC=0` is the default, consistent with the vendor profile. Its effect under IF saturation remains unqualified.
+- **Factory calibration:** calibration is stored in firmware. Do not load an external frequency-response file with `Devcie_SetFreqResponseCompensation`.
+- **Internal spurs:** integer-GHz spurs, including 1.000 and 2.000 GHz, affect SWP/RTA/SDR. Their apparent level can rise with input attenuation; narrow RBW can expose them in SWP. Treat them as device artefacts when interpreting a trace.
+- **Trace grid:** the device-native grid determines the available points; a requested point count is not a guarantee of display resolution. The firmware ignores `SWP_Profile_TypeDef.TraceBinSize_Hz`, so fixed bin spacing is unsupported. `SET_TRACEGRID.points_strategy` accepts `speed` and `accuracy`.
+
+## Measurements and triggers
+
+- **Normalization:** the external sweep source must cover the measurement bandwidth, with dwell time at least as long as the analyzer hop time. A CW source only normalizes its own frequency effectively; the baseline is clamped to zero.
+- **Phase noise:** offsets at the 100 Hz and 10 MHz boundaries are inaccurate. Minimum input level is -50 dBm.
+- **Channel measurements:** channel power, OBW and ACPR use the displayed trace and are limited by its bin spacing. A narrow CW signal can occupy only one or two bins even with a much narrower RBW. For finer OBW resolution, reduce span or increase the available point count.
+- **RTA level trigger:** triggering requires a threshold crossing. A steady signal already above the threshold when armed can wait indefinitely. `bus` is the supported RTA trigger source. POI describes the shortest burst the configuration is guaranteed to capture. Vendor timeout is also a communication timeout, so waiting can remain unknown; finite capture completion requires device/frame evidence. Fixture input does not simulate hardware hits.
+- **Swept-mode level trigger:** SWP has no device level-trigger field. The frontend detects crossings between consecutive sweeps, making one sweep the minimum time unit. The display remains live while armed and freezes on a hit. RTA timing controls and POI are unavailable in swept mode.
+
+## SDR
+
+- **Zero-IF artefact:** IQ DC and LO leakage sit at the requested capture centre. A signal exactly at that frequency overlaps the artefact.
+- **Upper-edge gap:** the capture grid can end before the upper edge of the display window. Uncovered bins remain gaps; RTA/SDR do not interpolate them with swept-mode GapFill.
+- **Vendor ADM:** SINAD/SNR/THD require a dominant modulation tone. They are not meaningful quality indicators for ordinary broadcast audio; raw values remain available in STATUS `sdr.adm`.
+- **Squelch level:** the pre-AGC tuned-bin peak is not integrated channel power. Modulation spreads power across bins, so set the squelch threshold for the received signal and mode.
+
+## Receiver and browser boundaries
+
+- **Receiver capacity:** the backend supports three independently configured slots. The product UI exposes only the main slot and disables auxiliary slots on entering SDR. Mixing, recording and dynamic channel counts are not delivered features; internal PFB bin counts do not represent product receiver capacity.
+- **RDS:** decoded text quality remains constrained; stereo indication reports pilot presence, not different left/right programme content.
+- **AM:** modulation depth is single-tone-equivalent RMS envelope depth, not arbitrary programme peak depth. Overmodulation folds the absolute envelope and can under-report signed depth; values are not capped at 100%. Carrier fading invalidates offset/depth and clears lock. The recovery estimator is limited to `min(IF bandwidth * 0.2, receiver IQ rate * 0.1, 3000 Hz)` and excludes lock near that boundary; this is a pull-range limit, not a guarantee of acquisition. Sync enabled does not itself mean carrier locked; these metrics do not establish real-RF reception quality.
+- **FT8:** decoding supports standard message types 1/2 within the supported search window, not unrestricted message types or searches.
+- **SSTV:** post-image FSK callsign decoding is unavailable.
+- **DRM:** short or looped codec playback can underrun; such clips do not establish sustained playback continuity. Codec audio bypasses the receiver AGC, noise reduction, squelch and de-emphasis controls, which are disabled in the UI; volume and audio enable remain usable.
+- **Browser rendering:** a 20 fps acquisition target does not guarantee 20 fps for every display layer. Existing observations with spectrum, density, waterfall and navigation enabled are around 15 fps; this is not a fresh hardware or browser measurement.
+
+For device constraints and probe context, see [SDR probe findings](../../tools/sdr_probe/FINDINGS.md). Hardware observations there are configuration-specific; this document does not establish qualification of a deployed build.

@@ -1,5 +1,4 @@
-# Exact versions this tree is verified against (see docs/*/ARCH_REVIEW.md G-2).
-# Docker/CI use this to reproduce a known-good environment:
+# Exact Python tool dependency versions for reproducible Docker/CI environments:
 #   pip install -r requirements-dev.txt -c requirements-lock.txt
 # Regenerate after a deliberate upgrade: python3 -m pip freeze | grep -Ei '^(aiohttp|numpy|pytest|pytest-asyncio|ruff|pyserial|fonttools|playwright)=='
 #

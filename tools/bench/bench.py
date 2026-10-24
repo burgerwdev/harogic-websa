@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import platform
 import socket
@@ -50,7 +51,7 @@ CPU_CEIL = 1.5            # worker CPU may not exceed this multiple
 
 def worker_pid() -> int | None:
     try:
-        out = subprocess.run(['pgrep', '-f', 'web_sa.main'],
+        out = subprocess.run(['pgrep', '-x', 'websad'],
                              capture_output=True, text=True).stdout.split()
     except Exception:
         return None
@@ -82,32 +83,68 @@ class CpuMeter:
         return round(max(0.0, now - self.start), 3)
 
 
-async def measure_audio(ws, seconds: float) -> dict:
-    frames = 0
-    samples = 0
-    bad = 0
+async def measure_audio(ws, seconds: float, frequency: float, expected_source: tuple) -> dict:
+    header = struct.Struct('<4sIIIddIIQdIIQdQQ')
+    frames = samples = bad = 0
+    config = None
+    last_seq = last_audio_index = last_count = None
+    rate = channels = None
+    audio_seconds = 0.0
+    format_flags = 0
     started = time.monotonic()
     while time.monotonic() - started < seconds:
         try:
             message = await asyncio.wait_for(ws.receive(), timeout=3)
         except asyncio.TimeoutError:
             break
+        if message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            break
         if message.type != aiohttp.WSMsgType.BINARY:
             continue
         data = message.data
-        if data[:4] != b'AUDF':
-            continue
-        if len(data) < 16:
+        if len(data) < header.size:
             bad += 1
             continue
-        _seq, _rate, count = struct.unpack_from('<III', data, 4)
-        if len(data) != 16 + count * 2:
+        (magic, version, seq, count, pcm_rate, freq, channel_id, epoch,
+         input_index, delay, pcm_channels, sample_format, audio_index, input_rate,
+         fraction_num, fraction_den) = header.unpack_from(data)
+        if (magic != b'AUD2' or version != 1 or sample_format & 0xFFFF != 1
+                or sample_format & ~0x30001 or not channel_id
+                or pcm_channels not in (1, 2) or not math.isfinite(pcm_rate) or pcm_rate <= 0
+                or not math.isfinite(input_rate) or input_rate <= 0
+                or not math.isfinite(delay) or delay < 0
+                or not math.isfinite(freq) or abs(freq - frequency) > 1
+                or (channel_id, epoch) != expected_source
+                or fraction_den == 0 or fraction_num >= fraction_den
+                or len(data) != header.size + count * pcm_channels * 4):
             bad += 1
             continue
+        identity = (channel_id, epoch, freq, pcm_rate, pcm_channels, input_rate)
+        format_flags = sample_format
+        if seq == 0:
+            if count != 0 or audio_index != 0:
+                bad += 1
+                continue
+            config = identity
+            rate, channels = pcm_rate, pcm_channels
+            last_seq = 0
+            last_audio_index = last_count = 0
+            continue
+        if (not count or config != identity or last_seq is None
+                or seq != (last_seq + 1) & 0xFFFFFFFF
+                or (last_audio_index is not None and audio_index != last_audio_index + last_count)):
+            bad += 1
+            continue
+        last_seq, last_audio_index, last_count = seq, audio_index, count
         frames += 1
         samples += count
+        audio_seconds += count / pcm_rate
     elapsed = max(1e-6, time.monotonic() - started)
-    return {'frames': frames, 'fps': round(frames / elapsed, 2), 'samples': samples, 'bad': bad}
+    return {'frames': frames, 'fps': round(frames / elapsed, 2), 'samples': samples, 'bad': bad,
+            'rate': rate, 'channels': channels, 'audio_seconds': audio_seconds,
+            'channel_id': config[0] if config else None, 'epoch': config[1] if config else None,
+            'delay_known': not bool(format_flags & 0x10000) if config else None,
+            'causal_presentation': bool(format_flags & 0x20000) if config else None}
 
 
 async def measure_switch(ws, mode_payload: dict, timeout: float = 10.0) -> float | None:
@@ -177,11 +214,9 @@ async def run(args) -> dict:
         'span_hz': args.span,
         'duration_s': args.duration,
     }
-    token = f'?token={args.token}' if args.token else ''
-    headers = {'Authorization': f'Bearer {args.token}'} if args.token else {}
     original = None
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
+        async with aiohttp.ClientSession() as session:
             async with session.get(f'{args.http_url}/api/state') as response:
                 original = await response.json()
                 if not original.get('connected'):
@@ -195,7 +230,7 @@ async def run(args) -> dict:
             result['configuration'] = await configure_for_bench(session, args.http_url, args)
             await asyncio.sleep(0.5)
 
-            async with session.ws_connect(f'{args.ws_url}/ws{token}',
+            async with session.ws_connect(f'{args.ws_url}/ws',
                                           max_msg_size=32 * 1024 * 1024) as ws:
                 await ws.send_json({'cmd': 'SET_FREQ', 'center': args.frequency, 'span': args.span})
                 caps = (await wait_status(ws, lambda s: abs(s['span'] - args.span) < 1)).get('caps')
@@ -215,15 +250,28 @@ async def run(args) -> dict:
                 result['rta'] = await collect_rta(ws, args.duration, time.monotonic())
                 result['rta']['cpu_s'] = meter.since()
 
-                # SDR: panadapter frames + audio frames on the same socket.
+                # SDR display stays on /ws; native PCM has its own channel subscription.
                 result['switch_to_sdr_ms'] = await measure_switch(
                     ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
                 await ws.send_json({'cmd': 'SET_SDR', 'center': args.frequency, 'decimate': 16})
-                await wait_status(ws, lambda s: s.get('mode') == 'sdr')
-                meter = CpuMeter()
-                spec = await collect_rta(ws, args.duration, time.monotonic())
-                audio = await measure_audio(ws, max(1.0, args.duration - 2))
-                spec['cpu_s'] = meter.since()
+                await ws.send_json({'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
+                                    'freq': args.frequency, 'mode': 'am', 'ifbw': 6000,
+                                    'volume': 0.8})
+                await wait_status(ws, lambda s: s.get('mode') == 'sdr' and any(
+                    ch.get('channel') == 1 and ch.get('enabled') and ch.get('mode') == 'am'
+                    and abs(ch.get('freq', 0) - args.frequency) < 1
+                    and ch.get('if_bw') == 6000 for ch in s.get('sdr', {}).get('channels', [])))
+                async with session.ws_connect(f'{args.ws_url}/ws/audio?channel=1',
+                                              max_msg_size=32 * 1024 * 1024) as audio_ws:
+                    async with session.get(f'{args.http_url}/api/state') as response:
+                        audio_state = await response.json()
+                    channel = next(ch for ch in audio_state['sdr']['channels'] if ch['channel'] == 1)
+                    source = (channel['channel_id'], channel['epoch'])
+                    meter = CpuMeter()
+                    spec, audio = await asyncio.gather(
+                        collect_rta(ws, args.duration, time.monotonic()),
+                        measure_audio(audio_ws, args.duration, args.frequency, source))
+                    spec['cpu_s'] = meter.since()
                 result['sdr'] = {
                     'frames': spec.get('frames', 0), 'fps': spec.get('fps', 0),
                     'bad_frames': spec.get('bad_frames', 0), 'points': spec.get('points', []),
@@ -232,7 +280,7 @@ async def run(args) -> dict:
     finally:
         with suppress(Exception):
             if original is not None:
-                async with aiohttp.ClientSession(headers=headers) as session:
+                async with aiohttp.ClientSession() as session:
                     await session.post(f'{args.http_url}/api/config',
                                        json={'cmd': 'SET_MODE', 'mode': 'std'})
                     await session.post(f'{args.http_url}/api/config',
@@ -287,7 +335,6 @@ def parse_args():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--http-url', default='http://127.0.0.1:8080')
     parser.add_argument('--ws-url', default='ws://127.0.0.1:8080')
-    parser.add_argument('--token', default='')
     parser.add_argument('--frequency', type=float, default=100.2e6)
     parser.add_argument('--span', type=float, default=10e6)
     parser.add_argument('--duration', type=float, default=5.0)

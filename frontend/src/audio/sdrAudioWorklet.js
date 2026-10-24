@@ -1,29 +1,13 @@
 /*
- * SDR playback processor: the last stage between the demodulator and the speaker.
- *
- * The producer is not the audio clock: PCM arrives from a worker in ~20 ms blocks, paced by the
- * analyzer's IQ packets, while this processor is called on the sound card's clock. The two differ
- * by a small fraction of a percent that nobody controls (a vendor's nominal sample rate, the
- * device's own clock), and a jittery network/worker adds bursts on top. A bare ring buffer cannot
- * absorb either: a rate mismatch slowly drains or fills it, and every empty moment is an audible
- * fade-out/re-prime (measured before this: about one puff per second, and a fill that grew until
- * the writer lapped the reader).
- *
- * So this stage does three things:
- *   * a mode-aware jitter buffer (short for analog, two super-frame bursts for DRM);
- *   * a drift-correcting resampler: the read pointer advances by a ratio steered by the fill, so a
- *     persistent producer/consumer mismatch is absorbed by resampling (which also keeps the pitch
- *     right) instead of by draining the buffer;
- *   * a hard ceiling on the fill, so a producer that outruns the clock can never turn into growing
- *     latency: past `MAX_FILL` the oldest samples are dropped (the audio stays live, which is what
- *     a listener wants after a retune).
+ * One backend ingress worker feeds this playback processor through its MessagePort.
+ * The ring stores interleaved float values; stereo frames occupy two adjacent values.
+ * Buffer thresholds are specified in seconds and scaled by the active channel count.
+ * Fill-based drift correction advances the read position on the AudioContext clock.
+ * Queue overflow clears playback and reports an explicit consumer failure.
  */
-// Analog burst headroom; DRM's 1.2 s super-frame bursts need a separate, larger ceiling.
-// ponytail: the 2.4 s DRM ceiling covers the measured 1.2 s cadence; raise it only if a
-// measured service produces larger bursts.
-// The IQBF publisher batches roughly 160 ms of PCM per frame; browser/network jitter can
-// delay another frame by 100+ ms without losing any samples. Keep enough analog headroom
-// to absorb that delay, while the separate fast-prime path preserves retune response.
+// Codec bursts use a larger ceiling than analog PCM.
+// Retunes keep the normal prime: equal-rate playback cannot rebuild a short
+// startup reserve, leaving later ingress jitter to cause an underrun and re-prime.
 const PRIME_S = 0.45;
 const TARGET_S = 0.50;
 const MAX_FILL_S = 1.1;
@@ -31,36 +15,20 @@ const DRM_PRIME_S = 1.6;
 const DRM_TARGET_S = 1.4;
 const DRM_MAX_FILL_S = 2.4;
 const FADE_S = 0.01;            // fade in/out, so a start or an underrun is not a click
-const FAST_PRIME_S = 0.06;      // a retune's short re-prime
-const FAST_PRIME_MAX_S = 0.3;  // return to normal threshold even if the target never fills
 const REPORT_S = 0.25;          // diagnostics window
 const RATIO_MIN = 0.9;          // the drift corrector's range (±10% of the sink's clock)
 const RATIO_MAX = 1.1;
-/// How often the fill's window mean is compared against its band.
+// Fill averaging window, in seconds.
 const FILL_WINDOW_S = 10;
-/// The proportional gain, expressed as "a fill error this large asks for a full step" (seconds): a
-/// proportional loop parks the fill `offset / gain` from the target, and this keeps that within the
-/// band for the residual this stage is sized for.
+// Fill error in seconds that requests the maximum correction step.
 const FILL_ERROR_FOR_FULL_STEP = 0.05;
-/// The largest correction one window may make: 0.05% ~ 0.9 cent, a step the ear does not hear.
-///
-/// The correction is a *pitch*, so this stage only ever touches it in steps this size and the step
-/// shrinks as the fill approaches its target - when the loop has converged, the ratio stops changing
-/// entirely, which is what the listener hears as a steady tone.
-///
-/// A fixed-size step instead (bang-bang) chatters around the band's edge: the step can be smaller than
-/// the offset, so the fill sits on the edge and every window adds another step - the ratio then walks
-/// past the offset, which is an audible few-cent wander. A proportional term sized for the real
-/// residual (~0.05%) parks the fill a little off target (offset / gain) and leaves the pitch alone.
-///
-/// ponytail: that parking offset means a mismatch several times the design range pushes the fill to
-/// the ceiling and its trim drops samples. That is the right trade here - the real residual measured
-/// 0.05%, and a proportional term would only be worth it if that grew much larger.
+// Maximum ratio change per fill averaging window.
 const DRIFT_STEP = 0.0005;
 class SdrAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.capacity = Math.ceil(sampleRate * (DRM_MAX_FILL_S + 0.1));
+    this.capacity = Math.ceil(sampleRate * (DRM_MAX_FILL_S + 0.1)) * 2;
+    // Capacity is float values: 2.5 seconds of stereo at the context sample rate.
     this.ring = new Float32Array(this.capacity);
     this.writePos = 0;
     this.readPos = 0;
@@ -69,8 +37,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.prime = Math.floor(sampleRate * PRIME_S);
     this.maxFill = Math.floor(sampleRate * MAX_FILL_S);
     this.mode = 'default';
-    this.fastPrime = false;
-    this.fastPrimeRemaining = 0;
     /// Sample layout of the ring: 'mono' (one value per sample) or 'stereo' (an L/R pair per
     /// sample, interleaved). The producer announces it with `buffer-mode`; a layout switch resets
     /// the ring, because mixing the two reads garbage.
@@ -88,6 +54,9 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.steerCountdown = Math.floor(sampleRate * FILL_WINDOW_S);
     this.frac = 0;
     this.received = 0;
+    this.renderedFrames = 0;
+    this.playedFrames = 0;
+    this.starvedFrames = 0;
     this.underruns = 0;
     /// Per-window fill accumulation (the trend is taken from the means, not from point samples).
     this.fillSum = 0;
@@ -95,22 +64,30 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.resets = 0;
     this.slipped = 0;
     this.reportCountdown = 0;
+    this.failed = false;
+    this.generation = 0;
+    // Source frames actually removed from the ring in the current generation.
+    this.consumedFrames = 0;
     this.port.onmessage = (event) => {
       const message = event.data || {};
       if (message.type === 'samples' && message.samples) {
         this.push(message.samples);
+        this.port.postMessage({ type: 'accepted', delivery: message.delivery, generation: message.generation });
       } else if (message.type === 'reset') {
+        this.generation = message.generation ?? this.generation;
+        this.setBufferMode(message.playbackMode);
+        this.layout = message.stereo ? 'stereo' : 'mono';
+        this.consumedFrames = 0;
         this.reset();
+        this.postCredit();
       } else if (message.type === 'buffer-mode') {
         this.setBufferMode(message.mode);
         this.setLayout(message.stereo ? 'stereo' : 'mono');
-      } else if (message.type === 'fast-prime') {
-        this.fastPrime = true;
-        this.fastPrimeRemaining = Math.floor(sampleRate * FAST_PRIME_MAX_S);
-        this.applyBufferParams();
+        this.postCredit();
       } else if (message.type === 'enabled') {
         const wasPlaying = this.playing;
         this.enabled = Boolean(message.value);
+        if (this.enabled) this.failed = false;
         if (!this.enabled) {
           this.tailGain = Math.max(this.tailGain, this.fade);
           this.available = 0;
@@ -119,8 +96,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
           this.frac = 0;
           this.playing = false;
           this.primed = false;
-          this.fastPrime = false;
-          this.fastPrimeRemaining = 0;
           this.applyBufferParams();
           this.fade = 0;
           this.underruns = 0;
@@ -128,22 +103,26 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         }
       }
     };
-    this.port.postMessage({ type: 'ready' });
+    this.port.postMessage({ type: 'ready', sampleRate });
   }
 
   /** Drop everything buffered: the stream was retuned, and the old audio must not be played. */
   reset() {
     const wasPlaying = this.playing;
     this.resets++;
-    this.tailGain = this.fade;
+    this.tailGain = 0;
+    this.lastSample = 0;
+    this.lastSampleR = 0;
+    this.ratio = 1;
+    this.fillSum = 0;
+    this.fillCount = 0;
+    this.steerCountdown = Math.floor(sampleRate * FILL_WINDOW_S);
     this.writePos = 0;
     this.readPos = 0;
     this.available = 0;
     this.frac = 0;
     this.playing = false;
     this.primed = false;
-    this.fastPrime = false;
-    this.fastPrimeRemaining = 0;
     this.applyBufferParams();
     this.fade = 0;
     this.underruns = 0;
@@ -154,7 +133,17 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   postGate() {
     this.port.postMessage({
       type: 'gate-transition', playing: this.playing, primed: this.primed,
+      generation: this.generation,
       available: this.available, resets: this.resets, underruns: this.underruns,
+    });
+  }
+
+  /** Absolute source-frame allowance; repeated reports do not grant extra space. */
+  postCredit() {
+    const channels = this.layout === 'stereo' ? 2 : 1;
+    this.port.postMessage({
+      type: 'credit', generation: this.generation,
+      limit: this.maxFill / channels + this.consumedFrames,
     });
   }
 
@@ -168,7 +157,6 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.maxFillFrames = Math.floor(sampleRate * (next === 'drm' ? DRM_MAX_FILL_S : MAX_FILL_S));
     this.applyBufferParams();
     this.ratio = 1;
-    this.reset();
   }
 
   /** Switch the ring's sample layout; the buffered audio of the old layout is dropped. */
@@ -183,44 +171,34 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   /** The thresholds count values in the ring: a stereo pair is two values per frame. */
   applyBufferParams() {
     const mul = this.layout === 'stereo' ? 2 : 1;
-    if (this.fastPrime) {
-      this.prime = Math.floor(sampleRate * FAST_PRIME_S) * mul;
-      this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
-      this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
-    } else {
-      this.prime = (this.primeFrames || Math.floor(sampleRate * PRIME_S)) * mul;
-      this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
-      this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
-    }
+    this.prime = (this.primeFrames || Math.floor(sampleRate * PRIME_S)) * mul;
+    this.target = (this.targetFrames || Math.floor(sampleRate * TARGET_S)) * mul;
+    this.maxFill = (this.maxFillFrames || Math.floor(sampleRate * MAX_FILL_S)) * mul;
   }
 
   push(samples) {
+    if (this.failed || !this.enabled) return;
+    const step = this.layout === 'stereo' ? 2 : 1;
+    if (!(samples instanceof Float32Array) || samples.length % step !== 0
+      || this.available + samples.length > Math.min(this.capacity, this.maxFill)) {
+      this.failed = true;
+      this.enabled = false;
+      this.reset();
+      this.port.postMessage({ type: 'error', message: 'Audio consumer is too slow or received invalid PCM: playback queue limit exceeded' });
+      return;
+    }
     for (let i = 0; i < samples.length; i++) {
       this.ring[this.writePos] = samples[i];
       this.writePos = (this.writePos + 1) % this.capacity;
-      if (this.available < this.capacity) {
-        this.available++;
-      } else {
-        // The ring is full: this sample replaces the oldest unplayed one. Dropping it (rather than
-        // growing the backlog) is what keeps a producer that outruns the clock from turning into
-        // latency - the listener hears live audio with an occasional skip instead of the past.
-        this.readPos = (this.readPos + 1) % this.capacity;
-        this.slipped++;
-      }
-      this.received++;
     }
-    // ...and never hold more than the ceiling, so the latency stays bounded.
-    const excess = this.available - this.maxFill;
-    if (excess > 0) {
-      this.readPos = (this.readPos + excess) % this.capacity;
-      this.available -= excess;
-      this.slipped += excess;
-    }
+    this.available += samples.length;
+    this.received += samples.length;
   }
 
   process(_inputs, outputs) {
     const out = outputs[0] && outputs[0][0];
     if (!out) return true;
+    if (this.enabled) this.renderedFrames += out.length;
     const wasPlaying = this.playing;
     // The second channel is written whenever the node has one, in BOTH layouts: the ring carries
     // an L/R pair per sample in the stereo layout, and in the mono layout the same sample goes to
@@ -232,24 +210,20 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     if (outR) outR.fill(0);
     const stereo = this.layout === 'stereo';
     const step = stereo ? 2 : 1;                     // ring values consumed per output sample
-    if (this.fastPrime) {
-      this.fastPrimeRemaining -= out.length;
-      if (this.fastPrimeRemaining <= 0 || this.available >= this.target) {
-        this.fastPrime = false;
-        this.fastPrimeRemaining = 0;
-        this.applyBufferParams();
-      }
-    }
     for (let i = 0; i < out.length; i++) {
       if (this.tailGain > 0) {
         out[i] = this.lastSample * this.tailGain;
         if (outR) outR[i] = this.lastSampleR * this.tailGain;
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
+        if (this.enabled) this.starvedFrames++;
         continue;
       }
       if (!this.enabled) continue;
       if (!this.playing) {
-        if (this.available < this.prime) continue;   // ring values, including both channels
+        if (this.available < this.prime) {
+          this.starvedFrames++;
+          continue;
+        }
         this.playing = true;
         this.primed = true;
         this.fade = 0;
@@ -258,6 +232,7 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
         this.playing = false;
         this.tailGain = this.fade;
         this.underruns++;
+        this.starvedFrames++;
         out[i] = this.lastSample * this.tailGain;
         if (outR) outR[i] = this.lastSampleR * this.tailGain;
         this.tailGain = Math.max(0, this.tailGain - this.fadeStep);
@@ -276,11 +251,13 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
       this.lastSampleR = valueR;
       out[i] = value * this.fade;
       if (outR) outR[i] = valueR * this.fade;
+      this.playedFrames++;
       this.frac += this.ratio;
       while (this.frac >= 1) {
         this.frac -= 1;
         this.readPos = (this.readPos + step) % this.capacity;
         this.available -= step;
+        this.consumedFrames++;
       }
     }
     this.fillSum += this.available;
@@ -294,11 +271,20 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     this.reportCountdown -= out.length;
     if (this.reportCountdown <= 0) {
       this.reportCountdown = Math.floor(sampleRate * REPORT_S);
+      this.postCredit();
       this.port.postMessage({
         type: 'status',
+        generation: this.generation,
+        sampleRate,
+        bufferMode: this.mode,
+        primeFrames: this.prime / (this.layout === 'stereo' ? 2 : 1),
+        maxFillFrames: this.maxFill / (this.layout === 'stereo' ? 2 : 1),
         available: this.available,
         underruns: this.underruns,
         received: this.received,
+        renderedFrames: this.renderedFrames,
+        playedFrames: this.playedFrames,
+        starvedFrames: this.starvedFrames,
         resets: this.resets,
         slipped: this.slipped,
         ratio: this.ratio,
@@ -310,13 +296,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
   }
 
   /**
-   * Steer the resampling ratio by the fill's window-mean error: one small, shrinking step per window.
-   *
-   * The fill jitters by hundreds of milliseconds as the producer's blocks land, so only the window
-   * *mean* says anything about the rate. A controller that read the instantaneous fill - or that took
-   * the difference of two point samples as the rate - moved the pitch on that jitter, and the listener
-   * heard the audio speed up and slow down every few seconds. What is left after averaging is small
-   * enough for one proportional step per window, clamped to under a cent.
+   * Steer from window-mean fill error rather than individual producer bursts.
+   * Apply one proportional correction per window, clamped to under a cent.
    */
   steerRatio() {
     if (!this.primed) {
@@ -327,7 +308,8 @@ class SdrAudioProcessor extends AudioWorkletProcessor {
     const mean = this.fillSum / Math.max(1, this.fillCount);
     this.fillSum = 0;
     this.fillCount = 0;
-    const errorSeconds = mean / sampleRate - this.target / sampleRate;
+    const channels = this.layout === 'stereo' ? 2 : 1;
+    const errorSeconds = (mean - this.target) / (sampleRate * channels);
     const step = Math.max(-DRIFT_STEP, Math.min(DRIFT_STEP,
       (errorSeconds / FILL_ERROR_FOR_FULL_STEP) * DRIFT_STEP));
     if (step !== 0) {

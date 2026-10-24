@@ -1,430 +1,108 @@
 # Architecture
 
-## Overview
+## System and ownership
+
+The native Rust service owns device configuration, acquisition, channelization and receiver DSP. A C++ shim serializes the official HAROGIC SDK. The browser owns controls, spectrum rendering, decoder presentation and audio playback. Python modules under `tools/reference/` are offline numerical references and fixture helpers.
+
+```text
+Browser controls → HTTP/WS commands → native mode owner → retained SDK session
+SDK IQ + FFT → bounded capture queue → ordered PFB workers → fine DDC/framer
+                                                   ├→ IQBF/IQAX consumers
+                                                   └→ receiver workers → AUD2/SDE2 → browser
+SDK SWP/RTA traces → display publisher → browser spectrum/density/waterfall
 ```
-Browser (frontend: TS + Vite)
-   │  bounded latest-wins binary frames + WS JSON
-   ▼
-Supervisor → web_sa worker (aiohttp + serialized SDK access; restart on native crash/timeout)
-   │
-   ▼
-htra_api.py → libhtraapi.so → USB → SAN series analyzer
-```
 
-## Backend Layers
-- `hardware/sdk_bindings.py`: all ctypes bindings (only DLL contact point), incl. PNM structs & calibration functions
-- `hardware/device.py`: device abstraction (open/configure/fetch/query) + DeviceState + model capability derivation
-- `measurements/`: measurement session objects (Std/RTA/Harmonic/PhaseNoise) + framer (frame encode/decode)
-- `web/`: ws.py (command table) + http_api.py (STATUS/REST) + publisher.py (mode-aware scheduling)
+SWP, RTA, SDR, harmonic and phase-noise modes keep their own configuration while sharing one physical device session. Effective device values and capabilities are returned in STATUS. Command validation and candidate-plan admission complete before replacing active state; a rejected request preserves the prior plan and stream.
 
-## Key Design
-1. **Session objects**: std/rta/harmonic/pnm share one interface; enter/exit restores configuration snapshots
-2. **Model capability derivation**: DeviceCapabilities (SAN-45/60/90 frequency ranges), no hardcoding
-3. **Frontend peak-preserving resampling**: backend sends device-native traces; frontend `resampleTrace` handles points (peak-preserving, no interpolation artifacts)
-4. **Frame protocol**: 16-byte header (magic+ver+points+sweep_ms) + data; POWR forced to float32
-5. **Client backpressure**: one sender per WS; retain FREQ/JSON and use latest-wins for POWR/RTAF
-6. **Secure default**: loopback listener, token required remotely, static files confined to the build root
-7. **Failure recovery**: SDK calls leave the asyncio thread; supervisor restarts after native crash/fatal timeout. The swept acquisition also declares `connected=false` on a run of bus errors (unplug) so the page never shows a frozen trace as connected; RTA/SDR keep their own in-place reconfiguration recovery. A worker link loop reopens a disconnected device and re-enters the active mode
-8. **Mode-private settings**: SWP/RTA independently retain Center/Span/Ref/RBW/VBW/Sweep and actual values; mode changes issue one SET_MODE command. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md).
+## Device session and acquisition
 
-## Frame Protocol
-| Type | Header | Data |
-|---|---|---|
-| FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 frequency axis |
-| POWR | POWR + ... | float32 power dBm |
-| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | channelized complex float32 IQ; `rate` is the DDC sample clock; seq=0 flushes |
+One persistent SDK owner thread serves SWP/RTA/IQS/PNM. All SDK calls are serialized. Healthy mode changes stop acquisition and release mode state while retaining the physical handle. `Device_Open` receives the permanent session's stable `void**` handle slot: vendor PNM workers retain that address until physical close. A stale/disconnected handle must not be passed to `Device_Close`.
 
-`IQBF.rate` and `sdr.actual.ddc_rate` come from the DDC configuration. They describe the
-sample clock, not host delivery speed. `sdr.actual.ddc_delivery_rate` measures delivered
-samples per wall second. After a tune pause the delivery rate fell to 283–291 kSps while the
-DDC clock stayed at 300.48 kSps. Using delivery speed as the DSP rate moved the 19 kHz pilot
-to about 18 kHz in the decoder and silenced stereo/RDS on the return tune.
+IQS configuration and arming are separate. The service prepares PFB, fine DDC, receiver workers and metadata before explicit arm, including recovery. It keeps the first packet and checks packet order and hardware timestamps. Host sample indices do not substitute for hardware continuity checks.
 
-## WS Commands
-CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
-SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/SET_HARM/SET_PNM
+A valid IQS packet returned with `-12` is retained with its timestamp; saturation is reported separately as `status_warning=-12`. Outside an explicitly active Auto operation, saturation preserves manual Ref and does not turn a valid packet into a bus failure. Explicit Auto recovery is bounded and uses fresh observations from the same mode/configuration; see [MODE_STATE_FLOW](MODE_STATE_FLOW.md). IQ, FFT, warning and timing return through one `san90_next_v3` call; routine metadata polling does not consume IQ. Malformed packets and real timestamp gaps fail explicitly.
 
-## RTA Real-Time Spectrum (SWP/RTA modes)
-- **Session** (`web_sa/measurements/rta.py`, `RtaSession`): built on the official SDK path
-  `RTA_Configuration` → `BusTriggerStart` → `GetRealTimeSpectrum`; `acq=0.005`.
-  Sustained SAN-90 push rate is about 105-129 fps, with a typical mode-to-first-frame delay near 0.57 s.
-- **Push and display**: backend acquisition follows device Get rate; per-client latest-wins fan-out isolates slow
-  connections; frontend RTA processing is throttled to about 33 Hz and SWP rendering to about 30 Hz.
-- **RTAF frame** (`measurements/rta.py`): magic `RTAF` + `freq` (f8) + `spec` (f4) + `wfRow` (u2)
-  + `stopHz`; each dtype is packed separately. The current trace uses the first spectrum in PacketFrame.
-- **Multi-trace (T1-T4)**: per-trace accumulators (`rtaDisplays[4]`) with their own modes, rendered
-  overlaid (own color + glow); **Freeze/View** is a standalone toggle button next to the trace-mode
-  dropdown (VIEW = freeze accumulation; unfreeze restores the previous mode); Clear resets the active trace
-- **Probability-density background**: default `frequency × 128` amplitude bins (64/96/128/192
-  selectable), accumulated along the signal path. Persistence and grain are configurable; an O(n)
-  histogram estimates noise floor and updates at about 33 Hz.
-- **Waterfall**: SWP derives rows from the current trace at about 10 rows/s; RTA derives rows from live
-  spec. The container replaces the Marker table slot and displays newest rows at the top.
-- **Recovery**: after eight consecutive Trigger/Get failures, RTA reconfigures in place from retained
-  mode-private settings up to two times. Persistent failure raises a fatal hardware error and the supervisor
-  restarts the worker. STATUS exposes `rta_health`.
-- **Known quirk**: `renderRta` wraps density+traces in an outer `save/clip(plotRect)` that must be
-  `restore`d before drawing the bottom frequency row — otherwise the row (outside the plot) is clipped
-  away and disappears after switching to RTA (fixed)
+Routine GNSS status uses a cached SDK snapshot. Device and optional clock capabilities come from successful open/hardware-state results; absent data stays unknown. External reference configuration uses 10 MHz. Recovery invalidates the physical session explicitly; shutdown joins mode owners before closing the session and SDK thread.
 
-## SDR DSP Pipeline
-
-The demodulator and the audio chain run in a Rust/WASM module inside a Web Worker. The
-channelizer does **not**: the coarse decimation and the tuning stay where the hardware already
-does them — the analyzer's own DDC plus a software NCO in the backend — because moving them to
-the browser did not fit the analyzer: the raw IQS stream is 2-31 MSps (measured: the transport
-topped out around 2.3 MSps and the browser's own 129-tap FIR could not run the 3.9 MSps the
-default settings ask for), so the AudioWorklet ring starved and the audio was a fixed periodic
-puff that no tuning could change. The browser now receives the channelized baseband. Narrow
-modes use about 48–63 kSps; WFM at 180 kHz IF uses about 300 kSps (2.4 MB/s of complex f32 IQ).
-The Python demodulator reads the same baseband.
-
-The Python DSP is **not deleted**: it is the no-WASM fallback and the numerical reference, and it
-only runs while a client subscribes to its audio (with the browser owning playback the backend
-skips that chain entirely).
-
-```
-SAN-90 ──IQ──▶ Python backend ──┬─ channelized baseband (IQBF) ──▶ Web Worker ──WASM──▶ AnalogDemod ─▶ Audio DSP ─▶ AudioWorklet ─▶ speaker
-  (IQS)        DDC + tuning NCO  └─ AUDF audio (fallback only) ──▶ (same worklet when the DSP cannot run)
-```
+## SDR channelizer and receivers
 
 ### Stage map
 
-Every stage of the diagram is a named module. The table is the contract: a stage that has no
-path here does not exist yet.
+These are current implementation paths. `tools/checks/check_doc_paths.py` checks the concrete paths in this table.
 
 | Stage | Module |
 |---|---|
-| SAN-90 IQ source | `web_sa/measurements/sdr.py` (IQS stream), `web_sa/hardware/sdk_bindings.py` |
-| Python device / control | `web_sa/hardware/`, `web_sa/measurements/`, `web_sa/web/` |
-| Channelizer (DDC + tuning) | `web_sa/demod/ddc.py` (vendor `DSP_DDC`), `web_sa/measurements/sdr.py` (`_chain_coarse`, `_mix`) |
-| Baseband over WebSocket | `web_sa/measurements/framer.py` (`IQBF`), `web_sa/web/client_stream.py` |
-| Baseband ingress | `frontend/src/sdr/iqWorker.ts` |
-| Worker DSP orchestration | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/wasmPipeline.ts` |
-| WASM boundary (raw ABI) | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`, `wasm/src/abi.rs` |
-| Analog demodulators | `wasm/src/analog/mod.rs` (the mode table and the detectors) |
-| FM stereo and RDS (WFM) | `wasm/src/analog/fm_stereo.rs` (pilot PLL, L−R, anti-alias filter), `wasm/src/analog/rds.rs` (57 kHz bit timing, groups), `frontend/src/ui/decodeWindow.ts` (FM pane) |
-| Digital demodulator (FT8) | `wasm/src/digital/ft8/mod.rs`, `wasm/src/digital/ft8/tables.rs` |
-| Digital demodulator (DRM) | `wasm/src/digital/drm/` (OFDM demod, FAC/SDC/MSC MLCC, audio deframing), `wasm/fdk/` (FDK AAC decoder) |
-| Digital demodulator (SSTV) | `wasm/src/digital/sstv/mod.rs` (the plugin: voice-band SSB front end, streaming decode), `wasm/src/digital/sstv/vendor/` (unexcellent/sstv 0.3.1, MIT: 18 modes, VIS header, per-mode timing), `wasm/src/digital/sstv_abi.rs` (the mode table over the ABI) |
-| SSTV picture and its pane | `frontend/src/sdr/sstvLog.ts` (picture, metadata, history), `frontend/src/ui/decodeWindow.ts` (the pane: canvas, mode buttons from the Rust table, progress, Save PNG) |
-| SSTV bench transmitter | `tools/pluto/pluto_sstv_tx.py`, `tools/fixtures/sstv_encode.py` (the repository's own encoder), `tools/fixtures/port_sstv_modes.py` (the mode tables, ported from the vendored tree) |
-| Audio DSP (analog PCM only) | `wasm/src/audio/stages.rs`, `wasm/src/audio/dc_block.rs`, `wasm/src/audio/wiener.rs`, `wasm/src/audio/notch.rs`, `wasm/src/audio/blanker.rs`, `wasm/src/fft.rs` |
-| Noise reduction (DeepFilterNet3, streamed) | `frontend/src/sdr/dfnWorker.ts`, `frontend/src/sdr/dfnWasm.ts`, `wasm-dfn/src/wasm.rs` |
-| DFN artifact and model | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm` (committed), `frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz` (fetched at runtime, never embedded) |
-| Path assembly and the separation rule | `wasm/src/pipeline.rs` |
-| DDC kernels (kept, and the reference chain) | `wasm/src/ddc/nco.rs`, `wasm/src/ddc/fir.rs`, `wasm/src/ddc/resampler.rs`, `wasm/src/ddc/agc.rs`, `wasm/src/ddc/mod.rs` |
-| Plugin registry (single source of truth) | `wasm/src/plugin.rs`, `wasm/src/plugin_abi.rs`, `frontend/src/sdr/registry.ts` |
-| Audio PCM output and the jitter buffer | `frontend/src/audio/sdrAudioWorklet.js`, `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts` |
-| Python fallback and reference | `web_sa/demod/` (unchanged), `tools/analysis/dsp_parity.py`, `tools/fixtures/gen_dsp_fixtures.py` |
-| WASM artifact build | `wasm/build.sh` → `frontend/public/dsp.wasm` (committed) |
+| Device session and acquisition | `native-ddc/sdk/san90_sdk.cpp`, `native-ddc/src/bin/websad/service_capture.rs` |
+| Service, commands and publication | `native-ddc/src/bin/websad.rs`, `native-ddc/src/bin/websad/service_ddc.rs` |
+| Coarse PFB and ordered workers | `native-ddc/src/pfb.rs`, `native-ddc/src/pfb_pool.rs` |
+| Fine DDC and sample clocks | `native-ddc/src/fine.rs`, `native-ddc/src/narrow.rs`, `native-ddc/src/rate_plan.rs` |
+| Pipeline orchestration and admission | `native-ddc/src/bin/websad/sdr_pipeline.rs`, `native-ddc/src/bin/websad/service_preflight.rs` |
+| Native receiver orchestration | `native-ddc/src/bin/websad/receiver_workers.rs`, `native-ddc/src/receiver.rs` |
+| Analog and digital DSP | `wasm/src/analog/`, `wasm/src/digital/`, `wasm/src/pipeline.rs` |
+| Native noise reduction | `native-ddc/src/nr.rs`, `wasm-dfn/src/` |
+| Binary wire and subscriber boundaries | `native-ddc/src/wire.rs`, `native-ddc/src/bin/websad/service_stream.rs`, `native-ddc/src/bin/websad/subscriber_stream.rs` |
+| Browser stream and decoder presentation | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
+| Playback | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
+| Offline reference and fixtures | `tools/reference/`, `tools/fixtures/gen_dsp_fixtures.py`, `tests/fixtures/dsp/` |
 
-`tools/checks/check_doc_paths.py` verifies every path in this table exists, so the map cannot describe a
-module that was renamed or never written.
+### Coarse PFB and fine DDC
 
-### DSP paths and the separation rule
+At full capture bandwidth the input is 62.5 MSps with 50 MHz usable bandwidth. The shared oversampled-by-two PFB has 128 bins and hop 64: bin spacing is 488.28125 kHz, while each coarse stream runs at 976.5625 kSps. Narrow device captures adjust geometry. Bin count, coarse spacing and coarse sample rate are different quantities; none is the number of product receivers.
 
-DDC is the shared base layer: every analog and digital mode receives the same mixed,
-filtered, resampled and levelled stream. Above it the two paths are deliberately separate:
+The prototype supports 4, 8 or 16 taps per phase, with 16 as the service default. Passband and alias rejection depend on this selection and frequency offset. Fine plans must fit the selected coarse bin's usable passband. A wide signal cannot be cut at a bin edge and treated as equivalent reception. Wideband modes beyond the supported channel envelope are rejected.
 
-- **Analog path** — `AnalogDemod` → Audio DSP → PCM. The audio chain (DC block, LPF, AGC,
-squelch, STFT Wiener, adaptive notch, IF noise blanker) serves the listener. WFM keeps its mono
-path and adds a side chain. A pilot PLL tracks 19 kHz. A coherent 38 kHz detector extracts L−R.
-A 57-tap FIR removes product images before resampling. Low-pass and de-emphasis run at the
-output rate. The side matches the mono delay and uses the same AGC envelope and volume.
-The worker builds `L = M + S` and `R = M − S`. A left-only speech station measured 30 dB median
-L/R separation on the SAN-90; `stereo_audio_rejects_images_before_resampling` pins the image
-filter, and `stereo_side_aligns_with_the_mono_pcm` pins phase alignment. Other analog modes do
-not build this side chain.
-  RDS uses the pilot to form the 57 kHz reference and bit clock. It hunts bit alignment after
-  two seconds without a valid group and decides bits across adjacent complex symbols. A
-  same-frequency DDC flush keeps the station's pilot and RDS data; a true tune clears them.
-  Without a valid group for eight seconds, RDS clears the old PI/PS/RadioText. The STEREO badge
-  means a pilot is present; a station can send identical L/R programme audio with that pilot.
-- **Digital path / RAW** — `DigitalDemod` → decoder and visualization, with **no audio
-enhancement at all**. A voice denoiser on an FT8 tone would destroy the information the
-decoder needs, so the separation is enforced by an automated test (RAW output must be
-bit-identical with the audio stage enabled and disabled), not by convention. SSTV runs the same
-way: its front end (a voice-band complex band pass and the real part, as the `usb` mode does) is
-inside the plugin, so the picture is decoded from the untouched baseband and
-`wasm/tests/sstv_decode.rs` asserts the picture is bit-identical with the chain on and off.
+Each receiver has its own frequency, mode, occupied bandwidth, `RatePlan`, oscillator phase, filter history and output rate. Fine DDC mixes and performs multistage anti-alias decimation; an exact protocol rate is adapted at the receiver input when needed. Audio playback rate is not a universal lower bound on IQ rate. USB/LSB envelopes include the sideband edge, CW includes pitch, FT8 retains at least the positive 3.2 kHz band, and SSTV the positive 3 kHz band. DRM and DRM+ use their protocol bandwidths.
 
-Adding a mode is adding a plugin to a registry: an analog mode implements the demodulator
-interface (already: am, dsb, usb, lsb, cw, nfm, wfm, pm), a digital protocol implements the
-decoder interface (FT8, DRM and SSTV). The UI mode list is read from the registry so a new mode
-cannot be forgotten in the panel, and a protocol's *own* sub-modes follow the same rule: the SSTV
-pane's mode buttons are read out of the Rust mode table over the ABI (`websa_dsp_sstv_mode_*`), so
-a button cannot offer a mode the decoder does not know.
+A main-channel retune outside the capture range validates every enabled channel before moving the shared capture center. Aux channels cannot move that center independently. A rejected configuration retains all active channels. A change inside the current plan updates only the affected fine receiver where possible.
 
-### WASM boundary and build
+### Workers, admission and backpressure
 
-- The crate has **no dependencies** (no wasm-bindgen, no wasm-pack); `cargo build --target
-wasm32-unknown-unknown` is the whole toolchain.
-- Arrays cross the boundary as pointers into the module's linear memory, block-wise; the hot
-path allocates nothing per block.
-- The built `.wasm` is committed so CI needs no Rust toolchain. `wasm/build.sh` rebuilds it
-and fails if the committed artifact differs from the fresh build.
-- `wasm/` also builds natively, which is what `cargo test` runs the kernels against.
+The raw acquisition queue holds 64 packets. PFB uses four fixed workers with at most six tasks in flight and collects results in input order. The fine/framer handoff is bounded at two. Two fixed receiver workers own mutable channel DSP state; a separate FT8 worker runs searches without blocking real-time monitoring. DFN templates are prepared before capture, then mutable processing state is owned by each receiver.
 
-### DDC numerics (the port must not change the audio)
+The backend supports three independently configured slots. The current product UI exposes the main slot and disables auxiliary slots on entering SDR. Coarse bins and internal benchmark channel counts do not advertise additional product channels. Mixing, recording and dynamic channel counts are not delivered features.
 
-The kernels are ports, not rewrites: `web_sa/demod/filters.py` (`design_lowpass`, `StreamFilter`,
-`LinearResampler`, `Agc`) and `sdr.py::_mix` are the reference, and `tests/fixtures/dsp/` holds
-their output for a committed IQ block, stage by stage (`mix`, `fir`, `dec`, `res`, `agc`).
-`wasm/tests/ddc_reference.rs` compares the Rust kernels against those bytes within the tolerance
-recorded in the fixture manifest (1e-5 absolute on an f32 full scale of 1.0, about -100 dBFS).
-Measured worst case: mixer, FIR and decimation exactly 0; resampler and AGC about 3e-8.
+Admission checks channel count, aggregate output rate and fine/framer cost before changing capture, identity or registry. Fine/framer calibration runs before capture and is reused in the process. Its cost policy reserves a factor of two: `2 × sum(cost_per_coarse_sample × coarse_rate) <= 1e9 ns/s`. This is a conservative internal budget, not proof of SDK, PFB, receiver, network or recording capacity.
 
-`tools/fixtures/gen_dsp_fixtures.py --check` is a CI gate (the reference cannot drift silently), and the
-Rust side runs with `make wasm-test`. `wasm/tests/ddc_bench.rs` records the per-block cost —
-native release: about 1.2 ms per 4096-sample block, 290 ns per complex sample, ~0.3 of real time
-at 1 MSps — and fails if the chain becomes quadratic or starts allocating per block.
+Display delivery can replace stale frames for slow viewers. Ordered IQ, PCM and decoder outputs use bounded queues and explicit failure on overflow. They must not silently discard samples, grow queues or block acquisition to make a throughput check pass. Audio capacity feedback counts queued and unacknowledged PCM; decoder batches remain bounded and are acknowledged after FIFO application. See [API](API.md) for the wire and feedback contracts.
 
-The vendor `DSP_DDC` is a hardware call that cannot be reproduced in software, so the Rust DDC
-*takes its place*; the numeric reference is the software chain Python ran around it. The
-channelizer now runs entirely on the backend, so the Rust DDC kernels are kept as the reference
-chain (`wasm/tests/ddc_reference.rs` compares them with the same Python fixtures) rather than as
-the browser's front end.
+### Stream identity and clocks
 
-### Reference projects and licences
+IQBF/IQAX v2 identify a stream by `(epoch, channel_id)`. Retune changes channel identity; a new DSP/capture plan changes epoch. Old output finishes before the new empty `seq=0` boundary. Rejection does not create a new identity. Registry and channel clocks are published from one immutable pipeline snapshot; leaving SDR clears them.
 
-The DSP here is written against published technique, not copied from a project. The reference list
-the architecture was designed from, and what was (and was not) taken from each:
+IQ `input_index` is the causal position of the first output in capture complex samples, not the packet start. Group delay is separate, in output complex samples. Alignment is `input_index / input_rate - group_delay_samples / output_rate`. Framing keeps the first nonempty segment's clock. Consumers preserve u64 indices exactly.
 
-| Project | What it informed | Code taken |
-|---|---|---|
-| [liquid-dsp](https://github.com/jgaeddert/liquid-dsp) (MIT) | Algorithm shapes: windowed-sinc design, NCO/phased-lock structure, RMS AGC, resampler | none — the kernels are written to match this repo's own Python reference (`demod/filters.py`), and are compared against it byte-for-byte |
-| [tpt-dsp](https://github.com/tpt-solutions/tpt-dsp) | The Rust DSP-core layout: no-allocation block processing, state carried in `struct`s, `f32`/`f64` split between kernels and PCM | none |
-| [sdr-web](https://github.com/kwakasa/sdr-web) | The browser dataflow: worker owns the socket, worklet owns playback | none |
-| [Radioband](https://github.com/hightemp/radioband) | Project structure: one module per stage, a registry per plugin family | none |
-| [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT performance expectations (why the FFT plans are cached per size) | none |
-| [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT) | The FT8 protocol: Costas pattern, Gray map, CRC-14 polynomial, LDPC(174,91) matrices | **The constant tables**, generated into `wasm/src/digital/ft8/tables.rs` by `tools/fixtures/port_ft8_tables.py` (which records the source and licence); the decoder and the fixture encoder are written against the specification, and the encoder is verified tone-for-tone against it |
-| [BrowSDR](https://github.com/jLynx/BrowSDR) (AGPL-3.0) | Architecture reading only | **none** — AGPL, deliberately avoided as a source |
+AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM `audio_index`, capture input position and fractional time. SDE2 carries decoder events with the same identity and clock semantics. Unknown total delay and causal presentation are explicit flags: neither permits claiming exact source alignment. FT8 results retain the original search-window time. New subscribers get their own start boundary; late SSTV subscribers get a bounded current-image snapshot without resetting the receiver. Full layouts and ordering are in [API](API.md).
 
-Attribution rule: an algorithm may be re-derived from a permissive source, but nothing is copied
-from an incompatible licence, and the numeric reference for every kernel is this repository's own
-Python implementation. That is also why the parity tests compare against Python rather than against
-another SDR application's output.
+### DSP and playback boundaries
 
-### Audio playback, NR and the fallback split
+The current mode registry covers AM, DSB, USB, LSB, CW, NFM, WFM, PM, FT8, SSTV, DRM and DRM+. Native receivers reuse the shared Rust DSP directly. Analog listening can use AGC, squelch, gain and noise reduction; digital decoding consumes its original protocol input. Listener enhancements must not alter FT8/SSTV/DRM input.
 
-The last stage before the speaker is `frontend/src/audio/sdrAudioWorklet.js`, and it is not a
-plain ring buffer: PCM arrives in ~20 ms blocks paced by the analyzer's packets while the processor
-runs on the sound card's clock, and the two differ by a fraction of a percent that nobody controls.
-It therefore holds a steered jitter buffer (target 250 ms, ceiling 500 ms): the read pointer advances
-by a ratio driven by the fill, so a persistent mismatch is absorbed by resampling (which keeps the
-pitch right) instead of draining or filling the buffer, and past the ceiling the oldest samples are
-dropped so a producer that outruns the clock cannot become growing latency. A retune flushes it, so
-the previous station never plays on. `frontend/src/__tests__/sdrAudioWorklet.test.ts` drives
-the ring directly (a matched producer, ±2% drift, a flood, a reset).
+WFM retains stereo and RDS processing. FM analysis is in Hz; fixed NFM ±5 kHz and WFM ±75 kHz normalization precedes adaptive AGC. Disabling AGC does not remove that unit conversion. Stereo indication reports pilot presence, not differing L/R programme content.
 
-Noise reduction is a panel control whose algorithm select picks between STFT Wiener (off/on,
-light/medium/strong, reaching the WASM audio chain over `websa_dsp_demod_set_nr`) and
-DeepFilterNet3 — an ML denoiser streamed through a dedicated worker (`dfnWorker.ts` → `dfnWasm.ts`
-→ the vendored `wasm-dfn` runtime, one 480-sample hop per frame, model fetched at runtime and
-handed to `df_create`) that has no strength knob, so the strength select hides while it is active.
-The algorithm is a client-owned preference (`sdr.nrAlgo`, persisted with the other SDR
-preferences) because the Python fallback path carries no NR of its own; the squelch slider reaches
-the audio chain over `websa_dsp_demod_set_squelch`. The
-default policy runs **no** enhancement stage, which is what the Python reference produces — the
-stages that used to run by default included an adaptive notch that removed the signal itself when the
-signal was a tone (measured: -33 dB on an AM test tone), and a `std`/browser A/B could not be
-compared while it did.
+AM keeps envelope and carrier-recovery paths in the shared DSP; `am_sync` selects their output with a soft crossfade. Live detector switching preserves capture, filter/resampler state and stream clocks. Pre-AGC carrier/depth analysis and final-PCM level/scope events use a 20 Hz source-sample grid; the browser displays these results rather than deriving metrics from playback callbacks. Enabling sync and achieving carrier lock are separate states.
 
-The Python audio path is the fallback and the reference only: the frontend does not open `?audio=1`
-while the browser DSP owns playback, and `web_sa/measurements/sdr.py` skips its demodulator when no
-client subscribes to AUDF. The S-meter reading comes from the browser's own PCM in that case
-(`dspLevelDbfs`).
+The browser receives AUD2 and SDE2 rather than running a duplicate production IQ demodulator. Each playback chain has one producer. Mode changes flush old PCM and wait for the new start boundary. Actual codec rate/channel changes also start a new audio boundary. The worklet's ready handshake determines playback rate; resampling accommodates the device and sound-card clocks. Overflow fails the playback chain explicitly. The shared crate also supports committed browser WASM artifacts for offline diagnostics; they do not replace the native service build.
 
-### What is not wired yet
+## Frontend state and rendering
 
-- FT8 is implemented end to end: decode only (the device has no transmitter), standard message
-  types 1/2 only (no hashed callsigns, no free text, no contest/telemetry types), and the sync
-  search covers the slot edge (about +/- 0.128 s) because FT8 is slot-synchronised — a wideband
-  skimmer would need a full-slot search at roughly 15x the cost. FT4 and the other digital
-  protocols are registry seams, not implementations.
-- SSTV is implemented on the receive side: the station sends a picture as single-sideband audio, the
-  plugin takes the 300..2700 Hz voice band out of the baseband and hands it to the vendored decoder,
-  which identifies the mode from the VIS header (or from a manual pin). All 18 modes the vendored
-  table carries decode (Martin M1/M2, Scottie S1/S2/DX, Robot 36/72, PD-50..PD-290, Pasokon
-  P3/P5/P7, Wrasse SC2-180), and the decode window's pane shows the picture line by line while the
-  transmission is still running, with the mode, VIS code, resolution, line progress, time and
-  frequency. Not wired: the FSK callsign identification some stations send after the picture (the
-  upstream crate has no decoder for it), and encoding/transmitting from the browser (only the bench
-  Python encoder and the PlutoSDR have a transmitter).
-- DRM30 is implemented through the receive chain (OFDM sync → FAC/SDC/MSC channel decoding →
-  audio super-frame deframing → AAC/xHE-AAC decode), verified bit-exact against a synthesised
-  Mode B / 10 kHz fixture; the DRM AAC re-serialisation (VCB11 + HCR + CRC) is verified lossless
-  against `aac_sine_24k` and the decoded PCM is delivered to the frontend audio path (resampled
-  12/24 kHz → 48 kHz). xHE-AAC (libxaac) is wired for the USAC audio service (coding 3) and its
-  wasm32 decoder decodes the committed `usac_tone` fixture non-silently; the USAC
-  AudioSpecificConfig is signalled in the SDC audio descriptor.
-- The Python DSP path is the audio source when the browser module is unavailable, and while any
-  client subscribes to its audio; it is kept as the fallback and as the numeric reference.
-- Four audio stages are installed but no policy enables them (`dc_block`, `lpf`, `agc`, `notch`):
-  the demodulator already blocks DC, low-passes and AGCs, and the notch is a tone *rejection* tool
-  rather than noise reduction — with a panel control missing, it is off. They are candidates for
-  deletion rather than for wiring.
+User-set, backend-confirmed parameters use `core/params.ts` slots: user actions set desired values and STATUS confirms them. Client-only preferences are authoritative locally. Measurement results use `core/results.ts` with explicit setters, without desired/confirmed semantics. Shared types and registries remain leaf modules; upper layers may depend on leaves. Registration modules must be reachable from `main.ts`.
 
-## Reachability of registration points (import side effects)
+The backend sends native frequency grids. The frontend preserves Hz for markers and export, uses peak-preserving resampling for display, and treats unsupported edge bins as gaps. Bin spacing is not RBW. Local zoom changes the visible window without retuning or changing receiver clocks. Density and waterfall histories are bounded. Read parameter slots once outside hot loops.
 
-Some modules register themselves when imported (`render/spectrum.ts` registers the renderer,
-the measurement modules register their tabs, the i18n namespaces merge). **After breaking the
-cycles, "nothing imports it any more" is itself a failure**: the registration never runs and
-the feature dies silently (this happened: no renderer -> `requestRender()` was a no-op -> a
-blank canvas, with no exception and no console error).
+The spectrum CSS box owns canvas geometry; the backing store follows it through ResizeObserver. With the waterfall enabled, both rendering and STATUS-driven measurement UI refreshes keep the marker table hidden. A STATUS report must not temporarily restore that table: doing so shrinks the spectrum and clears its resized bitmap before the next render hides the table again.
 
-Therefore:
+Axis gestures preview locally and commit when settled. Manual Ref is a device control; display scale/offset has separate ownership. Gain readbacks come from the active mode's successful SDK configuration and remain null when unavailable; preamp `0` means Auto and `1` means Off, not physical On. RTA capture uses device trigger metadata carried with each RTA2 frame; SDR retains RTAF, whose legacy decoding is compatibility only. A frame arrival or elapsed delay cannot prove capture completion. SWP level crossing is evaluated between consecutive sweeps in the frontend. Parameter, Auto, trace, measurement and trigger contracts are in [MODE_STATE_FLOW](MODE_STATE_FLOW.md).
 
-- the entry point `main.ts` must pull those modules in with a **side-effect import**
-  (`import './render/spectrum';`);
-- `tools/checks/check_registrations.py` computes import reachability from `main.ts`; a module that
-  registers but is unreachable fails `make ci`;
-- tests must assert the **user-visible result** (canvas pixels, DOM text), not an upstream
-  counter or dataset: `dataset.rtaFrames` only says a frame was handed to the renderer, not
-  that anything was drawn. The e2e now counts non-transparent canvas pixels after load and
-  after switching to RTA.
+## Quality limits and verification
 
-## State ownership (parameters use slots, results use a store)
+Three backend slots do not imply three exposed UI receivers or unlimited listening/recording. FT8 supports standard types 1/2 within its supported search window; SSTV does not decode the post-image FSK callsign. RDS text quality and short/looped DRM codec playback remain constrained. [KNOWN_ISSUES](KNOWN_ISSUES.md) records current limitations and SDK boundaries.
 
-Frontend state falls into two kinds, and putting one in the wrong place is a bug class this
-project hit repeatedly:
+A 20 fps acquisition target is not a guarantee that every browser layer renders at 20 fps. Existing browser observations with spectrum, density, waterfall and navigation enabled are around 15 fps. These descriptions summarize implementation and existing evidence; documentation maintenance does not revalidate hardware.
 
-- **Parameters** (user-set, backend-confirmed): use the slots in `core/params.ts`; each
-  parameter has exactly one owner. Only the STATUS handler calls `confirm()`, only a user
-  action calls `set()`, readers use `get()`. `desired`/`confirmed`/`epoch` plus a TTL mean a
-  just-set value is never reverted by an in-flight reply and a rejected command expires
-  instead of sticking. The groups live in `ui/{freqState,refState,swpState,sdrState,triggerState,waterfallState,displayState,graphMode,displayRef}.ts`.
-  A client-owned preference the backend never reports (display unit/offset, waterfall range,
-  audio switch, ...) must be declared `authoritative: true` or it reverts when the TTL ends.
-- **Results** (data produced by measurements/display): use `core/results.ts` - plain data with
-  an explicit setter and no desired/confirmed semantics.
+Reproducible entry points are `make wasm-test` for shared DSP, `make ci` for local non-hardware gates, and `make e2e-fake` for the native fixture UI. `tools/bench/sdr_pipeline_check.py` and `sdr_pipeline_controls.py` exercise live IQv2 continuity and controls; native `websad --sdr-pipeline-bench` exercises the pipeline. Command options and prerequisites are in [tools](../../tools/README.md). Hardware acceptance must check content, hardware timestamps, queue/failure deltas and drained sample conservation; fake-source throughput or a short window cannot prove sustained RF operation. Keep browser checks separate from quiet hardware performance windows; see [DEVELOPMENT](DEVELOPMENT.md).
 
-`core/model.ts` holds the types both sides share (a leaf module). `core/store.ts` keeps the
-runtime state (connection, trigger runtime, current mode, ...) and re-exports the two groups,
-so existing `S.x` / `S.setX()` call sites keep working.
+## References and licences
 
-In a hot path (loops running tens of thousands of times per frame) do not call a slot `get()`
-inside the loop body: it performs a `Date.now()` plus pending checks, and the density
-accumulation calling it hundreds of thousands of times per frame saturated the main thread
-(1 Hz STATUS fell behind and the mode buttons toggled from a stale value).
+Project code is MIT. Vendor SDK binaries are proprietary and obtained separately. DSP techniques are informed by liquid-dsp, tpt-dsp, sdr-web, Radioband and pffft.wasm; those references are not claims that their implementations were copied. Offline numeric parity uses this repository's reference kernels and committed fixtures.
 
-## Frontend DSP Engine (marker peak/valley)
-Implemented after modern analyzer architecture (Keysight/R&S style), all in the TS frontend:
-- **S-G smoothing** `sgSmooth(src,w,adaptive)`: 2nd-order Savitzky-Golay + gradient-adaptive
-  (|dY/df| > 90th percentile → shrink window to 3 to preserve edges); active when smoothBins > 1 (MAX/MIN/MEDIAN keep original logic)
-- **3-stage peak engine** `findExtremesOrdered(dir,isPeak)`:
-  1. Local extrema scan (±1 bin)
-  2. Excursion both-side tracing ≥6 dB (up to 100 bins) to filter noise ripples
-  3. Parabolic sub-bin fit `parabolaFit` (Δk = -0.5(y2-y0)/denom → sub-bin frequency/amplitude)
-- **Raw Anchor** (unsmoothed): smooth locate → real extremum in raw trace neighborhood (deep notches not shallowed)
-- **Dedup**: peaks 3 bins (narrow peaks kept); valleys 25 bins (merge same depression, rebuilt as depression-wide disp minimum; valley list matches Valley positioning)
-- **Traversal semantics**: peaks/valleys both frequency-direction (left=lower, right=higher); pos match takes nearest list item (±3 bins); if not in list (e.g. Valley global minimum is not a local extremum) jump to nearest independent valley, skipping same-depression
-- **Valley**: locates global minimum of display data + parabolic sub-bin
-- **Marker Tracking**: per-row On/Off toggles; initial assignment uses ranked unoccupied peaks, while later
-  updates follow a nearby `marker.freq`. The same strategy runs in SWP and RTA, with relocation after axis changes.
-- **smooth data source**: when enabled, fully based on smoothed curve (position/amplitude smoothed, matches display); when disabled, raw + Raw Anchor
-- **Pk threshold**: value lives in a slot (`meas` group); readers no longer parse the input element. Auto = **one decision per measurement geometry**: fitted (median of a few frames of the trace's 99.5th percentile, −50 dB) when span/RBW/Ref/dB-per-div/points/centre change, latched otherwise so a signal swing cannot move it or reshuffle the peak table/marker search; a manual edit locks it until Auto is pressed again; no update when all markers are off
-
-## Display and Control Design
-- **Reference Level**: Manual configures the active SWP/RTA Profile. **Auto Scale is a one-shot action**
-  (`AUTO_SCALE`), not a tracking mode: it computes one target from the newest trace (noise floor just
-  above the bottom of the display window, >=10 dB of headroom for the peak, 5 dB quantisation, never
-  below a learned IF-saturation floor) and applies it; applying is one step of a bounded closed loop,
-  because the trace is not independent of Ref (the automatic attenuator re-picks with it, so the trace
-  follows by ~half) - each settled frame re-measures and steps until the placement is good or the
-  budget is spent; an already-good placement costs nothing. It cannot hunt: the acceptance band is
-  10 dB wide (2-12 dB above the bottom edge, plus 8 dB of peak headroom), a change smaller than 5 dB
-  is not worth a reconfiguration, the loop is armed ONLY by a geometry change (a settings change or a
-  press - never by its own Ref write, because the geometry signature deliberately excludes the
-  level), and the first good placement disarms it. Measured on the bench, a settled tracker takes no
-  decision at all while the noise floor wobbles 8-12.6 dB above the bottom edge for 20 s, and a
-  40-step frequency drag leaves the level untouched.
-  One **protective action runs always**, independently of any user setting: IF overflow (-12) raises Ref
-  one 5 dB step per second, because that path stops delivering frames altogether. Nothing else moves the
-  level on its own - a peak grossly clipped above the top edge used to be raised once (rate-limited) and
-  that was removed on request, for the same reason lowering was never automatic: both are levels the user
-  chose, a clipped trace is feedback rather than a fault, and "the placement no longer fits" is what the
-  Auto button is for. A device that clamps a requested level to its own range is followed silently - the
-  box always shows the level the device reports, and the step arrows stay usable at the ends of the range
-  instead of being greyed out. `caps.ref_min/max` is the AUTO-PLACEMENT row, not a user limit: the
-  vendor SDK documents no Ref range (its only Ref feedback is the -12 IF-overflow warning), so a user
-  level is bounded by the display domain (-160..+40 dBm) and the profile is only sanity-clamped to it -
-  measured on this bench, -140 dBm is programmed exactly while +35 dBm comes back as +27. In SDR the
-  display scale stays client-owned (the `sdr` display-ref source arms no ack) and the IQS level is the
-  level itself - the same plain `double` the swept profile takes, and the bench accepts and echoes
-  -140 dBm there too (IQS frames keep arriving, no error status). There is
-  no signal-level gate: the anchor is the noise floor, so a noise-only trace is placed like any other
-  (a weak signal used to be reported as `no_signal` instead of being placed). A settings change
-  (span/centre/RBW/VBW/window/decimation) additionally arms the same bounded placement for the new
-  geometry, stopped by its first good decision; a level the user typed is never reversed by it. Before Center/cross-mode retuning a Ref that a FIT had lowered is raised to 0 dBm - a level the
-  USER set is never lifted (it is theirs, and getting that wrong is invisible: reported on the bench as
-  "the Ref resets to 0 when I change frequency", because `last_target` survives a manual takeover). Each
-  reconfiguration waits 0.75 s before observations are trusted again.
-  **SDR runs the same rule** (own tracker, fed by the panadapter frames): the backend fits, the client
-  applies the reported target to its display scale; the fit never writes the IQS level (a write
-  reconfigures the stream and interrupts the audio, and it moves the very trace the fit is reading -
-  measured: four writes in three seconds, one audio dropout each), so the SDR's own `sdr_ref_level`
-  only changes when the user sets it. The command carries the level on screen
-  (`current_ref`), because in SDR the device level is not what the user sees. A manual Ref therefore
-  holds: raising it is never undone, and only an IF overflow is corrected on the device's own
-  initiative. When a correction does happen, the display follows it (the SDR client applies
-  the reported target to its scale).
-- **Axis-label gestures** (`ui/axisDrag.ts`): the margins outside the graticule are grab areas - the
-  frequency row pans the centre (horizontal drag) and zooms the span (wheel, around the pointer), the
-  level labels pan Ref (vertical drag) and zoom dB/div (wheel). The content follows the finger. Because a
-  window change costs a device reconfiguration (0.3-1 s for frequency, ~1.9 s for Ref), nothing is sent
-  while the pointer moves: the plot is redrawn locally through the very mapping the renderers use
-  (`getX`/`getY` in `render/plot.ts`), and ONE request goes out when the gesture settles (release, or
-  250 ms of stillness, never closer than 400 ms). The preview is expressed against the window the data on
-  screen was measured in, so the confirming STATUS makes it the identity by itself, and it is dropped once
-  the drawn window and the display ref match the request - the trace never snaps back to the old window
-  while the device is still reconfiguring. The level axis changes what it shows: in the absolute (dBm)
-  display that is the device reference (preview + one `SET_REF`), in the relative (dB) display the top of
-  the graticule is a rendering offset pinned to 0, so the same drag pans the level OFFSET - a client-side
-  value applied as the pointer moves, with nothing to commit. Persistence Off for the RTA/SDR density map is a value (0) handled in
-  `dsp/rtaDensity.ts`: it stops both the accumulation and the drawing, which is also what takes the
-  bins x points work out of the frame path. The Persist/Grain controls live in the Trace panel so that the
-  layer they control is reachable in every mode it is drawn in.
-- **Periodic STATUS push (1 s)**: the publisher pushes full STATUS every second (aligned with the GNSS poll),
-  keeping GNSS lock/time, refclk_out, calibration state fresh without a page refresh
-- **GNSS detail popover**: click the GNSS indicator for full info (lock/sats/docxo/antenna/lat/lon/alt/UTC time)
-
-
-## Trigger architecture (RTA device / SWP software)
-
-- **RTA (device)**: the trigger is written into `RTA_Profile_TypeDef` (source/edge/mode, threshold,
-  debounce, delay, pre-trigger, acquisition, re-trigger, trigger out) by `web_sa/measurements/rta.py` on
-  every configuration. The fetch loop (`RTA_BusTriggerStart` + `RTA_GetRealTimeSpectrum`) yields no
-  packets while armed and delivers one frame on a hit. `ui/trigger.ts` owns the panel, the canvas status
-  chip (`FREE/WAIT/TRIG`) and the threshold line; `ui/triggerEvents.ts` decides in the **frame path** that
-  an arriving packet *is* the capture (with a 500 ms settle window so the in-flight frames sent right
-  after arming are not mistaken for it).
-- **SWP (frontend)**: the swept engine has no level trigger. `dsp/levelCross.ts` (pure, unit tested)
-  compares the same bin across two consecutive sweeps to produce a crossing event; `ui/swpTrigger.ts`
-  arms and evaluates every trace; on a hit the frame path stops updating the canvas, which is what
-  freezes the picture. The decision never depends on the display scale, so changing Ref cannot break it.
-- One set of buttons (`Capture` / `Free Run` / `Esc`) dispatches to either implementation by mode.
-
-- **The canvas status area is shared**: the top-right indicators are drawn by
-  `render/statusStack.ts` - each feature pushes a status block during a pass (trigger chip, limit
-  verdict) and the blocks are stacked, right-aligned, so a new indicator can never overlap an
-  existing one.
-- **Limits work in both modes**: the evaluation core (`dsp/limits.ts`) is display independent, and the
-  RTA branch now calls the same `renderLimits()` as the swept path. The canvas reports `LIMIT PASS` or
-  `LIMIT FAIL n` plus `worst +x dB @ f`, matching the pass/fail row in the panel.
-
-
-## Virtual keypad (v1.3.4)
-
-An optional on-screen pad for the numeric fields, disabled by default and remembered in
-`localStorage['websa-keypad']`. `ui/keypad.ts` builds it once and fills it per field:
-
-- a field with a unit button group (`UNIT_OPTIONS` in `core/units.ts`) also gets unit keys; a unit
-  key writes the value with `dataset.edited = '1'` and calls the panel's own `setUnit()`, so the
-  command is identical to clicking the panel button
-- a field marked `data-keypad="text"` (the n-dB threshold list) is edited as plain text: its display
-  line is a real input, so the mouse places the caret, backspace deletes one character there and
-  `C` clears the entry; its `.` key becomes the `,` separator
-- every other field commits through a `change` event, except the staged ones (`ref`, `points`,
-  `rbw`, `vbw`, `harm`, `pnm`, `ampdbs`) whose own Set/Meas button is clicked instead
+FT8 protocol tables originate from [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT), with provenance in `tools/fixtures/port_ft8_tables.py`. SSTV includes the MIT-licensed vendored decoder under `wasm/src/digital/sstv/vendor/`. CW uses [ggmorse](https://github.com/ggerganov/ggmorse) under `tools/vendor/ggmorse/` and its licence. DeepFilterNet integration retains the licences under `wasm-dfn/`. Codec build/provenance and licence boundaries remain in `wasm/fdk/README.md`, `wasm/xaac/README.md`, [DRM_BENCH](DRM_BENCH.md) and [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md). Preserve source attribution when changing fixtures or vendored code.

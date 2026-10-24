@@ -1,14 +1,8 @@
-// The SDR demodulator buttons, generated from the DSP module's plugin registry.
-//
-// The list of modes lives in the Rust registry and is read over the ABI, so this module owns no
-// mode list of its own: adding a mode to the DSP is what makes a button appear, and a mode whose
-// kernel is not written yet is rendered *disabled* instead of silently accepting a click that
-// nothing would answer.
+// The SDR demodulator buttons, generated from the native receiver's plugin registry.
 //
 // Kept out of `controls.ts` so the rendering can be unit tested without the whole control layer,
 // and so the dependency direction stays one-way (controls passes its actions in).
 import { isModeAvailable, loadPluginManifest, pluginManifest, sdrModeIds } from '../sdr/registry';
-import { dspWasmUrl } from '../sdr/wasm';
 
 export interface DemodGroupHooks {
 	/** Called with the mode id when the user picks one. */
@@ -58,13 +52,12 @@ export function renderSdrDemodGroup(
 export async function initSdrDemodGroup(
 	container: HTMLElement,
 	hooks: DemodGroupHooks,
-	url: string = dspWasmUrl(),
+	url = '/api/sdr/plugins',
 ): Promise<string[]> {
 	try {
 		await loadPluginManifest(url);
 	} catch {
-		// No module (no wasm support, or a fetch failure): the panel stays empty rather than
-		// offering modes nothing can run. The Python fallback path serves audio in that case.
+		container.textContent = 'Receiver modes unavailable';
 		return [];
 	}
 	// Render from the registry, after the manifest is in place: `isModeAvailable` reads it. Both

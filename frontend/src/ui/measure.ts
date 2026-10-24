@@ -12,9 +12,12 @@ import { updateInfoBar } from '../render/infobar';
 import { t } from '../core/i18n';
 import { getMeasurementTab, measurementTabs } from './measureRegistry';
 import { applyMeasUI, setMeasButtons } from './measureUi';
+import { measurementsAvailable } from './measurementAvailability';
+import { endMeasurementSessions } from '../meas/session';
 export { applyMeasUI, setMeasButtons } from './measureUi';
 
 export function measToggle() {
+  if (!S.measOn && !measurementsAvailable()) return;
   if (!S.measOn) {
     S.setMeasOn(true);
     const btn = document.getElementById('btn-meas-onoff');
@@ -33,8 +36,7 @@ export function measToggle() {
 
 
 export function applyMeasTabUI() {
-  // One pass over the registered tabs (report finding E-5): each tab owns its button and
-  // its panel, so adding a measurement does not touch this function.
+  // Each registered tab owns its button and panel.
   const selected = S.measTabSel;
   for (const tab of measurementTabs()) {
     const button = document.getElementById(tab.domId);
@@ -46,13 +48,15 @@ export function applyMeasTabUI() {
 }
 
 export function applyMeasNow() {
+  if (!measurementsAvailable()) return;
   exitMeasMode();
-  // Tabs register themselves (report finding E-5); an unknown id simply does nothing.
+  // Unknown tab IDs have no action.
   getMeasurementTab(S.measTabSel)?.apply();
   applyMeasUI();
 }
 
 export function measTab(t: string) {
+  if (!measurementsAvailable()) return;
   S.setMeasTabSel(t);
   applyMeasTabUI();
   if (!S.measOn) return;
@@ -60,6 +64,7 @@ export function measTab(t: string) {
 }
 
 export function exitMeasMode(updateBackend = true) {
+  endMeasurementSessions();
   if (S.viewMode === 'pnm' || S.viewMode === 'harm') {
     if (updateBackend) send({ cmd: 'SET_MODE', mode: 'std' });
     if (S.stdSnap) {
@@ -68,9 +73,7 @@ export function exitMeasMode(updateBackend = true) {
       S.setStdSnap(null);
     }
   }
-  // Only the measurement views are left here: RTA is a normal analyzer view and must
-  // survive (preset used to force view=std while the backend kept streaming RTA frames,
-  // which blanked the spectrum).
+  // Preset exits measurement views; RTA remains a normal analyzer view.
   if (S.viewMode === 'pnm' || S.viewMode === 'harm') {
     S.setViewMode('std');
     const mt = document.getElementById('marker-table');

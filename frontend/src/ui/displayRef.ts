@@ -1,31 +1,24 @@
 /**
  * Display reference level - the top line of the graticule.
  *
- * The value had nine writers in five files with no arbitration ("last write wins"), which is
- * how a Preset, a normalise toggle or a trace reset could silently clobber the Ref the user
- * had just set in SDR. Ownership is explicit now, and the same four disciplines as the mode
- * handshake apply (see ui/graphMode.ts):
+ * Display-reference writes have explicit owners and follow the same acknowledgement,
+ * supersession, timeout and divergence rules as the mode handshake (see ui/graphMode.ts):
  *
  *   owners:
  *     auto   - the SDR client-side auto-scale
  *     user   - the Ref Set button / arrows (an explicit takeover, acknowledged by the device)
- *     sdr    - the SDR display scale as set by the user: that scale belongs to the client, and the
- *              level the DEVICE is handed is a different value (clamped to the device row, since
- *              the front end cannot be at any level), so there is no echo to wait for - arming an
- *              ack here is what made a display-only level look unconfirmed and post a timeout
+ *     sdr    - restore the SDR display scale once on entry, without a hardware write
  *     mode   - display defaults (normalise sets 0, un-normalise restores the level)
  *     preset - global reset
  *
- *   1. id-matched ack   - a user Ref request is acknowledged only by a backend report that
- *                         matches the newest request; older reports are ignored.
+ *   1. matching report - a user Ref request is acknowledged only by the stored SDR hardware
+ *                       request matching the newest intent; effective IQS Ref may be clamped.
  *   2. supersede        - a newer request replaces the previous one and its timeout.
- *   3. timeout notify   - if the device never reports the requested level, the user is told.
+ *   3. timeout notify   - an unconfirmed request restores the previous display and reports timeout.
  *   4. divergence shown - `displayRefDiverges()` exposes requested-vs-reported for the UI.
  *
- * In SDR the scale belongs to the SDR session even when the auto-scale is off, so a
- * background 'mode' write (normalise / trace switch / trace reset) is refused there:
- * allowing it was the "manual Ref returns to 0" bug. An explicit 'preset' is still honoured
- * - the user asked for factory defaults, and the device resets its reference too.
+ * In SDR the session owns the scale even with auto-scale off. Background 'mode' writes
+ * cannot replace it; an explicit 'preset' resets both display and device reference.
  */
 import { createParam } from '../core/params';
 import { currentGraphMode } from './graphMode';
@@ -44,10 +37,10 @@ const value = createParam<number>('display.ref', {
 	equals: (a, b) => Math.abs(a - b) < 0.05,
 });
 
-/** Last effective reference level the device reported. */
+/** Last confirmed hardware request, independently of the IQS effective Ref. */
 let reported: number | null = null;
 let requestSeq = 0;
-let pending: { id: number; want: number; timer: number } | null = null;
+let pending: { id: number; want: number; rollback: number; timer: number } | null = null;
 
 export type DisplayRefTimeoutHandler = (want: number, reported: number | null) => void;
 let timeoutHandler: DisplayRefTimeoutHandler | null = null;
@@ -76,11 +69,21 @@ export function pendingDisplayRef(): number | null {
 	return pending ? pending.want : null;
 }
 
-function clearPending(): void {
+/** Explicit Auto supersedes hardware intent without restoring the previous display. */
+export function cancelDisplayRefRequest(): void {
 	if (pending !== null) {
 		window.clearTimeout(pending.timer);
 		pending = null;
 	}
+}
+
+/** Rejected hardware intent restores the display that was confirmed before the edit. */
+export function rejectDisplayRefRequest(): boolean {
+	if (!pending) return false;
+	const rollback = pending.rollback;
+	cancelDisplayRefRequest();
+	value.set(rollback);
+	return true;
 }
 
 /**
@@ -90,27 +93,27 @@ function clearPending(): void {
 export function setDisplayRef(source: DisplayRefSource, v: number): boolean {
 	if (source === 'mode' && currentGraphMode() === 'sdr') return false;
 	if (source === 'user') {
-		// Supersede: the newest request wins and restarts the timeout (discipline 2).
-		clearPending();
+		const rollback = pending?.rollback ?? value.get();
+		cancelDisplayRefRequest();
 		const id = ++requestSeq;
 		const timer = window.setTimeout(() => {
 			if (pending === null || pending.id !== id) return;
-			pending = null;
+			rejectDisplayRefRequest();
 			timeoutHandler?.(v, reported);
 		}, DISPLAY_REF_TTL_MS);
-		pending = { id, want: v, timer };
+		pending = { id, want: v, rollback, timer };
 	}
+	else if (source !== 'mode') cancelDisplayRefRequest();
 	value.set(v);
 	return true;
 }
 
 /**
- * The device reported its effective reference level (STATUS). A report matching the newest
- * user request acknowledges it (discipline 1); a report that does not match leaves the
- * request pending until its timeout.
+ * STATUS reported the stored hardware request. A matching newest intent acknowledges it;
+ * a stale report leaves it pending until rejection or timeout.
  */
 export function noteDisplayRefReport(v: number): void {
 	if (!Number.isFinite(v)) return;
 	reported = v;
-	if (pending !== null && Math.abs(pending.want - v) < 0.5) clearPending();
+	if (pending !== null && Math.abs(pending.want - v) < 0.5) cancelDisplayRefRequest();
 }

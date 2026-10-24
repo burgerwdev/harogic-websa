@@ -12,6 +12,7 @@ import { requestRender } from '../render/redraw';
 import { t } from '../core/i18n';
 import { displayUnit, smoothBins } from './displayState';
 import { peakThr } from './measurePrefs';
+import { postRefNotice } from './refAutoScale';
 
 // Freeze (View) toggle button state — reflects the active trace's mode
 export function syncFreezeBtn() {
@@ -41,11 +42,13 @@ export function switchTraceTab(idx: number) {
   const sel = document.getElementById('select-trace-mode') as HTMLSelectElement;
   if (sel) sel.value = t.mode === 'VIEW' ? (t.prevMode || 'CLEAR_WRITE') : t.mode;
   syncFreezeBtn();
+  syncAvgUI();
   const anyNorm = S.traces.some(x => x.isNormalized && x.reference);
   displayUnit.set((t.reference && t.isNormalized) ? 'dB' : (anyNorm ? 'dB' : 'dBm'));
   setDisplayRef('mode', displayUnit.get() === 'dB' ? 0.0 : refLevel.get());
   updateNormalizeStatusUI();
   updateInfoBar();
+  requestRender();
 }
 
 export function clearRtaTrace() {
@@ -59,16 +62,22 @@ export function clearRtaTrace() {
   S.rtaAvgSum[idx] = null;
   S.rtaDone[idx] = false;
   S.setRtaDisplays(arr);
-  if (S.rtaDensity2d) S.rtaDensity2d!.fill(0);
+  S.setRtaDensity2d(null);
   requestRender();
 }
 
 export function setTraceMode(mode: string) {
   const idx = S.activeTraceIdx;
+  const previous = S.traces[idx].mode;
+  // VIEW freezes the existing cloud. Resuming or choosing another accumulator starts fresh.
+  if (mode !== 'VIEW' && mode !== previous) S.setRtaDensity2d(null);
   applyTraceMode(S.traces[idx], mode);
   resetRtaAverage(idx);
+  const sel = document.getElementById('select-trace-mode') as HTMLSelectElement | null;
+  if (sel) sel.value = currentTraceMode();
   syncFreezeBtn();
   syncAvgUI();
+  requestRender();
 }
 
 /**
@@ -92,6 +101,11 @@ export const SDR_DEFAULT_AVG = 16;
 const FAMILY_DEFAULT: Record<TraceFamily, string> = { sdr: 'AVERAGE', swept: 'CLEAR_WRITE' };
 const remembered: Record<TraceFamily, string> = { ...FAMILY_DEFAULT };
 
+/** Preset resets the per-session family choices along with the traces. */
+export function resetTraceFamilyModes(): void {
+  Object.assign(remembered, FAMILY_DEFAULT);
+}
+
 function traceFamily(sdr: boolean): TraceFamily {
   return sdr ? 'sdr' : 'swept';
 }
@@ -107,26 +121,14 @@ export function rememberTraceMode(sdr: boolean): void {
   remembered[traceFamily(sdr)] = currentTraceMode();
 }
 
-/**
- * Apply the family's own trace mode to the ACTIVE trace (the others are left alone), plus the
- * default average depth when that lands on an average.
- *
- * The dropdown is written here because `setTraceMode` only syncs the Freeze button and the Avg
- * row - a mode applied behind the panel's back would leave the select showing the old mode.
- */
+/** Restore the family's mode without replacing its already configured average depth. */
 export function applyTraceFamilyMode(sdr: boolean): void {
-  const want = remembered[traceFamily(sdr)];
-  setTraceMode(want);
-  const sel = document.getElementById('select-trace-mode') as HTMLSelectElement | null;
-  if (sel) sel.value = want;
-  if (want === 'AVERAGE' && sdr) setTraceAverage(SDR_DEFAULT_AVG);
+  S.setRtaDensity2d(null);
+  setTraceMode(remembered[traceFamily(sdr)]);
+  if (sdr && S.traces[S.activeTraceIdx].avgTargetRta == null) setTraceAverage(SDR_DEFAULT_AVG);
 }
 
-/**
- * RTA stores its own accumulator arrays, so SWP-side resets are not enough: a stale
- * avgSum/avgCount would make a fresh average start near full scale and decay slowly
- * (reported as "the trace descends from the top").
- */
+/** Reset RTA-specific accumulators when starting a fresh average. */
 function resetRtaAverage(idx: number): void {
   S.rtaAvgSum[idx] = null;
   S.rtaAvgN[idx] = 0;
@@ -156,6 +158,7 @@ export function setTraceAverage(count: number): void {
   if (S.rtaMode) trace.avgTargetRta = normalizeAvgCount(count);   // RTA depth is mode-private
   else setAverageCount(trace, count);
   resetRtaAverage(idx);
+  S.setRtaDensity2d(null);
   syncAvgUI();
   requestRender();
 }
@@ -193,16 +196,21 @@ export function exportPeakListCsv(): void {
 }
 
 export function exportActiveTraceCsv(): void {
-  const t = S.traces[S.activeTraceIdx];
-  const powers = t?.powers;
-  const freq = S.freqArray;
-  if (!t || !powers || !freq) return;
-  const n = Math.min(powers.length, freq.length);
+  const trace = S.traces[S.activeTraceIdx];
+  const rta = S.rtaMode ? S.rtaData : null;
+  const powers = S.rtaMode ? S.rtaDisplays[S.activeTraceIdx] : trace?.powers;
+  const freq = S.rtaMode ? rta?.freq : S.freqArray;
+  if (!trace || trace.mode === 'OFF' || !powers?.length || !freq?.length || powers.length !== freq.length) {
+    postRefNotice(t('trace_export_no_data'));
+    return;
+  }
+  const n = powers.length;
   const head = [
-    `# trace=T${t.id}`, `mode=${t.mode}`,
-    `center_hz=${centerHz.get()}`, `span_hz=${spanHz.get()}`,
+    `# trace=T${trace.id}`, `mode=${trace.mode}`,
+    `center_hz=${S.rtaMode ? (freq[0] + freq[n - 1]) / 2 : centerHz.get()}`,
+    `span_hz=${S.rtaMode ? freq[n - 1] - freq[0] : spanHz.get()}`,
     `rbw_hz=${currentRBW.get()}`, `vbw_hz=${currentVBW.get()}`,
-    `display_unit=${displayUnit.get()}`, `normalized=${t.isNormalized}`,
+    `display_unit=${S.rtaMode ? 'dBm' : displayUnit.get()}`, `normalized=${!S.rtaMode && trace.isNormalized}`,
     `smooth_bins=${smoothBins.get()}`, `time=${new Date().toISOString()}`,
     'freq_hz,power',
   ];
@@ -215,7 +223,7 @@ export function exportActiveTraceCsv(): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `websa_T${t.id}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.download = `websa_T${trace.id}_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }

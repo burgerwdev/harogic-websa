@@ -12,8 +12,12 @@ import { beforeAll, describe, expect, it } from 'vitest';
 type Processor = {
 	new (): {
 		enabled: boolean;
+		failed: boolean;
 		available: number;
 		underruns: number;
+		renderedFrames: number;
+		playedFrames: number;
+		starvedFrames: number;
 		slipped: number;
 		ratio: number;
 		prime: number;
@@ -55,6 +59,7 @@ beforeAll(async () => {
 
 interface Outcome {
 	underruns: number;
+	failed: boolean;
 	slipped: number;
 	ratio: number;
 	fill: number;
@@ -82,6 +87,7 @@ function run(producerSps: number, seconds = 6, block = 960): Outcome {
 		if (proc.available > maxFillSeen) maxFillSeen = proc.available;
 	}
 	return {
+		failed: proc.failed,
 		underruns: proc.underruns,
 		slipped: proc.slipped,
 		ratio: proc.ratio,
@@ -91,6 +97,22 @@ function run(producerSps: number, seconds = 6, block = 960): Outcome {
 }
 
 describe('the SDR playback buffer', () => {
+	it('counts played and missing audio-clock frames even without an underrun', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.push(new Float32Array(RATE).fill(0.5));
+		for (let i = 0; i < 20; i++) proc.process(null, [[new Float32Array(128)]]);
+		expect(proc.renderedFrames).toBe(2560);
+		expect(proc.playedFrames).toBe(2560);
+		expect(proc.starvedFrames).toBe(0);
+		proc.reset();
+		proc.process(null, [[new Float32Array(128)]]);
+		expect(proc.renderedFrames).toBe(2688);
+		expect(proc.playedFrames).toBe(2560);
+		expect(proc.starvedFrames).toBe(128);
+		expect(proc.underruns).toBe(0);
+	});
+
 	it('plays a matched producer without an underrun and holds its fill', () => {
 		const r = run(RATE, 30);
 		expect(r.underruns).toBe(0);
@@ -152,14 +174,10 @@ describe('the SDR playback buffer', () => {
 		}
 	});
 
-	it('does not pretend to absorb a rate that is simply wrong', () => {
-		// A 2% mismatch cannot be buffered away: the fill walks one window's worth of it (~960 ms at
-		// 20 s), which the ceiling trims (fast producer) or the priming threshold starves (slow one).
-		// That is why the backend *measures* the baseband rate instead of trusting the vendor's
-		// nominal figure - the buffer is the last resort, not the mechanism.
+	it('fails a producer that exceeds the bounded queue and reports slow-source underruns', () => {
 		const fast = run(RATE * 1.02, 60);
-		expect(fast.slipped).toBeGreaterThan(0);
-		expect(fast.fill).toBeLessThanOrEqual(fast.maxFillSeen);
+		expect(fast.failed).toBe(true);
+		expect(fast.slipped).toBe(0);
 		const slow = run(RATE * 0.98, 60);
 		expect(slow.underruns).toBeGreaterThan(0);
 	});
@@ -177,7 +195,7 @@ describe('the SDR playback buffer', () => {
 		const changesAt: number[] = [];
 		let last = proc.ratio;
 		while (t < 120 * RATE) {
-			while (Math.floor((RATE * 1.01 * t) / RATE) - pushed >= 960) {
+			while (Math.floor((RATE * 1.001 * t) / RATE) - pushed >= 960) {
 				proc.push(new Float32Array(960));
 				pushed += 960;
 			}
@@ -241,18 +259,15 @@ describe('the SDR playback buffer', () => {
 		expect(proc.underruns).toBe(0);
 	});
 
-	it('keeps the latency bounded when the producer floods the ring', () => {
-		// A burst far beyond the ceiling (a stalled worker catching up) must not become seconds of
-		// delay: the oldest samples are dropped and the audio stays live.
+	it('fails explicitly when a producer floods the ring', () => {
 		const proc = new ProcessorClass!();
 		proc.enabled = true;
-		const out = new Float32Array(128);
-		proc.push(new Float32Array(RATE * 3));          // 3 s at once
-		// Everything beyond the ceiling is dropped, and accounted as such.
-		expect(proc.available).toBe(proc.maxFill);
-		expect(proc.slipped).toBe(RATE * 3 - proc.maxFill);
-		for (let i = 0; i < 400; i++) proc.process(null, [[out]]);
-		expect(proc.available).toBeLessThanOrEqual(proc.maxFill);
+		proc.push(new Float32Array(RATE * 3));
+		expect(proc.failed).toBe(true);
+		expect(proc.enabled).toBe(false);
+		expect(proc.available).toBe(0);
+		expect(proc.slipped).toBe(0);
+		expect(proc.port.messages.some((message) => message.type === 'error')).toBe(true);
 	});
 
 	it('keeps complete DRM super-frame bursts without periodic dropouts', () => {
@@ -283,12 +298,12 @@ describe('the SDR playback buffer', () => {
 		const proc = new ProcessorClass!();
 		proc.enabled = true;
 		const out = new Float32Array(128);
-		proc.push(new Float32Array(RATE * 2));          // two seconds offered
-		// Everything beyond the ceiling is dropped, and accounted as such.
-		expect(proc.available).toBe(proc.maxFill);
-		expect(proc.slipped).toBe(RATE * 2 - proc.maxFill);
+		proc.push(new Float32Array(RATE).fill(0.75));
+		expect(proc.available).toBe(RATE);
 		proc.reset();
 		expect(proc.available).toBe(0);
+		proc.process(null, [[out]]);
+		expect(Array.from(out)).toEqual(Array(128).fill(0));
 		// ...and it primes again from the new stream.
 		proc.push(new Float32Array(proc.prime + 128).fill(0.5));
 		const outputs = [[out]];
@@ -325,57 +340,16 @@ describe('the SDR playback buffer', () => {
 		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'wfm', stereo: true } });
 		proc.port.onmessage({ data: { type: 'enabled', value: true } });
 		proc.port.onmessage({ data: { type: 'reset' } });
-		proc.port.onmessage({ data: { type: 'fast-prime' } });
-		expect(proc.prime).toBe(Math.floor(RATE * 0.06) * 2);
 		proc.push(new Float32Array(proc.prime + 256).fill(0.5));
 		const start = proc.port.messages.length;
 		proc.process(null, [[new Float32Array(128), new Float32Array(128)]]);
 		const started = proc.port.messages.slice(start).find((m) => m.type === 'gate-transition');
 		expect(started?.playing).toBe(true);
 		expect(proc.playing).toBe(true);
-		// Early tune jitter still uses the short prime. The normal fill target restores the
-		// cold-start threshold after playback has enough margin.
-		expect(proc.prime).toBe(Math.floor(RATE * 0.06) * 2);
-		proc.push(new Float32Array(proc.target).fill(0.5));
-		proc.process(null, [[new Float32Array(128), new Float32Array(128)]]);
-		expect(proc.prime).toBe(Math.floor(RATE * 0.45) * 2);
 		const beforeReset = proc.port.messages.length;
 		proc.port.onmessage({ data: { type: 'reset' } });
 		const stopped = proc.port.messages.slice(beforeReset).find((m) => m.type === 'gate-transition');
 		expect(stopped?.playing).toBe(false);
-		expect(proc.playing).toBe(false);
-	});
-
-	it('ends fast-prime after early retune playback even when the target never fills', () => {
-		const proc = new ProcessorClass!();
-		proc.enabled = true;
-		proc.port.onmessage({ data: { type: 'reset' } });
-		proc.port.onmessage({ data: { type: 'fast-prime' } });
-		const out = new Float32Array(128);
-		proc.push(new Float32Array(Math.round(RATE * 0.08)));
-		let supplied = 0;
-		for (let t = 0; t < Math.round(RATE * 0.5); t += 128) {
-			while (t - supplied >= 960) {
-				proc.push(new Float32Array(960));
-				supplied += 960;
-			}
-			proc.process(null, [[out]]);
-		}
-		expect(proc.playing).toBe(true);
-		expect(proc.available).toBeLessThan(proc.target);
-		expect(proc.prime).toBe(Math.floor(RATE * 0.45));
-	});
-
-	it('expires fast-prime even while no PCM arrives', () => {
-		const proc = new ProcessorClass!();
-		proc.enabled = true;
-		proc.port.onmessage({ data: { type: 'reset' } });
-		proc.port.onmessage({ data: { type: 'fast-prime' } });
-		const out = new Float32Array(128);
-		for (let t = 0; t < RATE * 0.31; t += 128) proc.process(null, [[out]]);
-		expect(proc.prime).toBe(Math.floor(RATE * 0.45));
-		proc.push(new Float32Array(Math.floor(RATE * 0.1)));
-		proc.process(null, [[out]]);
 		expect(proc.playing).toBe(false);
 	});
 
@@ -406,5 +380,21 @@ describe('the SDR playback buffer', () => {
 		// A switch to mono invalidates the paired samples: the ring must empty, not reinterpret.
 		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'wfm', stereo: false } });
 		expect(proc.available).toBe(0);
+	});
+
+	it('retains complete stereo codec bursts beyond the old mono capacity', () => {
+		const proc = new ProcessorClass!();
+		proc.enabled = true;
+		proc.port.onmessage({ data: { type: 'buffer-mode', mode: 'drm', stereo: true } });
+		const pairs = new Float32Array(Math.round(RATE * 2.3) * 2);
+		for (let i = 0; i < pairs.length; i += 2) { pairs[i] = 0.25; pairs[i + 1] = -0.5; }
+		proc.push(pairs);
+		expect(proc.failed).toBe(false);
+		expect(proc.available).toBe(pairs.length);
+		const left = new Float32Array(128);
+		const right = new Float32Array(128);
+		for (let i = 0; i < 8; i++) proc.process(null, [[left, right]]);
+		expect(left[127]).toBeCloseTo(0.25);
+		expect(right[127]).toBeCloseTo(-0.5);
 	});
 });

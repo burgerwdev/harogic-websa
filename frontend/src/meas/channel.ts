@@ -5,7 +5,7 @@
 // the channel / adjacent / OBW bands are shaded over the plot.
 import * as S from '../core/store';
 import { centerHz } from '../ui/freqState';
-import { getDisplayPowers } from '../dsp/peaks';
+import { getActiveAbsolutePowers } from '../dsp/absoluteTrace';
 import { acpr, occupiedBandwidth } from '../dsp/channel';
 import { getX } from '../render/plot';
 import { requestRender } from '../render/redraw';
@@ -16,6 +16,7 @@ import { canvasColors } from '../core/theme';
 import { fmtF } from '../core/fmt';
 import { t } from '../core/i18n';
 import { fmtLevel } from '../core/level';
+import { sweptMeasurementsAvailable } from '../ui/measurementAvailability';
 
 function num(id: string, dflt: number): number {
   const el = document.getElementById(id) as HTMLInputElement | null;
@@ -31,9 +32,10 @@ function defaultCenterHz(): number {
 }
 
 export function measureChannel(): void {
-  const dp = getDisplayPowers();
+  if (!S.measOn || S.measTabSel !== 'chan' || !sweptMeasurementsAvailable()) return;
+  const dp = getActiveAbsolutePowers();
   const fa = S.freqArray;
-  if (!dp || !fa || fa.length < 2) return;
+  if (!dp || !fa || fa.length < 2) { clearChannel(); return; }
   const centerEl = document.getElementById('input-chan-center') as HTMLInputElement | null;
   if (centerEl && !centerEl.value.trim()) centerEl.value = (defaultCenterHz() / 1e6).toFixed(4);
   const center = num('input-chan-center', defaultCenterHz() / 1e6) * 1e6;
@@ -73,6 +75,8 @@ let lastTableKey = '';
 
 /** Fill the channel table; only touches the DOM when the content changes. */
 export function updateChanTable(): void {
+  const available = getActiveAbsolutePowers() !== null;
+  if (!available) S.setChanRes(null);
   const tb = document.getElementById('chan-tbody');
   const tbl = document.getElementById('chan-table');
   if (!tb || !tbl) return;
@@ -80,7 +84,7 @@ export function updateChanTable(): void {
   const cell = (a: string, b: string) => `<tr><td>${a}</td><td>${b}</td></tr>`;
   const rows: string[] = [];
   if (!r) {
-    rows.push(cell(t('chan_power'), '-'));
+    rows.push(cell(t('chan_power'), available ? '-' : t('absolute_trace_unavailable')));
     rows.push(cell(t('chan_obw'), '-'));
     rows.push(cell(t('chan_acp_l'), '-'));
     rows.push(cell(t('chan_acp_u'), '-'));
@@ -119,6 +123,7 @@ function freqToX(f: number): number {
 
 /** Shade the channel and adjacent bands and mark the OBW edges. */
 export function renderChannel(_powers: Float32Array): void {
+  if (!getActiveAbsolutePowers()) { S.setChanRes(null); return; }
   const r = S.chanRes;
   if (!r) return;
   const p = plotRect();
@@ -171,5 +176,4 @@ export function renderChannel(_powers: Float32Array): void {
   c.restore();
 }
 
-// Register this measurement tab with the registry (report finding E-5).
 registerMeasurementTab({ id: 'chan', domId: 'tab-chan', apply: () => { measureChannel(); updateChanTable(); }, updateTable: updateChanTable });

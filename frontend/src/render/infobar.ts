@@ -7,7 +7,7 @@ import { getDisplayRef } from '../ui/displayRef';
 import { displayUnit } from '../ui/displayState';
 
 // SWT prefers the device's estimated minimum sweep time. Some SDK profiles report zero;
-// in that case show the publisher's measured step duration, explicitly marked as measured.
+// in that case show the publisher's measured step duration.
 // The quantities remain separate and the display source changes only with SDK availability.
 let lastSwtStr = '', lastSwtAt = 0, lastSwtMode = '';
 const SWT_THROTTLE_MS = 500;
@@ -23,9 +23,8 @@ function setSwt() {
   if (S.rtaMode && S.rtaData && S.rtaData.stopHz) {
     v = formatBWHz(S.rtaData.stopHz - S.rtaData.startHz);
   } else {
-    const measured = S.sweepMs <= 0 && S.sweepMsMeas > 0;
-    const ms = measured ? S.sweepMsMeas : S.sweepMs;
-    v = ms > 0 ? ms.toFixed(1) + (measured ? ' ms (' + t('swt_measured') + ')' : ' ms') : '-';
+    const ms = S.sweepMs > 0 ? S.sweepMs : S.sweepMsMeas;
+    v = ms > 0 ? ms.toFixed(1) + ' ms' : '-';
   }
   if (v === lastSwtStr) return;                     // also skip if the value didn't change (avoid pointless writes)
   lastSwtStr = v;

@@ -9,8 +9,10 @@ import { t } from '../core/i18n';
 import { fmtF } from '../core/fmt';
 import { canvasColors } from '../core/theme';
 import { plotRect } from '../render/plot';
+import { sweptMeasurementsAvailable } from '../ui/measurementAvailability';
 
 export function measureAmp() {
+  if (!S.measOn || S.measTabSel !== 'amp' || !sweptMeasurementsAvailable()) return;
   const dp = getDisplayPowers();
   if (!dp || !S.freqArray || S.freqArray!.length < 2) return;
   const inp = document.getElementById('input-ampdbs') as HTMLInputElement;
@@ -103,5 +105,4 @@ function getXIdx(f: number): number {
   return getX(i0 + t * (i1 - i0), n);
 }
 
-// Register this measurement tab with the registry (report finding E-5).
 registerMeasurementTab({ id: 'amp', domId: 'tab-amp', apply: measureAmp });

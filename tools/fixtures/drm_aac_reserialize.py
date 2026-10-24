@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Parse a raw MPEG-4 AAC-LC access unit (ONLY_LONG window) and dump its scale
-factors and spectral codewords — the input to the DRM AAC re-serialisation
-(VCB11 + HCR). See docs/en/DRM_AAC_RESERIALIZATION.md.
+"""Parse an MPEG-4 AAC-LC access unit and re-serialise it to DRM AAC syntax.
 
-Status: parses the frame header, section data, scale factors and spectral data for
-the ONLY_LONG (window_sequence == 0) case, which is what a stationary signal (and
-the fdK-AAC encoder) produces. LONG_START/SHORT/LONG_STOP section-data handling
-and the VCB11/HCR re-serialisation are still TODO.
+Supports ONLY_LONG single-channel frames, including VCB11 section data, HCR
+spectral reordering and DRM CRC generation. Other window sequences are outside
+the parser's supported input contract. Used by gen_drm_aac_fixture.py; see
+docs/en/DRM_AAC_RESERIALIZATION.md for the format and codec constraints.
 """
 from __future__ import annotations
 

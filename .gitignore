@@ -7,11 +7,12 @@ venv/
 
 # Node / 前端
 node_modules/
-frontend/dist/
+/frontend/dist/
 npm-debug.log*
 
 # Rust/WASM 构建产物（入库的是发布后的 frontend/public/dsp.wasm）
 wasm/target/
+native-ddc/target/
 
 # DFN 降噪运行时构建产物（入库的是发布后的 public/dfn 与 public/models）
 wasm-dfn/target/
@@ -20,7 +21,9 @@ wasm-dfn/pkg/
 # 日志/运行时
 *.log
 *.pid
-server.pid
+
+# Temporary runtime publishing directory (the published runtime/ is committed).
+runtime/.package-*/
 
 # 测试/缓存
 .pytest_cache/
@@ -46,11 +49,12 @@ tools/sdr_probe/plots/
 tools/bench/ft8_reference/decode_ref
 tools/bench/ft8_reference/ft8_lib/
 
-# emscripten toolchain + ggmorse build scratch (the built artifact is committed)
-tools/.emsdk/
-tools/.ggmorse-build/
-
 # Generated bench audio (cowtts 语音、--wav 测试文件)
 *.wav
 # The one committed bench sample: the voice audio for `tools/pluto_tx.py --wav`.
 !tools/bench/audio/*.wav
+
+# Generated viewport observations (the gate evaluates current geometry).
+screenshots/resolution-baseline/
+tools/e2e/viewport_baseline.json
+tools/e2e/viewport_baseline.txt

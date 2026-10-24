@@ -1,65 +1,59 @@
-/**
- * Align a spectrum frame to the display window it advertises.
- *
- * The SDR panadapter captures around its own centre (`capture_*`) and a hardware frequency
- * offset can push that away from the centre the user asked for. The frame header, however,
- * always carries the *display* window. Rebinning the capture grid onto the display grid:
- *
- *   - maps every bin by its true capture frequency (the freq array spans the capture range),
- *   - clips the result to the display range, so the user's centre lands at the canvas centre,
- *   - leaves NaN where the display window reaches past the capture range (the offset edge).
- *
- * The NaN is a real gap, not invented data: the trace renderer already breaks a line on a
- * non-finite sample, and GapFill is the user's explicit opt-in. Everything downstream
- * (markers, limits, density, waterfall) then works on one uniform frequency axis.
- */
+/** Frequency geometry shared by traces and bounded display layers. No interpolation. */
 export interface AlignedSpectrum {
 	freq: Float64Array;
 	spec: Float32Array;
-	/** True when a rebin was actually needed (the capture grid differed from the window). */
+	/** The source coverage differs from the advertised display window. */
 	shifted: boolean;
 }
 
+export function lowerBound(freq: ArrayLike<number>, hz: number): number {
+	let lo = 0, hi = freq.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (freq[mid] < hz) lo = mid + 1; else hi = mid;
+	}
+	return lo;
+}
+
+/** Include one neighbour on either side so clipping retains boundary line segments. */
+export function visibleBinRange(freq: ArrayLike<number>, lo: number, hi: number): [number, number] {
+	const end = lowerBound(freq, hi);
+	return [Math.max(0, lowerBound(freq, lo) - 1), Math.min(freq.length, end + (freq[end] === hi ? 2 : 1))];
+}
+
+export function sameFrequencyGrid(a: ArrayLike<number> | null, b: ArrayLike<number>): boolean {
+	if (!a || a.length !== b.length) return false;
+	if (a === b) return true;
+	for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
 export function alignToDisplayWindow(
-	freq: ArrayLike<number>,
-	spec: ArrayLike<number>,
-	lo: number,
-	hi: number,
+	freq: ArrayLike<number>, spec: ArrayLike<number>, lo: number, hi: number,
 ): AlignedSpectrum {
-	const asFreq = (): Float64Array => (freq instanceof Float64Array ? freq : Float64Array.from(freq));
-	const asSpec = (): Float32Array => (spec instanceof Float32Array ? spec : Float32Array.from(spec));
-	const n = freq.length;
-	if (n < 2 || !(hi > lo)) return { freq: asFreq(), spec: asSpec(), shifted: false };
-	const capLo = Number(freq[0]);
-	const capHi = Number(freq[n - 1]);
-	const capStep = (capHi - capLo) / (n - 1);
-	// The display grid is already the capture grid (SWP/RTA, or an SDR capture that the device
-	// centred as requested). A rebin would only add interpolation error. A real offset moves the
-	// start by much more than one bin, so this test separates the two cases.
-	// The START alone is not sufficient. An SDR capture can be WIDER than the display window:
-	// the device capture is floored to keep the IQS packet period short (refer to
-	// SDR_MAX_CAPTURE_DECIMATE). Such a grid can still start on the window edge. Compare the
-	// widths too. Then this frame is not drawn as if the whole capture were the window.
-	const sameWindow = Math.abs(capLo - lo) < capStep
-		&& Math.abs((capHi - capLo) - (hi - lo)) < capStep;
-	if (!(capStep > 0) || sameWindow) {
-		return { freq: asFreq(), spec: asSpec(), shifted: false };
+	const f = freq instanceof Float64Array ? freq : Float64Array.from(freq);
+	const p = spec instanceof Float32Array ? spec : Float32Array.from(spec);
+	// Keep native bin centres, levels and NaNs. The renderer clips by Hz; an uncovered
+	// display edge stays empty instead of manufacturing samples on a new uniform grid.
+	return { freq: f, spec: p, shifted: f.length > 0 && (f[0] !== lo || f[f.length - 1] !== hi) };
+}
+
+/** Peak projection for coarse display layers only; traces retain the source arrays.
+ * Empty columns stay NaN. Work is O(source + columns), never source * amplitude bins.
+ */
+export function projectSpectrum(
+	freq: ArrayLike<number>, levels: ArrayLike<number>, lo: number, hi: number, out: Float32Array,
+): Float32Array {
+	out.fill(NaN);
+	if (!(hi > lo)) return out;
+	const scale = out.length / (hi - lo);
+	for (let i = lowerBound(freq, lo); i < Math.min(freq.length, levels.length) && freq[i] <= hi; i++) {
+		const v = levels[i];
+		const x = Math.min(out.length - 1, Math.floor((freq[i] - lo) * scale));
+		// A missing native sample breaks its coarse column too; do not bridge a gap.
+		if (!Number.isFinite(v)) { out[x] = Infinity; continue; }
+		if (out[x] !== Infinity && (!Number.isFinite(out[x]) || v > out[x])) out[x] = v;
 	}
-	const outFreq = new Float64Array(n);
-	const outSpec = new Float32Array(n);
-	const step = (hi - lo) / (n - 1);
-	for (let i = 0; i < n; i++) {
-		const f = lo + i * step;
-		outFreq[i] = f;
-		if (f < capLo - capStep * 0.5 || f > capHi + capStep * 0.5) {
-			outSpec[i] = NaN;                    // outside the capture: leave a real gap
-			continue;
-		}
-		const j = Math.min(n - 1, Math.max(0, (f - capLo) / capStep));
-		const j0 = Math.floor(j);
-		const j1 = Math.min(n - 1, j0 + 1);
-		const t = j - j0;
-		outSpec[i] = spec[j0] + (spec[j1] - spec[j0]) * t;
-	}
-	return { freq: outFreq, spec: outSpec, shifted: true };
+	for (let x = 0; x < out.length; x++) if (out[x] === Infinity) out[x] = NaN;
+	return out;
 }

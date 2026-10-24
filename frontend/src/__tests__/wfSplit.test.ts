@@ -1,13 +1,11 @@
 /**
- * The spectrum/waterfall split: the divider's clamping, pinned without a layout.
- *
- * The drag itself is a couple of lines over `clampWfHeight`; what needs a real check is the range
- * it allows - the waterfall must not vanish under its own minimum, and it must never squeeze the
- * spectrum past its floor (the two ends the CSS cannot express because the column is fluid).
+ * The spectrum/waterfall split: clamping, persistence and consecutive scaled drags.
+ * A new grab must use the current border-box height, including when no spectrum frame arrives.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { clampWfHeight, parseWfHeight, resetWfSplit, syncWfSplit } from '../ui/panels/waterfall';
+import { clampWfHeight, initWfSplit, parseWfHeight, resetWfSplit, syncWfSplit } from '../ui/panels/waterfall';
 import { waterfallOn } from '../ui/waterfallState';
+import { setUiScale } from '../core/uiScale';
 
 describe('the waterfall split', () => {
 	it('passes a sane drag through', () => {
@@ -36,6 +34,40 @@ describe('the waterfall split', () => {
 		expect(parseWfHeight('')).toBe(135);
 		expect(parseWfHeight('nonsense')).toBe(135);
 		expect(parseWfHeight('420')).toBe(420);
+	});
+	it('keeps consecutive drags anchored to the border box at 125% without a new frame', () => {
+		document.body.innerHTML = '<div class="spectrum-area">'
+			+ '<div id="wf-split"></div><div id="waterfall-container"></div></div>';
+		const area = document.querySelector('.spectrum-area') as HTMLElement;
+		const split = document.getElementById('wf-split') as HTMLElement;
+		const container = document.getElementById('waterfall-container') as HTMLElement;
+		Object.defineProperty(area, 'clientHeight', { get: () => 720 });
+		Object.defineProperties(container, {
+			offsetHeight: { get: () => Number.parseFloat(container.style.height) },
+			clientHeight: { get: () => Number.parseFloat(container.style.height) - 2 },
+		});
+		setUiScale(1.25);
+		try {
+			resetWfSplit();
+			initWfSplit();
+			const pointer = (type: string, y: number) => split.dispatchEvent(
+				new PointerEvent(type, { clientY: y, pointerId: 1, bubbles: true }));
+			pointer('pointerdown', 765);
+			pointer('pointermove', 815);
+			expect(container.offsetHeight).toBe(95); // 135 - 50 / 1.25, with no border loss
+			pointer('pointerup', 815);
+			pointer('pointerdown', 815);
+			pointer('pointermove', 715);
+			expect(container.offsetHeight).toBe(175); // the next grab starts from 95, not 93
+			pointer('pointerup', 715);
+			expect(localStorage.getItem('web-sa-wf-split')).toBe('175');
+			// Movement after release must not resize the column.
+			pointer('pointermove', 600);
+			expect(container.offsetHeight).toBe(175);
+		} finally {
+			setUiScale(1);
+			resetWfSplit();
+		}
 	});
 
 	describe('the Preset reset', () => {

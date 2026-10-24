@@ -15,12 +15,14 @@ import { markerToCenter } from '../ui/panels/markers';
 import { graphMode } from '../ui/graphMode';
 import { sdrCenterHz, sdrDecimate } from '../ui/sdrState';
 import { centerHz, rtaCenterHz, spanHz } from '../ui/freqState';
+import { resetFrequencyEditors } from '../ui/panels/frequency';
 
-vi.mock('../core/wsSend', () => ({ send: vi.fn() }));
+vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 
 const FREQS = new Float64Array([100e6, 101e6, 102e6]);
 
 afterEach(() => {
+	resetFrequencyEditors();
 	vi.mocked(send).mockClear();
 	localStorage.clear();
 	resetAll();

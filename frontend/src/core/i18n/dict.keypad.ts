@@ -1,5 +1,4 @@
-// i18n namespace 'keypad' (report finding E-5: dictionaries are split by domain and
-// merged in core/i18n.ts; the parity test checks the merged result).
+// Keypad translations, merged in core/i18n.ts.
 export const en = {
 	"kp_drag": "Drag to move the keypad",
 	"kp_comma": "Comma: separates the threshold values",

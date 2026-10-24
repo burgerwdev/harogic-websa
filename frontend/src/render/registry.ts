@@ -1,10 +1,5 @@
 /**
- * View renderer registry (report finding E-5).
- *
- * `renderAll()` used to dispatch on `viewMode` with an if/elif chain that named every
- * measurement module, so adding a view meant editing the renderer hub. Views register
- * themselves here instead and the hub only looks up the active mode; the swept path is the
- * default when nothing is registered.
+ * Views register by mode; the swept path is the default for unregistered modes.
  *
  * This module is a leaf (no application imports) so a view module can register without
  * creating a cycle back into render/spectrum.ts.

@@ -1,9 +1,9 @@
 //! RMS AGC (`Agc` in `web_sa/demod/filters.py`), used as the level stage of the DDC chain.
 //!
-//! The reference behaviour is preserved down to the priming rule and the ceiling, because those
-//! two are what stopped the "loud burst after every retune" defect:
+//! Priming and the ceiling prevent the "loud burst after every retune" defect:
 //!
-//!   * a silence gate keeps the gain from winding up on empty input;
+//!   * exact silence keeps the gain from winding up on empty input;
+//!   * a bounded gain leaves sub-resolution noise quiet without gating weak normalized signals;
 //!   * `hold` applies the current gain without adapting (used while a reconfiguration transient
 //!     is being discarded);
 //!   * the first block after a configure jumps straight to the safe gain, and any block whose
@@ -20,7 +20,6 @@ pub struct RmsAgc {
     attack: f64,
     release: f64,
     max_gain: f64,
-    silence_floor: f64,
     ceiling: f64,
     gain: f64,
     /// The gain in force at the previous block's end, so this block can ramp from it (gain continuity).
@@ -36,7 +35,6 @@ impl RmsAgc {
             attack,
             release,
             max_gain: 1.0e4,
-            silence_floor: 1.0e-4,
             ceiling: 0.95,
             gain: 1.0,
             gain_at_block_start: 1.0,
@@ -83,10 +81,14 @@ impl RmsAgc {
         }
         if !hold {
             let sum_sq: f64 = x.iter().map(|v| (*v as f64) * (*v as f64)).sum();
-            let rms = ((sum_sq / x.len() as f64) + 1e-20).sqrt();
+            let rms = (sum_sq / x.len() as f64).sqrt();
             self.gain_at_block_start = self.gain;
-            if rms >= self.silence_floor {
-                let desired = self.max_gain.min(self.target / rms.max(1e-9));
+            // Normalized IQ can carry an audible AM/SSB signal below 1e-4 after filtering and
+            // detection. An absolute gate there confused weak reception with silence. The gain
+            // cap already bounds amplification of numerical residue and very quiet noise; only
+            // exact silence freezes adaptation. Muting receiver noise belongs to the squelch.
+            if rms > 0.0 {
+                let desired = self.max_gain.min(self.target / rms);
                 if !self.primed || rms * self.gain > 1.0 {
                     self.gain = desired;
                     // A jump is not ramped: the first block after a configure must already be at the
@@ -189,8 +191,57 @@ mod tests {
     fn silence_never_raises_the_gain() {
         let mut agc = RmsAgc::reference();
         let mut out = Vec::new();
-        agc.process_into(&vec![0.0; 960], false, &mut out);
+        let silence = [0.0; 960];
+        agc.process_into(&silence, false, &mut out);
         assert_eq!(agc.gain(), 1.0);
+        assert!(out.iter().all(|v| v.is_finite() && *v == 0.0));
+        agc.process_into(&sine(960, 6e-5), false, &mut out);
+        let gain = agc.gain();
+        for _ in 0..100 {
+            agc.process_into(&silence, false, &mut out);
+            assert_eq!(agc.gain(), gain, "silence must preserve the last useful gain");
+            assert!(out.iter().all(|v| v.is_finite() && *v == 0.0));
+        }
+    }
+
+    #[test]
+    fn very_quiet_noise_stays_bounded_below_the_target() {
+        let mut agc = RmsAgc::reference();
+        let mut out = Vec::new();
+        let mut seed = 0x1234_5678_u32;
+        let noise: Vec<f32> = (0..960).map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32 * 1e-9
+        }).collect();
+        for _ in 0..200 {
+            agc.process_into(&noise, false, &mut out);
+            for (input, output) in noise.iter().zip(&out) {
+                assert!(output.is_finite());
+                assert!(output.abs() <= input.abs() * 10_000.0 * (1.0 + f32::EPSILON),
+                    "noise amplification must stay bounded: {input} -> {output}");
+            }
+            let rms = (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
+            assert!(rms < 1e-5, "sub-resolution noise must not be driven to the target: {rms}");
+        }
+    }
+
+    #[test]
+    fn a_weak_signal_then_a_loud_burst_stays_audible_and_bounded() {
+        let mut agc = RmsAgc::reference();
+        let mut out = Vec::new();
+        agc.process_into(&sine(960, 6e-5), false, &mut out);
+        let rms = (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
+        assert!((rms - agc.target()).abs() < 0.01, "weak signal RMS {rms}");
+        let mut burst = sine(960, 0.3);
+        burst[480] = 12.0;
+        agc.process_into(&burst, false, &mut out);
+        assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 0.95 + 1e-6),
+            "the old weak-signal gain must not clip the next loud block");
+        for _ in 0..200 {
+            agc.process_into(&sine(960, 0.3), false, &mut out);
+        }
+        let rms = (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
+        assert!((0.08..0.12).contains(&rms), "audio must recover after limiting: {rms}");
     }
 
     #[test]

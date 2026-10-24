@@ -143,11 +143,11 @@ impl AudioChain {
         taken
     }
 
-    /// Hand a dBFS threshold to every stage that has one; `false` when none does.
-    pub fn set_threshold(&mut self, dbfs: f64) -> bool {
+    /// Hand a dBm threshold to every stage that has one; `false` when none does.
+    pub fn set_threshold(&mut self, dbm: f64) -> bool {
         let mut taken = false;
         for entry in self.stages.iter_mut() {
-            taken |= entry.stage.set_threshold(dbfs);
+            taken |= entry.stage.set_threshold(dbm);
         }
         taken
     }
@@ -159,6 +159,12 @@ impl AudioChain {
             taken |= entry.stage.set_level_dbm(dbm);
         }
         taken
+    }
+
+    /// Report the applied gate; a disabled squelch passes every sample unchanged.
+    pub fn squelch_status(&self) -> Option<(bool, f64)> {
+        self.stages.iter().find_map(|entry| entry.stage.squelch_status()
+            .map(|status| if self.enabled && entry.enabled { status } else { (true, 1.0) }))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -333,7 +339,7 @@ impl Pipeline {
     }
 
 
-    /// Set the squelch threshold in channel dBm (`<= -100` leaves the gate wide open).
+    /// Set the squelch threshold in channel dBm (`<= -160` leaves the gate wide open).
     pub fn set_squelch_dbm(&mut self, dbm: f64) -> bool {
         if dbm.is_finite() {
             self.policy.squelch_dbm = dbm.clamp(-160.0, 0.0);
@@ -403,8 +409,7 @@ impl Pipeline {
         self.digital.as_mut().is_some_and(|demod| demod.set_mode_pin(index))
     }
 
-    /// Decoded 16-bit interleaved PCM the digital demodulator produced (DRM audio),
-    /// drained: the next call returns only what arrived since.
+    /// Drain the next decoded PCM format segment; query its actual rate after draining.
     pub fn digital_audio_pcm(&mut self) -> Vec<i16> {
         self.digital.as_mut().map(|demod| demod.take_audio_pcm()).unwrap_or_default()
     }
@@ -418,6 +423,31 @@ impl Pipeline {
     /// The decoded audio PCM's sample rate in Hz (0 when there is no audio).
     pub fn digital_audio_rate_hz(&self) -> u32 {
         self.digital.as_ref().map(|demod| demod.audio_rate_hz()).unwrap_or(0)
+    }
+
+    pub fn digital_audio_channels(&self) -> u32 {
+        self.digital.as_ref().map(|demod| demod.audio_channels()).unwrap_or(0)
+    }
+
+    pub fn digital_audio_codec_delay_samples(&self) -> Option<u32> {
+        self.digital.as_ref().and_then(|demod| demod.audio_codec_delay_samples())
+    }
+
+    pub fn digital_audio_source_position(&self) -> Option<(u64,u64,u64)> {
+        self.digital.as_ref().and_then(|demod|demod.audio_source_position())
+    }
+
+    pub fn digital_audio_total_delay_samples(&self) -> Option<f64> {
+        self.digital.as_ref().and_then(|demod|demod.audio_total_delay_samples())
+    }
+
+    /// Drain native codec output without combining different PCM formats.
+    pub fn digital_audio_chunks(&mut self) -> Vec<crate::plugin::DecodedAudioChunk> {
+        self.digital.as_mut().map(|demod|demod.take_audio_chunks()).unwrap_or_default()
+    }
+
+    pub fn digital_status(&self) -> Option<crate::plugin::DigitalStatus> {
+        self.digital.as_ref().and_then(|demod| demod.status())
     }
 
     pub fn chain(&self) -> &AudioChain {

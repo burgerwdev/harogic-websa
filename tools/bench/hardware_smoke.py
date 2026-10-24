@@ -184,7 +184,7 @@ async def collect_rta(ws, duration: float, command_time: float) -> dict:
             break
         message = await asyncio.wait_for(ws.receive(), timeout=3)
         clients = note_clients(message, clients)
-        if message.type != aiohttp.WSMsgType.BINARY or message.data[:4] != b'RTAF':
+        if message.type != aiohttp.WSMsgType.BINARY or message.data[:4] not in (b'RTAF', b'RTA2'):
             continue
         frame = message.data
         if first_frame_at is None:
@@ -195,7 +195,10 @@ async def collect_rta(ws, duration: float, command_time: float) -> dict:
         _version, points, waterfall_len, _max_density, _start = struct.unpack_from(
             '<IIHHd', frame, 4)
         expected = 24 + points * 12 + waterfall_len * 2 + 8
-        if points < 2 or len(frame) != expected:
+        valid_length = len(frame) == expected if frame[:4] == b'RTAF' else (
+            len(frame) >= expected + 8 and frame[expected:expected + 4] == b'TRIG'
+            and struct.unpack_from('<I', frame, expected + 4)[0] == len(frame) - expected - 8)
+        if points < 2 or not valid_length:
             bad_frames += 1
             continue
         frequency = np.frombuffer(frame, dtype='<f8', offset=24, count=points)
@@ -230,8 +233,6 @@ async def run(args) -> dict:
     source = None
     source_enabled = False
     result: dict = {'center_hz': args.frequency, 'span_hz': args.span}
-    headers = {'Authorization': f'Bearer {args.token}'} if args.token else {}
-    ws_query = f'?token={args.token}' if args.token else ''
     original = None
     try:
         if args.tinysa_port:
@@ -248,7 +249,7 @@ async def run(args) -> dict:
                 source_enabled = True
                 await asyncio.sleep(args.source_settle)
 
-        async with aiohttp.ClientSession(headers=headers) as session:
+        async with aiohttp.ClientSession() as session:
             async with session.get(
                 f'{args.http_url}/static/dist/%2Fetc%2Fhostname') as response:
                 result['static_escape_status'] = response.status
@@ -260,7 +261,7 @@ async def run(args) -> dict:
                     raise RuntimeError('hardware smoke test must start in std mode')
 
             async with session.ws_connect(
-                f'{args.ws_url}/ws{ws_query}', max_msg_size=32 * 1024 * 1024) as ws:
+                f'{args.ws_url}/ws', max_msg_size=32 * 1024 * 1024) as ws:
                 await ws.send_json({'cmd': 'NO_SUCH_COMMAND'})
                 error = await wait_status_or_error(ws)
                 result['invalid_command_error'] = error
@@ -284,7 +285,7 @@ async def run(args) -> dict:
         # Use REST for restoration so cleanup still runs if the streaming socket failed.
         with suppress(Exception):
             if original is not None:
-                async with aiohttp.ClientSession(headers=headers) as session:
+                async with aiohttp.ClientSession() as session:
                     await session.post(
                         f'{args.http_url}/api/config', json={'cmd': 'SET_MODE', 'mode': 'std'})
                     await session.post(
@@ -316,7 +317,6 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--http-url', default='http://127.0.0.1:8080')
     parser.add_argument('--ws-url', default='ws://127.0.0.1:8080')
-    parser.add_argument('--token', default='')
     parser.add_argument('--frequency', type=float, default=1e9)
     parser.add_argument('--span', type=float, default=10e6)
     parser.add_argument('--duration', type=float, default=3.0)

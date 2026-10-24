@@ -19,14 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import socket
-import subprocess
-import sys
 import time
 import urllib.request
 
 from playwright.sync_api import sync_playwright
+from rust_iq_browser import free_port, start_service, stop
 
 failures: list[str] = []
 
@@ -37,10 +34,6 @@ def check(name: str, ok: bool, detail: str = '') -> None:
         failures.append(name)
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
 
 
 def post(url: str, payload: dict) -> dict:
@@ -171,7 +164,8 @@ def drag_check(page, scale: float) -> None:
 
 def open_ft8_window(url: str, page) -> None:
     post(url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-    post(url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'ft8', 'ifbw': 2400, 'pitch': 700,
+    post(url, {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
+               'mode': 'ft8', 'ifbw': 2400, 'pitch': 700,
                'volume': 1.0, 'squelch': -140.0, 'agc': True})
     page.wait_for_function(
         "() => { const b = document.getElementById('btn-decode-window');"
@@ -184,18 +178,13 @@ def open_ft8_window(url: str, page) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', default=None,
-                        help='an already-running backend (default: start a fake one)')
+                        help='an already-running native backend (default: start native fixture)')
     args = parser.parse_args()
 
-    env = dict(os.environ, WEBSA_FAKE='1')
     server = None
     url = args.url
     if not url:
-        port = free_port()
-        url = f'http://127.0.0.1:{port}'
-        env['WEBSA_PORT'] = str(port)
-        server = subprocess.Popen([sys.executable, '-m', 'web_sa.main'], env=env,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server, url = start_service(free_port())
     try:
         wait_ready(url)
         errors: list[str] = []
@@ -219,9 +208,7 @@ def main() -> int:
             check('no page errors', not errors, '; '.join(errors[:3]))
             browser.close()
     finally:
-        if server:
-            server.terminate()
-            server.wait(timeout=10)
+        stop(server)
 
     print(f"\n{'ALL PASS' if not failures else 'FAILURES: ' + ', '.join(failures)}")
     return 0 if not failures else 1

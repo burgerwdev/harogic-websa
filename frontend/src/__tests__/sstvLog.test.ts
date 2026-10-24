@@ -11,6 +11,7 @@ import {
 	deleteSstvAll,
 	deleteSstvMode,
 	deleteSstvSelected,
+	setSstvChannel,
 	setSstvDecoderState,
 	setSstvModeFilter,
 	setSstvSelected,
@@ -43,10 +44,43 @@ function meta(serial: number, over: Partial<Parameters<typeof updateSstvPicture>
 }
 
 beforeEach(() => {
+	setSstvChannel(1);
+	clearSstv(2);
+	clearSstv(3);
 	clearSstv();
 });
 
 describe('the SSTV log', () => {
+	it('keeps equal serials from different stream epochs as separate pictures', () => {
+		updateSstvPicture(picture(1), meta(1, { serial: '9007199254740993', epoch: 'first' }));
+		const firstId = sstvStatus().current!.id;
+		updateSstvPicture(picture(2), meta(1, { serial: '9007199254740993', epoch: 'first', progress: 80 }));
+		expect(sstvStatus().current!.id).toBe(firstId);
+		expect(sstvStatus().current!.picture.rgb[0]).toBe(2);
+		updateSstvPicture(picture(3), meta(1, { serial: '9007199254740993', epoch: 'second' }));
+		expect(sstvStatus().current!.id).not.toBe(firstId);
+		expect(sstvStatus().history[0].id).toBe(firstId);
+		expect(sstvStatus().history[0].picture.rgb[0]).toBe(2);
+	});
+
+	it('retains each receiver picture, decoder state, and history view independently', () => {
+		updateSstvPicture(picture(1), meta(1), 1);
+		updateSstvPicture(picture(2), meta(2), 1);
+		const viewed = sstvStatus().history[0].id;
+		setSstvView(viewed);
+		updateSstvPicture(picture(3), meta(1), 2);
+		setSstvDecoderState({ running: true, pushes: 5, attempts: 1, bufferedSamples: 8000, bufferedSeconds: 1, hasPicture: true, level: 0.3 }, 2);
+		expect(sstvVisible()!.id).toBe(viewed);
+		expect(sstvStatus().decoder).toBeNull();
+		setSstvChannel(2);
+		expect(sstvVisible()!.picture.rgb[0]).toBe(3);
+		expect(sstvStatus().decoder?.hasPicture).toBe(true);
+		clearSstv(2);
+		setSstvChannel(1);
+		expect(sstvVisible()!.id).toBe(viewed);
+		expect(sstvStatus().current!.picture.rgb[0]).toBe(2);
+	});
+
 	it('updates the same transmission in place, keeping its first sighting', () => {
 		updateSstvPicture(picture(1), meta(1));
 		const first = sstvStatus().current!;

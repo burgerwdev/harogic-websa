@@ -1,7 +1,7 @@
 import { smoothBins } from '../ui/displayState';
 // Smoothing: 2nd-order SG + gradient-adaptive / window smoothing
 
-// P2: Savitzky-Golay 2nd-order smoothing (preserve peaks/edges)
+// Savitzky-Golay second-order smoothing preserves peaks and edges.
 export function sgSmooth(src: Float32Array, w: number, adaptive: boolean): Float32Array {
   if (w <= 1) return src.slice();
   const out = new Float32Array(src.length);

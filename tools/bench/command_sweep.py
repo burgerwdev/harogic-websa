@@ -78,10 +78,9 @@ async def set_mode(session, base, mode):
 
 
 async def run(args) -> int:
-    headers = {'Authorization': f'Bearer {args.token}'} if args.token else {}
     problems: list[str] = []
     active_mode = 'std'
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with aiohttp.ClientSession() as session:
         async with session.get(f'{args.http_url}/api/state') as response:
             state = await response.json()
         if not state.get('connected'):
@@ -140,7 +139,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--http-url', default='http://127.0.0.1:8080')
-    parser.add_argument('--token', default='')
     parser.add_argument('--with-cal', action='store_true')
     return parser.parse_args()
 

@@ -12,10 +12,8 @@
 //     keyed. That is a *proxy* for confidence (ggmorse emits no per-character confidence at all), and
 //     a good one: a keyed sidetone reads 0.6-0.7, noise reads below the gate's threshold, so a
 //     character that squeaked through can be shown as the doubtful one it is;
-//   * the pause before it - a word gap is the sender thinking, not the page stuck. It comes from the
-//     decoded text itself: ggmorse separates words with a space, and no timing rule can do better
-//     (measuring the keying got the inside of words wrong, because the decoder's reporting lag adds
-//     to every gap it sees - reported: dots between characters that should run together).
+//   * the pause before it - word-gap markers come from spaces in the decoded text.
+//     Decoder reporting lag makes keying timing unsuitable for identifying word gaps.
 //
 // The live level (rms and the keyed lamp) is *separate* state with its own listeners: it arrives with
 // every audio block (tens per second) and must not re-render the log's lines.
@@ -44,6 +42,10 @@ export interface CwLevel {
 	rms: number;
 	/** A sidetone is arriving right now (the lamp). */
 	keyed: boolean;
+	wpm?: number;
+	afcHz?: number;
+	pitchHz?: number;
+	centerHz?: number;
 }
 
 /** How many lines are kept (a band's worth of traffic; the window scrolls). */
@@ -53,11 +55,19 @@ export const MAX_CW_LINES = 200;
  * (`TONE_MIN_SHARE`), which is the line between "a sidetone was there" and "noise got through". */
 export const CW_WEAK_SHARE = 0.45;
 
-let lines: CwLine[] = [];
-let current = '';
-let currentAt = 0;
-let currentMarks: CwMark[] = [];
-let level: CwLevel = { rms: 0, keyed: false };
+interface CwContext {
+	lines: CwLine[];
+	current: string;
+	currentAt: number;
+	currentMarks: CwMark[];
+	level: CwLevel;
+}
+const contexts: Record<1 | 2 | 3, CwContext> = {
+	1: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
+	2: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
+	3: { lines: [], current: '', currentAt: 0, currentMarks: [], level: { rms: 0, keyed: false } },
+};
+let selectedChannel: 1 | 2 | 3 = 1;
 const listeners = new Set<() => void>();
 const levelListeners = new Set<() => void>();
 
@@ -65,39 +75,44 @@ function notify(): void {
 	for (const fn of listeners) fn();
 }
 
-/** Append decoded characters. `endsLine` closes the line (the sender paused). */
-export function addCwText(text: string, endsLine: boolean, share = 1): void {
-	// No text is the normal case for the *end* of a transmission: the decoder closes the line on the
-	// pause, long after the last character. Returning early here dropped that signal and ran every
-	// transmission into one line (reported).
-	if (!text && !endsLine) return;
-	if (text && !current) currentAt = Date.now();
-	for (let i = 0; i < text.length; i++) {
-		const gap = i === 0 ? current.endsWith(' ') : text[i - 1] === ' ';
-		currentMarks.push({ share, gap });
-	}
-	current += text;
-	if (endsLine) {
-		lines = [...lines, { at: currentAt, text: current, marks: currentMarks }].slice(-MAX_CW_LINES);
-		current = '';
-		currentMarks = [];
-	}
+export function setCwChannel(channel: 1 | 2 | 3): void {
+	selectedChannel = channel;
 	notify();
+	for (const fn of levelListeners) fn();
+}
+
+/** Append decoded characters. `endsLine` closes the line (the sender paused). */
+export function addCwText(text: string, endsLine: boolean, share = 1, channel: 1 | 2 | 3 = selectedChannel): void {
+	if (!text && !endsLine) return;
+	const context = contexts[channel];
+	if (text && !context.current) context.currentAt = Date.now();
+	for (let i = 0; i < text.length; i++) {
+		const gap = i === 0 ? context.current.endsWith(' ') : text[i - 1] === ' ';
+		context.currentMarks.push({ share, gap });
+	}
+	context.current += text;
+	if (endsLine && context.current) {
+		context.lines = [...context.lines, { at: context.currentAt, text: context.current, marks: context.currentMarks }].slice(-MAX_CW_LINES);
+		context.current = '';
+		context.currentMarks = [];
+	}
+	if (channel === selectedChannel) notify();
 }
 
 /** The finished lines and the line being keyed right now (empty when nothing is pending). */
 export function cwLog(): { lines: CwLine[]; current: string; marks: CwMark[] } {
-	return { lines, current, marks: currentMarks };
+	const { lines, current, currentMarks: marks } = contexts[selectedChannel];
+	return { lines, current, marks };
 }
 
 /** One audio block's level and keyed state: the meter and the lamp, nothing else. */
-export function setCwLevel(rms: number, keyed: boolean): void {
-	level = { rms, keyed };
-	for (const fn of levelListeners) fn();
+export function setCwLevel(rms: number, keyed: boolean, details: Partial<CwLevel> = {}, channel: 1 | 2 | 3 = selectedChannel): void {
+	contexts[channel].level = { ...details, rms, keyed };
+	if (channel === selectedChannel) for (const fn of levelListeners) fn();
 }
 
 export function cwLevel(): CwLevel {
-	return level;
+	return contexts[selectedChannel].level;
 }
 
 export function subscribeCwLevel(fn: () => void): () => void {
@@ -105,11 +120,12 @@ export function subscribeCwLevel(fn: () => void): () => void {
 	return () => levelListeners.delete(fn);
 }
 
-export function clearCwLog(): void {
-	lines = [];
-	current = '';
-	currentMarks = [];
-	notify();
+export function clearCwLog(channel: 1 | 2 | 3 = selectedChannel): void {
+	const context = contexts[channel];
+	context.lines = [];
+	context.current = '';
+	context.currentMarks = [];
+	if (channel === selectedChannel) notify();
 }
 
 export function subscribeCwLog(fn: () => void): () => void {

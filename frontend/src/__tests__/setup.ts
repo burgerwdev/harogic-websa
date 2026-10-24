@@ -5,7 +5,8 @@
 
 /** Path calls in order. Call `resetCtxCalls()` before a render pass. */
 export const ctxCalls: { op: 'moveTo' | 'lineTo'; x: number; y: number }[] = [];
-export function resetCtxCalls() { ctxCalls.length = 0; }
+export const ctxImages: { image: CanvasImageSource; args: number[] }[] = [];
+export function resetCtxCalls() { ctxCalls.length = 0; ctxImages.length = 0; }
 
 const fakeCanvas = {
   width: 860,
@@ -27,6 +28,9 @@ const fakeCtx = new Proxy({ canvas: fakeCanvas }, {
     if (prop === 'canvas') return fakeCanvas;
     if (prop === 'moveTo' || prop === 'lineTo') {
       return (x: number, y: number) => { ctxCalls.push({ op: prop, x, y }); };
+    }
+    if (prop === 'drawImage') {
+      return (image: CanvasImageSource, ...args: number[]) => { ctxImages.push({ image, args }); };
     }
     return () => {};
   },

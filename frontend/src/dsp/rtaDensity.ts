@@ -1,83 +1,144 @@
-/**
- * The 2D probability-density grid behind the RTA / SDR density display.
- *
- * Extracted from core/ws.ts: the rules took real debugging (the weight, the saturation, the grid
- * anchor) and they are worth testing without a canvas, a socket or a frame payload. It also puts
- * the persistence choice in one place - with persistence OFF the grid is neither advanced nor
- * kept, which is what makes "Off" mean the whole layer is off, and skips the bins x points loop
- * this display otherwise pays for on every frame.
- *
- * The grid is a Float32Array of `points * bins`: row-major by frequency, bins ordered downward in
- * level (bin 0 = the display reference line), which is the order the renderer draws it in.
- */
+/** Native-frequency persistence. Only occupied amplitude cells are visited for decay. */
 import { percentileApprox } from './stats';
+import { sameFrequencyGrid, visibleBinRange } from './grid';
 
-/** Density that saturates: past it the colour map cannot get any hotter. Also read by the renderer. */
 export const MAX_DENSITY = 40;
-/** Accumulated weight below this is dropped to zero, so a fading grid really does reach zero. */
 const DENSITY_FLOOR = 0.05;
 
+export interface DensityGrid {
+	values: Float32Array;
+	/** Linked occupied cells per native frequency column; -1 terminates each list. */
+	next: Int32Array;
+	heads: Int32Array;
+	bins: number;
+	/** Raw dBm at amplitude row zero; display offset is applied only when drawing. */
+	refTop: number;
+	dBPerBin: number;
+	revision: number;
+	/** The native axis that produced this history; the receiver updates it with its frame. */
+	freq?: Float64Array;
+	samples: Float32Array;
+}
+
 /**
- * Advance the grid by one frame.
- *
- * @param prev    the grid on screen; null, or a grid from another (points, bins) geometry, starts
- *                a fresh one
- * @param spec    the frame's amplitudes in dBm
- * @param bins    amplitude bins per column
- * @param fade    per-frame decay; <= 0 means persistence is OFF
- * @param refTop  level of row 0 (the display reference of the frame being accumulated)
- * @param dBPerBin level height of one bin
- * @returns the grid to draw, or null when persistence is off (the caller releases it)
+ * The input is the active trace AFTER its mode accumulator. Geometry changes start a new
+ * history; while paused, the old geometry remains available for display reprojection.
+ * Persistence Off releases history. VIEW retains it without decay or repeated frozen hits.
  */
 export function advanceDensity(
-	prev: Float32Array | null,
-	spec: Float32Array,
+	prev: DensityGrid | null,
+	spec: Float32Array | null,
 	bins: number,
 	fade: number,
 	refTop: number,
 	dBPerBin: number,
-): Float32Array | null {
-	if (!(fade > 0)) return null;
+	mode = 'CLEAR_WRITE',
+	freq?: Float64Array,
+): DensityGrid | null {
+	if (!(fade > 0) || mode === 'OFF' || !spec) return null;
+	const sameAxis = !freq || (prev?.freq !== undefined && sameFrequencyGrid(prev.freq, freq));
+	if (mode === 'VIEW' && prev && sameAxis) { prev.freq = freq; return prev; }
 	if (!(bins > 0) || !(dBPerBin > 0)) return prev;
-	const len = spec.length * bins;
-	const reuse = prev !== null && prev.length === len;
-	const grid = reuse ? prev : new Float32Array(len);
-	// A fresh grid starts from this frame alone: decaying an empty array would be a no-op, but the
-	// distinction matters for the first frame after a geometry change (it must not be halved).
-	const decay = reuse ? fade : 0;
+	const reuse = prev !== null && prev.heads.length === spec.length && prev.bins === bins
+		&& prev.refTop === refTop && prev.dBPerBin === dBPerBin && sameAxis;
+	const grid: DensityGrid = reuse ? prev! : {
+		values: new Float32Array(spec.length * bins),
+		next: new Int32Array(spec.length * bins),
+		heads: new Int32Array(spec.length).fill(-1),
+		bins, refTop, dBPerBin, revision: 0, samples: spec,
+	};
+	grid.freq = freq;
+	grid.samples = spec;
 	const floorN = percentileApprox(spec, 0.3);
 	for (let i = 0; i < spec.length; i++) {
-		if (decay > 0) {
-			for (let b = 0; b < bins; b++) {
-				const v = grid[i * bins + b] * decay;
-				grid[i * bins + b] = v > DENSITY_FLOOR ? v : 0;
+		let previous = -1;
+		let cell = grid.heads[i];
+		while (cell !== -1) {
+			const next = grid.next[cell];
+			const v = grid.values[cell] * fade;
+			if (v > DENSITY_FLOOR) {
+				grid.values[cell] = v;
+				previous = cell;
+			} else {
+				grid.values[cell] = 0;
+				if (previous === -1) grid.heads[i] = next;
+				else grid.next[previous] = next;
 			}
+			cell = next;
 		}
-		// A bin with no data has no weight. An SDR capture edge carries NaN here. Without this
-		// guard the weight rule runs with NaN, and the grid index becomes NaN too.
-		if (!isFinite(spec[i])) continue;
-		// Amplitude-graded weight: how far a point sits above the noise floor decides how strongly
-		// it accumulates. Weak signals (>3 dB) still leave a light density cloud so the map covers
-		// the whole trace; the floor ripple itself stays out.
+		if (!Number.isFinite(spec[i])) continue;
 		const relDb = spec[i] - floorN;
 		const w = relDb < 3 ? 0 : relDb >= 25 ? 1 : 0.25 + 0.75 * ((relDb - 3) / 22);
 		if (w <= 0) continue;
-		const bin = Math.max(0, Math.min(bins - 1, Math.round((refTop - spec[i]) / dBPerBin)));
-		const base = i * bins;
-		// A five-bin kernel (2-2-3.5-2-2 weights) widens the hit so the drawn layer is continuous
-		// instead of a one-pixel line; the peak bin scales with the signal strength.
-		bump(grid, base, bin, bins, 3.5 * w);
-		bump(grid, base, bin - 1, bins, 2 * w);
-		bump(grid, base, bin + 1, bins, 2 * w);
-		bump(grid, base, bin - 2, bins, 1 * w);
-		bump(grid, base, bin + 2, bins, 1 * w);
+		// Do not clamp off-screen samples to an edge: that invents a horizontal signal.
+		const row = (refTop - spec[i]) / dBPerBin;
+		const bin = Math.floor(row);
+		const fraction = row - bin;
+		// Fractional hits preserve the trace's level instead of snapping five full rows on.
+		bump(grid, i, bin, 3.5 * w * (1 - fraction));
+		bump(grid, i, bin + 1, 3.5 * w * fraction);
 	}
+	grid.revision++;
 	return grid;
 }
 
-function bump(grid: Float32Array, base: number, bin: number, bins: number, weight: number): void {
-	if (bin < 0 || bin >= bins) return;
-	const k = base + bin;
-	const v = grid[k] + weight;
-	grid[k] = v > MAX_DENSITY ? MAX_DENSITY : v;
+function bump(grid: DensityGrid, column: number, bin: number, weight: number): void {
+	if (bin < 0 || bin >= grid.bins || !(weight > 0)) return;
+	const k = column * grid.bins + bin;
+	if (grid.values[k] === 0) {
+		grid.next[k] = grid.heads[column];
+		grid.heads[column] = k;
+	}
+	grid.values[k] = Math.min(MAX_DENSITY, grid.values[k] + weight);
+}
+
+/**
+ * Max-composite linearly reconstructed native frequency samples into a reusable raster.
+ * Wide native bins taper to their neighbours instead of expanding into rectangular cells.
+ * Subpixel bins retain their peak in a device column so narrow carriers survive zoom-out.
+ */
+export function rasterDensity(
+	grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
+	width: number, out: Float32Array,
+): void {
+	out.fill(0);
+	if (!(hi > lo) || freq.length !== grid.heads.length) return;
+	const [first, end] = visibleBinRange(freq, lo, hi);
+	const scale = width / (hi - lo);
+	for (let i = first; i < end; i++) {
+		if (!Number.isFinite(grid.samples[i])) continue;
+		const hz = freq[i];
+		const left = i === 0 || !Number.isFinite(grid.samples[i - 1]) ? hz : freq[i - 1];
+		const right = i === freq.length - 1 || !Number.isFinite(grid.samples[i + 1]) ? hz : freq[i + 1];
+		if (right < lo || left > hi) continue;
+		const x0 = Math.max(0, Math.floor((left - lo) * scale));
+		const x1 = Math.min(width, Math.ceil((right - lo) * scale));
+		const peakX = Math.min(width - 1, Math.floor((hz - lo) * scale));
+		const resolved = (i === 0 || (hz - freq[i - 1]) * scale >= 1)
+			&& (i === freq.length - 1 || (freq[i + 1] - hz) * scale >= 1);
+		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+			const base = (cell % grid.bins) * width;
+			const value = grid.values[cell];
+			for (let x = x0; x < x1; x++) {
+				const sampleHz = lo + (x + 0.5) / scale;
+				if (sampleHz < left || sampleHz > right) continue;
+				const weight = sampleHz <= hz
+					? (hz === left ? 1 : (sampleHz - left) / (hz - left))
+					: (hz === right ? 1 : (right - sampleHz) / (right - hz));
+				const contribution = value * Math.max(0, Math.min(1, weight));
+				out[base + x] = resolved ? out[base + x] + contribution : Math.max(out[base + x], contribution);
+			}
+			if (!resolved && hz >= lo && hz <= hi) out[base + peakX] = Math.max(out[base + peakX], value);
+		}
+	}
+}
+
+/** Destination geometry: a raster row's CENTRE is its raw-dBm bin, just like the trace. */
+export function densityLevelPlacement(
+	grid: DensityGrid, ref: number, range: number, offset: number,
+): { top: number; height: number } {
+	return {
+		top: (ref - grid.refTop - offset - grid.dBPerBin / 2) / range,
+		height: grid.bins * grid.dBPerBin / range,
+	};
 }

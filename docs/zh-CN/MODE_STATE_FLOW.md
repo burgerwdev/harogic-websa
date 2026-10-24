@@ -1,293 +1,87 @@
-# SWP / RTA 参数状态与模式流转
+# 模式、参数与状态所有权
 
-本文定义普通频谱（SWP）和实时频谱（RTA）的参数所有权、默认值、命令语义和前后端状态流转。
+## 参数所有权
 
-## 1. 参数所有权
+`native-ddc/` Rust 服务管理设备配置与采集状态；浏览器管理显示设置、编辑器与播放状态。
 
-SWP 与 RTA 的采集参数互相独立，任何 RTA 配置都不得写入 SWP 字段。
-
-| 参数 | SWP 状态 | RTA 状态 | 是否共享 |
+| 设置 | SWP | RTA | SDR |
 |---|---|---|---|
-| Center / Span | `center_hz` / `span_hz` | `rta_center_hz` / `rta_span_hz` | 否 |
-| Ref / Ref Mode | `ref_level` / `ref_mode` | `rta_ref_level` / `rta_ref_mode` | 否 |
-| RBW | `rbw_mode` / `rbw_hz` | `rta_rbw_mode` / `rta_rbw_hz` | 否 |
-| VBW | `vbw_mode` / `vbw_hz` | `rta_vbw_mode` / `rta_vbw_hz` | 否 |
-| Sweep | `sweep_time_mode` / `sweep_time` | `rta_sweep_time_mode` / `rta_sweep_time` | 否 |
-| SDK 实际值 | `actual` | `rta_actual` | 否 |
-| Points / Window / Spur | SWP 专用 | 不适用 | 否 |
-| Atten / Preamp / IF Gain | 设备 RF 前端 | 设备 RF 前端 | 是 |
-| Reference Clock | 设备级 | 设备级 | 是 |
+| 中心频率 / 带宽 | 独立扫频中心 / 跨度 | 独立采集中心 / 跨度 | 采集中心 / 抽取率及接收机收听频率 |
+| 参考电平 | SWP SDK 参考 | RTA SDK 参考 | 由 `SET_REF` 显式设置 IQS 参考；浏览器显示参考独立 |
+| RBW / VBW / 扫描 | SWP 请求与实际值 | RTA 请求与实际值 | 采集与接收机速率计划 |
+| 点数 / FFT 窗 / 杂散抑制 | SWP 专用 | 不适用 | 不适用 |
+| 衰减 / 前置放大 / IF 增益 / 增益策略 | 共享 RF 前端 | 共享 RF 前端 | 共享 RF 前端 |
+| 参考时钟 / 时钟输出 | 设备级 | 设备级 | 设备级 |
 
-## 2. 应用启动默认值
+SWP 与 RTA 分别保存各自的请求参数，切换模式时互不覆盖。显示平均深度也分别保存（`avgTarget` / `avgTargetRta`）：有限 N 使用指数平均，α = 2/(N+1)；无穷使用累计均值。
 
-这些值是 WebSA 启动时的确定性配置，不等同于设备 `SWP_ProfileDeInit` Preset。
+## 默认值与预设
 
-### SWP
+| 设置 | SWP 启动值 | RTA 启动值 |
+|---|---|---|
+| 中心 / 跨度 | 1 GHz / 100 MHz | 1 GHz / 50.78125 MHz |
+| 参考电平 | 0 dBm | 0 dBm |
+| RBW / VBW | 100 kHz / 100 kHz，手动 | Auto / Equal |
+| 扫描 | minSWT (`0`) | minSWT ×4 (`2`) |
+| 点数 | 请求 1000；SDK 决定实际值 | 显示 1001 点 |
 
-| 参数 | 默认值 |
-|---|---:|
-| Center | 1 GHz |
-| Span | 100 MHz |
-| Ref | 0 dBm，Manual |
-| RBW | 100 kHz，Manual |
-| VBW | 100 kHz，Manual |
-| Points | 1000 requested，实际点数由 SDK 决定 |
-| Window | Blackman-Nuttall (`1`) |
-| Spur | Bypass |
-| Sweep | minSWT (`0`) |
-| Atten | Auto (`-1`) |
-| Preamp | Auto |
-| IF Gain | 2 |
-| Gain Strategy | Low Noise |
+SWP 使用 Blackman-Nuttall 窗（`1`）、杂散抑制 Bypass、自动衰减 / 前置放大、IF 增益 2 和 Low Noise 增益策略。SDK 实际 RBW、VBW 和点数应从 STATUS 读取，不能根据显示范围和点数推算。
 
-### RTA
+`SET_PRESET` 从 `SWP_ProfileDeInit` 的缓存设备默认值恢复 SWP，并将全跨度归一到型号频率范围，同时恢复固定 RTA 默认值。Frame Avg 回到 `device_default`；SDK 检波器默认值另见 `preset_defaults`。Preset 重置 SDR 采集 / 接收机参数并清除显式 IQS 参考标志（`sdr_ref_set=false`）。SDR 显示尺度归浏览器持有，并请求新的显示拟合。
 
-| 参数 | 默认值 |
-|---|---:|
-| Center | 1 GHz |
-| Span | 50.78125 MHz（Decimate 1） |
-| Ref | 0 dBm，Manual |
-| RBW | Auto；实际值由 SDK/FFT size 返回 |
-| VBW | Equal to RBW |
-| Sweep | minSWT x4 (`2`) |
-| Display Points | 1001 |
+Preset 保留已确认的采集模式及浏览器重载偏好；重载按存储模式发起请求，并等待后端确认。SDR 进入时在调谐命令全部发送后启动纯显示拟合；若 `sdr.ref_set` 已为 true，则保留硬件参考电平，不自动拟合，用户显式点击 Auto 才请求新的决策。
 
-SAN-90 真机在默认 RTA span 下返回 RBW/VBW 约 30.153 kHz；不能用 `span/2000`
-替代 SDK 实际值。12.6953125 MHz span 下真机实际 RBW/VBW 约 7.538 kHz。
+## STATUS 与命令
 
-## 3. 设备 Preset 默认
+- 顶层频率、参考、带宽与扫描字段描述当前模式。
+- `req.swp` / `req.rta` 保存模式请求；`swp_actual` / `rta_actual` 返回成功配置后的 SDK 实际值；`actual` 指向当前模式实际值对象。
+- `config_version` 标识配置变化；`response_to` 将命令响应 STATUS 与命令关联。
+- 频率编辑器在周期 STATUS 到来时保留未提交文本；命令成功响应提供实际频率值。
+- 增益回读描述当前模式成功配置后的 SDK 实际值；无法获取时为 null。前置放大 `0` 表示 Auto，`1` 表示 Off；Auto 不代表物理放大器已开启。
 
-`SET_PRESET` 从 `SWP_ProfileDeInit` 缓存恢复 SWP 默认，并同时将 RTA 恢复到上表固定默认。
-设备返回的 SWP 全扫宽可能包含保护带，WebSA 会按当前型号 `caps.fmin/fmax` 归一化，避免
-请求范围超过 SAN-45/60/90 能力。
+连续操作从最新期望值累积。频率提交携带 `request_id`，只有匹配最新提交的 ACK/ERROR 才能结束该次等待，随后尚未提交的新草稿不会被覆盖。频率提交独立计时，三秒期限不依赖 `config_version`。匹配 ACK 后显示 SDK 限幅后的实际值。RBW/VBW 的数值与模式共用一次待确认状态，失焦或周期 STATUS 不清除草稿；扫描模式、时间与可见性一起确认或回滚。时钟源与时钟输出也遵循最新意图规则。浏览器仅在收到匹配的成功 STATUS 后执行 Preset 重置并清除采集草稿与待确认状态；失败保留原有界面状态。
 
-Preset 会恢复 SWP Center/Span、Ref、RBW/VBW 及模式、Points、Window、Spur、Sweep、
-Atten、Preamp、IF Gain、Gain Strategy；Ref Mode 恢复 Manual。
+RTA 禁用点数、FFT 窗、检波器、帧/网格与杂散控制。RBW 比率仅适用于 SWP；RTA 提供 Auto/手动 RBW，并使用设备支持的选项。
 
-Preset 同时重置 SDR 参数：中心、抽取、解调，以及 IQS 的 `sdr_ref_level` 与 `sdr_ref_set=false`。
-SDR 的**显示**刻度归客户端所有。客户端在 Preset 时保留该刻度，并触发一次 fit —— 与"进入一个无电平的
-SDR"完全相同。若把 SWP 的参考电平（0 dBm）写进该刻度，整条迹线会掉到下边框之下，而且没有机制再把它
-放回来（已报告）。
+`SET_FREQ` 只接受 `{center, span}` 或 `{start, stop}` 中的一种。中心 / 跨度保留请求中心并缩小跨度以满足设备范围；起止频率要求 Stop > Start，且跨度至少 100 Hz。Full Span 显式选择全频段中点。
 
-## 4. STATUS 三层语义
+RTA 中由 `SET_RTA` 设置中心 / 跨度，跨度映射到 `50.78125 MHz / 2^n`。`SET_RBW`、`SET_VBW`、`SET_SWEEP` 与 `SET_REF` 更新 RTA 自有设置。共享 RF 与参考时钟变更配置当前模式的 Profile。
 
-- 顶层 `center/span/ref/rbw/vbw/sweep_*`：当前模式的设备有效值，供 UI 直接显示。
-- `req.swp` / `req.rta`：两个模式各自持久保存的请求配置。
-- `swp_actual` / `rta_actual`：SDK 最近一次成功配置返回的实际值。
-- `actual`：当前模式 actual 的兼容别名。
-- `config_version`：每次成功硬件重配置增加 1。
-- `response_to`：命令响应 STATUS 中标识对应命令；周期 STATUS 不包含该字段。
+## 模式切换
 
-前端只使用顶层有效值刷新当前模式，同时保留后端两套模式私有配置。
+浏览器发送 `SET_MODE`，收到 STATUS 后再切换视图；进入 SWP/RTA 时不重新发送本地采集设置。服务停止前一模式的采集，并用目标模式已保存的设置配置设备。返回 SWP 时恢复其独立请求，返回 RTA 时恢复 RTA 请求。
 
-## 5. SWP 频率字段联动
+SDR 偏好包括调谐、采集带宽、解调器、IF 带宽、去加重、音量、静噪和 AGC。普通返回恢复这些偏好；Shift+click 或“在此收听”显式交接所选频率；没有存储设置的首次进入从扫频视图推导调谐 / 解调默认值。离开 SDR 停止播放但保留音频启用偏好；Preset 重置偏好。
 
-### Center / Span
+AM 的 `am_sync` 偏好默认为 false（包络检波），选择其他解调模式时仍保留，恢复 SDR 偏好时一并恢复。Preset 成功后恢复为 false。仅修改此偏好属于实时检波切换，保留采集配置、流身份及源时钟和音频时钟的连续性。
 
-1. 用户首次点击输入框时自动全选当前内容；保持焦点后的继续点击可正常放置光标。
-2. 用户编辑 Center 或 Span，整个 SWP 频率编辑区进入 dirty。
-3. 周期 STATUS 仍更新全局状态，但不得覆盖 dirty 编辑框。
-4. 单位按钮采用安全的双态语义：输入数字被编辑后，点击 `Hz/kHz/MHz/GHz` 按该单位立即提交；未编辑时只换算显示并保持物理值，不配置硬件。
-5. 点击 Set、按 Enter 或点击已编辑字段的单位，一次发送：
-   `SET_FREQ {center, span}`。
-6. 后端保留用户输入的 center，并将 span 缩小到该 center 两侧可用的最大对称范围；只有 Full Span 会显式将 center 设为全频段中点。
-7. SDK 成功后返回带 `response_to=SET_FREQ` 的 STATUS。
-8. 前端清除 dirty，并使用 SDK actual 统一回填 Center/Span/Start/Stop。
+## 参考与显示状态
 
-### Start / Stop
+手动 `SET_REF` 在 -160 至 +40 dBm 请求范围内配置当前 SDK 参考电平。编辑器保留待确认请求，以 STATUS 中的 SDK 实际值确认，失败时回滚。能力表参考边界限制 Auto 目标，而非手动请求。
 
-1. Start 和 Stop 始终作为一组编辑，不对单字段失焦立即下发。
-2. 点击 Set 或按 Enter，一次发送：`SET_FREQ {start, stop}`。
-3. 后端拒绝 Stop <= Start 或小于 100 Hz 的范围。
-4. 后端转换为唯一的 Center/Span，SDK 成功后统一回填四个字段。
+显式 `AUTO_SCALE` 执行有界恢复与放置操作，最多持续 20 秒、执行 24 步，仅消费当前模式、当前配置下的新观测。遇到 SDK IF overflow（`-12`）时，以当前实际参考为起点提高 10 dB，并受能力表参考上限约束；不改变衰减、前置放大或 IF 增益。取得干净数据后可拟合显示，再由新的干净观测确认结果。手动编辑取消操作。未显式启动 Auto 时，溢出仅告警并保留手动参考。进入模式时的纯显示拟合不修改硬件参考。
 
-禁止在同一命令混合 `center/span` 与 `start/stop`。
+幅度偏移仅应用一次，作用于显示绝对电平，包括标记、峰值和绝对测量结果；设备参考与触发阈值仍以 dBm 表示。RTA/SDR 密度使用处理后的 active trace 样本与原生频率位置，共享迹线偏移/参考映射；Off 停止累积与显示。瀑布上下限必须为有限数且下限小于上限；无效编辑被拒绝，映射变化清除瀑布历史。
 
-### Span Step
+SDR 初次加载使用 AVERAGE 16；自定义 64/无限平均在离开并返回该采集类型后保留。Preset 将标准/SDR 迹线恢复为 T1 CLEAR_WRITE 16，不切换模式。SWP 瀑布仅从新接受的 POWR 数据添加行，使用原始功率及其对应频率网格，采样间隔至少 100 ms；界面重绘不添加行。RTA/SDR 瀑布继续消费原始 RTA 帧。CSV 导出当前采集类型中选定迹线及其匹配频率数组；活动迹线关闭或缺失时提示无数据，不回退到其他迹线。
 
-- `▼ / Full Span / ▲` 按钮行与频率输入框左边缘对齐。
-- Auto Step 根据当前 SWP span 的约 1/10 选择最近的 1/2/5 档，例如 100 MHz→10 MHz、200 MHz→20 MHz。
-- 用户编辑 Step 后转为自定义模式；Auto 按钮恢复随 span 联动。
-- Step 保存为绝对 Hz，Span 单位变化时同步换算显示，不改变物理步进。
-- 增减 span 均通过一次原子 `SET_FREQ {center, span}`，并受设备最小/最大 span 限制。
+## 测量状态
 
-## 6. SWP -> RTA
+RTA/SDR 禁用测量控件，处理函数也拒绝相关操作。标准模式下，限制线与信道测量只使用选定迹线经当前模式处理后的绝对电平；归一化迹线显示 N/A，且不产生绝对电平 CSV 行。不回退到其他迹线或原始数据。相对 dBc 结果不叠加幅度偏移。只有 Cal Wnd 重建已有的绝对校准参考；Normalize/Reset 根据所得状态重绘。
 
-1. 用户点击 RTA；按钮禁用并进入 pending，SWP UI 暂不乐观切换。
-2. 前端只发送一条 `SET_MODE {mode:rta}`，不再重放 localStorage 中的 RBW/VBW/Sweep。
-3. 后端停止旧会话，读取持久的 RTA 私有配置，执行一次 `RTA_Configuration`。
-4. 成功后 `config_version +1`，响应 STATUS 顶层切换为 RTA actual。
-5. 前端收到 mode=rta 后切换 UI、解除 pending，并显示 RTA Center/Span、实际 RBW/VBW。
-6. SWP 的完整配置始终保留在 `req.swp`，期间不被 RTA 回读覆盖。
+PNM 有独立可见的平均设置行。关闭测量后，三个 PNM Set/Apply 控件均被禁用。每次 PNM/Harm Set 都清除旧曲线、表格与累积器，并发送唯一 `session_id`。只有 `response_to` 与 `session_id` 匹配的成功 STATUS 才确认该次应用；结果携带最新已确认会话 ID 才予接受。硬件延迟返回的旧周期保留原 ID，过期或非活动结果不会重新填入显示。
 
-再次进入 RTA 时直接使用上一次后端 RTA 私有配置；服务重启或 Preset 后使用 RTA 默认值。
+## 触发状态
 
-## 7. RTA 参数设置
-
-- Center/Span：一次 `SET_RTA {center, span}`，span 映射到 `50.78125 MHz / 2^n`。
-- RBW：`SET_RBW` 仅更新 RTA 私有 RBW；Auto 的显示值必须使用 SDK actual。
-- VBW：`SET_VBW` 仅更新 RTA 私有 VBW；默认 Equal。
-- Sweep：`SET_SWEEP` 仅更新 RTA 私有 sweep；默认 x4。
-- Ref：`SET_REF` 仅更新 RTA 私有 Ref/Ref Mode。
-
-每个命令最多执行一次 RTA 重配置并返回一个带 `response_to` 的 STATUS。
-
-## 8. RTA 中的设备级参数
-
-Reference Clock、Reference Clock Output、Atten、Preamp、IF Gain 和 Gain Strategy
-是设备级共享参数。在 RTA 活跃时，这些命令必须写入 RTA Profile 并执行一次
-`RTA_Configuration`，禁止调用 `SWP_Configuration`。
-
-真机切换 Internal/External 及 Clock Output On/Off 时，命令响应约 105-145 ms，
-约 360 ms 后恢复 RTAF；模式始终保持 RTA，不需要 SWP 往返恢复。无外部参考输入时
-不得自动测试 `external_forced`。
-
-## 9. RTA -> SWP
-
-1. 用户点击 RTA 退出，只发送 `SET_MODE {mode:std}`。
-2. 后端停止 RTA trigger，恢复一直保留的 SWP 私有配置并执行一次 `SWP_Configuration`。
-3. 成功后 `config_version +1`；顶层 STATUS 切回 SWP actual。
-4. RTA 配置继续保留在 `req.rta`，供下次进入使用。
-
-## 10. Reference Level
-
-### Manual
-
-`SET_REF {mode:manual, ref}` 会实际配置当前模式的 SDK RefLevel，不再只改变前端 Y 轴。
-前端显示 SDK actual；手动 Atten 导致 SDK 修正 Ref 时，请求值保留在 `req`，顶层显示实际值。
-
-### Auto
-
-进入 SDR 会恢复用户自己的 SDR 设置（调谐、捕获带宽、解调模式、IF 带宽、去加重、音量、静噪、AGC）：
-它们被持久化并在进入时重新应用，因为切换模式不是复位。扫频中心交接属于显式手势（Shift+点击 / 峰值
-「听这里」，它**同时**设置捕获中心与解调频率），以及首次使用（尚无任何已存设置，此时还会按频段推导
-解调/IF 带宽）。
-
-**业界惯例。** 台式频谱仪的参考电平「Auto」在三大厂商都是**一次性动作**而非跟踪模式：Keysight 的
-*Auto Scale*、R&S 的 *Auto Level*、Anritsu 的 *Auto Scale*。它们的说明书写明还会顺带调整别的量
-（R&S 同时优化射频衰减，Keysight 可能连刻度一起改），但共享的放置规则一致，也是本项目实现的规则：
-按用户面前的迹线算出**一个**参考电平（含峰值余量），让整条迹线落入刻度网格，并让噪声底落在下沿稍上方。
-这类仪器上持续在线的是过载保护，不是自动量程；本项目采用同样的分工（见下规则 7-8）。
-
-下面各项是本项目的常量（`hardware/auto_reference.py`）；不引用厂商数值，因为厂商并不公布相同的量。
-
-1. `AUTO_SCALE`（或旧写法 `SET_REF {mode:auto}`）按最新迹线**请求一次**放置；不存在「持续跟踪」模式，`ref_mode` 恒为 `manual`。应用一个 target 只是**有界闭环**（规则 5）的一步：因此一次按下可能要走两三步才报 `ok`，其间按钮发光。
-2. 锚点是**噪声底、不是峰值**：目标把噪底放在下沿上方 `FLOOR_ANCHOR_DB`（ 8 dB，默认 10 dB/div 下约 1 格），只在峰值需要时才抬 Ref（余量 >= 10 dB，噪底高时约 30 dB）。量化到 5 dB Ref 网格后，噪底实际落在下沿上方 3-8 dB——这是 5 dB 步进能做到的「贴底」。
-3. **不再有信号电平门限。** 以峰值为锚点才需要信号，以噪底为锚点不需要。旧的 `峰值 - 噪底 < 15 dB -> no_signal` 拒绝就是一个死区（见下表）：仅噪声的迹线比下沿低几 dB 时会被判为 `inside`，随后拒绝动作，于是 Auto 回答 `no_signal`、保持电平，迹线依旧有一部分落在画布外（实测：SWP 20 MHz / 1 MHz，Ref 0、默认 100 dB 窗口下噪底 -101 dBm）。`no_signal` 仍保留在 STATUS 取值表中——字段取值是契约——但放置逻辑不再产生它。
-4. 放置已经合理时不应用任何变更：噪底在下沿上方 2-12 dB 且峰值余量 >= 8 dB。下界比 5 dB 网格的量化步进高 1 dB，所以比它更低的迹线确实不算可靠入窗，会被拟合；上界避免抖动的估计触发重配。
-5. **设置变更会预备一次有界闭环放置**（span、中心/起止、RBW、VBW、窗函数、SDR 抽取率——即 `geometry()` 里的任何量），按下 Auto 同理。之所以必须闭环，是因为迹线**并非**与 Ref 无关：自动衰减器会随 Ref 重选衰减，于是迹线只按 Ref 变化量的约一半、且以离散跳变跟随（实测曲线见下）。所以一次开环计算只是**预测**，经常落不到位——实测：由 -115 dBm 噪底算出 -20 dBm 的拟合，最终迹线仍在画布下沿以下 14 dB。因此每个稳定帧都重新测量并应用下一步，直到放置合理（`ok`）、预算 `REFIT_ATTEMPTS`（4 次）用完、或出现用户手输的电平；步间由 `SAFETY_INTERVAL_S`（2 秒）限速。某个模式的**首次** settle 不预备任何东西（连接或进入模式不会自行移动电平），且循环在首个良好放置处停止——它不是跟踪模式。
-6. **用户手输的电平永不被反转**——无论逐帧逻辑还是设置变更的闭环（`user_level` 由手动 `SET_REF` 路径置位，被一次已应用的拟合清除）。要重新放置它就按 Auto。dB/div 是纯显示设置：窗口高度随 Auto Scale 请求一起上报后端，因此改刻度后在下一次按下时才拟合（行为不变）。
-7. **安全量程始终运行**，与 Atten 设置、是否按过 Auto 无关，但只做**保护方向**：IF 溢出（-12）每秒抬 5 dB；峰值高出上沿 10 dB 以上的严重削顶时抬一次，限速 2 秒。**绝不自动降低**——把噪声底推到下沿之外只是显示选择（`below_window`），量程不动它（要重新拟合请点 Auto）。
-8. **拟合**调低过 Ref 后，改变 Center 或跨模式返回会先抬回 0 dBm 再调谐（`prepare_retune`）——但**用户自己设的电平绝不抬**（判据是 `user_level`；只看 `last_target` 正是「手动设的 Ref 每次改频率都被重置」的原因）；新几何随后按规则 5 获得自己的有界放置。
-9. 任何 SWP/RTA/SDR 重配置都会清除旧观测并暂停 0.75 秒。
-10. `auto_ref.last_peak/last_noise_floor/target/result/seq/pending/adjusting` 用于诊断；`adjusting` 同时驱动按钮的
-   忙碌指示，`result` 给出结果名（`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`），`seq` 每次
-   决策自增，使 UI 能把"新答复"与"上次决策的残留"区分开。重拟合发现放置已经合理时不报告新决策：
-   没有任何电平移动，也就没有可宣布的事情。
-11. SDR 走同一套拟合，但它拟合的是**显示**电平：该刻度由客户端负责并应用上报的 target，窗口可到 -160 dBm，
-   且拟合从不写 IQS 电平（写会重配数据流、打断音频并移动拟合正在读的迹线）。因此 SDR 的 target 按**显示范围**夹取（而不是器件的放置行），
-   写入器件的 IQS 电平则按器件范围夹取——与命令层对 `AUTO_SCALE.current_ref` 用的是同一条
-   「按值的所有者校验」规则。
-
-改变 Ref 会清除/重建依赖显示幅度网格的 RTA density；SWP/RTA Auto 状态互不影响。
-
-### 旧规则错在哪里
-
-上报的现象（「小 span、无外部信号：迹线不在画布中，或只有极小部分落在下沿以下」）来自两个独立的错误。
-
-*其一*，**分类**上的死区：
-
-| 峰值 - 噪底 | 噪底相对下沿 | 旧 `_decide` | 新 `_decide` |
+| 模式 | 自由运行 | 等待 | 命中 |
 |---|---|---|---|
-| >= 15 dB | 在带内 | `ok` / 拟合 | 不变 |
-| < 15 dB | 在带内 | `no_signal`，保持电平 | `ok`（无需变更） |
-| < 15 dB | 下沿以下 0-3 dB | `inside` 后 `no_signal`，保持电平（**即上报问题**） | 拟合：`applied`，目标把噪底放到带内 3-8 dB |
-| 任意 | 下沿以下 > 3 dB | 拟合（`below_window`） | 不变 |
+| RTA 设备触发 | Bus 源；实时 | Level Capture 已就绪；Stop | 绘制明确完成的数据包后保持 |
+| SWP 软件触发 | 实时；Capture | 图形保持实时；Stop | 冻结交叉频率/电平；Capture again |
 
-该门限当初存在，是因为拟合一度以峰值为锚点。一旦锚点换成噪底，就永远有东西可放置，所以「没有信号」
-只是一种普通放置情形。
+`Free Run` 或 Escape 释放捕获。SWP 依据电平与边沿比较相邻扫描；网格变化清除交叉历史。RTA 从 STATUS 确认并显示全部已应用触发字段，GET/STATUS 同步不发送控制命令。SWP 禁用高级原生触发控件；SDR、谐波与相噪视图禁用触发控件。外部/定时触发源仅按 API 状态只读显示，不扩展为新的界面操作流程。
 
-*其二*，修好第一个之后才暴露出来：**放置是开环的**。迹线并非与 Ref 无关——自动衰减器会随 Ref 重选——
-所以算出的 target 只是一个*预测*，经常落不到位。SAN-90 实测（中心 20 MHz / span 1 MHz、自动 Atten、
-100 dB 窗口、无信号）：
+RTA2 在每帧 `TRIG` 尾部携带已应用触发状态、配置代次、成功数据包计数与完成元数据。只有连续性明确的有限 Level 捕获才能报告完成；自适应、定时、重复触发或连续性丢失时，完成状态可能保持未知。收到帧或等待 500 ms 均不代表完成。漏触发提示与正常命中区分；模拟数据报告不支持，不能证明硬件命中。保留旧 RTAF 解码以兼容；SDR 仍使用 RTAF。有限 Level 捕获在整个捕获期间累积频谱最大值。先绘制有效且已接受的数据包，再进入保持状态，不提前清空画布。模式切换确认及 Preset 成功后，清除本地就绪/保持、内部阶段与待确认触发状态。
 
-| Ref | 实际衰减 | 迹线最大 | 噪声底 | 噪底相对下沿 |
-|---|---|---|---|---|
-| -10 dBm | 12 dB | -110.2 | -122.3 | **-12.3 dB** |
-| -20 dBm | 15 dB | -121.9 | -133.9 | -13.9 dB |
-| -30 dBm | 6 dB | -129.9 | -141.0 | -11.0 dB |
-| -40 dBm | 0 dB | -129.8 | -142.7 | -2.7 dB |
-| -50 dBm | 0 dB | -130.6 | -142.8 | **+7.2 dB（可见）** |
+跟踪标记使用当前处理后的 SWP/RTA 迹线。关闭标记时保留其频率与跟踪偏好；坐标轴变化后，先按频率重新定位，再继续跟踪。
 
-20 dB 的 Ref 变化只让迹线移动了约 10 dB，而衰减跳变（12 → 15 → 6 → 0）让这个关系非单调。因此由 Ref 0
-时的 -115 dBm 噪底算出的 -20 dBm，最终让噪底落在下沿以下 14 dB；而那一发已经用掉、不会再试——正是用户
-上报的「Auto 调到 -20 dBm 但还是看不到迹线」。现在循环每步重新测量，在该设备上 0 → -20 → -40 → -50 dBm，
-约 6 秒收敛。
-
-### 三个上报设置的验证
-
-无外部信号；默认 100 dB 窗口在 Ref 0 dBm 时下沿为 -100 dBm。在**假后端**上迹线与 Ref 无关，所以一步就能落定：
-
-| 模式 / 设置 | 观测噪底 | Ref 0 时的迹线 | 设置变更后 |
-|---|---|---|---|
-| SWP 中心 20 MHz / span 1 MHz | -101.3 dBm | 噪底在下沿以下 1.3 dB | 一次重拟合 -> Ref -5 dBm，噪底在窗口内 3.7 dB |
-| RTA 中心 20 MHz / 带宽 1.59 MHz | -101.3 dBm | 同上 | 一次重拟合 -> Ref -5 dBm，全部入窗 |
-| SDR 中心 20 MHz（窄捕获带宽） | -101.2 dBm | 同上 | 一次重拟合 -> Ref -5 dBm，全部入窗（显示刻度） |
-
-证据：`tests/test_auto_reference.py::test_the_reported_scenarios_through_the_fake_backend` 以纯噪声迹线
-驱动假设备及其会话走真实控制环（帧 -> 观测 -> 设置变更 -> 放置 -> 应用）；同一批场景在决策层
-也有断言（`test_the_reported_no_signal_scenario_ends_inside_the_window`）。e2e 的假后端保留了合成载波，
-因此 `state_regression` 9e 覆盖接线部分：设置变更不会撤销手动电平，随后按 Auto 能把整条迹线放进窗口。
-
-在**真机**上（SAN-90、无信号源、`WEBSA` 服务 + 浏览器；publisher 只在有客户端连接时驱动器件）完整复现了上报流程：
-
-| 步骤 | Ref | 窗口 | 迹线最大 | 噪声底 | 在画布上？ |
-|---|---|---|---|---|---|
-| preset -> 中心 20 MHz / span 1 MHz，首次放置 | -20 dBm | [-120, -20] | -122.4 | -133.7 | 否（差 14 dB） |
-| 第二步 | -40 dBm | [-140, -40] | -130.1 | -142.7 | 否（差 2.7 dB） |
-| 第三步（`ok`） | -50 dBm | [-150, -50] | -130.5 | -142.5 | **是** |
-
-循环在此停止（随后 12 秒内 `ref` 与 `seq` 均未变），而手动把 Ref 设为 0 dBm（会把迹线推出画布）保持了 8 秒
-未被反转；随后按下 Auto Scale 也以同样方式收敛。单测用实测曲线覆盖了这一点
-（`test_the_refit_keeps_going_when_a_step_undershoots`）以及预算行为（`test_the_refit_gives_up_after_its_budget`）。
-
-## 11. Marker Toggle 与 Tracking
-
-- Marker 表第一列是每行独立 On/Off toggle；打开时按当前峰值排序选择未占用峰，关闭时保留位置和 Tracking 设置。
-- Tracking 在 SWP POWR 与 RTAF 两条路径均生效，使用当前活动 Trace（含 Hold/Average）。
-- 多个 Tracking Marker 首次按峰值强度依次占用不同峰；后续优先跟随记录频率附近的峰，避免跳到远端更强杂散。
-- SWP/RTA 频率轴变化时先按 `marker.freq` 重定位，再执行 Tracking。
-
-## 12. 真机验证基线
-
-SAN-90 + TinySA Ultra+ ZS407，1 GHz / -25 dBm：
-
-- SWP Auto Scale：载波 -18.5 dBm、Ref 故意高 6 dB 时，一步落到拟合电平，耗时 0.11-0.12 秒（三次实测）；
-  第二次点击报 `ok` 且 `config_version` 不变。
-- RTA Auto Scale：同一套规则经 RTA profile 生效（`session._configure`）。
-- SWP -> RTA：一次配置，默认返回 50.78125 MHz / Auto RBW / Equal VBW / x4。
-- RTA -> SWP：一次配置，SWP Center/Span/RBW/VBW 完整恢复。
-- Center/Span、Start/Stop、RTA Center/Span 每次提交均只增加一个 config version。
-
-
-## 13. 触发状态（RTA 设备 / SWP 软件）
-
-两套实现共用一套按钮，状态机各自独立：
-
-| 模式 | 状态 | 画面 | 按钮 |
-|---|---|---|---|
-| RTA | free（自由运行） | 实时刷新 | `Capture` |
-| RTA | waiting（设备等待门限穿越） | **清空**（设备此时不发送任何数据包） | `Stop`（高亮） |
-| RTA | hit（已捕获） | 定格在捕获帧；角标 `TRIG hh:mm:ss` | `Capture again` |
-| SWP | free | 实时刷新 | `Capture` |
-| SWP | waiting（软件等待穿越） | **保持实时** | `Stop`（高亮） |
-| SWP | hit | 定格；角标 `TRIG hh:mm:ss` + 命中频率/电平 | `Capture again` |
-
-- 两者都可用 `Free Run` 或 `Esc` 解除；命中后不自动解除，便于查看捕获结果。
-- 进入 RTA 会话时触发源重置为 `bus`（避免上次启用触发导致"进来没图"）；Auto Scale 不再影响触发（见 KNOWN_ISSUES 20）。
-- 角标仅在触发就绪/命中时显示；自由运行时画布不显示任何触发文字。
-
-## 14. 平均档位按模式独立
-
-SWP 与 RTA 各自保存平均深度（`avgTarget` / `avgTargetRta`，档位 2/4/…/256/∞），切换模式互不覆盖。
-有限 N 为指数平均（α = 2/(N+1)，永不冻结），`∞` 为累计均值。
+通信协议字段与命令见 [API.md](API.md)，操作指导见 [FAQ_NOTES.md](FAQ_NOTES.md)。

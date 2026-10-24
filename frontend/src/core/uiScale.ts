@@ -1,12 +1,8 @@
 // Global UI scale: one number that sizes the whole interface, canvas included.
 //
-// Why a scale and not just a fluid layout: the frame now uses whatever the window gives it
-// (style.css, core/store.ts), but an 11px label is still 11 *css* px - on a 2560 or 3840 wide
-// panel that is 7.6 / 5.1 px per 1000px of viewport height, i.e. a smaller and smaller share
-// of the screen as the screen grows (tools/e2e/viewport_baseline.py reports exactly that
-// number). The scale multiplies fonts, spacing, control sizes AND the canvas: the canvas is
-// inside the scaled frame, so its CSS box grows with everything else and the backing store
-// keeps matching it (device pixels, never a stretched bitmap - see the ratio below).
+// UI scale preserves readable proportions as viewport height grows. It multiplies fonts,
+// spacing, control sizes and the canvas CSS box. The canvas backing store tracks UI scale
+// and device pixel ratio so the bitmap remains sharp.
 //
 // How it is applied: `zoom` on the frame. That is the only mechanism that scales a stylesheet
 // full of px values - borders, paddings, fixed control widths, popovers - without rewriting
@@ -39,9 +35,7 @@ const listeners = new Set<(scale: number) => void>();
  * the screen, and because the fluid columns already absorb extra width. A device pixel ratio
  * of 2 or more already doubles the physical size of a css px (a 4K panel at 200% reports a
  * 1080-high viewport), so what matters is the height the page is actually laid out against.
- * The steps are the ones that bring an 11px label back to the share of the screen it has on
- * the 1366x768 panel this layout was drawn for (tools/e2e/viewport_baseline.py reports that
- * share, and reports no finding once the auto value applies).
+ * The steps preserve readable label proportions as viewport height grows.
  */
 export function autoScale(height = window.innerHeight): number {
   if (height >= 1900) return 2;     // 2160-high viewport: 4K at 100%, or 5K/6K

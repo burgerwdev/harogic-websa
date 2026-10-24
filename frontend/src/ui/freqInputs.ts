@@ -1,9 +1,7 @@
 /**
  * Frequency-editor refresh (leaf).
  *
- * `core/ws.ts` calls it when a STATUS reports new frequency values and `ui/controls.ts`
- * calls it on user actions; living in either module created a cycle between them
- * (docs/.../ARCH_REVIEW.md finding P1-4).
+ * Shared by STATUS updates in core/ws.ts and user actions in ui/controls.ts.
  */
 import * as S from '../core/store';
 import { toUnit } from '../core/units';
@@ -24,8 +22,12 @@ export function updateFreqUIInputs(force = false) {
     setInput('input-start', toUnit(centerHz.get() - spanHz.get() / 2, 'start').toFixed(4), force);
     setInput('input-stop', toUnit(centerHz.get() + spanHz.get() / 2, 'stop').toFixed(4), force);
   }
-  setInput('input-rbw', toUnit(currentRBW.get(), 'rbw').toFixed(2));
-  setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
+  if (document.getElementById('input-rbw')?.dataset.edited !== '1') {
+    setInput('input-rbw', toUnit(currentRBW.get(), 'rbw').toFixed(2));
+  }
+  if (document.getElementById('input-vbw')?.dataset.edited !== '1') {
+    setInput('input-vbw', toUnit(currentVBW.get(), 'vbw').toFixed(2));
+  }
   const rtaEditor = document.getElementById('rta-freq-settings');
   if (S.rtaMode && rtaEditor?.dataset.dirty !== '1') {
     const u = units().rta_center || 'MHz';

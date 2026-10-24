@@ -1,51 +1,32 @@
 // Reference/amplitude panel: Ref Level, scale, attenuation/preamp/IF gain, offset,
-// reference clock and gap fill. Extracted from ui/controls.ts (report finding P1-5).
+// reference clock and gap fill.
 import * as S from '../../core/store';
 import { prepareSdrAudioTransition } from '../../audio/sdrAudio';
 import { steppedRefLevel } from '../../core/frequency';
 import { t } from '../../core/i18n';
+import { createParam } from '../../core/params';
 import { send } from '../../core/wsSend';
 import { updateInfoBar } from '../../render/infobar';
 import { requestRender } from '../../render/redraw';
-import { displayRefDiverges, getDisplayRef, setDisplayRef } from '../displayRef';
-import { currentGraphMode } from '../graphMode';
+import { displayRefDiverges, getDisplayRef, rejectDisplayRefRequest, setDisplayRef } from '../displayRef';
+import { currentGraphMode, measurementOwnsDevice } from '../graphMode';
 import { refLevel } from '../refState';
 import { autoScaleBusy, autoScaleRequest, clearAutoScaleHint } from '../refAutoScale';
 import { displayOffset } from '../displayState';
+import { syncWfRangeUi } from '../wfRange';
+import { AMP_FIELDS, type AmpField, setAmpField, syncAmpAvailability } from '../ampState';
 
 /**
- * The level a USER may ask for, in every mode.
- *
- * Deliberately not the device's Ref row reported in STATUS `caps`: the vendor SDK documents no Ref
- * range, and the device programs what its attenuation/IF-gain combination can do and echoes that
- * back (measured on this bench: -140 dBm is programmed exactly, +35 dBm comes back as +27). That row
- * is what the auto-placement rules use, so clamping user input to it refused levels the instrument
- * handles - the official software lets the level move further and only hints when the IF saturates
- * (`!IF overflow`, the -12 warning). These numbers mirror the backend's own bound for `SET_REF.ref`
- * and `AUTO_SCALE.current_ref` (config.DISPLAY_REF_*_DBM).
+ * User Ref bounds match the backend SET_REF.ref and AUTO_SCALE.current_ref schema.
+ * STATUS caps Ref bounds serve auto-placement; the device reports the effective level
+ * its attenuation and IF gain can program.
  */
 const REF_USER_MIN = -160;
 const REF_USER_MAX = 40;
 
 export function setRefLevel() {
   const el = document.getElementById('input-ref') as HTMLInputElement;
-  const value = parseFloat(el.value);
-  if (!isFinite(value)) return;
-  if (currentGraphMode() === 'sdr') {
-    // SDR Ref controls the IQS hardware reference level as well as the display. The
-    // backend reconfigures IQS and applies the normal audio reset/fade sequence.
-    const display = Math.max(REF_USER_MIN, Math.min(REF_USER_MAX, value));
-    clearAutoScaleHint();
-    setDisplayRef('sdr', display);        // client-owned scale: see DisplayRefSource
-    syncSdrRefUI();                       // the Auto button must reflect the real state
-    const cv = document.getElementById('spectrum');
-    if (cv) cv.dataset.sdrRef = String(Math.round(display));
-    prepareSdrAudioTransition();
-    send({ cmd: 'SET_REF', mode: 'manual', ref: display });
-    requestRender();
-    return;
-  }
-  send({ cmd: 'SET_REF', mode: 'manual', ref: value });
+  commitRefLevel(parseFloat(el.value));
 }
 
 export function refStepDbm(): number {
@@ -54,27 +35,9 @@ export function refStepDbm(): number {
 }
 
 export function adjustRefLevel(direction: -1 | 1) {
-  if (currentGraphMode() === 'sdr') {
-    const next = Math.max(REF_USER_MIN, Math.min(REF_USER_MAX, getDisplayRef() + direction * S.dbPerDiv));
-    clearAutoScaleHint();
-    setDisplayRef('sdr', next);
-    syncSdrRefUI();                       // ditto
-    const cv = document.getElementById('spectrum');
-    if (cv) cv.dataset.sdrRef = String(Math.round(next));
-    prepareSdrAudioTransition();
-    send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-    requestRender();
-    return;
-  }
-  const base = refLevel.get();
-  // Stepped to the end of the USER range (see REF_USER_*): a press past it is a quiet no-op, not a
-  // refusal, and the device's own echo decides what the level really became.
+  const base = currentGraphMode() === 'sdr' ? getDisplayRef() : refLevel.get();
   const next = steppedRefLevel(base, refStepDbm(), direction, REF_USER_MIN, REF_USER_MAX);
-  if (next === base) return;
-  // The stepped value is an intent: rendered immediately and dropped by the slot's TTL if
-  // the backend never accepts it (the old code hand-rolled exactly this with refPending).
-  refLevel.set(next);
-  send({ cmd: 'SET_REF', mode: 'manual', ref: next });
+  if (next !== base) commitRefLevel(next);
 }
 
 /**
@@ -95,28 +58,40 @@ export function commitLevelOffset(value: number): void {
 /**
  * One absolute Ref request from a gesture (the level axis drag), and the value that was asked for.
  *
- * The same paths as the Set button and the step arrows, with the level clamped to the OWNER's
- * range instead of reported: an end of the range is a no-op, not a message (the clamp notice was
- * removed on request). Returns the requested value so a caller that previews can wait for it, or
- * null when the value is not usable.
+ * Clamp to owner bounds; endpoints are silent no-ops. Return the requested value for preview,
+ * or null when the value is unusable.
  */
 export function commitRefLevel(value: number): number | null {
-  if (!isFinite(value)) return null;
-  if (currentGraphMode() === 'sdr') {
-    const next = Math.max(REF_USER_MIN, Math.min(REF_USER_MAX, value));
-    clearAutoScaleHint();
-    setDisplayRef('sdr', next);
-    syncSdrRefUI();
-    const cv = document.getElementById('spectrum');
-    if (cv) cv.dataset.sdrRef = String(Math.round(next));
-    prepareSdrAudioTransition();
-    send({ cmd: 'SET_REF', mode: 'manual', ref: next });
-    return next;
-  }
+  if (!isFinite(value) || measurementOwnsDevice()) return null;
   const next = Math.max(REF_USER_MIN, Math.min(REF_USER_MAX, value));
-  refLevel.set(next);
+  clearAutoScaleHint();
+  if (currentGraphMode() === 'sdr') {
+    setDisplayRef('user', next);
+    syncSdrRefUI(true);
+    prepareSdrAudioTransition();
+  } else {
+    refLevel.set(next);
+    setDisplayRef('mode', next);
+    const input = document.getElementById('input-ref') as HTMLInputElement | null;
+    if (input) { input.value = String(next); input.classList.add('ref-pending'); }
+  }
   send({ cmd: 'SET_REF', mode: 'manual', ref: next });
+  requestRender();
   return next;
+}
+
+/** Command errors carry their originating command; unrelated stream errors cannot cancel Ref. */
+export function rejectManualRef(): void {
+  if (currentGraphMode() === 'sdr') {
+    rejectDisplayRefRequest();
+    syncSdrRefUI(true);
+  } else {
+    refLevel.reset();
+    setDisplayRef('mode', refLevel.get());
+    const input = document.getElementById('input-ref') as HTMLInputElement | null;
+    if (input) { input.value = String(refLevel.get()); input.classList.remove('ref-pending'); }
+  }
+  requestRender();
 }
 
 /**
@@ -143,37 +118,121 @@ export function syncScaleButtons() {
   for (const b of grp.children) (b as HTMLElement).classList.toggle('active', parseFloat(b.textContent || '') === S.dbPerDiv);
 }
 
+const refClockSource = createParam<string>('clock.source', {
+  fallback: 'internal', scope: 'clock', ttlMs: Infinity,
+});
+const refClockOutput = createParam<boolean>('clock.output', {
+  fallback: false, scope: 'clock', ttlMs: Infinity,
+});
+let clockRequestSequence = 0;
+let sourceRequestId: string | null = null;
+let outputRequestId: string | null = null;
+
+interface RefClockReport {
+  ref_clock?: string;
+  refclk_out?: boolean;
+  response_to?: string;
+  request_id?: string | number;
+}
+
+function renderRefClockIntent(): void {
+  const source = document.getElementById('select-refclk') as HTMLSelectElement | null;
+  if (source) {
+    source.value = refClockSource.get();
+    source.dataset.pending = String(refClockSource.pending());
+    source.setAttribute('aria-busy', String(refClockSource.pending()));
+  }
+  const on = refClockOutput.get();
+  const btn = document.getElementById('btn-refclk-out');
+  if (btn) {
+    btn.classList.toggle('on', on);
+    btn.classList.toggle('pending', refClockOutput.pending());
+    btn.setAttribute('aria-busy', String(refClockOutput.pending()));
+    btn.setAttribute('aria-pressed', String(on));
+    btn.textContent = t('output') + ': ' + t(on ? 'on' : 'off');
+  }
+  document.getElementById('refclk-label')?.classList.toggle('refclk-label-on', on);
+}
+
 export function setRefClock(mode: string) {
-  // In SDR the reference clock lives in the IQS profile, so this reconfigures the
-  // capture chain; mute first so the reconfiguration transient is not audible.
+  if (measurementOwnsDevice()) return;
+  refClockSource.set(mode);
+  sourceRequestId = `clock-source-${++clockRequestSequence}`;
+  renderRefClockIntent();
+  // In SDR the clock reconfigures the IQS capture chain; mute its transition first.
   if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
-  send({ cmd: 'SET_REFCK', mode });
+  send({ cmd: 'SET_REFCK', mode, request_id: sourceRequestId });
 }
 
 export function toggleRefClkOut() {
-  const btn = document.getElementById('btn-refclk-out');
-  const cur = btn && btn.classList.contains('on');
+  if (measurementOwnsDevice()) return;
+  const on = !refClockOutput.get();
+  refClockOutput.set(on);
+  outputRequestId = `clock-output-${++clockRequestSequence}`;
+  renderRefClockIntent();
   if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
-  send({ cmd: 'SET_REFCKOUT', on: !cur });
+  send({ cmd: 'SET_REFCKOUT', on, request_id: outputRequestId });
 }
 
-export function syncRefClkOut(s: any) {
-  const btn = document.getElementById('btn-refclk-out');
-  if (!btn) return;
-  const on = !!s.refclk_out;
-  btn.classList.toggle('on', on);
-  btn.textContent = on ? (t('output') + ': ' + t('on')) : (t('output') + ': ' + t('off'));
+/** Readback may update rollback state, but only the newest correlated ACK settles intent. */
+export function syncRefClockStatus(
+  status: RefClockReport,
+  responseTo = status.response_to,
+  requestId = status.request_id,
+): void {
+  const clockReply = responseTo === 'SET_REFCK' || responseTo === 'SET_REFCKOUT';
+  if (typeof status.ref_clock === 'string') {
+    const desired = refClockSource.desiredValue();
+    const matching = responseTo === 'SET_REFCK' && requestId === sourceRequestId;
+    const stale = clockReply && sourceRequestId !== null && !matching;
+    if (!stale || desired !== null) {
+      refClockSource.confirm(status.ref_clock);
+      if (desired !== null) {
+        if (matching) refClockSource.reset();
+        else refClockSource.set(desired);
+      }
+    }
+  }
+  if (typeof status.refclk_out === 'boolean') {
+    const desired = refClockOutput.desiredValue();
+    const matching = responseTo === 'SET_REFCKOUT' && requestId === outputRequestId;
+    const stale = clockReply && outputRequestId !== null && !matching;
+    if (!stale || desired !== null) {
+      refClockOutput.confirm(status.refclk_out);
+      if (desired !== null) {
+        if (matching) refClockOutput.reset();
+        else refClockOutput.set(desired);
+      }
+    }
+  }
+  renderRefClockIntent();
 }
 
-export function setAmp() {
-  if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
-  send({
-    cmd: 'SET_AMP',
-    atten: parseInt((document.getElementById('select-atten') as HTMLSelectElement).value),
-    preamp: parseInt((document.getElementById('select-preamp') as HTMLSelectElement).value),
-    ifgain: parseInt((document.getElementById('select-ifgain') as HTMLSelectElement).value),
-    gain_strategy: parseInt((document.getElementById('select-gainstrategy') as HTMLSelectElement).value),
-  });
+export function rejectRefClockRequest(command: string, requestId?: string | number): void {
+  if (command === 'SET_REFCK' && requestId === sourceRequestId) {
+    refClockSource.reset();
+    sourceRequestId = `clock-source-${++clockRequestSequence}`;
+  }
+  if (command === 'SET_REFCKOUT' && requestId === outputRequestId) {
+    refClockOutput.reset();
+    outputRequestId = `clock-output-${++clockRequestSequence}`;
+  }
+  renderRefClockIntent();
+}
+
+/** Preset/disconnect: cancel outstanding intents without reusing their correlation IDs. */
+export function resetRefClockIntent(): void {
+  refClockSource.reset();
+  refClockOutput.reset();
+  sourceRequestId = `clock-source-${++clockRequestSequence}`;
+  outputRequestId = `clock-output-${++clockRequestSequence}`;
+  renderRefClockIntent();
+}
+
+export function setAmp(element: HTMLSelectElement) {
+  if (measurementOwnsDevice()) return;
+  const field = (Object.keys(AMP_FIELDS) as AmpField[]).find(key => AMP_FIELDS[key].id === element.id);
+  if (field) setAmpField(field, element);
 }
 
 export function setOffset() {
@@ -191,8 +250,21 @@ export function toggleGapFill() {
   }
 }
 
+/** Measurement sessions own the RF controls and their incompatible display windows. */
+export function syncLevelAvailability(mode: string): void {
+  const exclusive = mode === 'harmonic' || mode === 'pnm';
+  const panel = document.getElementById('level-panel');
+  if (panel) {
+    panel.setAttribute('aria-disabled', String(exclusive));
+    panel.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button')
+      .forEach(control => { control.disabled = exclusive; });
+  }
+  syncAmpAvailability(exclusive);
+  syncWfRangeUi();
+}
 
-export function syncSdrRefUI() {
+
+export function syncSdrRefUI(force = false) {
   if (currentGraphMode() !== 'sdr') return;
   const b = document.getElementById('btn-ref-auto');
   if (b) {
@@ -201,13 +273,15 @@ export function syncSdrRefUI() {
   }
   const inp = document.getElementById('input-ref') as HTMLInputElement | null;
   if (inp) {
-    inp.disabled = false;
+    inp.disabled = measurementOwnsDevice();
     // Discipline 4: the user can see that the device has not confirmed the new level yet.
     inp.classList.toggle('ref-pending', displayRefDiverges());
-    if (document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
+    if (force || document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
   }
+  const cv = document.getElementById('spectrum');
+  if (cv) cv.dataset.sdrRef = String(Math.round(getDisplayRef()));
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
-  if (setBtn) setBtn.disabled = false;
+  if (setBtn) setBtn.disabled = measurementOwnsDevice();
   // The step arrows stay usable at the ends of the SDR range as well (same rule as the swept
   // panel): the level is clamped to the range silently by adjustRefLevel.
   const down = document.getElementById('btn-ref-down') as HTMLButtonElement | null;

@@ -19,13 +19,14 @@
 // drag/resize/clamp/persist math runs in viewport pixels - where pointer clientX/Y,
 // getBoundingClientRect and window.innerWidth all agree - and the style writes convert to the
 // window's local pixels by dividing by the scale.
-import { clearFt8Spots, clock, ft8Spots, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
-import { clearCwLog, cwLevel, cwLog, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
+import { clearFt8Spots, clock, ft8DecoderState, ft8Spots, setFt8Channel, subscribeFt8Spots, type Ft8Spot } from '../sdr/ft8Log';
+import { clearCwLog, cwLevel, cwLog, setCwChannel, subscribeCwLevel, subscribeCwLog, CW_WEAK_SHARE,
 	type CwLine, type CwMark } from '../sdr/cwLog';
-import { clearDrm, drmStatus, subscribeDrm } from '../sdr/drmLog';
+import { clearDrm, drmStatus, setDrmChannel, subscribeDrm } from '../sdr/drmLog';
 import {
 	deleteSstvAll,
 	deleteSstvSelected,
+	setSstvChannel,
 	setSstvModeFilter,
 	setSstvSelected,
 	setSstvView,
@@ -41,19 +42,24 @@ import { formatLatLon, geoFor } from '../sdr/ft8Geo';
 import { parseFt8Message } from '../sdr/ft8Message';
 import { getLang, onLangChange, t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
+import { sdrAmSync, sdrSstvMode } from './sdrState';
 
 export interface DecodeWindowHooks {
 	/** Tune the receiver to an absolute frequency (an FT8 row was clicked). */
 	onTune(hz: number): void;
 	/** Pin the SSTV decoder to a mode (index into the Rust table), or null for the VIS header. */
 	onSstvMode(index: number | null): void;
+	/** Select the primary AM detector without changing any other receiver parameter. */
+	onAmSync?(enabled: boolean): void;
+	/** Whether the current session permits changing the AM detector. */
+	canAmSync?(): boolean;
 }
 
 /// The demodulators whose output this window shows.
 ///
 /// `sstv` is here for its picture: the station sends a still image, and the pane fills in while the
 /// transmission is still running.
-const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv', 'wfm'] as const;
+const DECODING_MODES = ['ft8', 'cw', 'drm', 'drmplus', 'sstv', 'wfm', 'am'] as const;
 export type DecodeMode = (typeof DECODING_MODES)[number] | null;
 
 const LS_KEY = 'websa-decode-window';
@@ -74,23 +80,90 @@ const MAX_CW_ROWS = 120;
 
 let hooks: DecodeWindowHooks = { onTune: () => {}, onSstvMode: () => {} };
 let open = false;
-/// The operator's choice, which survives a mode switch: leaving CW hides the window (there is
-/// nothing to show) but does not forget that they wanted it, so coming back shows it again - the
-/// first version cleared the choice on the way out and the window stayed hidden for the rest of the
-/// session (reported as "CW stops working after switching the demodulator away and back").
+/** Preserve the operator's window visibility preference across demodulator switches. */
 let wanted = false;
+/** Receiver availability is independent of retained decoder modes and window preference. */
+let active = false;
 /** Which pane the window shows: the demodulator decides (null = nothing decodes right now). */
 let mode: DecodeMode = null;
-/// The SSTV mode the operator pinned, or null while the VIS header decides.
-let sstvPin: number | null = null;
+export type DecodeChannel = 1 | 2 | 3;
+let selectedChannel: DecodeChannel = 1;
+const channelModes: Record<DecodeChannel, DecodeMode> = { 1: null, 2: null, 3: null };
+const sstvViews: Record<DecodeChannel, number | null> = { 1: null, 2: null, 3: null };
+
+export interface DecodeTiming {
+	inputIndex: string;
+	fractionNum: string;
+	fractionDen: string;
+	inputRate: number;
+	delaySeconds: number;
+	delayKnown: boolean;
+	causalPresentation: boolean;
+}
+const channelTiming: Record<DecodeChannel, DecodeTiming | null> = { 1: null, 2: null, 3: null };
+const channelErrors: Record<DecodeChannel, string | null> = { 1: null, 2: null, 3: null };
+let ingesting = false;
+let pendingPaint: number | null = null;
+
+/** Consume decoded events synchronously; painting must not delay their acknowledgement. */
+export function ingestDecodeEvents(consume: () => void): void {
+	ingesting = true;
+	try { consume(); } finally { ingesting = false; }
+}
+
+function deferDecodePaint(): boolean {
+	if (!ingesting) return false;
+	if (!open) return true;
+	if (pendingPaint === null) pendingPaint = requestAnimationFrame(() => {
+		pendingPaint = null;
+		if (open) renderContent();
+	});
+	return true;
+}
+
+export function setDecodeError(channel: DecodeChannel, message: string | null): void {
+	channelErrors[channel] = message;
+	if (message) { amInfo[channel] = null; amMeters[channel] = null; }
+	if (channel === selectedChannel && mode === 'am') renderAm();
+	if (channel === selectedChannel) renderDecodeTiming();
+}
+
+export function setDecodeTiming(channel: DecodeChannel, timing: DecodeTiming): void {
+	channelTiming[channel] = timing;
+	if (channel === selectedChannel) renderDecodeTiming();
+}
+
+function renderDecodeTiming(): void {
+	if (deferDecodePaint()) return;
+	const status = element('decode-source-timing');
+	if (status) status.style.display = mode === 'am' ? 'none' : '';
+	const timing = channelTiming[selectedChannel];
+	const error = channelErrors[selectedChannel];
+	const alignment = timing ? timing.delayKnown && !timing.causalPresentation ? 'Aligned' : 'Alignment unknown' : '';
+	const text = [error ? `Decoder error: ${error}` : '', alignment].filter(Boolean).join(' · ');
+	const tip = [error ? `Decoder error: ${error}` : '', timing
+		? `${alignment}\nSource sample ${timing.inputIndex} + ${timing.fractionNum}/${timing.fractionDen} at ${timing.inputRate} Hz\n${timing.delayKnown ? `Delay ${timing.delaySeconds.toFixed(6)} s` : 'Decoder delay unknown'}${timing.causalPresentation ? '\nCausal presentation' : ''}`
+		: ''].filter(Boolean).join('\n');
+	if (status) {
+		if (status.textContent !== text) status.textContent = text;
+		status.setAttribute('role', error ? 'alert' : 'status');
+		status.title = tip;
+	}
+	if (mode === 'am') {
+		const badge = element('am-title-badge');
+		if (badge) {
+			badge.title = [badge.textContent, tip].filter(Boolean).join('\n');
+			badge.setAttribute('role', error ? 'alert' : 'status');
+			badge.setAttribute('aria-label', [badge.textContent, text].filter(Boolean).join(' · '));
+		}
+	}
+}
 /// The mode table the buttons were built from, so a manifest that has not loaded yet can still build
 /// them later without the buttons flickering on every render.
 let sstvButtons: string[] = [];
 /// The history shape the select was filled from, so re-rendering does not rebuild (and reset) the
 /// operator's selection while the picture is still arriving.
 let sstvThumbsShape = '';
-/// The Auto toggle: true = the VIS header picks the decode mode.
-let sstvAuto = true;
 /// The mode whose picture set the pane shows (null = the live picture).
 let sstvViewMode: number | null = null;
 /// FT8 pane view state: the message filter (null = invalid pattern, filter off) and the sorted
@@ -99,7 +172,6 @@ let ft8FilterRe: RegExp | null = null;
 let ft8FilterBad = false;
 let ft8SortCol: number | null = null;
 /// Storage keys for the pane's persisted view state.
-const SSTV_AUTO_KEY = 'web-sa-sstv-auto';
 const SSTV_MODE_KEY = 'web-sa-sstv-mode';
 let unsubscribe: (() => void) | null = null;
 let unsubscribeLevel: (() => void) | null = null;
@@ -187,10 +259,8 @@ function applyGeometry(win: HTMLElement, geometry: Geometry): void {
 	win.style.height = `${geometry.h / scale}px`;
 }
 
-/** Move the window without touching its size. A drag must not round-trip `w`/`h` through
- * `getBoundingClientRect` (the rect is border-inclusive while `style.width` on a content-box
- * element is not), which grew the window ~2 px on every pointermove - reported as "the window
- * gets bigger while I drag it". */
+/** Move without resizing: border-inclusive DOM dimensions must not feed back into
+ * content-box width and height. */
 function placeAt(win: HTMLElement, x: number, y: number): void {
 	const scale = getUiScale();
 	win.style.left = `${x / scale}px`;
@@ -292,7 +362,7 @@ function rowFor(spot: Ft8Spot, country: string, location: string): HTMLTableRowE
 		if (className) cell.className = className;
 		row.appendChild(cell);
 	}
-	row.addEventListener('click', () => hooks.onTune(spot.hz));
+	row.addEventListener('click', () => { if (active) hooks.onTune(spot.hz); });
 	return row;
 }
 
@@ -508,7 +578,8 @@ function renderCwLines(): void {
  * around -20 dBFS, so a linear level would sit in one place all session.
  */
 function renderCwMeter(): void {
-	const { rms, keyed } = cwLevel();
+	if (deferDecodePaint()) return;
+	const { rms, keyed, wpm, pitchHz, afcHz } = cwLevel();
 	const fill = element('cw-vu-fill');
 	if (fill) {
 		const db = rms > 0 ? 20 * Math.log10(rms) : -100;
@@ -516,60 +587,83 @@ function renderCwMeter(): void {
 	}
 	const led = element('cw-led');
 	if (led) led.classList.toggle('on', keyed);
+	const telemetry = element('cw-telemetry');
+	if (telemetry) {
+		telemetry.textContent = [
+			Number.isFinite(wpm) ? `${wpm!.toFixed(1)} WPM` : '',
+			Number.isFinite(pitchHz) ? `${pitchHz!.toFixed(0)} Hz` : '',
+			Number.isFinite(afcHz) ? `AFC ${afcHz! >= 0 ? '+' : ''}${afcHz!.toFixed(1)} Hz` : '',
+		].filter(Boolean).join(' · ');
+	}
 }
 
 /** Render the active pane and keep the head in step with it. */
 function renderContent(): void {
+	if (deferDecodePaint()) return;
 	const showFt8 = mode === 'ft8';
 	const showCw = mode === 'cw';
 	const showDrm = mode === 'drm' || mode === 'drmplus';
 	const showSstv = mode === 'sstv';
 	const showWfm = mode === 'wfm';
+	const showAm = mode === 'am';
 	const table = element('decode-window-table');
 	const cw = element('decode-window-cw');
 	const drm = element('decode-window-drm');
 	const sstv = element('decode-window-sstv');
 	const wfm = element('decode-window-wfm');
+	const am = element('decode-am');
 	const title = element('decode-window-title');
 	const count = element('decode-window-count');
+	renderDecodeTiming();
+	element('decode-window-body')?.classList.toggle('decode-window-body-sstv', showSstv);
 	if (table) table.style.display = showFt8 ? '' : 'none';
 	if (cw) cw.style.display = showCw ? '' : 'none';
 	if (drm) drm.style.display = showDrm ? '' : 'none';
 	if (sstv) sstv.style.display = showSstv ? '' : 'none';
 	if (wfm) wfm.style.display = showWfm ? '' : 'none';
+	if (am) am.style.display = showAm ? '' : 'none';
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
 	// The stereo badge belongs to WFM alone; every other mode hides it.
 	const titleBadge = element('wfm-title-badge');
 	if (titleBadge) titleBadge.style.display = showWfm ? '' : 'none';
+	const amBadge = element('am-title-badge');
+	if (amBadge) amBadge.style.display = showAm ? '' : 'none';
 	// The SSTV waiting line lives in this head. Every other pane hides it.
 	const hint = element('sstv-head-hint');
 	if (hint) hint.style.display = 'none';
 	// UTC and Clear only act on something a pane accumulates (FT8's time column and spot list).
 	// Neither has an effect in FM, DRM or SSTV, so they are hidden there rather than sitting dead.
 	const utc = element('btn-decode-utc');
-	if (utc) utc.style.display = showDrm || showWfm || showSstv ? 'none' : '';
+	if (utc) utc.style.display = showDrm || showWfm || showSstv || showAm ? 'none' : '';
 	const clear = element('btn-decode-clear');
-	// Clear belongs to the panes that accumulate something (FT8 spots, CW log, SSTV pictures).
-	// FM keeps no history — pressing it used to empty the FT8 list from inside the FM pane.
-	if (clear) clear.style.display = showDrm || showWfm ? 'none' : '';
+	// Show Clear only for panes with accumulated content.
+	if (clear) clear.style.display = showDrm || showWfm || showAm ? 'none' : '';
 	if (title) title.textContent = showCw ? 'CW' : showDrm ? (mode === 'drmplus' ? 'DRM+' : 'DRM')
-		: showSstv ? 'SSTV' : showWfm ? 'FM' : 'FT8';
+		: showSstv ? 'SSTV' : showWfm ? 'FM' : showAm ? 'AM' : showFt8 ? 'FT8' : '—';
 	const timeTh = element('decode-window-time-th');
 	if (timeTh) timeTh.title = utcTime ? 'UTC' : 'LT';
 	const searchRow = element('decode-ft8-search-row');
 	if (searchRow) searchRow.style.display = showFt8 ? '' : 'none';
 	const search = element('decode-ft8-search') as HTMLInputElement | null;
 	if (search) search.title = t(ft8FilterBad ? 'ft8_search_bad' : 'ft8_search_tip');
+	const ft8State = element('decode-ft8-state');
+	if (ft8State) {
+		const state = ft8DecoderState();
+		ft8State.style.display = showFt8 && state ? '' : 'none';
+		ft8State.textContent = state ? `Buffer ${state.bufferedSeconds.toFixed(1)} s · Attempts ${state.attempts} · Decodes ${state.count} · Level ${(state.level * 100).toFixed(0)}%` : '';
+		ft8State.title = state ? `${state.bufferedSamples} samples · Epoch ${state.epoch}` : '';
+	}
 	if (count) {
 		count.style.display = showFt8 ? '' : 'none';
 		if (!showFt8) count.textContent = String(ft8Spots().length);
 	}
 	if (showFt8) renderFt8Rows();	// the count text (n/total while filtering) rides with the rows
-	else if (showCw) renderCwLines();
+	else if (showCw) { renderCwLines(); renderCwMeter(); }
 	else if (showDrm) renderDrm();
 	else if (showSstv) renderSstv();
 	else if (showWfm) renderWfm();
+	else if (showAm) renderAm();
 }
 
 /**
@@ -581,13 +675,14 @@ function renderSstv(): void {
 	buildSstvModeButtons();
 	const entry = sstvVisible();
 	const detected = sstvStatus().current?.meta.modeIndex ?? null;
-	// Auto drives the decode mode; a manual pin (auto off) overrides it. The detected mode stays
-	// marked either way, and the viewed mode's button carries the pane's own active state.
-	const active = sstvAuto ? detected : sstvPin;
+	const pin = sdrSstvMode.get();
+	const selectedMode = pin < 0 ? detected : pin;
+	const pending = sdrSstvMode.pending();
 	const counts = sstvModeCounts();
 	for (const buttonEl of document.querySelectorAll<HTMLElement>('#sstv-mode-group [data-sstv-mode]')) {
 		const value = buttonEl.dataset.sstvMode === 'auto' ? null : Number(buttonEl.dataset.sstvMode);
-		buttonEl.classList.toggle('active', value === active);
+		buttonEl.classList.toggle('active', value === selectedMode);
+		buttonEl.classList.toggle('pending', pending && value === pin);
 		buttonEl.classList.toggle('detected', value !== null && value === detected);
 		const badge = buttonEl.querySelector('.sstv-badge') as HTMLElement | null;
 		const count = value === null ? null : counts.get(value) ?? 0;
@@ -598,7 +693,10 @@ function renderSstv(): void {
 	}
 	// The Auto toggle's own state: on = the VIS header decides.
 	const autoButton = element('sstv-auto');
-	if (autoButton) autoButton.classList.toggle('active', sstvAuto);
+	if (autoButton) {
+		autoButton.classList.toggle('active', pin < 0);
+		autoButton.classList.toggle('pending', pending && pin < 0);
+	}
 	const put = (id: string, value: string): void => {
 		const el = element(id);
 		if (el) el.textContent = value;
@@ -665,30 +763,16 @@ function renderSstv(): void {
 	}
 }
 
-/** The Auto toggle: on = the VIS header picks the mode; off = the operator's pin. */
+/** The Auto control projects the receiver slot; viewing history never changes the pin. */
 function setSstvAuto(on: boolean): void {
-	sstvAuto = on;
-	try {
-		localStorage.setItem(SSTV_AUTO_KEY, on ? '1' : '0');
-	} catch { /* storage off: session-only auto */ }
-	if (on) {
-		sstvPin = null;
-	} else if (sstvStatus().current) {
-		// Leaving auto pins the mode the signal last declared, so the decode does not drift.
-		sstvPin = sstvStatus().current?.meta.modeIndex ?? null;
-	}
-	setSstvModeFilter(sstvAuto ? null : sstvPin);
-	// The worker's pin follows the toggle: auto = the header decides.
-	if (on) {
-		workerSetSstvPin(null);
-	} else if (sstvPin !== null) {
-		workerSetSstvPin(sstvPin);
-	}
+	if (!active) return;
+	const confirmed = sdrSstvMode.confirmedValue();
+	const pin = on ? null : sstvStatus().current?.meta.modeIndex ?? sstvViewMode ??
+		(confirmed !== null && confirmed >= 0 ? confirmed : null);
+	// With no received, viewed or confirmed mode, leaving Auto cannot invent a decoder pin.
+	if (!on && pin === null) return;
+	hooks.onSstvMode(pin);
 	renderContent();
-}
-
-function workerSetSstvPin(index: number | null): void {
-	hooks.onSstvMode(index);
 }
 
 /** The thumbnail column: the active mode's stored pictures, newest first, live one first. */
@@ -798,25 +882,27 @@ function saveSstvPng(): void {
 
 /** Render one service snapshot, not a growing history of per-symbol diagnostics. */
 function renderDrm(): void {
-	const { lines, snrDb, constellation } = drmStatus();
-	const locked = lines.find((line) => line.startsWith('locked: '));
-	const station = lines.find((line) => line.startsWith('station: '))?.slice(9);
+	const { lines, snrDb, constellation, receiver } = drmStatus();
+	const lockedLine = lines.find((line) => line.startsWith('locked: '));
+	const locked = receiver?.locked ?? !!lockedLine;
+	const station = receiver?.stationLabel ?? lines.find((line) => line.startsWith('station: '))?.slice(9);
 	const counts = lines.find((line) => line.includes(' MSC frames,'))
 		?.match(/^(\d+) MSC frames, (\d+) audio AUs, FAC ok (\d+) err (\d+)/);
 	const search = lines.find((line) => line.startsWith('DRM searching: '));
 	const debug = lines.filter((line) => line.startsWith('dbg ')).map((line) => line.slice(4)).join('\n');
-	const put = (id: string, value: string): void => { const el = element(id); if (el) el.textContent = value; };
+	const put = (id: string, value: string): void => { const el = element(id); if (el && el.textContent !== value) el.textContent = value; };
 	const stationName = station && !station.startsWith('(') ? station : t('drm_station_waiting');
 	put('decode-drm-station', stationName);
 	const stationEl = element('decode-drm-station');
 	if (stationEl) stationEl.title = stationName;
 	const searchMode = search?.match(/,\s*([A-E])\s+([\d.]+\s*kHz)/);
-	const modeText = locked ? `${t('drm_mode')} ${locked.slice(8).replace(', ', ' · ')}`
-		: searchMode ? `${t('drm_mode')} ${searchMode[1]} · ${searchMode[2]}` : '';
+	const modeText = receiver?.mode ? `${t('drm_mode')} ${receiver.mode}`
+		: lockedLine ? `${t('drm_mode')} ${lockedLine.slice(8).replace(', ', ' · ')}`
+			: searchMode ? `${t('drm_mode')} ${searchMode[1]} · ${searchMode[2]}` : '';
 	put('decode-drm-mode', modeText);
 	const modeBadge = element('decode-drm-mode');
 	if (modeBadge) modeBadge.style.display = modeText ? '' : 'none';
-	put('decode-drm-status', locked ? t('drm_locked') : search ? t('drm_searching') : t('drm_waiting'));
+	put('decode-drm-status', locked ? t('drm_locked') : receiver || search ? t('drm_searching') : t('drm_waiting'));
 	const lockBadge = element('decode-drm-lock');
 	lockBadge?.classList.toggle('on', !!locked);
 	if (lockBadge) lockBadge.title = search ?? '';
@@ -828,24 +914,53 @@ function renderDrm(): void {
 	if (metrics) metrics.style.display = locked ? 'grid' : 'none';
 	put('decode-drm-msc', counts?.[1] ?? '—');
 	put('decode-drm-aus', counts?.[2] ?? '—');
-	put('decode-drm-fac-ok', counts?.[3] ?? '—');
-	put('decode-drm-fac-err', counts?.[4] ?? '—');
-	element('decode-drm-fac-err')?.classList.toggle('error', Number(counts?.[4] ?? 0) > 0);
+	put('decode-drm-fac-ok', receiver ? String(receiver.facOk) : counts?.[3] ?? '—');
+	put('decode-drm-fac-err', receiver ? String(receiver.facErrors) : counts?.[4] ?? '—');
+	element('decode-drm-fac-err')?.classList.toggle('error', (receiver?.facErrors ?? Number(counts?.[4] ?? 0)) > 0);
 	const snr = element('decode-drm-snr');
 	if (snr) {
 		const measured = lines.find((line) => line.startsWith('FAC SNR '))?.slice(8);
 		snr.textContent = measured ?? (Number.isFinite(snrDb) ? `${snrDb?.toFixed(0)} dB` : '—');
 		snr.title = snr.textContent === '—' ? t('drm_snr_unavailable') : '';
 	}
+	let services = element('decode-drm-services');
+	if (!services) {
+		const host = element('decode-window-drm');
+		if (host) {
+			services = document.createElement('div');
+			services.id = 'decode-drm-services';
+			host.insertBefore(services, element('decode-drm-details'));
+		}
+	}
+	if (services) {
+		services.style.display = receiver ? '' : 'none';
+		const rows = receiver ? [
+			`SDC ${receiver.sdcOk} · Carrier ${receiver.carrierOffsetHz === null ? '—' : `${receiver.carrierOffsetHz.toFixed(1)} Hz`}`,
+			...receiver.services.map((service) => [
+				service.label || `Service ${service.serviceId}`,
+				`ID ${service.serviceId}`,
+				service.audioCoding === null ? '' : service.audioCoding === 0 ? 'AAC' : service.audioCoding === 3 ? 'xHE-AAC' : `Audio coding ${service.audioCoding}`,
+				service.sampleRate === null ? '' : `${(service.sampleRate / 1000).toFixed(1)} kHz`,
+				service.channels === null ? '' : `${service.channels} ch`,
+			].filter(Boolean).join(' · ')),
+		] : [];
+		while (services.children.length > rows.length) services.lastElementChild?.remove();
+		for (const [index, text] of rows.entries()) {
+			let row = services.children[index];
+			if (!row) { row = document.createElement('div'); services.appendChild(row); }
+			if (row.textContent !== text) row.textContent = text;
+		}
+	}
 	const details = element('decode-drm-details');
 	if (details) details.style.display = debug ? '' : 'none';
 	put('decode-drm-debug', debug);
 	const plot = element('decode-window-drm-plot') as HTMLCanvasElement | null;
-	if (!plot || !locked) return;
+	if (!plot) return;
 	const ctx = plot.getContext('2d');
 	if (!ctx) return;
 	const { width, height } = plot;
 	ctx.clearRect(0, 0, width, height);
+	if (!locked) return;
 	const span = 1.8;
 	const cx = width / 2;
 	const cy = height / 2;
@@ -867,26 +982,115 @@ function renderDrm(): void {
  * The WFM pane: the stereo badge, carrier parameters and audio level. The values come from
  * the worker's side chain through the `wfm-info` message, stored on the last-seen object.
  */
-let lastWfm: {
+export interface WfmInfo {
 	stereo: boolean; peakDevHz: number; pilotPct: number; peakDbFs: string; peakHoldDb: string;
 	rdsLocked: boolean; rdsPi: number; rdsGroups: number; ps: string; rt: string;
 	carrierHz: number; pilotDevHz: number; pilotSnrDb: number;
 	scopeL: Float32Array | null; scopeR: Float32Array | null;
-} | null = null;
+}
+const wfmInfo: Record<DecodeChannel, WfmInfo | null> = { 1: null, 2: null, 3: null };
 
 /** Record the worker's latest WFM info (called from the message handler in `iqStream`). */
-export function setWfmInfo(info: {
-	stereo: boolean; peakDevHz: number; pilotPct: number; peakDbFs: string; peakHoldDb: string;
-	rdsLocked: boolean; rdsPi: number; rdsGroups: number; ps: string; rt: string;
-	carrierHz: number; pilotDevHz: number; pilotSnrDb: number;
-	scopeL: Float32Array | null; scopeR: Float32Array | null;
-}): void {
-	lastWfm = info;
-	// Repaint here, not only from the store subscriptions: in WFM the stereo/RDS pane is the only
-	// thing that changes every block, and with nothing else notifying, the window froze on its
-	// first paint — the station name and the RadioText only appeared after the operator forced a
-	// repaint (the reported "press clear to see the text rotate").
-	if (open && mode === 'wfm') renderWfm();
+export function setWfmInfo(info: WfmInfo | null, channel: DecodeChannel = selectedChannel): void {
+	wfmInfo[channel] = info;
+	// Repaint the active WFM pane when stereo/RDS information arrives.
+	if (channel === selectedChannel && open && mode === 'wfm' && !deferDecodePaint()) renderWfm();
+}
+
+/** AM measurements describe real RF input and the mono audio sent to the listener. */
+export interface AmInfo {
+	syncEnabled: boolean; syncLocked: boolean; syncGeneration: number;
+	carrierHz: number | null; carrierOffsetHz: number | null; modulationPct: number | null; inputDbFs: number | null;
+	rmsDbFs: number | null; peakDbFs: number | null; scope: Float32Array | null;
+}
+const amInfo: Record<DecodeChannel, AmInfo | null> = { 1: null, 2: null, 3: null };
+interface AmMeters { time: number; rmsPower: number | null; peakDb: number | null }
+const amMeters: Record<DecodeChannel, AmMeters | null> = { 1: null, 2: null, 3: null };
+let confirmedAmSyncGeneration: number | null = null;
+
+/** STATUS and telemetry travel on different sockets; only the same detector generation may lock. */
+export function confirmAmSyncGeneration(generation: number | null): void {
+	if (generation === confirmedAmSyncGeneration) return;
+	confirmedAmSyncGeneration = generation;
+	amInfo[1] = null;
+	amMeters[1] = null;
+	if (mode === 'am') renderAm();
+}
+
+export function setAmInfo(info: AmInfo | null, channel: DecodeChannel = selectedChannel): void {
+	amInfo[channel] = active && channelModes[channel] === 'am' && !channelErrors[channel]
+		&& (channel !== 1 || (confirmedAmSyncGeneration !== null && info?.syncGeneration === confirmedAmSyncGeneration)) ? info : null;
+	const accepted = amInfo[channel];
+	if (!accepted) amMeters[channel] = null;
+	else {
+		const previous = amMeters[channel];
+		const time = performance.now();
+		const elapsed = previous ? Math.max(0, time - previous.time) / 1000 : 0;
+		const power = accepted.rmsDbFs != null && Number.isFinite(accepted.rmsDbFs) ? 10 ** (accepted.rmsDbFs / 10) : null;
+		const peak = accepted.peakDbFs != null && Number.isFinite(accepted.peakDbFs) ? accepted.peakDbFs : null;
+		amMeters[channel] = {
+			time,
+			rmsPower: power === null ? null : previous?.rmsPower == null ? power
+				: previous.rmsPower + (1 - Math.exp(-elapsed / 0.3)) * (power - previous.rmsPower),
+			peakDb: peak === null ? null : previous?.peakDb == null ? peak : Math.max(peak, previous.peakDb - 20 * elapsed),
+		};
+	}
+	if (channel === selectedChannel && open && mode === 'am' && !deferDecodePaint()) renderAm();
+}
+
+export function canToggleAmSync(): boolean {
+	return active && mode === 'am' && selectedChannel === 1 && !channelErrors[1]
+		&& !sdrAmSync.pending() && (hooks.canAmSync?.() ?? true);
+}
+
+function renderAm(): void {
+	if (deferDecodePaint()) return;
+	const info = amInfo[selectedChannel];
+	const confirmed = selectedChannel === 1 ? sdrAmSync.confirmedValue() === true : info?.syncEnabled === true;
+	const pending = selectedChannel === 1 && sdrAmSync.pending();
+	const locked = active && confirmed && !pending && info?.syncEnabled === true && info.syncLocked
+		&& (selectedChannel !== 1 || info.syncGeneration === confirmedAmSyncGeneration) && !channelErrors[selectedChannel];
+	const badge = element('am-title-badge');
+	if (badge) {
+		badge.textContent = t(!confirmed ? 'am_sync_off' : locked ? 'am_sync_locked' : 'am_sync_searching');
+		badge.classList.toggle('on', !!locked);
+	}
+	const toggle = button('am-sync-toggle');
+	if (toggle) {
+		toggle.textContent = t(pending ? sdrAmSync.get() ? 'am_sync_enabling' : 'am_sync_disabling' : confirmed ? 'on' : 'off');
+		toggle.setAttribute('aria-pressed', String(confirmed));
+		toggle.setAttribute('aria-busy', String(pending));
+		toggle.classList.toggle('active', confirmed);
+		toggle.classList.toggle('pending', pending);
+		toggle.disabled = !canToggleAmSync();
+		toggle.title = t(pending ? 'am_sync_pending_tip' : confirmed ? 'am_sync_disable' : 'am_sync_enable');
+		toggle.setAttribute('aria-label', `${t('am_sync_detector')}. ${toggle.title}`);
+	}
+	renderDecodeTiming();
+	const carrier = element('am-carrier');
+	if (carrier) carrier.textContent = info?.carrierHz != null && Number.isFinite(info.carrierHz) && info.carrierHz > 0
+		? `${(info.carrierHz / 1e6).toFixed(6)} MHz` : '—';
+	const put = (id: string, value: number | null | undefined, unit: string): void => {
+		const el = element(id);
+		if (el) el.textContent = typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)} ${unit}` : '—';
+	};
+	put('am-carrier-offset', info?.carrierOffsetHz, 'Hz');
+	put('am-modulation', info?.modulationPct, '%');
+	put('am-input', info?.inputDbFs, 'dBFS');
+	const meter = amMeters[selectedChannel];
+	put('am-rms', meter?.rmsPower != null ? 10 * Math.log10(Math.max(meter.rmsPower, 1e-16)) : null, 'dBFS');
+	put('am-peak', meter?.peakDb, 'dBFS');
+	const modulation = element('am-modulation');
+	if (modulation) modulation.title = t('am_modulation_tip');
+	const scope = element('am-scope') as HTMLCanvasElement | null;
+	if (scope) {
+		scope.title = t('am_scope_tip');
+		scope.setAttribute('aria-label', t('am_scope_tip'));
+		if (info?.scope && info.scope.length > 1) drawScope(scope, [info.scope], 1);
+		else scope.getContext('2d')?.clearRect(0, 0, scope.width, scope.height);
+	}
+	const empty = element('am-empty');
+	if (empty) { empty.textContent = t('am_waiting'); empty.style.display = info ? 'none' : ''; }
 }
 
 /**
@@ -906,10 +1110,8 @@ function drawScope(
 	const line = styles.getPropertyValue('--text').trim() || '#ccc';
 	const grid = styles.getPropertyValue('--card-border').trim() || '#444';
 	ctx.clearRect(0, 0, w, h);
-	// The vertical scale comes from the slow peak hold, not from these windows: scaling to each
-	// window's own peak makes the trace change height on every syllable (measured on speech, the
-	// block peak swings by more than 20 dB), which reads as the waveform "jumping". One scale
-	// for both lanes also makes the L/R balance visible instead of normalising it away.
+	// Slow peak hold stabilizes the vertical scale across audio blocks. Sharing the scale
+	// between lanes preserves the visible L/R balance.
 	let peak = scalePeak;
 	if (peak <= 1e-6) {
 		for (const t of traces) for (const v of t) peak = Math.max(peak, Math.abs(v));
@@ -946,7 +1148,7 @@ function drawScope(
 }
 
 function renderWfm(): void {
-	const w = lastWfm;
+	const w = wfmInfo[selectedChannel];
 	const put = (id: string, value: string): void => {
 		const el = element(id);
 		if (el) el.textContent = value;
@@ -1002,11 +1204,16 @@ function setOpen(next: boolean): void {
 
 /** Render the state: visible only when it was asked for and the demodulator decodes. */
 function syncOpen(): void {
-	open = wanted && mode !== null;
+	const available = active && channelModes[selectedChannel] !== null;
+	open = active && wanted && Object.values(channelModes).some((value) => value !== null);
 	const win = element('decode-window');
 	const toggle = button('btn-decode-window');
 	if (win) win.style.display = open ? 'flex' : 'none';
+	const amToggle = button('am-sync-toggle');
+	if (amToggle) amToggle.disabled = !canToggleAmSync();
 	if (toggle) {
+		toggle.disabled = !available;
+		toggle.title = available ? t('decode_window_tip') : t('decode_window_needs_mode');
 		toggle.textContent = open ? t('on') : t('off');
 		toggle.classList.toggle('active', open);
 	}
@@ -1033,7 +1240,24 @@ function subscribeAll(fn: () => void): () => void {
 }
 
 export function toggleDecodeWindow(): void {
-	setOpen(!open);
+	if (active) setOpen(!open);
+}
+
+/** Hide an inactive receiver without discarding its logs, channel modes or visibility choice. */
+export function setDecodeActive(next: boolean): void {
+	active = next;
+	if (!next) {
+		for (const channel of [1, 2, 3] as const) { amInfo[channel] = null; amMeters[channel] = null; }
+		confirmedAmSyncGeneration = null;
+		renderAm();
+	}
+	syncOpen();
+}
+
+/** Refresh slot-backed controls after STATUS confirmation, Preset or SDR entry. */
+export function refreshDecodeWindow(): void {
+	syncOpen();
+	if (!open) renderContent();
 }
 
 /** True while the window is showing (tests and the button state). */
@@ -1053,24 +1277,44 @@ export function decodeWindowMode(): DecodeMode {
  * window without losing the user's choice of position or the logs.
  */
 export function setDecodeWindowAvailable(demod: string): void {
+	setDecodeChannelMode(selectedChannel, demod);
+}
+
+/** The confirmed demodulator for one receiver, including channels that are not being viewed. */
+export function setDecodeChannelMode(channel: DecodeChannel, demod: string): void {
 	const next = (DECODING_MODES as readonly string[]).includes(demod) ? (demod as DecodeMode) : null;
-	const changed = next !== mode;
-	const leavingDrm = (mode === 'drm' || mode === 'drmplus') && next !== mode;
-	if (leavingDrm) clearDrm();
-	mode = next;
-	const toggle = button('btn-decode-window');
-	if (toggle) {
-		toggle.disabled = next === null;
-		toggle.title = next === null ? t('decode_window_needs_mode') : t('decode_window_tip');
+	const previous = channelModes[channel];
+	if ((previous === 'drm' || previous === 'drmplus') && previous !== next) clearDrm(channel);
+	if (previous === 'am' && previous !== next) {
+		amInfo[channel] = null;
+		amMeters[channel] = null;
+		if (channel === selectedChannel) renderAm();
 	}
-	if (next === null) {
-		syncOpen();                    // hide it, but keep the operator's choice (see `wanted`)
-		return;
-	}
-	// Switching between decoding modes re-renders (the other pane) but keeps the window open: the
-	// operator asked for the text, not for this particular protocol.
-	if (next !== null && changed) syncOpen();     // a decoding mode again: show it if it was wanted
-	if (next !== null && toggle && open) toggle.textContent = t('on');
+	channelModes[channel] = next;
+	mode = channelModes[selectedChannel];
+	// Availability is also gated by the acquisition mode in syncOpen().
+	syncOpen();
+}
+
+export function decodeChannel(): DecodeChannel {
+	return selectedChannel;
+}
+
+/** Select a receiver's retained decoder logs and notify the socket consumer. */
+export function setDecodeChannel(channel: DecodeChannel): void {
+	if (channel === selectedChannel) return;
+	sstvViews[selectedChannel] = sstvViewMode;
+	selectedChannel = channel;
+	mode = channelModes[channel];
+	sstvViewMode = sstvViews[channel];
+	sstvThumbsShape = '';
+	setFt8Channel(channel);
+	setCwChannel(channel);
+	setDrmChannel(channel);
+	setSstvChannel(channel);
+	setSstvModeFilter(sstvViewMode);
+	syncOpen();
+	document.dispatchEvent(new CustomEvent('websa:decode-channel', { detail: { channel } }));
 }
 
 /** Wire the window: its buttons, its drag/resize handles and the tune callback. */
@@ -1079,6 +1323,35 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	const win = element('decode-window');
 	const head = element('decode-window-head');
 	if (!win) return;
+	// Only the primary receiver has controls in the product UI. The retained
+	// per-channel stores still accept protocol events independently.
+	element('decode-channel')?.remove();
+	setDecodeChannel(1);
+	button('am-sync-toggle')?.addEventListener('click', () => {
+		const toggle = button('am-sync-toggle');
+		if (!toggle || toggle.disabled || !canToggleAmSync()) return;
+		hooks.onAmSync?.(sdrAmSync.confirmedValue() !== true);
+		renderAm();
+	});
+	if (head && !element('decode-source-timing')) {
+		const timing = document.createElement('span');
+		timing.id = 'decode-source-timing';
+		timing.className = 'count';
+		head.insertBefore(timing, head.querySelector('.spacer'));
+	}
+	const meter = element('cw-meter');
+	if (meter && !element('cw-telemetry')) {
+		const telemetry = document.createElement('span');
+		telemetry.id = 'cw-telemetry';
+		meter.appendChild(telemetry);
+	}
+	if (!element('decode-ft8-state')) {
+		const state = document.createElement('div');
+		state.id = 'decode-ft8-state';
+		state.className = 'decode-search-row';
+		state.style.display = 'none';
+		win.insertBefore(state, win.querySelector('.decode-resize-layer'));
+	}
 
 	const geometry = readGeometry();
 	// The zoom first, so the geometry applied below is measured against the scale that renders it.
@@ -1088,9 +1361,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		// the user cannot reach is worse than a moved one.
 		applyGeometry(win, clampToViewport(geometry));
 	} else {
-		// First run: an explicit position inside the viewport. Leaving `left`/`top` unset made the
-		// window land wherever its (fixed) static position happened to be - off-screen with its head
-		// out of reach, which is a window that cannot be dragged back (reported).
+		// Default geometry explicitly places the window inside the viewport.
 		applyGeometry(win, clampToViewport({
 			x: Math.round((window.innerWidth - DEFAULT_SIZE.w) / 2),
 			y: Math.max(60, Math.round(window.innerHeight * 0.25)),
@@ -1113,7 +1384,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		else clearFt8Spots();
 		renderContent();
 	});
-	element('btn-decode-close')?.addEventListener('click', () => setOpen(false));
+	element('btn-decode-close')?.addEventListener('click', () => { if (active) setOpen(false); });
 
 	// FT8 pane: the regex filter, the sortable headers (click sorts, click again restores the
 	// arrival order) and the QSO session marking on row hover. The rows body is rebuilt by
@@ -1149,16 +1420,13 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		// A mode click shows that mode's picture set, and (with Auto off) pins the decode mode to it.
 		setSstvModeFilter(mode);
 		sstvViewMode = mode;
-		if (!sstvAuto) {
-			sstvPin = mode;
-			hooks.onSstvMode(sstvPin);
-			try {
-				localStorage.setItem(SSTV_MODE_KEY, String(mode));
-			} catch { /* storage off: session-only pin */ }
-		}
+		try {
+			localStorage.setItem(SSTV_MODE_KEY, String(mode));
+		} catch { /* storage off: session-only view */ }
+		if (active && sdrSstvMode.get() >= 0) hooks.onSstvMode(mode);
 		renderContent();
 	});
-	element('sstv-auto')?.addEventListener('click', () => setSstvAuto(!sstvAuto));
+	element('sstv-auto')?.addEventListener('click', () => setSstvAuto(sdrSstvMode.get() >= 0));
 	element('sstv-select-all')?.addEventListener('click', () => {
 		const status = sstvStatus();
 		const all = [status.current, ...status.history].filter(Boolean);
@@ -1168,17 +1436,13 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	});
 	element('btn-sstv-delete')?.addEventListener('click', () => deleteSstvSelected());
 
-	// The Auto toggle and the viewed mode survive a reload.
+	// The history filter survives reload independently of receiver configuration.
 	try {
-		sstvAuto = localStorage.getItem(SSTV_AUTO_KEY) !== '0';
-		const storedMode = Number(localStorage.getItem(SSTV_MODE_KEY));
-		sstvViewMode = Number.isFinite(storedMode) && storedMode >= 0 ? storedMode : null;
-		if (!sstvAuto && sstvViewMode !== null) {
-			sstvPin = sstvViewMode;
-			hooks.onSstvMode(sstvPin);
-		}
-	} catch { /* storage off: session-only defaults */ }
-	setSstvModeFilter(sstvAuto ? null : sstvViewMode);
+		const raw = localStorage.getItem(SSTV_MODE_KEY);
+		const storedMode = raw !== null && raw.trim() !== '' ? Number(raw) : NaN;
+		sstvViewMode = Number.isInteger(storedMode) && storedMode >= 0 ? storedMode : null;
+	} catch { /* storage off: session-only view */ }
+	setSstvModeFilter(sstvViewMode);
 	element('btn-sstv-save')?.addEventListener('click', saveSstvPng);
 	element('sstv-thumbs')?.addEventListener('click', (event) => {
 		const thumb = (event.target as HTMLElement).closest('.decode-sstv-thumb') as HTMLElement | null;
@@ -1226,7 +1490,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		let offsetX = 0;
 		let offsetY = 0;
 		head.addEventListener('pointerdown', (event) => {
-			if ((event.target as HTMLElement).closest('button, input')) return;   // the head's own controls
+			if ((event.target as HTMLElement).closest('button, input, select')) return;
 			const box = win.getBoundingClientRect();
 			dragging = true;
 			offsetX = event.clientX - box.left;
@@ -1264,7 +1528,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 
 	wireResize(win);
 
-	mode = null;
+	mode = channelModes[selectedChannel];
 	// The DOM this init writes into is new, so the SSTV buttons and the thumbnails must be built again
 	// there; the cached shapes would otherwise skip both.
 	sstvButtons = [];

@@ -1,10 +1,10 @@
-// i18n namespace 'limits' (report finding E-5: dictionaries are split by domain and
-// merged in core/i18n.ts; the parity test checks the merged result).
+// Limit translations, merged in core/i18n.ts.
 export const en = {
 	"limit_canvas_pass": "LIMIT PASS",
 	"limit_canvas_fail": "LIMIT FAIL {n}",
 	"limit_canvas_worst": "worst +{db} dB @ {f}",
 	"limit_canvas_na": "LIMIT -",
+	"absolute_trace_unavailable": "Unavailable: select an absolute trace",
 	"limit_state": "Limit",
 	"limit_edit": "Edit",
 	"limit_add": "Add",
@@ -27,6 +27,7 @@ export const zh = {
 	"limit_canvas_fail": "限值 超限 {n}",
 	"limit_canvas_worst": "最差 +{db} dB @ {f}",
 	"limit_canvas_na": "限值 -",
+	"absolute_trace_unavailable": "不可用：请选择绝对电平迹线",
 	"limit_state": "限制",
 	"limit_edit": "编辑",
 	"limit_add": "加点",

@@ -104,7 +104,7 @@ export function spectrumWheelZoom(deltaY: number, x: number, minSpan: number): b
 	const capture = getCapture();
 	if (!view || !capture) return false;
 	const f = spectrumFreqAtX(x);
-	if (f === null) return false;                    // outside the plot: not our gesture
+	if (f === null) return false;                    // Outside the plot.
 	const factor = deltaY < 0 ? 0.8 : 1.25;
 	const next = zoomAround(view, factor, f, capture, minSpan);
 	setView(next, minSpan);

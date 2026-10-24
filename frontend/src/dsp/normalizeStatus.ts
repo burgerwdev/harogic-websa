@@ -1,9 +1,7 @@
 /**
  * Normalisation status indicator (leaf).
  *
- * It only reads the trace state and toggles one button, but it used to live in
- * dsp/normalize.ts while dsp/traces.ts called it - a two-module cycle
- * (docs/.../ARCH_REVIEW.md finding P1-4). Keeping it in a leaf lets both sides use it.
+ * Shared by normalization and trace updates; reads trace state and updates the button.
  */
 import * as S from '../core/store';
 

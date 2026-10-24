@@ -18,6 +18,7 @@ import {
 	getView,
 	viewportVersion,
 } from '../ui/spectrumViewport';
+import { lowerBound } from '../dsp/grid';
 
 let sized = false;
 let sizedVersion = -1;
@@ -89,19 +90,41 @@ export function renderSpectrumZoomOverview(): void {
 	if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi - lo < 1) { lo = -100; hi = 0; }
 	const pad = (hi - lo) * 0.1;
 	const Y = (v: number) => (1 - (v - (lo - pad)) / (hi - lo + 2 * pad)) * ovH;
-	const X = (i: number) => (i / (n - 1)) * ovW;
 
 	// The trace across the FULL capture (the view highlight is what marks the sub-window).
 	ctx.strokeStyle = col.traces[S.activeTraceIdx] || col.traces[0] || col.rta;
 	ctx.lineWidth = 1;
 	ctx.beginPath();
-	let pen = false;
-	for (let i = 0; i < n; i++) {
-		const v = powers[i];
-		if (!Number.isFinite(v)) { pen = false; continue; }
-		const x = X(i), y = Y(v);
-		if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
-	}
+  const freq = S.rtaMode ? S.rtaData?.freq : S.freqArray;
+  const columns = Math.max(1, Math.min(2048, Math.ceil(ovW)));
+  for (let column = 0; column < columns; column++) {
+    const a = cap.lo + column / columns * (cap.hi - cap.lo);
+    const b = cap.lo + (column + 1) / columns * (cap.hi - cap.lo);
+    const first = freq ? lowerBound(freq, a) : Math.floor(column * n / columns);
+    const end = freq ? (column + 1 === columns ? n : lowerBound(freq, b)) : Math.floor((column + 1) * n / columns);
+    if (first >= end) continue;
+    let min = first, max = first, gap = false;
+    for (let i = first; i < Math.min(n, end); i++) {
+      if (!Number.isFinite(powers[i])) { gap = true; break; }
+      if (powers[i] < powers[min]) min = i;
+      if (powers[i] > powers[max]) max = i;
+    }
+    // The navigator is a column envelope: independent original min/max vertices
+    // avoid dense cross-column zigzags and never join across missing coverage.
+    if (gap) continue;
+    const minHz = freq ? freq[min] : cap.lo + min / (n - 1) * (cap.hi - cap.lo);
+    const maxHz = freq ? freq[max] : cap.lo + max / (n - 1) * (cap.hi - cap.lo);
+    const minX = (minHz - cap.lo) / (cap.hi - cap.lo) * ovW;
+    const maxX = (maxHz - cap.lo) / (cap.hi - cap.lo) * ovW;
+    const minY = Y(powers[min]), maxY = Y(powers[max]);
+    if (min === max || minY === maxY) {
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillRect(minX, minY, 1 / ovRatio, 1 / ovRatio);
+    } else {
+      ctx.moveTo(minX, minY);
+      ctx.lineTo(maxX, maxY);
+    }
+  }
 	ctx.stroke();
 
 	// View highlight: dim the outside, outline the window, edge handles on both sides.

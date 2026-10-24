@@ -2,15 +2,18 @@
  * The decode window: gated on the demodulator, fed by the FT8 and CW logs, and its rows tune.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initDecodeWindow, decodeWindowOpen, decodeWindowMode, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
-import { addFt8Spot, clearFt8Spots, clock } from '../sdr/ft8Log';
-import { addCwText, clearCwLog, cwLog } from '../sdr/cwLog';
-import { clearDrm, drmStatus, setDrmConstellation, setDrmDecode } from '../sdr/drmLog';
+import { initDecodeWindow, ingestDecodeEvents, decodeChannel, decodeWindowOpen, decodeWindowMode, refreshDecodeWindow, setDecodeActive, setDecodeChannel, setDecodeChannelMode, setDecodeError, setDecodeTiming, setDecodeWindowAvailable, toggleDecodeWindow } from '../ui/decodeWindow';
+import { addFt8Spot, clearFt8Spots, clock, ft8Spots, setFt8DecoderState } from '../sdr/ft8Log';
+import { addCwText, clearCwLog, cwLog, cwLevel, setCwLevel } from '../sdr/cwLog';
+import { clearDrm, drmStatus, setDrmConstellation, setDrmDecode, setDrmStatus } from '../sdr/drmLog';
 import { clearSstv, setSstvDecoderState, setSstvModeFilter, setSstvSelected, sstvCount, sstvStatus, updateSstvPicture } from '../sdr/sstvLog';
 import { setSstvModeTable } from '../sdr/registry';
 import { setUiScale } from '../core/uiScale';
 import { setLang, t } from '../core/i18n';
 import type { Ft8Report } from '../sdr/types';
+import { resetSdrState, sdrSstvMode } from '../ui/sdrState';
+import { confirmAmSyncGeneration, setAmInfo, type AmInfo } from '../ui/decodeWindow';
+import { sdrAmSync } from '../ui/sdrState';
 
 /** The shell the panel ships (index.html); the window only fills `#decode-window-rows`. */
 function shell(): void {
@@ -19,6 +22,8 @@ function shell(): void {
 		<div class="decode-window" id="decode-window" style="display:none;">
 			<div class="decode-window-head" id="decode-window-head">
 				<span id="decode-window-title">FT8</span><span id="sstv-head-hint" style="display:none;"></span><span class="count" id="decode-window-count">0</span>
+				<span id="am-title-badge" role="status" style="display:none;"></span>
+				<span id="cw-meter"><span id="cw-led"></span><i id="cw-vu-fill"></i></span>
 				<span class="spacer"></span>
 				<input id="decode-window-opacity" type="range" min="35" max="100" step="5" value="100" />
 				<button class="btn" id="btn-decode-utc">UTC</button>
@@ -39,6 +44,13 @@ function shell(): void {
 					<th data-sortable data-col="6">Location</th>
 				</tr></thead><tbody id="decode-window-rows"></tbody></table>
 				<div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
+				<div id="decode-am" style="display:none;">
+					<div class="decode-am-carrier"><span id="am-carrier"></span>
+						<label>Synchronous <button class="btn" id="am-sync-toggle" aria-pressed="false" aria-busy="false"></button></label></div>
+					<span id="am-carrier-offset"></span><span id="am-modulation"></span>
+					<span id="am-input"></span><span id="am-rms"></span><span id="am-peak"></span>
+					<canvas id="am-scope" width="320" height="100"></canvas><span id="am-empty"></span>
+				</div>
 				<div class="decode-drm" id="decode-window-drm" style="display:none;">
 					<div class="decode-drm-service"><span id="decode-drm-lock"></span><strong id="decode-drm-station"></strong><span id="decode-drm-status"></span><div id="decode-drm-mode"></div></div>
 					<div id="decode-drm-main"><div id="decode-drm-mer"></div><span id="decode-drm-snr"></span>
@@ -95,6 +107,163 @@ const report = (over: Partial<Ft8Report> = {}): Ft8Report => ({
 const rows = () => Array.from(document.querySelectorAll('#decode-window-rows tr'));
 const shown = () => (document.getElementById('decode-window') as HTMLElement).style.display;
 
+beforeEach(() => {
+	setDecodeActive(true);
+	sdrSstvMode.reset();
+	sdrSstvMode.confirm(-1);
+	setDecodeChannel(1);
+	for (const channel of [1, 2, 3] as const) setDecodeChannelMode(channel, 'dsb');
+});
+
+describe('decoder channel selection', () => {
+	beforeEach(() => {
+		setDecodeChannel(1);
+		for (const channel of [1, 2, 3] as const) {
+			setDecodeChannelMode(channel, 'dsb');
+			setDecodeError(channel, null);
+			setFt8DecoderState(null, channel);
+			clearFt8Spots(channel);
+			clearCwLog(channel);
+			clearDrm(channel);
+			clearSstv(channel);
+		}
+		shell();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+	});
+
+	afterEach(() => {
+		setDecodeChannel(1);
+		for (const channel of [1, 2, 3] as const) setDecodeChannelMode(channel, 'dsb');
+		vi.restoreAllMocks();
+	});
+
+	it('selects the confirmed mode and retained output for each receiver', () => {
+		setDecodeChannelMode(1, 'ft8');
+		setDecodeChannelMode(2, 'cw');
+		addFt8Spot(report({ text: 'CQ JO1WKO PM95' }), 1000, 1);
+		addCwText('CHANNEL TWO', true, 0.8, 2);
+		setCwLevel(0.2, true, { wpm: 19, pitchHz: 701, afcHz: -2.5 }, 2);
+		toggleDecodeWindow();
+		const selected = vi.fn();
+		document.addEventListener('websa:decode-channel', selected);
+		try {
+			expect(document.getElementById('decode-channel')).toBeNull();
+			setDecodeChannel(2);
+			expect(decodeChannel()).toBe(2);
+			expect(decodeWindowMode()).toBe('cw');
+			expect(document.getElementById('decode-window-cw')?.textContent).toContain('CHANNEL TWO');
+			expect(cwLevel()).toMatchObject({ rms: 0.2, keyed: true, wpm: 19, pitchHz: 701 });
+			expect(document.getElementById('cw-telemetry')?.textContent).toBe('19.0 WPM · 701 Hz · AFC -2.5 Hz');
+			expect((selected.mock.calls[0][0] as CustomEvent).detail).toEqual({ channel: 2 });
+			setDecodeChannelMode(1, 'wfm');
+			expect(decodeWindowMode()).toBe('cw');
+			setDecodeChannelMode(1, 'ft8');
+			setDecodeChannel(1);
+			expect(rows()[0].textContent).toContain('CQ JO1WKO PM95');
+			expect(cwLog().lines).toEqual([]);
+		} finally {
+			document.removeEventListener('websa:decode-channel', selected);
+		}
+	});
+
+	it('deduplicates a source window while retaining later FT8 transmissions and other channels', () => {
+		const first = { ...report(), sourceKey: 'epoch:stream', windowStart: '9007199254740993' };
+		addFt8Spot(first, 1000, 1);
+		addFt8Spot(first, 2000, 1);
+		addFt8Spot({ ...first, windowStart: '9007199254740994' }, 3000, 1);
+		addFt8Spot(first, 4000, 2);
+		expect(ft8Spots().map((spot) => spot.at)).toEqual([3000, 1000]);
+		setDecodeChannel(2);
+		expect(ft8Spots().map((spot) => spot.at)).toEqual([4000]);
+	});
+
+	it('shows unknown alignment and exact source clock without leaking decoder errors across channels', () => {
+		setDecodeChannelMode(1, 'ft8');
+		setDecodeChannelMode(2, 'cw');
+		setDecodeTiming(1, {
+			inputIndex: '9007199254740993123', fractionNum: '17', fractionDen: '31',
+			inputRate: 48000, delaySeconds: 0, delayKnown: false, causalPresentation: true,
+		});
+		setDecodeTiming(2, {
+			inputIndex: '21', fractionNum: '0', fractionDen: '1',
+			inputRate: 48000, delaySeconds: 0.125, delayKnown: true, causalPresentation: false,
+		});
+		setDecodeError(2, 'Decoder unavailable');
+		toggleDecodeWindow();
+		const status = document.getElementById('decode-source-timing')!;
+		expect(status.textContent).toBe('Alignment unknown');
+		expect(status.title).toContain('9007199254740993123 + 17/31');
+		expect(status.title).toContain('Causal presentation');
+		setDecodeChannel(2);
+		expect(status.textContent).toContain('Decoder error: Decoder unavailable');
+		expect(status.getAttribute('role')).toBe('alert');
+		expect(status.title).toContain('Delay 0.125000 s');
+		setDecodeError(2, null);
+		expect(status.textContent).toBe('Aligned');
+		setDecodeChannel(1);
+		expect(status.textContent).toBe('Alignment unknown');
+		setDecodeTiming(1, {
+			inputIndex: '9007199254740993999', fractionNum: '3', fractionDen: '7',
+			inputRate: 48000, delaySeconds: 0.02, delayKnown: true, causalPresentation: true,
+		});
+		expect(status.textContent).toBe('Alignment unknown');
+		expect(status.title).toContain('9007199254740993999 + 3/7');
+		expect(status.title).toContain('Delay 0.020000 s');
+		expect(status.title).toContain('Causal presentation');
+	});
+
+	it('keeps FT8 receive counters with their channel while preserving the decode history', () => {
+		setDecodeChannelMode(1, 'ft8');
+		setDecodeChannelMode(2, 'ft8');
+		addFt8Spot(report(), 1000, 1);
+		setFt8DecoderState({ bufferedSamples: 24000, bufferedSeconds: 0.5, attempts: 3, count: 7, level: 0.2, epoch: 4 }, 1);
+		setFt8DecoderState({ bufferedSamples: 48000, bufferedSeconds: 1, attempts: 5, count: 9, level: 0.4, epoch: 6 }, 2);
+		toggleDecodeWindow();
+		expect(document.getElementById('decode-ft8-state')?.textContent).toContain('Buffer 0.5 s · Attempts 3 · Decodes 7 · Level 20%');
+		setDecodeChannel(2);
+		expect(document.getElementById('decode-ft8-state')?.textContent).toContain('Buffer 1.0 s · Attempts 5 · Decodes 9 · Level 40%');
+		setDecodeChannel(1);
+		setFt8DecoderState(null, 1);
+		expect(document.getElementById('decode-ft8-state')?.style.display).toBe('none');
+		expect(rows()[0].textContent).toContain('CQ JO1WKO PM95');
+	});
+
+	it('renders structured DRM services for either DRM mode', () => {
+		setDecodeChannelMode(2, 'drmplus');
+		setDrmStatus({
+			locked: true, mode: 'E', stationLabel: 'VHF RADIO', carrierOffsetHz: -2.5,
+			facOk: 11, facErrors: 2, sdcOk: 3,
+			services: [{ serviceId: 42, label: 'News', audioCoding: 0, sampleRate: 48000, channels: 2 }],
+		}, 2);
+		toggleDecodeWindow();
+		setDecodeChannel(2);
+		expect(document.getElementById('decode-window-title')?.textContent).toBe('DRM+');
+		expect(document.getElementById('decode-drm-station')?.textContent).toBe('VHF RADIO');
+		expect(document.getElementById('decode-drm-fac-err')?.textContent).toBe('2');
+		expect(document.getElementById('decode-drm-services')?.textContent).toContain('News · ID 42 · AAC · 48.0 kHz · 2 ch');
+		setDecodeChannel(1);
+		expect(drmStatus().receiver).toBeNull();
+	});
+
+	it('gates inactive decode without changing wanted visibility or clearing DRM output', () => {
+		setDecodeChannelMode(1, 'drm');
+		setDrmStatus({ locked: true, mode: 'A', stationLabel: 'RETAINED DRM', carrierOffsetHz: 0,
+			facOk: 1, facErrors: 0, sdcOk: 1, services: [] });
+		toggleDecodeWindow();
+		expect(decodeWindowOpen()).toBe(true);
+		setDecodeActive(false);
+		expect(decodeWindowOpen()).toBe(false);
+		expect((document.getElementById('btn-decode-window') as HTMLButtonElement).disabled).toBe(true);
+		toggleDecodeWindow();
+		document.getElementById('btn-decode-close')!.click();
+		expect(decodeWindowMode()).toBe('drm');
+		expect(drmStatus().receiver?.stationLabel).toBe('RETAINED DRM');
+		setDecodeActive(true);
+		expect(decodeWindowOpen()).toBe(true);
+		expect(document.getElementById('decode-drm-station')?.textContent).toBe('RETAINED DRM');
+	});
+});
 describe('the FT8 decode window', () => {
 	beforeEach(() => {
 		shell();
@@ -116,7 +285,7 @@ describe('the FT8 decode window', () => {
 		expect(shown()).toBe('flex');
 		// Switching to an analog demodulator closes it (the table would be meaningless) but the log
 		// and the user's chosen position stay.
-		setDecodeWindowAvailable('am');
+		setDecodeWindowAvailable('dsb');
 		expect(decodeWindowOpen()).toBe(false);
 		expect(shown()).toBe('none');
 		expect(button.disabled).toBe(true);
@@ -471,6 +640,62 @@ describe('the FT8 decode window', () => {
 		expect(document.getElementById('decode-drm-snr')?.title).toBe('');
 	});
 
+	it('retains the DRM snapshot across empty heartbeats and updates service rows in place', () => {
+		setDecodeWindowAvailable('drm');
+		toggleDecodeWindow();
+		const receiver = { locked: true, mode: 'B', stationLabel: 'CNR-1', carrierOffsetHz: 0,
+			facOk: 21, facErrors: 0, sdcOk: 3,
+			services: [{ serviceId: 1, label: 'CNR-1', audioCoding: 0, sampleRate: 24000, channels: 1 }] };
+		setDrmDecode(['locked: B, 10 kHz', 'FAC MER 18.7 dB', '14 MSC frames, 86 audio AUs, FAC ok 21 err 0'], 16, 1, receiver);
+		const service = document.getElementById('decode-drm-services')?.children[1];
+		setDrmDecode([], null, 1, { ...receiver, facOk: 22 });
+		expect(document.getElementById('decode-drm-msc')?.textContent).toBe('14');
+		expect(document.getElementById('decode-drm-aus')?.textContent).toBe('86');
+		expect(document.getElementById('decode-drm-mer')?.textContent).toBe('18.7');
+		expect(document.getElementById('decode-drm-snr')?.textContent).toBe('16 dB');
+		expect(document.getElementById('decode-drm-fac-ok')?.textContent).toBe('22');
+		expect(document.getElementById('decode-drm-services')?.children[1]).toBe(service);
+		setDecodeTiming(1, { inputIndex: '1000', fractionNum: '0', fractionDen: '1', inputRate: 48000,
+			delaySeconds: 1, delayKnown: false, causalPresentation: true });
+		expect(document.getElementById('decode-source-timing')?.textContent).toBe('Alignment unknown');
+		expect(document.getElementById('decode-source-timing')?.title).toContain('Alignment unknown');
+	});
+
+	it('consumes all decoder updates before painting the latest snapshot once', () => {
+		setDecodeWindowAvailable('cw');
+		toggleDecodeWindow();
+		let paint: FrameRequestCallback | null = null;
+		const schedule = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { paint = callback; return 1; });
+		ingestDecodeEvents(() => {
+			addCwText('CQ ', false);
+			addCwText('DE N0CALL', true);
+		});
+		expect(cwLog().lines.map((line) => line.text).join('')).toContain('CQ DE N0CALL');
+		expect(document.getElementById('decode-window-cw')?.textContent).not.toContain('CQ DE N0CALL');
+		expect(schedule).toHaveBeenCalledTimes(1);
+		(paint! as FrameRequestCallback)(0);
+		expect(document.getElementById('decode-window-cw')?.textContent).toContain('CQ DE N0CALL');
+	});
+
+	it('retains decoded updates while closed and paints their latest state on opening', () => {
+		setDecodeWindowAvailable('drm');
+		const schedule = vi.spyOn(window, 'requestAnimationFrame');
+		const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext');
+		canvas.mockClear();
+		ingestDecodeEvents(() => {
+			setDecodeTiming(1, { inputIndex: '9000', fractionNum: '0', fractionDen: '1', inputRate: 48000,
+				delaySeconds: 1, delayKnown: false, causalPresentation: true });
+			setDrmDecode(['locked: B, 10 kHz', 'station: LATEST STATION'], 19);
+			setDrmConstellation([{ re: 0.7, im: -0.7 }]);
+		});
+		expect(schedule).not.toHaveBeenCalled();
+		expect(canvas).not.toHaveBeenCalled();
+		expect(drmStatus().lines).toContain('station: LATEST STATION');
+		toggleDecodeWindow();
+		expect(document.getElementById('decode-drm-station')?.textContent).toBe('LATEST STATION');
+		expect(document.getElementById('decode-source-timing')?.title).toContain('Source sample 9000');
+	});
+
 	it('shows DRM searching without old station or stale constellation', () => {
 		setDecodeWindowAvailable('drm');
 		toggleDecodeWindow();
@@ -496,7 +721,7 @@ describe('the FT8 decode window', () => {
 	it('is closed and disabled for a mode that does not decode', () => {
 		setDecodeWindowAvailable('ft8');
 		toggleDecodeWindow();
-		setDecodeWindowAvailable('am');
+		setDecodeWindowAvailable('dsb');
 		expect(decodeWindowOpen()).toBe(false);
 		expect(decodeWindowMode()).toBe(null);
 		expect((document.getElementById('btn-decode-window') as HTMLButtonElement).disabled).toBe(true);
@@ -751,7 +976,7 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 	});
 
 	it('auto on: mode click views only (hooks not called); auto off: mode click pins', () => {
-		const onSstvMode = vi.fn();
+		const onSstvMode = vi.fn((mode: number | null) => sdrSstvMode.set(mode ?? -1));
 		initDecodeWindow({ onTune: () => {}, onSstvMode });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
@@ -768,6 +993,136 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 		// Toggle auto back on: unpins.
 		autoButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
 		expect(onSstvMode).toHaveBeenLastCalledWith(null);
+	});
+
+	it('projects API confirmation and pending pin or Auto requests without changing the history filter', () => {
+		initDecodeWindow({ onTune: () => {}, onSstvMode: (mode) => sdrSstvMode.set(mode ?? -1) });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		findMode('Robot 36').click();
+		expect(sstvStatus().activeMode).toBe(5);
+		sdrSstvMode.confirm(17);
+		refreshDecodeWindow();
+		expect(autoButton().classList.contains('active')).toBe(false);
+		expect(findMode('PD-290').classList.contains('active')).toBe(true);
+		expect(sstvStatus().activeMode).toBe(5);
+		findMode('Scottie S1').click();
+		expect(sdrSstvMode.get()).toBe(0);
+		expect(findMode('Scottie S1').classList.contains('pending')).toBe(true);
+		sdrSstvMode.confirm(0);
+		refreshDecodeWindow();
+		expect(findMode('Scottie S1').classList.contains('pending')).toBe(false);
+		autoButton().click();
+		expect(sdrSstvMode.get()).toBe(-1);
+		expect(autoButton().classList.contains('pending')).toBe(true);
+		sdrSstvMode.confirm(-1);
+		refreshDecodeWindow();
+		expect(autoButton().classList.contains('active')).toBe(true);
+		expect(autoButton().classList.contains('pending')).toBe(false);
+		expect(sstvStatus().activeMode).toBe(0);
+	});
+
+	it('Preset immediately projects Auto, removes the persisted pin and waits for confirmation', () => {
+		sdrSstvMode.confirm(17);
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		expect(findMode('PD-290').classList.contains('active')).toBe(true);
+		resetSdrState();
+		refreshDecodeWindow();
+		expect(autoButton().classList.contains('active')).toBe(true);
+		expect(autoButton().classList.contains('pending')).toBe(true);
+		expect(localStorage.getItem('web-sa-sdr-sstv-mode')).toBeNull();
+		sdrSstvMode.confirm(-1);
+		refreshDecodeWindow();
+		expect(autoButton().classList.contains('pending')).toBe(false);
+	});
+
+	it('Auto off without a received or stored pin keeps Auto and never sends mode zero', () => {
+		const onSstvMode = vi.fn();
+		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		expect(sstvStatus().activeMode).toBeNull();
+		autoButton().click();
+		expect(onSstvMode).not.toHaveBeenCalled();
+		expect(sdrSstvMode.get()).toBe(-1);
+		expect(autoButton().classList.contains('active')).toBe(true);
+	});
+
+	it('uses the viewed mode only when Auto off is explicitly requested without a received mode', () => {
+		const onSstvMode = vi.fn((mode: number | null) => sdrSstvMode.set(mode ?? -1));
+		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		findMode('PD-290').click();
+		expect(onSstvMode).not.toHaveBeenCalled();
+		expect(sdrSstvMode.get()).toBe(-1);
+		autoButton().click();
+		expect(onSstvMode).toHaveBeenCalledTimes(1);
+		expect(onSstvMode).toHaveBeenLastCalledWith(17);
+		expect(sdrSstvMode.get()).toBe(17);
+		expect(findMode('PD-290').classList.contains('pending')).toBe(true);
+	});
+
+	it('ignores decoder commands while inactive and retains the requested visibility', () => {
+		const onSstvMode = vi.fn((mode: number | null) => sdrSstvMode.set(mode ?? -1));
+		initDecodeWindow({ onTune: () => {}, onSstvMode });
+		setDecodeWindowAvailable('sstv');
+		toggleDecodeWindow();
+		sdrSstvMode.confirm(5);
+		setDecodeActive(false);
+		autoButton().click();
+		findMode('PD-290').click();
+		expect(onSstvMode).not.toHaveBeenCalled();
+		expect(sdrSstvMode.get()).toBe(5);
+		toggleDecodeWindow();
+		setDecodeActive(true);
+		expect(decodeWindowOpen()).toBe(true);
+	});
+
+	it.each([
+		{ auto: null, view: null, pin: null, expected: -1, filter: null },
+		{ auto: null, view: '17', pin: null, expected: -1, filter: 17 },
+		{ auto: '0', view: null, pin: null, expected: -1, filter: null },
+		{ auto: '0', view: '', pin: null, expected: -1, filter: null },
+		{ auto: '1', view: '17', pin: null, expected: -1, filter: 17 },
+		{ auto: '0', view: '5', pin: null, expected: 5, filter: 5 },
+		{ auto: null, view: null, pin: '0', expected: 0, filter: null },
+		{ auto: null, view: null, pin: '', expected: -1, filter: null },
+		{ auto: null, view: '5', pin: '17', expected: 17, filter: 5 },
+	])('reload restores config $expected and history filter $filter without sending ($auto/$view/$pin)', async ({ auto, view, pin, expected, filter }) => {
+		if (auto !== null) localStorage.setItem('web-sa-sstv-auto', auto);
+		if (view !== null) localStorage.setItem('web-sa-sstv-mode', view);
+		if (pin !== null) localStorage.setItem('web-sa-sdr-sstv-mode', pin);
+		vi.resetModules();
+		try {
+			// Fresh module loading is the reload boundary: static imports cannot restore storage again.
+			const state = await import('../ui/sdrState');
+			const decode = await import('../ui/decodeWindow');
+			const registry = await import('../sdr/registry');
+			const log = await import('../sdr/sstvLog');
+			registry.setSstvModeTable(table);
+			const onSstvMode = vi.fn();
+			decode.initDecodeWindow({ onTune: () => {}, onSstvMode });
+			decode.setDecodeWindowAvailable('sstv');
+			decode.toggleDecodeWindow();
+			expect(decode.decodeWindowOpen()).toBe(false);
+			expect(state.sdrSstvMode.get()).toBe(expected);
+			expect(log.sstvStatus().activeMode).toBe(filter);
+			expect(onSstvMode).not.toHaveBeenCalled();
+			decode.setDecodeActive(true);
+			decode.toggleDecodeWindow();
+			expect(decode.decodeWindowOpen()).toBe(true);
+			expect(autoButton().classList.contains('active')).toBe(expected < 0);
+			if (expected >= 0) {
+				expect(document.querySelector(`[data-sstv-mode="${expected}"]`)?.classList.contains('active')).toBe(true);
+			}
+			expect(onSstvMode).not.toHaveBeenCalled();
+			decode.setDecodeActive(false);
+		} finally {
+			vi.resetModules();
+		}
 	});
 
 	it('tick 2 thumbnails and delete both', () => {
@@ -806,3 +1161,264 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 		expect(sstvCount()).toBe(0);
 	});
 })
+
+describe('the AM pane', () => {
+	const metricIds = ['am-carrier-offset', 'am-modulation', 'am-input', 'am-rms', 'am-peak'];
+	const metricText = () => metricIds.map((id) => document.getElementById(id)!.textContent);
+	const badge = () => document.getElementById('am-title-badge')!;
+	const toggle = () => document.getElementById('am-sync-toggle') as HTMLButtonElement;
+	const info = (over: Partial<AmInfo> = {}): AmInfo => ({
+		syncEnabled: true, syncLocked: true, syncGeneration: 0, carrierHz: 7_100_012, carrierOffsetHz: 12, modulationPct: 65,
+		inputDbFs: -20, rmsDbFs: -12, peakDbFs: -3, scope: new Float32Array([0, 0.5, -0.5, 0]), ...over,
+	});
+	const lineTo = vi.fn();
+	const clearRect = vi.fn();
+	const onAmSync = vi.fn((enabled: boolean) => {
+		sdrAmSync.set(enabled);
+		setAmInfo(null, 1);
+	});
+
+	beforeEach(() => {
+		localStorage.clear();
+		setLang('en');
+		sdrAmSync.reset();
+		sdrAmSync.confirm(false);
+		for (const channel of [1, 2, 3] as const) {
+			setDecodeError(channel, null);
+			setAmInfo(null, channel);
+		}
+		shell();
+		lineTo.mockClear();
+		clearRect.mockClear();
+		onAmSync.mockClear();
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+			clearRect, lineTo, moveTo: vi.fn(), beginPath: vi.fn(), stroke: vi.fn(),
+		} as unknown as CanvasRenderingContext2D);
+		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {}, onAmSync });
+		setDecodeChannelMode(1, 'am');
+		confirmAmSyncGeneration(0);
+		if (!decodeWindowOpen()) toggleDecodeWindow();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		sdrAmSync.reset();
+		sdrAmSync.confirm(false);
+		vi.restoreAllMocks();
+	});
+
+	it('makes AM available and preserves wanted visibility across an unsupported mode', () => {
+		expect((document.getElementById('btn-decode-window') as HTMLButtonElement).disabled).toBe(false);
+		expect(decodeWindowOpen()).toBe(true);
+		expect(document.getElementById('decode-am')!.style.display).not.toBe('none');
+		expect(document.getElementById('decode-window-table')!.style.display).toBe('none');
+		setDecodeChannelMode(1, 'dsb');
+		expect(decodeWindowOpen()).toBe(false);
+		expect((document.getElementById('btn-decode-window') as HTMLButtonElement).disabled).toBe(true);
+		setDecodeChannelMode(1, 'am');
+		expect(decodeWindowOpen()).toBe(true);
+		expect(shown()).toBe('flex');
+	});
+
+	it('keeps AM telemetry isolated per channel and makes auxiliary sync read only', () => {
+		setDecodeChannelMode(2, 'am');
+		setAmInfo(info(), 1);
+		setAmInfo(info({ carrierOffsetHz: -7, inputDbFs: -40 }), 2);
+		expect(metricText()[0]).toBe('12.0 Hz');
+		setDecodeChannel(2);
+		expect(metricText()[0]).toBe('-7.0 Hz');
+		expect(metricText()[2]).toBe('-40.0 dBFS');
+		expect(toggle().disabled).toBe(true);
+		toggle().click();
+		expect(onAmSync).not.toHaveBeenCalled();
+		setDecodeChannel(1);
+		expect(metricText()[0]).toBe('12.0 Hz');
+		expect(metricText()[2]).toBe('-20.0 dBFS');
+	});
+
+	it('keeps the confirmed sync badge read only', () => {
+		expect(badge().tagName).toBe('SPAN');
+		badge().click();
+		expect(onAmSync).not.toHaveBeenCalled();
+		toggle().click();
+		expect(onAmSync).toHaveBeenCalledExactlyOnceWith(true);
+	});
+
+	it('merges AM timing and errors into its badge and restores independent timing in other modes', () => {
+		setDecodeTiming(1, { inputIndex: '123456', fractionNum: '3', fractionDen: '7',
+			inputRate: 48000, delaySeconds: 0.125, delayKnown: true, causalPresentation: false });
+		const timing = document.getElementById('decode-source-timing')!;
+		expect(timing.style.display).toBe('none');
+		expect(badge().title).toContain('123456 + 3/7');
+		expect(badge().title).toContain('0.125000');
+		setDecodeError(1, 'test decoder failure');
+		expect(badge().title).toContain('test decoder failure');
+		expect(badge().title).toContain('123456 + 3/7');
+		expect(badge().getAttribute('role')).toBe('alert');
+		expect(badge().getAttribute('aria-label')).toContain('test decoder failure');
+		setDecodeError(1, null);
+		expect(badge().getAttribute('role')).toBe('status');
+		expect(badge().title).not.toContain('test decoder failure');
+		setDecodeChannelMode(1, 'cw');
+		expect(timing.style.display).not.toBe('none');
+		expect(timing.title).toContain('123456 + 3/7');
+		expect(badge().style.display).toBe('none');
+		setDecodeError(1, 'CW failure');
+		expect(timing.getAttribute('role')).toBe('alert');
+		expect(timing.title).toContain('CW failure');
+		setDecodeError(1, null);
+	});
+
+	it('displays absolute carrier frequency only when available and valid', () => {
+		const carrier = () => document.getElementById('am-carrier')!.textContent;
+		expect(carrier()).toBe('—');
+		setAmInfo(info());
+		expect(carrier()).toBe('7.100012 MHz');
+		for (const carrierHz of [null, 0, -1, NaN, Infinity]) {
+			setAmInfo(info({ carrierHz }));
+			expect(carrier()).toBe('—');
+		}
+	});
+
+	it('distinguishes unknown measurements from measured zero', () => {
+		expect(metricText()).toEqual(['—', '—', '—', '—', '—']);
+		setAmInfo(info({ carrierOffsetHz: 0, modulationPct: 0, inputDbFs: 0, rmsDbFs: 0, peakDbFs: 0 }));
+		expect(metricText()).toEqual(['0.0 Hz', '0.0 %', '0.0 dBFS', '0.0 dBFS', '0.0 dBFS']);
+		setAmInfo(info({ carrierOffsetHz: null, modulationPct: null, inputDbFs: null, rmsDbFs: null, peakDbFs: null }));
+		expect(metricText()).toEqual(['—', '—', '—', '—', '—']);
+	});
+
+	it('integrates audio RMS power, releases peaks and clears held levels on telemetry reset', () => {
+		const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+		setAmInfo(info({ rmsDbFs: -10, peakDbFs: -3 }));
+		clock.mockReturnValue(50);
+		setAmInfo(info({ rmsDbFs: -40, peakDbFs: -40 }));
+		expect(document.getElementById('am-rms')!.textContent).toBe('-10.7 dBFS');
+		expect(document.getElementById('am-peak')!.textContent).toBe('-4.0 dBFS');
+		clock.mockReturnValue(100);
+		setAmInfo(info({ rmsDbFs: -40, peakDbFs: -1 }));
+		expect(document.getElementById('am-peak')!.textContent).toBe('-1.0 dBFS');
+		setAmInfo(null);
+		expect(document.getElementById('am-rms')!.textContent).toBe('—');
+		expect(document.getElementById('am-peak')!.textContent).toBe('—');
+		setAmInfo(info({ rmsDbFs: -160, peakDbFs: -160 }));
+		expect(document.getElementById('am-rms')!.textContent).toBe('-160.0 dBFS');
+		expect(document.getElementById('am-peak')!.textContent).toBe('-160.0 dBFS');
+	});
+
+	it('draws different waveform paths when actual audio samples change', () => {
+		setAmInfo(info({ scope: new Float32Array([0, 0.5, -0.5, 0]) }));
+		const first = lineTo.mock.calls.map((call) => [...call]);
+		lineTo.mockClear();
+		setAmInfo(info({ scope: new Float32Array([0, -0.25, 0.25, 0]) }));
+		const second = lineTo.mock.calls.map((call) => [...call]);
+		expect(first).toContainEqual([319 / 3, 26]);
+		expect(second).toContainEqual([319 / 3, 62]);
+		expect(second).not.toEqual(first);
+	});
+
+	it.each(['mode leave', 'decoder error', 'inactive'] as const)('clears old lock and waveform on %s', (transition) => {
+		sdrAmSync.confirm(true);
+		setAmInfo(info());
+		expect(badge().classList.contains('on')).toBe(true);
+		lineTo.mockClear();
+		clearRect.mockClear();
+		if (transition === 'mode leave') {
+			setDecodeChannelMode(1, 'dsb');
+			expect(toggle().disabled).toBe(true);
+			setDecodeChannelMode(1, 'am');
+		} else if (transition === 'decoder error') {
+			setDecodeError(1, 'AM decoder failed');
+			expect(toggle().disabled).toBe(true);
+			setAmInfo(info());
+			setDecodeError(1, null);
+		} else {
+			setDecodeActive(false);
+			expect(toggle().disabled).toBe(true);
+			setDecodeActive(true);
+			confirmAmSyncGeneration(0);
+		}
+		expect(badge().classList.contains('on')).toBe(false);
+		expect(document.getElementById('am-carrier')!.textContent).toBe('—');
+		expect(metricText()).toEqual(['—', '—', '—', '—', '—']);
+		expect(clearRect).toHaveBeenCalled();
+		expect(lineTo).not.toHaveBeenCalled();
+	});
+
+	it('waits for matching STATUS and actual lock telemetry after a sync request', () => {
+		expect(toggle().getAttribute('aria-pressed')).toBe('false');
+		expect(badge().classList.contains('on')).toBe(false);
+		toggle().click();
+		expect(onAmSync).toHaveBeenCalledExactlyOnceWith(true);
+		expect(sdrAmSync.pending()).toBe(true);
+		expect(toggle().getAttribute('aria-pressed')).toBe('false');
+		expect(toggle().getAttribute('aria-busy')).toBe('true');
+		expect(toggle().classList.contains('pending')).toBe(true);
+		expect(toggle().disabled).toBe(true);
+		setAmInfo(info());
+		expect(badge().classList.contains('on')).toBe(false);
+		sdrAmSync.confirm(false);
+		refreshDecodeWindow();
+		expect(toggle().getAttribute('aria-pressed')).toBe('false');
+		expect(toggle().classList.contains('pending')).toBe(true);
+		sdrAmSync.confirm(true);
+		setAmInfo(info({ syncLocked: false }));
+		refreshDecodeWindow();
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(toggle().getAttribute('aria-busy')).toBe('false');
+		expect(toggle().disabled).toBe(false);
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(badge().classList.contains('on')).toBe(false);
+		setAmInfo(info());
+		expect(badge().classList.contains('on')).toBe(true);
+		setAmInfo(info({ syncEnabled: false }));
+		expect(badge().classList.contains('on')).toBe(false);
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		setAmInfo(info({ syncLocked: false }));
+		expect(badge().classList.contains('on')).toBe(false);
+		setDecodeError(1, 'AM decoder failed');
+		expect(toggle().disabled).toBe(true);
+		toggle().click();
+		expect(onAmSync).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(['rejection', 'expiration'] as const)('restores confirmed sync state after pending %s', (outcome) => {
+		vi.useFakeTimers();
+		vi.setSystemTime(10_000);
+		sdrAmSync.confirm(true);
+		refreshDecodeWindow();
+		toggle().click();
+		expect(onAmSync).toHaveBeenCalledExactlyOnceWith(false);
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(toggle().classList.contains('pending')).toBe(true);
+		if (outcome === 'rejection') sdrAmSync.reset();
+		else vi.setSystemTime(13_001);
+		refreshDecodeWindow();
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(toggle().getAttribute('aria-busy')).toBe('false');
+		expect(toggle().classList.contains('pending')).toBe(false);
+		expect(badge().classList.contains('on')).toBe(false);
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(toggle().disabled).toBe(false);
+	});
+
+	it('rejects queued telemetry from an earlier enable after off and re-enable', () => {
+		sdrAmSync.confirm(true);
+		confirmAmSyncGeneration(1);
+		setAmInfo(info({ syncGeneration: 1 }));
+		expect(badge().classList.contains('on')).toBe(true);
+		sdrAmSync.confirm(false);
+		confirmAmSyncGeneration(2);
+		refreshDecodeWindow();
+		sdrAmSync.confirm(true);
+		confirmAmSyncGeneration(3);
+		setAmInfo(info({ syncGeneration: 1 }));
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(toggle().getAttribute('aria-pressed')).toBe('true');
+		expect(badge().classList.contains('on')).toBe(false);
+		expect(document.getElementById('am-carrier')!.textContent).toBe('—');
+		expect(metricText()).toEqual(['—', '—', '—', '—', '—']);
+		setAmInfo(info({ syncGeneration: 3 }));
+		expect(badge().classList.contains('on')).toBe(true);
+	});
+});

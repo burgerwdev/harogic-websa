@@ -17,6 +17,7 @@ import * as S from '../core/store';
 import { resetAll } from '../core/params';
 import { setWS } from '../core/wsSend';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
+import { resetFrequencyEditors } from '../ui/panels/frequency';
 import { refLevel } from '../ui/refState';
 import { setDisplayRef } from '../ui/displayRef';
 import { displayOffset, displayUnit } from '../ui/displayState';
@@ -28,6 +29,7 @@ import {
 	axisDragStart,
 	axisDragging,
 	axisWheel,
+	confirmSdrAxisWindow,
 	previewFreqWindow,
 	resetAxisPreview,
 	xAxisTransform,
@@ -61,10 +63,13 @@ beforeEach(() => {
 	S.setDbPerDiv(10);
 	refLevel.set(-20);
 	setDisplayRef('preset', -20);
+	S.setConfigVersion(0);
 	sweptFrame(100e6, 200e6);
 });
 
 afterEach(() => {
+	resetFrequencyEditors();
+	resetAxisPreview();
 	vi.useRealTimers();
 });
 
@@ -92,7 +97,7 @@ describe('dragging the frequency axis', () => {
 		expect(t.dxFrac).toBeCloseTo(0.125, 9);               // ...it slides the trace right
 		expect(previewFreqWindow()).toEqual({ lo: 87.5e6, hi: 187.5e6 });
 		axisDragEnd();
-		expect(sent).toEqual([{ cmd: 'SET_FREQ', center: 137.5e6, span: 100e6 }]);
+		expect(sent).toEqual([{ cmd: 'SET_FREQ', center: 137.5e6, span: 100e6, request_id: expect.any(String) }]);
 	});
 
 	it('keeps the preview until the drawn frame matches the request, then drops it', () => {
@@ -159,6 +164,33 @@ describe('dragging the frequency axis', () => {
 		expect([12700000, 6347656, 3173828]).toContain(cmd.span);
 		expect((document.getElementById('select-rta-span') as HTMLSelectElement).value)
 			.toBe(String(cmd.span));
+	});
+
+	it('rebases an SDR gesture onto the accepted passband center and continues from it', () => {
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
+		graphMode.confirm('sdr');
+		const span = 3_125_000;
+		const center = 100e6;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(500, IN_X_BAND.y);
+		axisDragEnd();
+		const requested = sent[0].center;
+		const accepted = requested + 127_000;
+		// A status from before the command cannot replace its pending preview.
+		confirmSdrAxisWindow(center, span, 0);
+		expect(previewFreqWindow()?.lo).toBeCloseTo(requested - span / 2, 6);
+		confirmSdrAxisWindow(accepted, span, 1);
+		expect(previewFreqWindow()).toEqual({ lo: accepted - span / 2, hi: accepted + span / 2 });
+		S.setRtaData({ freq: new Float64Array([accepted - span / 2, accepted + span / 2]),
+			startHz: accepted - span / 2, stopHz: accepted + span / 2 });
+		expect(previewFreqWindow()).toBeNull();
+		// The quick follow-on drag uses the accepted center, including its hardware fit.
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		axisDragEnd();
+		expect(sent[1].center).toBeCloseTo(accepted - span / 10, 6);
 	});
 });
 

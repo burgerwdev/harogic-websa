@@ -1,13 +1,15 @@
-//! Minimal C-runtime shims + FFI bindings for the prebuilt FDK AAC decoder
-//! (wasm32 only). The C++ objects in `wasm/fdk/libfdk.a` expect `malloc`/`free`/
-//! `calloc`/`realloc` (provided here, backed by Rust's global allocator) and the
-//! `operator new/delete` glue (compiled into the archive). `memcpy`/`memset`/… come
-//! from Rust's compiler-builtins.
+//! FDK AAC decoder FFI for native and wasm32 receivers.
+//!
+//! Native builds use the hosted FDK library. The committed wasm archive needs
+//! allocator shims backed by Rust; these must never override the native C runtime.
 
+#[cfg(target_arch = "wasm32")]
 use std::alloc::{alloc, dealloc, Layout};
 
+#[cfg(target_arch = "wasm32")]
 const HEADER: usize = 16;
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
     // Round the header-inclusive size up to HEADER so the Rust dlmalloc chunk size
@@ -25,6 +27,7 @@ pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
     p.add(HEADER)
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn free(ptr: *mut u8) {
     if ptr.is_null() {
@@ -35,6 +38,7 @@ pub unsafe extern "C" fn free(ptr: *mut u8) {
     dealloc(p, Layout::from_size_align_unchecked(total, HEADER));
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut u8 {
     let total = n.saturating_mul(size);
@@ -45,6 +49,7 @@ pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut u8 {
     p
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     if ptr.is_null() {
@@ -68,6 +73,27 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
 /// TT_DRM transport type.
 const TT_DRM: i32 = 12;
 
+/// Prefix of FDK's CStreamInfo through outputDelay. Pointer fields preserve the
+/// native ABI alignment as well as the wasm32 layout.
+#[repr(C)]
+struct StreamInfo {
+    sample_rate: i32,
+    frame_size: i32,
+    channels: i32,
+    channel_types: *const i32,
+    channel_indices: *const u8,
+    aac_sample_rate: i32,
+    profile: i32,
+    aot: i32,
+    channel_config: i32,
+    bit_rate: i32,
+    aac_samples_per_frame: i32,
+    aac_channels: i32,
+    extension_aot: i32,
+    extension_sample_rate: i32,
+    output_delay: u32,
+}
+
 extern "C" {
     fn aacDecoder_Open(transport: i32, layers: u32) -> *mut std::ffi::c_void;
     fn aacDecoder_ConfigRaw(
@@ -86,18 +112,20 @@ extern "C" {
     fn aacDecoder_GetStreamInfo(h: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
 }
 
-/// A streaming AAC (DRM transport) decoder over the prebuilt FDK AAC library.
+/// A streaming AAC / HE-AAC / xHE-AAC (DRM transport) decoder over FDK AAC.
 pub struct AacDecoder {
     handle: *mut std::ffi::c_void,
     /// Error code of the last decode call, for diagnostics.
     pub last_error: i32,
     /// `(sampleRate, frameSize, numChannels)` of the last decoded frame, for diagnostics.
     pub last_stream_info: (u32, u32, u32),
+    /// Additional decoder delay in PCM frames at last_stream_info.0, reported by FDK.
+    pub last_output_delay: Option<u32>,
 }
 
-// SAFETY: the handle is exclusively owned — the decoder is moved between owners, never
-// shared — and the wasm module is single-threaded. FDK keeps no thread-affine global
-// state (the same argument DecDRM's FdkDrmDecoder makes for its own `unsafe impl`).
+// SAFETY: the handle is exclusively owned and moved between owners, never shared.
+// FDK keeps no thread-affine global state (the same argument DecDRM's FdkDrmDecoder
+// makes for its own `unsafe impl`).
 unsafe impl Send for AacDecoder {}
 
 impl AacDecoder {
@@ -108,7 +136,7 @@ impl AacDecoder {
         if handle.is_null() {
             None
         } else {
-            Some(Self { handle, last_error: 0, last_stream_info: (0, 0, 0) })
+            Some(Self { handle, last_error: 0, last_stream_info: (0, 0, 0), last_output_delay: None })
         }
     }
 
@@ -117,28 +145,20 @@ impl AacDecoder {
     pub fn configure(&mut self, type9: &[u8]) -> bool {
         let mut conf = type9.as_ptr() as *mut u8;
         let len = type9.len() as u32;
-        unsafe { aacDecoder_ConfigRaw(self.handle, &mut conf, &len) == 0 }
+        self.last_error = unsafe { aacDecoder_ConfigRaw(self.handle, &mut conf, &len) };
+        self.last_error == 0
     }
 
     /// Decode one AAC access unit into 16-bit interleaved PCM (channels interleaved).
     pub fn decode(&mut self, au: &[u8]) -> Vec<i16> {
-        // Feed the access unit with room past it. FDK's DRM reader looks for the SBR payload
-        // after the core frame, and a stream whose SDC claims SBR while its payload carries
-        // none makes it read past the unit. That fault traps the wasm module, and whether it
-        // does depends on the heap layout. The padding turns it into a plain decode error.
-        // Exact access unit, no padding: FDK locates the DRM SBR payload from the END
-        // of the filled data, so a grown buffer or a stale byte shifts it. The padding
-        // this used to add was a band-aid for the text message that stayed inside the
-        // super frame (see `audio::split_text_message`).
-        let mut input = au.to_vec();
-        let mut buf = input.as_mut_ptr();
+        // FDK copies the access unit into its bit buffer. Its C API takes a mutable
+        // pointer, but does not modify this input. Pass its exact length: DRM SBR is
+        // located relative to the end of the unit.
+        let mut buf = au.as_ptr() as *mut u8;
         let size = au.len() as u32;
         let mut valid = au.len() as u32;
         let err = unsafe { aacDecoder_Fill(self.handle, &mut buf, &size, &mut valid) };
         if err != 0 || valid != 0 {
-            // The transport did not take the whole unit: the next Fill would append to a
-            // half-consumed frame and every later unit would be misaligned. Report it and
-            // drop this unit (the reference decoder does the same).
             self.last_error = if err != 0 { err } else { 0x4005 };
             return Vec::new();
         }
@@ -147,7 +167,9 @@ impl AacDecoder {
         let mut pcm = vec![0i16; 4096 * 2];
         let err = unsafe { aacDecoder_DecodeFrame(self.handle, pcm.as_mut_ptr(), pcm.len() as i32, 0) };
         self.last_error = err;
-        if err != 0 {
+        // FDK's IS_OUTPUT_VALID contract includes concealed decode errors.
+        // Their PCM is part of the output clock and must reach the consumer.
+        if err != 0 && !(0x4000..=0x4fff).contains(&err) {
             return Vec::new();
         }
 
@@ -155,11 +177,19 @@ impl AacDecoder {
         if info.is_null() {
             return Vec::new();
         }
-        let sample_rate = unsafe { *(info as *const i32) } as usize; // sampleRate
-        let frame_size = unsafe { *(info as *const i32).add(1) } as usize; // frameSize
-        let channels = unsafe { *(info as *const i32).add(2) } as usize; // numChannels
+        let info = unsafe { &*(info as *const StreamInfo) };
+        let sample_rate = info.sample_rate;
+        let frame_size = info.frame_size;
+        let channels = info.channels;
+        if sample_rate <= 0 || frame_size <= 0 || channels <= 0
+            || frame_size as usize > pcm.len() / channels as usize
+        {
+            self.last_error = -1;
+            return Vec::new();
+        }
         self.last_stream_info = (sample_rate as u32, frame_size as u32, channels as u32);
-        pcm.truncate(frame_size * channels);
+        self.last_output_delay = Some(info.output_delay);
+        pcm.truncate(frame_size as usize * channels as usize);
         pcm
     }
 }
@@ -167,6 +197,68 @@ impl AacDecoder {
 impl Drop for AacDecoder {
     fn drop(&mut self) {
         unsafe { aacDecoder_Close(self.handle) };
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drm_aac_fixture_and_malformed_access_unit() {
+        let mut decoder = AacDecoder::new().unwrap();
+        assert!(decoder.configure(&[0x03, 0x00]));
+        let bytes = include_bytes!("../../tests/fixtures/drm/aac_sine_24k.drm");
+        let mut pcm = Vec::new();
+        for frame in bytes.chunks_exact(36) { pcm.extend(decoder.decode(frame)); }
+        assert_eq!(decoder.last_stream_info, (24_000, 960, 1));
+        let peak = pcm.iter().map(|&sample| i32::from(sample).abs()).max().unwrap_or(0);
+        assert!(peak > 1000, "AAC fixture must contain its tone, peak={peak}");
+        let energy = |frequency: f64| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (index, &sample) in pcm.iter().enumerate() {
+                let phase = 2.0 * std::f64::consts::PI * frequency * index as f64 / 24_000.0;
+                re += f64::from(sample) * phase.cos();
+                im += f64::from(sample) * phase.sin();
+            }
+            re * re + im * im
+        };
+        assert!(energy(1000.0) > 5.0 * energy(500.0).max(energy(2000.0)), "AAC tone pitch must remain 1 kHz");
+        let mut malformed = AacDecoder::new().unwrap();
+        assert!(malformed.configure(&[0x03, 0x00]));
+        malformed.decode(&[]);
+        assert_ne!(malformed.last_error, 0, "empty AU must report a codec error");
+        // A damaged DRM CRC still yields FDK's concealed PCM. Preserve its
+        // duration and allow the next intact units to resume the station.
+        let mut corrupt = bytes[..36].to_vec();
+        corrupt[0] ^= 0xff;
+        let concealed = decoder.decode(&corrupt);
+        assert!((0x4000..=0x4fff).contains(&decoder.last_error), "CRC must be reported");
+        assert_eq!(concealed.len(), 960, "concealed PCM retains one audio frame");
+        let recovered: Vec<_> = bytes.chunks_exact(36).flat_map(|frame| decoder.decode(frame)).collect();
+        let peak = recovered.iter().map(|&sample| i32::from(sample).abs()).max().unwrap_or(0);
+        assert!(peak > 1000, "intact AAC units after corruption must resume the tone, peak={peak}");
+    }
+
+    #[test]
+    fn usac_fixture_and_truncated_access_unit() {
+        let bytes = include_bytes!("../../tests/fixtures/drm/usac_tone.bin");
+        // The fixture is an MPEG-4 ASC followed by one 2333-byte AU and 44 768-byte AUs.
+        let handle = unsafe { aacDecoder_Open(0, 1) }; // TT_MP4_RAW
+        assert!(!handle.is_null());
+        let mut decoder = AacDecoder { handle, last_error: 0, last_stream_info: (0, 0, 0), last_output_delay: None };
+        assert!(decoder.configure(&bytes[..22]));
+        let mut pcm = decoder.decode(&bytes[22..22 + 2333]);
+        for frame in bytes[22 + 2333..].chunks_exact(768) { pcm.extend(decoder.decode(frame)); }
+        let peak = pcm.iter().map(|&sample| i32::from(sample).abs()).max().unwrap_or(0);
+        assert!(peak > 1000, "USAC fixture must contain its tone, peak={peak}");
+        assert!(decoder.last_stream_info.0 > 0 && decoder.last_stream_info.2 > 0);
+        decoder.decode(&bytes[22..23]);
+        assert_ne!(decoder.last_error, 0);
+        let mut recovered = decoder.decode(&bytes[22..22 + 2333]);
+        for frame in bytes[22 + 2333..].chunks_exact(768) { recovered.extend(decoder.decode(frame)); }
+        let peak = recovered.iter().map(|&sample| i32::from(sample).abs()).max().unwrap_or(0);
+        assert!(peak > 1000, "intact USAC units after truncation must resume the tone, peak={peak}");
     }
 }
 

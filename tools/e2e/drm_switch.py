@@ -3,10 +3,9 @@
 away and back — all without a page refresh.
 
 Why this exists: the reported mode-switch regression was "after DRM, another demodulator
-gives no audio until a page refresh". The cause (a trapped wasm worker kept referenced by
-the page) is fixed and unit-tested, but only a real click sequence over the live bench
-signal covers the whole path. The DRM readout is the pass mark: it only appears when the
-receiver locked and the SDC decoded.
+gives no audio until a page refresh". A real click sequence over the live bench signal
+covers native receiver reconfiguration and rendering. The DRM readout is the pass mark:
+it only appears when the receiver locked and the SDC decoded.
 
 Run the bench first (Pluto transmitting, the app tuned to the signal, ref -40 dBm), then:
 
@@ -98,7 +97,7 @@ def main() -> int:
         page.evaluate("window.__drmSwitchMarker = 42")
 
         print('A) DRM selected from the panel locks and reports the station', flush=True)
-        if page.query_selector('#btn-sdr-audio'):
+        if page.query_selector('#btn-sdr-audio:not(.active)'):
             js_click(page, '#btn-sdr-audio')
         demod(page, 'drm')
         page.wait_for_timeout(1000)
@@ -112,13 +111,14 @@ def main() -> int:
         check('the station label matches the bench transmitter', LABEL in text,
               f'lines={text[:120]!r}')
 
-        print('B) away to AM: the baseband keeps running, the page does not reload', flush=True)
+        print('B) away to AM: native events keep arriving, the page does not reload', flush=True)
         blocks_before = counter(page, 'blocks')
         demod(page, 'am')
         page.wait_for_timeout(4000)
-        check('AM: the baseband pipeline keeps running',
-              counter(page, 'blocks') > blocks_before,
-              f'blocks {blocks_before} -> {counter(page, "blocks")}')
+        check('AM: native receiver events keep arriving',
+              counter(page, 'blocks') > blocks_before
+              and 'backend=1' in iq_diag(page) and 'pipeline=true' in iq_diag(page),
+              iq_diag(page))
         marker = page.evaluate('window.__drmSwitchMarker')
         check('no page refresh happened', marker == 42, f'marker={marker}')
 

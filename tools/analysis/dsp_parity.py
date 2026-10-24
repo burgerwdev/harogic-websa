@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DSP parity harness: run identical IQ through the Python reference and the Rust/WASM kernels.
 
-The Python DSP is not only the fallback, it is the *numeric reference* the browser kernels are held
+The standalone Python DSP is the *numeric reference* the browser kernels are held
 to. This tool makes that comparison a command anyone can run and read:
 
   1. re-runs the Python reference over the committed IQ and asserts the golden fixtures still match

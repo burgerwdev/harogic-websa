@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import type { ExtremaItem } from '../core/store';
 import { smoothForDisplay } from './smooth';
 
-// P1: Parabola sub-bin fit
+// Parabola sub-bin fit
 export function parabolaFit(p: ArrayLike<number>, k: number): { dk: number; y: number } {
   const y0 = p[k - 1], y1 = p[k], y2 = p[k + 1];
   if (!isFinite(y0) || !isFinite(y1) || !isFinite(y2)) return { dk: 0, y: y1 };

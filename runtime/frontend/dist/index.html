@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harogic SAN Series Web Spectrum Analyzer</title>
+  <script type="module" crossorigin src="/static/dist/assets/index-Bh7bK1yw.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-1qBNS6i_.css">
+</head>
+<body>
+<div class="analyzer-card">
+  <div class="info-bar">
+    <div class="info-left">
+      <div class="info-item"><span class="info-label" data-i18n="ref_level">Ref Level:</span><span class="info-value" id="info-ref">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="scale">Scale:</span><span class="info-value" id="info-scale">10 dB/div</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="rbw">RBW:</span><span class="info-value" id="info-rbw">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="vbw">VBW:</span><span class="info-value" id="info-vbw">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="pts">Pts:</span><span class="info-value" id="info-pts">-</span></div><span class="separator">|</span>
+      <div class="info-item"><span class="info-label" data-i18n="gnss">GNSS:</span><span class="info-value gnss-indicator" id="info-gnss" data-action="gnss-detail" data-i18n-attr="title" title="GNSS detail">-</span>
+        <div class="gnss-popover" id="gnss-popover" style="display:none;">
+          <div class="gnss-popover-head"><span data-i18n="gnss_detail">GNSS Detail</span>
+            <button class="btn" data-action="gnss-close" data-i18n="gnss_close">Close</button></div>
+          <div class="gnss-popover-body">
+            <div class="param-row"><label data-i18n="gnss_lock">Lock</label><span class="info-value" id="gnss-d-lock">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_sats">Satellites</label><span class="info-value" id="gnss-d-sats">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_docxo">DOCXO</label><span class="info-value" id="gnss-d-docxo">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_docxo_mode">DOCXO Mode</label><span class="info-value" id="gnss-d-docxo_mode">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_antenna">Antenna</label><span class="info-value" id="gnss-d-antenna">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_latitude">Latitude</label><span class="info-value" id="gnss-d-latitude">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_longitude">Longitude</label><span class="info-value" id="gnss-d-longitude">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_altitude">Altitude</label><span class="info-value" id="gnss-d-altitude">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_utc_time">GNSS UTC Time</label><span class="info-value" id="gnss-d-utc">-</span></div>
+            <div class="param-row"><label data-i18n="gnss_local_time">System Local Time</label><span class="info-value" id="gnss-d-local">-</span></div>
+          </div>
+        </div></div><span class="separator">|</span><div class="info-item"><span class="info-label" data-i18n="swt">SWT:</span><span class="info-value" id="info-swt">-</span></div><span class="separator">|</span>
+
+      <div class="info-item"><span id="refclk-label" class="info-label gnss-indicator" data-action="refclk-detail" data-i18n="clock_ref">Clock Ref:</span>
+        <select id="select-refclk" data-action="set-refclock" data-i18n="tip_select-refclk" data-i18n-attr="title">
+          <option value="internal" data-i18n="int">Int</option><option value="external" data-i18n="ext">Ext</option>
+          <option value="external_forced" data-i18n="ext_force">ExtForce</option>
+        </select>
+
+        <div class="gnss-popover" id="refclk-popover" style="display:none;">
+          <div class="gnss-popover-head"><span data-i18n="refclk_detail">Reference Clock</span>
+            <button class="btn" data-action="refclk-close" data-i18n="gnss_close">Close</button></div>
+          <div class="gnss-popover-body">
+            <div class="param-row"><label data-i18n="refclk_current">Requested</label><span class="info-value" id="refclk-d-current">-</span></div>
+            <div class="param-row"><label data-i18n="refclk_actual_src">Actual source</label><span class="info-value" id="refclk-d-actual">-</span></div>
+            <div class="param-row"><label data-i18n="output">Output</label>
+              <button class="btn" id="btn-refclk-out" data-action="toggle-refclkout" data-i18n="output" data-i18n-title="tip_btn-refclk-out">Output</button></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div class="info-right">
+      <button class="btn bar-btn" id="btn-spectrum-zoom" aria-pressed="false"
+              data-i18n-title="tip_spectrum_zoom" data-i18n-attr="title" title="Local zoom"><!--
+        Inline SVG like the keypad toggle: immune to the global font-family rule and
+        identical on every platform. Magnifier over a trace step.
+     --><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.15" stroke-linecap="round" aria-hidden="true"
+              style="display:block;margin:0 auto;">
+          <circle cx="6.6" cy="6.6" r="4.4"/>
+          <path d="M9.9 9.9 14 14"/>
+          <path d="M6.6 4.4v4.4M4.4 6.6h4.4"/>
+        </svg></button>
+      <button class="btn bar-btn keypad-toggle" id="btn-keypad" aria-pressed="false"
+              data-i18n-title="tip_keypad" data-i18n-attr="title" title="Virtual keypad"><!--
+        Drawn, not typed: U+2328 is absent from the bundled font subset, so the glyph fell
+        back to a language-dependent system font - a real keyboard icon in English and a
+        small missing-glyph box in Chinese. An inline SVG cannot be affected by the global
+        `font-family: ... !important` rule and looks identical on every platform.
+     --><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.15" stroke-linecap="round" aria-hidden="true"
+              style="display:block;margin:0 auto;">
+          <rect x="0.8" y="3.6" width="14.4" height="8.8" rx="1.5"/>
+          <path d="M3.2 6.1h.01M5.6 6.1h.01M8 6.1h.01M10.4 6.1h.01M12.8 6.1h.01
+                   M3.2 8.3h.01M5.6 8.3h.01M8 8.3h.01M10.4 8.3h.01M12.8 8.3h.01
+                   M5.2 10.5h5.6"/>
+        </svg></button>
+      <span class="info-label" data-i18n="ui_scale">UI:</span>
+      <!-- Global UI scale (core/uiScale.ts): the whole frame including the canvas. "Auto"
+           follows the screen height and forgets the stored override, so a manual pick stays
+           until the user asks for the automatic value again. -->
+      <select id="ui-scale" data-i18n-title="tip_ui_scale" data-i18n-attr="title"
+              title="Global UI scale (fonts, spacing and the canvas together)">
+        <option value="auto" data-i18n="ui_scale_auto">Auto</option>
+        <option value="0.5">50%</option>
+        <option value="0.65">65%</option>
+        <option value="0.8">80%</option>
+        <option value="1">100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+      </select>
+      <span id="connDot" class="dot off"></span>
+      <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect</button>
+    </div>
+</div>
+
+  <div class="screen-container">
+    <div class="spectrum-area">
+      <!-- The box owns the plot geometry: a canvas' intrinsic size comes from its own
+           width/height attributes, which syncCanvasSize() rewrites, so sizing the element
+           from that ratio would feed every new bitmap size straight back into the layout. -->
+      <!-- Display-only zoom overview (ui/spectrumZoomUi.ts): the full captured window with
+           the current view highlighted. Sits ABOVE the plot, same width; hidden while the
+           top-bar zoom toggle is off; the canvas is drawn like the plot (CSS px,
+           DPR-scaled backing store). -->
+      <div id="zoom-overview-box" class="zoom-overview-box" style="display:none;">
+        <div class="zoom-overview-head">
+          <span id="zoom-overview-title" class="zoom-overview-title"></span>
+          <button class="btn zoom-reset-btn" id="btn-zoom-reset" data-i18n-title="zoom_reset"
+                  data-i18n-attr="title" title="Restore the full captured spectrum" disabled>↻</button>
+          <button class="btn zoom-reset-btn" id="btn-zoom-close" data-i18n-title="zoom_close"
+                  data-i18n-attr="title" title="Exit local zoom">✕</button>
+        </div>
+        <canvas id="zoom-overview" width="300" height="48" tabindex="0" role="slider"
+                data-i18n-attr="aria-label" aria-label="Global overview"></canvas>
+        <div id="zoom-overview-hint" class="zoom-overview-hint" style="display:none;"></div>
+      </div>
+      <div class="spectrum-box">
+        <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
+      </div>
+      <!-- The split: drag it to trade height between the spectrum and the waterfall. Hidden while
+           the waterfall is off, so closing it returns the area to the spectrum untouched. -->
+      <div class="wf-split" id="wf-split" style="display:none;"
+           data-i18n-title="wf_split_tip" data-i18n-attr="title" title="Drag to resize the waterfall"></div>
+      <div id="waterfall-container" class="waterfall-container" style="display:none;">
+        <canvas id="waterfall" width="800" height="135"></canvas>
+        <div id="wf-controls" class="wf-controls">
+          <button class="btn wf-btn" id="btn-wf-pause" data-action="wf-pause" data-i18n="tip_waterfall_pause" data-i18n-attr="title" title="Pause/Resume waterfall">⏸</button>
+          <button class="btn wf-btn" id="btn-wf-reset" data-action="wf-reset" data-i18n="tip_waterfall_reset" data-i18n-attr="title" title="Restart waterfall from scratch">↻</button>
+        </div>
+      </div>
+      <table class="marker-table" id="marker-table">
+        <thead><tr>
+          <th style="width:9%;" data-i18n="mk_marker">Marker</th><th style="width:14%;" data-i18n="mk_mode">Mode</th>
+          <th style="width:37%;" data-i18n="mk_freq">Frequency / ΔFreq</th><th style="width:25%;" data-i18n="mk_amp">Amplitude / ΔPower</th><th style="width:15%;" data-i18n="mk_ref">Reference</th>
+        </tr></thead>
+        <tbody id="marker-tbody"></tbody>
+      </table>
+      <table class="marker-table" id="peak-table" style="display:none;">
+        <tbody id="peak-tbody"></tbody>
+      </table>
+      <table class="harmonic-table" id="harmonic-table" style="display:none;">
+        <tbody id="harmonic-tbody"></tbody>
+      </table>
+      <table class="harmonic-table" id="pnm-table" style="display:none;">
+        <tbody id="pnm-tbody"></tbody>
+      </table>
+      <table class="harmonic-table" id="chan-table" style="display:none;">
+        <tbody id="chan-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="control-rail" id="control-rail" aria-label="Control groups">
+      <button type="button" class="rail-toggle" id="panel-vis-toggle" aria-expanded="true" title="Hide control panel">-</button>
+      <button type="button" class="rail-toggle" id="rail-toggle" aria-expanded="true">«</button>
+      <div class="rail-items" id="rail-items"></div>
+    </div>
+
+    <div class="control-panel">
+      <div class="control-group" id="graph-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="graph">Graph</span>
+          <span class="cur-val warn-hint group-head-hint" id="mode-hint"></span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="mode">Mode</label>
+            <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
+            <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
+            <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
+          </div>
+        </div>
+      </div>
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="frequency">Frequency</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div id="rta-freq-settings" style="display:none;">
+            <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-rta-center" value="1000" step="any" data-i18n="tip_input-rta-center" data-i18n-attr="title">
+              <div class="unit-btn-group" id="unit-rta_center-group"></div>
+              <button class="btn" data-action="apply-rta" data-i18n="set">Set</button></div>
+            <div class="param-row"><label data-i18n="span">Span</label>
+              <select id="select-rta-span" data-action="apply-rta" data-i18n="tip_select-rta-span" data-i18n-attr="title">
+                <option value="50781250" selected>50.8 MHz</option>
+                <option value="25390625">25.4 MHz</option>
+                <option value="12695312">12.7 MHz</option>
+                <option value="6347656">6.35 MHz</option>
+                <option value="3173828">3.17 MHz</option>
+                <option value="1586914">1.59 MHz</option>
+                <option value="793457">794 kHz</option>
+                <option value="396729">397 kHz</option>
+                <option value="198364">198 kHz</option>
+                <option value="99182">99.2 kHz</option>
+                <option value="49591">49.6 kHz</option>
+                <option value="24796">24.8 kHz</option>
+              </select>
+              <button class="btn" id="btn-rta-span-down" data-action="rta-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
+              <button class="btn" id="btn-rta-span-full" data-action="rta-span-full" data-i18n="span_full_short" data-i18n-title="span_full">Full</button>
+              <button class="btn" id="btn-rta-span-up" data-action="rta-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button></div>
+          </div>
+          <div id="swp-freq-settings">
+          <div class="param-row"><label data-i18n="center">Center</label><input type="number" id="input-center" value="1000" step="any" data-i18n="tip_input-center" data-i18n-attr="title">
+            <div class="unit-btn-group" id="unit-center-group"></div>
+            <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="span">Span</label><input type="number" id="input-span" value="100" step="any" data-i18n="tip_input-span" data-i18n-attr="title">
+            <div class="unit-btn-group" id="unit-span-group"></div>
+            <button class="btn" data-action="apply-center-span" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="start">Start</label><input type="number" id="input-start" value="950" step="any" data-i18n="tip_input-start" data-i18n-attr="title">
+            <div class="unit-btn-group" id="unit-start-group"></div></div>
+          <div class="param-row"><label data-i18n="stop">Stop</label><input type="number" id="input-stop" value="1050" step="any" data-i18n="tip_input-stop" data-i18n-attr="title">
+            <div class="unit-btn-group" id="unit-stop-group"></div>
+            <button class="btn" data-action="apply-start-stop" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="span_step">Span Step</label>
+            <input type="number" id="input-span-step" value="10" min="0.000001" step="any" data-i18n="tip_input-span-step" data-i18n-attr="title">
+            <span class="cur-val" id="span-step-unit">MHz</span>
+            <button class="btn active" id="btn-span-step-auto" data-action="span-step-auto" data-i18n="auto" data-i18n-title="tip_btn-span-step-auto">Auto</button></div>
+          <div class="param-row span-action-row">
+            <button class="btn span-step-button" id="btn-swp-span-down" data-action="swp-span-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="span_down">▼</button>
+            <button class="btn span-step-button" id="btn-swp-span-up" data-action="swp-span-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="span_up">▲</button>
+            <button class="btn span-full-button" data-action="full-span" data-i18n="full_span">Full Span</button></div>
+          </div>
+          <div id="sdr-settings" style="display:none;">
+            <div class="param-row"><label data-i18n="center">Center</label>
+              <input type="number" id="input-sdr-center" value="1000" step="any" data-i18n-title="sdr_center_tip" data-i18n-attr="title" title="Wideband center (MHz)">
+              <span class="sdr-tail"><span class="cur-val">MHz</span><button class="btn" data-action="apply-sdr" data-i18n="set">Set</button></span></div>
+            <!-- IQ capture bandwidth on its own row. It was the last item of the Center row. On a
+                 narrow panel the 108px select wrapped to the start of the next line, below the
+                 label column. One row per control keeps every value in the value column. -->
+            <div class="param-row"><label data-i18n="iq_bw">IQ BW</label>
+              <select id="select-sdr-decimate" data-action="apply-sdr-bw" data-i18n-title="capture_bw" data-i18n-attr="title" title="IQ capture bandwidth">
+                <option value="1">50 MHz</option>
+                <option value="2">25 MHz</option>
+                <option value="4">12.5 MHz</option>
+                <option value="8">6.25 MHz</option>
+                <option value="16">3.13 MHz</option>
+                <option value="32" selected>1.56 MHz</option>
+                <option value="64">781 kHz</option>
+                <option value="128">391 kHz</option>
+                <option value="256">195 kHz</option>
+                <option value="512">97.7 kHz</option>
+                <option value="1024">48.8 kHz</option>
+                <option value="2048">24.4 kHz</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="listen">Listen</label>
+              <input type="number" id="input-sdr-listen" value="1000" step="any" data-i18n-title="sdr_listen_tip" data-i18n-attr="title" title="Demod frequency (MHz)">
+              <span class="sdr-tail"><span class="cur-val">MHz</span><button class="btn" data-action="apply-sdr-tune" data-i18n="set">Set</button></span></div>
+            <div class="param-row"><label data-i18n="step">Step</label>
+              <input type="number" id="input-sdr-step" min="0" step="any" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
+              <div class="unit-btn-group sdr-tail" id="unit-sdr_step-group"></div></div>
+            <div class="param-row span-action-row"><span id="sdr-step-quick"></span></div>
+            <div class="param-row span-action-row">
+              <button class="btn span-step-button" data-action="sdr-tune-down" data-i18n="glyph_left" data-i18n-attr="title" data-i18n-title="sdr_tune_down_tip" title="Tune down one step">◀</button>
+              <button class="btn span-step-button" data-action="sdr-tune-up" data-i18n="glyph_right" data-i18n-attr="title" data-i18n-title="sdr_tune_up_tip" title="Tune up one step">▶</button>
+              <button class="btn span-full-button" data-action="sdr-to-center" data-i18n="to_center" data-i18n-title="sdr_to_center_tip" title="Set the wideband centre to the listen frequency">To Center</button></div>
+            <div class="param-row"><label data-i18n="demod">Demod</label>
+              <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
+                   mode list lives in wasm/src/plugin.rs, not here. -->
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group"></div></div>
+            <div class="param-row"><label data-i18n="decode">Decode</label>
+              <!-- The decode window (ui/decodeWindow.ts) shows what the demodulator decoded: the
+                   FT8 table or the CW text, depending on the mode. One toggle for both, enabled
+                   only while a mode that decodes is selected. -->
+              <div class="ft8-line" style="flex:1;">
+                <button class="btn" id="btn-decode-window" data-action="toggle-decode-window" data-i18n-title="decode_window_tip" data-i18n-attr="title" disabled data-i18n="off">Off</button>
+              </div></div>
+            <div class="param-row"><label data-i18n="if_filter">Filter</label>
+              <span class="cur-val" id="sdr-drm-filter-note" data-i18n="drm_filter_fixed" data-i18n-title="drm_filter_tip" data-i18n-attr="title" style="display:none;">DRM auto (4.5–20 kHz)</span>
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
+                <button class="btn" data-sdr-ifbw="500">0.5k</button>
+                <button class="btn" data-sdr-ifbw="2400">2.4k</button>
+                <button class="btn" data-sdr-ifbw="3000">3k</button>
+                <button class="btn" data-sdr-ifbw="6000">6k</button>
+                <button class="btn" data-sdr-ifbw="12000">12k</button>
+                <button class="btn" data-sdr-ifbw="25000">25k</button>
+                <button class="btn" data-sdr-ifbw="50000">50k</button>
+                <button class="btn" data-sdr-ifbw="180000">180k</button>
+              </div></div>
+            <div class="param-row"><label data-i18n="deemph">De-emph</label>
+              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-deemph-group">
+                <button class="btn active" data-sdr-deemph="-1">Auto</button>
+                <button class="btn" data-sdr-deemph="0" data-i18n="off">Off</button>
+                <button class="btn" data-sdr-deemph="50">50µs</button>
+                <button class="btn" data-sdr-deemph="75">75µs</button>
+                <button class="btn" data-sdr-deemph="300">300µs</button>
+              </div></div>
+            <div class="param-row"><label data-i18n="volume">Volume</label>
+              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
+              <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
+            <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
+              <input type="range" id="input-sdr-squelch" min="-160" max="0" step="0.1" value="-110" data-i18n="squelch_tip" data-i18n-attr="title" title="RF threshold before AGC; far left disables squelch, move right to require a stronger signal" style="flex:1;">
+              <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span>
+              <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
+            <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
+              <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
+              <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
+                <option value="wiener" data-i18n="nr_algo_wiener">Wiener</option>
+                <option value="dfn" data-i18n="nr_algo_dfn">DeepFilterNet3</option>
+              </select>
+              <select id="select-sdr-nr-strength" data-action="set-sdr-nr-strength" data-i18n-title="nr_strength_tip" data-i18n-attr="title">
+                <option value="0.25" data-i18n="nr_light">Light</option>
+                <option value="0.6" selected data-i18n="nr_medium">Medium</option>
+                <option value="1" data-i18n="nr_strong">Strong</option>
+              </select>
+              <span class="cur-val" id="nr-dfn-status" style="display:none;"></span></div>
+            <div class="param-row" id="nr-atten-row" style="display:none;"><label data-i18n="nr_atten">Attn</label>
+              <input type="range" id="input-sdr-nr-atten" data-action="set-sdr-nr-atten" min="0" max="20" step="1" value="6" style="flex:1;" data-i18n-title="nr_atten_tip" data-i18n-attr="title" title="DeepFilterNet3 attenuation limit (dB)">
+              <span class="cur-val" id="cur-nr-atten">6 dB</span></div>
+            <div class="param-row sdr-hint-row">
+              <span class="cur-val" style="opacity:.6;flex:1;" data-i18n="sdr_hint">click=tune &middot; drag=tune/pan &middot; ←→ tune &middot; PgUp/PgDn BW &middot; M=demod &middot; Space=audio</span>
+              <!-- The level readout sits with the hint: the volume row is cramped and the level is a
+                   status, not a control. -->
+              <span class="cur-val" id="cur-sdr-level"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+
+      <div class="control-group" id="trace-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="trace">Trace</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row trace-keep"><label data-i18n="trace">Trace</label>
+            <button class="trace-btn T1 active" data-trace-tab="0">T1</button>
+            <button class="trace-btn T2" data-trace-tab="1">T2</button>
+            <button class="trace-btn T3" data-trace-tab="2">T3</button>
+            <button class="trace-btn T4" data-trace-tab="3">T4</button>
+            <div class="btn-group" style="margin-left:auto;">
+              <button class="btn" data-action="export-png" data-i18n="export_png" data-i18n-title="tip_export_png">PNG</button>
+              <button class="btn" data-action="export-csv" data-i18n="export_csv" data-i18n-title="tip_export_csv">CSV</button>
+            </div>
+          </div>
+          <div class="param-row trace-keep"><label data-i18n="mode">Mode</label>
+            <select id="select-trace-mode" data-action="set-trace-mode" data-i18n="tip_select-trace-mode" data-i18n-attr="title">
+              <option value="CLEAR_WRITE" data-i18n="clear_write">Clear Write</option><option value="MAX_HOLD" data-i18n="max_hold">Max Hold</option>
+              <option value="MIN_HOLD" data-i18n="min_hold">Min Hold</option><option value="AVERAGE" data-i18n="average">Average</option>
+              <option value="OFF" data-i18n="off">Off</option>
+            </select>
+            <button class="btn" id="btn-view-freeze" data-action="toggle-freeze" data-i18n="freeze" data-i18n-title="tip_btn-view-freeze">Freeze</button></div>
+          <div class="param-row trace-keep" id="trace-avg-row" style="display:none;"><label data-i18n="avg">Avg</label>
+            <select id="select-trace-avg" data-action="set-trace-avg" data-i18n="tip_select-trace-avg" data-i18n-attr="title">
+              <option value="2">2</option><option value="4">4</option><option value="8">8</option>
+              <option value="16" selected data-i18n="avg_opt_16">16 (default)</option><option value="32">32</option><option value="64">64</option>
+              <option value="128">128</option><option value="256">256</option><option value="0">∞</option>
+            </select>
+            <span class="cur-val" id="trace-avg-status">-</span></div>
+          <div class="param-row"><label data-i18n="smooth">Smooth</label>
+            <select id="select-smooth" data-action="set-smooth" data-i18n="tip_select-smooth" data-i18n-attr="title">
+              <option value="1" data-i18n="off_short">Off</option><option value="3">3 pts</option>
+              <option value="5">5 pts</option><option value="9">9 pts</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="trace_align">Align</label>
+            <select id="select-tracealign" data-action="set-trace-align" data-i18n="tip_tracealign" data-i18n-attr="title" title="Trace alignment on the frequency axis">
+              <option value="start" selected data-i18n="ta_start">To Start</option>
+              <option value="center" data-i18n="ta_center">To Center</option>
+              <option value="native" data-i18n="ta_native">Native</option>
+            </select>
+            <select id="select-points-strategy" data-action="set-points-strategy" data-i18n="tip_points_strategy" data-i18n-attr="title" title="How trace points map onto the span">
+              <option value="speed" selected data-i18n="ps_speed">Speed First</option>
+              <option value="accuracy" data-i18n="ps_accuracy">Points Accurate</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="cal_wnd">Cal Wnd</label>
+            <select id="select-refwin" data-action="set-norm-refwin" data-i18n="tip_refwin" data-i18n-attr="title" title="Normalize reference smoothing window">
+              <option value="0" data-i18n="auto_rbw">Auto (RBW)</option><option value="3">3 pts</option>
+              <option value="5">5 pts</option><option value="7">7 pts</option><option value="9">9 pts</option>
+            </select></div>
+          <div class="param-row trace-keep"><label data-i18n="persist">Persist</label>
+            <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Persistence (density fade)">
+              <option value="0" data-i18n="off">Off</option>
+              <option value="0.95" data-i18n="rta_fast">Fast</option>
+              <option value="0.975" selected data-i18n="rta_medium">Medium</option>
+              <option value="0.99" data-i18n="rta_slow">Slow</option>
+              <option value="0.995" data-i18n="rta_vslow">Very Slow</option>
+            </select>
+            <label style="min-width:auto;" data-i18n="grain">Grain</label>
+            <select id="select-rta-bins" data-action="set-rta-bins" data-i18n="tip_select-rta-bins" data-i18n-attr="title">
+              <option value="64">64</option>
+              <option value="96">96</option>
+              <option value="128" selected>128</option>
+              <option value="192">192</option>
+            </select></div>
+          <div class="btn-group trace-norm-ops" style="margin-top:4px;">
+            <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>
+            <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
+            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span></div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="marker">Marker</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body marker-ops">
+          <div class="param-row"><label data-i18n="active">Active</label>
+            <button class="mkr-btn M1" data-marker-select="1">M1</button>
+            <button class="mkr-btn M2" data-marker-select="2">M2</button>
+            <button class="mkr-btn M3" data-marker-select="3">M3</button>
+            <button class="mkr-btn M4" data-marker-select="4">M4</button>
+            <span class="mkr-gap"></span>
+            <button class="btn mkr-all-btn" id="btn-markers-all" data-action="markers-all" data-i18n="all_off" data-i18n-title="tip_btn-markers-all">All Off</button></div>
+          <div class="param-row"><label data-i18n="tracking">Tracking</label>
+            <button class="btn" id="btn-marker-tracking" data-action="marker-tracking" data-i18n="tracking" aria-pressed="false" data-i18n-title="tip_btn-marker-tracking">Tracking</button></div>
+          <div class="param-row"><label data-i18n="peak">Peak</label>
+            <button class="btn" data-action="mkr-peak" data-i18n="peak">Peak</button>
+            <button class="btn" data-action="mkr-peak-left">◀</button>
+            <button class="btn" data-action="mkr-peak-right">▶</button></div>
+          <div class="param-row"><label data-i18n="valley">Valley</label>
+            <button class="btn" data-action="mkr-valley" data-i18n="valley">Valley</button>
+            <button class="btn" data-action="mkr-valley-left">◀</button>
+            <button class="btn" data-action="mkr-valley-right">▶</button></div>
+          <div class="param-row"><label data-i18n="center_btn">Center</label>
+            <button class="btn" data-action="mkr-center" data-i18n="mkr_center">Mkr→Center</button></div>
+          <div class="param-row"><label data-i18n="pk_list">Pk List</label>
+            <input type="number" id="input-peakthr" value="-80" step="1" min="-150" max="0" data-i18n="tip_peakthr" data-i18n-attr="title"
+                   title="Peak threshold (dBm); Auto = global peak - 50dB, manual edit keeps your value"><span class="cur-val">dBm</span>
+            <button class="btn" id="btn-peakthr-auto" data-action="peakthr-auto" data-i18n="pk_auto" title="Re-enable auto threshold (peak-50dB)">Auto</button>
+            <button class="btn" id="btn-peaklist" data-action="toggle-peaklist" data-i18n="pk_off" data-i18n-title="tip_btn-peaklist">Off</button>
+            <button class="btn" data-action="export-peaks-csv" data-i18n="export_csv" data-i18n-title="tip_export_peaks_csv">CSV</button></div>
+          <div class="param-row"><label data-i18n="count">Count</label>
+            <input type="number" id="input-peakcnt" value="20" min="1" max="20" step="1" data-i18n="tip_peakcnt" data-i18n-attr="title"
+                   title="Number of peaks to display (1~20, single row)"><span class="cur-val">pts</span></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="level-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="level">Level</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-160" max="40" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
+          <div class="param-row"><label data-i18n="scale_short">Scale</label>
+            <div class="unit-btn-group" id="unit-scale-group">
+              <button class="unit-btn" data-scale="1">1</button>
+              <button class="unit-btn" data-scale="2">2</button>
+              <button class="unit-btn" data-scale="5">5</button>
+              <button class="unit-btn active" data-scale="10">10</button>
+              <button class="unit-btn" data-scale="20">20</button>
+            </div><span class="cur-val" data-i18n="db_div">dB/div</span></div>
+          <div class="param-row"><label data-i18n="amp_unit">Unit</label>
+            <select id="select-level-unit" data-i18n="tip_level_unit" data-i18n-attr="title">
+              <option value="dBm">dBm</option><option value="dBmV">dBmV</option>
+              <option value="dBuV">dBuV</option><option value="dBV">dBV</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="wf_range">WF Range</label>
+            <select id="select-wf-range" data-i18n="tip_wf_range" data-i18n-attr="title">
+              <option value="auto" data-i18n="wf_auto">Auto</option>
+              <option value="fixed" data-i18n="wf_fixed">Fixed</option>
+            </select>
+            <input type="number" id="input-wf-lo" value="-110" step="5" data-i18n="tip_wf_lo" data-i18n-attr="title">
+            <input type="number" id="input-wf-hi" value="-30" step="5" data-i18n="tip_wf_hi" data-i18n-attr="title"><span class="cur-val">dBm</span></div>
+          <div class="param-row"><label data-i18n="offset">Offset</label>
+            <input type="number" id="input-offset" value="0" step="0.5" data-i18n="tip_gain" data-i18n-attr="title" title="Display amplitude offset for external amp/attenuator (display only)">
+            <span class="cur-val" data-i18n="db">dB</span></div>
+          <div class="param-row"><label data-i18n="atten">Atten</label>
+            <select id="select-atten" data-action="set-amp" data-i18n="tip_atten" data-i18n-attr="title" title="Channel attenuation (Auto = derived from Ref Level)">
+              <option value="-1" data-i18n="auto">Auto</option>
+              <option value="0">0 dB</option><option value="1">1 dB</option><option value="2">2 dB</option><option value="3">3 dB</option><option value="4">4 dB</option>
+              <option value="5">5 dB</option><option value="6">6 dB</option><option value="7">7 dB</option><option value="8">8 dB</option><option value="9">9 dB</option>
+              <option value="10">10 dB</option><option value="11">11 dB</option><option value="12">12 dB</option><option value="13">13 dB</option><option value="14">14 dB</option>
+              <option value="15">15 dB</option><option value="16">16 dB</option><option value="17">17 dB</option><option value="18">18 dB</option><option value="19">19 dB</option>
+              <option value="20">20 dB</option><option value="21">21 dB</option><option value="22">22 dB</option><option value="23">23 dB</option><option value="24">24 dB</option>
+              <option value="25">25 dB</option><option value="26">26 dB</option><option value="27">27 dB</option><option value="28">28 dB</option><option value="29">29 dB</option>
+              <option value="30">30 dB</option><option value="31">31 dB</option><option value="32">32 dB</option><option value="33">33 dB</option>
+            </select><span class="cur-val" id="cur-atten">-</span></div>
+          <div class="param-row"><label data-i18n="preamp">PreAmp</label>
+            <select id="select-preamp" data-action="set-amp" data-i18n="tip_select-preamp" data-i18n-attr="title">
+              <option value="0" data-i18n="auto">Auto</option><option value="1" data-i18n="off">Off</option>
+            </select><span class="cur-val" id="cur-preamp">-</span></div>
+          <div class="param-row"><label data-i18n="if_gain">IF Gain</label>
+            <select id="select-ifgain" data-action="set-amp" data-i18n="tip_select-ifgain" data-i18n-attr="title">
+              <option value="0">0</option><option value="1">1</option>
+              <option value="2" selected>2</option><option value="3">3</option>
+            </select><span class="cur-val" id="cur-ifgain">-</span></div>
+          <div class="param-row"><label data-i18n="gain_strategy">Gain St</label>
+            <select id="select-gainstrategy" data-action="set-amp" data-i18n="tip_select-gainstrategy" data-i18n-attr="title">
+              <option value="0" data-i18n="low_noise">Low Noise</option><option value="1" data-i18n="high_linearity">High Linearity</option>
+            </select></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="trigger-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="trigger">Trigger</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="trg_source">Source</label>
+            <select id="select-trg-source" data-i18n="tip_trg_source" data-i18n-attr="title">
+              <option value="bus" data-i18n="trg_bus">Bus</option>
+              <option value="level" data-i18n="trg_level">Level</option>
+            </select>
+            <button class="btn" id="btn-trg-capture" data-i18n-title="tip_trg_capture">Capture</button>
+            <button class="btn" id="btn-trg-free" data-i18n="trg_free_btn" data-i18n-title="tip_trg_free">Free Run</button></div>
+          <div class="param-row"><label data-i18n="trg_level">Level</label>
+            <input type="number" id="input-trg-level" value="-40" step="any" min="-150" max="30"
+                   data-i18n="tip_trg_level" data-i18n-attr="title"><span class="cur-val">dBm</span>
+            <button class="btn" id="btn-trg-from-mkr" data-i18n="trg_from_mkr" data-i18n-title="tip_trg_from_mkr">Mkr</button>
+            <button class="btn" id="btn-trg-from-peak" data-i18n="trg_from_peak" data-i18n-title="tip_trg_from_peak">Pk-10</button></div>
+          <div class="param-row"><label data-i18n="trg_edge">Edge</label>
+            <select id="select-trg-edge" data-i18n="tip_trg_edge" data-i18n-attr="title">
+              <option value="rising" data-i18n="trg_rising">Rising</option>
+              <option value="falling" data-i18n="trg_falling">Falling</option>
+              <option value="double" data-i18n="trg_double">Double</option>
+            </select></div>
+          <div class="param-row rta-only"><label data-i18n="trg_debounce">Debounce</label>
+            <input type="number" id="input-trg-safetime" value="0" step="any" min="0" max="10"
+                   data-i18n="tip_trg_safetime" data-i18n-attr="title"><span class="cur-val">s</span>
+            <label style="min-width:auto;" data-i18n="trg_delay">Delay</label>
+            <input type="number" id="input-trg-delay" value="0" step="any" min="0" max="10"
+                   data-i18n="tip_trg_delay" data-i18n-attr="title"><span class="cur-val">s</span></div>
+          <div class="param-row rta-only"><label data-i18n="trg_pre">Pre</label>
+            <input type="number" id="input-trg-pretime" value="0" step="any" min="0" max="10"
+                   data-i18n="tip_trg_pretime" data-i18n-attr="title"><span class="cur-val">s</span>
+            <label style="min-width:auto;" data-i18n="trg_acq">Acq</label>
+            <input type="number" id="input-trg-acqtime" value="0.005" step="any" min="0.0005" max="60"
+                   data-i18n="tip_trg_acqtime" data-i18n-attr="title"><span class="cur-val">s</span></div>
+          <div class="param-row rta-only"><label data-i18n="trg_retrig">Retrig</label>
+            <input type="number" id="input-trg-retrigger" value="0" step="1" min="0" max="65535"
+                   data-i18n="tip_trg_retrigger" data-i18n-attr="title">
+            <input type="number" id="input-trg-retriggerperiod" value="0" step="any" min="0" max="3600"
+                   data-i18n="tip_trg_retriggerperiod" data-i18n-attr="title"><span class="cur-val">s</span></div>
+          <div class="param-row rta-only"><label data-i18n="trg_out">Out</label>
+            <select id="select-trg-out" data-i18n="tip_trg_out" data-i18n-attr="title">
+              <option value="none" data-i18n="trg_none">None</option>
+              <option value="per_hop" data-i18n="trg_per_hop">Per hop</option>
+              <option value="per_sweep" data-i18n="trg_per_sweep">Per sweep</option>
+              <option value="per_profile" data-i18n="trg_per_profile">Per profile</option>
+            </select>
+            <select id="select-trg-outpolarity" data-i18n="tip_trg_outpolarity" data-i18n-attr="title">
+              <option value="positive" data-i18n="trg_pos">Pos</option>
+              <option value="negative" data-i18n="trg_neg">Neg</option>
+            </select></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="meas-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="measurement">Measurement</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="measure">Measure</label>
+            <button class="btn" id="btn-meas-onoff" data-action="meas-toggle" data-i18n="off" data-i18n-title="tip_btn-meas-onoff">Off</button>
+            <div class="btn-group meas-tabs">
+              <button class="tab-btn" id="tab-amp" data-meas-tab="amp" data-i18n="amplitude" data-i18n-title="tip_tab-amp">Amplitude</button>
+              <button class="tab-btn" id="tab-harm" data-meas-tab="harm" data-i18n="harmonic" data-i18n-title="tip_tab-harm">Harmonic</button>
+              <button class="tab-btn" id="tab-pnm" data-meas-tab="pnm" data-i18n="phase_noise" data-i18n-title="tip_tab-pnm">PhaseNoise</button>
+              <button class="tab-btn" id="tab-chan" data-meas-tab="chan" data-i18n="channel" data-i18n-title="tip_tab-chan">Channel</button>
+            </div></div>
+          <div id="meas-amp" class="meas-tab">
+            <div class="param-row"><label data-i18n="n_db">n dB</label>
+              <input type="text" id="input-ampdbs" data-keypad="text" data-unit="dB" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
+                     title="Comma-separated thresholds below peak (1~60 dB)">
+              <button class="btn" id="btn-amp-meas" data-action="meas-amp" data-i18n="meas" data-i18n-title="tip_btn-amp-meas">Meas</button>
+              <button class="btn" id="btn-amp-clear" data-action="clear-amp" data-i18n="clear" data-i18n-title="tip_btn-amp-clear">Clear</button></div>
+          </div>
+          <div id="meas-harm" class="meas-tab" style="display:none;">
+            <div class="param-row"><label data-i18n="fund">Fund</label>
+              <input type="number" id="input-harm-f0" value="1000" step="any" data-i18n="tip_harm_f0" data-i18n-attr="title"
+                     title="Fundamental frequency (MHz). Span auto-selected from it, override below">
+              <span class="cur-val">MHz</span>
+              <button class="btn" id="btn-harm-set" data-action="meas-harm" data-i18n="set" data-i18n-title="tip_btn-harm-set">Set</button></div>
+            <div class="param-row"><label data-i18n="span_short">Span</label>
+              <select id="select-harm-span" data-i18n="tip_harm_span" data-i18n-attr="title" title="Narrow sweep span around each harmonic (auto-set by fundamental, 1Hz~100MHz)">
+                <option value="100000000">100MHz</option>
+                <option value="10000000">10MHz</option>
+                <option value="1000000">1MHz</option>
+                <option value="100000">100kHz</option>
+                <option value="1000">1kHz</option>
+                <option value="1">1Hz</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="orders">Orders</label>
+              <input type="number" id="input-harm-count" value="5" min="1" max="10" step="1" data-i18n="tip_harm_orders" data-i18n-attr="title"
+                     title="Harmonic orders 1~10"></div>
+          </div>
+          <div id="meas-chan" class="meas-tab" style="display:none;">
+            <div class="param-row"><label data-i18n="chan_center">Center</label>
+              <input type="number" id="input-chan-center" value="" placeholder="auto" step="any" data-i18n="tip_chan_center" data-i18n-attr="title">
+              <span class="cur-val">MHz</span>
+              <button class="btn" id="btn-chan-meas" data-action="meas-chan" data-i18n="meas" data-i18n-title="tip_btn-chan-meas">Meas</button>
+              <button class="btn" id="btn-chan-clear" data-action="clear-chan" data-i18n="clear" data-i18n-title="tip_btn-chan-clear">Clear</button></div>
+            <div class="param-row"><label data-i18n="chan_bw">CH BW</label>
+              <input type="number" id="input-chan-bw" value="1" step="any" min="0.001" data-i18n="tip_chan_bw" data-i18n-attr="title">
+              <span class="cur-val">MHz</span></div>
+            <div class="param-row"><label data-i18n="chan_obw">OBW</label>
+              <select id="select-chan-obw" data-i18n="tip_chan_obw" data-i18n-attr="title">
+                <option value="90">90%</option><option value="95">95%</option><option value="99" selected>99%</option>
+              </select></div>
+            <div class="param-row"><label data-i18n="chan_acp">ACP</label>
+              <input type="number" id="input-chan-offset" value="2" step="any" min="0" data-i18n="tip_chan_offset" data-i18n-attr="title">
+              <span class="cur-val">MHz</span>
+              <input type="number" id="input-chan-adjbw" value="1" step="any" min="0.001" data-i18n="tip_chan_adjbw" data-i18n-attr="title">
+              <span class="cur-val">MHz</span></div>
+          </div>
+          <div id="meas-pnm" class="meas-tab" style="display:none;">
+            <div class="param-row"><label data-i18n="carrier">Carrier</label>
+              <input type="number" id="input-pnm" value="1000" step="any" data-i18n="tip_pnm_carrier" data-i18n-attr="title"
+                     title="Carrier frequency">
+              <div class="unit-btn-group" id="unit-pnm-group"></div>
+              <button class="btn" id="btn-pnm-set" data-action="meas-pnm" data-i18n="set" data-i18n-title="tip_btn-pnm-set">Set</button></div>
+            <div class="param-row"><label data-i18n="range">Range</label>
+              <span class="cur-val">100Hz - 10MHz (5 dec)</span></div>
+            <div class="param-row"><label data-i18n="threshold">Threshold</label>
+              <input type="number" id="input-pnm-thr" value="-50" step="1" placeholder="dBm" data-i18n="tip_pnm_thr" data-i18n-attr="title"
+                     title="Carrier detect threshold (dBm), official default -50">
+              <button class="btn" id="btn-pnm-thr" data-action="meas-pnm" data-i18n="set" data-i18n-title="tip_btn-pnm-thr">Set</button></div>
+            <div class="param-row" id="pnm-avg-row"><label data-i18n="avg">Avg</label>
+              <input type="number" id="input-pnm-avg" value="4" min="1" max="1000" step="1" data-i18n="tip_pnm_avg" data-i18n-attr="title"
+                     title="Trace average count (1~1000)">
+              <button class="btn" id="btn-pnm-avg" data-action="meas-pnm" data-i18n="apply" data-i18n-title="tip_btn-pnm-avg">Apply</button></div>
+            <div class="param-row"><label data-i18n="smooth_short">Smooth</label>
+              <select id="select-pnm-smooth" data-i18n="tip_pnm_smooth" data-i18n-attr="title" title="Trace smoothing (frontend, like official software)">
+                <option value="1" data-i18n="on">On</option><option value="0" data-i18n="off">Off</option>
+              </select>
+              <input type="number" id="input-pnm-win" value="1" min="0" max="10" step="0.5" data-i18n="tip_pnm_win" data-i18n-attr="title"
+                     title="Smooth window (% of trace length, 0~10)">
+              <span class="cur-val">%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group" id="bw-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="bw">BW</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="rbw">RBW</label><input type="number" id="input-rbw" value="300" step="any" data-i18n="tip_input-rbw" data-i18n-attr="title">
+            <div class="unit-btn-group" id="unit-rbw-group"></div></div>
+          <div class="param-row"><label></label>
+            <select id="select-rbw-mode" data-action="apply-rbw" data-i18n="tip_select-rbw-mode" data-i18n-attr="title">
+              <option value="manual" data-i18n="manual">Manual</option><option value="auto" data-i18n="auto_span2000">Auto (Span/2000)</option>
+              <option value="one_thousandth_span" data-i18n="rbw_01pc_span">0.1% Span</option>
+              <option value="one_percent_span" data-i18n="rbw_1pc_span">1% Span</option>
+            </select><button class="btn" data-action="apply-rbw" data-i18n="set">Set</button></div>
+          <div class="param-row"><label data-i18n="window">Window</label>
+            <select id="select-window" data-action="set-window" data-i18n="tip_fft_window" data-i18n-attr="title" title="FFT window: FlatTop/B-Nuttall/LowSideLobe/Rectangle/Kaiser">
+              <option value="0">FlatTop</option>
+              <option value="1" selected>Blackman-Nuttall</option>
+              <option value="2">LowSideLobe</option>
+              <option value="3">Rectangle</option>
+              <option value="4">Kaiser</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="detector">Detector</label>
+            <select id="select-detector" data-action="set-detector" data-i18n="tip_detector" data-i18n-attr="title" title="Trace detector">
+              <option value="auto" selected>Auto Sample</option>
+              <option value="sample">Sample</option>
+              <option value="pos_peak">Pos Peak</option>
+              <option value="neg_peak">Neg Peak</option>
+              <option value="rms">RMS</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="frame_det">Frame Avg</label>
+            <select id="select-framedet" data-action="set-framedet" data-i18n="tip_framedet" data-i18n-attr="title" title="Per-bin inter-frame detector (official Detector field): average/max-power/pulse capture">
+              <option value="device_default" selected data-i18n="fd_default">Device Default</option>
+              <option value="average" data-i18n="fd_average">Average</option>
+              <option value="max_power" data-i18n="fd_maxpower">Max Power (pulse)</option>
+              <option value="raw_frames" data-i18n="fd_rawframes">Raw Frames</option>
+            </select></div>
+          <div class="param-row"><label data-i18n="vbw">VBW</label><input type="number" id="input-vbw" value="100" step="any" data-i18n="tip_input-vbw" data-i18n-attr="title">
+            <div class="unit-btn-group" id="unit-vbw-group"></div></div>
+          <div class="param-row"><label></label>
+            <select id="select-vbw-mode" data-action="apply-vbw" data-i18n="tip_select-vbw-mode" data-i18n-attr="title">
+              <option value="bypass" data-i18n="bypass_10x">Bypass (10×RBW)</option><option value="equal" data-i18n="eq_rbw">= RBW</option>
+              <option value="tenth" data-i18n="tenth_rbw">= 0.1×RBW</option><option value="manual" data-i18n="manual">Manual</option>
+            </select><button class="btn" id="btn-vbw-set" data-action="apply-vbw" data-i18n="set" data-i18n-title="tip_btn-vbw-set">Set</button></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="sweep-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="sweep">Sweep</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="points">Points</label><input type="number" id="input-points" value="1001" step="1" min="51" max="16000" data-i18n="tip_input-points" data-i18n-attr="title"><button class="btn" id="btn-points" data-action="apply-points" data-i18n="set" data-i18n-title="tip_btn-points">Set</button></div>
+          <div class="param-row"><label data-i18n="speed">Speed</label>
+            <select id="select-sweep-mode" data-action="set-sweep" data-i18n="tip_select-sweep-mode" data-i18n-attr="title">
+              <option value="0" data-i18n="swt_min">minSWT</option>
+              <option value="1">minSWTx2</option><option value="2">minSWTx4</option><option value="3">minSWTx10</option>
+              <option value="4">minSWTx20</option><option value="5">minSWTx50</option>
+              <option value="6">minSWTxN</option>
+              <option value="7" data-i18n="manual">Manual</option>
+              <option value="8">minSMPxN</option>
+            </select>
+            <input type="number" id="input-sweep-time" value="0" step="any" style="display:none;"
+                   data-i18n="tip_sweep_time" data-i18n-attr="title">
+            <button class="btn" data-action="set-sweep" data-i18n="set" style="display:none;">Set</button></div>
+          <div class="param-row"><label data-i18n="spur">Spur</label>
+            <select id="select-spur" data-action="set-spur" data-i18n="tip_select-spur" data-i18n-attr="title">
+              <option value="bypass" selected data-i18n="bypass">Bypass</option><option value="standard" data-i18n="standard">Standard</option><option value="enhanced" data-i18n="enhanced">Enhanced</option>
+            </select>
+            <label style="min-width:auto;" data-i18n="gapfill">GapFill</label><button class="btn active" id="btn-gapfill" data-action="toggle-gapfill" data-i18n="on" data-i18n-title="tip_btn-gapfill">On</button></div>
+        </div>
+      </div>
+
+      <div class="control-group" id="limit-panel">
+        <div class="group-head">
+          <span class="gh-toggle global-toggle" data-action="toggle-all-groups" data-i18n="tip_collapse_all" data-i18n-attr="title" title="Collapse All / Expand All">v</span>
+          <span class="group-title" data-action="toggle-group" data-i18n="limits">Limits</span>
+          <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
+        </div>
+        <div class="group-body">
+          <div class="param-row"><label data-i18n="limit_state">Limit</label>
+            <button class="btn" id="btn-limit-onoff" data-i18n="off" data-i18n-title="tip_limit_onoff">Off</button></div>
+          <div id="limit-rows"></div>
+          <div class="param-row"><label data-i18n="limit_edit">Edit</label>
+            <button class="btn" id="btn-limit-add" data-i18n="limit_add" data-i18n-title="tip_limit_add">Add</button>
+            <button class="btn" id="btn-limit-reset" data-i18n="limit_reset" data-i18n-title="tip_limit_reset">Span</button>
+            <button class="btn" id="btn-limit-csv" data-i18n="limit_csv" data-i18n-title="tip_limit_csv">CSV</button></div>
+          <div class="param-row"><label data-i18n="limit_tol">Tol</label>
+            <input type="number" id="input-limit-tol" value="0" step="0.1" min="0" max="20" data-i18n="tip_limit_tol" data-i18n-attr="title">
+            <span class="cur-val">dB</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="dev-bar" id="dev-bar">
+    <div class="info-item"><span class="info-label" data-i18n="device">Device</span><span class="info-value gnss-indicator" id="info-device" data-action="device-detail" data-i18n-attr="title" title="Device detail">-</span>
+      <div class="gnss-popover" id="device-popover" style="display:none;">
+        <div class="gnss-popover-head"><span data-i18n="device_detail">Device Detail</span>
+          <button class="btn" data-action="device-close" data-i18n="device_close">Close</button></div>
+        <div class="gnss-popover-body">
+          <div class="param-row"><label data-i18n="model">Model</label><span class="info-value" id="dev-d-model">-</span></div>
+          <div class="param-row"><label data-i18n="uid">UID:</label><span class="info-value" id="dev-d-uid">-</span></div>
+          <div class="param-row"><label data-i18n="hw">HW:</label><span class="info-value" id="dev-d-hw">-</span></div>
+          <div class="param-row"><label data-i18n="mfw">MFW:</label><span class="info-value" id="dev-d-mfw">-</span></div>
+          <div class="param-row"><label data-i18n="ffw">FFW:</label><span class="info-value" id="dev-d-ffw">-</span></div>
+          <div class="param-row"><label data-i18n="bus">BUS:</label><span class="info-value" id="dev-d-bus">-</span></div>
+          <div class="param-row"><label data-i18n="api">API:</label><span class="info-value" id="dev-d-api">-</span></div>
+          <div class="param-row"><label data-i18n="pmu">PMU:</label><span class="info-value" id="dev-d-pmu">-</span></div>
+          <div class="param-row"><label data-i18n="agu">AGU:</label><span class="info-value" id="dev-d-agu">-</span></div>
+          <div class="param-row"><label data-i18n="warn">Warn:</label><span class="info-value" id="dev-d-warn">-</span></div>
+        </div>
+      </div></div>
+    <span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="mfw">MFW:</span><span class="info-value" id="dev-mfw">-</span></div>
+    <span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="ffw">FFW:</span><span class="info-value" id="dev-ffw">-</span></div>
+    <span class="separator">|</span>
+    <div class="info-item"><span class="info-label" data-i18n="api">API:</span><span class="info-value" id="dev-api">-</span></div>
+    <div class="info-right">
+      <button class="btn" id="btn-preset" data-action="preset" data-i18n-title="tip_preset" data-i18n="preset">Preset</button>
+      <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
+      <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
+      <span class="info-label">2026 © HAROGIC WebSA</span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.0 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+    </div>
+  </div>
+</div>
+
+<!-- FT8 decode table: floating, draggable by its head, resizable by its corner. The rows
+     are built by ui/ft8Window.ts from sdr/ft8Log.ts (newest first). It lives in <body>, outside
+     the zoomed frame, and carries the UI scale itself (core/uiScale.ts) like the keypad: a
+     fixed-position element inside the zoomed card has its left/top rendered in zoomed
+     coordinates while pointer clientX/Y stay viewport coordinates, which threw the window
+     off the cursor on scaled UIs (the drag bug this placement fixes). -->
+<div class="decode-window" id="decode-window" style="display:none;">
+  <div class="decode-window-head" id="decode-window-head">
+    <span id="decode-window-title">FT8</span>
+    <!-- WFM only: the stereo badge sits in the title bar, beside the mode name, so the operator
+         reads the state where they look for the pane's state (as the CW lamp and the SSTV hint
+         do). It is one element shown for one mode; every other mode hides it. -->
+    <span class="decode-drm-badge decode-rds-badge decode-title-badge" id="wfm-title-badge"
+          style="display:none;">MONO</span>
+    <span class="decode-drm-badge decode-rds-badge decode-title-badge"
+          id="am-title-badge" role="status" style="display:none;">Sync off</span>
+    <!-- SSTV only, and only before a picture arrives: the waiting message belongs in the title row
+         (where the operator looks for the pane's state), not as placeholder text over the canvas.
+         The decoder's own state (audio buffered, attempts) sits in the readout row below. -->
+    <span class="decode-sstv-hint" id="sstv-head-hint" style="display:none;" data-i18n="sstv_waiting">waiting for a picture…</span>
+    <!-- CW only: a keyed lamp and a narrow level bar, fed by the decoder's own blocks (the tone
+         gate's state and the audio level), so they show exactly what the decoder is hearing. They sit
+         beside the title, where the operator looks first. -->
+    <span class="cw-meter" id="cw-meter" style="display:none;">
+      <span class="cw-led" id="cw-led" data-i18n-title="cw_led_tip" data-i18n-attr="title" title="Keyed"></span>
+      <span class="cw-vu" data-i18n-title="cw_vu_tip" data-i18n-attr="title" title="Audio level"><i id="cw-vu-fill"></i></span>
+    </span>
+    <span class="count" id="decode-window-count">0</span>
+    <span class="spacer"></span>
+    <input class="decode-opacity" id="decode-window-opacity" type="range" min="35" max="100" step="5"
+           value="100" data-i18n-title="ft8_opacity_tip" data-i18n-attr="title" title="Opacity" />
+    <button class="btn" id="btn-decode-utc" data-i18n="ft8_utc_toggle" data-i18n-title="ft8_utc_tip" data-i18n-attr="title" title="Show UTC time">UTC</button>
+    <button class="btn" id="btn-decode-clear" data-i18n="clear">Clear</button>
+    <button class="btn" id="btn-decode-close" data-i18n="gnss_close">Close</button>
+  </div>
+  <!-- FT8 only: a regex filter over the decoded messages. A pattern the engine refuses
+       marks the box invalid and keeps every row visible (filter off, never a blank table). -->
+  <div class="decode-search-row" id="decode-ft8-search-row" style="display:none;">
+    <input class="decode-search" id="decode-ft8-search" type="text" spellcheck="false" autocomplete="off"
+           data-i18n="ft8_search_ph" data-i18n-attr="placeholder" placeholder="Filter messages (regex)"
+           title="Regular expression over the message text" />
+  </div>
+  <div class="decode-window-body" id="decode-window-body">
+    <table id="decode-window-table">
+      <thead><tr>
+        <th id="decode-window-time-th" data-sortable data-col="0" data-i18n="ft8_time">Time</th>
+        <th data-sortable data-col="1" data-i18n="ft8_snr" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">SNR</th>
+        <th data-sortable data-col="2" data-i18n="ft8_df" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">DF</th>
+        <th data-sortable data-col="3" data-i18n="ft8_freq" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">MHz</th>
+        <th data-sortable data-col="4" data-i18n="ft8_message" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">Message</th>
+        <th data-sortable data-col="5" data-i18n="ft8_country" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">Country</th>
+        <th data-sortable data-col="6" data-i18n="ft8_location" data-i18n-title="ft8_sort_tip" title="Sort by this column; click again to restore">Location</th>
+      </tr></thead>
+      <tbody id="decode-window-rows"></tbody>
+    </table>
+    <!-- CW: the decoded Morse text, one line per transmission (live while keying). -->
+    <div class="decode-cw" id="decode-window-cw" style="display:none;"></div>
+    <!-- DRM: live service and decode health above the equalised FAC constellation. -->
+    <div class="decode-drm" id="decode-window-drm" style="display:none;">
+      <div class="decode-drm-service">
+        <strong class="decode-drm-station" id="decode-drm-station"></strong>
+        <span class="decode-drm-badge decode-drm-mode" id="decode-drm-mode"></span>
+        <span class="decode-drm-badge decode-drm-lock" id="decode-drm-lock"><span id="decode-drm-status"></span></span>
+      </div>
+      <div class="decode-drm-main" id="decode-drm-main">
+        <div class="decode-drm-readouts">
+          <div class="decode-drm-quality">
+            <span data-i18n="drm_fac_mer">FAC MER</span>
+            <strong id="decode-drm-mer">—</strong><span class="decode-drm-unit">dB</span>
+            <div class="decode-drm-snr"><span>SNR</span><span id="decode-drm-snr">—</span></div>
+          </div>
+          <dl class="decode-drm-metrics" id="decode-drm-metrics">
+            <div><dt>FAC</dt><dd title="OK / errors" data-i18n-title="drm_fac_counts" data-i18n-attr="title"><span id="decode-drm-fac-ok">—</span><span class="decode-drm-divider">/</span><span id="decode-drm-fac-err">—</span></dd></div>
+            <div><dt title="MSC frames" data-i18n-title="drm_msc_frames" data-i18n-attr="title">MSC</dt><dd id="decode-drm-msc">—</dd></div>
+            <div><dt title="Audio AUs" data-i18n="drm_audio_short" data-i18n-title="drm_audio_aus" data-i18n-attr="title">Audio</dt><dd id="decode-drm-aus">—</dd></div>
+          </dl>
+        </div>
+        <figure class="decode-drm-constellation" id="decode-drm-constellation">
+          <canvas class="decode-drm-plot" id="decode-window-drm-plot" width="144" height="144"></canvas>
+          <figcaption data-i18n="drm_constellation">FAC constellation</figcaption>
+        </figure>
+      </div>
+      <details class="decode-drm-details" id="decode-drm-details">
+        <summary data-i18n="drm_details">Decoder details</summary>
+        <code id="decode-drm-debug"></code>
+      </details>
+    </div>
+    <!-- WFM: the stereo badge (in the title bar), the carrier, the deviation, the pilot ratio,
+         the audio level and an audio scope. The values come from the worker's side chain
+         through the `wfm-info` message. -->
+    <div class="decode-rds" id="decode-window-wfm" style="display:none;">
+      <div class="decode-rds-service">
+        <strong class="decode-rds-ps" id="wfm-station">—</strong>
+        <span class="decode-rds-label" id="wfm-rds-pi">—</span>
+      </div>
+      <div class="decode-rds-clock-row">
+        <span class="decode-rds-label">RadioText</span>
+        <span id="wfm-rt">—</span>
+      </div>
+      <dl class="decode-rds-metrics decode-wfm-metrics">
+        <div><dt>Carrier</dt><dd id="wfm-carrier">—</dd></div>
+        <div><dt>Deviation</dt><dd id="wfm-dev">—</dd></div>
+        <div><dt>Pilot</dt><dd id="wfm-pilot">—</dd></div>
+      </dl>
+      <!-- The demodulated audio the listener hears: a ~10 ms window per block, triggered on a
+           rising zero crossing so the trace stands still instead of sliding. Its amplitude
+           answers "is the demodulator working" at a glance, which a level number cannot. -->
+      <canvas class="decode-wfm-scope" id="wfm-scope" width="360" height="64"
+              data-i18n-title="wfm_scope_tip" data-i18n-attr="title"
+              title="Demodulated audio, about 10 ms per frame (left on top, right below when the station is stereo)"></canvas>
+      <div class="decode-rds-clock-row decode-wfm-audio">
+        <span class="decode-rds-label">Audio level</span>
+        <span id="wfm-audio">—</span>
+      </div>
+      <div class="decode-rds-empty" id="wfm-empty" style="display:none;">Tune to an FM broadcast station.</div>
+    </div>
+    <div class="decode-rds" id="decode-am" style="display:none;">
+      <dl class="decode-rds-metrics decode-wfm-metrics">
+        <div class="decode-am-carrier-row">
+          <dt data-i18n="am_carrier">Carrier frequency</dt><dd id="am-carrier">—</dd>
+          <dd class="decode-am-sync-control"><label for="am-sync-toggle" data-i18n="am_sync_detector">Synchronous</label>
+            <button type="button" class="btn" id="am-sync-toggle" aria-pressed="false" aria-busy="false">Off</button></dd>
+        </div>
+        <div><dt data-i18n="am_carrier_offset">Carrier offset</dt><dd id="am-carrier-offset">—</dd></div>
+        <div><dt data-i18n="am_modulation">Modulation</dt><dd id="am-modulation">—</dd></div>
+        <div><dt data-i18n="am_input">Input</dt><dd id="am-input">—</dd></div>
+        <div><dt data-i18n="am_rms">Audio RMS</dt><dd id="am-rms">—</dd></div>
+        <div><dt data-i18n="am_peak">Audio peak</dt><dd id="am-peak">—</dd></div>
+      </dl>
+      <canvas class="decode-wfm-scope" id="am-scope" width="360" height="64" role="img"></canvas>
+      <div class="decode-rds-empty" id="am-empty" data-i18n="am_waiting">Waiting for AM signal information…</div>
+    </div>
+        <!-- SSTV: the picture the station sent and what the calibration header said about it. The mode
+         buttons are built from the Rust mode table (ui/decodeWindow.ts) - never a list kept here -
+         and the one the signal declared is marked, so "which mode is this?" is answered by looking.
+         The canvas is scaled by CSS to whatever room the window has. -->
+    <div class="decode-sstv" id="decode-window-sstv" style="display:none;">
+      <div class="decode-sstv-bar">
+        <button class="btn sstv-auto" id="sstv-auto" data-i18n="sstv_auto" data-i18n-title="sstv_auto_tip" data-i18n-attr="title" title="Take the mode from the signal's VIS header">Auto</button>
+        <div class="btn-group decode-sstv-modes" id="sstv-mode-group"></div>
+        <span class="spacer"></span>
+      </div>
+      <div class="decode-sstv-main">
+        <div class="decode-sstv-thumbs" id="sstv-thumbs">
+          <div class="decode-sstv-thumb-tools">
+            <button class="btn" id="sstv-select-all" data-i18n="sstv_select_all" data-i18n-title="sstv_select_all_tip" data-i18n-attr="title" title="Select every stored picture">All</button>
+            <button class="btn" id="btn-sstv-delete" data-i18n="sstv_delete" data-i18n-title="sstv_delete_tip" data-i18n-attr="title" title="Delete the ticked pictures" disabled>Delete</button>
+            <button class="btn" id="btn-sstv-save" data-i18n="sstv_save" data-i18n-title="sstv_save_tip" data-i18n-attr="title" title="Save the ticked pictures as PNG files" disabled>Save</button>
+          </div>
+          <div class="decode-sstv-thumb-list" id="sstv-thumb-list"></div>
+        </div>
+        <div class="decode-sstv-side">
+          <div class="decode-sstv-readout">
+            <span class="decode-sstv-mode" id="sstv-mode-name">—</span>
+            <span class="decode-sstv-chip" id="sstv-vis">VIS —</span>
+            <span class="decode-sstv-chip" id="sstv-size">—</span>
+            <span class="decode-sstv-chip" id="sstv-time">—</span>
+            <span class="decode-sstv-chip" id="sstv-freq">—</span>
+            <span class="decode-sstv-chip" id="sstv-count" data-i18n-title="sstv_count_tip" data-i18n-attr="title" title="Pictures received this session">—</span>
+            <span class="decode-sstv-state" id="sstv-state" style="display:none;" data-i18n-title="sstv_state_tip" data-i18n-attr="title" title="Decoder state"></span>
+          </div>
+          <div class="decode-sstv-progress" id="sstv-progress" data-i18n-title="sstv_progress_tip" data-i18n-attr="title" title="Scanlines decoded">
+            <i id="sstv-progress-fill"></i><span id="sstv-progress-text">0%</span>
+          </div>
+          <div class="decode-sstv-view">
+            <canvas class="decode-sstv-canvas" id="decode-sstv-canvas" width="320" height="256"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Resize handles: four edges and four corners (a single corner grip was all the first
+       version had, so the window could only grow one way). The corners sit above the edges, and
+       the south-east one keeps the visible grip look. -->
+  <div class="decode-resize-layer">
+    <div class="decode-rz n" data-decode-rz="n"></div>
+    <div class="decode-rz s" data-decode-rz="s"></div>
+    <div class="decode-rz w" data-decode-rz="w"></div>
+    <div class="decode-rz e" data-decode-rz="e"></div>
+    <div class="decode-rz nw" data-decode-rz="nw"></div>
+    <div class="decode-rz ne" data-decode-rz="ne"></div>
+    <div class="decode-rz sw" data-decode-rz="sw"></div>
+    <div class="decode-rz se" data-decode-rz="se" data-i18n-title="ft8_resize_tip" data-i18n-attr="title" title="Drag to resize"></div>
+  </div>
+</div>
+</body>
+</html>

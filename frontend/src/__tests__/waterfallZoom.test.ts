@@ -1,33 +1,67 @@
-/**
- * The viewport-sliced waterfall (render/waterfall.ts phase 2).
- *
- * Pins the storage/render split: rows keep their stored width; the render maps any row
- * onto the canvas through the visible capture fraction — MAX aggregation on the way down
- * (the rows' own peak-hold semantics), nearest column on the way up (a step, never an
- * interpolation), and a row-width floor/cap that decouples history from the canvas size.
- */
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-	setWaterfallRowWidth,
-	sliceDensityRow,
-	waterfallRowWidth,
-} from '../render/waterfall';
+import { pushSpectrumRow, renderWaterfall, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
+import * as S from '../core/store';
+import { wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
+import { __testSeedCapture } from '../ui/spectrumViewport';
 
 beforeEach(() => {
-	// back to the clamped default
-	setWaterfallRowWidth(0);   // invalid: ignored, keeps the previous value
+  S.resetWaterfall();
+  wfRangeMode.set('fixed');
+  wfLoDbm.set(-100);
+  wfHiDbm.set(0);
 });
 
-describe('row width floor and cap', () => {
-	it('clamps into [2048, 16384]', () => {
-		expect(waterfallRowWidth()).toBeGreaterThanOrEqual(2048);
-		setWaterfallRowWidth(500);
-		expect(waterfallRowWidth()).toBe(2048);       // the floor is what small screens get
-		setWaterfallRowWidth(5000);
-		expect(waterfallRowWidth()).toBe(5000);       // a 5k-wide canvas keeps 1:1
-		setWaterfallRowWidth(99999);
-		expect(waterfallRowWidth()).toBe(16384);      // the cap bounds memory on 8K
-	});
+describe('native waterfall history', () => {
+  it('retains a close pair, valley, missing bin and final carrier on their native Hz', () => {
+    const freq = Float64Array.from([10, 12, 14, 16, 18]);
+    pushSpectrumRow(Float32Array.from([-20, -95, -30, NaN, -25]), freq, 8, 20, 100);
+    const row = S.waterfallRows[0];
+    expect([...row]).toEqual([80, 5, 70, 0, 75]);
+    expect([...sliceWaterfallRow(row, 3, 10, 16)]).toEqual([80, 5, 70]);
+    expect([...sliceWaterfallRow(row, 4, 15, 19)]).toEqual([0, 0, 75, 75]);
+    expect([...sliceWaterfallRow(row, 3, 8, 11)]).toEqual([0, 0, 80]);
+  });
+
+  it('bounds oversized history while retaining a carrier in the last native bin', () => {
+    const freq = Float64Array.from({ length: 32769 }, (_, i) => i);
+    const levels = new Float32Array(freq.length).fill(-100);
+    levels[levels.length - 1] = -10;
+    for (let i = 0; i < 513; i++) pushSpectrumRow(levels, freq, 0, 32768, 100);
+    expect(S.waterfallRows).toHaveLength(512);
+    expect(S.waterfallRows[511]).toHaveLength(16384);
+    expect(sliceWaterfallRow(S.waterfallRows[511], 1, 32767, 32768)[0]).toBe(90);
+  });
+
+  it('scrolls new rows without changing historical pixels and rebuilds correctly after reset', () => {
+    const freq = Float64Array.from([10, 12, 14, 16]);
+    let pixels = new Uint8ClampedArray();
+    const context = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: (image: { data: Uint8ClampedArray }) => { pixels = image.data.slice(); },
+    };
+    const canvas = { width: 4, height: 3, getContext: () => context } as unknown as HTMLCanvasElement;
+    __testSeedCapture({ lo: 10, hi: 16 });
+    try {
+      pushSpectrumRow(Float32Array.from([-80, -60, -40, -20]), freq, 10, 16, 100);
+      renderWaterfall(canvas, 100);
+      const originalTop = pixels.slice(0, 16);
+      pushSpectrumRow(Float32Array.from([-20, -40, -60, -80]), freq, 10, 16, 100);
+      renderWaterfall(canvas, 100);
+      expect([...pixels.slice(16, 32)]).toEqual([...originalTop]);
+      const incremental = pixels.slice();
+      const rows = [...S.waterfallRows];
+      S.resetWaterfall();
+      // A reset can replace rows without changing the final push counter.
+      for (const row of rows) S.pushWaterfallRow(row);
+      canvas.width = 5;
+      renderWaterfall(canvas, 100);
+      canvas.width = 4;
+      renderWaterfall(canvas, 100);
+      expect([...pixels]).toEqual([...incremental]);
+    } finally {
+      __testSeedCapture(null);
+    }
+  });
 });
 
 describe('sliceDensityRow', () => {

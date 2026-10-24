@@ -2,13 +2,17 @@
 # Frontend build: npm install (if missing) -> Vite build -> dist
 # Self-hosted font: extract LXGW WenKai from the system if public/fonts lacks LXGWWenKai-*.woff2
 set -e
+case "${1:-}" in
+  --help|-h) echo 'Usage: ./build.sh (build browser controls); make build builds browser and Rust service; make sdk-shim builds the hardware SDK adapter'; exit 0 ;;
+  '') ;;
+  *) echo "Unknown argument: $1" >&2; exit 2 ;;
+esac
 cd "$(dirname "$0")/frontend"
 
 # Font extraction (if missing): subset LXGW WenKai from /usr/share/fonts/TTF
 if [ ! -f public/fonts/LXGWWenKai-Regular.woff2 ]; then
   if ! python3 -c 'import fontTools' 2>/dev/null; then
-    # The woff2 files are normally COMMITTED (public/fonts); this branch only runs on a
-    # checkout where they are missing. Say what is missing instead of a bare stack trace.
+    # Missing committed fonts fall back to system fonts when fonttools is unavailable.
     echo "NOTE: public/fonts lacks LXGWWenKai-*.woff2 and fonttools is not installed;"
     echo "      continuing WITHOUT self-hosted CJK fonts (the page falls back to system"
     echo "      fonts; install fonttools + LXGW WenKai TTFs in /usr/share/fonts/TTF to"

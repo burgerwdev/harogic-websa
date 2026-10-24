@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""SSTV receive, end to end: fake backend -> IQBF -> browser worker -> decoder -> pane.
+"""Native Robot36 fixture -> SDE2 -> browser decoder pane.
 
-Runs against a real service with the fake device replaying the committed Robot 36 transmission.
-Asserts: first decode < 2 s, dual transmission (2 completions), history thumbnails populated.
-Fault injection: --offset Hz, --scale amplitude.
+Requires the native websad release binary and built frontend assets.
+Asserts: first decode < 2 s, two distinct completed pictures, populated thumbnails.
 
     python3 tools/e2e/sstv_receive.py
-    python3 tools/e2e/sstv_receive.py --offset 800 --scale 0.01
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import signal
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -25,6 +20,8 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from playwright.sync_api import sync_playwright  # noqa: E402
+
+from tools.e2e.rust_iq_browser import start_service, stop  # noqa: E402
 
 
 def post(url: str, payload: dict) -> None:
@@ -34,40 +31,26 @@ def post(url: str, payload: dict) -> None:
         response.read()
 
 
-def start_backend(port: int, offset: float = 0.0, scale: float = 1.0) -> subprocess.Popen:
-    env = dict(os.environ, WEBSA_FAKE='1', WEBSA_PORT=str(port),
-               WEBSA_FAKE_SSTV_OFFSET_HZ=str(offset), WEBSA_FAKE_SSTV_SCALE=str(scale))
-    proc = subprocess.Popen([sys.executable, '-m', 'web_sa.supervisor'], cwd=ROOT, env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    url = f'http://127.0.0.1:{port}'
-    for _ in range(60):
-        try:
-            urllib.request.urlopen(f'{url}/api/config', timeout=2)
-            return proc
-        except urllib.error.HTTPError:
-            return proc
-        except Exception:
-            time.sleep(0.5)
-    proc.terminate()
-    raise SystemExit('backend did not start')
+def start_backend(port: int) -> subprocess.Popen:
+    proc, _ = start_service(port)
+    return proc
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--port', type=int, default=8125)
-    parser.add_argument('--offset', type=float, default=0.0, help='replay frequency offset in Hz')
-    parser.add_argument('--scale', type=float, default=1.0, help='replay amplitude scale')
     parser.add_argument('--seconds', type=float, default=90.0, help='how long to wait for 2 pictures')
     args = parser.parse_args()
 
-    backend = start_backend(args.port, offset=args.offset, scale=args.scale)
+    backend = start_backend(args.port)
     failures: list[str] = []
     try:
         post(f'http://127.0.0.1:{args.port}', {'cmd': 'SET_MODE', 'mode': 'sdr'})
         post(f'http://127.0.0.1:{args.port}',
-             {'cmd': 'SET_SDR_DEMOD', 'mode': 'sstv', 'ifbw': 3000, 'pitch': 700, 'volume': 0.0,
-              'squelch': -140.0, 'agc': True})
+             {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
+              'freq': 100_000_000, 'mode': 'sstv', 'ifbw': 3000, 'pitch': 700,
+              'volume': 0.0, 'squelch': -140.0, 'agc': True})
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             context = browser.new_context()
@@ -83,8 +66,9 @@ def main() -> int:
             start_mono = time.monotonic()
             deadline = start_mono + args.seconds
             first_decode_at = None
-            completions = 0
-            last_progress = ''
+            completed_ids: set[str] = set()
+            saw_progress = False
+            diag = ''
             # Phase 1: sub-300 ms polling until the first decode (latency gate: < 2 s).
             while time.monotonic() < start_mono + 10.0:
                 page.wait_for_timeout(250)
@@ -98,26 +82,40 @@ def main() -> int:
                     break
             else:
                 failures.append('no decode within 10s')
-            # Phase 2: 3 s polling until 2 completions; assert history thumbnails.
+            # Track the actual picture identity; progress can finish between polls.
             while time.monotonic() < deadline:
-                page.wait_for_timeout(3000)
-                progress = page.evaluate("() => document.getElementById('sstv-progress-text').textContent")
-                diag = page.evaluate("() => document.getElementById('spectrum').dataset.sdrIq || ''")
-                thumbs = page.evaluate(
-                    "() => document.querySelectorAll('.decode-sstv-thumb').length")
-                if progress == '100%' and last_progress != '100%':
-                    completions += 1
-                    print(f'COMPLETION #{completions} at t={time.monotonic() - start_mono:.0f}s  thumbs={thumbs}')
-                    if completions >= 1 and thumbs < 1:
-                        failures.append(f'completion #{completions} but no history thumbnails')
-                last_progress = progress
-                if completions >= 2:
-                    print(f'DUAL TRANSMISSION OK: {completions} completions, thumbs={thumbs}')
-                    if thumbs < 1:
-                        failures.append('no history thumbnails after 2 completions')
+                page.wait_for_timeout(250)
+                snapshot = page.evaluate("""() => {
+                    const picture = document.querySelector('.decode-sstv-thumb.viewed');
+                    const canvas = document.getElementById('decode-sstv-canvas');
+                    const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+                    let nonzero = false;
+                    for (let i = 0; i < pixels.length; i += 4) {
+                        if (pixels[i] || pixels[i + 1] || pixels[i + 2]) { nonzero = true; break; }
+                    }
+                    return {id: picture?.dataset.id, progress: document.getElementById('sstv-progress-text').textContent,
+                        mode: document.getElementById('sstv-mode-name').textContent,
+                        width: canvas.width, height: canvas.height, nonzero,
+                        thumbs: document.querySelectorAll('.decode-sstv-thumb canvas').length};
+                }""")
+                diag = json.dumps(snapshot)
+                percent = float((snapshot['progress'] or '0').rstrip('%'))
+                saw_progress |= 0 < percent < 100
+                if percent == 100 and snapshot['id'] and snapshot['id'] not in completed_ids:
+                    completed_ids.add(snapshot['id'])
+                    print(f'COMPLETION #{len(completed_ids)}: {diag}')
+                    if 'robot' not in snapshot['mode'].lower() or '36' not in snapshot['mode']:
+                        failures.append(f'unexpected fixture mode: {snapshot["mode"]}')
+                    if (snapshot['width'], snapshot['height']) != (320, 240) or not snapshot['nonzero']:
+                        failures.append('Robot36 picture is empty or has incorrect dimensions')
+                    if snapshot['thumbs'] < len(completed_ids):
+                        failures.append('completed pictures missing history thumbnails')
+                if len(completed_ids) >= 2:
                     break
-            if completions < 2:
-                failures.append(f'only {completions} completions in {args.seconds:.0f}s')
+            if not saw_progress:
+                failures.append('no partial picture progress observed')
+            if len(completed_ids) < 2:
+                failures.append(f'only {len(completed_ids)} completions in {args.seconds:.0f}s')
             if failures:
                 print('\nFAIL:')
                 for failure in failures:
@@ -129,7 +127,7 @@ def main() -> int:
             browser.close()
             return 0
     finally:
-        backend.send_signal(signal.SIGTERM)
+        stop(backend)
 
 
 if __name__ == '__main__':

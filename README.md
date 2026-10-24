@@ -2,7 +2,11 @@
 
 **中文文档: [README.zh-CN.md](README.zh-CN.md)**
 
-A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), built on the official SDK (`htra_api.py` + `libhtraapi.so`, USB connection).
+A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), using the native Rust service and a C++ shim for the official `libhtraapi.so` SDK over USB.
+
+Release **1.9.0** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
+for offline tools and tests; there is no Python production backend. Retained browser WASM
+artifacts are optional offline diagnostics, not the production DSP path.
 
 ![Main UI (dark)](screenshots/main_dark.png)
 
@@ -14,9 +18,7 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 ## Features
 
-- **Narrow SDR captures stay smooth** — an IQ capture bandwidth below about 100 kHz keeps the
-  panadapter at its full frame rate and the audio free of gaps: the analyzer captures wider and
-  shows the requested span.
+- **Narrow SDR capture** — acquisition can cover a wider band while the panadapter shows the requested span; the channelizer chooses a suitable receiver rate.
 - **Spectrum** — Clear Write / Max Hold / Min Hold / Average / View, four traces, smoothing,
   peak-preserving resampling
 - **Display zoom** — enlarge the captured spectrum on screen. No retune, no new sweep. An
@@ -31,16 +33,19 @@ A browser-based control and measurement application for **Harogic SAN series spe
 - **Real-time spectrum** — FPGA engine, multiple traces, density background, waterfall
 - **Measurements** — amplitude (n-dB bandwidth), harmonic (H1–H5), phase noise
 - **Channel measurements** — channel power, occupied bandwidth (90/95/99%), ACPR
-- **SDR receiver** — IQ streaming with the DSP in the browser: AM/DSB/USB/LSB/CW/NFM/WFM/PM
+- **SDR receiver** — IQ streaming with native Rust DSP: AM/DSB/USB/LSB/CW/NFM/WFM/PM
   demodulators, noise reduction (Wiener, optional DeepFilterNet3), audio chain, panadapter and
-  waterfall
-- **Digital modes** — FT8 decoding (multi-pass with OSD fallback), CW decoding, DRM30 (SW broadcast) decoding, and SSTV picture decoding (18 modes, in the decode window). The FT8 decode window marks the QSO pair on hover, filters messages with a regex, and sorts by column.
+  waterfall; the browser handles control, playback and display
+- **Digital modes** — FT8 decoding, CW decoding, DRM/DRM+ reception and SSTV picture decoding (18 modes). The FT8 window supports QSO highlighting, regex filtering and column sorting. Current decoder and playback limits are documented in [KNOWN_ISSUES](docs/en/KNOWN_ISSUES.md).
 - **FM stereo and RDS** — WFM recovers L/R from the 19 kHz pilot and 38 kHz difference signal.
   It decodes RDS PI, station name and RadioText from 57 kHz. The FM pane shows a pilot-based
   STEREO/MONO badge, deviation, audio level and L/R scope. The badge reports the pilot, not
-  whether the current programme has different L/R content.
+  whether the current programme has different L/R content. Stereo is enabled by default; the native
+  stream has two channels, while explicitly disabling stereo selects mono.
+- **AM analysis** — envelope detection by default, optional synchronous detection with integral carrier tracking, recovered RF frequency and lock indication, smoothed modulation/input metrics, audio levels and a final-PCM waveform. The title badge reports detector lock and includes timing details on hover; the Synchronous toggle sits beside the carrier frequency.
 - **Trigger** — device-side RTA level trigger plus a swept-mode software trigger; limit lines with
-  pass/fail margins and normalization; PNG/CSV export
+  pass/fail margins and normalization; PNG/CSV export. RTA capture completion is confirmed from
+  device/frame metadata; fixture input does not simulate hardware trigger hits.
 - **UI** — jump rail, optional virtual keypad, amplitude units with external gain/loss
   compensation, dark/light theme, English/Chinese
 - **Link monitor** — an unplug is reported on the canvas instead of a frozen trace, and reconnecting
@@ -62,20 +67,54 @@ A browser-based control and measurement application for **Harogic SAN series spe
 
 ## Quick Start
 
+### Run the bundled release
+
+The 1.9.0 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
+`runtime/linux-x86_64/libwebsa_san90_sdk_session.so`, and `runtime/frontend/dist/`.
+Run `./run.sh` for hardware or `./run.sh --fake` for synthetic input, then open
+http://127.0.0.1:8080. No Rust, Node.js or Python installation is needed to use the bundle.
+Hardware still requires the user-provided HAROGIC SDK under `/opt/htraapi` (including
+`libhtraapi.so.0`); the proprietary SDK is not bundled.
+
+Synthetic digital-mode playback also needs this checkout's tracked `tests/fixtures/`;
+copying only `runtime/` is insufficient. `run.sh` sets the working directory to the checkout;
+`WEBSA_FIXTURES` can select another fixture directory.
+
+These binaries target **Linux x86_64 with glibc** and were built on Arch Linux. They require
+GLIBC 2.44, GLIBCXX 3.4.30 and CXXABI 1.3.15 across the service and adapter, plus the
+system ELF loader, `libstdc++.so.6`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6` and
+`libfdk-aac.so.2`. The SDK also needs its own dependencies (observed: libusb, liquid-dsp,
+OpenMP, pthread and dl). This is not a portable or static binary distribution; rebuild on
+older distributions or other architectures. See [Development](docs/en/DEVELOPMENT.md)
+for rebuilding and packaging.
+
+`run.sh` prefers rebuilt `native-ddc/target/release/websad` and `frontend/dist/` when present,
+otherwise it uses the bundled files. `WEBSA_BIN` overrides the service executable. For hardware,
+an explicit `WEBSA_RUST_IQS_SHIM` wins, followed by the installed user shim and the bundled adapter.
+
+The service itself needs GLIBCXX 3.4.29 and CXXABI 1.3.9; the bundled SDK adapter raises
+those requirements to the versions above. The ELF loader path is `/lib64/ld-linux-x86-64.so.2`.
+The adapter was linked against SDK 0.55.100 with library search path `/opt/htraapi/lib/x86_64`;
+rebuild it with `SDK_ROOT` for a different SDK installation. CPU portability beyond Linux x86_64
+has not been established.
+
 ### Prerequisites
 
-- Python ≥ 3.10 (aiohttp, NumPy; pyserial is optional for hardware smoke tests)
+- Linux with systemd user services, `curl` and `ss` (iproute2) for the launcher; native audio
+  decoding requires the FDK AAC shared library (`libfdk-aac.so.2`, version ≥2.0.3).
+- Rust, a C++17 compiler and pkg-config only for native rebuilds.
+- Python ≥3.10 only for bench, e2e, reference and fixture tools; no production Python backend.
 - Node.js — only for rebuilding the frontend and running its tests: a 22.22+, 24.15+ or ≥26
   release (the test stack's floor; a plain Vite build accepts 22.12+). Node 18/20/23 are not covered.
 - Harogic SAN series analyzer + official SDK:
-  - `htra_api.py` — included in the repo root (official Python wrapper, HAROGIC copyright)
-  - `libhtraapi.so` — **proprietary binary, obtain it from HAROGIC**; place it somewhere `ctypes` can find it
+  - `htra_api.py` — vendor wrapper retained for offline tools (HAROGIC copyright)
+  - `libhtraapi.so` — **proprietary binary, obtain it from HAROGIC**; install the SDK headers/libraries under `/opt/htraapi`
 
-### 1. Install dependencies
+### 1. Rebuild from source
 
 ```bash
-pip install -r requirements.txt          # runtime only: aiohttp, NumPy
-./build.sh                               # sync frontend dependencies and run the Vite build
+make native sdk-shim                     # native service and hardware SDK shim
+./build.sh                               # frontend assets; make wasm rebuilds WASM explicitly
 ```
 
 ### 2. Run
@@ -86,30 +125,35 @@ pip install -r requirements.txt          # runtime only: aiohttp, NumPy
 
 Open http://127.0.0.1:8080
 
+The default is real hardware; the launcher selects the installed user shim or bundled adapter as described above.
+Use `WEBSA_FAKE=1 ./run.sh` explicitly for synthetic input. `WEBSA_UNIT`, `WEBSA_HOST`,
+`WEBSA_PORT`, `WEBSA_RUST_IQS_SHIM` and `WEBSA_STATIC` configure the native launcher;
+logs are in the systemd user journal. `./stop.sh` and `./status.sh` manage the same native unit.
+
 Unplugging the analyzer is detected and reported, and plugging it back in resumes the same mode
 without a restart; `make status` shows the live link, and `make restart` restarts the service.
 
-The service listens on loopback by default. Remote control requires a token:
+The service listens on loopback by default. Local and LAN access need no token:
 
 ```bash
-WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
+WEBSA_HOST=0.0.0.0 ./run.sh
 ```
 
-Then open `http://device-address:8080/?token=the-same-token`. See
-[`docs/en/FAQ_NOTES.md`](docs/en/FAQ_NOTES.md) for all environment variables, remote deployment,
-logging, and hardware tests. SWP/RTA parameter semantics are documented in
-[`docs/en/MODE_STATE_FLOW.md`](docs/en/MODE_STATE_FLOW.md). An independent architecture and code
-review with prioritized refactor recommendations is in
-[`docs/en/ARCH_REVIEW.md`](docs/en/ARCH_REVIEW.md); the development guide (layer map, state
-ownership, feature checklists, testing/perf rules, guard rails, debugging playbook and a lesson
-ledger) is [`docs/en/DEVELOPMENT.md`](docs/en/DEVELOPMENT.md).
+Then open `http://device-address:8080/`. The [operations FAQ](docs/en/FAQ_NOTES.md) covers
+environment variables, logging and recovery. Direct invocation of `native-ddc/target/release/websad`
+defaults to fixture input on port 8099 when no hardware shim is supplied; `run.sh` explicitly selects
+hardware on port 8080 unless fake input is requested.
+
+Current documentation: [architecture](docs/en/ARCHITECTURE.md), [HTTP/WS API](docs/en/API.md),
+[mode and parameter flow](docs/en/MODE_STATE_FLOW.md), [development](docs/en/DEVELOPMENT.md),
+[known limits](docs/en/KNOWN_ISSUES.md), and [tools](tools/README.md).
 
 ### 3. Test
 
 ```bash
-pip install -r requirements-dev.txt      # runtime + pytest/ruff/playwright/fonttools
-make ci                                  # everything CI runs (no hardware needed)
-python3 tools/bench/bench.py --check tools/bench/bench_baseline.json   # performance, service running
+pip install -r requirements-dev.txt      # optional development/bench/e2e tools
+make ci                                  # local non-hardware gates
+make e2e-fake                            # native fixture service + browser checks
 make hw-test                             # bench only: tinySA CW + UI state regression
 ```
 
@@ -117,21 +161,20 @@ make hw-test                             # bench only: tinySA CW + UI state regr
 
 ```
 harogic-websa/
-├─ web_sa/               backend (supervisor + aiohttp worker, serialized device calls)
-│  ├─ hardware/          sdk_bindings.py (only DLL contact point) / device.py
-│  ├─ measurements/      Std/Harmonic/PhaseNoise sessions + framer (frame protocol)
-│  └─ web/               ws.py / http_api.py / publisher.py
+├─ native-ddc/           Rust service, channelizer and C++ SDK shim
+├─ wasm/                 shared Rust DSP crate and browser WASM
+├─ wasm-dfn/             DeepFilterNet integration
 ├─ frontend/             TS frontend (Vite + TypeScript, i18n + themes)
 │  ├─ src/ui/panels/     panel modules (frequency/resolution/rta/markers/refAmp/...)
 │  ├─ src/render/registry.ts  view renderer registry (views self-register)
 │  └─ src/__tests__/     vitest tests (DSP engine, synthetic traces)
-├─ htra_api.py           official SDK Python wrapper (HAROGIC copyright)
-├─ docs/                 docs (en/ + zh-CN/): architecture / API / mode flow / known issues / FAQ /
-│                        refactor log / arch review / development guide
-├─ tests/                backend pytest (protocol, config, device state, HTTP API)
+├─ htra_api.py           vendor Python wrapper for offline tools (HAROGIC copyright)
+├─ docs/                 bilingual architecture, API, operations, development and codec references
+├─ tests/                reference/tool tests and shared protocol/DSP fixtures
 │  └─ fixtures/frames/   golden binary frames shared with the TS decoder test
 ├─ tools/                hardware smoke + e2e + bench + quality guards
 │  └─ checks/            architecture_guard.py + baseline.json (fitness functions)
+│  └─ reference/         offline sdk_bindings/ddc/native_ddc/spectrum/demod/filters/framer/sdr_capture.py
 ├─ screenshots/          README screenshots
 ├─ run.sh / stop.sh / status.sh / clean.sh / build.sh / test.sh / Makefile
 ├─ pyproject.toml / requirements.txt / LICENSE / .gitignore
@@ -143,29 +186,29 @@ The day-to-day commands, plus what to run before committing:
 
 | Script | Description |
 |---|---|
-| `./run.sh` / `./stop.sh` | Start / stop the service (supervisor + worker) |
+| `./run.sh` / `./stop.sh` | Start / stop the native systemd user service |
 | `make restart` / `make status` | Restart / show state, PID, memory, CPU, log, device link |
-| `make build` | Full build: WASM cores (only when stale + Rust) + frontend |
+| `make build` | Frontend assets + native Rust service (hardware shim built separately) |
+| `make native` / `make sdk-shim` | Build the Rust service / hardware SDK shim |
 | `make frontend` | Frontend only: npm install + Vite build (no WASM) |
 | `make wasm` | Both WASM cores; `make wasm-dsp` / `make wasm-dfn` build one |
-| `make clean` / `make clean-all` | Clean caches/logs/dist (keep deps + WASM caches) / full clean incl. node_modules + WASM target |
-| `./test.sh` | Backend pytest + Ruff + frontend Vitest |
-| `make ci` | Every in-process gate CI runs (no hardware needed) |
-| `make e2e-fake` | Browser end-to-end on the fake backend (no hardware) |
+| `make clean` / `make clean-all` | Clean caches/dist while keeping dependencies and Rust targets / also remove dependencies and Rust targets; committed WASM stays |
+| `./test.sh` | Native contracts + Python tool tests + Ruff + frontend Vitest |
+| `make ci` | Local non-hardware gates; see the development guide for workflow differences |
+| `make e2e-fake` | Browser checks against the native fixture service |
 | `make hw-test` | **Bench only** — tinySA CW smoke test + UI state regression |
 | `make bench` | Compare against the recorded performance baseline |
 
-The full list (fixture regeneration, guards, doc/version checks, the bench probes) is in
-[`docs/en/DEVELOPMENT.md`](docs/en/DEVELOPMENT.md) §13.
+The [development guide](docs/en/DEVELOPMENT.md) and [tools guide](tools/README.md) cover fixture
+regeneration, guards, document/version checks and hardware prerequisites.
 
 ## Tests
 
-- **Backend** (pytest) and **frontend** (Vitest) suites cover the protocol, configuration, command
-  validation, marker/DSP logic, parameter slots and i18n parity. Golden fixtures lock the binary
-  frame codec and the DSP kernels against the Rust/WASM implementation.
-- **No hardware needed by default**: without `libhtraapi.so` the vendor-dependent tests are skipped,
-  so `make ci` runs everything else on any machine. `make e2e-fake` adds the browser end-to-end
-  tests against a fake backend; `make hw-test` needs the analyzer (and a tinySA for the CW source).
+- **Native Rust**, **Python tool/reference** and **frontend Vitest** suites cover service contracts,
+  protocol/DSP logic, parameter slots and i18n parity. Shared golden fixtures cover binary frames
+  and DSP kernels; Python is not a production backend or a runtime fallback.
+- **No hardware needed by default**: local gates and native fixture browser checks exercise deterministic service and DSP contracts. `make hw-test` needs the analyzer and a tinySA CW source. A fake source or passing unit suite does not establish sustained RF performance.
+- Hardware results depend on device, firmware, host load and enabled browser layers. Existing screenshots and measurements are examples, not a fresh hardware qualification of every checkout. The retained performance baseline needs its configuration and provenance checked before native comparisons.
 
 ## Open-Source Notes
 
@@ -173,10 +216,10 @@ The full list (fixture regeneration, guards, doc/version checks, the bench probe
 - `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
 - Screenshots taken on a real SAN-90 (the SDR digital-mode shots use a PlutoSDR as the signal source)
-- `frontend/src/dsp/ggmorse/` and `tools/vendor/ggmorse/`: the CW (Morse) decoder is
+- `tools/vendor/ggmorse/`: the CW (Morse) decoder is
   [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at
-  commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`) and compiled to a single-file wasm module by
-  `tools/vendor/build_ggmorse_wasm.sh`. `tools/vendor/ggmorse/ggmorse_wasm.cpp` is ours.
+  commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`). `native-ddc/cw_build.rs` compiles it
+  into the native service with the project's `native-ddc/native/ggmorse_bridge.cpp` bridge.
 
 
 ---

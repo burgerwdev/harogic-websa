@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Live aux-DDC verification (G1'): run the real service against the real device,
-enable aux channel 2, and assert IQAX frames arrive on ?iqaux=1 (and nowhere else).
+"""Live aux-DDC verification (G1') against a running native service: enable aux
+channel 2 and assert IQAX frames arrive on ?iqaux=1 (and nowhere else).
 
-Starts its own web_sa.main on a scratch port; stop any running service first.
-Usage:  python3 tools/sdr_probe/probe_aux_live.py [--center 100e6] [--aux-freq 101e6]
+Usage: python3 tools/sdr_probe/probe_aux_live.py --url http://127.0.0.1:8080
+       [--center 100e6] [--aux-freq 100.1e6]
 """
 from __future__ import annotations
 
@@ -11,19 +11,13 @@ import argparse
 import asyncio
 import json
 import os
-import signal
 import struct
 import sys
 import time
-from pathlib import Path
 
 import aiohttp
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
-
-PORT = int(os.environ.get('WEBSA_TEST_PORT', '8123'))
-WS = f'ws://127.0.0.1:{PORT}/ws'
+IQ_HEADER = struct.Struct('<4sIIIddIIQd')  # IQ wire v2, including magic
 
 
 async def send(ws, payload):
@@ -33,7 +27,14 @@ async def send(ws, payload):
 async def wait_connected(ws, timeout=30.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        msg = json.loads((await ws.receive()).data)
+        raw = await ws.receive()
+        if raw.type == aiohttp.WSMsgType.BINARY:
+            continue
+        if raw.type != aiohttp.WSMsgType.TEXT:
+            break
+        msg = json.loads(raw.data)
+        if msg.get('cmd') == 'ERROR':
+            raise RuntimeError(json.dumps(msg))
         if msg.get('cmd') == 'STATUS':
             if msg.get('connected'):
                 return msg
@@ -57,6 +58,8 @@ async def drain_status(ws, seconds=2.0):
         if raw.type != aiohttp.WSMsgType.TEXT:
             break
         msg = json.loads(raw.data)
+        if msg.get('cmd') == 'ERROR':
+            raise RuntimeError(json.dumps(msg))
         if msg.get('cmd') == 'STATUS':
             last = msg
         else:
@@ -66,82 +69,67 @@ async def drain_status(ws, seconds=2.0):
 
 async def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--url', default=os.environ.get('WEBSA_URL', 'http://127.0.0.1:8080'),
+                    help='HTTP base URL of the running native service')
     ap.add_argument('--center', type=float, default=100e6)
-    ap.add_argument('--aux-freq', type=float, default=100.5e6)
+    ap.add_argument('--aux-freq', type=float, default=100.1e6)
     args = ap.parse_args()
 
-    env = dict(os.environ, WEBSA_PORT=str(PORT), WEBSA_LOG_LEVEL='INFO',
-               WEBSA_LOGFILE='/tmp/websa_aux_probe.log')
-    import subprocess
-    proc = subprocess.Popen(
-        [sys.executable, '-m', 'web_sa.main'], cwd=str(ROOT), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        preexec_fn=os.setsid)
-    ok = False
-    try:
-        # Poll for the port: device open + server bind can take a while on the real unit.
-        import socket as _socket
-        deadline = time.monotonic() + 40.0
-        while time.monotonic() < deadline:
-            try:
-                with _socket.create_connection(('127.0.0.1', PORT), timeout=1.0):
-                    break
-            except OSError:
-                if proc.poll() is not None:
-                    raise RuntimeError(f'server exited early: {proc.returncode}; '
-                                       'see /tmp/websa_aux_probe.log') from None
-                await asyncio.sleep(0.5)
-        else:
-            raise TimeoutError('server never bound the port')
-        async with aiohttp.ClientSession() as http, http.ws_connect(WS) as ws:
-            await send(ws, {'cmd': 'CONNECT'})
-            await wait_connected(ws)
-            await send(ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-            await send(ws, {'cmd': 'SET_SDR', 'center': args.center, 'decimate': 32})
-            await send(ws, {'cmd': 'SET_SDR_TUNE', 'listen': args.center})
-            await drain_status(ws, 3.0)           # let the SDR chain settle
-            await send(ws, {'cmd': 'SET_SDR_DDC', 'channel': 2, 'enabled': True,
-                            'freq': args.aux_freq})
-            st, others = await drain_status(ws, 3.0)
-            for m in others:
-                print('non-STATUS:', json.dumps(m)[:300])
-            aux_echo = (st or {}).get('req', {}).get('sdr', {}).get('aux', {})
-            print('aux echo:', aux_echo)
+    ws_url = args.url.rstrip('/') + '/ws'
+    async with aiohttp.ClientSession() as http, http.ws_connect(ws_url) as ws:
+        await send(ws, {'cmd': 'CONNECT'})
+        await wait_connected(ws)
+        await send(ws, {'cmd': 'SET_MODE', 'mode': 'sdr'})
+        await send(ws, {'cmd': 'SET_SDR', 'center': args.center, 'decimate': 32})
+        await send(ws, {'cmd': 'SET_SDR_CHANNEL', 'channel': 1, 'enabled': True,
+                        'freq': args.center, 'mode': 'am', 'ifbw': 6000})
+        await drain_status(ws, 3.0)           # let the SDR chain settle
+        await send(ws, {'cmd': 'SET_SDR_CHANNEL', 'channel': 2, 'enabled': True,
+                        'freq': args.aux_freq, 'mode': 'am', 'ifbw': 6000})
+        st, others = await drain_status(ws, 3.0)
+        for m in others:
+            print('non-STATUS:', json.dumps(m)[:300])
+        aux_echo = (st or {}).get('req', {}).get('sdr', {}).get('aux', {})
+        print('aux echo:', aux_echo)
+        registry = (st or {}).get('channel_registry', [])
+        expected = {(row['epoch'], row['channel_id']) for row in registry
+                    if row.get('channel') == 2 and row.get('state') == 'active'}
+        if len(expected) != 1:
+            raise ValueError('active auxiliary slot 2 missing from channel registry')
 
-            async with http.ws_connect(WS + '?iqaux=1') as aux_ws:
-                end = time.monotonic() + 5.0
-                iqax = 0
-                iqbf_on_aux = 0
-                centers = set()
-                while time.monotonic() < end:
-                    try:
-                        raw = await asyncio.wait_for(aux_ws.receive(),
-                                                     timeout=end - time.monotonic())
-                    except (asyncio.TimeoutError, TimeoutError):
-                        break
-                    if raw.type != aiohttp.WSMsgType.BINARY:
-                        continue
-                    magic = raw.data[:4]
-                    if magic == b'IQAX':
-                        iqax += 1
-                        centers.add(struct.unpack_from('<d', raw.data, 24)[0])
-                    elif magic == b'IQBF':
-                        iqbf_on_aux += 1
-            print(f'IQAX frames: {iqax}, centers: {centers}, IQBF on aux socket: {iqbf_on_aux}')
-            ok = iqax > 0 and centers == {args.aux_freq} and iqbf_on_aux == 0
-            print('RESULT:', 'PASS' if ok else 'FAIL')
-    finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=10)
-        except Exception:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        async with http.ws_connect(ws_url + '?iqaux=1') as aux_ws:
+            end = time.monotonic() + 5.0
+            iqax = 0
+            iqbf_on_aux = 0
+            centers = set()
+            identities = set()
+            while time.monotonic() < end:
+                try:
+                    raw = await asyncio.wait_for(aux_ws.receive(),
+                                                 timeout=end - time.monotonic())
+                except (asyncio.TimeoutError, TimeoutError):
+                    break
+                if raw.type != aiohttp.WSMsgType.BINARY:
+                    continue
+                magic = raw.data[:4]
+                if magic not in (b'IQAX', b'IQBF'):
+                    continue
+                if len(raw.data) < IQ_HEADER.size:
+                    raise ValueError('short IQ header')
+                (_magic, version, _seq, count, _rate, center, channel_id,
+                 epoch, _input_index, _group_delay) = IQ_HEADER.unpack_from(raw.data)
+                if version != 2 or len(raw.data) != IQ_HEADER.size + count * 8:
+                    raise ValueError('invalid IQ v2 frame')
+                if magic == b'IQAX':
+                    iqax += 1
+                    identities.add((epoch, channel_id))
+                    centers.add(center)
+                else:
+                    iqbf_on_aux += 1
+        print(f'IQAX frames: {iqax}, identities: {identities}, centers: {centers}, '
+              f'IQBF on aux socket: {iqbf_on_aux}')
+        ok = iqax > 0 and identities == expected and iqbf_on_aux == 0
+        print('RESULT:', 'PASS' if ok else 'FAIL')
     sys.exit(0 if ok else 1)
 
 

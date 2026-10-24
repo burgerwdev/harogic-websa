@@ -1,9 +1,6 @@
 /**
- * Waterfall persistence parameters as slots (report finding P1-6).
- *
- * These were plain store globals with hand-written setters, written by both the waterfall
- * panel and the localStorage restore path. They are user parameters, so they own slots:
- * `set()` on a user action, `confirm()` when the stored value is restored.
+ * Waterfall user settings use slots: user actions call set(), and stored values restore
+ * through confirm().
  *
  * Rows/pushes themselves are data and stay in core/store.
  */

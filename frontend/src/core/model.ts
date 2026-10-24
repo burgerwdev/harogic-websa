@@ -1,6 +1,5 @@
 // Shared state types (leaf: no imports, so store.ts and results.ts can both use them).
-// Split out of core/store.ts so measurement results can live in core/results.ts
-// without importing the store back (report finding P1-6).
+// Measurement results remain independent of core/store.ts.
 
 export interface TraceState {
   id: number;

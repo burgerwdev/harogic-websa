@@ -70,7 +70,7 @@ export function canvasColors() {
 
 export type CanvasColors = ReturnType<typeof canvasColors>;
 
-// Theme initialization (default dark, consistent with legacy)
+// Initialize the saved theme, defaulting to dark.
 export function initTheme(saved?: Theme | null) {
   const th = saved || 'dark';
   setTheme(th);

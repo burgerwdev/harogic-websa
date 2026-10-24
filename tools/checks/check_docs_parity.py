@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Bilingual docs must keep the same section structure (report finding P2-5).
-
-The English and Chinese documents are maintained by hand, and they had already drifted
-(ARCHITECTURE.md 126 vs 118 lines, KNOWN_ISSUES.md 62 vs 51) with nothing to catch it.
-Wording may be translated; the *structure* may not diverge, or a reader of one language
-silently loses a section that exists in the other.
+"""Require paired English/Chinese documents with the same section structure.
 
 Compares the `##`/`###` heading sequence of every docs/en/*.md with its zh-CN counterpart,
-ignoring the translated titles (a heading is identified by its level and its position).
+ignoring translated titles. Every document name must exist in both languages.
 
     python3 tools/checks/check_docs_parity.py
 """

@@ -1,11 +1,6 @@
 /**
  * Parameter slots - one authoritative source per parameter.
  *
- * The project kept a private copy of every backend setting in module variables and wrote
- * them from several places, which produced a recurring class of bugs: a value the user had
- * just set was overwritten by a reply that was already in flight, a pending "hand-off"
- * survived a global reset, and the same parameter had several writers with no owner.
- *
  * A slot owns exactly one parameter and holds:
  *   - `confirmed` - the value the backend last reported (STATUS)
  *   - `desired`   - what the user asked for, kept until the backend confirms it
@@ -17,8 +12,7 @@
  *   - a reply older than the newest intent cannot win;
  *   - a rejected command does not stick forever (the intent expires after `ttlMs`).
  *
- * Persistence lives here too, in one place, so a preference cannot be written by one code
- * path and forgotten by another (the SDR auto-scale flag had exactly that bug).
+ * Persistence is owned by the slot.
  */
 
 const DEFAULT_TTL_MS = 3000;
@@ -38,10 +32,7 @@ export interface ParamOptions<T> {
 	/** How long an unconfirmed intent may override the backend (a rejected command). */
 	ttlMs?: number;
 	/**
-	 * Client-owned value: nothing confirms it, so `desired` never expires and `get()` never
-	 * falls back while it is set. Preferences (audio on/off, auto-scale on/off) are of this
-	 * kind - with a TTL they would silently revert, and a toggle reading a reverted value
-	 * can only ever compute "on" (observed: the SDR audio switch stopped turning off).
+	 * Client-owned value: desired never expires and takes precedence over restored values.
 	 */
 	authoritative?: boolean;
 	parse?(raw: string): T | null;
@@ -126,11 +117,7 @@ export class Param<T> {
 	/** What the UI must render. */
 	get(now = Date.now()): T {
 		if (this.#opts.authoritative) {
-			// Nothing confirms an authoritative value, so the user's choice must win. The
-			// persisted value is restored into `confirmed`, and with the opposite order it
-			// won forever: the toggle wrote `desired`, the button kept rendering the stored
-			// value, and only the audio itself changed (reported as "sound plays but the
-			// button is always Off").
+			// User intent takes precedence over the persisted value restored into confirmed.
 			return this.#desired ?? this.#confirmed ?? this.#opts.fallback;
 		}
 		if (this.pending(now)) return this.#desired as T;
@@ -195,9 +182,7 @@ export function createParam<T>(name: string, opts: ParamOptions<T>): Param<T> {
 /**
  * Clear pending intents, by scope or for every parameter.
  *
- * This exists because global resets (Preset) used to clear some fields by hand and missed
- * others - a stale hand-off then reapplied the pre-reset frequency. Resetting is now one
- * call that cannot miss a slot.
+ * Preset resets must clear every matching slot so stale intents cannot reapply old values.
  */
 export function resetAll(scope?: string): void {
 	for (const p of slots) {

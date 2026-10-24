@@ -1,62 +1,31 @@
 #!/usr/bin/env python3
-"""Front-end state-machine regression (Playwright, no RF signal required).
+"""Exercise native-service tuning, mode, reload, overlay and reference-level contracts.
 
-Guards the single-owner parameter model introduced for the SDR group:
-  frontend/src/core/params.ts   (confirmed / desired / epoch slots)
-  frontend/src/ui/sdrState.ts   (the SDR group's owner + its only renderer)
-
-It drives the real UI against a running service and checks the properties that used to
-break - not the implementation:
-
-  1. tune     - a value set in the UI reaches the backend and both agree
-  2. demod    - demod / IF bandwidth / de-emphasis reach the backend and highlight follows
-  3. preset   - Preset inside SDR must not reappear with the pre-Preset frequency
-                (the old `pendingSdrFreq` hand-off survived a reset and did exactly that)
-  4. reload   - after a page reload the controls show the backend's values, not whatever
-                the browser restored into the form
-  5. handoff  - entering SDR from the swept view follows the swept centre
-  6. modes    - mode round trip leaves no stuck pending state (buttons usable again)
-
-Usage:  python3 tools/e2e/state_regression.py [--url http://127.0.0.1:8080]
-
-This script is device-agnostic by construction (every expectation is read from /api/state or
-the DOM) and runs unchanged against the fake backend, which is how CI covers the parameter
-state machine:
-    WEBSA_FAKE=1 WEBSA_PORT=8099 python3 -m web_sa.supervisor &
-    python3 tools/e2e/state_regression.py --url http://127.0.0.1:8099
-
-Discipline: never relax or branch an assertion to make it pass on the fake - that would
-weaken the bench run too. A genuinely device-only check (e.g. one that needs a real trace
-length or the IF-overflow warning) passes `require_device=True`, which skips it with a visible
-SKIP line when the backend is the fake. No check needs that today.
-
-Exit status is non-zero when any check fails, so it can be used in CI (the service has to
-be running; the acquisition loop requires a WebSocket client, which this script is).
+Usage: python3 tools/e2e/state_regression.py --url http://127.0.0.1:8080
+Run against a running websad (fixture or hardware); failures produce a non-zero exit.
+Signal-dependent hardware scenarios report SKIP when the required signal is absent.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import struct
 import sys
 import time
 import urllib.request
 
 from playwright.sync_api import Page, sync_playwright
+from viewport_baseline import wait_ui_ready
 
 FAILURES: list[str] = []
 
-#: True when the service runs the fake backend (see hardware/fake_device.py); set in main().
+#: True when websad runs fixture input; set in main().
 FAKE_BACKEND = False
 
 
 def skip(name: str, reason: str) -> None:
-    """Report a check that cannot be exercised in this environment.
-
-    Used where a scenario depends on the signal in front of the antenna (a weak trace cannot be
-    pushed out of a 100 dB window within the allowed Ref range). The same scenario runs whenever a
-    source is present, and it is asserted unconditionally on the fake backend in CI.
-    """
+    """Report a scenario whose required signal is absent on this bench."""
     print(f"  SKIP  {name}  <- {reason}")
 
 
@@ -90,12 +59,7 @@ def state(url: str) -> dict:
 
 
 def painted_pixels(page) -> int:
-    """Number of non-transparent pixels on the spectrum canvas (0 = nothing drawn).
-
-    The regression used to assert frames/datasets only, so a renderer that was never
-    registered (the hub module lost its import) passed every check while the user saw a
-    blank canvas. Counting painted pixels is the direct check.
-    """
+    """Count painted pixels to detect a blank spectrum canvas."""
     return page.evaluate(
         """() => {
           const c = document.getElementById('spectrum');
@@ -139,7 +103,7 @@ def enter_sdr(page: Page) -> None:
     """#btn-mode-sdr is a toggle: only click when the SDR panel is not already shown."""
     if not sdr_panel_visible(page):
         page.click("#btn-mode-sdr")
-        page.wait_for_timeout(2500)
+    wait_ui_ready(page, "sdr")
 
 
 def main() -> int:
@@ -148,15 +112,49 @@ def main() -> int:
     ap.add_argument("--url", default="http://127.0.0.1:8080")
     args = ap.parse_args()
     url = args.url.rstrip("/")
-    try:
-        FAKE_BACKEND = str(state(url).get("device", "")).startswith("FAKE")
-    except Exception:
-        FAKE_BACKEND = False
+    FAKE_BACKEND = str(state(url)["device"]).endswith("(FAKE)")
     print(f"backend: {'fake' if FAKE_BACKEND else 'device'} ({url})")
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
+        native_pan: dict = {}
+
+        def receive_frame(payload) -> None:
+            if not isinstance(payload, bytes) or payload[:4] not in (b"RTAF", b"RTA2"):
+                return
+            if len(payload) < 32:
+                errors.append("truncated native RTAF header")
+                return
+            _, points, wf_len = struct.unpack_from("<IIH", payload, 4)
+            base_size = 32 + 12 * points + 2 * wf_len
+            if points < 2 or wf_len < 1 or len(payload) < base_size:
+                errors.append("invalid native RTA spectrum length")
+                return
+            if payload[:4] == b"RTA2":
+                if len(payload) < base_size + 8 or payload[base_size:base_size + 4] != b"TRIG":
+                    errors.append("invalid RTA2 trigger trailer")
+                    return
+                metadata_size = struct.unpack_from("<I", payload, base_size + 4)[0]
+                if len(payload) != base_size + 8 + metadata_size:
+                    errors.append("invalid RTA2 trigger metadata length")
+                    return
+                try:
+                    json.loads(payload[base_size + 8:])
+                except (ValueError, UnicodeDecodeError):
+                    errors.append("invalid RTA2 trigger metadata JSON")
+                    return
+            elif len(payload) != base_size:
+                errors.append("invalid native RTAF length")
+                return
+            native_pan.update(
+                lo=struct.unpack_from("<d", payload, 16)[0],
+                hi=struct.unpack_from("<d", payload, base_size - 8)[0],
+                freq=struct.unpack_from(f"<{points}d", payload, 24),
+            )
+
+        page.on("websocket", lambda ws: ws.on("framereceived", receive_frame)
+                if "noaudio=1" in ws.url and "noiq=1" in ws.url else None)
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.on(
@@ -164,10 +162,11 @@ def main() -> int:
             lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None,
         )
 
-        page.goto(url, wait_until="networkidle")
+        page.goto(url, wait_until="domcontentloaded")
+        wait_ui_ready(page)
         page.evaluate("localStorage.setItem('web-sa-mode','std')")
-        page.reload(wait_until="networkidle")
-        page.wait_for_timeout(2500)
+        page.reload(wait_until="domcontentloaded")
+        wait_ui_ready(page, "std")
 
         # 1 - tune
         print("1) tune")
@@ -191,65 +190,99 @@ def main() -> int:
             f"input {page.input_value('#input-sdr-center')}",
         )
 
-        # 1b - SDR centre alignment: the canvas maps the frame's display window across its
-        # width, so the canvas centre is (start+stop)/2. It must equal the requested centre
-        # within one division, whatever the hardware capture offset did.
-        print("1b) SDR centre alignment")
-        win = page.evaluate(
-            "JSON.parse(document.getElementById('spectrum').dataset.sdrWindow || '{}')"
-        )
+        # 1b - Display, hardware capture and native sample coverage are distinct.
+        print("1b) SDR display / capture / native sample geometry")
+        before_frames = page.get_attribute("#spectrum", "data-rta-frames")
+        page.wait_for_function("""(before) => {
+            const c = document.getElementById('spectrum');
+            const w = JSON.parse(c.dataset.sdrWindow || '{}');
+            return c.dataset.rtaFrames !== before && Math.abs((w.lo + w.hi) / 2 - 90.5e6) < 1;
+        }""", arg=before_frames, timeout=30000)
+        win = page.evaluate("JSON.parse(document.getElementById('spectrum').dataset.sdrWindow)")
+        d = state(url)
         actual = d["sdr"].get("actual") or {}
-        if win and win.get("hi", 0) > win.get("lo", 0):
-            division = (win["hi"] - win["lo"]) / 10
-            check(
-                "the display window is centred on the requested frequency",
-                abs((win["lo"] + win["hi"]) / 2 - 90.5e6) < division,
-                f"window {(win['lo'] + win['hi']) / 2 / 1e6:.4f} MHz (1 div = {division / 1e3:.1f} kHz)",
-            )
-            check(
-                "the capture window is published separately",
-                "capture_start" in actual and "capture_stop" in actual
-                and actual["capture_stop"] > actual["capture_start"],
-                f"capture {actual.get('capture_start')}..{actual.get('capture_stop')}",
-            )
-            check(
-                "the display and capture windows have the same width",
-                abs((win["hi"] - win["lo"])
-                    - (actual["capture_stop"] - actual["capture_start"])) < 2 * division,
-                f"display {win['hi'] - win['lo']:.0f} vs capture "
-                f"{actual['capture_stop'] - actual['capture_start']:.0f} Hz",
-            )
-            # The capture must not be tuned away from the requested centre: the old
-            # +200 kHz "avoid the zero-IF DC centre" shift left the lowest 200 kHz of the
-            # display uncovered (a blank strip at the left edge of the panadapter).
-            check(
-                "the capture is not offset from the display window",
-                abs(actual["capture_start"] - win["lo"]) < division
-                and abs(actual["capture_stop"] - win["hi"]) < division,
-                f"offset {actual['capture_start'] - win['lo']:.0f} Hz",
-            )
-        else:
-            check("the display window is published on the canvas", bool(win), str(win))
+        required = ("start", "stop", "center", "bandwidth", "capture_start", "capture_stop",
+                    "capture_center", "capture_bandwidth", "capture_decimate", "iq_rate", "decimate")
+        geometry_valid = all(isinstance(actual.get(k), (int, float))
+                             and math.isfinite(actual[k]) for k in required)
+        check("native SDR publishes display and capture geometry", geometry_valid, str(actual))
+        if geometry_valid:
+            lo, hi = actual["start"], actual["stop"]
+            cap_lo, cap_hi = actual["capture_start"], actual["capture_stop"]
+            check("display centre and width match the requested SDR view",
+                  hi > lo and abs((lo + hi) / 2 - d["sdr"]["center"]) < 1
+                  and abs(actual["center"] - d["sdr"]["center"]) < 1
+                  and abs(hi - lo - actual["bandwidth"]) < 1
+                  and actual["decimate"] > 0
+                  and abs(actual["bandwidth"] - min(50e6 / actual["decimate"],
+                                                   actual["capture_bandwidth"])) < 1,
+                  f"display {lo}..{hi}, bandwidth {actual['bandwidth']}")
+            check("capture centre and width match native IQ geometry",
+                  cap_hi > cap_lo and abs((cap_lo + cap_hi) / 2 - actual["capture_center"]) < 1
+                  and abs(cap_hi - cap_lo - actual["capture_bandwidth"]) < 1
+                  and abs(actual["capture_bandwidth"] - 0.8 * actual["iq_rate"]) < 1
+                  and actual["capture_decimate"] > 0
+                  and abs(actual["iq_rate"] - 62.5e6 / actual["capture_decimate"]) < 1,
+                  f"capture {cap_lo}..{cap_hi}, IQ rate {actual['iq_rate']}")
+            check("the hardware capture contains the entire display",
+                  cap_lo <= lo + 1 and cap_hi >= hi - 1,
+                  f"capture {cap_lo}..{cap_hi}, display {lo}..{hi}")
+            check("the canvas uses the native display window",
+                  abs(win["lo"] - lo) < 1 and abs(win["hi"] - hi) < 1, str(win))
+            freq = native_pan.get("freq", ())
+            native_valid = (len(freq) >= 2 and all(math.isfinite(f) for f in freq)
+                            and all(a < b for a, b in zip(freq, freq[1:], strict=False)))
+            check("the native frame has finite increasing sample frequencies", native_valid)
+            if native_valid:
+                first_bin, last_bin = freq[1] - freq[0], freq[-1] - freq[-2]
+                check("native samples cover the display to within one bin without invented edges",
+                      abs(native_pan["lo"] - lo) < 1 and abs(native_pan["hi"] - hi) < 1
+                      and -1e-6 <= freq[0] - lo < first_bin + 1e-6
+                      and -1e-6 <= hi - freq[-1] < last_bin + 1e-6
+                      and cap_lo <= freq[0] <= freq[-1] <= cap_hi,
+                      f"samples {freq[0]}..{freq[-1]}, edge bins {first_bin}/{last_bin}")
+                check("the renderer preserves the native sample endpoints",
+                      abs(win["capLo"] - freq[0]) < 1e-6
+                      and abs(win["capHi"] - freq[-1]) < 1e-6, str(win))
 
-        # 1c - entering SDR must show a usable trace: the automatic scale was armed on
-        # entry, and the value it decided is the one the canvas renders (the reported
-        # "Preset -> SDR spectrum overflows the canvas").
-        print("1c) SDR automatic scale is applied")
-        # The entry fit is a bounded *closed loop*: the automatic attenuator re-picks with
-        # every Ref step, so the trace moves and the loop legitimately walks a few steps
-        # (each one a settle period) before its placement is good. When the level carried
-        # into SDR is far off, the settled answer - the one the client records - can take
-        # several seconds; poll for it instead of assuming it landed inside the two fixed
-        # waits above.
-        dbg = {}
-        for _ in range(32):                     # up to 8 s
-            dbg = page.evaluate(
-                "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
-            )
-            if dbg and "peak" in dbg:
-                break
-            page.wait_for_timeout(250)
+        # User zoom changes only the local view; the native windows stay intact.
+        zoom_before = state(url)
+        page.click('#btn-spectrum-zoom')
+        page.locator('#zoom-overview').press('+')
+        page.wait_for_function("!document.getElementById('btn-zoom-reset').disabled")
+        check("user zoom narrows the displayed view",
+              page.get_attribute('#btn-spectrum-zoom', 'aria-pressed') == 'true'
+              and not page.is_disabled('#btn-zoom-reset'))
+        zoom_after = state(url)
+        check("user zoom preserves native tuning and both windows",
+              zoom_before['sdr']['center'] == zoom_after['sdr']['center']
+              and zoom_before['sdr']['decimate'] == zoom_after['sdr']['decimate']
+              and all(zoom_before['sdr']['actual'][k] == zoom_after['sdr']['actual'][k]
+                      for k in required), str(zoom_after['sdr']['actual']))
+        page.click('#btn-zoom-reset')
+        page.wait_for_function("document.getElementById('btn-zoom-reset').disabled")
+        check("reset returns to the full window with zoom still enabled",
+              page.get_attribute('#btn-spectrum-zoom', 'aria-pressed') == 'true')
+        page.click('#btn-zoom-close')
+        check("closing zoom returns to the ordinary spectrum",
+              page.get_attribute('#btn-spectrum-zoom', 'aria-pressed') == 'false')
+
+        # 1c - A saved SDR hardware level deliberately skips the automatic entry fit.
+        # Exercise the user's explicit Auto action and require its own fresh decision.
+        print("1c) SDR explicit automatic scale is applied")
+        previous_seq = page.evaluate(
+            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}').seq ?? -1"
+        )
+        page.click('[data-action="set-ref-auto"]')
+        page.wait_for_function("""(previous) => {
+          const d = JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}');
+          return d.seq > previous && Number.isFinite(d.peak) && !document.getElementById('btn-ref-auto').classList.contains('busy');
+        }""", arg=previous_seq, timeout=30000)
+        dbg = page.evaluate(
+            "JSON.parse(document.getElementById('spectrum').dataset.sdrRefDbg || '{}')"
+        )
         if dbg and "peak" in dbg:
+            check("explicit Auto completed a placement decision", dbg.get("result") in ("applied", "ok"), str(dbg))
             check(
                 "the auto-scale decision is what the canvas shows",
                 abs(dbg.get("shown", 1e9) - dbg.get("ref", -1e9)) < 3,
@@ -276,8 +309,7 @@ def main() -> int:
         check("IF bandwidth reaches the backend", abs(d["sdr"]["if_bw"] - 12000) < 1, str(d["sdr"]["if_bw"]))
         actual = (d["sdr"].get("actual") or {}).get("deemph_us")
         check("de-emphasis is applied", actual is not None and abs(actual - 75) < 1, str(actual))
-        # ...and the selection must survive the slot TTL. The backend did not report the
-        # requested de-emphasis, so the button fell back to Auto after ~3 s.
+        # The confirmed de-emphasis must survive the pending-slot TTL.
         page.wait_for_timeout(3500)
         check(
             "de-emphasis selection does not fall back to Auto",
@@ -293,79 +325,55 @@ def main() -> int:
             == ["nfm"],
         )
 
-        # 2b - the channel overlay must follow the band the *active demodulator* reads. A protocol
-        # decoder does not read an IF passband centred on the dial: FT8 reads 100..3000 Hz ABOVE it.
-        # The symmetric overlay highlighted 3 kHz the decoder cannot read and hid 1.6 kHz it can,
-        # which presents as "the signal is inside the marked band and still does not decode"
-        # (measured on the bench: with the dial parked on the tone, 0 decodes in 5 slots).
+        # 2b - Published overlay edges follow each demodulator's receive band.
         print("2b) the channel overlay follows the demodulator's own band")
         page.select_option("#select-sdr-decimate", "2048")
         page.click('[data-action="apply-sdr-bw"]')
-        # The analog reference is taken at the SAME IF bandwidth the FT8 frame uses, so the only
-        # difference between the two frames is the mode - which is exactly the rule under test.
+        # Hold IF bandwidth constant while changing demodulators.
         page.click('[data-sdr-ifbw="3000"]')
         page.click('[data-sdr-demod="usb"]')
         page.wait_for_timeout(2500)
-        span = float((state(url)["sdr"].get("actual") or {}).get("bandwidth") or 0)
-        # Self-calibrating: the marker's own motion for a known 1 kHz tune gives Hz per pixel, so
-        # nothing here has to know the plot's margins (and the check follows any capture span).
         marker_move = []
         for listen_mhz in ("90.5", "90.501"):
             page.fill("#input-sdr-listen", listen_mhz)
             page.click('[data-action="apply-sdr-tune"]')
             page.wait_for_timeout(2200)
             marker_move.append(page.evaluate(OVERLAY_SCAN))
-        if any(frame["band"] is None for frame in marker_move):
-            skip("the channel overlay follows the demodulator's own band", "no overlay drawn")
-        else:
-            hz_per_px = 1000.0 / (marker_move[1]["marker"] - marker_move[0]["marker"])
-            if hz_per_px > 60:
-                # At the wide spans (3 MHz and up) the FT8 band is a handful of pixels, which is
-                # too coarse to assert in Hz; the geometry itself is pinned by `sdrDemodBand.test.ts`.
-                skip("the channel overlay follows the demodulator's own band",
-                     f"capture span {span / 1e3:.0f} kHz is {hz_per_px:.0f} Hz/px, too coarse")
-            else:
-                tol = 6 * hz_per_px
-                analog = marker_move[1]
-                page.click('[data-sdr-demod="ft8"]')
-                page.wait_for_timeout(2500)
-                ft8 = page.evaluate(OVERLAY_SCAN)
-                lo_a = (analog["band"][0] - analog["marker"]) * hz_per_px
-                hi_a = (analog["band"][1] - analog["marker"]) * hz_per_px
-                lo_f = (ft8["band"][0] - ft8["marker"]) * hz_per_px
-                hi_f = (ft8["band"][1] - ft8["marker"]) * hz_per_px
-                check(
-                    "an analog demodulator highlights its passband, centred on the dial",
-                    abs(lo_a + 1500) < tol and abs(hi_a - 1500) < tol,
-                    f"{lo_a:+.0f}..{hi_a:+.0f} Hz",
-                )
-                # The FT8 band's own edges cannot be measured in pixels: the lower edge is 1-2 px
-                # from the dashed marker, and the 12% tint composites to G-R ~ 4-9 over the
-                # waterfall's blue noise, so the scan's edges drift by ~1 kHz with the noise
-                # phase. The overlay publishes what it draws in `dataset.demodBand` (the
-                # `dataset.yLabels` pattern), which is resolution-independent and deterministic.
-                ft8_band = page.eval_on_selector("#spectrum", "e => e.dataset.demodBand || ''")
-                check(
-                    "FT8 highlights the band the decoder reads, above the dial",
-                    ft8_band == "100..3000",
-                    f"dataset={ft8_band!r}, pixels {lo_f:+.0f}..{hi_f:+.0f} Hz",
-                )
-                check(
-                    "the FT8 band is not the IF passband (the bandwidth must not move it)",
-                    ft8_band == "100..3000" and lo_a < -1000,
-                    f"analog starts {lo_a:+.0f} Hz, dataset={ft8_band!r}",
-                )
+        check("the channel overlay is drawn", all(frame["band"] is not None for frame in marker_move))
+        for mode in ("usb", "lsb", "cw", "ft8"):
+            page.click(f'[data-sdr-demod="{mode}"]')
+            page.wait_for_timeout(2500)
+            sdr = state(url)["sdr"]
+            primary = next((ch for ch in sdr.get("channels", []) if ch.get("channel") == 1), sdr)
+            ifbw = float(primary["if_bw"])
+            guard = min(300.0, max(100.0, ifbw * 0.1))
+            pitch = max(100.0, float(primary["pitch"])) if mode == "cw" else 0
+            expected = {"usb": (guard, ifbw), "lsb": (-ifbw, -guard),
+                        "cw": (pitch - max(50.0, ifbw) / 2, pitch + max(50.0, ifbw) / 2),
+                        "ft8": (100, 3000)}[mode]
+            published = page.eval_on_selector("#spectrum", "e => e.dataset.demodBand || ''")
+            edges = tuple(float(edge) for edge in published.split("..")) if published else ()
+            check(f"{mode} overlay publishes its receive band",
+                  len(edges) == 2 and all(abs(a - b) < 1 for a, b in zip(edges, expected, strict=True)),
+                  f"dataset={published!r}, expected={expected}")
+            drawn = page.evaluate(OVERLAY_SCAN)
+            check(f"{mode} overlay remains visible", drawn["band"] is not None)
         page.click('[data-sdr-demod="nfm"]')
         page.click('[data-sdr-ifbw="12000"]')
         page.wait_for_timeout(1500)
 
-        # 3 - Preset inside SDR: the old hand-off came back with the pre-Preset frequency
+        # 3 - Preset must discard the previous tuning request.
         print("3) Preset inside SDR")
         page.fill("#input-sdr-center", "101.7")
         page.click('[data-action="apply-sdr"]')
         page.wait_for_timeout(2000)
         page.click('[data-action="preset"]')
-        page.wait_for_timeout(2500)
+        wait_ui_ready(page, "sdr")
+        page.wait_for_function("""async () => {
+          const s = await fetch('/api/state').then(response => response.json());
+          return s.mode === 'sdr' && Math.abs(s.sdr.center - 101.7e6) > 1e6
+            && Math.abs(Number(document.getElementById('input-sdr-center').value) * 1e6 - s.sdr.center) < 1e4;
+        }""")
         d = state(url)
         after = d["sdr"]["center"] / 1e6
         check(
@@ -373,16 +381,22 @@ def main() -> int:
             abs(after - 101.7) > 1,
             f"centre after Preset {after:.4f} MHz",
         )
-        check("Preset inside SDR keeps SDR active", sdr_panel_visible(page), d["mode"])
+        check("Preset inside SDR keeps SDR active", sdr_panel_visible(page) and d["mode"] == "sdr", d["mode"])
+        check("Preset preserves the confirmed SDR mode for reload",
+              page.evaluate("localStorage.getItem('web-sa-mode')") == "sdr")
 
         # 4 - reload: controls must follow the backend, not the browser-restored form value
         print("4) reload")
         enter_sdr(page)
         page.fill("#input-sdr-center", "433")
         page.click('[data-action="apply-sdr"]')
-        page.wait_for_timeout(2200)
-        page.reload(wait_until="networkidle")
-        page.wait_for_timeout(3000)
+        page.wait_for_function("""async () => {
+          const s = await fetch('/api/state').then(response => response.json());
+          return s.mode === 'sdr' && Math.abs(s.sdr.center - 433e6) < 1e4
+            && Math.abs(Number(document.getElementById('input-sdr-center').value) - 433) < 0.0001;
+        }""")
+        page.reload(wait_until="domcontentloaded")
+        wait_ui_ready(page, "sdr")
         d = state(url)
         shown = float(page.input_value("#input-sdr-center"))
         check(
@@ -390,11 +404,9 @@ def main() -> int:
             abs(shown * 1e6 - d["sdr"]["center"]) < 1e4,
             f"input {shown:.4f} vs backend {d['sdr']['center'] / 1e6:.4f} MHz",
         )
+        check("reload preserves the active SDR backend mode", d["mode"] == "sdr", d["mode"])
 
-        # 5 - the user's SDR setup survives a plain mode round trip, and the gesture still hands
-        # off a frequency. The old behaviour re-derived everything (frequency, capture bandwidth,
-        # demod) from the swept view on every entry, which silently discarded the setup the user
-        # had left in SDR (reported).
+        # 5 - Plain mode return preserves SDR setup; Shift+click explicitly retunes.
         print("5) the user's SDR setup survives a mode round trip")
         if not sdr_panel_visible(page):
             enter_sdr(page)
@@ -450,10 +462,7 @@ def main() -> int:
         page.keyboard.up("Shift")
         page.wait_for_timeout(3000)
         gesture = state(url)
-        # The click lands at 25% of the canvas width; the plot shows the RTA window (that is the
-        # axis `xToFreqHz` maps through), so the expectation comes from the reported RTA frame,
-        # not from the SWP snapshot. The tolerance still separates the click from the SDR tuning
-        # the previous check left at 100 MHz.
+        # Shift+click maps the RTA axis, independently of the SWP snapshot.
         axis = gesture["rta_actual"] or gesture["swp_actual"]
         expected = axis["start"] + 0.25 * (axis["stop"] - axis["start"])
         check("Shift+click hands that frequency to SDR",
@@ -475,8 +484,7 @@ def main() -> int:
             label == "On" and "enabled=true" in gate,
             f"label={label} gate={gate} (stored value before: {store})",
         )
-        # The preference must survive a trip to another mode: leaving SDR stops the pipeline, and
-        # writing the preference off there turned "audio on" into "audio off" for good (reported).
+        # Leaving SDR must preserve the stored audio preference.
         page.click("#btn-mode-rta")
         page.wait_for_timeout(2500)
         page.click("#btn-mode-sdr")
@@ -538,9 +546,7 @@ def main() -> int:
         check("the RTA view is actually drawn", painted_rta > 5000,
               f"{painted_rta} painted pixels")
 
-        # 6c - the RTA centre unit buttons and the virtual keypad must reach the device
-        # (the unit group is keyed `rta_center` while the input id is `input-rta-center`;
-        # the mismatch made both silently do nothing)
+        # 6c - Both unit buttons and keypad apply the RTA centre.
         print("6c) RTA centre unit buttons and keypad")
         post(url, {"cmd": "SET_MODE", "mode": "rta"})
         page.wait_for_timeout(2000)
@@ -573,18 +579,14 @@ def main() -> int:
         page.click("#btn-keypad")
         page.wait_for_timeout(200)
 
-        # 7 - SWP/RTA reference level (the refPending -> slot migration)
+        # 7 - SWP reference stepping.
         print("7) SWP reference stepping")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
         page.wait_for_timeout(2500)
         post(url, {"cmd": "SET_REF", "mode": "manual", "ref": -5})
         page.wait_for_timeout(2000)
         before = state(url)["ref"]
-        # Step DOWN from a level that already shows the whole trace: raising Ref pushes the noise
-        # floor below the bottom edge, where nothing corrects it any more (the ranger's automatic
-        # raise is gone), and lowering it below about -15 dBm would clip the fake backend's -25 dBm
-        # carrier. This check is about the step arriving at the device, not about the placement rules
-        # (9c/9d).
+        # Step down from a level that still contains the fixture carrier.
         page.click("#btn-ref-down")
         page.wait_for_timeout(2000)
         after = state(url)["ref"]
@@ -620,9 +622,7 @@ def main() -> int:
         page.click("[data-action='toggle-waterfall']")   # leave it off for the next step
         page.wait_for_timeout(600)
 
-        # 8 - rapid mode switching: each switch must take effect promptly and leave no stuck
-        # pending state. This is the measurable form of "switching got slow / needs a second
-        # click" - a request that blocks the next one until its timeout would fail here.
+        # 8 - Mode requests must settle promptly and leave controls usable.
         print("8) rapid mode switching")
         for want, sel in (("rta", "#btn-mode-rta"), ("sdr", "#btn-mode-sdr"),
                           ("rta", "#btn-mode-rta"), ("sdr", "#btn-mode-sdr"),
@@ -640,9 +640,7 @@ def main() -> int:
         check("mode buttons usable after the burst",
               not page.eval_on_selector("#btn-mode-sdr", "e => e.disabled"))
 
-        # 8b - a newer mode request supersedes an in-flight one (discipline 2). The buttons
-        # used to be disabled while a request was pending, so the second click was swallowed
-        # and the first target won - the "switching is slow / needs a retry" report.
+        # 8b - A newer request supersedes a pending mode change.
         print("8b) a newer mode request supersedes the old one")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
         page.wait_for_timeout(2000)
@@ -653,8 +651,7 @@ def main() -> int:
         check("the newest mode request wins", state(url)["mode"] == "sdr",
               state(url)["mode"])
 
-        # 9 - SDR manual reference must stay put. It used to be undone within a second or two
-        # (the display-mode defaults kept writing 0) while a tracking auto-scale fought it.
+        # 9 - The user's manual SDR reference must hold.
         print("9) SDR manual reference holds")
         if sdr_panel_visible(page) is False:
             page.click("#btn-mode-sdr")
@@ -663,12 +660,7 @@ def main() -> int:
             post(url, {"cmd": "SET_MODE", "mode": "sdr"})
             page.wait_for_timeout(2500)
         page.wait_for_timeout(1200)
-        # A level the trace in front of us actually fits in: mid-window and clear of the peak. It
-        # has to be derived from the measurement, because the fake backend's carrier is ~45 dB
-        # stronger than what the bench shows without a source - and a level that leaves the trace
-        # clipped or below the window is no longer corrected for us (the ranger's automatic raise
-        # was removed on request), so the level asked for here has to be a sensible one to begin
-        # with.
+        # Derive a usable reference from the measured signal and device limits.
         sdr_now = state(url)["auto_ref"]
         window = 100.0
         floor_now = sdr_now.get("last_noise_floor")
@@ -678,31 +670,24 @@ def main() -> int:
         good_ref = max(float(caps["ref_min"]), min(float(caps["ref_max"]), good_ref))
         page.fill("#input-ref", str(good_ref))
         page.click("#btn-ref-set")
-        # A low level can saturate the IQS chain: the device then reports IF overflow (-12) and the
-        # protective ranger raises Ref by 5 dB per second until it stops. That is protection, not a
-        # failure, so wait for the level to settle first and judge what follows.
-        ref_now, stable_since, overflowed = state(url)["ref"], time.time(), False
-        for _ in range(30):
-            page.wait_for_timeout(500)
-            s = state(url)
-            overflowed = overflowed or s["status_warning"] == -12
-            if s["ref"] != ref_now:
-                ref_now, stable_since = s["ref"], time.time()
-            elif time.time() - stable_since >= 1.5:
-                break
+        # A manual request must hold even if hardware reports IF overflow.
+        page.wait_for_timeout(1500)
         settled = state(url)
         after = page.input_value("#input-ref")
         check("the Ref box shows the level the device reports",
               abs(float(after) - float(settled["ref"])) < 1.5,
               f"input {after} vs device {settled['ref']} (asked {good_ref})")
-        check("a change from the asked level is explained by the device",
-              abs(float(settled["ref"]) - good_ref) < 1.5
-              or settled["auto_ref"].get("result") in ("overflow", "clipped", "applied"),
-              f'asked {good_ref}, device {settled["ref"]}, '
-              f'result {settled["auto_ref"].get("result")}, overflow seen {overflowed}')
+        check("manual Ref remains exactly the requested level without Auto",
+              abs(float(settled["req"]["sdr"]["ref"]) - good_ref) < 0.01,
+              f'asked {good_ref}, requested {settled["req"]["sdr"]["ref"]}, '
+              f'result {settled["auto_ref"].get("result")}')
         page.wait_for_timeout(3500)              # well past any auto-refresh settle window
-        held = state(url)["ref"]
-        check("the settled level then holds (not reset to 0)", abs(held - settled["ref"]) < 1.5,
+        held_state = state(url)
+        held = held_state["ref"]
+        check("manual requested Ref still holds after fresh acquisitions",
+              abs(float(held_state["req"]["sdr"]["ref"]) - good_ref) < 0.01,
+              f'asked {good_ref}, requested {held_state["req"]["sdr"]["ref"]} after 3.5 s')
+        check("the hardware readback remains stable", abs(held - settled["ref"]) < 0.01,
               f'{settled["ref"]} -> {held} after 3.5 s')
         page.click("#btn-ref-down")
         page.wait_for_timeout(600)
@@ -710,12 +695,7 @@ def main() -> int:
         check("Ref down arrow works without pressing up first", float(down) < float(held),
               f"{held} -> {down}")
 
-        # 9a2 - A clipped manual level is feedback, and not a fault. No code changes this level
-        # without a user action. The automatic gross-clip raise was removed on request. Test 9c(b)
-        # examines the SWP mode. The operator uses the Auto button to correct the level. The result
-        # of this correction must be visible on the canvas and in the Ref box. A report showed that
-        # the hint gave a new level, but the canvas and the Ref box kept the manual value. The
-        # correction reached the device only.
+        # 9a2 - Manual clipping is feedback; only Auto requests a correction.
         print("9a2) SDR: a clipped level is left alone until asked, and the correction is visible")
         if sdr_panel_visible(page) is False:
             page.click("#btn-mode-sdr")
@@ -724,8 +704,7 @@ def main() -> int:
         sdr_peak = sdr_now["auto_ref"].get("last_peak")
         clip_ref = None
         if sdr_peak is not None and sdr_peak - 15.0 >= -50.0:
-            # 15 dB over the top edge: past the gross-clipping margin (10 dB), so raising Ref is
-            # the protective action the ranger takes on its own.
+            # Put the peak 15 dB above the display, within the allowed Ref range.
             clip_ref = math.ceil((sdr_peak - 15.0) / 5.0) * 5.0
         if clip_ref is None:
             skip("a clipped level is left alone and Auto corrects it",
@@ -758,9 +737,7 @@ def main() -> int:
                   isinstance(target, (int, float)) and abs(box - float(target)) < 1.5,
                   f'box {box} target {target}')
 
-        # 9b - Auto Scale is an ACTION, not a mode: it must show that it is working, act once,
-        # and never lock the reference. The old tracking mode gave no feedback for the ~1.9 s
-        # the device needs and disabled the Ref controls while it was "on".
+        # 9b - Auto Scale acts once, exposes progress and leaves Ref editable.
         print("9b) Auto Scale is a one-shot action with feedback")
         check("the reference is never locked (no tracking mode)",
               not page.eval_on_selector("#input-ref", "e => e.disabled")
@@ -792,17 +769,11 @@ def main() -> int:
               not page.eval_on_selector("#input-ref", "e => e.disabled"),
               "input disabled after a fit")
 
-        # 9c - SWP: a trace that has left the window is fitted WITHOUT being asked. Measured
-        # regression: Ref 0 dBm with an 80 dB window and everything at -108 dBm, the old loop
-        # refused to move (its guard wanted a peak 15 dB above the noise floor) and left the
-        # display empty for as long as the signal stayed away. A 20 dB window makes the whole
-        # trace sit below the bottom edge, whatever the signal level is today.
+        # 9c - Manual SWP Ref holds even when the trace leaves the display.
         print("9c) SWP: raising Ref is the user's choice, gross clipping is not")
         post(url, {"cmd": "SET_MODE", "mode": "std"})
         page.wait_for_timeout(3000)
-        # (a) Raising Ref pushes the noise floor below the bottom edge. Reported: pressing the up
-        # arrow made Auto pull the trace back down. That is a display choice, so nothing may happen
-        # on its own. The level is derived from the measurement so it holds on any signal level.
+        # (a) Raising Ref is a display choice, derived from the measured floor.
         measure = state(url)
         floor = measure["auto_ref"].get("last_noise_floor")
         window = 100.0
@@ -815,9 +786,7 @@ def main() -> int:
               kept["ref"] == raised_ref,
               f'asked {raised_ref}, device {kept["ref"]} result {kept["auto_ref"].get("result")}')
 
-        # (b) A grossly clipped trace (far above the top edge) used to be raised by the ranger.
-        # That was removed on request: the level the user set is the level they get, and the Auto
-        # button is what re-fits it. -15 dB below the peak clips by 15 dB, past the old margin.
+        # (b) A clipped manual trace holds until the user presses Auto.
         clip = state(url)
         peak = clip["auto_ref"].get("last_peak")
         if peak is not None and peak - 15.0 >= -50.0:
@@ -825,7 +794,7 @@ def main() -> int:
             post(url, {"cmd": "SET_REF", "mode": "manual", "ref": clip_ref, "range_db": 100})
             page.wait_for_timeout(2500)
             held = state(url)["ref"]          # what the device accepted for that request
-            page.wait_for_timeout(4000)       # far past the old ranger's 2 s interval
+            page.wait_for_timeout(4000)       # observe the manual level over time
             fixed = state(url)
             check("a grossly clipped trace is not raised automatically",
                   fixed["ref"] == held,
@@ -871,11 +840,7 @@ def main() -> int:
               not page.eval_on_selector("#btn-ref-auto", "e => e.classList.contains('busy')"),
               str(after["auto_ref"]))
 
-        # The second press must also produce a decision, and it must not churn: either the
-        # placement is reported as already good (no reconfiguration at all), or the estimate
-        # really moved and the new target differs from the previous one by at least the 5 dB
-        # quantum (the front-end gain chain follows Ref on the bench, so the noise floor estimate
-        # can legitimately move between two presses).
+        # A second fit either holds or moves by at least the device's 5 dB quantum.
         version = after["config_version"]
         previous_target = after["auto_ref"].get("target")
         page.click("#btn-ref-auto")
@@ -896,11 +861,7 @@ def main() -> int:
             check("a second press reports how the placement stands, not silence",
                   result2 in ("no_signal", "no_data"), str(again["auto_ref"]))
 
-        # 9e - a settings change arms one automatic re-fit, but it is not a loophole for undoing a
-        # level the user typed: that stays theirs, and the press is what brings the trace back.
-        # This is the reported failure shape (small span / capture bandwidth with only noise:
-        # the floor sits under the bottom edge), which Auto used to answer with `no_signal` and
-        # no action at all.
+        # 9e - Settings preserve manual Ref; Auto must still fit noise-only traces.
         print("9e) a settings change keeps the user's level, and Auto still fixes the trace")
         dev = state(url)
         window = float(dev.get("ref_range_db") or 100.0)
@@ -913,17 +874,14 @@ def main() -> int:
             low = max(float(caps["ref_min"]), min(float(caps["ref_max"]), low))
             post(url, {"cmd": "SET_REF", "mode": "manual", "ref": low, "range_db": window})
             page.wait_for_timeout(3000)
-            # The settings change that used to leave the trace under the canvas.
+            # Change the displayed frequency range while preserving manual Ref.
             post(url, {"cmd": "SET_FREQ", "center": 20e6, "span": 1e6})
             page.wait_for_timeout(4000)
             kept = state(url)
             check("a settings change does not undo a level the user set",
                   abs(float(kept["ref"]) - low) < 1.5, f'asked {low}, device {kept["ref"]}')
             page.click("#btn-ref-auto")
-            # The fit is a bounded closed loop: every Ref step re-picks the automatic
-            # attenuator and the trace moves with it, so the walk can legitimately take
-            # longer than any fixed wait (measured: ref -40 -> pending -50 while adjusting
-            # at the 4 s mark). Poll until the loop reports settled, then judge the window.
+            # Gain changes can move the trace between Ref steps; await the bounded fit.
             fixed = {}
             for _ in range(24):                     # up to 12 s
                 fixed = state(url)

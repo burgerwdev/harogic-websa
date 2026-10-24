@@ -31,7 +31,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from web_sa.measurements.framer import BASEBAND_HEADER, MAGIC_BASEBAND  # noqa: E402
+from tools.reference.framer import BASEBAND_HEADER, MAGIC_BASEBAND  # noqa: E402
 
 #: The WebSocket path that carries IQ only (the display connection carries no IQ).
 IQ_PATH = '/ws?iq=1&noaudio=1'
@@ -40,14 +40,15 @@ IQ_PATH = '/ws?iq=1&noaudio=1'
 def decode_baseband(buf: bytes) -> tuple[int, int, float, float, np.ndarray] | None:
     """Decode one IQBF frame into (version, seq, rate Hz, center Hz, interleaved IQ).
 
-    Layout (see `web_sa/measurements/framer.py`): magic + version(u32) + seq(u32) +
-    samples(u32) + rate(f64) + center_hz(f64) + float32[2 * samples].
+    Layout (see `tools/reference/framer.py`): 56-byte IQ wire v2 header,
+    followed by float32[2 * samples].
     """
     if len(buf) < 4 or buf[:4] != MAGIC_BASEBAND or len(buf) < 4 + BASEBAND_HEADER.size:
         return None
-    version, seq, samples, rate, center_hz = BASEBAND_HEADER.unpack_from(buf, 4)
+    (version, seq, samples, rate, center_hz, _channel_id, _epoch,
+     _input_index, _group_delay) = BASEBAND_HEADER.unpack_from(buf, 4)
     payload = 4 + BASEBAND_HEADER.size
-    if len(buf) != payload + samples * 8:
+    if version != 2 or len(buf) != payload + samples * 8:
         return None
     iq = np.frombuffer(buf, dtype='<f4', offset=payload, count=samples * 2)
     return int(version), int(seq), float(rate), float(center_hz), iq

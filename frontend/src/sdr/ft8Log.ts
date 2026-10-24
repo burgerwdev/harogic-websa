@@ -19,6 +19,9 @@ export interface Ft8Spot {
 	offsetHz: number;
 	/** Where the transmission started relative to the slot, in seconds. */
 	timeOffsetS: number;
+	/** Backend stream and source window identity, when available. */
+	sourceKey?: string;
+	windowStart?: string;
 }
 
 /**
@@ -28,13 +31,9 @@ export interface Ft8Spot {
  * IF filter: that filter sets the channel the device hands over and the analog modes' audio passband,
  * while the decoder reads the whole channelized baseband either way.
  *
- * These are the decoder's own `F_MIN_HZ`/`F_MAX_HZ` (`wasm/src/digital/ft8/mod.rs`) and they are the
- * authority: the panadapter draws this band as the FT8 passband (`demodBandHz`), so a value that
- * drifts from the decoder highlights a band the decoder does not read. It said 200 while the decoder
- * said 100 (the lower edge is 100 on purpose: a PlutoSDR's clock error at 411 MHz measures -809 Hz,
- * which pushes a 1 kHz-offset signal under a 200 Hz floor). The lower edge is also what the band
- * *above the dial* starts at - the decoder's audio frequency is measured from the listen frequency,
- * never symmetrically about it.
+ * These limits match the decoder's `F_MIN_HZ`/`F_MAX_HZ` (`wasm/src/digital/ft8/mod.rs`).
+ * The panadapter uses the same band for `demodBandHz`. Decoder audio frequencies are
+ * measured above the listen frequency, never symmetrically about it.
  */
 export const FT8_SEARCH_LOW_HZ = 100;
 export const FT8_SEARCH_HIGH_HZ = 3_000;
@@ -42,10 +41,7 @@ export const FT8_SEARCH_HIGH_HZ = 3_000;
 export const FT8_TUNE_HZ = 1_000;
 
 /**
- * The dial frequency that puts a decoded signal at [`FT8_TUNE_HZ`] inside the decoder's band.
- *
- * Tuning to the signal's own frequency would put it at DC, outside the band the decoder searches -
- * which is how a clicked row used to make a signal undecodable.
+ * Tune below the decoded signal by `FT8_TUNE_HZ` so it lies inside the decoder search band.
  */
 export function ft8DialFor(signalHz: number): number {
 	return signalHz - FT8_TUNE_HZ;
@@ -54,15 +50,40 @@ export function ft8DialFor(signalHz: number): number {
 /** How many decodes are kept (a band's worth of traffic; the window scrolls). */
 export const MAX_FT8_SPOTS = 200;
 
-let spots: Ft8Spot[] = [];
+const contexts: Record<1 | 2 | 3, Ft8Spot[]> = { 1: [], 2: [], 3: [] };
+let selectedChannel: 1 | 2 | 3 = 1;
 const listeners = new Set<(spots: Ft8Spot[]) => void>();
 
+export interface Ft8DecoderState {
+	bufferedSamples: number;
+	bufferedSeconds: number;
+	attempts: number;
+	count: number;
+	level: number;
+	epoch: number;
+}
+const decoderStates: Record<1 | 2 | 3, Ft8DecoderState | null> = { 1: null, 2: null, 3: null };
+
+export function setFt8DecoderState(state: Ft8DecoderState | null, channel: 1 | 2 | 3 = selectedChannel): void {
+	decoderStates[channel] = state;
+	if (channel === selectedChannel) notify();
+}
+
+export function ft8DecoderState(): Ft8DecoderState | null {
+	return decoderStates[selectedChannel];
+}
+
 function notify(): void {
-	for (const listener of listeners) listener(spots);
+	for (const listener of listeners) listener(contexts[selectedChannel]);
+}
+
+export function setFt8Channel(channel: 1 | 2 | 3): void {
+	selectedChannel = channel;
+	notify();
 }
 
 /** Record one decode (newest first). Returns the spot that was appended. */
-export function addFt8Spot(report: Ft8Report, at = Date.now()): Ft8Spot {
+export function addFt8Spot(report: Ft8Report, at = Date.now(), channel: 1 | 2 | 3 = selectedChannel): Ft8Spot {
 	const spot: Ft8Spot = {
 		at,
 		hz: (Number(report.centerHz) || 0) + (Number(report.frequencyHz) || 0),
@@ -70,21 +91,28 @@ export function addFt8Spot(report: Ft8Report, at = Date.now()): Ft8Spot {
 		snrDb: Number(report.snrDb) || 0,
 		offsetHz: Number(report.frequencyHz) || 0,
 		timeOffsetS: Number(report.timeOffsetS) || 0,
+		sourceKey: report.sourceKey,
+		windowStart: report.windowStart,
 	};
-	spots = [spot, ...spots].slice(0, MAX_FT8_SPOTS);
-	notify();
+	const spots = contexts[channel];
+	if (spot.sourceKey !== undefined && spot.windowStart !== undefined) {
+		const existing = spots.find((item) => item.sourceKey === spot.sourceKey && item.windowStart === spot.windowStart && item.text === spot.text && item.hz === spot.hz);
+		if (existing) return existing;
+	}
+	contexts[channel] = [spot, ...spots].slice(0, MAX_FT8_SPOTS);
+	if (channel === selectedChannel) notify();
 	return spot;
 }
 
 /** The decodes, newest first. */
 export function ft8Spots(): Ft8Spot[] {
-	return spots;
+	return contexts[selectedChannel];
 }
 
-export function clearFt8Spots(): void {
-	if (spots.length === 0) return;
-	spots = [];
-	notify();
+export function clearFt8Spots(channel: 1 | 2 | 3 = selectedChannel): void {
+	if (contexts[channel].length === 0) return;
+	contexts[channel] = [];
+	if (channel === selectedChannel) notify();
 }
 
 /** Watch the log (the window re-renders); returns the unsubscribe function. */

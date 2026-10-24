@@ -4,12 +4,13 @@ import { centerHz, spanHz } from '../ui/freqState';
 import { getDisplayRef } from '../ui/displayRef';
 import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect, plottableLevel } from './plot';
-import { previewFreqWindow, previewLevelWindow, xAxisTransform, yAxisTransform } from '../ui/axisDrag';
+import { previewFreqWindow, previewLevelWindow, yAxisTransform } from '../ui/axisDrag';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
 import { demodBandHz, sdrDemod, sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
+import { getActiveAbsolutePowers } from '../dsp/absoluteTrace';
 import { trigLevel, trigSource } from '../ui/triggerState';
 import { smoothForDisplay } from '../dsp/smooth';
 import { markerFreqHz } from '../core/markerCommon';
@@ -17,14 +18,15 @@ import { autoPeakThr, updatePeakTable, renderPeakMarks, peakListOn } from './pea
 import { updateMarkerTable } from './markerTable';
 import { renderAmp } from '../meas/amplitude';
 import { renderChannel, updateChanTable } from '../meas/channel';
-import { renderWaterfall, pushSwpRow, setWaterfallRowWidth } from './waterfall';
+import { renderWaterfall } from './waterfall';
 import { setRenderer } from './redraw';
 import { peakListVisible } from '../ui/measurePrefs';
 import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
-import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
-import { MAX_DENSITY } from '../dsp/rtaDensity';
+import { rtaFade, waterfallOn } from '../ui/waterfallState';
+import { MAX_DENSITY, rasterDensity, densityLevelPlacement, type DensityGrid } from '../dsp/rtaDensity';
+import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
 import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
@@ -147,17 +149,47 @@ export function renderTraceLine(t: S.TraceState) {
   const p = plotRect();
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-  const data = smoothBins.get() > 1 ? smoothForDisplay(t.powers, t.mode) : t.powers;
-  const n = data.length;
+  const n = t.powers.length;
   ctx.strokeStyle = col.traces[t.id - 1] || col.traces[0];
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   let pen = false;
-  for (let i = 0; i < n; i++) {
-    const v = data[i];
-    if (!plottableLevel(v)) { pen = false; continue; }
-    const x = getX(i, n), y = getY(v);
-    if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+  const view = previewFreqWindow() ?? (isZoomed() ? getView() : getCapture());
+  const freq = S.freqArray;
+  const [first, end] = view && freq ? visibleBinRange(freq, view.lo, view.hi) : [0, n];
+  // Adaptive smoothing uses the full frame, as do marker/readout levels. A slice-local
+  // percentile changes the apparent amplitude when the viewport moves.
+  const data = smoothBins.get() > 1 ? smoothForDisplay(t.powers, t.mode) : t.powers;
+  const nativeAxis = freq && freq.length === n ? freq : null;
+  const axisFirst = nativeAxis ? nativeAxis[0] : 0;
+  const axisLast = nativeAxis ? nativeAxis[n - 1] : n - 1;
+  const xFirst = getX(0, n);
+  const xScale = (getX(n - 1, n) - xFirst) / (axisLast - axisFirst);
+  const after = Math.min(n, end);
+  let i = first;
+  while (i < after) {
+    if (!plottableLevel(data[i])) { pen = false; i++; continue; }
+    const start = i;
+    const column = Math.floor((xFirst + ((nativeAxis ? nativeAxis[i] : i) - axisFirst) * xScale - p.x) * pixelRatio);
+    let min = i, max = i;
+    i++;
+    while (i < after && plottableLevel(data[i])
+        && Math.floor((xFirst + ((nativeAxis ? nativeAxis[i] : i) - axisFirst) * xScale - p.x) * pixelRatio) === column) {
+      if (data[i] < data[min]) min = i;
+      if (data[i] > data[max]) max = i;
+      i++;
+    }
+    const last = i - 1;
+    let previous = -1;
+    for (let vertex = 0; vertex < 4; vertex++) {
+      const index = vertex === 0 ? start : vertex === 3 ? last
+        : vertex === 1 ? Math.min(min, max) : Math.max(min, max);
+      if (index === previous) continue;
+      previous = index;
+      const x = xFirst + ((nativeAxis ? nativeAxis[index] : index) - axisFirst) * xScale;
+      const y = getY(data[index]);
+      if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+    }
   }
   ctx.stroke();
   ctx.restore();
@@ -412,9 +444,7 @@ function renderOSD(powers: Float32Array) {
     const f = markerFreqHz(idx), a = powers[idx];
     let txt: string;
     if (m.mode === 'NORMAL') {
-      // Same rule as the marker table: display unit + external offset (fmtLevel), raw dB only in
-      // relative mode. Printing the raw value here is what made the on-canvas readout ignore the
-      // Level offset while the trace moved with it.
+      // Match marker-table units and external offset; relative values remain raw dB.
       txt = `M${m.id} ${formatFreqHz(f)}  ${fmtReadoutLevel(a)}`;
     } else if (m.mode === 'DELTA') {
       const ref = c.markers.find(x => x.id === m.refId);
@@ -439,6 +469,9 @@ let lastLimitEval: LimitEval | null = null;
 /** Limit verdict as a status block; the stack owns the canvas status area. */
 function limitStatusBlock(): { lines: string[]; accent?: string } | null {
   if (!S.limits.on) return null;
+  if (!S.rtaMode && S.traces[S.activeTraceIdx]?.isNormalized) {
+    return { lines: [t('absolute_trace_unavailable')] };
+  }
   const ev = lastLimitEval;
   if (!ev || !ev.checked) return { lines: [t('limit_canvas_na')] };
   if (ev.pass) return { lines: [t('limit_canvas_pass')], accent: '#00c853' };
@@ -452,9 +485,15 @@ function limitStatusBlock(): { lines: string[]; accent?: string } | null {
   };
 }
 
-function renderLimits(powers: Float32Array | null) {
+function renderLimits() {
+  const powers = getActiveAbsolutePowers();
   const freq = S.freqArray;
-  if (!powers || !freq) { lastLimitEval = null; return; }
+  if (!powers || !freq) {
+    lastLimitEval = null;
+    const canvas = document.getElementById('spectrum');
+    if (canvas) delete canvas.dataset.limitsDbg;
+    return;
+  }
   const n = Math.min(powers.length, freq.length);
   const lim = buildLimitArray(freq, S.limits.points, n);
   if (!lim) { lastLimitEval = null; return; }
@@ -463,10 +502,7 @@ function renderLimits(powers: Float32Array | null) {
   ctx.beginPath();
   ctx.rect(p.x, p.y, p.w, p.h);
   ctx.clip();
-  // Violating bins used to be shaded/stroked red on top of the trace. The shading did not
-  // line up reliably with the trace and read as inaccurate, so the canvas now shows only the
-  // limit line plus the PASS/FAIL status block; the geometry stays in dataset.limitsDbg for
-  // diagnostics.
+  // Draw the limit line and PASS/FAIL status; retain overlay geometry for diagnostics.
   const runs = violationRuns(powers, lim, S.limits.tol);
   // Dashed limit line itself
   ctx.setLineDash([6, 4]);
@@ -502,7 +538,7 @@ function renderLimits(powers: Float32Array | null) {
   }
 }
 
-/** Drawing primitives lent to registered views (report finding E-5). */
+/** Drawing primitives shared with registered views. */
 function viewContext() {
   return { renderGrid, renderTraceLine, getDisplayPowers };
 }
@@ -513,7 +549,7 @@ function renderRtaView() {
     renderRta();
     renderTriggerLevel();                           // outside renderRta: still drawn when the
     renderTriggerOverlay();                         // canvas is empty while waiting
-    if (S.limits.on) { renderLimits(getDisplayPowers()); pushStatus(limitStatusBlock()); }   // RTA too
+    if (S.limits.on) { renderLimits(); pushStatus(limitStatusBlock()); }
     if (S.badData) pushStatus({ lines: [`!${t('bad_data')}`], accent: '#ff7043' });
     renderStatusBlocks();
     renderWaterfallIfOn();
@@ -551,8 +587,7 @@ export function renderAll() {
   const wfc = document.getElementById('waterfall-container');
   if (wfc) wfc.style.display = waterfallOn.get() ? '' : 'none';
 
-  // Measurement views register themselves (report finding E-5); the swept path below is
-  // the default when nothing is registered for the active mode.
+  // Use the swept path when no renderer is registered for the active mode.
   const view = getViewRenderer(c.viewMode);
   if (view) {
     view.render(viewContext());
@@ -569,7 +604,7 @@ export function renderAll() {
     renderTriggerLevel();
     renderTriggerOverlay();
   }
-  if (S.limits.on) { renderLimits(powers); pushStatus(limitStatusBlock()); }
+  if (S.limits.on) { renderLimits(); pushStatus(limitStatusBlock()); }
   if (powers && S.freqArray) {
     // Markers/OSD/3 dB are drawn only on the swept path; the measurement views own their
     // own overlays (see render/registry.ts). The amplitude/channel measurements are also
@@ -614,8 +649,7 @@ export function renderAll() {
   syncSpectrumZoomUi();
 }
 
-// The redraw seam: everyone else asks for a repaint instead of importing this hub
-// (breaks the render/spectrum.ts cycles, docs/*/ARCH_REVIEW.md finding P1-4).
+// Repaint callers depend on redraw.ts; this module owns the renderer.
 setRenderer(renderAll);
 // The real-time view is part of the hub itself, so it registers locally.
 registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
@@ -624,9 +658,9 @@ registerViewRenderer({ mode: 'rta', render: () => renderRtaView() });
 /**
  * Y-axis tick labels (right of the graticule), in the display domain.
  *
- * The trace is displaced by the external offset in getY(), so the axis must be labelled with the
- * same conversion - `fmtAxisLevel` - or every number disagrees with the trace by the offset.
- * The labels also become the `dataset.yLabels` diagnostic/e2e hook.
+ * The trace is displaced by the external offset in getY(); the axis labels convert the unit
+ * only (fmtAxisLevel), so the number on a graticule line equals the readout of the point
+ * drawn on it - the offset is applied exactly once.
  */
 function drawYAxisLabels(p: { x: number; y: number; w: number; h: number },
                          col: { axis: string }, displayRef: number, dbPerDiv: number) {
@@ -690,27 +724,6 @@ function renderTriggerLevel() {
 }
 
 // ---- RTA 实时频谱渲染 ----
-/**
- * Draw one RTA/SDR trace polyline. The caller sets the context style. The glow pass draws the
- * same path with a wider, translucent stroke.
- *
- * The pen lifts at each sample that `plottableLevel()` rejects. An RTA/SDR frame contains a real
- * gap at an SDR capture edge (NaN from dsp/grid.ts). An inked pen across that gap draws a line
- * down to the foot of the graticule, along the plot edge. That line reads as a signal.
- */
-function strokeRtaTrace(freq: ArrayLike<number>, disp: ArrayLike<number>, dn: number,
-                        lo: number, hi: number, p: { x: number; y: number; w: number; h: number }) {
-  ctx.beginPath();
-  let pen = false;
-  for (let i = 0; i < dn; i++) {
-    const v = disp[i];
-    if (!plottableLevel(v)) { pen = false; continue; }
-    const x = p.x + (freq[i] - lo) / (hi - lo) * p.w;
-    const y = getY(v);
-    if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-}
 
 function renderRta() {
   const col = canvasColors();
@@ -749,37 +762,72 @@ function renderRta() {
   const hi = pf ? pf.hi : (inFrame ? zv!.hi : d.stopHz);
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-  // 2D probability density rendered as an offscreen layer (freq x amplitude matrix ->
-  // ImageData with gamma-adjusted color), then drawImage-scaled onto the plot so the
-  // hot region is continuous and smooth instead of sparse 1px dots. Row 0 = top of the
-  // density matrix = displayRef (highest power), matching the plot Y direction.
-  if (persistenceOn() && S.rtaDensity2d && S.rtaDensity2d!.length >= n * rtaAmpBins.get()) {
-    drawRtaDensityLayer(n, p);
+  const densityOn = rtaFade.get() > 0;
+  const density = S.rtaDensity2d;
+  // Native history is rasterised only for this visible Hz window at screen resolution.
+  if (densityOn && S.traces[S.activeTraceIdx].mode !== 'OFF' && density
+      && (!density.freq || density.freq === d.freq)) {
+    drawRtaDensityLayer(density, d.freq, lo, hi, p);
   }
-  // No density layer means the graticule and background drawn above simply stay visible. It used to
-  // be repainted with the background here, which wiped the grid: harmless while that only happened
-  // for a frame or two with no data, but Persist=Off made it permanent (reported: "turning
-  // persistence off removes the RTA/SDR grid"). The frame starts with clearRect, so nothing has to
-  // be cleared here.
+  // Without density, retain the graticule and background. clearRect runs at frame start.
   // Diagnostic/e2e hook (same pattern as `dataset.yLabels`): the pixel scan cannot tell a dark
   // density layer from the plain background, so the contract is read from here.
-  const densityState = persistenceOn() ? 'on' : 'off';
+  const densityState = densityOn ? 'on' : 'off';
   if (ctx.canvas.dataset.density !== densityState) ctx.canvas.dataset.density = densityState;
-  // Fluorescent traces with glow (previous style; density dots provide the lingering trail)
+  // Fluorescent traces with glow; density dots provide the lingering trail.
+  // These values are invariant through both strokes and all traces in this render.
+  // Snapshot param/gesture state once rather than refreshing it per native bin.
+  const [firstBin, afterBin] = visibleBinRange(d.freq, lo, hi);
+  const xScale = p.w / (hi - lo);
+  const levelOffset = displayOffset.get();
+  const levelRef = getDisplayRef();
+  const yScale = p.h / (S.totalDivs * S.dbPerDiv);
+  const levelTransform = yAxisTransform();
   S.traces.forEach((tr, ti) => {
     if (tr.mode === 'OFF') return;
     const disp = S.rtaDisplays[ti];
     if (!disp || disp.length < 2) return;
     const dn = Math.min(n, disp.length);   // guard against point-count mismatch
-    const tcol = canvasColors().traces[ti] || col.rta;
+    const tcol = col.traces[ti] || col.rta;
     ctx.save();
     ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+    ctx.beginPath();
+    let pen = false;
+    const end = Math.min(dn, afterBin);
+    // Keep native samples in storage; the canvas only needs each device column's
+    // first/min/max/last original vertices. Split runs at every missing bin.
+    let i = firstBin;
+    while (i < end) {
+      if (!plottableLevel(disp[i])) { pen = false; i++; continue; }
+      const first = i;
+      const column = Math.floor((d.freq[i] - lo) * xScale * pixelRatio);
+      let min = i, max = i;
+      i++;
+      while (i < end && plottableLevel(disp[i])
+          && Math.floor((d.freq[i] - lo) * xScale * pixelRatio) === column) {
+        if (disp[i] < disp[min]) min = i;
+        if (disp[i] > disp[max]) max = i;
+        i++;
+      }
+      const last = i - 1;
+      let previous = -1;
+      for (let vertex = 0; vertex < 4; vertex++) {
+        const index = vertex === 0 ? first : vertex === 3 ? last
+          : vertex === 1 ? Math.min(min, max) : Math.max(min, max);
+        if (index === previous) continue;
+        previous = index;
+        const x = p.x + (d.freq[index] - lo) * xScale;
+        let y = p.y + (levelRef - (disp[index] + levelOffset)) * yScale;
+        if (levelTransform) y = p.y + (y - p.y) * levelTransform.sy + levelTransform.dyFrac * p.h;
+        if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+      }
+    }
     // glow
     ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
-    strokeRtaTrace(d.freq, disp, dn, lo, hi, p);
+    ctx.stroke();
     // main line
     ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = tcol;
-    strokeRtaTrace(d.freq, disp, dn, lo, hi, p);
+    ctx.stroke();
     ctx.restore();
   });
   // SDR: listen-frequency marker + the band the active demodulator actually reads. A protocol
@@ -819,7 +867,7 @@ function renderRta() {
     if (lx >= p.x && lx <= p.x + p.w) {
       ctx.fillStyle = '#00ffa0'; ctx.font = '11px monospace';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      // formatFreqHz keeps the unit (the label used to read "\u25bc 101.7073" with none).
+      // Include the frequency unit in the listen marker label.
       ctx.fillText('\u25bc ' + formatFreqHz(sdrListenHz.get()), lx, p.y + 2);
     }
   }
@@ -830,7 +878,6 @@ function renderRta() {
 }
 
 // 瀑布: 渲染到容器内 canvas(容器替换 marker 表槽位, 布局稳定)
-let lastSwpWfAt = 0;
 // The waterfall canvas is sized here, never inside the frame loop: reading clientWidth/
 // clientHeight per frame forces a layout per frame (render/dsp/meas are covered by
 // hotPathLayout.test.ts). It is re-derived when the plot box changes - core/store.ts pushes
@@ -846,16 +893,12 @@ function sizeWaterfall(wf: HTMLCanvasElement): void {
   if (wf.style.left !== left) wf.style.left = left;
   const width = pr.w.toFixed(3) + 'px';
   if (wf.style.width !== width) wf.style.width = width;
-  // Backing store from the box it actually got x the ratio the spectrum canvas uses, so the
-  // bitmap is never resampled. The box has to be read rather than assumed: the browser rounds
-  // a zoomed box to its own grid, so a constant differs from the real content box by a pixel
-  // or two (measured: 134 vs the nominal 133). layout-read-ok: resize path only - wfSized is
-  // false only after a resize/zoom or when the waterfall is switched on, never per frame.
+  // Size the backing store from the actual content box and spectrum pixel ratio.
+  // Browser rounding requires measuring the box. layout-read-ok: resize/zoom/enable only.
   const backW = Math.max(60, Math.round(wf.clientWidth * pixelRatio));    // layout-read-ok: resize path only
   const backH = Math.max(40, Math.round(wf.clientHeight * pixelRatio));   // layout-read-ok: resize path only
   if (wf.width !== backW) wf.width = backW;
   if (wf.height !== backH) wf.height = backH;
-  setWaterfallRowWidth(wf.width);
   wfSized = true;
 }
 
@@ -867,87 +910,73 @@ function renderWaterfallIfOn() {
   const wf = document.getElementById('waterfall') as HTMLCanvasElement | null;
   if (!wf) return;
   if (!wfSized) sizeWaterfall(wf);
-  // SWP mode: generate waterfall rows from the current trace (throttled ~10/s)
-  if (!S.rtaMode) {
-    const powers = getDisplayPowers();
-    if (powers && !wfPaused.get()) {
-      const now = performance.now();
-      if (now - lastSwpWfAt > 100) {
-        lastSwpWfAt = now;
-        pushSwpRow(powers, wf.width, 100);
-      }
-    }
-  }
   renderWaterfall(wf, 100);
 }
 
 
 let rtaDensLayer: HTMLCanvasElement | null = null;
 let rtaDensCtx: CanvasRenderingContext2D | null = null;
-let lastDensRebuild = 0;
+let rtaDensImage: ImageData | null = null;
+let rtaDensRaster = new Float32Array(0);
+let lastDensGrid: DensityGrid | null = null;
+let lastDensFreq: Float64Array | null = null;
+let lastDensRevision = -1;
+let lastDensLo = NaN, lastDensHi = NaN;
+let lastDensTheme: string | undefined;
+let rtaDensLut: Uint32Array | null = null;
 
-/**
- * Persistence Off switches the whole density layer off, not just its decay: the grid is not
- * accumulated either (dsp/rtaDensity.ts returns null), so the canvas goes back to the plain
- * background with the fluorescent traces on it.
- */
-function persistenceOn(): boolean {
-  return rtaFade.get() > 0;
-}
-// Build the density layer (throttled; cheap drawImage reuse between rebuilds)
-function drawRtaDensityLayer(cols: number, p: { x: number; y: number; w: number; h: number }) {
-  if (!rtaDensLayer) { rtaDensLayer = document.createElement('canvas'); rtaDensCtx = rtaDensLayer.getContext('2d'); }
-  const rows = rtaAmpBins.get();
-  const now = performance.now();
-  if (rtaDensLayer.width !== cols || rtaDensLayer.height !== rows) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
+
+function drawRtaDensityLayer(
+  grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
+  p: { x: number; y: number; w: number; h: number },
+) {
+  if (!rtaDensLayer) {
+    rtaDensLayer = document.createElement('canvas');
+    rtaDensCtx = rtaDensLayer.getContext('2d');
+  }
+  const cols = Math.max(1, Math.ceil(p.w * pixelRatio));
+  const rows = grid.bins;
+  const resized = rtaDensLayer.width !== cols || rtaDensLayer.height !== rows;
+  if (resized) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;
-  const dens = S.rtaDensity2d!;
-  if (now - lastDensRebuild > 45) {   // ~22fps density refresh is plenty (fade is slow)
-    lastDensRebuild = now;
-    const lut = densityLutForRta();
-    const img = lc.createImageData(cols, rows);
+  const theme = document.documentElement.dataset.theme;
+  const themeChanged = lastDensTheme !== theme || !rtaDensLut;
+  if (themeChanged) { rtaDensLut = densityLutForRta(); lastDensTheme = theme; }
+  if (resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
+      || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi || themeChanged) {
+    if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
+      rtaDensImage = lc.createImageData(cols, rows);
+      rtaDensRaster = new Float32Array(cols * rows);
+    }
+    rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+    const img = rtaDensImage;
     const px = img.data;
-    const MAXD = MAX_DENSITY;   // the same saturation dsp/rtaDensity.ts accumulates to
-    for (let i = 0; i < cols; i++) {
-      const base = i * rows;
-      for (let b = 0; b < rows; b++) {
-        const v = dens[base + b];
-        const o = (i + b * cols) * 4;
-        if (v <= 0.02) { px[o + 3] = 0; continue; }
-        // gamma ~0.45: weak skirt/noise-floor hits stay clearly visible, dense saturate
-        const g = Math.min(1, Math.pow(Math.min(1, v / MAXD), 0.45));
-        const c = lut[Math.round(g * 255)];
-        px[o] = c & 0xff; px[o + 1] = (c >> 8) & 0xff; px[o + 2] = (c >> 16) & 0xff;
-        px[o + 3] = Math.min(255, 110 + Math.round(g * 145));
-      }
+    const lut = rtaDensLut!;
+    for (let i = 0; i < rtaDensRaster.length; i++) {
+      const v = rtaDensRaster[i];
+      const o = i * 4;
+      if (v <= 0.02) { px[o + 3] = 0; continue; }
+      const g = Math.min(1, Math.pow(Math.min(1, v / MAX_DENSITY), 0.45));
+      const c = lut[Math.round(g * 255)];
+      px[o] = c & 0xff; px[o + 1] = (c >> 8) & 0xff; px[o + 2] = (c >> 16) & 0xff;
+      px[o + 3] = Math.round(255 * g);
     }
     lc.putImageData(img, 0, 0);
+    lastDensGrid = grid; lastDensRevision = grid.revision;
+    lastDensFreq = freq;
+    lastDensLo = lo; lastDensHi = hi;
   }
-  // smooth-bilinear scale onto the plot area (row 0 = top = displayRef). A level or frequency
-  // gesture scales this matrix through the same affine the trace uses - drawImage of the
-  // transformed rect IS that transform - so the density never drifts away from the trace.
-  const xt = xAxisTransform();
+  // Offset, reference and scale are evaluated on EVERY draw, even with no new frame.
+  // The half-row origin places a cell's centre, rather than its edge, at the trace level.
+  const level = densityLevelPlacement(grid, getDisplayRef(), S.totalDivs * S.dbPerDiv, displayOffset.get());
   const yt = yAxisTransform();
-  // Display zoom: sample the SOURCE rectangle of the density bitmap that matches the view
-  // (the matrix is anchored to the frame window), never stretch the whole layer across a
-  // magnified view (design §4.5). A device-gesture transform and a zoom never coexist.
-  const d = S.rtaData;
-  const zv = isZoomed() ? getView() : null;
-  let sx = 0, sw = rtaDensLayer.width;
-  if (zv && d && d.stopHz > d.startHz && zv.lo >= d.startHz - 0.5 && zv.hi <= d.stopHz + 0.5) {
-    const f0 = (zv.lo - d.startHz) / (d.stopHz - d.startHz);
-    const f1 = (zv.hi - d.startHz) / (d.stopHz - d.startHz);
-    sx = Math.max(0, f0) * rtaDensLayer.width;
-    sw = Math.max(1, (Math.min(1, f1) - Math.max(0, f0)) * rtaDensLayer.width);
-  }
-  ctx.drawImage(
-    rtaDensLayer,
-    sx, 0, sw, rtaDensLayer.height,
-    p.x + (xt ? xt.dxFrac * p.w : 0),
-    p.y + (yt ? yt.dyFrac * p.h : 0),
-    p.w * (xt ? xt.sx : 1),
-    p.h * (yt ? yt.sy : 1),
-  );
+  const sy = yt ? yt.sy : 1;
+  // Interpolate amplitude rows around their existing half-row centre; frequency is
+  // already rasterised at device resolution. Never enlarge native cells with nearest.
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(rtaDensLayer, p.x,
+    p.y + (level.top * sy + (yt ? yt.dyFrac : 0)) * p.h,
+    p.w, level.height * sy * p.h);
 }
 
 // RTA density heat LUT (theme-aware, deep-blue -> cyan -> yellow -> red)

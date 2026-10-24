@@ -13,6 +13,8 @@ commands:
     python3 tools/pluto_tx.py --dry-run-all
     python3 tools/pluto_tx.py nfm --lo 411e6 --gain -10
     python3 tools/pluto_tx.py drm --iq drm_iq.wav --dry-run
+    python3 tools/pluto_tx.py drm --iq-f32 tests/fixtures/drm/drm_modeB_so3_48k_aac.f32 --iq-rate 48000 --dry-run
+    python3 tools/pluto_tx.py drmplus --dry-run
     python3 tools/pluto_tx.py cw 'CQ CQ DE N0CALL' --pitch 700
 
 Run `python3 tools/pluto_tx.py <mode> --help` for the mode's own options.
@@ -39,10 +41,18 @@ TOOLS: dict[str, tuple[str | None, str]] = {
     'pm': ('pluto_analog_tx.py', 'PM: phase modulation'),
     'cw': ('pluto_cw_tx.py', 'CW: keyed Morse carrier at the Pitch'),
     'ft8': ('pluto_ft8_tx.py', 'FT8: 8-FSK burst in a 15 s slot'),
-    'drm': ('pluto_drm_tx.py', 'DRM30: OFDM from a DecDRM int16 IQ WAV'),
-    'drmplus': (None, 'DRM+ mode E: no external transmitter in this repository'),
+    'drm': ('pluto_drm_tx.py', 'DRM30: int16 WAV or committed f32 IQ'),
+    'drmplus': ('pluto_drm_tx.py', 'DRM+ mode E: committed 96 kHz f32 IQ in bursts'),
     'sstv': ('pluto_sstv_tx.py', 'SSTV: slow-scan television picture as SSB tones'),
 }
+#: Extra tool arguments that select a mode in a shared tool.
+MODE_ARGS: dict[str, tuple[str, ...]] = {'drmplus': ('--mode', 'drmplus')}
+
+#: The DRM30 committed source, used by --dry-run-all so DRM gets a real buffer check.
+DRM30_DRY_SOURCE = ('--iq-f32', str(Path(__file__).resolve().parent.parent
+                                   / 'tests/fixtures/drm/drm_modeB_so3_48k_aac.f32'),
+                    '--iq-rate', '48000')
+
 #: The analog tool takes the mode as a positional argument.
 ANALOG_TOOL = 'pluto_analog_tx.py'
 
@@ -67,7 +77,7 @@ def run(mode: str, argv: list[str]) -> int:
               file=sys.stderr)
         return 2
     module = load_tool(tool)
-    call = [mode, *argv] if tool == ANALOG_TOOL else list(argv)
+    call = [mode, *argv] if tool == ANALOG_TOOL else [*MODE_ARGS.get(mode, ()), *argv]
     return module.main(call)
 
 
@@ -81,25 +91,22 @@ def list_modes() -> int:
 
 def dry_run_all() -> int:
     """Dry-run every mode in-process and report the result. No radio is needed."""
-    # A PASS must mean "the generator can build a signal". DRM30 builds its OFDM signal
-    # only from an external DecDRM int16 IQ WAV: without --iq the tool prints a transmit
-    # plan and exits 0 — a plan is not a signal, so it used to be reported as PASS.
-    needs_external_iq = {'drm'}
+    # A PASS must mean "the generator can build a signal". Both DRM paths now have
+    # committed complex-f32 fixtures, so they are dry-run with those sources; the
+    # legacy DecDRM WAV input remains available through `drm --iq`.
+    dry_source = {'drm': DRM30_DRY_SOURCE}
     ok = True
     width = max(len(mode) for mode in TOOLS)
     for mode, (tool, desc) in TOOLS.items():
         if tool is None:
             print(f'SKIP  {mode:<{width}}  {desc}')
             continue
-        if mode in needs_external_iq:
-            print(f'SKIP  {mode:<{width}}  {desc} '
-                  '(needs an external DecDRM IQ WAV: tools/pluto_tx.py drm --iq <file> --dry-run)')
-            continue
+        extra = dry_source.get(mode, ())
         buf = io.StringIO()
         code = 1
         try:
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                code = run(mode, ['--dry-run'])
+                code = run(mode, [*extra, '--dry-run'])
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
         if code == 0:

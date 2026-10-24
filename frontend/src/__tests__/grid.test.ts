@@ -1,59 +1,38 @@
 import { describe, expect, it } from 'vitest';
+import { alignToDisplayWindow, projectSpectrum, sameFrequencyGrid, visibleBinRange } from '../dsp/grid';
 
-import { alignToDisplayWindow } from '../dsp/grid';
-
-function grid(lo: number, hi: number, n: number): Float64Array {
-  return Float64Array.from({ length: n }, (_, i) => lo + (i * (hi - lo)) / (n - 1));
-}
-
-describe('alignToDisplayWindow', () => {
-  it('leaves a frame alone when the capture grid already spans the display window', () => {
-    const freq = grid(100, 108, 9);
-    const spec = new Float32Array(Array.from({ length: 9 }, (_, i) => -100 + i));
-    const out = alignToDisplayWindow(freq, spec, 100, 108);
-    expect(out.shifted).toBe(false);
+describe('native frequency geometry', () => {
+  it('keeps close peaks, their valley, native positions and gaps through an offset display window', () => {
+    const freq = Float64Array.from([100, 101.25, 102.5, 103.75, 105]);
+    const spec = Float32Array.from([-90, -25, -95, -30, NaN]);
+    const out = alignToDisplayWindow(freq, spec, 99.5, 106);
     expect(out.freq).toBe(freq);
     expect(out.spec).toBe(spec);
+    expect([...out.spec.slice(1, 4)]).toEqual([-25, -95, -30]);
+    expect(Number.isNaN(out.spec[4])).toBe(true);
+    expect([...out.freq]).toEqual([100, 101.25, 102.5, 103.75, 105]);
   });
 
-  it('rebins an offset capture to the display window and leaves the uncovered edge empty', () => {
-    // Display window 2..10, capture grid 4..12: a 2-bin hardware offset.
-    const capFreq = grid(4, 12, 9);
-    const capSpec = Float32Array.from({ length: 9 }, (_, i) => i);
-    const out = alignToDisplayWindow(capFreq, capSpec, 2, 10);
-    expect(out.shifted).toBe(true);
-    expect(out.freq[0]).toBeCloseTo(2, 9);
-    expect(out.freq[8]).toBeCloseTo(10, 9);
-    // The first 2 bins are outside the capture range: a real gap, not interpolated data.
-    expect(Number.isNaN(out.spec[0])).toBe(true);
-    expect(Number.isNaN(out.spec[1])).toBe(true);
-    // Inside the capture the values follow the capture bins (display f -> capture index f-4).
-    expect(Array.from(out.spec.slice(2))).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    // The user's centre lands at the centre of the frequency axis.
-    expect((out.freq[0] + out.freq[8]) / 2).toBeCloseTo(6, 9);
+  it('selects only the visible bins and boundary neighbours, including exact boundaries', () => {
+    const freq = Float64Array.from([0, 10, 20, 30, 40, 50, 60]);
+    expect(visibleBinRange(freq, 20, 40)).toEqual([1, 6]);
+    expect(visibleBinRange(freq, 21, 39)).toEqual([2, 5]);
+    expect(visibleBinRange(freq, -10, 0)).toEqual([0, 2]);
+    expect(visibleBinRange(freq, 60, 70)).toEqual([5, 7]);
   });
 
-  it('rebins a wider capture grid that happens to start on the display window', () => {
-    // SDR: the device captured four times wider than the requested window. The capture is floored
-    // to keep the IQS packet period short, so the grid starts on the window edge and covers much
-    // more. An equal start is not proof that the window IS the capture.
-    const capFreq = grid(100, 108, 9);                                    // 8 MHz capture
-    const capSpec = Float32Array.from({ length: 9 }, (_, i) => i);
-    const out = alignToDisplayWindow(capFreq, capSpec, 100, 102);          // 2 MHz window
-    expect(out.shifted).toBe(true);
-    expect(out.freq[0]).toBeCloseTo(100, 9);
-    expect(out.freq[8]).toBeCloseTo(102, 9);        // the axis is the window, not the capture
-    // Every display bin is inside the capture, so nothing is invented and nothing is a gap.
-    expect(Array.from(out.spec).some(Number.isNaN)).toBe(false);
-    expect(Array.from(out.spec)).toEqual([0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]);
+  it('detects shifted interior bins even when count and endpoints match', () => {
+    expect(sameFrequencyGrid(Float64Array.from([0, 1, 3]), Float64Array.from([0, 2, 3]))).toBe(false);
+    expect(sameFrequencyGrid(Float64Array.from([0, 1, 3]), Float64Array.from([0, 1, 3]))).toBe(true);
   });
 
-  it('interpolates fractionally offset grids instead of snapping', () => {
-    const capFreq = grid(0, 8, 9);           // step 1
-    const capSpec = Float32Array.from({ length: 9 }, (_, i) => i * 10);
-    const out = alignToDisplayWindow(capFreq, capSpec, 1.5, 9.5);   // 1.5-bin shift
-    expect(out.shifted).toBe(true);
-    expect(out.spec[0]).toBeCloseTo(15, 5);  // halfway between 10 and 20
-    expect(Number.isNaN(out.spec[8])).toBe(true);   // 9.5 is past the capture
+  it('projects coarse columns by Hz and keeps empty coverage and the final carrier', () => {
+    const freq = Float64Array.from([12, 13, 14, 18]);
+    const spec = Float32Array.from([-60, -20, NaN, -25]);
+    const out = projectSpectrum(freq, spec, 10, 18, new Float32Array(4));
+    expect(Number.isNaN(out[0])).toBe(true);
+    expect(out[1]).toBe(-20);
+    expect(Number.isNaN(out[2])).toBe(true);
+    expect(out[3]).toBe(-25);
   });
 });

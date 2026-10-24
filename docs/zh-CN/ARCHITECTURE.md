@@ -1,332 +1,108 @@
 # 架构
 
-## 总览
+## 系统与所有权
+
+原生 Rust 服务负责设备配置、采集、信道化和接收 DSP。C++ shim 串行调用 HAROGIC 官方 SDK。浏览器负责控制、频谱绘制、解码结果展示和音频播放。`tools/reference/` 中的 Python 模块仅供离线数值参考和 fixture 工具使用。
+
+```text
+浏览器控制 → HTTP/WS 命令 → 原生模式所有者 → 保留的 SDK session
+SDK IQ + FFT → 有界采集队列 → 有序 PFB workers → fine DDC/成帧
+                                             ├→ IQBF/IQAX 消费者
+                                             └→ receiver workers → AUD2/SDE2 → 浏览器
+SDK SWP/RTA 迹线 → 显示发布器 → 浏览器频谱/密度/瀑布
 ```
-浏览器 (frontend: TypeScript + Canvas)
-   │  WS 有界 latest-wins 二进制帧 + WS JSON
-   ▼
-Supervisor → web_sa worker (aiohttp + 串行 SDK 调用；native 崩溃/超时退避重启)
-   │
-   ▼
-htra_api.py → libhtraapi.so → USB → SAN 系列设备
-```
 
-## 后端分层
-- `hardware/sdk_bindings.py`: 全部 ctypes 绑定(唯一 dll 接触点), 含 PNM 结构/校准函数
-- `hardware/device.py`: 设备抽象(open/configure/fetch/query) + DeviceState + 型号能力推导
-- `measurements/`: 测量会话对象化 (Std/RTA/Harmonic/PhaseNoise) + framer(帧编解码)
-- `web/`: ws.py(命令表) + http_api.py(STATUS/REST) + publisher.py(按模式调度)
+SWP、RTA、SDR、谐波和相噪各自保存配置，共享一个物理设备 session。STATUS 发布设备实际值和能力。命令校验及候选计划准入在替换活动状态前完成；拒绝请求保留原计划和原流。
 
-## 关键设计
-1. **会话对象化**: std/rta/harmonic/pnm 统一接口, enter/exit 配置快照恢复
-2. **型号能力推导**: DeviceCapabilities(SAN-45/60/90 频率范围), 不硬编码
-3. **前端保峰重采样**: 后端返回设备原生迹线, 前端 resampleTrace 处理点数(保峰, 无插值三角)
-4. **帧协议**: 16 字节头(magic+ver+points+sweep_ms) + 数据; POWR 强制 float32
-5. **客户端背压**: 每个 WS 独立发送任务；FREQ/JSON 保留，POWR/RTAF 采用 latest-wins
-6. **安全默认**: loopback 监听；远程模式要求 token；静态资源限制在构建目录内
-7. **故障恢复**: SDK 调用离开 asyncio 主线程；native 崩溃/致命超时由 supervisor 重启 worker。扫描路径还会在连续总线错误（拔线）时置 `connected=false`，避免把定格画面当成已连接；RTA/SDR 保留各自的原地重配恢复。worker 链路循环会重开已断开的设备并恢复原模式
-8. **模式私有状态**: SWP/RTA 分别保存 Center/Span/Ref/RBW/VBW/Sweep 和 actual；
-   模式切换只发送一次 SET_MODE，完整流转见 [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md)
+## 设备 session 与采集
 
-## 帧协议
-| 类型 | 头 | 数据 |
-|---|---|---|
-| FREQ | FREQ + ver(4) + points(4) + sweep_ms(f4) | float64 频率轴 |
-| POWR | POWR + ... | float32 功率 dBm |
-| IQBF | IQBF + ver(4) + seq(4) + samples(4) + rate(f8) + center_hz(f8) | 信道化复 float32 IQ；`rate` 是 DDC 样本时钟；seq=0 表示清流 |
+一个长期运行的 SDK 管理线程负责 SWP/RTA/IQS/PNM，所有 SDK 调用均串行执行。设备正常时，模式切换只停止采集并释放模式状态，保留物理句柄。`Device_Open` 使用长期会话中地址稳定的 `void**` 句柄槽：厂商 PNM worker 会保留该地址，直到物理连接关闭。失效或断链句柄不得传给 `Device_Close`。
 
-`IQBF.rate` 与 `sdr.actual.ddc_rate` 来自 DDC 配置，表示样本时钟，不是主机交付速度。
-`sdr.actual.ddc_delivery_rate` 才是按墙钟测得的交付率。实测切频后交付率降到 283–291 kSps，
-DDC 时钟仍是 300.48 kSps。误把交付率当作 DSP 样本率会把 19 kHz 导频算到约 18 kHz，
-使返频后的立体声与 RDS 失锁。
+IQS 配置与启动采集（arm）分开。服务先准备 PFB、fine DDC、接收器工作线程和元数据，再显式启动采集；恢复时也遵循此顺序。首包予以保留，并校验包序和硬件时间戳。主机样本索引不能替代对硬件连续性的核对。
 
-## WS 命令
-CONNECT/STATUS/SET_PRESET/CAL_REFCLK/SET_FREQ/SET_REF/SET_RBW/SET_VBW/SET_SWEEP/
-SET_POINTS/SET_SPUR/SET_WINDOW/SET_AMP/SET_REFCK/SET_REFCKOUT/SET_MODE/SET_RTA/SET_HARM/SET_PNM
+IQS 返回 `-12` 时，若包含有效 IQ 包，服务保留样本及时间戳，通过 `status_warning=-12` 单独报告饱和。未显式启动 Auto 时，饱和保持手动 Ref，也不会把有效包计为总线失败。显式 Auto 恢复有明确上限，且只使用同一模式、同一配置下的新观测，详见 [MODE_STATE_FLOW](MODE_STATE_FLOW.md)。IQ、FFT、告警和计时经同一次 `san90_next_v3` 返回；例行元数据轮询不消费 IQ。畸形包和真实时间戳断裂显式失败。
 
-## RTA 实时频谱 (SWP/RTA 模式)
-- **会话** (`web_sa/measurements/rta.py`, `RtaSession`): 基于官方 SDK 路径
-  `RTA_Configuration` → `BusTriggerStart` → `GetRealTimeSpectrum`; 官方取包模式
-  (trigger 后循环 Get), `acq=0.005`; SAN-90 实测持续推送约 105-129 fps，常规模式切换首帧约 0.57 s
-- **推送与显示**: 后端按设备 Get 速率采集；每客户端 latest-wins 防止慢连接阻塞；前端 RTA 数据处理
-  节流约 33 Hz，SWP 绘制约 30 Hz
-- **RTAF 帧** (`measurements/rta.py`): magic `RTAF` + `freq`(f8) + `spec`(f4) +
-  `wfRow`(u2) + `stopHz`; 各 dtype 分别 `tobytes` 打包，当前迹线使用 PacketFrame 中第一条频谱
-- **多迹线 (T1-T4)**: 各迹线独立累积(`rtaDisplays[4]`)并按各自 mode 叠加显示(各自颜色 + 辉光);
-  **Freeze/View** 为 trace mode 下拉右侧的独立 toggle 按钮(VIEW = 冻结累积; 解冻恢复之前的模式);
-  Clear 清空当前迹线
-- **概率密度背景**: 默认 `freq × 128` 幅度 bin（可选 64/96/128/192），按信号迹线路径累积；
-  衰减和颗粒度可配置，使用 O(n) 直方图估计噪底并在约 33 Hz 更新
-- **瀑布**: SWP 从当前迹线生成并节流到约 10 行/s；RTA 从实时 spec 生成行；容器替换 Marker 表槽位，
-  最新行位于顶部
-- **恢复**: 连续 8 次 Trigger/Get 失败后按当前 RTA 私有参数原地重配，最多两次；仍失败时
-  抛出致命硬件错误，由 supervisor 重启 worker；STATUS 暴露 `rta_health`
-- **已知坑**: `renderRta` 用外层 `save/clip(plotRect)` 包裹密度+迹线, 画底部频率行前必须
-  `restore` —— 否则绘图区外的频率行被 clip 裁掉, 切到 RTA 后消失(已修复)
+定期获取 GNSS 状态时使用 SDK 缓存快照。设备和可选时钟能力根据成功打开设备及读取硬件状态的结果确定；缺失数据保持未知。外部参考配置为 10 MHz。恢复时显式将物理会话标记为失效；退出时先结束模式管理逻辑，再关闭会话并等待 SDK 线程结束。
 
-## SDR DSP 流水线
-
-解调器与音频链运行在 Web Worker 里的 Rust/WASM 模块中；**信道化不在浏览器里**。粗抽取与调谐留在
-硬件本来就做的地方——设备自带的 DDC 加后端软件 NCO：把它们搬到浏览器与设备能力不匹配（原始 IQS
-流是 2–31 MSps；实测传输上限约 2.3 MSps，浏览器自己的 129 抽头 FIR 也跑不动默认档位要求的
-3.9 MSps），于是 AudioWorklet 环形缓冲被抽干，声音变成与调谐无关的固定周期性噗噗声。浏览器接收
-信道化基带。窄带模式约 48–63 kSps；180 kHz IF 的 WFM 约 300 kSps（复 float32 IQ 约 2.4 MB/s）。
-Python 回退解调器也读取同一路基带。
-
-Python DSP **不删除**：它是无 WASM 时的回退路径与数值参考，并且只在有客户端订阅其音频时才运行
-（浏览器接管播放时后端直接跳过这条链）。
-
-```
-SAN-90 ──IQ──▶ Python 后端 ──┬─ 信道化基带（IQBF）──▶ Web Worker ──WASM──▶ 模拟解调 ─▶ 音频 DSP ─▶ AudioWorklet ─▶ 扬声器
-  (IQS)        DDC + 调谐 NCO  └─ AUDF 音频（仅回退）──▶ （DSP 无法运行时由同一个 worklet 播放）
-```
+## SDR 信道化与接收器
 
 ### 阶段映射
 
-图中的每个阶段都对应一个具名模块。下表就是契约：没有路径的阶段即尚未存在。
+下表是当前实现路径。`tools/checks/check_doc_paths.py` 检查表内具体路径。
 
 | 阶段 | 模块 |
 |---|---|
-| SAN-90 IQ 源 | `web_sa/measurements/sdr.py`（IQS 流）、`web_sa/hardware/sdk_bindings.py` |
-| Python 设备 / 控制 | `web_sa/hardware/`、`web_sa/measurements/`、`web_sa/web/` |
-| 信道化器（DDC + 调谐） | `web_sa/demod/ddc.py`（厂商 `DSP_DDC`）、`web_sa/measurements/sdr.py`（`_chain_coarse`、`_mix`） |
-| WebSocket 传输基带 | `web_sa/measurements/framer.py`（`IQBF`）、`web_sa/web/client_stream.py` |
-| 基带入口 | `frontend/src/sdr/iqWorker.ts` |
-| Worker DSP 编排 | `frontend/src/sdr/iqStream.ts`、`frontend/src/sdr/wasmPipeline.ts` |
-| WASM 边界（裸 ABI） | `frontend/src/sdr/wasm.ts` ↔ `wasm/src/pipeline_abi.rs`、`wasm/src/abi.rs` |
-| 模拟解调器 | `wasm/src/analog/mod.rs`（模式表与检测器） |
-| FM 立体声与 RDS（WFM） | `wasm/src/analog/fm_stereo.rs`（导频 PLL、L−R、抗混叠滤波）、`wasm/src/analog/rds.rs`（57 kHz 位时序与组解码）、`frontend/src/ui/decodeWindow.ts`（FM 面板） |
-| 数字解调器（FT8） | `wasm/src/digital/ft8/mod.rs`、`wasm/src/digital/ft8/tables.rs` |
-| 数字解调器（DRM） | `wasm/src/digital/drm/`（OFDM 解调、FAC/SDC/MSC MLCC、音频拆帧）、`wasm/fdk/`（FDK AAC 解码器） |
-| 数字解调器（SSTV） | `wasm/src/digital/sstv/mod.rs`（插件：话音带 SSB 前端、流式解码）、`wasm/src/digital/sstv/vendor/`（unexcellent/sstv 0.3.1，MIT：18 种模式、VIS 头、各模式时序）、`wasm/src/digital/sstv_abi.rs`（模式表跨 ABI 暴露） |
-| SSTV 图像与面板 | `frontend/src/sdr/sstvLog.ts`（图像、元数据、历史）、`frontend/src/ui/decodeWindow.ts`（面板：canvas、来自 Rust 表的模式按钮、进度、保存 PNG） |
-| SSTV 台架发射机 | `tools/pluto/pluto_sstv_tx.py`、`tools/fixtures/sstv_encode.py`（本仓库自己的编码器）、`tools/fixtures/port_sstv_modes.py`（从 vendored 树移植的模式表） |
-| 音频 DSP（仅模拟 PCM） | `wasm/src/audio/stages.rs`、`wasm/src/audio/dc_block.rs`、`wasm/src/audio/wiener.rs`、`wasm/src/audio/notch.rs`、`wasm/src/audio/blanker.rs`、`wasm/src/fft.rs` |
-| 降噪（DeepFilterNet3，流式） | `frontend/src/sdr/dfnWorker.ts`、`frontend/src/sdr/dfnWasm.ts`、`wasm-dfn/src/wasm.rs` |
-| DFN 产物与模型 | `wasm-dfn/build.sh` → `frontend/public/dfn/df_bg.wasm`（入库）、`frontend/public/models/dfn/DeepFilterNet3_onnx.tar.gz`（运行时拉取，绝不内嵌） |
-| 路径组装与分离规则 | `wasm/src/pipeline.rs` |
-| DDC 内核（保留，兼作参考链） | `wasm/src/ddc/nco.rs`、`wasm/src/ddc/fir.rs`、`wasm/src/ddc/resampler.rs`、`wasm/src/ddc/agc.rs`、`wasm/src/ddc/mod.rs` |
-| 插件注册表（唯一来源） | `wasm/src/plugin.rs`、`wasm/src/plugin_abi.rs`、`frontend/src/sdr/registry.ts` |
-| 音频 PCM 输出与抖动缓冲 | `frontend/src/audio/sdrAudioWorklet.js`、`frontend/src/audio/sdrAudio.ts`、`frontend/src/audio/sdrAudioWorker.ts` |
-| Python 回退与参考 | `web_sa/demod/`（不变）、`tools/analysis/dsp_parity.py`、`tools/fixtures/gen_dsp_fixtures.py` |
-| WASM 产物构建 | `wasm/build.sh` → `frontend/public/dsp.wasm`（入库） |
+| 设备 session 与采集 | `native-ddc/sdk/san90_sdk.cpp`, `native-ddc/src/bin/websad/service_capture.rs` |
+| 服务、命令与发布 | `native-ddc/src/bin/websad.rs`, `native-ddc/src/bin/websad/service_ddc.rs` |
+| 粗 PFB 与有序 workers | `native-ddc/src/pfb.rs`, `native-ddc/src/pfb_pool.rs` |
+| fine DDC 与样本时钟 | `native-ddc/src/fine.rs`, `native-ddc/src/narrow.rs`, `native-ddc/src/rate_plan.rs` |
+| 流水线编排与准入 | `native-ddc/src/bin/websad/sdr_pipeline.rs`, `native-ddc/src/bin/websad/service_preflight.rs` |
+| 原生接收器编排 | `native-ddc/src/bin/websad/receiver_workers.rs`, `native-ddc/src/receiver.rs` |
+| 模拟与数字 DSP | `wasm/src/analog/`, `wasm/src/digital/`, `wasm/src/pipeline.rs` |
+| 原生降噪 | `native-ddc/src/nr.rs`, `wasm-dfn/src/` |
+| 二进制协议与订阅边界 | `native-ddc/src/wire.rs`, `native-ddc/src/bin/websad/service_stream.rs`, `native-ddc/src/bin/websad/subscriber_stream.rs` |
+| 浏览器流与解码展示 | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
+| 播放 | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
+| 离线参考与 fixture | `tools/reference/`, `tools/fixtures/gen_dsp_fixtures.py`, `tests/fixtures/dsp/` |
 
-`tools/checks/check_doc_paths.py` 会校验本表中的每个路径都存在，因此这份映射不会描述被改名或从未存在的模块。
+### 粗 PFB 与 fine DDC
 
-### DSP 路径与分离规则
+全带宽采集输入为 62.5 MSps，可用带宽为 50 MHz。共享二倍过采样 PFB 使用 128 个频率箱，步长为 64 个样本：粗频率箱间距为 488.28125 kHz，每箱输出采样率为 976.5625 kSps。窄带设备采集会相应调整这些参数。频率箱数量、间距和输出采样率是不同的量，均不代表产品提供的接收器数量。
 
-DDC 是公共基础层：所有模拟与数字模式拿到的都是同一路混频、滤波、重采样、电平归一后的数据流。
-在它之上，两条路径刻意分开：
+原型滤波器支持每相 4、8 或 16 个抽头，服务默认使用 16 个。通带和混叠抑制取决于抽头数及频偏。fine 计划必须落在所选粗频率箱的可用通带内；不能截断宽带信号后仍将其视为等价接收。超出当前频道可接收频率范围的宽带模式会被明确拒绝。
 
-- **模拟路径** — `AnalogDemod` → 音频 DSP → PCM。隔直、LPF、AGC、静噪、Wiener、陷波和 IF
-噪声消除服务于听音。WFM 保留单声道路径，另开一条侧链。导频 PLL 跟踪 19 kHz；相干检波器从 38 kHz
-恢复 L−R。57 抽头 FIR 在重采样前去掉乘积镜像。低通和去加重在输出采样率下运行。侧链与单声道对齐，
-两者使用相同的 AGC 包络与音量。Worker 做 `L = M + S`、`R = M − S` 矩阵。SAN-90 接收左声道语音时，
-左右分离度中位数实测约 30 dB。`stereo_audio_rejects_images_before_resampling` 固定抗混叠行为，
-`stereo_side_aligns_with_the_mono_pcm` 固定相位对齐。其他模拟模式不建此侧链。
-  RDS 使用导频恢复 57 kHz 参考和位时钟。连续 2 秒没有有效组时，它扫描位相位；相邻复符号用于差分判决。
-  同频 DDC 清流保留已确认的导频与电台数据；真正切频清空。8 秒没有有效组后，PI/PS/RadioText 清空。
-  STEREO badge 表示有导频，不保证此刻节目左右声道内容不同。
-- **数字路径 / RAW** — `DigitalDemod` → 解码器与可视化，**完全不经过音频增强**。语音降噪作用在
-FT8 音调上会毁掉解码所需的信息，因此该分离由自动化测试保证（开关音频级时 RAW 输出必须逐位相同），
-而不是靠约定。SSTV 同理：它的前端（话音带复带通与取实部，与 `usb` 模式相同）在插件内部，因此图像是从
-未经处理的基带上解出的，`wasm/tests/sstv_decode.rs` 断言音频链开关前后图像逐位相同。
+每路接收器独立保存频率、模式、占用带宽、`RatePlan`、振荡器相位、滤波历史和输出率。fine DDC 频移后执行多级抗混叠抽取，必要时在接收器输入适配精确协议率。播放采样率不是所有模式的 IQ 率下限。USB/LSB 包络覆盖边带上限，CW 包含 pitch，FT8 至少保留正频率 3.2 kHz，SSTV 至少保留正频率 3 kHz；DRM 和 DRM+ 使用协议带宽。
 
-新增模式就是在注册表里加一个插件：模拟模式实现解调器接口（已有 am、dsb、usb、lsb、cw、nfm、wfm、pm），
-数字协议实现解码器接口（FT8、DRM、SSTV）。UI 的模式列表从注册表读取，新增模式不会在面板里被遗漏。
-协议自身的子模式遵循同样的规则：SSTV 面板的模式按钮通过 ABI（`websa_dsp_sstv_mode_*`）从 Rust 模式表中
-读出，因此按钮不可能提供解码器不认识的一种模式。
+主频道调谐超出采集范围时，先验证所有已开启频道，再移动共享采集中心。辅助频道不能独立移动中心。拒绝配置保留所有活动频道。在当前计划内可完成的变更尽量只更新目标 fine 接收器。
 
-### WASM 边界与构建
+### Workers、准入与背压
 
-- 该 crate **无任何依赖**（不用 wasm-bindgen，也不用 wasm-pack）；`cargo build --target
-wasm32-unknown-unknown` 就是全部工具链。
-- 数组以指向模块线性内存的指针按块跨越边界；热路径每块零分配。
-- 构建出的 `.wasm` 入库，因此 CI 不需要 Rust 工具链。`wasm/build.sh` 重新构建，并在入库产物与
-新构建不一致时失败。
-- `wasm/` 同时可本机编译，`cargo test` 就是针对内核运行它。
+原始采集队列容纳 64 包。PFB 使用四个固定 worker，最多六个任务在途，按输入顺序收集结果。fine/成帧交接容量为二。两个固定 receiver worker 独占频道可变 DSP 状态；另一个 FT8 worker 执行搜索，避免阻塞实时监听。DFN 模板在采集前准备，各接收器独占可变处理状态。
 
-### DDC 数值（移植不能改变声音）
+后端支持三个独立配置槽。当前产品界面仅提供主路控制，进入 SDR 时停用辅助槽。粗频率箱数量和内部基准测试的路数不代表产品提供更多频道。混音、录制及动态频道数尚未实现。
 
-这些内核是移植而不是重写：参考实现是 `web_sa/demod/filters.py`（`design_lowpass`、`StreamFilter`、
-`LinearResampler`、`Agc`）与 `sdr.py::_mix`，`tests/fixtures/dsp/` 针对一个入库的 IQ 块逐级保存了它们
-的输出（`mix`、`fir`、`dec`、`res`、`agc`）。`wasm/tests/ddc_reference.rs` 在 fixture manifest 记录的容差
-（f32 满量程 1.0 上绝对 1e-5，约 -100 dBFS）内把 Rust 内核与这些字节做比对。实测最差：混频、FIR、抽取
-为精确 0；重采样与 AGC 约 3e-8。
+准入在更改采集、身份或注册表前检查频道数、合计输出率和 fine/成帧成本。fine/成帧校准在采集前完成，进程内复用。成本策略保留二倍余量：`2 × sum(每粗样本成本 × 粗采样率) <= 1e9 ns/s`。这是内部保守预算，不证明 SDK、PFB、接收器、网络或录制容量。
 
-`tools/fixtures/gen_dsp_fixtures.py --check` 是 CI 门禁（参考实现不能静默漂移），Rust 侧用 `make wasm-test`。
-`wasm/tests/ddc_bench.rs` 记录每块开销——本机 release：4096 点块约 1.2 ms，每复数点 290 ns，1 MSps 下约
-0.3 倍实时——并在链路退化为平方级或开始逐块分配时失败。
+对于显示帧，慢客户端的旧帧可由新帧替换。有序 IQ、PCM 和解码输出使用有界队列，溢出时明确报错；不得通过静默丢样、扩大队列或阻塞采集来通过吞吐检查。音频容量反馈包括排队和未确认的 PCM；解码批次保持有界，按 FIFO 顺序应用后确认。协议和反馈契约见 [API](API.md)。
 
-厂商 `DSP_DDC` 是硬件调用，无法用软件复现，因此 Rust DDC *取而代之*；数值参考是 Python 围绕它跑的软件链路。
-信道化现在完全在后端完成，所以 Rust 的 DDC 内核保留为**参考链**（`wasm/tests/ddc_reference.rs`
-用同一批 Python 夹具比对），而不再作为浏览器的前端。
+### 流身份与时钟
 
-### 参考项目与许可证
+IQBF/IQAX v2 使用 `(epoch, channel_id)` 标识流。重调更换频道身份，新 DSP/采集计划更换 epoch。旧输出先于新流空 `seq=0` 边界结束。拒绝请求不分配新身份。注册表和频道时钟来自同一不可变流水线快照；退出 SDR 后清空。
 
-这里的 DSP 是依据公开技术写的，没有从任何项目复制。下边是架构设计所参考的项目，以及各自取用（与未取用）了什么：
+IQ `input_index` 是首个输出在采集复数样本域中的因果位置，不是包首。群延迟独立传输，单位为输出复数样本。对齐公式为 `input_index / input_rate - group_delay_samples / output_rate`。合帧保留首段非空输出时钟。消费者必须精确保留 u64 索引。
 
-| 项目 | 影响的部分 | 取用的代码 |
-|---|---|---|
-| [liquid-dsp](https://github.com/jgaeddert/liquid-dsp)（MIT） | 算法形态：窗函数 sinc 设计、NCO 结构、RMS AGC、重采样 | 无——内核按本仓库自己的 Python 参考（`demod/filters.py`）编写，并与之逐字节比对 |
-| [tpt-dsp](https://github.com/tpt-solutions/tpt-dsp) | Rust DSP 内核组织：无分配的块处理、状态放在 `struct` 里 | 无 |
-| [sdr-web](https://github.com/kwakasa/sdr-web) | 浏览器数据流：worker 持有 socket、worklet 负责播放 | 无 |
-| [Radioband](https://github.com/hightemp/radioband) | 工程结构：每个阶段一个模块、每类插件一个注册表 | 无 |
-| [pffft.wasm](https://github.com/JorenSix/pffft.wasm) | STFT 性能预期（FFT plan 按尺寸缓存的原因） | 无 |
-| [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT） | FT8 协议：Costas 图案、Gray 映射、CRC-14 多项式、LDPC(174,91) 矩阵 | **常量表**，由 `tools/fixtures/port_ft8_tables.py` 生成到 `wasm/src/digital/ft8/tables.rs`（该脚本记录了来源与许可证）；解码器与 fixture 编码器依据规范实现，编码器逐音与参考比对验证 |
-| [BrowSDR](https://github.com/jLynx/BrowSDR)（AGPL-3.0） | 仅阅读架构 | **无**——AGPL，刻意不作为来源 |
+AUD2 携带交错 f32 PCM、实际率和声道、流身份、PCM `audio_index`、采集输入位置及分数时刻。SDE2 携带相同身份和时钟语义的解码事件。总延迟未知和因果播放有明确标志，两者均不允许宣称精确源对齐。FT8 结果保留原搜索窗口时刻。新订阅者获得自己的起始边界；晚订阅 SSTV 获得有界当前图像快照，不重置接收器。完整布局及排序见 [API](API.md)。
 
-归属规则：算法可以从宽松许可的来源重新推导，但绝不从不兼容的许可证复制代码；每个内核的数值参考都是本仓库自己的 Python 实现。这也是对等测试与 Python 而非其他 SDR 应用输出比对的原因。
+### DSP 与播放边界
 
-### 音频播放、降噪与回退分工
+当前模式注册表包括 AM、DSB、USB、LSB、CW、NFM、WFM、PM、FT8、SSTV、DRM 和 DRM+。原生接收器直接复用共享 Rust DSP。模拟监听可使用 AGC、静噪、增益和降噪；数字解码保留原始协议输入。监听增强不得改变 FT8/SSTV/DRM 输入。
 
-扬声器前的最后一级是 `frontend/src/audio/sdrAudioWorklet.js`，它不是普通环形缓冲：PCM 按
-分析仪的数据包节奏以约 20 ms 块到达，而该处理器跑在声卡时钟上，两者相差一个谁也无法控制的千分
-之几。因此它维护一个受控抖动缓冲（目标 250 ms、上限 500 ms）：读指针按填充量驱动出的比例推进，
-于是持续性的速率差通过重采样吸收（音高保持正确），而不是把缓冲抽干或灌满；超过上限则丢弃最旧的
-样本，让“产出快于时钟”不会变成不断增长的延迟。换台会清空该缓冲，所以上一个电台的声音不会继续
-播。`frontend/src/__tests__/sdrAudioWorklet.test.ts` 直接驱动这个环（速率一致、±2% 漂移、
-灌爆、复位四种情形）。
+WFM 保留立体声和 RDS。FM 分析单位为 Hz，固定 NFM ±5 kHz、WFM ±75 kHz 归一化先于自适应 AGC；关闭 AGC 不取消单位转换。立体声指示表示有导频，不保证节目左右声道内容不同。
 
-降噪是面板控件，算法选择在两者之间：STFT Wiener（开/关 + 轻/中/强，经 `websa_dsp_demod_set_nr` 到达
-WASM 音频链），与 DeepFilterNet3——经专用 worker（`dfnWorker.ts` → `dfnWasm.ts` → 自研 `wasm-dfn`
-运行时，每帧一个 480 样本 hop，模型运行时拉取后交给 `df_create`）流式推理的 ML 降噪器，它没有强度档，
-选中时强度下拉随之隐藏。算法是客户端自有偏好（`sdr.nrAlgo`，与其他 SDR 偏好一起持久化），因为
-Python 回退路径自身不带降噪；静噪滑块经 `websa_dsp_demod_set_squelch` 到达同一条链。默认策略**不启用任何**增强级，也就是 Python 参考实现
-的产出——过去默认启用的一级里包含自适应陷波，而信号本身是单音时它会把信号一起滤掉（实测：1 kHz
-AM 测试音被压低 33 dB），有它在时与参考实现的 A/B 根本无法比较。
+共享 DSP 同时运行 AM 包络与载波恢复路径，`am_sync` 切换输出时平滑过渡。实时切换保留采集、滤波与重采样状态以及流时钟。AGC 前的载波与调制度分析、最终 PCM 电平和波形事件按 20 Hz 源样本时钟网格产生；浏览器显示这些结果，不从播放回调推算指标。同步检波开启与载波锁定是两个独立状态。
 
-Python 音频路径只作回退与参考：浏览器 DSP 接管播放时前端不再打开 `?audio=1`，且
-`web_sa/measurements/sdr.py` 在没有客户端订阅 AUDF 时跳过其解调器。此时 S 表读数来自浏览器自己的
-PCM（`dspLevelDbfs`）。
+浏览器接收 AUD2 和 SDE2，不重复运行生产 IQ 解调器。每条播放链只有一个生产者。模式切换清空旧 PCM 并等待新起始边界；codec 实际率或声道变化也产生新音频边界。worklet ready 握手确定播放率，重采样适应设备与声卡时钟。溢出显式终止播放链。共享 crate 还支持已提交的浏览器 WASM 离线诊断产物；它们不替代原生服务构建。
 
-### 尚未接线的部分
+## 前端状态与绘制
 
-- FT8 已端到端实现：仅接收（设备没有发射功能），仅支持标准报文类型 1/2（不支持哈希呼号、自由文本、比赛/遥测类型）；同步搜索覆盖时隙边缘（约 ±0.128 s），因为 FT8 是时隙同步的——宽带扫描器需要全时隙搜索，代价约 15 倍。FT4 与其他数字协议目前是注册表接缝，而非实现。
-- SSTV 已实现接收侧：画面以单边带音频发送，插件取出基带的 300..2700 Hz 话音带后交给 vendored 解码器，解码器从 VIS 头或手动指定的模式解出图像；18 种模式（Martin M1/M2、Scottie S1/S2/DX、Robot 36/72、PD-50..PD-290、Pasokon P3/P5/P7、Wrasse SC2-180）均可解码，解码窗面板在传输过程中逐行显示画面，并给出模式、VIS、分辨率、行进度、时间与频率。未接入：图像后的 FSK 呼号识别（上游 crate 无此功能），以及浏览器内的编码/发射（仅台架 Python 编码器 + PlutoSDR 具备）。
-- DRM30 已实现接收链（OFDM 同步 → FAC/SDC/MSC 信道译码 → 音频超帧拆帧 → AAC/xHE-AAC 解码），已对照合成的 Mode B / 10 kHz fixture 逐位验证；DRM AAC 重序列化（VCB11 + HCR + CRC）已对照 `aac_sine_24k` 验证无损，解码后的 PCM 已接入前端音频通路（12/24 kHz 重采样到 48 kHz）。xHE-AAC（libxaac）已接入 USAC 音频业务（coding 3），其 wasm32 解码器可非静音解码已提交的 `usac_tone` fixture；USAC AudioSpecificConfig 由 SDC 音频描述符标识。
-- 浏览器模块不可用时，Python DSP 路径仍是实际的音频来源；它同时作为回退与数值参考被保留。
+用户设置及后端确认的参数使用 `core/params.ts` 槽位管理：用户操作写入 desired，STATUS 确认实际值。纯客户端偏好以本地状态为准。测量结果存放在 `core/results.ts`，通过显式 setter 更新，不使用 desired/confirmed 语义。共享类型与注册表保持为叶子模块，由上层模块依赖。注册模块必须能从 `main.ts` 的导入链访问。
 
-## 注册点的可达性（import 副作用）
+后端返回原生频率网格。前端为标记和导出保留以 Hz 表示的原始频率，显示时采用保峰重采样，将未覆盖的边界频点绘制为缺口。频点间距不等于 RBW。本地缩放只改变可见窗口，不重新调谐或改变接收时钟。密度和瀑布历史均有容量上限。参数槽位在高频循环外一次性读取。
 
-有些模块在被导入时注册自己（`render/spectrum.ts` 注册渲染器、测量模块注册页签、i18n 命名空间合并）。
-**破坏循环依赖之后，"没有任何模块导入它"本身就是一个故障**：注册不会发生，功能静默失效
-（曾发生：渲染器未注册 → `requestRender()` 空转 → 画布全空，且没有任何异常或 console 报错）。
+频谱 CSS 盒决定画布几何，位图尺寸通过 ResizeObserver 跟随。启用瀑布时，绘制路径和 STATUS 驱动的测量 UI 刷新均保持标记表隐藏。STATUS 不能临时恢复该表，否则频谱会缩小并因位图尺寸变化而清空，直到下一次绘制再次隐藏表格。
 
-因此：
+轴拖动本地预览，手势稳定后提交。手动 Ref 属于设备控制，显示刻度和偏移独立归属。增益回读来自当前模式成功配置后的 SDK 实际值；无法获取时保持 null。前置放大 `0` 表示 Auto、`1` 表示 Off，不能据此宣称物理放大器已开启。RTA 捕获依据随 RTA2 帧传输的设备触发元数据；SDR 继续使用 RTAF，旧格式解码仅供兼容。收到帧或等待一段时间都不能证明捕获完成。SWP 在前端根据相邻扫描判断电平交叉。参数、Auto、迹线、测量与触发约定见 [MODE_STATE_FLOW](MODE_STATE_FLOW.md)。
 
-- 入口 `main.ts` 必须用**副作用 import** 拉入这些模块（例如 `import './render/spectrum';`）；
-- `tools/checks/check_registrations.py` 从 `main.ts` 计算 import 可达性，任何"注册了但不可达"的模块都会让 `make ci` 失败；
-- 测试必须断言**用户可见结果**（画布像素、DOM 文本），而不是上游计数器/数据集：`dataset.rtaFrames` 只说明帧交给了渲染器，
-  不代表真的画出来了。e2e 现在会统计画布非透明像素（加载后、切到 RTA 后各一次）。
+## 质量边界与验证
 
-## 前端 DSP 引擎 (marker 寻峰寻谷)
-按现代频谱仪架构(Keysight/R&S 思路)实现, 位于 TypeScript DSP/渲染模块:
-- **S-G 平滑** `sgSmooth(src,w,adaptive)`: 2 阶 Savitzky-Golay + 梯度自适应
-  (|dY/df|>90% 分位 → 窗口缩到 3 保边沿); smoothBins>1 时启用(MAX/MIN/MEDIAN 保留原逻辑)
-- **三级寻峰引擎** `findExtremesOrdered(dir,isPeak)`:
-  1. 局部极值扫描(±1bin)
-  2. Excursion 双侧追溯 ≥6dB(上限 100bin) 过滤噪纹
-  3. 抛物线亚频点拟合 `parabolaFit`(Δk=-0.5(y2-y0)/denom → 亚频点频率/幅度)
-- **Raw Anchor**(非平滑时): 平滑定位 → 原始迹线邻域取真实极值(深陷波不被拉浅)
-- **去重**: 峰 3bin(窄峰保持); 谷 25bin(合并同一凹陷, 重建为凹陷内 disp 全局最低,
-  谷列表项与 Valley 定位一致)
-- **遍历语义**: 峰/谷统一频率方向(左=低频, 右=高频); pos 匹配取最近列表项(±3bin);
-  不在列表(如 Valley 全局最低点非局部极小)时跳最近独立谷, 跳过同凹陷
-- **Valley**: 定位显示数据全局最低点 + 抛物线亚频点
-- **多 Marker Tracking**: Marker 表逐行 toggle；首次按峰值强度分配未占用峰，后续按 `marker.freq`
-  连续跟随邻近峰；SWP/RTA 共用策略，频率轴变化时先重定位
-- **smooth 数据源**: 开启时完全用平滑曲线(位置/幅度均平滑, 与显示一致); 关闭用原始+Raw Anchor
-- **Pk 阈值**: 值存于槽位（`meas` 组），读取方不再解析输入框；自动 = **每个测量几何一次决策**
-  （span/RBW/Ref/dB per div/points/中心变化时按若干帧迹线 99.5 分位数的中位数 −50 dB 重新拟合，
-  其余时间保持不变）——信号幅度变化不会再移动门限、也不会重排峰值表/marker 峰搜索；用户编辑后锁定
-  直到再次点 Auto；marker 全关闭时不更新
+后端三个槽不表示 UI 提供三路接收器，也不表示无限监听或录制。FT8 在支持的搜索窗内处理标准类型 1/2；SSTV 不解码图像后的 FSK 呼号。RDS 文本质量和短段/循环 DRM codec 播放仍有约束。[KNOWN_ISSUES](KNOWN_ISSUES.md) 记录当前限制及 SDK 边界。
 
-## 显示与控制设计
-- **Reference Level**: Manual 实际配置当前 SWP/RTA Profile。**Auto Scale 是一次性动作**（`AUTO_SCALE`），
-  不是跟踪模式：用最新迹线算一个目标（噪声底落在显示窗口底部稍上、峰值留 >=10 dB 余量、5 dB 量化、
-  不低于学到的 IF 饱和下界）并应用；应用只是**有界闭环**的一步，因为迹线并非与 Ref 无关（自动衰减器会随
-  它重选，迹线只按约一半跟随）——每个稳定帧重新测量并再走一步，直到放置合理或预算用完；已经放好时不付
-  任何代价，也绝不会来回振荡：可接受带宽 10 dB（下沿以上 2-12 dB，另有峰值 8 dB 余量）、小于 5 dB 的变化
-  不值得重配、环**只由几何变化**武装（设置变更或按下 Auto，绝不由它自己写下的 Ref 武装——几何签名刻意
-  不含 Ref），且首次良好放置即解除。真机实测：已收敛的 tracker 在噪底于下沿上方 8–12.6 dB 抖动 20 秒期间
-  一次决策都不做；40 步频率拖动全程电平不动。**始终运行的保护动作只有一项**，与用户设置无关：IF 溢出（-12）每秒抬 5 dB——那条路径
-  干脆不再出帧。除此之外没有任何东西会自己移动电平：峰值高出上沿的严重削顶本来会抬一次（限速），
-  现已按用户要求移除，理由与「绝不自动降低」相同：两者都是用户自己选的电平，削顶是反馈而不是故障，
-  「放置不再合适」是 Auto 按钮的职责。器件把请求电平夹到自身上限时静默跟随——输入框显示的就是器件
-  回报的电平，箭头在量程两端保持可用而不再置灰。`caps.ref_min/max` 是**自动放置**用的那一行，不是用户
-  界限：厂商 SDK 未定义 Ref 范围（唯一 Ref 反馈是 -12 的 IF 溢出告警），因此用户电平只受显示域
-  （-160..+40 dBm）约束，profile 仅按该域做 sanity 夹取——本轮真机实测 -140 dBm 被精确编程，+35 dBm 回显 +27。
-  SDR 下显示刻度仍归客户端（`sdr` 显示 ref 来源不挂 ack），IQS 电平同样原样下发——它和扫描 profile 用的是同一个
-  `double` 字段，真机在 -140 dBm 下也照收并回显（IQS 帧持续到达、无错误状态）。
-  15 dB 峰噪判据原本只在窗口内生效，因此弱信号会明确报 `no_signal` 而不是静默无动作。现在**没有信号电平门限**：
-  锚点是噪声底，仅噪声的迹线也按普通情形放置。设置变更（span/中心/RBW/VBW/窗函数/抽取率）还会为新几何
-  预备恰好一次重拟合，首次决策即撤销；它绝不会反转用户手输的电平。Center/跨模式重调前，
-  会把**拟合**调低过的 Ref 抬到 0 dBm；**用户自己设的电平绝不抬**（那是他的，而抬错了是隐形的：现场表现为
-  「一改频率 Ref 就归零」，因为 `last_target` 会跨过手动接管继续存在）。每次重配后 0.75 秒内不信任观测。
-  **SDR 走同一套规则**（自己的 tracker，由泛解析度帧喂观测）：后端拟合、客户端把上报的 target 应用到
-  显示刻度；拟合**从不**写 IQS 电平（写会重配数据流、打断音频，而且会移动拟合正在读的那条迹线——实测 3 秒内写了 4 次），因此 SDR 自己的 `sdr_ref_level` 只在用户设置时改变。命令带上屏上电平（`current_ref`），
-  因为 SDR 里器件电平不等于用户所见。因此手动 Ref 会保持：抬升永不被撤销，只有 IF 溢出才会由器件主动纠正；
-  一旦发生纠正，显示会跟随（SDR 客户端把上报的 target 应用到自己的刻度）。
-- **坐标轴刻度手势**（`ui/axisDrag.ts`）：网格之外的边距就是拖拽区——频率行横拖平移中心、在其上滚轮
-  围绕指针缩放 span；电平刻度纵拖平移 Ref、在其上滚轮缩放 dB/div。内容跟随手指。因为一次窗口改动的代价是
-  重配器件（频率 0.3-1 s，Ref 约 1.9 s），指针移动期间**一个命令都不发**：画面经由渲染层本来就在走的映射
-  （`render/plot.ts` 的 `getX`/`getY`）本地重绘，手势停下来时才发**一次**请求（松手，或静止 250 ms，两次
-  提交间隔不小于 400 ms）。预览是相对屏幕上数据实际测量所在的窗口表达的，因此确认的 STATUS 会让它自己退化
-  为恒等；画面窗口与显示 ref 追上请求后即撤除——器件仍在重配时迹线不会弹回旧窗口。电平轴改变的是**它显示的那个量**：
-  绝对（dBm）显示下是器件参考（预览 + 一次 `SET_REF`），相对（dB）显示的刻度顶端是钉在 0 的渲染偏移，因此同一
-  手势平移的是**电平 offset**——客户端显示值，随指针即时生效，无需提交。RTA/SDR 密度图的
-  Persist Off 是一个值（0），在 `dsp/rtaDensity.ts` 里同时停掉累积与绘制，也顺带把 bins × points 的开销
-  移出每帧路径；Persist/Grain 控件放在 Trace 面板，使它所控制的图层在每一种会绘制它的模式下都可达。
-- **周期 STATUS 推送(1s)**: publisher 每秒推送全量 STATUS(与 GNSS 轮询对齐),
-  使 GNSS 锁定/时间、refclk_out、校准状态自动刷新, 无需刷新页面
-- **GNSS 详情浮层**: 点击 GNSS 指示器查看完整信息(锁定/卫星/天线/经纬度/海拔/UTC 时间)
+20 fps 采集目标不保证浏览器所有图层均以 20 fps 绘制。已有频谱、密度、瀑布和导航全开的浏览器观察约为 15 fps。这些描述归纳实现与既有证据；维护文档不构成重新验收硬件。
 
+可复现入口包括：`make wasm-test` 验证共享 DSP，`make ci` 执行本地无硬件门禁，`make e2e-fake` 验证原生 fixture UI。`tools/bench/sdr_pipeline_check.py` 和 `sdr_pipeline_controls.py` 检查 live IQv2 连续性及控制；原生 `websad --sdr-pipeline-bench` 覆盖流水线。命令选项及依赖见 [tools](../../tools/README.md)。硬件验收必须核对内容、硬件时间戳、队列/失败增量和排空后的样本守恒；假源吞吐或短窗口不能证明持续 RF 运行。浏览器检查与安静的硬件性能窗口分开，见 [DEVELOPMENT](DEVELOPMENT.md)。
 
-## 触发架构（RTA 设备 / SWP 软件）
+## 参考与许可证
 
-- **RTA（设备）**: 触发参数写入 `RTA_Profile_TypeDef`（`TriggerSource/Edge/Mode`、门限、防抖、延迟、
-  预触发、采集时长、重触发、触发输出），由 `web_sa/measurements/rta.py` 在每次配置时下发；取帧循环
-  （`RTA_BusTriggerStart` + `RTA_GetRealTimeSpectrum`）在等待触发期间不产出数据包，命中后交付一帧。
-  前端 `ui/trigger.ts` 负责面板、状态角标（`FREE/WAIT/TRIG`）、门限线；`ui/triggerEvents.ts` 在**帧路径**
-  上判定"到达的包即捕获"（settle 窗口 500 ms，避免启用瞬间的在途帧被误判）。
-- **SWP（前端软件）**: 设备在普通模式下没有电平触发。`dsp/levelCross.ts`（纯函数，含单测）比较相邻两次
-  扫描的同频点电平得到穿越事件；`ui/swpTrigger.ts` 负责启用与逐帧判定；命中后帧路径停止更新画布以实现
-  定格。判定与显示刻度无关，因此改 Ref 不影响触发。
-- 界面共用一套按钮（`Capture` / `Free Run` / `Esc`），按当前模式分派到两套实现。
+项目代码使用 MIT 许可证。厂商 SDK 二进制为专有软件，需另行获取。DSP 技术参考 liquid-dsp、tpt-dsp、sdr-web、Radioband 和 pffft.wasm；参考不表示复制其实现。离线数值一致性以本仓库参考内核及已提交的 fixture 为准。
 
-- **画布状态区是共享的**: 右上角的指示信息由 `render/statusStack.ts` 统一绘制——各功能在一次渲染中
-  投递状态块（触发角标、限制线判定），按顺序向下堆叠、右对齐，因此新增指示不会与既有信息重叠。
-- **限制线在两种模式都生效**: 判定核心（`dsp/limits.ts`）与显示无关，RTA 分支与扫频分支调用同一套
-  `renderLimits()`；画布上给出 `LIMIT PASS` / `LIMIT FAIL n` + `最差 +x dB @ f`，与面板内的判定一致。
-
-
-## 虚拟键盘（v1.3.4）
-
-可选的屏幕数字键盘，默认关闭，开关状态记在 `localStorage['websa-keypad']`。`ui/keypad.ts` 只创建一次，
-每次打开按字段填充：
-
-- 带单位组的字段（`core/units.ts` 的 `UNIT_OPTIONS`）额外提供单位键；按单位键会写入数值并置
-  `dataset.edited='1'`、调用面板自身的 `setUnit()`，因此与手点面板按钮发出的命令完全一致
-- 标了 `data-keypad="text"` 的字段（n dB 门限列表）按纯文本编辑：显示行是真实输入框，鼠标可定位光标、
-  退格删除光标处一个字符、`C` 清空整串；该字段的 `.` 键变为 `,` 分隔符
-- 其余字段通过 `change` 事件提交；`ref`/`points`/`rbw`/`vbw`/`harm`/`pnm`/`ampdbs` 这类"暂存 + Set/Meas
-  按钮"字段改为点击其自身按钮提交
-
-## 状态归属规则（参数用槽位，结果用仓库）
-
-前端有两类状态，放错地方就是历史上一类反复出现的 bug：
-
-- **参数**（用户设定 + 后端确认的值）：使用 `core/params.ts` 的槽位，
-  每个参数只有一个所有者。只有 STATUS 处理器调用 `confirm()`，只有用户动作调用 `set()`，
-  读取方一律走 `get()`；`desired/confirmed/epoch` + TTL 保证"刚设的值不会被在途回包覆盖"，
-  被拒绝的指令会过期而不是永久卡住。分组见 `ui/{freqState,refState,swpState,sdrState,triggerState,waterfallState,displayState,graphMode,displayRef}.ts`。
-  客户端独有、后端从不上报的偏好（显示单位/偏移、瀑布显示范围、音频开关等）声明 `authoritative: true`，
-  否则会在 TTL 到期后回退。
-- **结果**（测量/显示产生的数据）：使用 `core/results.ts`，只是数据 + 显式 setter，没有 desired/confirmed 语义。
-
-`core/model.ts` 放两者共用的类型（叶子模块）。`core/store.ts` 保留运行态（连接状态、触发运行态、
-当前模式等）并 re-export 上面两类，所以旧调用点 `S.xxx` / `S.setXxx()` 仍然有效。
-
-热路径（每帧数万次以上的循环）不要把槽位 `get()` 放在循环体内：它带 `Date.now()` 与 pending 检查，
-密度累加那样每帧数十万次的调用会拖满主线程（曾导致 1 Hz STATUS 延迟、模式按钮基于过期值切换）。
+FT8 协议表来自 [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT），来源见 `tools/fixtures/port_ft8_tables.py`。SSTV 包含 `wasm/src/digital/sstv/vendor/` 中 MIT 许可解码器。CW 使用 `tools/vendor/ggmorse/` 中的 [ggmorse](https://github.com/ggerganov/ggmorse) 并保留许可证。DeepFilterNet 集成保留 `wasm-dfn/` 下的许可证。codec 构建、来源和许可边界保留在 `wasm/fdk/README.md`、`wasm/xaac/README.md`、[DRM_BENCH](DRM_BENCH.md) 和 [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md)。修改 fixture 或 vendor 代码时保留归属信息。

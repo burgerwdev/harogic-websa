@@ -30,9 +30,8 @@ export function renderStatusBlocks(): void {
   // Transient feedback (Auto Scale outcome) below the warnings, in the normal (green) colour: the
   // stack is where the condition it answers is drawn, so cause and result sit together.
   if (noticeText) pushStatus({ lines: [noticeText], accent: '#00cc00' });
-  // Canvas text is not DOM text: the e2e reads the message from here (same convention as the
-  // other dataset diagnostic hooks). Written only on change: this runs on every render pass, and
-  // an unconditional DOM attribute write per frame costs CPU in the RTA path (measured).
+  // Canvas text is exposed through the diagnostic attribute for e2e readers.
+  // Write the attribute only when its value changes.
   const notice = noticeText ?? '';
   if (ctx.canvas.dataset.notice !== notice) ctx.canvas.dataset.notice = notice;
   if (!blocks.length) return;

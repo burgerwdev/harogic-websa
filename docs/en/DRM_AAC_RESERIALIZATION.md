@@ -1,77 +1,50 @@
-# DRM AAC re-serialization (MPEG-4 → DRM syntax) — design notes
+# DRM AAC re-serialization (MPEG-4 → DRM syntax)
 
-DRM30 uses a *different* AAC syntax from MPEG-4: the spectral data is carried with
-**HCR** (Huffman Code Reordering) and the section data with **VCB11** (11-bit
-codebook indices), the SBR payload is moved to the end of the frame, and a CRC-8
-covers specific side-information bit ranges. fdK-AAC has a *decoder* for this
-(`tpdec_drm.cpp` + `aacdec_hcr*.cpp`) but **no encoder**, so a DRM-audio fixture
-cannot be produced by re-using fdK-AAC directly. This note is the plan for an
-independent reimplementation (ISO/IEC 14496-3 §4.5.4.2.4 / ES 201 980 §5.3.1.2),
-which is the "rewrite" path.
+[The fixture re-serializer](../../tools/fixtures/drm_aac_reserialize.py) converts raw MPEG-4 GA AAC-LC single-channel, `ONLY_LONG` access units to DRM syntax. It implements VCB11 section data, HCR spectral reordering and CRC-8; it is not a general DRM audio encoder. The generator skips other window sequences, and this fixture path does not generate SBR. FDK-AAC provides a DRM decoder (`TT_DRM`), but no DRM encoder.
 
-## What the encoder must produce, per frame
+## Frame syntax
 
-1. **Section data as VCB11**: the per-section codebook is sent as an 11-bit value;
-   section *lengths* are implicit (derived from the spectral data, unlike MPEG-4
-   which sends explicit section lengths). Escape/extension codebooks are
-   signalled differently.
-2. **Spectral data as HCR**: the quantised spectral coefficients are Huffman-coded
-   as in MPEG-4, but the codewords are *reordered* — grouped by codebook — and two
-   side-info fields precede them: `reordered_spectral_data_length` and
-   `longest_codeword_length`, followed by a segmentation grid that lets the
-   decoder locate each codeword. (Inverse of `aacdec_hcr.cpp::HcrDecoder`.)
-3. **SBR payload moved to the end** of the frame (its own 8-bit CRC comes from the
-   SBR encoder; for a no-SBR AAC-LC signal this step is absent).
-4. **`aac_crc_bits`**: CRC-8 (poly 0x1D, init 0xFFFF) over the side-information bit
-   ranges the DRM decoder checks (`drmRead_CrcStartReg`/`CrcEndReg` in
-   `tpdec_drm.cpp`), transmitted in front of the frame for `TT_DRM`.
-
-## Implementation plan (independent, spec-based)
-
-- **Step 1 — parse MPEG-4 AAC**: read the raw access unit (from fdK-AAC's MPEG-4
-  encoder, or ffmpeg) at bit level: ICS info, section data (codebook per section),
-  scale factors, and the spectral Huffman codewords. The Huffman codebook tables
-  are the standard AAC tables (ISO 14496-3 §4.6.2); fdK-AAC's `aacdec_hufftab.h` /
-  `aac_rom.cpp` are the reference.
-- **Step 2 — VCB11**: re-encode the section codebook list as 11-bit entries.
-- **Step 3 — HCR**: sort the codewords by codebook, compute `longest_codeword_length`
-  and the segmentation grid, and emit the reordered spectral bits (inverse of the
-  `HcrInit`/`HcrDecoder` ordering).
-- **Step 4 — SBR + CRC**: append the SBR payload at the end and compute the
-  side-info CRC-8 over the exact ranges `tpdec_drm.cpp` covers.
-
-## References
-
-- ISO/IEC 14496-3 §4.5.4.2.4 (HCR), §4.6.2 (Huffman tables).
-- ES 201 980 §5.3.1.2 (DRM AAC frame + `aac_crc_bits`).
-- fdK-AAC: `libAACdec/src/aacdec_hcr.cpp` (HCR decode), `libMpegTPDec/src/tpdec_drm.cpp`
-  (CRC ranges), `libAACdec/src/aac_rom.cpp` (Huffman tables).
-- DecDRM `FdkDrmEncoder` (GPL, algorithm reference only — not copyable).
-
-## Exact DRM AAC SCE frame layout (DecDRM `aac/drm.rs`, `el_drm_sce`)
+For the supported no-TNS/no-SBR fixture, the emitted access unit is:
 
 ```text
-[id_syn_ele element_tag]  [ics_info tns_data_present ltp_data_present global_gain
- section_data scale_factor_data hcr_lengths tns_data]  spectral_data(HCR)
+aac_crc_bits(8)
+ics_info tns_data_present ltp_data_present global_gain
+section_data scale_factor_data reordered_spectral_data_length(14)
+longest_codeword_length(6) spectral_data(HCR)
 ```
 
-- `ics_info` = ics_reserved(1) window_sequence(2) window_shape(1) max_sfb(6 or 4+7)
-  — **no** GA `predictor_data_present` bit.
-- `global_gain` moves **after** the tns/ltp flags (the DRM order differs from GA).
-- The bracketed part (ics_info … tns_data) is covered by `aac_crc_bits` (CRC-8).
-- `aac_crc_bits` byte is prepended to the frame for `TT_DRM`.
+- The GA `id_syn_ele` and element tag are omitted. Long-window `ics_info` contains reserved(1), window sequence(2), window shape(1), and `max_sfb`(6), without GA's `predictor_data_present` bit.
+- `global_gain` follows the TNS/LTP flags. General DRM syntax can carry TNS data; the fixture serializer does not implement that payload.
+- **VCB11 means virtual codebook 11, not 11-bit indices.** This long-window path writes 5-bit codebook indices. Codebook 11 and virtual codebooks 16–31 imply one band; other codebooks carry 5-bit section lengths with escape value 31. Virtual codebooks bound the largest absolute coefficient.
+- CRC covers the emitted side information from `ics_info` through the HCR length fields, excluding spectral data. The implementation uses polynomial `0x1D`, initial register `0xFF`, MSB-first processing and a final ones' complement; the CRC byte precedes the payload for `TT_DRM`. General CRC boundaries follow the decoder's `drmRead_CrcStartReg`/`CrcEndReg` regions, including applicable TNS data.
+- Real HE-AAC DRM frames carry SBR at the frame end, read in reverse bit order, with its own CRC. The no-SBR fixture omits it. Text bytes must be removed before audio deframing; see [bench audio notes](DRM_BENCH.md).
 
-## HCR reordering is a state machine, not a plain sort (DecDRM `aac/hcr.rs`)
+## HCR ordering
 
-- Codewords are ordered by **codebook priority**, not codebook number:
-  `11, 31..16 (descending), 9/10, 7/8, 5/6, 3/4, 1/2` (`aCbPriority`).
-- `aMaxCwLen[cb]` is the maximum codeword length **including sign and escape bits**;
-  the segment width is `min(aMaxCwLen[cb], length_of_longest_codeword)`.
-- The highest-priority codewords (PCWs) start the segments; the remaining codewords
-  are distributed in *sets* over the leftover space, alternating read direction per
-  set. The encoder is written as the decoder's control flow with every "read a bit"
-  replaced by "write the next bit of this codeword here".
+HCR is a segmented state machine, not a plain codebook sort:
 
-A simpler milestone is to first implement Steps 1+2+4 for a single-codebook AAC-LC
-frame (no SBR), then add HCR (Step 3) once the VCB11 framing round-trips through the
-fdK-AAC `TT_DRM` decoder.
+- Priority is `11, 31..16` descending, then `9/10, 7/8, 5/6, 3/4, 1/2`.
+- Maximum codeword lengths include sign and escape bits. Segment width is `min(aMaxCwLen[cb], longest_codeword_length)`.
+- Priority codewords start the segments. Remaining codewords fill leftover space in sets, alternating direction per set. The length fields describe the reordered spectral payload and longest codeword.
+
+## Fixture generation and codec builds
+
+The [fixture README](../../tests/fixtures/drm/README.md) owns the fixture metadata, verifier build command and recorded comparison. The direct fixture contains nine 36-byte DRM units paired with nine 320-byte GA units: a 1 kHz sine, AAC-LC, 24 kHz mono, 64 kbit/s, 960 samples per frame. Decoder priming accounts for the first two silent frames.
+
+Generation needs external FDK GA output built with the 960-sample encoder patch described by DecDRM's `crates/decdrm-fdk-sys/build.rs` (`aacenc_lib.cpp`, `aacenc.cpp`, `psy_configuration.cpp`). Given raw access units as `*.bin` files:
+
+```sh
+python3 tools/fixtures/gen_drm_aac_fixture.py /path/to/ga_units /tmp/aac_sine_24k
+```
+
+This writes `.drm`, `.ga` and `.json`; non-`ONLY_LONG` frames are skipped. The source encoder and its patch are external prerequisites, not provided by this command.
+
+The receiver's [build script](../../wasm/build.rs) requires `pkg-config` and native FDK-AAC >= 2.0.3 with DRM/USAC support. Wasm builds link the committed FDK and libxaac archives; the standalone libxaac diagnostic is wasm-only. Native FDK handles AAC, HE-AAC and xHE-AAC/USAC. PCM consumers must use the decoder's returned sample rate and channel count: the direct no-SBR fixture outputs 24 kHz, while the synthetic IQ fixture signals SBR and outputs 48 kHz.
+
+## References and licensing
+
+- ISO/IEC 14496-3 §4.5.4.2.4 (HCR), §4.6.2 (Huffman tables); ETSI ES 201 980 §5.3.1.2 (DRM AAC framing).
+- External FDK-AAC sources: `libAACdec/src/aacdec_hcr.cpp`, `aacdec_hufftab.h`, `aac_rom.cpp`; `libMpegTPDec/src/tpdec_drm.cpp` defines transport CRC regions. FDK-AAC has its own license.
+- [DecDRM](https://github.com/CasualArclamp/DecDRM) is GPL-2.0-or-later. Its `FdkDrmEncoder`, `aac/drm.rs` and `aac/hcr.rs` are external algorithm references, not source to copy into the independent receiver. Generated fixture data and generator source have distinct provenance; the [fixture README](../../tests/fixtures/drm/README.md#provenance-and-licence) owns that record.
+
+The standards, external encoder patch and reference decoder sources are not vendored by this document. These notes describe the implementation and existing fixture record, not a new codec or hardware verification run.

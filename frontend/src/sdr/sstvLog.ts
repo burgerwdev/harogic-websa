@@ -34,7 +34,9 @@ export interface SstvMeta {
 	/** True once the last scanline arrived. */
 	complete: boolean;
 	/** The decoder's transmission counter (see the note above). */
-	serial: number;
+	serial: number | string;
+	/** Receiver stream epoch: serials restart when a stream changes. */
+	epoch?: string;
 	/** Wall clock (epoch ms) the transmission was first seen. */
 	at: number;
 	/** Absolute frequency the receiver was tuned to, in Hz. */
@@ -80,47 +82,45 @@ export function sstvBandHz(): [number, number] {
 	return [SSTV_AUDIO_LOW_HZ, SSTV_AUDIO_HIGH_HZ];
 }
 
-let status: SstvStatus = {
-	current: null,
-	history: [],
-	activeMode: null,
-	viewId: null,
-	decoder: null,
-};
+const emptyStatus = (): SstvStatus => ({ current: null, history: [], activeMode: null, viewId: null, decoder: null });
+const contexts: Record<1 | 2 | 3, SstvStatus> = { 1: emptyStatus(), 2: emptyStatus(), 3: emptyStatus() };
+let selectedChannel: 1 | 2 | 3 = 1;
+let status = contexts[selectedChannel];
 const listeners = new Set<() => void>();
 
 function notify(): void {
+	contexts[selectedChannel] = status;
 	for (const listener of listeners) listener();
 }
 
-function entry_id(serial: number, modeIndex: number): string {
-	return `${serial}-${modeIndex}`;
+export function setSstvChannel(channel: 1 | 2 | 3): void {
+	selectedChannel = channel;
+	status = contexts[channel];
+	notify();
 }
+
 
 /**
  * Record the decoder's latest picture. The first sighting dates the transmission and fixes its
  * frequency; later reports of the same serial update the entry in place. A completed picture that is
  * followed by a new serial moves to the history.
  */
-export function updateSstvPicture(picture: SstvPicture, meta: Omit<SstvMeta, 'at' | 'hz'> & { hz: number }): void {
-	const previous = status.current;
-	const id = entry_id(meta.serial, meta.modeIndex);
+export function updateSstvPicture(picture: SstvPicture, meta: Omit<SstvMeta, 'at' | 'hz'> & { hz: number }, channel: 1 | 2 | 3 = selectedChannel): void {
+	const context = contexts[channel];
+	const previous = context.current;
+	const id = JSON.stringify([meta.epoch ?? '', String(meta.serial), meta.modeIndex]);
 	const grew = previous !== null && previous.id === id;
-	if (grew) {
-		const at = previous.meta.at;
-		const hz = previous.meta.hz;
-		status = { ...status, current: { id, picture, meta: { ...meta, at, hz }, selected: previous.selected } };
+	const entry: SstvEntry = {
+		id, picture,
+		meta: { ...meta, at: grew ? previous.meta.at : Date.now(), hz: grew ? previous.meta.hz : meta.hz },
+		selected: grew ? previous.selected : false,
+	};
+	const history = !grew && previous ? [previous, ...context.history].slice(0, SSTV_HISTORY_MAX) : context.history;
+	contexts[channel] = { ...context, current: entry, history };
+	if (channel === selectedChannel) {
+		status = contexts[channel];
 		notify();
-		return;
 	}
-	// A new transmission: the finished one moves into the history, and a history view follows it one
-	// slot down.
-	const at = Date.now();
-	const hz = meta.hz;
-	const entry: SstvEntry = { id, picture, meta: { ...meta, at, hz }, selected: false };
-	const history = previous ? [previous, ...status.history].slice(0, SSTV_HISTORY_MAX) : status.history;
-	status = { ...status, current: entry, history };
-	notify();
 }
 
 /** Show the live picture (`null`) or one stored entry by id. */
@@ -214,14 +214,18 @@ export function deleteSstvMode(modeIndex: number): void {
 }
 
 /** Delete everything. */
-export function deleteSstvAll(): void {
-	if (!status.current && status.history.length === 0 && !status.decoder) return;
-	status = { ...status, current: null, history: [], viewId: null, decoder: null };
-	notify();
+export function deleteSstvAll(channel: 1 | 2 | 3 = selectedChannel): void {
+	const context = contexts[channel];
+	if (!context.current && context.history.length === 0 && !context.decoder) return;
+	contexts[channel] = { ...context, current: null, history: [], viewId: null, decoder: null };
+	if (channel === selectedChannel) {
+		status = contexts[channel];
+		notify();
+	}
 }
 
-export function clearSstv(): void {
-	deleteSstvAll();
+export function clearSstv(channel: 1 | 2 | 3 = selectedChannel): void {
+	deleteSstvAll(channel);
 }
 
 export function sstvStatus(): SstvStatus {
@@ -229,19 +233,14 @@ export function sstvStatus(): SstvStatus {
 }
 
 /** Record what the decoder is doing (the worker's own counters, once per stats round). */
-export function setSstvDecoderState(decoder: SstvDecoderState | null): void {
-	const previous = status.decoder;
-	if (
-		previous &&
-		decoder &&
-		previous.attempts === decoder.attempts &&
-		previous.hasPicture === decoder.hasPicture &&
-		previous.bufferedSeconds === decoder.bufferedSeconds
-	) {
-		return;
+export function setSstvDecoderState(decoder: SstvDecoderState | null, channel: 1 | 2 | 3 = selectedChannel): void {
+	const previous = contexts[channel].decoder;
+	if (previous && decoder && previous.running === decoder.running && previous.pushes === decoder.pushes && previous.attempts === decoder.attempts && previous.bufferedSamples === decoder.bufferedSamples && previous.bufferedSeconds === decoder.bufferedSeconds && previous.hasPicture === decoder.hasPicture && previous.level === decoder.level && previous.srcLevel === decoder.srcLevel) return;
+	contexts[channel] = { ...contexts[channel], decoder };
+	if (channel === selectedChannel) {
+		status = contexts[channel];
+		notify();
 	}
-	status = { ...status, decoder };
-	notify();
 }
 
 export function subscribeSstv(listener: () => void): () => void {

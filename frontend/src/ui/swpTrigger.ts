@@ -5,18 +5,20 @@
 // here: while armed the display keeps sweeping live, and the first sweep whose trace
 // crosses the threshold (relative to the previous sweep) is frozen and marked TRIGGERED.
 import * as S from '../core/store';
-import { trigEdge, trigLevel } from './triggerState';
-import { getDisplayPowers } from '../dsp/peaks';
+import { trigEdge, trigLevel, triggerMode } from './triggerState';
 import { levelCrossing } from '../dsp/levelCross';
+import { sameFrequencyGrid } from '../dsp/grid';
 
 type HitListener = (freqHz: number, level: number) => void;
 const listeners = new Set<HitListener>();
+let previousGrid: Float64Array | null = null;
 
 export function onSwpHit(fn: HitListener): void {
   listeners.add(fn);
 }
 
 export function armSwpTrigger(): void {
+  previousGrid = null;
   S.setSwpPrev(null);
   S.setSwpHold(false);
   S.setSwpArmed(true);
@@ -25,22 +27,15 @@ export function armSwpTrigger(): void {
   S.setTrigHit(false);
 }
 
-export function disarmSwpTrigger(): void {
-  S.setSwpArmed(false);
-  S.setSwpHold(false);
-  S.setSwpPrev(null);
-  S.setTrigArmed(false);
-  S.setTrigWaiting(false);
-  S.setTrigHit(false);
-}
 
 /** Called from the SWP frame path for every trace. */
-export function evaluateSwpTrigger(): void {
-  if (!S.swpArmed || S.swpHold) return;
-  const d = getDisplayPowers();
+export function evaluateSwpTrigger(d: Float32Array): void {
+  if (triggerMode() !== 'std' || !S.swpArmed || S.swpHold) return;
   const f = S.freqArray;
-  if (!d || !f || d.length < 2) return;
+  if (!f || d.length < 2) return;
   const n = Math.min(d.length, f.length);
+  if (!sameFrequencyGrid(previousGrid, f)) S.setSwpPrev(null);
+  previousGrid = f;
   const prev = S.swpPrev;
   if (prev && prev.length === n) {
     const idx = levelCrossing(prev, d, trigLevel.get(), trigEdge.get(), n);
@@ -54,7 +49,7 @@ export function evaluateSwpTrigger(): void {
       return;
     }
   }
-  const copy = new Float32Array(n);
+  const copy = prev?.length === n ? prev : new Float32Array(n);
   copy.set(d.subarray(0, n));
   S.setSwpPrev(copy);
 }

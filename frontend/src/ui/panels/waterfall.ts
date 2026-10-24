@@ -1,11 +1,12 @@
 // Waterfall controls and the sweep-speed field.
-// Extracted from ui/controls.ts (report finding P1-5).
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 import { send } from '../../core/wsSend';
 import { requestRender } from '../../render/redraw';
 import { getUiScale } from '../../core/uiScale';
 import { waterfallOn, wfPaused } from '../waterfallState';
+import { pushSpectrumRow } from '../../render/waterfall';
+import { createParam } from '../../core/params';
 
 /// The waterfall's default height: the CSS box the panel always had.
 const WF_DEFAULT_H = 135;
@@ -25,8 +26,7 @@ export function clampWfHeight(desired: number, columnH: number): number {
   return Math.round(Math.min(Math.max(WF_MIN_H, desired), upper));
 }
 
-/** A stored split, or the default. `Number(null)` is 0, and a stored *absence* must not become a
- * zero-height waterfall (it did, once: the panel came up invisible until the first drag). */
+/** Missing stored height uses the default; zero coercion must not hide the panel. */
 export function parseWfHeight(raw: string | null): number {
   if (raw === null || raw === '') return WF_DEFAULT_H;
   const value = Number(raw);
@@ -66,7 +66,9 @@ export function initWfSplit(): void {
     const area = document.querySelector('.spectrum-area') as HTMLElement | null;
     dragging = true;
     startY = event.clientY;
-    startH = container.clientHeight || wfHeight;
+    // Height is assigned to a border-box container; clientHeight excludes its borders and
+    // would move the grab point by another two CSS pixels on every new drag.
+    startH = container.offsetHeight || wfHeight;
     columnH = area?.clientHeight ?? 0;
     split.classList.add('dragging');
     try {
@@ -82,10 +84,7 @@ export function initWfSplit(): void {
     // the spectrum's bottom edge - so growing the waterfall (dy > 0) pushes the divider up, away
     // from the cursor. Inverting the delta is what makes the grab point stay under the mouse:
     // dragging down moves the boundary down, the spectrum grows and the waterfall shrinks.
-    // The pointer moves in viewport pixels while `height` is in the zoomed frame's local pixels
-    // (`.analyzer-card` carries `zoom: var(--ui)`), so the delta is converted before it is applied
-    // - without this a 50 px drag moved the divider 65 px at scale 1.25 (measured: the handle
-    // outran the cursor by exactly the zoom factor).
+    // Convert the pointer's viewport delta to local CSS pixels using UI scale.
     wfHeight = clampWfHeight(startH - (event.clientY - startY) / getUiScale(), columnH);
     container.style.height = `${wfHeight}px`;
   });
@@ -140,10 +139,25 @@ export function toggleWaterfall() {
   setWaterfall(!waterfallOn.get());
 }
 
-export function toggleWfPause() {
-  wfPaused.set(!wfPaused.get());
+export function setWfPaused(paused: boolean): void {
+  wfPaused.set(paused);
   const b = document.getElementById('btn-wf-pause');
-  if (b) b.classList.toggle('active', wfPaused.get());
+  if (b) b.classList.toggle('active', paused);
+}
+
+export function toggleWfPause() {
+  setWfPaused(!wfPaused.get());
+}
+
+let lastSwpWfAt = -Infinity;
+
+/** Sample incoming sweeps; redraws never add time to the waterfall history. */
+export function sampleSwpWaterfall(powers: Float32Array, freq: Float64Array | null): void {
+  if (S.rtaMode || !waterfallOn.get() || wfPaused.get() || !freq || freq.length !== powers.length || freq.length < 2) return;
+  const now = performance.now();
+  if (now - lastSwpWfAt < 100) return;
+  lastSwpWfAt = now;
+  pushSpectrumRow(powers, freq, freq[0], freq[freq.length - 1], 100);
 }
 
 export function resetWf() {
@@ -151,17 +165,115 @@ export function resetWf() {
   requestRender();
 }
 
-export function setSweepSpeed() {
-  const sel = document.getElementById('select-sweep-mode') as HTMLSelectElement;
-  const tin = document.getElementById('input-sweep-time') as HTMLInputElement;
-  const mode = parseInt(sel?.value || '0');
-  const time = parseFloat(tin?.value || '0');
-  const m: any = { cmd: 'SET_SWEEP', mode };
-  if (mode === 6 || mode === 7 || mode === 8) {
-    const minimum = mode === 7 ? 0.001 : 1;
-    m.time = Math.max(minimum, isFinite(time) ? time : minimum);
+interface SweepValue { mode: number; time: number }
+const sweep = createParam<SweepValue>('swp.sweep', {
+  fallback: { mode: 0, time: 0 }, scope: 'swp', ttlMs: Infinity,
+  equals: (a, b) => a.mode === b.mode && a.time === b.time,
+});
+let sweepRequest: string | null = null;
+let sweepSequence = 0;
+let sweepRetiredThrough = 0;
+let sweepConfirmedSequence = 0;
+const sweepPrefix = `sweep-${Date.now()}-${Math.random().toString(36).slice(2)}-`;
+let sweepMode = '';
+
+function sweepElements() {
+  return [document.getElementById('select-sweep-mode'), document.getElementById('input-sweep-time')] as [HTMLSelectElement | null, HTMLInputElement | null];
+}
+
+function fillSweepEditor() {
+  const [select, input] = sweepElements();
+  // Mode, time and visibility form one editor; never mix a report with a draft.
+  if (!sweepElements().some(el => el && (document.activeElement === el || el.dataset.edited === '1'))) {
+    const value = sweep.get();
+    if (select) select.value = String(value.mode);
+    if (input) input.value = String(value.time);
   }
-  send(m);
+  syncSweepInput();
+}
+
+export function resetSweepEditor() {
+  sweepRequest = null;
+  sweepRetiredThrough = sweepSequence;
+  sweep.reset();
+  for (const el of sweepElements()) if (el) delete el.dataset.edited;
+}
+
+export function syncSweepStatus(status: {
+  mode: string; response_to?: string; request_id?: string | number;
+  sweep_time_mode?: number; sweep_time?: number;
+  req?: { swp?: { sweep_time_mode?: number; sweep_time?: number }; rta?: { sweep_time_mode?: number; sweep_time?: number } };
+}) {
+  if (sweepMode !== status.mode) {
+    sweepRequest = null;
+    sweepRetiredThrough = sweepSequence;
+    sweep.reset();
+    sweepMode = status.mode;
+  }
+  if (status.mode === 'sdr') return;
+  const ownSequence = typeof status.request_id === 'string' && status.request_id.startsWith(sweepPrefix)
+    ? Number(status.request_id.slice(sweepPrefix.length)) : null;
+  const superseded = sweepRequest !== null && ownSequence !== null && status.request_id !== sweepRequest
+    && ownSequence > sweepRetiredThrough && ownSequence > sweepConfirmedSequence && ownSequence < sweepSequence;
+  if (ownSequence !== null && status.request_id !== sweepRequest && !superseded) return;
+  if (sweepRequest !== null && status.request_id !== sweepRequest && !superseded) return;
+  const profile = status.req?.[status.mode === 'rta' ? 'rta' : 'swp'];
+  const mode = profile?.sweep_time_mode ?? status.sweep_time_mode;
+  const time = profile?.sweep_time ?? status.sweep_time;
+  if (!Number.isInteger(mode) || mode! < 0 || mode! > 8 || !Number.isFinite(time)) return;
+  if (superseded) {
+    const desired = sweep.desiredValue();
+    sweep.confirm({ mode: mode!, time: time! });
+    // Equality may clear desired in Param.confirm; the newer request still owns intent.
+    if (desired) sweep.set(desired);
+    sweepConfirmedSequence = ownSequence!;
+    fillSweepEditor();
+    return;
+  }
+  if (ownSequence !== null) sweepConfirmedSequence = ownSequence;
+  sweepRetiredThrough = sweepSequence;
+  sweepRequest = null;
+  sweep.reset();
+  sweep.confirm({ mode: mode!, time: time! });
+  fillSweepEditor();
+}
+
+export function rejectSweepRequest(requestId: unknown) {
+  if (sweepRequest === null || requestId !== sweepRequest) return;
+  sweepRequest = null;
+  sweepRetiredThrough = sweepSequence;
+  sweep.reset();
+  fillSweepEditor();
+}
+
+export function bindSweepEditor() {
+  const [select, input] = sweepElements();
+  for (const el of [select, input]) {
+    if (!el || el.dataset.sweepBound === '1') continue;
+    el.dataset.sweepBound = '1';
+    el.addEventListener('input', () => { el.dataset.edited = '1'; syncSweepInput(); });
+    el.addEventListener('blur', fillSweepEditor);
+  }
+  input?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); setSweepSpeed(); }
+  });
+  fillSweepEditor();
+}
+
+export function setSweepSpeed() {
+  if (S.sdrMode) return;
+  const [select, input] = sweepElements();
+  const mode = Number(select?.value ?? 0);
+  if (!Number.isInteger(mode) || mode < 0 || mode > 8) return;
+  const raw = Number(input?.value ?? 0);
+  const minimum = mode === 7 ? 0.001 : 1;
+  const time = mode >= 6 ? Math.max(minimum, Number.isFinite(raw) ? raw : minimum) : 0;
+  sweepMode = S.rtaMode ? 'rta' : 'std';
+  sweepRequest = `${sweepPrefix}${++sweepSequence}`;
+  sweep.set({ mode, time });
+  for (const el of [select, input]) if (el) delete el.dataset.edited;
+  syncSweepInput();
+  send({ cmd: 'SET_SWEEP', mode, ...(mode >= 6 ? { time } : {}), request_id: sweepRequest });
 }
 
 export function syncSweepInput() {

@@ -179,6 +179,8 @@ pub struct XheHeader {
 pub struct XheFrame {
     pub data: Vec<u8>,
     pub crc_ok: bool,
+    /// Earliest contributing IQ sample when supplied by the receiver.
+    pub source_sample: Option<u64>,
 }
 
 impl XheFrame {
@@ -210,6 +212,7 @@ pub struct XheAacDeframer {
     pending: Vec<u8>,
     /// Whether `pending` starts at a frame border.
     synced: bool,
+    pending_sources: Vec<Option<u64>>,
 }
 
 impl XheAacDeframer {
@@ -221,13 +224,18 @@ impl XheAacDeframer {
     pub fn reset(&mut self) {
         self.pending.clear();
         self.synced = false;
+        self.pending_sources.clear();
     }
 
     /// Parse one audio super frame (the logical frame without the text message bytes) and
     /// return the frames it completed. `None` means the super frame was malformed; the state
     /// is reset so the next one starts clean.
     pub fn push(&mut self, sf: &[u8]) -> Option<(XheHeader, Vec<XheFrame>)> {
-        match self.push_inner(sf) {
+        self.push_with_source(sf, None)
+    }
+
+    pub fn push_with_source(&mut self, sf: &[u8], source: Option<u64>) -> Option<(XheHeader, Vec<XheFrame>)> {
+        match self.push_inner(sf, source) {
             Some(r) => Some(r),
             None => {
                 self.reset();
@@ -236,7 +244,7 @@ impl XheAacDeframer {
         }
     }
 
-    fn push_inner(&mut self, sf: &[u8]) -> Option<(XheHeader, Vec<XheFrame>)> {
+    fn push_inner(&mut self, sf: &[u8], source: Option<u64>) -> Option<(XheHeader, Vec<XheFrame>)> {
         if sf.len() < 2 {
             return None;
         }
@@ -284,23 +292,28 @@ impl XheAacDeframer {
             borders.push(pos);
         }
         self.pending.extend_from_slice(payload);
+        self.pending_sources.resize(self.pending.len(), source);
         let mut frames = Vec::with_capacity(borders.len());
         let mut prev = 0;
         for &b in &borders {
             if self.synced {
                 let data = self.pending[prev..b].to_vec();
                 let crc_ok = xhe_frame_crc_ok(&data);
-                frames.push(XheFrame { data, crc_ok });
+                let source_sample = self.pending_sources[prev..b].iter().try_fold(u64::MAX,
+                    |earliest, source| source.map(|source| earliest.min(source))).filter(|&source| source != u64::MAX);
+                frames.push(XheFrame { data, crc_ok, source_sample });
             }
             // The first border ends the partial frame running before the download started.
             self.synced = true;
             prev = b;
         }
         self.pending.drain(..prev);
+        self.pending_sources.drain(..prev);
         if !self.synced {
             // Only the last two bytes can matter (a delayed 0xFFE/0xFFF border).
             let keep = self.pending.len().saturating_sub(2);
             self.pending.drain(..keep);
+            self.pending_sources.drain(..keep);
         } else if self.pending.len() > 4 * XHE_AAC_MAX_FRAME_BYTES {
             return None;
         }
@@ -353,14 +366,15 @@ mod tests {
             sf
         };
         let mut def = XheAacDeframer::new();
-        let (h1, f1) = def.push(&build(&frame, 0, 1)).expect("header parses");
+        let (h1, f1) = def.push_with_source(&build(&frame, 0, 1), Some(100)).expect("header parses");
         assert_eq!(h1.frame_border_count, 1);
         assert!(h1.header_crc_ok);
         assert!(f1.is_empty(), "the first border carries no complete frame yet");
-        let (_h2, f2) = def.push(&build(&frame, 0, 1)).expect("header parses");
+        let (_h2, f2) = def.push_with_source(&build(&frame, 0, 1), Some(200)).expect("header parses");
         assert_eq!(f2.len(), 1);
         assert_eq!(f2[0].data, frame);
         assert!(f2[0].crc_ok, "the frame CRC-16 must pass");
         assert_eq!(f2[0].access_unit(), &au, "the USAC access unit drops the CRC-16");
+        assert_eq!(f2[0].source_sample, Some(100), "completing a frame must retain its earlier source");
     }
 }

@@ -1,0 +1,333 @@
+import { describe, expect, it, vi } from 'vitest';
+import { DecodeSequence, MAX_DECODE_BYTES, type DecodeEnvelope } from '../sdr/decodeProtocol';
+
+function frame(overrides: Partial<DecodeEnvelope> = {}): ArrayBuffer {
+  const value: DecodeEnvelope = { version: 1, channel: 1, channel_id: 17, epoch: 9, seq: 0,
+    input_index: '9007199254740993', input_rate: 62500000, input_fraction_num: '0', input_fraction_den: '1',
+    delay_seconds: 0.001, delay_known: true, causal_presentation: false, mode: 'cw', event: { type: 'start' }, ...overrides };
+  const text = new TextEncoder().encode(JSON.stringify(value));
+  const data = new ArrayBuffer(text.length + 8);
+  new Uint8Array(data).set([83, 68, 69, 50]);
+  new DataView(data).setUint32(4, text.length, true);
+  new Uint8Array(data, 8).set(text);
+  return data;
+}
+function amEvent(overrides: Record<string, unknown> = {}): DecodeEnvelope['event'] {
+  return { type: 'am-info', syncEnabled: true, syncLocked: true, amSyncGeneration: 0, carrierHz: 9_810_001.25, carrierOffsetHz: 1.25,
+    modulationPct: 42, inputDbFs: -26, rmsDbFs: -32, peakDbFs: -24, scope: [-1, 0, 1],
+    ...overrides } as DecodeEnvelope['event'];
+}
+describe('native decoded stream boundaries', () => {
+  it('keeps all three channel clocks independent when one changes identity', () => {
+    const stream = new DecodeSequence();
+    for (const channel of [1, 2, 3]) stream.accept(frame({ channel, channel_id: channel }));
+    stream.accept(frame({ channel: 2, channel_id: 4, event: { type: 'start' } }));
+    const event = { type: 'cw', text: 'CQ', keyed: true, rms: 0.3 };
+    expect(stream.accept(frame({ channel: 1, channel_id: 1, seq: 1, event })).event.text).toBe('CQ');
+    expect(stream.accept(frame({ channel: 3, channel_id: 3, seq: 1, event })).channel).toBe(3);
+    expect(stream.accept(frame({ channel: 2, channel_id: 4, seq: 1, event })).channel_id).toBe(4);
+  });
+  it('rejects loss and old-identity output instead of mixing receiver state', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame());
+    expect(() => stream.accept(frame({ seq: 2, event: { type: 'cw' } }))).toThrow(/sequence gap/);
+    stream.accept(frame({ channel_id: 18 }));
+    expect(() => stream.accept(frame())).toThrow(/Stale/);
+    expect(() => stream.accept(frame({ seq: 1, event: { type: 'cw' } }))).toThrow(/identity/);
+  });
+  it('compares rational source clocks above the JavaScript exact integer range', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ input_fraction_num: '2', input_fraction_den: '3' }));
+    stream.accept(frame({ seq: 1, input_fraction_num: '4', input_fraction_den: '6', event: { type: 'cw' } }));
+    expect(() => stream.accept(frame({ seq: 2, input_fraction_num: '1', input_fraction_den: '2', event: { type: 'cw' } }))).toThrow(/backwards/);
+    const result = stream.accept(frame({ seq: 2, input_index: '9007199254740994', event: { type: 'cw' } }));
+    expect(result.input_index).toBe('9007199254740994');
+  });
+  it('retains delayed FT8 window anchors while preserving stream sequence', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'ft8' }));
+    stream.accept(frame({ mode: 'ft8', seq: 1, input_index: '9007199254741993', event: { type: 'ft8-state' } }));
+    const result = stream.accept(frame({ mode: 'ft8', seq: 2, input_index: '9007199254740993', event: {
+      type: 'ft8', text: 'CQ W1AW FN31', windowStart: '9007199254740993' } }));
+    expect(result.input_index).toBe('9007199254740993');
+    expect(() => stream.accept(frame({ mode: 'ft8', seq: 3, input_index: '9007199254740994', event: { type: 'ft8-state' } }))).toThrow(/backwards/);
+    expect(stream.accept(frame({ mode: 'ft8', seq: 3, input_index: '9007199254741994', event: { type: 'ft8-state' } })).seq).toBe(3);
+  });
+  it('keeps causal codec provenance even when contributor anchors arrive out of order', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'drm', causal_presentation: true }));
+    stream.accept(frame({ mode: 'drm', seq: 1, causal_presentation: true, input_index: '9007199254741993', event: { type: 'drm' } }));
+    const result = stream.accept(frame({ mode: 'drm', seq: 2, causal_presentation: true,
+      input_index: '9007199254740993', event: { type: 'drm' } }));
+    expect(result.input_index).toBe('9007199254740993');
+    expect(result.causal_presentation).toBe(true);
+  });
+  it('accepts successful NR status with an explicit absent failure reason', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame());
+    const result = stream.accept(frame({ seq: 1, event: { type: 'nr-status', state: 'ready', reason: null } }));
+    expect(result.event.reason).toBeNull();
+    expect(result.event.state).toBe('ready');
+  });
+  it('rejects unavailable clocks, invalid fractions and malformed lengths', () => {
+    const stream = new DecodeSequence();
+    expect(() => stream.accept(frame({ input_index: '18446744073709551616' }))).toThrow(/overflow/);
+    expect(() => stream.accept(frame({ input_fraction_den: '0' }))).toThrow(/fraction/);
+    expect(() => stream.accept(frame({ input_fraction_num: '2', input_fraction_den: '2' }))).toThrow(/fraction/);
+    const invalid = frame();
+    new DataView(invalid).setUint32(4, invalid.byteLength, true);
+    expect(() => stream.accept(invalid)).toThrow(/header/);
+    expect(() => stream.accept(new ArrayBuffer(MAX_DECODE_BYTES + 9))).toThrow(/size/);
+  });
+  it('accepts the full JSON payload limit independently of its eight-byte header', () => {
+    const empty = frame({ event: { type: 'start', text: '' } });
+    const text = 'x'.repeat(MAX_DECODE_BYTES - (empty.byteLength - 8));
+    expect(new DecodeSequence().accept(frame({ event: { type: 'start', text } })).event.text).toBe(text);
+    expect(() => new DecodeSequence().accept(frame({ event: { type: 'start', text: text + 'x' } }))).toThrow(/size/);
+  });
+  it('requires an explicit start and rejects mode payloads with nonnumeric telemetry', () => {
+    const stream = new DecodeSequence();
+    expect(() => stream.accept(frame({ seq: 1, event: { type: 'cw' } }))).toThrow(/gap/);
+    expect(() => stream.accept(frame({ event: { type: 'cw' } }))).toThrow(/start/);
+    const bad = JSON.parse(new TextDecoder().decode(new Uint8Array(frame(), 8)));
+    bad.event = { type: 'cw', rms: 'invalid' };
+    const text = new TextEncoder().encode(JSON.stringify(bad));
+    const buffer = new ArrayBuffer(8 + text.length);
+    new Uint8Array(buffer).set([83, 68, 69, 50]);
+    new DataView(buffer).setUint32(4, text.length, true);
+    new Uint8Array(buffer, 8).set(text);
+    expect(() => stream.accept(buffer)).toThrow(/rms/);
+  });
+  it('preserves nullable AM measurements and accepts the bounded scope endpoints', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    const unknown = amEvent({ carrierHz: null, carrierOffsetHz: null, modulationPct: null, inputDbFs: null, scope: [] });
+    expect(stream.accept(frame({ mode: 'am', seq: 1, event: unknown })).event).toEqual(unknown);
+    const bounded = amEvent({ syncEnabled: false, syncLocked: false, carrierOffsetHz: 0,
+      modulationPct: 0, inputDbFs: 0, rmsDbFs: 0, peakDbFs: 0, scope: Array.from({ length: 256 }, (_, i) => i - 128) });
+    expect(stream.accept(frame({ mode: 'am', seq: 2, event: bounded })).event).toEqual(bounded);
+  });
+  it('requires an unsigned 32-bit AM sync generation without advancing rejected events', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    for (const amSyncGeneration of [undefined, null, '0', false, -1, 0.5, 0x100000000]) {
+      expect(() => stream.accept(frame({ mode: 'am', seq: 1, event: amEvent({ amSyncGeneration }) }))).toThrow(/AM sync generation/);
+    }
+    expect(stream.accept(frame({ mode: 'am', seq: 1, event: amEvent({ amSyncGeneration: 0 }) })).event.amSyncGeneration).toBe(0);
+    expect(stream.accept(frame({ mode: 'am', seq: 2, event: amEvent({ amSyncGeneration: 0xffffffff }) })).event.amSyncGeneration).toBe(0xffffffff);
+  });
+  it.each(['syncEnabled', 'syncLocked'])('requires an AM %s boolean', (key) => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    for (const invalid of [undefined, null, 0, 'true']) {
+      expect(() => stream.accept(frame({ mode: 'am', seq: 1, event: amEvent({ [key]: invalid }) }))).toThrow(/AM sync/);
+    }
+  });
+  it.each(['carrierHz', 'carrierOffsetHz', 'modulationPct', 'inputDbFs'])('requires an explicit nullable AM %s measurement', (key) => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    for (const invalid of [undefined, '0', false, {}]) {
+      expect(() => stream.accept(frame({ mode: 'am', seq: 1, event: amEvent({ [key]: invalid }) }))).toThrow(key);
+    }
+  });
+  it.each(['rmsDbFs', 'peakDbFs'])('requires a numeric AM %s measurement', (key) => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    for (const invalid of [undefined, null, '0', false]) {
+      expect(() => stream.accept(frame({ mode: 'am', seq: 1, event: amEvent({ [key]: invalid }) }))).toThrow(key);
+    }
+  });
+  it('rejects missing, oversized, and malformed AM scopes without advancing the stream', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    for (const scope of [undefined, null, {}, Array(257).fill(0), [null], ['0'], [true]]) {
+      expect(() => stream.accept(frame({ mode: 'am', seq: 1, event: amEvent({ scope }) }))).toThrow(/AM scope/);
+    }
+    expect(stream.accept(frame({ mode: 'am', seq: 1, event: amEvent() })).seq).toBe(1);
+  });
+  it('keeps WFM peak text while rejecting AM peak text and numeric WFM peaks', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'wfm' }));
+    expect(stream.accept(frame({ mode: 'wfm', seq: 1, event: { type: 'wfm-info', peakDbFs: '-7.0' } })).event.peakDbFs).toBe('-7.0');
+    expect(() => stream.accept(frame({ mode: 'wfm', seq: 2, event: { type: 'wfm-info', peakDbFs: -7 } }))).toThrow(/peakDbFs/);
+    expect(() => stream.accept(frame({ mode: 'am', seq: 2, event: amEvent({ peakDbFs: '-7.0' }) }))).toThrow(/peakDbFs/);
+  });
+  it('rejects non-finite AM wire numbers, including otherwise nullable measurements', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'am' }));
+    for (const key of ['carrierHz', 'carrierOffsetHz', 'modulationPct', 'inputDbFs', 'rmsDbFs', 'peakDbFs', 'scope']) {
+      const event = amEvent({ [key]: key === 'scope' ? [123456789] : 123456789 });
+      const text = new TextEncoder().encode(new TextDecoder().decode(new Uint8Array(frame({ mode: 'am', seq: 1, event }), 8))
+        .replace('123456789', '1e999'));
+      const data = new ArrayBuffer(8 + text.length);
+      new Uint8Array(data).set([83, 68, 69, 50]);
+      new DataView(data).setUint32(4, text.length, true);
+      new Uint8Array(data, 8).set(text);
+      expect(() => stream.accept(data)).toThrow(key);
+    }
+  });
+  it('clears stale AM locks across warnings, fatal errors, stream boundaries, reset, and disconnect', async () => {
+    class Receiver {
+      static current: Receiver;
+      onmessage: ((event: { data: { type: string; envelopes?: DecodeEnvelope[]; message?: string } }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      constructor() { Receiver.current = this; }
+      postMessage(): void {}
+      terminate(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('Worker', Receiver);
+    try {
+      // Load a fresh stream and UI together after installing Worker so lifecycle state is isolated.
+      const ui = await import('../ui/decodeWindow');
+      const { sdrAmSync } = await import('../ui/sdrState');
+      const { setLang } = await import('../core/i18n');
+      const stream = await import('../sdr/iqStream');
+      document.body.innerHTML = `<div id="decode-window"><span id="am-title-badge"></span>
+        <div class="decode-am-carrier"><span id="am-carrier"></span><label>Synchronous <button id="am-sync-toggle"></button></label></div>
+        <span id="am-carrier-offset"></span><span id="am-modulation"></span><span id="am-input"></span>
+        <span id="am-rms"></span><span id="am-peak"></span><div id="am-empty"></div></div>`;
+      setLang('en');
+      sdrAmSync.reset();
+      sdrAmSync.confirm(true);
+      ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {}, onAmSync: () => {} });
+      ui.setDecodeActive(true);
+      ui.setDecodeChannelMode(1, 'am');
+      ui.confirmAmSyncGeneration(0);
+      if (!ui.decodeWindowOpen()) ui.toggleDecodeWindow();
+      const badge = document.getElementById('am-title-badge')!;
+      const toggle = document.getElementById('am-sync-toggle') as HTMLButtonElement;
+      const measurement = () => document.getElementById('am-input')!.textContent;
+      const sequence = new DecodeSequence();
+      const deliver = (...envelopes: DecodeEnvelope[]) => {
+        Receiver.current.onmessage!({ data: { type: 'frames', envelopes } });
+        ui.refreshDecodeWindow();
+      };
+      stream.setSdrIqEnabled(true);
+      deliver(sequence.accept(frame({ mode: 'am' })), sequence.accept(frame({ mode: 'am', seq: 1,
+        event: amEvent({ syncLocked: false, carrierHz: null, carrierOffsetHz: null, modulationPct: null, inputDbFs: null }) })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(measurement()).toBe('—');
+      expect(document.getElementById('am-rms')!.textContent).toBe('-32.0 dBFS');
+      deliver(sequence.accept(frame({ mode: 'am', seq: 2, event: { type: 'warning', message: 'Temporary AM sync warning' } })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(toggle.disabled).toBe(false);
+      deliver(sequence.accept(frame({ mode: 'am', seq: 3, event: amEvent({ inputDbFs: 0 }) })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(true);
+      expect(document.getElementById('am-carrier')!.textContent).toBe('9.810001 MHz');
+      expect(measurement()).toBe('0.0 dBFS');
+      deliver(sequence.accept(frame({ mode: 'am', seq: 4, event: { type: 'error', message: 'AM decoder failed' } })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(toggle.disabled).toBe(true);
+      expect(measurement()).toBe('—');
+      deliver(sequence.accept(frame({ mode: 'am', channel_id: 18 })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(toggle.disabled).toBe(false);
+      deliver(sequence.accept(frame({ mode: 'am', channel_id: 18, seq: 1, event: amEvent() })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(true);
+      stream.resetSdrIq();
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(measurement()).toBe('—');
+      deliver(sequence.accept(frame({ mode: 'am', channel_id: 18, seq: 2, event: amEvent() })));
+      expect(badge.classList.contains('on')).toBe(true);
+      stream.setSdrIqEnabled(false);
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(measurement()).toBe('—');
+      stream.setSdrIqEnabled(true);
+      ui.confirmAmSyncGeneration(0);
+      deliver(sequence.accept(frame({ mode: 'am', channel_id: 18, seq: 3, event: amEvent() })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(true);
+      ui.confirmAmSyncGeneration(3);
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      deliver(sequence.accept(frame({ mode: 'am', channel_id: 18, seq: 4, event: amEvent({ amSyncGeneration: 1 }) })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(measurement()).toBe('—');
+      deliver(sequence.accept(frame({ mode: 'am', channel_id: 18, seq: 5, event: amEvent({ amSyncGeneration: 3 }) })));
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(true);
+      const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try { Receiver.current.onmessage!({ data: { type: 'closed', message: 'Stream disconnected' } }); }
+      finally { quiet.mockRestore(); }
+      expect(toggle.getAttribute('aria-pressed')).toBe('true');
+      expect(badge.classList.contains('on')).toBe(false);
+      expect(toggle.disabled).toBe(true);
+      expect(measurement()).toBe('—');
+      stream.setSdrIqEnabled(false);
+      stream.resetSdrIq();
+      sdrAmSync.reset();
+    } finally { vi.unstubAllGlobals(); document.body.innerHTML = ''; }
+  });
+  it('reports the original rejected stream error using a browser-valid close code', async () => {
+    const messages: Array<{ type: string; message?: string }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; message?: string }) => messages.push(message) };
+    let connection: { onmessage: ((event: { data: ArrayBuffer }) => void) | null } | null = null;
+    const closed: number[] = [];
+    class Socket {
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      constructor() { connection = this; }
+      close(code: number): void {
+        if (code !== 1000 && (code < 3000 || code > 4999)) throw new DOMException('Invalid close code', 'InvalidAccessError');
+        closed.push(code);
+      }
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      // Worker module initialization installs self.onmessage; browser globals must exist before import.
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const socket = connection! as Socket;
+      socket.onmessage!({ data: frame({ seq: 1, event: { type: 'cw' } }) });
+      expect(messages).toEqual([{ type: 'error', message: 'SDE2 identity or sequence gap' }]);
+      expect(closed).toEqual([4002]);
+      socket.onmessage!({ data: frame() });
+      expect(messages).toHaveLength(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('drains every queued decoded event in FIFO batches without waiting one round trip per event', async () => {
+    const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message) };
+    let receive: ((event: { data: ArrayBuffer }) => void) | null = null;
+    class Socket {
+      set onmessage(callback: (event: { data: ArrayBuffer }) => void) { receive = callback; }
+      close(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      // Worker initialization binds self, so install browser globals before loading it.
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      (receive! as (event: { data: ArrayBuffer }) => void)({ data: frame() });
+      for (let seq = 1; seq <= 20; seq++) {
+        (receive! as (event: { data: ArrayBuffer }) => void)({ data: frame({ seq, event: { type: 'cw', text: String(seq) } }) });
+      }
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(messages.map((message) => message.envelopes?.map((event) => event.seq))).toEqual([[0], Array.from({ length: 20 }, (_, index) => index + 1)]);
+      expect(messages[1].envelopes?.map((event) => event.event.text)).toEqual(Array.from({ length: 20 }, (_, index) => String(index + 1)));
+      // The twenty unacknowledged events plus twelve queued events fill the
+      // same ceiling; batching must not create another queue's worth of credit.
+      for (let seq = 21; seq <= 32; seq++) {
+        (receive! as (event: { data: ArrayBuffer }) => void)({ data: frame({ seq, event: { type: 'cw', text: String(seq) } }) });
+      }
+      expect(messages).toHaveLength(2);
+      (receive! as (event: { data: ArrayBuffer }) => void)({ data: frame({ seq: 33, event: { type: 'cw', text: '33' } }) });
+      expect(messages[2]).toEqual({ type: 'error', message: 'Slow decoded-output consumer: queue exceeded' });
+    } finally { vi.unstubAllGlobals(); }
+  });
+});

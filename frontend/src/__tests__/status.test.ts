@@ -10,7 +10,7 @@
  * The payload below is a real STATUS captured from a SAN-90, trimmed to the fields the
  * slots consume (kept structurally complete so a shape change fails here).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { updateStatus } from '../core/ws';
 import * as S from '../core/store';
 import { resetAll } from '../core/params';
@@ -20,6 +20,10 @@ import { currentPoints, currentRBW, currentSpur, currentVBW, rbwMode, vbwMode } 
 import { currentGraphMode } from '../ui/graphMode';
 import { sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz, sdrSquelch } from '../ui/sdrState';
 import { noticeText } from '../core/store';
+import { fillGnssDetail } from '../ui/panels/gnss';
+import { t } from '../core/i18n';
+import { sdrIqStats } from '../sdr/iqStream';
+import { setWaterfall } from '../ui/panels/waterfall';
 
 const SWP_STATUS = {
 	cmd: 'STATUS',
@@ -95,6 +99,62 @@ beforeEach(() => {
 	localStorage.clear();
 });
 
+describe('GNSS freshness during wideband capture', () => {
+	it('marks paused polling and hides stale lock/satellite details', () => {
+		document.body.innerHTML = '<span id="info-gnss"></span><span id="gnss-d-lock"></span><span id="gnss-d-sats"></span>';
+		const status = structuredClone(SWP_STATUS) as Record<string, any>;
+		status.gnss = { lock: 1, sats: 8, stale: true };
+		updateStatus(status);
+		fillGnssDetail();
+		expect(document.getElementById('info-gnss')?.textContent).toBe(t('status_stale'));
+		expect(document.getElementById('gnss-d-lock')?.textContent).toBe(t('status_stale'));
+		expect(document.getElementById('gnss-d-sats')?.textContent).toBe('-');
+	});
+});
+
+describe('reference clock hardware capabilities', () => {
+	it('removes unavailable premium sources despite live GNSS and preserves requested versus actual', () => {
+		document.body.innerHTML = '<select id="select-refclk"><option value="internal">Int</option><option value="external">Ext</option><option value="external_forced">ExtForce</option><option value="premium">Int+ (DOCXO)</option></select><span id="refclk-d-current"></span><span id="refclk-d-actual"></span><div id="refclk-popover"></div>';
+		updateStatus({
+			...SWP_STATUS, has_docxo: false, has_premium_ref_clock: false,
+			gnss: { lock: 1, sats: 22, docxo_mode: 1 }, ref_clock: 'external',
+			actual: { ...SWP_STATUS.actual, refclk_src: 0 },
+		});
+		const select = document.getElementById('select-refclk') as HTMLSelectElement;
+		expect(select.querySelector('option[value="premium"]')).toBeNull();
+		expect(select.value).toBe('external');
+		expect(document.getElementById('refclk-d-current')?.textContent).toBe(t('ext'));
+		expect(document.getElementById('refclk-d-actual')?.textContent).toBe(`${t('int')} (${t('refclk_fell_back')})`);
+	});
+
+	it('labels OCXO and DOCXO by installed oscillator independently of GNSS lock', () => {
+		document.body.innerHTML = '<select id="select-refclk"><option value="internal">Int</option></select><span id="refclk-d-current"></span><span id="refclk-d-actual"></span><div id="refclk-popover"></div>';
+		for (const hasDocxo of [false, true]) {
+			updateStatus({
+				...SWP_STATUS, has_docxo: hasDocxo, has_premium_ref_clock: true,
+				gnss: { lock: 0, docxo: 0, docxo_mode: 0 }, ref_clock: 'premium',
+				actual: { ...SWP_STATUS.actual, refclk_src: 2 },
+			});
+			const label = t(hasDocxo ? 'docxo_premium' : 'ocxo_premium');
+			expect(document.querySelector('#select-refclk option[value="premium"]')?.textContent).toBe(label);
+			expect(document.getElementById('refclk-d-current')?.textContent).toBe(label);
+			expect(document.getElementById('refclk-d-actual')?.textContent).toBe(label);
+		}
+	});
+
+	it('hides DOCXO status and work mode when the oscillator is absent', () => {
+		document.body.innerHTML = '<div class="param-row"><span id="gnss-d-docxo"></span></div><div class="param-row"><span id="gnss-d-docxo_mode"></span></div><span id="gnss-d-sats"></span>';
+		for (const installed of [false, true, false]) {
+			updateStatus({ ...SWP_STATUS, has_docxo: installed, gnss: { lock: 1, sats: 22, docxo_mode: 1 } });
+			fillGnssDetail();
+			for (const id of ['gnss-d-docxo', 'gnss-d-docxo_mode']) {
+				expect(document.getElementById(id)?.closest<HTMLElement>('.param-row')?.hidden).toBe(!installed);
+			}
+			expect(document.getElementById('gnss-d-sats')?.textContent).toBe('22');
+		}
+	});
+});
+
 describe('independent sweep-time fields', () => {
 	it('STATUS refreshes SWT from the device estimate, never the measured EMA', () => {
 		const status = structuredClone(SWP_STATUS) as Record<string, any>;
@@ -110,7 +170,7 @@ describe('independent sweep-time fields', () => {
 		updateStatus(status);
 		expect(S.sweepMs).toBe(12.5);
 	});
-	it('shows explicitly measured time when SDK estimate is unavailable', async () => {
+	it('falls back to publisher duration when SDK estimate is unavailable', async () => {
 		const { updateInfoBar } = await import('../render/infobar');
 		document.body.innerHTML = '<span id="info-swt"></span>';
 		const status = structuredClone(SWP_STATUS) as Record<string, any>;
@@ -209,6 +269,28 @@ describe("the user's SDR audio preference", () => {
 });
 
 describe('updateStatus', () => {
+	it('repaints the primary input meter on consecutive STATUS and clears missing measurements', () => {
+		const meter = document.createElement('span');
+		meter.id = 'cur-sdr-level';
+		document.body.append(meter);
+		const status = structuredClone(SDR_STATUS) as Record<string, any>;
+		status.sdr.channels = [{ channel: 1, enabled: true, level_dbfs: -6.0206 }];
+		meter.title = 'old IQ error';
+		updateStatus(status);
+		expect(meter.textContent).toBe('-6.0 dBFS');
+		expect(meter.hasAttribute('title')).toBe(false);
+		status.sdr.channels[0].level_dbfs = -26.0206;
+		updateStatus(status);
+		expect(meter.textContent).toBe('-26.0 dBFS');
+		status.sdr.channels[0].level_dbfs = null;
+		updateStatus(status);
+		expect(meter.textContent).toBe('');
+		delete status.sdr.channels;
+		status.sdr.level_dbfs = null;
+		updateStatus(status);
+		expect(meter.textContent).toBe('');
+		meter.remove();
+	});
 	it('confirms the swept parameters into their slots', () => {
 		updateStatus(structuredClone(SWP_STATUS));
 		expect(centerHz.get()).toBe(225000000);
@@ -240,6 +322,22 @@ describe('updateStatus', () => {
 		expect(sdrListenHz.get()).toBe(101762500);
 		expect(sdrDemod.get()).toBe('am');
 		expect(sdrIfbw.get()).toBe(12000);
+	});
+
+	it('forwards the confirmed channel registry without driving IQ stream identity', () => {
+		const status = structuredClone(SDR_STATUS) as Record<string, any>;
+		status.actual.channel_registry = [{
+			channel: 0, channel_id: 2, epoch: 7, frequency_hz: 101762500,
+			output_rate: 48000, input_rate: 96000, group_delay_samples: 63.5, state: 'active',
+		}];
+		updateStatus(status);
+		expect(sdrIqStats()).toMatchObject({
+			confirmedRegistry: status.actual.channel_registry,
+			streamKey: '',        // STATUS never selects a stream; the frame header does
+		});
+		status.actual.channel_registry = undefined;
+		updateStatus(status);
+		expect(sdrIqStats().confirmedRegistry).toBeNull();
 	});
 
 	it('does not confirm a parameter that was not reported', () => {
@@ -302,6 +400,32 @@ describe('device-disconnect warning', () => {
 		// a repeat of the same (connected) state must not repaint on every STATUS
 		updateStatus(structuredClone(SWP_STATUS));
 		expect(renderRequestCount()).toBe(afterClear);
+	});
+});
+
+describe('waterfall table replacement during STATUS', () => {
+	afterEach(() => {
+		setWaterfall(false);
+		S.setMeasOn(false);
+		updateStatus(structuredClone(SWP_STATUS));
+		document.body.innerHTML = '';
+	});
+
+	it.each(['std', 'rta', 'sdr'])('keeps the marker table out of the %s layout on repeated reports', mode => {
+		document.body.innerHTML = '<button id="btn-waterfall"></button>'
+			+ '<table id="marker-table"></table><div id="waterfall-container"></div><div id="wf-split"></div>';
+		S.setMeasOn(false);
+		const report = { ...structuredClone(mode === 'sdr' ? SDR_STATUS : SWP_STATUS), mode };
+		updateStatus(report);
+		setWaterfall(true);
+		const table = document.getElementById('marker-table')!;
+		for (let n = 0; n < 3; n++) {
+			updateStatus(structuredClone(report));
+			expect(table.style.display).toBe('none');
+		}
+		setWaterfall(false);
+		updateStatus(structuredClone(report));
+		expect(table.style.display).toBe('');
 	});
 });
 

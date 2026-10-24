@@ -9,25 +9,34 @@ import { send } from '../core/wsSend';
 import { applyMeasUI } from '../ui/measureUi';
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
+import { measurementsAvailable } from '../ui/measurementAvailability';
+import { acceptsMeasurementResult, beginMeasurementSession } from './session';
 
 // Stop showing the measuring overlay after the first complete acquisition
 // (the backend recycles progress every loop while the measurement keeps refreshing)
 let pnmFirstDone = false;
+let appliedCenter = 0;
 
 export function measPnmApply() {
-  pnmFirstDone = false;   // Re-measure: re-show the loading overlay
-  if (!S.measOn || S.measTabSel !== 'pnm') return;
+  if (!S.measOn || S.measTabSel !== 'pnm' || !measurementsAvailable()) return;
+  pnmFirstDone = false;
   const center = parsePnmFreq() || 1e9;
+  appliedCenter = center;
   const thr = parseFloat((document.getElementById('input-pnm-thr') as HTMLInputElement).value);
-  const avg = parseInt((document.getElementById('input-pnm-avg') as HTMLInputElement).value) || 4;
+  const avgInput = document.getElementById('input-pnm-avg') as HTMLInputElement;
+  const avg = Math.max(1, Math.min(1000, parseInt(avgInput.value) || 4));
+  avgInput.value = String(avg);
+  const session_id = beginMeasurementSession('pnm');
+  S.setPnmData(null);
+  S.setPnmCarAcc(null);
   if (S.viewMode !== 'pnm') {
     S.setViewMode('pnm');
-    S.setPnmData(null);
-    S.setPnmCarAcc(null);
     send({ cmd: 'SET_MODE', mode: 'pnm' });
   }
-  send({ cmd: 'SET_PNM', center, threshold: isFinite(thr) ? thr : -50, traceavg: avg, start: 100, stop: 10e6 });
+  send({ cmd: 'SET_PNM', session_id, center, threshold: isFinite(thr) ? thr : -50, traceavg: avg, start: 100, stop: 10e6 });
   applyMeasUI();
+  updatePnmTable();
+  requestRender();
 }
 
 function parsePnmFreq(): number {
@@ -52,6 +61,7 @@ function pnmReady(d: any): boolean {
 }
 
 export function onPnmResult(d: any) {
+  if (!S.measOn || S.viewMode !== 'pnm' || !acceptsMeasurementResult('pnm', d?.session_id)) return;
   S.setPnmData(d);
   // Dismiss based on complete x-axis labels (offset covers the full range) —
   // the loading overlay disappears only once the plot is truly finished
@@ -77,8 +87,17 @@ function pnmSmoothOn(): boolean {
   return el?.value === '1';
 }
 function pnmWinPct(): number {
-  const v = parseFloat((document.getElementById('input-pnm-win') as HTMLInputElement).value);
-  return isFinite(v) ? Math.max(0, Math.min(10, v)) : 0;
+  const input = document.getElementById('input-pnm-win') as HTMLInputElement;
+  const v = parseFloat(input.value);
+  const value = isFinite(v) ? Math.max(0, Math.min(10, v)) : 0;
+  input.value = String(value);
+  return value;
+}
+
+export function repaintPnm(): void {
+  pnmWinPct();
+  updatePnmTable();
+  requestRender();
 }
 function smoothArr(arr: Float32Array, winPct: number): Float32Array {
   const n = arr.length;
@@ -217,14 +236,14 @@ export function updatePnmTable() {
   const tb = document.getElementById('pnm-table');
   const tb2 = document.getElementById('pnm-tbody');
   if (!tb || !tb2) return;
-  if (!S.pnmData || !S.pnmData.offset) { tb.style.display = 'none'; return; }
+  if (!S.pnmData || !S.pnmData.offset) { tb.style.display = 'none'; tb2.innerHTML = ''; return; }
   tb.style.display = '';
   const acc = S.pnmCarAcc;
   const c = (acc && acc.f.length)
     ? { f: acc.sumF / acc.f.length, p: acc.sumP / acc.p.length }
     : null;
   const ready = !!c;
-  const offHz = ready ? c.f - (parsePnmFreq() || 0) : 0;
+  const offHz = ready ? c.f - appliedCenter : 0;
   let html = '<tr><th style="width:30%;" colspan="2">' + t('pnm_carrier') + '</th></tr>' +
     '<tr><td>' + t('pnm_frequency') + '</td><td>' + (ready ? formatFreqHz(c.f) : t('measuring')) + '</td></tr>' +
     '<tr><td>' + t('pnm_offset') + '</td><td>' + (ready ? (offHz >= 0 ? '+' : '') + fmtHzUnit(Math.abs(offHz)) : '—') + '</td></tr>' +
@@ -262,11 +281,9 @@ function drawLoading(c: HTMLCanvasElement, ctx2: CanvasRenderingContext2D, col: 
   ctx2.fillText(t('please_wait'), cx, by + 26);
 }
 
-// Register this view with the renderer hub (report finding E-5).
 registerViewRenderer({
   mode: 'pnm',
   render: () => { renderPnm(); updatePnmTable(); },
 });
 
-// Register this measurement tab with the registry (report finding E-5).
 registerMeasurementTab({ id: 'pnm', domId: 'tab-pnm', apply: measPnmApply, updateTable: updatePnmTable });

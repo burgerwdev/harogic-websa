@@ -241,6 +241,7 @@ pub struct ComplexBandFilter {
     im_q: FirState,
     im_i: FirState,
     re_q: FirState,
+    im_zero: bool,
     scratch_a: Vec<f64>,
     scratch_b: Vec<f64>,
     out_a: Vec<f64>,
@@ -250,11 +251,13 @@ pub struct ComplexBandFilter {
 impl ComplexBandFilter {
     /// `(re, im)` are the tap components from [`design_complex_bandpass`].
     pub fn new(re: Vec<f64>, im: Vec<f64>) -> Self {
+        let im_zero = im.iter().all(|&tap| tap == 0.0);
         Self {
             re_i: FirState::new(re.clone()),
             im_q: FirState::new(im.clone()),
             im_i: FirState::new(im),
             re_q: FirState::new(re),
+            im_zero: im_zero,
             scratch_a: Vec::new(),
             scratch_b: Vec::new(),
             out_a: Vec::new(),
@@ -288,6 +291,18 @@ impl ComplexBandFilter {
         let mut conv_i_re = core::mem::take(&mut self.out_a);
         let mut conv_q_im = core::mem::take(&mut self.out_b);
         self.re_i.process_into(&self.scratch_a, &mut conv_i_re);
+        if self.im_zero {
+            self.re_q.process_into(&self.scratch_b, &mut conv_q_im);
+            out.clear();
+            out.reserve(conv_i_re.len() * 2);
+            for k in 0..conv_i_re.len() {
+                out.push(conv_i_re[k]);
+                out.push(conv_q_im[k]);
+            }
+            self.out_a = conv_i_re;
+            self.out_b = conv_q_im;
+            return;
+        }
         self.im_q.process_into(&self.scratch_b, &mut conv_q_im);
         let mut conv_i_im = Vec::with_capacity(n);
         let mut conv_q_re = Vec::with_capacity(n);
@@ -348,6 +363,35 @@ mod tests {
         for (i, (u, v)) in one.iter().zip(a.iter()).enumerate() {
             assert!((u - v).abs() < 1e-12, "sample {i}: {u} vs {v}");
         }
+    }
+
+    #[test]
+    fn real_band_uses_two_firs_without_changing_streaming_results() {
+        let re = design_lowpass(325_520.0, 90_000.0, 257);
+        let mut band = ComplexBandFilter::new(re.clone(), vec![0.0; re.len()]);
+        assert!(band.im_zero);
+        let mut expected_i = FirState::new(re.clone());
+        let mut expected_q = FirState::new(re);
+        for (start, len) in [(0, 17), (17, 509), (526, 9)] {
+            let i: Vec<f64> = (start..start + len).map(|k| (k as f64 * 0.13).sin()).collect();
+            let q: Vec<f64> = (start..start + len).map(|k| (k as f64 * 0.07).cos()).collect();
+            let iq: Vec<f64> = i.iter().zip(&q).flat_map(|(&a, &b)| [a, b]).collect();
+            let mut actual = Vec::new();
+            band.process_complex_into(&iq, &mut actual);
+            let mut ei = Vec::new();
+            let mut eq = Vec::new();
+            expected_i.process_into(&i, &mut ei);
+            expected_q.process_into(&q, &mut eq);
+            for (k, (&a, &b)) in ei.iter().zip(&eq).enumerate() {
+                assert_eq!(actual[2*k], a);
+                assert_eq!(actual[2*k+1], b);
+            }
+        }
+        let mut complex = ComplexBandFilter::new(vec![1.0], vec![1.0]);
+        assert!(!complex.im_zero);
+        let mut out = Vec::new();
+        complex.process_complex_into(&[1.0, 2.0], &mut out);
+        assert_eq!(out, [-1.0, 3.0]);
     }
 
     #[test]

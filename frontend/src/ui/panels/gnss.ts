@@ -1,5 +1,4 @@
 // GNSS detail popover.
-// Extracted from ui/controls.ts (report finding P1-5).
 import * as S from '../../core/store';
 import { t } from '../../core/i18n';
 
@@ -11,9 +10,10 @@ function fmtNow(): string {
 }
 
 export function fillGnssDetail() {
-  const g = S.lastGnss || {};
+  const stale = Boolean(S.lastGnss?.stale);
+  const g = stale ? {} : (S.lastGnss || {});
   const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('gnss-d-lock', g.lock ? t('status_locked') : t('status_nolock'));
+  set('gnss-d-lock', stale ? t('status_stale') : g.lock ? t('status_locked') : t('status_nolock'));
   set('gnss-d-sats', g.sats != null ? String(g.sats) : '-');
   set('gnss-d-docxo', g.docxo ? t('on') : t('off'));
   set('gnss-d-docxo_mode', g.docxo_mode === 0 ? t('gnss_docxo_lock') : (g.docxo_mode === 1 ? t('gnss_docxo_hold') : '-'));

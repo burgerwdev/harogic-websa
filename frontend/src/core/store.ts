@@ -1,28 +1,14 @@
-// Global state (centralized management of the original app.js globals)
-//
-// Parameters live in ui/*State.ts slots; measurement results live in core/results.ts;
-// shared types in core/model.ts. This module keeps the runtime/UI state and re-exports the
-// moved names so existing `S.x` / `S.setX` call sites keep working.
+// Runtime/UI state. Parameters live in ui/*State.ts slots, measurement results in
+// core/results.ts, and shared types in core/model.ts.
 import type { MarkerState, TraceState } from './model';
 import { requestRender } from '../render/redraw';
 import { getUiScale } from './uiScale';
 // Canvas
 //
-// These are assigned by initStore() rather than at import time: importing this module used
-// to touch the DOM, which made the import order load-bearing (report finding P2-1). They are
-// `let` bindings, so every importer sees the assigned values (ESM live bindings); layout code
-// must therefore read them inside functions, not at module scope.
-//
-// Drawing coordinates are CSS pixels of the canvas *content box* (W/H below), not a fixed
-// 860x480 grid: the frame is fluid, so the plot uses the box it is actually given and the
-// backing store follows it (`round(box x ratio)`), which is what keeps it sharp - a fixed
-// backing store stretched by CSS is what "soft on a bigger screen" looked like. Geometry
-// (plotRect/getX/getY/MARGIN, peak/marker readouts) stays in these logical units, so no
-// readout depends on the window size.
-//
-// The size is re-derived from a ResizeObserver, never from inside a frame: a per-frame
-// getBoundingClientRect() is a forced layout every frame, which render/spectrum.ts used to do
-// for the waterfall's CSS width (see 'the waterfall never reads layout' in the DOM guard).
+// initStore() assigns these ESM live bindings. Read them inside functions, not at module scope.
+// Drawing coordinates are CSS pixels of the canvas content box. Geometry and readouts use
+// these logical units; the backing store uses round(box × pixel ratio) for sharp rendering.
+// ResizeObserver updates the size outside the frame loop to avoid forced layout per frame.
 // Fallback drawing space in CSS px, used when there is nothing to measure (jsdom, a hidden
 // tab, before the first layout); the live values are W/H below.
 export const LOGICAL_W = 860;
@@ -44,9 +30,7 @@ export const MARGIN = { left: 10, right: 50, top: 14, bottom: 26 };
 //   * PIXEL_BUDGET 8M device pixels (~32MB for this canvas) - a 3840px-wide window at 2x
 //     would otherwise allocate a 25M-pixel bitmap that is cleared whenever the size changes.
 //     Past the budget the ratio is reduced, never below 1.
-//   * The ratio is clamped *up* to 1: a scale below 1 is real (with a desktop text scale set,
-//     Chromium reports 0.906 on this laptop's panel), and an undersampled bitmap is blurrier
-//     than an oversized one.
+//   * Clamp the ratio to at least 1 to avoid undersampling at fractional desktop scales.
 const MAX_SCALE = 4;
 const PIXEL_BUDGET = 8_000_000;
 
@@ -128,10 +112,7 @@ export function initStore(): void {
 
 // Frequency/amplitude state
 //
-// `dbPerDiv`, `levelUnit` and `currentGapFill` intentionally stay plain values: they are
-// single-writer, but they are read inside per-frame loops (getY / level conversions / gap
-// fill), and calling a slot get() there is exactly what saturated the main thread once
-// (DEVELOPMENT.md §3, hot-path rule).
+// dbPerDiv, levelUnit, and currentGapFill are single-writer plain values read in per-bin loops.
 export let FREQ_MIN = 9e3, FREQ_MAX = 9e9;
 export function setFrequencyLimits(minimum: number, maximum: number) {
   if (isFinite(minimum) && isFinite(maximum) && minimum > 0 && maximum > minimum) {
@@ -139,25 +120,15 @@ export function setFrequencyLimits(minimum: number, maximum: number) {
     FREQ_MAX = maximum;
   }
 }
-// (Reference level/mode live in ui/refState.ts; rta_ref_level/rta_ref_mode were unused copies - the
-// STATUS `ref` field is already the effective value for the active mode.)
-//
-// The client used to keep a copy of the device's Ref ROW here (from `caps`), as the clamp for the
-// arrows and the drag. It is gone: that row is an AUTO-PLACEMENT input, not a limit on what an
-// operator may ask for (the vendor SDK documents no Ref range at all - see panels/refAmp.ts
-// REF_USER_* and the FAQ). Keeping a copy here only invited the invented limit back.
+// Reference level/mode live in ui/refState.ts; STATUS `ref` is effective for the active mode.
+// The device Ref ROW is an auto-placement input, not a user Ref limit (see panels/refAmp.ts).
 export let configVersion = 0;
 export function setConfigVersion(v: number) { configVersion = v; }
 
-// Last centre confirmed by a STATUS while the hardware was in an SWP-family mode.
-// STATUS `center` is mode-dependent (in SDR it is the SDR centre), so this is the only
-// unambiguous source for "where the swept view is" when handing off to SDR.
 export let dbPerDiv = 10.0;
 export function setDbPerDiv(v: number) { dbPerDiv = v; }
 export const totalDivs = 10;
-// (RBW/VBW mode + effective values, points and spur mode live in ui/swpState.ts. Copies
-// here were written by the STATUS handler and by the RBW/VBW UI functions at the same time,
-// so a user choice could not be told apart from a confirmed value.)
+// RBW/VBW mode and effective values, points, and spur mode live in ui/swpState.ts.
 export let currentGapFill = true;
 export function setCurrentGapFill(v: boolean) { currentGapFill = v; }
 export let sweepMs = 0;
@@ -165,8 +136,7 @@ export function setSweepMs(v: number) { sweepMs = v; }
 export let sweepMsMeas = 0;
 export function setSweepMsMeas(v: number) { sweepMsMeas = v; }
 export let deviceConnected = false;
-// True while the frames we receive are unusable (saturated/undefined): shown on the canvas
-// instead of silently dropping them forever.
+// Received frames are unusable (saturated/undefined); expose this condition on the canvas.
 export let badData = false;
 export function setBadData(v: boolean) { badData = v; }
 // Nearest drawn bin under the pointer while the pointer is inside the plot. The value is null
@@ -177,11 +147,10 @@ export function setPlotCursorIdx(v: number | null) { plotCursorIdx = v; }
 export function setDeviceConnected(v: boolean) { deviceConnected = v; }
 export let lastMeasKey = '';
 export function setLastMeasKey(v: string) { lastMeasKey = v; }
-// (The display reference level lives in ui/displayRef.ts: it had several writers with no
-// arbitration, so a Preset/normalise/trace reset could clobber a manually set SDR Ref.)
+// Display reference level ownership lives in ui/displayRef.ts.
 export let levelUnit: 'dBm' | 'dBmV' | 'dBuV' | 'dBV' = 'dBm';
 export function setLevelUnit(v: 'dBm' | 'dBmV' | 'dBuV' | 'dBV') { levelUnit = v; }
-// RTA trigger parameters live in ui/triggerState.ts (slots, report finding P1-6).
+// RTA trigger parameters live in ui/triggerState.ts slots.
 // SWP software level trigger: the swept engine has no level trigger, so the condition is
 // evaluated in software across consecutive sweeps (see ui/swpTrigger.ts).
 export let swpArmed = false;
@@ -266,8 +235,7 @@ export function setRtaMode(v: boolean) { rtaMode = v; }
 // listen-frequency marker / passband.
 export let sdrMode = false;
 export function setSdrMode(v: boolean) { sdrMode = v; }
-// (Every SDR parameter - centre/decimate/span/listen/demod/ifbw/deemph - lives in
-// ui/sdrState.ts. Copies here are what let the store and the form controls disagree.)
+// SDR parameters live in ui/sdrState.ts.
 // Audio is OFF until the user explicitly enables it ("Listen").
 // (The SDR auto-scale and audio preferences live in ui/sdrState.ts.)
 
@@ -282,7 +250,7 @@ export const ABSORB_THRESH = 0.3;
 export const NORM_REF_RBW_FACTOR = 60;
 export const PNM_OFFSETS = [100, 1000, 10000, 100000, 1000000, 10000000];
 
-// ── Re-exports of the moved state (results + types) ──
+// Shared results and types
 export type {
   ChanResult, ExtremaItem, HarmResult, M3dBResult, MarkerState, StdSnap, TraceState,
 } from './model';

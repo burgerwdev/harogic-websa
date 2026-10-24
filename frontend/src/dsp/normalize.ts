@@ -6,6 +6,7 @@ import { currentRBW } from '../ui/swpState';
 import { setDisplayRef } from '../ui/displayRef';
 import { resetTraceAccum } from './traces';
 import { updateInfoBar } from '../render/infobar';
+import { requestRender } from '../render/redraw';
 
 export function normRefWindow(): number {
   if (normRefWinUser.get() > 0) return normRefWinUser.get();
@@ -43,7 +44,7 @@ function classifySource(powers: Float32Array) {
   return { isSrc, noiseFloor, thresh, srcRatio: n ? srcCount / n : 0 };
 }
 
-function buildReferenceTable(powers: Float32Array): Float32Array {
+export function buildReferenceTable(powers: Float32Array): Float32Array {
   const n = powers.length;
   const { isSrc, srcRatio } = classifySource(powers);
   // No source points (noise source/weak signal): reference = smoothed noise floor (local mean),
@@ -87,6 +88,17 @@ function cleanReference(ref: Float32Array, win = 5): Float32Array {
   }
   return out;
 }
+/** Rebuild calibration only from the existing absolute reference, never relative display data. */
+export function setNormalizeReferenceWindow(value: number): void {
+  normRefWinUser.set(value);
+  const trace = S.traces[S.activeTraceIdx];
+  if (trace.isNormalized && trace.reference) {
+    trace.reference = smoothRefWindow(cleanReference(buildReferenceTable(trace.reference)), normRefWindow());
+    resetTraceAccum(trace);
+  }
+  requestRender();
+}
+
 
 export function normalizeActiveTrace() {
   const t = S.traces[S.activeTraceIdx];
@@ -101,6 +113,7 @@ export function normalizeActiveTrace() {
   setDisplayRef('mode', 0.0);
   updateNormalizeStatusUI();
   updateInfoBar();
+  requestRender();
 }
 
 export function resetActiveTraceNormalize() {
@@ -113,6 +126,7 @@ export function resetActiveTraceNormalize() {
   }
   updateNormalizeStatusUI();
   updateInfoBar();
+  requestRender();
 }
 
 import { updateNormalizeStatusUI } from './normalizeStatus';

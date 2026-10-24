@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tinysa import TinySA  # noqa: E402
 
 import htra_api as T  # noqa: E402
-from web_sa.hardware import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
+from tools.reference import sdk_bindings as sb  # noqa: E402  (restored BootInfo)
 
 
 class AMDemodParam(Structure):

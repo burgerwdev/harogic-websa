@@ -2,7 +2,6 @@
 import pytest
 
 from tools.bench.hardware_smoke import TinySaSource, safe_tinysa_level
-from web_sa.supervisor import should_restart
 
 
 @pytest.mark.parametrize(
@@ -42,10 +41,3 @@ def test_tinysa_configures_safely_before_enabling():
     assert commands[:4] == ['output off', 'level -42', 'mode output', 'output off']
     assert commands.index('sweep cw 7000000000') < commands.index('level -35')
     assert commands.index('level -35') < commands.index('output on')
-
-
-def test_supervisor_only_restarts_native_or_timeout_failures():
-    assert should_restart(-11)
-    assert should_restart(70)
-    assert not should_restart(0)
-    assert not should_restart(1)

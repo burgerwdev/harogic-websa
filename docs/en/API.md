@@ -1,12 +1,12 @@
 # API Documentation
 
-Backend (`web_sa/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames).
+Native backend (`native-ddc/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames). Root `./run.sh` defaults to hardware on port 8080; Python clients are optional tools.
 
 - Service: `http://127.0.0.1:8080` (WebSocket at `/ws`)
 - Frontend: modern UI at `/`, static assets `/static/dist/{file}`
-- Loopback is the secure default. Remote listeners require `WEBSA_TOKEN`; REST accepts a
-  Bearer token and browser/WS clients accept `?token=...`. WebSockets require same-origin
-  access or an origin listed in `WEBSA_ALLOWED_ORIGINS`.
+- Loopback is the default. Set `WEBSA_HOST=0.0.0.0` for LAN access; product endpoints
+  do not require authentication. WebSockets require same-origin access or an origin
+  listed in `WEBSA_ALLOWED_ORIGINS`.
 
 ---
 
@@ -53,24 +53,25 @@ Field reference:
 | `ref_mode` | str | always `manual`: Auto Scale is a one-shot action, not a tracking mode |
 | `rbw_mode` / `rbw` | str / number | RBW mode (manual/auto), resolution bandwidth |
 | `vbw_mode` / `vbw` | str / number | VBW mode (bypass/equal/tenth/manual), video bandwidth |
-| `points` | int | requested points (frontend resample target) |
+| `points` | int | requested SWP trace points; the actual returned native count is in each FREQ/POWR frame |
 | `window` | int | FFT window: 0=FlatTop 1=Blackman-Nuttall 2=LowSideLobe 3=Rectangle 4=Kaiser |
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
 | `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
+| `frame_detector` | str | Frame Avg request; native Preset restores `device_default`, leaving the inter-frame detector to the SDK profile default |
 | `mode` | str | measurement mode (std/harmonic/pnm/rta/sdr) |
 | `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm, the **auto-placement** row, not a limit on what a user may ask for - see FAQ_NOTES), `rta_span_max` (Hz), `rta_points` |
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp`, `req.rta` and `req.sdr` retain mode-private settings |
 | `swp_actual` / `rta_actual` | obj | latest SDK effective settings for each spectrum mode |
 | `sweep_ms` / `sweep_ms_meas` | number | SDK-estimated minimum SWP time (ms, in FREQ/POWR headers; 0 if SDK has no estimate) / publisher's measured acquisition/publish step duration EMA (ms, STATUS only). SWT prefers the estimate; when it is 0, SWT displays the EMA marked `measured` rather than leaving the field blank or mixing sources. |
-| `sdr` | obj | the SDR receive chain: the requested `center`/`decimate`/`listen`/`demod`/`if_bw`/`squelch`/`volume`/`agc`/`pitch`/`deemph_us`, plus `actual` (the IQS/DDC geometry). In `actual`, `bandwidth` is the requested display window, and `capture_bandwidth` with `capture_decimate` gives the stream geometry of the device. The capture is wider when the request would make the IQS packet period too long (refer to `SDR_MAX_CAPTURE_DECIMATE`). `actual` also holds the capture window and the packet shape. The object also gives `level_dbfs` (Python-path audio level), `channel_dbm` (pre-AGC tuned-bin peak; null until measured), `squelch_open`, `adm` (vendor AM/FM metrics), and `health` (packet counters, non-empty in SDR only) |
-| `rta_actual.frame_points` | int | RTA device FFT frame width; `points` and the display trace stay at 1001 |
-| `config_version` / `response_to` | int / str? | successful reconfiguration sequence and command-response correlation |
-| `auto_ref` | obj | reference-placement state: `last_peak`/`last_noise_floor` (newest trace), `target` (level the last fit applied), `result` (`idle`/`applied`/`ok`/`no_signal`/`no_data`/`clipped`/`below_window`/`overflow`), `seq` (increments per decision), `pending` (queued level), `adjusting` (a change is queued or still settling). The placement no longer produces `no_signal` (it is floor-anchored, so a missing signal is not a refusal) - the value stays in the vocabulary because the field's values are a contract |
+| `sdr` | obj | Requested tuning/demod/audio settings, `actual` capture/display/DDC geometry, `level_dbfs`, squelch, vendor ADM metrics and native stream health. `sdr.level_dbfs` is channel 1's meter; each `sdr.channels[].level_dbfs` measures its own normalized complex IQ before AGC/audio gain: `10*log10(mean(I²+Q²))`, with wire full scale 1. It is null for no finite measurement (including zero power), inactive/disabled channels, changed stream identity/tuning, outside SDR mode, or input older than 1500 ms. Each channel's `channel_dbm` reports its fresh SDK tuned-bin peak; `squelch_open` reports the processed analog audio gate, and is null before processing, for stale/inactive streams or for DRM codec audio that bypasses the gate. Top-level `sdr.channel_dbm` and `sdr.squelch_open` mirror channel 1. Requested display bandwidth may be narrower than device capture bandwidth. |
+| `rta_actual.frame_points` | int | RTA device FFT frame width; RTA2 delivers returned bins independently of SWP points |
+| `config_version` / `response_to` / `request_id` | int / str / scalar | successful reconfiguration sequence; command name and optional scalar request identity echoed on command STATUS/ERROR; periodic publications omit response identity |
+| `auto_ref` | obj | bounded Auto session state: `adjusting`; `pending`, the hardware or display target awaiting fresh confirmation; `hardware_adjusting`, which distinguishes SDR capture recovery/audio transition and remains false for display-only fitting; `seq`, `last_peak`, `last_noise_floor`, `result`, and successful final `target` (otherwise null). See Auto Scale below. |
 | `rta_health` | obj | current consecutive RTA errors and in-place recovery attempts |
-| `amp` | obj | gain chain: atten/preamp/ifgain/gain_strategy + actual atten_actual/preamp_actual/ifgain_actual |
+| `amp` | obj | shared requested `atten`/`preamp`/`ifgain`/`gain_strategy`, plus active-mode SDK-configured `atten_actual`/`preamp_actual`/`ifgain_actual`; unavailable actuals are null, never copied from requests. Preamp 0 means configured Auto and 1 Off, not physical On/off telemetry. |
 | `ref_clock` | str | reference clock source: internal/external/premium/external_forced |
-| `has_docxo` | bool | DOCXO supported |
+| `has_docxo` / `has_premium_ref_clock` | bool | Installed DOCXO hardware / available premium internal source. Derived from hardware options, independent of GNSS lock or work mode |
 | `refclk_ppm` / `calibrating` / `last_cal_freq` | - | GNSS calibration state |
 | `refclk_out` | bool | reference clock output enable |
 | `gnss` | obj | GNSS state: `lock`(0/1) `sats` `docxo`(0/1) `docxo_mode`(0=disciplined,1=hold) `antenna`(0=external,1=internal) `latitude`/`longitude`(deg) `altitude`(m) `time`(UTC, "0000-00-00 00:00:00" when invalid) |
@@ -120,32 +121,59 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_PRESET` | - | restore device default config (Preset) |
 | `CAL_REFCLK` | `count?` | GNSS 1PPS reference clock calibration (background; `calibrating=true` meanwhile) |
 | `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
-| `SET_REF` | `mode` (manual/auto), `ref?`, `range_db?` | active-mode reference level; manual requires ref. `mode=auto` is the legacy spelling of one Auto Scale (see `AUTO_SCALE`) and does **not** latch a tracking mode |
-| `AUTO_SCALE` | `range_db?`, `current_ref?` | place the reference, from the newest trace: the noise floor lands just above the bottom of the `range_db`-tall window. Never refuses for lack of a signal. `current_ref` is the level the user is looking at - a DISPLAY value, so it is validated against the display bounds, not the device Ref range (in SDR the client owns the scale, and its target is clamped to that display range too). Applying a target is one step of a bounded closed loop: the trace is not independent of Ref (the automatic attenuator re-picks with it), so the level may step two or three times before the placement is good - watch `auto_ref.adjusting`/`seq`/`pending`. Does nothing when the placement is already good (no reconfiguration). A settings change (span/centre/RBW/VBW/window/decimation) arms the same bounded loop; a level the user typed is never reversed by it. The result is reported in `auto_ref.result`/`target`/`seq` |
-| `SET_RBW` | `mode?` (manual/auto), `rbw?` | set resolution bandwidth |
+| `SET_REF` | `mode` (manual/auto), `ref?`, `range_db?` | active-mode reference; manual requires `ref` in -160..40 dBm. `mode=auto` starts one Auto Scale session |
+| `AUTO_SCALE` | `range_db?` (5..200), `current_ref?`, `display_only?` | bounded reference placement/recovery; see below. `current_ref` is a display value |
+| `SET_RBW` | `mode?` (manual/auto/one_thousandth_span/one_percent_span), `rbw?` | SWP resolution bandwidth; RTA uses its supported manual/auto choices |
 | `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
-| `SET_SWEEP` | `mode?` (0~8), `time?` (s, 0~60) | sweep-time mode (0=minSWT 1=x2 2=x4 3=x10 4=x20 5=x50 6=xN 7=Manual 8=minSMPxN); `time` is absolute seconds in Manual, a multiplier in xN. In RTA the pair is applied to the RTA profile instead |
-| `SET_POINTS` | `points` (51~4000) | set sweep points |
+| `SET_SWEEP` | `mode?` (0..8), `time?` (schema: 0..1000) | 0=minSWT, 1=x2, 2=x4, 3=x10, 4=x20, 5=x50, 6=xN, 7=Manual, 8=minSMPxN. `time` is seconds for Manual and a multiplier for xN; mode-specific handler validation also applies. RTA updates its own profile |
+| `SET_POINTS` | `points` (integer 51..16000) | requested SWP points; RTA points are SDK-owned |
 | `SET_SPUR` | `mode` (bypass/standard/enhanced) | spur rejection mode |
 | `SET_WINDOW` | `window` (0~4) | FFT window |
 | `SET_DETECTOR` | `mode` (auto/sample/pos_peak/neg_peak/rms/auto_peak) | trace detector, SWP only |
 | `SET_AMP` | `atten` (-1~33), `preamp` (0/1), `ifgain` (0~3), `gain_strategy` (0/1) | gain chain config |
-| `SET_REFCK` | `mode` (internal/external/premium/external_forced) | reference clock source; reconfigures the active RTA profile |
-| `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active RTA profile |
+| `SET_REFCK` | `mode` (internal/external/premium/external_forced) | requested reference source; reconfigures the active profile. Unavailable premium hardware is rejected before mutation. `actual.refclk_src` reports the SDK-resolved source, including automatic external fallback |
+| `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active profile |
 | `SET_MODE` | `mode` (std/harmonic/pnm/rta/sdr) | switch measurement mode (session) |
 | `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
-| `SET_SDR` | `center?`, `decimate?` (power of two, 1~`caps.decimate_max`; rounded to the nearest power of two) | set the SDR capture window (IQS center and decimation; full reconfiguration) |
-| `SET_SDR_TUNE` | `listen` (Hz) | cheap retune of the demodulator within the capture window (software NCO; clamped to the window) |
-| `SET_SDR_DEMOD` | `mode?`, `deemph_us?` (-1=auto 0=off ..1000), `ifbw?` (100~500000 Hz), `squelch?` (-150..0 dBm tuned-bin peak, before audio AGC), `volume?` (0~2), `pitch?` (200~2000 Hz), `agc?` (bool) | the demodulator settings. `mode` is a token from the DSP plugin registry (analog: am/dsb/usb/lsb/cw/nfm/wfm/pm; digital: ft8) — the demodulator runs in the browser, the Python chain keeps demodulating the analog subset it implements. A digital mode decodes in the browser worker while an SSB companion plays the channel audio. Mode/pitch/de-emphasis are applied without touching the stream while the browser owns the audio; `ifbw` reconfigures the channelizer |
+| `SET_SDR` | `center?`, `decimate?` (power of two, 1~`caps.decimate_max`; rounded to the nearest power of two), `pfb_taps_per_phase?` (native backend: 4/8/16, default 16) | set the SDR capture window; the native backend rebuilds the channelizer for the selected PFB taps per phase. 16 taps is the default rejection profile; 8/4 are measured lower adjacent/alias-rejection profiles |
+| `SET_SDR_TUNE` | `listen` (Hz) | tune the primary receiver. On the native backend, tuning within the capture updates the channel plan; an enabled primary tuned beyond the capture moves the shared capture to the requested frequency. All three channel configurations are preserved. Enabled auxiliary channels must fit the replacement capture; auxiliary tuning never moves the capture. Device limits, occupied bandwidth, coarse passband and admission failures are reported explicitly |
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?` (-1=auto 0=off ..1000), `ifbw?` (100~500000 Hz), `squelch?` (-200..0 nominal SDK dBm tuned-bin peak, before audio AGC; <=-160 selects Off), `volume?` (0~2), `pitch?` (200~2000 Hz), `agc?` (bool), `am_sync?` (bool, default false) | primary receiver settings. The native backend processes all 12 modes: am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/drm/drmplus. It emits AUD2 PCM and SDE2 events. The browser controls playback and displays results. `ifbw` reconfigures the channelizer |
+| `SET_SDR_CHANNEL` | `channel?` (1–3, default 1), `enabled?`, `freq?`/`listen?`, `mode?`/`demod?`, `ifbw?`/`if_bw?`, `squelch?`, `volume?`, `agc?`, `pitch?`, `deemph_us?`/`deemph?`, `nr?`, `nr_strength?`, `nr_algorithm?`, `nr_atten_db?`, `stereo?`, `am_sync?`, `audio_rate?`, `sstv_mode?` | partially update one receiver; omitted fields retain their values. Conflicting aliases are rejected. `am_sync` is a strict JSON boolean, default false. Squelch accepts -200..0, pitch (0,20000] Hz, NR strength 0..1, algorithm wiener/dfn, attenuation 0..100 dB, audio rate integer 8000..192000; SSTV mode is null (automatic) or a supported mode index. Volume/deemphasis use the bounds above. |
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
 | `SET_TRIGGER` | `source` (bus/freerun/level/external/timer), `edge` (rising/falling/double), `level` (dBm, `caps` bounds), `safetime`/`delay`/`pretime` (0~10 s), `acqtime` (0.0005~60 s), `retrigger` (0-65535), `retriggerperiod` (s), `out` (none/per_hop/per_sweep/per_profile), `outpolarity` (positive/negative) | RTA acquisition trigger (written into the RTA profile): reconfigured immediately while in RTA, otherwise applied on the next entry. The swept-mode level trigger runs in the frontend and does not use this command |
 
-> Config commands (`SET_*`) reply with the latest STATUS and `response_to=<command>`;
-> periodic STATUS messages omit `response_to`.
->
-> Commands validate finite numbers, ranges, enums, device connection, and capabilities. Invalid REST
-> commands return HTTP 400 `{"error":"..."}`; WS commands return `{"cmd":"ERROR","msg":"..."}`.
+The squelch slider covers -160..0 in 0.1 dB steps; its minimum selects Off. Raising
+the threshold requires a stronger signal to open audio. The gate opens at or above
+the threshold and closes below threshold minus 3 dB after a 300 ms hold, with a
+smoothed attack/release. Missing or expired RF measurements fail open. The RF
+reference is the SDK spectrum's peak within one bin of the tuned frequency, not
+integrated channel power or the IQ dBFS meter; absolute RF calibration accuracy
+has not been independently established. Protocol decoding precedes this listener gate.
+
+For native FM audio, `agc=false` uses fixed PCM gain. NFM deviation of 5 kHz
+and WFM deviation of 75 kHz map to full scale before listener volume.
+WFM waveform events use a separate 20 Hz source clock.
+
+AM defaults to envelope detection; `am_sync:true` selects carrier-recovered synchronous detection. The preference is retained outside AM. An `am_sync`-only update crossfades polarity-aligned detectors without rebuilding capture, filters or resampling, changing stream identity, or resetting input/audio clocks. STATUS reports the confirmed value in `sdr.channels[].am_sync`, with primary mirrors `sdr.am_sync` and `req.sdr.am_sync`.
+
+`sdr.channels[].am_sync_generation` is a server-owned read-only u32 (default 0), mirrored for the primary channel as `sdr.am_sync_generation` and `req.sdr.am_sync_generation`. It increments only when `am_sync` changes; duplicate values leave it unchanged and requests cannot set it. Preset resets it with the new stream identity.
+
+Native WFM defaults to stereo interleaved L/R AUD2; explicit `stereo:false` selects mono.
+DRM/DRM+ codec audio does not use analog AGC, NR, squelch or deemphasis; the UI
+disables these controls and retains volume/playback. Disabled receiver slots accept
+partial updates without a valid dormant frequency; enabling validates tuning.
+SSTV `sstv_mode:null` selects automatic detection; a supported integer pins a mode.
+Saved selection is replayed only after confirmed SDR entry. Display decimation,
+capture `sdr.actual.iq_rate` and per-channel `actual_iq_rate` are distinct quantities.
+
+Channel admission uses a symmetric occupied-bandwidth envelope around tuning. USB/LSB cover the sideband IF limit; CW includes pitch and IF; FT8 retains at least positive 3.2 kHz and SSTV positive 3 kHz. Integer IQ rates follow that envelope; exact protocol rates are adapted internally. WFM IQ also supports pilot/stereo/RDS, independently of PCM playback rate. A primary recapture validates all enabled channels first; rejection leaves the previous plan active.
+
+> Config replies include `response_to=<command>` on STATUS and ERROR. A scalar
+> `request_id` (string/number/bool/null) is echoed unchanged; object/array IDs are omitted.
+> Periodic status and publisher errors carry no request identity. Rejected SWP/RTA
+> reconfiguration preserves the prior request and applied profile when restoration succeeds.
+> Invalid REST commands return HTTP 400; WS commands return `cmd:"ERROR"` with `msg`.
 >
 > Periodic STATUS `stream` metrics contain `clients`, `dropped_frames`, `dropped_control`,
 > `dropped_audio` and `dropped_iq` for observing latest-wins drops and streaming-FIFO overruns
@@ -169,7 +197,7 @@ ws.send(JSON.stringify({ cmd: 'SET_HARM', f0: 1e9, count: 5, span: 1e6 }));
 | `STATUS` | on connect / after commands / **periodic (every 1 s)** | full status (fields in §1); periodic push keeps GNSS/time/lock states fresh without page refresh |
 | `HARM` | during harmonic measurement | result: `{cmd:'HARM', list:[{n,f,amp,dBc,idx,inSpan}...]}` |
 | `PNM` | during phase noise | result: `{cmd:'PNM', offset[], pn[], carrier_freq, carrier_power, progress, done}` |
-| `ERROR` | device/command error | `{cmd:'ERROR', code, params?, msg}`; `code` is a stable identifier used by the frontend for localization, unknown codes fall back to the English `msg` |
+| `ERROR` | device/command error | `{cmd:'ERROR', code, params?, msg, response_to?, request_id?}`; stable `code` supports localization, unknown codes fall back to `msg` |
 
 **PNM message fields:**
 
@@ -205,27 +233,139 @@ offset  size  type    content
 | `FREQ` | float64 × points | frequency axis (Hz), sent only on version change |
 | `POWR` | float32 × points | power trace (dBm), paired with same-version FREQ |
 
-**RTAF — 24-byte header (real-time trace + one waterfall row):**
+**RTA2 / RTAF — 24-byte base header:**
 
 ```
 magic(4) + ver(u32) + points(u32) + wfLen(u16) + maxDensity(u16) + startHz(f64)
 + float64[points] + float32[points] + uint16[wfLen] + stopHz(f64)
 ```
 
-Sent by the RTA session and by SDR (the panadapter): spectrum + waterfall row + the display
-window (`startHz`/`stopHz`); `points` is the display trace length.
+RTA emits `RTA2`: after the base payload, append ASCII `TRIG`, a little-endian
+u32 UTF-8 JSON byte length, then the trigger metadata JSON described below.
+SDR panadapter emits legacy `RTAF` without the trailer. The browser can read old
+RTAF recordings, but those frames cannot establish hardware capture completion.
+Refresh older clients for RTA2 support. `points` is the display trace length.
 
-**Streaming frames (AUDF / IQBF):**
+#### 2.3 Native receiver subscriptions
 
-| magic | header | data | description |
-|---|---|---|---|
-| `AUDF` | magic(4) + seq(u32) + rate(u32) + samples(u32) | int16 × samples | mono PCM16 audio (48 kHz, 20 ms blocks) from the **Python demodulator path** (the fallback/reference). Only sent while a client subscribes (`/ws?audio=1`); `seq=0` flushes stale audio |
-| `IQBF` | magic(4) + ver(u32) + seq(u32) + samples(u32) + rate(f64) + centerHz(f64) | float32 × 2·samples (interleaved I/Q) | the channelized baseband (backend DDC output, at its nominal DDC sample clock) for the browser demodulator. Only sent while a client subscribes (`/ws?iq=1`); `seq=0` flushes stale baseband after a retune/reconfiguration |
+| Endpoint | Binary output |
+|---|---|
+| `/ws` | display FREQ/POWR/RTA2/RTAF plus JSON commands/status |
+| `/ws?iq=1` | primary IQBF |
+| `/ws?iqaux=1` | auxiliary IQAX |
+| `/ws/audio?channel=1` | AUD2 receiver PCM |
+| `/ws/decode?channel=1` | SDE2 receiver events |
 
-Both streaming types are FIFO-ordered (drop-oldest only on overrun) on a bounded per-client
-queue; AUDF/IQBF never mix with display frames on the same connection (the filters above).
+Audio/decode `channel` is optional: omit it for all channels, or select slot 1–3; invalid values return HTTP 400. These subscriptions do not carry display frames. The backend demodulates; the browser resamples PCM for playback and displays decoded results. Current product controls expose the primary channel and disable auxiliaries on entry to SDR. Backend subscriptions support three slots.
 
-> **Note**: POWR is forced to float32 (prevents interpolation precision misalignment); points is device-native (frontend does peak-preserving resampling).
+Stream identity is `(epoch, channel_id)`. Retuning assigns a new channel ID; replanning, recapture and new sessions assign a new epoch. Rejected requests preserve the previous configuration and stream. Old output tails precede the new start boundary. Each audio/decode subscriber receives its own sequence starting at zero, without resetting the receiver or other subscribers. Source sequence gaps and format changes without a start marker fail explicitly.
+
+Streaming uses a bounded 64-message per-client FIFO. Overflow closes the slow subscription with code 1013; samples/events are not dropped to continue playback. Display traces instead use latest-wins delivery. See [ARCHITECTURE.md](ARCHITECTURE.md) for processing ownership and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for receiver limitations.
+
+#### 2.4 IQBF/IQAX v2 header
+
+All multibyte binary fields are little-endian. IQ frames contain normalized ADC full-scale samples (`1/32768`), with no framing AGC or clipping; filter overshoot may exceed `[-1,1]`.
+
+| offset | size | field |
+|---:|---:|---|
+| 0 | 4 | magic `IQBF` or `IQAX` |
+| 4 | 4 | version, u32 = 2 |
+| 8 | 4 | seq, u32; 0 is the empty start marker |
+| 12 | 4 | samples, u32 complex samples |
+| 16 | 8 | rate, f64, output Sps |
+| 24 | 8 | center, f64, Hz |
+| 32 | 4 | channel_id, u32 |
+| 36 | 4 | epoch, u32 |
+| 40 | 8 | input_index, u64, capture complex samples |
+| 48 | 8 | group_delay_samples, f64, output complex samples |
+| 56 | 8×samples | interleaved I/Q, f32 |
+
+`input_index` is the first output sample's causal position in the plan input, not the packet start; delay is separate. Alignment is `input_index / input_rate - group_delay_samples / rate`. The native path provides an exact index; synthetic sources use their own sample clock and zero delay. Offline reference fixtures may use `u64::MAX` for unavailable timing; never align that sentinel. Preserve u64 values as integers (JavaScript `bigint`).
+
+`STATUS.channel_registry`, `actual.channel_registry` and `sdr.actual.channel_registry` share a snapshot. Entries contain `channel`, `channel_id`, `epoch`, `frequency_hz`, `output_rate`, `input_rate`, `group_delay_samples`, `state="active"`. Disabled channels are absent; outside SDR the registry and channel clocks are empty. The service does not negotiate v1.
+
+#### 2.5 AUD2 audio header and clock
+
+AUD2 has a 96-byte header followed by interleaved finite f32 PCM: total bytes = `96 + frames * channels * 4`.
+
+| offset | type | field |
+|---:|---|---|
+| 0 | 4 bytes | `AUD2` |
+| 4 | u32 | version = 1 |
+| 8 | u32 | seq; 0 is an empty start marker |
+| 12 | u32 | PCM frames (one sample per channel per frame) |
+| 16 | f64 | actual PCM rate, Hz |
+| 24 | f64 | tuned frequency, Hz |
+| 32 | u32 | channel_id |
+| 36 | u32 | epoch |
+| 40 | u64 | input_index, capture complex samples |
+| 48 | f64 | delay_seconds, finite and nonnegative; known portion if total delay is unknown |
+| 56 | u32 | channels, 1 or 2 |
+| 60 | u32 | low 16 bits: format = 1 (f32); bit 16: total delay unknown; bit 17: causal presentation clock |
+| 64 | u64 | audio_index, PCM frame position |
+| 72 | f64 | input_rate, capture Sps |
+| 80 | u64 | input_fraction_num |
+| 88 | u64 | input_fraction_den |
+| 96 | f32 array | interleaved PCM |
+
+Rates are finite and positive, IDs/epoch nonzero, and `0 <= num < den` with `den >= 1`. When total delay is known and the clock represents source samples, alignment is `(input_index + num/den) / input_rate - delay_seconds`. Unknown delay or causal presentation does not establish exact source alignment. Protocol blocks can share an input position or jump to the next protocol frame; validate PCM continuity with `audio_index`, rather than inventing input positions from PCM duration. Delay may vary per frame.
+
+A new subscriber gets an empty `seq=0` retaining the first received block's global `audio_index` (possibly nonzero), then `seq=1`. Codec rate/channel changes may send a new start within the same IQ identity: `audio_index` resets to zero, the next sequence is 1, and the player clears queued PCM and rebuilds its rate adapter. Codec state remains valid. Mode changes mute old PCM until the new boundary.
+
+Playback feedback is internal browser messaging, not a WebSocket acknowledgement API. The ingress sends `{type:'samples', samples, stereo, delivery, generation}`; the sink grants cumulative `{type:'credit', generation, limit}` capacity and confirms `{type:'accepted', generation, delivery}`. Only matching generations apply. Unsent and unacknowledged frames share a three-second delivery budget; overflow fails playback. Receiver mode selects buffering: analog startup 450 ms; DRM/DRM+ startup 1.6 s and queue limit 2.4 s.
+
+#### 2.6 SDE2 decoded events
+
+| offset | type | field |
+|---:|---|---|
+| 0 | 4 bytes | `SDE2` |
+| 4 | u32 | UTF-8 JSON byte length, 1 byte through 2 MiB inclusive |
+| 8 | UTF-8 | JSON envelope, exactly the declared length |
+
+Envelope fields: `version=1`, `channel` (slot 1–3), `channel_id`, `epoch`, `seq`, `input_index`, `input_rate`, `input_fraction_num`, `input_fraction_den`, `delay_seconds`, `delay_known`, `causal_presentation`, `timing_kind`, `mode`, `event`. The three u64 position/fraction fields are decimal strings. Clock units and flags match AUD2. `timing_kind` is `sample`, `protocol_provenance`, or `causal_presentation`; protocol provenance does not imply a recovered sample timestamp. FT8 results retain their search-window time rather than asynchronous completion time. `event` contains mode-specific results; sequence zero carries `{type:'start'}`.
+
+AM emits `event.type:'am-info'` on a 20 Hz source-sample grid, independent of browser rendering and audio callback sizes. Its SDE2 envelope uses the source clock and delay flags above. Payload fields are:
+
+| Field | Type / meaning |
+|---|---|
+| `amSyncGeneration` | u32; actual receiver configuration generation corresponding to STATUS `am_sync_generation` |
+| `syncEnabled` | boolean; actual synchronous detector state, not a pending command |
+| `syncLocked` | boolean; enabled and carrier evidence passes power, coherence and phase/frequency consistency checks after a dwell |
+| `carrierHz` | number or null; absolute recovered RF carrier in Hz, computed from the actual receiver frequency plus `carrierOffsetHz`; null without carrier evidence |
+| `carrierOffsetHz` | number or null; recovered carrier offset in Hz, available with valid carrier evidence in either detector mode |
+| `modulationPct` | number or null; `100 * sqrt(2 * variance(envelope)) / mean(envelope)`, measured before AGC over a source-clock window; single-tone-equivalent RMS depth, not programme peak depth |
+| `inputDbFs` | number or null; raw IQ level `10*log10(mean(I²+Q²))` in dBFS; zero power is null |
+| `rmsDbFs`, `peakDbFs` | numbers; final PCM RMS and peak in dBFS, with a -160 dB floor at silence |
+| `scope` | array of at most 256 samples from actual final PCM after listener processing, NR and gain |
+
+Unavailable carrier frequency/offset/depth are null, never fabricated zeros; deep carrier fading invalidates them. AM does not report SNR. `syncLocked:false` is expected with sync disabled even when carrier metrics are valid. Recovery uses coarse frequency acquisition followed by integral phase tracking with separate 150 ms acquisition/loss dwell; deep fades invalidate immediately. Input power uses 100 ms windows with 500 ms exponential smoothing. Envelope variance is normalized within each 100 ms window before its modulation power is smoothed over 1 s, avoiding false modulation from slower RF fading. Carrier offset uses 250 ms smoothing after acquisition. Audio waveform samples remain actual PCM.
+
+The browser accepts AM telemetry and lock only when `amSyncGeneration` matches the authoritative STATUS generation; an unknown generation is not accepted. This rejects queued telemetry from an earlier switch even after off/on returns to the same boolean value. Device/control disconnect invalidates telemetry and generation; decode resumes only after STATUS confirms connection.
+
+SSTV subscribers receive a start and a bounded snapshot of the current image before live row increments. Image events contain `type:'sstv-image'`, `width`, `height`, `row`, `rows`, packed RGB byte array `rgb`, and `meta`; snapshots are split into at most 64 rows each. The service retains only the current image; browser history is local.
+
+The browser delivers event batches FIFO using `{type:'frames', envelopes}` and acknowledges application with `{type:'ack'}` on its internal worker port. Queued plus in-flight data is limited to 32 events / 4 MiB; overflow explicitly fails. This acknowledgement is not sent over `/ws/decode`.
+
+> **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density uses processed samples from the active trace and native frequency positions, sharing trace offset/reference/preview mapping. Off stops both accumulation and drawing. Fluorescent glow follows the trace path. Waterfall history retains native frequency positions; missing bins remain gaps unless SWP GapFill is enabled.
+
+On an axis-version transition, the first frame for the new axis takes priority and
+older-version frames are rejected. Density projects native frequency centers continuously,
+splits each amplitude contribution between two rows, and uses bilinear display sampling.
+Grain defaults to 128; NaN gaps stay blank. Off stops and clears accumulation;
+VIEW retains frozen history without decay or repeated hits.
+
+SWP/RTA/SDR raster paths use each device-pixel column's first, minimum, maximum and last original vertices, in source order, and split at every missing bin. Zoom reveals the retained native vertices as they occupy separate pixels; markers and export always use the complete source arrays. Optional SWP adaptive smoothing still uses the full frame, consistently with marker readouts.
+
+The global navigator uses independent minimum/maximum segments at their original Hz in bounded columns; columns containing missing samples stay blank. It is an overview of retained data, not an extra resolution source.
+
+CSV exports the selected current-mode processed trace and matching native axis;
+OFF/missing/mismatched data produces a no-data notice, never an old SWP fallback.
+Limits/channel measurements require the selected processed absolute trace;
+normalized traces are N/A and emit no absolute measurement CSV rows. RTA/SDR
+disable these measurement controls. dBc receives no external level offset.
+SWP waterfall rows come from accepted raw POWR at most 10 Hz, not repaint calls.
+
+
 
 ---
 
@@ -241,11 +381,16 @@ queue; AUDF/IQBF never mix with display frames on the same connection (the filte
 1. `SET_MODE {mode:'pnm'}` → `SET_PNM {center, threshold, traceavg, start, stop}`
 2. Server does incremental acquisition (`PNM_GetPartialUpdatedFullTrace`), pushes `PNM` per frame (with progress)
 
+Each Harmonic/PNM Set starts a new `session_id`; successful command STATUS echoes it,
+and HARM/PNM results carry the applied session ID. Clients reject older session results,
+including an old hardware cycle finishing during reconfiguration. The browser clears
+previous results on Set. PNM averaging has its own visible control.
+
 ### SDR (software-defined receive)
 
 1. `SET_MODE {mode:'sdr'}` → optionally `SET_SDR {center, decimate}` (capture window)
-2. `SET_SDR_TUNE {listen}` retunes the demodulator cheaply inside the window; `SET_SDR_DEMOD` selects the demodulator and its audio settings
-3. The server pushes `RTAF` (panadapter spectrum + waterfall), `IQBF` (channelized baseband for the browser demodulator, to `?iq=1` connections) and — while something subscribes to the Python path — `AUDF`. Level/squelch/ADM metrics are in `STATUS.sdr`
+2. `SET_SDR_TUNE {listen}` tunes the primary receiver (native: recaptures when needed, preserving auxiliary frequencies); `SET_SDR_CHANNEL {channel:1, freq}` uses the same native tuning behavior. `SET_SDR_DEMOD` selects the demodulator and its audio settings
+3. The server pushes `RTAF` (panadapter spectrum + waterfall) and subscribed `IQBF` baseband. Native receiver audio uses `/ws/audio`; decoder events use `/ws/decode`. Level/squelch/ADM metrics are in `STATUS.sdr`.
 
 ### Exit measurement
 
@@ -292,25 +437,71 @@ asyncio.run(main())
 ## 5. Notes
 
 - **Single handle**: only one process may open the device at a time (SAStudio4 and the Web service are mutually exclusive)
-- **Serialized device calls**: single-process aiohttp, commands handled serially via `_dispatch`
+- **Serialized device calls**: the native SDK shim owns a retained session thread and serializes access.
 - **Binary SDK**: `libhtraapi.so` is proprietary, obtain it from HAROGIC (the `htra_api.py` wrapper is bundled)
 - **SystemClockSource=External**: dangerous, do not use (hangs the device)
 
 
 ## Trigger reference
 
-The device-side trigger (RTA) and the frontend software trigger (SWP) are separate
-implementations; only the former is exposed by the API:
+`SET_TRIGGER` has eleven parameters. Requests remain in `req.rta.trigger_<field>`;
+`req.rta.trigger_actual` reports SDK-applied source, edge, level, safetime, delay,
+pretime, acqtime, retrigger, retriggerperiod, out and outpolarity, plus runtime metadata.
+Applied settings come from ProfileOut, and `poi` from SDK FrameInfo. Missing proof is
+unknown/null; requests are never substituted for applied settings.
 
-| Item | RTA (device) | SWP (frontend software) |
-|---|---|---|
-| Source | `level` (threshold crossing), `bus` (free-running frames, default) | level threshold, judged on the crossing **between two consecutive sweeps** |
-| Edge | rising / falling / double | same |
-| Timing | debounce `safetime`, `delay`, pre-trigger `pretime`, acquisition `acqtime`, re-trigger `retrigger`+`retriggerperiod`, trigger out `out`+`outpolarity` | not available (a swept trace has no time axis) |
-| Status | `STATUS.req.rta.trigger_actual`: `waiting`/`frames`/`edges`/`first_ts`/`first_edge_ts`; `rta_actual.poi` (shortest burst guaranteed to be intercepted) and `rta_actual.time_resolution` | decided in the browser, no STATUS fields |
-| On entering RTA | the trigger source is reset to `bus` (an armed trigger from an earlier session would otherwise come up with an empty plot) | - |
+RTA2 TRIG metadata includes `valid`, `supported`, `simulated`, `generation`, `frames`,
+`capture_id`, `packet_index`, `packet_count`, `waiting`, `complete`,
+`trigger_missed` and `last_sdk_status`. Generation advances on successful configuration;
+frames counts successful SDK packet acquisitions, not STATUS polls. Capture identity is
+null when the SDK has none. Packet index is one-based since BusStart, becoming null
+after continuity loss; packet count is known only for FixedPoints. Waiting is null
+without SDK proof: -10 can mean trigger waiting or a communication error.
 
-> Every `SET_TRIGGER` parameter is echoed back in `STATUS.req.rta` (`trigger_source`,
-> `trigger_edge`, `trigger_level`, `trigger_safetime`, `trigger_delay`, `trigger_pretime`,
-> `trigger_acqtime`, `trigger_retrigger`, `trigger_retriggerperiod`, `trigger_out`,
-> `trigger_outpolarity`).
+For finite Level/FixedPoints captures without retrigger, completion requires uninterrupted
+packet continuity and the final configured packet or SDK status -301/-303. Even -301/-303
+cannot establish a complete assembled capture after data loss. Timer, adaptive and
+retrigger boundaries remain unknown without proof. -302/-303 sets `trigger_missed`;
+-303 retains the completed capture and holds its final data while reporting the missed
+trigger. A valid complete packet is processed before freezing; older generations are
+ignored. No delay or first frame establishes completion. Finite Level capture retains
+the maximum across its traces and packets. Simulated RTA reports unsupported, invalid
+metadata and cannot produce a hardware HIT. Clock-relocked statuses -36..-39 retain
+valid RTA data and last_sdk_status; Auto treats them as warning/pending.
+
+After proven completion, the server stops SDK reads and retains the exact completed
+RTA2 for that generation, republishing it at 5 Hz for late subscribers. Replays do not
+advance frames, packet_index or Auto observations. Successful reconfiguration,
+rearm/Free Run, rollback restart, invalidation and mode exit clear the retained frame.
+This is a server-held capture; the finite SDK acquisition need not stop producing packets.
+
+In standard SWP, Capture uses a browser threshold crossing between consecutive
+display traces; only level, edge and capture helpers apply. RTA supports device timing;
+SDR/harmonic/PNM disable these controls. External/timer API states are displayed
+read-only. Free Run/Escape releases a held capture; successful mode/Preset transitions
+reset local hold. RTA entry selects bus. Auto Scale does not release an armed trigger.
+
+## Auto Scale and local level controls
+
+Explicit Auto runs for at most 20 seconds / 24 steps. Each step requires fresh data
+from the same mode/configuration. SDK IF overflow (-12) raises configured actual Ref
+by 10 dB up to `caps.ref_max`, without lowering an already higher Ref or changing gain
+selectors. Waiting/no data alone never raises Ref. A clean spectrum drives placement,
+then fresh clean data must confirm it. Recovery does not lower hardware Ref back into
+the proven overload region. Ordinary SDR fitting changes only display Ref; explicit
+overflow recovery may reconfigure IQS through normal admission. Entry fitting uses
+`display_only:true` and never changes hardware.
+
+`auto_ref.result` is `idle`, `adjusting`, `applied`, `ok`, `no_data`, `overflow`,
+`limit`, `stalled`, `failed`, `cancelled` or `timeout`. `target` is non-null only on
+successful completion. No usable acquisition ends as no_data; an adjusted but
+unconfirmed session ends as timeout. Manual Ref/AMP, frequency, mode and Preset edits
+cancel the session and clear its old target. There is no background overflow recovery.
+
+Manual Ref edits show pending until confirmed; rejection or an unconfirmed timeout
+restores the accepted display. SDR stored `sdr.ref` confirms the request separately
+from effective `ref`. External Offset compensates absolute traces/readouts once;
+axis formatting only converts units, and relative dB is unchanged. Waterfall Fixed
+range requires finite low < high; rejected edits revert with a notice. Mapping/range
+changes clear quantized history even while paused. Local Scale/Unit/Offset/Waterfall
+remain usable in std/rta/sdr; exclusive harmonic/PNM disables Level controls.

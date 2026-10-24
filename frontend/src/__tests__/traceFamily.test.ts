@@ -17,9 +17,11 @@ import {
 	SDR_DEFAULT_AVG,
 	applyTraceFamilyMode,
 	rememberTraceMode,
+	setTraceAverage,
 	setTraceMode,
 	switchTraceTab,
 	syncAvgUI,
+	toggleFreeze,
 } from '../ui/traceOps';
 
 function traceSelect(mode: string): HTMLSelectElement {
@@ -28,9 +30,10 @@ function traceSelect(mode: string): HTMLSelectElement {
 		`<option value="CLEAR_WRITE"${mode === 'CLEAR_WRITE' ? ' selected' : ''}>Clear Write</option>` +
 		`<option value="MAX_HOLD"${mode === 'MAX_HOLD' ? ' selected' : ''}>Max Hold</option>` +
 		`<option value="AVERAGE"${mode === 'AVERAGE' ? ' selected' : ''}>Average</option>` +
+		'<option value="OFF">Off</option>' +
 		'</select><div id="trace-avg-row" style="display:none;"></div>' +
 		'<select id="select-trace-avg"><option value="16" selected>16</option>' +
-		'<option value="32">32</option></select><span id="trace-avg-status"></span>';
+		'<option value="32">32</option><option value="64">64</option><option value="0">∞</option></select><span id="trace-avg-status"></span>';
 	return document.getElementById('select-trace-mode') as HTMLSelectElement;
 }
 
@@ -49,9 +52,16 @@ beforeEach(() => {
 	resetAll();
 	resetGraphMode();
 	graphMode.confirm('std');
+	S.setRtaMode(false);
+	S.setSdrMode(false);
 	traceSelect('CLEAR_WRITE');
 	S.setActiveTraceIdx(0);
-	S.traces.forEach((trace, i) => { trace.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; });
+	S.traces.forEach((trace, i) => {
+		trace.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF';
+		trace.prevMode = undefined;
+		trace.avgTarget = 16;
+		trace.avgTargetRta = 16;
+	});
 	S.traces[0].mode = 'CLEAR_WRITE';
 	rememberTraceMode(false);
 	S.traces[0].mode = 'AVERAGE';
@@ -131,6 +141,15 @@ describe('the STATUS wiring', () => {
 		expect(activeTrace().mode).toBe('MIN_HOLD');
 	});
 
+	it.each([64, 0])('retains SDR average depth %s across family changes', depth => {
+		updateStatus(status('sdr'));
+		setTraceAverage(depth);
+		updateStatus(status('std'));
+		updateStatus(status('sdr'));
+		expect(activeTrace().avgTargetRta).toBe(depth);
+		expect((document.getElementById('select-trace-avg') as HTMLSelectElement).value).toBe(String(depth));
+	});
+
 	it('restores the swept mode and depth on the way back', () => {
 		updateStatus(status('std'));
 		applyTraceFamilyMode(false);
@@ -151,5 +170,26 @@ describe('the STATUS wiring', () => {
 		switchTraceTab(0);
 		expect((document.getElementById('select-trace-mode') as HTMLSelectElement).value)
 			.toBe('AVERAGE');
+	});
+
+	it('projects each active tab average without another STATUS', () => {
+		S.traces[0].mode = 'AVERAGE';
+		S.traces[0].avgTarget = 64;
+		S.traces[1].mode = 'OFF';
+		switchTraceTab(0);
+		expect(document.getElementById('trace-avg-row')!.style.display).toBe('');
+		expect((document.getElementById('select-trace-avg') as HTMLSelectElement).value).toBe('64');
+		expect(document.getElementById('trace-avg-status')!.textContent).toBe('64');
+		switchTraceTab(1);
+		expect(document.getElementById('trace-avg-row')!.style.display).toBe('none');
+		expect(document.getElementById('trace-avg-status')!.textContent).toBe('');
+	});
+
+	it('restores the OFF dropdown when a frozen OFF trace resumes', () => {
+		setTraceMode('OFF');
+		toggleFreeze();
+		toggleFreeze();
+		expect(activeTrace().mode).toBe('OFF');
+		expect((document.getElementById('select-trace-mode') as HTMLSelectElement).value).toBe('OFF');
 	});
 });

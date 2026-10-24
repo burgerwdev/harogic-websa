@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """Architecture guard rails — fail when a structural metric gets *worse* than the baseline.
 
-These are the "fitness functions" from docs/*/ARCH_REVIEW.md §7.5. They do not demand the
-refactor be finished; they stop the situation from degrading while it is carried out:
-
-  * module cycles (frontend + backend)
-  * the two command-layer god functions (line counts)
-  * mode/session-name branching in the scheduler and command layers
-  * direct `import htra_api` outside the hardware binding layer
-  * untyped limit literals in command validation
+The active gate measures frontend module cycles against the reviewed baseline.
+Retired Python service metrics are intentionally removed rather than reported as zero.
 
 Usage:
     python3 tools/checks/architecture_guard.py              # check (CI)
@@ -18,9 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import ast
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -80,114 +72,9 @@ def frontend_cycles() -> int:
     return _cycle_count(_ts_graph())[0]
 
 
-def _module_path(dotted: str) -> Path | None:
-    rel = dotted.replace('.', os.sep)
-    for candidate in (ROOT / rel).with_suffix('.py'), ROOT / rel / '__init__.py':
-        if candidate.is_file():
-            return candidate
-    return None
 
 
-def backend_cycles() -> int:
-    graph: dict[Path, set[Path]] = {}
-    for path in (ROOT / 'web_sa').rglob('*.py'):
-        graph[path] = set()
-    for path, edges in graph.items():
-        tree = ast.parse(path.read_text(encoding='utf-8'))
-        package = path.parent.relative_to(ROOT).as_posix().replace('/', '.')
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                if node.level:
-                    base = package.split('.')
-                    base = base[:len(base) - node.level + 1]
-                    name = '.'.join(base + ([node.module] if node.module else []))
-                else:
-                    name = node.module or ''
-                if name.startswith('web_sa'):
-                    target = _module_path(name)
-                    if target is not None and target != path:
-                        edges.add(target)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith('web_sa'):
-                        target = _module_path(alias.name)
-                        if target is not None and target != path:
-                            edges.add(target)
-    return _cycle_count(graph)[0]
-
-
-def function_lines(rel_path: str, name: str) -> int:
-    tree = ast.parse((ROOT / rel_path).read_text(encoding='utf-8'))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return node.end_lineno - node.lineno + 1
-    raise SystemExit(f'{rel_path}: function {name} not found')
-
-
-MODE_BRANCH = re.compile(r"""\.mode\s*==|\.name\s*==\s*['"](?:rta|sdr|std|harmonic|pnm)['"]|\.name\s+in\s*\('(?:rta|sdr)'""")
-MODE_FILES = ('web_sa/web/ws.py', 'web_sa/web/publisher.py', 'web_sa/hardware/device.py')
-
-
-def mode_branches() -> int:
-    total = 0
-    for rel in MODE_FILES:
-        total += len(MODE_BRANCH.findall((ROOT / rel).read_text(encoding='utf-8')))
-    return total
-
-
-HTRA_IMPORT = re.compile(r'^\s*import\s+htra_api|^\s*from\s+htra_api', re.M)
-
-
-def htra_imports_outside_bindings() -> int:
-    count = 0
-    for path in (ROOT / 'web_sa').rglob('*.py'):
-        if path.name == 'sdk_bindings.py':
-            continue
-        count += len(HTRA_IMPORT.findall(path.read_text(encoding='utf-8')))
-    return count
-
-
-LIMIT_LITERAL = re.compile(r'maximum=(?:\d|[\d.]+e\d|[A-Za-z_]+\.\w+)')
-
-
-def validation_limit_literals() -> int:
-    """Numeric `maximum=` arguments in ws.py validation (should come from capabilities)."""
-    text = (ROOT / 'web_sa/web/ws.py').read_text(encoding='utf-8')
-    return len([m for m in LIMIT_LITERAL.findall(text) if not m.startswith('maximum=caps')])
-
-
-def _longest_function(rel_path: str, prefix: str = '') -> int:
-    """Longest function (optionally name-prefixed) in a module."""
-    tree = ast.parse((ROOT / rel_path).read_text(encoding='utf-8'))
-    sizes = [node.end_lineno - node.lineno + 1 for node in ast.walk(tree)
-             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-             and node.name.startswith(prefix)]
-    if not sizes:
-        raise SystemExit(f'{rel_path}: no function with prefix {prefix!r}')
-    return max(sizes)
-
-
-def command_specs() -> int:
-    """Number of declarative command entries in the registry (grows with new features)."""
-    text = (ROOT / 'web_sa/web/commands.py').read_text(encoding='utf-8')
-    registry = text[text.index('_REGISTRY = ('):text.index(')\n\n#: The command table')]
-    return len(re.findall(r"^\s*\('[A-Z_]+',", registry, re.M))
-
-
-METRICS = {
-    'frontend_cycles': frontend_cycles,
-    'backend_cycles': backend_cycles,
-    # The command layer moved into web/commands.py: measure the largest single handler and
-    # the largest cross-field rule there instead of the two god functions that used to live
-    # in ws.py. Per-field validation is declarative now (one ParamSpec per field), so the
-    # only hand-written validation left is the _x_ cross-field rules.
-    'dispatch_lines': lambda: _longest_function('web_sa/web/commands.py', '_h_'),
-    'validate_lines': lambda: _longest_function('web_sa/web/commands.py', '_x_'),
-    'command_specs': command_specs,
-    'mode_branches': mode_branches,
-    'htra_imports_outside_bindings': htra_imports_outside_bindings,
-    'validation_limit_literals': validation_limit_literals,
-}
+METRICS = {'frontend_cycles': frontend_cycles}
 
 
 def main() -> int:

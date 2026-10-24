@@ -3,10 +3,9 @@
 #     decdrm tx tools/bench/drm_bench/station_iq.toml --output drm_iq.wav --duration 60
 #     python3 tools/pluto/pluto_drm_tx.py --iq drm_iq.wav --lo 400e6
 #
-# The signal shape matches the verified fixture `tests/fixtures/drm/` (mode B, 10 kHz,
-# 64-QAM MSC, AAC + SBR mono), so a lock on the bench and a lock on the fixture are the
-# same receiver state. Run the generator from the DecDRM checkout (see the DRM bench
-# section of docs/en/ARCHITECTURE.md).
+# Generate a mode B, 10 kHz signal with 64-QAM MSC and mono xHE-AAC audio for
+# native receiver bench checks. Run the generator from the DecDRM checkout
+# (see the DRM bench section of docs/en/ARCHITECTURE.md).
 
 [channel]
 mode = "B"

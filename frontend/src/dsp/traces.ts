@@ -1,4 +1,4 @@
-// Trace processing: resampling/gapFill/spur suppression/state machine
+// Trace processing: explicit gap fill, normalization and accumulation.
 import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
 import { setDisplayRef } from '../ui/displayRef';
@@ -50,16 +50,6 @@ export function gapFill(raw: Float32Array): Float32Array {
   return out;
 }
 
-export function fillSpurDips(p: Float32Array): Float32Array {
-  const out = new Float32Array(p);
-  for (let i = 1; i < p.length - 1; i++) {
-    const v = out[i], l = out[i - 1], r = out[i + 1];
-    if (isFinite(v) && isFinite(l) && isFinite(r) && v < l - 25 && v < r - 25) {
-      out[i] = (l + r) / 2;
-    }
-  }
-  return out;
-}
 
 export function resetTraceAccum(t: S.TraceState) {
   t.raw = null; t.powers = null; t.avgSum = null; t.avgCount = 0;
@@ -89,8 +79,7 @@ export function applyTraceMode(t: S.TraceState, mode: string) {
 }
 
 export function processTraces(rawPowers: Float32Array) {
-  let data0 = gapFill(rawPowers);
-  data0 = fillSpurDips(data0);
+  const data0 = gapFill(rawPowers);
   S.traces.forEach(t => {
     if (t.mode === 'OFF') return;
 
@@ -109,8 +98,7 @@ export function processTraces(rawPowers: Float32Array) {
     if (t.reference && t.isNormalized && t.reference.length === t.raw.length) {
       let noiseFloor = t._noiseFloorT || 0;
       if (t._settling) {
-        // Recompute the settling noise floor at most twice per second: sorting the raw
-        // trace on every frame was needless work during the 4.5 s settle window.
+        // Update the settling noise-floor estimate at most twice per second.
         const now = performance.now();
         if (t._noiseFloorT == null || now - (t._floorAt || 0) >= 500) {
           const tmp = Float32Array.from(t.raw).sort();

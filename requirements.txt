@@ -1,4 +1,4 @@
-# Runtime dependencies (installed by run.sh / the release artifact).
+# Python SDK bench, fixture and numerical reference tool dependencies; Rust serves HTTP.
 # Bounds are two-sided so a future major release cannot break the build silently;
 # the exact versions this project is tested against are in requirements-lock.txt.
 aiohttp>=3.9,<4

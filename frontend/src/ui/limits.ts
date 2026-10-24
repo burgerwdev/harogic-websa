@@ -8,7 +8,7 @@ import { refLevel } from './refState';
 import { currentRBW } from './swpState';
 import { applyI18n, onLangChange, t } from '../core/i18n';
 import { buildLimitArray, normalizePoints, type LimitPoint } from '../dsp/limits';
-import { getDisplayPowers } from '../dsp/peaks';
+import { getActiveAbsolutePowers } from '../dsp/absoluteTrace';
 import { requestRender } from '../render/redraw';
 import { toDisplayLevel, fromDisplayLevel } from '../core/level';
 
@@ -131,7 +131,7 @@ export function refreshLimitUnits(): void {
 }
 
 export function exportLimitCsv(): void {
-  const powers = getDisplayPowers();
+  const powers = getActiveAbsolutePowers();
   const freq = S.freqArray;
   if (!powers || !freq) return;
   const n = Math.min(powers.length, freq.length);
@@ -188,12 +188,18 @@ function addPoint(): void {
   refreshLimitVerdict();
 }
 
+function syncTolerance(): void {
+  const input = document.getElementById('input-limit-tol') as HTMLInputElement | null;
+  if (input) input.value = String(S.limits.tol);
+}
+
 /** Preset: drop the stored limit points and return to the disabled default. */
 export function resetLimits(): void {
   S.setLimits({ on: false, tol: 0, points: [] });
   try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ }
   renderRows();
   syncToggle();
+  syncTolerance();
   refreshLimitVerdict();
 }
 
@@ -220,11 +226,11 @@ export function initLimits(): void {
 
   const tol = document.getElementById('input-limit-tol') as HTMLInputElement | null;
   if (tol) {
-    tol.value = String(S.limits.tol);
+    syncTolerance();
     tol.addEventListener('change', () => {
       const v = parseFloat(tol.value);
       S.limits.tol = Number.isFinite(v) && v >= 0 ? v : 0;
-      tol.value = String(S.limits.tol);
+      syncTolerance();
       save();
       refreshLimitVerdict();
     });

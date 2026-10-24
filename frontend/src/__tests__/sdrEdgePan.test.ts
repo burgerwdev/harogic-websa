@@ -13,7 +13,7 @@ import { send } from '../core/wsSend';
 import { sdrPanCentreBy } from '../ui/controls';
 import { sdrCenterHz, sdrDecimate, sdrSpanHz } from '../ui/sdrState';
 
-vi.mock('../core/wsSend', () => ({ send: vi.fn() }));
+vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 
 afterEach(() => {
 	vi.mocked(send).mockClear();

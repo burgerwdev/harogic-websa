@@ -1,16 +1,8 @@
-// Measurement results (the data store, as opposed to parameters which use slots).
-
-//
-
-// The parameter/result split from the review: user parameters own a slot with
-
-// confirmed/desired/epoch semantics, measurement results are plain data with an
-
-// explicit setter. Keeping them here stops core/store.ts from being a single growing
-
-// bag of everything (report finding P1-6).
+// Measurement results are plain data with explicit setters. User parameters live in slots
+// with confirmed/desired/epoch semantics.
 
 import type { ChanResult, HarmResult, M3dBResult, StdSnap } from './model';
+import type { DensityGrid } from '../dsp/rtaDensity';
 
 
 
@@ -64,9 +56,9 @@ export let rtaAvgSum: (Float32Array | null)[] = [null, null, null, null];
 
 export let rtaDone: boolean[] = [false, false, false, false];
 
-export let rtaDensity2d: Float32Array | null = null;
+export let rtaDensity2d: DensityGrid | null = null;
 
-export function setRtaDensity2d(v: Float32Array | null) { rtaDensity2d = v; }
+export function setRtaDensity2d(v: DensityGrid | null) { rtaDensity2d = v; }
 
 export let stdSnap: StdSnap | null = null;
 
@@ -82,7 +74,10 @@ export function setFreqVersion(v: number) { freqVersion = v; }
 
 export let activeTraceIdx = 0;
 
-export function setActiveTraceIdx(v: number) { activeTraceIdx = v; }
+export function setActiveTraceIdx(v: number) {
+  if (activeTraceIdx !== v) setRtaDensity2d(null);
+  activeTraceIdx = v;
+}
 
 export let activeMkrId = 1;
 

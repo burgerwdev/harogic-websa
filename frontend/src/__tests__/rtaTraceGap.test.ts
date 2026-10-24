@@ -1,22 +1,26 @@
 /**
  * The RTA/SDR trace polyline must break at a bin that carries no data.
  *
- * The SDR panadapter publishes its capture grid. That grid can stop before the display window
- * stops. `dsp/grid.ts` then leaves the outermost display bin at NaN. It does not invent a value.
- * Bench measurement at 23 MHz with decimate 128: one NaN, the last bin of 2048.
+ * Native bins retain their measured Hz; coverage outside the capture stays empty.
+ * A NaN native bin must lift the pen rather than drawing down to the plot boundary.
  *
  * The RTA renderer inked the pen across that sample. `getY()` puts a non-finite level below the
  * graticule. The trace then ran down the right plot edge for most of the plot height. The
  * operator reported that line as a signal. The swept renderer already lifted the pen. Both paths
  * now use `plottableLevel`.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ctxCalls, resetCtxCalls } from './setup';
+import { ctxCalls, ctxImages, resetCtxCalls } from './setup';
 import { renderAll } from '../render/spectrum';
-import { plotRect } from '../render/plot';
+import { getY, plotRect } from '../render/plot';
 import * as S from '../core/store';
 import { setDisplayRef } from '../ui/displayRef';
+import { displayOffset } from '../ui/displayState';
+import { axisDragMove, axisDragStart, resetAxisPreview } from '../ui/axisDrag';
+import { __testSeedCapture, setView } from '../ui/spectrumViewport';
+import { advanceDensity } from '../dsp/rtaDensity';
+import { rtaFade, waterfallOn } from '../ui/waterfallState';
 
 /** The live SDR window: 23 MHz centre, decimate 128 (span 390.625 kHz). */
 const LO = 22804687.5;
@@ -43,6 +47,7 @@ beforeEach(() => {
   S.setFreqArray(null);
   S.setRtaDisplays([null, null, null, null]);
   S.setRtaData(null);
+  S.setRtaDensity2d(null);
   S.setViewMode('rta');
   S.setRtaMode(true);
 });
@@ -70,5 +75,101 @@ describe('renderRta', () => {
     const last = line[line.length - 1];
     expect(last.x).toBeCloseTo(p.x + p.w, 0);
     expect(last.y).toBeLessThan(p.y + p.h);
+  });
+
+  it('keeps native trace levels aligned with Ref, offset and a live level preview', () => {
+    sdrFrame(false);
+    S.rtaData.spec[1023] = -20;
+    const savedOffset = displayOffset.get();
+    const p = plotRect();
+    try {
+      setDisplayRef('preset', -60);
+      displayOffset.set(7);
+      axisDragStart('y', p.x + p.w + 20, p.y + 50, p);
+      axisDragMove(p.x + p.w + 20, p.y + 80);
+      resetCtxCalls();
+      renderAll();
+      const index = 1023;
+      const x = p.x + index / (PTS - 1) * p.w;
+      const point = ctxCalls.find(call => call.op === 'lineTo' && Math.abs(call.x - x) < 1e-7)!;
+      expect(point.y).toBeCloseTo(getY(S.rtaData.spec[index]), 8);
+    } finally {
+      resetAxisPreview();
+      displayOffset.set(savedOffset);
+    }
+  });
+
+  it('keeps original extrema, final carrier and an internal gap when native bins share pixels', () => {
+    const p = plotRect();
+    const freq = Float64Array.from({ length: 16240 }, (_, i) => LO + i / 16239 * (HI - LO));
+    const spec = new Float32Array(freq.length).fill(-100);
+    spec[8001] = -25;
+    spec[8002] = -140;
+    spec[8003] = -30;
+    spec[8004] = NaN;
+    spec[spec.length - 1] = -35;
+    S.setFreqArray(freq);
+    S.setRtaData({ ver: 0, freq, spec, wfRow: new Uint16Array(0), maxDensity: 0, startHz: LO, stopHz: HI });
+    S.setRtaDisplays([spec, null, null, null]);
+    renderAll();
+    const xAt = (i: number) => p.x + (freq[i] - LO) / (HI - LO) * p.w;
+    for (const index of [8001, 8002, spec.length - 1]) {
+      const point = ctxCalls.find(call => Math.abs(call.x - xAt(index)) < 1e-7 && Math.abs(call.y - getY(spec[index])) < 1e-7);
+      expect(point).toBeDefined();
+    }
+    expect(ctxCalls.some(call => call.op === 'moveTo' && Math.abs(call.x - xAt(8005)) < 1e-7)).toBe(true);
+    __testSeedCapture({ lo: LO, hi: HI });
+    try {
+      setView({ lo: freq[7999], hi: freq[8006] }, 2 * (freq[1] - freq[0]));
+      resetCtxCalls();
+      renderAll();
+      for (const index of [8001, 8002, 8003]) {
+        const x = p.x + (freq[index] - freq[7999]) / (freq[8006] - freq[7999]) * p.w;
+        expect(ctxCalls.some(call => Math.abs(call.x - x) < 1e-7 && Math.abs(call.y - getY(spec[index])) < 1e-7)).toBe(true);
+      }
+    } finally {
+      __testSeedCapture(null);
+    }
+  });
+
+  it('moves the existing density with the trace for paused offset/ref/scale and axis preview', () => {
+    const offscreen = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: () => {},
+    };
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(offscreen as unknown as CanvasRenderingContext2D);
+    const savedOffset = displayOffset.get();
+    const savedFade = rtaFade.get();
+    const savedWaterfall = waterfallOn.get();
+    const p = plotRect();
+    try {
+      S.traces[0].mode = 'CLEAR_WRITE';
+      rtaFade.set(1); waterfallOn.set(false);
+      displayOffset.set(0);
+      setDisplayRef('preset', -20);
+      sdrFrame(false);
+      S.rtaData.spec[1023] = -60;
+      const density = advanceDensity(null, S.rtaDisplays[0], 128, 1, -20, 1)!;
+      S.setRtaDensity2d(density);
+      const assertAligned = () => {
+        resetCtxCalls(); renderAll();
+        const draw = ctxImages[0];
+        expect(draw).toBeDefined();
+        const [, top, , height] = draw.args;
+        const centre = top + (40 + 0.5) / density.bins * height;
+        expect(centre).toBeCloseTo(getY(-60), 8);
+      };
+      assertAligned();
+      displayOffset.set(7); setDisplayRef('preset', -30); S.setDbPerDiv(7);
+      assertAligned();
+      axisDragStart('y', p.x + p.w + 20, p.y + 50, p);
+      axisDragMove(p.x + p.w + 20, p.y + 80);
+      assertAligned();
+    } finally {
+      canvas.mockRestore();
+      resetAxisPreview();
+      S.setRtaDensity2d(null);
+      displayOffset.set(savedOffset); rtaFade.set(savedFade); waterfallOn.set(savedWaterfall);
+    }
   });
 });

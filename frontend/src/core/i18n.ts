@@ -1,10 +1,4 @@
-// i18n: the en/zh dictionary, merged from per-domain namespaces (core/trigger/sdr/limits/
-// keypad) so a feature's text ships with its feature (report finding E-5).
-//
-// History: this file used to hold a base literal plus thirteen additive Object.assign blocks,
-// which left `keyof typeof dict.en` covering only the base literal and made key parity
-// impossible to check; it was merged into one declaration (2026-09) and later split by
-// namespace while keeping a single merged `dict` for t()/hasKey and the parity test.
+// Domain dictionaries merge into one dict for t()/hasKey and key-parity validation.
 import * as dict_core from './i18n/dict.core';
 import * as dict_trigger from './i18n/dict.trigger';
 import * as dict_sdr from './i18n/dict.sdr';

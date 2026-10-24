@@ -1,245 +1,82 @@
-# HAROGIC FAQ and Operations
+# FAQ and Operations
 
-## SDK Call Constraints
+## Starting and Accessing the Service
 
-1. Only one SDK call may access a device at a time; WebSA serializes calls with command and device locks.
-2. A device cannot be shared by the API and SAStudio4; `Device_Open` fails while another application owns it.
-3. Configuration calls may be repeated. Fields not explicitly set inherit SDK Profile defaults.
-4. Continuous acquisition requires repeated Get calls. WebSA does not continuously fetch spectra when no browser is connected.
-
-## SWP and RTA
-
-- `SWP_GetFullSweep` can return a range wider than requested; WebSA trims it with `DSP_InterceptSpectrum`.
-- Requested and device-effective point counts can differ. STATUS exposes request and actual values separately.
-- RBW depends on sample rate, window, decimation, and FFT size. RTA Auto RBW must use the SDK actual value rather than a simple `span/2000` calculation.
-- SWP and RTA independently retain Center, Span, Ref, RBW, VBW, Sweep, and actual values. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md).
-- After eight consecutive RTA Trigger/Get failures, WebSA reconfigures RTA in place up to two times; persistent failure causes the supervisor to restart the worker.
-- Use `rta_health.error_streak/recovery_attempts` to diagnose a stalled RTA stream.
-- While a harmonic/PNM measurement is active, SWP-owned commands (frequency, Ref, RBW, VBW, sweep, points, spur, window, gain, reference clock) are rejected with an explicit error so the session cannot be disturbed; in RTA, FFT window/points/spur are also SWP-only.
-
-## SDR settings
-
-- **Your SDR setup is kept**: the tuning (capture centre + listen frequency), the capture
-  bandwidth (decimate), the demodulator, the IF bandwidth, de-emphasis, volume, squelch and AGC all
-  survive leaving the mode, a page reload and a service restart. A mode switch is not a reset; it
-  used to re-derive everything from the swept view, which discarded what you had left in SDR.
-- **The frequency is handed over explicitly**: Shift+click on the spectrum (or a peak/marker
-  "listen here") enters SDR *at that frequency*; the band presets (FM / AIR / VHF / UHF) set the
-  whole listening setup for a band. A plain return to SDR restores your own tuning instead.
-- **A first run picks sensible defaults**: with nothing stored yet, entering SDR follows the swept
-  centre and derives the demodulator/IF bandwidth from the band (WFM/180 kHz on FM broadcast, AM/25
-  kHz in the airband). Once you have chosen, your choice is what is restored.
-- **Preset** restores the factory defaults and clears the stored SDR preferences, so "defaults"
-  really means defaults.
-
-## SDR audio
-
-- **Audio on is the user's preference and it survives a trip to another mode**: leaving SDR stops the
-  audio pipeline, not the setting, so coming back with audio on applies it again (it used to be
-  written off on the way out, which turned "on" into "off" for good). The state is persisted, so it
-  also survives a page reload; **Preset** is the one action that restores the factory default (off).
-- Button label, pipeline state and ring-buffer diagnostics are all visible:
-  `#spectrum.dataset.sdrAudio` reads `enabled=... muted=... buffered_ms=... underruns=... rms=...`.
-
-## Reference Level
-
-- Manual Ref configures the active SWP/RTA Profile; it is not only a display-axis adjustment.
-- **Auto is a one-shot action** (`AUTO_SCALE`), like `Auto Scale` on a bench analyser: it places the
-  reference once from the newest trace, and an already-good placement does nothing (no reconfiguration).
-  Measured on the SAN-90: 0.11-0.12 s from the click to the level landing, where the previous tracking
-  loop needed 1.86 s (it waited for a settled frame, then a 0.75 s settle window).
-- The fit reports what it did in `auto_ref.result`: `applied` (with `target`), `ok` (already placed
-  well), `no_data` (no trace since the last reconfiguration). It never refuses for lack of a signal:
-  the anchor is the noise floor, so a noise-only trace is a placement like any other. (`no_signal`
-  remains in the vocabulary for compatibility but the placement no longer produces it.) The button
-  glows while a change is queued or settling, and the hint names the outcome.
-- A **settings change places the trace again**, as a bounded closed loop: span, centre/start-stop,
-  RBW, VBW, window function or SDR capture bandwidth arms it, and each settled frame re-measures and
-  steps the level until the placement is good (usually two or three steps, ~6 s - the automatic
-  attenuator moves the trace by only about half of a Ref change, so one step lands short). It stops
-  at the first good placement, and never reverses a level you typed - press Auto for that.
-- A **safety ranger runs always**, whatever the Atten setting and whether or not Auto was ever pressed -
-  but only in the protective direction: IF overflow (-12) raises Ref one 5 dB step per second, and a peak
-  grossly clipped above the top edge (>= 10 dB over) is raised once, rate-limited. This is also what a
-  manual Atten used to disable: overload protection now cannot be switched off by accident.
-  **Raising Ref is never undone.** A level that pushes the noise floor below the bottom edge is a display
-  choice, not a fault (`below_window`), so the up arrow keeps what it did; press Auto when you want the
-  placement re-fitted. Only information loss (clipping) and device overload are corrected behind your
-  back.
-- **SDR uses the same fit** as SWP/RTA (`AUTO_SCALE`, one implementation): the backend computes the target
-  from the panadapter trace, the client applies it to its display scale, and the fit never writes the
-  IQS level (a write reconfigures the stream and interrupts the audio, and it moves the
-  trace the fit is reading), so it changes only when the user sets it. Entering SDR
-  asks for one fit as soon as a frame arrives (this replaces the old persisted "auto" toggle).
-- The placement keeps the noise floor just above the bottom of the display window with at least 10 dB of
-  headroom for the peak (about 30 dB when the noise floor is high), quantised to 5 dB and never below a
-  learned IF-saturation floor or -50 dBm.
-- When a fit has lowered Ref, a Center change or an SWP/RTA return raises it to 0 dBm first, avoiding
-  retuning to an unknown strong signal with an unsafe low Ref.
-- Every SWP/RTA reconfiguration clears stale observations and waits 0.75 s before they are trusted again.
-- Lower Ref and RBW generally reduce the displayed noise floor, but input overload must be avoided.
-- **The amplitude offset is a display-domain shift**: the trace is displaced by it, so every absolute
-  readout follows it too - the y-axis labels (`fmtAxisLevel`), the marker table, the marker readout on
-  the canvas, the peak list and the channel results (`fmtReadoutLevel`). Differences (dB/div, dBc,
-  deltas) are never converted, and device parameters (Ref, attenuation, trigger level) stay in dBm:
-  they describe the instrument, not the signal after your cable or amplifier.
-- **There is no enforced Ref range: the level is bounded only by the display domain (-160 .. +40 dBm).**
-  The vendor SDK documents no Ref range at all (the profile's `RefLevel_dBm` is a plain `double`), and
-  its only Ref-related feedback is `APIRETVAL_WARNING_IFOverflow` (-12) - "the IF is saturated, raise
-  the reference level" - which this client shows as the `!IF overflow` hint. The `caps.ref_min` /
-  `caps.ref_max` row (-50 .. +30 on the SAN-90) is what the **auto-placement rules** clamp their target
-  to; it is not a limit on what an operator may dial in, and using it as one refused levels the
-  instrument handles (reported from the bench, and measured here afterwards: Ref -60, -90 and
-  **-140 dBm** are accepted and echoed **exactly**, while +35/+40 come back as **+27** - the device's own
-  maximum, which depends on the attenuation/IF-gain it picks, and the profile echoes what the hardware
-  actually programmed). The UI follows that reported value silently; the box and the step arrows stay
-  usable at both ends of the display domain, and nothing posts a message when the device's own limit
-  clamps the request.
-
-## Reference Clock
-
-- `ReferenceClockSource`: 0=Int, 1=Ext (automatic fallback when unlocked), 2=Int+ DOCXO, 3=ExtForce.
-- The SAN-90 external reference input is 10 MHz; WebSA sets `ExternalSystemClockFrequency=10 MHz`.
-- `EnableReferenceClockOut` controls reference output; support depends on the hardware model.
-- Changing Ref Clock or Clock Output in RTA reconfigures the RTA Profile without applying SWP configuration or leaving RTA.
-- `SystemClockSource=External` is dangerous and must only be used under vendor guidance; WebSA does not expose it.
-- GNSS 1PPS calibration requires a real, locked 1PPS input. The vendor DLL can block when no signal is present.
-- Do not use `external_forced` without a valid external reference.
-
-## Phase Noise
-
-- Results near the 100 Hz and 10 MHz offset boundaries can be inaccurate; an SWP span of twice the maximum offset can be used as a cross-check.
-- Typical minimum input power is -50 dBm.
-- PNM is incremental: each Get returns a partially updated result.
-
-## Configuration Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `WEBSA_HOST` | `127.0.0.1` | HTTP/WS listen address |
-| `WEBSA_PORT` | `8080` | Service port |
-| `WEBSA_TOKEN` | empty | REST Bearer token and browser/WS query token |
-| `WEBSA_ALLOWED_ORIGINS` | empty | Additional allowed Origins, comma-separated |
-| `WEBSA_ALLOW_UNAUTHENTICATED_REMOTE` | empty | Explicitly allow remote access without a token; trusted isolated networks only |
-| `WEBSA_LOG` | `INFO` | Python log level |
-| `WEBSA_LOGFILE` | empty (`run.sh` sets `/tmp/websa.log`) | Log file, rotated by the worker: 5 MiB + 3 backups, a 20 MiB ceiling across restarts. The supervisor appends through a `WatchedFileHandler` that reopens the file after a rotation. `WEBSA_ERR` (`run.sh`: `/tmp/websa.err`) keeps interpreter-level crash output that the logging module never sees |
-| `WEBSA_STATIC` | automatic | Override frontend directory |
-| `HTRA_API_LIB` | derived from `/opt/htraapi` and host architecture | Full `libhtraapi.so` path override |
-
-Remote listeners require a token:
+Run project scripts from the repository root:
 
 ```bash
-WEBSA_HOST=0.0.0.0 WEBSA_TOKEN='replace-with-a-long-random-token' ./run.sh
-```
-
-Open the browser at:
-
-```text
-http://device-address:8080/?token=the-same-token
-```
-
-When a reverse proxy changes the Origin:
-
-```bash
-WEBSA_ALLOWED_ORIGINS='https://sa.example.com' \
-WEBSA_HOST=127.0.0.1 WEBSA_TOKEN='...' ./run.sh
-```
-
-Query tokens can enter browser history and proxy logs, so remote access should use HTTPS. Set `WEBSA_ALLOW_UNAUTHENTICATED_REMOTE=1` only on a trusted isolated network.
-
-## Startup and Recovery
-
-Always run the project scripts from the repository root:
-
-```bash
+make native sdk-shim
 ./build.sh
 ./run.sh
-./stop.sh
 ```
 
-`run.sh` starts a supervisor and a WebSA worker. The supervisor restarts the worker with backoff after a native crash, fatal acquisition error, or DLL timeout; configuration errors are not restarted in a loop. A simulated worker `SIGKILL` restored the SAN-90 API in about three seconds. The default runtime log is `/tmp/websa.log` (5 MiB + 3 backups); uncaught crash output that the logging module never sees goes to `/tmp/websa.err`.
+Root `./run.sh` starts the `websad` systemd user service with hardware on `127.0.0.1:8080`. Missing hardware prerequisites are errors. `WEBSA_FAKE=1 ./run.sh` explicitly selects fixture input. Direct invocation of the `websad` binary defaults to port 8099 and fixture input when no SDK shim is specified; this differs from the root launcher.
 
-If the device still does not recover:
+| Launcher variable | Default | Purpose |
+|---|---|---|
+| `WEBSA_HOST` | `127.0.0.1` | Listen address |
+| `WEBSA_PORT` | `8080` | Root launcher port |
+| `WEBSA_UNIT` | `websad` | User service unit |
+| `WEBSA_FAKE` | `0` | Explicit fixture selection (`1`) |
+| `WEBSA_RUST_IQS_SHIM` | `~/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so` | Hardware shim |
+| `WEBSA_STATIC` | Repository `frontend` | Directory containing `dist/index.html` |
 
-1. Stop SAStudio4 and any other API process.
-2. Wait a few seconds, then run `./stop.sh && ./run.sh`.
-3. Replug USB if it still fails; a fully wedged firmware can require a system restart.
+`WEBSA_HOST=0.0.0.0 ./run.sh` enables LAN access at `http://device-address:8080/`. Product endpoints do not require authentication. Use `./status.sh` and `journalctl --user -u websad.service -n 100` to inspect the service; substitute the configured unit if overridden. `./stop.sh` stops the same unit.
 
-## Software Verification
+## SDK Ownership and Recovery
 
-Run the complete gate with:
+Only one SDK call may access a device at a time. The retained native session serializes SDK work on its owner thread. Close SAStudio4 and other API clients before starting WebSA: the device cannot be shared. Configuration fields not explicitly set inherit SDK Profile defaults; continuous acquisition requires repeated Get calls.
 
-```bash
-./test.sh
-python3 -m ruff check web_sa tests tools
-cd frontend && npm audit
-```
+Inspect STATUS errors and journal output before recovery. Stop competing applications, restart with `./stop.sh && ./run.sh`, and replug USB if the link remains unavailable. Wedged firmware may require a system restart. Process restarts are managed by systemd; device recovery is handled by native mode owners. No recovery timing is guaranteed here.
 
-`./test.sh` runs backend pytest, Ruff, and frontend Vitest, and returns a non-zero status if any stage fails. The current baseline is 51 backend tests and 23 frontend tests.
+Harmonic/PNM sessions reject SWP-owned configuration commands while active, including frequency, reference, bandwidth, sweep, frontend and reference-clock changes. Stop the measurement before changing those settings.
 
-## SAN-90 / TinySA Hardware Smoke Test
+## Spectrum and SDR Operation
 
-With the service running:
+SWP and RTA retain independent acquisition settings. SDK-effective points and bandwidths may differ from requests. The native SWP shim restricts the returned sweep to the requested frequency range, skips negative frequencies and marks unfilled zero-power bins as NaN. RTA Auto RBW uses the SDK actual value, not `span/2000`. See [MODE_STATE_FLOW.md](MODE_STATE_FLOW.md) for ownership and transitions.
 
-```bash
-./tools/bench/hardware_smoke.py --tinysa-port /dev/ttyACM0
-```
+Frequency, resolution, sweep and clock controls retain the latest pending intent until matching acceptance or error; delayed STATUS must not overwrite a newer edit. Frequency acceptance uses hardware-effective bounds, and rapid span steps build on the latest requested window. Preset clears pending drafts only after a matched successful confirmation; failure preserves the prior UI. RTA disables SWP-only points, FFT window, detector, grid, spur and bandwidth-ratio controls; RTA bandwidth remains Auto or Manual.
 
-This command reads TinySA identity without changing TinySA output, but exercises SAN SWP/RTA and restores the SAN SWP Center/Span that existed before the test.
+SDR restores stored tuning, capture bandwidth, demodulator, IF bandwidth, de-emphasis, volume, squelch and AGC. Shift+click or “listen here” explicitly selects a new listening frequency. Leaving SDR stops playback but preserves the audio-enabled preference; Preset resets preferences only after successful confirmation. Non-SDR STATUS does not overwrite SDR preferences. WFM stereo defaults to enabled and delivers native two-channel audio; explicitly setting stereo false selects mono. DRM/DRM+ codec audio disables AGC, noise reduction, squelch and de-emphasis controls; audio enable and volume remain usable. SSTV Auto/pinned mode is one saved preference, replayed on SDR entry. Audio diagnostics are exposed in `#spectrum.dataset.sdrAudio`, including enabled/muted state, buffered time, underruns and RMS.
 
-To explicitly transmit a 1 GHz TinySA signal:
+The AM window shows recovered carrier frequency (MHz), carrier offset (Hz), modulation depth (%), raw input level and final audio RMS/peak (dBFS), plus an actual final-PCM waveform on a fixed ±1 scale. Unknown values display “—”. The read-only title badge reports Sync off, searching or locked. Hovering it shows source timing, alignment, delay and decoder errors; AM has no separate timing label. The Synchronous toggle sits at the right of the carrier-frequency row. A pending request adds “enabling…” or “disabling…” with a dashed outline; it does not change the confirmed detector state or claim carrier lock. Rejection or timeout restores the confirmed state. Sync enabled means synchronous detection is selected; carrier lock additionally requires valid DSP carrier evidence. Carrier offset, modulation and input power are smoothed using source time. Reload restores the saved confirmed `am_sync` preference on SDR entry; successful Preset resets it to false. Start, disconnect, leaving AM or a stream warning clears old telemetry.
 
-```bash
-./tools/bench/hardware_smoke.py \
-  --tinysa-port /dev/ttyACM0 \
-  --configure-tinysa \
-  --tinysa-output-mode normal \
-  --frequency 1e9 --span 10e6 --duration 3
-```
+Synchronous AM mixes IQ with the recovered carrier; envelope AM takes its magnitude. With a clean carrier and no envelope reversal, both recover nearly the same programme audio, so switching need not sound different. Controlled overmodulation or quadrature contamination distinguishes the paths; synchronous detection is not a general noise-reduction switch. The recovered carrier resolves the coherent path's polarity during acquisition and retains it while locked, preventing opposite-polarity cancellation during detector crossfades.
 
-Safety limits:
+The audio RMS display averages linear power over 300 ms. Audio peak indication attacks immediately and releases at 20 dB/s. These display ballistics leave PCM, waveform samples and raw telemetry unchanged; stream resets and unavailable telemetry clear the meter immediately.
 
-- `<=6 GHz`: `-25 dBm`
-- `(6,7] GHz`: `-35 dBm`
-- `(7,9] GHz`: `-42 dBm`
-- `>9 GHz`: rejected
+The squelch slider uses 0.1 dB steps and displays the requested RF threshold. Its far-left position (−160 dBm) disables squelch; higher thresholds require stronger signals. The receiver uses the SDK spectrum's tuned-bin peak before audio AGC, with hysteresis, hold and a soft audio fade. This is a nominal SDK dBm measurement, not integrated channel power. SDR step quick-selection buttons keep Left/Right tuning available immediately after a click; numeric inputs retain their own editing keys.
 
-The tool first disables output and sets -42 dBm, selects the output mode, sets and reads back frequency with `sweep cw`, then applies the band-safe level and runs `output on + resume`. It always executes `output off` on completion or failure. It does not restore the previous TinySA frequency/mode; record shared-bench settings before use and restore them afterward when needed.
+Trace detector selection applies only to SWP and is rejected during RTA or harmonic/PNM measurements. Auto Sample follows signal type; Sample, Pos Peak, Neg Peak and RMS select fixed detectors. Auto Peak is intended for pulsed signals and is available through the API rather than the UI. Hold span, RBW and points constant when comparing detector results.
 
-## Other Known Behavior
+## Reference Level and Overflow
 
-- IF Gain grades 1/4 can differ by about 1 dB at some frequencies.
-- SAN-45/60/90 nominal ranges are 9 kHz-4.5/6/9 GHz. Features are shared, but specifications differ.
-- Some firmware leaves `RefClkFreqOffset` at zero; use the calculated value after calibration when available.
-- RTA currently uses the first spectrum in PacketFrame. Hardware bitmap/PacketFrame density semantics still need comparison against the vendor application.
+Manual `SET_REF` requests use -160 to +40 dBm. Edits remain pending until matching acceptance; a correlated error or timeout restores the accepted display. SDR `sdr.ref` confirms the stored hardware request, while `ref` reports SDK-effective reference and can differ after clamping. SDR display reference is separate from IQS reference. Level controls are disabled during harmonic/PNM measurement.
 
-## Trace Detector
+Explicit `AUTO_SCALE` starts a bounded session (20 seconds, at most 24 steps). Only fresh acquisition evidence from the same mode and configuration advances it. An SDK IF-overflow warning (`APIRETVAL_WARNING_IFOverflow`, -12) allows a recovery step from the active SDK actual reference by +10 dB, capped at the reported reference maximum; an actual reference already above that maximum is never lowered. Attenuation, preamp, IF gain and strategy choices are preserved. Valid IQ returned with the warning is retained. Ordinary missing data or trigger waiting does not raise reference, and manual operation has no background reference adjustment.
 
-- `Auto Sample` (default): follows the signal type; the right choice for general viewing and CW.
-- `Sample` / `Pos Peak` / `Neg Peak` / `RMS`: fixed detectors; `Pos Peak` sits closest to the top, `RMS` shows a lower noise floor.
-- `Auto Peak`: intended for pulsed/burst capture. Measured on SAN-90 it loses a steady CW carrier (peak -21.7 -> -85 dBm, 0.85 dB jitter), so it is **not offered in the UI**; use it via the API for pulsed signals only.
-- Detector applies to SWP only; the command is rejected during RTA and harmonic/PNM measurements.
-- Fix span / RBW / points when comparing detectors: with a narrow span and large RBW each point combines many frames, so all detectors converge (SAN-90 measured -21.6 dBm for all five at 10 MHz span / 1 MHz RBW). Differences appear only at wide spans (100 MHz span, RBW auto: PosPeak -21.6 / RMS -27.6 / Sample -36.6 / NegPeak -84.7 dBm). Such differences are detector semantics plus dwell conditions, not a fault.
+Auto fits only a clean spectrum and requires fresh clean evidence after configuration changes before confirming completion. SDR explicit Auto can reconfigure IQS for overflow recovery; SDR entry uses `display_only:true` and never changes hardware. Manual configuration, frequency, mode and Preset changes cancel old sessions and targets. `auto_ref` exposes progress and terminal reasons, including limit, stalled, failed, no_data and timeout; unsuccessful completion has no target. See [API](API.md) for the full result schema.
 
+Amplitude offset is applied once to displayed absolute levels (axis, markers, peaks and channel readouts). Differences such as dBc remain differences; device reference, attenuation and trigger thresholds retain instrument units. Actual gain readbacks belong to the active SDK mode; unavailable fields remain null. Preamp Auto/Off indicates the selected policy, not physical on/off state. Waterfall level ranges must be finite and valid; changing the level mapping clears history even while paused.
 
-## Why does the swept mode have no debounce / delay / pre-trigger?
+## Reference Clock and Firmware
 
-Those are device-side timing features: RTA acquires continuously, so a jitter window and a pre-trigger
-interval can be defined in time. A swept trace dwells microseconds per point and has no time axis of its
-own, leaving exactly one decidable quantity: whether a threshold crossing happened between two
-consecutive sweeps. The panel therefore greys those rows out in the swept mode; they are RTA-only.
+- `ReferenceClockSource`: 0=Internal, 1=External with fallback when unlocked, 2=Internal + DOCXO, 3=External Forced. Premium clock availability depends on the device.
+- The SAN-90 external reference input is 10 MHz. The native shim sets `ExternalSystemClockFrequency` and the external reference frequency to 10 MHz.
+- Reference output support depends on the model. Clock changes configure the active profile; RTA remains RTA.
+- Do not select `external_forced` without a valid external reference. `SystemClockSource=External` is a separate vendor setting and is not exposed by WebSA.
+- GNSS 1PPS calibration requires a real locked 1PPS input; vendor calls can block without it.
+- Some firmware reports zero `RefClkFreqOffset`; a zero report does not establish clock accuracy. Use a calculated calibration result when available.
+- SAN-45/60/90 nominal upper frequency limits are 4.5/6/9 GHz, with a 9 kHz lower limit; specifications and supported features vary by model.
 
-## Does Auto Ref release an armed RTA trigger?
+## Trigger and Measurement Questions
 
-It used to: arming a level trigger and then pressing Auto Ref returned the button to `Capture` and
-dropped the threshold line. That no longer reproduces (verified: the button stays on `Stop` and the
-trigger source stays `level` across Auto Ref). Changing Ref **manually** was never affected - even when
-the threshold is pushed outside the visible range the line is pinned to the edge (with an arrow).
+RTA uses device triggering; SWP software triggering keeps the plot live until a crossing between consecutive sweeps. Debounce, delay and pre-trigger timing apply only to RTA. RTA requested settings and SDK-applied readback are separate; capture is held only after a complete frame is rendered. Vendor timeout alone does not prove trigger waiting, and unsupported or unknown capture state is shown explicitly. Fixture input does not simulate hardware hits. A confirmed hit remains frozen until Free Run or Escape; Auto Scale does not release an armed trigger.
 
+PNM results update incrementally on successive Get calls. Results near the 100 Hz and 10 MHz offset boundaries can be inaccurate; a sweep span twice the maximum offset provides a cross-check. Typical minimum PNM input power is -50 dBm.
 
-## Why does the n-dB field behave differently in the keypad?
+Each harmonic/PNM Set clears the old plot, table and accumulators. Results must match the newest confirmed command session; old acquisition cycles cannot populate a new measurement. PNM averaging has an independent control row, and disabling PNM disables all its Set/Apply actions. Limits and channel measurements use the selected processed absolute trace; normalized traces are unavailable for these absolute readings and absolute CSV export. RTA/SDR disable these measurement controls, with standard mode restoring them. dBc readings do not receive amplitude offset.
 
-It is not a single number but a comma separated list of whole thresholds, so the pad edits it as
-text instead of replacing one value: the caret can be placed with the mouse, backspace deletes a
-single character there and `C` clears the whole entry (`OK` then drops a leading/trailing or
-doubled comma). Because the field takes whole numbers, its `.` key doubles as the `,` separator.
+The n-dB keypad edits a comma-separated list of integer thresholds. Backspace deletes at the caret, C clears the entry, and the decimal key enters a comma. OK normalizes leading, trailing and repeated commas.
+
+Development checks and hardware verification procedures are documented in [DEVELOPMENT.md](DEVELOPMENT.md); current limitations are in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).

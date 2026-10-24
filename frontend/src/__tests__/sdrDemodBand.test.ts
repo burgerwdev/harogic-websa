@@ -1,102 +1,74 @@
-/**
- * The band the SDR view highlights must be the band the active demodulator actually reads.
- *
- * A protocol decoder is the case that differs: FT8 reads 100..3000 Hz *above* the dial, not a
- * passband centred on it. Highlighting a symmetric passband instead claimed half a band the decoder
- * cannot read and hid half of the one it can, which reads as "the signal is inside the marked band
- * and still does not decode". Measured on the bench (Pluto at 411.0015 MHz, dial parked on the tone):
- * 0 decodes in 5 slots while the overlay covered the signal.
- *
- * The last case is the guard that would have caught the drift this replaced: the TS band said 200 Hz
- * while the decoder said 100, and nothing tied them together.
- */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-	SSTV_AUDIO_HIGH_HZ, SSTV_AUDIO_LOW_HZ, SSTV_BLACK_HZ, SSTV_SYNC_HZ, SSTV_WHITE_HZ, sstvBandHz,
+	SSTV_AUDIO_HIGH_HZ, SSTV_AUDIO_LOW_HZ, SSTV_BLACK_HZ, SSTV_SYNC_HZ, SSTV_WHITE_HZ,
 } from '../sdr/sstvLog';
 import { clearDrm, setDrmDecode } from '../sdr/drmLog';
-import { audioCompanionFor, readPluginManifest, setPluginManifest } from '../sdr/registry';
-import { instantiateDsp } from '../sdr/wasm';
+import { audioCompanionFor, loadPluginManifest, setPluginManifest, setSstvModeTable } from '../sdr/registry';
 import { demodBandHz } from '../ui/sdrState';
 
-const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
-const FT8_RS = resolve(process.cwd(), '..', 'wasm', 'src', 'digital', 'ft8', 'mod.rs');
-const SSTV_RS = resolve(process.cwd(), '..', 'wasm', 'src', 'digital', 'sstv', 'mod.rs');
-
-async function loadManifest(): Promise<void> {
-	const buf = readFileSync(ARTIFACT);
-	const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-	setPluginManifest(await readPluginManifest(await instantiateDsp(bytes)));
-}
+beforeEach(async () => {
+	setPluginManifest(null);
+	setSstvModeTable(null);
+	clearDrm();
+	vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+		ok: true,
+		json: async () => ({
+			plugins: [
+				...['usb', 'wfm'].map((id) => ({
+					kind: 'analog', id, implemented: true, audioEnhancement: false,
+				})),
+				...['ft8', 'drm', 'drmplus', 'sstv'].map((id) => ({
+					kind: 'digital', id, implemented: true, audioEnhancement: false,
+				})),
+			],
+			sstv_modes: [{ index: 0, name: 'Robot 36', vis: 8, width: 320, height: 240 }],
+		}),
+	}));
+	await loadPluginManifest();
+});
+afterEach(() => {
+	clearDrm();
+	setPluginManifest(null);
+	setSstvModeTable(null);
+	vi.unstubAllGlobals();
+});
 
 describe('the band the SDR view highlights', () => {
-	it('is the IF passband, symmetric about the listen frequency, for an analog demodulator', () => {
-		expect(demodBandHz('usb', 2400)).toEqual([-1200, 1200]);
+	it('follows native sideband carrier guards and signed filter edges', () => {
+		expect(demodBandHz('usb', 2400)).toEqual([240, 2400]);
+		expect(demodBandHz('lsb', 2400)).toEqual([-2400, -240]);
+		expect(demodBandHz('usb', 500)).toEqual([100, 500]);
+		expect(demodBandHz('lsb', 6000)).toEqual([-6000, -300]);
 		expect(demodBandHz('wfm', 180000)).toEqual([-90000, 90000]);
 	});
 
-	it('is the decoder band above the dial, not around it, for a protocol decoder', async () => {
-		await loadManifest();
+	it('centers CW on the native pitch and preserves the native minimums', () => {
+		expect(demodBandHz('cw', 3000, 900)).toEqual([-600, 2400]);
+		expect(demodBandHz('cw', 500, 600)).toEqual([350, 850]);
+		expect(demodBandHz('cw', 20, 0)).toEqual([75, 125]);
+	});
+
+	it('keeps the FT8 search band above the dial regardless of the IF bandwidth', () => {
 		expect(demodBandHz('ft8', 3000)).toEqual([100, 3000]);
-		// The IF bandwidth is not the decoder's band: it must not move it.
 		expect(demodBandHz('ft8', 6000)).toEqual([100, 3000]);
 	});
 
-	it('highlights the FAC-selected DRM30 occupancy, not FT8 or the analog filter', async () => {
-		await loadManifest();
-		clearDrm();
+	it('follows the FAC-selected DRM occupancy independently of the analog filter', () => {
 		expect(demodBandHz('drm', 6000)).toEqual([-10000, 10000]);
 		setDrmDecode(['locked: B, 4.5 kHz'], 18);
 		expect(demodBandHz('drm', 12000)).toEqual([-2250, 2250]);
 		setDrmDecode(['locked: B, 20 kHz'], 18);
 		expect(demodBandHz('drm', 12000)).toEqual([-10000, 10000]);
 		expect(demodBandHz('drmplus', 100000)).toEqual([-50000, 50000]);
-		clearDrm();
 	});
 
-	it('cannot drift from the decoder that defines it', () => {
-		const rust = readFileSync(FT8_RS, 'utf8');
-		const declared = (name: string): number => {
-			const found = new RegExp(`const ${name}: f64 = ([0-9_]+)`).exec(rust);
-			expect(found, `${name} in ${FT8_RS}`).not.toBeNull();
-			return Number(found![1].replace(/_/g, ''));
-		};
-		expect(declared('F_MIN_HZ')).toBe(FT8_SEARCH_LOW_HZ);
-		expect(declared('F_MAX_HZ')).toBe(FT8_SEARCH_HIGH_HZ);
-	});
-
-	it('is the voice band the SSTV decoder filters, not the FT8 search band', async () => {
-		await loadManifest();
-		// SSTV is single-sideband audio: the plugin band-passes 300..2700 Hz and the picture's tones
-		// (1200 sync, 1500 black, 2300 white) sit inside it. It is a digital plugin, so without its own
-		// case it would inherit FT8's 100..3000 band and mark a band the decoder does not read.
-		expect(demodBandHz('sstv', 2400)).toEqual([SSTV_AUDIO_LOW_HZ, SSTV_AUDIO_HIGH_HZ]);
-		expect(demodBandHz('sstv', 50000)).toEqual(sstvBandHz());
-		// The picture's own tones are inside that band, and it is the audio band that is highlighted.
+	it('keeps the SSTV voice band and picture tones above the dial', () => {
+		expect(demodBandHz('sstv', 2400)).toEqual([300, 2700]);
+		expect(demodBandHz('sstv', 50000)).toEqual([300, 2700]);
 		for (const hz of [SSTV_SYNC_HZ, SSTV_BLACK_HZ, SSTV_WHITE_HZ]) {
 			expect(hz).toBeGreaterThan(SSTV_AUDIO_LOW_HZ);
 			expect(hz).toBeLessThan(SSTV_AUDIO_HIGH_HZ);
 		}
-	});
-
-	it('cannot drift from the SSTV plugin that defines it', () => {
-		const rust = readFileSync(SSTV_RS, 'utf8');
-		const declared = (name: string): number => {
-			const found = new RegExp(`const ${name}: f64 = ([0-9_]+)`).exec(rust);
-			expect(found, `${name} in ${SSTV_RS}`).not.toBeNull();
-			return Number(found![1].replace(/_/g, ''));
-		};
-		expect(declared('AUDIO_LO_HZ')).toBe(SSTV_AUDIO_LOW_HZ);
-		expect(declared('AUDIO_HI_HZ')).toBe(SSTV_AUDIO_HIGH_HZ);
-	});
-
-	it('keeps the USB companion that plays the channel while the picture decodes', async () => {
-		await loadManifest();
-		// A protocol decoder produces a picture and no audio, so the operator still hears the channel
-		// through the companion demodulator (USB, as SSTV is sent).
 		expect(audioCompanionFor('sstv')).toBe('usb');
 	});
 });

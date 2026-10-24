@@ -7,13 +7,31 @@
  */
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
-	addCwText, clearCwLog, cwLevel, cwLog, setCwLevel, subscribeCwLevel, subscribeCwLog,
+	addCwText, clearCwLog, cwLevel, cwLog, setCwChannel, setCwLevel, subscribeCwLevel, subscribeCwLog,
 } from '../sdr/cwLog';
 
 describe('the CW decode log', () => {
 	beforeEach(() => {
+		setCwChannel(1);
+		clearCwLog(2);
+		clearCwLog(3);
 		clearCwLog();
 		setCwLevel(0, false);
+	});
+
+	it('retains live lines and decoder measurements independently for each receiver', () => {
+		addCwText('CQ ', false, 0.7, 1);
+		addCwText('OTHER', true, 0.8, 2);
+		setCwLevel(0.3, true, { wpm: 18, pitchHz: 702, centerHz: 7025000 }, 2);
+		expect(cwLog().current).toBe('CQ ');
+		setCwChannel(2);
+		expect(cwLog().lines[0].text).toBe('OTHER');
+		expect(cwLevel()).toMatchObject({ wpm: 18, pitchHz: 702, keyed: true });
+		clearCwLog(2);
+		setCwChannel(1);
+		addCwText('DE', true, 0.7);
+		expect(cwLog().lines[0].text).toBe('CQ DE');
+		expect(cwLog().lines[0].marks[3].gap).toBe(true);
 	});
 
 	it('keeps one mark per character, with the share it was decoded at', () => {

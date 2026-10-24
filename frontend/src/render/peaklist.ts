@@ -90,12 +90,9 @@ function commitAutoThr(robust: number): boolean {
 /**
  * Auto threshold: ONE decision per measurement geometry.
  *
- * It used to be recomputed every frame from the instantaneous global peak, so the threshold -
- * which decides peak-table membership and marker peak search - moved with every amplitude
- * change and reshuffled both. Now the value is latched: it is fitted once when the geometry
- * changes (span/RBW/Ref/dB-per-div/points/centre move the trace), from the median of a few
- * frames so a settling frame cannot set it, and a manual edit still owns it until Auto is
- * pressed again.
+ * Fit from the median of several frames after span/RBW/Ref/dB-per-div/points/centre changes,
+ * then latch the threshold for peak-table membership and marker searches. A manual edit
+ * owns the threshold until Auto is pressed again.
  */
 export function autoPeakThr(powers: Float32Array | null) {
   if (peakThrUserSet.get()) return;
@@ -141,13 +138,31 @@ export function resetPeakThr() {
   setPeakThr(-80);
 }
 
+function peakCount(): number {
+  const input = document.getElementById('input-peakcnt') as HTMLInputElement | null;
+  const raw = Number(input?.value);
+  const count = Number.isFinite(raw) ? Math.max(1, Math.min(20, Math.trunc(raw))) : 20;
+  if (input) input.value = String(count);
+  return count;
+}
+
+export function initPeakCountUi(): void {
+  const input = document.getElementById('input-peakcnt');
+  const repaint = () => {
+    peakCount();
+    updatePeakTable(getDisplayPowers());
+    requestRender();
+  };
+  input?.addEventListener('input', repaint);
+  input?.addEventListener('change', repaint);
+}
+
 export function updatePeakTable(powers: Float32Array | null) {
   const tb = document.getElementById('peak-table');
   const tb2 = document.getElementById('peak-tbody');
   if (!tb || !tb2) return;
   if (!peakListVisible.get() || !powers || !S.freqArray) { tb.style.display = 'none'; return; }
-  const cntEl = document.getElementById('input-peakcnt') as HTMLInputElement;
-  const maxN = Math.max(1, Math.min(20, cntEl ? (parseInt(cntEl.value) || 20) : 20));
+  const maxN = peakCount();
   const peaks = findPeaks(powers, maxN);
   S.setPeakMarks(peaks.map((pk, i) => Object.assign({}, pk, { n: i + 1 })));
   tb.style.display = '';

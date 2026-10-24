@@ -41,19 +41,19 @@ export function plottableLevel(v: number): boolean {
 
 export function getX(idx: number, points: number): number {
   const rect = plotRect();
-  // Display-only zoom: the WHOLE swept path goes through one mapping — data position ->
-  // view window — so the trace, markers, peak marks, limit/channel/harmonic overlays and
-  // the frequency row can never disagree (design §4.4). The identity path below is
-  // bit-for-bit what it always was when no view is active.
+  // Every overlay and hit test uses the native Hz, including partial capture coverage.
   const view = isZoomed() ? getView() : null;
-  const cap = getCapture();
+  const cap = getCapture() ?? (S.rtaMode && S.rtaData
+    ? { lo: S.rtaData.startHz, hi: S.rtaData.stopHz } : null);
+  const win = view ?? cap;
+  const fa = S.freqArray;
   let x: number;
-  if (view && cap && points > 1) {
-    const fa = S.freqArray;
-    const f = fa && fa.length > 1
-      ? fa[Math.max(0, Math.min(points - 1, idx))]
-      : cap.lo + (idx / (points - 1)) * (cap.hi - cap.lo);
-    x = rect.x + (f - view.lo) / (view.hi - view.lo) * rect.w;
+  if (win && fa && fa.length === points && points > 1) {
+    const index = Math.max(0, Math.min(points - 1, idx));
+    const left = Math.floor(index), right = Math.min(points - 1, left + 1);
+    // Measurement overlays can lie between bins; interpolate the coordinate only.
+    const f = fa[left] + (fa[right] - fa[left]) * (index - left);
+    x = rect.x + (f - win.lo) / (win.hi - win.lo) * rect.w;
   } else {
     x = rect.x + (idx / (points - 1)) * rect.w;
   }

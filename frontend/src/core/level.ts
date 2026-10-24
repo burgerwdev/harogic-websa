@@ -54,13 +54,14 @@ export function fmtReadoutLevel(dbm: number, digits = 2): string {
 /**
  * Y-axis tick label, e.g. the top line of the graticule.
  *
- * The trace is displaced by the external offset in getY(), so the axis has to be labelled in the
- * same domain, otherwise the numbers disagrees with the trace by exactly the offset (reported:
- * "the Level offset and the amplitude numbers on the plot do not track each other").
+ * The external offset is already spent once where it belongs: getY() displaces the
+ * trace/density by it. Adding it here as well would double-compensate, and the label of a
+ * graticule line would disagree with the readout of the point sitting on that line. So the
+ * absolute axis converts the unit only; the relative (dB) axis converts nothing.
  */
 export function fmtAxisLevel(dbm: number): string {
   if (displayUnit.get() === 'dB') return dbm.toFixed(0);   // relative axis: raw dB, no conversion
-  return toDisplayLevel(dbm).toFixed(0);
+  return (dbm + unitOffsetDb(S.levelUnit)).toFixed(0);      // absolute axis: unit conversion only
 }
 
 /** Formatted absolute level in the selected unit, e.g. "-22.46 dBuV". */

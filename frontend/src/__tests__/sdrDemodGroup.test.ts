@@ -1,88 +1,89 @@
-/**
- * The SDR mode buttons come from the DSP registry, not from `index.html`.
- *
- * The panel used to carry a hardcoded button list, which is how a mode could exist in the DSP
- * while the UI never offered it (or the other way round). These tests pin the new rule: the group
- * is rendered from the manifest, an unimplemented mode is disabled rather than silently accepted,
- * and `index.html` no longer contains any mode buttons.
- */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
-import { renderSdrDemodGroup } from '../ui/sdrDemodGroup';
-import { readPluginManifest, setPluginManifest } from '../sdr/registry';
-import { instantiateDsp } from '../sdr/wasm';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { initSdrDemodGroup, refreshSdrDemodGroup, renderSdrDemodGroup } from '../ui/sdrDemodGroup';
+import { setPluginManifest, setSstvModeTable, type PluginInfo } from '../sdr/registry';
 
-const ARTIFACT = resolve(process.cwd(), '..', 'frontend', 'public', 'dsp.wasm');
-const INDEX_HTML = resolve(process.cwd(), 'index.html');
+const plugins: PluginInfo[] = [
+	...['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm'].map((id) => ({
+		kind: 'analog' as const, id, implemented: id !== 'pm', audioEnhancement: false,
+	})),
+	...['ft8', 'drm', 'drmplus', 'sstv'].map((id) => ({
+		kind: 'digital' as const, id, implemented: true, audioEnhancement: false,
+	})),
+	{ kind: 'audio', id: 'dc_block', implemented: true, audioEnhancement: true },
+];
 
-const artifactBytes = (): ArrayBuffer => {
-	const buf = readFileSync(ARTIFACT);
-	return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+beforeEach(() => {
+	setPluginManifest(null);
+	setSstvModeTable(null);
+});
+afterEach(() => {
+	setPluginManifest(null);
+	setSstvModeTable(null);
+	vi.unstubAllGlobals();
+});
+
+const serveMetadata = () => {
+	vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+		ok: true,
+		json: async () => ({ plugins, sstv_modes: [] }),
+	}));
 };
 
 describe('the SDR demodulator group', () => {
-	it('is generated from the manifest, with unimplemented modes disabled', async () => {
-		setPluginManifest(readPluginManifest(await instantiateDsp(artifactBytes())));
+	it('offers the receiver analog and digital modes, excluding audio stages', async () => {
+		serveMetadata();
 		const container = document.createElement('div');
 		const selected: string[] = [];
-		// 'am' is implemented; an id the registry does not know cannot be run, so it must be
-		// disabled. Asserting the *property* (disabled iff unavailable) keeps this test true as
-		// modes land, instead of freezing today's set of finished kernels.
-		renderSdrDemodGroup(container, ['am', 'not_a_mode'], { onSelect: (id) => selected.push(id) });
-
+		const ids = await initSdrDemodGroup(container, { onSelect: (id) => selected.push(id) });
+		expect(ids).toEqual(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm', 'ft8', 'drm', 'drmplus', 'sstv']);
 		const buttons = Array.from(container.querySelectorAll('button'));
-		expect(buttons.map((b) => b.dataset.sdrDemod)).toEqual(['am', 'not_a_mode']);
-		expect(buttons.map((b) => b.textContent)).toEqual(['AM', 'NOT_A_MODE']);
-		expect(buttons[0].disabled).toBe(false);
-		expect(buttons[1].disabled).toBe(true);
-		expect(buttons[1].title).toMatch(/not implemented/);
-
-		buttons[0].click();
-		expect(selected).toEqual(['am']);
-		buttons[1].click();
-		expect(selected).toEqual(['am']);          // a disabled mode reports nothing
-		setPluginManifest(null);
+		expect(buttons.map((button) => button.dataset.sdrDemod)).toEqual(ids);
+		const drmplus = buttons.find((button) => button.dataset.sdrDemod === 'drmplus')!;
+		expect(drmplus.textContent).toBe('DRM+');
+		drmplus.click();
+		expect(selected).toEqual(['drmplus']);
 	});
 
-	it('enables exactly the modes the registry reports as implemented', async () => {
-		const manifest = readPluginManifest(await instantiateDsp(artifactBytes()));
-		setPluginManifest(manifest);
-		const analog = manifest.filter((p) => p.kind === 'analog');
-		const container = document.createElement('div');
-		renderSdrDemodGroup(container, analog.map((p) => p.id), { onSelect: () => {} });
-		for (const button of Array.from(container.querySelectorAll('button'))) {
-			const expected = analog.find((p) => p.id === button.dataset.sdrDemod);
-			expect(button.disabled).toBe(!expected?.implemented);
-		}
-		setPluginManifest(null);
-	});
-
-	it('offers exactly the analog modes the module declares', async () => {
-		const manifest = readPluginManifest(await instantiateDsp(artifactBytes()));
-		setPluginManifest(manifest);
-		const analog = manifest.filter((p) => p.kind === 'analog').map((p) => p.id);
-		const container = document.createElement('div');
-		renderSdrDemodGroup(container, analog, { onSelect: () => {} });
-		const rendered = Array.from(container.querySelectorAll('button')).map((b) => b.dataset.sdrDemod);
-		expect(rendered).toEqual(analog);
-		expect(rendered).toContain('nfm');
-		expect(rendered).toContain('pm');
-		setPluginManifest(null);
-	});
-
-	it('has no hardcoded mode buttons left in index.html', () => {
-		// The structural half of the rule: the markup cannot reintroduce a second list.
-		const html = readFileSync(INDEX_HTML, 'utf8');
-		expect(html).not.toMatch(/data-sdr-demod=/);
-		expect(html).toMatch(/id="sdr-demod-group"/);
-	});
-
-	it('renders nothing when the registry has not loaded, instead of guessing', () => {
-		setPluginManifest(null);
+	it('prevents selecting an unavailable mode and refreshes when capabilities change', async () => {
+		serveMetadata();
 		const container = document.createElement('div');
 		const onSelect = vi.fn();
-		renderSdrDemodGroup(container, [], { onSelect });
-		expect(container.querySelectorAll('button')).toHaveLength(0);
+		await initSdrDemodGroup(container, { onSelect });
+		const unavailable = container.querySelector<HTMLButtonElement>('[data-sdr-demod="pm"]')!;
+		expect(unavailable.disabled).toBe(true);
+		expect(unavailable.title).toMatch(/not implemented/);
+		unavailable.click();
+		expect(onSelect).not.toHaveBeenCalled();
+
+		setPluginManifest(plugins.map((plugin) => ({ ...plugin, implemented: true })));
+		refreshSdrDemodGroup(container, { onSelect });
+		const enabled = container.querySelector<HTMLButtonElement>('[data-sdr-demod="pm"]')!;
+		expect(enabled.disabled).toBe(false);
+		enabled.click();
+		expect(onSelect).toHaveBeenCalledWith('pm');
+	});
+
+	it('keeps undeclared mode ids unavailable', () => {
+		setPluginManifest(plugins);
+		const container = document.createElement('div');
+		const onSelect = vi.fn();
+		const [button] = renderSdrDemodGroup(container, ['not_a_mode'], { onSelect });
+		expect(button.disabled).toBe(true);
+		button.click();
+		expect(onSelect).not.toHaveBeenCalled();
+	});
+
+	it('shows metadata failure and can load the group after the receiver recovers', async () => {
+		const fetchMetadata = vi.fn()
+			.mockResolvedValueOnce({ ok: false, status: 503 })
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ plugins, sstv_modes: [] }) });
+		vi.stubGlobal('fetch', fetchMetadata);
+		const container = document.createElement('div');
+		const onSelect = vi.fn();
+		expect(await initSdrDemodGroup(container, { onSelect })).toEqual([]);
+		expect(container.textContent).toBe('Receiver modes unavailable');
+		expect(container.querySelector('button')).toBeNull();
+		await initSdrDemodGroup(container, { onSelect });
+		expect(container.querySelector<HTMLButtonElement>('[data-sdr-demod="am"]')?.disabled).toBe(false);
 	});
 });
