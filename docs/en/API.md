@@ -1,6 +1,6 @@
 # API Documentation
 
-Native backend (`native-ddc/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames). Root `./run.sh` defaults to hardware on port 8080; Python clients are optional tools.
+Native backend (`backend/`) external interfaces: **HTTP REST** + **WebSocket** (JSON commands/status + binary trace frames). Root `./run.sh` defaults to hardware on port 8080; Python clients are optional tools.
 
 - Service: `http://127.0.0.1:8080` (WebSocket at `/ws`)
 - Frontend: modern UI at `/`, static assets `/static/dist/{file}`
@@ -261,6 +261,8 @@ Audio/decode `channel` is optional: omit it for all channels, or select slot 1â€
 Stream identity is `(epoch, channel_id)`. Retuning assigns a new channel ID; replanning, recapture and new sessions assign a new epoch. Rejected requests preserve the previous configuration and stream. Old output tails precede the new start boundary. Each audio/decode subscriber receives its own sequence starting at zero, without resetting the receiver or other subscribers. Source sequence gaps and format changes without a start marker fail explicitly.
 
 Streaming uses a bounded 64-message per-client FIFO. Overflow closes the slow subscription with code 1013; samples/events are not dropped to continue playback. Display traces instead use latest-wins delivery. See [ARCHITECTURE.md](ARCHITECTURE.md) for processing ownership and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for receiver limitations.
+
+A native receiver failure ends that SDR session: the display/control stream receives one `ERROR` with `code="receiver_failed"` and the original diagnostic, and audio/decode subscriptions close with code 1011 and reason `receiver failed`. The failed session cannot guarantee a complete ordered tail. The service retains the failure and does not automatically restart capture after losing samples. Change `SET_MODE` to another mode and then return to SDR to create a fresh session; setting SDR again while already in SDR is a no-op. `connected` continues to describe the hardware link, so a receiver failure alone does not set it to false.
 
 #### 2.4 IQBF/IQAX v2 header
 

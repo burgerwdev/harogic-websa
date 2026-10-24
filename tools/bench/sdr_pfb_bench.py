@@ -165,7 +165,7 @@ def run(library: Path, fs: float, packets: int, repeats: int, raw: Path | None,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--lib', type=Path,
-                        default=Path('native-ddc/target/release/libwebsa_channelizer.so'))
+                        default=Path(__file__).resolve().parents[2] / 'backend/target/release/libwebsa_channelizer.so')
     parser.add_argument('--raw', type=Path, help='explicit recorded 31.25 MSps Complex16 fixture')
     parser.add_argument('--fs', type=float, choices=(31_250_000.0, 62_500_000.0),
                         default=31_250_000.0)

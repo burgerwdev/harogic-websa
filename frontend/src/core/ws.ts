@@ -22,11 +22,11 @@ import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
 import { pushSpectrumRow } from '../render/waterfall';
 import { sampleSwpWaterfall } from '../ui/panels/waterfall';
-import { setWS } from './wsSend';
+import { onCommandSent, setWS } from './wsSend';
 import { premiumRefClockLabel, refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
-import { confirmTriggerMetadata, noteFrameArrived, prepareTriggerFrame, resetTriggerConnection } from '../ui/triggerEvents';
+import { confirmTriggerMetadata, noteFrameArrived, onTriggerReset, prepareTriggerFrame, resetTriggerConnection } from '../ui/triggerEvents';
 import { confirmTriggerFromStatus, rejectTriggerEdit, triggerMode } from '../ui/triggerState';
 import { evaluateSwpTrigger } from '../ui/swpTrigger';
 import { onHarmResult } from '../meas/harmonic';
@@ -56,6 +56,7 @@ import { confirmResolutionStatus, rejectResolutionCommit, resetResolutionEditors
 import { syncSweepStatus, rejectSweepRequest, resetSweepEditor } from '../ui/panels/waterfall';
 import { acceptRtaAxisFrame, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { sdrCenterHz, sdrDecimate } from '../ui/sdrState';
+import { deviceMode } from '../ui/graphMode';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -76,6 +77,51 @@ let lastRender = 0;
 let rtaFrames = 0;
 let lastRtaInfoAt = 0;
 let sdrTransition: { center: number; decimate: number; version: number } | null = null;
+
+// Only spectrum arrivals use this trailing throttle; UI redraws remain synchronous.
+const SPECTRUM_INTERVAL = 1000 / 30;
+let spectrumTimer: number | null = null;
+let pendingSpectrumWork: (() => void) | null = null;
+let lastSpectrumDraw = -Infinity;
+
+function cancelSpectrumWork() {
+  if (spectrumTimer !== null) window.clearTimeout(spectrumTimer);
+  spectrumTimer = null;
+  pendingSpectrumWork = null;
+}
+
+function drawSpectrumFrame() {
+  lastSpectrumDraw = performance.now();
+  requestRender();
+}
+
+function scheduleSpectrumWork(work: () => void, immediate = false) {
+  const mode = currentGraphMode(), view = S.viewMode, owner = deviceMode.get();
+  // Rejected settling packets still consume an RTA processing slot without a draw.
+  const lastWork = mode === 'rta' ? Math.max(lastSpectrumDraw, lastRtaProcess) : lastSpectrumDraw;
+  const guardedWork = () => {
+    if (currentGraphMode() === mode && S.viewMode === view && deviceMode.get() === owner) work();
+  };
+  if (immediate || performance.now() - lastWork >= SPECTRUM_INTERVAL) {
+    cancelSpectrumWork();
+    guardedWork();
+    return;
+  }
+  pendingSpectrumWork = guardedWork;
+  if (spectrumTimer !== null) return;
+  spectrumTimer = window.setTimeout(() => {
+    const latest = pendingSpectrumWork;
+    spectrumTimer = null;
+    pendingSpectrumWork = null;
+    latest?.();
+  }, Math.ceil(SPECTRUM_INTERVAL - (performance.now() - lastWork)));
+}
+
+onTriggerReset(cancelSpectrumWork);
+onCommandSent(command => {
+  if (command.cmd === 'SET_MODE' || command.cmd === 'SET_PRESET'
+      || command.cmd === 'SET_RTA' || command.cmd === 'SET_TRIGGER') cancelSpectrumWork();
+});
 
 // Re-initialise the SDR auto-scale (called when entering SDR).
 let firstConnect = true;
@@ -107,6 +153,8 @@ let lastDisconnected = false;
 
 export function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  cancelSpectrumWork();
+  lastSpectrumDraw = -Infinity;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   // The display connection carries neither audio nor IQ: SDR playback has its own `?audio=1`
   // socket inside the audio worker and the DSP has its own `?iq=1` socket inside the IQ
@@ -119,6 +167,8 @@ export function connectWS() {
   setWS(ws);   // Key: all commands (send) go through the unified wsSend exit, must be initialized
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
+    cancelSpectrumWork();
+    lastSpectrumDraw = -Infinity;
     reconnectDelay = 1000;
     S.setRtaData(null);
     S.setRtaDensity2d(null);
@@ -139,6 +189,7 @@ export function connectWS() {
   };
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
+    cancelSpectrumWork();
     endMeasurementSessions();
     S.setDeviceConnected(false);
     disconnectSdrSession();
@@ -171,7 +222,7 @@ export function connectWS() {
           rejectRefClockRequest(msg.response_to, msg.request_id);
           rejectPresetRequest(msg.response_to, msg.request_id);
           rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
-          alert(localizedError(msg));
+          S.setStatusError(localizedError(msg));
         }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
@@ -220,106 +271,126 @@ export function connectWS() {
       } else sdrTransition = null;
       const processAt = performance.now();
       // The first packet of a new capture must replace both layers immediately.
-      if (!geometryChanged && captureFrame !== 'first' && !S.trigArmed && processAt - lastRtaProcess < 30) return;
-      lastRtaProcess = processAt;
-      {
-        // Debug/verification aid: the windows the renderer actually uses (e2e reads it).
-        const cvW = document.getElementById('spectrum');
-        if (cvW && (shifted || currentGraphMode() === 'sdr')) {
-          cvW.dataset.sdrWindow = JSON.stringify({
-            lo: startHz, hi: stopHz,
-            capLo: Number(capFreq[0]), capHi: Number(capFreq[pts - 1]), shifted,
-          });
+      if (currentGraphMode() !== 'rta' && !geometryChanged && captureFrame !== 'first' && !S.trigArmed && processAt - lastRtaProcess < 30) return;
+      const immediate = geometryChanged || captureFrame === 'first' || S.trigArmed;
+      const processRtaFrame = () => {
+        // Axis or trigger admission can change while a normal packet waits for its deadline.
+        if (currentGraphMode() === 'rta') {
+          if (!acceptRtaAxisFrame(ver, startHz, stopHz) || (S.rtaData && ver < S.rtaData.ver)) return;
+          if (!immediate && triggerMode() === 'rta' && prepareTriggerFrame(frame.trigger) === 'ignore') return;
         }
-      }
-      const plausible = plausibleSpectrum(spec);
-      if (plausible) {
-        rtaBadCount = 0;
-        if (S.badData) S.setBadData(false);
-      } else {
-        if (rtaBadCount === 0) rtaBadFirst = performance.now();
-        rtaBadCount++;
-      }
-      const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
-      if (!plausible && !settleOver && !S.trigArmed) return;
-      if (!plausible) S.setBadData(true);       // past it, show the data and say so
-      // SDR: the swept reference level is meaningless here (often 0 dBm against a -100 dBm
-      // noise floor), so entering the mode asks the backend for one fit; the client applies the
-      // reported target to the display scale (see ui/refAutoScale.ts). Nothing runs unattended.
-      if (currentGraphMode() === 'sdr') {
-        maybeRequestSdrFit();
-      }
-      // The RTA frequency window (center/span) changed -> every accumulation (probability
-      // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
-      // must be reset, otherwise stale dots/traces linger at wrong frequencies.
-      const axisChanged = geometryChanged;
-      if (axisChanged || captureFrame === 'first') {
-        S.setRtaDensity2d(null);
-        for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
-        for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
-        S.resetWaterfall();
-      }
-      // The frame's display window is the capture the zoom feature navigates in (design
-      // §4.2); a changed window drops the view inside setCapture.
-      setCapture({ lo: startHz, hi: stopHz });
-      S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
-      {
-        // Debug/verification aid: proves a frame was actually decoded and handed to the
-        // renderer, which the mode flag alone does not (e2e reads it).
-        const cvF = document.getElementById('spectrum');
-        if (cvF) cvF.dataset.rtaFrames = String(rtaFrames++);
-      }
-      // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
-      const _nowU = performance.now();
-      if (_nowU - lastRtaInfoAt > 400) {
-        lastRtaInfoAt = _nowU;
-        updateInfoBar();
-      }
-      // RTA mode has no FREQ frames; sync the frequency axis so markers map correctly
-      S.setFreqArray(freq);
-      if (axisChanged) retrackMarkers();
-      // Per-trace accumulation (multi-trace like the official SW): each enabled trace
-      // accumulates its own RTA display according to its mode.
-      // RTA reuses the shared accumulator (single semantics with SWP). rtaDisplays stays
-      // the storage so rendering, markers and waterfall are untouched.
-      S.traces.forEach((tr, ti) => {
-        if (tr.mode === 'OFF') return;
-        const shim = {
-          id: ti + 1, mode: tr.mode, prevMode: tr.prevMode,
-          raw: null, powers: S.rtaDisplays[ti], avgSum: S.rtaAvgSum[ti],
-          avgCount: S.rtaAvgN[ti], avgTarget: tr.avgTargetRta ?? 16, done: S.rtaDone[ti],
-          reference: null, isNormalized: false,
-        } as unknown as S.TraceState;
-        accumulateTrace(shim, spec);
-        S.rtaDisplays[ti] = shim.powers;
-        S.rtaAvgSum[ti] = shim.avgSum;
-        S.rtaAvgN[ti] = shim.avgCount;
-        S.rtaDone[ti] = shim.done;
-      });
-      // Persistence belongs to the selected, mode-processed trace, never the raw waterfall.
-      // Store raw dBm: offset is a render transform and must also work with no new frames.
-      const active = S.traces[S.activeTraceIdx];
-      const bins = rtaAmpBins.get();
-      const range = S.totalDivs * S.dbPerDiv;
-      S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, S.rtaDisplays[S.activeTraceIdx],
-        bins, rtaFade.get(), getDisplayRef() - displayOffset.get(), range / bins, active.mode, freq));
-      updateTrackingMarkers();
-      if (waterfallOn.get() && S.rtaMode && !wfPaused.get()) {
-        // bitmap rows are often all-zero; derive waterfall row from the live trace
-        pushSpectrumRow(spec, freq, startHz, stopHz, 100);
-      }
-      const el = document.getElementById('info-pts');
-      if (el) el.innerText = String(pts);
-      if (triggerMode() === 'rta') noteFrameArrived(frame.trigger);
-      // RTA data arrived -> redraw at ~60fps (16ms throttle)
-      const now = performance.now();
-      if (axisChanged || captureFrame === 'first' || now - lastRender >= 16) {
-        lastRender = now;
-        requestRender();
-      }
+        lastRtaProcess = currentGraphMode() === 'rta' ? performance.now() : processAt;
+        {
+          // Debug/verification aid: the windows the renderer actually uses (e2e reads it).
+          const cvW = document.getElementById('spectrum');
+          if (cvW && (shifted || currentGraphMode() === 'sdr')) {
+            cvW.dataset.sdrWindow = JSON.stringify({
+              lo: startHz, hi: stopHz,
+              capLo: Number(capFreq[0]), capHi: Number(capFreq[pts - 1]), shifted,
+            });
+          }
+        }
+        const plausible = plausibleSpectrum(spec);
+        if (plausible) {
+          rtaBadCount = 0;
+          if (S.badData) S.setBadData(false);
+        } else {
+          if (rtaBadCount === 0) rtaBadFirst = performance.now();
+          rtaBadCount++;
+        }
+        const settleOver = rtaBadCount > RTA_BAD_MAX_FRAMES || performance.now() - rtaBadFirst > RTA_BAD_MAX_MS;
+        if (!plausible && !settleOver && !S.trigArmed) return;
+        if (!plausible) S.setBadData(true);       // past it, show the data and say so
+        // SDR: the swept reference level is meaningless here (often 0 dBm against a -100 dBm
+        // noise floor), so entering the mode asks the backend for one fit; the client applies the
+        // reported target to the display scale (see ui/refAutoScale.ts). Nothing runs unattended.
+        if (currentGraphMode() === 'sdr') {
+          maybeRequestSdrFit();
+        }
+        // The RTA frequency window (center/span) changed -> every accumulation (probability
+        // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
+        // must be reset, otherwise stale dots/traces linger at wrong frequencies.
+        const axisChanged = geometryChanged;
+        if (axisChanged || captureFrame === 'first') {
+          S.setRtaDensity2d(null);
+          for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
+          for (let ti = 0; ti < S.rtaAvgN.length; ti++) { S.rtaAvgN[ti] = 0; S.rtaAvgSum[ti] = null; S.rtaDone[ti] = false; }
+          S.resetWaterfall();
+        }
+        // The frame's display window is the capture the zoom feature navigates in (design
+        // §4.2); a changed window drops the view inside setCapture.
+        setCapture({ lo: startHz, hi: stopHz });
+        S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
+        {
+          // Debug/verification aid: proves a frame was actually decoded and handed to the
+          // renderer, which the mode flag alone does not (e2e reads it).
+          const cvF = document.getElementById('spectrum');
+          if (cvF) cvF.dataset.rtaFrames = String(rtaFrames++);
+        }
+        // Refresh info-bar (BW/RBW follow the frame's start/stop) at a throttled rate
+        const _nowU = performance.now();
+        if (_nowU - lastRtaInfoAt > 400) {
+          lastRtaInfoAt = _nowU;
+          updateInfoBar();
+        }
+        // RTA mode has no FREQ frames; sync the frequency axis so markers map correctly
+        S.setFreqArray(freq);
+        if (axisChanged) retrackMarkers();
+        // Per-trace accumulation (multi-trace like the official SW): each enabled trace
+        // accumulates its own RTA display according to its mode.
+        // RTA reuses the shared accumulator (single semantics with SWP). rtaDisplays stays
+        // the storage so rendering, markers and waterfall are untouched.
+        S.traces.forEach((tr, ti) => {
+          if (tr.mode === 'OFF') return;
+          const shim = {
+            id: ti + 1, mode: tr.mode, prevMode: tr.prevMode,
+            raw: null, powers: S.rtaDisplays[ti], avgSum: S.rtaAvgSum[ti],
+            avgCount: S.rtaAvgN[ti], avgTarget: tr.avgTargetRta ?? 16, done: S.rtaDone[ti],
+            reference: null, isNormalized: false,
+          } as unknown as S.TraceState;
+          accumulateTrace(shim, spec);
+          S.rtaDisplays[ti] = shim.powers;
+          S.rtaAvgSum[ti] = shim.avgSum;
+          S.rtaAvgN[ti] = shim.avgCount;
+          S.rtaDone[ti] = shim.done;
+        });
+        // Persistence belongs to the selected, mode-processed trace, never the raw waterfall.
+        // Store raw dBm: offset is a render transform and must also work with no new frames.
+        const active = S.traces[S.activeTraceIdx];
+        const bins = rtaAmpBins.get();
+        const range = S.totalDivs * S.dbPerDiv;
+        S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, S.rtaDisplays[S.activeTraceIdx],
+          bins, rtaFade.get(), getDisplayRef() - displayOffset.get(), range / bins, active.mode, freq));
+        updateTrackingMarkers();
+        if (waterfallOn.get() && S.rtaMode && !wfPaused.get()) {
+          // bitmap rows are often all-zero; derive waterfall row from the live trace
+          pushSpectrumRow(spec, freq, startHz, stopHz, 100);
+        }
+        const el = document.getElementById('info-pts');
+        if (el) el.innerText = String(pts);
+        const captureComplete = triggerMode() === 'rta' && noteFrameArrived(frame.trigger);
+        if (currentGraphMode() === 'rta') {
+          // Capture listeners synchronously paint the completed packet and its overlay.
+          if (captureComplete) lastSpectrumDraw = performance.now();
+          else drawSpectrumFrame();
+        } else {
+          // SDR retains its existing 30 ms processing and 16 ms arrival redraw gates.
+          const now = performance.now();
+          if (axisChanged || captureFrame === 'first' || now - lastRender >= 16) {
+            lastRender = now;
+            requestRender();
+          }
+        }
+      };
+      if (currentGraphMode() === 'rta') scheduleSpectrumWork(processRtaFrame, immediate);
+      else processRtaFrame();
       return;
     }
     if (frame.kind === 'freq') {
+      if (frame.version !== S.freqVersion || !sameFrequencyGrid(S.freqArray, frame.freq)) {
+        cancelSpectrumWork();
+        lastSpectrumDraw = -Infinity;
+      }
       if (!sameFrequencyGrid(S.freqArray, frame.freq)) {
         invalidateAllTraces();
         S.setSwpPrev(null);
@@ -340,17 +411,18 @@ export function connectWS() {
       if (canvas) canvas.dataset.swpFrames = String(Number(canvas.dataset.swpFrames ?? 0) + 1);
       sampleSwpWaterfall(frame.power, S.freqArray);
       if (triggerMode() === 'std') evaluateSwpTrigger(frame.power);
-      const now = performance.now();
-      if (now - lastRender >= 33) {
-        lastRender = now;
-        requestRender();
-      }
+      if (S.swpHold) {
+        // The hit listener already painted the frozen sweep and trigger overlay.
+        cancelSpectrumWork();
+        lastSpectrumDraw = performance.now();
+      } else scheduleSpectrumWork(drawSpectrumFrame);
     }
   };
 }
 
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
+  if (s.connected === false || s.mode !== deviceMode.get()) cancelSpectrumWork();
   document.body.dataset.deviceMode = String(s.mode);
   syncPresetStatus(s.response_to, s.request_id);
   S.setDeviceConnected(s.connected === true);

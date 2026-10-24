@@ -5,7 +5,7 @@ See [Architecture](ARCHITECTURE.md) for component boundaries and [API](API.md) f
 
 ## 1. Environment, build and run
 
-Release 1.9.0 uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
+Release 1.9.1 uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
 offline tooling and optional diagnostics, not production backends. To run the committed
 bundle, use `./run.sh` or `./run.sh --fake`; see the [release prerequisites](../../README.md#run-the-bundled-release).
 The bundle contains `runtime/linux-x86_64/websad`, the project's SDK adapter and
@@ -61,10 +61,10 @@ systemd does not inherit the terminal's toolchain override.
 
 | Area | Responsibility |
 |---|---|
-| `native-ddc/src/bin/websad.rs` | Service lifecycle, commands, STATUS and transport |
-| `native-ddc/sdk/san90_sdk.cpp` | Retained device session and serialized SDK calls |
-| `native-ddc/src/` | Native channelizer and receivers |
-| `wasm/`, `wasm-dfn/` | Shared DSP kernels and explicit browser diagnostics |
+| `backend/src/bin/websad.rs` | Service lifecycle, commands, STATUS and transport |
+| `backend/sdk/san90_sdk.cpp` | Retained device session and serialized SDK calls |
+| `backend/src/` | Native channelizer and receivers |
+| `dsp/core/`, `dsp/deepfilter/` | Shared native/WASM DSP crates and explicit browser diagnostics |
 | `tools/reference/` | Offline reference and fixture support |
 | `frontend/src/core/` | Types, parameter slots, results, runtime state and protocol |
 | `frontend/src/dsp/` | Pure frontend calculations |

@@ -199,6 +199,43 @@ afterEach(() => {
   HTMLAnchorElement.prototype.click = ORIG_CLICK;
 });
 
+describe('amplitude threshold validation', () => {
+  it('shows one inline error without changing results and clears it after valid input', () => {
+    document.body.innerHTML = '<div><input id="input-ampdbs" value="3" aria-describedby="amp-threshold-validation">' +
+      '<span id="amp-threshold-validation" role="alert" hidden></span></div>';
+    const input = document.getElementById('input-ampdbs') as HTMLInputElement;
+    S.setFreqArray(new Float64Array([1, 2, 3, 4, 5]));
+    S.traces[0].powers = new Float32Array([-30, -20, -10, -20, -30]);
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => { throw new Error('blocking dialog'); });
+    try {
+      measureAmp();
+      const previous = S.ampRes;
+      input.value = 'bad,0,61';
+      measureAmp();
+      measureAmp();
+      const error = document.getElementById('amp-threshold-validation')!;
+      expect(error.hidden).toBe(false);
+      expect(error.textContent).toContain('1~60');
+      expect(document.querySelectorAll('#amp-threshold-validation')).toHaveLength(1);
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(input.getAttribute('aria-describedby')).toBe(error.id);
+      expect(S.ampRes).toBe(previous);
+      input.value = '6';
+      input.dispatchEvent(new Event('input'));
+      expect(error.hidden).toBe(true);
+      measureAmp();
+      expect(error.hidden).toBe(true);
+      expect(error.textContent).toBe('');
+      expect(input.hasAttribute('aria-invalid')).toBe(false);
+      expect(S.ampRes.rows[0]).toMatchObject({ thr: 6, lf: 2.4, rf: 3.6 });
+      expect(S.ampRes.rows[0].bw).toBeCloseTo(1.2);
+      expect(alert).not.toHaveBeenCalled();
+    } finally {
+      alert.mockRestore();
+    }
+  });
+});
+
 describe('PNM session lifecycle', () => {
   it('carries the session id on the wire and ignores results before the acknowledgement', () => {
     const setPnm = applyPnm('1000');

@@ -2,7 +2,7 @@
 """SSTV encoding for the Python bench tools: mode tables -> tones -> 16-bit PCM.
 
 This is the transmit side of the repo's own reference pair. The decoder is the vendored Rust tree
-(`wasm/src/digital/sstv/vendor`); the tables here are *ported from* that tree by
+(`dsp/core/src/digital/sstv/vendor`); the tables here are *ported from* that tree by
 `tools/fixtures/port_sstv_modes.py`, so a mode's timing exists once and the transmitter cannot drift
 from the decoder. `gen_sstv_fixtures.py` writes a committed waveform with this module and the Rust
 decoder's test decodes it — a cross-implementation check, in the same spirit as the DSP fixtures

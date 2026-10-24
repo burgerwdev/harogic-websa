@@ -53,12 +53,12 @@
 
 ## 快速开始
 
-**1.9.0** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
+**1.9.1** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
 不再提供生产后端。保留的浏览器 WASM 产物是可选离线诊断工具，不是生产 DSP 路径。
 
 ### 运行随附发布产物
 
-1.9.0 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
+1.9.1 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so` 以及 `runtime/frontend/dist/`。
 执行 `./run.sh` 连接硬件，或执行 `./run.sh --fake` 使用合成输入，然后访问
 http://127.0.0.1:8080。使用随附产物无需安装 Rust、Node.js 或 Python。
@@ -75,7 +75,7 @@ SDK 还需要自己的依赖（已观察到 libusb、liquid-dsp、OpenMP、pthre
 这不是可移植或静态链接发行包；较旧发行版或其他架构须从源码重建。
 重建和打包方法见[开发指南](docs/zh-CN/DEVELOPMENT.md)。
 
-`run.sh` 优先使用本地重建的 `native-ddc/target/release/websad` 和 `frontend/dist/`，
+`run.sh` 优先使用本地重建的 `backend/target/release/websad` 和 `frontend/dist/`，
 否则使用随附文件。`WEBSA_BIN` 可覆盖服务程序路径。硬件适配库依次选择显式设置的
 `WEBSA_RUST_IQS_SHIM`、用户目录中已安装的 shim、随附适配库。
 
@@ -126,7 +126,7 @@ WEBSA_HOST=0.0.0.0 ./run.sh
 ```
 
 然后访问 `http://设备地址:8080/`。[运行 FAQ](docs/zh-CN/FAQ_NOTES.md) 说明环境变量、日志和恢复。
-直接运行 `native-ddc/target/release/websad` 且不提供硬件 shim 时默认使用 8099 端口的 fixture 输入；
+直接运行 `backend/target/release/websad` 且不提供硬件 shim 时默认使用 8099 端口的 fixture 输入；
 `run.sh` 除非明确请求假源，否则选择 8080 硬件模式。
 
 当前文档：[架构](docs/zh-CN/ARCHITECTURE.md)、[HTTP/WS API](docs/zh-CN/API.md)、
@@ -146,9 +146,10 @@ make hw-test                             # 需真机：tinySA CW + 界面状态�
 
 ```
 harogic-websa/
-├─ native-ddc/           Rust 服务、信道化器与 C++ SDK shim
-├─ wasm/                 原生共享 Rust DSP crate 与浏览器 WASM
-├─ wasm-dfn/             DeepFilterNet 集成
+├─ backend/              Rust 服务、信道化器与 C++ SDK shim
+├─ dsp/
+│  ├─ core/              原生/WASM 共享 Rust DSP crate 与浏览器 WASM
+│  └─ deepfilter/        原生/WASM 共享 DeepFilterNet 集成
 ├─ frontend/             TS 前端 (Vite + TypeScript, i18n + 主题)
 │  └─ src/__tests__/     vitest 测试(DSP 引擎, 合成迹线)
 ├─ htra_api.py           厂商离线工具 Python wrapper（HAROGIC 版权）
@@ -198,8 +199,8 @@ harogic-websa/
 - 截图使用真实 SAN-90 拍摄（SDR 数字模式截图使用 PlutoSDR 作为信号源）
 - `tools/vendor/ggmorse/`：CW（莫尔斯）解码器来自 Georgi Gerganov 的
   [ggmorse](https://github.com/ggerganov/ggmorse)，**MIT** 协议，保留上游提交
-  `7b4822a8`（见 `tools/vendor/ggmorse/LICENSE`）。`native-ddc/cw_build.rs` 将其与本项目的
-  `native-ddc/native/ggmorse_bridge.cpp` 桥接代码一起编译进原生服务。
+  `7b4822a8`（见 `tools/vendor/ggmorse/LICENSE`）。`backend/cw_build.rs` 将其与本项目的
+  `backend/native/ggmorse_bridge.cpp` 桥接代码一起编译进原生服务。
 
 
 ---

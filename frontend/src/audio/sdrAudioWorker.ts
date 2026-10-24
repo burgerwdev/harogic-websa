@@ -233,7 +233,10 @@ function connect(): void {
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   };
   current.onerror = () => { if (socket === current) fail('Backend audio connection failed'); };
-  current.onclose = () => { if (socket === current) fail('Backend audio connection closed'); };
+  current.onclose = (event) => {
+    if (socket === current) fail(event.code === 1011 && event.reason === 'receiver failed'
+      ? 'Backend audio receiver failed' : 'Backend audio connection closed');
+  };
 }
 self.onmessage = (event: MessageEvent) => {
   const message: Record<string, unknown> = event.data && typeof event.data === 'object' ? event.data : {};

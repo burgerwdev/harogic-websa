@@ -61,6 +61,10 @@ function connect(): void {
     socket = null;
     if (!enabled) return;
     if (event.code === 1013) { fail(`Slow decoded-output consumer: ${event.reason}`); return; }
+    if (event.code === 1011 && event.reason === 'receiver failed') {
+      fail('Decoded-output receiver failed');
+      return;
+    }
     host.postMessage({ type: 'closed', message: `Decoded-output stream closed (${event.code}): ${event.reason}` });
     // FIFO delivery preserves old tails before the next stream boundary.
     retry = self.setTimeout(() => { retry = null; connect(); }, 2000);

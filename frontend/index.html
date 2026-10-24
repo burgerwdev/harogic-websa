@@ -120,6 +120,8 @@
       </div>
       <div class="spectrum-box">
         <canvas id="spectrum" width="860" height="480" tabindex="0"></canvas>
+        <span id="status-error" role="alert" aria-atomic="true"
+              style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;"></span>
       </div>
       <!-- The split: drag it to trade height between the spectrum and the waterfall. Hidden while
            the waterfall is off, so closing it returns the area to the spectrum untouched. -->
@@ -261,7 +263,7 @@
               <button class="btn span-full-button" data-action="sdr-to-center" data-i18n="to_center" data-i18n-title="sdr_to_center_tip" title="Set the wideband centre to the listen frequency">To Center</button></div>
             <div class="param-row"><label data-i18n="demod">Demod</label>
               <!-- Buttons are generated from the DSP plugin registry (ui/sdrDemodGroup.ts): the
-                   mode list lives in wasm/src/plugin.rs, not here. -->
+                   mode list lives in dsp/core/src/plugin.rs, not here. -->
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-demod-group"></div></div>
             <div class="param-row"><label data-i18n="decode">Decode</label>
               <!-- The decode window (ui/decodeWindow.ts) shows what the demodulator decoded: the
@@ -567,9 +569,10 @@
           <div id="meas-amp" class="meas-tab">
             <div class="param-row"><label data-i18n="n_db">n dB</label>
               <input type="text" id="input-ampdbs" data-keypad="text" data-unit="dB" value="3,10,20" data-i18n="tip_ampdbs" data-i18n-attr="title"
-                     title="Comma-separated thresholds below peak (1~60 dB)">
+                     title="Comma-separated thresholds below peak (1~60 dB)" aria-describedby="amp-threshold-validation">
               <button class="btn" id="btn-amp-meas" data-action="meas-amp" data-i18n="meas" data-i18n-title="tip_btn-amp-meas">Meas</button>
               <button class="btn" id="btn-amp-clear" data-action="clear-amp" data-i18n="clear" data-i18n-title="tip_btn-amp-clear">Clear</button></div>
+            <span id="amp-threshold-validation" role="alert" hidden></span>
           </div>
           <div id="meas-harm" class="meas-tab" style="display:none;">
             <div class="param-row"><label data-i18n="fund">Fund</label>
@@ -762,7 +765,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.0 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
@@ -801,6 +804,11 @@
     <button class="btn" id="btn-decode-utc" data-i18n="ft8_utc_toggle" data-i18n-title="ft8_utc_tip" data-i18n-attr="title" title="Show UTC time">UTC</button>
     <button class="btn" id="btn-decode-clear" data-i18n="clear">Clear</button>
     <button class="btn" id="btn-decode-close" data-i18n="gnss_close">Close</button>
+  </div>
+  <div class="decode-sstv-confirm" id="sstv-clear-confirm" role="group" aria-labelledby="sstv-clear-prompt" style="display:none;">
+    <span id="sstv-clear-prompt" data-i18n="sstv_confirm_clear_all">Delete every stored SSTV picture (all modes)?</span>
+    <button type="button" class="btn" id="btn-sstv-delete-all" data-i18n="sstv_delete_all">Delete all</button>
+    <button type="button" class="btn" id="btn-sstv-clear-cancel" data-i18n="sstv_cancel">Cancel</button>
   </div>
   <!-- FT8 only: a regex filter over the decoded messages. A pattern the engine refuses
        marks the box invalid and keeps every row visible (filter off, never a blank table). -->

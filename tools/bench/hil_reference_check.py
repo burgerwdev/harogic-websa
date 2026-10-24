@@ -3,7 +3,7 @@
 
     python3 tools/bench/hil_reference_check.py /tmp/hil_iq.json
 
-The native side invokes native-ddc/target/release/sdr_decode. Build that executable
+The native side invokes backend/target/release/sdr_decode. Build that executable
 before running this tool, or select an existing executable with --native-bin.
 Both sides use the capture's actual IQ cadence and report tone, SINAD and THD.
 """
@@ -20,7 +20,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-DEFAULT_NATIVE_BIN = ROOT / 'native-ddc' / 'target' / 'release' / 'sdr_decode'
+DEFAULT_NATIVE_BIN = ROOT / 'backend' / 'target' / 'release' / 'sdr_decode'
 AUDIO_RATE = 48_000
 
 

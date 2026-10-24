@@ -297,6 +297,35 @@ describe('native decoded stream boundaries', () => {
       expect(messages).toHaveLength(1);
     } finally { vi.unstubAllGlobals(); }
   });
+  it('stops on receiver failure without reconnecting and permits an explicit new start', async () => {
+    const messages: Array<{ type: string; message?: string }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; message?: string }) => messages.push(message),
+      setTimeout: vi.fn(), clearTimeout: vi.fn() };
+    const sockets: Socket[] = [];
+    class Socket {
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      constructor() { sockets.push(this); }
+      close(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      // Worker initialization binds self; load only after installing this worker's globals.
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      sockets[0].onclose!({ code: 1011, reason: 'receiver failed' });
+      sockets[0].onmessage!({ data: frame() });
+      expect(messages).toEqual([{ type: 'error', message: 'Decoded-output receiver failed' }]);
+      expect(host.setTimeout).not.toHaveBeenCalled();
+      expect(sockets).toHaveLength(1);
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      sockets[1].onmessage!({ data: frame() });
+      expect(messages[1].type).toBe('frames');
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('drains every queued decoded event in FIFO batches without waiting one round trip per event', async () => {
     const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,

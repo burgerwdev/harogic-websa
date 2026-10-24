@@ -9,8 +9,8 @@ esac
 cd "$(dirname "$0")"
 
 echo "==== Rust service contracts ===="
-cargo test --release -j 1 --manifest-path native-ddc/Cargo.toml --lib -- --test-threads=1
-cargo test --release -j 1 --manifest-path native-ddc/Cargo.toml --bin websad -- --test-threads=1
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib -- --test-threads=1
+cargo test --release -j 1 --manifest-path backend/Cargo.toml --bin websad -- --test-threads=1
 
 echo "==== Python tool tests (pytest) ===="
 python3 -m pytest tests/ -q

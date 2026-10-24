@@ -5,7 +5,7 @@
 
 ## 1. 环境、构建与运行
 
-1.9.0 使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
+1.9.1 使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
 不承载生产后端。运行仓库随附产物使用 `./run.sh` 或 `./run.sh --fake`，依赖见
 [发布运行要求](../../README.zh-CN.md#运行随附发布产物)。随附内容为
 `runtime/linux-x86_64/websad`、本项目 SDK 适配库和 `runtime/frontend/dist/`。
@@ -58,10 +58,10 @@ Rust 测试保留 `--test-threads=1`。在单独的 systemd 用户服务单元�
 
 | 区域 | 职责 |
 |---|---|
-| `native-ddc/src/bin/websad.rs` | 服务生命周期、命令、STATUS 与传输 |
-| `native-ddc/sdk/san90_sdk.cpp` | 保留设备 session，串行调用 SDK |
-| `native-ddc/src/` | 原生信道化与接收机 |
-| `wasm/`、`wasm-dfn/` | 共享 DSP 内核与显式浏览器诊断 |
+| `backend/src/bin/websad.rs` | 服务生命周期、命令、STATUS 与传输 |
+| `backend/sdk/san90_sdk.cpp` | 保留设备 session，串行调用 SDK |
+| `backend/src/` | 原生信道化与接收机 |
+| `dsp/core/`、`dsp/deepfilter/` | 原生/WASM 共享 DSP crate 与显式浏览器诊断 |
 | `tools/reference/` | 离线参考与 fixture 支持 |
 | `frontend/src/core/` | 类型、参数槽、结果、运行状态和协议 |
 | `frontend/src/dsp/` | 纯前端计算 |

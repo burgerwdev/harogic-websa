@@ -66,7 +66,7 @@ export const SSTV_HISTORY_MAX = 6;
 
 /**
  * The audio band the decoder's own front end reads, in Hz above the dial. These are the plugin's
- * `AUDIO_LO_HZ`/`AUDIO_HI_HZ` (`wasm/src/digital/sstv/mod.rs`) and they are the authority: the
+ * `AUDIO_LO_HZ`/`AUDIO_HI_HZ` (`dsp/core/src/digital/sstv/mod.rs`) and they are the authority: the
  * panadapter draws this as the SSTV passband.
  */
 export const SSTV_AUDIO_LOW_HZ = 300;

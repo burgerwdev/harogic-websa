@@ -10,8 +10,8 @@ LOCAL_SHIM="$HOME/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so
 SHIM="${WEBSA_RUST_IQS_SHIM:-$LOCAL_SHIM}"
 BIN="${WEBSA_BIN:-}"
 if [[ -z "$BIN" ]]; then
-  if [[ -x native-ddc/target/release/websad ]]; then
-    BIN="$(pwd)/native-ddc/target/release/websad"
+  if [[ -x backend/target/release/websad ]]; then
+    BIN="$(pwd)/backend/target/release/websad"
   else
     BIN="$(pwd)/runtime/linux-x86_64/websad"
   fi

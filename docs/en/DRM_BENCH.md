@@ -34,7 +34,7 @@ The tool subscribes to `/ws?iq=1&noaudio=1`; it does not configure or open the d
 The committed capture and synthetic fixtures are described in the [fixture README](../../tests/fixtures/drm/README.md). The native receiver fixture command is:
 
 ```sh
-cargo test --manifest-path wasm/Cargo.toml --release --test drm_live_fixture -- --nocapture
+cargo test --manifest-path dsp/core/Cargo.toml --release --test drm_live_fixture -- --nocapture
 ```
 
 This command reads the committed fixture, not `/tmp/drm_live.f32`. Native codec builds require `pkg-config` and FDK-AAC >= 2.0.3 with DRM/USAC support; see [AAC format and build notes](DRM_AAC_RESERIALIZATION.md).

@@ -136,25 +136,33 @@ export function setDecodeTiming(channel: DecodeChannel, timing: DecodeTiming): v
 function renderDecodeTiming(): void {
 	if (deferDecodePaint()) return;
 	const status = element('decode-source-timing');
-	if (status) status.style.display = mode === 'am' ? 'none' : '';
 	const timing = channelTiming[selectedChannel];
 	const error = channelErrors[selectedChannel];
-	const alignment = timing ? timing.delayKnown && !timing.causalPresentation ? 'Aligned' : 'Alignment unknown' : '';
-	const text = [error ? `Decoder error: ${error}` : '', alignment].filter(Boolean).join(' · ');
-	const tip = [error ? `Decoder error: ${error}` : '', timing
-		? `${alignment}\nSource sample ${timing.inputIndex} + ${timing.fractionNum}/${timing.fractionDen} at ${timing.inputRate} Hz\n${timing.delayKnown ? `Delay ${timing.delaySeconds.toFixed(6)} s` : 'Decoder delay unknown'}${timing.causalPresentation ? '\nCausal presentation' : ''}`
-		: ''].filter(Boolean).join('\n');
+	const errorText = error ? t('decode_error', { message: error }) : '';
+	const timingTip = timing ? [
+		t(timing.delayKnown && !timing.causalPresentation ? 'decode_timing_known' : 'decode_timing_unknown'),
+		t(mode === 'drm' || mode === 'drmplus' ? 'decode_timing_drm_tip' : 'decode_timing_source_tip'),
+		t('decode_timing_source', {
+			index: timing.inputIndex, num: timing.fractionNum, den: timing.fractionDen, rate: timing.inputRate,
+		}),
+		timing.delayKnown ? t('decode_timing_delay', { delay: timing.delaySeconds.toFixed(6) }) : t('decode_timing_delay_unknown'),
+		timing.causalPresentation ? t('decode_timing_causal') : '',
+	].filter(Boolean).join('\n') : '';
+	const tip = [errorText, timingTip].filter(Boolean).join('\n');
 	if (status) {
-		if (status.textContent !== text) status.textContent = text;
+		status.style.display = mode !== 'am' && error ? '' : 'none';
+		if (status.textContent !== errorText) status.textContent = errorText;
 		status.setAttribute('role', error ? 'alert' : 'status');
 		status.title = tip;
 	}
+	const title = element('decode-window-title');
+	if (title) title.title = timingTip;
 	if (mode === 'am') {
 		const badge = element('am-title-badge');
 		if (badge) {
 			badge.title = [badge.textContent, tip].filter(Boolean).join('\n');
 			badge.setAttribute('role', error ? 'alert' : 'status');
-			badge.setAttribute('aria-label', [badge.textContent, text].filter(Boolean).join(' · '));
+			badge.setAttribute('aria-label', [badge.textContent, errorText].filter(Boolean).join(' · '));
 		}
 	}
 }
@@ -166,6 +174,8 @@ let sstvButtons: string[] = [];
 let sstvThumbsShape = '';
 /// The mode whose picture set the pane shows (null = the live picture).
 let sstvViewMode: number | null = null;
+/** The channel whose destructive action is awaiting an explicit inline confirmation. */
+let sstvClearChannel: DecodeChannel | null = null;
 /// FT8 pane view state: the message filter (null = invalid pattern, filter off) and the sorted
 /// column (null = arrival order, newest first). In-memory on purpose: a view preference, not data.
 let ft8FilterRe: RegExp | null = null;
@@ -615,6 +625,7 @@ function renderContent(): void {
 	const title = element('decode-window-title');
 	const count = element('decode-window-count');
 	renderDecodeTiming();
+	renderSstvClearConfirmation();
 	element('decode-window-body')?.classList.toggle('decode-window-body-sstv', showSstv);
 	if (table) table.style.display = showFt8 ? '' : 'none';
 	if (cw) cw.style.display = showCw ? '' : 'none';
@@ -664,6 +675,22 @@ function renderContent(): void {
 	else if (showSstv) renderSstv();
 	else if (showWfm) renderWfm();
 	else if (showAm) renderAm();
+}
+
+function renderSstvClearConfirmation(): void {
+	const row = element('sstv-clear-confirm');
+	if (row) row.style.display = sstvClearChannel !== null && active && open && mode === 'sstv' ? '' : 'none';
+	const prompt = element('sstv-clear-prompt');
+	if (prompt) prompt.textContent = t('sstv_confirm_clear_all');
+	const confirm = button('btn-sstv-delete-all');
+	if (confirm) confirm.textContent = t('sstv_delete_all');
+	const cancel = button('btn-sstv-clear-cancel');
+	if (cancel) cancel.textContent = t('sstv_cancel');
+}
+
+function cancelSstvClear(): void {
+	sstvClearChannel = null;
+	renderSstvClearConfirmation();
 }
 
 /**
@@ -766,6 +793,7 @@ function renderSstv(): void {
 /** The Auto control projects the receiver slot; viewing history never changes the pin. */
 function setSstvAuto(on: boolean): void {
 	if (!active) return;
+	cancelSstvClear();
 	const confirmed = sdrSstvMode.confirmedValue();
 	const pin = on ? null : sstvStatus().current?.meta.modeIndex ?? sstvViewMode ??
 		(confirmed !== null && confirmed >= 0 ? confirmed : null);
@@ -1206,6 +1234,7 @@ function setOpen(next: boolean): void {
 function syncOpen(): void {
 	const available = active && channelModes[selectedChannel] !== null;
 	open = active && wanted && Object.values(channelModes).some((value) => value !== null);
+	if (!open || mode !== 'sstv') cancelSstvClear();
 	const win = element('decode-window');
 	const toggle = button('btn-decode-window');
 	if (win) win.style.display = open ? 'flex' : 'none';
@@ -1303,6 +1332,7 @@ export function decodeChannel(): DecodeChannel {
 /** Select a receiver's retained decoder logs and notify the socket consumer. */
 export function setDecodeChannel(channel: DecodeChannel): void {
 	if (channel === selectedChannel) return;
+	cancelSstvClear();
 	sstvViews[selectedChannel] = sstvViewMode;
 	selectedChannel = channel;
 	mode = channelModes[channel];
@@ -1323,6 +1353,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	const win = element('decode-window');
 	const head = element('decode-window-head');
 	if (!win) return;
+	cancelSstvClear();
 	// Only the primary receiver has controls in the product UI. The retained
 	// per-channel stores still accept protocol events independently.
 	element('decode-channel')?.remove();
@@ -1371,12 +1402,10 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	}
 	element('btn-decode-clear')?.addEventListener('click', () => {
 		if (mode === 'sstv') {
-			// The head Clear empties the whole SSTV store (all modes) — the thumbnails' Delete
-			// handles single/multi entries, so the big red switch here is the bulk action.
-			if (!window.confirm(t('sstv_confirm_clear_all'))) return;
-			deleteSstvAll();
-			sstvThumbsShape = '';
-			renderContent();
+			if (!active || !open) return;
+			// Keep reception running while the operator decides; Clear never deletes by itself.
+			sstvClearChannel = selectedChannel;
+			renderSstvClearConfirmation();
 			return;
 		}
 		if (mode === 'cw') clearCwLog();
@@ -1384,6 +1413,14 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		else clearFt8Spots();
 		renderContent();
 	});
+	element('btn-sstv-delete-all')?.addEventListener('click', () => {
+		if (sstvClearChannel !== selectedChannel || !active || !open || mode !== 'sstv') return;
+		cancelSstvClear();
+		deleteSstvAll();
+		sstvThumbsShape = '';
+		renderContent();
+	});
+	element('btn-sstv-clear-cancel')?.addEventListener('click', cancelSstvClear);
 	element('btn-decode-close')?.addEventListener('click', () => { if (active) setOpen(false); });
 
 	// FT8 pane: the regex filter, the sortable headers (click sorts, click again restores the
@@ -1417,6 +1454,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 		if (!target) return;
 		const mode = Number(target.dataset.sstvMode);
 		if (!Number.isFinite(mode)) return;
+		cancelSstvClear();
 		// A mode click shows that mode's picture set, and (with Auto off) pins the decode mode to it.
 		setSstvModeFilter(mode);
 		sstvViewMode = mode;

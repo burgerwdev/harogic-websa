@@ -13,7 +13,7 @@ from tools.reference.native_ddc import NativeDdcChannel
 def library():
     if not shutil.which('cargo'):
         pytest.skip('cargo not available')
-    crate = Path(__file__).resolve().parents[1] / 'native-ddc'
+    crate = Path(__file__).resolve().parents[1] / 'backend'
     subprocess.run(['cargo', 'build', '-j', '1', '--release', '--lib', '--manifest-path', str(crate / 'Cargo.toml')],
                    check=True)
     return str(crate / 'target/release/libwebsa_channelizer.so')

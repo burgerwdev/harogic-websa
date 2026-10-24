@@ -22,7 +22,7 @@ rm -rf frontend/dist
 if [ "$keep_deps" = 1 ]; then
   echo "OK: cleaned caches/dist; dependencies and all Rust targets kept"
 else
-  rm -rf frontend/node_modules wasm/target wasm-dfn/target native-ddc/target
+  rm -rf frontend/node_modules dsp/core/target dsp/deepfilter/target dsp/deepfilter/pkg backend/target
   if [ "$with_wasm" = 1 ]; then
     rm -f frontend/public/dsp.wasm frontend/public/dfn/df_bg.wasm
     echo "OK: cleaned caches, dependencies, Rust targets and published WASM cores; use make build and make wasm to restore"

@@ -8,7 +8,7 @@ let sockets: FakeSocket[];
 class FakeSocket {
   binaryType = '';
   onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(readonly url: string) { sockets.push(this); }
   close(): void {}
@@ -123,6 +123,18 @@ describe('AUD2 audio ingress', () => {
     for (let seq = 1; seq <= 4; seq++) receive(packet({ seq, frames: 48000, input: BigInt(seq - 1) * 96000n, index: BigInt(seq - 1) * 48000n }));
     expect(posted[posted.length - 1]?.message).toMatch(/consumer is too slow/);
     expect(posted.filter((message) => message.type === 'samples')).toHaveLength(3);
+  });
+  it('preserves receiver failure and ignores late PCM until an explicit restart', () => {
+    receive(packet({ seq: 0 }));
+    sockets[0].onclose!({ code: 1011, reason: 'receiver failed' });
+    receive(packet({ seq: 1, frames: 2 }));
+    expect(posted.filter((message) => message.type === 'error')).toEqual([
+      { type: 'error', message: 'Backend audio receiver failed' },
+    ]);
+    expect(posted.filter((message) => message.type === 'samples')).toEqual([]);
+    expect(sockets).toHaveLength(1);
+    send({ type: 'enabled', value: true });
+    expect(sockets).toHaveLength(2);
   });
   it('exposes unknown total delay and causal presentation without claiming exact alignment', () => {
     receive(packet({ seq: 0, flags: 0x30001 }));

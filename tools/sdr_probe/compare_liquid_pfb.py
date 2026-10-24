@@ -1,6 +1,6 @@
 """Offline 2x PFB comparison against liquid-dsp 1.7 (no instrument access).
 
-Run after: cargo build --release --manifest-path native-ddc/Cargo.toml --lib
+Run after: cargo build --release --manifest-path backend/Cargo.toml --lib
 """
 import ctypes as C
 from pathlib import Path
@@ -14,7 +14,7 @@ BINS = (0, 1, 5, 15, 20, 31, 40, 45, 63, 64, 65, 80, 90, 100, 120, 127)
 
 
 def compare(bin_id, offset, impulse_at=None):
-    rust = C.CDLL(str(ROOT / "native-ddc/target/release/libwebsa_channelizer.so"))
+    rust = C.CDLL(str(ROOT / "backend/target/release/libwebsa_channelizer.so"))
     rust.pfb_open_kernel.argtypes = (C.c_double, C.c_uint32, C.c_uint32)
     rust.pfb_open_kernel.restype = C.c_void_p
     rust.pfb_process.argtypes = (C.c_void_p, C.c_void_p, C.c_int, C.c_void_p, C.c_int, C.c_void_p, C.c_int)

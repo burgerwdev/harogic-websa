@@ -56,8 +56,8 @@ oracle, and AAC reserialization procedures are documented in
 Offline IQ replay uses the production receiver:
 
 ```sh
-cargo build -j 1 --release --manifest-path native-ddc/Cargo.toml --bin sdr_decode
-native-ddc/target/release/sdr_decode --input IQ.f32 --mode ft8 \
+cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin sdr_decode
+backend/target/release/sdr_decode --input IQ.f32 --mode ft8 \
   --input-rate 48000 --bandwidth 3000 --report-json /tmp/decode.json
 ```
 
@@ -121,7 +121,7 @@ capture the channelized IQ for native analysis and repeatable replay:
 ```sh
 python3 tools/bench/hil_audio_check.py --mode wfm --frequency 411e6 \
   --seconds 8 --tinysa-port '' --ifbw 180000 --out /tmp/hil_wfm.json
-WEBSA_RDS_IQ=/tmp/hil_wfm.json cargo test -j 1 --release --manifest-path wasm/Cargo.toml \
+WEBSA_RDS_IQ=/tmp/hil_wfm.json cargo test -j 1 --release --manifest-path dsp/core/Cargo.toml \
   --test live_rds_capture -- --nocapture
 ```
 
@@ -162,7 +162,7 @@ the device window free of builds, tests, browsers, and other session work:
 
 ```sh
 ./stop.sh
-native-ddc/target/release/websad --sdr-pipeline-bench \
+backend/target/release/websad --sdr-pipeline-bench \
   --product-channels true --seconds 60 --warmup 5 \
   --shim "$WEBSA_RUST_IQS_SHIM" --center 411000000 --output /tmp/sdr-product-60.json
 ```

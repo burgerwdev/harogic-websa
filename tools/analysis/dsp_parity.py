@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'dsp'
-WASM_DIR = ROOT / 'wasm'
+WASM_DIR = ROOT / 'dsp' / 'core'
 
 #: Printed lines the Rust tests emit, e.g. "fir: worst difference 0e0" or
 #: "usb: worst difference vs the Python reference 2.9e-8".
@@ -80,7 +80,7 @@ def main() -> int:
 
     if args.wasm:
         print('\n== WASM artifact ==')
-        build = run(['./wasm/build.sh', '--check'], ROOT)
+        build = run(['./dsp/core/build.sh', '--check'], ROOT)
         print(build.stdout.strip().splitlines()[-1] if build.stdout.strip() else build.stderr.strip())
         if build.returncode != 0:
             return 1

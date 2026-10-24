@@ -551,7 +551,6 @@ function renderRtaView() {
     renderTriggerOverlay();                         // canvas is empty while waiting
     if (S.limits.on) { renderLimits(); pushStatus(limitStatusBlock()); }
     if (S.badData) pushStatus({ lines: [`!${t('bad_data')}`], accent: '#ff7043' });
-    renderStatusBlocks();
     renderWaterfallIfOn();
     const rp = getDisplayPowers();
     // The RTA/SDR path needs the same auto peak threshold as the swept path, otherwise the
@@ -591,6 +590,7 @@ export function renderAll() {
   const view = getViewRenderer(c.viewMode);
   if (view) {
     view.render(viewContext());
+    renderStatusBlocks();
     renderCursorReadout();          // top-left, drawn over every view's own labels
     drawMarqueeOverlay();
     renderSpectrumZoomOverview();

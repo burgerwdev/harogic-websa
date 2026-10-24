@@ -8,8 +8,8 @@
 	all help
 
 # Explicit diagnostic artifact dependencies.
-WASM_DSP_SRC := $(shell find wasm/src -name '*.rs' 2>/dev/null) wasm/Cargo.toml wasm/build.sh
-WASM_DFN_SRC := $(shell find wasm-dfn/src -name '*.rs' 2>/dev/null) wasm-dfn/Cargo.toml wasm-dfn/build.sh
+WASM_DSP_SRC := $(shell find dsp/core/src -name '*.rs' 2>/dev/null) dsp/core/Cargo.toml dsp/core/build.sh
+WASM_DFN_SRC := $(shell find dsp/deepfilter/src -name '*.rs' 2>/dev/null) dsp/deepfilter/Cargo.toml dsp/deepfilter/build.sh
 
 ##@ Service
 
@@ -32,23 +32,23 @@ frontend: ## Frontend only: npm install + Vite build -> dist (no WASM)
 	./build.sh
 
 wasm-dsp: ## Build the DSP core (needs Rust) and publish the committed artifact
-	./wasm/build.sh
+	./dsp/core/build.sh
 
 wasm-dfn: ## Build the DFN (DeepFilterNet3) core (needs Rust) and publish the committed artifact
-	./wasm-dfn/build.sh
+	./dsp/deepfilter/build.sh
 
 wasm: wasm-dsp wasm-dfn  ## Build both WASM cores (DSP + DFN) and publish the committed artifacts (needs Rust)
 
 build: frontend native  ## Build browser controls and Rust service
 
 native: ## Build the Rust service and native DSP
-	cargo build -j 1 --release --manifest-path native-ddc/Cargo.toml --bin websad
+	cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websad
 
 SDK_ROOT ?= /opt/htraapi
 SDK_SHIM ?= $(HOME)/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so
 sdk-shim: ## Build matching SAN-90 retained-session SDK shim (vendor SDK required)
 	mkdir -p "$(dir $(SDK_SHIM))"
-	$(CXX) -O2 -std=c++17 -Wall -Wextra -pthread -fPIC -shared -I"$(SDK_ROOT)/inc" native-ddc/sdk/san90_sdk.cpp -L"$(SDK_ROOT)/lib/x86_64" -Wl,-rpath,"$(SDK_ROOT)/lib/x86_64" -l:libhtraapi.so.0.55.100 -o "$(SDK_SHIM)"
+	$(CXX) -O2 -std=c++17 -Wall -Wextra -pthread -fPIC -shared -I"$(SDK_ROOT)/inc" backend/sdk/san90_sdk.cpp -L"$(SDK_ROOT)/lib/x86_64" -Wl,-rpath,"$(SDK_ROOT)/lib/x86_64" -l:libhtraapi.so.0.55.100 -o "$(SDK_SHIM)"
 
 package-runtime: ## Publish existing native/frontend/SDK-adapter builds into runtime/ (Linux x86_64)
 	./tools/package-runtime.sh "$(SDK_SHIM)"
@@ -72,7 +72,7 @@ test:     ## Test Rust service contracts, Python tools and frontend
 	./test.sh
 
 wasm-test: ## Run native Rust DSP kernel tests
-	cargo test -j 1 --manifest-path wasm/Cargo.toml -- --test-threads=1
+	cargo test -j 1 --manifest-path dsp/core/Cargo.toml -- --test-threads=1
 
 ci: wasm-test  ## Run hardware-free local checks; browser checks use make e2e-fake
 	./test.sh
@@ -93,8 +93,8 @@ ci: wasm-test  ## Run hardware-free local checks; browser checks use make e2e-fa
 ##@ WASM artifacts
 
 wasm-check: ## Rebuild both WASM cores and fail if a committed artifact differs (needs Rust)
-	./wasm/build.sh --check
-	./wasm-dfn/build.sh --check
+	./dsp/core/build.sh --check
+	./dsp/deepfilter/build.sh --check
 
 ##@ Hardware
 
@@ -122,7 +122,7 @@ e2e-fake: native  ## UI smoke against the native fixture service; production rem
 	@bash -eu -o pipefail -c '\
 	WEBSA_FAKE_PORT=$${WEBSA_FAKE_PORT:-8099}; \
 	export WEBSA_PORT=$$WEBSA_FAKE_PORT; \
-	env -u WEBSA_RUST_IQS_SHIM WEBSA_HOST=127.0.0.1 setsid nohup native-ddc/target/release/websad > /tmp/websa-fake.log 2>&1 < /dev/null & \
+	env -u WEBSA_RUST_IQS_SHIM WEBSA_HOST=127.0.0.1 setsid nohup backend/target/release/websad > /tmp/websa-fake.log 2>&1 < /dev/null & \
 	fake_pid=$$!; echo $$fake_pid > /tmp/websa-fake.pid; \
 	cleanup() { kill -TERM -- -$$fake_pid 2>/dev/null || kill "$$fake_pid" 2>/dev/null || true; rm -f /tmp/websa-fake.pid; }; \
 	trap cleanup EXIT; \
@@ -162,7 +162,7 @@ help:     ## Show help
 
 # Explicit offline diagnostic artifacts; product frontend builds do not use them.
 frontend/public/dsp.wasm: $(WASM_DSP_SRC)
-	./wasm/build.sh
+	./dsp/core/build.sh
 
 frontend/public/dfn/df_bg.wasm: $(WASM_DFN_SRC)
-	./wasm-dfn/build.sh
+	./dsp/deepfilter/build.sh

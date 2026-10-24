@@ -32,15 +32,15 @@ IQS 返回 `-12` 时，若包含有效 IQ 包，服务保留样本及时间戳�
 
 | 阶段 | 模块 |
 |---|---|
-| 设备 session 与采集 | `native-ddc/sdk/san90_sdk.cpp`, `native-ddc/src/bin/websad/service_capture.rs` |
-| 服务、命令与发布 | `native-ddc/src/bin/websad.rs`, `native-ddc/src/bin/websad/service_ddc.rs` |
-| 粗 PFB 与有序 workers | `native-ddc/src/pfb.rs`, `native-ddc/src/pfb_pool.rs` |
-| fine DDC 与样本时钟 | `native-ddc/src/fine.rs`, `native-ddc/src/narrow.rs`, `native-ddc/src/rate_plan.rs` |
-| 流水线编排与准入 | `native-ddc/src/bin/websad/sdr_pipeline.rs`, `native-ddc/src/bin/websad/service_preflight.rs` |
-| 原生接收器编排 | `native-ddc/src/bin/websad/receiver_workers.rs`, `native-ddc/src/receiver.rs` |
-| 模拟与数字 DSP | `wasm/src/analog/`, `wasm/src/digital/`, `wasm/src/pipeline.rs` |
-| 原生降噪 | `native-ddc/src/nr.rs`, `wasm-dfn/src/` |
-| 二进制协议与订阅边界 | `native-ddc/src/wire.rs`, `native-ddc/src/bin/websad/service_stream.rs`, `native-ddc/src/bin/websad/subscriber_stream.rs` |
+| 设备 session 与采集 | `backend/sdk/san90_sdk.cpp`, `backend/src/bin/websad/service_capture.rs` |
+| 服务、命令与发布 | `backend/src/bin/websad.rs`, `backend/src/bin/websad/service_ddc.rs` |
+| 粗 PFB 与有序 workers | `backend/src/pfb.rs`, `backend/src/pfb_pool.rs` |
+| fine DDC 与样本时钟 | `backend/src/fine.rs`, `backend/src/narrow.rs`, `backend/src/rate_plan.rs` |
+| 流水线编排与准入 | `backend/src/bin/websad/sdr_pipeline.rs`, `backend/src/bin/websad/service_preflight.rs` |
+| 原生接收器编排 | `backend/src/bin/websad/receiver_workers.rs`, `backend/src/receiver.rs` |
+| 模拟与数字 DSP | `dsp/core/src/analog/`, `dsp/core/src/digital/`, `dsp/core/src/pipeline.rs` |
+| 原生降噪 | `backend/src/nr.rs`, `dsp/deepfilter/src/` |
+| 二进制协议与订阅边界 | `backend/src/wire.rs`, `backend/src/bin/websad/service_stream.rs`, `backend/src/bin/websad/subscriber_stream.rs` |
 | 浏览器流与解码展示 | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
 | 播放 | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
 | 离线参考与 fixture | `tools/reference/`, `tools/fixtures/gen_dsp_fixtures.py`, `tests/fixtures/dsp/` |
@@ -65,13 +65,17 @@ IQS 返回 `-12` 时，若包含有效 IQ 包，服务保留样本及时间戳�
 
 对于显示帧，慢客户端的旧帧可由新帧替换。有序 IQ、PCM 和解码输出使用有界队列，溢出时明确报错；不得通过静默丢样、扩大队列或阻塞采集来通过吞吐检查。音频容量反馈包括排队和未确认的 PCM；解码批次保持有界，按 FIFO 顺序应用后确认。协议和反馈契约见 [API](API.md)。
 
+Receiver worker 失败会终止当前 SDR 会话。服务保留首次诊断及 worker 计数器，回收失败的 worker 和采集，仅发送一次 `receiver_failed` 错误，并以接收器失败原因关闭 PCM/事件订阅；不会恢复不连续的流，也不会重复轮询已锁存的 worker 故障。健康重配置仍按顺序发布旧流尾帧；失败会话不保证完整尾帧。显式离开 SDR 再返回会创建新 worker 和流身份，硬件链路状态保持独立。
+
+DRM 在 SDC 尚未提供复用配置时，只保留近期完整等化帧：DRM30 为 13 帧，DRM+ 为 16 帧，覆盖长交织器预热及超帧对齐。裁剪保留每帧的 FAC 标记和源样本来源；已有配置后的解码不变。选定模式的定时路径也沿用绝对样本坐标裁剪未同步 IQ 历史。这些是解码器捕获历史的边界，不是丢弃输入帧或创建新流身份；失锁恢复仍清理既有解码状态。
+
 ### 流身份与时钟
 
 IQBF/IQAX v2 使用 `(epoch, channel_id)` 标识流。重调更换频道身份，新 DSP/采集计划更换 epoch。旧输出先于新流空 `seq=0` 边界结束。拒绝请求不分配新身份。注册表和频道时钟来自同一不可变流水线快照；退出 SDR 后清空。
 
 IQ `input_index` 是首个输出在采集复数样本域中的因果位置，不是包首。群延迟独立传输，单位为输出复数样本。对齐公式为 `input_index / input_rate - group_delay_samples / output_rate`。合帧保留首段非空输出时钟。消费者必须精确保留 u64 索引。
 
-AUD2 携带交错 f32 PCM、实际率和声道、流身份、PCM `audio_index`、采集输入位置及分数时刻。SDE2 携带相同身份和时钟语义的解码事件。总延迟未知和因果播放有明确标志，两者均不允许宣称精确源对齐。FT8 结果保留原搜索窗口时刻。新订阅者获得自己的起始边界；晚订阅 SSTV 获得有界当前图像快照，不重置接收器。完整布局及排序见 [API](API.md)。
+AUD2 携带交错 f32 PCM、实际率和声道、流身份、PCM `audio_index`、采集输入位置及分数时刻。SDE2 携带相同身份和时钟语义的解码事件。总延迟未知和因果播放有明确标志，两者均不允许宣称精确源对齐。解码窗格通过模式标题的工具提示展示这些时钟详情，而非常规显示标题栏标签。DRM/DRM+ 的时序与电台锁定和音频播放状态无关；解码器错误仍显示在标题栏。FT8 结果保留原搜索窗口时刻。新订阅者获得自己的起始边界；晚订阅 SSTV 获得有界当前图像快照，不重置接收器。完整布局及排序见 [API](API.md)。
 
 ### DSP 与播放边界
 
@@ -91,13 +95,15 @@ WFM 保留立体声和 RDS。FM 分析单位为 Hz，固定 NFM ±5 kHz、WFM ±
 
 频谱 CSS 盒决定画布几何，位图尺寸通过 ResizeObserver 跟随。启用瀑布时，绘制路径和 STATUS 驱动的测量 UI 刷新均保持标记表隐藏。STATUS 不能临时恢复该表，否则频谱会缩小并因位图尺寸变化而清空，直到下一次绘制再次隐藏表格。
 
+SWP 与常规 RTA 频谱更新以 30 fps 为目标，使用一个以上次帧绘制时刻为基准的尾随定时器。SWP 仍对每个有效扫描执行迹线、瀑布和触发处理；RTA 只处理最新待处理的常规帧。首帧、频率轴变化及已布防的 RTA 捕获仍立即处理和绘制。模式切换、重新调谐、触发重置和断线会取消待处理工作。UI 重绘请求保持同步，SDR 保留既有处理及绘制节奏。
+
 轴拖动本地预览，手势稳定后提交。手动 Ref 属于设备控制，显示刻度和偏移独立归属。增益回读来自当前模式成功配置后的 SDK 实际值；无法获取时保持 null。前置放大 `0` 表示 Auto、`1` 表示 Off，不能据此宣称物理放大器已开启。RTA 捕获依据随 RTA2 帧传输的设备触发元数据；SDR 继续使用 RTAF，旧格式解码仅供兼容。收到帧或等待一段时间都不能证明捕获完成。SWP 在前端根据相邻扫描判断电平交叉。参数、Auto、迹线、测量与触发约定见 [MODE_STATE_FLOW](MODE_STATE_FLOW.md)。
 
 ## 质量边界与验证
 
 后端三个槽不表示 UI 提供三路接收器，也不表示无限监听或录制。FT8 在支持的搜索窗内处理标准类型 1/2；SSTV 不解码图像后的 FSK 呼号。RDS 文本质量和短段/循环 DRM codec 播放仍有约束。[KNOWN_ISSUES](KNOWN_ISSUES.md) 记录当前限制及 SDK 边界。
 
-20 fps 采集目标不保证浏览器所有图层均以 20 fps 绘制。已有频谱、密度、瀑布和导航全开的浏览器观察约为 15 fps。这些描述归纳实现与既有证据；维护文档不构成重新验收硬件。
+浏览器 SWP/RTA 的 30 fps 调度目标取决于输入帧率与绘制开销，不代表已测硬件吞吐，也不改变后端采集时序。这些描述归纳实现；维护文档不构成重新验收硬件。
 
 可复现入口包括：`make wasm-test` 验证共享 DSP，`make ci` 执行本地无硬件门禁，`make e2e-fake` 验证原生 fixture UI。`tools/bench/sdr_pipeline_check.py` 和 `sdr_pipeline_controls.py` 检查 live IQv2 连续性及控制；原生 `websad --sdr-pipeline-bench` 覆盖流水线。命令选项及依赖见 [tools](../../tools/README.md)。硬件验收必须核对内容、硬件时间戳、队列/失败增量和排空后的样本守恒；假源吞吐或短窗口不能证明持续 RF 运行。浏览器检查与安静的硬件性能窗口分开，见 [DEVELOPMENT](DEVELOPMENT.md)。
 
@@ -105,4 +111,4 @@ WFM 保留立体声和 RDS。FM 分析单位为 Hz，固定 NFM ±5 kHz、WFM ±
 
 项目代码使用 MIT 许可证。厂商 SDK 二进制为专有软件，需另行获取。DSP 技术参考 liquid-dsp、tpt-dsp、sdr-web、Radioband 和 pffft.wasm；参考不表示复制其实现。离线数值一致性以本仓库参考内核及已提交的 fixture 为准。
 
-FT8 协议表来自 [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT），来源见 `tools/fixtures/port_ft8_tables.py`。SSTV 包含 `wasm/src/digital/sstv/vendor/` 中 MIT 许可解码器。CW 使用 `tools/vendor/ggmorse/` 中的 [ggmorse](https://github.com/ggerganov/ggmorse) 并保留许可证。DeepFilterNet 集成保留 `wasm-dfn/` 下的许可证。codec 构建、来源和许可边界保留在 `wasm/fdk/README.md`、`wasm/xaac/README.md`、[DRM_BENCH](DRM_BENCH.md) 和 [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md)。修改 fixture 或 vendor 代码时保留归属信息。
+FT8 协议表来自 [ft8_lib](https://github.com/kgoba/ft8_lib)（MIT），来源见 `tools/fixtures/port_ft8_tables.py`。SSTV 包含 `dsp/core/src/digital/sstv/vendor/` 中 MIT 许可解码器。CW 使用 `tools/vendor/ggmorse/` 中的 [ggmorse](https://github.com/ggerganov/ggmorse) 并保留许可证。DeepFilterNet 集成保留 `dsp/deepfilter/` 下的许可证。codec 构建、来源和许可边界保留在 `dsp/core/fdk/README.md`、`dsp/core/xaac/README.md`、[DRM_BENCH](DRM_BENCH.md) 和 [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md)。修改 fixture 或 vendor 代码时保留归属信息。

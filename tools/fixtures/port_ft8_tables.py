@@ -12,7 +12,7 @@ hand — hand-copying 83x12 bytes is how a decoder ends up subtly non-interopera
 
 The generated files are committed (so a build never needs the upstream checkout):
 
-    wasm/src/digital/ft8/tables.rs        the Rust decoder's constants
+    dsp/core/src/digital/ft8/tables.rs    the Rust decoder's constants
     tests/fixtures/ft8/tables.json        the same values for the Python fixture generator
 
 Usage:
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SOURCE = Path(sys.argv[1] if len(sys.argv) > 1 else '/tmp/ft8_lib')
-RUST_OUT = ROOT / 'wasm' / 'src' / 'digital' / 'ft8' / 'tables.rs'
+RUST_OUT = ROOT / 'dsp' / 'core' / 'src' / 'digital' / 'ft8' / 'tables.rs'
 JSON_OUT = ROOT / 'tests' / 'fixtures' / 'ft8' / 'tables.json'
 
 HEADER = """//! FT8 protocol constants.

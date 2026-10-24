@@ -154,7 +154,7 @@ describe('SDR entry and reload', () => {
 		localStorage.setItem('web-sa-sdr-am-sync', '1');
 		await load();
 		const { sdrAmSync } = await import('../ui/sdrState');
-		const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
 		receive(status('sdr', { sdr: { center: 1e9, decimate: 32,
 			channels: [{ channel: 1, enabled: true, freq: 1e9, mode: 'am', if_bw: 6000, am_sync: false, am_sync_generation: 0 }] } }));
 		const request = socket.sent.find(command => command.am_sync === true)!;
@@ -165,8 +165,55 @@ describe('SDR entry and reload', () => {
 		expect(sdrAmSync.desiredValue()).toBeNull();
 		expect(sdrAmSync.get()).toBe(false);
 		expect(localStorage.getItem('web-sa-sdr-am-sync')).toBe('0');
-		alert.mockRestore();
 	});
+
+  it('keeps repeated device errors bounded while STATUS and controls continue, beyond notice expiry', async () => {
+    const { controls, fit } = await load();
+    // These modules must share load()'s reset module graph to model a fresh page.
+    const S = await import('../core/store');
+    S.initStore();
+    const { renderAll } = await import('../render/spectrum');
+    const { setRenderer, renderRequestCount } = await import('../render/redraw');
+    const { currentGraphMode } = await import('../ui/graphMode');
+    const { setLang } = await import('../core/i18n');
+    setLang('en');
+    document.body.insertAdjacentHTML('beforeend', '<span id="status-error" role="alert" aria-atomic="true"></span>');
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => { throw new Error('blocking dialog'); });
+    try {
+      receive(status('std'));
+      fit.postRefNotice('Transient reference feedback', 100);
+      const failure = { cmd: 'ERROR', code: 'receiver_failed', msg: 'receiver input queue failure: full' };
+      receive(failure);
+      const repaints = renderRequestCount();
+      for (let i = 0; i < 100; i++) receive(failure);
+      expect(renderRequestCount()).toBe(repaints);
+      expect(S.canvas.dataset.error).toBe('Device: receiver input queue failure: full');
+      expect(document.querySelectorAll('#status-error')).toHaveLength(1);
+      expect(document.getElementById('status-error')?.textContent).toBe(S.canvas.dataset.error);
+      vi.advanceTimersByTime(101);
+      expect(S.noticeText).toBeNull();
+      expect(S.canvas.dataset.error).toBe('Device: receiver input queue failure: full');
+      receive(status('rta'));
+      expect(currentGraphMode()).toBe('rta');
+      controls.setGraphMode('std');
+      expect(socket.sent.at(-1)).toMatchObject({ cmd: 'SET_MODE', mode: 'std' });
+      receive(status('std'));
+      expect(currentGraphMode()).toBe('std');
+      receive({ cmd: 'ERROR', code: 'another_failure', msg: 'new diagnostic' });
+      expect(S.canvas.dataset.error).toBe('Device: new diagnostic');
+      expect(document.getElementById('status-error')?.textContent).toBe('Device: new diagnostic');
+      for (const view of ['pnm', 'harm'] as const) {
+        S.setViewMode(view);
+        delete S.canvas.dataset.error;
+        renderAll();
+        expect(S.canvas.dataset.error).toBe('Device: new diagnostic');
+      }
+      expect(alert).not.toHaveBeenCalled();
+    } finally {
+      alert.mockRestore();
+      setRenderer(null);
+    }
+  });
 
 	it.each(['device STATUS', 'control websocket'])('clears the actual AM display on %s loss and ignores the retired worker until connected STATUS', async (loss) => {
 		class Receiver {

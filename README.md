@@ -4,7 +4,7 @@
 
 A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), using the native Rust service and a C++ shim for the official `libhtraapi.so` SDK over USB.
 
-Release **1.9.0** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
+Release **1.9.1** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
 for offline tools and tests; there is no Python production backend. Retained browser WASM
 artifacts are optional offline diagnostics, not the production DSP path.
 
@@ -69,7 +69,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 
 ### Run the bundled release
 
-The 1.9.0 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
+The 1.9.1 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so`, and `runtime/frontend/dist/`.
 Run `./run.sh` for hardware or `./run.sh --fake` for synthetic input, then open
 http://127.0.0.1:8080. No Rust, Node.js or Python installation is needed to use the bundle.
@@ -88,7 +88,7 @@ OpenMP, pthread and dl). This is not a portable or static binary distribution; r
 older distributions or other architectures. See [Development](docs/en/DEVELOPMENT.md)
 for rebuilding and packaging.
 
-`run.sh` prefers rebuilt `native-ddc/target/release/websad` and `frontend/dist/` when present,
+`run.sh` prefers rebuilt `backend/target/release/websad` and `frontend/dist/` when present,
 otherwise it uses the bundled files. `WEBSA_BIN` overrides the service executable. For hardware,
 an explicit `WEBSA_RUST_IQS_SHIM` wins, followed by the installed user shim and the bundled adapter.
 
@@ -140,7 +140,7 @@ WEBSA_HOST=0.0.0.0 ./run.sh
 ```
 
 Then open `http://device-address:8080/`. The [operations FAQ](docs/en/FAQ_NOTES.md) covers
-environment variables, logging and recovery. Direct invocation of `native-ddc/target/release/websad`
+environment variables, logging and recovery. Direct invocation of `backend/target/release/websad`
 defaults to fixture input on port 8099 when no hardware shim is supplied; `run.sh` explicitly selects
 hardware on port 8080 unless fake input is requested.
 
@@ -161,9 +161,10 @@ make hw-test                             # bench only: tinySA CW + UI state regr
 
 ```
 harogic-websa/
-├─ native-ddc/           Rust service, channelizer and C++ SDK shim
-├─ wasm/                 shared Rust DSP crate and browser WASM
-├─ wasm-dfn/             DeepFilterNet integration
+├─ backend/              Rust service, channelizer and C++ SDK shim
+├─ dsp/
+│  ├─ core/              shared native/WASM Rust DSP crate and browser WASM
+│  └─ deepfilter/        shared native/WASM DeepFilterNet integration
 ├─ frontend/             TS frontend (Vite + TypeScript, i18n + themes)
 │  ├─ src/ui/panels/     panel modules (frequency/resolution/rta/markers/refAmp/...)
 │  ├─ src/render/registry.ts  view renderer registry (views self-register)
@@ -218,8 +219,8 @@ regeneration, guards, document/version checks and hardware prerequisites.
 - Screenshots taken on a real SAN-90 (the SDR digital-mode shots use a PlutoSDR as the signal source)
 - `tools/vendor/ggmorse/`: the CW (Morse) decoder is
   [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at
-  commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`). `native-ddc/cw_build.rs` compiles it
-  into the native service with the project's `native-ddc/native/ggmorse_bridge.cpp` bridge.
+  commit `7b4822a8` (see `tools/vendor/ggmorse/LICENSE`). `backend/cw_build.rs` compiles it
+  into the native service with the project's `backend/native/ggmorse_bridge.cpp` bridge.
 
 
 ---

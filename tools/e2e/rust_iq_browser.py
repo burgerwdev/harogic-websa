@@ -2,7 +2,7 @@
 """Native fixture IQ -> AUD2 -> browser audio worker/AudioWorklet, up to three slots.
 
 Uses the production websad service and committed AM fixture (1 kHz, 50% depth).
-Requires an already built native-ddc/target/release/websad and frontend/dist.
+Requires an already built backend/target/release/websad and frontend/dist.
 Checks concurrent playback, affected-slot retuning, and consumer shutdown.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
-WEBSAD = ROOT / 'native-ddc/target/release/websad'
+WEBSAD = ROOT / 'backend/target/release/websad'
 CHANNELS = [100_000_000.0, 100_100_000.0, 100_200_000.0]
 
 

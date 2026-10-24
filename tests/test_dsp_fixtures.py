@@ -1,7 +1,7 @@
 """DSP golden fixtures: the Rust/WASM kernels' reference output cannot change silently.
 
 ``tools/fixtures/gen_dsp_fixtures.py`` runs the Python reference DSP over a committed IQ block and writes
-the per-stage results the Rust tests in ``wasm/tests/ddc_reference.rs`` are compared against
+the per-stage results the Rust tests in ``dsp/core/tests/ddc_reference.rs`` are compared against
 (within the tolerance recorded in the manifest). This test re-runs the reference and asserts the
 committed fixtures still match within that same tolerance, so changing the Python DSP forces a
 deliberate fixture update - and the Rust test then proves the two implementations still agree.

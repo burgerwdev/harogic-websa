@@ -34,7 +34,7 @@ python3 tools/bench/drm_capture.py --seconds 10 --out /tmp/drm_live.f32 --json /
 已提交抓取与合成夹具见[夹具 README](../../tests/fixtures/drm/README.md)。原生接收机夹具命令为：
 
 ```sh
-cargo test --manifest-path wasm/Cargo.toml --release --test drm_live_fixture -- --nocapture
+cargo test --manifest-path dsp/core/Cargo.toml --release --test drm_live_fixture -- --nocapture
 ```
 
 此命令读取已提交夹具，不读取 `/tmp/drm_live.f32`。原生编解码器构建需要 `pkg-config` 与支持 DRM/USAC 的 FDK-AAC >= 2.0.3；参见 [AAC 格式与构建说明](DRM_AAC_RESERIALIZATION.md)。

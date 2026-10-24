@@ -38,7 +38,7 @@ SERVICE = 'http://127.0.0.1:8080'
 WEBSAD_PORT = 8108
 CARRIER = 100_020_000.0          # Pluto: --lo 100e6 --base-hz 20000
 FULL_CENTER, FULL_SPAN = 4_510_004_000.0, 9_019_992_000.0
-WEBSAD = ROOT / 'native-ddc/target/release/websad'
+WEBSAD = ROOT / 'backend/target/release/websad'
 
 
 def post(url, payload):

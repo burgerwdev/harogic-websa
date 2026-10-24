@@ -90,7 +90,7 @@ def test_total_length_matches_the_mode_table():
     # per-pixel division: a scan's duration is split over the width, and the remainder is dropped the
     # same way the Rust encoder drops it. The table's `total_ns` is what the Rust side compares
     # against its own timing
-    # (`wasm/tests/sstv_decode.rs::the_transmitter_table_matches_the_vendored_decoder_table`).
+    # (`dsp/core/tests/sstv_decode.rs::the_transmitter_table_matches_the_vendored_decoder_table`).
     for mode in sstv.load_modes():
         groups = mode['height'] // mode['lines_per_sequence']
         header_ns = sum(ns for _, ns in sstv.header_tones(mode))

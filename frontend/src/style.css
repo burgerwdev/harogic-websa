@@ -345,6 +345,8 @@ select:disabled { color: var(--label); }
    the body scrolls when the controls and picture exceed the window height. */
 .decode-sstv { display: flex; flex-direction: column; min-width: 0; min-height: 100%; box-sizing: border-box; color: var(--table-cell); font-size: 11px; }
 .decode-sstv-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--inner-border); }
+.decode-sstv-confirm { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--inner-border); color: var(--text); font-size: 11px; }
+.decode-sstv-confirm > span { flex: 1 1 180px; }
 .decode-sstv-modes { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; gap: 3px; }
 .decode-sstv-modes .btn { padding: 2px 6px; font-size: 10px; }
 /* The mode the signal declared, when a manual pin points somewhere else: the pin is what decodes, but

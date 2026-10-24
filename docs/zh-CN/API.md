@@ -1,6 +1,6 @@
 # API 文档
 
-原生后端（`native-ddc/`）通过 **HTTP REST** 和 **WebSocket** 提供接口。WebSocket 传输 JSON 命令、状态和二进制迹线帧。仓库根目录的 `./run.sh` 默认连接硬件，服务端口为 8080；Python 客户端仅为可选工具。
+原生后端（`backend/`）通过 **HTTP REST** 和 **WebSocket** 提供接口。WebSocket 传输 JSON 命令、状态和二进制迹线帧。仓库根目录的 `./run.sh` 默认连接硬件，服务端口为 8080；Python 客户端仅为可选工具。
 
 - 服务地址：`http://127.0.0.1:8080`（WebSocket 路径为 `/ws`）
 - 前端页面：`/`，静态资源：`/static/dist/{file}`
@@ -251,6 +251,8 @@ RTA 发送 RTA2：基础载荷后追加 ASCII TRIG、小端 u32 JSON 字节长�
 流身份为 `(epoch, channel_id)`。重调分配新频道 ID；重建计划、重新采集和新会话分配新 epoch。拒绝请求保留旧配置及旧流。旧输出尾帧先于新起始边界。每个音频/解码订阅者拥有从零开始的序号，不重置接收器或其他订阅者。源序号断裂或无起始标记的格式变化均显式失败。
 
 流使用每客户端最多 64 条消息的有界 FIFO。溢出时以代码 1013 关闭慢订阅，不通过丢弃样本或事件维持播放。显示迹线只保留最新帧。处理职责见 [ARCHITECTURE.md](ARCHITECTURE.md)，接收限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
+
+原生接收器失败会终止当前 SDR 会话：显示/控制流仅收到一次 `code="receiver_failed"` 的 `ERROR`，包含原始诊断；音频/解码订阅以代码 1011 和原因 `receiver failed` 关闭。失败会话无法保证完整的有序尾帧。服务保留故障，丢样后不会自动重新开始采集。通过 `SET_MODE` 切换到其他模式，再返回 SDR，才能创建新会话；已在 SDR 时再次设置 SDR 不起作用。`connected` 始终表示硬件链路状态，接收器失败本身不会将其设为 false。
 
 #### 2.4 IQBF/IQAX v2 头部
 

@@ -39,7 +39,7 @@ python3 tools/fixtures/gen_drm_aac_fixture.py /path/to/ga_units /tmp/aac_sine_24
 
 命令输出 `.drm`、`.ga` 与 `.json` 文件，跳过非 `ONLY_LONG` 帧。源编码器及其补丁须另行准备，此命令不提供它们。
 
-接收机的[构建脚本](../../wasm/build.rs) 要求 `pkg-config` 与支持 DRM/USAC 的原生 FDK-AAC >= 2.0.3。Wasm 构建链接已提交的 FDK 与 libxaac 静态库；独立 libxaac 诊断仅支持 wasm。原生 FDK 处理 AAC、HE-AAC 和 xHE-AAC/USAC。PCM 使用方必须采用解码器返回的采样率与声道数：直接无 SBR 夹具输出 24 kHz，合成 IQ 夹具声明 SBR，输出 48 kHz。
+接收机的[构建脚本](../../dsp/core/build.rs) 要求 `pkg-config` 与支持 DRM/USAC 的原生 FDK-AAC >= 2.0.3。Wasm 构建链接已提交的 FDK 与 libxaac 静态库；独立 libxaac 诊断仅支持 wasm。原生 FDK 处理 AAC、HE-AAC 和 xHE-AAC/USAC。PCM 使用方必须采用解码器返回的采样率与声道数：直接无 SBR 夹具输出 24 kHz，合成 IQ 夹具声明 SBR，输出 48 kHz。
 
 ## 参考资料与许可
 

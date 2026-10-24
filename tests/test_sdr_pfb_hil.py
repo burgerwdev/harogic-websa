@@ -9,9 +9,9 @@ from tools.bench.sdr_pfb_hil import FixtureSource, PfbApi, run_native_pool, run_
 
 @pytest.fixture
 def api():
-    path = Path(__file__).resolve().parents[1] / 'native-ddc/target/release/libwebsa_channelizer.so'
+    path = Path(__file__).resolve().parents[1] / 'backend/target/release/libwebsa_channelizer.so'
     if not path.exists():
-        pytest.skip('build native-ddc first')
+        pytest.skip('build backend first')
     instance = PfbApi(path, 62_500_000.0, [0, 5, 31, 127])
     try:
         yield instance
@@ -21,9 +21,9 @@ def api():
 
 @pytest.mark.parametrize('strategy', [0, 1])
 def test_native_pool_fixture_is_ordered_and_faster_than_packet_clock(strategy):
-    path = Path(__file__).resolve().parents[1] / 'native-ddc/target/release/libwebsa_channelizer.so'
+    path = Path(__file__).resolve().parents[1] / 'backend/target/release/libwebsa_channelizer.so'
     if not path.exists():
-        pytest.skip('build native-ddc first')
+        pytest.skip('build backend first')
     src = FixtureSource(62_500_000.0, 16240, 120)
     result = run_native_pool(src.get, src.fs, src.n, 100e6, path, [0, 5, 31, 127], 120,
                              strategy=strategy)
@@ -37,9 +37,9 @@ def test_native_pool_fixture_is_ordered_and_faster_than_packet_clock(strategy):
 
 @pytest.mark.parametrize('strategy', [0, 1])
 def test_native_pool_aborts_on_sdk_error_without_leaking_handles(strategy):
-    path = Path(__file__).resolve().parents[1] / 'native-ddc/target/release/libwebsa_channelizer.so'
+    path = Path(__file__).resolve().parents[1] / 'backend/target/release/libwebsa_channelizer.so'
     if not path.exists():
-        pytest.skip('build native-ddc first')
+        pytest.skip('build backend first')
     src = FixtureSource(62_500_000.0, 16240, 20)
     def failing():
         packet = src.get()
@@ -55,9 +55,9 @@ def test_native_pool_aborts_on_sdk_error_without_leaking_handles(strategy):
 
 
 def test_native_pool_strategies_match_on_same_iq():
-    path = Path(__file__).resolve().parents[1] / 'native-ddc/target/release/libwebsa_channelizer.so'
+    path = Path(__file__).resolve().parents[1] / 'backend/target/release/libwebsa_channelizer.so'
     if not path.exists():
-        pytest.skip('build native-ddc first')
+        pytest.skip('build backend first')
     def run(strategy):
         src = FixtureSource(62_500_000.0, 16240, 240)
         return run_native_pool(src.get, src.fs, src.n, 100e6, path, list(range(32)), 240,

@@ -174,6 +174,16 @@ export function setStatusWarnings(v: string[]) { statusWarnings = v; }
 //: message replaces the previous one instead of piling up.
 export let noticeText: string | null = null;
 export function setNoticeText(v: string | null) { noticeText = v; }
+// Persistent device/command error, separate from transient reference notices. Repeated
+// failures replace this one slot; neither STATUS updates nor notice timers erase it.
+export let statusError: string | null = null;
+export function setStatusError(v: string | null) {
+  if (statusError === v) return;
+  statusError = v;
+  const live = document.getElementById('status-error');
+  if (live) live.textContent = v ?? '';
+  requestRender();
+}
 export function setTrigOverlay(v: string[]) { trigOverlay = v; }
 
 // Limit line + pass/fail check (state owned by ui/limits.ts, math by dsp/limits.ts)

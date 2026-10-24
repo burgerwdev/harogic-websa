@@ -30,6 +30,11 @@ function shell(): void {
 				<button class="btn" id="btn-decode-clear">Clear</button>
 				<button class="btn" id="btn-decode-close">Close</button>
 			</div>
+			<div class="decode-sstv-confirm" id="sstv-clear-confirm" role="group" aria-labelledby="sstv-clear-prompt" style="display:none;">
+				<span id="sstv-clear-prompt"></span>
+				<button type="button" class="btn" id="btn-sstv-delete-all">Delete all</button>
+				<button type="button" class="btn" id="btn-sstv-clear-cancel">Cancel</button>
+			</div>
 			<div class="decode-search-row" id="decode-ft8-search-row" style="display:none;">
 				<input class="decode-search" id="decode-ft8-search" type="text" placeholder="Filter messages (regex)" />
 			</div>
@@ -178,7 +183,7 @@ describe('decoder channel selection', () => {
 		expect(ft8Spots().map((spot) => spot.at)).toEqual([4000]);
 	});
 
-	it('shows unknown alignment and exact source clock without leaking decoder errors across channels', () => {
+	it('keeps exact source timing and decoder errors isolated across channels', () => {
 		setDecodeChannelMode(1, 'ft8');
 		setDecodeChannelMode(2, 'cw');
 		setDecodeTiming(1, {
@@ -192,25 +197,26 @@ describe('decoder channel selection', () => {
 		setDecodeError(2, 'Decoder unavailable');
 		toggleDecodeWindow();
 		const status = document.getElementById('decode-source-timing')!;
-		expect(status.textContent).toBe('Alignment unknown');
-		expect(status.title).toContain('9007199254740993123 + 17/31');
-		expect(status.title).toContain('Causal presentation');
+		const title = document.getElementById('decode-window-title')!;
+		expect(status.style.display).toBe('none');
+		expect(status.textContent).toBe('');
+		expect(title.title).toContain('9007199254740993123 + 17/31');
 		setDecodeChannel(2);
-		expect(status.textContent).toContain('Decoder error: Decoder unavailable');
+		expect(status.style.display).not.toBe('none');
+		expect(status.textContent).toContain('Decoder unavailable');
 		expect(status.getAttribute('role')).toBe('alert');
-		expect(status.title).toContain('Delay 0.125000 s');
+		expect(title.title).toContain('0.125000');
 		setDecodeError(2, null);
-		expect(status.textContent).toBe('Aligned');
+		expect(status.style.display).toBe('none');
+		expect(status.textContent).toBe('');
 		setDecodeChannel(1);
-		expect(status.textContent).toBe('Alignment unknown');
+		expect(title.title).toContain('9007199254740993123 + 17/31');
 		setDecodeTiming(1, {
 			inputIndex: '9007199254740993999', fractionNum: '3', fractionDen: '7',
 			inputRate: 48000, delaySeconds: 0.02, delayKnown: true, causalPresentation: true,
 		});
-		expect(status.textContent).toBe('Alignment unknown');
-		expect(status.title).toContain('9007199254740993999 + 3/7');
-		expect(status.title).toContain('Delay 0.020000 s');
-		expect(status.title).toContain('Causal presentation');
+		expect(title.title).toContain('9007199254740993999 + 3/7');
+		expect(title.title).toContain('0.020000');
 	});
 
 	it('keeps FT8 receive counters with their channel while preserving the decode history', () => {
@@ -655,10 +661,6 @@ describe('the FT8 decode window', () => {
 		expect(document.getElementById('decode-drm-snr')?.textContent).toBe('16 dB');
 		expect(document.getElementById('decode-drm-fac-ok')?.textContent).toBe('22');
 		expect(document.getElementById('decode-drm-services')?.children[1]).toBe(service);
-		setDecodeTiming(1, { inputIndex: '1000', fractionNum: '0', fractionDen: '1', inputRate: 48000,
-			delaySeconds: 1, delayKnown: false, causalPresentation: true });
-		expect(document.getElementById('decode-source-timing')?.textContent).toBe('Alignment unknown');
-		expect(document.getElementById('decode-source-timing')?.title).toContain('Alignment unknown');
 	});
 
 	it('consumes all decoder updates before painting the latest snapshot once', () => {
@@ -693,7 +695,7 @@ describe('the FT8 decode window', () => {
 		expect(drmStatus().lines).toContain('station: LATEST STATION');
 		toggleDecodeWindow();
 		expect(document.getElementById('decode-drm-station')?.textContent).toBe('LATEST STATION');
-		expect(document.getElementById('decode-source-timing')?.title).toContain('Source sample 9000');
+		expect(document.getElementById('decode-window-title')?.title).toContain('9000');
 	});
 
 	it('shows DRM searching without old station or stale constellation', () => {
@@ -934,12 +936,13 @@ describe('SSTV pane interactions', () => {
 	});
 
 	it('clear all removes everything without breaking the live picture', () => {
-		vi.spyOn(window, 'confirm').mockReturnValue(true);
 		updateSstvPicture(picture(1), meta(1));
 		updateSstvPicture(picture(2), meta(2));
 		expect(sstvCount()).toBe(2);
 		const clearAll = document.getElementById('btn-decode-clear') as HTMLButtonElement;
 		clearAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(sstvCount()).toBe(2);
+		document.getElementById('btn-sstv-delete-all')!.click();
 		expect(sstvCount()).toBe(0);
 		// Reception recovers: the next picture starts fresh.
 		updateSstvPicture(picture(3), meta(3));
@@ -1142,24 +1145,78 @@ describe('SSTV auto toggle + multi-select delete + confirm', () => {
 		expect(sstvCount()).toBe(1); // only the live picture remains
 	});
 
-	it('confirm gate: cancel keeps pictures, confirm deletes them', () => {
+	it('keeps receiving while an inline decision is pending, and Cancel preserves every picture', () => {
 		initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
 		setDecodeWindowAvailable('sstv');
 		toggleDecodeWindow();
 		updateSstvPicture(picture(1), meta(1));
 		updateSstvPicture(picture(2), meta(2));
-		const confirmSpy = vi.spyOn(window, 'confirm');
-		// Cancel: pictures survive.
-		confirmSpy.mockReturnValue(false);
 		const clearAll = document.getElementById('btn-decode-clear') as HTMLButtonElement;
-		clearAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-		expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('SSTV'));
+		const confirmation = document.getElementById('sstv-clear-confirm') as HTMLElement;
+		const confirm = document.getElementById('btn-sstv-delete-all') as HTMLButtonElement;
+		// The affirmative button cannot delete without an outstanding request.
+		confirm.click();
 		expect(sstvCount()).toBe(2);
-		// Confirm: pictures deleted.
-		confirmSpy.mockReturnValue(true);
-		clearAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		clearAll.click();
+		clearAll.click();
+		expect(confirmation.style.display).toBe('');
+		expect(document.querySelectorAll('#sstv-clear-confirm')).toHaveLength(1);
+		expect(sstvCount()).toBe(2);
+		// A growing live image and a new transmission still reach the store and pane.
+		updateSstvPicture(picture(3), meta(2, { progress: 75, lines: 180 }));
+		expect(sstvStatus().current?.picture.rgb[0]).toBe(3);
+		expect(document.getElementById('sstv-progress-text')?.textContent).toBe('75%');
+		updateSstvPicture(picture(4), meta(3));
+		expect(sstvCount()).toBe(3);
+		expect(document.getElementById('sstv-count')?.textContent).toBe('3');
+		expect(confirmation.style.display).toBe('');
+		document.getElementById('btn-sstv-clear-cancel')!.click();
+		expect(confirmation.style.display).toBe('none');
+		confirm.click();
+		expect(sstvCount()).toBe(3);
+		clearAll.click();
+		confirm.click();
 		expect(sstvCount()).toBe(0);
+		expect(confirmation.style.display).toBe('none');
+		updateSstvPicture(picture(5), meta(4));
+		confirm.click();
+		expect(sstvCount()).toBe(1);
 	});
+
+	it.each(['close', 'toggle', 'demodulator', 'channel', 'inactive/disconnect', 'SSTV mode', 'Auto', 're-init'])(
+		'discards pending deletion after %s so a stale button cannot delete a later session', (transition) => {
+			initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+			setDecodeWindowAvailable('sstv');
+			toggleDecodeWindow();
+			updateSstvPicture(picture(1), meta(1));
+			document.getElementById('btn-decode-clear')!.click();
+			const confirmation = document.getElementById('sstv-clear-confirm') as HTMLElement;
+			expect(confirmation.style.display).toBe('');
+			switch (transition) {
+				case 'close': document.getElementById('btn-decode-close')!.click(); break;
+				case 'toggle': toggleDecodeWindow(); break;
+				case 'demodulator': setDecodeWindowAvailable('ft8'); break;
+				case 'channel':
+					setDecodeChannelMode(2, 'sstv');
+					setDecodeChannel(2);
+					break;
+				case 'inactive/disconnect': setDecodeActive(false); break;
+				case 'SSTV mode': findMode('PD-290').click(); break;
+				case 'Auto': autoButton().click(); break;
+				case 're-init': initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} }); break;
+			}
+			expect(confirmation.style.display).toBe('none');
+			setDecodeChannel(1);
+			setDecodeWindowAvailable('sstv');
+			setDecodeActive(true);
+			if (!decodeWindowOpen()) toggleDecodeWindow();
+			updateSstvPicture(picture(2), meta(2));
+			document.getElementById('btn-sstv-delete-all')!.click();
+			expect(sstvCount()).toBe(2);
+			expect(sstvStatus().current?.picture.rgb[0]).toBe(2);
+			expect(confirmation.style.display).toBe('none');
+		},
+	);
 })
 
 describe('the AM pane', () => {
@@ -1244,10 +1301,11 @@ describe('the AM pane', () => {
 		expect(onAmSync).toHaveBeenCalledExactlyOnceWith(true);
 	});
 
-	it('merges AM timing and errors into its badge and restores independent timing in other modes', () => {
+	it('keeps AM timing and errors in its badge and hides routine timing in other modes', () => {
 		setDecodeTiming(1, { inputIndex: '123456', fractionNum: '3', fractionDen: '7',
 			inputRate: 48000, delaySeconds: 0.125, delayKnown: true, causalPresentation: false });
 		const timing = document.getElementById('decode-source-timing')!;
+		const title = document.getElementById('decode-window-title')!;
 		expect(timing.style.display).toBe('none');
 		expect(badge().title).toContain('123456 + 3/7');
 		expect(badge().title).toContain('0.125000');
@@ -1260,13 +1318,15 @@ describe('the AM pane', () => {
 		expect(badge().getAttribute('role')).toBe('status');
 		expect(badge().title).not.toContain('test decoder failure');
 		setDecodeChannelMode(1, 'cw');
-		expect(timing.style.display).not.toBe('none');
-		expect(timing.title).toContain('123456 + 3/7');
+		expect(timing.style.display).toBe('none');
+		expect(title.title).toContain('123456 + 3/7');
 		expect(badge().style.display).toBe('none');
 		setDecodeError(1, 'CW failure');
+		expect(timing.style.display).not.toBe('none');
+		expect(timing.textContent).toContain('CW failure');
 		expect(timing.getAttribute('role')).toBe('alert');
-		expect(timing.title).toContain('CW failure');
 		setDecodeError(1, null);
+		expect(timing.style.display).toBe('none');
 	});
 
 	it('displays absolute carrier frequency only when available and valid', () => {

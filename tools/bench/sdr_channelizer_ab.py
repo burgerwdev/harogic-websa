@@ -142,7 +142,8 @@ def compare(v, n, fs_out, tone=None, kind='cw'):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--lib', type=Path, default=Path('native-ddc/target/release/libwebsa_channelizer.so'))
+    p.add_argument('--lib', type=Path,
+                   default=Path(__file__).resolve().parents[2] / 'backend/target/release/libwebsa_channelizer.so')
     p.add_argument('--packets', type=int, default=120)
     p.add_argument('--raw', type=Path, help='Optional saved contiguous little-endian interleaved int16 IQ')
     p.add_argument('--offset-hz', type=float, default=0.0, help='DDC offset; positive input tone uses negative offset')

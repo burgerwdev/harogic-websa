@@ -32,15 +32,15 @@ These are current implementation paths. `tools/checks/check_doc_paths.py` checks
 
 | Stage | Module |
 |---|---|
-| Device session and acquisition | `native-ddc/sdk/san90_sdk.cpp`, `native-ddc/src/bin/websad/service_capture.rs` |
-| Service, commands and publication | `native-ddc/src/bin/websad.rs`, `native-ddc/src/bin/websad/service_ddc.rs` |
-| Coarse PFB and ordered workers | `native-ddc/src/pfb.rs`, `native-ddc/src/pfb_pool.rs` |
-| Fine DDC and sample clocks | `native-ddc/src/fine.rs`, `native-ddc/src/narrow.rs`, `native-ddc/src/rate_plan.rs` |
-| Pipeline orchestration and admission | `native-ddc/src/bin/websad/sdr_pipeline.rs`, `native-ddc/src/bin/websad/service_preflight.rs` |
-| Native receiver orchestration | `native-ddc/src/bin/websad/receiver_workers.rs`, `native-ddc/src/receiver.rs` |
-| Analog and digital DSP | `wasm/src/analog/`, `wasm/src/digital/`, `wasm/src/pipeline.rs` |
-| Native noise reduction | `native-ddc/src/nr.rs`, `wasm-dfn/src/` |
-| Binary wire and subscriber boundaries | `native-ddc/src/wire.rs`, `native-ddc/src/bin/websad/service_stream.rs`, `native-ddc/src/bin/websad/subscriber_stream.rs` |
+| Device session and acquisition | `backend/sdk/san90_sdk.cpp`, `backend/src/bin/websad/service_capture.rs` |
+| Service, commands and publication | `backend/src/bin/websad.rs`, `backend/src/bin/websad/service_ddc.rs` |
+| Coarse PFB and ordered workers | `backend/src/pfb.rs`, `backend/src/pfb_pool.rs` |
+| Fine DDC and sample clocks | `backend/src/fine.rs`, `backend/src/narrow.rs`, `backend/src/rate_plan.rs` |
+| Pipeline orchestration and admission | `backend/src/bin/websad/sdr_pipeline.rs`, `backend/src/bin/websad/service_preflight.rs` |
+| Native receiver orchestration | `backend/src/bin/websad/receiver_workers.rs`, `backend/src/receiver.rs` |
+| Analog and digital DSP | `dsp/core/src/analog/`, `dsp/core/src/digital/`, `dsp/core/src/pipeline.rs` |
+| Native noise reduction | `backend/src/nr.rs`, `dsp/deepfilter/src/` |
+| Binary wire and subscriber boundaries | `backend/src/wire.rs`, `backend/src/bin/websad/service_stream.rs`, `backend/src/bin/websad/subscriber_stream.rs` |
 | Browser stream and decoder presentation | `frontend/src/sdr/iqStream.ts`, `frontend/src/sdr/decodeWorker.ts`, `frontend/src/ui/decodeWindow.ts` |
 | Playback | `frontend/src/audio/sdrAudio.ts`, `frontend/src/audio/sdrAudioWorker.ts`, `frontend/src/audio/sdrAudioWorklet.js` |
 | Offline reference and fixtures | `tools/reference/`, `tools/fixtures/gen_dsp_fixtures.py`, `tests/fixtures/dsp/` |
@@ -65,13 +65,17 @@ Admission checks channel count, aggregate output rate and fine/framer cost befor
 
 Display delivery can replace stale frames for slow viewers. Ordered IQ, PCM and decoder outputs use bounded queues and explicit failure on overflow. They must not silently discard samples, grow queues or block acquisition to make a throughput check pass. Audio capacity feedback counts queued and unacknowledged PCM; decoder batches remain bounded and are acknowledged after FIFO application. See [API](API.md) for the wire and feedback contracts.
 
+Receiver worker failures are terminal for the SDR session. The service retains the first diagnostic and worker counters, retires the failed workers and capture, emits one `receiver_failed` error, and closes PCM/event subscriptions with a receiver-failure reason. It never resumes a discontinuous stream or repeatedly polls a sticky worker failure. Healthy reconfiguration still publishes retiring tails in order; a failed session makes no complete-tail guarantee. Leaving SDR and returning explicitly starts fresh workers and identities, while the hardware link state remains independent.
+
+DRM acquisition keeps only recent complete equalized frames while SDC has not supplied a multiplex configuration: 13 frames for DRM30 and 16 for DRM+, covering long-interleaver warm-up and superframe alignment. Trimming preserves each retained frame's FAC marker and source provenance; configured decoding is unchanged. Selected-mode timing also trims unsynchronised IQ history using the existing absolute sample grid. These are decoder acquisition histories, not dropped input frames or a new stream identity; loss recovery still clears the existing decoder state.
+
 ### Stream identity and clocks
 
 IQBF/IQAX v2 identify a stream by `(epoch, channel_id)`. Retune changes channel identity; a new DSP/capture plan changes epoch. Old output finishes before the new empty `seq=0` boundary. Rejection does not create a new identity. Registry and channel clocks are published from one immutable pipeline snapshot; leaving SDR clears them.
 
 IQ `input_index` is the causal position of the first output in capture complex samples, not the packet start. Group delay is separate, in output complex samples. Alignment is `input_index / input_rate - group_delay_samples / output_rate`. Framing keeps the first nonempty segment's clock. Consumers preserve u64 indices exactly.
 
-AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM `audio_index`, capture input position and fractional time. SDE2 carries decoder events with the same identity and clock semantics. Unknown total delay and causal presentation are explicit flags: neither permits claiming exact source alignment. FT8 results retain the original search-window time. New subscribers get their own start boundary; late SSTV subscribers get a bounded current-image snapshot without resetting the receiver. Full layouts and ordering are in [API](API.md).
+AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM `audio_index`, capture input position and fractional time. SDE2 carries decoder events with the same identity and clock semantics. Unknown total delay and causal presentation are explicit flags: neither permits claiming exact source alignment. The decode pane exposes these clock details in the mode-title tooltip rather than a routine header label. For DRM/DRM+, this timing is independent of station lock and audio playback; decoder errors remain visible in the header. FT8 results retain the original search-window time. New subscribers get their own start boundary; late SSTV subscribers get a bounded current-image snapshot without resetting the receiver. Full layouts and ordering are in [API](API.md).
 
 ### DSP and playback boundaries
 
@@ -91,13 +95,15 @@ The backend sends native frequency grids. The frontend preserves Hz for markers 
 
 The spectrum CSS box owns canvas geometry; the backing store follows it through ResizeObserver. With the waterfall enabled, both rendering and STATUS-driven measurement UI refreshes keep the marker table hidden. A STATUS report must not temporarily restore that table: doing so shrinks the spectrum and clears its resized bitmap before the next render hides the table again.
 
+SWP and normal RTA spectrum updates target 30 fps using one trailing timer anchored to the last frame draw. SWP still processes every accepted sweep for traces, waterfall and trigger detection; RTA processes only the latest pending normal packet. First frames, changed axes and armed RTA captures remain immediate. Mode changes, retunes, trigger resets and disconnects cancel pending work. UI redraw requests remain synchronous, and SDR retains its existing processing and redraw cadence.
+
 Axis gestures preview locally and commit when settled. Manual Ref is a device control; display scale/offset has separate ownership. Gain readbacks come from the active mode's successful SDK configuration and remain null when unavailable; preamp `0` means Auto and `1` means Off, not physical On. RTA capture uses device trigger metadata carried with each RTA2 frame; SDR retains RTAF, whose legacy decoding is compatibility only. A frame arrival or elapsed delay cannot prove capture completion. SWP level crossing is evaluated between consecutive sweeps in the frontend. Parameter, Auto, trace, measurement and trigger contracts are in [MODE_STATE_FLOW](MODE_STATE_FLOW.md).
 
 ## Quality limits and verification
 
 Three backend slots do not imply three exposed UI receivers or unlimited listening/recording. FT8 supports standard types 1/2 within its supported search window; SSTV does not decode the post-image FSK callsign. RDS text quality and short/looped DRM codec playback remain constrained. [KNOWN_ISSUES](KNOWN_ISSUES.md) records current limitations and SDK boundaries.
 
-A 20 fps acquisition target is not a guarantee that every browser layer renders at 20 fps. Existing browser observations with spectrum, density, waterfall and navigation enabled are around 15 fps. These descriptions summarize implementation and existing evidence; documentation maintenance does not revalidate hardware.
+The browser's 30 fps SWP/RTA scheduling target depends on incoming frames and rendering cost; it does not establish measured hardware throughput or change backend acquisition timing. These descriptions summarize implementation; documentation maintenance does not revalidate hardware.
 
 Reproducible entry points are `make wasm-test` for shared DSP, `make ci` for local non-hardware gates, and `make e2e-fake` for the native fixture UI. `tools/bench/sdr_pipeline_check.py` and `sdr_pipeline_controls.py` exercise live IQv2 continuity and controls; native `websad --sdr-pipeline-bench` exercises the pipeline. Command options and prerequisites are in [tools](../../tools/README.md). Hardware acceptance must check content, hardware timestamps, queue/failure deltas and drained sample conservation; fake-source throughput or a short window cannot prove sustained RF operation. Keep browser checks separate from quiet hardware performance windows; see [DEVELOPMENT](DEVELOPMENT.md).
 
@@ -105,4 +111,4 @@ Reproducible entry points are `make wasm-test` for shared DSP, `make ci` for loc
 
 Project code is MIT. Vendor SDK binaries are proprietary and obtained separately. DSP techniques are informed by liquid-dsp, tpt-dsp, sdr-web, Radioband and pffft.wasm; those references are not claims that their implementations were copied. Offline numeric parity uses this repository's reference kernels and committed fixtures.
 
-FT8 protocol tables originate from [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT), with provenance in `tools/fixtures/port_ft8_tables.py`. SSTV includes the MIT-licensed vendored decoder under `wasm/src/digital/sstv/vendor/`. CW uses [ggmorse](https://github.com/ggerganov/ggmorse) under `tools/vendor/ggmorse/` and its licence. DeepFilterNet integration retains the licences under `wasm-dfn/`. Codec build/provenance and licence boundaries remain in `wasm/fdk/README.md`, `wasm/xaac/README.md`, [DRM_BENCH](DRM_BENCH.md) and [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md). Preserve source attribution when changing fixtures or vendored code.
+FT8 protocol tables originate from [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT), with provenance in `tools/fixtures/port_ft8_tables.py`. SSTV includes the MIT-licensed vendored decoder under `dsp/core/src/digital/sstv/vendor/`. CW uses [ggmorse](https://github.com/ggerganov/ggmorse) under `tools/vendor/ggmorse/` and its licence. DeepFilterNet integration retains the licences under `dsp/deepfilter/`. Codec build/provenance and licence boundaries remain in `dsp/core/fdk/README.md`, `dsp/core/xaac/README.md`, [DRM_BENCH](DRM_BENCH.md) and [DRM_AAC_RESERIALIZATION](DRM_AAC_RESERIALIZATION.md). Preserve source attribution when changing fixtures or vendored code.

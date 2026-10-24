@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Verify the committed WASM artifact without a Rust toolchain (so CI can gate it).
 
-`wasm/build.sh --check` is the real proof (it rebuilds and compares), but it needs Rust, and
+`dsp/core/build.sh --check` is the real proof (it rebuilds and compares), but it needs Rust, and
 CI deliberately has none: adding the artifact must not add a toolchain to every push. This
 check keeps the artifact honest with pure Python:
 
-  * the file exists and its size and sha256 match `wasm/dsp.artifact.json`
+  * the file exists and its size and sha256 match `dsp/core/dsp.artifact.json`
   * the recorded ABI version is the one the loader expects
   * the module's *export section* actually contains every export the manifest lists
 
@@ -22,9 +22,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-MANIFEST = ROOT / 'wasm' / 'dsp.artifact.json'
+MANIFEST = ROOT / 'dsp' / 'core' / 'dsp.artifact.json'
 ARTIFACT = ROOT / 'frontend' / 'public' / 'dsp.wasm'
-#: ABI version this toolchain's loader understands; keep in step with wasm/src/abi.rs.
+#: ABI version this toolchain's loader understands; keep in step with dsp/core/src/abi.rs.
 EXPECTED_ABI_VERSION = 1
 WASM_MAGIC = b'\x00asm'
 
@@ -78,11 +78,11 @@ def wasm_exports(data: bytes) -> set[str]:
 def main() -> int:
     problems: list[str] = []
     if not MANIFEST.exists():
-        print('wasm/dsp.artifact.json is missing; run wasm/build.sh', file=sys.stderr)
+        print('dsp/core/dsp.artifact.json is missing; run dsp/core/build.sh', file=sys.stderr)
         return 1
     manifest = json.loads(MANIFEST.read_text())
     if not ARTIFACT.exists():
-        print(f'{ARTIFACT.relative_to(ROOT)} is missing; run wasm/build.sh', file=sys.stderr)
+        print(f'{ARTIFACT.relative_to(ROOT)} is missing; run dsp/core/build.sh', file=sys.stderr)
         return 1
 
     data = ARTIFACT.read_bytes()
@@ -111,7 +111,7 @@ def main() -> int:
         print('wasm artifact check failed:', file=sys.stderr)
         for problem in problems:
             print(f'  {problem}', file=sys.stderr)
-        print('run wasm/build.sh to republish the artifact', file=sys.stderr)
+        print('run dsp/core/build.sh to republish the artifact', file=sys.stderr)
         return 1
 
     print(f'wasm artifact OK: {len(data)} bytes, {len(exports)} exports, '

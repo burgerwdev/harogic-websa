@@ -11,15 +11,38 @@ import { canvasColors } from '../core/theme';
 import { plotRect } from '../render/plot';
 import { sweptMeasurementsAvailable } from '../ui/measurementAvailability';
 
+function thresholds(value: string): number[] {
+  return value.split(',').map(s => parseFloat(s.trim()))
+    .filter(v => isFinite(v) && v >= 1 && v <= 60);
+}
+
+const validationInputs = new WeakSet<HTMLInputElement>();
+
+function thresholdValidation(input: HTMLInputElement | null, message: string): void {
+  if (!input) return;
+  const notice = document.getElementById('amp-threshold-validation');
+  if (!validationInputs.has(input)) {
+    validationInputs.add(input);
+    input.addEventListener('input', () => {
+      if (thresholds(input.value).length) thresholdValidation(input, '');
+    });
+  }
+  if (notice) {
+    notice.textContent = message;
+    notice.hidden = !message;
+  }
+  if (message) input.setAttribute('aria-invalid', 'true');
+  else input.removeAttribute('aria-invalid');
+}
+
 export function measureAmp() {
   if (!S.measOn || S.measTabSel !== 'amp' || !sweptMeasurementsAvailable()) return;
   const dp = getDisplayPowers();
   if (!dp || !S.freqArray || S.freqArray!.length < 2) return;
-  const inp = document.getElementById('input-ampdbs') as HTMLInputElement;
-  const thrs = (inp?.value || '3,10,20')
-    .split(',').map(s => parseFloat(s.trim()))
-    .filter(v => isFinite(v) && v >= 1 && v <= 60);
-  if (!thrs.length) { alert(t('meas_invalid_thresholds')); return; }
+  const inp = document.getElementById('input-ampdbs') as HTMLInputElement | null;
+  const thrs = thresholds(inp?.value || '3,10,20');
+  if (!thrs.length) { thresholdValidation(inp, t('meas_invalid_thresholds')); return; }
+  thresholdValidation(inp, '');
   let pi = 0, pv = -1e9;
   for (let i = 0; i < dp.length; i++) if (dp[i] > pv) { pv = dp[i]; pi = i; }
   const rows: { thr: number; lf: number; rf: number; bw: number; hasL: boolean; hasR: boolean }[] = [];

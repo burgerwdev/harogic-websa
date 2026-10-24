@@ -31,7 +31,7 @@ export interface Ft8Spot {
  * IF filter: that filter sets the channel the device hands over and the analog modes' audio passband,
  * while the decoder reads the whole channelized baseband either way.
  *
- * These limits match the decoder's `F_MIN_HZ`/`F_MAX_HZ` (`wasm/src/digital/ft8/mod.rs`).
+ * These limits match the decoder's `F_MIN_HZ`/`F_MAX_HZ` (`dsp/core/src/digital/ft8/mod.rs`).
  * The panadapter uses the same band for `demodBandHz`. Decoder audio frequencies are
  * measured above the listen frequency, never symmetrically about it.
  */

@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 #: The console Dream build that exposes `--status-socket` (see DECISION.md in the other worktree).
-DEFAULT_DREAM = ('/home/hui/git/harogic-websa-drm-dream/tools/drm_dream/build/dream')
+DEFAULT_DREAM = str(Path(__file__).resolve().parents[3] / 'harogic-websa-drm-dream/tools/drm_dream/build/dream')
 #: Dream's input rate, in Hz. DRM mode B spans 10 kHz, so 48 kHz is enough.
 DREAM_RATE = 48_000.0
 

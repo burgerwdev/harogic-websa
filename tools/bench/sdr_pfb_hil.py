@@ -415,7 +415,7 @@ class FixtureSource:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--lib', type=Path,
-                        default=Path('native-ddc/target/release/libwebsa_channelizer.so'))
+                        default=Path(__file__).resolve().parents[2] / 'backend/target/release/libwebsa_channelizer.so')
     parser.add_argument('--seconds', type=float, default=3.0)
     parser.add_argument('--bins', type=int, choices=(4, 32), default=32)
     parser.add_argument('--fixture', action='store_true')

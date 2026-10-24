@@ -2,7 +2,7 @@
 
 ## Parameter Ownership
 
-The Rust service in `native-ddc/` owns device configuration and acquisition. The browser owns display settings, editors and playback.
+The Rust service in `backend/` owns device configuration and acquisition. The browser owns display settings, editors and playback.
 
 | Setting | SWP | RTA | SDR |
 |---|---|---|---|

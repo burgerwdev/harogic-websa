@@ -39,7 +39,7 @@ python3 tools/fixtures/gen_drm_aac_fixture.py /path/to/ga_units /tmp/aac_sine_24
 
 This writes `.drm`, `.ga` and `.json`; non-`ONLY_LONG` frames are skipped. The source encoder and its patch are external prerequisites, not provided by this command.
 
-The receiver's [build script](../../wasm/build.rs) requires `pkg-config` and native FDK-AAC >= 2.0.3 with DRM/USAC support. Wasm builds link the committed FDK and libxaac archives; the standalone libxaac diagnostic is wasm-only. Native FDK handles AAC, HE-AAC and xHE-AAC/USAC. PCM consumers must use the decoder's returned sample rate and channel count: the direct no-SBR fixture outputs 24 kHz, while the synthetic IQ fixture signals SBR and outputs 48 kHz.
+The receiver's [build script](../../dsp/core/build.rs) requires `pkg-config` and native FDK-AAC >= 2.0.3 with DRM/USAC support. Wasm builds link the committed FDK and libxaac archives; the standalone libxaac diagnostic is wasm-only. Native FDK handles AAC, HE-AAC and xHE-AAC/USAC. PCM consumers must use the decoder's returned sample rate and channel count: the direct no-SBR fixture outputs 24 kHz, while the synthetic IQ fixture signals SBR and outputs 48 kHz.
 
 ## References and licensing
 
