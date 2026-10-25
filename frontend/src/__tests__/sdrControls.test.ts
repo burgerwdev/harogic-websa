@@ -324,6 +324,56 @@ describe('SDR control intent and STATUS', () => {
 		expect(document.getElementById('cur-sdr-squelch')!.textContent).toBe('Off');
 	});
 
+	it('keeps AGC independent of squelch and settles only its latest command reply', async () => {
+		document.body.insertAdjacentHTML('beforeend', '<button id="btn-sdr-agc" data-action="toggle-sdr-agc"></button>');
+		const { controls, state, send } = await load();
+		controls.bindActions();
+		controls.syncSdrPanel(status('sdr', 'am', { agc: true, squelch: -112.3 }));
+		const button = document.getElementById('btn-sdr-agc') as HTMLButtonElement;
+		button.click();
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		expect(first).toEqual({ cmd: 'SET_SDR_CHANNEL', channel: 1, agc: false, request_id: expect.stringMatching(/^sdr-agc-/) });
+		button.click();
+		const second = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel({ ...status('sdr', 'am', { agc: false, squelch: -112.3 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+		controls.rejectSdrAgcRequest('SET_SDR_CHANNEL', first.request_id);
+		expect(state.sdrAgc.get()).toBe(true);
+		expect(state.sdrAgc.pending()).toBe(true);
+		expect(button.getAttribute('aria-pressed')).toBe('true');
+		controls.syncSdrPanel({ ...status('sdr', 'am', { agc: true, squelch: -112.3 }),
+			response_to: 'SET_SDR_CHANNEL', request_id: second.request_id });
+		expect(state.sdrAgc.pending()).toBe(false);
+		expect(state.sdrSquelch.get()).toBe(-112.3);
+		expect(localStorage.getItem('web-sa-sdr-agc')).toBe('1');
+	});
+
+	it.each(['error', 'timeout', 'disconnect', 'leave'])(
+		'clears unconfirmed AGC intent after %s and ignores its late reply', async (ending) => {
+		document.body.insertAdjacentHTML('beforeend', '<button id="btn-sdr-agc" data-action="toggle-sdr-agc"></button>');
+		const { controls, state, send } = await load();
+		controls.bindActions();
+		controls.syncSdrPanel(status('sdr', 'am', { agc: true, squelch: -97.2 }));
+		const button = document.getElementById('btn-sdr-agc') as HTMLButtonElement;
+		button.click();
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		expect(state.sdrAgc.get()).toBe(false);
+		if (ending === 'error') controls.rejectSdrAgcRequest('SET_SDR_CHANNEL', request.request_id);
+		else if (ending === 'timeout') vi.advanceTimersByTime(3000);
+		else if (ending === 'disconnect') controls.disconnectSdrSession();
+		else controls.syncSdrPanel(status('std'));
+		expect(state.sdrAgc.desiredValue()).toBeNull();
+		expect(state.sdrAgc.get()).toBe(true);
+		expect(button.getAttribute('aria-pressed')).toBe('true');
+		controls.syncSdrPanel({ ...status('sdr', 'am', { agc: false }),
+			response_to: 'SET_SDR_CHANNEL', request_id: request.request_id });
+		expect(state.sdrAgc.get()).toBe(true);
+		expect(state.sdrSquelch.get()).toBe(-97.2);
+		controls.syncSdrPanel(status('sdr', 'am', { agc: false }));
+		expect(state.sdrAgc.get()).toBe(false);
+		expect(button.getAttribute('aria-pressed')).toBe('false');
+	});
+
 	it.each(['drm', 'drmplus'])('disables unsupported %s controls and restores them on analog STATUS', async (mode) => {
 		document.body.insertAdjacentHTML('beforeend', `
 			<button id="btn-sdr-agc"></button><button id="btn-sdr-nr"></button>
@@ -508,5 +558,28 @@ describe('SDR control intent and STATUS', () => {
 		vi.mocked(send).mockClear();
 		controls.syncGraphModeStatus('sdr');
 		expect(vi.mocked(send).mock.calls.some(([command]) => 'am_sync' in command && command.am_sync === true)).toBe(false);
+	});
+
+	it.each(['std', 'rta'])('keeps a held Y gesture across recurring %s STATUS', async (mode) => {
+		const { controls, send } = await load();
+		const { graphMode } = await import('../ui/graphMode');
+		const { axisDragStart, axisDragMove, axisDragEnd, axisDragging, previewLevelWindow, resetAxisPreview } = await import('../ui/axisDrag');
+		const { setDisplayRef } = await import('../ui/displayRef');
+		graphMode.confirm(mode as 'std' | 'rta');
+		setDisplayRef('preset', -30);
+		const rect = { x: 10, y: 14, w: 800, h: 400 };
+		try {
+			axisDragStart('y', 830, 200, rect);
+			axisDragMove(830, 240);
+			controls.syncSdrPanel(status(mode));
+			controls.syncSdrPanel(status(mode));
+			expect(axisDragging()).toBe(true);
+			expect(previewLevelWindow()?.ref).toBe(-20);
+			axisDragMove(830, 160);
+			axisDragEnd();
+			expect(send).toHaveBeenCalledWith({ cmd: 'SET_REF', mode: 'manual', ref: -40 });
+		} finally {
+			resetAxisPreview();
+		}
 	});
 });

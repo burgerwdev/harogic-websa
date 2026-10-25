@@ -30,13 +30,14 @@
  * (`committedFreqWindow` - the ends of the drawn frequency array / the RTA frame window), not
  * against a snapshot taken at pointer-down. So when the confirming STATUS arrives the two windows
  * coincide, the transform becomes the identity on its own, and the trace never jumps back to the
- * old window while the device is still reconfiguring. `refresh()` drops the preview as soon as the
- * drawn window (and the display ref) match what was requested.
+ * old window while the device is still reconfiguring. `refresh()` drops the preview when the
+ * drawn window matches, or the requested display Ref is acknowledged and shown.
  *
- * The level axis means what it shows. In the absolute (dBm) display it is the device reference:
- * a drag previews and commits a Ref request. In the relative (dB) display the top of the
- * graticule is a rendering offset pinned to 0, not a device reference - so the same drag pans
- * the level OFFSET (`commitLevelOffset`), the value that actually moves that axis. That one is
+ * The absolute (dBm) level axis follows the user's requested Ref, even when hardware gain limits
+ * produce a different effective Ref. A drag previews and commits that request inside the manual
+ * -160..40 dBm hardware bounds shifted by the level offset. In relative dB the top is pinned to 0,
+ * so the same drag pans the level OFFSET (`commitLevelOffset`), the value that actually moves that
+ * axis. That one is
  * the client's own display value, so it is applied as the pointer moves: nothing to wait for,
  * nothing to commit. Zooming dB/div is client-side in both displays, so the y wheel applies
  * immediately through the Level panel's own setter.
@@ -46,7 +47,7 @@ import { normalizeCenterSpan } from '../core/frequency';
 import { send } from '../core/wsSend';
 import { currentGraphMode } from './graphMode';
 import { centerHz, spanHz } from './freqState';
-import { getDisplayRef } from './displayRef';
+import { clampDisplayRef, getDisplayRef, hardwareRefForDisplay, pendingDisplayRef, setDisplayRefShiftHandler } from './displayRef';
 import { displayOffset, displayUnit } from './displayState';
 import { estimatedCaptureSpanHz } from './sdrState';
 import { beginFrequencyCommit } from './panels/frequency';
@@ -58,7 +59,7 @@ export type FreqWindow = { lo: number; hi: number };
 export type LevelWindow = { ref: number; range: number };
 export type Rect = { x: number; y: number; w: number; h: number };
 
-/** A still pointer for this long ends the gesture and commits it. */
+/** A still pointer for this long commits its current target without ending a held drag. */
 export const IDLE_COMMIT_MS = 250;
 /** Two commits are never closer than this: one Ref change reconfigures the front end. */
 export const MIN_COMMIT_INTERVAL_MS = 400;
@@ -76,7 +77,7 @@ const MAX_DB_PER_DIV = 20;
 const MIN_SPAN_HZ = 100;
 
 type GestureBase = { freq: FreqWindow | null; level: LevelWindow };
-type Settle = { freq?: FreqWindow; level?: LevelWindow; revision?: number };
+type Settle = { freq?: FreqWindow; level?: LevelWindow; levelAccepted?: boolean; revision?: number };
 /** What the level axis changes: the device reference, or the relative display's own offset. */
 type LevelTarget = 'ref' | 'offset';
 
@@ -97,6 +98,8 @@ type Session = {
 	level: LevelTarget;
 	/** The offset the gesture started from (only meaningful for `level: 'offset'`). */
 	baseOffset: number;
+	/** The last pointer target sent in this session; idle commits do not reset the drag origin. */
+	committedRef: number;
 	/**
 	 * The pointer is HELD ON A BAND: this is what makes it a gesture. A wheel session is live
 	 * without it, so hovering the canvas afterwards neither pans anything nor swallows the
@@ -206,7 +209,7 @@ function refresh(): void {
 	}
 	if (done && want.level) {
 		const drawn = committedLevelWindow();
-		done = near(drawn.ref, want.level.ref, LEVEL_MATCH_DB)
+		done = want.levelAccepted === true && near(drawn.ref, want.level.ref, LEVEL_MATCH_DB)
 			&& near(drawn.range, want.level.range, LEVEL_MATCH_DB);
 	}
 	if (done) clearPreview();
@@ -222,6 +225,35 @@ export function previewFreqWindow(): FreqWindow | null {
 export function previewLevelWindow(): LevelWindow | null {
 	refresh();
 	return session ? session.targetLevel : null;
+}
+
+/** Only the stored requested Ref acknowledges the display; effective SDK Ref may differ. */
+export function confirmAxisRef(requested: unknown): void {
+	const s = session;
+	if (!s || s.axis !== 'y' || s.level !== 'ref' || !s.settle?.level
+		|| typeof requested !== 'number' || !near(requested, hardwareRefForDisplay(s.settle.level.ref), 0.05)) return;
+	s.settle.levelAccepted = true;
+	refresh();
+}
+
+/** Keep pending and held gestures on the same raw window when compensation changes. */
+export function shiftAxisRef(delta: number): void {
+	const s = session;
+	if (s && s.level === 'ref') {
+		s.base.level = { ...s.base.level, ref: s.base.level.ref + delta };
+		s.targetLevel = { ...s.targetLevel, ref: s.targetLevel.ref + delta };
+		s.committedRef += delta;
+		if (s.settle?.level) s.settle.level = { ...s.settle.level, ref: s.settle.level.ref + delta };
+	}
+	if (chain) chain.level = { ...chain.level, ref: chain.level.ref + delta };
+}
+
+// Offset compensation reaches this gesture through displayRef, not a panel import.
+setDisplayRefShiftHandler(shiftAxisRef);
+
+/** A rejected Ref must not leave a preview hiding the restored display. */
+export function rejectAxisRef(): void {
+	if (session?.axis === 'y' && session.level === 'ref' && session.settle?.level) clearPreview();
 }
 
 /** Rebase a pending SDR gesture onto the window accepted by the device. */
@@ -306,6 +338,9 @@ function clearPreview(): void {
 }
 
 function chainBase(axis: Axis): GestureBase | null {
+	// Ref and dB/div writes update the client display immediately. Reusing a cached Y target
+	// would override newer panel edits, request bounds, or a rejected SDR request's rollback.
+	if (axis === 'y') return null;
 	if (!chain || chain.axis !== axis) return null;
 	if (performance.now() - chain.at > CHAIN_MS) return null;
 	return { freq: chain.freq, level: chain.level };
@@ -313,7 +348,7 @@ function chainBase(axis: Axis): GestureBase | null {
 
 function rememberTarget(): void {
 	const s = session;
-	if (!s) return;
+	if (!s || s.axis === 'y') return;
 	chain = { axis: s.axis, freq: s.targetFreq, level: s.targetLevel, at: performance.now() };
 }
 
@@ -340,6 +375,8 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 	const base: GestureBase = chained
 		? { freq: chained.freq ?? freq, level: chained.level }
 		: { freq, level };
+	const pendingLevel = axis === 'y' && session?.axis === 'y' && session.settle?.level
+		? session.settle : null;
 	clearTimers();
 	session = {
 		axis, rect, x0: px, y0: py,
@@ -354,9 +391,10 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 		// which is the value that actually pans that axis, and is client-side.
 		level: displayUnit.get() === 'dB' ? 'offset' : 'ref',
 		baseOffset: displayOffset.get(),
+		committedRef: base.level.ref,
 		down: held,
 		live: true,
-		settle: null,
+		settle: pendingLevel,
 	};
 	return true;
 }
@@ -386,7 +424,8 @@ function applyPointer(px: number, py: number): void {
 		commitLevelOffset(s.baseOffset - (ref - bl.ref));
 		return;
 	}
-	s.targetLevel = { ref, range };
+	// Match commitRefLevel's manual bounds without limiting the relative display's offset.
+	s.targetLevel = { ref: clampDisplayRef(ref), range };
 }
 
 export function axisDragMove(px: number, py: number): void {
@@ -465,7 +504,7 @@ function targetMoved(): boolean {
 		return !near(t.lo, b.lo, tol) || !near(t.hi, b.hi, tol);
 	}
 	if (s.level === 'offset') return false;         // applied live; there is no request to make
-	return !near(s.targetLevel.ref, s.base.level.ref, 0.05);
+	return !near(s.targetLevel.ref, s.committedRef, 0.05);
 }
 
 /**
@@ -479,7 +518,13 @@ function commit(reason: 'end' | 'idle'): void {
 	const s = session;
 	if (!s) return;
 	if (idleTimer !== null) { window.clearTimeout(idleTimer); idleTimer = null; }
-	if (!targetMoved()) { s.live = false; rememberTarget(); return; }
+	if (!targetMoved()) {
+		s.live = false;
+		rememberTarget();
+		if (!s.down && !s.settle) clearPreview();
+		else if (s.settle) { refresh(); if (session) scheduleSettleTimeout(); }
+		return;
+	}
 	const now = performance.now();
 	if (reason === 'idle' && lastCommitAt !== 0 && now - lastCommitAt < MIN_COMMIT_INTERVAL_MS) {
 		scheduleIdleCommit();
@@ -494,15 +539,28 @@ function commit(reason: 'end' | 'idle'): void {
 		}
 	} else if (s.axis === 'y' && s.level === 'ref') {
 		const sent = commitRefLevel(s.targetLevel.ref);
-		if (sent !== null) settle.level = { ref: sent, range: s.targetLevel.range };
+		if (sent !== null) {
+			settle.level = { ref: sent, range: s.targetLevel.range };
+			settle.levelAccepted = pendingDisplayRef() === null;
+			s.committedRef = s.targetLevel.ref;
+		}
 	}
 	lastCommitAt = now;
 	if (settle.freq || settle.level) noteCommit();
 	s.live = false;
 	s.settle = settle.freq || settle.level ? settle : null;
 	rememberTarget();
-	if (settleTimer !== null) window.clearTimeout(settleTimer);
-	settleTimer = window.setTimeout(() => { settleTimer = null; clearPreview(); }, SETTLE_MAX_MS);
+	scheduleSettleTimeout();
+}
+
+function scheduleSettleTimeout(): void {
+	if (settleTimer !== null) { window.clearTimeout(settleTimer); settleTimer = null; }
+	// An idle commit leaves the pointer in charge; its preview may expire only after release.
+	if (session?.down || session?.live) return;
+	settleTimer = window.setTimeout(() => {
+		settleTimer = null;
+		if (!session?.down && !session?.live) clearPreview();
+	}, SETTLE_MAX_MS);
 }
 
 // ---------------- the requests ----------------

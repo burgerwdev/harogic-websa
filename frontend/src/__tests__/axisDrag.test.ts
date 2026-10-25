@@ -18,9 +18,11 @@ import { resetAll } from '../core/params';
 import { setWS } from '../core/wsSend';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
 import { resetFrequencyEditors } from '../ui/panels/frequency';
-import { refLevel } from '../ui/refState';
-import { setDisplayRef } from '../ui/displayRef';
+import { confirmRefLevel, effectiveRefLevel, refLevel } from '../ui/refState';
+import { getDisplayRef, noteDisplayRefReport, setDisplayRef } from '../ui/displayRef';
 import { displayOffset, displayUnit } from '../ui/displayState';
+import { commitLevelOffset, rejectManualRef } from '../ui/panels/refAmp';
+import { getY } from '../render/plot';
 import {
 	IDLE_COMMIT_MS,
 	axisBandAt,
@@ -29,8 +31,11 @@ import {
 	axisDragStart,
 	axisDragging,
 	axisWheel,
+	confirmAxisRef,
 	confirmSdrAxisWindow,
 	previewFreqWindow,
+	previewLevelWindow,
+	rejectAxisRef,
 	resetAxisPreview,
 	xAxisTransform,
 	yAxisTransform,
@@ -57,9 +62,11 @@ beforeEach(() => {
 	document.body.replaceChildren();
 	resetAll();
 	resetGraphMode();
+	graphMode.confirm('std');    // resetGraphMode clears intent, not the last confirmed SDR mode
 	resetAxisPreview();          // no gesture survives a test, including the CHAIN window
 	openSocket();
 	displayUnit.set('dBm');
+	displayOffset.set(0);
 	S.setDbPerDiv(10);
 	refLevel.set(-20);
 	setDisplayRef('preset', -20);
@@ -211,13 +218,20 @@ describe('dragging the level labels', () => {
 		// device reference: the gesture pans the value that actually moves that axis, which is the
 		// client's own offset - so it applies as the pointer moves and nothing is requested.
 		displayUnit.set('dB');
+		commitLevelOffset(60);
+		const reference = getDisplayRef();
 		const base = displayOffset.get();
 		expect(axisDragStart('y', IN_Y_BAND.x, 200, RECT)).toBe(true);
 		axisDragMove(IN_Y_BAND.x, 240);                        // 40 px of 400 = 10 dB down
 		expect(displayOffset.get()).toBeCloseTo(base - 10, 6);
+		axisDragMove(IN_Y_BAND.x, 1200);                       // offsets are not manual Ref requests
+		expect(displayOffset.get()).toBeCloseTo(base - 250, 6);
+		axisDragMove(IN_Y_BAND.x, -1000);
+		expect(displayOffset.get()).toBeCloseTo(base + 300, 6);
 		expect(yAxisTransform()).toBeNull();                    // applied live: no preview layer
 		axisDragEnd();
 		expect(sent).toEqual([]);                               // ...and no device request at all
+		expect(getDisplayRef()).toBe(reference);
 	});
 
 	it('applies a dB/div zoom immediately and still needs the Ref preview', () => {
@@ -246,5 +260,225 @@ describe('dragging the level labels', () => {
 		axisDragMove(IN_Y_BAND.x, 230);
 		axisDragEnd();
 		expect(sent.filter((m) => m.cmd === 'SET_REF').length).toBe(2);
+	});
+
+	it.each([false, true])('keeps a held drag after the settle deadline (acknowledged: %s)', (acknowledged) => {
+		vi.useFakeTimers();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		if (acknowledged) confirmAxisRef(-10);
+		vi.advanceTimersByTime(6500);
+		expect(axisDragging()).toBe(true);
+		expect(previewLevelWindow()?.ref).toBe(-10);
+		axisDragMove(IN_Y_BAND.x, 280);
+		expect(previewLevelWindow()?.ref).toBe(0);
+		axisDragEnd();
+		expect(axisDragging()).toBe(false);
+		expect(sent).toEqual([
+			{ cmd: 'SET_REF', mode: 'manual', ref: -10 },
+			{ cmd: 'SET_REF', mode: 'manual', ref: 0 },
+		]);
+		confirmAxisRef(0);
+		expect(previewLevelWindow()).toBeNull();
+	});
+
+	it('starts the unacknowledged preview deadline on release after a long hold', () => {
+		vi.useFakeTimers();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 6500);
+		axisDragEnd();
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		expect(previewLevelWindow()?.ref).toBe(-10);
+		vi.advanceTimersByTime(6001);
+		expect(previewLevelWindow()).toBeNull();
+	});
+
+	it.each([0, 60, -60].flatMap(offset => [
+		{ offset, bound: 100 + offset, raw: 40, beyond: 800, further: 1000, reverse: 240, final: -10 + offset },
+		{ offset, bound: -200 + offset, raw: -160, beyond: -800, further: -1000, reverse: 160, final: -30 + offset },
+	]))('previews the manual $bound display bound at offset $offset and allows reversal', ({ offset, bound, raw, beyond, further, reverse, final }) => {
+		vi.useFakeTimers();
+		commitLevelOffset(offset);
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, beyond);
+		expect(previewLevelWindow()?.ref).toBe(bound);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: raw }]);
+		expect(previewLevelWindow()?.ref).toBe(bound);
+		expect(getDisplayRef()).toBe(bound);
+		axisDragMove(IN_Y_BAND.x, further);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: raw }]);
+		expect(previewLevelWindow()?.ref).toBe(bound);
+		axisDragMove(IN_Y_BAND.x, reverse);
+		expect(previewLevelWindow()?.ref).toBe(final);
+		axisDragEnd();
+		expect(sent).toEqual([
+			{ cmd: 'SET_REF', mode: 'manual', ref: raw },
+			{ cmd: 'SET_REF', mode: 'manual', ref: final - offset },
+		]);
+		expect(previewLevelWindow()?.ref).toBe(sent[1].ref + offset);
+		confirmAxisRef(final - offset);
+		expect(previewLevelWindow()).toBeNull();
+	});
+
+	it.each(['std', 'rta', 'sdr'] as const)('settles display +100 on raw +40 in %s and pans locally thereafter', mode => {
+		graphMode.confirm(mode);
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 680);
+		axisDragEnd();
+		expect(getDisplayRef()).toBe(100);
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: 40 }]);
+		confirmAxisRef(100);
+		expect(previewLevelWindow()?.ref).toBe(100);
+		noteDisplayRefReport(40);
+		confirmAxisRef(40);
+		expect(previewLevelWindow()).toBeNull();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 160);
+		axisDragEnd();
+		expect(getDisplayRef()).toBe(90);
+		expect(previewLevelWindow()).toBeNull();
+		expect(sent).toHaveLength(1);
+	});
+
+	it.each([60, -60])('keeps marker coordinates stable when absolute offset changes to %s', (offset) => {
+		const markerY = getY(-55);
+		commitLevelOffset(offset);
+		expect(getDisplayRef()).toBe(-20 + offset);
+		expect(getY(-55)).toBeCloseTo(markerY, 8);
+		expect(sent).toEqual([]);
+	});
+
+	it('shifts a held axis preview with the offset and continues from the same raw reference', () => {
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		const markerY = getY(-55);
+		expect(previewLevelWindow()?.ref).toBe(-10);
+		commitLevelOffset(60);
+		expect(previewLevelWindow()?.ref).toBe(50);
+		expect(getY(-55)).toBeCloseTo(markerY, 8);
+		expect(sent).toEqual([]);
+		axisDragMove(IN_Y_BAND.x, 280);
+		expect(previewLevelWindow()?.ref).toBe(60);
+		axisDragEnd();
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: 0 }]);
+		commitLevelOffset(-60);
+		expect(previewLevelWindow()?.ref).toBe(-60);
+		expect(getDisplayRef()).toBe(-60);
+		expect(sent).toHaveLength(1);
+		confirmAxisRef(0);
+		expect(previewLevelWindow()).toBeNull();
+	});
+
+	it('commits a return to the starting Ref after an idle commit', () => {
+		vi.useFakeTimers();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		axisDragMove(IN_Y_BAND.x, 200);
+		axisDragEnd();
+		expect(sent).toEqual([
+			{ cmd: 'SET_REF', mode: 'manual', ref: -10 },
+			{ cmd: 'SET_REF', mode: 'manual', ref: -20 },
+		]);
+	});
+
+	it('does not repeat an idle-committed target on release and waits for its acknowledgement', () => {
+		vi.useFakeTimers();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		axisDragEnd();
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		// The optimistic display already matches, but that does not acknowledge the command.
+		expect(getDisplayRef()).toBe(-10);
+		expect(previewLevelWindow()?.ref).toBe(-10);
+		confirmAxisRef(-20);
+		expect(previewLevelWindow()?.ref).toBe(-10);
+		confirmAxisRef(-10);
+		expect(previewLevelWindow()).toBeNull();
+	});
+
+	it('keeps lowering the requested Ref across rapid gestures despite a different effective hardware Ref', () => {
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, -120); // -80 dB; deliberately past the trace and plot edge
+		axisDragEnd();
+		// Hardware gain fitting cannot pull the requested display back towards the signal.
+		confirmRefLevel('std', -47.5, -100, -100);
+		setDisplayRef('mode', refLevel.get());
+		expect(effectiveRefLevel.get()).toBe(-47.5);
+		confirmAxisRef(-100);
+		expect(previewLevelWindow()).toBeNull();
+		expect(getDisplayRef()).toBe(-100);
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 160);
+		axisDragEnd();
+		expect(sent).toEqual([
+			{ cmd: 'SET_REF', mode: 'manual', ref: -100 },
+			{ cmd: 'SET_REF', mode: 'manual', ref: -110 },
+		]);
+	});
+
+	it('keeps the newest rapid drag pending through an older acknowledgement', () => {
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		axisDragEnd();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		axisDragEnd();
+		confirmAxisRef(-10);
+		expect(previewLevelWindow()?.ref).toBe(0);
+		confirmAxisRef(0);
+		expect(previewLevelWindow()).toBeNull();
+		expect(sent.map(message => message.ref)).toEqual([-10, 0]);
+	});
+
+	it('retains the pending acknowledgement across a second press without movement', () => {
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		axisDragEnd();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragEnd();
+		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		expect(previewLevelWindow()?.ref).toBe(-10);
+		confirmAxisRef(-10);
+		expect(previewLevelWindow()).toBeNull();
+	});
+
+	it('starts the next drag from a newer panel display instead of a cached axis target', () => {
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		axisDragEnd();
+		confirmAxisRef(-10);
+		setDisplayRef('user', -60);
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 160);
+		axisDragEnd();
+		expect(sent.map(message => message.ref)).toEqual([-10, -70]);
+	});
+
+	it('keeps SDR display Ref independent and drops rejected previews', () => {
+		graphMode.confirm('sdr');
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		axisDragEnd();
+		confirmRefLevel('sdr', -47.5, -10, -10);
+		noteDisplayRefReport(-10);
+		confirmAxisRef(-10);
+		expect(getDisplayRef()).toBe(-10);
+		expect(previewLevelWindow()).toBeNull();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 160);
+		axisDragEnd();
+		rejectManualRef();
+		rejectAxisRef();
+		expect(previewLevelWindow()).toBeNull();
+		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
+		axisDragMove(IN_Y_BAND.x, 240);
+		axisDragEnd();
+		expect(sent.map(message => message.ref)).toEqual([-10, -20, 0]);
 	});
 });

@@ -1,11 +1,11 @@
-// Amplitude units and the external gain/loss offset, applied at the *readout* layer.
+// Amplitude units and external gain/loss compensation for absolute levels.
 //
 // Rules:
 //  - Absolute trace levels (marker table, peak list, channel power, limit levels) are
 //    converted: display = dBm + unit offset + external offset.
 //  - Differences (deltas, dBc, margins, dB/div) are unit independent and never converted.
-//  - Device parameters (Ref, attenuation) stay in dBm: they describe the instrument, not
-//    the signal after the user's cable/amplifier.
+//  - Hardware Ref stays raw dBm. The Ref editor and plot top include external offset,
+//    while the selected amplitude unit changes axis labels and level readouts only.
 //
 // Conversions are for a 50 ohm system, which is what the SAN series uses.
 import * as S from '../core/store';
@@ -54,10 +54,9 @@ export function fmtReadoutLevel(dbm: number, digits = 2): string {
 /**
  * Y-axis tick label, e.g. the top line of the graticule.
  *
- * The external offset is already spent once where it belongs: getY() displaces the
- * trace/density by it. Adding it here as well would double-compensate, and the label of a
- * graticule line would disagree with the readout of the point sitting on that line. So the
- * absolute axis converts the unit only; the relative (dB) axis converts nothing.
+ * The absolute plot top and getY() both include the external offset. Axis labels therefore
+ * convert the unit only: applying compensation again would disagree with marker readouts.
+ * The relative (dB) axis converts nothing.
  */
 export function fmtAxisLevel(dbm: number): string {
   if (displayUnit.get() === 'dB') return dbm.toFixed(0);   // relative axis: raw dB, no conversion

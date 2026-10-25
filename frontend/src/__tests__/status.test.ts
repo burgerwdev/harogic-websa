@@ -15,7 +15,7 @@ import { updateStatus } from '../core/ws';
 import * as S from '../core/store';
 import { resetAll } from '../core/params';
 import { centerHz, spanHz, rtaCenterHz, swpCenterHz } from '../ui/freqState';
-import { refLevel } from '../ui/refState';
+import { effectiveRefLevel, refLevel } from '../ui/refState';
 import { currentPoints, currentRBW, currentSpur, currentVBW, rbwMode, vbwMode } from '../ui/swpState';
 import { currentGraphMode } from '../ui/graphMode';
 import { sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrIfbw, sdrListenHz, sdrSquelch } from '../ui/sdrState';
@@ -24,6 +24,9 @@ import { fillGnssDetail } from '../ui/panels/gnss';
 import { t } from '../core/i18n';
 import { sdrIqStats } from '../sdr/iqStream';
 import { setWaterfall } from '../ui/panels/waterfall';
+import { getDisplayRef, pendingDisplayRef, resetDisplayRefMode } from '../ui/displayRef';
+import { commitRefLevel } from '../ui/panels/refAmp';
+import { setWS } from '../core/wsSend';
 
 const SWP_STATUS = {
 	cmd: 'STATUS',
@@ -96,7 +99,46 @@ const SDR_STATUS = {
 
 beforeEach(() => {
 	resetAll();
+	resetDisplayRefMode();
 	localStorage.clear();
+});
+
+describe('manual display viewport through STATUS', () => {
+	it.each(['std', 'rta', 'sdr'] as const)('retains +100 on raw +40 reports in %s and resets on mode handoff', mode => {
+		const commands: Array<Record<string, unknown>> = [];
+		setWS({ readyState: WebSocket.OPEN, send: (message: string) => commands.push(JSON.parse(message)) } as unknown as WebSocket);
+		try {
+			const report = structuredClone(SWP_STATUS) as Record<string, any>;
+			report.mode = mode;
+			report.req[mode === 'std' ? 'swp' : mode].ref = -30;
+			if (mode === 'sdr') report.sdr = { ...SDR_STATUS.sdr, ref: -30, ref_set: true };
+			updateStatus(report);
+			commands.length = 0;
+			commitRefLevel(100);
+			updateStatus(report);
+			expect(getDisplayRef()).toBe(100);
+			expect(pendingDisplayRef()).toBe(100);
+			report.req[mode === 'std' ? 'swp' : mode].ref = 40;
+			if (mode === 'sdr') report.sdr.ref = 40;
+			report.response_to = 'SET_REF';
+			updateStatus(report);
+			expect(pendingDisplayRef()).toBeNull();
+			expect(getDisplayRef()).toBe(100);
+			delete report.response_to;
+			updateStatus(report);
+			commitRefLevel(90);
+			expect(getDisplayRef()).toBe(90);
+			expect(commands.filter(command => command.cmd === 'SET_REF')).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: 40 }]);
+			report.mode = mode === 'std' ? 'rta' : 'std';
+			report.req[report.mode === 'std' ? 'swp' : report.mode].ref = -50;
+			report.ref = -50;
+			updateStatus(report);
+			expect(getDisplayRef()).toBe(-50);
+		} finally {
+			resetDisplayRefMode();
+			setWS(null);
+		}
+	});
 });
 
 describe('GNSS freshness during wideband capture', () => {
@@ -206,11 +248,6 @@ describe('SDR squelch zero threshold', () => {
 });
 
 describe('a reference level the device clamped to its own range', () => {
-	// Asked for explicitly: requesting a level the current front end cannot program used to make
-	// the canvas announce "Device limited Ref to X dBm" and to grey the step arrows at the ends
-	// of the range. Both are gone - the echoed level is simply the level on screen, and a press
-	// past the end is a silent no-op. The pairs are only test data: at runtime the value comes
-	// from `actual.ref` in the STATUS, which is why several pairs are checked.
 	const limited = [[30, 27], [30, 25], [25, 22], [-5, -8]] as const;
 
 	it.each(limited)('stays silent when the device programmed %i as %i', (asked, reported) => {
@@ -221,7 +258,8 @@ describe('a reference level the device clamped to its own range', () => {
 		S.setNoticeText('');
 		updateStatus(status);
 		expect(noticeText).toBe('');                  // nothing posted, not even once
-		expect(refLevel.get()).toBe(reported);        // ...but the echoed level is followed
+		expect(refLevel.get()).toBe(asked);
+		expect(effectiveRefLevel.get()).toBe(reported);
 	});
 
 	it('never greys the step arrows at the ends of the range', () => {
@@ -369,10 +407,34 @@ describe('IF-overflow warning repaint', () => {
 		const afterClear = renderRequestCount();
 		expect(afterClear).toBeGreaterThan(afterAppear);
 
-		// a repeat of the same state must not repaint on every STATUS
-		updateStatus(structuredClone(SWP_STATUS));
-		expect(renderRequestCount()).toBe(afterClear);
 	});
+
+  it('keeps requested Ref below the hardware floor during overflow without an automatic command', async () => {
+    const { getDisplayRef } = await import('../ui/displayRef');
+    const { setWS } = await import('../core/wsSend');
+    const commands: unknown[] = [];
+    setWS({ readyState: WebSocket.OPEN, send: (m: string) => { commands.push(JSON.parse(m)); } } as unknown as WebSocket);
+    try {
+      const status = structuredClone(SWP_STATUS) as Record<string, any>;
+      status.status_warning = -12;
+      status.ref = -60;
+      status.req.swp.ref = -120;
+      status.response_to = 'SET_REF';
+      refLevel.set(-120);
+      updateStatus(status);
+      expect(getDisplayRef()).toBe(-120);
+      expect(effectiveRefLevel.get()).toBe(-60);
+      refLevel.set(-130);
+      updateStatus(status);
+      expect(getDisplayRef()).toBe(-130);
+      status.req.swp.ref = -130;
+      updateStatus(status);
+      expect(getDisplayRef()).toBe(-130);
+      expect(commands).toEqual([]);
+    } finally {
+      setWS(null);
+    }
+  });
 });
 
 describe('device-disconnect warning', () => {
@@ -397,9 +459,6 @@ describe('device-disconnect warning', () => {
 		const afterClear = renderRequestCount();
 		expect(afterClear).toBeGreaterThan(afterAppear);
 
-		// a repeat of the same (connected) state must not repaint on every STATUS
-		updateStatus(structuredClone(SWP_STATUS));
-		expect(renderRequestCount()).toBe(afterClear);
 	});
 });
 

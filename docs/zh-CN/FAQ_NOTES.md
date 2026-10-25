@@ -10,24 +10,24 @@ make native sdk-shim
 ./run.sh
 ```
 
-仓库根目录的 `./run.sh` 启动 `websad` systemd 用户服务，默认使用硬件并监听 `127.0.0.1:8080`。硬件运行所需条件不满足时会报错；`WEBSA_FAKE=1 ./run.sh` 显式选择 fixture 输入。直接运行 `websad` 二进制时，默认端口为 8099，未指定 SDK shim 时使用 fixture 输入；这与根目录启动脚本的默认行为不同。
+仓库根目录的 `./run.sh` 启动脱离终端的 `websad` 后台进程，无需 systemd，默认使用硬件并监听 `127.0.0.1:8080`。硬件运行所需条件不满足时会报错；`WEBSA_FAKE=1 ./run.sh` 显式选择 fixture 输入。直接运行 `websad` 二进制时，默认端口为 8099，未指定 SDK shim 时使用 fixture 输入；这与根目录启动脚本的默认行为不同。
 
 | 启动变量 | 默认值 | 用途 |
 |---|---|---|
 | `WEBSA_HOST` | `127.0.0.1` | 监听地址 |
 | `WEBSA_PORT` | `8080` | 根启动脚本端口 |
-| `WEBSA_UNIT` | `websad` | 用户服务单元 |
+| `WEBSA_INSTANCE` | `websad` | 本仓库的进程实例（`--instance NAME`） |
 | `WEBSA_FAKE` | `0` | 显式选择 fixture（`1`） |
 | `WEBSA_RUST_IQS_SHIM` | `~/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so` | 硬件 shim |
 | `WEBSA_STATIC` | 仓库 `frontend` | 包含 `dist/index.html` 的目录 |
 
-`WEBSA_HOST=0.0.0.0 ./run.sh` 开启局域网访问，地址为 `http://device-address:8080/`。产品端点无需认证。使用 `./status.sh` 和 `journalctl --user -u websad.service -n 100` 查看服务；修改单元名后需替换日志命令中的名称。`./stop.sh` 停止同一单元。
+`WEBSA_HOST=0.0.0.0 ./run.sh` 开启局域网访问，地址为 `http://device-address:8080/`。产品端点无需认证。`./status.sh` 自动读取保存的主机和端口，输出进程、日志路径与 HTTP 状态；命名实例使用 `--instance NAME` 选择。`./stop.sh` 只停止通过所有权校验的该实例，重复停止成功退出。状态和日志保存在 `$XDG_RUNTIME_DIR/harogic-websa`，没有本用户的可用运行时目录时使用 `${XDG_STATE_HOME:-$HOME/.local/state}/harogic-websa`。
 
 ## SDK 所有权与恢复
 
 同一时间只能有一个 SDK 调用访问设备。原生服务保留设备会话，并在管理该会话的线程中串行执行 SDK 调用。启动 WebSA 前须关闭 SAStudio4 和其他 API 客户端，设备不能共享。未显式设置的配置字段继承 SDK Profile 默认值；连续采集需要反复调用 Get。
 
-恢复前先查看 STATUS 错误和 journal 日志。关闭竞争应用，用 `./stop.sh && ./run.sh` 重启；链路仍不可用时重新插拔 USB。固件卡死可能需要重启系统。systemd 管理进程重启，原生模式所有者负责设备恢复。此处不保证恢复时间。
+恢复前先查看 STATUS 错误和实例日志。关闭竞争应用，用 `./stop.sh && ./run.sh` 重启；链路仍不可用时重新插拔 USB。固件卡死可能需要重启系统。启动脚本不会自动重启退出的进程，原生模式所有者负责设备恢复。此处不保证恢复时间。
 
 设备与命令错误显示在频谱右上角的一个持久错误栏中，不弹出阻塞浏览器的对话框。相同错误不会累积，不同错误替换当前诊断；悬停频谱可查看完整信息。STATUS 更新与临时参考电平提示不会清除错误。命令拒绝仍按请求关联执行回退。
 
@@ -53,17 +53,25 @@ AM 同步检波使用恢复的载波对 IQ 混频，包络检波取 IQ 幅值。
 
 静噪滑块以 0.1 dB 为步长，并显示请求的 RF 门限。最左端（−160 dBm）关闭静噪；向右提高门限，仅放行更强信号。接收器使用音频 AGC 前的 SDK 频谱调谐点峰值，配合迟滞、保持时间和音频渐变。这是 SDK 标称 dBm 读数，不是积分信道功率。点击 SDR 步长快选按钮后可立即按左右键调频；数值输入框仍保留自身的编辑按键。
 
+AGC 开/关用于自动调整解调后的收听电平；关闭后使用固定增益，不改变射频前端或静噪门限。目前不提供速度或目标电平设置。开关命令只修改 `agc`；匹配的确认结束请求，拒绝、超时或退出会话清除待确认意图。
+
+其他接收器可提供更多 AGC 控件。[FlexRadio 的 SmartSDR 说明](https://helpdesk.flexradio.com/hc/en-us/articles/360029494371-How-Does-the-Automatic-Gain-Control-AGC-Function-in-SmartSDR) 将 FAST/MED/SLOW 定义为强信号之后的增益恢复速度，将 AGC-T 定义为最大可用增益。这些设置取决于接收器实现；本应用的固定音频 AGC 尚不提供这些参数。
+
 迹线检波器选择只适用于 SWP，在 RTA 或谐波 / PNM 测量中会被拒绝。Auto Sample 随信号类型选择；Sample、Pos Peak、Neg Peak 和 RMS 使用固定检波器。Auto Peak 面向脉冲信号，通过 API 提供，不在 UI 中提供。比较检波结果时保持跨度、RBW 和点数不变。
 
 ## 参考电平与溢出
 
-手动 `SET_REF` 请求范围为 -160 至 +40 dBm。编辑值在匹配的确认到达前保持待确认状态，关联错误或超时后恢复已接受的显示。SDR 的 `sdr.ref` 确认保存的硬件请求，`ref` 则报告 SDK 实际参考电平，钳位后两者可能不同。SDR 显示参考与 IQS 参考相互独立。谐波/PNM 测量期间禁用 Level 控件。
+设备输入端的手动 `SET_REF` 请求范围仍为 -160 至 +40 dBm。SWP、RTA、SDR 的本地 Ref 显示窗口独立，范围为补偿前 -200 至 +100 dBm，再加外部 Offset。Offset 为零时，输入或拖到 +100 会显示 +100，而硬件请求为 +40；输入 +110 则显示限制为 +100。在 +90 和 +100 之间移动复用同一个硬件请求，包括该请求仍待确认时。匹配的原始电平确认接受显示窗口，不会将它改回 +40；拒绝或超时恢复最后已接受的窗口。修改 Offset 同步平移边界、纵轴和绝对电平读数，保持迹线位置，不发送硬件命令；到达 +100 不需要 Offset。SDK 实际参考 `ref` 独立上报，悬停 Ref 输入框或读数可比较。Auto 替换手动窗口；切换模式或刷新页面后按当前硬件请求加 Offset 恢复。Preset 清除手动窗口所有权，SDR 在新数据到来后拟合一次。IF 溢出只告警，不阻止编辑。修改 Ref 保留增益选择。SDR 的 `sdr.ref`、SWP 的 `req.swp.ref` 和 RTA 的 `req.rta.ref` 均保存未补偿的设备请求。谐波/PNM 测量期间禁用 Level 控件。
+
+SWP 在 IF 溢出时保留 SDK 返回的完整新扫描，并继续显示告警；饱和数据可能不准确。若 SDK 未返回完整新扫描，则不发布替代帧，也不把旧缓冲重复当作新数据。提高 Ref 可以解除告警，手动操作期间程序不会自行抬高 Ref。
 
 显式 `AUTO_SCALE` 启动有界会话（20 秒，最多 24 步），仅由同一模式、同一配置下的新采集证据推进。SDK IF 溢出告警 `APIRETVAL_WARNING_IFOverflow`（-12）允许从当前 SDK 实际参考电平增加 10 dB，最高不超过上报的参考上限；实际值已高于上限时绝不向下调整。衰减、前置放大、中频增益及策略保留用户选择。与告警一起返回的有效 IQ 会被保留。普通无数据或等待触发不会抬高参考，手动操作也没有后台参考调整。
 
 Auto 仅根据无溢出的频谱拟合，配置变化后还须取得新的无溢出频谱才能确认完成。SDR 显式 Auto 可重配 IQS 以恢复溢出；进入 SDR 使用 `display_only:true`，不修改硬件。手动配置、频率、模式或 Preset 变更会取消旧会话并清除旧目标。`auto_ref` 提供进度与结束原因，包括 limit、stalled、failed、no_data 和 timeout；未成功完成时目标为空。完整结果结构见 [API](API.md)。
 
 幅度偏移仅应用一次，作用于显示绝对电平（坐标轴、标记、峰值和信道读数）。dBc 等差值仍为差值；设备参考、衰减与触发阈值保持仪器单位。实际增益按当前 SDK 模式回读，缺失字段保留为 null。前置放大器 Auto/Off 表示所选策略，不代表物理开关状态。瀑布电平范围必须有限且有效；映射变化会清空历史，即使已暂停。
+
+衰减、预放策略、IF 增益档位和增益策略分别提交、分别确认。旧命令回复不会确认较新的选择；拒绝、超时或断线会清除待确认值。实际回读描述 SDK 已配置的前端参数。预放 Auto 表示策略，不证明物理开关状态；IF 档位也不同于 SDR 音频 AGC。
 
 ## 参考时钟与固件
 

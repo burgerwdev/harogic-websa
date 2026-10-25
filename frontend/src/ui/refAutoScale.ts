@@ -8,7 +8,7 @@
  * only a successful final placement may move it.
  */
 import { t } from '../core/i18n';
-import { cancelDisplayRefRequest, displayRefDiverges, getDisplayRef, setDisplayRef } from './displayRef';
+import { releaseDisplayRef, displayRefDiverges, hardwareRefForDisplay, getDisplayRef, rawToDisplayRef, setDisplayRef } from './displayRef';
 import { onCommandSent, send } from '../core/wsSend';
 import * as S from '../core/store';
 import { currentGraphMode } from './graphMode';
@@ -124,7 +124,7 @@ function announce(result: string, target: unknown, a?: AutoRefStatus): void {
 	if (result === 'no_data') postRefNotice(t('auto_scale_no_data'), 6000, about);
 	else if (result === 'ok') postRefNotice(t('auto_scale_ok'), 2500, about);
 	else if (result === 'applied' && target != null && Number.isFinite(Number(target))) {
-		postRefNotice(`Ref \u2192 ${Math.round(Number(target))} dBm`, 3000, about);
+		postRefNotice(`Ref \u2192 ${Math.round(rawToDisplayRef(Number(target)))} dBm`, 3000, about);
 	} else if (['limit', 'stalled', 'failed', 'cancelled', 'overflow', 'timeout'].includes(result)) {
 		postRefNotice(t(`auto_scale_${result}`), 6000, about);
 	}
@@ -160,8 +160,9 @@ export function noteSdrRefState(sdr: any): void {
 	entrySyncPending = false;
 	// Synchronize once after a finite SDR reference arrives, unless user intent owns the display.
 	if (displayRefDiverges()) { note('user-request-in-flight'); return; }   // it owns the display
-	if (Math.abs(reportedSdrRef - getDisplayRef()) < 0.5) { note('already-on-it'); return; }
-	setDisplayRef('sdr', reportedSdrRef);
+	const display = rawToDisplayRef(reportedSdrRef);
+	if (Math.abs(display - getDisplayRef()) < 0.5) { note('already-on-it'); return; }
+	setDisplayRef('sdr', display);
 	note('synced');
 }
 
@@ -173,7 +174,7 @@ export function clearSdrEntryState(): void {
 
 /** The user pressed Auto Scale. */
 export function autoScaleRequest(): void {
-	cancelDisplayRefRequest();
+	releaseDisplayRef();
 	refLevel.reset();
 	document.getElementById('input-ref')?.classList.remove('ref-pending');
 	ignoreAutoStatus = false;
@@ -192,8 +193,8 @@ export function autoScaleRequest(): void {
 	send({
 		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
 		request_id: pendingAutoRequestId,
-		// Fit against the visible client display level.
-		current_ref: getDisplayRef(),
+		// Keep the existing wire bounds even when the local viewport extends beyond them.
+		current_ref: hardwareRefForDisplay(getDisplayRef()),
 	});
 	busyUntil = performance.now() + BUSY_FALLBACK_MS;
 	setBusy(true);
@@ -209,6 +210,7 @@ export function requestSdrEntryFit(syncToReportedLevel = true): void {
 	backendAdjusting = false;
 	explicitSdrAuto = false;
 	awaitingAutoAck = false;
+	pendingAutoRequestId = null;
 	entryFitPending = true;
 	entrySyncPending = syncToReportedLevel;
 	entryFitAttempts = 0;
@@ -251,7 +253,7 @@ export function maybeRequestSdrFit(): void {
 	pendingAutoRequestId = `ref-auto-${++autoRequestSerial}`;
 	send({
 		cmd: 'AUTO_SCALE', range_db: S.totalDivs * S.dbPerDiv,
-		current_ref: getDisplayRef(),
+		current_ref: hardwareRefForDisplay(getDisplayRef()),
 		display_only: true,
 		request_id: pendingAutoRequestId,
 	});
@@ -271,6 +273,12 @@ export function syncAutoScaleStatus(s: { status_warning?: unknown; response_to?:
 	const seq = Number(a.seq ?? -1);
 	if (!Number.isFinite(seq) || seq < highestSeq) return;
 	if (ignoreAutoStatus) {
+		highestSeq = Math.max(highestSeq, seq);
+		return;
+	}
+	// Preset's own STATUS reports idle, and queued reports can still describe the
+	// retired session. Neither is an answer to the fit armed for the next SDR frame.
+	if (entryFitPending && !entryFitInFlight) {
 		highestSeq = Math.max(highestSeq, seq);
 		return;
 	}
@@ -308,8 +316,8 @@ export function syncAutoScaleStatus(s: { status_warning?: unknown; response_to?:
 		const move = placed && target != null && Number.isFinite(Number(target)) && Number(target) !== appliedTarget;
 		if (move) {
 			appliedTarget = Number(target);
-			// Apply the absolute fit target to the client display, preserving the IQS reference.
-			setDisplayRef('auto', appliedTarget);
+			// Convert the raw fit target once; the IQS hardware reference stays unchanged.
+			setDisplayRef('auto', rawToDisplayRef(appliedTarget));
 		}
 		const cv = document.getElementById('spectrum');
 		if (cv) {
@@ -337,6 +345,12 @@ export function syncAutoScaleStatus(s: { status_warning?: unknown; response_to?:
 
 /** Preset (or a fresh start): forget what Auto last did, so nothing stale blocks a new fit. */
 export function resetAutoScaleState(): void {
+	// A successful Preset supersedes pending manual Ref, including its rollback timer.
+	releaseDisplayRef();
+	refLevel.reset();
+	entrySyncPending = false;
+	reportedSdrRef = null;
+	sdrHasOwnLevel = false;
 	lastSeq = -1;
 	highestSeq = -1;
 	backendAdjusting = false;

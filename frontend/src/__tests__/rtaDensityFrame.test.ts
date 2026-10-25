@@ -4,9 +4,9 @@ import * as S from '../core/store';
 import { connectWS } from '../core/ws';
 import { setDisplayRef } from '../ui/displayRef';
 import { displayOffset } from '../ui/displayState';
-import { rtaAmpBins, rtaFade, waterfallOn } from '../ui/waterfallState';
+import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
+import { setRtaDensSource, beginRtaAxisTransition, clearRtaAccum, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { clearRtaTrace, setTraceMode, switchTraceTab } from '../ui/traceOps';
-import { beginRtaAxisTransition, clearRtaAccum, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 
 class DisplaySocket {
 	static OPEN = 1;
@@ -67,7 +67,7 @@ beforeEach(() => {
 	displayOffset.set(0);
 	rtaAmpBins.set(128);
 	// Abandoned hits vanish on the second frame, exposing which data the receiver adds.
-	rtaFade.set(0.001);
+	rtaHalflife.set(0.001);
 	waterfallOn.set(false);
 });
 
@@ -158,7 +158,7 @@ describe('processed active-trace density', () => {
 		expect(S.rtaDensity2d!.freq).toBe(S.rtaData.freq);
 	});
 	it('replaces both layers on the first new-axis packet inside the process throttle', () => {
-		rtaFade.set(1);
+		rtaHalflife.set(999);
 		const rapid = vi.spyOn(performance, 'now').mockReturnValue(clock + 1000);
 		feed(-40);
 		const old = S.rtaDensity2d!;
@@ -178,5 +178,29 @@ describe('processed active-trace density', () => {
 		} finally {
 			rapid.mockImplementation(() => (clock += 100));
 		}
+	});
+
+	it('live source accumulates the raw frame and survives trace freeze', () => {
+		rtaDensSource.set('live');
+		feed(-40);
+		const raw = S.rtaData.spec[16];
+		const grid = S.rtaDensity2d!;
+		expect(grid.source).toBe('live');
+		const row = Math.round((grid.refTop - raw) / grid.dBPerBin);
+		expect(grid.values[16 * grid.bins + row]).toBeGreaterThan(0);
+		setTraceMode('VIEW');
+		feed(-80);
+		expect(grid.revision).toBeGreaterThan(1);   // VIEW freezes the trace, not this history
+		expect(grid.values[16 * grid.bins + Math.round((grid.refTop + 80) / grid.dBPerBin)]).toBeGreaterThan(0);
+	});
+	it('switching the source back starts a fresh trace-following history', () => {
+		setRtaDensSource('live');
+		feed(-40);
+		const liveGrid = S.rtaDensity2d!;
+		setRtaDensSource('trace');
+		expect(S.rtaDensity2d).toBeNull();
+		feed(-40);
+		expect(S.rtaDensity2d).not.toBe(liveGrid);
+		expect(S.rtaDensity2d!.source).toBe('trace');
 	});
 });

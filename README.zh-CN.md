@@ -55,12 +55,12 @@
 
 ## 快速开始
 
-**1.9.1** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
+**1.9.2** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
 不再提供生产后端。保留的浏览器 WASM 产物是可选离线诊断工具，不是生产 DSP 路径。
 
 ### 运行随附发布产物
 
-1.9.1 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
+1.9.2 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so` 以及 `runtime/frontend/dist/`。
 执行 `./run.sh` 连接硬件，或执行 `./run.sh --fake` 使用合成输入，然后访问
 http://127.0.0.1:8080。使用随附产物无需安装 Rust、Node.js 或 Python。
@@ -88,7 +88,7 @@ ELF 加载器路径为 `/lib64/ld-linux-x86-64.so.2`。适配库链接时使用 
 
 ### 前置条件
 
-- 启动脚本需要 Linux、systemd 用户服务、`curl` 和 `ss`（iproute2）；原生音频解码需要
+- 启动脚本需要 Linux、Bash、coreutils、`flock`（util-linux）、`/proc` 和 `curl`；原生音频解码需要
   FDK AAC 动态库（`libfdk-aac.so.2`，版本 ≥2.0.3）。
 - 仅原生重建需要 Rust、C++17 编译器和 pkg-config。
 - Python ≥3.10 仅用于台架、端到端、离线参考和 fixture 工具，不提供生产后端。
@@ -114,9 +114,15 @@ make native sdk-shim                     # 原生服务与硬件 SDK shim
 浏览器打开 http://127.0.0.1:8080
 
 默认连接真实硬件；启动脚本按上文规则选择用户已安装的 shim 或随附适配库。
-模拟数据源须通过 `WEBSA_FAKE=1 ./run.sh` 显式启用。`WEBSA_UNIT`、`WEBSA_HOST`、`WEBSA_PORT`、
-`WEBSA_RUST_IQS_SHIM`、`WEBSA_STATIC` 配置原生启动入口；日志由 systemd 用户 journal 管理。
-`./stop.sh` 与 `./status.sh` 管理同一原生单元。
+模拟数据源须通过 `WEBSA_FAKE=1 ./run.sh` 显式启用。`WEBSA_INSTANCE`、`WEBSA_HOST`、`WEBSA_PORT`、
+`WEBSA_BIN`、`WEBSA_RUST_IQS_SHIM`、`WEBSA_STATIC` 配置原生启动入口。
+脚本通过 `nohup` 和可用时的 `setsid` 启动普通后台进程，无需 systemd 会话。
+`--instance NAME` 或 `WEBSA_INSTANCE` 选择本仓库的实例（默认 `websad`），取代原先的 `--unit` / `WEBSA_UNIT`。
+`./stop.sh` 在发信号前核对记录的 PID、启动时间、可执行文件和工作目录；重复停止成功退出。
+`./status.sh` 自动读取记录的主机和端口，输出 PID、日志路径和 HTTP 状态。
+私有状态及追加式日志存放在 `$XDG_RUNTIME_DIR/harogic-websa`，不可用时使用
+`${XDG_STATE_HOME:-$HOME/.local/state}/harogic-websa`，按仓库与实例隔离。
+脚本不自动重启崩溃的进程；进程退出后用 `make restart` 恢复。
 
 服务会检测并上报频谱仪断开，重新接入后自动恢复原模式，无需重启；`make status` 查看实时连接状态，
 `make restart` 重启服务。
@@ -171,8 +177,8 @@ harogic-websa/
 
 | 脚本 | 说明 |
 |---|---|
-| `./run.sh` / `./stop.sh` | 启动 / 停止原生 systemd 用户服务 |
-| `make restart` / `make status` | 重启 / 查看运行状态、PID、内存、CPU、日志、设备链路 |
+| `./run.sh` / `./stop.sh` | 启动 / 停止归本实例管理的原生后台进程 |
+| `make restart` / `make status` | 重启 / 查看 PID、日志路径、HTTP 与设备实时状态 |
 | `make build` | 前端资源 + 原生 Rust 服务（硬件 shim 单独构建）|
 | `make native` / `make sdk-shim` | 构建 Rust 服务 / 硬件 SDK shim |
 | `make frontend` | 仅构建前端：npm install + Vite 构建（不构建 WASM）|

@@ -4,7 +4,10 @@
 // rather than UI prose, so a screenshot is self-describing in a report.
 import * as S from '../core/store';
 import { centerHz, spanHz } from './freqState';
-import { refLevel } from './refState';
+import { getDisplayRef } from './displayRef';
+import { displayUnit } from './displayState';
+import { previewLevelWindow } from './axisDrag';
+import { unitOffsetDb } from '../core/level';
 import { currentRBW, currentVBW, currentPoints } from './swpState';
 import { formatFreqHz } from '../core/fmt';
 import { getView, isZoomed } from './spectrumViewport';
@@ -15,10 +18,12 @@ function headerParts(): string[] {
   const n = S.freqArray?.length ?? currentPoints.get();
   const lo = centerHz.get() - spanHz.get() / 2;
   const hi = centerHz.get() + spanHz.get() / 2;
+  const top = previewLevelWindow()?.ref ?? getDisplayRef();
+  const relative = displayUnit.get() === 'dB';
   const parts = [
     ver,
     `${formatFreqHz(lo)} - ${formatFreqHz(hi)}`,
-    `Ref ${refLevel.get().toFixed(1)} dBm`,
+    `Ref ${(top + (relative ? 0 : unitOffsetDb(S.levelUnit))).toFixed(1)} ${relative ? 'dB' : S.levelUnit}`,
     `${S.dbPerDiv.toFixed(0)} dB/div`,
     `RBW ${formatFreqHz(currentRBW.get())}`,
     `VBW ${formatFreqHz(currentVBW.get())}`,

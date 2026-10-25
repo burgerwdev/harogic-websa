@@ -11,7 +11,7 @@ vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
 import { send } from '../core/wsSend';
 import { resetAll } from '../core/params';
 import { deviceMode } from '../ui/graphMode';
-import { AMP_FIELDS, setAmpField, syncAmpAvailability, syncAmpStatus } from '../ui/ampState';
+import { AMP_FIELDS, rejectAmpRequest, resetAmpIntents, setAmpField, syncAmpAvailability, syncAmpStatus } from '../ui/ampState';
 
 function buildDom(): void {
 	for (const field of Object.keys(AMP_FIELDS) as (keyof typeof AMP_FIELDS)[]) {
@@ -44,9 +44,22 @@ function buildDom(): void {
 
 const sel = (id: string) => document.getElementById(id) as HTMLSelectElement;
 const span = (id: string) => document.getElementById(id) as HTMLElement;
+function lastRequestId(): string {
+	const command = vi.mocked(send).mock.calls.at(-1)![0];
+	if (!('request_id' in command) || typeof command.request_id !== 'string') throw new Error('Missing request ID');
+	return command.request_id;
+}
+
+function commit(field: keyof typeof AMP_FIELDS, value: number): string {
+	sel(AMP_FIELDS[field].id).value = String(value);
+	setAmpField(field);
+	return lastRequestId();
+}
 
 beforeEach(() => {
+	vi.useFakeTimers();
 	buildDom();
+	resetAmpIntents();
 	resetAll('amp');
 	deviceMode.confirm('std');
 	syncAmpStatus({ atten: -1, preamp: 0, ifgain: 2, gain_strategy: 0 });
@@ -54,6 +67,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	resetAmpIntents();
+	vi.useRealTimers();
 	for (const id of [...Object.values(AMP_FIELDS).map((m) => m.id), 'cur-atten', 'cur-preamp', 'cur-ifgain']) {
 		document.getElementById(id)?.remove();
 	}
@@ -87,9 +102,94 @@ describe('stale status vs pending intent', () => {
 		syncAmpStatus({ atten: 0, ifgain: 2 });
 		expect(sel('select-ifgain').value).toBe('3');
 		expect(sel('select-atten').value).toBe('0'); // no intent for atten, confirmed wins
-		expect(send).toHaveBeenLastCalledWith({ cmd: 'SET_AMP', ifgain: 3 });
+		expect(send).toHaveBeenLastCalledWith({ cmd: 'SET_AMP', ifgain: 3, request_id: expect.any(String) });
 	});
 
+	it('settles each field independently and ignores unrelated snapshot values', () => {
+		const atten = commit('atten', 10);
+		const ifgain = commit('ifgain', 3);
+		syncAmpStatus({ atten: 10, ifgain: 2 }, 'SET_AMP', atten);
+		expect(sel('select-atten').value).toBe('10');
+		expect(AMP_FIELDS.atten.slot.pending()).toBe(false);
+		expect(sel('select-ifgain').value).toBe('3');
+		expect(AMP_FIELDS.ifgain.slot.pending()).toBe(true);
+		syncAmpStatus({ atten: -1, ifgain: 3 }, 'SET_AMP', ifgain);
+		expect(sel('select-atten').value).toBe('10');
+		expect(AMP_FIELDS.ifgain.slot.pending()).toBe(false);
+	});
+
+	it('keeps a repeated-value cycle pending until its own ACK and ignores older ACKs afterward', () => {
+		const first = commit('ifgain', 3);
+		const second = commit('ifgain', 1);
+		const newest = commit('ifgain', 3);
+		expect(new Set([first, second, newest]).size).toBe(3);
+		syncAmpStatus({ ifgain: 3 }, 'SET_AMP', first);
+		syncAmpStatus({ ifgain: 3 });
+		rejectAmpRequest('SET_AMP', second);
+		expect(AMP_FIELDS.ifgain.slot.pending()).toBe(true);
+		expect(sel('select-ifgain').value).toBe('3');
+		syncAmpStatus({ ifgain: 3 }, 'SET_AMP', newest);
+		syncAmpStatus({ ifgain: 1 }, 'SET_AMP', second);
+		expect(AMP_FIELDS.ifgain.slot.pending()).toBe(false);
+		expect(sel('select-ifgain').value).toBe('3');
+	});
+
+	it('rolls back to the newest accepted predecessor on matching ERROR even while focused', () => {
+		const first = commit('atten', 5);
+		const second = commit('atten', 10);
+		const newest = commit('atten', 20);
+		syncAmpStatus({ atten: 10 }, 'SET_AMP', second);
+		syncAmpStatus({ atten: 5 }, 'SET_AMP', first);
+		sel('select-atten').focus();
+		rejectAmpRequest('SET_REF', newest);
+		rejectAmpRequest('SET_AMP', second);
+		expect(sel('select-atten').value).toBe('20');
+		rejectAmpRequest('SET_AMP', newest);
+		expect(sel('select-atten').value).toBe('10');
+		expect(AMP_FIELDS.atten.slot.pending()).toBe(false);
+		syncAmpStatus({ atten: 20 }, 'SET_AMP', newest);
+		expect(sel('select-atten').value).toBe('10');
+	});
+
+	it('repaints focused controls and availability when a request expires without another status', () => {
+		const request = commit('atten', 20);
+		sel('select-atten').focus();
+		expect(sel('select-preamp').disabled).toBe(true);
+		vi.advanceTimersByTime(3000);
+		expect(sel('select-atten').value).toBe('-1');
+		expect(sel('select-preamp').disabled).toBe(false);
+		expect(AMP_FIELDS.atten.slot.pending()).toBe(false);
+		syncAmpStatus({ atten: 20 }, 'SET_AMP', request);
+		expect(sel('select-atten').value).toBe('-1');
+	});
+
+	it('restarts only the resubmitted field watchdog for an identical value', () => {
+		commit('atten', 20);
+		commit('ifgain', 3);
+		vi.advanceTimersByTime(2000);
+		commit('atten', 20);
+		vi.advanceTimersByTime(1000);
+		expect(sel('select-atten').value).toBe('20');
+		expect(sel('select-ifgain').value).toBe('2');
+		vi.advanceTimersByTime(2000);
+		expect(sel('select-atten').value).toBe('-1');
+		expect(sel('select-preamp').disabled).toBe(false);
+	});
+
+	it('cancels all intents on disconnect and ignores their late replies across reconnect', () => {
+		const atten = commit('atten', 20);
+		const ifgain = commit('ifgain', 3);
+		resetAmpIntents();
+		expect(sel('select-atten').value).toBe('-1');
+		expect(sel('select-ifgain').value).toBe('2');
+		expect(sel('select-preamp').disabled).toBe(false);
+		syncAmpStatus({ atten: 5, ifgain: 1 });
+		syncAmpStatus({ atten: 20, ifgain: 3 }, 'SET_AMP', atten);
+		syncAmpStatus({ atten: 20, ifgain: 3 }, 'SET_AMP', ifgain);
+		vi.advanceTimersByTime(3000);
+		expect(sel('select-atten').value).toBe('5');
+		expect(sel('select-ifgain').value).toBe('1');
+	});
 });
 
 describe('actual readouts render strictly', () => {
@@ -120,6 +220,12 @@ describe('actual readouts render strictly', () => {
 		expect(span('cur-preamp').textContent).toBe('Off');
 		syncAmpStatus({});
 		expect(span('cur-preamp').textContent).toBe('');
+	});
+
+	it.each([2, 3, 4])('shows SDK preamp grade %i without replacing requested policy', (grade) => {
+		syncAmpStatus({ preamp: 0, preamp_actual: grade });
+		expect(span('cur-preamp').textContent).toBe('L' + grade);
+		expect(sel('select-preamp').value).toBe('0');
 	});
 
 	it.each([5, 25, 33])('keeps legal attenuation %i selected through confirmation', (atten) => {

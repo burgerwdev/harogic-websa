@@ -3,8 +3,10 @@ import { prepareSdrAudioTransition } from '../audio/sdrAudio';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { send, setWS } from '../core/wsSend';
+import { getY, plotRect } from '../render/plot';
 import { getDisplayRef, noteDisplayRefReport, pendingDisplayRef, setDisplayRef } from '../ui/displayRef';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
+import { commitLevelOffset } from '../ui/panels/refAmp';
 import {
 	autoScaleBusy, autoScaleRequest, clearAutoScaleHint, maybeRequestSdrFit,
 	noteSdrRefState, noteTraceObservation, requestSdrEntryFit, resetAutoScaleState,
@@ -77,14 +79,44 @@ describe('Auto request scope and takeover', () => {
 		expect(getDisplayRef()).toBe(0);
 	});
 
-	it('preserves an SDR hardware level on entry without starting a fit', () => {
+	it.each([0, 60])('preserves an SDR hardware level on entry with offset %s without starting a fit', offset => {
 		graphMode.confirm('sdr');
+		commitLevelOffset(offset);
 		requestSdrEntryFit();
 		noteSdrRefState({ ref: -55, ref_set: true });
 		maybeRequestSdrFit();
 		expect(sent).toEqual([]);
-		expect(getDisplayRef()).toBe(-55);
+		expect(getDisplayRef()).toBe(-55 + offset);
 		expect(autoScaleBusy()).toBe(false);
+	});
+
+	it.each(['entry', 'explicit'])('fits %s Auto in raw units with a +60 offset and keeps marker placement stable', kind => {
+		graphMode.confirm('sdr');
+		commitLevelOffset(60);
+		requestSdrEntryFit();
+		noteSdrRefState({ ref: -55, ref_set: kind === 'explicit' });
+		expect(getDisplayRef()).toBe(5);
+		if (kind === 'entry') maybeRequestSdrFit();
+		else autoScaleRequest();
+		expect(sent.at(-1)).toMatchObject({ cmd: 'AUTO_SCALE', current_ref: -55, range_db: 100 });
+		expect(sent.at(-1)?.display_only).toBe(kind === 'entry' ? true : undefined);
+		acknowledge(1);
+		const result = { result: 'applied', target: -30, last_peak: -65, last_noise_floor: -115, seq: 2 };
+		status(result);
+		expect(getDisplayRef()).toBe(30);
+		const rect = plotRect();
+		const markerY = getY(-65);
+		expect(markerY).toBeCloseTo(rect.y + rect.h * 0.35, 6);
+		expect(getY(-115)).toBeCloseTo(rect.y + rect.h * 0.85, 6);
+		status(result);
+		expect(getDisplayRef()).toBe(30);
+		expect(getY(-65)).toBeCloseTo(markerY, 6);
+		commitLevelOffset(0);
+		status(result);
+		expect(getDisplayRef()).toBe(-30);
+		expect(getY(-65)).toBeCloseTo(markerY, 6);
+		expect(autoScaleBusy()).toBe(false);
+		expect(sent).toHaveLength(1);
 	});
 
 	it('supersedes pending manual Ref without its old timeout rolling back Auto', () => {
@@ -99,6 +131,16 @@ describe('Auto request scope and takeover', () => {
 		status({ result: 'applied', target: -85, seq: 2 });
 		vi.advanceTimersByTime(6000);
 		expect(getDisplayRef()).toBe(-85);
+	});
+
+	it.each([-200, 100])('fits an out-of-hardware viewport at %s using valid wire bounds', ref => {
+		graphMode.confirm('sdr');
+		setDisplayRef('user', ref);
+		autoScaleRequest();
+		expect(sent.at(-1)?.current_ref).toBe(ref < -160 ? -160 : 40);
+		acknowledge(1);
+		status({ result: 'applied', target: -30, seq: 2 });
+		expect(getDisplayRef()).toBe(-30);
 	});
 
 	it('prepares explicit SDR recovery audio once for known or newly reported overflow', () => {
@@ -152,6 +194,41 @@ describe('Auto session progress and cancellation', () => {
 		acknowledge(4);
 		status({ result: 'applied', target: -70, seq: 5 });
 		expect(getDisplayRef()).toBe(-70);
+	});
+
+	it.each([-200, -160, 40, 100])('keeps Preset fit armed through idle and retired sessions at Ref %s', ref => {
+		graphMode.confirm('sdr');
+		autoScaleRequest();
+		const retiredId = sent.at(-1)?.request_id;
+		acknowledge(10);
+		clearAutoScaleHint();
+		setDisplayRef('user', ref);
+		refLevel.set(Math.max(-160, Math.min(40, ref)));
+		resetAutoScaleState();
+		requestSdrEntryFit(false);
+		noteSdrRefState({ ref: 0, ref_set: false });
+		status({ result: 'idle', target: null, adjusting: false, seq: 12 });
+		status({ result: 'applied', target: -20, adjusting: false, seq: 11 });
+		expect(getDisplayRef()).toBe(ref);
+		expect(pendingDisplayRef()).toBeNull();
+		expect(refLevel.pending()).toBe(false);
+		maybeRequestSdrFit();
+		expect(sent.at(-1)).toMatchObject({ cmd: 'AUTO_SCALE', display_only: true, current_ref: Math.max(-160, Math.min(40, ref)) });
+		expect(sent).toHaveLength(2);
+		syncAutoScaleStatus({ response_to: 'AUTO_SCALE', request_id: retiredId,
+			auto_ref: { result: 'adjusting', adjusting: true, seq: 10 } });
+		status({ result: 'applied', target: -20, adjusting: false, seq: 11 });
+		expect(getDisplayRef()).toBe(ref);
+		acknowledge(13);
+		status({ result: 'applied', target: -20, adjusting: false, seq: 11 });
+		expect(getDisplayRef()).toBe(ref);
+		status({ result: 'applied', target: -30, adjusting: false, seq: 14 });
+		expect(getDisplayRef()).toBe(-30);
+		vi.advanceTimersByTime(6000);
+		maybeRequestSdrFit();
+		expect(getDisplayRef()).toBe(-30);
+		expect(autoScaleBusy()).toBe(false);
+		expect(sent).toHaveLength(2);
 	});
 
 	it.each(['SET_REF', 'SET_AMP', 'SET_FREQ', 'SET_TRIGGER', 'SET_MODE', 'SET_SDR']) (
@@ -231,6 +308,27 @@ describe('Auto terminal outcomes', () => {
 		maybeRequestSdrFit();
 		expect(sent).toHaveLength(2);
 		expect(getDisplayRef()).toBe(-95);
+	});
+
+	it('finishes a Preset fit on overflow without moving Ref or retrying hardware recovery', () => {
+		graphMode.confirm('sdr');
+		setDisplayRef('user', -160);
+		resetAutoScaleState();
+		requestSdrEntryFit(false);
+		noteSdrRefState({ ref: 0, ref_set: false });
+		status({ result: 'idle', target: null, adjusting: false, seq: 1 });
+		maybeRequestSdrFit();
+		acknowledge(2);
+		syncAutoScaleStatus({ status_warning: -12,
+			auto_ref: { result: 'overflow', target: null, adjusting: false, seq: 3 } });
+		expect(getDisplayRef()).toBe(-160);
+		expect(S.noticeText).toBe('Display fit stopped: raise the hardware reference or press Auto');
+		expect(autoScaleBusy()).toBe(false);
+		vi.advanceTimersByTime(1600);
+		maybeRequestSdrFit();
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({ cmd: 'AUTO_SCALE', display_only: true });
+		expect(prepareSdrAudioTransition).not.toHaveBeenCalled();
 	});
 
 	it('withdraws a no-data notice once a trace is available', () => {

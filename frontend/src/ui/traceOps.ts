@@ -3,7 +3,7 @@ import * as S from '../core/store';
 import { centerHz, spanHz } from './freqState';
 import { refLevel } from './refState';
 import { currentRBW, currentVBW } from './swpState';
-import { setDisplayRef } from './displayRef';
+import { rawToDisplayRef, setDisplayRef } from './displayRef';
 import { updateInfoBar } from '../render/infobar';
 import { updateNormalizeStatusUI } from '../dsp/normalize';
 import { applyTraceMode } from '../dsp/traces';
@@ -44,8 +44,10 @@ export function switchTraceTab(idx: number) {
   syncFreezeBtn();
   syncAvgUI();
   const anyNorm = S.traces.some(x => x.isNormalized && x.reference);
+  const previousUnit = displayUnit.get();
   displayUnit.set((t.reference && t.isNormalized) ? 'dB' : (anyNorm ? 'dB' : 'dBm'));
-  setDisplayRef('mode', displayUnit.get() === 'dB' ? 0.0 : refLevel.get());
+  setDisplayRef(previousUnit !== displayUnit.get() ? 'normalize' : 'mode',
+    displayUnit.get() === 'dB' ? 0.0 : rawToDisplayRef(refLevel.get()));
   updateNormalizeStatusUI();
   updateInfoBar();
   requestRender();
@@ -92,6 +94,8 @@ export function setTraceMode(mode: string) {
  * gesture inside SDR is the user's and stays until they change it - leaving the mode and coming
  * back is not allowed to reset it (the same rule the audio preference and the tuning already
  * follow). Leaving SDR restores the swept/RTA mode, which keeps its factory Clear Write.
+ * Preset deliberately discards both remembered choices: SDR restarts Average at depth 16,
+ * swept/RTA restart Clear Write, and every trace's accumulation starts empty.
  */
 export type TraceFamily = 'sdr' | 'swept';
 

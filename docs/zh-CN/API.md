@@ -123,7 +123,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `CAL_REFCLK` | `count?` | GNSS 1PPS 参考时钟校准（后台线程，期间校准状态 `calibrating=true`）|
 | `SET_FREQ` | `center`,`span` 或 `start`,`stop` | 原子设置 SWP 频率窗口；禁止混合两种赋值 |
 | `SET_REF` | `mode`（manual/auto）、`ref?`、`range_db?` | 当前模式参考电平；manual 必须提供 -160..40 dBm 的 ref；mode=auto 执行一次 Auto Scale |
-| `AUTO_SCALE` | `range_db?`（5..200）、`current_ref?`、`display_only?` | 有界参考电平放置与过载恢复，详见下文；current_ref 是显示值 |
+| `AUTO_SCALE` | `range_db?`（5..200）、`current_ref?`、`display_only?` | 有界参考电平放置与过载恢复，详见下文；current_ref 不含外部 Offset，浏览器从显示 Ref 中减去补偿后发送 |
 | `SET_RBW` | `mode?`（manual/auto/one_thousandth_span/one_percent_span）、`rbw?` | SWP 分辨率带宽；RTA 仅 manual/auto |
 | `SET_VBW` | `mode?`（manual/equal/tenth/onethousandth/bypass）、`vbw?` | 设置视频带宽 |
 | `SET_SWEEP` | `mode?`（0..8）、`time?`（schema：0..1000） | 0=minSWT、1=x2、2=x4、3=x10、4=x20、5=x50、6=xN、7=Manual、8=minSMPxN；time 在 Manual 为秒，在 xN 为倍率，仍须通过对应 handler 的校验。RTA 更新自身 Profile |
@@ -131,7 +131,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_SPUR` | `mode`（bypass/standard/enhanced）| 杂散抑制模式 |
 | `SET_WINDOW` | `window`（0~4）| FFT 窗口 |
 | `SET_DETECTOR` | `mode`（auto/sample/pos_peak/neg_peak/rms/auto_peak）| 迹线检波器，仅 SWP 生效 |
-| `SET_AMP` | `atten`（-1~33）, `preamp`（0/1）, `ifgain`（0~3）, `gain_strategy`（0/1）| 增益链配置 |
+| `SET_AMP` | `atten?`（-1~33）, `preamp?`（0/1）, `ifgain?`（0~3）, `gain_strategy?`（0/1）, `request_id?` | 只更新提供的增益字段；STATUS/ERROR 回传 request_id，请求值与 SDK 实际回读分别保留 |
 | `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 请求参考源并重配当前模式；无高品质内参考硬件时在变更前拒绝。`actual.refclk_src`报告SDK实际配置源，包括外参考自动回退 |
 | `SET_REFCKOUT` | `on`（bool） | 参考时钟输出，重配置当前模式 Profile |
 | `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr）| 切换测量模式（会话）|
@@ -345,9 +345,9 @@ SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实
 
 浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。此确认不发送到 `/ws/decode`。
 
-> **频谱细节**：POWR 使用 float32 电平和以 Hz 表示的原生 FREQ 轴。RTA/SDR 为迹线、标记和导出保留原生频点；本地缩放不发送采集命令，也不改善物理 RBW。密度使用当前迹线处理后的样本与原生频率位置，与迹线共用偏移、参考电平和预览映射。Off 停止累积与显示，荧光显示共用迹线绘制路径。瀑布保留原生频率位置；缺口保持为空，除非启用 SWP GapFill。
+> **频谱细节**：POWR 使用 float32 电平和以 Hz 表示的原生 FREQ 轴。RTA/SDR 为迹线、标记和导出保留原生频点；本地缩放不发送采集命令，也不改善物理 RBW。密度可跟随当前处理后的迹线，也可积累 Average/Max Hold 前的实时频谱帧；切换来源清除历史。余辉按真实时间半衰期衰减（Off、0.5、2、5、10 秒），命中权重按经过时间计算，并限制长间隔的影响。Off 停止累积与显示。图层选择只改变可见性，不改变迹线模式、marker、测量和导出的数据来源。密度显示时取消迹线宽辉光。对比度调整颜色，透明度独立映射。瀑布保留原生频率位置；缺口保持为空，除非启用 SWP GapFill。
 
-频率轴版本切换时，优先接收新轴的首帧，拒收旧版本帧。密度按原生频点中心连续投影，将幅度贡献按比例分到相邻两行，并以双线性采样显示。Grain 默认仍为 128，NaN 缺口保持空白；Off 停止并清除累积，VIEW 保留冻结历史，不衰减也不重复计入命中。
+频率轴版本切换时，优先接收新轴的首帧，拒收旧版本帧。密度按原生频点中心投影，将幅度贡献按比例分到相邻两行。显示宽度为 1/3/5/9 CSS 像素，默认 5，仅扩大已有幅度格中心的垂直绘制范围，不改变命中历史、幅度、频率或测量。对比度调整颜色，透明度独立映射；浅色主题使用饱和色，实测底噪以较低强度保留。Grain 默认为 128，NaN 缺口保持空白；Off 清除累积，跟随迹线源在 VIEW 时冻结，实时源继续积累。切换宽度、主题和对比度均保留历史。
 
 CSV 导出当前模式所选处理后迹线及匹配的原生频率轴；OFF、缺失或长度不匹配时提示无数据，不能回退到旧 SWP 迹线。Limits 与频道测量仅使用所选的处理后绝对功率迹线；归一化相对迹线显示 N/A，不生成绝对测量 CSV 行。RTA/SDR 禁用这些测量控件。dBc 不叠加外部电平偏移。SWP 瀑布从已接受的原始 POWR 帧取行，最高 10 Hz，重绘本身不会生成新行。
 
@@ -443,4 +443,4 @@ RTA2 的 TRIG 元数据包括 valid、supported、simulated、generation、frame
 
 auto_ref.result 为 idle、adjusting、applied、ok、no_data、overflow、limit、stalled、failed、cancelled 或 timeout。只有成功结束时 target 非 null。始终没有可用采集时以 no_data 结束；已有调整但未获得新干净数据确认时以 timeout 结束。手动 Ref/AMP、调频、换模和 Preset 会取消会话并清除旧 target。
 
-手动 Ref 编辑显示 pending，拒绝或超时未确认后恢复已接受的显示值。SDR 的 sdr.ref 确认保存请求，与有效 ref 分开。外部 Offset 对绝对迹线和读数只补偿一次，坐标轴格式化仅转换单位，相对 dB 不变。瀑布 Fixed 范围须为有限数且低值小于高值；非法编辑回退并提示。映射或有效范围变化会清空量化历史，暂停时亦然。std/rta/sdr 可使用本地 Scale/Unit/Offset/瀑布设置；独占谐波/相噪测量时禁用 Level 控件。
+SWP/RTA/SDR 的手动 Ref 使用独立本地窗口（-200 至 +100 dBm 加外部 Offset）。SET_REF 和 AUTO_SCALE.current_ref 减去 Offset 后限制在现有 -160 至 +40 dBm 协议范围。匹配的原始请求回读接受窗口，不替换显示值：Offset 为零时显示 +100 对应硬件请求 +40。同一限幅目标下继续移动窗口不重配硬件，也不重启待确认超时。拒绝或超时恢复已接受的显示值。SDR 的 sdr.ref 确认未补偿请求，与有效 ref 分开。应用 Auto 目标时只加一次 Offset。修改 Offset 同步平移绝对纵轴和迹线，不发送硬件命令；相对 dB 不变。瀑布 Fixed 范围须为有限数且低值小于高值；非法编辑回退并提示。映射或有效范围变化会清空量化历史，暂停时亦然。std/rta/sdr 可使用本地 Scale/Unit/Offset/瀑布设置；独占谐波/相噪测量时禁用 Level 控件。

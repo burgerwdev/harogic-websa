@@ -23,7 +23,7 @@ restart:  ## Restart service (stop + start)
 	./stop.sh
 	./run.sh
 
-status:   ## Show Rust user-unit status, journal and HTTP health
+status:   ## Show owned Rust process, log path and HTTP health
 	./status.sh
 
 ##@ Build
@@ -64,7 +64,7 @@ dev:      ## Stop, clean caches, rebuild browser and Rust service, then run
 	$(MAKE) clean
 	$(MAKE) build
 	WEBSA_TRACE=1 ./run.sh
-	@echo "Rust service journal: journalctl --user -u $${WEBSA_UNIT:-websad} -f"
+	@echo "Run ./status.sh to find the Rust service log path"
 
 ##@ Test
 
@@ -99,22 +99,25 @@ wasm-check: ## Rebuild both WASM cores and fail if a committed artifact differs 
 ##@ Hardware
 
 hw-test:  ## Hardware-in-the-loop: tinySA CW + SWP/RTA smoke + UI state regression (SAN-90 required)
-	@systemctl --user is-active --quiet "$${WEBSA_UNIT:-websad}" || ./run.sh
+	@./status.sh --quiet || ./run.sh
 	@# The smoke test needs std mode; a previous e2e run may have left SDR/RTA active.
 	@curl -s -X POST http://127.0.0.1:$${WEBSA_PORT:-8080}/api/config \
 		-H 'Content-Type: application/json' -d '{"cmd":"SET_MODE","mode":"std"}' >/dev/null || true
 	python3 tools/bench/hardware_smoke.py --tinysa-port $${TINYSA_PORT:-/dev/ttyACM0} \
-		--configure-tinysa --frequency 100.2e6 --span 10e6 --duration 3
-	python3 tools/bench/command_sweep.py
-	python3 tools/e2e/state_regression.py
+		--configure-tinysa --frequency 100.2e6 --span 10e6 --duration 3 \
+		--http-url http://127.0.0.1:$${WEBSA_PORT:-8080} --ws-url ws://127.0.0.1:$${WEBSA_PORT:-8080}
+	python3 tools/bench/command_sweep.py --http-url http://127.0.0.1:$${WEBSA_PORT:-8080}
+	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$${WEBSA_PORT:-8080}
 	@echo "OK: hardware smoke + command sweep + UI state regression"
 
 bench:    ## Performance baseline: compare against tools/bench/bench_baseline.json (service running)
-	@systemctl --user is-active --quiet "$${WEBSA_UNIT:-websad}" || ./run.sh
-	python3 tools/bench/bench.py --check tools/bench/bench_baseline.json
+	@./status.sh --quiet || ./run.sh
+	python3 tools/bench/bench.py --check tools/bench/bench_baseline.json \
+		--http-url http://127.0.0.1:$${WEBSA_PORT:-8080} --ws-url ws://127.0.0.1:$${WEBSA_PORT:-8080}
 
 bench-record:  ## Re-record the performance baseline on this host
-	python3 tools/bench/bench.py --duration 4 --write-baseline tools/bench/bench_baseline.json
+	python3 tools/bench/bench.py --duration 4 --write-baseline tools/bench/bench_baseline.json \
+		--http-url http://127.0.0.1:$${WEBSA_PORT:-8080} --ws-url ws://127.0.0.1:$${WEBSA_PORT:-8080}
 
 ##@ E2E
 
@@ -122,14 +125,10 @@ e2e-fake: native  ## UI smoke against the native fixture service; production rem
 	@bash -eu -o pipefail -c '\
 	WEBSA_FAKE_PORT=$${WEBSA_FAKE_PORT:-8099}; \
 	export WEBSA_PORT=$$WEBSA_FAKE_PORT; \
-	env -u WEBSA_RUST_IQS_SHIM WEBSA_HOST=127.0.0.1 setsid nohup backend/target/release/websad > /tmp/websa-fake.log 2>&1 < /dev/null & \
-	fake_pid=$$!; echo $$fake_pid > /tmp/websa-fake.pid; \
-	cleanup() { kill -TERM -- -$$fake_pid 2>/dev/null || kill "$$fake_pid" 2>/dev/null || true; rm -f /tmp/websa-fake.pid; }; \
+	export WEBSA_INSTANCE=websad-e2e; \
+	cleanup() { ./stop.sh; }; \
+	./run.sh --fake --host 127.0.0.1; \
 	trap cleanup EXIT; \
-	ok=0; \
-	for i in $$(seq 1 25); do sleep 1; \
-		curl -sf -o /dev/null http://127.0.0.1:$$WEBSA_FAKE_PORT/api/state && { ok=1; break; }; done; \
-	if [ $$ok -ne 1 ]; then echo "FAIL: fake backend did not become ready" >&2; tail -5 /tmp/websa-fake.log >&2; exit 1; fi; \
 	python3 tools/e2e/ui_smoke.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT; \
 	python3 tools/e2e/state_regression.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT; \
 	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$$WEBSA_FAKE_PORT \
@@ -139,7 +138,7 @@ e2e-fake: native  ## UI smoke against the native fixture service; production rem
 VIEWPORT_JSON ?= /tmp/websa-viewport.json
 
 viewport-baseline:  ## Record current layout/geometry findings over attached outputs (VIEWPORT_JSON sets output)
-	@systemctl --user is-active --quiet "$${WEBSA_UNIT:-websad}" || ./run.sh
+	@./status.sh --quiet || ./run.sh
 	python3 tools/e2e/viewport_baseline.py --url http://127.0.0.1:$${WEBSA_PORT:-8080} \
 		--json "$(VIEWPORT_JSON)"
 

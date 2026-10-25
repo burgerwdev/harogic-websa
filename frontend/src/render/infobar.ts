@@ -4,7 +4,8 @@ import { formatBWHz } from '../core/fmt';
 import { t } from '../core/i18n';
 import { rbwMode, vbwMode, currentRBW, currentVBW } from '../ui/swpState';
 import { getDisplayRef } from '../ui/displayRef';
-import { displayUnit } from '../ui/displayState';
+import { displayOffset, displayUnit } from '../ui/displayState';
+import { effectiveRefLevel } from '../ui/refState';
 
 // SWT prefers the device's estimated minimum sweep time. Some SDK profiles report zero;
 // in that case show the publisher's measured step duration.
@@ -37,10 +38,20 @@ export function updateInfoBar() {
   // RTA mode: the SWT field shows the RTA analysis bandwidth -> label becomes "BW:"
   const swtLabel = document.querySelector('[data-i18n="swt"]');
   if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
-  // Reference level is the active mode's effective hardware value.
+  // Reference level is the compensated top of the displayed scale, independent of hardware gain.
   const ref = getDisplayRef();
   set('info-ref', ref.toFixed(1) + (displayUnit.get() === 'dB' ? ' dB' : ' dBm'));
-  set('info-scale', `${S.dbPerDiv} ${t('db_per_div')}`);
+  const hardwareRef = effectiveRefLevel.confirmedValue();
+  if (hardwareRef !== null) {
+    const detail = t('ref_hardware_detail', {
+      display: ref.toFixed(1), offset: displayOffset.get().toFixed(1), actual: hardwareRef.toFixed(1),
+    });
+    for (const id of ['info-ref', 'input-ref']) {
+      const element = document.getElementById(id);
+      if (element) element.title = detail;
+    }
+  }
+  set('info-scale', `${Number(S.dbPerDiv.toFixed(2))} ${t('db_per_div')}`);
   set('info-rbw', formatBWHz(currentRBW.get()) + (rbwMode.get() === 'auto' ? ' (auto)' : ''));
   set('info-vbw', vbwMode.get() === 'bypass' ? 'Bypass' : formatBWHz(currentVBW.get()));
   setSwt();

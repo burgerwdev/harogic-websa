@@ -8,16 +8,37 @@
  * class the manual clearing had before the loop existed. These tests hold the line without
  * needing to read the slot's private options: they watch the storage itself.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../core/wsSend', () => ({ send: vi.fn(), onCommandSent: vi.fn() }));
+vi.mock('../audio/sdrAudio', () => ({
+	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
+}));
 import { allParams, resetAll } from '../core/params';
-import { resetSdrState, sdrAmSync, sdrFilterByMode } from '../ui/sdrState';
+import * as S from '../core/store';
+import { send } from '../core/wsSend';
+import { updateStatus } from '../core/ws';
+import { presetAll } from '../ui/controls';
+import { resetGraphMode } from '../ui/graphMode';
+import { resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz } from '../ui/sdrState';
+import { resetTraceFamilyModes, SDR_DEFAULT_AVG, setTraceAverage, setTraceMode } from '../ui/traceOps';
+import { getView, isZoomed, setCapture, setView } from '../ui/spectrumViewport';
+import { commitRefLevel } from '../ui/panels/refAmp';
+import { getDisplayRef } from '../ui/displayRef';
+import { getY } from '../render/plot';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
 
 beforeEach(() => {
+	vi.useFakeTimers();
 	localStorage.clear();
 	resetAll('sdr');
+});
+
+afterEach(() => {
+	vi.clearAllTimers();
+	vi.useRealTimers();
+	document.body.replaceChildren();
 });
 
 describe('Preset clears the persisted SDR preferences', () => {
@@ -73,5 +94,62 @@ describe('Preset clears the persisted SDR preferences', () => {
 		expect(localStorage.getItem('web-sa-lang')).toBe('zh');
 		expect(localStorage.getItem('web-sa-rail')).toBe('collapsed');
 		expect(localStorage.getItem('web-sa-panel')).toBe('hidden');
+	});
+
+	it('accepts native SDR preset defaults without replaying old filters or changing raw Ref placement', () => {
+		resetGraphMode();
+		resetTraceFamilyModes();
+		sdrAudioOn.set(false);
+		S.setActiveTraceIdx(0);
+		document.body.innerHTML = '<input id="input-offset"><input id="input-sdr-center"><input id="input-sdr-listen">' +
+			'<select id="select-sdr-decimate"><option>16</option><option>64</option></select>' +
+			'<select id="select-trace-mode"><option>CLEAR_WRITE</option><option>AVERAGE</option><option>MAX_HOLD</option></select>' +
+			'<div id="trace-avg-row"><select id="select-trace-avg"><option>16</option><option>0</option></select></div>' +
+			'<span id="trace-avg-status"></span>';
+		// Native STATUS has sibling sdr and req.sdr objects; channel records use mode,
+		// while both SDR objects report demod. Effective capture geometry is in sdr.actual.
+		const status = (center: number, decimate: number, demod: string, if_bw: number) => {
+			const request = { center, listen: center, decimate, demod, if_bw, ref: 0, ref_set: false };
+			const span = 50e6 / decimate;
+			return { cmd: 'STATUS', mode: 'sdr', connected: true, center, span, ref: 0,
+				req: { swp: {}, rta: {}, sdr: request }, actual: {},
+				sdr: { ...request, actual: { start: center - span / 2, stop: center + span / 2 },
+					channels: [{ channel: 1, enabled: true, freq: center, mode: demod, if_bw,
+						am_sync: false, am_sync_generation: 0 }] } };
+		};
+		updateStatus(status(14.2e6, 64, 'cw', 900));
+		sdrFilterByMode.set({ cw: 900, am: 4500 });
+		setTraceMode('AVERAGE');
+		setTraceAverage(0);
+		S.rtaAvgN.fill(87);
+		S.rtaAvgSum.fill(new Float32Array([87]));
+		setCapture({ lo: 14e6, hi: 14.4e6 });
+		setView({ lo: 14.19e6, hi: 14.21e6 });
+		commitRefLevel(-80);
+		const oldY = getY(-65);
+		presetAll();
+		const preset = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		updateStatus({ ...status(1e9, 16, 'am', 6000), response_to: 'SET_PRESET', request_id: preset.request_id });
+		expect([sdrCenterHz.get(), sdrListenHz.get(), sdrDecimate.get(), sdrDemod.get(), sdrIfbw.get()])
+			.toEqual([1e9, 1e9, 16, 'am', 6000]);
+		expect(sdrFilterByMode.get()).toEqual({ am: 6000 });
+		expect(JSON.parse(localStorage.getItem('web-sa-sdr-filter-by-mode')!)).toEqual({ am: 6000 });
+		expect(localStorage.getItem('web-sa-sdr-demod')).toBe('am');
+		expect(localStorage.getItem('web-sa-sdr-ifbw')).toBe('6000');
+		expect(localStorage.getItem('web-sa-sdr-center')).toBe('1000000000');
+		expect((document.getElementById('input-sdr-center') as HTMLInputElement).value).toBe('1000.000000');
+		expect((document.getElementById('input-sdr-listen') as HTMLInputElement).value).toBe('1000.000000');
+		expect(S.traces[0].mode).toBe('AVERAGE');
+		expect(S.traces[0].avgTargetRta).toBe(SDR_DEFAULT_AVG);
+		expect(S.rtaAvgN).toEqual([0, 0, 0, 0]);
+		expect(S.rtaAvgSum).toEqual([null, null, null, null]);
+		expect((document.getElementById('select-trace-mode') as HTMLSelectElement).value).toBe('AVERAGE');
+		expect((document.getElementById('select-trace-avg') as HTMLSelectElement).value).toBe(String(SDR_DEFAULT_AVG));
+		expect(document.getElementById('trace-avg-row')!.style.display).toBe('');
+		expect(document.getElementById('trace-avg-status')!.textContent).toBe(String(SDR_DEFAULT_AVG));
+		expect(isZoomed()).toBe(false);
+		expect(getView()).toBeNull();
+		expect(getDisplayRef()).toBe(-80);
+		expect(getY(-65)).toBe(oldY);
 	});
 });

@@ -23,7 +23,10 @@ beforeEach(() => {
 	vi.resetModules();
 	vi.useFakeTimers();
 	localStorage.clear();
-	document.body.innerHTML = '<input id="input-offset"><button id="btn-mode-sdr"></button><button id="btn-mode-rta"></button>';
+	document.body.innerHTML = '<input id="input-offset"><button id="btn-mode-sdr"></button><button id="btn-mode-rta"></button>' +
+		'<select id="select-trace-mode"><option>CLEAR_WRITE</option><option>AVERAGE</option><option>MAX_HOLD</option><option>OFF</option></select>' +
+		'<div id="trace-avg-row"><select id="select-trace-avg"><option>16</option><option>64</option><option>0</option></select></div>' +
+		'<span id="trace-avg-status"></span><button id="btn-view-freeze"></button>';
 	vi.stubGlobal('WebSocket', class extends DisplaySocket {
 		constructor() { super(); socket = this; }
 	});
@@ -46,9 +49,13 @@ async function load() {
 }
 
 function status(mode: string, response: Record<string, unknown> = {}) {
-	return { cmd: 'STATUS', mode, connected: true, center: 1e9, span: 1e6, ref: 0,
-		req: { swp: {}, rta: {} }, actual: {}, sdr: { center: 1e9, decimate: 32,
-			listen: 1e9, demod: 'am', if_bw: 6000, ref: 0, ref_set: false }, ...response };
+	const sdr = { center: 1e9, decimate: 16, listen: 1e9, demod: 'am', if_bw: 6000,
+		ref: 0, ref_set: false };
+	return { cmd: 'STATUS', mode, connected: true, center: 1e9, span: 3.125e6, ref: 0,
+		auto_ref: { result: 'idle', target: null, pending: null, seq: 0, adjusting: false,
+			hardware_adjusting: false, last_peak: null, last_noise_floor: null },
+		req: { swp: {}, rta: {}, sdr: { ...sdr } }, actual: {}, sdr: { ...sdr,
+			actual: { start: 998437500, stop: 1001562500 } }, ...response };
 }
 
 function receive(payload: Record<string, unknown>) {
@@ -56,40 +63,129 @@ function receive(payload: Record<string, unknown>) {
 }
 
 describe('SDR entry and reload', () => {
-	it('fits a fresh entry after tuning commands, then explicit Auto supersedes a stored level', async () => {
+	it.each([0, 60])('fits a fresh entry with offset %s, then explicit Auto supersedes a stored level', async offset => {
 		const { controls, fit } = await load();
+		// Static imports would retain the previous module graph across vi.resetModules().
+		const { commitLevelOffset } = await import('../ui/panels/refAmp');
+		commitLevelOffset(offset);
 		receive(status('std'));
 		controls.setGraphMode('sdr');
 		receive(status('sdr'));
 		fit.maybeRequestSdrFit();
 		const entry = socket.sent.at(-1)!;
-		expect(entry).toMatchObject({ cmd: 'AUTO_SCALE', display_only: true });
+		expect(entry).toMatchObject({ cmd: 'AUTO_SCALE', display_only: true, current_ref: 0 });
 		receive(status('sdr', { response_to: 'AUTO_SCALE', request_id: entry.request_id,
 			auto_ref: { result: 'applied', target: -85, last_peak: -65, last_noise_floor: -115, seq: 1 } }));
 		const { getDisplayRef } = await import('../ui/displayRef');
-		expect(getDisplayRef()).toBe(-85);
+		expect(getDisplayRef()).toBe(-85 + offset);
 
 		fit.requestSdrEntryFit();
 		fit.noteSdrRefState({ ref: -45, ref_set: true });
+		expect(getDisplayRef()).toBe(-45 + offset);
 		const count = socket.sent.length;
 		fit.maybeRequestSdrFit();
 		expect(socket.sent).toHaveLength(count);
 		fit.autoScaleRequest();
 		const explicit = socket.sent.at(-1)!;
 		expect(explicit.display_only).toBeUndefined();
+		expect(explicit.current_ref).toBe(-45);
 		receive(status('sdr', { response_to: 'AUTO_SCALE', request_id: explicit.request_id,
 			auto_ref: { result: 'applied', target: -75, last_peak: -55, last_noise_floor: -105, seq: 2 } }));
-		expect(getDisplayRef()).toBe(-75);
-		expect(JSON.parse(document.getElementById('spectrum')!.dataset.sdrRefDbg ?? '{}')).toMatchObject({ seq: 2, result: 'applied', shown: -75, peak: -55 });
+		expect(getDisplayRef()).toBe(-75 + offset);
+		expect(JSON.parse(document.getElementById('spectrum')!.dataset.sdrRefDbg ?? '{}')).toMatchObject({ seq: 2, result: 'applied', shown: -75 + offset, peak: -55 });
+	});
+
+	it.each([-200, -160, 40, 100].flatMap(ref => [0, 60].map(offset => ({ ref, offset }))))(
+		'Preset preserves raw Ref $ref when resetting offset $offset, then fits SDR', async ({ ref, offset }) => {
+		const { controls, fit } = await load();
+		// These actions must share load()'s fresh module graph after vi.resetModules().
+		const { commitRefLevel, commitLevelOffset } = await import('../ui/panels/refAmp');
+		const { displayOffset } = await import('../ui/displayState');
+		const { getY, plotRect } = await import('../render/plot');
+		const { getDisplayRef, pendingDisplayRef } = await import('../ui/displayRef');
+		const S = await import('../core/store');
+		receive(status('sdr'));
+		commitLevelOffset(offset);
+		// The trace is above the raw -160 window and below the raw +40 window.
+		commitRefLevel(ref + offset);
+		expect(getDisplayRef()).toBe(ref + offset);
+		const markerY = getY(-65);
+		controls.presetAll();
+		const preset = socket.sent.at(-1)!;
+		// Backend preset() resets AutoRef to idle and increments its sequence. That
+		// STATUS is processed after applyPresetSuccess has armed the next-frame fit.
+		receive(status('sdr', { response_to: 'SET_PRESET', request_id: preset.request_id,
+			auto_ref: { result: 'idle', target: null, pending: null, seq: 2, adjusting: false,
+				hardware_adjusting: false, last_peak: null, last_noise_floor: null } }));
+		expect(displayOffset.get()).toBe(0);
+		expect(getDisplayRef()).toBe(ref);
+		expect(getY(-65)).toBeCloseTo(markerY, 6);
+		expect(pendingDisplayRef()).toBeNull();
+		fit.maybeRequestSdrFit();
+		const request = socket.sent.at(-1)!;
+		expect(request).toMatchObject({ cmd: 'AUTO_SCALE', display_only: true, current_ref: Math.max(-160, Math.min(40, ref)), range_db: 100 });
+		receive(status('sdr', { response_to: 'AUTO_SCALE', request_id: request.request_id,
+			auto_ref: { result: 'adjusting', target: null, pending: null, seq: 3, adjusting: true,
+				hardware_adjusting: false, last_peak: null, last_noise_floor: null } }));
+		// advance_auto first calculates this display-only target, then a fresh clean
+		// observation confirms it. Hardware SDR ref stays at the preset's 0 dBm.
+		receive(status('sdr', { auto_ref: { result: 'adjusting', target: null, pending: -30,
+			seq: 3, adjusting: true, hardware_adjusting: false, last_peak: -65, last_noise_floor: -115 } }));
+		expect(getDisplayRef()).toBe(ref);
+		const complete = status('sdr', { auto_ref: { result: 'applied', target: -30, pending: null,
+			seq: 4, adjusting: false, hardware_adjusting: false, last_peak: -65, last_noise_floor: -115 } });
+		receive(complete);
+		expect(getDisplayRef()).toBe(-30);
+		expect(-65).toBeLessThan(getDisplayRef());
+		expect(-115).toBeGreaterThan(getDisplayRef() - S.totalDivs * S.dbPerDiv);
+		const rect = plotRect();
+		expect(getY(-65)).toBeCloseTo(rect.y + rect.h * 0.35, 6);
+		expect(getY(-115)).toBeCloseTo(rect.y + rect.h * 0.85, 6);
+		vi.advanceTimersByTime(6000);
+		for (let frame = 0; frame < 3; frame++) {
+			receive(complete);
+			fit.maybeRequestSdrFit();
+		}
+		expect(getDisplayRef()).toBe(-30);
+		expect(fit.autoScaleBusy()).toBe(false);
+		expect(socket.sent.filter(command => command.cmd === 'AUTO_SCALE')).toHaveLength(1);
+		expect(socket.sent.filter(command => command.cmd === 'SET_REF')).toEqual([
+			{ cmd: 'SET_REF', mode: 'manual', ref: Math.max(-160, Math.min(40, ref)) },
+		]);
+		// Later manual intent owns the display again; a sticky fit cannot undo it.
+		commitRefLevel(-45);
+		receive(complete);
+		fit.maybeRequestSdrFit();
+		expect(getDisplayRef()).toBe(-45);
+		expect(socket.sent.filter(command => command.cmd === 'AUTO_SCALE')).toHaveLength(1);
 	});
 
 	it.each(['sdr', 'rta', 'std'])('keeps confirmed %s through Preset and a fresh websocket startup', async (mode) => {
 		const { controls } = await load();
 		receive(status(mode));
+		// Static imports would retain the module graph from before the simulated page reload.
+		const S = await import('../core/store');
+		const { setTraceMode, setTraceAverage, rememberTraceMode, SDR_DEFAULT_AVG } = await import('../ui/traceOps');
+		setTraceMode('MAX_HOLD');
+		rememberTraceMode(mode === 'sdr');
+		setTraceAverage(0);
+		S.rtaAvgN.fill(123);
+		S.rtaAvgSum.fill(new Float32Array([123]));
+		S.rtaDone.fill(true);
 		controls.presetAll();
 		const preset = socket.sent.at(-1)!;
 		receive(status(mode, { response_to: 'SET_PRESET', request_id: preset.request_id }));
 		expect(localStorage.getItem('web-sa-mode')).toBe(mode);
+		const expectedTraceMode = mode === 'sdr' ? 'AVERAGE' : 'CLEAR_WRITE';
+		expect(S.traces[0].mode).toBe(expectedTraceMode);
+		expect(S.traces[0].avgTargetRta).toBe(SDR_DEFAULT_AVG);
+		expect(S.rtaAvgN).toEqual([0, 0, 0, 0]);
+		expect(S.rtaAvgSum).toEqual([null, null, null, null]);
+		expect(S.rtaDone).toEqual([false, false, false, false]);
+		expect((document.getElementById('select-trace-mode') as HTMLSelectElement).value).toBe(expectedTraceMode);
+		expect((document.getElementById('select-trace-avg') as HTMLSelectElement).value).toBe(String(SDR_DEFAULT_AVG));
+		expect(document.getElementById('trace-avg-row')!.style.display).toBe(mode === 'sdr' ? '' : 'none');
+		expect(document.getElementById('trace-avg-status')!.textContent).toBe(mode === 'sdr' ? String(SDR_DEFAULT_AVG) : '');
 
 		// Module reload is the page boundary: onopen must select the same mode without an
 		// artificial storage seed, using the state that the acknowledged Preset left behind.
@@ -101,6 +197,11 @@ describe('SDR entry and reload', () => {
 		const { currentGraphMode } = await import('../ui/graphMode');
 		expect(currentGraphMode()).toBe(mode);
 		expect(document.body.dataset.deviceMode).toBe(mode);
+		const reloadedStore = await import('../core/store');
+		expect(reloadedStore.traces[0].mode).toBe(expectedTraceMode);
+		expect(reloadedStore.traces[0].avgTargetRta).toBe(SDR_DEFAULT_AVG);
+		expect(reloadedStore.rtaAvgN).toEqual([0, 0, 0, 0]);
+		expect((document.getElementById('select-trace-mode') as HTMLSelectElement).value).toBe(expectedTraceMode);
 	});
 
 	it.each([false, true])('restores the saved AM detector preference (%s) on SDR entry after reload', async (enabled) => {

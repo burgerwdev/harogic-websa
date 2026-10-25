@@ -11,9 +11,8 @@
  *     mode   - display defaults (normalise sets 0, un-normalise restores the level)
  *     preset - global reset
  *
- *   1. matching report - a user Ref request is acknowledged only by the stored SDR hardware
- *                       request matching the newest intent; effective IQS Ref may be clamped.
- *   2. supersede        - a newer request replaces the previous one and its timeout.
+ *   1. matching report - the clamped raw hardware request acknowledges the local display target.
+ *   2. supersede        - a newer hardware request replaces the previous one and its timeout.
  *   3. timeout notify   - an unconfirmed request restores the previous display and reports timeout.
  *   4. divergence shown - `displayRefDiverges()` exposes requested-vs-reported for the UI.
  *
@@ -22,14 +21,14 @@
  */
 import { createParam } from '../core/params';
 import { currentGraphMode } from './graphMode';
+import { displayOffset } from './displayState';
 
-export type DisplayRefSource = 'auto' | 'user' | 'sdr' | 'mode' | 'preset';
+export type DisplayRefSource = 'auto' | 'user' | 'sdr' | 'mode' | 'normalize' | 'preset';
 
 /** How long a user Ref request may stay unacknowledged before we say so. */
 export const DISPLAY_REF_TTL_MS = 5000;
 
-// Client-owned: nothing confirms a *display* scale (the backend reports the hardware Ref,
-// which is a different value in SDR), so the value must not expire.
+// Client-owned: hardware reports acknowledge a request, never replace a manual viewport.
 const value = createParam<number>('display.ref', {
 	fallback: 0,
 	scope: 'display',
@@ -40,7 +39,8 @@ const value = createParam<number>('display.ref', {
 /** Last confirmed hardware request, independently of the IQS effective Ref. */
 let reported: number | null = null;
 let requestSeq = 0;
-let pending: { id: number; want: number; rollback: number; timer: number } | null = null;
+let owner: { raw: number } | null = null;
+let pending: { id: number; want: number; rollback: number; rollbackOwner: { raw: number } | null; timer: number } | null = null;
 
 export type DisplayRefTimeoutHandler = (want: number, reported: number | null) => void;
 let timeoutHandler: DisplayRefTimeoutHandler | null = null;
@@ -49,8 +49,51 @@ export function setDisplayRefTimeoutHandler(fn: DisplayRefTimeoutHandler | null)
 	timeoutHandler = fn;
 }
 
+export type DisplayRefShiftHandler = (delta: number) => void;
+let shiftHandler: DisplayRefShiftHandler | null = null;
+
+/** Axis gestures subscribe so offset edits keep a held or pending drag on the same raw window. */
+export function setDisplayRefShiftHandler(fn: DisplayRefShiftHandler | null): void {
+	shiftHandler = fn;
+}
+
 export function getDisplayRef(): number {
 	return value.get();
+}
+
+/** Absolute display references include external gain/loss; hardware references never do. */
+export function rawToDisplayRef(raw: number): number {
+	return raw + displayOffset.get();
+}
+
+export function displayToRawRef(display: number): number {
+	return display - displayOffset.get();
+}
+
+/** Local viewport bounds in raw-equivalent dBm; Offset shifts the absolute display once. */
+export function displayRefMin(): number { return rawToDisplayRef(-200); }
+export function displayRefMax(): number { return rawToDisplayRef(100); }
+
+/** The verified SET_REF protocol bounds remain independent of the viewport. */
+export function hardwareRefForDisplay(display: number): number {
+	return Math.max(-160, Math.min(40, displayToRawRef(display)));
+}
+
+/** Same clamped hardware intent can serve multiple viewport moves, including while pending. */
+export function needsHardwareRef(display: number): boolean {
+	const current = pending?.want ?? owner?.raw ?? reported;
+	return current === null || Math.abs(hardwareRefForDisplay(display) - current) >= 0.05;
+}
+
+export function clampDisplayRef(display: number): number {
+	return Math.max(displayRefMin(), Math.min(displayRefMax(), display));
+}
+
+/** Offset edits preserve hardware intent, the rollback window, and a subscribed axis gesture. */
+export function shiftDisplayRef(delta: number): void {
+	value.set(value.get() + delta);
+	if (pending) pending.rollback += delta;
+	shiftHandler?.(delta);
 }
 
 /** The device-reported level, for diagnostics and the divergence test. */
@@ -64,9 +107,9 @@ export function displayRefDiverges(): boolean {
 	return reported === null || Math.abs(pending.want - reported) >= 0.05;
 }
 
-/** The user request still waiting for a matching report, if any. */
+/** Compensated user request still waiting for a matching raw hardware report, if any. */
 export function pendingDisplayRef(): number | null {
-	return pending ? pending.want : null;
+	return pending ? value.get() : null;
 }
 
 /** Explicit Auto supersedes hardware intent without restoring the previous display. */
@@ -77,10 +120,22 @@ export function cancelDisplayRefRequest(): void {
 	}
 }
 
+/** Auto, Preset and confirmed mode changes relinquish the manual viewport. */
+export function releaseDisplayRef(): void {
+	cancelDisplayRefRequest();
+	owner = null;
+}
+
+export function resetDisplayRefMode(): void {
+	releaseDisplayRef();
+	reported = null;
+}
+
 /** Rejected hardware intent restores the display that was confirmed before the edit. */
 export function rejectDisplayRefRequest(): boolean {
 	if (!pending) return false;
 	const rollback = pending.rollback;
+	owner = pending.rollbackOwner;
 	cancelDisplayRefRequest();
 	value.set(rollback);
 	return true;
@@ -91,19 +146,28 @@ export function rejectDisplayRefRequest(): boolean {
  * refused write is a normal outcome: a higher-priority owner is active).
  */
 export function setDisplayRef(source: DisplayRefSource, v: number): boolean {
-	if (source === 'mode' && currentGraphMode() === 'sdr') return false;
+	if (source === 'normalize' && currentGraphMode() === 'sdr') return false;
+	if (source === 'mode' && (currentGraphMode() === 'sdr' || owner !== null)) return false;
 	if (source === 'user') {
-		const rollback = pending?.rollback ?? value.get();
-		cancelDisplayRefRequest();
-		const id = ++requestSeq;
-		const timer = window.setTimeout(() => {
-			if (pending === null || pending.id !== id) return;
-			rejectDisplayRefRequest();
-			timeoutHandler?.(v, reported);
-		}, DISPLAY_REF_TTL_MS);
-		pending = { id, want: v, rollback, timer };
+		const raw = hardwareRefForDisplay(v);
+		if (needsHardwareRef(v)) {
+			const rollback = pending?.rollback ?? value.get();
+			const rollbackOwner = pending ? pending.rollbackOwner : owner;
+			cancelDisplayRefRequest();
+			const id = ++requestSeq;
+			const timer = window.setTimeout(() => {
+				if (pending === null || pending.id !== id) return;
+				const want = value.get();
+				rejectDisplayRefRequest();
+				timeoutHandler?.(want, reported);
+			}, DISPLAY_REF_TTL_MS);
+			pending = { id, want: raw, rollback, rollbackOwner, timer };
+		}
+		owner = { raw };
+	} else if (source !== 'mode') {
+		releaseDisplayRef();
+		if (source === 'preset') reported = null;
 	}
-	else if (source !== 'mode') cancelDisplayRefRequest();
 	value.set(v);
 	return true;
 }

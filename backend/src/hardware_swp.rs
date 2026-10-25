@@ -111,7 +111,7 @@ pub struct SdkFailure {
     pub message: String,
 }
 
-/// Vendor warnings (htra_api.h): the frame is missing, the handle stays usable.
+/// Vendor warnings (htra_api.h): the handle stays usable; IF overflow may include a frame.
 pub const WARN_STATUS: [i32; 9] = [-10, -11, -12, -14, -15, -16, -17, -18, -19];
 /// Vendor bus errors: the handle is stale; never pass it to Device_Close.
 pub const LINK_LOST_STATUS: [i32; 2] = [-8, -9];
@@ -401,6 +401,8 @@ pub struct SwpFrame {
     /// NaN marks bins outside the swept range (the device writes exactly 0.0 dBm there).
     pub power: Vec<f32>,
     pub refclk_ppm: f64,
+    /// Vendor acquisition warning accompanying this valid trace (0 for a clean sweep).
+    pub warning: i32,
 }
 
 /// Device power-on SWP profile (`SWP_ProfileDeInit`), in WebSA wire names.
@@ -735,8 +737,8 @@ impl Device {
 
     fn next(&mut self) -> Result<SwpFrame, SdkFailure> {
         let capacity = self.geometry.points as usize;
-        let mut freq = vec![0.0; capacity];
-        let mut power = vec![0.0f32; capacity];
+        let mut freq = vec![f64::NAN; capacity];
+        let mut power = vec![f32::INFINITY; capacity];
         let (mut written, mut refclk_ppm) = (0, 0.0);
         let status = unsafe {
             (self.next)(
@@ -748,7 +750,7 @@ impl Device {
                 &mut refclk_ppm,
             )
         };
-        if status != 0 {
+        if status != 0 && status != -12 {
             if !WARN_STATUS.contains(&status) {
                 unsafe { let _ = invalidate_sdk_session(self.library, self.handle, LINK_LOST_STATUS.contains(&status)); }
             }
@@ -762,16 +764,27 @@ impl Device {
         }
         if written < 2 || written as usize > capacity {
             return Err(SdkFailure {
-                status: 0,
-                message: format!("SDK SWP next points={written}"),
+                status,
+                message: format!("SDK SWP next status={status} points={written}"),
             });
         }
         freq.truncate(written as usize);
         power.truncate(written as usize);
+        // The shim intentionally marks zero-power coverage gaps with NaN. Infinite
+        // power and non-finite frequencies are never valid spectrum coordinates.
+        if freq.iter().any(|value| !value.is_finite())
+            || power.iter().any(|value| value.is_infinite())
+        {
+            return Err(SdkFailure {
+                status,
+                message: format!("SDK SWP next status={status} invalid trace"),
+            });
+        }
         Ok(SwpFrame {
             freq,
             power,
             refclk_ppm,
+            warning: status,
         })
     }
 

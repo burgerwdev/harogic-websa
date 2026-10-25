@@ -1,7 +1,7 @@
 // Trace processing: explicit gap fill, normalization and accumulation.
 import * as S from '../core/store';
 import { refLevel } from '../ui/refState';
-import { setDisplayRef } from '../ui/displayRef';
+import { rawToDisplayRef, setDisplayRef } from '../ui/displayRef';
 import { accumulateTrace, applyMode } from './accumulator';
 import { updateNormalizeStatusUI } from './normalizeStatus';
 import { updateTrackingMarkers } from './markerTracking';
@@ -61,9 +61,8 @@ export function invalidateAllTraces() {
     t.reference = null; t.isNormalized = false;
   });
   displayUnit.set('dBm');
-  // A display default; in SDR the SDR session owns the scale, so this is a refused write
-  // there (see ui/displayRef.ts) - it must not clobber a manual SDR Ref.
-  setDisplayRef('mode', refLevel.get());
+  // Trace invalidation cannot replace a manually owned viewport or the SDR display scale.
+  setDisplayRef('mode', rawToDisplayRef(refLevel.get()));
   updateNormalizeStatusUI();
 }
 

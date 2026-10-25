@@ -15,7 +15,7 @@ import { requestRender } from '../render/redraw';
 import { getDisplayPowers } from '../dsp/peaks';
 
 import { normRefWinUser } from './measurePrefs';
-import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv, syncFreezeBtn, syncAvgUI, rememberTraceMode, applyTraceFamilyMode, resetTraceFamilyModes } from './traceOps';
+import { switchTraceTab, toggleFreeze, setTraceMode, clearRtaTrace, setTraceAverage, exportActiveTraceCsv, exportPeakListCsv, syncFreezeBtn, syncAvgUI, rememberTraceMode, applyTraceFamilyMode, resetTraceFamilyModes, SDR_DEFAULT_AVG } from './traceOps';
 import { exportSpectrumPng } from './exportImage';
 import { normalizeActiveTrace, resetActiveTraceNormalize, updateNormalizeStatusUI, setNormalizeReferenceWindow } from '../dsp/normalize';
 import { resetTraceAccum } from '../dsp/traces';
@@ -29,7 +29,7 @@ import { measPnmApply, repaintPnm } from '../meas/phaseNoise';
 import { t } from '../core/i18n';
 import { getUiScale } from '../core/uiScale';
 import { resetTrigger, syncTriggerMode } from './triggerState';
-import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, confirmSdrAxisWindow, resetAxisPreview, type Axis } from './axisDrag';
+import { axisBandAt, axisDragging, axisDragEnd, axisDragMove, axisDragStart, axisWheel, confirmSdrAxisWindow, rejectAxisRef, resetAxisPreview, type Axis } from './axisDrag';
 import { isSpectrumZoomOn, syncSpectrumZoomUi } from './spectrumZoomUi';
 import {
 	cancelMarqueePreview,
@@ -57,10 +57,11 @@ import { resetLimits } from './limits';
 import { applyCenterSpan, applyFullSpan, applyStartStop, markFrequencyDirty, resetFrequencyEditors, resetSpanStepAuto, stepSwpSpan, syncSwpSpanStep, updateCustomSpanStep } from './panels/frequency';
 import { closeDeviceDetail, fillDeviceDetail } from './panels/deviceInfo';
 import { applyPoints, applyRBW, applyVBW, markResolutionDirty, resetResolutionEditors, syncResolutionAvailability, setFrameDetector, setPointsStrategy, setSpurMode, setTraceAlign, setWindow } from './panels/resolution';
-import { applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade } from './panels/rta';
+import { applyRta, clearRtaAccum, resetRtaDensityCfg, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaDensContrast, setRtaDensWidth, setRtaDensLayers, setRtaDensSource, setRtaHalflife, toggleDensitySettings } from './panels/rta';
+import { resetAmpIntents } from './ampState';
 import { activeMarkerNextPeakLeft, activeMarkerNextPeakRight, activeMarkerNextValleyLeft, activeMarkerNextValleyRight, activeMarkerPeak, activeMarkerValley, markerToCenter, placeMarkerFromX, selectMarker, syncMarkerTrackingToggle, toggleActiveMarkerTracking, toggleMarkersAll, updateMarkersAllBtn } from './panels/markers';
-import {  adjustRefLevel, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
-  syncSdrRefUI, syncLevelAvailability, resetRefClockIntent, toggleGapFill, toggleRefClkOut,
+import { adjustRefLevel, commitLevelOffset, setAmp, setOffset, setRefAuto, setRefClock, setRefLevel, setScale,
+  syncRefUI, syncLevelAvailability, resetRefClockIntent, toggleGapFill, toggleRefClkOut,
 } from './panels/refAmp';
 import { resetWf, setSweepSpeed, syncSweepInput, bindSweepEditor, resetSweepEditor, setWfPaused, toggleWaterfall, toggleWfPause, initWfSplit, resetWfSplit } from './panels/waterfall';
 import { closeGnssDetail, fillGnssDetail } from './panels/gnss';
@@ -121,7 +122,8 @@ export function connectDevice() { send({ cmd: 'CONNECT' }); }
 // They apply the four disciplines (id-matched ack, supersede, timeout notice, visible
 // divergence); this module only translates them to the DOM.
 import { currentGraphMode, deviceMode, graphMode, graphModeDiverges, isGraphMode, measurementOwnsDevice, pendingGraphMode, requestGraphMode, confirmGraphMode, resetGraphMode, setGraphModeTimeoutHandler } from './graphMode';
-import { setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
+import { resetDisplayRefMode, setDisplayRef, setDisplayRefTimeoutHandler } from './displayRef';
+import { refLevel } from './refState';
 
 let initialSdrNr: { on: boolean; strength: number; algorithm: NrAlgo; attenuation: number } | null = {
   on: sdrNr.get(), strength: sdrNrStrength.get(), algorithm: sdrNrAlgo.get(), attenuation: sdrNrAtten.get(),
@@ -170,6 +172,7 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 export function disconnectSdrSession(): void {
   clearAmSyncRequest();
   sdrAmSync.reset();
+  resetSdrAgcRequest();
   clearReceiverEdit();
   sdrDemod.reset();
   sdrIfbw.reset();
@@ -217,7 +220,9 @@ setDisplayRefTimeoutHandler(() => {
   // Same place as the Auto Scale outcome: it is a message about the reference the user is
   // looking at, and the input already carries the local "unconfirmed" outline (ref-pending).
   postRefNotice(t('ref_switch_timeout'), 5000);
-  syncSdrRefUI(true);
+  refLevel.reset();
+  rejectAxisRef();
+  syncRefUI(true);
   requestRender();
 });
 
@@ -326,6 +331,7 @@ export function syncGraphModeStatus(mode: string) {
   const changed = confirmGraphMode(mode);
   syncModeButtons();
   if (!changed) { applyMeasUI(); return; }
+  resetDisplayRefMode();
   resetTrigger();
   const isRtaLike = mode === 'rta' || mode === 'sdr';
   const isSdr = mode === 'sdr';
@@ -431,7 +437,8 @@ export function syncGraphModeStatus(mode: string) {
   // The density map (Persist/Grain) is drawn from the non-real-time frames only: RTA and SDR own it,
   // and in the swept mode there is nothing to accumulate, so the row is disabled there instead of
   // sitting there doing nothing (reported: "does trace persist not work in SWP?").
-  for (const id of ['select-rta-fade', 'select-rta-bins']) {
+  for (const id of ['select-rta-fade', 'select-rta-bins', 'select-rta-dens-source',
+    'select-rta-dens-layers', 'select-rta-dens-contrast', 'select-rta-dens-width']) {
     setDisabled(id, mode === 'std');
   }
   const rtaFrequency = document.getElementById('rta-freq-settings');
@@ -637,13 +644,41 @@ function sendSdrNr(): void {
          nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get() });
 }
 
-function toggleSdrAgc(el: HTMLElement) {
+let agcSerial = 0;
+let pendingAgc: { requestId: string; enabled: boolean; timer: number } | null = null;
+
+function renderSdrAgc(): void {
+  const button = document.getElementById('btn-sdr-agc');
+  if (!button) return;
+  const on = sdrAgc.get();
+  button.classList.toggle('active', on);
+  button.setAttribute('aria-pressed', String(on));
+  button.dataset.i18n = on ? 'agc_on' : 'agc_off';
+  button.textContent = t(on ? 'agc_on' : 'agc_off');
+}
+
+export function resetSdrAgcRequest(): void {
+  if (pendingAgc) window.clearTimeout(pendingAgc.timer);
+  pendingAgc = null;
+  sdrAgc.reset();
+  renderSdrAgc();
+}
+
+export function rejectSdrAgcRequest(responseTo?: string, requestId?: string | number): void {
+  if (responseTo === 'SET_SDR_CHANNEL' && pendingAgc && pendingAgc.requestId === requestId) resetSdrAgcRequest();
+}
+
+function toggleSdrAgc() {
   if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
-  const on = !sdrAgc.get();
-  sdrAgc.set(on);
-  el.classList.toggle('active', on);
-  el.textContent = on ? t('on') : t('off');
-  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, agc: on });
+  const enabled = !sdrAgc.get();
+  if (pendingAgc) window.clearTimeout(pendingAgc.timer);
+  sdrAgc.set(enabled);
+  const requestId = `sdr-agc-${++agcSerial}`;
+  pendingAgc = { requestId, enabled, timer: window.setTimeout(() => {
+    if (pendingAgc?.requestId === requestId) resetSdrAgcRequest();
+  }, 3000) };
+  renderSdrAgc();
+  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, agc: enabled, request_id: requestId });
 }
 
 // Band presets (centre, capture bandwidth, demod, IF bandwidth)
@@ -839,7 +874,7 @@ export function syncSdrPanel(s: any) {
     clearPassbandView();
     sdrFilterLimits.confirm(null);
     clearReceiverEdit();
-    cancelSdrCanvasGesture();
+    resetSdrAgcRequest();
     cancelSdrFilterEdit();
     sdrDemod.reset();
     sdrIfbw.reset();
@@ -915,7 +950,14 @@ export function syncSdrPanel(s: any) {
   if (receiver.deemph_us != null) sdrDeemph.confirm(Number(receiver.deemph_us));
   if (receiver.volume != null) sdrVolume.confirm(Number(receiver.volume));
   if (receiver.squelch != null) sdrSquelch.confirm(Number(receiver.squelch));
-  if (receiver.agc != null) sdrAgc.confirm(!!receiver.agc);
+  const agcReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-agc-');
+  if (typeof receiver.agc === 'boolean' && (!agcReply || s.request_id === pendingAgc?.requestId)) {
+    sdrAgc.confirm(receiver.agc);
+    if (pendingAgc) {
+      if (s.response_to === 'SET_SDR_CHANNEL' && s.request_id === pendingAgc.requestId) resetSdrAgcRequest();
+      else sdrAgc.set(pendingAgc.enabled);
+    }
+  }
   if (receiver.nr != null) sdrNr.confirm(!!receiver.nr);
   if (receiver.nr_strength != null) sdrNrStrength.confirm(Number(receiver.nr_strength));
   if (receiver.nr_algorithm != null) sdrNrAlgo.confirm(receiver.nr_algorithm === 'dfn' ? 'dfn' : 'wiener');
@@ -930,11 +972,7 @@ export function syncSdrPanel(s: any) {
   // preference restored from storage cannot disagree with the form).
   sdrSet('input-sdr-volume', String(sdrVolume.get()));
   // Squelch and its dBm readout are rendered by renderSdrState, including fractional dB.
-  const agc = document.getElementById('btn-sdr-agc');
-  if (agc) {
-    agc.textContent = sdrAgc.get() ? t('on') : t('off');
-    agc.classList.toggle('active', sdrAgc.get());
-  }
+  renderSdrAgc();
   const lvl = document.getElementById('cur-sdr-level');
   if (lvl) {
     const value = primary ? primary.level_dbfs : sdr.level_dbfs;
@@ -944,7 +982,7 @@ export function syncSdrPanel(s: any) {
   }
   syncSdrButtons();
   syncSdrAudioButton();
-  syncSdrRefUI();
+  syncRefUI();
   setDecodeChannelMode(1, primary && !primary.enabled ? '' : sdrDemod.get());
 }
 // 仅 ×N(6)/Manual(7) 需要输入框+Set 按钮; 其余固定档隐藏
@@ -955,6 +993,7 @@ let pendingPreset: { requestId: string; timer: number } | null = null;
 
 export function presetAll() {
   if (pendingPreset) window.clearTimeout(pendingPreset.timer);
+  resetAxisPreview();
   clearPassbandView();
   sdrFilterLimits.confirm(null);
   clearReceiverEdit();
@@ -984,31 +1023,34 @@ export function syncPresetStatus(responseTo?: string, requestId?: string | numbe
 }
 
 function applyPresetSuccess() {
+  resetAxisPreview();
   resetFrequencyEditors();
   resetResolutionEditors();
   resetSweepEditor();
   resetRefClockIntent();
+  resetAmpIntents();
   resetAll('swp');
   resetAll('rta');
+  resetAll('ref');
   resetTraceFamilyModes();
+  setScale(10);
   resetTrigger();
   exitMeasModePub();
   S.setMeasOn(false);
   const b = document.getElementById('btn-meas-onoff');
   if (b) b.textContent = t('off');
   setMeasButtons(false);
-  // SWP/RTA: the display follows the device reference that the preset restores. In SDR the client
-  // owns the display scale. A write of the factory 0 dBm put the whole panadapter under the bottom
-  // edge, and nothing placed it again (reported). The SDR path keeps the scale and arms the
-  // one-shot fit below.
+  // SDR keeps the raw display window until the one-shot fit returns; compensation resets now.
+  commitLevelOffset(0);
   if (currentGraphMode() !== 'sdr') setDisplayRef('preset', 0);
-  displayOffset.set(0);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of) of.value = '0';
+  const presetTraceMode = currentGraphMode() === 'sdr' ? 'AVERAGE' : 'CLEAR_WRITE';
   S.traces.forEach((t, i) => {
-    t.mode = i === 0 ? 'CLEAR_WRITE' : 'OFF'; t.reference = null; t.isNormalized = false;
-    t.avgSum = null; t.avgCount = 0; t.avgTarget = 16; t.avgTargetRta = 16; t.prevMode = undefined; t.done = false;
+    t.mode = i === 0 ? presetTraceMode : 'OFF'; t.reference = null; t.isNormalized = false;
+    t.avgSum = null; t.avgCount = 0; t.avgTarget = 16; t.avgTargetRta = SDR_DEFAULT_AVG; t.prevMode = undefined; t.done = false;
   });
+  clearRtaAccum();
   // The trace panel must follow the state back to the factory defaults (reported: after a
   // Preset the panel still showed the last trace's Mode/Avg/Freeze and the Smooth/RefWin
   // selects kept their old values, while the traces themselves were already reset - the
@@ -1018,7 +1060,7 @@ function applyPresetSuccess() {
   S.setActiveTraceIdx(0);
   document.querySelectorAll('.trace-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
   const modeSel = document.getElementById('select-trace-mode') as HTMLSelectElement | null;
-  if (modeSel) modeSel.value = 'CLEAR_WRITE';
+  if (modeSel) modeSel.value = presetTraceMode;
   syncFreezeBtn();
   syncAvgUI();
   updateNormalizeStatusUI();
@@ -1049,14 +1091,13 @@ function applyPresetSuccess() {
     if (vbwSel) vbwSel.value = 'equal';
     const sm = document.getElementById('select-sweep-mode') as HTMLSelectElement;
     if (sm) { sm.value = '2'; syncSweepInput(); }
-    clearRtaAccum();
   }
   // Preset resets acquisition settings while keeping the active mode. Preserve its saved
   // confirmation too: a same-mode STATUS does not repeat the mode-change persistence above.
   try {
-    ['web-sa-sdr-audio', 'web-sa-sdr-ref-auto',
-     'rta-fade', 'rta-bins'].forEach((k) => localStorage.removeItem(k));
+    ['web-sa-sdr-audio', 'web-sa-sdr-ref-auto'].forEach((k) => localStorage.removeItem(k));
   } catch { /* ignore */ }
+  resetRtaDensityCfg();
   resetLimits();
   S.resetWaterfall();
   setWfPaused(false);
@@ -1082,6 +1123,7 @@ function applyPresetSuccess() {
   initialSstvMode = null;
   initialSdrAmSync = null;
   clearAmSyncRequest();
+  resetSdrAgcRequest();
   resetSdrState();
   sdrAudioOn.set(audioWasOn);
   renderSdrState();
@@ -1176,7 +1218,7 @@ export function bindActions() {
     'sdr-tune-up': () => sdrTuneBy(currentSdrStepHz()),
     'sdr-to-center': () => sdrToCenter(),
     'set-sdr-demod': () => applySdrDemod(),
-    'toggle-sdr-agc': (el) => toggleSdrAgc(el),
+    'toggle-sdr-agc': () => toggleSdrAgc(),
     'toggle-sdr-nr': () => toggleSdrNr(),
     'toggle-decode-window': () => toggleDecodeWindow(),
     'set-sdr-nr-strength': (el) => setSdrNrStrength(Number((el as HTMLSelectElement).value)),
@@ -1186,8 +1228,13 @@ export function bindActions() {
     'rta-span-down': () => rtaSpanStep(1),
     'rta-span-up': () => rtaSpanStep(-1),
     'rta-span-full': () => rtaSpanFull(),
-    'set-rta-fade': (el) => setRtaFade(parseFloat((el as HTMLSelectElement).value)),
-    'set-rta-bins': (el) => { setRtaBins(parseInt((el as HTMLSelectElement).value) || 128); },
+    'set-rta-fade': (el) => setRtaHalflife(parseFloat((el as HTMLSelectElement).value)),
+    'set-rta-bins': (el) => setRtaBins(parseInt((el as HTMLSelectElement).value) || 128),
+    'set-rta-dens-source': (el) => setRtaDensSource((el as HTMLSelectElement).value === 'live' ? 'live' : 'trace'),
+    'set-rta-dens-layers': (el) => setRtaDensLayers((el as HTMLSelectElement).value as 'both' | 'density' | 'trace'),
+    'set-rta-dens-contrast': (el) => setRtaDensContrast(parseFloat((el as HTMLSelectElement).value)),
+    'set-rta-dens-width': (el) => setRtaDensWidth(Number((el as HTMLSelectElement).value)),
+    'toggle-density-settings': () => toggleDensitySettings(),
     'wf-pause': () => toggleWfPause(),
     'wf-reset': () => resetWf(),
     'preset': () => presetAll(),
@@ -1303,7 +1350,7 @@ export function bindActions() {
   if (sdrCenterEl) sdrCenterEl.addEventListener('change', () => applySdr());
   // Persisted SDR preferences are restored by the slots themselves (core/params.ts).
   syncSdrAudioButton();
-  syncSdrRefUI();
+  syncRefUI();
   const sdrCenter = document.getElementById('input-sdr-center') as HTMLInputElement | null;
   if (sdrCenter) sdrCenter.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Enter') applySdr();
@@ -1521,6 +1568,7 @@ export function bindCanvas() {
         syncSpectrumZoomUi();
       }
       if (axisDragStart(band, x, y, pr)) {
+        canvas.setPointerCapture?.(e.pointerId);
         canvas.style.cursor = 'grabbing';
         e.preventDefault();
         return;
@@ -1570,6 +1618,7 @@ export function bindCanvas() {
     }
     if (axisDragging()) {
       axisDragMove(canvasX(e, canvas), canvasY(e, canvas));
+      requestRender();
       return;
     }
     if (zoomMarquee) {
@@ -1631,6 +1680,8 @@ export function bindCanvas() {
     }
     if (axisDragging()) {
       axisDragEnd();
+      if (canvas.hasPointerCapture?.(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      requestRender();
       canvas.style.cursor = axisBandCursor(axisBandFor(canvasX(e, canvas), canvasY(e, canvas),
         plotRectPub()));
       return;
@@ -1839,7 +1890,7 @@ function sdrNudgeVolume(dv: number) {
 }
 import { plotRect as plotRectPub, nearestIdxAtX } from '../render/plot';
 import { exitMeasMode as exitMeasModePub } from './measure';
-import { displayOffset, smoothBins } from './displayState';
+import { smoothBins } from './displayState';
 import { peakListVisible } from './measurePrefs';
 import { spanStepAuto } from './swpState';
 
@@ -1852,7 +1903,7 @@ export {
 } from './panels/frequency';
 export { applyPoints, applyRBW, applyVBW, setFrameDetector, setPointsStrategy, setSpurMode, setTraceAlign, setWindow } from './panels/resolution';
 export {
-  applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaFade,
+  applyRta, clearRtaAccum, restoreRtaDensityCfg, rtaSpanFull, rtaSpanStep, setRtaBins, setRtaDensSource, setRtaHalflife,
 } from './panels/rta';
 export {
   activeMarkerPeak, activeMarkerValley, autoTrackMarker, markerToCenter, placeMarkerFromX,

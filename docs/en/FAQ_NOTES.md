@@ -10,24 +10,24 @@ make native sdk-shim
 ./run.sh
 ```
 
-Root `./run.sh` starts the `websad` systemd user service with hardware on `127.0.0.1:8080`. Missing hardware prerequisites are errors. `WEBSA_FAKE=1 ./run.sh` explicitly selects fixture input. Direct invocation of the `websad` binary defaults to port 8099 and fixture input when no SDK shim is specified; this differs from the root launcher.
+Root `./run.sh` starts a detached `websad` background process with hardware on `127.0.0.1:8080`, without systemd. Missing hardware prerequisites are errors. `WEBSA_FAKE=1 ./run.sh` explicitly selects fixture input. Direct invocation of the `websad` binary defaults to port 8099 and fixture input when no SDK shim is specified; this differs from the root launcher.
 
 | Launcher variable | Default | Purpose |
 |---|---|---|
 | `WEBSA_HOST` | `127.0.0.1` | Listen address |
 | `WEBSA_PORT` | `8080` | Root launcher port |
-| `WEBSA_UNIT` | `websad` | User service unit |
+| `WEBSA_INSTANCE` | `websad` | Checkout-scoped process instance (`--instance NAME`) |
 | `WEBSA_FAKE` | `0` | Explicit fixture selection (`1`) |
 | `WEBSA_RUST_IQS_SHIM` | `~/.local/share/harogic-websa/shims/libwebsa_san90_sdk_session.so` | Hardware shim |
 | `WEBSA_STATIC` | Repository `frontend` | Directory containing `dist/index.html` |
 
-`WEBSA_HOST=0.0.0.0 ./run.sh` enables LAN access at `http://device-address:8080/`. Product endpoints do not require authentication. Use `./status.sh` and `journalctl --user -u websad.service -n 100` to inspect the service; substitute the configured unit if overridden. `./stop.sh` stops the same unit.
+`WEBSA_HOST=0.0.0.0 ./run.sh` enables LAN access at `http://device-address:8080/`. Product endpoints do not require authentication. `./status.sh` reads the saved host/port and prints the process, log path and HTTP state; use `--instance NAME` for a named instance. `./stop.sh` stops only that validated instance and succeeds when it is already stopped. State and logs live under `$XDG_RUNTIME_DIR/harogic-websa`, or `${XDG_STATE_HOME:-$HOME/.local/state}/harogic-websa` when no owned runtime directory is available.
 
 ## SDK Ownership and Recovery
 
 Only one SDK call may access a device at a time. The retained native session serializes SDK work on its owner thread. Close SAStudio4 and other API clients before starting WebSA: the device cannot be shared. Configuration fields not explicitly set inherit SDK Profile defaults; continuous acquisition requires repeated Get calls.
 
-Inspect STATUS errors and journal output before recovery. Stop competing applications, restart with `./stop.sh && ./run.sh`, and replug USB if the link remains unavailable. Wedged firmware may require a system restart. Process restarts are managed by systemd; device recovery is handled by native mode owners. No recovery timing is guaranteed here.
+Inspect STATUS errors and the instance log before recovery. Stop competing applications, restart with `./stop.sh && ./run.sh`, and replug USB if the link remains unavailable. Wedged firmware may require a system restart. The launcher does not automatically restart a failed process; device recovery is handled by native mode owners. No recovery timing is guaranteed here.
 
 Device and command errors appear in one persistent slot at the top right of the plot, without a blocking browser dialog. Identical errors do not accumulate; a different error replaces the displayed diagnostic. Hover the plot for the full message. The error remains available across STATUS updates and transient reference notices. Command rejections retain their request correlation and rollback behavior.
 
@@ -53,17 +53,25 @@ The audio RMS display averages linear power over 300 ms. Audio peak indication a
 
 The squelch slider uses 0.1 dB steps and displays the requested RF threshold. Its far-left position (−160 dBm) disables squelch; higher thresholds require stronger signals. The receiver uses the SDK spectrum's tuned-bin peak before audio AGC, with hysteresis, hold and a soft audio fade. This is a nominal SDK dBm measurement, not integrated channel power. SDR step quick-selection buttons keep Left/Right tuning available immediately after a click; numeric inputs retain their own editing keys.
 
+AGC On/Off automatically levels demodulated listening audio; Off retains fixed detector-to-PCM gain. It does not change the RF front end or squelch threshold. The current implementation exposes no speed or target control. Its command changes only `agc`; matching acknowledgement settles the request, and rejection, timeout or session exit clears pending intent.
+
+Other receivers can expose additional AGC controls. [FlexRadio's SmartSDR guidance](https://helpdesk.flexradio.com/hc/en-us/articles/360029494371-How-Does-the-Automatic-Gain-Control-AGC-Function-in-SmartSDR) describes FAST/MED/SLOW as recovery speed after a strong signal and AGC-T as maximum applied gain. Those controls belong to that receiver's implementation; this application's fixed audio AGC does not implement those settings.
+
 Trace detector selection applies only to SWP and is rejected during RTA or harmonic/PNM measurements. Auto Sample follows signal type; Sample, Pos Peak, Neg Peak and RMS select fixed detectors. Auto Peak is intended for pulsed signals and is available through the API rather than the UI. Hold span, RBW and points constant when comparing detector results.
 
 ## Reference Level and Overflow
 
-Manual `SET_REF` requests use -160 to +40 dBm. Edits remain pending until matching acceptance; a correlated error or timeout restores the accepted display. SDR `sdr.ref` confirms the stored hardware request, while `ref` reports SDK-effective reference and can differ after clamping. SDR display reference is separate from IQS reference. Level controls are disabled during harmonic/PNM measurement.
+Manual `SET_REF` requests at the analyzer input use -160 to +40 dBm. SWP, RTA and SDR have an independent local Ref viewport from -200 to +100 dBm before external Offset. With Offset zero, entering or dragging to +100 displays +100 while requesting hardware +40; +110 clamps the display to +100. Moving between +90 and +100 reuses the same hardware request, including while its acknowledgement is pending. A matching raw acknowledgement accepts the viewport without replacing it. Rejection or timeout restores the last accepted viewport. Offset shifts the limits, axis and absolute signal readouts together, preserving trace position without a hardware command; it is not required to reach +100. SDK-effective `ref` remains separate; hover the Ref input or readout to compare it. Auto replaces manual placement; changing mode or reloading restores the active hardware request plus Offset. Preset clears manual ownership and SDR fits once on fresh data. IF overflow warns but does not block manual edits. Ref changes preserve gain selections. SDR `sdr.ref`, SWP `req.swp.ref` and RTA `req.rta.ref` store uncompensated requests. Level controls are disabled during harmonic/PNM measurement.
+
+SWP retains complete new sweeps returned with IF overflow and keeps the warning visible. Saturated measurements can be inaccurate. If the SDK does not return a complete new sweep, no replacement frame is published; the previous buffer is not replayed. Raising Ref can clear the warning, but the application does not raise it automatically during manual operation.
 
 Explicit `AUTO_SCALE` starts a bounded session (20 seconds, at most 24 steps). Only fresh acquisition evidence from the same mode and configuration advances it. An SDK IF-overflow warning (`APIRETVAL_WARNING_IFOverflow`, -12) allows a recovery step from the active SDK actual reference by +10 dB, capped at the reported reference maximum; an actual reference already above that maximum is never lowered. Attenuation, preamp, IF gain and strategy choices are preserved. Valid IQ returned with the warning is retained. Ordinary missing data or trigger waiting does not raise reference, and manual operation has no background reference adjustment.
 
 Auto fits only a clean spectrum and requires fresh clean evidence after configuration changes before confirming completion. SDR explicit Auto can reconfigure IQS for overflow recovery; SDR entry uses `display_only:true` and never changes hardware. Manual configuration, frequency, mode and Preset changes cancel old sessions and targets. `auto_ref` exposes progress and terminal reasons, including limit, stalled, failed, no_data and timeout; unsuccessful completion has no target. See [API](API.md) for the full result schema.
 
 Amplitude offset is applied once to displayed absolute levels (axis, markers, peaks and channel readouts). Differences such as dBc remain differences; device reference, attenuation and trigger thresholds retain instrument units. Actual gain readbacks belong to the active SDK mode; unavailable fields remain null. Preamp Auto/Off indicates the selected policy, not physical on/off state. Waterfall level ranges must be finite and valid; changing the level mapping clears history even while paused.
+
+Attenuation, preamp policy, IF gain grade and gain strategy are independent requests. Each selector confirms its own command; an older reply cannot settle a newer edit. Rejection, timeout or disconnect clears the pending selection. Actual readbacks describe the configured SDK profile. Preamp Auto is a policy, not proof of a physical switch state, and IF grade is not SDR audio AGC.
 
 ## Reference Clock and Firmware
 

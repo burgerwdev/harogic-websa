@@ -1125,6 +1125,30 @@ extern "C" int san90_swp_reconfig_v1(San90SwpDevice* state, const San90SwpReques
     return status;
 }
 
+// IF overflow is a warning that can accompany a complete sweep. The SDK has no
+// written-count output: poison the configured trace so a partial/absent sweep
+// cannot reuse bins from a previous call. Raw bins must be finite; the v2 output
+// alone converts the SDK's zero-power coverage gaps to NaN.
+static int san90_swp_fetch(San90SwpDevice* state, bool& available) {
+    available = false;
+    if (state->points < 2 || state->points > state->freq.size() ||
+        state->points > state->power.size()) return -108;
+    for (uint32_t i = 0; i < state->points; ++i) {
+        state->freq[i] = NAN;
+        state->power[i] = NAN;
+    }
+    state->aux = {};
+    const int status = SWP_GetFullSweep(&state->handle, state->freq.data(),
+                                       state->power.data(), &state->aux);
+    if (status && status != APIRETVAL_WARNING_IFOverflow) return status;
+    for (uint32_t i = 0; i < state->points; ++i) {
+        if (!std::isfinite(state->freq[i]) || !std::isfinite(state->power[i]))
+            return status ? status : -103;
+    }
+    available = true;
+    return status;
+}
+
 // One sweep cut to the requested start/stop (Python device.py fetch_sweep): the vendor trace
 // can extend past the request and below 0 Hz; unfilled bins read exactly 0.0 dBm -> NaN.
 extern "C" int san90_swp_next_v2(San90SwpDevice* state, double* freq, float* power,
@@ -1134,17 +1158,18 @@ extern "C" int san90_swp_next_v2(San90SwpDevice* state, double* freq, float* pow
     if (!san90_session.usable()) return -8;
     if (!state || !freq || !power || !points || !refclk_ppm) return -100;
     *points = 0;
-    int status = SWP_GetFullSweep(&state->handle, state->freq.data(), state->power.data(),
-                                  &state->aux);
-    if (status) return status;
-    *refclk_ppm = state->aux.RefClkFreqOffset;
+    bool available = false;
+    const int status = san90_swp_fetch(state, available);
+    if (!available) return status;
     uint32_t cut = 0;
     DSP_InterceptSpectrum(state->req.StartFreq_Hz, state->req.StopFreq_Hz, state->freq.data(),
                           state->power.data(), state->points, state->ifreq.data(),
                           state->ipower.data(), &cut);
-    if (cut > state->ifreq.size()) return -108;
+    if (cut > state->points || cut > state->ifreq.size() ||
+        cut > state->ipower.size() || cut > capacity) return -108;
     uint32_t n = 0;
-    for (uint32_t i = 0; i < cut && n < capacity; ++i) {
+    for (uint32_t i = 0; i < cut; ++i) {
+        if (!std::isfinite(state->ifreq[i]) || !std::isfinite(state->ipower[i])) return -103;
         if (state->ifreq[i] < 0.0) continue;
         freq[n] = state->ifreq[i];
         power[n] = state->ipower[i] == 0.0f ? NAN : state->ipower[i];
@@ -1152,7 +1177,8 @@ extern "C" int san90_swp_next_v2(San90SwpDevice* state, double* freq, float* pow
     }
     if (n < 2) return -109;
     *points = n;
-    return 0;
+    *refclk_ppm = state->aux.RefClkFreqOffset;
+    return status;
 }
 
 // Stable optional metadata ABI, copied from the successful physical Device_Open.
@@ -1312,13 +1338,14 @@ extern "C" int san90_swp_next_v1(San90SwpDevice* state, double* freq, float* pow
     SAN90_DISPATCH(state, san90_swp_next_v1(state, freq, power, capacity, points));
     if (!san90_session.usable()) return -8;
     if (!state || !freq || !power || !points || capacity < state->points) return -100;
-    int status = SWP_GetFullSweep(&state->handle, state->freq.data(), state->power.data(),
-                                  &state->aux);
-    if (status) return status;
+    *points = 0;
+    bool available = false;
+    const int status = san90_swp_fetch(state, available);
+    if (!available) return status;
     std::memcpy(freq, state->freq.data(), state->points * sizeof(double));
     std::memcpy(power, state->power.data(), state->points * sizeof(float));
     *points = state->points;
-    return 0;
+    return status;
 }
 
 extern "C" int san90_swp_close_v1(San90SwpDevice* state) {

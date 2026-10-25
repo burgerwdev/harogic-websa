@@ -12,11 +12,15 @@ import {
   setDisplayRefTimeoutHandler,
 } from '../ui/displayRef';
 import { graphMode, resetGraphMode } from '../ui/graphMode';
+import { displayOffset, displayUnit } from '../ui/displayState';
+import { commitLevelOffset } from '../ui/panels/refAmp';
 
 beforeEach(() => {
   vi.useFakeTimers();
   resetAll();
   resetGraphMode();
+  displayOffset.set(0);
+  displayUnit.set('dBm');
   setDisplayRefTimeoutHandler(null);
   graphMode.confirm('std');
   setDisplayRef('preset', 0);
@@ -64,6 +68,37 @@ describe('display reference ownership', () => {
     expect(pendingDisplayRef()).toBeNull();
     expect(reportedDisplayRef()).toBe(-40);
     expect(displayRefDiverges()).toBe(false);
+  });
+
+  it('matches raw SDR acknowledgements after the display offset changes', () => {
+    graphMode.confirm('sdr');
+    commitLevelOffset(60);
+    setDisplayRef('user', 100);
+    expect(pendingDisplayRef()).toBe(100);
+    commitLevelOffset(-60);
+    expect(getDisplayRef()).toBe(-20);
+    expect(pendingDisplayRef()).toBe(-20);
+    noteDisplayRefReport(-20); // The display value is not the hardware request.
+    expect(pendingDisplayRef()).toBe(-20);
+    expect(displayRefDiverges()).toBe(true);
+    noteDisplayRefReport(40);
+    expect(pendingDisplayRef()).toBeNull();
+    expect(getDisplayRef()).toBe(-20);
+    expect(displayRefDiverges()).toBe(false);
+  });
+
+  it('rolls an SDR request back in the current offset domain at its original deadline', () => {
+    graphMode.confirm('sdr');
+    setDisplayRef('auto', -75);
+    commitLevelOffset(60);
+    setDisplayRef('user', 20);
+    vi.advanceTimersByTime(DISPLAY_REF_TTL_MS - 1);
+    commitLevelOffset(-60);
+    expect(getDisplayRef()).toBe(-100);
+    expect(pendingDisplayRef()).toBe(-100);
+    vi.advanceTimersByTime(1);
+    expect(pendingDisplayRef()).toBeNull();
+    expect(getDisplayRef()).toBe(-135);
   });
 
   it('supersedes an older request and notifies when the device never confirms', () => {

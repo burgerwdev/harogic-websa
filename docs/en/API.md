@@ -123,7 +123,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `CAL_REFCLK` | `count?` | GNSS 1PPS reference clock calibration (background; `calibrating=true` meanwhile) |
 | `SET_FREQ` | `center`,`span` or `start`,`stop` | atomically set the SWP frequency window |
 | `SET_REF` | `mode` (manual/auto), `ref?`, `range_db?` | active-mode reference; manual requires `ref` in -160..40 dBm. `mode=auto` starts one Auto Scale session |
-| `AUTO_SCALE` | `range_db?` (5..200), `current_ref?`, `display_only?` | bounded reference placement/recovery; see below. `current_ref` is a display value |
+| `AUTO_SCALE` | `range_db?` (5..200), `current_ref?`, `display_only?` | bounded reference placement/recovery; see below. `current_ref` excludes external Offset; the browser subtracts Offset from its displayed Ref |
 | `SET_RBW` | `mode?` (manual/auto/one_thousandth_span/one_percent_span), `rbw?` | SWP resolution bandwidth; RTA uses its supported manual/auto choices |
 | `SET_VBW` | `mode?` (manual/equal/tenth/onethousandth/bypass), `vbw?` | set video bandwidth |
 | `SET_SWEEP` | `mode?` (0..8), `time?` (schema: 0..1000) | 0=minSWT, 1=x2, 2=x4, 3=x10, 4=x20, 5=x50, 6=xN, 7=Manual, 8=minSMPxN. `time` is seconds for Manual and a multiplier for xN; mode-specific handler validation also applies. RTA updates its own profile |
@@ -131,7 +131,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_SPUR` | `mode` (bypass/standard/enhanced) | spur rejection mode |
 | `SET_WINDOW` | `window` (0~4) | FFT window |
 | `SET_DETECTOR` | `mode` (auto/sample/pos_peak/neg_peak/rms/auto_peak) | trace detector, SWP only |
-| `SET_AMP` | `atten` (-1~33), `preamp` (0/1), `ifgain` (0~3), `gain_strategy` (0/1) | gain chain config |
+| `SET_AMP` | `atten?` (-1~33), `preamp?` (0/1), `ifgain?` (0~3), `gain_strategy?` (0/1), `request_id?` | update supplied gain fields; STATUS/ERROR echoes request_id. Requested fields and SDK actual readbacks remain separate |
 | `SET_REFCK` | `mode` (internal/external/premium/external_forced) | requested reference source; reconfigures the active profile. Unavailable premium hardware is rejected before mutation. `actual.refclk_src` reports the SDK-resolved source, including automatic external fallback |
 | `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active profile |
 | `SET_MODE` | `mode` (std/harmonic/pnm/rta/sdr) | switch measurement mode (session) |
@@ -355,13 +355,17 @@ SSTV subscribers receive a start and a bounded snapshot of the current image bef
 
 The browser delivers event batches FIFO using `{type:'frames', envelopes}` and acknowledges application with `{type:'ack'}` on its internal worker port. Queued plus in-flight data is limited to 32 events / 4 MiB; overflow explicitly fails. This acknowledgement is not sent over `/ws/decode`.
 
-> **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density uses processed samples from the active trace and native frequency positions, sharing trace offset/reference/preview mapping. Off stops both accumulation and drawing. Fluorescent glow follows the trace path. Waterfall history retains native frequency positions; missing bins remain gaps unless SWP GapFill is enabled.
+> **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density keeps either the processed active trace or the received frames before Average/Max Hold; switching the source clears history. Afterglow uses a real-time half-life (Off, 0.5, 2, 5, 10 s). Hit weights use elapsed time with bounded gaps. Off stops accumulation and drawing. Both, Density and Trace change visibility only; trace modes, markers, measurements and export retain their data sources. The wide trace glow is suppressed while density is drawn. Contrast changes colour independently of opacity. Waterfall history retains native frequency positions; missing bins stay blank unless SWP GapFill is enabled.
 
 On an axis-version transition, the first frame for the new axis takes priority and
 older-version frames are rejected. Density projects native frequency centers continuously,
-splits each amplitude contribution between two rows, and uses bilinear display sampling.
-Grain defaults to 128; NaN gaps stay blank. Off stops and clears accumulation;
-VIEW retains frozen history without decay or repeated hits.
+splits each amplitude contribution between two rows, and draws measured cell centres with a
+centred vertical footprint of 1/3/5/9 CSS pixels (default 5). Display width changes only
+the pixel footprint; it does not change occupancy, amplitude, frequency or measurements.
+Contrast controls colour separately from opacity. Light mode uses a saturated palette;
+measured noise remains visible at reduced strength. Grain defaults to 128; NaN gaps stay
+blank. Off clears accumulation. VIEW freezes trace-source history; Live continues while
+the trace is frozen. Width, theme and contrast changes preserve history.
 
 SWP/RTA/SDR raster paths use each device-pixel column's first, minimum, maximum and last original vertices, in source order, and split at every missing bin. Zoom reveals the retained native vertices as they occupy separate pixels; markers and export always use the complete source arrays. Optional SWP adaptive smoothing still uses the full frame, consistently with marker readouts.
 
@@ -507,10 +511,14 @@ successful completion. No usable acquisition ends as no_data; an adjusted but
 unconfirmed session ends as timeout. Manual Ref/AMP, frequency, mode and Preset edits
 cancel the session and clear its old target. There is no background overflow recovery.
 
-Manual Ref edits show pending until confirmed; rejection or an unconfirmed timeout
-restores the accepted display. SDR stored `sdr.ref` confirms the request separately
-from effective `ref`. External Offset compensates absolute traces/readouts once;
-axis formatting only converts units, and relative dB is unchanged. Waterfall Fixed
+Manual Ref edits use an independent local viewport (-200..+100 dBm plus external Offset)
+in SWP/RTA/SDR. SET_REF and AUTO_SCALE.current_ref subtract Offset and clamp to the existing
+-160..+40 dBm wire bounds. A matching raw request report accepts the viewport without replacing
+it: display +100 with Offset zero requests hardware +40. Further viewport moves with the same
+clamped request do not reconfigure hardware or restart its pending timeout. Rejection or timeout
+restores the accepted display. SDR stored `sdr.ref` confirms the request separately from effective
+`ref`. Auto placement adds Offset once. Offset edits shift the absolute axis and trace together
+without hardware writes; relative dB is unchanged. Waterfall Fixed
 range requires finite low < high; rejected edits revert with a notice. Mapping/range
 changes clear quantized history even while paused. Local Scale/Unit/Offset/Waterfall
 remain usable in std/rta/sdr; exclusive harmonic/PNM disables Level controls.

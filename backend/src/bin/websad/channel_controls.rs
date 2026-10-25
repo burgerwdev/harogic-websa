@@ -277,6 +277,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn agc_commands_preserve_squelch_and_reject_non_boolean_updates() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        dispatch(&mut state, "SET_SDR_CHANNEL", &json!({"squelch":-112.3,"volume":0.4})).unwrap();
+        let mut expected = state.channel_configs();
+        for enabled in [false, true] {
+            dispatch(&mut state, "SET_SDR_CHANNEL", &json!({"agc":enabled})).unwrap();
+            expected[0].agc = enabled;
+            assert_eq!(state.channel_configs(), expected);
+            let status = state.status_snapshot().build();
+            assert_eq!(status["sdr"]["agc"], enabled);
+            assert_eq!(status["sdr"]["channels"][0]["agc"], enabled);
+            assert_eq!(status["sdr"]["squelch"], -112.3);
+        }
+        for invalid in [json!("false"), json!(0), Value::Null] {
+            assert!(dispatch(&mut state, "SET_SDR_CHANNEL", &json!({"agc":invalid})).is_err());
+            assert_eq!(state.channel_configs(), expected);
+        }
+    }
+
+    #[test]
     fn disabled_partial_preserves_config_and_enabling_checks_device_limits() {
         let mut state = DevState::new(json!({"preset_defaults": {}}), json!({}));
         let initial = state.channel_configs()[1].clone();

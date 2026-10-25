@@ -24,8 +24,8 @@ import { peakListVisible } from '../ui/measurePrefs';
 import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
-import { rtaFade, waterfallOn } from '../ui/waterfallState';
-import { MAX_DENSITY, rasterDensity, densityLevelPlacement, type DensityGrid } from '../dsp/rtaDensity';
+import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
+import { rasterDensity, densityLevelPlacement, densityLut, paintDensity, type DensityGrid } from '../dsp/rtaDensity';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
@@ -763,29 +763,32 @@ function renderRta() {
   const hi = pf ? pf.hi : (inFrame ? zv!.hi : d.stopHz);
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
-  const densityOn = rtaFade.get() > 0;
+  const activeTrace = S.traces[S.activeTraceIdx];
+  const densityOn = rtaHalflife.get() > 0 && rtaDensLayers.get() !== 'trace'
+    && (rtaDensSource.get() === 'live' || activeTrace.mode !== 'OFF');
   const density = S.rtaDensity2d;
+  const densityVisible = densityOn && !!density && (!density.freq || density.freq === d.freq);
   // Native history is rasterised only for this visible Hz window at screen resolution.
-  if (densityOn && S.traces[S.activeTraceIdx].mode !== 'OFF' && density
-      && (!density.freq || density.freq === d.freq)) {
-    drawRtaDensityLayer(density, d.freq, lo, hi, p);
-  }
+  if (densityVisible) drawRtaDensityLayer(density!, d.freq, lo, hi, p);
   // Without density, retain the graticule and background. clearRect runs at frame start.
   // Diagnostic/e2e hook (same pattern as `dataset.yLabels`): the pixel scan cannot tell a dark
   // density layer from the plain background, so the contract is read from here.
-  const densityState = densityOn ? 'on' : 'off';
+  const densityState = densityVisible ? 'on' : 'off';
   if (ctx.canvas.dataset.density !== densityState) ctx.canvas.dataset.density = densityState;
-  // Fluorescent traces with glow; density dots provide the lingering trail.
-  // These values are invariant through both strokes and all traces in this render.
-  // Snapshot param/gesture state once rather than refreshing it per native bin.
+  // A drawn density layer carries the lingering trail, so the active trace drops its wide
+  // glow and stays a thin line: overlapping layers would only hide the density below.
+  const thinTraces = densityVisible;
+  // Until the first frame of a new history arrives, retain the trace instead of showing an
+  // empty plot. The live source also remains drawable when its trace is OFF.
+  const hideTraces = rtaDensLayers.get() === 'density' && densityVisible;
   const [firstBin, afterBin] = visibleBinRange(d.freq, lo, hi);
   const xScale = p.w / (hi - lo);
   const levelOffset = displayOffset.get();
   const levelRef = getDisplayRef();
   const yScale = p.h / (S.totalDivs * S.dbPerDiv);
   const levelTransform = yAxisTransform();
-  S.traces.forEach((tr, ti) => {
-    if (tr.mode === 'OFF') return;
+  S.traces.forEach((_tr, ti) => {
+    if (hideTraces) return;
     const disp = S.rtaDisplays[ti];
     if (!disp || disp.length < 2) return;
     const dn = Math.min(n, disp.length);   // guard against point-count mismatch
@@ -823,9 +826,11 @@ function renderRta() {
         if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
       }
     }
-    // glow
-    ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
-    ctx.stroke();
+    // glow: the fluorescent trail only when no density layer carries the history
+    if (!thinTraces) {
+      ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
+      ctx.stroke();
+    }
     // main line
     ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = tcol;
     ctx.stroke();
@@ -898,6 +903,8 @@ let lastDensFreq: Float64Array | null = null;
 let lastDensRevision = -1;
 let lastDensLo = NaN, lastDensHi = NaN;
 let lastDensTheme: string | undefined;
+let lastDensContrast = NaN;
+let lastDensWidth = NaN, lastDensCentre = NaN, lastDensPitch = NaN;
 let rtaDensLut: Uint32Array | null = null;
 
 
@@ -910,66 +917,41 @@ function drawRtaDensityLayer(
     rtaDensCtx = rtaDensLayer.getContext('2d');
   }
   const cols = Math.max(1, Math.ceil(p.w * pixelRatio));
-  const rows = grid.bins;
+  const rows = Math.max(1, Math.ceil(p.h * pixelRatio));
   const resized = rtaDensLayer.width !== cols || rtaDensLayer.height !== rows;
   if (resized) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;
   const theme = document.documentElement.dataset.theme;
   const themeChanged = lastDensTheme !== theme || !rtaDensLut;
-  if (themeChanged) { rtaDensLut = densityLutForRta(); lastDensTheme = theme; }
-  if (resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
-      || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi || themeChanged) {
-    if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
-      rtaDensImage = lc.createImageData(cols, rows);
-      rtaDensRaster = new Float32Array(cols * rows);
-    }
-    rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
-    const img = rtaDensImage;
-    const px = img.data;
-    const lut = rtaDensLut!;
-    for (let i = 0; i < rtaDensRaster.length; i++) {
-      const v = rtaDensRaster[i];
-      const o = i * 4;
-      if (v <= 0.02) { px[o + 3] = 0; continue; }
-      const g = Math.min(1, Math.pow(Math.min(1, v / MAX_DENSITY), 0.45));
-      const c = lut[Math.round(g * 255)];
-      px[o] = c & 0xff; px[o + 1] = (c >> 8) & 0xff; px[o + 2] = (c >> 16) & 0xff;
-      px[o + 3] = Math.round(255 * g);
-    }
-    lc.putImageData(img, 0, 0);
-    lastDensGrid = grid; lastDensRevision = grid.revision;
-    lastDensFreq = freq;
-    lastDensLo = lo; lastDensHi = hi;
-  }
-  // Offset, reference and scale are evaluated on EVERY draw, even with no new frame.
-  // The half-row origin places a cell's centre, rather than its edge, at the trace level.
+  if (themeChanged) { rtaDensLut = densityLut(theme === 'light'); lastDensTheme = theme; }
+  const contrast = rtaDensContrast.get();
+  // Reproject frozen history on every offset/reference/scale/gesture change. The footprint
+  // remains CSS pixels even when the native amplitude grid stretches or the DPR changes.
   const level = densityLevelPlacement(grid, getDisplayRef(), S.totalDivs * S.dbPerDiv, displayOffset.get());
   const yt = yAxisTransform();
   const sy = yt ? yt.sy : 1;
-  // Interpolate amplitude rows around their existing half-row centre; frequency is
-  // already rasterised at device resolution. Never enlarge native cells with nearest.
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(rtaDensLayer, p.x,
-    p.y + (level.top * sy + (yt ? yt.dyFrac : 0)) * p.h,
-    p.w, level.height * sy * p.h);
-}
-
-// RTA density heat LUT (theme-aware, deep-blue -> cyan -> yellow -> red)
-function densityLutForRta(): Uint32Array {
-  const th = document.documentElement.dataset.theme;
-  const stops = th === 'light'
-    ? [[255, 255, 255], [200, 225, 255], [120, 170, 255], [60, 110, 220], [40, 130, 150], [180, 140, 0], [220, 70, 0]]
-    : [[0, 8, 90], [0, 24, 150], [0, 70, 190], [0, 130, 200], [30, 200, 200], [90, 230, 90], [255, 220, 40], [255, 110, 20]];
-  const lut = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    const x = i / 255 * (stops.length - 1);
-    const j = Math.min(stops.length - 2, Math.floor(x));
-    const t = x - j;
-    const a = stops[j], b = stops[j + 1];
-    const r = Math.round(a[0] + (b[0] - a[0]) * t);
-    const g = Math.round(a[1] + (b[1] - a[1]) * t);
-    const bl = Math.round(a[2] + (b[2] - a[2]) * t);
-    lut[i] = (255 << 24) | (bl << 16) | (g << 8) | r;
+  const pitch = level.height / grid.bins * sy * rows;
+  const centre = (level.top * sy + (yt ? yt.dyFrac : 0)) * rows + pitch / 2;
+  const width = rtaDensWidth.get() * rows / p.h;
+  const rasterChanged = resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
+    || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi;
+  if (rasterChanged) {
+    if (rtaDensRaster.length !== cols * grid.bins) rtaDensRaster = new Float32Array(cols * grid.bins);
+    rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
   }
-  return lut;
+  if (rasterChanged || themeChanged || lastDensContrast !== contrast
+      || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
+    if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
+      rtaDensImage = lc.createImageData(cols, rows);
+    }
+    paintDensity(rtaDensRaster, cols, grid.bins, rtaDensImage.data, rows,
+      centre, pitch, width, contrast, rtaDensLut!);
+    lc.putImageData(rtaDensImage, 0, 0);
+    lastDensGrid = grid; lastDensRevision = grid.revision;
+    lastDensFreq = freq;
+    lastDensLo = lo; lastDensHi = hi; lastDensContrast = contrast;
+    lastDensWidth = width; lastDensCentre = centre; lastDensPitch = pitch;
+  }
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(rtaDensLayer, p.x, p.y, p.w, p.h);
 }

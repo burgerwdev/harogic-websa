@@ -20,7 +20,7 @@ import { displayOffset } from '../ui/displayState';
 import { axisDragMove, axisDragStart, resetAxisPreview } from '../ui/axisDrag';
 import { __testSeedCapture, setView } from '../ui/spectrumViewport';
 import { advanceDensity } from '../dsp/rtaDensity';
-import { rtaFade, waterfallOn } from '../ui/waterfallState';
+import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
 
 /** The live SDR window: 23 MHz centre, decimate 128 (span 390.625 kHz). */
 const LO = 22804687.5;
@@ -133,43 +133,101 @@ describe('renderRta', () => {
   });
 
   it('moves the existing density with the trace for paused offset/ref/scale and axis preview', () => {
+    let image: ImageData;
     const offscreen = {
       createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
-      putImageData: () => {},
+      putImageData: (value: ImageData) => { image = value; },
     };
     const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(offscreen as unknown as CanvasRenderingContext2D);
     const savedOffset = displayOffset.get();
-    const savedFade = rtaFade.get();
+    const savedFade = rtaHalflife.get();
     const savedWaterfall = waterfallOn.get();
+    const savedWidth = rtaDensWidth.get(), savedContrast = rtaDensContrast.get();
+    const savedTheme = document.documentElement.dataset.theme;
     const p = plotRect();
     try {
       S.traces[0].mode = 'CLEAR_WRITE';
-      rtaFade.set(1); waterfallOn.set(false);
+      rtaHalflife.set(999); waterfallOn.set(false);
       displayOffset.set(0);
       setDisplayRef('preset', -20);
       sdrFrame(false);
       S.rtaData.spec[1023] = -60;
-      const density = advanceDensity(null, S.rtaDisplays[0], 128, 1, -20, 1)!;
+      const density = advanceDensity(null, S.rtaDisplays[0], 128, 999, -20, 1)!;
+      const values = density.values.slice(), samples = density.samples.slice();
       S.setRtaDensity2d(density);
       const assertAligned = () => {
         resetCtxCalls(); renderAll();
         const draw = ctxImages[0];
         expect(draw).toBeDefined();
-        const [, top, , height] = draw.args;
-        const centre = top + (40 + 0.5) / density.bins * height;
-        expect(centre).toBeCloseTo(getY(-60), 8);
+        const [left, top, width, height] = draw.args;
+        const x = Math.floor(1023 / (PTS - 1) * image.width);
+        const expectedY = getY(-60);
+        let mass = 0, weighted = 0;
+        for (let y = 0; y < image.height; y++) {
+          const screenY = top + (y + 0.5) / image.height * height;
+          if (Math.abs(screenY - expectedY) > 12) continue;
+          const alpha = image.data[(y * image.width + x) * 4 + 3];
+          mass += alpha; weighted += alpha * screenY;
+        }
+        expect(mass).toBeGreaterThan(0);
+        expect(Math.abs(weighted / mass - expectedY)).toBeLessThanOrEqual(height / image.height / 2 + 0.01);
+        expect(left).toBe(p.x); expect(width).toBe(p.w);
       };
       assertAligned();
+      for (const theme of ['light', 'dark']) for (const width of [1, 9]) {
+        document.documentElement.dataset.theme = theme;
+        rtaDensWidth.set(width); rtaDensContrast.set(0.6);
+        assertAligned();
+      }
       displayOffset.set(7); setDisplayRef('preset', -30); S.setDbPerDiv(7);
       assertAligned();
       axisDragStart('y', p.x + p.w + 20, p.y + 50, p);
       axisDragMove(p.x + p.w + 20, p.y + 80);
       assertAligned();
+      expect(density.values).toEqual(values); expect(density.samples).toEqual(samples);
     } finally {
       canvas.mockRestore();
       resetAxisPreview();
       S.setRtaDensity2d(null);
-      displayOffset.set(savedOffset); rtaFade.set(savedFade); waterfallOn.set(savedWaterfall);
+      displayOffset.set(savedOffset); rtaHalflife.set(savedFade); waterfallOn.set(savedWaterfall);
+      rtaDensWidth.set(savedWidth); rtaDensContrast.set(savedContrast);
+      if (savedTheme === undefined) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = savedTheme;
     }
+  });
+
+  it('keeps live density visible when the active trace is OFF', () => {
+    const offscreen = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: () => {},
+    };
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(offscreen as unknown as CanvasRenderingContext2D);
+    try {
+      sdrFrame(false);
+      const density = advanceDensity(null, S.rtaDisplays[0], 128, 999, -80, 1, 'CLEAR_WRITE', S.rtaData.freq, 'live')!;
+      S.setRtaDensity2d(density);
+      S.traces[0].mode = 'OFF';
+      rtaDensSource.set('live');
+      rtaDensLayers.set('density');
+      rtaHalflife.set(2);
+      renderAll();
+      expect(ctxImages.length).toBeGreaterThan(0);
+      expect(document.getElementById('spectrum')!.dataset.density).toBe('on');
+    } finally {
+      canvas.mockRestore();
+      rtaDensSource.set('trace'); rtaDensLayers.set('both');
+    }
+  });
+
+  it('retains the trace while density-only history is being rebuilt', () => {
+    sdrFrame(false);
+    S.traces[0].mode = 'CLEAR_WRITE';
+    rtaDensLayers.set('density');
+    rtaHalflife.set(2);
+    S.setRtaDensity2d(null);
+    renderAll();
+    expect(ctxCalls.filter((c) => c.op === 'lineTo').length).toBeGreaterThan(PTS / 2);
+    expect(document.getElementById('spectrum')!.dataset.density).toBe('off');
+    rtaDensLayers.set('both');
   });
 });

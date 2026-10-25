@@ -4,7 +4,7 @@ import { normalizeCenterSpan } from '../../core/frequency';
 import { beginFrequencyCommit, validateFrequencyWindow } from './frequency';
 import { send } from '../../core/wsSend';
 import { requestRender } from '../../render/redraw';
-import { rtaAmpBins, rtaFade } from '../waterfallState';
+import { rtaAmpBins, rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife } from '../waterfallState';
 import { units } from '../../core/units';
 
 let axisTransition: { requestId: string; version: number; lo: number; hi: number; until: number } | null = null;
@@ -47,32 +47,106 @@ export function clearRtaAccum() {
   requestRender();
 }
 
-// The four persistence gears, plus Off (0), which switches the density layer off entirely
-// (see dsp/rtaDensity.ts).
-export const RTA_FADE_OFF = 0;
+// The afterglow gears are half-lives in seconds; Off (0) switches the density layer off
+// entirely (see dsp/rtaDensity.ts).
 /** The panel's own default gear, used when a value cannot be read at all. */
-const RTA_FADE_DEFAULT = 0.975;
+const RTA_HALFLIFE_DEFAULT = 0.5;
+const RTA_HALFLIFE_GEARS = [0, 0.5, 2, 5, 10];
+
+function normalizeHalflife(value: number): number {
+  return RTA_HALFLIFE_GEARS.includes(value) ? value : RTA_HALFLIFE_DEFAULT;
+}
 
 /** Persist density settings across the slot, form and storage; zero is a valid Off value. */
-export function setRtaFade(value: number) {
-  const fade = isFinite(value) ? value : RTA_FADE_DEFAULT;
-  rtaFade.set(fade);
-  if (!(fade > 0)) S.setRtaDensity2d(null);
+export function setRtaHalflife(value: number) {
+  const halflife = normalizeHalflife(value);
+  rtaHalflife.set(halflife);
+  if (!(halflife > 0)) S.setRtaDensity2d(null);
   const sel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
-  if (sel) sel.value = String(fade);
-  try { localStorage.setItem('rta-fade', String(fade)); } catch { /* ignore */ }
+  if (sel) sel.value = String(halflife);
+  try { localStorage.setItem('rta-halflife', String(halflife)); } catch { /* ignore */ }
   requestRender();
 }
 
+// Switching the source starts a new history: mixing the two statistics would be meaningless.
+export function setRtaDensSource(source: 'trace' | 'live') {
+  rtaDensSource.set(source);
+  S.setRtaDensity2d(null);
+  const sel = document.getElementById('select-rta-dens-source') as HTMLSelectElement | null;
+  if (sel) sel.value = source;
+  try { localStorage.setItem('rta-dens-source', source); } catch { /* ignore */ }
+}
+
+/** Layer visibility is display-only: it never touches trace modes, markers or history. */
+export function setRtaDensLayers(layers: 'both' | 'density' | 'trace') {
+  rtaDensLayers.set(layers);
+  requestRender();
+}
+
+/** Contrast re-maps colours only; the history and the numbers behind it are untouched. */
+export function setRtaDensContrast(contrast: number) {
+  rtaDensContrast.set(isFinite(contrast) && contrast > 0 ? contrast : 1);
+  requestRender();
+}
+
+/** The footprint is display-only: keep the source, samples and occupancy unchanged. */
+export function setRtaDensWidth(width: number) {
+  rtaDensWidth.set([1, 3, 5, 9].includes(width) ? width : 5);
+  requestRender();
+}
+
+export function toggleDensitySettings() {
+  const panel = document.getElementById('density-settings');
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
+  document.getElementById('btn-density-more')?.setAttribute('aria-expanded', String(!panel.hidden));
+}
+
+export function resetRtaDensityCfg() {
+  rtaHalflife.reset();
+  rtaDensSource.reset();
+  rtaDensLayers.reset();
+  rtaDensContrast.reset();
+  rtaDensWidth.reset();
+  rtaAmpBins.reset();
+  rtaHalflife.confirm(RTA_HALFLIFE_DEFAULT);
+  rtaDensSource.confirm('trace');
+  rtaDensLayers.confirm('both');
+  rtaDensContrast.confirm(1);
+  rtaDensWidth.confirm(5);
+  rtaAmpBins.confirm(128);
+  S.setRtaDensity2d(null);
+  for (const [id, value] of [
+    ['select-rta-fade', rtaHalflife.get()],
+    ['select-rta-dens-source', rtaDensSource.get()],
+    ['select-rta-dens-layers', rtaDensLayers.get()],
+    ['select-rta-dens-contrast', rtaDensContrast.get()],
+    ['select-rta-dens-width', rtaDensWidth.get()],
+    ['select-rta-bins', rtaAmpBins.get()],
+  ] as const) {
+    const select = document.getElementById(id) as HTMLSelectElement | null;
+    if (select) select.value = String(value);
+  }
+  try {
+    for (const key of ['rta-fade', 'rta-halflife', 'rta-dens-source', 'rta-bins']) localStorage.removeItem(key);
+  } catch { /* Storage can be disabled. */ }
+}
+
 export function restoreRtaDensityCfg() {
-  // The select is the truth when nothing was ever stored (its own default is the middle gear), so
-  // the value the density actually fades at and the value the panel shows cannot disagree.
+  // The selects are the truth when nothing was ever stored (their own defaults are the
+  // middle gears), so the value the density actually fades at and the value the panel shows
+  // cannot disagree. A stored per-frame coefficient from an earlier release is dropped.
+  try { localStorage.removeItem('rta-fade'); } catch { /* ignore */ }
   const fadeSel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
-  const storedFade = localStorage.getItem('rta-fade');
-  const fade = Number(storedFade !== null ? storedFade : fadeSel?.value);
-  if (isFinite(fade)) {
-    if (fadeSel && storedFade !== null) fadeSel.value = String(fade);
-    rtaFade.set(fade);
+  const storedHalflife = localStorage.getItem('rta-halflife');
+  const halflife = normalizeHalflife(Number(storedHalflife !== null ? storedHalflife : fadeSel?.value));
+  if (fadeSel) fadeSel.value = String(halflife);
+  rtaHalflife.set(halflife);
+  const src = localStorage.getItem('rta-dens-source');
+  if (src === 'trace' || src === 'live') {
+    rtaDensSource.set(src);
+    const srcSel = document.getElementById('select-rta-dens-source') as HTMLSelectElement | null;
+    if (srcSel) srcSel.value = src;
   }
   const bn = localStorage.getItem('rta-bins');
   if (bn) { const s = document.getElementById('select-rta-bins') as HTMLSelectElement | null; if (s) s.value = bn; rtaAmpBins.set(parseInt(bn) || 128); }

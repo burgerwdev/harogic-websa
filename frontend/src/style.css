@@ -733,10 +733,19 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 #input-wf-lo:disabled, #input-wf-hi:disabled { opacity: 0.45; }
 #span-step-unit { min-width: 34px; }
 .param-row label { color: var(--label); font-size: 11px; min-width: 58px; }
-/* RTA frequency controls (Center + Span rows): the frequency input and the span
-   dropdown share the same width/height so the two rows grid-align. Buttons keep their
-   natural widths (only the ▼/▲ glyph buttons are equalized); everything shares the
-   row height for a clean baseline. */
+.density-settings { display: grid; grid-template-columns: 58px minmax(0, 1fr) 58px minmax(0, 1fr); gap: 4px; }
+.density-settings label { min-width: 0; }
+.density-settings select { width: 100%; min-width: 0; box-sizing: border-box; }
+.density-settings[hidden] { display: none; }
+.density-layers-row { display: grid; grid-template-columns: 58px minmax(0, 120px) auto; justify-content: start; gap: 4px; }
+.density-layers-row select { width: 100%; min-width: 0; }
+.density-layers-row .btn { min-width: 58px; }
+#btn-density-more::after { content: ' v'; }
+#btn-density-more[aria-expanded="true"]::after { content: ' ^'; }
+#sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) 70px auto; gap: 4px; align-items: center; }
+#sdr-settings .sdr-squelch-row input { width: 100%; min-width: 0; margin: 0; }
+#sdr-settings .sdr-squelch-row #cur-sdr-squelch { text-align: right; }
+#sdr-settings .sdr-squelch-row #btn-sdr-agc { min-width: 70px; white-space: nowrap; }
 #rta-freq-settings .param-row { flex-wrap: nowrap; align-items: center; }
 #rta-freq-settings .param-row label { min-width: 52px; }
 /* main control column: input == select */

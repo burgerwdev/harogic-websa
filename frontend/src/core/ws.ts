@@ -11,6 +11,7 @@ import {
   releaseGraphModePending,
   syncPresetStatus, rejectPresetRequest,
   rejectSdrAmSyncRequest,
+  rejectSdrAgcRequest,
   rejectSdrFilterRequest,
   disconnectSdrSession,
   syncScaleButtons,
@@ -36,7 +37,7 @@ import { confirmMeasurementSession, endMeasurementSessions } from '../meas/sessi
 import { plausibleSpectrum } from '../dsp/stats';
 import { advanceDensity } from '../dsp/rtaDensity';
 import { alignToDisplayWindow, sameFrequencyGrid } from '../dsp/grid';
-import { getDisplayRef, setDisplayRef, noteDisplayRefReport, rejectDisplayRefRequest } from '../ui/displayRef';
+import { displayRefDiverges, getDisplayRef, rawToDisplayRef, setDisplayRef, noteDisplayRefReport } from '../ui/displayRef';
 import { updateTrackingMarkers } from '../dsp/markerTracking';
 import { confirmRefLevel, refLevel } from '../ui/refState';
 import { maybeRequestSdrFit, noteSdrRefState, noteTraceObservation, syncAutoScaleStatus }
@@ -46,11 +47,11 @@ import {
   rbwMode, vbwMode, currentRBW, currentPoints, currentSpur,
   frameDetector, traceAlign, pointsStrategy,
 } from '../ui/swpState';
-import { rtaAmpBins, rtaFade, waterfallOn, wfPaused } from '../ui/waterfallState';
+import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { resetViewport, setCapture } from '../ui/spectrumViewport';
 import { confirmSdrChannelRegistry } from '../sdr/iqStream';
-import { syncAmpStatus } from '../ui/ampState';
+import { rejectAmpRequest, resetAmpIntents, syncAmpStatus } from '../ui/ampState';
 import { rejectManualRef, syncLevelAvailability, syncRefClockStatus, rejectRefClockRequest, resetRefClockIntent } from '../ui/panels/refAmp';
 import { confirmFrequencyStatus, rejectFrequencyCommit, resetFrequencyEditors } from '../ui/panels/frequency';
 import { confirmResolutionStatus, rejectResolutionCommit, resetResolutionEditors } from '../ui/panels/resolution';
@@ -58,6 +59,7 @@ import { syncSweepStatus, rejectSweepRequest, resetSweepEditor } from '../ui/pan
 import { acceptRtaAxisFrame, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { sdrCenterHz, sdrDecimate } from '../ui/sdrState';
 import { deviceMode } from '../ui/graphMode';
+import { confirmAxisRef, rejectAxisRef } from '../ui/axisDrag';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -200,6 +202,7 @@ export function connectWS() {
     resetResolutionEditors();
     resetSweepEditor();
     resetRefClockIntent();
+    resetAmpIntents();
     updateInfoBar();
     setWS(null);
     ws = null;
@@ -215,13 +218,15 @@ export function connectWS() {
         else if (msg.cmd === 'ERROR') {
           releaseGraphModePending();
           if (msg.response_to === 'SET_TRIGGER') rejectTriggerEdit();
-          if (msg.response_to === 'SET_REF') rejectManualRef();
+          if (msg.response_to === 'SET_REF') { rejectAxisRef(); rejectManualRef(); }
           rejectFrequencyCommit(msg.response_to, msg.request_id);
           rejectResolutionCommit(msg.response_to, msg.request_id);
           rejectRtaAxisTransition(msg.response_to, msg.request_id);
           if (msg.response_to === 'SET_SWEEP') rejectSweepRequest(msg.request_id);
           rejectRefClockRequest(msg.response_to, msg.request_id);
+          rejectAmpRequest(msg.response_to, msg.request_id);
           rejectPresetRequest(msg.response_to, msg.request_id);
+          rejectSdrAgcRequest(msg.response_to, msg.request_id);
           rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
           rejectSdrFilterRequest(msg.response_to, msg.request_id);
           S.setStatusError(localizedError(msg));
@@ -356,13 +361,18 @@ export function connectWS() {
           S.rtaAvgN[ti] = shim.avgCount;
           S.rtaDone[ti] = shim.done;
         });
-        // Persistence belongs to the selected, mode-processed trace, never the raw waterfall.
-        // Store raw dBm: offset is a render transform and must also work with no new frames.
+        // The trace-following density uses the selected, mode-processed trace; the live
+        // source accumulates the frame exactly as received, before any Average/Max Hold.
+        // Both store raw dBm: offset is a render transform and must also work with no new
+        // frames.
         const active = S.traces[S.activeTraceIdx];
         const bins = rtaAmpBins.get();
         const range = S.totalDivs * S.dbPerDiv;
-        S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, S.rtaDisplays[S.activeTraceIdx],
-          bins, rtaFade.get(), getDisplayRef() - displayOffset.get(), range / bins, active.mode, freq));
+        const densSource = rtaDensSource.get();
+        const densSpec = densSource === 'live' ? spec : S.rtaDisplays[S.activeTraceIdx];
+        S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, densSpec,
+          bins, rtaHalflife.get(), getDisplayRef() - displayOffset.get(), range / bins,
+          densSource === 'live' ? 'CLEAR_WRITE' : active.mode, freq, densSource, processAt));
         updateTrackingMarkers();
         if (waterfallOn.get() && S.rtaMode && !wfPaused.get()) {
           // bitmap rows are often all-zero; derive waterfall row from the live trace
@@ -446,7 +456,7 @@ export function updateStatus(s: any) {
     const refEl = document.getElementById('input-ref') as HTMLInputElement | null;
     if (refEl) {
       refEl.classList.toggle('ref-warn', over);
-      refEl.title = over ? t('if_overflow_hint') : '';
+      refEl.title = over ? `${t('if_overflow_hint')} ${t('tip_input-ref')}` : t('tip_input-ref');
     }
     const warnings: string[] = [];
     if (over) warnings.push('!' + t('if_overflow_short'), '!' + t('if_overflow_hint'));
@@ -464,8 +474,9 @@ export function updateStatus(s: any) {
     requestRender();
   }
   }
+  const storedRef = s.req?.[s.mode === 'std' ? 'swp' : s.mode]?.ref;
   confirmRefLevel(s.mode, s.ref,
-    s.response_to === 'SET_REF' ? s.req?.[s.mode === 'std' ? 'swp' : s.mode]?.ref : undefined);
+    s.response_to === 'SET_REF' ? storedRef : undefined, storedRef);
   S.setConfigVersion(Number(s.config_version) || 0);
   confirmResolutionStatus(s);
   currentPoints.confirm(Number(s.points) || Number(s.req.swp?.points) || 1001);
@@ -493,28 +504,30 @@ export function updateStatus(s: any) {
   }
   if (s.mode === 'sdr') {
     if (typeof s.sdr?.ref === 'number') noteDisplayRefReport(s.sdr.ref);
-  } else rejectDisplayRefRequest();
+  } else if (typeof storedRef === 'number') noteDisplayRefReport(storedRef);
   // SDR owns two refs (its IQS level and the client's display scale): this brings the display onto
   // the level the SDR itself stores, once per entry, and tells the entry fit whether to run at all.
   noteSdrRefState(s.sdr);
-  if (displayUnit.get() !== 'dB') setDisplayRef('mode', refLevel.get());
+  if (displayUnit.get() !== 'dB') setDisplayRef('mode', rawToDisplayRef(refLevel.get()));
+  if (s.mode === 'sdr') confirmAxisRef(s.sdr?.ref);
+  else if (s.response_to === 'SET_REF') confirmAxisRef(storedRef);
   syncScaleButtons();
 
   const frequencyCommitted = s.response_to === 'SET_FREQ' || s.response_to === 'SET_RTA';
   updateFreqUIInputs(frequencyCommitted);
-  const cur = refLevel.get();
+  const cur = displayUnit.get() === 'dB' ? rawToDisplayRef(refLevel.get()) : getDisplayRef();
   const refText = Number.isInteger(cur) ? cur.toFixed(0) : cur.toFixed(1);
-  // The editor holds the absolute reference level in dBm for Set and STATUS updates.
-  // Relative display mode changes the rendered axis, not this hardware reference.
+  // The editor holds compensated dBm even when readouts use another amplitude unit.
+  // Relative display mode changes the rendered axis, not this absolute reference editor.
   setInput('input-ref', refText);
   const refInput = document.getElementById('input-ref') as HTMLInputElement | null;
   // Nothing locks the reference any more: Auto Scale is a one-shot action, so the input, the
   // Set button and the step arrows stay usable and only their pending state is shown.
-  if (refInput) refInput.classList.toggle('ref-pending', refLevel.pending());
+  if (refInput) refInput.classList.toggle('ref-pending', displayRefDiverges());
   syncLevelAvailability(s.mode);
   // The step arrows are never greyed at a range end any more: the range end is not a state the
   // user has to be locked out of, and the value that results from a press is clamped to the
-  // device's own range silently (see panels/refAmp.ts adjustRefLevel).
+  // local viewport range silently (see panels/refAmp.ts adjustRefLevel).
   const refDown = document.getElementById('btn-ref-down') as HTMLButtonElement | null;
   const refUp = document.getElementById('btn-ref-up') as HTMLButtonElement | null;
   if (refDown) refDown.title = t('ref_down');
@@ -601,7 +614,7 @@ export function updateStatus(s: any) {
   }
   refreshRefClockHint(s, s.response_to);
   syncRefClockStatus(s);
-  if (s.amp) syncAmpStatus(s.amp);
+  if (s.amp) syncAmpStatus(s.amp, s.response_to, s.request_id);
   const of = document.getElementById('input-offset') as HTMLInputElement;
   if (of && document.activeElement !== of && Math.abs(parseFloat(of.value) - displayOffset.get()) > 0.01)
     of.value = displayOffset.get().toFixed(1);

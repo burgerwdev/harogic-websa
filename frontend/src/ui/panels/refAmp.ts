@@ -8,21 +8,13 @@ import { createParam } from '../../core/params';
 import { send } from '../../core/wsSend';
 import { updateInfoBar } from '../../render/infobar';
 import { requestRender } from '../../render/redraw';
-import { displayRefDiverges, getDisplayRef, rejectDisplayRefRequest, setDisplayRef } from '../displayRef';
+import { clampDisplayRef, displayRefDiverges, displayRefMin, displayRefMax, hardwareRefForDisplay, needsHardwareRef, getDisplayRef, rawToDisplayRef, rejectDisplayRefRequest, setDisplayRef, shiftDisplayRef } from '../displayRef';
 import { currentGraphMode, measurementOwnsDevice } from '../graphMode';
 import { refLevel } from '../refState';
 import { autoScaleBusy, autoScaleRequest, clearAutoScaleHint } from '../refAutoScale';
-import { displayOffset } from '../displayState';
+import { displayOffset, displayUnit } from '../displayState';
 import { syncWfRangeUi } from '../wfRange';
 import { AMP_FIELDS, type AmpField, setAmpField, syncAmpAvailability } from '../ampState';
-
-/**
- * User Ref bounds match the backend SET_REF.ref and AUTO_SCALE.current_ref schema.
- * STATUS caps Ref bounds serve auto-placement; the device reports the effective level
- * its attenuation and IF gain can program.
- */
-const REF_USER_MIN = -160;
-const REF_USER_MAX = 40;
 
 export function setRefLevel() {
   const el = document.getElementById('input-ref') as HTMLInputElement;
@@ -35,23 +27,24 @@ export function refStepDbm(): number {
 }
 
 export function adjustRefLevel(direction: -1 | 1) {
-  const base = currentGraphMode() === 'sdr' ? getDisplayRef() : refLevel.get();
-  const next = steppedRefLevel(base, refStepDbm(), direction, REF_USER_MIN, REF_USER_MAX);
+  const base = getDisplayRef();
+  const next = steppedRefLevel(base, refStepDbm(), direction, displayRefMin(), displayRefMax());
   if (next !== base) commitRefLevel(next);
 }
 
-/**
- * One Level-offset value from a gesture (the level axis in the RELATIVE display, where the top of
- * the graticule is a rendering offset rather than a device reference).
- *
- * The slot, the box and the repaint move together: a value changed behind the panel's back would
- * leave the box showing an offset that is not the one on screen.
- */
+/** Apply external gain/loss compensation, or pan the relative display's level offset. */
 export function commitLevelOffset(value: number): void {
   if (!isFinite(value)) return;
+  const delta = value - displayOffset.get();
   displayOffset.set(value);
+  if (displayUnit.get() !== 'dB') {
+    shiftDisplayRef(delta);
+  }
+  syncRefBounds();
+  syncRefUI(true);
   const box = document.getElementById('input-offset') as HTMLInputElement | null;
   if (box && document.activeElement !== box) box.value = String(Number(value.toFixed(1)));
+  updateInfoBar();
   requestRender();
 }
 
@@ -63,34 +56,27 @@ export function commitLevelOffset(value: number): void {
  */
 export function commitRefLevel(value: number): number | null {
   if (!isFinite(value) || measurementOwnsDevice()) return null;
-  const next = Math.max(REF_USER_MIN, Math.min(REF_USER_MAX, value));
+  const next = clampDisplayRef(value);
+  const raw = hardwareRefForDisplay(next);
+  const configure = needsHardwareRef(next);
   clearAutoScaleHint();
-  if (currentGraphMode() === 'sdr') {
-    setDisplayRef('user', next);
-    syncSdrRefUI(true);
-    prepareSdrAudioTransition();
-  } else {
-    refLevel.set(next);
-    setDisplayRef('mode', next);
-    const input = document.getElementById('input-ref') as HTMLInputElement | null;
-    if (input) { input.value = String(next); input.classList.add('ref-pending'); }
+  setDisplayRef('user', next);
+  if (configure) {
+    refLevel.set(raw);
+    if (currentGraphMode() === 'sdr') prepareSdrAudioTransition();
+    send({ cmd: 'SET_REF', mode: 'manual', ref: raw });
   }
-  send({ cmd: 'SET_REF', mode: 'manual', ref: next });
+  syncRefUI(true);
+  updateInfoBar();
   requestRender();
   return next;
 }
 
 /** Command errors carry their originating command; unrelated stream errors cannot cancel Ref. */
 export function rejectManualRef(): void {
-  if (currentGraphMode() === 'sdr') {
-    rejectDisplayRefRequest();
-    syncSdrRefUI(true);
-  } else {
-    refLevel.reset();
-    setDisplayRef('mode', refLevel.get());
-    const input = document.getElementById('input-ref') as HTMLInputElement | null;
-    if (input) { input.value = String(refLevel.get()); input.classList.remove('ref-pending'); }
-  }
+  if (rejectDisplayRefRequest()) refLevel.reset();
+  syncRefUI(true);
+  updateInfoBar();
   requestRender();
 }
 
@@ -237,8 +223,7 @@ export function setAmp(element: HTMLSelectElement) {
 
 export function setOffset() {
   const v = parseFloat((document.getElementById('input-offset') as HTMLInputElement).value);
-  displayOffset.set(isFinite(v) ? v : 0);
-  requestRender();
+  commitLevelOffset(isFinite(v) ? v : 0);
 }
 
 export function toggleGapFill() {
@@ -252,6 +237,7 @@ export function toggleGapFill() {
 
 /** Measurement sessions own the RF controls and their incompatible display windows. */
 export function syncLevelAvailability(mode: string): void {
+  syncRefBounds();
   const exclusive = mode === 'harmonic' || mode === 'pnm';
   const panel = document.getElementById('level-panel');
   if (panel) {
@@ -263,9 +249,17 @@ export function syncLevelAvailability(mode: string): void {
   syncWfRangeUi();
 }
 
+/** The editor remains compensated dBm regardless of the readout's amplitude unit. */
+export function syncRefBounds(): void {
+  const input = document.getElementById('input-ref') as HTMLInputElement | null;
+  if (input) {
+    input.min = String(displayRefMin());
+    input.max = String(displayRefMax());
+  }
+}
 
-export function syncSdrRefUI(force = false) {
-  if (currentGraphMode() !== 'sdr') return;
+export function syncRefUI(force = false) {
+  syncRefBounds();
   const b = document.getElementById('btn-ref-auto');
   if (b) {
     b.classList.toggle('busy', autoScaleBusy());
@@ -276,10 +270,11 @@ export function syncSdrRefUI(force = false) {
     inp.disabled = measurementOwnsDevice();
     // Discipline 4: the user can see that the device has not confirmed the new level yet.
     inp.classList.toggle('ref-pending', displayRefDiverges());
-    if (force || document.activeElement !== inp) inp.value = getDisplayRef().toFixed(0);
+    const ref = displayUnit.get() === 'dB' ? rawToDisplayRef(refLevel.get()) : getDisplayRef();
+    if (force || document.activeElement !== inp) inp.value = String(Number(ref.toFixed(1)));
   }
   const cv = document.getElementById('spectrum');
-  if (cv) cv.dataset.sdrRef = String(Math.round(getDisplayRef()));
+  if (cv && currentGraphMode() === 'sdr') cv.dataset.sdrRef = String(Math.round(getDisplayRef()));
   const setBtn = document.getElementById('btn-ref-set') as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = measurementOwnsDevice();
   // The step arrows stay usable at the ends of the SDR range as well (same rule as the swept

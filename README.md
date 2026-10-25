@@ -4,7 +4,7 @@
 
 A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), using the native Rust service and a C++ shim for the official `libhtraapi.so` SDK over USB.
 
-Release **1.9.1** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
+Release **1.9.2** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
 for offline tools and tests; there is no Python production backend. Retained browser WASM
 artifacts are optional offline diagnostics, not the production DSP path.
 
@@ -71,7 +71,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 
 ### Run the bundled release
 
-The 1.9.1 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
+The 1.9.2 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so`, and `runtime/frontend/dist/`.
 Run `./run.sh` for hardware or `./run.sh --fake` for synthetic input, then open
 http://127.0.0.1:8080. No Rust, Node.js or Python installation is needed to use the bundle.
@@ -102,7 +102,7 @@ has not been established.
 
 ### Prerequisites
 
-- Linux with systemd user services, `curl` and `ss` (iproute2) for the launcher; native audio
+- Linux with Bash, coreutils, `flock` (util-linux), `/proc` and `curl` for the launcher; native audio
   decoding requires the FDK AAC shared library (`libfdk-aac.so.2`, version ≥2.0.3).
 - Rust, a C++17 compiler and pkg-config only for native rebuilds.
 - Python ≥3.10 only for bench, e2e, reference and fixture tools; no production Python backend.
@@ -128,9 +128,16 @@ make native sdk-shim                     # native service and hardware SDK shim
 Open http://127.0.0.1:8080
 
 The default is real hardware; the launcher selects the installed user shim or bundled adapter as described above.
-Use `WEBSA_FAKE=1 ./run.sh` explicitly for synthetic input. `WEBSA_UNIT`, `WEBSA_HOST`,
-`WEBSA_PORT`, `WEBSA_RUST_IQS_SHIM` and `WEBSA_STATIC` configure the native launcher;
-logs are in the systemd user journal. `./stop.sh` and `./status.sh` manage the same native unit.
+Use `WEBSA_FAKE=1 ./run.sh` explicitly for synthetic input. `WEBSA_INSTANCE`, `WEBSA_HOST`,
+`WEBSA_PORT`, `WEBSA_BIN`, `WEBSA_RUST_IQS_SHIM` and `WEBSA_STATIC` configure the native launcher.
+It starts an ordinary background process with `nohup` and, when available, `setsid`; no systemd
+session is needed. `--instance NAME` or `WEBSA_INSTANCE` selects a checkout-scoped instance
+(default `websad`), replacing the former `--unit` / `WEBSA_UNIT` interface. `./stop.sh` validates
+the recorded PID, start time, executable and working directory before signalling it; repeated stops succeed.
+`./status.sh` uses the recorded host/port and prints the PID, log path and HTTP state.
+Private state and append-only logs live below `$XDG_RUNTIME_DIR/harogic-websa` when available,
+otherwise `${XDG_STATE_HOME:-$HOME/.local/state}/harogic-websa`, separated by checkout and instance.
+There is no automatic process restart; use `make restart` after a process failure.
 
 Unplugging the analyzer is detected and reported, and plugging it back in resumes the same mode
 without a restart; `make status` shows the live link, and `make restart` restarts the service.
@@ -189,8 +196,8 @@ The day-to-day commands, plus what to run before committing:
 
 | Script | Description |
 |---|---|
-| `./run.sh` / `./stop.sh` | Start / stop the native systemd user service |
-| `make restart` / `make status` | Restart / show state, PID, memory, CPU, log, device link |
+| `./run.sh` / `./stop.sh` | Start / stop the owned native background process |
+| `make restart` / `make status` | Restart / show PID, log path and live HTTP/device state |
 | `make build` | Frontend assets + native Rust service (hardware shim built separately) |
 | `make native` / `make sdk-shim` | Build the Rust service / hardware SDK shim |
 | `make frontend` | Frontend only: npm install + Vite build (no WASM) |

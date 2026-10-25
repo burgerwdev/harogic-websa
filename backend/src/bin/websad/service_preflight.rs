@@ -231,6 +231,45 @@ mod tests {
     }
 
     #[tokio::test(flavor="current_thread")]
+    async fn manual_reference_and_overflow_preserve_sdr_gain_controls() {
+        let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let _injection=AutoInjection;
+        let app=app();
+        std::fs::write(AUTO_CONTROL,"-15 inf").unwrap();
+        for (atten,preamp,ifgain,gain_strategy) in [
+            (-1,0,0,1),(-1,1,1,0),(17,0,2,1),(33,1,3,0),
+        ] {
+            command(&app,"SET_AMP",json!({"atten":atten,"preamp":preamp,
+                "ifgain":ifgain,"gain_strategy":gain_strategy})).await.unwrap();
+            for reference in [-70.0,-45.0] {
+                command(&app,"SET_REF",json!({"ref":reference})).await.unwrap();
+                let state=app.state.lock().unwrap();
+                let status=state.status_snapshot().build();
+                assert_eq!(status["req"]["sdr"]["ref"],reference);
+                assert_eq!(status["amp"]["atten"],atten);
+                assert_eq!(status["amp"]["preamp"],preamp);
+                assert_eq!(status["amp"]["ifgain"],ifgain);
+                assert_eq!(status["amp"]["gain_strategy"],gain_strategy);
+                assert_eq!(status["amp"]["atten_actual"],18);
+                assert_eq!(status["amp"]["preamp_actual"],1);
+                assert_eq!(status["amp"]["ifgain_actual"],3);
+            }
+            let mut state=app.state.lock().unwrap();
+            let amp=state.status_snapshot().build()["amp"].clone();
+            let before=(state.config_version,state.ddc.as_ref().unwrap().0.generation);
+            for _ in 0..6 {
+                assert_eq!(fresh_iqs_observation(&mut state),-12);
+                state.advance_auto();
+                assert_eq!(state.sdr_ref,-45.0);
+                assert_eq!(state.active_auto_ref(),Some(-47.5));
+                assert_eq!(state.auto.view()["adjusting"],false);
+                assert_eq!(state.status_snapshot().build()["amp"],amp);
+                assert_eq!((state.config_version,state.ddc.as_ref().unwrap().0.generation),before);
+            }
+        }
+    }
+
+    #[tokio::test(flavor="current_thread")]
     async fn relevel_after_retained_bins_and_mode_change_uses_fresh_calibrated_geometry() {
         let _guard=hardware_iqs::tests::TEST_IQS_LOCK.lock().unwrap_or_else(|e|e.into_inner());
         let app=app();

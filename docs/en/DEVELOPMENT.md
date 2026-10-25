@@ -5,7 +5,7 @@ See [Architecture](ARCHITECTURE.md) for component boundaries and [API](API.md) f
 
 ## 1. Environment, build and run
 
-Release 1.9.1 uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
+Release 1.9.2 uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
 offline tooling and optional diagnostics, not production backends. To run the committed
 bundle, use `./run.sh` or `./run.sh --fake`; see the [release prerequisites](../../README.md#run-the-bundled-release).
 The bundle contains `runtime/linux-x86_64/websad`, the project's SDK adapter and
@@ -22,7 +22,7 @@ Synthetic digital-mode playback needs the checkout's tracked `tests/fixtures/` i
 `runtime/`. The root launcher sets the working directory; `WEBSA_FIXTURES` overrides the
 fixture directory, which otherwise defaults to `tests/fixtures` relative to that directory.
 
-To rebuild, use Linux with a systemd user session, Rust stable, a C/C++ toolchain, CMake,
+To rebuild, use Linux, Rust stable, a C/C++ toolchain, CMake,
 pkg-config and Node.js 22.22+, 24.15+ or ≥26 (the frontend test stack's floor; a plain Vite
 build accepts 22.12+). Python 3.12 or 3.13 supports tests, fixtures and bench tools; it is
 not a production backend. Native audio decoding requires FDK AAC ≥2.0.3 at build time and
@@ -35,9 +35,9 @@ Run these commands from the repository root, in sequence:
 python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt
 make frontend
 make native
-./run.sh --fake --port 8099 --unit websad-dev
-WEBSA_UNIT=websad-dev WEBSA_PORT=8099 ./status.sh
-WEBSA_UNIT=websad-dev ./stop.sh
+./run.sh --fake --port 8099 --instance websad-dev
+./status.sh --instance websad-dev
+./stop.sh --instance websad-dev
 ```
 
 `make frontend` runs `build.sh` and produces `frontend/dist/`. Rebuild after frontend changes:
@@ -46,16 +46,15 @@ the service serves that bundle. `make build` builds the frontend and native serv
 
 For hardware, install the vendor SDK, then run `make sdk-shim` and `./run.sh`.
 `SDK_ROOT` and `SDK_SHIM` configure the shim build; `WEBSA_RUST_IQS_SHIM` selects it at runtime.
-The default service is `websad` at `127.0.0.1:8080`. Use `WEBSA_UNIT`, `WEBSA_PORT` and
-`WEBSA_HOST` consistently with the root scripts. Keep one process as the device owner.
+The default instance is `websad` at `127.0.0.1:8080`. Use `WEBSA_INSTANCE` or `--instance`
+to select it; status and stop read saved endpoint/ownership metadata. Keep one process as the device owner.
 See [FAQ notes](FAQ_NOTES.md) and [the tools guide](../../tools/README.md) for service and hardware configuration.
 
 **Memory-limited hosts: builds must be serial and isolated.** Run Rust builds, Rust tests and
 browser suites sequentially; do not use parallel Make. Cargo `-j 1` limits only one invocation,
-not other builds or browsers. Keep `--test-threads=1` for Rust test runs. Compile in a separate
-systemd user unit with an explicit memory limit, and keep the device service in its own unit
-so a terminal-scope OOM kill cannot terminate it. Pass the selected Rust toolchain explicitly:
-systemd does not inherit the terminal's toolchain override.
+not other builds or browsers. Keep `--test-threads=1` for Rust test runs. Isolate builds from
+the device process with the host's available resource controls and an explicit memory limit.
+The launcher uses a detached background process and does not require a service manager.
 
 ## 2. Dependency direction and ownership
 
@@ -94,8 +93,10 @@ Use explicit absence rather than a valid frequency or level as an unset sentinel
 once outside hot loops. Mode switches preserve preferences; explicit handover actions change
 them deliberately.
 
-Keep manual Ref intent separate from effective SDK readback. Manual requests use -160 to +40 dBm;
-pending edits must survive stale STATUS and roll back on a correlated error or timeout. Explicit
+Keep manual display Ref separate from the requested and effective hardware references. The local
+viewport uses -200..+100 dBm plus Offset; wire requests clamp Ref minus Offset to -160..+40 dBm.
+Matching raw reports must retain the chosen viewport. Repeated clamped targets must reuse pending
+or accepted hardware intent. Pending edits survive stale STATUS and roll back on rejection or timeout. Explicit
 Auto is a bounded operation; cancel stale decisions on manual, frequency, mode or Preset changes.
 SDR entry fitting is display-only and must not configure IQS. See [FAQ notes](FAQ_NOTES.md) for
 overflow recovery and placement rules. Apply amplitude offset once at the display boundary.
@@ -175,13 +176,13 @@ Architecture baselines likewise require an explained, reviewed change when relax
 
 ## 7. Failures and releases
 
-Native recovery owns device link failures; systemd owns process restarts. Preserve error
-context in the journal, and expose UI/script diagnostics through STATUS. Keep warnings distinct
+Native recovery owns device link failures; process failures require `make restart`. Preserve error
+context in the instance log, and expose UI/script diagnostics through STATUS. Keep warnings distinct
 from failed acquisition, including usable IQ returned with an SDK warning. Do not turn a
 recoverable warning into silent data loss or claim a disconnected device is healthy.
 
-Start diagnosis with `./status.sh` and `journalctl --user -u websad.service -n 100` (use the
-selected unit). For a blank canvas, check the rebuilt bundle, registration reachability and
+Start diagnosis with `./status.sh` (select a named instance with `--instance`) and read its
+reported log file. For a blank canvas, check the rebuilt bundle, registration reachability and
 visible pixels. For a stale control, inspect STATUS, pending intent and main-thread load.
 For a device-busy failure, inspect exclusive ownership before retrying.
 

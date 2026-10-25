@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Harogic SAN Series Web Spectrum Analyzer</title>
-  <script type="module" crossorigin src="/static/dist/assets/index-Dox-IEB9.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-CGjsYWxp.css">
+  <script type="module" crossorigin src="/static/dist/assets/index-Ci-0cljQ.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-bqBf_GOY.css">
 </head>
 <body>
 <div class="analyzer-card">
@@ -274,18 +274,11 @@
               <div class="ft8-line" style="flex:1;">
                 <button class="btn" id="btn-decode-window" data-action="toggle-decode-window" data-i18n-title="decode_window_tip" data-i18n-attr="title" disabled data-i18n="off">Off</button>
               </div></div>
-            <div class="param-row"><label data-i18n="if_filter">Filter</label>
-              <span class="cur-val" id="sdr-drm-filter-note" data-i18n="drm_filter_fixed" data-i18n-title="drm_filter_tip" data-i18n-attr="title" style="display:none;">DRM auto (4.5–20 kHz)</span>
-              <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-ifbw-group">
-                <button class="btn" data-sdr-ifbw="500">0.5k</button>
-                <button class="btn" data-sdr-ifbw="2400">2.4k</button>
-                <button class="btn" data-sdr-ifbw="3000">3k</button>
-                <button class="btn" data-sdr-ifbw="6000">6k</button>
-                <button class="btn" data-sdr-ifbw="12000">12k</button>
-                <button class="btn" data-sdr-ifbw="25000">25k</button>
-                <button class="btn" data-sdr-ifbw="50000">50k</button>
-                <button class="btn" data-sdr-ifbw="180000">180k</button>
-              </div></div>
+            <div class="param-row sdr-filter-row"><label for="input-sdr-ifbw" data-i18n="if_filter">Filter</label>
+              <input type="number" id="input-sdr-ifbw" min="0.05" step="0.001" value="6" data-unit="kHz">
+              <div class="sdr-tail"><div class="unit-btn-group" id="unit-sdr_ifbw-group"></div>
+                <button class="btn" id="btn-sdr-filter-view" type="button" aria-pressed="false" data-i18n="sdr_filter_view" data-i18n-title="sdr_filter_view_tip">View</button></div></div>
+            <div class="param-row sdr-filter-actions"><div class="btn-group" id="sdr-ifbw-group"></div></div>
             <div class="param-row"><label data-i18n="deemph">De-emph</label>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-deemph-group">
                 <button class="btn active" data-sdr-deemph="-1">Auto</button>
@@ -297,10 +290,10 @@
             <div class="param-row"><label data-i18n="volume">Volume</label>
               <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
               <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
-            <div class="param-row"><label data-i18n="squelch_short">Squelch</label>
-              <input type="range" id="input-sdr-squelch" min="-160" max="0" step="0.1" value="-110" data-i18n="squelch_tip" data-i18n-attr="title" title="RF threshold before AGC; far left disables squelch, move right to require a stronger signal" style="flex:1;">
+            <div class="param-row sdr-squelch-row"><label data-i18n="squelch_short">Squelch</label>
+              <input type="range" id="input-sdr-squelch" min="-160" max="0" step="0.1" value="-110" data-i18n="squelch_tip" data-i18n-attr="title" title="RF threshold before AGC; far left disables squelch, move right to require a stronger signal">
               <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span>
-              <button class="btn active" id="btn-sdr-agc" data-action="toggle-sdr-agc" data-i18n-title="agc_tip" data-i18n-attr="title" title="Audio AGC">On</button></div>
+              <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button></div>
             <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
               <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
@@ -379,25 +372,53 @@
               <option value="0" data-i18n="auto_rbw">Auto (RBW)</option><option value="3">3 pts</option>
               <option value="5">5 pts</option><option value="7">7 pts</option><option value="9">9 pts</option>
             </select></div>
-          <div class="param-row trace-keep"><label data-i18n="persist">Persist</label>
-            <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Persistence (density fade)">
-              <option value="0" data-i18n="off">Off</option>
-              <option value="0.95" data-i18n="rta_fast">Fast</option>
-              <option value="0.975" selected data-i18n="rta_medium">Medium</option>
-              <option value="0.99" data-i18n="rta_slow">Slow</option>
-              <option value="0.995" data-i18n="rta_vslow">Very Slow</option>
+          <div class="btn-group trace-norm-ops" style="margin-top:4px;">
+            <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>
+            <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
+            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span></div>
+          <div class="param-row trace-keep density-layers-row">
+            <label for="select-rta-dens-layers" data-i18n="dens_layers">Layers</label>
+            <select id="select-rta-dens-layers" data-action="set-rta-dens-layers" data-i18n="tip_rta_dens_layers" data-i18n-attr="title" title="Visible layers">
+              <option value="both" selected data-i18n="rta_layers_both">Both</option>
+              <option value="density" data-i18n="rta_layers_density">Density</option>
+              <option value="trace" data-i18n="rta_layers_trace">Trace</option>
             </select>
-            <label style="min-width:auto;" data-i18n="grain">Grain</label>
+            <button class="btn" id="btn-density-more" type="button" data-action="toggle-density-settings" data-i18n="density_more" aria-controls="density-settings" aria-expanded="false">More</button>
+          </div>
+          <div class="param-row trace-keep density-settings" id="density-settings" hidden>
+            <label for="select-rta-fade" data-i18n="persist">Persist</label>
+            <select id="select-rta-fade" data-action="set-rta-fade" data-i18n="tip_persist" data-i18n-attr="title" title="Density afterglow half-life">
+              <option value="0" data-i18n="off">Off</option>
+              <option value="0.5" selected data-i18n="rta_persist_05">0.5 s</option>
+              <option value="2" data-i18n="rta_persist_2">2 s</option>
+              <option value="5" data-i18n="rta_persist_5">5 s</option>
+              <option value="10" data-i18n="rta_persist_10">10 s</option>
+            </select>
+            <label for="select-rta-dens-source" data-i18n="dens_source">Source</label>
+            <select id="select-rta-dens-source" data-action="set-rta-dens-source" data-i18n="tip_rta_dens_source" data-i18n-attr="title" title="Density input">
+              <option value="trace" selected data-i18n="rta_src_trace">Trace</option>
+              <option value="live" data-i18n="rta_src_live">Live</option>
+            </select>
+            <label for="select-rta-bins" data-i18n="grain">Grain</label>
             <select id="select-rta-bins" data-action="set-rta-bins" data-i18n="tip_select-rta-bins" data-i18n-attr="title">
               <option value="64">64</option>
               <option value="96">96</option>
               <option value="128" selected>128</option>
               <option value="192">192</option>
+            </select>
+            <label for="select-rta-dens-contrast" data-i18n="contrast">Contrast</label>
+            <select id="select-rta-dens-contrast" data-action="set-rta-dens-contrast" data-i18n="tip_rta_dens_contrast" data-i18n-attr="title" title="Density colour contrast">
+              <option value="0.6" data-i18n="contrast_soft">Soft</option>
+              <option value="1" selected data-i18n="contrast_medium">Medium</option>
+              <option value="1.6" data-i18n="contrast_hard">Hard</option>
+            </select>
+            <label for="select-rta-dens-width" data-i18n="dens_width">Display width</label>
+            <select id="select-rta-dens-width" data-action="set-rta-dens-width" data-i18n="tip_rta_dens_width" data-i18n-attr="title" title="Vertical display footprint in CSS pixels; does not change measured amplitudes or history">
+              <option value="1">1 px</option>
+              <option value="3">3 px</option>
+              <option value="5" selected>5 px</option>
+              <option value="9">9 px</option>
             </select></div>
-          <div class="btn-group trace-norm-ops" style="margin-top:4px;">
-            <button class="btn" id="btn-normalize" data-action="normalize" data-i18n="normalize" data-i18n-title="tip_normalize">Normalize</button>
-            <button class="btn" data-action="reset-norm" data-i18n="reset_norm">Reset Norm</button>
-            <button class="btn" data-action="clear-trace" data-i18n="clear">Clear</button><span class="cur-val warn-hint" id="norm-hint"></span></div>
         </div>
       </div>
 
@@ -446,7 +467,7 @@
           <span class="gh-toggle panel-toggle" data-action="toggle-group" data-i18n="tip_collapse_panel" data-i18n-attr="title" title="Collapse / Expand panel">-</span>
         </div>
         <div class="group-body">
-          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" min="-160" max="40" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
+          <div class="param-row"><label data-i18n="ref_dbm">Ref (dBm)</label><input type="number" id="input-ref" value="0" step="1" data-i18n="tip_input-ref" data-i18n-attr="title"><button class="btn" id="btn-ref-set" data-action="set-ref-level" data-i18n="set" data-i18n-title="tip_btn-ref-set">Set</button><button class="btn" id="btn-ref-auto" data-action="set-ref-auto" data-i18n="auto" data-i18n-title="tip_btn-ref-auto">Auto</button><button class="btn ref-step-btn" id="btn-ref-down" data-action="ref-down" data-i18n="glyph_down" data-i18n-attr="title" data-i18n-title="ref_down">▼</button><button class="btn ref-step-btn" id="btn-ref-up" data-action="ref-up" data-i18n="glyph_up" data-i18n-attr="title" data-i18n-title="ref_up">▲</button></div>
           <div class="param-row"><label data-i18n="scale_short">Scale</label>
             <div class="unit-btn-group" id="unit-scale-group">
               <button class="unit-btn" data-scale="1">1</button>
@@ -767,7 +788,7 @@
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.2 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
@@ -877,7 +898,7 @@
         <span id="wfm-rt">—</span>
       </div>
       <dl class="decode-rds-metrics decode-wfm-metrics">
-        <div><dt>Carrier</dt><dd id="wfm-carrier">—</dd></div>
+        <div><dt id="wfm-carrier-label">Carrier</dt><dd id="wfm-carrier" title="Channel centre the demodulated audio belongs to">—</dd></div>
         <div><dt>Deviation</dt><dd id="wfm-dev">—</dd></div>
         <div><dt>Pilot</dt><dd id="wfm-pilot">—</dd></div>
       </dl>

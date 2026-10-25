@@ -164,23 +164,91 @@ mod auto_recovery {
     }
 
     #[test]
-    fn manual_reference_never_recovers_persistent_overflow_without_auto() {
+    fn manual_reference_and_overflow_preserve_swp_gain_controls() {
         let fixture = Fixture::new();
-        let mut state = fixture.state(-40.0);
-        state.fetch_sweep();
-        dispatch(&mut state, "SET_REF", &json!({"ref": -45.0})).unwrap();
-        controls(-10.0, f64::INFINITY, 0);
-        let version = state.config_version;
-        let stats = fake_swp_stats();
-        for _ in 0..12 {
-            assert!(tick(&mut state).is_empty());
-            assert_eq!(state.swp.ref_level, -45.0);
-            assert_eq!(state.actual["ref"], -47.5);
-            assert!(!adjusting(&state));
+        for (atten, preamp, ifgain, gain_strategy) in [
+            (-1, 0, 0, 1), (-1, 1, 1, 0), (17, 0, 2, 1), (33, 1, 3, 0),
+        ] {
+            let mut state = fixture.state(-40.0);
+            state.fetch_sweep();
+            dispatch(&mut state, "SET_AMP", &json!({
+                "atten": atten, "preamp": preamp, "ifgain": ifgain,
+                "gain_strategy": gain_strategy,
+            })).unwrap();
+            for reference in [-70.0, -45.0] {
+                dispatch(&mut state, "SET_REF", &json!({"ref": reference})).unwrap();
+                let status = state.status_snapshot().build();
+                assert_eq!(status["req"]["ref"], reference);
+                assert_eq!(status["amp"]["atten"], atten);
+                assert_eq!(status["amp"]["preamp"], preamp);
+                assert_eq!(status["amp"]["ifgain"], ifgain);
+                assert_eq!(status["amp"]["gain_strategy"], gain_strategy);
+                assert_eq!(status["amp"]["atten_actual"], 14);
+                assert_eq!(status["amp"]["preamp_actual"], 1);
+                assert_eq!(status["amp"]["ifgain_actual"], 3);
+            }
+            controls(-10.0, f64::INFINITY, 0);
+            let amp = state.status_snapshot().build()["amp"].clone();
+            let version = state.config_version;
+            let stats = fake_swp_stats();
+            for _ in 0..12 {
+                assert!(tick(&mut state).is_empty());
+                assert_eq!(state.swp.ref_level, -45.0);
+                assert_eq!(state.actual["ref"], -47.5);
+                assert_eq!(state.status_snapshot().build()["amp"], amp);
+                assert!(!adjusting(&state));
+            }
+            assert_eq!(state.status_warning, -12);
+            assert_eq!(state.config_version, version);
+            assert_eq!(fake_swp_stats(), stats);
         }
-        assert_eq!(state.status_warning, -12);
-        assert_eq!(state.config_version, version);
-        assert_eq!(fake_swp_stats(), stats);
+    }
+
+    #[test]
+    fn manual_reference_and_overflow_preserve_rta_gain_controls() {
+        // Every SDK read reports a fresh IF overflow without completing capture.
+        let source = FAKE_RTA_SHIM.replace(
+            "*points = 0; t.last_sdk_status = -10; return -10;",
+            "*points = 0; t.last_sdk_status = -12; return -12;",
+        );
+        let mut state = hardware_state(Some(compile_fake_swp_source("rta_manual_gain_overflow", &source)));
+        state.swp.mode = "rta".into();
+        assert!(state.step_rta().is_empty());
+        assert!(state.rta_hw.is_some(), "fake RTA open failed: {:?}", state.rta_error);
+        for (atten, preamp, ifgain, gain_strategy) in [
+            (-1, 0, 0, 1), (-1, 1, 1, 0), (17, 0, 2, 1), (33, 1, 3, 0),
+        ] {
+            dispatch(&mut state, "SET_AMP", &json!({
+                "atten": atten, "preamp": preamp, "ifgain": ifgain,
+                "gain_strategy": gain_strategy,
+            })).unwrap();
+            for reference in [-70.0, -45.0] {
+                dispatch(&mut state, "SET_REF", &json!({"ref": reference})).unwrap();
+                let status = state.status_snapshot().build();
+                assert_eq!(status["req"]["ref"], reference);
+                assert_eq!(status["amp"]["atten"], atten);
+                assert_eq!(status["amp"]["preamp"], preamp);
+                assert_eq!(status["amp"]["ifgain"], ifgain);
+                assert_eq!(status["amp"]["gain_strategy"], gain_strategy);
+                assert_eq!(status["amp"]["atten_actual"], 12);
+                assert_eq!(status["amp"]["preamp_actual"], 1);
+                assert_eq!(status["amp"]["ifgain_actual"], 2);
+            }
+            let amp = state.status_snapshot().build()["amp"].clone();
+            let version = state.config_version;
+            let generation = state.rta_hw.as_ref().unwrap().trigger_actual().unwrap().generation;
+            for _ in 0..12 {
+                assert!(state.step_rta().is_empty());
+                assert_eq!(state.status_warning, -12);
+                state.advance_auto();
+                assert_eq!(state.rta_ref, -45.0);
+                assert_eq!(state.rta_actual["ref"], -45.0);
+                assert_eq!(state.status_snapshot().build()["amp"], amp);
+                assert!(!adjusting(&state));
+                assert_eq!(state.config_version, version);
+                assert_eq!(state.rta_hw.as_ref().unwrap().trigger_actual().unwrap().generation, generation);
+            }
+        }
     }
 
     #[test]

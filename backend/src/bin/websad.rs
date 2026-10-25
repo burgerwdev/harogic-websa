@@ -1882,17 +1882,24 @@ impl DevState {
         match result {
             Ok(frame) => {
                 self.swp_fail_streak = 0;
-                self.status_warning = 0;
-                self.note_auto_acquisition(0);
+                self.status_warning = frame.warning;
+                self.note_auto_acquisition(frame.warning);
                 if self
                     .swp_error
                     .as_deref()
-                    .is_some_and(|e| e.starts_with("IF overflow"))
+                    .is_some_and(|e| e.starts_with("IF overflow")) && frame.warning == 0
                 {
                     self.swp_error = None;
                 }
+                if frame.warning == -12 {
+                    self.swp_error = Some(
+                        "IF overflow (-12): raise the reference level until this warning clears".into(),
+                    );
+                }
                 self.refclk_ppm = frame.refclk_ppm;
-                self.observe_peak(&frame.power, Some(&frame.freq));
+                if frame.warning == 0 {
+                    self.observe_peak(&frame.power, Some(&frame.freq));
+                }
                 let points = frame.freq.len();
                 let encode = |tag: &[u8; 4], values: &[u8]| -> Vec<u8> {
                     let mut out = tag.to_vec();
@@ -6256,7 +6263,7 @@ extern "C" int san90_pnm_close_v1(void* p) { delete static_cast<FakePnm*>(p); re
     }
 
     #[test]
-    fn swp_warning_status_keeps_handle_and_reports_warning() {
+    fn swp_warning_without_frame_keeps_handle_and_reports_warning() {
         let _guard = TEST_SWP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fail = std::path::Path::new("/tmp/websa_fake_swp_fail.txt");
         let _ = std::fs::remove_file(fail);
@@ -6277,6 +6284,57 @@ extern "C" int san90_pnm_close_v1(void* p) { delete static_cast<FakePnm*>(p); re
         let (_, powr) = state.fetch_sweep();
         assert!(!powr.is_empty());
         assert_eq!(state.status()["status_warning"], 0);
+        let _ = std::fs::remove_file(fail);
+    }
+
+    #[test]
+    fn swp_valid_overflow_frames_publish_without_changing_manual_front_end() {
+        let _guard = TEST_SWP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fail = std::path::Path::new("/tmp/websa_fake_swp_fail.txt");
+        let _ = std::fs::remove_file(fail);
+        let source = FAKE_SWP_SHIM
+            .replace(
+                "if (int status = fail_next()) { *points = 0; return status; }",
+                "const int status = fail_next(); if (status && status != -12) { *points = 0; return status; }",
+            )
+            .replace(
+                "*points = static_cast<uint32_t>(dev->points);\n    return 0;",
+                "*points = static_cast<uint32_t>(dev->points);\n    return status;",
+            );
+        let mut state = hardware_state(Some(compile_fake_swp_source("valid_overflow", &source)));
+        state.swp.mode = "std".into();
+        state.fetch_sweep();
+        dispatch(&mut state, "SET_REF", &json!({"ref": -20.0})).unwrap();
+        dispatch(&mut state, "SET_AMP", &json!({"atten": 10})).unwrap();
+        let (_, clean_power) = state.fetch_sweep();
+        let points = u32::from_le_bytes(clean_power[8..12].try_into().unwrap()) as usize;
+        assert_eq!(clean_power.len(), 16 + points * 4);
+        let version = state.config_version;
+        let actual = state.actual.clone();
+        let requested = state.status()["req"]["swp"].clone();
+        let opens = state.swp_open_count;
+        std::fs::write(fail, "3 -12").unwrap();
+        for _ in 0..3 {
+            let (_, power) = state.fetch_sweep();
+            assert_eq!(power, clean_power, "valid SDK power must reach the wire during overflow");
+            assert_eq!(state.status_warning, -12);
+            assert_eq!(state.auto.observation_status, -12);
+            assert!(state.auto.last_peak.is_none(), "saturated data cannot fit Auto reference");
+            assert!(state.swp_error.as_deref().is_some_and(|error| error.starts_with("IF overflow")));
+            state.advance_auto();
+            assert_eq!(state.config_version, version);
+            assert_eq!(state.actual, actual);
+            assert_eq!(state.status()["req"]["swp"], requested);
+            assert_eq!(state.swp_open_count, opens);
+            assert_eq!(state.swp_fail_streak, 0);
+            assert!(state.link_up && state.swp_hw.is_some());
+        }
+        let (_, recovered) = state.fetch_sweep();
+        assert_eq!(recovered, clean_power);
+        assert_eq!(state.status_warning, 0);
+        assert_eq!(state.auto.observation_status, 0);
+        assert!(state.auto.last_peak.is_some());
+        assert!(state.swp_error.is_none());
         let _ = std::fs::remove_file(fail);
     }
 

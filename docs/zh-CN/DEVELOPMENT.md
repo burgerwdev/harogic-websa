@@ -5,7 +5,7 @@
 
 ## 1. 环境、构建与运行
 
-1.9.1 使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
+1.9.2 使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
 不承载生产后端。运行仓库随附产物使用 `./run.sh` 或 `./run.sh --fake`，依赖见
 [发布运行要求](../../README.zh-CN.md#运行随附发布产物)。随附内容为
 `runtime/linux-x86_64/websad`、本项目 SDK 适配库和 `runtime/frontend/dist/`。
@@ -21,7 +21,7 @@
 fixture。根目录启动脚本设置工作目录；fixture 默认从该目录下的 `tests/fixtures` 读取，
 可通过 `WEBSA_FIXTURES` 覆盖目录。
 
-源码重建使用带 systemd 用户会话的 Linux、Rust stable、C/C++ 工具链、CMake、pkg-config
+源码重建使用 Linux、Rust stable、C/C++ 工具链、CMake、pkg-config
 和 Node.js 22.22+、24.15+ 或 ≥26（前端测试栈的最低要求；单独 Vite 构建接受 22.12+）。
 Python 3.12 或 3.13 用于测试、fixture 和台架工具，不承载生产后端。原生音频解码在构建时
 需要 FDK AAC ≥2.0.3，运行时需要其动态库；[工作流](../../.github/workflows/ci.yml)记录了
@@ -33,9 +33,9 @@ Python 3.12 或 3.13 用于测试、fixture 和台架工具，不承载生产后
 python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt
 make frontend
 make native
-./run.sh --fake --port 8099 --unit websad-dev
-WEBSA_UNIT=websad-dev WEBSA_PORT=8099 ./status.sh
-WEBSA_UNIT=websad-dev ./stop.sh
+./run.sh --fake --port 8099 --instance websad-dev
+./status.sh --instance websad-dev
+./stop.sh --instance websad-dev
 ```
 
 `make frontend` 调用 `build.sh`，生成 `frontend/dist/`。前端修改后须重新构建，
@@ -44,15 +44,14 @@ WEBSA_UNIT=websad-dev ./stop.sh
 
 硬件运行先安装厂商 SDK，再执行 `make sdk-shim` 和 `./run.sh`。
 `SDK_ROOT`、`SDK_SHIM` 配置 shim 构建，`WEBSA_RUST_IQS_SHIM` 选择运行时 shim。
-默认服务为 `websad`，地址为 `127.0.0.1:8080`。调用根脚本时保持 `WEBSA_UNIT`、
-`WEBSA_PORT`、`WEBSA_HOST` 一致。设备只允许一个进程持有。
+默认实例为 `websad`，地址为 `127.0.0.1:8080`。用 `WEBSA_INSTANCE` 或 `--instance`
+选择实例；status 和 stop 自动读取保存的端点及所有权信息。设备只允许一个进程持有。
 服务与硬件配置见[FAQ 说明](FAQ_NOTES.md)和[工具指南](../../tools/README.md)。
 
 **内存受限主机必须串行、隔离构建。** Rust 构建、Rust 测试和浏览器套件依次运行，
 不要使用并行 Make。Cargo `-j 1` 只限制当前调用，不能限制其他构建或浏览器。
-Rust 测试保留 `--test-threads=1`。在单独的 systemd 用户服务单元中编译，并设置明确的内存上限，
-设备服务使用自己的单元，防止终端作用域中的 OOM 处理连带终止设备服务。
-显式传入选定的 Rust 工具链：systemd 不继承终端的工具链覆盖设置。
+Rust 测试保留 `--test-threads=1`。使用主机可用的资源控制和明确的内存上限隔离构建与设备进程。
+启动脚本使用脱离终端的后台进程，无需服务管理器。
 
 ## 2. 依赖方向与归属
 
@@ -87,8 +86,9 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 重置须使旧的待处理请求失效。未设置的值须有明确表示，不能用合法频率或电平充当哨兵值。
 参数槽应在高频循环外读取一次。模式切换保留偏好，只有明确的交接操作才主动改变偏好。
 
-手动 Ref 请求与 SDK 实际回读须分别保存。手动请求范围为 -160 至 +40 dBm；待确认编辑不能被
-过期 STATUS 覆盖，关联错误或超时后须恢复已接受的显示状态。显式 Auto 是有界操作，手动编辑、
+手动显示 Ref、设备请求与 SDK 实际回读须分别保存。本地窗口为 -200 至 +100 dBm 加 Offset；
+设备请求将 Ref 减 Offset 限制在 -160 至 +40 dBm。匹配原始回读不能覆盖所选窗口；同一限幅目标
+复用待确认或已接受的硬件请求。待确认编辑不能被过期 STATUS 覆盖，拒绝或超时后恢复已接受的窗口。显式 Auto 是有界操作，手动编辑、
 频率或模式变更以及 Preset 须取消旧决策。进入 SDR 时的拟合仅调整显示，不得配置 IQS；
 溢出恢复与放置规则见 [FAQ 说明](FAQ_NOTES.md)。幅度偏移只在显示边界应用一次。
 实际增益按当前 SDK 模式读取，缺失回读保留为 null；前置放大器 Auto/Off 表示请求策略，
@@ -156,11 +156,11 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 
 ## 7. 故障与发布
 
-原生恢复逻辑负责设备链路故障，systemd 负责进程重启。日志保留错误上下文，UI 和脚本
+原生恢复逻辑负责设备链路故障，进程退出后须用 `make restart` 恢复。实例日志保留错误上下文，UI 和脚本
 所需诊断通过 STATUS 暴露。区分告警与采集失败，包括 SDK 告警伴随有效 IQ 的情况。
 不得因可恢复告警静默丢数据，也不得将断开的设备报告为健康。
 
-排障时先查看 `./status.sh` 和 `journalctl --user -u websad.service -n 100`（替换为选定的服务单元）。
+排障时先查看 `./status.sh`（用 `--instance` 选择命名实例）及其输出的日志文件。
 画布为空时，先检查前端资源是否重新构建、注册模块是否可达及实际绘制的像素。控件未更新时，先检查 STATUS、
 待处理请求和主线程负载。设备忙时，先检查是否被其他程序独占，再考虑重试。
 
