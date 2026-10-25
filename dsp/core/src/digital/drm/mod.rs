@@ -146,12 +146,13 @@ pub struct DrmReceiver {
     /// Stateful xHE-AAC audio super frame parser (its frames span super frames).
     xhe_deframer: crate::digital::drm::audio::XheAacDeframer,
     /// Mode E's 200 ms audio super frame spans two 100 ms multiplex frames.
-    mode_e_audio_half: Option<Vec<u8>>,
+    mode_e_audio_half: Option<(usize, Vec<u8>)>,
     mode_e_audio_source: Option<u64>,
     /// AAC access units deframed from the audio stream (ready for the codec).
     pub audio_access_units: Vec<Vec<u8>>,
     audio_unit_sources: Vec<Option<u64>>,
     audio_unit_count: usize,
+    audio_crc_errors: usize,
     /// Decoded i16 PCM: native channels interleaved, wasm downmixed for its mono worklet.
     pub audio_pcm: Vec<i16>,
     audio_pcm_rate: u32,
@@ -246,6 +247,7 @@ impl DrmReceiver {
             audio_unit_sources: Vec::new(),
             audio_unit_count: 0,
             audio_pcm: Vec::new(),
+            audio_crc_errors: 0,
             audio_pcm_rate: 0,
             audio_pcm_channels: 0,
             audio_pcm_sources: std::collections::VecDeque::new(),
@@ -307,7 +309,13 @@ impl DrmReceiver {
         r
     }
 
+    /// Discard an unmatched final component. Reject nonfinite pairs before they
+    /// reach persistent synchronization filters.
     pub fn push(&mut self, iq: &[f32]) {
+        let iq = &iq[..iq.len() / 2 * 2];
+        if iq.iter().any(|sample| !sample.is_finite()) {
+            return;
+        }
         self.buf.extend_from_slice(iq);
         self.pushed += iq.len() as u64 / 2;
     }
@@ -447,6 +455,7 @@ impl DrmReceiver {
             self.fs_acq = Some(crate::digital::drm::framesync::FramePhaseAcquisition::new(&cmap));
             self.demod = Some(OfdmDemod::new(&cmap));
             self.mode_detected = true;
+            self.last_good_fac_sample = self.pushed;
             // The tracked demodulation consumes the buffered capture from the start (the
             // frame sync needs the whole capture for the phase).
             self.processed_complex = 0;
@@ -540,6 +549,9 @@ impl DrmReceiver {
                 self.phase_computed = true;
                 self.demod_rows = 0;
             } else {
+                if self.pushed.saturating_sub(self.last_good_fac_sample) >= u64::from(self.sample_rate) * 3 {
+                    self.recover(map);
+                }
                 return;
             }
         }
@@ -669,7 +681,7 @@ impl DrmReceiver {
             self.map = Some(selected.clone());
             // A valid FAC names this signal's layout, not a lost channel. Replay the
             // buffered capture so SDC and the long MSC interleaver get their warm-up.
-            self.recover_with_keep(&selected, self.buf.len());
+            self.recover_with_keep(&selected, self.buf.len(), false);
             self.run_with_layout_retry(false);
             return;
         }
@@ -679,8 +691,7 @@ impl DrmReceiver {
             // future FFT window; start only after the backlog has been consumed.
             self.chanest.as_mut().unwrap().start_timing_tracking();
         }
-        if self.locked()
-            && self.pushed.saturating_sub(self.last_good_fac_sample) >= u64::from(self.sample_rate) * 3
+        if self.pushed.saturating_sub(self.last_good_fac_sample) >= u64::from(self.sample_rate) * 3
         {
             self.recover_pending = true;
         }
@@ -717,10 +728,10 @@ impl DrmReceiver {
     /// the coarse acquisition again on the recent baseband, so a fade or a bench-loop wrap does
     /// not wedge the receiver until the operator resets it.
     fn recover(&mut self, map: &CellMap) {
-        self.recover_with_keep(map, self.sample_rate as usize * 3); // 1.5 s of interleaved I/Q
+        self.recover_with_keep(map, self.sample_rate as usize * 3, true); // 1.5 s of interleaved I/Q
     }
 
-    fn recover_with_keep(&mut self, map: &CellMap, keep: usize) {
+    fn recover_with_keep(&mut self, map: &CellMap, keep: usize, search_modes: bool) {
         use crate::digital::drm::sync::freqacq::FreqAcquisition;
         use crate::digital::drm::sync::freqtrack::FreqTrack;
         use crate::digital::drm::sync::nco::Nco;
@@ -780,6 +791,7 @@ impl DrmReceiver {
         self.msc_frames.clear();
         self.msc_frame_count = 0;
         self.audio_unit_count = 0;
+        self.audio_crc_errors = 0;
         self.tracking = false;
         self.timing_tracking = false;
         self.good_facs = 0;
@@ -788,6 +800,23 @@ impl DrmReceiver {
         self.consecutive_fac_failures = 0;
         self.last_good_fac_sample = self.pushed;
         self.recover_pending = false;
+        if search_modes {
+            // Timing alone does not identify the robustness mode. Loss of FAC
+            // requires a search across all candidates.
+            self.mode_detected = false;
+            self.mode = None;
+            self.map = None;
+            self.mode_search.clear();
+            self.searched_complex = 0;
+            self.coarse_search = None;
+            self.coarse_search_hit = None;
+            self.nco = None;
+            self.ft = None;
+            self.tsync = None;
+            self.fs_acq = None;
+            self.demod = None;
+            return;
+        }
         // Re-run the coarse carrier acquisition on the kept samples.
         let flat: Vec<f64> = self
             .buf
@@ -873,9 +902,15 @@ impl DrmReceiver {
         // Persistent stages: the deinterleaver holds the long-interleaving memory, so it must
         // survive across calls; the MLC decoder is rebuilt only when the configuration changes.
         if self.msc_deinterleaver.is_none() {
-            self.msc_deinterleaver = Some(CellDeinterleaver::new(
-                map.msc_cells_per_frame, if map.mode() == RobustnessMode::E { 6 } else { 5 },
-            ));
+            let depth = if map.mode() == RobustnessMode::E {
+                6
+            } else if self.facs.first().is_some_and(|fac|
+                fac.channel.interleaving == crate::digital::drm::fac::Interleaving::Short) {
+                1
+            } else {
+                5
+            };
+            self.msc_deinterleaver = Some(CellDeinterleaver::new(map.msc_cells_per_frame, depth));
         }
         let key = (mapping, prot.part_a, prot.part_b, part_a_bytes);
         if self.msc_decoder_key != Some(key) {
@@ -888,14 +923,14 @@ impl DrmReceiver {
         // the NEXT frame starts, because the current frame's FAC index (its position in the super
         // frame) is only known once the FAC completes, at the end of the frame.
         let emitted = std::mem::take(&mut self.msc_emitted);
-        let mut decoded: Vec<(usize, Vec<u8>, Option<u64>)> = Vec::new();
+        // Decode in frame order so a gap resets audio carry after pre-gap output.
         for (out_sym, cells, source, fac_index) in &emitted {
             let out_sym = *out_sym;
             if out_sym == 0 {
                 self.msc_boundary_seen = true;
                 let buf = std::mem::take(&mut self.msc_frame_buf);
                 if !buf.is_empty() {
-                    self.assemble_msc_frame(map, &buf, &mut decoded);
+                    self.assemble_msc_frame(map, &buf);
                 }
             }
             if self.msc_boundary_seen {
@@ -905,11 +940,22 @@ impl DrmReceiver {
         // No trailing partial-super-frame flush: in the streaming model the last super frame is
         // decoded when its next frame 0 arrives (or, for a finite capture, it is simply the one
         // incomplete frame at the end). Flushing it on every call decoded it repeatedly.
-        for (frame_index, b, source) in decoded {
-            self.deframe_audio_with_source(&b, frame_index, source);
-            self.msc_frames.push(b);
-            self.msc_frame_count += 1;
-        }
+    }
+
+    fn reset_audio_carry(&mut self) {
+        self.xhe_deframer.reset();
+        self.mode_e_audio_half = None;
+        self.mode_e_audio_source = None;
+    }
+
+    /// Missing cells invalidate both the interleaver delay and partial audio frames.
+    fn reset_msc_continuity(&mut self) {
+        for cells in &mut self.msc_super { cells.clear(); }
+        for sources in &mut self.msc_super_sources { sources.clear(); }
+        self.msc_prev_index = None;
+        self.msc_started = false;
+        if let Some(deinterleaver) = &mut self.msc_deinterleaver { deinterleaver.reset(); }
+        self.reset_audio_carry();
     }
 
     /// Place one completed frame's cells into the super-frame buckets, decoding a super frame
@@ -919,19 +965,15 @@ impl DrmReceiver {
         &mut self,
         map: &CellMap,
         buf: &[(usize, Vec<EqCell>, Option<u64>, Option<u8>)],
-        decoded: &mut Vec<(usize, Vec<u8>, Option<u64>)>,
     ) {
         let frame_index = buf.iter().find_map(|symbol| symbol.3).unwrap_or(0xFF);
         if frame_index == 0xFF {
-            // A frame with no FAC: its cells are missing from the super frame, so the buckets are
-            // broken. Drop them rather than let the next super frame append to them.
-            for c in self.msc_super.iter_mut() {
-                c.clear();
-            }
-            for sources in &mut self.msc_super_sources { sources.clear(); }
-            self.msc_prev_index = None;
-            self.msc_started = false;
+            self.reset_msc_continuity();
             return;
+        }
+        if self.msc_prev_index.is_some_and(|prev|
+            frame_index != (prev + 1) % map.mode().frames_per_superframe() as u8) {
+            self.reset_msc_continuity();
         }
         // Wait for the first real super-frame start (frame 0): the frames before it belong to a
         // super frame the warm-up truncated, and placing them would leave buckets that the next
@@ -941,15 +983,6 @@ impl DrmReceiver {
                 return;
             }
             self.msc_started = true;
-        } else if let Some(prev) = self.msc_prev_index {
-            if frame_index != (prev + 1) % self.mode.expect("acquired").frames_per_superframe() as u8 {
-                // A frame boundary was skipped (a dropped timing window), so the buckets hold an
-                // incomplete super frame. Drop it and restart at this frame.
-                for sources in &mut self.msc_super_sources { sources.clear(); }
-                for c in self.msc_super.iter_mut() {
-                    c.clear();
-                }
-            }
         }
         self.msc_prev_index = Some(frame_index);
         if frame_index == 0
@@ -972,7 +1005,12 @@ impl DrmReceiver {
                     if d.iter().all(|c| c.chan > 0.0)
                         && self.msc_decoder.as_mut().expect("created").decode(&d, &mut self.msc_bits)
                     {
-                        decoded.push((output_index, self.msc_bits.clone(), source));
+                        let bits = self.msc_bits.clone();
+                        self.deframe_audio_with_source(&bits, output_index, source);
+                        self.msc_frames.push(bits);
+                        self.msc_frame_count += 1;
+                    } else {
+                        self.reset_audio_carry();
                     }
                 }
             }
@@ -1075,10 +1113,17 @@ impl DrmReceiver {
             return Some(logical.to_vec());
         }
         if frame_index % 2 == 0 {
-            self.mode_e_audio_half = Some(logical.to_vec());
+            self.mode_e_audio_half = Some((frame_index, logical.to_vec()));
             None
         } else {
-            let mut first = self.mode_e_audio_half.take()?;
+            let Some((first_index, mut first)) = self.mode_e_audio_half.take() else {
+                self.xhe_deframer.reset();
+                return None;
+            };
+            if first_index + 1 != frame_index {
+                self.xhe_deframer.reset();
+                return None;
+            }
             first.extend_from_slice(logical);
             Some(first)
         }
@@ -1111,6 +1156,10 @@ impl DrmReceiver {
                 // frame borders, and a frame may span super frames, so the parser is stateful.
                 if let Some((_header, frames)) = self.xhe_deframer.push_with_source(&super_frame, source) {
                     for f in frames {
+                        if !f.crc_ok {
+                            self.audio_crc_errors += 1;
+                            continue;
+                        }
                         self.audio_access_units.push(f.access_unit().to_vec());
                         self.audio_unit_sources.push(f.source_sample);
                     }
@@ -1308,6 +1357,165 @@ impl DrmReceiver {
 mod tests {
     use super::*;
 
+    fn xhe_test_superframe(payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0x10, crate::digital::drm::fec::crc::crc8(&[0x10])];
+        frame.extend_from_slice(payload);
+        frame.extend_from_slice(&[0, 1]); // One frame border at payload offset zero.
+        frame
+    }
+
+    #[test]
+    fn nonfinite_and_odd_pushes_do_not_corrupt_iq_or_source_clock() {
+        for rate in [48_000, 96_000] {
+            let mut rx = DrmReceiver::new_at(rate);
+            rx.push(&[1.0]);
+            rx.push(&[2.0]);
+            rx.push(&[3.0, 4.0, 5.0]);
+            for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                rx.push(&[6.0, 7.0, invalid, 8.0]);
+            }
+            rx.push(&[9.0, 10.0]);
+            assert_eq!(rx.buf, [3.0, 4.0, 9.0, 10.0]);
+            assert_eq!(rx.pushed, 2);
+            assert_eq!(rx.buffered(), 2);
+        }
+    }
+
+    #[test]
+    fn nonfinite_plugin_bursts_allow_later_station_acquisition() {
+        let mut plugin = DrPlugin::new(48_000.0);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            plugin.process_iq(&vec![invalid; 80_000]);
+        }
+        let iq = load_iq(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/drm/drm_modeB_so3_48k.f32"));
+        for block in iq.chunks(3248 * 2) { plugin.process_iq(block); }
+        assert!(plugin.rx.locked());
+        assert_eq!(plugin.rx.station_label.as_deref(), Some("SAN90 DRM TEST"));
+    }
+
+    #[test]
+    fn pre_fac_row_timeout_reopens_robustness_search() {
+        for mode in [RobustnessMode::A, RobustnessMode::E] {
+            let occupancy = if mode == RobustnessMode::E { SpectrumOccupancy::SO_0 } else { SpectrumOccupancy::SO_3 };
+            let map = CellMap::new(mode, occupancy).unwrap();
+            let mut rx = DrmReceiver::new_at(mode.sample_rate());
+            rx.mode = Some(mode);
+            rx.map = Some(map.clone());
+            rx.mode_detected = true;
+            rx.spf = mode.symbols_per_frame();
+            rx.recover_with_keep(&map, 0, false);
+            rx.push(&vec![0.0; mode.sample_rate() as usize * 6]);
+            rx.run();
+            assert_eq!(rx.mode, None, "pre-FAC candidate must expire for {mode:?}");
+            assert!(!rx.mode_detected);
+            if mode != RobustnessMode::E {
+                let iq = load_iq(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/drm/drm_modeB_so3_48k.f32"));
+                for block in iq.chunks(3248 * 2) { rx.push(block); rx.run(); }
+                assert!(rx.locked());
+                assert_eq!(rx.mode, Some(RobustnessMode::B));
+            }
+        }
+    }
+
+    #[test]
+    fn msc_gaps_erase_delayed_cells_audio_halves_and_xhe_carry() {
+        for mode in [RobustnessMode::B, RobustnessMode::E] {
+            for marker in [None, Some(0xff), Some(2)] {
+                let occupancy = if mode == RobustnessMode::E { SpectrumOccupancy::SO_0 } else { SpectrumOccupancy::SO_3 };
+                let map = CellMap::new(mode, occupancy).unwrap();
+                let mut rx = DrmReceiver::new_at(mode.sample_rate());
+                rx.mode = Some(mode);
+                rx.spf = mode.symbols_per_frame();
+                rx.msc_super = vec![Vec::new(); map.msc_carriers.len()];
+                rx.msc_super_sources = vec![Vec::new(); map.msc_carriers.len()];
+                let depth = if mode == RobustnessMode::E { 6 } else { 5 };
+                let cells = vec![EqCell { sig: Cplx::new(1.0, 0.0), chan: 1.0 }; map.msc_cells_per_frame];
+                let mut de = CellDeinterleaver::new(map.msc_cells_per_frame, depth);
+                for _ in 0..depth { de.push_with_sources(&cells, &vec![Some(10); cells.len()]); }
+                rx.msc_deinterleaver = Some(de);
+                rx.msc_started = true;
+                rx.msc_prev_index = Some(0);
+                rx.mode_e_audio_half = Some((0, vec![1, 2]));
+                rx.mode_e_audio_source = Some(10);
+                rx.xhe_deframer.push_with_source(&xhe_test_superframe(&[1, 2]), Some(10)).unwrap();
+                rx.assemble_msc_frame(&map, &[(0, Vec::new(), Some(20), marker)]);
+                assert!(!rx.msc_started);
+                assert_eq!(rx.msc_prev_index, None);
+                assert!(rx.mode_e_audio_half.is_none());
+                assert_eq!(rx.mode_e_audio_source, None);
+                let (_, frames) = rx.xhe_deframer.push_with_source(&xhe_test_superframe(&[3, 4]), Some(20)).unwrap();
+                assert!(frames.is_empty(), "pre-gap xHE bytes must not be completed");
+                for frame in 0..depth {
+                    let (out, source) = rx.msc_deinterleaver.as_mut().unwrap()
+                        .push_with_sources(&cells, &vec![Some(20); cells.len()]).unwrap();
+                    assert_eq!(out.iter().all(|cell| cell.chan > 0.0), frame == depth - 1);
+                    assert_eq!(source, if frame == depth - 1 { Some(20) } else { None });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn xhe_bad_crc_access_units_are_not_delivered_in_drm_or_drmplus() {
+        use crate::digital::drm::fec::crc::crc16;
+        let au = [0x12, 0x34];
+        let mut good = au.to_vec();
+        good.extend_from_slice(&crc16(&au).to_be_bytes());
+        let mut bad = good.clone();
+        bad[0] ^= 1;
+        for mode in [RobustnessMode::B, RobustnessMode::E] {
+            let mut rx = DrmReceiver::new_at(mode.sample_rate());
+            rx.mode = Some(mode);
+            rx.apply_sdc_entities(&[4, 0x90, 0xc3, 0]);
+            rx.multiplex = Some(crate::digital::drm::sdc::MultiplexDescription {
+                protection_a: 0, protection_b: 0,
+                streams: vec![crate::digital::drm::sdc::StreamDescription {
+                    len_a: 0, len_b: if mode == RobustnessMode::E { 4 } else { 8 },
+                }],
+            });
+            for (index, payload) in [&bad, &good, &good].into_iter().enumerate() {
+                let sf = xhe_test_superframe(payload);
+                let half_len = if mode == RobustnessMode::E { sf.len() / 2 } else { sf.len() };
+                for (half, data) in sf.chunks(half_len).enumerate() {
+                    let bits: Vec<u8> = data.iter().flat_map(|byte|
+                        (0..8).rev().map(move |bit| (byte >> bit) & 1)).collect();
+                    rx.deframe_audio_with_source(&bits, (index * 2 + half) % 4, Some(100 + index as u64));
+                }
+            }
+            assert_eq!(rx.audio_access_units, vec![au.to_vec()]);
+            assert_eq!(rx.audio_unit_sources, vec![Some(101)]);
+            assert_eq!(rx.audio_crc_errors, 1);
+        }
+    }
+
+    #[test]
+    fn msc_honors_short_and_long_fac_interleaving() {
+        use crate::digital::drm::fac::Interleaving;
+        for (mode, interleaving, depth) in [
+            (RobustnessMode::B, Interleaving::Short, 1),
+            (RobustnessMode::B, Interleaving::Long, 5),
+            (RobustnessMode::E, Interleaving::Long, 6),
+        ] {
+            let occupancy = if mode == RobustnessMode::E { SpectrumOccupancy::SO_0 } else { SpectrumOccupancy::SO_3 };
+            let map = CellMap::new(mode, occupancy).unwrap();
+            let mut rx = DrmReceiver::new_at(mode.sample_rate());
+            rx.mode = Some(mode);
+            let mut fac = Fac::parse_for(RobustnessMode::E,
+                &crate::digital::drm::fac::tests::mode_e_fac(0, 0, 0, 0)).unwrap();
+            fac.channel.interleaving = interleaving;
+            rx.facs.push(fac);
+            rx.multiplex = Some(crate::digital::drm::sdc::MultiplexDescription {
+                protection_a: 0, protection_b: 0, streams: Vec::new(),
+            });
+            rx.decode_msc(&map);
+            let cells = vec![EqCell { sig: Cplx::new(1.0, 0.0), chan: 1.0 }; map.msc_cells_per_frame];
+            for index in 0..depth {
+                let out = rx.msc_deinterleaver.as_mut().unwrap().push(&cells).unwrap();
+                assert_eq!(out.iter().all(|cell| cell.chan > 0.0), index == depth - 1);
+            }
+        }
+    }
+
     #[test]
     fn pre_sdc_history_keeps_complete_current_frames_and_recovers_cleanly() {
         for mode in [RobustnessMode::B, RobustnessMode::E] {
@@ -1349,7 +1557,7 @@ mod tests {
                 let bucket = index * rx.spf + symbol;
                 assert_eq!(rx.msc_super_sources[bucket], vec![Some(98); map.msc_carriers[bucket].len()]);
             }
-            rx.recover_with_keep(&map, 0);
+            rx.recover_with_keep(&map, 0, true);
             assert!(rx.msc_emitted.is_empty());
             assert!(rx.msc_frame_buf.is_empty());
             assert!(!rx.msc_boundary_seen && !rx.msc_started);
@@ -1501,6 +1709,12 @@ mod tests {
         assert!(rx.complete_audio_super_frame(&[43], 3).is_none());
         assert!(rx.complete_audio_super_frame(&[50], 2).is_none());
         assert_eq!(rx.complete_audio_super_frame(&[51], 3), Some(vec![50, 51]));
+        assert!(rx.complete_audio_super_frame(&[60], 0).is_none());
+        assert!(rx.complete_audio_super_frame(&[63], 3).is_none());
+        assert!(rx.complete_audio_super_frame(&[70], 2).is_none());
+        assert!(rx.complete_audio_super_frame(&[71], 1).is_none());
+        assert!(rx.complete_audio_super_frame(&[80], 0).is_none());
+        assert_eq!(rx.complete_audio_super_frame(&[81], 1), Some(vec![80, 81]));
     }
 
     #[test]
@@ -1551,6 +1765,8 @@ mod tests {
         assert!(rx.all_rows.is_empty() && rx.all_shifts.is_empty(), "processed rows must be released");
         let map = rx.map.clone().unwrap();
         rx.recover(&map);
+        assert_eq!(rx.mode, None);
+        assert!(!rx.mode_detected);
         assert!(!rx.locked(), "a lost station must not remain locked");
         assert!(rx.station_label.is_none() && rx.audio.is_none() && rx.multiplex.is_none());
         assert!(rx.audio_access_units.is_empty() && rx.msc_frames.is_empty());
@@ -1866,6 +2082,10 @@ mod tests {
             }
         }
         let mut rx = DrmReceiver::new_at(96_000);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            rx.push(&vec![invalid; 80_000]);
+            rx.run();
+        }
         // Diagnostic: how many timing windows does the mode E TimeSync see, and at what score?
         {
             let cx: Vec<Cplx> = iq.chunks_exact(2).map(|c| Cplx::new(f64::from(c[0]), f64::from(c[1]))).collect();
@@ -1908,6 +2128,10 @@ mod tests {
         });
         assert!(shift.is_some(), "mode E MSC must match consecutive transmitted frames bit-exactly");
         let mut streamed = DrmReceiver::new_at(96_000);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            streamed.push(&vec![invalid; 80_000]);
+            streamed.run();
+        }
         for block in iq.chunks(3248 * 2) {
             streamed.push(block);
             streamed.run();
@@ -2109,6 +2333,9 @@ impl DigitalDemodulator for DrPlugin {
             self.rx.good_facs,
             self.rx.fac_errors
         ));
+        if self.rx.audio_crc_errors > 0 {
+            lines.push(format!("xHE audio CRC errors {}", self.rx.audio_crc_errors));
+        }
         if !self.rx.audio_debug.is_empty() {
             lines.push(format!("dbg {}", self.rx.audio_debug));
         }

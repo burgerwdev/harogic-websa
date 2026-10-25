@@ -40,12 +40,12 @@ struct Decimator {
 }
 
 impl Decimator {
-    fn new(fs: f64, factor: usize, pass: f64, stop: f64) -> Self {
+    fn new(fs: f64, factor: usize, pass: f64, stop: f64) -> Option<Self> {
         // Kaiser beta 8.6 gives approximately 80 dB stopband rejection.
-        let n = ((80.0 - 8.0) / (2.285 * 2.0 * PI * (stop - pass) / fs)).ceil() as usize + 1;
-        let n = n.max(8).next_multiple_of(8);
-        Self { factor, phase: 0, pos: 0, taps: design(n, (pass + stop) / (2.0 * fs)),
-            re: vec![0.0; 2 * n], im: vec![0.0; 2 * n] }
+        let n = crate::rate_plan::filter_taps(fs, pass, stop)?;
+        let history = n.checked_mul(2)?;
+        Some(Self { factor, phase: 0, pos: 0, taps: design(n, (pass / fs + stop / fs) / 2.0),
+            re: vec![0.0; history], im: vec![0.0; history] })
     }
 
     fn push(&mut self, re: f32, im: f32, avx2: bool) -> Option<(f32, f32)> {
@@ -260,11 +260,14 @@ pub fn channel_open_planned(fs: f64, offset: f64, plan: &crate::rate_plan::RateP
         let next_rate = rate / factor as f64;
         // Protect the occupied passband from every alias image. The low-rate final
         // stage removes the remaining transition-band energy before delivery.
-        stages.push(Decimator::new(rate, factor, plan.occupied_bandwidth_hz / 2.0,
-            next_rate - plan.occupied_bandwidth_hz / 2.0));
+        let Some(stage) = Decimator::new(rate, factor, plan.occupied_bandwidth_hz / 2.0,
+            next_rate - plan.occupied_bandwidth_hz / 2.0) else { return std::ptr::null_mut(); };
+        stages.push(stage);
         rate = next_rate;
     }
-    stages.push(Decimator::new(rate, 1, plan.occupied_bandwidth_hz / 2.0, plan.stopband_hz));
+    let Some(stage) = Decimator::new(rate, 1, plan.occupied_bandwidth_hz / 2.0, plan.stopband_hz)
+        else { return std::ptr::null_mut(); };
+    stages.push(stage);
     #[cfg(target_arch = "x86_64")]
     let avx2 = std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma");
     #[cfg(not(target_arch = "x86_64"))]

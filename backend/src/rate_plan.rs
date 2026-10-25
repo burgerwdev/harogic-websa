@@ -38,14 +38,16 @@ impl RatePlan {
         let decimate = (1..=ceiling).rev().find(|&d| supported_decimation(d))
             .ok_or("no supported integer channel rate")?;
         let output_rate = coarse_rate / decimate as f64;
-        Ok(Self {
+        let plan = Self {
             decimate,
             output_rate,
             occupied_bandwidth_hz,
             transition_hz: transition,
             stopband_hz: occupied_bandwidth_hz / 2.0 + transition,
             decoder_rate,
-        })
+        };
+        if !plan.valid_for(coarse_rate) { return Err("channel filter geometry exceeds supported bounds"); }
+        Ok(plan)
     }
 
     pub(crate) fn valid_for(&self, fs: f64) -> bool {
@@ -55,8 +57,22 @@ impl RatePlan {
             && self.occupied_bandwidth_hz.is_finite() && self.occupied_bandwidth_hz > 0.0
             && self.transition_hz.is_finite() && self.transition_hz > 0.0
             && self.stopband_hz.is_finite() && self.stopband_hz <= self.output_rate / 2.0
+            && self.occupied_bandwidth_hz / 2.0 > 0.0
+            && self.stopband_hz - self.occupied_bandwidth_hz / 2.0 > 0.0
+            && filter_taps(self.output_rate, self.occupied_bandwidth_hz / 2.0, self.stopband_hz).is_some()
             && (self.stopband_hz - self.occupied_bandwidth_hz / 2.0 - self.transition_hz).abs() <= fs * 1e-12
     }
+}
+
+/// Bound FIR memory and work before converting the floating-point tap estimate.
+pub(crate) fn filter_taps(fs: f64, pass: f64, stop: f64) -> Option<usize> {
+    let width = stop - pass;
+    if !fs.is_finite() || fs <= 0.0 || !pass.is_finite() || pass <= 0.0
+        || !stop.is_finite() || !width.is_finite() || width <= 0.0 { return None; }
+    let estimate = (72.0 / (2.285 * 2.0 * std::f64::consts::PI * (width / fs))).ceil();
+    if !estimate.is_finite() || !(0.0..65_536.0).contains(&estimate) { return None; }
+    let n = (estimate as usize).checked_add(1)?.max(8).checked_next_multiple_of(8)?;
+    (n <= 65_536 && n.checked_mul(2).is_some()).then_some(n)
 }
 
 fn supported_decimation(decimate: i32) -> bool {
@@ -85,6 +101,19 @@ pub(crate) fn stage_factors(decimate: i32) -> Option<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_public_plan_rejects_unrealizable_or_unbounded_filter() {
+        let mut plan = RatePlan { decimate: 1, output_rate: 976_562.5,
+            occupied_bandwidth_hz: 1_000.0, transition_hz: 1e-300,
+            stopband_hz: 500.0, decoder_rate: None };
+        assert!(!plan.valid_for(976_562.5));
+        assert!(crate::narrow::channel_open_planned(976_562.5, 0.0, &plan).is_null());
+        plan.stopband_hz = f64::from_bits(500.0f64.to_bits() + 1);
+        plan.transition_hz = plan.stopband_hz - 500.0;
+        assert!(!plan.valid_for(976_562.5));
+        assert!(crate::narrow::channel_open_planned(976_562.5, 0.0, &plan).is_null());
+    }
 
     #[test]
     fn occupied_edges_and_decoder_clocks_survive_narrow_and_wide_plans() {

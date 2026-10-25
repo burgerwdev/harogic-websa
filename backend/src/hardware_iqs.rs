@@ -1,5 +1,5 @@
 //! Exclusive SDK 0.55.100 IQS owner for the opt-in WebSA SDR path.
-//! Only this thread calls open/next/close. Full capture queue is fatal, not a hidden gap.
+//! Only this thread calls open/next/close. Sustained stalls end the stream explicitly.
 use crate::hardware_swp::{
     owner_slot_free, park_stuck_owner, read_defaults, read_front_end_actual, FrontEnd,
     FrontEndActual, GnssInfo, SwpDefaults, OPEN_TIMEOUT,
@@ -42,19 +42,17 @@ impl SpectrumSchedule {
     }
 }
 
-/// Slow-consumer budget shared by both streaming stages: the IQS owner busy-waits
-/// this long for queue space before failing closed, and the websad FineBank
-/// delivery budget is the same value so one slow tick cannot fail either stage
-/// alone. 250 ms ≈ 3 consumer steps (85 ms blocks).
+/// Queue-wait accounting slice, shared with FineBank's delivery budget.
+/// Retain the packet across slices until delivery or the backlog deadline.
 pub const CONSUMER_BUDGET: Duration = Duration::from_millis(250);
 
-/// Recover vendor capture after this wall-time stall, allowing short transient bursts.
+/// Sustained vendor stalls end this stream; the service recaptures with a new DSP epoch.
 const STALL_RECOVERY: Duration = Duration::from_millis(750);
-/// The consumer wait must cover a capture stall and its recovery without replacing DDC state.
 const PACKET_WAIT: Duration = Duration::from_secs(4);
-/// Consumer backlog is handled by bounded waiting, not by reopening the device:
-/// only a two-second full queue is treated as a wedged pipeline.
-const OVERLOAD_RECOVERY: Duration = Duration::from_secs(2);
+/// Reopening cannot fix consumer backlog. Fail explicitly after this continuous wait.
+const BACKLOG_TIMEOUT: Duration = Duration::from_secs(2);
+/// Give healthy teardown a short grace period, then park the exclusive SDK owner.
+const OWNER_STOP_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Bus failures without a valid packet. IF overflow is valid data, not a retry.
 const TRANSIENT_IQS: [i32; 3] = [-8, -9, -10];
@@ -152,8 +150,8 @@ pub struct CaptureGeometry {
 }
 
 #[derive(Clone, Copy, Default, Debug)]
-/// Timing distributions are cumulative for this capture lifetime, including
-/// in-place recovery. Quantiles cannot be subtracted to form window quantiles.
+/// Timing distributions are cumulative for this capture lifetime.
+/// Quantiles cannot be subtracted to form window quantiles.
 pub struct CaptureStats {
     pub packets: u64,
     /// Vendor warning on the latest valid packet; 0 clears the prior warning.
@@ -169,14 +167,13 @@ pub struct CaptureStats {
     /// -10 calls that trigger recovery).
     pub fail_calls: u64,
     pub fail_max_ms: f64,
-    /// Longest gap since the last packet at the moment recovery was started.
+    /// Longest gap since the last packet when a sustained stall ended this stream.
     pub recovery_stall_ms: f64,
     /// Vendor transient statuses skipped without failing the stream.
     pub skips: u64,
     /// Vendor status of the last skipped call (0 = none yet).
     pub last_skip_status: i32,
-    /// In-place vendor recoveries (close + reopen on this thread, Python
-    /// `_recover_locked` parity). The DDC, FineBank and IQBF sequence survive.
+    /// Reserved cumulative recovery counter; stream recovery requires a new capture.
     pub recoveries: u64,
     /// False for old shims or a failed optional timing query. Empty SDK timings
     /// must not be interpreted as zero-cost SDK work when this is false.
@@ -202,9 +199,9 @@ pub struct CaptureStats {
 #[derive(Clone, Copy, Default, Debug, serde::Serialize)]
 pub struct QueueFullAttribution {
     /// Zero-based successful SDK packet ordinal over this capture lifetime.
-    /// Like CaptureEvent.packet_seq, this survives reconfiguration and recovery.
+    /// Like CaptureEvent.packet_seq, this survives reconfiguration.
     pub seq: u64,
-    /// Device sample counter of that packet; recovery may reset this counter.
+    /// Device sample counter of that packet; a fresh capture may reset it.
     pub stamp: u64,
     /// Complex samples successfully enqueued over this capture lifetime before
     /// this packet. This is not the DDC plan's input_index, which can reset.
@@ -260,7 +257,7 @@ impl ServiceMarks {
 const QUEUE_FULL_CAPACITY: usize = 64;
 
 /// Diagnostic-only retention; neither this capacity nor the four-packet trigger
-/// participates in admission, overload recovery, or stream control.
+/// participates in admission, backlog deadlines, or stream control.
 const EVENT_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy, Default, Debug, serde::Serialize)]
@@ -412,12 +409,27 @@ pub struct CaptureGnss {
     error: Arc<Mutex<Option<String>>>,
 }
 
+/// Admission and reply share one deadline, including a full request queue.
+fn send_until<T>(sender: &SyncSender<T>, mut value: T, deadline: Instant, what: &str) -> Result<(), String> {
+    loop {
+        match sender.try_send(value) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Disconnected(_)) => return Err("SDK IQS owner closed".into()),
+            Err(TrySendError::Full(pending)) => value = pending,
+        }
+        if Instant::now() >= deadline { return Err(format!("{what} stalled during request admission")); }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 impl CaptureGnss {
     pub fn gnss(&self) -> Result<GnssInfo, String> {
         if let Some(error) = self.error.lock().clone() { return Err(error); }
         let (reply, received) = mpsc::sync_channel(1);
-        self.requests.send(Request::Gnss(reply)).map_err(|_| "SDK IQS owner closed")?;
-        received.recv_timeout(Duration::from_secs(5)).map_err(|_| "SDK GNSS query stalled")?
+        let deadline = Instant::now() + Duration::from_secs(5);
+        send_until(&self.requests, Request::Gnss(reply), deadline, "SDK GNSS query")?;
+        received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| "SDK GNSS query stalled")?
     }
 }
 
@@ -810,47 +822,8 @@ impl Drop for Device {
     }
 }
 
-/// Python `_recover_locked` parity (sdr.py:1305): explicitly invalidate the physical
-/// session, release the mode, then reopen with the current settings. The shim runs
-/// these operations on its permanent SDK thread. The packet channel, DDC, FineBank
-/// and IQBF sequence survive the device-side resynchronised stamp gap.
-fn recover_in_place(
-    device: Device,
-    path: &str,
-    settings: &Settings,
-    owner_stats: &Arc<Mutex<CaptureState>>,
-    mut event: CaptureEvent,
-) -> Result<Device, String> {
-    let started = Instant::now();
-    owner_stats.lock().events.record(event, "recovery_begin");
-    unsafe {
-        crate::hardware_swp::invalidate_sdk_session(
-            device.library, device.handle, device.abandoned,
-        )?;
-    }
-    drop(device);
-    let result = Device::open(
-        path,
-        settings.center,
-        settings.front_end,
-        settings.device_decimate,
-    ).and_then(|(mut device, geometry)| {
-        device.arm()?;
-        Ok((device, geometry))
-    });
-    event.recovery_ns = duration_ns(started.elapsed());
-    event.failed = result.is_err();
-    let mut state = owner_stats.lock();
-    state.events.record(event, if event.failed { "recovery_failed" } else { "recovery_complete" });
-    let (device, geometry) = result.map_err(|e| format!("SDK IQS recovery reopen failed: {e}"))?;
-    state.refclk_hz = geometry.refclk_hz;
-    state.refclk_src = geometry.refclk_src;
-    state.front_end = geometry.front_end;
-    state.stats.recoveries += 1;
-    Ok(device)
-}
 
-/// Current stream settings on the owner thread. Recovery reopens with these values.
+/// Current stream settings on the exclusive SDK owner thread.
 struct Settings {
     center: f64,
     front_end: FrontEnd,
@@ -949,6 +922,7 @@ impl HardwareCapture {
                 // setup holds acquisition unarmed. Service them on this owner
                 // instead of waiting exclusively for the acquisition handshake.
                 let armed = loop {
+                    if owner_stop.load(Ordering::Acquire) { return; }
                     match arm_rx.recv_timeout(Duration::from_millis(10)) {
                         Ok(reply) => break reply,
                         Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -968,9 +942,6 @@ impl HardwareCapture {
                 // Last successful vendor packet: a real stall is measured in wall time,
                 // not in the number of fast -10 returns.
                 let mut last_packet_at = Instant::now();
-                // Last in-place vendor recovery (Python `_last_recovery`): recoveries
-                // stay >=1 s apart, everything in between just skips and keeps streaming.
-                let mut last_recovery: Option<Instant> = None;
                 let mut attempt = 0u64;
                 let mut packet_seq = 0u64;
                 // Complex samples in successfully enqueued packets; the failing
@@ -1062,9 +1033,8 @@ impl HardwareCapture {
                             packet
                         }
                         Err(failure) => {
-                            // Transient statuses skip packets. Wall-time stalls recover vendor
-                            // capture in place, preserving DDC state. The >=1 s guard bounds
-                            // recovery frequency; while it is closed, keep skipping.
+                            // Resume only if the next packet passes the consumer's timestamp
+                            // continuity check. A sustained stall ends the stream with its vendor cause.
                             if let Some(status) =
                                 failure.status.filter(|s| TRANSIENT_IQS.contains(s))
                             {
@@ -1081,10 +1051,7 @@ impl HardwareCapture {
                                 }
                                 let streaked = transient_streak >= 60
                                     || last_packet_at.elapsed() >= STALL_RECOVERY;
-                                let guard_open = last_recovery
-                                    .map_or(true, |t| t.elapsed() >= Duration::from_secs(1));
-                                if streaked && guard_open {
-                                    last_recovery = Some(Instant::now());
+                                if streaked {
                                     {
                                         let mut state = owner_stats.lock();
                                         let stats = &mut state.stats;
@@ -1092,21 +1059,19 @@ impl HardwareCapture {
                                             .recovery_stall_ms
                                             .max(last_packet_at.elapsed().as_secs_f64() * 1e3);
                                     }
-                                    device = match recover_in_place(
-                                        device,
-                                        &path,
-                                        &settings,
-                                        &owner_stats,
-                                        event,
-                                    ) {
-                                        Ok(device) => device,
-                                        Err(message) => {
-                                            *owner_error.lock() = Some(message);
-                                            break;
-                                        }
-                                    };
-                                    transient_streak = 0;
-                                    last_packet_at = Instant::now();
+                                    owner_stats.lock().events.record(event, "recovery_required");
+                                    *owner_error.lock() = Some(format!(
+                                        "{}; sustained capture stall requires a new stream epoch",
+                                        failure.message));
+                                    // Retire the failed physical session on its owner only.
+                                    // Publish the original failure first: teardown can itself stall.
+                                    if let Err(error) = unsafe {
+                                        crate::hardware_swp::invalidate_sdk_session(
+                                            device.library, device.handle, device.abandoned)
+                                    } {
+                                        eprintln!("SDK IQS failed-session invalidation: {error}");
+                                    }
+                                    break;
                                 }
                                 continue;
                             }
@@ -1138,7 +1103,6 @@ impl HardwareCapture {
                     let queue_started = wait;
                     let mut packet = QueuedPacket { packet, enqueued_at: wait, event };
                     let mut full = false;
-                    let mut full_since: Option<Instant> = None;
                     let mut pending_recorded = false;
                     loop {
                         packet.enqueued_at = Instant::now();
@@ -1207,11 +1171,8 @@ impl HardwareCapture {
                                         spectrum_schedule = SpectrumSchedule::default();
                                     }
                                 }
-                                // Wait for queue capacity without dropping packets. Recover
-                                // the vendor stream only after OVERLOAD_RECOVERY of continuous
-                                // backpressure.
+                                // Retain the packet; reopening cannot fix consumer backlog.
                                 if wait.elapsed() >= CONSUMER_BUDGET {
-                                    full_since.get_or_insert(wait);
                                     {
                                         let mut state = owner_stats.lock();
                                         state.events.record(CaptureEvent {
@@ -1224,41 +1185,15 @@ impl HardwareCapture {
                                             .queue_wait_max_ms
                                             .max(wait.elapsed().as_secs_f64() * 1e3);
                                     }
-                                    let overloaded = full_since
-                                        .is_some_and(|t| t.elapsed() >= OVERLOAD_RECOVERY);
-                                    let guard_open = last_recovery
-                                        .map_or(true, |t| t.elapsed() >= Duration::from_secs(1));
-                                    if overloaded {
-                                        let mut state = owner_stats.lock();
-                                        let stats = &mut state.stats;
-                                        stats.recovery_stall_ms = stats.recovery_stall_ms.max(
-                                            full_since
-                                                .map(|t| t.elapsed().as_secs_f64() * 1e3)
-                                                .unwrap_or(0.0),
-                                        );
-                                    }
-                                    if overloaded && guard_open {
-                                        last_recovery = Some(Instant::now());
-                                        device = match recover_in_place(
-                                            device,
-                                            &path,
-                                            &settings,
-                                            &owner_stats,
-                                            CaptureEvent { queue_wait_ns: duration_ns(queue_started.elapsed()), ..event },
-                                        ) {
-                                            Ok(device) => device,
-                                            Err(message) => {
-                                                *owner_error.lock() = Some(message);
-                                                return;
-                                            }
-                                        };
-                                        transient_streak = 0;
-                                        last_packet_at = Instant::now();
+                                    if queue_started.elapsed() >= BACKLOG_TIMEOUT {
+                                        *owner_error.lock() = Some(
+                                            "SDK IQS consumer backlog exceeded 2 seconds; capture ended".into());
+                                        return;
                                     }
                                     wait = Instant::now();
                                     continue;
                                 }
-                                thread::yield_now();
+                                thread::sleep(Duration::from_millis(1));
                             }
                             Err(TrySendError::Disconnected(_)) => {
                                 owner_stats.lock().events.record(CaptureEvent {
@@ -1315,14 +1250,16 @@ impl HardwareCapture {
             return Err(e);
         }
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.requests
-            .as_ref()
-            .ok_or("IQS capture closed")?
-            .send(request(reply_tx))
-            .map_err(|_| "SDK IQS owner closed".to_owned())?;
-        reply_rx
-            .recv_timeout(timeout)
-            .map_err(|_| format!("{what} stalled"))?
+        let deadline = Instant::now() + timeout;
+        let result = send_until(self.requests.as_ref().ok_or("IQS capture closed")?,
+            request(reply_tx), deadline, what)
+            .and_then(|()| reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| format!("{what} stalled")));
+        if let Err(message) = &result {
+            self.stop.store(true, Ordering::Release);
+            *self.error.lock() = Some(message.clone());
+        }
+        result?
     }
 
     /// GNSS snapshot; runs on the owner thread with every other vendor call.
@@ -1389,15 +1326,30 @@ impl HardwareCapture {
     /// Starts vendor acquisition after consumer setup and waits for its result.
     /// A second successful call is a no-op.
     pub fn arm(&mut self) -> Result<(), String> {
+        self.arm_with_timeout(OPEN_TIMEOUT)
+    }
+
+    fn arm_with_timeout(&mut self, timeout: Duration) -> Result<(), String> {
         if let Some(error) = self.error.lock().clone() { return Err(error); }
         let Some(arm) = self.arm.take() else { return Ok(()); };
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        arm.send(reply_tx).map_err(|_| "SDK IQS owner closed before arm".to_owned())?;
-        reply_rx.recv_timeout(OPEN_TIMEOUT)
-            .map_err(|_| "SDK IQS acquisition arm stalled".to_owned())?
+        let deadline = Instant::now() + timeout;
+        let result = send_until(&arm, reply_tx, deadline, "SDK IQS acquisition arm")
+            .and_then(|()| reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| "SDK IQS acquisition arm stalled".to_owned()))
+            .and_then(|reply| reply);
+        if let Err(message) = &result {
+            self.stop.store(true, Ordering::Release);
+            *self.error.lock() = Some(message.clone());
+        }
+        result
     }
 
     pub fn next(&self) -> Result<Packet, String> {
+        self.next_with_timeout(PACKET_WAIT)
+    }
+
+    fn next_with_timeout(&self, timeout: Duration) -> Result<Packet, String> {
         let served_at = Instant::now();
         let mut event = None;
         let result = (|| {
@@ -1408,7 +1360,7 @@ impl HardwareCapture {
                 .packets
                 .as_ref()
                 .ok_or("IQS capture closed")?
-                .recv_timeout(PACKET_WAIT);
+                .recv_timeout(timeout);
             if let Ok(packet) = &packet {
                 let residence = packet.enqueued_at.elapsed();
                 event = Some(CaptureEvent { queue_residence_ns: duration_ns(residence), ..packet.event });
@@ -1417,7 +1369,12 @@ impl HardwareCapture {
             if let Some(e) = self.error.lock().clone() {
                 return Err(e);
             }
-            packet.map(|queued| queued.packet).map_err(|_| "SDK IQS capture stalled/closed".into())
+            packet.map(|queued| queued.packet).map_err(|_| {
+                self.stop.store(true, Ordering::Release);
+                let message = "SDK IQS capture stalled/closed".to_owned();
+                *self.error.lock() = Some(message.clone());
+                message
+            })
         })();
         let completed_at = Instant::now();
         let served = completed_at.duration_since(served_at);
@@ -1436,13 +1393,25 @@ impl HardwareCapture {
     }
 }
 
+/// Never close SDK state on another thread while an owner call is still running.
+/// Parking keeps the existing session exclusion gate closed until owner teardown ends.
+fn finish_owner(owner: JoinHandle<()>, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !owner.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    if owner.is_finished() { let _ = owner.join(); }
+    else { park_stuck_owner(owner); }
+}
+
 impl Drop for HardwareCapture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.arm.take();
         self.packets.take(); // unblock a full producer before joining the SDK owner
+        self.requests.take();
         if let Some(owner) = self.owner.take() {
-            let _ = owner.join();
+            finish_owner(owner, OWNER_STOP_TIMEOUT);
         }
     }
 }
@@ -1450,6 +1419,80 @@ impl Drop for HardwareCapture {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn request_admission_obeys_deadline_when_owner_queue_is_full() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(1).unwrap();
+        let error = send_until(&tx, 2, Instant::now(), "control").unwrap_err();
+        assert!(error.contains("request admission"));
+        assert_eq!(rx.recv().unwrap(), 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn stuck_arm_and_fetch_park_exclusive_owner_until_call_returns() {
+        let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        write_open_fail(false);
+        let _ = std::fs::remove_file(FAKE_IQS_FAIL);
+        for stuck_arm in [true, false] {
+            let gate = r#"
+static std::atomic<bool> blocked{true}, entered{false};
+static void test_wait() {
+    entered = true;
+    while (blocked.load()) usleep(1000);
+}
+extern "C" int san90_test_gate(int release) {
+    if (release) blocked = false;
+    return entered.load() ? 1 : 0;
+}
+"#;
+            let source = FAKE_IQS_SHIM.replace("struct PacketInfo {", &format!("{gate}\nstruct PacketInfo {{"));
+            let source = if stuck_arm {
+                source.replace("    armed = true;", "    test_wait();\n    armed = true;")
+            } else {
+                source.replace("    (void)handle;", "    test_wait();\n    (void)handle;")
+            };
+            let shim = compile_fake_iqs_source(if stuck_arm { "stuck_arm" } else { "stuck_fetch" }, &source);
+            let cpath = CString::new(shim.clone()).unwrap();
+            let library = unsafe { dlopen(cpath.as_ptr(), crate::hardware_swp::SDK_DLOPEN_FLAGS) };
+            assert!(!library.is_null());
+            let symbol = unsafe { dlsym(library, b"san90_test_gate\0".as_ptr().cast()) };
+            assert!(!symbol.is_null());
+            let control: unsafe extern "C" fn(c_int) -> c_int = unsafe { std::mem::transmute(symbol) };
+            let mut capture = HardwareCapture::start(shim, 100e6, FRONT_END, 1).unwrap();
+            let (done_tx, done_rx) = mpsc::sync_channel(1);
+            let caller = thread::spawn(move || {
+                let error = if stuck_arm {
+                    capture.arm_with_timeout(Duration::from_secs(1)).unwrap_err()
+                } else {
+                    capture.arm().unwrap();
+                    capture.next_with_timeout(Duration::from_secs(1)).err().unwrap()
+                };
+                drop(capture);
+                done_tx.send(error).unwrap();
+            });
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while unsafe { control(0) } == 0 {
+                assert!(Instant::now() < deadline, "fake owner never entered SDK call");
+                thread::sleep(Duration::from_millis(1));
+            }
+            // Teardown must return while the vendor call is blocked; the timeout detects deadlock.
+            let result = done_rx.recv_timeout(Duration::from_secs(10));
+            let excluded = owner_slot_free().is_err();
+            unsafe { control(1); }
+            caller.join().unwrap();
+            let error = result.expect("capture teardown waited for the blocked vendor call");
+            assert!(error.contains("stalled"), "{error}");
+            assert!(excluded, "new SDK session admitted while the previous owner was blocked");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while owner_slot_free().is_err() {
+                assert!(Instant::now() < deadline, "released owner did not finish teardown");
+                thread::sleep(Duration::from_millis(1));
+            }
+            unsafe { dlclose(library); }
+        }
+    }
 
     #[test]
     fn diagnostic_ring_keeps_order_and_recovery_after_wrap() {
@@ -1766,19 +1809,6 @@ extern "C" int san90_close(void* handle) {
         }
     }
 
-    fn wait_for_recoveries(capture: &HardwareCapture, recoveries: u64) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let stats = capture.stats();
-            if stats.recoveries >= recoveries {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(format!("recovery did not happen: {stats:?}"));
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
 
     fn wait_for_packets(capture: &HardwareCapture, packets: u64) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -2056,47 +2086,48 @@ int main() {
     }
 
     #[test]
-    fn sustained_iqs_stall_recovers_in_place() {
-        let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        write_open_fail(false);
-        let shim = compile_fake_iqs_shim();
-        // Sustained -10 responses require recovery; short bursts must not reopen capture.
-        write_injection(-10, 1000);
-        let mut capture = HardwareCapture::start(shim.clone(), 100e6, FRONT_END, 1).unwrap();
-        capture.arm().unwrap();
-        wait_for_recoveries(&capture, 1).unwrap();
-        // Reopen reset the injection counter, so remove the injection to let the
-        // stream flow; inside the 1 s guard any remaining skips are absorbed.
-        std::fs::remove_file(FAKE_IQS_FAIL).unwrap();
-        wait_for_packets(&capture, 3).unwrap();
-        let stats = capture.stats();
-        assert!(stats.skips >= 1, "{stats:?}");
-        assert_eq!(stats.recoveries, 1);
-        assert_eq!(stats.last_skip_status, -10);
-        // No error latched: the next call delivers a packet.
-        capture.next().unwrap();
-    }
-
-    #[test]
-    fn sustained_consumer_overload_recovers_without_owner_exit() {
+    fn sustained_iqs_stall_requires_new_stream_before_timestamp_reset() {
         let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         write_open_fail(false);
         let _ = std::fs::remove_file(FAKE_IQS_FAIL);
         let shim = compile_fake_iqs_shim();
-        // A stalled consumer fills the bounded queue; the owner must hold the packet,
-        // recover the vendor stream in place only after OVERLOAD_RECOVERY of
-        // continuous backpressure and never exit.
+        let mut capture = HardwareCapture::start(shim.clone(), 100e6, FRONT_END, 1).unwrap();
+        capture.arm().unwrap();
+        assert_eq!(capture.next().unwrap().stamp, 0);
+        assert_eq!(capture.next().unwrap().stamp, 2 * N as u64);
+        write_injection(-10, 1000);
+        let error = loop {
+            if let Err(error) = capture.next() { break error; }
+        };
+        assert!(error.contains("status=-10"), "{error}");
+        assert!(error.contains("new stream epoch"), "{error}");
+        assert_eq!(capture.stats().recoveries, 0);
+        assert!(capture.next().is_err(), "failed capture must not deliver old queued IQ");
+        drop(capture);
+        std::fs::remove_file(FAKE_IQS_FAIL).unwrap();
+        let mut fresh = HardwareCapture::start(shim, 100e6, FRONT_END, 1).unwrap();
+        fresh.arm().unwrap();
+        assert_eq!(fresh.next().unwrap().stamp, 0);
+        assert_eq!(fresh.next().unwrap().stamp, 2 * N as u64);
+    }
+
+    #[test]
+    fn consumer_backpressure_retains_packets_without_reopening() {
+        let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        write_open_fail(false);
+        let _ = std::fs::remove_file(FAKE_IQS_FAIL);
+        let shim = compile_fake_iqs_shim();
+        // The held packet must retain its timestamp while the consumer catches up.
         let mut capture = HardwareCapture::start(shim, 100e6, FRONT_END, 1).unwrap();
         capture.arm().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while capture.stats().recoveries == 0 {
-            assert!(Instant::now() < deadline, "consumer overload never recovered");
+        while capture.stats().queue_full == 0 {
+            assert!(Instant::now() < deadline, "consumer queue never filled");
             std::thread::sleep(Duration::from_millis(10));
         }
         let diagnostics = capture.diagnostics();
         let initial = diagnostics.events();
-        // Retries and in-place recovery of this held packet must not overwrite
-        // the first failed enqueue or fill the failure ring with duplicates.
+        // Retries of this held packet must not duplicate the first failed enqueue.
         assert_eq!(initial.queue_full_total, 1);
         assert_eq!(initial.queue_full_overwritten, 0);
         let attribution = initial.queue_full_attribution[0];
@@ -2136,35 +2167,33 @@ int main() {
             assert!(events.queue_full_attribution[0].since_last_service_us.is_none());
             assert!(events.queue_full_attribution[0].last_output_seq.is_none());
         }
-        capture.next().unwrap();
+        for ordinal in 2..PACKET_QUEUE + 3 {
+            assert_eq!(capture.next().unwrap().stamp, ordinal as u64 * 2 * N as u64);
+        }
+        assert_eq!(capture.stats().recoveries, 0);
     }
 
     #[test]
-    fn recovery_reopen_failure_fails_closed() {
+    fn sustained_consumer_backlog_fails_with_distinct_cause() {
         let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         write_open_fail(false);
+        let _ = std::fs::remove_file(FAKE_IQS_FAIL);
         let shim = compile_fake_iqs_shim();
-        // A sustained stall reaches STALL_RECOVERY, but the in-place reopen itself
-        // fails: the only remaining exit is the explicit error (websad auto-reopen
-        // takes over).
-        write_injection(-10, 1000);
         let mut capture = HardwareCapture::start(shim, 100e6, FRONT_END, 1).unwrap();
-        write_open_fail(true);
         capture.arm().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        let error = loop {
-            match capture.next() {
-                Ok(_) => assert!(Instant::now() < deadline, "owner never failed closed"),
-                Err(error) => break error,
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        assert!(error.contains("recovery reopen failed"), "{error}");
-        write_open_fail(false);
+        while capture.error.lock().is_none() {
+            assert!(Instant::now() < deadline, "backlog never failed");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let error = capture.next().err().expect("old queued IQ escaped after failure");
+        assert!(error.contains("consumer backlog"), "{error}");
+        assert_eq!(capture.stats().recoveries, 0);
+        assert_eq!(capture.stats().fail_calls, 0);
     }
 
     #[test]
-    fn transient_streak_boundary_59_survives_and_60_recovers() {
+    fn transient_streak_boundary_59_survives_and_60_ends_stream() {
         let _guard = TEST_IQS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         write_open_fail(false);
         let shim = compile_fake_iqs_shim();
@@ -2179,18 +2208,14 @@ int main() {
         assert_eq!(stats.last_skip_status, -9);
         assert_eq!(stats.recoveries, 0);
         capture.next().unwrap();
-        // Drop joins the owner before re-arming the injection. One more transient
-        // than the survivor case trips the 60-streak: recover in place, keep
-        // streaming, never reset the packet channel.
         drop(capture);
         write_injection(-9, 60);
         let mut capture = HardwareCapture::start(shim, 100e6, FRONT_END, 1).unwrap();
         capture.arm().unwrap();
-        wait_for_recoveries(&capture, 1).unwrap();
+        let error = capture.next().err().expect("sustained transient must fail");
+        assert!(error.contains("status=-9"), "{error}");
+        assert!(error.contains("new stream epoch"), "{error}");
         std::fs::remove_file(FAKE_IQS_FAIL).unwrap();
-        wait_for_packets(&capture, 2).unwrap();
-        assert_eq!(capture.stats().recoveries, 1);
-        capture.next().unwrap();
     }
 
     #[test]

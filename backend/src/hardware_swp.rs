@@ -48,6 +48,9 @@ pub(crate) unsafe fn register_sdk_session(library: *mut c_void) -> Result<(), St
 
 /// Terminal process shutdown, after all mode owners have been dropped and joined.
 pub fn finish_sdk_session() -> Result<(), String> {
+    // A parked owner may still be in a vendor call. Keep session shutdown excluded
+    // until that owner's teardown ends.
+    owner_slot_free()?;
     let session = SDK_SESSION.lock();
     let status = session.as_ref().map_or(0, |finish| unsafe { finish() });
     if status == 0 { Ok(()) } else { Err(format!("SDK session finish status={status}")) }

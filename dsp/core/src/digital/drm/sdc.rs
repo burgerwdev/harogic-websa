@@ -169,7 +169,7 @@ pub fn parse_entities(data: &[u8]) -> Vec<Entity> {
             0 => parse_multiplex(&mut r, length).map(Entity::Multiplex).unwrap_or(Entity::Skipped),
             1 => parse_label(&mut r, length).map(Entity::Label).unwrap_or(Entity::Skipped),
             9 => parse_audio(&mut r, length).map(Entity::Audio).unwrap_or(Entity::Skipped),
-            12 => parse_language(&mut r).map(Entity::LanguageCountry).unwrap_or(Entity::Skipped),
+            12 => parse_language(&mut r, length).map(Entity::LanguageCountry).unwrap_or(Entity::Skipped),
             _ => Entity::Skipped,
         };
         out.push(entity);
@@ -217,6 +217,9 @@ fn parse_label(r: &mut BitReader, len: usize) -> Option<Label> {
 }
 
 fn parse_audio(r: &mut BitReader, len: usize) -> Option<AudioInfo> {
+    if len < 2 {
+        return None;
+    }
     let mut audio = AudioInfo {
         short_id: r.read(2) as u8,
         stream_id: r.read(2) as u8,
@@ -231,13 +234,16 @@ fn parse_audio(r: &mut BitReader, len: usize) -> Option<AudioInfo> {
     };
     r.read(1); // rfa bit
     // xHE-AAC (coding 3) carries the USAC AudioSpecificConfig after the fixed fields.
-    if audio.coding == 3 && len >= 2 {
+    if audio.coding == 3 {
         audio.xhe_aac_config = r.read_bytes(len - 2);
     }
     Some(audio)
 }
 
-fn parse_language(r: &mut BitReader) -> Option<LanguageCountry> {
+fn parse_language(r: &mut BitReader, len: usize) -> Option<LanguageCountry> {
+    if len < 5 {
+        return None;
+    }
     let short_id = r.read(2) as u8;
     if r.read(2) != 0 {
         return None;
@@ -245,4 +251,43 @@ fn parse_language(r: &mut BitReader) -> Option<LanguageCountry> {
     let language = [r.read_byte(), r.read_byte(), r.read_byte()];
     let country = [r.read_byte(), r.read_byte()];
     Some(LanguageCountry { short_id, language, country })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_audio_and_language_entities_are_skipped_inside_valid_crc_blocks() {
+        for (kind, minimum) in [(9u8, 2usize), (12, 5)] {
+            for len in 0..minimum {
+                let mut data = vec![(len as u8) << 1, kind << 4];
+                data.resize(2 + len, 0);
+                // A following valid entity must still be parsed at its declared boundary.
+                data.extend_from_slice(&[2, 0x10, b'A']);
+                let mut bits = vec![0; 4];
+                for &byte in &data {
+                    bits.extend((0..8).rev().map(|bit| (byte >> bit) & 1));
+                }
+                let mut crc = Crc::crc16();
+                crc.add_byte(0);
+                crc.add_bytes(&data);
+                bits.extend((0..16).rev().map(|bit| ((crc.value() >> bit) & 1) as u8));
+                let block = parse_sdc_block(&bits).unwrap();
+                assert!(block.crc_ok);
+                assert_eq!(parse_entities(&block.data), vec![Entity::Skipped,
+                    Entity::Label(Label { short_id: 0, bytes: vec![b'A'] })]);
+            }
+        }
+    }
+
+    #[test]
+    fn minimum_audio_and_language_entities_decode() {
+        assert!(matches!(parse_entities(&[4, 0x90, 3, 0]).as_slice(),
+            [Entity::Audio(AudioInfo { sample_rate: 3, .. })]));
+        assert_eq!(parse_entities(&[10, 0xc0, b'e', b'n', b'g', b'G', b'B']),
+            vec![Entity::LanguageCountry(LanguageCountry {
+                short_id: 0, language: *b"eng", country: *b"GB",
+            })]);
+    }
 }

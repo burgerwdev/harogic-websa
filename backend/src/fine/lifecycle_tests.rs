@@ -727,17 +727,9 @@ fn nyquist_coarse_bin_accepts_both_capture_edges_without_wrapping_rf() {
             ).unwrap();
             bank.subscribe(1, 0, -tuned, 4).unwrap();
             bank.subscribe(2, 0, tuned, 4).unwrap();
-            for seq in 0..4u64 {
-                let iq: Vec<i16> = (0..16240).flat_map(|n| {
-                    let phase = 2.0 * PI * tuned * (seq * 16240 + n) as f64 / fs;
-                    [(12000.0 * phase.cos()) as i16, 0]
-                }).collect();
-                stream.submit(seq, seq * 32480, &iq).unwrap();
-            }
-            stream.finish().unwrap();
             let mut clocks = [0u64; 2];
             let mut late = [Vec::<f32>::new(), Vec::<f32>::new()];
-            while let Some(packet) = stream.take() {
+            let mut deliver = |packet: PfbOutput| {
                 for sign in [-1.0, 1.0] {
                     assert_eq!(bank.retune(1, 3, 0, sign * fs / 2.0, 4),
                         Err("fine channel outside usable IQ bandwidth"));
@@ -753,7 +745,23 @@ fn nyquist_coarse_bin_accepts_both_capture_edges_without_wrapping_rf() {
                     if packet.seq >= 2 { late[at].extend_from_slice(out.iq); }
                     Ok(())
                 }).unwrap();
+            };
+            for seq in 0..4u64 {
+                let iq: Vec<i16> = (0..16240).flat_map(|n| {
+                    let phase = 2.0 * PI * tuned * (seq * 16240 + n) as f64 / fs;
+                    [(12000.0 * phase.cos()) as i16, 0]
+                }).collect();
+                loop {
+                    match stream.submit(seq, seq * 32480, &iq) {
+                        Ok(()) => break,
+                        Err(-2) => while let Some(packet) = stream.take() { deliver(packet); },
+                        Err(error) => panic!("PFB submit failed: {error}"),
+                    }
+                }
             }
+            stream.finish().unwrap();
+            while let Some(packet) = stream.take() { deliver(packet); }
+            drop(deliver);
             for iq in late {
                 let power: f64 = iq.chunks_exact(2)
                     .map(|z| (z[0] as f64).powi(2) + (z[1] as f64).powi(2)).sum();

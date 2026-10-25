@@ -102,10 +102,14 @@ impl DevState {
         if !frames.is_empty() || self.receiver_workers.is_some() {
             let mut retiring = std::mem::take(&mut self.pending_iq);
             retiring.extend(frames);
-            let output = self.process_receiver_frames_with_registry(&retiring, &registry, true)?;
-            self.pending_receiver.audio.extend(output.audio);
-            self.pending_receiver.decode.extend(output.decode);
-            for frame in &retiring {
+            match self.process_receiver_frames_with_registry(&retiring, &registry, true) {
+                Ok(output)=>{
+                    self.pending_receiver.audio.extend(output.audio);
+                    self.pending_receiver.decode.extend(output.decode);
+                }
+                Err(error)=>self.latch_receiver_failure(error),
+            }
+            for frame in retiring.iter().filter(|_|self.receiver_failure.is_none()) {
                 if frame.len()>=56 && matches!(frame.get(..4),Some(b"IQBF"|b"IQAX")) {
                     self.consumed_receiver_iq.insert((u32::from_le_bytes(frame[32..36].try_into().unwrap()),
                         u32::from_le_bytes(frame[36..40].try_into().unwrap()),u32::from_le_bytes(frame[8..12].try_into().unwrap())));
@@ -130,17 +134,19 @@ impl DevState {
         // A command may drain the next IQ batch while spectrum encoding runs
         // without the state lock. Queue this batch first so that command tails
         // cannot overtake it, and retain worker output for the ordered drain.
-        self.submit_receiver_frames(&output.frames)?;
+        if let Err(error)=self.submit_receiver_frames(&output.frames) {self.latch_receiver_failure(error);}
         Ok(output)
     }
     pub(super) fn take_hardware_presentation(&mut self, listeners: usize) -> Result<Option<HardwarePresentation>, String> {
-        if self.receiver_failure.is_some() {return Ok(None);}
         let blocked = self.ddc_error.is_some() && !Self::retry_due(&self.ddc_retry_at);
         if self.pipeline.is_none() && listeners > 0 && !blocked {
             // Compile receiver models before arming capture; startup must not
             // stall the consumer while the hardware IQ queue is filling.
-            if self.receiver_workers.is_none() {
-                self.receiver_workers = Some(receiver_workers::ReceiverWorkers::new()?);
+            if self.receiver_workers.is_none() && self.receiver_failure.is_none() {
+                match receiver_workers::ReceiverWorkers::new() {
+                    Ok(workers)=>self.receiver_workers=Some(workers),
+                    Err(error)=>self.latch_receiver_failure(error),
+                }
             }
             let configs=self.channel_configs();
             let aux=configs.iter().filter(|c|c.channel>1 && c.enabled).map(|c|(c.channel,c.freq)).collect();
@@ -226,6 +232,33 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receiver_submit_failure_preserves_current_and_later_capture_products() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.swp.mode="sdr".into();
+        let mut source=service_fixture::FixtureSources::new();
+        source.configure(&state.channel_configs()).unwrap();
+        let mut frames=source.step().unwrap();
+        state.fixture_sources=Some(source);
+        // Valid IQ transport and identity; deliberately inconsistent receiver rate.
+        frames[0][16..24].copy_from_slice(&(-1.0_f64).to_le_bytes());
+        let pan=vec![(vec![100e6],vec![-40.0],0,0,1)];
+        let output=state.prepare_hardware_output(sdr_pipeline::PipelineOutput {frames:frames.clone(),pan:pan.clone()}).unwrap();
+        assert_eq!(output.frames,frames,"receiver validation cannot consume raw IQ");
+        assert_eq!(output.pan,pan,"receiver validation cannot discard queued spectra");
+        assert_eq!(state.receiver_failure.as_deref(),Some("invalid receiver IQ frame metadata"));
+        assert!(state.ddc_error.is_none());
+        for sequence in 2..10 {
+            let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
+            let pan=vec![(vec![100e6],vec![-40.0],0,0,sequence)];
+            let output=state.prepare_hardware_output(sdr_pipeline::PipelineOutput {frames:frames.clone(),pan:pan.clone()}).unwrap();
+            assert_eq!(output.frames,frames);
+            assert_eq!(output.pan,pan);
+            assert!(state.drain_receiver_frames().unwrap().audio.is_empty());
+        }
+        assert_eq!(state.ddc_error_count,0);
+    }
 
     #[test]
     fn detached_presentation_queues_iq_before_command_tail_and_keeps_new_epoch_start() {

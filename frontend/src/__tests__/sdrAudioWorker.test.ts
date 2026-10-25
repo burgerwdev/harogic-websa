@@ -63,12 +63,23 @@ describe('AUD2 audio ingress', () => {
     expect(Array.from(blocks[0].samples)).toEqual([0.5, -0.25, 0.5, -0.25]);
     expect(Array.from(blocks[1].samples)).toEqual([0.5, -0.25]);
   });
-  it.each(['sequence', 'source', 'index'])('rejects a %s gap explicitly', (kind) => {
+  it.each(['sequence', 'source', 'index'])('rejects %s discontinuity or overlapping source samples', (kind) => {
     receive(packet({ seq: 0 }));
     receive(packet({ seq: 1, frames: 2 }));
-    receive(packet({ seq: kind === 'sequence' ? 3 : 2, frames: 2, input: kind === 'source' ? 5n : 4n, index: kind === 'index' ? 3n : 2n }));
+    receive(packet({ seq: kind === 'sequence' ? 3 : 2, frames: 2, input: kind === 'source' ? 3n : 4n, index: kind === 'index' ? 3n : 2n }));
     expect(posted.filter((message) => message.type === 'error')).toHaveLength(1);
     expect(posted[posted.length - 1]?.message).toMatch(/gap|discontinuity/);
+  });
+  it('preserves an NR tail gap with continuous audio indices and exact rational source positions', () => {
+    const input = 9007199254740993n;
+    receive(packet({ seq: 0, input, num: 1n, den: 3n }));
+    receive(packet({ seq: 1, input, num: 1n, den: 3n, frames: 2 }));
+    receive(packet({ seq: 2, input: input + 515n, num: 1n, den: 3n, index: 2n, frames: 2 }));
+    receive(packet({ seq: 3, input: input + 519n, num: 1n, den: 3n, index: 4n, frames: 2 }));
+    expect(posted.filter(message => message.type === 'error')).toEqual([]);
+    expect(posted.filter(message => message.type === 'samples')).toHaveLength(3);
+    receive(packet({ seq: 4, input: input + 523n, num: 1n, den: 4n, index: 6n, frames: 1 }));
+    expect(posted.at(-1)?.message).toMatch(/discontinuity/);
   });
   it('flushes and accepts codec geometry changes only at a new identity boundary', () => {
     receive(packet({ seq: 0 }));

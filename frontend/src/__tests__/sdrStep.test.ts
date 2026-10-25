@@ -1,112 +1,119 @@
 /**
- * The per-bandwidth tuning step.
+ * Per-mode tuning steps.
  *
- * The arrow keys tune by the step in the step box. The step is remembered per capture
- * bandwidth, because a step that walks a 50 MHz sweep is useless inside a 25 kHz channel.
- * These tests pin the rules the UI relies on: the span-derived default, the per-bandwidth
- * memory, the persistence, and the Preset reset.
+ * The three tiers (normal / coarse / fine) are remembered per demodulation mode and default
+ * to fixed, mode-appropriate values that do not follow the capture width. These tests pin
+ * the rules the tune keys rely on: the defaults, the per-mode memory, the persistence and
+ * the Preset reset.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resetAll } from '../core/params';
 import { UNIT_OPTIONS, toUnit, units } from '../core/units';
 import {
-	SDR_STEP_QUICK_HZ, currentSdrStepHz, defaultSdrStepHz,
-	parseSdrStepMap, setSdrStepForCurrentBw, sdrDecimate, sdrSpanHz,
-	storedSdrStepHz,
+	SDR_STEP_QUICK_HZ, SDR_PREF_KEYS, currentSdrStepHz, effectiveLocateMode, parseSdrStepMap,
+	resetSdrState, sdrChannelAnchorHz, sdrChannelStepHz, sdrDemod,
+	sdrFineStepByMode, sdrLocateMode, sdrNormalStepByMode, setSdrStepForCurrentMode,
 } from '../ui/sdrState';
+import { signalLocateSupported, stepTierDefaults } from '../ui/sdrTuning';
 
 beforeEach(() => {
 	localStorage.clear();
 	resetAll('sdr');
 });
 
-describe('defaultSdrStepHz', () => {
-	it('keeps the historical 1 kHz step for the 195 kHz capture span', () => {
-		expect(defaultSdrStepHz(195_000)).toBe(1000);
+describe('per-mode tier defaults', () => {
+	it('gives every voice mode its band-plan ladder', () => {
+		expect(stepTierDefaults('am')).toEqual({ normal: 1000, coarse: 5000, fine: 100 });
+		expect(stepTierDefaults('dsb')).toEqual({ normal: 1000, coarse: 5000, fine: 100 });
+		expect(stepTierDefaults('usb')).toEqual({ normal: 100, coarse: 1000, fine: 10 });
+		expect(stepTierDefaults('lsb')).toEqual({ normal: 100, coarse: 1000, fine: 10 });
+		expect(stepTierDefaults('cw')).toEqual({ normal: 10, coarse: 100, fine: 1 });
+		expect(stepTierDefaults('nfm')).toEqual({ normal: 12500, coarse: 100000, fine: 1000 });
+		expect(stepTierDefaults('pm')).toEqual({ normal: 12500, coarse: 100000, fine: 1000 });
+		expect(stepTierDefaults('wfm')).toEqual({ normal: 100000, coarse: 1000000, fine: 10000 });
 	});
 
-	it('narrows the step for narrow demodulation spans and widens it for wide ones', () => {
-		expect(defaultSdrStepHz(24_400)).toBe(200); // 244 → the 2 of 1-2-5: SSB / CW work
-		expect(defaultSdrStepHz(97_700)).toBe(500);
-		expect(defaultSdrStepHz(1_560_000)).toBe(10_000);
-		expect(defaultSdrStepHz(6_250_000)).toBe(50_000);
-		expect(defaultSdrStepHz(12_500_000)).toBe(100_000);
-		expect(defaultSdrStepHz(25_000_000)).toBe(200_000);
-		expect(defaultSdrStepHz(50_000_000)).toBe(500_000);
+	it('keeps protocol modes on conservative dial-accuracy steps', () => {
+		expect(stepTierDefaults('ft8')).toEqual({ normal: 10, coarse: 100, fine: 1 });
+		expect(stepTierDefaults('sstv')).toEqual({ normal: 1000, coarse: 10000, fine: 100 });
+		expect(stepTierDefaults('drm')).toEqual({ normal: 1000, coarse: 10000, fine: 100 });
+		expect(stepTierDefaults('drmplus')).toEqual({ normal: 10000, coarse: 100000, fine: 1000 });
 	});
 
-	it('always lands on a 1-2-5 value and never returns zero or a negative number', () => {
-		for (let span = 100; span <= 60_000_000; span = Math.floor(span * 1.37) + 1) {
-			const step = defaultSdrStepHz(span);
-			expect(step).toBeGreaterThan(0);
-			const mantissa = Number(step.toPrecision(2)) / step;
-			expect([1, 2, 5]).toContain(mantissa);
-		}
+	it('serves a conservative generic ladder for an unknown mode', () => {
+		expect(stepTierDefaults('nope')).toEqual({ normal: 1000, coarse: 10000, fine: 100 });
 	});
 
-	it('degrades safely on a missing or impossible span', () => {
-		expect(defaultSdrStepHz(0)).toBe(1000);
-		expect(defaultSdrStepHz(-1)).toBe(1000);
-		expect(defaultSdrStepHz(NaN)).toBe(1000);
-		expect(defaultSdrStepHz(Infinity)).toBe(1000);
-		expect(defaultSdrStepHz(50)).toBe(1); // below the ladder floor
+	it('serves the defaults whatever the capture width: the step no longer follows the span', () => {
+		// Same mode, two very different spans: the default tiers are identical. The old
+		// per-bandwidth step made a 50 MHz sweep jump to 500 kHz and hid narrow signals.
+		const wide = stepTierDefaults('am');
+		expect(wide).toEqual(stepTierDefaults('am'));
+		expect(currentSdrStepHz()).toBe(1000); // am default, no decimate involvement
 	});
 });
 
-describe('per-bandwidth step memory', () => {
-	it('falls back to the span default until the user stores a step', () => {
-		sdrSpanHz.set(195_000);
-		expect(storedSdrStepHz(256)).toBeNull();
-		expect(currentSdrStepHz()).toBe(1000); // the default, not a stored value
-	});
-
-	it('keeps one step per bandwidth and uses the stored one', () => {
-		sdrSpanHz.set(0);
-		sdrDecimate.set(256); // ~195 kHz span: default 1 kHz
-		expect(currentSdrStepHz()).toBe(1000);
-		setSdrStepForCurrentBw(2500);
+describe('per-mode tier memory', () => {
+	it('keeps one step per mode and tier and returns each mode its own', () => {
+		sdrDemod.set('am');
+		setSdrStepForCurrentMode(2500);
+		setSdrStepForCurrentMode(10000, 'coarse');
+		setSdrStepForCurrentMode(25, 'fine');
 		expect(currentSdrStepHz()).toBe(2500);
+		expect(currentSdrStepHz('coarse')).toBe(10000);
+		expect(currentSdrStepHz('fine')).toBe(25);
 
-		sdrDecimate.set(2048); // ~24 kHz span, no stored step: its own default
-		expect(storedSdrStepHz(2048)).toBeNull();
-		expect(currentSdrStepHz()).toBe(200);
+		sdrDemod.set('cw'); // no stored step: cw's own ladder
+		expect(currentSdrStepHz()).toBe(10);
+		expect(currentSdrStepHz('coarse')).toBe(100);
+		expect(currentSdrStepHz('fine')).toBe(1);
 
-		sdrDecimate.set(2048);
-		setSdrStepForCurrentBw(50);
-		sdrDecimate.set(256);
-		expect(currentSdrStepHz()).toBe(2500); // the 256x step came back unchanged
-		sdrDecimate.set(2048);
-		expect(currentSdrStepHz()).toBe(50);
+		sdrDemod.set('am'); // the am ladder came back unchanged
+		expect(currentSdrStepHz()).toBe(2500);
+		expect(currentSdrStepHz('coarse')).toBe(10000);
+		expect(currentSdrStepHz('fine')).toBe(25);
 	});
 
 	it('ignores an impossible step', () => {
-		sdrDecimate.set(256);
-		setSdrStepForCurrentBw(0);
-		setSdrStepForCurrentBw(-100);
-		setSdrStepForCurrentBw(NaN);
-		expect(storedSdrStepHz(256)).toBeNull();
+		sdrDemod.set('am');
+		setSdrStepForCurrentMode(0);
+		setSdrStepForCurrentMode(-100);
+		setSdrStepForCurrentMode(NaN);
+		setSdrStepForCurrentMode(0.5, 'fine'); // below the 1 Hz floor
+		expect(sdrNormalStepByMode.get()).toEqual({});
+		expect(sdrFineStepByMode.get()).toEqual({});
+		expect(currentSdrStepHz()).toBe(1000);
 	});
 
-	it('persists across a reload and Preset clears it with the other preferences', () => {
-		sdrDecimate.set(256);
-		setSdrStepForCurrentBw(2500);
-		expect(localStorage.getItem('web-sa-sdr-step-bw')).not.toBeNull();
+	it('persists per tier and Preset clears all three with the old bandwidth key', () => {
+		sdrDemod.set('am');
+		setSdrStepForCurrentMode(2500);
+		setSdrStepForCurrentMode(20000, 'coarse');
+		setSdrStepForCurrentMode(50, 'fine');
+		expect(localStorage.getItem('web-sa-sdr-step-normal')).toBe('{"am":2500}');
+		expect(localStorage.getItem('web-sa-sdr-step-coarse')).toBe('{"am":20000}');
+		expect(localStorage.getItem('web-sa-sdr-step-fine')).toBe('{"am":50}');
 
-		// The state module registers the key in SDR_PREF_KEYS, so the Preset path
-		// (resetSdrState) removes it; here resetAll covers the in-memory side. With the
-		// stored step gone, the default returns for the fallback decimation (32 = ~1.56 MHz).
-		resetAll('sdr');
-		localStorage.removeItem('web-sa-sdr-step-bw');
-		expect(storedSdrStepHz(256)).toBeNull();
-		expect(currentSdrStepHz()).toBe(10_000);
+		resetSdrState();
+		expect(sdrNormalStepByMode.get()).toEqual({});
+		expect(currentSdrStepHz()).toBe(1000);
+		for (const key of ['web-sa-sdr-step-normal', 'web-sa-sdr-step-coarse', 'web-sa-sdr-step-fine']) {
+			expect(localStorage.getItem(key)).toBeNull();
+		}
+	});
+
+	it('clears the retired per-bandwidth step key so it cannot survive a Preset', () => {
+		localStorage.setItem('web-sa-sdr-step-bw', '{"256":2500}');
+		resetSdrState();
+		expect(localStorage.getItem('web-sa-sdr-step-bw')).toBeNull();
 	});
 });
 
 describe('the stored step slot', () => {
-	it('parses a stored map and drops entries that are not positive finite numbers', () => {
+	it('parses a stored map and drops entries below 1 Hz or not finite', () => {
 		const parsed = parseSdrStepMap(
-			JSON.stringify({ 256: 2500, 512: -1, 1024: 'x', 2048: NaN, 4096: Infinity, 8192: 0 }));
-		expect(parsed).toEqual({ 256: 2500 });
+			JSON.stringify({ am: 2500, cw: 0.5, usb: -1, lsb: 'x', nfm: NaN, wfm: Infinity }));
+		expect(parsed).toEqual({ am: 2500 });
 	});
 
 	it('degrades corrupt storage to an empty map', () => {
@@ -121,11 +128,48 @@ describe('step unit and quick steps', () => {
 		expect(SDR_STEP_QUICK_HZ).toEqual([
 			1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000,
 		]);
-		// The unit toggles are the shared ones (core/units.ts), and Hz is one of them, so a
-		// 1 Hz step is reachable end to end: box value, state and the tune command are Hz.
 		expect(UNIT_OPTIONS.sdr_step).toEqual(['Hz', 'kHz', 'MHz']);
 		expect(units().sdr_step).toBe('kHz');
 		expect(toUnit(1000, 'sdr_step')).toBe(1);
 		expect(toUnit(1, 'sdr_step')).toBe(0.001);
+	});
+});
+
+describe('positioning preferences', () => {
+	it('offers signal locate only for AM and CW', () => {
+		expect(signalLocateSupported('am')).toBe(true);
+		expect(signalLocateSupported('cw')).toBe(true);
+		for (const mode of ['usb', 'lsb', 'dsb', 'nfm', 'wfm', 'pm', 'ft8', 'sstv', 'drm', 'drmplus']) {
+			expect(signalLocateSupported(mode)).toBe(false);
+		}
+	});
+
+	it('keeps a signal preference but serves free while the mode cannot use it', () => {
+		sdrLocateMode.set('signal');
+		sdrDemod.set('usb');
+		expect(effectiveLocateMode('usb')).toBe('free');
+		expect(sdrLocateMode.get()).toBe('signal'); // remembered for the return
+		sdrDemod.set('am');
+		expect(effectiveLocateMode('am')).toBe('signal');
+	});
+
+	it('resets locate and grid preferences with Preset', () => {
+		sdrLocateMode.set('channel');
+		sdrChannelStepHz.set(12500);
+		sdrChannelAnchorHz.set(100000);
+		resetSdrState();
+		expect(sdrLocateMode.get()).toBe('free');
+		expect(sdrChannelStepHz.get()).toBe(25000);
+		expect(sdrChannelAnchorHz.get()).toBe(0);
+		for (const key of SDR_PREF_KEYS) expect(localStorage.getItem(key)).toBeNull();
+	});
+
+	it('stores fractional spacing from 1 Hz up and a nonzero anchor', () => {
+		sdrChannelStepHz.set(12.5); // kHz-plans with a fraction, still >= 1 Hz
+		sdrChannelAnchorHz.set(156.25);
+		expect(sdrChannelStepHz.get()).toBe(12.5);
+		expect(sdrChannelAnchorHz.get()).toBe(156.25);
+		// A stored spacing below the floor degrades to the default, not to the raw value.
+		localStorage.setItem('web-sa-sdr-channel-step', '0.2');
 	});
 });

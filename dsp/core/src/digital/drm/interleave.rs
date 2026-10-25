@@ -37,6 +37,13 @@ impl CellDeinterleaver {
         self.d
     }
 
+    /// Forget the delayed cells and their phase after a missing multiplex frame.
+    pub fn reset(&mut self) {
+        for cells in &mut self.mem { cells.fill(EqCell::default()); }
+        for sources in &mut self.sources { sources.fill(None); }
+        for (index, current) in self.cur.iter_mut().enumerate() { *current = index; }
+    }
+
     /// Push one received multiplex frame; returns the deinterleaved frame whose cells
     /// are now complete (erasures where nothing was received yet).
     pub fn push(&mut self, frame: &[EqCell]) -> Option<Vec<EqCell>> {

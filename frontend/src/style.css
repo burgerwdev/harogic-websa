@@ -776,6 +776,14 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 /* Allow quick presets to shrink and wrap within their container. */
 #sdr-step-quick { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
 #sdr-step-quick .btn { padding: 2px 5px; }
+/* Inline step-tier / grid settings: in-flow panel content, no overlay. */
+.sdr-inline-settings { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin: 2px 0 2px 62px; min-width: 0; }
+.sdr-inline-settings[style*="display:none"] { display: none; }
+.sdr-inline-field { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.sdr-inline-field label { color: var(--label); font-size: 11px; min-width: 34px; }
+.sdr-inline-field input[type="number"] { box-sizing: border-box; width: 84px; min-width: 0; }
+.sdr-inline-field .cur-val { flex: 0 0 24px; }
+.sdr-hint-note { color: var(--label); font-size: 11px; flex: 1 1 100%; }
 /* Filter presets wrap within the parameter column. */
 #sdr-ifbw-group { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }
 #sdr-ifbw-group .btn { padding: 2px 5px; }

@@ -5,14 +5,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use websa_channelizer::{encode_audio, encode_decode_event, AudioFrameMetadata};
+use websa_channelizer::{encode_audio, encode_decode_event, AudioFrameMetadata, MAX_BASEBAND_SAMPLES};
 use websa_channelizer::receiver::{AudioBlock, Ft8Job, Ft8Result, InputClock, Receiver, ReceiverConfig, ReceiverEvent, SamplePosition};
 
 const WORKERS: usize = 2;
 const INPUT_CAPACITY: usize = 8;
 const RESULT_CAPACITY: usize = 32;
 const SEARCH_CAPACITY: usize = 3;
-const MAX_IQ_SAMPLES: usize = 65_536;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,6 +61,7 @@ impl ChannelConfig {
             || !self.freq.is_finite() || !self.if_bw.is_finite() || self.if_bw <= 0.0
             || !self.squelch.is_finite() || !self.volume.is_finite() || !(0.0..=2.0).contains(&self.volume)
             || !self.pitch.is_finite() || self.pitch <= 0.0 || !self.deemph_us.is_finite()
+            || (self.mode == "cw" && !(100.0..=1600.0).contains(&self.pitch))
             || !self.nr_strength.is_finite() || !(0.0..=1.0).contains(&self.nr_strength)
             || !self.nr_atten_db.is_finite() || !(0.0..=100.0).contains(&self.nr_atten_db)
             || !matches!(self.nr_algorithm.as_str(), "wiener" | "dfn")
@@ -129,6 +129,7 @@ impl Shared {
     fn fail(&self, error: String) {
         let mut failure = self.failure.lock().unwrap_or_else(|e| e.into_inner());
         if failure.is_none() { *failure = Some(error); }
+        self.stopping.store(true, Ordering::Release);
     }
 
     fn check(&self) -> Result<(), String> {
@@ -139,8 +140,26 @@ impl Shared {
     }
 
     fn current(&self, slot: usize, generation: u64) -> bool {
-        self.generations[slot].load(Ordering::Acquire) == generation
+        !self.stopping.load(Ordering::Acquire) && self.generations[slot].load(Ordering::Acquire) == generation
     }
+}
+
+struct Pending(Arc<Shared>);
+
+impl Pending {
+    fn new(shared: &Arc<Shared>) -> Self {
+        shared.pending.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(shared))
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) { self.0.pending.fetch_sub(1, Ordering::AcqRel); }
+}
+
+struct PendingWork {
+    work: Work,
+    pending: Pending,
 }
 
 struct Packet {
@@ -163,6 +182,7 @@ struct SearchJob {
     channel_id: u32,
     epoch: u32,
     job: Ft8Job,
+    pending: Pending,
 }
 
 struct SearchResult {
@@ -210,13 +230,23 @@ pub(super) struct ReceiverWorkers {
     power: [Option<f64>; 3],
     levels: [Option<InputLevel>; 3],
     squelch: [Option<SquelchState>; 3],
-    inputs: Vec<mpsc::SyncSender<Work>>,
+    inputs: Vec<mpsc::SyncSender<PendingWork>>,
     outputs: mpsc::Receiver<Output>,
     threads: Vec<JoinHandle<()>>,
     shared: Arc<Shared>,
 }
 
 impl ReceiverWorkers {
+    pub fn stop_failed(&mut self) {
+        self.shared.stopping.store(true, Ordering::Release);
+        for generation in &self.shared.generations {generation.fetch_add(1, Ordering::AcqRel);}
+        self.inputs.clear();
+        self.levels=[None;3];
+        self.squelch=[None;3];
+    }
+
+    pub fn stopped(&self)->bool {self.threads.iter().all(JoinHandle::is_finished)}
+
     pub fn new() -> Result<Self, String> {
         let shared = Arc::new(Shared {
             stopping: AtomicBool::new(false), generations: std::array::from_fn(|_| AtomicU64::new(1)),
@@ -311,9 +341,10 @@ impl ReceiverWorkers {
         for slot in 0..self.configs.len() {
             let generation = self.shared.generations[slot].load(Ordering::Acquire);
             let (reply, done) = mpsc::sync_channel(1);
-            self.shared.pending.fetch_add(1, Ordering::AcqRel);
-            if let Err(error) = self.inputs[slot % WORKERS].try_send(Work::Deactivate { slot, generation, reply }) {
-                self.shared.pending.fetch_sub(1, Ordering::AcqRel);
+            let pending = Pending::new(&self.shared);
+            if let Err(error) = self.inputs[slot % WORKERS].try_send(PendingWork {
+                work: Work::Deactivate { slot, generation, reply }, pending,
+            }) {
                 return Err(format!("receiver session reset queue failure: {error}"));
             }
             done.recv_timeout(Duration::from_secs(5))
@@ -346,9 +377,10 @@ impl ReceiverWorkers {
                 if self.configs[slot].enabled && !config.enabled {
                     let generation=self.shared.generations[slot].load(Ordering::Acquire);
                     let (reply,done)=mpsc::sync_channel(1);
-                    self.shared.pending.fetch_add(1,Ordering::AcqRel);
-                    if let Err(error)=self.inputs[slot%WORKERS].try_send(Work::Deactivate {slot,generation,reply}) {
-                        self.shared.pending.fetch_sub(1,Ordering::AcqRel);
+                    let pending=Pending::new(&self.shared);
+                    if let Err(error)=self.inputs[slot%WORKERS].try_send(PendingWork {
+                        work:Work::Deactivate {slot,generation,reply},pending,
+                    }) {
                         let error=format!("receiver deactivate queue failure: {error}");
                         self.shared.fail(error.clone());return Err(error);
                     }
@@ -381,8 +413,8 @@ impl ReceiverWorkers {
         let epoch = u32_at(36);
         let input_index = u64::from_le_bytes(frame[40..48].try_into().unwrap());
         let delay = f64_at(48);
-        if u32_at(4) != 2 || samples > MAX_IQ_SAMPLES || frame.len() != 56 + samples * 8
-            || !rate.is_finite() || rate <= 0.0 || !frequency.is_finite()
+        if u32_at(4) != 2 || samples > MAX_BASEBAND_SAMPLES || frame.len() != 56 + samples * 8
+            || !(1.0..=1e9).contains(&rate) || !frequency.is_finite()
             || channel_id == 0 || epoch == 0 || !delay.is_finite() || delay < 0.0
             || (seq == 0) != (samples == 0) || input_index == u64::MAX
         { return Err("invalid receiver IQ frame metadata".into()); }
@@ -390,7 +422,8 @@ impl ReceiverWorkers {
             .ok_or_else(|| format!("receiver IQ identity {channel_id}/{epoch} missing from registry"))?;
         if !(1..=3).contains(&row.channel) || row.state != "active"
             || row.output_rate != rate || row.frequency_hz != frequency
-            || !row.input_rate.is_finite() || row.input_rate <= 0.0
+            || !(1.0..=1e9).contains(&row.input_rate)
+            || !row.group_delay_samples.is_finite() || row.group_delay_samples < 0.0
             || !(delay * row.input_rate / rate).is_finite()
         { return Err("receiver IQ registry clock mismatch".into()); }
         let slot = row.channel as usize - 1;
@@ -410,8 +443,8 @@ impl ReceiverWorkers {
             clock: InputClock { first_sample_index: input_index, input_rate: row.input_rate,
                 delay_input_samples: delay * row.input_rate / rate }, iq,
         };
-        self.shared.pending.fetch_add(1, Ordering::AcqRel);
-        match self.inputs[slot % WORKERS].try_send(Work::Packet(packet)) {
+        let pending = Pending::new(&self.shared);
+        match self.inputs[slot % WORKERS].try_send(PendingWork { work:Work::Packet(packet), pending }) {
             Ok(()) => {
                 self.levels[slot] = if samples == 0 { None } else {
                     Some(InputLevel { channel_id, epoch,
@@ -426,7 +459,6 @@ impl ReceiverWorkers {
                 Ok(())
             }
             Err(error) => {
-                self.shared.pending.fetch_sub(1, Ordering::AcqRel);
                 self.shared.counters.queue_full.fetch_add(1, Ordering::Relaxed);
                 let error = format!("receiver input queue failure: {error}; channel={} mode={} rate={rate} seq={seq} pending={} chain_max_ns={}",
                     row.channel, self.configs[slot].mode,
@@ -487,7 +519,7 @@ impl ReceiverWorkers {
             "pending":self.shared.pending.load(Ordering::Acquire),
             "native_chain":{"count":load(&c.chain_count),"total_ns":load(&c.chain_total_ns),"max_ns":load(&c.chain_max_ns)},
             "limits":{"workers":WORKERS,"input_per_worker":INPUT_CAPACITY,"results":RESULT_CAPACITY,
-                "ft8_jobs":SEARCH_CAPACITY,"max_iq_samples":MAX_IQ_SAMPLES,"max_event_bytes":MAX_EVENT_BYTES}
+                "ft8_jobs":SEARCH_CAPACITY,"max_iq_samples":MAX_BASEBAND_SAMPLES,"max_event_bytes":MAX_EVENT_BYTES}
         })
     }
 }
@@ -636,11 +668,11 @@ impl Write for BoundedJson {
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 
-fn run_realtime(input: mpsc::Receiver<Work>, output: mpsc::SyncSender<Output>,
+fn run_realtime(input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Output>,
     search: mpsc::SyncSender<SearchJob>, shared: Arc<Shared>) {
     let mut states: [Option<ChannelState>; 3] = std::array::from_fn(|_| None);
     while !shared.stopping.load(Ordering::Acquire) {
-        let work = match input.recv_timeout(Duration::from_millis(20)) {
+        let PendingWork { work, pending } = match input.recv_timeout(Duration::from_millis(20)) {
             Ok(work) => work,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -680,12 +712,12 @@ fn run_realtime(input: mpsc::Receiver<Work>, output: mpsc::SyncSender<Output>,
             Ok(None) => {}
             Err(error) => shared.fail(error),
         }
-        shared.pending.fetch_sub(1, Ordering::AcqRel);
+        drop(pending);
     }
 }
 
 fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
-    search: &mpsc::SyncSender<SearchJob>, shared: &Shared) -> Result<Option<Output>, String> {
+    search: &mpsc::SyncSender<SearchJob>, shared: &Arc<Shared>) -> Result<Option<Output>, String> {
     if !shared.current(packet.slot, packet.generation) { return Ok(None); }
     let needs_reset = states[packet.slot].as_ref().is_none_or(|state|
         state.generation != packet.generation || state.channel_id != packet.channel_id || state.epoch != packet.epoch);
@@ -718,12 +750,11 @@ fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
         for audio in result.audio { state.audio(audio, &mut frames)?; }
         for event in result.events { frames.decode.push(state.event(packet.slot, packet.clock, event)?); }
         if let Some(job) = result.ft8_job {
-            shared.pending.fetch_add(1, Ordering::AcqRel);
+            let pending = Pending::new(shared);
             match search.try_send(SearchJob { slot:packet.slot, generation:packet.generation,
-                channel_id:packet.channel_id, epoch:packet.epoch, job }) {
+                channel_id:packet.channel_id, epoch:packet.epoch, job, pending }) {
                 Ok(()) => { shared.counters.search_submitted.fetch_add(1, Ordering::Relaxed); }
                 Err(error) => {
-                    shared.pending.fetch_sub(1, Ordering::AcqRel);
                     shared.counters.queue_full.fetch_add(1, Ordering::Relaxed);
                     return Err(format!("FT8 search queue failure: {error}"));
                 }
@@ -753,7 +784,7 @@ fn process_search(completed: SearchResult, states: &mut [Option<ChannelState>; 3
     Ok(Some(Output { slot:completed.slot, generation:completed.generation, frames, squelch }))
 }
 
-fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSender<Work>>, shared: Arc<Shared>) {
+fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSender<PendingWork>>, shared: Arc<Shared>) {
     while !shared.stopping.load(Ordering::Acquire) {
         let job = match input.recv_timeout(Duration::from_millis(20)) {
             Ok(job) => job,
@@ -761,7 +792,6 @@ fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSend
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if !shared.current(job.slot, job.generation) {
-            shared.pending.fetch_sub(1, Ordering::AcqRel);
             continue;
         }
         let started = Instant::now();
@@ -771,10 +801,12 @@ fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSend
         shared.counters.chain_total_ns.fetch_add(elapsed, Ordering::Relaxed);
         shared.counters.chain_max_ns.fetch_max(elapsed, Ordering::Relaxed);
         shared.counters.search_completed.fetch_add(1, Ordering::Relaxed);
-        if let Err(error) = destinations[job.slot % WORKERS].try_send(Work::Search(SearchResult {
-            slot:job.slot, generation:job.generation, channel_id:job.channel_id, epoch:job.epoch, result,
-        })) {
-            shared.pending.fetch_sub(1, Ordering::AcqRel);
+        if !shared.current(job.slot, job.generation) { continue; }
+        if let Err(error) = destinations[job.slot % WORKERS].try_send(PendingWork {
+            work: Work::Search(SearchResult {
+                slot:job.slot, generation:job.generation, channel_id:job.channel_id, epoch:job.epoch, result,
+            }), pending:job.pending,
+        }) {
             shared.counters.queue_full.fetch_add(1, Ordering::Relaxed);
             shared.fail(format!("FT8 result queue failure: {error}"));
         }
@@ -784,6 +816,72 @@ fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ft8_pending_releases_on_stop_and_result_disconnect() {
+        for stopped in [true, false] {
+            let shared = Arc::new(Shared {
+                stopping:AtomicBool::new(stopped),
+                generations:std::array::from_fn(|_|AtomicU64::new(1)),
+                pending:AtomicUsize::new(0), failure:Mutex::new(None), counters:Counters::default(),
+            });
+            let config = ChannelConfig {mode:"ft8".into(),if_bw:3200.0,..ChannelConfig::default()};
+            let mut receiver = Receiver::new(config.receiver_config(12_000.0)).unwrap();
+            let iq = vec![0.0; 60_000 * 2];
+            let mut job = None;
+            for block in 0..3 {
+                job = receiver.process(&iq, InputClock {first_sample_index:block * 60_000,
+                    input_rate:12_000.0,delay_input_samples:0.0}, None).unwrap().ft8_job;
+            }
+            let (search, queued) = mpsc::sync_channel(SEARCH_CAPACITY);
+            search.try_send(SearchJob {slot:0,generation:1,channel_id:1,epoch:1,
+                job:job.expect("15 seconds produces an FT8 search"),pending:Pending::new(&shared)})
+                .unwrap_or_else(|_|panic!("test search queue full"));
+            drop(search);
+            let (destination, disconnected) = mpsc::sync_channel(INPUT_CAPACITY);
+            drop(disconnected);
+            run_search(queued, vec![destination], Arc::clone(&shared));
+            assert_eq!(shared.pending.load(Ordering::Acquire), 0);
+            if stopped {
+                assert_eq!(shared.counters.search_completed.load(Ordering::Relaxed), 0);
+            } else {
+                assert!(shared.check().unwrap_err().contains("FT8 result queue failure"));
+                assert_eq!(shared.counters.search_completed.load(Ordering::Relaxed), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_worker_releases_queued_work_before_replacement() {
+        for _ in 0..4 {
+            let shared = Arc::new(Shared {
+                stopping: AtomicBool::new(false),
+                generations: std::array::from_fn(|_| AtomicU64::new(1)),
+                pending: AtomicUsize::new(0), failure: Mutex::new(None), counters: Counters::default(),
+            });
+            let (input, queued) = mpsc::sync_channel(INPUT_CAPACITY);
+            let (output, _received) = mpsc::sync_channel(RESULT_CAPACITY);
+            let (search, _jobs) = mpsc::sync_channel(SEARCH_CAPACITY);
+            // Channels one and three share a worker; channel one fails with IQ still queued.
+            for slot in [0, 2, 0, 2] {
+                input.try_send(PendingWork {
+                    work: Work::Packet(Packet {
+                        slot, generation: 1,
+                        config: Arc::new(ChannelConfig { enabled:true, ..ChannelConfig::for_slot(slot as u32 + 1) }),
+                        channel_id:slot as u32 + 1, epoch:1, seq:1, rate:48_000.0, frequency:0.0,
+                        clock:InputClock {first_sample_index:0,input_rate:48_000.0,delay_input_samples:0.0},
+                        power_dbm:None, iq:vec![0.1, 0.0],
+                    }),
+                    pending:Pending::new(&shared),
+                }).unwrap_or_else(|_| panic!("test input queue full"));
+            }
+            assert_eq!(shared.pending.load(Ordering::Acquire), 4);
+            run_realtime(queued, output, search, Arc::clone(&shared));
+            assert!(shared.check().unwrap_err().contains("sequence zero"));
+            assert_eq!(shared.pending.load(Ordering::Acquire), 0);
+            assert_eq!(shared.counters.completed.load(Ordering::Relaxed), 1);
+        }
+    }
     use websa_channelizer::{encode_baseband, BasebandMagic};
 
     #[test]

@@ -5,7 +5,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use websa_channelizer::receiver::{AudioBlock, InputClock, Receiver, ReceiverConfig, ReceiverOutput};
+use websa_channelizer::receiver::{AudioBlock, InputClock, Receiver, ReceiverConfig, ReceiverOutput, SamplePosition};
 
 const BLOCK_COMPLEX: usize = 16_384;
 const MAX_EVENTS: usize = 100_000;
@@ -101,6 +101,9 @@ struct PcmSpan {
     clock: InputClock,
     frames: u64,
     samples: u64,
+    source_position: SamplePosition,
+    timing_kind: String,
+    codec_delay_known: bool,
 }
 
 #[derive(Serialize)]
@@ -163,6 +166,7 @@ struct Sink {
     events: Vec<Value>,
     event_bytes: usize,
     pcm_bytes: Vec<u8>,
+    next_source: Option<SamplePosition>,
 }
 impl Sink {
     fn events(&mut self, events: Vec<Value>) -> Result<(), Box<dyn std::error::Error>> {
@@ -183,6 +187,37 @@ impl Sink {
         if audio.rate == 0 || audio.channels == 0 || audio.samples.len() % audio.channels as usize != 0 {
             return Err("receiver emitted invalid PCM geometry".into());
         }
+        if audio.samples.iter().any(|sample| !sample.is_finite())
+            || !audio.clock.input_rate.is_finite() || audio.clock.input_rate <= 0.0
+            || !audio.clock.delay_input_samples.is_finite() || audio.clock.delay_input_samples < 0.0 {
+            return Err("receiver emitted invalid PCM samples or clock".into());
+        }
+        let source = audio.source_position.ok_or("receiver PCM lacks IQ provenance")?;
+        if source.fraction_den == 0 || source.fraction_num >= source.fraction_den {
+            return Err("receiver emitted invalid PCM source fraction".into());
+        }
+        let frames = (audio.samples.len()/audio.channels as usize) as u64;
+        let previous = self.pcm_spans.last();
+        let same_format = previous.is_some_and(|span| {
+            let format = &self.formats[span.format_index];
+            format.sample_rate == audio.rate && format.channels == audio.channels
+        });
+        let contiguous_source = same_format && self.next_source.is_some_and(|next| position_cmp(source,next).is_eq());
+        if same_format {
+            let previous = previous.unwrap();
+            if audio.first_frame_index != previous.first_frame_index.checked_add(previous.frames).ok_or("PCM frame index overflow")?
+                || audio.clock.input_rate != previous.clock.input_rate {
+                return Err("receiver emitted discontinuous PCM frame index or source rate".into());
+            }
+            if self.next_source.is_some_and(|next| position_cmp(source,next).is_lt()) {
+                return Err("receiver emitted overlapping or backward PCM provenance".into());
+            }
+        } else if audio.first_frame_index != 0 {
+            return Err("receiver PCM format starts with a nonzero frame index".into());
+        }
+        let next_source = if audio.timing_kind == "sample" {
+            source.checked_advance(frames,audio.clock.input_rate,audio.rate)?
+        } else { source };
         let index = self.formats.iter().position(|format|
             format.sample_rate == audio.rate && format.channels == audio.channels);
         let index = match index {
@@ -199,7 +234,10 @@ impl Sink {
         let format = &mut self.formats[index];
         format.frames += (audio.samples.len() / audio.channels as usize) as u64;
         format.samples += audio.samples.len() as u64;
-        if self.pcm_spans.last().is_none_or(|span| span.format_index != index) {
+        if !contiguous_source || audio.timing_kind != "sample"
+            || self.pcm_spans.last().is_none_or(|span| span.format_index != index
+                || span.clock.delay_input_samples != audio.clock.delay_input_samples
+                || span.timing_kind != audio.timing_kind || span.codec_delay_known != audio.codec_delay_known) {
             if self.pcm_spans.len() >= MAX_EVENTS {
                 return Err("PCM span report limit exceeded (100000 spans); split the input capture".into());
             }
@@ -209,11 +247,15 @@ impl Sink {
                 clock: audio.clock,
                 frames: 0,
                 samples: 0,
+                source_position: source,
+                timing_kind: audio.timing_kind,
+                codec_delay_known: audio.codec_delay_known,
             });
         }
         let span = self.pcm_spans.last_mut().unwrap();
         span.frames += (audio.samples.len() / audio.channels as usize) as u64;
         span.samples += audio.samples.len() as u64;
+        self.next_source = Some(next_source);
         if let Some(pcm) = self.pcm.as_mut() {
             self.pcm_bytes.clear();
             self.pcm_bytes.reserve(audio.samples.len() * 4);
@@ -229,6 +271,11 @@ impl Sink {
         if let Some(job) = output.ft8_job { self.events(receiver.accept_ft8(job.decode()))?; }
         Ok(())
     }
+}
+
+fn position_cmp(a: SamplePosition, b: SamplePosition) -> std::cmp::Ordering {
+    a.index.cmp(&b.index).then_with(||
+        (a.fraction_num as u128 * b.fraction_den as u128).cmp(&(b.fraction_num as u128 * a.fraction_den as u128)))
 }
 
 fn resolved_path(path: &Path) -> io::Result<PathBuf> {
@@ -253,7 +300,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut input = BufReader::new(input_file);
     let pcm = args.output_pcm.as_ref().map(File::create).transpose()?.map(BufWriter::new);
-    let mut sink = Sink { pcm, formats: Vec::new(), pcm_spans: Vec::new(), events: Vec::new(), event_bytes: 0, pcm_bytes: Vec::new() };
+    let mut sink = Sink { pcm, formats: Vec::new(), pcm_spans: Vec::new(), events: Vec::new(), event_bytes: 0, pcm_bytes: Vec::new(), next_source: None };
     let mut bytes = vec![0_u8; BLOCK_COMPLEX * 8];
     let mut iq = Vec::with_capacity(BLOCK_COMPLEX * 2);
     let mut complex_samples = 0_u64;
@@ -281,7 +328,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         sink.output(&mut receiver, output)?;
         complex_samples = complex_samples.checked_add((iq.len() / 2) as u64).ok_or("input sample count overflow")?;
     }
-    if let Some(job) = receiver.flush_ft8() { sink.events(receiver.accept_ft8(job.decode()))?; }
+    if let Some(job) = receiver.flush_ft8()? { sink.events(receiver.accept_ft8(job.decode()))?; }
     if let Some(pcm) = sink.pcm.as_mut() { pcm.flush()?; }
     let report = Report {
         schema_version: 1,
@@ -313,5 +360,48 @@ fn main() {
     if let Err(error) = result {
         eprintln!("sdr_decode: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sink() -> Sink {
+        Sink {pcm:None,formats:Vec::new(),pcm_spans:Vec::new(),events:Vec::new(),
+            event_bytes:0,pcm_bytes:Vec::new(),next_source:None}
+    }
+
+    fn block(frame: u64, source: u64) -> AudioBlock {
+        AudioBlock {samples:vec![0.0;128],rate:48_000,channels:1,
+            clock:InputClock {first_sample_index:source,input_rate:48_000.0,delay_input_samples:0.0},
+            first_frame_index:frame,source_position:Some(SamplePosition {index:source,fraction_num:0,fraction_den:1}),
+            timing_kind:"sample".into(),codec_delay_known:true}
+    }
+
+    #[test]
+    fn source_gaps_split_report_spans_and_overlap_is_rejected() {
+        let mut sink = sink();
+        sink.audio(block(0,100)).unwrap();
+        sink.audio(block(128,228)).unwrap();
+        assert_eq!(sink.pcm_spans.len(),1);
+        assert_eq!(sink.pcm_spans[0].frames,256);
+        sink.audio(block(256,700)).unwrap();
+        assert_eq!(sink.pcm_spans.len(),2);
+        assert_eq!(sink.pcm_spans[1].source_position.index,700);
+        assert_eq!(sink.pcm_spans[1].first_frame_index,256);
+        assert!(sink.audio(block(384,827)).is_err());
+        assert!(sink.audio(block(385,828)).is_err());
+        sink.audio(block(384,828)).unwrap();
+    }
+
+    #[test]
+    fn nonfinite_pcm_is_rejected_before_report_or_output() {
+        let mut sink = sink();
+        let mut invalid = block(0,0);
+        invalid.samples[1] = f32::NAN;
+        assert!(sink.audio(invalid).is_err());
+        assert!(sink.pcm_spans.is_empty());
+        assert!(sink.formats.is_empty());
     }
 }

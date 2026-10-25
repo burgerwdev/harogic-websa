@@ -47,6 +47,7 @@ interface ClockState {
 	num: bigint;
 	den: bigint;
 	rate: number;
+	mode: string;
 }
 function uint64(value: unknown): bigint {
 	if (typeof value !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(value)) throw new Error('Invalid SDE2 source integer');
@@ -139,6 +140,7 @@ export class DecodeSequence {
 			}
 		} else {
 			if (!previous || previous.identity !== identity || previous.seq + 1 !== d.seq) throw new Error('SDE2 identity or sequence gap');
+			if (d.event.type === 'start' || previous.mode !== d.mode) throw new Error('SDE2 mode changed without boundary');
 			if (previous.rate !== d.input_rate) throw new Error('SDE2 source rate changed without boundary');
 			// FT8 search completes asynchronously and retains its original transmission clock.
 			if (!d.causal_presentation && d.event.type !== 'ft8' && (whole - previous.whole) * den * previous.den
@@ -148,7 +150,7 @@ export class DecodeSequence {
 			+ num * previous.den - previous.num * den < 0n;
 		this.channels.set(d.channel, delayed
 			? { ...previous, seq: d.seq }
-			: { identity, epoch: d.epoch, channelId: d.channel_id, seq: d.seq, whole, num, den, rate: d.input_rate });
+			: { identity, epoch: d.epoch, channelId: d.channel_id, seq: d.seq, whole, num, den, rate: d.input_rate, mode: d.mode });
 		return d;
 	}
 }

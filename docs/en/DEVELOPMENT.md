@@ -5,7 +5,7 @@ See [Architecture](ARCHITECTURE.md) for component boundaries and [API](API.md) f
 
 ## 1. Environment, build and run
 
-Release 1.9.2 uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
+Release 1.9.3 uses native Rust PFB/DDC; Python and retained browser WASM artifacts are
 offline tooling and optional diagnostics, not production backends. To run the committed
 bundle, use `./run.sh` or `./run.sh --fake`; see the [release prerequisites](../../README.md#run-the-bundled-release).
 The bundle contains `runtime/linux-x86_64/websad`, the project's SDK adapter and

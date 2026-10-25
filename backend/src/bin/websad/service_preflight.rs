@@ -8,6 +8,28 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
         && (cmd == "AUTO_SCALE" || data["mode"] == "auto");
     if display_only { return Ok(app.state.lock().unwrap().config_version); }
     if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(app.state.lock().unwrap().config_version); }
+    {
+        let state = app.state.lock().unwrap();
+        if !data.is_object() { return Err("JSON message must be an object".into()); }
+        if matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC") {
+            if state.swp.mode != "sdr" { return Err("channel commands require SDR mode".into()); }
+            if matches!(cmd, "SET_SDR_AUX" | "SET_SDR_DDC") && !matches!(data["channel"].as_u64(), Some(2 | 3)) {
+                return Err("aux channel must be 2 or 3".into());
+            }
+            if cmd == "SET_SDR_TUNE" && data.get("listen").is_none() && data.get("freq").is_none() {
+                return Err("tune requires listen or freq".into());
+            }
+            let config = state.parse_channel_config(data)?;
+            if state.channel_recapture(&config)?.is_none() && config.enabled {
+                let plan = service_ddc::channel_plan(COARSE_RATE, &config)?;
+                Ddc::validate_service_frequency(state.capture_center(), state.capture_bandwidth(),
+                    state.capture_bandwidth() / 0.8, state.sdr_pfb_taps_per_phase, config.freq, &plan)?;
+            }
+        } else {
+            validate(&state.schema, cmd, data).map_err(|(_, message)| message)?;
+            if cmd == "SET_SDR" { state.parse_service_capture(data)?; }
+        }
+    }
     let supersede = cmd != "AUTO_SCALE" && !(cmd == "SET_REF" && data["mode"] == "auto")
         && app.state.lock().unwrap().cancel_auto_session();
     if supersede {
@@ -90,6 +112,34 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor="current_thread")]
+    async fn rejected_request_preserves_running_auto_session() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        state.auto_scale(None, false);
+        let sequence = state.auto.seq;
+        let app = Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
+            next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            display_version:Arc::new(AtomicU64::new(0))});
+        for (cmd, data) in [
+            ("SET_SDR_CHANNEL", json!({"mode":"cw", "pitch":1601})),
+            ("SET_SDR_TUNE", json!({})),
+            ("SET_SDR_AUX", json!({"channel":1})),
+            ("SET_REF", json!({"ref":"invalid"})),
+            ("SET_SDR", json!({"pfb_taps_per_phase":3})),
+        ] {
+            assert!(preflight(&app, cmd, &data).await.is_err(), "{cmd}");
+            let state = app.state.lock().unwrap();
+            assert!(state.auto.session.is_some());
+            assert_eq!(state.auto.seq, sequence);
+            assert_eq!(state.auto.result, "adjusting");
+        }
+    }
 
     const RECONFIG_FAIL: &str = "/tmp/websa_fake_iqs_reconfig_fail.txt";
     struct Injection;

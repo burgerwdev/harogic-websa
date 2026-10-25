@@ -34,6 +34,7 @@ import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterPassband } from '../ui/sdrFilterGesture';
+import { renderSdrLocate } from '../ui/sdrLocate';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -838,7 +839,7 @@ function renderRta() {
   });
   // Drawing and edge hits use the same passband mapping.
   renderFilterPassband(lo, hi);
-  // 频率轴
+  renderSdrLocate(lo, hi);
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
   // Bottom frequency row (same as SWP grid)
   drawFreqRow(lo, hi, col, p);

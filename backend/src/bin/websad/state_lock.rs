@@ -23,6 +23,7 @@ pub(super) struct StatusSnapshot {
     sdr_center: f64,
     sdr_actual: Value,
     sdr_ref: f64,
+    receiver_failure: Option<String>,
     channel_registry: Arc<[sdr_pipeline::ChannelRegistryEntry]>,
     channels: Value,
     actual: Value,
@@ -128,6 +129,7 @@ impl DevState {
             sdr_center: self.sdr_center.clone(),
             sdr_actual,
             sdr_ref: self.sdr_ref.clone(),
+            receiver_failure: self.receiver_failure.clone(),
             channels: self.channel_status(),
             channel_registry: self.stream_registry(),
             actual: self.actual.clone(),
@@ -406,6 +408,7 @@ impl StatusSnapshot {
         s["channel_registry"] = registry.clone();
         s["sdr"]["channels"] = self.channels.clone();
         s["sdr"]["filter_limits"] = self.sdr_filter_limits.clone();
+        s["sdr"]["receiver_error"] = json!(self.receiver_failure);
         for name in ["am_sync", "am_sync_generation"] {
             s["sdr"][name] = self.channels[0][name].clone();
             s["req"]["sdr"][name] = self.channels[0][name].clone();

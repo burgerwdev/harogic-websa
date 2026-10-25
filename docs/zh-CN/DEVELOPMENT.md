@@ -5,7 +5,7 @@
 
 ## 1. 环境、构建与运行
 
-1.9.2 使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
+1.9.3 使用原生 Rust PFB/DDC；Python 与保留的浏览器 WASM 产物仅用于离线工具和可选诊断，
 不承载生产后端。运行仓库随附产物使用 `./run.sh` 或 `./run.sh --fake`，依赖见
 [发布运行要求](../../README.zh-CN.md#运行随附发布产物)。随附内容为
 `runtime/linux-x86_64/websad`、本项目 SDK 适配库和 `runtime/frontend/dist/`。

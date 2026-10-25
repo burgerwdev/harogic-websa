@@ -78,33 +78,21 @@ impl DecodeSnapshots {
     }
 }
 
-// A missing ordered IQ block ends the session. Do not reuse its sticky worker
-// failure or restart capture against the same identity after losing samples.
+// Receiver failure ends every shared decoder lane, never the capture session.
+// Publication consumes the notice once, including failures found during controls.
 pub(super) fn fail_receiver_session(state:&mut DevState,app:&App,error:String)->Option<Value> {
-    if state.receiver_failure.is_some() {return None;}
-    state.receiver_failure=Some(error.clone());
-    if state.pipeline.is_some() || state.ddc_error.as_ref()!=Some(&error) {
-        state.hardware_presentation_failed(error.clone());
-    }
-    if let Some(workers)=state.receiver_workers.take() {
-        let diagnostics=state.ddc_failure_diagnostics.get_or_insert_with(||json!({"error":&error}));
-        diagnostics["receiver_workers"]=workers.stats();
-        drop(workers);
-    }
-    // Healthy command retirement still drains in order. A terminal failure cannot
-    // promise a complete tail; retain its diagnosis instead of publishing a gap.
-    state.pending_iq.clear();
-    state.pending_receiver=receiver_workers::ReceiverFrames::default();
-    state.consumed_receiver_iq.clear();
-    state.decode_snapshots=DecodeSnapshots::default();
-    state.fixture_sources=None;
-    state.retiring_registry=Arc::from([]);
-    state.channel_power=[None;3];
+    state.latch_receiver_failure(error);
+    publish_receiver_failure(state,app)
+}
+
+pub(super) fn publish_receiver_failure(state:&mut DevState,app:&App)->Option<Value> {
+    if !std::mem::take(&mut state.receiver_failure_pending) {return None;}
+    let error=state.receiver_failure.as_ref()?;
     for client in app.clients.lock().iter().filter(|c|c.audio||c.decode) {
         client.receiver_failed.store(true,Ordering::Release);
         client.wake.notify_one();
     }
-    Some(json!({"cmd":"ERROR","code":"receiver_failed","msg":error}))
+    Some(json!({"cmd":"RECEIVER_ERROR","error":error,"failed":true,"scope":"all_receivers"}))
 }
 
 pub(super) fn deliver_retiring(state:&mut DevState,app:&App) {
@@ -156,6 +144,36 @@ pub(super) fn identity_current(identity:Option<u64>,identities:&[AtomicU64;3],ch
 }
 
 impl DevState {
+    pub(super) fn latch_receiver_failure(&mut self,error:String) {
+        if self.receiver_failure.is_some() {return;}
+        self.receiver_failure=Some(error);
+        self.receiver_failure_pending=true;
+        if let Some(workers)=self.receiver_workers.as_mut() {workers.stop_failed();}
+        self.pending_receiver=receiver_workers::ReceiverFrames::default();
+        self.consumed_receiver_iq.clear();
+        self.decode_snapshots=DecodeSnapshots::default();
+        self.retiring_registry=Arc::from([]);
+    }
+
+    pub(super) fn reap_failed_receivers(&mut self)->bool {
+        if self.receiver_failure.is_none() {return true;}
+        if self.receiver_failure_pending {return false;}
+        if self.receiver_workers.as_ref().is_some_and(|workers| !workers.stopped()) {return false;}
+        self.receiver_workers=None;
+        true
+    }
+
+    pub(super) fn restart_failed_receivers(&mut self)->Result<(),String> {
+        if self.receiver_failure.is_none() {return Ok(());}
+        self.ddc_command(|ddc|ddc.restart_service_receivers())?;
+        if let Some(source)=self.fixture_sources.as_mut() {source.restart(None)?;}
+        self.receiver_failure=None;
+        self.receiver_failure_pending=false;
+        self.consumed_receiver_iq.clear();
+        self.config_version+=1;
+        Ok(())
+    }
+
     pub(super) fn stream_registry(&self)->Arc<[sdr_pipeline::ChannelRegistryEntry]> {
         if self.swp.mode!="sdr" {Arc::from([])}
         else if let Some(pipeline)=&self.pipeline {pipeline.snapshot.registry.clone()}
@@ -196,9 +214,7 @@ impl DevState {
     }
     fn submit_receiver_frames_with_registry(&mut self,frames:&[Vec<u8>],
         registry:&[sdr_pipeline::ChannelRegistryEntry],finish:bool)->Result<receiver_workers::ReceiverFrames,String> {
-        if let Some(error)=&self.receiver_failure {
-            return if frames.is_empty() {Ok(receiver_workers::ReceiverFrames::default())} else {Err(error.clone())};
-        }
+        if self.receiver_failure.is_some() {return Ok(receiver_workers::ReceiverFrames::default());}
         let configs=self.channel_configs();
         let power=self.fresh_channel_power();
         if self.receiver_workers.is_none() {self.receiver_workers=Some(receiver_workers::ReceiverWorkers::new()?);}
@@ -271,13 +287,18 @@ mod tests {
     }
 
     #[test]
-    fn worker_failure_retires_once_and_explicit_mode_change_recovers() {
+    fn worker_failure_is_latched_without_stopping_iq_and_same_demod_recovers() {
         let mut state=DevState::new(json!({"preset_defaults":{}}),json!({"commands":{"SET_MODE":{}}}));
         state.swp.mode="sdr".into();
         state.sdr_listen=100e6;
         state.sdr_demod="nfm".into();
         state.sdr_if_bw=12_500.0;
         state.link_up=true;
+        state.sdr_center=100e6;
+        let mut source=service_fixture::FixtureSources::new();
+        source.configure(&state.channel_configs()).unwrap();
+        let initial_registry=source.registry();
+        state.fixture_sources=Some(source);
         let app=App {
             state:StateMutex::new(DevState::new(json!({"preset_defaults":{}}),json!({}))),
             clients:PLMutex::new(Vec::new()),next_client:AtomicU64::new(0),
@@ -305,56 +326,62 @@ mod tests {
         let error=state.process_receiver_frames_with_registry(&[frame(11,2)],&old,true).err().unwrap();
         assert!(error.contains("receiver IQ sequence or clock discontinuity"));
         let message=fail_receiver_session(&mut state,&app,error.clone()).unwrap();
-        assert_eq!(message["code"],"receiver_failed");
-        assert_eq!(message["msg"],error);
-        assert!(state.receiver_workers.is_none());
+        assert_eq!(message["cmd"],"RECEIVER_ERROR");
+        assert_eq!(message["error"],error);
         assert!(state.link_up,"DSP failure must not report physical disconnection");
-        assert_eq!(state.ddc_error.as_deref(),Some(error.as_str()));
-        assert_eq!(state.ddc_failure_diagnostics.as_ref().unwrap()["receiver_workers"]["submitted"],2);
+        assert!(state.ddc_error.is_none());
+        assert!(state.ddc_failure_diagnostics.is_none());
+        let status=state.status_snapshot().build();
+        assert_eq!(status["sdr"]["receiver_error"],error);
+        assert!(status["last_error"].is_null());
         for client in app.clients.lock().iter() {
             assert!(client.receiver_failed.load(Ordering::Acquire));
             assert!(!client.overflow.load(Ordering::Acquire),"receiver failure is not consumer overflow");
         }
-        state.hardware_shim=Some("must-not-open-after-failure".into());
-        let diagnostics=state.ddc_failure_diagnostics.clone();
-        state.preset().unwrap();
-        assert_eq!(state.ddc_failure_diagnostics,diagnostics,"preset must retain the terminal diagnosis");
-        assert_eq!(state.receiver_failure.as_deref(),Some(error.as_str()));
-        assert_eq!(state.ddc_error.as_deref(),Some(error.as_str()));
-        assert!(state.pipeline.is_none() && state.receiver_workers.is_none());
-        for _ in 0..3 {
-            assert!(state.take_hardware_presentation(1).unwrap().is_none());
+        let mut last_sequence=None;
+        for _ in 0..12 {
+            let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
+            for frame in &frames {
+                let sequence=u32::from_le_bytes(frame[8..12].try_into().unwrap());
+                if let Some(last)=last_sequence {assert_eq!(sequence,last+1);}
+                last_sequence=Some(sequence);
+            }
+            let output=state.process_receiver_frames(&frames).unwrap();
+            assert!(output.audio.is_empty() && output.decode.is_empty());
             assert!(state.drain_receiver_frames().unwrap().decode.is_empty());
-            assert_eq!(state.process_receiver_frames_with_registry(&[frame(11,3)],&old,false).err().as_deref(),Some(error.as_str()));
-            let empty=state.process_receiver_frames_with_registry(&[],&old,false).unwrap();
-            assert!(empty.audio.is_empty() && empty.decode.is_empty());
             assert!(fail_receiver_session(&mut state,&app,"later failure".into()).is_none());
-            assert!(state.receiver_workers.is_none(),"polling must not silently start a new session");
+            assert_eq!(state.stream_registry()[0].epoch,initial_registry[0].epoch);
         }
+        assert!(last_sequence.unwrap()>1,"raw IQ must continue advancing under the failure latch");
         assert_eq!(state.receiver_failure.as_deref(),Some(error.as_str()));
-        assert_eq!(state.ddc_error_count,1);
-        state.hardware_shim=None;
+        assert_eq!(state.ddc_error_count,0);
         assert!(!dispatch(&mut state,"SET_MODE",&json!({"mode":"sdr"})).unwrap());
         assert!(state.receiver_failure.is_some(),"same-mode no-op cannot hide a lost block");
-        dispatch(&mut state,"SET_MODE",&json!({"mode":"std"})).unwrap();
-        dispatch(&mut state,"SET_MODE",&json!({"mode":"sdr"})).unwrap();
+        state.receiver_failure_pending=true;
+        assert_eq!(dispatch(&mut state,"SET_SDR_DEMOD",&json!({"mode":"nfm"})).unwrap_err().code,"receiver_retiring");
+        dispatch(&mut state,"SET_SDR_CHANNEL",&json!({"freq":100e6+100.0})).unwrap();
+        dispatch(&mut state,"SET_SDR_DEMOD",&json!({"ifbw":10_000.0})).unwrap();
+        assert_eq!(state.sdr_listen,100e6+100.0);
+        assert_eq!(state.sdr_if_bw,10_000.0);
+        assert!(state.receiver_failure.is_some(),"tuning and filter edits cannot resume a lost receiver session");
+        assert!(publish_receiver_failure(&mut state,&app).is_some());
+        let deadline=std::time::Instant::now()+Duration::from_secs(2);
+        while !state.reap_failed_receivers() {
+            assert!(std::time::Instant::now()<deadline,"stopped workers must retire");
+            std::thread::yield_now();
+        }
+        dispatch(&mut state,"SET_SDR_DEMOD",&json!({"mode":"nfm","ifbw":12_500.0})).unwrap();
         assert!(state.receiver_failure.is_none());
-        state.sdr_listen=100e6;
-        state.sdr_demod="nfm".into();
-        state.sdr_if_bw=12_500.0;
-        let fresh=registry(12);
-        let start=state.process_receiver_frames_with_registry(&[frame(12,0)],&fresh,true).unwrap();
-        let envelope:Value=serde_json::from_slice(&start.decode[0][8..]).unwrap();
-        assert_eq!(envelope["channel_id"],12);
+        let fresh=state.stream_registry();
+        assert_ne!((fresh[0].channel_id,fresh[0].epoch),(initial_registry[0].channel_id,initial_registry[0].epoch));
+        let frames=state.fixture_sources.as_mut().unwrap().step().unwrap();
+        let output=state.process_receiver_frames_with_registry(&frames,&fresh,true).unwrap();
+        let envelope:Value=serde_json::from_slice(&output.decode[0][8..]).unwrap();
+        assert_eq!(envelope["epoch"],fresh[0].epoch);
         assert_eq!(envelope["seq"],0);
         assert_eq!(envelope["event"]["type"],"start");
-        let output=state.process_receiver_frames_with_registry(&[frame(12,1)],&fresh,true).unwrap();
         assert!(output.audio.iter().any(|frame|u32::from_le_bytes(frame[12..16].try_into().unwrap())>0),
             "fresh session must process real IQ into PCM after retiring the failed workers");
-        let next_error=state.process_receiver_frames_with_registry(&[frame(12,3)],&fresh,true).err().unwrap();
-        let next_message=fail_receiver_session(&mut state,&app,next_error.clone()).unwrap();
-        assert_eq!(next_message["msg"],next_error);
-        assert!(next_error.contains("identity=12/7"));
     }
 
     #[test]

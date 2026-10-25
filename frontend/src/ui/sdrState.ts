@@ -13,6 +13,7 @@ import { t } from '../core/i18n';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { sstvBandHz } from '../sdr/sstvLog';
+import { signalLocateSupported, stepTierDefaults } from './sdrTuning';
 
 /** Frequency-like equality: sub-Hz differences are the same value. */
 const hz = {
@@ -223,28 +224,20 @@ export interface SdrChannelStatus {
     audio_rate?: number;
 }
 
-/**
- * Tuning step, one entry per capture bandwidth.
- *
- * The user tunes with fixed steps, and a step that suits a 50 MHz span is useless inside a
- * 25 kHz one. So the step is remembered per bandwidth (key = decimation, the select's own
- * value) and the client owns it: the backend never reports a step, so the slot is
- * authoritative and persists with the other SDR preferences. The display unit lives
- * separately, in the shared unit map (core/units.ts) under the key `sdr_step`, the same
- * toggle buttons as every other frequency box.
- */
+/** Tuning tier: the step box writes `normal`; Shift/Ctrl held arrows use the others. */
+export type TuneTier = 'normal' | 'coarse' | 'fine';
 
 /**
- * Parse a stored step map. Keys are decimations, values are steps in Hz. Any entry that is
- * not a positive finite number is dropped, and unreadable storage degrades to an empty map,
- * so a hand-edited or damaged value cannot put a broken step on the arrow keys.
+ * Parse a stored per-mode tier map. Values below 1 Hz or not positive finite are dropped,
+ * and unreadable storage degrades to an empty map, so damaged storage cannot put a broken
+ * step on the arrow keys.
  */
 export function parseSdrStepMap(raw: string): Record<string, number> {
 	try {
 		const map = JSON.parse(raw) as Record<string, unknown>;
 		const clean: Record<string, number> = {};
-		for (const [key, value] of Object.entries(map)) {
-			if (typeof value === 'number' && isFinite(value) && value > 0) clean[key] = value;
+		for (const [mode, value] of Object.entries(map)) {
+			if (typeof value === 'number' && Number.isFinite(value) && value >= 1) clean[mode] = value;
 		}
 		return clean;
 	} catch {
@@ -252,16 +245,71 @@ export function parseSdrStepMap(raw: string): Record<string, number> {
 	}
 }
 
-export const sdrStepByBw = createParam<Record<string, number>>('sdr.stepByBw', {
-	fallback: {}, scope: 'sdr', persistKey: 'web-sa-sdr-step-bw', persist: 'desired',
+const stepMapEquals = (a: Record<string, number>, b: Record<string, number>): boolean => {
+	const ka = Object.keys(a), kb = Object.keys(b);
+	return ka.length === kb.length && ka.every((mode) => a[mode] === b[mode]);
+};
+
+const stepMapSlot = (name: string, persistKey: string) => createParam<Record<string, number>>(
+	name, {
+		fallback: {}, scope: 'sdr', persistKey, persist: 'desired', authoritative: true,
+		parse: parseSdrStepMap, serialize: (v) => JSON.stringify(v), equals: stepMapEquals,
+	});
+
+/** Normal tier per demod mode (Hz); authoritative client preference. */
+export const sdrNormalStepByMode = stepMapSlot('sdr.normalStep', 'web-sa-sdr-step-normal');
+/** Coarse tier per demod mode (Hz); authoritative client preference. */
+export const sdrCoarseStepByMode = stepMapSlot('sdr.coarseStep', 'web-sa-sdr-step-coarse');
+/** Fine tier per demod mode (Hz); authoritative client preference. */
+export const sdrFineStepByMode = stepMapSlot('sdr.fineStep', 'web-sa-sdr-step-fine');
+
+/** Stored spacing must be a finite value of at least 1 Hz; anything else reads the default. */
+const stepHz = (raw: string): number | null => {
+	const value = Number(raw);
+	return Number.isFinite(value) && value >= 1 ? value : null;
+};
+
+/** Stored anchors may be any finite value, including a fractional offset from zero. */
+const anchorHz = (raw: string): number | null => {
+	const value = Number(raw);
+	return Number.isFinite(value) ? value : null;
+};
+
+/** Click positioning: raw click, nearest channel-grid point, or strongest nearby signal. */
+export type LocateMode = 'free' | 'channel' | 'signal';
+
+/** Which positioning the user wants; a kept preference, reset by Preset. */
+export const sdrLocateMode = createParam<LocateMode>('sdr.locate', {
+	fallback: 'free', scope: 'sdr', persistKey: 'web-sa-sdr-locate', persist: 'desired',
 	authoritative: true,
-	parse: parseSdrStepMap,
-	serialize: (v) => JSON.stringify(v),
-	equals: (a, b) => {
-		const ka = Object.keys(a), kb = Object.keys(b);
-		return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
-	},
+	parse: (raw) => (raw === 'channel' || raw === 'signal' ? raw : 'free'),
+	serialize: String,
 });
+
+/**
+ * The locate mode usable now: `signal` falls back to `free` where the mode has no carrier
+ * evidence, and the preference itself stays stored for the return to a supported mode.
+ */
+export function effectiveLocateMode(mode: string): LocateMode {
+	return sdrLocateMode.get() === 'signal' && !signalLocateSupported(mode) ? 'free'
+		: sdrLocateMode.get();
+}
+
+/** Channel-grid spacing in Hz; any value from 1 Hz up, fractional channel plans included. */
+export const sdrChannelStepHz = createParam<number>('sdr.channelStep', {
+	fallback: 25_000, scope: 'sdr', persistKey: 'web-sa-sdr-channel-step', persist: 'desired',
+	authoritative: true, parse: stepHz, serialize: String,
+	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
+});
+
+/** Channel-grid anchor in Hz; the uniform grid runs `anchor + n * spacing`. */
+export const sdrChannelAnchorHz = createParam<number>('sdr.channelAnchor', {
+	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-channel-anchor', persist: 'desired',
+	authoritative: true, parse: anchorHz, serialize: String,
+	equals: (a: number, b: number) => Math.abs(a - b) < 0.01,
+});
+
+
 
 /** Every persisted SDR preference (Preset removes them, so defaults really are defaults). */
 export const SDR_PREF_KEYS = [
@@ -269,8 +317,9 @@ export const SDR_PREF_KEYS = [
 	'web-sa-sdr-demod', 'web-sa-sdr-ifbw', 'web-sa-sdr-deemph', 'web-sa-sdr-volume',
 	'web-sa-sdr-squelch', 'web-sa-sdr-squelch-mode', 'web-sa-sdr-agc', 'web-sa-sdr-nr',
 	'web-sa-sdr-nr-strength', 'web-sa-sdr-nr-algo', 'web-sa-sdr-nr-atten',
-	'web-sa-sdr-step-bw', 'web-sa-sdr-sstv-mode', 'web-sa-sdr-am-sync',
-	'web-sa-sdr-filter-by-mode',
+	'web-sa-sdr-step-normal', 'web-sa-sdr-step-coarse', 'web-sa-sdr-step-fine',
+	'web-sa-sdr-locate', 'web-sa-sdr-channel-step', 'web-sa-sdr-channel-anchor',
+	'web-sa-sdr-sstv-mode', 'web-sa-sdr-am-sync', 'web-sa-sdr-filter-by-mode',
 ];
 
 /**
@@ -295,9 +344,16 @@ export function resetSdrState(): void {
 	sdrFilterByMode.set({});
 	sdrSstvMode.set(-1);
 	sdrAmSync.set(false);
+	sdrNormalStepByMode.set({});
+	sdrCoarseStepByMode.set({});
+	sdrFineStepByMode.set({});
+	sdrLocateMode.set('free');
+	sdrChannelStepHz.set(25_000);
+	sdrChannelAnchorHz.set(0);
 	if (typeof localStorage === 'undefined') return;
 	try {
 		SDR_PREF_KEYS.forEach((key) => localStorage.removeItem(key));
+		localStorage.removeItem('web-sa-sdr-step-bw');
 	} catch {
 		/* storage disabled: nothing to clear */
 	}
@@ -322,44 +378,25 @@ export const SDR_STEP_QUICK_HZ = [
 ] as const;
 
 /**
- * Default step for a capture bandwidth: a 1-2-5 value at about span / 100, rounded down.
- *
- * A 195 kHz span then keeps the 1 kHz step the keyboard always used, a 25 kHz span drops to
- * 100 Hz for SSB and CW work, and a 50 MHz span gives 500 kHz so a wideband sweep stays
- * quick to walk through. Round down, not to the nearest: a finer step never hides a signal.
+ * The step a tier uses now: the user's stored value for this demod mode, else the mode's
+ * fixed default. One caller per action: the tune keys and the step box.
  */
-export function defaultSdrStepHz(bandwidthHz: number): number {
-	if (!(bandwidthHz > 0) || !isFinite(bandwidthHz)) return 1000;
-	const target = bandwidthHz / 100;
-	const decade = Math.floor(Math.log10(target));
-	if (decade < 0) return 1;
-	for (const m of [5, 2, 1]) {
-		if (m * 10 ** decade <= target) return m * 10 ** decade;
-	}
-	return 1;
+export function currentSdrStepHz(tier: TuneTier = 'normal'): number {
+	const mode = sdrDemod.get();
+	const slot = tier === 'coarse' ? sdrCoarseStepByMode
+		: tier === 'fine' ? sdrFineStepByMode : sdrNormalStepByMode;
+	const remembered = slot.get()[mode];
+	if (remembered !== undefined && Number.isFinite(remembered) && remembered >= 1) return remembered;
+	return stepTierDefaults(mode)[tier];
 }
 
-/** The step the user stored for one bandwidth, or null when none was set (an auto value). */
-export function storedSdrStepHz(decimate: number): number | null {
-	const stored = sdrStepByBw.get()[String(Math.round(decimate))];
-	return stored && stored > 0 ? stored : null;
-}
-
-/** The step the arrow keys use now: the user's choice for this bandwidth, else the default. */
-export function currentSdrStepHz(): number {
-	const stored = storedSdrStepHz(sdrDecimate.get());
-	if (stored !== null) return stored;
-	const span = sdrSpanHz.get() > 0
-		? sdrSpanHz.get()
-		: estimatedCaptureSpanHz(Math.max(1, Math.round(sdrDecimate.get())));
-	return defaultSdrStepHz(span);
-}
-
-/** Record the user's step for the current bandwidth (a user action; never an auto choice). */
-export function setSdrStepForCurrentBw(stepHz: number): void {
-	if (!(stepHz > 0) || !isFinite(stepHz)) return;
-	const key = String(Math.round(sdrDecimate.get()));
-	sdrStepByBw.set({ ...sdrStepByBw.get(), [key]: stepHz });
+/** Record the user's step for one tier of the current demod mode. */
+export function setSdrStepForCurrentMode(stepHz: number, tier: TuneTier = 'normal'): void {
+	if (!Number.isFinite(stepHz) || stepHz < 1) return;
+	const mode = sdrDemod.get();
+	const slot = tier === 'coarse' ? sdrCoarseStepByMode
+		: tier === 'fine' ? sdrFineStepByMode : sdrNormalStepByMode;
+	slot.set({ ...slot.get(), [mode]: stepHz });
 }
 
 const input = (id: string) => document.getElementById(id) as HTMLInputElement | null;
@@ -388,8 +425,8 @@ export function renderSdrState(): void {
 		squelchLabel.textContent = threshold <= -160 ? t('off') : `${threshold.toFixed(1)} dBm`;
 	}
 	// The tuning step: the box shows the value in the chosen unit, a quick button marks the
-	// step in use. Read from the slots on every render, so a bandwidth switch shows that
-	// bandwidth's stored step (or its default) with no separate copy to keep in step.
+	// step in use. Read from the slots on every render, so a mode switch shows that mode's
+	// remembered step (or its default) with no separate copy to keep in step.
 	const stepInput = input('input-sdr-step');
 	if (stepInput && document.activeElement !== stepInput) {
 		// The box shows the step in the shared unit map's unit for `sdr_step`.

@@ -4,7 +4,7 @@
 
 A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), using the native Rust service and a C++ shim for the official `libhtraapi.so` SDK over USB.
 
-Release **1.9.2** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
+Release **1.9.3** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
 for offline tools and tests; there is no Python production backend. Retained browser WASM
 artifacts are optional offline diagnostics, not the production DSP path.
 
@@ -71,7 +71,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 
 ### Run the bundled release
 
-The 1.9.2 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
+The 1.9.3 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so`, and `runtime/frontend/dist/`.
 Run `./run.sh` for hardware or `./run.sh --fake` for synthetic input, then open
 http://127.0.0.1:8080. No Rust, Node.js or Python installation is needed to use the bundle.

@@ -139,6 +139,13 @@ function renderDecodeTiming(): void {
 	const timing = channelTiming[selectedChannel];
 	const error = channelErrors[selectedChannel];
 	const errorText = error ? t('decode_error', { message: error }) : '';
+	const inline = element('sdr-receiver-error');
+	if (inline) {
+		inline.hidden = !error;
+		inline.textContent = error ? t('receiver_failed') : '';
+		inline.title = errorText;
+		inline.setAttribute('aria-label', errorText);
+	}
 	const timingTip = timing ? [
 		t(timing.delayKnown && !timing.causalPresentation ? 'decode_timing_known' : 'decode_timing_unknown'),
 		t(mode === 'drm' || mode === 'drmplus' ? 'decode_timing_drm_tip' : 'decode_timing_source_tip'),

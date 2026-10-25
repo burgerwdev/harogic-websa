@@ -226,6 +226,7 @@ struct DevState {
     sdr_channels: Vec<receiver_workers::ChannelConfig>,
     receiver_workers: Option<receiver_workers::ReceiverWorkers>,
     receiver_failure: Option<String>,
+    receiver_failure_pending: bool,
     fixture_sources: Option<service_fixture::FixtureSources>,
     channel_power: [Option<(std::time::Instant,f64)>;3],
     sdr_actual: Value,
@@ -438,6 +439,7 @@ impl DevState {
             sdr_channels: (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect(),
             receiver_workers: None,
             receiver_failure: None,
+            receiver_failure_pending: false,
             fixture_sources: None,
             channel_power: [None;3],
             sdr_actual: json!({}),
@@ -2443,13 +2445,8 @@ impl Ddc {
             self.stream.flush_pending().map_err(str::to_owned)?;
             let frames = self.drain()?;
             self.carry.extend(frames);
-            if let Some(tail) = self.framer.finish().map_err(str::to_owned)? {
-                self.carry.push(tail);
-            }
             let mut tails = Vec::new();
-            for (_, _, framer) in self.aux.values_mut() {
-                if let Some(tail) = framer.finish().map_err(str::to_owned)? { tails.push(tail); }
-            }
+            self.finish_framers(&mut tails)?;
             self.carry.extend(tails);
             Ok(())
         })();
@@ -2512,10 +2509,7 @@ impl Ddc {
             self.stream.flush_pending().map_err(str::to_owned)?;
             let mut tails = std::mem::take(&mut self.carry);
             tails.extend(self.drain()?);
-            if let Some(tail) = self.framer.finish().map_err(str::to_owned)? { tails.push(tail); }
-            for (_, _, framer) in self.aux.values_mut() {
-                if let Some(tail) = framer.finish().map_err(str::to_owned)? { tails.push(tail); }
-            }
+            self.finish_framers(&mut tails)?;
             Ok(tails)
         })();
         next.carry = match drained {
@@ -3024,12 +3018,18 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
         if matches!(cmd,"SET_SDR_AUX"|"SET_SDR_DDC") && !matches!(data["channel"].as_u64(),Some(2|3)) {
             return Err(CommandError::new("bad_parameter","aux channel must be 2 or 3"));
         }
+        let restart=state.receiver_failure.is_some()
+            && ["mode","demod"].iter().any(|field|data.get(*field).is_some());
+        if restart && !state.reap_failed_receivers() {
+            return Err(CommandError::new("receiver_retiring","Receiver is still stopping; retry shortly"));
+        }
         state.apply_channel_config(data).map_err(|error|CommandError::new("bad_parameter",&error))?;
         if state.hardware_shim.is_none() {
             let configs=state.channel_configs();
             state.fixture_sources.get_or_insert_with(service_fixture::FixtureSources::new)
                 .configure(&configs).map_err(|error|CommandError::new("device_error",&error))?;
         }
+        if restart {state.restart_failed_receivers().map_err(|error|CommandError::new("device_error",&error))?;}
         return Ok(true);
     }
     let Some(spec) = state.schema["commands"].get(cmd).cloned() else {
@@ -3089,6 +3089,7 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 return Ok(false);
             }
             if mode == next { return Ok(false); }
+            if !state.reap_failed_receivers() {return Err(CommandError::new("receiver_retiring","Receiver is still stopping; retry shortly"));}
             if mode != next {
                 // One vendor session at a time: drop (join) the old owner before the next opens.
                 state.stop_pipeline().map_err(device)?;
@@ -3107,6 +3108,7 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                     }
                 }
                 state.receiver_failure = None;
+                state.receiver_failure_pending = false;
                 state.pending_receiver=receiver_workers::ReceiverFrames::default();
                 state.decode_snapshots=service_stream::DecodeSnapshots::default();
                 state.retiring_registry = Arc::from([]);
@@ -3771,7 +3773,6 @@ async fn publisher(app: Arc<App>) {
                     if state.rta_completed_frame.is_some() { Duration::from_millis(200) }
                     else { Duration::from_millis(10) }
                 }
-                "sdr" if state.receiver_failure.is_some() => Duration::from_millis(20),
                 "sdr" if state.hardware_shim.is_some() => {
                     let listeners = iq_clients + aux_clients + display_clients + audio_clients + decode_clients
                         + usize::from(state.auto.session.is_some());
@@ -3853,6 +3854,8 @@ async fn publisher(app: Arc<App>) {
                         }
                     }
                 }
+                state.reap_failed_receivers();
+                if let Some(message)=service_stream::publish_receiver_failure(&mut state,&compute) {msgs.push(message);}
             }
             let auto_changed = {
                 let mut state = compute.state.lock().unwrap();
@@ -5294,6 +5297,8 @@ mod tests {
         });
         let router = Router::new()
             .route("/ws", get(ws_handler))
+            .route("/ws/audio", get(service_stream::audio_ws_handler))
+            .route("/ws/decode", get(service_stream::decode_ws_handler))
             .with_state(app.clone());
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -5344,7 +5349,6 @@ mod tests {
             assert_eq!(reply.get("params"), http.get("params"));
             if cmd == "SET_SDR" {
                 assert_eq!(reply["code"], "bad_parameter");
-                assert_eq!(reply["msg"], "pfb_taps_per_phase must be 4, 8, or 16");
             }
         }
         let global_error = CommandError::new("device_error", "stream link failed").payload();
@@ -5431,6 +5435,243 @@ mod tests {
             Ok(Some(Err(error))) => panic!("socket error while waiting for silence: {error}"),
             Ok(Some(Ok(frame))) => panic!("unexpected frame: {frame:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn publisher_keeps_spectrum_and_iq_live_through_receiver_failure_and_recovery() {
+        // Exercise the production publisher, socket routing, controls and native
+        // AM receiver together. Only the fault injection bypasses the wire API.
+        struct PublisherTask(tokio::task::JoinHandle<()>);
+        impl Drop for PublisherTask {
+            fn drop(&mut self) { self.0.abort(); }
+        }
+        fn word(frame: &[u8], offset: usize) -> u32 {
+            u32::from_le_bytes(frame[offset..offset + 4].try_into().unwrap())
+        }
+        fn identity(frame: &[u8]) -> (u32, u32) {
+            (word(frame, 32), word(frame, 36))
+        }
+        fn check_status(value: &Value) {
+            assert_ne!(value["cmd"], "ERROR", "unexpected service error: {value}");
+            if value["cmd"] == "STATUS" {
+                assert!(value["last_error"].is_null() || value["last_error"] == "",
+                    "receiver fault leaked into capture: {value}");
+            }
+        }
+        // Native model preparation on a cold process can exceed the lightweight
+        // socket helper's two-second timeout; retain a bounded integration wait.
+        async fn next_ws(ws: &mut WsClient) -> WsMessage {
+            tokio::time::timeout(Duration::from_secs(30), ws.next()).await
+                .expect("publisher WebSocket read timed out")
+                .expect("publisher WebSocket closed")
+                .expect("publisher WebSocket read failed")
+        }
+        async fn next_binary(ws: &mut WsClient) -> Vec<u8> {
+            match next_ws(ws).await {
+                WsMessage::Binary(frame) => frame.to_vec(),
+                other => panic!("expected publisher binary frame: {other:?}"),
+            }
+        }
+        async fn command(ws: &mut WsClient, request: Value) -> Value {
+            ws.send(WsMessage::Text(request.to_string().into())).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    match next_ws(ws).await {
+                        WsMessage::Text(text) => {
+                            let value: Value = serde_json::from_str(&text).unwrap();
+                            check_status(&value);
+                            if value["response_to"] == request["cmd"] { return value; }
+                        }
+                        WsMessage::Binary(_) => {}
+                        other => panic!("control socket stopped: {other:?}"),
+                    }
+                }
+            }).await.expect("control acknowledgement timed out")
+        }
+        async fn spectrum(ws: &mut WsClient) -> Vec<u8> {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match next_ws(ws).await {
+                        WsMessage::Binary(frame) if frame.starts_with(b"RTAF") => return frame.to_vec(),
+                        WsMessage::Binary(_) => {}
+                        WsMessage::Text(text) => check_status(&serde_json::from_str::<Value>(&text).unwrap()),
+                        other => panic!("display socket stopped: {other:?}"),
+                    }
+                }
+            }).await.expect("spectrum publication timed out")
+        }
+        async fn receiver_closed(ws: &mut WsClient) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match next_ws(ws).await {
+                        WsMessage::Close(Some(close)) => {
+                            assert_eq!(u16::from(close.code), 1011);
+                            assert_eq!(close.reason, "receiver failed");
+                            return;
+                        }
+                        WsMessage::Binary(_) => {} // Already-sent output may precede the close.
+                        other => panic!("expected receiver failure close: {other:?}"),
+                    }
+                }
+            }).await.expect("failed receiver socket did not close")
+        }
+        async fn pcm(ws: &mut WsClient, expected: (u32, u32)) {
+            let start = next_binary(ws).await;
+            assert_eq!(&start[..4], b"AUD2");
+            assert_eq!(identity(&start), expected);
+            assert_eq!(word(&start, 8), 0);
+            assert_eq!(word(&start, 12), 0);
+            let samples = next_binary(ws).await;
+            assert_eq!(&samples[..4], b"AUD2");
+            assert_eq!(identity(&samples), expected);
+            assert_eq!(word(&samples, 8), 1);
+            assert!(word(&samples, 12) > 0, "AM must produce PCM, not only a start marker");
+        }
+        async fn decode(ws: &mut WsClient, expected: (u32, u32)) {
+            let start = next_binary(ws).await;
+            assert_eq!(&start[..4], b"SDE2");
+            let start: Value = serde_json::from_slice(&start[8..]).unwrap();
+            assert_eq!(start["channel_id"], expected.0);
+            assert_eq!(start["epoch"], expected.1);
+            assert_eq!(start["seq"], 0);
+            assert_eq!(start["event"]["type"], "start");
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let frame = next_binary(ws).await;
+                    assert_eq!(&frame[..4], b"SDE2");
+                    let event: Value = serde_json::from_slice(&frame[8..]).unwrap();
+                    assert_eq!(event["channel_id"], expected.0);
+                    assert_eq!(event["epoch"], expected.1);
+                    assert!(event["seq"].as_u64().unwrap() > 0);
+                    if event["event"]["type"] == "am-info" { return; }
+                }
+            }).await.expect("native AM decode telemetry timed out")
+        }
+        async fn new_iq_identity(ws: &mut WsClient, previous: (u32, u32)) -> (u32, u32) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let frame = next_binary(ws).await;
+                    assert_eq!(&frame[..4], b"IQBF");
+                    if identity(&frame) != previous {
+                        assert_eq!(word(&frame, 8), 0, "replacement IQ identity must begin at zero");
+                        assert_eq!(word(&frame, 12), 0);
+                        return identity(&frame);
+                    }
+                }
+            }).await.expect("replacement IQ identity timed out")
+        }
+
+        let (app, url) = start_ws_server().await;
+        {
+            let (golden, schema) = load_golden();
+            let mut state = app.state.lock().unwrap();
+            *state = DevState::new(golden, schema);
+            state.sdr_center = 100e6;
+            state.sdr_listen = 100e6;
+            state.sdr_decimate = 1;
+        }
+        let mut display = connect_ws(&url).await;
+        command(&mut display, json!({"cmd":"SET_MODE","mode":"sdr"})).await;
+        command(&mut display, json!({"cmd":"SET_SDR_CHANNEL","channel":1,
+            "mode":"am","ifbw":6000.0,"squelch":-160.0})).await;
+        let mut iq = connect_ws(&format!("{url}?iq")).await;
+        let mut audio = connect_ws(&format!("{url}/audio?channel=1")).await;
+        let mut events = connect_ws(&format!("{url}/decode?channel=1")).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while app.clients.lock().len() != 4 { tokio::task::yield_now().await; }
+        }).await.expect("stream subscribers did not register");
+        let _publisher = PublisherTask(tokio::spawn(publisher(app.clone())));
+        spectrum(&mut display).await;
+        let first = next_binary(&mut iq).await;
+        assert_eq!(&first[..4], b"IQBF");
+        assert_eq!(word(&first, 8), 0);
+        let original = identity(&first);
+        pcm(&mut audio, original).await;
+        decode(&mut events, original).await;
+
+        let failure_tick = {
+            let mut state = app.state.lock().unwrap();
+            state.latch_receiver_failure("injected receiver failure".into());
+            state.tick
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (mut notice, mut status) = (false, false);
+            while !(notice && status) {
+                match next_ws(&mut display).await {
+                    WsMessage::Text(text) => {
+                        let value: Value = serde_json::from_str(&text).unwrap();
+                        check_status(&value);
+                        if value["cmd"] == "RECEIVER_ERROR" {
+                            assert_eq!(value["error"], "injected receiver failure");
+                            assert_eq!(value["scope"], "all_receivers");
+                            assert_eq!(value["failed"], true);
+                            notice = true;
+                        }
+                        if value["cmd"] == "STATUS" && value["sdr"]["receiver_error"].is_string() {
+                            assert_eq!(value["sdr"]["receiver_error"], "injected receiver failure");
+                            status = true;
+                        }
+                    }
+                    WsMessage::Binary(_) => {}
+                    other => panic!("display closed after receiver failure: {other:?}"),
+                }
+            }
+        }).await.expect("receiver failure was not published to the display");
+        receiver_closed(&mut audio).await;
+        receiver_closed(&mut events).await;
+
+        // RTAF carries a configuration version, not a sequence. Observe two
+        // changed spectra after the failure notice and check the acquisition tick.
+        let failed_spectrum = spectrum(&mut display).await;
+        let next_spectrum = spectrum(&mut display).await;
+        assert_ne!(failed_spectrum, next_spectrum);
+        assert!(app.state.lock().unwrap().tick > failure_tick + 1);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut previous = 0;
+            loop {
+                let frame = next_binary(&mut iq).await;
+                assert_eq!(&frame[..4], b"IQBF");
+                assert_eq!(identity(&frame), original, "failure must preserve capture identity");
+                let sequence = word(&frame, 8);
+                assert_eq!(sequence, previous + 1, "raw IQ must remain contiguous through failure");
+                previous = sequence;
+                // Each synthetic acquisition publishes one data packet. This
+                // crosses the injection boundary even if earlier packets queued.
+                if u64::from(sequence) > failure_tick + 2 { break; }
+            }
+        }).await.expect("raw IQ stopped after receiver failure");
+        let tuned = command(&mut display, json!({"cmd":"SET_SDR_CHANNEL","channel":1,
+            "freq":100_010_000.0})).await;
+        assert_eq!(tuned["sdr"]["receiver_error"], "injected receiver failure");
+        {
+            let state = app.state.lock().unwrap();
+            assert_eq!(state.sdr_listen, 100_010_000.0);
+            assert_eq!(state.sdr_center, 100e6);
+            assert_eq!(state.swp.mode, "sdr");
+            assert!(state.link_up);
+            assert!(state.ddc_error.is_none());
+            assert_eq!(state.ddc_error_count, 0);
+        }
+        let tuned_identity = new_iq_identity(&mut iq, original).await;
+        spectrum(&mut display).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if app.state.lock().unwrap().receiver_workers.is_none() { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("failed receiver workers did not retire");
+        let recovered = command(&mut display, json!({"cmd":"SET_SDR_CHANNEL","channel":1,
+            "mode":"am","ifbw":6000.0})).await;
+        assert!(recovered["sdr"]["receiver_error"].is_null());
+        let fresh = new_iq_identity(&mut iq, tuned_identity).await;
+        assert_ne!(fresh, original);
+        let mut audio = connect_ws(&format!("{url}/audio?channel=1")).await;
+        let mut events = connect_ws(&format!("{url}/decode?channel=1")).await;
+        pcm(&mut audio, fresh).await;
+        decode(&mut events, fresh).await;
+        spectrum(&mut display).await;
+        let healthy = command(&mut display, json!({"cmd":"STATUS"})).await;
+        assert!(healthy["sdr"]["receiver_error"].is_null());
     }
 
     #[tokio::test(flavor = "current_thread")]

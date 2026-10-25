@@ -107,7 +107,7 @@ impl<I: Iterator<Item = i16>> Demodulator<I> {
 
         let crossing_point = Ticks::until_crossing(previous_sample, sample, midline);
 
-        let half_period = self.ticks_since_crossing + crossing_point;
+        let half_period = self.ticks_since_crossing.saturating_add(crossing_point);
         let period = self.previous_half_period.saturating_add(half_period);
 
         self.previous_half_period = half_period;
@@ -284,13 +284,6 @@ impl Ticks {
     }
 }
 
-impl Add for Ticks {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self {
-        Self(self.0 + rhs.0)
-    }
-}
 
 impl Sub for Ticks {
     type Output = Self;
@@ -305,6 +298,26 @@ mod tests {
     use super::*;
     use crate::digital::sstv::vendor::units::Duration;
     use crate::digital::sstv::vendor::{Synthesizer, Tone};
+
+    #[test]
+    fn first_crossing_after_saturated_silence_recovers_frequency() {
+        let mut demodulator = Demodulator::new(core::iter::empty(), 8_000);
+        // The state reached after at least 8,388,608 samples without a crossing.
+        demodulator.ticks_since_crossing = Ticks(i32::MAX);
+        demodulator.crossings_seen = 4;
+        let first = demodulator.calculate_frequency(-10_000).expect("crossing");
+        assert_eq!(first.hz(), 0);
+        assert_eq!(demodulator.previous_half_period.0, i32::MAX);
+
+        // A returning 2 kHz tone replaces both stale half-periods within a few crossings.
+        let mut recovered = None;
+        for sample in [-10_000, 10_000, 10_000, -10_000].into_iter().cycle().take(40) {
+            if let Some(frequency) = demodulator.calculate_frequency(sample) {
+                recovered = Some(frequency);
+            }
+        }
+        assert!(frequencies_match(recovered.expect("returning tone"), Frequency::from_hz(2_000)));
+    }
 
     #[test]
     fn pure_1500hz_at_48000() {

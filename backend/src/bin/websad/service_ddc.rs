@@ -150,10 +150,7 @@ impl Ddc {
             self.stream.flush_pending().map_err(str::to_owned)?;
             let mut frames=std::mem::take(&mut self.carry);
             frames.extend(self.drain()?);
-            if let Some(tail)=self.framer.finish().map_err(str::to_owned)? {frames.push(tail);}
-            for (_,_,framer) in self.aux.values_mut() {
-                if let Some(tail)=framer.finish().map_err(str::to_owned)? {frames.push(tail);}
-            }
+            self.finish_framers(&mut frames)?;
             Ok(frames)
         })();
         let frames=match drained {Ok(frames)=>frames,Err(error)=>{self.capture_failed=true;return Err(error);}};
@@ -178,11 +175,24 @@ impl Ddc {
     }
 
     pub(super) fn configure_service_channel(&mut self, config:ChannelConfig)->Result<Vec<Vec<u8>>,String> {
+        self.configure_service_channel_inner(config,false)
+    }
+
+    pub(super) fn restart_service_receivers(&mut self)->Result<Vec<Vec<u8>>,String> {
+        let configs=self.service_configs.clone().ok_or("not a service channel plan")?;
+        let mut frames=Vec::new();
+        for config in configs.into_iter().filter(|config|config.enabled) {
+            frames.extend(self.configure_service_channel_inner(config,true)?);
+        }
+        Ok(frames)
+    }
+
+    fn configure_service_channel_inner(&mut self,config:ChannelConfig,force:bool)->Result<Vec<Vec<u8>>,String> {
         let mut configs = self.service_configs.clone().ok_or("not a service channel plan")?;
         if !(1..=3).contains(&config.channel) { return Err("channel must be 1, 2, or 3".into()); }
         let slot = config.channel as usize-1;
         let old = &configs[slot];
-        if old.enabled == config.enabled && old.freq == config.freq && old.mode == config.mode
+        if !force && old.enabled == config.enabled && old.freq == config.freq && old.mode == config.mode
             && old.if_bw == config.if_bw && old.pitch == config.pitch && old.sstv_mode == config.sstv_mode
             && old.audio_rate == config.audio_rate && old.stereo == config.stereo {
             configs[slot] = config;

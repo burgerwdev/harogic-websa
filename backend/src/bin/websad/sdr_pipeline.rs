@@ -475,6 +475,15 @@ pub(super) struct Pipeline {
     failure: Option<String>,
 }
 impl Ddc {
+    pub(super) fn finish_framers(&mut self, frames: &mut Vec<Vec<u8>>) -> Result<(), String> {
+        if self.service_configs.as_ref().is_none_or(|configs| configs[0].enabled) {
+            frames.extend(self.framer.finish().map_err(str::to_owned)?);
+        }
+        for (_, _, framer) in self.aux.values_mut() {
+            frames.extend(framer.finish().map_err(str::to_owned)?);
+        }
+        Ok(())
+    }
     fn suspend_fine(&mut self) -> Result<Vec<Vec<u8>>, String> {
         self.stream.flush_pending().map_err(str::to_owned)?;
         let mut frames = self.drain()?;
@@ -686,13 +695,7 @@ impl Pipeline {
                         }};
                         let changed = match command.change {
                             Some(change) => change(&mut ddc).map(|tail| frames.extend(tail)),
-                            None => ddc.framer.finish().map_err(str::to_owned)
-                                .map(|tail| frames.extend(tail)).and_then(|()| {
-                                    for (_, _, framer) in ddc.aux.values_mut() {
-                                        frames.extend(framer.finish().map_err(str::to_owned)?);
-                                    }
-                                    Ok(())
-                                }),
+                            None => ddc.finish_framers(&mut frames),
                         };
                         let clocks = ddc.sample_clocks();
                         aux = ddc.aux.iter().map(|(&ch, (_, f, _))| (ch, *f)).collect::<Vec<_>>().into();
@@ -885,8 +888,36 @@ mod tests {
 
     fn finish(ddc: &mut Ddc, frames: &mut Vec<Vec<u8>>) {
         frames.extend(ddc.suspend_fine().unwrap());
-        frames.extend(ddc.framer.finish().unwrap());
-        for (_, _, framer) in ddc.aux.values_mut() { frames.extend(framer.finish().unwrap()); }
+        ddc.finish_framers(frames).unwrap();
+    }
+
+    #[test]
+    fn disabled_primary_recapture_and_stop_preserve_auxiliary_tail() {
+        let mut configs:Vec<_> = (1..=3).map(receiver_workers::ChannelConfig::for_slot).collect();
+        configs[0].freq = 100e6;
+        configs[1].freq = 100e6 + BIN_SPACING;
+        configs[1].enabled = true;
+        let mut ddc = Ddc::configured_service(100e6, 50e6, &mut None, 16, IQ_FS, &configs).unwrap();
+        for _ in 0..8 { ddc.packet().unwrap(); }
+        configs[0].enabled = false;
+        let retired = ddc.configure_service_channel(configs[0].clone()).unwrap();
+        assert!(retired.iter().any(|frame| frame.starts_with(b"IQBF") && frame.len() > 56));
+        let old_aux = ddc.channel_registry()[0].channel_id;
+        for _ in 0..8 { ddc.packet().unwrap(); }
+        let front_end = DevState::new(json!({"preset_defaults":{}}), json!({})).front_end(0.0);
+        assert!(ddc.recapture_service_configs(100e6, 1, front_end, 3, &configs).is_err());
+        // The next plan holds one enabled channel plus its five neighbour bins.
+        service_cost::admit_service(&configs, IQ_FS, 16, 5).unwrap();
+        let tail = ddc.recapture_service_configs(100e6, 1, front_end, 16, &configs).unwrap();
+        assert!(tail.iter().any(|frame| frame.starts_with(b"IQAX") && frame.len() > 56
+            && u32::from_le_bytes(frame[32..36].try_into().unwrap()) == old_aux));
+        assert!(!ddc.capture_failed);
+        assert_eq!(ddc.channel_registry().iter().map(|row| row.channel).collect::<Vec<_>>(), vec![2]);
+        for _ in 0..8 { ddc.packet().unwrap(); }
+        let mut stopped = Vec::new();
+        finish(&mut ddc, &mut stopped);
+        assert!(stopped.iter().any(|frame| frame.starts_with(b"IQAX") && frame.len() > 56));
+        assert!(!stopped.iter().any(|frame| frame.starts_with(b"IQBF")));
     }
 
     #[test]

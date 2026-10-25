@@ -56,13 +56,23 @@ impl ReceiverConfig {
         if !matches!(self.mode.as_str(), "am"|"dsb"|"usb"|"lsb"|"cw"|"nfm"|"wfm"|"pm"|"ft8"|"sstv"|"drm"|"drmplus") {
             return Err(format!("unsupported receiver mode {}", self.mode));
         }
-        if !self.input_rate.is_finite() || self.input_rate <= 0.0 || self.audio_rate == 0
+        if clock_ratio(self.input_rate).is_none() || !(8_000..=192_000).contains(&self.audio_rate)
             || !self.if_bw.is_finite() || self.if_bw <= 0.0 || !self.pitch.is_finite()
             || self.pitch <= 0.0 || !self.gain.is_finite() || self.gain < 0.0
             || !self.squelch_dbm.is_finite() || !self.nr_strength.is_finite()
             || !(0.0..=1.0).contains(&self.nr_strength) || !self.nr_atten_db.is_finite()
             || !(0.0..=100.0).contains(&self.nr_atten_db) || !self.deemph_us.is_finite() {
             return Err("invalid receiver geometry or listening controls".into());
+        }
+        if self.mode == "cw" && !(100.0..=1600.0).contains(&self.pitch) {
+            return Err("CW requires a 100–1600 Hz pitch".into());
+        }
+        let listen_mode = if matches!(self.mode.as_str(), "ft8"|"sstv") { "usb" } else { self.mode.as_str() };
+        if let Some(spec) = analog::spec_for(listen_mode) {
+            let (low, high) = spec.band_hz(self.if_bw.max(50.0), self.pitch);
+            if low.abs().max(high.abs()) >= self.input_rate / 2.0 {
+                return Err("receiver passband must fit below the IQ Nyquist limit".into());
+            }
         }
         if !matches!(self.nr_algorithm.as_str(), "wiener"|"dfn") {
             return Err("NR algorithm must be wiener or dfn".into());
@@ -71,6 +81,11 @@ impl ReceiverConfig {
             return Err("invalid SSTV mode index".into());
         }
         Ok(())
+    }
+    fn nr_algorithm(&self) -> NrAlgorithm {
+        if !self.nr || matches!(self.mode.as_str(), "drm"|"drmplus") { NrAlgorithm::Off }
+        else if self.nr_algorithm == "dfn" { NrAlgorithm::Dfn }
+        else { NrAlgorithm::Wiener }
     }
 }
 
@@ -87,6 +102,32 @@ pub struct SamplePosition {
     pub index: u64,
     pub fraction_num: u64,
     pub fraction_den: u64,
+}
+impl SamplePosition {
+    pub fn checked_advance(self, frames: u64, source_rate: f64, pcm_rate: u32) -> Result<Self, String> {
+        if self.fraction_den == 0 || self.fraction_num >= self.fraction_den || pcm_rate == 0 {
+            return Err("invalid sample position or PCM rate".into());
+        }
+        let (source_num, source_den) = clock_ratio(source_rate).ok_or("unsupported source clock rate")?;
+        let step_num = frames as u128 * source_num as u128;
+        let step_den = pcm_rate as u128 * source_den as u128;
+        let mut a = self.fraction_den as u128;
+        let mut b = step_den;
+        while b != 0 { (a,b) = (b,a%b); }
+        let denominator = (self.fraction_den as u128 / a).checked_mul(step_den)
+            .ok_or("source fraction denominator overflow")?;
+        let numerator = (self.fraction_num as u128).checked_mul(step_den / a)
+            .and_then(|n| step_num.checked_mul(self.fraction_den as u128 / a).and_then(|step| n.checked_add(step)))
+            .ok_or("source clock offset overflow")?;
+        let whole = u64::try_from(numerator / denominator).map_err(|_|"source clock offset overflow")?;
+        let mut remainder = numerator % denominator;
+        let (mut a,mut b) = (remainder,denominator);
+        while b != 0 { (a,b) = (b,a%b); }
+        remainder /= a;
+        Ok(Self { index:self.index.checked_add(whole).ok_or("source sample index overflow")?,
+            fraction_num:u64::try_from(remainder).map_err(|_|"source fraction overflow")?,
+            fraction_den:u64::try_from(denominator/a).map_err(|_|"source fraction denominator overflow")? })
+    }
 }
 #[derive(Debug)]
 pub struct AudioBlock {
@@ -148,17 +189,17 @@ impl Ft8Window {
         Self { samples: VecDeque::with_capacity(FT8_RATE as usize * 58), origin: None,
             start: 0, early: false, attempts: 0, accepted: 0, decoded: 0, seen: VecDeque::new() }
     }
-    fn extract(&mut self, iq: &[f32], clock: InputClock, epoch: u64) -> Option<Ft8Job> {
+    fn extract(&mut self, iq: &[f32], clock: InputClock, epoch: u64) -> Result<Option<Ft8Job>, String> {
         self.origin.get_or_insert(clock);
         self.samples.extend(iq.iter().copied());
         let window = (FT8_RATE as f64 * 28.04).round() as usize;
         let hop = FT8_RATE as usize * 15;
         let n = self.samples.len() / 2;
         let count = if !self.early && n >= hop { hop }
-            else if n >= window { window } else { return None };
+            else if n >= window { window } else { return Ok(None) };
         self.attempts += 1;
         let origin = self.origin.unwrap();
-        let position = position_at(origin, self.start, FT8_RATE);
+        let position = try_position_at(origin, self.start, FT8_RATE)?;
         let job = Ft8Job { epoch, sequence: self.attempts,
             iq: self.samples.iter().take(count * 2).copied().collect(),
             clock: InputClock { first_sample_index: position.index, ..origin },
@@ -168,20 +209,20 @@ impl Ft8Window {
             self.samples.drain(..hop * 2);
             self.start += hop as u64;
         }
-        Some(job)
+        Ok(Some(job))
     }
-    fn flush(&mut self, epoch: u64) -> Option<Ft8Job> {
-        if self.samples.len()/2 < (FT8_RATE as f64 * 12.64) as usize { return None; }
-        let origin = self.origin?;
+    fn flush(&mut self, epoch: u64) -> Result<Option<Ft8Job>, String> {
+        if self.samples.len()/2 < (FT8_RATE as f64 * 12.64) as usize { return Ok(None); }
+        let Some(origin) = self.origin else { return Ok(None) };
         self.attempts += 1;
-        let source_position = position_at(origin, self.start, FT8_RATE);
+        let source_position = try_position_at(origin, self.start, FT8_RATE)?;
         let job = Ft8Job { epoch, sequence: self.attempts,
             iq: self.samples.iter().copied().collect(),
             clock: InputClock { first_sample_index:source_position.index,..origin },
             source_position,window_start:self.start };
         self.start += (self.samples.len()/2) as u64;
         self.samples.clear();
-        Some(job)
+        Ok(Some(job))
     }
 }
 
@@ -206,6 +247,8 @@ pub struct Receiver {
     ft8: Option<Ft8Window>,
     pushes: u64,
     elapsed_samples: u64,
+    analog_frames: u64,
+    audio_source_offset: u64,
     next_status: u64,
     next_wfm_info: u64,
     image_serial: Option<u64>,
@@ -253,8 +296,7 @@ impl Receiver {
             squelch_dbm: config.squelch_dbm };
         let listener = audio::chain_for_mode(listen_mode, config.audio_rate as f64, policy);
         let side_listener = audio::chain_for_mode(listen_mode, config.audio_rate as f64, policy);
-        let algorithm = if !config.nr { NrAlgorithm::Off } else if config.nr_algorithm == "dfn" {
-            NrAlgorithm::Dfn } else { NrAlgorithm::Wiener };
+        let algorithm = config.nr_algorithm();
         let mut nr = NoiseReduction::new(config.audio_rate);
         let mut nr_right = NoiseReduction::new(config.audio_rate);
         nr.configure(config.audio_rate, algorithm, config.nr_strength as f32, config.nr_atten_db);
@@ -269,6 +311,7 @@ impl Receiver {
             side: Vec::new(), nr, nr_right, nr_scratch: Vec::new(), cw, ft8, pushes: 0,
             nr_left_output: Vec::new(), nr_right_output: Vec::new(),
             elapsed_samples: 0, next_status: 0, next_wfm_info: 0, next_am_info: 0, image_serial: None, image_lines: 0,
+            analog_frames: 0, audio_source_offset: 0,
             audio_origin: None, input_origin:None, audio_frames: 0, audio_format, peak_hold: 0.0 })
     }
     pub fn config(&self) -> &ReceiverConfig { &self.config }
@@ -293,8 +336,12 @@ impl Receiver {
             nr_strength: config.nr_strength, squelch_dbm: config.squelch_dbm });
         audio::apply_policy(&mut self.side_listener, AudioPolicy { nr: false,
             nr_strength: config.nr_strength, squelch_dbm: config.squelch_dbm });
-        let algorithm = if !config.nr { NrAlgorithm::Off } else if config.nr_algorithm == "dfn" {
-            NrAlgorithm::Dfn } else { NrAlgorithm::Wiener };
+        let algorithm = config.nr_algorithm();
+        if self.analog.is_some() && algorithm != self.config.nr_algorithm() {
+            // A reducer change drops its un-emitted tail, but retains decoder history.
+            self.audio_source_offset = self.analog_frames.checked_sub(self.audio_frames)
+                .ok_or("noise reducer emitted beyond its input clock")?;
+        }
         self.nr.configure(config.audio_rate, algorithm, config.nr_strength as f32, config.nr_atten_db);
         let right_algorithm = if config.mode == "wfm" && config.stereo { algorithm } else { NrAlgorithm::Off };
         self.nr_right.configure(config.audio_rate, right_algorithm, config.nr_strength as f32, config.nr_atten_db);
@@ -319,6 +366,12 @@ impl Receiver {
             || !clock.delay_input_samples.is_finite() || clock.delay_input_samples < 0.0 {
             return Err("invalid receiver source clock".into());
         }
+        if self.input_origin.is_some_and(|origin| origin.input_rate != clock.input_rate) {
+            return Err("receiver source clock rate changed without a reset".into());
+        }
+        if iq.iter().any(|sample| !sample.is_finite()) {
+            return Err("receiver IQ samples must be finite".into());
+        }
         let mut out = ReceiverOutput::default();
         if iq.is_empty() { return Ok(out); }
         // Validate the actual emitted frame count in audio_block, rather than estimating
@@ -327,7 +380,7 @@ impl Receiver {
         self.pushes += 1;
         self.elapsed_samples = self.elapsed_samples.saturating_add((iq.len() / 2) as u64);
         let status_due = self.elapsed_samples >= self.next_status;
-        if status_due { self.next_status = self.elapsed_samples + (self.config.input_rate / 10.0).max(1.0) as u64; }
+        if status_due { self.next_status = self.elapsed_samples.saturating_add((self.config.input_rate / 10.0).max(1.0) as u64); }
         // Every digital consumer sees IQ before listener AGC, squelch, NR, gain or stereo matrix.
         let mut decoder_clock = clock;
         // Source positions use the adapter's actual causal input emission index;
@@ -340,8 +393,12 @@ impl Receiver {
                 * clock.input_rate / self.config.input_rate;
             &self.converted
         } else { iq };
+        if digital_iq.iter().any(|sample| !sample.is_finite())
+            || !decoder_clock.delay_input_samples.is_finite() {
+            return Err("decoder rate conversion exceeded finite sample or clock bounds".into());
+        }
         if let Some(ft8) = self.ft8.as_mut() {
-            out.ft8_job = ft8.extract(digital_iq, decoder_clock, self.epoch);
+            out.ft8_job = ft8.extract(digital_iq, decoder_clock, self.epoch)?;
             if let Some(job) = out.ft8_job.as_mut() {
                 let origin = self.input_origin.unwrap();
                 job.source_position = decoder_position(origin, job.window_start, FT8_RATE,
@@ -439,7 +496,12 @@ impl Receiver {
         if let Some(analog) = self.analog.as_mut() {
             self.audio_origin.get_or_insert(clock);
             analog.process_into(iq, self.pcm.samples_mut());
+            self.analog_frames = self.analog_frames.checked_add(self.pcm.samples().len() as u64)
+                .ok_or("analog frame index overflow")?;
             self.side = analog.take_side();
+            if self.pcm.samples().iter().chain(self.side.iter()).any(|sample| !sample.is_finite()) {
+                return Err("analog demodulator produced nonfinite PCM".into());
+            }
             if let Some(cw) = self.cw.as_mut() {
                 let chunk = cw.push(self.pcm.samples());
                 if let Some(error) = chunk.error.as_ref() {
@@ -466,18 +528,22 @@ impl Receiver {
                 self.nr_scratch.clear();
                 self.nr_scratch.extend(self.pcm.samples().iter().enumerate()
                     .map(|(i,m)|*m + self.side_pcm.samples().get(i).copied().unwrap_or(0.0)*blend));
-                self.nr.process(&self.nr_scratch, &mut self.nr_left_output);
+                self.nr.process(&self.nr_scratch, &mut self.nr_left_output)?;
                 self.nr_scratch.clear();
                 self.nr_scratch.extend(self.pcm.samples().iter().enumerate()
                     .map(|(i,m)|*m - self.side_pcm.samples().get(i).copied().unwrap_or(0.0)*blend));
-                self.nr_right.process(&self.nr_scratch, &mut self.nr_right_output);
+                self.nr_right.process(&self.nr_scratch, &mut self.nr_right_output)?;
+                if self.nr_left_output.len() != self.nr_right_output.len()
+                    || self.nr.latency_samples() != self.nr_right.latency_samples() {
+                    return Err("stereo noise reducers lost sample alignment".into());
+                }
                 samples.reserve(self.nr_left_output.len()*2);
                 for (&l,&r) in self.nr_left_output.iter().zip(&self.nr_right_output) {
                     samples.push(l*self.config.gain);
                     samples.push(r*self.config.gain);
                 }
             } else {
-                self.nr.process(self.pcm.samples(), &mut samples);
+                self.nr.process(self.pcm.samples(), &mut samples)?;
                 for sample in &mut samples { *sample *= self.config.gain; }
             }
             if self.config.mode == "wfm" && !samples.is_empty() && self.elapsed_samples >= self.next_wfm_info {
@@ -532,6 +598,12 @@ impl Receiver {
         Ok(out)
     }
     fn audio_block(&mut self, samples: Vec<f32>, rate: u32, channels: u16, clock: InputClock, codec: bool) -> Result<AudioBlock,String> {
+        if samples.iter().any(|sample| !sample.is_finite()) {
+            return Err("receiver produced nonfinite PCM".into());
+        }
+        if !clock.delay_input_samples.is_finite() {
+            return Err("receiver delay exceeds source clock bounds".into());
+        }
         if self.audio_format != Some((rate, channels)) {
             self.audio_format = Some((rate,channels)); self.audio_origin = Some(clock); self.audio_frames = 0;
         }
@@ -540,8 +612,12 @@ impl Receiver {
         let next_frame_index = self.audio_frames.checked_add((samples.len()/channels as usize) as u64)
             .ok_or("audio frame index overflow")?;
         let source_position = if codec { None } else {
-            try_position_at(origin,next_frame_index,rate)?;
-            Some(try_position_at(origin,first_frame_index,rate)?)
+            let first_source_frame = first_frame_index.checked_add(self.audio_source_offset)
+                .ok_or("audio source frame index overflow")?;
+            let next_source_frame = next_frame_index.checked_add(self.audio_source_offset)
+                .ok_or("audio source frame index overflow")?;
+            try_position_at(origin,next_source_frame,rate)?;
+            Some(try_position_at(origin,first_source_frame,rate)?)
         };
         self.audio_frames = next_frame_index;
         Ok(AudioBlock { samples, rate, channels, clock, first_frame_index, source_position,
@@ -571,21 +647,19 @@ impl Receiver {
         events
     }
     /// Search the complete remaining transmission at EOF without adding synthetic samples.
-    pub fn flush_ft8(&mut self) -> Option<Ft8Job> {
-        let mut job = self.ft8.as_mut()?.flush(self.epoch)?;
-        job.source_position = decoder_position(self.input_origin?,job.window_start,FT8_RATE,
-            self.config.input_rate,self.adapter.as_ref())
-            .expect("FT8 source clock was checked while processing");
+    pub fn flush_ft8(&mut self) -> Result<Option<Ft8Job>, String> {
+        let Some(ft8) = self.ft8.as_mut() else { return Ok(None) };
+        let Some(mut job) = ft8.flush(self.epoch)? else { return Ok(None) };
+        let origin = self.input_origin.ok_or("FT8 window lacks source clock")?;
+        job.source_position = decoder_position(origin,job.window_start,FT8_RATE,
+            self.config.input_rate,self.adapter.as_ref())?;
         job.clock.first_sample_index = job.source_position.index;
-        Some(job)
+        Ok(Some(job))
     }
 }
 
 fn algorithm_name(algorithm: NrAlgorithm) -> &'static str {
     match algorithm { NrAlgorithm::Off=>"off",NrAlgorithm::Wiener=>"wiener",NrAlgorithm::Dfn=>"dfn" }
-}
-fn position_at(origin: InputClock, frames: u64, rate: u32) -> SamplePosition {
-    try_position_at(origin,frames,rate).expect("source clock was checked before processing")
 }
 fn try_position_at(origin: InputClock, frames: u64, rate: u32) -> Result<SamplePosition,String> {
     let (source_num, source_den) = clock_ratio(origin.input_rate).ok_or("unsupported source clock rate")?;
@@ -647,6 +721,155 @@ fn scope(samples: &[f32], channels: usize) -> (Vec<f32>,Vec<f32>) {
 mod tests {
     use super::*;
 
+    const MODES: [&str; 12] = ["am","dsb","usb","lsb","cw","nfm","wfm","pm","ft8","sstv","drm","drmplus"];
+
+    fn mode_config(mode: &str) -> ReceiverConfig {
+        ReceiverConfig { mode:mode.into(),
+            input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else {48_000.0},
+            if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else {6_000.0},
+            ..ReceiverConfig::default() }
+    }
+
+    #[test]
+    fn invalid_geometry_is_rejected_before_constructing_any_mode() {
+        for mode in MODES {
+            for rate in [0,1,7_999,192_001,u32::MAX] {
+                assert!(Receiver::new(ReceiverConfig {audio_rate:rate,..mode_config(mode)}).is_err(),"{mode}: {rate}");
+            }
+            for rate in [0.0,f64::MIN_POSITIVE,f64::NAN,f64::INFINITY,f64::MAX] {
+                assert!(Receiver::new(ReceiverConfig {input_rate:rate,..mode_config(mode)}).is_err(),"{mode}: {rate}");
+            }
+        }
+        for mode in ["am","dsb","usb","lsb","cw","nfm","wfm","pm","ft8","sstv"] {
+            let config = mode_config(mode);
+            assert!(Receiver::new(ReceiverConfig {if_bw:f64::MAX,..config.clone()}).is_err(),"{mode}");
+            if matches!(mode,"usb"|"lsb"|"ft8"|"sstv") {
+                assert!(Receiver::new(ReceiverConfig {if_bw:config.input_rate/2.0,..config}).is_err(),"{mode}");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_iq_does_not_poison_any_receiver_mode() {
+        for mode in MODES {
+            let config = mode_config(mode);
+            let clock = InputClock {first_sample_index:0,input_rate:config.input_rate,delay_input_samples:0.0};
+            let mut receiver = Receiver::new(config).unwrap();
+            let epoch = receiver.epoch();
+            for iq in [&[0.0][..], &[f32::NAN,0.0], &[0.0,f32::INFINITY]] {
+                assert!(receiver.process(iq,clock,None).is_err(),"{mode}");
+            }
+            assert!(receiver.process(&vec![0.0;2*(MAX_BLOCK_COMPLEX+1)],clock,None).is_err());
+            assert!(receiver.process(&[],clock,None).unwrap().audio.is_empty());
+            assert_eq!(receiver.epoch(),epoch);
+            let output = receiver.process(&vec![0.0;2048],clock,None).unwrap();
+            for block in output.audio {
+                assert!(block.samples.iter().all(|sample| sample.is_finite() && *sample == 0.0),"{mode}");
+                assert_eq!(block.first_frame_index,0);
+                assert_eq!(block.source_position.unwrap().index,0);
+            }
+            assert!(receiver.process(&[0.0,0.0],InputClock {input_rate:clock.input_rate+1.0,..clock},None).is_err());
+            assert_eq!(receiver.input_origin.unwrap().first_sample_index,0);
+            assert_eq!(receiver.elapsed_samples,1024);
+        }
+    }
+
+    #[test]
+    fn codec_modes_keep_nr_preferences_without_running_a_reducer() {
+        for mode in ["drm","drmplus"] {
+            let mut config = mode_config(mode);
+            config.nr = true;
+            config.nr_algorithm = "dfn".into();
+            let mut receiver = Receiver::new(config.clone()).unwrap();
+            assert!(receiver.config().nr);
+            assert_eq!(receiver.nr.status().effective,NrAlgorithm::Off);
+            config.nr_atten_db = 20.0;
+            receiver.configure(config).unwrap();
+            assert_eq!(receiver.nr.status().effective,NrAlgorithm::Off);
+            let mut listen = mode_config("usb");
+            listen.nr = true;
+            receiver.configure(listen).unwrap();
+            assert_eq!(receiver.nr.status().effective,NrAlgorithm::Wiener);
+        }
+    }
+
+    #[test]
+    fn stereo_format_changes_reset_audio_clock_and_decoder_epoch() {
+        let mut config = mode_config("wfm");
+        let mut receiver = Receiver::new(config.clone()).unwrap();
+        let clock = InputClock {first_sample_index:123,input_rate:config.input_rate,delay_input_samples:0.0};
+        let iq = vec![0.0;4096];
+        let stereo = receiver.process(&iq,clock,None).unwrap().audio.remove(0);
+        assert_eq!(stereo.channels,2);
+        let epoch = receiver.epoch();
+        config.stereo = false;
+        receiver.configure(config).unwrap();
+        assert_ne!(receiver.epoch(),epoch);
+        let clock = InputClock {first_sample_index:10_000,..clock};
+        let mono = receiver.process(&iq,clock,None).unwrap().audio.remove(0);
+        assert_eq!(mono.channels,1);
+        assert_eq!(mono.samples.len()*2,stereo.samples.len());
+        assert_eq!(mono.first_frame_index,0);
+        assert_eq!(mono.source_position.unwrap().index,10_000);
+    }
+
+    #[test]
+    fn ft8_window_clock_overflow_returns_errors() {
+        let clock = InputClock {first_sample_index:u64::MAX,input_rate:12_000.0,delay_input_samples:0.0};
+        let mut window = Ft8Window::new();
+        window.start = 1;
+        assert!(window.extract(&vec![0.0;12_000*15*2],clock,1).is_err());
+        assert!(window.flush(1).is_err());
+        let mut receiver = Receiver::new(mode_config("ft8")).unwrap();
+        receiver.input_origin = Some(clock);
+        receiver.ft8 = Some(window);
+        assert!(receiver.flush_ft8().is_err());
+    }
+
+    #[test]
+    fn invalid_listening_update_preserves_the_current_stream() {
+        let config = mode_config("am");
+        let mut receiver = Receiver::new(config.clone()).unwrap();
+        let epoch = receiver.epoch();
+        let invalid = ReceiverConfig {audio_rate:1,..config.clone()};
+        assert!(receiver.configure(invalid).is_err());
+        assert_eq!(receiver.config(),&config);
+        assert_eq!(receiver.epoch(),epoch);
+    }
+
+    #[test]
+    fn reducer_changes_skip_discarded_tail_without_resetting_ft8_history() {
+        let mut config = mode_config("ft8");
+        config.nr = true;
+        let mut receiver = Receiver::new(config.clone()).unwrap();
+        let epoch = receiver.epoch();
+        let clock = InputClock {first_sample_index:100,input_rate:48_000.0,delay_input_samples:0.0};
+        let first = receiver.process(&vec![0.0;600*2],clock,None).unwrap().audio.remove(0);
+        assert_eq!(first.samples.len(),128);
+        let buffered = receiver.ft8.as_ref().unwrap().samples.len();
+        config.nr = false;
+        receiver.configure(config.clone()).unwrap();
+        assert_eq!(receiver.epoch(),epoch);
+        assert_eq!(receiver.ft8.as_ref().unwrap().samples.len(),buffered);
+        let second = receiver.process(&vec![0.0;600*2],InputClock {first_sample_index:700,..clock},None)
+            .unwrap().audio.remove(0);
+        assert_eq!(second.first_frame_index,128);
+        assert_eq!(second.source_position.unwrap().index,700);
+        config.nr = true;
+        receiver.configure(config.clone()).unwrap();
+        let third = receiver.process(&vec![0.0;600*2],InputClock {first_sample_index:1300,..clock},None)
+            .unwrap().audio.remove(0);
+        assert_eq!(third.first_frame_index,728);
+        assert_eq!(third.source_position.unwrap().index,1300);
+        config.nr = false;
+        receiver.configure(config).unwrap();
+        let fourth = receiver.process(&vec![0.0;600*2],InputClock {first_sample_index:1900,..clock},None)
+            .unwrap().audio.remove(0);
+        assert_eq!(fourth.first_frame_index,856);
+        assert_eq!(fourth.source_position.unwrap().index,1900);
+        assert_eq!(receiver.epoch(),epoch);
+    }
+
     #[test]
     fn wfm_scope_keeps_twenty_hz_phase_without_raising_status_rate() {
         let config = ReceiverConfig {mode:"wfm".into(),input_rate:240_000.0,if_bw:180_000.0,
@@ -699,6 +922,20 @@ mod tests {
     fn source_index_overflow_is_an_error() {
         let clock = InputClock {first_sample_index:u64::MAX-2,input_rate:976_562.5,delay_input_samples:0.0};
         assert!(try_position_at(clock,48_000,48_000).is_err());
+    }
+
+    #[test]
+    fn sample_position_advance_matches_fractional_capture_clock() {
+        let clock = InputClock {first_sample_index:(1_u64<<53)+137,input_rate:976_562.5,delay_input_samples:0.0};
+        let start = try_position_at(clock,17,48_000).unwrap();
+        let advanced = start.checked_advance(48_000*601+23,clock.input_rate,48_000).unwrap();
+        let expected = try_position_at(clock,48_000*601+40,48_000).unwrap();
+        assert_eq!(advanced.index,expected.index);
+        assert_eq!(advanced.fraction_num as u128*expected.fraction_den as u128,
+            expected.fraction_num as u128*advanced.fraction_den as u128);
+        let end = SamplePosition {index:u64::MAX,fraction_num:1,fraction_den:2};
+        assert!(end.checked_advance(1,48_000.0,48_000).is_err());
+        assert!(start.checked_advance(1,clock.input_rate,0).is_err());
     }
 
     #[test]

@@ -35,6 +35,14 @@ describe('native decoded stream boundaries', () => {
     expect(() => stream.accept(frame())).toThrow(/Stale/);
     expect(() => stream.accept(frame({ seq: 1, event: { type: 'cw' } }))).toThrow(/identity/);
   });
+  it.each(['am', 'dsb', 'usb', 'lsb', 'cw', 'nfm', 'wfm', 'pm', 'ft8', 'sstv', 'drm', 'drmplus'])('requires a fresh identity for a switch to %s', (mode) => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: mode === 'cw' ? 'am' : 'cw' }));
+    expect(() => stream.accept(frame({ mode, seq: 1, event: { type: 'nr-status' } }))).toThrow(/mode changed/);
+    stream.accept(frame({ channel_id: 18, mode }));
+    expect(stream.accept(frame({ channel_id: 18, mode, seq: 1, event: { type: 'nr-status' } })).mode).toBe(mode);
+    expect(() => stream.accept(frame({ channel_id: 18, mode, seq: 2 }))).toThrow(/mode changed/);
+  });
   it('compares rational source clocks above the JavaScript exact integer range', () => {
     const stream = new DecodeSequence();
     stream.accept(frame({ input_fraction_num: '2', input_fraction_den: '3' }));
@@ -324,6 +332,39 @@ describe('native decoded stream boundaries', () => {
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
       sockets[1].onmessage!({ data: frame() });
       expect(messages[1].type).toBe('frames');
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each(['stop', 'error'])('clears in-flight delivery on %s and ignores the old socket callbacks', async (type) => {
+    const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message),
+      setTimeout: vi.fn(), clearTimeout: vi.fn() };
+    class Socket {
+      static instances: Socket[] = [];
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      constructor() { Socket.instances.push(this); }
+      close(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      // Worker initialization must bind the installed worker globals.
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const old = Socket.instances[0];
+      old.onmessage!({ data: frame() });
+      host.onmessage!({ data: { type } });
+      const count = messages.length;
+      old.onopen!();
+      old.onerror!();
+      old.onmessage!({ data: frame({ seq: 1, event: { type: 'cw' } }) });
+      expect(messages).toHaveLength(count);
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      Socket.instances[1].onmessage!({ data: frame({ channel_id: 18 }) });
+      expect(messages.at(-1)?.envelopes?.[0].channel_id).toBe(18);
     } finally { vi.unstubAllGlobals(); }
   });
   it('drains every queued decoded event in FIFO batches without waiting one round trip per event', async () => {

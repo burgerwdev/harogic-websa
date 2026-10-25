@@ -3,6 +3,7 @@
 ## Device and SDK
 
 - **Exclusive ownership:** `libhtraapi` requires exclusive access to the device. `Device_Open` returns `-1` while SAStudio4 holds it. The proprietary SDK can block or crash; unplug/replug recovery and shutdown must be qualified on the deployed hardware build.
+- **Capture recovery:** a sustained SDK stall ends capture with its original cause. Recovery requires a fresh capture epoch; old timestamps cannot continue. Queue backlog waits under bounded backpressure until explicit failure without reopening the device. A stuck vendor owner remains parked. SDK finish and reopen are refused during its vendor call. Capture failure uses global error handling.
 - **External reference:** supply a 10 MHz reference and set `ExternalSystemClockFrequency` accordingly. `Ext` falls back to the internal reference on unlock; `ExtForce` forces external reference use. Do not set `SystemClockSource=External`: it can hang the device.
 - **GNSS calibration:** some firmware leaves `RefClkFreqOffset` at zero; use the computed offset after calibration. GNSS/1PPS calibration and 6/7/9 GHz soak qualification remain outstanding.
 - **IF AGC:** `EnableIFAGC=0` is the default, consistent with the vendor profile. Its effect under IF saturation remains unqualified.
@@ -28,11 +29,12 @@
 ## Receiver and browser boundaries
 
 - **Receiver capacity:** the backend supports three independently configured slots. The product UI exposes only the main slot and disables auxiliary slots on entering SDR. Mixing, recording and dynamic channel counts are not delivered features; internal PFB bin counts do not represent product receiver capacity.
+- **Raw DSP input:** direct `Pipeline` and `AnalogDemod` trait callers must supply finite input. Production `Receiver` and offline entry points check for nonfinite input; the raw DSP API does not.
 - **RDS:** decoded text quality remains constrained; stereo indication reports pilot presence, not different left/right programme content.
 - **AM:** modulation depth is single-tone-equivalent RMS envelope depth, not arbitrary programme peak depth. Overmodulation folds the absolute envelope and can under-report signed depth; values are not capped at 100%. Carrier fading invalidates offset/depth and clears lock. The recovery estimator is limited to `min(IF bandwidth * 0.2, receiver IQ rate * 0.1, 3000 Hz)` and excludes lock near that boundary; this is a pull-range limit, not a guarantee of acquisition. Sync enabled does not itself mean carrier locked; these metrics do not establish real-RF reception quality.
 - **FT8:** decoding supports standard message types 1/2 within the supported search window, not unrestricted message types or searches.
 - **SSTV:** post-image FSK callsign decoding is unavailable.
-- **DRM:** short or looped codec playback can underrun; such clips do not establish sustained playback continuity. Codec audio bypasses the receiver AGC, noise reduction, squelch and de-emphasis controls, which are disabled in the UI; volume and audio enable remain usable.
+- **DRM:** short or looped codec playback can underrun; such clips do not establish sustained playback continuity. Codec audio bypasses the receiver AGC, noise reduction, squelch and de-emphasis controls, which are disabled in the UI; volume and audio enable remain usable. NR preferences remain stored with effective NR Off. Full signalling reconfiguration and next-multiplex timing are not fully applied.
 - **Browser rendering:** a 20 fps acquisition target does not guarantee 20 fps for every display layer. Existing observations with spectrum, density, waterfall and navigation enabled are around 15 fps; this is not a fresh hardware or browser measurement.
 
 For device constraints and probe context, see [SDR probe findings](../../tools/sdr_probe/FINDINGS.md). Hardware observations there are configuration-specific; this document does not establish qualification of a deployed build.

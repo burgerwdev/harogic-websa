@@ -18,6 +18,9 @@ const MAX_QUEUED_EVENTS = 32;
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 function fail(message: string): void {
   enabled = false;
+  if (retry !== null) { self.clearTimeout(retry); retry = null; }
+  inFlight = 0;
+  inFlightBytes = 0;
   queue.length = 0;
   queuedBytes = 0;
   const previous = socket;
@@ -41,7 +44,7 @@ function connect(): void {
   socket = connection;
   connection.binaryType = 'arraybuffer';
   const sequence = new DecodeSequence();
-  connection.onopen = () => host.postMessage({ type: 'connected' });
+  connection.onopen = () => { if (enabled && socket === connection) host.postMessage({ type: 'connected' }); };
   connection.onmessage = (event: MessageEvent<unknown>) => {
     if (!enabled || socket !== connection) return;
     try {
@@ -55,7 +58,7 @@ function connect(): void {
       deliver();
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   };
-  connection.onerror = () => host.postMessage({ type: 'error', message: 'Decoded-output connection failed' });
+  connection.onerror = () => { if (enabled && socket === connection) host.postMessage({ type: 'error', message: 'Decoded-output connection failed' }); };
   connection.onclose = (event) => {
     if (socket !== connection) return;
     socket = null;
@@ -85,6 +88,8 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
   } else if (message.type === 'stop') {
     enabled = false;
     if (retry !== null) { self.clearTimeout(retry); retry = null; }
+    inFlight = 0;
+    inFlightBytes = 0;
     const previous = socket;
     socket = null;
     previous?.close();

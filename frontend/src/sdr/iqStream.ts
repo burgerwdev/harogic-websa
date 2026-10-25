@@ -1,5 +1,6 @@
 // Native SDR decoded output. The browser controls, renders and plays; it performs no receiver DSP.
 import { send } from '../core/wsSend';
+import { setSdrReceiverAudioError } from '../audio/sdrAudio';
 import { decodeChannel, ingestDecodeEvents, setAmInfo, setDecodeChannelMode, setDecodeError, setDecodeTiming, setWfmInfo } from '../ui/decodeWindow';
 import type { AmInfo } from '../ui/decodeWindow';
 import { addFt8Spot, clearFt8Spots, setFt8DecoderState } from './ft8Log';
@@ -22,17 +23,69 @@ export interface ChannelRegistryEntry {
 let confirmedRegistry: readonly ChannelRegistryEntry[] | null = null;
 let enabled = false;
 let worker: Worker | null = null;
+let streamFailed = false;
+let streamFailedRegistry: readonly ChannelRegistryEntry[] | null = null;
 let connected = false;
 let blocks = 0;
 let lastError = '';
 let current: DecodeEnvelope | null = null;
+let failedRegistry: readonly ChannelRegistryEntry[] | null = null;
 let identityChanges = 0;
 let ft8Text = '', ft8Count = 0, ft8Detail = '';
 const pictures = new Map<number, { identity: string; serial: string; width: number; height: number; rgb: Uint8Array; nextRow: number }>();
+document.addEventListener('websa:sdr-stream-error', (event) => {
+  const detail = (event as CustomEvent).detail;
+  if (detail?.stream === 'audio' && detail.message === 'Backend audio receiver failed') failSdrReceiver(detail.message);
+});
 
 export function confirmSdrChannelRegistry(registry: readonly ChannelRegistryEntry[] | null): void {
   confirmedRegistry = registry;
   publishIqDebug();
+}
+
+export function failSdrReceiver(message: string): void {
+  if (failedRegistry !== null && lastError
+      && (message === 'Decoded-output receiver failed' || message === 'Backend audio receiver failed')) return;
+  if (failedRegistry !== null && lastError === message) return;
+  if (failedRegistry === null) failedRegistry = confirmedRegistry ?? (current ? [{ channel: current.channel,
+    channel_id: current.channel_id, epoch: current.epoch } as ChannelRegistryEntry] : []);
+  worker?.postMessage({ type: 'stop' });
+  worker?.terminate();
+  worker = null;
+  pictures.clear();
+  for (const channel of [1, 2, 3] as const) {
+    setSdrReceiverAudioError(channel, message);
+    setCwLevel(0, false, {}, channel);
+    clearDrm(channel);
+    setWfmInfo(null, channel);
+    setFt8DecoderState(null, channel);
+    setSstvDecoderState(null, channel);
+  }
+  reportError(message);
+}
+
+export function confirmSdrReceiverError(error: string | null | undefined): boolean {
+  if (typeof error === 'string') { failSdrReceiver(error); return false; }
+  if (error === null && streamFailed && confirmedRegistry?.some(entry => entry.state === 'active')
+      && streamFailedRegistry !== null && !streamFailedRegistry.some(old => confirmedRegistry!.some(next => next.state === 'active'
+        && old.channel_id === next.channel_id && old.epoch === next.epoch))) {
+    streamFailed = false;
+    streamFailedRegistry = null;
+    lastError = '';
+  }
+  if (error !== null || failedRegistry === null || !confirmedRegistry?.some(entry => entry.state === 'active')) return false;
+  // A healthy report for the failed identities cannot revive their latched workers.
+  if (failedRegistry.some(old => confirmedRegistry!.some(next => next.state === 'active'
+    && old.channel_id === next.channel_id && old.epoch === next.epoch))) return false;
+  failedRegistry = null;
+  streamFailed = false;
+  streamFailedRegistry = null;
+  lastError = '';
+  current = null;
+  clearAmState();
+  for (const channel of [1, 2, 3] as const) setSdrReceiverAudioError(channel, null);
+  publishIqDebug();
+  return true;
 }
 function publishIqDebug(): void {
   const cv = document.getElementById('spectrum');
@@ -43,13 +96,14 @@ function publishIqDebug(): void {
     + (lastError ? ` error=${lastError}` : '');
 }
 function reportError(message: string): void {
+  if (streamFailed && streamFailedRegistry === null) streamFailedRegistry = confirmedRegistry ?? [];
   lastError = message;
   connected = false;
   for (const channel of [1, 2, 3] as const) { setAmInfo(null, channel); setDecodeError(channel, message); }
   console.error(`SDR decoded stream: ${message}`);
   document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'decode', message } }));
   const status = document.getElementById('cur-sdr-level');
-  if (status) { status.textContent = message; status.title = message; }
+  if (status) { status.textContent = ''; status.removeAttribute('title'); }
   publishIqDebug();
 }
 /** Drop AM sync telemetry and decode errors on every channel (unsafe badge must not outlive the stream). */
@@ -57,16 +111,32 @@ function clearAmState(): void {
   for (const channel of [1, 2, 3] as const) { setAmInfo(null, channel); setDecodeError(channel, null); }
 }
 function startStream(): void {
-  if (worker || !enabled || typeof Worker === 'undefined') return;
+  if (worker || !enabled || failedRegistry !== null || streamFailed) return;
   clearAmState();
   const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/decode`;
-  const receiver = new Worker(new URL('./decodeWorker.ts', import.meta.url), { type: 'module' });
+  let receiver: Worker;
+  try { receiver = new Worker(new URL('./decodeWorker.ts', import.meta.url), { type: 'module' }); }
+  catch (error) { streamFailed = true; reportError(error instanceof Error ? error.message : String(error)); return; }
   worker = receiver;
-  receiver.onerror = (event) => { reportError(event.message || 'Decoded-output worker failed'); receiver.terminate(); worker = null; };
+  receiver.onerror = (event) => {
+    if (receiver !== worker) return;
+    streamFailed = true;
+    worker = null;
+    receiver.terminate();
+    reportError(event.message || 'Decoded-output worker failed');
+  };
   receiver.onmessage = (message: MessageEvent<{ type: string; envelopes?: DecodeEnvelope[]; message?: string }>) => {
     if (receiver !== worker) return;
     if (message.data.type === 'connected') { connected = true; lastError = ''; publishIqDebug(); return; }
-    if (message.data.type === 'error' || message.data.type === 'closed') { reportError(message.data.message ?? 'Decoded-output stream failed'); return; }
+    if (message.data.type === 'error' || message.data.type === 'closed') {
+      const text = message.data.message ?? 'Decoded-output stream failed';
+      if (text === 'Decoded-output receiver failed') failSdrReceiver(text);
+      else {
+        if (message.data.type === 'error') { streamFailed = true; worker = null; receiver.terminate(); }
+        reportError(text);
+      }
+      return;
+    }
     if (message.data.type !== 'frames') return;
     try {
       const envelopes = message.data.envelopes;
@@ -82,8 +152,10 @@ function startStream(): void {
       publishIqDebug();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      streamFailed = true;
+      worker = null;
+      receiver.terminate();
       reportError(text);
-      receiver.postMessage({ type: 'error', message: text });
     }
   };
   receiver.postMessage({ type: 'start', url });
@@ -116,6 +188,7 @@ function consumeDecode(envelope: DecodeEnvelope): void {
     clearCwLog(channel);
     setWfmInfo(null, channel);
     setFt8DecoderState(null, channel);
+    setSstvDecoderState(null, channel);
     setAmInfo(null, channel);
     setDecodeError(channel, null);
     return;
@@ -229,20 +302,24 @@ export function setSdrIqEnabled(on: boolean): void {
   enabled = on;
   if (on) startStream();
   else {
+    streamFailed = false;
+    streamFailedRegistry = null;
     worker?.postMessage({ type: 'stop' });
     worker?.terminate();
     worker = null;
     connected = false;
-    clearAmState();
+    if (failedRegistry === null) clearAmState();
   }
   publishIqDebug();
 }
 export function resetSdrIq(): void {
   ft8Text = ''; ft8Count = 0; ft8Detail = ''; blocks = 0; current = null; identityChanges = 0;
-  confirmedRegistry = null; lastError = ''; pictures.clear();
+  if (failedRegistry === null) { confirmedRegistry = null; lastError = ''; }
+  pictures.clear();
   for (const channel of [1, 2, 3] as const) {
     clearFt8Spots(channel); clearCwLog(channel); clearDrm(channel); clearSstv(channel);
-    setWfmInfo(null, channel); setAmInfo(null, channel); setFt8DecoderState(null, channel); setDecodeError(channel, null);
+    setWfmInfo(null, channel); setAmInfo(null, channel); setFt8DecoderState(null, channel);
+    setDecodeError(channel, failedRegistry === null ? null : lastError);
   }
   publishIqDebug();
 }
@@ -261,6 +338,6 @@ export function sdrIqStats() {
     fallbackReason: '', streamKey: current ? `${current.epoch}:${current.channel_id}` : '', channelId: current?.channel_id ?? 0,
     epoch: current?.epoch ?? 0, inputIndex: current?.input_index ?? '0', groupDelay: current?.delay_seconds ?? 0,
     delayKnown: current?.delay_known ?? false, causalPresentation: current?.causal_presentation ?? false,
-    identityChanges, identityMixes: 0, confirmedRegistry, lastError };
+    identityChanges, identityMixes: 0, confirmedRegistry, lastError, receiverFailed: failedRegistry !== null };
 }
 export type { Ft8Report };

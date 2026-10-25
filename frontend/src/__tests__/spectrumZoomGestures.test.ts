@@ -1,17 +1,5 @@
-/**
- * Zoom gesture math + the "no wire traffic" contract (ui/spectrumZoomGestures.ts).
- *
- * The design's hard rule (§6): display-zoom operations must never produce
- * SET_FREQ/SET_RTA/SET_SDR (or any other) commands. Proven two ways here:
- *
- *   1. static: the zoom modules contain no wsSend import and no send() call;
- *   2. behavioural: with a captured fake WebSocket open (the axisDrag.test.ts rig),
- *      driving the zoom paths through real frames sends nothing, while the viewport
- *      state still moves.
- */
+/** Display zoom changes the viewport without sending device commands. */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import * as S from '../core/store';
 import { resetAll } from '../core/params';
 import { setWS } from '../core/wsSend';
@@ -45,23 +33,6 @@ beforeEach(() => {
 	openSocket();
 });
 
-describe('static wire-access scan', () => {
-	const files = [
-		'../ui/spectrumViewport.ts',
-		'../ui/spectrumZoomUi.ts',
-		'../ui/spectrumZoomGestures.ts',
-	];
-
-	/** Strip comments so prose like "send() call" cannot trip the scan. */
-	const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-	it('the zoom modules import no wsSend and call no send()', () => {
-		for (const f of files) {
-			const src = strip(readFileSync(resolve(import.meta.dirname, f), 'utf8'));
-			expect(/from\s+'[^']*wsSend'/.test(src), `${f} imports wsSend`).toBe(false);
-			expect(/\bsend\s*\(/.test(src), `${f} calls send()`).toBe(false);
-		}
-	});
-});
 
 describe('plot x mapping', () => {
 	it('maps the plot rect onto the current view', () => {

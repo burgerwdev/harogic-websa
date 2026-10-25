@@ -333,7 +333,9 @@ impl Ft8Decoder {
         }
     }
 
+    /// Append complete interleaved I/Q pairs, discarding an unmatched trailing float per call.
     pub fn push_iq(&mut self, iq: &[f32]) {
+        let iq = &iq[..iq.len() / 2 * 2];
         // Saturating: this counts every sample of a session, and wasm32's `usize` is 32 bits, so a
         // long enough run would wrap and make the de-duplication arithmetic nonsense.
         self.total_pushed = self.total_pushed.saturating_add(iq.len() / 2);
@@ -1060,6 +1062,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn odd_pushes_preserve_iq_pairs_and_sample_positions() {
+        let mut decoder = Ft8Decoder::new(48_000.0);
+        decoder.push_iq(&[99.0]);
+        decoder.push_iq(&[98.0]);
+        assert_eq!(decoder.buffered(), 0);
+        decoder.push_iq(&[1.0, -1.0, 97.0]);
+        decoder.push_iq(&[2.0, -2.0, 96.0]);
+        assert_eq!(decoder.buffered(), 2);
+        assert_eq!(decoder.total_pushed, 2);
+        assert_eq!(decoder.samples, [1.0, -1.0, 2.0, -2.0]);
+        decoder.advance(1);
+        assert_eq!(decoder.samples, [2.0, -2.0]);
+        assert_eq!(decoder.total_pushed - decoder.buffered(), 1);
+    }
+
+    #[test]
+    fn unsupported_message_types_and_unknown_hashes_are_rejected() {
+        for message_type in [0_u8, 3, 4, 5, 6, 7] {
+            let mut payload = [0_u8; 77];
+            payload[74] = message_type >> 2;
+            payload[75] = (message_type >> 1) & 1;
+            payload[76] = message_type & 1;
+            assert_eq!(unpack_message(&payload), None);
+        }
+        for call_offset in [0, 29] {
+            for hash in [NTOKENS, NTOKENS + MAX22 - 1] {
+                let mut payload = [0_u8; 77];
+                payload[76] = 1;
+                let packed = hash << 1;
+                for bit in 0..29 {
+                    payload[call_offset + bit] = ((packed >> (28 - bit)) & 1) as u8;
+                }
+                assert_eq!(unpack_message(&payload), None);
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_noise_does_not_decode_a_message() {
+        if cfg!(debug_assertions) {
+            return; // Full waterfall searches require a release build.
+        }
+        let mut decoder = Ft8Decoder::new(6_000.0);
+        let mut state = 0x48ab_19f3_u32;
+        let iq: Vec<f32> = (0..decoder.retain_samples() * 2)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
+            })
+            .collect();
+        decoder.push_iq(&iq);
+        assert!(decoder.decode().is_empty());
+        assert_eq!(decoder.buffered(), decoder.retain_samples());
+    }
+
+    #[test]
     fn a_push_past_the_retention_keeps_the_head_not_half_the_buffer() {
         // The feeder deliberately sends one slot plus a tail. The trim must drop only the excess:
         // subtracting the *complex* retention from a *float* length over-drained by half the buffer
@@ -1186,12 +1246,12 @@ impl Ft8Plugin {
         }
     }
 
-    /// How many messages this plugin has decoded (diagnostics/status).
+    /// Lifetime decoded-message count (diagnostics/status), preserved across stream resets.
     pub fn decoded_messages(&self) -> u64 {
         self.decoded_messages
     }
 
-    /// The most recent decode, with the timing and frequency the decoder measured.
+    /// The last message from the most recent process call, with its measured timing and frequency.
     pub fn last(&self) -> Option<&Ft8Message> {
         self.decoded.last()
     }
@@ -1202,12 +1262,9 @@ impl Ft8Plugin {
     }
 
     fn record(&mut self, messages: Vec<Ft8Message>) -> Vec<String> {
-        if messages.is_empty() {
-            return Vec::new();
-        }
         self.decoded_messages += messages.len() as u64;
-        self.decoded = messages.clone();
-        messages.into_iter().map(|m| m.text).collect()
+        self.decoded = messages;
+        self.decoded.iter().map(|m| m.text.clone()).collect()
     }
 }
 
@@ -1217,6 +1274,7 @@ impl DigitalDemodulator for Ft8Plugin {
     }
 
     fn process_iq(&mut self, iq: &[f32]) -> Vec<String> {
+        self.decoded.clear();
         self.decoder.push_iq(iq);
         let buffered = self.decoder.buffered();
         if buffered < self.decoder.window_samples() {
@@ -1277,6 +1335,61 @@ impl DigitalDemodulator for Ft8Plugin {
 mod plugin_tests {
     use super::*;
 
+    fn prior_message(plugin: &mut Ft8Plugin) {
+        plugin.record(vec![Ft8Message {
+            text: "CQ JO1WKO PM95".to_string(),
+            frequency_hz: 1_000.0,
+            time_offset_s: 0.5,
+            snr_db: 12.0,
+        }]);
+        assert_eq!(plugin.decoded()[0].0, "CQ JO1WKO PM95");
+    }
+
+    #[test]
+    fn accumulating_process_clears_previous_messages() {
+        let mut plugin = Ft8Plugin::new(48_000.0);
+        for block in [&[][..], &[0.0, 0.0][..]] {
+            prior_message(&mut plugin);
+            assert!(plugin.process_iq(block).is_empty());
+            assert!(plugin.decoded().is_empty());
+            assert!(plugin.last().is_none());
+            assert!(plugin.last_report().is_none());
+        }
+        assert_eq!(plugin.decoded_messages(), 2);
+    }
+
+    #[test]
+    fn quiet_decode_attempts_clear_previous_messages() {
+        if cfg!(debug_assertions) {
+            return; // Full waterfall searches require a release build.
+        }
+        let mut plugin = Ft8Plugin::new(6_000.0);
+        let first_slot = plugin.decoder.slot_samples();
+        let remaining = plugin.decoder.window_samples() - first_slot;
+        for samples in [first_slot, remaining] {
+            prior_message(&mut plugin);
+            assert!(plugin.process_iq(&vec![0.0; samples * 2]).is_empty());
+            assert!(plugin.decoded().is_empty());
+            assert!(plugin.last().is_none());
+            assert!(plugin.last_report().is_none());
+        }
+        assert_eq!(plugin.decoded_messages(), 2);
+    }
+
+    #[test]
+    fn reset_clears_stream_results_but_preserves_lifetime_count() {
+        let mut plugin = Ft8Plugin::new(48_000.0);
+        plugin.process_iq(&[1.0, -1.0]);
+        prior_message(&mut plugin);
+        plugin.reset();
+        assert!(plugin.decoded().is_empty());
+        assert!(plugin.last().is_none());
+        assert_eq!(plugin.buffered(), 0);
+        assert_eq!(plugin.decoded_messages(), 1);
+        prior_message(&mut plugin);
+        assert_eq!(plugin.decoded_messages(), 2);
+    }
+
     const IQ_BYTES: &[u8] = include_bytes!("../../../../../tests/fixtures/ft8/ft8_cq_iq.bin");
 
     fn fixture() -> Vec<f32> {
@@ -1297,23 +1410,29 @@ mod plugin_tests {
     }
 
     #[test]
-    fn the_plugin_decodes_the_fixture_from_a_slot_and_clears_its_buffer() {
+    fn the_plugin_decodes_torn_fixture_blocks_without_repeating_reports() {
         if cfg!(debug_assertions) {
             return; // a whole-slot waterfall decode is release-only (see the reference test)
         }
         let mut plugin = Ft8Plugin::new(48_000.0);
-        // The plugin waits for a whole sliding window (hop + burst) before it searches, so pad the
-        // fixture slot out to one.
+        // Cover the early attempt and the full-window re-search of the same burst.
         let mut slot = fixture_slot();
         slot.resize(Ft8Decoder::new(48_000.0).window_samples() * 2, 0.0);
         let mut decoded: Vec<String> = Vec::new();
         for block in slot.chunks(960 * 2) {
-            decoded.extend(plugin.process_iq(block));
+            let mut torn_block = block.to_vec();
+            torn_block.push(f32::NAN); // An unmatched I must not become the next block's Q.
+            let messages = plugin.process_iq(&torn_block);
+            let reports = plugin.decoded();
+            assert_eq!(reports.iter().map(|(text, _)| text).collect::<Vec<_>>(), messages.iter().collect::<Vec<_>>());
+            decoded.extend(messages);
+            for (_, report) in reports {
+                assert!((report.frequency_hz - 1_000.0).abs() < 25.0);
+            }
         }
         assert_eq!(decoded, vec!["CQ JO1WKO PM95".to_string()]);
         assert_eq!(plugin.decoded_messages(), 1);
-        let last = plugin.last().expect("a message");
-        assert!((last.frequency_hz - 1_000.0).abs() < 25.0);
+        assert!(plugin.decoded().is_empty(), "the final window only re-searches an old burst");
         // The slot was consumed: a single further block must not decode anything.
         assert!(plugin.process_iq(&slot[..960 * 2]).is_empty());
     }

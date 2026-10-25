@@ -298,7 +298,7 @@ describe('SDR control intent and STATUS', () => {
 		expect(state.sdrListenHz.get()).toBe(9_810_100);
 		key('ArrowLeft');
 		expect(state.sdrListenHz.get()).toBe(9_810_000);
-		expect(send).toHaveBeenCalledWith({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 9_810_100 });
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 9_810_100 }));
 		const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
 		button.dispatchEvent(space); expect(space.defaultPrevented).toBe(false);
 		(document.getElementById('input-sdr-listen') as HTMLInputElement).focus();

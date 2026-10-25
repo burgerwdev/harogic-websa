@@ -7,6 +7,7 @@
 use crate::FineOutput;
 const BASEBAND_VERSION: u32 = 2;
 const IQ_SCALE: f32 = 1.0 / 32768.0;
+pub const MAX_BASEBAND_SAMPLES: usize = 65_536;
 
 #[derive(Clone, Copy)]
 pub enum BasebandMagic {
@@ -48,7 +49,8 @@ impl BasebandFramer {
         rate: f64,
         magic: BasebandMagic,
     ) -> Option<Self> {
-        if !center_hz.is_finite() || !rate.is_finite() || rate <= 0.0 || rate > 1e7
+        if !center_hz.is_finite() || !(1.0..=1e7).contains(&rate)
+            || (rate / 30.0).ceil() > MAX_BASEBAND_SAMPLES as f64
             || channel_id == 0 || channel_id > u32::MAX as u64
             || epoch == 0 || epoch > u32::MAX as u64
         {
@@ -78,6 +80,10 @@ impl BasebandFramer {
             || output.epoch != self.epoch
             || output.output_rate != self.rate
             || output.iq.len() % 2 != 0
+            || self.pending.len().checked_add(output.iq.len())
+                .is_none_or(|len| len / 2 > MAX_BASEBAND_SAMPLES)
+            || output.iq.iter().any(|value| !value.is_finite())
+            || output.input_index == u64::MAX
             || !output.delay_samples.is_finite()
             || output.delay_samples < 0.0
             || self
@@ -188,13 +194,14 @@ pub fn encode_baseband(
     let channel_id = u32::try_from(channel_id).map_err(|_| "baseband channel id exceeds u32")?;
     let epoch = u32::try_from(epoch).map_err(|_| "baseband epoch exceeds u32")?;
     if iq.len() % 2 != 0
-        || !rate.is_finite()
-        || rate <= 0.0
+        || iq.len() / 2 > MAX_BASEBAND_SAMPLES
+        || !(1.0..=1e9).contains(&rate)
         || !center_hz.is_finite()
         || channel_id == 0
         || epoch == 0
         || !delay.is_finite()
         || delay < 0.0
+        || input_index == u64::MAX
         || (seq == 0) != iq.is_empty()
     {
         return Err("invalid baseband frame");
@@ -214,6 +221,7 @@ pub fn encode_baseband(
     frame.extend_from_slice(&input_index.to_le_bytes());
     frame.extend_from_slice(&delay.to_le_bytes());
     for sample in iq {
+        if !sample.is_finite() { return Err("nonfinite baseband IQ sample"); }
         frame.extend_from_slice(&sample.to_le_bytes());
     }
     Ok(frame)
@@ -338,6 +346,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_oversized_or_nonfinite_baseband_before_emitting_wire_data() {
+        for magic in [BasebandMagic::Primary, BasebandMagic::Aux] {
+            for iq in [vec![0.0; (MAX_BASEBAND_SAMPLES + 1) * 2], vec![f32::NAN, 0.0], vec![0.0, f32::INFINITY]] {
+                assert!(encode_baseband(magic, 1, 1200.0, 100e6, 1, 1, 0, 0.0, &iq).is_err());
+                let mut framer = BasebandFramer::with_magic(1, 1, 100e6, 1200.0, magic).unwrap();
+                let mut output = FineOutput {
+                    channel_id:1, epoch:1, bin:0, seq:0, stamp:0, input_index:0, output_index:0,
+                    output_rate:1200.0, center_offset_hz:Some(0.0), delay_samples:0.0, iq:&iq,
+                };
+                assert!(framer.push(&output).is_err());
+                let valid = [8192.0; 80];
+                output.iq = &valid;
+                let frames = framer.push(&output).unwrap();
+                assert_eq!(u32::from_le_bytes(frames[0][8..12].try_into().unwrap()), 0);
+                assert_eq!(u32::from_le_bytes(frames[1][8..12].try_into().unwrap()), 1);
+                assert!(frames[1][56..].chunks_exact(4).all(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()) == 0.25));
+                assert!(framer.finish().unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
     fn matches_python_and_browser_baseband_fixture() {
         let iq = [
             0.0, 0.0, 0.5, -0.5, 0.25, -0.25, 1.0, -1.0, 0.001, 1e-6, -0.001, -1e-6,
@@ -436,15 +466,16 @@ mod tests {
     fn rejects_unrepresentable_identity_and_invalid_delay() {
         let max = u32::MAX as u64;
         for magic in [BasebandMagic::Primary, BasebandMagic::Aux] {
+            for rate in [0.5, f64::NAN, f64::INFINITY, 1e9 + 1.0] {
+                assert!(encode_baseband(magic, 0, rate, 100e6, 1, 1, 0, 0.0, &[]).is_err());
+            }
+            assert!(BasebandFramer::with_magic(1, 1, 100e6, 1e7, magic).is_none());
             assert!(encode_baseband(magic, 1, 1200.0, 100e6, 1, 1, 0, 0.0, &[]).is_err());
             for (id, epoch) in [(0, 1), (1, 0), (max + 1, 1), (1, max + 1)] {
                 assert!(BasebandFramer::with_magic(id, epoch, 100e6, 1200.0, magic).is_none());
                 assert!(encode_baseband(magic, 0, 1200.0, 100e6, id, epoch, 0, 0.0, &[]).is_err());
             }
-            let frame = encode_baseband(magic, 0, 1200.0, 100e6, max, max, u64::MAX, 0.0, &[]).unwrap();
-            assert_eq!(u32::from_le_bytes(frame[32..36].try_into().unwrap()), u32::MAX);
-            assert_eq!(u32::from_le_bytes(frame[36..40].try_into().unwrap()), u32::MAX);
-            assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()), u64::MAX);
+            assert!(encode_baseband(magic, 0, 1200.0, 100e6, max, max, u64::MAX, 0.0, &[]).is_err());
             for delay in [-1.0, f64::NAN, f64::INFINITY] {
                 assert!(encode_baseband(magic, 0, 1200.0, 100e6, 1, 1, 0, delay, &[]).is_err());
             }

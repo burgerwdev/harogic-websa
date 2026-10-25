@@ -173,6 +173,9 @@ impl DevState {
         if !(-200.0..=0.0).contains(&config.squelch) { return Err("squelch must be in -200..=0 dB".into()); }
         if !(0.0..=2.0).contains(&config.volume) { return Err("volume must be in 0..=2".into()); }
         if config.pitch <= 0.0 || config.pitch > 20_000.0 { return Err("pitch must be in (0, 20000] Hz".into()); }
+        if config.mode == "cw" && !(100.0..=1600.0).contains(&config.pitch) {
+            return Err("CW pitch must be in 100..=1600 Hz".into());
+        }
         if !(-1.0..=1000.0).contains(&config.deemph_us) { return Err("deemph_us must be in -1..=1000".into()); }
         if !(0.0..=1.0).contains(&config.nr_strength) { return Err("nr_strength must be in 0..=1".into()); }
         if !matches!(config.nr_algorithm.as_str(), "wiener" | "dfn") { return Err("nr_algorithm must be wiener or dfn".into()); }
@@ -217,13 +220,19 @@ impl DevState {
             Ddc::validate_service_frequency(self.capture_center(),self.capture_bandwidth(),fs,
                 self.sdr_pfb_taps_per_phase,config.freq,&plan)?;
         }
-        if geometry_changed && self.pipeline.is_none() && self.ddc.is_none() {
+        if geometry_changed && self.pipeline.is_none() && self.ddc.is_none() && self.receiver_failure.is_none() {
             if let Some(workers)=self.receiver_workers.as_mut() {
-                let output=workers.finish()?;
-                self.pending_receiver.audio.extend(output.audio);
-                self.decode_snapshots.observe(&output.decode)?;
-                self.pending_receiver.decode.extend(output.decode);
-                self.retiring_registry=self.stream_registry();
+                match workers.finish().and_then(|output| {
+                    self.decode_snapshots.observe(&output.decode)?;
+                    Ok(output)
+                }) {
+                    Ok(output)=>{
+                        self.pending_receiver.audio.extend(output.audio);
+                        self.pending_receiver.decode.extend(output.decode);
+                        self.retiring_registry=self.stream_registry();
+                    }
+                    Err(error)=>self.latch_receiver_failure(error),
+                }
             }
         }
         if geometry_changed {
@@ -266,7 +275,11 @@ impl DevState {
         }
         self.sdr_aux = json!({"2":configs[1], "3":configs[2]});
         self.sdr_channels = configs;
-        if let Some(workers) = self.receiver_workers.as_mut() { workers.configure(&self.sdr_channels)?; }
+        if self.receiver_failure.is_none() {
+            if let Some(workers) = self.receiver_workers.as_mut() {
+                if let Err(error)=workers.configure(&self.sdr_channels) {self.latch_receiver_failure(error);}
+            }
+        }
         self.config_version += 1;
         Ok(())
     }
@@ -275,6 +288,26 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_cw_pitch_rejects_without_retiring_receivers() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "sdr".into();
+        state.sdr_center = 100e6;
+        state.sdr_listen = 100e6;
+        let before = state.channel_configs();
+        let version = state.config_version;
+        for pitch in [99.0, 1601.0, 20_000.0] {
+            assert!(dispatch(&mut state, "SET_SDR_CHANNEL", &json!({"mode":"cw","pitch":pitch})).is_err());
+            assert_eq!(state.channel_configs(), before);
+            assert_eq!(state.config_version, version);
+            assert!(state.receiver_failure.is_none());
+        }
+        for pitch in [100.0, 1600.0] {
+            assert_eq!(state.parse_channel_config(&json!({"mode":"cw","pitch":pitch})).unwrap().pitch, pitch);
+        }
+    }
 
     #[test]
     fn agc_commands_preserve_squelch_and_reject_non_boolean_updates() {

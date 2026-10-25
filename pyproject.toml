@@ -1,6 +1,6 @@
 [project]
 name = "harogic-websa-tools"
-version = "1.9.2"
+version = "1.9.3"
 description = "Harogic WebSA SDK bench, fixture generators and numerical reference tools (Rust service version source)"
 requires-python = ">=3.10"
 dependencies = ["aiohttp>=3.9", "numpy>=1.24"]

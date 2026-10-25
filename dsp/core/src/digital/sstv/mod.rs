@@ -9,9 +9,9 @@
 //!
 //! SSTV sends a picture as single-sideband audio: sync pulses at 1200 Hz, pixel tones from 1500 Hz to
 //! 2300 Hz. The streaming decoder hands out each scanline as soon as its sequence pass completes, so
-//! the pane fills while the station sends. Rows land in one picture canvas; a completed picture clears
-//! it for the next transmission. The front end keeps the voice band, which the DDC's own AGC can leave
-//! quiet inside a wide channel, levelled by an AGC of its own.
+//! the image updates during reception. Ordered acquisition, row and completion events keep each
+//! canvas tied to its transmission, even when one block spans multiple pictures.
+//! The front end has a separate voice-band AGC.
 
 /// A vendored copy of the reference decoder. Its own warnings (an unread field, an unused binding)
 /// are upstream's, and editing the copy would make the next re-vendor a merge: silence them here.
@@ -26,7 +26,7 @@ use crate::ddc::agc::RmsAgc;
 use crate::ddc::fir::ComplexBandFilter;
 use crate::ddc::resampler::LinearResampler;
 use crate::plugin::{DigitalDemodulator, ImageRef, ImageStatus};
-use vendor::decode::streaming::{StreamingDecoder, StreamEvents};
+use vendor::decode::streaming::{StreamingDecoder, StreamEvent};
 use vendor::modes::Mode;
 
 /// Rate the streaming decoder runs at. SSTV's highest tone is 2300 Hz, so 8 kHz has margin.
@@ -146,8 +146,6 @@ pub struct SstvPlugin {
     image: Option<SstvImage>,
     /// The mode the operator pinned, or `None` for VIS detection.
     pinned: Option<usize>,
-    /// Set after a picture completed or was abandoned: the next rows start a new transmission.
-    awaiting_new: bool,
     /// Consecutive quiet samples before the picture's last row (the transmission's own end is quiet).
     quiet_samples: u64,
     /// loudest block seen, for the quiet threshold (a fraction of the band's own peak).
@@ -178,7 +176,6 @@ impl SstvPlugin {
             status: None,
             image: None,
             pinned: None,
-            awaiting_new: false,
             quiet_samples: 0,
             loud_peak: 0.0,
             finished: false,
@@ -225,92 +222,71 @@ impl SstvPlugin {
         self.samples_seen as f64 / DECODE_RATE_HZ
     }
 
-    /// Absorb one streaming row into the picture canvas.
-    /// Absorb one streaming row into the picture canvas.
-    fn absorb_row(&mut self, row: &vendor::decode::streaming::StreamRow) {
-        let Some(mode) = self.decoder.mode() else {
-            return;
-        };
-        let (width, height) = (mode.resolution().0, mode.resolution().1);
-        if self.awaiting_new || self.image.is_none() {
-            // A new transmission: the finished one moved into the history on the page, and this canvas
-            // starts empty and black.
-            self.awaiting_new = false;
-            let serial = self.status.as_ref().map_or(1, |status| status.serial + 1);
-            let mode_index = mode_index(mode).unwrap_or(0);
-            self.status = Some(SstvStatus {
-                serial,
-                mode_index,
-                mode_name: SSTV_MODES[mode_index].0,
-                vis: mode_vis(mode),
-                width,
-                height,
-                lines: 0,
-                progress: 0,
-                complete: false,
-                attempts: u64::from(self.decoder.acquisitions()),
-            });
-            self.image = Some(SstvImage {
-                rgb: alloc::vec![0u8; (width * height * 3) as usize],
-                width,
-                height,
-            });
-            let name = mode_name(mode);
-            self.readout.push(alloc::format!(
-                "SSTV {name} {width}x{height} VIS {}",
-                mode_vis(mode)
-            ));
-        }
-        let Some(image) = self.image.as_mut() else {
-            return;
-        };
-        if image.width != width || image.height != height || row.index >= height {
-            return;
-        }
-        let base = row.index as usize * width as usize * 3;
-        for (column, pixel) in row.pixels.iter().enumerate() {
-            image.rgb[base + column * 3] = pixel.red();
-            image.rgb[base + column * 3 + 1] = pixel.green();
-            image.rgb[base + column * 3 + 2] = pixel.blue();
-        }
-        if let Some(status) = self.status.as_mut() {
-            status.lines = self.decoder.lines();
-            status.progress = if height > 0 {
-                (status.lines.saturating_mul(100) / height).min(100)
-            } else {
-                0
-            };
-        }
+    /// Start a canvas when the decoder acquires a transmission, before applying any of its rows.
+    fn acquire(&mut self, mode: Mode, attempt: u32) {
+        self.finished = false;
+        self.quiet_samples = 0;
+        let (width, height) = mode.resolution();
+        let serial = self.status.as_ref().map_or(1, |status| status.serial + 1);
+        let mode_index = mode_index(mode).unwrap_or(0);
+        self.status = Some(SstvStatus {
+            serial,
+            mode_index,
+            mode_name: SSTV_MODES[mode_index].0,
+            vis: mode_vis(mode),
+            width,
+            height,
+            lines: 0,
+            progress: 0,
+            complete: false,
+            attempts: u64::from(attempt),
+        });
+        self.image = Some(SstvImage {
+            rgb: alloc::vec![0u8; (width * height * 3) as usize],
+            width,
+            height,
+        });
+        let name = mode_name(mode);
+        self.readout.push(alloc::format!(
+            "SSTV {name} {width}x{height} VIS {}",
+            mode_vis(mode)
+        ));
     }
 
-    /// Apply one push's phase events to the status and the readout.
-    fn absorb_events(&mut self, events: StreamEvents) {
-        if events.acquired {
-            self.finished = false;
-            self.quiet_samples = 0;
-            if let Some(status) = self.status.as_mut() {
-                status.attempts = u64::from(self.decoder.acquisitions());
+    fn absorb_events(&mut self, events: Vec<StreamEvent>) {
+        for event in events {
+            match event {
+                StreamEvent::Acquired { mode, attempt } => self.acquire(mode, attempt),
+                StreamEvent::Row(row) => {
+                    let (Some(image), Some(status)) = (&mut self.image, &mut self.status) else {
+                        continue;
+                    };
+                    let width = image.width as usize;
+                    if row.index >= image.height || row.pixels.len() != width {
+                        continue;
+                    }
+                    let base = row.index as usize * width * 3;
+                    for (rgb, pixel) in image.rgb[base..base + width * 3]
+                        .chunks_exact_mut(3).zip(&row.pixels)
+                    {
+                        rgb.copy_from_slice(&[pixel.red(), pixel.green(), pixel.blue()]);
+                    }
+                    status.lines = status.lines.max(row.index + 1);
+                    status.progress = status.lines * 100 / status.height;
+                }
+                StreamEvent::Completed => {
+                    self.finished = true;
+                    if let Some(status) = self.status.as_mut() {
+                        status.complete = true;
+                        status.progress = 100;
+                        self.readout.push(alloc::format!(
+                            "SSTV {} {}x{} VIS {} 100%",
+                            status.mode_name, status.width, status.height, status.vis
+                        ));
+                    }
+                }
+                StreamEvent::Abandoned => self.finished = true,
             }
-        }
-        if events.completed {
-            if let Some(status) = self.status.as_mut() {
-                status.complete = true;
-                status.progress = 100;
-            }
-            if let Some(status) = self.status.as_ref() {
-                self.readout.push(alloc::format!(
-                    "SSTV {} {}x{} VIS {} 100%",
-                    status.mode_name,
-                    status.width,
-                    status.height,
-                    status.vis
-                ));
-            }
-            // The canvas is the finished picture; the next rows start a new one.
-            self.awaiting_new = true;
-        }
-        if events.abandoned {
-            self.awaiting_new = true;
         }
     }
 }
@@ -359,7 +335,8 @@ impl DigitalDemodulator for SstvPlugin {
         }
         self.samples_seen += samples.len() as u64;
 
-        let (rows, mut events) = self.decoder.push(&samples);
+        let events = self.decoder.push(&samples);
+        self.absorb_events(events);
         // A transmission ends quietly: the tones stop, and the last sequence is only cut when its end
         // is known. The band's own level against the loudest block seen tells the two apart; two
         // seconds of quiet end the picture.
@@ -374,25 +351,15 @@ impl DigitalDemodulator for SstvPlugin {
         }
         let quiet = self.loud_peak > 0.005 && raw * 20.0 < self.loud_peak;
         self.quiet_samples = if quiet { self.quiet_samples + samples.len() as u64 } else { 0 };
-        if !events.completed
-            && !self.finished
+        if !self.finished
             && self.decoder.mode().is_some()
             && self.quiet_samples >= (DECODE_RATE_HZ * 2.0) as u64
         {
             self.finished = true;
             self.quiet_samples = 0;
-            let (quiet_rows, quiet_events) = self.decoder.finish();
-            for row in &quiet_rows {
-                self.absorb_row(row);
-            }
-            events.completed = quiet_events.completed;
-            events.abandoned = quiet_events.abandoned;
+            let events = self.decoder.finish();
+            self.absorb_events(events);
         }
-
-        for row in &rows {
-            self.absorb_row(row);
-        }
-        self.absorb_events(events);
         self.readout.clone()
     }
 
@@ -457,7 +424,6 @@ impl DigitalDemodulator for SstvPlugin {
         self.decoder.reset();
         self.level = 0.0;
         self.samples_seen = 0;
-        self.awaiting_new = false;
         self.quiet_samples = 0;
         self.loud_peak = 0.0;
         self.finished = false;
@@ -478,6 +444,91 @@ pub(crate) mod tests {
     use vendor::modes::ROBOT_36;
     use vendor::encode::{Encoder, Synthesizer};
     use vendor::RgbPixel;
+
+    #[test]
+    fn batched_pd290_then_robot36_preserves_picture_boundaries() {
+        let pd = vendor::modes::PD_290;
+        let encoder = Encoder::new(pd,
+            core::iter::repeat(RgbPixel::new(220, 20, 20))
+                .take((pd.resolution().0 * pd.resolution().1) as usize)).expect("PD encoder");
+        let mut samples: Vec<i16> = Synthesizer::new(encoder, DECODE_RATE_HZ as u32).collect();
+        samples.extend(core::iter::repeat(0).take(DECODE_RATE_HZ as usize * 2));
+        let encoder = Encoder::new(ROBOT_36,
+            core::iter::repeat(RgbPixel::new(20, 220, 20))
+                .take(320 * 240)).expect("Robot encoder");
+        samples.extend(Synthesizer::new(encoder, DECODE_RATE_HZ as u32)
+            .take(DECODE_RATE_HZ as usize * 12));
+
+        let mut plugin = SstvPlugin::new(DECODE_RATE_HZ);
+        let events = plugin.decoder.push(&samples);
+        let boundary = events.iter().position(|event| matches!(event,
+            StreamEvent::Acquired { mode, attempt: 2 } if *mode == ROBOT_36))
+            .expect("second acquisition in the same push");
+        let mut pd_lines = 0;
+        for event in &events[..boundary] {
+            match event {
+                StreamEvent::Row(row) => {
+                    assert_eq!(row.index, pd_lines);
+                    assert_eq!(row.pixels.len(), 800);
+                    pd_lines += 1;
+                }
+                StreamEvent::Completed => assert_eq!(pd_lines, 616),
+                _ => {}
+            }
+        }
+        assert_eq!(pd_lines, 616, "all PD rows survive the batched boundary");
+        assert!(matches!(events[boundary - 1], StreamEvent::Completed));
+        plugin.absorb_events(events);
+        let status = plugin.status().expect("second picture");
+        assert_eq!(status.serial, 2);
+        assert_eq!(status.attempts, 2);
+        assert_eq!(status.mode_name, "Robot 36");
+        assert_eq!((status.width, status.height), (320, 240));
+        assert!(!status.complete, "PD completion must not complete Robot");
+        assert!(status.lines > 0 && status.lines < 240);
+        assert_eq!(status.progress, status.lines * 100 / 240);
+        let image = plugin.image().unwrap();
+        assert_eq!(image.rgb.len(), 320 * 240 * 3);
+        let green = image.rgb[..status.lines as usize * 320 * 3]
+            .chunks_exact(3).filter(|rgb| u16::from(rgb[1]) > u16::from(rgb[0]) + 50).count();
+        assert!(green > status.lines as usize * 320 * 9 / 10);
+        assert!(image.rgb[status.lines as usize * 320 * 3..].iter().all(|v| *v == 0));
+    }
+
+    #[test]
+    fn repinning_incomplete_picture_replaces_canvas_on_acquisition() {
+        for mode in [vendor::modes::MARTIN_1, vendor::modes::ROBOT_72] {
+            let mut plugin = SstvPlugin::new(DECODE_RATE_HZ);
+            let encoder = Encoder::new(ROBOT_36,
+                core::iter::repeat(RgbPixel::new(220, 20, 20)).take(320 * 240))
+                .expect("first encoder");
+            let samples: Vec<i16> = Synthesizer::new(encoder, DECODE_RATE_HZ as u32)
+                .take(DECODE_RATE_HZ as usize * 12).collect();
+            let events = plugin.decoder.push(&samples);
+            plugin.absorb_events(events);
+            let first = plugin.status().expect("partial first picture").clone();
+            assert!(!first.complete);
+            assert!(first.lines > 0);
+
+            plugin.set_mode_pin(mode_index(mode));
+            assert!(plugin.status() == Some(&first), "retain the display during search");
+            let (width, height) = mode.resolution();
+            let encoder = Encoder::new(mode,
+                core::iter::repeat(RgbPixel::new(20, 220, 20))
+                    .take((width * height) as usize)).expect("second encoder");
+            let samples: Vec<i16> = Synthesizer::new(encoder, DECODE_RATE_HZ as u32)
+                .take(DECODE_RATE_HZ as usize * 15).collect();
+            let events = plugin.decoder.push(&samples);
+            plugin.absorb_events(events);
+            let status = plugin.status().expect("new picture after re-pin");
+            assert_eq!(status.serial, first.serial + 1);
+            assert_eq!(status.mode_index, mode_index(mode).unwrap());
+            assert_eq!((status.width, status.height), (width, height));
+            assert!(status.lines > 0 && status.lines < height);
+            assert!(!status.complete);
+            assert_eq!(plugin.image().unwrap().rgb.len(), (width * height * 3) as usize);
+        }
+    }
 
     /// A picture to send: red brightens to the right, green downwards, blue diagonally. A wrong row
     /// order or channel swap shows up as error, not as a pass.

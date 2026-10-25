@@ -12,7 +12,7 @@ function context(): AudioContext {
     ctx = requestedRate === '44100' || requestedRate === '48000'
       ? new AudioContext({ sampleRate: Number(requestedRate) }) : new AudioContext();
     const resume = () => {
-      if (Array.from(chains.values()).some((chain) => chain.enabled)) void ctx?.resume();
+      for (const playback of chains.values()) playback.resume();
     };
     document.addEventListener('click', resume);
     document.addEventListener('keydown', resume);
@@ -30,6 +30,8 @@ class AudioChain {
   private worker: Worker | null = null;
   private node: AudioWorkletNode | ScriptProcessorNode | null = null;
   private initialization: Promise<void> | null = null;
+  private receiverFailed = false;
+  private generation = 0;
   private watchdog: number | null = null;
   private frames = 0;
   private buffered = 0;
@@ -89,11 +91,38 @@ class AudioChain {
     this.playing = false;
   }
   private fail(message: string): void {
+    if (message === 'Backend audio receiver failed') {
+      this.setReceiverError(message);
+      document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'audio', message } }));
+      return;
+    }
     this.error = message;
-    this.clearRing();
-    this.worker?.postMessage({ type: 'enabled', value: false });
+    this.dispose();
     console.error(`SDR audio channel ${this.channel}: ${message}`);
     this.debug();
+  }
+  private dispose(): void {
+    this.generation++;
+    this.clearWatchdog();
+    this.worker?.terminate();
+    this.worker = null;
+    if (this.node) {
+      if ('port' in this.node) { this.node.onprocessorerror = null; this.node.port.close(); }
+      else this.node.onaudioprocess = null;
+      this.node.disconnect();
+    }
+    this.node = null;
+    if (this.channel === 1) { spectrumProbe?.disconnect(); spectrumProbe = null; }
+    this.initialization = null;
+    this.rms = 0;
+    this.clearRing();
+  }
+  resume(): void {
+    if (!this.enabled || this.receiverFailed || this.error || !ctx) return;
+    const generation = this.generation;
+    void ctx.resume().catch((error) => {
+      if (generation === this.generation && this.enabled) this.fail(error instanceof Error ? error.message : String(error));
+    });
   }
   private legacy(context: AudioContext): void {
     this.ring = new Float32Array(Math.ceil(context.sampleRate * 3) * 2);
@@ -171,7 +200,22 @@ class AudioChain {
     }
     this.debug();
   }
+  setReceiverError(message: string | null): void {
+    if (message === null) {
+      if (!this.receiverFailed) return;
+      this.receiverFailed = false;
+      this.error = '';
+      this.setEnabled(this.enabled);
+      return;
+    }
+    this.receiverFailed = true;
+    this.error = message;
+    this.dispose();
+    this.muted = false;
+    this.debug();
+  }
   private async initialize(): Promise<void> {
+    const generation = this.generation;
     const audio = context();
     let playbackRate = audio.sampleRate;
     let port: MessagePort | null = null;
@@ -180,6 +224,7 @@ class AudioChain {
       try {
         if (!modulePromise) modulePromise = audio.audioWorklet.addModule(WORKLET_URL);
         await modulePromise;
+        if (generation !== this.generation) return;
         candidate = new AudioWorkletNode(audio, 'sdr-audio-processor', {
           numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
         });
@@ -198,12 +243,14 @@ class AudioChain {
           };
           output.connect(audio.destination);
         });
+        if (generation !== this.generation) { candidate.disconnect(); candidate.port.close(); return; }
         this.node = candidate;
         port = candidate.port;
-        candidate.onprocessorerror = () => this.fail('AudioWorklet processor stopped');
+        candidate.onprocessorerror = () => { if (generation === this.generation) this.fail('AudioWorklet processor stopped'); };
       } catch (error) {
         candidate?.disconnect();
         candidate?.port.close();
+        if (generation !== this.generation) return;
         console.warn(`SDR audio channel ${this.channel}: using compatibility output`, error);
         this.legacy(audio);
       }
@@ -217,8 +264,8 @@ class AudioChain {
     this.playbackRate = playbackRate;
     const worker = new Worker(new URL('./sdrAudioWorker.ts', import.meta.url), { type: 'module' });
     this.worker = worker;
-    worker.onmessage = (event: MessageEvent) => this.message(event.data || {});
-    worker.onerror = (event: ErrorEvent) => this.fail(event.message || 'Audio worker failed');
+    worker.onmessage = (event: MessageEvent) => { if (this.worker === worker) this.message(event.data || {}); };
+    worker.onerror = (event: ErrorEvent) => { if (this.worker === worker) this.fail(event.message || 'Audio worker failed'); };
     worker.postMessage({ type: 'init', url: audioUrl(this.channel), targetRate: playbackRate, mode: this.mode, flowControl: Boolean(port), port }, port ? [port] : []);
     worker.postMessage({ type: 'enabled', value: this.enabled });
     worker.postMessage({ type: 'mute', value: this.muted });
@@ -227,21 +274,29 @@ class AudioChain {
     const next = mode || 'default';
     if (next === this.mode) return;
     this.mode = next;
+    if (this.error && !this.receiverFailed && this.enabled) { this.setEnabled(false); this.setEnabled(true); return; }
     this.worker?.postMessage({ type: 'mode', mode: next });
   }
   setEnabled(on: boolean): void {
+    if (on && this.enabled && this.error && !this.receiverFailed) return;
     this.clearWatchdog();
     this.enabled = on;
+    if (this.receiverFailed) { this.debug(); return; }
     this.muted = false;
     this.error = '';
     this.clearRing();
+    if (!on) { this.dispose(); this.debug(); return; }
     if (on) {
-      const audio = context();
-      if (!this.initialization) this.initialization = this.initialize().catch((error) => {
-        this.initialization = null;
-        this.fail(error instanceof Error ? error.message : String(error));
-      });
-      void audio.resume();
+      try { context(); } catch (error) { this.fail(error instanceof Error ? error.message : String(error)); return; }
+      if (!this.initialization) {
+        const generation = this.generation;
+        this.initialization = this.initialize().catch((error) => {
+          if (generation !== this.generation) return;
+          this.initialization = null;
+          this.fail(error instanceof Error ? error.message : String(error));
+        });
+      }
+      this.resume();
     }
     this.worker?.postMessage({ type: 'enabled', value: on });
     this.worker?.postMessage({ type: 'mute', value: false });
@@ -252,7 +307,7 @@ class AudioChain {
     this.watchdog = null;
   }
   transition(): void {
-    if (!this.enabled) return;
+    if (!this.enabled || this.receiverFailed) return;
     this.clearWatchdog();
     this.muted = true;
     this.clearRing();
@@ -276,6 +331,7 @@ export function setSdrAudioMode(channel: number, mode: string): void { chain(cha
 export function setSdrChannelAudioEnabled(channel: number, on: boolean): void { chain(channel).setEnabled(on); }
 export function prepareSdrChannelAudioTransition(channel: number): void { chain(channel).transition(); }
 export function getSdrChannelAudioError(channel: number): string { return chain(channel).error; }
+export function setSdrReceiverAudioError(channel: number, message: string | null): void { chain(channel).setReceiverError(message); }
 export function setSdrAudioEnabled(on: boolean): void { setSdrChannelAudioEnabled(1, on); }
 export function prepareSdrAudioTransition(): void { prepareSdrChannelAudioTransition(1); }
 export function audioSampleRate(): number {

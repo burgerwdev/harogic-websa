@@ -193,7 +193,8 @@ function receive(buffer: ArrayBuffer): void {
     throw new Error('AUD2 sequence gap or invalid frame count');
   }
   const causal = Boolean(next.flags & 0x20000);
-  const sourceValid = causal || position.num * source.den === source.num * position.den;
+  // NR reconfiguration can discard its pending tail without resetting the decoder.
+  const sourceValid = causal || position.num * source.den >= source.num * position.den;
   if (index !== audioIndex || !sourceValid) {
     throw new Error('AUD2 source or audio index discontinuity');
   }

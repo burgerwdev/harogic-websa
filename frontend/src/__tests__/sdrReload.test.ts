@@ -3,6 +3,7 @@ import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 
 vi.mock('../audio/sdrAudio', () => ({
 	prepareSdrAudioTransition: vi.fn(), setSdrAudioEnabled: vi.fn(), setSdrAudioMode: vi.fn(),
+	setSdrReceiverAudioError: vi.fn(),
 }));
 
 class DisplaySocket {
@@ -283,17 +284,17 @@ describe('SDR entry and reload', () => {
     try {
       receive(status('std'));
       fit.postRefNotice('Transient reference feedback', 100);
-      const failure = { cmd: 'ERROR', code: 'receiver_failed', msg: 'receiver input queue failure: full' };
+      const failure = { cmd: 'ERROR', code: 'capture_failed', msg: 'capture failure' };
       receive(failure);
       const repaints = renderRequestCount();
       for (let i = 0; i < 100; i++) receive(failure);
       expect(renderRequestCount()).toBe(repaints);
-      expect(S.canvas.dataset.error).toBe('Device: receiver input queue failure: full');
+      expect(S.canvas.dataset.error).toBe('Device: capture failure');
       expect(document.querySelectorAll('#status-error')).toHaveLength(1);
       expect(document.getElementById('status-error')?.textContent).toBe(S.canvas.dataset.error);
       vi.advanceTimersByTime(101);
       expect(S.noticeText).toBeNull();
-      expect(S.canvas.dataset.error).toBe('Device: receiver input queue failure: full');
+      expect(S.canvas.dataset.error).toBe('Device: capture failure');
       receive(status('rta'));
       expect(currentGraphMode()).toBe('rta');
       controls.setGraphMode('std');
@@ -315,6 +316,129 @@ describe('SDR entry and reload', () => {
       setRenderer(null);
     }
   });
+
+	it.each(['RECEIVER_ERROR', 'ERROR'])('keeps %s scoped while spectrum and mode requests continue', async cmd => {
+		const { controls } = await load();
+		// These observers must share load()'s fresh module graph after resetModules().
+		const S = await import('../core/store');
+		const { pendingGraphMode } = await import('../ui/graphMode');
+		S.initStore();
+		document.body.insertAdjacentHTML('beforeend', '<span id="sdr-receiver-error" hidden></span>');
+		receive(status('sdr'));
+		controls.setGraphMode('rta');
+		const error = 'receiver input queue failure: full';
+		receive({ cmd, code: 'receiver_failed', error, msg: error, failed: true, scope: 'all_receivers' });
+		expect(S.statusError).toBeNull();
+		expect(pendingGraphMode()).toBe('rta');
+		expect(document.getElementById('sdr-receiver-error')!.hidden).toBe(false);
+		expect(document.getElementById('sdr-receiver-error')!.title).toContain(error);
+		const points = 32;
+		const data = new ArrayBuffer(24 + points * 12 + 2 + 8);
+		new Uint8Array(data, 0, 4).set([82, 84, 65, 70]);
+		const header = new DataView(data);
+		header.setUint32(4, 1, true);
+		header.setUint32(8, points, true);
+		header.setUint16(12, 1, true);
+		header.setFloat64(16, 998437500, true);
+		const freq = new Float64Array(data, 24, points);
+		for (let i = 0; i < points; i++) freq[i] = 998437500 + i * 3.125e6 / (points - 1);
+		new Float32Array(data, 24 + points * 8, points).fill(-90);
+		header.setFloat64(data.byteLength - 8, 1001562500, true);
+		socket.onmessage!({ data } as MessageEvent);
+		expect(S.rtaData?.ver).toBe(1);
+		header.setUint32(4, 2, true);
+		new Float32Array(data, 24 + points * 8, points).fill(-80);
+		socket.onmessage!({ data } as MessageEvent);
+		expect(S.rtaData?.ver).toBe(2);
+		expect(S.rtaData?.spec[16]).toBeCloseTo(-80);
+		expect(S.statusError).toBeNull();
+		expect(pendingGraphMode()).toBe('rta');
+	});
+
+	it('restarts a failed decoder only after explicit healthy status with fresh receiver identities', async () => {
+		class Receiver {
+			static instances: Receiver[] = [];
+			onmessage: ((event: { data: { type: string } }) => void) | null = null;
+			onerror: ((event: { message: string }) => void) | null = null;
+			postMessage = vi.fn();
+			terminate = vi.fn();
+			constructor() { Receiver.instances.push(this); }
+		}
+		vi.stubGlobal('Worker', Receiver);
+		await load();
+		// These observers must share load()'s fresh module graph after resetModules().
+		const S = await import('../core/store');
+		const { sdrIqStats } = await import('../sdr/iqStream');
+		document.body.insertAdjacentHTML('beforeend', '<span id="sdr-receiver-error" hidden></span><span id="cur-sdr-level"></span>');
+		const receiverStatus = (id: number, error: string | null | undefined) => {
+			const value = status('sdr');
+			return { ...value, actual: { channel_registry: [{ channel: 1, channel_id: id, epoch: 9, state: 'active' }] },
+				sdr: { ...value.sdr, receiver_error: error, level_dbfs: -25 } };
+		};
+		receive(receiverStatus(17, null));
+		const worker = Receiver.instances.at(-1)!;
+		const count = Receiver.instances.length;
+		receive({ cmd: 'RECEIVER_ERROR', error: 'queue full', failed: true, scope: 'all_receivers' });
+		expect(worker.terminate).toHaveBeenCalledOnce();
+		receive(receiverStatus(17, 'queue full'));
+		expect(document.getElementById('cur-sdr-level')!.textContent).toBe('');
+		receive(receiverStatus(17, null));
+		receive(receiverStatus(18, undefined));
+		const inactive = receiverStatus(18, null);
+		inactive.actual.channel_registry[0].state = 'retiring';
+		receive(inactive);
+		expect(Receiver.instances).toHaveLength(count);
+		expect(sdrIqStats().receiverFailed).toBe(true);
+		S.setStatusError('unrelated capture failure');
+		receive(receiverStatus(18, null));
+		expect(Receiver.instances).toHaveLength(count + 1);
+		expect(sdrIqStats().receiverFailed).toBe(false);
+		expect(document.getElementById('sdr-receiver-error')!.hidden).toBe(true);
+		expect(S.statusError).toBe('unrelated capture failure');
+		worker.onmessage!({ data: { type: 'connected' } });
+		expect(sdrIqStats().pipelineReady).toBe(false);
+	});
+	it('keeps a crashed decode worker stopped until fresh healthy receiver identity arrives', async () => {
+		class Receiver {
+			static instances: Receiver[] = [];
+			onmessage: ((event: { data: { type: string } }) => void) | null = null;
+			onerror: ((event: { message: string }) => void) | null = null;
+			postMessage = vi.fn();
+			terminate = vi.fn();
+			constructor() { Receiver.instances.push(this); }
+		}
+		vi.stubGlobal('Worker', Receiver);
+		await load();
+		const healthy = (id: number) => ({ ...status('sdr'), actual: { channel_registry: [{ channel: 1, channel_id: id, epoch: 9, state: 'active' }] },
+			sdr: { ...status('sdr').sdr, receiver_error: null } });
+		receive(healthy(17));
+		const old = Receiver.instances.at(-1)!;
+		const count = Receiver.instances.length;
+		old.onerror!({ message: 'Worker stopped' });
+		receive(healthy(17));
+		receive(healthy(17));
+		expect(Receiver.instances).toHaveLength(count);
+		expect(old.terminate).toHaveBeenCalledOnce();
+		receive(healthy(18));
+		expect(Receiver.instances).toHaveLength(count + 1);
+	});
+
+
+	it.each(['ERROR', 'RECEIVER_ERROR'])('settles %s recovery failure without a delayed spectrum error or automatic retry', async cmd => {
+		const { controls } = await load();
+		// This observer must share load()'s fresh module graph after resetModules().
+		const S = await import('../core/store');
+		receive(status('sdr'));
+		controls.selectSdrDemod('am');
+		const request = socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL' && command.request_id).at(-1)!;
+		receive(cmd === 'ERROR' ? { cmd, code: 'receiver_retiring', msg: 'receiver still retiring',
+			response_to: 'SET_SDR_CHANNEL', request_id: request.request_id }
+			: { cmd, failed: true, scope: 'all_receivers', error: 'receiver queue full' });
+		const sent = socket.sent.length;
+		vi.advanceTimersByTime(4000);
+		expect(S.statusError).toBeNull();
+		expect(socket.sent).toHaveLength(sent);
+	});
 
 	it.each(['device STATUS', 'control websocket'])('clears the actual AM display on %s loss and ignores the retired worker until connected STATUS', async (loss) => {
 		class Receiver {

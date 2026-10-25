@@ -56,10 +56,20 @@ describe('Preset clears the persisted SDR preferences', () => {
 		expect(sdrPersisted()).toEqual([]);
 	});
 
-	it('the new step memory is covered by the reset', () => {
-		localStorage.setItem('web-sa-sdr-step-bw', '{"256":2500}');
+	it('the per-mode step memories are covered by the reset', () => {
+		localStorage.setItem('web-sa-sdr-step-normal', '{"am":2500}');
+		localStorage.setItem('web-sa-sdr-step-coarse', '{"am":20000}');
+		localStorage.setItem('web-sa-sdr-step-fine', '{"am":50}');
+		localStorage.setItem('web-sa-sdr-locate', 'signal');
+		localStorage.setItem('web-sa-sdr-channel-step', '12500');
+		localStorage.setItem('web-sa-sdr-channel-anchor', '1000');
+		localStorage.setItem('web-sa-sdr-step-bw', '{"256":2500}'); // the retired key
 		resetSdrState();
-		expect(localStorage.getItem('web-sa-sdr-step-bw')).toBeNull();
+		for (const key of ['web-sa-sdr-step-normal', 'web-sa-sdr-step-coarse', 'web-sa-sdr-step-fine',
+			'web-sa-sdr-locate', 'web-sa-sdr-channel-step', 'web-sa-sdr-channel-anchor',
+			'web-sa-sdr-step-bw']) {
+			expect(localStorage.getItem(key)).toBeNull();
+		}
 	});
 
 	it('clears confirmed per-mode Filter preferences and their in-memory values', () => {

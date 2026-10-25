@@ -55,7 +55,7 @@ struct DfnStream {
 impl DfnStream {
     fn new(atten_db: f32) -> Result<Self, String> {
         let mut runtime = DFN_TEMPLATE.with(|template| {
-            template.get().expect("DFN is prepared when NoiseReduction is constructed").clone()
+            template.get_or_init(build_dfn).clone()
         })?;
         runtime.set_atten_lim(atten_db);
         Ok(Self {
@@ -102,7 +102,6 @@ pub struct NoiseReduction {
 
 impl NoiseReduction {
     pub fn new(rate: u32) -> Self {
-        prepare_dfn();
         Self {
             rate, algorithm: NrAlgorithm::Off, strength: 1.0, atten_db: 6.0,
             wiener: Wiener::new(), dfn: None, failure: None,
@@ -169,25 +168,15 @@ impl NoiseReduction {
     }
 
 
-    pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) {
+    pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<(), String> {
         if self.algorithm == NrAlgorithm::Off {
             output.clear();
             output.extend_from_slice(input);
-            return;
+            return Ok(());
         }
         if let Some(dfn) = &mut self.dfn {
-            match dfn.process(input, output) {
-                Ok(()) => return,
-                Err(error) => {
-                    self.failure = Some(error);
-                    self.dfn = None;
-                    self.wiener.reset();
-                    self.blanker.reset();
-                    self.blanker_output.clear();
-                    self.wiener_filled = 0;
-                    self.wiener_warmed = false;
-                }
-            }
+            // A failed hop may already have consumed PCM. Do not replay it through another reducer.
+            return dfn.process(input, output);
         }
         output.clear();
         output.reserve(input.len() + 128);
@@ -208,9 +197,10 @@ impl NoiseReduction {
             }
         }
         // Retain the original listener policy order: Wiener, then impulse repair.
-        // A ready DFN and Off return above; runtime DFN failure reaches this same fallback.
+        // DFN initialization failure uses this Wiener path.
         self.blanker.process_into(output, false, &mut self.blanker_output);
         std::mem::swap(output, &mut self.blanker_output);
+        Ok(())
     }
 }
 
@@ -225,17 +215,17 @@ mod tests {
         let input: Vec<f32> = (0..HOP * 8)
             .map(|n| (n as f32 * 0.071).sin() * 0.1).collect();
         let mut output = Vec::new();
-        used.process(&input, &mut output);
+        used.process(&input, &mut output).unwrap();
         assert_eq!(used.status().effective, NrAlgorithm::Dfn, "{:?}", used.status());
 
         let mut fresh = NoiseReduction::new(48000);
         fresh.configure(48000, NrAlgorithm::Dfn, 1.0, 12.0);
         assert_eq!(fresh.status().effective, NrAlgorithm::Dfn, "{:?}", fresh.status());
         let mut expected = Vec::new();
-        fresh.process(&input, &mut expected);
+        fresh.process(&input, &mut expected).unwrap();
         assert_eq!(fresh.status().effective, NrAlgorithm::Dfn, "{:?}", fresh.status());
         used.reset();
-        used.process(&input, &mut output);
+        used.process(&input, &mut output).unwrap();
         assert_eq!(used.status().effective, NrAlgorithm::Dfn, "{:?}", used.status());
         assert_eq!(output, expected, "reset must restore pristine recurrent and overlap state");
 

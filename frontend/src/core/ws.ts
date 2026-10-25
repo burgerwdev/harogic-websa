@@ -19,6 +19,8 @@ import {
   syncSdrPanel,
   currentGraphMode,
 } from '../ui/controls';
+import { rejectSdrTuneRequest } from '../ui/sdrTuneRequest';
+import { observeCarrierSpectrum, resetCarrierEvidence } from '../dsp/carrierSnap';
 import { invalidateAllTraces } from '../dsp/traces';
 import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
@@ -50,7 +52,7 @@ import {
 import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { resetViewport, setCapture } from '../ui/spectrumViewport';
-import { confirmSdrChannelRegistry } from '../sdr/iqStream';
+import { confirmSdrChannelRegistry, confirmSdrReceiverError, failSdrReceiver, sdrIqStats } from '../sdr/iqStream';
 import { rejectAmpRequest, resetAmpIntents, syncAmpStatus } from '../ui/ampState';
 import { rejectManualRef, syncLevelAvailability, syncRefClockStatus, rejectRefClockRequest, resetRefClockIntent } from '../ui/panels/refAmp';
 import { confirmFrequencyStatus, rejectFrequencyCommit, resetFrequencyEditors } from '../ui/panels/frequency';
@@ -215,6 +217,17 @@ export function connectWS() {
         if (msg.cmd === 'STATUS') { confirmMeasurementSession(msg); updateStatus(msg); }
         else if (msg.cmd === 'HARM') onHarmResult(msg.list, msg.session_id);
         else if (msg.cmd === 'PNM') onPnmResult(msg);
+        else if (msg.cmd === 'RECEIVER_ERROR' || (msg.cmd === 'ERROR'
+            && (msg.code === 'receiver_failed' || msg.code === 'receiver_retiring'))) {
+          failSdrReceiver(String(msg.error || msg.msg || t('receiver_failed')));
+          if (msg.cmd === 'ERROR') {
+            rejectSdrAgcRequest(msg.response_to, msg.request_id);
+            rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
+            rejectSdrFilterRequest(msg.response_to, msg.request_id, true);
+            rejectSdrTuneRequest(msg.response_to, msg.request_id);
+            if (msg.response_to === 'SET_MODE') releaseGraphModePending();
+          } else rejectSdrFilterRequest(undefined, undefined, true);
+        }
         else if (msg.cmd === 'ERROR') {
           releaseGraphModePending();
           if (msg.response_to === 'SET_TRIGGER') rejectTriggerEdit();
@@ -229,6 +242,7 @@ export function connectWS() {
           rejectSdrAgcRequest(msg.response_to, msg.request_id);
           rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
           rejectSdrFilterRequest(msg.response_to, msg.request_id);
+          rejectSdrTuneRequest(msg.response_to, msg.request_id);
           S.setStatusError(localizedError(msg));
         }
       } catch (error) {
@@ -318,6 +332,10 @@ export function connectWS() {
         // density, per-trace displays, waterfall rows) lives on the OLD frequency axis and
         // must be reset, otherwise stale dots/traces linger at wrong frequencies.
         const axisChanged = geometryChanged;
+        if (currentGraphMode() === 'sdr') {
+          if (axisChanged || !plausible) resetCarrierEvidence();
+          if (plausible) observeCarrierSpectrum(capFreq, capSpec, performance.now(), `${ver}:${startHz.toFixed(1)}:${stopHz.toFixed(1)}`);
+        }
         if (axisChanged || captureFrame === 'first') {
           S.setRtaDensity2d(null);
           for (let ti = 0; ti < S.rtaDisplays.length; ti++) S.rtaDisplays[ti] = null;
@@ -438,6 +456,12 @@ export function updateStatus(s: any) {
   document.body.dataset.deviceMode = String(s.mode);
   syncPresetStatus(s.response_to, s.request_id);
   S.setDeviceConnected(s.connected === true);
+  const previousReceiverError = sdrIqStats().lastError;
+  confirmSdrChannelRegistry(Array.isArray(s.actual.channel_registry) ? s.actual.channel_registry : null);
+  const recoveredReceiver = confirmSdrReceiverError(s.connected === true ? s.sdr?.receiver_error : undefined);
+  if (typeof s.sdr?.receiver_error === 'string') rejectSdrFilterRequest(undefined, undefined, true);
+  if (recoveredReceiver && previousReceiverError
+      && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);
   syncGraphModeStatus(s.mode);
   if (s.caps) {
     S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
@@ -625,7 +649,10 @@ export function updateStatus(s: any) {
   }
   updateInfoBar();
   syncSdrPanel(s);   // last: in SDR it owns the shared Ref widgets
-  confirmSdrChannelRegistry(Array.isArray(s.actual.channel_registry) ? s.actual.channel_registry : null);
+  if (sdrIqStats().receiverFailed) {
+    const level = document.getElementById('cur-sdr-level');
+    if (level) { level.textContent = ''; level.removeAttribute('title'); }
+  }
 }
 
 function setInput(id: string, v: string, force = false) {

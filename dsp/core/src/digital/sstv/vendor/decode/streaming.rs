@@ -56,16 +56,13 @@ pub struct StreamRow {
     pub pixels: Vec<RgbPixel>,
 }
 
-/// What one [`push`](StreamingDecoder::push) produced, beside the rows themselves.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct StreamEvents {
-    /// A header or sync lock was acquired: a transmission found and its mode known.
-    pub acquired: bool,
-    /// The picture's last scanline passed: the transmission is over.
-    pub completed: bool,
-    /// The transmission's tones ran out before the picture's last row: the signal ended early. The
-    /// next picture starts a new one.
-    pub abandoned: bool,
+/// Decoder output in sample order. Acquisition precedes all rows of that transmission, and its
+/// completion or abandonment precedes the next acquisition, even within a single push.
+pub enum StreamEvent {
+    Acquired { mode: Mode, attempt: u32 },
+    Row(StreamRow),
+    Completed,
+    Abandoned,
 }
 
 /// The tones of the picture as they are cut, pulled on demand.
@@ -114,7 +111,7 @@ impl RowBuilder {
     }
 
     /// Feed one tone; hands out the rows its pass completed.
-    fn tone(&mut self, tone: Tone, rows: &mut Vec<StreamRow>) {
+    fn tone(&mut self, tone: Tone, events: &mut Vec<StreamEvent>) {
         match self.mode.sequence[self.step] {
             Step::Control(_) => self.step += 1,
             Step::Scan(channel, _) => {
@@ -132,10 +129,10 @@ impl RowBuilder {
             for row in super::rows::assemble_rows(self.mode.color, &scans) {
                 // One index per ROW (a pass emits 1 or 2): a shared index let the second row of the
                 // pass overwrite the first, and every other scanline decoded to black.
-                rows.push(StreamRow {
+                events.push(StreamEvent::Row(StreamRow {
                     index: self.mode.resolution().1 - self.rows_left as u32,
                     pixels: row,
-                });
+                }));
                 self.rows_left -= 1;
             }
         }
@@ -238,32 +235,26 @@ impl StreamingDecoder {
         self.complete = false;
     }
 
-    /// Feed samples; returns the scanlines completed by them, with the phase events.
-    pub fn push(&mut self, samples: &[i16]) -> (Vec<StreamRow>, StreamEvents) {
+    /// Feed samples; returns scanlines and transmission boundaries in sample order.
+    pub fn push(&mut self, samples: &[i16]) -> Vec<StreamEvent> {
         self.feed.push(samples);
         self.drain()
     }
 
-    /// End of the transmission: cut the sequences whose scans have begun, with the missing tail
-    /// standing in from the newest estimate, and hand out what that completes. A picture short of its
-    /// last row reports `abandoned`; the next transmission starts a new one.
-    pub fn finish(&mut self) -> (Vec<StreamRow>, StreamEvents) {
-        let mut rows = Vec::new();
-        let mut events = StreamEvents::default();
-        if let Phase::Walk(walk, tones) = &mut self.phase {
+    /// Finish scans that have begun, using the latest estimate for missing samples.
+    /// Emit `Abandoned` if the last row is incomplete. The next transmission starts a new picture.
+    pub fn finish(&mut self) -> Vec<StreamEvent> {
+        if let Phase::Walk(_, tones) = &mut self.phase {
             while !tones.0.is_done() {
                 tones.0.read();
             }
-            let drained = self.drain();
-            rows = drained.0;
-            events = drained.1;
+            return self.drain();
         }
-        (rows, events)
+        Vec::new()
     }
 
-    fn drain(&mut self) -> (Vec<StreamRow>, StreamEvents) {
-        let mut rows = Vec::new();
-        let mut events = StreamEvents::default();
+    fn drain(&mut self) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
         loop {
             match &mut self.phase {
                 Phase::Search(search) => {
@@ -278,7 +269,7 @@ impl StreamingDecoder {
                             self.lines = 0;
                             self.complete = false;
                             self.acquisitions += 1;
-                            events.acquired = true;
+                            events.push(StreamEvent::Acquired { mode, attempt: self.acquisitions });
                             let walk = RowBuilder::new(mode);
                             self.phase = Phase::Walk(Box::new(walk), Box::new(Tones(tones)));
                         }
@@ -288,23 +279,23 @@ impl StreamingDecoder {
                 Phase::Walk(walk, tones) => {
                     let height = self.mode.map_or(0, |mode| mode.resolution().1);
                     if self.lines >= height {
-                        events.completed = true;
+                        events.push(StreamEvent::Completed);
                         self.complete = true;
                         self.phase = Self::search(&self.feed, self.rate, self.pinned);
                         continue;
                     }
                     match tones.next() {
                         Some(tone) => {
-                            let before = rows.len();
-                            walk.tone(tone, &mut rows);
-                            self.lines += (rows.len() - before) as u32;
+                            let before = events.len();
+                            walk.tone(tone, &mut events);
+                            self.lines += (events.len() - before) as u32;
                         }
                         None => {
                             // Queue empty. A set `done` means the transmission's tones ran out before
                             // the picture's last row: the signal was lost, and the next picture starts
                             // a new one. Otherwise more samples are needed.
                             if tones.is_done() {
-                                events.abandoned = true;
+                                events.push(StreamEvent::Abandoned);
                                 self.phase = Self::search(&self.feed, self.rate, self.pinned);
                                 continue;
                             }
@@ -314,7 +305,7 @@ impl StreamingDecoder {
                 }
             }
         }
-        (rows, events)
+        events
     }
 }
 
@@ -353,25 +344,28 @@ mod tests {
         let mut first_row_at = usize::MAX;
         let mut contiguous = true;
         for (block, chunk) in iq.chunks(4096).enumerate() {
-            let (rows, _) = decoder.push(chunk);
-            if !rows.is_empty() && first_row_at == usize::MAX {
-                first_row_at = block;
+            for event in decoder.push(chunk) {
+                if let StreamEvent::Row(row) = event {
+                    if first_row_at == usize::MAX {
+                        first_row_at = block;
+                    }
+                    if row.index as usize != total {
+                        contiguous = false;
+                    }
+                    total += 1;
+                }
             }
-            for row in &rows {
+        }
+        let tail = decoder.finish();
+        assert!(tail.iter().any(|event| matches!(event, StreamEvent::Completed)),
+            "the transmission must complete at end of stream");
+        for event in tail {
+            if let StreamEvent::Row(row) = event {
                 if row.index as usize != total {
                     contiguous = false;
                 }
                 total += 1;
             }
-        }
-        // End of the transmission: the caller declares it, and the tail rows are cut.
-        let (tail, events) = decoder.finish();
-        assert!(events.completed, "the transmission must complete at end of stream");
-        for row in &tail {
-            if row.index as usize != total {
-                contiguous = false;
-            }
-            total += 1;
         }
         let height = ROBOT_36.resolution().1;
         assert_eq!(decoder.mode(), Some(ROBOT_36));
