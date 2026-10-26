@@ -50,6 +50,8 @@ The default instance is `websad` at `127.0.0.1:8080`. Use `WEBSA_INSTANCE` or `-
 to select it; status and stop read saved endpoint/ownership metadata. Keep one process as the device owner.
 See [FAQ notes](FAQ_NOTES.md) and [the tools guide](../../tools/README.md) for service and hardware configuration.
 
+The Pluto bench dispatcher supports `radiofax` and `wefax` through the same streaming transmitter. Use `python3 tools/pluto_tx.py radiofax --dry-run` without hardware, or add `--image chart.png --ioc 576 --lpm 120` for a page. Image height keeps its aspect ratio unless `--lines` is set. `--modulation am`, `--polarity inverted`, framing durations, offset, repeat and pause follow the mode's help. Default FM uses APT, 30 s phasing, 1500–2300 Hz image tones and APT stop. 180 LPM needs manual receiver settings. Full pages stream at the radio's accepted rate in fixed chunks; dry-run builds only a short head. See the [tools guide](../../tools/README.md) for examples.
+
 **Memory-limited hosts: builds must be serial and isolated.** Run Rust builds, Rust tests and
 browser suites sequentially; do not use parallel Make. Cargo `-j 1` limits only one invocation,
 not other builds or browsers. Keep `--test-threads=1` for Rust test runs. Isolate builds from
