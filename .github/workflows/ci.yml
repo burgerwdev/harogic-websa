@@ -6,7 +6,7 @@ name: CI
 
 on:
   push:
-    branches: [master, websa-pfb-ddc, 'feature/**', 'refactor/**', 'analysis/**']
+    branches: [master, websa-pfb-ddc, 'feat/**', 'feature/**', 'refactor/**', 'analysis/**']
   pull_request:
   workflow_dispatch:
 
@@ -38,11 +38,10 @@ jobs:
         with:
           workspaces: dsp/core
       - name: Rust DSP kernel tests
-        run: cargo test -j 1 --manifest-path dsp/core/Cargo.toml -- --test-threads=1
+        run: cargo test --release -j 1 --manifest-path dsp/core/Cargo.toml -- --test-threads=1
       - name: Rust service contract tests
         run: |
-          cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib -- --test-threads=1
-          cargo test --release -j 1 --manifest-path backend/Cargo.toml --bin websad -- --test-threads=1
+          cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib --bins --tests -- --test-threads=1
 
   python-tools:
     runs-on: ubuntu-latest

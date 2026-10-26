@@ -72,7 +72,7 @@ test:     ## Test Rust service contracts, Python tools and frontend
 	./test.sh
 
 wasm-test: ## Run native Rust DSP kernel tests
-	cargo test -j 1 --manifest-path dsp/core/Cargo.toml -- --test-threads=1
+	cargo test --release -j 1 --manifest-path dsp/core/Cargo.toml -- --test-threads=1
 
 ci: wasm-test  ## Run hardware-free local checks; browser checks use make e2e-fake
 	./test.sh

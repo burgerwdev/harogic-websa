@@ -135,8 +135,8 @@ regenerate only reproducible fixtures with their existing generators.
 
 | Layer | Entry point and evidence |
 |---|---|
-| Native service and tools | `./test.sh`: Rust service contracts, Python tool tests, Ruff and frontend Vitest |
-| DSP kernels | `make wasm-test`: native Rust kernel tests against reference fixtures |
+| Native service and tools | `./test.sh`: release-mode backend library, binaries and integration tests, Python tool tests, Ruff and frontend Vitest |
+| DSP kernels | `make wasm-test`: release-mode native Rust kernel tests against reference fixtures, including optimized FT8 paths |
 | Local aggregate | `make ci`: kernel and service/tool/frontend tests, version and fixture checks, DOM/registration/doc/architecture guards, frontend build |
 | Browser fixtures | `make e2e-fake`: native fixture service, UI smoke, state regression and viewport geometry gate |
 | Hardware | `make hw-test`: tinySA-driven smoke, command sweep and UI state regression |

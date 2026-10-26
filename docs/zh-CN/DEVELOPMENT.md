@@ -121,8 +121,8 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 
 | 层次 | 入口与证据 |
 |---|---|
-| 原生服务与工具 | `./test.sh`：Rust 服务契约、Python 工具测试、Ruff 和前端 Vitest |
-| DSP 内核 | `make wasm-test`：对照参考 fixture 的原生 Rust 内核测试 |
+| 原生服务与工具 | `./test.sh`：release 模式的后端库、全部二进制及集成测试，Python 工具测试、Ruff 和前端 Vitest |
+| DSP 内核 | `make wasm-test`：release 模式的原生 Rust 内核测试，包含需优化构建的 FT8 路径 |
 | 本地聚合 | `make ci`：内核、服务、工具、前端测试，版本与 fixture 检查，DOM、注册、文档、架构守卫及前端构建 |
 | 浏览器 fixture | `make e2e-fake`：原生 fixture 服务、UI smoke、状态回归和视口几何门禁 |
 | 硬件 | `make hw-test`：tinySA 驱动的 smoke、命令遍历和 UI 状态回归 |
