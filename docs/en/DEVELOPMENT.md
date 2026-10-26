@@ -135,7 +135,7 @@ regenerate only reproducible fixtures with their existing generators.
 
 | Layer | Entry point and evidence |
 |---|---|
-| Native service and tools | `./test.sh`: release-mode backend library, binaries and integration tests, Python tool tests, Ruff and frontend Vitest |
+| Native service and tools | `./test.sh`: release-mode backend library and binaries, standard-profile integration tests, Python tool tests, Ruff and frontend Vitest |
 | DSP kernels | `make wasm-test`: release-mode native Rust kernel tests against reference fixtures, including optimized FT8 paths |
 | Local aggregate | `make ci`: kernel and service/tool/frontend tests, version and fixture checks, DOM/registration/doc/architecture guards, frontend build |
 | Browser fixtures | `make e2e-fake`: native fixture service, UI smoke, state regression and viewport geometry gate |
@@ -143,7 +143,7 @@ regenerate only reproducible fixtures with their existing generators.
 | Performance | `make bench`: comparison with `tools/bench/bench_baseline.json` |
 
 Read DSP ABI text messages immediately after the push that reports them. Later pushes replace this result list; the lifetime decode count does not retain message payloads.
-Run backend library, binary and integration targets in separate Cargo invocations. Combining them can collide with this project's shared-library output artifacts.
+Run backend library, binary and integration targets in separate Cargo invocations. Combining them can collide with this project's shared-library output artifacts. Integration tests use the standard test profile to match the harness's unwind strategy; production release artifacts use abort.
 
 Install browser support with `python3 -m playwright install --with-deps chromium` and build
 the frontend before browser runs. Fixture mode proves application behavior without the SDK;

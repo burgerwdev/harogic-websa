@@ -121,7 +121,7 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 
 | 层次 | 入口与证据 |
 |---|---|
-| 原生服务与工具 | `./test.sh`：release 模式的后端库、全部二进制及集成测试，Python 工具测试、Ruff 和前端 Vitest |
+| 原生服务与工具 | `./test.sh`：release 模式的后端库与全部二进制、标准 test profile 的集成测试，Python 工具测试、Ruff 和前端 Vitest |
 | DSP 内核 | `make wasm-test`：release 模式的原生 Rust 内核测试，包含需优化构建的 FT8 路径 |
 | 本地聚合 | `make ci`：内核、服务、工具、前端测试，版本与 fixture 检查，DOM、注册、文档、架构守卫及前端构建 |
 | 浏览器 fixture | `make e2e-fake`：原生 fixture 服务、UI smoke、状态回归和视口几何门禁 |
@@ -129,7 +129,7 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 | 性能 | `make bench`：与 `tools/bench/bench_baseline.json` 比较 |
 
 DSP ABI 文本消息只在当前 push 的结果列表中有效，应在返回消息数后立即读取。后续 push 会替换列表；累计解码计数不会保存消息内容。
-后端库、二进制和集成测试分别调用 Cargo，依次运行；合并选择这些目标可能导致本项目的共享库产物冲突。
+后端库、二进制和集成测试分别调用 Cargo，依次运行；合并选择这些目标可能导致共享库产物冲突。集成测试使用标准 test profile，与测试 harness 的 unwind 策略一致；生产 release 产物仍使用 abort。
 
 使用 `python3 -m playwright install --with-deps chromium` 安装浏览器支持，运行浏览器检查前
 先构建前端。Fixture 模式证明无 SDK 的应用行为，不证明 RF 正确性、持续采集或硬件恢复。

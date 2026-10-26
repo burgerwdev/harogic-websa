@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 echo "==== Rust service contracts ===="
 cargo test --release -j 1 --manifest-path backend/Cargo.toml --lib -- --test-threads=1
 cargo test --release -j 1 --manifest-path backend/Cargo.toml --bins -- --test-threads=1
-cargo test --release -j 1 --manifest-path backend/Cargo.toml --test '*' -- --test-threads=1
+cargo test -j 1 --manifest-path backend/Cargo.toml --test '*' -- --test-threads=1
 
 echo "==== Python tool tests (pytest) ===="
 python3 -m pytest tests/ -q
