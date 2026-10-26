@@ -4182,13 +4182,32 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     match initial_decode {
         Ok(frames)=>for frame in frames {
             if !service_stream::identity_current(service_stream::message_identity(&frame),&app.identities,channel) {continue;}
-            let expected = if decode_ack {
-                let Message::Binary(bytes) = &frame else {initial_ok=false;break;};
-                match serde_json::from_slice::<DecodeApplied>(&bytes[8..]) {
-                    Ok(applied) => Some(applied),
+            let (frame, expected) = if decode_ack {
+                let Message::Binary(bytes) = frame else {initial_ok=false;break;};
+                let expected = match serde_json::from_slice::<DecodeApplied>(&bytes[8..]) {
+                    Ok(applied) => applied,
                     Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
-                }
-            } else {None};
+                };
+                let frame = if expected.seq == 0 {
+                    let mut envelope: Value = match serde_json::from_slice(&bytes[8..]) {
+                        Ok(envelope) => envelope,
+                        Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
+                    };
+                    // Capability is advertised only on the snapshot boundary. Live starts stay bare.
+                    if envelope["event"]["type"] == "start" {
+                        envelope["event"]["snapshotAck"] = json!(true);
+                    }
+                    let encoded = match serde_json::to_vec(&envelope)
+                        .map_err(|error| error.to_string())
+                        .and_then(|json| websa_channelizer::encode_decode_event(&json).map_err(str::to_owned))
+                    {
+                        Ok(encoded) => encoded,
+                        Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
+                    };
+                    Message::Binary(encoded.into())
+                } else {Message::Binary(bytes)};
+                (frame, Some(expected))
+            } else {(frame, None)};
             if !send_frame(&mut sink,frame).await {initial_ok=false;break;}
             if let Some(expected) = expected {
                 match wait_snapshot_ack(&mut stream, &expected).await {
@@ -5806,12 +5825,14 @@ mod tests {
             raw_bytes += bytes.len();
             let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
             assert_eq!(envelope["seq"], seq);
+            if seq == 0 { assert!(envelope["event"].get("snapshotAck").is_none()); }
         }
         assert!(raw_bytes > 4*1024*1024);
         let mut paced = connect_ws(&format!("{url}/decode?channel=1&ack=1")).await;
         let start = next_binary(&mut paced).await;
         let start: Value = serde_json::from_slice(&start[8..]).unwrap();
         assert_eq!(start["seq"], 0);
+        assert_eq!(start["event"]["snapshotAck"], true);
         expect_silence(&mut paced, Duration::from_millis(30)).await;
         // An ACK for another channel or sequence grants no credit.
         paced.send(WsMessage::Text(json!({"type":"ack","channel":2,"epoch":stream_epoch,"seq":0}).to_string().into())).await.unwrap();

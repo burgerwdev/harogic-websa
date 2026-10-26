@@ -437,9 +437,9 @@ describe('native decoded stream boundaries', () => {
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?channel=1' } });
       const socket = Socket.current;
       expect(socket.url).toBe('ws://localhost/ws/decode?channel=1&ack=1');
-      socket.onmessage!({ data: frame() });
+      socket.onmessage!({ data: frame({ event: { type: 'start', snapshotAck: true } }) });
       socket.onmessage!({ data: frame({ seq: 1, event: { type: 'cw' } }) });
-      socket.onmessage!({ data: frame({ channel: 2, channel_id: 18 }) });
+      socket.onmessage!({ data: frame({ channel: 2, channel_id: 18, event: { type: 'start', snapshotAck: true } }) });
       socket.onmessage!({ data: frame({ seq: 2, event: { type: 'cw' } }) });
       expect(socket.sent).toEqual([]);
       host.onmessage!({ data: { type: 'ack' } });
@@ -451,6 +451,66 @@ describe('native decoded stream boundaries', () => {
       host.onmessage!({ data: { type: 'ack' } });
       expect(socket.sent).toHaveLength(3);
     } finally { vi.unstubAllGlobals(); }
+  });
+  it.each(['wfm', 'am', 'cw'])('sends no wire ACK for an old %s start that omits snapshotAck', async (mode) => {
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null, postMessage: () => {} };
+    class Socket {
+      static current: Socket;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      sent: unknown[] = [];
+      constructor() { Socket.current = this; }
+      send(text: string): void { this.sent.push(JSON.parse(text)); }
+      close(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const socket = Socket.current;
+      const event = mode === 'am' ? amEvent() : mode === 'wfm' ? { type: 'wfm-info', peakDbFs: '-7.0' } : { type: 'cw', text: 'CQ' };
+      socket.onmessage!({ data: frame({ mode }) });
+      socket.onmessage!({ data: frame({ mode, seq: 1, event }) });
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(socket.sent).toEqual([]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('keeps wire ACK enabled after the initial advertisement even if a later start omits it', async () => {
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null, postMessage: () => {} };
+    class Socket {
+      static current: Socket;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      sent: unknown[] = [];
+      constructor() { Socket.current = this; }
+      send(text: string): void { this.sent.push(JSON.parse(text)); }
+      close(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const socket = Socket.current;
+      socket.onmessage!({ data: frame({ event: { type: 'start', snapshotAck: true } }) });
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(socket.sent).toEqual([{ type: 'ack', channel: 1, epoch: 9, seq: 0 }]);
+      socket.onmessage!({ data: frame({ channel_id: 18 }) });
+      host.onmessage!({ data: { type: 'ack' } });
+      socket.onmessage!({ data: frame({ channel_id: 18, seq: 1, event: { type: 'cw' } }) });
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(socket.sent.slice(1)).toEqual([
+        { type: 'ack', channel: 1, epoch: 9, seq: 0 },
+        { type: 'ack', channel: 1, epoch: 9, seq: 1 },
+      ]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('rejects a non-boolean snapshotAck and accepts an explicit false without enabling the wire ACK', () => {
+    const stream = new DecodeSequence();
+    expect(() => stream.accept(frame({ event: { type: 'start', snapshotAck: 'true' as unknown as boolean } }))).toThrow(/snapshotAck/);
+    expect(() => stream.accept(frame({ event: { type: 'start', snapshotAck: 1 as unknown as boolean } }))).toThrow(/snapshotAck/);
+    expect(stream.accept(frame({ event: { type: 'start', snapshotAck: false } })).event.snapshotAck).toBe(false);
   });
   it('applies a retained 20 MiB radiofax snapshot with bounded outstanding transport credit', async () => {
     vi.resetModules();
@@ -490,7 +550,7 @@ describe('native decoded stream boundaries', () => {
         host.onmessage!({ data: { type: 'ack' } });
         expect(socket.applied).toBe(seq);
       };
-      apply(frame({ mode: 'radiofax' }), 0);
+      apply(frame({ mode: 'radiofax', event: { type: 'start', snapshotAck: true } }), 0);
       const pixels = btoa(String.fromCharCode(81).repeat(1810 * 64));
       let seq = 0;
       for (let segmentIndex = 0; segmentIndex < 5; segmentIndex++) {

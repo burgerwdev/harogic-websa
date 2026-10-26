@@ -127,7 +127,8 @@ AM modulation on the receiver. 180 LPM needs manual receive settings. Whole
 pages use fixed 0.25 s complex64 chunks at the radio's accepted rate; Gray8 input
 is limited to 40 MiB. CPU replay of generated IOC288/576 pages through the native
 receiver has verified phasing and APT-stop completion with correct 16-line ramps.
-This is a generated-IQ check; it does not establish Pluto RF interoperability.
+Real Pluto-to-SAN-90 RF at 435 MHz also received complete IOC576/120 LPM 1810×64
+and IOC288/240 LPM 905×256 test pages, with phasing clock recovery and no missing rows.
 Generator clock trim is device-specific; inspect the selected radio's options
 before relying on RF frequency accuracy.
 

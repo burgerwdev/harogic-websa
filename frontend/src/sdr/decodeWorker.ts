@@ -15,6 +15,7 @@ let inFlightBytes = 0;
 let queuedBytes = 0;
 const queue: { envelope: DecodeEnvelope; bytes: number; connection: WebSocket }[] = [];
 const applied = new Map<number, { envelope: DecodeEnvelope; connection: WebSocket }>();
+const snapshotAck = new WeakMap<WebSocket, boolean>();
 const MAX_QUEUED_EVENTS = 32;
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 function fail(message: string): void {
@@ -55,6 +56,9 @@ function connect(): void {
     try {
       if (!(event.data instanceof ArrayBuffer) || event.data.byteLength - 8 > MAX_DECODE_BYTES) throw new Error('Expected bounded binary SDE2');
       const envelope = sequence.accept(event.data);
+      if (envelope.seq === 0 && envelope.event.type === 'start' && envelope.event.snapshotAck === true) {
+        snapshotAck.set(connection, true);
+      }
       if (queue.length + inFlight >= MAX_QUEUED_EVENTS || queuedBytes + inFlightBytes + event.data.byteLength > MAX_QUEUED_BYTES) {
         throw new Error('Slow decoded-output consumer: queue exceeded');
       }
@@ -92,7 +96,7 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
     inFlightBytes = 0;
     try {
       for (const { envelope, connection } of acknowledgements) {
-        if (enabled && socket === connection) connection.send(JSON.stringify({ type: 'ack',
+        if (enabled && socket === connection && snapshotAck.get(connection) === true) connection.send(JSON.stringify({ type: 'ack',
           channel: envelope.channel, epoch: envelope.epoch, seq: envelope.seq }));
       }
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }

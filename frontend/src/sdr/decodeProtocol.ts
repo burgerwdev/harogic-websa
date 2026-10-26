@@ -6,6 +6,7 @@ export const MAX_DECODE_BYTES = 2 * 1024 * 1024;
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
 	type: string;
+	snapshotAck?: boolean;
 	text?: string; endsLine?: boolean; share?: number; rms?: number; keyed?: boolean;
 	centerHz?: number; pitchHz?: number; afcHz?: number; wpm?: number;
 	frequencyHz?: number; timeOffsetS?: number; snrDb?: number; count?: number; windowStart?: string;
@@ -76,6 +77,9 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		|| typeof value.delay_seconds !== 'number' || !Number.isFinite(value.delay_seconds) || value.delay_seconds < 0
 		|| typeof value.delay_known !== 'boolean' || typeof value.causal_presentation !== 'boolean'
 		|| typeof value.mode !== 'string' || typeof value.event.type !== 'string') throw new Error('Invalid SDE2 envelope');
+	if (value.event.type === 'start' && value.event.snapshotAck !== undefined && typeof value.event.snapshotAck !== 'boolean') {
+		throw new Error('Invalid receiver snapshotAck');
+	}
 	const d = value.event;
 	for (const key of ['share', 'rms', 'centerHz', 'pitchHz', 'afcHz', 'wpm', 'frequencyHz', 'timeOffsetS', 'snrDb', 'count',
 		'peakDevHz', 'pilotPct', 'rdsPi', 'rdsGroups', 'carrierHz', 'pilotDevHz', 'pilotSnrDb', 'width', 'height', 'row', 'rows',
