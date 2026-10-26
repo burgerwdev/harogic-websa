@@ -113,6 +113,8 @@ AudioContext setup and resume errors affect audio playback only. The browser ign
 
 User-set, backend-confirmed parameters use `core/params.ts` slots: user actions set desired values and STATUS confirms them. Client-only preferences are authoritative locally. Measurement results use `core/results.ts` with explicit setters, without desired/confirmed semantics. Shared types and registries remain leaf modules; upper layers may depend on leaves. Registration modules must be reachable from `main.ts`.
 
+Decode refreshes the selected WFM receiver on pane, channel and stream changes. Control or device disconnect cancels active spectrum gestures and releases pointer capture before resetting receiver state; a later pointer release cannot submit a tune.
+
 ### SDR filter and tuning controls
 
 The panel, numeric field and spectrum overlay share `sdrDemod` and `sdrIfbw`; those parameter slots remain the only desired/confirmed values. A custom value remains visible without forcing a preset highlight. A STATUS confirmation also records the last confirmed value for that mode. Selecting a mode restores its stored confirmed value, or the mode default when none is valid; ordinary tuning retains the active filter, and Preset clears these mode preferences with the existing SDR preferences.

@@ -244,6 +244,7 @@ export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string |
 
 /** A lost control/device connection ends the receiver session and all unconfirmed detector intent. */
 export function disconnectSdrSession(): void {
+  cancelSdrCanvasGesture();
   resetSdrTuneSession();
   resetCarrierEvidence();
   cancelSdrTuningEdit();

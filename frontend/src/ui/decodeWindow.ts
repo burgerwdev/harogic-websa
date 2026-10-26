@@ -660,6 +660,7 @@ function renderContent(): void {
 	const drm = element('decode-window-drm');
 	const sstv = element('decode-window-sstv');
 	const radiofax = element('decode-window-radiofax');
+	const wfm = element('decode-window-wfm');
 	const am = element('decode-am');
 	const title = element('decode-window-title');
 	const count = element('decode-window-count');
@@ -672,6 +673,7 @@ function renderContent(): void {
 	if (drm) drm.style.display = showDrm ? '' : 'none';
 	if (sstv) sstv.style.display = showSstv ? '' : 'none';
 	if (radiofax) radiofax.style.display = showRadiofax ? 'flex' : 'none';
+	if (wfm) wfm.style.display = showWfm ? '' : 'none';
 	if (am) am.style.display = showAm ? '' : 'none';
 	const meter = element('cw-meter');
 	if (meter) meter.style.display = showCw ? '' : 'none';
@@ -714,6 +716,7 @@ function renderContent(): void {
 	else if (showDrm) renderDrm();
 	else if (showSstv) renderSstv();
 	else if (showRadiofax) renderRadiofax();
+	else if (showWfm) renderWfm();
 	else if (showAm) renderAm();
 }
 
