@@ -55,12 +55,12 @@
 
 ## 快速开始
 
-**1.9.3** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
+**1.9.4** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
 不再提供生产后端。保留的浏览器 WASM 产物是可选离线诊断工具，不是生产 DSP 路径。
 
 ### 运行随附发布产物
 
-1.9.3 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
+1.9.4 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so` 以及 `runtime/frontend/dist/`。
 执行 `./run.sh` 连接硬件，或执行 `./run.sh --fake` 使用合成输入，然后访问
 http://127.0.0.1:8080。使用随附产物无需安装 Rust、Node.js 或 Python。

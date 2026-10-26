@@ -8,7 +8,6 @@ import { previewFreqWindow, previewLevelWindow, yAxisTransform } from '../ui/axi
 import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz, fmtAxis, fmtF } from '../core/fmt';
-import { sdrListenHz } from '../ui/sdrState';
 import { getDisplayPowers } from '../dsp/peaks';
 import { getActiveAbsolutePowers } from '../dsp/absoluteTrace';
 import { trigLevel, trigSource } from '../ui/triggerState';
@@ -35,6 +34,7 @@ import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterPassband } from '../ui/sdrFilterGesture';
 import { renderSdrLocate } from '../ui/sdrLocate';
+import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -582,6 +582,7 @@ function renderRtaView() {
   }
 
 export function renderAll() {
+  validateSdrBadgeDrag();
   const c = cur();
   resetStatusBlocks();                             // status area is rebuilt every pass
   // Waterfall container replaces the table slot in ALL modes (incl. RTA)
@@ -752,16 +753,9 @@ function renderRta() {
   const d = S.rtaData;
   if (!d || !d.freq || d.freq.length < 2) return;
   const n = d.freq.length;
-  // A frequency gesture draws the frame in the window being dragged to (see ui/axisDrag.ts); the
-  // trace, the demod overlay and the frequency row below all read this one pair.
-  const pf = previewFreqWindow();
-  // A display zoom narrows the drawn window to the view — but only while the view still
-  // lies inside the frame on screen (a fresh frame with a new window resets the view, and
-  // a device gesture preview overrides everything anyway).
-  const zv = isZoomed() ? getView() : null;
-  const inFrame = !!zv && zv.lo >= d.startHz - 0.5 && zv.hi <= d.stopHz + 0.5;
-  const lo = pf ? pf.lo : (inFrame ? zv!.lo : d.startHz);
-  const hi = pf ? pf.hi : (inFrame ? zv!.hi : d.stopHz);
+  const window = sdrSpectrumWindow();
+  if (!window) return;
+  const { lo, hi } = window;
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
   const activeTrace = S.traces[S.activeTraceIdx];
@@ -837,20 +831,22 @@ function renderRta() {
     ctx.stroke();
     ctx.restore();
   });
-  // Drawing and edge hits use the same passband mapping.
-  renderFilterPassband(lo, hi);
+  // Preview the dial and passband together while the badge owns the pointer.
+  renderFilterPassband(lo, hi, sdrBadgeDragFrequency());
   renderSdrLocate(lo, hi);
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
   // Bottom frequency row (same as SWP grid)
   drawFreqRow(lo, hi, col, p);
-  if (S.sdrMode && sdrListenHz.get() > 0) {
-    const lx = p.x + (sdrListenHz.get() - lo) / ((hi - lo) || 1) * p.w;
-    if (lx >= p.x && lx <= p.x + p.w) {
-      ctx.fillStyle = '#00ffa0'; ctx.font = '11px monospace';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      // Include the frequency unit in the listen marker label.
-      ctx.fillText('\u25bc ' + formatFreqHz(sdrListenHz.get()), lx, p.y + 2);
-    }
+  const badge = sdrBadgeGeometry();
+  if (badge) {
+    ctx.save();
+    ctx.font = SDR_BADGE_FONT;
+    ctx.fillStyle = col.rta;
+    ctx.fillRect(badge.left, badge.top, badge.width, badge.height);
+    ctx.fillStyle = col.bg;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(badge.label, badge.left + badge.width / 2, badge.top + badge.height / 2, badge.width - 8);
+    ctx.restore();
   }
   // Markers on the active RTA trace (length-guarded)
   const actDisp = S.rtaDisplays[S.activeTraceIdx] || d.spec;

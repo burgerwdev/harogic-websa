@@ -51,7 +51,7 @@ export function clearRtaAccum() {
 // entirely (see dsp/rtaDensity.ts).
 /** The panel's own default gear, used when a value cannot be read at all. */
 const RTA_HALFLIFE_DEFAULT = 0.5;
-const RTA_HALFLIFE_GEARS = [0, 0.5, 2, 5, 10];
+const RTA_HALFLIFE_GEARS = [0, 0.2, 0.5, 2, 5, 10];
 
 function normalizeHalflife(value: number): number {
   return RTA_HALFLIFE_GEARS.includes(value) ? value : RTA_HALFLIFE_DEFAULT;

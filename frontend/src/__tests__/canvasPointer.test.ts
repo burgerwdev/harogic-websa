@@ -118,6 +118,123 @@ function drag(x0: number, x1: number, y = 240, ctrl = false) {
 }
 
 describe('canvas pointer ownership', () => {
+  it.each([0.02, 0.98])('tunes near plot edge %s without moving the capture window', async fraction => {
+    const { state, plot, send } = await load();
+    const p = plot.plotRect();
+    const x = p.x + p.w * fraction;
+    pointer('pointerdown', p.x + p.w * 0.5);
+    vi.advanceTimersByTime(500);
+    pointer('pointermove', x);
+    vi.advanceTimersByTime(500);
+    pointer('pointermove', x);
+    expect(state.sdrCenterHz.get()).toBe(10_000_000);
+    expect(send).not.toHaveBeenCalled();
+    pointer('pointerup', x);
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 9_800_000 + 400_000 * fraction,
+    }));
+    expect(state.sdrCenterHz.get()).toBe(10_000_000);
+  });
+
+  it.each([false, true])('drags the measured top badge with Zoom %s and releases outside', async zoom => {
+    const { state, viewport, send } = await load(zoom);
+    const badge = await import('../ui/sdrBadgeGesture');
+    const g = badge.sdrBadgeGeometry()!;
+    const x = g.left + 2, y = g.top + g.height / 2;
+    canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
+    expect(canvas.style.cursor).toBe('grab');
+    pointer('pointerdown', x, y);
+    expect(canvas.style.cursor).toBe('grabbing');
+    expect(badge.sdrBadgeDragFrequency()).toBe(10_000_000);
+    pointer('pointermove', x + 80, -40);
+    expect(badge.sdrBadgeDragFrequency()).toBe(10_040_000);
+    expect(state.sdrListenHz.get()).toBe(10_000_000);
+    expect(send).not.toHaveBeenCalled();
+    pointer('pointerup', x + 80, -40);
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', freq: 10_040_000 }));
+    expect(viewport.isZoomed()).toBe(false);
+    expect(badge.sdrBadgeDragFrequency()).toBeNull();
+    expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it.each(['left', 'right'])('keeps the initial frequency offset on an edge-clamped %s badge', async edge => {
+    const { state, send } = await load(true);
+    const badge = await import('../ui/sdrBadgeGesture');
+    const initial = edge === 'left' ? 9_800_000 : 10_200_000;
+    state.sdrListenHz.confirm(initial);
+    const g = badge.sdrBadgeGeometry()!;
+    const x = edge === 'left' ? g.left + g.width - 1 : g.left + 1;
+    const delta = edge === 'left' ? 20 : -20;
+    pointer('pointerdown', x, 7);
+    pointer('pointermove', x, 7);
+    expect(badge.sdrBadgeDragFrequency()).toBe(initial);
+    pointer('pointermove', x + delta, 7);
+    expect(badge.sdrBadgeDragFrequency()).toBe(initial + delta * 500);
+    pointer('pointerup', x + delta, 7);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ freq: initial + delta * 500 }));
+  });
+
+  it('bounds badge tuning to both the zoomed view and the device RF range', async () => {
+    const { S, viewport, send } = await load(true);
+    const badge = await import('../ui/sdrBadgeGesture');
+    viewport.setView({ lo: 9_900_000, hi: 10_100_000 });
+    S.setFrequencyLimits(9_950_000, 10_050_000);
+    const g = badge.sdrBadgeGeometry()!;
+    pointer('pointerdown', g.left + 1, 7);
+    pointer('pointermove', -1000, 7);
+    expect(badge.sdrBadgeDragFrequency()).toBe(9_950_000);
+    pointer('pointermove', 2000, 7);
+    expect(badge.sdrBadgeDragFrequency()).toBe(10_050_000);
+    pointer('pointerup', 2000, 7);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ freq: 10_050_000 }));
+    S.setFrequencyLimits(9000, 9e9);
+    const second = badge.sdrBadgeGeometry()!;
+    pointer('pointerdown', second.left + 1, 7);
+    pointer('pointermove', -1000, 7);
+    expect(badge.sdrBadgeDragFrequency()).toBe(9_900_000);
+    pointer('pointermove', 2000, 7);
+    expect(badge.sdrBadgeDragFrequency()).toBe(10_100_000);
+  });
+
+  it.each(['pointercancel', 'escape', 'lostcapture', 'blur', 'zoom', 'mode', 'disconnect', 'view', 'missing-spectrum', 'missing-frame'])
+  ('clears badge preview and capture on %s without a release command', async reason => {
+    const { controls, S, state, viewport, send } = await load(true);
+    const badge = await import('../ui/sdrBadgeGesture');
+    const g = badge.sdrBadgeGeometry()!;
+    pointer('pointerdown', g.left + 1, 7);
+    pointer('pointermove', g.left + 81, 7);
+    if (reason === 'pointercancel') pointer('pointercancel', 500, 7);
+    if (reason === 'escape') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    if (reason === 'lostcapture') {
+      const event = new Event('lostpointercapture');
+      Object.defineProperty(event, 'pointerId', { value: 1 });
+      canvas.dispatchEvent(event);
+    }
+    if (reason === 'blur') window.dispatchEvent(new Event('blur'));
+    if (reason === 'zoom') viewport.zoomEnabled.set(false);
+    if (reason === 'mode') controls.selectSdrDemod('am');
+    if (reason === 'disconnect') controls.disconnectSdrSession();
+    if (reason === 'view') viewport.setView({ lo: 9_900_000, hi: 10_100_000 });
+    if (reason === 'missing-spectrum') vi.spyOn(document, 'getElementById').mockReturnValue(null);
+    if (reason === 'missing-frame') S.setRtaData(null);
+    // Renderers call this getter even when no frame arrives or pointer moves.
+    expect(badge.sdrBadgeDragFrequency()).toBeNull();
+    vi.mocked(send).mockClear();
+    pointer('pointerup', 500, 7);
+    expect(send).not.toHaveBeenCalled();
+    expect(state.sdrListenHz.get()).toBe(10_000_000);
+    expect(S.dragging).toBe(false);
+    if (reason !== 'missing-spectrum') expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it('ignores the top margin when the listening badge has no spectrum frame', async () => {
+    const { S, send } = await load();
+    S.setRtaData(null);
+    drag(410, 490, 7);
+    expect(canvas.setPointerCapture).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
 	it.each([250, 410, 450])('zooms from Signal, dial or Filter (%s) without receiver or marker edits', async x => {
 		const { S, state, viewport, filter, locate, send } = await load(true);
 		const markers = S.markers.map(m => ({ ...m }));

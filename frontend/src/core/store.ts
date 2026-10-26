@@ -174,8 +174,8 @@ export function setStatusWarnings(v: string[]) { statusWarnings = v; }
 //: message replaces the previous one instead of piling up.
 export let noticeText: string | null = null;
 export function setNoticeText(v: string | null) { noticeText = v; }
-// Persistent device/command error, separate from transient reference notices. Repeated
-// failures replace this one slot; neither STATUS updates nor notice timers erase it.
+// Device/command diagnostic, separate from transient reference notices. Repeated
+// failures replace this slot; ws.ts clears command failures only on correlated recovery.
 export let statusError: string | null = null;
 export function setStatusError(v: string | null) {
   if (statusError === v) return;

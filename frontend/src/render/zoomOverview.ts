@@ -18,7 +18,6 @@ import {
 	getView,
 	viewportVersion,
 } from '../ui/spectrumViewport';
-import { lowerBound } from '../dsp/grid';
 
 let sized = false;
 let sizedVersion = -1;
@@ -40,7 +39,7 @@ function sizeOverview(cv: HTMLCanvasElement, ver: number): boolean {
 /** Active-trace display levels for the overview sketch (null while nothing is drawn). */
 function overviewLevels(): Float32Array | null {
 	const idx = S.activeTraceIdx;
-	if (S.rtaMode) {
+	if (S.rtaMode || S.sdrMode) {
 		const d = S.rtaData;
 		const disp = S.rtaDisplays[idx];
 		if (disp && disp.length > 1) return disp;
@@ -95,36 +94,38 @@ export function renderSpectrumZoomOverview(): void {
 	ctx.strokeStyle = col.traces[S.activeTraceIdx] || col.traces[0] || col.rta;
 	ctx.lineWidth = 1;
 	ctx.beginPath();
-  const freq = S.rtaMode ? S.rtaData?.freq : S.freqArray;
-  const columns = Math.max(1, Math.min(2048, Math.ceil(ovW)));
-  for (let column = 0; column < columns; column++) {
-    const a = cap.lo + column / columns * (cap.hi - cap.lo);
-    const b = cap.lo + (column + 1) / columns * (cap.hi - cap.lo);
-    const first = freq ? lowerBound(freq, a) : Math.floor(column * n / columns);
-    const end = freq ? (column + 1 === columns ? n : lowerBound(freq, b)) : Math.floor((column + 1) * n / columns);
-    if (first >= end) continue;
-    let min = first, max = first, gap = false;
-    for (let i = first; i < Math.min(n, end); i++) {
-      if (!Number.isFinite(powers[i])) { gap = true; break; }
-      if (powers[i] < powers[min]) min = i;
-      if (powers[i] > powers[max]) max = i;
-    }
-    // The navigator is a column envelope: independent original min/max vertices
-    // avoid dense cross-column zigzags and never join across missing coverage.
-    if (gap) continue;
-    const minHz = freq ? freq[min] : cap.lo + min / (n - 1) * (cap.hi - cap.lo);
-    const maxHz = freq ? freq[max] : cap.lo + max / (n - 1) * (cap.hi - cap.lo);
-    const minX = (minHz - cap.lo) / (cap.hi - cap.lo) * ovW;
-    const maxX = (maxHz - cap.lo) / (cap.hi - cap.lo) * ovW;
-    const minY = Y(powers[min]), maxY = Y(powers[max]);
-    if (min === max || minY === maxY) {
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.fillRect(minX, minY, 1 / ovRatio, 1 / ovRatio);
-    } else {
-      ctx.moveTo(minX, minY);
-      ctx.lineTo(maxX, maxY);
-    }
-  }
+	const freq = S.rtaMode || S.sdrMode ? S.rtaData?.freq : S.freqArray;
+	const end = freq ? Math.min(n, freq.length) : n;
+	const span = cap.hi - cap.lo;
+	const columns = Math.max(1, Math.min(2048, Math.ceil(ovW * ovRatio)));
+	const xAt = (index: number) => freq
+		? (freq[index] - cap.lo) / span * ovW : index / (n - 1) * ovW;
+	let pen = false, i = 0;
+	while (i < end) {
+		if (!Number.isFinite(powers[i]) || (freq && !Number.isFinite(freq[i]))) {
+			pen = false; i++; continue;
+		}
+		const first = i;
+		const column = Math.floor(xAt(i) / ovW * columns);
+		let min = i, max = i;
+		i++;
+		while (i < end && Number.isFinite(powers[i]) && (!freq || Number.isFinite(freq[i]))
+			&& Math.floor(xAt(i) / ovW * columns) === column) {
+			if (powers[i] < powers[min]) min = i;
+			if (powers[i] > powers[max]) max = i;
+			i++;
+		}
+		const last = i - 1;
+		let previous = -1;
+		for (let vertex = 0; vertex < 4; vertex++) {
+			const index = vertex === 0 ? first : vertex === 3 ? last
+				: vertex === 1 ? Math.min(min, max) : Math.max(min, max);
+			if (index === previous) continue;
+			previous = index;
+			const x = xAt(index), y = Y(powers[index]);
+			if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
+		}
+	}
 	ctx.stroke();
 
 	// View highlight: dim the outside, outline the window, edge handles on both sides.

@@ -372,7 +372,7 @@ Picture boundaries remain ordered. Pinning an SSTV mode again starts a fresh can
 
 The browser delivers event batches FIFO using `{type:'frames', envelopes}` and acknowledges application with `{type:'ack'}` on its internal worker port. Queued plus in-flight data is limited to 32 events / 4 MiB; overflow explicitly fails. This acknowledgement is not sent over `/ws/decode`.
 
-> **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density keeps either the processed active trace or the received frames before Average/Max Hold; switching the source clears history. Afterglow uses a real-time half-life (Off, 0.5, 2, 5, 10 s). Hit weights use elapsed time with bounded gaps. Off stops accumulation and drawing. Both, Density and Trace change visibility only; trace modes, markers, measurements and export retain their data sources. The wide trace glow is suppressed while density is drawn. Contrast changes colour independently of opacity. Waterfall history retains native frequency positions; missing bins stay blank unless SWP GapFill is enabled.
+> **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density keeps either the processed active trace or the received frames before Average/Max Hold; switching the source clears history. Afterglow uses a real-time half-life (Off, 0.2, 0.5, 2, 5, 10 s). Hit weights use elapsed time with bounded gaps. Off stops accumulation and drawing. Both, Density and Trace change visibility only; trace modes, markers, measurements and export retain their data sources. The wide trace glow is suppressed while density is drawn. Contrast changes colour independently of opacity. Waterfall history retains native frequency positions; missing bins stay blank unless SWP GapFill is enabled.
 
 On an axis-version transition, the first frame for the new axis takes priority and
 older-version frames are rejected. Density projects native frequency centers continuously,
@@ -386,7 +386,7 @@ the trace is frozen. Width, theme and contrast changes preserve history.
 
 SWP/RTA/SDR raster paths use each device-pixel column's first, minimum, maximum and last original vertices, in source order, and split at every missing bin. Zoom reveals the retained native vertices as they occupy separate pixels; markers and export always use the complete source arrays. Optional SWP adaptive smoothing still uses the full frame, consistently with marker readouts.
 
-The global navigator uses independent minimum/maximum segments at their original Hz in bounded columns; columns containing missing samples stay blank. It is an overview of retained data, not an extra resolution source.
+The global navigator connects native vertices, retaining each bounded column's first/minimum/maximum/last samples in source order and breaking at missing bins. Sparse captures remain a continuous outline; this does not add measurement resolution.
 
 CSV exports the selected current-mode processed trace and matching native axis;
 OFF/missing/mismatched data produces a no-data notice, never an old SWP fallback.
@@ -421,6 +421,20 @@ previous results on Set. PNM averaging has its own visible control.
 1. `SET_MODE {mode:'sdr'}` → optionally `SET_SDR {center, decimate}` (capture window)
 2. `SET_SDR_TUNE {listen}` tunes the primary receiver (native: recaptures when needed, preserving auxiliary frequencies); `SET_SDR_CHANNEL {channel:1, freq}` uses the same native tuning behavior. `SET_SDR_DEMOD` selects the demodulator and its audio settings
 3. The server pushes `RTAF` (panadapter spectrum + waterfall) and subscribed `IQBF` baseband. Native receiver audio uses `/ws/audio`; decoder events use `/ws/decode`. Level/squelch/ADM metrics are in `STATUS.sdr`.
+
+On the native backend, SDR capture centers use the model's IQ tuning range
+intersected with the device RF range (SAN-90: 9 kHz–9 GHz). The reported
+`caps.fmin`–`caps.fmax` receiver range may be wider after sweep readback
+(SAN-90: 8 kHz–9.02 GHz). For example, an 8 kHz receiver can use a 9 kHz IQ center.
+The IQ capture and displayed spectrum may extend past either RF limit; their
+half-width is not added to the minimum center or subtracted from the maximum.
+Changing display bandwidth therefore does not force an otherwise valid center
+away from a device limit. Frequency-axis drag and wheel gestures request a center
+within the reported RF range; the backend confirms the IQ-compatible center.
+Dragging within the plot only tunes within the displayed window; reaching an edge does not pan it. Use the frequency axis to move the window. Listen dragging and arrow tuning stop at the RF limits; clicks outside them do not tune a receiver. Enabled receiver frequencies must remain
+inside the RF range, and their occupied bandwidth and coarse-channel transition
+must still fit the capture passbands. An incompatible auxiliary receiver rejects
+the change rather than moving that receiver. RTA retains its whole-window limits.
 
 ### Exit measurement
 

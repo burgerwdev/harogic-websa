@@ -1,3 +1,4 @@
+import { drawPassband } from './passband';
 // 瀑布图渲染: ImageData 逐像素密度着色 + 滚动历史
 import * as S from '../core/store';
 import { canvasColors, getTheme } from '../core/theme';
@@ -5,6 +6,10 @@ import { percentileApprox } from '../dsp/stats';
 import { wfHiDbm, wfLoDbm, wfRangeMode } from '../ui/waterfallState';
 import { getCapture, getView, isZoomed, viewportVersion } from '../ui/spectrumViewport';
 import { lowerBound, projectSpectrum, sameFrequencyGrid } from '../dsp/grid';
+import { sdrBadgeDragFrequency, sdrSpectrumWindow } from '../ui/sdrBadgeGesture';
+import { demodBandHz, sdrDemod, sdrPitchHz } from '../ui/sdrState';
+import { filterPreviewHz } from '../ui/sdrFilter';
+import { passbandDragFrequency } from '../ui/sdrFilterGesture';
 
 const MAX_HISTORY_COLUMNS = 16384;
 const rowGeometry = new WeakMap<Uint16Array, { freq: Float64Array | null; lo: number; hi: number }>();
@@ -83,6 +88,28 @@ let wfLastMax = -1;
 let wfLastTheme = '';
 let sliceScratch: Uint16Array | null = null;
 let wfNewestRow: Uint16Array | null = null;
+let wfCanvas: HTMLCanvasElement | null = null;
+let wfOverlayX: number | null = null;
+
+/** Paint over the clean history image; never write the indicator into cached pixels. */
+function paintBadgeIndicator(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  const frequency = sdrBadgeDragFrequency() ?? passbandDragFrequency();
+  const view = frequency === null ? null : sdrSpectrumWindow();
+  wfOverlayX = frequency !== null && view && frequency >= view.lo && frequency <= view.hi
+    ? Math.max(0, Math.min(width - 1, Math.round((frequency - view.lo) / (view.hi - view.lo) * width))) : null;
+  if (wfOverlayX === null || frequency === null || !view) return;
+  const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
+  const scale = width / (view.hi - view.lo);
+  const left = (frequency + bandLo - view.lo) * scale;
+  const right = (frequency + bandHi - view.lo) * scale;
+  ctx.save();
+  const colors = canvasColors();
+  drawPassband(ctx, left, right, 0, 0, width, height, colors, true);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = colors.rta;
+  ctx.fillRect(wfOverlayX, 0, Math.min(2, width - wfOverlayX), height);
+  ctx.restore();
+}
 
 /**
  * Map one row's stored columns onto the canvas width through the visible capture
@@ -123,23 +150,33 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   if (!n) {
     ctx.fillStyle = canvasColors().bg; ctx.fillRect(0, 0, W, H);
     wfLastPushes = S.waterfallPushes;
+    wfCanvas = canvas;
+    paintBadgeIndicator(ctx, W, H);
     return;
   }
   // Viewport slice: the waterfall follows the main plot's display window (design §2,
   // phase 2); fractions are stable across rows stored at different widths.
   const cap = getCapture();
   const zv = isZoomed() ? getView() : null;
+  const view = S.sdrMode ? sdrSpectrumWindow() ?? cap : zv && cap
+    && zv.lo >= cap.lo - 0.5 && zv.hi <= cap.hi + 0.5 ? zv : cap;
   let f0 = 0, f1 = 1;
-  if (zv && cap && cap.hi > cap.lo
-      && zv.lo >= cap.lo - 0.5 && zv.hi <= cap.hi + 0.5) {
-    f0 = Math.max(0, (zv.lo - cap.lo) / (cap.hi - cap.lo));
-    f1 = Math.min(1, (zv.hi - cap.lo) / (cap.hi - cap.lo));
+  if (view && cap && cap.hi > cap.lo) {
+    f0 = (view.lo - cap.lo) / (cap.hi - cap.lo);
+    f1 = (view.hi - cap.lo) / (cap.hi - cap.lo);
   }
-  const viewKey = `${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
+  const viewKey = `${view?.lo}:${view?.hi}:${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
   const imageKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`;
-  const sameImage = wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
+  const sameImage = wfCanvas === canvas && wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
   const pushed = S.waterfallPushes - wfLastPushes;
-  if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) return;
+  if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) {
+    // Frozen history still has to erase the previous indicator before drawing the next.
+    if (wfOverlayX !== null || sdrBadgeDragFrequency() !== null || passbandDragFrequency() !== null) {
+      ctx.putImageData(wfImg!, 0, 0);
+      paintBadgeIndicator(ctx, W, H);
+    }
+    return;
+  }
   // Existing pixels already represent immutable historical rows. Scroll those pixels
   // once and rasterize only arrivals; zoom/resize/palette/reset rebuilds all rows.
   const scroll = sameImage && pushed > 0 && pushed < Math.min(n, H)
@@ -148,6 +185,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   wfLastMax = dmax;
   wfLastTheme = theme;
   wfImgKey = imageKey;
+  wfCanvas = canvas;
   wfNewestRow = rows[n - 1];
   if (!wfImg || wfImg.width !== W || wfImg.height !== H) wfImg = ctx.createImageData(W, H);
   const img = wfImg;
@@ -172,7 +210,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
       continue;
     }
     if (!sliceScratch || sliceScratch.length !== W) sliceScratch = new Uint16Array(W);
-    const ds = cap ? sliceWaterfallRow(row, W, zv?.lo ?? cap.lo, zv?.hi ?? cap.hi, sliceScratch)
+    const ds = view ? sliceWaterfallRow(row, W, view.lo, view.hi, sliceScratch)
       : sliceDensityRow(row, W, f0, f1, sliceScratch);
     for (let x = 0; x < W; x++) {
       const lvl = Math.min(255, Math.round(ds[x] / dmax * 255));
@@ -185,6 +223,7 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     }
   }
   ctx.putImageData(img, 0, 0);
+  paintBadgeIndicator(ctx, W, H);
 }
 
 // Native rows retain one level per bin; oversized sources are peak-projected before this mapping.

@@ -69,7 +69,7 @@ describe('manual Ref controls', () => {
     document.getElementById('btn-ref-set')!.click();
     expect(input().value).toBe('160');
     expect(getDisplayRef()).toBe(160);
-    expect(sent.at(-1)).toEqual({ cmd: 'SET_REF', mode: 'manual', ref: 40 });
+    expect(sent.at(-1)).toMatchObject({ cmd: 'SET_REF', mode: 'manual', ref: 40 });
     document.getElementById('btn-ref-up')!.click();
     document.getElementById('btn-ref-down')!.click();
     expect(input().value).toBe('150');
@@ -81,7 +81,7 @@ describe('manual Ref controls', () => {
     input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
     expect(input().value).toBe('-260');
     expect(getDisplayRef()).toBe(-260);
-    expect(sent.at(-1)).toEqual({ cmd: 'SET_REF', mode: 'manual', ref: -160 });
+    expect(sent.at(-1)).toMatchObject({ cmd: 'SET_REF', mode: 'manual', ref: -160 });
     document.getElementById('btn-ref-down')!.click();
     document.getElementById('btn-ref-up')!.click();
     expect(input().value).toBe('-250');
@@ -94,7 +94,7 @@ describe('manual Ref controls', () => {
     commitRefLevel(90);
     vi.advanceTimersByTime(1000);
     commitRefLevel(100);
-    expect(sent.filter(message => message.cmd === 'SET_REF')).toEqual([
+    expect(sent.filter(message => message.cmd === 'SET_REF')).toMatchObject([
       { cmd: 'SET_REF', mode: 'manual', ref: 40 },
     ]);
     noteDisplayRefReport(-30);
@@ -140,7 +140,7 @@ describe('manual Ref controls', () => {
     expect(input().value).toBe('20');
     expect(pendingDisplayRef()).toBe(20);
     expect(input().classList.contains('ref-pending')).toBe(true);
-    expect(sent.filter(message => message.cmd === 'SET_REF')).toEqual([
+    expect(sent.filter(message => message.cmd === 'SET_REF')).toMatchObject([
       { cmd: 'SET_REF', mode: 'manual', ref: -40 },
     ]);
     noteDisplayRefReport(-40);
@@ -241,7 +241,7 @@ describe('manual Ref controls', () => {
     expect(effectiveRefLevel.get()).toBe(-60);
     expect(getDisplayRef()).toBe(-120);
     document.getElementById('btn-ref-down')!.click();
-    expect(sent.at(-1)).toEqual({ cmd: 'SET_REF', mode: 'manual', ref: -130 });
+    expect(sent.at(-1)).toMatchObject({ cmd: 'SET_REF', mode: 'manual', ref: -130 });
     confirmRefLevel('rta', -60, -120, -120);
     expect(refLevel.get()).toBe(-130);
     confirmRefLevel('rta', -60, -130, -130);

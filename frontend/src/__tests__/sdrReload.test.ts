@@ -150,7 +150,7 @@ describe('SDR entry and reload', () => {
 		expect(getDisplayRef()).toBe(-30);
 		expect(fit.autoScaleBusy()).toBe(false);
 		expect(socket.sent.filter(command => command.cmd === 'AUTO_SCALE')).toHaveLength(1);
-		expect(socket.sent.filter(command => command.cmd === 'SET_REF')).toEqual([
+		expect(socket.sent.filter(command => command.cmd === 'SET_REF')).toMatchObject([
 			{ cmd: 'SET_REF', mode: 'manual', ref: Math.max(-160, Math.min(40, ref)) },
 		]);
 		// Later manual intent owns the display again; a sticky fit cannot undo it.
@@ -193,7 +193,7 @@ describe('SDR entry and reload', () => {
 		vi.clearAllTimers();
 		vi.resetModules();
 		await load();
-		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toEqual([{ cmd: 'SET_MODE', mode }]);
+		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toMatchObject([{ cmd: 'SET_MODE', mode }]);
 		receive(status(mode));
 		const { currentGraphMode } = await import('../ui/graphMode');
 		expect(currentGraphMode()).toBe(mode);
@@ -317,6 +317,125 @@ describe('SDR entry and reload', () => {
     }
   });
 
+	// Dynamic imports below intentionally share load()'s fresh module graph after
+	// vi.resetModules(); static imports would observe a different socket/store.
+	it.each([
+		[{ cmd: 'SET_SDR', center: 21e6 }, { cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 21e6 }],
+		[{ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 21e6 }, { cmd: 'SET_SDR_TUNE', listen: 21e6 }],
+		[{ cmd: 'SET_SDR_TUNE', listen: 21e6 }, { cmd: 'SET_SDR', center: 21e6 }],
+	])('clears a rejected frequency command only after a related successful retry (%j)', async (failed, retry) => {
+		await load();
+		const { send } = await import('../core/wsSend');
+		const S = await import('../core/store');
+		receive(status('sdr'));
+		send(failed);
+		const request = socket.sent.at(-1)!;
+		receive({ cmd: 'ERROR', response_to: request.cmd, request_id: request.request_id,
+			msg: 'channel frequency outside device limits' });
+		const diagnostic = S.statusError;
+		expect(diagnostic).toContain('channel frequency outside device limits');
+		receive(status('sdr'));
+		receive(status('sdr', { response_to: 'STATUS', request_id: request.request_id }));
+		for (const unrelated of [
+			{ cmd: 'SET_REF', ref: -30 },
+			{ cmd: 'SET_SDR_CHANNEL', channel: 1, volume: 0.8 },
+			{ cmd: 'SET_SDR_CHANNEL', channel: 2, freq: 21e6 },
+		]) {
+			send(unrelated);
+			const command = socket.sent.at(-1)!;
+			receive(status('sdr', { response_to: command.cmd, request_id: command.request_id }));
+			expect(S.statusError).toBe(diagnostic);
+		}
+		send(retry);
+		const recovery = socket.sent.at(-1)!;
+		expect(S.statusError).toBe(diagnostic);
+		receive(status('sdr', { response_to: recovery.cmd, request_id: recovery.request_id }));
+		expect(S.statusError).toBeNull();
+	});
+
+	it('keeps a newer command failure when an older success or failure arrives', async () => {
+		await load();
+		const { send } = await import('../core/wsSend');
+		const S = await import('../core/store');
+		receive(status('sdr'));
+		const issue = (request_id: string) => {
+			send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 21e6, request_id });
+			return socket.sent.at(-1)!;
+		};
+		const oldSuccess = issue('old-success');
+		const oldFailure = issue('old-failure');
+		const latest = issue('latest');
+		receive({ cmd: 'ERROR', response_to: latest.cmd, request_id: latest.request_id, msg: 'new failure' });
+		const diagnostic = S.statusError;
+		receive(status('sdr', { response_to: oldSuccess.cmd, request_id: oldSuccess.request_id }));
+		expect(S.statusError).toBe(diagnostic);
+		receive({ cmd: 'ERROR', response_to: oldFailure.cmd, request_id: oldFailure.request_id, msg: 'old failure' });
+		expect(S.statusError).toBe(diagnostic);
+		const retry = issue('retry');
+		receive(status('sdr', { response_to: retry.cmd }));
+		receive(status('sdr', { response_to: 'SET_REF', request_id: retry.request_id }));
+		expect(S.statusError).toBe(diagnostic);
+		receive(status('sdr', { response_to: retry.cmd, request_id: retry.request_id }));
+		expect(S.statusError).toBeNull();
+	});
+
+	it.each([false, true])('ignores a delayed older failure after successful recovery (prior visible failure: %s)', async visibleFailure => {
+		await load();
+		const { send } = await import('../core/wsSend');
+		const S = await import('../core/store');
+		receive(status('sdr'));
+		send({ cmd: 'SET_SDR', center: 21e6, request_id: 'delayed' });
+		if (visibleFailure) {
+			send({ cmd: 'SET_SDR', center: 21e6, request_id: 'failed' });
+			receive({ cmd: 'ERROR', response_to: 'SET_SDR', request_id: 'failed', msg: 'capture rejected' });
+			expect(S.statusError).toContain('capture rejected');
+		}
+		send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 21e6, request_id: 'recovery' });
+		receive(status('sdr', { response_to: 'SET_SDR_CHANNEL', request_id: 'recovery' }));
+		expect(S.statusError).toBeNull();
+		receive({ cmd: 'ERROR', response_to: 'SET_SDR', request_id: 'delayed', msg: 'obsolete rejection' });
+		expect(S.statusError).toBeNull();
+		// Recovery is scoped: a later independent failure must remain visible.
+		send({ cmd: 'SET_REF', ref: -30, request_id: 'unrelated' });
+		receive({ cmd: 'ERROR', response_to: 'SET_REF', request_id: 'unrelated', msg: 'reference rejected' });
+		expect(S.statusError).toContain('reference rejected');
+	});
+
+	it.each(['SET_MODE', 'CONNECT'])('clears command failure after confirmed %s, retaining it across a socket reconnect', async cmd => {
+		await load();
+		const { send } = await import('../core/wsSend');
+		const S = await import('../core/store');
+		receive(status('sdr'));
+		send({ cmd: 'SET_SDR', center: 21e6 });
+		const failure = socket.sent.at(-1)!;
+		receive({ cmd: 'ERROR', response_to: failure.cmd, request_id: failure.request_id, msg: 'rejected capture' });
+		const diagnostic = S.statusError;
+		send({ cmd, mode: 'std' });
+		const abandoned = socket.sent.at(-1)!;
+		socket.onclose!();
+		vi.advanceTimersByTime(1000);
+		socket.onopen!();
+		receive(status('std'));
+		receive(status('std', { response_to: cmd, request_id: abandoned.request_id }));
+		expect(S.statusError).toBe(diagnostic);
+		send({ cmd, mode: 'std' });
+		const recovery = socket.sent.at(-1)!;
+		receive(status('std', { response_to: cmd, request_id: recovery.request_id }));
+		expect(S.statusError).toBeNull();
+	});
+
+	it('does not clear an uncorrelated device failure on a successful command', async () => {
+		await load();
+		const { send } = await import('../core/wsSend');
+		const S = await import('../core/store');
+		receive({ cmd: 'ERROR', msg: 'device capture failed' });
+		const diagnostic = S.statusError;
+		send({ cmd: 'CONNECT' });
+		const recovery = socket.sent.at(-1)!;
+		receive(status('std', { response_to: recovery.cmd, request_id: recovery.request_id }));
+		expect(S.statusError).toBe(diagnostic);
+	});
+
 	it.each(['RECEIVER_ERROR', 'ERROR'])('keeps %s scoped while spectrum and mode requests continue', async cmd => {
 		const { controls } = await load();
 		// These observers must share load()'s fresh module graph after resetModules().
@@ -381,7 +500,7 @@ describe('SDR entry and reload', () => {
 		receive({ cmd: 'RECEIVER_ERROR', error: 'queue full', failed: true, scope: 'all_receivers' });
 		expect(worker.terminate).toHaveBeenCalledOnce();
 		receive(receiverStatus(17, 'queue full'));
-		expect(document.getElementById('cur-sdr-level')!.textContent).toBe('');
+		expect(document.getElementById('cur-sdr-level')!.textContent).toBe('--- dBFS');
 		receive(receiverStatus(17, null));
 		receive(receiverStatus(18, undefined));
 		const inactive = receiverStatus(18, null);

@@ -75,6 +75,9 @@ input, select, button, textarea { font-size: 11px; }
   --sa-norm: #ffd75e;
   --sa-warning: #ff4d4d;
   --sa-rta: #00ff88;
+  --sa-passband: rgba(0, 255, 160, 0.24);
+  --sa-passband-edge: rgba(224, 242, 234, 0.8);
+  --sa-passband-outline: rgba(0, 0, 0, 0.45);
   --sa-label-bg: rgba(0, 0, 0, 0.7);
   --sa-label-border: #00aa66;
   --sa-osd-stroke: rgba(0, 0, 0, 0.9);
@@ -139,6 +142,9 @@ input, select, button, textarea { font-size: 11px; }
   --sa-norm: #9a6a00;
   --sa-warning: #c00000;
   --sa-rta: #0d7a2e;
+  --sa-passband: rgba(13, 122, 46, 0.24);
+  --sa-passband-edge: rgba(35, 62, 46, 0.8);
+  --sa-passband-outline: rgba(255, 255, 255, 0.6);
   --sa-label-bg: rgba(255, 255, 255, 0.88);
   --sa-label-border: #b0c4b0;
   --sa-osd-stroke: rgba(255, 255, 255, 0.9);
@@ -237,14 +243,14 @@ select:disabled { color: var(--label); }
 .ft8-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* The hint row carries the level readout on the right (it is status, not a control). */
 .sdr-hint-row { display: flex; align-items: center; gap: 8px; }
-/* Level readout in the badge style of the other read-only indicators; invisible while the
-   backend has not reported a level yet. */
-.sdr-hint-row #cur-sdr-level {
-  font-family: 'Courier New', monospace; white-space: nowrap;
+/* Keep both readouts in fixed-size badges as measurements arrive or squelch is disabled. */
+#cur-sdr-level, #cur-sdr-squelch {
+  font-family: 'Courier New', monospace; white-space: nowrap; line-height: 16px;
   border: 1px solid var(--inner-border); background: var(--input-bg);
-  padding: 2px 6px; border-radius: 2px; color: var(--text);
+  padding: 2px 6px; border-radius: 2px; color: var(--text); text-align: right;
+  box-sizing: content-box;
 }
-.sdr-hint-row #cur-sdr-level:empty { border: none; background: none; padding: 0; }
+#sdr-settings #cur-sdr-level { flex: 0 0 11ch; width: 11ch; }
 /* Shared FT8/CW/DRM decode window: draggable and resizable. Lives in
    <body> outside the zoomed frame and carries the UI scale itself (like the keypad) - a fixed
    element inside the zoomed card renders its left/top in zoomed coordinates while pointer events
@@ -742,10 +748,10 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .density-layers-row .btn { min-width: 58px; }
 #btn-density-more::after { content: ' v'; }
 #btn-density-more[aria-expanded="true"]::after { content: ' ^'; }
-#sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) 70px auto; gap: 4px; align-items: center; }
+#sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto auto; gap: 4px; align-items: center; }
 #sdr-settings .sdr-squelch-row input { width: 100%; min-width: 0; margin: 0; }
-#sdr-settings .sdr-squelch-row #cur-sdr-squelch { text-align: right; }
-#sdr-settings .sdr-squelch-row #btn-sdr-agc { min-width: 70px; white-space: nowrap; }
+#sdr-settings .sdr-squelch-row #cur-sdr-squelch { width: 10ch; }
+#sdr-settings .sdr-squelch-row #btn-sdr-agc { min-width: 0; width: calc(7ch + 10px); box-sizing: border-box; padding: 3px 4px; white-space: nowrap; }
 #rta-freq-settings .param-row { flex-wrap: nowrap; align-items: center; }
 #rta-freq-settings .param-row label { min-width: 52px; }
 /* main control column: input == select */

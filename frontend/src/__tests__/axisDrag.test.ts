@@ -37,6 +37,7 @@ import {
 	previewLevelWindow,
 	rejectAxisRef,
 	resetAxisPreview,
+	rejectSdrAxisWindow,
 	xAxisTransform,
 	yAxisTransform,
 } from '../ui/axisDrag';
@@ -173,6 +174,61 @@ describe('dragging the frequency axis', () => {
 			.toBe(String(cmd.span));
 	});
 
+	it.each(['minimum', 'maximum'] as const)('pans SDR to the RF %s while retaining the IQ span', (edge) => {
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="128">390.625k</option></select>';
+		graphMode.confirm('sdr');
+		const span = 390_625;
+		const boundary = edge === 'minimum' ? S.FREQ_MIN : S.FREQ_MAX;
+		const direction = edge === 'minimum' ? 1 : -1;
+		const center = boundary + direction * span;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(400 + direction * RECT.w * 2, IN_X_BAND.y);
+		expect(previewFreqWindow()).toEqual({ lo: boundary - span / 2, hi: boundary + span / 2 });
+		axisDragEnd();
+		expect(sent).toEqual([{ cmd: 'SET_SDR', center: boundary, decimate: 128, request_id: expect.any(String) }]);
+	});
+
+	it.each(['minimum', 'maximum'] as const)('keeps SDR wheel preview and snapped commit centered at the RF %s', (edge) => {
+		vi.useFakeTimers();
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="128">390.625k</option></select>';
+		graphMode.confirm('sdr');
+		const span = 390_625;
+		const boundary = edge === 'minimum' ? S.FREQ_MIN : S.FREQ_MAX;
+		const direction = edge === 'minimum' ? 1 : -1;
+		const center = boundary + direction * span / 16;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		axisWheel('x', 100, edge === 'minimum' ? RECT.x + RECT.w : RECT.x, IN_X_BAND.y, RECT);
+		const preview = previewFreqWindow()!;
+		expect((preview.lo + preview.hi) / 2).toBeCloseTo(boundary, 5);
+		expect(preview.hi - preview.lo).toBeCloseTo(span * Math.exp(0.15), 5);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		expect(sent).toEqual([{ cmd: 'SET_SDR', center: boundary, decimate: 128, request_id: expect.any(String) }]);
+	});
+
+	it.each(['minimum', 'maximum'] as const)('keeps the RTA window inside the RF %s during a pan', (edge) => {
+		document.body.innerHTML = '<div id="rta-freq-settings"></div>' +
+			'<select id="select-rta-span"><option value="3173828">3.17M</option></select>';
+		graphMode.confirm('rta');
+		const span = 3_173_828;
+		const boundary = edge === 'minimum' ? S.FREQ_MIN : S.FREQ_MAX;
+		const direction = edge === 'minimum' ? 1 : -1;
+		const center = boundary + direction * span;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(400 + direction * RECT.w * 2, IN_X_BAND.y);
+		const preview = previewFreqWindow()!;
+		expect(preview.lo).toBeGreaterThanOrEqual(S.FREQ_MIN);
+		expect(preview.hi).toBeLessThanOrEqual(S.FREQ_MAX);
+		axisDragEnd();
+		const cmd = sent.find((m) => m.cmd === 'SET_RTA');
+		expect(cmd.center - cmd.span / 2).toBeGreaterThanOrEqual(S.FREQ_MIN);
+		expect(cmd.center + cmd.span / 2).toBeLessThanOrEqual(S.FREQ_MAX);
+	});
+
 	it('rebases an SDR gesture onto the accepted passband center and continues from it', () => {
 		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
 		graphMode.confirm('sdr');
@@ -186,9 +242,9 @@ describe('dragging the frequency axis', () => {
 		const requested = sent[0].center;
 		const accepted = requested + 127_000;
 		// A status from before the command cannot replace its pending preview.
-		confirmSdrAxisWindow(center, span, 0);
+		confirmSdrAxisWindow(center, span, 0, 'STATUS', undefined);
 		expect(previewFreqWindow()?.lo).toBeCloseTo(requested - span / 2, 6);
-		confirmSdrAxisWindow(accepted, span, 1);
+		confirmSdrAxisWindow(accepted, span, 1, 'SET_SDR', sent[0].request_id);
 		expect(previewFreqWindow()).toEqual({ lo: accepted - span / 2, hi: accepted + span / 2 });
 		S.setRtaData({ freq: new Float64Array([accepted - span / 2, accepted + span / 2]),
 			startHz: accepted - span / 2, stopHz: accepted + span / 2 });
@@ -198,6 +254,131 @@ describe('dragging the frequency axis', () => {
 		axisDragMove(480, IN_X_BAND.y);
 		axisDragEnd();
 		expect(sent[1].center).toBeCloseTo(accepted - span / 10, 6);
+	});
+
+	it('keeps the latest absolute pan through delayed ACKs and sends only its newest queued target', () => {
+		vi.useFakeTimers();
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
+		graphMode.confirm('sdr');
+		const span = 3_125_000;
+		const center = 21e6;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		const pan = () => {
+			axisDragStart('x', 400, IN_X_BAND.y, RECT);
+			axisDragMove(480, IN_X_BAND.y);
+			axisDragEnd();
+		};
+		pan();
+		const first = sent[0];
+		// The reply takes longer than the normal chaining window. Pending input still chains.
+		vi.advanceTimersByTime(1600);
+		pan();
+		pan();
+		const latest = { lo: center - span * 0.8, hi: center + span * 0.2 };
+		expect(previewFreqWindow()).toEqual(latest);
+		expect(sent).toEqual([first]);
+		confirmSdrAxisWindow(center, span, 1, 'STATUS', undefined);
+		expect(previewFreqWindow()).toEqual(latest);
+		expect(sent).toEqual([first]);
+		confirmSdrAxisWindow(first.center + 127000, span, 2, 'SET_SDR', first.request_id);
+		expect(previewFreqWindow()).toEqual(latest);
+		expect(sent.map((command) => command.center)).toEqual([first.center, center - span * 0.3]);
+		const last = sent[1];
+		// A repeated old ACK cannot consume or shift the new in-flight target.
+		confirmSdrAxisWindow(first.center, span, 2, 'SET_SDR', first.request_id);
+		expect(previewFreqWindow()).toEqual(latest);
+		confirmSdrAxisWindow(last.center, span, 3, 'SET_SDR', last.request_id);
+		S.setRtaData({ freq: new Float64Array([latest.lo, latest.hi]), startHz: latest.lo, stopHz: latest.hi });
+		expect(previewFreqWindow()).toBeNull();
+	});
+
+	it('preserves a held pointer target and origin when the preceding SDR pan is acknowledged', () => {
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
+		graphMode.confirm('sdr');
+		const span = 3_125_000;
+		const center = 21e6;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		axisDragEnd();
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		const held = previewFreqWindow();
+		confirmSdrAxisWindow(sent[0].center + 127000, span, 1, 'SET_SDR', sent[0].request_id);
+		expect(previewFreqWindow()).toEqual(held);
+		axisDragMove(560, IN_X_BAND.y);
+		expect(previewFreqWindow()).toEqual({ lo: center - span * 0.8, hi: center + span * 0.2 });
+		axisDragEnd();
+		expect(sent[1].center).toBe(center - span * 0.3);
+	});
+
+	it('submits a discarded idle-queued SDR target on release without retrying at timeout', () => {
+		vi.useFakeTimers();
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
+		graphMode.confirm('sdr');
+		const span = 3_125_000;
+		const center = 21e6;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
+		expect(sent).toEqual([{ cmd: 'SET_SDR', center: center - span * 0.1,
+			decimate: 16, request_id: expect.any(String) }]);
+		const first = sent[0];
+		axisDragMove(560, IN_X_BAND.y);
+		// Let the second idle commit pass the minimum interval and queue behind the first.
+		vi.advanceTimersByTime(2 * IDLE_COMMIT_MS + 1);
+		const latest = { lo: center - span * 0.7, hi: center + span * 0.3 };
+		expect(previewFreqWindow()).toEqual(latest);
+		expect(sent).toEqual([first]);
+		vi.advanceTimersByTime(6000);
+		expect(axisDragging()).toBe(true);
+		expect(previewFreqWindow()).toEqual(latest);
+		expect(sent).toEqual([first]);
+		// Neither waiting longer nor a late ACK retries the discarded queue.
+		vi.advanceTimersByTime(6000);
+		confirmSdrAxisWindow(first.center, span, 1, 'SET_SDR', first.request_id);
+		expect(sent).toEqual([first]);
+		axisDragEnd();
+		expect(sent).toEqual([first, { cmd: 'SET_SDR', center: center - span * 0.2,
+			decimate: 16, request_id: expect.any(String) }]);
+		expect(sent[1].request_id).not.toBe(first.request_id);
+		confirmSdrAxisWindow(sent[1].center, span, 2, 'SET_SDR', sent[1].request_id);
+		S.setRtaData({ freq: new Float64Array([latest.lo, latest.hi]), startHz: latest.lo, stopHz: latest.hi });
+		expect(previewFreqWindow()).toBeNull();
+	});
+
+	it('discards queued SDR pans on a matching rejection and ignores replies after reset', () => {
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
+		graphMode.confirm('sdr');
+		const span = 3_125_000;
+		S.setRtaData({ freq: new Float64Array([20e6, 20e6 + span]), startHz: 20e6, stopHz: 20e6 + span });
+		for (let i = 0; i < 2; i++) {
+			axisDragStart('x', 400, IN_X_BAND.y, RECT);
+			axisDragMove(480, IN_X_BAND.y);
+			axisDragEnd();
+		}
+		const first = sent[0];
+		rejectSdrAxisWindow('SET_SDR', 'another-request');
+		expect(previewFreqWindow()).not.toBeNull();
+		rejectSdrAxisWindow('SET_SDR', first.request_id);
+		expect(previewFreqWindow()).toBeNull();
+		confirmSdrAxisWindow(first.center, span, 1, 'SET_SDR', first.request_id);
+		expect(sent).toEqual([first]);
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		axisDragEnd();
+		const second = sent[1];
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		axisDragEnd();
+		resetAxisPreview();
+		confirmSdrAxisWindow(second.center, span, 2, 'SET_SDR', second.request_id);
+		expect(sent).toEqual([first, second]);
+		expect(previewFreqWindow()).toBeNull();
 	});
 });
 
@@ -210,7 +391,7 @@ describe('dragging the level labels', () => {
 		expect(t.sy).toBeCloseTo(1, 9);
 		expect(t.dyFrac).toBeCloseTo(0.1, 9);
 		axisDragEnd();
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
 	});
 
 	it('pans the level OFFSET in the relative (dB) display instead of the device Ref', () => {
@@ -275,7 +456,7 @@ describe('dragging the level labels', () => {
 		expect(previewLevelWindow()?.ref).toBe(0);
 		axisDragEnd();
 		expect(axisDragging()).toBe(false);
-		expect(sent).toEqual([
+		expect(sent).toMatchObject([
 			{ cmd: 'SET_REF', mode: 'manual', ref: -10 },
 			{ cmd: 'SET_REF', mode: 'manual', ref: 0 },
 		]);
@@ -289,7 +470,7 @@ describe('dragging the level labels', () => {
 		axisDragMove(IN_Y_BAND.x, 240);
 		vi.advanceTimersByTime(IDLE_COMMIT_MS + 6500);
 		axisDragEnd();
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
 		expect(previewLevelWindow()?.ref).toBe(-10);
 		vi.advanceTimersByTime(6001);
 		expect(previewLevelWindow()).toBeNull();
@@ -305,17 +486,17 @@ describe('dragging the level labels', () => {
 		axisDragMove(IN_Y_BAND.x, beyond);
 		expect(previewLevelWindow()?.ref).toBe(bound);
 		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: raw }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: raw }]);
 		expect(previewLevelWindow()?.ref).toBe(bound);
 		expect(getDisplayRef()).toBe(bound);
 		axisDragMove(IN_Y_BAND.x, further);
 		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: raw }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: raw }]);
 		expect(previewLevelWindow()?.ref).toBe(bound);
 		axisDragMove(IN_Y_BAND.x, reverse);
 		expect(previewLevelWindow()?.ref).toBe(final);
 		axisDragEnd();
-		expect(sent).toEqual([
+		expect(sent).toMatchObject([
 			{ cmd: 'SET_REF', mode: 'manual', ref: raw },
 			{ cmd: 'SET_REF', mode: 'manual', ref: final - offset },
 		]);
@@ -330,7 +511,7 @@ describe('dragging the level labels', () => {
 		axisDragMove(IN_Y_BAND.x, 680);
 		axisDragEnd();
 		expect(getDisplayRef()).toBe(100);
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: 40 }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: 40 }]);
 		confirmAxisRef(100);
 		expect(previewLevelWindow()?.ref).toBe(100);
 		noteDisplayRefReport(40);
@@ -364,7 +545,7 @@ describe('dragging the level labels', () => {
 		axisDragMove(IN_Y_BAND.x, 280);
 		expect(previewLevelWindow()?.ref).toBe(60);
 		axisDragEnd();
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: 0 }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: 0 }]);
 		commitLevelOffset(-60);
 		expect(previewLevelWindow()?.ref).toBe(-60);
 		expect(getDisplayRef()).toBe(-60);
@@ -380,7 +561,7 @@ describe('dragging the level labels', () => {
 		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
 		axisDragMove(IN_Y_BAND.x, 200);
 		axisDragEnd();
-		expect(sent).toEqual([
+		expect(sent).toMatchObject([
 			{ cmd: 'SET_REF', mode: 'manual', ref: -10 },
 			{ cmd: 'SET_REF', mode: 'manual', ref: -20 },
 		]);
@@ -392,7 +573,7 @@ describe('dragging the level labels', () => {
 		axisDragMove(IN_Y_BAND.x, 240);
 		vi.advanceTimersByTime(IDLE_COMMIT_MS + 1);
 		axisDragEnd();
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
 		// The optimistic display already matches, but that does not acknowledge the command.
 		expect(getDisplayRef()).toBe(-10);
 		expect(previewLevelWindow()?.ref).toBe(-10);
@@ -416,7 +597,7 @@ describe('dragging the level labels', () => {
 		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
 		axisDragMove(IN_Y_BAND.x, 160);
 		axisDragEnd();
-		expect(sent).toEqual([
+		expect(sent).toMatchObject([
 			{ cmd: 'SET_REF', mode: 'manual', ref: -100 },
 			{ cmd: 'SET_REF', mode: 'manual', ref: -110 },
 		]);
@@ -442,7 +623,7 @@ describe('dragging the level labels', () => {
 		axisDragEnd();
 		axisDragStart('y', IN_Y_BAND.x, 200, RECT);
 		axisDragEnd();
-		expect(sent).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
+		expect(sent).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: -10 }]);
 		expect(previewLevelWindow()?.ref).toBe(-10);
 		confirmAxisRef(-10);
 		expect(previewLevelWindow()).toBeNull();

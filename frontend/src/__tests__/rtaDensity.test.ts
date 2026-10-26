@@ -223,6 +223,18 @@ describe('the persistence setting', () => {
 		expect(rtaHalflife.get()).toBe(0);
 	});
 
+	it('selects 0.2 s and restores that exact choice from storage', () => {
+		densSelect('<option value="0">Off</option><option value="0.2">0.2 s</option><option value="0.5" selected>0.5 s</option>');
+		setRtaHalflife(0.2);
+		expect(rtaHalflife.get()).toBe(0.2);
+		expect(localStorage.getItem('rta-halflife')).toBe('0.2');
+		expect((document.getElementById('select-rta-fade') as HTMLSelectElement).value).toBe('0.2');
+		rtaHalflife.set(2);
+		restoreRtaDensityCfg();
+		expect(rtaHalflife.get()).toBe(0.2);
+		expect((document.getElementById('select-rta-fade') as HTMLSelectElement).value).toBe('0.2');
+	});
+
 	it('uses the panel default when storage is absent, a real gear for invalid input, and drops the old per-frame key', () => {
 		localStorage.setItem('rta-fade', '0.975');
 		const sel = densSelect('<option value="0">Off</option><option value="0.5" selected>0.5 s</option><option value="2">2 s</option>');

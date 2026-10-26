@@ -128,7 +128,7 @@ describe('manual display viewport through STATUS', () => {
 			updateStatus(report);
 			commitRefLevel(90);
 			expect(getDisplayRef()).toBe(90);
-			expect(commands.filter(command => command.cmd === 'SET_REF')).toEqual([{ cmd: 'SET_REF', mode: 'manual', ref: 40 }]);
+			expect(commands.filter(command => command.cmd === 'SET_REF')).toMatchObject([{ cmd: 'SET_REF', mode: 'manual', ref: 40 }]);
 			report.mode = mode === 'std' ? 'rta' : 'std';
 			report.req[report.mode === 'std' ? 'swp' : report.mode].ref = -50;
 			report.ref = -50;
@@ -307,7 +307,7 @@ describe("the user's SDR audio preference", () => {
 });
 
 describe('updateStatus', () => {
-	it('repaints the primary input meter on consecutive STATUS and clears missing measurements', () => {
+	it('repaints the primary input meter on consecutive STATUS and marks missing measurements unavailable', () => {
 		const meter = document.createElement('span');
 		meter.id = 'cur-sdr-level';
 		document.body.append(meter);
@@ -322,11 +322,11 @@ describe('updateStatus', () => {
 		expect(meter.textContent).toBe('-26.0 dBFS');
 		status.sdr.channels[0].level_dbfs = null;
 		updateStatus(status);
-		expect(meter.textContent).toBe('');
+		expect(meter.textContent).toBe('--- dBFS');
 		delete status.sdr.channels;
 		status.sdr.level_dbfs = null;
 		updateStatus(status);
-		expect(meter.textContent).toBe('');
+		expect(meter.textContent).toBe('--- dBFS');
 		meter.remove();
 	});
 	it('confirms the swept parameters into their slots', () => {

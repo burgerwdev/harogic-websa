@@ -26,7 +26,7 @@ import { syncAvgUI, showNormalizeClearedHint } from '../ui/traceOps';
 import { accumulateTrace } from '../dsp/accumulator';
 import { pushSpectrumRow } from '../render/waterfall';
 import { sampleSwpWaterfall } from '../ui/panels/waterfall';
-import { onCommandSent, setWS } from './wsSend';
+import { onCommandSent, send, setWS } from './wsSend';
 import { premiumRefClockLabel, refreshRefClockHint } from './refclock';
 import { retrackMarkers } from './markerCommon';
 import { processTraces } from '../dsp/traces';
@@ -61,7 +61,7 @@ import { syncSweepStatus, rejectSweepRequest, resetSweepEditor } from '../ui/pan
 import { acceptRtaAxisFrame, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { sdrCenterHz, sdrDecimate } from '../ui/sdrState';
 import { deviceMode } from '../ui/graphMode';
-import { confirmAxisRef, rejectAxisRef } from '../ui/axisDrag';
+import { confirmAxisRef, rejectAxisRef, rejectSdrAxisWindow } from '../ui/axisDrag';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -72,6 +72,63 @@ function localizedError(msg: any): string {
   const key = code ? `err_${code}` : '';
   const text = key && hasKey(key) ? t(key, params) : (msg?.msg || t('err_command'));
   return `${t('alert_device')}: ${text}`;
+}
+
+type SentCommand = { sequence: number; command: Readonly<Record<string, unknown>>; recovered?: boolean };
+const pendingCommands = new Map<unknown, SentCommand>();
+let commandSequence = 0;
+let commandFailure: { sequence: number; scope: string; text: string } | null = null;
+
+function recoveryScope(command: Readonly<Record<string, unknown>>): string {
+  const cmd = String(command.cmd);
+  const channel = command.channel ?? 1;
+  if (cmd === 'SET_SDR' || cmd === 'SET_SDR_TUNE'
+      || (cmd === 'SET_SDR_CHANNEL' && ('freq' in command || 'listen' in command))) {
+    return `sdr-frequency:${cmd === 'SET_SDR_CHANNEL' ? channel : 1}`;
+  }
+  if (cmd === 'SET_SDR_CHANNEL') {
+    const fields = Object.keys(command).filter(key => key !== 'cmd' && key !== 'channel' && key !== 'request_id').sort();
+    return `${cmd}:${channel}:${fields.join(',')}`;
+  }
+  return cmd;
+}
+
+function takeCommandReply(reply: Readonly<Record<string, unknown>>): SentCommand | undefined {
+  const sent = pendingCommands.get(reply.request_id);
+  if (!sent || sent.command.cmd !== reply.response_to) return;
+  pendingCommands.delete(reply.request_id);
+  return sent;
+}
+
+function reportCommandError(reply: Readonly<Record<string, unknown>>) {
+  const sent = takeCommandReply(reply);
+  if (sent?.recovered) return;
+  // Late failures must not replace a diagnostic from a newer request.
+  if (sent && commandFailure && sent.sequence < commandFailure.sequence) return;
+  const text = localizedError(reply);
+  commandFailure = typeof reply.response_to === 'string' ? {
+    sequence: sent?.sequence ?? commandSequence,
+    scope: recoveryScope(sent?.command ?? { cmd: reply.response_to }), text,
+  } : null;
+  S.setStatusError(text);
+}
+
+function confirmCommandRecovery(reply: Readonly<Record<string, unknown>>) {
+  const sent = takeCommandReply(reply);
+  if (!sent) return;
+  const cmd = sent.command.cmd;
+  const scope = recoveryScope(sent.command);
+  // Keep recovery evidence on still-pending older requests, even when there is
+  // no visible failure yet. Their delayed ERROR cannot undo confirmed recovery.
+  for (const pending of pendingCommands.values()) {
+    if (pending.sequence < sent.sequence && (cmd === 'SET_MODE' || cmd === 'CONNECT'
+        || recoveryScope(pending.command) === scope)) pending.recovered = true;
+  }
+  if (!commandFailure || sent.sequence <= commandFailure.sequence) return;
+  if (cmd !== 'SET_MODE' && cmd !== 'CONNECT'
+      && recoveryScope(sent.command) !== commandFailure.scope) return;
+  if (S.statusError === commandFailure.text) S.setStatusError(null);
+  commandFailure = null;
 }
 
 let ws: WebSocket | null = null;
@@ -124,6 +181,12 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
 
 onTriggerReset(cancelSpectrumWork);
 onCommandSent(command => {
+  if (command.cmd !== 'STATUS') {
+    pendingCommands.set(command.request_id, { sequence: ++commandSequence, command });
+    // Missing replies cannot grow this ledger indefinitely. Evicted/unknown ACKs
+    // conservatively retain the diagnostic because their ordering is unproven.
+    if (pendingCommands.size > 256) pendingCommands.delete(pendingCommands.keys().next().value);
+  }
   if (command.cmd === 'SET_MODE' || command.cmd === 'SET_PRESET'
       || command.cmd === 'SET_RTA' || command.cmd === 'SET_TRIGGER') cancelSpectrumWork();
 });
@@ -131,9 +194,6 @@ onCommandSent(command => {
 // Re-initialise the SDR auto-scale (called when entering SDR).
 let firstConnect = true;
 
-export function send(obj: object) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-}
 
 function scheduleReconnect() {
   if (reconnectTimer !== null) return;
@@ -194,6 +254,7 @@ export function connectWS() {
   };
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
+    pendingCommands.clear();
     cancelSpectrumWork();
     endMeasurementSessions();
     S.setDeviceConnected(false);
@@ -220,21 +281,25 @@ export function connectWS() {
         else if (msg.cmd === 'RECEIVER_ERROR' || (msg.cmd === 'ERROR'
             && (msg.code === 'receiver_failed' || msg.code === 'receiver_retiring'))) {
           failSdrReceiver(String(msg.error || msg.msg || t('receiver_failed')));
+          takeCommandReply(msg);
           if (msg.cmd === 'ERROR') {
             rejectSdrAgcRequest(msg.response_to, msg.request_id);
             rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
             rejectSdrFilterRequest(msg.response_to, msg.request_id, true);
             rejectSdrTuneRequest(msg.response_to, msg.request_id);
+            rejectSdrAxisWindow(msg.response_to, msg.request_id);
             if (msg.response_to === 'SET_MODE') releaseGraphModePending();
           } else rejectSdrFilterRequest(undefined, undefined, true);
         }
         else if (msg.cmd === 'ERROR') {
+          reportCommandError(msg);
           releaseGraphModePending();
           if (msg.response_to === 'SET_TRIGGER') rejectTriggerEdit();
           if (msg.response_to === 'SET_REF') { rejectAxisRef(); rejectManualRef(); }
           rejectFrequencyCommit(msg.response_to, msg.request_id);
           rejectResolutionCommit(msg.response_to, msg.request_id);
           rejectRtaAxisTransition(msg.response_to, msg.request_id);
+          rejectSdrAxisWindow(msg.response_to, msg.request_id);
           if (msg.response_to === 'SET_SWEEP') rejectSweepRequest(msg.request_id);
           rejectRefClockRequest(msg.response_to, msg.request_id);
           rejectAmpRequest(msg.response_to, msg.request_id);
@@ -243,7 +308,6 @@ export function connectWS() {
           rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
           rejectSdrFilterRequest(msg.response_to, msg.request_id);
           rejectSdrTuneRequest(msg.response_to, msg.request_id);
-          S.setStatusError(localizedError(msg));
         }
       } catch (error) {
         console.error('Invalid WebSocket JSON message', error);
@@ -452,6 +516,7 @@ export function connectWS() {
 
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
+  confirmCommandRecovery(s);
   if (s.connected === false || s.mode !== deviceMode.get()) cancelSpectrumWork();
   document.body.dataset.deviceMode = String(s.mode);
   syncPresetStatus(s.response_to, s.request_id);
@@ -651,7 +716,7 @@ export function updateStatus(s: any) {
   syncSdrPanel(s);   // last: in SDR it owns the shared Ref widgets
   if (sdrIqStats().receiverFailed) {
     const level = document.getElementById('cur-sdr-level');
-    if (level) { level.textContent = ''; level.removeAttribute('title'); }
+    if (level) { level.textContent = '--- dBFS'; level.removeAttribute('title'); }
   }
 }
 

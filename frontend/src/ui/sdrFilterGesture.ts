@@ -2,6 +2,8 @@
  * release returns a value for the command owner. Coordinates use logical canvas pixels. */
 import { ctx } from '../core/store';
 import * as S from '../core/store';
+import { canvasColors } from '../core/theme';
+import { drawPassband } from '../render/passband';
 import { plotRect } from '../render/plot';
 import { demodBandHz, sdrDemod, sdrIfbw, sdrListenHz, sdrPitchHz } from './sdrState';
 import { isDigitalMode } from '../sdr/registry';
@@ -135,6 +137,15 @@ interface DragState {
 
 let drag: DragState | null = null;
 let hover: FilterEdge | null = null;
+let tuneDragging = false;
+
+export function setPassbandTuneDragging(active: boolean): void {
+  tuneDragging = active;
+}
+
+export function passbandDragFrequency(): number | null {
+  return S.sdrMode && (tuneDragging || drag !== null) ? sdrListenHz.get() : null;
+}
 
 /** True while a filter drag owns its pointer. */
 export function filterDragging(): boolean {
@@ -282,10 +293,10 @@ export function filterViewResolution(): { samples: number; atDataLimit: boolean 
 
 // ---------------- renderer hook ----------------
 
-/** Draw inside the caller's plot clip; protocol modes have no editable handles. */
-export function renderFilterPassband(loHz: number, hiHz: number): boolean {
+/** Draw inside the caller's plot clip; a badge drag may preview a different dial frequency. */
+export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: number | null = null): boolean {
   if (!S.sdrMode) return false;
-  const listen = sdrListenHz.get();
+  const listen = listenPreview ?? sdrListenHz.get();
   if (!(listen > 0)) return false;
   const mode = sdrDemod.get();
   const [bandLo, bandHi] = demodBandHz(mode, filterPreviewHz(), sdrPitchHz.get());
@@ -305,9 +316,9 @@ export function renderFilterPassband(loHz: number, hiHz: number): boolean {
   const ds = `${bandLo}..${bandHi}`;
   if (ctx.canvas.dataset.demodBand !== ds) ctx.canvas.dataset.demodBand = ds;
 
-  ctx.fillStyle = 'rgba(0,255,160,0.12)';
-  ctx.fillRect(x0, p.y, Math.max(1, x1 - x0), p.h);
-  ctx.strokeStyle = '#00ffa0';
+  const colors = canvasColors();
+  drawPassband(ctx, x0, x1, p.x, p.y, p.w, p.h, colors, listenPreview !== null || passbandDragFrequency() !== null);
+  ctx.strokeStyle = colors.rta;
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 3]);
   ctx.beginPath();
@@ -325,14 +336,6 @@ export function renderFilterPassband(loHz: number, hiHz: number): boolean {
   for (const edge of active) {
     const x = edge === 'low' ? x0 : x1;
     if (x < p.x || x > p.x + p.w) continue;
-    // The 2px line marks the TRUE cutoff; the grab area is the caller's tolerance.
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(x, p.y);
-    ctx.lineTo(x, p.y + p.h);
-    ctx.stroke();
-    // Top tab so the full-height line does not read as a tune marker.
     ctx.fillStyle = accent;
     ctx.beginPath();
     ctx.moveTo(x - 5, p.y);

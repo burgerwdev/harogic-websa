@@ -77,7 +77,7 @@ const MAX_DB_PER_DIV = 20;
 const MIN_SPAN_HZ = 100;
 
 type GestureBase = { freq: FreqWindow | null; level: LevelWindow };
-type Settle = { freq?: FreqWindow; level?: LevelWindow; levelAccepted?: boolean; revision?: number };
+type Settle = { freq?: FreqWindow; level?: LevelWindow; levelAccepted?: boolean };
 /** What the level axis changes: the device reference, or the relative display's own offset. */
 type LevelTarget = 'ref' | 'offset';
 
@@ -118,6 +118,9 @@ let chain: (GestureBase & { axis: Axis; at: number }) | null = null;
 let idleTimer: number | null = null;
 let settleTimer: number | null = null;
 let lastCommitAt = 0;
+let sdrSerial = 0;
+let sdrInFlight: { id: string; freq: FreqWindow; revision: number; timer: number } | null = null;
+let sdrQueued: FreqWindow | null = null;
 
 // ---------------- the windows on screen ----------------
 
@@ -158,10 +161,9 @@ function levelAt(frac: number, w: LevelWindow = committedLevelWindow()): number 
 
 function clampFreq(w: FreqWindow): FreqWindow {
 	if (currentGraphMode() === 'sdr') {
-		// IQ widths are fixed steps: slide the entire window inside the RF limits.
-		const span = Math.min(w.hi - w.lo, S.FREQ_MAX - S.FREQ_MIN);
-		const half = span / 2;
-		const center = Math.max(S.FREQ_MIN + half, Math.min(S.FREQ_MAX - half, (w.lo + w.hi) / 2));
+		// RF limits constrain the tuner center; the fixed IQ window may cross either limit.
+		const half = (w.hi - w.lo) / 2;
+		const center = Math.max(S.FREQ_MIN, Math.min(S.FREQ_MAX, (w.lo + w.hi) / 2));
 		return { lo: center - half, hi: center + half };
 	}
 	const n = normalizeCenterSpan(
@@ -198,6 +200,7 @@ export function axisBandAt(x: number, y: number, rect: Rect): Axis | null {
 function refresh(): void {
 	const s = session;
 	if (!s || s.down || s.live || !s.settle) return;
+	if (s.axis === 'x' && sdrInFlight) return;
 	const want = s.settle;
 	let done = true;
 	if (want.freq) {
@@ -256,24 +259,46 @@ export function rejectAxisRef(): void {
 	if (session?.axis === 'y' && session.level === 'ref' && session.settle?.level) clearPreview();
 }
 
-/** Rebase a pending SDR gesture onto the window accepted by the device. */
-export function confirmSdrAxisWindow(center: number, span: number, revision: number): void {
-	const s = session;
-	const pending = s?.settle;
-	if (currentGraphMode() !== 'sdr' || !s || s.axis !== 'x' || !pending?.freq
-		|| pending.revision === undefined || revision <= pending.revision
+/** Only the matching command may settle a pan; older reports must not move newer input. */
+export function confirmSdrAxisWindow(center: number, span: number, revision: number,
+	responseTo: unknown, requestId: unknown): void {
+	const pending = sdrInFlight;
+	if (currentGraphMode() !== 'sdr' || !pending || responseTo !== 'SET_SDR'
+		|| requestId !== pending.id || revision < pending.revision
 		|| !Number.isFinite(revision) || !Number.isFinite(center) || !(span > 0)) return;
-	const requested = pending.freq;
-	if (!near(span, requested.hi - requested.lo, Math.max(1, span * FREQ_MATCH_FRAC))) return;
+	window.clearTimeout(pending.timer);
+	sdrInFlight = null;
 	const accepted = { lo: center - span / 2, hi: center + span / 2 };
-	const delta = accepted.lo - requested.lo;
-	const shift = (window: FreqWindow): FreqWindow => ({ lo: window.lo + delta, hi: window.hi + delta });
-	if (s.base.freq) s.base.freq = shift(s.base.freq);
-	if (s.targetFreq) s.targetFreq = shift(s.targetFreq);
-	pending.freq = accepted;
-	pending.revision = revision;
-	if (chain?.axis === 'x' && chain.freq) chain.freq = shift(chain.freq);
+	const s = session;
+	if (s?.axis === 'x' && s.settle?.freq === pending.freq) {
+		s.settle.freq = accepted;
+		// A released, unchanged target follows the device's passband fit. Input that arrived
+		// during the round trip keeps its absolute target and pointer origin.
+		if (!s.down && !s.live && s.targetFreq
+			&& near(s.targetFreq.lo, pending.freq.lo, 1) && near(s.targetFreq.hi, pending.freq.hi, 1)) {
+			s.targetFreq = accepted;
+			if (chain?.axis === 'x') chain.freq = accepted;
+		}
+	}
+	const next = sdrQueued;
+	sdrQueued = null;
+	if (next) submitSdrWindow(next);
 	refresh();
+	if (session) scheduleSettleTimeout();
+}
+
+/** A failed pan discards unsent input; its error remains visible through the WS handler. */
+export function rejectSdrAxisWindow(responseTo?: string, requestId?: string | number): void {
+	if (responseTo !== 'SET_SDR' || requestId !== sdrInFlight?.id) return;
+	cancelSdrWindow();
+	if (session?.axis === 'x') clearPreview();
+	if (chain?.axis === 'x') chain = null;
+}
+
+function cancelSdrWindow(): void {
+	if (sdrInFlight) window.clearTimeout(sdrInFlight.timer);
+	sdrInFlight = null;
+	sdrQueued = null;
 }
 
 /**
@@ -318,6 +343,7 @@ export function axisDragging(): boolean {
 
 /** Forget any preview (mode change, preset, or a failed gesture). */
 export function resetAxisPreview(): void {
+	cancelSdrWindow();
 	clearPreview();
 	chain = null;
 	// The rate limiter's memory of the last commit belongs to the gesture that ended, not to the
@@ -341,6 +367,8 @@ function chainBase(axis: Axis): GestureBase | null {
 	// Ref and dB/div writes update the client display immediately. Reusing a cached Y target
 	// would override newer panel edits, request bounds, or a rejected SDR request's rollback.
 	if (axis === 'y') return null;
+	if (session?.axis === 'x' && session.targetFreq && sdrInFlight)
+		return { freq: session.targetFreq, level: session.targetLevel };
 	if (!chain || chain.axis !== axis) return null;
 	if (performance.now() - chain.at > CHAIN_MS) return null;
 	return { freq: chain.freq, level: chain.level };
@@ -375,7 +403,7 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 	const base: GestureBase = chained
 		? { freq: chained.freq ?? freq, level: chained.level }
 		: { freq, level };
-	const pendingLevel = axis === 'y' && session?.axis === 'y' && session.settle?.level
+	const pending = session?.axis === axis && (axis === 'y' || currentGraphMode() === 'sdr')
 		? session.settle : null;
 	clearTimers();
 	session = {
@@ -394,7 +422,7 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 		committedRef: base.level.ref,
 		down: held,
 		live: true,
-		settle: pendingLevel,
+		settle: pending,
 	};
 	return true;
 }
@@ -497,7 +525,7 @@ function scheduleIdleCommit(): void {
 function targetMoved(): boolean {
 	const s = session!;
 	if (s.axis === 'x') {
-		const b = s.base.freq;
+		const b = currentGraphMode() === 'sdr' ? s.settle?.freq ?? s.base.freq : s.base.freq;
 		const t = s.targetFreq;
 		if (!b || !t) return false;
 		const tol = Math.max(1, 1e-6 * (b.hi - b.lo));
@@ -535,7 +563,6 @@ function commit(reason: 'end' | 'idle'): void {
 		const sent = commitFreqWindow(s.targetFreq);
 		if (sent) {
 			settle.freq = sent;
-			if (currentGraphMode() === 'sdr') settle.revision = S.configVersion;
 		}
 	} else if (s.axis === 'y' && s.level === 'ref') {
 		const sent = commitRefLevel(s.targetLevel.ref);
@@ -546,7 +573,7 @@ function commit(reason: 'end' | 'idle'): void {
 		}
 	}
 	lastCommitAt = now;
-	if (settle.freq || settle.level) noteCommit();
+	if ((settle.freq && currentGraphMode() !== 'sdr') || settle.level) noteCommit();
 	s.live = false;
 	s.settle = settle.freq || settle.level ? settle : null;
 	rememberTarget();
@@ -557,6 +584,7 @@ function scheduleSettleTimeout(): void {
 	if (settleTimer !== null) { window.clearTimeout(settleTimer); settleTimer = null; }
 	// An idle commit leaves the pointer in charge; its preview may expire only after release.
 	if (session?.down || session?.live) return;
+	if (sdrInFlight) return;
 	settleTimer = window.setTimeout(() => {
 		settleTimer = null;
 		if (!session?.down && !session?.live) clearPreview();
@@ -630,6 +658,24 @@ function commitFreqWindow(w: FreqWindow): FreqWindow | null {
 	const span = estimatedCaptureSpanHz(decimate);
 	const fitted = clampFreq({ lo: center - span / 2, hi: center + span / 2 });
 	selectOption('select-sdr-decimate', decimate);
-	send({ cmd: 'SET_SDR', center: (fitted.lo + fitted.hi) / 2, decimate });
+	if (sdrInFlight) sdrQueued = fitted;
+	else submitSdrWindow(fitted);
 	return fitted;
+}
+
+/** One device reconfiguration at a time, with only the latest unsent window retained. */
+function submitSdrWindow(freq: FreqWindow): void {
+	const decimate = nearestDecimate(freq.hi - freq.lo);
+	if (decimate === null) return;
+	const id = `sdr-axis-${++sdrSerial}`;
+	sdrInFlight = { id, freq, revision: S.configVersion, timer: window.setTimeout(() => {
+		if (sdrInFlight?.id !== id) return;
+		// A held drag may release the discarded target later; it is no longer submitted.
+		if (session?.axis === 'x' && session.settle?.freq === sdrQueued) session.settle = null;
+		cancelSdrWindow();
+		if (session?.axis === 'x' && !session.down && !session.live) clearPreview();
+		if (chain?.axis === 'x') chain = null;
+	}, SETTLE_MAX_MS) };
+	send({ cmd: 'SET_SDR', center: (freq.lo + freq.hi) / 2, decimate, request_id: id });
+	noteCommit();
 }

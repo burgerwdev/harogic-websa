@@ -307,6 +307,22 @@ describe('SDR control intent and STATUS', () => {
 		expect(state.sdrListenHz.get()).toBe(9_810_000);
 	});
 
+	it.each(['minimum', 'maximum'] as const)('stops keyboard tuning at the RF %s inside a crossing IQ window', async (edge) => {
+		const { controls, state, send } = await load();
+		const store = await import('../core/store');
+		const { graphMode } = await import('../ui/graphMode');
+		graphMode.confirm('sdr');
+		const boundary = edge === 'minimum' ? store.FREQ_MIN : store.FREQ_MAX;
+		const direction = edge === 'minimum' ? 1 : -1;
+		state.sdrCenterHz.confirm(boundary);
+		state.sdrSpanHz.confirm(390_625);
+		state.sdrListenHz.confirm(boundary + direction);
+		controls.bindCanvas();
+		key(edge === 'minimum' ? 'ArrowLeft' : 'ArrowRight');
+		expect(state.sdrListenHz.get()).toBe(boundary);
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', freq: boundary }));
+	});
+
 	it('keeps tenths of a dB distinct and reflects the threshold through STATUS', async () => {
 		document.body.insertAdjacentHTML('beforeend', '<input type="range" id="input-sdr-squelch" min="-160" max="0" step="0.1"><span id="cur-sdr-squelch"></span>');
 		const { controls, state, send } = await load();

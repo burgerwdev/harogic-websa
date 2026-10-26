@@ -168,7 +168,9 @@ impl DevState {
             };
         }
         let (minimum, maximum) = self.freq_limits();
-        if config.enabled && !(minimum..=maximum).contains(&config.freq) { return Err("channel frequency outside device limits".into()); }
+        if config.enabled && !(minimum..=maximum).contains(&config.freq) {
+            return Err(format!("channel frequency outside device limits: channel {} requested {} Hz; valid RF range {minimum}..={maximum} Hz", config.channel, config.freq));
+        }
         service_ddc::channel_plan(COARSE_RATE,&config)?;
         if !(-200.0..=0.0).contains(&config.squelch) { return Err("squelch must be in -200..=0 dB".into()); }
         if !(0.0..=2.0).contains(&config.volume) { return Err("volume must be in 0..=2".into()); }

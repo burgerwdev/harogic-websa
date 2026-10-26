@@ -67,10 +67,11 @@ export function locateTargetAt(x: number, y: number, pixelScale: number): Locate
 	if (!Number.isFinite(raw) || raw <= 0) return null;
 	const free: LocateTarget = { mode: 'free', targetHz: raw, carrierHz: raw, x, evidenceMs: null };
 	if (!S.sdrMode) return free;
+	if (raw < S.FREQ_MIN || raw > S.FREQ_MAX) return null;
 	const mode = sdrDemod.get(), preference = effectivePreference(mode);
 	if (preference === 'channel') {
 		const aligned = alignToChannelGrid(raw, sdrChannelStepHz.get(), sdrChannelAnchorHz.get(),
-			{ lo: Math.max(view.lo, 0), hi: view.hi });
+			{ lo: Math.max(view.lo, S.FREQ_MIN), hi: Math.min(view.hi, S.FREQ_MAX) });
 		if (aligned === null || aligned <= 0) return free;
 		return { mode: 'channel', targetHz: aligned, carrierHz: aligned,
 			x: p.x + (aligned - view.lo) / (view.hi - view.lo) * p.w, evidenceMs: null };
@@ -79,7 +80,7 @@ export function locateTargetAt(x: number, y: number, pixelScale: number): Locate
 		const cand = findCarrierCandidate(raw, snapRadiusHzAt(pixelScale), performance.now(), signalMaxBinHz(mode));
 		if (cand) {
 			const dial = mode === 'cw' ? cand.hz - Math.max(100, sdrPitchHz.get()) : cand.hz;
-			if (dial > 0 && dial >= view.lo && dial <= view.hi) {
+			if (dial >= S.FREQ_MIN && dial <= S.FREQ_MAX && dial >= view.lo && dial <= view.hi) {
 				return { mode: 'signal', targetHz: dial, carrierHz: cand.hz,
 					x: p.x + (dial - view.lo) / (view.hi - view.lo) * p.w, evidenceMs: cand.atMs };
 			}
@@ -221,7 +222,7 @@ export function commitSdrLocateClick(rawHz: number): number | null {
 	const c = frozen;
 	frozen = null;
 	requestRender();
-	if (!c || !S.sdrMode || !Number.isFinite(rawHz) || rawHz <= 0) return null;
+	if (!c || !S.sdrMode || !Number.isFinite(rawHz) || rawHz < S.FREQ_MIN || rawHz > S.FREQ_MAX) return null;
 	if (environmentChanged(c.environment)) {
 		postRefNotice(t('sdr_locate_fallback_moved'), 2500);
 		return rawHz;
@@ -236,7 +237,7 @@ export function commitSdrLocateClick(rawHz: number): number | null {
 			return rawHz;
 		}
 	}
-	return target.targetHz;
+	return target.targetHz >= S.FREQ_MIN && target.targetHz <= S.FREQ_MAX ? target.targetHz : null;
 }
 
 export function cancelSdrLocate(): void {

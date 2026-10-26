@@ -1,17 +1,50 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pushSpectrumRow, renderWaterfall, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
 import * as S from '../core/store';
 import { wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
 import { __testSeedCapture } from '../ui/spectrumViewport';
+import { clearSdrBadgeDrag, sdrBadgeGeometry, startSdrBadgeDrag } from '../ui/sdrBadgeGesture';
+import { sdrListenHz } from '../ui/sdrState';
+import { canvasColors, setTheme } from '../core/theme';
 
 beforeEach(() => {
   S.resetWaterfall();
   wfRangeMode.set('fixed');
-  wfLoDbm.set(-100);
   wfHiDbm.set(0);
+  wfLoDbm.set(-100);
+});
+
+afterEach(() => {
+  clearSdrBadgeDrag();
+  S.setSdrMode(false);
+  S.setRtaData(null);
+  __testSeedCapture(null);
+  setTheme('dark');
+  S.setFrequencyLimits(9000, 9e9);
 });
 
 describe('native waterfall history', () => {
+
+  it('erases the indicator from an empty waterfall without a new history row', () => {
+    S.initStore();
+    S.setSdrMode(true);
+    const freq = Float64Array.from([10_000, 20_000]);
+    S.setRtaData({ freq, startHz: 10_000, stopHz: 20_000 });
+    __testSeedCapture({ lo: 10_000, hi: 20_000 });
+    sdrListenHz.confirm(15_000);
+    const context = { fillStyle: '', fillRect: vi.fn(), save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), setLineDash: vi.fn() };
+    const canvas = { width: 100, height: 40, getContext: () => context } as unknown as HTMLCanvasElement;
+    const g = sdrBadgeGeometry()!;
+    startSdrBadgeDrag(g.left, g, clearSdrBadgeDrag);
+    renderWaterfall(canvas, 100);
+    expect(context.fillRect).toHaveBeenLastCalledWith(50, 0, 2, 40);
+    clearSdrBadgeDrag();
+    context.fillRect.mockClear();
+    renderWaterfall(canvas, 100);
+    expect(context.fillRect).toHaveBeenCalledExactlyOnceWith(0, 0, 100, 40);
+    expect(context.fillStyle).toBe(canvasColors().bg);
+  });
+
   it('retains a close pair, valley, missing bin and final carrier on their native Hz', () => {
     const freq = Float64Array.from([10, 12, 14, 16, 18]);
     pushSpectrumRow(Float32Array.from([-20, -95, -30, NaN, -25]), freq, 8, 20, 100);

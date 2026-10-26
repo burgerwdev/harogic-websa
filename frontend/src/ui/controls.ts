@@ -8,9 +8,10 @@ import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTu
 import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
 import { sdrFilterLimits } from './sdrState';
 import { clearPassbandView } from './spectrumViewport';
-import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, moveFilterDrag, setFilterHover, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
+import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, moveFilterDrag, setFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
 import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession, stopSdrTuneRepeat } from './sdrTuneRequest';
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
+import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
 import { resetCarrierEvidence } from '../dsp/carrierSnap';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
@@ -560,22 +561,6 @@ export function applySdrStep() {
 }
 
 /**
- * Move the wideband centre by a part of the capture span. This is the SDR edge push: a drag that
- * touches either side of the plot. One writer for that move keeps the wire payload equal to the
- * slot values. The edge push put the slots themselves on the wire. JSON made objects of them, and
- * the backend answered "center must be a number" for each push. The operator then had to dismiss
- * a stack of dialogs after a drag to a side.
- */
-export function sdrPanCentreBy(fraction: number) {
-  const span = sdrSpanHz.get();
-  const center = sdrCenterHz.get() + span * fraction;
-  // An unknown span cannot move the centre, and 0/NaN must never reach the device as a centre.
-  if (!(span > 0) || !(center > 0)) return;
-  sdrCenterHz.set(center);
-  send({ cmd: 'SET_SDR', center, decimate: Math.round(sdrDecimate.get()) });
-}
-
-/**
  * To Center: make the listen frequency the wideband centre. The demodulator is already on
  * the signal, so only the capture window moves around it. SET_SDR retunes the demod to the
  * new centre, so the follow-up SET_SDR_TUNE puts the listen frequency back where it was.
@@ -940,7 +925,7 @@ export function syncSdrPanel(s: any) {
   if (a.start != null && a.stop != null) sdrSpanHz.confirm(Number(a.stop) - Number(a.start));
   const displaySpan = a.start != null && a.stop != null
     ? Number(a.stop) - Number(a.start) : estimatedCaptureSpanHz(Number(sdr.decimate) || 32);
-  confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version));
+  confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version), s.response_to, s.request_id);
   const actualMode = String((primary ? primary.mode : sdr.demod) || 'am');
   const actualFilter = Number(receiver.if_bw) || 6000;
   if (Number.isFinite(version)) receiverConfigVersion = version;
@@ -1006,7 +991,7 @@ export function syncSdrPanel(s: any) {
   if (lvl) {
     const value = primary ? primary.level_dbfs : sdr.level_dbfs;
     lvl.textContent = typeof value === 'number' && Number.isFinite(value)
-      ? value.toFixed(1) + ' dBFS' : '';
+      ? value.toFixed(1) + ' dBFS' : '--- dBFS';
     lvl.removeAttribute('title');
   }
   syncSdrButtons();
@@ -1336,7 +1321,12 @@ export function bindActions() {
   const squelchEl = document.getElementById('input-sdr-squelch') as HTMLInputElement | null;
   squelchEl?.addEventListener('input', () => {
     const label = document.getElementById('cur-sdr-squelch');
-    if (label) label.textContent = Number(squelchEl.value) <= -160 ? t('off') : `${Number(squelchEl.value).toFixed(1)} dBm`;
+    if (label) {
+      const threshold = Number(squelchEl.value);
+      if (threshold <= -160) label.dataset.i18n = 'squelch_off';
+      else delete label.dataset.i18n;
+      label.textContent = threshold <= -160 ? t('squelch_off') : `${threshold.toFixed(1)} dBm`;
+    }
   });
   squelchEl?.addEventListener('change', () => {
     if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;
@@ -1508,9 +1498,6 @@ export function bindActions() {
 }
 
 // Canvas click/drag
-// ── SDR canvas interaction: click to tune, drag to tune/pan ──
-let sdrEdgeAt = 0;
-
 function canvasX(e: MouseEvent | PointerEvent, canvas: HTMLCanvasElement): number {
   // The drawing space is the canvas content box (core/store.ts W). Under a UI scale the
   // element is CSS-zoomed, so clientWidth is in *local* px while the pointer and the rect are
@@ -1553,7 +1540,7 @@ function axisBandCursor(band: Axis | null): string {
 }
 
 type CanvasGesture = {
-  owner: 'axis' | 'filter' | 'marker' | 'zoom' | 'tune' | 'jump';
+  owner: 'axis' | 'filter' | 'marker' | 'zoom' | 'tune' | 'jump' | 'badge';
   sdr: boolean;
   mode: string;
   demod: string;
@@ -1617,7 +1604,9 @@ function cancelSdrCanvasGesture(restore = true): void {
   const pointerId = canvasPointerId;
   canvasGesture = null;
   canvasPointerId = null;
-  const canvas = document.getElementById('spectrum') as HTMLCanvasElement | null;
+  clearSdrBadgeDrag();
+  setPassbandTuneDragging(false);
+  const canvas = (document.getElementById('spectrum') as HTMLCanvasElement | null) ?? S.canvas;
   if (pointerId !== null && canvas?.hasPointerCapture?.(pointerId)) canvas.releasePointerCapture(pointerId);
   if (canvas) canvas.style.cursor = '';
   cancelFilterDrag();
@@ -1638,6 +1627,7 @@ function cancelSdrCanvasGesture(restore = true): void {
 function canvasGestureCurrent(): boolean {
   const gesture = canvasGesture;
   if (!gesture) return false;
+  if (gesture.owner === 'badge' && !validateSdrBadgeDrag()) return false;
   if (gesture.mode !== currentGraphMode() || gesture.zoom !== isSpectrumZoomOn()
       || gesture.zoomEpoch !== zoomEnabled.epoch || (gesture.sdr && gesture.demod !== sdrDemod.get())) {
     cancelSdrCanvasGesture();
@@ -1673,6 +1663,15 @@ export function bindCanvas() {
       e.preventDefault();
       return gesture;
     };
+    const badge = sdr && sdrBadgeAt(x, y);
+    if (badge) {
+      cancelSdrLocate();
+      accept('badge');
+      startSdrBadgeDrag(x, badge, cancelSdrCanvasGesture);
+      canvas.style.cursor = 'grabbing';
+      requestRender();
+      return;
+    }
     const band = axisBandFor(x, y, pr);
     if (band) {
       cancelSdrLocate();
@@ -1727,7 +1726,10 @@ export function bindCanvas() {
     const x = canvasX(e, canvas), y = canvasY(e, canvas);
     const dx = e.clientX - gesture.clientX0, dy = e.clientY - gesture.clientY0;
     if (Math.hypot(dx, dy) > 4) gesture.moved = true;
-    if (gesture.owner === 'filter') {
+    if (gesture.owner === 'badge') {
+      moveSdrBadgeDrag(x);
+      requestRender();
+    } else if (gesture.owner === 'filter') {
       moveFilterDrag(x, e.pointerId);
     } else if (gesture.owner === 'axis') {
       axisDragMove(x, y);
@@ -1746,15 +1748,9 @@ export function bindCanvas() {
       }
     } else if (gesture.owner === 'tune' && gesture.moved) {
       cancelSdrLocate();
+      setPassbandTuneDragging(true);
       const f = spectrumFreqAtX(x);
-      if (f != null) sdrListenHz.set(f);
-      const pr = plotRectPub();
-      const frac = (x - pr.x) / pr.w;
-      const now = performance.now();
-      if (now - sdrEdgeAt > 350 && (frac > 0.9 || frac < 0.1)) {
-        sdrEdgeAt = now;
-        sdrPanCentreBy(frac > 0.9 ? 0.2 : -0.2);
-      }
+      if (f != null) sdrListenHz.set(Math.max(S.FREQ_MIN, Math.min(S.FREQ_MAX, f)));
       requestRender();
     }
   });
@@ -1768,7 +1764,9 @@ export function bindCanvas() {
     let tune: number | null = null;
     let jump: number | null = null;
     let filter: number | null = null;
-    if (gesture.owner === 'filter') {
+    if (gesture.owner === 'badge') {
+      tune = gesture.moved ? moveSdrBadgeDrag(x) : null;
+    } else if (gesture.owner === 'filter') {
       filter = endFilterDrag(e.pointerId);
     } else if (gesture.owner === 'axis') {
       axisDragEnd();
@@ -1778,6 +1776,7 @@ export function bindCanvas() {
     } else if (gesture.owner === 'tune' || gesture.owner === 'zoom') {
       if (gesture.owner === 'tune' && gesture.moved) {
         tune = spectrumFreqAtX(x);
+        if (tune !== null) tune = Math.max(S.FREQ_MIN, Math.min(S.FREQ_MAX, tune));
       } else if (inside && !gesture.moved) {
         const raw = spectrumFreqAtX(x);
         if (gesture.sdr) tune = raw === null ? null : commitSdrLocateClick(raw);
@@ -1808,6 +1807,12 @@ export function bindCanvas() {
   canvas.addEventListener('mousemove', (e) => {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
     const x = canvasX(e, canvas), y = canvasY(e, canvas);
+    if (currentGraphMode() === 'sdr' && sdrBadgeAt(x, y)) {
+      setFilterHover(null);
+      cancelSdrLocate();
+      canvas.style.cursor = 'grab';
+      return;
+    }
     const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
     const band = axisBandFor(x, y, plotRectPub());
     const marker = markerDiamondAt(x, y, canvas);
@@ -1818,7 +1823,7 @@ export function bindCanvas() {
     } else cancelSdrLocate();
     const center = currentGraphMode() === 'sdr' && filterCenterAt(x, y, tolerance);
     const cursor = band ? axisBandCursor(band) : marker || e.ctrlKey ? 'crosshair'
-      : edge ? 'ew-resize' : center && !isSpectrumZoomOn() ? 'grab' : '';
+      : edge ? 'ew-resize' : center ? 'crosshair' : '';
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   });
   // Cursor readout: publish the drawn bin under the pointer while the pointer is inside the plot.
@@ -1936,8 +1941,8 @@ function sdrTuneBy(dHz: number) {
   const center = sdrCenterHz.get();
   const span = sdrSpanHz.get();
   if (!(center > 0) || !(span > 0)) return;
-  const f = Math.max(center - span / 2,
-    Math.min(center + span / 2, (sdrListenHz.get() || center) + dHz));
+  const f = Math.max(S.FREQ_MIN, center - span / 2,
+    Math.min(S.FREQ_MAX, center + span / 2, (sdrListenHz.get() || center) + dHz));
   requestSdrTune(f);
 }
 

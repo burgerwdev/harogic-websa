@@ -103,7 +103,7 @@ function reportError(message: string): void {
   console.error(`SDR decoded stream: ${message}`);
   document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'decode', message } }));
   const status = document.getElementById('cur-sdr-level');
-  if (status) { status.textContent = ''; status.removeAttribute('title'); }
+  if (status) { status.textContent = '--- dBFS'; status.removeAttribute('title'); }
   publishIqDebug();
 }
 /** Drop AM sync telemetry and decode errors on every channel (unsafe badge must not outlive the stream). */

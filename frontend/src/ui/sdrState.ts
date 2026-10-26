@@ -422,7 +422,9 @@ export function renderSdrState(): void {
 	const squelchLabel = document.getElementById('cur-sdr-squelch');
 	if (squelchLabel) {
 		const threshold = Number(squelch?.value ?? sdrSquelch.get());
-		squelchLabel.textContent = threshold <= -160 ? t('off') : `${threshold.toFixed(1)} dBm`;
+		if (threshold <= -160) squelchLabel.dataset.i18n = 'squelch_off';
+		else delete squelchLabel.dataset.i18n;
+		squelchLabel.textContent = threshold <= -160 ? t('squelch_off') : `${threshold.toFixed(1)} dBm`;
 	}
 	// The tuning step: the box shows the value in the chosen unit, a quick button marks the
 	// step in use. Read from the slots on every render, so a mode switch shows that mode's

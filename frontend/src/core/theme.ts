@@ -65,6 +65,9 @@ export function canvasColors() {
     osdStroke: cssVar('--sa-osd-stroke', 'rgba(0,0,0,0.9)'),
     osdFill: cssVar('--sa-osd-fill', '#00ff00'),
     rta: cssVar('--sa-rta', '#00ff88'),
+    passband: cssVar('--sa-passband', 'rgba(0,255,160,0.24)'),
+    passbandEdge: cssVar('--sa-passband-edge', 'rgba(224,242,234,0.8)'),
+    passbandOutline: cssVar('--sa-passband-outline', 'rgba(0,0,0,0.45)'),
   };
 }
 

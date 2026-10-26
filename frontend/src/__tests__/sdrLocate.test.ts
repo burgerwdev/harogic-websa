@@ -109,6 +109,36 @@ describe('hover and commit agree', () => {
 		expect(commitSdrLocateClick(target.targetHz)).toBeCloseTo(target.targetHz, 6);
 	});
 
+	it.each(['minimum', 'maximum'] as const)('ignores clicks beyond the RF %s while allowing its exact boundary', (edge) => {
+		const boundary = edge === 'minimum' ? S.FREQ_MIN : S.FREQ_MAX;
+		const direction = edge === 'minimum' ? -1 : 1;
+		const capture = { lo: boundary - 10_000, hi: boundary + 10_000 };
+		__testSeedCapture(capture);
+		setCapture(capture);
+		const outsideX = MID_X + direction * 200;
+		expect(locateTargetAt(outsideX, MID_Y, 1)).toBeNull();
+		beginSdrLocateClick(outsideX, MID_Y, 1);
+		expect(commitSdrLocateClick(boundary + direction * 5_000)).toBeNull();
+		expect(locateTargetAt(MID_X, MID_Y, 1)?.targetHz).toBe(boundary);
+		beginSdrLocateClick(MID_X, MID_Y, 1);
+		expect(commitSdrLocateClick(boundary)).toBe(boundary);
+	});
+
+	it.each(['minimum', 'maximum'] as const)('keeps a valid click when its channel grid point exceeds the RF %s', (edge) => {
+		const boundary = edge === 'minimum' ? S.FREQ_MIN : S.FREQ_MAX;
+		const direction = edge === 'minimum' ? 1 : -1;
+		const raw = boundary + direction * 100;
+		const capture = { lo: raw - 10_000, hi: raw + 10_000 };
+		__testSeedCapture(capture);
+		setCapture(capture);
+		sdrLocateMode.set('channel');
+		sdrChannelStepHz.set(10_000);
+		sdrChannelAnchorHz.set(boundary - direction * 100);
+		expect(locateTargetAt(MID_X, MID_Y, 1)).toMatchObject({ mode: 'free', targetHz: raw });
+		beginSdrLocateClick(MID_X, MID_Y, 1);
+		expect(commitSdrLocateClick(raw)).toBe(raw);
+	});
+
 	it('channel mode snaps to anchor + round((f-anchor)/spacing)*spacing', () => {
 		sdrLocateMode.set('channel');
 		const target = locateTargetAt(MID_X, MID_Y, 1)!;
