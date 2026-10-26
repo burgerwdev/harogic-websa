@@ -103,6 +103,10 @@ FM keeps its current line clock during a fade for at most 4.5 s. Recovery needs 
 
 The browser groups segments by stream identity and transmission ID. It retains images when the receiver resets, changes frequency or mode, or disconnects. A logical page enters history only after it has rows. The channel budget is 20 MiB of allocated Gray8 storage. The current page and the page being viewed are protected; other pages are evicted oldest first. Eviction and blocked retention are visible. Deleting the active page suppresses later rows from that transmission. Explicit clear and Preset can remove images. History lasts only for this browser session. A late subscriber can restore only the backend's bounded current-page snapshot. PNG names use UTC; menu dates use the persisted local/UTC choice and describe the browser's first image receipt, not the station's transmit time.
 
+The Radiofax window gives the image most of the space. A compact toolbar holds received-page selection, New page, Save, zoom and Follow. The RX line describes the live receiver; the footer describes the selected page, so a complete historical page remains distinct from a current signal loss. Settings hold acquisition and correction controls. Details hold clocks, signal measurements, browser receipt time and memory use. Multi-segment pages expose segment navigation and whole-page/current-segment save choices. Retention failures and missing-prefix warnings stay visible when Details is closed; deletion and clear remain confirmed actions under More.
+
+Follow is a display toggle. Turning it off pins the current page and segment without stopping decoding or moving the scroll position. Turning it on selects the newest page and segment and scrolls to its latest rows. Scrolling up also suspends following; an explicit off remains off when already at the bottom.
+
 The DSP retains at most 20 MiB of raw Gray8 rows and the corrected rows for the same segments (at most 20 MiB more). The service snapshot has its own 20 MiB Gray8 budget. It removes whole old segments, preserves their original indices, and reports `snapshot_prefix_missing` when a late subscriber cannot restore the page prefix. It never crops rows and renumbers a segment. Old retained segments remain eligible for clock and manual correction.
 
 WFM retains stereo and RDS processing. FM analysis is in Hz; fixed NFM ±5 kHz and WFM ±75 kHz normalization precedes adaptive AGC. Disabling AGC does not remove that unit conversion. Stereo indication reports pilot presence, not differing L/R programme content.
@@ -158,7 +162,7 @@ The listening-frequency badge above the plot shares measured geometry for drawin
 
 Passband fill is green at 24% opacity in both themes. Thin solid edges appear only during dragging, at the actual filter cutoffs.
 
-The SDR level badge reserves 10ch and centers its text; unavailable IQ level remains `--- dBFS`. The squelch badge reserves 9ch, keeps its dBm unit when enabled and shows localized Off at −160 dBm or below. AGC sits to the left of Mute on the volume row. Mute On means playback is disabled; Mute Off means playback is enabled. The Chinese labels are 静音 and 播放. These controls change listening only, not protocol decoding.
+The SDR level badge reserves 10ch and centers its text; unavailable IQ level remains `--- dBFS`. The squelch badge reserves 9ch, keeps its dBm unit when enabled and shows localized Off at −160 dBm or below. AGC sits to the left of Mute on the volume row. Mute On means playback is disabled; Mute Off means playback is enabled. The Chinese labels are 静音 开 and 静音 关. These controls change listening only, not protocol decoding.
 
 Filter gestures change only the filter. View Passband saves the display window and Zoom state, and highlights the toggle. A second press restores both. A manual view change, capture change, mode change or reset discards the saved state. The view uses the original spectrum bins; zoom adds no spectrum resolution.
 

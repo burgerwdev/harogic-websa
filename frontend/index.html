@@ -991,73 +991,96 @@
     <!-- Radiofax: continuous Gray8 paper, independent from SSTV's RGB still pictures. -->
     <div class="decode-radiofax" id="decode-window-radiofax" style="display:none;">
       <div class="decode-radiofax-bar">
-        <div class="btn-group" role="group" aria-label="Radiofax acquisition">
-          <button type="button" class="btn" id="radiofax-auto" data-i18n="auto">Auto</button>
-          <button type="button" class="btn" id="radiofax-manual" data-i18n="radiofax_manual">Manual</button>
-        </div>
-        <label><span data-i18n="radiofax_ioc">IOC</span><select id="radiofax-ioc">
-          <option value="auto" data-i18n="auto">Auto</option><option value="288">288</option><option value="576">576</option>
-        </select></label>
-        <label><span data-i18n="radiofax_lpm">LPM</span><select id="radiofax-lpm">
-          <option value="auto" data-i18n="auto">Auto</option><option value="60">60</option><option value="90">90</option>
-          <option value="120">120</option><option value="180">180</option><option value="240">240</option>
-        </select></label>
-        <button type="button" class="btn" id="radiofax-new-page" data-i18n="radiofax_new_page" data-i18n-title="radiofax_new_page_tip">New page</button>
-        <button type="button" class="btn" id="radiofax-save" data-i18n="radiofax_save" data-i18n-title="radiofax_save_tip">Save segment PNG</button>
-        <button type="button" class="btn" id="radiofax-save-page" data-i18n="radiofax_save_page" data-i18n-title="radiofax_save_page_tip">Save whole page</button>
-      </div>
-      <details class="decode-radiofax-advanced" id="radiofax-advanced">
-        <summary data-i18n="radiofax_advanced">Advanced</summary>
-        <div class="decode-radiofax-advanced-grid">
-          <label><span data-i18n="radiofax_modulation">Modulation</span><select id="radiofax-modulation">
-            <option value="fm">FM</option><option value="am">AM</option>
-          </select></label>
-          <label><span data-i18n="radiofax_polarity">Polarity</span><select id="radiofax-polarity">
-            <option value="normal" data-i18n="radiofax_normal">Normal</option><option value="inverted" data-i18n="radiofax_inverted">Inverted</option>
-          </select></label>
-          <label><span data-i18n="radiofax_clock">Clock recovery</span><select id="radiofax-clock-recovery">
-            <option value="auto" data-i18n="auto">Auto</option><option value="off" data-i18n="off">Off</option>
-          </select></label>
-          <label><span data-i18n="radiofax_phase">Phase (px)</span><input id="radiofax-phase-pixels" type="number" step="any" value="0"></label>
-          <label><span data-i18n="radiofax_ppm">Clock (ppm)</span><input id="radiofax-clock-ppm" type="number" step="any" value="0"></label>
-          <button type="button" class="btn" id="radiofax-reset-correction" data-i18n="radiofax_reset" data-i18n-title="radiofax_reset_tip">Reset correction</button>
-        </div>
-      </details>
-      <div class="decode-radiofax-status" id="radiofax-state" role="status">—</div>
-      <div class="decode-radiofax-status" id="radiofax-clock-state">—</div>
-      <div class="decode-radiofax-status" id="radiofax-received" data-i18n-title="radiofax_received_tip"></div>
-      <div class="decode-radiofax-status" id="radiofax-page-info"></div>
-      <div class="decode-radiofax-notice" id="radiofax-missing" role="status"></div>
-      <div class="decode-radiofax-notice" id="radiofax-prefix-missing" role="status"></div>
-      <div class="decode-radiofax-notice" id="radiofax-resource" role="status"></div>
-      <div class="decode-radiofax-view-tools">
         <select id="radiofax-history" data-i18n-title="radiofax_history_tip" title="Received pages"></select>
-        <div class="btn-group" role="group" aria-label="Radiofax zoom">
-          <button type="button" class="btn" data-radiofax-zoom="fit" data-i18n="radiofax_fit">Fit</button>
-          <button type="button" class="btn" data-radiofax-zoom="50">50%</button>
-          <button type="button" class="btn" data-radiofax-zoom="100">100%</button>
-          <button type="button" class="btn" data-radiofax-zoom="200">200%</button>
-        </div>
+        <button type="button" class="btn" id="radiofax-new-page" data-i18n="radiofax_new_page" data-i18n-title="radiofax_new_page_tip">New page</button>
+        <details class="decode-radiofax-menu" id="radiofax-save-menu">
+          <summary class="btn" id="radiofax-save" data-i18n="radiofax_save" data-i18n-title="radiofax_save_tip">Save PNG</summary>
+          <div class="decode-radiofax-menu-panel">
+            <button type="button" class="btn" id="radiofax-save-segment" data-i18n="radiofax_save_segment" data-i18n-title="radiofax_save_segment_tip">Save this segment</button>
+            <button type="button" class="btn" id="radiofax-save-page" data-i18n="radiofax_save_page" data-i18n-title="radiofax_save_page_tip">Save whole page</button>
+            <p class="decode-radiofax-menu-note" id="radiofax-export-limit" role="status"></p>
+          </div>
+        </details>
+        <label class="decode-radiofax-zoom"><span data-i18n="radiofax_zoom">Zoom</span><select id="radiofax-zoom" data-i18n-title="radiofax_zoom_tip" title="Zoom the viewed segment">
+          <option value="fit" data-i18n="radiofax_fit">Fit</option>
+          <option value="50">50%</option>
+          <option value="100">100%</option>
+          <option value="200">200%</option>
+        </select></label>
         <button type="button" class="btn active" id="radiofax-follow" aria-pressed="true" data-i18n="radiofax_follow" data-i18n-title="radiofax_follow_tip">Follow</button>
+        <details class="decode-radiofax-menu" id="radiofax-settings">
+          <summary class="btn" data-i18n="radiofax_settings" data-i18n-title="radiofax_settings_tip">Settings</summary>
+          <div class="decode-radiofax-menu-panel decode-radiofax-settings-panel">
+            <div class="btn-group" role="group" data-i18n-attr="title" data-i18n="radiofax_acquisition" title="Acquisition">
+              <button type="button" class="btn" id="radiofax-auto" data-i18n="auto">Auto</button>
+              <button type="button" class="btn" id="radiofax-manual" data-i18n="radiofax_manual">Manual</button>
+            </div>
+            <label><span data-i18n="radiofax_ioc">IOC</span><select id="radiofax-ioc">
+              <option value="auto" data-i18n="auto">Auto</option><option value="288">288</option><option value="576">576</option>
+            </select></label>
+            <label><span data-i18n="radiofax_lpm">LPM</span><select id="radiofax-lpm">
+              <option value="auto" data-i18n="auto">Auto</option><option value="60">60</option><option value="90">90</option>
+              <option value="120">120</option><option value="180">180</option><option value="240">240</option>
+            </select></label>
+            <label><span data-i18n="radiofax_modulation">Modulation</span><select id="radiofax-modulation">
+              <option value="fm">FM</option><option value="am">AM</option>
+            </select></label>
+            <label><span data-i18n="radiofax_polarity">Polarity</span><select id="radiofax-polarity">
+              <option value="normal" data-i18n="radiofax_normal">Normal</option><option value="inverted" data-i18n="radiofax_inverted">Inverted</option>
+            </select></label>
+            <label><span data-i18n="radiofax_clock">Clock recovery</span><select id="radiofax-clock-recovery">
+              <option value="auto" data-i18n="auto">Auto</option><option value="off" data-i18n="off">Off</option>
+            </select></label>
+            <label><span data-i18n="radiofax_phase">Phase (px)</span><input id="radiofax-phase-pixels" type="number" step="any" value="0"></label>
+            <label><span data-i18n="radiofax_ppm">Clock (ppm)</span><input id="radiofax-clock-ppm" type="number" step="any" value="0"></label>
+            <button type="button" class="btn" id="radiofax-reset-correction" data-i18n="radiofax_reset" data-i18n-title="radiofax_reset_tip">Reset correction</button>
+          </div>
+        </details>
+        <details class="decode-radiofax-menu" id="radiofax-more">
+          <summary class="btn" data-i18n="radiofax_more">More</summary>
+          <div class="decode-radiofax-menu-panel">
+            <button type="button" class="btn" id="radiofax-delete" data-i18n="radiofax_delete" data-i18n-title="radiofax_delete_tip">Delete page</button>
+            <button type="button" class="btn" id="radiofax-clear" data-i18n="radiofax_clear" data-i18n-title="radiofax_clear_tip">Clear history</button>
+          </div>
+        </details>
       </div>
-      <div class="decode-radiofax-page-tools">
-        <button type="button" class="btn" id="radiofax-segment-prev" data-i18n="radiofax_previous_segment">Previous segment</button>
-        <span id="radiofax-segment">—</span>
-        <button type="button" class="btn" id="radiofax-segment-next" data-i18n="radiofax_next_segment">Next segment</button>
-        <button type="button" class="btn" id="radiofax-delete" data-i18n="radiofax_delete" data-i18n-title="radiofax_delete_tip">Delete page</button>
-        <button type="button" class="btn" id="radiofax-clear" data-i18n="radiofax_clear" data-i18n-title="radiofax_clear_tip">Clear history</button>
+      <div class="decode-radiofax-status" id="radiofax-state" role="status">—</div>
+      <div class="decode-radiofax-view" id="radiofax-view">
+        <canvas id="decode-radiofax-canvas" width="576" height="1"></canvas>
+        <div class="decode-radiofax-empty" id="radiofax-empty" data-i18n="radiofax_waiting">Waiting for radiofax image…</div>
+      </div>
+      <div class="decode-radiofax-alerts">
+        <div class="decode-radiofax-notice blocked" id="radiofax-budget" role="status"></div>
+        <div class="decode-radiofax-notice" id="radiofax-suppressed" role="status"></div>
+        <div class="decode-radiofax-notice" id="radiofax-prefix-missing" role="status"></div>
+        <div class="decode-radiofax-error" id="radiofax-save-error" role="alert" style="display:none;"></div>
+      </div>
+      <div class="decode-radiofax-footer">
+        <div class="decode-radiofax-page" id="radiofax-page-info"></div>
+        <div class="decode-radiofax-segments" id="radiofax-segments">
+          <button type="button" class="btn" id="radiofax-segment-prev" data-i18n="radiofax_previous_segment" data-i18n-attr="title" title="Previous segment">‹</button>
+          <span id="radiofax-segment">—</span>
+          <button type="button" class="btn" id="radiofax-segment-next" data-i18n="radiofax_next_segment" data-i18n-attr="title" title="Next segment">›</button>
+        </div>
+        <span class="decode-radiofax-missing" id="radiofax-missing" role="status"></span>
+        <span class="decode-radiofax-eviction" id="radiofax-eviction" role="status"></span>
+        <span class="decode-radiofax-activity" id="radiofax-activity" role="status"></span>
+        <details class="decode-radiofax-menu decode-radiofax-details" id="radiofax-details">
+          <summary data-i18n="radiofax_details">Details</summary>
+          <div class="decode-radiofax-menu-panel decode-radiofax-details-panel">
+            <p id="radiofax-clock-state"></p>
+            <p id="radiofax-signal"></p>
+            <p id="radiofax-carrier"></p>
+            <p id="radiofax-received"></p>
+            <p id="radiofax-reason"></p>
+            <p id="radiofax-resource"></p>
+          </div>
+        </details>
       </div>
       <div class="decode-radiofax-confirm" id="radiofax-confirm" role="group" aria-labelledby="radiofax-confirm-prompt" style="display:none;">
         <span id="radiofax-confirm-prompt"></span>
         <button type="button" class="btn" id="radiofax-confirm-delete" data-i18n="radiofax_confirm_action">Delete</button>
         <button type="button" class="btn" id="radiofax-confirm-cancel" data-i18n="radiofax_cancel">Cancel</button>
-      </div>
-      <div class="decode-radiofax-notice" id="radiofax-export-limit" role="status"></div>
-      <div class="decode-radiofax-notice" id="radiofax-activity" role="status"></div>
-      <div class="decode-radiofax-error" id="radiofax-save-error" role="alert" style="display:none;"></div>
-      <div class="decode-radiofax-view" id="radiofax-view">
-        <canvas id="decode-radiofax-canvas" width="576" height="1"></canvas>
-        <div class="decode-radiofax-empty" id="radiofax-empty" data-i18n="radiofax_waiting">Waiting for radiofax image…</div>
       </div>
     </div>
   </div>
