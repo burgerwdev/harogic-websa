@@ -83,6 +83,7 @@ pub const DIGITAL_PLUGINS: &[PluginDescriptor] = &[
     digital("drm", true),
     digital("drmplus", true),
     digital("sstv", true),
+    digital("radiofax", true),
 ];
 
 /// Audio-enhancement stages, in the order the chain applies them. Every one of these is
@@ -415,6 +416,91 @@ pub trait DigitalDemodulator: Send {
     fn status(&self) -> Option<DigitalStatus> {
         None
     }
+    /// Downcast to the radiofax page/control surface. Other protocols return `None`.
+    fn as_radiofax(&mut self) -> Option<&mut dyn RadiofaxControl> {
+        None
+    }
+
+}
+
+/// Product controls shared by the plugin and the receiver configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadiofaxConfigView {
+    pub acquisition: String,
+    pub ioc: String,
+    pub lpm: String,
+    pub modulation: String,
+    pub polarity: String,
+    pub clock_recovery: String,
+    pub phase_pixels: f32,
+    pub clock_ppm: f32,
+}
+
+/// Gray8 page metadata a radiofax receiver publishes without using the SSTV RGB path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadiofaxImageMeta {
+    pub serial: u64,
+    pub ioc: u16,
+    pub lpm: u16,
+    pub lines: u32,
+    pub complete: bool,
+    pub partial: bool,
+    pub segment_index: u32,
+    pub transmission_id: u64,
+    /// Cumulative sorted unique local row indices that were erased in this
+    /// segment. Every index is strictly less than `lines`.
+    pub missing_rows: Vec<u32>,
+    /// Why the current page is partial, degraded, or closed. `None` while reception is ordinary.
+    pub reason: Option<String>,
+}
+
+/// One corrected Gray8 row span. `gray` is tightly packed and exactly `width * rows` bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadiofaxImageSpan {
+    pub width: u32,
+    pub row: u32,
+    pub rows: u32,
+    pub revision: u64,
+    pub gray: Vec<u8>,
+    pub meta: RadiofaxImageMeta,
+}
+
+/// The live radiofax readout. Stage and clock names are the wire vocabulary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadiofaxState {
+    pub running: bool,
+    pub stage: &'static str,
+    pub has_picture: bool,
+    pub signal_level: f32,
+    pub carrier_coherence: f32,
+    pub ioc: Option<u16>,
+    pub lpm: Option<u16>,
+    pub modulation: &'static str,
+    pub polarity: &'static str,
+    pub width: u32,
+    pub lines: u32,
+    pub elapsed_seconds: f64,
+    pub clock_status: &'static str,
+    pub clock_source: &'static str,
+    pub phase_pixels: f32,
+    pub clock_ppm: f32,
+    pub clock_confidence: f32,
+    pub complete: bool,
+    pub partial: bool,
+    pub reason: Option<String>,
+}
+
+/// Read-only page snapshot plus the controls that do not rebuild the RF receiver.
+///
+/// Only radiofax implements this. SSTV and DRM keep their own image and status paths.
+pub trait RadiofaxControl {
+    fn radiofax_config(&self) -> RadiofaxConfigView;
+    fn radiofax_state(&self) -> RadiofaxState;
+    /// Corrected spans produced since the previous call, at most 64 rows each.
+    fn take_radiofax_spans(&mut self) -> Vec<RadiofaxImageSpan>;
+    fn apply_radiofax(&mut self, config: &RadiofaxConfigView, new_page: bool) -> Result<(), String>;
+    fn finish_input(&mut self) -> Result<(), String> { Ok(()) }
+    fn mark_discontinuity(&mut self) -> Result<(), String> { Ok(()) }
 }
 
 /// One stage of the analog audio chain (LPF/AGC/squelch/Wiener/notch/blanker).

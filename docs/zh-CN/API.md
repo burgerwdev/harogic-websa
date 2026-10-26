@@ -139,8 +139,8 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档 |
 | `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
-| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（CW 为 100..1600 Hz；其他模式为 (0,20000] Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 12 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
-| `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。`am_sync` 仅接受 JSON 布尔值，默认 false。静噪范围 -200..0，CW pitch 为 100..1600 Hz，其他模式为 (0,20000] Hz，NR 强度 0..1，算法 wiener/dfn，衰减 0..100 dB，音频率为整数 8000..192000；SSTV 模式为 null（自动）或支持的模式索引。音量/去加重范围同上。 |
+| `SET_SDR_DEMOD` | `mode?`, `deemph_us?`（-1=自动 0=关 ..1000）, `ifbw?`（正有限值，Hz）, `squelch?`（-200~0，SDK 标称 dBm 调谐点频谱峰值，AGC 前；<=-160 为关闭静噪）, `volume?`（0~2）, `pitch?`（CW 为 100..1600 Hz；其他模式为 (0,20000] Hz）, `agc?`（bool）, `am_sync?`（bool，默认 false）| 主接收器设置。原生后端处理全部 13 模式：am/dsb/usb/lsb/cw/nfm/wfm/pm/ft8/sstv/radiofax/drm/drmplus，输出 AUD2 PCM 和 SDE2 事件。浏览器控制播放并显示结果。`ifbw` 请求修改接收滤波器，通过准入后重配信道化器 |
+| `SET_SDR_CHANNEL` | `channel?`（1–3，默认 1）、`enabled?`、`freq?`/`listen?`、`mode?`/`demod?`、`ifbw?`/`if_bw?`、`squelch?`、`volume?`、`agc?`、`pitch?`、`deemph_us?`/`deemph?`、`nr?`、`nr_strength?`、`nr_algorithm?`、`nr_atten_db?`、`stereo?`、`am_sync?`、`audio_rate?`、`sstv_mode?`、`radiofax_acquisition?`、`radiofax_ioc?`、`radiofax_lpm?`、`radiofax_modulation?`、`radiofax_polarity?`、`radiofax_clock_recovery?`、`radiofax_phase_pixels?`、`radiofax_clock_ppm?`、`radiofax_new_page?`、`radiofax_reset_correction?` | 局部更新一个接收器；省略字段保留原值，冲突别名被拒绝。传真捕获为 auto/manual，IOC 为 auto/288/576，LPM 为 auto/60/90/120/180/240，调制为 fm/am，极性为 normal/inverted，时钟恢复为 auto/off。相位范围 ±4096 像素，时钟校正 ±5000 ppm。`radiofax_new_page` 将当前页以部分完成收尾；`radiofax_reset_correction` 将两项校正置零。协议参数变化重建解码器；相位和 ppm 不重建 RF。 |
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
 | `SET_TRIGGER` | `source`（bus/freerun/level/external/timer）, `edge`（rising/falling/double）, `level`（dBm，以 `caps` 界限为准）, `safetime`/`delay`/`pretime`（0~10 s）, `acqtime`（0.0005~60 s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
@@ -163,7 +163,7 @@ AM 默认使用包络检波，`am_sync:true` 切换到载波恢复同步检波�
 
 `ifbw` 的含义随模式变化。AM/DSB/NFM/WFM/PM 中，它表示以拨盘频率为中心的总带宽。USB/LSB 中，它表示外侧高截止，内侧载波保护带为 `clamp(0.1 × ifbw, 100, 300)` Hz，LSB 取镜像负频率。CW 以 `max(100, pitch)` Hz 为中心，两侧各延伸 `max(50, ifbw) / 2`。浏览器数值编辑器与后端均对其他可编辑模式执行 50 Hz 下限，对 USB/LSB 执行 101 Hz 下限，避免保护带退化。浏览器还检查当前 `sdr.filter_limits`；后端另按所选模式的包络、采集和输出采样率、粗箱通带及频道容量执行准入。非法或不能准入的请求会被拒绝，不会静默截断。预设是推荐值而非上限：AM 100 kHz、SSB 50 kHz、CW 10 kHz 等高于常用预设的自定义值在通过准入时允许使用。输入支持 Hz/kHz/MHz，单位切换不改变底层 Hz 值，虚拟键盘与手动输入共用校验和提交路径。
 
-浏览器将 FT8 固定为 `ifbw=3000`，解码范围为 100~3000 Hz；SSTV 固定为 `ifbw=3000`，解码范围为 300~2700 Hz；为 DRM 选择并锁定 `ifbw=12000`；DRM+ 固定为 `ifbw=100000`。这些是界面的模式语义，不是通信协议限制：直接 API 请求仍可使用其他值，但受后端几何与准入约束。DRM 显示 `±confirmed_ifbw/2`，不随 FAC 声明的占用带宽改变，因此不会自动接收全部 4.5~20 kHz 占用带宽。DRM+ 的 100 kHz 界面值是频道宽度，不表示最外侧 OFDM 载波恰好位于 ±50 kHz。
+浏览器将 FT8 固定为 `ifbw=3000`，解码范围为 100~3000 Hz；SSTV/无线电传真固定为 `ifbw=3000`，解码范围为 300~2700 Hz；为 DRM 选择并锁定 `ifbw=12000`；DRM+ 固定为 `ifbw=100000`。这些是界面的模式语义，不是通信协议限制：直接 API 请求仍可使用其他值，但受后端几何与准入约束。DRM 显示 `±confirmed_ifbw/2`，不随 FAC 声明的占用带宽改变，因此不会自动接收全部 4.5~20 kHz 占用带宽。DRM+ 的 100 kHz 界面值是频道宽度，不表示最外侧 OFDM 载波恰好位于 ±50 kHz。
 
 频道准入使用调谐点两侧的对称占用带宽包络。USB/LSB 覆盖单边 IF 上限；CW 包含 pitch 和 IF；FT8 至少保留正频率 3.2 kHz，SSTV 保留正频率 3 kHz。整数 IQ 采样率由该包络决定，精确协议采样率在内部适配。WFM IQ 还需支持导频、立体声和 RDS，与 PCM 播放采样率相互独立。主路重新采集前会验证全部已启用频道；请求被拒绝时，旧计划继续生效。
 
@@ -360,7 +360,19 @@ WFM 事件 `wfm-info` 中的 `carrierHz` 是该接收流的频道中心频率（
 SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实时增量行。图像事件含 `type:'sstv-image'`、`width`、`height`、`row`、`rows`、紧密排列 RGB 字节数组 `rgb` 和 `meta`；快照每块最多 64 行。服务只保留当前图像，历史由浏览器保存。
 图像边界保持有序。重新固定 SSTV 模式时使用全新画布；长时间静音的计时保持有界。
 
-浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。此确认不发送到 `/ws/decode`。
+无线电传真订阅者先收到起始事件、当前逻辑页已保留的 Gray8 存储段和最新状态，再收到实时事件。`radiofax-image` 包含 `width`、从零开始的 `row`、`rows`（1–64）、base64 `gray`、`revision` 和 `meta`。`gray` 解码后的字节数必须等于 `width * rows`，没有固定逻辑页总高度。元数据必须包含 `serial`、`epoch`、实际接收 `hz`（或 null）、`ioc`、`lpm`、`lines`、`complete`、`partial`、`segmentIndex`、`transmissionId`、`missingRows` 及可为 null 的 `reason`。`missingRows` 是累计、严格递增的段内缺失行索引，均小于 `meta.lines`；这些行在校正后保持灰度 128，占据光栅位置，但不代表有效解码内容。每块的 `meta.lines = row + rows`，包含缺失行。按序追加，不允许行位置空洞。新 revision 从第零行开始替换该存储段。流身份及元数据 epoch 隔离接收，`transmissionId` 将有序存储段归为同一逻辑页。每段最多 2400 行，存储边界不表示逻辑页完成。浏览器历史仅在本次会话内保留。
+
+`transmissionId` 是无符号 64 位整数的标准十进制字符串，在同一图像流身份内递增。浏览器为该身份保留高水位：校正可以更新仍保留的页面，但不能重建已删除或淘汰的旧页。清空保留高水位，新图像流身份使用独立顺序。
+
+`radiofax-state` 报告 `running`、`stage`、`hasPicture`、`signalLevel`、`carrierCoherence`、`ioc`、`lpm`、`modulation`、`polarity`、`width`、数值整数 `lines`（0–2400）、`elapsedSeconds`、`clockStatus`、`clockSource`、`phasePixels`、`clockPpm`、`clockConfidence`、`complete`、`partial` 及可为 null 的 `reason`。`stage` 为 `searching`、`fallback`、`apt`、`phasing`、`receiving`、`degraded`、`complete` 或 `partial`；`clockStatus` 为 `nominal`、`acquiring`、`locked`、`tracking` 或 `degraded`；`clockSource` 为 `nominal`、`phasing`、`image_content` 或 `manual`。未锁定的 IOC576/120 LPM fallback 和 `image_content` 时钟估计均不表示 APT/定相协议锁定。
+
+`lines` 统计当前段内已保留的光栅行位置，包含明确标记的缺失行；`elapsedSeconds` 跨存储段跟踪同一逻辑页。`reason` 区分 `signal_lost`、`discontinuity`、`reconfigured`、`new_page` 和 `eof`；确认协议停止后标为完成。衰落显示信号减弱，不新建 transmission。`snapshot_prefix_missing` 表示较早的分段已超出服务留存预算。
+
+`signalLevel` 是原始带通实数 PCM 的 RMS，功率平滑时间常数为 0.2 秒，单位为线性满量程幅度，不是复数 IQ 的 dBFS 读数。`carrierCoherence` 是平滑后的 1400–2500 Hz 能量与 300–2700 Hz 能量之比，限制在 0–1。集中在该频带的干扰也可能通过能量门限，因此该值不能确认传真信号身份、相位锁定或接收质量。
+
+浏览器解码 worker 请求 `/ws/decode?ack=1`，服务通过初始快照 `start` 事件的 `snapshotAck:true` 确认支持。worker 仅在收到确认后发送传输 ACK；省略该字段的服务不会收到 ACK。内部 FIFO 确认不变。页面应用快照帧后，worker 发送 `{type:'ack', channel, epoch, seq}`，服务最多等待 5 秒再发送下一快照帧。未请求 `ack=1` 的客户端仍直接接收推送。图像帧、实时事件语义和 worker 的 32 事件 / 4 MiB 上限不变。
+
+浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。只有服务确认 `snapshotAck` 后，worker 才将应用确认转换为上述带序号的传输 ACK。
 
 > **频谱细节**：POWR 使用 float32 电平和以 Hz 表示的原生 FREQ 轴。RTA/SDR 为迹线、标记和导出保留原生频点；本地缩放不发送采集命令，也不改善物理 RBW。密度可跟随当前处理后的迹线，也可积累 Average/Max Hold 前的实时频谱帧；切换来源清除历史。余辉按真实时间半衰期衰减（Off、0.2、0.5、2、5、10 秒），命中权重按经过时间计算，并限制长间隔的影响。Off 停止累积与显示。图层选择只改变可见性，不改变迹线模式、marker、测量和导出的数据来源。密度显示时取消迹线宽辉光。对比度调整颜色，透明度独立映射。瀑布保留原生频率位置；缺口保持为空，除非启用 SWP GapFill。
 

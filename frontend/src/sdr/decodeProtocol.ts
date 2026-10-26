@@ -1,9 +1,12 @@
 // SDE2 is the native receiver's bounded, source-clocked event stream.
 import type { DrmReceiverStatus } from './drmLog';
+import type { RadiofaxClockSource, RadiofaxClockStatus, RadiofaxStage } from './radiofaxLog';
+import { parseRadiofaxTransmissionId } from './radiofaxLog';
 export const MAX_DECODE_BYTES = 2 * 1024 * 1024;
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
 	type: string;
+	snapshotAck?: boolean;
 	text?: string; endsLine?: boolean; share?: number; rms?: number; keyed?: boolean;
 	centerHz?: number; pitchHz?: number; afcHz?: number; wpm?: number;
 	frequencyHz?: number; timeOffsetS?: number; snrDb?: number; count?: number; windowStart?: string;
@@ -13,12 +16,18 @@ export interface ReceiverEvent {
 	syncEnabled?: boolean; syncLocked?: boolean; amSyncGeneration?: number;
 	carrierOffsetHz?: number | null; modulationPct?: number | null; inputDbFs?: number | null;
 	rmsDbFs?: number; scope?: number[];
-	lines?: string[]; points?: { re: number; im: number }[];
+	lines?: string[] | number; points?: { re: number; im: number }[];
 	width?: number; height?: number; row?: number; rows?: number; rgb?: string | number[];
-	meta?: { name?: string; modeIndex?: number; vis?: number; serial?: string | number; hz?: number;
-		lines?: number; progress?: number; complete?: boolean };
+	gray?: string; revision?: number;
+	meta?: { name?: string; modeIndex?: number; vis?: number; serial?: string | number; hz?: number | null;
+		epoch?: string | number; ioc?: number; lpm?: number; transmissionId?: string; segmentIndex?: number;
+		lines?: number; progress?: number; complete?: boolean; partial?: boolean; missingRows?: number[]; reason?: string | null };
 	running?: boolean; pushes?: number; attempts?: number; bufferedSamples?: number;
 	bufferedSeconds?: number; hasPicture?: boolean; level?: number; srcLevel?: number;
+	stage?: RadiofaxStage; signalLevel?: number; carrierCoherence?: number; ioc?: 288 | 576 | null;
+	lpm?: number | null; modulation?: 'fm' | 'am'; polarity?: 'normal' | 'inverted';
+	elapsedSeconds?: number; clockStatus?: RadiofaxClockStatus; clockSource?: RadiofaxClockSource;
+	phasePixels?: number; clockPpm?: number; clockConfidence?: number; complete?: boolean; partial?: boolean;
 	reason?: string | null; state?: string; index?: number; message?: string;
 	status?: DrmReceiverStatus;
 }
@@ -68,17 +77,21 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		|| typeof value.delay_seconds !== 'number' || !Number.isFinite(value.delay_seconds) || value.delay_seconds < 0
 		|| typeof value.delay_known !== 'boolean' || typeof value.causal_presentation !== 'boolean'
 		|| typeof value.mode !== 'string' || typeof value.event.type !== 'string') throw new Error('Invalid SDE2 envelope');
+	if (value.event.type === 'start' && value.event.snapshotAck !== undefined && typeof value.event.snapshotAck !== 'boolean') {
+		throw new Error('Invalid receiver snapshotAck');
+	}
 	const d = value.event;
 	for (const key of ['share', 'rms', 'centerHz', 'pitchHz', 'afcHz', 'wpm', 'frequencyHz', 'timeOffsetS', 'snrDb', 'count',
 		'peakDevHz', 'pilotPct', 'rdsPi', 'rdsGroups', 'carrierHz', 'pilotDevHz', 'pilotSnrDb', 'width', 'height', 'row', 'rows',
-		'pushes', 'attempts', 'bufferedSamples', 'bufferedSeconds', 'level', 'srcLevel', 'index']) {
+		'pushes', 'attempts', 'bufferedSamples', 'bufferedSeconds', 'level', 'srcLevel', 'index', 'signalLevel',
+		'carrierCoherence', 'ioc', 'lpm', 'revision', 'elapsedSeconds', 'phasePixels', 'clockPpm', 'clockConfidence']) {
 		if (d[key] !== undefined && d[key] !== null && (typeof d[key] !== 'number' || !Number.isFinite(d[key]))) throw new Error(`Invalid receiver ${key}`);
 	}
-	for (const key of ['text', 'windowStart', 'peakHoldDb', 'ps', 'rt', 'state', 'message']) {
+	for (const key of ['text', 'windowStart', 'peakHoldDb', 'ps', 'rt', 'message', 'modulation', 'polarity']) {
 		if (d[key] !== undefined && typeof d[key] !== 'string') throw new Error(`Invalid receiver ${key}`);
 	}
 	if (d.reason !== undefined && d.reason !== null && typeof d.reason !== 'string') throw new Error('Invalid receiver reason');
-	for (const key of ['endsLine', 'keyed', 'stereo', 'rdsLocked', 'running', 'hasPicture']) {
+	for (const key of ['endsLine', 'keyed', 'stereo', 'rdsLocked', 'running', 'hasPicture', 'complete', 'partial']) {
 		if (d[key] !== undefined && typeof d[key] !== 'boolean') throw new Error(`Invalid receiver ${key}`);
 	}
 	if (d.type === 'am-info') {
@@ -99,7 +112,33 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		// WFM still reports peaks as preformatted text.
 		throw new Error('Invalid receiver peakDbFs');
 	}
-	if (d.lines !== undefined && (!Array.isArray(d.lines) || d.lines.some((line) => typeof line !== 'string'))) throw new Error('Invalid receiver lines');
+	if (d.type === 'radiofax-image') {
+		const meta = d.meta;
+		if (!record(meta) || typeof meta.lines !== 'number' || !Number.isInteger(meta.lines) || meta.lines < 1 || meta.lines > 2400
+			|| !Array.isArray(meta.missingRows) || meta.missingRows.some((row, index, list) =>
+				typeof row !== 'number' || !Number.isInteger(row) || row < 0 || row >= Number(meta.lines) || (index > 0 && row <= list[index - 1]))
+			|| (meta.reason !== null && typeof meta.reason !== 'string')) throw new Error('Invalid radiofax picture metadata');
+		parseRadiofaxTransmissionId(meta.transmissionId);
+	}
+	if (d.type === 'radiofax-state') {
+		if (typeof d.lines !== 'number' || !Number.isInteger(d.lines) || d.lines < 0 || d.lines > 2400) throw new Error('Invalid radiofax lines');
+		if (d.reason !== null && typeof d.reason !== 'string') throw new Error('Invalid radiofax reason');
+		// Telemetry enums are the receiver's own vocabulary; a future stage must be visible as an
+		// error, not silently coerced into a wrong clock summary.
+		const radiofaxEnums: [keyof ReceiverEvent, readonly string[]][] = [
+			['stage', ['searching', 'fallback', 'apt', 'phasing', 'receiving', 'degraded', 'complete', 'partial']],
+			['clockStatus', ['nominal', 'acquiring', 'locked', 'tracking', 'degraded']],
+			['clockSource', ['nominal', 'phasing', 'image_content', 'manual']],
+		];
+		for (const [key, allowed] of radiofaxEnums) {
+			if (!allowed.includes(String(d[key]))) throw new Error(`Invalid radiofax ${key}`);
+		}
+		if (d.ioc !== undefined && d.ioc !== null && d.ioc !== 288 && d.ioc !== 576) throw new Error('Invalid radiofax ioc');
+		if (typeof d.clockConfidence !== 'number' || !Number.isFinite(d.clockConfidence)) throw new Error('Invalid receiver clockConfidence');
+		if (d.modulation !== 'fm' && d.modulation !== 'am') throw new Error('Invalid radiofax modulation');
+		if (d.polarity !== 'normal' && d.polarity !== 'inverted') throw new Error('Invalid radiofax polarity');
+	}
+	if (d.type === 'drm' && d.lines !== undefined && (!Array.isArray(d.lines) || d.lines.some((line) => typeof line !== 'string'))) throw new Error('Invalid receiver lines');
 	if (d.status !== undefined) {
 		const s = d.status;
 		if (!record(s) || typeof s.locked !== 'boolean' || !Array.isArray(s.services)) throw new Error('Invalid DRM status');

@@ -8,6 +8,7 @@
 
 pub mod drm;
 pub mod ft8;
+pub mod radiofax;
 pub mod sstv;
 pub(crate) mod sstv_abi;
 
@@ -31,6 +32,7 @@ pub fn build(id: &str, rate: f64) -> Option<Box<dyn DigitalDemodulator>> {
         // own voice-band filter and detector turn it into the audio the vendored decoder wants),
         // so the audio-enhancement chain stays unreachable from it like any other protocol decoder.
         "sstv" => Some(Box::new(sstv::SstvPlugin::new(rate))),
+        "radiofax" => Some(Box::new(radiofax::RadiofaxPlugin::new(rate))),
         _ => None,
     }
 }

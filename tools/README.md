@@ -105,6 +105,7 @@ python3 tools/pluto_tx.py usb --wav tools/bench/audio/speech.wav --seconds 60
 python3 tools/pluto_tx.py wfm --no-audio --rds-rt 'RIG RDS OK 0123456789' \
   --rds-ps 'RIG RDS' --lo 411e6 --gain -10
 python3 tools/pluto_tx.py sstv --mode 'Robot 36' --callsign 'CQ WE0BSA'
+python3 tools/pluto_tx.py radiofax --ioc 576 --lpm 120 --image chart.png --dry-run
 python3 tools/pluto_tx.py drm --iq drm_iq.wav --seconds 600
 ```
 
@@ -112,8 +113,24 @@ Use `--wav` for analog programme audio, `--voice` for the USB/LSB voice chain,
 and `wfm --stereo FILE` for two-channel programme audio with a pilot. For a mono
 station omit stereo, pilot, and RDS options. RDS uses the WFM 57-kHz subcarrier;
 `--rds-buffer` enables cyclic playback. SSTV accepts `--image FILE` and
-`--list-modes`. Generator clock trim is device-specific; inspect the selected
-radio's options before relying on RF frequency accuracy.
+`--list-modes`. Radiofax (`wefax` is an alias) accepts PNG/PPM files through
+`--image`, keeping their aspect at the IOC width unless `--lines` is given.
+Use `--ioc 288|576`, `--lpm 60|90|120|180|240`, `--modulation fm|am`,
+`--polarity normal|inverted`, and `--list-modes`. The default is an IOC576/120 LPM
+FM pattern with 128 lines and standard APT/phasing. Framing times are configurable;
+`--seconds 0` sends a full page, `--repeat 0` repeats until interrupted, and
+`--pause` pushes silence between pages. A radiofax dry run synthesizes at most
+two seconds by default (`--dry-run-seconds` changes that limit).
+FM uses 1500–2300 Hz above the TX LO; tune the receiver in USB at the LO with
+Radiofax IFBW 3000. AM uses a 1900 Hz carrier with true zero for black; choose
+AM modulation on the receiver. 180 LPM needs manual receive settings. Whole
+pages use fixed 0.25 s complex64 chunks at the radio's accepted rate; Gray8 input
+is limited to 40 MiB. CPU replay of generated IOC288/576 pages through the native
+receiver has verified phasing and APT-stop completion with correct 16-line ramps.
+Real Pluto-to-SAN-90 RF at 435 MHz also received complete IOC576/120 LPM 1810×64
+and IOC288/240 LPM 905×256 test pages, with phasing clock recovery and no missing rows.
+Generator clock trim is device-specific; inspect the selected radio's options
+before relying on RF frequency accuracy.
 
 With the native service running and the transmitter coupled to the SAN-90,
 capture the channelized IQ for native analysis and repeatable replay:

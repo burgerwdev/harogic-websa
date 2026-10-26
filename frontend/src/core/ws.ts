@@ -10,6 +10,7 @@ import {
   syncGraphModeStatus,
   releaseGraphModePending,
   syncPresetStatus, rejectPresetRequest,
+  rejectSdrRadiofaxRequest,
   rejectSdrAmSyncRequest,
   rejectSdrAgcRequest,
   rejectSdrFilterRequest,
@@ -285,6 +286,7 @@ export function connectWS() {
           if (msg.cmd === 'ERROR') {
             rejectSdrAgcRequest(msg.response_to, msg.request_id);
             rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
+            rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
             rejectSdrFilterRequest(msg.response_to, msg.request_id, true);
             rejectSdrTuneRequest(msg.response_to, msg.request_id);
             rejectSdrAxisWindow(msg.response_to, msg.request_id);
@@ -306,6 +308,7 @@ export function connectWS() {
           rejectPresetRequest(msg.response_to, msg.request_id);
           rejectSdrAgcRequest(msg.response_to, msg.request_id);
           rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
+          rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
           rejectSdrFilterRequest(msg.response_to, msg.request_id);
           rejectSdrTuneRequest(msg.response_to, msg.request_id);
         }

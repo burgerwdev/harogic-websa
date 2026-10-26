@@ -48,6 +48,8 @@ make native
 选择实例；status 和 stop 自动读取保存的端点及所有权信息。设备只允许一个进程持有。
 服务与硬件配置见[FAQ 说明](FAQ_NOTES.md)和[工具指南](../../tools/README.md)。
 
+Pluto 台架统一入口支持 `radiofax` 和 `wefax`，两者使用同一个流式发射脚本。无需硬件时运行 `python3 tools/pluto_tx.py radiofax --dry-run`；发送图片可加 `--image chart.png --ioc 576 --lpm 120`。图片默认按比例调整高度，`--lines` 可指定行数。AM、反相极性、协议头时长、音频偏移、重复与间隔均见该模式的 `--help`。默认 FM 包含 APT、30 秒定相、1500–2300 Hz 图像音调及 APT 停止；180 LPM 需手动配置接收器。完整页面按设备实际接受的采样率分固定块发送，dry-run 只合成短片头。示例见[工具指南](../../tools/README.md)。
+
 **内存受限主机必须串行、隔离构建。** Rust 构建、Rust 测试和浏览器套件依次运行，
 不要使用并行 Make。Cargo `-j 1` 只限制当前调用，不能限制其他构建或浏览器。
 Rust 测试保留 `--test-threads=1`。使用主机可用的资源控制和明确的内存上限隔离构建与设备进程。
@@ -121,12 +123,15 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 
 | 层次 | 入口与证据 |
 |---|---|
-| 原生服务与工具 | `./test.sh`：Rust 服务契约、Python 工具测试、Ruff 和前端 Vitest |
-| DSP 内核 | `make wasm-test`：对照参考 fixture 的原生 Rust 内核测试 |
+| 原生服务与工具 | `./test.sh`：release 模式的后端库与全部二进制、标准 test profile 的集成测试，Python 工具测试、Ruff 和前端 Vitest |
+| DSP 内核 | `make wasm-test`：release 模式的原生 Rust 内核测试，包含需优化构建的 FT8 路径 |
 | 本地聚合 | `make ci`：内核、服务、工具、前端测试，版本与 fixture 检查，DOM、注册、文档、架构守卫及前端构建 |
 | 浏览器 fixture | `make e2e-fake`：原生 fixture 服务、UI smoke、状态回归和视口几何门禁 |
 | 硬件 | `make hw-test`：tinySA 驱动的 smoke、命令遍历和 UI 状态回归 |
 | 性能 | `make bench`：与 `tools/bench/bench_baseline.json` 比较 |
+
+DSP ABI 文本消息只在当前 push 的结果列表中有效，应在返回消息数后立即读取。后续 push 会替换列表；累计解码计数不会保存消息内容。
+后端库、二进制和集成测试分别调用 Cargo，依次运行；合并选择这些目标可能导致共享库产物冲突。集成测试使用标准 test profile，与测试 harness 的 unwind 策略一致；生产 release 产物仍使用 abort。
 
 使用 `python3 -m playwright install --with-deps chromium` 安装浏览器支持，运行浏览器检查前
 先构建前端。Fixture 模式证明无 SDK 的应用行为，不证明 RF 正确性、持续采集或硬件恢复。

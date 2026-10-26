@@ -115,6 +115,13 @@ impl DevState {
                         u32::from_le_bytes(frame[36..40].try_into().unwrap()),u32::from_le_bytes(frame[8..12].try_into().unwrap())));
                 }
             }
+            let current=self.stream_registry();
+            let changed:Vec<u32>=registry.iter().filter(|old| !current.iter().any(|new|
+                new.channel==old.channel && new.channel_id==old.channel_id && new.epoch==old.epoch))
+                .map(|old|old.channel).collect();
+            if !changed.is_empty() {
+                if let Err(error)=self.finish_radiofax_channels(&changed,registry.clone()) {self.latch_receiver_failure(error);}
+            }
             self.retiring_registry = registry;
             self.pending_iq.extend(retiring);
         }
@@ -213,6 +220,7 @@ impl DevState {
         }
     }
     pub(super) fn hardware_presentation_failed(&mut self, error: String) {
+        if let Err(failure)=self.finish_radiofax() {self.latch_receiver_failure(failure);}
         self.note_auto_acquisition(i32::MIN);
         if let Some(pipeline) = &self.pipeline {
             let mut diagnostics = pipeline.failure_diagnostics();

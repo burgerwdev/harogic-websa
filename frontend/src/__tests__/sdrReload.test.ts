@@ -64,6 +64,30 @@ function receive(payload: Record<string, unknown>) {
 }
 
 describe('SDR entry and reload', () => {
+	it.each(['device STATUS', 'control websocket'])('retains radiofax paper and selection through %s loss', async loss => {
+		const { controls } = await load();
+		// Store and stream must belong to load()'s freshly isolated browser session.
+		const fax = await import('../sdr/radiofaxLog');
+		const stream = await import('../sdr/iqStream');
+		fax.appendRadiofaxRows({ width: 1, row: 0, rows: 2, gray: Uint8Array.of(40, 80), revision: 0 }, {
+			serial: 'disconnect', epoch: 'meta', hz: 9_110_000, ioc: 576, lpm: 120, lines: 2,
+			complete: false, partial: false, segmentIndex: 0, transmissionId: '1', missingRows: [], reason: null,
+		}, 'original-stream');
+		const pageId = fax.radiofaxVisiblePage()!.id;
+		fax.setRadiofaxView(pageId);
+		if (loss === 'device STATUS') receive(status('sdr', { connected: false }));
+		else socket.onclose!();
+		expect(fax.radiofaxStatus().viewId).toBe(pageId);
+		expect([...fax.radiofaxVisible()!.picture.gray]).toEqual([40, 80]);
+		expect(fax.radiofaxVisible()!.meta.partial).toBe(true);
+		expect(fax.radiofaxStatus().decoder).toBeNull();
+		stream.consumeDecode({ version: 1, channel: 1, channel_id: 18, epoch: 10, seq: 0, input_index: '0',
+			input_rate: 62500000, input_fraction_num: '0', input_fraction_den: '1', delay_seconds: 0,
+			delay_known: true, causal_presentation: false, mode: 'radiofax', event: { type: 'start' } });
+		expect(fax.radiofaxStatus().pages).toHaveLength(1);
+		expect(fax.radiofaxVisiblePage()!.id).toBe(pageId);
+		controls.disconnectSdrSession();
+	});
 	it.each([0, 60])('fits a fresh entry with offset %s, then explicit Auto supersedes a stored level', async offset => {
 		const { controls, fit } = await load();
 		// Static imports would retain the previous module graph across vi.resetModules().

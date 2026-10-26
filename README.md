@@ -38,7 +38,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
   waterfall; the browser handles control, playback and display
 - **SDR filter** — per-mode presets (compact k/M labels, full Hz on hover) with exact numeric entry and remembered confirmed values. The input offers Hz/kHz/MHz units shared by typed and virtual-keypad entry; custom values may exceed common presets when admitted. View highlights while active and a second press restores the previous window and zoom state, until a manual view/capture/mode/reset change; passband zoom changes only the display.
   The input tooltip shows the actual passband, confirmed state and available range; View sits beside the units.
-- **Digital modes** — FT8 decoding, CW decoding, DRM/DRM+ reception and SSTV picture decoding (18 modes). The FT8 window supports QSO highlighting, regex filtering and column sorting. Current decoder and playback limits are documented in [KNOWN_ISSUES](docs/en/KNOWN_ISSUES.md).
+- **Digital modes** — FT8 decoding, CW decoding, DRM/DRM+ reception, SSTV picture decoding (18 modes) and HF radiofax reception. Radiofax uses a 12 kHz USB path, IOC 288/576, 60/90/120/240 LPM, continuous pages and PNG export. The FT8 window supports QSO highlighting, regex filtering and column sorting. Current decoder and playback limits are documented in [KNOWN_ISSUES](docs/en/KNOWN_ISSUES.md).
 - **FM stereo and RDS** — WFM recovers L/R from the 19 kHz pilot and 38 kHz difference signal.
   It decodes RDS PI, station name and RadioText from 57 kHz. The FM pane shows a pilot-based
   STEREO/MONO badge, deviation, audio level and L/R scope. The badge reports the pilot, not

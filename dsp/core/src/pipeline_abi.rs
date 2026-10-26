@@ -850,20 +850,25 @@ mod tests {
         unsafe {
             core::ptr::copy_nonoverlapping(iq.as_ptr(), ptr, iq.len());
             let mut decoded = 0;
+            let mut messages = Vec::new();
             for block in 0..(iq.len() / 2).div_ceil(8_192) {
                 let start = block * 8_192;
                 let count = (8_192).min(iq.len() / 2 - start);
                 if count <= 0 {
                     break;
                 }
-                decoded = decoded.max(websa_dsp_demod_push(handle, ptr.add(start * 2), count as u32));
+                let block_decoded = websa_dsp_demod_push(handle, ptr.add(start * 2), count as u32);
+                decoded += block_decoded;
+                for index in 0..block_decoded {
+                    let written = websa_dsp_demod_message_at(
+                        handle, index, text.as_mut_ptr(), text.len() as u32, metrics.as_mut_ptr());
+                    messages.push(text[..written as usize].to_vec());
+                    assert!(metrics[0] > 900.0 && metrics[0] < 1_100.0, "frequency {}", metrics[0]);
+                }
             }
             assert_eq!(decoded, 1, "the slot must decode");
-            let written = websa_dsp_demod_message_at(
-                handle, 0, text.as_mut_ptr(), text.len() as u32, metrics.as_mut_ptr());
-            assert_eq!(&text[..written as usize], b"CQ JO1WKO PM95");
+            assert_eq!(messages, vec![b"CQ JO1WKO PM95".to_vec()]);
             assert_eq!(websa_dsp_demod_count(handle), 1);
-            assert!(metrics[0] > 900.0 && metrics[0] < 1_100.0, "frequency {}", metrics[0]);
             // A digital handle has no audio: the analog entry point refuses it.
             let out_ptr = crate::abi::websa_dsp_alloc(1_024 * 4) as *mut f32;
             assert_eq!(websa_dsp_demod_process(handle, ptr, 16, out_ptr, 1_024, 0), 0);

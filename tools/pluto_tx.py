@@ -44,6 +44,8 @@ TOOLS: dict[str, tuple[str | None, str]] = {
     'drm': ('pluto_drm_tx.py', 'DRM30: int16 WAV or committed f32 IQ'),
     'drmplus': ('pluto_drm_tx.py', 'DRM+ mode E: committed 96 kHz f32 IQ in bursts'),
     'sstv': ('pluto_sstv_tx.py', 'SSTV: slow-scan television picture as SSB tones'),
+    'radiofax': ('pluto_radiofax_tx.py', 'Radiofax: WEFAX page with APT and phasing as SSB tones'),
+    'wefax': ('pluto_radiofax_tx.py', 'WEFAX: alias for radiofax'),
 }
 #: Extra tool arguments that select a mode in a shared tool.
 MODE_ARGS: dict[str, tuple[str, ...]] = {'drmplus': ('--mode', 'drmplus')}

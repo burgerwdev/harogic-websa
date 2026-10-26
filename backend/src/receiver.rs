@@ -41,6 +41,14 @@ pub struct ReceiverConfig {
     pub deemph_us: f64,
     pub stereo: bool,
     pub sstv_mode: Option<usize>,
+    pub radiofax_acquisition: String,
+    pub radiofax_ioc: String,
+    pub radiofax_lpm: String,
+    pub radiofax_modulation: String,
+    pub radiofax_polarity: String,
+    pub radiofax_clock_recovery: String,
+    pub radiofax_phase_pixels: f32,
+    pub radiofax_clock_ppm: f32,
 }
 impl Default for ReceiverConfig {
     fn default() -> Self {
@@ -48,12 +56,16 @@ impl Default for ReceiverConfig {
             if_bw: 6_000.0, pitch: 700.0, agc: true, am_sync: false, am_sync_generation: 0, gain: 1.0,
             squelch_dbm: -110.0, nr: false, nr_strength: 0.6,
             nr_algorithm: "wiener".into(), nr_atten_db: 10.0, deemph_us: -1.0,
-            stereo: true, sstv_mode: None }
+            stereo: true, sstv_mode: None,
+            radiofax_acquisition: "auto".into(), radiofax_ioc: "auto".into(),
+            radiofax_lpm: "auto".into(), radiofax_modulation: "fm".into(),
+            radiofax_polarity: "normal".into(), radiofax_clock_recovery: "auto".into(),
+            radiofax_phase_pixels: 0.0, radiofax_clock_ppm: 0.0 }
     }
 }
 impl ReceiverConfig {
     fn validate(&self) -> Result<(), String> {
-        if !matches!(self.mode.as_str(), "am"|"dsb"|"usb"|"lsb"|"cw"|"nfm"|"wfm"|"pm"|"ft8"|"sstv"|"drm"|"drmplus") {
+        if !matches!(self.mode.as_str(), "am"|"dsb"|"usb"|"lsb"|"cw"|"nfm"|"wfm"|"pm"|"ft8"|"sstv"|"drm"|"drmplus"|"radiofax") {
             return Err(format!("unsupported receiver mode {}", self.mode));
         }
         if clock_ratio(self.input_rate).is_none() || !(8_000..=192_000).contains(&self.audio_rate)
@@ -67,7 +79,7 @@ impl ReceiverConfig {
         if self.mode == "cw" && !(100.0..=1600.0).contains(&self.pitch) {
             return Err("CW requires a 100–1600 Hz pitch".into());
         }
-        let listen_mode = if matches!(self.mode.as_str(), "ft8"|"sstv") { "usb" } else { self.mode.as_str() };
+        let listen_mode = if matches!(self.mode.as_str(), "ft8"|"sstv"|"radiofax") { "usb" } else { self.mode.as_str() };
         if let Some(spec) = analog::spec_for(listen_mode) {
             let (low, high) = spec.band_hz(self.if_bw.max(50.0), self.pitch);
             if low.abs().max(high.abs()) >= self.input_rate / 2.0 {
@@ -80,12 +92,29 @@ impl ReceiverConfig {
         if self.sstv_mode.is_some_and(|index| index >= digital::sstv::SSTV_MODES.len()) {
             return Err("invalid SSTV mode index".into());
         }
+        if self.mode == "radiofax" {
+            websa_dsp::digital::radiofax::validate_radiofax(&self.radiofax_view())?;
+        }
         Ok(())
     }
     fn nr_algorithm(&self) -> NrAlgorithm {
         if !self.nr || matches!(self.mode.as_str(), "drm"|"drmplus") { NrAlgorithm::Off }
         else if self.nr_algorithm == "dfn" { NrAlgorithm::Dfn }
         else { NrAlgorithm::Wiener }
+    }
+    fn radiofax_view(&self) -> websa_dsp::plugin::RadiofaxConfigView {
+        websa_dsp::plugin::RadiofaxConfigView {
+            acquisition: self.radiofax_acquisition.clone(), ioc: self.radiofax_ioc.clone(),
+            lpm: self.radiofax_lpm.clone(), modulation: self.radiofax_modulation.clone(),
+            polarity: self.radiofax_polarity.clone(), clock_recovery: self.radiofax_clock_recovery.clone(),
+            phase_pixels: self.radiofax_phase_pixels, clock_ppm: self.radiofax_clock_ppm,
+        }
+    }
+    fn radiofax_protocol_changed(&self, config: &Self) -> bool {
+        self.radiofax_acquisition != config.radiofax_acquisition || self.radiofax_ioc != config.radiofax_ioc
+            || self.radiofax_lpm != config.radiofax_lpm || self.radiofax_modulation != config.radiofax_modulation
+            || self.radiofax_polarity != config.radiofax_polarity
+            || self.radiofax_clock_recovery != config.radiofax_clock_recovery
     }
 }
 
@@ -254,6 +283,7 @@ pub struct Receiver {
     image_serial: Option<u64>,
     next_am_info: u64,
     image_lines: u32,
+    radiofax_new_page: bool,
     audio_origin: Option<InputClock>,
     input_origin: Option<InputClock>,
     audio_frames: u64,
@@ -264,7 +294,7 @@ impl Receiver {
     pub fn new(config: ReceiverConfig) -> Result<Self, String> {
         config.validate()?;
         let mode = config.mode.as_str();
-        let listen_mode = if matches!(mode, "ft8"|"sstv") { "usb" } else { mode };
+        let listen_mode = if matches!(mode, "ft8"|"sstv"|"radiofax") { "usb" } else { mode };
         let mut demod_config = DemodConfig::new(config.input_rate, config.if_bw);
         demod_config.pitch = config.pitch;
         let mut analog = analog::spec_for(listen_mode).map(|spec|
@@ -274,19 +304,24 @@ impl Receiver {
             demod.set_am_sync(config.am_sync);
             if config.deemph_us >= 0.0 { demod.set_deemph_us(config.deemph_us); }
         }
-        let decoder_rate = match mode { "ft8" => FT8_RATE, "sstv" => 8_000, "drm" => 48_000,
-            "drmplus" => 96_000, _ => 0 };
-        let mut digital = if matches!(mode, "sstv"|"drm"|"drmplus") {
+        let decoder_rate = match mode { "ft8" => FT8_RATE, "sstv" => 8_000, "radiofax" => 12_000,
+            "drm" => 48_000, "drmplus" => 96_000, _ => 0 };
+        let mut digital = if matches!(mode, "sstv"|"drm"|"drmplus"|"radiofax") {
             digital::build(mode, decoder_rate as f64)
         } else { None };
-        if let Some(demod) = digital.as_mut() { demod.set_mode_pin(config.sstv_mode); }
+        if mode == "radiofax" {
+            let fax = digital.as_mut().and_then(|demod| demod.as_radiofax()).ok_or("radiofax decoder unavailable")?;
+            fax.apply_radiofax(&config.radiofax_view(), false)?;
+        } else if let Some(demod) = digital.as_mut() {
+            demod.set_mode_pin(config.sstv_mode);
+        }
         let adapter = if decoder_rate != 0 && config.input_rate != decoder_rate as f64 {
             let passband = match mode {
                 // Mode E's outer carrier is 47,111 Hz; keep it inside the flat passband.
                 "drmplus" => 47_200.0,
                 "drm" => config.if_bw / 2.0,
                 "ft8" => 3_200.0,
-                "sstv" => 3_000.0,
+                "sstv" | "radiofax" => 3_000.0,
                 _ => unreachable!(),
             };
             Some(Rational::from_rates(config.input_rate, decoder_rate, passband)
@@ -311,6 +346,7 @@ impl Receiver {
             side: Vec::new(), nr, nr_right, nr_scratch: Vec::new(), cw, ft8, pushes: 0,
             nr_left_output: Vec::new(), nr_right_output: Vec::new(),
             elapsed_samples: 0, next_status: 0, next_wfm_info: 0, next_am_info: 0, image_serial: None, image_lines: 0,
+            radiofax_new_page: false,
             analog_frames: 0, audio_source_offset: 0,
             audio_origin: None, input_origin:None, audio_frames: 0, audio_format, peak_hold: 0.0 })
     }
@@ -319,12 +355,21 @@ impl Receiver {
     /// Geometry changes replace only this channel's state. Listening changes retain decoder history.
     pub fn configure(&mut self, config: ReceiverConfig) -> Result<(), String> {
         config.validate()?;
-        if config == self.config { return Ok(()); }
+        if config == self.config && !self.radiofax_new_page { return Ok(()); }
         let geometry_changed = config.mode != self.config.mode || config.input_rate != self.config.input_rate
             || config.audio_rate != self.config.audio_rate || config.if_bw != self.config.if_bw
             || config.pitch != self.config.pitch || config.sstv_mode != self.config.sstv_mode
             || config.stereo != self.config.stereo;
+        let fax_changed = self.config.mode == "radiofax" && (self.config.radiofax_protocol_changed(&config)
+            || self.config.radiofax_phase_pixels != config.radiofax_phase_pixels
+            || self.config.radiofax_clock_ppm != config.radiofax_clock_ppm || self.radiofax_new_page);
         if geometry_changed { *self = Self::new(config)?; return Ok(()); }
+        if fax_changed {
+            let new_page = self.radiofax_new_page;
+            let digital = self.digital.as_mut().and_then(|demod| demod.as_radiofax()).ok_or("radiofax decoder unavailable")?;
+            digital.apply_radiofax(&config.radiofax_view(), new_page)?;
+            self.radiofax_new_page = false;
+        }
         if let Some(demod) = self.analog.as_mut() {
             demod.set_agc_enabled(config.agc);
             demod.set_am_sync(config.am_sync);
@@ -349,8 +394,33 @@ impl Receiver {
         self.config = config;
         Ok(())
     }
+    pub fn request_radiofax_page(&mut self) {
+        self.radiofax_new_page = true;
+    }
     pub fn reset(&mut self) -> Result<(), String> {
         *self = Self::new(self.config.clone())?;
+        Ok(())
+    }
+    pub fn finish_radiofax(&mut self) -> Result<(), String> {
+        if self.config.mode != "radiofax" { return Ok(()); }
+        let digital = self.digital.as_mut().and_then(|demod| demod.as_radiofax()).ok_or("radiofax decoder unavailable")?;
+        digital.finish_input()
+    }
+    pub fn take_radiofax_events(&mut self) -> Result<Vec<ReceiverEvent>, String> {
+        if self.config.mode != "radiofax" { return Ok(Vec::new()); }
+        let fax = self.digital.as_mut().and_then(|demod| demod.as_radiofax()).ok_or("radiofax decoder unavailable")?;
+        let mut events = Vec::new();
+        radiofax_events(fax, self.epoch, true, &mut events)?;
+        Ok(events)
+    }
+    pub fn retune(&mut self) -> Result<(), String> {
+        if let Some(analog) = self.analog.as_mut() { analog.retune(); }
+        if self.config.mode == "radiofax" {
+            if let Some(fax) = self.digital.as_mut().and_then(|demod| demod.as_radiofax()) {
+                fax.mark_discontinuity()?;
+            }
+        } else if let Some(digital) = self.digital.as_mut() { digital.retune(); }
+        if let Some(ft8) = self.ft8.as_mut() { *ft8 = Ft8Window::new(); }
         Ok(())
     }
     /// Protocol codec audio bypasses the analog listener chain.
@@ -414,7 +484,10 @@ impl Receiver {
         }
         if let Some(digital) = self.digital.as_mut() {
             let lines = digital.process_iq(digital_iq);
-            if matches!(self.config.mode.as_str(), "drm"|"drmplus") {
+            if self.config.mode == "radiofax" {
+                let fax = digital.as_radiofax().ok_or("radiofax decoder unavailable")?;
+                radiofax_events(fax, self.epoch, status_due, &mut out.events)?;
+            } else if matches!(self.config.mode.as_str(), "drm"|"drmplus") {
                 if !lines.is_empty() || status_due {
                     let status = digital.status().map(|s| json!({"locked":s.locked,"mode":s.mode,
                         "stationLabel":s.station_label,"carrierOffsetHz":s.carrier_offset_hz,
@@ -581,7 +654,7 @@ impl Receiver {
             if !samples.is_empty() {
                 let mut audio_clock = clock;
                 // Only the asymmetric modes retain the IF selection FIR.
-                let if_delay = if matches!(self.config.mode.as_str(), "usb"|"lsb"|"cw"|"ft8"|"sstv") {128.0} else {0.0};
+                let if_delay = if matches!(self.config.mode.as_str(), "usb"|"lsb"|"cw"|"ft8"|"sstv"|"radiofax") {128.0} else {0.0};
                 audio_clock.delay_input_samples += (if_delay + 64.0) * clock.input_rate / self.config.input_rate;
                 if let Some(delay) = self.nr.latency_samples() {
                     audio_clock.delay_input_samples += delay as f64 * clock.input_rate / self.config.audio_rate as f64;
@@ -658,8 +731,54 @@ impl Receiver {
     }
 }
 
+fn radiofax_events(fax: &mut dyn websa_dsp::plugin::RadiofaxControl, epoch: u64, status_due: bool,
+    events: &mut Vec<ReceiverEvent>) -> Result<(), String> {
+    let state = fax.radiofax_state();
+    if !state.running {
+        return Err(state.reason.unwrap_or_else(|| "radiofax decoder stopped".into()));
+    }
+    for span in fax.take_radiofax_spans() {
+        if span.rows == 0 || span.rows > 64 || span.gray.len() != span.width as usize * span.rows as usize {
+            return Err("radiofax image geometry is invalid".into());
+        }
+        events.push(json!({"type":"radiofax-image","width":span.width,"row":span.row,
+            "rows":span.rows,"gray":base64_encode(&span.gray),"revision":span.revision,
+            "meta":{"serial":span.meta.serial.to_string(),"epoch":epoch,"hz":null,
+                "ioc":span.meta.ioc,"lpm":span.meta.lpm,"lines":span.meta.lines,
+                "complete":span.meta.complete,"partial":span.meta.partial,
+                "segmentIndex":span.meta.segment_index,"transmissionId":span.meta.transmission_id.to_string(),
+                "missingRows":span.meta.missing_rows,"reason":span.meta.reason}}));
+    }
+    if status_due {
+        events.push(json!({"type":"radiofax-state","running":state.running,"stage":state.stage,
+            "hasPicture":state.has_picture,"signalLevel":state.signal_level,
+            "carrierCoherence":state.carrier_coherence,"ioc":state.ioc,"lpm":state.lpm,
+            "modulation":state.modulation,"polarity":state.polarity,"width":state.width,
+            "lines":state.lines,"elapsedSeconds":state.elapsed_seconds,
+            "clockStatus":state.clock_status,"clockSource":state.clock_source,
+            "phasePixels":state.phase_pixels,"clockPpm":state.clock_ppm,
+            "clockConfidence":state.clock_confidence,"complete":state.complete,
+            "partial":state.partial,"reason":state.reason}));
+    }
+    Ok(())
+}
+
 fn algorithm_name(algorithm: NrAlgorithm) -> &'static str {
     match algorithm { NrAlgorithm::Off=>"off",NrAlgorithm::Wiener=>"wiener",NrAlgorithm::Dfn=>"dfn" }
+}
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let mut value = [0_u8; 3];
+        value[..chunk.len()].copy_from_slice(chunk);
+        let packed = (u32::from(value[0]) << 16) | (u32::from(value[1]) << 8) | u32::from(value[2]);
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((packed >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[(packed & 63) as usize] as char } else { '=' });
+    }
+    out
 }
 fn try_position_at(origin: InputClock, frames: u64, rate: u32) -> Result<SamplePosition,String> {
     let (source_num, source_den) = clock_ratio(origin.input_rate).ok_or("unsupported source clock rate")?;
@@ -721,12 +840,12 @@ fn scope(samples: &[f32], channels: usize) -> (Vec<f32>,Vec<f32>) {
 mod tests {
     use super::*;
 
-    const MODES: [&str; 12] = ["am","dsb","usb","lsb","cw","nfm","wfm","pm","ft8","sstv","drm","drmplus"];
+    const MODES: [&str; 13] = ["am","dsb","usb","lsb","cw","nfm","wfm","pm","ft8","sstv","drm","drmplus","radiofax"];
 
     fn mode_config(mode: &str) -> ReceiverConfig {
         ReceiverConfig { mode:mode.into(),
-            input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else {48_000.0},
-            if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else {6_000.0},
+            input_rate:if mode == "wfm" {240_000.0} else if mode == "drmplus" {96_000.0} else if mode == "radiofax" {12_000.0} else {48_000.0},
+            if_bw:if mode == "wfm" {180_000.0} else if mode == "drmplus" {90_000.0} else if mode == "radiofax" {3_000.0} else {6_000.0},
             ..ReceiverConfig::default() }
     }
 
@@ -740,10 +859,10 @@ mod tests {
                 assert!(Receiver::new(ReceiverConfig {input_rate:rate,..mode_config(mode)}).is_err(),"{mode}: {rate}");
             }
         }
-        for mode in ["am","dsb","usb","lsb","cw","nfm","wfm","pm","ft8","sstv"] {
+        for mode in ["am","dsb","usb","lsb","cw","nfm","wfm","pm","ft8","sstv","radiofax"] {
             let config = mode_config(mode);
             assert!(Receiver::new(ReceiverConfig {if_bw:f64::MAX,..config.clone()}).is_err(),"{mode}");
-            if matches!(mode,"usb"|"lsb"|"ft8"|"sstv") {
+            if matches!(mode,"usb"|"lsb"|"ft8"|"sstv"|"radiofax") {
                 assert!(Receiver::new(ReceiverConfig {if_bw:config.input_rate/2.0,..config}).is_err(),"{mode}");
             }
         }
@@ -1039,5 +1158,80 @@ mod tests {
         assert_eq!(scopes,39); // initial event and each crossed 50 ms grid boundary in 1.92 s
         // Live listening updates deliberately request an immediate status, but never a new epoch.
         assert_eq!(statuses,16);
+    }
+    #[test]
+    fn radiofax_phase_keeps_epoch_and_protocol_change_marks_partial() {
+        let mut config = mode_config("radiofax");
+        let mut receiver = Receiver::new(config.clone()).unwrap();
+        let epoch = receiver.epoch();
+        let clock = InputClock { first_sample_index: 10, input_rate: 12_000.0, delay_input_samples: 0.0 };
+        assert!(receiver.process(&[f32::NAN, 0.0], clock, None).is_err());
+        assert_eq!(receiver.epoch(), epoch);
+        let quiet = receiver.process(&vec![0.0; 2_400], clock, None).unwrap();
+        assert!(quiet.audio.iter().any(|block| block.channels == 1 && !block.samples.is_empty()));
+        assert!(quiet.events.iter().all(|event| event["type"] != "sstv-image" && event["type"] != "sstv-state"));
+        config.radiofax_phase_pixels = 4.0;
+        receiver.configure(config.clone()).unwrap();
+        assert_eq!(receiver.epoch(), epoch);
+        config.radiofax_acquisition = "manual".into();
+        config.radiofax_ioc = "576".into();
+        config.radiofax_lpm = "180".into();
+        receiver.configure(config).unwrap();
+        assert_eq!(receiver.epoch(), epoch, "radiofax protocol controls must not rebuild RF");
+        let state = receiver.process(&vec![0.0; 1_200], InputClock { first_sample_index: 1_210, ..clock }, None).unwrap();
+        let fax = state.events.iter().find(|event| event["type"] == "radiofax-state").unwrap();
+        assert!(matches!(fax["stage"].as_str(), Some("searching") | Some("partial") | Some("fallback")));
+        assert_ne!(fax["clockSource"], "phasing");
+    }
+    #[test]
+    fn synthesized_radiofax_iq_emits_base64_gray_without_sstv_events() {
+        let mut pcm = Vec::with_capacity(24_000);
+        for index in 0..24_000 {
+            let t = index as f64 / 12_000.0;
+            let gray = if (index / 1_810) % 2 == 0 { 0.15 } else { 0.85 };
+            let frequency = 1_900.0 + (gray - 0.5) * 800.0;
+            pcm.push((0.45 * (std::f64::consts::TAU * frequency * t).sin()) as f32);
+        }
+        let iq: Vec<f32> = pcm.iter().flat_map(|sample| [*sample, 0.0]).collect();
+        let mut receiver = Receiver::new(mode_config("radiofax")).unwrap();
+        let clock = InputClock { first_sample_index: 0, input_rate: 12_000.0, delay_input_samples: 0.0 };
+        let mut images = Vec::new();
+        for (index, block) in iq.chunks(3_000).enumerate() {
+            let output = receiver.process(block, InputClock {
+                first_sample_index: index as u64 * 1_500, ..clock }, None).unwrap();
+            assert!(output.events.iter().all(|event| !event["type"].as_str().unwrap_or("").starts_with("sstv")));
+            images.extend(output.events.into_iter().filter(|event| event["type"] == "radiofax-image"));
+        }
+        let image = images.first().expect("synthetic fax IQ should emit gray");
+        assert!(image.get("height").is_none());
+        assert!(image["gray"].as_str().unwrap().chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=')));
+        assert_eq!(image["meta"]["hz"], serde_json::Value::Null);
+        assert_eq!(image["meta"]["ioc"], 576);
+        assert!(image["rows"].as_u64().unwrap() <= 64);
+        let serial = images.last().unwrap()["meta"]["serial"].clone();
+        let epoch = receiver.epoch();
+        receiver.request_radiofax_page();
+        receiver.configure(receiver.config().clone()).unwrap();
+        let mut next_images = Vec::new();
+        for (index, block) in iq.chunks(3_000).enumerate() {
+            let output = receiver.process(block, InputClock {
+                first_sample_index: 24_000 + index as u64 * 1_500, ..clock }, None).unwrap();
+            next_images.extend(output.events.into_iter().filter(|event| event["type"] == "radiofax-image"));
+        }
+        assert_eq!(receiver.epoch(), epoch);
+        assert!(next_images.iter().any(|event| event["meta"]["serial"] != serial && event["row"] == 0),
+            "manual new page must start a distinct image without a parameter change");
+        let revision=next_images.last().unwrap()["revision"].as_u64().unwrap();
+        receiver.finish_radiofax().unwrap();
+        let closed=receiver.take_radiofax_events().unwrap();
+        let image=closed.iter().find(|event|event["type"]=="radiofax-image").expect("EOF must republish page closure");
+        assert_eq!(image["row"],0);
+        assert!(image["revision"].as_u64().unwrap()>revision);
+        assert_eq!(image["meta"]["partial"],true);
+        let state=closed.iter().find(|event|event["type"]=="radiofax-state").unwrap();
+        assert_eq!(state["partial"],true);
+        assert_eq!(state["reason"],"eof");
+        receiver.finish_radiofax().unwrap();
+        assert!(receiver.take_radiofax_events().unwrap().iter().all(|event|event["type"]!="radiofax-image"));
     }
 }

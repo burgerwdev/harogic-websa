@@ -9,7 +9,7 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
     if display_only { return Ok(app.state.lock().unwrap().config_version); }
     if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(app.state.lock().unwrap().config_version); }
     {
-        let state = app.state.lock().unwrap();
+        let mut state = app.state.lock().unwrap();
         if !data.is_object() { return Err("JSON message must be an object".into()); }
         if matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC") {
             if state.swp.mode != "sdr" { return Err("channel commands require SDR mode".into()); }
@@ -40,7 +40,7 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
     // Wait for admission before snapshotting the configuration revision.
     let permit = ADMISSION.acquire().await.map_err(|_| "admission_busy: service admission already running")?;
     let candidate = {
-        let state = app.state.lock().unwrap();
+        let mut state = app.state.lock().unwrap();
         let revision = state.config_version;
         let channels = matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC");
         let front_end = matches!(cmd, "AUTO_SCALE" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT");
@@ -112,6 +112,40 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor="current_thread")]
+    async fn radiofax_preflight_never_queues_page_break_and_rejects_atomically() {
+        let (golden,schema)=load_golden();
+        let mut state=DevState::new(golden,schema);
+        state.swp.mode="sdr".into();
+        state.sdr_center=100e6;
+        state.sdr_listen=100e6;
+        state.sdr_demod="radiofax".into();
+        state.sdr_if_bw=3_000.0;
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.auto_scale(None,false);
+        let sequence=state.auto.seq;
+        let before=state.channel_configs();
+        let app=Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
+            next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            display_version:Arc::new(AtomicU64::new(0))});
+        for data in [json!({"radiofax_lpm":"180","radiofax_new_page":true}),
+            json!({"radiofax_acquisition":"manual","radiofax_new_page":true})] {
+            assert!(preflight(&app,"SET_SDR_CHANNEL",&data).await.is_err());
+            let state=app.state.lock().unwrap();
+            assert_eq!(state.channel_configs(),before);
+            assert_eq!(state.auto.seq,sequence);
+            assert!(state.auto.session.is_some());
+            assert!(state.receiver_failure.is_none());
+            assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        }
+        preflight(&app,"SET_SDR_CHANNEL",&json!({"radiofax_new_page":true})).await.unwrap();
+        let mut state=app.state.lock().unwrap();
+        assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        state.apply_channel_config(&json!({"radiofax_new_page":true})).unwrap();
+        assert!(state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+    }
 
     #[tokio::test(flavor="current_thread")]
     async fn rejected_request_preserves_running_auto_session() {

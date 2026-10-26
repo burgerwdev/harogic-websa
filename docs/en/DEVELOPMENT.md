@@ -50,6 +50,8 @@ The default instance is `websad` at `127.0.0.1:8080`. Use `WEBSA_INSTANCE` or `-
 to select it; status and stop read saved endpoint/ownership metadata. Keep one process as the device owner.
 See [FAQ notes](FAQ_NOTES.md) and [the tools guide](../../tools/README.md) for service and hardware configuration.
 
+The Pluto bench dispatcher supports `radiofax` and `wefax` through the same streaming transmitter. Use `python3 tools/pluto_tx.py radiofax --dry-run` without hardware, or add `--image chart.png --ioc 576 --lpm 120` for a page. Image height keeps its aspect ratio unless `--lines` is set. `--modulation am`, `--polarity inverted`, framing durations, offset, repeat and pause follow the mode's help. Default FM uses APT, 30 s phasing, 1500–2300 Hz image tones and APT stop. 180 LPM needs manual receiver settings. Full pages stream at the radio's accepted rate in fixed chunks; dry-run builds only a short head. See the [tools guide](../../tools/README.md) for examples.
+
 **Memory-limited hosts: builds must be serial and isolated.** Run Rust builds, Rust tests and
 browser suites sequentially; do not use parallel Make. Cargo `-j 1` limits only one invocation,
 not other builds or browsers. Keep `--test-threads=1` for Rust test runs. Isolate builds from
@@ -135,12 +137,15 @@ regenerate only reproducible fixtures with their existing generators.
 
 | Layer | Entry point and evidence |
 |---|---|
-| Native service and tools | `./test.sh`: Rust service contracts, Python tool tests, Ruff and frontend Vitest |
-| DSP kernels | `make wasm-test`: native Rust kernel tests against reference fixtures |
+| Native service and tools | `./test.sh`: release-mode backend library and binaries, standard-profile integration tests, Python tool tests, Ruff and frontend Vitest |
+| DSP kernels | `make wasm-test`: release-mode native Rust kernel tests against reference fixtures, including optimized FT8 paths |
 | Local aggregate | `make ci`: kernel and service/tool/frontend tests, version and fixture checks, DOM/registration/doc/architecture guards, frontend build |
 | Browser fixtures | `make e2e-fake`: native fixture service, UI smoke, state regression and viewport geometry gate |
 | Hardware | `make hw-test`: tinySA-driven smoke, command sweep and UI state regression |
 | Performance | `make bench`: comparison with `tools/bench/bench_baseline.json` |
+
+Read DSP ABI text messages immediately after the push that reports them. Later pushes replace this result list; the lifetime decode count does not retain message payloads.
+Run backend library, binary and integration targets in separate Cargo invocations. Combining them can collide with this project's shared-library output artifacts. Integration tests use the standard test profile to match the harness's unwind strategy; production release artifacts use abort.
 
 Install browser support with `python3 -m playwright install --with-deps chromium` and build
 the frontend before browser runs. Fixture mode proves application behavior without the SDK;

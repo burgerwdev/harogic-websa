@@ -7,7 +7,8 @@ import { addFt8Spot, clearFt8Spots, setFt8DecoderState } from './ft8Log';
 import { addCwText, clearCwLog, setCwLevel } from './cwLog';
 import { clearDrm, setDrmDecode, setDrmConstellation } from './drmLog';
 import { clearSstv, setSstvDecoderState, updateSstvPicture } from './sstvLog';
-import type { DecodeEnvelope } from './decodeProtocol';
+import { appendRadiofaxRows, endRadiofaxStream, parseRadiofaxTransmissionId, setRadiofaxDecoderState } from './radiofaxLog';
+import type { DecodeEnvelope, ReceiverEvent } from './decodeProtocol';
 import type { Ft8Report } from './types';
 
 export interface ChannelRegistryEntry {
@@ -60,6 +61,7 @@ export function failSdrReceiver(message: string): void {
     setWfmInfo(null, channel);
     setFt8DecoderState(null, channel);
     setSstvDecoderState(null, channel);
+    endRadiofaxStream(channel);
   }
   reportError(message);
 }
@@ -99,7 +101,7 @@ function reportError(message: string): void {
   if (streamFailed && streamFailedRegistry === null) streamFailedRegistry = confirmedRegistry ?? [];
   lastError = message;
   connected = false;
-  for (const channel of [1, 2, 3] as const) { setAmInfo(null, channel); setDecodeError(channel, message); }
+  for (const channel of [1, 2, 3] as const) { endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message); }
   console.error(`SDR decoded stream: ${message}`);
   document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'decode', message } }));
   const status = document.getElementById('cur-sdr-level');
@@ -172,7 +174,49 @@ function samples(value: unknown): Float32Array | null {
   if (value.length > 1024 || value.some((v) => typeof v !== 'number' || !Number.isFinite(v))) throw new Error('Invalid receiver scope');
   return Float32Array.from(value);
 }
-function consumeDecode(envelope: DecodeEnvelope): void {
+function consumeRadiofaxImage(d: ReceiverEvent, identity: string, channel: 1 | 2 | 3): void {
+  const width = d.width, row = d.row, rows = d.rows, revision = d.revision;
+  if (typeof width !== 'number' || !Number.isInteger(width) || width <= 0
+    || typeof row !== 'number' || !Number.isInteger(row) || row < 0
+    || typeof rows !== 'number' || !Number.isInteger(rows) || rows <= 0 || rows > 64
+    || typeof revision !== 'number' || !Number.isInteger(revision) || revision < 0
+    || width * rows > 2 * 1024 * 1024) throw new Error('Invalid radiofax rows');
+  const meta = d.meta;
+  if (!meta || (typeof meta.serial !== 'string' && typeof meta.serial !== 'number')
+    || (typeof meta.epoch !== 'string' && typeof meta.epoch !== 'number')
+    || typeof meta.transmissionId !== 'string'
+    || (meta.hz !== null && (typeof meta.hz !== 'number' || !Number.isFinite(meta.hz)))
+    || typeof meta.ioc !== 'number' || !Number.isFinite(meta.ioc)
+    || typeof meta.lpm !== 'number' || !Number.isFinite(meta.lpm) || meta.lpm <= 0
+    || typeof meta.lines !== 'number' || !Number.isInteger(meta.lines) || meta.lines !== row + rows || meta.lines > 2400
+    || typeof meta.complete !== 'boolean' || typeof meta.partial !== 'boolean'
+    || !Array.isArray(meta.missingRows) || meta.missingRows.some((value, index, list) =>
+      !Number.isInteger(value) || value < 0 || value >= Number(meta.lines) || (index > 0 && value <= list[index - 1]))
+    || (meta.reason !== null && typeof meta.reason !== 'string')
+    || typeof meta.segmentIndex !== 'number' || !Number.isInteger(meta.segmentIndex) || meta.segmentIndex < 0) {
+    throw new Error('Invalid radiofax picture metadata');
+  }
+  parseRadiofaxTransmissionId(meta.transmissionId);
+  if (typeof d.gray !== 'string') throw new Error('Invalid radiofax pixels');
+  let bytes: Uint8Array;
+  try {
+    const decoded = atob(d.gray);
+    bytes = Uint8Array.from(decoded, (c) => c.charCodeAt(0));
+  } catch { throw new Error('Invalid radiofax pixels'); }
+  if (bytes.length !== width * rows) throw new Error('Invalid radiofax pixel count');
+  for (const missing of meta.missingRows) {
+    if (missing < row || missing >= row + rows) continue;
+    const start = (missing - row) * width;
+    if (bytes.subarray(start, start + width).some((value) => value !== 128)) throw new Error('Invalid radiofax missing row pixels');
+  }
+  appendRadiofaxRows({ width, row, rows, gray: bytes, revision }, {
+    serial: String(meta.serial), epoch: String(meta.epoch), hz: meta.hz, ioc: meta.ioc, lpm: meta.lpm,
+    lines: meta.lines, complete: meta.complete, partial: meta.partial,
+    segmentIndex: meta.segmentIndex, transmissionId: meta.transmissionId,
+    missingRows: meta.missingRows, reason: meta.reason,
+  }, `${identity}:${String(meta.epoch)}`, channel);
+}
+export function consumeDecode(envelope: DecodeEnvelope): void {
   const d = envelope.event;
   const channel = envelope.channel as 1 | 2 | 3;
   const identity = `${envelope.epoch}:${envelope.channel_id}`;
@@ -189,6 +233,7 @@ function consumeDecode(envelope: DecodeEnvelope): void {
     setWfmInfo(null, channel);
     setFt8DecoderState(null, channel);
     setSstvDecoderState(null, channel);
+    endRadiofaxStream(channel);
     setAmInfo(null, channel);
     setDecodeError(channel, null);
     return;
@@ -229,6 +274,19 @@ function consumeDecode(envelope: DecodeEnvelope): void {
         throw new Error('Invalid DRM constellation');
       }
       setDrmConstellation(d.points, channel);
+      break;
+    case 'radiofax-image':
+      consumeRadiofaxImage(d, identity, channel);
+      break;
+    case 'radiofax-state':
+      // Enum/number validation happened in decodeProtocol; this only coerces missing numbers.
+      setRadiofaxDecoderState({ running: d.running === true, stage: d.stage!, hasPicture: d.hasPicture === true,
+        signalLevel: finite(d.signalLevel), carrierCoherence: finite(d.carrierCoherence), ioc: d.ioc ?? null,
+        lpm: d.lpm ?? null, modulation: d.modulation!, polarity: d.polarity!, width: finite(d.width),
+        lines: finite(d.lines), elapsedSeconds: finite(d.elapsedSeconds), clockStatus: d.clockStatus!,
+        clockSource: d.clockSource!, phasePixels: finite(d.phasePixels), clockPpm: finite(d.clockPpm),
+        clockConfidence: finite(d.clockConfidence), complete: d.complete === true, partial: d.partial === true,
+        reason: d.reason ?? null }, channel);
       break;
     case 'sstv-image': {
       const width = d.width, height = d.height, row = d.row, rows = d.rows;
@@ -308,6 +366,7 @@ export function setSdrIqEnabled(on: boolean): void {
     worker?.terminate();
     worker = null;
     connected = false;
+    for (const channel of [1, 2, 3] as const) endRadiofaxStream(channel);
     if (failedRegistry === null) clearAmState();
   }
   publishIqDebug();
@@ -318,6 +377,7 @@ export function resetSdrIq(): void {
   pictures.clear();
   for (const channel of [1, 2, 3] as const) {
     clearFt8Spots(channel); clearCwLog(channel); clearDrm(channel); clearSstv(channel);
+    endRadiofaxStream(channel);
     setWfmInfo(null, channel); setAmInfo(null, channel); setFt8DecoderState(null, channel);
     setDecodeError(channel, failedRegistry === null ? null : lastError);
   }
