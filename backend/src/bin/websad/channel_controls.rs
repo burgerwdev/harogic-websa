@@ -122,7 +122,7 @@ impl DevState {
             value
         }).collect())
     }
-    pub(super) fn parse_channel_config(&self, data: &Value) -> Result<ChannelConfig, String> {
+    pub(super) fn parse_channel_config(&mut self, data: &Value) -> Result<ChannelConfig, String> {
         if !data.is_object() { return Err("channel configuration must be an object".into()); }
         let channel = match data.get("channel") {
             None => 1,
@@ -167,6 +167,20 @@ impl DevState {
                     .ok_or("sstv_mode must be null or a supported mode index")?)
             };
         }
+        config.radiofax_acquisition = text(data, &["radiofax_acquisition"], &config.radiofax_acquisition)?;
+        config.radiofax_ioc = text(data, &["radiofax_ioc"], &config.radiofax_ioc)?;
+        config.radiofax_lpm = text(data, &["radiofax_lpm"], &config.radiofax_lpm)?;
+        config.radiofax_modulation = text(data, &["radiofax_modulation"], &config.radiofax_modulation)?;
+        config.radiofax_polarity = text(data, &["radiofax_polarity"], &config.radiofax_polarity)?;
+        config.radiofax_clock_recovery = text(data, &["radiofax_clock_recovery"], &config.radiofax_clock_recovery)?;
+        config.radiofax_phase_pixels = number(data, &["radiofax_phase_pixels"], f64::from(config.radiofax_phase_pixels))? as f32;
+        config.radiofax_clock_ppm = number(data, &["radiofax_clock_ppm"], f64::from(config.radiofax_clock_ppm))? as f32;
+        let new_page = boolean(data, "radiofax_new_page", false)?;
+        if boolean(data, "radiofax_reset_correction", false)? {
+            config.radiofax_phase_pixels = 0.0;
+            config.radiofax_clock_ppm = 0.0;
+        }
+        if new_page { self.request_radiofax_page(config.channel)?; }
         let (minimum, maximum) = self.freq_limits();
         if config.enabled && !(minimum..=maximum).contains(&config.freq) {
             return Err(format!("channel frequency outside device limits: channel {} requested {} Hz; valid RF range {minimum}..={maximum} Hz", config.channel, config.freq));
@@ -184,6 +198,12 @@ impl DevState {
         if !(0.0..=100.0).contains(&config.nr_atten_db) { return Err("nr_atten_db must be in 0..=100".into()); }
         if !(8_000..=192_000).contains(&config.audio_rate) { return Err("audio_rate must be in 8000..=192000".into()); }
         Ok(config)
+    }
+    fn request_radiofax_page(&mut self, channel: u32) -> Result<(), String> {
+        if let Some(workers) = self.receiver_workers.as_mut() {
+            workers.request_radiofax_page(channel)?;
+        }
+        Ok(())
     }
 
     /// Primary tuning may move the shared capture; auxiliary tuning remains capture-bound.
@@ -213,7 +233,10 @@ impl DevState {
         if config == old { return Ok(()); }
         let geometry_changed=old.enabled!=config.enabled || old.freq!=config.freq || old.mode!=config.mode
             || old.if_bw!=config.if_bw || old.pitch!=config.pitch || old.audio_rate!=config.audio_rate
-            || old.stereo!=config.stereo || old.sstv_mode!=config.sstv_mode;
+            || old.stereo!=config.stereo || old.sstv_mode!=config.sstv_mode
+            || old.radiofax_acquisition!=config.radiofax_acquisition || old.radiofax_ioc!=config.radiofax_ioc
+            || old.radiofax_lpm!=config.radiofax_lpm || old.radiofax_modulation!=config.radiofax_modulation
+            || old.radiofax_polarity!=config.radiofax_polarity || old.radiofax_clock_recovery!=config.radiofax_clock_recovery;
         let recapture = self.channel_recapture(&config)?;
         if geometry_changed && config.enabled && recapture.is_none() {
             // Replay IQ clocks describe receiver output, not the shared RF capture grid.

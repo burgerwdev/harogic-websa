@@ -1,0 +1,21 @@
+Source: https://github.com/boybook/rasterwave.rs
+Release: rasterwave 0.5.0
+Commit: 65a334c8b29e5156532ce1a53066acd199a9676b
+License: MIT; see LICENSE.
+
+Copied without algorithmic changes:
+- src/fax.rs
+- src/fax_paper.rs
+- src/oscillator.rs
+- GrayImage and pixel_count from src/image.rs
+- PaperBoundaryKind from src/paper.rs
+- WORK_SAMPLE_RATE, LinearResampler and FrequencyDemodulator from src/decoder.rs
+
+Local integration changes only:
+- Adjusted crate-relative imports for this vendor module.
+- Replaced thiserror derives/attributes with handwritten Display and std::error::Error.
+- Retained only error and image primitives needed by radiofax; no SSTV code is vendored.
+- Limited FaxEncoder, FaxEncodeOptions, encode_fax and Oscillator to cfg(test).
+- Moved upstream fax.rs, fax_streaming.rs and fax_paper.rs tests into local unit-test modules and adjusted imports; replaced the static_assertions helper with a local generic assertion.
+
+No third-party dependencies are required.

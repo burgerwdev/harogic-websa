@@ -45,6 +45,7 @@ const SPECS: Record<string, SdrFilterSpec> = {
 	pm: spec(true, 12_000, PM_PRESETS, 'kHz', 'sdr_filter_bandwidth', 50),
 	ft8: spec(false, 3_000, [3_000], 'kHz', 'ft8_filter_fixed', 50),
 	sstv: spec(false, 3_000, [3_000], 'kHz', 'sstv_filter_fixed', 50),
+	radiofax: spec(false, 3_000, [3_000], 'kHz', 'radiofax_filter_fixed', 50),
 	drm: spec(false, 12_000, [12_000], 'kHz', 'drm_filter_fixed', 50),
 	drmplus: spec(false, 100_000, [100_000], 'kHz', 'drmplus_filter_fixed', 50),
 };

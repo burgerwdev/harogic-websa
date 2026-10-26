@@ -25,6 +25,7 @@ enum FixtureSource {
     Replay { iq: Arc<[f32]>, period_samples: usize },
     Cw { key: Arc<[f32]> },
     Analog,
+    Radiofax,
 }
 
 // The launcher runs from the checkout root; direct launches may override the
@@ -82,6 +83,7 @@ impl FixtureSource {
             "am" | "dsb" | "usb" | "lsb" | "nfm" | "pm" => {
                 return Ok((Self::Analog, 48_000.0));
             }
+            "radiofax" => return Ok((Self::Radiofax, 12_000.0)),
             _ => return Err(format!("no fixture source for receiver mode {mode}")),
         };
         let period_samples = period.unwrap_or(iq.len() / 2);
@@ -147,6 +149,13 @@ impl FixtureSource {
                     out.extend_from_slice(&[re as f32, im as f32]);
                 }
             }
+            Self::Radiofax => {
+                for index in first..first + count as u64 {
+                    let t = index as f64 / rate;
+                    let audio = TAU * 1_900.0 * t;
+                    out.extend_from_slice(&[(0.25 * audio.cos()) as f32, 0.0]);
+                }
+            }
         }
     }
 }
@@ -203,7 +212,10 @@ impl FixtureSources {
                 slot.config.freq != config.freq || slot.config.mode != config.mode
                     || slot.config.if_bw != config.if_bw || slot.config.pitch != config.pitch
                     || slot.config.audio_rate != config.audio_rate || slot.config.stereo != config.stereo
-                    || slot.config.sstv_mode != config.sstv_mode) {
+                    || slot.config.sstv_mode != config.sstv_mode
+                    || slot.config.radiofax_acquisition != config.radiofax_acquisition || slot.config.radiofax_ioc != config.radiofax_ioc
+                    || slot.config.radiofax_lpm != config.radiofax_lpm || slot.config.radiofax_modulation != config.radiofax_modulation
+                    || slot.config.radiofax_polarity != config.radiofax_polarity || slot.config.radiofax_clock_recovery != config.radiofax_clock_recovery) {
                 replacements.push((config.channel, FixtureSlot::new(config.clone())?));
             }
         }

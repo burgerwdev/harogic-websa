@@ -174,6 +174,24 @@ describe('native decoded stream boundaries', () => {
       expect(() => stream.accept(data)).toThrow(key);
     }
   });
+  it('requires a fresh identity for a switch to radiofax and accepts its state telemetry', () => {
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'cw' }));
+    expect(() => stream.accept(frame({ mode: 'radiofax', seq: 1, event: { type: 'radiofax-state', running: true,
+      stage: 'searching', clockStatus: 'nominal', clockSource: 'nominal', modulation: 'fm', polarity: 'normal',
+      clockConfidence: 0 } }))).toThrow(/mode changed/);
+    stream.accept(frame({ channel_id: 18, mode: 'radiofax' }));
+    const state: DecodeEnvelope['event'] = { type: 'radiofax-state', running: true, stage: 'receiving', hasPicture: true,
+      signalLevel: 0.4, carrierCoherence: 0.8, ioc: 576, lpm: 120, modulation: 'fm', polarity: 'normal', width: 1810,
+      elapsedSeconds: 21.5, clockStatus: 'locked', clockSource: 'phasing', phasePixels: -1.25, clockPpm: 0.5,
+      clockConfidence: 0.9, complete: false, partial: true, reason: null };
+    expect(stream.accept(frame({ channel_id: 18, mode: 'radiofax', seq: 1, event: state })).event).toEqual(state);
+    for (const bad of [{ stage: 'unknown' }, { ioc: 352 }, { modulation: 'usb' }, { polarity: 'flipped' },
+      { clockStatus: 'fast' }, { clockSource: 'guess' }, { signalLevel: 'high' }, { clockConfidence: null }]) {
+      expect(() => stream.accept(frame({ channel_id: 18, mode: 'radiofax', seq: 2,
+        event: { ...state, ...bad } as unknown as DecodeEnvelope['event'] }))).toThrow();
+    }
+  });
   it('clears stale AM locks across warnings, fatal errors, stream boundaries, reset, and disconnect', async () => {
     class Receiver {
       static current: Receiver;

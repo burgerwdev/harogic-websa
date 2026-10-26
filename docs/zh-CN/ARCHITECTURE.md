@@ -89,13 +89,15 @@ AUD2 携带交错 f32 PCM、实际率和声道、流身份、PCM `audio_index`�
 
 ### DSP 与播放边界
 
-当前模式注册表包括 AM、DSB、USB、LSB、CW、NFM、WFM、PM、FT8、SSTV、DRM 和 DRM+。原生接收器直接复用共享 Rust DSP。模拟监听可使用 AGC、静噪、增益和降噪；数字解码保留原始协议输入。监听增强不得改变 FT8/SSTV/DRM 输入。
+当前模式注册表包括 AM、DSB、USB、LSB、CW、NFM、WFM、PM、FT8、SSTV、无线电传真、DRM 和 DRM+。原生接收器直接复用共享 Rust DSP。模拟监听可使用 AGC、静噪、增益和降噪；数字解码保留原始协议输入。监听增强不得改变 FT8/SSTV/传真/DRM 输入。
 
 `Receiver` 在构建 DSP 前校验音频率（8000..192000 Hz）、IF 与模式通带几何、CW 解码音调（100..1600 Hz），并检查 IQ 有限值、源时钟和输出 PCM 有限值。生产接收器和离线入口执行输入校验；直接调用原始 `Pipeline` 或 `AnalogDemod` trait 时，调用方仍须提供有限输入。
 
 DFN 运行时错误经 `Receiver` 传入接收器故障路径，不会在流中静默切换算法。初始化失败或不支持 DFN 时，明确选择 Wiener。DRM/DRM+ 保留 NR 偏好，但实际 NR 为 Off。切换 NR 保留解码历史和连续的 `audio_index`；源位置会前移，跳过被丢弃的降噪器尾部。
 
 SSTV 按顺序输出图像边界。重新固定模式时使用全新画布，长时间静音的计时器保持有界。
+
+无线电传真使用 12 kHz IQ、300–2700 Hz 复带通和线性 f32 PCM。`FaxPaperDecoder` 负责 APT、定相与 IOC/LPM 检测。产品适配层保存 Gray8 页面，只执行一次纸张校正，并发出 `radiofax-image` 和 `radiofax-state`。换频、换模、断线或 IQ 不连续时，当前页以部分完成收尾，并开始新的流身份。信号丢失和捕获拒绝仅更新解码状态，不锁定共享接收器，也不改变频谱发布。内嵌解码器来自 rasterwave.rs 0.5.0（`65a334c8`），MIT 许可，位于 `dsp/core/src/digital/radiofax/vendor/`。
 
 WFM 保留立体声和 RDS。FM 分析单位为 Hz，固定 NFM ±5 kHz、WFM ±75 kHz 归一化先于自适应 AGC；关闭 AGC 不取消单位转换。立体声指示表示有导频，不保证节目左右声道内容不同。
 

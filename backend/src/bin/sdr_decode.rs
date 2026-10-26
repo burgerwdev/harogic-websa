@@ -14,7 +14,7 @@ const MAX_FORMATS: usize = 256;
 const HELP: &str = "Usage: sdr_decode --input IQ.f32 --mode MODE --input-rate HZ --bandwidth HZ\n\
     [--pitch HZ] [--audio-rate HZ] [--output-pcm PCM.f32] [--report-json REPORT.json]\n\
     [--first-sample-index N] [--delay-input-samples N]\n\n\
-Modes: am dsb usb lsb cw nfm wfm pm ft8 sstv drm drmplus\n\
+Modes: am dsb usb lsb cw nfm wfm pm ft8 sstv drm drmplus radiofax\n\
 Input: little-endian interleaved f32 I,Q pairs at the stated input rate.\n\
 Output: little-endian interleaved f32 PCM, with actual sample rate and channel count\n\
 recorded in formats. A PCM file requires a single format; a format change is an error.\n\
@@ -329,6 +329,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         complex_samples = complex_samples.checked_add((iq.len() / 2) as u64).ok_or("input sample count overflow")?;
     }
     if let Some(job) = receiver.flush_ft8()? { sink.events(receiver.accept_ft8(job.decode()))?; }
+    receiver.finish_radiofax()?;
     if let Some(pcm) = sink.pcm.as_mut() { pcm.flush()?; }
     let report = Report {
         schema_version: 1,

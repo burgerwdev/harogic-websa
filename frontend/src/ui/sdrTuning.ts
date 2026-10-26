@@ -36,6 +36,7 @@ export const STEP_TIERS: Readonly<Record<string, StepTiers>> = {
 	wfm: { normal: 100_000, coarse: 1_000_000, fine: 10_000 },
 	ft8: { normal: 10, coarse: 100, fine: 1 },
 	sstv: { normal: 1_000, coarse: 10_000, fine: 100 },
+	radiofax: { normal: 1_000, coarse: 10_000, fine: 100 },
 	drm: { normal: 1_000, coarse: 10_000, fine: 100 },
 	drmplus: { normal: 10_000, coarse: 100_000, fine: 1_000 },
 };

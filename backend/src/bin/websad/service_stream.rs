@@ -2,11 +2,16 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct DecodeSnapshots { channels:BTreeMap<u32,DecodeSnapshot> }
-struct DecodeSnapshot { envelope:Value, serial:String, width:u32, height:u32, lines:u32, rgb:Vec<u8>, meta:Value }
+struct DecodeSnapshot { envelope:Value, serial:String, width:u32, height:u32, lines:u32, rgb:Vec<u8>, meta:Value, fax:Option<FaxPage> }
+const FAX_ROWS:u32=64;
+const FAX_PIXEL_LIMIT:usize=5*1024*1024;
+struct FaxPage { gray:Vec<u8>, state:Option<Value> }
 #[derive(serde::Deserialize)]
 struct SnapshotHeader<'a> { #[serde(borrow)] mode:&'a str, #[serde(borrow)] event:&'a serde_json::value::RawValue }
 #[derive(serde::Deserialize)]
 struct SnapshotImage { width:u32,height:u32,row:u32,rows:u32,rgb:Vec<u8>,meta:Value }
+#[derive(serde::Deserialize)]
+struct FaxImage<'a> { width:u32,row:u32,rows:u32,#[serde(borrow)] gray:&'a str,revision:u32,meta:Value }
 #[derive(serde::Deserialize)]
 struct EventKind<'a> { #[serde(rename="type",borrow)] kind:&'a str }
 impl DecodeSnapshots {
@@ -14,7 +19,7 @@ impl DecodeSnapshots {
     pub(super) fn observe(&mut self,frames:&[Vec<u8>])->Result<(),String> {
         for frame in frames {
             let header:SnapshotHeader<'_>=serde_json::from_slice(&frame[8..]).map_err(|e|e.to_string())?;
-            if header.mode!="sstv" {continue;}
+            if !matches!(header.mode,"sstv"|"radiofax") {continue;}
             let event:EventKind<'_>=serde_json::from_str(header.event.get()).map_err(|e|e.to_string())?;
             let event_offset=header.event.get().as_ptr() as usize-frame.as_ptr() as usize;
             let mut metadata=Vec::with_capacity(frame.len()-header.event.get().len()+4);
@@ -24,9 +29,11 @@ impl DecodeSnapshots {
             let channel=envelope["channel"].as_u64().ok_or("decode snapshot channel absent")? as u32;
             if !(1..=3).contains(&channel) {return Err("decode snapshot channel invalid".into());}
             let entry=self.channels.entry(channel).or_insert_with(||DecodeSnapshot {
-                envelope:Value::Null,serial:String::new(),width:0,height:0,lines:0,rgb:Vec::new(),meta:Value::Null });
-            if event.kind=="start" {entry.rgb.clear();entry.lines=0;entry.serial.clear();}
-            if event.kind=="sstv-image" {
+                envelope:Value::Null,serial:String::new(),width:0,height:0,lines:0,rgb:Vec::new(),meta:Value::Null,fax:None });
+            if event.kind=="start" {
+                entry.rgb.clear();entry.lines=0;entry.serial.clear();entry.fax=None;
+            }
+            if header.mode=="sstv" && event.kind=="sstv-image" {
                 let image:SnapshotImage=serde_json::from_str(header.event.get()).map_err(|e|e.to_string())?;
                 let (width,height,row,rows)=(image.width,image.height,image.row,image.rows);
                 let size=(width as usize).checked_mul(height as usize).and_then(|v|v.checked_mul(3))
@@ -43,7 +50,13 @@ impl DecodeSnapshots {
                 if image.rgb.len()!=width as usize*rows as usize*3 {return Err("SSTV snapshot RGB length mismatch".into());}
                 let begin=row as usize*width as usize*3;
                 entry.rgb[begin..begin+image.rgb.len()].copy_from_slice(&image.rgb);
-                entry.lines=row+rows;entry.meta=image.meta;
+                entry.lines=row+rows;entry.meta=image.meta;entry.fax=None;
+            }
+            if header.mode=="radiofax" && matches!(event.kind,"radiofax-image"|"radiofax-state") {
+                entry.rgb.clear();
+                let page=entry.fax.get_or_insert_with(||FaxPage {gray:Vec::new(),state:None});
+                if event.kind=="radiofax-image" {observe_fax_image(entry,header.event.get())?;}
+                else {page.state=Some(serde_json::from_str(header.event.get()).map_err(|e|e.to_string())?);}
             }
             entry.envelope=envelope;
         }
@@ -62,20 +75,106 @@ impl DecodeSnapshots {
             let mut sequence=0u32;
             envelope["seq"]=json!(0);envelope["event"]=json!({"type":"start"});
             frames.push(Message::Binary(websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?).map_err(str::to_owned)?.into()));
-            for row in (0..snapshot.lines).step_by(64) {
-                let end=(row+64).min(snapshot.lines);
-                let mut meta=snapshot.meta.clone();meta["lines"]=json!(end);
-                meta["progress"]=json!(end*100/snapshot.height.max(1));
-                meta["complete"]=json!(end==snapshot.height&&snapshot.meta["complete"]==true);
-                sequence+=1;envelope["seq"]=json!(sequence);
-                envelope["event"]=json!({"type":"sstv-image","width":snapshot.width,"height":snapshot.height,
-                    "row":row,"rows":end-row,"rgb":&snapshot.rgb[row as usize*snapshot.width as usize*3..end as usize*snapshot.width as usize*3],"meta":meta});
-                frames.push(Message::Binary(websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?).map_err(str::to_owned)?.into()));
+            if snapshot.envelope["mode"]=="radiofax" {
+                if let Some(page)=&snapshot.fax {
+                    let lines=(page.gray.len()/snapshot.width.max(1) as usize) as u32;
+                    for row in (0..lines).step_by(FAX_ROWS as usize) {
+                        let end=(row+FAX_ROWS).min(lines);
+                        let pixels=&page.gray[row as usize*snapshot.width as usize..end as usize*snapshot.width as usize];
+                        let mut meta=snapshot.meta.clone();
+                        meta["lines"]=json!(end);
+                        meta["complete"]=json!(end==lines && snapshot.meta["complete"]==true);
+                        meta["partial"]=json!(end!=lines || snapshot.meta["partial"]==true);
+                        sequence+=1;envelope["seq"]=json!(sequence);
+                        envelope["event"]=json!({"type":"radiofax-image","width":snapshot.width,"row":row,
+                            "rows":end-row,"gray":fax_base64(pixels),"revision":snapshot.height+1,"meta":meta});
+                        frames.push(Message::Binary(websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?).map_err(str::to_owned)?.into()));
+                    }
+                    if let Some(state)=&page.state {
+                        sequence+=1;envelope["seq"]=json!(sequence);envelope["event"]=state.clone();
+                        frames.push(Message::Binary(websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?).map_err(str::to_owned)?.into()));
+                    }
+                }
+            } else {
+                for row in (0..snapshot.lines).step_by(64) {
+                    let end=(row+64).min(snapshot.lines);
+                    let mut meta=snapshot.meta.clone();meta["lines"]=json!(end);
+                    meta["progress"]=json!(end*100/snapshot.height.max(1));
+                    meta["complete"]=json!(end==snapshot.height&&snapshot.meta["complete"]==true);
+                    sequence+=1;envelope["seq"]=json!(sequence);
+                    envelope["event"]=json!({"type":"sstv-image","width":snapshot.width,"height":snapshot.height,
+                        "row":row,"rows":end-row,"rgb":&snapshot.rgb[row as usize*snapshot.width as usize*3..end as usize*snapshot.width as usize*3],"meta":meta});
+                    frames.push(Message::Binary(websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?).map_err(str::to_owned)?.into()));
+                }
             }
             subscriber.seed_decode(slot,(id,epoch),source,sequence);
         }
         Ok(frames)
     }
+}
+
+fn observe_fax_image(entry:&mut DecodeSnapshot,event:&str)->Result<(),String> {
+    let image:FaxImage<'_>=serde_json::from_str(event).map_err(|e|format!("radiofax snapshot image: {e}"))?;
+    if image.rows==0 || image.rows>FAX_ROWS {return Err("radiofax snapshot row count exceeds 64".into());}
+    let end=image.row.checked_add(image.rows).ok_or("radiofax snapshot row overflow")?;
+    let pixels=fax_decode(image.gray).map_err(|_|"radiofax snapshot gray is not valid base64".to_string())?;
+    let span=(image.width as usize).checked_mul(image.rows as usize).ok_or("radiofax snapshot geometry overflow")?;
+    if image.width==0 || pixels.len()!=span {return Err("radiofax snapshot gray length mismatch".into());}
+    if span>FAX_PIXEL_LIMIT {return Err("radiofax snapshot exceeds size bound".into());}
+    let serial=image.meta["serial"].as_str().ok_or("radiofax snapshot serial absent")?;
+    let page=entry.fax.as_mut().ok_or("radiofax snapshot page absent")?;
+    let current=(page.gray.len()/entry.width.max(1) as usize) as u32;
+    let same=entry.serial==serial && entry.width==image.width && !entry.serial.is_empty();
+    if same {
+        if image.revision<=entry.height {return Err("radiofax snapshot revision must increase".into());}
+        if image.row>current {return Err("radiofax snapshot row discontinuity".into());}
+    } else if image.row!=0 {
+        return Err("radiofax snapshot page must start at row zero".into());
+    }
+    let stored=(image.width as usize).checked_mul(end as usize).ok_or("radiofax snapshot geometry overflow")?;
+    if stored>FAX_PIXEL_LIMIT {return Err("radiofax snapshot exceeds size bound".into());}
+    if !same {
+        entry.serial=serial.to_owned();entry.width=image.width;entry.lines=0;page.gray.clear();
+    }
+    let begin=image.row as usize*image.width as usize;
+    if page.gray.len()<begin+pixels.len() {page.gray.resize(begin+pixels.len(),0);}
+    page.gray[begin..begin+pixels.len()].copy_from_slice(&pixels);
+    let retained = (page.gray.len()/entry.width.max(1) as usize).max(end as usize);
+    entry.lines=retained as u32;entry.height=image.revision;entry.meta=image.meta;
+    Ok(())
+}
+
+fn fax_decode(text:&str)->Result<Vec<u8>,()> {
+    fn value(byte:u8)->Option<u8> {
+        match byte {b'A'..=b'Z'=>Some(byte-b'A'),b'a'..=b'z'=>Some(byte-b'a'+26),
+            b'0'..=b'9'=>Some(byte-b'0'+52),b'+'=>Some(62),b'/'=>Some(63),_=>None}
+    }
+    if text.len()%4!=0 {return Err(());}
+    let bytes=text.as_bytes();
+    let mut out=Vec::with_capacity(text.len()/4*3);
+    for chunk in bytes.chunks_exact(4) {
+        let pad=chunk.iter().rev().take_while(|&&b|b==b'=').count();
+        if pad>2 || chunk[..4-pad].contains(&b'=') {return Err(());}
+        let mut word=0u32;
+        for &byte in &chunk[..4-pad] {word=(word<<6)|u32::from(value(byte).ok_or(())?);}
+        word<<=6*pad as u32;
+        out.push((word>>16) as u8);
+        if pad<2 {out.push((word>>8) as u8);}
+        if pad<1 {out.push(word as u8);}
+    }
+    Ok(out)
+}
+
+fn fax_base64(bytes:&[u8])->String {
+    const ALPHA: &[u8;64]=b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out=String::with_capacity(bytes.len().div_ceil(3)*4);
+    for chunk in bytes.chunks(3) {
+        let mut word=0u32;
+        for (index,&byte) in chunk.iter().enumerate() {word|=u32::from(byte)<<((2-index)*8);}
+        for index in 0..=chunk.len() {out.push(ALPHA[((word>>((3-index)*6))&63) as usize] as char);}
+        out.extend(std::iter::repeat('=').take(3-chunk.len()));
+    }
+    out
 }
 
 // Receiver failure ends every shared decoder lane, never the capture session.
@@ -463,5 +562,81 @@ mod tests {
             assert!(!client.overflow.load(Ordering::Acquire));
             assert_eq!(client.dropped.load(Ordering::Relaxed),0);
         }
+    }
+
+    fn fax_frame(seq:u32,event:Value)->Vec<u8> {
+        websa_channelizer::encode_decode_event(&serde_json::to_vec(&json!({
+            "channel":1,"channel_id":11,"epoch":7,"seq":seq,"mode":"radiofax","event":event,
+        })).unwrap()).unwrap()
+    }
+    fn fax_meta(serial:&str,lines:u32,complete:bool)->Value {
+        json!({"serial":serial,"epoch":4,"hz":7.8e6,"ioc":576,"lpm":120,"lines":lines,
+            "complete":complete,"partial":!complete,"segmentIndex":1,"transmissionId":"paper"})
+    }
+    fn fax_image(row:u32,gray:&[u8],revision:u32,serial:&str,lines:u32)->Value {
+        json!({"type":"radiofax-image","width":2,"row":row,"rows":gray.len()/2,
+            "gray":fax_base64(gray),"revision":revision,"meta":fax_meta(serial,lines,lines==gray.len() as u32/2+row)})
+    }
+
+    #[test]
+    fn radiofax_snapshot_appends_replaces_and_recovers_for_late_subscribers() {
+        let mut snapshots=DecodeSnapshots::default();
+        snapshots.observe(&[fax_frame(0,json!({"type":"start"})),
+            fax_frame(1,fax_image(0,&[1,2,3,4],1,"A",2)),
+            fax_frame(2,fax_image(2,&[5,6],2,"A",3))]).unwrap();
+        let page=&snapshots.channels[&1].fax.as_ref().unwrap().gray;
+        assert_eq!(page,&[1,2,3,4,5,6]);
+        assert_eq!(snapshots.channels[&1].height,2);
+        snapshots.observe(&[fax_frame(3,fax_image(0,&[9,8,7,6,5,4],3,"A",3))]).unwrap();
+        assert_eq!(snapshots.channels[&1].fax.as_ref().unwrap().gray,&[9,8,7,6,5,4]);
+        assert_eq!(snapshots.channels[&1].lines,3);
+        let state=json!({"type":"radiofax-state","running":true,"lines":2,"complete":false});
+        snapshots.observe(&[fax_frame(4,state.clone())]).unwrap();
+        let registry=[sdr_pipeline::ChannelRegistryEntry {channel:1,channel_id:11,epoch:7,
+            frequency_hz:7.8e6,output_rate:12_000.0,input_rate:48_000.0,group_delay_samples:0.0,state:"active"}];
+        let mut subscriber=subscriber_stream::SubscriberStream::default();
+        let frames=snapshots.initial(Some(1),&registry,&mut subscriber).unwrap();
+        let events:Vec<Value>=frames.iter().map(|message| {
+            let Message::Binary(bytes)=message else {panic!("binary snapshot")};
+            serde_json::from_slice(&bytes[8..]).unwrap()
+        }).collect();
+        assert_eq!(events.iter().map(|event|event["seq"].as_u64().unwrap()).collect::<Vec<_>>(),vec![0,1,2]);
+        assert_eq!(events[0]["event"]["type"],"start");
+        assert_eq!(events[1]["event"]["row"],0);
+        assert_eq!(events[1]["event"]["rows"],3);
+        assert_eq!(events[1]["event"]["gray"],fax_base64(&[9,8,7,6,5,4]));
+        assert_eq!(events[1]["event"]["revision"],4);
+        assert_eq!(events[2]["event"],state);
+        assert!(subscriber.frames(Message::Binary(fax_frame(4,state).into())).unwrap().is_empty());
+        assert_eq!(subscriber.frames(Message::Binary(fax_frame(5,json!({"type":"radiofax-state"})).into())).unwrap().len(),1);
+    }
+
+    #[test]
+    fn radiofax_snapshot_rejects_invalid_gray_geometry_and_ordering() {
+        let valid=|event| {
+            let mut snapshots=DecodeSnapshots::default();
+            snapshots.observe(&[fax_frame(0,json!({"type":"start"})),fax_frame(1,event)])
+        };
+        assert!(valid(json!({"type":"radiofax-image","width":2,"row":0,"rows":1,
+            "gray":"A","revision":1,"meta":fax_meta("A",1,false)})).unwrap_err().contains("base64"));
+        assert!(valid(json!({"type":"radiofax-image","width":2,"row":0,"rows":65,
+            "gray":fax_base64(&[0;130]),"revision":1,"meta":fax_meta("A",65,false)})).unwrap_err().contains("64"));
+        assert!(valid(json!({"type":"radiofax-image","width":2,"row":0,"rows":1,
+            "gray":fax_base64(&[1,2,3]),"revision":1,"meta":fax_meta("A",1,false)})).unwrap_err().contains("length"));
+        assert!(valid(json!({"type":"radiofax-image","width":2,"row":1,"rows":1,
+            "gray":fax_base64(&[1,2]),"revision":1,"meta":fax_meta("A",2,false)})).unwrap_err().contains("row zero"));
+        let mut snapshots=DecodeSnapshots::default();
+        snapshots.observe(&[fax_frame(0,json!({"type":"start"})),fax_frame(1,fax_image(0,&[1,2],1,"A",1))]).unwrap();
+        let error=snapshots.observe(&[fax_frame(2,fax_image(0,&[3,4],1,"A",1))]).unwrap_err();
+        assert!(error.contains("revision"),"{error}");
+        let error=snapshots.observe(&[fax_frame(2,fax_image(4,&[3,4],2,"A",5))]).unwrap_err();
+        assert!(error.contains("discontinuity"),"{error}");
+        let mut entry=DecodeSnapshot {
+            envelope:Value::Null,serial:"B".into(),width:1,height:1,lines:1,
+            rgb:Vec::new(),meta:Value::Null,fax:Some(FaxPage {gray:vec![7],state:None}) };
+        let event=json!({"type":"radiofax-image","width":FAX_PIXEL_LIMIT+1,"row":0,"rows":1,
+            "gray":"A".repeat((FAX_PIXEL_LIMIT+1).div_ceil(3)*4),"revision":2,
+            "meta":fax_meta("B",1,false)}).to_string();
+        assert!(observe_fax_image(&mut entry,&event).unwrap_err().contains("size"));
     }
 }

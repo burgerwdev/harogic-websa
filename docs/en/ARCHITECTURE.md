@@ -89,13 +89,15 @@ AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM
 
 ### DSP and playback boundaries
 
-The current mode registry covers AM, DSB, USB, LSB, CW, NFM, WFM, PM, FT8, SSTV, DRM and DRM+. Native receivers reuse the shared Rust DSP directly. Analog listening can use AGC, squelch, gain and noise reduction; digital decoding consumes its original protocol input. Listener enhancements must not alter FT8/SSTV/DRM input.
+The current mode registry covers AM, DSB, USB, LSB, CW, NFM, WFM, PM, FT8, SSTV, radiofax, DRM and DRM+. Native receivers reuse the shared Rust DSP directly. Analog listening can use AGC, squelch, gain and noise reduction; digital decoding consumes its original protocol input. Listener enhancements must not alter FT8/SSTV/radiofax/DRM input.
 
 `Receiver` validates audio rate (8000..192000 Hz), IF and mode-band geometry, and CW decoder pitch (100..1600 Hz) before DSP construction. It also checks finite IQ, source clocks and finite output PCM. Production receiver and offline entry points validate input; direct raw `Pipeline` and `AnalogDemod` trait callers must still supply finite input.
 
 A runtime DFN error propagates through `Receiver` to the scoped receiver failure path; it does not silently switch algorithms mid-stream. Initialization failure or unsupported DFN operation uses an explicit Wiener selection. DRM/DRM+ retain NR preferences with effective NR Off. An NR toggle keeps decoder history and continuous `audio_index`; source provenance advances over any discarded reducer tail.
 
 SSTV emits picture boundaries in order. Pinning a mode again starts a fresh canvas, and the long-silence timer is bounded.
+
+Radiofax uses a 12 kHz IQ path, a 300–2700 Hz complex band-pass and linear f32 PCM. `FaxPaperDecoder` owns APT, phasing and IOC/LPM detection. The product adapter stores Gray8 pages, applies paper correction once and emits `radiofax-image` and `radiofax-state`. A frequency, mode, disconnect or IQ discontinuity closes the active page as partial and starts a new stream identity. Signal loss and acquisition rejection remain decoder state; they do not latch the shared receiver or alter spectrum publication. The vendored decoder is rasterwave.rs 0.5.0 (`65a334c8`), MIT, under `dsp/core/src/digital/radiofax/vendor/`.
 
 WFM retains stereo and RDS processing. FM analysis is in Hz; fixed NFM ±5 kHz and WFM ±75 kHz normalization precedes adaptive AGC. Disabling AGC does not remove that unit conversion. Stereo indication reports pilot presence, not differing L/R programme content.
 

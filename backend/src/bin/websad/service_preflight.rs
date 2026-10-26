@@ -9,7 +9,7 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
     if display_only { return Ok(app.state.lock().unwrap().config_version); }
     if !matches!(cmd, "AUTO_SCALE" | "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC" | "SET_SDR" | "SET_MODE" | "CONNECT" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT" | "SET_PRESET") { return Ok(app.state.lock().unwrap().config_version); }
     {
-        let state = app.state.lock().unwrap();
+        let mut state = app.state.lock().unwrap();
         if !data.is_object() { return Err("JSON message must be an object".into()); }
         if matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC") {
             if state.swp.mode != "sdr" { return Err("channel commands require SDR mode".into()); }
@@ -40,7 +40,7 @@ pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result
     // Wait for admission before snapshotting the configuration revision.
     let permit = ADMISSION.acquire().await.map_err(|_| "admission_busy: service admission already running")?;
     let candidate = {
-        let state = app.state.lock().unwrap();
+        let mut state = app.state.lock().unwrap();
         let revision = state.config_version;
         let channels = matches!(cmd, "SET_SDR_CHANNEL" | "SET_SDR_AUX" | "SET_SDR_DEMOD" | "SET_SDR_TUNE" | "SET_SDR_DDC");
         let front_end = matches!(cmd, "AUTO_SCALE" | "SET_REF" | "SET_AMP" | "SET_REFCK" | "SET_REFCKOUT");

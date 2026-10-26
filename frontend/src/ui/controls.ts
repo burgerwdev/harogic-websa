@@ -4,6 +4,8 @@ import { send } from '../core/wsSend';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
+import { sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery, sdrRadiofaxIoc,
+  sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels, sdrRadiofaxPolarity } from './sdrState';
 import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTuningUi';
 import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
 import { sdrFilterLimits } from './sdrState';
@@ -51,7 +53,7 @@ import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
 import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
-import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow } from './decodeWindow';
+import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
 import { resetSdrIq, setSdrIqEnabled, setSstvModePin } from '../sdr/iqStream';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
@@ -164,8 +166,75 @@ function requestSdrAmSync(enabled: boolean): void {
   send({ cmd: 'SET_SDR_CHANNEL', channel: 1, am_sync: enabled, request_id: requestId });
   refreshDecodeWindow();
 }
+let radiofaxSerial = 0;
+let pendingRadiofax: { requestId: string; timer: number } | null = null;
+let radiofaxQueue: RadiofaxConfigPatch[] = [];
 
-/** A rejection must belong to this detector request, not another primary-channel edit. */
+function currentRadiofaxConfig(): Required<Omit<RadiofaxConfigPatch, 'radiofax_new_page' | 'radiofax_reset_correction'>> {
+  return {
+    radiofax_acquisition: sdrRadiofaxAcquisition.get(), radiofax_ioc: sdrRadiofaxIoc.get(),
+    radiofax_lpm: sdrRadiofaxLpm.get(), radiofax_modulation: sdrRadiofaxModulation.get(),
+    radiofax_polarity: sdrRadiofaxPolarity.get(), radiofax_clock_recovery: sdrRadiofaxClockRecovery.get(),
+    radiofax_phase_pixels: sdrRadiofaxPhasePixels.get(), radiofax_clock_ppm: sdrRadiofaxClockPpm.get(),
+  };
+}
+
+function sendRadiofaxConfig(patch: RadiofaxConfigPatch): void {
+  const requestId = `sdr-radiofax-${++radiofaxSerial}`;
+  pendingRadiofax = { requestId, timer: window.setTimeout(() => {
+    pendingRadiofax = null;
+    radiofaxQueue = [];
+    sdrRadiofaxAcquisition.reset(); sdrRadiofaxIoc.reset(); sdrRadiofaxLpm.reset();
+    sdrRadiofaxModulation.reset(); sdrRadiofaxPolarity.reset(); sdrRadiofaxClockRecovery.reset();
+    sdrRadiofaxPhasePixels.reset(); sdrRadiofaxClockPpm.reset();
+    refreshDecodeWindow();
+    S.setStatusError(t('sdr_filter_timeout'));
+  }, 3000) };
+  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, ...currentRadiofaxConfig(), ...patch, request_id: requestId });
+}
+
+function requestRadiofaxConfig(patch: RadiofaxConfigPatch): void {
+  if (patch.radiofax_acquisition !== undefined) sdrRadiofaxAcquisition.set(patch.radiofax_acquisition);
+  if (patch.radiofax_ioc !== undefined) sdrRadiofaxIoc.set(patch.radiofax_ioc);
+  if (patch.radiofax_lpm !== undefined) sdrRadiofaxLpm.set(patch.radiofax_lpm);
+  if (patch.radiofax_modulation !== undefined) sdrRadiofaxModulation.set(patch.radiofax_modulation);
+  if (patch.radiofax_polarity !== undefined) sdrRadiofaxPolarity.set(patch.radiofax_polarity);
+  if (patch.radiofax_clock_recovery !== undefined) sdrRadiofaxClockRecovery.set(patch.radiofax_clock_recovery);
+  if (patch.radiofax_phase_pixels !== undefined && Number.isFinite(patch.radiofax_phase_pixels)) sdrRadiofaxPhasePixels.set(patch.radiofax_phase_pixels);
+  if (patch.radiofax_clock_ppm !== undefined && Number.isFinite(patch.radiofax_clock_ppm)) sdrRadiofaxClockPpm.set(patch.radiofax_clock_ppm);
+  const oneShot: RadiofaxConfigPatch = {};
+  if (patch.radiofax_new_page === true) oneShot.radiofax_new_page = true;
+  if (patch.radiofax_reset_correction === true) oneShot.radiofax_reset_correction = true;
+  if (pendingRadiofax) { radiofaxQueue.push(oneShot); return; }
+  sendRadiofaxConfig(oneShot);
+  refreshDecodeWindow();
+}
+
+function finishRadiofaxConfig(): void {
+  if (pendingRadiofax) window.clearTimeout(pendingRadiofax.timer);
+  pendingRadiofax = null;
+  const next = radiofaxQueue.shift();
+  if (next) sendRadiofaxConfig(next);
+  refreshDecodeWindow();
+}
+
+export function rejectSdrRadiofaxRequest(responseTo?: string, requestId?: string | number): void {
+  if (responseTo !== 'SET_SDR_CHANNEL' || !pendingRadiofax || pendingRadiofax.requestId !== requestId) return;
+  window.clearTimeout(pendingRadiofax.timer);
+  pendingRadiofax = null;
+  radiofaxQueue = [];
+  sdrRadiofaxAcquisition.reset(); sdrRadiofaxIoc.reset(); sdrRadiofaxLpm.reset();
+  sdrRadiofaxModulation.reset(); sdrRadiofaxPolarity.reset(); sdrRadiofaxClockRecovery.reset();
+  sdrRadiofaxPhasePixels.reset(); sdrRadiofaxClockPpm.reset();
+  refreshDecodeWindow();
+}
+
+/** Radiofax edits queue behind the in-flight request so acknowledgement stays ordered. */
+function clearRadiofaxRequest(): void {
+  if (pendingRadiofax) window.clearTimeout(pendingRadiofax.timer);
+  pendingRadiofax = null;
+  radiofaxQueue = [];
+}
 export function rejectSdrAmSyncRequest(responseTo?: string, requestId?: string | number): void {
   if (responseTo !== 'SET_SDR_CHANNEL' || !pendingAmSync || pendingAmSync.requestId !== requestId) return;
   clearAmSyncRequest();
@@ -186,7 +255,10 @@ export function disconnectSdrSession(): void {
   sdrIfbw.reset();
   clearPassbandView();
   sdrFilterLimits.confirm(null);
-  cancelSdrCanvasGesture();
+  clearRadiofaxRequest();
+  sdrRadiofaxAcquisition.reset(); sdrRadiofaxIoc.reset(); sdrRadiofaxLpm.reset();
+  sdrRadiofaxModulation.reset(); sdrRadiofaxPolarity.reset(); sdrRadiofaxClockRecovery.reset();
+  sdrRadiofaxPhasePixels.reset(); sdrRadiofaxClockPpm.reset();
   cancelSdrFilterEdit();
   confirmAmSyncGeneration(null);
   setSdrIqEnabled(false);
@@ -596,7 +668,7 @@ export function applySdrDemod(restoringMode = false, filterOnly = false) {
   const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: 1, mode, ifbw } : { cmd: 'SET_SDR_CHANNEL', channel: 1, enabled: true, mode, ifbw, volume, squelch,
     agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
     nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
-    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get() };
+    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig() };
   if (receiverInFlight) {
     receiverQueued = { payload, mode, ifbw, restoringMode };
   } else if (sdrDemod.pending() || sdrIfbw.pending()) {
@@ -769,7 +841,7 @@ function sendReceiverEdit(edit: ReceiverEdit): void {
     volume: sdrVolume.get(), squelch: sdrSquelch.get(), agc: sdrAgc.get(), am_sync: sdrAmSync.get(),
     deemph_us: sdrDeemph.get(), nr: sdrNr.get(), nr_strength: sdrNrStrength.get(),
     nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
-    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(),
+    sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig(),
   } : {};
   send({ ...edit.payload, ...liveAudio, request_id: requestId });
 }
@@ -956,6 +1028,15 @@ export function syncSdrPanel(s: any) {
   renderSdrTuningUi();
   if (receiver.pitch != null) sdrPitchHz.confirm(Number(receiver.pitch));
   if ('sstv_mode' in receiver) sdrSstvMode.confirm(receiver.sstv_mode == null ? -1 : Number(receiver.sstv_mode));
+  if (receiver.radiofax_acquisition === 'auto' || receiver.radiofax_acquisition === 'manual') sdrRadiofaxAcquisition.confirm(receiver.radiofax_acquisition);
+  if (receiver.radiofax_ioc === 'auto' || receiver.radiofax_ioc === '288' || receiver.radiofax_ioc === '576') sdrRadiofaxIoc.confirm(receiver.radiofax_ioc);
+  if (receiver.radiofax_lpm !== undefined && ['auto', '60', '90', '120', '180', '240'].includes(receiver.radiofax_lpm)) sdrRadiofaxLpm.confirm(receiver.radiofax_lpm);
+  if (receiver.radiofax_modulation === 'fm' || receiver.radiofax_modulation === 'am') sdrRadiofaxModulation.confirm(receiver.radiofax_modulation);
+  if (receiver.radiofax_polarity === 'normal' || receiver.radiofax_polarity === 'inverted') sdrRadiofaxPolarity.confirm(receiver.radiofax_polarity);
+  if (receiver.radiofax_clock_recovery === 'auto' || receiver.radiofax_clock_recovery === 'off') sdrRadiofaxClockRecovery.confirm(receiver.radiofax_clock_recovery);
+  if (typeof receiver.radiofax_phase_pixels === 'number' && Number.isFinite(receiver.radiofax_phase_pixels)) sdrRadiofaxPhasePixels.confirm(receiver.radiofax_phase_pixels);
+  if (typeof receiver.radiofax_clock_ppm === 'number' && Number.isFinite(receiver.radiofax_clock_ppm)) sdrRadiofaxClockPpm.confirm(receiver.radiofax_clock_ppm);
+  if (pendingRadiofax && s.response_to === 'SET_SDR_CHANNEL' && s.request_id === pendingRadiofax.requestId) finishRadiofaxConfig();
   if (typeof primary?.am_sync === 'boolean') {
     sdrAmSync.confirm(primary.am_sync);
     if (!sdrAmSync.pending()) clearAmSyncRequest();
@@ -1355,6 +1436,10 @@ export function bindActions() {
     onAmSync: (enabled) => {
       if (!amSyncSessionAvailable() || !canToggleAmSync() || sdrDemod.confirmedValue() !== 'am') return;
       requestSdrAmSync(enabled);
+    },
+    onRadiofaxConfig: (config) => {
+      if (deviceMode.get() !== 'sdr') return;
+      requestRadiofaxConfig(config);
     },
   });
   const demodGroup = document.getElementById('sdr-demod-group');

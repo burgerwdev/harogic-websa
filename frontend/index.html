@@ -988,6 +988,58 @@
         </div>
       </div>
     </div>
+    <!-- Radiofax: continuous Gray8 paper, independent from SSTV's RGB still pictures. -->
+    <div class="decode-radiofax" id="decode-window-radiofax" style="display:none;">
+      <div class="decode-radiofax-bar">
+        <div class="btn-group" role="group" aria-label="Radiofax acquisition">
+          <button type="button" class="btn" id="radiofax-auto" data-i18n="auto">Auto</button>
+          <button type="button" class="btn" id="radiofax-manual" data-i18n="radiofax_manual">Manual</button>
+        </div>
+        <label><span data-i18n="radiofax_ioc">IOC</span><select id="radiofax-ioc">
+          <option value="auto" data-i18n="auto">Auto</option><option value="288">288</option><option value="576">576</option>
+        </select></label>
+        <label><span data-i18n="radiofax_lpm">LPM</span><select id="radiofax-lpm">
+          <option value="auto" data-i18n="auto">Auto</option><option value="60">60</option><option value="90">90</option>
+          <option value="120">120</option><option value="180">180</option><option value="240">240</option>
+        </select></label>
+        <button type="button" class="btn" id="radiofax-new-page" data-i18n="radiofax_new_page" data-i18n-title="radiofax_new_page_tip">New page</button>
+        <button type="button" class="btn" id="radiofax-save" data-i18n="radiofax_save" data-i18n-title="radiofax_save_tip">Save PNG</button>
+      </div>
+      <details class="decode-radiofax-advanced" id="radiofax-advanced">
+        <summary data-i18n="radiofax_advanced">Advanced</summary>
+        <div class="decode-radiofax-advanced-grid">
+          <label><span data-i18n="radiofax_modulation">Modulation</span><select id="radiofax-modulation">
+            <option value="fm">FM</option><option value="am">AM</option>
+          </select></label>
+          <label><span data-i18n="radiofax_polarity">Polarity</span><select id="radiofax-polarity">
+            <option value="normal" data-i18n="radiofax_normal">Normal</option><option value="inverted" data-i18n="radiofax_inverted">Inverted</option>
+          </select></label>
+          <label><span data-i18n="radiofax_clock">Clock recovery</span><select id="radiofax-clock-recovery">
+            <option value="auto" data-i18n="auto">Auto</option><option value="off" data-i18n="off">Off</option>
+          </select></label>
+          <label><span data-i18n="radiofax_phase">Phase (px)</span><input id="radiofax-phase-pixels" type="number" step="any" value="0"></label>
+          <label><span data-i18n="radiofax_ppm">Clock (ppm)</span><input id="radiofax-clock-ppm" type="number" step="any" value="0"></label>
+          <button type="button" class="btn" id="radiofax-reset-correction" data-i18n="radiofax_reset" data-i18n-title="radiofax_reset_tip">Reset correction</button>
+        </div>
+      </details>
+      <div class="decode-radiofax-status" id="radiofax-state" role="status">—</div>
+      <div class="decode-radiofax-status" id="radiofax-clock-state">—</div>
+      <div class="decode-radiofax-view-tools">
+        <select id="radiofax-history" data-i18n-title="radiofax_history_tip" title="Received pages"></select>
+        <div class="btn-group" role="group" aria-label="Radiofax zoom">
+          <button type="button" class="btn" data-radiofax-zoom="fit" data-i18n="radiofax_fit">Fit</button>
+          <button type="button" class="btn" data-radiofax-zoom="50">50%</button>
+          <button type="button" class="btn" data-radiofax-zoom="100">100%</button>
+          <button type="button" class="btn" data-radiofax-zoom="200">200%</button>
+        </div>
+        <button type="button" class="btn active" id="radiofax-follow" aria-pressed="true" data-i18n="radiofax_follow" data-i18n-title="radiofax_follow_tip">Follow latest</button>
+      </div>
+      <div class="decode-radiofax-error" id="radiofax-save-error" role="alert" style="display:none;"></div>
+      <div class="decode-radiofax-view" id="radiofax-view">
+        <canvas id="decode-radiofax-canvas" width="576" height="1"></canvas>
+        <div class="decode-radiofax-empty" id="radiofax-empty" data-i18n="radiofax_waiting">Waiting for radiofax image…</div>
+      </div>
+    </div>
   </div>
   <!-- Resize handles: four edges and four corners (a single corner grip was all the first
        version had, so the window could only grow one way). The corners sit above the edges, and

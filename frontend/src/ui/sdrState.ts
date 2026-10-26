@@ -13,6 +13,7 @@ import { t } from '../core/i18n';
 import { isDigitalMode } from '../sdr/registry';
 import { FT8_SEARCH_HIGH_HZ, FT8_SEARCH_LOW_HZ } from '../sdr/ft8Log';
 import { sstvBandHz } from '../sdr/sstvLog';
+import { radiofaxBandHz } from '../sdr/radiofaxLog';
 import { signalLocateSupported, stepTierDefaults } from './sdrTuning';
 
 /** Frequency-like equality: sub-Hz differences are the same value. */
@@ -64,6 +65,49 @@ export const sdrSstvMode = createParam<number>('sdr.sstvMode', {
 		const mode = raw.trim() !== '' ? Number(raw) : NaN;
 		return Number.isInteger(mode) && mode >= -1 ? mode : null;
 	},
+});
+/** Radiofax acquisition and raster preferences. STATUS alone confirms and persists them. */
+export type RadiofaxAcquisition = 'auto' | 'manual';
+export type RadiofaxIoc = 'auto' | '288' | '576';
+export type RadiofaxLpm = 'auto' | '60' | '90' | '120' | '180' | '240';
+export type RadiofaxModulation = 'fm' | 'am';
+export type RadiofaxPolarity = 'normal' | 'inverted';
+export type RadiofaxClockRecovery = 'auto' | 'off';
+export const sdrRadiofaxAcquisition = createParam<RadiofaxAcquisition>('sdr.radiofaxAcquisition', {
+	fallback: 'auto', scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-acquisition',
+	parse: (raw) => raw === 'auto' || raw === 'manual' ? raw : null,
+});
+export const sdrRadiofaxIoc = createParam<RadiofaxIoc>('sdr.radiofaxIoc', {
+	fallback: 'auto', scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-ioc',
+	parse: (raw) => raw === 'auto' || raw === '288' || raw === '576' ? raw : null,
+});
+export const sdrRadiofaxLpm = createParam<RadiofaxLpm>('sdr.radiofaxLpm', {
+	fallback: 'auto', scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-lpm',
+	parse: (raw) => ['auto', '60', '90', '120', '180', '240'].includes(raw) ? raw as RadiofaxLpm : null,
+});
+export const sdrRadiofaxModulation = createParam<RadiofaxModulation>('sdr.radiofaxModulation', {
+	fallback: 'fm', scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-modulation',
+	parse: (raw) => raw === 'fm' || raw === 'am' ? raw : null,
+});
+export const sdrRadiofaxPolarity = createParam<RadiofaxPolarity>('sdr.radiofaxPolarity', {
+	fallback: 'normal', scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-polarity',
+	parse: (raw) => raw === 'normal' || raw === 'inverted' ? raw : null,
+});
+export const sdrRadiofaxClockRecovery = createParam<RadiofaxClockRecovery>('sdr.radiofaxClockRecovery', {
+	fallback: 'auto', scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-clock-recovery',
+	parse: (raw) => raw === 'auto' || raw === 'off' ? raw : null,
+});
+const finiteRadiofaxCorrection = (raw: string): number | null => {
+	const value = Number(raw);
+	return raw.trim() !== '' && Number.isFinite(value) ? value : null;
+};
+export const sdrRadiofaxPhasePixels = createParam<number>('sdr.radiofaxPhasePixels', {
+	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-phase-pixels',
+	parse: finiteRadiofaxCorrection, serialize: String,
+});
+export const sdrRadiofaxClockPpm = createParam<number>('sdr.radiofaxClockPpm', {
+	fallback: 0, scope: 'sdr', persistKey: 'web-sa-sdr-radiofax-clock-ppm',
+	parse: finiteRadiofaxCorrection, serialize: String,
 });
 /** IF passband in Hz (also what the listen-band overlay draws). */
 export const sdrIfbw = createParam<number>('sdr.ifbw', {
@@ -121,6 +165,7 @@ export function demodBandHz(demod: string, ifBw: number, pitch = sdrPitchHz.get(
 		return [-ifBw / 2, ifBw / 2];
 	}
 	if (demod === 'sstv') return sstvBandHz();
+	if (demod === 'radiofax') return radiofaxBandHz();
 	if (isDigitalMode(demod)) return [FT8_SEARCH_LOW_HZ, FT8_SEARCH_HIGH_HZ];
 	const guard = Math.max(100, Math.min(300, ifBw * 0.1));
 	if (demod === 'usb') return [guard, ifBw];
@@ -209,6 +254,14 @@ export interface SdrChannelStatus {
     mode: string;
     if_bw: number;
     sstv_mode?: number | null;
+    radiofax_acquisition?: RadiofaxAcquisition;
+    radiofax_ioc?: RadiofaxIoc;
+    radiofax_lpm?: RadiofaxLpm;
+    radiofax_modulation?: RadiofaxModulation;
+    radiofax_polarity?: RadiofaxPolarity;
+    radiofax_clock_recovery?: RadiofaxClockRecovery;
+    radiofax_phase_pixels?: number;
+    radiofax_clock_ppm?: number;
     am_sync?: boolean;
     am_sync_generation?: number;
     volume: number;
@@ -320,6 +373,9 @@ export const SDR_PREF_KEYS = [
 	'web-sa-sdr-step-normal', 'web-sa-sdr-step-coarse', 'web-sa-sdr-step-fine',
 	'web-sa-sdr-locate', 'web-sa-sdr-channel-step', 'web-sa-sdr-channel-anchor',
 	'web-sa-sdr-sstv-mode', 'web-sa-sdr-am-sync', 'web-sa-sdr-filter-by-mode',
+	'web-sa-sdr-radiofax-acquisition', 'web-sa-sdr-radiofax-ioc', 'web-sa-sdr-radiofax-lpm',
+	'web-sa-sdr-radiofax-modulation', 'web-sa-sdr-radiofax-polarity', 'web-sa-sdr-radiofax-clock-recovery',
+	'web-sa-sdr-radiofax-phase-pixels', 'web-sa-sdr-radiofax-clock-ppm',
 ];
 
 /**
@@ -344,6 +400,14 @@ export function resetSdrState(): void {
 	sdrFilterByMode.set({});
 	sdrSstvMode.set(-1);
 	sdrAmSync.set(false);
+	sdrRadiofaxAcquisition.set('auto');
+	sdrRadiofaxIoc.set('auto');
+	sdrRadiofaxLpm.set('auto');
+	sdrRadiofaxModulation.set('fm');
+	sdrRadiofaxPolarity.set('normal');
+	sdrRadiofaxClockRecovery.set('auto');
+	sdrRadiofaxPhasePixels.set(0);
+	sdrRadiofaxClockPpm.set(0);
 	sdrNormalStepByMode.set({});
 	sdrCoarseStepByMode.set({});
 	sdrFineStepByMode.set({});

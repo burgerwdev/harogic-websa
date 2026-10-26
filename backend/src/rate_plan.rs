@@ -26,6 +26,7 @@ impl RatePlan {
             "ft8" => (Some(12_000.0), 6_000.0, 0.125, 100.0),
             "sstv" => (Some(8_000.0), 8_000.0, 0.125, 100.0),
             "drm" => (Some(48_000.0), 0.0, 0.125, 250.0),
+            "radiofax" => (Some(12_000.0), 12_000.0, 0.125, 100.0),
             "drmplus" => (Some(96_000.0), 0.0, 0.125, 1_000.0),
             _ => return Err("unsupported channel mode"),
         };
@@ -117,12 +118,12 @@ mod tests {
 
     #[test]
     fn occupied_edges_and_decoder_clocks_survive_narrow_and_wide_plans() {
-        for mode in ["am", "dsb", "usb", "lsb", "cw", "nfm", "wfm", "pm", "ft8", "sstv", "drm", "drmplus"] {
+        for mode in ["am", "dsb", "usb", "lsb", "cw", "nfm", "wfm", "pm", "ft8", "sstv", "drm", "drmplus", "radiofax"] {
             for bandwidth in [500.0, 3_000.0, 12_500.0, 100_000.0, 300_000.0] {
                 let plan = RatePlan::new(976_562.5, mode, bandwidth).unwrap();
                 assert!(plan.valid_for(976_562.5));
                 assert!(plan.stopband_hz > bandwidth / 2.0);
-                let minimum = match mode { "ft8" => 6_000.0, "sstv" => 8_000.0,
+                let minimum = match mode { "ft8" => 6_000.0, "sstv" => 8_000.0, "radiofax" => 12_000.0,
                     "wfm" => 300_000.0, _ => 0.0 };
                 assert!(plan.output_rate >= minimum);
             }

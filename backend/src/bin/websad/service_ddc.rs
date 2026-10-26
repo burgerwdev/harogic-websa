@@ -7,6 +7,7 @@ pub(super) fn channel_plan(rate:f64, config:&ChannelConfig)->Result<RatePlan,Str
         "usb"|"lsb" => config.if_bw*2.0,
         "ft8" => config.if_bw.max(3_200.0)*2.0,
         "sstv" => config.if_bw.max(3_000.0)*2.0,
+        "radiofax" => config.if_bw.max(3_000.0)*2.0,
         "cw" => config.if_bw+config.pitch*2.0,
         _ => config.if_bw,
     };
@@ -194,6 +195,9 @@ impl Ddc {
         let old = &configs[slot];
         if !force && old.enabled == config.enabled && old.freq == config.freq && old.mode == config.mode
             && old.if_bw == config.if_bw && old.pitch == config.pitch && old.sstv_mode == config.sstv_mode
+            && old.radiofax_acquisition == config.radiofax_acquisition && old.radiofax_ioc == config.radiofax_ioc
+            && old.radiofax_lpm == config.radiofax_lpm && old.radiofax_modulation == config.radiofax_modulation
+            && old.radiofax_polarity == config.radiofax_polarity && old.radiofax_clock_recovery == config.radiofax_clock_recovery
             && old.audio_rate == config.audio_rate && old.stereo == config.stereo {
             configs[slot] = config;
             self.service_configs = Some(configs);

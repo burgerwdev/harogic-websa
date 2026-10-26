@@ -387,6 +387,23 @@ select:disabled { color: var(--label); }
 .decode-sstv-progress span { flex: 0 0 auto; min-width: 30px; color: var(--label); font-size: 10px; text-align: right; }
 .decode-sstv-view { flex: 1 0 auto; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 6px; }
 .decode-sstv-canvas { display: block; max-width: 100%; height: auto; background: var(--sa-bg); border: 1px solid var(--inner-border); image-rendering: pixelated; }
+.decode-window-body-radiofax { overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.decode-radiofax { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; color: var(--table-cell); font-size: 11px; }
+.decode-radiofax-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 8px; border-bottom: 1px solid var(--inner-border); }
+.decode-radiofax-bar label, .decode-radiofax-advanced-grid label { display: flex; align-items: center; gap: 4px; color: var(--label); white-space: nowrap; }
+.decode-radiofax select, .decode-radiofax input { min-width: 0; font-size: 11px; }
+.decode-radiofax-bar select { width: 64px; }
+.decode-radiofax-advanced { padding: 5px 8px; border-bottom: 1px solid var(--inner-border); color: var(--label); }
+.decode-radiofax-advanced summary { cursor: pointer; }
+.decode-radiofax-advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, auto)); gap: 5px 10px; align-items: center; padding-top: 6px; }
+.decode-radiofax-advanced-grid input { width: 70px; }
+.decode-radiofax-status { padding: 4px 8px 0; color: var(--table-cell); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decode-radiofax-view-tools { display: flex; align-items: center; gap: 5px; padding: 5px 8px; }
+.decode-radiofax-view-tools select { flex: 1 1 auto; min-width: 80px; }
+.decode-radiofax-error { margin: 0 8px 5px; padding: 4px 6px; border: 1px solid var(--dot-off); color: var(--dot-off); }
+.decode-radiofax-view { position: relative; flex: 1 1 auto; min-height: 80px; overflow: auto; background: var(--sa-bg); border-top: 1px solid var(--inner-border); scrollbar-width: thin; }
+#decode-radiofax-canvas { display: block; background: #111; image-rendering: pixelated; }
+.decode-radiofax-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--label); text-align: center; }
 .cw-line { display: flex; gap: 8px; align-items: baseline; }
 .cw-time { color: var(--label); flex: 0 0 auto; }
 .cw-text { color: var(--table-cell); white-space: pre-wrap; word-break: break-word; min-width: 0; }
