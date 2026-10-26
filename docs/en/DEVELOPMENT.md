@@ -142,6 +142,8 @@ regenerate only reproducible fixtures with their existing generators.
 | Hardware | `make hw-test`: tinySA-driven smoke, command sweep and UI state regression |
 | Performance | `make bench`: comparison with `tools/bench/bench_baseline.json` |
 
+Read DSP ABI text messages immediately after the push that reports them. Later pushes replace this result list; the lifetime decode count does not retain message payloads.
+
 Install browser support with `python3 -m playwright install --with-deps chromium` and build
 the frontend before browser runs. Fixture mode proves application behavior without the SDK;
 it does not prove RF correctness, sustained capture or hardware recovery.

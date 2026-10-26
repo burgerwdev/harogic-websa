@@ -128,6 +128,8 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 | 硬件 | `make hw-test`：tinySA 驱动的 smoke、命令遍历和 UI 状态回归 |
 | 性能 | `make bench`：与 `tools/bench/bench_baseline.json` 比较 |
 
+DSP ABI 文本消息只在当前 push 的结果列表中有效，应在返回消息数后立即读取。后续 push 会替换列表；累计解码计数不会保存消息内容。
+
 使用 `python3 -m playwright install --with-deps chromium` 安装浏览器支持，运行浏览器检查前
 先构建前端。Fixture 模式证明无 SDK 的应用行为，不证明 RF 正确性、持续采集或硬件恢复。
 
