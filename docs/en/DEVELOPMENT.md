@@ -143,6 +143,7 @@ regenerate only reproducible fixtures with their existing generators.
 | Performance | `make bench`: comparison with `tools/bench/bench_baseline.json` |
 
 Read DSP ABI text messages immediately after the push that reports them. Later pushes replace this result list; the lifetime decode count does not retain message payloads.
+Run backend library, binary and integration targets in separate Cargo invocations. Combining them can collide with this project's shared-library output artifacts.
 
 Install browser support with `python3 -m playwright install --with-deps chromium` and build
 the frontend before browser runs. Fixture mode proves application behavior without the SDK;
