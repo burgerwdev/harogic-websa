@@ -85,7 +85,7 @@ IQBF/IQAX v2 identify a stream by `(epoch, channel_id)`. Retune changes channel 
 
 IQ `input_index` is the causal position of the first output in capture complex samples, not the packet start. Group delay is separate, in output complex samples. Alignment is `input_index / input_rate - group_delay_samples / output_rate`. Framing keeps the first nonempty segment's clock. Consumers preserve u64 indices exactly.
 
-AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM `audio_index`, capture input position and fractional time. SDE2 carries decoder events with the same identity and clock semantics. Unknown total delay and causal presentation are explicit flags: neither permits claiming exact source alignment. The decode pane exposes these clock details in the mode-title tooltip rather than a routine header label. For DRM/DRM+, this timing is independent of station lock and audio playback; decoder errors remain visible in the header. FT8 results retain the original search-window time. New subscribers get their own start boundary; late SSTV subscribers get a bounded current-image snapshot without resetting the receiver. Full layouts and ordering are in [API](API.md).
+AUD2 carries interleaved f32 PCM with actual rate/channels, stream identity, PCM `audio_index`, capture input position and fractional time. SDE2 carries decoder events with the same identity and clock semantics. Unknown total delay and causal presentation are explicit flags: neither permits claiming exact source alignment. The decode pane exposes these clock details in the mode-title tooltip rather than a routine header label. For DRM/DRM+, this timing is independent of station lock and audio playback; decoder errors remain visible in the header. FT8 results retain the original search-window time. New subscribers get their own start boundary; late SSTV/radiofax subscribers get a bounded current-image snapshot without resetting the receiver. Full layouts and ordering are in [API](API.md).
 
 ### DSP and playback boundaries
 
@@ -97,7 +97,9 @@ A runtime DFN error propagates through `Receiver` to the scoped receiver failure
 
 SSTV emits picture boundaries in order. Pinning a mode again starts a fresh canvas, and the long-silence timer is bounded.
 
-Radiofax uses a 12 kHz IQ path, a 300–2700 Hz complex band-pass and linear f32 PCM. `FaxPaperDecoder` owns APT, phasing and IOC/LPM detection. The product adapter stores Gray8 pages, applies paper correction once and emits `radiofax-image` and `radiofax-state`. A frequency, mode, disconnect or IQ discontinuity closes the active page as partial and starts a new stream identity. Signal loss and acquisition rejection remain decoder state; they do not latch the shared receiver or alter spectrum publication. The vendored decoder is rasterwave.rs 0.5.0 (`65a334c8`), MIT, under `dsp/core/src/digital/radiofax/vendor/`.
+Radiofax uses a 12 kHz IQ path, a 300–2700 Hz complex band-pass and linear f32 PCM without pre-decoder normalization or AGC. Signal level is measured from that raw band-passed PCM; scale-independent carrier evidence gates reception separately. `FaxPaperDecoder` owns APT, phasing and IOC/LPM detection. The product adapter stores Gray8 pages, applies paper correction once and emits `radiofax-image` and `radiofax-state`. A frequency, mode, disconnect or IQ discontinuity closes the active page as partial and starts a new stream identity. Signal loss and acquisition rejection remain decoder state; they do not latch the shared receiver or alter spectrum publication. The vendored decoder is rasterwave.rs 0.5.0 (`65a334c8`), MIT, under `dsp/core/src/digital/radiofax/vendor/`.
+
+AM black can suppress the carrier. After signal acquisition, AM preserves decoder continuity for up to 2.5 s without carrier evidence. A longer loss closes the page as partial. FM does not use this hold.
 
 WFM retains stereo and RDS processing. FM analysis is in Hz; fixed NFM ±5 kHz and WFM ±75 kHz normalization precedes adaptive AGC. Disabling AGC does not remove that unit conversion. Stereo indication reports pilot presence, not differing L/R programme content.
 
@@ -123,7 +125,7 @@ The panel, numeric field and spectrum overlay share `sdrDemod` and `sdrIfbw`; th
 | NFM | 12000 | 9000, 12000, 12500, 15000, 25000 | yes |
 | WFM | 180000 | 100000, 150000, 180000, 200000, 250000 | yes |
 | PM | 12000 | 6000, 9000, 12000, 15000, 25000 | yes |
-| FT8/SSTV | 3000 | UI fixed | no |
+| FT8/SSTV/radiofax | 3000 | UI fixed | no |
 | DRM | 12000 | UI selected/locked | no |
 | DRM+ | 100000 | UI fixed | no |
 

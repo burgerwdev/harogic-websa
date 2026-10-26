@@ -287,6 +287,7 @@ export const zh = {
 	"sdr_filter_timeout": "Filter 修改超时；已恢复已确认值",
 	"ft8_filter_fixed": "FT8 固定接收 100–3000 Hz",
 	"sstv_filter_fixed": "SSTV 固定接收 300–2700 Hz",
+	"radiofax_filter_fixed": "传真固定接收 300–2700 Hz",
 	"nr": "降噪",
 	"nr_tip": "降噪（浏览器音频链）",
 	"squelch_tip": "AGC 前的 RF 门限（dBm）。最左端（−160）关闭静噪；向右提高门限，仅放行更强的信号。方向键每次调整 0.1 dB。",

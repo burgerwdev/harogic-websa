@@ -14,7 +14,7 @@ export interface ReceiverEvent {
 	syncEnabled?: boolean; syncLocked?: boolean; amSyncGeneration?: number;
 	carrierOffsetHz?: number | null; modulationPct?: number | null; inputDbFs?: number | null;
 	rmsDbFs?: number; scope?: number[];
-	lines?: string[]; points?: { re: number; im: number }[];
+	lines?: string[] | number; points?: { re: number; im: number }[];
 	width?: number; height?: number; row?: number; rows?: number; rgb?: string | number[];
 	gray?: string; revision?: number;
 	meta?: { name?: string; modeIndex?: number; vis?: number; serial?: string | number; hz?: number | null;
@@ -82,8 +82,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		'carrierCoherence', 'ioc', 'lpm', 'revision', 'elapsedSeconds', 'phasePixels', 'clockPpm', 'clockConfidence']) {
 		if (d[key] !== undefined && d[key] !== null && (typeof d[key] !== 'number' || !Number.isFinite(d[key]))) throw new Error(`Invalid receiver ${key}`);
 	}
-	for (const key of ['text', 'windowStart', 'peakHoldDb', 'ps', 'rt', 'state', 'message', 'stage', 'modulation',
-		'polarity', 'clockStatus', 'clockSource']) {
+	for (const key of ['text', 'windowStart', 'peakHoldDb', 'ps', 'rt', 'message', 'modulation', 'polarity']) {
 		if (d[key] !== undefined && typeof d[key] !== 'string') throw new Error(`Invalid receiver ${key}`);
 	}
 	if (d.reason !== undefined && d.reason !== null && typeof d.reason !== 'string') throw new Error('Invalid receiver reason');
@@ -109,6 +108,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		throw new Error('Invalid receiver peakDbFs');
 	}
 	if (d.type === 'radiofax-state') {
+		if (typeof d.lines !== 'number' || !Number.isInteger(d.lines) || d.lines < 0 || d.lines > 2400) throw new Error('Invalid radiofax lines');
 		// Telemetry enums are the receiver's own vocabulary; a future stage must be visible as an
 		// error, not silently coerced into a wrong clock summary.
 		const radiofaxEnums: [keyof ReceiverEvent, readonly string[]][] = [
@@ -124,7 +124,7 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		if (d.modulation !== 'fm' && d.modulation !== 'am') throw new Error('Invalid radiofax modulation');
 		if (d.polarity !== 'normal' && d.polarity !== 'inverted') throw new Error('Invalid radiofax polarity');
 	}
-	if (d.lines !== undefined && (!Array.isArray(d.lines) || d.lines.some((line) => typeof line !== 'string'))) throw new Error('Invalid receiver lines');
+	if (d.type === 'drm' && d.lines !== undefined && (!Array.isArray(d.lines) || d.lines.some((line) => typeof line !== 'string'))) throw new Error('Invalid receiver lines');
 	if (d.status !== undefined) {
 		const s = d.status;
 		if (!record(s) || typeof s.locked !== 'boolean' || !Array.isArray(s.services)) throw new Error('Invalid DRM status');

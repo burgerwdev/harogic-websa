@@ -1722,7 +1722,25 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 
 	// Radiofax commands go through controls.ts, whose request-id queue keeps acknowledgements ordered.
 	const radiofaxConfig = (patch: RadiofaxConfigPatch): void => {
-		if (active) hooks.onRadiofaxConfig?.(patch);
+		if (!active) return;
+		const acquisition = patch.radiofax_acquisition ?? sdrRadiofaxAcquisition.get();
+		const ioc = patch.radiofax_ioc ?? sdrRadiofaxIoc.get();
+		const lpm = patch.radiofax_lpm ?? sdrRadiofaxLpm.get();
+		if (patch.radiofax_ioc === 'auto' || patch.radiofax_lpm === 'auto') {
+			patch.radiofax_acquisition = 'auto';
+			if (lpm === '180') patch.radiofax_lpm = 'auto';
+		} else if (patch.radiofax_acquisition === 'auto') {
+			if (lpm === '180') patch.radiofax_lpm = 'auto';
+		} else if (acquisition === 'manual' || lpm === '180') {
+			const decoder = radiofaxStatus().decoder;
+			patch.radiofax_acquisition = 'manual';
+			if (ioc === 'auto') patch.radiofax_ioc = decoder?.ioc === 288 ? '288' : '576';
+			if (lpm === 'auto') {
+				const observed = String(decoder?.lpm ?? 120);
+				patch.radiofax_lpm = (['60', '90', '120', '180', '240'].includes(observed) ? observed : '120') as RadiofaxLpm;
+			}
+		}
+		hooks.onRadiofaxConfig?.(patch);
 	};
 	button('radiofax-auto')?.addEventListener('click', () => radiofaxConfig({ radiofax_acquisition: 'auto' }));
 	button('radiofax-manual')?.addEventListener('click', () => radiofaxConfig({ radiofax_acquisition: 'manual' }));

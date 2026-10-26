@@ -114,6 +114,40 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor="current_thread")]
+    async fn radiofax_preflight_never_queues_page_break_and_rejects_atomically() {
+        let (golden,schema)=load_golden();
+        let mut state=DevState::new(golden,schema);
+        state.swp.mode="sdr".into();
+        state.sdr_center=100e6;
+        state.sdr_listen=100e6;
+        state.sdr_demod="radiofax".into();
+        state.sdr_if_bw=3_000.0;
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        state.auto_scale(None,false);
+        let sequence=state.auto.seq;
+        let before=state.channel_configs();
+        let app=Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
+            next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            display_version:Arc::new(AtomicU64::new(0))});
+        for data in [json!({"radiofax_lpm":"180","radiofax_new_page":true}),
+            json!({"radiofax_acquisition":"manual","radiofax_new_page":true})] {
+            assert!(preflight(&app,"SET_SDR_CHANNEL",&data).await.is_err());
+            let state=app.state.lock().unwrap();
+            assert_eq!(state.channel_configs(),before);
+            assert_eq!(state.auto.seq,sequence);
+            assert!(state.auto.session.is_some());
+            assert!(state.receiver_failure.is_none());
+            assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        }
+        preflight(&app,"SET_SDR_CHANNEL",&json!({"radiofax_new_page":true})).await.unwrap();
+        let mut state=app.state.lock().unwrap();
+        assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        state.apply_channel_config(&json!({"radiofax_new_page":true})).unwrap();
+        assert!(state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+    }
+
+    #[tokio::test(flavor="current_thread")]
     async fn rejected_request_preserves_running_auto_session() {
         let (golden, schema) = load_golden();
         let mut state = DevState::new(golden, schema);

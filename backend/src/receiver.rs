@@ -355,14 +355,14 @@ impl Receiver {
     /// Geometry changes replace only this channel's state. Listening changes retain decoder history.
     pub fn configure(&mut self, config: ReceiverConfig) -> Result<(), String> {
         config.validate()?;
-        if config == self.config { return Ok(()); }
+        if config == self.config && !self.radiofax_new_page { return Ok(()); }
         let geometry_changed = config.mode != self.config.mode || config.input_rate != self.config.input_rate
             || config.audio_rate != self.config.audio_rate || config.if_bw != self.config.if_bw
             || config.pitch != self.config.pitch || config.sstv_mode != self.config.sstv_mode
             || config.stereo != self.config.stereo;
         let fax_changed = self.config.mode == "radiofax" && (self.config.radiofax_protocol_changed(&config)
             || self.config.radiofax_phase_pixels != config.radiofax_phase_pixels
-            || self.config.radiofax_clock_ppm != config.radiofax_clock_ppm);
+            || self.config.radiofax_clock_ppm != config.radiofax_clock_ppm || self.radiofax_new_page);
         if geometry_changed { *self = Self::new(config)?; return Ok(()); }
         if fax_changed {
             let new_page = self.radiofax_new_page;
@@ -405,6 +405,13 @@ impl Receiver {
         if self.config.mode != "radiofax" { return Ok(()); }
         let digital = self.digital.as_mut().and_then(|demod| demod.as_radiofax()).ok_or("radiofax decoder unavailable")?;
         digital.finish_input()
+    }
+    pub fn take_radiofax_events(&mut self) -> Result<Vec<ReceiverEvent>, String> {
+        if self.config.mode != "radiofax" { return Ok(Vec::new()); }
+        let fax = self.digital.as_mut().and_then(|demod| demod.as_radiofax()).ok_or("radiofax decoder unavailable")?;
+        let mut events = Vec::new();
+        radiofax_events(fax, self.epoch, true, &mut events)?;
+        Ok(events)
     }
     pub fn retune(&mut self) -> Result<(), String> {
         if let Some(analog) = self.analog.as_mut() { analog.retune(); }
@@ -478,33 +485,8 @@ impl Receiver {
         if let Some(digital) = self.digital.as_mut() {
             let lines = digital.process_iq(digital_iq);
             if self.config.mode == "radiofax" {
-                let fatal = digital.as_radiofax().and_then(|fax| fax.radiofax_state().reason)
-                    .filter(|reason| reason.contains("non-finite") || reason.contains("geometry") || reason.contains("width"));
-                if let Some(error) = fatal { return Err(error); }
                 let fax = digital.as_radiofax().ok_or("radiofax decoder unavailable")?;
-                for span in fax.take_radiofax_spans() {
-                    if span.rows == 0 || span.rows > 64 || span.gray.len() != span.width as usize * span.rows as usize {
-                        return Err("radiofax image geometry is invalid".into());
-                    }
-                    out.events.push(json!({"type":"radiofax-image","width":span.width,"row":span.row,
-                        "rows":span.rows,"gray":base64_encode(&span.gray),"revision":span.revision,
-                        "meta":{"serial":span.meta.serial.to_string(),"epoch":self.epoch,"hz":null,
-                            "ioc":span.meta.ioc,"lpm":span.meta.lpm,"lines":span.meta.lines,
-                            "complete":span.meta.complete,"partial":span.meta.partial,
-                            "segmentIndex":span.meta.segment_index,"transmissionId":span.meta.transmission_id}}));
-                }
-                if status_due {
-                    let state = fax.radiofax_state();
-                    out.events.push(json!({"type":"radiofax-state","running":state.running,"stage":state.stage,
-                        "hasPicture":state.has_picture,"signalLevel":state.signal_level,
-                        "carrierCoherence":state.carrier_coherence,"ioc":state.ioc,"lpm":state.lpm,
-                        "modulation":state.modulation,"polarity":state.polarity,"width":state.width,
-                        "lines":state.lines,"elapsedSeconds":state.elapsed_seconds,
-                        "clockStatus":state.clock_status,"clockSource":state.clock_source,
-                        "phasePixels":state.phase_pixels,"clockPpm":state.clock_ppm,
-                        "clockConfidence":state.clock_confidence,"complete":state.complete,
-                        "partial":state.partial,"reason":state.reason}));
-                }
+                radiofax_events(fax, self.epoch, status_due, &mut out.events)?;
             } else if matches!(self.config.mode.as_str(), "drm"|"drmplus") {
                 if !lines.is_empty() || status_due {
                     let status = digital.status().map(|s| json!({"locked":s.locked,"mode":s.mode,
@@ -747,6 +729,37 @@ impl Receiver {
         job.clock.first_sample_index = job.source_position.index;
         Ok(Some(job))
     }
+}
+
+fn radiofax_events(fax: &mut dyn websa_dsp::plugin::RadiofaxControl, epoch: u64, status_due: bool,
+    events: &mut Vec<ReceiverEvent>) -> Result<(), String> {
+    let state = fax.radiofax_state();
+    if !state.running {
+        return Err(state.reason.unwrap_or_else(|| "radiofax decoder stopped".into()));
+    }
+    for span in fax.take_radiofax_spans() {
+        if span.rows == 0 || span.rows > 64 || span.gray.len() != span.width as usize * span.rows as usize {
+            return Err("radiofax image geometry is invalid".into());
+        }
+        events.push(json!({"type":"radiofax-image","width":span.width,"row":span.row,
+            "rows":span.rows,"gray":base64_encode(&span.gray),"revision":span.revision,
+            "meta":{"serial":span.meta.serial.to_string(),"epoch":epoch,"hz":null,
+                "ioc":span.meta.ioc,"lpm":span.meta.lpm,"lines":span.meta.lines,
+                "complete":span.meta.complete,"partial":span.meta.partial,
+                "segmentIndex":span.meta.segment_index,"transmissionId":span.meta.transmission_id}}));
+    }
+    if status_due {
+        events.push(json!({"type":"radiofax-state","running":state.running,"stage":state.stage,
+            "hasPicture":state.has_picture,"signalLevel":state.signal_level,
+            "carrierCoherence":state.carrier_coherence,"ioc":state.ioc,"lpm":state.lpm,
+            "modulation":state.modulation,"polarity":state.polarity,"width":state.width,
+            "lines":state.lines,"elapsedSeconds":state.elapsed_seconds,
+            "clockStatus":state.clock_status,"clockSource":state.clock_source,
+            "phasePixels":state.phase_pixels,"clockPpm":state.clock_ppm,
+            "clockConfidence":state.clock_confidence,"complete":state.complete,
+            "partial":state.partial,"reason":state.reason}));
+    }
+    Ok(())
 }
 
 fn algorithm_name(algorithm: NrAlgorithm) -> &'static str {
@@ -1194,5 +1207,30 @@ mod tests {
         assert_eq!(image["meta"]["hz"], serde_json::Value::Null);
         assert_eq!(image["meta"]["ioc"], 576);
         assert!(image["rows"].as_u64().unwrap() <= 64);
+        let serial = images.last().unwrap()["meta"]["serial"].clone();
+        let epoch = receiver.epoch();
+        receiver.request_radiofax_page();
+        receiver.configure(receiver.config().clone()).unwrap();
+        let mut next_images = Vec::new();
+        for (index, block) in iq.chunks(3_000).enumerate() {
+            let output = receiver.process(block, InputClock {
+                first_sample_index: 24_000 + index as u64 * 1_500, ..clock }, None).unwrap();
+            next_images.extend(output.events.into_iter().filter(|event| event["type"] == "radiofax-image"));
+        }
+        assert_eq!(receiver.epoch(), epoch);
+        assert!(next_images.iter().any(|event| event["meta"]["serial"] != serial && event["row"] == 0),
+            "manual new page must start a distinct image without a parameter change");
+        let revision=next_images.last().unwrap()["revision"].as_u64().unwrap();
+        receiver.finish_radiofax().unwrap();
+        let closed=receiver.take_radiofax_events().unwrap();
+        let image=closed.iter().find(|event|event["type"]=="radiofax-image").expect("EOF must republish page closure");
+        assert_eq!(image["row"],0);
+        assert!(image["revision"].as_u64().unwrap()>revision);
+        assert_eq!(image["meta"]["partial"],true);
+        let state=closed.iter().find(|event|event["type"]=="radiofax-state").unwrap();
+        assert_eq!(state["partial"],true);
+        assert_eq!(state["reason"],"eof");
+        receiver.finish_radiofax().unwrap();
+        assert!(receiver.take_radiofax_events().unwrap().iter().all(|event|event["type"]!="radiofax-image"));
     }
 }

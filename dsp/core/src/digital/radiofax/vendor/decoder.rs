@@ -131,7 +131,11 @@ impl FrequencyDemodulator {
 
         let magnitude = self.i_stage2.hypot(self.q_stage2);
         self.carrier_level_ema += ((2.0 * magnitude) as f32 - self.carrier_level_ema) * 0.02;
-        if self.has_previous_vector && magnitude > 0.0005 {
+        // Phase difference is invariant to input scale. Reject vectors only
+        // relative to the recent envelope; never require a full-scale carrier.
+        let minimum_magnitude = f64::from(self.amplitude_ema) * 0.05;
+        let usable = magnitude > minimum_magnitude && magnitude > f64::MIN_POSITIVE;
+        if self.has_previous_vector && usable {
             let cross = self.previous_i * self.q_stage2 - self.previous_q * self.i_stage2;
             let dot = self.previous_i * self.i_stage2 + self.previous_q * self.q_stage2;
             let delta = cross.atan2(dot);
@@ -143,7 +147,7 @@ impl FrequencyDemodulator {
         }
         self.previous_i = self.i_stage2;
         self.previous_q = self.q_stage2;
-        self.has_previous_vector = magnitude > 0.0005;
+        self.has_previous_vector = usable;
         self.current_frequency
     }
 
@@ -153,5 +157,31 @@ impl FrequencyDemodulator {
 
     pub(crate) fn reset(&mut self) {
         *self = Self::new(self.center_hz);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fm_phase_difference_is_invariant_to_input_amplitude() {
+        let mut strong = FrequencyDemodulator::default();
+        let mut weak = FrequencyDemodulator::default();
+        let mut phase = 0.0_f64;
+        let mut largest_difference = 0.0_f32;
+        for index in 0..WORK_SAMPLE_RATE as u64 * 2 {
+            let frequency = 1_900.0 + 400.0 *
+                (std::f64::consts::TAU * index as f64 / 6_000.0).sin();
+            phase += std::f64::consts::TAU * frequency / f64::from(WORK_SAMPLE_RATE);
+            let sample = phase.sin() as f32;
+            let full = strong.process(sample * 0.5, index);
+            let low = weak.process(sample * 3.0e-5, index);
+            if index > 1_000 {
+                largest_difference = largest_difference.max((full - low).abs());
+            }
+        }
+        assert!(largest_difference < 0.01, "amplitude changed FM frequency by {largest_difference} Hz");
+        assert!(weak.carrier_level() < 1.0e-4);
     }
 }

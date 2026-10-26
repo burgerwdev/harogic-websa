@@ -163,7 +163,7 @@ AM 默认使用包络检波，`am_sync:true` 切换到载波恢复同步检波�
 
 `ifbw` 的含义随模式变化。AM/DSB/NFM/WFM/PM 中，它表示以拨盘频率为中心的总带宽。USB/LSB 中，它表示外侧高截止，内侧载波保护带为 `clamp(0.1 × ifbw, 100, 300)` Hz，LSB 取镜像负频率。CW 以 `max(100, pitch)` Hz 为中心，两侧各延伸 `max(50, ifbw) / 2`。浏览器数值编辑器与后端均对其他可编辑模式执行 50 Hz 下限，对 USB/LSB 执行 101 Hz 下限，避免保护带退化。浏览器还检查当前 `sdr.filter_limits`；后端另按所选模式的包络、采集和输出采样率、粗箱通带及频道容量执行准入。非法或不能准入的请求会被拒绝，不会静默截断。预设是推荐值而非上限：AM 100 kHz、SSB 50 kHz、CW 10 kHz 等高于常用预设的自定义值在通过准入时允许使用。输入支持 Hz/kHz/MHz，单位切换不改变底层 Hz 值，虚拟键盘与手动输入共用校验和提交路径。
 
-浏览器将 FT8 固定为 `ifbw=3000`，解码范围为 100~3000 Hz；SSTV 固定为 `ifbw=3000`，解码范围为 300~2700 Hz；为 DRM 选择并锁定 `ifbw=12000`；DRM+ 固定为 `ifbw=100000`。这些是界面的模式语义，不是通信协议限制：直接 API 请求仍可使用其他值，但受后端几何与准入约束。DRM 显示 `±confirmed_ifbw/2`，不随 FAC 声明的占用带宽改变，因此不会自动接收全部 4.5~20 kHz 占用带宽。DRM+ 的 100 kHz 界面值是频道宽度，不表示最外侧 OFDM 载波恰好位于 ±50 kHz。
+浏览器将 FT8 固定为 `ifbw=3000`，解码范围为 100~3000 Hz；SSTV/无线电传真固定为 `ifbw=3000`，解码范围为 300~2700 Hz；为 DRM 选择并锁定 `ifbw=12000`；DRM+ 固定为 `ifbw=100000`。这些是界面的模式语义，不是通信协议限制：直接 API 请求仍可使用其他值，但受后端几何与准入约束。DRM 显示 `±confirmed_ifbw/2`，不随 FAC 声明的占用带宽改变，因此不会自动接收全部 4.5~20 kHz 占用带宽。DRM+ 的 100 kHz 界面值是频道宽度，不表示最外侧 OFDM 载波恰好位于 ±50 kHz。
 
 频道准入使用调谐点两侧的对称占用带宽包络。USB/LSB 覆盖单边 IF 上限；CW 包含 pitch 和 IF；FT8 至少保留正频率 3.2 kHz，SSTV 保留正频率 3 kHz。整数 IQ 采样率由该包络决定，精确协议采样率在内部适配。WFM IQ 还需支持导频、立体声和 RDS，与 PCM 播放采样率相互独立。主路重新采集前会验证全部已启用频道；请求被拒绝时，旧计划继续生效。
 
@@ -359,6 +359,12 @@ WFM 事件 `wfm-info` 中的 `carrierHz` 是该接收流的频道中心频率（
 
 SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实时增量行。图像事件含 `type:'sstv-image'`、`width`、`height`、`row`、`rows`、紧密排列 RGB 字节数组 `rgb` 和 `meta`；快照每块最多 64 行。服务只保留当前图像，历史由浏览器保存。
 图像边界保持有序。重新固定 SSTV 模式时使用全新画布；长时间静音的计时保持有界。
+
+无线电传真订阅者先收到起始事件、当前页 Gray8 行块及最新状态，再收到实时事件。`radiofax-image` 包含 `width`、从零开始的 `row`、`rows`（1–64）、base64 `gray`、`revision` 和 `meta`。`gray` 解码后的字节数必须等于 `width * rows`，没有固定总高度。元数据包含 `serial`、`epoch`、实际接收 `hz`（或 null）、`ioc`、`lpm`、`lines`、`complete`、`partial`、`segmentIndex` 和 `transmissionId`。每块的 `meta.lines = row + rows`，表示该块结束位置，不是最终页高。按序追加，不允许行空洞。新 revision 从第零行开始替换页面，后续块沿用该 revision。流身份、元数据 epoch 和页 serial 共同隔离页面。后端保留当前页，历史由浏览器保存。
+
+`radiofax-state` 报告 `running`、`stage`、`hasPicture`、`signalLevel`、`carrierCoherence`、`ioc`、`lpm`、`modulation`、`polarity`、`width`、数值整数 `lines`（0–2400）、`elapsedSeconds`、`clockStatus`、`clockSource`、`phasePixels`、`clockPpm`、`clockConfidence`、`complete`、`partial` 及可为 null 的 `reason`。`stage` 为 `searching`、`fallback`、`apt`、`phasing`、`receiving`、`degraded`、`complete` 或 `partial`；`clockStatus` 为 `nominal`、`acquiring`、`locked`、`tracking` 或 `degraded`；`clockSource` 为 `nominal`、`phasing`、`image_content` 或 `manual`。未锁定的 IOC576/120 LPM fallback 和 `image_content` 时钟估计均不表示 APT/定相协议锁定。
+
+`signalLevel` 是原始带通实数 PCM 的 RMS，功率平滑时间常数为 0.2 秒，单位为线性满量程幅度，不是复数 IQ 的 dBFS 读数。`carrierCoherence` 是平滑后的 1400–2500 Hz 能量与 300–2700 Hz 能量之比，限制在 0–1。集中在该频带的干扰也可能通过能量门限，因此该值不能确认传真信号身份、相位锁定或接收质量。
 
 浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。此确认不发送到 `/ws/decode`。
 

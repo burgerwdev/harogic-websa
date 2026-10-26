@@ -122,7 +122,7 @@ impl DevState {
             value
         }).collect())
     }
-    pub(super) fn parse_channel_config(&mut self, data: &Value) -> Result<ChannelConfig, String> {
+    pub(super) fn parse_channel_config(&self, data: &Value) -> Result<ChannelConfig, String> {
         if !data.is_object() { return Err("channel configuration must be an object".into()); }
         let channel = match data.get("channel") {
             None => 1,
@@ -175,12 +175,11 @@ impl DevState {
         config.radiofax_clock_recovery = text(data, &["radiofax_clock_recovery"], &config.radiofax_clock_recovery)?;
         config.radiofax_phase_pixels = number(data, &["radiofax_phase_pixels"], f64::from(config.radiofax_phase_pixels))? as f32;
         config.radiofax_clock_ppm = number(data, &["radiofax_clock_ppm"], f64::from(config.radiofax_clock_ppm))? as f32;
-        let new_page = boolean(data, "radiofax_new_page", false)?;
+        boolean(data, "radiofax_new_page", false)?;
         if boolean(data, "radiofax_reset_correction", false)? {
             config.radiofax_phase_pixels = 0.0;
             config.radiofax_clock_ppm = 0.0;
         }
-        if new_page { self.request_radiofax_page(config.channel)?; }
         let (minimum, maximum) = self.freq_limits();
         if config.enabled && !(minimum..=maximum).contains(&config.freq) {
             return Err(format!("channel frequency outside device limits: channel {} requested {} Hz; valid RF range {minimum}..={maximum} Hz", config.channel, config.freq));
@@ -197,6 +196,7 @@ impl DevState {
         if !matches!(config.nr_algorithm.as_str(), "wiener" | "dfn") { return Err("nr_algorithm must be wiener or dfn".into()); }
         if !(0.0..=100.0).contains(&config.nr_atten_db) { return Err("nr_atten_db must be in 0..=100".into()); }
         if !(8_000..=192_000).contains(&config.audio_rate) { return Err("audio_rate must be in 8000..=192000".into()); }
+        config.validate()?;
         Ok(config)
     }
     fn request_radiofax_page(&mut self, channel: u32) -> Result<(), String> {
@@ -230,7 +230,10 @@ impl DevState {
         let channel = config.channel;
         let mut configs = self.channel_configs();
         let old = configs[(channel - 1) as usize].clone();
-        if config == old { return Ok(()); }
+        if config == old {
+            if data["radiofax_new_page"] == true { self.request_radiofax_page(channel)?; }
+            return Ok(());
+        }
         let geometry_changed=old.enabled!=config.enabled || old.freq!=config.freq || old.mode!=config.mode
             || old.if_bw!=config.if_bw || old.pitch!=config.pitch || old.audio_rate!=config.audio_rate
             || old.stereo!=config.stereo || old.sstv_mode!=config.sstv_mode
@@ -247,7 +250,7 @@ impl DevState {
         }
         if geometry_changed && self.pipeline.is_none() && self.ddc.is_none() && self.receiver_failure.is_none() {
             if let Some(workers)=self.receiver_workers.as_mut() {
-                match workers.finish().and_then(|output| {
+                match workers.finish_radiofax(&[channel]).and_then(|output| {
                     self.decode_snapshots.observe(&output.decode)?;
                     Ok(output)
                 }) {
@@ -306,6 +309,7 @@ impl DevState {
             }
         }
         self.config_version += 1;
+        if data["radiofax_new_page"] == true { self.request_radiofax_page(channel)?; }
         Ok(())
     }
 }
@@ -313,6 +317,39 @@ impl DevState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radiofax_parse_is_pure_and_invalid_cross_fields_reject_before_commit() {
+        let mut state=DevState::new(json!({"preset_defaults":{}}),json!({}));
+        state.swp.mode="sdr".into();
+        state.sdr_center=100e6;
+        state.sdr_listen=100e6;
+        state.sdr_demod="radiofax".into();
+        state.sdr_if_bw=3_000.0;
+        state.receiver_workers=Some(receiver_workers::ReceiverWorkers::new().unwrap());
+        let before=state.channel_configs();
+        let version=state.config_version;
+        let page=json!({"radiofax_new_page":true});
+        state.parse_channel_config(&page).unwrap();
+        state.parse_channel_config(&page).unwrap();
+        assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        for patch in [
+            json!({"radiofax_acquisition":"manual","radiofax_new_page":true}),
+            json!({"radiofax_lpm":"180","radiofax_new_page":true}),
+            json!({"volume":3,"radiofax_new_page":true}),
+            json!({"radiofax_ioc":"invalid","radiofax_new_page":true}),
+        ] {
+            assert!(state.apply_channel_config(&patch).is_err());
+            assert_eq!(state.channel_configs(),before);
+            assert_eq!(state.config_version,version);
+            assert!(state.receiver_failure.is_none());
+            assert!(!state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        }
+        state.apply_channel_config(&page).unwrap();
+        assert!(state.receiver_workers.as_ref().unwrap().radiofax_page_pending(1));
+        assert_eq!(state.channel_configs(),before);
+        assert_eq!(state.config_version,version);
+    }
 
     #[test]
     fn unsupported_cw_pitch_rejects_without_retiring_receivers() {

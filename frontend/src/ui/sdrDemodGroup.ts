@@ -11,7 +11,9 @@ export interface DemodGroupHooks {
 
 /** Button label for a mode id (the ids are already short and uppercase-able). */
 export function demodLabel(id: string): string {
-	return id === 'drmplus' ? 'DRM+' : id.toUpperCase();
+	if (id === 'drmplus') return 'DRM+';
+	if (id === 'radiofax') return 'FAX';
+	return id.toUpperCase();
 }
 
 /**

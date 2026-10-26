@@ -86,6 +86,38 @@ fn feed(decoder: &mut FaxPaperDecoder, samples: &[f32], events: &mut Vec<FaxPape
 }
 
 #[test]
+fn weak_fm_keeps_four_second_apt_confirmation_and_phasing() {
+    let mut spec = FaxSpec::standard(FaxIoc::Ioc576, FaxLpm::LPM_120);
+    spec.start_seconds = 5.0;
+    spec.phasing_seconds = 3.0;
+    spec.stop_seconds = 5.0;
+    let image = test_image(spec.ioc, 2);
+    let mut encoder = FaxEncoder::new(image, spec, 12_000, FaxEncodeOptions {
+        amplitude: 3.0e-5, ..FaxEncodeOptions::default()
+    }).unwrap();
+    let mut decoder = FaxPaperDecoder::new(12_000, FaxPaperConfig {
+        expected_phasing_seconds: Some(3.0),
+        minimum_signal_level: 1.0e-7,
+        ..FaxPaperConfig::default()
+    }).unwrap();
+    let mut events = Vec::new();
+    let mut chunk = [0.0; 1_200];
+    let mut samples = 0;
+    while !encoder.is_finished() {
+        let count = encoder.read_samples(&mut chunk);
+        samples += count;
+        decoder.process_into(&chunk[..count], &mut events).unwrap();
+        if samples < 12_000 * 4 {
+            assert!(!events.iter().any(|event| matches!(event, FaxPaperEvent::AptDetected { .. })));
+        }
+    }
+    assert!(events.iter().any(|event| matches!(event, FaxPaperEvent::AptDetected { ioc: FaxIoc::Ioc576 })));
+    assert!(events.iter().any(|event| matches!(event, FaxPaperEvent::Boundary {
+        kind: PaperBoundaryKind::AptPhasing, trusted: true, ..
+    })));
+}
+
+#[test]
 fn auto_prints_fallback_snow_without_apt() {
     let mut decoder = FaxPaperDecoder::new(12_000, FaxPaperConfig::default()).unwrap();
     let mut events = Vec::new();

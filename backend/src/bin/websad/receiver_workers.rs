@@ -68,7 +68,7 @@ impl ChannelConfig {
         Self { channel: slot, enabled: slot == 1, ..Self::default() }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), String> {
         if !(1..=3).contains(&self.channel)
             || !self.freq.is_finite() || !self.if_bw.is_finite() || self.if_bw <= 0.0
             || !self.squelch.is_finite() || !self.volume.is_finite() || !(0.0..=2.0).contains(&self.volume)
@@ -227,6 +227,7 @@ struct SearchResult {
 enum Work {
     Packet(Packet),
     Search(SearchResult),
+    FinishRadiofax { slot:usize, generation:u64 },
     Deactivate { slot:usize, generation:u64, reply:mpsc::SyncSender<()> },
 }
 
@@ -548,6 +549,25 @@ impl ReceiverWorkers {
             }
         }
     }
+    /// Close selected radiofax pages while their current stream identities are valid.
+    pub fn finish_radiofax(&mut self, channels: &[u32]) -> Result<ReceiverFrames, String> {
+        let mut frames=self.finish()?;
+        for &channel in channels {
+            let slot=channel.checked_sub(1).filter(|&slot|slot<3).ok_or("invalid radiofax channel")? as usize;
+            let generation=self.shared.generations[slot].load(Ordering::Acquire);
+            let pending=Pending::new(&self.shared);
+            self.inputs[slot%WORKERS].try_send(PendingWork {
+                work:Work::FinishRadiofax {slot,generation},pending,
+            }).map_err(|error|format!("receiver finish queue failure: {error}"))?;
+        }
+        frames.append(self.finish()?);
+        Ok(frames)
+    }
+
+    #[cfg(test)]
+    pub(super) fn radiofax_page_pending(&self, channel:u32)->bool {
+        self.radiofax_new_page[(channel-1) as usize]
+    }
 
 
     pub fn stats(&self) -> serde_json::Value {
@@ -591,6 +611,7 @@ struct ChannelState {
     audio_index: u64,
     audio_format: Option<(u32, u16)>,
     protocol_timing: Option<(InputClock, SamplePosition, bool)>,
+    last_clock: InputClock,
     receiver: Receiver,
 }
 
@@ -608,8 +629,18 @@ impl ChannelState {
             source_rate: packet.clock.input_rate, next_seq: 0, event_seq: 0, audio_seq: 0,
             audio_index: 0, audio_format: None,
             protocol_timing: None,
+            last_clock: packet.clock,
             receiver: Receiver::new(packet.config.receiver_config(packet.rate))?,
         })
+    }
+
+    fn finish_radiofax(&mut self, slot:usize, frames:&mut ReceiverFrames)->Result<(),String> {
+        if self.mode!="radiofax" {return Ok(());}
+        self.receiver.finish_radiofax()?;
+        for event in self.receiver.take_radiofax_events()? {
+            frames.decode.push(self.event(slot,self.last_clock,event)?);
+        }
+        Ok(())
     }
 
     fn event(&mut self, slot: usize, clock: InputClock, event: ReceiverEvent) -> Result<Vec<u8>, String> {
@@ -730,6 +761,16 @@ fn run_realtime(input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Out
                 result
             }
             Work::Search(completed) => process_search(completed, &mut states, &shared),
+            Work::FinishRadiofax {slot,generation} => {
+                if shared.current(slot,generation) {
+                    if let Some(state)=states[slot].as_mut() {
+                        let mut frames=ReceiverFrames::default();
+                        state.finish_radiofax(slot,&mut frames).map(|_|Some(Output {
+                            slot,generation,frames,squelch:None,
+                        }))
+                    } else {Ok(None)}
+                } else {Ok(None)}
+            }
             Work::Deactivate {slot,generation,reply} => {
                 if shared.current(slot,generation) {states[slot]=None;}
                 let _=reply.try_send(());
@@ -762,6 +803,7 @@ fn run_realtime(input: mpsc::Receiver<PendingWork>, output: mpsc::SyncSender<Out
 fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
     search: &mpsc::SyncSender<SearchJob>, shared: &Arc<Shared>) -> Result<Option<Output>, String> {
     if !shared.current(packet.slot, packet.generation) { return Ok(None); }
+    let mut frames = ReceiverFrames::default();
     let needs_reset = states[packet.slot].as_ref().is_none_or(|state|
         state.generation != packet.generation || state.channel_id != packet.channel_id || state.epoch != packet.epoch);
     if needs_reset {
@@ -772,7 +814,7 @@ fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
                 packet.slot + 1, packet.channel_id, packet.epoch, packet.generation, state.generation,
                 packet.seq, state.next_seq, packet.config.mode, state.mode));
         }
-        if let Some(previous) = states[packet.slot].as_mut() { previous.receiver.finish_radiofax()?; }
+        if let Some(previous) = states[packet.slot].as_mut() { previous.finish_radiofax(packet.slot,&mut frames)?; }
         states[packet.slot] = Some(ChannelState::new(&packet)?);
     }
     let state = states[packet.slot].as_mut().unwrap();
@@ -787,7 +829,7 @@ fn process_packet(packet: Packet, states: &mut [Option<ChannelState>; 3],
             state.frequency, packet.clock.delay_input_samples, packet.config.mode));
     }
     state.next_seq = state.next_seq.checked_add(1).ok_or("receiver IQ sequence overflow")?;
-    let mut frames = ReceiverFrames::default();
+    state.last_clock=packet.clock;
     if packet.seq == 0 {
         frames.decode.push(state.event(packet.slot, packet.clock, serde_json::json!({"type":"start"}))?);
     } else {
@@ -861,6 +903,57 @@ fn run_search(input: mpsc::Receiver<SearchJob>, destinations: Vec<mpsc::SyncSend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radiofax_terminal_drain_publishes_partial_under_retiring_identity() {
+        let mut config=ChannelConfig {mode:"radiofax".into(),freq:7.8e6,if_bw:3_000.0,
+            ..ChannelConfig::default()};
+        let mut workers=ReceiverWorkers::new().unwrap();
+        workers.configure(&[config.clone()]).unwrap();
+        let mut registry=[ChannelRegistryEntry {channel:1,channel_id:11,epoch:7,
+            frequency_hz:config.freq,output_rate:12_000.0,input_rate:12_000.0,
+            group_delay_samples:0.0,state:"active"}];
+        let frame=|seq,index,epoch,freq,iq:&[f32]| websa_channelizer::encode_baseband(
+            websa_channelizer::BasebandMagic::Primary,seq,12_000.0,freq,11,epoch,index,0.0,iq).unwrap();
+        workers.submit(&frame(0,0,7,config.freq,&[]),&registry).unwrap();
+        workers.finish().unwrap();
+        let mut images=0;
+        for block in 0..16_u32 {
+            let first=u64::from(block)*1_500;
+            let iq:Vec<f32>=(first..first+1_500).flat_map(|index| {
+                let gray=if (index/1_810)%2==0 {0.15}else{0.85};
+                let frequency=1_900.0+(gray-0.5)*800.0;
+                let sample=(0.45*(std::f64::consts::TAU*frequency*index as f64/12_000.0).sin()) as f32;
+                [sample,0.0]
+            }).collect();
+            workers.submit(&frame(block+1,first,7,config.freq,&iq),&registry).unwrap();
+            images+=workers.finish().unwrap().decode.iter().filter(|frame| {
+                let event:serde_json::Value=serde_json::from_slice(&frame[8..]).unwrap();
+                event["event"]["type"]=="radiofax-image"
+            }).count();
+        }
+        assert!(images>0);
+        let closed=workers.finish_radiofax(&[1]).unwrap();
+        let events:Vec<serde_json::Value>=closed.decode.iter().map(|frame|
+            serde_json::from_slice(&frame[8..]).unwrap()).collect();
+        assert!(events.iter().all(|event|event["epoch"]==7));
+        let image=events.iter().find(|event|event["event"]["type"]=="radiofax-image").unwrap();
+        assert_eq!(image["event"]["row"],0);
+        assert_eq!(image["event"]["meta"]["partial"],true);
+        assert!(events.iter().any(|event|event["event"]["type"]=="radiofax-state"
+            && event["event"]["reason"]=="eof"));
+        config.freq+=1_000.0;
+        workers.configure(&[config.clone()]).unwrap();
+        registry[0].epoch=8;
+        registry[0].frequency_hz=config.freq;
+        workers.submit(&frame(0,0,8,config.freq,&[]),&registry).unwrap();
+        let next=workers.finish().unwrap();
+        let events:Vec<serde_json::Value>=next.decode.iter().map(|frame|
+            serde_json::from_slice(&frame[8..]).unwrap()).collect();
+        assert!(events.iter().all(|event|event["event"]["type"]!="radiofax-image"));
+        assert_eq!(events.last().unwrap()["epoch"],8);
+        assert_eq!(events.last().unwrap()["event"]["type"],"start");
+    }
 
     #[test]
     fn ft8_pending_releases_on_stop_and_result_disconnect() {
@@ -1121,6 +1214,7 @@ mod tests {
             generation: 1, channel_id: 4, epoch: 9, frequency: 13_882_500.0, mode: "radiofax".into(),
             rate: 12_000.0, source_rate: 48_000.0, next_seq: 1, event_seq: 3, audio_seq: 0,
             audio_index: 0, audio_format: None, protocol_timing: None,
+            last_clock: InputClock { first_sample_index: 80, input_rate: 48_000.0, delay_input_samples: 12.0 },
             receiver: Receiver::new(ChannelConfig { mode: "usb".into(), if_bw: 2_700.0,
                 ..ChannelConfig::default() }.receiver_config(12_000.0)).unwrap(),
         };

@@ -387,8 +387,9 @@ select:disabled { color: var(--label); }
 .decode-sstv-progress span { flex: 0 0 auto; min-width: 30px; color: var(--label); font-size: 10px; text-align: right; }
 .decode-sstv-view { flex: 1 0 auto; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 6px; }
 .decode-sstv-canvas { display: block; max-width: 100%; height: auto; background: var(--sa-bg); border: 1px solid var(--inner-border); image-rendering: pixelated; }
-.decode-window-body-radiofax { overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.decode-window-body-radiofax { overflow: auto; display: flex; flex-direction: column; min-height: 0; }
 .decode-radiofax { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; color: var(--table-cell); font-size: 11px; }
+.decode-radiofax > :not(.decode-radiofax-view) { flex-shrink: 0; }
 .decode-radiofax-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 8px; border-bottom: 1px solid var(--inner-border); }
 .decode-radiofax-bar label, .decode-radiofax-advanced-grid label { display: flex; align-items: center; gap: 4px; color: var(--label); white-space: nowrap; }
 .decode-radiofax select, .decode-radiofax input { min-width: 0; font-size: 11px; }

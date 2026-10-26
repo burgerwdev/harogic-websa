@@ -194,6 +194,16 @@ export function setRadiofaxDecoderState(decoder: RadiofaxDecoderState | null, ch
 	publish(channel);
 }
 
+/** Preserve received rows when the source closes before final metadata arrives. */
+export function endRadiofaxStream(channel: Channel = selectedChannel): void {
+	const context = contexts[channel];
+	const current = context.current;
+	contexts[channel] = { ...context, decoder: null, current: current && !current.meta.complete && !current.meta.partial
+		? { ...current, meta: { ...current.meta, partial: true } } : current };
+	if (current && contexts[channel].current !== current) capacities.set(contexts[channel].current!, capacities.get(current) ?? 0);
+	publish(channel);
+}
+
 export function clearRadiofax(channel: Channel = selectedChannel): void {
 	contexts[channel] = emptyStatus();
 	publish(channel);

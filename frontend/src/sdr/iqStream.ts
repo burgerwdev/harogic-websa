@@ -7,7 +7,7 @@ import { addFt8Spot, clearFt8Spots, setFt8DecoderState } from './ft8Log';
 import { addCwText, clearCwLog, setCwLevel } from './cwLog';
 import { clearDrm, setDrmDecode, setDrmConstellation } from './drmLog';
 import { clearSstv, setSstvDecoderState, updateSstvPicture } from './sstvLog';
-import { appendRadiofaxRows, clearRadiofax, setRadiofaxDecoderState } from './radiofaxLog';
+import { appendRadiofaxRows, clearRadiofax, endRadiofaxStream, setRadiofaxDecoderState } from './radiofaxLog';
 import type { DecodeEnvelope, ReceiverEvent } from './decodeProtocol';
 import type { Ft8Report } from './types';
 
@@ -61,7 +61,7 @@ export function failSdrReceiver(message: string): void {
     setWfmInfo(null, channel);
     setFt8DecoderState(null, channel);
     setSstvDecoderState(null, channel);
-    setRadiofaxDecoderState(null, channel);
+    endRadiofaxStream(channel);
   }
   reportError(message);
 }
@@ -101,7 +101,7 @@ function reportError(message: string): void {
   if (streamFailed && streamFailedRegistry === null) streamFailedRegistry = confirmedRegistry ?? [];
   lastError = message;
   connected = false;
-  for (const channel of [1, 2, 3] as const) { setAmInfo(null, channel); setDecodeError(channel, message); }
+  for (const channel of [1, 2, 3] as const) { endRadiofaxStream(channel); setAmInfo(null, channel); setDecodeError(channel, message); }
   console.error(`SDR decoded stream: ${message}`);
   document.dispatchEvent(new CustomEvent('websa:sdr-stream-error', { detail: { stream: 'decode', message } }));
   const status = document.getElementById('cur-sdr-level');
@@ -223,7 +223,7 @@ export function consumeDecode(envelope: DecodeEnvelope): void {
     setWfmInfo(null, channel);
     setFt8DecoderState(null, channel);
     setSstvDecoderState(null, channel);
-    setRadiofaxDecoderState(null, channel);
+    endRadiofaxStream(channel);
     setAmInfo(null, channel);
     setDecodeError(channel, null);
     return;
@@ -356,6 +356,7 @@ export function setSdrIqEnabled(on: boolean): void {
     worker?.terminate();
     worker = null;
     connected = false;
+    for (const channel of [1, 2, 3] as const) endRadiofaxStream(channel);
     if (failedRegistry === null) clearAmState();
   }
   publishIqDebug();

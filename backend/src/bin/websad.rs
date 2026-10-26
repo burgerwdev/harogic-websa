@@ -1705,6 +1705,7 @@ impl DevState {
                             self.ddc_error_count += 1;
                             self.ddc_error_last = Some(error.clone());
                             eprintln!("DDC step error #{}: {}", self.ddc_error_count, error);
+                            if let Err(failure)=self.finish_radiofax() {self.latch_receiver_failure(failure);}
                             if error.contains("status=-8") || error.contains("status=-9") {
                                 self.link_up = false;
                             }
@@ -3092,7 +3093,9 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
             if !state.reap_failed_receivers() {return Err(CommandError::new("receiver_retiring","Receiver is still stopping; retry shortly"));}
             if mode != next {
                 // One vendor session at a time: drop (join) the old owner before the next opens.
+                let registry=state.stream_registry();
                 state.stop_pipeline().map_err(device)?;
+                state.finish_radiofax_with_registry(registry).map_err(device)?;
                 state.ddc_failure_diagnostics = None;
                 // SET_MODE ends the IQ session. Never replay its retained tails
                 // when SDR is opened again under a later transport epoch.
@@ -3102,16 +3105,12 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 state.fixture_sources=None;
                 // A deliberate mode change retires the stream, while healthy
                 // workers retain their prepared models for the next SDR entry.
-                if let Some(mut workers) = state.receiver_workers.take() {
-                    if workers.reset_session().is_ok() {
-                        state.receiver_workers = Some(workers);
-                    }
+                if let Some(workers) = state.receiver_workers.as_mut() {
+                    workers.reset_session().map_err(device)?;
                 }
                 state.receiver_failure = None;
                 state.receiver_failure_pending = false;
-                state.pending_receiver=receiver_workers::ReceiverFrames::default();
                 state.decode_snapshots=service_stream::DecodeSnapshots::default();
-                state.retiring_registry = Arc::from([]);
                 state.consumed_receiver_iq.clear();
                 state.channel_power = [None; 3];
                 state.rta_hw = None;
@@ -4479,7 +4478,9 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let _ = publisher.await;
     tokio::task::spawn_blocking(move || {
         let mut state = app.state.lock().unwrap();
+        let registry=state.stream_registry();
         let stopped = state.stop_pipeline();
+        let receivers_finished = state.finish_radiofax_with_registry(registry);
         state.ddc = None;
         state.swp_hw = None;
         state.rta_hw = None;
@@ -4489,7 +4490,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         // Mode owners have joined; the permanent SDK owner can now close the
         // idle physical device and join its thread exactly once.
         let finished = hardware_swp::finish_sdk_session();
-        stopped.and(finished)
+        stopped.and(receivers_finished).and(finished)
     }).await??;
     Ok(())
 }

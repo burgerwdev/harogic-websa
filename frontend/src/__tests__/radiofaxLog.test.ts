@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	appendRadiofaxRows,
 	clearRadiofax,
+	endRadiofaxStream,
 	followRadiofaxLatest,
 	radiofaxStatus,
 	radiofaxVisible,
@@ -56,6 +57,20 @@ describe('radiofax page store', () => {
 		expect(entry.picture.gray[0]).toBe(9);
 		expect(entry.revision).toBe(1);
 		expect(() => appendRadiofaxRows(chunk(1, [5], 0), meta(), 'id1')).toThrow(/revision/);
+	});
+
+	it('marks interrupted pages partial and resumes the source revision after reconnect', () => {
+		appendRadiofaxRows(chunk(0, [1, 2], 5), meta(), 'id1');
+		endRadiofaxStream();
+		expect(radiofaxStatus().current!.meta.partial).toBe(true);
+		expect(radiofaxStatus().decoder).toBeNull();
+		appendRadiofaxRows(chunk(2, [3], 5), meta(), 'id1');
+		expect(Array.from(radiofaxStatus().current!.picture.gray)).toEqual([1, 2, 3]);
+		expect(radiofaxStatus().current!.meta.partial).toBe(false);
+		appendRadiofaxRows(chunk(0, [4], 6), meta({ complete: true }), 'id1');
+		endRadiofaxStream();
+		expect(radiofaxStatus().current!.meta.complete).toBe(true);
+		expect(radiofaxStatus().current!.meta.partial).toBe(false);
 	});
 
 	it('rejects row gaps and a replacement that starts beyond row zero', () => {
