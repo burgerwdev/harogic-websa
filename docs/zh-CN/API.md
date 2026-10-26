@@ -360,13 +360,19 @@ WFM 事件 `wfm-info` 中的 `carrierHz` 是该接收流的频道中心频率（
 SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实时增量行。图像事件含 `type:'sstv-image'`、`width`、`height`、`row`、`rows`、紧密排列 RGB 字节数组 `rgb` 和 `meta`；快照每块最多 64 行。服务只保留当前图像，历史由浏览器保存。
 图像边界保持有序。重新固定 SSTV 模式时使用全新画布；长时间静音的计时保持有界。
 
-无线电传真订阅者先收到起始事件、当前页 Gray8 行块及最新状态，再收到实时事件。`radiofax-image` 包含 `width`、从零开始的 `row`、`rows`（1–64）、base64 `gray`、`revision` 和 `meta`。`gray` 解码后的字节数必须等于 `width * rows`，没有固定总高度。元数据包含 `serial`、`epoch`、实际接收 `hz`（或 null）、`ioc`、`lpm`、`lines`、`complete`、`partial`、`segmentIndex` 和 `transmissionId`。每块的 `meta.lines = row + rows`，表示该块结束位置，不是最终页高。按序追加，不允许行空洞。新 revision 从第零行开始替换页面，后续块沿用该 revision。流身份、元数据 epoch 和页 serial 共同隔离页面。后端保留当前页，历史由浏览器保存。
+无线电传真订阅者先收到起始事件、当前逻辑页已保留的 Gray8 存储段和最新状态，再收到实时事件。`radiofax-image` 包含 `width`、从零开始的 `row`、`rows`（1–64）、base64 `gray`、`revision` 和 `meta`。`gray` 解码后的字节数必须等于 `width * rows`，没有固定逻辑页总高度。元数据必须包含 `serial`、`epoch`、实际接收 `hz`（或 null）、`ioc`、`lpm`、`lines`、`complete`、`partial`、`segmentIndex`、`transmissionId`、`missingRows` 及可为 null 的 `reason`。`missingRows` 是累计、严格递增的段内缺失行索引，均小于 `meta.lines`；这些行在校正后保持灰度 128，占据光栅位置，但不代表有效解码内容。每块的 `meta.lines = row + rows`，包含缺失行。按序追加，不允许行位置空洞。新 revision 从第零行开始替换该存储段。流身份及元数据 epoch 隔离接收，`transmissionId` 将有序存储段归为同一逻辑页。每段最多 2400 行，存储边界不表示逻辑页完成。浏览器历史仅在本次会话内保留。
+
+`transmissionId` 是无符号 64 位整数的标准十进制字符串，在同一图像流身份内递增。浏览器为该身份保留高水位：校正可以更新仍保留的页面，但不能重建已删除或淘汰的旧页。清空保留高水位，新图像流身份使用独立顺序。
 
 `radiofax-state` 报告 `running`、`stage`、`hasPicture`、`signalLevel`、`carrierCoherence`、`ioc`、`lpm`、`modulation`、`polarity`、`width`、数值整数 `lines`（0–2400）、`elapsedSeconds`、`clockStatus`、`clockSource`、`phasePixels`、`clockPpm`、`clockConfidence`、`complete`、`partial` 及可为 null 的 `reason`。`stage` 为 `searching`、`fallback`、`apt`、`phasing`、`receiving`、`degraded`、`complete` 或 `partial`；`clockStatus` 为 `nominal`、`acquiring`、`locked`、`tracking` 或 `degraded`；`clockSource` 为 `nominal`、`phasing`、`image_content` 或 `manual`。未锁定的 IOC576/120 LPM fallback 和 `image_content` 时钟估计均不表示 APT/定相协议锁定。
 
+`lines` 统计当前段内已保留的光栅行位置，包含明确标记的缺失行；`elapsedSeconds` 跨存储段跟踪同一逻辑页。`reason` 区分 `signal_lost`、`discontinuity`、`reconfigured`、`new_page` 和 `eof`；确认协议停止后标为完成。衰落显示信号减弱，不新建 transmission。`snapshot_prefix_missing` 表示较早的分段已超出服务留存预算。
+
 `signalLevel` 是原始带通实数 PCM 的 RMS，功率平滑时间常数为 0.2 秒，单位为线性满量程幅度，不是复数 IQ 的 dBFS 读数。`carrierCoherence` 是平滑后的 1400–2500 Hz 能量与 300–2700 Hz 能量之比，限制在 0–1。集中在该频带的干扰也可能通过能量门限，因此该值不能确认传真信号身份、相位锁定或接收质量。
 
-浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。此确认不发送到 `/ws/decode`。
+浏览器解码 worker 使用 `/ws/decode?ack=1`。页面应用每个初始快照帧后，发送 `{type:'ack', channel, epoch, seq}`，其中 `seq` 为已应用批次的最后一帧。服务逐帧最多等待 5 秒再发送下一快照帧。未请求 `ack=1` 的客户端仍直接接收快照。worker 的 32 事件 / 4 MiB 上限不变。
+
+浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。worker 将应用确认转换为上述带序号的传输 ACK。
 
 > **频谱细节**：POWR 使用 float32 电平和以 Hz 表示的原生 FREQ 轴。RTA/SDR 为迹线、标记和导出保留原生频点；本地缩放不发送采集命令，也不改善物理 RBW。密度可跟随当前处理后的迹线，也可积累 Average/Max Hold 前的实时频谱帧；切换来源清除历史。余辉按真实时间半衰期衰减（Off、0.2、0.5、2、5、10 秒），命中权重按经过时间计算，并限制长间隔的影响。Off 停止累积与显示。图层选择只改变可见性，不改变迹线模式、marker、测量和导出的数据来源。密度显示时取消迹线宽辉光。对比度调整颜色，透明度独立映射。瀑布保留原生频率位置；缺口保持为空，除非启用 SWP GapFill。
 

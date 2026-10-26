@@ -16,6 +16,10 @@ import { confirmAmSyncGeneration, setAmInfo, setWfmInfo } from '../ui/decodeWind
 import type { AmInfo, WfmInfo } from '../ui/decodeWindow';
 import type { DecodeEnvelope } from '../sdr/decodeProtocol';
 import { sdrAmSync } from '../ui/sdrState';
+import type * as DecodeUi from '../ui/decodeWindow';
+import type * as RadiofaxStore from '../sdr/radiofaxLog';
+import type * as I18nModule from '../core/i18n';
+import type { RadiofaxPageMeta } from '../sdr/radiofaxLog';
 
 /** The shell the panel ships (index.html); the window only fills `#decode-window-rows`. */
 function shell(): void {
@@ -1632,5 +1636,278 @@ describe('the WFM pane', () => {
 			vi.unstubAllGlobals();
 			document.body.innerHTML = '';
 		}
+	});
+});
+
+describe('radiofax logical page browser', () => {
+	let ui: typeof DecodeUi;
+	let fax: typeof RadiofaxStore;
+	let language: typeof I18nModule;
+	let originalToBlob: PropertyDescriptor | undefined;
+	const transmissions = new Map<string, string>();
+	const transmission = (label: string): string => {
+		if (!transmissions.has(label)) transmissions.set(label, String(transmissions.size + 1));
+		return transmissions.get(label)!;
+	};
+	const select = () => document.getElementById('radiofax-history') as HTMLSelectElement;
+	const click = (id: string) => document.getElementById(id)!.click();
+	const text = (id: string) => document.getElementById(id)!.textContent!;
+	const image = (transmissionId: string, segmentIndex = 0, values: number[] | Uint8Array = [10, 128, 30], overrides: Partial<RadiofaxPageMeta> = {}, revision = 0, width = 1) => {
+		fax.appendRadiofaxRows({ width, row: 0, rows: values.length / width, gray: Uint8Array.from(values), revision }, {
+			serial: `${transmissionId}-${segmentIndex}`, epoch: 'metadata-epoch', hz: 9_110_000, ioc: 576, lpm: 120,
+			lines: values.length / width, complete: false, partial: false, segmentIndex, transmissionId: transmission(transmissionId),
+			missingRows: [], reason: null, ...overrides,
+		}, 'stream-epoch');
+		ui.refreshDecodeWindow();
+	};
+	beforeEach(async () => {
+		transmissions.clear();
+		originalToBlob = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'toBlob');
+		Object.defineProperty(HTMLCanvasElement.prototype, 'toBlob', {
+			configurable: true, writable: true,
+			value: (_callback: BlobCallback) => { throw new Error('PNG tests must install their export callback'); },
+		});
+		// A fresh module graph isolates channel stores and UI subscriptions from the other pane tests.
+		vi.resetModules();
+		ui = await import('../ui/decodeWindow');
+		fax = await import('../sdr/radiofaxLog');
+		language = await import('../core/i18n');
+		language.setLang('en');
+		localStorage.clear();
+		shell();
+		document.getElementById('decode-window-body')!.insertAdjacentHTML('beforeend', `
+			<div id="decode-window-radiofax">
+				<div id="radiofax-state"></div><div id="radiofax-clock-state"></div>
+				<div id="radiofax-received"></div><div id="radiofax-page-info"></div>
+				<div id="radiofax-missing"></div><div id="radiofax-prefix-missing"></div><div id="radiofax-resource"></div>
+				<select id="radiofax-history"></select><button id="radiofax-follow"></button>
+				<button id="radiofax-segment-prev"></button><span id="radiofax-segment"></span><button id="radiofax-segment-next"></button>
+				<button id="radiofax-save"></button><button id="radiofax-save-page"></button>
+				<button id="radiofax-delete"></button><button id="radiofax-clear"></button>
+				<div id="radiofax-confirm" style="display:none"><span id="radiofax-confirm-prompt"></span><button id="radiofax-confirm-delete"></button><button id="radiofax-confirm-cancel"></button></div>
+				<div id="radiofax-export-limit"></div><div id="radiofax-activity"></div><div id="radiofax-save-error"></div>
+				<div id="radiofax-view"><canvas id="decode-radiofax-canvas"></canvas><div id="radiofax-empty"></div></div>
+			</div>`);
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+		ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		ui.setDecodeActive(true);
+		ui.setDecodeWindowAvailable('radiofax');
+		if (!ui.decodeWindowOpen()) ui.toggleDecodeWindow();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		if (originalToBlob) Object.defineProperty(HTMLCanvasElement.prototype, 'toBlob', originalToBlob);
+		else Reflect.deleteProperty(HTMLCanvasElement.prototype, 'toBlob');
+		vi.unstubAllGlobals();
+		document.body.innerHTML = '';
+	});
+
+	it('keeps option identity across revisions and freezes mouse or keyboard interaction until blur', () => {
+		image('older');
+		image('live');
+		const older = fax.radiofaxStatus().pages.find((page) => page.segments[0].meta.transmissionId === transmission('older'))!;
+		const option = Array.from(select().options).find((item) => item.value === older.id)!;
+		select().focus();
+		select().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+		select().value = older.id;
+		const frozen = select().innerHTML;
+		select().dispatchEvent(new Event('pointerdown'));
+		image('live', 0, [99, 128, 33], { partial: true, reason: 'signal_lost' }, 1);
+		image('newest');
+		expect(select().innerHTML).toBe(frozen);
+		expect(select().value).toBe(older.id);
+		expect(document.activeElement).toBe(select());
+		select().dispatchEvent(new Event('change'));
+		expect(fax.radiofaxStatus().viewId).toBe(older.id);
+		select().blur();
+		expect(select().options).toHaveLength(4);
+		expect(Array.from(select().options).find((item) => item.value === older.id)).toBe(option);
+		expect(select().value).toBe(older.id);
+		image('next');
+		expect(select().value).toBe(older.id);
+		expect(fax.radiofaxVisiblePage()!.id).toBe(older.id);
+	});
+
+	it('pins the viewed page when scrolling up and never lets a new page steal it', () => {
+		image('first');
+		const first = fax.radiofaxVisiblePage()!.id;
+		const view = document.getElementById('radiofax-view')!;
+		Object.defineProperties(view, { scrollHeight: { value: 1000 }, clientHeight: { value: 100 } });
+		view.scrollTop = 100;
+		view.dispatchEvent(new Event('scroll'));
+		expect(fax.radiofaxStatus().viewId).toBe(first);
+		expect(document.getElementById('radiofax-follow')!.getAttribute('aria-pressed')).toBe('false');
+		image('second');
+		expect(fax.radiofaxVisiblePage()!.id).toBe(first);
+		expect(view.scrollTop).toBe(100);
+		click('radiofax-follow');
+		expect(fax.radiofaxStatus().viewId).toBeNull();
+		expect(fax.radiofaxVisiblePage()!.segments[0].meta.transmissionId).toBe(transmission('second'));
+	});
+
+	it('browses ordered storage segments inside one logical page using 1-based labels', () => {
+		image('paper', 0, [10]);
+		image('paper', 1, [20, 21]);
+		expect(select().options).toHaveLength(2);
+		expect(text('radiofax-segment')).toBe('Segment 2 · 2 retained');
+		click('radiofax-segment-prev');
+		expect(text('radiofax-segment')).toBe('Segment 1 · 2 retained');
+		expect((document.getElementById('decode-radiofax-canvas') as HTMLCanvasElement).height).toBe(1);
+		image('paper', 2, [30, 31, 32]);
+		expect(text('radiofax-segment')).toBe('Segment 1 · 3 retained');
+		click('radiofax-segment-next');
+		expect(text('radiofax-segment')).toBe('Segment 2 · 3 retained');
+	});
+
+	it('shows honest dated local receipt time, switches to UTC and restores the persisted preference', () => {
+		const at = Date.parse('2026-10-26T00:00:01Z');
+		vi.spyOn(Date, 'now').mockReturnValue(at);
+		image('dated');
+		expect(document.getElementById('btn-decode-utc')!.style.display).toBe('');
+		expect(text('radiofax-received')).toContain('First browser image receipt');
+		expect(text('radiofax-received')).toMatch(/2026-10-\d{2} .* LT/);
+		expect(document.getElementById('radiofax-received')!.title).toContain("not the station's transmission time");
+		click('btn-decode-utc');
+		expect(text('radiofax-received')).toContain('2026-10-26 00:00:01 UTC');
+		expect(JSON.parse(localStorage.getItem('websa-decode-window')!).utc).toBe(true);
+		ui.initDecodeWindow({ onTune: () => {}, onSstvMode: () => {} });
+		ui.refreshDecodeWindow();
+		expect(document.getElementById('btn-decode-utc')!.classList.contains('active')).toBe(true);
+		expect(text('radiofax-received')).toContain('2026-10-26 00:00:01 UTC');
+		vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-25T23:59:59Z'));
+		image('previous-day');
+		expect(Array.from(select().options).map((option) => option.textContent)).toEqual(expect.arrayContaining([
+			expect.stringContaining('2026-10-25 23:59:59 UTC'), expect.stringContaining('2026-10-26 00:00:01 UTC'),
+		]));
+	});
+
+	it('preserves neutral missing bands in canvas and PNG and shows partial reason metadata', () => {
+		const pixels: Uint8ClampedArray[] = [];
+		const context = {
+			createImageData: (width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }),
+			putImageData: (image: ImageData) => pixels.push(image.data),
+		} as unknown as CanvasRenderingContext2D;
+		vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(context);
+		const blob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => callback(null));
+		image('partial', 0, [10, 128, 30], { missingRows: [1], partial: true, reason: 'signal_lost' });
+		expect(text('radiofax-missing')).toContain('1 missing rows');
+		expect(text('radiofax-page-info')).toContain('Partial');
+		expect(text('radiofax-page-info')).toContain('signal_lost');
+		expect(Array.from(pixels.at(-1)!)).toEqual([10, 10, 10, 255, 128, 128, 128, 255, 30, 30, 30, 255]);
+		click('radiofax-save');
+		expect(blob).toHaveBeenCalled();
+		expect(Array.from(pixels.at(-1)!)).toEqual([10, 10, 10, 255, 128, 128, 128, 255, 30, 30, 30, 255]);
+		expect(text('radiofax-save-error')).toBe('PNG export failed');
+	});
+
+	it('exports one safe whole page and keeps UTC segment filenames 1-based', () => {
+		const downloads: string[] = [];
+		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+			createImageData: (width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }),
+			putImageData: vi.fn(), drawImage: vi.fn(),
+		} as unknown as CanvasRenderingContext2D);
+		const sizes: number[][] = [];
+		vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (this: HTMLCanvasElement, callback) {
+			sizes.push([this.width, this.height]); callback(new Blob(['png'], { type: 'image/png' }));
+		});
+		vi.stubGlobal('URL', { createObjectURL: () => 'blob:fax', revokeObjectURL: vi.fn() });
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { downloads.push(this.download); });
+		vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-26T12:00:00Z'));
+		image('paper', 0, [10]); image('paper', 1, [20, 21]);
+		click('radiofax-save'); click('radiofax-save-page');
+		expect(sizes).toEqual([[1, 2], [1, 3]]);
+		expect(downloads[0]).toBe(`radiofax-20261026T120000Z-9110000Hz-IOC576-120LPM-p${transmission('paper')}-s2.png`);
+		expect(downloads[1]).toContain('-page.png');
+	});
+
+	it('refuses oversized whole-page export before canvas allocation and leaves segment export available', () => {
+		image('wide', 0, Array(32_768).fill(128), {}, 0, 32_768);
+		const exportPng = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => callback(null));
+		click('radiofax-save-page');
+		expect(exportPng).not.toHaveBeenCalled();
+		expect(text('radiofax-save-error')).toContain('Save each segment PNG instead');
+		expect((document.getElementById('radiofax-save') as HTMLButtonElement).disabled).toBe(false);
+	});
+
+	it('rejects whole-page RGBA allocation above the pixel budget even when each dimension is safe', () => {
+		const pixels = new Uint8Array(4096 * 2049).fill(128);
+		image('large', 0, pixels, {}, 0, 4096);
+		image('large', 1, pixels, {}, 0, 4096);
+		const exportPng = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => callback(null));
+		click('radiofax-save-page');
+		expect(exportPng).not.toHaveBeenCalled();
+		expect(text('radiofax-export-limit')).toContain('16,777,216 pixels');
+		expect((document.getElementById('radiofax-save') as HTMLButtonElement).disabled).toBe(false);
+	});
+
+	it('warns when a late snapshot has lost earlier segments and keeps whole-page export unavailable', () => {
+		image('snapshot', 4, [10, 128, 30], { partial: true, reason: 'snapshot_prefix_missing', missingRows: [1] });
+		expect(text('radiofax-prefix-missing')).toContain('Earlier segments are unavailable');
+		expect(text('radiofax-page-info')).toContain('Partial');
+		expect(text('radiofax-segment')).toBe('Segment 5 · 1 retained');
+		const exportPng = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => callback(null));
+		click('radiofax-save-page');
+		expect(exportPng).not.toHaveBeenCalled();
+		language.setLang('zh');
+		ui.refreshDecodeWindow();
+		expect(text('radiofax-prefix-missing')).toContain('不含较早的分段');
+		expect(text('radiofax-missing')).toContain('缺失 1 行');
+		expect(text('radiofax-segment')).toContain('第 5 段');
+	});
+
+	it('exposes eviction and refused retention while preserving the viewed page and save/delete controls', () => {
+		const retain = (transmissionId: string, segmentIndex = 0, rows = 2400) => {
+			fax.appendRadiofaxRows({ width: 4096, row: 0, rows, gray: new Uint8Array(4096 * rows), revision: 0 }, {
+				serial: `${transmissionId}-${segmentIndex}`, epoch: 'metadata-epoch', hz: 9_110_000, ioc: 576, lpm: 120,
+				lines: rows, complete: false, partial: false, segmentIndex, transmissionId: transmission(transmissionId), missingRows: [], reason: null,
+			}, 'stream-epoch');
+			ui.refreshDecodeWindow();
+		};
+		retain('first'); retain('second'); retain('third');
+		expect(text('radiofax-resource')).toContain('1 older unprotected pages evicted');
+		const second = fax.radiofaxStatus().pages.find((page) => page.segments[0].meta.transmissionId === transmission('second'))!;
+		select().value = second.id;
+		select().dispatchEvent(new Event('change'));
+		retain('third', 1, 400);
+		expect(fax.radiofaxStatus().retention).toBe('blocked');
+		expect(fax.radiofaxVisiblePage()!.id).toBe(second.id);
+		expect(text('radiofax-resource')).toContain('Storage full');
+		expect((document.getElementById('radiofax-save') as HTMLButtonElement).disabled).toBe(false);
+		expect((document.getElementById('radiofax-delete') as HTMLButtonElement).disabled).toBe(false);
+	});
+
+	it('deletes a pinned historical page after confirmation and safely falls back to the receiving page', () => {
+		image('older');
+		const older = fax.radiofaxVisiblePage()!.id;
+		image('live');
+		select().value = older;
+		select().dispatchEvent(new Event('change'));
+		click('radiofax-delete');
+		expect(fax.radiofaxStatus().viewId).toBe(older);
+		click('radiofax-confirm-delete');
+		expect(fax.radiofaxStatus().viewId).toBeNull();
+		expect(fax.radiofaxVisiblePage()!.segments[0].meta.transmissionId).toBe(transmission('live'));
+		expect(select().value).toBe('');
+	});
+
+	it('requires confirmation for selected or receiving page deletion and channel clear', () => {
+		image('older'); image('receiving');
+		const receiving = fax.radiofaxVisiblePage()!.id;
+		click('radiofax-delete');
+		expect(fax.radiofaxStatus().pages).toHaveLength(2);
+		expect(text('radiofax-confirm-prompt')).toContain('receiving page');
+		click('radiofax-confirm-cancel');
+		expect(fax.radiofaxStatus().pages).toHaveLength(2);
+		select().focus();
+		click('radiofax-delete'); click('radiofax-confirm-delete');
+		expect(fax.radiofaxStatus().pages.some((page) => page.id === receiving)).toBe(false);
+		expect(fax.radiofaxStatus().currentSuppressed).toBe(true);
+		expect(select().selectedIndex).toBeGreaterThanOrEqual(0);
+		expect(text('radiofax-resource')).toContain('later rows stay hidden');
+		click('radiofax-clear');
+		expect(text('radiofax-confirm-prompt')).toContain('selected and receiving pages');
+		click('radiofax-confirm-delete');
+		expect(fax.radiofaxStatus().pages).toHaveLength(0);
+		expect(text('radiofax-activity')).toBe('Channel history cleared');
 	});
 });

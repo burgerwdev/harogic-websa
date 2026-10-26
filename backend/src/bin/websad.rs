@@ -4010,6 +4010,30 @@ fn enqueue(client: &Client, packet: Outbound) {
 type WsSink = futures_util::stream::SplitSink<WebSocket, Message>;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
+const SNAPSHOT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(serde::Deserialize, PartialEq)]
+struct DecodeApplied { channel: u32, epoch: u32, seq: u32 }
+
+async fn wait_snapshot_ack(stream: &mut futures_util::stream::SplitStream<WebSocket>, expected: &DecodeApplied)
+    -> Result<bool, tokio::time::error::Elapsed> {
+    tokio::time::timeout(SNAPSHOT_ACK_TIMEOUT, async {
+        while let Some(Ok(message)) = stream.next().await {
+            match message {
+                Message::Text(text) => {
+                    #[derive(serde::Deserialize)]
+                    struct Ack { #[serde(rename="type")] kind: String, #[serde(flatten)] applied: DecodeApplied }
+                    if serde_json::from_str::<Ack>(&text).is_ok_and(|ack| ack.kind == "ack" && ack.applied == *expected) {
+                        return true;
+                    }
+                }
+                Message::Close(_) => return false,
+                _ => {}
+            }
+        }
+        false
+    }).await
+}
 
 /// Bounded single-frame send. `false` means the socket is gone; the loop must remove the
 /// client instead of retrying.
@@ -4095,10 +4119,10 @@ async fn ws_handler(
     if aux && (iq || audio) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    ws.on_upgrade(move |socket| client_loop(app, socket, iq, aux, audio, false, None))
+    ws.on_upgrade(move |socket| client_loop(app, socket, iq, aux, audio, false, None, false))
 }
 
-async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audio: bool, decode:bool, channel:Option<u32>) {
+async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audio: bool, decode:bool, channel:Option<u32>, decode_ack:bool) {
     let (tx, mut rx) = mpsc::channel::<Outbound>(64);
     let id = app.next_client.fetch_add(1, Ordering::Relaxed);
     let overflow = Arc::new(AtomicBool::new(false));
@@ -4157,8 +4181,22 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     let mut initial_ok = true;
     match initial_decode {
         Ok(frames)=>for frame in frames {
-            if service_stream::identity_current(service_stream::message_identity(&frame),&app.identities,channel)
-                && !send_frame(&mut sink,frame).await {initial_ok=false;break;}
+            if !service_stream::identity_current(service_stream::message_identity(&frame),&app.identities,channel) {continue;}
+            let expected = if decode_ack {
+                let Message::Binary(bytes) = &frame else {initial_ok=false;break;};
+                match serde_json::from_slice::<DecodeApplied>(&bytes[8..]) {
+                    Ok(applied) => Some(applied),
+                    Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
+                }
+            } else {None};
+            if !send_frame(&mut sink,frame).await {initial_ok=false;break;}
+            if let Some(expected) = expected {
+                match wait_snapshot_ack(&mut stream, &expected).await {
+                    Ok(true) => {},
+                    Ok(false) => {initial_ok=false;break;},
+                    Err(_) => {overflow.store(true,Ordering::Release);initial_ok=false;break;}
+                }
+            }
         },
         Err(error)=>{eprintln!("WebSA initial decode snapshot: {error}");initial_ok=false;}
     }
@@ -4206,6 +4244,8 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         }
                         continue;
                     };
+                    // Application acknowledgements are transport credit, never control commands.
+                    if decode && data.get("type").and_then(Value::as_str) == Some("ack") {continue;}
                     let cmd = data.get("cmd").and_then(Value::as_str).unwrap_or_default().to_string();
                     let request_id = command_request_id(&data);
                     if cmd == "STATUS" {
@@ -4299,7 +4339,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
             }
         }
     } else {
-        false
+        overflow.load(Ordering::Acquire) || receiver_failed.load(Ordering::Acquire)
     };
     if slow {
         close_stream(&mut sink,receiver_failed.load(Ordering::Acquire)).await;
@@ -5717,6 +5757,85 @@ mod tests {
         let mut ws = connect_ws(&url).await;
         wait_for_client(&app).await;
         assert_eq!(next_binary(&mut ws).await, b"FREQ-initial".to_vec());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn initial_decode_snapshot_waits_for_opted_in_application_ack() {
+        let (app, url) = start_ws_server().await;
+        let (channel_id, stream_epoch) = {
+            let mut state = app.state.lock().unwrap();
+            state.swp.mode = "sdr".into();
+            state.sdr_center = 100e6;
+            state.sdr_listen = 100e6;
+            state.sdr_demod = "radiofax".into();
+            state.sdr_if_bw = 2400.0;
+            let mut source = service_fixture::FixtureSources::new();
+            source.configure(&state.channel_configs()).unwrap();
+            let registry = source.registry();
+            let identity = (registry[0].channel_id, registry[0].epoch);
+            state.fixture_sources = Some(source);
+            state.publish_identities(&app.identities);
+            identity
+        };
+        let frame = |seq, event| websa_channelizer::encode_decode_event(&serde_json::to_vec(&json!({
+            "version":1,"channel":1,"channel_id":channel_id,"epoch":stream_epoch,"seq":seq,
+            "input_index":"0","input_rate":48_000,"input_fraction_num":"0","input_fraction_den":"1",
+            "delay_seconds":0,"delay_known":true,"causal_presentation":false,"mode":"radiofax","event":event,
+        })).unwrap()).unwrap();
+        {
+            let mut state = app.state.lock().unwrap();
+            state.decode_snapshots.observe(&[frame(0,json!({"type":"start"}))]).unwrap();
+            for (index,row) in (0..2400u32).step_by(64).enumerate() {
+                let rows = (2400-row).min(64);
+                let pixels = 1810*rows as usize;
+                let padding = (3-pixels%3)%3;
+                let gray = "A".repeat(pixels.div_ceil(3)*4-padding)+&"=".repeat(padding);
+                state.decode_snapshots.observe(&[frame(index as u32+1,json!({
+                    "type":"radiofax-image","width":1810,"row":row,"rows":rows,"gray":gray,"revision":1,
+                    "meta":{"serial":"page","epoch":"paper","hz":100e6,"ioc":576,"lpm":120,
+                        "lines":row+rows,"complete":false,"partial":false,"segmentIndex":0,
+                        "transmissionId":"1","missingRows":[],"reason":null}
+                }))]).unwrap();
+            }
+        }
+        // Raw consumers retain their push transport and need no application acknowledgements.
+        let mut raw = connect_ws(&format!("{url}/decode?channel=1")).await;
+        let mut raw_bytes = 0;
+        for seq in 0..=38 {
+            let bytes = next_binary(&mut raw).await;
+            raw_bytes += bytes.len();
+            let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
+            assert_eq!(envelope["seq"], seq);
+        }
+        assert!(raw_bytes > 4*1024*1024);
+        let mut paced = connect_ws(&format!("{url}/decode?channel=1&ack=1")).await;
+        let start = next_binary(&mut paced).await;
+        let start: Value = serde_json::from_slice(&start[8..]).unwrap();
+        assert_eq!(start["seq"], 0);
+        expect_silence(&mut paced, Duration::from_millis(30)).await;
+        // An ACK for another channel or sequence grants no credit.
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":2,"epoch":stream_epoch,"seq":0}).to_string().into())).await.unwrap();
+        expect_silence(&mut paced, Duration::from_millis(30)).await;
+        let mut total = 0;
+        for seq in 0..=38 {
+            paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":stream_epoch,"seq":seq}).to_string().into())).await.unwrap();
+            if seq == 38 {break;}
+            let bytes = next_binary(&mut paced).await;
+            assert!(bytes.len()-8 <= 2*1024*1024);
+            total += bytes.len();
+            let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
+            assert_eq!(envelope["seq"], seq+1);
+            assert_eq!(envelope["event"]["row"], seq*64);
+        }
+        assert!(total > 4*1024*1024);
+        let live = frame(39,json!({"type":"radiofax-state"}));
+        fanout(&app, Message::Binary(live.into()), app.epoch.load(Ordering::Acquire));
+        let bytes = next_binary(&mut paced).await;
+        let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
+        assert_eq!(envelope["seq"], 39);
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":stream_epoch,"seq":39}).to_string().into())).await.unwrap();
+        expect_silence(&mut paced, Duration::from_millis(30)).await;
+        assert!(app.clients.lock().iter().all(|client| !client.overflow.load(Ordering::Acquire)));
     }
 
     #[tokio::test]

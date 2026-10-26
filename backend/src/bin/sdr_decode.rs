@@ -330,6 +330,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(job) = receiver.flush_ft8()? { sink.events(receiver.accept_ft8(job.decode()))?; }
     receiver.finish_radiofax()?;
+    sink.events(receiver.take_radiofax_events()?)?;
     if let Some(pcm) = sink.pcm.as_mut() { pcm.flush()?; }
     let report = Report {
         schema_version: 1,

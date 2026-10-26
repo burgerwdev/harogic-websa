@@ -13,7 +13,8 @@ let retry: number | null = null;
 let inFlight = 0;
 let inFlightBytes = 0;
 let queuedBytes = 0;
-const queue: { envelope: DecodeEnvelope; bytes: number }[] = [];
+const queue: { envelope: DecodeEnvelope; bytes: number; connection: WebSocket }[] = [];
+const applied = new Map<number, { envelope: DecodeEnvelope; connection: WebSocket }>();
 const MAX_QUEUED_EVENTS = 32;
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
 function fail(message: string): void {
@@ -23,6 +24,7 @@ function fail(message: string): void {
   inFlightBytes = 0;
   queue.length = 0;
   queuedBytes = 0;
+  applied.clear();
   const previous = socket;
   socket = null;
   // Browser clients may send 1000 or application codes, never protocol code 1002.
@@ -36,11 +38,14 @@ function deliver(): void {
   inFlight = items.length;
   inFlightBytes = queuedBytes;
   queuedBytes = 0;
+  for (const item of items) applied.set(item.envelope.channel, item);
   host.postMessage({ type: 'frames', envelopes: items.map((item) => item.envelope) });
 }
 function connect(): void {
   if (!enabled || socket) return;
-  const connection = new WebSocket(url);
+  const endpoint = new URL(url);
+  endpoint.searchParams.set('ack', '1');
+  const connection = new WebSocket(endpoint.href);
   socket = connection;
   connection.binaryType = 'arraybuffer';
   const sequence = new DecodeSequence();
@@ -54,7 +59,7 @@ function connect(): void {
         throw new Error('Slow decoded-output consumer: queue exceeded');
       }
       queuedBytes += event.data.byteLength;
-      queue.push({ envelope, bytes: event.data.byteLength });
+      queue.push({ envelope, bytes: event.data.byteLength, connection });
       deliver();
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   };
@@ -80,8 +85,17 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
     url = message.url ?? '';
     connect();
   } else if (message.type === 'ack') {
+    if (!inFlight) return;
+    const acknowledgements = [...applied.values()];
+    applied.clear();
     inFlight = 0;
     inFlightBytes = 0;
+    try {
+      for (const { envelope, connection } of acknowledgements) {
+        if (enabled && socket === connection) connection.send(JSON.stringify({ type: 'ack',
+          channel: envelope.channel, epoch: envelope.epoch, seq: envelope.seq }));
+      }
+    } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
     deliver();
   } else if (message.type === 'error') {
     fail(message.message ?? 'Invalid decoded output');
@@ -90,6 +104,7 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
     if (retry !== null) { self.clearTimeout(retry); retry = null; }
     inFlight = 0;
     inFlightBytes = 0;
+    applied.clear();
     const previous = socket;
     socket = null;
     previous?.close();

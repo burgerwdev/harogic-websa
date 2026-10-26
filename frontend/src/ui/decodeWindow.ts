@@ -39,11 +39,15 @@ import {
 } from '../sdr/sstvLog';
 import {
 	radiofaxStatus,
-	radiofaxVisible,
+	radiofaxVisiblePage,
+	deleteRadiofaxPage,
+	clearRadiofax,
+	RADIOFAX_CHANNEL_BYTES,
 	setRadiofaxChannel,
 	setRadiofaxView,
 	subscribeRadiofax,
 	type RadiofaxEntry,
+	type RadiofaxPage,
 } from '../sdr/radiofaxLog';
 import { sstvModeTable } from '../sdr/registry';
 import { formatLatLon, geoFor } from '../sdr/ft8Geo';
@@ -213,7 +217,13 @@ let sstvClearChannel: DecodeChannel | null = null;
 type RadiofaxZoom = 'fit' | '50' | '100' | '200';
 let radiofaxZoom: RadiofaxZoom = 'fit';
 let radiofaxFollow = true;
-let radiofaxHistoryShape = '';
+let radiofaxScrollPaused = false;
+let radiofaxHistoryInteracting = false;
+let radiofaxSegmentId: string | null = null;
+let radiofaxViewedPageId: string | null = null;
+let radiofaxConfirmation: { channel: DecodeChannel; pageId: string | null } | null = null;
+const RADIOFAX_EXPORT_MAX_DIMENSION = 32_767;
+const RADIOFAX_EXPORT_MAX_PIXELS = 16_777_216;
 /// FT8 pane view state: the message filter (null = invalid pattern, filter off) and the sorted
 /// column (null = arrival order, newest first). In-memory on purpose: a view preference, not data.
 let ft8FilterRe: RegExp | null = null;
@@ -685,10 +695,9 @@ function renderContent(): void {
 	// The SSTV waiting line lives in this head. Every other pane hides it.
 	const hint = element('sstv-head-hint');
 	if (hint) hint.style.display = 'none';
-	// UTC and Clear only act on something a pane accumulates (FT8's time column and spot list).
-	// Neither has an effect in FM, DRM or SSTV, so they are hidden there rather than sitting dead.
+	// Radiofax shares the persisted local/UTC preference for first browser image receipt times.
 	const utc = element('btn-decode-utc');
-	if (utc) utc.style.display = showDrm || showWfm || showSstv || showRadiofax || showAm ? 'none' : '';
+	if (utc) utc.style.display = showDrm || showWfm || showSstv || showAm ? 'none' : '';
 	const clear = element('btn-decode-clear');
 	// Show Clear only for panes with accumulated content.
 	if (clear) clear.style.display = showDrm || showWfm || showRadiofax || showAm ? 'none' : '';
@@ -967,74 +976,145 @@ function drawRadiofaxPicture(canvas: HTMLCanvasElement, entry: RadiofaxEntry): v
 	ctx.putImageData(image, 0, 0);
 }
 
-function radiofaxPageName(entry: RadiofaxEntry): string {
+function radiofaxPageName(entry: RadiofaxEntry, wholePage = false): string {
 	const stamp = new Date(entry.meta.at).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 	const hz = entry.meta.hz === null ? 'unknownHz' : `${Math.round(entry.meta.hz)}Hz`;
-	return `radiofax-${stamp}-${hz}-IOC${entry.meta.ioc}-${entry.meta.lpm}LPM-p${entry.meta.serial}-s${entry.meta.segmentIndex}.png`
+	return `radiofax-${stamp}-${hz}-IOC${entry.meta.ioc}-${entry.meta.lpm}LPM-p${entry.meta.transmissionId}-${wholePage ? 'page' : `s${entry.meta.segmentIndex + 1}`}.png`
 		.replace(/[^\w.-]+/g, '-');
 }
 
-function showRadiofaxSaveError(show: boolean): void {
+function showRadiofaxSaveError(show: boolean, message = t('radiofax_save_failed')): void {
 	const error = element('radiofax-save-error');
 	if (!error) return;
 	error.style.display = show ? '' : 'none';
-	error.textContent = show ? t('radiofax_save_failed') : '';
+	error.textContent = show ? message : '';
 }
 
-function saveRadiofaxPng(): void {
-	const entry = radiofaxVisible();
+function radiofaxViewedSegment(page = radiofaxVisiblePage()): RadiofaxEntry | null {
+	if (!page) { radiofaxSegmentId = null; radiofaxViewedPageId = null; return null; }
+	if (radiofaxViewedPageId !== page.id) { radiofaxViewedPageId = page.id; radiofaxSegmentId = null; }
+	const pinned = radiofaxStatus().viewId !== null || !radiofaxFollow;
+	const entry = pinned ? page.segments.find((segment) => segment.id === radiofaxSegmentId) : null;
+	const visible = entry ?? page.segments[page.segments.length - 1];
+	radiofaxSegmentId = visible.id;
+	return visible;
+}
+
+function radiofaxWholePageSafe(page: RadiofaxPage): boolean {
+	const width = page.segments[0].picture.width;
+	return width <= RADIOFAX_EXPORT_MAX_DIMENSION && page.lines <= RADIOFAX_EXPORT_MAX_DIMENSION
+		&& width * page.lines <= RADIOFAX_EXPORT_MAX_PIXELS
+		&& page.segments.every((segment, index) => segment.picture.width === width && segment.meta.segmentIndex === index);
+}
+
+function saveRadiofaxPng(wholePage = false): void {
+	const page = radiofaxVisiblePage();
+	const entry = radiofaxViewedSegment(page);
 	showRadiofaxSaveError(false);
-	if (!entry) return;
-	const canvas = document.createElement('canvas');
-	drawRadiofaxPicture(canvas, entry);
+	if (!entry || !page) return;
+	if (wholePage && !radiofaxWholePageSafe(page)) {
+		showRadiofaxSaveError(true, t('radiofax_export_limit'));
+		return;
+	}
+	const filename = radiofaxPageName(wholePage ? page.segments[0] : entry, wholePage);
 	try {
+		const canvas = document.createElement('canvas');
+		if (wholePage) {
+			canvas.width = entry.picture.width;
+			canvas.height = page.lines;
+			const context = canvas.getContext('2d');
+			if (!context) throw new Error('Canvas unavailable');
+			const segmentCanvas = document.createElement('canvas');
+			let row = 0;
+			for (const segment of page.segments) {
+				drawRadiofaxPicture(segmentCanvas, segment);
+				context.drawImage(segmentCanvas, 0, row);
+				row += segment.picture.height;
+			}
+		} else drawRadiofaxPicture(canvas, entry);
+		const activity = element('radiofax-activity');
+		if (activity) activity.textContent = t('radiofax_saving', { name: filename });
 		canvas.toBlob((blob) => {
-			if (!blob) { showRadiofaxSaveError(true); return; }
+			if (!blob) { showRadiofaxSaveError(true); if (activity) activity.textContent = ''; return; }
 			const url = URL.createObjectURL(blob);
 			const anchor = document.createElement('a');
 			anchor.href = url;
-			anchor.download = radiofaxPageName(entry);
+			anchor.download = filename;
 			document.body.appendChild(anchor);
 			anchor.click();
 			anchor.remove();
+			if (activity) activity.textContent = t('radiofax_saved', { name: filename });
 			setTimeout(() => URL.revokeObjectURL(url), 0);
 		}, 'image/png');
-	} catch {
-		showRadiofaxSaveError(true);
-	}
+	} catch { showRadiofaxSaveError(true); }
 }
 
-function renderRadiofaxHistory(entry: RadiofaxEntry | null): void {
+function radiofaxReceiptTime(at: number): string {
+	const date = new Date(at);
+	const year = utcTime ? date.getUTCFullYear() : date.getFullYear();
+	const month = (utcTime ? date.getUTCMonth() : date.getMonth()) + 1;
+	const day = utcTime ? date.getUTCDate() : date.getDate();
+	return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')} ${clock(at, utcTime)} ${utcTime ? 'UTC' : 'LT'}`;
+}
+
+function renderRadiofaxHistory(): void {
 	const select = element('radiofax-history') as HTMLSelectElement | null;
-	if (!select) return;
+	if (!select || radiofaxHistoryInteracting || document.activeElement === select) return;
 	const state = radiofaxStatus();
-	const pages = [state.current, ...state.history].filter((page): page is RadiofaxEntry => page !== null);
-	const shape = pages.map((page) => `${page.id}:${page.revision}`).join('|');
-	if (shape !== radiofaxHistoryShape || select.childElementCount === 0) {
-		radiofaxHistoryShape = shape;
-		select.textContent = '';
-		const live = document.createElement('option');
-		live.value = '';
-		live.textContent = t('radiofax_page_live');
-		select.appendChild(live);
-		for (const page of pages) {
-			const option = document.createElement('option');
-			option.value = page.id;
-			option.textContent = `${new Date(page.meta.at).toISOString().slice(11, 19)}Z · IOC ${page.meta.ioc} · ${page.meta.lpm} LPM · ${page.meta.lines} · segment ${page.meta.segmentIndex}`;
-			select.appendChild(option);
-		}
+	const choices = [{ id: '', label: t('radiofax_page_live') }, ...state.pages.map((page) => ({
+		id: page.id,
+		label: `${radiofaxReceiptTime(page.at)} · ${page.lines} ${t('radiofax_lines')} · ${page.segments.length} ${t('radiofax_segments')} · ${t(page.partial ? 'radiofax_stage_partial' : page.complete ? 'radiofax_stage_complete' : 'radiofax_stage_receiving')}`,
+	}))];
+	const valid = new Set(choices.map((choice) => choice.id));
+	for (const option of Array.from(select.options)) if (!valid.has(option.value)) option.remove();
+	for (let index = 0; index < choices.length; index++) {
+		const choice = choices[index];
+		let option = Array.from(select.options).find((item) => item.value === choice.id);
+		if (!option) { option = document.createElement('option'); option.value = choice.id; }
+		if (option.textContent !== choice.label) option.textContent = choice.label;
+		option.title = t('radiofax_received_tip');
+		if (select.options[index] !== option) select.insertBefore(option, select.options[index] ?? null);
 	}
-	select.value = state.viewId ?? '';
-	if (select.selectedIndex < 0) select.value = '';
-	select.disabled = pages.length === 0;
+	const desired = state.viewId ?? '';
+	if (select.value !== desired) select.value = desired;
+	select.disabled = state.pages.length === 0;
 	select.setAttribute('aria-label', t('radiofax_history_tip'));
-	if (entry && !pages.some((page) => page.id === entry.id)) radiofaxHistoryShape = '';
+	select.title = t('radiofax_received_tip');
+}
+
+function renderRadiofaxPageDetails(page: RadiofaxPage | null, entry: RadiofaxEntry | null): void {
+	const state = radiofaxStatus();
+	const put = (id: string, text: string): void => { const node = element(id); if (node) node.textContent = text; };
+	put('radiofax-received', page ? `${t('radiofax_received')}: ${radiofaxReceiptTime(page.at)}` : '');
+	const receipt = element('radiofax-received');
+	if (receipt) receipt.title = t('radiofax_received_tip');
+	put('radiofax-page-info', page ? `${t(page.partial ? 'radiofax_stage_partial' : page.complete ? 'radiofax_stage_complete' : 'radiofax_stage_receiving')} · ${page.lines} ${t('radiofax_lines')}${page.reason ? ` · ${page.reason}` : ''}` : '');
+	put('radiofax-missing', page?.missingRows.length ? t('radiofax_missing_rows', { count: page.missingRows.length }) : '');
+	put('radiofax-prefix-missing', page && page.segments[0].meta.segmentIndex > 0 ? t('radiofax_prefix_missing') : '');
+	put('radiofax-resource', `${t('radiofax_session_only')} · ${(state.bytes / 1048576).toFixed(1)} / ${RADIOFAX_CHANNEL_BYTES / 1048576} MiB · ${t('radiofax_evicted', { count: state.evicted })}${state.retention === 'blocked' ? ` · ${t('radiofax_budget_blocked')}` : ''}${state.currentSuppressed ? ` · ${t('radiofax_current_deleted')}` : ''}`);
+	element('radiofax-resource')?.classList.toggle('blocked', state.retention === 'blocked');
+	const resource = element('radiofax-resource');
+	if (resource) resource.title = state.retentionReason ?? t('radiofax_session_only');
+	put('radiofax-segment', entry && page ? t('radiofax_segment', { index: entry.meta.segmentIndex + 1, count: page.segments.length }) : '—');
+	const index = page?.segments.findIndex((segment) => segment.id === entry?.id) ?? -1;
+	const previous = button('radiofax-segment-prev');
+	const next = button('radiofax-segment-next');
+	if (previous) previous.disabled = index <= 0;
+	if (next) next.disabled = !page || index >= page.segments.length - 1;
+	for (const id of ['radiofax-delete', 'radiofax-save-page']) { const control = button(id); if (control) control.disabled = !page; }
+	const clear = button('radiofax-clear');
+	if (clear) clear.disabled = state.pages.length === 0;
+	put('radiofax-export-limit', page && !radiofaxWholePageSafe(page) ? t('radiofax_export_limit') : '');
+	const confirmation = element('radiofax-confirm');
+	if (confirmation) confirmation.style.display = radiofaxConfirmation?.channel === selectedChannel ? '' : 'none';
+	put('radiofax-confirm-prompt', t(radiofaxConfirmation?.pageId ? 'radiofax_confirm_delete' : 'radiofax_confirm_clear'));
 }
 
 function renderRadiofax(): void {
 	if (deferDecodePaint()) return;
 	const state = radiofaxStatus();
-	const entry = radiofaxVisible();
+	const page = radiofaxVisiblePage();
+	const entry = radiofaxViewedSegment(page);
 	const decoder = state.decoder;
 	const acquisition = sdrRadiofaxAcquisition.get();
 	const pending = {
@@ -1079,7 +1159,7 @@ function renderRadiofax(): void {
 		}
 	}
 	const stateText = decoder
-		? `${t(`radiofax_stage_${decoder.stage}`)} · IOC ${decoder.ioc ?? '—'} · ${decoder.lpm ?? '—'} LPM · ${decoder.modulation.toUpperCase()} · ${t(`radiofax_${decoder.polarity}`)} · ${decoder.lines} lines · ${decoder.elapsedSeconds.toFixed(1)} s`
+		? `${t(`radiofax_stage_${decoder.stage}`)} · IOC ${decoder.ioc ?? '—'} · ${decoder.lpm ?? '—'} LPM · ${decoder.modulation.toUpperCase()} · ${t(`radiofax_${decoder.polarity}`)} · ${decoder.lines} ${t('radiofax_lines')} · ${decoder.elapsedSeconds.toFixed(1)} s`
 		: t('radiofax_waiting');
 	const status = element('radiofax-state');
 	if (status) {
@@ -1092,7 +1172,8 @@ function renderRadiofax(): void {
 			? `${t(`radiofax_clock_${decoder.clockStatus}`)} · ${decoder.clockSource === 'nominal' ? t('radiofax_clock_nominal') : t(`radiofax_clock_source_${decoder.clockSource}`)} · phase ${decoder.phasePixels.toFixed(1)} px · ${decoder.clockPpm.toFixed(1)} ppm · ${Math.round(decoder.clockConfidence * 100)}%`
 			: '—';
 	}
-	renderRadiofaxHistory(entry);
+	renderRadiofaxHistory();
+	renderRadiofaxPageDetails(page, entry);
 	for (const zoomButton of document.querySelectorAll<HTMLButtonElement>('[data-radiofax-zoom]')) {
 		zoomButton.classList.toggle('active', zoomButton.dataset.radiofaxZoom === radiofaxZoom);
 	}
@@ -1568,7 +1649,11 @@ export function setDecodeChannel(channel: DecodeChannel): void {
 	setSstvModeFilter(sstvViewMode);
 	setRadiofaxChannel(channel);
 	radiofaxFollow = radiofaxStatus().viewId === null;
-	radiofaxHistoryShape = '';
+	radiofaxHistoryInteracting = false;
+	radiofaxScrollPaused = false;
+	radiofaxSegmentId = null;
+	radiofaxViewedPageId = null;
+	radiofaxConfirmation = null;
 	syncOpen();
 	document.dispatchEvent(new CustomEvent('websa:decode-channel', { detail: { channel } }));
 }
@@ -1770,18 +1855,73 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	bindRadiofaxNumber('radiofax-clock-ppm', 'radiofax_clock_ppm');
 	button('radiofax-new-page')?.addEventListener('click', () => radiofaxConfig({ radiofax_new_page: true }));
 	button('radiofax-reset-correction')?.addEventListener('click', () => radiofaxConfig({ radiofax_reset_correction: true }));
-	button('radiofax-save')?.addEventListener('click', saveRadiofaxPng);
-	element('radiofax-history')?.addEventListener('change', () => {
-		const select = element('radiofax-history') as HTMLSelectElement;
-		radiofaxFollow = select.value === '';
-		setRadiofaxView(radiofaxFollow ? null : select.value);
+	button('radiofax-save')?.addEventListener('click', () => saveRadiofaxPng());
+	button('radiofax-save-page')?.addEventListener('click', () => saveRadiofaxPng(true));
+	const history = element('radiofax-history') as HTMLSelectElement | null;
+	for (const event of ['focus', 'pointerdown', 'keydown']) history?.addEventListener(event, () => { radiofaxHistoryInteracting = true; });
+	history?.addEventListener('blur', () => {
+		radiofaxHistoryInteracting = false;
+		renderRadiofaxHistory();
+	});
+	history?.addEventListener('change', () => {
+		radiofaxFollow = history.value === '';
+		radiofaxScrollPaused = false;
+		radiofaxSegmentId = null;
+		setRadiofaxView(radiofaxFollow ? null : history.value);
+		renderRadiofax();
+	});
+	const moveSegment = (offset: number): void => {
+		const page = radiofaxVisiblePage();
+		const entry = radiofaxViewedSegment(page);
+		if (!page || !entry) return;
+		const target = page.segments[page.segments.findIndex((segment) => segment.id === entry.id) + offset];
+		if (!target) return;
+		radiofaxFollow = false;
+		radiofaxSegmentId = target.id;
+		radiofaxScrollPaused = false;
+		setRadiofaxView(page.id);
+		const view = element('radiofax-view');
+		if (view) view.scrollTop = 0;
+		renderRadiofax();
+	};
+	button('radiofax-segment-prev')?.addEventListener('click', () => moveSegment(-1));
+	button('radiofax-segment-next')?.addEventListener('click', () => moveSegment(1));
+	const requestDelete = (pageId: string | null): void => {
+		radiofaxConfirmation = { channel: selectedChannel, pageId };
+		renderRadiofax();
+	};
+	button('radiofax-delete')?.addEventListener('click', () => { const page = radiofaxVisiblePage(); if (page) requestDelete(page.id); });
+	button('radiofax-clear')?.addEventListener('click', () => requestDelete(null));
+	button('radiofax-confirm-cancel')?.addEventListener('click', () => { radiofaxConfirmation = null; renderRadiofax(); });
+	button('radiofax-confirm-delete')?.addEventListener('click', () => {
+		if (!radiofaxConfirmation || radiofaxConfirmation.channel !== selectedChannel) return;
+		const pageId = radiofaxConfirmation.pageId;
+		radiofaxConfirmation = null;
+		history?.blur();
+		radiofaxHistoryInteracting = false;
+		const activity = element('radiofax-activity');
+		if (activity) activity.textContent = t('radiofax_deleting');
+		if (pageId) deleteRadiofaxPage(pageId);
+		else clearRadiofax();
+		radiofaxFollow = radiofaxStatus().viewId === null;
+		radiofaxSegmentId = null;
+		if (activity) activity.textContent = t(pageId ? 'radiofax_deleted' : 'radiofax_cleared');
+		renderRadiofax();
 	});
 	element('radiofax-view')?.addEventListener('scroll', () => {
 		const view = element('radiofax-view');
 		if (!view) return;
 		const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight <= 24;
-        if (atBottom) radiofaxFollow = true;
-        else if (radiofaxFollow) radiofaxFollow = false;
+		const page = radiofaxVisiblePage();
+		if (!atBottom && radiofaxFollow && page) {
+			radiofaxFollow = false;
+			radiofaxScrollPaused = true;
+			setRadiofaxView(page.id);
+		} else if (atBottom && radiofaxScrollPaused && page && radiofaxStatus().current?.id === radiofaxSegmentId) {
+			radiofaxFollow = true;
+			radiofaxScrollPaused = false;
+			setRadiofaxView(null);
+		}
 		const follow = button('radiofax-follow');
 		if (follow) {
 			follow.classList.toggle('active', radiofaxFollow && radiofaxStatus().viewId === null);
@@ -1796,6 +1936,7 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	});
 	button('radiofax-follow')?.addEventListener('click', () => {
 		radiofaxFollow = true;
+		radiofaxScrollPaused = false;
 		setRadiofaxView(null);
 		const view = element('radiofax-view');
 		if (view) view.scrollTop = view.scrollHeight;
@@ -1876,7 +2017,12 @@ export function initDecodeWindow(next: DecodeWindowHooks): void {
 	// there; the cached shapes would otherwise skip both.
 	sstvButtons = [];
 	sstvThumbsShape = '';
-	radiofaxHistoryShape = '';
+	radiofaxHistoryInteracting = false;
+	radiofaxScrollPaused = false;
+	radiofaxFollow = radiofaxStatus().viewId === null;
+	radiofaxSegmentId = null;
+	radiofaxViewedPageId = null;
+	radiofaxConfirmation = null;
 	renderContent();
 	setOpen(false);
 }

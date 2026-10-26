@@ -18,5 +18,9 @@ Local integration changes:
 - Limited FaxEncoder, FaxEncodeOptions, encode_fax and Oscillator to cfg(test).
 - Moved upstream fax.rs, fax_streaming.rs and fax_paper.rs tests into local unit-test modules and adjusted imports; replaced the static_assertions helper with a local generic assertion.
 - FrequencyDemodulator rejects low vectors relative to the recent input envelope instead of a fixed 0.0005 full-scale threshold. This preserves FM phase differences at weak SDR input levels without applying gain to signal or noise.
+- `FaxDecoder::advance_erasure` and `FaxPaperDecoder::advance_erasure` advance the
+  existing resampler and raster deadlines through receiver-declared RF fades without
+  demodulation, APT/phasing or image-timing learning. Intersecting rows are explicitly
+  marked `Erased`; the adapter paints their final corrected output neutral Gray8=128.
 
 No third-party dependencies are required.

@@ -447,6 +447,11 @@ pub struct RadiofaxImageMeta {
     pub partial: bool,
     pub segment_index: u32,
     pub transmission_id: u64,
+    /// Cumulative sorted unique local row indices that were erased in this
+    /// segment. Every index is strictly less than `lines`.
+    pub missing_rows: Vec<u32>,
+    /// Why the current page is partial, degraded, or closed. `None` while reception is ordinary.
+    pub reason: Option<String>,
 }
 
 /// One corrected Gray8 row span. `gray` is tightly packed and exactly `width * rows` bytes.

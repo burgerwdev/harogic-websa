@@ -7,7 +7,7 @@ import { addFt8Spot, clearFt8Spots, setFt8DecoderState } from './ft8Log';
 import { addCwText, clearCwLog, setCwLevel } from './cwLog';
 import { clearDrm, setDrmDecode, setDrmConstellation } from './drmLog';
 import { clearSstv, setSstvDecoderState, updateSstvPicture } from './sstvLog';
-import { appendRadiofaxRows, clearRadiofax, endRadiofaxStream, setRadiofaxDecoderState } from './radiofaxLog';
+import { appendRadiofaxRows, endRadiofaxStream, parseRadiofaxTransmissionId, setRadiofaxDecoderState } from './radiofaxLog';
 import type { DecodeEnvelope, ReceiverEvent } from './decodeProtocol';
 import type { Ft8Report } from './types';
 
@@ -184,15 +184,19 @@ function consumeRadiofaxImage(d: ReceiverEvent, identity: string, channel: 1 | 2
   const meta = d.meta;
   if (!meta || (typeof meta.serial !== 'string' && typeof meta.serial !== 'number')
     || (typeof meta.epoch !== 'string' && typeof meta.epoch !== 'number')
-    || (typeof meta.transmissionId !== 'string' && typeof meta.transmissionId !== 'number')
+    || typeof meta.transmissionId !== 'string'
     || (meta.hz !== null && (typeof meta.hz !== 'number' || !Number.isFinite(meta.hz)))
     || typeof meta.ioc !== 'number' || !Number.isFinite(meta.ioc)
     || typeof meta.lpm !== 'number' || !Number.isFinite(meta.lpm) || meta.lpm <= 0
-    || typeof meta.lines !== 'number' || !Number.isInteger(meta.lines) || meta.lines < 0
+    || typeof meta.lines !== 'number' || !Number.isInteger(meta.lines) || meta.lines !== row + rows || meta.lines > 2400
     || typeof meta.complete !== 'boolean' || typeof meta.partial !== 'boolean'
+    || !Array.isArray(meta.missingRows) || meta.missingRows.some((value, index, list) =>
+      !Number.isInteger(value) || value < 0 || value >= Number(meta.lines) || (index > 0 && value <= list[index - 1]))
+    || (meta.reason !== null && typeof meta.reason !== 'string')
     || typeof meta.segmentIndex !== 'number' || !Number.isInteger(meta.segmentIndex) || meta.segmentIndex < 0) {
     throw new Error('Invalid radiofax picture metadata');
   }
+  parseRadiofaxTransmissionId(meta.transmissionId);
   if (typeof d.gray !== 'string') throw new Error('Invalid radiofax pixels');
   let bytes: Uint8Array;
   try {
@@ -200,10 +204,16 @@ function consumeRadiofaxImage(d: ReceiverEvent, identity: string, channel: 1 | 2
     bytes = Uint8Array.from(decoded, (c) => c.charCodeAt(0));
   } catch { throw new Error('Invalid radiofax pixels'); }
   if (bytes.length !== width * rows) throw new Error('Invalid radiofax pixel count');
+  for (const missing of meta.missingRows) {
+    if (missing < row || missing >= row + rows) continue;
+    const start = (missing - row) * width;
+    if (bytes.subarray(start, start + width).some((value) => value !== 128)) throw new Error('Invalid radiofax missing row pixels');
+  }
   appendRadiofaxRows({ width, row, rows, gray: bytes, revision }, {
     serial: String(meta.serial), epoch: String(meta.epoch), hz: meta.hz, ioc: meta.ioc, lpm: meta.lpm,
     lines: meta.lines, complete: meta.complete, partial: meta.partial,
-    segmentIndex: meta.segmentIndex, transmissionId: String(meta.transmissionId),
+    segmentIndex: meta.segmentIndex, transmissionId: meta.transmissionId,
+    missingRows: meta.missingRows, reason: meta.reason,
   }, `${identity}:${String(meta.epoch)}`, channel);
 }
 export function consumeDecode(envelope: DecodeEnvelope): void {
@@ -367,7 +377,7 @@ export function resetSdrIq(): void {
   pictures.clear();
   for (const channel of [1, 2, 3] as const) {
     clearFt8Spots(channel); clearCwLog(channel); clearDrm(channel); clearSstv(channel);
-    clearRadiofax(channel);
+    endRadiofaxStream(channel);
     setWfmInfo(null, channel); setAmInfo(null, channel); setFt8DecoderState(null, channel);
     setDecodeError(channel, failedRegistry === null ? null : lastError);
   }

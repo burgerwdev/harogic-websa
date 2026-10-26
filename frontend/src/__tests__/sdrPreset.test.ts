@@ -17,7 +17,7 @@ import { allParams, resetAll } from '../core/params';
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
 import { updateStatus } from '../core/ws';
-import { presetAll } from '../ui/controls';
+import { presetAll, syncPresetStatus } from '../ui/controls';
 import { resetGraphMode } from '../ui/graphMode';
 import { resetSdrState, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDemod, sdrFilterByMode, sdrIfbw, sdrListenHz } from '../ui/sdrState';
 import { resetTraceFamilyModes, SDR_DEFAULT_AVG, setTraceAverage, setTraceMode } from '../ui/traceOps';
@@ -25,6 +25,7 @@ import { getView, isZoomed, setCapture, setView } from '../ui/spectrumViewport';
 import { commitRefLevel } from '../ui/panels/refAmp';
 import { getDisplayRef } from '../ui/displayRef';
 import { getY } from '../render/plot';
+import { appendRadiofaxRows, radiofaxStatus, setRadiofaxChannel } from '../sdr/radiofaxLog';
 
 const sdrPersisted = (): string[] =>
 	Object.keys(localStorage).filter((k) => k.startsWith('web-sa-sdr-'));
@@ -42,6 +43,22 @@ afterEach(() => {
 });
 
 describe('Preset clears the persisted SDR preferences', () => {
+	it('clears retained fax paper only after its matching successful Preset acknowledgement', () => {
+		setRadiofaxChannel(1);
+		appendRadiofaxRows({ width: 1, row: 0, rows: 1, gray: Uint8Array.of(64), revision: 0 }, {
+			serial: 'preset', epoch: 'meta', hz: 9_110_000, ioc: 576, lpm: 120, lines: 1, complete: false,
+			partial: false, segmentIndex: 0, transmissionId: '1', missingRows: [], reason: null,
+		}, 'preset-stream');
+		presetAll();
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		expect(radiofaxStatus().pages).toHaveLength(1);
+		syncPresetStatus('SET_PRESET', 'unrelated');
+		expect(radiofaxStatus().pages).toHaveLength(1);
+		syncPresetStatus('SET_PRESET', request.request_id);
+		expect(radiofaxStatus().pages).toEqual([]);
+		expect(radiofaxStatus().current).toBeNull();
+		expect(radiofaxStatus().bytes).toBe(0);
+	});
 	it('every sdr-scope slot that persists leaves no storage behind', () => {
 		// Write through every sdr slot the way the app does. Types differ per slot, so the
 		// writes are deliberately untyped: the test only needs the persistence side effect.

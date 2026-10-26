@@ -179,7 +179,7 @@ describe('native decoded stream boundaries', () => {
     stream.accept(frame({ mode: 'cw' }));
     expect(() => stream.accept(frame({ mode: 'radiofax', seq: 1, event: { type: 'radiofax-state', running: true,
       stage: 'searching', lines: 0, clockStatus: 'nominal', clockSource: 'nominal', modulation: 'fm', polarity: 'normal',
-      clockConfidence: 0 } }))).toThrow(/mode changed/);
+      clockConfidence: 0, reason: null } }))).toThrow(/mode changed/);
     stream.accept(frame({ channel_id: 18, mode: 'radiofax' }));
     const state: DecodeEnvelope['event'] = { type: 'radiofax-state', running: true, stage: 'receiving', hasPicture: true,
       signalLevel: 0.4, carrierCoherence: 0.8, ioc: 576, lpm: 120, modulation: 'fm', polarity: 'normal', width: 1810,
@@ -192,6 +192,25 @@ describe('native decoded stream boundaries', () => {
       expect(() => stream.accept(frame({ channel_id: 18, mode: 'radiofax', seq: 2,
         event: { ...state, ...bad } as unknown as DecodeEnvelope['event'] }))).toThrow();
     }
+  });
+  it('requires explicit radiofax missing rows and nullable reason on the wire', () => {
+    const meta = { serial: '1', epoch: 'meta', hz: null, ioc: 576, lpm: 120, lines: 3,
+      complete: false, partial: false, segmentIndex: 0, transmissionId: '1', missingRows: [1], reason: null };
+    const event = { type: 'radiofax-image', width: 1, row: 0, rows: 3, revision: 0, gray: 'AYAC', meta };
+    const stream = new DecodeSequence();
+    stream.accept(frame({ mode: 'radiofax' }));
+    expect(stream.accept(frame({ mode: 'radiofax', seq: 1, event })).event.meta!.missingRows).toEqual([1]);
+    for (const extra of [{ missingRows: undefined }, { reason: undefined }, { missingRows: [1, 1] },
+      { missingRows: [2, 1] }, { missingRows: [-1] }, { missingRows: [3] }, { missingRows: [0.5] }, { reason: false }]) {
+      expect(() => stream.accept(frame({ mode: 'radiofax', seq: 2,
+        event: { ...event, meta: { ...meta, ...extra } } as DecodeEnvelope['event'] }))).toThrow(/metadata/);
+    }
+    for (const transmissionId of ['fax', '', '01', '-1', '1.0', '18446744073709551616', 1, Number.MAX_SAFE_INTEGER + 1, null, undefined]) {
+      expect(() => stream.accept(frame({ mode: 'radiofax', seq: 2,
+        event: { ...event, meta: { ...meta, transmissionId } } as DecodeEnvelope['event'] }))).toThrow(/transmission id/);
+    }
+    expect(stream.accept(frame({ mode: 'radiofax', seq: 2,
+      event: { ...event, meta: { ...meta, transmissionId: '18446744073709551615' } } })).event.meta!.transmissionId).toBe('18446744073709551615');
   });
   it('accepts radiofax rows and NR status together while keeping DRM text rows strict', () => {
     const stream = new DecodeSequence();
@@ -397,6 +416,102 @@ describe('native decoded stream boundaries', () => {
       expect(messages.at(-1)?.envelopes?.[0].channel_id).toBe(18);
     } finally { vi.unstubAllGlobals(); }
   });
+  it('acknowledges only host-applied sequences independently per channel', async () => {
+    const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message) };
+    class Socket {
+      static current: Socket;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      sent: unknown[] = [];
+      constructor(readonly url: string) { Socket.current = this; }
+      send(text: string): void { this.sent.push(JSON.parse(text)); }
+      close(): void {}
+    }
+    vi.resetModules();
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      // Worker initialization binds self, which must be installed before this module loads.
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode?channel=1' } });
+      const socket = Socket.current;
+      expect(socket.url).toBe('ws://localhost/ws/decode?channel=1&ack=1');
+      socket.onmessage!({ data: frame() });
+      socket.onmessage!({ data: frame({ seq: 1, event: { type: 'cw' } }) });
+      socket.onmessage!({ data: frame({ channel: 2, channel_id: 18 }) });
+      socket.onmessage!({ data: frame({ seq: 2, event: { type: 'cw' } }) });
+      expect(socket.sent).toEqual([]);
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(socket.sent).toEqual([{ type: 'ack', channel: 1, epoch: 9, seq: 0 }]);
+      expect(messages[1].envelopes?.map((item) => [item.channel, item.seq])).toEqual([[1, 1], [2, 0], [1, 2]]);
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(socket.sent.slice(1)).toEqual([{ type: 'ack', channel: 1, epoch: 9, seq: 2 },
+        { type: 'ack', channel: 2, epoch: 9, seq: 0 }]);
+      host.onmessage!({ data: { type: 'ack' } });
+      expect(socket.sent).toHaveLength(3);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('applies a retained 20 MiB radiofax snapshot with bounded outstanding transport credit', async () => {
+    vi.resetModules();
+    // Reset stream/store ownership to model a fresh browser before loading the worker host.
+    const stream = await import('../sdr/iqStream');
+    const store = await import('../sdr/radiofaxLog');
+    const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
+    const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
+      postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message) };
+    class Socket {
+      static current: Socket;
+      onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
+      applied: number | null = null;
+      constructor() { Socket.current = this; }
+      send(text: string): void {
+        const ack = JSON.parse(text);
+        expect(ack).toMatchObject({ type: 'ack', channel: 1, epoch: 9 });
+        expect(typeof ack.seq).toBe('number');
+        this.applied = ack.seq;
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('self', host);
+    vi.stubGlobal('WebSocket', Socket);
+    try {
+      // Worker initialization binds the browser globals installed above.
+      await import('../sdr/decodeWorker');
+      host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
+      const socket = Socket.current;
+      const apply = (packet: ArrayBuffer, seq: number): void => {
+        expect(packet.byteLength).toBeLessThan(2 * 1024 * 1024);
+        socket.onmessage!({ data: packet });
+        expect(socket.applied).toBe(seq === 0 ? null : seq - 1);
+        const delivered = messages.pop()!;
+        expect(delivered.type).toBe('frames');
+        for (const envelope of delivered.envelopes!) stream.consumeDecode(envelope);
+        host.onmessage!({ data: { type: 'ack' } });
+        expect(socket.applied).toBe(seq);
+      };
+      apply(frame({ mode: 'radiofax' }), 0);
+      const pixels = btoa(String.fromCharCode(81).repeat(1810 * 64));
+      let seq = 0;
+      for (let segmentIndex = 0; segmentIndex < 5; segmentIndex++) {
+        const lines = segmentIndex === 4 ? 1986 : 2400;
+        for (let row = 0; row < lines; row += 64) {
+          const rows = Math.min(64, lines - row);
+          apply(frame({ mode: 'radiofax', seq: ++seq, event: { type: 'radiofax-image', width: 1810, row, rows,
+            gray: rows === 64 ? pixels : btoa(String.fromCharCode(81).repeat(1810 * rows)), revision: 1,
+            meta: { serial: String(segmentIndex), epoch: 'paper', hz: 9_110_000, ioc: 576, lpm: 120,
+              lines: row + rows, complete: false, partial: false, segmentIndex, transmissionId: '1',
+              missingRows: [], reason: null } } }), seq);
+        }
+      }
+      expect(messages).toEqual([]);
+      const page = store.radiofaxStatus().pages[0];
+      expect(page.segments).toHaveLength(5);
+      expect(page.lines).toBe(11586);
+      expect(page.segments.reduce((bytes, segment) => bytes + segment.picture.gray.length, 0)).toBe(20_970_660);
+      expect(store.radiofaxStatus().evicted).toBe(0);
+    } finally { vi.unstubAllGlobals(); }
+  }, 20_000);
   it('drains every queued decoded event in FIFO batches without waiting one round trip per event', async () => {
     const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
@@ -404,6 +519,7 @@ describe('native decoded stream boundaries', () => {
     let receive: ((event: { data: ArrayBuffer }) => void) | null = null;
     class Socket {
       set onmessage(callback: (event: { data: ArrayBuffer }) => void) { receive = callback; }
+      send(): void {}
       close(): void {}
     }
     vi.resetModules();

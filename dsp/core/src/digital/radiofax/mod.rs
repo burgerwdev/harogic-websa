@@ -38,6 +38,11 @@ const MINIMUM_CARRIER_CONCENTRATION: f32 = 0.6;
 // AM black can suppress the carrier for almost a full 60 LPM phasing line.
 // Match the paper decoder's default loss timeout without inventing signal power.
 const AM_SIGNAL_LOSS_SECONDS: f64 = 2.5;
+// 4.5 s spans nine 120 LPM lines and exceeds a 3 s fade plus the 0.3 s
+// recovery gate. The 0.3 s gate spans six 600-sample decisions and exceeds
+// the 0.2 s level EMA; neither signal threshold is relaxed.
+const FM_SIGNAL_LOSS_SECONDS: f64 = 4.5;
+const FM_RECOVERY_SECONDS: f64 = 0.3;
 const LEVEL_TIME_SECONDS: f64 = 0.2;
 const PHASE_LIMIT: f32 = 4_096.0;
 const PPM_LIMIT: f32 = 5_000.0;
@@ -64,6 +69,8 @@ struct Segment {
     dirty_from: u32,
     complete: bool,
     partial: bool,
+    missing_rows: Vec<u32>,
+    reason: Option<String>,
     closed: bool,
 }
 
@@ -85,6 +92,9 @@ pub struct RadiofaxPlugin {
     carrier_energy: f64,
     signal_present: bool,
     am_hold_samples: u64,
+    fade_samples: u64,
+    recovery_samples: u64,
+    erasing: bool,
     observed_ioc: Option<u16>,
     observed_lpm: Option<u16>,
     clock_status: FaxClockStatus,
@@ -134,6 +144,9 @@ impl RadiofaxPlugin {
             carrier_energy: 0.0,
             signal_present: false,
             am_hold_samples: 0,
+            fade_samples: 0,
+            recovery_samples: 0,
+            erasing: false,
             observed_ioc: None,
             observed_lpm: None,
             clock_status: FaxClockStatus::Nominal,
@@ -187,24 +200,28 @@ impl RadiofaxPlugin {
             dirty_from: 0,
             complete: false,
             partial: false,
+            missing_rows: Vec::new(),
+            reason: None,
             closed: false,
         });
-        self.page_started = Some(self.elapsed_samples);
+        if transmission.is_none() { self.page_started = Some(self.elapsed_samples); }
         self.page_complete = false;
         self.page_partial = false;
-        self.stage = if trusted { "receiving" } else { "fallback" };
+        self.stage = if self.erasing { "degraded" } else if trusted { "receiving" } else { "fallback" };
     }
 
     fn close_active(&mut self, partial: bool, complete: bool) {
-        if let Some(segment) = self.active_mut() {
-            if !segment.lines.is_empty() || complete {
+        if let Some(transmission) = self.active_mut().map(|segment| segment.transmission_id) {
+            for segment in &mut self.segments {
+                if segment.transmission_id != transmission { continue; }
                 segment.partial = partial;
                 segment.complete = complete;
                 segment.closed = true;
-                segment.revision += 1;
-                segment.dirty_from = 0;
-            } else {
-                segment.closed = true;
+                segment.reason = if complete { Some("apt_stop".into()) } else { self.reason.clone() };
+                if !segment.lines.is_empty() {
+                    segment.revision += 1;
+                    segment.dirty_from = 0;
+                }
             }
         }
         self.page_complete = complete;
@@ -213,6 +230,18 @@ impl RadiofaxPlugin {
             self.stage = "complete";
         } else if partial {
             self.stage = "partial";
+        }
+    }
+    fn terminal_reason(&mut self, reason: &str) {
+        self.reason = Some(reason.into());
+        if let Some(transmission) = self.segments.iter().rev()
+            .find(|segment| !segment.lines.is_empty()).map(|segment| segment.transmission_id)
+        {
+            for segment in &mut self.segments {
+                if segment.transmission_id == transmission && segment.closed {
+                    segment.reason = Some(reason.into());
+                }
+            }
         }
     }
 
@@ -237,6 +266,7 @@ impl RadiofaxPlugin {
                         }
                         PaperBoundaryKind::AptPhasing => {
                             self.close_active(self.active_has_lines(), false);
+                            self.terminal_reason("new_header");
                             self.begin_segment(spec, boundary_id, trusted, None, line_index);
                             self.phasing_seen = true;
                             self.stage = "receiving";
@@ -249,11 +279,9 @@ impl RadiofaxPlugin {
                             let had = self.active_has_lines();
                             self.close_active(had, false);
                             if had {
-                                self.reason = Some(if kind == PaperBoundaryKind::Reset {
+                                self.terminal_reason(if kind == PaperBoundaryKind::Reset {
                                     "new_page"
-                                } else {
-                                    "signal_lost"
-                                }.into());
+                                } else { "signal_lost" });
                             }
                             self.begin_segment(spec, boundary_id, false, None, line_index);
                             self.stage = if had { "partial" } else { "searching" };
@@ -270,8 +298,8 @@ impl RadiofaxPlugin {
                 }
                 FaxPaperEvent::ClockCalibration { boundary_id, calibration, .. } => {
                     self.note_clock(calibration);
-                    if let Some(segment) = self.segments.iter_mut().rev().find(|segment| {
-                        segment.boundary_id == boundary_id && !segment.closed
+                    for segment in self.segments.iter_mut().filter(|segment| {
+                        segment.boundary_id == boundary_id
                     }) {
                         segment.controls.push(calibration);
                         segment.dirty_from = 0;
@@ -322,11 +350,11 @@ impl RadiofaxPlugin {
         self.clock_confidence = point.confidence;
     }
 
-    fn store_line(&mut self, boundary: u64, line_index: u64, spec: FaxSpec, pixels: Vec<u8>, basis: FaxRasterBasis) -> Result<(), String> {
+    fn store_line(&mut self, boundary: u64, line_index: u64, spec: FaxSpec, mut pixels: Vec<u8>, basis: FaxRasterBasis) -> Result<(), String> {
         if pixels.len() != spec.width() as usize {
             return Err("radiofax row width does not match IOC".into());
         }
-        if !self.signal_present && self.am_hold_samples == 0 {
+        if !self.signal_present && self.am_hold_samples == 0 && !self.erasing {
             return Ok(());
         }
         let needs_new = self.segments.iter().rev().find(|segment| segment.boundary_id == boundary && !segment.closed)
@@ -338,7 +366,7 @@ impl RadiofaxPlugin {
                 .map_or((None, false), |(id, trusted)| (Some(id), trusted));
             if let Some(segment) = self.segments.iter_mut().rev().find(|segment| !segment.closed) {
                 segment.closed = true;
-                segment.partial = true;
+                segment.partial = false;
                 segment.revision += 1;
                 segment.dirty_from = 0;
             }
@@ -347,12 +375,13 @@ impl RadiofaxPlugin {
                 .map(|segment| segment.controls.clone()).unwrap_or_default();
             self.begin_segment(spec, boundary, trusted, transmission, line_index);
             if let Some(segment) = self.active_mut() { segment.controls = controls; }
-            if transmission.is_some() {
-                self.reason = Some("segment_limit".into());
-            }
         }
         let segment = self.segments.iter_mut().rev().find(|segment| segment.boundary_id == boundary && !segment.closed)
             .ok_or("radiofax row has no open segment")?;
+        if basis == FaxRasterBasis::Erased {
+            pixels.fill(128);
+            segment.missing_rows.push(segment.lines.len() as u32);
+        }
         segment.lines.push(RawLine { pixels, basis });
         self.observed_ioc = Some(spec.ioc.value());
         self.observed_lpm = Some(spec.lpm.get());
@@ -368,17 +397,16 @@ impl RadiofaxPlugin {
             clock_ppm: self.config.clock_ppm,
         };
         for segment in &mut self.segments {
-            if segment.closed && segment.corrected.len() == segment.lines.len() * segment.width as usize { continue; }
             if segment.dirty_from as usize >= segment.lines.len() { continue; }
             let width = segment.width as usize;
             let height = segment.lines.len();
             let mut raw = Vec::with_capacity(width * height);
             let mut nominal = true;
             for line in &segment.lines {
-                if line.basis != FaxRasterBasis::NominalPaper { nominal = false; }
+                if line.basis == FaxRasterBasis::Calibrated { nominal = false; }
                 raw.extend_from_slice(&line.pixels);
             }
-            let corrected = if nominal && (!segment.controls.is_empty()
+            let mut corrected = if nominal && (!segment.controls.is_empty()
                 || adjustment.phase_pixels != 0.0 || adjustment.clock_ppm != 0.0)
             {
                 correct_fax_paper(&raw, segment.width, height as u32, segment.first_line, &segment.controls, adjustment)
@@ -386,6 +414,9 @@ impl RadiofaxPlugin {
             } else {
                 raw
             };
+            for &row in &segment.missing_rows {
+                corrected[row as usize * width..(row as usize + 1) * width].fill(128);
+            }
             if corrected != segment.corrected {
                 let previous = segment.corrected.len().min(corrected.len());
                 if corrected[..previous] != segment.corrected[..previous] {
@@ -429,6 +460,9 @@ impl RadiofaxPlugin {
         self.carrier_coherence = 0.0;
         self.signal_present = false;
         self.am_hold_samples = 0;
+        self.fade_samples = 0;
+        self.recovery_samples = 0;
+        self.erasing = false;
     }
 }
 
@@ -588,6 +622,40 @@ impl DigitalDemodulator for RadiofaxPlugin {
             self.update_level(start, end);
             let samples = (end - start) as u64;
             self.elapsed_samples += samples;
+            if self.config.modulation == "fm" {
+                let holding = self.fade_samples != 0;
+                if (!self.signal_present && self.active_has_lines()) || holding {
+                    self.fade_samples += samples;
+                    self.recovery_samples = if self.signal_present {
+                        self.recovery_samples + samples
+                    } else { 0 };
+                    if self.recovery_samples >= (DECODE_RATE_HZ * FM_RECOVERY_SECONDS) as u64 {
+                        self.fade_samples = 0;
+                        self.recovery_samples = 0;
+                        self.reason = None;
+                        self.stage = if self.phasing_seen { "receiving" } else { "fallback" };
+                    } else if self.fade_samples >= (DECODE_RATE_HZ * FM_SIGNAL_LOSS_SECONDS) as u64 {
+                        let mut events = Vec::new();
+                        let result = self.decoder.mark_signal_lost(
+                            &mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned()))
+                            .map_err(|error| error.to_string()).and_then(|_| self.absorb(events));
+                        self.fade_samples = 0;
+                        self.recovery_samples = 0;
+                        if let Err(error) = result { self.fatal = Some(error); break; }
+                        continue;
+                    } else {
+                        self.stage = "degraded";
+                        self.reason = Some("signal_fade".into());
+                        self.erasing = true;
+                        let mut events = Vec::new();
+                        let result = self.decoder.advance_erasure(samples as usize, &mut events)
+                            .map_err(|error| error.to_string()).and_then(|_| self.absorb(events));
+                        self.erasing = false;
+                        if let Err(error) = result { self.fatal = Some(error); break; }
+                        continue;
+                    }
+                }
+            }
             if self.config.modulation == "am" {
                 if self.signal_present {
                     self.am_hold_samples = (DECODE_RATE_HZ * AM_SIGNAL_LOSS_SECONDS) as u64;
@@ -596,7 +664,7 @@ impl DigitalDemodulator for RadiofaxPlugin {
                 }
             }
             let accepting = self.signal_present || self.am_hold_samples != 0;
-            if (was_present || was_held) && !accepting {
+            if self.config.modulation == "am" && (was_present || was_held) && !accepting {
                 let mut events = Vec::new();
                 if let Err(error) = self.decoder.mark_signal_lost(&mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned()))
                     .map_err(|error| error.to_string()).and_then(|_| self.absorb(events))
@@ -665,7 +733,7 @@ impl RadiofaxControl for RadiofaxPlugin {
             width: segment.map(|item| item.width).unwrap_or(0),
             lines: segment.map(|item| item.lines.len() as u32).unwrap_or(0),
             elapsed_seconds: elapsed,
-            clock_status: clock_name(self.clock_status),
+            clock_status: if self.fade_samples != 0 { "degraded" } else { clock_name(self.clock_status) },
             clock_source: reported_source,
             phase_pixels: self.clock_phase + self.config.phase_pixels,
             clock_ppm: self.clock_ppm + self.config.clock_ppm,
@@ -702,15 +770,20 @@ impl RadiofaxControl for RadiofaxPlugin {
                         partial: segment.partial,
                         segment_index: segment.segment_index,
                         transmission_id: segment.transmission_id,
+                        missing_rows: segment.missing_rows.iter().copied()
+                            .take_while(|missing| *missing < row + rows).collect(),
+                        reason: segment.reason.clone(),
                     },
                 });
                 row += rows;
             }
             segment.dirty_from = lines;
         }
-        // Closed rasters have been handed to the receiver/browser; retain only
-        // bounded recent history in the DSP rather than every transmission.
-        while self.segments.len() > 3 && self.segments[0].closed {
+        // Retain up to 20 MiB raw Gray8, matching the snapshot/browser suffix.
+        // Corrected rasters add at most another 20 MiB for the same retained rows.
+        while self.segments.iter().map(|segment| segment.lines.len() * segment.width as usize)
+            .sum::<usize>() > 20 * 1024 * 1024
+            && self.segments.first().is_some_and(|segment| segment.closed) {
             self.segments.remove(0);
         }
         spans
@@ -723,7 +796,7 @@ impl RadiofaxControl for RadiofaxPlugin {
         if protocol_changed(&self.config, config) || new_page {
             let had = self.active_has_lines();
             self.close_active(had, false);
-            if had { self.reason = Some(if new_page { "new_page" } else { "reconfigured" }.into()); }
+            if had { self.terminal_reason(if new_page { "new_page" } else { "reconfigured" }); }
             self.config = config.clone();
             self.decoder = paper_decoder(config)?;
             self.clear_signal_continuity();
@@ -741,7 +814,7 @@ impl RadiofaxControl for RadiofaxPlugin {
             self.config.phase_pixels = config.phase_pixels;
             self.config.clock_ppm = config.clock_ppm;
             for segment in &mut self.segments {
-                if !segment.closed { segment.dirty_from = 0; }
+                segment.dirty_from = 0;
             }
             self.correct_open_segments()?;
         }
@@ -758,7 +831,7 @@ impl RadiofaxControl for RadiofaxPlugin {
         self.absorb(events)?;
         if had && !self.page_complete {
             self.close_active(true, false);
-            self.reason = Some("eof".into());
+            self.terminal_reason("eof");
             self.stage = "partial";
         }
         Ok(())
@@ -766,12 +839,19 @@ impl RadiofaxControl for RadiofaxPlugin {
 
     fn mark_discontinuity(&mut self) -> Result<(), String> {
         if self.input_finished { return Ok(()); }
+        let had_picture = self.active_has_lines();
         self.clear_signal_continuity();
         let mut events = Vec::new();
         self.decoder.mark_signal_lost(&mut |event: FaxPaperEventRef<'_>| events.push(event.to_owned()))
             .map_err(|error| error.to_string())?;
         self.absorb(events)?;
-        if self.page_partial { self.reason = Some("discontinuity".into()); }
+        // Absorbing the boundary opens an empty candidate segment, which resets
+        // page_partial. The retiring page still needs the explicit IQ-gap reason.
+        if had_picture {
+            self.page_partial = true;
+            self.stage = "partial";
+            self.terminal_reason("discontinuity");
+        }
         Ok(())
     }
 }
@@ -783,7 +863,106 @@ mod tests {
     use vendor::fax::{encode_fax, FaxEncodeOptions, FaxEncoder};
     use vendor::GrayImage;
 
+    #[test]
+    fn iq_discontinuity_during_a_fade_closes_immediately() {
+        let mut fax = plugin();
+        fax.process_iq(&tone_block(0, 36_000, 3.0e-5, 1900.0));
+        let transmission = fax.take_radiofax_spans()[0].meta.transmission_id;
+        fax.process_iq(&vec![0.0; 12_000 * 2]);
+        assert_eq!(fax.radiofax_state().stage, "degraded");
+        fax.mark_discontinuity().unwrap();
+        let terminal = fax.take_radiofax_spans();
+        assert!(terminal.iter().all(|span| span.meta.transmission_id == transmission
+            && span.meta.partial && span.meta.reason.as_deref() == Some("discontinuity")));
+        assert_eq!(fax.fade_samples, 0);
+        fax.process_iq(&tone_block(0, 24_000, 3.0e-5, 1900.0));
+        assert!(fax.take_radiofax_spans().iter().any(|span|
+            span.row == 0 && span.meta.transmission_id != transmission));
+    }
     fn plugin() -> RadiofaxPlugin { RadiofaxPlugin::new(DECODE_RATE_HZ) }
+
+    #[test]
+    fn fm_fades_keep_transmission_clock_and_neutral_missing_rows() {
+        for seconds in [1, 3] {
+            let mut fax = plugin();
+            fax.process_iq(&tone_block(0, 36_000, 3.0e-5, 1900.0));
+            let before = fax.take_radiofax_spans();
+            let serial = before[0].meta.serial;
+            let transmission = before[0].meta.transmission_id;
+            let last_line = before.last().unwrap().meta.lines;
+            let clock = (fax.clock_phase, fax.clock_ppm);
+            fax.process_iq(&vec![0.0; seconds * 12_000 * 2]);
+            assert_eq!(fax.radiofax_state().stage, "degraded");
+            assert_eq!(fax.radiofax_state().clock_status, "degraded");
+            assert_eq!((fax.clock_phase, fax.clock_ppm), clock);
+            fax.process_iq(&tone_block(0, 1_200, 3.0e-5, 1900.0));
+            assert_eq!(fax.radiofax_state().stage, "degraded", "brief carrier must not release the hold");
+            fax.process_iq(&tone_block(1_200, 24_000, 3.0e-5, 1900.0));
+            let after = fax.take_radiofax_spans();
+            assert!(after.iter().all(|span| span.meta.serial == serial
+                && span.meta.transmission_id == transmission && !span.meta.partial));
+            let meta = &after.last().unwrap().meta;
+            assert!(meta.lines >= last_line + seconds as u32 * 2 + 3,
+                "recovered rows must retain the lost sample time");
+            assert!(meta.missing_rows.len() >= seconds * 2 - 1);
+            for span in &after {
+                assert!(span.meta.missing_rows.windows(2).all(|pair| pair[0] < pair[1]));
+                for row in &span.meta.missing_rows {
+                    assert!(*row < span.meta.lines);
+                    if *row >= span.row && *row < span.row + span.rows {
+                        let offset = (*row - span.row) as usize * span.width as usize;
+                        assert!(span.gray[offset..offset + span.width as usize].iter().all(|p| *p == 128));
+                    }
+                }
+            }
+            assert_ne!(fax.radiofax_state().stage, "degraded");
+            assert_ne!(fax.radiofax_state().clock_source, "phasing");
+        }
+    }
+
+    #[test]
+    fn sustained_fm_loss_is_bounded_and_recovery_starts_a_transmission() {
+        let mut fax = plugin();
+        fax.process_iq(&tone_block(0, 36_000, 3.0e-5, 1900.0));
+        let transmission = fax.take_radiofax_spans()[0].meta.transmission_id;
+        fax.process_iq(&vec![0.0; 12_000 * 2 * 7]);
+        let closed = fax.take_radiofax_spans();
+        assert!(closed.iter().any(|span| span.meta.partial
+            && span.meta.reason.as_deref() == Some("signal_lost")));
+        assert!(closed.last().unwrap().meta.lines < 18, "loss must stop printing");
+        fax.process_iq(&vec![0.0; 12_000 * 2 * 7]);
+        assert!(fax.take_radiofax_spans().is_empty());
+        fax.process_iq(&tone_block(0, 24_000, 3.0e-5, 1900.0));
+        assert!(fax.take_radiofax_spans().iter().any(|span|
+            span.row == 0 && span.meta.transmission_id != transmission));
+    }
+
+    #[test]
+    fn storage_segment_limit_keeps_logical_page_and_local_erasure_indices() {
+        let mut fax = plugin();
+        let spec = FaxSpec::standard(FaxIoc::Ioc288, FaxLpm::LPM_120);
+        fax.signal_present = true;
+        fax.begin_segment(spec, 9, false, None, 0);
+        let transmission = fax.segments[0].transmission_id;
+        for line in 0..2_402 {
+            let basis = if line == 2_400 { FaxRasterBasis::Erased } else { FaxRasterBasis::NominalPaper };
+            fax.store_line(9, line, spec, vec![200; spec.width() as usize], basis).unwrap();
+        }
+        fax.config.phase_pixels = 17.5;
+        fax.config.clock_ppm = 500.0;
+        fax.correct_open_segments().unwrap();
+        let spans = fax.take_radiofax_spans();
+        assert!(spans.iter().all(|span| span.meta.transmission_id == transmission
+            && !span.meta.partial && !span.meta.complete && span.meta.reason.is_none()));
+        let tail = spans.iter().find(|span| span.meta.segment_index == 1).unwrap();
+        assert_eq!(tail.meta.missing_rows, vec![0]);
+        assert!(tail.gray[..spec.width() as usize].iter().all(|pixel| *pixel == 128));
+        assert!(spans.iter().any(|span| span.meta.segment_index == 0 && span.meta.lines == 2_400));
+        fax.close_active(true, false);
+        fax.terminal_reason("discontinuity");
+        assert!(fax.take_radiofax_spans().iter().all(|span| span.meta.partial
+            && span.meta.reason.as_deref() == Some("discontinuity")));
+    }
 
     fn page(width: u32, height: u32, value: u8) -> GrayImage {
         GrayImage::new(width, height, alloc::vec![value; width as usize * height as usize]).unwrap()
@@ -991,7 +1170,7 @@ mod tests {
         assert_eq!(spans[0].meta.lpm, 120);
         assert!(spans[0].gray.iter().any(|pixel| *pixel < 80));
         let state = fax.radiofax_state();
-        assert_eq!(state.stage, "partial");
+        assert_eq!(state.stage, "degraded");
         assert!(state.elapsed_seconds > 0.0);
         assert_ne!(state.clock_source, "phasing");
     }

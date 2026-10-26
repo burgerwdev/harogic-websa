@@ -746,7 +746,8 @@ fn radiofax_events(fax: &mut dyn websa_dsp::plugin::RadiofaxControl, epoch: u64,
             "meta":{"serial":span.meta.serial.to_string(),"epoch":epoch,"hz":null,
                 "ioc":span.meta.ioc,"lpm":span.meta.lpm,"lines":span.meta.lines,
                 "complete":span.meta.complete,"partial":span.meta.partial,
-                "segmentIndex":span.meta.segment_index,"transmissionId":span.meta.transmission_id}}));
+                "segmentIndex":span.meta.segment_index,"transmissionId":span.meta.transmission_id.to_string(),
+                "missingRows":span.meta.missing_rows,"reason":span.meta.reason}}));
     }
     if status_due {
         events.push(json!({"type":"radiofax-state","running":state.running,"stage":state.stage,

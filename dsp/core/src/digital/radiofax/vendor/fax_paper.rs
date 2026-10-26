@@ -881,6 +881,37 @@ impl FaxPaperDecoder {
         let mut sink = |event: FaxPaperEventRef<'_>| output.push(event.to_owned());
         self.push_f32(input, &mut sink)
     }
+    /// Advance continuous input time across a receiver-declared RF fade. Only the
+    /// active raster runs; acquisition and image timing do not observe invalid data.
+    pub fn advance_erasure(&mut self, count: usize, output: &mut Vec<FaxPaperEvent>) -> Result<()> {
+        if self.finished { return Err(Error::DecoderFinished); }
+        let active_detector = self.capture.as_ref().map(|capture| capture.detector);
+        for (index, detector) in self.detectors.iter_mut().enumerate() {
+            if Some(index) != active_detector {
+                detector.decoder.advance_erasure(count, &mut |_: FaxDecodeEventRef<'_>| {})?;
+            }
+        }
+        if let Some(capture) = &self.capture {
+            let detector = capture.detector;
+            let mut events = Vec::new();
+            self.detectors[detector].decoder.advance_erasure(count,
+                &mut |event: FaxDecodeEventRef<'_>| events.push(event.to_owned()))?;
+            let mut claimed = true;
+            for event in events {
+                self.handle_detector_event(detector, event, &mut claimed,
+                    &mut |event: FaxPaperEventRef<'_>| output.push(event.to_owned()))?;
+            }
+        } else {
+            let mut events = Vec::new();
+            self.raster.advance_erasure(count,
+                &mut |event: FaxDecodeEventRef<'_>| events.push(event.to_owned()))?;
+            for event in events {
+                self.handle_raster_event(event,
+                    &mut |event: FaxPaperEventRef<'_>| output.push(event.to_owned()));
+            }
+        }
+        Ok(())
+    }
 
     /// Finalize input without completing an untrusted or partial capture.
     pub fn finish(&mut self, sink: &mut impl FaxPaperSink) -> Result<usize> {
@@ -1111,9 +1142,8 @@ impl FaxPaperDecoder {
                     pixels: &pixels,
                     basis,
                 });
-                if let Some(calibration) =
-                    self.image_timing
-                        .observe(paper_line, self.current_spec, &pixels)
+                if let Some(calibration) = (basis == FaxRasterBasis::NominalPaper)
+                    .then(|| self.image_timing.observe(paper_line, self.current_spec, &pixels)).flatten()
                 {
                     sink.on_event(FaxPaperEventRef::ClockCalibration {
                         paper_id: self.paper_id,

@@ -1,6 +1,7 @@
 // SDE2 is the native receiver's bounded, source-clocked event stream.
 import type { DrmReceiverStatus } from './drmLog';
 import type { RadiofaxClockSource, RadiofaxClockStatus, RadiofaxStage } from './radiofaxLog';
+import { parseRadiofaxTransmissionId } from './radiofaxLog';
 export const MAX_DECODE_BYTES = 2 * 1024 * 1024;
 const U64_MAX = (1n << 64n) - 1n;
 export interface ReceiverEvent {
@@ -18,8 +19,8 @@ export interface ReceiverEvent {
 	width?: number; height?: number; row?: number; rows?: number; rgb?: string | number[];
 	gray?: string; revision?: number;
 	meta?: { name?: string; modeIndex?: number; vis?: number; serial?: string | number; hz?: number | null;
-		epoch?: string | number; ioc?: number; lpm?: number; transmissionId?: string | number; segmentIndex?: number;
-		lines?: number; progress?: number; complete?: boolean; partial?: boolean };
+		epoch?: string | number; ioc?: number; lpm?: number; transmissionId?: string; segmentIndex?: number;
+		lines?: number; progress?: number; complete?: boolean; partial?: boolean; missingRows?: number[]; reason?: string | null };
 	running?: boolean; pushes?: number; attempts?: number; bufferedSamples?: number;
 	bufferedSeconds?: number; hasPicture?: boolean; level?: number; srcLevel?: number;
 	stage?: RadiofaxStage; signalLevel?: number; carrierCoherence?: number; ioc?: 288 | 576 | null;
@@ -107,8 +108,17 @@ function validateEnvelope(value: unknown): asserts value is DecodeEnvelope {
 		// WFM still reports peaks as preformatted text.
 		throw new Error('Invalid receiver peakDbFs');
 	}
+	if (d.type === 'radiofax-image') {
+		const meta = d.meta;
+		if (!record(meta) || typeof meta.lines !== 'number' || !Number.isInteger(meta.lines) || meta.lines < 1 || meta.lines > 2400
+			|| !Array.isArray(meta.missingRows) || meta.missingRows.some((row, index, list) =>
+				typeof row !== 'number' || !Number.isInteger(row) || row < 0 || row >= Number(meta.lines) || (index > 0 && row <= list[index - 1]))
+			|| (meta.reason !== null && typeof meta.reason !== 'string')) throw new Error('Invalid radiofax picture metadata');
+		parseRadiofaxTransmissionId(meta.transmissionId);
+	}
 	if (d.type === 'radiofax-state') {
 		if (typeof d.lines !== 'number' || !Number.isInteger(d.lines) || d.lines < 0 || d.lines > 2400) throw new Error('Invalid radiofax lines');
+		if (d.reason !== null && typeof d.reason !== 'string') throw new Error('Invalid radiofax reason');
 		// Telemetry enums are the receiver's own vocabulary; a future stage must be visible as an
 		// error, not silently coerced into a wrong clock summary.
 		const radiofaxEnums: [keyof ReceiverEvent, readonly string[]][] = [

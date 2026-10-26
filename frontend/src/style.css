@@ -398,9 +398,16 @@ select:disabled { color: var(--label); }
 .decode-radiofax-advanced summary { cursor: pointer; }
 .decode-radiofax-advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, auto)); gap: 5px 10px; align-items: center; padding-top: 6px; }
 .decode-radiofax-advanced-grid input { width: 70px; }
-.decode-radiofax-status { padding: 4px 8px 0; color: var(--table-cell); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.decode-radiofax-view-tools { display: flex; align-items: center; gap: 5px; padding: 5px 8px; }
+.decode-radiofax-status { padding: 4px 8px 0; color: var(--table-cell); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.decode-radiofax-view-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 5px 8px; }
 .decode-radiofax-view-tools select { flex: 1 1 auto; min-width: 80px; }
+.decode-radiofax-page-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 0 8px 5px; }
+.decode-radiofax-page-tools > span { color: var(--label); font-variant-numeric: tabular-nums; }
+.decode-radiofax-notice { padding: 3px 8px; color: var(--label); white-space: normal; overflow-wrap: anywhere; }
+.decode-radiofax-notice:empty { display: none; }
+.decode-radiofax-notice.blocked, #radiofax-missing { color: var(--table-cell); }
+.decode-radiofax-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 0 8px 5px; padding: 5px; border: 1px solid var(--inner-border); }
+.decode-radiofax-confirm > span { flex: 1 1 200px; }
 .decode-radiofax-error { margin: 0 8px 5px; padding: 4px 6px; border: 1px solid var(--dot-off); color: var(--dot-off); }
 .decode-radiofax-view { position: relative; flex: 1 1 auto; min-height: 80px; overflow: auto; background: var(--sa-bg); border-top: 1px solid var(--inner-border); scrollbar-width: thin; }
 #decode-radiofax-canvas { display: block; background: #111; image-rendering: pixelated; }

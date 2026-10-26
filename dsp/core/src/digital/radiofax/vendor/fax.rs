@@ -251,6 +251,8 @@ pub enum FaxRasterBasis {
     Calibrated,
     /// The row uses the stable nominal LPM paper grid and needs calibration metadata.
     NominalPaper,
+    /// Receiver-declared erasure; raster time is known but pixels are unavailable.
+    Erased,
 }
 
 impl FaxSpec {
@@ -866,6 +868,7 @@ struct FaxRasterState {
     levels: Vec<u8>,
     line: Vec<u8>,
     basis: FaxRasterBasis,
+    erasure_until: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1381,6 +1384,26 @@ impl FaxDecoder {
         self.finished = true;
         Ok(events)
     }
+    /// Advance the resampler and raster clock without learning from invalid PCM.
+    pub fn advance_erasure(&mut self, count: usize, sink: &mut impl FaxDecodeSink) -> Result<usize> {
+        if self.finished { return Err(Error::DecoderFinished); }
+        self.reset_fax_acquisition();
+        self.demodulator.reset();
+        self.am_detector.reset();
+        self.level_history.clear();
+        let mut produced = 0;
+        for _ in 0..count { self.resampler.push(0.0, |_| produced += 1); }
+        self.working_sample += produced as u64;
+        self.last_signal_sample += produced as u64;
+        let FaxDecodeState::Receiving { page_id, raster, stop_started_at, stop_hold, .. } = &mut self.state else {
+            return Ok(0);
+        };
+        raster.levels.extend(stop_hold.drain(..));
+        *stop_started_at = None;
+        raster.levels.resize(raster.levels.len() + produced, 128);
+        raster.erasure_until = raster.scheduled_line_samples + raster.levels.len() as u64;
+        Ok(emit_available_fax_lines(*page_id, raster, self.config.max_lines, false, false, sink))
+    }
 
     /// End an active page from receiver-specific squelch or carrier evidence.
     ///
@@ -1491,6 +1514,7 @@ impl FaxDecoder {
                     line_period_samples,
                     next_line_deadline: line_period_samples,
                     scheduled_line_samples: 0,
+                    erasure_until: 0,
                     levels: Vec::with_capacity(line_period_samples.ceil() as usize),
                     line: vec![0; ioc.width() as usize],
                     basis: self.config.raster_basis,
@@ -1721,6 +1745,7 @@ impl FaxDecoder {
                                     line_period_samples,
                                     next_line_deadline: line_period_samples,
                                     scheduled_line_samples: 0,
+                                    erasure_until: 0,
                                     levels,
                                     line: vec![0; ioc.width() as usize],
                                     basis: self.config.raster_basis,
@@ -2069,7 +2094,9 @@ fn emit_available_fax_lines(
             page_id,
             line_index: raster.line_index,
             pixels: &raster.line,
-            basis: raster.basis,
+            basis: if raster.erasure_until > raster.scheduled_line_samples {
+                FaxRasterBasis::Erased
+            } else { raster.basis },
         });
         events += 1;
         raster.line_index += 1;
@@ -2276,6 +2303,39 @@ fn work_samples(seconds: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn erasure_preserves_fractional_deadlines_and_resumed_line_phase() {
+        let config = FaxDecoderConfig {
+            immediate_decode: true,
+            raster_basis: FaxRasterBasis::NominalPaper,
+            ioc: Some(FaxIoc::Ioc288),
+            lpm: Some(FaxLpm::LPM_180),
+            ..FaxDecoderConfig::default()
+        };
+        let mut reference = FaxDecoder::new(11_025, config).unwrap();
+        let mut erased = FaxDecoder::new(11_025, config).unwrap();
+        let mut ignored = Vec::new();
+        reference.process_into(&vec![0.1; 4_137], &mut ignored).unwrap();
+        erased.process_into(&vec![0.1; 4_137], &mut ignored).unwrap();
+        let mut missing = Vec::new();
+        erased.advance_erasure(33_259,
+            &mut |event: FaxDecodeEventRef<'_>| missing.push(event.to_owned())).unwrap();
+        reference.process_into(&vec![0.1; 33_259], &mut ignored).unwrap();
+        assert!(missing.iter().all(|event| matches!(event,
+            FaxDecodeEvent::LineReady { basis: FaxRasterBasis::Erased, .. })));
+        for count in [117, 1_111, 8_023] {
+            erased.process_into(&vec![0.1; count], &mut ignored).unwrap();
+            reference.process_into(&vec![0.1; count], &mut ignored).unwrap();
+            let FaxDecodeState::Receiving { raster: actual, .. } = &erased.state else { panic!("active erasure raster"); };
+            let FaxDecodeState::Receiving { raster: expected, .. } = &reference.state else { panic!("active reference raster"); };
+            assert_eq!(actual.line_index, expected.line_index);
+            assert_eq!(actual.scheduled_line_samples, expected.scheduled_line_samples);
+            assert_eq!(actual.next_line_deadline, expected.next_line_deadline);
+            assert_eq!(actual.levels.len(), expected.levels.len());
+            assert_eq!(erased.working_sample, reference.working_sample);
+        }
+    }
 
     #[test]
     fn fax_types_are_thread_safe() {

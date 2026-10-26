@@ -1222,7 +1222,8 @@ mod tests {
         let frame = state.event(0, clock, serde_json::json!({
             "type":"radiofax-image","width":1,"row":0,"rows":1,"gray":"AA==","revision":1,
             "meta":{"serial":"page","epoch":9,"hz":null,"ioc":576,"lpm":120,"lines":1,
-                "complete":false,"partial":true,"segmentIndex":0,"transmissionId":"tx"}
+                "complete":false,"partial":true,"segmentIndex":0,"transmissionId":"1",
+                "missingRows":[],"reason":null}
         })).unwrap();
         let envelope: serde_json::Value = serde_json::from_slice(&frame[8..]).unwrap();
         assert_eq!(envelope["seq"], 3);

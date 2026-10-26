@@ -55,6 +55,7 @@ import { initSdrDemodGroup } from './sdrDemodGroup';
 import { ft8DialFor } from '../sdr/ft8Log';
 import { canToggleAmSync, confirmAmSyncGeneration, decodeChannel, initDecodeWindow, refreshDecodeWindow, setAmInfo, setDecodeActive, setDecodeChannelMode, toggleDecodeWindow, type RadiofaxConfigPatch } from './decodeWindow';
 import { resetSdrIq, setSdrIqEnabled, setSstvModePin } from '../sdr/iqStream';
+import { clearRadiofax } from '../sdr/radiofaxLog';
 import { sdrModeIds } from '../sdr/registry';
 import { resetLimits } from './limits';
 
@@ -1214,6 +1215,7 @@ function applyPresetSuccess() {
   cancelSdrCanvasGesture();
   const audioWasOn = sdrAudioOn.get();
   resetSdrIq();
+  for (const channel of [1, 2, 3] as const) clearRadiofax(channel);
 
   // Every pending SDR intent (including a hand-off centre) is dropped by one call - the old
   // code cleared the fields by hand and missed one, so a Preset could reapply the previous
