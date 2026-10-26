@@ -250,7 +250,7 @@ select:disabled { color: var(--label); }
   padding: 2px 6px; border-radius: 2px; color: var(--text); text-align: right;
   box-sizing: content-box;
 }
-#sdr-settings #cur-sdr-level { flex: 0 0 11ch; width: 11ch; }
+#sdr-settings #cur-sdr-level { flex: 0 0 10ch; width: 10ch; text-align: center; }
 /* Shared FT8/CW/DRM decode window: draggable and resizable. Lives in
    <body> outside the zoomed frame and carries the UI scale itself (like the keypad) - a fixed
    element inside the zoomed card renders its left/top in zoomed coordinates while pointer events
@@ -773,10 +773,12 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .density-layers-row .btn { min-width: 58px; }
 #btn-density-more::after { content: ' v'; }
 #btn-density-more[aria-expanded="true"]::after { content: ' ^'; }
-#sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto auto; gap: 4px; align-items: center; }
-#sdr-settings .sdr-squelch-row input { width: 100%; min-width: 0; margin: 0; }
-#sdr-settings .sdr-squelch-row #cur-sdr-squelch { width: 10ch; }
-#sdr-settings .sdr-squelch-row #btn-sdr-agc { min-width: 0; width: calc(7ch + 10px); box-sizing: border-box; padding: 3px 4px; white-space: nowrap; }
+#sdr-settings .sdr-volume-row, #sdr-settings .sdr-squelch-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 4px; align-items: center; }
+#sdr-settings .sdr-volume-row { grid-template-columns: 58px minmax(0, 1fr) auto auto; }
+#sdr-settings .sdr-volume-row input, #sdr-settings .sdr-squelch-row input { width: 100%; min-width: 0; margin: 0; }
+#sdr-settings .sdr-squelch-row #cur-sdr-squelch { width: 9ch; }
+#sdr-settings .sdr-volume-row #btn-sdr-agc { min-width: 0; width: calc(7ch + 10px); box-sizing: border-box; padding: 3px 4px; white-space: nowrap; }
+#sdr-settings #btn-sdr-audio { white-space: nowrap; }
 #rta-freq-settings .param-row { flex-wrap: nowrap; align-items: center; }
 #rta-freq-settings .param-row label { min-width: 52px; }
 /* main control column: input == select */

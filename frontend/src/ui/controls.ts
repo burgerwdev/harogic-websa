@@ -917,8 +917,11 @@ export function selectSdrIfbw(ifbw: number): void {
 function syncSdrAudioButton() {
   const b = document.getElementById('btn-sdr-audio');
   if (b) {
-    b.textContent = sdrAudioOn.get() ? t('on') : t('off');
-    b.classList.toggle('active', sdrAudioOn.get());
+    const muted = !sdrAudioOn.get();
+    b.dataset.i18n = muted ? 'sdr_mute_on' : 'sdr_mute_off';
+    b.textContent = t(b.dataset.i18n);
+    b.classList.toggle('active', muted);
+    b.setAttribute('aria-pressed', String(muted));
   }
 }
 

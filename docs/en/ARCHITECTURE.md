@@ -158,7 +158,7 @@ The listening-frequency badge above the plot shares measured geometry for drawin
 
 Passband fill is green at 24% opacity in both themes. Thin solid edges appear only during dragging, at the actual filter cutoffs.
 
-The SDR level badge retains `--- dBFS` while its IQ level is unavailable, including retunes and receiver failures, without collapsing the control row. The matching squelch badge keeps its dBm unit when enabled and shows localized Off at −160 dBm or below; both badges reserve their dimensions across state changes. The AGC button uses compact horizontal padding and retains its width when toggled.
+The SDR level badge reserves 10ch and centers its text; unavailable IQ level remains `--- dBFS`. The squelch badge reserves 9ch, keeps its dBm unit when enabled and shows localized Off at −160 dBm or below. AGC sits to the left of Mute on the volume row. Mute On means playback is disabled; Mute Off means playback is enabled. The Chinese labels are 静音 and 播放. These controls change listening only, not protocol decoding.
 
 Filter gestures change only the filter. View Passband saves the display window and Zoom state, and highlights the toggle. A second press restores both. A manual view change, capture change, mode change or reset discards the saved state. The view uses the original spectrum bins; zoom adds no spectrum resolution.
 

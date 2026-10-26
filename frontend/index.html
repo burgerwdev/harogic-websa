@@ -306,13 +306,13 @@
                 <button class="btn" data-sdr-deemph="75">75µs</button>
                 <button class="btn" data-sdr-deemph="300">300µs</button>
               </div></div>
-            <div class="param-row"><label data-i18n="volume">Volume</label>
-              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
-              <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
+            <div class="param-row sdr-volume-row"><label data-i18n="volume">Volume</label>
+              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05">
+              <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button>
+              <button class="btn active" id="btn-sdr-audio" data-action="toggle-sdr-audio" aria-pressed="true" data-i18n="sdr_mute_on" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Toggle mute (Space)">Mute On</button></div>
             <div class="param-row sdr-squelch-row"><label data-i18n="squelch_short">Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-160" max="0" step="0.1" value="-110" data-i18n="squelch_tip" data-i18n-attr="title" title="RF threshold before AGC; far left disables squelch, move right to require a stronger signal">
-              <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span>
-              <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button></div>
+              <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span></div>
             <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
               <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
