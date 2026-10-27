@@ -11,6 +11,18 @@ on:
   workflow_dispatch:
 
 jobs:
+  soapy-patch:
+    # Patch applicability needs public driver sources only, with no vendor SDK.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDK-free patch check dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl patch
+      - name: Shell syntax and pinned SoapyHarogic patch
+        run: make soapy-check-patch
+
   native:
     # Native DSP uses hosted FDK AAC. Device SDK calls remain outside this job.
     runs-on: ubuntu-latest

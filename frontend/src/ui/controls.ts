@@ -1,6 +1,7 @@
 // Control commands + data-action binding + panel collapse + marker ops + canvas interaction
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
+import { initServerMode, requestServerMode, syncServerViewMode, trackServerExit } from './serverMode';
 
 import { clearSdrEntryState, postRefNotice, requestSdrEntryFit, resetAutoScaleState } from './refAutoScale';
 import { sdrAgc, sdrAmSync, sdrAudioOn, sdrCenterHz, sdrDecimate, sdrDeemph, sdrDemod, sdrIfbw, sdrListenHz, sdrNr, sdrNrAlgo, sdrNrAtten, sdrNrStrength, sdrPitchHz, sdrSpanHz, sdrSquelch, sdrSstvMode, sdrVolume, SDR_STEP_QUICK_HZ, currentSdrStepHz, estimatedCaptureSpanHz, hasStoredSdrPrefs, renderSdrState, resetSdrState, setSdrStepForCurrentMode, sdrLocateMode, sdrChannelStepHz, sdrChannelAnchorHz, type NrAlgo } from './sdrState';
@@ -274,6 +275,10 @@ function amSyncSessionAvailable(): boolean {
 }
 
 let sdrAudioHandoffTimer: number | null = null;
+/** Centre captured when the user asked to enter SDR. A disconnected confirm must not consume it. */
+let pendingSdrEntryHz: number | null = null;
+/** True only after the user (or a saved-mode restore) asks to enter SDR, not after a spontaneous STATUS. */
+let sdrEntryPending = false;
 
 // Transient hint notices. A held notice (a timeout report) must not be overwritten by the
 // high-frequency pending-state refresh, so it owns the field until it expires.
@@ -311,10 +316,15 @@ setDisplayRefTimeoutHandler(() => {
 function deferSdrAudioPreference() {
   if (sdrAudioHandoffTimer !== null) window.clearTimeout(sdrAudioHandoffTimer);
   // Drop samples from the pre-SDR/default demod chain until the final SDR commands settle.
+  // While the device is still opening, keep the preference muted; the healthy entry restarts this.
   setSdrAudioEnabled(false);
+  if (!S.deviceConnected || deviceMode.get() !== 'sdr') {
+    sdrAudioHandoffTimer = null;
+    return;
+  }
   sdrAudioHandoffTimer = window.setTimeout(() => {
     sdrAudioHandoffTimer = null;
-    if (currentGraphMode() === 'sdr') applySdrAudioPreference();
+    if (currentGraphMode() === 'sdr' && S.deviceConnected) applySdrAudioPreference();
   }, 800);
 }
 
@@ -333,6 +343,11 @@ function syncModeButtons(): void {
 }
 
 export function setGraphMode(mode: string) {
+  if (deviceMode.get() === 'server') {
+    const target = mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
+    if (trackServerExit(target) && target === 'sdr') beginSdrEntry();
+    return;
+  }
   const target: 'std' | 'rta' | 'sdr' =
     mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
   if (pendingGraphMode() === null && target === currentGraphMode()) return;
@@ -358,26 +373,10 @@ export function setGraphMode(mode: string) {
   syncResolutionAvailability();
   // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
   // the user located (active marker), or the current centre if no marker is set.
-  if (target === 'sdr') {
-    // Priority: an explicit hand-off (Shift+click / peak row already called sdrCenterHz.set), then
-    // the user's own SDR tuning, then - first run only - the active marker or the swept centre.
-    // Returning to SDR used to re-derive everything from the swept view, which discarded the
-    // tuning and the listening setup the user had left there (reported).
-    if (!sdrCenterHz.pending()) {
-      const remembered = sdrCenterHz.confirmedValue();
-      if (remembered !== null && remembered > 0) {
-        sdrCenterHz.set(remembered);           // re-assert: the entry below sends it
-      } else {
-        const m = S.markers.find(x => x.enabled && x.freq != null);
-        // Prefer the last centre confirmed by a SWP-family STATUS: centerHz.get() is refreshed
-        // from every STATUS (including SDR ones), so it can still hold the value from before
-        // a preset/re-tune when this runs.
-        const base = swpCenterHz.get() > 0 ? swpCenterHz.get() : centerHz.get();
-        sdrCenterHz.set((m && m.freq) ? m.freq : base);
-      }
-    }
-    deferSdrAudioPreference();
-  } else {
+  if (target === 'sdr') beginSdrEntry();
+  else {
+    sdrEntryPending = false;
+    pendingSdrEntryHz = null;
     sdrCenterHz.reset();
     if (sdrAudioHandoffTimer !== null) {
       window.clearTimeout(sdrAudioHandoffTimer);
@@ -389,22 +388,58 @@ export function setGraphMode(mode: string) {
   send({ cmd: 'SET_MODE', mode: target });
 }
 
+/** Re-assert the remembered receiver before the entry STATUS sends it.
+ *  Server mode must not send hardware commands; the healthy SDR STATUS does. */
+function beginSdrEntry() {
+  // Priority: an explicit hand-off (Shift+click / peak row already called sdrCenterHz.set), then
+  // the user's own SDR tuning, then - first run only - the active marker or the swept centre.
+  // Returning to SDR used to re-derive everything from the swept view, which discarded the
+  // tuning and the listening setup the user had left there (reported).
+  if (!sdrCenterHz.pending()) {
+    const remembered = sdrCenterHz.confirmedValue();
+    if (remembered !== null && remembered > 0) {
+      sdrCenterHz.set(remembered);           // re-assert: the entry below sends it
+    } else {
+      const m = S.markers.find(x => x.enabled && x.freq != null);
+      // Prefer the last centre confirmed by a SWP-family STATUS: centerHz.get() is refreshed
+      // from every STATUS (including SDR ones), so it can still hold the value from before
+      // a preset/re-tune when this runs.
+      const base = swpCenterHz.get() > 0 ? swpCenterHz.get() : centerHz.get();
+      sdrCenterHz.set((m && m.freq) ? m.freq : base);
+    }
+  }
+  pendingSdrEntryHz = sdrCenterHz.get() > 0 ? sdrCenterHz.get() : null;
+  sdrEntryPending = true;
+  deferSdrAudioPreference();
+}
+
 /** Drop a pending request (socket loss / command error): the UI follows the backend again. */
 export function releaseGraphModePending() {
   resetGraphMode();
+  sdrEntryPending = false;
+  pendingSdrEntryHz = null;
   syncModeButtons();
   syncResolutionAvailability();
 }
 
 export function syncGraphModeStatus(mode: string) {
+  const wasServer = deviceMode.get() === 'server';
   // The raw reported mode is recorded FIRST: the measurement sessions are not view modes, but they
   // own the device, and everything mode-gated has to see that (see `deviceMode`).
   deviceMode.confirm(mode);
+  syncServerViewMode(mode);
   syncTriggerMode(mode);
   syncLevelAvailability(mode);
   syncResolutionAvailability(mode);
   setDecodeActive(S.deviceConnected && mode === 'sdr');
   if (!isGraphMode(mode)) {
+    if (mode === 'server') {
+      resetGraphMode();
+      if (sdrAudioHandoffTimer !== null) window.clearTimeout(sdrAudioHandoffTimer);
+      sdrAudioHandoffTimer = null;
+      setSdrAudioEnabled(false);
+      setSdrIqEnabled(false);
+    }
     cancelSdrCanvasGesture();
     cancelSdrTuningEdit();
     applyMeasUI();
@@ -417,9 +452,15 @@ export function syncGraphModeStatus(mode: string) {
   // the next reconfiguration. Only a real confirmed-mode SWITCH may drop the view (§4.3).
   const hadConfirmedMode = graphMode.confirmedValue() !== null;
   // Discipline 1: an older reply (a STATUS still on another mode) is not our answer.
-  const changed = confirmGraphMode(mode);
+  const changed = confirmGraphMode(mode) || wasServer;
   syncModeButtons();
-  if (!changed) { applyMeasUI(); return; }
+  // The disconnected confirm already consumed the mode change. The held entry still has
+  // to run once, on the later healthy SDR STATUS, and must not repeat after that.
+  if (!changed) {
+    if (mode === 'sdr' && S.deviceConnected && sdrEntryPending) finishSdrEntry();
+    applyMeasUI();
+    return;
+  }
   resetDisplayRefMode();
   resetTrigger();
   const isRtaLike = mode === 'rta' || mode === 'sdr';
@@ -446,28 +487,12 @@ export function syncGraphModeStatus(mode: string) {
   // user just made (see ui/traceOps.ts).
   rememberTraceMode(previousMode === 'sdr');
   applyTraceFamilyMode(isSdr);
-  if (isSdr && S.deviceConnected) {
-    // Decode events and receiver telemetry arrive independently of speaker playback.
-    setSdrIqEnabled(true);
-    deferSdrAudioPreference();
-    if (initialSdrNr) {
-      sdrNr.set(initialSdrNr.on);
-      sdrNrStrength.set(initialSdrNr.strength);
-      sdrNrAlgo.set(initialSdrNr.algorithm);
-      sdrNrAtten.set(initialSdrNr.attenuation);
-      initialSdrNr = null;
-    }
-    sendSdrNr();
-    if (initialSstvMode !== null) {
-      sdrSstvMode.set(initialSstvMode);
-      setSstvModePin(initialSstvMode < 0 ? null : initialSstvMode, 1);
-      initialSstvMode = null;
-      refreshDecodeWindow();
-    }
-    // Auxiliary receivers have no browser controls; never restore hidden saved receivers.
-    send({ cmd: 'SET_SDR_CHANNEL', channel: 2, enabled: false });
-    send({ cmd: 'SET_SDR_CHANNEL', channel: 3, enabled: false });
-  } else {
+  // Only a request that began this entry is replayed. A disconnected confirm must not clear
+  // that request; a healthy one finishes it. Leaving SDR, or arriving in SDR unasked, does not.
+  if (isSdr && sdrEntryPending && S.deviceConnected) finishSdrEntry();
+  else if (!isSdr) {
+    sdrEntryPending = false;
+    pendingSdrEntryHz = null;
     // Leaving SDR stops the audio PIPELINE; the user's preference is theirs and must survive the
     // trip. Writing it off here is what made "audio on" silently become "audio off" after a visit
     // to RTA/SWP (measured: localStorage flipped 1 -> 0 on the way out).
@@ -538,31 +563,75 @@ export function syncGraphModeStatus(mode: string) {
   if (swpFrequency) swpFrequency.style.display = mode === 'std' ? '' : 'none';
   if (sdrSettings) sdrSettings.style.display = isSdr ? '' : 'none';
   if (isRtaLike) S.resetWaterfall();
-  if (isSdr && sdrCenterHz.pending() && sdrCenterHz.get() > 0) {
-    const f = sdrCenterHz.get();
-    if (!hasStoredSdrPrefs()) {
-      // First run (or right after a Preset): pick a sensible listening setup for the band the
-      // user landed in. Once they have their own preferences, those win - the band presets
-      // (FM/AIR/VHF/UHF) are the deliberate way to switch bands.
-      const inFm = f >= 87.5e6 && f <= 108e6;
-      const inAir = f >= 118e6 && f <= 137e6;
-      sdrDecimate.set(16);
-      sdrDemod.set(inFm ? 'wfm' : 'am');
-      sdrIfbw.set(inFm ? 180000 : (inAir ? 25000 : 12000));
-      sdrDeemph.set(-1);
-    }
-    const decimate = sdrDecimate.get() || 16;
-    sdrSpanHz.set(estimatedCaptureSpanHz(decimate));  // estimate until the device reports it
-    sdrListenHz.set(sdrListenHz.get() > 0 ? sdrListenHz.get() : f);
-    renderSdrState();
-    send({ cmd: 'SET_SDR', center: f, decimate });
-    send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: sdrListenHz.get() });
-    applySdrDemod();
+  requestRender();
+}
+
+/** One SDR entry: IQ, audio, and the remembered receiver, only while the device is healthy. */
+function finishSdrEntry(): void {
+  sdrEntryPending = false;
+  // Decode events and receiver telemetry arrive independently of speaker playback.
+  setSdrIqEnabled(true);
+  deferSdrAudioPreference();
+  if (initialSdrNr) {
+    sdrNr.set(initialSdrNr.on);
+    sdrNrStrength.set(initialSdrNr.strength);
+    sdrNrAlgo.set(initialSdrNr.algorithm);
+    sdrNrAtten.set(initialSdrNr.attenuation);
+    initialSdrNr = null;
   }
+  sendSdrNr();
+  if (initialSstvMode !== null) {
+    sdrSstvMode.set(initialSstvMode);
+    setSstvModePin(initialSstvMode < 0 ? null : initialSstvMode, 1);
+    initialSstvMode = null;
+    refreshDecodeWindow();
+  }
+  // Auxiliary receivers have no browser controls; never restore hidden saved receivers.
+  send({ cmd: 'SET_SDR_CHANNEL', channel: 2, enabled: false });
+  send({ cmd: 'SET_SDR_CHANNEL', channel: 3, enabled: false });
+  replaySdrEntry();
+}
+
+/** Send the centre captured by beginSdrEntry, then the listening setup.
+ *  Restored preferences are already confirmed, so set() would not mark them pending and
+ *  the SET_SDR would be skipped. Reset first, then set the held centre. */
+function replaySdrEntry(): void {
+  const held = pendingSdrEntryHz;
+  pendingSdrEntryHz = null;
+  if (held !== null && held > 0) {
+    sdrCenterHz.reset();
+    sdrCenterHz.set(held);
+  }
+  if (!(sdrCenterHz.pending() && sdrCenterHz.get() > 0)) {
+    requestSdrEntryFit();
+    return;
+  }
+  const f = sdrCenterHz.get();
+  if (!hasStoredSdrPrefs()) {
+    // First run (or right after a Preset): pick a sensible listening setup for the band the
+    // user landed in. Once they have their own preferences, those win - the band presets
+    // (FM/AIR/VHF/UHF) are the deliberate way to switch bands.
+    const inFm = f >= 87.5e6 && f <= 108e6;
+    const inAir = f >= 118e6 && f <= 137e6;
+    sdrDecimate.set(16);
+    sdrDemod.set(inFm ? 'wfm' : 'am');
+    sdrIfbw.set(inFm ? 180000 : (inAir ? 25000 : 12000));
+    sdrDeemph.set(-1);
+  }
+  const decimate = sdrDecimate.get() || 16;
+  sdrSpanHz.set(estimatedCaptureSpanHz(decimate));  // estimate until the device reports it
+  if (!(sdrListenHz.get() > 0)) sdrListenHz.set(f);
+  renderSdrState();
+  send({ cmd: 'SET_SDR', center: f, decimate });
+  if (initialSdrAmSync !== null) {
+    sdrAmSync.set(initialSdrAmSync);
+    initialSdrAmSync = null;
+  }
+  send({ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: sdrListenHz.get() });
+  applySdrDemod();
   // Entry setup sends SET commands, which cancel older fits. Arm the new one only after
   // that hand-off finishes; an existing SDR hardware level is preserved by the fit owner.
-  if (isSdr) requestSdrEntryFit();
-  requestRender();
+  requestSdrEntryFit();
 }
 
 // Density persistence/grain restored on page load + RTA entry (independent memory keys)
@@ -950,9 +1019,14 @@ function sdrSet(id: string, value: string) {
 // Live SDR geometry for click/drag/wheel interaction (updated from STATUS).
 export function syncSdrPanel(s: any) {
   const sdr = s?.sdr;
+  // Server keeps the device exclusively and forces connected=false. That report is not a lost
+  // receiver session, and it must not confirm or reset the remembered SDR setup.
+  if (s?.mode === 'server') return;
   const active = s?.connected === true && s?.mode === 'sdr';
+  // The first SDR STATUS after leaving Server is disconnected while the capture opens.
+  // It is not a lost session, and it must not consume the entry still waiting to be sent.
   if (s?.connected !== true) {
-    disconnectSdrSession();
+    if (!(s?.mode === 'sdr' && sdrEntryPending)) disconnectSdrSession();
     return;
   }
   setDecodeActive(active);
@@ -997,7 +1071,10 @@ export function syncSdrPanel(s: any) {
   }
   // Confirm the tuning group from the backend, then render it from the slots (the only
   // writer of those controls). The demod group still uses the DOM for now.
-  sdrCenterHz.confirm(Number(sdr.center) || 0);
+  // While an entry is still waiting for a healthy device, this report must not confirm
+  // the centre the replay is about to send.
+  const reportedCenter = Number(sdr.center) || 0;
+  if (!sdrEntryPending) sdrCenterHz.confirm(reportedCenter);
   sdrDecimate.confirm(Number(sdr.decimate) || 32);
   if (a.start != null && a.stop != null) sdrSpanHz.confirm(Number(a.stop) - Number(a.start));
   const displaySpan = a.start != null && a.stop != null
@@ -1247,6 +1324,7 @@ function applyPresetSuccess() {
 // ── Panel collapse ──
 // ── data-action binding ──
 export function bindActions() {
+  initServerMode(setGraphMode);
   document.addEventListener('pointerdown', (event) => {
     if (!(event.target instanceof Element)) return;
     const takeover = event.target.closest('#sdr-demod-group [data-sdr-demod], #btn-mode-sdr, #btn-mode-rta, [data-action="preset"], [data-sdr-band]');
@@ -1325,6 +1403,7 @@ export function bindActions() {
     'toggle-rta': () => setGraphMode(currentGraphMode() === 'rta' ? 'swp' : 'rta'),
     'apply-rta': () => applyRta(),
     'toggle-sdr': () => setGraphMode(currentGraphMode() === 'sdr' ? 'swp' : 'sdr'),
+    'toggle-server': () => { resetGraphMode(); requestServerMode(); },
     'apply-sdr': () => applySdr(),
     'apply-sdr-bw': () => applySdrBw(),
     'apply-sdr-tune': () => applySdrTune(),
@@ -1360,10 +1439,11 @@ export function bindActions() {
     const a = el.getAttribute('data-action')!;
     const handler = act[a];
     if (!handler) return;
+    const invoke = () => { if (deviceMode.get() !== 'server' || el.closest('#server-view')) handler(el as HTMLElement); };
     if (el.tagName === 'SELECT') {
-      (el as HTMLSelectElement).addEventListener('change', () => handler(el as HTMLElement));
+      (el as HTMLSelectElement).addEventListener('change', invoke);
     } else {
-      el.addEventListener('click', () => handler(el as HTMLElement));
+      el.addEventListener('click', invoke);
     }
     // Non-native activatable elements (panel headers, info readouts) get button
     // semantics: keyboard focus + Enter/Space activation, matching the click handler.
@@ -1373,7 +1453,7 @@ export function bindActions() {
       (el as HTMLElement).addEventListener('keydown', (ev: KeyboardEvent) => {
         if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.ctrlKey || ev.metaKey || ev.altKey) return;
         ev.preventDefault();
-        handler(el as HTMLElement);
+        invoke();
       });
     }
   });
@@ -2001,6 +2081,7 @@ export function bindCanvas() {
 
   // Keyboard / trackpad-only operation (no mouse required).
   document.addEventListener('keydown', (e) => {
+    if (deviceMode.get() === 'server') return;
     if (currentGraphMode() !== 'sdr' || e.defaultPrevented || e.altKey || e.metaKey || e.isComposing
         || (e.ctrlKey && e.shiftKey) || canvasPointerId !== null || document.hidden) return;
     const el = document.activeElement as HTMLElement | null;

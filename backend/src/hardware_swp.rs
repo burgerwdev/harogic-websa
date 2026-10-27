@@ -27,22 +27,50 @@ unsafe extern "C" {
 /// including failed opens. The vendor module must remain mapped until process exit.
 pub(crate) const SDK_DLOPEN_FLAGS: c_int = 2 | 0x1000;
 type SessionFinish = unsafe extern "C" fn() -> c_int;
+type SessionRelease = unsafe extern "C" fn() -> c_int;
 type SessionInvalidate = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
-static SDK_SESSION: Mutex<Option<SessionFinish>> = Mutex::new(None);
+struct SdkSession {
+    finish: SessionFinish,
+    release: Option<SessionRelease>,
+}
+enum SdkSessionSlot {
+    /// A library was loaded and it has no shared session ABI (old stateless fixture).
+    /// Its physical close cannot be proven, so a hardware handoff must refuse.
+    Stateless,
+    Session(SdkSession),
+}
+static SDK_SESSION: Mutex<Option<SdkSessionSlot>> = Mutex::new(None);
 
-/// Registers the production session ABI. Older stateless fixture shims need neither entry.
+/// Registers the production session ABI. Older stateless fixture shims need neither entry
+/// and are recorded as loaded-but-stateless. A hardware shim that can finish but not
+/// release is registered without a release entry; [`release_sdk_session`] then refuses
+/// the handoff instead of claiming the device closed. No call at all means no library.
 pub(crate) unsafe fn register_sdk_session(library: *mut c_void) -> Result<(), String> {
     let finish = unsafe { dlsym(library, b"san90_session_finish_v1\0".as_ptr().cast()) };
     let invalidate = unsafe { dlsym(library, b"san90_session_invalidate_v1\0".as_ptr().cast()) };
-    if finish.is_null() && invalidate.is_null() { return Ok(()); }
+    let mut session = SDK_SESSION.lock();
+    if finish.is_null() && invalidate.is_null() {
+        if session.as_ref().is_some_and(|old| !matches!(old, SdkSessionSlot::Stateless)) {
+            return Err("cannot use two physical SDK session shims in one process".into());
+        }
+        *session = Some(SdkSessionSlot::Stateless);
+        return Ok(());
+    }
     if finish.is_null() || invalidate.is_null() {
         return Err("SDK shim has an incomplete shared session ABI".into());
     }
-    let mut session = SDK_SESSION.lock();
-    if session.as_ref().is_some_and(|old| *old as usize != finish as usize) {
+    let release = unsafe { dlsym(library, b"san90_session_release_v1\0".as_ptr().cast()) };
+    if session.as_ref().is_some_and(|old| match old {
+        SdkSessionSlot::Session(old) => old.finish as usize != finish as usize,
+        SdkSessionSlot::Stateless => true,
+    }) {
         return Err("cannot use two physical SDK session shims in one process".into());
     }
-    *session = Some(unsafe { std::mem::transmute::<*mut c_void, SessionFinish>(finish) });
+    *session = Some(SdkSessionSlot::Session(SdkSession {
+        finish: unsafe { std::mem::transmute::<*mut c_void, SessionFinish>(finish) },
+        release: (!release.is_null())
+            .then(|| unsafe { std::mem::transmute::<*mut c_void, SessionRelease>(release) }),
+    }));
     Ok(())
 }
 
@@ -52,8 +80,29 @@ pub fn finish_sdk_session() -> Result<(), String> {
     // until that owner's teardown ends.
     owner_slot_free()?;
     let session = SDK_SESSION.lock();
-    let status = session.as_ref().map_or(0, |finish| unsafe { finish() });
+    let status = match session.as_ref() {
+        Some(SdkSessionSlot::Session(session)) => unsafe { (session.finish)() },
+        Some(SdkSessionSlot::Stateless) | None => 0,
+    };
     if status == 0 { Ok(()) } else { Err(format!("SDK session finish status={status}")) }
+}
+
+/// Closes an idle physical handle and leaves the SDK worker reusable.
+/// No loaded shim means nothing was ever opened. A loaded shim without
+/// `san90_session_release_v1` cannot prove `Device_Close`, so it refuses.
+pub fn release_sdk_session() -> Result<(), String> {
+    owner_slot_free()?;
+    let session = SDK_SESSION.lock();
+    let release = match session.as_ref() {
+        None => return Ok(()),
+        Some(SdkSessionSlot::Stateless) => None,
+        Some(SdkSessionSlot::Session(session)) => session.release,
+    };
+    let Some(release) = release else {
+        return Err("SDK shim cannot release the physical session".into());
+    };
+    let status = unsafe { release() };
+    if status == 0 { Ok(()) } else { Err(format!("SDK session release status={status}")) }
 }
 
 /// Marks the physical session for recovery; the following mode close retires its buffers.
@@ -1051,6 +1100,82 @@ mod tests {
         assert_eq!(trace_align_code("start"), 1);
         assert_eq!(points_strategy_code("accuracy"), 1);
         assert_eq!(points_strategy_code("speed"), 0);
+    }
+
+    #[test]
+    fn session_release_refuses_hardware_without_close_and_accepts_no_shim() {
+        const ISOLATED: &str = "WEBSA_TEST_SESSION_RELEASE_ISOLATED";
+        if std::env::var_os(ISOLATED).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["hardware_swp::tests::session_release_refuses_hardware_without_close_and_accepts_no_shim", "--exact", "--test-threads=1"])
+                .env(ISOLATED, "1")
+                .status().unwrap();
+            assert!(status.success(), "isolated SDK session release regression failed");
+            return;
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "websa_session_release_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("session.c");
+        let library = directory.join("libsession.so");
+        std::fs::write(
+            &source,
+            r#"
+int san90_session_finish_v1(void) { return 0; }
+int san90_session_invalidate_v1(void* state, int abandon) {
+    (void)state; (void)abandon; return 0;
+}
+"#,
+        )
+        .unwrap();
+        let stateless = directory.join("stateless.c");
+        let stateless_library = directory.join("libstateless.so");
+        std::fs::write(&stateless, "int fixture_only(void) { return 0; }\n").unwrap();
+        assert!(
+            std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-O1"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&library)
+                .status()
+                .expect("cc required for session ABI regression")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-O1"])
+                .arg(&stateless)
+                .arg("-o")
+                .arg(&stateless_library)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // No library was loaded: nothing owns a physical device.
+        assert!(release_sdk_session().is_ok());
+        let path = CString::new(library.to_str().unwrap()).unwrap();
+        let opened = unsafe { dlopen(path.as_ptr(), SDK_DLOPEN_FLAGS) };
+        assert!(!opened.is_null());
+        unsafe { register_sdk_session(opened).unwrap(); }
+        let refused = release_sdk_session().unwrap_err();
+        assert!(refused.contains("cannot release"));
+        assert!(finish_sdk_session().is_ok());
+        unsafe { dlclose(opened); }
+        *SDK_SESSION.lock() = None;
+        let stateless_path = CString::new(stateless_library.to_str().unwrap()).unwrap();
+        let stateless_opened = unsafe { dlopen(stateless_path.as_ptr(), SDK_DLOPEN_FLAGS) };
+        assert!(!stateless_opened.is_null());
+        unsafe { register_sdk_session(stateless_opened).unwrap(); }
+        let stateless_refused = release_sdk_session().unwrap_err();
+        assert!(stateless_refused.contains("cannot release"));
+        assert!(finish_sdk_session().is_ok());
+        unsafe { dlclose(stateless_opened); }
+        *SDK_SESSION.lock() = None;
+        assert!(release_sdk_session().is_ok());
+        assert!(finish_sdk_session().is_ok());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

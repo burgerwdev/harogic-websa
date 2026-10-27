@@ -139,7 +139,9 @@ regenerate only reproducible fixtures with their existing generators.
 |---|---|
 | Native service and tools | `./test.sh`: release-mode backend library and binaries, standard-profile integration tests, Python tool tests, Ruff and frontend Vitest |
 | DSP kernels | `make wasm-test`: release-mode native Rust kernel tests against reference fixtures, including optimized FT8 paths |
-| Local aggregate | `make ci`: kernel and service/tool/frontend tests, version and fixture checks, DOM/registration/doc/architecture guards, frontend build |
+| Soapy patch | `make soapy-check-patch`: helper shell syntax and pinned patch applicability; requires curl + patch, no SDK |
+| Soapy stream | `make soapy-check-stream SDK_ROOT=/opt/htraapi`: actual patched driver with real vendor headers, SoapySDR development files and stub HTRA; no vendor library or device |
+| Local aggregate | `make ci`: kernel and service/tool/frontend tests, SDK-free Soapy patch check, version and fixture checks, DOM/registration/doc/architecture guards, frontend build |
 | Browser fixtures | `make e2e-fake`: native fixture service, UI smoke, state regression and viewport geometry gate |
 | Hardware | `make hw-test`: tinySA-driven smoke, command sweep and UI state regression |
 | Performance | `make bench`: comparison with `tools/bench/bench_baseline.json` |
@@ -158,6 +160,13 @@ Python tools (3.12 and 3.13), frontend, UI smoke and architecture jobs. It expli
 `viewport_baseline.py`. Consult [Makefile](../../Makefile), [test.sh](../../test.sh) and
 [ci.yml](../../.github/workflows/ci.yml) for the actual gates; neither a local aggregate nor
 one CI job substitutes for hardware validation.
+
+Both `make ci` and hosted CI run `soapy-check-patch`, including `bash -n` for the helper
+and patch applicability against the pinned upstream sources. It requires `curl`, `patch`
+and standard shell utilities. The separate `soapy-check-stream` gate also requires
+`pkg-config`, `realpath`, a C++ compiler, SoapySDR development files and real vendor SDK
+headers under `SDK_ROOT`. It links only SoapySDR and uses stub HTRA functions; it checks
+the stream contract without qualifying RF acquisition or client applications.
 
 ## 6. Hardware validation and performance isolation
 

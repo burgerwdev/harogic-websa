@@ -49,9 +49,10 @@ artifacts are optional offline diagnostics, not the production DSP path.
   pass/fail margins and normalization; PNG/CSV export. RTA capture completion is confirmed from
   device/frame metadata; fixture input does not simulate hardware trigger hits.
 - **UI** — jump rail, optional virtual keypad, amplitude units with external gain/loss
-  compensation, dark/light theme, English/Chinese
+  compensation, dark/light theme, English/Chinese; global UI scale in the footer, including SRV mode
 - **Link monitor** — an unplug is reported on the canvas instead of a frozen trace, and reconnecting
   resumes the same mode without a service restart
+- **Soapy SRV** — the **SRV** button opens an exclusive mode that hands the analyzer to a local SoapySDRServer. Entering it stops Web capture and audio and releases the physical device handle; it does not start the server. Bind address and port are configured only while stopped, and Start, Stop and Restart are separate. Exit returns to the last spectrum, real-time or SDR view. The committed runtime bundle does not include this handoff; rebuild the SDK shim and Soapy module below.
 
 ## Screenshots
 
@@ -116,8 +117,11 @@ has not been established.
 
 ```bash
 make native sdk-shim                     # native service and hardware SDK shim
-./build.sh                               # frontend assets; make wasm rebuilds WASM explicitly
+./build.sh                               # frontend (`make frontend`); make wasm rebuilds WASM explicitly
+make soapy-driver                        # patched official SoapyHarogic module; vendor SDK required
 ```
+
+`make soapy-driver` downloads five source and licence files from official SoapyHarogic revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` (GNU LGPL v2.1 or later), applies this project's stream-format and device-lifecycle patch to a private copy, and installs under `$HOME/.local/share/harogic-websa/soapy`. It does not download the SDK or install system packages. Server handoff needs a shim rebuilt with `san90_session_release_v1`; the committed `runtime/` adapter does not export that symbol and does not provide this feature. Host SoapySDR 0.8 and SoapyRemote are also required. See the [tools guide](tools/README.md).
 
 ### 2. Run
 
@@ -200,6 +204,9 @@ The day-to-day commands, plus what to run before committing:
 | `make restart` / `make status` | Restart / show PID, log path and live HTTP/device state |
 | `make build` | Frontend assets + native Rust service (hardware shim built separately) |
 | `make native` / `make sdk-shim` | Build the Rust service / hardware SDK shim |
+| `make soapy-driver` | Build the patched official SoapyHarogic module into the user prefix |
+| `make soapy-check-patch` | Check helper shell syntax and pinned patch applicability with curl + patch; no SDK required |
+| `make soapy-check-stream SDK_ROOT=/opt/htraapi` | Check the patched driver with real vendor headers, SoapySDR development files and stub HTRA; no vendor library or device |
 | `make frontend` | Frontend only: npm install + Vite build (no WASM) |
 | `make wasm` | Both WASM cores; `make wasm-dsp` / `make wasm-dfn` build one |
 | `make clean` / `make clean-all` | Clean caches/dist while keeping dependencies and Rust targets / also remove dependencies and Rust targets; committed WASM stays |
@@ -225,6 +232,7 @@ regeneration, guards, document/version checks and hardware prerequisites.
 - Project code (backend + frontend): **MIT** licensed
 - `htra_api.py`: HAROGIC official SDK Python wrapper, copyright HAROGIC; bundled for convenience with your own SDK
 - `libhtraapi.so`: proprietary binary, **not included** — obtain from HAROGIC
+- Official [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` is **GNU LGPL v2.1 or later** and is downloaded at build time, not vendored. `tools/soapy-htra-stream-format.patch` is this project's compatibility patch and is applied only to a private build copy.
 - Screenshots taken on a real SAN-90 (the SDR digital-mode shots use a PlutoSDR as the signal source)
 - `tools/vendor/ggmorse/`: the CW (Morse) decoder is
   [ggmorse](https://github.com/ggerganov/ggmorse) by Georgi Gerganov, **MIT** licensed, vendored at

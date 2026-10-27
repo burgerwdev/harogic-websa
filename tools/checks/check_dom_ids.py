@@ -47,11 +47,13 @@ def main() -> int:
     parser.add_argument('--list', action='store_true', help='print the whole contract')
     args = parser.parse_args()
 
-    html_ids = set(HTML_ID.findall(INDEX.read_text(encoding='utf-8')))
+    html_text = INDEX.read_text(encoding='utf-8')
+    html_ids = HTML_ID.findall(html_text)
+    present = set(html_ids)
+    duplicates = sorted({name for name in present if html_ids.count(name) > 1})
     read = read_ids()
     missing = {name: where for name, where in read.items()
-               if name not in html_ids and name not in OPTIONAL}
-    stale = {name: where for name, where in OPTIONAL.items() if name not in read}
+               if name not in present and name not in OPTIONAL}
 
     if args.list:
         for name in sorted(read):
@@ -61,10 +63,10 @@ def main() -> int:
         return 0
 
     problems = []
+    for name in duplicates:
+        problems.append(f'index.html repeats id="{name}" ({html_ids.count(name)} times); getElementById only binds the first')
     for name, where in sorted(missing.items()):
         problems.append(f'index.html has no id="{name}" but it is read in {", ".join(sorted(set(where)))}')
-    for name, where in sorted(stale.items()):
-        problems.append(f'OPTIONAL lists "{name}" ({where}) but nothing reads it any more')
     if problems:
         print('DOM id contract violated:', file=sys.stderr)
         for problem in problems:

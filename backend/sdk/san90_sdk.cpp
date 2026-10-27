@@ -112,6 +112,30 @@ public:
         *slot = nullptr;
         return status;
     }
+    void reset_idle_device() {
+        handle = nullptr;
+        healthy = false;
+        invalidate = false;
+        boot_info = {};
+        hardware_state = {};
+        hardware_state_status = -100;
+    }
+    // Closes an idle healthy handle and leaves the worker reusable. A null handle
+    // owns nothing (never opened, or already released), including !healthy. A
+    // non-null stale or invalidated pointer refuses and is never passed to Device_Close.
+    int release_idle() {
+        std::lock_guard<std::mutex> serial(callers_);
+        auto close = [&] {
+            if (active) return -110;
+            if (!handle) return 0;
+            if (invalidate || !healthy) return -111;
+            int status = Device_Close(&handle);
+            if (status) return status;
+            reset_idle_device();
+            return 0;
+        };
+        return submit(close);
+    }
     int finish(bool force = false) {
         std::lock_guard<std::mutex> serial(callers_);
         if (!worker_.joinable()) return 0;
@@ -121,8 +145,7 @@ public:
                 retire(const_cast<void*>(active));
             }
             int status = usable() ? Device_Close(&handle) : 0;
-            handle = nullptr;
-            healthy = false;
+            reset_idle_device();
             return status;
         };
         int status = submit(close);
@@ -154,6 +177,7 @@ extern "C" int san90_session_invalidate_v1(void* state, int abandon) {
     return 0;
 }
 
+extern "C" int san90_session_release_v1() { return san90_session.release_idle(); }
 extern "C" int san90_session_finish_v1() { return san90_session.finish(); }
 
 // Front-end and clock fields shared by the SWP, RTA and IQS profiles (v11 entry points).

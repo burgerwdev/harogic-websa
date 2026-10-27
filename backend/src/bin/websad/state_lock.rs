@@ -9,6 +9,7 @@ pub(super) struct StatusSnapshot {
     pub revision: u64,
     golden: Value,
     swp: Swp,
+    server: Value,
     rta_center: f64,
     rta_span: f64,
     rta_rbw_mode: String,
@@ -115,6 +116,7 @@ impl DevState {
             revision: STATUS_REVISION.fetch_add(1, Ordering::Relaxed),
             golden: self.golden.clone(),
             swp: self.swp.clone(),
+            server: self.server.lock().snapshot(),
             rta_center: self.rta_center.clone(),
             rta_span: self.rta_span.clone(),
             rta_rbw_mode: self.rta_rbw_mode.clone(),
@@ -180,6 +182,7 @@ impl StatusSnapshot {
         let p = &self.swp;
         let mode = p.mode.as_str();
         let (req_active, mut actual): (Value, Value) = match mode {
+            "server" => (json!({}), json!({})),
             "rta" => (
                 json!({
                     "center": self.rta_center, "span": self.rta_span, "points": 3328,
@@ -245,14 +248,14 @@ impl StatusSnapshot {
         for (path, value) in [
             (
                 "/connected",
-                json!(!self.hardware || self.link_up),
+                json!(mode != "server" && (!self.hardware || self.link_up)),
             ),
             ("/status_warning", json!(self.status_warning)),
             ("/sdr_last_failure", json!(self.ddc_failure_diagnostics)),
             ("/ref_clock", json!(self.ref_clock)),
             ("/refclk_out", json!(self.refclk_out)),
             ("/refclk_ppm", json!(self.refclk_ppm)),
-            ("/swp_actual", self.actual.clone()),
+            ("/swp_actual", if mode == "server" { json!({}) } else { self.actual.clone() }),
             ("/caps/fmin", json!(self.freq_limits.0)),
             ("/caps/fmax", json!(self.freq_limits.1)),
             (
@@ -318,7 +321,7 @@ impl StatusSnapshot {
             ),
             (
                 "/gnss",
-                if self.hardware {
+                if mode == "server" { Value::Null } else if self.hardware {
                     self.gnss_value.clone().unwrap_or(Value::Null)
                 } else {
                     self.golden["gnss"].clone()
@@ -403,6 +406,7 @@ impl StatusSnapshot {
         ] {
             set_path(&mut s, path, value);
         }
+        s["server"] = self.server.clone();
         s["has_docxo"] = json!(self.has_docxo);
         s["has_premium_ref_clock"] = json!(self.has_premium_ref_clock);
         s["channel_registry"] = registry.clone();
@@ -575,5 +579,25 @@ mod tests {
         state.swp.mode = "std".into();
         let status = state.status_snapshot().build();
         assert_eq!(status["sdr"]["actual"]["channel_clocks"], json!([]));
+    }
+
+    #[test]
+    fn configured_server_bind_reaches_status_without_a_fixture_key() {
+        let (golden, schema) = load_golden();
+        assert!(golden.get("server").is_none(), "fixture must not pre-seed the server object");
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "server".into();
+        assert!(dispatch(&mut state, "SET_SERVER", &json!({
+            "action": "configure", "bind_address": "10.9.8.7", "port": 55140,
+        })).unwrap());
+        let status = state.status_snapshot().build();
+        let server = state.server.lock().snapshot();
+        assert_eq!(status["server"], server);
+        assert_eq!(status["server"]["state"], "stopped");
+        assert_eq!(status["server"]["bind_address"], "10.9.8.7");
+        assert_eq!(status["server"]["port"], 55140);
+        assert!(status["server"]["pid"].is_null());
+        assert!(status["server"]["logs"].as_array().unwrap().iter().any(|line|
+            line["source"] == "lifecycle" && line["text"].as_str().unwrap().contains("10.9.8.7:55140")));
     }
 }

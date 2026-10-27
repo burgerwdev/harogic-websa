@@ -16,6 +16,7 @@
 import { t } from '../core/i18n';
 import { getUiScale, onUiScaleChange } from '../core/uiScale';
 import { fieldForInput, setUnit, UNIT_OPTIONS } from '../core/units';
+import { deviceMode } from './graphMode';
 
 const LS_KEY = 'websa-keypad';
 
@@ -396,6 +397,7 @@ function commit(chosenUnit: string): void {
 }
 
 function onDocClick(e: MouseEvent): void {
+  if (deviceMode.get() === 'server') { close(); return; }
   if (!enabled) return;
   if (isServed(e.target)) { open(e.target); return; }
   if (pad && e.target instanceof Node && pad.contains(e.target)) return;
@@ -403,6 +405,7 @@ function onDocClick(e: MouseEvent): void {
 }
 
 function onKeyDown(e: KeyboardEvent): void {
+  if (deviceMode.get() === 'server') { close(); return; }
   if (!enabled || !target) return;
   const k = e.key;
   if (isTextField(target)) {

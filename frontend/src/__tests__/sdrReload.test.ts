@@ -39,7 +39,7 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
-// Static imports cannot re-exercise preference restoration and firstConnect at a page reload.
+// Static imports cannot re-exercise preference restoration at a page reload.
 async function load() {
 	const ws = await import('../core/ws');
 	const controls = await import('../ui/controls');
@@ -212,13 +212,13 @@ describe('SDR entry and reload', () => {
 		expect(document.getElementById('trace-avg-row')!.style.display).toBe(mode === 'sdr' ? '' : 'none');
 		expect(document.getElementById('trace-avg-status')!.textContent).toBe(mode === 'sdr' ? String(SDR_DEFAULT_AVG) : '');
 
-		// Module reload is the page boundary: onopen must select the same mode without an
-		// artificial storage seed, using the state that the acknowledged Preset left behind.
+		// A fresh browser waits for STATUS before restoring the saved graph preference.
 		vi.clearAllTimers();
 		vi.resetModules();
 		await load();
-		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toMatchObject([{ cmd: 'SET_MODE', mode }]);
+		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toEqual([]);
 		receive(status(mode));
+		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toMatchObject([{ cmd: 'SET_MODE', mode }]);
 		const { currentGraphMode } = await import('../ui/graphMode');
 		expect(currentGraphMode()).toBe(mode);
 		expect(document.body.dataset.deviceMode).toBe(mode);

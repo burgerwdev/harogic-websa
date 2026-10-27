@@ -269,9 +269,14 @@ export function setRadiofaxDecoderState(decoder: RadiofaxDecoderState | null, ch
 /** Close receiving state and preserve the paper; a fresh stream identity cannot splice into it. */
 export function endRadiofaxStream(channel: Channel = selectedChannel): void {
 	const context = contexts[channel];
-	const current = context.status.current;
-	if (current && !current.meta.complete && !current.meta.partial) {
-		current.meta = { ...current.meta, partial: true, reason: current.meta.reason ?? 'stream ended' };
+	// Paper appended before a decode worker exists has no live segment, but an open page
+	// is still interrupted by the same stream loss.
+	for (const page of context.status.pages) {
+		for (const entry of page.segments) {
+			if (!entry.meta.complete && !entry.meta.partial) {
+				entry.meta = { ...entry.meta, partial: true, reason: entry.meta.reason ?? 'stream ended' };
+			}
+		}
 	}
 	context.status.decoder = null;
 	refresh(context);

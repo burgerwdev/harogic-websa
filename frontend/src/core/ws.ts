@@ -62,6 +62,7 @@ import { syncSweepStatus, rejectSweepRequest, resetSweepEditor } from '../ui/pan
 import { acceptRtaAxisFrame, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { sdrCenterHz, sdrDecimate } from '../ui/sdrState';
 import { deviceMode } from '../ui/graphMode';
+import { rejectServerCommand, setServerConnection, syncServerStatus } from '../ui/serverMode';
 import { confirmAxisRef, rejectAxisRef, rejectSdrAxisWindow } from '../ui/axisDrag';
 
 function localizedError(msg: any): string {
@@ -182,6 +183,7 @@ function scheduleSpectrumWork(work: () => void, immediate = false) {
 
 onTriggerReset(cancelSpectrumWork);
 onCommandSent(command => {
+  if (command.cmd === 'SET_MODE') initialModeSync = false;
   if (command.cmd !== 'STATUS') {
     pendingCommands.set(command.request_id, { sequence: ++commandSequence, command });
     // Missing replies cannot grow this ledger indefinitely. Evicted/unknown ACKs
@@ -192,9 +194,10 @@ onCommandSent(command => {
       || command.cmd === 'SET_RTA' || command.cmd === 'SET_TRIGGER') cancelSpectrumWork();
 });
 
-// Re-initialise the SDR auto-scale (called when entering SDR).
-let firstConnect = true;
 
+// Restore the graph preference once, after learning whether Server owns the device.
+let initialModeSync = false;
+let firstConnect = true;
 
 function scheduleReconnect() {
   if (reconnectTimer !== null) return;
@@ -235,26 +238,17 @@ export function connectWS() {
   ws.onopen = () => {
     cancelSpectrumWork();
     lastSpectrumDraw = -Infinity;
+    if (firstConnect) { firstConnect = false; initialModeSync = true; }
     reconnectDelay = 1000;
+    setServerConnection(true);
     S.setRtaData(null);
     S.setRtaDensity2d(null);
     resetRtaAxisTransition();
     send({ cmd: 'STATUS' });
-    // First load synchronizes the backend with the UI's initial standard sweep view.
-    if (firstConnect) {
-      firstConnect = false;
-      // First load: restore saved mode (default std). A leftover RTA session on the
-      // backend would otherwise push RTAF frames with no SWP data -> blank spectrum.
-      const saved = localStorage.getItem('web-sa-mode');
-      const wantMode = saved === 'rta' ? 'rta' : saved === 'sdr' ? 'sdr' : 'std';
-      const wantRta = wantMode !== 'std';
-      send({ cmd: 'SET_MODE', mode: wantMode });
-      if (!wantRta) { S.setViewMode('std'); S.setRtaMode(false); }
-      else { S.setViewMode('rta'); S.setRtaMode(true); }
-    }
   };
   ws.onerror = () => ws?.close();
   ws.onclose = () => {
+    setServerConnection(false);
     pendingCommands.clear();
     cancelSpectrumWork();
     endMeasurementSessions();
@@ -284,6 +278,7 @@ export function connectWS() {
           failSdrReceiver(String(msg.error || msg.msg || t('receiver_failed')));
           takeCommandReply(msg);
           if (msg.cmd === 'ERROR') {
+            rejectServerCommand(msg);
             rejectSdrAgcRequest(msg.response_to, msg.request_id);
             rejectSdrAmSyncRequest(msg.response_to, msg.request_id);
             rejectSdrRadiofaxRequest(msg.response_to, msg.request_id);
@@ -296,6 +291,7 @@ export function connectWS() {
         else if (msg.cmd === 'ERROR') {
           reportCommandError(msg);
           releaseGraphModePending();
+          rejectServerCommand(msg);
           if (msg.response_to === 'SET_TRIGGER') rejectTriggerEdit();
           if (msg.response_to === 'SET_REF') { rejectAxisRef(); rejectManualRef(); }
           rejectFrequencyCommit(msg.response_to, msg.request_id);
@@ -519,6 +515,10 @@ export function connectWS() {
 
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
+  const restoreMode = initialModeSync && s.mode !== 'server'
+    ? localStorage.getItem('web-sa-mode') : null;
+  const shouldRestoreMode = initialModeSync && s.mode !== 'server';
+  initialModeSync = false;
   confirmCommandRecovery(s);
   if (s.connected === false || s.mode !== deviceMode.get()) cancelSpectrumWork();
   document.body.dataset.deviceMode = String(s.mode);
@@ -531,6 +531,7 @@ export function updateStatus(s: any) {
   if (recoveredReceiver && previousReceiverError
       && S.statusError === localizedError({ msg: previousReceiverError })) S.setStatusError(null);
   syncGraphModeStatus(s.mode);
+  syncServerStatus(s);
   if (s.caps) {
     S.setFrequencyLimits(Number(s.caps.fmin), Number(s.caps.fmax));
   }
@@ -720,6 +721,10 @@ export function updateStatus(s: any) {
   if (sdrIqStats().receiverFailed) {
     const level = document.getElementById('cur-sdr-level');
     if (level) { level.textContent = '--- dBFS'; level.removeAttribute('title'); }
+  }
+  if (shouldRestoreMode) {
+    const mode = restoreMode === 'rta' ? 'rta' : restoreMode === 'sdr' ? 'sdr' : 'std';
+    send({ cmd: 'SET_MODE', mode });
   }
 }
 

@@ -352,6 +352,56 @@ mod tests {
     }
 
     #[test]
+    fn failed_server_handoff_fences_detached_metadata_power_and_auto_observation() {
+        if !crate::tests::isolated_handoff_test("sdr_hardware::tests::failed_server_handoff_fences_detached_metadata_power_and_auto_observation") { return; }
+        crate::tests::register_stateless_handoff_library();
+        let (golden,schema)=load_golden();
+        let mut state=DevState::new(golden,schema);
+        state.swp.mode="sdr".into();
+        state.hardware_shim=Some("registered-stateless-library".into());
+        state.link_up=true;
+        state.actual=json!({"center":100e6});
+        state.sdr_actual=json!({"center":100e6,"ref":-10.0});
+        state.rta_actual=json!({"center":100e6});
+        state.gnss_value=Some(json!({"lock":1}));
+        state.channel_power=[Some((std::time::Instant::now(),-21.0));3];
+        state.note_auto_acquisition(-12);
+        state.auto.last_peak=Some(-20.0);
+        state.auto.last_floor=Some(-80.0);
+        state.auto_scale(None,false);
+        let old_version=state.config_version;
+        let mut output=PresentedHardware {
+            pan:vec![b"old-pan".to_vec()],frames:vec![b"retiring-iq".to_vec()],
+            actual:json!({"center":200e6,"ref":3.0}),version:old_version,
+            timing:Timing::default(),peak:Some((-2.0,-50.0,0,999)),
+            channel_power:Some([Some((std::time::Instant::now(),-1.0));3]),
+        };
+        let error=dispatch(&mut state,"SET_MODE",&json!({"mode":"server"})).unwrap_err();
+        assert_eq!(error.code,"device_error");
+        assert!(error.message.contains("cannot release"));
+        assert_eq!(state.swp.mode,"sdr");
+        assert_eq!(state.config_version,old_version+1);
+        assert!(!state.link_up);
+        assert_eq!(state.actual,json!({}));
+        assert_eq!(state.sdr_actual,json!({}));
+        assert_eq!(state.rta_actual,json!({}));
+        assert!(state.gnss_value.is_none());
+        assert!(state.channel_power.iter().all(Option::is_none));
+        assert!(state.auto.session.is_none());
+        assert!(state.auto.last_peak.is_none() && state.auto.last_floor.is_none());
+        let observation=(state.auto.observation,state.auto.observation_config,state.auto.observation_status,
+            state.auto.spectrum_observation,state.auto.seq);
+        state.apply_hardware_presentation(&mut output);
+        assert!(output.pan.is_empty());
+        assert_eq!(output.frames,vec![b"retiring-iq".to_vec()]);
+        assert_eq!(state.sdr_actual,json!({}),"detached metadata cannot undo failed-handoff clearing");
+        assert!(state.channel_power.iter().all(Option::is_none));
+        assert_eq!((state.auto.observation,state.auto.observation_config,state.auto.observation_status,
+            state.auto.spectrum_observation,state.auto.seq),observation);
+        assert!(state.auto.last_peak.is_none() && state.auto.last_floor.is_none());
+    }
+
+    #[test]
     fn current_presentation_keeps_pan_and_updates_actual() {
         let (golden, schema) = load_golden();
         let mut state = DevState::new(golden, schema);

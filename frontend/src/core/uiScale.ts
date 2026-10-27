@@ -86,20 +86,24 @@ export function chooseUiScale(value: string): number {
   return scale;
 }
 
-/** Initialise from localStorage (auto when absent) and bind the bar control. */
+/** Initialise from localStorage (auto when absent) and bind the footer scale control. */
+let uiScaleBinding: AbortController | null = null;
 export function initUiScale(saved: string | null = localStorage.getItem(UI_SCALE_KEY)): number {
   const scale = initialScale(saved);
   setUiScale(scale);
-  const select = document.getElementById('ui-scale') as HTMLSelectElement | null;
+  const shown = saved !== null && parseStoredScale(saved) !== null ? String(scale) : UI_SCALE_AUTO;
+  // A repeated init (tests, a rebuilt frame) must not stack another listener on the select.
+  uiScaleBinding?.abort();
+  uiScaleBinding = new AbortController();
+  const signal = uiScaleBinding.signal;
+  const select = document.querySelector<HTMLSelectElement>('#ui-scale');
   if (select) {
-    select.value = saved !== null && parseStoredScale(saved) !== null ? String(scale) : UI_SCALE_AUTO;
+    select.value = shown;
     select.addEventListener('change', () => {
       const applied = chooseUiScale(select.value);
-      // Keep the control honest when the request was rejected (bad value -> auto).
-      if (select.value !== UI_SCALE_AUTO && parseStoredScale(select.value) !== applied) {
-        select.value = UI_SCALE_AUTO;
-      }
-    });
+      select.value = select.value !== UI_SCALE_AUTO && parseStoredScale(select.value) !== applied
+        ? UI_SCALE_AUTO : select.value === UI_SCALE_AUTO ? UI_SCALE_AUTO : String(applied);
+    }, { signal });
   }
   return scale;
 }

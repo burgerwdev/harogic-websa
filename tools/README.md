@@ -18,6 +18,7 @@ Python dependencies belong to these tools; the service runs through `./run.sh`,
 | `pluto/`, `pluto_tx.py` | RF signal generators behind one transmit entry point. |
 | `sdr_probe/` | SDK constraints, device helpers, and native IQ/audio/decode probes. |
 | `vendor/` | ggmorse sources, licensing, and artifact rebuild script. |
+| `build-soapy.sh` | Build the official SoapyHarogic module with typed IQ and device-lifecycle fixes; `--check-patch` checks pinned patch applicability and `--check-stream` checks the patched stream contract with an HTRA stub. |
 
 Run commands from the repository root. Install Python tools with
 `python3 -m pip install -r requirements-dev.txt`; use `requirements-lock.txt` for
@@ -32,6 +33,43 @@ builds the retained-session shim against SDK 0.55.100; override `SDK_ROOT` and
 shim or `WEBSA_RUST_IQS_SHIM`. Pluto transmission requires a reachable ADALM-PLUTO,
 libiio, and pyadi-iio; tinySA helpers require pyserial and the selected serial port.
 
+## Soapy Server driver setup
+
+Server mode needs system SoapySDR 0.8 development files, `SoapySDRUtil`, and SoapyRemote (`SoapySDRServer` on the host and the remote module on clients). Build tools are `curl`, CMake, pkg-config, realpath, patch and a C++ compiler. Install these dependencies and the proprietary HTRA SDK yourself; the helper never runs root or package-install commands.
+
+```sh
+make native sdk-shim frontend
+make soapy-driver
+# Custom SDK and installation prefix:
+make soapy-driver SDK_ROOT=/opt/htraapi SOAPY_PREFIX="$HOME/.local/share/harogic-websa/soapy"
+# SDK-free pinned patch and helper shell syntax check:
+make soapy-check-patch
+# Stream contract check with real SDK headers; no device or SDK library used:
+make soapy-check-stream SDK_ROOT=/opt/htraapi
+```
+
+`make soapy-driver` calls `tools/build-soapy.sh`; a direct invocation builds the same patched module (`--build` is an explicit alias for the default). It fetches only `CMakeLists.txt`, `HarogicDevice.cpp`, `HarogicDevice.hpp`, `LICENSE`, and `cmake/FindLibHTRA.cmake` from official [HAROGIC-Technologies/soapy-htra](https://github.com/HAROGIC-Technologies/soapy-htra/tree/762dbfa1512c705e1d8b86e820b06e8a10e08a92) revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92`. The driver is GNU LGPL v2.1 or later; its source, copyright notices, licence and revision attribution remain under `${SOAPY_SRC_CACHE:-$HOME/.cache/harogic-websa/soapy-htra}/<revision>`. SDK headers/libraries stay external. Builds use one compile job and install to `${SOAPY_PREFIX:-$HOME/.local/share/harogic-websa/soapy}/lib/SoapySDR/modules0.8`; the default `SDK_ROOT` is `/opt/htraapi`.
+
+`make soapy-check-patch` requires `curl`, `patch` and standard shell utilities, but no SDK or SoapySDR development files. It runs `bash -n tools/build-soapy.sh` and the helper's `--check-patch` mode to check applicability against the pinned upstream sources. `make soapy-check-stream SDK_ROOT=/opt/htraapi` additionally requires `pkg-config`, `realpath`, a C++ compiler, SoapySDR development files and real vendor SDK headers. It compiles the patched driver with stub HTRA functions and links only SoapySDR; it needs neither a vendor library nor a device.
+
+Every build applies this project's `tools/soapy-htra-stream-format.patch` to a private source copy, leaving the cached upstream revision unchanged. Upstream advertises integer formats while writing CF32; the patched driver actually writes CF32, CS16 or CS8 as requested. Before stream setup, the native-format query defaults to CS16 up to 60 MSps (`fullScale` 32768) and CS8 above 60 MSps (`fullScale` 128). After setup it reports the selected output format and its `fullScale` (CF32: 1, CS16: 32768, CS8: 128). `native_format` selects SDK CS8/CS16/CS32/AUTO at stream setup, and that SDK width stays fixed until the stream is closed. AUTO matches integer output width; for CF32 it selects CS16 up to 60 MSps and CS8 above that rate at setup. Explicit integer output requires a matching SDK width. The ring stores raw SDK samples and bulk-copies matching integer output; CF32 converts each component by its SDK scale (`2^7`, `2^15` or `2^31`). CS32 is an SDK input option, not an offered Soapy output format. CF32, CS16 and CS8 use 8, 4 and 2 bytes per complex sample respectively; client output format and SoapyRemote wire format can differ. `--check-stream` compiles the actual patched driver with an in-process HTRA stub and links SoapySDR only. It checks the format contract and buffer writes without opening hardware; it does not qualify RF streaming or any SDR application.
+
+The stream MTU is 16384 samples before and after activation, independent of SDK packet size. Active reads return available samples up to the requested count; consumers must accept partial reads. Inactive reads honor their timeout, and fatal acquisition errors return `SOAPY_SDR_STREAM_ERROR`.
+
+The host IQ ring holds about 50 ms at the configured sample rate, with a minimum of two SDK packets and 16384 samples. Allocation occurs during activation and reuses existing storage. A full ring reports `SOAPY_SDR_OVERFLOW`.
+
+For a custom prefix, export `WEBSA_SOAPY_MODULE_PATH=<prefix>/lib/SoapySDR/modules0.8` before starting `websad`; direct Soapy tools use `SOAPY_SDR_PLUGIN_PATH` for that path. The manager prepends its module path to the inherited plugin path and probes `SoapySDRUtil --info` for the registered lowercase `harogic` factory. `WEBSA_SOAPY_SERVER_BIN` and `WEBSA_SOAPY_UTIL_BIN` are trusted process-environment overrides of the two executables, not browser settings. Rebuild the SDK shim too: handoff requires the nonterminal `san90_session_release_v1` ABI. The committed runtime adapter has not been updated and cannot provide the handoff.
+
+Open WebSA, select **SRV**, configure the stopped server's IP literal/port, then Start. The default bind is `127.0.0.1:55132`; use `0.0.0.0` for IPv4 LAN clients, then connect to the server's reachable LAN address. A wildcard bind (`0.0.0.0` or `::`) is not a client destination. Use `driver=remote,remote=<host>:<port>,remote:driver=harogic` in a SoapyRemote client. SoapySDRServer exposes installed device factories, so retain the `harogic` filter. Listening confirms only the process endpoint; the analyzer opens on client use. Web capture and audio are stopped throughout Server mode. Spectrum stops and reaps the child before restoring the last graph view. See the paired [API](../docs/en/API.md) / [中文](../docs/zh-CN/API.md) for state, logs, dependency failures, browser lifetime and release refusal.
+
+SoapyRemote provides automatic network discovery through mDNS/Avahi and SSDP; WebSA does not need a second publisher. `avahi-browse -rt _soapy._tcp` can show the advertised host and port. An advertisement can include addresses on multiple interfaces, including loopback; discovery does not make a server bound to `127.0.0.1` reachable from another machine. In OnAir 3.2, stop reception, open the source selector, and enable **Search the network for radios** (off by default). The client must have the SoapyRemote module installed; discovered radios then appear through its Soapy source.
+
+USB discovery uses the SDK's `Device_List` to obtain device indices and serials without opening acquisition handles. Explicit Ethernet addresses bypass broadcast discovery; the constructor validates the selected device and serial. One streaming-capable handle serves capability queries and subsequent streams. Deactivation and `closeStream` stop acquisition but retain that handle; device destruction releases it. Changing live settings stops and joins the worker before SDK configuration, and unchanged settings do not restart acquisition.
+
+OnAir can reconstruct its entire Soapy device when changing mode or IQ bandwidth. Device reconstruction still requires an SDK open; stream recreation within an existing device reuses its handle. WebSA's server process remains running during client-side changes.
+
+Use the default UDP MTU with SoapyRemote 0.5.2. Native CS16/CS8 transport reduces network traffic relative to CF32. `driver=harogic,prot=tcp` selects TCP in OnAir's remote-driver setting. The driver supplies no hardware timestamps.
+
 ## Checks, fixtures, and references
 
 ```sh
@@ -44,12 +82,14 @@ python3 tools/fixtures/gen_ft8_fixtures.py --check
 python3 tools/fixtures/gen_sstv_fixtures.py --check
 ```
 
-`make ci` runs the in-process Rust/Python/frontend and fixture/static gates without
-hardware. See [fixture ownership](../tests/fixtures/README.md) before regenerating
-data. `tools/reference/` and `tools/analysis/` provide independent numerical
-comparisons; they do not run the HTTP service. DRM generation, capture, codec
-oracle, and AAC reserialization procedures are documented in
-[DRM bench](../docs/en/DRM_BENCH.md) ([中文](../docs/zh-CN/DRM_BENCH.md)) and
+`make ci` runs the in-process Rust/Python/frontend and fixture/static gates, including
+`soapy-check-patch`, without hardware or the vendor SDK. Hosted CI also runs the SDK-free
+patch check. `soapy-check-stream` is a separate gate for hosts with the real vendor headers
+and SoapySDR development files. See [fixture ownership](../tests/fixtures/README.md) before
+regenerating data. `tools/reference/` and `tools/analysis/` provide independent numerical
+comparisons; they do not run the HTTP service. DRM generation, capture, codec oracle, and AAC
+reserialization procedures are documented in [DRM bench](../docs/en/DRM_BENCH.md)
+([中文](../docs/zh-CN/DRM_BENCH.md)) and
 [DRM AAC reserialization](../docs/en/DRM_AAC_RESERIALIZATION.md)
 ([中文](../docs/zh-CN/DRM_AAC_RESERIALIZATION.md)).
 
