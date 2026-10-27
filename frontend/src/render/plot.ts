@@ -1,7 +1,7 @@
 // Canvas layout
 import { W, H, MARGIN } from '../core/store';
 import * as S from '../core/store';
-import { getDisplayRef } from '../ui/displayRef';
+import { getDisplayRange, getDisplayTop } from '../ui/displayRef';
 import { displayOffset } from '../ui/displayState';
 import { xAxisTransform, yAxisTransform } from '../ui/axisDrag';
 import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
@@ -12,8 +12,7 @@ export function plotRect() {
 
 export function getY(val: number): number {
   if (isFinite(val)) val += displayOffset.get();
-  const dispRef = getDisplayRef();
-  const top = dispRef, bottom = dispRef - S.totalDivs * S.dbPerDiv;
+  const top = getDisplayTop(), bottom = top - getDisplayRange();
   if (!isFinite(val)) val = bottom - 10;
   const rect = plotRect();
   const y = rect.y + ((top - val) / (top - bottom)) * rect.h;

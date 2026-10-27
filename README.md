@@ -21,8 +21,8 @@ artifacts are optional offline diagnostics, not the production DSP path.
 - **Narrow SDR capture** — acquisition can cover a wider band while the panadapter shows the requested span; the channelizer chooses a suitable receiver rate.
 - **Spectrum** — Clear Write / Max Hold / Min Hold / Average / View, four traces, smoothing,
   peak-preserving resampling
-- **Display zoom** — enlarge the captured spectrum on screen. No retune, no new sweep. An
-  overview shows the full window. The waterfall follows the same view.
+- **Display zoom** — enlarge the captured spectrum with a linked overview and rail sliders for
+  horizontal position, Top and Bottom. These controls leave Ref Level, attenuation and preamp unchanged.
 - **SDR tuning step** — set the arrow-key step per capture bandwidth. Quick steps run from
   1 Hz to 100 MHz, and To Center puts the signal at the centre.
 - **Controls** — atomic Center/Span and Start/Stop, span stepping and Full Span, RBW / VBW /
@@ -36,8 +36,9 @@ artifacts are optional offline diagnostics, not the production DSP path.
 - **SDR receiver** — IQ streaming with native Rust DSP: AM/DSB/USB/LSB/CW/NFM/WFM/PM
   demodulators, noise reduction (Wiener, optional DeepFilterNet3), audio chain, panadapter and
   waterfall; the browser handles control, playback and display
-- **SDR filter** — per-mode presets (compact k/M labels, full Hz on hover) with exact numeric entry and remembered confirmed values. The input offers Hz/kHz/MHz units shared by typed and virtual-keypad entry; custom values may exceed common presets when admitted. View highlights while active and a second press restores the previous window and zoom state, until a manual view/capture/mode/reset change; passband zoom changes only the display.
-  The input tooltip shows the actual passband, confirmed state and available range; View sits beside the units.
+- **SDR filter** — per-mode presets, exact Hz/kHz/MHz entry, a bandwidth slider and draggable
+  passband edges share confirmed settings and admission limits. View toggles passband focus.
+  CW adds a 100–1600 Hz tone control; the dial stays fixed while the receive passband follows the tone.
 - **Digital modes** — FT8 decoding, CW decoding, DRM/DRM+ reception, SSTV picture decoding (18 modes) and HF radiofax reception. Radiofax uses a 12 kHz USB path, IOC 288/576, 60/90/120/240 LPM, continuous pages and PNG export. The FT8 window supports QSO highlighting, regex filtering and column sorting. Current decoder and playback limits are documented in [KNOWN_ISSUES](docs/en/KNOWN_ISSUES.md).
 - **FM stereo and RDS** — WFM recovers L/R from the 19 kHz pilot and 38 kHz difference signal.
   It decodes RDS PI, station name and RadioText from 57 kHz. The FM pane shows a pilot-based

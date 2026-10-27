@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const markup = `
 	<input id="input-sdr-ifbw"><div id="unit-sdr_ifbw-group"></div>
-	<div id="sdr-ifbw-group"></div><button id="btn-sdr-filter-view"></button>`;
+	<div id="sdr-ifbw-group"></div><button id="btn-sdr-filter-view"></button>
+	<input type="range" id="slider-sdr-ifbw"><output id="sdr-filter-readout"></output>
+	<span id="sdr-filter-status"></span>`;
 
 beforeEach(() => {
 	vi.resetModules();
@@ -29,6 +31,22 @@ async function load(mode = 'am', ifbw = 6000) {
 }
 
 describe('SDR Filter panel', () => {
+	it('previews slider movement locally and commits once on release within reported limits', async () => {
+		const { state, filter } = await load();
+		state.sdrFilterLimits.confirm({ mode: 'am', min_hz: 100, max_hz: 9000 });
+		const commit = vi.fn((hz: number) => state.sdrIfbw.set(hz));
+		filter.bindSdrFilter({ onCommit: commit, onView: vi.fn() });
+		const slider = document.getElementById('slider-sdr-ifbw') as HTMLInputElement;
+		expect(slider.min).toBe('100');
+		expect(slider.max).toBe('9000');
+		slider.value = '8000';
+		slider.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(filter.filterPreviewHz()).toBe(8000);
+		expect(state.sdrIfbw.get()).toBe(6000);
+		expect(commit).not.toHaveBeenCalled();
+		slider.dispatchEvent(new Event('change', { bubbles: true }));
+		expect(commit).toHaveBeenCalledExactlyOnceWith(8000);
+	});
 	it('renders the actual AM passband and applies a preset through the shared IF slot', async () => {
 		const { state, filter } = await load();
 		const onView = vi.fn();

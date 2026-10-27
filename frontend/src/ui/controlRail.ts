@@ -99,6 +99,15 @@ function syncLabels(): void {
   if (toggle) toggle.title = t(isCollapsedRail() ? 'rail_expand' : 'rail_collapse');
   const visToggle = document.getElementById('panel-vis-toggle');
   if (visToggle) visToggle.title = t(isPanelHidden() ? 'panel_show' : 'panel_hide');
+  for (const key of ['position', 'top', 'bottom']) {
+    const label = document.getElementById(`zoom-rail-${key}-label`);
+    const input = document.getElementById(`zoom-rail-${key}`);
+    if (label) label.textContent = t(`zoom_rail_${key}`);
+    if (input) {
+      input.setAttribute('aria-label', t(`zoom_rail_${key}_tip`));
+      input.title = t(`zoom_rail_${key}_tip`);
+    }
+  }
 }
 
 function isCollapsedRail(): boolean {
@@ -154,6 +163,43 @@ function syncActive(): void {
   items.forEach((it, i) => it.el.classList.toggle('active', i === idx));
 }
 
+/** Keep the navigation buttons intact while zoom temporarily owns the rail. */
+export function syncControlRailZoom(on: boolean): void {
+  const host = document.getElementById('control-rail');
+  if (host?.classList.contains('zoom-rail') !== on) {
+    const itemsHost = document.getElementById('rail-items');
+    if (itemsHost) { itemsHost.scrollLeft = 0; itemsHost.scrollTop = 0; }
+  }
+  host?.classList.toggle('zoom-rail', on);
+  items.forEach(({ el }) => { el.hidden = on; });
+  const controls = document.getElementById('zoom-rail-controls');
+  if (controls) controls.hidden = !on;
+}
+
+function createZoomRail(): HTMLElement {
+  const controls = document.createElement('div');
+  controls.id = 'zoom-rail-controls';
+  controls.className = 'zoom-rail-controls';
+  controls.hidden = true;
+  for (const key of ['position', 'top', 'bottom']) {
+    const group = document.createElement('label');
+    group.className = 'zoom-rail-control';
+    const label = document.createElement('span');
+    label.id = `zoom-rail-${key}-label`;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.id = `zoom-rail-${key}`;
+    input.disabled = true;
+    input.setAttribute('aria-orientation', 'vertical');
+    const value = document.createElement('output');
+    value.id = `zoom-rail-${key}-value`;
+    value.setAttribute('for', input.id);
+    group.append(label, input, value);
+    controls.appendChild(group);
+  }
+  return controls;
+}
+
 export function initControlRail(): void {
   const host = document.getElementById('control-rail');
   const p = panel();
@@ -170,6 +216,7 @@ export function initControlRail(): void {
   if (itemsHost) {
     itemsHost.innerHTML = '';
     items.forEach((it) => itemsHost.appendChild(it.el));
+    itemsHost.appendChild(createZoomRail());
   }
   const toggle = document.getElementById('rail-toggle');
   toggle?.addEventListener('click', () => {

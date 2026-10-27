@@ -398,6 +398,8 @@ measured noise remains visible at reduced strength. Grain defaults to 128; NaN g
 blank. Off clears accumulation. VIEW freezes trace-source history; Live continues while
 the trace is frozen. Width, theme and contrast changes preserve history.
 
+SDR uses a thin trace without the wide glow and four times the selected amplitude grain (up to 1024 bins, with a native-point memory cap). Its waterfall retains 16-bit amplitude levels for recolouring history when the display range changes. SWP and non-SDR RTA traces retain their existing rendering. Zoom rail Top/Bottom are independent display bounds shared by the trace, density and SDR waterfall; they do not write Ref Level, attenuation or preamp. Restore or leaving Zoom clears these bounds.
+
 SWP/RTA/SDR raster paths use each device-pixel column's first, minimum, maximum and last original vertices, in source order, and split at every missing bin. Zoom reveals the retained native vertices as they occupy separate pixels; markers and export always use the complete source arrays. Optional SWP adaptive smoothing still uses the full frame, consistently with marker readouts.
 
 The global navigator connects native vertices, retaining each bounded column's first/minimum/maximum/last samples in source order and breaking at missing bins. Sparse captures remain a continuous outline; this does not add measurement resolution.

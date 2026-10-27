@@ -280,10 +280,23 @@
                 <span id="sdr-receiver-error" role="status" aria-live="polite" hidden></span>
               </div></div>
             <div class="param-row sdr-filter-row"><label for="input-sdr-ifbw" data-i18n="if_filter">Filter</label>
-              <input type="number" id="input-sdr-ifbw" min="0.05" step="0.001" value="6" data-unit="kHz">
+              <input type="number" id="input-sdr-ifbw" min="0.05" step="0.001" value="6" data-unit="kHz" aria-describedby="sdr-filter-readout sdr-filter-status">
               <div class="sdr-tail"><div class="unit-btn-group" id="unit-sdr_ifbw-group"></div>
                 <button class="btn" id="btn-sdr-filter-view" type="button" aria-pressed="false" data-i18n="sdr_filter_view" data-i18n-title="sdr_filter_view_tip">View</button></div></div>
             <div class="param-row sdr-filter-actions"><div class="btn-group" id="sdr-ifbw-group"></div></div>
+            <div class="sdr-filter-adjust">
+              <input type="range" id="slider-sdr-ifbw" min="50" max="12000" step="1" value="6000" aria-describedby="sdr-filter-readout sdr-filter-status">
+              <output id="sdr-filter-readout"></output>
+              <span id="sdr-filter-status" role="status" aria-live="polite"></span>
+            </div>
+            <div class="sdr-tone-controls" id="sdr-tone-controls" hidden>
+              <div class="param-row sdr-tone-row"><label for="input-sdr-pitch" data-i18n="sdr_tone_label">CW tone</label>
+                <input type="number" id="input-sdr-pitch" min="100" max="1600" step="10" value="700" data-unit="Hz" aria-describedby="sdr-tone-help sdr-tone-status">
+                <span class="sdr-tone-unit">Hz</span></div>
+              <input type="range" id="slider-sdr-pitch" min="100" max="1600" step="10" value="700" aria-describedby="sdr-tone-help sdr-tone-status">
+              <span id="sdr-tone-status" role="status" aria-live="polite"></span>
+              <span id="sdr-tone-help" data-i18n="sdr_tone_tip">CW sidetone and passband centre above the dial. Changing tone moves the selected RF band; the dial stays fixed.</span>
+            </div>
             <div class="param-row"><label data-i18n="deemph">De-emph</label>
               <div class="btn-group" style="flex:1;flex-wrap:wrap;" id="sdr-deemph-group">
                 <button class="btn active" data-sdr-deemph="-1">Auto</button>

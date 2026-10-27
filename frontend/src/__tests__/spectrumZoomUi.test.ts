@@ -6,11 +6,11 @@
  * Off returns to the full window; PNM disables the whole UI without touching the
  * user's toggle choice; none of it sends anything.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAll } from '../core/params';
 import { deviceMode } from '../ui/graphMode';
 import { syncGraphModeStatus } from '../ui/controls';
-import { getCapture, sameWindow, setCapture, togglePassbandView, zoomEnabled, __testSeedCapture } from '../ui/spectrumViewport';
+import { getCapture, getView, sameWindow, setCapture, setView, togglePassbandView, zoomEnabled, __testSeedCapture } from '../ui/spectrumViewport';
 import {
 	initSpectrumZoomUi,
 	isSpectrumZoomOn,
@@ -18,6 +18,18 @@ import {
 	syncSpectrumZoomUi,
 	toggleSpectrumZoom,
 } from '../ui/spectrumZoomUi';
+import * as S from '../core/store';
+import { initControlRail } from '../ui/controlRail';
+import { clearDisplayBounds, getDisplayRange, getDisplayRef, getDisplayTop, hasDisplayBounds, noteDisplayRefReport } from '../ui/displayRef';
+import { refLevel } from '../ui/refState';
+import { ampAtten, ampPreamp } from '../ui/ampState';
+import { send } from '../core/wsSend';
+import type * as WsSendModule from '../core/wsSend';
+
+vi.mock('../core/wsSend', async (importOriginal) => {
+	const actual = await importOriginal<typeof WsSendModule>();
+	return { ...actual, send: vi.fn() };
+});
 
 const CAP = { lo: 900e6, hi: 1000e6 };
 
@@ -161,5 +173,65 @@ describe('the toggle state machine', () => {
 			syncGraphModeStatus('rta');     // a real switch: the view dies with the old axis
 			expect(getCapture()).toBeNull();
 		});
+	});
+});
+
+describe('zoom rail display controls', () => {
+	function slider(key: string): HTMLInputElement {
+		return document.getElementById(`zoom-rail-${key}`) as HTMLInputElement;
+	}
+	function move(key: string, value: number): void {
+		const input = slider(key);
+		input.value = String(value);
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+	beforeEach(() => {
+		clearDisplayBounds();
+		buildDom();
+		document.body.insertAdjacentHTML('beforeend', '<div id="control-rail"><div id="rail-items"></div></div><div class="control-panel"></div>');
+		initControlRail();
+		initSpectrumZoomUi();
+		vi.mocked(send).mockClear();
+	});
+	it('disables every slider without data, and position at the full window', () => {
+		toggleSpectrumZoom();
+		for (const key of ['position', 'top', 'bottom']) expect(slider(key).disabled).toBe(true);
+		__testSeedCapture(CAP);
+		syncSpectrumZoomUi(true);
+		expect(slider('position').disabled).toBe(true);
+		expect(slider('top').disabled).toBe(false);
+	});
+	it('moves the overview in both directions while preserving the selected span', () => {
+		__testSeedCapture(CAP);
+		toggleSpectrumZoom();
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		syncSpectrumZoomUi();
+		expect(Number(slider('position').value)).toBe(500);
+		move('position', 1000);
+		expect(getView()).toEqual({ lo: 980e6, hi: 1000e6 });
+		setView({ lo: 900e6, hi: 920e6 }, 1);
+		syncSpectrumZoomUi();
+		expect(Number(slider('position').value)).toBe(0);
+	});
+	it('keeps reference and gain intent unchanged, survives ACK, and restores both axes', () => {
+		__testSeedCapture(CAP);
+		toggleSpectrumZoom();
+		const before = [getDisplayRef(), refLevel.get(), S.dbPerDiv, ampAtten.get(), ampPreamp.get()];
+		move('top', -20);
+		move('bottom', -120);
+		expect(getDisplayTop()).toBe(-20);
+		expect(getDisplayRange()).toBe(100);
+		noteDisplayRefReport(0);
+		expect(getDisplayTop()).toBe(-20);
+		expect([getDisplayRef(), refLevel.get(), S.dbPerDiv, ampAtten.get(), ampPreamp.get()]).toEqual(before);
+		expect(send).not.toHaveBeenCalled();
+		move('bottom', -20);
+		expect(getDisplayRange()).toBeGreaterThanOrEqual(1);
+		document.getElementById('btn-zoom-reset')!.click();
+		expect(hasDisplayBounds()).toBe(false);
+		move('top', -20);
+		toggleSpectrumZoom();
+		expect(hasDisplayBounds()).toBe(false);
+		expect(getDisplayTop()).toBe(before[0]);
 	});
 });

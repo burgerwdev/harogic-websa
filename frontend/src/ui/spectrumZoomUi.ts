@@ -20,6 +20,12 @@ import { getLang, t } from '../core/i18n';
 import { formatFreqHz } from '../core/fmt';
 import { requestRender } from '../render/redraw';
 import { deviceMode } from './graphMode';
+import { onLangChange } from '../core/i18n';
+import { fmtAxisLevel } from '../core/level';
+import { displayUnit } from './displayState';
+import { clearDisplayBounds, displayBoundsMax, displayBoundsMin, getDisplayRange, getDisplayTop, hasDisplayBounds, setDisplayBounds } from './displayRef';
+import { syncControlRailZoom } from './controlRail';
+import { cancelLevelPreview } from './axisDrag';
 import {
 	DETAIL_HINT_SAMPLES,
 	isZoomed,
@@ -40,6 +46,69 @@ import {
 let lastSyncKey = '';
 let lastPassbandButton: HTMLButtonElement | null = null;
 let lastPassbandButtonKey = '';
+
+function railInput(key: string): HTMLInputElement | null {
+	return document.getElementById(`zoom-rail-${key}`) as HTMLInputElement | null;
+}
+
+function syncZoomRail(on: boolean): void {
+	syncControlRailZoom(on);
+	const capture = getCapture(), view = getView();
+	const ready = on && !!capture && !!view;
+	const position = railInput('position');
+	if (position) {
+		const span = view ? view.hi - view.lo : 0;
+		position.min = '0'; position.max = '1000'; position.step = '1';
+		position.disabled = !ready || !capture || span >= capture.hi - capture.lo;
+		position.value = capture && view && !position.disabled
+			? String(Math.round((view.lo - capture.lo) / (capture.hi - capture.lo - span) * 1000)) : '500';
+		position.setAttribute('aria-valuetext', view ? formatFreqHz((view.lo + view.hi) / 2) : t('zoom_waiting'));
+		const output = document.getElementById('zoom-rail-position-value');
+		if (output) { output.textContent = view ? `${Math.round(Number(position.value) / 10)}%` : '—'; output.title = position.getAttribute('aria-valuetext') ?? ''; }
+	}
+	const top = getDisplayTop(), bottom = top - getDisplayRange();
+	const minimum = Math.min(displayBoundsMin(), bottom), maximum = Math.max(displayBoundsMax(), top);
+	for (const key of ['top', 'bottom']) {
+		const input = railInput(key);
+		if (!input) continue;
+		const value = key === 'top' ? top : bottom;
+		input.disabled = !ready;
+		input.min = String(key === 'top' ? bottom + 1 : minimum);
+		input.max = String(key === 'bottom' ? top - 1 : maximum);
+		input.step = 'any';
+		input.value = String(value);
+		const text = `${fmtAxisLevel(value)} ${displayUnit.get() === 'dB' ? 'dB' : S.levelUnit}`;
+		input.setAttribute('aria-valuetext', text);
+		const output = document.getElementById(`zoom-rail-${key}-value`);
+		if (output) { output.textContent = fmtAxisLevel(value); output.title = text; }
+	}
+}
+
+function initZoomRail(): void {
+	for (const key of ['position', 'top', 'bottom']) {
+		const input = railInput(key);
+		input?.addEventListener('keydown', (event) => { event.stopPropagation(); });
+		input?.addEventListener('input', () => {
+			if (!isSpectrumZoomOn() || !getCapture() || !getView() || input.disabled) return;
+			const value = Number(input.value);
+			if (!Number.isFinite(value)) return;
+			if (key === 'position') {
+				const capture = getCapture()!, view = getView()!;
+				const span = view.hi - view.lo;
+				const center = capture.lo + span / 2 + value / 1000 * (capture.hi - capture.lo - span);
+				const min = minSpanHz(S.freqArray);
+				setView(panToCenter(view, center, capture, min), min);
+			} else {
+				cancelLevelPreview();
+				const top = getDisplayTop(), bottom = top - getDisplayRange();
+				setDisplayBounds(key === 'top' ? Math.max(bottom + 1, value) : top,
+					key === 'bottom' ? Math.min(top - 1, value) : bottom);
+			}
+			syncSpectrumZoomUi(true);
+			requestRender();
+		});
+	}
+}
 
 /** Keep the filter action's fixed-width label while exposing toggle state accessibly. */
 function syncPassbandViewButton(active: boolean): void {
@@ -92,17 +161,18 @@ export function syncSpectrumZoomUi(force = false): void {
 	const key = [
 		on ? 1 : 0, available ? 1 : 0, zoomed ? 1 : 0,
 		viewportVersion(), capture ? capture.lo.toFixed(0) : '-',
-		samples === null ? '-' : samples,
+		samples === null ? '-' : samples, getDisplayTop(), getDisplayRange(), getLang(), displayUnit.get(), S.levelUnit,
 	].join('|');
 	if (!force && key === lastSyncKey) return;
 	lastSyncKey = key;
+	syncZoomRail(on);
 
 	btn.disabled = !available;
 	btn.classList.toggle('active', on);
 	btn.setAttribute('aria-pressed', String(on));
 	btn.title = available ? t('tip_spectrum_zoom') : t('tip_spectrum_zoom') + ' (PNM)';
 	box.style.display = on ? '' : 'none';
-	if (reset) reset.disabled = !zoomed;
+	if (reset) reset.disabled = !zoomed && !hasDisplayBounds();
 
 	if (title) {
 		if (!capture) {
@@ -138,7 +208,7 @@ export function toggleSpectrumZoom(): void {
 	const next = !zoomEnabled.get();
 	zoomEnabled.set(next);
 	// Off always returns to the full window (design §3); On keeps whatever comes next.
-	if (!next) setView(null);
+	if (!next) { setView(null); clearDisplayBounds(); }
 	syncSpectrumZoomUi(true);
 	requestRender();
 }
@@ -147,6 +217,7 @@ export function toggleSpectrumZoom(): void {
 export function resetSpectrumZoom(): void {
 	if (!isSpectrumZoomOn()) return;
 	setView(null);
+	clearDisplayBounds();
 	syncSpectrumZoomUi(true);
 	requestRender();
 }
@@ -159,6 +230,8 @@ export function initSpectrumZoomUi(): void {
 		document.getElementById('btn-zoom-close')
 		?.addEventListener('click', (e) => { e.stopPropagation(); if (isSpectrumZoomOn()) toggleSpectrumZoom(); });
 	initOverviewInteractions();
+	initZoomRail();
+	onLangChange(() => syncSpectrumZoomUi(true));
 	syncSpectrumZoomUi(true);
 }
 

@@ -31,6 +31,21 @@ export const zoomEnabled = createParam<boolean>('zoom.enabled', {
 	fallback: false, scope: 'zoom', authoritative: true,
 });
 
+
+export type LevelWindow = { top: number; bottom: number };
+let levelView: LevelWindow | null = null;
+
+/** Display-only raw dBm bounds; independent of reference and receiver settings. */
+export function getLevelView(): LevelWindow | null { return levelView; }
+
+export function setLevelView(top: number, bottom: number): boolean {
+	if (!Number.isFinite(top) || !Number.isFinite(bottom) || top - bottom < 1) return false;
+	if (levelView?.top === top && levelView.bottom === bottom) return false;
+	levelView = { top, bottom };
+	return true;
+}
+
+export function clearLevelView(): void { levelView = null; }
 /** Two windows closer than this are the same window (per-frame float jitter must not reset). */
 export const SAME_WINDOW_HZ = 0.5;
 /** The marquee only becomes a zoom past this width (CSS px; the gesture layer measures it). */
@@ -285,6 +300,7 @@ export function togglePassbandView(target: FreqWindow, minSpan: number): boolean
 
 /** Reset everything (mode change, Preset, disconnect). The toggle stays as the user set it. */
 export function resetViewport(): void {
+	clearLevelView();
 	clearPassbandView();
 	if (capture === null && view === null) return;
 	capture = null;

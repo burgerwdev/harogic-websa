@@ -100,8 +100,8 @@ describe('AM: symmetric total-bandwidth edges', () => {
 	it('dragging one edge previews a symmetric total bandwidth', () => {
 		expect(startFilterDrag('low', 1)).toBe(true);
 		expect(filterDragging()).toBe(true);
-		// drag low edge to +2 kHz off the dial: bandwidth = 4 kHz, mirrored.
-		expect(moveFilterDrag(xOf(LISTEN + 2_000), 1)).toBe(true);
+		// Low edge remains below the dial; the opposite edge mirrors its width.
+		expect(moveFilterDrag(xOf(LISTEN - 2_000), 1)).toBe(true);
 		expect(filterPreviewHz()).toBeCloseTo(4_000, 6);
 		// the confirmed slot is untouched until the caller commits
 		expect(sdrIfbw.get()).toBe(40_000);
@@ -109,6 +109,13 @@ describe('AM: symmetric total-bandwidth edges', () => {
 		expect(filterPreviewHz()).toBeCloseTo(sdrIfbw.get(), 6);   // preview cleared
 		expect(filterDragging()).toBe(false);
 		expect(sent).toEqual([]);                                   // the gesture sends nothing
+	});
+
+	it('stops a low edge at minimum width when dragged beyond the centre', () => {
+		expect(startFilterDrag('low', 1)).toBe(true);
+		moveFilterDrag(xOf(LISTEN + 2_000), 1);
+		expect(filterPreviewHz()).toBe(50);
+		expect(endFilterDrag(1)).toBe(50);
 	});
 
 	it('the y bound keeps the axis rows out of the edge hit', () => {

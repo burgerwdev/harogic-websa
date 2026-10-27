@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pushSpectrumRow, renderWaterfall, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
 import * as S from '../core/store';
 import { wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
-import { __testSeedCapture } from '../ui/spectrumViewport';
+import { __testSeedCapture, zoomEnabled } from '../ui/spectrumViewport';
 import { clearSdrBadgeDrag, sdrBadgeGeometry, startSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 import { sdrListenHz } from '../ui/sdrState';
 import { canvasColors, setTheme } from '../core/theme';
+import { clearDisplayBounds, setDisplayBounds } from '../ui/displayRef';
 
 beforeEach(() => {
   S.resetWaterfall();
@@ -16,6 +17,8 @@ beforeEach(() => {
 
 afterEach(() => {
   clearSdrBadgeDrag();
+  clearDisplayBounds();
+  zoomEnabled.set(false);
   S.setSdrMode(false);
   S.setRtaData(null);
   __testSeedCapture(null);
@@ -53,6 +56,34 @@ describe('native waterfall history', () => {
     expect([...sliceWaterfallRow(row, 3, 10, 16)]).toEqual([80, 5, 70]);
     expect([...sliceWaterfallRow(row, 4, 15, 19)]).toEqual([0, 0, 75, 75]);
     expect([...sliceWaterfallRow(row, 3, 8, 11)]).toEqual([0, 0, 80]);
+  });
+
+  it('recolors retained SDR levels with display bounds and keeps sub-dB carriers distinct', () => {
+    S.setSdrMode(true);
+    zoomEnabled.set(true);
+    const freq = Float64Array.from([10, 12, 14, 16]);
+    __testSeedCapture({ lo: 10, hi: 16 });
+    let pixels = new Uint8ClampedArray();
+    const context = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: (image: { data: Uint8ClampedArray }) => { pixels = image.data.slice(); },
+    };
+    const canvas = { width: 4, height: 1, getContext: () => context } as unknown as HTMLCanvasElement;
+    pushSpectrumRow(Float32Array.from([-60.8, -60.2, NaN, -20]), freq, 10, 16, 100);
+    const row = S.waterfallRows[0];
+    const pushes = S.waterfallPushes;
+    setDisplayBounds(-60, -61);
+    renderWaterfall(canvas, 100);
+    const narrow = pixels.slice();
+    expect([...pixels.slice(0, 4)]).not.toEqual([...pixels.slice(4, 8)]);
+    setDisplayBounds(0, -100);
+    renderWaterfall(canvas, 100);
+    expect(pixels).not.toEqual(narrow);
+    expect(S.waterfallRows[0]).toBe(row);
+    expect(S.waterfallPushes).toBe(pushes);
+    setDisplayBounds(-60, -61);
+    renderWaterfall(canvas, 100);
+    expect(pixels).toEqual(narrow);
   });
 
   it('bounds oversized history while retaining a carrier in the last native bin', () => {

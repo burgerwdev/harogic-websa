@@ -502,6 +502,12 @@ export const en = {
 	"zoom_view_label": "View",
 	"zoom_full_label": "Full",
 	"zoom_close": "Exit local zoom",
+	"zoom_rail_position": "Pos",
+	"zoom_rail_top": "Top",
+	"zoom_rail_bottom": "Bottom",
+	"zoom_rail_position_tip": "Horizontal display position inside the captured spectrum",
+	"zoom_rail_top_tip": "Maximum displayed level (display only)",
+	"zoom_rail_bottom_tip": "Minimum displayed level (display only)",
 } as const;
 
 export const zh = {
@@ -1007,5 +1013,11 @@ export const zh = {
 	"zoom_view_label": "显示",
 	"zoom_full_label": "全局",
 	"zoom_close": "退出局部放大",
+	"zoom_rail_position": "位置",
+	"zoom_rail_top": "Top",
+	"zoom_rail_bottom": "Bottom",
+	"zoom_rail_position_tip": "已采集频谱内的水平显示位置",
+	"zoom_rail_top_tip": "显示最大电平（仅显示）",
+	"zoom_rail_bottom_tip": "显示最小电平（仅显示）",
 } as const;
 

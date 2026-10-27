@@ -9,6 +9,7 @@ import { sdrRadiofaxAcquisition, sdrRadiofaxClockPpm, sdrRadiofaxClockRecovery, 
   sdrRadiofaxLpm, sdrRadiofaxModulation, sdrRadiofaxPhasePixels, sdrRadiofaxPolarity } from './sdrState';
 import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTuningUi';
 import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
+import { bindSdrTone, cancelSdrToneEdit, renderSdrTone } from './sdrTone';
 import { sdrFilterLimits } from './sdrState';
 import { clearPassbandView } from './spectrumViewport';
 import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, moveFilterDrag, setFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
@@ -726,6 +727,7 @@ export function applySdrDemod(restoringMode = false, filterOnly = false) {
     sdrIfbw.set(filterSpec(mode).defaultHz);
   }
   const ifbw = sdrIfbw.get();
+  const pitch = sdrPitchHz.get();
   const deemph = sdrDeemph.get();
   const volume = sdrVolume.get();
   const squelch = sdrSquelch.get();
@@ -733,17 +735,17 @@ export function applySdrDemod(restoringMode = false, filterOnly = false) {
   // reset handshake. Volume/squelch/AGC are applied live, so muting them would just add a
   // gap. "Changed" is the slot's own pending state now, not a separate copy of the last
   // value sent (those caches were one more thing that could disagree with the truth).
-  if (sdrDemod.pending() || sdrIfbw.pending() || sdrDeemph.pending()) {
+  if (sdrDemod.pending() || sdrIfbw.pending() || sdrPitchHz.pending() || sdrDeemph.pending()) {
     prepareSdrAudioTransition();
   }
-  const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: 1, mode, ifbw } : { cmd: 'SET_SDR_CHANNEL', channel: 1, enabled: true, mode, ifbw, volume, squelch,
+  const payload = filterOnly ? { cmd: 'SET_SDR_CHANNEL', channel: 1, mode, ifbw, pitch } : { cmd: 'SET_SDR_CHANNEL', channel: 1, enabled: true, mode, ifbw, pitch, volume, squelch,
     agc: sdrAgc.get(), am_sync: sdrAmSync.get(), deemph_us: deemph, nr: sdrNr.get(),
     nr_strength: sdrNrStrength.get(), nr_algorithm: sdrNrAlgo.get(), nr_atten_db: sdrNrAtten.get(),
     sstv_mode: sdrSstvMode.get() < 0 ? null : sdrSstvMode.get(), ...currentRadiofaxConfig() };
   if (receiverInFlight) {
-    receiverQueued = { payload, mode, ifbw, restoringMode };
-  } else if (sdrDemod.pending() || sdrIfbw.pending()) {
-    sendReceiverEdit({ payload, mode, ifbw, restoringMode });
+    receiverQueued = { payload, mode, ifbw, pitch, restoringMode };
+  } else if (sdrDemod.pending() || sdrIfbw.pending() || sdrPitchHz.pending()) {
+    sendReceiverEdit({ payload, mode, ifbw, pitch, restoringMode });
   } else send(payload);
 }
 
@@ -879,6 +881,7 @@ function syncSdrButtons() {
     if (control) control.disabled = drm || (id === 'select-sdr-nr-strength' && sdrNrAlgo.get() === 'dfn');
   }
   renderSdrFilter();
+  renderSdrTone();
   const dv = sdrDeemph.get();
   document.querySelectorAll<HTMLButtonElement>('[data-sdr-deemph]').forEach((el) => {
     el.disabled = drm;
@@ -889,7 +892,7 @@ function syncSdrButtons() {
 // ── SDR audio enable + amplitude reference ──
 
 let filterSerial = 0;
-type ReceiverEdit = { payload: Record<string, unknown>; mode: string; ifbw: number; restoringMode: boolean };
+type ReceiverEdit = { payload: Record<string, unknown>; mode: string; ifbw: number; pitch: number; restoringMode: boolean };
 let receiverInFlight: (ReceiverEdit & { requestId: string; timer: number }) | null = null;
 let receiverQueued: ReceiverEdit | null = null;
 let receiverConfigVersion = -1;
@@ -899,6 +902,8 @@ function clearReceiverEdit(): void {
   receiverInFlight = null;
   receiverConfigVersion = -1;
   receiverQueued = null;
+  sdrPitchHz.reset();
+  cancelSdrToneEdit();
 }
 
 function sendReceiverEdit(edit: ReceiverEdit): void {
@@ -927,10 +932,13 @@ function finishReceiverEdit(accepted: boolean): void {
     sdrDemod.touch(next.mode);
     sdrIfbw.set(next.ifbw);
     sdrIfbw.touch(next.ifbw);
+    sdrPitchHz.set(next.pitch);
+    sdrPitchHz.touch(next.pitch);
     sendReceiverEdit(next);
   } else {
     sdrDemod.reset();
     sdrIfbw.reset();
+    sdrPitchHz.reset();
     if (!accepted) cancelSdrCanvasGesture();
   }
   setSdrAudioMode(1, sdrDemod.get());
@@ -951,7 +959,7 @@ export function rejectSdrFilterRequest(responseTo?: string, requestId?: string |
   if (!receiverQueued && rejected.restoringMode && rejected.ifbw !== filterSpec(rejected.mode).defaultHz) {
     sdrDemod.set(rejected.mode);
     sdrIfbw.set(filterSpec(rejected.mode).defaultHz);
-    receiverQueued = { mode: rejected.mode, ifbw: filterSpec(rejected.mode).defaultHz, restoringMode: false,
+    receiverQueued = { mode: rejected.mode, ifbw: filterSpec(rejected.mode).defaultHz, pitch: rejected.pitch, restoringMode: false,
       payload: { ...rejected.payload, ifbw: filterSpec(rejected.mode).defaultHz } };
   }
   finishReceiverEdit(false);
@@ -964,6 +972,7 @@ export function selectSdrDemod(id: string): void {
   cancelSdrTuningEdit();
   clearPassbandView();
   cancelSdrFilterEdit();
+  cancelSdrToneEdit();
   sdrDemod.set(id);
   sdrIfbw.set(filterValueForMode(id));
   renderSdrState();
@@ -978,6 +987,18 @@ export function selectSdrIfbw(ifbw: number): void {
   if (!spec.editable || !Number.isFinite(ifbw) || ifbw < spec.minimumHz) return;
   sdrIfbw.set(ifbw);
   renderSdrState();
+  syncSdrButtons();
+  applySdrDemod(false, true);
+  requestRender();
+}
+
+/** CW pitch selects the sidetone-centred band; the dial frequency stays fixed. */
+export function selectSdrPitch(pitch: number): void {
+  if (sdrDemod.get() !== 'cw' || !Number.isFinite(pitch) || pitch < 100 || pitch > 1600) return;
+  if (pitch === sdrPitchHz.get()) return;
+  cancelSdrCanvasGesture();
+  resetCarrierEvidence();
+  sdrPitchHz.set(pitch);
   syncSdrButtons();
   applySdrDemod(false, true);
   requestRender();
@@ -1087,10 +1108,12 @@ export function syncSdrPanel(s: any) {
     clearPassbandView();
     cancelSdrCanvasGesture();
     cancelSdrFilterEdit();
+    cancelSdrToneEdit();
     resetCarrierEvidence();
   } else if (receiver.pitch != null && receiver.pitch !== sdrPitchHz.get()) { cancelSdrCanvasGesture(); resetCarrierEvidence(); }
   sdrDemod.confirm(actualMode);
   sdrIfbw.confirm(actualFilter);
+  if (receiver.pitch != null) sdrPitchHz.confirm(Number(receiver.pitch));
   const limits = sdr.filter_limits;
   sdrFilterLimits.confirm(limits && limits.mode === actualMode && Number.isFinite(limits.min_hz)
     && (limits.max_hz === null || Number.isFinite(limits.max_hz)) ? limits : null);
@@ -1104,11 +1127,12 @@ export function syncSdrPanel(s: any) {
       sdrIfbw.set(target.ifbw);
       sdrDemod.touch(target.mode);
       sdrIfbw.touch(target.ifbw);
+      sdrPitchHz.set(target.pitch);
+      sdrPitchHz.touch(target.pitch);
     }
   }
   setSdrAudioMode(1, sdrDemod.get());
   renderSdrTuningUi();
-  if (receiver.pitch != null) sdrPitchHz.confirm(Number(receiver.pitch));
   if ('sstv_mode' in receiver) sdrSstvMode.confirm(receiver.sstv_mode == null ? -1 : Number(receiver.sstv_mode));
   if (receiver.radiofax_acquisition === 'auto' || receiver.radiofax_acquisition === 'manual') sdrRadiofaxAcquisition.confirm(receiver.radiofax_acquisition);
   if (receiver.radiofax_ioc === 'auto' || receiver.radiofax_ioc === '288' || receiver.radiofax_ioc === '576') sdrRadiofaxIoc.confirm(receiver.radiofax_ioc);
@@ -1535,6 +1559,7 @@ export function bindActions() {
     });
   }
   bindSdrFilter({ onCommit: selectSdrIfbw, onView: viewSdrPassband });
+  bindSdrTone(selectSdrPitch);
   document.querySelectorAll('[data-sdr-deemph]').forEach((el) => {
     el.addEventListener('click', () => {
       if (sdrDemod.get() === 'drm' || sdrDemod.get() === 'drmplus') return;

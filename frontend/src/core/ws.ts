@@ -447,7 +447,11 @@ export function connectWS() {
         // Both store raw dBm: offset is a render transform and must also work with no new
         // frames.
         const active = S.traces[S.activeTraceIdx];
-        const bins = rtaAmpBins.get();
+        // SDR resolves four amplitude subdivisions per grain step, with at most 16 MiB
+        // for values/links. Geometry stays independent of resize and display-only bounds.
+        const bins = S.sdrMode
+          ? Math.max(1, Math.min(rtaAmpBins.get() * 4, 1024, Math.floor(2097152 / spec.length)))
+          : rtaAmpBins.get();
         const range = S.totalDivs * S.dbPerDiv;
         const densSource = rtaDensSource.get();
         const densSpec = densSource === 'live' ? spec : S.rtaDisplays[S.activeTraceIdx];

@@ -10,9 +10,16 @@ import { sdrBadgeDragFrequency, sdrSpectrumWindow } from '../ui/sdrBadgeGesture'
 import { demodBandHz, sdrDemod, sdrPitchHz } from '../ui/sdrState';
 import { filterPreviewHz } from '../ui/sdrFilter';
 import { passbandDragFrequency } from '../ui/sdrFilterGesture';
+import { getDisplayRange, getDisplayTop, hasDisplayBounds } from '../ui/displayRef';
+import { displayOffset } from '../ui/displayState';
 
 const MAX_HISTORY_COLUMNS = 16384;
-const rowGeometry = new WeakMap<Uint16Array, { freq: Float64Array | null; lo: number; hi: number }>();
+type RowGeometry = {
+	freq: Float64Array | null; lo: number; hi: number;
+	/** SDR stores raw amplitude codes, with zero reserved for missing observations. */
+	level?: { lo: number; step: number; windowLo: number; windowHi: number; offset: boolean };
+};
+const rowGeometry = new WeakMap<Uint16Array, RowGeometry>();
 let historyFreq: Float64Array | null = null;
 let historyScratch = new Float32Array(0);
 // One current display mapping per retained axis, never a cache of zoom histories.
@@ -166,7 +173,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     f1 = (view.hi - cap.lo) / (cap.hi - cap.lo);
   }
   const viewKey = `${view?.lo}:${view?.hi}:${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
-  const imageKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`;
+  const boundsKey = S.sdrMode ? `${hasDisplayBounds()}:${getDisplayTop()}:${getDisplayRange()}:${displayOffset.get()}` : '';
+  const imageKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}:${boundsKey}`;
   const sameImage = wfCanvas === canvas && wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
   const pushed = S.waterfallPushes - wfLastPushes;
   if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) {
@@ -212,8 +220,18 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     if (!sliceScratch || sliceScratch.length !== W) sliceScratch = new Uint16Array(W);
     const ds = view ? sliceWaterfallRow(row, W, view.lo, view.hi, sliceScratch)
       : sliceDensityRow(row, W, f0, f1, sliceScratch);
+    const level = rowGeometry.get(row)?.level;
+    const displayBounds = S.sdrMode && hasDisplayBounds();
+    const fixedBounds = wfRangeMode.get() === 'fixed';
+    const top = displayBounds ? getDisplayTop() - displayOffset.get() : fixedBounds ? wfHiDbm.get() : level?.windowHi ?? 0;
+    const bottom = displayBounds ? top - getDisplayRange() : fixedBounds ? wfLoDbm.get() : level?.windowLo ?? 0;
     for (let x = 0; x < W; x++) {
-      const lvl = Math.min(255, Math.round(ds[x] / dmax * 255));
+      let fraction = ds[x] / dmax;
+      if (level) {
+        fraction = ds[x] === 0 ? 0 : (level.lo + (ds[x] - 1) * level.step - bottom) / (top - bottom);
+        if (!displayBounds && !fixedBounds && ds[x] !== 0 && level.offset) fraction = 0.26 + fraction * 0.74;
+      }
+      const lvl = Math.max(0, Math.min(255, Math.round(fraction * 255)));
       const c = lut[lvl];
       const o = (y * W + x) * 4;
       px[o] = c & 0xff;
@@ -275,7 +293,24 @@ export function pushSpectrumRow(levels: Float32Array, freq: Float64Array, lo: nu
     if (historyScratch.length !== MAX_HISTORY_COLUMNS) historyScratch = new Float32Array(MAX_HISTORY_COLUMNS);
     source = projectSpectrum(freq, levels, lo, hi, historyScratch);
   }
-  const row = buildRow(source, maxDensity, win.lo, win.hi, win.offset);
-  rowGeometry.set(row, { freq: axis, lo, hi });
+  let row: Uint16Array;
+  const geometry: RowGeometry = { freq: axis, lo, hi };
+  if (S.sdrMode) {
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < source.length; i++) {
+      if (!Number.isFinite(source[i])) continue;
+      min = Math.min(min, source[i]); max = Math.max(max, source[i]);
+    }
+    if (!Number.isFinite(min)) min = max = 0;
+    const step = (max - min) / 65534 || 1;
+    row = new Uint16Array(source.length);
+    for (let i = 0; i < source.length; i++) {
+      if (Number.isFinite(source[i])) row[i] = 1 + Math.round((source[i] - min) / step);
+    }
+    geometry.level = { lo: min, step, windowLo: win.lo, windowHi: win.hi, offset: win.offset };
+  } else {
+    row = buildRow(source, maxDensity, win.lo, win.hi, win.offset);
+  }
+  rowGeometry.set(row, geometry);
   S.pushWaterfallRow(row);
 }

@@ -2,11 +2,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as S from '../core/store';
 import { connectWS } from '../core/ws';
-import { setDisplayRef } from '../ui/displayRef';
+import { clearDisplayBounds, setDisplayBounds, setDisplayRef } from '../ui/displayRef';
 import { displayOffset } from '../ui/displayState';
 import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
 import { setRtaDensSource, beginRtaAxisTransition, clearRtaAccum, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { clearRtaTrace, setTraceMode, switchTraceTab } from '../ui/traceOps';
+import { zoomEnabled } from '../ui/spectrumViewport';
 
 class DisplaySocket {
 	static OPEN = 1;
@@ -72,6 +73,29 @@ beforeEach(() => {
 });
 
 describe('processed active-trace density', () => {
+	it('keeps finer SDR amplitude history when display bounds move', () => {
+		S.setSdrMode(true);
+		zoomEnabled.set(true);
+		try {
+			feed(-40);
+			const grid = S.rtaDensity2d!;
+			const pitch = grid.dBPerBin;
+			const carrierRow = Math.floor((grid.refTop + 40) / pitch);
+			expect(grid.values[16 * grid.bins + carrierRow]).toBeGreaterThan(0);
+			setDisplayBounds(-35, -45);
+			feed(-40.3);
+			expect(S.rtaDensity2d).toBe(grid);
+			expect(grid.refTop).toBe(0);
+			expect(grid.dBPerBin).toBe(pitch);
+			const movedRow = Math.floor((grid.refTop + 40.3) / pitch);
+			expect(movedRow).toBeGreaterThan(carrierRow);
+			expect(grid.values[16 * grid.bins + movedRow]).toBeGreaterThan(0);
+		} finally {
+			clearDisplayBounds();
+			zoomEnabled.set(false);
+			S.setSdrMode(false);
+		}
+	});
 	it.each([
 		['AVERAGE', -40 + (-80 + 40) * 2 / 3],
 		['MAX_HOLD', -40],

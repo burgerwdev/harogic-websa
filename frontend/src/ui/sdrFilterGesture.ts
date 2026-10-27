@@ -19,8 +19,9 @@ import {
 } from './spectrumViewport';
 import { syncSpectrumZoomUi } from './spectrumZoomUi';
 import { requestRender } from '../render/redraw';
-import { filterPreviewHz, filterSpec, setFilterPreview } from './sdrFilter';
+import { filterPreviewHz, filterRange, filterSpec, setFilterPreview } from './sdrFilter';
 import { formatFreqHz } from '../core/fmt';
+import { tonePreviewHz } from './sdrTone';
 
 /** Which band edge a gesture is on. Symmetric modes mirror both onto the same drag. */
 export type FilterEdge = 'low' | 'high';
@@ -64,7 +65,7 @@ export function filterGeometry(ifBwOverride?: number, modeOverride?: string): Fi
   if (!(listen > 0)) return null;
   const mode = modeOverride ?? sdrDemod.get();
   const ifBw = ifBwOverride ?? filterPreviewHz();
-  const [bandLo, bandHi] = demodBandHz(mode, ifBw, sdrPitchHz.get());
+  const [bandLo, bandHi] = demodBandHz(mode, ifBw, tonePreviewHz());
   if (!(bandHi > bandLo)) return null;
   const view = isZoomed() ? getView() : getCapture();
   if (!view || !(view.hi > view.lo)) return null;
@@ -177,9 +178,9 @@ function previewHzFor(mode: string, semantic: DragTarget, listen: number, pitch:
     case 'lsb':
       return semantic === 'low' ? -d : null;
     case 'cw':
-      return 2 * Math.abs(d - Math.max(100, pitch));   // width around the sidetone
+      return 2 * (semantic === 'low' ? Math.max(100, pitch) - d : d - Math.max(100, pitch));
     default:
-      return 2 * Math.abs(d);                          // symmetric: total bandwidth
+      return 2 * (semantic === 'low' ? -d : d);        // do not flip edges across the centre
   }
 }
 
@@ -198,9 +199,9 @@ export function moveFilterDrag(x: number, pointerId: number): boolean {
   const next = previewHzFor(drag.mode, drag.semantic, drag.listen, drag.pitch, hz);
   const spec = filterSpec(drag.mode);
   if (next === null || !isFinite(next) || !spec.editable) return false;
-  // Only the spec's honest width floor; channel admission (sampling-rate headroom) is
-  // the backend's call and surfaces through the existing rejection path on commit.
-  const clamped = Math.max(next, spec.minimumHz);
+  const range = filterRange(drag.mode);
+  if (range.max === null || range.max < range.min) return false;
+  const clamped = Math.min(range.max, Math.max(next, range.min));
   if (clamped === filterPreviewHz()) return false;
   setFilterPreview(clamped);
   requestRender();
@@ -269,7 +270,7 @@ export function viewSdrPassband(): boolean {
   // From the SLOTS, not the on-screen geometry: the entry must still find the band
   // when the current view does not show it, and the target is the band the receiver
   // reads inside THIS capture (edges outside the capture clamp to its ends).
-  const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
+  const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), tonePreviewHz());
   if (!(bandHi > bandLo)) return false;
   const listen = sdrListenHz.get();
   const lo = Math.max(listen + bandLo, capture.lo);
@@ -299,7 +300,7 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
   const listen = listenPreview ?? sdrListenHz.get();
   if (!(listen > 0)) return false;
   const mode = sdrDemod.get();
-  const [bandLo, bandHi] = demodBandHz(mode, filterPreviewHz(), sdrPitchHz.get());
+  const [bandLo, bandHi] = demodBandHz(mode, filterPreviewHz(), tonePreviewHz());
   if (!(bandHi > bandLo)) return false;
   const p = plotRect();
   const span = (hiHz - loHz) || 1;

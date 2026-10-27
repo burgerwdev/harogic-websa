@@ -10,6 +10,8 @@ import { demodBandHz, sdrDemod, sdrFilterByMode, sdrFilterLimits, sdrIfbw, sdrLi
 import { getCapture, passbandViewActive } from './spectrumViewport';
 import { convertUnitValue, toUnit, units } from '../core/units';
 import type { UnitCommitDetail } from '../core/units';
+import { requestRender } from '../render/redraw';
+import { tonePreviewHz } from './sdrTone';
 
 export interface SdrFilterSpec {
 	editable: boolean;
@@ -54,6 +56,16 @@ const UNKNOWN_SPEC = spec(false, 6_000, [6_000], 'kHz', 'sdr_filter_bandwidth', 
 
 export function filterSpec(mode: string): SdrFilterSpec {
 	return SPECS[mode] ?? UNKNOWN_SPEC;
+}
+
+/** Shared admission bounds for numeric, slider and spectrum-edge controls. */
+export function filterRange(mode: string): { min: number; max: number | null } {
+	const specForMode = filterSpec(mode);
+	const limits = sdrFilterLimits.get();
+	return {
+		min: Math.max(specForMode.minimumHz, limits?.mode === mode ? limits.min_hz : 0),
+		max: limits?.mode === mode ? limits.max_hz : Infinity,
+	};
 }
 
 /**
@@ -172,7 +184,7 @@ function commitInput(el: HTMLInputElement): void {
 		return;
 	}
 	const limits = sdrFilterLimits.get();
-	if (limits?.mode === mode && (limits.max_hz === null || hz > limits.max_hz)) {
+	if (limits?.mode === mode && (limits.max_hz === null || hz < limits.min_hz || hz > limits.max_hz)) {
 		rejectInput(el, limits.max_hz === null ? 'sdr_filter_no_range' : 'sdr_filter_outside_range', {
 			min: inputValueText(limits.min_hz), max: inputValueText(limits.max_hz ?? 0),
 		});
@@ -188,6 +200,7 @@ function commitInput(el: HTMLInputElement): void {
 
 /** Drop an input draft without committing it (Preset, disconnect and every mode change). */
 export function cancelSdrFilterEdit(): void {
+	previewHz = null;
 	const el = input();
 	if (!el) {
 		inputError = null;
@@ -226,7 +239,8 @@ function syncPresetButtons(group: HTMLElement, mode: string, specForMode: SdrFil
 		const button = child as HTMLButtonElement;
 		const preset = specForMode.presets[index];
 		const active = Math.abs(shownHz - preset) < 0.5;
-		button.disabled = !specForMode.editable;
+		const range = filterRange(mode);
+		button.disabled = !specForMode.editable || range.max === null || preset < range.min || preset > range.max;
 		button.classList.toggle('active', active);
 		button.setAttribute('aria-pressed', String(active));
 	}
@@ -236,6 +250,7 @@ export function renderSdrFilter(): void {
 	const mode = sdrDemod.get();
 	const specForMode = filterSpec(mode);
 	const shownHz = filterPreviewHz();
+	const range = filterRange(mode);
 	const el = input();
 	if (el && document.activeElement === el && renderedMode !== null && renderedMode !== mode) {
 		cancelSdrFilterEdit();
@@ -248,7 +263,7 @@ export function renderSdrFilter(): void {
 	if (group) syncPresetButtons(group, mode, specForMode, shownHz);
 
 	// The input hover and description carry the mode meaning, actual passband, state and range.
-	const [bandLo, bandHi] = demodBandHz(mode, shownHz);
+	const [bandLo, bandHi] = demodBandHz(mode, shownHz, tonePreviewHz());
 	let stateText = '';
 	if (inputError) {
 		stateText = t(inputError.key, inputError.params);
@@ -278,10 +293,32 @@ export function renderSdrFilter(): void {
 		: previewHz !== null ? 'preview'
 		: sdrIfbw.pending() ? 'pending'
 		: !specForMode.editable ? 'locked' : 'confirmed';
+	const slider = document.getElementById('slider-sdr-ifbw') as HTMLInputElement | null;
+	if (slider) {
+		slider.min = String(range.min);
+		// Keep the usual mode range useful, while retaining any wider manually selected value.
+		slider.max = String(Math.max(range.min, Math.min(range.max ?? range.min,
+			Math.max(specForMode.presets[specForMode.presets.length - 1], sdrIfbw.get()))));
+		slider.value = String(shownHz);
+		slider.disabled = !specForMode.editable || range.max === null || Number(slider.max) <= range.min;
+		slider.setAttribute('aria-label', t(specForMode.labelKey));
+		slider.setAttribute('aria-valuetext', valueText(shownHz, specForMode));
+		slider.title = t('sdr_filter_adjust_tip');
+	}
+	const readout = document.getElementById('sdr-filter-readout');
+	if (readout) {
+		readout.textContent = passbandText;
+		readout.title = hoverText;
+	}
+	const feedback = document.getElementById('sdr-filter-status');
+	if (feedback) {
+		feedback.textContent = stateText || filterTooltip(mode, specForMode);
+		feedback.dataset.state = state;
+	}
 
 	if (el) {
-		el.disabled = !specForMode.editable;
-		el.min = String(toUnit(specForMode.minimumHz, 'sdr_ifbw'));
+		el.disabled = !specForMode.editable || range.max === null;
+		el.min = String(toUnit(range.min, 'sdr_ifbw'));
 		el.max = limits?.mode === mode && limits.max_hz !== null ? String(toUnit(limits.max_hz, 'sdr_ifbw')) : '';
 		el.step = 'any';
 		el.dataset.unit = units().sdr_ifbw ?? 'kHz';
@@ -369,6 +406,32 @@ export function bindSdrFilter(next: { onCommit: (hz: number) => void; onView: ()
 				event.preventDefault();
 				event.stopPropagation();
 				cancelSdrFilterEdit();
+			}
+		});
+	}
+	const slider = document.getElementById('slider-sdr-ifbw') as HTMLInputElement | null;
+	if (slider && !bound.has(slider)) {
+		bound.add(slider);
+		slider.addEventListener('pointerdown', cancelSdrFilterEdit);
+		slider.addEventListener('input', () => {
+			setFilterPreview(slider.valueAsNumber);
+			requestRender();
+		});
+		slider.addEventListener('change', () => {
+			const hz = slider.valueAsNumber;
+			setFilterPreview(null);
+			const range = filterRange(sdrDemod.get());
+			if (filterSpec(sdrDemod.get()).editable && range.max !== null && hz >= range.min && hz <= range.max
+				&& hz !== sdrIfbw.get()) callbacks?.onCommit(hz);
+			requestRender();
+		});
+		slider.addEventListener('pointercancel', () => { setFilterPreview(null); requestRender(); });
+		slider.addEventListener('keydown', (event) => {
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				event.stopPropagation();
+				setFilterPreview(null);
+				requestRender();
 			}
 		});
 	}

@@ -1,7 +1,7 @@
 // Spectrum rendering main module: grid/traces/markers/OSD/3dB/peak marks
 import * as S from '../core/store';
 import { centerHz, spanHz } from '../ui/freqState';
-import { getDisplayRef } from '../ui/displayRef';
+import { getDisplayTop, getDisplayRange } from '../ui/displayRef';
 import { ctx, onCanvasResize, pixelRatio, W, H } from '../core/store';
 import { getX, getY, plotRect, plottableLevel } from './plot';
 import { previewFreqWindow, previewLevelWindow, yAxisTransform } from '../ui/axisDrag';
@@ -43,8 +43,8 @@ function cur() {
   const lv = previewLevelWindow();
   return {
     centerHz: centerHz.get(), spanHz: spanHz.get(),
-    dbPerDiv: lv ? lv.range / S.totalDivs : S.dbPerDiv,
-    displayRef: lv ? lv.ref : getDisplayRef(),
+    dbPerDiv: lv ? lv.range / S.totalDivs : getDisplayRange() / S.totalDivs,
+    displayRef: lv ? lv.ref : getDisplayTop(),
     displayOffset: displayOffset.get(), displayUnit: displayUnit.get(), viewMode: S.viewMode,
     measOn: S.measOn, measTabSel: S.measTabSel, traces: S.traces, markers: S.markers,
     activeMkrId: S.activeMkrId, freqArray: S.freqArray, m3dB: S.m3dB, harm: S.harm,
@@ -779,8 +779,8 @@ function renderRta() {
   const [firstBin, afterBin] = visibleBinRange(d.freq, lo, hi);
   const xScale = p.w / (hi - lo);
   const levelOffset = displayOffset.get();
-  const levelRef = getDisplayRef();
-  const yScale = p.h / (S.totalDivs * S.dbPerDiv);
+  const levelRef = getDisplayTop();
+  const yScale = p.h / getDisplayRange();
   const levelTransform = yAxisTransform();
   S.traces.forEach((_tr, ti) => {
     if (hideTraces) return;
@@ -821,13 +821,13 @@ function renderRta() {
         if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
       }
     }
-    // glow: the fluorescent trail only when no density layer carries the history
-    if (!thinTraces) {
+    // SDR uses a single fine stroke; persistence already supplies its measured trail.
+    if (!thinTraces && !S.sdrMode) {
       ctx.globalAlpha = 0.22; ctx.lineWidth = 5; ctx.strokeStyle = tcol;
       ctx.stroke();
     }
     // main line
-    ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = tcol;
+    ctx.globalAlpha = 1; ctx.lineWidth = S.sdrMode ? 1 : 1.5; ctx.strokeStyle = tcol;
     ctx.stroke();
     ctx.restore();
   });
@@ -924,7 +924,7 @@ function drawRtaDensityLayer(
   const contrast = rtaDensContrast.get();
   // Reproject frozen history on every offset/reference/scale/gesture change. The footprint
   // remains CSS pixels even when the native amplitude grid stretches or the DPR changes.
-  const level = densityLevelPlacement(grid, getDisplayRef(), S.totalDivs * S.dbPerDiv, displayOffset.get());
+  const level = densityLevelPlacement(grid, getDisplayTop(), getDisplayRange(), displayOffset.get());
   const yt = yAxisTransform();
   const sy = yt ? yt.sy : 1;
   const pitch = level.height / grid.bins * sy * rows;
