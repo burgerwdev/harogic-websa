@@ -7,8 +7,7 @@ import { xAxisTransform, yAxisTransform } from '../ui/axisDrag';
 import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
 export { W, H, MARGIN };
 export function plotRect() {
-  const top = S.sdrMode ? Math.max(MARGIN.top, 28) : MARGIN.top;
-  return { x: MARGIN.left, y: top, w: W - MARGIN.left - MARGIN.right, h: H - top - MARGIN.bottom };
+  return { x: MARGIN.left, y: MARGIN.top, w: W - MARGIN.left - MARGIN.right, h: H - MARGIN.top - MARGIN.bottom };
 }
 
 export function getY(val: number): number {

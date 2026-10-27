@@ -11,10 +11,10 @@ import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTu
 import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
 import { sdrFilterLimits } from './sdrState';
 import { clearPassbandView } from './spectrumViewport';
-import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, filterNeedsViewAt, moveFilterDrag, setFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
+import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, moveFilterDrag, setFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
 import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession, stopSdrTuneRepeat } from './sdrTuneRequest';
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
-import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, setSdrBadgeHover, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
+import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
 import { resetCarrierEvidence } from '../dsp/carrierSnap';
 import { parseFreqUnit } from '../core/units';
 import { centerHz, swpCenterHz } from './freqState';
@@ -1776,7 +1776,6 @@ function cancelSdrCanvasGesture(restore = true): void {
   canvasGesture = null;
   canvasPointerId = null;
   clearSdrBadgeDrag();
-  setSdrBadgeHover(false);
   setPassbandTuneDragging(false);
   const canvas = (document.getElementById('spectrum') as HTMLCanvasElement | null) ?? S.canvas;
   if (pointerId !== null && canvas?.hasPointerCapture?.(pointerId)) canvas.releasePointerCapture(pointerId);
@@ -1880,7 +1879,7 @@ export function bindCanvas() {
     if (sdr) {
       const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
       const edge = filterEdgeAt(x, y, tolerance);
-      if (edge && startFilterDrag(edge, e.pointerId)) {
+      if (edge && startFilterDrag(edge, e.pointerId, x)) {
         cancelSdrLocate();
         accept('filter');
         canvas.style.cursor = 'ew-resize';
@@ -1984,7 +1983,6 @@ export function bindCanvas() {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
     const x = canvasX(e, canvas), y = canvasY(e, canvas);
     const badge = currentGraphMode() === 'sdr' && !e.ctrlKey && sdrBadgeAt(x, y);
-    setSdrBadgeHover(!!badge);
     if (badge) {
       setFilterHover(null);
       cancelSdrLocate();
@@ -1997,9 +1995,8 @@ export function bindCanvas() {
     const marker = markerDiamondAt(x, y, canvas);
     const edge = currentGraphMode() === 'sdr' ? filterEdgeAt(x, y, tolerance) : null;
     setFilterHover(!marker && !e.ctrlKey ? edge : null);
-    const narrow = currentGraphMode() === 'sdr' && filterNeedsViewAt(x, y, tolerance);
-    if (!marker && !e.ctrlKey && (edge || narrow)) {
-      canvas.title = t(edge ? 'sdr_passband_edge_tip' : 'sdr_passband_narrow_tip');
+    if (!marker && !e.ctrlKey && edge) {
+      canvas.title = t('sdr_passband_edge_tip');
     } else canvas.removeAttribute('title');
     if (currentGraphMode() === 'sdr' && !edge && !marker && !e.ctrlKey && !band) {
       updateSdrLocateHover(x, y, S.W / Math.max(1, canvas.getBoundingClientRect().width));
@@ -2030,7 +2027,6 @@ export function bindCanvas() {
   canvas.addEventListener('mouseleave', () => {
     if (canvasPointerId === null) {
       setFilterHover(null);
-      setSdrBadgeHover(false);
       canvas.removeAttribute('title');
       cancelSdrLocate();
     }
@@ -2073,7 +2069,6 @@ export function bindCanvas() {
     if (e.key === 'Control' && canvasPointerId === null) {
       cancelSdrLocate();
       setFilterHover(null);
-      setSdrBadgeHover(false);
       canvas.removeAttribute('title');
     }
     if (e.key === 'Escape' && canvasPointerId !== null) {

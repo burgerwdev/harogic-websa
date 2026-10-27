@@ -387,18 +387,21 @@ describe('canvas pointer ownership', () => {
 		expect(send).not.toHaveBeenCalled();
 	});
 
-	it('offers View for a collapsed passband and leaves its edge available to zoom', async () => {
-		const { state, filter, viewport, plot, send } = await load(true);
-		state.sdrIfbw.confirm(1000);
-		const y = plot.plotRect().y + 8;
-		canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 411, clientY: y }));
-		expect(canvas.title).toMatch(/View|查看/);
-		pointer('pointerdown', 411, y);
-		expect(filter.filterDragging()).toBe(false);
-		pointer('pointermove', 531, y);
-		pointer('pointerup', 531, y);
-		expect(viewport.isZoomed()).toBe(true);
+	it('drags a narrow external arrow from its hit margin without an initial jump', async () => {
+		const { state, filter, viewport, send } = await load(true);
+		state.sdrIfbw.confirm(60);
+		const handle = filter.filterGeometry()!.handles[1];
+		const x = handle.x + 5;
+		pointer('pointerdown', x, handle.y);
+		expect(filter.filterDragging()).toBe(true);
+		pointer('pointermove', x, handle.y);
+		expect(state.sdrIfbw.get()).toBe(60);
 		expect(send).not.toHaveBeenCalled();
+		pointer('pointermove', x + 10, handle.y);
+		pointer('pointerup', x + 10, handle.y);
+		expect(state.sdrIfbw.get()).toBeCloseTo(10_060, 6);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ifbw: 10_060 }));
+		expect(viewport.isZoomed()).toBe(false);
 	});
 
 	it.each(['pointercancel', 'escape', 'blur'])('cancels a top Filter preview on %s without submitting', async reason => {

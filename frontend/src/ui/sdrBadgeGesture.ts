@@ -1,9 +1,9 @@
 import * as S from '../core/store';
+import { formatFreqHz } from '../core/fmt';
 import { plotRect } from '../render/plot';
 import { previewFreqWindow } from './axisDrag';
 import { sdrDemod, sdrListenHz, sdrPitchHz } from './sdrState';
 import { getView, isZoomed, zoomEnabled, type FreqWindow } from './spectrumViewport';
-import { requestRender } from '../render/redraw';
 
 export const SDR_BADGE_FONT = '11px monospace';
 
@@ -20,7 +20,7 @@ export function sdrSpectrumWindow(): FreqWindow | null {
 
 export interface SdrBadgeGeometry {
   left: number; top: number; width: number; height: number; label: string;
-  frequency: number; dialX: number; view: FreqWindow;
+  frequency: number; view: FreqWindow;
 }
 
 interface BadgeDrag {
@@ -30,17 +30,6 @@ interface BadgeDrag {
   minimum: number; maximum: number; listen: number; connected: boolean; cancel: () => void;
 }
 let drag: BadgeDrag | null = null;
-let hovered = false;
-
-export function setSdrBadgeHover(active: boolean): void {
-  if (hovered === active) return;
-  hovered = active;
-  requestRender();
-}
-
-export function sdrBadgeActive(): boolean {
-  return hovered || drag !== null;
-}
 
 /** Cancel even without pointer movement when a redraw observes a changed environment. */
 export function validateSdrBadgeDrag(): boolean {
@@ -73,21 +62,20 @@ export function sdrBadgeGeometry(): SdrBadgeGeometry | null {
   if (!S.sdrMode || !view || !S.ctx || !(frequency > 0) || frequency < view.lo || frequency > view.hi) return null;
   const plot = plotRect();
   if (!(plot.w > 0)) return null;
-  const label = Math.round(frequency).toLocaleString('en-US') + ' Hz';
+  const label = '\u25bc ' + formatFreqHz(frequency);
   S.ctx.save();
   S.ctx.font = SDR_BADGE_FONT;
-  const width = Math.min(plot.w, S.ctx.measureText(label).width + 26);
+  const width = Math.min(plot.w, S.ctx.measureText(label).width + 8);
   S.ctx.restore();
   const dialX = plot.x + (frequency - view.lo) / (view.hi - view.lo) * plot.w;
-  const height = 18;
+  const height = 12;
   return { left: Math.max(plot.x, Math.min(dialX - width / 2, plot.x + plot.w - width)),
-    top: Math.max(0, plot.y - height - 6), width, height, label, frequency, dialX, view };
+    top: (plot.y - height) / 2, width, height, label, frequency, view };
 }
 
 export function sdrBadgeAt(x: number, y: number): SdrBadgeGeometry | null {
   const g = sdrBadgeGeometry();
-  return g && x >= g.left && x <= g.left + g.width && y >= Math.max(0, g.top - 4)
-    && y <= g.top + g.height + 4 ? g : null;
+  return g && x >= g.left && x <= g.left + g.width && y >= g.top && y <= g.top + g.height ? g : null;
 }
 
 export function startSdrBadgeDrag(x: number, g: SdrBadgeGeometry, cancel: () => void): void {

@@ -17,6 +17,7 @@ import {
 	filterCenterAt,
 	filterDragging,
 	filterEdgeAt,
+	filterGeometry,
 	filterViewResolution,
 	moveFilterDrag,
 	startFilterDrag,
@@ -96,7 +97,7 @@ describe('AM: symmetric total-bandwidth edges', () => {
 	});
 
 	it('dragging one edge previews a symmetric total bandwidth', () => {
-		expect(startFilterDrag('low', 1)).toBe(true);
+		expect(startFilterDrag('low', 1, xOf(LISTEN - 20_000))).toBe(true);
 		expect(filterDragging()).toBe(true);
 		// Low edge remains below the dial; the opposite edge mirrors its width.
 		expect(moveFilterDrag(xOf(LISTEN - 2_000), 1)).toBe(true);
@@ -110,7 +111,7 @@ describe('AM: symmetric total-bandwidth edges', () => {
 	});
 
 	it('stops a low edge at minimum width when dragged beyond the centre', () => {
-		expect(startFilterDrag('low', 1)).toBe(true);
+		expect(startFilterDrag('low', 1, xOf(LISTEN - 20_000))).toBe(true);
 		moveFilterDrag(xOf(LISTEN + 2_000), 1);
 		expect(filterPreviewHz()).toBe(50);
 		expect(endFilterDrag(1)).toBe(50);
@@ -131,10 +132,10 @@ describe('SSB: only the outer cutoff is a target', () => {
 		expect(filterEdgeAt(xOf(LISTEN + 24_000), MID_Y, TOL)).toBe('high');
 		expect(filterEdgeAt(xOf(LISTEN + 300), MID_Y, TOL)).toBeNull();   // guard is not a target
 		// the inner (guard) edge cannot even start a drag
-		expect(startFilterDrag('low', 1)).toBe(false);
+		expect(startFilterDrag('low', 1, xOf(LISTEN + 300))).toBe(false);
 		expect(filterDragging()).toBe(false);
 		// the outer edge previews the upper cutoff directly
-		expect(startFilterDrag('high', 1)).toBe(true);
+		expect(startFilterDrag('high', 1, xOf(LISTEN + 24_000))).toBe(true);
 		expect(moveFilterDrag(xOf(LISTEN + 3_000), 1)).toBe(true);
 		expect(filterPreviewHz()).toBeCloseTo(3_000, 6);
 		endFilterDrag(1);
@@ -145,8 +146,8 @@ describe('SSB: only the outer cutoff is a target', () => {
 		sdrIfbw.set(24_000);
 		expect(filterEdgeAt(xOf(LISTEN - 24_000), MID_Y, TOL)).toBe('low');
 		expect(filterEdgeAt(xOf(LISTEN - 300), MID_Y, TOL)).toBeNull();
-		expect(startFilterDrag('high', 1)).toBe(false);
-		expect(startFilterDrag('low', 1)).toBe(true);
+		expect(startFilterDrag('high', 1, xOf(LISTEN - 300))).toBe(false);
+		expect(startFilterDrag('low', 1, xOf(LISTEN - 24_000))).toBe(true);
 		expect(moveFilterDrag(xOf(LISTEN - 1_800), 1)).toBe(true);
 		expect(filterPreviewHz()).toBeCloseTo(1_800, 6);
 		endFilterDrag(1);
@@ -168,7 +169,7 @@ describe('CW: the band sits around the sidetone pitch', () => {
 	});
 
 	it('dragging an edge keeps the band centred on the pitch', () => {
-		startFilterDrag('high', 1);
+		startFilterDrag('high', 1, xOf(LISTEN + 950));
 		// high edge to pitch + 500 -> width 1000 around the pitch.
 		expect(moveFilterDrag(xOf(LISTEN + 700 + 500), 1)).toBe(true);
 		expect(filterPreviewHz()).toBeCloseTo(1_000, 6);
@@ -176,34 +177,57 @@ describe('CW: the band sits around the sidetone pitch', () => {
 	});
 });
 
-describe('narrow passbands: indistinguishable edges do not hit', () => {
-	it('a sub-tolerance AM band returns no edge; the centre stays the only hit', () => {
-		sdrDemod.set('am');
-		// 500 Hz/px: 1 kHz total -> edges 1 px from the dial, 2 px apart.
-		sdrIfbw.set(1_000);
-		expect(filterEdgeAt(xOf(LISTEN - 500), MID_Y, TOL)).toBeNull();
-		expect(filterEdgeAt(xOf(LISTEN - 500) - 200, MID_Y, TOL)).toBeNull();
-		expect(filterCenterAt(xOf(LISTEN), MID_Y, TOL)).toBe(true);   // tune stays available
-	});
-
-	it('two edges closer than 2*tol to each other return nothing (CW, away from the dial)', () => {
-		sdrDemod.set('cw');
+describe('narrow passbands: independent arrows without changing the real band', () => {
+	it.each(['am', 'cw'])('%s keeps subpixel edges independently draggable without a jump', mode => {
+		sdrDemod.set(mode);
 		sdrIfbw.set(60);
-		// 5 Hz/px: band [670, 730] -> 12 px apart, 134+ px from the dial.
-		setView({ lo: LISTEN - 2_000, hi: LISTEN + 2_000 }, 1);
-		expect(filterEdgeAt(xOf(LISTEN + 670), MID_Y, TOL)).toBeNull();
-		// widen to 500 Hz -> edges [450, 950], 100 px apart: hits resume.
-		sdrIfbw.set(500);
-		expect(filterEdgeAt(xOf(LISTEN + 450), MID_Y, TOL)).toBe('low');
+		const geometry = filterGeometry()!;
+		expect(geometry.highX! - geometry.lowX!).toBeLessThan(1);
+		const [low, high] = geometry.handles;
+		expect(high.x - low.x).toBeCloseTo(24, 6);
+		for (const handle of [low, high]) {
+			const startX = handle.x + (handle.edge === 'low' ? -5 : 5);
+			expect(filterEdgeAt(startX, handle.y, TOL)).toBe(handle.edge);
+			expect(startFilterDrag(handle.edge, 1, startX)).toBe(true);
+			expect(filterPreviewHz()).toBe(60);
+			expect(moveFilterDrag(startX, 1)).toBe(false);
+			expect(filterPreviewHz()).toBe(60);
+			const direction = handle.edge === 'low' ? -1 : 1;
+			expect(moveFilterDrag(startX + direction * 2, 1)).toBe(true);
+			expect(filterPreviewHz()).toBeGreaterThan(60);
+			expect(moveFilterDrag(startX, 1)).toBe(true);
+			expect(filterPreviewHz()).toBe(60);
+			expect(endFilterDrag(1)).toBeNull();
+		}
+		expect(filterCenterAt(geometry.dialX, MID_Y, TOL)).toBe(true);
 	});
 
-	it('an outer edge sitting on the dial marker never steals the tune hit', () => {
-		sdrDemod.set('lsb');
-		sdrIfbw.set(300);
-		// low (outer) edge at dial-300 = 0.6 px from the dial: inside the centre zone.
-		expect(filterEdgeAt(xOf(LISTEN - 300), MID_Y, TOL)).toBeNull();
-		expect(filterEdgeAt(xOf(LISTEN - 101), MID_Y, TOL)).toBeNull();   // guard, not a target
-		expect(filterCenterAt(xOf(LISTEN), MID_Y, TOL)).toBe(true);
+	it('keeps both arrows reachable when a narrow band touches either plot boundary', () => {
+		sdrDemod.set('am');
+		sdrIfbw.set(60);
+		for (const frequency of [CAP.lo + 30, CAP.hi - 30]) {
+			sdrListenHz.set(frequency);
+			const g = filterGeometry()!;
+			expect(g.handles[1].x - g.handles[0].x).toBeCloseTo(24, 6);
+			for (const handle of g.handles) {
+				expect(handle.x).toBeGreaterThanOrEqual(g.plot.x);
+				expect(handle.x).toBeLessThanOrEqual(g.plot.x + g.plot.w);
+				expect(filterEdgeAt(handle.x, handle.y, TOL)).toBe(handle.edge);
+			}
+		}
+	});
+
+	it('zoom gives only the top arrows priority and keeps the background available', () => {
+		sdrDemod.set('am');
+		sdrIfbw.set(60);
+		zoomEnabled.set(true);
+		const g = filterGeometry()!;
+		for (const handle of g.handles) {
+			expect(filterEdgeAt(handle.x, handle.y, TOL)).toBe(handle.edge);
+			expect(filterEdgeAt(handle.x, MID_Y, TOL)).toBeNull();
+		}
+		expect(filterEdgeAt(g.dialX, MID_Y, TOL)).toBeNull();
+		zoomEnabled.set(false);
 	});
 });
 
@@ -214,7 +238,7 @@ describe('protocol modes are not edge-draggable', () => {
 		for (const probe of [-1_000, 0, 1_500, 3_000, 4_500]) {
 			expect(filterEdgeAt(xOf(LISTEN + probe), MID_Y, TOL)).toBeNull();
 		}
-		expect(startFilterDrag('high', 1)).toBe(false);
+		expect(startFilterDrag('high', 1, xOf(LISTEN + 3_000))).toBe(false);
 		expect(filterDragging()).toBe(false);
 	});
 });
@@ -226,7 +250,7 @@ describe('ownership and cancellation', () => {
 	});
 
 	it('a move/end with a foreign pointer id is ignored', () => {
-		startFilterDrag('high', 1);
+		startFilterDrag('high', 1, xOf(LISTEN + 20_000));
 		expect(moveFilterDrag(xOf(LISTEN + 24_000), 2)).toBe(false);
 		expect(filterPreviewHz()).toBeCloseTo(40_000, 6);   // nothing moved
 		expect(endFilterDrag(2)).toBeNull();                // wrong owner ends nothing
@@ -235,7 +259,7 @@ describe('ownership and cancellation', () => {
 	});
 
 	it('a mode change under a drag cancels it and clears the preview', () => {
-		startFilterDrag('high', 1);
+		startFilterDrag('high', 1, xOf(LISTEN + 20_000));
 		moveFilterDrag(xOf(LISTEN + 24_000), 1);
 		expect(filterPreviewHz()).toBeCloseTo(48_000, 6);
 		sdrDemod.set('usb');
@@ -245,7 +269,7 @@ describe('ownership and cancellation', () => {
 	});
 
 	it('a listen retune under a drag cancels it', () => {
-		startFilterDrag('high', 1);
+		startFilterDrag('high', 1, xOf(LISTEN + 20_000));
 		sdrListenHz.set(LISTEN + 5_000);
 		expect(moveFilterDrag(xOf(LISTEN + 24_000), 1)).toBe(true);
 		expect(filterDragging()).toBe(false);
@@ -254,14 +278,14 @@ describe('ownership and cancellation', () => {
 	it('a pitch change cancels a CW drag', () => {
 		sdrDemod.set('cw');
 		sdrIfbw.set(500);
-		startFilterDrag('high', 1);
+		startFilterDrag('high', 1, xOf(LISTEN + 950));
 		sdrPitchHz.set(600);
 		expect(moveFilterDrag(xOf(LISTEN + 950), 1)).toBe(true);
 		expect(filterDragging()).toBe(false);
 	});
 
 	it('cancel drops the preview without a value', () => {
-		startFilterDrag('high', 1);
+		startFilterDrag('high', 1, xOf(LISTEN + 20_000));
 		moveFilterDrag(xOf(LISTEN + 24_000), 1);
 		expect(cancelFilterDrag()).toBe(true);
 		expect(filterPreviewHz()).toBeCloseTo(sdrIfbw.get(), 6);
