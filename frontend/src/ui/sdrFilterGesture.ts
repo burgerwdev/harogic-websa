@@ -17,11 +17,11 @@ import {
 	samplesInView,
 	togglePassbandView,
 } from './spectrumViewport';
+import { zoomEnabled } from './spectrumViewport';
 import { syncSpectrumZoomUi } from './spectrumZoomUi';
 import { requestRender } from '../render/redraw';
 import { filterPreviewHz, filterRange, filterSpec, setFilterPreview } from './sdrFilter';
 import { formatFreqHz } from '../core/fmt';
-import { tonePreviewHz } from './sdrTone';
 
 /** Which band edge a gesture is on. Symmetric modes mirror both onto the same drag. */
 export type FilterEdge = 'low' | 'high';
@@ -65,7 +65,7 @@ export function filterGeometry(ifBwOverride?: number, modeOverride?: string): Fi
   if (!(listen > 0)) return null;
   const mode = modeOverride ?? sdrDemod.get();
   const ifBw = ifBwOverride ?? filterPreviewHz();
-  const [bandLo, bandHi] = demodBandHz(mode, ifBw, tonePreviewHz());
+  const [bandLo, bandHi] = demodBandHz(mode, ifBw, sdrPitchHz.get());
   if (!(bandHi > bandLo)) return null;
   const view = isZoomed() ? getView() : getCapture();
   if (!view || !(view.hi > view.lo)) return null;
@@ -91,6 +91,27 @@ export function filterGeometry(ifBwOverride?: number, modeOverride?: string): Fi
   };
 }
 
+export const FILTER_HANDLE_HEIGHT = 18;
+
+/** Edge zones must remain distinct from each other and from the tuning dial. */
+function distinguishable(g: FilterGeometry, tolerance: number): boolean {
+  if (!g.candidates.length) return false;
+  const separation = Math.max(16, 2 * tolerance);
+  if (g.lowX !== null && g.highX !== null && Math.abs(g.highX - g.lowX) < separation) return false;
+  return g.candidates.every(edge => {
+    const x = edge === 'low' ? g.lowX : g.highX;
+    return x === null || Math.abs(x - g.dialX) >= separation;
+  });
+}
+
+/** Hovering a collapsed band explains how to expose its real edge controls. */
+export function filterNeedsViewAt(x: number, y: number, tolerance: number): boolean {
+  const g = filterGeometry();
+  if (!g || !g.candidates.length || distinguishable(g, tolerance)
+      || y < g.plot.y || y > g.plot.y + g.plot.h) return false;
+  const lo = g.lowX ?? g.plot.x, hi = g.highX ?? g.plot.x + g.plot.w;
+  return x >= lo - tolerance && x <= hi + tolerance;
+}
 /** Reject overlapping edge and dial hit zones. Tolerance is in logical canvas pixels. */
 export function filterEdgeAt(x: number, y: number, tolerance: number): FilterEdge | null {
   const tol = Math.max(0, tolerance);
@@ -98,15 +119,9 @@ export function filterEdgeAt(x: number, y: number, tolerance: number): FilterEdg
   if (!g || !g.candidates.length) return null;
   if (y < g.plot.y || y > g.plot.y + g.plot.h) return null;
   if (x < g.plot.x || x > g.plot.x + g.plot.w) return null;
+  if (zoomEnabled.get() && y > g.plot.y + FILTER_HANDLE_HEIGHT) return null;
+  if (!distinguishable(g, tol)) return null;
   const zoneX = (edge: FilterEdge) => (edge === 'low' ? g.lowX : g.highX);
-  const zones = g.candidates
-    .map(zoneX)
-    .filter((edgeX): edgeX is number =>
-      edgeX !== null && edgeX >= g.plot.x && edgeX <= g.plot.x + g.plot.w);
-  // Overlap between candidate zones, or between a candidate zone and the dial zone.
-  const overlaps = zones.some((edgeX) => Math.abs(edgeX - g.dialX) < 2 * tol)
-    || zones.some((a, i) => zones.some((b, j) => i < j && Math.abs(a - b) < 2 * tol));
-  if (overlaps) return null;
   let best: { edge: FilterEdge; dist: number } | null = null;
   for (const edge of g.candidates) {
     const edgeX = zoneX(edge);
@@ -270,7 +285,7 @@ export function viewSdrPassband(): boolean {
   // From the SLOTS, not the on-screen geometry: the entry must still find the band
   // when the current view does not show it, and the target is the band the receiver
   // reads inside THIS capture (edges outside the capture clamp to its ends).
-  const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), tonePreviewHz());
+  const [bandLo, bandHi] = demodBandHz(sdrDemod.get(), filterPreviewHz(), sdrPitchHz.get());
   if (!(bandHi > bandLo)) return false;
   const listen = sdrListenHz.get();
   const lo = Math.max(listen + bandLo, capture.lo);
@@ -300,7 +315,7 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
   const listen = listenPreview ?? sdrListenHz.get();
   if (!(listen > 0)) return false;
   const mode = sdrDemod.get();
-  const [bandLo, bandHi] = demodBandHz(mode, filterPreviewHz(), tonePreviewHz());
+  const [bandLo, bandHi] = demodBandHz(mode, filterPreviewHz(), sdrPitchHz.get());
   if (!(bandHi > bandLo)) return false;
   const p = plotRect();
   const span = (hiHz - loHz) || 1;
@@ -318,7 +333,7 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
   if (ctx.canvas.dataset.demodBand !== ds) ctx.canvas.dataset.demodBand = ds;
 
   const colors = canvasColors();
-  drawPassband(ctx, x0, x1, p.x, p.y, p.w, p.h, colors, listenPreview !== null || passbandDragFrequency() !== null);
+  drawPassband(ctx, x0, x1, p.x, p.y, p.w, p.h, colors, true);
   ctx.strokeStyle = colors.rta;
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 3]);
@@ -328,29 +343,47 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Handles only while hovering/dragging (no permanent affordances over the trace).
   const candidates = edgeCandidates(mode);
-  const active = drag ? candidates
-    : (hover && candidates.includes(hover) ? [hover] : []);
-  if (!active.length) return true;
-  const accent = filterPreviewHz() !== sdrIfbw.get() ? '#ffd54f' : '#00ffa0';
-  for (const edge of active) {
+  const geometry = filterGeometry();
+  const usable = geometry !== null && distinguishable(geometry, 8);
+  // A fine top boundary connects the two cutoffs with the tuning badge above them.
+  ctx.strokeStyle = colors.passbandEdge;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(Math.max(p.x, x0), p.y + 0.5);
+  ctx.lineTo(Math.min(p.x + p.w, x1), p.y + 0.5);
+  ctx.stroke();
+  for (const edge of candidates) {
     const x = edge === 'low' ? x0 : x1;
     if (x < p.x || x > p.x + p.w) continue;
-    ctx.fillStyle = accent;
+    const active = drag?.semantic === edge || hover === edge;
+    // Collapsed bands keep their honest boundaries, without overlapping fake handles.
+    if (!usable && !drag) continue;
+    ctx.fillStyle = active ? colors.rta : colors.bg;
+    ctx.strokeStyle = active ? colors.rta : colors.passbandEdge;
+    ctx.lineWidth = active ? 2 : 1;
+    ctx.fillRect(x - 6, p.y + 1, 12, FILTER_HANDLE_HEIGHT - 2);
+    ctx.strokeRect(x - 6, p.y + 1, 12, FILTER_HANDLE_HEIGHT - 2);
+    ctx.strokeStyle = active ? colors.bg : colors.passbandEdge;
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(x - 5, p.y);
-    ctx.lineTo(x + 5, p.y);
-    ctx.lineTo(x + 5, p.y + 7);
-    ctx.lineTo(x, p.y + 12);
-    ctx.lineTo(x - 5, p.y + 7);
-    ctx.closePath();
-    ctx.fill();
+    for (const dx of [-2, 2]) {
+      ctx.moveTo(x + dx, p.y + 5);
+      ctx.lineTo(x + dx, p.y + FILTER_HANDLE_HEIGHT - 5);
+    }
+    ctx.stroke();
+    if (!active) continue;
+    const cutoff = edge === 'low' ? bandLo : bandHi;
+    const label = `${cutoff > 0 ? '+' : ''}${formatFreqHz(cutoff)} · BW ${formatFreqHz(bandHi - bandLo)}`;
     ctx.font = '11px monospace';
-    ctx.textAlign = x > p.x + p.w / 2 ? 'right' : 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText(formatFreqHz(edge === 'low' ? listen + bandLo : listen + bandHi),
-      x > p.x + p.w / 2 ? x - 6 : x + 6, p.y + 14);
+    const width = ctx.measureText(label).width + 8;
+    const left = Math.max(p.x, Math.min(x - width / 2, p.x + p.w - width));
+    ctx.fillStyle = colors.bg;
+    ctx.fillRect(left, p.y + FILTER_HANDLE_HEIGHT + 3, width, 16);
+    ctx.fillStyle = colors.rta;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, left + 4, p.y + FILTER_HANDLE_HEIGHT + 11);
   }
   return true;
 }

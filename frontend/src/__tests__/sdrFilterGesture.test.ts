@@ -10,6 +10,7 @@ import { setWS } from '../core/wsSend';
 import { sdrDemod, sdrIfbw, sdrListenHz, sdrPitchHz } from '../ui/sdrState';
 import { setPluginManifest } from '../sdr/registry';
 import { filterPreviewHz } from '../ui/sdrFilter';
+import { plotRect } from '../render/plot';
 import {
 	cancelFilterDrag,
 	endFilterDrag,
@@ -31,10 +32,6 @@ import {
 	zoomEnabled,
 } from '../ui/spectrumViewport';
 
-// Store defaults: 860x480 canvas, MARGIN l10/r50/t14/b26 -> plot x[10,810] w=800.
-const PLOT_X = 10;
-const PLOT_W = 800;
-const PLOT_Y = 14;
 const MID_Y = 480 / 2;
 
 const CAP = { lo: 9_800_000, hi: 10_200_000 };   // 400 kHz around 10 MHz -> 500 Hz/px
@@ -56,7 +53,8 @@ function openSocket() {
 /** x of an absolute Hz in the window the plot draws (view when zoomed, else capture). */
 function xOf(hz: number): number {
 	const v = getView() ?? CAP;
-	return PLOT_X + (hz - v.lo) / (v.hi - v.lo) * PLOT_W;
+	const p = plotRect();
+	return p.x + (hz - v.lo) / (v.hi - v.lo) * p.w;
 }
 
 beforeEach(() => {
@@ -119,8 +117,9 @@ describe('AM: symmetric total-bandwidth edges', () => {
 	});
 
 	it('the y bound keeps the axis rows out of the edge hit', () => {
-		expect(filterEdgeAt(xOf(LISTEN - 20_000), PLOT_Y - 1, TOL)).toBeNull();
-		expect(filterEdgeAt(xOf(LISTEN - 20_000), PLOT_Y + 480 - 14 - 26 + 1, TOL)).toBeNull();
+		const p = plotRect();
+		expect(filterEdgeAt(xOf(LISTEN - 20_000), p.y - 1, TOL)).toBeNull();
+		expect(filterEdgeAt(xOf(LISTEN - 20_000), p.y + p.h + 1, TOL)).toBeNull();
 	});
 });
 
@@ -322,7 +321,8 @@ describe('view passband: display-only, data-honest', () => {
 
 	it('edge drags still hit after viewing the passband', () => {
 		viewSdrPassband();
-		expect(filterEdgeAt(xOf(LISTEN - 3_000), MID_Y, TOL)).toBe('low');
+		expect(filterEdgeAt(xOf(LISTEN - 3_000), plotRect().y + 8, TOL)).toBe('low');
+		expect(filterEdgeAt(xOf(LISTEN - 3_000), MID_Y, TOL)).toBeNull();
 		setView(null, 1);
 		expect(isZoomed()).toBe(false);
 	});

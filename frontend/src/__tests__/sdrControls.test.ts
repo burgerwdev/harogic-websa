@@ -173,37 +173,6 @@ describe('SDR control intent and STATUS', () => {
 		expect(state.sdrIfbw.pending()).toBe(false);
 	});
 
-	it('serializes CW pitch with bandwidth and rolls a rejected queued pitch back to its ACK', async () => {
-		const { controls, state, send } = await load();
-		controls.syncSdrPanel(status('sdr', 'cw', { if_bw: 500, pitch: 700 }));
-		controls.selectSdrPitch(800);
-		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
-		controls.selectSdrIfbw(200);
-		controls.selectSdrPitch(900);
-		expect(send).toHaveBeenCalledTimes(1);
-		controls.syncSdrPanel(status('sdr', 'cw', { if_bw: 500, pitch: 700 }));
-		expect(state.sdrPitchHz.get()).toBe(900);
-		expect(state.sdrPitchHz.pending()).toBe(true);
-		controls.syncSdrPanel({ ...status('sdr', 'cw', { if_bw: 500, pitch: 800 }),
-			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
-		const queued = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
-		expect(queued).toEqual(expect.objectContaining({ mode: 'cw', pitch: 900, ifbw: 200 }));
-		controls.rejectSdrFilterRequest('SET_SDR_CHANNEL', queued.request_id);
-		expect(state.sdrPitchHz.get()).toBe(800);
-		expect(state.sdrPitchHz.pending()).toBe(false);
-		expect(state.sdrIfbw.get()).toBe(500);
-	});
-
-	it('rejects unsupported CW pitches without submitting receiver work', async () => {
-		const { controls, state, send } = await load();
-		controls.syncSdrPanel(status('sdr', 'am', { if_bw: 6000, pitch: 700 }));
-		controls.selectSdrPitch(800);
-		controls.syncSdrPanel(status('sdr', 'cw', { if_bw: 500, pitch: 700 }));
-		for (const pitch of [NaN, 99, 1601]) controls.selectSdrPitch(pitch);
-		expect(send).not.toHaveBeenCalled();
-		expect(state.sdrPitchHz.get()).toBe(700);
-	});
-
 	it('refreshes queued full receiver edits with the newest AM detector confirmation', async () => {
 		const { controls, state, send } = await load();
 		const { initDecodeWindow } = await import('../ui/decodeWindow');

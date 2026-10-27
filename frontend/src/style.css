@@ -936,23 +936,6 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 #input-sdr-ifbw.preview { border-color: var(--dot-on); }
 #input-sdr-ifbw.invalid { border-color: #e5534b; }
 #input-sdr-ifbw.locked { color: var(--label); }
-.sdr-filter-adjust, .sdr-tone-controls { padding: 0 0 8px 62px; display: grid; gap: 4px; }
-.sdr-tone-controls[hidden] { display: none; }
-.sdr-filter-adjust input[type="range"], .sdr-tone-controls input[type="range"] {
-  width: 100%; min-width: 0; min-height: 28px; margin: 0; accent-color: var(--dot-on);
-}
-.sdr-filter-adjust output { font: 11px var(--font-mono, monospace); color: var(--text); overflow-wrap: anywhere; }
-.sdr-filter-adjust > span, .sdr-tone-controls > span { font-size: 11px; line-height: 1.4; color: var(--label); }
-.sdr-filter-adjust [data-state="pending"], .sdr-filter-adjust [data-state="preview"] { color: var(--dot-on); }
-.sdr-filter-adjust [data-state="error"] { color: #e5534b; }
-#sdr-settings .sdr-tone-row { margin-left: -62px; margin-bottom: 0; }
-#sdr-settings .sdr-tone-row > input { flex: 0 1 96px; min-width: 0; }
-.sdr-tone-unit { font-size: 11px; color: var(--label); }
-.sdr-tone-controls input.pending { border-style: dashed; }
-.sdr-tone-controls input[aria-invalid="true"] { border-color: #e5534b; }
-.sdr-filter-adjust input:focus-visible, .sdr-tone-controls input:focus-visible {
-  outline: 2px solid var(--dot-on); outline-offset: 2px;
-}
 /* The algorithm selector keeps its options' width when DeepFilterNet3 hides the strength
    selector. In Wiener mode the strength selector takes free space. DFN status has its own line. */
 #sdr-settings .param-row.sdr-nr-row { flex-wrap: wrap; }
@@ -1151,7 +1134,7 @@ input.ref-pending { border: 1px dashed #ffb300; }
 }
 .zoom-rail-control input:disabled { opacity: .35; cursor: not-allowed; }
 .zoom-rail-control input:focus-visible { outline: 1px solid var(--text); outline-offset: 0; }
-.zoom-rail-control output { max-width: 100%; font-variant-numeric: tabular-nums; color: var(--text); }
+.zoom-rail-control output { max-width: 100%; font-variant-numeric: tabular-nums; color: var(--text); text-align: center; overflow-wrap: anywhere; }
 @media (max-width: 1000px) {
   .control-rail.zoom-rail:not(.collapsed) { width: auto; }
   .control-rail.zoom-rail > .rail-toggle { width: 34px; }

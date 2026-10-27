@@ -157,6 +157,22 @@ describe('canvas pointer ownership', () => {
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
   });
 
+	it.each(['usb', 'lsb', 'cw'])('uses the frequency badge to tune heard %s tone with a single listen edit', async mode => {
+		const { state, send } = await load(true);
+		state.sdrDemod.confirm(mode);
+		const badge = await import('../ui/sdrBadgeGesture');
+		const g = badge.sdrBadgeGeometry()!;
+		const x = g.left + 5, y = g.top + g.height / 2;
+		pointer('pointerdown', x, y);
+		pointer('pointermove', x + 20, y);
+		expect(state.sdrListenHz.get()).toBe(10_000_000);
+		expect(send).not.toHaveBeenCalled();
+		pointer('pointerup', x + 20, -40);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ freq: 10_010_000 }));
+		expect(vi.mocked(send).mock.calls[0][0]).not.toHaveProperty('pitch');
+		expect(state.sdrPitchHz.get()).toBe(700);
+	});
+
   it.each(['left', 'right'])('keeps the initial frequency offset on an edge-clamped %s badge', async edge => {
     const { state, send } = await load(true);
     const badge = await import('../ui/sdrBadgeGesture');
@@ -347,6 +363,55 @@ describe('canvas pointer ownership', () => {
 		expect(send).toHaveBeenCalledTimes(1);
 		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', ifbw: 60_000 }));
 		expect(vi.mocked(send).mock.calls[0][0]).not.toHaveProperty('freq');
+	});
+
+	it('adjusts the top Filter handle with Zoom on while the lower edge remains a marquee', async () => {
+		const { state, viewport, filter, plot, send } = await load(true);
+		const y = plot.plotRect().y + 8;
+		pointer('pointerdown', 450, y);
+		expect(filter.filterDragging()).toBe(true);
+		pointer('pointermove', 470, y);
+		expect(state.sdrIfbw.get()).toBe(40_000);
+		expect(send).not.toHaveBeenCalled();
+		pointer('pointerup', 470, -40);
+		expect(state.sdrIfbw.get()).toBe(60_000);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ifbw: 60_000 }));
+		expect(viewport.isZoomed()).toBe(false);
+	});
+
+	it('keeps Ctrl marker priority over a top edge handle', async () => {
+		const { S, filter, plot, send } = await load(true);
+		drag(450, 570, plot.plotRect().y + 8, true);
+		expect(filter.filterDragging()).toBe(false);
+		expect(S.markers[0].freq).toBe(10_080_000);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('offers View for a collapsed passband and leaves its edge available to zoom', async () => {
+		const { state, filter, viewport, plot, send } = await load(true);
+		state.sdrIfbw.confirm(1000);
+		const y = plot.plotRect().y + 8;
+		canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 411, clientY: y }));
+		expect(canvas.title).toMatch(/View|查看/);
+		pointer('pointerdown', 411, y);
+		expect(filter.filterDragging()).toBe(false);
+		pointer('pointermove', 531, y);
+		pointer('pointerup', 531, y);
+		expect(viewport.isZoomed()).toBe(true);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it.each(['pointercancel', 'escape', 'blur'])('cancels a top Filter preview on %s without submitting', async reason => {
+		const { state, plot, send } = await load(true);
+		const y = plot.plotRect().y + 8;
+		pointer('pointerdown', 450, y);
+		pointer('pointermove', 470, y);
+		if (reason === 'pointercancel') pointer('pointercancel', 470, y);
+		if (reason === 'escape') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		if (reason === 'blur') window.dispatchEvent(new Event('blur'));
+		pointer('pointerup', 470, y);
+		expect(state.sdrIfbw.get()).toBe(40_000);
+		expect(send).not.toHaveBeenCalled();
 	});
 
 	it('uses both diamond coordinates instead of stealing clicks on its vertical line', async () => {

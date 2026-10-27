@@ -113,7 +113,7 @@ export const sdrRadiofaxClockPpm = createParam<number>('sdr.radiofaxClockPpm', {
 export const sdrIfbw = createParam<number>('sdr.ifbw', {
 	fallback: 6000, scope: 'sdr', persistKey: 'web-sa-sdr-ifbw', ...hz,
 });
-/** CW sidetone/passband centre (100–1600 Hz), confirmed by STATUS. */
+/** Native CW pitch from STATUS; the panel has no pitch setting. */
 export const sdrPitchHz = createParam<number>('sdr.pitch', { fallback: 700, scope: 'sdr', ...hz });
 
 export interface SdrFilterLimits { mode: string; min_hz: number; max_hz: number | null }

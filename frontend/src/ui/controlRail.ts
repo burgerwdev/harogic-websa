@@ -99,7 +99,7 @@ function syncLabels(): void {
   if (toggle) toggle.title = t(isCollapsedRail() ? 'rail_expand' : 'rail_collapse');
   const visToggle = document.getElementById('panel-vis-toggle');
   if (visToggle) visToggle.title = t(isPanelHidden() ? 'panel_show' : 'panel_hide');
-  for (const key of ['position', 'top', 'bottom']) {
+  for (const key of ['horizontal', 'top', 'bottom']) {
     const label = document.getElementById(`zoom-rail-${key}-label`);
     const input = document.getElementById(`zoom-rail-${key}`);
     if (label) label.textContent = t(`zoom_rail_${key}`);
@@ -181,7 +181,7 @@ function createZoomRail(): HTMLElement {
   controls.id = 'zoom-rail-controls';
   controls.className = 'zoom-rail-controls';
   controls.hidden = true;
-  for (const key of ['position', 'top', 'bottom']) {
+  for (const key of ['horizontal', 'top', 'bottom']) {
     const group = document.createElement('label');
     group.className = 'zoom-rail-control';
     const label = document.createElement('span');

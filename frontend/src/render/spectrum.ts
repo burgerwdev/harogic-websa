@@ -34,7 +34,7 @@ import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
 import { renderFilterPassband } from '../ui/sdrFilterGesture';
 import { renderSdrLocate } from '../ui/sdrLocate';
-import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
+import { SDR_BADGE_FONT, sdrBadgeActive, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 
 // Take mutable references from the store (snapshot at module level, re-read during render)
 function cur() {
@@ -841,11 +841,29 @@ function renderRta() {
   if (badge) {
     ctx.save();
     ctx.font = SDR_BADGE_FONT;
-    ctx.fillStyle = col.rta;
+    const active = sdrBadgeActive();
+    ctx.strokeStyle = col.passbandEdge;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(badge.dialX, badge.top + badge.height);
+    ctx.lineTo(badge.dialX, p.y);
+    ctx.stroke();
+    ctx.fillStyle = active ? col.rta : col.bg;
     ctx.fillRect(badge.left, badge.top, badge.width, badge.height);
-    ctx.fillStyle = col.bg;
+    ctx.strokeStyle = col.rta;
+    ctx.lineWidth = active ? 2 : 1;
+    ctx.strokeRect(badge.left, badge.top, badge.width, badge.height);
+    ctx.strokeStyle = active ? col.bg : col.rta;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const dx of [5, 8, 11]) {
+      ctx.moveTo(badge.left + dx, badge.top + 5);
+      ctx.lineTo(badge.left + dx, badge.top + badge.height - 5);
+    }
+    ctx.stroke();
+    ctx.fillStyle = active ? col.bg : col.rta;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(badge.label, badge.left + badge.width / 2, badge.top + badge.height / 2, badge.width - 8);
+    ctx.fillText(badge.label, badge.left + badge.width / 2 + 7, badge.top + badge.height / 2, badge.width - 24);
     ctx.restore();
   }
   // Markers on the active RTA trace (length-guarded)

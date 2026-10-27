@@ -28,7 +28,7 @@ INDEX = ROOT / 'frontend' / 'index.html'
 #: ids read on purpose even though they may be absent (popovers injected at runtime, ...).
 OPTIONAL: dict[str, str] = {
     'zoom-rail-controls': 'Created by initControlRail with the navigation items.',
-    'zoom-rail-position-value': 'Created with the zoom rail slider outputs.',
+    'zoom-rail-horizontal-value': 'Created with the zoom rail slider outputs.',
 }
 
 READ_ID = re.compile(r"getElementById\(\s*'([^']+)'")

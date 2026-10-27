@@ -17,7 +17,7 @@
  */
 import * as S from '../core/store';
 import { getLang, t } from '../core/i18n';
-import { formatFreqHz } from '../core/fmt';
+import { formatBWHz, formatFreqHz } from '../core/fmt';
 import { requestRender } from '../render/redraw';
 import { deviceMode } from './graphMode';
 import { onLangChange } from '../core/i18n';
@@ -55,16 +55,19 @@ function syncZoomRail(on: boolean): void {
 	syncControlRailZoom(on);
 	const capture = getCapture(), view = getView();
 	const ready = on && !!capture && !!view;
-	const position = railInput('position');
-	if (position) {
+	const horizontal = railInput('horizontal');
+	if (horizontal) {
 		const span = view ? view.hi - view.lo : 0;
-		position.min = '0'; position.max = '1000'; position.step = '1';
-		position.disabled = !ready || !capture || span >= capture.hi - capture.lo;
-		position.value = capture && view && !position.disabled
-			? String(Math.round((view.lo - capture.lo) / (capture.hi - capture.lo - span) * 1000)) : '500';
-		position.setAttribute('aria-valuetext', view ? formatFreqHz((view.lo + view.hi) / 2) : t('zoom_waiting'));
-		const output = document.getElementById('zoom-rail-position-value');
-		if (output) { output.textContent = view ? `${Math.round(Number(position.value) / 10)}%` : '—'; output.title = position.getAttribute('aria-valuetext') ?? ''; }
+		const fullSpan = capture ? capture.hi - capture.lo : 0;
+		const maxZoom = fullSpan ? Math.max(1, fullSpan / minSpanHz(S.freqArray)) : 1;
+		const zoom = span ? fullSpan / span : 1;
+		horizontal.min = '0'; horizontal.max = '1000'; horizontal.step = '1';
+		horizontal.disabled = !ready;
+		horizontal.value = String(maxZoom > 1 ? Math.round(Math.log(zoom) / Math.log(maxZoom) * 1000) : 0);
+		const text = view ? `${Number(zoom.toPrecision(3))}× · ${formatBWHz(span)}` : t('zoom_waiting');
+		horizontal.setAttribute('aria-valuetext', text);
+		const output = document.getElementById('zoom-rail-horizontal-value');
+		if (output) { output.textContent = view ? text : '—'; output.title = text; }
 	}
 	const top = getDisplayTop(), bottom = top - getDisplayRange();
 	const minimum = Math.min(displayBoundsMin(), bottom), maximum = Math.max(displayBoundsMax(), top);
@@ -85,19 +88,20 @@ function syncZoomRail(on: boolean): void {
 }
 
 function initZoomRail(): void {
-	for (const key of ['position', 'top', 'bottom']) {
+	for (const key of ['horizontal', 'top', 'bottom']) {
 		const input = railInput(key);
 		input?.addEventListener('keydown', (event) => { event.stopPropagation(); });
 		input?.addEventListener('input', () => {
 			if (!isSpectrumZoomOn() || !getCapture() || !getView() || input.disabled) return;
 			const value = Number(input.value);
 			if (!Number.isFinite(value)) return;
-			if (key === 'position') {
+			if (key === 'horizontal') {
 				const capture = getCapture()!, view = getView()!;
-				const span = view.hi - view.lo;
-				const center = capture.lo + span / 2 + value / 1000 * (capture.hi - capture.lo - span);
-				const min = minSpanHz(S.freqArray);
-				setView(panToCenter(view, center, capture, min), min);
+				const fullSpan = capture.hi - capture.lo;
+				const min = Math.min(fullSpan, minSpanHz(S.freqArray));
+				// Equal slider steps multiply zoom; the current centre stays fixed until an edge clamps it.
+				const span = fullSpan / Math.pow(fullSpan / min, value / 1000);
+				setView(zoomAround(view, span / (view.hi - view.lo), (view.lo + view.hi) / 2, capture, min), min);
 			} else {
 				cancelLevelPreview();
 				const top = getDisplayTop(), bottom = top - getDisplayRange();
@@ -160,7 +164,7 @@ export function syncSpectrumZoomUi(force = false): void {
 	const samples = on && capture && view ? samplesInView(S.freqArray, view) : null;
 	const key = [
 		on ? 1 : 0, available ? 1 : 0, zoomed ? 1 : 0,
-		viewportVersion(), capture ? capture.lo.toFixed(0) : '-',
+		viewportVersion(), S.freqVersion, capture ? capture.lo.toFixed(0) : '-',
 		samples === null ? '-' : samples, getDisplayTop(), getDisplayRange(), getLang(), displayUnit.get(), S.levelUnit,
 	].join('|');
 	if (!force && key === lastSyncKey) return;
