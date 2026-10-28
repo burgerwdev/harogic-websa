@@ -156,6 +156,129 @@ export function rasterDensity(
 	}
 }
 
+// Reused by sparse projections; at most 2 * bins - 1 monotone quantile segments.
+let sparseLeft = new Float64Array(0), sparseRight = new Float64Array(0);
+let sparseFrom = new Uint32Array(0), sparseTo = new Uint32Array(0);
+let sparseMass = new Float64Array(0);
+
+export interface DensityProjection {
+	/** Destination amplitude rows; native row r maps to origin + r * scale. */
+	bins: number;
+	origin: number;
+	scale: number;
+}
+
+/**
+ * Join adjacent occupied histograms by their normalized cumulative mass, moving each
+ * matched quantile between amplitude rows. This is a display approximation of history
+ * distributions, not a reconstruction of per-frame correlations. Native history stays
+ * untouched. Gaps retain only their finite native points; endpoints never extrapolate.
+ * Apart from clearing out, work is O(visible pairs * bins + pixels * occupied segments
+ * + crossed amplitude cells), with O(bins) scratch and no per-pixel allocations or sorting.
+ */
+export function rasterSparseDensity(
+	grid: DensityGrid, freq: Float64Array, lo: number, hi: number,
+	width: number, out: Float32Array,
+	projection?: DensityProjection,
+): void {
+	out.fill(0);
+	if (!(hi > lo) || !(width > 0) || freq.length !== grid.heads.length) return;
+	const bins = grid.bins;
+	const outputBins = projection?.bins ?? bins;
+	const origin = projection?.origin ?? 0, rowScale = projection?.scale ?? 1;
+	if (sparseLeft.length < bins) {
+		sparseLeft = new Float64Array(bins);
+		sparseRight = new Float64Array(bins);
+		sparseFrom = new Uint32Array(2 * bins);
+		sparseTo = new Uint32Array(2 * bins);
+		sparseMass = new Float64Array(2 * bins);
+	}
+	const [first, end] = visibleBinRange(freq, lo, hi);
+	const scale = width / (hi - lo);
+	for (let i = first; i + 1 < end; i++) {
+		if (!Number.isFinite(grid.samples[i]) || !Number.isFinite(grid.samples[i + 1])) continue;
+		const left = freq[i], right = freq[i + 1];
+		if (!(right > left) || right < lo || left > hi) continue;
+		sparseLeft.fill(0, 0, bins);
+		sparseRight.fill(0, 0, bins);
+		let leftTotal = 0, rightTotal = 0;
+		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+			const value = grid.values[cell];
+			sparseLeft[cell % bins] = value;
+			leftTotal += value;
+		}
+		for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) {
+			const value = grid.values[cell];
+			sparseRight[cell % bins] = value;
+			rightTotal += value;
+		}
+		if (!(leftTotal > 0) || !(rightTotal > 0)) continue;
+		let a = 0, b = 0, aMass = 0, bMass = 0, segments = 0;
+		while (true) {
+			while (a < bins && !(aMass > 0)) aMass = sparseLeft[a++] / leftTotal;
+			while (b < bins && !(bMass > 0)) bMass = sparseRight[b++] / rightTotal;
+			if (!(aMass > 0) || !(bMass > 0)) break;
+			const mass = Math.min(aMass, bMass);
+			sparseFrom[segments] = a - 1;
+			sparseTo[segments] = b - 1;
+			sparseMass[segments++] = mass;
+			aMass -= mass;
+			bMass -= mass;
+		}
+		// Half-open frequency intervals assign each pixel centre to exactly one pair;
+		// integrate its clipped frequency footprint so steep slopes cannot skip rows.
+		const x0 = Math.max(0, Math.ceil((left - lo) * scale - 0.5));
+		const x1 = Math.min(width, Math.ceil((right - lo) * scale - 0.5));
+		for (let x = x0; x < x1; x++) {
+			const t = (lo + (x + 0.5) / scale - left) / (right - left);
+			const t0 = Math.max(0, (lo + x / scale - left) / (right - left));
+			const t1 = Math.min(1, (lo + (x + 1) / scale - left) / (right - left));
+			const total = leftTotal + (rightTotal - leftTotal) * t;
+			for (let s = 0; s < segments; s++) {
+				const from = origin + sparseFrom[s] * rowScale;
+				const delta = (sparseTo[s] - sparseFrom[s]) * rowScale;
+				const row0 = from + delta * t0;
+				const row1 = from + delta * t1;
+				const low = Math.min(row0, row1), high = Math.max(row0, row1);
+				const mass = total * sparseMass[s];
+				if (high - low < 1e-9) {
+					const row = from + delta * t;
+					const bin = Math.floor(row), fraction = row - bin;
+					if (bin >= 0 && bin < outputBins) out[bin * width + x] += mass * (1 - fraction);
+					if (fraction > 0 && bin + 1 >= 0 && bin + 1 < outputBins) out[(bin + 1) * width + x] += mass * fraction;
+					continue;
+				}
+				// Exact integral of the two-row linear deposit over each crossed interval.
+				for (let bin = Math.max(-1, Math.floor(low)); bin < Math.min(outputBins, Math.ceil(high)); bin++) {
+					const start = Math.max(low, bin), finish = Math.min(high, bin + 1);
+					const fraction = (start + finish) / 2 - bin;
+					const portion = mass * (finish - start) / (high - low);
+					if (bin >= 0) out[bin * width + x] += portion * (1 - fraction);
+					if (bin + 1 < outputBins) out[(bin + 1) * width + x] += portion * fraction;
+				}
+			}
+		}
+	}
+	// Preserve native peaks only in their own device column, including isolated points
+	// and multiple native frequencies sharing a pixel. No second full raster is needed.
+	for (let i = first; i < end; i++) {
+		if (!Number.isFinite(grid.samples[i]) || freq[i] < lo || freq[i] > hi) continue;
+		const x = Math.min(width - 1, Math.floor((freq[i] - lo) * scale));
+		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
+			const row = origin + (cell % bins) * rowScale;
+			const bin = Math.floor(row), fraction = row - bin;
+			if (bin >= 0 && bin < outputBins) {
+				const k = bin * width + x;
+				out[k] = Math.max(out[k], grid.values[cell] * (1 - fraction));
+			}
+			if (fraction > 0 && bin + 1 >= 0 && bin + 1 < outputBins) {
+				const k = (bin + 1) * width + x;
+				out[k] = Math.max(out[k], grid.values[cell] * fraction);
+			}
+		}
+	}
+}
+
 /** Destination geometry: a raster row's CENTRE is its raw-dBm bin, just like the trace. */
 export function densityLevelPlacement(
 	grid: DensityGrid, ref: number, range: number, offset: number,

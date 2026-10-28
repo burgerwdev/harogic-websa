@@ -24,7 +24,7 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, densityLevelPlacement, densityLut, paintDensity, type DensityGrid } from '../dsp/rtaDensity';
+import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, paintDensity, type DensityGrid } from '../dsp/rtaDensity';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
@@ -941,18 +941,22 @@ function drawRtaDensityLayer(
   const width = rtaDensWidth.get() * rows / p.h;
   const rasterChanged = resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
     || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi
-    || lastDensSoftFootprint !== softFootprint;
+    || lastDensSoftFootprint !== softFootprint
+    || (softFootprint && (lastDensCentre !== centre || lastDensPitch !== pitch));
   if (rasterChanged) {
-    if (rtaDensRaster.length !== cols * grid.bins) rtaDensRaster = new Float32Array(cols * grid.bins);
-    rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+    const rasterBins = softFootprint ? rows : grid.bins;
+    if (rtaDensRaster.length !== cols * rasterBins) rtaDensRaster = new Float32Array(cols * rasterBins);
+    if (softFootprint) rasterSparseDensity(grid, freq, lo, hi, cols, rtaDensRaster,
+      { bins: rows, origin: centre - 0.5, scale: pitch });
+    else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
   }
   if (rasterChanged || themeChanged || lastDensContrast !== contrast
       || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
     if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
       rtaDensImage = lc.createImageData(cols, rows);
     }
-    paintDensity(rtaDensRaster, cols, grid.bins, rtaDensImage.data, rows,
-      centre, pitch, width, contrast, rtaDensLut!, softFootprint);
+    paintDensity(rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
+      softFootprint ? 0.5 : centre, softFootprint ? 1 : pitch, width, contrast, rtaDensLut!, softFootprint);
     lc.putImageData(rtaDensImage, 0, 0);
     lastDensGrid = grid; lastDensRevision = grid.revision;
     lastDensFreq = freq;
