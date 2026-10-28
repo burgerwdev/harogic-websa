@@ -29,7 +29,7 @@ SWP starts with Blackman-Nuttall window (`1`), spur bypass, automatic attenuatio
 
 `SET_PRESET` restores cached device SWP defaults from `SWP_ProfileDeInit`, normalizing full span to model frequency limits, and restores the fixed RTA defaults. Frame Avg returns to `device_default`; the SDK detector default is reported separately in `preset_defaults`. Preset resets SDR capture/receiver parameters and clears the explicit IQS reference flag (`sdr_ref_set=false`). The browser owns the SDR display scale and requests a fresh display fit.
 
-Preset keeps the confirmed acquisition mode, including its browser reload preference. Reload restores that mode from storage and waits for backend confirmation. SDR entry arms its display-only fit after entry tuning commands complete. If `sdr.ref_set` is already true, entry preserves the stored hardware level and does not fit; pressing Auto explicitly requests a new decision.
+Preset keeps the confirmed acquisition mode, including its browser reload preference. Reload restores that mode from storage and waits for backend confirmation. Restoring SDR runs its complete entry once even when the first STATUS already reports SDR: a connected SDR STATUS starts the saved audio preference and replays entry tuning before arming the display-only fit. A disconnected report holds this entry until the device is ready; periodic STATUS does not repeat it. If `sdr.ref_set` is already true, entry preserves the stored hardware level and does not fit; pressing Auto explicitly requests a new decision.
 
 ## STATUS and Commands
 

@@ -342,7 +342,7 @@ function syncModeButtons(): void {
   setHint('mode-hint', busy ? t('mode_switching', { mode: want!.toUpperCase() }) : '');
 }
 
-export function setGraphMode(mode: string) {
+export function setGraphMode(mode: string, { restore = false }: { restore?: boolean } = {}) {
   if (deviceMode.get() === 'server') {
     const target = mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
     if (trackServerExit(target) && target === 'sdr') beginSdrEntry();
@@ -350,7 +350,7 @@ export function setGraphMode(mode: string) {
   }
   const target: 'std' | 'rta' | 'sdr' =
     mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
-  if (pendingGraphMode() === null && target === currentGraphMode()) return;
+  if (!restore && pendingGraphMode() === null && target === currentGraphMode()) return;
   if (target !== 'std' && S.measOn) {
     exitMeasModePub(false);
     S.setMeasOn(false);

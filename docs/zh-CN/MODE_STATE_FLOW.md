@@ -29,7 +29,7 @@ SWP 使用 Blackman-Nuttall 窗（`1`）、杂散抑制 Bypass、自动衰减 / 
 
 `SET_PRESET` 从 `SWP_ProfileDeInit` 的缓存设备默认值恢复 SWP，并将全跨度归一到型号频率范围，同时恢复固定 RTA 默认值。Frame Avg 回到 `device_default`；SDK 检波器默认值另见 `preset_defaults`。Preset 重置 SDR 采集 / 接收机参数并清除显式 IQS 参考标志（`sdr_ref_set=false`）。SDR 显示尺度归浏览器持有，并请求新的显示拟合。
 
-Preset 保留已确认的采集模式及浏览器重载偏好；重载按存储模式发起请求，并等待后端确认。SDR 进入时在调谐命令全部发送后启动纯显示拟合；若 `sdr.ref_set` 已为 true，则保留硬件参考电平，不自动拟合，用户显式点击 Auto 才请求新的决策。
+Preset 保留已确认的采集模式及浏览器重载偏好；重载按存储模式发起请求，并等待后端确认。恢复 SDR 时，即使首份 STATUS 已报告 SDR，也会完整执行一次进入流程：收到已连接的 SDR STATUS 后恢复音频启用偏好，发送调谐命令，再启动纯显示拟合。断开报告会保留这次进入请求，等设备就绪后执行；周期 STATUS 不会重复进入。若 `sdr.ref_set` 已为 true，则保留硬件参考电平，不自动拟合，用户显式点击 Auto 才请求新的决策。
 
 ## STATUS 与命令
 

@@ -8,6 +8,7 @@ import { updateInfoBar } from '../render/infobar';
 import {
   fillGnssDetail,
   syncGraphModeStatus,
+  setGraphMode,
   releaseGraphModePending,
   syncPresetStatus, rejectPresetRequest,
   rejectSdrRadiofaxRequest,
@@ -727,7 +728,10 @@ export function updateStatus(s: any) {
   }
   if (shouldRestoreMode) {
     const mode = restoreMode === 'rta' ? 'rta' : restoreMode === 'sdr' ? 'sdr' : 'std';
-    send({ cmd: 'SET_MODE', mode });
+    // Reload must initialize SDR playback and its display fit even if the device
+    // is already in the saved mode when the first STATUS arrives.
+    if (mode === 'sdr') setGraphMode(mode, { restore: true });
+    else send({ cmd: 'SET_MODE', mode });
   }
 }
 
