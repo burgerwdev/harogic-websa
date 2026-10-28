@@ -389,7 +389,7 @@ The browser delivers event batches FIFO using `{type:'frames', envelopes}` and a
 > **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density keeps either the processed active trace or the received frames before Average/Max Hold; switching the source clears history. Afterglow uses a real-time half-life (Off, 0.2, 0.5, 2, 5, 10 s). Hit weights use elapsed time with bounded gaps. Off stops accumulation and drawing. Both, Density and Trace change visibility only; trace modes, markers, measurements and export retain their data sources. The wide trace glow is suppressed while density is drawn. Contrast changes colour independently of opacity. Waterfall history retains native frequency positions; missing bins stay blank unless SWP GapFill is enabled.
 
 On an axis-version transition, the first frame for the new axis takes priority and
-older-version frames are rejected. Density projects native frequency centers continuously,
+older-version frames are rejected. RTA density projects native frequency centers continuously,
 splits each amplitude contribution between two rows, and draws measured cell centres with a
 centred vertical footprint of 1/3/5/9 CSS pixels (default 5). Display width changes only
 the pixel footprint; it does not change occupancy, amplitude, frequency or measurements.
@@ -398,7 +398,7 @@ measured noise remains visible at reduced strength. Grain defaults to 128; NaN g
 blank. Off clears accumulation. VIEW freezes trace-source history; Live continues while
 the trace is frozen. Width, theme and contrast changes preserve history.
 
-SDR uses a thin trace without the wide glow and four times the selected amplitude grain (up to 1024 bins, with a native-point memory cap). Its waterfall retains 16-bit amplitude levels for recolouring history when the display range changes. SWP and non-SDR RTA traces retain their existing rendering. Zoom rail Top/Bottom are independent display bounds shared by the trace, density and SDR waterfall; they do not write Ref Level, attenuation or preamp. Restore or leaving Zoom clears these bounds.
+SDR uses a thin trace without the wide glow. Persistence retains a bounded sample of native trace contours and reconstructs their sloping segments at display resolution, without amplitude-grid blocks; Grain applies only to RTA. Retained contour payload is at most 8 MiB / 128 frames, or one native spectrum when it exceeds that byte budget. Compaction retains measured contours and decayed mass; long afterglow approximates their temporal distribution. The SDR waterfall retains 16-bit amplitude levels and reconstructs valid neighbouring levels before colouring when enlarged; shrinking preserves native peaks. Neither path bridges missing bins or adds measurement resolution. SWP and non-SDR RTA traces retain their existing rendering. Zoom rail Top/Bottom are independent display bounds shared by the trace, density and SDR waterfall; they do not write Ref Level, attenuation or preamp. Restore or leaving Zoom clears these bounds.
 
 SWP/RTA/SDR raster paths use each device-pixel column's first, minimum, maximum and last original vertices, in source order, and split at every missing bin. Zoom reveals the retained native vertices as they occupy separate pixels; markers and export always use the complete source arrays. Optional SWP adaptive smoothing still uses the full frame, consistently with marker readouts.
 

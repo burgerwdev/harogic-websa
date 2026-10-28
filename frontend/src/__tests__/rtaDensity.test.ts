@@ -1,6 +1,6 @@
 /** Native density history, visible frequency raster, and persistence controls. */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { advanceDensity, densityLevelPlacement, densityLut, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity } from '../dsp/rtaDensity';
+import { advanceDensity, densityLevelPlacement, densityLut, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity, rasterDensityContours, SDR_DENSITY_HISTORY_BYTES, SDR_DENSITY_HISTORY_FRAMES, type DensityGrid } from '../dsp/rtaDensity';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { resetRtaDensityCfg, restoreRtaDensityCfg, setRtaBins, setRtaDensContrast, setRtaDensWidth, setRtaDensSource, setRtaHalflife } from '../ui/panels/rta';
@@ -177,6 +177,127 @@ describe('native density history', () => {
 		const p0 = densityLevelPlacement(grid, -10, 100, 0);
 		const p1 = densityLevelPlacement(grid, -10, 100, 5);
 		expect(p1.top - p0.top).toBeCloseTo(-5 / 100, 8);
+	});
+});
+
+describe('SDR measured contour persistence', () => {
+	const advance = (previous: DensityGrid | null, samples: Float32Array,
+		freq: Float64Array, now: number, half = 1, mode = 'CLEAR_WRITE', source: 'trace' | 'live' = 'trace') =>
+		advanceDensity(previous, samples, 64, half, 0, 1, mode, freq, source, now, true)!;
+	const raster = (grid: DensityGrid, freq: Float64Array,
+		lo: number, hi: number, cols: number, rows = 64, centre = 0, pitch = 1, width = 1) => {
+		const out = new Float32Array(cols * rows);
+		rasterDensityContours(grid, freq, lo, hi, cols, rows, centre, pitch, width, out, new Float32Array(rows));
+		return out;
+	};
+
+	it('joins measured slopes at zoomed intermediate amplitudes instead of horizontal native bricks', () => {
+		const freq = new Float64Array([0, 10]);
+		const grid = advance(null, new Float32Array([-10, -30]), freq, 0);
+		const out = raster(grid, freq, 0, 10, 100);
+		for (const x of [20, 50, 80]) {
+			const y = Math.floor(10 + 20 * (x + 0.5) / 100);
+			expect(out[y * 100 + x] + out[(y + 1) * 100 + x]).toBeGreaterThan(0);
+		}
+		expect(out[10 * 100 + 50]).toBe(0);
+		expect(out[30 * 100 + 50]).toBe(0);
+	});
+
+	it('preserves NaN gaps and isolated measured carriers in dense screen columns', () => {
+		const freq = new Float64Array([0, 1, 2, 3, 4]);
+		const grid = advance(null, new Float32Array([-30, -10, NaN, -20, -30]), freq, 0);
+		const out = raster(grid, freq, 0, 4, 80);
+		for (let y = 0; y < 64; y++) expect(out[y * 80 + 40]).toBe(0);
+		const denseFreq = Float64Array.from({ length: 1000 }, (_, i) => i);
+		const dense = new Float32Array(1000).fill(-40);
+		dense[501] = -5; dense[502] = -60;
+		const denseGrid = advance(null, dense, denseFreq, 0);
+		const narrow = raster(denseGrid, denseFreq, 0, 1000, 10);
+		expect(narrow[5 * 10 + 5]).toBeGreaterThan(0);
+		expect(narrow[59 * 10 + 5]).toBeGreaterThan(0);
+	});
+
+	it('copies only the selected source and reprojects frozen contours with pixel width and bounds', () => {
+		const freq = new Float64Array([0, 1]);
+		const samples = new Float32Array([-20, -20]);
+		const grid = advance(null, samples, freq, 0);
+		samples.fill(-40);
+		const original = raster(grid, freq, 0, 1, 10, 80, 0.5, 1, 1);
+		const revision = grid.revision;
+		expect(advance(grid, samples, freq, 1000, 1, 'VIEW')).toBe(grid);
+		expect(grid.revision).toBe(revision);
+		expect(raster(grid, freq, 0, 1, 10, 80, 0.5, 1, 1)).toEqual(original);
+		const moved = raster(grid, freq, 0, 1, 10, 80, -9.5, 1, 5);
+		expect(moved[10 * 10 + 5]).toBeGreaterThan(0);
+		expect(moved[20 * 10 + 5]).toBe(0);
+		const columnMass = (out: Float32Array) => out.reduce((sum, value, i) => sum + (i % 10 === 5 ? value : 0), 0);
+		expect(columnMass(moved) / columnMass(original)).toBeCloseTo(5, 5);
+		const live = advance(grid, samples, freq, 1100, 1, 'VIEW', 'live');
+		expect(live).not.toBe(grid);
+		expect(live.history!.frames[0].samples[0]).toBe(-40);
+		expect(advanceDensity(live, samples, 64, 0, 0, 1, 'VIEW', freq, 'live', 1200, true)).toBeNull();
+		expect(advanceDensity(live, samples, 64, 1, 0, 1, 'OFF', freq, 'trace', 1200, true)).toBeNull();
+		expect(advance(live, samples, new Float64Array([0, 2]), 1200, 1, 'CLEAR_WRITE', 'live')).not.toBe(live);
+	});
+
+	it('halves abandoned contour occupancy by elapsed time and discards its faded tail', () => {
+		const freq = new Float64Array([0, 1]);
+		const grid = advance(null, new Float32Array([-10, -10]), freq, 0);
+		const before = raster(grid, freq, 0, 1, 10, 64, 0.5);
+		advance(grid, new Float32Array([-30, -30]), freq, 1000);
+		const after = raster(grid, freq, 0, 1, 10, 64, 0.5);
+		expect(after[10 * 10 + 5]).toBeCloseTo(before[10 * 10 + 5] / 2, 5);
+		expect(after[30 * 10 + 5]).toBeGreaterThan(0);
+		for (let i = 2; i <= 10; i++) advance(grid, new Float32Array([-30, -30]), freq, i * 1000);
+		expect(raster(grid, freq, 0, 1, 10, 64, 0.5)[10 * 10 + 5]).toBe(0);
+	});
+
+	it('retains one contour for a native spectrum larger than the usual history budget', () => {
+		const samples = new Float32Array(SDR_DENSITY_HISTORY_BYTES / 4 + 1).fill(-20);
+		const grid = advanceDensity(null, samples, 64, 1, 0, 1, 'CLEAR_WRITE', undefined, 'trace', 0, true)!;
+		expect(grid.history!.capacity).toBe(1);
+		expect(grid.history!.frames[0].samples.byteLength).toBe(samples.byteLength);
+		advanceDensity(grid, samples, 64, 1, 0, 1, 'CLEAR_WRITE', undefined, 'trace', 100, true);
+		expect(grid.history!.frames.length).toBe(1);
+	});
+
+	it('keeps occupancy mass stable between full-view and zoom temporal sampling budgets', () => {
+		const freq = Float64Array.from({ length: 12990 }, (_, i) => i);
+		const samples = new Float32Array(freq.length).fill(-20);
+		const grid = advance(null, samples, freq, 0, 10);
+		for (let i = 1; i < 100; i++) advance(grid, samples, freq, i, 10);
+		const full = raster(grid, freq, 0, 12989, 100, 64, 0.5);
+		const zoom = raster(grid, freq, 6400, 6500, 100, 64, 0.5);
+		for (let x = 1; x < 99; x++) {
+			expect(full[20 * 100 + x]).toBeGreaterThan(0);
+			expect(full[20 * 100 + x]).toBeCloseTo(zoom[20 * 100 + x], 5);
+		}
+		expect(grid.history!.frames.length).toBe(100);
+	});
+
+	it('compacts real spectra within a fixed budget while retaining long half-life mass', () => {
+		const freq = Float64Array.from({ length: 12990 }, (_, i) => i);
+		const samples = new Float32Array(freq.length).fill(-20);
+		const grid = advance(null, samples, freq, 0, 10);
+		let expected = DENSITY_HIT_RATE / 30;
+		for (let i = 1; i <= 400; i++) {
+			samples.fill(-20 - i); samples[0] = -i;
+			advance(grid, samples, freq, i * 100, 10);
+			expected = expected * Math.pow(2, -0.1 / 10) + DENSITY_HIT_RATE * 0.1;
+		}
+		const frames = grid.history!.frames;
+		expect(frames.length).toBeLessThanOrEqual(SDR_DENSITY_HISTORY_FRAMES);
+		expect(frames.reduce((sum, frame) => sum + frame.samples.byteLength, 0)).toBeLessThanOrEqual(SDR_DENSITY_HISTORY_BYTES);
+		expect(frames.reduce((sum, frame) => sum + frame.weight, 0)).toBeCloseTo(expected, 5);
+		expect(grid.values.byteLength + grid.next.byteLength + grid.heads.byteLength).toBe(0);
+		for (const frame of frames) {
+			// Every retained contour is one actual input frame, never averaged amplitudes.
+			expect(Number.isInteger(frame.samples[0])).toBe(true);
+			expect(frame.samples[1] === -20 || frame.samples[1] === frame.samples[0] - 20).toBe(true);
+		}
+		const before = raster(grid, freq, 5000, 5100, 100, 64);
+		advance(grid, samples, freq, 40000, 10);
+		expect(raster(grid, freq, 5000, 5100, 100, 64)).toEqual(before);
 	});
 });
 

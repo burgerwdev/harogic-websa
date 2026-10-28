@@ -366,24 +366,61 @@ describe('canvas pointer ownership', () => {
 	});
 
 	it('adjusts the top Filter handle with Zoom on while the lower edge remains a marquee', async () => {
-		const { state, viewport, filter, plot, send } = await load(true);
-		const y = plot.plotRect().y + 8;
-		pointer('pointerdown', 450, y);
+		const { state, viewport, filter, send } = await load(true);
+		const handle = filter.filterGeometry()!.handles[1];
+		const x = handle.x, y = handle.y;
+		pointer('pointerdown', x, y);
 		expect(filter.filterDragging()).toBe(true);
-		pointer('pointermove', 470, y);
+		pointer('pointermove', x + 20, y);
 		expect(state.sdrIfbw.get()).toBe(40_000);
 		expect(send).not.toHaveBeenCalled();
-		pointer('pointerup', 470, -40);
+		pointer('pointerup', x + 20, -40);
 		expect(state.sdrIfbw.get()).toBe(60_000);
 		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ifbw: 60_000 }));
 		expect(viewport.isZoomed()).toBe(false);
 	});
 
 	it('keeps Ctrl marker priority over a top edge handle', async () => {
-		const { S, filter, plot, send } = await load(true);
-		drag(450, 570, plot.plotRect().y + 8, true);
+		const { S, filter, send } = await load(true);
+		const handle = filter.filterGeometry()!.handles[1];
+		drag(handle.x, 570, handle.y, true);
 		expect(filter.filterDragging()).toBe(false);
 		expect(S.markers[0].freq).toBe(10_080_000);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('reveals near the dial, clears on leave/Escape/blur, and keeps hidden background for Zoom', async () => {
+		const { filter, viewport, send } = await load(true);
+		const g = filter.filterGeometry()!;
+		const hover = (x: number) => canvas.dispatchEvent(new MouseEvent('pointermove', {
+			clientX: x * screenScale, clientY: 240 * screenScale, bubbles: true,
+		}));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		hover(g.dialX + 55);
+		expect(filter.filterHandlesVisible()).toBe(true);
+		canvas.dispatchEvent(new Event('pointerleave'));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		hover(g.dialX);
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		hover(g.dialX);
+		window.dispatchEvent(new Event('blur'));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		drag(570, 650);
+		expect(filter.filterDragging()).toBe(false);
+		expect(viewport.isZoomed()).toBe(true);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('grabs an outward arrow in the canvas margin before axis gestures', async () => {
+		const { state, filter, axis, send } = await load(true);
+		state.sdrIfbw.confirm(60);
+		state.sdrListenHz.confirm(9_800_030);
+		const handle = filter.filterGeometry()!.handles[0];
+		pointer('pointerdown', handle.x, handle.y);
+		expect(filter.filterDragging()).toBe(true);
+		expect(axis.axisDragging()).toBe(false);
+		pointer('pointerup', handle.x, handle.y);
 		expect(send).not.toHaveBeenCalled();
 	});
 
@@ -405,14 +442,15 @@ describe('canvas pointer ownership', () => {
 	});
 
 	it.each(['pointercancel', 'escape', 'blur'])('cancels a top Filter preview on %s without submitting', async reason => {
-		const { state, plot, send } = await load(true);
-		const y = plot.plotRect().y + 8;
-		pointer('pointerdown', 450, y);
-		pointer('pointermove', 470, y);
-		if (reason === 'pointercancel') pointer('pointercancel', 470, y);
+		const { state, filter, send } = await load(true);
+		const handle = filter.filterGeometry()!.handles[1];
+		const x = handle.x, y = handle.y;
+		pointer('pointerdown', x, y);
+		pointer('pointermove', x + 20, y);
+		if (reason === 'pointercancel') pointer('pointercancel', x + 20, y);
 		if (reason === 'escape') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 		if (reason === 'blur') window.dispatchEvent(new Event('blur'));
-		pointer('pointerup', 470, y);
+		pointer('pointerup', x + 20, y);
 		expect(state.sdrIfbw.get()).toBe(40_000);
 		expect(send).not.toHaveBeenCalled();
 	});

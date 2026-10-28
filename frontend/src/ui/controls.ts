@@ -11,7 +11,7 @@ import { bindSdrTuningUi, renderSdrTuningUi, cancelSdrTuningEdit } from './sdrTu
 import { bindSdrFilter, cancelSdrFilterEdit, filterSpec, filterValueForMode, rememberConfirmedFilter, renderSdrFilter } from './sdrFilter';
 import { sdrFilterLimits } from './sdrState';
 import { clearPassbandView } from './spectrumViewport';
-import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, filterEdgeAt, moveFilterDrag, setFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
+import { cancelFilterDrag, endFilterDrag, filterDragging, filterCenterAt, moveFilterDrag, setFilterHover, updateFilterHover, setPassbandTuneDragging, startFilterDrag, viewSdrPassband } from './sdrFilterGesture';
 import { cancelSdrTuneRequest, confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession, stopSdrTuneRepeat } from './sdrTuneRequest';
 import { beginSdrLocateClick, cancelSdrLocate, commitSdrLocateClick, updateSdrLocateHover } from './sdrLocate';
 import { clearSdrBadgeDrag, moveSdrBadgeDrag, sdrBadgeAt, startSdrBadgeDrag, validateSdrBadgeDrag } from './sdrBadgeGesture';
@@ -549,12 +549,16 @@ export function syncGraphModeStatus(mode: string) {
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
   if (resetButton) resetButton.disabled = isRtaLike;
-  // The density map (Persist/Grain) is drawn from the non-real-time frames only: RTA and SDR own it,
-  // and in the swept mode there is nothing to accumulate, so the row is disabled there instead of
-  // sitting there doing nothing (reported: "does trace persist not work in SWP?").
-  for (const id of ['select-rta-fade', 'select-rta-bins', 'select-rta-dens-source',
+  // SDR persistence follows native contours; amplitude-grid grain applies only to RTA.
+  for (const id of ['select-rta-fade', 'select-rta-dens-source',
     'select-rta-dens-layers', 'select-rta-dens-contrast', 'select-rta-dens-width']) {
     setDisabled(id, mode === 'std');
+  }
+  const grain = document.getElementById('select-rta-bins') as HTMLSelectElement | null;
+  if (grain) {
+    grain.disabled = mode === 'std' || isSdr;
+    grain.dataset.i18n = isSdr ? 'tip_sdr_density_contours' : 'tip_select-rta-bins';
+    grain.title = t(grain.dataset.i18n);
   }
   const rtaFrequency = document.getElementById('rta-freq-settings');
   const swpFrequency = document.getElementById('swp-freq-settings');
@@ -1845,6 +1849,16 @@ export function bindCanvas() {
       requestRender();
       return;
     }
+    const hit = markerDiamondAt(x, y, canvas);
+    const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
+    const edge = sdr && !e.ctrlKey && !hit ? updateFilterHover(x, y, tolerance) : null;
+    if (edge && startFilterDrag(edge, e.pointerId, x)) {
+      cancelSdrLocate();
+      accept('filter');
+      canvas.style.cursor = 'ew-resize';
+      canvas.title = t('sdr_passband_edge_tip');
+      return;
+    }
     const band = axisBandFor(x, y, pr);
     if (band) {
       cancelSdrLocate();
@@ -1860,7 +1874,7 @@ export function bindCanvas() {
     }
     if (x < pr.x || x > pr.x + pr.w || y < pr.y || y > pr.y + pr.h) return;
     const powers = getDisplayPowers();
-    const hit = markerDiamondAt(x, y, canvas);
+    setFilterHover(null);
     if (e.ctrlKey || hit || (!sdr && !zoom && !e.shiftKey)) {
       cancelSdrLocate();
       const marker = e.ctrlKey ? S.markers.find(m => m.id === S.activeMkrId) : hit ?? S.markers.find(m => m.id === S.activeMkrId);
@@ -1877,15 +1891,6 @@ export function bindCanvas() {
       return;
     }
     if (sdr) {
-      const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
-      const edge = filterEdgeAt(x, y, tolerance);
-      if (edge && startFilterDrag(edge, e.pointerId, x)) {
-        cancelSdrLocate();
-        accept('filter');
-        canvas.style.cursor = 'ew-resize';
-        canvas.title = t('sdr_passband_edge_tip');
-        return;
-      }
       // Freeze a locate candidate for a possible click; ownership is decided by zoom.
       beginSdrLocateClick(x, y, S.W / Math.max(1, canvas.getBoundingClientRect().width));
       accept(zoom ? 'zoom' : 'tune');
@@ -1979,22 +1984,23 @@ export function bindCanvas() {
 
   // Hover feedback for the axis bands: without a cursor change the handles are invisible, and
   // the bands sit in the margins where nothing else ever happened before.
-  canvas.addEventListener('mousemove', (e) => {
+  const updateCanvasHover = (e: MouseEvent) => {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
     const x = canvasX(e, canvas), y = canvasY(e, canvas);
+    const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
+    const marker = markerDiamondAt(x, y, canvas);
+    const edge = currentGraphMode() === 'sdr' && !marker && !e.ctrlKey
+      ? updateFilterHover(x, y, tolerance) : null;
+    if (marker || e.ctrlKey || currentGraphMode() !== 'sdr') setFilterHover(null);
     const badge = currentGraphMode() === 'sdr' && !e.ctrlKey && sdrBadgeAt(x, y);
     if (badge) {
-      setFilterHover(null);
+      updateFilterHover(x, Math.max(y, plotRectPub().y), tolerance);
       cancelSdrLocate();
       canvas.style.cursor = 'grab';
       canvas.title = t('sdr_passband_tune_tip');
       return;
     }
-    const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
     const band = axisBandFor(x, y, plotRectPub());
-    const marker = markerDiamondAt(x, y, canvas);
-    const edge = currentGraphMode() === 'sdr' ? filterEdgeAt(x, y, tolerance) : null;
-    setFilterHover(!marker && !e.ctrlKey ? edge : null);
     if (!marker && !e.ctrlKey && edge) {
       canvas.title = t('sdr_passband_edge_tip');
     } else canvas.removeAttribute('title');
@@ -2002,10 +2008,12 @@ export function bindCanvas() {
       updateSdrLocateHover(x, y, S.W / Math.max(1, canvas.getBoundingClientRect().width));
     } else cancelSdrLocate();
     const center = currentGraphMode() === 'sdr' && filterCenterAt(x, y, tolerance);
-    const cursor = band ? axisBandCursor(band) : marker || e.ctrlKey ? 'crosshair'
-      : edge ? 'ew-resize' : center ? 'crosshair' : '';
+    const cursor = marker || e.ctrlKey ? 'crosshair' : edge ? 'ew-resize'
+      : band ? axisBandCursor(band) : center ? 'crosshair' : '';
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
-  });
+  };
+  canvas.addEventListener('pointermove', updateCanvasHover);
+  canvas.addEventListener('mousemove', updateCanvasHover);
   // Cursor readout: publish the drawn bin under the pointer while the pointer is inside the plot.
   // The canvas then labels that point (see render/spectrum.ts). Only a change of bin repaints. The
   // readout cannot change faster than that, and one repaint redraws the whole trace and the tables.
@@ -2024,13 +2032,15 @@ export function bindCanvas() {
     publishCursor(canvasX(e, canvas), canvasY(e, canvas));
   });
   canvas.addEventListener('mouseleave', () => publishCursor(-1e9, -1e9));
-  canvas.addEventListener('mouseleave', () => {
+  const clearCanvasHover = () => {
     if (canvasPointerId === null) {
       setFilterHover(null);
       canvas.removeAttribute('title');
       cancelSdrLocate();
     }
-  });
+  };
+  canvas.addEventListener('pointerleave', clearCanvasHover);
+  canvas.addEventListener('mouseleave', clearCanvasHover);
 
   // Wheel on an axis band zooms that axis (span on the frequency row, dB/div on the level
   // labels); inside the plot the wheel zooms the DISPLAY view while the toggle is On
@@ -2068,6 +2078,10 @@ export function bindCanvas() {
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Control' && canvasPointerId === null) {
       cancelSdrLocate();
+      setFilterHover(null);
+      canvas.removeAttribute('title');
+    }
+    if (e.key === 'Escape') {
       setFilterHover(null);
       canvas.removeAttribute('title');
     }

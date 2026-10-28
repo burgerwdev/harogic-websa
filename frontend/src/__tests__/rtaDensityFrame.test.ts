@@ -8,6 +8,7 @@ import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/water
 import { setRtaDensSource, beginRtaAxisTransition, clearRtaAccum, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { clearRtaTrace, setTraceMode, switchTraceTab } from '../ui/traceOps';
 import { zoomEnabled } from '../ui/spectrumViewport';
+import { rasterDensityContours } from '../dsp/rtaDensity';
 
 class DisplaySocket {
 	static OPEN = 1;
@@ -73,23 +74,26 @@ beforeEach(() => {
 });
 
 describe('processed active-trace density', () => {
-	it('keeps finer SDR amplitude history when display bounds move', () => {
+	it('reprojects measured SDR contours when display bounds move', () => {
 		S.setSdrMode(true);
 		zoomEnabled.set(true);
 		try {
 			feed(-40);
 			const grid = S.rtaDensity2d!;
-			const pitch = grid.dBPerBin;
-			const carrierRow = Math.floor((grid.refTop + 40) / pitch);
-			expect(grid.values[16 * grid.bins + carrierRow]).toBeGreaterThan(0);
+			const freq = S.rtaData.freq;
+			const out = new Float32Array(100 * 100);
+			const column = new Float32Array(100);
+			rasterDensityContours(grid, freq, freq[16], freq[17], 100, 100, 0,
+				grid.dBPerBin, 1, out, column);
+			expect(out[40 * 100] + out[39 * 100]).toBeGreaterThan(0);
 			setDisplayBounds(-35, -45);
 			feed(-40.3);
 			expect(S.rtaDensity2d).toBe(grid);
-			expect(grid.refTop).toBe(0);
-			expect(grid.dBPerBin).toBe(pitch);
-			const movedRow = Math.floor((grid.refTop + 40.3) / pitch);
-			expect(movedRow).toBeGreaterThan(carrierRow);
-			expect(grid.values[16 * grid.bins + movedRow]).toBeGreaterThan(0);
+			// Reproject the same raw-dBm history to the new 10 dB display window.
+			rasterDensityContours(grid, freq, freq[16], freq[17], 100, 100, -350,
+				10 * grid.dBPerBin, 1, out, column);
+			expect(out[53 * 100] + out[52 * 100]).toBeGreaterThan(0);
+			expect(out[40 * 100]).toBe(0);
 		} finally {
 			clearDisplayBounds();
 			zoomEnabled.set(false);

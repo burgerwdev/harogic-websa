@@ -96,7 +96,7 @@ export function filterGeometry(ifBwOverride?: number, modeOverride?: string): Fi
     lowHz: listen + bandLo,
     highHz: listen + bandHi,
     candidates,
-    handles: filterHandles(p, dialX, loX, hiX, candidates),
+    handles: filterHandles(p, loX, hiX, candidates),
     mode,
     band: [bandLo, bandHi],
   };
@@ -104,46 +104,34 @@ export function filterGeometry(ifBwOverride?: number, modeOverride?: string): Fi
 
 export const FILTER_HANDLE_HEIGHT = 18;
 
-/** Keep the actual band untouched while separating the small controls above it. */
-function filterHandles(p: FilterGeometry['plot'], dialX: number, lowX: number, highX: number,
+/** Keep arrow ink outside the real band, including when an edge reaches a plot margin. */
+function filterHandles(p: FilterGeometry['plot'], lowX: number, highX: number,
   candidates: FilterEdge[]): FilterHandle[] {
-  candidates = candidates.filter(edge => {
+  let low = Math.max(4.5, lowX - 12), high = Math.min(S.W - 4.5, highX + 12);
+  if (high - low < 24) {
+    if (low + 24 <= S.W - 4.5) high = low + 24;
+    else low = high - 24;
+  }
+  return candidates.filter(edge => {
     const x = edge === 'low' ? lowX : highX;
     return x >= p.x && x <= p.x + p.w;
-  });
-  const inset = Math.min(6, p.w / 2);
-  const left = p.x + inset, right = p.x + p.w - inset;
-  const clamp = (x: number) => Math.max(left, Math.min(right, x));
-  let low = clamp(lowX), high = clamp(highX);
-  if (candidates.length === 2) {
-    const separation = Math.min(24, right - left);
-    if (high - low < separation) {
-      const middle = Math.max(left + separation / 2,
-        Math.min(right - separation / 2, (lowX + highX) / 2));
-      low = middle - separation / 2;
-      high = middle + separation / 2;
-    }
-  } else if (candidates[0] === 'low') {
-    low = clamp(Math.min(lowX, dialX - 12));
-  } else if (candidates[0] === 'high') {
-    high = clamp(Math.max(highX, dialX + 12));
-  }
-  return candidates.map(edge => ({ edge, x: edge === 'low' ? low : high,
+  }).map(edge => ({ edge, x: edge === 'low' ? low : high,
     y: p.y + FILTER_HANDLE_HEIGHT / 2, edgeX: edge === 'low' ? lowX : highX }));
 }
-/** Top arrows own distinct nearest-edge targets; zoom keeps the plot below for selection. */
+
+/** Visible arrows own distinct targets; zoom keeps the plot below for selection. */
 export function filterEdgeAt(x: number, y: number, tolerance: number): FilterEdge | null {
   const tol = Math.max(0, tolerance);
   const g = filterGeometry();
-  if (!g || !g.handles.length) return null;
-  if (y < g.plot.y || y > g.plot.y + g.plot.h) return null;
-  if (x < g.plot.x || x > g.plot.x + g.plot.w) return null;
+  if (!filterHandlesVisible() || !g || !g.handles.length) return null;
+  if (y < g.plot.y || y > g.plot.y + g.plot.h || x < 0 || x > S.W) return null;
   const top = y <= g.plot.y + FILTER_HANDLE_HEIGHT;
   if (zoomEnabled.get() && !top) return null;
+  if (!top && (x < g.plot.x || x > g.plot.x + g.plot.w)) return null;
+  if (!top && (Math.abs(x - g.dialX) <= tol
+      || (g.handles.length === 2 && g.handles[1].edgeX - g.handles[0].edgeX < 2 * tol))) return null;
   let best: { edge: FilterEdge; dist: number } | null = null;
   for (const handle of g.handles) {
-    // Offset controls are only targets where they are drawn, leaving the dial usable.
-    if (!top && Math.abs(handle.x - handle.edgeX) > 0.5) continue;
     const dist = Math.abs(x - (top ? handle.x : handle.edgeX));
     if (dist <= tol && (!best || dist < best.dist)) best = { edge: handle.edge, dist };
   }
@@ -174,6 +162,7 @@ interface DragState {
 
 let drag: DragState | null = null;
 let hover: FilterEdge | null = null;
+let handlesVisible = false;
 let tuneDragging = false;
 
 export function setPassbandTuneDragging(active: boolean): void {
@@ -206,6 +195,7 @@ export function startFilterDrag(edge: FilterEdge, pointerId: number, startX: num
     startBandwidth: filterPreviewHz(),
     hzPerPixel: (view.hi - view.lo) / g.plot.w,
   };
+  requestRender();
   return true;
 }
 
@@ -244,6 +234,7 @@ export function endFilterDrag(pointerId: number): number | null {
   const value = preview !== sdrIfbw.get() ? preview : null;
   drag = null;
   hover = null;
+  handlesVisible = false;
   setFilterPreview(null);
   requestRender();
   return value;
@@ -255,18 +246,43 @@ export function cancelFilterDrag(): boolean {
   const hadDrag = drag !== null;
   // Clear even when the preview returned to the slot value.
   const hadPreview = filterPreviewHz() !== sdrIfbw.get();
+  const hadHover = handlesVisible;
   drag = null;
   hover = null;
+  handlesVisible = false;
   setFilterPreview(null);
-  if (hadDrag || hadPreview) requestRender();
-  return hadDrag || hadPreview;
+  if (hadDrag || hadPreview || hadHover) requestRender();
+  return hadDrag || hadPreview || hadHover;
 }
 
-/** Hover changes cannot replace an active drag. */
+/** Explicitly clearing hover also hides both controls; an active drag keeps them visible. */
 export function setFilterHover(edge: FilterEdge | null): void {
-  if (drag || hover === edge) return;
+  if (drag || (hover === edge && handlesVisible === (edge !== null))) return;
   hover = edge;
+  handlesVisible = edge !== null;
   requestRender();
+}
+
+/** Reveal near the dial or an editable edge, using the caller's existing CSS pixel scale. */
+export function updateFilterHover(x: number, y: number, tolerance: number): FilterEdge | null {
+  if (drag) return null;
+  const g = filterGeometry();
+  const scale = Math.max(0, tolerance) / 8;
+  const inside = g && x >= 0 && x <= S.W && y >= g.plot.y && y <= g.plot.y + g.plot.h;
+  const visible = !!(inside && g.handles.length && (Math.abs(x - g.dialX) <= 56 * scale
+    || g.handles.some(handle => Math.min(Math.abs(x - handle.edgeX), Math.abs(x - handle.x)) <= 12 * scale)));
+  const changed = handlesVisible !== visible;
+  handlesVisible = visible;
+  const edge = visible ? filterEdgeAt(x, y, tolerance) : null;
+  if (changed || hover !== edge) {
+    hover = edge;
+    requestRender();
+  }
+  return edge;
+}
+
+export function filterHandlesVisible(): boolean {
+  return drag !== null || handlesVisible;
 }
 
 /** The hovered edge (renderer input); null while dragging or not hovering. */
@@ -350,37 +366,42 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const handles = filterHandles(p, dialX, x0, x1, edgeCandidates(mode));
-  for (const handle of handles) {
-    const { edge, x, y, edgeX } = handle;
+  return true;
+}
+
+/** Draw after the plot clip is restored so outward controls can use the canvas margins. */
+export function renderFilterHandles(): void {
+  if (!filterHandlesVisible()) return;
+  const g = filterGeometry();
+  if (!g) return;
+  const colors = canvasColors();
+  const p = g.plot;
+  ctx.save();
+  ctx.strokeStyle = colors.rta;
+  ctx.fillStyle = colors.rta;
+  ctx.lineWidth = 1;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  for (const { edge, x, y } of g.handles) {
     const active = drag?.semantic === edge || hover === edge;
-    ctx.strokeStyle = colors.rta;
-    ctx.lineWidth = 1;
-    if (Math.abs(x - edgeX) > 0.5) {
-      ctx.globalAlpha = active ? 0.8 : 0.4;
-      ctx.beginPath();
-      ctx.moveTo(x, y + 4);
-      ctx.lineTo(Math.max(p.x, Math.min(p.x + p.w, edgeX)), y + 7);
-      ctx.stroke();
-    }
-    // Fine outward chevrons, without plates or grip marks.
-    ctx.globalAlpha = active ? 1 : 0.7;
-    ctx.lineWidth = active ? 1.8 : 1.2;
     const direction = edge === 'low' ? -1 : 1;
+    ctx.globalAlpha = active ? 1 : 0.72;
+    // A tiny filled arrowhead and short stem; no plate, grip or line through the band.
     ctx.beginPath();
-    ctx.moveTo(x - direction * 3.5, y - 3.5);
-    ctx.lineTo(x + direction * 3.5, y);
-    ctx.lineTo(x - direction * 3.5, y + 3.5);
+    ctx.moveTo(x + direction * 4, y);
+    ctx.lineTo(x, y - 3);
+    ctx.lineTo(x, y + 3);
+    ctx.closePath();
+    ctx.fill();
     ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - direction * 4, y);
+    ctx.stroke();
     if (!active) continue;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(edgeX, p.y);
-    ctx.lineTo(edgeX, p.y + p.h);
-    ctx.stroke();
-    const cutoff = edge === 'low' ? bandLo : bandHi;
-    const label = `${cutoff > 0 ? '+' : ''}${formatFreqHz(cutoff)} · BW ${formatFreqHz(bandHi - bandLo)}`;
+    ctx.globalAlpha = 1;
+    const cutoff = edge === 'low' ? g.band[0] : g.band[1];
+    const label = `${cutoff > 0 ? '+' : ''}${formatFreqHz(cutoff)} · BW ${formatFreqHz(g.band[1] - g.band[0])}`;
     ctx.font = '11px monospace';
     const width = ctx.measureText(label).width + 8;
     const left = Math.max(p.x, Math.min(x - width / 2, p.x + p.w - width));
@@ -391,5 +412,5 @@ export function renderFilterPassband(loHz: number, hiHz: number, listenPreview: 
     ctx.textBaseline = 'middle';
     ctx.fillText(label, left + 4, p.y + FILTER_HANDLE_HEIGHT + 11);
   }
-  return true;
+  ctx.restore();
 }

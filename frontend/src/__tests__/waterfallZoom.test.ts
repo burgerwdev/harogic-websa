@@ -86,6 +86,44 @@ describe('native waterfall history', () => {
     expect(pixels).toEqual(narrow);
   });
 
+  it('reconstructs SDR zoom slopes before colour mapping while retaining native peaks and gaps', () => {
+    S.setSdrMode(true);
+    const freq = Float64Array.from([10, 14, 18, 22, 26]);
+    pushSpectrumRow(Float32Array.from([-100, -20, -80, NaN, -40]), freq, 8, 28, 100);
+    const row = S.waterfallRows[0];
+    const scratch = new Uint16Array(16);
+    const slope = sliceWaterfallRow(row, 16, 10, 18, scratch);
+    expect(slope).toBe(scratch);
+    expect(slope[0]).toBe(row[0]);
+    for (let x = 1; x < 8; x++) expect(slope[x]).toBeGreaterThan(slope[x - 1]);
+    expect(slope[8]).toBe(row[1]); // The native carrier survives between pixel centres.
+    expect([...sliceWaterfallRow(row, 2, 10, 26)]).toEqual([row[1], row[4]]);
+    const gap = sliceWaterfallRow(row, 16, 18, 26);
+    expect(gap[0]).toBe(row[2]);
+    expect([...gap.slice(1, -1)]).toEqual(new Array(14).fill(0));
+    expect(gap[15]).toBe(row[4]);
+    expect([...sliceWaterfallRow(row, 4, 8, 10)]).toEqual([0, 0, 0, 0]);
+    expect([...sliceWaterfallRow(row, 4, 26.5, 28)]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('uses projected SDR cell centres for oversized history without extrapolating capture edges', () => {
+    S.setSdrMode(true);
+    // Two native samples per retained cell; values form a known slope in cell space.
+    const freq = Float64Array.from({ length: 32768 }, (_, i) => i + 0.25);
+    const levels = Float32Array.from(freq, hz => hz / 2);
+    pushSpectrumRow(levels, freq, 0, 32768, 100);
+    const row = S.waterfallRows[0];
+    expect(row).toHaveLength(16384);
+    const slope = sliceWaterfallRow(row, 4, 101, 103);
+    expect(slope[0]).toBe(row[50]);
+    for (let x = 1; x < slope.length; x++) expect(slope[x]).toBeGreaterThan(slope[x - 1]);
+    expect(slope[3]).toBeLessThanOrEqual(row[51]);
+    expect(sliceWaterfallRow(row, 1, 102.5, 103.5)[0]).toBe(row[51]);
+    expect([...sliceWaterfallRow(row, 4, 0, 1)]).toEqual([0, 0, 0, 0]);
+    expect([...sliceWaterfallRow(row, 4, 32767.5, 32768.5)]).toEqual([0, 0, 0, 0]);
+    expect(sliceWaterfallRow(row, 1, 0, 32768)[0]).toBe(row[row.length - 1]);
+  });
+
   it('bounds oversized history while retaining a carrier in the last native bin', () => {
     const freq = Float64Array.from({ length: 32769 }, (_, i) => i);
     const levels = new Float32Array(freq.length).fill(-100);

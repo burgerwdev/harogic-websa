@@ -24,7 +24,7 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, densityLevelPlacement, densityLut, paintDensity, type DensityGrid } from '../dsp/rtaDensity';
+import { rasterDensity, rasterDensityContours, densityLevelPlacement, densityLut, paintDensity, paintDensityContours, type DensityGrid } from '../dsp/rtaDensity';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
@@ -32,7 +32,7 @@ import { getCapture, getView, isZoomed } from '../ui/spectrumViewport';
 import { getMarqueePreview } from '../ui/spectrumZoomGestures';
 import { renderSpectrumZoomOverview } from './zoomOverview';
 import { syncSpectrumZoomUi } from '../ui/spectrumZoomUi';
-import { renderFilterPassband } from '../ui/sdrFilterGesture';
+import { renderFilterHandles, renderFilterPassband } from '../ui/sdrFilterGesture';
 import { renderSdrLocate } from '../ui/sdrLocate';
 import { SDR_BADGE_FONT, sdrBadgeDragFrequency, sdrBadgeGeometry, sdrSpectrumWindow, validateSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 
@@ -835,6 +835,7 @@ function renderRta() {
   renderFilterPassband(lo, hi, sdrBadgeDragFrequency());
   renderSdrLocate(lo, hi);
   ctx.restore();   // close the outer clip (density + traces) so the bottom row outside the plot is visible
+  renderFilterHandles();
   // Bottom frequency row (same as SWP grid)
   drawFreqRow(lo, hi, col, p);
   const badge = sdrBadgeGeometry();
@@ -895,6 +896,7 @@ let rtaDensLayer: HTMLCanvasElement | null = null;
 let rtaDensCtx: CanvasRenderingContext2D | null = null;
 let rtaDensImage: ImageData | null = null;
 let rtaDensRaster = new Float32Array(0);
+let rtaDensColumn = new Float32Array(0);
 let lastDensGrid: DensityGrid | null = null;
 let lastDensFreq: Float64Array | null = null;
 let lastDensRevision = -1;
@@ -930,18 +932,27 @@ function drawRtaDensityLayer(
   const pitch = level.height / grid.bins * sy * rows;
   const centre = (level.top * sy + (yt ? yt.dyFrac : 0)) * rows + pitch / 2;
   const width = rtaDensWidth.get() * rows / p.h;
+  const amplitudeChanged = lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch;
   const rasterChanged = resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
-    || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi;
+    || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi
+    || (!!grid.history && amplitudeChanged);
   if (rasterChanged) {
-    if (rtaDensRaster.length !== cols * grid.bins) rtaDensRaster = new Float32Array(cols * grid.bins);
-    rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+    const rasterRows = grid.history ? rows : grid.bins;
+    if (rtaDensRaster.length !== cols * rasterRows) rtaDensRaster = new Float32Array(cols * rasterRows);
+    if (grid.history) {
+      if (rtaDensColumn.length !== rows) rtaDensColumn = new Float32Array(rows);
+      rasterDensityContours(grid, freq, lo, hi, cols, rows, centre, pitch, width, rtaDensRaster, rtaDensColumn);
+    } else {
+      rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+    }
   }
   if (rasterChanged || themeChanged || lastDensContrast !== contrast
       || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
     if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
       rtaDensImage = lc.createImageData(cols, rows);
     }
-    paintDensity(rtaDensRaster, cols, grid.bins, rtaDensImage.data, rows,
+    if (grid.history) paintDensityContours(rtaDensRaster, rtaDensImage.data, contrast, rtaDensLut!);
+    else paintDensity(rtaDensRaster, cols, grid.bins, rtaDensImage.data, rows,
       centre, pitch, width, contrast, rtaDensLut!);
     lc.putImageData(rtaDensImage, 0, 0);
     lastDensGrid = grid; lastDensRevision = grid.revision;

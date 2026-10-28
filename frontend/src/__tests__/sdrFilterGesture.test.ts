@@ -18,6 +18,9 @@ import {
 	filterDragging,
 	filterEdgeAt,
 	filterGeometry,
+	filterHandlesVisible,
+	setFilterHover,
+	updateFilterHover,
 	filterViewResolution,
 	moveFilterDrag,
 	startFilterDrag,
@@ -72,6 +75,7 @@ beforeEach(() => {
 	sdrPitchHz.set(700);
 	__testSeedCapture(CAP);
 	openSocket();
+	setFilterHover('high');
 });
 
 afterEach(() => {
@@ -184,8 +188,11 @@ describe('narrow passbands: independent arrows without changing the real band', 
 		const geometry = filterGeometry()!;
 		expect(geometry.highX! - geometry.lowX!).toBeLessThan(1);
 		const [low, high] = geometry.handles;
-		expect(high.x - low.x).toBeCloseTo(24, 6);
+		expect(high.x - low.x).toBeGreaterThanOrEqual(24);
+		expect(low.x + 4.5).toBeLessThan(geometry.lowX!);
+		expect(high.x - 4.5).toBeGreaterThan(geometry.highX!);
 		for (const handle of [low, high]) {
+			updateFilterHover(handle.x, handle.y, TOL);
 			const startX = handle.x + (handle.edge === 'low' ? -5 : 5);
 			expect(filterEdgeAt(startX, handle.y, TOL)).toBe(handle.edge);
 			expect(startFilterDrag(handle.edge, 1, startX)).toBe(true);
@@ -208,13 +215,37 @@ describe('narrow passbands: independent arrows without changing the real band', 
 		for (const frequency of [CAP.lo + 30, CAP.hi - 30]) {
 			sdrListenHz.set(frequency);
 			const g = filterGeometry()!;
-			expect(g.handles[1].x - g.handles[0].x).toBeCloseTo(24, 6);
+			expect(g.handles[1].x - g.handles[0].x).toBeGreaterThanOrEqual(24);
+			expect(g.handles[0].x + 4.5).toBeLessThan(g.lowX!);
+			expect(g.handles[1].x - 4.5).toBeGreaterThan(g.highX!);
 			for (const handle of g.handles) {
-				expect(handle.x).toBeGreaterThanOrEqual(g.plot.x);
-				expect(handle.x).toBeLessThanOrEqual(g.plot.x + g.plot.w);
+				expect(handle.x).toBeGreaterThanOrEqual(0);
+				expect(handle.x).toBeLessThanOrEqual(S.W);
+				updateFilterHover(handle.x, handle.y, TOL);
 				expect(filterEdgeAt(handle.x, handle.y, TOL)).toBe(handle.edge);
 			}
 		}
+	});
+
+	it('reveals both arrows near the dial or a wide editable edge and hides elsewhere', () => {
+		sdrDemod.set('am');
+		sdrIfbw.set(180_000);
+		setFilterHover(null);
+		const g = filterGeometry()!;
+		expect(filterHandlesVisible()).toBe(false);
+		expect(filterEdgeAt(g.handles[1].x, g.handles[1].y, TOL)).toBeNull();
+		updateFilterHover(g.dialX + 55, MID_Y, TOL);
+		expect(filterHandlesVisible()).toBe(true);
+		updateFilterHover(g.dialX + 80, MID_Y, TOL);
+		expect(filterHandlesVisible()).toBe(false);
+		const high = g.handles[1];
+		expect(updateFilterHover(high.x, high.y, TOL)).toBe('high');
+		expect(filterHandlesVisible()).toBe(true);
+		startFilterDrag('high', 1, high.x);
+		setFilterHover(null);
+		expect(filterHandlesVisible()).toBe(true);
+		cancelFilterDrag();
+		expect(filterHandlesVisible()).toBe(false);
 	});
 
 	it('zoom gives only the top arrows priority and keeps the background available', () => {
@@ -345,8 +376,10 @@ describe('view passband: display-only, data-honest', () => {
 
 	it('edge drags still hit after viewing the passband', () => {
 		viewSdrPassband();
-		expect(filterEdgeAt(xOf(LISTEN - 3_000), plotRect().y + 8, TOL)).toBe('low');
-		expect(filterEdgeAt(xOf(LISTEN - 3_000), MID_Y, TOL)).toBeNull();
+		const low = filterGeometry()!.handles.find(handle => handle.edge === 'low')!;
+		expect(updateFilterHover(low.x, low.y, TOL)).toBe('low');
+		expect(filterEdgeAt(low.x, low.y, TOL)).toBe('low');
+		expect(filterEdgeAt(low.edgeX, MID_Y, TOL)).toBeNull();
 		setView(null, 1);
 		expect(isZoomed()).toBe(false);
 	});
