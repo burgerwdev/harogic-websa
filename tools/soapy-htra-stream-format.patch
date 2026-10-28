@@ -1,0 +1,952 @@
+--- a/HarogicDevice.cpp
++++ b/HarogicDevice.cpp
+@@ -23,6 +23,7 @@
+ #include <arpa/inet.h>
+ #include <cctype>
+ #include <cstdio>
++#include <cmath>
+ #include <initializer_list>
+ 
+ // Define constants for clarity
+@@ -34,6 +35,8 @@
+ 
+ constexpr uint16_t HTRA_ETH_REMOTE_PORT = 5000;
+ constexpr int32_t HTRA_ETH_READ_TIMEOUT_MS = 5000;
++constexpr size_t STREAM_MTU_SAMPLES = 16 * 1024;
++constexpr double STREAM_BUFFER_SECONDS = 0.050;
+ constexpr const char* HAROGIC_DRIVER_REVISION = "custom-source-usb-eth-1.0";
+ 
+ bool deviceOpenSucceeded(const int status)
+@@ -120,8 +123,7 @@
+         profile.ETH_ReadTimeOut = HTRA_ETH_READ_TIMEOUT_MS;
+     } else {
+         profile.PhysicalInterface = PhysicalInterface_TypeDef::USB;
+-        // Keep the original USB behavior unchanged: discovery/capability queries
+-        // use USBPortOnly, while the active IQ stream uses USBPortAndPowerPort.
++        // Enumeration needs no streaming power; an opened device keeps it until destruction.
+         profile.DevicePowerSupply = streaming
+             ? DevicePowerSupply_TypeDef::USBPortAndPowerPort
+             : DevicePowerSupply_TypeDef::USBPortOnly;
+@@ -141,7 +143,8 @@
+     _profile{},
+     _mtu(0),
+     _rx_thread_running(false),
+-    _ring_buffer(RING_BUFFER_SIZE),
++    _rx_stream_failed(false),
++    _ring_buffer(0),
+     _overflow_flag(false),
+     _sample_rate(0.0),
+     _center_freq(100e6),
+@@ -149,8 +152,7 @@
+     _gain_strategy(LowNoisePreferred),
+     _preamp_mode(AutoOn),
+     _if_agc(false),
+-    _lo_mode(LOOpt_Auto),
+-    _native_format_selection("AUTO")
++    _lo_mode(LOOpt_Auto)
+ {
+     if (args.count("serial")) _serial = args.at("serial");
+ 
+@@ -170,57 +172,53 @@
+     if (!ipArg.empty()) _ip_address = ipArg;
+ 
+     void* dev_tmp = nullptr;
++    struct CloseHandle {
++        void *&handle;
++        ~CloseHandle() { if (handle) Device_Close(&handle); }
++    } closeHandle{dev_tmp};
+     BootInfo_TypeDef binfo{};
+ 
+     if (_physical_interface == "USB") {
+-        BootProfile_TypeDef profile = makeBootProfile("USB", _ip_address, false);
+-
+-        if (!deviceArg.empty()) {
+-            const int status = Device_Open(&dev_tmp, _device_number, &profile, &binfo);
+-            if (!deviceOpenSucceeded(status)) {
+-                throw std::runtime_error("Harogic USB device " +
+-                                         std::to_string(_device_number) +
+-                                         " could not be opened, status=" +
++        if (deviceArg.empty()) {
++            BootProfile_TypeDef profile = makeBootProfile("USB", _ip_address, false);
++            uint8_t count = 0;
++            uint8_t indexes[MAX_DEVICE] = {};
++            DeviceInfo_TypeDef infos[MAX_DEVICE] = {};
++            const int status = Device_List(&profile, &count, indexes, infos);
++            if (status != 0) {
++                throw std::runtime_error("Failed to list Harogic USB devices, status=" +
+                                          std::to_string(status));
+             }
+-
+-            _dev_index = _device_number;
+-            _dev_info = binfo.DeviceInfo;
+-            const std::string serial = uidToString(binfo.DeviceInfo.DeviceUID);
+-            if (_serial.empty()) _serial = serial;
+-            Device_Close(&dev_tmp);
+-
+-            if (!_serial.empty() && _serial != serial) {
+-                throw std::runtime_error("USB device number " +
+-                                         std::to_string(_device_number) +
+-                                         " does not match requested serial " + _serial);
++            for (unsigned i = 0; i < count; ++i) {
++                const std::string serial = uidToString(infos[i].DeviceUID);
++                if (_serial.empty() || _serial == serial) {
++                    _serial = serial;
++                    _dev_index = indexes[i];
++                    _device_number = indexes[i];
++                    break;
++                }
++            }
++            if (_dev_index == -1) {
++                throw std::runtime_error("Harogic USB device not found for serial: " + _serial);
+             }
+         } else {
+-            // Preserve the original behavior: scan USB device numbers and select
+-            // either the requested serial or the first available receiver.
+-            for (int i = 0; i < 128; i++) {
+-                binfo = {};
+-                const int status = Device_Open(&dev_tmp, i, &profile, &binfo);
+-                if (!deviceOpenSucceeded(status)) break;
+-
+-                const std::string serial = uidToString(binfo.DeviceInfo.DeviceUID);
+-                if (_serial.empty()) _serial = serial;
+-                if (_serial == serial) {
+-                    _dev_index = i;
+-                    _device_number = i;
+-                    _dev_info = binfo.DeviceInfo;
+-                    Device_Close(&dev_tmp);
+-                    dev_tmp = nullptr;
+-                    break;
+-                }
+-
+-                Device_Close(&dev_tmp);
+-                dev_tmp = nullptr;
+-            }
+-        }
+-
+-        if (_dev_index == -1) {
+-            throw std::runtime_error("Harogic USB device not found for serial: " + _serial);
++            _dev_index = _device_number;
++        }
++
++        BootProfile_TypeDef profile = makeBootProfile("USB", _ip_address, true);
++        const int status = Device_Open(&dev_tmp, _dev_index, &profile, &binfo);
++        if (!deviceOpenSucceeded(status)) {
++            dev_tmp = nullptr; // Failed SDK opens may leave an unusable slot.
++            throw std::runtime_error("Harogic USB device " +
++                                     std::to_string(_device_number) +
++                                     " could not be opened, status=" + std::to_string(status));
++        }
++        _dev_info = binfo.DeviceInfo;
++        const std::string serial = uidToString(binfo.DeviceInfo.DeviceUID);
++        if (_serial.empty()) _serial = serial;
++        if (_serial != serial) {
++            throw std::runtime_error("USB device number " + std::to_string(_device_number) +
++                                     " does not match requested serial " + _serial);
+         }
+     } else {
+         // If ETH is explicitly selected with only a serial number, try to resolve
+@@ -240,9 +238,10 @@
+             }
+         }
+ 
+-        BootProfile_TypeDef profile = makeBootProfile("ETH", _ip_address, false);
++        BootProfile_TypeDef profile = makeBootProfile("ETH", _ip_address, true);
+         const int status = Device_Open(&dev_tmp, _device_number, &profile, &binfo);
+         if (!deviceOpenSucceeded(status)) {
++            dev_tmp = nullptr; // Failed SDK opens may leave an unusable slot.
+             throw std::runtime_error("Harogic ETH device at " + _ip_address +
+                                      " could not be opened, status=" +
+                                      std::to_string(status));
+@@ -252,8 +251,6 @@
+         _dev_info = binfo.DeviceInfo;
+         const std::string serial = uidToString(binfo.DeviceInfo.DeviceUID);
+         if (_serial.empty()) _serial = serial;
+-        Device_Close(&dev_tmp);
+-        dev_tmp = nullptr;
+ 
+         if (!_serial.empty() && _serial != serial) {
+             throw std::runtime_error("ETH device at " + _ip_address +
+@@ -270,16 +267,11 @@
+                   _physical_interface.c_str(),
+                   deviceLocation.c_str());
+ 
+-    // Query capabilities without holding the device open.
+-    BootProfile_TypeDef profile = makeBootProfile(_physical_interface, _ip_address, false);
+-    int status = Device_Open(&dev_tmp, _dev_index, &profile, &binfo);
+-    if (!deviceOpenSucceeded(status)) {
+-        throw std::runtime_error("Failed to open device to query capabilities, status=" +
+-                                 std::to_string(status));
+-    }
+-
+-    IQS_Profile_TypeDef default_profile;
+-    IQS_ProfileDeInit(&dev_tmp, &default_profile);
++    IQS_Profile_TypeDef default_profile{};
++    const int status = IQS_ProfileDeInit(&dev_tmp, &default_profile);
++    if (status < 0) {
++        throw std::runtime_error("Failed to query IQS capabilities, status=" + std::to_string(status));
++    }
+     for (int i = 0; i < 8; i++) {
+         _available_sample_rates.push_back(default_profile.NativeIQSampleRate_SPS / (double)(1 << i));
+     }
+@@ -291,14 +283,17 @@
+     _rx_ports["SWR"] = SWR_Port;
+     _rx_ports["INT"] = INT_Port;
+     _antenna = "External";
+-    Device_Close(&dev_tmp);
++    // Transfer ownership only after initialization succeeds; failures close dev_tmp.
++    _dev_handle = dev_tmp;
++    dev_tmp = nullptr;
+ }
+ 
+ SoapyHarogic::~SoapyHarogic() {
+-    deactivateStream(nullptr, 0, 0);
+-}
+-
+-std::string SoapyHarogic::getDriverKey() const { return "Harogic"; }
++    closeStream(nullptr);
++    if (_dev_handle) Device_Close(&_dev_handle);
++}
++
++std::string SoapyHarogic::getDriverKey() const { return "harogic"; }
+ std::string SoapyHarogic::getHardwareKey() const { return "HTRA"; }
+ SoapySDR::Kwargs SoapyHarogic::getHardwareInfo() const {
+     SoapySDR::Kwargs info;
+@@ -314,69 +309,90 @@
+ size_t SoapyHarogic::getNumChannels(const int dir) const { return (dir == SOAPY_SDR_RX) ? 1 : 0; }
+ 
+ std::vector<std::string> SoapyHarogic::getStreamFormats(const int, const size_t) const {
+-    // Add CS32 to the list of supported formats
+-    return {SOAPY_SDR_CF32, SOAPY_SDR_CS32, SOAPY_SDR_CS16, SOAPY_SDR_CS8};
++    return {SOAPY_SDR_CF32, SOAPY_SDR_CS16, SOAPY_SDR_CS8};
+ }
+ 
+ std::string SoapyHarogic::getNativeStreamFormat(const int, const size_t, double &fullScale) const {
+-    if (_native_format_selection == "CS32") {
+-        fullScale = 2147483648.0; // 2^31
+-        return SOAPY_SDR_CS32;
+-    }
+-    if (_native_format_selection == "CF32") {
+-        fullScale = 1.0; // Native floats are already normalized
+-        return SOAPY_SDR_CF32;
+-    }
+-    if (_native_format_selection == "CS8" || (_native_format_selection == "AUTO" && _sample_rate > RESOLTRIG)) {
+-        fullScale = 128.0; // 2^7
+-        return SOAPY_SDR_CS8;
+-    }
+-    // Default to CS16
+-    fullScale = 32768.0; // 2^15
+-    return SOAPY_SDR_CS16;
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    if (!_output_format.empty()) {
++        fullScale = _output_format == SOAPY_SDR_CF32 ? 1.0 : _output_format == SOAPY_SDR_CS8 ? 128.0 : 32768.0;
++        return _output_format;
++    }
++    fullScale = _sample_rate > RESOLTRIG ? 128.0 : 32768.0;
++    return _sample_rate > RESOLTRIG ? SOAPY_SDR_CS8 : SOAPY_SDR_CS16;
+ }
+ 
+ SoapySDR::ArgInfoList SoapyHarogic::getStreamArgsInfo(const int, const size_t) const {
++    // native_format selects the SDK integer width. It is not a Soapy stream format.
+     SoapySDR::ArgInfoList infos;
+     SoapySDR::ArgInfo format_arg;
+     format_arg.key = "native_format";
+     format_arg.name = "Native Format";
+-    format_arg.description = "Request a specific native format. AUTO selects based on sample rate.";
++    format_arg.description = "SDK integer width, fixed until closeStream. Integer output requires the matching width; AUTO uses the output width or the setup sample rate for CF32.";
+     format_arg.type = SoapySDR::ArgInfo::STRING;
+-    // Add CS32 to the dropdown options
+-    format_arg.options = {"AUTO", "CF32", "CS32", "CS16", "CS8"};
++    format_arg.options = {"AUTO", "CS32", "CS16", "CS8"};
+     format_arg.value = "AUTO";
+     infos.push_back(format_arg);
+     return infos;
+ }
+ 
+-SoapySDR::Stream *SoapyHarogic::setupStream(const int direction, const std::string &, const std::vector<size_t> &, const SoapySDR::Kwargs &args) {
++SoapySDR::Stream *SoapyHarogic::setupStream(const int direction, const std::string &format, const std::vector<size_t> &, const SoapySDR::Kwargs &args) {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    if (_rx_thread_running) throw std::runtime_error("Cannot set up an active stream");
+     if (direction != SOAPY_SDR_RX) throw std::runtime_error("Harogic driver only supports RX");
+-    _native_format_selection = args.count("native_format") ? args.at("native_format") : "AUTO";
+-    SoapySDR_logf(SOAPY_SDR_INFO, "Native format selection: %s", _native_format_selection.c_str());
++    if (format != SOAPY_SDR_CF32 && format != SOAPY_SDR_CS16 && format != SOAPY_SDR_CS8)
++        throw std::runtime_error("Harogic supports CF32, CS16 and CS8 stream output");
++    std::string native = args.count("native_format") ? args.at("native_format") : "AUTO";
++    if (native == "AUTO") native = format == SOAPY_SDR_CF32 ?
++        (_sample_rate > RESOLTRIG ? "CS8" : "CS16") : format;
++    if (native != "CS32" && native != "CS16" && native != "CS8")
++        throw std::runtime_error("native_format must be AUTO, CS32, CS16 or CS8");
++    if (format != SOAPY_SDR_CF32 && format != native)
++        throw std::runtime_error("Integer output requires matching native_format");
++    std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++    _sdk_format = native == "CS8" ? Complex8bit : native == "CS16" ? Complex16bit : Complex32bit;
++    _sample_bytes = native == "CS8" ? 2 : native == "CS16" ? 4 : 8;
++    _ring_buffer.clear();
++    _rx_stream_failed = false;
++    _overflow_flag = false;
++    _output_format = format;
+     return (SoapySDR::Stream *)this;
+ }
+ 
+-void SoapyHarogic::closeStream(SoapySDR::Stream *stream) {
+-    this->deactivateStream(stream, 0, 0);
++void SoapyHarogic::closeStream(SoapySDR::Stream *) {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    _deactivate_stream();
++    std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
+     _ring_buffer.clear();
+-    _native_format_selection = "AUTO";
+-}
+-
+-size_t SoapyHarogic::getStreamMTU(SoapySDR::Stream *) const { return _mtu; }
++    _rx_stream_failed = false;
++    _overflow_flag = false;
++    _output_format.clear();
++}
++
++size_t SoapyHarogic::getStreamMTU(SoapySDR::Stream *) const {
++    // SoapyRemote caches this before activation, when the SDK packet size is unknown.
++    // readStream consumes the ring buffer and can span SDK packets. Keep this
++    // transfer bound stable; _mtu remains the SDK packet size used by the RX worker.
++    return STREAM_MTU_SAMPLES;
++}
+ 
+ int SoapyHarogic::activateStream(SoapySDR::Stream *, const int, const long long, const size_t) {
+     std::lock_guard<std::mutex> lock(_device_mutex);
++    return _activate_stream();
++}
++
++int SoapyHarogic::_activate_stream() {
++    if (_output_format.empty()) return SOAPY_SDR_STREAM_ERROR;
+     if (_rx_thread_running) return 0;
++    if (_rx_worker_thread.joinable()) _deactivate_stream();
++    {
++        std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++        _rx_stream_failed = false;
++        _ring_buffer.clear();
++        _overflow_flag = false;
++    }
+ 
+     try {
+-        BootProfile_TypeDef bprofile = makeBootProfile(_physical_interface, _ip_address, true);
+-        BootInfo_TypeDef binfo{};
+-        int ret = Device_Open(&_dev_handle, _dev_index, &bprofile, &binfo);
+-        if (!deviceOpenSucceeded(ret)) {
+-            throw std::runtime_error("Device_Open failed with code " + std::to_string(ret));
+-        }
+-
+         if (_physical_interface == "USB") {
+             SoapySDR_logf(SOAPY_SDR_INFO, "Opening stream via USB, device=%d", _device_number);
+         } else {
+@@ -384,25 +400,15 @@
+                           _ip_address.c_str(), static_cast<unsigned>(HTRA_ETH_REMOTE_PORT));
+         }
+ 
+-        IQS_ProfileDeInit(&_dev_handle, &_profile);
++        int ret = IQS_ProfileDeInit(&_dev_handle, &_profile);
++        if (ret < 0) throw std::runtime_error("IQS_ProfileDeInit failed with code " + std::to_string(ret));
+         _profile.Atten = -1;
+-        _profile.BusTimeout_ms = 1000;
++        _profile.BusTimeout_ms = 250;
+         _profile.TriggerSource = Bus;
+         _profile.TriggerMode = Adaptive;
+ 
+-        // Handle format selection, including the unsupported CF32 case
+-        if (_native_format_selection == "CF32") {
+-            SoapySDR_log(SOAPY_SDR_WARNING, "CF32 (Complexfloat) is not supported in IQS mode. Falling back to CS16.");
+-            _profile.DataFormat = Complex16bit;
+-        } else if (_native_format_selection == "CS32") {
+-            _profile.DataFormat = Complex32bit;
+-        } else if (_native_format_selection == "CS16") {
+-            _profile.DataFormat = Complex16bit;
+-        } else if (_native_format_selection == "CS8") {
+-            _profile.DataFormat = Complex8bit;
+-        } else { // AUTO mode
+-            _profile.DataFormat = (_sample_rate > RESOLTRIG) ? Complex8bit : Complex16bit;
+-        }
++        // Setup fixes the SDK width for the entire stream, including retunes.
++        _profile.DataFormat = _sdk_format;
+ 
+         _profile.CenterFreq_Hz = _center_freq;
+         _profile.RefLevel_dBm = _ref_level;
+@@ -439,36 +445,67 @@
+         IQS_StreamInfo_TypeDef info;
+         ret = IQS_Configuration(&_dev_handle, &_profile, &_profile, &info);
+         if (ret < 0) throw std::runtime_error("IQS_Configuration failed with code " + std::to_string(ret));
++        if (_profile.DataFormat != _sdk_format)
++            throw std::runtime_error("SDK changed the configured stream width");
+         
+         _mtu = info.PacketSamples;
+         if (_mtu == 0) throw std::runtime_error("Device returned an MTU of 0 samples.");
++        {
++            std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++            // Bound queued latency while retaining space for complete SDK packets.
++            const size_t samples = std::max({STREAM_MTU_SAMPLES, 2 * _mtu,
++                static_cast<size_t>(std::ceil(info.IQSampleRate * STREAM_BUFFER_SECONDS))});
++            _ring_buffer.reset(samples * _sample_bytes);
++        }
+         
+         ret = IQS_BusTriggerStart(&_dev_handle);
+         if (ret < 0) throw std::runtime_error("IQS_BusTriggerStart failed with code " + std::to_string(ret));
++        _sample_rate = info.IQSampleRate;
+         
+-        _rx_thread_running = true;
++        {
++            std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++            _rx_thread_running = true;
++        }
+         _rx_worker_thread = std::thread(&SoapyHarogic::_rx_thread, this);
+         SoapySDR_logf(SOAPY_SDR_INFO, "Stream activated with MTU %zu", _mtu);
+ 
+     } catch (const std::exception &e) {
+         SoapySDR_logf(SOAPY_SDR_ERROR, "activateStream caught exception: %s", e.what());
+-        if (_dev_handle) { Device_Close(&_dev_handle); _dev_handle = nullptr; }
++        {
++            std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++            _rx_thread_running = false;
++            _rx_stream_failed = true;
++        }
++        _buffer_cv.notify_all();
++        if (_dev_handle) IQS_BusTriggerStop(&_dev_handle);
+         return SOAPY_SDR_STREAM_ERROR;
+     }
+     return 0;
+ }
+ 
+ int SoapyHarogic::deactivateStream(SoapySDR::Stream *, const int, const long long) {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    return _deactivate_stream();
++}
++
++int SoapyHarogic::_deactivate_stream() {
+     if (!_rx_thread_running && !_rx_worker_thread.joinable()) return 0;
+-    _rx_thread_running = false;
++    {
++        std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++        _rx_thread_running = false;
++    }
+     _buffer_cv.notify_one();
+     if (_rx_worker_thread.joinable()) _rx_worker_thread.join();
++    {
++        std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++        _rx_stream_failed = false;
++        _ring_buffer.clear();
++        _overflow_flag = false;
++    }
+     
+-    std::lock_guard<std::mutex> lock(_device_mutex);
+     if (_dev_handle) {
+-        IQS_BusTriggerStop(&_dev_handle);
+-        Device_Close(&_dev_handle);
+-        _dev_handle = nullptr;
++        const int ret = IQS_BusTriggerStop(&_dev_handle);
++        if (ret < 0) return SOAPY_SDR_STREAM_ERROR;
+     }
+     SoapySDR_log(SOAPY_SDR_INFO, "Stream deactivated");
+     return 0;
+@@ -476,76 +513,71 @@
+ 
+ int SoapyHarogic::readStream(SoapySDR::Stream *, void *const *buffs, const size_t numElems, int &flags, long long &, const long timeoutUs) {
+     std::unique_lock<std::mutex> lock(_buffer_mutex);
+-    if (!_buffer_cv.wait_for(lock, std::chrono::microseconds(timeoutUs), [&]{ return _ring_buffer.size() >= numElems || !_rx_thread_running; })) {
++    // SoapyRemote starts reading during setup. An inactive stream must obey
++    // the read timeout; only a failed RX worker is a stream error.
++    if (!_buffer_cv.wait_for(lock, std::chrono::microseconds(timeoutUs), [&]{ return (_rx_thread_running && (_ring_buffer.size() >= _sample_bytes || _overflow_flag)) || _rx_stream_failed; })) {
+         return SOAPY_SDR_TIMEOUT;
+     }
+-    if (!_rx_thread_running && _ring_buffer.size() < numElems) {
++    if (_rx_stream_failed) {
+         return SOAPY_SDR_STREAM_ERROR;
+     }
+     flags = 0;
+     if (_overflow_flag.exchange(false)) {
+-        flags |= SOAPY_SDR_END_BURST;
+-        SoapySDR_log(SOAPY_SDR_SSI, "D");
+-    }
+-    return _ring_buffer.read((std::complex<float>*)buffs[0], numElems);
++        return SOAPY_SDR_OVERFLOW;
++    }
++    const size_t available = std::min(numElems, _ring_buffer.size() / _sample_bytes);
++    if (_output_format != SOAPY_SDR_CF32)
++        return static_cast<int>(_ring_buffer.read(static_cast<uint8_t *>(buffs[0]), available * _sample_bytes) / _sample_bytes);
++    auto *out = static_cast<std::complex<float> *>(buffs[0]);
++    size_t consumed = 0;
++    while (consumed < available) {
++        const size_t count = std::min(available - consumed, _read_scratch.size() / _sample_bytes);
++        _ring_buffer.read(_read_scratch.data(), count * _sample_bytes);
++        const auto convert = [&](auto zero, const float scale) {
++            using Sample = decltype(zero);
++            for (size_t i = 0; i < count; ++i) {
++                Sample iq[2];
++                std::memcpy(iq, _read_scratch.data() + i * sizeof(iq), sizeof(iq));
++                out[consumed + i] = std::complex<float>(static_cast<float>(iq[0]) * scale,
++                                                       static_cast<float>(iq[1]) * scale);
++            }
++        };
++        if (_sdk_format == Complex8bit) convert(int8_t{}, 1.0f / 128.0f);
++        else if (_sdk_format == Complex16bit) convert(int16_t{}, 1.0f / 32768.0f);
++        else convert(int32_t{}, 1.0f / 2147483648.0f);
++        consumed += count;
++    }
++    return static_cast<int>(consumed);
+ }
+ 
+ void SoapyHarogic::_rx_thread() {
+     SoapySDR_log(SOAPY_SDR_INFO, "RX worker thread started.");
+-    std::vector<std::complex<float>> temp_buf;
+-    if (_mtu > 0) temp_buf.resize(_mtu);
+     IQStream_TypeDef iqs;
+ 
+     while (_rx_thread_running) {
+-        int ret;
+-        {
+-            std::lock_guard<std::mutex> lock(_device_mutex);
+-            if (!_dev_handle) break;
+-            ret = IQS_GetIQStream_PM1(&_dev_handle, &iqs);
+-        }
++        // Control stops and joins this worker before any SDK configuration.
++        // Consume the SDK-owned packet before the next fetch or reconfiguration.
++        const int ret = IQS_GetIQStream_PM1(&_dev_handle, &iqs);
+ 
+         if (!_rx_thread_running) break;
+         if (ret < 0) {
+-            if (ret == APIRETVAL_WARNING_BusTimeOut) { SoapySDR_log(SOAPY_SDR_SSI, "T"); continue; }
+-            if (ret == APIRETVAL_WARNING_IFOverflow) { _overflow_flag = true; continue; }
+-            SoapySDR_logf(SOAPY_SDR_ERROR, "Fatal streaming error: %d. Worker thread stopping.", ret);
+-            _rx_thread_running = false;
+-            break;
+-        }
+-
+-        uint32_t packetSamples = iqs.IQS_StreamInfo.PacketSamples;
+-        if (packetSamples == 0 || iqs.AlternIQStream == nullptr) continue;
+-        if (temp_buf.size() != packetSamples) temp_buf.resize(packetSamples);
+-
+-        switch (_profile.DataFormat) {
+-            case Complex8bit: {
+-                int8_t* in = (int8_t*)iqs.AlternIQStream;
+-                for(size_t i = 0; i < packetSamples; ++i) temp_buf[i] = std::complex<float>(in[2*i] / 127.0f, in[2*i+1] / 127.0f);
+-                break;
+-            }
+-            case Complex16bit: {
+-                int16_t* in = (int16_t*)iqs.AlternIQStream;
+-                for(size_t i = 0; i < packetSamples; ++i) temp_buf[i] = std::complex<float>(in[2*i] / 32767.0f, in[2*i+1] / 32767.0f);
+-                break;
+-            }
+-            case Complex32bit: {
+-                int32_t* in = (int32_t*)iqs.AlternIQStream;
+-                for(size_t i = 0; i < packetSamples; ++i) {
+-                    temp_buf[i] = std::complex<float>(
+-                        static_cast<float>(in[2*i]) / 2147483647.0f,
+-                        static_cast<float>(in[2*i+1]) / 2147483647.0f
+-                    );
++            if (ret == APIRETVAL_WARNING_BusTimeOut || ret == APIRETVAL_WARNING_DataNotReady) continue;
++            if (ret != APIRETVAL_WARNING_IFOverflow) {
++                SoapySDR_logf(SOAPY_SDR_ERROR, "Fatal streaming error: %d. Worker thread stopping.", ret);
++                {
++                    std::lock_guard<std::mutex> bufferLock(_buffer_mutex);
++                    _rx_stream_failed = true;
++                    _rx_thread_running = false;
+                 }
+                 break;
+             }
+-            // We don't handle Complexfloat because activateStream prevents it from being selected
+-            default:
+-                std::fill(temp_buf.begin(), temp_buf.end(), std::complex<float>(0.0f, 0.0f));
+-                break;
+-        }
+-
++        }
++
++        uint32_t packetSamples = iqs.IQS_StreamInfo.PacketSamples;
++        if (packetSamples == 0 || iqs.AlternIQStream == nullptr) continue;
+         std::unique_lock<std::mutex> lock(_buffer_mutex);
+-        if (!_ring_buffer.write(temp_buf.data(), packetSamples)) SoapySDR_log(SOAPY_SDR_SSI, "O");
++        if (!_ring_buffer.write(static_cast<const uint8_t *>(iqs.AlternIQStream),
++                                packetSamples * _sample_bytes)) _overflow_flag = true;
+         lock.unlock();
+         _buffer_cv.notify_one();
+     }
+@@ -573,16 +605,24 @@
+     return infos;
+ }
+ void SoapyHarogic::writeSetting(const std::string &key, const std::string &value) {
+-    if (key == "gain_strategy") _gain_strategy = (value == "Low Noise") ? LowNoisePreferred : HighLinearityPreferred;
+-    else if (key == "lo_mode") {
+-        if (value == "Speed") _lo_mode = LOOpt_Speed;
+-        else if (value == "Spurs") _lo_mode = LOOpt_Spur;
+-        else if (value == "Phase Noise") _lo_mode = LOOpt_PhaseNoise;
+-        else _lo_mode = LOOpt_Auto;
+-    }
+-    if (_rx_thread_running) _apply_settings();
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    const auto previousGain = _gain_strategy;
++    const auto previousLO = _lo_mode;
++    if (key == "gain_strategy") {
++        const auto next = (value == "Low Noise") ? LowNoisePreferred : HighLinearityPreferred;
++        if (next == _gain_strategy) return;
++        _gain_strategy = next;
++    } else if (key == "lo_mode") {
++        const auto next = value == "Speed" ? LOOpt_Speed : value == "Spurs" ? LOOpt_Spur :
++            value == "Phase Noise" ? LOOpt_PhaseNoise : LOOpt_Auto;
++        if (next == _lo_mode) return;
++        _lo_mode = next;
++    } else return;
++    try { if (_rx_thread_running) _apply_settings(); }
++    catch (...) { _gain_strategy = previousGain; _lo_mode = previousLO; throw; }
+ }
+ std::string SoapyHarogic::readSetting(const std::string &key) const {
++    std::lock_guard<std::mutex> lock(_device_mutex);
+     if (key == "gain_strategy") return (_gain_strategy == LowNoisePreferred) ? "Low Noise" : "High Linearity";
+     if (key == "lo_mode") {
+         if (_lo_mode == LOOpt_Speed) return "Speed";
+@@ -599,11 +639,18 @@
+     return antennas;
+ }
+ void SoapyHarogic::setAntenna(const int, const size_t, const std::string &name) {
++    std::lock_guard<std::mutex> lock(_device_mutex);
+     if (_rx_ports.find(name) == _rx_ports.end()) throw std::runtime_error("Invalid antenna name: " + name);
++    if (_antenna == name) return;
++    const std::string previous = _antenna;
+     _antenna = name;
+-    if (_rx_thread_running) _apply_settings();
+-}
+-std::string SoapyHarogic::getAntenna(const int, const size_t) const { return _antenna; }
++    try { if (_rx_thread_running) _apply_settings(); }
++    catch (...) { _antenna = previous; throw; }
++}
++std::string SoapyHarogic::getAntenna(const int, const size_t) const {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    return _antenna;
++}
+ 
+ std::vector<std::string> SoapyHarogic::listGains(const int, const size_t) const { return {"REF", "PREAMP", "IF_AGC"}; }
+ bool SoapyHarogic::hasGainMode(const int, const size_t) const { return false; }
+@@ -613,12 +660,28 @@
+ double SoapyHarogic::getGain(const int dir, const size_t chan) const { return this->getGain(dir, chan, "REF"); }
+ SoapySDR::Range SoapyHarogic::getGainRange(const int dir, const size_t chan) const { return this->getGainRange(dir, chan, "REF"); }
+ void SoapyHarogic::setGain(const int, const size_t, const std::string &name, const double value) {
+-    if (name == "REF") { _ref_level = static_cast<int>(value); }
+-    else if (name == "PREAMP") { _preamp_mode = (value > 0.5) ? AutoOn : ForcedOff; }
+-    else if (name == "IF_AGC") { _if_agc = (value > 0.5); }
+-    if (_rx_thread_running) _apply_settings();
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    const int previousRef = _ref_level;
++    const auto previousPreamp = _preamp_mode;
++    const bool previousAGC = _if_agc;
++    if (name == "REF") {
++        const int next = static_cast<int>(value);
++        if (next == _ref_level) return;
++        _ref_level = next;
++    } else if (name == "PREAMP") {
++        const auto next = (value > 0.5) ? AutoOn : ForcedOff;
++        if (next == _preamp_mode) return;
++        _preamp_mode = next;
++    } else if (name == "IF_AGC") {
++        const bool next = value > 0.5;
++        if (next == _if_agc) return;
++        _if_agc = next;
++    } else return;
++    try { if (_rx_thread_running) _apply_settings(); }
++    catch (...) { _ref_level = previousRef; _preamp_mode = previousPreamp; _if_agc = previousAGC; throw; }
+ }
+ double SoapyHarogic::getGain(const int, const size_t, const std::string &name) const {
++    std::lock_guard<std::mutex> lock(_device_mutex);
+     if (name == "REF") return _ref_level;
+     if (name == "PREAMP") return (_preamp_mode == AutoOn) ? 1.0 : 0.0;
+     if (name == "IF_AGC") return _if_agc ? 1.0 : 0.0;
+@@ -630,53 +693,42 @@
+     return SoapySDR::Range(0.0, 0.0);
+ }
+ 
+-void SoapyHarogic::setFrequency(const int, const size_t, const std::string &, const double frequency, const SoapySDR::Kwargs &) { _center_freq = frequency; if (_rx_thread_running) _apply_settings(); }
+-double SoapyHarogic::getFrequency(const int, const size_t, const std::string &) const { return _center_freq; }
++void SoapyHarogic::setFrequency(const int, const size_t, const std::string &, const double frequency, const SoapySDR::Kwargs &) {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    if (_center_freq == frequency) return;
++    const double previous = _center_freq;
++    _center_freq = frequency;
++    try { if (_rx_thread_running) _apply_settings(); }
++    catch (...) { _center_freq = previous; throw; }
++}
++double SoapyHarogic::getFrequency(const int, const size_t, const std::string &) const {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    return _center_freq;
++}
+ std::vector<std::string> SoapyHarogic::listFrequencies(const int, const size_t) const { return {"RF"}; }
+ SoapySDR::RangeList SoapyHarogic::getFrequencyRange(const int, const size_t, const std::string &) const { return {SoapySDR::Range(MIN_FREQ, MAX_FREQ)}; }
+-void SoapyHarogic::setSampleRate(const int, const size_t, const double rate) { _sample_rate = rate; if (_rx_thread_running) _apply_settings(); }
+-double SoapyHarogic::getSampleRate(const int, const size_t) const { return _sample_rate; }
++void SoapyHarogic::setSampleRate(const int, const size_t, const double rate) {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    if (!std::isfinite(rate) || rate <= 0) throw std::invalid_argument("Invalid sample rate");
++    const double selected = *std::min_element(_available_sample_rates.begin(), _available_sample_rates.end(),
++        [rate](double a, double b) { return std::abs(a - rate) < std::abs(b - rate); });
++    if (_sample_rate == selected) return;
++    const double previous = _sample_rate;
++    _sample_rate = selected;
++    try { if (_rx_thread_running) _apply_settings(); }
++    catch (...) { _sample_rate = previous; throw; }
++}
++double SoapyHarogic::getSampleRate(const int, const size_t) const {
++    std::lock_guard<std::mutex> lock(_device_mutex);
++    return _sample_rate;
++}
+ std::vector<double> SoapyHarogic::listSampleRates(const int, const size_t) const { return _available_sample_rates; }
+ 
+ void SoapyHarogic::_apply_settings() {
+-    std::lock_guard<std::mutex> lock(_device_mutex);
+-    if (!_dev_handle) return;
+-    
+-    SoapySDR_log(SOAPY_SDR_INFO, "--- Applying Settings Update ---");
+-
+-    if (_native_format_selection == "CF32") { /* Fallback handled in activateStream */ _profile.DataFormat = Complex16bit; }
+-    else if (_native_format_selection == "CS32") _profile.DataFormat = Complex32bit;
+-    else if (_native_format_selection == "CS16") _profile.DataFormat = Complex16bit;
+-    else if (_native_format_selection == "CS8") _profile.DataFormat = Complex8bit;
+-    else _profile.DataFormat = (_sample_rate > RESOLTRIG) ? Complex8bit : Complex16bit;
+-    
+-    _profile.CenterFreq_Hz = _center_freq;
+-    _profile.RefLevel_dBm = _ref_level;
+-    _profile.DecimateFactor = (uint32_t)(_available_sample_rates[0] / _sample_rate);
+-    _profile.RxPort = _rx_ports.at(_antenna);
+-    _profile.GainStrategy = _gain_strategy;
+-    _profile.Preamplifier = _preamp_mode;
+-    _profile.EnableIFAGC = _if_agc;
+-    _profile.LOOptimization = _lo_mode;
+-    
+-    SoapySDR_logf(SOAPY_SDR_INFO, "  - New Center Frequency: %.3f MHz", _profile.CenterFreq_Hz / 1e6);
+-    SoapySDR_logf(SOAPY_SDR_INFO, "  - New Sample Rate:      %.3f MS/s", _sample_rate / 1e6);
+-    SoapySDR_logf(SOAPY_SDR_INFO, "  - New Reference Level:  %d dBm", (int)_profile.RefLevel_dBm);
+-    SoapySDR_logf(SOAPY_SDR_INFO, "  - New Preamp State:     %s", (_profile.Preamplifier == AutoOn) ? "Auto" : "Off");
+-    SoapySDR_log(SOAPY_SDR_INFO, "------------------------------");
+-
+-    IQS_StreamInfo_TypeDef info;
+-    int ret = IQS_Configuration(&_dev_handle, &_profile, &_profile, &info);
+-    if (ret < 0) { 
+-        SoapySDR_logf(SOAPY_SDR_ERROR, "Failed to apply settings: %d", ret);
+-        return;
+-    }
+-    _mtu = info.PacketSamples;
+-
+-    ret = IQS_BusTriggerStart(&_dev_handle);
+-    if (ret < 0) {
+-        SoapySDR_logf(SOAPY_SDR_ERROR, "Could not re-trigger stream after settings change: %d", ret);
+-    }
++    // The worker exclusively owns SDK calls while running. Join first so no
++    // SDK packet can be invalidated by a concurrent configuration or trigger.
++    if (_deactivate_stream() != 0) throw std::runtime_error("Failed to stop IQS stream before settings change");
++    if (_activate_stream() != 0) throw std::runtime_error("Failed to apply IQS settings");
+ }
+ 
+ static SoapySDR::KwargsList findHarogic(const SoapySDR::Kwargs &args) {
+@@ -697,83 +749,68 @@
+ 
+     if (searchUSB) {
+         BootProfile_TypeDef profile = makeBootProfile("USB", "192.168.1.100", false);
+-        void* dev = nullptr;
+-        BootInfo_TypeDef binfo{};
++        uint8_t count = 0;
++        uint8_t indexes[MAX_DEVICE] = {};
++        DeviceInfo_TypeDef infos[MAX_DEVICE] = {};
+         const int requestedDevice = parseDeviceNumber(deviceArg, -1);
+-
+-        for (int i = 0; i < 128; i++) {
+-            if (requestedDevice >= 0 && i != requestedDevice) continue;
+-
+-            binfo = {};
+-            const int status = Device_Open(&dev, i, &profile, &binfo);
+-            if (!deviceOpenSucceeded(status)) {
+-                if (requestedDevice >= 0) break;
+-                // Keep the original contiguous USB enumeration behavior.
+-                break;
+-            }
+-
+-            const std::string serial = uidToString(binfo.DeviceInfo.DeviceUID);
+-            if (serialFilter.empty() || serialFilter == serial) {
++        const int status = Device_List(&profile, &count, indexes, infos);
++        if (status == 0) {
++            for (unsigned i = 0; i < count; ++i) {
++                if (requestedDevice >= 0 && indexes[i] != requestedDevice) continue;
++                const std::string serial = uidToString(infos[i].DeviceUID);
++                if (!serialFilter.empty() && serialFilter != serial) continue;
+                 SoapySDR::Kwargs dev_info;
+                 dev_info["serial"] = serial;
+                 dev_info["label"] = "Harogic USB " + serial;
+-                dev_info["driver"] = "Harogic";
++                dev_info["driver"] = "harogic";
+                 dev_info["interface"] = "USB";
+-                dev_info["device"] = std::to_string(i);
++                dev_info["device"] = std::to_string(indexes[i]);
+                 results.push_back(dev_info);
+             }
+-
+-            Device_Close(&dev);
+-            dev = nullptr;
+-            if (requestedDevice >= 0) break;
+-        }
+-    }
+-
+-    if (searchETH) {
++        } else {
++            SoapySDR_logf(SOAPY_SDR_DEBUG, "Device_List returned %d", status);
++        }
++    }
++
++    if (searchETH && !ipFilter.empty()) {
++        uint8_t parsed[4] = {};
++        if (!ipv4ToBytes(ipFilter, parsed)) {
++            throw std::invalid_argument("invalid IPv4 address: " + ipFilter);
++        }
++        // The constructor validates the direct endpoint and requested serial.
++        SoapySDR::Kwargs dev_info;
++        dev_info["label"] = "Harogic ETH " + ipFilter;
++        dev_info["driver"] = "harogic";
++        dev_info["interface"] = "ETH";
++        dev_info["ip"] = ipFilter;
++        if (!deviceArg.empty()) dev_info["device"] = deviceArg;
++        if (!serialFilter.empty()) dev_info["serial"] = serialFilter;
++        results.push_back(dev_info);
++    } else if (searchETH) {
+         uint8_t count = 0;
+         NetworkDeviceInfo_TypeDef networkInfo[64] = {};
+         uint8_t localIP[4] = {};
+         uint8_t localMask[4] = {};
+-        bool matchedRequestedIP = false;
+ 
+         const int status = Device_GetNetworkDeviceList(&count, networkInfo, localIP, localMask);
+         if (status == 0) {
+             for (uint8_t i = 0; i < count; ++i) {
+                 const std::string ip = ipv4ToString(networkInfo[i].IPAddress);
+                 const std::string serial = uidToString(networkInfo[i].DeviceUID);
+-
+-                if (!ipFilter.empty() && ip != ipFilter) continue;
+                 if (!serialFilter.empty() && serial != serialFilter) continue;
+ 
+                 SoapySDR::Kwargs dev_info;
+                 dev_info["serial"] = serial;
+                 dev_info["label"] = "Harogic ETH " + serial + " (" + ip + ")";
+-                dev_info["driver"] = "Harogic";
++                dev_info["driver"] = "harogic";
+                 dev_info["interface"] = "ETH";
+                 dev_info["ip"] = ip;
+                 results.push_back(dev_info);
+-                if (!ipFilter.empty() && ip == ipFilter) matchedRequestedIP = true;
+             }
+         } else if (interfaceFilter == "ETH") {
+             SoapySDR_logf(SOAPY_SDR_DEBUG,
+                           "Device_GetNetworkDeviceList returned %d", status);
+         }
+-
+-        // Direct IP operation should still be possible when UDP/broadcast network
+-        // discovery is filtered by the host/network. Device_Open will validate it.
+-        if (!ipFilter.empty() && !matchedRequestedIP) {
+-            uint8_t parsed[4] = {};
+-            if (!ipv4ToBytes(ipFilter, parsed)) {
+-                throw std::invalid_argument("invalid IPv4 address: " + ipFilter);
+-            }
+-            SoapySDR::Kwargs dev_info;
+-            dev_info["label"] = "Harogic ETH " + ipFilter;
+-            dev_info["driver"] = "Harogic";
+-            dev_info["interface"] = "ETH";
+-            dev_info["ip"] = ipFilter;
+-            if (!serialFilter.empty()) dev_info["serial"] = serialFilter;
+-            results.push_back(dev_info);
+-        }
+     }
+ 
+     return results;
+--- a/HarogicDevice.hpp
++++ b/HarogicDevice.hpp
+@@ -42,14 +42,14 @@
+ #include <cinttypes>
+ #include <cstring> // For memcpy
+ #include <complex>
++#include <array>
+ 
+ // Define constants for clarity
+ #define RESOLTRIG 60e6  // Sample rate threshold for auto-selecting CS8
+ #define MIN_FREQ 9e3
+ #define MAX_FREQ 40e9
+-#define RING_BUFFER_SIZE (16 * 1024 * 1024) // 16 Mega-samples
+-
+-// A thread-safe ring buffer for transferring samples between the RX thread and the readStream call
++
++// Ring operations require the caller's buffer mutex.
+ template <typename T>
+ class RingBuffer
+ {
+@@ -57,23 +57,32 @@
+         RingBuffer(size_t capacity) : _capacity(capacity), _size(0), _readPos(0), _writePos(0) {
+             _buffer.resize(capacity);
+         }
++        void reset(size_t capacity) {
++            if (_buffer.size() < capacity) _buffer.resize(capacity);
++            _capacity = capacity;
++            clear();
++        }
+ 
+         bool write(const T *data, size_t len) {
++            if (len == 0) return true;
+             if (len > _capacity - _size.load()) return false; // Not enough space
+-            for (size_t i = 0; i < len; ++i) {
+-                _buffer[_writePos] = data[i];
+-                _writePos = (_writePos + 1) % _capacity;
+-            }
++            const size_t first = std::min(len, _capacity - _writePos);
++            std::copy_n(data, first, _buffer.data() + _writePos);
++            std::copy_n(data + first, len - first, _buffer.data());
++            _writePos += len;
++            if (_writePos >= _capacity) _writePos -= _capacity;
+             _size += len;
+             return true;
+         }
+ 
+         size_t read(T *data, size_t len) {
+             size_t toRead = std::min(len, _size.load());
+-            for (size_t i = 0; i < toRead; ++i) {
+-                data[i] = _buffer[_readPos];
+-                _readPos = (_readPos + 1) % _capacity;
+-            }
++            if (toRead == 0) return 0;
++            const size_t first = std::min(toRead, _capacity - _readPos);
++            std::copy_n(_buffer.data() + _readPos, first, data);
++            std::copy_n(_buffer.data(), toRead - first, data + first);
++            _readPos += toRead;
++            if (_readPos >= _capacity) _readPos -= _capacity;
+             _size -= toRead;
+             return toRead;
+         }
+@@ -158,6 +167,8 @@
+     private:
+         void _rx_thread();
+         void _apply_settings();
++        int _activate_stream(); // Caller holds _device_mutex.
++        int _deactivate_stream(); // Joins worker before SDK reconfiguration.
+ 
+ 
+         // Device identification
+@@ -175,9 +186,14 @@
+         // Stream management
+         size_t _mtu;
+         std::atomic<bool> _rx_thread_running;
++        bool _rx_stream_failed; // Protected by _buffer_mutex, like the read predicate.
+         std::thread _rx_worker_thread;
+-        RingBuffer<std::complex<float>> _ring_buffer;
+-        std::mutex _device_mutex; // Protects _dev_handle
++        RingBuffer<uint8_t> _ring_buffer; // Raw SDK bytes; resized only while the worker is stopped.
++        std::array<uint8_t, 16 * 1024 * 8> _read_scratch;
++        size_t _sample_bytes = 4;
++        DataFormat_TypeDef _sdk_format = Complex16bit;
++        std::string _output_format;
++        mutable std::mutex _device_mutex; // Serializes control; worker owns SDK while running.
+         std::mutex _buffer_mutex; // Protects _ring_buffer (for condition variable)
+         std::condition_variable _buffer_cv;
+         std::atomic<bool> _overflow_flag;
+@@ -193,7 +209,6 @@
+         LOOptimization_TypeDef _lo_mode;
+         std::vector<double> _available_sample_rates;
+         std::map<std::string, RxPort_TypeDef> _rx_ports;
+-        std::string _native_format_selection;
+ };
+ 
+ #endif // HAROGIC_DEVICE_HPP

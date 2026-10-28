@@ -57,7 +57,7 @@ curl http://localhost:8080/api/state
 | `spur` | str | 杂散抑制（bypass/standard/enhanced）|
 | `detector` | str | 迹线检波器（auto/sample/pos_peak/neg_peak/rms/auto_peak），仅 SWP |
 | `frame_detector` | str | Frame Avg 请求；原生 Preset 恢复 `device_default`，由 SDK 默认 profile 决定帧间检波器 |
-| `mode` | str | 当前测量模式（std/harmonic/pnm/rta/sdr）|
+| `mode` | str | 当前测量模式（std/harmonic/pnm/rta/sdr/server）|
 | `caps` | obj | 型号能力：`model`/`name`/`fmin`/`fmax`，以及客户端应读取而非硬编码的数值限制：`ref_min`/`ref_max`（dBm，用于自动调整参考电平，不限制手动输入范围，见 FAQ_NOTES）、`rta_span_max`（Hz）、`rta_points` |
 | `preset_defaults` | obj | 设备默认配置（Preset 用）|
 | `req` / `actual` | obj | 当前模式请求/实际值；`req.swp`、`req.rta`、`req.sdr` 分别保存各模式配置 |
@@ -76,7 +76,8 @@ curl http://localhost:8080/api/state
 | `has_docxo` / `has_premium_ref_clock` | bool | 是否安装 DOCXO 硬件 / 是否有可用的高品质内部参考时钟；取决于硬件选件，与 GNSS 锁定状态和工作模式无关 |
 | `refclk_ppm` / `calibrating` / `last_cal_freq` | - | GNSS 校准状态 |
 | `refclk_out` | bool | 参考时钟输出使能 |
-| `gnss` | obj | GNSS 状态：`lock`(0/1) `sats`(卫星数) `docxo`(0/1) `docxo_mode`(0=驯服,1=保持) `antenna`(0=外部,1=内部) `latitude`/`longitude`(度) `altitude`(米) `time`(UTC, 无效为 "0000-00-00 00:00:00")；`stale`标记未取得可用新快照 |
+| `gnss` | obj | GNSS 状态：`lock`(0/1) `sats`(卫星数) `docxo`(0/1) `docxo_mode`(0=驯服,1=保持) `antenna`(0=外部,1=内部) `latitude`/`longitude`(度) `altitude`(米) `time`(UTC, 无效为 "0000-00-00 00:00:00")；`stale`标记未取得可用新快照。Server 模式为 null，没有设备或客户端遥测 |
+| `server` | obj | 始终发布，即使状态 fixture 没有 `server` 键。字段见下文 Soapy Server。非该模式时进程保持停止 |
 | `last_error` | str | 最近的全局错误；receiver worker 故障使用 `sdr.receiver_error` |
 
 完整参数所有权、默认值和模式转换流程见
@@ -110,7 +111,7 @@ curl -X POST http://localhost:8080/api/config \
 ws://localhost:8080/ws
 ```
 
-连接建立后服务端立即开始推送迹线帧（FREQ/POWR）与状态。
+连接建立后服务端推送状态及当前采集模式的迹线帧（FREQ/POWR 或 RTAF/RTA2）。Server 模式只推送状态，不提供 Web 采集帧。
 
 ### 2.1 客户端 → 服务端（命令）
 
@@ -135,7 +136,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_AMP` | `atten?`（-1~33）, `preamp?`（0/1）, `ifgain?`（0~3）, `gain_strategy?`（0/1）, `request_id?` | 只更新提供的增益字段；STATUS/ERROR 回传 request_id，请求值与 SDK 实际回读分别保留 |
 | `SET_REFCK` | `mode`（internal/external/premium/external_forced）| 请求参考源并重配当前模式；无高品质内参考硬件时在变更前拒绝。`actual.refclk_src`报告SDK实际配置源，包括外参考自动回退 |
 | `SET_REFCKOUT` | `on`（bool） | 参考时钟输出，重配置当前模式 Profile |
-| `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr）| 切换测量模式（会话）|
+| `SET_MODE` | `mode`（std/harmonic/pnm/rta/sdr/server）| 切换测量模式（会话）。`server` 为独占模式，不启动 SoapySDRServer |
 | `SET_RTA` | `center?`, `span?` | 原子设置 RTA 中心和 2^n 档分析带宽 |
 | `SET_SDR` | `center?`, `decimate?`（2 的幂，1~`caps.decimate_max`；自动取整到最近 2 的幂）, `pfb_taps_per_phase?`（原生后端 4/8/16，默认 16）| 设置 SDR 捕获窗口；原生后端按每相 PFB 抽头数重建信道化器。16 tap 为默认全抑制档，8/4 为实测较低邻道/混叠抑制档 |
 | `SET_SDR_TUNE` | `listen`（Hz）| 调谐主接收器。原生后端在采集范围内更新频道计划；已启用主路调到采集范围外时，将共享采集中心移到请求频率。保留全部三路频道配置；已启用辅路必须能容纳于新采集范围，辅路调谐不会移动采集中心。设备频率限制、占用带宽、粗箱通带及准入错误均显式报告 |
@@ -144,6 +145,7 @@ JSON 对象：`{"cmd": "<COMMAND>", ...}`
 | `SET_HARM` | `f0`, `count`, `span` | 谐波测量参数（基频 Hz、次数、每谐波扫宽）|
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | 相噪测量参数 |
 | `SET_TRIGGER` | `source`（bus/freerun/level/external/timer）, `edge`（rising/falling/double）, `level`（dBm，以 `caps` 界限为准）, `safetime`/`delay`/`pretime`（0~10 s）, `acqtime`（0.0005~60 s）, `retrigger`（0~65535）, `retriggerperiod`（s）, `out`（none/per_hop/per_sweep/per_profile）, `outpolarity`（positive/negative）| RTA 采集触发（写入 RTA Profile）：在 RTA 中立即重配，否则在下次进入 RTA 生效。SWP 的电平触发由前端软件实现，不经过该命令 |
+| `SET_SERVER` | `action`（start/stop/restart/configure）、`bind_address?`（IP 字面量）、`port?`（整数 1..65535）| 控制 SoapySDRServer；要求 `mode=server`，否则返回 `server_mode_required`。配置要求子进程已停止；已有子进程时以不同绑定启动返回 `server_busy`。重启先停止子进程，可以应用新绑定。启动和重启重新检查依赖及空闲的 SDK 管理槽。可选标量 `request_id` 与其他命令一样回传。Server 中除 `STATUS`、`SET_MODE` 和 `SET_SERVER` 外的硬件命令被拒绝，提示先离开 Server 再修改硬件设置；HTTP/WS 准入返回 `bad_parameter`，dispatch 返回 `server_mode_active` |
 
 静噪滑块范围为 -160..0，步进 0.1 dB，最小值关闭静噪。提高门限要求更强的信号才开启音频。
 信号达到或超过门限时开门，低于门限 3 dB 且 300 ms 保持时间已过时关门，音量平滑渐入/渐出。
@@ -376,7 +378,11 @@ SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实
 
 > **频谱细节**：POWR 使用 float32 电平和以 Hz 表示的原生 FREQ 轴。RTA/SDR 为迹线、标记和导出保留原生频点；本地缩放不发送采集命令，也不改善物理 RBW。密度可跟随当前处理后的迹线，也可积累 Average/Max Hold 前的实时频谱帧；切换来源清除历史。余辉按真实时间半衰期衰减（Off、0.2、0.5、2、5、10 秒），命中权重按经过时间计算，并限制长间隔的影响。Off 停止累积与显示。图层选择只改变可见性，不改变迹线模式、marker、测量和导出的数据来源。密度显示时取消迹线宽辉光。对比度调整颜色，透明度独立映射。瀑布保留原生频率位置；缺口保持为空，除非启用 SWP GapFill。
 
-频率轴版本切换时，优先接收新轴的首帧，拒收旧版本帧。密度按原生频点中心投影，将幅度贡献按比例分到相邻两行。显示宽度为 1/3/5/9 CSS 像素，默认 5，仅扩大已有幅度格中心的垂直绘制范围，不改变命中历史、幅度、频率或测量。对比度调整颜色，透明度独立映射；浅色主题使用饱和色，实测底噪以较低强度保留。Grain 默认为 128，NaN 缺口保持空白；Off 清除累积，跟随迹线源在 VIEW 时冻结，实时源继续积累。切换宽度、主题和对比度均保留历史。
+频率轴版本切换时，优先接收新轴的首帧，拒收旧版本帧。密度按原生频点积累幅度命中，将贡献按比例分到相邻两行。显示宽度为 1/3/5/9 CSS 像素，默认 5，仅扩大幅度格中心的绘制范围，不改变历史、幅度、频率或测量。对比度调整颜色，透明度独立映射；浅色主题使用饱和色，实测底噪以较低强度保留。Grain 默认为 128，NaN 缺口保持空白；Off 清除累积，跟随迹线源在 VIEW 时冻结，实时源继续积累。切换宽度、主题和对比度均保留历史。
+
+Persist 在 SDR 默认 0.2 秒，在 RTA 默认 0.5 秒；已保存的用户选择优先，Preset 恢复当前模式的默认值。
+
+SDR 使用无宽辉光的细迹线。密度保留原生频率的幅度占用历史、默认 128 档 Grain、设备像素绘制和按数据版本刷新。稀疏视图将相邻积累分布连接成连续幅度带；配对变化或低权重格消失时，固定屏幕坐标的线性占用包络按所选半衰期限制淡出速度，使用取大值合成，不重复累积。视窗几何、缺口或来源变化会立即重置包络。该显示插值不改变原生历史或测量，不回放迹线帧，也不限刷新率；密集全景与非 SDR 绘制保持原路径。SDR 瀑布保留 16 位幅度，放大时先重建相邻有效电平再着色，缩小时保留原生峰值；缺失点保持为空，缩放不增加测量分辨率。缩放侧栏 Top/Bottom 只改变显示上下限，不写入 Ref Level、衰减或前放；恢复或退出缩放会清除这组上下限。
 
 CSV 导出当前模式所选处理后迹线及匹配的原生频率轴；OFF、缺失或长度不匹配时提示无数据，不能回退到旧 SWP 迹线。Limits 与频道测量仅使用所选的处理后绝对功率迹线；归一化相对迹线显示 N/A，不生成绝对测量 CSV 行。RTA/SDR 禁用这些测量控件。dBc 不叠加外部电平偏移。SWP 瀑布从已接受的原始 POWR 帧取行，最高 10 Hz，重绘本身不会生成新行。
 
@@ -416,6 +422,33 @@ IQ 采集窗口与频谱显示窗口可以越过任一 RF 边界；最小中心�
 ### 退出测量
 
 `SET_MODE {mode:'std'}` → 恢复标准扫频。
+
+### Soapy Server
+
+`SET_MODE {mode:'server'}` 停止 Web 采集和音频，结束前一个采集所有者，并通过可复用的管理线程释放物理 SDK 句柄。它不启动 SoapySDRServer。浏览器随后分别使用启动、停止和重启。只有停止时才能配置绑定。绑定设置只保持到 `websad` 重启；默认是 `127.0.0.1` 和 `55132`。
+
+`STATUS.server` 字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `state` | str | `stopped`、`starting`、`listening`、`stopping` 或 `failed`。`listening` 表示所管理进程已报告绑定端点；设备在 Soapy 客户端使用时才打开 |
+| `bind_address` / `port` | str / int | 已配置的 IP 字面量和端口。`0.0.0.0` 与 `::` 不是客户端目标地址 |
+| `pid` / `uptime_seconds` / `exit_code` | int 或 null / int / int 或 null | 所管理子进程、该子进程存在期间的秒数，以及最近一次回收状态（被信号终止时为 `128+信号`）|
+| `error` / `dependency_error` | str 或 null | 进程或生命周期故障 / 缺少程序、探测失败或没有 `harogic` factory。启动和重启会刷新依赖检查 |
+| `driver_available` | bool | 最近一次依赖检查找到了 `SoapySDRServer`、`SoapySDRUtil` 和小写 `harogic` factory |
+| `graph_mode` | str | 进入时记住的最近 `std`、`rta` 或 `sdr` 视图；返回频谱时回到该视图 |
+| `logs` | array | 有界的原始 stdout、stderr 和生命周期行：`{seq, time_ms, source, text}`。容量为 200 行和 64 KiB；管道读取按 2 KiB 分段。暂停、跟随和清除只影响本地显示，不删除服务端缓冲 |
+| `log_capacity` | int | 保留行容量（200）|
+
+此模式的 STATUS 报告 `connected=false`、`gnss=null`，活动 `actual` 对象为空。不发布 Soapy 客户端数量、吞吐或远程遥测。浏览器刷新、重连或关闭不会停止子进程。`websad` 关闭时停止并回收子进程；子进程监督线程还会启用父进程退出清理。退出时（`SET_MODE` 到 `graph_mode` 或其他测量模式）先停止并回收子进程，再恢复采集。无法回收的子进程会保留 Server 模式和设备占用。
+
+已加载 shim 缺少 `san90_session_release_v1`，或先前的厂商管理线程仍停在 SDK 调用中时，拒绝交接。模式不会提交成功。该尝试仍会结束先前采集：流边界前移，`connected` 变为 false，`gnss` 为 null，命令返回 `device_error`。下一次采集使用新 epoch。随附 `runtime/` 适配库未更新，不能执行这次释放。
+
+客户端需要 SoapySDR 和 [SoapyRemote](https://github.com/pothosware/SoapyRemote) 模块。使用 `driver=remote,remote=<host>:<port>,remote:driver=harogic`；将通配绑定替换为服务端主机可到达的地址，IPv6 主机用方括号包围。SoapySDRServer 导出全部已安装设备 factory，因此须保留 `harogic` 筛选。打过补丁的模块实际输出 CF32、CS16 或 CS8。setup 前，原生格式查询默认在不超过 60 MSps 时返回 CS16（`fullScale` 为 32768），高于 60 MSps 时返回 CS8（`fullScale` 为 128）。setup 后返回所选输出格式及其 `fullScale`（CF32：1、CS16：32768、CS8：128）。CS16 和 CS8 的每个复数样本分别为 4、2 字节，CF32 则为 8 字节。`native_format` 在 setup 时选择 SDK 的 CS8/CS16/CS32/AUTO，关闭流之前保持该宽度。AUTO 对整数输出采用相同宽度；对 CF32 按 setup 时的采样率选择，不超过 60 MSps 使用 CS16，否则使用 CS8。显式指定 SDK 宽度时，整数输出必须与其匹配。CF32 按 SDK 分量的 `2^7`、`2^15` 或 `2^31` 标度归一化；CS32 仅为 SDK 输入格式。SoapyRemote 可在线路上传输原生整数样本，同时向客户端返回 CF32。实现使用原始样本环形缓冲与批量复制，不宣称零拷贝。
+
+自动发现由 SoapyRemote 通过 mDNS/Avahi 和 SSDP 发布；`avahi-browse -rt _soapy._tcp` 可列出广播端点。WebSA 不额外添加重复发布器。广播可能包含回环地址；默认的 `127.0.0.1` 绑定仍只接受本机客户端。IPv4 局域网访问须先停止服务，将绑定配置为 `0.0.0.0`，重新启动后使用主机可到达的局域网地址。在 OnAir 3.2 中，先停止接收，再打开源选择器并开启默认关闭的 **Search the network for radios**。客户端安装 SoapyRemote 模块后，自动发现的电台会通过 Soapy 源出现。
+
+上游客户端路径包括 [SDR++](https://github.com/AlexandreRouma/SDRPlusPlus#sources)（`soapy_source` 为可选/已弃用模块，可能需要自行构建）、[OnAir 桌面版](https://github.com/adswill/OnAir#network-radios)（SoapyRemote）、[SDR--](https://sdrmm.com/docs/hardware)（仅限包含 Soapy 路径的构建）和 [OpenWebRX](https://github.com/jketterl/openwebrx/wiki/Supported-Hardware)（SoapyRemote）。KiwiSDR 没有通用 Soapy 输入。已在 SAN-90 上验证 OnAir 3.2.0 源启动及 15.625 MSps 下的 IQ 接收。更新驱动后，OnAir CLI 以 7.8125 MSps 接收 FM 五秒，使用 CS16 UDP 传输并向客户端输出 CF32，报告载波锁定、立体声和零丢样，并成功退出。另一轮五秒 CLI 运行验证了 62.5 MSps CS8 UDP 输入，报告零丢样并成功退出；其接收器重采样到 4 MSps，未取得 FM 载波锁定。这验证了该次运行的全速率输入路径，不代表图形界面以 62.5 MSps 处理 FFT、全速率解码质量、电视锁定或长时间连续性。其他应用路径仍为上游兼容性说明。发现方式、传输与性能限制见[驱动设置和测量记录](../../tools/README.md#soapy-server-driver-setup)。
 
 ---
 

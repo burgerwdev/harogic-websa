@@ -47,7 +47,7 @@ import { normalizeCenterSpan } from '../core/frequency';
 import { send } from '../core/wsSend';
 import { currentGraphMode } from './graphMode';
 import { centerHz, spanHz } from './freqState';
-import { clampDisplayRef, getDisplayRef, hardwareRefForDisplay, pendingDisplayRef, setDisplayRefShiftHandler } from './displayRef';
+import { clampDisplayRef, clearDisplayBounds, getDisplayRange, getDisplayTop, hardwareRefForDisplay, hasDisplayBounds, pendingDisplayRef, setDisplayRefShiftHandler } from './displayRef';
 import { displayOffset, displayUnit } from './displayState';
 import { estimatedCaptureSpanHz } from './sdrState';
 import { beginFrequencyCommit } from './panels/frequency';
@@ -151,7 +151,7 @@ export function committedFreqWindow(): FreqWindow | null {
 
 /** The level window the graticule shows: the top line and its height. */
 export function committedLevelWindow(): LevelWindow {
-	return { ref: getDisplayRef(), range: Math.max(1e-6, S.totalDivs * S.dbPerDiv) };
+	return { ref: getDisplayTop(), range: Math.max(1e-6, getDisplayRange()) };
 }
 
 /** The level at a fraction of the plot height (0 = top edge). */
@@ -351,6 +351,12 @@ export function resetAxisPreview(): void {
 	lastCommitAt = 0;
 }
 
+/** A display slider supersedes an unfinished level gesture without touching receiver intent. */
+export function cancelLevelPreview(): void {
+	if (session?.axis === 'y') clearPreview();
+	if (chain?.axis === 'y') chain = null;
+}
+
 // ---------------- the gesture ----------------
 
 function clearTimers(): void {
@@ -396,6 +402,10 @@ export function axisDragStart(axis: Axis, px: number, py: number, rect: Rect): b
  * movements steer it and only the release commits) and a wheel, which has no pointer state at all.
  */
 function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: boolean): boolean {
+	if (axis === 'y' && hasDisplayBounds()) {
+		clearDisplayBounds();
+		cancelLevelPreview();
+	}
 	const freq = committedFreqWindow();
 	if (axis === 'x' && !freq) return false;
 	const level = committedLevelWindow();

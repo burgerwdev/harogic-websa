@@ -4,7 +4,7 @@
 // rather than UI prose, so a screenshot is self-describing in a report.
 import * as S from '../core/store';
 import { centerHz, spanHz } from './freqState';
-import { getDisplayRef } from './displayRef';
+import { getDisplayRange, getDisplayTop, hasDisplayBounds } from './displayRef';
 import { displayUnit } from './displayState';
 import { previewLevelWindow } from './axisDrag';
 import { unitOffsetDb } from '../core/level';
@@ -18,13 +18,15 @@ function headerParts(): string[] {
   const n = S.freqArray?.length ?? currentPoints.get();
   const lo = centerHz.get() - spanHz.get() / 2;
   const hi = centerHz.get() + spanHz.get() / 2;
-  const top = previewLevelWindow()?.ref ?? getDisplayRef();
+  const level = previewLevelWindow();
+  const top = level?.ref ?? getDisplayTop();
+  const range = level?.range ?? getDisplayRange();
   const relative = displayUnit.get() === 'dB';
   const parts = [
     ver,
     `${formatFreqHz(lo)} - ${formatFreqHz(hi)}`,
-    `Ref ${(top + (relative ? 0 : unitOffsetDb(S.levelUnit))).toFixed(1)} ${relative ? 'dB' : S.levelUnit}`,
-    `${S.dbPerDiv.toFixed(0)} dB/div`,
+    `${hasDisplayBounds() ? 'Top' : 'Ref'} ${(top + (relative ? 0 : unitOffsetDb(S.levelUnit))).toFixed(1)} ${relative ? 'dB' : S.levelUnit}`,
+    `${Number((range / S.totalDivs).toFixed(2))} dB/div`,
     `RBW ${formatFreqHz(currentRBW.get())}`,
     `VBW ${formatFreqHz(currentVBW.get())}`,
     `${n} pts`,

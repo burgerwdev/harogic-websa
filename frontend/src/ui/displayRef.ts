@@ -22,6 +22,8 @@
 import { createParam } from '../core/params';
 import { currentGraphMode } from './graphMode';
 import { displayOffset } from './displayState';
+import { dbPerDiv, totalDivs } from '../core/store';
+import { clearLevelView, getLevelView, setLevelView, zoomEnabled } from './spectrumViewport';
 
 export type DisplayRefSource = 'auto' | 'user' | 'sdr' | 'mode' | 'normalize' | 'preset';
 
@@ -60,6 +62,25 @@ export function setDisplayRefShiftHandler(fn: DisplayRefShiftHandler | null): vo
 export function getDisplayRef(): number {
 	return value.get();
 }
+
+/** Zoom bounds are a separate raw-dBm viewport; receiver Ref and its ACK owner stay intact. */
+export function hasDisplayBounds(): boolean { return zoomEnabled.get() && getLevelView() !== null; }
+export function getDisplayTop(): number {
+	return hasDisplayBounds() ? getLevelView()!.top + displayOffset.get() : getDisplayRef();
+}
+export function getDisplayRange(): number {
+	const bounds = hasDisplayBounds() ? getLevelView() : null;
+	return bounds ? bounds.top - bounds.bottom : totalDivs * dbPerDiv;
+}
+export function displayBoundsMin(): number { return rawToDisplayRef(-300); }
+export function displayBoundsMax(): number { return rawToDisplayRef(100); }
+export function setDisplayBounds(top: number, bottom: number): boolean {
+	if (!Number.isFinite(top) || !Number.isFinite(bottom)) return false;
+	const offset = displayOffset.get();
+	return setLevelView(Math.min(100, Math.max(-300, top - offset)),
+		Math.min(100, Math.max(-300, bottom - offset)));
+}
+export function clearDisplayBounds(): void { clearLevelView(); }
 
 /** Absolute display references include external gain/loss; hardware references never do. */
 export function rawToDisplayRef(raw: number): number {

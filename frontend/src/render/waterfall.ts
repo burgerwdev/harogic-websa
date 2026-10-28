@@ -10,19 +10,86 @@ import { sdrBadgeDragFrequency, sdrSpectrumWindow } from '../ui/sdrBadgeGesture'
 import { demodBandHz, sdrDemod, sdrPitchHz } from '../ui/sdrState';
 import { filterPreviewHz } from '../ui/sdrFilter';
 import { passbandDragFrequency } from '../ui/sdrFilterGesture';
+import { getDisplayRange, getDisplayTop, hasDisplayBounds } from '../ui/displayRef';
+import { displayOffset } from '../ui/displayState';
 
 const MAX_HISTORY_COLUMNS = 16384;
-const rowGeometry = new WeakMap<Uint16Array, { freq: Float64Array | null; lo: number; hi: number }>();
+type UniformRowGrid = { first: number; step: number; length: number };
+type RowGeometry = {
+	freq: Float64Array | null; lo: number; hi: number;
+	/** Peak-projected columns are samples at cell centres, not capture endpoints. */
+	uniform?: UniformRowGrid;
+	/** SDR stores raw amplitude codes, with zero reserved for missing observations. */
+	level?: { lo: number; step: number; windowLo: number; windowHi: number; offset: boolean };
+};
+const rowGeometry = new WeakMap<Uint16Array, RowGeometry>();
 let historyFreq: Float64Array | null = null;
 let historyScratch = new Float32Array(0);
+let historyUniformGrid: UniformRowGrid | null = null;
 // One current display mapping per retained axis, never a cache of zoom histories.
 const rowMappings = new WeakMap<Float64Array, { w: number; lo: number; hi: number; first: Int32Array; end: Int32Array }>();
+type LevelMapping = {
+	w: number; lo: number; hi: number; capLo: number; capHi: number;
+	first: Int32Array; end: Int32Array; mix: Float32Array;
+};
+// Shared by all rows on an axis; zoom replaces its mapping rather than retaining views.
+const levelMappings = new WeakMap<Float64Array | UniformRowGrid, LevelMapping>();
+
+/** SDR codes are affine dBm samples: interpolate levels, then recolour retained history.
+ * Pixels containing native samples keep their MAX; empty pixels interpolate only
+ * between observed neighbours, never across zero codes or beyond source centres. */
+function sliceLevelRow(row: Uint16Array, geometry: RowGeometry, w: number, lo: number, hi: number,
+	out?: Uint16Array): Uint16Array {
+	const dst = out && out.length === w ? out : new Uint16Array(w);
+	const { freq, uniform, lo: capLo, hi: capHi } = geometry;
+	const grid = freq ?? uniform!;
+	let mapping = levelMappings.get(grid);
+	if (!mapping || mapping.w !== w || mapping.lo !== lo || mapping.hi !== hi
+		|| mapping.capLo !== capLo || mapping.capHi !== capHi) {
+		const first = new Int32Array(w), end = new Int32Array(w), mix = new Float32Array(w);
+		const at = (i: number) => freq ? freq[i] : uniform!.first + i * uniform!.step;
+		const lower = (hz: number) => freq ? lowerBound(freq, hz)
+			: Math.max(0, Math.min(row.length, Math.ceil((hz - uniform!.first) / uniform!.step)));
+		for (let x = 0; x < w; x++) {
+			const a = lo + x / w * (hi - lo), b = lo + (x + 1) / w * (hi - lo);
+			const start = Math.max(a, capLo), stop = Math.min(b, capHi);
+			if (stop < start || b <= capLo || a > capHi) continue;
+			first[x] = lower(start);
+			end[x] = stop >= at(row.length - 1) ? row.length : lower(stop);
+			// A pixel containing native samples keeps their MAX, including narrow carriers.
+			if (first[x] < end[x]) continue;
+			const mid = (a + b) / 2;
+			if (mid < capLo || mid > capHi || mid < at(0) || mid > at(row.length - 1)) continue;
+			const right = lower(mid), left = Math.max(0, right - 1);
+			if (right >= row.length || right === left) continue;
+			first[x] = left;
+			end[x] = -1;
+			mix[x] = (mid - at(left)) / (at(right) - at(left));
+		}
+		mapping = { w, lo, hi, capLo, capHi, first, end, mix };
+		levelMappings.set(grid, mapping);
+	}
+	for (let x = 0; x < w; x++) {
+		const first = mapping.first[x], end = mapping.end[x];
+		if (end === -1) {
+			const a = row[first], b = row[first + 1];
+			// Zero is missing, not a low level: neither side of a NaN may bridge it.
+			dst[x] = a && b ? Math.round(a + (b - a) * mapping.mix[x]) : 0;
+		} else {
+			let peak = 0;
+			for (let i = first; i < end; i++) if (row[i] > peak) peak = row[i];
+			dst[x] = peak;
+		}
+	}
+	return dst;
+}
 
 /** Stored native rows use their true Hz; only over-budget rows use uniform columns. */
 export function sliceWaterfallRow(row: Uint16Array, w: number, lo: number, hi: number,
 	out?: Uint16Array): Uint16Array {
 	const geometry = rowGeometry.get(row);
 	if (!geometry) return sliceDensityRow(row, w, 0, 1, out);
+	if (geometry.level) return sliceLevelRow(row, geometry, w, lo, hi, out);
 	const { freq, lo: capLo, hi: capHi } = geometry;
 	if (!freq) return sliceDensityRow(row, w, (lo - capLo) / (capHi - capLo), (hi - capLo) / (capHi - capLo), out);
 	const dst = out && out.length === w ? out : new Uint16Array(w);
@@ -166,7 +233,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     f1 = (view.hi - cap.lo) / (cap.hi - cap.lo);
   }
   const viewKey = `${view?.lo}:${view?.hi}:${f0.toFixed(4)}:${f1.toFixed(4)}:${viewportVersion()}`;
-  const imageKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}`;
+  const boundsKey = S.sdrMode ? `${hasDisplayBounds()}:${getDisplayTop()}:${getDisplayRange()}:${displayOffset.get()}` : '';
+  const imageKey = `${W}x${H}:${wfRangeMode.get()}:${wfLoDbm.get()}:${wfHiDbm.get()}:${viewKey}:${boundsKey}`;
   const sameImage = wfCanvas === canvas && wfImg !== null && wfImgKey === imageKey && wfLastMax === dmax && wfLastTheme === theme;
   const pushed = S.waterfallPushes - wfLastPushes;
   if (sameImage && pushed === 0 && wfNewestRow === rows[n - 1]) {
@@ -212,8 +280,18 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
     if (!sliceScratch || sliceScratch.length !== W) sliceScratch = new Uint16Array(W);
     const ds = view ? sliceWaterfallRow(row, W, view.lo, view.hi, sliceScratch)
       : sliceDensityRow(row, W, f0, f1, sliceScratch);
+    const level = rowGeometry.get(row)?.level;
+    const displayBounds = S.sdrMode && hasDisplayBounds();
+    const fixedBounds = wfRangeMode.get() === 'fixed';
+    const top = displayBounds ? getDisplayTop() - displayOffset.get() : fixedBounds ? wfHiDbm.get() : level?.windowHi ?? 0;
+    const bottom = displayBounds ? top - getDisplayRange() : fixedBounds ? wfLoDbm.get() : level?.windowLo ?? 0;
     for (let x = 0; x < W; x++) {
-      const lvl = Math.min(255, Math.round(ds[x] / dmax * 255));
+      let fraction = ds[x] / dmax;
+      if (level) {
+        fraction = ds[x] === 0 ? 0 : (level.lo + (ds[x] - 1) * level.step - bottom) / (top - bottom);
+        if (!displayBounds && !fixedBounds && ds[x] !== 0 && level.offset) fraction = 0.26 + fraction * 0.74;
+      }
+      const lvl = Math.max(0, Math.min(255, Math.round(fraction * 255)));
       const c = lut[lvl];
       const o = (y * W + x) * 4;
       px[o] = c & 0xff;
@@ -275,7 +353,30 @@ export function pushSpectrumRow(levels: Float32Array, freq: Float64Array, lo: nu
     if (historyScratch.length !== MAX_HISTORY_COLUMNS) historyScratch = new Float32Array(MAX_HISTORY_COLUMNS);
     source = projectSpectrum(freq, levels, lo, hi, historyScratch);
   }
-  const row = buildRow(source, maxDensity, win.lo, win.hi, win.offset);
-  rowGeometry.set(row, { freq: axis, lo, hi });
+  let row: Uint16Array;
+  const geometry: RowGeometry = { freq: axis, lo, hi };
+  if (!axis && S.sdrMode) {
+    const step = (hi - lo) / source.length, first = lo + step / 2;
+    if (!historyUniformGrid || historyUniformGrid.first !== first || historyUniformGrid.step !== step
+      || historyUniformGrid.length !== source.length) historyUniformGrid = { first, step, length: source.length };
+    geometry.uniform = historyUniformGrid;
+  }
+  if (S.sdrMode) {
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < source.length; i++) {
+      if (!Number.isFinite(source[i])) continue;
+      min = Math.min(min, source[i]); max = Math.max(max, source[i]);
+    }
+    if (!Number.isFinite(min)) min = max = 0;
+    const step = (max - min) / 65534 || 1;
+    row = new Uint16Array(source.length);
+    for (let i = 0; i < source.length; i++) {
+      if (Number.isFinite(source[i])) row[i] = 1 + Math.round((source[i] - min) / step);
+    }
+    geometry.level = { lo: min, step, windowLo: win.lo, windowHi: win.hi, offset: win.offset };
+  } else {
+    row = buildRow(source, maxDensity, win.lo, win.hi, win.offset);
+  }
+  rowGeometry.set(row, geometry);
   S.pushWaterfallRow(row);
 }

@@ -420,6 +420,7 @@ static bool workers_live = false;
 static bool fail_open = false;
 static int opens = 0;
 static int closes = 0;
+static int close_attempts = 0;
 static int stops = 0;
 static std::thread::id sdk_thread;
 static void observe_worker() {
@@ -449,6 +450,7 @@ extern "C" int Device_GetHardwareState(void** slot, HardWareState_TypeDef* state
     return 0;
 }
 extern "C" int Device_Close(void** slot) {
+    ++close_attempts;
     observe_worker();
     assert(slot == retained_slot);
     ++closes;
@@ -510,11 +512,62 @@ int main() {
     assert(closes == 1 && !workers_live);
     fail_open = false;
     pnm = new San90PnmDevice{};
+    const int opens_at_reject = opens;
+    const int closes_at_reject = closes;
+    const int stops_at_reject = stops;
     assert(open_probe(pnm) == 0);
     next_probe(pnm);
+    assert(opens == opens_at_reject + 1 && workers_live);
     assert(san90_pnm_close_v1(pnm) == 0);
+    // Healthy mode close stops PNM and retains the physical handle. The
+    // invalidate above is still the only Device_Close.
+    assert(stops == stops_at_reject + 1 && closes == closes_at_reject && workers_live);
+    // Idle release closes the physical handle and leaves the worker reusable.
+    // A second release owns nothing: success, and Device_Close is not repeated.
+    const int closes_before_idle = closes;
+    assert(san90_session_release_v1() == 0);
+    assert(san90_session_release_v1() == 0);
+    assert(closes == closes_before_idle + 1 && close_attempts == closes && !workers_live);
+    assert(san90_session.call(nullptr, [&] {
+        assert(!san90_session.handle && !san90_session.active && !san90_session.healthy);
+        assert(san90_session.on_thread());
+        return 0;
+    }) == 0);
+    // A non-null unhealthy pointer is stale: refuse and never Device_Close it.
+    const int close_attempts_before_stale = close_attempts;
+    assert(san90_session.call(nullptr, [&] {
+        san90_session.handle = &physical_device;
+        san90_session.healthy = false;
+        return 0;
+    }) == 0);
+    assert(san90_session_release_v1() == -111);
+    assert(close_attempts == close_attempts_before_stale);
+    assert(san90_session.call(nullptr, [&] {
+        assert(san90_session.handle == &physical_device && !san90_session.healthy);
+        san90_session.handle = nullptr;
+        return 0;
+    }) == 0);
+    pnm = new San90PnmDevice{};
+    const int opens_before_reuse = opens;
+    const int closes_before_reuse = closes;
+    assert(open_probe(pnm) == 0);
+    next_probe(pnm);
+    assert(opens == opens_before_reuse + 1 && closes == closes_before_reuse && workers_live);
+    // An active mode must not overlap Device_Close.
+    const int close_attempts_while_active = close_attempts;
+    assert(san90_session_release_v1() == -110);
+    assert(opens == opens_before_reuse + 1 && closes == closes_before_reuse
+           && close_attempts == close_attempts_while_active && workers_live);
+    const int stops_before_retire = stops;
+    assert(san90_pnm_close_v1(pnm) == 0);
+    assert(stops == stops_before_retire + 1 && closes == closes_before_reuse && workers_live);
+    assert(san90_session_release_v1() == 0);
+    assert(san90_session_release_v1() == 0);
+    assert(opens == opens_before_reuse + 1 && closes == closes_before_reuse + 1
+           && close_attempts == closes && stops == stops_before_retire + 1 && !workers_live);
     assert(san90_session_finish_v1() == 0);
-    assert(opens == 3 && closes == 2 && stops == 3 && !workers_live);
+    assert(opens == opens_before_reuse + 1 && closes == closes_before_reuse + 1
+           && close_attempts == closes && stops == stops_before_retire + 1 && !workers_live);
 }
 "#);
         let dir = std::env::temp_dir().join(format!("websa_pnm_slot_{}", std::process::id()));

@@ -38,7 +38,7 @@ export function updateInfoBar() {
   // RTA mode: the SWT field shows the RTA analysis bandwidth -> label becomes "BW:"
   const swtLabel = document.querySelector('[data-i18n="swt"]');
   if (swtLabel) swtLabel.textContent = S.rtaMode ? t('bw_label') : t('swt');
-  // Reference level is the compensated top of the displayed scale, independent of hardware gain.
+  // Ref retains the compensated reference setting while zoom has independent display bounds.
   const ref = getDisplayRef();
   set('info-ref', ref.toFixed(1) + (displayUnit.get() === 'dB' ? ' dB' : ' dBm'));
   const hardwareRef = effectiveRefLevel.confirmedValue();

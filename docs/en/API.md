@@ -58,7 +58,7 @@ Field reference:
 | `spur` | str | spur rejection (bypass/standard/enhanced) |
 | `detector` | str | trace detector (auto/sample/pos_peak/neg_peak/rms/auto_peak), SWP only |
 | `frame_detector` | str | Frame Avg request; native Preset restores `device_default`, leaving the inter-frame detector to the SDK profile default |
-| `mode` | str | measurement mode (std/harmonic/pnm/rta/sdr) |
+| `mode` | str | measurement mode (std/harmonic/pnm/rta/sdr/server) |
 | `caps` | obj | model capabilities: `model`/`name`/`fmin`/`fmax` plus the numeric limits the client must not hard-code - `ref_min`/`ref_max` (dBm, the **auto-placement** row, not a limit on what a user may ask for - see FAQ_NOTES), `rta_span_max` (Hz), `rta_points` |
 | `preset_defaults` | obj | device default config (used by Preset) |
 | `req` / `actual` | obj | active request/actual values; `req.swp`, `req.rta` and `req.sdr` retain mode-private settings |
@@ -76,7 +76,8 @@ Field reference:
 | `has_docxo` / `has_premium_ref_clock` | bool | Installed DOCXO hardware / available premium internal source. Derived from hardware options, independent of GNSS lock or work mode |
 | `refclk_ppm` / `calibrating` / `last_cal_freq` | - | GNSS calibration state |
 | `refclk_out` | bool | reference clock output enable |
-| `gnss` | obj | GNSS state: `lock`(0/1) `sats` `docxo`(0/1) `docxo_mode`(0=disciplined,1=hold) `antenna`(0=external,1=internal) `latitude`/`longitude`(deg) `altitude`(m) `time`(UTC, "0000-00-00 00:00:00" when invalid) |
+| `gnss` | obj | GNSS state: `lock`(0/1) `sats` `docxo`(0/1) `docxo_mode`(0=disciplined,1=hold) `antenna`(0=external,1=internal) `latitude`/`longitude`(deg) `altitude`(m) `time`(UTC, "0000-00-00 00:00:00" when invalid). Null in Server; this mode has no device or client telemetry |
+| `server` | obj | Always present, including when the status fixture has no `server` key. See Soapy Server below. Outside that mode the process stays stopped |
 | `last_error` | str | recent global error message; receiver worker failures use `sdr.receiver_error` |
 
 Complete parameter ownership, defaults, and mode transitions are documented in
@@ -110,7 +111,7 @@ Frontend static assets (JS/CSS/fonts).
 ws://localhost:8080/ws
 ```
 
-After connecting, the server starts pushing trace frames (FREQ/POWR) and status.
+After connecting, the service pushes status and the active acquisition mode's trace frames (FREQ/POWR or RTAF/RTA2). Server mode pushes status without Web acquisition frames.
 
 ### 2.1 Client → Server (commands)
 
@@ -135,7 +136,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_AMP` | `atten?` (-1~33), `preamp?` (0/1), `ifgain?` (0~3), `gain_strategy?` (0/1), `request_id?` | update supplied gain fields; STATUS/ERROR echoes request_id. Requested fields and SDK actual readbacks remain separate |
 | `SET_REFCK` | `mode` (internal/external/premium/external_forced) | requested reference source; reconfigures the active profile. Unavailable premium hardware is rejected before mutation. `actual.refclk_src` reports the SDK-resolved source, including automatic external fallback |
 | `SET_REFCKOUT` | `on` (bool) | reference clock output; reconfigures the active profile |
-| `SET_MODE` | `mode` (std/harmonic/pnm/rta/sdr) | switch measurement mode (session) |
+| `SET_MODE` | `mode` (std/harmonic/pnm/rta/sdr/server) | switch measurement mode (session). `server` is exclusive and does not start SoapySDRServer |
 | `SET_RTA` | `center?`, `span?` | atomically set RTA center and 2^n analysis span |
 | `SET_SDR` | `center?`, `decimate?` (power of two, 1~`caps.decimate_max`; rounded to the nearest power of two), `pfb_taps_per_phase?` (native backend: 4/8/16, default 16) | set the SDR capture window; the native backend rebuilds the channelizer for the selected PFB taps per phase. 16 taps is the default rejection profile; 8/4 are measured lower adjacent/alias-rejection profiles |
 | `SET_SDR_TUNE` | `listen` (Hz) | tune the primary receiver. On the native backend, tuning within the capture updates the channel plan; an enabled primary tuned beyond the capture moves the shared capture to the requested frequency. All three channel configurations are preserved. Enabled auxiliary channels must fit the replacement capture; auxiliary tuning never moves the capture. Device limits, occupied bandwidth, coarse passband and admission failures are reported explicitly |
@@ -144,6 +145,7 @@ JSON object: `{"cmd": "<COMMAND>", ...}`
 | `SET_HARM` | `f0`, `count`, `span` | harmonic params (fundamental Hz, orders, span per harmonic) |
 | `SET_PNM` | `center`, `threshold`, `traceavg`, `start`, `stop` | phase noise params |
 | `SET_TRIGGER` | `source` (bus/freerun/level/external/timer), `edge` (rising/falling/double), `level` (dBm, `caps` bounds), `safetime`/`delay`/`pretime` (0~10 s), `acqtime` (0.0005~60 s), `retrigger` (0-65535), `retriggerperiod` (s), `out` (none/per_hop/per_sweep/per_profile), `outpolarity` (positive/negative) | RTA acquisition trigger (written into the RTA profile): reconfigured immediately while in RTA, otherwise applied on the next entry. The swept-mode level trigger runs in the frontend and does not use this command |
+| `SET_SERVER` | `action` (start/stop/restart/configure), `bind_address?` (IP literal), `port?` (integer 1..65535) | SoapySDRServer control; requires `mode=server`, otherwise `server_mode_required`. Configure requires a stopped child; starting an existing child with a different bind returns `server_busy`. Restart stops the child and can apply a new bind. Start/restart recheck dependencies and the free SDK owner slot. Optional scalar `request_id` is echoed as on other commands. In Server, hardware commands other than `STATUS`, `SET_MODE` and `SET_SERVER` are rejected with “leave server mode before changing hardware settings”; HTTP/WS admission uses `bad_parameter`, while dispatch uses `server_mode_active` |
 
 The squelch slider covers -160..0 in 0.1 dB steps; its minimum selects Off. Raising
 the threshold requires a stronger signal to open audio. The gate opens at or above
@@ -387,7 +389,7 @@ The browser delivers event batches FIFO using `{type:'frames', envelopes}` and a
 > **Spectrum detail**: POWR uses float32 levels and the paired native FREQ Hz axis. RTA/SDR retain native bins for traces, markers and export. Local zoom sends no acquisition commands and cannot improve physical RBW. Density keeps either the processed active trace or the received frames before Average/Max Hold; switching the source clears history. Afterglow uses a real-time half-life (Off, 0.2, 0.5, 2, 5, 10 s). Hit weights use elapsed time with bounded gaps. Off stops accumulation and drawing. Both, Density and Trace change visibility only; trace modes, markers, measurements and export retain their data sources. The wide trace glow is suppressed while density is drawn. Contrast changes colour independently of opacity. Waterfall history retains native frequency positions; missing bins stay blank unless SWP GapFill is enabled.
 
 On an axis-version transition, the first frame for the new axis takes priority and
-older-version frames are rejected. Density projects native frequency centers continuously,
+older-version frames are rejected. Density accumulates occupancy at native frequencies,
 splits each amplitude contribution between two rows, and draws measured cell centres with a
 centred vertical footprint of 1/3/5/9 CSS pixels (default 5). Display width changes only
 the pixel footprint; it does not change occupancy, amplitude, frequency or measurements.
@@ -395,6 +397,10 @@ Contrast controls colour separately from opacity. Light mode uses a saturated pa
 measured noise remains visible at reduced strength. Grain defaults to 128; NaN gaps stay
 blank. Off clears accumulation. VIEW freezes trace-source history; Live continues while
 the trace is frozen. Width, theme and contrast changes preserve history.
+
+Persist defaults to 0.2 s in SDR and 0.5 s in RTA. Saved user selections take precedence; Preset restores the active mode's default.
+
+SDR uses a thin trace without the wide glow. Density retains native-frequency amplitude occupancy, Grain defaulting to 128, device-pixel rendering and per-revision refresh. Sparse views connect neighbouring accumulated distributions as continuous amplitude bands. A fixed-coordinate linear occupancy envelope limits their fade to the selected half-life when interpolation changes or a low-weight cell disappears; it uses max-composition, not a second accumulation. View geometry, gaps or source changes reset that envelope immediately. This display interpolation does not modify native history or measurements, replay trace frames or limit refresh rate. Dense full-span views and non-SDR rendering retain the original path. The SDR waterfall retains 16-bit amplitude levels and reconstructs valid neighbouring levels before colouring when enlarged; shrinking preserves native peaks. Missing bins remain gaps and zoom adds no measurement resolution. Zoom rail Top/Bottom change display bounds only, without writing Ref Level, attenuation or preamp; Restore or leaving Zoom clears them.
 
 SWP/RTA/SDR raster paths use each device-pixel column's first, minimum, maximum and last original vertices, in source order, and split at every missing bin. Zoom reveals the retained native vertices as they occupy separate pixels; markers and export always use the complete source arrays. Optional SWP adaptive smoothing still uses the full frame, consistently with marker readouts.
 
@@ -451,6 +457,33 @@ the change rather than moving that receiver. RTA retains its whole-window limits
 ### Exit measurement
 
 `SET_MODE {mode:'std'}` → restore standard sweep.
+
+### Soapy Server
+
+`SET_MODE {mode:'server'}` stops Web capture and audio, joins the previous acquisition owner, and releases the physical SDK handle through the reusable owner thread. It does not spawn SoapySDRServer. The browser then uses separate Start, Stop and Restart actions. Configure is accepted only while stopped. Bind settings persist only until `websad` restarts; the defaults are `127.0.0.1` and `55132`.
+
+`STATUS.server` fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `state` | str | `stopped`, `starting`, `listening`, `stopping`, or `failed`. `listening` means the owned process reported its bind endpoint; the device opens when a Soapy client uses it |
+| `bind_address` / `port` | str / int | configured IP literal and port. `0.0.0.0` and `::` are not client destinations |
+| `pid` / `uptime_seconds` / `exit_code` | int or null / int / int or null | owned child identity, elapsed seconds while that child exists, and the last reaped status (`128+signal` when signaled) |
+| `error` / `dependency_error` | str or null | process or lifecycle failure / missing binary, probe failure, or unavailable `harogic` factory. Start and restart refresh the dependency check |
+| `driver_available` | bool | last dependency check found `SoapySDRServer`, `SoapySDRUtil`, and the lowercase `harogic` factory |
+| `graph_mode` | str | last `std`, `rta`, or `sdr` view remembered on entry; Spectrum returns there |
+| `logs` | array | bounded raw stdout, stderr and lifecycle lines: `{seq, time_ms, source, text}`. Capacity is 200 lines and 64 KiB; pipe reads flush at 2 KiB. Pause, follow and clear are local display controls and do not delete the service buffer |
+| `log_capacity` | int | retained line capacity (200) |
+
+In this mode STATUS reports `connected=false`, `gnss=null`, and empty active `actual` objects. No Soapy client count, throughput, or remote telemetry is published. A browser refresh, reconnect, or close leaves the child running. `websad` shutdown stops and reaps it; the child supervisor also arms parent-death cleanup. Exit (`SET_MODE` to `graph_mode`, or another measurement mode) stops and reaps the child before acquisition resumes. A child that cannot be reaped keeps Server mode and the device reservation.
+
+Handoff is refused when the loaded shim lacks `san90_session_release_v1` or a previous vendor owner is still parked inside the SDK. The mode change is not committed. The attempt still retires the previous capture: stream fences advance, `connected` becomes false, `gnss` is null, and the command returns `device_error`. The next capture uses a new epoch. The prebuilt `runtime/` adapter is unchanged and cannot perform this release.
+
+A client needs SoapySDR and the [SoapyRemote](https://github.com/pothosware/SoapyRemote) module. Use `driver=remote,remote=<host>:<port>,remote:driver=harogic`; replace a wildcard bind with the server host's reachable address, and bracket IPv6 hosts. SoapySDRServer exposes all installed device factories, so retain the `harogic` filter. The patched module writes CF32, CS16 or CS8 output. Before setup, the native-format query defaults to CS16 at rates up to 60 MSps (`fullScale` 32768) and CS8 above 60 MSps (`fullScale` 128). After setup it reports the selected output format and its `fullScale` (CF32: 1, CS16: 32768, CS8: 128). CS16 and CS8 payloads use 4 and 2 bytes per complex sample, versus CF32's 8. `native_format` selects SDK CS8/CS16/CS32/AUTO at setup and remains fixed until stream close. AUTO matches integer output width; for CF32 it selects CS16 up to 60 MSps and CS8 above that rate at setup. Explicit integer output requires a matching SDK width. CF32 output normalizes SDK components by `2^7`, `2^15` or `2^31`; CS32 is SDK input only. SoapyRemote can transport native integer samples while returning CF32 to the client. This uses a raw ring and bulk copies, without a zero-copy claim.
+
+For automatic discovery, SoapyRemote publishes through mDNS/Avahi and SSDP; `avahi-browse -rt _soapy._tcp` lists advertised endpoints. WebSA does not add a duplicate publisher. Advertisements can include loopback addresses; the default `127.0.0.1` bind still accepts only local clients. For IPv4 LAN access, stop the server, configure `0.0.0.0`, restart it and use its reachable LAN address. In OnAir 3.2, stop reception, open the source selector and enable **Search the network for radios**, which is off by default. With the SoapyRemote module installed on the client, discovered radios appear through the Soapy source.
+
+Upstream client paths include [SDR++](https://github.com/AlexandreRouma/SDRPlusPlus#sources) (`soapy_source` is optional/deprecated and may require a custom build), [OnAir desktop](https://github.com/adswill/OnAir#network-radios) (SoapyRemote), [SDR--](https://sdrmm.com/docs/hardware) (only builds with the Soapy path), and [OpenWebRX](https://github.com/jketterl/openwebrx/wiki/Supported-Hardware) (SoapyRemote). KiwiSDR has no general Soapy input. OnAir 3.2.0 source startup and IQ delivery at 15.625 MSps were exercised on SAN-90. With the updated driver, a five-second OnAir CLI FM run at 7.8125 MSps used CS16 UDP transport and CF32 client output, reported carrier lock, stereo and zero dropped samples, and exited successfully. Another five-second CLI run exercised 62.5 MSps CS8 UDP input with zero reported drops and a successful exit; its receiver resampled to 4 MSps and did not achieve FM carrier lock. This establishes the full-rate input path for that run, without proving GUI FFT processing at 62.5 MSps, full-rate decode quality, television lock or long-duration continuity. Other application paths remain upstream compatibility notes. See [driver setup and measurements](../../tools/README.md#soapy-server-driver-setup) for discovery, transport and performance limits.
 
 ---
 

@@ -3,6 +3,12 @@ use super::*;
 /// Calibrate candidate kernels without holding the device state or pausing capture.
 pub(super) async fn preflight(app: &Arc<App>, cmd: &str, data: &Value) -> Result<u64, String> {
     static ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    {
+        let state = app.state.lock().unwrap();
+        if state.swp.mode == "server" && !matches!(cmd, "STATUS" | "SET_MODE" | "SET_SERVER") {
+            return Err("leave server mode before changing hardware settings".into());
+        }
+    }
     let display_only = matches!(cmd, "AUTO_SCALE" | "SET_REF")
         && data["display_only"] == true
         && (cmd == "AUTO_SCALE" || data["mode"] == "auto");

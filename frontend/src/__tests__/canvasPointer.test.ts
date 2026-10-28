@@ -157,6 +157,22 @@ describe('canvas pointer ownership', () => {
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
   });
 
+	it.each(['usb', 'lsb', 'cw'])('uses the frequency badge to tune heard %s tone with a single listen edit', async mode => {
+		const { state, send } = await load(true);
+		state.sdrDemod.confirm(mode);
+		const badge = await import('../ui/sdrBadgeGesture');
+		const g = badge.sdrBadgeGeometry()!;
+		const x = g.left + 5, y = g.top + g.height / 2;
+		pointer('pointerdown', x, y);
+		pointer('pointermove', x + 20, y);
+		expect(state.sdrListenHz.get()).toBe(10_000_000);
+		expect(send).not.toHaveBeenCalled();
+		pointer('pointerup', x + 20, -40);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ freq: 10_010_000 }));
+		expect(vi.mocked(send).mock.calls[0][0]).not.toHaveProperty('pitch');
+		expect(state.sdrPitchHz.get()).toBe(700);
+	});
+
   it.each(['left', 'right'])('keeps the initial frequency offset on an edge-clamped %s badge', async edge => {
     const { state, send } = await load(true);
     const badge = await import('../ui/sdrBadgeGesture');
@@ -347,6 +363,96 @@ describe('canvas pointer ownership', () => {
 		expect(send).toHaveBeenCalledTimes(1);
 		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR_CHANNEL', ifbw: 60_000 }));
 		expect(vi.mocked(send).mock.calls[0][0]).not.toHaveProperty('freq');
+	});
+
+	it('adjusts the top Filter handle with Zoom on while the lower edge remains a marquee', async () => {
+		const { state, viewport, filter, send } = await load(true);
+		const handle = filter.filterGeometry()!.handles[1];
+		const x = handle.x, y = handle.y;
+		pointer('pointerdown', x, y);
+		expect(filter.filterDragging()).toBe(true);
+		pointer('pointermove', x + 20, y);
+		expect(state.sdrIfbw.get()).toBe(40_000);
+		expect(send).not.toHaveBeenCalled();
+		pointer('pointerup', x + 20, -40);
+		expect(state.sdrIfbw.get()).toBe(60_000);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ifbw: 60_000 }));
+		expect(viewport.isZoomed()).toBe(false);
+	});
+
+	it('keeps Ctrl marker priority over a top edge handle', async () => {
+		const { S, filter, send } = await load(true);
+		const handle = filter.filterGeometry()!.handles[1];
+		drag(handle.x, 570, handle.y, true);
+		expect(filter.filterDragging()).toBe(false);
+		expect(S.markers[0].freq).toBe(10_080_000);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('reveals near the dial, clears on leave/Escape/blur, and keeps hidden background for Zoom', async () => {
+		const { filter, viewport, send } = await load(true);
+		const g = filter.filterGeometry()!;
+		const hover = (x: number) => canvas.dispatchEvent(new MouseEvent('pointermove', {
+			clientX: x * screenScale, clientY: 240 * screenScale, bubbles: true,
+		}));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		hover(g.dialX + 55);
+		expect(filter.filterHandlesVisible()).toBe(true);
+		canvas.dispatchEvent(new Event('pointerleave'));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		hover(g.dialX);
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		hover(g.dialX);
+		window.dispatchEvent(new Event('blur'));
+		expect(filter.filterHandlesVisible()).toBe(false);
+		drag(570, 650);
+		expect(filter.filterDragging()).toBe(false);
+		expect(viewport.isZoomed()).toBe(true);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('grabs an outward arrow in the canvas margin before axis gestures', async () => {
+		const { state, filter, axis, send } = await load(true);
+		state.sdrIfbw.confirm(60);
+		state.sdrListenHz.confirm(9_800_030);
+		const handle = filter.filterGeometry()!.handles[0];
+		pointer('pointerdown', handle.x, handle.y);
+		expect(filter.filterDragging()).toBe(true);
+		expect(axis.axisDragging()).toBe(false);
+		pointer('pointerup', handle.x, handle.y);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('drags a narrow external arrow from its hit margin without an initial jump', async () => {
+		const { state, filter, viewport, send } = await load(true);
+		state.sdrIfbw.confirm(60);
+		const handle = filter.filterGeometry()!.handles[1];
+		const x = handle.x + 5;
+		pointer('pointerdown', x, handle.y);
+		expect(filter.filterDragging()).toBe(true);
+		pointer('pointermove', x, handle.y);
+		expect(state.sdrIfbw.get()).toBe(60);
+		expect(send).not.toHaveBeenCalled();
+		pointer('pointermove', x + 10, handle.y);
+		pointer('pointerup', x + 10, handle.y);
+		expect(state.sdrIfbw.get()).toBeCloseTo(10_060, 6);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ifbw: 10_060 }));
+		expect(viewport.isZoomed()).toBe(false);
+	});
+
+	it.each(['pointercancel', 'escape', 'blur'])('cancels a top Filter preview on %s without submitting', async reason => {
+		const { state, filter, send } = await load(true);
+		const handle = filter.filterGeometry()!.handles[1];
+		const x = handle.x, y = handle.y;
+		pointer('pointerdown', x, y);
+		pointer('pointermove', x + 20, y);
+		if (reason === 'pointercancel') pointer('pointercancel', x + 20, y);
+		if (reason === 'escape') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		if (reason === 'blur') window.dispatchEvent(new Event('blur'));
+		pointer('pointerup', x + 20, y);
+		expect(state.sdrIfbw.get()).toBe(40_000);
+		expect(send).not.toHaveBeenCalled();
 	});
 
 	it('uses both diamond coordinates instead of stealing clicks on its vertical line', async () => {

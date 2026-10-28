@@ -1,6 +1,6 @@
 /** Native density history, visible frequency raster, and persistence controls. */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { advanceDensity, densityLevelPlacement, densityLut, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity } from '../dsp/rtaDensity';
+import { advanceDensity, densityLevelPlacement, densityLut, paintDensity, DENSITY_HIT_RATE, MAX_DENSITY, rasterDensity, rasterSparseDensity } from '../dsp/rtaDensity';
 import { resetAll } from '../core/params';
 import * as S from '../core/store';
 import { resetRtaDensityCfg, restoreRtaDensityCfg, setRtaBins, setRtaDensContrast, setRtaDensWidth, setRtaDensSource, setRtaHalflife } from '../ui/panels/rta';
@@ -147,6 +147,17 @@ describe('native density history', () => {
 		expect(xPeak2 - xPeak1).toBeGreaterThan(80);
 	});
 
+	it('renders an isolated finite native carrier surrounded by NaN gaps', () => {
+		const freq = new Float64Array([0, 1, 2]);
+		const grid = advanceDensity(null, new Float32Array([NaN, -40, NaN]), BINS, 1, 0, 2)!;
+		const raster = new Float32Array(100 * BINS);
+		rasterDensity(grid, freq, 0, 2, 100, raster);
+		const pixels = new Uint8ClampedArray(100 * 64 * 4);
+		paintDensity(raster, 100, BINS, pixels, 64, 0, 1, 1, 1, densityLut(false));
+		expect(pixels[(20 * 100 + 50) * 4 + 3]).toBeGreaterThan(0);
+		for (const x of [49, 51]) expect(pixels[(20 * 100 + x) * 4 + 3]).toBe(0);
+	});
+
 	it('keeps equal resolved samples equally bright across a half-pixel viewport pan', () => {
 		const freq = Float64Array.from({ length: 16 }, (_, i) => i);
 		const spec = new Float32Array(16).fill(-120);
@@ -177,6 +188,179 @@ describe('native density history', () => {
 		const p0 = densityLevelPlacement(grid, -10, 100, 0);
 		const p1 = densityLevelPlacement(grid, -10, 100, 5);
 		expect(p1.top - p0.top).toBeCloseTo(-5 / 100, 8);
+	});
+});
+
+describe('sparse density distribution projection', () => {
+	function history(columns: number[][]) {
+		const grid = advanceDensity(null, new Float32Array(columns.length), BINS, 1, 0, 1)!;
+		grid.values.fill(0);
+		grid.heads.fill(-1);
+		for (let i = 0; i < columns.length; i++) {
+			for (let bin = 0; bin < columns[i].length; bin++) {
+				if (!(columns[i][bin] > 0)) continue;
+				const cell = i * BINS + bin;
+				grid.values[cell] = columns[i][bin];
+				grid.next[cell] = grid.heads[i];
+				grid.heads[i] = cell;
+			}
+		}
+		return grid;
+	}
+	const peak = (row: number, mass: number) => {
+		const histogram = new Array<number>(BINS).fill(0);
+		histogram[row] = mass;
+		return histogram;
+	};
+
+	it.each([[8, 56], [56, 8]])('moves steep slopes from row %i to %i through midpoint occupancy', (from, to) => {
+		const grid = history([peak(from, 4), peak(to, 8)]);
+		const raster = new Float32Array(9 * BINS);
+		// Native frequencies and the midpoint land exactly on pixel centres.
+		rasterSparseDensity(grid, new Float64Array([0, 1]), -0.0625, 1.0625, 9, raster);
+		for (let x = 1; x < 8; x++) {
+			const row = from + (to - from) * x / 8;
+			let total = 0;
+			for (let bin = 0; bin < BINS; bin++) total += raster[bin * 9 + x];
+			expect(total).toBeCloseTo(4 + x / 2, 6);
+			// Each pixel covers six amplitude rows; even the shared edge rows stay lit.
+			for (let bin = row - 3; bin <= row + 3; bin++) expect(raster[bin * 9 + x]).toBeGreaterThan(0);
+		}
+		expect(raster[32 * 9 + 4]).toBeCloseTo(1, 6);
+		expect(raster[from * 9]).toBe(4);
+		expect(raster[to * 9 + 8]).toBe(8);
+		expect(raster[from * 9 + 1]).toBe(0);
+	});
+
+	it('paints a continuous steep slope when amplitude pitch exceeds the CSS footprint', () => {
+		const cols = 9, rows = 320, pitch = 5, footprint = 2;
+		const grid = history([peak(8, 4), peak(56, 8)]);
+		const raster = new Float32Array(cols * rows);
+		rasterSparseDensity(grid, new Float64Array([0, 1]), -0.0625, 1.0625, cols, raster,
+			{ bins: rows, origin: 0, scale: pitch });
+		const pixels = new Uint8ClampedArray(cols * rows * 4);
+		paintDensity(raster, cols, rows, pixels, rows, 0.5, 1, footprint, 1, densityLut(false), true);
+		// Each device column covers 30 screen rows, including all rows between samples.
+		for (let x = 1; x < cols - 1; x++) {
+			const centre = (8 + 6 * x) * pitch;
+			for (let y = centre - 15; y <= centre + 15; y++) {
+				expect(pixels[(y * cols + x) * 4 + 3]).toBeGreaterThan(0);
+			}
+		}
+	});
+
+	it('matches cumulative mass in bin order and splits fractional rows without losing total', () => {
+		const left = peak(0, 1), right = peak(16, 4);
+		left[BINS - 1] = 3;
+		right[BINS - 1] = 4;
+		const raster = new Float32Array(9 * BINS);
+		rasterSparseDensity(history([left, right]), new Float64Array([0, 1]), -0.0625, 1.0625, 9, raster);
+		// Each matched interval uses only its consumed fraction of the native cell.
+		// The midpoint bands retain their mass while spanning the pixel footprint.
+		expect(raster[8 * 9 + 4]).toBeGreaterThan(0);
+		expect(raster[39 * 9 + 4]).toBeGreaterThan(0);
+		expect(raster[40 * 9 + 4]).toBeGreaterThan(0);
+		expect(raster[63 * 9 + 4]).toBeGreaterThan(0);
+		let total = 0;
+		for (let bin = 0; bin < BINS; bin++) total += raster[bin * 9 + 4];
+		expect(total).toBeCloseTo(6, 6);
+	});
+
+	it.each(['NaN', 'empty'])('does not bridge a %s column and preserves isolated native points', gap => {
+		const grid = history([peak(8, 4), gap === 'empty' ? [] : peak(32, 5), peak(56, 6)]);
+		if (gap === 'NaN') grid.samples[1] = NaN;
+		const raster = new Float32Array(21 * BINS);
+		rasterSparseDensity(grid, new Float64Array([0, 1, 2]), 0, 2, 21, raster);
+		expect(raster[8 * 21]).toBe(4);
+		expect(raster[56 * 21 + 20]).toBe(6);
+		for (let bin = 0; bin < BINS; bin++) {
+			for (let x = 1; x < 20; x++) expect(raster[bin * 21 + x]).toBe(0);
+		}
+	});
+
+	it('keeps steady histograms identical to the old raster and leaves raw history unchanged', () => {
+		const histogram = peak(7, 3);
+		histogram[29] = 1;
+		const grid = history([histogram, histogram]);
+		const values = grid.values.slice(), next = grid.next.slice(), heads = grid.heads.slice();
+		const samples = grid.samples.slice(), revision = grid.revision;
+		const oldRaster = new Float32Array(9 * BINS), sparse = new Float32Array(oldRaster.length);
+		const freq = new Float64Array([0, 1]);
+		rasterDensity(grid, freq, 0, 1, 9, oldRaster);
+		rasterSparseDensity(grid, freq, 0, 1, 9, sparse);
+		expect(sparse).toEqual(oldRaster);
+		expect(grid.values).toEqual(values);
+		expect(grid.next).toEqual(next);
+		expect(grid.heads).toEqual(heads);
+		expect(grid.samples).toEqual(samples);
+		expect(grid.revision).toBe(revision);
+	});
+
+	it('max-composites native peaks sharing one pixel and never extrapolates endpoints', () => {
+		const grid = history([peak(8, 4), peak(8, 6)]);
+		const freq = new Float64Array([0, 1]);
+		const subpixel = new Float32Array(BINS);
+		rasterSparseDensity(grid, freq, 0, 1, 1, subpixel);
+		expect(subpixel[8]).toBe(6);
+		const window = new Float32Array(12 * BINS);
+		rasterSparseDensity(grid, freq, -1, 2, 12, window);
+		for (const x of [0, 1, 2, 3, 9, 10, 11]) expect(window[8 * 12 + x]).toBe(0);
+	});
+
+	it('changes continuously as alternating bin weights cross a quantile match boundary', () => {
+		const cols = 17, rows = 320, epsilon = 1e-5;
+		const project = (delta: number) => {
+			const left = peak(18, 1 + delta), right = peak(18, 1 - delta);
+			left[19] = 1 - delta; right[19] = 1 + delta;
+			const out = new Float32Array(cols * rows);
+			rasterSparseDensity(history([left, right]), new Float64Array([0, 1]), 0, 1, cols, out,
+				{ bins: rows, origin: 0, scale: 8 });
+			return out;
+		};
+		const before = project(-epsilon), at = project(0), after = project(epsilon);
+		let difference = 0;
+		for (let k = 0; k < at.length; k++) {
+			difference += Math.abs(before[k] - at[k]) + Math.abs(after[k] - at[k]);
+		}
+		expect(difference).toBeLessThan(0.01);
+		const pixels = new Uint8ClampedArray(cols * rows * 4);
+		paintDensity(at, cols, rows, pixels, rows, 0.5, 1, 2, 1, densityLut(false), true);
+		for (let x = 0; x < cols; x++) {
+			for (let row = 18 * 8 - 3; row < 19 * 8 + 4; row++) {
+				expect(at[row * cols + x]).toBeGreaterThan(0);
+				expect(pixels[(row * cols + x) * 4 + 3]).toBeGreaterThan(0);
+			}
+		}
+	});
+
+	it('scales the entire projected distribution linearly under common exponential decay', () => {
+		const left = peak(8, 2), right = peak(12, 3);
+		left[9] = 4; right[13] = 1;
+		const factor = Math.pow(2, -0.37), cols = 17, rows = 180;
+		const full = new Float32Array(cols * rows), decayed = new Float32Array(full.length);
+		const freq = new Float64Array([0, 1]), projection = { bins: rows, origin: 10, scale: 6 };
+		rasterSparseDensity(history([left, right]), freq, 0, 1, cols, full, projection);
+		rasterSparseDensity(history([left.map(v => v * factor), right.map(v => v * factor)]), freq,
+			0, 1, cols, decayed, projection);
+		for (let k = 0; k < full.length; k++) expect(decayed[k]).toBeCloseTo(full[k] * factor, 6);
+	});
+
+	it('projects resolved native endpoints inside their amplitude support without a centre stripe', () => {
+		const cols = 9, rows = 320, pitch = 8;
+		const raster = new Float32Array(cols * rows);
+		rasterSparseDensity(history([peak(8, 4), peak(30, 8)]), new Float64Array([0, 1]),
+			-0.0625, 1.0625, cols, raster, { bins: rows, origin: 0, scale: pitch });
+		for (const [x, nativeRow, mass] of [[0, 8, 4], [8, 30, 8]]) {
+			let total = 0, moment = 0;
+			for (let row = 0; row < rows; row++) {
+				const value = raster[row * cols + x];
+				total += value; moment += value * row;
+				if (Math.abs(row - nativeRow * pitch) > pitch / 2) expect(value).toBe(0);
+			}
+			expect(total).toBeCloseTo(mass, 6);
+			expect(moment / total).toBeCloseTo(nativeRow * pitch, 6);
+			expect(raster[nativeRow * pitch * cols + x]).toBeCloseTo(mass / pitch, 6);
+		}
 	});
 });
 
@@ -288,6 +472,52 @@ describe('density display footprint and visibility', () => {
 		expect(alpha.slice(2)).toEqual(new Array(10).fill(0));
 		paintDensity(new Float32Array([MAX_DENSITY]), 1, 1, pixels, 12, -4, 3, 5, 1, densityLut(false));
 		expect(alphas(pixels)).toEqual(new Array(12).fill(0));
+	});
+
+	it('feathers an isolated native carrier edge while keeping its flat centre and frequency gaps', () => {
+		const freq = new Float64Array([0, 1, 2]);
+		const grid = advanceDensity(null, new Float32Array([NaN, -40, NaN]), BINS, 1, 0, 2)!;
+		for (const ratio of [1, 2]) for (const pitch of [2, 7]) {
+			const cols = 100 * ratio, rows = 80 * ratio, centre = 30.5 * ratio, width = 5 * ratio;
+			const raster = new Float32Array(cols * BINS);
+			rasterDensity(grid, freq, 0, 2, cols, raster);
+			const pixels = new Uint8ClampedArray(cols * rows * 4);
+			paintDensity(raster, cols, BINS, pixels, rows, centre - 20 * pitch, pitch, width, 1, densityLut(false), true);
+			const alpha = Array.from({ length: rows }, (_, y) => pixels[(y * cols + 50 * ratio) * 4 + 3]);
+			const mass = alpha.reduce((sum, a) => sum + a, 0);
+			expect(mass).toBeGreaterThan(0);
+			expect(alpha.reduce((sum, a, y) => sum + a * (y + 0.5), 0) / mass / ratio).toBeCloseTo(30.5, 2);
+			const edge = Math.floor(centre - width / 2);
+			expect(alpha[Math.floor(centre)]).toBeGreaterThan(alpha[edge]);
+			const centreAlpha = Math.round(255 * (1 - Math.exp(-5 * Math.pow(grid.values[BINS + 20] / MAX_DENSITY, 0.4))));
+			expect(alpha[Math.floor(centre)]).toBe(centreAlpha);
+			expect(alpha[Math.floor(centre) - 1]).toBe(centreAlpha);
+			for (let y = 0; y < rows; y++) {
+				if (y + 1 <= centre - width / 2 || y >= centre + width / 2) expect(alpha[y]).toBe(0);
+				for (const x of [50 * ratio - 1, 50 * ratio + 1]) expect(pixels[(y * cols + x) * 4 + 3]).toBe(0);
+			}
+			expect(grid.samples[1]).toBe(-40);
+			expect(raster[20 * cols + 50 * ratio]).toBeCloseTo(grid.values[BINS + 20]);
+		}
+	});
+
+	it('clips the soft native footprint using the original centre and finite edges', () => {
+		const freq = new Float64Array([0, 1, 2]);
+		const grid = advanceDensity(null, new Float32Array([NaN, -40, NaN]), BINS, 1, 0, 2)!;
+		const cols = 100, rows = 12, pitch = 3;
+		const raster = new Float32Array(cols * BINS);
+		rasterDensity(grid, freq, 0, 2, cols, raster);
+		const full = new Uint8ClampedArray(cols * rows * 4), clipped = new Uint8ClampedArray(full.length);
+		paintDensity(raster, cols, BINS, full, rows, 8.5 - 20 * pitch, pitch, 5, 1, densityLut(false), true);
+		paintDensity(raster, cols, BINS, clipped, rows, -0.5 - 20 * pitch, pitch, 5, 1, densityLut(false), true);
+		expect(clipped[(0 * cols + 50) * 4 + 3]).toBeGreaterThan(clipped[(1 * cols + 50) * 4 + 3]);
+		for (let y = 0; y < rows; y++) {
+			const expected = y + 9 < rows ? full[((y + 9) * cols + 50) * 4 + 3] : 0;
+			expect(clipped[(y * cols + 50) * 4 + 3]).toBe(expected);
+			if (y >= 2) expect(clipped[(y * cols + 50) * 4 + 3]).toBe(0);
+		}
+		paintDensity(raster, cols, BINS, clipped, rows, -3 - 20 * pitch, pitch, 5, 1, densityLut(false), true);
+		expect(clipped.every(value => value === 0)).toBe(true);
 	});
 
 	it('makes rare cells visible in both themes with contrast independent of opacity', () => {

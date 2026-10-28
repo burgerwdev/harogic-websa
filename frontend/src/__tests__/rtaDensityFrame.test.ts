@@ -2,11 +2,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as S from '../core/store';
 import { connectWS } from '../core/ws';
-import { setDisplayRef } from '../ui/displayRef';
+import { clearDisplayBounds, getDisplayRange, getDisplayTop, setDisplayBounds, setDisplayRef } from '../ui/displayRef';
 import { displayOffset } from '../ui/displayState';
 import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
 import { setRtaDensSource, beginRtaAxisTransition, clearRtaAccum, rejectRtaAxisTransition, resetRtaAxisTransition } from '../ui/panels/rta';
 import { clearRtaTrace, setTraceMode, switchTraceTab } from '../ui/traceOps';
+import { zoomEnabled } from '../ui/spectrumViewport';
+import { densityLevelPlacement, densityLut, paintDensity, rasterDensity } from '../dsp/rtaDensity';
 
 class DisplaySocket {
 	static OPEN = 1;
@@ -71,7 +73,69 @@ beforeEach(() => {
 	waterfallOn.set(false);
 });
 
-describe('processed active-trace density', () => {
+describe.each([false, true])('processed active-trace density (SDR=%s)', (sdr) => {
+	beforeEach(() => { S.setSdrMode(sdr); rtaDensSource.set('trace'); });
+	it('reprojects retained SDR occupancy when display bounds move', () => {
+		S.setSdrMode(true);
+		zoomEnabled.set(true);
+		try {
+			rtaHalflife.set(2);
+			feed(-40.625);
+			const grid = S.rtaDensity2d!;
+			const freq = S.rtaData.freq;
+			const raster = new Float32Array(100 * grid.bins);
+			rasterDensity(grid, freq, freq[16], freq[17], 100, raster);
+			const paint = () => {
+				const placement = densityLevelPlacement(grid, getDisplayTop(), getDisplayRange(), displayOffset.get());
+				const pitch = placement.height * 100 / grid.bins;
+				const pixels = new Uint8ClampedArray(100 * 100 * 4);
+				paintDensity(raster, 100, grid.bins, pixels, 100,
+					placement.top * 100 + pitch / 2, pitch, 1, 1, densityLut(false));
+				return pixels;
+			};
+			expect(paint()[(40 * 100) * 4 + 3]).toBeGreaterThan(0);
+			const before = grid.values[16 * grid.bins + 52];
+			setDisplayBounds(-35, -45);
+			expect(S.rtaDensity2d).toBe(grid);
+			expect(grid.values[16 * grid.bins + 52]).toBe(before);
+			const moved = paint();
+			expect(moved[(56 * 100) * 4 + 3]).toBeGreaterThan(0);
+			expect(moved[(40 * 100) * 4 + 3]).toBe(0);
+			feed(-40.625);
+			expect(S.rtaDensity2d).toBe(grid);
+			expect(grid.values[16 * grid.bins + 52]).toBeGreaterThan(before);
+		} finally {
+			clearDisplayBounds();
+			zoomEnabled.set(false);
+			S.setSdrMode(sdr);
+		}
+	});
+	it('accumulates steady packets into the same native occupancy history', () => {
+		rtaHalflife.set(2);
+		feed(-40.625);
+		const grid = S.rtaDensity2d!;
+		const row = Math.round((grid.refTop + 40.625) / grid.dBPerBin);
+		const before = grid.values[16 * grid.bins + row];
+		feed(-40.625);
+		expect(S.rtaDensity2d).toBe(grid);
+		expect(grid.values[16 * grid.bins + row]).toBeGreaterThan(before);
+	});
+	it('halves abandoned occupancy after one wall-clock half-life', () => {
+		rtaHalflife.set(1);
+		const timed = vi.spyOn(performance, 'now').mockReturnValue(clock + 1000);
+		try {
+			feed(-40.625);
+			const grid = S.rtaDensity2d!;
+			const row = Math.round((grid.refTop + 40.625) / grid.dBPerBin);
+			const before = grid.values[16 * grid.bins + row];
+			timed.mockReturnValue(clock + 2000);
+			feed(-80);
+			expect(S.rtaDensity2d).toBe(grid);
+			expect(grid.values[16 * grid.bins + row]).toBeCloseTo(before / 2, 5);
+		} finally {
+			timed.mockImplementation(() => (clock += 100));
+		}
+	});
 	it.each([
 		['AVERAGE', -40 + (-80 + 40) * 2 / 3],
 		['MAX_HOLD', -40],

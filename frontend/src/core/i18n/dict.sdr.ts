@@ -1,7 +1,7 @@
 // SDR translations, merged in core/i18n.ts.
 export const en = {
 	"sdr_hint": "click=tune · Ctrl+drag=marker · Zoom: drag=select",
-	"sdr_hint_tip": "Click to tune. Ctrl+click/drag places or moves a marker; drag its diamond to move it. With Zoom on, drag selects a zoom range, including over the dial and filter. With Zoom off, drag a filter edge to adjust bandwidth; other drags tune freely. Arrow keys tune; Shift/Ctrl selects coarse/fine steps. PgUp/PgDn changes bandwidth; M changes demodulation; Space toggles audio.",
+	"sdr_hint_tip": "Drag the top frequency handle to tune; drag passband edge grips to adjust bandwidth. With Zoom on, other plot drags select a zoom range. Ctrl+click/drag and marker diamonds operate markers. Arrow keys tune; Shift/Ctrl selects coarse/fine steps. PgUp/PgDn changes bandwidth; M changes demodulation; Space toggles audio.",
 	"sdr_audio_tip": "Toggle mute (Space)",
 	"sdr_mute_on": "Mute On",
 	"sdr_mute_off": "Mute Off",
@@ -52,6 +52,8 @@ export const en = {
 	"sdr_filter_outside_range": "Outside the current system range: {min} … {max}",
 	"sdr_filter_no_range": "No filter width fits the current capture and channel position",
 	"sdr_filter_bandwidth": "Total receive bandwidth",
+	"sdr_passband_tune_tip": "Drag to tune; move near the dial to reveal bandwidth arrows. Release to apply.",
+	"sdr_passband_edge_tip": "Drag the arrow to adjust bandwidth; release to apply",
 	"sdr_filter_high_cutoff": "Outer high cutoff; the DSP keeps the carrier guard",
 	"sdr_filter_cutoff_label": "High cut",
 	"sdr_filter_view_unavailable": "The passband is outside the captured spectrum, or spectrum data is not available",
@@ -277,7 +279,7 @@ export const en = {
 
 export const zh = {
 	"sdr_hint": "单击调谐 · Ctrl+拖动测量点 · 放大时拖动框选",
-	"sdr_hint_tip": "单击调谐。Ctrl+单击或拖动放置、移动测量点；也可直接拖动标记菱形。开启放大时，拖动框选范围，包括拨盘和滤波区域。关闭放大时，拖动滤波边缘调整带宽，其余拖动自由调谐。方向键调谐，Shift/Ctrl 选择粗/细步进。PgUp/PgDn 调整带宽，M 切换解调，Space 开关声音。",
+	"sdr_hint_tip": "拖动顶部频率滑块调谐，拖动通带边缘抓手调整带宽。开启放大时，其余图区拖动框选范围。Ctrl+单击/拖动及标记菱形用于操作测量点。方向键调谐，Shift/Ctrl 选择粗/细步进。PgUp/PgDn 调整带宽，M 切换解调，Space 开关声音。",
 	"sdr_audio_tip": "切换静音（Space）",
 	"sdr_mute_on": "静音 开",
 	"sdr_mute_off": "静音 关",
@@ -328,6 +330,8 @@ export const zh = {
 	"sdr_filter_outside_range": "超出当前系统范围：{min} … {max}",
 	"sdr_filter_no_range": "当前采集范围和频道位置无法容纳有效通带",
 	"sdr_filter_bandwidth": "总接收带宽",
+	"sdr_passband_tune_tip": "拖动调谐；靠近频率中线显示带宽箭头。松开应用。",
+	"sdr_passband_edge_tip": "拖动箭头调整带宽，松开应用",
 	"sdr_filter_high_cutoff": "外侧高截止；载波保护区由 DSP 保留",
 	"sdr_filter_cutoff_label": "高截止",
 	"sdr_filter_view_unavailable": "通带不在当前采集频谱内，或频谱数据尚不可用",

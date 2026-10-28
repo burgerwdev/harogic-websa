@@ -2,8 +2,8 @@
 # WASM targets remain explicit offline DSP diagnostics.
 
 .PHONY: run stop restart status \
-	build frontend native sdk-shim package-runtime wasm wasm-dsp wasm-dfn dev clean clean-all \
-	test wasm-test ci wasm-check \
+	build frontend native sdk-shim soapy-driver package-runtime wasm wasm-dsp wasm-dfn dev clean clean-all \
+	test wasm-test ci wasm-check soapy-check-patch soapy-check-stream \
 	hw-test bench bench-record e2e-fake viewport-baseline viewport-check \
 	all help
 
@@ -50,6 +50,10 @@ sdk-shim: ## Build matching SAN-90 retained-session SDK shim (vendor SDK require
 	mkdir -p "$(dir $(SDK_SHIM))"
 	$(CXX) -O2 -std=c++17 -Wall -Wextra -pthread -fPIC -shared -I"$(SDK_ROOT)/inc" backend/sdk/san90_sdk.cpp -L"$(SDK_ROOT)/lib/x86_64" -Wl,-rpath,"$(SDK_ROOT)/lib/x86_64" -l:libhtraapi.so.0.55.100 -o "$(SDK_SHIM)"
 
+SOAPY_PREFIX ?= $(HOME)/.local/share/harogic-websa/soapy
+soapy-driver: ## Build patched official SoapyHarogic module into a user prefix (vendor SDK required)
+	SDK_ROOT="$(SDK_ROOT)" SOAPY_PREFIX="$(SOAPY_PREFIX)" ./tools/build-soapy.sh --build --sdk-root "$(SDK_ROOT)" --prefix "$(SOAPY_PREFIX)"
+
 package-runtime: ## Publish existing native/frontend/SDK-adapter builds into runtime/ (Linux x86_64)
 	./tools/package-runtime.sh "$(SDK_SHIM)"
 
@@ -71,10 +75,17 @@ dev:      ## Stop, clean caches, rebuild browser and Rust service, then run
 test:     ## Test Rust service contracts, Python tools and frontend
 	./test.sh
 
+soapy-check-patch: ## Check pinned SoapyHarogic patch; SDK-free and hardware-free (curl + patch)
+	bash -n tools/build-soapy.sh
+	./tools/build-soapy.sh --check-patch
+
+soapy-check-stream: ## Run hardware-free Soapy stream contracts (SDK_ROOT headers + SoapySDR development files required)
+	SDK_ROOT="$(SDK_ROOT)" ./tools/build-soapy.sh --check-stream --sdk-root "$(SDK_ROOT)"
+
 wasm-test: ## Run native Rust DSP kernel tests
 	cargo test --release -j 1 --manifest-path dsp/core/Cargo.toml -- --test-threads=1
 
-ci: wasm-test  ## Run hardware-free local checks; browser checks use make e2e-fake
+ci: wasm-test soapy-check-patch  ## Run hardware-free local checks; browser checks use make e2e-fake
 	./test.sh
 	python3 tools/checks/sync_version.py --check
 	python3 tools/fixtures/gen_frame_fixtures.py --check
@@ -88,7 +99,7 @@ ci: wasm-test  ## Run hardware-free local checks; browser checks use make e2e-fa
 	python3 tools/checks/check_doc_paths.py
 	python3 tools/checks/architecture_guard.py
 	./build.sh
-	@echo "OK: local tests, fixture contracts, static gates and frontend build; browser checks: make e2e-fake"
+	@echo "OK: local tests, Soapy patch, fixture contracts, static gates and frontend build; browser checks: make e2e-fake"
 
 ##@ WASM artifacts
 

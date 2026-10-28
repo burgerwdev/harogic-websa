@@ -17,6 +17,7 @@ const fakeCanvas = {
   // dataset.sdrWindow) must not explode in jsdom.
   dataset: {} as Record<string, string>,
   style: {} as Record<string, string>,
+  removeAttribute(name: string) { delete (this as Record<string, unknown>)[name]; },
   classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
 } as unknown as HTMLCanvasElement;
 

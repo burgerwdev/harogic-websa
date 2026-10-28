@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pushSpectrumRow, renderWaterfall, sliceDensityRow, sliceWaterfallRow } from '../render/waterfall';
 import * as S from '../core/store';
 import { wfRangeMode, wfLoDbm, wfHiDbm } from '../ui/waterfallState';
-import { __testSeedCapture } from '../ui/spectrumViewport';
+import { __testSeedCapture, zoomEnabled } from '../ui/spectrumViewport';
 import { clearSdrBadgeDrag, sdrBadgeGeometry, startSdrBadgeDrag } from '../ui/sdrBadgeGesture';
 import { sdrListenHz } from '../ui/sdrState';
 import { canvasColors, setTheme } from '../core/theme';
+import { clearDisplayBounds, setDisplayBounds } from '../ui/displayRef';
 
 beforeEach(() => {
   S.resetWaterfall();
@@ -16,6 +17,8 @@ beforeEach(() => {
 
 afterEach(() => {
   clearSdrBadgeDrag();
+  clearDisplayBounds();
+  zoomEnabled.set(false);
   S.setSdrMode(false);
   S.setRtaData(null);
   __testSeedCapture(null);
@@ -53,6 +56,72 @@ describe('native waterfall history', () => {
     expect([...sliceWaterfallRow(row, 3, 10, 16)]).toEqual([80, 5, 70]);
     expect([...sliceWaterfallRow(row, 4, 15, 19)]).toEqual([0, 0, 75, 75]);
     expect([...sliceWaterfallRow(row, 3, 8, 11)]).toEqual([0, 0, 80]);
+  });
+
+  it('recolors retained SDR levels with display bounds and keeps sub-dB carriers distinct', () => {
+    S.setSdrMode(true);
+    zoomEnabled.set(true);
+    const freq = Float64Array.from([10, 12, 14, 16]);
+    __testSeedCapture({ lo: 10, hi: 16 });
+    let pixels = new Uint8ClampedArray();
+    const context = {
+      createImageData: (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+      putImageData: (image: { data: Uint8ClampedArray }) => { pixels = image.data.slice(); },
+    };
+    const canvas = { width: 4, height: 1, getContext: () => context } as unknown as HTMLCanvasElement;
+    pushSpectrumRow(Float32Array.from([-60.8, -60.2, NaN, -20]), freq, 10, 16, 100);
+    const row = S.waterfallRows[0];
+    const pushes = S.waterfallPushes;
+    setDisplayBounds(-60, -61);
+    renderWaterfall(canvas, 100);
+    const narrow = pixels.slice();
+    expect([...pixels.slice(0, 4)]).not.toEqual([...pixels.slice(4, 8)]);
+    setDisplayBounds(0, -100);
+    renderWaterfall(canvas, 100);
+    expect(pixels).not.toEqual(narrow);
+    expect(S.waterfallRows[0]).toBe(row);
+    expect(S.waterfallPushes).toBe(pushes);
+    setDisplayBounds(-60, -61);
+    renderWaterfall(canvas, 100);
+    expect(pixels).toEqual(narrow);
+  });
+
+  it('reconstructs SDR zoom slopes before colour mapping while retaining native peaks and gaps', () => {
+    S.setSdrMode(true);
+    const freq = Float64Array.from([10, 14, 18, 22, 26]);
+    pushSpectrumRow(Float32Array.from([-100, -20, -80, NaN, -40]), freq, 8, 28, 100);
+    const row = S.waterfallRows[0];
+    const scratch = new Uint16Array(16);
+    const slope = sliceWaterfallRow(row, 16, 10, 18, scratch);
+    expect(slope).toBe(scratch);
+    expect(slope[0]).toBe(row[0]);
+    for (let x = 1; x < 8; x++) expect(slope[x]).toBeGreaterThan(slope[x - 1]);
+    expect(slope[8]).toBe(row[1]); // The native carrier survives between pixel centres.
+    expect([...sliceWaterfallRow(row, 2, 10, 26)]).toEqual([row[1], row[4]]);
+    const gap = sliceWaterfallRow(row, 16, 18, 26);
+    expect(gap[0]).toBe(row[2]);
+    expect([...gap.slice(1, -1)]).toEqual(new Array(14).fill(0));
+    expect(gap[15]).toBe(row[4]);
+    expect([...sliceWaterfallRow(row, 4, 8, 10)]).toEqual([0, 0, 0, 0]);
+    expect([...sliceWaterfallRow(row, 4, 26.5, 28)]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('uses projected SDR cell centres for oversized history without extrapolating capture edges', () => {
+    S.setSdrMode(true);
+    // Two native samples per retained cell; values form a known slope in cell space.
+    const freq = Float64Array.from({ length: 32768 }, (_, i) => i + 0.25);
+    const levels = Float32Array.from(freq, hz => hz / 2);
+    pushSpectrumRow(levels, freq, 0, 32768, 100);
+    const row = S.waterfallRows[0];
+    expect(row).toHaveLength(16384);
+    const slope = sliceWaterfallRow(row, 4, 101, 103);
+    expect(slope[0]).toBe(row[50]);
+    for (let x = 1; x < slope.length; x++) expect(slope[x]).toBeGreaterThan(slope[x - 1]);
+    expect(slope[3]).toBeLessThanOrEqual(row[51]);
+    expect(sliceWaterfallRow(row, 1, 102.5, 103.5)[0]).toBe(row[51]);
+    expect([...sliceWaterfallRow(row, 4, 0, 1)]).toEqual([0, 0, 0, 0]);
+    expect([...sliceWaterfallRow(row, 4, 32767.5, 32768.5)]).toEqual([0, 0, 0, 0]);
+    expect(sliceWaterfallRow(row, 1, 0, 32768)[0]).toBe(row[row.length - 1]);
   });
 
   it('bounds oversized history while retaining a carrier in the last native bin', () => {

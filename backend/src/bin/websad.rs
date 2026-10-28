@@ -36,6 +36,8 @@ mod service_power;
 mod subscriber_stream;
 #[path = "websad/service_preflight.rs"]
 mod service_preflight;
+#[path = "websad/server_mode.rs"]
+mod server_mode;
 use state_lock::StateMutex;
 use sdr_pipeline::{Pipeline, PipelineConfig};
 use websa_channelizer::timing::Timing;
@@ -272,6 +274,7 @@ struct DevState {
     ddc_failure_diagnostics: Option<Value>,
     ddc_retry_at: Option<std::time::Instant>,
     hardware_shim: Option<String>,
+    server: PLMutex<server_mode::SoapyServer>,
     gnss_value: Option<Value>,
     swp_hw: Option<HardwareSwp>,
     swp_error: Option<String>,
@@ -482,6 +485,7 @@ impl DevState {
             ddc_failure_diagnostics: None,
             ddc_retry_at: None,
             hardware_shim: None,
+            server: PLMutex::new(server_mode::SoapyServer::default()),
             gnss_value: None,
             swp_hw: None,
             swp_error: None,
@@ -510,7 +514,7 @@ impl DevState {
     /// Queried at the STATUS cadence; a failure keeps the last good value (Python parity:
     /// query errors surface through last_error only when they persist).
     fn refresh_gnss(&mut self) {
-        if self.hardware_shim.is_none() {
+        if self.hardware_shim.is_none() || self.swp.mode == "server" {
             return;
         }
         // SDR uses the explicit cached-only shim ABI on the SDK owner thread.
@@ -741,6 +745,7 @@ impl DevState {
     /// Re-applies the active mode's device profile (Python configure_active).
     fn configure_active(&mut self) -> Result<(), String> {
         match self.swp.mode.as_str() {
+            "server" => return Err("hardware configuration is unavailable in server mode".into()),
             "rta" => self.configure_rta()?,
             "sdr" => self.configure_sdr_capture()?,
             "pnm" => {
@@ -3014,6 +3019,9 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
             "JSON message must be an object",
         ));
     }
+    if state.swp.mode == "server" && !matches!(cmd, "STATUS" | "SET_MODE" | "SET_SERVER") {
+        return Err(CommandError::new("server_mode_active", "leave server mode before changing hardware settings"));
+    }
     if matches!(cmd,"SET_SDR_CHANNEL"|"SET_SDR_AUX"|"SET_SDR_DEMOD"|"SET_SDR_TUNE"|"SET_SDR_DDC") {
         sdr_mode_required(state,cmd)?;
         if matches!(cmd,"SET_SDR_AUX"|"SET_SDR_DDC") && !matches!(data["channel"].as_u64(),Some(2|3)) {
@@ -3040,7 +3048,8 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
         ));
     };
     // Python commands.py validate(): device link, measurement ownership, mode guards.
-    if spec["needs_device"] == true && state.hardware_shim.is_some() && !state.link_up {
+    if spec["needs_device"] == true && state.hardware_shim.is_some() && !state.link_up
+        && !(cmd == "SET_MODE" && (state.swp.mode == "server" || data["mode"] == "server")) {
         return Err(CommandError::new(
             "device_not_connected",
             "device is not connected",
@@ -3073,6 +3082,22 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
     }
     let device = |error: String| CommandError::new("device_error", &error);
     match cmd {
+        "SET_SERVER" => {
+            if mode != "server" {
+                return Err(CommandError::new("server_mode_required", "SET_SERVER requires server mode"));
+            }
+            // Start/restart can only run after SET_MODE has joined every owner
+            // and released the physical SDK session.
+            server_mode::parse_bind(data, "127.0.0.1".parse().unwrap(), 55132)
+                .map_err(|error| CommandError::new("bad_parameter", &error))?;
+            if matches!(data["action"].as_str(), Some("start" | "restart")) {
+                hardware_swp::owner_slot_free().map_err(device)?;
+            }
+            let changed = state.server.lock().command(data)
+                .map_err(|(code, message)| CommandError::new(code, &message))?;
+            if changed { state.config_version += 1; }
+            Ok(changed)
+        }
         "CONNECT" => {
             if state.hardware_shim.is_none() || state.link_up {
                 return Ok(false);
@@ -3086,20 +3111,37 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
         }
         "SET_MODE" => {
             let next = data["mode"].as_str().unwrap_or_default();
-            if !matches!(next, "std" | "rta" | "sdr" | "harmonic" | "pnm") {
+            if !matches!(next, "std" | "rta" | "sdr" | "harmonic" | "pnm" | "server") {
                 return Ok(false);
             }
             if mode == next { return Ok(false); }
+            if mode == "server" {
+                // Keep server mode and its exclusive reservation if stopping
+                // fails; acquisition must not overlap an unreaped child.
+                state.server.lock().stop().map_err(device)?;
+            }
             if !state.reap_failed_receivers() {return Err(CommandError::new("receiver_retiring","Receiver is still stopping; retry shortly"));}
             if mode != next {
                 // One vendor session at a time: drop (join) the old owner before the next opens.
                 let registry=state.stream_registry();
+                // Retirement is irreversible even if a later SDK handoff fails.
+                // Fence detached presentations before stopping any owner.
+                state.config_version += 1;
+                state.freq_version += 1;
+                state.invalidate_observation();
+                state.cancel_auto_session();
+                state.sdr_actual = json!({});
+                state.actual = json!({});
+                state.rta_actual = json!({});
+                state.gnss_value = None;
+                state.channel_power = [None; 3];
                 state.stop_pipeline().map_err(device)?;
                 state.finish_radiofax_with_registry(registry).map_err(device)?;
                 state.ddc_failure_diagnostics = None;
                 // SET_MODE ends the IQ session. Never replay its retained tails
                 // when SDR is opened again under a later transport epoch.
                 state.pending_iq.clear();
+                state.last_freq = None;
                 state.ddc = None;
                 state.synthetic_iq = None;
                 state.fixture_sources=None;
@@ -3127,6 +3169,17 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 state.rta_retry_at = None;
                 state.swp_retry_at = None;
                 state.status_warning = 0;
+                if next == "server" && state.hardware_shim.is_some() {state.link_up = false;}
+                if next == "server" {
+                    hardware_swp::owner_slot_free().map_err(device)?;
+                    if state.hardware_shim.is_some() {
+                        hardware_swp::release_sdk_session().map_err(device)?;
+                    }
+                    let mut server = state.server.lock();
+                    server.remember_graph(&mode);
+                    server.refresh_dependencies();
+                    drop(server);
+                }
                 let was_measure = matches!(mode.as_str(), "harmonic" | "pnm");
                 let is_measure = matches!(next, "harmonic" | "pnm");
                 if !was_measure && is_measure && state.swp_restore.is_none() {
@@ -3175,8 +3228,7 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
             if next == "sdr" {
                 if let Err(error) = state.rebind_synthetic_iq() { return Err(device(error.to_string())); }
             }
-            state.config_version += 1;
-            state.freq_version += 1;
+            // Versions advanced at the retirement boundary, including failure.
             Ok(true)
         }
         "SET_HARM" => {
@@ -3628,7 +3680,19 @@ async fn api_config(State(app): State<Arc<App>>, headers: HeaderMap, body: Strin
                 app.state.publish_status(snapshot.revision, status.clone());
                 Ok((snapshot.revision, status, changed))
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                if state.config_version != revision {
+                    app.epoch.fetch_add(1, Ordering::AcqRel);
+                    service_stream::deliver_retiring(&mut state,&app);
+                    app.display_version.store(state.freq_version, Ordering::Release);
+                    state.publish_identities(&app.identities);
+                    let snapshot = state.status_snapshot();
+                    drop(state);
+                    let status = snapshot.build();
+                    app.state.publish_status(snapshot.revision, status);
+                }
+                Err(error)
+            },
         }
     })
     .await
@@ -3757,6 +3821,10 @@ async fn publisher(app: Arc<App>) {
             let mut hardware = None;
             let acquisition_started = std::time::Instant::now();
             let pace = match mode.as_str() {
+                "server" => {
+                    state.server.lock().poll();
+                    Duration::from_millis(100)
+                }
                 "harmonic" => {
                     let (mut frames, harm_msgs) = state.step_harm();
                     display.append(&mut frames);
@@ -3859,7 +3927,7 @@ async fn publisher(app: Arc<App>) {
             let auto_changed = {
                 let mut state = compute.state.lock().unwrap();
                 let before = state.config_version;
-                let changed = state.advance_auto();
+                let changed = state.swp.mode != "server" && state.advance_auto();
                 if state.config_version != before {
                     // Same capture: retire only stale display/identity state, never the
                     // IQ/audio session epoch (a gain reconfigure keeps the stream valid).
@@ -4170,6 +4238,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         let worker_app = app.clone();
         tokio::task::spawn_blocking(move || {
             let state = worker_app.state.lock().unwrap();
+            if state.swp.mode == "server" { return None; }
             let frame_epoch = worker_app.epoch.load(Ordering::Acquire);
             state
                 .last_freq
@@ -4317,7 +4386,19 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                                 worker_app.state.publish_status(snapshot.revision, status.clone());
                                 Some(Ok((snapshot.revision, status)))
                             }
-                            Err(error) => Some(Err(with_request_id(error.reply_payload(&cmd),error_request_id.as_ref()).to_string())),
+                            Err(error) => {
+                                if state.config_version != revision {
+                                    worker_app.epoch.fetch_add(1, Ordering::AcqRel);
+                                    service_stream::deliver_retiring(&mut state,&worker_app);
+                                    worker_app.display_version.store(state.freq_version, Ordering::Release);
+                                    state.publish_identities(&worker_app.identities);
+                                    let snapshot = state.status_snapshot();
+                                    drop(state);
+                                    let status = snapshot.build();
+                                    worker_app.state.publish_status(snapshot.revision, status);
+                                }
+                                Some(Err(with_request_id(error.reply_payload(&cmd),error_request_id.as_ref()).to_string()))
+                            },
                         }
                     })
                     .await
@@ -4422,6 +4503,16 @@ fn load_golden() -> (Value, Value) {
     const STATE: &str = include_str!("../../../tests/fixtures/contract/state_fake_initial.json");
     const SCHEMA: &str = include_str!("../../../tests/fixtures/contract/schema.json");
     let mut schema: Value = serde_json::from_str(SCHEMA).expect("embedded golden schema JSON");
+    schema["commands"]["SET_MODE"]["params"][0]["choices"].as_array_mut().unwrap().push(json!("server"));
+    schema["commands"]["SET_SERVER"] = json!({
+        "needs_device": false, "denied_in_sdr": false, "swp_only": false,
+        "session_exclusive": false,
+        "params": [
+            {"name":"action", "type":"choice", "required":true, "choices":["start","stop","restart","configure"]},
+            {"name":"bind_address", "type":"token", "required":false, "min_length":2, "max_length":45},
+            {"name":"port", "type":"integer", "required":false, "min":1, "max":65535}
+        ]
+    });
     schema["commands"]["SET_SDR"]["params"].as_array_mut().unwrap().push(json!({
         "name": "pfb_taps_per_phase", "type": "integer", "choices": [4, 8, 16],
         "default": 16, "min": 4, "max": 16, "required": false, "unit": ""
@@ -4492,6 +4583,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         check_hardware_exclusive()?;
         state.hardware_shim = Some(shim);
     }
+    state.server.lock().refresh_dependencies();
     // Prepare thread-owned models once before accepting mode changes or arming
     // hardware. Each later session creates fresh channel DSP on these workers.
     state.receiver_workers = Some(receiver_workers::ReceiverWorkers::new()?);
@@ -4525,6 +4617,8 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             _ = tokio::signal::ctrl_c() => (),
             _ = terminate.recv() => (),
         }
+        let stop_app = shutdown_app.clone();
+        let _ = tokio::task::spawn_blocking(move || stop_app.state.lock().unwrap().server.lock().stop()).await;
         // Drop every outbound sender and wake parked sockets before waiting for
         // axum's upgraded connections; otherwise an idle WS can hold shutdown.
         let mut clients = shutdown_app.clients.lock();
@@ -4538,6 +4632,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     tokio::task::spawn_blocking(move || {
         let mut state = app.state.lock().unwrap();
         let registry=state.stream_registry();
+        state.server.lock().stop()?;
         let stopped = state.stop_pipeline();
         let receivers_finished = state.finish_radiofax_with_registry(registry);
         state.ddc = None;
@@ -4560,6 +4655,213 @@ mod tests {
 
     include!("websad/auto_recovery_tests.rs");
     include!("websad/configuration_transaction_tests.rs");
+
+    // SDK session registration is process-global. Run handoff failures in a
+    // fresh test process so stateless registration cannot affect other tests.
+    pub(super) fn isolated_handoff_test(name: &str) -> bool {
+        const KEY: &str = "WEBSA_ISOLATED_HANDOFF_TEST";
+        if std::env::var(KEY).ok().as_deref() == Some(name) { return true; }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(KEY, name).status().expect("run isolated SDK handoff test");
+        assert!(status.success(), "isolated handoff regression failed: {name}");
+        false
+    }
+
+    pub(super) fn register_stateless_handoff_library() {
+        unsafe extern "C" {
+            fn dlopen(path: *const std::ffi::c_char, flags: i32) -> *mut std::ffi::c_void;
+        }
+        // libc has none of the SDK session symbols. Register the actual loaded
+        // library through the production ABI path, as an old stateless shim is.
+        let library = unsafe { dlopen(c"libc.so.6".as_ptr(), hardware_swp::SDK_DLOPEN_FLAGS) };
+        assert!(!library.is_null(), "load stateless library");
+        unsafe { hardware_swp::register_sdk_session(library).unwrap(); }
+        assert!(hardware_swp::release_sdk_session().unwrap_err().contains("cannot release"));
+    }
+
+    #[tokio::test(flavor="current_thread")]
+    async fn failed_server_handoff_retires_receiver_tails_and_publishes_http_and_ws_state() {
+        if !isolated_handoff_test("tests::failed_server_handoff_retires_receiver_tails_and_publishes_http_and_ws_state") { return; }
+        register_stateless_handoff_library();
+        for websocket in [false, true] {
+            let (app, url) = start_ws_server().await;
+            let mut control = connect_ws(&url).await;
+            wait_for_client(&app).await;
+            let (golden, schema) = load_golden();
+            let mut state = DevState::new(golden.clone(), schema.clone());
+            state.swp.mode = "sdr".into();
+            state.sdr_center = 100e6;
+            state.sdr_listen = 100e6;
+            state.sdr_demod = "am".into();
+            state.sdr_if_bw = 6000.0;
+            let mut source = service_fixture::FixtureSources::new();
+            source.configure(&state.channel_configs()).unwrap();
+            let registry = source.registry();
+            let initial_iq = source.step().unwrap();
+            let tail_iq = source.step().unwrap();
+            let initial = state.process_receiver_frames_with_registry(&initial_iq, &registry, true).unwrap();
+
+            // Compute the uninterrupted receiver result from the very same IQ,
+            // so a lost or repeated command tail changes the observed bytes.
+            let mut reference = DevState::new(golden, schema);
+            reference.sdr_center=state.sdr_center;
+            reference.sdr_listen=state.sdr_listen;
+            reference.sdr_demod=state.sdr_demod.clone();
+            reference.sdr_if_bw=state.sdr_if_bw;
+            reference.process_receiver_frames_with_registry(&initial_iq, &registry, true).unwrap();
+            let tail = reference.process_receiver_frames_with_registry(&tail_iq, &registry, true).unwrap();
+            assert!(tail.audio.iter().any(|frame|u32::from_le_bytes(frame[12..16].try_into().unwrap())>0));
+
+            state.fixture_sources=Some(source);
+            state.pending_iq=tail_iq;
+            state.hardware_shim=Some("registered-stateless-library".into());
+            state.sdr_actual=json!({"center":100e6,"ref":-20.0});
+            state.actual=json!({"center":100e6});
+            state.rta_actual=json!({"center":100e6});
+            state.gnss_value=Some(json!({"lock":1}));
+            state.auto.last_peak=Some(-30.0);
+            state.last_freq=Some(b"FREQ-retired".to_vec());
+            state.publish_identities(&app.identities);
+            *app.state.lock().unwrap()=state;
+            let mut receivers=Vec::new();
+            for audio in [true, false] {
+                let (tx, rx)=mpsc::channel(64);
+                app.clients.lock().push(Client {
+                    id:if audio {100} else {101},tx,dropped:Arc::new(AtomicU64::new(0)),
+                    overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
+                    wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),status_revision:app.state.revision(),
+                    display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),
+                    identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
+                });
+                receivers.push((audio,rx));
+            }
+            {
+                let state=app.state.lock().unwrap();
+                service_stream::deliver_receiver(&state,&app,initial,false);
+            }
+            // Consume the established session's start/data before the command.
+            // The tail will be enqueued under the *new* transport epoch.
+            for (_,rx) in &mut receivers {
+                assert!(rx.try_recv().is_ok());
+                while rx.try_recv().is_ok() {}
+            }
+            let old_epoch=app.epoch.load(Ordering::Acquire);
+            let request=json!({"cmd":"SET_MODE","mode":"server","request_id":"failed-handoff"});
+            let error=if websocket {
+                control.send(WsMessage::Text(request.to_string().into())).await.unwrap();
+                let error=next_text(&mut control).await;
+                assert_eq!(error["cmd"],"ERROR");
+                assert!(error["msg"].as_str().unwrap().contains("cannot release"));
+                error
+            } else {
+                let response=api_config(State(app.clone()),HeaderMap::new(),request.to_string()).await;
+                assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+                let bytes=axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+                let error:Value=serde_json::from_slice(&bytes).unwrap();
+                assert!(error["error"].as_str().unwrap().contains("cannot release"));
+                error
+            };
+            assert_eq!(error["code"],"device_error");
+            assert_eq!(error["response_to"],"SET_MODE");
+            assert_eq!(error["request_id"],"failed-handoff");
+            assert_eq!(app.epoch.load(Ordering::Acquire),old_epoch+1);
+            assert_eq!(app.display_version.load(Ordering::Acquire),1);
+            assert!(app.identities.iter().all(|id|id.load(Ordering::Acquire)==0));
+            let published=app.state.status_with_revision().1;
+            assert_eq!(published["mode"],"sdr");
+            assert_eq!(published["config_version"],1);
+            assert_eq!(published["connected"],false);
+            assert!(published["sdr"]["actual"].get("center").is_none());
+            assert!(published["gnss"].is_null());
+            {
+                let mut state=app.state.lock().unwrap();
+                assert!(state.pending_iq.is_empty());
+                assert!(state.pending_receiver.audio.is_empty() && state.pending_receiver.decode.is_empty());
+                assert!(state.fixture_sources.is_none());
+                assert!(state.auto.last_peak.is_none());
+                // Acquisition may restart in the unchanged SDR mode only after
+                // the error has delivered its retiring output.
+                let mut next=service_fixture::FixtureSources::new();
+                next.configure(&state.channel_configs()).unwrap();
+                let next_registry=next.registry();
+                assert_ne!(registry[0].epoch,next_registry[0].epoch);
+                let iq=next.step().unwrap();
+                state.fixture_sources=Some(next);
+                state.publish_identities(&app.identities);
+                let output=state.process_receiver_frames_with_registry(&iq,&next_registry,true).unwrap();
+                service_stream::deliver_receiver(&state,&app,output,false);
+            }
+            for (audio,mut rx) in receivers {
+                let expected=if audio {&tail.audio} else {&tail.decode};
+                for frame in expected {
+                    let packet=rx.try_recv().expect("retiring tail cannot be lost on failed handoff");
+                    assert_eq!(packet.epoch,old_epoch+1);
+                    assert!(packet.identity.is_none(),"old tail must survive the identity fence");
+                    let Message::Binary(bytes)=packet.message else {panic!("expected receiver bytes")};
+                    assert_eq!(bytes.as_ref(),frame.as_slice());
+                }
+                let packet=rx.try_recv().expect("fresh capture start follows every retiring tail");
+                assert!(packet.identity.is_some());
+                let Message::Binary(bytes)=packet.message else {panic!("expected fresh receiver start")};
+                if audio {
+                    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()),0);
+                    assert_ne!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()),registry[0].epoch);
+                } else {
+                    let event:Value=serde_json::from_slice(&bytes[8..]).unwrap();
+                    assert_eq!(event["seq"],0);assert_eq!(event["event"]["type"],"start");
+                    assert_ne!(event["epoch"],json!(registry[0].epoch));
+                }
+            }
+            control.close(None).await.unwrap();
+        }
+    }
+
+    #[test]
+    fn server_mode_guards_commands_without_changing_settings_or_opening_hardware() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "server".into();
+        state.hardware_shim = Some("must-not-be-opened.so".into());
+        state.link_up = false;
+        let before = state.status();
+        for (command, data) in [
+            ("CONNECT", json!({})), ("SET_PRESET", json!({})),
+            ("SET_REF", json!({"ref":-10})), ("SET_FREQ", json!({"center":100e6})),
+            ("SET_AMP", json!({"atten":10})), ("SET_SDR", json!({"center":100e6})),
+            ("SET_SDR_CHANNEL", json!({"mode":"am"})),
+        ] {
+            assert_eq!(dispatch(&mut state, command, &data).unwrap_err().code, "server_mode_active");
+        }
+        state.refresh_gnss();
+        assert!(state.swp_hw.is_none() && state.rta_hw.is_none() && state.pnm_hw.is_none());
+        assert!(state.pipeline.is_none() && state.ddc.is_none());
+        let after = state.status();
+        for key in ["req", "config_version", "mode", "server"] { assert_eq!(before[key], after[key], "{key}"); }
+        assert!(dispatch(&mut state,"SET_MODE",&json!({"mode":"std"})).unwrap());
+        assert_eq!(state.swp.mode,"std");
+    }
+
+    #[tokio::test]
+    async fn publisher_in_server_mode_never_captures_or_polls_the_sdk() {
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "server".into();
+        state.hardware_shim = Some("must-not-be-opened.so".into());
+        let app = Arc::new(App {state:StateMutex::new(state),clients:PLMutex::new(Vec::new()),
+            next_client:AtomicU64::new(0),epoch:Arc::new(AtomicU64::new(0)),
+            identities:Arc::new(std::array::from_fn(|_|AtomicU64::new(0))),
+            display_version:Arc::new(AtomicU64::new(0))});
+        let task = tokio::spawn(publisher(app.clone()));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        task.abort();let _=task.await;
+        let state=app.state.lock().unwrap();
+        assert_eq!(state.tick,0);
+        assert!(state.swp_hw.is_none() && state.rta_hw.is_none() && state.pnm_hw.is_none());
+        assert!(state.pipeline.is_none() && state.ddc.is_none());
+        assert!(state.swp_error.is_none() && state.rta_error.is_none() && state.ddc_error.is_none());
+        assert!(state.gnss_value.is_none());
+    }
 
     #[test]
     fn premium_reference_requires_hardware_capability_not_gnss_state() {

@@ -39,7 +39,7 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
-// Static imports cannot re-exercise preference restoration and firstConnect at a page reload.
+// Static imports cannot re-exercise preference restoration at a page reload.
 async function load() {
 	const ws = await import('../core/ws');
 	const controls = await import('../ui/controls');
@@ -185,6 +185,54 @@ describe('SDR entry and reload', () => {
 		expect(socket.sent.filter(command => command.cmd === 'AUTO_SCALE')).toHaveLength(1);
 	});
 
+	it.each(['sdr', 'std'].flatMap(mode => [true, false].flatMap(connected =>
+		[true, false].flatMap(audioOn => [true, false].map(ownRef => ({ mode, connected, audioOn, ownRef }))))))(
+		'restores playback and a visible axis after reload from $mode (connected=$connected, audio=$audioOn, ownRef=$ownRef)',
+		async ({ mode, connected, audioOn, ownRef }) => {
+			localStorage.setItem('web-sa-mode', 'sdr');
+			localStorage.setItem('web-sa-sdr-audio', audioOn ? '1' : '0');
+			const { fit } = await load();
+			// Observe the same fresh module graph as the reloaded websocket.
+			const audio = await import('../audio/sdrAudio');
+			const { getY, plotRect } = await import('../render/plot');
+			const { getDisplayRef } = await import('../ui/displayRef');
+			const live = () => {
+				const value = status('sdr');
+				return { ...value, sdr: { ...value.sdr, ref: ownRef ? -40 : 0, ref_set: ownRef } };
+			};
+			receive({ ...live(), mode, connected });
+			if (!connected) {
+				vi.advanceTimersByTime(1000);
+				expect(audio.setSdrAudioEnabled).not.toHaveBeenCalledWith(true);
+			}
+			receive(live());
+			fit.maybeRequestSdrFit();
+			if (!ownRef) {
+				const request = socket.sent.find(command => command.cmd === 'AUTO_SCALE')!;
+				expect(request.display_only).toBe(true);
+				receive({ ...live(), response_to: 'AUTO_SCALE', request_id: request.request_id,
+					auto_ref: { result: 'applied', target: -30, seq: 1, last_peak: -65, last_noise_floor: -115 } });
+			} else {
+				expect(socket.sent.some(command => command.cmd === 'AUTO_SCALE')).toBe(false);
+			}
+			vi.advanceTimersByTime(800);
+			expect(audio.setSdrAudioEnabled).toHaveBeenLastCalledWith(audioOn);
+			expect(localStorage.getItem('web-sa-sdr-audio')).toBe(audioOn ? '1' : '0');
+			expect(getDisplayRef()).toBe(ownRef ? -40 : -30);
+			const rect = plotRect();
+			for (const power of [-65, -115]) {
+				expect(getY(power)).toBeGreaterThan(rect.y);
+				expect(getY(power)).toBeLessThan(rect.y + rect.h);
+			}
+			const commands = socket.sent.length;
+			vi.mocked(audio.setSdrAudioEnabled).mockClear();
+			receive(live());
+			fit.maybeRequestSdrFit();
+			vi.advanceTimersByTime(1000);
+			expect(socket.sent).toHaveLength(commands);
+			expect(audio.setSdrAudioEnabled).not.toHaveBeenCalled();
+		});
+
 	it.each(['sdr', 'rta', 'std'])('keeps confirmed %s through Preset and a fresh websocket startup', async (mode) => {
 		const { controls } = await load();
 		receive(status(mode));
@@ -212,13 +260,13 @@ describe('SDR entry and reload', () => {
 		expect(document.getElementById('trace-avg-row')!.style.display).toBe(mode === 'sdr' ? '' : 'none');
 		expect(document.getElementById('trace-avg-status')!.textContent).toBe(mode === 'sdr' ? String(SDR_DEFAULT_AVG) : '');
 
-		// Module reload is the page boundary: onopen must select the same mode without an
-		// artificial storage seed, using the state that the acknowledged Preset left behind.
+		// A fresh browser waits for STATUS before restoring the saved graph preference.
 		vi.clearAllTimers();
 		vi.resetModules();
 		await load();
-		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toMatchObject([{ cmd: 'SET_MODE', mode }]);
+		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toEqual([]);
 		receive(status(mode));
+		expect(socket.sent.filter(command => command.cmd === 'SET_MODE')).toMatchObject([{ cmd: 'SET_MODE', mode }]);
 		const { currentGraphMode } = await import('../ui/graphMode');
 		expect(currentGraphMode()).toBe(mode);
 		expect(document.body.dataset.deviceMode).toBe(mode);
@@ -265,8 +313,8 @@ describe('SDR entry and reload', () => {
 		receive(status('sdr', { ...primary(false), connected: false }));
 		expect(socket.sent.filter(command => 'am_sync' in command)).toEqual([]);
 		receive(status('sdr', primary(false)));
-		expect(socket.sent.filter(command => 'am_sync' in command)).toEqual([
-			{ cmd: 'SET_SDR_CHANNEL', channel: 1, am_sync: enabled, request_id: expect.any(String) },
+		expect(socket.sent.filter(command => 'am_sync' in command)).toMatchObject([
+			{ cmd: 'SET_SDR_CHANNEL', channel: 1, am_sync: enabled },
 		]);
 		expect(sdrAmSync.get()).toBe(enabled);
 		receive(status('sdr', primary(enabled)));

@@ -125,7 +125,9 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 |---|---|
 | 原生服务与工具 | `./test.sh`：release 模式的后端库与全部二进制、标准 test profile 的集成测试，Python 工具测试、Ruff 和前端 Vitest |
 | DSP 内核 | `make wasm-test`：release 模式的原生 Rust 内核测试，包含需优化构建的 FT8 路径 |
-| 本地聚合 | `make ci`：内核、服务、工具、前端测试，版本与 fixture 检查，DOM、注册、文档、架构守卫及前端构建 |
+| Soapy 补丁 | `make soapy-check-patch`：helper shell 语法及固定版本的补丁适用性；需要 curl + patch，无需 SDK |
+| Soapy 流 | `make soapy-check-stream SDK_ROOT=/opt/htraapi`：使用真实厂商头文件、SoapySDR 开发文件及 HTRA 桩检查实际补丁驱动；无需厂商库或设备 |
+| 本地聚合 | `make ci`：内核、服务、工具、前端测试，无 SDK 的 Soapy 补丁检查，版本与 fixture 检查，DOM、注册、文档、架构守卫及前端构建 |
 | 浏览器 fixture | `make e2e-fake`：原生 fixture 服务、UI smoke、状态回归和视口几何门禁 |
 | 硬件 | `make hw-test`：tinySA 驱动的 smoke、命令遍历和 UI 状态回归 |
 | 性能 | `make bench`：与 `tools/bench/bench_baseline.json` 比较 |
@@ -142,6 +144,12 @@ DSP ABI 文本消息只在当前 push 的结果列表中有效，应在返回消
 和 `state_regression.py`；本地 `make e2e-fake` 还运行 `viewport_baseline.py`。
 实际门禁以 [Makefile](../../Makefile)、[test.sh](../../test.sh) 和
 [ci.yml](../../.github/workflows/ci.yml) 为准。本地聚合或单个 CI job 都不能代替硬件验证。
+
+`make ci` 和托管 CI 均运行 `soapy-check-patch`，对 helper 执行 `bash -n`，并检查补丁
+能否应用于固定的上游源码版本。该门禁需要 `curl`、`patch` 和标准 shell 工具。独立的
+`soapy-check-stream` 门禁还需要 `pkg-config`、`realpath`、C++ 编译器、SoapySDR 开发文件
+以及 `SDK_ROOT` 下的真实厂商 SDK 头文件。它只链接 SoapySDR，用桩函数提供 HTRA 符号，
+检查流契约，不能据此认定 RF 采集或客户端应用已通过验证。
 
 ## 6. 硬件验证与性能隔离
 

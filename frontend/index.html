@@ -77,21 +77,6 @@
                    M3.2 8.3h.01M5.6 8.3h.01M8 8.3h.01M10.4 8.3h.01M12.8 8.3h.01
                    M5.2 10.5h5.6"/>
         </svg></button>
-      <span class="info-label" data-i18n="ui_scale">UI:</span>
-      <!-- Global UI scale (core/uiScale.ts): the whole frame including the canvas. "Auto"
-           follows the screen height and forgets the stored override, so a manual pick stays
-           until the user asks for the automatic value again. -->
-      <select id="ui-scale" data-i18n-title="tip_ui_scale" data-i18n-attr="title"
-              title="Global UI scale (fonts, spacing and the canvas together)">
-        <option value="auto" data-i18n="ui_scale_auto">Auto</option>
-        <option value="0.5">50%</option>
-        <option value="0.65">65%</option>
-        <option value="0.8">80%</option>
-        <option value="1">100%</option>
-        <option value="1.25">125%</option>
-        <option value="1.5">150%</option>
-        <option value="2">200%</option>
-      </select>
       <span id="connDot" class="dot off"></span>
       <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect</button>
     </div>
@@ -174,6 +159,7 @@
             <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
             <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
             <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
+            <button class="btn" id="btn-mode-server" data-action="toggle-server" data-i18n="mode_server" data-i18n-title="tip_btn-mode-server">SRV</button>
           </div>
         </div>
       </div>
@@ -779,6 +765,61 @@
       </div>
     </div>
   </div>
+  <section class="server-view" id="server-view" hidden>
+    <canvas class="server-transition" id="server-transition" aria-hidden="true" hidden></canvas>
+    <header class="server-head">
+      <div class="server-title">
+        <span class="server-mark" aria-hidden="true"></span>
+        <h1 data-i18n="server_title">Soapy SRV</h1>
+        <span class="server-state" id="server-state" data-state="stopped">stopped</span>
+      </div>
+      <button type="button" class="btn" id="btn-server-back" data-i18n="server_back" data-i18n-title="tip_server_back">Spectrum</button>
+    </header>
+    <div class="server-body">
+      <div class="server-controls">
+        <div class="server-row">
+          <label for="server-bind" data-i18n="server_bind">Bind</label>
+          <input type="text" id="server-bind" spellcheck="false" autocomplete="off" inputmode="decimal" value="127.0.0.1" data-i18n="tip_server_bind" data-i18n-attr="title">
+          <label for="server-port" data-i18n="server_port">Port</label>
+          <input type="number" id="server-port" min="1" max="65535" step="1" value="55132" data-i18n="tip_server_port" data-i18n-attr="title">
+          <button type="button" class="btn" id="btn-server-configure" data-i18n="server_apply" data-i18n-title="tip_server_apply">Apply</button>
+        </div>
+        <div class="server-row server-actions">
+          <button type="button" class="btn" id="btn-server-start" data-i18n="server_start" data-i18n-title="tip_server_start">Start</button>
+          <button type="button" class="btn" id="btn-server-stop" data-i18n="server_stop" data-i18n-title="tip_server_stop">Stop</button>
+          <button type="button" class="btn" id="btn-server-restart" data-i18n="server_restart" data-i18n-title="tip_server_restart">Restart</button>
+          <label class="server-motion"><input type="checkbox" id="server-motion"> <span data-i18n="server_motion">Transition</span></label>
+        </div>
+        <p class="server-note" id="server-dependency" hidden></p>
+        <p class="server-note" id="server-field-error" role="status" hidden></p>
+      </div>
+      <dl class="server-status" id="server-status">
+        <div><dt data-i18n="server_pid">PID</dt><dd id="server-pid">—</dd></div>
+        <div><dt data-i18n="server_uptime">Uptime</dt><dd id="server-uptime">—</dd></div>
+        <div><dt data-i18n="server_exit">Exit</dt><dd id="server-exit">—</dd></div>
+        <div class="server-error-item"><dt data-i18n="server_error">Error</dt><dd id="server-error">—</dd></div>
+      </dl>
+      <div class="server-connect" id="server-connect" hidden>
+        <div class="server-connect-head">
+          <span data-i18n="server_connect">Client connection</span>
+          <button type="button" class="btn" id="btn-server-copy-connect" data-i18n="server_copy" data-i18n-title="tip_server_copy">Copy</button>
+        </div>
+        <pre id="server-connect-text"></pre>
+        <p class="server-note" id="server-connect-hint" hidden></p>
+      </div>
+      <div class="server-logs">
+        <div class="server-logs-head">
+          <span data-i18n="server_logs">Log</span>
+          <span class="server-log-meta" id="server-log-meta"></span>
+          <button type="button" class="btn" id="btn-server-pause" data-i18n="server_pause" data-i18n-title="tip_server_pause">Pause</button>
+          <button type="button" class="btn" id="btn-server-follow" data-i18n="server_follow" data-i18n-title="tip_server_follow">Follow</button>
+          <button type="button" class="btn" id="btn-server-clear" data-i18n="server_clear" data-i18n-title="tip_server_clear">Clear</button>
+          <button type="button" class="btn" id="btn-server-copy-logs" data-i18n="server_copy_logs" data-i18n-title="tip_server_copy_logs">Copy log</button>
+        </div>
+        <ol class="server-log" id="server-log" aria-live="off"></ol>
+      </div>
+    </div>
+  </section>
   <div class="dev-bar" id="dev-bar">
     <div class="info-item"><span class="info-label" data-i18n="device">Device</span><span class="info-value gnss-indicator" id="info-device" data-action="device-detail" data-i18n-attr="title" title="Device detail">-</span>
       <div class="gnss-popover" id="device-popover" style="display:none;">
@@ -804,11 +845,26 @@
     <span class="separator">|</span>
     <div class="info-item"><span class="info-label" data-i18n="api">API:</span><span class="info-value" id="dev-api">-</span></div>
     <div class="info-right">
+      <span class="info-label" data-i18n="ui_scale">UI:</span>
+      <!-- Global UI scale (core/uiScale.ts): the whole frame including the canvas. "Auto"
+           follows the screen height and forgets the stored override, so a manual pick stays
+           until the user asks for the automatic value again. -->
+      <select id="ui-scale" data-i18n-title="tip_ui_scale" data-i18n-attr="title"
+              title="Global UI scale (fonts, spacing and the canvas together)">
+        <option value="auto" data-i18n="ui_scale_auto">Auto</option>
+        <option value="0.5">50%</option>
+        <option value="0.65">65%</option>
+        <option value="0.8">80%</option>
+        <option value="1">100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+      </select>
       <button class="btn" id="btn-preset" data-action="preset" data-i18n-title="tip_preset" data-i18n="preset">Preset</button>
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.5 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.10.1 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>

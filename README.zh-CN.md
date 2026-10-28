@@ -16,7 +16,7 @@
 
 - **窄带 SDR 采集** — 采集范围可宽于请求频带，全景图仅显示请求范围；信道化器选择适合接收器的输出采样率
 - **频谱显示** — 清除写入 / 最大保持 / 最小保持 / 平均 / 冻结查看，支持 4 条迹线、平滑与保峰重采样
-- **显示缩放** — 放大已采集的频谱；概览窗显示完整范围，瀑布图跟随同一视窗
+- **显示缩放** — 放大已采集的频谱；侧栏提供水平缩放、Top、Bottom 滑条，概览框同步显示可见范围，不改变 Ref Level、衰减或前放
 - **SDR 调谐步进** — 按采集带宽分别保存方向键步进，预设范围为 1 Hz 至 100 MHz；To Center 将信号移至中心
 - **控制面板** — Center/Span 与 Start/Stop 原子联动、Span Step 与 Full Span、RBW/VBW/点数、
   FFT 窗口、衰减/前置放大/中频增益、手动或一次性 Auto Ref Level、参考时钟与输出
@@ -26,8 +26,7 @@
 - **信道测量** — 信道功率、占用带宽（90/95/99%）、邻道功率比（ACPR）
 - **SDR 接收** — IQ 流式传输与原生 Rust DSP：AM/DSB/USB/LSB/CW/NFM/WFM/PM 解调、
   降噪（Wiener，可选 DeepFilterNet3）、音频处理、频谱与瀑布图；浏览器负责控制、播放与显示
-- **SDR 滤波** — 按模式提供预设（紧凑 k/M 标注，悬停显示完整 Hz 值）、精确数值输入与已确认值记忆。输入支持 Hz/kHz/MHz 单位，手动输入与虚拟键盘共用提交路径；自定义值在通过准入时可高于常用预设。“查看”激活时高亮，再次按下恢复原显示窗口与缩放开关，手动改变视窗/采集/模式或重置后失效；查看通带只缩放显示。
-  输入框悬停提示显示实际通带、确认状态与可用范围；“查看”位于单位按钮右侧。
+- **SDR 滤波** — 按模式提供预设与 Hz/kHz/MHz 精确输入；拖动频谱通带边缘调整带宽，拖动顶部频率滑块调谐。“查看”聚焦通带，便于精细调整。
 - **数字模式** — FT8、CW 解码、DRM/DRM+ 接收、SSTV 图像解码（18 种模式）及 HF 无线电传真接收。传真使用 12 kHz USB 通路，支持 IOC 288/576、60/90/120/240 LPM、连续多页和 PNG 导出。FT8 窗口支持通联高亮、正则过滤与列排序。解码和播放边界见[已知限制](docs/zh-CN/KNOWN_ISSUES.md)。
 - **FM 立体声与 RDS** — WFM 用 19 kHz 导频和 38 kHz 差分信号恢复左右声道，
   从 57 kHz 信号解码 PI、台名与 RadioText。FM 面板显示基于导频的 STEREO/MONO 指示、频偏、
@@ -36,8 +35,9 @@
 - **AM 分析** — 默认包络检波，可切换带积分载波跟踪的同步检波；显示恢复的 RF 载波频率、锁定状态、平滑后的调制度与输入电平、音频电平及最终 PCM 波形。标题 badge 显示同步锁定状态，悬停提供时序详情；检波开关位于载波频率旁。
 - **触发与辅助** — RTA 设备电平触发与扫描模式软件触发；限制线与通过/失败余量；归一化；PNG/CSV 导出。
   RTA 捕获完成由设备与帧元数据确认；fixture 输入不模拟硬件触发命中。
-- **界面** — 侧边导航条、可选虚拟键盘、幅度单位与外部增益/线损补偿、深浅主题、中英文
+- **界面** — 侧边导航条、可选虚拟键盘、幅度单位与外部增益/线损补偿、深浅主题、中英文；全局界面缩放统一使用底部控件，SRV 模式同样适用
 - **设备连接监控** — 拔线时在画布上显示提示，重新接入后自动恢复原模式，无需重启服务
+- **Soapy SRV** — **SRV** 按钮进入独占模式，把分析仪交给本机 SoapySDRServer。进入时停止 Web 采集和音频并释放物理设备句柄，不会自动启动服务。绑定地址和端口只能在停止时配置；启动、停止和重启各自独立。退出后回到进入前的频谱、实时或 SDR 视图。仓库随附的 runtime 不包含这次交接；须按下文重建 SDK shim 和 Soapy 模块。
 
 ## 界面截图
 
@@ -102,8 +102,11 @@ ELF 加载器路径为 `/lib64/ld-linux-x86-64.so.2`。适配库链接时使用 
 
 ```bash
 make native sdk-shim                     # 原生服务与硬件 SDK shim
-./build.sh                               # 前端资源；WASM 用 make wasm 显式重建
+./build.sh                               # 前端资源（即 `make frontend`）；WASM 用 make wasm 显式重建
+make soapy-driver                        # 打过补丁的官方 SoapyHarogic 模块；需要厂商 SDK
 ```
+
+`make soapy-driver` 只下载官方 SoapyHarogic 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 的五个源码和许可证文件（GNU LGPL v2.1 或更高版本），把本项目的流格式及设备生命周期补丁应用到私有副本，并安装到 `$HOME/.local/share/harogic-websa/soapy`。脚本不下载 SDK，也不安装系统软件包。Server 交接要求用导出 `san90_session_release_v1` 的 shim 重新构建；仓库随附的 `runtime/` 适配库没有该符号，也不提供此功能。主机还须自行提供 SoapySDR 0.8 和 SoapyRemote。详见[工具指南](tools/README.md)。
 
 ### 2. 运行
 
@@ -181,6 +184,9 @@ harogic-websa/
 | `make restart` / `make status` | 重启 / 查看 PID、日志路径、HTTP 与设备实时状态 |
 | `make build` | 前端资源 + 原生 Rust 服务（硬件 shim 单独构建）|
 | `make native` / `make sdk-shim` | 构建 Rust 服务 / 硬件 SDK shim |
+| `make soapy-driver` | 将打过补丁的官方 SoapyHarogic 模块构建到用户前缀 |
+| `make soapy-check-patch` | 用 curl + patch 检查固定版本的补丁适用性及 helper shell 语法；无需 SDK |
+| `make soapy-check-stream SDK_ROOT=/opt/htraapi` | 用真实厂商头文件、SoapySDR 开发文件及 HTRA 桩检查补丁驱动；无需厂商库或设备 |
 | `make frontend` | 仅构建前端：npm install + Vite 构建（不构建 WASM）|
 | `make wasm` | 构建两个 WASM 内核；`make wasm-dsp` / `make wasm-dfn` 单独构建其中一个 |
 | `make clean` / `make clean-all` | 前者清理缓存和 dist，保留依赖及 Rust targets；后者同时清理依赖及 Rust targets；均保留已提交的 WASM |
@@ -204,6 +210,7 @@ harogic-websa/
 - 项目代码（后端 + 前端）：**MIT** 协议
 - `htra_api.py`：HAROGIC 官方 SDK Python 包装，版权归 HAROGIC（海得逻捷）；随项目附带供配合自有 SDK 使用
 - `libhtraapi.so`：专有二进制，**不在本仓库**，需从 HAROGIC 官方获取
+- 官方 [SoapyHarogic](https://github.com/HAROGIC-Technologies/soapy-htra) 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 为 **GNU LGPL v2.1 或更高版本**，在构建时下载，不纳入仓库。`tools/soapy-htra-stream-format.patch` 是本项目的兼容补丁，只应用于私有构建副本。
 - 截图使用真实 SAN-90 拍摄（SDR 数字模式截图使用 PlutoSDR 作为信号源）
 - `tools/vendor/ggmorse/`：CW（莫尔斯）解码器来自 Georgi Gerganov 的
   [ggmorse](https://github.com/ggerganov/ggmorse)，**MIT** 协议，保留上游提交
