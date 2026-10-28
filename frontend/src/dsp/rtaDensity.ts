@@ -184,23 +184,6 @@ export function densityLut(light: boolean): Uint32Array {
 	return lut;
 }
 
-export interface DensityPalette {
-	colours: Uint32Array;
-	alphas: Float32Array;
-}
-
-/** Cache the SDR transfer curves once per theme/contrast instead of per occupied cell. */
-export function prepareDensityPalette(contrast: number, lut: Uint32Array): DensityPalette {
-	const colours = new Uint32Array(2049);
-	const alphas = new Float32Array(colours.length);
-	for (let i = 0; i < colours.length; i++) {
-		const n = i / (colours.length - 1);
-		colours[i] = lut[Math.round(255 * Math.pow(n, 0.45 * contrast))];
-		alphas[i] = 255 * (1 - Math.exp(-5 * Math.pow(n, 0.4)));
-	}
-	return { colours, alphas };
-}
-
 /**
  * Paint native amplitude centres into a reusable screen-resolution RGBA image.
  * Width is a centred display footprint in backing pixels, never an amplitude spread.
@@ -210,10 +193,11 @@ export function prepareDensityPalette(contrast: number, lut: Uint32Array): Densi
 export function paintDensity(
 	raster: Float32Array, cols: number, bins: number, pixels: Uint8ClampedArray,
 	rows: number, firstCentre: number, rowPitch: number, footprint: number,
-	contrast: number, lut: Uint32Array, palette?: DensityPalette,
+	contrast: number, lut: Uint32Array, softFootprint = false,
 ): void {
 	pixels.fill(0);
 	const half = footprint / 2;
+	const feather = Math.min(1, half);
 	for (let bin = 0; bin < bins; bin++) {
 		const centre = firstCentre + bin * rowPitch;
 		const top = centre - half, bottom = centre + half;
@@ -222,19 +206,25 @@ export function paintDensity(
 		for (let x = 0; x < cols; x++) {
 			const value = raster[bin * cols + x];
 			if (!(value > 0)) continue;
-			let colour: number, alpha: number;
-			if (palette) {
-				const index = Math.round(Math.min(1, value / MAX_DENSITY) * (palette.colours.length - 1));
-				colour = palette.colours[index];
-				alpha = palette.alphas[index];
-			} else {
-				const n = Math.min(1, value / MAX_DENSITY);
-				colour = lut[Math.round(255 * Math.pow(n, 0.45 * contrast))];
-				// Visibility depends only on occupancy, independently of the colour curve.
-				alpha = 255 * (1 - Math.exp(-5 * Math.pow(n, 0.4)));
-			}
+			const n = Math.min(1, value / MAX_DENSITY);
+			const colour = lut[Math.round(255 * Math.pow(n, 0.45 * contrast))];
+			// Visibility depends only on occupancy, independently of the colour curve.
+			const alpha = 255 * (1 - Math.exp(-5 * Math.pow(n, 0.4)));
 			for (let y = y0; y < y1; y++) {
-				const coverage = Math.min(y + 1, bottom) - Math.max(y, top);
+				const start = Math.max(y, top) - top, end = Math.min(y + 1, bottom) - top;
+				let coverage = end - start;
+				if (softFootprint) {
+					// Keep a flat centre; feather only the outer backing pixel inside the
+					// original footprint so separated amplitude rows do not become thin stripes.
+					if (start < feather) {
+						const a = feather - start, b = Math.max(0, feather - end);
+						coverage -= (a * a - b * b) / (2 * feather);
+					}
+					if (end > footprint - feather) {
+						const a = end - footprint + feather, b = Math.max(0, start - footprint + feather);
+						coverage -= (a * a - b * b) / (2 * feather);
+					}
+				}
 				const a = Math.round(alpha * coverage), o = (y * cols + x) * 4;
 				if (a <= pixels[o + 3]) continue;
 				pixels[o] = colour & 0xff;

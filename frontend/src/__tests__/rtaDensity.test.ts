@@ -301,6 +301,52 @@ describe('density display footprint and visibility', () => {
 		expect(alphas(pixels)).toEqual(new Array(12).fill(0));
 	});
 
+	it('feathers an isolated native carrier edge while keeping its flat centre and frequency gaps', () => {
+		const freq = new Float64Array([0, 1, 2]);
+		const grid = advanceDensity(null, new Float32Array([NaN, -40, NaN]), BINS, 1, 0, 2)!;
+		for (const ratio of [1, 2]) for (const pitch of [2, 7]) {
+			const cols = 100 * ratio, rows = 80 * ratio, centre = 30.5 * ratio, width = 5 * ratio;
+			const raster = new Float32Array(cols * BINS);
+			rasterDensity(grid, freq, 0, 2, cols, raster);
+			const pixels = new Uint8ClampedArray(cols * rows * 4);
+			paintDensity(raster, cols, BINS, pixels, rows, centre - 20 * pitch, pitch, width, 1, densityLut(false), true);
+			const alpha = Array.from({ length: rows }, (_, y) => pixels[(y * cols + 50 * ratio) * 4 + 3]);
+			const mass = alpha.reduce((sum, a) => sum + a, 0);
+			expect(mass).toBeGreaterThan(0);
+			expect(alpha.reduce((sum, a, y) => sum + a * (y + 0.5), 0) / mass / ratio).toBeCloseTo(30.5, 2);
+			const edge = Math.floor(centre - width / 2);
+			expect(alpha[Math.floor(centre)]).toBeGreaterThan(alpha[edge]);
+			const centreAlpha = Math.round(255 * (1 - Math.exp(-5 * Math.pow(grid.values[BINS + 20] / MAX_DENSITY, 0.4))));
+			expect(alpha[Math.floor(centre)]).toBe(centreAlpha);
+			expect(alpha[Math.floor(centre) - 1]).toBe(centreAlpha);
+			for (let y = 0; y < rows; y++) {
+				if (y + 1 <= centre - width / 2 || y >= centre + width / 2) expect(alpha[y]).toBe(0);
+				for (const x of [50 * ratio - 1, 50 * ratio + 1]) expect(pixels[(y * cols + x) * 4 + 3]).toBe(0);
+			}
+			expect(grid.samples[1]).toBe(-40);
+			expect(raster[20 * cols + 50 * ratio]).toBeCloseTo(grid.values[BINS + 20]);
+		}
+	});
+
+	it('clips the soft native footprint using the original centre and finite edges', () => {
+		const freq = new Float64Array([0, 1, 2]);
+		const grid = advanceDensity(null, new Float32Array([NaN, -40, NaN]), BINS, 1, 0, 2)!;
+		const cols = 100, rows = 12, pitch = 3;
+		const raster = new Float32Array(cols * BINS);
+		rasterDensity(grid, freq, 0, 2, cols, raster);
+		const full = new Uint8ClampedArray(cols * rows * 4), clipped = new Uint8ClampedArray(full.length);
+		paintDensity(raster, cols, BINS, full, rows, 8.5 - 20 * pitch, pitch, 5, 1, densityLut(false), true);
+		paintDensity(raster, cols, BINS, clipped, rows, -0.5 - 20 * pitch, pitch, 5, 1, densityLut(false), true);
+		expect(clipped[(0 * cols + 50) * 4 + 3]).toBeGreaterThan(clipped[(1 * cols + 50) * 4 + 3]);
+		for (let y = 0; y < rows; y++) {
+			const expected = y + 9 < rows ? full[((y + 9) * cols + 50) * 4 + 3] : 0;
+			expect(clipped[(y * cols + 50) * 4 + 3]).toBe(expected);
+			if (y >= 2) expect(clipped[(y * cols + 50) * 4 + 3]).toBe(0);
+		}
+		paintDensity(raster, cols, BINS, clipped, rows, -3 - 20 * pitch, pitch, 5, 1, densityLut(false), true);
+		expect(clipped.every(value => value === 0)).toBe(true);
+	});
+
 	it('makes rare cells visible in both themes with contrast independent of opacity', () => {
 		const raster = new Float32Array([0, 0.08, 1, MAX_DENSITY]);
 		const before = raster.slice();

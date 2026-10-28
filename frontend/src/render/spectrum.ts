@@ -24,7 +24,7 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, densityLevelPlacement, densityLut, paintDensity, prepareDensityPalette, type DensityGrid, type DensityPalette } from '../dsp/rtaDensity';
+import { rasterDensity, densityLevelPlacement, densityLut, paintDensity, type DensityGrid } from '../dsp/rtaDensity';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
@@ -904,9 +904,7 @@ let lastDensTheme: string | undefined;
 let lastDensContrast = NaN;
 let lastDensWidth = NaN, lastDensCentre = NaN, lastDensPitch = NaN;
 let rtaDensLut: Uint32Array | null = null;
-let sdrDensPalette: DensityPalette | undefined;
-let sdrDensPaletteContrast = NaN;
-let lastSdrDensPaintMs = -Infinity;
+let lastDensSoftFootprint = false;
 
 
 function drawRtaDensityLayer(
@@ -917,22 +915,21 @@ function drawRtaDensityLayer(
     rtaDensLayer = document.createElement('canvas');
     rtaDensCtx = rtaDensLayer.getContext('2d');
   }
-  // SDR trades density texture resolution for frame rate; the trace retains device DPI.
-  const cols = Math.max(1, Math.ceil(S.sdrMode ? Math.min(p.w, 512) : p.w * pixelRatio));
-  const rows = Math.max(1, Math.ceil(S.sdrMode ? Math.min(p.h, 256) : p.h * pixelRatio));
+  const cols = Math.max(1, Math.ceil(p.w * pixelRatio));
+  const rows = Math.max(1, Math.ceil(p.h * pixelRatio));
   const resized = rtaDensLayer.width !== cols || rtaDensLayer.height !== rows;
   if (resized) { rtaDensLayer.width = cols; rtaDensLayer.height = rows; }
   const lc = rtaDensCtx!;
   const theme = document.documentElement.dataset.theme;
   const themeChanged = lastDensTheme !== theme || !rtaDensLut;
-  if (themeChanged) {
-    rtaDensLut = densityLut(theme === 'light'); lastDensTheme = theme;
-    sdrDensPalette = undefined;
-  }
+  if (themeChanged) { rtaDensLut = densityLut(theme === 'light'); lastDensTheme = theme; }
   const contrast = rtaDensContrast.get();
-  if (S.sdrMode && (!sdrDensPalette || sdrDensPaletteContrast !== contrast)) {
-    sdrDensPalette = prepareDensityPalette(contrast, rtaDensLut!);
-    sdrDensPaletteContrast = contrast;
+  let softFootprint = false;
+  if (S.sdrMode && hi > lo) {
+    const [first, end] = visibleBinRange(freq, lo, hi);
+    // Only soften detail views where native frequency spacing exceeds two CSS pixels.
+    softFootprint = end - first > 1
+      && (freq[end - 1] - freq[first]) * p.w > 2 * (hi - lo) * (end - first - 1);
   }
   // Reproject frozen history on every offset/reference/scale/gesture change. The footprint
   // remains CSS pixels even when the native amplitude grid stretches or the DPR changes.
@@ -942,33 +939,29 @@ function drawRtaDensityLayer(
   const pitch = level.height / grid.bins * sy * rows;
   const centre = (level.top * sy + (yt ? yt.dyFrac : 0)) * rows + pitch / 2;
   const width = rtaDensWidth.get() * rows / p.h;
-  const geometryChanged = resized || lastDensGrid !== grid || lastDensLo !== lo || lastDensHi !== hi
-    || (!S.sdrMode && lastDensFreq !== freq);
-  const appearanceChanged = themeChanged || lastDensContrast !== contrast
-    || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch;
-  const rasterChanged = geometryChanged || lastDensRevision !== grid.revision;
-  const now = S.sdrMode ? performance.now() : 0;
-  // Only new occupancy waits for the 20 Hz texture cadence; gestures redraw immediately.
-  const repaint = !S.sdrMode || geometryChanged || appearanceChanged || now - lastSdrDensPaintMs >= 50;
-  if (rasterChanged && repaint) {
+  const rasterChanged = resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
+    || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi
+    || lastDensSoftFootprint !== softFootprint;
+  if (rasterChanged) {
     if (rtaDensRaster.length !== cols * grid.bins) rtaDensRaster = new Float32Array(cols * grid.bins);
     rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
   }
-  if ((rasterChanged || appearanceChanged) && repaint) {
+  if (rasterChanged || themeChanged || lastDensContrast !== contrast
+      || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
     if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
       rtaDensImage = lc.createImageData(cols, rows);
     }
     paintDensity(rtaDensRaster, cols, grid.bins, rtaDensImage.data, rows,
-      centre, pitch, width, contrast, rtaDensLut!, S.sdrMode ? sdrDensPalette : undefined);
+      centre, pitch, width, contrast, rtaDensLut!, softFootprint);
     lc.putImageData(rtaDensImage, 0, 0);
     lastDensGrid = grid; lastDensRevision = grid.revision;
     lastDensFreq = freq;
     lastDensLo = lo; lastDensHi = hi; lastDensContrast = contrast;
     lastDensWidth = width; lastDensCentre = centre; lastDensPitch = pitch;
-    if (S.sdrMode) lastSdrDensPaintMs = now;
+    lastDensSoftFootprint = softFootprint;
   }
   ctx.save();
-  ctx.imageSmoothingEnabled = S.sdrMode;
+  ctx.imageSmoothingEnabled = softFootprint;
   ctx.drawImage(rtaDensLayer, p.x, p.y, p.w, p.h);
   ctx.restore();
 }
