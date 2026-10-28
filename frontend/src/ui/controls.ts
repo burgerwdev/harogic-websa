@@ -549,15 +549,14 @@ export function syncGraphModeStatus(mode: string) {
   const resetButton = document.querySelector(
     '[data-action="reset-norm"]') as HTMLButtonElement | null;
   if (resetButton) resetButton.disabled = isRtaLike;
-  // SDR persistence follows native contours; amplitude-grid grain applies only to RTA.
   for (const id of ['select-rta-fade', 'select-rta-dens-source',
     'select-rta-dens-layers', 'select-rta-dens-contrast', 'select-rta-dens-width']) {
     setDisabled(id, mode === 'std');
   }
   const grain = document.getElementById('select-rta-bins') as HTMLSelectElement | null;
   if (grain) {
-    grain.disabled = mode === 'std' || isSdr;
-    grain.dataset.i18n = isSdr ? 'tip_sdr_density_contours' : 'tip_select-rta-bins';
+    grain.disabled = mode === 'std';
+    grain.dataset.i18n = 'tip_select-rta-bins';
     grain.title = t(grain.dataset.i18n);
   }
   const rtaFrequency = document.getElementById('rta-freq-settings');

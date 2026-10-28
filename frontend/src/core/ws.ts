@@ -447,14 +447,16 @@ export function connectWS() {
         // Both store raw dBm: offset is a render transform and must also work with no new
         // frames.
         const active = S.traces[S.activeTraceIdx];
-        // SDR persists bounded measured contours; RTA retains its native cell grid.
-        const bins = rtaAmpBins.get();
         const range = S.totalDivs * S.dbPerDiv;
         const densSource = rtaDensSource.get();
         const densSpec = densSource === 'live' ? spec : S.rtaDisplays[S.activeTraceIdx];
+        // Budget SDR values + next to 16 MiB, retaining at least one amplitude bin.
+        const bins = S.sdrMode
+          ? Math.max(1, Math.min(rtaAmpBins.get(), Math.floor(16 * 1024 * 1024 / (spec.length * 8))))
+          : rtaAmpBins.get();
         S.setRtaDensity2d(advanceDensity(S.rtaDensity2d, densSpec,
           bins, rtaHalflife.get(), getDisplayRef() - displayOffset.get(), range / bins,
-          densSource === 'live' ? 'CLEAR_WRITE' : active.mode, freq, densSource, processAt, S.sdrMode));
+          densSource === 'live' ? 'CLEAR_WRITE' : active.mode, freq, densSource, processAt));
         updateTrackingMarkers();
         if (waterfallOn.get() && S.rtaMode && !wfPaused.get()) {
           // bitmap rows are often all-zero; derive waterfall row from the live trace
