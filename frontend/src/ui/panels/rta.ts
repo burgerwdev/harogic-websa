@@ -49,12 +49,11 @@ export function clearRtaAccum() {
 
 // The afterglow gears are half-lives in seconds; Off (0) switches the density layer off
 // entirely (see dsp/rtaDensity.ts).
-/** The panel's own default gear, used when a value cannot be read at all. */
-const RTA_HALFLIFE_DEFAULT = 0.5;
+const defaultHalflife = () => S.sdrMode ? 0.2 : 0.5;
 const RTA_HALFLIFE_GEARS = [0, 0.2, 0.5, 2, 5, 10];
 
 function normalizeHalflife(value: number): number {
-  return RTA_HALFLIFE_GEARS.includes(value) ? value : RTA_HALFLIFE_DEFAULT;
+  return RTA_HALFLIFE_GEARS.includes(value) ? value : defaultHalflife();
 }
 
 /** Persist density settings across the slot, form and storage; zero is a valid Off value. */
@@ -109,7 +108,7 @@ export function resetRtaDensityCfg() {
   rtaDensContrast.reset();
   rtaDensWidth.reset();
   rtaAmpBins.reset();
-  rtaHalflife.confirm(RTA_HALFLIFE_DEFAULT);
+  rtaHalflife.confirm(defaultHalflife());
   rtaDensSource.confirm('trace');
   rtaDensLayers.confirm('both');
   rtaDensContrast.confirm(1);
@@ -133,13 +132,11 @@ export function resetRtaDensityCfg() {
 }
 
 export function restoreRtaDensityCfg() {
-  // The selects are the truth when nothing was ever stored (their own defaults are the
-  // middle gears), so the value the density actually fades at and the value the panel shows
-  // cannot disagree. A stored per-frame coefficient from an earlier release is dropped.
+  // Saved user choices take precedence over the mode's default.
   try { localStorage.removeItem('rta-fade'); } catch { /* ignore */ }
   const fadeSel = document.getElementById('select-rta-fade') as HTMLSelectElement | null;
   const storedHalflife = localStorage.getItem('rta-halflife');
-  const halflife = normalizeHalflife(Number(storedHalflife !== null ? storedHalflife : fadeSel?.value));
+  const halflife = normalizeHalflife(storedHalflife === null ? defaultHalflife() : Number(storedHalflife));
   if (fadeSel) fadeSel.value = String(halflife);
   rtaHalflife.set(halflife);
   const src = localStorage.getItem('rta-dens-source');
