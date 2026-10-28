@@ -135,6 +135,8 @@ counters that merely prove a renderer was called. Label proxies and their eviden
 Keep real captures, golden fixtures, models and vendor provenance when they have consumers;
 regenerate only reproducible fixtures with their existing generators.
 
+Lifecycle tests require a locally built `backend/target/release/websad`. The Python CI job and `./test.sh` build it before pytest; the bundled runtime has its own host ABI requirements and is not the CI executable.
+
 | Layer | Entry point and evidence |
 |---|---|
 | Native service and tools | `./test.sh`: release-mode backend library and binaries, standard-profile integration tests, Python tool tests, Ruff and frontend Vitest |

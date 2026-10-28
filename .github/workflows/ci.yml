@@ -105,6 +105,11 @@ jobs:
         run: python tools/checks/check_docs_parity.py
       - name: Every module-scope registration is reachable from the entry point
         run: python tools/checks/check_registrations.py
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Build native service for lifecycle tests
+        run: cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websad
       - name: Tests
         run: python -m pytest tests/ -q
 

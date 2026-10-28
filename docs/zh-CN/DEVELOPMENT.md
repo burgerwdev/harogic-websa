@@ -121,6 +121,8 @@ HTTP/WS 事件循环或浏览器主线程。生产处理使用原生 PFB 路径�
 真实采集数据、基准 fixture、模型及厂商来源信息只要仍有使用方就须保留；可重新生成的 fixture
 通过现有生成器更新。
 
+生命周期测试需要本机构建的 `backend/target/release/websad`；Python CI 作业与 `./test.sh` 均在 pytest 前构建它。随附 runtime 有独立的宿主 ABI 要求，不作为 CI 的测试可执行文件。
+
 | 层次 | 入口与证据 |
 |---|---|
 | 原生服务与工具 | `./test.sh`：release 模式的后端库与全部二进制、标准 test profile 的集成测试，Python 工具测试、Ruff 和前端 Vitest |
