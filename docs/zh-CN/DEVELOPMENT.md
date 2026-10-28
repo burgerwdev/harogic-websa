@@ -21,7 +21,7 @@
 fixture。根目录启动脚本设置工作目录；fixture 默认从该目录下的 `tests/fixtures` 读取，
 可通过 `WEBSA_FIXTURES` 覆盖目录。
 
-源码重建使用 Linux、Rust stable、C/C++ 工具链、CMake、pkg-config
+源码重建使用 Linux、Rust stable ≥1.95、C/C++ 工具链、CMake、pkg-config
 和 Node.js 22.22+、24.15+ 或 ≥26（前端测试栈的最低要求；单独 Vite 构建接受 22.12+）。
 Python 3.12 或 3.13 用于测试、fixture 和台架工具，不承载生产后端。原生音频解码在构建时
 需要 FDK AAC ≥2.0.3，运行时需要其动态库；[工作流](../../.github/workflows/ci.yml)记录了
@@ -41,6 +41,11 @@ make native
 `make frontend` 调用 `build.sh`，生成 `frontend/dist/`。前端修改后须重新构建，
 服务提供的是构建后的资源。`make build` 构建前端和原生服务；`make wasm` 用于显式构建
 离线 DSP 产物，不是产品前端构建的前置步骤。
+
+保持 `make build` 无 warning，并保留编译器和 Vite 的默认诊断。
+CSS 字体路径使用 `frontend/public/` 对应的 `/fonts/`，由 Vite 加上 `/static/dist/`
+基础路径。翻译资源生成独立且立即加载的 `i18n` 分块，使主包低于 Vite 默认大小阈值，
+同时保持语言初始化行为不变。
 
 硬件运行先安装厂商 SDK，再执行 `make sdk-shim` 和 `./run.sh`。
 `SDK_ROOT`、`SDK_SHIM` 配置 shim 构建，`WEBSA_RUST_IQS_SHIM` 选择运行时 shim。

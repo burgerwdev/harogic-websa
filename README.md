@@ -105,7 +105,7 @@ has not been established.
 
 - Linux with Bash, coreutils, `flock` (util-linux), `/proc` and `curl` for the launcher; native audio
   decoding requires the FDK AAC shared library (`libfdk-aac.so.2`, version ≥2.0.3).
-- Rust, a C++17 compiler and pkg-config only for native rebuilds.
+- Rust ≥1.95, a C++17 compiler and pkg-config only for native rebuilds.
 - Python ≥3.10 only for bench, e2e, reference and fixture tools; no production Python backend.
 - Node.js — only for rebuilding the frontend and running its tests: a 22.22+, 24.15+ or ≥26
   release (the test stack's floor; a plain Vite build accepts 22.12+). Node 18/20/23 are not covered.

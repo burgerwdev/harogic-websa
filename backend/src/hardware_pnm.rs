@@ -80,13 +80,6 @@ pub struct PnmParams {
     pub trace_average: u32,
 }
 
-#[derive(Clone, Copy)]
-pub struct PnmGeometry {
-    pub points: u32,
-    pub segments: u32,
-    pub partial_updates: u32,
-}
-
 pub struct PnmFrame {
     pub carrier_hz: f64,
     pub carrier_dbm: f32,
@@ -105,13 +98,13 @@ struct Device {
     gnss: Option<Gnss>,
     /// Stale after a bus error (-8/-9): never hand the handle back to the vendor library.
     abandoned: bool,
-    geometry: PnmGeometry,
+    points: u32,
 }
 
 unsafe impl Send for Device {}
 
 impl Device {
-    fn open(path: &str, params: &PnmParams) -> Result<(Self, PnmGeometry), String> {
+    fn open(path: &str, params: &PnmParams) -> Result<Self, String> {
         let path = CString::new(path).map_err(|_| "invalid SDK shim path")?;
         let library = unsafe { dlopen(path.as_ptr(), crate::hardware_swp::SDK_DLOPEN_FLAGS) };
         if library.is_null() {
@@ -157,30 +150,18 @@ impl Device {
                     "SDK PNM open rejected status={status} points={points} segments={segments}"
                 ));
             }
-            let geometry = PnmGeometry {
-                points,
-                segments,
-                partial_updates: partial,
-            };
             let gnss_ptr = unsafe { dlsym(library, b"san90_gnss_v1\0".as_ptr().cast()) };
             let gnss: Option<Gnss> =
                 (!gnss_ptr.is_null()).then(|| unsafe { std::mem::transmute(gnss_ptr) });
-            Ok((
-                Self {
-                    library,
-                    handle,
-                    next,
-                    close,
-                    gnss,
-                    abandoned: false,
-                    geometry: PnmGeometry {
-                        points,
-                        segments,
-                        partial_updates: partial,
-                    },
-                },
-                geometry,
-            ))
+            Ok(Self {
+                library,
+                handle,
+                next,
+                close,
+                gnss,
+                abandoned: false,
+                points,
+            })
         })();
         if result.is_err() {
             unsafe {
@@ -192,7 +173,7 @@ impl Device {
 
     /// One partial-update attempt: `Ok(None)` means "no new data yet, poll again".
     fn next(&mut self) -> Result<Option<PnmFrame>, String> {
-        let points = self.geometry.points as usize;
+        let points = self.points as usize;
         let mut carrier_hz = 0.0;
         let mut carrier_dbm = 0.0f32;
         let mut offset = vec![0.0f64; points];
@@ -207,7 +188,7 @@ impl Device {
                 &mut carrier_dbm,
                 offset.as_mut_ptr(),
                 pn.as_mut_ptr(),
-                self.geometry.points,
+                self.points,
                 &mut written,
                 &mut ref_level,
                 &mut progress,
@@ -295,7 +276,6 @@ impl Drop for Device {
 }
 
 pub struct HardwarePnm {
-    pub geometry: PnmGeometry,
     pub device_info: Option<crate::hardware_swp::DeviceInfo>,
     next_tx: SyncSender<SyncSender<Result<Option<PnmFrame>, String>>>,
     gnss_tx: SyncSender<SyncSender<Result<GnssInfo, String>>>,
@@ -317,9 +297,9 @@ impl HardwarePnm {
         let owner_error = error.clone();
         let owner_stop = stop.clone();
         let owner = std::thread::spawn(move || match Device::open(&path, &params) {
-            Ok((mut device, geometry)) => {
+            Ok(mut device) => {
                 let info = crate::hardware_swp::read_device_info(device.library, device.handle).ok().flatten();
-                if meta_tx.send(Ok((geometry, info))).is_err() {
+                if meta_tx.send(Ok(info)).is_err() {
                     return;
                 }
                 loop {
@@ -352,11 +332,10 @@ impl HardwarePnm {
                 let _ = meta_tx.send(Err(e));
             }
         });
-        let (geometry, device_info) = meta_rx
+        let device_info = meta_rx
             .recv_timeout(Duration::from_secs(10))
             .map_err(|_| "SDK PNM startup timed out; owner outcome unknown".to_owned())??;
         Ok(Self {
-            geometry,
             device_info,
             next_tx,
             gnss_tx,

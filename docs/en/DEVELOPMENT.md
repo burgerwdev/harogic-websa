@@ -22,7 +22,7 @@ Synthetic digital-mode playback needs the checkout's tracked `tests/fixtures/` i
 `runtime/`. The root launcher sets the working directory; `WEBSA_FIXTURES` overrides the
 fixture directory, which otherwise defaults to `tests/fixtures` relative to that directory.
 
-To rebuild, use Linux, Rust stable, a C/C++ toolchain, CMake,
+To rebuild, use Linux, Rust stable ≥1.95, a C/C++ toolchain, CMake,
 pkg-config and Node.js 22.22+, 24.15+ or ≥26 (the frontend test stack's floor; a plain Vite
 build accepts 22.12+). Python 3.12 or 3.13 supports tests, fixtures and bench tools; it is
 not a production backend. Native audio decoding requires FDK AAC ≥2.0.3 at build time and
@@ -43,6 +43,11 @@ make native
 `make frontend` runs `build.sh` and produces `frontend/dist/`. Rebuild after frontend changes:
 the service serves that bundle. `make build` builds the frontend and native service;
 `make wasm` is an explicit offline DSP artifact build, not a product frontend prerequisite.
+
+Keep `make build` warning-free with the default compiler and Vite diagnostics enabled.
+Font URLs in CSS use `/fonts/` from `frontend/public/`; Vite applies the `/static/dist/`
+base. Translations are emitted as a separate, eagerly loaded `i18n` chunk to keep the
+main bundle below Vite's default chunk-size limit without changing language initialization.
 
 For hardware, install the vendor SDK, then run `make sdk-shim` and `./run.sh`.
 `SDK_ROOT` and `SDK_SHIM` configure the shim build; `WEBSA_RUST_IQS_SHIM` selects it at runtime.

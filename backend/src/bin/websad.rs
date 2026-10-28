@@ -77,7 +77,7 @@ const STATUS_PERIOD: Duration = Duration::from_secs(1);
 static DSP_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 fn allocate_dsp_epoch() -> Result<u32, &'static str> {
-    DSP_EPOCH.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |epoch| {
+    DSP_EPOCH.try_update(Ordering::Relaxed, Ordering::Relaxed, |epoch| {
         (epoch < u32::MAX as u64).then_some(epoch + 1)
     }).map(|previous| (previous + 1) as u32).map_err(|_| "DSP epoch exhausted")
 }
@@ -131,7 +131,7 @@ const DECODE_PENDING_BYTE_LIMIT: u64 = 3 * (20 * 1024 * 1024u64).div_ceil(3) * 4
 struct DecodeReservation { pending: Arc<AtomicU64>, bytes: u64 }
 impl DecodeReservation {
     fn acquire(pending: &Arc<AtomicU64>, bytes: u64) -> Option<Self> {
-        pending.fetch_update(Ordering::AcqRel, Ordering::Acquire, |used|
+        pending.try_update(Ordering::AcqRel, Ordering::Acquire, |used|
             used.checked_add(bytes).filter(|&total| total <= DECODE_PENDING_BYTE_LIMIT)).ok()?;
         Some(Self { pending: pending.clone(), bytes })
     }

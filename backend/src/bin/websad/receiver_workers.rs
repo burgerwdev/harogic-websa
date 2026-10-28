@@ -436,7 +436,7 @@ impl ReceiverWorkers {
     }
 
     fn bump_generation(&self, slot: usize) -> Result<(), String> {
-        self.shared.generations[slot].fetch_update(Ordering::AcqRel, Ordering::Acquire,
+        self.shared.generations[slot].try_update(Ordering::AcqRel, Ordering::Acquire,
             |generation| generation.checked_add(1))
             .map(|_| ()).map_err(|_| "receiver configuration generation overflow".into())
     }

@@ -9,6 +9,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          // Keep shared translations cacheable without changing synchronous language switching.
+          groups: [{ name: 'i18n', test: /[\\/]src[\\/]core[\\/]i18n(?:[\\/]|\.ts$)/ }],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

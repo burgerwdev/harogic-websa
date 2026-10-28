@@ -90,7 +90,7 @@ ELF 加载器路径为 `/lib64/ld-linux-x86-64.so.2`。适配库链接时使用 
 
 - 启动脚本需要 Linux、Bash、coreutils、`flock`（util-linux）、`/proc` 和 `curl`；原生音频解码需要
   FDK AAC 动态库（`libfdk-aac.so.2`，版本 ≥2.0.3）。
-- 仅原生重建需要 Rust、C++17 编译器和 pkg-config。
+- 仅原生重建需要 Rust ≥1.95、C++17 编译器和 pkg-config。
 - Python ≥3.10 仅用于台架、端到端、离线参考和 fixture 工具，不提供生产后端。
 - Node.js — 仅重建前端和运行前端测试时需要：22.22+ / 24.15+ / ≥26（测试工具要求的最低版本；仅运行 Vite 构建
   只需 22.12+）。Node 18/20/23 未纳入验证范围。
