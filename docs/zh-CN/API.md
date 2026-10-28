@@ -76,7 +76,7 @@ curl http://localhost:8080/api/state
 | `has_docxo` / `has_premium_ref_clock` | bool | 是否安装 DOCXO 硬件 / 是否有可用的高品质内部参考时钟；取决于硬件选件，与 GNSS 锁定状态和工作模式无关 |
 | `refclk_ppm` / `calibrating` / `last_cal_freq` | - | GNSS 校准状态 |
 | `refclk_out` | bool | 参考时钟输出使能 |
-| `gnss` | obj | GNSS 状态：`lock`(0/1) `sats`(卫星数) `docxo`(0/1) `docxo_mode`(0=驯服,1=保持) `antenna`(0=外部,1=内部) `latitude`/`longitude`(度) `altitude`(米) `time`(UTC, 无效为 "0000-00-00 00:00:00")；`stale`标记未取得可用新快照。Server 模式为 null，没有设备或客户端遥测 |
+| `gnss` | obj | GNSS 状态：`lock`(0/1；null 或缺失表示不可用，仅显式 0 表示未锁定) `sats`(卫星数) `docxo`(0/1) `docxo_mode`(0=驯服,1=保持) `antenna`(0=外部,1=内部) `latitude`/`longitude`(度) `altitude`(米) `time`(UTC, 无效为 "0000-00-00 00:00:00")；普通模式切换及查询失败时保留上次遥测并标记 `stale:true`（待更新），直到成功取得新快照后清除。Server 模式为 null，没有设备或客户端遥测 |
 | `server` | obj | 始终发布，即使状态 fixture 没有 `server` 键。字段见下文 Soapy Server。非该模式时进程保持停止 |
 | `last_error` | str | 最近的全局错误；receiver worker 故障使用 `sdr.receiver_error` |
 
@@ -366,13 +366,15 @@ SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实
 
 `transmissionId` 是无符号 64 位整数的标准十进制字符串，在同一图像流身份内递增。浏览器为该身份保留高水位：校正可以更新仍保留的页面，但不能重建已删除或淘汰的旧页。清空保留高水位，新图像流身份使用独立顺序。
 
+接收 radiofax 新 revision 时，浏览器逐行替换已收到的部分，尚未重传到的行继续保留旧版内容；可见高度不会缩成第一块的高度。接收进度单独记录，因此缺少重传块仍会报行号缺口。重传中断后，已保留的整幅光栅仍可查看、导出 PNG，未完成页面标为部分完成；只有新版行覆盖已保留高度后才接受完成标记。
+
 `radiofax-state` 报告 `running`、`stage`、`hasPicture`、`signalLevel`、`carrierCoherence`、`ioc`、`lpm`、`modulation`、`polarity`、`width`、数值整数 `lines`（0–2400）、`elapsedSeconds`、`clockStatus`、`clockSource`、`phasePixels`、`clockPpm`、`clockConfidence`、`complete`、`partial` 及可为 null 的 `reason`。`stage` 为 `searching`、`fallback`、`apt`、`phasing`、`receiving`、`degraded`、`complete` 或 `partial`；`clockStatus` 为 `nominal`、`acquiring`、`locked`、`tracking` 或 `degraded`；`clockSource` 为 `nominal`、`phasing`、`image_content` 或 `manual`。未锁定的 IOC576/120 LPM fallback 和 `image_content` 时钟估计均不表示 APT/定相协议锁定。
 
 `lines` 统计当前段内已保留的光栅行位置，包含明确标记的缺失行；`elapsedSeconds` 跨存储段跟踪同一逻辑页。`reason` 区分 `signal_lost`、`discontinuity`、`reconfigured`、`new_page` 和 `eof`；确认协议停止后标为完成。衰落显示信号减弱，不新建 transmission。`snapshot_prefix_missing` 表示较早的分段已超出服务留存预算。
 
 `signalLevel` 是原始带通实数 PCM 的 RMS，功率平滑时间常数为 0.2 秒，单位为线性满量程幅度，不是复数 IQ 的 dBFS 读数。`carrierCoherence` 是平滑后的 1400–2500 Hz 能量与 300–2700 Hz 能量之比，限制在 0–1。集中在该频带的干扰也可能通过能量门限，因此该值不能确认传真信号身份、相位锁定或接收质量。
 
-浏览器解码 worker 请求 `/ws/decode?ack=1`，服务通过初始快照 `start` 事件的 `snapshotAck:true` 确认支持。worker 仅在收到确认后发送传输 ACK；省略该字段的服务不会收到 ACK。内部 FIFO 确认不变。页面应用快照帧后，worker 发送 `{type:'ack', channel, epoch, seq}`，服务最多等待 5 秒再发送下一快照帧。未请求 `ack=1` 的客户端仍直接接收推送。图像帧、实时事件语义和 worker 的 32 事件 / 4 MiB 上限不变。
+浏览器解码 worker 请求 `/ws/decode?ack=1`，服务通过 `start` 事件的 `snapshotAck:true` 确认支持；没有初始快照时，实时 start 也会携带该字段。worker 仅在收到确认后发送传输 ACK。页面应用每个快照或实时帧后，worker 发送 `{type:'ack', channel, epoch, seq}`，服务最多等待 5 秒，收到完全匹配的确认后才发送下一帧。未请求 `ack=1` 的客户端仍直接接收推送。实时解码输出按共享批次入队，整图重传不会让每个图像块各占一个 FIFO 槽。每客户端的排队及在途批次共用字节预算，容量为三路各 20 MiB Gray8 的 base64 数据加 4 MiB 信封开销；超限仍会关闭慢消费者。worker 继续保持 32 事件 / 4 MiB 上限。
 
 浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。只有服务确认 `snapshotAck` 后，worker 才将应用确认转换为上述带序号的传输 ACK。
 

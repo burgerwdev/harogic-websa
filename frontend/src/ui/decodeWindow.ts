@@ -962,8 +962,13 @@ function saveSstvPng(): void {
 	}
 }
 
+// The store replaces entries for every row chunk, including same-revision overlaps.
+// Decoder/status updates keep the entry, so only those paints can safely be skipped.
+const radiofaxCanvasEntries = new WeakMap<HTMLCanvasElement, RadiofaxEntry>();
+
 function drawRadiofaxPicture(canvas: HTMLCanvasElement, entry: RadiofaxEntry): void {
 	const { gray, width, height } = entry.picture;
+	if (radiofaxCanvasEntries.get(canvas) === entry && canvas.width === width && canvas.height === height) return;
 	if (canvas.width !== width) canvas.width = width;
 	if (canvas.height !== height) canvas.height = height;
 	const ctx = canvas.getContext('2d');
@@ -976,6 +981,7 @@ function drawRadiofaxPicture(canvas: HTMLCanvasElement, entry: RadiofaxEntry): v
 		image.data[target + 3] = 255;
 	}
 	ctx.putImageData(image, 0, 0);
+	radiofaxCanvasEntries.set(canvas, entry);
 }
 
 function radiofaxPageName(entry: RadiofaxEntry, wholePage = false): string {

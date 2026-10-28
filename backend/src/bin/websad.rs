@@ -82,21 +82,68 @@ fn allocate_dsp_epoch() -> Result<u32, &'static str> {
     }).map(|previous| (previous + 1) as u32).map_err(|_| "DSP epoch exhausted")
 }
 
-/// One queued frame tagged with the generation that produced it. The sink drops a packet
-/// whose generation is older than `App.epoch`, so a command switch never leaks frames from
-/// the previous configuration.
+/// One queued payload tagged with the generation that produced it. Decode receiver
+/// output occupies one FIFO slot, with shared bytes and a per-client byte reservation.
 #[derive(Debug)]
 struct Outbound {
     epoch: u64,
     status_revision: Option<u64>,
     display_version: Option<u64>,
     identity: Option<u64>,
-    message: Message,
+    message: OutboundPayload,
+}
+
+#[derive(Debug)]
+enum OutboundPayload {
+    Single(Message),
+    DecodeBatch {
+        frames: Arc<[(Message, Option<u64>)]>,
+        // Retiring identities have already passed the channel filter under state.
+        retiring: Option<Vec<u64>>,
+        _reservation: DecodeReservation,
+    },
+}
+
+impl From<Message> for OutboundPayload {
+    fn from(message: Message) -> Self { Self::Single(message) }
+}
+
+impl OutboundPayload {
+    fn frame(&self, index: usize) -> Option<(Message, Option<u64>)> {
+        match self {
+            Self::Single(message) => (index == 0).then(|| (message.clone(), None)),
+            Self::DecodeBatch { frames, retiring, .. } => frames.get(index).map(|(message, identity)| {
+                let identity = if retiring.as_ref().is_some_and(|ids| identity.is_some_and(|id| ids.contains(&id))) {
+                    None
+                } else { *identity };
+                (message.clone(), identity)
+            }),
+        }
+    }
+}
+
+// Three retained 20 MiB channels, base64 encoded, plus envelope overhead. The
+// reservation includes the packet being applied, so ACK stalls cannot accumulate
+// 64 complete receiver revisions in memory. Frame count never consumes FIFO slots.
+const DECODE_PENDING_BYTE_LIMIT: u64 = 3 * (20 * 1024 * 1024u64).div_ceil(3) * 4 + 4 * 1024 * 1024;
+
+#[derive(Debug)]
+struct DecodeReservation { pending: Arc<AtomicU64>, bytes: u64 }
+impl DecodeReservation {
+    fn acquire(pending: &Arc<AtomicU64>, bytes: u64) -> Option<Self> {
+        pending.fetch_update(Ordering::AcqRel, Ordering::Acquire, |used|
+            used.checked_add(bytes).filter(|&total| total <= DECODE_PENDING_BYTE_LIMIT)).ok()?;
+        Some(Self { pending: pending.clone(), bytes })
+    }
+}
+impl Drop for DecodeReservation {
+    fn drop(&mut self) { self.pending.fetch_sub(self.bytes, Ordering::AcqRel); }
 }
 
 struct Client {
     id: u64,
     tx: mpsc::Sender<Outbound>,
+    decode_pending_bytes: Arc<AtomicU64>,
     dropped: Arc<AtomicU64>,
     overflow: Arc<AtomicBool>,
     receiver_failed: Arc<AtomicBool>,
@@ -511,10 +558,11 @@ impl DevState {
     /// Auto-reopen gate: Python's link loop retries the open until the analyzer answers;
     /// a bounded cooldown keeps the retry visible through `last_error` without hammering.
     /// One GNSS snapshot from whichever hardware owner currently holds the device.
-    /// Queried at the STATUS cadence; a failure keeps the last good value (Python parity:
-    /// query errors surface through last_error only when they persist).
+    /// A missing owner or failed query retains the last snapshot as stale until
+    /// the new owner supplies fresh telemetry. Server mode ends that session.
     fn refresh_gnss(&mut self) {
-        if self.hardware_shim.is_none() || self.swp.mode == "server" {
+        if self.swp.mode == "server" {
+            self.gnss_value = None;
             return;
         }
         // SDR uses the explicit cached-only shim ABI on the SDK owner thread.
@@ -538,8 +586,8 @@ impl DevState {
                                 g.year, g.month, g.day, g.hour, g.minute, g.second),
                 "stale": false,
             }));
-        } else if self.swp.mode == "sdr" {
-            self.gnss_value.get_or_insert_with(|| json!({}))["stale"] = json!(true);
+        } else if let Some(gnss) = self.gnss_value.as_mut() {
+            gnss["stale"] = json!(true);
         }
     }
 
@@ -3133,7 +3181,11 @@ fn dispatch_inner(state: &mut DevState, cmd: &str, data: &Value) -> Result<bool,
                 state.sdr_actual = json!({});
                 state.actual = json!({});
                 state.rta_actual = json!({});
-                state.gnss_value = None;
+                if next == "server" {
+                    state.gnss_value = None;
+                } else if let Some(gnss) = state.gnss_value.as_mut() {
+                    gnss["stale"] = json!(true);
+                }
                 state.channel_power = [None; 3];
                 state.stop_pipeline().map_err(device)?;
                 state.finish_radiofax_with_registry(registry).map_err(device)?;
@@ -3987,7 +4039,7 @@ async fn publisher(app: Arc<App>) {
                     let version = (frame.starts_with(b"RTAF") || frame.starts_with(b"RTA2") || frame.starts_with(b"FREQ"))
                         .then_some(display_version);
                     enqueue(client, Outbound {
-                        epoch, message: Message::Binary(frame.clone().into()),
+                        epoch, message: Message::Binary(frame.clone().into()).into(),
                         status_revision: None, display_version: version,
                         identity:None,
                     });
@@ -3997,7 +4049,7 @@ async fn publisher(app: Arc<App>) {
                 }
                 if let Some((revision, status)) = &status {
                     enqueue(client, Outbound {
-                        epoch, message: Message::Text(status.to_string().into()),
+                        epoch, message: Message::Text(status.to_string().into()).into(),
                         status_revision: Some(*revision), display_version: None,
                         identity:None,
                     });
@@ -4031,7 +4083,7 @@ async fn publisher(app: Arc<App>) {
 /// generation that produced it.
 fn send_or_count(client: &Client, message: Message, epoch: u64) {
     let identity=service_stream::message_identity(&message);
-    enqueue(client, Outbound { epoch, message,identity,status_revision: None, display_version: None });
+    enqueue(client, Outbound { epoch, message:message.into(),identity,status_revision: None, display_version: None });
 }
 
 fn enqueue(client: &Client, packet: Outbound) {
@@ -4045,7 +4097,7 @@ fn enqueue(client: &Client, packet: Outbound) {
         return;
     }
     let (freq, trace) = match &packet.message {
-        Message::Binary(bytes) => (
+        OutboundPayload::Single(Message::Binary(bytes)) => (
             bytes.starts_with(b"FREQ"),
             bytes.starts_with(b"POWR") || bytes.starts_with(b"RTAF") || bytes.starts_with(b"RTA2"),
         ),
@@ -4078,14 +4130,14 @@ fn enqueue(client: &Client, packet: Outbound) {
 type WsSink = futures_util::stream::SplitSink<WebSocket, Message>;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const SNAPSHOT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const DECODE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(serde::Deserialize, PartialEq)]
 struct DecodeApplied { channel: u32, epoch: u32, seq: u32 }
 
-async fn wait_snapshot_ack(stream: &mut futures_util::stream::SplitStream<WebSocket>, expected: &DecodeApplied)
+async fn wait_decode_ack(stream: &mut futures_util::stream::SplitStream<WebSocket>, expected: &DecodeApplied)
     -> Result<bool, tokio::time::error::Elapsed> {
-    tokio::time::timeout(SNAPSHOT_ACK_TIMEOUT, async {
+    tokio::time::timeout(DECODE_ACK_TIMEOUT, async {
         while let Some(Ok(message)) = stream.next().await {
             match message {
                 Message::Text(text) => {
@@ -4101,6 +4153,29 @@ async fn wait_snapshot_ack(stream: &mut futures_util::stream::SplitStream<WebSoc
         }
         false
     }).await
+}
+
+async fn send_decode_frame(sink:&mut WsSink, stream:&mut futures_util::stream::SplitStream<WebSocket>,
+    frame:Message, decode_ack:bool) -> Result<bool,tokio::time::error::Elapsed> {
+    if !decode_ack {return Ok(send_frame(sink,frame).await);}
+    let Message::Binary(bytes)=frame else {return Ok(send_frame(sink,frame).await);};
+    if !bytes.starts_with(b"SDE2") {return Ok(send_frame(sink,Message::Binary(bytes)).await);}
+    let expected=match serde_json::from_slice::<DecodeApplied>(&bytes[8..]) {
+        Ok(applied)=>applied,
+        Err(error)=>{eprintln!("WebSA decode ACK identity: {error}");return Ok(false);}
+    };
+    let frame=if expected.seq==0 {
+        let encoded=(|| -> Result<Vec<u8>,String> {
+            let mut envelope:Value=serde_json::from_slice(&bytes[8..]).map_err(|e|e.to_string())?;
+            if envelope["event"]["type"]=="start" {envelope["event"]["snapshotAck"]=json!(true);}
+            websa_channelizer::encode_decode_event(&serde_json::to_vec(&envelope).map_err(|e|e.to_string())?).map_err(str::to_owned)
+        })();
+        match encoded {Ok(bytes)=>Message::Binary(bytes.into()),Err(error)=>{
+            eprintln!("WebSA decode ACK capability: {error}");return Ok(false);
+        }}
+    } else {Message::Binary(bytes)};
+    if !send_frame(sink,frame).await {return Ok(false);}
+    wait_decode_ack(stream,&expected).await
 }
 
 /// Bounded single-frame send. `false` means the socket is gone; the loop must remove the
@@ -4165,7 +4240,8 @@ async fn flush_latest(
         {
             continue;
         }
-        if !send_frame(sink, packet.message).await {
+        let OutboundPayload::Single(message) = packet.message else { unreachable!("display payload must be a single frame") };
+        if !send_frame(sink, message).await {
             return false;
         }
     }
@@ -4211,6 +4287,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     app.clients.lock().push(Client {
         id,
         tx,
+        decode_pending_bytes: Arc::new(AtomicU64::new(0)),
         dropped: Arc::new(AtomicU64::new(0)),
         overflow: overflow.clone(),
         receiver_failed: receiver_failed.clone(),
@@ -4251,39 +4328,10 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
     match initial_decode {
         Ok(frames)=>for frame in frames {
             if !service_stream::identity_current(service_stream::message_identity(&frame),&app.identities,channel) {continue;}
-            let (frame, expected) = if decode_ack {
-                let Message::Binary(bytes) = frame else {initial_ok=false;break;};
-                let expected = match serde_json::from_slice::<DecodeApplied>(&bytes[8..]) {
-                    Ok(applied) => applied,
-                    Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
-                };
-                let frame = if expected.seq == 0 {
-                    let mut envelope: Value = match serde_json::from_slice(&bytes[8..]) {
-                        Ok(envelope) => envelope,
-                        Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
-                    };
-                    // Capability is advertised only on the snapshot boundary. Live starts stay bare.
-                    if envelope["event"]["type"] == "start" {
-                        envelope["event"]["snapshotAck"] = json!(true);
-                    }
-                    let encoded = match serde_json::to_vec(&envelope)
-                        .map_err(|error| error.to_string())
-                        .and_then(|json| websa_channelizer::encode_decode_event(&json).map_err(str::to_owned))
-                    {
-                        Ok(encoded) => encoded,
-                        Err(error) => {eprintln!("WebSA initial decode snapshot identity: {error}");initial_ok=false;break;}
-                    };
-                    Message::Binary(encoded.into())
-                } else {Message::Binary(bytes)};
-                (frame, Some(expected))
-            } else {(frame, None)};
-            if !send_frame(&mut sink,frame).await {initial_ok=false;break;}
-            if let Some(expected) = expected {
-                match wait_snapshot_ack(&mut stream, &expected).await {
-                    Ok(true) => {},
-                    Ok(false) => {initial_ok=false;break;},
-                    Err(_) => {overflow.store(true,Ordering::Release);initial_ok=false;break;}
-                }
+            match send_decode_frame(&mut sink,&mut stream,frame,decode_ack).await {
+                Ok(true)=>{},
+                Ok(false)=>{initial_ok=false;break;},
+                Err(_)=>{overflow.store(true,Ordering::Release);initial_ok=false;break;}
             }
         },
         Err(error)=>{eprintln!("WebSA initial decode snapshot: {error}");initial_ok=false;}
@@ -4303,7 +4351,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         }
     }
     let slow = if initial_ok {
-        loop {
+        'client: loop {
             if receiver_failed.load(Ordering::Acquire) || overflow.load(Ordering::Acquire) {
                 break true;
             }
@@ -4428,13 +4476,29 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                     if let Some(revision) = packet.status_revision {
                         seen_status_revision = revision;
                     }
-                    let frames=match subscriber.frames(packet.message) {
-                        Ok(frames)=>frames,
-                        Err(error)=>{eprintln!("SDR subscriber stream: {error}");break true;},
-                    };
-                    let mut sent=true;
-                    for frame in frames {if !send_frame(&mut sink,frame).await {sent=false;break;}}
-                    if !sent {break false;}
+                    let mut index=0;
+                    while let Some((message,identity))=packet.message.frame(index) {
+                        if receiver_failed.load(Ordering::Acquire) || overflow.load(Ordering::Acquire) {break 'client true;}
+                        let included=match &packet.message {
+                            OutboundPayload::DecodeBatch {frames,retiring:Some(ids),..}=>
+                                frames[index].1.is_some_and(|id|ids.contains(&id)),
+                            _=>true,
+                        };
+                        index+=1;
+                        if !included || packet.epoch!=epoch.load(Ordering::Acquire)
+                            || !service_stream::identity_current(identity.or(packet.identity),&app.identities,channel) {continue;}
+                        let frames=match subscriber.frames(message) {
+                            Ok(frames)=>frames,
+                            Err(error)=>{eprintln!("SDR subscriber stream: {error}");break 'client true;},
+                        };
+                        for frame in frames {
+                            match send_decode_frame(&mut sink,&mut stream,frame,decode_ack).await {
+                                Ok(true)=>{},
+                                Ok(false)=>break 'client false,
+                                Err(_)=>{overflow.store(true,Ordering::Release);break 'client true;}
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4729,6 +4793,7 @@ mod tests {
                 let (tx, rx)=mpsc::channel(64);
                 app.clients.lock().push(Client {
                     id:if audio {100} else {101},tx,dropped:Arc::new(AtomicU64::new(0)),
+                    decode_pending_bytes:Arc::new(AtomicU64::new(0)),
                     overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
                     wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),status_revision:app.state.revision(),
                     display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),
@@ -4794,16 +4859,19 @@ mod tests {
             }
             for (audio,mut rx) in receivers {
                 let expected=if audio {&tail.audio} else {&tail.decode};
-                for frame in expected {
-                    let packet=rx.try_recv().expect("retiring tail cannot be lost on failed handoff");
+                let mut packet=rx.try_recv().expect("retiring tail cannot be lost on failed handoff");
+                for (index,frame) in expected.iter().enumerate() {
+                    if audio && index>0 {packet=rx.try_recv().expect("retiring audio tail");}
                     assert_eq!(packet.epoch,old_epoch+1);
-                    assert!(packet.identity.is_none(),"old tail must survive the identity fence");
-                    let Message::Binary(bytes)=packet.message else {panic!("expected receiver bytes")};
+                    let (message,identity)=packet.message.frame(if audio {0} else {index}).unwrap();
+                    assert!(identity.or(packet.identity).is_none(),"old tail must survive the identity fence");
+                    let Message::Binary(bytes)=message else {panic!("expected receiver bytes")};
                     assert_eq!(bytes.as_ref(),frame.as_slice());
                 }
                 let packet=rx.try_recv().expect("fresh capture start follows every retiring tail");
-                assert!(packet.identity.is_some());
-                let Message::Binary(bytes)=packet.message else {panic!("expected fresh receiver start")};
+                let (message,identity)=packet.message.frame(0).unwrap();
+                assert!(identity.or(packet.identity).is_some());
+                let Message::Binary(bytes)=message else {panic!("expected fresh receiver start")};
                 if audio {
                     assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()),0);
                     assert_ne!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()),registry[0].epoch);
@@ -5621,6 +5689,7 @@ mod tests {
         let client = Client {
             id: 1,
             tx,
+            decode_pending_bytes:Arc::new(AtomicU64::new(0)),
             dropped: dropped.clone(),
             overflow: overflow.clone(),
             receiver_failed: Arc::new(AtomicBool::new(false)),
@@ -6161,6 +6230,161 @@ mod tests {
         assert!(app.clients.lock().iter().all(|client| !client.overflow.load(Ordering::Acquire)));
     }
 
+    #[test]
+    fn decode_pending_budget_counts_active_batches_and_releases_on_drop() {
+        let pending=Arc::new(AtomicU64::new(0));
+        let reservation=DecodeReservation::acquire(&pending,DECODE_PENDING_BYTE_LIMIT).unwrap();
+        assert!(DecodeReservation::acquire(&pending,1).is_none());
+        drop(reservation);
+        assert_eq!(pending.load(Ordering::Acquire),0);
+        assert!(DecodeReservation::acquire(&pending,DECODE_PENDING_BYTE_LIMIT).is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn live_decode_revision_batches_wait_for_exact_ack_without_losing_fifo() {
+        let (app,url)=start_ws_server().await;
+        for (index,identity) in app.identities.iter().enumerate() {
+            identity.store(service_stream::identity_key(index as u32+11,7),Ordering::Release);
+        }
+        let mut paced=connect_ws(&format!("{url}/decode?ack=1")).await;
+        let mut raw=connect_ws(&format!("{url}/decode")).await;
+        let frame=|channel:u32,seq:u32,event:Value| websa_channelizer::encode_decode_event(&serde_json::to_vec(&json!({
+            "version":1,"channel":channel,"channel_id":channel+10,"epoch":7,"seq":seq,
+            "input_index":"0","input_rate":48_000,"input_fraction_num":"0","input_fraction_den":"1",
+            "delay_seconds":0,"delay_known":true,"causal_presentation":false,"mode":"radiofax","event":event,
+        })).unwrap()).unwrap();
+        let mut output=receiver_workers::ReceiverFrames::default();
+        // Almost 20 MiB of gray per channel: five retained segments, 184 image
+        // chunks per channel. One synchronous delivery exceeds both old limits.
+        for channel in 1..=3 {
+            output.decode.push(frame(channel,0,json!({"type":"start"})));
+            let mut seq=0;
+            for (segment,lines) in [2400u32,2400,2400,2400,1986].into_iter().enumerate() {
+                for row in (0..lines).step_by(64) {
+                    let rows=(lines-row).min(64);
+                    let pixels=1810*rows as usize;
+                    let padding=(3-pixels%3)%3;
+                    let gray="A".repeat(pixels.div_ceil(3)*4-padding)+&"=".repeat(padding);
+                    seq+=1;
+                    output.decode.push(frame(channel,seq,json!({
+                        "type":"radiofax-image","width":1810,"row":row,"rows":rows,"gray":gray,"revision":2,
+                        "meta":{"serial":format!("page-{segment}"),"segmentIndex":segment,"transmissionId":"fax",
+                            "lines":row+rows,"complete":true,"partial":false,"missingRows":[],"reason":null}
+                    })));
+                }
+            }
+            assert_eq!(seq,184);
+        }
+        let count=output.decode.len();
+        assert!(count>64);
+        let wire_bytes:usize=output.decode.iter().map(Vec::len).sum();
+        assert!(wire_bytes>3*4*1024*1024);
+        assert!((wire_bytes as u64)<DECODE_PENDING_BYTE_LIMIT);
+        {
+            let state=app.state.lock().unwrap();
+            service_stream::deliver_receiver(&state,&app,output,false);
+            let mut following=receiver_workers::ReceiverFrames::default();
+            for channel in 1..=3 {following.decode.push(frame(channel,185,json!({"type":"radiofax-state"})));}
+            service_stream::deliver_receiver(&state,&app,following,false);
+        }
+        let mut sequences=[0u32;3];
+        let mut total=0;
+        for index in 0..count+3 {
+            let bytes=next_binary(&mut paced).await;
+            let event:Value=serde_json::from_slice(&bytes[8..]).unwrap();
+            let channel=event["channel"].as_u64().unwrap() as usize;
+            let seq=event["seq"].as_u64().unwrap() as u32;
+            assert_eq!(seq,sequences[channel-1]);
+            sequences[channel-1]+=1;
+            if index<count {assert!(seq<=184);} else {assert_eq!(seq,185);}
+            if seq==0 {assert_eq!(event["event"]["snapshotAck"],true);}
+            if seq>0 && seq<=184 {assert_eq!(event["event"]["revision"],2);}
+            if index==0 {
+                expect_silence(&mut paced,Duration::from_millis(20)).await;
+                for (wrong_channel,wrong_epoch,wrong_seq) in [(2,7,0),(1,8,0),(1,7,1)] {
+                    paced.send(WsMessage::Text(json!({"type":"ack","channel":wrong_channel,"epoch":wrong_epoch,"seq":wrong_seq}).to_string().into())).await.unwrap();
+                    expect_silence(&mut paced,Duration::from_millis(20)).await;
+                }
+            }
+            let raw_bytes=next_binary(&mut raw).await;
+            let raw_event:Value=serde_json::from_slice(&raw_bytes[8..]).unwrap();
+            assert_eq!(raw_event["channel"],event["channel"]);
+            assert_eq!(raw_event["seq"],event["seq"]);
+            assert!(raw_event["event"].get("snapshotAck").is_none());
+            if seq>0 {assert_eq!(raw_bytes,bytes);}
+            total+=bytes.len();
+            paced.send(WsMessage::Text(json!({"type":"ack","channel":channel,"epoch":7,"seq":seq}).to_string().into())).await.unwrap();
+        }
+        assert_eq!(sequences,[186;3]);
+        assert!(total>=wire_bytes);
+        expect_silence(&mut paced,Duration::from_millis(20)).await;
+        for client in app.clients.lock().iter() {
+            assert!(!client.overflow.load(Ordering::Acquire));
+            assert_eq!(client.dropped.load(Ordering::Relaxed),0);
+            assert_eq!(client.decode_pending_bytes.load(Ordering::Acquire),0);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn decode_channel_ack_stall_does_not_queue_unrelated_batches() {
+        let (app,url)=start_ws_server().await;
+        for (index,identity) in app.identities.iter().enumerate() {
+            identity.store(service_stream::identity_key(index as u32+11,7),Ordering::Release);
+        }
+        let mut paced=connect_ws(&format!("{url}/decode?channel=1&ack=1")).await;
+        let frame=|channel:u32,seq:u32,event:Value| websa_channelizer::encode_decode_event(&serde_json::to_vec(&json!({
+            "version":1,"channel":channel,"channel_id":channel+10,"epoch":7,"seq":seq,
+            "input_index":"0","input_rate":48_000,"input_fraction_num":"0","input_fraction_den":"1",
+            "delay_seconds":0,"delay_known":true,"causal_presentation":false,"mode":"radiofax","event":event,
+        })).unwrap()).unwrap();
+        {
+            let state=app.state.lock().unwrap();
+            service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
+                audio:Vec::new(),decode:vec![frame(1,0,json!({"type":"start"}))],
+            },false);
+        }
+        let start=next_binary(&mut paced).await;
+        let start:Value=serde_json::from_slice(&start[8..]).unwrap();
+        assert_eq!(start["event"]["snapshotAck"],true);
+        let pending=app.clients.lock()[0].decode_pending_bytes.load(Ordering::Acquire);
+        assert!(pending>0,"active ACK wait must retain its reservation");
+        {
+            let state=app.state.lock().unwrap();
+            // No awaits: the client cannot drain a mistakenly enqueued batch.
+            // Test both live filtering and retiring filtering with no matching
+            // retiring identity for this channel.
+            for retiring in [false,true] {
+                for seq in 0..130 {
+                    service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
+                        audio:Vec::new(),decode:vec![frame(2,seq,json!({"type":"radiofax-state"})),
+                            frame(3,seq,json!({"type":"radiofax-state"}))],
+                    },retiring);
+                }
+            }
+            let clients=app.clients.lock();
+            let client=&clients[0];
+            assert_eq!(client.tx.capacity(),64);
+            assert_eq!(client.decode_pending_bytes.load(Ordering::Acquire),pending);
+            assert_eq!(client.dropped.load(Ordering::Relaxed),0);
+            assert!(!client.overflow.load(Ordering::Acquire));
+        }
+        {
+            let state=app.state.lock().unwrap();
+            service_stream::deliver_receiver(&state,&app,receiver_workers::ReceiverFrames {
+                audio:Vec::new(),decode:vec![frame(1,1,json!({"type":"radiofax-state"}))],
+            },false);
+        }
+        expect_silence(&mut paced,Duration::from_millis(20)).await;
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":7,"seq":0}).to_string().into())).await.unwrap();
+        let following=next_binary(&mut paced).await;
+        let following:Value=serde_json::from_slice(&following[8..]).unwrap();
+        assert_eq!(following["channel"],1);
+        assert_eq!(following["seq"],1);
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":7,"seq":1}).to_string().into())).await.unwrap();
+        expect_silence(&mut paced,Duration::from_millis(20)).await;
+        assert_eq!(app.clients.lock()[0].decode_pending_bytes.load(Ordering::Acquire),0);
+    }
+
     #[tokio::test]
     async fn pipelined_invalid_commands_reply_without_self_queue_deadlock() {
         let (app, url) = start_ws_server().await;
@@ -6241,7 +6465,7 @@ mod tests {
                 epoch: app.epoch.load(Ordering::Acquire),
                 status_revision: Some(old.revision), display_version: None,
                 identity:None,
-                message: Message::Text(old_status.to_string().into()),
+                message: Message::Text(old_status.to_string().into()).into(),
             }).unwrap();
             send_or_count(&clients[0], Message::Text(json!({"cmd": "MARKER"}).to_string().into()), 0);
         }
@@ -6262,13 +6486,13 @@ mod tests {
             enqueue(&clients[0], Outbound {
                 epoch: 0, status_revision: Some(revision), display_version: None,
                 identity:None,
-                message: Message::Text(json!({"cmd": "STATUS", "connected": false}).to_string().into()),
+                message: Message::Text(json!({"cmd": "STATUS", "connected": false}).to_string().into()).into(),
             });
             for frame in [b"RTAF-old".to_vec(), b"FREQ-old".to_vec()] {
                 enqueue(&clients[0], Outbound {
                     epoch: 0, status_revision: None, display_version: Some(0),
                     identity:None,
-                    message: Message::Binary(frame.into()),
+                    message: Message::Binary(frame.into()).into(),
                 });
             }
         }
@@ -6863,10 +7087,16 @@ extern "C" int san90_pnm_close_v1(void* p) { delete static_cast<FakePnm*>(p); re
     fn hardware_gnss_snapshot_publishes_python_parity_fields() {
         let _guard = TEST_SWP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::remove_file("/tmp/websa_fake_swp_fail.txt");
-        let mut state = hardware_state(Some(compile_fake_swp_shim()));
+        let source = FAKE_SWP_SHIM.replace(
+            "    *lock = 1; *sats = 7;",
+            "    if (int status = fail_next()) return status;\n    *lock = 1; *sats = 7;",
+        );
+        let mut state = hardware_state(Some(compile_fake_swp_source("gnss_fail", &source)));
         state.swp.mode = "std".into();
         state.swp.center = 1e9;
         state.swp.span = 1e8;
+        state.refresh_gnss();
+        assert_eq!(state.status()["gnss"], Value::Null, "no owner has supplied telemetry yet");
         let _ = state.fetch_sweep(); // open the owner so gnss has a live handle
         state.refresh_gnss();
         let gnss = state.status()["gnss"].clone();
@@ -6881,17 +7111,57 @@ extern "C" int san90_pnm_close_v1(void* p) { delete static_cast<FakePnm*>(p); re
         assert_eq!(gnss["time"], "2026-10-21 12:34:56");
         assert_eq!(gnss["year"], 2026);
         assert_eq!(gnss["stale"], false);
-        // A DDC without a hardware owner has no live GNSS snapshot. Keep the
-        // previous fields explicitly stale until an IQS cached snapshot arrives.
-        state.swp.mode = "sdr".into();
-        state.ddc = Some(SendDdc(Ddc::new(1e9, 1e9 - 1e6).unwrap()));
+        // Query failure invalidates freshness in SWP too, and the next successful
+        // owner query restores the same snapshot to fresh without a mode change.
+        std::fs::write("/tmp/websa_fake_swp_fail.txt", "1 -7").unwrap();
         state.refresh_gnss();
-        let gnss = state.status()["gnss"].clone();
-        assert_eq!(gnss["stale"], true);
-        assert_eq!(gnss["sats"], 7, "last good fields survive an absent owner");
-        // Before any owner exists the hardware service reports null, never a fake value.
-        let fresh = hardware_state(Some("/does/not/exist.so".into()));
-        assert_eq!(fresh.status()["gnss"], Value::Null);
+        assert_eq!(state.status()["gnss"]["stale"], true);
+        assert_eq!(state.status()["gnss"]["lock"], 1);
+        state.refresh_gnss();
+        assert_eq!(state.status()["gnss"], gnss);
+
+        // Dispatch retires each owner. The last snapshot survives the gap, but
+        // neither a mode change nor polling an absent owner can make it fresh.
+        for mode in ["rta", "sdr", "pnm", "harmonic", "std"] {
+            assert!(dispatch(&mut state, "SET_MODE", &json!({"mode":mode})).unwrap());
+            let pending = state.status()["gnss"].clone();
+            assert_eq!(pending["lock"], 1, "{mode}");
+            assert_eq!(pending["sats"], 7, "{mode}");
+            assert_eq!(pending["stale"], true, "{mode}");
+            state.refresh_gnss();
+            assert_eq!(state.status()["gnss"], pending, "{mode}");
+        }
+        let _ = state.fetch_sweep();
+        state.refresh_gnss();
+        assert_eq!(state.status()["gnss"], gnss, "new owner restores fresh telemetry");
+        let _ = std::fs::remove_file("/tmp/websa_fake_swp_fail.txt");
+    }
+
+    #[test]
+    fn gnss_server_transition_discards_previous_hardware_session() {
+        let _guard = TEST_SWP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // No SDK is loaded or server process started for this dispatch test.
+        let (golden, schema) = load_golden();
+        let mut state = DevState::new(golden, schema);
+        state.swp.mode = "std".into();
+        state.gnss_value = Some(json!({"lock":1,"sats":7,"stale":false}));
+        assert!(dispatch(&mut state, "SET_MODE", &json!({"mode":"rta"})).unwrap());
+        assert_eq!(state.gnss_value.as_ref().unwrap()["stale"], true);
+        assert!(dispatch(&mut state, "SET_MODE", &json!({"mode":"server"})).unwrap());
+        assert!(state.gnss_value.is_none());
+        state.refresh_gnss();
+        assert_eq!(state.status()["gnss"], Value::Null);
+        assert!(dispatch(&mut state, "SET_MODE", &json!({"mode":"std"})).unwrap());
+        // Hardware STATUS must stay unavailable until the new session reports.
+        state.hardware_shim = Some("must-not-be-opened.so".into());
+        state.refresh_gnss();
+        assert!(state.gnss_value.is_none());
+        assert_eq!(state.status()["gnss"], Value::Null);
+        for mode in ["rta", "sdr", "std"] {
+            assert!(dispatch(&mut state, "SET_MODE", &json!({"mode":mode})).unwrap());
+            state.refresh_gnss();
+            assert_eq!(state.status()["gnss"], Value::Null, "{mode}");
+        }
     }
 
     fn fake_swp_stats() -> (i32, i32, i32) {

@@ -284,17 +284,42 @@ pub(super) fn deliver_retiring(state:&mut DevState,app:&App) {
 pub(super) fn deliver_receiver(state:&DevState,app:&App,output:receiver_workers::ReceiverFrames,retiring:bool) {
     let epoch=app.epoch.load(Ordering::Acquire);
     let clients=app.clients.lock();
-    for (audio,frames) in [(true,output.audio),(false,output.decode)] {
-        for frame in frames {
-            let message=Message::Binary(frame.into());
-            let identity=message_identity(&message);
-            for client in clients.iter().filter(|c| if audio {c.audio} else {c.decode}) {
-                if retiring && client.channel.is_some_and(|slot| !state.retiring_registry.iter().any(|r|
-                    r.channel==slot&&identity==Some(identity_key(r.channel_id,r.epoch)))) {continue;}
-                enqueue(client,Outbound {epoch,message:message.clone(),identity:if retiring {None} else {identity},
-                    status_revision:None,display_version:None});
-            }
+    // Audio keeps its existing frame FIFO. Decode can synchronously close every
+    // retained segment on all three channels; queue that receiver output once.
+    for frame in output.audio {
+        let message=Message::Binary(frame.into());
+        let identity=message_identity(&message);
+        for client in clients.iter().filter(|c|c.audio) {
+            if retiring && client.channel.is_some_and(|slot| !state.retiring_registry.iter().any(|r|
+                r.channel==slot&&identity==Some(identity_key(r.channel_id,r.epoch)))) {continue;}
+            enqueue(client,Outbound {epoch,message:message.clone().into(),identity:if retiring {None} else {identity},
+                status_revision:None,display_version:None});
         }
+    }
+    if output.decode.is_empty() {return;}
+    let bytes=output.decode.iter().map(|frame|frame.len() as u64).sum();
+    let frames:Arc<[(Message,Option<u64>)]>=output.decode.into_iter().map(|frame| {
+        let message=Message::Binary(frame.into());
+        let identity=message_identity(&message);
+        (message,identity)
+    }).collect();
+    for client in clients.iter().filter(|c|c.decode) {
+        let retiring=retiring.then(||state.retiring_registry.iter()
+            .filter(|r|client.channel.is_none_or(|slot|slot==r.channel))
+            .map(|r|identity_key(r.channel_id,r.epoch)).collect::<Vec<_>>());
+        if !frames.iter().any(|(_,identity)|match &retiring {
+            Some(ids)=>identity.is_some_and(|id|ids.contains(&id)),
+            None=>identity_current(*identity,&client.identities,client.channel),
+        }) {continue;}
+        let Some(reservation)=DecodeReservation::acquire(&client.decode_pending_bytes,bytes) else {
+            client.dropped.fetch_add(1,Ordering::Relaxed);
+            client.overflow.store(true,Ordering::Release);
+            client.wake.notify_one();
+            continue;
+        };
+        enqueue(client,Outbound {epoch,message:OutboundPayload::DecodeBatch {
+            frames:frames.clone(),retiring,_reservation:reservation,
+        },identity:None,status_revision:None,display_version:None});
     }
 }
 pub(super) fn identity_key(channel_id:u32,epoch:u32)->u64 { (u64::from(epoch)<<32)|u64::from(channel_id) }
@@ -519,6 +544,7 @@ mod tests {
             let (tx,rx)=mpsc::channel(64);
             app.clients.lock().push(Client {
                 id:receivers.len() as u64,tx,dropped:Arc::new(AtomicU64::new(0)),
+                decode_pending_bytes:Arc::new(AtomicU64::new(0)),
                 overflow:Arc::new(AtomicBool::new(false)),receiver_failed:Arc::new(AtomicBool::new(false)),
                 wake:Arc::new(Notify::new()),epoch:app.epoch.clone(),status_revision:app.state.revision(),
                 display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel:Some(1),
@@ -621,6 +647,7 @@ mod tests {
                 let (tx,rx)=mpsc::channel(64);
                 app.clients.lock().push(Client {
                     id:receivers.len() as u64,tx,dropped:Arc::new(AtomicU64::new(0)),
+                    decode_pending_bytes:Arc::new(AtomicU64::new(0)),
                     overflow:Arc::new(AtomicBool::new(false)),wake:Arc::new(Notify::new()),
                     receiver_failed:Arc::new(AtomicBool::new(false)),
                     epoch:app.epoch.clone(),status_revision:app.state.revision(),
@@ -659,7 +686,7 @@ mod tests {
                 let packet=rx.try_recv().expect("every old tail and new start must be queued");
                 let mut batch=output(id,seq);
                 let expected=if audio {batch.audio.remove(0)} else {batch.decode.remove(0)};
-                let frames=subscriber.frames(packet.message).expect("ordered subscriber stream");
+                let frames=subscriber.frames(packet.message.frame(0).unwrap().0).expect("ordered subscriber stream");
                 assert_eq!(frames.len(),1);
                 let Message::Binary(bytes)=&frames[0] else {panic!("expected binary receiver frame")};
                 assert_eq!(bytes.as_ref(),expected.as_slice());

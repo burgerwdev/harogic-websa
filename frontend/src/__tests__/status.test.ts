@@ -141,16 +141,43 @@ describe('manual display viewport through STATUS', () => {
 	});
 });
 
-describe('GNSS freshness during wideband capture', () => {
-	it('marks paused polling and hides stale lock/satellite details', () => {
-		document.body.innerHTML = '<span id="info-gnss"></span><span id="gnss-d-lock"></span><span id="gnss-d-sats"></span>';
-		const status = structuredClone(SWP_STATUS) as Record<string, any>;
-		status.gnss = { lock: 1, sats: 8, stale: true };
-		updateStatus(status);
-		fillGnssDetail();
-		expect(document.getElementById('info-gnss')?.textContent).toBe(t('status_stale'));
-		expect(document.getElementById('gnss-d-lock')?.textContent).toBe(t('status_stale'));
-		expect(document.getElementById('gnss-d-sats')?.textContent).toBe('-');
+describe('GNSS freshness across mode transitions', () => {
+	const measurements = ['sats', 'docxo', 'docxo_mode', 'antenna', 'latitude', 'longitude', 'altitude', 'utc'];
+	beforeEach(() => {
+		document.body.innerHTML = '<span id="info-gnss"></span><div id="gnss-popover">'
+			+ ['lock', ...measurements, 'local'].map(id => `<span id="gnss-d-${id}"></span>`).join('') + '</div>';
+	});
+	it.each([null, undefined, {}, { lock: null }])('shows missing GNSS lock %j as unavailable', gnss => {
+		updateStatus({ ...SWP_STATUS, gnss });
+		expect(document.getElementById('info-gnss')?.textContent).toBe(t('status_unavailable'));
+		expect(document.getElementById('info-gnss')?.style.color).toBe('var(--muted)');
+		expect(document.getElementById('gnss-d-lock')?.textContent).toBe(t('status_unavailable'));
+	});
+	it('keeps header and open details in sync through stale, unavailable and fresh reports', () => {
+		const fresh = { lock: 1, sats: 8, docxo: 1, docxo_mode: 0, antenna: 1,
+			latitude: 39.9, longitude: 116.4, altitude: 43, time: '2026-10-21 12:34:56', stale: false };
+		for (const [mode, gnss, label, color] of [
+			['std', fresh, 'status_locked', '--dot-on'],
+			['rta', { ...fresh, stale: true }, 'status_stale', '--muted'],
+			['sdr', { ...fresh, stale: true }, 'status_stale', '--muted'],
+			['server', null, 'status_unavailable', '--muted'],
+			['std', null, 'status_unavailable', '--muted'],
+			['std', { ...fresh, lock: 0 }, 'status_nolock', '--dot-off'],
+			['std', fresh, 'status_locked', '--dot-on'],
+		] as const) {
+			updateStatus({ ...SWP_STATUS, mode, gnss });
+			expect(document.getElementById('info-gnss')?.textContent).toBe(t(label));
+			expect(document.getElementById('info-gnss')?.style.color).toBe(`var(${color})`);
+			expect(document.getElementById('gnss-d-lock')?.textContent).toBe(t(label));
+			if (!gnss || gnss.stale) {
+				for (const id of measurements) expect(document.getElementById(`gnss-d-${id}`)?.textContent).toBe('-');
+			} else {
+				expect(document.getElementById('gnss-d-sats')?.textContent).toBe('8');
+				expect(document.getElementById('gnss-d-docxo')?.textContent).toBe(t('on'));
+				expect(document.getElementById('gnss-d-utc')?.textContent).toBe(gnss.lock === 1 ? fresh.time : '-');
+			}
+			expect(document.getElementById('gnss-d-local')?.textContent).not.toBe('');
+		}
 	});
 });
 

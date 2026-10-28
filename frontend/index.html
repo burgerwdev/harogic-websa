@@ -242,7 +242,12 @@
             <div class="param-row"><label data-i18n="step">Step</label>
               <input type="number" id="input-sdr-step" min="0" step="any" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
               <div class="unit-btn-group sdr-tail" id="unit-sdr_step-group"></div>
-              <span class="sdr-tail"><button class="btn" id="btn-sdr-step-settings" type="button" aria-expanded="false" aria-controls="sdr-step-settings-panel" data-i18n="sdr_step_settings" data-i18n-title="sdr_step_settings_tip">Steps</button></span></div>
+              <span class="sdr-tail sdr-step-settings-tail"><button class="btn" id="btn-sdr-step-settings" type="button" aria-expanded="false" aria-controls="sdr-step-settings-panel" aria-labelledby="sdr-step-settings-label" data-i18n="sdr_step_settings" data-i18n-attr="title" data-i18n-title="sdr_step_settings_tip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true" style="display:block;margin:0 auto;">
+                  <path d="m9.5 3-.6 2.2-1.8 1.1-2.2-.6-2.5 4.3L4 11.6v2.1l-1.6 1.6 2.5 4.3 2.2-.6 1.8 1.1.6 2.2h5l.6-2.2 1.8-1.1 2.2.6 2.5-4.3-1.6-1.6v-2.1l1.6-1.6-2.5-4.3-2.2.6-1.8-1.1-.6-2.2z"/>
+                  <circle cx="12" cy="12.6" r="3"/>
+                </svg><span id="sdr-step-settings-label" hidden data-i18n="sdr_step_settings">Steps</span>
+              </button></span></div>
             <div class="param-row span-action-row"><span id="sdr-step-quick"></span></div>
             <!-- Inline step-tier settings: the Shift/Ctrl tune steps live beside the box, not
                  in a dialog. Collapsed by default; ordinary in-flow panel content. -->

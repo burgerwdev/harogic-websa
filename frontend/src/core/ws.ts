@@ -689,8 +689,9 @@ export function updateStatus(s: any) {
   if (g) {
     // The top bar shows only the locked state (details such as satellite count live in the detail popover)
     if (s.gnss?.stale) { g.textContent = t('status_stale'); g.style.color = 'var(--muted)'; }
-    else if (s.gnss && s.gnss.lock) { g.textContent = t('status_locked'); g.style.color = 'var(--dot-on)'; }
-    else { g.textContent = t('status_nolock'); g.style.color = 'var(--dot-off)'; }
+    else if (s.gnss?.lock === 1) { g.textContent = t('status_locked'); g.style.color = 'var(--dot-on)'; }
+    else if (s.gnss?.lock === 0) { g.textContent = t('status_nolock'); g.style.color = 'var(--dot-off)'; }
+    else { g.textContent = t('status_unavailable'); g.style.color = 'var(--muted)'; }
     // Update the detail popover synchronously (if open)
     const pop = document.getElementById('gnss-popover');
     if (pop && pop.style.display !== 'none') fillGnssDetail();

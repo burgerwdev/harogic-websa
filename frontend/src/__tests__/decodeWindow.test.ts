@@ -1932,6 +1932,57 @@ describe('radiofax logical page browser', () => {
 		expect(text('radiofax-save-error')).toBe('PNG export failed');
 	});
 
+	it('keeps pixels current through growth, overlaps, revisions and page switches without repainting status updates', () => {
+		const pixels: number[][] = [];
+		const allocate = vi.fn((width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }));
+		vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+			createImageData: allocate,
+			putImageData: (image: ImageData) => pixels.push(Array.from(image.data)),
+		} as unknown as CanvasRenderingContext2D);
+		const canvas = document.getElementById('decode-radiofax-canvas') as HTMLCanvasElement;
+		const rgba = (values: number[]) => values.flatMap((value) => [value, value, value, 255]);
+		const append = (row: number, values: number[]) => {
+			const entry = fax.radiofaxVisible()!;
+			fax.appendRadiofaxRows({ width: 1, row, rows: values.length, gray: Uint8Array.from(values), revision: entry.revision },
+				{ ...entry.meta, lines: row + values.length }, 'stream-epoch');
+			ui.refreshDecodeWindow();
+		};
+		image('paper', 0, [10, 128, 30]);
+		const paper = fax.radiofaxVisiblePage()!.id;
+		expect(pixels.at(-1)).toEqual(rgba([10, 128, 30]));
+		const paints = allocate.mock.calls.length;
+		fax.setRadiofaxDecoderState(null);
+		ui.refreshDecodeWindow();
+		expect(allocate).toHaveBeenCalledTimes(paints);
+		expect(pixels.at(-1)).toEqual(rgba([10, 128, 30]));
+		append(3, [40, 50]);
+		expect([canvas.width, canvas.height]).toEqual([1, 5]);
+		expect(pixels.at(-1)).toEqual(rgba([10, 128, 30, 40, 50]));
+		append(1, [99]);
+		expect(pixels.at(-1)).toEqual(rgba([10, 99, 30, 40, 50]));
+		image('paper', 0, [70, 80], {}, 1);
+		expect([canvas.width, canvas.height]).toEqual([1, 5]);
+		expect(pixels.at(-1)).toEqual(rgba([70, 80, 30, 40, 50]));
+		append(2, [90, 100, 110]);
+		expect(pixels.at(-1)).toEqual(rgba([70, 80, 90, 100, 110]));
+		image('next', 0, [21]);
+		expect(pixels.at(-1)).toEqual(rgba([21]));
+		select().value = paper;
+		select().dispatchEvent(new Event('change'));
+		expect(pixels.at(-1)).toEqual(rgba([70, 80, 90, 100, 110]));
+		canvas.width = 2;
+		ui.refreshDecodeWindow();
+		expect([canvas.width, canvas.height]).toEqual([1, 5]);
+		expect(pixels.at(-1)).toEqual(rgba([70, 80, 90, 100, 110]));
+		const sizes: number[][] = [];
+		vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (this: HTMLCanvasElement, callback) {
+			sizes.push([this.width, this.height]); callback(null);
+		});
+		click('radiofax-save');
+		expect(sizes).toEqual([[1, 5]]);
+		expect(pixels.at(-1)).toEqual(rgba([70, 80, 90, 100, 110]));
+	});
+
 	it('exports one safe whole page and keeps UTC segment filenames 1-based', () => {
 		const downloads: string[] = [];
 		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({

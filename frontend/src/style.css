@@ -901,6 +901,8 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 #sdr-settings .sdr-tail { flex: 0 1 auto; display: flex; align-items: center; gap: 4px; min-width: 0; }
 #sdr-settings .sdr-tail > .cur-val { flex: 0 0 34px; }
 #sdr-settings .sdr-tail > .btn { flex: 0 0 52px; }
+#sdr-settings .sdr-tail > #btn-sdr-step-settings { flex: 0 0 26px; width: 26px; min-width: 26px; padding: 3px; }
+#sdr-settings #unit-sdr_step-group, #sdr-settings .sdr-step-settings-tail { flex: 0 0 auto; }
 /* Keep the items of each SDR row on one line. A wrapped item starts at the row start, below the
    label column. This is the misalignment that the panel showed on a narrow screen. A row with a
    wrapping button group (demod, filter, de-emph) wraps inside that group. Only the free-text hint
@@ -919,6 +921,10 @@ body.meas-mode #meas-panel .group-body { pointer-events: auto; opacity: 1; }
 .sdr-inline-field label { color: var(--label); font-size: 11px; min-width: 34px; }
 .sdr-inline-field input[type="number"] { box-sizing: border-box; width: 84px; min-width: 0; }
 .sdr-inline-field .cur-val { flex: 0 0 24px; }
+#sdr-locate-settings-panel { display: grid; margin-left: 0; gap: 4px; }
+#sdr-locate-settings-panel .sdr-inline-field { display: grid; grid-template-columns: 58px minmax(0, 140px) 34px; gap: 4px; }
+#sdr-locate-settings-panel label { min-width: 0; }
+#sdr-locate-settings-panel input[type="number"] { width: 100%; }
 .sdr-hint-note { color: var(--label); font-size: 11px; flex: 1 1 100%; }
 /* Filter presets wrap within the parameter column. */
 #sdr-ifbw-group { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px; min-width: 0; }

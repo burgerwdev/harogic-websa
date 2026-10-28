@@ -13,9 +13,10 @@ export function fillGnssDetail() {
   const stale = Boolean(S.lastGnss?.stale);
   const g = stale ? {} : (S.lastGnss || {});
   const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('gnss-d-lock', stale ? t('status_stale') : g.lock ? t('status_locked') : t('status_nolock'));
+  set('gnss-d-lock', stale ? t('status_stale') : g.lock === 1 ? t('status_locked')
+    : g.lock === 0 ? t('status_nolock') : t('status_unavailable'));
   set('gnss-d-sats', g.sats != null ? String(g.sats) : '-');
-  set('gnss-d-docxo', g.docxo ? t('on') : t('off'));
+  set('gnss-d-docxo', g.docxo == null ? '-' : g.docxo ? t('on') : t('off'));
   set('gnss-d-docxo_mode', g.docxo_mode === 0 ? t('gnss_docxo_lock') : (g.docxo_mode === 1 ? t('gnss_docxo_hold') : '-'));
   set('gnss-d-antenna', g.antenna === 0 ? t('gnss_ext_ant') : (g.antenna === 1 ? t('gnss_int_ant') : '-'));
   set('gnss-d-latitude', g.latitude != null && Math.abs(g.latitude) > 0.0001 ? g.latitude.toFixed(6) + '°' : '-');

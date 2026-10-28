@@ -103,6 +103,35 @@ describe('radiofax logical page retention', () => {
 		expect(store.radiofaxStatus().pages).toHaveLength(2);
 		expect(store.radiofaxVisiblePage()!.id).toBe(old);
 	});
+	it('preserves all received rows when a replacement revision is interrupted', () => {
+		store.appendRadiofaxRows(chunk(0, [10, 20, 30, 40]), meta({ lines: 4 }), 'stream1');
+		store.appendRadiofaxRows(chunk(0, [11, 21], 1), meta({ lines: 2, complete: true }), 'stream1');
+		expect([...store.radiofaxVisible()!.picture.gray]).toEqual([11, 21, 30, 40]);
+		expect(store.radiofaxVisiblePage()!.lines).toBe(4);
+		store.endRadiofaxStream();
+		expect([...store.radiofaxVisible()!.picture.gray]).toEqual([11, 21, 30, 40]);
+		expect(store.radiofaxVisiblePage()!.complete).toBe(false);
+		expect(store.radiofaxVisiblePage()!.partial).toBe(true);
+		expect(store.radiofaxVisiblePage()!.reason).toBe('stream ended');
+	});
+	it('requires contiguous replacement rows despite retaining the older tail', () => {
+		store.appendRadiofaxRows(chunk(0, [10, 20, 30, 40]), meta({ lines: 4 }), 'stream1');
+		store.appendRadiofaxRows(chunk(0, [11], 1), meta(), 'stream1');
+		expect(() => store.appendRadiofaxRows(chunk(3, [41], 1), meta({ lines: 4 }), 'stream1')).toThrow(/gap/);
+		store.appendRadiofaxRows(chunk(1, [21, 31, 41], 1), meta({ lines: 4, complete: true }), 'stream1');
+		store.endRadiofaxStream();
+		expect([...store.radiofaxVisible()!.picture.gray]).toEqual([11, 21, 31, 41]);
+		expect(store.radiofaxVisiblePage()!.complete).toBe(true);
+		expect(store.radiofaxVisiblePage()!.partial).toBe(false);
+	});
+	it('replaces old missing-row metadata only as the revised rows arrive', () => {
+		store.appendRadiofaxRows(chunk(0, [10, 20, 128, 40]), meta({ lines: 4, missingRows: [2] }), 'stream1');
+		store.appendRadiofaxRows(chunk(0, [11], 1), meta(), 'stream1');
+		expect(store.radiofaxVisiblePage()!.missingRows).toEqual([2]);
+		store.appendRadiofaxRows(chunk(1, [21, 31, 41], 1), meta({ lines: 4, complete: true }), 'stream1');
+		expect(store.radiofaxVisiblePage()!.missingRows).toEqual([]);
+		expect([...store.radiofaxVisible()!.picture.gray]).toEqual([11, 21, 31, 41]);
+	});
 	it('deletes whole pages, clears dangling view and suppresses live rows until the next transmission', () => {
 		receive('old');
 		const old = store.radiofaxVisiblePage()!.id;

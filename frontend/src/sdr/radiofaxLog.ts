@@ -110,6 +110,9 @@ const newContext = (): Context => ({
 });
 const contexts: Record<Channel, Context> = { 1: newContext(), 2: newContext(), 3: newContext() };
 const blockedPages = new WeakSet<RadiofaxPage>();
+// A revised prefix may be newer than the retained tail. Track transport progress
+// separately from visible height so preserving old rows cannot hide wire gaps.
+const receivedRows = new WeakMap<RadiofaxEntry, number>();
 let selectedChannel: Channel = 1;
 const listeners = new Set<() => void>();
 function publish(channel: Channel): void {
@@ -187,11 +190,11 @@ export function appendRadiofaxRows(chunk: RadiofaxRows, meta: RadiofaxPageMeta, 
 	if (previous && chunk.revision < previous.revision) throw new Error('Stale radiofax image revision');
 	if (previous && previous.picture.width !== chunk.width) throw new Error('Radiofax image width changed');
 	const replace = !previous || chunk.revision > previous.revision;
-	const nextRow = replace ? 0 : previous!.picture.height;
+	const nextRow = replace ? 0 : receivedRows.get(previous!) ?? previous!.picture.height;
 	if (chunk.row > nextRow) throw new Error('Radiofax picture row gap');
 	if (replace && chunk.row !== 0) throw new Error('Radiofax picture missing first rows');
 	if (chunk.rows === 0) return;
-	if (!replace && previous!.meta.missingRows.some((row) => row < meta.lines && !meta.missingRows.includes(row))) {
+	if (!replace && previous!.meta.missingRows.some((row) => row < Math.min(meta.lines, nextRow) && !meta.missingRows.includes(row))) {
 		throw new Error('Radiofax missing rows regressed');
 	}
 	// Record new paper before attempting retention, even if the budget refuses it.
@@ -199,7 +202,8 @@ export function appendRadiofaxRows(chunk: RadiofaxRows, meta: RadiofaxPageMeta, 
 		context.latestIdentity = identity;
 		context.latestTransmission = transmission;
 	}
-	const height = Math.max(nextRow, chunk.row + chunk.rows);
+	const received = Math.max(nextRow, chunk.row + chunk.rows);
+	const height = Math.max(previous?.picture.height ?? 0, received);
 	const needed = height * chunk.width;
 	const oldCapacity = previous?.picture.gray.buffer.byteLength ?? 0;
 	// Revisions reuse capacity; growth never reserves rows beyond the 2400-line wire segment.
@@ -233,12 +237,14 @@ export function appendRadiofaxRows(chunk: RadiofaxRows, meta: RadiofaxPageMeta, 
 	}
 	const buffer = oldCapacity >= capacity && previous ? previous.picture.gray.buffer : new ArrayBuffer(capacity);
 	const gray = new Uint8Array(buffer, 0, needed);
-	if (!replace && previous && buffer !== previous.picture.gray.buffer) gray.set(previous.picture.gray);
+	if (previous && buffer !== previous.picture.gray.buffer) gray.set(previous.picture.gray);
 	gray.set(chunk.gray, chunk.row * chunk.width);
 	const entry: RadiofaxEntry = { id, picture: { gray, width: chunk.width, height },
-		meta: { ...meta, lines: height, missingRows: !replace && previous
+		meta: { ...meta, lines: height, complete: meta.complete && received >= height,
+			partial: meta.partial && received >= height, missingRows: previous
 			? [...meta.missingRows, ...previous.meta.missingRows.filter((row) => row >= meta.lines)]
 			: meta.missingRows.slice(), at: previous?.meta.at ?? now }, revision: chunk.revision };
+	receivedRows.set(entry, received);
 	state.pages = state.pages.filter((item) => !dropped.has(item.id));
 	state.evicted += dropped.size;
 	if (page) {
