@@ -630,7 +630,7 @@ def main() -> int:
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
         page.wait_for_timeout(2500)
         button = page.locator('#btn-sdr-audio')
-        if 'on' not in button.inner_text().lower():
+        if button.get_attribute('aria-pressed') == 'true':
             button.evaluate('(el) => el.click()')
         page.wait_for_timeout(6000)
         audio_dbg = page.evaluate("document.getElementById('spectrum').dataset.sdrAudio") or ''
@@ -778,7 +778,7 @@ def main() -> int:
             fresh = browser.new_context()
             fresh_page = fresh.new_page()
             fresh_page.add_init_script(
-                "for (const [k, v] of Object.entries({'web-sa-sdr-ifbw': '180000',"
+                "for (const [k, v] of Object.entries({'web-sa-sdr-ifbw': '6000',"
                 " 'web-sa-sdr-demod': 'usb', 'web-sa-sdr-audio': '0',"
                 " 'web-sa-sdr-decimate': '32', 'web-sa-sdr-center': '411000000',"
                 " 'web-sa-sdr-listen': '411000000'})) localStorage.setItem(k, v);")
@@ -789,7 +789,7 @@ def main() -> int:
             # the demod command below is mode-legal.
             fresh_page.wait_for_timeout(1200)
             post(args.url, {'cmd': 'SET_MODE', 'mode': 'sdr'})
-            post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'am', 'ifbw': 180000, 'pitch': 700,
+            post(args.url, {'cmd': 'SET_SDR_DEMOD', 'mode': 'am', 'ifbw': 6000,
                             'volume': 0.8, 'squelch': -140.0, 'agc': True})
             fresh_page.wait_for_timeout(2000)
             js_click(fresh_page, '[data-sdr-demod="cw"]')
@@ -926,26 +926,16 @@ def main() -> int:
         display_unit('dBm')
         page.wait_for_timeout(500)
 
-        print('Q) the density persistence switch lives in the Trace panel and Off means off')
-        rows = page.evaluate(
-            """() => { const sel = document.getElementById('select-rta-fade');
-                       const bins = document.getElementById('select-rta-bins');
-                       return {trace: !!sel.closest('#trace-panel') && !!bins.closest('#trace-panel'),
-                               options: [...sel.options].map(o => o.value)}; }""")
-        check('Persist and Grain are in the Trace panel (visible in every mode)',
-              rows['trace'], f"{rows}")
-        check('Persist offers Off as well as the four gears',
-              '0' in rows['options'], f"options={rows['options']}")
+        print('Q) density persistence is reachable through Trace settings and Off means off')
 
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'rta'})
         page.wait_for_timeout(3000)
-        usable = page.evaluate(
-            """() => { const sel = document.getElementById('select-rta-fade');
-                       return {disabled: sel.disabled,
-                               pe: getComputedStyle(sel.closest('.param-row')).pointerEvents}; }""")
         density_on = page.evaluate("() => document.getElementById('spectrum').dataset.density")
-        check('the persistence control stays usable in RTA',
-              not usable['disabled'] and usable['pe'] != 'none', f"{usable}")
+        page.locator('#rail-items .rail-item[aria-label="Trace"]').click()
+        page.click('#btn-density-more')
+        page.locator('#select-rta-fade').wait_for(state='visible')
+        check('More exposes a usable persistence control in RTA',
+              page.is_visible('#select-rta-fade') and page.is_enabled('#select-rta-fade'))
         check('the density layer is drawn in RTA while persistence is on',
               density_on == 'on', f'density={density_on}')
 
@@ -953,7 +943,7 @@ def main() -> int:
         page.wait_for_timeout(1500)
         off = page.evaluate(
             """() => ({density: document.getElementById('spectrum').dataset.density,
-                        stored: localStorage.getItem('rta-fade')})""")
+                        stored: localStorage.getItem('rta-halflife')})""")
         check('Persist=Off removes the whole density layer and is stored',
               off['density'] == 'off' and off['stored'] == '0', f"{off}")
         post(args.url, {'cmd': 'SET_MODE', 'mode': 'std'})
@@ -962,7 +952,7 @@ def main() -> int:
         page.wait_for_timeout(2500)
         restored = page.evaluate("() => document.getElementById('select-rta-fade').value")
         check('...and comes back when the mode is entered again', restored == '0', f'value={restored}')
-        page.select_option('#select-rta-fade', '0.975')
+        page.select_option('#select-rta-fade', '0.5')
         page.wait_for_timeout(800)
 
         print('R) SDR opens on an average while the swept views keep Clear Write')

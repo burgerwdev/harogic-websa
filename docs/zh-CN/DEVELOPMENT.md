@@ -145,6 +145,9 @@ DSP ABI 文本消息只在当前 push 的结果列表中有效，应在返回消
 使用 `python3 -m playwright install --with-deps chromium` 安装浏览器支持，运行浏览器检查前
 先构建前端。Fixture 模式证明无 SDK 的应用行为，不证明 RF 正确性、持续采集或硬件恢复。
 
+密度 smoke 场景先打开“迹线 → 更多”，再操作 Persist。检查 Off 关闭密度层、
+保存 `rta-halflife`，并在切换模式后保留；余辉设置值以秒为单位表示半衰期。
+
 `make ci` 与 GitHub Actions 是不同入口。工作流分别运行 native、Python tools
 （3.12 和 3.13）、frontend、UI smoke 和 architecture job，明确执行
 `npx tsc --noEmit`，并在干净环境安装依赖。工作流的浏览器 job 运行 `ui_smoke.py`

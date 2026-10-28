@@ -160,6 +160,10 @@ Install browser support with `python3 -m playwright install --with-deps chromium
 the frontend before browser runs. Fixture mode proves application behavior without the SDK;
 it does not prove RF correctness, sustained capture or hardware recovery.
 
+The density smoke scenario opens Trace → More before selecting Persist. It checks that
+Off removes the density layer, saves `rta-halflife`, and survives mode changes; persistence
+values are half-lives in seconds.
+
 `make ci` and GitHub Actions are different entry points. The workflow has separate native,
 Python tools (3.12 and 3.13), frontend, UI smoke and architecture jobs. It explicitly runs
 `npx tsc --noEmit` and installs dependencies in clean environments. Its browser job runs
