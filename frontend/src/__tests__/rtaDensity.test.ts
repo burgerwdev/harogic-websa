@@ -255,11 +255,12 @@ describe('sparse density distribution projection', () => {
 		right[BINS - 1] = 4;
 		const raster = new Float32Array(9 * BINS);
 		rasterSparseDensity(history([left, right]), new Float64Array([0, 1]), -0.0625, 1.0625, 9, raster);
-		// Quantile masses .25, .25, .5 traverse midpoint rows 8, 39.5, 63.
-		expect(raster[8 * 9 + 4]).toBeCloseTo(0.75, 6);
+		// Each matched interval uses only its consumed fraction of the native cell.
+		// The midpoint bands retain their mass while spanning the pixel footprint.
+		expect(raster[8 * 9 + 4]).toBeGreaterThan(0);
 		expect(raster[39 * 9 + 4]).toBeGreaterThan(0);
 		expect(raster[40 * 9 + 4]).toBeGreaterThan(0);
-		expect(raster[63 * 9 + 4]).toBeCloseTo(3, 6);
+		expect(raster[63 * 9 + 4]).toBeGreaterThan(0);
 		let total = 0;
 		for (let bin = 0; bin < BINS; bin++) total += raster[bin * 9 + 4];
 		expect(total).toBeCloseTo(6, 6);
@@ -304,6 +305,62 @@ describe('sparse density distribution projection', () => {
 		const window = new Float32Array(12 * BINS);
 		rasterSparseDensity(grid, freq, -1, 2, 12, window);
 		for (const x of [0, 1, 2, 3, 9, 10, 11]) expect(window[8 * 12 + x]).toBe(0);
+	});
+
+	it('changes continuously as alternating bin weights cross a quantile match boundary', () => {
+		const cols = 17, rows = 320, epsilon = 1e-5;
+		const project = (delta: number) => {
+			const left = peak(18, 1 + delta), right = peak(18, 1 - delta);
+			left[19] = 1 - delta; right[19] = 1 + delta;
+			const out = new Float32Array(cols * rows);
+			rasterSparseDensity(history([left, right]), new Float64Array([0, 1]), 0, 1, cols, out,
+				{ bins: rows, origin: 0, scale: 8 });
+			return out;
+		};
+		const before = project(-epsilon), at = project(0), after = project(epsilon);
+		let difference = 0;
+		for (let k = 0; k < at.length; k++) {
+			difference += Math.abs(before[k] - at[k]) + Math.abs(after[k] - at[k]);
+		}
+		expect(difference).toBeLessThan(0.01);
+		const pixels = new Uint8ClampedArray(cols * rows * 4);
+		paintDensity(at, cols, rows, pixels, rows, 0.5, 1, 2, 1, densityLut(false), true);
+		for (let x = 0; x < cols; x++) {
+			for (let row = 18 * 8 - 3; row < 19 * 8 + 4; row++) {
+				expect(at[row * cols + x]).toBeGreaterThan(0);
+				expect(pixels[(row * cols + x) * 4 + 3]).toBeGreaterThan(0);
+			}
+		}
+	});
+
+	it('scales the entire projected distribution linearly under common exponential decay', () => {
+		const left = peak(8, 2), right = peak(12, 3);
+		left[9] = 4; right[13] = 1;
+		const factor = Math.pow(2, -0.37), cols = 17, rows = 180;
+		const full = new Float32Array(cols * rows), decayed = new Float32Array(full.length);
+		const freq = new Float64Array([0, 1]), projection = { bins: rows, origin: 10, scale: 6 };
+		rasterSparseDensity(history([left, right]), freq, 0, 1, cols, full, projection);
+		rasterSparseDensity(history([left.map(v => v * factor), right.map(v => v * factor)]), freq,
+			0, 1, cols, decayed, projection);
+		for (let k = 0; k < full.length; k++) expect(decayed[k]).toBeCloseTo(full[k] * factor, 6);
+	});
+
+	it('projects resolved native endpoints inside their amplitude support without a centre stripe', () => {
+		const cols = 9, rows = 320, pitch = 8;
+		const raster = new Float32Array(cols * rows);
+		rasterSparseDensity(history([peak(8, 4), peak(30, 8)]), new Float64Array([0, 1]),
+			-0.0625, 1.0625, cols, raster, { bins: rows, origin: 0, scale: pitch });
+		for (const [x, nativeRow, mass] of [[0, 8, 4], [8, 30, 8]]) {
+			let total = 0, moment = 0;
+			for (let row = 0; row < rows; row++) {
+				const value = raster[row * cols + x];
+				total += value; moment += value * row;
+				if (Math.abs(row - nativeRow * pitch) > pitch / 2) expect(value).toBe(0);
+			}
+			expect(total).toBeCloseTo(mass, 6);
+			expect(moment / total).toBeCloseTo(nativeRow * pitch, 6);
+			expect(raster[nativeRow * pitch * cols + x]).toBeCloseTo(mass / pitch, 6);
+		}
 	});
 });
 

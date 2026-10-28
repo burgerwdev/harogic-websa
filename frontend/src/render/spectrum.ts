@@ -24,7 +24,8 @@ import { getViewRenderer, registerViewRenderer } from './registry';
 import { buildLimitArray, evaluateAgainst, violationRuns, type LimitEval } from '../dsp/limits';
 import { pushStatus, renderStatusBlocks, resetStatusBlocks } from './statusStack';
 import { rtaDensContrast, rtaDensWidth, rtaDensLayers, rtaDensSource, rtaHalflife, waterfallOn } from '../ui/waterfallState';
-import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, paintDensity, type DensityGrid } from '../dsp/rtaDensity';
+import { rasterDensity, rasterSparseDensity, densityLevelPlacement, densityLut, densityPalette, paintDensity, type DensityGrid, type DensityPalette } from '../dsp/rtaDensity';
+import { DensityRelease } from '../dsp/densityRelease';
 import { visibleBinRange } from '../dsp/grid';
 import { displayOffset, displayUnit, smoothBins } from '../ui/displayState';
 import { fmtAxisLevel, fmtReadoutLevel } from '../core/level';
@@ -584,6 +585,7 @@ function renderRtaView() {
 export function renderAll() {
   validateSdrBadgeDrag();
   const c = cur();
+  if (!S.rtaMode || !S.rtaDensity2d || !(rtaHalflife.get() > 0)) clearRtaDensityRelease();
   resetStatusBlocks();                             // status area is rebuilt every pass
   // Waterfall container replaces the table slot in ALL modes (incl. RTA)
   const wfc = document.getElementById('waterfall-container');
@@ -751,10 +753,10 @@ function renderRta() {
   // Corner badge "RTA"/"SDR". The cursor readout continues on this line (topLeftLines()).
   drawModeBadge();
   const d = S.rtaData;
-  if (!d || !d.freq || d.freq.length < 2) return;
+  if (!d || !d.freq || d.freq.length < 2) { clearRtaDensityRelease(); return; }
   const n = d.freq.length;
   const window = sdrSpectrumWindow();
-  if (!window) return;
+  if (!window) { clearRtaDensityRelease(); return; }
   const { lo, hi } = window;
   ctx.save();
   ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
@@ -765,6 +767,7 @@ function renderRta() {
   const densityVisible = densityOn && !!density && (!density.freq || density.freq === d.freq);
   // Native history is rasterised only for this visible Hz window at screen resolution.
   if (densityVisible) drawRtaDensityLayer(density!, d.freq, lo, hi, p);
+  else clearRtaDensityRelease();
   // Without density, retain the graticule and background. clearRect runs at frame start.
   // Diagnostic/e2e hook (same pattern as `dataset.yLabels`): the pixel scan cannot tell a dark
   // density layer from the plain background, so the contract is read from here.
@@ -904,7 +907,22 @@ let lastDensTheme: string | undefined;
 let lastDensContrast = NaN;
 let lastDensWidth = NaN, lastDensCentre = NaN, lastDensPitch = NaN;
 let rtaDensLut: Uint32Array | null = null;
+let rtaDensPalette: DensityPalette | undefined;
 let lastDensSoftFootprint = false;
+const rtaDensRelease = new DensityRelease();
+let rtaDensFiniteMask = new Uint8Array(0);
+let lastDensFirst = -1, lastDensEnd = -1;
+let lastDensSource: DensityGrid['source'] | undefined;
+let lastDensBins = -1, lastDensRefTop = NaN, lastDensDbPerBin = NaN;
+let lastDensPlotWidth = NaN, lastDensPlotHeight = NaN, lastDensPixelRatio = NaN;
+
+function clearRtaDensityRelease(): void {
+  rtaDensRelease.clear();
+  if (rtaDensPalette) rtaDensPalette.rasterBits = undefined;
+  if (rtaDensFiniteMask.length) rtaDensFiniteMask = new Uint8Array(0);
+  lastDensFirst = lastDensEnd = -1;
+  lastDensRevision = -1;
+}
 
 
 function drawRtaDensityLayer(
@@ -925,12 +943,17 @@ function drawRtaDensityLayer(
   if (themeChanged) { rtaDensLut = densityLut(theme === 'light'); lastDensTheme = theme; }
   const contrast = rtaDensContrast.get();
   let softFootprint = false;
+  let first = 0, end = 0;
   if (S.sdrMode && hi > lo) {
-    const [first, end] = visibleBinRange(freq, lo, hi);
+    [first, end] = visibleBinRange(freq, lo, hi);
     // Only soften detail views where native frequency spacing exceeds two CSS pixels.
     softFootprint = end - first > 1
       && (freq[end - 1] - freq[first]) * p.w > 2 * (hi - lo) * (end - first - 1);
   }
+  if (softFootprint && (themeChanged || lastDensContrast !== contrast || !rtaDensPalette)) {
+    rtaDensPalette = densityPalette(contrast, rtaDensLut!);
+  }
+  if (!softFootprint) rtaDensPalette = undefined;
   // Reproject frozen history on every offset/reference/scale/gesture change. The footprint
   // remains CSS pixels even when the native amplitude grid stretches or the DPR changes.
   const level = densityLevelPlacement(grid, getDisplayTop(), getDisplayRange(), displayOffset.get());
@@ -939,30 +962,56 @@ function drawRtaDensityLayer(
   const pitch = level.height / grid.bins * sy * rows;
   const centre = (level.top * sy + (yt ? yt.dyFrac : 0)) * rows + pitch / 2;
   const width = rtaDensWidth.get() * rows / p.h;
-  const rasterChanged = resized || lastDensGrid !== grid || lastDensRevision !== grid.revision
-    || lastDensFreq !== freq || lastDensLo !== lo || lastDensHi !== hi
+  // SDR native histories already replace their grid on a changed frequency axis;
+  // packets may carry equal axes in freshly allocated arrays.
+  const geometryChanged = resized || lastDensGrid !== grid || (!softFootprint && lastDensFreq !== freq)
+    || lastDensLo !== lo || lastDensHi !== hi || lastDensSource !== grid.source
+    || lastDensPlotWidth !== p.w || lastDensPlotHeight !== p.h || lastDensPixelRatio !== pixelRatio
+    || lastDensBins !== grid.bins || lastDensRefTop !== grid.refTop || lastDensDbPerBin !== grid.dBPerBin
     || lastDensSoftFootprint !== softFootprint
     || (softFootprint && (lastDensCentre !== centre || lastDensPitch !== pitch));
+  const rasterChanged = geometryChanged || lastDensRevision !== grid.revision;
   if (rasterChanged) {
     const rasterBins = softFootprint ? rows : grid.bins;
     if (rtaDensRaster.length !== cols * rasterBins) rtaDensRaster = new Float32Array(cols * rasterBins);
     if (softFootprint) rasterSparseDensity(grid, freq, lo, hi, cols, rtaDensRaster,
       { bins: rows, origin: centre - 0.5, scale: pitch });
     else rasterDensity(grid, freq, lo, hi, cols, rtaDensRaster);
+    if (softFootprint) {
+      let reset = geometryChanged || !rtaDensRelease.values.length
+        || lastDensFirst !== first || lastDensEnd !== end;
+      if (rtaDensFiniteMask.length !== grid.samples.length) {
+        rtaDensFiniteMask = new Uint8Array(grid.samples.length);
+        reset = true;
+      }
+      // Only visible samples (including clipping neighbours) affect this raster's gaps.
+      // Track finite topology, never changing finite amplitudes or expired histogram cells.
+      for (let i = first; i < end; i++) {
+        const finite = Number.isFinite(grid.samples[i]) ? 1 : 0;
+        if (rtaDensFiniteMask[i] !== finite) reset = true;
+        rtaDensFiniteMask[i] = finite;
+      }
+      rtaDensRelease.apply(rtaDensRaster, grid.lastMs, rtaHalflife.get(), reset);
+      lastDensFirst = first; lastDensEnd = end;
+    } else clearRtaDensityRelease();
   }
   if (rasterChanged || themeChanged || lastDensContrast !== contrast
       || lastDensWidth !== width || lastDensCentre !== centre || lastDensPitch !== pitch) {
     if (!rtaDensImage || rtaDensImage.width !== cols || rtaDensImage.height !== rows) {
       rtaDensImage = lc.createImageData(cols, rows);
     }
-    paintDensity(rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
-      softFootprint ? 0.5 : centre, softFootprint ? 1 : pitch, width, contrast, rtaDensLut!, softFootprint);
+    paintDensity(softFootprint ? rtaDensRelease.values : rtaDensRaster, cols, softFootprint ? rows : grid.bins, rtaDensImage.data, rows,
+      softFootprint ? 0.5 : centre, softFootprint ? 1 : pitch, width, contrast, rtaDensLut!, softFootprint,
+      softFootprint ? rtaDensPalette : undefined);
     lc.putImageData(rtaDensImage, 0, 0);
     lastDensGrid = grid; lastDensRevision = grid.revision;
     lastDensFreq = freq;
     lastDensLo = lo; lastDensHi = hi; lastDensContrast = contrast;
     lastDensWidth = width; lastDensCentre = centre; lastDensPitch = pitch;
     lastDensSoftFootprint = softFootprint;
+    lastDensSource = grid.source; lastDensBins = grid.bins;
+    lastDensRefTop = grid.refTop; lastDensDbPerBin = grid.dBPerBin;
+    lastDensPlotWidth = p.w; lastDensPlotHeight = p.h; lastDensPixelRatio = pixelRatio;
   }
   ctx.save();
   ctx.imageSmoothingEnabled = softFootprint;
