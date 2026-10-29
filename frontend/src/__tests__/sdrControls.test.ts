@@ -173,6 +173,49 @@ describe('SDR control intent and STATUS', () => {
 		expect(state.sdrIfbw.pending()).toBe(false);
 	});
 
+	it.each([false, true])('settles a stale filter ACK without overwriting newer state (queued: %s)', async (queued) => {
+		const { controls, state, send } = await load();
+		// resetModules above gives each test fresh request ownership and store state.
+		const store = await import('../core/store');
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 6000 }), config_version: 5 });
+		controls.selectSdrIfbw(3000);
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		if (queued) controls.selectSdrIfbw(12000);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000 }), config_version: 3,
+			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+		expect(state.sdrIfbw.confirmedValue()).toBe(6000);
+		if (queued) {
+			expect(send).toHaveBeenCalledTimes(2);
+			const second = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+			controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 12000 }), config_version: 6,
+				response_to: 'SET_SDR_CHANNEL', request_id: second.request_id });
+		}
+		vi.advanceTimersByTime(3000);
+		expect(state.sdrIfbw.get()).toBe(queued ? 12000 : 6000);
+		expect(state.sdrIfbw.pending()).toBe(false);
+		expect(store.statusError).toBeNull();
+	});
+
+	it('admits newer state carrying a completed filter identity without settling the live edit', async () => {
+		const { controls, state, send } = await load();
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 6000 }), config_version: 1 });
+		controls.selectSdrIfbw(3000);
+		const first = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 3000 }), config_version: 2,
+			response_to: 'SET_SDR_CHANNEL', request_id: first.request_id });
+		controls.selectSdrIfbw(12000);
+		const second = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 4500 }), config_version: 3,
+			response_to: 'STATUS', request_id: first.request_id });
+		expect(state.sdrIfbw.confirmedValue()).toBe(4500);
+		expect(state.sdrIfbw.get()).toBe(12000);
+		expect(state.sdrIfbw.pending()).toBe(true);
+		expect(send).toHaveBeenCalledTimes(2);
+		controls.syncSdrPanel({ ...status('sdr', 'am', { if_bw: 12000 }), config_version: 4,
+			response_to: 'SET_SDR_CHANNEL', request_id: second.request_id });
+		expect(state.sdrIfbw.pending()).toBe(false);
+	});
+
 	it('refreshes queued full receiver edits with the newest AM detector confirmation', async () => {
 		const { controls, state, send } = await load();
 		const { initDecodeWindow } = await import('../ui/decodeWindow');

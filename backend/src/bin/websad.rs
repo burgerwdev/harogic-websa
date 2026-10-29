@@ -42,6 +42,7 @@ use state_lock::StateMutex;
 use sdr_pipeline::{Pipeline, PipelineConfig};
 use websa_channelizer::timing::Timing;
 use axum::{
+    body::Bytes,
     extract::{
         ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
@@ -63,6 +64,7 @@ use parking_lot::Mutex as PLMutex;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap},
+    future::Future,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -98,8 +100,8 @@ enum OutboundPayload {
     Single(Message),
     DecodeBatch {
         frames: Arc<[(Message, Option<u64>)]>,
-        // Retiring identities have already passed the channel filter under state.
-        retiring: Option<Vec<u64>>,
+        // Admission is fixed under state; a later retune cannot remove a predecessor.
+        admitted: Vec<u64>,
         _reservation: DecodeReservation,
     },
 }
@@ -112,19 +114,39 @@ impl OutboundPayload {
     fn frame(&self, index: usize) -> Option<(Message, Option<u64>)> {
         match self {
             Self::Single(message) => (index == 0).then(|| (message.clone(), None)),
-            Self::DecodeBatch { frames, retiring, .. } => frames.get(index).map(|(message, identity)| {
-                let identity = if retiring.as_ref().is_some_and(|ids| identity.is_some_and(|id| ids.contains(&id))) {
-                    None
-                } else { *identity };
-                (message.clone(), identity)
-            }),
+            Self::DecodeBatch { frames, .. } => frames.get(index).cloned(),
         }
     }
 }
 
-// Three retained 20 MiB channels, base64 encoded, plus envelope overhead. The
-// reservation includes the packet being applied, so ACK stalls cannot accumulate
-// 64 complete receiver revisions in memory. Frame count never consumes FIFO slots.
+impl Outbound {
+    fn epoch_current(&self, epoch:u64) -> bool {
+        self.epoch==epoch || match &self.message {
+            OutboundPayload::DecodeBatch {..} => true,
+            OutboundPayload::Single(Message::Binary(bytes)) => bytes.starts_with(b"AUD2") || bytes.starts_with(b"SDE2"),
+            _ => false,
+        }
+    }
+    fn frames(&self) -> impl Iterator<Item = Message> + '_ {
+        let count = match &self.message {
+            OutboundPayload::Single(_) => 1,
+            OutboundPayload::DecodeBatch { frames, .. } => frames.len(),
+        };
+        (0..count).filter_map(|index| {
+            let (message, identity) = self.message.frame(index)?;
+            match &self.message {
+                OutboundPayload::DecodeBatch { admitted, .. }
+                    if !identity.is_some_and(|id| admitted.contains(&id)) => None,
+                _ => Some(message),
+            }
+        })
+    }
+}
+
+// Three retained 20 MiB channels, base64 encoded, plus envelope overhead. This
+// reservation covers queued and currently sending batches; a separate 4 MiB
+// credit budget bounds sent frames awaiting application ACKs. Frame count never
+// consumes FIFO slots.
 const DECODE_PENDING_BYTE_LIMIT: u64 = 3 * (20 * 1024 * 1024u64).div_ceil(3) * 4 + 4 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -1613,7 +1635,7 @@ impl DevState {
             "capture_stop": self.ddc.as_ref().map_or(center + usable / 2.0, |d| {
                 d.0.capture_center + d.0.usable_bandwidth / 2.0
             }),
-            "start": center - bandwidth / 2.0, "stop": center + bandwidth / 2.0,
+            "start": (center - bandwidth / 2.0).max(self.freq_limits().0), "stop": (center + bandwidth / 2.0).min(self.freq_limits().1),
             "atten": atten, "preamp": preamp, "ifgain": ifgain,
             "ref": ref_dbm,
             "refclk_src": ref_clock_code(&self.ref_clock), "refclk_out": self.refclk_out,
@@ -1622,18 +1644,16 @@ impl DevState {
             "mix_offset": 0.0, "ddc_decimate": 64 * fine, "ddc_delay": 102, "ddc_batch": 1,
             "audio_rate": 48_000.0, "deemph_us": self.sdr_deemph,
         });
+        let (lo, hi) = (
+            (center - bandwidth / 2.0).max(self.freq_limits().0),
+            (center + bandwidth / 2.0).min(self.freq_limits().1),
+        );
         let wf = self.wf_row(224);
         let mut pan = if self.hardware_shim.is_some() {
             self.sdr_actual["pan_available"] = json!(false);
             Vec::new()
         } else {
-            vec![self.encode_rta_frame(
-                &freq,
-                &spec,
-                &wf,
-                center - bandwidth / 2.0,
-                center + bandwidth / 2.0,
-            )]
+            vec![self.encode_rta_frame(&freq, &spec, &wf, lo, hi)]
         };
         // Without hardware, digital modes replay committed fixtures so the browser decoders
         // see real transmissions. With hardware every mode uses the real channel IQ.
@@ -1705,23 +1725,21 @@ impl DevState {
                     }
                 }
             }
+            let (rf_lo, rf_hi) = self.freq_limits();
+            let rf_center = self.sdr_center;
+            let usable_now = self.ddc.as_ref().map_or(usable, |d| d.0.usable_bandwidth);
+            let pan_lo = (rf_center - bandwidth.min(usable_now) / 2.0).max(rf_lo);
+            let pan_hi = (rf_center + bandwidth / 2.0).min(rf_hi).min(rf_center + usable_now / 2.0);
             match self.ddc.as_mut() {
                 Some(ddc) => {
                     real_rate = Some(ddc.0.channel_rate());
                     let result = ddc.0.step();
-                    let window = (self.sdr_center, bandwidth.min(ddc.0.usable_bandwidth));
                     let pan_raw = std::mem::take(&mut ddc.0.pan);
                     let real_pan = if result.is_ok() {
                         pan_raw
                             .iter()
                             .map(|(freq, power, _warning, _generation, _seq)| {
-                                hardware_pan(
-                                    self.freq_version as u32,
-                                    window.0,
-                                    window.1,
-                                    freq,
-                                    power,
-                                )
+                                hardware_pan(self.freq_version as u32, pan_lo, pan_hi - pan_lo, freq, power)
                             })
                             .collect::<Result<Vec<_>, _>>()
                     } else {
@@ -1737,12 +1755,10 @@ impl DevState {
                             if let Some((freq, power, warning, _generation, seq)) = pan_raw.last() {
                                 self.note_auto_acquisition(*warning);
                                 self.observe_channel_power(freq,power);
-                                let (lo, hi) =
-                                    (window.0 - window.1 / 2.0, window.0 + window.1 / 2.0);
                                 let inside: Vec<f32> = freq
                                     .iter()
                                     .zip(power)
-                                    .filter(|(f, _)| (lo..=hi).contains(*f))
+                                    .filter(|(f, _)| (pan_lo..=pan_hi).contains(*f))
                                     .map(|(_, p)| *p)
                                     .collect();
                                 if (*warning == 0 || *warning == -301)
@@ -2820,13 +2836,12 @@ impl std::ops::DerefMut for Ddc {
 
 fn hardware_pan(
     version: u32,
-    center: f64,
+    lo: f64,
     bandwidth: f64,
     freq: &[f64],
     power: &[f32],
 ) -> Result<Vec<u8>, String> {
-    let lo = center - bandwidth / 2.0;
-    let hi = center + bandwidth / 2.0;
+    let hi = lo + bandwidth;
     if freq.len() != power.len() || freq.len() < 2 || !freq.windows(2).all(|pair| pair[0] < pair[1])
     {
         return Err("SDK FFT frequency grid invalid".into());
@@ -3866,7 +3881,7 @@ async fn publisher(app: Arc<App>) {
             let mut state = compute.state.lock().unwrap();
             let mode = state.swp.mode.clone();
             let epoch = compute.epoch.load(Ordering::Acquire);
-            let mut display: Vec<Vec<u8>> = Vec::new();
+            let mut display: Vec<Bytes> = Vec::new();
             let mut iq_frame: Vec<Vec<u8>> = Vec::new();
             let mut aux_frame: Vec<Vec<u8>> = Vec::new();
             let mut msgs: Vec<Value> = Vec::new();
@@ -3878,8 +3893,8 @@ async fn publisher(app: Arc<App>) {
                     Duration::from_millis(100)
                 }
                 "harmonic" => {
-                    let (mut frames, harm_msgs) = state.step_harm();
-                    display.append(&mut frames);
+                    let (frames, harm_msgs) = state.step_harm();
+                    display.extend(frames.into_iter().map(Bytes::from));
                     msgs.extend(harm_msgs);
                     Duration::from_millis(20)
                 }
@@ -3888,7 +3903,7 @@ async fn publisher(app: Arc<App>) {
                     Duration::from_millis(50)
                 }
                 "rta" => {
-                    display.push(state.step_rta());
+                    display.push(state.step_rta().into());
                     if state.rta_completed_frame.is_some() { Duration::from_millis(200) }
                     else { Duration::from_millis(10) }
                 }
@@ -3903,7 +3918,7 @@ async fn publisher(app: Arc<App>) {
                 }
                 "sdr" => {
                     let (pan,_,_,_)=state.step_sdr(0,0,display_clients,0);
-                    display.extend(pan);
+                    display.extend(pan.into_iter().map(Bytes::from));
                     if iq_clients+aux_clients+audio_clients+decode_clients>0 {
                         let configs=state.channel_configs();
                         let source=state.fixture_sources.get_or_insert_with(service_fixture::FixtureSources::new);
@@ -3920,10 +3935,10 @@ async fn publisher(app: Arc<App>) {
                 _ => {
                     let (freq, powr) = state.fetch_sweep();
                     if let Some(frame) = freq {
-                        display.push(frame);
+                        display.push(frame.into());
                     }
                     if !powr.is_empty() {
-                        display.push(powr);
+                        display.push(powr.into());
                     }
                     Duration::from_millis(10)
                 }
@@ -3943,7 +3958,7 @@ async fn publisher(app: Arc<App>) {
                 match hardware.finish() {
                     Ok(mut output) => {
                         compute.state.lock().unwrap().apply_hardware_presentation(&mut output);
-                        display.extend(output.pan);
+                        display.extend(output.pan.into_iter().map(Bytes::from));
                         for frame in output.frames {
                             if frame.starts_with(b"IQAX") { aux_frame.push(frame); }
                             else { iq_frame.push(frame); }
@@ -4039,7 +4054,7 @@ async fn publisher(app: Arc<App>) {
                     let version = (frame.starts_with(b"RTAF") || frame.starts_with(b"RTA2") || frame.starts_with(b"FREQ"))
                         .then_some(display_version);
                     enqueue(client, Outbound {
-                        epoch, message: Message::Binary(frame.clone().into()).into(),
+                        epoch, message: Message::Binary(frame.clone()).into(),
                         status_revision: None, display_version: version,
                         identity:None,
                     });
@@ -4132,31 +4147,83 @@ type WsSink = futures_util::stream::SplitSink<WebSocket, Message>;
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const DECODE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(serde::Deserialize, PartialEq)]
-struct DecodeApplied { channel: u32, epoch: u32, seq: u32 }
+const DECODE_ACK_WINDOW: usize = 16;
+const DECODE_ACK_BYTES: usize = 4 * 1024 * 1024;
 
-async fn wait_decode_ack(stream: &mut futures_util::stream::SplitStream<WebSocket>, expected: &DecodeApplied)
-    -> Result<bool, tokio::time::error::Elapsed> {
-    tokio::time::timeout(DECODE_ACK_TIMEOUT, async {
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq)]
+struct DecodeApplied { channel: u32, channel_id: u32, epoch: u32, seq: u32 }
+
+struct DecodePending { applied: DecodeApplied, deadline: tokio::time::Instant, bytes: usize }
+
+#[derive(Default)]
+struct DecodeCredit { pending: std::collections::VecDeque<DecodePending>, bytes: usize }
+
+impl DecodeCredit {
+    fn can_send(&self, bytes: usize) -> bool {
+        self.pending.len() < DECODE_ACK_WINDOW && self.bytes + bytes <= DECODE_ACK_BYTES
+    }
+
+    fn sent(&mut self, applied: DecodeApplied, bytes: usize) {
+        self.pending.push_back(DecodePending {
+            applied, bytes, deadline: tokio::time::Instant::now() + DECODE_ACK_TIMEOUT,
+        });
+        self.bytes += bytes;
+    }
+
+    fn acknowledge(&mut self, applied: DecodeApplied) -> bool {
+        // Only a frame actually sent can grant cumulative credit. A guessed future
+        // sequence, another identity, or a duplicate ACK cannot release memory.
+        if !self.pending.iter().any(|entry| entry.applied == applied) { return false; }
+        self.pending.retain(|entry| {
+            let prior = entry.applied.channel == applied.channel
+                && entry.applied.channel_id == applied.channel_id
+                && entry.applied.epoch == applied.epoch && entry.applied.seq <= applied.seq;
+            if prior { self.bytes -= entry.bytes; }
+            !prior
+        });
+        true
+    }
+
+    fn acknowledge_text(&mut self, text: &str) -> bool {
+        #[derive(serde::Deserialize)]
+        struct Ack { #[serde(rename="type")] kind: String, #[serde(flatten)] applied: DecodeApplied }
+        serde_json::from_str::<Ack>(text).is_ok_and(|ack| ack.kind == "ack" && self.acknowledge(ack.applied))
+    }
+
+    fn deadline(&self) -> Option<tokio::time::Instant> { self.pending.front().map(|entry| entry.deadline) }
+}
+
+#[derive(Debug)]
+struct DecodeAckTimeout;
+
+async fn send_with_decode_deadline(deadline:Option<tokio::time::Instant>,
+    send:impl Future<Output=bool>) -> Result<bool,DecodeAckTimeout> {
+    let Some(deadline)=deadline else {return Ok(send.await);};
+    // timeout_at polls its future before checking the timer. Check both sides
+    // explicitly so even an immediately ready send cannot outlive old credit.
+    if tokio::time::Instant::now()>=deadline {return Err(DecodeAckTimeout);}
+    let sent=tokio::time::timeout_at(deadline,send).await.map_err(|_|DecodeAckTimeout)?;
+    if tokio::time::Instant::now()>=deadline {return Err(DecodeAckTimeout);}
+    Ok(sent)
+}
+
+async fn wait_decode_credit(stream: &mut futures_util::stream::SplitStream<WebSocket>, credit: &mut DecodeCredit)
+    -> Result<bool, DecodeAckTimeout> {
+    let Some(deadline) = credit.deadline() else { return Ok(false); };
+    tokio::time::timeout_at(deadline, async {
         while let Some(Ok(message)) = stream.next().await {
             match message {
-                Message::Text(text) => {
-                    #[derive(serde::Deserialize)]
-                    struct Ack { #[serde(rename="type")] kind: String, #[serde(flatten)] applied: DecodeApplied }
-                    if serde_json::from_str::<Ack>(&text).is_ok_and(|ack| ack.kind == "ack" && ack.applied == *expected) {
-                        return true;
-                    }
-                }
+                Message::Text(text) if credit.acknowledge_text(&text) => return true,
                 Message::Close(_) => return false,
                 _ => {}
             }
         }
         false
-    }).await
+    }).await.map_err(|_|DecodeAckTimeout)
 }
 
 async fn send_decode_frame(sink:&mut WsSink, stream:&mut futures_util::stream::SplitStream<WebSocket>,
-    frame:Message, decode_ack:bool) -> Result<bool,tokio::time::error::Elapsed> {
+    frame:Message, decode_ack:bool, credit:&mut DecodeCredit) -> Result<bool,DecodeAckTimeout> {
     if !decode_ack {return Ok(send_frame(sink,frame).await);}
     let Message::Binary(bytes)=frame else {return Ok(send_frame(sink,frame).await);};
     if !bytes.starts_with(b"SDE2") {return Ok(send_frame(sink,Message::Binary(bytes)).await);}
@@ -4174,8 +4241,14 @@ async fn send_decode_frame(sink:&mut WsSink, stream:&mut futures_util::stream::S
             eprintln!("WebSA decode ACK capability: {error}");return Ok(false);
         }}
     } else {Message::Binary(bytes)};
-    if !send_frame(sink,frame).await {return Ok(false);}
-    wait_decode_ack(stream,&expected).await
+    let bytes = match &frame { Message::Binary(bytes) => bytes.len(), _ => 0 };
+    if bytes > DECODE_ACK_BYTES { return Ok(false); }
+    while !credit.can_send(bytes) {
+        if !wait_decode_credit(stream,credit).await? { return Ok(false); }
+    }
+    if !send_with_decode_deadline(credit.deadline(),send_frame(sink,frame)).await? {return Ok(false);}
+    credit.sent(expected,bytes);
+    Ok(true)
 }
 
 /// Bounded single-frame send. `false` means the socket is gone; the loop must remove the
@@ -4211,12 +4284,15 @@ async fn send_status(
     send_frame(sink, Message::Text(status.to_string().into())).await
 }
 
-async fn close_stream(sink: &mut WsSink, receiver_failed: bool) {
+async fn close_stream(sink: &mut WsSink, receiver_failed: bool, subscriber_failed: bool, ack_timeout: bool) {
     let _ = tokio::time::timeout(
         Duration::from_millis(250),
         sink.send(Message::Close(Some(CloseFrame {
-            code: if receiver_failed { 1011 } else { 1013 },
-            reason: if receiver_failed { "receiver failed" } else { "IQ/audio consumer too slow" }.into(),
+            code: if receiver_failed || subscriber_failed { 1011 } else { 1013 },
+            reason: if receiver_failed { "receiver failed" } else if subscriber_failed {
+                "subscriber source stream invalid"
+            } else if ack_timeout { "decoded-output acknowledgement timeout" }
+            else { "IQ/audio consumer too slow" }.into(),
         }))),
     )
     .await;
@@ -4304,7 +4380,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         latest: Arc::clone(&latest_slot),
     });
         if decode {state.decode_snapshots.initial(channel,&state.stream_registry(),&mut subscriber)}
-        else {Ok(Vec::new())}
+            else {Ok(Vec::new())}
     };
     let (mut sink, mut stream) = socket.split();
     // Capture the generation under the same lock as the frame, then re-check before the
@@ -4325,13 +4401,15 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         .await
     };
     let mut initial_ok = true;
+    let mut decode_credit = DecodeCredit::default();
+    let mut subscriber_failed = false;
+    let mut ack_timeout = false;
     match initial_decode {
         Ok(frames)=>for frame in frames {
-            if !service_stream::identity_current(service_stream::message_identity(&frame),&app.identities,channel) {continue;}
-            match send_decode_frame(&mut sink,&mut stream,frame,decode_ack).await {
+            match send_decode_frame(&mut sink,&mut stream,frame,decode_ack,&mut decode_credit).await {
                 Ok(true)=>{},
                 Ok(false)=>{initial_ok=false;break;},
-                Err(_)=>{overflow.store(true,Ordering::Release);initial_ok=false;break;}
+                Err(_)=>{ack_timeout=true;overflow.store(true,Ordering::Release);initial_ok=false;break;}
             }
         },
         Err(error)=>{eprintln!("WebSA initial decode snapshot: {error}");initial_ok=false;}
@@ -4358,7 +4436,13 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
             // Fair select: a FIFO backlog or published STATUS cannot starve the wake
             // branch. The wake branch sends at most FREQ + newest trace, then selects
             // again, so command input is never delayed behind display traffic.
+            let ack_deadline = decode_credit.deadline();
             tokio::select! {
+                _ = tokio::time::sleep_until(ack_deadline.unwrap_or_else(||tokio::time::Instant::now()+DECODE_ACK_TIMEOUT)), if ack_deadline.is_some() => {
+                    ack_timeout=true;
+                    overflow.store(true,Ordering::Release);
+                    break true;
+                }
                 _ = wake.notified() => {
                     if !flush_latest(&mut sink, &latest_slot, &epoch, &display_version).await {
                         break false;
@@ -4381,7 +4465,10 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                         continue;
                     };
                     // Application acknowledgements are transport credit, never control commands.
-                    if decode && data.get("type").and_then(Value::as_str) == Some("ack") {continue;}
+                    if decode && data.get("type").and_then(Value::as_str) == Some("ack") {
+                        decode_credit.acknowledge_text(&text);
+                        continue;
+                    }
                     let cmd = data.get("cmd").and_then(Value::as_str).unwrap_or_default().to_string();
                     let request_id = command_request_id(&data);
                     if cmd == "STATUS" {
@@ -4467,7 +4554,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                 }
                 packet = rx.recv() => {
                     let Some(packet) = packet else { break false };
-                    if packet.epoch != epoch.load(Ordering::Acquire)
+                    if !packet.epoch_current(epoch.load(Ordering::Acquire))
                         || packet.status_revision.is_some_and(|r| r < seen_status_revision || r < status_revision.load(Ordering::Acquire))
                         || packet.display_version.is_some_and(|v| v != display_version.load(Ordering::Acquire))
                     {
@@ -4476,26 +4563,18 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
                     if let Some(revision) = packet.status_revision {
                         seen_status_revision = revision;
                     }
-                    let mut index=0;
-                    while let Some((message,identity))=packet.message.frame(index) {
+                    for message in packet.frames() {
                         if receiver_failed.load(Ordering::Acquire) || overflow.load(Ordering::Acquire) {break 'client true;}
-                        let included=match &packet.message {
-                            OutboundPayload::DecodeBatch {frames,retiring:Some(ids),..}=>
-                                frames[index].1.is_some_and(|id|ids.contains(&id)),
-                            _=>true,
-                        };
-                        index+=1;
-                        if !included || packet.epoch!=epoch.load(Ordering::Acquire)
-                            || !service_stream::identity_current(identity.or(packet.identity),&app.identities,channel) {continue;}
+                        if !packet.epoch_current(epoch.load(Ordering::Acquire)) {continue;}
                         let frames=match subscriber.frames(message) {
                             Ok(frames)=>frames,
-                            Err(error)=>{eprintln!("SDR subscriber stream: {error}");break 'client true;},
+                            Err(error)=>{eprintln!("SDR subscriber stream: {error}");subscriber_failed=true;break 'client true;},
                         };
                         for frame in frames {
-                            match send_decode_frame(&mut sink,&mut stream,frame,decode_ack).await {
+                            match send_decode_frame(&mut sink,&mut stream,frame,decode_ack,&mut decode_credit).await {
                                 Ok(true)=>{},
                                 Ok(false)=>break 'client false,
-                                Err(_)=>{overflow.store(true,Ordering::Release);break 'client true;}
+                                Err(_)=>{ack_timeout=true;overflow.store(true,Ordering::Release);break 'client true;}
                             }
                         }
                     }
@@ -4506,7 +4585,7 @@ async fn client_loop(app: Arc<App>, socket: WebSocket, iq: bool, aux: bool, audi
         overflow.load(Ordering::Acquire) || receiver_failed.load(Ordering::Acquire)
     };
     if slow {
-        close_stream(&mut sink,receiver_failed.load(Ordering::Acquire)).await;
+        close_stream(&mut sink,receiver_failed.load(Ordering::Acquire),subscriber_failed,ack_timeout).await;
     }
     app.clients.lock().retain(|client| client.id != id);
 }
@@ -4801,16 +4880,14 @@ mod tests {
                 });
                 receivers.push((audio,rx));
             }
+            let initial_audio=initial.audio.clone();
+            let initial_decode=initial.decode.clone();
             {
                 let state=app.state.lock().unwrap();
                 service_stream::deliver_receiver(&state,&app,initial,false);
             }
-            // Consume the established session's start/data before the command.
-            // The tail will be enqueued under the *new* transport epoch.
-            for (_,rx) in &mut receivers {
-                assert!(rx.try_recv().is_ok());
-                while rx.try_recv().is_ok() {}
-            }
+            // Leave ordinary predecessors queued while the command admits its
+            // retiring successors under the next capture epoch.
             let old_epoch=app.epoch.load(Ordering::Acquire);
             let request=json!({"cmd":"SET_MODE","mode":"server","request_id":"failed-handoff"});
             let error=if websocket {
@@ -4858,19 +4935,32 @@ mod tests {
                 service_stream::deliver_receiver(&state,&app,output,false);
             }
             for (audio,mut rx) in receivers {
+                let mut subscriber=subscriber_stream::SubscriberStream::default();
+                let initial=if audio {&initial_audio} else {&initial_decode};
+                let mut packet=rx.try_recv().expect("queued predecessor");
+                for (index,expected) in initial.iter().enumerate() {
+                    if audio && index>0 {packet=rx.try_recv().expect("queued audio predecessor");}
+                    assert_eq!(packet.epoch,old_epoch);
+                    assert!(packet.epoch_current(app.epoch.load(Ordering::Acquire)),"admitted receiver predecessor survives capture transition");
+                    let frame=packet.frames().nth(if audio {0} else {index}).unwrap();
+                    let frames=subscriber.frames(frame).expect("initial sequence remains contiguous");
+                    let Message::Binary(bytes)=&frames[0] else {panic!("expected receiver bytes")};
+                    assert_eq!(bytes.as_ref(),expected.as_slice());
+                }
                 let expected=if audio {&tail.audio} else {&tail.decode};
                 let mut packet=rx.try_recv().expect("retiring tail cannot be lost on failed handoff");
                 for (index,frame) in expected.iter().enumerate() {
                     if audio && index>0 {packet=rx.try_recv().expect("retiring audio tail");}
                     assert_eq!(packet.epoch,old_epoch+1);
-                    let (message,identity)=packet.message.frame(if audio {0} else {index}).unwrap();
-                    assert!(identity.or(packet.identity).is_none(),"old tail must survive the identity fence");
+                    let message=packet.frames().nth(if audio {0} else {index}).expect("retiring tail remains admitted");
+                    assert!(packet.epoch_current(app.epoch.load(Ordering::Acquire)));
+                    let frames=subscriber.frames(message).expect("retiring successor follows queued predecessor");
+                    let message=frames.into_iter().next().unwrap();
                     let Message::Binary(bytes)=message else {panic!("expected receiver bytes")};
                     assert_eq!(bytes.as_ref(),frame.as_slice());
                 }
                 let packet=rx.try_recv().expect("fresh capture start follows every retiring tail");
-                let (message,identity)=packet.message.frame(0).unwrap();
-                assert!(identity.or(packet.identity).is_some());
+                let message=packet.frames().next().expect("fresh start remains admitted");
                 let Message::Binary(bytes)=message else {panic!("expected fresh receiver start")};
                 if audio {
                     assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()),0);
@@ -5659,7 +5749,7 @@ mod tests {
         dbm[last] = -35.0;
         let lo = freq[first];
         let hi = freq[last];
-        let frame = hardware_pan(7, (lo + hi) / 2.0, hi - lo, &freq, &dbm).unwrap();
+        let frame = hardware_pan(7, lo, hi - lo, &freq, &dbm).unwrap();
         assert_eq!(&frame[..4], b"RTAF");
         assert_eq!(u32::from_le_bytes(frame[4..8].try_into().unwrap()), 7);
         let points = u32::from_le_bytes(frame[8..12].try_into().unwrap()) as usize;
@@ -6150,7 +6240,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn initial_decode_snapshot_waits_for_opted_in_application_ack() {
+    async fn initial_decode_snapshot_uses_bounded_cumulative_application_ack() {
         let (app, url) = start_ws_server().await;
         let (channel_id, stream_epoch) = {
             let mut state = app.state.lock().unwrap();
@@ -6204,20 +6294,33 @@ mod tests {
         let start: Value = serde_json::from_slice(&start[8..]).unwrap();
         assert_eq!(start["seq"], 0);
         assert_eq!(start["event"]["snapshotAck"], true);
-        expect_silence(&mut paced, Duration::from_millis(30)).await;
-        // An ACK for another channel or sequence grants no credit.
-        paced.send(WsMessage::Text(json!({"type":"ack","channel":2,"epoch":stream_epoch,"seq":0}).to_string().into())).await.unwrap();
-        expect_silence(&mut paced, Duration::from_millis(30)).await;
         let mut total = 0;
-        for seq in 0..=38 {
-            paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":stream_epoch,"seq":seq}).to_string().into())).await.unwrap();
-            if seq == 38 {break;}
+        for seq in 1..DECODE_ACK_WINDOW as u32 {
+            let bytes = next_binary(&mut paced).await;
+            total += bytes.len();
+            let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
+            assert_eq!(envelope["seq"], seq);
+        }
+        expect_silence(&mut paced, Duration::from_millis(30)).await;
+        // Wrong identities and unsent sequences cannot release the full window.
+        for (channel,id,epoch,seq) in [(2,channel_id,stream_epoch,15),
+            (1,channel_id+1,stream_epoch,15),(1,channel_id,stream_epoch+1,15),
+            (1,channel_id,stream_epoch,16)] {
+            paced.send(WsMessage::Text(json!({"type":"ack","channel":channel,"channel_id":id,
+                "epoch":epoch,"seq":seq}).to_string().into())).await.unwrap();
+            expect_silence(&mut paced, Duration::from_millis(30)).await;
+        }
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"channel_id":channel_id,
+            "epoch":stream_epoch,"seq":15}).to_string().into())).await.unwrap();
+        for seq in DECODE_ACK_WINDOW as u32..=38 {
             let bytes = next_binary(&mut paced).await;
             assert!(bytes.len()-8 <= 2*1024*1024);
             total += bytes.len();
             let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
-            assert_eq!(envelope["seq"], seq+1);
-            assert_eq!(envelope["event"]["row"], seq*64);
+            assert_eq!(envelope["seq"], seq);
+            assert_eq!(envelope["event"]["row"], (seq-1)*64);
+            paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"channel_id":channel_id,
+                "epoch":stream_epoch,"seq":seq}).to_string().into())).await.unwrap();
         }
         assert!(total > 4*1024*1024);
         let live = frame(39,json!({"type":"radiofax-state"}));
@@ -6225,7 +6328,7 @@ mod tests {
         let bytes = next_binary(&mut paced).await;
         let envelope: Value = serde_json::from_slice(&bytes[8..]).unwrap();
         assert_eq!(envelope["seq"], 39);
-        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":stream_epoch,"seq":39}).to_string().into())).await.unwrap();
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"channel_id":channel_id,"epoch":stream_epoch,"seq":39}).to_string().into())).await.unwrap();
         expect_silence(&mut paced, Duration::from_millis(30)).await;
         assert!(app.clients.lock().iter().all(|client| !client.overflow.load(Ordering::Acquire)));
     }
@@ -6240,8 +6343,64 @@ mod tests {
         assert!(DecodeReservation::acquire(&pending,DECODE_PENDING_BYTE_LIMIT).is_some());
     }
 
+    #[test]
+    fn decode_credit_bounds_bytes_and_tracks_cumulative_identity_deadlines() {
+        let mut credit=DecodeCredit::default();
+        let first=DecodeApplied {channel:1,channel_id:11,epoch:7,seq:0};
+        credit.sent(first,DECODE_ACK_BYTES/2);
+        let oldest=credit.deadline();
+        let second=DecodeApplied {seq:1,..first};
+        credit.sent(second,DECODE_ACK_BYTES/2);
+        assert!(!credit.can_send(1));
+        assert!(!credit.acknowledge(DecodeApplied {seq:2,..first}));
+        assert!(!credit.acknowledge(DecodeApplied {channel_id:12,..second}));
+        assert_eq!(credit.deadline(),oldest);
+        assert!(credit.acknowledge(second));
+        assert_eq!(credit.bytes,0);
+        assert_eq!(credit.deadline(),None);
+        credit.sent(first,1);
+        credit.sent(DecodeApplied {channel_id:12,..first},1);
+        credit.sent(DecodeApplied {epoch:8,..first},1);
+        assert!(credit.acknowledge(first));
+        assert_eq!(credit.pending.len(),2);
+        assert_eq!(credit.bytes,2);
+        assert!(!credit.acknowledge(first));
+        for seq in 1..DECODE_ACK_WINDOW as u32-1 {
+            assert!(credit.can_send(1));
+            credit.sent(DecodeApplied {epoch:8,seq,..first},1);
+        }
+        assert!(!credit.can_send(1));
+    }
+
+    #[tokio::test(flavor="current_thread")]
+    async fn decode_send_rejects_expired_oldest_credit_with_available_capacity() {
+        let mut credit=DecodeCredit::default();
+        credit.sent(DecodeApplied {channel:1,channel_id:11,epoch:7,seq:0},1);
+        credit.pending.front_mut().unwrap().deadline=tokio::time::Instant::now()-Duration::from_secs(1);
+        assert!(credit.can_send(1),"deadline must be enforced even below both window bounds");
+        let mut polled=false;
+        let result=send_with_decode_deadline(credit.deadline(),async {polled=true;true}).await;
+        assert!(result.is_err());
+        assert!(!polled,"an expired predecessor must prevent even an immediately ready send");
+        assert!(send_with_decode_deadline(None,async {true}).await.unwrap());
+        assert!(send_with_decode_deadline(Some(tokio::time::Instant::now()+DECODE_ACK_TIMEOUT),async {true}).await.unwrap());
+        let deadline=tokio::time::Instant::now()+Duration::from_millis(1);
+        assert!(send_with_decode_deadline(Some(deadline),std::future::pending()).await.is_err(),
+            "a blocked send must end at the oldest credit deadline");
+    }
+
+    #[test]
+    fn capture_epoch_fences_raw_iq_and_display_but_keeps_admitted_receiver_frames() {
+        for (magic,retained) in [(b"IQBF",false),(b"RTAF",false),(b"AUD2",true),(b"SDE2",true)] {
+            let packet=Outbound {epoch:1,status_revision:None,display_version:None,identity:None,
+                message:Message::Binary(magic.to_vec().into()).into()};
+            assert!(packet.epoch_current(1));
+            assert_eq!(packet.epoch_current(2),retained);
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn live_decode_revision_batches_wait_for_exact_ack_without_losing_fifo() {
+    async fn live_decode_revision_batches_use_bounded_ack_without_losing_fifo() {
         let (app,url)=start_ws_server().await;
         for (index,identity) in app.identities.iter().enumerate() {
             identity.store(service_stream::identity_key(index as u32+11,7),Ordering::Release);
@@ -6299,13 +6458,6 @@ mod tests {
             if index<count {assert!(seq<=184);} else {assert_eq!(seq,185);}
             if seq==0 {assert_eq!(event["event"]["snapshotAck"],true);}
             if seq>0 && seq<=184 {assert_eq!(event["event"]["revision"],2);}
-            if index==0 {
-                expect_silence(&mut paced,Duration::from_millis(20)).await;
-                for (wrong_channel,wrong_epoch,wrong_seq) in [(2,7,0),(1,8,0),(1,7,1)] {
-                    paced.send(WsMessage::Text(json!({"type":"ack","channel":wrong_channel,"epoch":wrong_epoch,"seq":wrong_seq}).to_string().into())).await.unwrap();
-                    expect_silence(&mut paced,Duration::from_millis(20)).await;
-                }
-            }
             let raw_bytes=next_binary(&mut raw).await;
             let raw_event:Value=serde_json::from_slice(&raw_bytes[8..]).unwrap();
             assert_eq!(raw_event["channel"],event["channel"]);
@@ -6313,7 +6465,7 @@ mod tests {
             assert!(raw_event["event"].get("snapshotAck").is_none());
             if seq>0 {assert_eq!(raw_bytes,bytes);}
             total+=bytes.len();
-            paced.send(WsMessage::Text(json!({"type":"ack","channel":channel,"epoch":7,"seq":seq}).to_string().into())).await.unwrap();
+            paced.send(WsMessage::Text(json!({"type":"ack","channel":channel,"channel_id":channel+10,"epoch":7,"seq":seq}).to_string().into())).await.unwrap();
         }
         assert_eq!(sequences,[186;3]);
         assert!(total>=wire_bytes);
@@ -6347,7 +6499,7 @@ mod tests {
         let start:Value=serde_json::from_slice(&start[8..]).unwrap();
         assert_eq!(start["event"]["snapshotAck"],true);
         let pending=app.clients.lock()[0].decode_pending_bytes.load(Ordering::Acquire);
-        assert!(pending>0,"active ACK wait must retain its reservation");
+        assert_eq!(pending,0,"sent frames use the separate bounded credit window");
         {
             let state=app.state.lock().unwrap();
             // No awaits: the client cannot drain a mistakenly enqueued batch.
@@ -6374,13 +6526,11 @@ mod tests {
                 audio:Vec::new(),decode:vec![frame(1,1,json!({"type":"radiofax-state"}))],
             },false);
         }
-        expect_silence(&mut paced,Duration::from_millis(20)).await;
-        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":7,"seq":0}).to_string().into())).await.unwrap();
         let following=next_binary(&mut paced).await;
         let following:Value=serde_json::from_slice(&following[8..]).unwrap();
         assert_eq!(following["channel"],1);
         assert_eq!(following["seq"],1);
-        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"epoch":7,"seq":1}).to_string().into())).await.unwrap();
+        paced.send(WsMessage::Text(json!({"type":"ack","channel":1,"channel_id":11,"epoch":7,"seq":1}).to_string().into())).await.unwrap();
         expect_silence(&mut paced,Duration::from_millis(20)).await;
         assert_eq!(app.clients.lock()[0].decode_pending_bytes.load(Ordering::Acquire),0);
     }

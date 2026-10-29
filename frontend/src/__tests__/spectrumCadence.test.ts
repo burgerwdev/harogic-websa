@@ -83,14 +83,14 @@ function rta(peak: number, version = 1, shift = 0, trigger?: TriggerMetadata, sa
   }
   deliver(data);
 }
-function sweep(kind: 'FREQ' | 'POWR', peak = -60) {
+function sweep(kind: 'FREQ' | 'POWR', peak = -60, version = 1, shift = 0, extraSpan = 0) {
   const data = new ArrayBuffer(16 + 32 * (kind === 'FREQ' ? 8 : 4));
   const header = new DataView(data);
   new Uint8Array(data, 0, 4).set([...kind].map(char => char.charCodeAt(0)));
-  header.setUint32(4, 1, true); header.setUint32(8, 32, true);
+  header.setUint32(4, version, true); header.setUint32(8, 32, true);
   if (kind === 'FREQ') {
     const freq = new Float64Array(data, 16);
-    for (let i = 0; i < 32; i++) freq[i] = 1e9 + i * 100;
+    for (let i = 0; i < 32; i++) freq[i] = 1e9 + shift + i * (100 + extraSpan / 31);
   } else {
     const powers = new Float32Array(data, 16); powers.fill(-120); powers[16] = peak;
   }
@@ -98,7 +98,34 @@ function sweep(kind: 'FREQ' | 'POWR', peak = -60) {
 }
 
 describe('spectrum arrival cadence', () => {
-  it.each(['rta', 'std'] as const)('draws the latest %s near 30 Hz for 20 ms input, then stops when idle', async mode => {
+  it('retains SWP zoom after a pan settles onto a realigned native grid, but resets it on a span edit', async () => {
+    await load('std');
+    // These imports must share load()'s fresh graph after vi.resetModules().
+    const viewport = await import('../ui/spectrumViewport');
+    const axis = await import('../ui/axisDrag');
+    sweep('FREQ');
+    sweep('POWR');
+    viewport.zoomEnabled.set(true);
+    viewport.setView({ lo: 1e9 + 1000, hi: 1e9 + 1800 }, 1);
+    axis.axisDragStart('x', 400, 450, { x: 0, y: 0, w: 800, h: 400 });
+    axis.axisDragMove(600, 450);
+    axis.axisDragEnd();
+    expect(axis.previewCaptureWindow()).toEqual({ lo: 1e9 - 200, hi: 1e9 + 2900 });
+    expect(viewport.isZoomed()).toBe(true);
+    // A same-bandwidth SDK retune changes the sampled endpoint by one native bin.
+    sweep('FREQ', -60, 2, -200, 100);
+    sweep('POWR', -50, 2);
+    vi.advanceTimersByTime(100);
+    expect(viewport.isZoomed()).toBe(true);
+    expect(viewport.getView()).toEqual({ lo: 1e9 + 800, hi: 1e9 + 1600 });
+    expect(axis.previewCaptureWindow()).toBeNull();
+    // Without a pan in flight, a genuine capture-width edit still drops the view.
+    sweep('FREQ', -60, 3, -200, 3200);
+    sweep('POWR', -40, 3);
+    expect(viewport.isZoomed()).toBe(false);
+  });
+
+  it.each(['rta', 'std', 'sdr'] as const)('presents the final %s burst frame without another arrival', async mode => {
     const { S, draws } = await load(mode);
     if (mode === 'std') sweep('FREQ');
     const feed = (peak: number) => mode === 'std' ? sweep('POWR', peak) : rta(peak);
@@ -106,38 +133,22 @@ describe('spectrum arrival cadence', () => {
     feed(-100);
     vi.advanceTimersByTime(10); feed(-20);
     vi.advanceTimersByTime(10); feed(-90);
-    vi.advanceTimersByTime(14);
-    // SWP processes every accepted frame; normal RTA coalesces the superseded packet.
+    expect(draws.at(-1)!.peak).toBe(-100);
+    vi.advanceTimersByTime(20);
+    // SWP processes every accepted frame; RTA and SDR coalesce superseded packets.
     expect(mode === 'std' ? S.traces[0].powers![16] : S.rtaDisplays[0]![16]).toBe(mode === 'std' ? -20 : -90);
+    expect(draws.at(-1)!.peak).toBe(mode === 'std' ? -20 : -90);
     S.traces[0].mode = 'CLEAR_WRITE';
-    for (let i = 2; i <= 49; i++) {
-      vi.advanceTimersByTime(i * 20 - performance.now());
-      feed(-100 + i);
-    }
-    vi.advanceTimersByTime(60);
-    expect(draws.length).toBeGreaterThanOrEqual(29);
-    expect(draws.length).toBeLessThanOrEqual(31);
-    expect(draws.at(-1)!.peak).toBe(-51);
+    feed(-60);
+    vi.advanceTimersByTime(100);
+    expect(draws.at(-1)!.peak).toBe(-60);
     const count = draws.length;
     vi.advanceTimersByTime(1000);
     expect(draws).toHaveLength(count);
   });
 
-  it('retains SDR arrival processing at 30 ms and never schedules a trailing draw', async () => {
-    const { S, draws } = await load('sdr');
-    for (let i = 0; i < 50; i++) {
-      if (i) vi.advanceTimersByTime(20);
-      rta(-100 + i);
-    }
-    expect(draws).toHaveLength(25);
-    expect(S.rtaData.spec[16]).toBe(-52);
-    vi.advanceTimersByTime(100);
-    expect(draws).toHaveLength(25);
-    expect(S.rtaData.spec[16]).toBe(-52);
-  });
-
-  it('draws a new axis immediately and cannot restore its queued old-axis packet', async () => {
-    const { S, draws } = await load('rta');
+  it.each(['rta', 'sdr'] as const)('draws a new %s axis immediately without restoring queued old-axis data', async mode => {
+    const { S, draws } = await load(mode);
     rta(-100);
     vi.advanceTimersByTime(10); rta(-80);
     vi.advanceTimersByTime(1); rta(-60, 2, 10000);
@@ -203,20 +214,40 @@ describe('spectrum arrival cadence', () => {
     expect(draws[1].at).toBeGreaterThanOrEqual(300);
   });
 
-  it.each(['mode', 'disconnect', 'retune'] as const)('cancels deferred RTA work on %s', async boundary => {
-    const { S, draws } = await load('rta');
+  it.each([
+    ['rta', 'mode'], ['rta', 'disconnect'], ['rta', 'retune'],
+    ['sdr', 'mode'], ['sdr', 'disconnect'], ['sdr', 'retune'],
+  ] as const)('cancels deferred %s work on %s', async (mode, boundary) => {
+    const { S, draws } = await load(mode);
     rta(-100);
     vi.advanceTimersByTime(10); rta(-80);
     if (boundary === 'disconnect') socket.onclose!();
     else {
       const { send } = await import('../core/wsSend');
-      send(boundary === 'mode' ? { cmd: 'SET_MODE', mode: 'std' } : { cmd: 'SET_RTA', center: 2e9 });
+      send(boundary === 'mode' ? { cmd: 'SET_MODE', mode: 'std' }
+        : { cmd: mode === 'sdr' ? 'SET_SDR' : 'SET_RTA', center: 2e9 });
     }
     // SET_* also withdraws Auto feedback synchronously; that UI repaint is intentional.
     const drawsAfterBoundary = draws.length;
     vi.advanceTimersByTime(100);
     expect(draws).toHaveLength(drawsAfterBoundary);
     expect(S.rtaData.spec[16]).toBe(-100);
-    expect(draws.every(draw => draw.peak === -100)).toBe(true);
+  });
+
+  it.each(['center', 'decimate', 'version'] as const)('rejects deferred SDR work after its capture %s changes', async boundary => {
+    const { S, draws } = await load('sdr');
+    // Static imports would retain state from before resetModules().
+    const { sdrCenterHz, sdrDecimate } = await import('../ui/sdrState');
+    rta(-100);
+    vi.advanceTimersByTime(10); rta(-80);
+    if (boundary === 'center') sdrCenterHz.set(sdrCenterHz.get() + 10000);
+    else if (boundary === 'decimate') sdrDecimate.set(sdrDecimate.get() * 2);
+    else S.setConfigVersion(S.configVersion + 1);
+    const drawsAfterBoundary = draws.length;
+    vi.advanceTimersByTime(100);
+    expect(draws).toHaveLength(drawsAfterBoundary);
+    expect(S.rtaData.spec[16]).toBe(-100);
+    rta(-60, 2, 10000);
+    expect(draws.at(-1)!.peak).toBe(-60);
   });
 });

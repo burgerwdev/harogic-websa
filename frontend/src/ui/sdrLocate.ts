@@ -7,7 +7,7 @@ import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { formatFreqHz } from '../core/fmt';
 import {
-	carrierEvidenceVersion, currentCarrierEvidence, findCarrierCandidate, resetCarrierEvidence,
+	carrierAxisCoarse, carrierEvidenceVersion, currentCarrierEvidence, findCarrierCandidate, resetCarrierEvidence,
 } from '../dsp/carrierSnap';
 import {
 	SNAP_ENVELOPE_MS, SNAP_WINDOW_HZ, SNAP_WINDOW_PX, SNAP_RELEASE_PX,
@@ -56,7 +56,11 @@ function signalRadiusHzAt(pixelScale: number, pixels: number): number {
 	const mode = sdrDemod.get(), view = locateView();
 	if (!signalLocateSupported(mode) || !view) return 0;
 	const cap = mode === 'cw' ? CW_SNAP_CAP_HZ : AM_SNAP_CAP_HZ;
-	return Math.min(cap, pixels * Math.max(0, pixelScale) * (view.hi - view.lo) / Math.max(1, plotRect().w), SNAP_WINDOW_HZ);
+	const px = pixels * Math.max(0, pixelScale) * (view.hi - view.lo) / Math.max(1, plotRect().w);
+	// Wide native bins need a larger search envelope; resolved carriers retain the
+	// mode-specific cap even when a large capture is drawn into a narrow plot.
+	const ceiling = carrierAxisCoarse(signalMaxBinHz(mode)) ? SNAP_WINDOW_HZ : Math.min(cap, SNAP_WINDOW_HZ);
+	return Math.min(ceiling, px);
 }
 
 /** Pure query: no hover mutation, persistence hold, or receiver commands. */
@@ -77,7 +81,7 @@ export function locateTargetAt(x: number, y: number, pixelScale: number): Locate
 			x: p.x + (aligned - view.lo) / (view.hi - view.lo) * p.w, evidenceMs: null };
 	}
 	if (preference === 'signal') {
-		const cand = findCarrierCandidate(raw, snapRadiusHzAt(pixelScale), performance.now(), signalMaxBinHz(mode));
+		const cand = findCarrierCandidate(raw, snapRadiusHzAt(pixelScale), performance.now(), signalMaxBinHz(mode), true);
 		if (cand) {
 			const dial = mode === 'cw' ? cand.hz - Math.max(100, sdrPitchHz.get()) : cand.hz;
 			if (dial >= S.FREQ_MIN && dial <= S.FREQ_MAX && dial >= view.lo && dial <= view.hi) {
@@ -168,9 +172,10 @@ function refreshHover(): void {
 	}
 	const raw = view.lo + (h.x - p.x) / p.w * (view.hi - view.lo);
 	if (previous?.mode === 'signal' && Math.abs(previous.carrierHz - raw) <= signalRadiusHzAt(h.pixelScale, SNAP_RELEASE_PX)) {
-		const evidence = currentCarrierEvidence(previous.carrierHz, now, signalMaxBinHz(sdrDemod.get()));
+		const evidence = currentCarrierEvidence(previous.carrierHz, now, signalMaxBinHz(sdrDemod.get()), true);
+		const fresh = evidence ? evidence.atMs : (previous.evidenceMs ?? -Infinity);
 		if (evidence) previous.evidenceMs = evidence.atMs;
-		if (now - (previous.evidenceMs ?? -Infinity) < SNAP_ENVELOPE_MS) return;
+		if (now - fresh < SNAP_ENVELOPE_MS) return;
 	}
 	const target = locateTargetAt(h.x, h.y, h.pixelScale);
 	h.target = target?.mode === 'free' ? null : target;
@@ -190,6 +195,7 @@ export function sdrLocateHover(): LocateTarget | null {
 export function updateSdrLocateHover(x: number, y: number, pixelScale: number): void {
 	if (!S.sdrMode) { cancelSdrLocate(); return; }
 	if (frozen) return;
+	const previous = hover?.target ?? null;
 	if (hover) {
 		hover.x = x;
 		hover.y = y;
@@ -197,7 +203,8 @@ export function updateSdrLocateHover(x: number, y: number, pixelScale: number): 
 	} else hover = { x, y, pixelScale, target: null, environment: environmentSnapshot() };
 	refreshHover();
 	armStaleTimer(hover.target);
-	requestRender();
+	// Repaint only when the visible preview changed; ordinary Free movement paints nothing.
+	if ((hover.target ?? null) !== previous) requestRender();
 }
 
 /** Freeze the candidate already displayed at this pointer position. */
@@ -231,7 +238,7 @@ export function commitSdrLocateClick(rawHz: number): number | null {
 	if (!target || target.mode === 'free') return rawHz;
 	if (target.mode === 'signal') {
 		const now = performance.now();
-		const evidence = currentCarrierEvidence(target.carrierHz, now, signalMaxBinHz(sdrDemod.get()));
+		const evidence = currentCarrierEvidence(target.carrierHz, now, signalMaxBinHz(sdrDemod.get()), true);
 		if (!evidence || now - evidence.atMs >= SNAP_ENVELOPE_MS) {
 			postRefNotice(t('sdr_locate_fallback_expired'), 2500);
 			return rawHz;
@@ -261,7 +268,7 @@ export function renderSdrLocate(loHz: number, hiHz: number): boolean {
 			shown = frozen.target;
 			if (shown?.mode === 'signal') {
 				const now = performance.now();
-				const evidence = currentCarrierEvidence(shown.carrierHz, now, signalMaxBinHz(sdrDemod.get()));
+				const evidence = currentCarrierEvidence(shown.carrierHz, now, signalMaxBinHz(sdrDemod.get()), true);
 				if (evidence) shown.evidenceMs = evidence.atMs;
 				if (now - (shown.evidenceMs ?? -Infinity) >= SNAP_ENVELOPE_MS) shown = null;
 			}

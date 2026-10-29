@@ -48,7 +48,7 @@ import {
 	spectrumWheelZoom,
 	updateMarqueePreview,
 } from './spectrumZoomGestures';
-import { minSpanHz, zoomEnabled } from './spectrumViewport';
+import { getCapture, isZoomed, minSpanHz, recenterOnCapture, zoomEnabled } from './spectrumViewport';
 import { resetViewport } from './spectrumViewport';
 import { openRefClockDetail, closeRefClockDetail } from '../core/refclock';
 import { prepareSdrAudioTransition, setSdrAudioEnabled, setSdrAudioMode } from '../audio/sdrAudio';
@@ -342,10 +342,10 @@ function syncModeButtons(): void {
   setHint('mode-hint', busy ? t('mode_switching', { mode: want!.toUpperCase() }) : '');
 }
 
-export function setGraphMode(mode: string, { restore = false }: { restore?: boolean } = {}) {
+export function setGraphMode(mode: string, { restore = false, handoffHz }: { restore?: boolean; handoffHz?: number } = {}) {
   if (deviceMode.get() === 'server') {
     const target = mode === 'rta' ? 'rta' : mode === 'sdr' ? 'sdr' : 'std';
-    if (trackServerExit(target) && target === 'sdr') beginSdrEntry();
+    if (trackServerExit(target) && target === 'sdr') beginSdrEntry(handoffHz);
     return;
   }
   const target: 'std' | 'rta' | 'sdr' =
@@ -373,7 +373,7 @@ export function setGraphMode(mode: string, { restore = false }: { restore?: bool
   syncResolutionAvailability();
   // Sweep-to-SDR handoff: entering SDR from the swept view demodulates the frequency
   // the user located (active marker), or the current centre if no marker is set.
-  if (target === 'sdr') beginSdrEntry();
+  if (target === 'sdr') beginSdrEntry(handoffHz);
   else {
     sdrEntryPending = false;
     pendingSdrEntryHz = null;
@@ -390,9 +390,14 @@ export function setGraphMode(mode: string, { restore = false }: { restore?: bool
 
 /** Re-assert the remembered receiver before the entry STATUS sends it.
  *  Server mode must not send hardware commands; the healthy SDR STATUS does. */
-function beginSdrEntry() {
-  // Priority: an explicit hand-off (Shift+click / peak row already called sdrCenterHz.set), then
-  // the user's own SDR tuning, then - first run only - the active marker or the swept centre.
+function beginSdrEntry(handoffHz?: number) {
+  // Stage the explicit handoff after mode-change cancellation clears the old tune request.
+  if (handoffHz !== undefined) {
+    sdrCenterHz.set(handoffHz);
+    sdrListenHz.set(handoffHz);
+  }
+  // Priority: an explicit handoff, then the user's own SDR tuning, then - first run only -
+  // the active marker or the swept centre.
   // Returning to SDR used to re-derive everything from the swept view, which discarded the
   // tuning and the listening setup the user had left there (reported).
   if (!sdrCenterHz.pending()) {
@@ -865,9 +870,7 @@ export function listenAtFreq(hz: number) {
   // the listen frequency go there - setting only the centre left the previous listen frequency in
   // place, so the backend re-centred the capture to chase a channel the user never asked for
   // (measured: Shift+click at 216 MHz landed SDR at 987 MHz).
-  sdrCenterHz.set(hz);
-  sdrListenHz.set(hz);
-  setGraphMode('sdr');
+  setGraphMode('sdr', { handoffHz: hz });
 }
 
 function syncSdrButtons() {
@@ -1059,9 +1062,26 @@ export function syncSdrPanel(s: any) {
   const receiver = primary || sdr;
   const ownReply = typeof s.request_id === 'string' && s.request_id.startsWith('sdr-filter-');
   const version = Number(s.config_version);
-  if ((ownReply && s.request_id !== receiverInFlight?.requestId)
-      || (Number.isFinite(version) && version < receiverConfigVersion)) return;
-  if (!confirmSdrTuneReport(Number(primary ? primary.freq : sdr.listen), s.response_to, s.request_id, s.config_version)) return;
+  const receiverAck = receiverInFlight !== null && s.response_to === 'SET_SDR_CHANNEL'
+    && s.request_id === receiverInFlight.requestId;
+  const acceptSnapshot = (!ownReply || s.request_id === receiverInFlight?.requestId || version > receiverConfigVersion)
+    && !(Number.isFinite(version) && version < receiverConfigVersion);
+  const reportedCenter = Number(sdr.center) || 0;
+  const actualMode = String((primary ? primary.mode : sdr.demod) || 'am');
+  const previousCenter = sdrCenterHz.confirmedValue();
+  const previousDecimate = sdrDecimate.confirmedValue();
+  const contextChanged = actualMode !== sdrDemod.confirmedValue()
+    || (previousCenter !== null && previousCenter > 0 && reportedCenter > 0
+      && Math.abs(reportedCenter - previousCenter) >= 0.5)
+    || (previousDecimate !== null && Number(sdr.decimate) > 0 && Number(sdr.decimate) !== previousDecimate);
+  const listenBeforeAck = sdrListenHz.confirmedValue();
+  if (!confirmSdrTuneReport(Number(primary ? primary.freq : sdr.listen), s.response_to, s.request_id,
+    s.config_version, { acceptSnapshot, contextChanged })) {
+    // A stale snapshot still completes its exact request; only the confirmed state
+    // stays unchanged, and the latest unsent edit can now proceed.
+    if (receiverAck) finishReceiverEdit(true);
+    return;
+  }
   const generation = primary?.am_sync_generation;
   confirmAmSyncGeneration(typeof generation === 'number' && Number.isInteger(generation)
     && generation >= 0 && generation <= 0xffffffff ? generation : null);
@@ -1076,14 +1096,28 @@ export function syncSdrPanel(s: any) {
   // writer of those controls). The demod group still uses the DOM for now.
   // While an entry is still waiting for a healthy device, this report must not confirm
   // the centre the replay is about to send.
-  const reportedCenter = Number(sdr.center) || 0;
   if (!sdrEntryPending) sdrCenterHz.confirm(reportedCenter);
   sdrDecimate.confirm(Number(sdr.decimate) || 32);
   if (a.start != null && a.stop != null) sdrSpanHz.confirm(Number(a.stop) - Number(a.start));
+  // The presented span can be shorter than the requested window at an RF limit; the axis
+  // gesture tracks the requested centre so panning stays on the user's tuning, not the
+  // clipped midpoint.
+  const requestedSpan = estimatedCaptureSpanHz(Number(sdr.decimate) || 32);
   const displaySpan = a.start != null && a.stop != null
-    ? Number(a.stop) - Number(a.start) : estimatedCaptureSpanHz(Number(sdr.decimate) || 32);
+    ? Math.max(Number(a.stop) - Number(a.start), requestedSpan) : requestedSpan;
   confirmSdrAxisWindow(Number(sdr.center), displaySpan, Number(s.config_version), s.response_to, s.request_id);
-  const actualMode = String((primary ? primary.mode : sdr.demod) || 'am');
+  // Capture updates shift the zoom box with the frame. Recenter only when this
+  // pan acknowledgement actually changed the confirmed listen frequency.
+  if (s.response_to === 'SET_SDR') {
+    const listen = sdrListenHz.confirmedValue() ?? 0;
+    const previous = listenBeforeAck ?? listen;
+    const capture = getCapture();
+    if (listen > 0 && previous !== listen && capture && isZoomed()) {
+      const expected = Number.isFinite(a.start) && Number.isFinite(a.stop) && a.stop > a.start
+        ? { lo: a.start, hi: a.stop } : capture;
+      recenterOnCapture(listen, expected, minSpanHz(S.freqArray));
+    }
+  }
   const actualFilter = Number(receiver.if_bw) || 6000;
   if (Number.isFinite(version)) receiverConfigVersion = version;
   if (actualMode !== sdrDemod.confirmedValue()) {
@@ -1861,10 +1895,6 @@ export function bindCanvas() {
     const band = axisBandFor(x, y, pr);
     if (band) {
       cancelSdrLocate();
-      if (zoom) {
-        resetViewForDeviceGesture();
-        syncSpectrumZoomUi();
-      }
       if (axisDragStart(band, x, y, pr)) {
         accept('axis');
         canvas.style.cursor = 'grabbing';
@@ -1983,15 +2013,14 @@ export function bindCanvas() {
 
   // Hover feedback for the axis bands: without a cursor change the handles are invisible, and
   // the bands sit in the margins where nothing else ever happened before.
-  const updateCanvasHover = (e: MouseEvent) => {
+  const updateCanvasHover = (x: number, y: number, ctrl: boolean, scale: number) => {
     if (canvasPointerId !== null || axisDragging() || filterDragging()) return;
-    const x = canvasX(e, canvas), y = canvasY(e, canvas);
-    const tolerance = 8 * S.W / Math.max(1, canvas.getBoundingClientRect().width);
+    const tolerance = 8 * scale;
     const marker = markerDiamondAt(x, y, canvas);
-    const edge = currentGraphMode() === 'sdr' && !marker && !e.ctrlKey
+    const edge = currentGraphMode() === 'sdr' && !marker && !ctrl
       ? updateFilterHover(x, y, tolerance) : null;
-    if (marker || e.ctrlKey || currentGraphMode() !== 'sdr') setFilterHover(null);
-    const badge = currentGraphMode() === 'sdr' && !e.ctrlKey && sdrBadgeAt(x, y);
+    if (marker || ctrl || currentGraphMode() !== 'sdr') setFilterHover(null);
+    const badge = currentGraphMode() === 'sdr' && !ctrl && sdrBadgeAt(x, y);
     if (badge) {
       updateFilterHover(x, Math.max(y, plotRectPub().y), tolerance);
       cancelSdrLocate();
@@ -2000,22 +2029,55 @@ export function bindCanvas() {
       return;
     }
     const band = axisBandFor(x, y, plotRectPub());
-    if (!marker && !e.ctrlKey && edge) {
+    if (!marker && !ctrl && edge) {
       canvas.title = t('sdr_passband_edge_tip');
     } else canvas.removeAttribute('title');
-    if (currentGraphMode() === 'sdr' && !edge && !marker && !e.ctrlKey && !band) {
-      updateSdrLocateHover(x, y, S.W / Math.max(1, canvas.getBoundingClientRect().width));
+    if (currentGraphMode() === 'sdr' && !edge && !marker && !ctrl && !band) {
+      updateSdrLocateHover(x, y, scale);
     } else cancelSdrLocate();
     const center = currentGraphMode() === 'sdr' && filterCenterAt(x, y, tolerance);
-    const cursor = marker || e.ctrlKey ? 'crosshair' : edge ? 'ew-resize'
+    const cursor = marker || ctrl ? 'crosshair' : edge ? 'ew-resize'
       : band ? axisBandCursor(band) : center ? 'crosshair' : '';
     if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   };
-  canvas.addEventListener('pointermove', updateCanvasHover);
-  canvas.addEventListener('mousemove', updateCanvasHover);
-  // Cursor readout: publish the drawn bin under the pointer while the pointer is inside the plot.
-  // The canvas then labels that point (see render/spectrum.ts). Only a change of bin repaints. The
-  // readout cannot change faster than that, and one repaint redraws the whole trace and the tables.
+  // One coalesced pointer path per movement: duplicated compatibility events caused multiple
+  // full repaints per move, the stutter users saw with the pointer inside the plot.
+  const hasPointerEvents = typeof window.onpointerdown !== 'undefined'
+    || Object.prototype.hasOwnProperty.call(window, 'onpointermove');
+  let hoverX = 0, hoverY = 0, hoverCtrl = false, hoverPending = false;
+  const runCanvasHover = () => {
+    if (!hoverPending) return;
+    hoverPending = false;
+    // Same conversion as canvasX/canvasY: the pointer is in screen px, the plot in
+    // content-box px; borders and the element offset must come out first.
+    const rect = canvas.getBoundingClientRect();
+    const ui = getUiScale();
+    const borderX = (parseFloat(getComputedStyle(canvas).borderLeftWidth) || 0) * ui;
+    const borderY = (parseFloat(getComputedStyle(canvas).borderTopWidth) || 0) * ui;
+    const boxX = Math.max(1, rect.width - 2 * borderX);
+    const boxY = Math.max(1, rect.height - 2 * borderY);
+    const x = (hoverX - rect.left - borderX) * (S.W / boxX);
+    const y = (hoverY - rect.top - borderY) * (S.H / boxY);
+    updateCanvasHover(x, y, hoverCtrl, S.W / boxX);
+    publishCursor(x, y);
+  };
+  const queueCanvasHover = (e: MouseEvent) => {
+    hoverX = e.clientX;
+    hoverY = e.clientY;
+    hoverCtrl = e.ctrlKey;
+    if (hoverPending) return;
+    hoverPending = true;
+    window.requestAnimationFrame(runCanvasHover);
+  };
+  canvas.addEventListener('pointermove', queueCanvasHover);
+  // Browsers deliver pointermove wherever pointer events exist; the compatibility mousemove
+  // path only serves environments without them (and tests that synthesize bare mousemove).
+  canvas.addEventListener('mousemove', (e) => {
+    if (!hasPointerEvents) queueCanvasHover(e);
+  });
+  // Cursor readout: publish the drawn bin under the pointer while the pointer is inside the
+  // plot. Only a change of bin repaints, and the coalesced hover frame above has already
+  // scheduled that paint when the locate/cursor work changed anything.
   let cursorIdx: number | null = null;
   const publishCursor = (x: number, y: number) => {
     const pr = plotRectPub();
@@ -2027,11 +2089,9 @@ export function bindCanvas() {
     S.setPlotCursorIdx(idx);
     requestRender();
   };
-  canvas.addEventListener('mousemove', (e) => {
-    publishCursor(canvasX(e, canvas), canvasY(e, canvas));
-  });
-  canvas.addEventListener('mouseleave', () => publishCursor(-1e9, -1e9));
   const clearCanvasHover = () => {
+    hoverPending = false;
+    publishCursor(-1e9, -1e9);
     if (canvasPointerId === null) {
       setFilterHover(null);
       canvas.removeAttribute('title');

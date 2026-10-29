@@ -13,6 +13,9 @@ import { canvasColors } from '../core/theme';
 import { t } from '../core/i18n';
 import { isSpectrumZoomOn } from '../ui/spectrumZoomUi';
 import { getMarqueePreview } from '../ui/spectrumZoomGestures';
+import { sdrListenHz } from '../ui/sdrState';
+import { sdrBadgeDragFrequency } from '../ui/sdrBadgeGesture';
+import { previewCaptureWindow, previewFreqWindow } from '../ui/axisDrag';
 import {
 	getCapture,
 	getView,
@@ -60,7 +63,8 @@ export function renderSpectrumZoomOverview(): void {
 	}
 	const ctx = cv.getContext('2d');
 	if (!ctx) return;
-	const cap = getCapture();
+	const captured = getCapture();
+	const cap = previewCaptureWindow() ?? captured;
 	ctx.setTransform(ovRatio, 0, 0, ovRatio, 0, 0);
 	const col = canvasColors();
 	ctx.clearRect(0, 0, ovW, ovH);
@@ -99,7 +103,9 @@ export function renderSpectrumZoomOverview(): void {
 	const span = cap.hi - cap.lo;
 	const columns = Math.max(1, Math.min(2048, Math.ceil(ovW * ovRatio)));
 	const xAt = (index: number) => freq
-		? (freq[index] - cap.lo) / span * ovW : index / (n - 1) * ovW;
+		? (freq[index] - cap.lo) / span * ovW
+		: captured ? (captured.lo + index / (n - 1) * (captured.hi - captured.lo) - cap.lo) / span * ovW
+			: index / (n - 1) * ovW;
 	let pen = false, i = 0;
 	while (i < end) {
 		if (!Number.isFinite(powers[i]) || (freq && !Number.isFinite(freq[i]))) {
@@ -129,7 +135,7 @@ export function renderSpectrumZoomOverview(): void {
 	ctx.stroke();
 
 	// View highlight: dim the outside, outline the window, edge handles on both sides.
-	const view = getView();
+	const view = previewFreqWindow() ?? getView();
 	const marq = getMarqueePreview();
 	const win = marq ?? (view && isSubwindow(view, cap) ? view : null);
 	if (win) {
@@ -144,6 +150,29 @@ export function renderSpectrumZoomOverview(): void {
 		ctx.fillStyle = col.text;
 		ctx.fillRect(xa - 1, 0, 2, ovH);
 		ctx.fillRect(xb - 1, 0, 2, ovH);
+	}
+
+	// Draw over the dimming and view outline so an off-view receiver stays visible.
+	const listen = S.sdrMode ? sdrBadgeDragFrequency() ?? sdrListenHz.get() : null;
+	if (listen !== null && Number.isFinite(listen) && listen > 0
+		&& listen >= cap.lo && listen <= cap.hi) {
+		const x = (listen - cap.lo) / span * ovW;
+		ctx.save();
+		ctx.strokeStyle = col.rta;
+		ctx.fillStyle = col.rta;
+		ctx.lineWidth = 2;
+		ctx.setLineDash([3, 2]);
+		ctx.beginPath();
+		ctx.moveTo(x, 8);
+		ctx.lineTo(x, ovH);
+		ctx.stroke();
+		ctx.beginPath();
+		ctx.moveTo(Math.max(0, x - 5), 0);
+		ctx.lineTo(Math.min(ovW, x + 5), 0);
+		ctx.lineTo(x, 8);
+		ctx.closePath();
+		ctx.fill();
+		ctx.restore();
 	}
 }
 

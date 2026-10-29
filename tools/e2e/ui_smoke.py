@@ -290,8 +290,27 @@ def main() -> int:
             window.restoreOffsetCanvas = () => { Object.assign(ctx, saved); delete window.offsetCanvasSample; };
         }""")
         box = page.locator('#spectrum').bounding_box()
-        hover_x = box['width'] * 0.5
-        page.mouse.move(box['x'] + hover_x, box['y'] + box['height'] * 0.5)
+        page.mouse.move(box['x'] + box['width'] * 0.5, box['y'] + box['height'] * 0.5)
+        page.wait_for_function('window.offsetCanvasSample.points.length > 0')
+        # Canvas vertices use local content-box pixels; Playwright uses screen pixels.
+        # Pick an actual retained native-bin vertex, then invert the hover conversion
+        # (including CSS zoom and borders) to point at that same bin. A nearest vertex
+        # to an arbitrary screen x can instead select another frequency or an extremum
+        # retained by the renderer's per-device-column aggregation.
+        hover = page.evaluate("""() => {
+            const c = document.getElementById('spectrum'), rect = c.getBoundingClientRect();
+            const scale = Number(document.documentElement.dataset.uiScale);
+            const style = getComputedStyle(c);
+            const borderX = (parseFloat(style.borderLeftWidth) || 0) * scale;
+            const borderY = (parseFloat(style.borderTopWidth) || 0) * scale;
+            const middle = c.clientWidth * 0.5;
+            const point = window.offsetCanvasSample.points.reduce((a, b) =>
+                Math.abs(a.x-middle) < Math.abs(b.x-middle) ? a : b);
+            return {localX: point.x,
+                x: rect.left + borderX + point.x * (rect.width - 2 * borderX) / c.clientWidth,
+                y: rect.top + borderY + (rect.height - 2 * borderY) * 0.5};
+        }""")
+        page.mouse.move(hover['x'], hover['y'])
         try:
             base_readout = None
             for offset in (0, 20, -10):
@@ -300,14 +319,14 @@ def main() -> int:
                 page.wait_for_timeout(700)
                 point = page.evaluate("""x => {
                     const sample = window.offsetCanvasSample;
-                    const point = sample.points.reduce((a, b) => Math.abs(a.x-x) < Math.abs(b.x-x) ? a : b);
+                    const point = sample.points.find(point => point.x === x);
                     const labels = sample.labels.sort((a,b) => a.y-b.y);
                     const top = labels[0], bottom = labels[labels.length-1];
                     const axis = top.value + (point.y-top.y)/(bottom.y-top.y)*(bottom.value-top.value);
                     const cursor = document.getElementById('spectrum').dataset.cursor || '';
                     const match = cursor.match(/(-?\\d+(?:\\.\\d+)?) dBm$/);
                     return {axis, readout: match ? Number(match[1]) : null};
-                }""", hover_x)
+                }""", hover['localX'])
                 check(f'offset {offset}: drawn trace point agrees with its axis and readout',
                       point['readout'] is not None and abs(point['axis'] - point['readout']) < 1,
                       str(point))

@@ -33,6 +33,9 @@ export interface FindCarrierOptions {
   radiusHz: number;
   maxBinHz: number;
   now: number;
+  // When bins are wider than maxBinHz, snap to the nearest local peak instead of
+  // refusing. Off by default: fine carrier resolution stays honest unless a caller asks.
+  coarseFallback?: boolean;
 }
 
 interface FrameRecord {
@@ -58,6 +61,11 @@ export function carrierEvidenceVersion(): number { return version; }
 export function resetCarrierEvidence(): void {
   history = null;
   version++;
+}
+
+/** True when the current evidence axis is too coarse for fine carrier resolution. */
+export function carrierAxisCoarse(maxBinHz: number): boolean {
+  return history !== null && history.binHz > maxBinHz;
 }
 
 /** Invalid or changed native axes cannot retain evidence from a previous source. */
@@ -157,14 +165,14 @@ function localPeak(rec: FrameRecord, bin: number): number {
 }
 
 /** Current local support for an already acquired native bin; never searches farther away. */
-export function currentCarrierEvidence(hz: number, now: number, maxBinHz: number): CarrierCandidate | null {
+export function currentCarrierEvidence(hz: number, now: number, maxBinHz: number, coarseFallback = false): CarrierCandidate | null {
   const h = history;
-  if (!h || !h.used || h.binHz > maxBinHz) return null;
+  if (!h || !h.used || (h.binHz > maxBinHz && !coarseFallback)) return null;
   const rec = h.records[h.head];
   if (now < rec.atMs || now - rec.atMs >= CARRIER_STALE_MS) return null;
   const bin = Math.round((hz - h.freq[0]) / h.binHz);
   if (bin < 0 || bin >= h.freq.length || Math.abs(h.freq[bin] - hz) > 1e-6) return null;
-  const peak = localPeak(rec, bin);
+  const peak = h.binHz > maxBinHz ? (rec.prominence[bin] > 0 ? bin : -1) : localPeak(rec, bin);
   return peak < 0 ? null : { hz, quality: Math.min(1, rec.prominence[peak] / 30), atMs: rec.atMs };
 }
 
@@ -197,9 +205,9 @@ export function findCarrierNear(options: FindCarrierOptions): CarrierHit | Carri
   const lo = Math.max(0, Math.ceil((hz - radiusHz - h.freq[0]) / h.binHz));
   const hi = Math.min(h.freq.length - 1, Math.floor((hz + radiusHz - h.freq[0]) / h.binHz));
   if (lo > hi) return { ok: false, reason: 'out-of-view' };
-  if (h.binHz > maxBinHz) return { ok: false, reason: 'coarse-bins' };
-  let best: CarrierEvidence | null = null, bestDistance = Infinity, tied = false;
   const rec = h.records[h.head];
+  if (h.binHz > maxBinHz) return options.coarseFallback ? coarsePeakFallback(h, rec, lo, hi, hz) : { ok: false, reason: 'coarse-bins' };
+  let best: CarrierEvidence | null = null, bestDistance = Infinity, tied = false;
   for (let bin = lo; bin <= hi; bin++) {
     if (!rec.prominence[bin]) continue;
     const candidate = trail(h, bin, now);
@@ -215,8 +223,27 @@ export function findCarrierNear(options: FindCarrierOptions): CarrierHit | Carri
   return tied ? { ok: false, reason: 'ambiguous' } : { ok: true, candidate: best };
 }
 
-export function findCarrierCandidate(hz: number, maxOffsetHz: number, now: number, maxBinHz: number): CarrierCandidate | null {
-  const result = findCarrierNear({ hz, radiusHz: maxOffsetHz, now, maxBinHz });
+// Bins wider than the fine gate cannot resolve a carrier lobe, so fall back to the nearest
+// credible local peak inside the pointer radius. Only a genuine tie is refused: the
+// runner-up must sit within one bin of the nearest distance. Farther peaks never veto.
+function coarsePeakFallback(h: History, rec: FrameRecord, lo: number, hi: number, hz: number): CarrierHit | CarrierMiss {
+  let best = -1, bestDist = Infinity, secondDist = Infinity;
+  for (let bin = lo; bin <= hi; bin++) {
+    if (!(rec.prominence[bin] > 0)) continue;
+    const dist = Math.abs(h.freq[bin] - hz);
+    if (dist < bestDist) { secondDist = bestDist; bestDist = dist; best = bin; }
+    else if (dist < secondDist) secondDist = dist;
+  }
+  if (best < 0) return { ok: false, reason: 'absent' };
+  if (secondDist - bestDist < h.binHz) return { ok: false, reason: 'ambiguous' };
+  return { ok: true, candidate: {
+    carrierHz: h.freq[best], bin: best, powerDb: h.powers[best], prominenceDb: rec.prominence[best],
+    frames: 1, firstMs: rec.atMs, lastMs: rec.atMs, binHz: h.binHz,
+  } };
+}
+
+export function findCarrierCandidate(hz: number, maxOffsetHz: number, now: number, maxBinHz: number, coarseFallback = false): CarrierCandidate | null {
+  const result = findCarrierNear({ hz, radiusHz: maxOffsetHz, now, maxBinHz, coarseFallback });
   if (!result.ok) return null;
   const c = result.candidate;
   return { hz: c.carrierHz, quality: Math.min(1, c.prominenceDb / 30), atMs: c.lastMs };

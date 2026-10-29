@@ -14,6 +14,7 @@ import struct
 import sys
 import time
 import urllib.request
+from contextlib import ExitStack
 
 from playwright.sync_api import Page, sync_playwright
 from viewport_baseline import wait_ui_ready
@@ -115,8 +116,9 @@ def main() -> int:
     FAKE_BACKEND = str(state(url)["device"]).endswith("(FAKE)")
     print(f"backend: {'fake' if FAKE_BACKEND else 'device'} ({url})")
 
-    with sync_playwright() as p:
+    with sync_playwright() as p, ExitStack() as resources:
         browser = p.chromium.launch()
+        resources.callback(browser.close)
         page = browser.new_page()
         native_pan: dict = {}
 
@@ -209,10 +211,11 @@ def main() -> int:
         if geometry_valid:
             lo, hi = actual["start"], actual["stop"]
             cap_lo, cap_hi = actual["capture_start"], actual["capture_stop"]
-            check("display centre and width match the requested SDR view",
-                  hi > lo and abs((lo + hi) / 2 - d["sdr"]["center"]) < 1
-                  and abs(actual["center"] - d["sdr"]["center"]) < 1
-                  and abs(hi - lo - actual["bandwidth"]) < 1
+            check("display window stays inside the RF limits and the requested view",
+                  hi > lo and abs(actual["center"] - d["sdr"]["center"]) < 1
+                  and lo >= 0 and hi <= 9.1e9
+                  and abs(lo - max(actual["center"] - actual["bandwidth"] / 2, 0)) < 1
+                  and abs(hi - min(actual["center"] + actual["bandwidth"] / 2, 9.1e9)) < 1
                   and actual["decimate"] > 0
                   and abs(actual["bandwidth"] - min(50e6 / actual["decimate"],
                                                    actual["capture_bandwidth"])) < 1,
@@ -329,9 +332,10 @@ def main() -> int:
         print("2b) the channel overlay follows the demodulator's own band")
         page.select_option("#select-sdr-decimate", "2048")
         page.click('[data-action="apply-sdr-bw"]')
-        # Each mode restores its own filter; derive every expected overlay from actual STATUS.
-        page.click('[data-sdr-ifbw="3000"]')
+        # Select USB before its mode-specific 3 kHz preset (NFM does not offer it).
         page.click('[data-sdr-demod="usb"]')
+        page.click('[data-sdr-ifbw="3000"]')
+        # Each mode restores its own filter; derive every expected overlay from actual STATUS.
         page.wait_for_timeout(2500)
         marker_move = []
         for listen_mhz in ("90.5", "90.501"):
@@ -453,68 +457,90 @@ def main() -> int:
         page.wait_for_timeout(2500)
         post(url, {"cmd": "SET_FREQ", "center": 225e6, "span": 20e6})
         page.wait_for_timeout(2000)
+        # Snapshot the displayed RTA frame before mode entry clears its STATUS geometry.
+        lo, hi = native_pan["lo"], native_pan["hi"]
+        expected = lo + 0.25 * (hi - lo)
         box = page.eval_on_selector("#spectrum", """el => {
             const r = el.getBoundingClientRect();
-            return {x: r.left + r.width * 0.25, y: r.top + r.height * 0.5};
+            const style = getComputedStyle(el);
+            const scale = Number(document.documentElement.dataset.uiScale || 1);
+            const bx = (parseFloat(style.borderLeftWidth) || 0) * scale;
+            const by = (parseFloat(style.borderTopWidth) || 0) * scale;
+            const W = el.clientWidth, H = el.clientHeight;
+            // Match the spectrum's plot margins, excluding axes and canvas borders.
+            const x = 10 + 0.25 * (W - 60), y = 14 + 0.5 * (H - 40);
+            return {x: r.left + bx + x / W * Math.max(1, r.width - 2 * bx),
+                    y: r.top + by + y / H * Math.max(1, r.height - 2 * by)};
         }""")
         page.keyboard.down("Shift")
         page.mouse.click(box["x"], box["y"])
         page.keyboard.up("Shift")
         page.wait_for_timeout(3000)
         gesture = state(url)
-        # Shift+click maps the RTA axis, independently of the SWP snapshot.
-        axis = gesture["rta_actual"] or gesture["swp_actual"]
-        expected = axis["start"] + 0.25 * (axis["stop"] - axis["start"])
         check("Shift+click hands that frequency to SDR",
               gesture["mode"] == "sdr" and abs(gesture["sdr"]["center"] - expected) < 2e6
               and abs(gesture["sdr"]["center"] - 100e6) > 5e6,
               f'centre {gesture["sdr"]["center"] / 1e6:.3f} MHz vs clicked '
-              f'{expected / 1e6:.3f} MHz (axis {axis["start"] / 1e6:.1f}'
-              f'..{axis["stop"] / 1e6:.1f} MHz)')
+              f'{expected / 1e6:.3f} MHz (axis {lo / 1e6:.1f}'
+              f'..{hi / 1e6:.1f} MHz)')
 
         # 5b - the audio toggle must follow the user's choice even with a stored value
         print("5b) audio toggle with a stored preference")
+        def audio_snapshot():
+            return page.evaluate("""() => {
+                const button = document.getElementById('btn-sdr-audio');
+                const gate = document.getElementById('spectrum').dataset.sdrAudio || '';
+                return {pressed: button.getAttribute('aria-pressed'),
+                        active: button.classList.contains('active'),
+                        stored: localStorage.getItem('web-sa-sdr-audio'), gate};
+            }""")
+
+        def matches_audio_choice(snapshot, on):
+            return (snapshot['pressed'] == ('false' if on else 'true')
+                    and snapshot['active'] == (not on)
+                    and snapshot['stored'] == ('1' if on else '0')
+                    and f"enabled={str(on).lower()}" in snapshot['gate'].split()
+                    and 'muted=false' in snapshot['gate'].split())
+
         store = page.evaluate("localStorage.getItem('web-sa-sdr-audio')")
         page.click("#btn-sdr-audio")
         page.wait_for_timeout(600)
-        label = page.inner_text("#btn-sdr-audio")
-        gate = page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''")
+        audio = audio_snapshot()
         check(
             "toggle turns audio on",
-            label == "On" and "enabled=true" in gate,
-            f"label={label} gate={gate} (stored value before: {store})",
+            matches_audio_choice(audio, True),
+            f"{audio} (stored value before: {store})",
         )
         # Leaving SDR must preserve the stored audio preference.
         page.click("#btn-mode-rta")
         page.wait_for_timeout(2500)
         page.click("#btn-mode-sdr")
         page.wait_for_timeout(3000)
-        gate_back = page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''")
+        audio = audio_snapshot()
         check(
             "audio on survives a mode round trip",
-            page.inner_text("#btn-sdr-audio") == "On" and "enabled=true" in gate_back,
-            f"label={page.inner_text('#btn-sdr-audio')} gate={gate_back}",
+            matches_audio_choice(audio, True),
+            str(audio),
         )
 
         page.click("#btn-sdr-audio")
         page.wait_for_timeout(600)
+        audio = audio_snapshot()
         check(
             "toggle turns audio off again",
-            page.inner_text("#btn-sdr-audio") == "Off"
-            and "enabled=false" in page.evaluate("document.getElementById('spectrum')?.dataset.sdrAudio || ''"),
-            f"label={page.inner_text('#btn-sdr-audio')}",
+            matches_audio_choice(audio, False),
+            str(audio),
         )
         # ...and "off" is a preference too: it comes back as off.
         page.click("#btn-mode-rta")
         page.wait_for_timeout(2500)
         page.click("#btn-mode-sdr")
         page.wait_for_timeout(3000)
+        audio = audio_snapshot()
         check(
             "audio off survives a mode round trip",
-            page.inner_text("#btn-sdr-audio") == "Off"
-            and "enabled=false" in page.evaluate(
-                "document.getElementById('spectrum')?.dataset.sdrAudio || ''"),
-            f"label={page.inner_text('#btn-sdr-audio')}",
+            matches_audio_choice(audio, False),
+            str(audio),
         )
 
         # 6 - mode round trip leaves no stuck pending state
@@ -901,7 +927,6 @@ def main() -> int:
                   f'floor {fixed_floor} peak {fixed_peak}')
 
         check("no page errors", not errors, "; ".join(errors[:3]))
-        browser.close()
 
     print()
     if FAILURES:

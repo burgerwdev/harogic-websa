@@ -26,6 +26,8 @@ import { refLevel } from '../ui/refState';
 import { ampAtten, ampPreamp } from '../ui/ampState';
 import { send } from '../core/wsSend';
 import type * as WsSendModule from '../core/wsSend';
+import { axisDragMove, axisDragStart, resetAxisPreview } from '../ui/axisDrag';
+import { graphMode } from '../ui/graphMode';
 
 vi.mock('../core/wsSend', async (importOriginal) => {
 	const actual = await importOriginal<typeof WsSendModule>();
@@ -64,6 +66,7 @@ function box(): HTMLElement {
 beforeEach(() => {
 	document.body.innerHTML = '';
 	resetAll();
+	resetAxisPreview();
 	__testSeedCapture(null);
 	buildDom();
 	initSpectrumZoomUi();
@@ -159,6 +162,27 @@ describe('the toggle state machine', () => {
 		expect(titleText).toContain('GHz');
 	});
 
+	it('updates the overview ranges while an axis drag is held', () => {
+		graphMode.confirm('std');
+		S.setFreqArray(Float64Array.from([CAP.lo, CAP.hi]));
+		__testSeedCapture(CAP);
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		zoomEnabled.set(true);
+		syncSpectrumZoomUi(true);
+		const title = document.getElementById('zoom-overview-title')!;
+		const before = title.textContent;
+		axisDragStart('x', 400, 450, { x: 0, y: 0, w: 800, h: 400 });
+		axisDragMove(600, 450);
+		syncSpectrumZoomUi();
+		expect(title.textContent).toContain('935');
+		expect(title.textContent).toContain('955');
+		expect(title.textContent).toContain('895');
+		resetAxisPreview();
+		syncSpectrumZoomUi();
+		expect(title.textContent).toBe(before);
+	});
+
+
 	describe('mode-STATUS lifecycle (the first STATUS is not a mode switch)', () => {
 		const CAP2 = { lo: 900e6, hi: 1000e6 };
 
@@ -190,7 +214,7 @@ describe('zoom rail display controls', () => {
 		clearDisplayBounds();
 		S.setFreqArray(Float64Array.from({ length: 101 }, (_, i) => CAP.lo + i * 1e6));
 		buildDom();
-		document.body.insertAdjacentHTML('beforeend', '<div id="control-rail"><div id="rail-items"></div></div><div class="control-panel"></div>');
+		document.body.insertAdjacentHTML('beforeend', '<div id="control-rail"><div id="rail-items"></div></div><div class="control-panel"><div class="control-group"><span class="group-title" data-i18n="graph">Graph</span></div></div>');
 		initControlRail();
 		initSpectrumZoomUi();
 		vi.mocked(send).mockClear();
@@ -215,7 +239,7 @@ describe('zoom rail display controls', () => {
 		move('horizontal', 1000);
 		expect(getView()).toEqual({ lo: 949e6, hi: 951e6 });
 		expect(slider('horizontal').getAttribute('aria-valuetext')).toBe('50× · 2.000 MHz');
-		expect(document.getElementById('zoom-rail-horizontal-value')!.textContent).toBe('50× · 2.000 MHz');
+		expect(document.getElementById('zoom-rail-horizontal-value')!.textContent).toBe('x50');
 		move('horizontal', 0);
 		expect(getView()).toEqual(CAP);
 		expect(slider('horizontal').disabled).toBe(false);
@@ -275,5 +299,32 @@ describe('zoom rail display controls', () => {
 		toggleSpectrumZoom();
 		expect(hasDisplayBounds()).toBe(false);
 		expect(getDisplayTop()).toBe(before[0]);
+	});
+	it('shows a switch only while zoom is on and toggles the group buttons against the sliders', () => {
+		const button = document.getElementById('zoom-rail-switch') as HTMLButtonElement;
+		const item = document.querySelector('.rail-item') as HTMLButtonElement;
+		const sliders = document.getElementById('zoom-rail-controls') as HTMLElement;
+		expect(button.hidden).toBe(true);
+		expect(item.hidden).toBe(false);
+		toggleSpectrumZoom();
+		expect(button.hidden).toBe(false);
+		expect(button.getAttribute('aria-pressed')).toBe('false');
+		expect(item.hidden).toBe(true);
+		expect(sliders.classList.contains('showing-groups')).toBe(false);
+		button.click();
+		expect(button.getAttribute('aria-pressed')).toBe('true');
+		expect(item.hidden).toBe(false);
+		expect(sliders.hidden).toBe(false);
+		expect(sliders.classList.contains('showing-groups')).toBe(true);
+		button.click();
+		expect(item.hidden).toBe(true);
+		expect(sliders.classList.contains('showing-groups')).toBe(false);
+		toggleSpectrumZoom();
+		expect(button.hidden).toBe(true);
+		expect(item.hidden).toBe(false);
+		expect(sliders.hidden).toBe(true);
+		toggleSpectrumZoom();
+		expect(button.getAttribute('aria-pressed')).toBe('false');
+		expect(item.hidden).toBe(true);
 	});
 });

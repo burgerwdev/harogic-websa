@@ -14,7 +14,7 @@ let inFlight = 0;
 let inFlightBytes = 0;
 let queuedBytes = 0;
 const queue: { envelope: DecodeEnvelope; bytes: number; connection: WebSocket }[] = [];
-const applied = new Map<number, { envelope: DecodeEnvelope; connection: WebSocket }>();
+const applied = new Map<string, { envelope: DecodeEnvelope; connection: WebSocket }>();
 const snapshotAck = new WeakMap<WebSocket, boolean>();
 const MAX_QUEUED_EVENTS = 32;
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
@@ -39,7 +39,10 @@ function deliver(): void {
   inFlight = items.length;
   inFlightBytes = queuedBytes;
   queuedBytes = 0;
-  for (const item of items) applied.set(item.envelope.channel, item);
+  for (const item of items) {
+    const { channel, channel_id, epoch } = item.envelope;
+    applied.set(`${channel}:${channel_id}:${epoch}`, item);
+  }
   host.postMessage({ type: 'frames', envelopes: items.map((item) => item.envelope) });
 }
 function connect(): void {
@@ -77,6 +80,10 @@ function connect(): void {
       fail('Decoded-output receiver failed');
       return;
     }
+    if (event.code === 1011 && event.reason === 'subscriber source stream invalid') {
+      fail('Decoded-output source stream invalid');
+      return;
+    }
     host.postMessage({ type: 'closed', message: `Decoded-output stream closed (${event.code}): ${event.reason}` });
     // FIFO delivery preserves old tails before the next stream boundary.
     retry = self.setTimeout(() => { retry = null; connect(); }, 2000);
@@ -97,7 +104,7 @@ host.onmessage = (event: MessageEvent<{ type: string; url?: string; message?: st
     try {
       for (const { envelope, connection } of acknowledgements) {
         if (enabled && socket === connection && snapshotAck.get(connection) === true) connection.send(JSON.stringify({ type: 'ack',
-          channel: envelope.channel, epoch: envelope.epoch, seq: envelope.seq }));
+          channel: envelope.channel, channel_id: envelope.channel_id, epoch: envelope.epoch, seq: envelope.seq }));
       }
     } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
     deliver();

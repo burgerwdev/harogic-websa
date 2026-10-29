@@ -263,6 +263,8 @@ RTA 发送 RTA2：基础载荷后追加 ASCII TRIG、小端 u32 JSON 字节长�
 
 流使用每客户端最多 64 条消息的有界 FIFO。溢出时以代码 1013 关闭慢订阅，不通过丢弃样本或事件维持播放。显示迹线只保留最新帧。处理职责见 [ARCHITECTURE.md](ARCHITECTURE.md)，接收限制见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 
+订阅源序列错误以代码 1011 和原因 `subscriber source stream invalid` 关闭订阅；浏览器将其视为流的终止故障。实际队列溢出使用代码 1013 和原因 `IQ/audio consumer too slow`；解码确认超时使用代码 1013 和原因 `decoded-output acknowledgement timeout`。两者均不报告为接收器工作线程故障。
+
 共享原生接收器工作线程故障会停止全部音频和解码接收器。显示/控制流收到 `RECEIVER_ERROR`，内容为 `{error, failed:true, scope:'all_receivers'}`。STATUS 在 `sdr.receiver_error:string|null` 中保留诊断。音频和解码订阅以代码 1011 和原因 `receiver failed` 关闭。采集、PFB、fine DDC、原始 IQ、频谱和瀑布继续运行。接收器故障不设置 `last_error` 或 `ddc_error`，不显示频谱错误遮罩，也不改变硬件连接状态 `connected`。采集和设备故障由全局错误流程处理。
 
 原始 IQ 和频谱处理使用有界队列背压。队列积压时等待，直到明确失败，不重新打开设备。SDK 持续停滞时，以原始原因结束采集；恢复须创建新的采集 epoch。
@@ -374,7 +376,9 @@ SSTV 订阅者先收到起始事件及当前图像的有界快照，再收到实
 
 `signalLevel` 是原始带通实数 PCM 的 RMS，功率平滑时间常数为 0.2 秒，单位为线性满量程幅度，不是复数 IQ 的 dBFS 读数。`carrierCoherence` 是平滑后的 1400–2500 Hz 能量与 300–2700 Hz 能量之比，限制在 0–1。集中在该频带的干扰也可能通过能量门限，因此该值不能确认传真信号身份、相位锁定或接收质量。
 
-浏览器解码 worker 请求 `/ws/decode?ack=1`，服务通过 `start` 事件的 `snapshotAck:true` 确认支持；没有初始快照时，实时 start 也会携带该字段。worker 仅在收到确认后发送传输 ACK。页面应用每个快照或实时帧后，worker 发送 `{type:'ack', channel, epoch, seq}`，服务最多等待 5 秒，收到完全匹配的确认后才发送下一帧。未请求 `ack=1` 的客户端仍直接接收推送。实时解码输出按共享批次入队，整图重传不会让每个图像块各占一个 FIFO 槽。每客户端的排队及在途批次共用字节预算，容量为三路各 20 MiB Gray8 的 base64 数据加 4 MiB 信封开销；超限仍会关闭慢消费者。worker 继续保持 32 事件 / 4 MiB 上限。
+浏览器解码 worker 请求 `/ws/decode?ack=1`，服务通过 `start` 事件的 `snapshotAck:true` 确认支持；没有初始快照时，实时 start 也会携带该字段。worker 仅在收到确认后发送传输 ACK；服务省略该字段时不发送。页面按 FIFO 应用快照或实时事件后，worker 发送 `{type:'ack', channel, channel_id, epoch, seq}`，其中 `seq` 为该流身份已应用的最高序号。ACK 只累计释放同一 `(channel, channel_id, epoch)` 下不大于 `seq` 的已发送事件，且该序号必须精确匹配一个尚未确认的已发送事件。错误身份、超前序号和重复 ACK 均不增加额度。整个 socket 最多有 16 个事件且不超过 4 MiB 的 SDE2 线路数据等待确认，计入 8 字节帧头及 start 的 `snapshotAck` 增补字段；额度释放后继续发送。每个已发送事件保留 5 秒确认期限，按最早尚未确认的事件执行。未请求 `ack=1` 的客户端仍直接接收推送。
+
+实时解码输出按共享批次入队，整图重传不会让每个图像块各占一个 FIFO 槽。每客户端的排队批次与当前发送中的批次共用字节预算，容量为三路各 20 MiB Gray8 的 base64 数据加 4 MiB 信封开销；超限仍会关闭慢消费者。批次发送完成即释放其预留额度，无须等待全部 ACK；已发送但未确认的事件仍受独立的 4 MiB 线路字节上限约束。已接纳的接收器音频与解码事件（包括初始快照）在重调及采集 epoch 切换后仍保留，先按 FIFO 交付，再交付退役尾帧和新的接收器身份。解码队列退役保留未受影响的频道。采集 epoch 边界仍用于原始 IQ、显示数据和新数据包的接纳。最早尚未确认的 ACK 期限也约束多帧批次与快照循环内的发送。
 
 浏览器以 `{type:'frames', envelopes}` 按 FIFO 交付事件批次，应用后通过内部 worker 端口回复 `{type:'ack'}`。排队和在途数据合计上限为 32 事件 / 4 MiB；溢出显式失败。只有服务确认 `snapshotAck` 后，worker 才将应用确认转换为上述带序号的传输 ACK。
 
@@ -414,12 +418,15 @@ CSV 导出当前模式所选处理后迹线及匹配的原生频率轴；OFF、�
 原生后端将 SDR 采集中心限制在型号的 IQ 调谐范围与设备 RF 范围的交集内
 （SAN-90：9 kHz–9 GHz）。经扫频回读后，报告的 `caps.fmin`–`caps.fmax` 接收频率范围
 可能更宽（SAN-90：8 kHz–9.02 GHz）；例如，8 kHz 接收器可使用 9 kHz IQ 中心。
-IQ 采集窗口与频谱显示窗口可以越过任一 RF 边界；最小中心频率不再加上半带宽，
-最大中心频率也不再减去半带宽。因此，改变显示带宽不会强制将有效中心移离设备边界。
-频率轴拖动和滚轮缩放在报告的 RF 范围内请求中心，由后端确认符合 IQ 约束的实际中心。
-图区拖动只在显示窗口内调谐，到达边缘不会平移频段；移动频段使用频率轴。收听频率拖动与方向键调谐均止于 RF 边界；点击边界外区域不会调谐接收器。已启用接收器的频率仍必须位于 RF
-范围内，其占用带宽及粗信道过渡带仍须满足采集通带约束。若辅路无法容纳于新采集
-窗口，则拒绝变更，不会移动该辅路。RTA 仍要求整个窗口位于设备频率范围内。
+IQ 采集窗口可以越过任一 RF 边界；对外呈现的频谱与 `sdr.actual.start/stop`
+裁剪到报告的 RF 范围内，因此低中心配合宽带宽时只显示从设备最小频率开始的频点。
+最小中心频率不再加上半带宽，最大中心频率也不再减去半带宽，改变显示带宽
+不会强制将有效中心移离设备边界。频率轴拖动和滚轮缩放在报告的 RF 范围内请求中心，
+由后端确认符合 IQ 约束的实际中心。图区拖动只在显示窗口内调谐，到达边缘不会平移频段；
+移动频段使用频率轴。收听频率拖动与方向键调谐均止于 RF 边界；点击边界外区域不会调谐
+接收器。已启用接收器的频率仍必须位于 RF 范围内，其占用带宽及粗信道过渡带仍须满足
+采集通带约束。若辅路无法容纳于新采集窗口，则拒绝变更，不会移动该辅路。
+RTA 仍要求整个窗口位于设备频率范围内。
 
 ### 退出测量
 
@@ -444,7 +451,7 @@ IQ 采集窗口与频谱显示窗口可以越过任一 RF 边界；最小中心�
 
 此模式的 STATUS 报告 `connected=false`、`gnss=null`，活动 `actual` 对象为空。不发布 Soapy 客户端数量、吞吐或远程遥测。浏览器刷新、重连或关闭不会停止子进程。`websad` 关闭时停止并回收子进程；子进程监督线程还会启用父进程退出清理。退出时（`SET_MODE` 到 `graph_mode` 或其他测量模式）先停止并回收子进程，再恢复采集。无法回收的子进程会保留 Server 模式和设备占用。
 
-已加载 shim 缺少 `san90_session_release_v1`，或先前的厂商管理线程仍停在 SDK 调用中时，拒绝交接。模式不会提交成功。该尝试仍会结束先前采集：流边界前移，`connected` 变为 false，`gnss` 为 null，命令返回 `device_error`。下一次采集使用新 epoch。随附 `runtime/` 适配库未更新，不能执行这次释放。
+已加载 shim 缺少 `san90_session_release_v1`，或先前的厂商管理线程仍停在 SDK 调用中时，拒绝交接。模式不会提交成功。该尝试仍会结束先前采集：流边界前移，`connected` 变为 false，`gnss` 为 null，命令返回 `device_error`。下一次采集使用新 epoch。
 
 客户端需要 SoapySDR 和 [SoapyRemote](https://github.com/pothosware/SoapyRemote) 模块。使用 `driver=remote,remote=<host>:<port>,remote:driver=harogic`；将通配绑定替换为服务端主机可到达的地址，IPv6 主机用方括号包围。SoapySDRServer 导出全部已安装设备 factory，因此须保留 `harogic` 筛选。打过补丁的模块实际输出 CF32、CS16 或 CS8。setup 前，原生格式查询默认在不超过 60 MSps 时返回 CS16（`fullScale` 为 32768），高于 60 MSps 时返回 CS8（`fullScale` 为 128）。setup 后返回所选输出格式及其 `fullScale`（CF32：1、CS16：32768、CS8：128）。CS16 和 CS8 的每个复数样本分别为 4、2 字节，CF32 则为 8 字节。`native_format` 在 setup 时选择 SDK 的 CS8/CS16/CS32/AUTO，关闭流之前保持该宽度。AUTO 对整数输出采用相同宽度；对 CF32 按 setup 时的采样率选择，不超过 60 MSps 使用 CS16，否则使用 CS8。显式指定 SDK 宽度时，整数输出必须与其匹配。CF32 按 SDK 分量的 `2^7`、`2^15` 或 `2^31` 标度归一化；CS32 仅为 SDK 输入格式。SoapyRemote 可在线路上传输原生整数样本，同时向客户端返回 CF32。实现使用原始样本环形缓冲与批量复制，不宣称零拷贝。
 

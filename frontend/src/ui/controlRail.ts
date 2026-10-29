@@ -99,6 +99,7 @@ function syncLabels(): void {
   if (toggle) toggle.title = t(isCollapsedRail() ? 'rail_expand' : 'rail_collapse');
   const visToggle = document.getElementById('panel-vis-toggle');
   if (visToggle) visToggle.title = t(isPanelHidden() ? 'panel_show' : 'panel_hide');
+  syncZoomSwitchLabel();
   for (const key of ['horizontal', 'top', 'bottom']) {
     const label = document.getElementById(`zoom-rail-${key}-label`);
     const input = document.getElementById(`zoom-rail-${key}`);
@@ -163,17 +164,51 @@ function syncActive(): void {
   items.forEach((it, i) => it.el.classList.toggle('active', i === idx));
 }
 
+/** True while zoom is on and the operator has chosen the group buttons over the sliders. */
+let zoomShowsGroups = false;
+
+function syncZoomSwitchLabel(): void {
+  const button = document.getElementById('zoom-rail-switch');
+  if (!button) return;
+  const label = t(zoomShowsGroups ? 'zoom_rail_show_sliders' : 'zoom_rail_show_groups');
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.setAttribute('aria-pressed', String(zoomShowsGroups));
+  button.textContent = zoomShowsGroups ? '\u2261' : '\u2195';
+}
+
 /** Keep the navigation buttons intact while zoom temporarily owns the rail. */
 export function syncControlRailZoom(on: boolean): void {
   const host = document.getElementById('control-rail');
+  if (!on) zoomShowsGroups = false;
   if (host?.classList.contains('zoom-rail') !== on) {
     const itemsHost = document.getElementById('rail-items');
     if (itemsHost) { itemsHost.scrollLeft = 0; itemsHost.scrollTop = 0; }
   }
   host?.classList.toggle('zoom-rail', on);
-  items.forEach(({ el }) => { el.hidden = on; });
+  const groups = on && !zoomShowsGroups;
+  items.forEach(({ el }) => { el.hidden = groups; });
   const controls = document.getElementById('zoom-rail-controls');
   if (controls) controls.hidden = !on;
+  const button = document.getElementById('zoom-rail-switch');
+  if (button) button.hidden = !on;
+  controls?.classList.toggle('showing-groups', on && zoomShowsGroups);
+  syncZoomSwitchLabel();
+}
+
+/** The zoom-only switch between group buttons and sliders; pinned at the rail's top. */
+function createZoomSwitch(): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.id = 'zoom-rail-switch';
+  button.className = 'rail-toggle zoom-rail-switch';
+  button.hidden = true;
+  button.addEventListener('click', () => {
+    if (!document.getElementById('control-rail')?.classList.contains('zoom-rail')) return;
+    zoomShowsGroups = !zoomShowsGroups;
+    syncControlRailZoom(true);
+  });
+  return button;
 }
 
 function createZoomRail(): HTMLElement {
@@ -215,6 +250,7 @@ export function initControlRail(): void {
   const itemsHost = document.getElementById('rail-items');
   if (itemsHost) {
     itemsHost.innerHTML = '';
+    itemsHost.appendChild(createZoomSwitch());
     items.forEach((it) => itemsHost.appendChild(it.el));
     itemsHost.appendChild(createZoomRail());
   }

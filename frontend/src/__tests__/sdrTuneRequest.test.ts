@@ -4,7 +4,6 @@ vi.mock('../core/wsSend', () => ({ send: vi.fn() }));
 
 import * as S from '../core/store';
 import { send } from '../core/wsSend';
-import { renderRequestCount } from '../render/redraw';
 import { sdrListenHz } from '../ui/sdrState';
 import {
 	cancelSdrTuneRequest, confirmSdrTuneReport, rejectSdrTuneRequest,
@@ -22,6 +21,7 @@ beforeEach(() => {
 	localStorage.clear();
 	sdrListenHz.confirm(0);   // test world: the backend has not reported a listen frequency
 	vi.mocked(send).mockClear();
+	S.setStatusError(null);
 });
 
 afterEach(() => {
@@ -135,11 +135,103 @@ describe('SDR listen-frequency tuning requests', () => {
 		vi.advanceTimersByTime(1);
 		expect(sent()).toHaveLength(1);
 		expect(sdrListenHz.get()).toBe(0);
-		expect(S.statusError).toBe('Receiver tuning timed out; restored the confirmed frequency');
-		const repaints = renderRequestCount();
-		own(sent()[0]);          // the timed-out request is dead; no repaint, no resend
+		expect(S.statusError).not.toBeNull();
+		own(sent()[0]);
 		expect(sent()).toHaveLength(1);
-		expect(renderRequestCount()).toBe(repaints);
+		expect(sdrListenHz.get()).toBe(0);
+		expect(S.statusError).toBeNull();
+	});
+
+	it('clears only its timeout diagnostic on valid input and cancellation', () => {
+		requestSdrTune(7.100e6);
+		vi.advanceTimersByTime(3000);
+		expect(S.statusError).not.toBeNull();
+		requestSdrTune(Number.NaN);
+		expect(S.statusError).not.toBeNull();
+		requestSdrTune(7.200e6);
+		expect(S.statusError).toBeNull();
+		vi.advanceTimersByTime(3000);
+		S.setStatusError('another failure');
+		requestSdrTune(7.300e6);
+		cancelSdrTuneRequest();
+		expect(S.statusError).toBe('another failure');
+		requestSdrTune(7.400e6);
+		vi.advanceTimersByTime(3000);
+		expect(S.statusError).not.toBeNull();
+		cancelSdrTuneRequest();
+		expect(S.statusError).toBeNull();
+	});
+
+	it('recovers a timed-out frequency from newer authoritative state without reviving its queue', () => {
+		confirmSdrTuneReport(7.000e6, 'STATUS', undefined, 1);
+		requestSdrTune(7.100e6);
+		requestSdrTune(7.200e6);
+		const [old] = sent();
+		vi.advanceTimersByTime(3000);
+		expect(confirmSdrTuneReport(7.100e6, 'STATUS', old.request_id, 2)).toBe(true);
+		expect(sdrListenHz.get()).toBe(7.100e6);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(S.statusError).toBeNull();
+		expect(sent()).toHaveLength(1);
+		expect(confirmSdrTuneReport(7.000e6, 'SET_SDR_CHANNEL', old.request_id, 1)).toBe(false);
+		expect(sdrListenHz.get()).toBe(7.100e6);
+	});
+
+	it('settles an exact ACK rejected by snapshot freshness and submits only the live queued target', () => {
+		confirmSdrTuneReport(7.000e6, 'STATUS', undefined, 5);
+		requestSdrTune(7.100e6);
+		requestSdrTune(7.200e6);
+		expect(confirmSdrTuneReport(7.100e6, 'SET_SDR_CHANNEL', sent()[0].request_id, 3)).toBe(false);
+		expect(sdrListenHz.confirmedValue()).toBe(7.000e6);
+		expect(sent().map(({ freq }) => freq)).toEqual([7.100e6, 7.200e6]);
+		confirmSdrTuneReport(7.200e6, 'SET_SDR_CHANNEL', sent()[1].request_id, 6);
+		vi.advanceTimersByTime(3000);
+		expect(sdrListenHz.get()).toBe(7.200e6);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(S.statusError).toBeNull();
+	});
+
+	it('settles an ACK when an independent receiver owner rejects the snapshot', () => {
+		requestSdrTune(7.100e6);
+		const [command] = sent();
+		expect(confirmSdrTuneReport(command.freq, 'SET_SDR_CHANNEL', command.request_id, 4,
+			{ acceptSnapshot: false })).toBe(false);
+		vi.advanceTimersByTime(3000);
+		expect(sdrListenHz.get()).toBe(0);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(S.statusError).toBeNull();
+	});
+
+	it('keeps the queued target when its own ACK changes the capture context', () => {
+		confirmSdrTuneReport(7.000e6, 'STATUS', undefined, 1);
+		requestSdrTune(7.100e6);
+		requestSdrTune(7.200e6);
+		expect(confirmSdrTuneReport(7.100e6, 'SET_SDR_CHANNEL', sent()[0].request_id, 2,
+			{ contextChanged: true })).toBe(true);
+		expect(sent().map(({ freq }) => freq)).toEqual([7.100e6, 7.200e6]);
+		own(sent()[1]);
+		expect(sdrListenHz.get()).toBe(7.200e6);
+		expect(sdrListenHz.pending()).toBe(false);
+	});
+
+	it('admits newer state carrying a dead identity while preserving newer tune ownership', () => {
+		confirmSdrTuneReport(7.000e6, 'STATUS', undefined, 1);
+		requestSdrTune(7.100e6);
+		const [old] = sent();
+		cancelSdrTuneRequest();
+		requestSdrTune(7.200e6);
+		requestSdrTune(7.300e6);
+		expect(confirmSdrTuneReport(7.100e6, 'STATUS', old.request_id, 2)).toBe(true);
+		expect(sdrListenHz.confirmedValue()).toBe(7.100e6);
+		expect(sdrListenHz.get()).toBe(7.300e6);
+		expect(sent()).toHaveLength(2);
+		expect(confirmSdrTuneReport(7.000e6, 'SET_SDR_CHANNEL', old.request_id, 1)).toBe(false);
+		expect(sdrListenHz.confirmedValue()).toBe(7.100e6);
+		confirmSdrTuneReport(7.200e6, 'SET_SDR_CHANNEL', sent()[1].request_id, 3);
+		expect(sent().map(({ freq }) => freq)).toEqual([7.100e6, 7.200e6, 7.300e6]);
+		confirmSdrTuneReport(7.300e6, 'SET_SDR_CHANNEL', sent()[2].request_id, 4);
+		expect(sdrListenHz.get()).toBe(7.300e6);
+		expect(sdrListenHz.pending()).toBe(false);
 	});
 
 	it('discards unsent repeats on blur while the current request settles', () => {

@@ -11,8 +11,9 @@
  *     Shift+click), a drag past MARQUEE_MIN_PX becomes a marquee that owns the gesture;
  *   - wheel inside the plot zooms around the pointer, unless the browser-zoom modifiers
  *     (Ctrl/Cmd) are held;
- *   - the axis-label bands keep their DEVICE meaning (ui/axisDrag.ts), so a device gesture
- *     first drops the local view: a capture preview and a display zoom must never stack.
+ *   - an x-axis pan keeps the local view (it rides the band); an axis-band wheel, which
+ *     changes the capture span, drops the local view first so the axisDrag preview and a
+ *     display zoom never stack;
  *
  * Overview box: see ui/spectrumZoomUi.ts (DOM/pointer), which uses freqAtFraction below.
  */
@@ -112,9 +113,9 @@ export function spectrumWheelZoom(deltaY: number, x: number, minSpan: number): b
 }
 
 /**
- * A device-side capture gesture (axis band drag/wheel) starts: the local view must go
- * back to the full window FIRST (design §3) so the axisDrag preview transform and a
- * display zoom never stack on the same frame.
+ * An axis-band wheel changes the capture span: the local view goes back to the full
+ * window first so the axisDrag preview and a display zoom never stack on the same frame.
+ * An x-axis pan does not call this; the view shifts with the band instead.
  */
 export function resetViewForDeviceGesture(): boolean {
 	const had = getView() !== null && isViewSubwindow();

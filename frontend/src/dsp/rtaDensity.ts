@@ -209,24 +209,30 @@ export function rasterSparseDensity(
 	}
 	const [first, end] = visibleBinRange(freq, lo, hi);
 	const scale = width / (hi - lo);
+	// Buffers persist across calls; clear once here, then each pair clears only its own rows.
+	sparseLeft.fill(0, 0, bins);
+	sparseRight.fill(0, 0, bins);
 	for (let i = first; i + 1 < end; i++) {
 		if (!Number.isFinite(grid.samples[i]) || !Number.isFinite(grid.samples[i + 1])) continue;
 		const left = freq[i], right = freq[i + 1];
 		if (!(right > left) || right < lo || left > hi) continue;
-		sparseLeft.fill(0, 0, bins);
-		sparseRight.fill(0, 0, bins);
+		// Clear through the sparse lists below; they already record exactly the touched rows.
 		let leftTotal = 0, rightTotal = 0;
 		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) {
-			const value = grid.values[cell];
-			sparseLeft[cell % bins] = value;
-			leftTotal += value;
+			const row = cell % bins;
+			sparseLeft[row] = grid.values[cell];
+			leftTotal += grid.values[cell];
 		}
 		for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) {
-			const value = grid.values[cell];
-			sparseRight[cell % bins] = value;
-			rightTotal += value;
+			const row = cell % bins;
+			sparseRight[row] = grid.values[cell];
+			rightTotal += grid.values[cell];
 		}
-		if (!(leftTotal > 0) || !(rightTotal > 0)) continue;
+		if (!(leftTotal > 0) || !(rightTotal > 0)) {
+			for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) sparseLeft[cell % bins] = 0;
+			for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) sparseRight[cell % bins] = 0;
+			continue;
+		}
 		let a = 0, b = 0, aMass = 0, bMass = 0, aUsed = 0, bUsed = 0, segments = 0;
 		while (true) {
 			while (a < bins && !(aMass > 0)) { aMass = sparseLeft[a++] / leftTotal; aUsed = 0; }
@@ -279,6 +285,8 @@ export function rasterSparseDensity(
 				}
 			}
 		}
+		for (let cell = grid.heads[i]; cell !== -1; cell = grid.next[cell]) sparseLeft[cell % bins] = 0;
+		for (let cell = grid.heads[i + 1]; cell !== -1; cell = grid.next[cell]) sparseRight[cell % bins] = 0;
 	}
 	// Resolved pairs already contain their endpoints as continuous bands. Only isolated
 	// points, an uncovered right endpoint, and subpixel carriers need a native projection.
@@ -315,7 +323,6 @@ export function rasterSparseDensity(
 		}
 	}
 }
-
 /** Destination geometry: a raster row's CENTRE is its raw-dBm bin, just like the trace. */
 export function densityLevelPlacement(
 	grid: DensityGrid, ref: number, range: number, offset: number,

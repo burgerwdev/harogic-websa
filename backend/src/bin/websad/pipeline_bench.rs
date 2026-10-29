@@ -471,7 +471,7 @@ impl Consumer {
                 return Err("nonfinite SDK spectrum".into());
             }
             let started = Instant::now();
-            let encoded = hardware_pan(1, self.center, self.bandwidth, &frequencies, &powers);
+            let encoded = hardware_pan(1, self.center - self.bandwidth / 2.0, self.bandwidth, &frequencies, &powers);
             self.encode.observe(started.elapsed());
             let encoded = encoded?;
             self.spectrum_bytes += encoded.len() as u64;

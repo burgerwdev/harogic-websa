@@ -273,6 +273,8 @@ Stream identity is `(epoch, channel_id)`. Retuning assigns a new channel ID; rep
 
 Streaming uses a bounded 64-message per-client FIFO. Overflow closes the slow subscription with code 1013; samples/events are not dropped to continue playback. Display traces instead use latest-wins delivery. See [ARCHITECTURE.md](ARCHITECTURE.md) for processing ownership and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for receiver limitations.
 
+A subscriber source-sequence fault closes the subscription with code 1011 and reason `subscriber source stream invalid`. The browser treats this as a terminal stream failure. Actual queue overflow uses code 1013 and reason `IQ/audio consumer too slow`; decode acknowledgement expiry uses code 1013 and reason `decoded-output acknowledgement timeout`. Neither is reported as a receiver-worker failure.
+
 A shared native receiver worker failure stops all audio/decode receivers. The display/control stream receives `RECEIVER_ERROR` with `{error, failed:true, scope:'all_receivers'}`. STATUS retains the diagnostic in `sdr.receiver_error:string|null`. Audio/decode subscriptions close with code 1011 and reason `receiver failed`. Capture, PFB, fine DDC, raw IQ, spectra and waterfall continue. Receiver failure does not set `last_error` or `ddc_error`, add a spectrum error overlay, or change hardware `connected` state. Capture and device faults use global error handling.
 
 Raw IQ and spectrum processing use bounded queue backpressure. Queue backlog waits until explicit failure without reopening the device. A sustained SDK stall ends capture with its original cause; recovery requires a new capture epoch.
@@ -384,7 +386,9 @@ During a radiofax revision, the browser replaces received rows in place and reta
 
 `signalLevel` is the raw band-passed real PCM RMS with 0.2 s power smoothing, in linear full-scale units. It is not the complex-IQ dBFS meter. `carrierCoherence` is the smoothed 1400–2500 Hz energy divided by the 300–2700 Hz energy, limited to 0–1. Concentrated interference can also pass this energy gate; the value does not establish radiofax identity, phase lock or reception quality.
 
-A browser decode worker requests `/ws/decode?ack=1`. The service confirms support with `snapshotAck:true` on a `start` event, including a live start when no initial snapshot exists. The worker sends transport ACKs only after this confirmation; a server that omits the field receives none. After the page applies each snapshot or live frame, the worker sends `{type:'ack', channel, epoch, seq}`. The service waits up to 5 s for that exact acknowledgement before sending the next frame. Clients without `ack=1` receive the push stream. Live receiver output is queued in shared batches, so full-image revisions do not consume one FIFO slot per image chunk. Queued and in-flight batches share a per-client byte budget sized for three retained 20 MiB Gray8 channels in base64 plus 4 MiB of envelope overhead; exceeding it still closes a slow consumer. The worker retains its 32-event / 4 MiB bound.
+A browser decode worker requests `/ws/decode?ack=1`. The service confirms support with `snapshotAck:true` on a `start` event, including a live start when no initial snapshot exists. The worker sends transport ACKs only after this confirmation; a server that omits the field receives none. After the page applies snapshot or live events in FIFO order, the worker sends `{type:'ack', channel, channel_id, epoch, seq}` with the highest applied sequence for that stream identity. An ACK cumulatively releases sent events through `seq` only for the same `(channel, channel_id, epoch)`; its sequence must match an outstanding sent event. Wrong identities, future sequences and duplicate ACKs grant no credit. Across the socket, at most 16 events and 4 MiB of SDE2 wire bytes may remain unacknowledged, including the 8-byte headers and `snapshotAck` start augmentation. Sending resumes as credit becomes available. Each sent event retains a 5 s acknowledgement deadline, enforced against the oldest outstanding event. Clients without `ack=1` receive the push stream.
+
+Live receiver output is queued in shared batches, so full-image revisions do not consume one FIFO slot per image chunk. Queued batches and the batch currently being sent share a per-client byte budget sized for three retained 20 MiB Gray8 channels in base64 plus 4 MiB of envelope overhead; exceeding it still closes a slow consumer. A batch's reservation is released when sending finishes, without waiting for all its ACKs; sent but unacknowledged events remain subject to the separate 4 MiB wire-byte ceiling. Already admitted receiver audio and decoder events, including an initial snapshot, survive retunes and capture-epoch transitions and are delivered FIFO before retiring tails and new receiver identities. Decoder queue retirement preserves unaffected channels. Capture-epoch fences still apply to raw IQ, display data and admission of new packets. The oldest outstanding ACK deadline also bounds sends within multi-frame batches and snapshot loops.
 
 The browser delivers event batches FIFO using `{type:'frames', envelopes}` and acknowledges application with `{type:'ack'}` on its internal worker port. Queued plus in-flight data is limited to 32 events / 4 MiB; overflow explicitly fails. The worker converts application acknowledgements into the sequence-bearing transport ACK described above only after the server has confirmed `snapshotAck`.
 
@@ -446,15 +450,20 @@ On the native backend, SDR capture centers use the model's IQ tuning range
 intersected with the device RF range (SAN-90: 9 kHz–9 GHz). The reported
 `caps.fmin`–`caps.fmax` receiver range may be wider after sweep readback
 (SAN-90: 8 kHz–9.02 GHz). For example, an 8 kHz receiver can use a 9 kHz IQ center.
-The IQ capture and displayed spectrum may extend past either RF limit; their
-half-width is not added to the minimum center or subtracted from the maximum.
-Changing display bandwidth therefore does not force an otherwise valid center
-away from a device limit. Frequency-axis drag and wheel gestures request a center
-within the reported RF range; the backend confirms the IQ-compatible center.
-Dragging within the plot only tunes within the displayed window; reaching an edge does not pan it. Use the frequency axis to move the window. Listen dragging and arrow tuning stop at the RF limits; clicks outside them do not tune a receiver. Enabled receiver frequencies must remain
-inside the RF range, and their occupied bandwidth and coarse-channel transition
-must still fit the capture passbands. An incompatible auxiliary receiver rejects
-the change rather than moving that receiver. RTA retains its whole-window limits.
+The IQ capture may extend past either RF limit; the presented spectrum and
+`sdr.actual.start/stop` are clipped to the reported RF range, so a wide window
+at a low center shows bins only from the device minimum. Its half-width is not
+added to the minimum center or subtracted from the maximum, and changing display
+bandwidth does not force an otherwise valid center away from a device limit.
+Frequency-axis drag and wheel gestures request a center within the reported RF
+range; the backend confirms the IQ-compatible center. Dragging within the plot
+only tunes within the displayed window; reaching an edge does not pan it. Use the
+frequency axis to move the window. Listen dragging and arrow tuning stop at the
+RF limits; clicks outside them do not tune a receiver. Enabled receiver
+frequencies must remain inside the RF range, and their occupied bandwidth and
+coarse-channel transition must still fit the capture passbands. An incompatible
+auxiliary receiver rejects the change rather than moving that receiver. RTA
+retains its whole-window limits.
 
 ### Exit measurement
 
@@ -479,7 +488,7 @@ the change rather than moving that receiver. RTA retains its whole-window limits
 
 In this mode STATUS reports `connected=false`, `gnss=null`, and empty active `actual` objects. No Soapy client count, throughput, or remote telemetry is published. A browser refresh, reconnect, or close leaves the child running. `websad` shutdown stops and reaps it; the child supervisor also arms parent-death cleanup. Exit (`SET_MODE` to `graph_mode`, or another measurement mode) stops and reaps the child before acquisition resumes. A child that cannot be reaped keeps Server mode and the device reservation.
 
-Handoff is refused when the loaded shim lacks `san90_session_release_v1` or a previous vendor owner is still parked inside the SDK. The mode change is not committed. The attempt still retires the previous capture: stream fences advance, `connected` becomes false, `gnss` is null, and the command returns `device_error`. The next capture uses a new epoch. The prebuilt `runtime/` adapter is unchanged and cannot perform this release.
+Handoff is refused when the loaded shim lacks `san90_session_release_v1` or a previous vendor owner is still parked inside the SDK. The mode change is not committed. The attempt still retires the previous capture: stream fences advance, `connected` becomes false, `gnss` is null, and the command returns `device_error`. The next capture uses a new epoch.
 
 A client needs SoapySDR and the [SoapyRemote](https://github.com/pothosware/SoapyRemote) module. Use `driver=remote,remote=<host>:<port>,remote:driver=harogic`; replace a wildcard bind with the server host's reachable address, and bracket IPv6 hosts. SoapySDRServer exposes all installed device factories, so retain the `harogic` filter. The patched module writes CF32, CS16 or CS8 output. Before setup, the native-format query defaults to CS16 at rates up to 60 MSps (`fullScale` 32768) and CS8 above 60 MSps (`fullScale` 128). After setup it reports the selected output format and its `fullScale` (CF32: 1, CS16: 32768, CS8: 128). CS16 and CS8 payloads use 4 and 2 bytes per complex sample, versus CF32's 8. `native_format` selects SDK CS8/CS16/CS32/AUTO at setup and remains fixed until stream close. AUTO matches integer output width; for CF32 it selects CS16 up to 60 MSps and CS8 above that rate at setup. Explicit integer output requires a matching SDK width. CF32 output normalizes SDK components by `2^7`, `2^15` or `2^31`; CS32 is SDK input only. SoapyRemote can transport native integer samples while returning CF32 to the client. This uses a raw ring and bulk copies, without a zero-copy claim.
 

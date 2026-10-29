@@ -37,7 +37,7 @@
   RTA 捕获完成由设备与帧元数据确认；fixture 输入不模拟硬件触发命中。
 - **界面** — 侧边导航条、可选虚拟键盘、幅度单位与外部增益/线损补偿、深浅主题、中英文；全局界面缩放统一使用底部控件，SRV 模式同样适用
 - **设备连接监控** — 拔线时在画布上显示提示，重新接入后自动恢复原模式，无需重启服务
-- **Soapy SRV** — **SRV** 按钮进入独占模式，把分析仪交给本机 SoapySDRServer。进入时停止 Web 采集和音频并释放物理设备句柄，不会自动启动服务。绑定地址和端口只能在停止时配置；启动、停止和重启各自独立。退出后回到进入前的频谱、实时或 SDR 视图。仓库随附的 runtime 不包含这次交接；须按下文重建 SDK shim 和 Soapy 模块。
+- **Soapy SRV** — **SRV** 按钮进入独占模式，把分析仪交给本机 SoapySDRServer。进入时停止 Web 采集和音频并释放物理设备句柄，不会自动启动服务。绑定地址和端口只能在停止时配置；启动、停止和重启各自独立。退出后回到进入前的频谱、实时或 SDR 视图。须按下文安装 Soapy 依赖并构建 Soapy 模块。
 
 ## 界面截图
 
@@ -55,12 +55,12 @@
 
 ## 快速开始
 
-**1.9.4** 使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
+服务使用原生 Rust PFB/DDC 采集与接收处理链路。Python 仅用于离线工具和测试，
 不再提供生产后端。保留的浏览器 WASM 产物是可选离线诊断工具，不是生产 DSP 路径。
 
 ### 运行随附发布产物
 
-1.9.4 仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
+仓库包含 `runtime/linux-x86_64/websad`、本项目 SDK 适配库
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so` 以及 `runtime/frontend/dist/`。
 执行 `./run.sh` 连接硬件，或执行 `./run.sh --fake` 使用合成输入，然后访问
 http://127.0.0.1:8080。使用随附产物无需安装 Rust、Node.js 或 Python。
@@ -106,7 +106,7 @@ make native sdk-shim                     # 原生服务与硬件 SDK shim
 make soapy-driver                        # 打过补丁的官方 SoapyHarogic 模块；需要厂商 SDK
 ```
 
-`make soapy-driver` 只下载官方 SoapyHarogic 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 的五个源码和许可证文件（GNU LGPL v2.1 或更高版本），把本项目的流格式及设备生命周期补丁应用到私有副本，并安装到 `$HOME/.local/share/harogic-websa/soapy`。脚本不下载 SDK，也不安装系统软件包。Server 交接要求用导出 `san90_session_release_v1` 的 shim 重新构建；仓库随附的 `runtime/` 适配库没有该符号，也不提供此功能。主机还须自行提供 SoapySDR 0.8 和 SoapyRemote。详见[工具指南](tools/README.md)。
+`make soapy-driver` 只下载官方 SoapyHarogic 修订版 `762dbfa1512c705e1d8b86e820b06e8a10e08a92` 的五个源码和许可证文件（GNU LGPL v2.1 或更高版本），把本项目的流格式及设备生命周期补丁应用到私有副本，并安装到 `$HOME/.local/share/harogic-websa/soapy`。脚本不下载 SDK，也不安装系统软件包。Server 交接要求 shim 导出 `san90_session_release_v1`；加载的适配库缺少该符号时会拒绝交接。主机还须自行提供 SoapySDR 0.8 和 SoapyRemote。详见[工具指南](tools/README.md)。
 
 ### 2. 运行
 

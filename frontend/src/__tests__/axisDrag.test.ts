@@ -22,6 +22,9 @@ import { confirmRefLevel, effectiveRefLevel, refLevel } from '../ui/refState';
 import { getDisplayRef, noteDisplayRefReport, setDisplayRef } from '../ui/displayRef';
 import { displayOffset, displayUnit } from '../ui/displayState';
 import { commitLevelOffset, rejectManualRef } from '../ui/panels/refAmp';
+import { confirmSdrTuneReport, requestSdrTune, resetSdrTuneSession } from '../ui/sdrTuneRequest';
+import { sdrListenHz } from '../ui/sdrState';
+import { __testSeedCapture, getCapture, getView, setView, setCapture } from '../ui/spectrumViewport';
 import { getY } from '../render/plot';
 import {
 	IDLE_COMMIT_MS,
@@ -34,6 +37,7 @@ import {
 	confirmAxisRef,
 	confirmSdrAxisWindow,
 	previewFreqWindow,
+	previewCaptureWindow,
 	previewLevelWindow,
 	rejectAxisRef,
 	resetAxisPreview,
@@ -65,6 +69,7 @@ beforeEach(() => {
 	resetGraphMode();
 	graphMode.confirm('std');    // resetGraphMode clears intent, not the last confirmed SDR mode
 	resetAxisPreview();          // no gesture survives a test, including the CHAIN window
+	__testSeedCapture(null);
 	openSocket();
 	displayUnit.set('dBm');
 	displayOffset.set(0);
@@ -76,6 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	resetSdrTuneSession();
 	resetFrequencyEditors();
 	resetAxisPreview();
 	vi.useRealTimers();
@@ -96,6 +102,28 @@ describe('the axis bands', () => {
 });
 
 describe('dragging the frequency axis', () => {
+	it.each(['std', 'rta', 'sdr'] as const)('preserves the zoom scale and capture bandwidth during a %s pan', mode => {
+		graphMode.confirm(mode);
+		S.setRtaData({ freq: new Float64Array([100e6, 200e6]), startHz: 100e6, stopHz: 200e6 });
+		__testSeedCapture({ lo: 100e6, hi: 200e6 });
+		setView({ lo: 140e6, hi: 160e6 }, 1);
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		expect(previewFreqWindow()).toEqual({ lo: 140e6, hi: 160e6 });
+		expect(xAxisTransform()).toBeNull();
+		axisDragMove(600, IN_X_BAND.y);
+		expect(previewFreqWindow()).toEqual({ lo: 135e6, hi: 155e6 });
+		expect(previewCaptureWindow()).toEqual({ lo: 95e6, hi: 195e6 });
+		expect(xAxisTransform()?.dxFrac).toBeCloseTo(0.25, 10);
+		expect(getCapture()).toEqual({ lo: 100e6, hi: 200e6 });
+		expect(getView()).toEqual({ lo: 140e6, hi: 160e6 });
+		expect(sent).toEqual([]);
+		setCapture({ lo: 95e6, hi: 195e6 });
+		sweptFrame(95e6, 195e6);
+		S.setRtaData({ freq: S.freqArray, startHz: 95e6, stopHz: 195e6 });
+		expect(previewFreqWindow()).toEqual(getView());
+		expect(xAxisTransform()).toBeNull();
+	});
+
 	it('pans the window with the finger and sends one request on release', () => {
 		expect(axisDragStart('x', 400, IN_X_BAND.y, RECT)).toBe(true);
 		axisDragMove(500, IN_X_BAND.y);                       // 100 px of 800 = 1/8 of the span
@@ -134,6 +162,16 @@ describe('dragging the frequency axis', () => {
 		expect(t.sx).toBeCloseTo(Math.exp(0.15), 6);            // the span shrank by exp(-0.15)
 		// Where the anchor frequency was, is where it still is.
 		expect(RECT.x + (anchorFrac * t.sx + t.dxFrac) * RECT.w).toBeCloseTo(IN_X_BAND.x, 6);
+	});
+
+	it('uses the full capture when a wheel drops zoom during a held pan', () => {
+		__testSeedCapture({ lo: 100e6, hi: 200e6 });
+		setView({ lo: 140e6, hi: 160e6 }, 1);
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		setView(null); // The canvas wheel handler drops local zoom before axisWheel.
+		axisWheel('x', -100, 400, IN_X_BAND.y, RECT);
+		expect(previewFreqWindow()).toEqual(previewCaptureWindow());
+		expect(previewFreqWindow()!.hi - previewFreqWindow()!.lo).toBeCloseTo(100e6 * Math.exp(-0.15), 5);
 	});
 
 	it('does not leave a wheel gesture holding the pointer state', () => {
@@ -227,6 +265,29 @@ describe('dragging the frequency axis', () => {
 		const cmd = sent.find((m) => m.cmd === 'SET_RTA');
 		expect(cmd.center - cmd.span / 2).toBeGreaterThanOrEqual(S.FREQ_MIN);
 		expect(cmd.center + cmd.span / 2).toBeLessThanOrEqual(S.FREQ_MAX);
+	});
+
+	it('cancels a pending tune and its queued repeat when committing a capture pan', () => {
+		vi.useFakeTimers();
+		document.body.innerHTML = '<select id="select-sdr-decimate"><option value="16">3.125M</option></select>';
+		graphMode.confirm('sdr');
+		const span = 3_125_000;
+		const center = 100e6;
+		S.setRtaData({ freq: new Float64Array([center - span / 2, center + span / 2]),
+			startHz: center - span / 2, stopHz: center + span / 2 });
+		sdrListenHz.confirm(center);
+		requestSdrTune(center + 1000);
+		requestSdrTune(center + 2000);
+		const first = sent[0];
+		axisDragStart('x', 400, IN_X_BAND.y, RECT);
+		axisDragMove(480, IN_X_BAND.y);
+		axisDragEnd();
+		expect(sent.map(command => command.cmd)).toEqual(['SET_SDR_CHANNEL', 'SET_SDR']);
+		expect(sdrListenHz.pending()).toBe(false);
+		confirmSdrTuneReport(first.freq, 'SET_SDR_CHANNEL', first.request_id, undefined);
+		vi.advanceTimersByTime(3000);
+		expect(sent.map(command => command.cmd)).toEqual(['SET_SDR_CHANNEL', 'SET_SDR']);
+		expect(sdrListenHz.get()).toBe(center);
 	});
 
 	it('rebases an SDR gesture onto the accepted passband center and continues from it', () => {

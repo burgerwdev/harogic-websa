@@ -265,6 +265,7 @@ pub(super) struct ReceiverWorkers {
     squelch: [Option<SquelchState>; 3],
     inputs: Vec<mpsc::SyncSender<PendingWork>>,
     outputs: mpsc::Receiver<Output>,
+    deferred: Vec<Output>,
     threads: Vec<JoinHandle<()>>,
     shared: Arc<Shared>,
 }
@@ -300,7 +301,7 @@ impl ReceiverWorkers {
             levels: [None; 3],
             squelch: [None; 3],
             radiofax_new_page: [false; 3],
-            inputs, outputs, threads: Vec::with_capacity(WORKERS + 1), shared,
+            inputs, outputs, deferred: Vec::new(), threads: Vec::with_capacity(WORKERS + 1), shared,
         };
         for (index, rx) in input_rxs.into_iter().enumerate() {
             let shared = Arc::clone(&workers.shared);
@@ -416,6 +417,7 @@ impl ReceiverWorkers {
                     || self.configs[slot].radiofax_clock_recovery != config.radiofax_clock_recovery
                     || self.configs[slot].audio_rate != config.audio_rate || self.configs[slot].stereo != config.stereo {
                     self.bump_generation(slot)?;
+                    self.retire_backlog()?;
                 }
                 if self.configs[slot].enabled && !config.enabled {
                     let generation=self.shared.generations[slot].load(Ordering::Acquire);
@@ -441,6 +443,36 @@ impl ReceiverWorkers {
             .map(|_| ()).map_err(|_| "receiver configuration generation overflow".into())
     }
 
+    /// Drain retired work without losing output from unchanged receiver generations.
+    fn retire_backlog(&mut self) -> Result<(), String> {
+        self.shared.check()?;
+        let started = Instant::now();
+        loop {
+            while let Ok(output) = self.outputs.try_recv() {
+                if self.shared.current(output.slot, output.generation) {
+                    self.deferred.push(output);
+                }
+            }
+            if self.shared.pending.load(Ordering::Acquire) == 0 {
+                while let Ok(output) = self.outputs.try_recv() {
+                    if self.shared.current(output.slot, output.generation) {
+                        self.deferred.push(output);
+                    }
+                }
+                return self.shared.check();
+            }
+            if started.elapsed() > Duration::from_secs(120) {
+                return Err("receiver drain exceeded 120 seconds".into());
+            }
+            match self.outputs.recv_timeout(Duration::from_millis(10)) {
+                Ok(output) if self.shared.current(output.slot, output.generation) => self.deferred.push(output),
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err("receiver output queue disconnected".into()),
+            }
+            self.shared.check()?;
+        }
+    }
+
     pub fn submit(&mut self, frame: &[u8], registry: &[ChannelRegistryEntry]) -> Result<(), String> {
         self.shared.check()?;
         if frame.len() < 56 || !matches!(&frame[..4], b"IQBF" | b"IQAX") {
@@ -461,6 +493,8 @@ impl ReceiverWorkers {
             || channel_id == 0 || epoch == 0 || !delay.is_finite() || delay < 0.0
             || (seq == 0) != (samples == 0) || input_index == u64::MAX
         { return Err("invalid receiver IQ frame metadata".into()); }
+        // The service filters stale identities before submission; reaching this
+        // boundary without the frame's registry is a caller error.
         let row = registry.iter().find(|row| row.channel_id == channel_id && row.epoch == epoch)
             .ok_or_else(|| format!("receiver IQ identity {channel_id}/{epoch} missing from registry"))?;
         if !(1..=3).contains(&row.channel) || row.state != "active"
@@ -517,6 +551,12 @@ impl ReceiverWorkers {
     pub fn poll(&mut self) -> Result<ReceiverFrames, String> {
         self.shared.check()?;
         let mut frames = ReceiverFrames::default();
+        for output in self.deferred.drain(..) {
+            if self.shared.current(output.slot, output.generation) {
+                self.squelch[output.slot] = output.squelch;
+                frames.append(output.frames);
+            }
+        }
         while let Ok(output) = self.outputs.try_recv() {
             if self.shared.current(output.slot, output.generation) {
                 self.squelch[output.slot] = output.squelch;
@@ -1256,5 +1296,75 @@ mod tests {
         assert_eq!(mapped.radiofax_clock_ppm, -2.0);
         config.radiofax_modulation = "ask".into();
         assert!(workers.configure(&[config]).unwrap_err().contains("invalid receiver configuration"));
+    }
+
+    #[test]
+    fn mode_switch_discards_a_full_slow_decoder_queue_without_failing() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        let drm = ChannelConfig { mode: "drm".into(), freq: 100e6, if_bw: 10_000.0, ..ChannelConfig::default() };
+        workers.configure(&[drm]).unwrap();
+        let old = [ChannelRegistryEntry { channel: 1, channel_id: 4, epoch: 7,
+            frequency_hz: 100e6, output_rate: 48_000.0, input_rate: 48_000.0,
+            group_delay_samples: 0.0, state: "active" }];
+        let frame = |seq, index| encode_baseband(BasebandMagic::Primary,
+            seq, 48_000.0, 100e6, 4, 7, index, 0.0, &vec![0.1, 0.0].repeat(4096)).unwrap();
+        let start = encode_baseband(BasebandMagic::Primary, 0, 48_000.0, 100e6, 4, 7, 0, 0.0, &[]).unwrap();
+        workers.submit(&start, &old).unwrap();
+        workers.finish().unwrap();
+        for seq in 1..=INPUT_CAPACITY as u32 {
+            workers.submit(&frame(seq, u64::from(seq - 1) * 4096), &old).unwrap();
+        }
+        // Whether the worker has already consumed part of the batch depends on
+        // scheduling; the contract under test is that retiring whatever backlog
+        // exists never latches a failure, not that a backlog must persist here.
+        let am = ChannelConfig { mode: "am".into(), freq: 100e6, if_bw: 6_000.0, ..ChannelConfig::default() };
+        workers.configure(&[am]).unwrap();
+        assert!(workers.shared.check().is_ok(), "changing demodulation must not latch a queue failure");
+        assert_eq!(workers.shared.pending.load(Ordering::Acquire), 0);
+        let fresh = [ChannelRegistryEntry { channel: 1, channel_id: 5, epoch: 8,
+            frequency_hz: 100e6, output_rate: 48_000.0, input_rate: 48_000.0,
+            group_delay_samples: 0.0, state: "active" }];
+        let start = encode_baseband(BasebandMagic::Primary, 0, 48_000.0, 100e6, 5, 8, 0, 0.0, &[]).unwrap();
+        workers.submit(&start, &fresh).unwrap();
+        let resumed = encode_baseband(BasebandMagic::Primary,
+            1, 48_000.0, 100e6, 5, 8, 0, 0.0, &vec![0.1, 0.0].repeat(4096)).unwrap();
+        workers.submit(&resumed, &fresh).unwrap();
+        let output = workers.finish().unwrap();
+        assert!(output.audio.iter().any(|audio| u32::from_le_bytes(audio[36..40].try_into().unwrap()) == 8),
+            "the replacement demodulator must emit audio on its own stream");
+    }
+
+    #[test]
+    fn reconfigure_preserves_unchanged_output_and_retires_deferred_generations() {
+        let mut workers = ReceiverWorkers::new().unwrap();
+        let mut configs = [ChannelConfig::default(), ChannelConfig {
+            channel: 2, enabled: true, ..ChannelConfig::default()
+        }];
+        workers.configure(&configs).unwrap();
+        let (sender, outputs) = mpsc::sync_channel(RESULT_CAPACITY);
+        workers.outputs = outputs;
+        let output = |slot, byte| Output {
+            slot, generation: workers.shared.generations[slot].load(Ordering::Acquire),
+            frames: ReceiverFrames { audio: vec![vec![byte]], decode: vec![vec![byte]] },
+            squelch: None,
+        };
+        sender.send(output(0, 1)).unwrap();
+        sender.send(output(1, 2)).unwrap();
+        configs[0].freq += 1.0;
+        workers.configure(&configs).unwrap();
+        let preserved = workers.poll().unwrap();
+        assert_eq!(preserved.audio, vec![vec![2]]);
+        assert_eq!(preserved.decode, vec![vec![2]]);
+
+        sender.send(Output { slot: 1,
+            generation: workers.shared.generations[1].load(Ordering::Acquire),
+            frames: ReceiverFrames { audio: vec![vec![3]], decode: vec![vec![3]] }, squelch: None,
+        }).unwrap();
+        configs[0].freq += 1.0;
+        workers.configure(&configs).unwrap();
+        configs[1].freq += 1.0;
+        workers.configure(&configs).unwrap();
+        let retired = workers.poll().unwrap();
+        assert!(retired.audio.is_empty() && retired.decode.is_empty());
     }
 }

@@ -74,16 +74,19 @@ def start_service(port, *, hardware=False, log=None):
                             stdout=log or subprocess.DEVNULL,
                             stderr=log or subprocess.DEVNULL)
     origin = f'http://127.0.0.1:{port}'
-    for _ in range(100):
-        if proc.poll() is not None:
-            break
-        try:
-            state(origin)
-            return proc, origin
-        except OSError:
-            time.sleep(0.1)
-    stop(proc)
-    raise RuntimeError('native websad did not start; inspect the service log')
+    try:
+        for _ in range(100):
+            if proc.poll() is not None:
+                break
+            try:
+                state(origin)
+                return proc, origin
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError('native websad did not start; inspect the service log')
+    except BaseException:
+        stop(proc)
+        raise
 
 
 def configure(origin, frequencies):

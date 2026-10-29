@@ -4,6 +4,7 @@ pub(super) struct HardwarePresentation {
     pipeline: sdr_pipeline::PipelinePresentation,
     output: sdr_pipeline::PipelineOutput,
     version: u64,
+    rf_limits: (f64, f64),
     frequency_version: u32,
     center: f64,
     decimate: i64,
@@ -34,6 +35,11 @@ impl HardwarePresentation {
         }
         let snapshot = &self.pipeline.snapshot;
         let bandwidth = (2.0 * display_half_width(self.decimate as i32)).min(snapshot.usable_bandwidth);
+        // The IQ window may extend past the RF limits the model reports; only bins inside those
+        // limits are presented. The physical capture keeps its requested centre and bandwidth.
+        let lo = (self.center - bandwidth / 2.0).max(self.rf_limits.0);
+        let hi = (self.center + bandwidth / 2.0).min(self.rf_limits.1);
+        let window = hi.max(lo) - lo;
         let mut actual = self.pipeline.encode();
         actual.as_object_mut().unwrap().extend(json!({
             "iq_rate":snapshot.usable_bandwidth / 0.8,"ddc_rate":snapshot.rate,
@@ -42,7 +48,7 @@ impl HardwarePresentation {
             "pfb_taps_per_phase":snapshot.taps,"capture_decimate":snapshot.device_decimate,
             "capture_center":snapshot.capture_center,"capture_start":snapshot.capture_center-snapshot.usable_bandwidth/2.0,
             "capture_stop":snapshot.capture_center+snapshot.usable_bandwidth/2.0,
-            "start":self.center-bandwidth/2.0,"stop":self.center+bandwidth/2.0,
+            "start":lo,"stop":hi,
             "packet_samples":16240,"packet_bytes":64960,"pan_available":false,
             "listen":self.listen,"demod":self.demod,"if_bw":self.if_bw,
             "ddc_decimate":snapshot.registry.iter().find(|c|c.channel==1).map(|c| snapshot.usable_bandwidth/0.8/c.output_rate),"ddc_batch":1,
@@ -58,10 +64,10 @@ impl HardwarePresentation {
             peak = None;
             channel_power = Some(service_power::measure_channel_power(&freq, &power, &self.channel_configs));
             let started = std::time::Instant::now();
-            pan.push(hardware_pan(self.frequency_version, self.center, bandwidth, &freq, &power)?);
+            pan.push(hardware_pan(self.frequency_version, lo, window, &freq, &power)?);
             self.timing.observe(started.elapsed());
             let mut inside: Vec<f32> = freq.iter().zip(&power)
-                .filter(|(f, p)| (**f-self.center).abs() <= bandwidth/2.0 && p.is_finite())
+                .filter(|(f, p)| **f >= lo && **f <= hi && p.is_finite())
                 .map(|(_, p)| *p).collect();
             if !inside.is_empty() {
                 inside.sort_by(f32::total_cmp);
@@ -187,6 +193,7 @@ impl DevState {
         Ok(Some(HardwarePresentation {
             pipeline:presentation, output, version:self.config_version,
             frequency_version:self.freq_version as u32, center:self.sdr_center,
+            rf_limits:self.freq_limits(),
             decimate:self.sdr_decimate, listen:self.sdr_listen, demod:self.sdr_demod.clone(),
             if_bw:self.sdr_if_bw, deemph:self.sdr_deemph, errors:self.ddc_error_count,
             last_error:self.ddc_error_last.clone(), timing:std::mem::take(&mut self.spectrum_timing),

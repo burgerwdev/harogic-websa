@@ -117,6 +117,11 @@ function drag(x0: number, x1: number, y = 240, ctrl = false) {
 	pointer('pointerup', x1, y, ctrl);
 }
 
+/** Hover state advances only in the coalesced animation frame that processes pointer moves. */
+function flushHover() {
+	vi.advanceTimersByTime(16);
+}
+
 describe('canvas pointer ownership', () => {
   it.each([0.02, 0.98])('tunes near plot edge %s without moving the capture window', async fraction => {
     const { state, plot, send } = await load();
@@ -136,13 +141,30 @@ describe('canvas pointer ownership', () => {
     expect(state.sdrCenterHz.get()).toBe(10_000_000);
   });
 
+  it.each([false, true])('keeps pointer hover accurate when the canvas sits away from the viewport origin (Zoom %s)', async zoom => {
+    const { filter, locate } = await load(zoom);
+    // A page header above the canvas must not shift hover hit-testing into the axis band.
+    vi.spyOn(canvas, 'getBoundingClientRect').mockImplementation(() => ({
+      left: 24, top: 60, width: 860 * screenScale, height: 480 * screenScale,
+      x: 24, y: 60, right: 884 * screenScale, bottom: 540 * screenScale, toJSON: () => ({}),
+    }) as DOMRect);
+    const g = filter.filterGeometry()!;
+    canvas.dispatchEvent(new MouseEvent('pointermove', {
+      clientX: (g.dialX + 55) * screenScale + 24, clientY: 240 * screenScale + 60, bubbles: true,
+    }));
+    flushHover();
+    expect(filter.filterHandlesVisible()).toBe(true);
+    expect(locate.sdrLocateHover()).toBeNull();
+    expect(canvas.style.cursor).not.toBe('ew-resize');
+  });
+
   it.each([false, true])('drags the measured top badge with Zoom %s and releases outside', async zoom => {
     const { state, viewport, send } = await load(zoom);
     const badge = await import('../ui/sdrBadgeGesture');
     const g = badge.sdrBadgeGeometry()!;
     const x = g.left + 2, y = g.top + g.height / 2;
-    canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
-    expect(canvas.style.cursor).toBe('grab');
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: x, clientY: y }));
+    flushHover();
     pointer('pointerdown', x, y);
     expect(canvas.style.cursor).toBe('grabbing');
     expect(badge.sdrBadgeDragFrequency()).toBe(10_000_000);
@@ -397,6 +419,7 @@ describe('canvas pointer ownership', () => {
 		}));
 		expect(filter.filterHandlesVisible()).toBe(false);
 		hover(g.dialX + 55);
+		flushHover();
 		expect(filter.filterHandlesVisible()).toBe(true);
 		canvas.dispatchEvent(new Event('pointerleave'));
 		expect(filter.filterHandlesVisible()).toBe(false);
@@ -410,6 +433,19 @@ describe('canvas pointer ownership', () => {
 		expect(filter.filterDragging()).toBe(false);
 		expect(viewport.isZoomed()).toBe(true);
 		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('does not restore queued hover after the pointer leaves the canvas', async () => {
+		const { filter, locate } = await load(true);
+		const g = filter.filterGeometry()!;
+		canvas.dispatchEvent(new MouseEvent('pointermove', {
+			clientX: (g.dialX + 55) * screenScale, clientY: 240 * screenScale, bubbles: true,
+		}));
+		canvas.dispatchEvent(new Event('pointerleave'));
+		flushHover();
+		expect(filter.filterHandlesVisible()).toBe(false);
+		expect(locate.sdrLocateHover()).toBeNull();
+		expect(canvas.style.cursor).toBe('');
 	});
 
 	it('grabs an outward arrow in the canvas margin before axis gestures', async () => {
@@ -499,6 +535,130 @@ describe('canvas pointer ownership', () => {
 		expect(axis.axisDragging()).toBe(false);
 		expect(viewport.isZoomed()).toBe(false);
 		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('preserves zoom on axis press and pans all display mappings at the zoom scale', async () => {
+		const { viewport, axis, plot, send } = await load(true);
+		// vi.resetModules() gives each case a fresh gesture graph; a static import
+		// would retain a different viewport instance from load().
+		const badge = await import('../ui/sdrBadgeGesture');
+		viewport.setView({ lo: 9_940_000, hi: 10_020_000 }, 1);
+		const view = { ...viewport.getView()! };
+		const rect = plot.plotRect();
+		const x = rect.x + rect.w / 2;
+		const y = rect.y + rect.h + 5;
+		const signalX = plot.getX(40, 101);
+		pointer('pointerdown', x, y);
+		expect(axis.previewFreqWindow()).toEqual(view);
+		expect(badge.sdrSpectrumWindow()).toEqual(view);
+		expect(axis.xAxisTransform()).toBeNull();
+		expect(plot.getX(40, 101)).toBe(signalX);
+		expect(send).not.toHaveBeenCalled();
+		pointer('pointermove', x + rect.w / 4, y);
+		const preview = { lo: view.lo - 20_000, hi: view.hi - 20_000 };
+		expect(axis.previewFreqWindow()).toEqual(preview);
+		expect(badge.sdrSpectrumWindow()).toEqual(preview);
+		expect(plot.getX(40, 101)).toBeCloseTo(signalX + rect.w / 4, 8);
+		expect(viewport.getView()).toEqual(view);
+		pointer('pointercancel', x + rect.w / 4, y);
+		expect(axis.previewFreqWindow()).toBeNull();
+		expect(plot.getX(40, 101)).toBe(signalX);
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('keeps the zoom preview stable through held frame updates, release and a chained press', async () => {
+		const { S, viewport, axis, plot, send } = await load(true);
+		document.body.insertAdjacentHTML('beforeend',
+			'<select id="select-sdr-decimate"><option value="128" selected>390.625k</option></select>');
+		viewport.setView({ lo: 9_940_000, hi: 10_020_000 }, 1);
+		const rect = plot.plotRect();
+		const x = rect.x + rect.w / 2;
+		const y = rect.y + rect.h + 5;
+		pointer('pointerdown', x, y);
+		pointer('pointermove', x + rect.w / 4, y);
+		const preview = { lo: 9_920_000, hi: 10_000_000 };
+		viewport.setCapture({ lo: 9_780_000, hi: 10_180_000 });
+		S.setFreqArray(Float64Array.from({ length: 101 }, (_, i) => 9_780_000 + i * 4000));
+		S.setRtaData({ freq: S.freqArray, startHz: 9_780_000, stopHz: 10_180_000 });
+		pointer('pointermove', x + rect.w / 4, y);
+		expect(axis.previewFreqWindow()).toEqual(preview);
+		expect(axis.xAxisTransform()).toBeNull();
+		pointer('pointerup', x + rect.w / 4, y);
+		expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+			cmd: 'SET_SDR', center: 9_980_000, decimate: 128,
+		}));
+		expect(axis.previewFreqWindow()).toEqual(preview);
+		pointer('pointerdown', x, y);
+		expect(axis.previewFreqWindow()).toEqual(preview);
+		pointer('pointercancel', x, y);
+	});
+
+	it('keeps an active zoom when a frequency-axis drag changes the band', async () => {
+		const { viewport, send } = await load(true);
+		document.body.insertAdjacentHTML('beforeend',
+			'<select id="select-sdr-decimate"><option value="128" selected>390.625k</option></select>');
+		viewport.setView({ lo: 9_900_000, hi: 10_100_000 }, 1);
+		expect(viewport.isZoomed()).toBe(true);
+		pointer('pointerdown', 410, 465);
+		pointer('pointermove', 250, 465);
+		pointer('pointerup', 250, 465);
+		expect(viewport.isZoomed()).toBe(true);
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR' }));
+		// The box is pinned to the frame: a same-width band pan slides the spectrum
+		// under it (view shifts with the capture), clamped at the frame's edges.
+		viewport.setCapture({ lo: 9_900_000, hi: 10_300_000 });
+		expect(viewport.isZoomed()).toBe(true);
+		expect(viewport.getView()).toEqual({ lo: 10_000_000, hi: 10_200_000 });
+		viewport.setView({ lo: 10_100_000, hi: 10_300_000 }, 1);
+		viewport.setCapture({ lo: 9_500_000, hi: 9_900_000 });
+		expect(viewport.getView()).toEqual({ lo: 9_700_000, hi: 9_900_000 });
+	});
+
+	it.each(['before', 'after'] as const)('picks the magnifier up when a band-change ACK arrives %s the frame', async order => {
+		const { controls, state, viewport, send } = await load(true);
+		document.body.insertAdjacentHTML('beforeend',
+			'<select id="select-sdr-decimate"><option value="128" selected>390.625k</option></select>');
+		viewport.setView({ lo: 9_940_000, hi: 9_960_000 }, 1);
+		state.sdrListenHz.confirm(9_950_000);
+		pointer('pointerdown', 410, 465);
+		pointer('pointermove', 250, 465);
+		pointer('pointerup', 250, 465);
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'SET_SDR' }));
+		const request = vi.mocked(send).mock.calls.at(-1)![0] as { request_id: string };
+		// The flag left the frame: the backend replanted listen at the new band's edge
+		// (nearest valid point — 10.0 MHz here, vs the 9.95 MHz fixture listen). The
+		// box is dropped centred on the new flag; the flag sits on the capture's lo
+		// edge, so clamping keeps it at the view's left edge.
+		if (order === 'after') viewport.setCapture({ lo: 10_000_000, hi: 10_400_000 });
+		const status = {
+			cmd: 'STATUS', mode: 'sdr', connected: true, config_version: 5,
+			response_to: 'SET_SDR', request_id: request.request_id,
+			center: 10_200_000, span: 400_000, ref: 0,
+			req: { swp: {}, rta: {}, sdr: {} }, actual: {},
+			sdr: { center: 10_200_000, decimate: 128, listen: 10_000_000, demod: 'am', if_bw: 40_000,
+				actual: { start: 10_000_000, stop: 10_400_000 },
+				channels: [{ channel: 1, enabled: true, freq: 10_000_000, mode: 'am', if_bw: 40_000 }] },
+		};
+		controls.syncSdrPanel(status);
+		expect(state.sdrListenHz.get()).toBe(10_000_000);
+		if (order === 'before') {
+			expect(viewport.getView()).toEqual({ lo: 9_940_000, hi: 9_960_000 });
+			viewport.setCapture({ lo: 10_000_000, hi: 10_400_000 });
+		}
+		expect(viewport.isZoomed()).toBe(true);
+		expect(viewport.getView()).toEqual({ lo: 10_000_000, hi: 10_020_000 });
+		// An ordinary tune between pans must become the baseline for the next ACK.
+		state.sdrListenHz.confirm(10_100_000);
+		// The next pan preserves that listen frequency, so only the capture shifts the box.
+		viewport.setCapture({ lo: 9_800_000, hi: 10_200_000 });
+		const sameListen = { ...status, config_version: 6,
+			response_to: 'SET_SDR', request_id: 'sdr-axis-next',
+			sdr: { ...status.sdr, listen: 10_100_000,
+				actual: { start: 9_800_000, stop: 10_200_000 },
+				channels: [{ channel: 1, enabled: true, freq: 10_100_000, mode: 'am', if_bw: 40_000 }] } };
+		controls.syncSdrPanel(sameListen);
+		// The box shifted with the −200 kHz frame pan and stayed fully inside.
+		expect(viewport.getView()).toEqual({ lo: 9_800_000, hi: 9_820_000 });
 	});
 
 	it.each(['demod', 'sdr', 'rta', 'preset', 'band'])('discards tuning drafts before %s takeover focus and change events', async action => {

@@ -263,15 +263,42 @@ describe('premise snapshots', () => {
 		}
 	});
 
-	it('expires a frozen signal instead of submitting its old carrier', () => {
+	it.each([1000, 5000])('expires a frozen signal with %i Hz bins instead of submitting its old carrier', (step) => {
 		sdrLocateMode.set('signal');
+		const freq = Float64Array.from({ length: 64 }, (_, i) => 100_000 + i * step);
+		const powers = new Float32Array(64).fill(-100);
+		powers[32] = -80;
+		const capture = { lo: freq[0], hi: freq[63] };
+		__testSeedCapture(capture);
+		setCapture(capture);
 		withClock(130, () => {
-			seededCarrier(32);
+			for (const at of [0, 60, 130]) observeCarrierSpectrum(freq, powers, at, 1);
 			updateSdrLocateHover(MID_X, MID_Y, 1);
-			expect(sdrLocateHover()?.targetHz).toBe(132_000);
+			expect(sdrLocateHover()?.targetHz).toBe(freq[32]);
 			beginSdrLocateClick(MID_X, MID_Y, 1);
 		});
-		withClock(431, () => expect(commitSdrLocateClick(131_500)).toBe(131_500));
+		const raw = 100_000 + 31.5 * step;
+		withClock(431, () => expect(commitSdrLocateClick(raw)).toBe(raw));
+	});
+
+	it('rejects a vanished coarse peak while the frozen preview is still fresh', () => {
+		sdrLocateMode.set('signal');
+		const freq = Float64Array.from({ length: 64 }, (_, i) => 100_000 + i * 5000);
+		const powers = new Float32Array(64).fill(-100);
+		powers[32] = -80;
+		const capture = { lo: freq[0], hi: freq[63] };
+		__testSeedCapture(capture);
+		setCapture(capture);
+		withClock(130, () => {
+			observeCarrierSpectrum(freq, powers, 130, 1);
+			updateSdrLocateHover(MID_X, MID_Y, 1);
+			expect(sdrLocateHover()?.targetHz).toBe(freq[32]);
+			beginSdrLocateClick(MID_X, MID_Y, 1);
+		});
+		withClock(140, () => {
+			observeCarrierSpectrum(freq, new Float32Array(64).fill(-100), 140, 1);
+			expect(commitSdrLocateClick(257_500)).toBe(257_500);
+		});
 	});
 });
 
@@ -435,6 +462,20 @@ describe('snap radius honesty', () => {
 		setView({ lo: 131_000, hi: 132_000 });
 		sdrDemod.set('am');
 		expect(snapRadiusHzAt(1)).toBeCloseTo(40 * 1000 / 800, 5);
+	});
+
+	it('keeps resolved AM acquisition inside its mode cap on a wide view', () => {
+		sdrLocateMode.set('signal');
+		const freq = Float64Array.from({ length: 1024 }, (_, i) => 100_000 + i * 1000);
+		const powers = new Float32Array(1024).fill(-100);
+		powers[532] = -80;
+		const capture = { lo: freq[0], hi: freq[1023] };
+		__testSeedCapture(capture);
+		setCapture(capture);
+		withClock(130, () => {
+			for (const at of [0, 60, 130]) observeCarrierSpectrum(freq, powers, at, 1);
+			expect(locateTargetAt(MID_X, MID_Y, 1)?.mode).toBe('free');
+		});
 	});
 
 	it('is zero where the mode has no carrier', () => {

@@ -2,8 +2,8 @@
  * Carrier evidence from raw spectrum frames.
  *
  * These tests pin the snap rules the SDR click relies on: raw frames are the only
- * evidence, persistence spans multiple frames in time, one-frame transients never
- * pass, the nearest candidate wins over a stronger distant one, staleness and
+ * evidence, fine acquisition spans multiple frames in time, coarse acquisition is
+ * opt-in, the nearest candidate wins over a stronger distant one, staleness and
  * geometry changes reset the evidence, and ambiguous rivals are refused.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -235,6 +235,40 @@ describe('resolution honesty', () => {
 		// The same evidence is fine when the caller accepts the wider bin.
 		const wide = near(START_HZ + 10 * 5000, 120, 40_000, 5000);
 		expect(wide.ok).toBe(true);
+	});
+
+	it('falls back to the nearest local peak on coarse bins only when asked, and refuses an equidistant rival', () => {
+		const freq = new Float64Array(POINTS);
+		for (let i = 0; i < POINTS; i++) freq[i] = START_HZ + i * 5000;
+		observeCarrierSpectrum(freq, frameWithCarrier(20, 20), 120, ID);
+		const target = START_HZ + 20 * 5000;
+		// Default stays honest: wide bins are refused, not snapped.
+		expect(near(target, 120, 40_000, MAX_BIN_HZ).ok).toBe(false);
+		const snapped = findCarrierNear({ hz: target + 2000, radiusHz: 40_000, maxBinHz: MAX_BIN_HZ, now: 120, coarseFallback: true });
+		expect(snapped.ok).toBe(true);
+		if (snapped.ok) expect(snapped.candidate.carrierHz).toBe(target);
+		// A second peak the same distance away makes the snap ambiguous.
+		resetCarrierEvidence();
+		const pair = frameWithCarrier(20, 20);
+		pair[24] = -80;
+		observeCarrierSpectrum(freq, pair, 120, ID);
+		const mid = (freq[20] + freq[24]) / 2;
+		const ambiguous = findCarrierNear({ hz: mid, radiusHz: 40_000, maxBinHz: MAX_BIN_HZ, now: 120, coarseFallback: true });
+		expect(ambiguous.ok).toBe(false);
+		if (!ambiguous.ok) expect(ambiguous.reason).toBe('ambiguous');
+	});
+
+	it('refreshes a coarse preview only from current support at its exact native bin', () => {
+		const freq = Float64Array.from({ length: POINTS }, (_, i) => START_HZ + i * 5000);
+		const target = freq[20];
+		observeCarrierSpectrum(freq, frameWithCarrier(20, 20), 120, ID);
+		expect(currentCarrierEvidence(target, 120, MAX_BIN_HZ)).toBeNull();
+		expect(currentCarrierEvidence(target, 120, MAX_BIN_HZ, true)?.atMs).toBe(120);
+		observeCarrierSpectrum(freq, frameWithCarrier(20, 20), 180, ID);
+		expect(currentCarrierEvidence(target, 180, MAX_BIN_HZ, true)?.atMs).toBe(180);
+		observeCarrierSpectrum(freq, frameWithCarrier(21, 20), 240, ID);
+		expect(currentCarrierEvidence(target, 240, MAX_BIN_HZ, true)).toBeNull();
+		expect(currentCarrierEvidence(freq[21], 240 + CARRIER_STALE_MS, MAX_BIN_HZ, true)).toBeNull();
 	});
 
 	it('reports out-of-view when the search window is off the axis', () => {

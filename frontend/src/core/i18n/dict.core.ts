@@ -503,12 +503,14 @@ export const en = {
 	"zoom_view_label": "View",
 	"zoom_full_label": "Full",
 	"zoom_close": "Exit local zoom",
-	"zoom_rail_horizontal": "Zoom",
-	"zoom_rail_top": "Top",
-	"zoom_rail_bottom": "Bottom",
+	"zoom_rail_horizontal": "Z",
+	"zoom_rail_top": "T",
+	"zoom_rail_bottom": "B",
 	"zoom_rail_horizontal_tip": "Horizontal zoom and displayed bandwidth (display only)",
 	"zoom_rail_top_tip": "Maximum displayed level (display only)",
 	"zoom_rail_bottom_tip": "Minimum displayed level (display only)",
+	"zoom_rail_show_groups": "Show group buttons",
+	"zoom_rail_show_sliders": "Show zoom sliders",
 } as const;
 
 export const zh = {
@@ -1015,11 +1017,13 @@ export const zh = {
 	"zoom_view_label": "显示",
 	"zoom_full_label": "全局",
 	"zoom_close": "退出局部放大",
-	"zoom_rail_horizontal": "缩放",
-	"zoom_rail_top": "Top",
-	"zoom_rail_bottom": "Bottom",
+	"zoom_rail_horizontal": "Z",
+	"zoom_rail_top": "T",
+	"zoom_rail_bottom": "B",
 	"zoom_rail_horizontal_tip": "水平缩放倍率与显示频宽（仅显示）",
 	"zoom_rail_top_tip": "显示最大电平（仅显示）",
 	"zoom_rail_bottom_tip": "显示最小电平（仅显示）",
+	"zoom_rail_show_groups": "显示分组按钮",
+	"zoom_rail_show_sliders": "显示缩放滑块",
 } as const;
 

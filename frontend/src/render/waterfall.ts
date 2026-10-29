@@ -5,6 +5,7 @@ import { canvasColors, getTheme } from '../core/theme';
 import { percentileApprox } from '../dsp/stats';
 import { wfHiDbm, wfLoDbm, wfRangeMode } from '../ui/waterfallState';
 import { getCapture, getView, isZoomed, viewportVersion } from '../ui/spectrumViewport';
+import { previewFreqWindow } from '../ui/axisDrag';
 import { lowerBound, projectSpectrum, sameFrequencyGrid } from '../dsp/grid';
 import { sdrBadgeDragFrequency, sdrSpectrumWindow } from '../ui/sdrBadgeGesture';
 import { demodBandHz, sdrDemod, sdrPitchHz } from '../ui/sdrState';
@@ -225,8 +226,8 @@ export function renderWaterfall(canvas: HTMLCanvasElement, maxDensity: number) {
   // phase 2); fractions are stable across rows stored at different widths.
   const cap = getCapture();
   const zv = isZoomed() ? getView() : null;
-  const view = S.sdrMode ? sdrSpectrumWindow() ?? cap : zv && cap
-    && zv.lo >= cap.lo - 0.5 && zv.hi <= cap.hi + 0.5 ? zv : cap;
+  const view = previewFreqWindow() ?? (S.sdrMode ? sdrSpectrumWindow() ?? cap : zv && cap
+    && zv.lo >= cap.lo - 0.5 && zv.hi <= cap.hi + 0.5 ? zv : cap);
   let f0 = 0, f1 = 1;
   if (view && cap && cap.hi > cap.lo) {
     f0 = (view.lo - cap.lo) / (cap.hi - cap.lo);

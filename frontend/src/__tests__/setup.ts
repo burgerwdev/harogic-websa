@@ -2,6 +2,13 @@
 // The tests do not do real rendering, only pure logic (smoothing/peak-finding/resampling/normalization)
 // - plus every `moveTo`/`lineTo` call that the renderer makes. A test can then assert what a full
 // render pass draws. The RTA/SDR trace-polyline regression reads this list.
+import { beforeEach, vi } from 'vitest';
+
+// jsdom has no canvas backend. Keep its null-context behavior for auxiliary canvases;
+// drawing tests supply their own contexts. Reinstall after suites restore their spies.
+beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+});
 
 /** Path calls in order. Call `resetCtxCalls()` before a render pass. */
 export const ctxCalls: { op: 'moveTo' | 'lineTo'; x: number; y: number }[] = [];

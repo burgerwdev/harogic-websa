@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Harogic SAN Series Web Spectrum Analyzer</title>
-  <script type="module" crossorigin src="/static/dist/assets/index-BnKgwUOX.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-B9tGlFuC.css">
+  <script type="module" crossorigin src="/static/dist/assets/index-D5f1hZEp.js"></script>
+  <link rel="modulepreload" crossorigin href="/static/dist/assets/i18n-BB-QIrzU.js">
+  <link rel="stylesheet" crossorigin href="/static/dist/assets/index-BUeCXhlk.css">
 </head>
 <body>
 <div class="analyzer-card">
@@ -79,21 +80,6 @@
                    M3.2 8.3h.01M5.6 8.3h.01M8 8.3h.01M10.4 8.3h.01M12.8 8.3h.01
                    M5.2 10.5h5.6"/>
         </svg></button>
-      <span class="info-label" data-i18n="ui_scale">UI:</span>
-      <!-- Global UI scale (core/uiScale.ts): the whole frame including the canvas. "Auto"
-           follows the screen height and forgets the stored override, so a manual pick stays
-           until the user asks for the automatic value again. -->
-      <select id="ui-scale" data-i18n-title="tip_ui_scale" data-i18n-attr="title"
-              title="Global UI scale (fonts, spacing and the canvas together)">
-        <option value="auto" data-i18n="ui_scale_auto">Auto</option>
-        <option value="0.5">50%</option>
-        <option value="0.65">65%</option>
-        <option value="0.8">80%</option>
-        <option value="1">100%</option>
-        <option value="1.25">125%</option>
-        <option value="1.5">150%</option>
-        <option value="2">200%</option>
-      </select>
       <span id="connDot" class="dot off"></span>
       <button class="btn" id="btn-connect" data-action="connect" data-i18n="connect" data-i18n-title="tip_btn-connect">Connect</button>
     </div>
@@ -176,6 +162,7 @@
             <button class="btn" id="btn-waterfall" data-action="toggle-waterfall" data-i18n="waterfall" data-i18n-title="tip_btn-waterfall">Waterfall</button>
             <button class="btn" id="btn-mode-rta" data-action="toggle-rta" data-i18n="mode_rta" data-i18n-title="tip_btn-mode-rta">RTA</button>
             <button class="btn" id="btn-mode-sdr" data-action="toggle-sdr" title="SDR receive: demodulate the active marker/centre. Shift+click on the spectrum jumps straight to SDR at that frequency. Click again to return to the sweep.">SDR</button>
+            <button class="btn" id="btn-mode-server" data-action="toggle-server" data-i18n="mode_server" data-i18n-title="tip_btn-mode-server">SRV</button>
           </div>
         </div>
       </div>
@@ -258,7 +245,12 @@
             <div class="param-row"><label data-i18n="step">Step</label>
               <input type="number" id="input-sdr-step" min="0" step="any" data-i18n-title="sdr_step_tip" data-i18n-attr="title" title="Arrow-key tuning step">
               <div class="unit-btn-group sdr-tail" id="unit-sdr_step-group"></div>
-              <span class="sdr-tail"><button class="btn" id="btn-sdr-step-settings" type="button" aria-expanded="false" aria-controls="sdr-step-settings-panel" data-i18n="sdr_step_settings" data-i18n-title="sdr_step_settings_tip">Steps</button></span></div>
+              <span class="sdr-tail sdr-step-settings-tail"><button class="btn" id="btn-sdr-step-settings" type="button" aria-expanded="false" aria-controls="sdr-step-settings-panel" aria-labelledby="sdr-step-settings-label" data-i18n="sdr_step_settings" data-i18n-attr="title" data-i18n-title="sdr_step_settings_tip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true" style="display:block;margin:0 auto;">
+                  <path d="m9.5 3-.6 2.2-1.8 1.1-2.2-.6-2.5 4.3L4 11.6v2.1l-1.6 1.6 2.5 4.3 2.2-.6 1.8 1.1.6 2.2h5l.6-2.2 1.8-1.1 2.2.6 2.5-4.3-1.6-1.6v-2.1l1.6-1.6-2.5-4.3-2.2.6-1.8-1.1-.6-2.2z"/>
+                  <circle cx="12" cy="12.6" r="3"/>
+                </svg><span id="sdr-step-settings-label" hidden data-i18n="sdr_step_settings">Steps</span>
+              </button></span></div>
             <div class="param-row span-action-row"><span id="sdr-step-quick"></span></div>
             <!-- Inline step-tier settings: the Shift/Ctrl tune steps live beside the box, not
                  in a dialog. Collapsed by default; ordinary in-flow panel content. -->
@@ -308,13 +300,13 @@
                 <button class="btn" data-sdr-deemph="75">75µs</button>
                 <button class="btn" data-sdr-deemph="300">300µs</button>
               </div></div>
-            <div class="param-row"><label data-i18n="volume">Volume</label>
-              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05" style="flex:1;">
-              <button class="btn" id="btn-sdr-audio" data-action="toggle-sdr-audio" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Enable/disable audio (Space)">Off</button></div>
+            <div class="param-row sdr-volume-row"><label data-i18n="volume">Volume</label>
+              <input type="range" id="input-sdr-volume" min="0" max="2" step="0.05">
+              <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button>
+              <button class="btn active" id="btn-sdr-audio" data-action="toggle-sdr-audio" aria-pressed="true" data-i18n="sdr_mute_on" data-i18n-title="sdr_audio_tip" data-i18n-attr="title" title="Toggle mute (Space)">Mute On</button></div>
             <div class="param-row sdr-squelch-row"><label data-i18n="squelch_short">Squelch</label>
               <input type="range" id="input-sdr-squelch" min="-160" max="0" step="0.1" value="-110" data-i18n="squelch_tip" data-i18n-attr="title" title="RF threshold before AGC; far left disables squelch, move right to require a stronger signal">
-              <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span>
-              <button class="btn active" id="btn-sdr-agc" type="button" data-action="toggle-sdr-agc" aria-pressed="true" data-i18n="agc_on" data-i18n-title="agc_tip" data-i18n-attr="title" title="Automatically adjusts listening level; Off uses fixed gain. Does not change RF gain or squelch.">AGC On</button></div>
+              <span class="cur-val" id="cur-sdr-squelch">-110.0 dBm</span></div>
             <div class="param-row sdr-nr-row"><label data-i18n="nr">NR</label>
               <button class="btn" id="btn-sdr-nr" data-action="toggle-sdr-nr" data-i18n-title="nr_tip" data-i18n-attr="title" data-i18n="off">Off</button>
               <select id="select-sdr-nr-algo" data-action="set-sdr-nr-algo" data-i18n-title="nr_algo_tip" data-i18n-attr="title">
@@ -781,6 +773,61 @@
       </div>
     </div>
   </div>
+  <section class="server-view" id="server-view" hidden>
+    <canvas class="server-transition" id="server-transition" aria-hidden="true" hidden></canvas>
+    <header class="server-head">
+      <div class="server-title">
+        <span class="server-mark" aria-hidden="true"></span>
+        <h1 data-i18n="server_title">Soapy SRV</h1>
+        <span class="server-state" id="server-state" data-state="stopped">stopped</span>
+      </div>
+      <button type="button" class="btn" id="btn-server-back" data-i18n="server_back" data-i18n-title="tip_server_back">Spectrum</button>
+    </header>
+    <div class="server-body">
+      <div class="server-controls">
+        <div class="server-row">
+          <label for="server-bind" data-i18n="server_bind">Bind</label>
+          <input type="text" id="server-bind" spellcheck="false" autocomplete="off" inputmode="decimal" value="127.0.0.1" data-i18n="tip_server_bind" data-i18n-attr="title">
+          <label for="server-port" data-i18n="server_port">Port</label>
+          <input type="number" id="server-port" min="1" max="65535" step="1" value="55132" data-i18n="tip_server_port" data-i18n-attr="title">
+          <button type="button" class="btn" id="btn-server-configure" data-i18n="server_apply" data-i18n-title="tip_server_apply">Apply</button>
+        </div>
+        <div class="server-row server-actions">
+          <button type="button" class="btn" id="btn-server-start" data-i18n="server_start" data-i18n-title="tip_server_start">Start</button>
+          <button type="button" class="btn" id="btn-server-stop" data-i18n="server_stop" data-i18n-title="tip_server_stop">Stop</button>
+          <button type="button" class="btn" id="btn-server-restart" data-i18n="server_restart" data-i18n-title="tip_server_restart">Restart</button>
+          <label class="server-motion"><input type="checkbox" id="server-motion"> <span data-i18n="server_motion">Transition</span></label>
+        </div>
+        <p class="server-note" id="server-dependency" hidden></p>
+        <p class="server-note" id="server-field-error" role="status" hidden></p>
+      </div>
+      <dl class="server-status" id="server-status">
+        <div><dt data-i18n="server_pid">PID</dt><dd id="server-pid">—</dd></div>
+        <div><dt data-i18n="server_uptime">Uptime</dt><dd id="server-uptime">—</dd></div>
+        <div><dt data-i18n="server_exit">Exit</dt><dd id="server-exit">—</dd></div>
+        <div class="server-error-item"><dt data-i18n="server_error">Error</dt><dd id="server-error">—</dd></div>
+      </dl>
+      <div class="server-connect" id="server-connect" hidden>
+        <div class="server-connect-head">
+          <span data-i18n="server_connect">Client connection</span>
+          <button type="button" class="btn" id="btn-server-copy-connect" data-i18n="server_copy" data-i18n-title="tip_server_copy">Copy</button>
+        </div>
+        <pre id="server-connect-text"></pre>
+        <p class="server-note" id="server-connect-hint" hidden></p>
+      </div>
+      <div class="server-logs">
+        <div class="server-logs-head">
+          <span data-i18n="server_logs">Log</span>
+          <span class="server-log-meta" id="server-log-meta"></span>
+          <button type="button" class="btn" id="btn-server-pause" data-i18n="server_pause" data-i18n-title="tip_server_pause">Pause</button>
+          <button type="button" class="btn" id="btn-server-follow" data-i18n="server_follow" data-i18n-title="tip_server_follow">Follow</button>
+          <button type="button" class="btn" id="btn-server-clear" data-i18n="server_clear" data-i18n-title="tip_server_clear">Clear</button>
+          <button type="button" class="btn" id="btn-server-copy-logs" data-i18n="server_copy_logs" data-i18n-title="tip_server_copy_logs">Copy log</button>
+        </div>
+        <ol class="server-log" id="server-log" aria-live="off"></ol>
+      </div>
+    </div>
+  </section>
   <div class="dev-bar" id="dev-bar">
     <div class="info-item"><span class="info-label" data-i18n="device">Device</span><span class="info-value gnss-indicator" id="info-device" data-action="device-detail" data-i18n-attr="title" title="Device detail">-</span>
       <div class="gnss-popover" id="device-popover" style="display:none;">
@@ -806,11 +853,26 @@
     <span class="separator">|</span>
     <div class="info-item"><span class="info-label" data-i18n="api">API:</span><span class="info-value" id="dev-api">-</span></div>
     <div class="info-right">
+      <span class="info-label" data-i18n="ui_scale">UI:</span>
+      <!-- Global UI scale (core/uiScale.ts): the whole frame including the canvas. "Auto"
+           follows the screen height and forgets the stored override, so a manual pick stays
+           until the user asks for the automatic value again. -->
+      <select id="ui-scale" data-i18n-title="tip_ui_scale" data-i18n-attr="title"
+              title="Global UI scale (fonts, spacing and the canvas together)">
+        <option value="auto" data-i18n="ui_scale_auto">Auto</option>
+        <option value="0.5">50%</option>
+        <option value="0.65">65%</option>
+        <option value="0.8">80%</option>
+        <option value="1">100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+      </select>
       <button class="btn" id="btn-preset" data-action="preset" data-i18n-title="tip_preset" data-i18n="preset">Preset</button>
       <button class="btn bar-btn" id="btn-theme" data-i18n="tip_theme" data-i18n-attr="title">Light</button>
       <button class="btn bar-btn" id="btn-lang" data-i18n="tip_lang" data-i18n-attr="title" title="Switch language">中文</button>
       <span class="info-label">2026 © HAROGIC WebSA</span>
-      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.9.4 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
+      <span class="version-tag" data-i18n="tip_version" data-i18n-attr="title">v1.10.3 by <a class="version-tag-link" href="https://space.bilibili.com/28447213" target="_blank" rel="noopener">好奇牛马</a></span>
     </div>
   </div>
 </div>
@@ -988,6 +1050,101 @@
             <canvas class="decode-sstv-canvas" id="decode-sstv-canvas" width="320" height="256"></canvas>
           </div>
         </div>
+      </div>
+    </div>
+    <!-- Radiofax: continuous Gray8 paper, independent from SSTV's RGB still pictures. -->
+    <div class="decode-radiofax" id="decode-window-radiofax" style="display:none;">
+      <div class="decode-radiofax-bar">
+        <select id="radiofax-history" data-i18n-title="radiofax_history_tip" title="Received pages"></select>
+        <button type="button" class="btn" id="radiofax-new-page" data-i18n="radiofax_new_page" data-i18n-title="radiofax_new_page_tip">New page</button>
+        <details class="decode-radiofax-menu" id="radiofax-save-menu">
+          <summary class="btn" id="radiofax-save" data-i18n="radiofax_save" data-i18n-title="radiofax_save_tip">Save PNG</summary>
+          <div class="decode-radiofax-menu-panel">
+            <button type="button" class="btn" id="radiofax-save-segment" data-i18n="radiofax_save_segment" data-i18n-title="radiofax_save_segment_tip">Save this segment</button>
+            <button type="button" class="btn" id="radiofax-save-page" data-i18n="radiofax_save_page" data-i18n-title="radiofax_save_page_tip">Save whole page</button>
+            <p class="decode-radiofax-menu-note" id="radiofax-export-limit" role="status"></p>
+          </div>
+        </details>
+        <label class="decode-radiofax-zoom"><span data-i18n="radiofax_zoom">Zoom</span><select id="radiofax-zoom" data-i18n-title="radiofax_zoom_tip" title="Zoom the viewed segment">
+          <option value="fit" data-i18n="radiofax_fit">Fit</option>
+          <option value="50">50%</option>
+          <option value="100">100%</option>
+          <option value="200">200%</option>
+        </select></label>
+        <button type="button" class="btn active" id="radiofax-follow" aria-pressed="true" data-i18n="radiofax_follow" data-i18n-title="radiofax_follow_tip">Follow</button>
+        <details class="decode-radiofax-menu" id="radiofax-settings">
+          <summary class="btn" data-i18n="radiofax_settings" data-i18n-title="radiofax_settings_tip">Settings</summary>
+          <div class="decode-radiofax-menu-panel decode-radiofax-settings-panel">
+            <div class="btn-group" role="group" data-i18n-attr="title" data-i18n="radiofax_acquisition" title="Acquisition">
+              <button type="button" class="btn" id="radiofax-auto" data-i18n="auto">Auto</button>
+              <button type="button" class="btn" id="radiofax-manual" data-i18n="radiofax_manual">Manual</button>
+            </div>
+            <label><span data-i18n="radiofax_ioc">IOC</span><select id="radiofax-ioc">
+              <option value="auto" data-i18n="auto">Auto</option><option value="288">288</option><option value="576">576</option>
+            </select></label>
+            <label><span data-i18n="radiofax_lpm">LPM</span><select id="radiofax-lpm">
+              <option value="auto" data-i18n="auto">Auto</option><option value="60">60</option><option value="90">90</option>
+              <option value="120">120</option><option value="180">180</option><option value="240">240</option>
+            </select></label>
+            <label><span data-i18n="radiofax_modulation">Modulation</span><select id="radiofax-modulation">
+              <option value="fm">FM</option><option value="am">AM</option>
+            </select></label>
+            <label><span data-i18n="radiofax_polarity">Polarity</span><select id="radiofax-polarity">
+              <option value="normal" data-i18n="radiofax_normal">Normal</option><option value="inverted" data-i18n="radiofax_inverted">Inverted</option>
+            </select></label>
+            <label><span data-i18n="radiofax_clock">Clock recovery</span><select id="radiofax-clock-recovery">
+              <option value="auto" data-i18n="auto">Auto</option><option value="off" data-i18n="off">Off</option>
+            </select></label>
+            <label><span data-i18n="radiofax_phase">Phase (px)</span><input id="radiofax-phase-pixels" type="number" step="any" value="0"></label>
+            <label><span data-i18n="radiofax_ppm">Clock (ppm)</span><input id="radiofax-clock-ppm" type="number" step="any" value="0"></label>
+            <button type="button" class="btn" id="radiofax-reset-correction" data-i18n="radiofax_reset" data-i18n-title="radiofax_reset_tip">Reset correction</button>
+          </div>
+        </details>
+        <details class="decode-radiofax-menu" id="radiofax-more">
+          <summary class="btn" data-i18n="radiofax_more">More</summary>
+          <div class="decode-radiofax-menu-panel">
+            <button type="button" class="btn" id="radiofax-delete" data-i18n="radiofax_delete" data-i18n-title="radiofax_delete_tip">Delete page</button>
+            <button type="button" class="btn" id="radiofax-clear" data-i18n="radiofax_clear" data-i18n-title="radiofax_clear_tip">Clear history</button>
+          </div>
+        </details>
+      </div>
+      <div class="decode-radiofax-status" id="radiofax-state" role="status">—</div>
+      <div class="decode-radiofax-view" id="radiofax-view">
+        <canvas id="decode-radiofax-canvas" width="576" height="1"></canvas>
+        <div class="decode-radiofax-empty" id="radiofax-empty" data-i18n="radiofax_waiting">Waiting for radiofax image…</div>
+      </div>
+      <div class="decode-radiofax-alerts">
+        <div class="decode-radiofax-notice blocked" id="radiofax-budget" role="status"></div>
+        <div class="decode-radiofax-notice" id="radiofax-suppressed" role="status"></div>
+        <div class="decode-radiofax-notice" id="radiofax-prefix-missing" role="status"></div>
+        <div class="decode-radiofax-error" id="radiofax-save-error" role="alert" style="display:none;"></div>
+      </div>
+      <div class="decode-radiofax-footer">
+        <div class="decode-radiofax-page" id="radiofax-page-info"></div>
+        <div class="decode-radiofax-segments" id="radiofax-segments">
+          <button type="button" class="btn" id="radiofax-segment-prev" data-i18n="radiofax_previous_segment" data-i18n-attr="title" title="Previous segment">‹</button>
+          <span id="radiofax-segment">—</span>
+          <button type="button" class="btn" id="radiofax-segment-next" data-i18n="radiofax_next_segment" data-i18n-attr="title" title="Next segment">›</button>
+        </div>
+        <span class="decode-radiofax-missing" id="radiofax-missing" role="status"></span>
+        <span class="decode-radiofax-eviction" id="radiofax-eviction" role="status"></span>
+        <span class="decode-radiofax-activity" id="radiofax-activity" role="status"></span>
+        <details class="decode-radiofax-menu decode-radiofax-details" id="radiofax-details">
+          <summary data-i18n="radiofax_details">Details</summary>
+          <div class="decode-radiofax-menu-panel decode-radiofax-details-panel">
+            <p id="radiofax-clock-state"></p>
+            <p id="radiofax-signal"></p>
+            <p id="radiofax-carrier"></p>
+            <p id="radiofax-received"></p>
+            <p id="radiofax-reason"></p>
+            <p id="radiofax-resource"></p>
+          </div>
+        </details>
+      </div>
+      <div class="decode-radiofax-confirm" id="radiofax-confirm" role="group" aria-labelledby="radiofax-confirm-prompt" style="display:none;">
+        <span id="radiofax-confirm-prompt"></span>
+        <button type="button" class="btn" id="radiofax-confirm-delete" data-i18n="radiofax_confirm_action">Delete</button>
+        <button type="button" class="btn" id="radiofax-confirm-cancel" data-i18n="radiofax_cancel">Cancel</button>
       </div>
     </div>
   </div>

@@ -8,12 +8,19 @@ let serial = 0;
 let inFlight: { id: string; hz: number; timer: number } | null = null;
 let queued: number | null = null;
 let version = -1;
+let timeoutError: { id: string; text: string; version: number } | null = null;
+
+function clearTimeoutError(): void {
+  if (timeoutError && S.statusError === timeoutError.text) S.setStatusError(null);
+  timeoutError = null;
+}
 
 /** Cancel pending work. Replies from the old request cannot start another command. */
 export function cancelSdrTuneRequest(): void {
   if (inFlight) window.clearTimeout(inFlight.timer);
   inFlight = null;
   queued = null;
+  clearTimeoutError();
   sdrListenHz.reset();
 }
 
@@ -24,7 +31,9 @@ function submit(hz: number): void {
   inFlight = { id, hz, timer: window.setTimeout(() => {
     if (inFlight?.id !== id) return;
     cancelSdrTuneRequest();
-    S.setStatusError(t('sdr_tune_timeout'));
+    const text = t('sdr_tune_timeout');
+    timeoutError = { id, text, version };
+    S.setStatusError(text);
     renderSdrState();
     requestRender();
   }, 3000) };
@@ -34,6 +43,7 @@ function submit(hz: number): void {
 /** One request in flight; repeated input replaces the single unsent target. */
 export function requestSdrTune(hz: number): void {
   if (!Number.isFinite(hz) || hz <= 0) return;
+  clearTimeoutError();
   if (inFlight) {
     queued = hz;
     sdrListenHz.set(hz);
@@ -52,28 +62,39 @@ export function stopSdrTuneRepeat(): void {
   }
 }
 
-/** Returns false for old request identities and older configuration snapshots. */
 export function confirmSdrTuneReport(hz: number, responseTo: unknown, requestId: unknown,
-  configVersion: unknown): boolean {
+  configVersion: unknown, options: { acceptSnapshot?: boolean; contextChanged?: boolean } = {}): boolean {
   const own = typeof requestId === 'string' && requestId.startsWith('sdr-tune-');
-  const nextVersion = typeof configVersion === 'number' ? configVersion : -1;
-  if ((own && requestId !== inFlight?.id) || (nextVersion >= 0 && nextVersion < version)) return false;
-  if (nextVersion >= 0) version = nextVersion;
-  if (!Number.isFinite(hz) || hz <= 0) return true;
-  sdrListenHz.confirm(hz);
-  if (inFlight && responseTo === 'SET_SDR_CHANNEL' && requestId === inFlight.id) {
+  const nextVersion = typeof configVersion === 'number' && Number.isFinite(configVersion) ? configVersion : -1;
+  const matching = inFlight !== null && responseTo === 'SET_SDR_CHANNEL' && requestId === inFlight.id;
+  const accepted = options.acceptSnapshot !== false && !(nextVersion >= 0 && nextVersion < version)
+    && (!own || requestId === inFlight?.id || nextVersion > version);
+  if (responseTo === 'SET_SDR_CHANNEL' && requestId === timeoutError?.id) clearTimeoutError();
+  if (accepted) {
+    if (options.contextChanged && !matching) cancelSdrTuneRequest();
+    if (nextVersion >= 0) version = nextVersion;
+    if (Number.isFinite(hz) && hz > 0) {
+      sdrListenHz.confirm(hz);
+      if (timeoutError && nextVersion > timeoutError.version) clearTimeoutError();
+    }
+  }
+  if (matching && inFlight) {
     window.clearTimeout(inFlight.timer);
     inFlight = null;
     const next = queued;
     queued = null;
     sdrListenHz.reset();
-    if (next !== null && Math.abs(next - hz) >= 0.5) submit(next);
-  } else if (inFlight) {
+    if (next !== null && Math.abs(next - (sdrListenHz.confirmedValue() ?? 0)) >= 0.5) submit(next);
+    if (!accepted) {
+      renderSdrState();
+      requestRender();
+    }
+  } else if (accepted && inFlight) {
     const target = queued ?? inFlight.hz;
     sdrListenHz.set(target);
     sdrListenHz.touch(target);
   }
-  return true;
+  return accepted;
 }
 
 export function rejectSdrTuneRequest(responseTo?: string, requestId?: string | number): void {

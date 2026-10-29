@@ -7,6 +7,7 @@ radio.
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import types
 from pathlib import Path
@@ -19,6 +20,17 @@ sys.path.insert(0, str(ROOT))
 from tools.pluto import pluto_radio as radio  # noqa: E402
 
 TRIM_HZ = int(round(radio.XO_NOMINAL_HZ * (1.0 - radio.XO_PPM_LOW * 1e-6)))
+
+
+@pytest.fixture(autouse=True)
+def restore_signal_handlers():
+    # Radio installs process-wide handlers even when its driver is a test double.
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 class _Attr:

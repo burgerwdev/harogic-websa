@@ -2,6 +2,7 @@ name: CI
 
 # Hardware-free gates cover frontend rendering and parameter state against the fake backend.
 # Analyzer checks run separately on the hardware bench.
+# Official actions use Node 24 (runner >= 2.327.1); project language versions stay explicit below.
 
 
 on:
@@ -15,7 +16,7 @@ jobs:
     # Patch applicability needs public driver sources only, with no vendor SDK.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install SDK-free patch check dependencies
         run: |
           sudo apt-get update
@@ -27,7 +28,7 @@ jobs:
     # Native DSP uses hosted FDK AAC. Device SDK calls remain outside this job.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # Upstream v2.0.3 tag resolves to this commit; Ubuntu 24.04 ships only 2.0.2.
       # Source: https://github.com/mstorsjo/fdk-aac/releases/tag/v2.0.3
@@ -37,6 +38,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake g++ git pkg-config
           source_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$source_dir"' EXIT
           git -C "$source_dir" init
           git -C "$source_dir" remote add origin https://github.com/mstorsjo/fdk-aac.git
           git -C "$source_dir" fetch --depth 1 origin 716f4394641d53f0d79c9ddac3fa93b03a49f278
@@ -64,10 +66,10 @@ jobs:
       matrix:
         python-version: ['3.12', '3.13']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - *install-fdk
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -119,8 +121,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -140,15 +142,16 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WEBSA_PORT: '8099'
+      WEBSA_INSTANCE: ci-smoke
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - *install-fdk
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -162,25 +165,42 @@ jobs:
       - name: Build native fixture service
         run: cargo build -j 1 --release --manifest-path backend/Cargo.toml --bin websad
       - name: Start the fake-backend service
+        id: start-fake
         run: |
-          setsid nohup backend/target/release/websad > /tmp/websa-fake.log 2>&1 < /dev/null &
-          for i in $(seq 1 25); do sleep 1; curl -sf -o /dev/null http://127.0.0.1:8099/api/state && break; done
-          curl -sf http://127.0.0.1:8099/api/state | head -c 120
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/websa-ci-runtime"
+          printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          mkdir -m 700 "$XDG_RUNTIME_DIR"
+          ./run.sh --fake
       - name: UI smoke - rendering and wiring (fake backend)
         run: python tools/e2e/ui_smoke.py --url http://127.0.0.1:8099
       - name: Parameter state-machine contract (fake backend)
         # The same script as the bench run: it is device-agnostic by construction, so the
         # historical slot/pending/hand-off/preset regressions are now gated in CI too.
         run: python tools/e2e/state_regression.py --url http://127.0.0.1:8099
+      - name: Stop the owned fake-backend service
+        id: stop-fake
+        if: always() && steps.start-fake.outcome != 'skipped'
+        run: |
+          if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" ]]; then ./stop.sh; fi
       - name: Service log on failure
-        if: failure()
-        run: tail -50 /tmp/websa-fake.log
+        if: failure() && steps.start-fake.outcome != 'skipped'
+        run: |
+          if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" ]]; then
+            source ./lifecycle.sh
+            lifecycle_init
+            if [[ -f "$LOG" ]]; then tail -n 50 "$LOG"; fi
+          fi
+      - name: Remove fake-backend temporary state
+        if: always() && steps.stop-fake.outcome == 'success'
+        # Print failure diagnostics first; retain ownership metadata if stopping failed.
+        run: |
+          if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then rm -rf -- "$XDG_RUNTIME_DIR"; fi
 
   architecture:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Frontend module cycle guard

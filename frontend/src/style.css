@@ -1125,26 +1125,32 @@ input.ref-pending { border: 1px dashed #ffb300; }
   .screen-container { overflow-y: auto; }
 }
 
-/* Zoom rail: native range controls retain touch, keyboard and assistive-tool support. */
-.control-rail.zoom-rail:not(.collapsed) { width: 44px; }
-.zoom-rail .rail-item[hidden], .zoom-rail-controls[hidden] { display: none; }
-.zoom-rail-controls { display: flex; flex-direction: column; gap: 4px; flex: 1 0 330px; min-height: 330px; }
+/* Zoom rail: native range controls retain touch, keyboard and assistive-tool support.
+   The slider strip takes the same column the group buttons do. */
+.control-rail.zoom-rail:not(.collapsed) { width: 24px; }
+.zoom-rail .rail-item[hidden], .zoom-rail-controls[hidden], .zoom-rail-switch[hidden] { display: none; }
+.zoom-rail-controls { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; width: 100%; }
+.zoom-rail-controls.showing-groups .zoom-rail-control { display: none; }
+.zoom-rail-switch { flex: 0 0 auto; height: 18px; font-size: 10px; }
 .zoom-rail-control {
-  display: flex; flex: 1 1 0; flex-direction: column; align-items: center; gap: 3px;
-  min-height: 100px; padding: 4px 1px; box-sizing: border-box; border: 1px solid var(--card-border);
-  border-radius: 3px; background: var(--panel-2); color: var(--label); font: 9px monospace;
+  display: flex; flex: 1 1 0; flex-direction: column; align-items: center; gap: 2px;
+  min-height: 0; padding: 2px 0; box-sizing: border-box; border: 1px solid var(--card-border);
+  border-radius: 3px; background: var(--panel-2); color: var(--label); font: 8px monospace;
+  overflow: hidden;
 }
 .zoom-rail-control input[type=range] {
-  writing-mode: vertical-lr; direction: rtl; flex: 1 1 auto; width: 36px; min-height: 44px;
+  writing-mode: vertical-lr; direction: rtl; flex: 1 1 auto; width: 18px; min-height: 44px;
   margin: 0; padding: 0; accent-color: var(--text); cursor: ns-resize; touch-action: none;
 }
 .zoom-rail-control input:disabled { opacity: .35; cursor: not-allowed; }
 .zoom-rail-control input:focus-visible { outline: 1px solid var(--text); outline-offset: 0; }
-.zoom-rail-control output { max-width: 100%; font-variant-numeric: tabular-nums; color: var(--text); text-align: center; overflow-wrap: anywhere; }
+.zoom-rail-control output { max-width: 100%; font-size: 6px; font-variant-numeric: tabular-nums;
+  color: var(--text); text-align: center; white-space: nowrap; overflow: hidden; }
 @media (max-width: 1000px) {
   .control-rail.zoom-rail:not(.collapsed) { width: auto; }
   .control-rail.zoom-rail > .rail-toggle { width: 34px; }
   .zoom-rail .rail-items { min-width: 0; overflow-x: auto; }
-  .zoom-rail-controls { flex-direction: row; flex: 1 0 144px; min-height: 124px; }
-  .zoom-rail-control { min-width: 44px; min-height: 124px; }
+  .zoom-rail-controls { flex-direction: row; flex: 1 1 auto; min-height: 0; width: auto; }
+  .zoom-rail-switch { width: 22px; height: 22px; align-self: stretch; }
+  .zoom-rail-control { min-width: 0; min-height: 124px; }
 }

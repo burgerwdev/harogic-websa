@@ -576,10 +576,6 @@ function renderRtaView() {
       if (pt) pt.style.display = 'none';   // pk list off -> no leftover peak table
       updateMarkerTable(rp);
     }
-    drawMarqueeOverlay();
-    renderSpectrumZoomOverview();
-    syncSpectrumZoomUi();
-    return;
   }
 
 export function renderAll() {

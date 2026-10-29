@@ -50,6 +50,8 @@ import { centerHz, spanHz } from './freqState';
 import { clampDisplayRef, clearDisplayBounds, getDisplayRange, getDisplayTop, hardwareRefForDisplay, hasDisplayBounds, pendingDisplayRef, setDisplayRefShiftHandler } from './displayRef';
 import { displayOffset, displayUnit } from './displayState';
 import { estimatedCaptureSpanHz } from './sdrState';
+import { getView, isZoomed } from './spectrumViewport';
+import { cancelSdrTuneRequest } from './sdrTuneRequest';
 import { beginFrequencyCommit } from './panels/frequency';
 import { beginRtaAxisTransition } from './panels/rta';
 import { commitLevelOffset, commitRefLevel, setScale } from './panels/refAmp';
@@ -88,6 +90,10 @@ type Session = {
 	y0: number;
 	/** What the pointer deltas and wheel factors are applied to (see CHAIN_MS). */
 	base: GestureBase;
+	/** Display window at gesture start; capture requests retain their full IQ span. */
+	displayBase: FreqWindow | null;
+	/** Native axis at press time; quantization tolerance cannot settle against old data. */
+	frequencyGrid: Float64Array | null;
 	/** Wheel-zoom anchor as a fraction of the band, so the value under the pointer stays put. */
 	anchor: number;
 	zoomFreq: number;
@@ -206,7 +212,10 @@ function refresh(): void {
 	if (want.freq) {
 		const drawn = committedFreqWindow();
 		const span = want.freq.hi - want.freq.lo;
-		const tol = Math.max(1, FREQ_MATCH_FRAC * span);
+		const grid = currentGraphMode() === 'std' && S.freqArray !== s.frequencyGrid ? S.freqArray : null;
+		const edgeStep = grid && grid.length > 1 ? Math.max(
+			grid[1] - grid[0], grid[grid.length - 1] - grid[grid.length - 2]) : 0;
+		const tol = Math.max(1, FREQ_MATCH_FRAC * span, 2 * edgeStep);
 		done = drawn !== null
 			&& near(drawn.lo, want.freq.lo, tol) && near(drawn.hi, want.freq.hi, tol);
 	}
@@ -218,10 +227,23 @@ function refresh(): void {
 	if (done) clearPreview();
 }
 
+/** Acquisition target for overview feedback; never replaces the committed capture. */
+export function previewCaptureWindow(): FreqWindow | null {
+	refresh();
+	return session?.axis === 'x' ? session.targetFreq : null;
+}
+
 /** The frequency window to draw and label right now (null when nothing is being previewed). */
 export function previewFreqWindow(): FreqWindow | null {
 	refresh();
-	return session ? session.targetFreq : null;
+	const s = session;
+	if (!s || s.axis !== 'x' || !s.targetFreq) return null;
+	if (!s.displayBase || !s.base.freq) return s.targetFreq;
+	const scale = (s.targetFreq.hi - s.targetFreq.lo) / (s.base.freq.hi - s.base.freq.lo);
+	return {
+		lo: s.targetFreq.lo + (s.displayBase.lo - s.base.freq.lo) * scale,
+		hi: s.targetFreq.lo + (s.displayBase.hi - s.base.freq.lo) * scale,
+	};
 }
 
 /** The level window to draw and label right now (null when nothing is being previewed). */
@@ -311,13 +333,14 @@ export function xAxisTransform(): { sx: number; dxFrac: number } | null {
 	refresh();
 	const s = session;
 	if (!s || s.axis !== 'x' || !s.targetFreq) return null;
-	const base = committedFreqWindow();
-	if (!base) return null;
+	const base = s.displayBase ? getView() : committedFreqWindow();
+	const target = previewFreqWindow();
+	if (!base || !target) return null;
 	const baseSpan = base.hi - base.lo;
-	const span = s.targetFreq.hi - s.targetFreq.lo;
+	const span = target.hi - target.lo;
 	if (!(baseSpan > 0) || !(span > 0)) return null;
 	const sx = baseSpan / span;
-	const dxFrac = (base.lo - s.targetFreq.lo) / span;
+	const dxFrac = (base.lo - target.lo) / span;
 	if (near(sx, 1, 1e-6) && near(dxFrac, 0, 1e-9)) return null;
 	return { sx, dxFrac };
 }
@@ -415,10 +438,14 @@ function beginSession(axis: Axis, px: number, py: number, rect: Rect, held: bool
 		: { freq, level };
 	const pending = session?.axis === axis && (axis === 'y' || currentGraphMode() === 'sdr')
 		? session.settle : null;
+	const display = axis === 'x' && isZoomed()
+		? previewFreqWindow() ?? getView() : null;
 	clearTimers();
 	session = {
 		axis, rect, x0: px, y0: py,
 		base,
+		displayBase: display ? { ...display } : null,
+		frequencyGrid: S.freqArray,
 		anchor: axis === 'x' ? (px - rect.x) / rect.w : (py - rect.y) / rect.h,
 		zoomFreq: 1,
 		zoomLevel: 1,
@@ -445,8 +472,12 @@ function applyPointer(px: number, py: number): void {
 		const b = s.base.freq;
 		const bSpan = b.hi - b.lo;
 		const span = bSpan * s.zoomFreq;
+		// Freeze the display scale at press time: incoming frames must not change
+		// the frequency distance represented by an unchanged pointer delta.
+		const rate = s.displayBase && bSpan > 0
+			? (s.displayBase.hi - s.displayBase.lo) / bSpan : 1;
 		const anchorHz = b.lo + s.anchor * bSpan;
-		const lo = anchorHz - s.anchor * span - ((px - s.x0) / s.rect.w) * span;
+		const lo = anchorHz - s.anchor * span - ((px - s.x0) / s.rect.w) * span * rate;
 		s.targetFreq = clampFreq({ lo, hi: lo + span });
 		return;
 	}
@@ -500,6 +531,9 @@ export function axisWheel(axis: Axis, deltaY: number, px: number, py: number, re
 	s.anchor = axis === 'x' ? (px - rect.x) / rect.w : (py - rect.y) / rect.h;
 	const factor = Math.exp(Math.max(-100, Math.min(100, deltaY)) * 0.0015);
 	if (axis === 'x') {
+		// The wheel caller drops local zoom even when it reuses a held pan session.
+		// Stop applying that session's magnifier to the full capture preview.
+		if (!isZoomed()) s.displayBase = null;
 		s.zoomFreq = Math.max(0.02, Math.min(50, s.zoomFreq * factor));
 		applyPointer(px, py);
 	} else {
@@ -668,6 +702,7 @@ function commitFreqWindow(w: FreqWindow): FreqWindow | null {
 	const span = estimatedCaptureSpanHz(decimate);
 	const fitted = clampFreq({ lo: center - span / 2, hi: center + span / 2 });
 	selectOption('select-sdr-decimate', decimate);
+	cancelSdrTuneRequest();
 	if (sdrInFlight) sdrQueued = fitted;
 	else submitSdrWindow(fitted);
 	return fitted;
@@ -677,6 +712,7 @@ function commitFreqWindow(w: FreqWindow): FreqWindow | null {
 function submitSdrWindow(freq: FreqWindow): void {
 	const decimate = nearestDecimate(freq.hi - freq.lo);
 	if (decimate === null) return;
+	cancelSdrTuneRequest();
 	const id = `sdr-axis-${++sdrSerial}`;
 	sdrInFlight = { id, freq, revision: S.configVersion, timer: window.setTimeout(() => {
 		if (sdrInFlight?.id !== id) return;

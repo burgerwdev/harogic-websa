@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-import shutil
+import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack, closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 STYLE_CSS = ROOT / 'frontend/src/style.css'
@@ -474,50 +477,57 @@ def wait_ui_ready(page, mode: str | None = None) -> None:
 def collect(browser, url: str, label: str, w: int, h: int, dpr: float,
             mode: str = 'swp', mode_clicks: list[str] | None = None,
             shot_path: Path | None = None, ui_scale: float | None = None) -> dict:
-    ctx = browser.new_context(viewport={'width': w, 'height': h}, device_scale_factor=dpr)
-    if ui_scale is not None:
-        # Seed the stored override the way a returning user would have it, so the same sweep
-        # can run at several UI scales (the control itself is exercised by tools/e2e/ui_smoke.py).
-        ctx.add_init_script(
-            f"try {{ localStorage.setItem('web-sa-ui-scale', '{ui_scale}') }} catch (e) {{}}")
-    page = ctx.new_page()
-    errors: list[str] = []
-    page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
-    page.goto(f'{url}/', wait_until='domcontentloaded')
-    wait_ui_ready(page, 'std')
-    for selector in (mode_clicks or []):
-        before = page.get_attribute('#spectrum', 'data-rta-frames')
-        page.click(selector)
-        wait_ui_ready(page, 'sdr' if mode == 'sdr' else 'rta')
-        page.wait_for_function("""(before) => {
-            const frames = document.getElementById('spectrum').dataset.rtaFrames;
-            return frames !== undefined && frames !== before;
-        }""", arg=before, timeout=30000)
-    metrics = page.evaluate(PROBE, LANDMARKS)
-    # A backing store derived from the box must settle: if the size keeps changing, the layout
-    # is feeding the bitmap back into itself (the trap the canvas CSS now avoids).
-    before = [[c['backingW'], c['backingH']] for c in metrics['canvases']]
-    page.wait_for_timeout(700)
-    after = page.evaluate("() => [...document.querySelectorAll('canvas')]"
-                          '.map((c) => [c.width, c.height])')
-    metrics['settled'] = before == after
-    if shot_path is not None:
-        page.screenshot(path=str(shot_path), full_page=False)
-        print(f"  screenshot    : {shot_path.relative_to(ROOT)}")
-    metrics['label'] = label
-    metrics['mode'] = mode
-    metrics['uiScale'] = ui_scale if ui_scale is not None else 1
-    metrics['errors'] = errors
-    ctx.close()
-    return metrics
+    with closing(browser.new_context(
+            viewport={'width': w, 'height': h}, device_scale_factor=dpr)) as ctx:
+        if ui_scale is not None:
+            # Seed the stored override the way a returning user would have it, so the same sweep
+            # can run at several UI scales (the control itself is exercised by tools/e2e/ui_smoke.py).
+            ctx.add_init_script(
+                f"try {{ localStorage.setItem('web-sa-ui-scale', '{ui_scale}') }} catch (e) {{}}")
+        page = ctx.new_page()
+        errors: list[str] = []
+        page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
+        page.goto(f'{url}/', wait_until='domcontentloaded')
+        wait_ui_ready(page, 'std')
+        for selector in (mode_clicks or []):
+            before = page.get_attribute('#spectrum', 'data-rta-frames')
+            page.click(selector)
+            wait_ui_ready(page, 'sdr' if mode == 'sdr' else 'rta')
+            page.wait_for_function("""(before) => {
+                const frames = document.getElementById('spectrum').dataset.rtaFrames;
+                return frames !== undefined && frames !== before;
+            }""", arg=before, timeout=30000)
+        metrics = page.evaluate(PROBE, LANDMARKS)
+        # A backing store derived from the box must settle: if the size keeps changing, the layout
+        # is feeding the bitmap back into itself (the trap the canvas CSS now avoids).
+        before = [[c['backingW'], c['backingH']] for c in metrics['canvases']]
+        page.wait_for_timeout(700)
+        after = page.evaluate("() => [...document.querySelectorAll('canvas')]"
+                              '.map((c) => [c.width, c.height])')
+        metrics['settled'] = before == after
+        if shot_path is not None:
+            page.screenshot(path=str(shot_path), full_page=False)
+            print(f"  screenshot    : {shot_path.relative_to(ROOT)}")
+        metrics['label'] = label
+        metrics['mode'] = mode
+        metrics['uiScale'] = ui_scale if ui_scale is not None else 1
+        metrics['errors'] = errors
+        return metrics
 
 
-def environment() -> list[str]:
+def environment(*, require_compositor: bool = False) -> list[str]:
     """The output/scale environment the numbers below depend on (facts, not assumptions)."""
     rows = []
-    for m in monitors():
-        rows.append(f"  output {m['name']}: {m['lw']}x{m['lh']} logical "
-                    f"(compositor scale {m['scale']}, at {m['x']},{m['y']})")
+    try:
+        outputs = monitors()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        if require_compositor:
+            raise
+        rows.append('  compositor outputs unavailable; using fixed headless viewports')
+    else:
+        for m in outputs:
+            rows.append(f"  output {m['name']}: {m['lw']}x{m['lh']} logical "
+                        f"(compositor scale {m['scale']}, at {m['x']},{m['y']})")
     try:
         ts = subprocess.run(['gsettings', 'get', 'org.gnome.desktop.interface',
                              'text-scaling-factor'], capture_output=True, text=True, timeout=5)
@@ -544,39 +554,43 @@ def hyprctl(args: list[str]) -> str:
     return out.stdout.strip()
 
 
-def screens(url: str, port: int = 9411, scales: list[float | None] | None = None) -> int:
+def screens(url: str, scales: list[float | None] | None = None) -> int:
     """Capture the system Chromium window on each output at the requested UI scales."""
     from playwright.sync_api import sync_playwright
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
     mons = monitors()
     previous_focus = next((m['name'] for m in mons if m['focused']), None)
     rc = 0
-    with sync_playwright() as p:
-        for scale in (scales or [None]):
-            rc |= screens_for_monitors(p, mons, url, port, scale)
-    if previous_focus:
-        hyprctl(['dispatch', f'hl.dsp.focus({{monitor="{previous_focus}"}})'])
+    try:
+        with sync_playwright() as p:
+            for scale in (scales or [None]):
+                rc |= screens_for_monitors(p, mons, url, scale)
+    finally:
+        if previous_focus:
+            hyprctl(['dispatch', f'hl.dsp.focus({{monitor="{previous_focus}"}})'])
     return rc
 
 
-def screens_for_monitors(p, mons: list[dict], url: str, port: int,
+def screens_for_monitors(p, mons: list[dict], url: str,
                          ui_scale: float | None = None) -> int:
     rc = 0
     tag = f"ui{ui_scale}" if ui_scale else 'auto'
     for mon in mons:
         print(f"--- {mon['name']} {mon['lw']}x{mon['lh']} @{mon['scale']} "
               f"logical ({mon['x']},{mon['y']})  scale {tag}")
-        profile = f'/tmp/websa-baseline-{mon["name"]}'
-        shutil.rmtree(profile, ignore_errors=True)
+        # Chromium selects a free CDP port and records it inside this owned profile.
         hyprctl(['dispatch', f'hl.dsp.focus({{monitor="{mon["name"]}"}})'])
         time.sleep(0.5)
-        with open(f'/tmp/websa-baseline-{mon["name"]}.log', 'w') as log:
+        with TemporaryDirectory(prefix='websa-baseline-') as temp_dir, ExitStack() as resources:
+            profile = Path(temp_dir) / 'profile'
+            log = resources.enter_context(open(Path(temp_dir) / 'chromium.log', 'w'))
             proc = subprocess.Popen(
-                ['chromium', f'--remote-debugging-port={port}', f'--user-data-dir={profile}',
+                ['chromium', '--remote-debugging-port=0', f'--user-data-dir={profile}',
                  '--new-window', f'{url}/'],
                 stdout=log, stderr=log, start_new_session=True)
+            resources.callback(stop_browser_process, proc)
+            page = connect_page(p, profile, url, resources)
             try:
-                page = connect_page(p, port, url)
                 if page is None:
                     print('    WARN: the browser never exposed the page')
                     rc = 1
@@ -590,7 +604,7 @@ def screens_for_monitors(p, mons: list[dict], url: str, port: int,
                     wait_ui_ready(page)
                 # Maximise this window (located by browser pid) and let the layout settle.
                 addr = next((c['address'] for c in clients()
-                             if c.get('pid') == proc.pid or c.get('class') == 'chromium'), '')
+                             if c.get('pid') == proc.pid), '')
                 if addr:
                     hyprctl(['dispatch', f'hl.dsp.window.focus({{window="address:{addr}"}})'])
                     hyprctl(['dispatch',
@@ -627,10 +641,29 @@ def screens_for_monitors(p, mons: list[dict], url: str, port: int,
                     print('    WARN: screenshot is empty')
                     rc = 1
             finally:
-                proc.terminate()
-                time.sleep(1)
-                subprocess.run(['pkill', '-f', profile], capture_output=True)
+                # ExitStack closes the CDP connection before terminating and reaping Chromium.
+                resources.close()
     return rc
+
+
+def stop_browser_process(proc: subprocess.Popen) -> None:
+    """Stop only the process group created for this Chromium launch, then reap it."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # The main process can exit before its descendants; stop any remaining group members.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        finally:
+            proc.wait()
 
 
 def clients() -> list[dict]:
@@ -640,13 +673,17 @@ def clients() -> list[dict]:
         return []
 
 
-def connect_page(p, port: int, url: str, timeout: float = 40.0):
-    """The page in the browser we just started, once its CDP endpoint is up."""
+def connect_page(p, profile: Path, url: str, resources: ExitStack, timeout: float = 40.0):
+    """The page in the browser we just started, once its owned CDP endpoint is up."""
     host = url.split('//')[1].rstrip('/')
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    browser = None
+    while time.monotonic() < deadline:
         try:
-            browser = p.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
+            if browser is None:
+                port = int((profile / 'DevToolsActivePort').read_text().splitlines()[0])
+                browser = p.chromium.connect_over_cdp(f'http://127.0.0.1:{port}', timeout=1000)
+                resources.callback(browser.close)
             found = [x for c in browser.contexts for x in c.pages if host in x.url]
             if found:
                 return found[-1]
@@ -694,11 +731,8 @@ def main() -> int:
         print(f'no mode matches {args.modes!r}; known: {[m[0] for m in MODES]}')
         return 1
     print('=== environment (the outputs and scales the numbers depend on) ===')
-    try:
-        for line in environment():
-            print(line)
-    except Exception as exc:                                               # noqa: BLE001
-        print(f'  WARN: could not read the compositor environment: {exc}')
+    for line in environment(require_compositor=args.screens):
+        print(line)
 
     print('=== fixed sizes still in src/style.css (grep-able) ===')
     print('--- fixed layout dimensions:')
@@ -712,8 +746,9 @@ def main() -> int:
     from playwright.sync_api import sync_playwright
     results = []
     total_findings = 0
-    with sync_playwright() as p:
+    with sync_playwright() as p, ExitStack() as resources:
         browser = p.chromium.launch()
+        resources.callback(browser.close)
         for label, w, h, dpr in VIEWPORTS:
             for ui_scale in scales:
                 for mode, mode_clicks in selected:
@@ -740,7 +775,6 @@ def main() -> int:
                     total_findings += len(findings)
                     results.append({'label': title, 'mode': mode, 'findings': findings,
                                 'metrics': m})
-        browser.close()
 
     print('\n=== summary ===')
     print(f"  {'viewport [mode]':<32} {'card':>6} {'canvas local':>12} {'backing':>12} "
@@ -748,7 +782,7 @@ def main() -> int:
     for r in results:
         m = r['metrics']
         card = m.get('card') or {'w': 0}
-        c = m['canvases'][0] if m['canvases'] else {}
+        c = next((canvas for canvas in m['canvases'] if canvas['id'] == 'spectrum'), {})
         unused = f"{100 - card['w'] / m['viewport']['w'] * 100:.0f}%" if card['w'] else '-'
         print(f"  {r['label']:<32} {card['w']:>6} "
               f"{str(c.get('cssW')) + 'x' + str(c.get('cssH')):>12} "

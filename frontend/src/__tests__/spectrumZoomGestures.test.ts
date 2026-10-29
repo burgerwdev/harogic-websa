@@ -86,7 +86,7 @@ describe('wheel zoom', () => {
 });
 
 describe('device-gesture reset', () => {
-	it('drops the view for an axis-band gesture and reports nothing on the wire', () => {
+	it('drops the view for an axis-band span change and reports nothing on the wire', () => {
 		commitMarquee(10, 410, 2e6);
 		expect(isZoomed()).toBe(true);
 		expect(resetViewForDeviceGesture()).toBe(true);

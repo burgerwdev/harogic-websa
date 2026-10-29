@@ -63,7 +63,125 @@ function receive(payload: Record<string, unknown>) {
 	socket.onmessage!({ data: JSON.stringify(payload) } as MessageEvent);
 }
 
+function receiverStatus(freq: number, mode: string, version: number, response: Record<string, unknown> = {}) {
+	const snapshot = status('sdr');
+	return { ...snapshot, config_version: version, ...response,
+		sdr: { ...snapshot.sdr, listen: freq, demod: mode,
+			...(response.sdr as Record<string, unknown> | undefined) } };
+}
 describe('SDR entry and reload', () => {
+	it('hands an RTA listen frequency to both SDR capture and receiver', async () => {
+		const { controls } = await load();
+		// Static imports would retain the module graph discarded by load()'s resetModules fixture.
+		const { sdrCenterHz, sdrListenHz, sdrDecimate } = await import('../ui/sdrState');
+		receive(status('rta'));
+		sdrCenterHz.confirm(1e9);
+		sdrListenHz.confirm(1e9);
+		sdrDecimate.confirm(16);
+		socket.sent.length = 0;
+
+		controls.listenAtFreq(216e6);
+		expect(socket.sent).toMatchObject([{ cmd: 'SET_MODE', mode: 'sdr' }]);
+		expect(sdrCenterHz.get()).toBe(216e6);
+		expect(sdrListenHz.get()).toBe(216e6);
+
+		// The mode acknowledgement still contains the previous hardware tuning.
+		receive(status('sdr'));
+		expect(socket.sent.filter(command => command.cmd === 'SET_SDR')).toEqual([
+			{ cmd: 'SET_SDR', center: 216e6, decimate: 16, request_id: expect.any(String) },
+		]);
+		expect(socket.sent.filter(command => command.cmd === 'SET_SDR_CHANNEL' && 'freq' in command)).toEqual([
+			{ cmd: 'SET_SDR_CHANNEL', channel: 1, freq: 216e6, request_id: expect.any(String) },
+		]);
+	});
+
+	it('recovers from a missing tune ACK after periodic state and timeout', async () => {
+		await load();
+		// These modules must share load()'s fresh graph after vi.resetModules().
+		const { requestSdrTune } = await import('../ui/sdrTuneRequest');
+		const { sdrListenHz } = await import('../ui/sdrState');
+		const S = await import('../core/store');
+		receive(receiverStatus(1e9, 'cw', 1));
+		requestSdrTune(1e9 + 1000);
+		requestSdrTune(1e9 + 2000);
+		const first = socket.sent.at(-1)!;
+		for (let i = 0; i < 3; i++) {
+			vi.advanceTimersByTime(900);
+			receive(receiverStatus(1e9 + 1000, 'cw', 2));
+		}
+		vi.advanceTimersByTime(300);
+		expect(sdrListenHz.get()).toBe(1e9 + 1000);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(S.statusError).not.toBeNull();
+		requestSdrTune(1e9 + 3000);
+		const next = socket.sent.at(-1)!;
+		receive(receiverStatus(1e9 + 3000, 'cw', 3,
+			{ response_to: 'SET_SDR_CHANNEL', request_id: next.request_id }));
+		receive(receiverStatus(1e9 + 1000, 'cw', 2,
+			{ response_to: 'SET_SDR_CHANNEL', request_id: first.request_id }));
+		expect(sdrListenHz.get()).toBe(1e9 + 3000);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(S.statusError).toBeNull();
+		expect(socket.sent.filter(command => String(command.request_id).startsWith('sdr-tune-'))
+			.map(command => command.freq)).toEqual([1e9 + 1000, 1e9 + 3000]);
+	});
+
+	it.each(['local demod', 'external demod', 'external capture'])('cancels tuning superseded by %s', async context => {
+		const { controls } = await load();
+		// These modules must share load()'s fresh graph after vi.resetModules().
+		const { requestSdrTune } = await import('../ui/sdrTuneRequest');
+		const { sdrListenHz, sdrDemod, sdrCenterHz } = await import('../ui/sdrState');
+		const S = await import('../core/store');
+		receive(receiverStatus(1e9, 'cw', 1));
+		requestSdrTune(1e9 + 1000);
+		requestSdrTune(1e9 + 2000);
+		const first = socket.sent.at(-1)!;
+		if (context === 'local demod') {
+			controls.selectSdrDemod('am');
+			const edit = socket.sent.at(-1)!;
+			receive(receiverStatus(1e9, 'am', 3,
+				{ response_to: 'SET_SDR_CHANNEL', request_id: edit.request_id }));
+		} else if (context === 'external demod') receive(receiverStatus(1e9, 'am', 3));
+		else receive(receiverStatus(1e9, 'cw', 3, { sdr: { center: 1e9 + 10000, decimate: 32 } }));
+		receive(receiverStatus(1e9 + 1000, 'cw', 2,
+			{ response_to: 'SET_SDR_CHANNEL', request_id: first.request_id }));
+		vi.advanceTimersByTime(3000);
+		expect(sdrListenHz.get()).toBe(1e9);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(sdrDemod.get()).toBe(context === 'external capture' ? 'cw' : 'am');
+		expect(sdrCenterHz.get()).toBe(context === 'external capture' ? 1e9 + 10000 : 1e9);
+		expect(S.statusError).toBeNull();
+		expect(socket.sent.filter(command => String(command.request_id).startsWith('sdr-tune-'))).toHaveLength(1);
+	});
+
+	it('settles a tune ACK older than a receiver filter snapshot without reverting frequency', async () => {
+		const { controls } = await load();
+		// These modules must share load()'s fresh graph after vi.resetModules().
+		const { requestSdrTune } = await import('../ui/sdrTuneRequest');
+		const { sdrListenHz } = await import('../ui/sdrState');
+		const S = await import('../core/store');
+		receive(receiverStatus(1e9, 'cw', 1));
+		requestSdrTune(1e9 + 1000);
+		requestSdrTune(1e9 + 2000);
+		const first = socket.sent.at(-1)!;
+		controls.selectSdrIfbw(500);
+		const filter = socket.sent.at(-1)!;
+		receive(receiverStatus(1e9 + 1000, 'cw', 3,
+			{ response_to: 'SET_SDR_CHANNEL', request_id: filter.request_id }));
+		receive(receiverStatus(1e9, 'cw', 2,
+			{ response_to: 'SET_SDR_CHANNEL', request_id: first.request_id }));
+		expect(sdrListenHz.confirmedValue()).toBe(1e9 + 1000);
+		expect(S.configVersion).toBe(3);
+		const next = socket.sent.at(-1)!;
+		expect(next).toMatchObject({ cmd: 'SET_SDR_CHANNEL', freq: 1e9 + 2000 });
+		receive(receiverStatus(1e9 + 2000, 'cw', 4,
+			{ response_to: 'SET_SDR_CHANNEL', request_id: next.request_id }));
+		vi.advanceTimersByTime(3000);
+		expect(sdrListenHz.get()).toBe(1e9 + 2000);
+		expect(sdrListenHz.pending()).toBe(false);
+		expect(S.statusError).toBeNull();
+	});
+
 	it.each(['device STATUS', 'control websocket'])('retains radiofax paper and selection through %s loss', async loss => {
 		const { controls } = await load();
 		// Store and stream must belong to load()'s freshly isolated browser session.

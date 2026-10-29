@@ -53,7 +53,7 @@ import {
 } from '../ui/swpState';
 import { rtaAmpBins, rtaDensSource, rtaHalflife, waterfallOn, wfPaused } from '../ui/waterfallState';
 import { displayOffset, displayUnit } from '../ui/displayState';
-import { resetViewport, setCapture } from '../ui/spectrumViewport';
+import { getCapture, resetViewport, sameSpan, setCapture } from '../ui/spectrumViewport';
 import { confirmSdrChannelRegistry, confirmSdrReceiverError, failSdrReceiver, sdrIqStats } from '../sdr/iqStream';
 import { rejectAmpRequest, resetAmpIntents, syncAmpStatus } from '../ui/ampState';
 import { rejectManualRef, syncLevelAvailability, syncRefClockStatus, rejectRefClockRequest, resetRefClockIntent } from '../ui/panels/refAmp';
@@ -64,7 +64,7 @@ import { acceptRtaAxisFrame, rejectRtaAxisTransition, resetRtaAxisTransition } f
 import { sdrCenterHz, sdrDecimate } from '../ui/sdrState';
 import { deviceMode } from '../ui/graphMode';
 import { rejectServerCommand, setServerConnection, syncServerStatus } from '../ui/serverMode';
-import { confirmAxisRef, rejectAxisRef, rejectSdrAxisWindow } from '../ui/axisDrag';
+import { confirmAxisRef, previewCaptureWindow, rejectAxisRef, rejectSdrAxisWindow } from '../ui/axisDrag';
 
 function localizedError(msg: any): string {
   const code = String(msg?.code || '');
@@ -137,8 +137,8 @@ function confirmCommandRecovery(reply: Readonly<Record<string, unknown>>) {
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectDelay = 1000;
+let statusVersion = -1;
 let lastRtaProcess = 0;
-let lastRender = 0;
 let rtaFrames = 0;
 let lastRtaInfoAt = 0;
 let sdrTransition: { center: number; decimate: number; version: number } | null = null;
@@ -162,10 +162,14 @@ function drawSpectrumFrame() {
 
 function scheduleSpectrumWork(work: () => void, immediate = false) {
   const mode = currentGraphMode(), view = S.viewMode, owner = deviceMode.get();
-  // Rejected settling packets still consume an RTA processing slot without a draw.
-  const lastWork = mode === 'rta' ? Math.max(lastSpectrumDraw, lastRtaProcess) : lastSpectrumDraw;
+  // Rejected settling packets still consume a processing slot without a draw.
+  const lastWork = mode === 'rta' || mode === 'sdr' ? Math.max(lastSpectrumDraw, lastRtaProcess) : lastSpectrumDraw;
+  const center = sdrCenterHz.get(), decimate = sdrDecimate.get(), version = S.configVersion;
   const guardedWork = () => {
-    if (currentGraphMode() === mode && S.viewMode === view && deviceMode.get() === owner) work();
+    if (currentGraphMode() !== mode || S.viewMode !== view || deviceMode.get() !== owner) return;
+    if (mode === 'sdr' && (sdrCenterHz.get() !== center || sdrDecimate.get() !== decimate
+        || S.configVersion !== version)) return;
+    work();
   };
   if (immediate || performance.now() - lastWork >= SPECTRUM_INTERVAL) {
     cancelSpectrumWork();
@@ -192,7 +196,8 @@ onCommandSent(command => {
     if (pendingCommands.size > 256) pendingCommands.delete(pendingCommands.keys().next().value);
   }
   if (command.cmd === 'SET_MODE' || command.cmd === 'SET_PRESET'
-      || command.cmd === 'SET_RTA' || command.cmd === 'SET_TRIGGER') cancelSpectrumWork();
+      || command.cmd === 'SET_RTA' || command.cmd === 'SET_SDR'
+      || command.cmd === 'SET_TRIGGER') cancelSpectrumWork();
 });
 
 
@@ -239,6 +244,7 @@ export function connectWS() {
   ws.onopen = () => {
     cancelSpectrumWork();
     lastSpectrumDraw = -Infinity;
+    statusVersion = -1;
     if (firstConnect) { firstConnect = false; initialModeSync = true; }
     reconnectDelay = 1000;
     setServerConnection(true);
@@ -356,15 +362,12 @@ export function connectWS() {
       } else sdrTransition = null;
       const processAt = performance.now();
       // The first packet of a new capture must replace both layers immediately.
-      if (currentGraphMode() !== 'rta' && !geometryChanged && captureFrame !== 'first' && !S.trigArmed && processAt - lastRtaProcess < 30) return;
       const immediate = geometryChanged || captureFrame === 'first' || S.trigArmed;
       const processRtaFrame = () => {
         // Axis or trigger admission can change while a normal packet waits for its deadline.
-        if (currentGraphMode() === 'rta') {
-          if (!acceptRtaAxisFrame(ver, startHz, stopHz) || (S.rtaData && ver < S.rtaData.ver)) return;
-          if (!immediate && triggerMode() === 'rta' && prepareTriggerFrame(frame.trigger) === 'ignore') return;
-        }
-        lastRtaProcess = currentGraphMode() === 'rta' ? performance.now() : processAt;
+        if (!acceptRtaAxisFrame(ver, startHz, stopHz) || (S.rtaData && ver < S.rtaData.ver)) return;
+        if (!immediate && triggerMode() === 'rta' && prepareTriggerFrame(frame.trigger) === 'ignore') return;
+        lastRtaProcess = performance.now();
         {
           // Debug/verification aid: the windows the renderer actually uses (e2e reads it).
           const cvW = document.getElementById('spectrum');
@@ -407,7 +410,7 @@ export function connectWS() {
           S.resetWaterfall();
         }
         // The frame's display window is the capture the zoom feature navigates in (design
-        // §4.2); a changed window drops the view inside setCapture.
+        // §4.2). A same-width pan shifts the view; a changed span drops it (setCapture).
         setCapture({ lo: startHz, hi: stopHz });
         S.setRtaData({ ver, freq, spec, wfRow, maxDensity, startHz, stopHz });
         {
@@ -466,21 +469,11 @@ export function connectWS() {
         const el = document.getElementById('info-pts');
         if (el) el.innerText = String(pts);
         const captureComplete = triggerMode() === 'rta' && noteFrameArrived(frame.trigger);
-        if (currentGraphMode() === 'rta') {
-          // Capture listeners synchronously paint the completed packet and its overlay.
-          if (captureComplete) lastSpectrumDraw = performance.now();
-          else drawSpectrumFrame();
-        } else {
-          // SDR retains its existing 30 ms processing and 16 ms arrival redraw gates.
-          const now = performance.now();
-          if (axisChanged || captureFrame === 'first' || now - lastRender >= 16) {
-            lastRender = now;
-            requestRender();
-          }
-        }
+        // Capture listeners synchronously paint the completed packet and its overlay.
+        if (captureComplete) lastSpectrumDraw = performance.now();
+        else drawSpectrumFrame();
       };
-      if (currentGraphMode() === 'rta') scheduleSpectrumWork(processRtaFrame, immediate);
-      else processRtaFrame();
+      scheduleSpectrumWork(processRtaFrame, immediate);
       return;
     }
     if (frame.kind === 'freq') {
@@ -493,10 +486,25 @@ export function connectWS() {
         S.setSwpPrev(null);
         S.resetWaterfall();
       }
+      // SWP native bins are intercepted to the requested window. Retuning can
+      // align either endpoint to an adjacent bin without changing acquisition span.
+      const pendingCapture = previewCaptureWindow();
+      const previousCapture = getCapture();
+      const previousGrid = S.freqArray;
       S.setFreqArray(frame.freq);
       S.setFreqVersion(frame.version);
       if (frame.freq.length > 1) {
-        setCapture({ lo: frame.freq[0], hi: frame.freq[frame.freq.length - 1] });
+        const next = { lo: frame.freq[0], hi: frame.freq[frame.freq.length - 1] };
+        const edgeStep = Math.max(
+          frame.freq[1] - next.lo, next.hi - frame.freq[frame.freq.length - 2],
+          previousGrid && previousGrid.length > 1 ? previousGrid[1] - previousGrid[0] : 0,
+          previousGrid && previousGrid.length > 1
+            ? previousGrid[previousGrid.length - 1] - previousGrid[previousGrid.length - 2] : 0);
+        const tolerance = Math.max(0.5, 2 * edgeStep);
+        const settlingPan = pendingCapture && previousCapture && sameSpan(pendingCapture, previousCapture)
+          && Math.abs(next.lo - pendingCapture.lo) <= tolerance
+          && Math.abs(next.hi - pendingCapture.hi) <= tolerance;
+        setCapture(next, settlingPan ? tolerance : undefined);
       }
       const el = document.getElementById('info-pts');
       if (el) el.innerText = String(points);
@@ -519,11 +527,19 @@ export function connectWS() {
 
 export function updateStatus(s: any) {
   if (!s || !s.req || !s.actual) return;
+  confirmCommandRecovery(s);
+  const version = Number(s.config_version);
+  if (s.response_to === 'SET_SDR_CHANNEL' && Number.isFinite(version) && version < statusVersion) {
+    // Delayed receiver ACKs still settle their request, but cannot roll back the
+    // device snapshot or invalidate spectrum work queued against its newer version.
+    if (s.mode === 'sdr' && deviceMode.get() === 'sdr') syncSdrPanel(s);
+    return;
+  }
+  if (Number.isFinite(version)) statusVersion = Math.max(statusVersion, version);
   const restoreMode = initialModeSync && s.mode !== 'server'
     ? localStorage.getItem('web-sa-mode') : null;
   const shouldRestoreMode = initialModeSync && s.mode !== 'server';
   initialModeSync = false;
-  confirmCommandRecovery(s);
   if (s.connected === false || s.mode !== deviceMode.get()) cancelSpectrumWork();
   document.body.dataset.deviceMode = String(s.mode);
   syncPresetStatus(s.response_to, s.request_id);
@@ -659,7 +675,7 @@ export function updateStatus(s: any) {
 
   const dd = s.device_detail;
   if (dd) {
-    const set = (id: string, v: string) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const set = (id: string, v: string) => { const el = document.getElementById(id); if (el && el.textContent !== v) el.textContent = v; };
     // Decoded strings come from the backend (version_info.py, the same source as the official
     // About panel). The code falls back to the raw numbers when an older backend omits them.
     // The device bar shows the model and the three versions that an operator reads first
@@ -688,10 +704,14 @@ export function updateStatus(s: any) {
   const g = document.getElementById('info-gnss');
   if (g) {
     // The top bar shows only the locked state (details such as satellite count live in the detail popover)
-    if (s.gnss?.stale) { g.textContent = t('status_stale'); g.style.color = 'var(--muted)'; }
-    else if (s.gnss?.lock === 1) { g.textContent = t('status_locked'); g.style.color = 'var(--dot-on)'; }
-    else if (s.gnss?.lock === 0) { g.textContent = t('status_nolock'); g.style.color = 'var(--dot-off)'; }
-    else { g.textContent = t('status_unavailable'); g.style.color = 'var(--muted)'; }
+    const gnssText = s.gnss?.stale ? t('status_stale')
+      : s.gnss?.lock === 1 ? t('status_locked')
+      : s.gnss?.lock === 0 ? t('status_nolock') : t('status_unavailable');
+    const gnssColor = s.gnss?.stale ? 'var(--muted)'
+      : s.gnss?.lock === 1 ? 'var(--dot-on)'
+      : s.gnss?.lock === 0 ? 'var(--dot-off)' : 'var(--muted)';
+    if (g.textContent !== gnssText) g.textContent = gnssText;
+    if (g.style.color !== gnssColor) g.style.color = gnssColor;
     // Update the detail popover synchronously (if open)
     const pop = document.getElementById('gnss-popover');
     if (pop && pop.style.display !== 'none') fillGnssDetail();
@@ -738,11 +758,11 @@ export function updateStatus(s: any) {
 
 function setInput(id: string, v: string, force = false) {
   const el = document.getElementById(id) as HTMLInputElement;
-  if (el && (force || document.activeElement !== el)) el.value = v;
+  if (el && el.value !== v && (force || document.activeElement !== el)) el.value = v;
 }
 function setSelect(id: string, v: string) {
   const el = document.getElementById(id) as HTMLSelectElement;
-  if (el && document.activeElement !== el) el.value = v;
+  if (el && el.value !== v && document.activeElement !== el) el.value = v;
 }
 
 // Sync frequency input fields

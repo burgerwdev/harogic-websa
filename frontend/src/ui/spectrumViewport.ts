@@ -11,8 +11,9 @@
  *     rtaData.startHz/stopHz for RTA/SDR) — never from the editor inputs;
  *   - `view` is always inside `capture` (C0 <= lo < hi <= C1), clamped to a minimum span of
  *     two sample steps so a magnified trace still shows real samples;
- *   - nothing persists: a reload, a mode switch, a Preset or a capture-window change returns
- *     to the full window (design §4.3).
+ *   - nothing persists: a reload, a mode switch or a Preset returns to the full window.
+ *     A translated capture (same width) keeps the view's width and its place in the band;
+ *     a capture whose width changes drops the view (design §4.3).
  *
  * The functions are pure and the state is tiny on purpose: the gesture layer (ui/controls.ts)
  * computes the next window here and then calls requestRender() itself, so this file stays a
@@ -91,6 +92,11 @@ export function sameWindow(a: FreqWindow | null, b: FreqWindow | null): boolean 
 		&& Math.abs(a.lo - b.lo) <= SAME_WINDOW_HZ
 		&& Math.abs(a.hi - b.hi) <= SAME_WINDOW_HZ;
 }
+/** Same width (within SAME_WINDOW_HZ). Ends may differ: that is a pan, not a new span. */
+export function sameSpan(a: FreqWindow | null, b: FreqWindow | null): boolean {
+	return !!a && !!b && Math.abs((a.hi - a.lo) - (b.hi - b.lo)) <= SAME_WINDOW_HZ;
+}
+
 
 /** Clamp [lo,hi] into capture honouring minSpan: shrink at the edges, never exceed capture. */
 export function clampView(w: FreqWindow, capture: FreqWindow, minSpan: number): FreqWindow {
@@ -184,6 +190,8 @@ let capture: FreqWindow | null = null;
 let view: FreqWindow | null = null;
 /** Raw view and master-toggle state saved only while the passband focus is active. */
 let passbandSnapshot: { view: FreqWindow | null; zoomEnabled: boolean } | null = null;
+/** A relocated receiver is focused only once its acknowledged capture is drawn. */
+let pendingRecenter: { hz: number; expected: FreqWindow; minSpan: number } | null = null;
 
 /** True while a second passband-view action will restore the saved display state. */
 export function passbandViewActive(): boolean {
@@ -220,15 +228,32 @@ export function viewportVersion(): number {
 	return version;
 }
 
+/** Apply an acknowledged receiver relocation after its matching acquisition frame arrives. */
+export function recenterOnCapture(hz: number, expected: FreqWindow, minSpan: number): void {
+	pendingRecenter = null;
+	if (!view || !Number.isFinite(hz) || !isValidWindow(expected)) return;
+	if (sameWindow(capture, expected)) {
+		const minimum = Math.min(minSpan, expected.hi - expected.lo);
+		setView(panToCenter(view, hz, expected, minimum), minimum);
+	} else {
+		pendingRecenter = { hz, expected: { ...expected }, minSpan };
+	}
+}
+
 /**
  * Feed the window of the frame the renderer is about to draw.
  *
- * Same window → nothing changes (the view survives). A NEW window → the view is dropped:
- * the zoom was selected against the old capture, and pasting it onto different data is
- * exactly the misalignment the design forbids (§4.3). Returns true when the viewport changed.
+ * Same window → nothing changes. A translated window of the same width (an x-axis
+ * band pan) shifts the view by the same amount: the zoom box is pinned to the
+ * observation FRAME, the spectrum (and the listen flag on it) slides under it,
+ * clamped only at the frame's edges. When the flag slides out the backend replants
+ * it and the SET_SDR acknowledgement in controls.ts drops the box onto the new
+ * flag. A window whose width changed drops the view: that zoom was selected
+ * against a different span. Returns true when the viewport changed.
  */
-export function setCapture(w: FreqWindow | null | undefined): boolean {
+export function setCapture(w: FreqWindow | null | undefined, spanToleranceHz = SAME_WINDOW_HZ): boolean {
 	if (!isValidWindow(w)) {
+		pendingRecenter = null;
 		clearPassbandView();
 		if (capture === null && view === null) return false;
 		capture = null;
@@ -238,15 +263,31 @@ export function setCapture(w: FreqWindow | null | undefined): boolean {
 	}
 	const next = { lo: w.lo, hi: w.hi };
 	if (sameWindow(next, capture)) return false;
+	const recenter = pendingRecenter;
+	pendingRecenter = null;
 	clearPassbandView();
+	const prev = capture;
 	capture = next;
-	view = null;
+	if (view && prev && Math.abs((next.hi - next.lo) - (prev.hi - prev.lo)) <= spanToleranceHz) {
+		const shift = next.lo - prev.lo;
+		const shifted = clampView(
+			{ lo: view.lo + shift, hi: view.hi + shift }, next,
+			Math.min(view.hi - view.lo, next.hi - next.lo));
+		view = sameWindow(shifted, next) ? null : shifted;
+	} else {
+		view = null;
+	}
+	if (view && recenter && sameWindow(next, recenter.expected)) {
+		const centered = panToCenter(view, recenter.hz, next, Math.min(recenter.minSpan, next.hi - next.lo));
+		view = sameWindow(centered, next) ? null : centered;
+	}
 	version++;
 	return true;
 }
 
 /** Apply a computed view (already clamped by the helpers). Null = back to full capture. */
 export function setView(w: FreqWindow | null, minSpan?: number): boolean {
+	pendingRecenter = null;
 	// Every external view action makes an earlier passband snapshot stale, even when the
 	// requested window happens to equal the current one.
 	clearPassbandView();
@@ -278,6 +319,7 @@ function applyView(w: FreqWindow | null, minSpan?: number): boolean {
  * Returns the resulting focus state. No acquisition or receiver parameter is touched.
  */
 export function togglePassbandView(target: FreqWindow, minSpan: number): boolean {
+	pendingRecenter = null;
 	if (passbandSnapshot) {
 		const saved = passbandSnapshot;
 		passbandSnapshot = null;
@@ -300,6 +342,7 @@ export function togglePassbandView(target: FreqWindow, minSpan: number): boolean
 
 /** Reset everything (mode change, Preset, disconnect). The toggle stays as the user set it. */
 export function resetViewport(): void {
+	pendingRecenter = null;
 	clearLevelView();
 	clearPassbandView();
 	if (capture === null && view === null) return;
@@ -310,6 +353,7 @@ export function resetViewport(): void {
 
 /** For tests: seed a capture directly (production goes through the renderer/frame path). */
 export function __testSeedCapture(w: FreqWindow | null): void {
+	pendingRecenter = null;
 	clearPassbandView();
 	capture = w && isValidWindow(w) ? { lo: w.lo, hi: w.hi } : null;
 	view = null;

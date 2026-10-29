@@ -58,7 +58,7 @@ The stream MTU is 16384 samples before and after activation, independent of SDK 
 
 The host IQ ring holds about 50 ms at the configured sample rate, with a minimum of two SDK packets and 16384 samples. Allocation occurs during activation and reuses existing storage. A full ring reports `SOAPY_SDR_OVERFLOW`.
 
-For a custom prefix, export `WEBSA_SOAPY_MODULE_PATH=<prefix>/lib/SoapySDR/modules0.8` before starting `websad`; direct Soapy tools use `SOAPY_SDR_PLUGIN_PATH` for that path. The manager prepends its module path to the inherited plugin path and probes `SoapySDRUtil --info` for the registered lowercase `harogic` factory. `WEBSA_SOAPY_SERVER_BIN` and `WEBSA_SOAPY_UTIL_BIN` are trusted process-environment overrides of the two executables, not browser settings. Rebuild the SDK shim too: handoff requires the nonterminal `san90_session_release_v1` ABI. The committed runtime adapter has not been updated and cannot provide the handoff.
+For a custom prefix, export `WEBSA_SOAPY_MODULE_PATH=<prefix>/lib/SoapySDR/modules0.8` before starting `websad`; direct Soapy tools use `SOAPY_SDR_PLUGIN_PATH` for that path. The manager prepends its module path to the inherited plugin path and probes `SoapySDRUtil --info` for the registered lowercase `harogic` factory. `WEBSA_SOAPY_SERVER_BIN` and `WEBSA_SOAPY_UTIL_BIN` are trusted process-environment overrides of the two executables, not browser settings. Handoff requires the nonterminal `san90_session_release_v1` ABI; a loaded shim without it refuses handoff. Rebuild custom SDK shims with `make sdk-shim`.
 
 Open WebSA, select **SRV**, configure the stopped server's IP literal/port, then Start. The default bind is `127.0.0.1:55132`; use `0.0.0.0` for IPv4 LAN clients, then connect to the server's reachable LAN address. A wildcard bind (`0.0.0.0` or `::`) is not a client destination. Use `driver=remote,remote=<host>:<port>,remote:driver=harogic` in a SoapyRemote client. SoapySDRServer exposes installed device factories, so retain the `harogic` filter. Listening confirms only the process endpoint; the analyzer opens on client use. Web capture and audio are stopped throughout Server mode. Spectrum stops and reaps the child before restoring the last graph view. See the paired [API](../docs/en/API.md) / [中文](../docs/zh-CN/API.md) for state, logs, dependency failures, browser lifetime and release refusal.
 
@@ -132,6 +132,8 @@ audio, decoded content, and images. Include independent tune/rate/mode changes,
 fractional IQ rates, and transitions between analog and codec modes. Capture
 cadence and combined trace/density/waterfall rendering have separate limits;
 a native 20-fps gate does not certify browser rendering or seamless playback.
+
+The state-regression, viewport and native-IQ browser probes tear down browsers and contexts even after an exception. The system-Chromium screenshot path uses a unique temporary profile and log, terminates and reaps only its own process group, removes its temporary files, and restores monitor focus.
 
 ## RF transmit and capture
 

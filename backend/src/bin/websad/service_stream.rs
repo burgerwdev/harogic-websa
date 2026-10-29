@@ -304,13 +304,16 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,output:receiver_workers:
         (message,identity)
     }).collect();
     for client in clients.iter().filter(|c|c.decode) {
-        let retiring=retiring.then(||state.retiring_registry.iter()
-            .filter(|r|client.channel.is_none_or(|slot|slot==r.channel))
-            .map(|r|identity_key(r.channel_id,r.epoch)).collect::<Vec<_>>());
-        if !frames.iter().any(|(_,identity)|match &retiring {
-            Some(ids)=>identity.is_some_and(|id|ids.contains(&id)),
-            None=>identity_current(*identity,&client.identities,client.channel),
-        }) {continue;}
+        let admitted:Vec<_>=if retiring {
+            state.retiring_registry.iter()
+                .filter(|r|client.channel.is_none_or(|slot|slot==r.channel))
+                .map(|r|identity_key(r.channel_id,r.epoch)).collect()
+        } else {
+            client.identities.iter().enumerate()
+                .filter(|(slot,_)|client.channel.is_none_or(|channel|channel as usize==slot+1))
+                .map(|(_,identity)|identity.load(Ordering::Acquire)).filter(|&id|id!=0).collect()
+        };
+        if !frames.iter().any(|(_,identity)|identity.is_some_and(|id|admitted.contains(&id))) {continue;}
         let Some(reservation)=DecodeReservation::acquire(&client.decode_pending_bytes,bytes) else {
             client.dropped.fetch_add(1,Ordering::Relaxed);
             client.overflow.store(true,Ordering::Release);
@@ -318,7 +321,7 @@ pub(super) fn deliver_receiver(state:&DevState,app:&App,output:receiver_workers:
             continue;
         };
         enqueue(client,Outbound {epoch,message:OutboundPayload::DecodeBatch {
-            frames:frames.clone(),retiring,_reservation:reservation,
+            frames:frames.clone(),admitted,_reservation:reservation,
         },identity:None,status_revision:None,display_version:None});
     }
 }
@@ -654,11 +657,15 @@ mod tests {
                     display_version:app.display_version.clone(),iq:false,aux:false,audio,decode:!audio,channel,
                     identities:app.identities.clone(),latest:Arc::new(PLMutex::new((None,None))),
                 });
-                receivers.push((audio,rx));
+                receivers.push((audio,rx,subscriber_stream::SubscriberStream::default()));
             }
         }
         let state=app.state.lock().unwrap();
         deliver_receiver(&state,&app,output(11,0),false);
+        for (_,rx,subscriber) in &mut receivers {
+            let packet=rx.try_recv().expect("initial source marker");
+            subscriber.frames(packet.frames().next().unwrap()).unwrap();
+        }
         let drained=output(11,1);
         let (attempted_tx,attempted_rx)=std::sync::mpsc::sync_channel(0);
         let command_app=app.clone();
@@ -679,14 +686,14 @@ mod tests {
         drop(state);
         command.join().unwrap();
 
-        for (audio,mut rx) in receivers {
-            let mut subscriber=subscriber_stream::SubscriberStream::default();
+        for (audio,mut rx,mut subscriber) in receivers {
             let mut pcm=Vec::new();
-            for (id,seq) in [(11,0),(11,1),(11,2),(12,0),(12,1)] {
+            for (id,seq) in [(11,1),(11,2),(12,0),(12,1)] {
                 let packet=rx.try_recv().expect("every old tail and new start must be queued");
                 let mut batch=output(id,seq);
                 let expected=if audio {batch.audio.remove(0)} else {batch.decode.remove(0)};
-                let frames=subscriber.frames(packet.message.frame(0).unwrap().0).expect("ordered subscriber stream");
+                let frames=subscriber.frames(packet.frames().next().expect("admitted predecessor survives retune"))
+                    .expect("ordered subscriber stream");
                 assert_eq!(frames.len(),1);
                 let Message::Binary(bytes)=&frames[0] else {panic!("expected binary receiver frame")};
                 assert_eq!(bytes.as_ref(),expected.as_slice());

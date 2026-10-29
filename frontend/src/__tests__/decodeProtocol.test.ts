@@ -354,7 +354,10 @@ describe('native decoded stream boundaries', () => {
       expect(messages).toHaveLength(1);
     } finally { vi.unstubAllGlobals(); }
   });
-  it('stops on receiver failure without reconnecting and permits an explicit new start', async () => {
+  it.each([
+    ['receiver failed', 'Decoded-output receiver failed'],
+    ['subscriber source stream invalid', 'Decoded-output source stream invalid'],
+  ])('stops on %s without reconnecting and permits an explicit new start', async (reason, message) => {
     const messages: Array<{ type: string; message?: string }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
       postMessage: (message: { type: string; message?: string }) => messages.push(message),
@@ -373,9 +376,9 @@ describe('native decoded stream boundaries', () => {
       // Worker initialization binds self; load only after installing this worker's globals.
       await import('../sdr/decodeWorker');
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
-      sockets[0].onclose!({ code: 1011, reason: 'receiver failed' });
+      sockets[0].onclose!({ code: 1011, reason });
       sockets[0].onmessage!({ data: frame() });
-      expect(messages).toEqual([{ type: 'error', message: 'Decoded-output receiver failed' }]);
+      expect(messages).toEqual([{ type: 'error', message }]);
       expect(host.setTimeout).not.toHaveBeenCalled();
       expect(sockets).toHaveLength(1);
       host.onmessage!({ data: { type: 'start', url: 'ws://localhost/ws/decode' } });
@@ -416,7 +419,7 @@ describe('native decoded stream boundaries', () => {
       expect(messages.at(-1)?.envelopes?.[0].channel_id).toBe(18);
     } finally { vi.unstubAllGlobals(); }
   });
-  it('acknowledges only host-applied sequences independently per channel', async () => {
+  it('acknowledges host-applied sequences independently across channels and tuning identities', async () => {
     const messages: Array<{ type: string; envelopes?: DecodeEnvelope[] }> = [];
     const host = { onmessage: null as ((event: { data: { type: string; url?: string } }) => void) | null,
       postMessage: (message: { type: string; envelopes?: DecodeEnvelope[] }) => messages.push(message) };
@@ -441,15 +444,24 @@ describe('native decoded stream boundaries', () => {
       socket.onmessage!({ data: frame({ seq: 1, event: { type: 'cw' } }) });
       socket.onmessage!({ data: frame({ channel: 2, channel_id: 18, event: { type: 'start', snapshotAck: true } }) });
       socket.onmessage!({ data: frame({ seq: 2, event: { type: 'cw' } }) });
+      socket.onmessage!({ data: frame({ channel_id: 19, event: { type: 'start', snapshotAck: true } }) });
+      socket.onmessage!({ data: frame({ channel_id: 19, seq: 1, event: { type: 'cw' } }) });
+      socket.onmessage!({ data: frame({ channel_id: 19, epoch: 10, event: { type: 'start', snapshotAck: true } }) });
       expect(socket.sent).toEqual([]);
       host.onmessage!({ data: { type: 'ack' } });
-      expect(socket.sent).toEqual([{ type: 'ack', channel: 1, epoch: 9, seq: 0 }]);
-      expect(messages[1].envelopes?.map((item) => [item.channel, item.seq])).toEqual([[1, 1], [2, 0], [1, 2]]);
+      expect(socket.sent).toEqual([{ type: 'ack', channel: 1, channel_id: 17, epoch: 9, seq: 0 }]);
+      expect(messages[1].envelopes?.map((item) => [item.channel, item.channel_id, item.epoch, item.seq])).toEqual([
+        [1, 17, 9, 1], [2, 18, 9, 0], [1, 17, 9, 2], [1, 19, 9, 0], [1, 19, 9, 1], [1, 19, 10, 0],
+      ]);
       host.onmessage!({ data: { type: 'ack' } });
-      expect(socket.sent.slice(1)).toEqual([{ type: 'ack', channel: 1, epoch: 9, seq: 2 },
-        { type: 'ack', channel: 2, epoch: 9, seq: 0 }]);
+      expect(socket.sent.slice(1)).toEqual([
+        { type: 'ack', channel: 1, channel_id: 17, epoch: 9, seq: 2 },
+        { type: 'ack', channel: 2, channel_id: 18, epoch: 9, seq: 0 },
+        { type: 'ack', channel: 1, channel_id: 19, epoch: 9, seq: 1 },
+        { type: 'ack', channel: 1, channel_id: 19, epoch: 10, seq: 0 },
+      ]);
       host.onmessage!({ data: { type: 'ack' } });
-      expect(socket.sent).toHaveLength(3);
+      expect(socket.sent).toHaveLength(5);
     } finally { vi.unstubAllGlobals(); }
   });
   it.each(['wfm', 'am', 'cw'])('sends no wire ACK for an old %s start that omits snapshotAck', async (mode) => {
@@ -495,14 +507,14 @@ describe('native decoded stream boundaries', () => {
       const socket = Socket.current;
       socket.onmessage!({ data: frame({ event: { type: 'start', snapshotAck: true } }) });
       host.onmessage!({ data: { type: 'ack' } });
-      expect(socket.sent).toEqual([{ type: 'ack', channel: 1, epoch: 9, seq: 0 }]);
+      expect(socket.sent).toEqual([{ type: 'ack', channel: 1, channel_id: 17, epoch: 9, seq: 0 }]);
       socket.onmessage!({ data: frame({ channel_id: 18 }) });
       host.onmessage!({ data: { type: 'ack' } });
       socket.onmessage!({ data: frame({ channel_id: 18, seq: 1, event: { type: 'cw' } }) });
       host.onmessage!({ data: { type: 'ack' } });
       expect(socket.sent.slice(1)).toEqual([
-        { type: 'ack', channel: 1, epoch: 9, seq: 0 },
-        { type: 'ack', channel: 1, epoch: 9, seq: 1 },
+        { type: 'ack', channel: 1, channel_id: 18, epoch: 9, seq: 0 },
+        { type: 'ack', channel: 1, channel_id: 18, epoch: 9, seq: 1 },
       ]);
     } finally { vi.unstubAllGlobals(); }
   });

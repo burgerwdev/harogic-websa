@@ -25,7 +25,7 @@ import { fmtAxisLevel } from '../core/level';
 import { displayUnit } from './displayState';
 import { clearDisplayBounds, displayBoundsMax, displayBoundsMin, getDisplayRange, getDisplayTop, hasDisplayBounds, setDisplayBounds } from './displayRef';
 import { syncControlRailZoom } from './controlRail';
-import { cancelLevelPreview } from './axisDrag';
+import { cancelLevelPreview, previewCaptureWindow, previewFreqWindow } from './axisDrag';
 import {
 	DETAIL_HINT_SAMPLES,
 	isZoomed,
@@ -67,7 +67,10 @@ function syncZoomRail(on: boolean): void {
 		const text = view ? `${Number(zoom.toPrecision(3))}× · ${formatBWHz(span)}` : t('zoom_waiting');
 		horizontal.setAttribute('aria-valuetext', text);
 		const output = document.getElementById('zoom-rail-horizontal-value');
-		if (output) { output.textContent = view ? text : '—'; output.title = text; }
+		// The rail is one narrow column: a compact factor (k = 1000) stays inside it; the
+		// exact value keeps its full form in the tooltip/aria text.
+		const factor = zoom >= 1000 ? `${Math.round(zoom / 100) / 10}k` : String(Number(zoom.toPrecision(3)));
+		if (output) { output.textContent = view ? `x${factor}` : '—'; output.title = text; }
 	}
 	const top = getDisplayTop(), bottom = top - getDisplayRange();
 	const minimum = Math.min(displayBoundsMin(), bottom), maximum = Math.max(displayBoundsMax(), top);
@@ -159,12 +162,13 @@ export function syncSpectrumZoomUi(force = false): void {
 	const zoomed = on && isZoomed();
 
 	// One cheap string key guards the DOM writes: the render loop calls this every pass.
-	const capture = getCapture();
-	const view = getView();
+	const capture = previewCaptureWindow() ?? getCapture();
+	const view = previewFreqWindow() ?? getView();
 	const samples = on && capture && view ? samplesInView(S.freqArray, view) : null;
 	const key = [
 		on ? 1 : 0, available ? 1 : 0, zoomed ? 1 : 0,
 		viewportVersion(), S.freqVersion, capture ? capture.lo.toFixed(0) : '-',
+		capture?.hi, view?.lo, view?.hi,
 		samples === null ? '-' : samples, getDisplayTop(), getDisplayRange(), getLang(), displayUnit.get(), S.levelUnit,
 	].join('|');
 	if (!force && key === lastSyncKey) return;

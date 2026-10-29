@@ -2,9 +2,9 @@
  * The display-only spectrum viewport (ui/spectrumViewport.ts).
  *
  * These tests pin the design contract (~/harogic-websa-spectrum-local-zoom-design.md §4):
- * the view is always inside the capture, zoom keeps the anchor under the pointer, a new
- * capture drops the view (a zoom selected against one axis must never be pasted onto
- * another), and none of this touches the wire.
+ * the view is always inside the capture, zoom keeps the anchor under the pointer, a
+ * translated capture shifts the view while a new span drops it, and none of this
+ * touches the wire.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resetAll } from '../core/params';
@@ -24,6 +24,7 @@ import {
 	panToCenter,
 	passbandViewActive,
 	plotXToFreq,
+	recenterOnCapture,
 	resetViewport,
 	sampleStepHz,
 	samplesInView,
@@ -141,11 +142,65 @@ describe('module state', () => {
 		expect(isZoomed()).toBe(true);
 	});
 
-	it('drops the view when the capture actually changes', () => {
+	it('shifts the view with a same-width capture pan (box pinned to the frame)', () => {
 		setView({ lo: 940e6, hi: 960e6 }, 2e6);
+		// The frame pans; the box keeps its place in the frame, so it pans with it
+		// by the same offset — the spectrum slides under a screen-fixed magnifier.
+		expect(setCapture({ lo: 910e6, hi: 1010e6 })).toBe(true);
+		expect(isZoomed()).toBe(true);
+		expect(sameWindow(getView(), { lo: 950e6, hi: 970e6 })).toBe(true);
+	});
+
+	it('clamps a shifted view at the frame edges', () => {
+		setView({ lo: 980e6, hi: 1000e6 }, 2e6);
 		expect(setCapture({ lo: 800e6, hi: 900e6 })).toBe(true);
+		expect(isZoomed()).toBe(true);
+		expect(sameWindow(getView(), { lo: 880e6, hi: 900e6 })).toBe(true);
+		setView({ lo: 800e6, hi: 820e6 }, 2e6);
+		expect(setCapture({ lo: 900e6, hi: 1000e6 })).toBe(true);
+		expect(sameWindow(getView(), { lo: 900e6, hi: 920e6 })).toBe(true);
+	});
+
+	it('falls back to full capture when pan quantization makes it narrower than the view', () => {
+		setView({ lo: 901e6, hi: 999e6 }, 1);
+		setCapture({ lo: 910e6, hi: 1007e6 }, 3e6);
 		expect(isZoomed()).toBe(false);
-		expect(sameWindow(getView(), { lo: 800e6, hi: 900e6 })).toBe(true);
+		expect(getView()).toEqual(getCapture());
+	});
+
+	it.each(['before', 'after'] as const)('focuses a relocated receiver when its ACK arrives %s the capture', order => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		const next = { lo: 1000e6, hi: 1100e6 };
+		if (order === 'after') setCapture(next);
+		recenterOnCapture(1020e6, next, 1);
+		if (order === 'before') {
+			expect(getView()).toEqual({ lo: 940e6, hi: 960e6 });
+			setCapture(CAP); // An old frame must not discard the pending relocation.
+			setCapture(next);
+		}
+		expect(getView()).toEqual({ lo: 1010e6, hi: 1030e6 });
+		setCapture({ lo: 1010e6, hi: 1110e6 });
+		expect(getView()).toEqual({ lo: 1020e6, hi: 1040e6 });
+	});
+
+	it.each(['view', 'capture', 'invalid', 'reset'] as const)('cancels deferred receiver focus after a superseding %s change', change => {
+		setView({ lo: 940e6, hi: 960e6 }, 1);
+		const next = { lo: 1000e6, hi: 1100e6 };
+		recenterOnCapture(1020e6, next, 1);
+		if (change === 'view') setView({ lo: 930e6, hi: 950e6 }, 1);
+		else if (change === 'capture') setCapture({ lo: 910e6, hi: 1010e6 });
+		else if (change === 'invalid') setCapture(null);
+		else resetViewport();
+		setCapture(next);
+		expect(getView()).toEqual(change === 'view' ? { lo: 1030e6, hi: 1050e6 }
+			: change === 'capture' ? { lo: 1040e6, hi: 1060e6 } : next);
+	});
+
+	it('drops the view when the capture span changes', () => {
+		setView({ lo: 940e6, hi: 960e6 }, 2e6);
+		expect(setCapture({ lo: 800e6, hi: 950e6 })).toBe(true);
+		expect(isZoomed()).toBe(false);
+		expect(sameWindow(getView(), { lo: 800e6, hi: 950e6 })).toBe(true);
 	});
 
 	it('clears everything on invalid capture and on reset', () => {

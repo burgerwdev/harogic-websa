@@ -4,7 +4,7 @@
 
 A browser-based control and measurement application for **Harogic SAN series spectrum analyzers** (SAN-45 / SAN-60 / SAN-90, 海得逻捷), using the native Rust service and a C++ shim for the official `libhtraapi.so` SDK over USB.
 
-Release **1.9.4** uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
+The service uses the native Rust PFB/DDC acquisition and receiver path. Python is reserved
 for offline tools and tests; there is no Python production backend. Retained browser WASM
 artifacts are optional offline diagnostics, not the production DSP path.
 
@@ -52,7 +52,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
   compensation, dark/light theme, English/Chinese; global UI scale in the footer, including SRV mode
 - **Link monitor** — an unplug is reported on the canvas instead of a frozen trace, and reconnecting
   resumes the same mode without a service restart
-- **Soapy SRV** — the **SRV** button opens an exclusive mode that hands the analyzer to a local SoapySDRServer. Entering it stops Web capture and audio and releases the physical device handle; it does not start the server. Bind address and port are configured only while stopped, and Start, Stop and Restart are separate. Exit returns to the last spectrum, real-time or SDR view. The committed runtime bundle does not include this handoff; rebuild the SDK shim and Soapy module below.
+- **Soapy SRV** — the **SRV** button opens an exclusive mode that hands the analyzer to a local SoapySDRServer. Entering it stops Web capture and audio and releases the physical device handle; it does not start the server. Bind address and port are configured only while stopped, and Start, Stop and Restart are separate. Exit returns to the last spectrum, real-time or SDR view. Install the Soapy dependencies and build the Soapy module below.
 
 ## Screenshots
 
@@ -72,7 +72,7 @@ artifacts are optional offline diagnostics, not the production DSP path.
 
 ### Run the bundled release
 
-The 1.9.4 checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
+The checkout includes `runtime/linux-x86_64/websad`, the project SDK adapter
 `runtime/linux-x86_64/libwebsa_san90_sdk_session.so`, and `runtime/frontend/dist/`.
 Run `./run.sh` for hardware or `./run.sh --fake` for synthetic input, then open
 http://127.0.0.1:8080. No Rust, Node.js or Python installation is needed to use the bundle.
@@ -121,7 +121,7 @@ make native sdk-shim                     # native service and hardware SDK shim
 make soapy-driver                        # patched official SoapyHarogic module; vendor SDK required
 ```
 
-`make soapy-driver` downloads five source and licence files from official SoapyHarogic revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` (GNU LGPL v2.1 or later), applies this project's stream-format and device-lifecycle patch to a private copy, and installs under `$HOME/.local/share/harogic-websa/soapy`. It does not download the SDK or install system packages. Server handoff needs a shim rebuilt with `san90_session_release_v1`; the committed `runtime/` adapter does not export that symbol and does not provide this feature. Host SoapySDR 0.8 and SoapyRemote are also required. See the [tools guide](tools/README.md).
+`make soapy-driver` downloads five source and licence files from official SoapyHarogic revision `762dbfa1512c705e1d8b86e820b06e8a10e08a92` (GNU LGPL v2.1 or later), applies this project's stream-format and device-lifecycle patch to a private copy, and installs under `$HOME/.local/share/harogic-websa/soapy`. It does not download the SDK or install system packages. Server handoff requires a shim exporting `san90_session_release_v1`; a loaded adapter without it refuses handoff. Host SoapySDR 0.8 and SoapyRemote are also required. See the [tools guide](tools/README.md).
 
 ### 2. Run
 
